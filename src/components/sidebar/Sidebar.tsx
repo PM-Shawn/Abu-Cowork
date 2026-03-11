@@ -245,8 +245,10 @@ export default function Sidebar() {
         ) : (
           <div className="space-y-0.5">
             {sortedConvs.map((conv) => (
-              <button
+              <div
                 key={conv.id}
+                role="button"
+                tabIndex={0}
                 onClick={() => { switchConversation(conv.id); setViewMode('chat'); }}
                 onContextMenu={(e) => handleContextMenu(e, conv.id)}
                 aria-current={conv.id === activeConversationId && viewMode === 'chat' ? 'true' : undefined}
@@ -278,7 +280,7 @@ export default function Sidebar() {
                     }}
                   />
                 ) : (
-                  <span className="flex-1 truncate text-[13px]">{conv.title}</span>
+                  <span className="flex-1 truncate text-[13px]">{conv.title.replace(/\[Attachment:\s*`[^`]*`\]\s*/g, '').trim() || conv.title}</span>
                 )}
                 <Button
                   variant="ghost"
@@ -288,7 +290,7 @@ export default function Sidebar() {
                 >
                   <Trash2 className="h-3.5 w-3.5" />
                 </Button>
-              </button>
+              </div>
             ))}
           </div>
         )}

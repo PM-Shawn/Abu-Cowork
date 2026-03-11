@@ -154,7 +154,7 @@ export default function ChatInput({ variant, onSend, disabled }: ChatInputProps)
     setFiles((prev) => prev.filter((f) => f.id !== id));
   }, []);
 
-  // Consume pending input
+  // Consume pending input (just set text; auto-selection handled in a later effect)
   useEffect(() => {
     if (pendingInput) {
       setText(pendingInput);
@@ -266,6 +266,28 @@ export default function ChatInput({ variant, onSend, disabled }: ChatInputProps)
 
   // Derived: show suggestions when there are matches and not dismissed
   const showSuggestions = !suggestionsDismissed && suggestionType !== null && suggestions.length > 0;
+
+  // Auto-select skill/agent when text exactly matches "/name " or "@name " (e.g. from "Try in chat")
+  useEffect(() => {
+    if (!suggestionType || selectedSkill || selectedAgent) return;
+    const trimmed = text.trim();
+
+    if (suggestionType === 'skill') {
+      const skillMatch = /^\/([a-z0-9-]+)$/.exec(trimmed);
+      if (skillMatch && suggestions.length === 1 && suggestions[0].name === skillMatch[1]) {
+        setSelectedSkill(suggestions[0]);
+        setText('');
+        setSuggestionsDismissed(true);
+      }
+    } else if (suggestionType === 'agent') {
+      const agentMatch = /^@([a-z0-9-]+)$/.exec(trimmed);
+      if (agentMatch && suggestions.length === 1 && suggestions[0].name === agentMatch[1]) {
+        setSelectedAgent(suggestions[0]);
+        setText('');
+        setSuggestionsDismissed(true);
+      }
+    }
+  }, [text, suggestionType, suggestions, selectedSkill, selectedAgent]);
 
   // Auto-resize textarea
   const maxHeight = isWelcome ? 180 : 160;
@@ -430,7 +452,7 @@ export default function ChatInput({ variant, onSend, disabled }: ChatInputProps)
       <div className="relative">
         {/* Suggestions Popup (Skills / Agents) */}
         {showSuggestions && suggestions.length > 0 && (
-          <div className="absolute bottom-full left-0 right-0 mb-2 bg-white rounded-xl border border-[#706b5750] shadow-lg overflow-hidden z-20">
+          <div className="absolute bottom-full left-0 right-0 mb-2 bg-white rounded-xl border border-[#706b5750] shadow-lg overflow-x-hidden overflow-y-auto max-h-[320px] z-20">
             {suggestions.map((item, idx) => (
               <button
                 key={item.name}

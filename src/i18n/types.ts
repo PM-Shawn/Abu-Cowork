@@ -314,6 +314,8 @@ export interface TranslationDict {
     addCustomServer: string;
     noServersConfigured: string;
     noServersConnected: string;
+    myServers: string;
+    exampleServers: string;
     serverName: string;
     serverCommand: string;
     serverArgs: string;
@@ -392,16 +394,25 @@ export interface TranslationDict {
     skillEnabled: string;
     skillDisabled: string;
     skillEdit: string;
+    skillTryInChat: string;
     skillSave: string;
     skillSaveAndTest: string;
     skillEditorTitle: string;
     skillEditorName: string;
     skillEditorDescription: string;
+    skillEditorDescriptionPlaceholder: string;
     skillEditorMetadata: string;
     skillEditorContent: string;
     skillEditorPreview: string;
     skillArgumentHint: string;
     skillUserInvocable: string;
+    skillDisableAutoInvoke: string;
+    skillLicense: string;
+    skillAdvancedSettings: string;
+    skillFiles: string;
+    skillAddedBy: string;
+    mySkills: string;
+    exampleSkills: string;
     activeSkills: string;
     activeSkillsRemove: string;
     // Category filter
@@ -433,6 +444,8 @@ export interface TranslationDict {
     agentEditorMetadata: string;
     agentEditorContent: string;
     agentEditorPreview: string;
+    myAgents: string;
+    exampleAgents: string;
     agentEnabled: string;
     agentDisabled: string;
     agentCategoryAll: string;

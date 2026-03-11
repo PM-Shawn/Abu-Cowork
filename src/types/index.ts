@@ -236,6 +236,10 @@ export interface SkillMetadata {
     PreToolUse?: SkillHookEntry[];
     PostToolUse?: SkillHookEntry[];
   };
+  // Agent Skills spec compatibility fields
+  license?: string;
+  compatibility?: string;
+  metadata?: Record<string, string>;
 }
 
 export interface Skill extends SkillMetadata {

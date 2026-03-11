@@ -41,6 +41,10 @@ function parseSkillFile(raw: string, filePath: string): Skill | null {
       agent: meta.agent as string | undefined,
       preloadSkills: Array.isArray(preloadSkills) ? preloadSkills : undefined,
       hooks,
+      // Agent Skills spec compatibility fields
+      license: meta.license as string | undefined,
+      compatibility: meta.compatibility as string | undefined,
+      metadata: meta.metadata as Record<string, string> | undefined,
       content,
       filePath,
       skillDir: getParentDir(filePath),
@@ -96,8 +100,27 @@ export class SkillLoader {
     let builtinDir: string | null = null;
     try {
       builtinDir = await resolveResource('builtin-skills');
+      // Verify the resolved path is accessible
+      if (builtinDir && !(await exists(builtinDir))) {
+        builtinDir = null;
+      }
     } catch {
-      // resolveResource not available (e.g. browser dev mode)
+      // resolveResource may fail in dev mode
+    }
+    // Dev mode fallback: try multiple possible paths
+    if (!builtinDir) {
+      // In dev mode, Tauri CWD is src-tauri/, so try ../builtin-skills first
+      const candidates = ['../builtin-skills', 'builtin-skills'];
+      for (const candidate of candidates) {
+        try {
+          const devDir = await resolve(candidate);
+          if (await exists(devDir)) {
+            builtinDir = devDir;
+            console.log('[SkillLoader] dev fallback found:', devDir);
+            break;
+          }
+        } catch { /* try next */ }
+      }
     }
 
     const dirs = [
@@ -277,6 +300,10 @@ export function serializeSkillMd(metadata: Partial<SkillMetadata>, content: stri
   set('agent', metadata.agent);
   set('skills', metadata.preloadSkills);
   if (metadata.hooks) set('hooks', metadata.hooks);
+  // Agent Skills spec compatibility fields
+  set('license', metadata.license);
+  set('compatibility', metadata.compatibility);
+  if (metadata.metadata) set('metadata', metadata.metadata);
 
   const yaml = stringifyYaml(meta, { lineWidth: 0 }).trimEnd();
   return `---\n${yaml}\n---\n\n${content}`;

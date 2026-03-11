@@ -1,45 +1,66 @@
 import { useState, useEffect, useMemo } from 'react';
 import { useDiscoveryStore } from '@/stores/discoveryStore';
 import { useSettingsStore } from '@/stores/settingsStore';
+import { useChatStore } from '@/stores/chatStore';
 import { useI18n } from '@/i18n';
 import { agentTemplates } from '@/data/marketplace/agents';
 import { agentRegistry } from '@/core/agent/registry';
-import MarketplaceCard from './MarketplaceCard';
-import SubTabBar from './SubTabBar';
-import AgentDetailModal from './AgentDetailModal';
 import AgentEditor from './AgentEditor';
 import { Toggle } from '@/components/ui/toggle';
-import { Trash2, AlertCircle } from 'lucide-react';
-import { writeTextFile, mkdir, remove } from '@tauri-apps/plugin-fs';
-import { homeDir } from '@tauri-apps/api/path';
-import { joinPath, getParentDir } from '@/utils/pathUtils';
+import { Bot, ChevronDown, ChevronRight, MoreHorizontal, Pencil, Trash2, MessageCircle, Eye, Code, Search, Plus, X, Wand2, PenLine, Upload } from 'lucide-react';
+import { remove } from '@tauri-apps/plugin-fs';
+import { getParentDir } from '@/utils/pathUtils';
 import type { SubagentDefinition } from '@/types';
-import type { MarketplaceItem } from '@/types/marketplace';
+import MarkdownRenderer from '@/components/chat/MarkdownRenderer';
 import abuAvatar from '@/assets/abu-avatar.png';
 
-function getAgentCategoryKey(category: string): string {
-  const lower = category.toLowerCase();
-  if (lower.includes('research') || lower.includes('研究')) return 'research';
-  if (lower.includes('develop') || lower.includes('开发')) return 'development';
-  if (lower.includes('writ') || lower.includes('写作')) return 'writing';
-  return lower;
+// Marketplace agent names — used to distinguish "installed from marketplace" vs "truly custom"
+const marketplaceNames = new Set(agentTemplates.map((t) => t.name));
+
+function isSystemAgent(agent: SubagentDefinition): boolean {
+  if (agent.name === 'abu') return true;
+  if (agent.filePath === '__builtin__' || agent.filePath.includes('builtin-agents')) return true;
+  if (marketplaceNames.has(agent.name)) return true;
+  return false;
 }
 
-export default function AgentsSection({ manualCreateTrigger }: { manualCreateTrigger?: number }) {
+/** Render agent avatar: use real image for abu, emoji for others */
+function AgentAvatar({ agent, size = 'md' }: { agent: SubagentDefinition; size?: 'sm' | 'md' }) {
+  const cls = size === 'sm' ? 'h-5 w-5' : 'h-6 w-6';
+  if (agent.name === 'abu') {
+    return <img src={abuAvatar} alt="Abu" className={`${cls} rounded-full object-cover`} />;
+  }
+  return <span className={size === 'sm' ? 'text-base' : 'text-xl'}>{agent.avatar || '🤖'}</span>;
+}
+
+/** Display name: capitalize first letter for abu */
+function displayName(agent: SubagentDefinition): string {
+  if (agent.name === 'abu') return 'Abu';
+  return agent.name;
+}
+
+interface AgentsSectionProps {
+  manualCreateTrigger?: number;
+  onAICreate?: () => void;
+  onManualCreate?: () => void;
+  onUploadFile?: () => void;
+}
+
+export default function AgentsSection({ manualCreateTrigger, onAICreate, onManualCreate, onUploadFile }: AgentsSectionProps) {
   const { agents, refresh } = useDiscoveryStore();
-  const { installingItem, setInstallingItem, toolboxSearchQuery, disabledAgents, toggleAgentEnabled } = useSettingsStore();
+  const { toolboxSearchQuery, setToolboxSearchQuery, disabledAgents, toggleAgentEnabled, closeToolbox } = useSettingsStore();
+  const startNewConversation = useChatStore((s) => s.startNewConversation);
+  const setPendingInput = useChatStore((s) => s.setPendingInput);
   const { t } = useI18n();
 
   const [installedAgents, setInstalledAgents] = useState<SubagentDefinition[]>([]);
-  const [error, setError] = useState<string | null>(null);
-  const [activeSubTab, setActiveSubTab] = useState<'system' | 'custom'>('system');
-  const [categoryFilter, setCategoryFilter] = useState<string>('all');
-  const [detailItem, setDetailItem] = useState<
-    | { kind: 'agent'; data: SubagentDefinition }
-    | { kind: 'template'; data: MarketplaceItem }
-    | null
-  >(null);
+  const [selectedAgent, setSelectedAgent] = useState<string | null>(null);
   const [editorAgent, setEditorAgent] = useState<SubagentDefinition | 'new' | null>(null);
+  const [menuAgent, setMenuAgent] = useState<string | null>(null);
+  const [collapsedCategories, setCollapsedCategories] = useState<Set<string>>(new Set());
+  const [showSearch, setShowSearch] = useState(false);
+  const [showCreateMenu, setShowCreateMenu] = useState(false);
+  const [contentViewMode, setContentViewMode] = useState<'preview' | 'source'>('preview');
 
   // Open blank editor when manual create is triggered from parent
   useEffect(() => {
@@ -48,7 +69,7 @@ export default function AgentsSection({ manualCreateTrigger }: { manualCreateTri
     }
   }, [manualCreateTrigger]);
 
-  // Load full agent details for source info
+  // Load full agent details
   useEffect(() => {
     const loadAgentDetails = async () => {
       const fullAgents: SubagentDefinition[] = [];
@@ -57,297 +78,344 @@ export default function AgentsSection({ manualCreateTrigger }: { manualCreateTri
         if (full) fullAgents.push(full);
       }
       setInstalledAgents(fullAgents);
+      if (!selectedAgent && fullAgents.length > 0) {
+        setSelectedAgent(fullAgents[0].name);
+      }
     };
     loadAgentDetails();
   }, [agents]);
 
-  const installedNames = useMemo(() => new Set(agents.map((a) => a.name)), [agents]);
   const disabledSet = useMemo(() => new Set(disabledAgents), [disabledAgents]);
 
-  // Filter templates by search
+  // Filter by search
   const searchLower = toolboxSearchQuery.toLowerCase();
-  const matchesSearch = (name: string, description: string) => {
-    if (!toolboxSearchQuery) return true;
-    return name.toLowerCase().includes(searchLower) || description.toLowerCase().includes(searchLower);
-  };
+  const filteredAgents = useMemo(() => {
+    if (!toolboxSearchQuery) return installedAgents;
+    return installedAgents.filter((a) =>
+      a.name.toLowerCase().includes(searchLower) ||
+      a.description.toLowerCase().includes(searchLower)
+    );
+  }, [installedAgents, searchLower]);
 
-  const filteredTemplates = agentTemplates.filter((tmpl) => {
-    if (!matchesSearch(tmpl.name, tmpl.description)) return false;
-    if (categoryFilter !== 'all' && getAgentCategoryKey(tmpl.category) !== categoryFilter) return false;
-    return true;
-  });
-
-  // Marketplace agent names — used to distinguish "installed from marketplace" vs "truly custom"
-  const marketplaceNames = useMemo(() => new Set(agentTemplates.map((t) => t.name)), []);
-
-  // Custom agents = installed agents that are NOT builtin, not abu, and not from marketplace
-  const customInstalledAgents = installedAgents.filter((a) => {
-    if (a.name === 'abu') return false;
-    if (a.filePath === '__builtin__' || a.filePath.includes('builtin-agents')) return false;
-    if (marketplaceNames.has(a.name)) return false;
-    return matchesSearch(a.name, a.description);
-  });
-
-  // Install an agent from marketplace
-  const handleInstall = async (template: MarketplaceItem) => {
-    if (!template.content) return;
-
-    setInstallingItem(template.id);
-    setError(null);
-
-    try {
-      const home = await homeDir();
-      const agentDir = joinPath(home, '.abu/agents', template.name);
-
-      await mkdir(agentDir, { recursive: true });
-      await writeTextFile(joinPath(agentDir, 'AGENT.md'), template.content);
-      await refresh();
-    } catch (err) {
-      console.error('Failed to install agent:', err);
-      setError(`${t.toolbox.installFailed}: ${err instanceof Error ? err.message : String(err)}`);
-    } finally {
-      setInstallingItem(null);
+  // Group into "My agents" (user-created) and "System" (builtin/marketplace)
+  const { userAgents, systemAgents } = useMemo(() => {
+    const user: SubagentDefinition[] = [];
+    const system: SubagentDefinition[] = [];
+    for (const a of filteredAgents) {
+      if (isSystemAgent(a)) {
+        system.push(a);
+      } else {
+        user.push(a);
+      }
     }
+    return { userAgents: user, systemAgents: system };
+  }, [filteredAgents]);
+
+  const toggleCategory = (cat: string) => {
+    setCollapsedCategories((prev) => {
+      const next = new Set(prev);
+      if (next.has(cat)) next.delete(cat); else next.add(cat);
+      return next;
+    });
   };
+
+  const selected = installedAgents.find((a) => a.name === selectedAgent) ?? null;
 
   // Delete a user-installed agent
   const handleDelete = async (agent: SubagentDefinition) => {
     if (agent.filePath === '__builtin__' || agent.filePath.includes('builtin-agents')) return;
-
     try {
       const agentDir = getParentDir(agent.filePath);
       await remove(agentDir, { recursive: true });
+      if (selectedAgent === agent.name) setSelectedAgent(null);
       await refresh();
     } catch (err) {
       console.error('Failed to delete agent:', err);
     }
   };
 
-  const handleCardClick = (template: MarketplaceItem) => {
-    const installed = installedAgents.find((a) => a.name === template.name);
-    if (installed) {
-      setDetailItem({ kind: 'agent', data: installed });
-    } else {
-      setDetailItem({ kind: 'template', data: template });
-    }
+  // Close menus when clicking outside
+  useEffect(() => {
+    if (!menuAgent && !showCreateMenu) return;
+    const handleClick = () => { setMenuAgent(null); setShowCreateMenu(false); };
+    document.addEventListener('click', handleClick);
+    return () => document.removeEventListener('click', handleClick);
+  }, [menuAgent, showCreateMenu]);
+
+  const renderAgentRow = (agent: SubagentDefinition) => {
+    const isSelected = selectedAgent === agent.name;
+    const isEnabled = !disabledSet.has(agent.name);
+
+    return (
+      <div key={agent.name}>
+        <div
+          className={`flex items-center gap-2.5 pl-7 pr-3 py-2.5 cursor-pointer transition-colors ${
+            isSelected ? 'bg-[#eae7e0]' : 'hover:bg-[#f0ede6]'
+          }`}
+          onClick={() => setSelectedAgent(agent.name)}
+        >
+          <AgentAvatar agent={agent} size="sm" />
+          <span className={`text-sm flex-1 truncate ${
+            !isEnabled && agent.name !== 'abu' ? 'text-[#b5b0a6]' : isSelected ? 'text-[#29261b] font-medium' : 'text-[#656358]'
+          }`}>
+            {displayName(agent)}
+          </span>
+        </div>
+      </div>
+    );
   };
 
-  const handleCustomAgentClick = (agent: SubagentDefinition) => {
-    setDetailItem({ kind: 'agent', data: agent });
-  };
-
-  const handleEditAgent = (agent: SubagentDefinition) => {
-    setEditorAgent(agent);
-    setDetailItem(null);
-  };
-
-  const handleEditorClose = () => {
-    setEditorAgent(null);
-  };
-
-  const handleEditorSave = async () => {
-    await refresh();
-    setEditorAgent(null);
-  };
-
-  const getSourceLabel = (agent: SubagentDefinition) => {
-    const filePath = agent.filePath;
-    if (filePath === '__builtin__' || filePath.includes('builtin-agents')) {
-      return { label: t.toolbox.sourceBuiltin, color: 'bg-blue-100 text-blue-600' };
-    }
-    // Marketplace-installed agents: name matches a template
-    if (marketplaceNames.has(agent.name)) {
-      return { label: t.toolbox.sourceBuiltin, color: 'bg-blue-100 text-blue-600' };
-    }
-    if (filePath.includes('.abu/agents')) {
-      if (filePath.startsWith('.abu/')) return { label: t.toolbox.sourceProject, color: 'bg-purple-100 text-purple-600' };
-      return { label: t.toolbox.sourceUser, color: 'bg-green-100 text-green-600' };
-    }
-    return { label: t.toolbox.sourceUnknown, color: 'bg-neutral-100 text-neutral-500' };
-  };
-
-  const subTabs = [
-    { id: 'system', label: t.toolbox.tabSystem, count: filteredTemplates.length + 1 },
-    { id: 'custom', label: t.toolbox.tabCustom, count: customInstalledAgents.length },
-  ];
-
-  const categoryTabs = [
-    { id: 'all', label: t.toolbox.agentCategoryAll },
-    { id: 'research', label: t.toolbox.agentCategoryResearch },
-    { id: 'development', label: t.toolbox.agentCategoryDevelopment },
-    { id: 'writing', label: t.toolbox.agentCategoryWriting },
-  ];
-
-  // If editor is open, show editor
+  // If editor is open, show editor full-width
   if (editorAgent !== null) {
     return (
       <AgentEditor
         agent={editorAgent === 'new' ? null : editorAgent}
-        onClose={handleEditorClose}
-        onSave={handleEditorSave}
+        onClose={() => setEditorAgent(null)}
+        onSave={async () => { await refresh(); setEditorAgent(null); }}
       />
     );
   }
 
   return (
-    <div className="flex flex-col h-full overflow-hidden">
-      {/* Sub-tab bar */}
-      <div className="shrink-0 px-4 pt-4 pb-2">
-        <SubTabBar
-          tabs={subTabs}
-          activeTab={activeSubTab}
-          onChange={(id) => setActiveSubTab(id as 'system' | 'custom')}
-        />
-      </div>
-
-      {/* Category filter for system tab */}
-      {activeSubTab === 'system' && (
-        <div className="shrink-0 px-4 pb-2 flex gap-1.5 flex-wrap">
-          {categoryTabs.map((cat) => (
-            <button
-              key={cat.id}
-              onClick={() => setCategoryFilter(cat.id)}
-              className={`px-2.5 py-1 rounded-full text-[11px] font-medium transition-colors ${
-                categoryFilter === cat.id
-                  ? 'bg-[#29261b] text-[#faf9f5]'
-                  : 'bg-neutral-100 text-neutral-500 hover:bg-neutral-200'
-              }`}
-            >
-              {cat.label}
-            </button>
-          ))}
-        </div>
-      )}
-
-      <div className="flex-1 overflow-y-auto px-4 pb-4">
-        {/* Error Display */}
-        {error && (
-          <div className="mb-4 p-3 rounded-lg bg-red-50 border border-red-200 flex items-start gap-2">
-            <AlertCircle className="h-4 w-4 text-red-500 shrink-0 mt-0.5" />
-            <div className="text-sm text-red-700">{error}</div>
-          </div>
-        )}
-
-        {/* System tab: Abu main agent + marketplace templates */}
-        {activeSubTab === 'system' && (
-          <>
-            {/* Abu Main Agent Card */}
-            <div className="mb-4 p-3 rounded-lg bg-gradient-to-r from-[#d97757]/10 to-[#d97757]/5 border border-[#d97757]/20">
-              <div className="flex items-center gap-3">
-                <div className="h-10 w-10 rounded-full overflow-hidden">
-                  <img src={abuAvatar} alt="Abu" className="w-full h-full object-cover" />
-                </div>
-                <div className="flex-1">
-                  <div className="flex items-center gap-2">
-                    <span className="font-medium text-sm text-neutral-900">{t.common.appName} (abu)</span>
-                    <span className="text-[10px] px-1.5 py-0.5 bg-[#d97757]/20 text-[#d97757] rounded">
-                      {t.toolbox.defaultAgent}
-                    </span>
-                  </div>
-                  <p className="text-xs text-neutral-500 mt-0.5">{t.toolbox.mainAgentDesc}</p>
+    <div className="flex h-full overflow-hidden">
+      {/* Left: Agent list */}
+      <div className="w-[260px] shrink-0 border-r border-[#e8e4dd]/60 flex flex-col overflow-hidden bg-[#faf8f5]">
+        {/* Header: Title + Search + Create */}
+        <div className="shrink-0 px-3 pt-3 pb-2 border-b border-[#e8e4dd]/60">
+          {showSearch ? (
+            <div className="relative">
+              <Search className="absolute left-2 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-[#656358]" />
+              <input
+                autoFocus
+                type="text"
+                placeholder={t.toolbox.searchPlaceholder}
+                value={toolboxSearchQuery}
+                onChange={(e) => setToolboxSearchQuery(e.target.value)}
+                onBlur={() => { if (!toolboxSearchQuery) setShowSearch(false); }}
+                onKeyDown={(e) => { if (e.key === 'Escape') { setToolboxSearchQuery(''); setShowSearch(false); } }}
+                className="w-full pl-7 pr-7 py-1 text-sm border border-[#e8e4dd] rounded-md bg-white focus:outline-none focus:ring-1 focus:ring-[#d97757]/30 text-[#29261b]"
+              />
+              <button
+                onClick={() => { setToolboxSearchQuery(''); setShowSearch(false); }}
+                className="absolute right-2 top-1/2 -translate-y-1/2 text-[#656358] hover:text-[#29261b]"
+              >
+                <X className="h-3.5 w-3.5" />
+              </button>
+            </div>
+          ) : (
+            <div className="flex items-center justify-between">
+              <span className="text-sm font-semibold text-[#29261b]">{t.toolbox.agents}</span>
+              <div className="flex items-center gap-1">
+                <button
+                  onClick={() => setShowSearch(true)}
+                  className="p-1 text-[#888579] hover:text-[#29261b] transition-colors"
+                >
+                  <Search className="h-3.5 w-3.5" />
+                </button>
+                <div className="relative">
+                  <button
+                    onClick={(e) => { e.stopPropagation(); setShowCreateMenu(!showCreateMenu); }}
+                    className="p-1 text-[#888579] hover:text-[#29261b] transition-colors"
+                  >
+                    <Plus className="h-4 w-4" />
+                  </button>
+                  {showCreateMenu && (
+                    <div className="absolute z-50 top-full right-0 mt-1 w-44 bg-white rounded-lg shadow-lg border border-[#e8e4dd] py-1">
+                      {onAICreate && (
+                        <button
+                          onClick={() => { setShowCreateMenu(false); onAICreate(); }}
+                          className="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-[#29261b] hover:bg-[#f0ede6] transition-colors"
+                        >
+                          <Wand2 className="h-3.5 w-3.5 text-[#d97757]" />
+                          <span>{t.toolbox.createWithAbu}</span>
+                        </button>
+                      )}
+                      {onManualCreate && (
+                        <button
+                          onClick={() => { setShowCreateMenu(false); onManualCreate(); }}
+                          className="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-[#29261b] hover:bg-[#f0ede6] transition-colors"
+                        >
+                          <PenLine className="h-3.5 w-3.5 text-[#888579]" />
+                          <span>{t.toolbox.createManually}</span>
+                        </button>
+                      )}
+                      {onUploadFile && (
+                        <button
+                          onClick={() => { setShowCreateMenu(false); onUploadFile(); }}
+                          className="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-[#29261b] hover:bg-[#f0ede6] transition-colors"
+                        >
+                          <Upload className="h-3.5 w-3.5 text-[#888579]" />
+                          <span>{t.toolbox.uploadFile}</span>
+                        </button>
+                      )}
+                    </div>
+                  )}
                 </div>
               </div>
             </div>
-
-            {/* Marketplace Templates */}
-            {filteredTemplates.length === 0 ? (
-              <div className="text-sm text-neutral-400 py-4 text-center">{t.toolbox.noAgentsFound}</div>
-            ) : (
-              <div className="grid grid-cols-2 gap-3">
-                {filteredTemplates.map((template) => (
-                  <MarketplaceCard
-                    key={template.id}
-                    item={template}
-                    isInstalled={installedNames.has(template.name)}
-                    isInstalling={installingItem === template.id}
-                    isEnabled={!disabledSet.has(template.name)}
-                    onInstall={() => handleInstall(template)}
-                    onUninstall={
-                      installedNames.has(template.name)
-                        ? (() => {
-                            const agent = installedAgents.find((a) => a.name === template.name);
-                            if (agent && agent.filePath !== '__builtin__' && !agent.filePath.includes('builtin-agents')) {
-                              handleDelete(agent);
-                            }
-                          })
-                        : undefined
+          )}
+        </div>
+        <div className="flex-1 overflow-y-auto py-1">
+          {filteredAgents.length === 0 ? (
+            <div className="text-xs text-[#888579] py-8 text-center">{t.toolbox.noAgentsFound}</div>
+          ) : (
+            <>
+              {/* My agents (user-created) */}
+              {userAgents.length > 0 && (
+                <div>
+                  <div
+                    className="flex items-center gap-1.5 px-4 py-2 cursor-pointer text-[#888579] hover:text-[#29261b]"
+                    onClick={() => toggleCategory('my')}
+                  >
+                    {collapsedCategories.has('my')
+                      ? <ChevronRight className="h-3 w-3" />
+                      : <ChevronDown className="h-3 w-3" />
                     }
-                    onToggleEnabled={
-                      installedNames.has(template.name)
-                        ? () => toggleAgentEnabled(template.name)
-                        : undefined
+                    <span className="text-[13px] font-medium">{t.toolbox.myAgents}</span>
+                  </div>
+                  {!collapsedCategories.has('my') && userAgents.map((agent) => renderAgentRow(agent))}
+                </div>
+              )}
+              {/* System agents (builtin/marketplace) */}
+              {systemAgents.length > 0 && (
+                <div>
+                  <div
+                    className="flex items-center gap-1.5 px-4 py-2 cursor-pointer text-[#888579] hover:text-[#29261b]"
+                    onClick={() => toggleCategory('system')}
+                  >
+                    {collapsedCategories.has('system')
+                      ? <ChevronRight className="h-3 w-3" />
+                      : <ChevronDown className="h-3 w-3" />
                     }
-                    onClick={() => handleCardClick(template)}
-                  />
-                ))}
-              </div>
-            )}
-          </>
-        )}
-
-        {/* Custom tab: installed custom agents */}
-        {activeSubTab === 'custom' && (
-          <>
-            {customInstalledAgents.length === 0 ? (
-              <div className="text-sm text-neutral-400 py-8 text-center">{t.toolbox.noCustomAgents}</div>
-            ) : (
-              <div className="space-y-2">
-                {customInstalledAgents.map((agent) => {
-                  const source = getSourceLabel(agent);
-                  const isEnabled = !disabledSet.has(agent.name);
-                  return (
-                    <div
-                      key={agent.name}
-                      onClick={() => handleCustomAgentClick(agent)}
-                      className={`group flex items-center gap-3 p-3 rounded-lg bg-white border border-neutral-200/60 cursor-pointer hover:border-neutral-300 ${
-                        !isEnabled ? 'opacity-60' : ''
-                      }`}
-                    >
-                      <div className="h-8 w-8 rounded-full bg-neutral-100 flex items-center justify-center">
-                        <span className="text-base">{agent.avatar || '🤖'}</span>
-                      </div>
-                      <div className="flex-1 min-w-0">
-                        <div className="flex items-center gap-2">
-                          <span className="font-medium text-sm text-neutral-900">{agent.name}</span>
-                          <span className={`text-[10px] px-1.5 py-0.5 rounded ${source.color}`}>
-                            {source.label}
-                          </span>
-                        </div>
-                        <p className="text-xs text-neutral-500 mt-0.5 truncate">{agent.description}</p>
-                      </div>
-                      <Toggle checked={isEnabled} onChange={() => toggleAgentEnabled(agent.name)} />
-                      <button
-                        onClick={(e) => { e.stopPropagation(); handleDelete(agent); }}
-                        className="shrink-0 p-1.5 text-neutral-400 hover:text-red-500 hover:bg-red-50 rounded transition-colors opacity-0 group-hover:opacity-100"
-                      >
-                        <Trash2 className="h-4 w-4" />
-                      </button>
-                    </div>
-                  );
-                })}
-              </div>
-            )}
-          </>
-        )}
+                    <span className="text-[13px] font-medium">{t.toolbox.exampleAgents}</span>
+                  </div>
+                  {!collapsedCategories.has('system') && systemAgents.map((agent) => renderAgentRow(agent))}
+                </div>
+              )}
+            </>
+          )}
+        </div>
       </div>
 
-      {/* Agent Detail Modal */}
-      {detailItem && (
-        <AgentDetailModal
-          agent={detailItem.kind === 'agent' ? detailItem.data : null}
-          template={detailItem.kind === 'template' ? detailItem.data : null}
-          isInstalled={detailItem.kind === 'agent' || installedNames.has(detailItem.data.name)}
-          onClose={() => setDetailItem(null)}
-          onInstall={detailItem.kind === 'template' ? () => handleInstall(detailItem.data as MarketplaceItem) : undefined}
-          onEdit={
-            detailItem.kind === 'agent' &&
-            detailItem.data.filePath !== '__builtin__' &&
-            !detailItem.data.filePath.includes('builtin-agents')
-              ? () => handleEditAgent(detailItem.data as SubagentDefinition)
-              : undefined
-          }
-        />
-      )}
+      {/* Right: Agent detail */}
+      <div className="flex-1 overflow-y-auto bg-white">
+        {selected ? (
+          <div className="p-6">
+            {/* Row 1: Name + Toggle + Menu */}
+            <div className="flex items-center justify-between mb-3">
+              <div className="flex items-center gap-2">
+                <AgentAvatar agent={selected} />
+                <h2 className="text-lg font-semibold text-[#29261b]">{displayName(selected)}</h2>
+              </div>
+              <div className="flex items-center gap-2">
+                {selected.name !== 'abu' && (
+                  <>
+                    <Toggle
+                      checked={!disabledSet.has(selected.name)}
+                      onChange={() => toggleAgentEnabled(selected.name)}
+                    />
+                    {/* Show "..." menu only when there are items: user agents always have edit/delete; system agents only when enabled (try in chat) */}
+                    {(!isSystemAgent(selected) || !disabledSet.has(selected.name)) && (
+                      <div className="relative">
+                        <button
+                          onClick={(e) => { e.stopPropagation(); setMenuAgent(menuAgent === selected.name ? null : selected.name); }}
+                          className="p-1.5 rounded-lg text-[#656358] hover:text-[#29261b] hover:bg-[#f5f3ee] transition-colors"
+                        >
+                          <MoreHorizontal className="h-4 w-4" />
+                        </button>
+                        {menuAgent === selected.name && (
+                          <div className="absolute right-0 top-8 z-10 bg-white border border-[#e8e4dd] rounded-lg shadow-lg py-1 min-w-[140px]">
+                            {/* Try in chat - only when enabled */}
+                            {!disabledSet.has(selected.name) && (
+                              <button
+                                className="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-[#29261b] hover:bg-[#f5f3ee] transition-colors"
+                                onClick={() => {
+                                  setMenuAgent(null);
+                                  startNewConversation();
+                                  setPendingInput(`@${selected.name} `);
+                                  closeToolbox();
+                                }}
+                              >
+                                <MessageCircle className="h-3 w-3" />
+                                {t.toolbox.skillTryInChat}
+                              </button>
+                            )}
+                            {/* Edit & Delete - only for user agents */}
+                            {!isSystemAgent(selected) && (
+                              <>
+                                <button
+                                  className="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-[#29261b] hover:bg-[#f5f3ee] transition-colors"
+                                  onClick={() => { setEditorAgent(selected); setMenuAgent(null); }}
+                                >
+                                  <Pencil className="h-3 w-3" />
+                                  {t.toolbox.agentEdit}
+                                </button>
+                                <button
+                                  className="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-red-600 hover:bg-red-50 transition-colors"
+                                  onClick={() => { handleDelete(selected); setMenuAgent(null); }}
+                                >
+                                  <Trash2 className="h-3 w-3" />
+                                  {t.toolbox.uninstall}
+                                </button>
+                              </>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </>
+                )}
+              </div>
+            </div>
+
+            {/* Row 2: Added by */}
+            <div className="mb-4">
+              <div className="text-xs text-[#888579]">{t.toolbox.skillAddedBy}</div>
+              <div className="text-sm text-[#29261b]">{isSystemAgent(selected) ? 'System' : 'User'}</div>
+            </div>
+
+            {/* Description */}
+            <div className="mb-5">
+              <span className="text-xs text-[#888579]">Description</span>
+              <p className="text-sm text-[#29261b] mt-1">{selected.description}</p>
+            </div>
+
+            {/* System Prompt content area (hidden for abu — internal prompt) */}
+            {selected.systemPrompt && selected.name !== 'abu' && (
+              <div className="border border-[#e8e4dd] rounded-lg overflow-hidden">
+                {/* Toggle bar */}
+                <div className="flex items-center justify-end gap-1 px-3 py-2 bg-[#faf8f5] border-b border-[#e8e4dd]/60">
+                  <button
+                    onClick={() => setContentViewMode('preview')}
+                    className={`p-1 rounded transition-colors ${contentViewMode === 'preview' ? 'text-[#29261b] bg-[#eae7e0]' : 'text-[#888579] hover:text-[#29261b]'}`}
+                    title="Preview"
+                  >
+                    <Eye className="h-3.5 w-3.5" />
+                  </button>
+                  <button
+                    onClick={() => setContentViewMode('source')}
+                    className={`p-1 rounded transition-colors ${contentViewMode === 'source' ? 'text-[#29261b] bg-[#eae7e0]' : 'text-[#888579] hover:text-[#29261b]'}`}
+                    title="Source"
+                  >
+                    <Code className="h-3.5 w-3.5" />
+                  </button>
+                </div>
+                <div className="px-5 py-4 bg-[#faf8f5]">
+                  {contentViewMode === 'preview' ? (
+                    <MarkdownRenderer content={selected.systemPrompt} />
+                  ) : (
+                    <pre className="text-xs text-[#29261b] whitespace-pre-wrap break-words font-mono leading-relaxed">{selected.systemPrompt}</pre>
+                  )}
+                </div>
+              </div>
+            )}
+          </div>
+        ) : (
+          <div className="flex items-center justify-center h-full text-sm text-[#888579]">
+            {t.toolbox.noAgentsFound}
+          </div>
+        )}
+      </div>
     </div>
   );
 }

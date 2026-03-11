@@ -266,10 +266,14 @@ export const useChatStore = create<ChatStore>()(
             conv.updatedAt = Date.now();
             // Auto-title from first user message
             if (conv.title === '新对话' && message.role === 'user') {
-              const content = typeof message.content === 'string'
+              let content = typeof message.content === 'string'
                 ? message.content
                 : message.content.find(c => c.type === 'text')?.text || '';
-              conv.title = content.slice(0, 30) + (content.length > 30 ? '...' : '');
+              // Strip [Attachment: `path`] patterns from title
+              content = content.replace(/\[Attachment:\s*`[^`]*`\]\s*/g, '').trim();
+              if (content) {
+                conv.title = content.slice(0, 30) + (content.length > 30 ? '...' : '');
+              }
             }
           }
         });

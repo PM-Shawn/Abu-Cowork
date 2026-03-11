@@ -157,6 +157,17 @@ export default function MessageGroup({ messages }: MessageGroupProps) {
   // Extract file outputs for attachments
   const fileOutputs = extractFileOutputs(allToolCalls);
 
+  // Build filename -> full path map for inline file chip matching
+  const fileOutputMap = useMemo(() => {
+    if (fileOutputs.length === 0) return undefined;
+    const map = new Map<string, string>();
+    for (const f of fileOutputs) {
+      const name = f.path.split('/').pop() || f.path;
+      map.set(name, f.path);
+    }
+    return map;
+  }, [fileOutputs]);
+
   // Check if any tool is executing
   const isAnyExecuting = allToolCalls.some((tc) => tc.isExecuting);
 
@@ -266,6 +277,7 @@ export default function MessageGroup({ messages }: MessageGroupProps) {
                         content={cleanedText}
                         searchResults={searchResults.length > 0 ? searchResults : undefined}
                         onCitationClick={searchResults.length > 0 ? handleCitationClick : undefined}
+                        fileOutputMap={fileOutputMap}
                       />
                     </div>
                   )}

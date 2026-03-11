@@ -14,6 +14,7 @@ import { createEventRouter } from './eventRouter';
 import { routeInput, buildSystemPrompt, type RouteResult } from './orchestrator';
 import { skillLoader } from '../skill/loader';
 import { substituteVariables } from '../skill/preprocessor';
+import { joinPath } from '../../utils/pathUtils';
 import { matchesToolName, parseToolPatterns } from '../skill/toolFilter';
 import { notifyTaskCompleted, notifyTaskError } from '../../utils/notifications';
 import { prepareContextMessages, trimOldScreenshots } from '../context/contextManager';
@@ -401,21 +402,35 @@ function buildDynamicCapabilities(tools: ToolDefinition[]): string {
 }
 
 /** Load active skill contents for dynamic system prompt injection, with variable substitution */
-function loadActiveSkillContent(
+async function loadActiveSkillContent(
   activeSkills: string[] | undefined,
   activeSkillArgs?: Record<string, string>,
   conversationId?: string,
-): string {
+): Promise<string> {
   if (!activeSkills || activeSkills.length === 0) return '';
-  const skillContents = activeSkills
-    .map(name => {
-      const s = skillLoader.getSkill(name);
-      if (!s) return null;
-      const args = activeSkillArgs?.[name] ?? '';
-      const processed = substituteVariables(s.content, args, s.skillDir, conversationId ?? '');
-      return `### ${s.name}\n${processed}`;
-    })
-    .filter((s): s is string => s !== null);
+  const skillContents: string[] = [];
+  for (const name of activeSkills) {
+    const s = skillLoader.getSkill(name);
+    if (!s) continue;
+    const args = activeSkillArgs?.[name] ?? '';
+    const processed = substituteVariables(s.content, args, s.skillDir, conversationId ?? '');
+    let block = `### ${s.name}\n${processed}`;
+
+    // SK-5: List supporting files for progressive disclosure
+    const supportingFiles = await skillLoader.listSupportingFiles(name);
+    if (supportingFiles.length > 0) {
+      block += '\n\n**Available reference files** (use `read_skill_file` tool to load when needed):\n';
+      block += supportingFiles.map(f => {
+        if (f.startsWith('scripts/') || f.startsWith('scripts\\')) {
+          const absPath = joinPath(s.skillDir, f);
+          return `- ${f} (path: ${absPath})`;
+        }
+        return `- ${f}`;
+      }).join('\n');
+    }
+
+    skillContents.push(block);
+  }
   if (skillContents.length === 0) return '';
   return `## Active Skill Instructions\n${skillContents.join('\n\n')}`;
 }
@@ -744,7 +759,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
       const { tools, inputValidators } = resolveTools(route, !!builtinWebSearch);
       const dynamicCapabilities = buildDynamicCapabilities(tools);
       const conv = useChatStore.getState().conversations[conversationId];
-      const activeSkillContent = loadActiveSkillContent(
+      const activeSkillContent = await loadActiveSkillContent(
         conv?.activeSkills,
         conv?.activeSkillArgs,
         conversationId,

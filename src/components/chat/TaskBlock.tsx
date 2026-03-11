@@ -1,4 +1,4 @@
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useEffect, useRef } from 'react';
 import {
   Clock,
   FileSearch,
@@ -212,8 +212,14 @@ export default function TaskBlock({ steps, executionSteps, isActive, onRetry }: 
   const [displayMode, setDisplayMode] = useState<DisplayMode>(isActive ? 'preview' : 'collapsed');
   const { t, locale } = useI18n();
 
-  // Don't auto-collapse when execution finishes — the sudden height change
-  // causes the scroll position to jump up. Users can collapse manually.
+  // Auto-collapse when execution finishes (isActive: true → false)
+  const prevIsActiveRef = useRef(isActive);
+  useEffect(() => {
+    if (prevIsActiveRef.current && !isActive) {
+      setDisplayMode('collapsed');
+    }
+    prevIsActiveRef.current = isActive;
+  }, [isActive]);
 
   // Convert to unified steps
   const unifiedSteps = useMemo(() => {

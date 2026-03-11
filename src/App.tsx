@@ -155,16 +155,18 @@ function App() {
 
       {/* Sidebar & panel toggle buttons — positioned in title bar area on macOS, top bar on Windows */}
       <div className={cn('fixed left-0 right-0 z-40 pointer-events-none', mac ? 'top-0 h-7' : 'top-0 h-8')}>
-        <button
-          onClick={toggleSidebar}
-          className="absolute btn-ghost p-1 text-[#656358] hover:text-[#29261b] hover:bg-[#e8e5de]/80 rounded-md transition-[left] duration-200 pointer-events-auto"
-          style={{ top: mac ? 6 : 4, left: sidebarCollapsed ? 70 : 232 }}
-          title={sidebarCollapsed ? t.sidebar.showSidebar : t.sidebar.hideSidebar}
-        >
-          {sidebarCollapsed
-            ? <PanelLeftOpen className="h-3.5 w-3.5" />
-            : <PanelLeftClose className="h-3.5 w-3.5" />}
-        </button>
+        {viewMode !== 'toolbox' && (
+          <button
+            onClick={toggleSidebar}
+            className="absolute btn-ghost p-1 text-[#656358] hover:text-[#29261b] hover:bg-[#e8e5de]/80 rounded-md transition-[left] duration-200 pointer-events-auto"
+            style={{ top: mac ? 6 : 4, left: sidebarCollapsed ? 70 : 232 }}
+            title={sidebarCollapsed ? t.sidebar.showSidebar : t.sidebar.hideSidebar}
+          >
+            {sidebarCollapsed
+              ? <PanelLeftOpen className="h-3.5 w-3.5" />
+              : <PanelLeftClose className="h-3.5 w-3.5" />}
+          </button>
+        )}
 
         {showRightPanelToggle && (
           <button
@@ -181,13 +183,15 @@ function App() {
       </div>
 
       <div className="flex h-full w-full">
-        {/* Sidebar */}
-        <div
-          className="sidebar-transition shrink-0 overflow-hidden"
-          style={{ width: sidebarCollapsed ? 0 : 260 }}
-        >
-          <Sidebar />
-        </div>
+        {/* Sidebar - hidden in toolbox mode */}
+        {viewMode !== 'toolbox' && (
+          <div
+            className="sidebar-transition shrink-0 overflow-hidden"
+            style={{ width: sidebarCollapsed ? 0 : 260 }}
+          >
+            <Sidebar />
+          </div>
+        )}
 
         {/* Main — pt-7 on macOS to clear overlay title bar; no padding on Windows (native title bar) */}
         <main className={cn('flex-1 min-w-0 bg-[#faf9f5]', mac && 'pt-7')}>

@@ -100,10 +100,32 @@ const readFileTool: ToolDefinition = {
     required: ['path'],
   },
   execute: async (input) => {
-    const path = input.path as string;
+    const filePath = input.path as string;
 
     try {
-      const content = await readTextFile(path);
+      // PDF files: extract text instead of returning raw binary
+      if (filePath.toLowerCase().endsWith('.pdf')) {
+        try {
+          const output = await invoke<CommandOutput>('run_shell_command', {
+            command: `pdftotext "${filePath}" -`,
+            cwd: null,
+            background: false,
+            timeout: 30,
+            sandboxEnabled: false,
+            extraWritablePaths: [],
+            networkIsolation: false,
+          });
+          if (output.code === 0 && output.stdout.trim()) {
+            return output.stdout;
+          }
+          // pdftotext not available or failed, fall through to hint
+          return `Error: Cannot read PDF as text. Use run_command to extract text, e.g.: python3 -c "import pdfplumber; pdf=pdfplumber.open('${filePath}'); print('\\n'.join(p.extract_text() or '' for p in pdf.pages))"`;
+        } catch {
+          return `Error: Cannot read PDF as text. Use run_command to extract text with pdftotext or pdfplumber.`;
+        }
+      }
+
+      const content = await readTextFile(filePath);
       return content;
     } catch (err) {
       return `Error reading file: ${err instanceof Error ? err.message : String(err)}`;

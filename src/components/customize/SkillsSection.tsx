@@ -1,57 +1,145 @@
 import { useState, useEffect, useMemo } from 'react';
 import { useDiscoveryStore } from '@/stores/discoveryStore';
 import { useSettingsStore } from '@/stores/settingsStore';
+import { useChatStore } from '@/stores/chatStore';
 import { useI18n } from '@/i18n';
 import { skillTemplates } from '@/data/marketplace/skills';
 import { skillLoader } from '@/core/skill/loader';
-import MarketplaceCard from './MarketplaceCard';
-import SubTabBar from './SubTabBar';
-import SkillDetailModal from './SkillDetailModal';
 import SkillEditor from './SkillEditor';
 import { Toggle } from '@/components/ui/toggle';
-import { Trash2, AlertCircle } from 'lucide-react';
-import { writeTextFile, mkdir, remove } from '@tauri-apps/plugin-fs';
-import { homeDir } from '@tauri-apps/api/path';
-import { joinPath, getParentDir } from '@/utils/pathUtils';
+import { Trash2, File, Folder, ChevronDown, ChevronRight, Pencil, MoreHorizontal, Eye, Code, Info, MessageCircle, Search, Plus, X, Wand2, PenLine, Upload } from 'lucide-react';
+import { remove } from '@tauri-apps/plugin-fs';
+import { getParentDir } from '@/utils/pathUtils';
 import type { Skill } from '@/types';
-import type { MarketplaceItem } from '@/types/marketplace';
-
-function getCategoryKey(category: string): string {
-  const lower = category.toLowerCase();
-  if (lower.includes('document') || lower.includes('文档')) return 'document';
-  if (lower.includes('design') || lower.includes('设计')) return 'design';
-  if (lower.includes('develop') || lower.includes('开发')) return 'development';
-  return lower;
-}
+import MarkdownRenderer from '@/components/chat/MarkdownRenderer';
 
 // Build a set of system skill names from marketplace templates
 const systemSkillNames = new Set(
   skillTemplates.filter((t) => t.isBuiltin).map((t) => t.name)
 );
 
-// Check if a skill is a system (builtin) skill
-function isSystemSkill(item: Skill | MarketplaceItem): boolean {
-  if ('filePath' in item) {
-    return item.filePath.includes('builtin-skills') || systemSkillNames.has(item.name);
-  }
-  return item.isBuiltin === true;
+function isSystemSkill(skill: Skill): boolean {
+  return skill.filePath.includes('builtin-skills') || systemSkillNames.has(skill.name);
 }
 
-export default function SkillsSection({ manualCreateTrigger }: { manualCreateTrigger?: number }) {
+/** Build a tree structure from flat file paths */
+interface FileNode {
+  name: string;
+  path: string;
+  isDir: boolean;
+  children: FileNode[];
+}
+
+function buildFileTree(files: string[]): FileNode[] {
+  const root: FileNode[] = [];
+
+  for (const filePath of files) {
+    const parts = filePath.split('/');
+    let current = root;
+    let accPath = '';
+
+    for (let i = 0; i < parts.length; i++) {
+      const part = parts[i];
+      accPath = accPath ? `${accPath}/${part}` : part;
+      const isLast = i === parts.length - 1;
+
+      let existing = current.find((n) => n.name === part);
+      if (!existing) {
+        existing = { name: part, path: accPath, isDir: !isLast, children: [] };
+        current.push(existing);
+      }
+      current = existing.children;
+    }
+  }
+
+  // Sort: directories first, then files, alphabetically within each group
+  const sortNodes = (nodes: FileNode[]) => {
+    nodes.sort((a, b) => {
+      if (a.isDir !== b.isDir) return a.isDir ? -1 : 1;
+      return a.name.localeCompare(b.name);
+    });
+    nodes.forEach((n) => { if (n.children.length) sortNodes(n.children); });
+  };
+  sortNodes(root);
+
+  return root;
+}
+
+/** Recursive file tree item */
+function FileTreeItem({
+  node, depth = 0, selectedFile, onFileClick,
+}: {
+  node: FileNode; depth?: number;
+  selectedFile?: string | null;
+  onFileClick?: (path: string) => void;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const basePl = 42 + depth * 16;
+
+  if (node.isDir) {
+    return (
+      <div>
+        <div
+          className="flex items-center gap-2 py-1.5 cursor-pointer hover:bg-[#f0ede6] text-[#888579] hover:text-[#29261b] text-[13px]"
+          style={{ paddingLeft: basePl }}
+          onClick={() => setExpanded(!expanded)}
+        >
+          {expanded ? <ChevronDown className="h-3 w-3 shrink-0" /> : <ChevronRight className="h-3 w-3 shrink-0" />}
+          <Folder className="h-3.5 w-3.5 shrink-0 text-[#d97757]/70" />
+          <span className="truncate">{node.name}</span>
+        </div>
+        {expanded && node.children.map((child) => (
+          <FileTreeItem key={child.path} node={child} depth={depth + 1} selectedFile={selectedFile} onFileClick={onFileClick} />
+        ))}
+      </div>
+    );
+  }
+
+  const isActive = selectedFile === node.path;
+  return (
+    <div
+      className={`flex items-center gap-2 py-1.5 cursor-pointer text-[13px] transition-colors ${
+        isActive ? 'bg-[#eae7e0] text-[#29261b]' : 'text-[#888579] hover:bg-[#f0ede6] hover:text-[#29261b]'
+      }`}
+      style={{ paddingLeft: basePl + 16 }}
+      onClick={() => onFileClick?.(node.path)}
+    >
+      <File className="h-3.5 w-3.5 shrink-0 opacity-50" />
+      <span className="truncate">{node.name}</span>
+    </div>
+  );
+}
+
+interface SkillsSectionProps {
+  manualCreateTrigger?: number;
+  onAICreate?: () => void;
+  onManualCreate?: () => void;
+  onUploadFile?: () => void;
+}
+
+export default function SkillsSection({ manualCreateTrigger, onAICreate, onManualCreate, onUploadFile }: SkillsSectionProps) {
   const { skills, refresh } = useDiscoveryStore();
-  const { installingItem, setInstallingItem, toolboxSearchQuery, disabledSkills, toggleSkillEnabled } = useSettingsStore();
+  const { toolboxSearchQuery, setToolboxSearchQuery, disabledSkills, toggleSkillEnabled, closeToolbox } = useSettingsStore();
+  const startNewConversation = useChatStore((s) => s.startNewConversation);
+  const setPendingInput = useChatStore((s) => s.setPendingInput);
   const { t } = useI18n();
 
   const [installedSkills, setInstalledSkills] = useState<Skill[]>([]);
-  const [error, setError] = useState<string | null>(null);
-  const [activeSubTab, setActiveSubTab] = useState<'system' | 'custom'>('system');
-  const [categoryFilter, setCategoryFilter] = useState<string>('all');
-  const [detailItem, setDetailItem] = useState<
-    | { kind: 'skill'; data: Skill }
-    | { kind: 'template'; data: MarketplaceItem }
-    | null
-  >(null);
+  const [selectedSkill, setSelectedSkill] = useState<string | null>(null);
+  const [expandedSkills, setExpandedSkills] = useState<Set<string>>(new Set());
+  const [supportingFiles, setSupportingFiles] = useState<Record<string, string[]>>({});
   const [editorSkill, setEditorSkill] = useState<Skill | 'new' | null>(null);
+  const [menuSkill, setMenuSkill] = useState<string | null>(null);
+  // Selected file within skill tree: null = show skill detail, string = show file content
+  const [selectedFile, setSelectedFile] = useState<{ skillName: string; path: string } | null>(null);
+  const [fileContent, setFileContent] = useState<string | null>(null);
+  // Category collapse state
+  const [collapsedCategories, setCollapsedCategories] = useState<Set<string>>(new Set());
+  // Search & create UI state
+  const [showSearch, setShowSearch] = useState(false);
+  const [showCreateMenu, setShowCreateMenu] = useState(false);
+  // Content view mode: preview (rendered) or source (raw)
+  const [contentViewMode, setContentViewMode] = useState<'preview' | 'source'>('preview');
 
   // Open blank editor when manual create is triggered from parent
   useEffect(() => {
@@ -60,7 +148,7 @@ export default function SkillsSection({ manualCreateTrigger }: { manualCreateTri
     }
   }, [manualCreateTrigger]);
 
-  // Load full skill details for source info
+  // Load full skill details
   useEffect(() => {
     const loadSkillDetails = async () => {
       const fullSkills: Skill[] = [];
@@ -69,263 +157,454 @@ export default function SkillsSection({ manualCreateTrigger }: { manualCreateTri
         if (full) fullSkills.push(full);
       }
       setInstalledSkills(fullSkills);
+      // Auto-select first skill if none selected
+      if (!selectedSkill && fullSkills.length > 0) {
+        setSelectedSkill(fullSkills[0].name);
+      }
     };
     loadSkillDetails();
   }, [skills]);
 
-  const installedNames = useMemo(() => new Set(skills.map((s) => s.name)), [skills]);
   const disabledSet = useMemo(() => new Set(disabledSkills), [disabledSkills]);
 
   // Filter by search
   const searchLower = toolboxSearchQuery.toLowerCase();
-  const matchesSearch = (name: string, description: string, tags?: string[]) => {
-    if (!toolboxSearchQuery) return true;
-    const tagStr = (tags ?? []).join(' ').toLowerCase();
-    return name.toLowerCase().includes(searchLower) ||
-      description.toLowerCase().includes(searchLower) ||
-      tagStr.includes(searchLower);
+  const filteredSkills = useMemo(() => {
+    if (!toolboxSearchQuery) return installedSkills;
+    return installedSkills.filter((s) => {
+      const tagStr = (s.tags ?? []).join(' ').toLowerCase();
+      return s.name.toLowerCase().includes(searchLower) ||
+        s.description.toLowerCase().includes(searchLower) ||
+        tagStr.includes(searchLower);
+    });
+  }, [installedSkills, searchLower]);
+
+  // Group into "My skills" (user-created) and "Examples" (system builtin)
+  const { userSkills, exampleSkills } = useMemo(() => {
+    const user: Skill[] = [];
+    const examples: Skill[] = [];
+    for (const s of filteredSkills) {
+      if (isSystemSkill(s)) {
+        examples.push(s);
+      } else {
+        user.push(s);
+      }
+    }
+    return { userSkills: user, exampleSkills: examples };
+  }, [filteredSkills]);
+
+  const toggleCategory = (cat: string) => {
+    setCollapsedCategories((prev) => {
+      const next = new Set(prev);
+      if (next.has(cat)) next.delete(cat); else next.add(cat);
+      return next;
+    });
   };
 
-  // Separate system and custom skills from marketplace templates
-  const systemTemplates = skillTemplates.filter((t) => {
-    if (!isSystemSkill(t)) return false;
-    if (!matchesSearch(t.name, t.description)) return false;
-    if (categoryFilter !== 'all' && getCategoryKey(t.category) !== categoryFilter) return false;
-    return true;
-  });
+  const selected = installedSkills.find((s) => s.name === selectedSkill) ?? null;
 
-  // Custom skills = installed skills that are NOT builtin
-  const customInstalledSkills = installedSkills.filter(
-    (s) => !isSystemSkill(s) && matchesSearch(s.name, s.description, s.tags)
-  );
-
-  // Install a skill from marketplace
-  const handleInstall = async (template: (typeof skillTemplates)[0]) => {
-    if (!template.content) return;
-
-    setInstallingItem(template.id);
-    setError(null);
-
-    try {
-      const home = await homeDir();
-      const skillDir = joinPath(home, '.abu/skills', template.name);
-      await mkdir(skillDir, { recursive: true });
-      await writeTextFile(joinPath(skillDir, 'SKILL.md'), template.content);
-      await refresh();
-    } catch (err) {
-      console.error('[Skills] Failed to install:', err);
-      setError(`${t.toolbox.installFailed}: ${err instanceof Error ? err.message : String(err)}`);
-    } finally {
-      setInstallingItem(null);
+  // Load supporting files when a skill is expanded
+  const toggleExpanded = async (skillName: string) => {
+    const next = new Set(expandedSkills);
+    if (next.has(skillName)) {
+      next.delete(skillName);
+    } else {
+      next.add(skillName);
+      if (!supportingFiles[skillName]) {
+        const files = await skillLoader.listSupportingFiles(skillName);
+        setSupportingFiles((prev) => ({ ...prev, [skillName]: files }));
+      }
     }
+    setExpandedSkills(next);
   };
 
   // Delete a user-installed skill
   const handleDelete = async (skill: Skill) => {
     if (skill.filePath.includes('builtin-skills')) return;
-
     try {
       const skillDir = getParentDir(skill.filePath);
       await remove(skillDir, { recursive: true });
+      if (selectedSkill === skill.name) setSelectedSkill(null);
       await refresh();
     } catch (err) {
       console.error('Failed to delete skill:', err);
     }
   };
 
-  const handleCardClick = (template: MarketplaceItem) => {
-    // Try to get full skill data if installed
-    const installed = installedSkills.find((s) => s.name === template.name);
-    if (installed) {
-      setDetailItem({ kind: 'skill', data: installed });
-    } else {
-      setDetailItem({ kind: 'template', data: template });
+  // Handle file click in tree: load content
+  const handleFileClick = async (skillName: string, filePath: string) => {
+    // If it's SKILL.md, just show the skill detail
+    if (filePath === 'SKILL.md') {
+      setSelectedFile(null);
+      setFileContent(null);
+      setSelectedSkill(skillName);
+      return;
     }
+    setSelectedSkill(skillName);
+    setSelectedFile({ skillName, path: filePath });
+    const content = await skillLoader.loadSupportingFile(skillName, filePath);
+    setFileContent(content);
   };
 
-  const handleCustomSkillClick = (skill: Skill) => {
-    setDetailItem({ kind: 'skill', data: skill });
+  // Select skill, toggle its expand, and collapse all others
+  const handleSkillClick = (skillName: string) => {
+    setSelectedSkill(skillName);
+    setSelectedFile(null);
+    setFileContent(null);
+    setExpandedSkills((prev) => {
+      // If already expanded, collapse it; otherwise expand it and collapse others
+      if (prev.has(skillName)) {
+        return new Set<string>();
+      }
+      // Load supporting files if needed
+      if (!supportingFiles[skillName]) {
+        skillLoader.listSupportingFiles(skillName).then((files) => {
+          setSupportingFiles((p) => ({ ...p, [skillName]: files }));
+        });
+      }
+      return new Set([skillName]);
+    });
   };
 
-  const handleEditSkill = (skill: Skill) => {
-    setEditorSkill(skill);
-    setDetailItem(null);
+  // Close menus when clicking outside
+  useEffect(() => {
+    if (!menuSkill && !showCreateMenu) return;
+    const handleClick = () => { setMenuSkill(null); setShowCreateMenu(false); };
+    document.addEventListener('click', handleClick);
+    return () => document.removeEventListener('click', handleClick);
+  }, [menuSkill, showCreateMenu]);
+
+  const renderSkillRow = (skill: Skill) => {
+    const isSelected = selectedSkill === skill.name;
+    const isExpanded = expandedSkills.has(skill.name);
+    const files = supportingFiles[skill.name] ?? [];
+    const fileTree = isExpanded ? buildFileTree(files) : [];
+    const isEnabled = !disabledSet.has(skill.name);
+    // Skill row only highlights when selected AND not drilling into child files
+    const isRowActive = isSelected && !selectedFile && !isExpanded;
+
+    return (
+      <div key={skill.name}>
+        <div
+          className={`flex items-center gap-2.5 pl-7 pr-3 py-2.5 cursor-pointer transition-colors ${
+            isRowActive ? 'bg-[#eae7e0]' : 'hover:bg-[#f0ede6]'
+          }`}
+          onClick={() => handleSkillClick(skill.name)}
+        >
+          <File className={`h-4 w-4 shrink-0 ${!isEnabled ? 'text-[#b5b0a6]' : 'text-[#888579]'}`} />
+          <span className={`text-sm flex-1 truncate ${
+            !isEnabled ? 'text-[#b5b0a6]' : isSelected ? 'text-[#29261b] font-medium' : 'text-[#656358]'
+          }`}>
+            {skill.name}
+          </span>
+          <div className="p-0.5 text-[#888579]">
+            {isExpanded
+              ? <ChevronDown className="h-3.5 w-3.5" />
+              : <ChevronRight className="h-3.5 w-3.5" />
+            }
+          </div>
+        </div>
+        {isExpanded && (
+          <div className="pb-1">
+            <div
+              className={`flex items-center gap-2 py-1.5 cursor-pointer text-[13px] transition-colors ${
+                selectedSkill === skill.name && !selectedFile
+                  ? 'bg-[#eae7e0] text-[#29261b]'
+                  : 'text-[#888579] hover:bg-[#f0ede6] hover:text-[#29261b]'
+              }`}
+              style={{ paddingLeft: 56 }}
+              onClick={() => handleFileClick(skill.name, 'SKILL.md')}
+            >
+              <File className="h-3.5 w-3.5 shrink-0 opacity-50" />
+              <span>SKILL.md</span>
+            </div>
+            {fileTree.map((node) => (
+              <FileTreeItem
+                key={node.path}
+                node={node}
+                selectedFile={selectedFile?.skillName === skill.name ? selectedFile.path : null}
+                onFileClick={(path) => handleFileClick(skill.name, path)}
+              />
+            ))}
+          </div>
+        )}
+      </div>
+    );
   };
 
-  const handleEditorClose = () => {
-    setEditorSkill(null);
-  };
-
-  const handleEditorSave = async () => {
-    await refresh();
-    setEditorSkill(null);
-  };
-
-  const getSourceLabel = (skill: Skill) => {
-    if (skill.filePath.includes('builtin-skills') || systemSkillNames.has(skill.name))
-      return { label: t.toolbox.sourceBuiltin, color: 'bg-blue-100 text-blue-600' };
-    if (skill.filePath.includes('.abu/skills')) {
-      if (skill.filePath.startsWith('.abu/'))
-        return { label: t.toolbox.sourceProject, color: 'bg-purple-100 text-purple-600' };
-      return { label: t.toolbox.sourceUser, color: 'bg-green-100 text-green-600' };
-    }
-    return { label: t.toolbox.sourceUnknown, color: 'bg-neutral-100 text-neutral-500' };
-  };
-
-  const subTabs = [
-    { id: 'system', label: t.toolbox.tabSystem, count: systemTemplates.length },
-    { id: 'custom', label: t.toolbox.tabCustom, count: customInstalledSkills.length },
-  ];
-
-  const categoryTabs = [
-    { id: 'all', label: t.toolbox.categoryAll },
-    { id: 'document', label: t.toolbox.categoryDocument },
-    { id: 'design', label: t.toolbox.categoryDesign },
-    { id: 'development', label: t.toolbox.categoryDevelopment },
-  ];
-
-  // If editor is open, show editor
+  // If editor is open, show editor full-width
   if (editorSkill !== null) {
     return (
       <SkillEditor
         skill={editorSkill === 'new' ? null : editorSkill}
-        onClose={handleEditorClose}
-        onSave={handleEditorSave}
+        onClose={() => setEditorSkill(null)}
+        onSave={async () => { await refresh(); setEditorSkill(null); }}
       />
     );
   }
 
   return (
-    <div className="flex flex-col h-full overflow-hidden">
-      {/* Sub-tab bar */}
-      <div className="shrink-0 px-4 pt-4 pb-2">
-        <SubTabBar
-          tabs={subTabs}
-          activeTab={activeSubTab}
-          onChange={(id) => setActiveSubTab(id as 'system' | 'custom')}
-        />
+    <div className="flex h-full overflow-hidden">
+      {/* Left: Skill list with file trees */}
+      <div className="w-[260px] shrink-0 border-r border-[#e8e4dd]/60 flex flex-col overflow-hidden bg-[#faf8f5]">
+        {/* Header: Title + Search + Create */}
+        <div className="shrink-0 px-3 pt-3 pb-2 border-b border-[#e8e4dd]/60">
+          {showSearch ? (
+            <div className="relative">
+              <Search className="absolute left-2 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-[#656358]" />
+              <input
+                autoFocus
+                type="text"
+                placeholder={t.toolbox.searchPlaceholder}
+                value={toolboxSearchQuery}
+                onChange={(e) => setToolboxSearchQuery(e.target.value)}
+                onBlur={() => { if (!toolboxSearchQuery) setShowSearch(false); }}
+                onKeyDown={(e) => { if (e.key === 'Escape') { setToolboxSearchQuery(''); setShowSearch(false); } }}
+                className="w-full pl-7 pr-7 py-1 text-sm border border-[#e8e4dd] rounded-md bg-white focus:outline-none focus:ring-1 focus:ring-[#d97757]/30 text-[#29261b]"
+              />
+              <button
+                onClick={() => { setToolboxSearchQuery(''); setShowSearch(false); }}
+                className="absolute right-2 top-1/2 -translate-y-1/2 text-[#656358] hover:text-[#29261b]"
+              >
+                <X className="h-3.5 w-3.5" />
+              </button>
+            </div>
+          ) : (
+            <div className="flex items-center justify-between">
+              <span className="text-sm font-semibold text-[#29261b]">{t.toolbox.skills}</span>
+              <div className="flex items-center gap-1">
+                <button
+                  onClick={() => setShowSearch(true)}
+                  className="p-1 text-[#888579] hover:text-[#29261b] transition-colors"
+                >
+                  <Search className="h-3.5 w-3.5" />
+                </button>
+                <div className="relative">
+                  <button
+                    onClick={(e) => { e.stopPropagation(); setShowCreateMenu(!showCreateMenu); }}
+                    className="p-1 text-[#888579] hover:text-[#29261b] transition-colors"
+                  >
+                    <Plus className="h-4 w-4" />
+                  </button>
+                  {showCreateMenu && (
+                    <div className="absolute z-50 top-full right-0 mt-1 w-44 bg-white rounded-lg shadow-lg border border-[#e8e4dd] py-1">
+                      {onAICreate && (
+                        <button
+                          onClick={() => { setShowCreateMenu(false); onAICreate(); }}
+                          className="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-[#29261b] hover:bg-[#f0ede6] transition-colors"
+                        >
+                          <Wand2 className="h-3.5 w-3.5 text-[#d97757]" />
+                          <span>{t.toolbox.createWithAbu}</span>
+                        </button>
+                      )}
+                      {onManualCreate && (
+                        <button
+                          onClick={() => { setShowCreateMenu(false); onManualCreate(); }}
+                          className="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-[#29261b] hover:bg-[#f0ede6] transition-colors"
+                        >
+                          <PenLine className="h-3.5 w-3.5 text-[#888579]" />
+                          <span>{t.toolbox.createManually}</span>
+                        </button>
+                      )}
+                      {onUploadFile && (
+                        <button
+                          onClick={() => { setShowCreateMenu(false); onUploadFile(); }}
+                          className="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-[#29261b] hover:bg-[#f0ede6] transition-colors"
+                        >
+                          <Upload className="h-3.5 w-3.5 text-[#888579]" />
+                          <span>{t.toolbox.uploadFile}</span>
+                        </button>
+                      )}
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+        <div className="flex-1 overflow-y-auto py-1">
+          {filteredSkills.length === 0 ? (
+            <div className="text-xs text-[#888579] py-8 text-center">{t.toolbox.noSkillsFound}</div>
+          ) : (
+            <>
+              {/* My skills */}
+              {userSkills.length > 0 && (
+                <div>
+                  <div
+                    className="flex items-center gap-1.5 px-4 py-2 cursor-pointer text-[#888579] hover:text-[#29261b]"
+                    onClick={() => toggleCategory('my')}
+                  >
+                    {collapsedCategories.has('my')
+                      ? <ChevronRight className="h-3 w-3" />
+                      : <ChevronDown className="h-3 w-3" />
+                    }
+                    <span className="text-[13px] font-medium">{t.toolbox.mySkills}</span>
+                  </div>
+                  {!collapsedCategories.has('my') && userSkills.map((skill) => renderSkillRow(skill))}
+                </div>
+              )}
+              {/* Examples (system builtin) */}
+              {exampleSkills.length > 0 && (
+                <div>
+                  <div
+                    className="flex items-center gap-1.5 px-4 py-2 cursor-pointer text-[#888579] hover:text-[#29261b]"
+                    onClick={() => toggleCategory('examples')}
+                  >
+                    {collapsedCategories.has('examples')
+                      ? <ChevronRight className="h-3 w-3" />
+                      : <ChevronDown className="h-3 w-3" />
+                    }
+                    <span className="text-[13px] font-medium">{t.toolbox.exampleSkills}</span>
+                  </div>
+                  {!collapsedCategories.has('examples') && exampleSkills.map((skill) => renderSkillRow(skill))}
+                </div>
+              )}
+            </>
+          )}
+        </div>
       </div>
 
-      {/* Category filter for system tab */}
-      {activeSubTab === 'system' && (
-        <div className="shrink-0 px-4 pb-2 flex gap-1.5 flex-wrap">
-          {categoryTabs.map((cat) => (
-            <button
-              key={cat.id}
-              onClick={() => setCategoryFilter(cat.id)}
-              className={`px-2.5 py-1 rounded-full text-[11px] font-medium transition-colors ${
-                categoryFilter === cat.id
-                  ? 'bg-[#29261b] text-[#faf9f5]'
-                  : 'bg-neutral-100 text-neutral-500 hover:bg-neutral-200'
-              }`}
-            >
-              {cat.label}
-            </button>
-          ))}
-        </div>
-      )}
+      {/* Right: Skill detail or file content */}
+      <div className="flex-1 overflow-y-auto bg-white">
+        {selected ? (
+          selectedFile ? (
+            /* Show selected file content */
+            <div className="p-6">
+              <div className="flex items-center gap-2 mb-4">
+                <button
+                  className="text-xs text-[#888579] hover:text-[#29261b] transition-colors"
+                  onClick={() => { setSelectedFile(null); setFileContent(null); }}
+                >
+                  {selected.name}
+                </button>
+                <span className="text-xs text-[#888579]">/</span>
+                <span className="text-sm font-medium text-[#29261b]">{selectedFile.path}</span>
+              </div>
+              <div className="border border-[#e8e4dd] rounded-lg overflow-hidden">
+                <div className="px-5 py-4 bg-[#faf8f5]">
+                  {fileContent !== null ? (
+                    selectedFile.path.endsWith('.md') ? (
+                      <MarkdownRenderer content={fileContent} />
+                    ) : (
+                      <pre className="text-xs text-[#29261b] whitespace-pre-wrap break-all font-mono leading-relaxed">{fileContent}</pre>
+                    )
+                  ) : (
+                    <div className="text-sm text-[#888579]">Loading...</div>
+                  )}
+                </div>
+              </div>
+            </div>
+          ) : (
+            /* Show skill detail */
+            <div className="p-6">
+              {/* Row 1: Name + Toggle + Menu */}
+              <div className="flex items-center justify-between mb-3">
+                <h2 className="text-lg font-semibold text-[#29261b]">{selected.name}</h2>
+                <div className="flex items-center gap-2">
+                  <Toggle
+                    checked={!disabledSet.has(selected.name)}
+                    onChange={() => toggleSkillEnabled(selected.name)}
+                  />
+                  {/* Show "..." menu only when there are items: user skills always have edit/delete; system skills only when enabled (try in chat) */}
+                  {(!isSystemSkill(selected) || !disabledSet.has(selected.name)) && (
+                    <div className="relative">
+                      <button
+                        onClick={(e) => { e.stopPropagation(); setMenuSkill(menuSkill === selected.name ? null : selected.name); }}
+                        className="p-1.5 rounded-lg text-[#656358] hover:text-[#29261b] hover:bg-[#f5f3ee] transition-colors"
+                      >
+                        <MoreHorizontal className="h-4 w-4" />
+                      </button>
+                      {menuSkill === selected.name && (
+                        <div className="absolute right-0 top-8 z-10 bg-white border border-[#e8e4dd] rounded-lg shadow-lg py-1 min-w-[140px]">
+                          {/* Try in chat - only when enabled */}
+                          {!disabledSet.has(selected.name) && (
+                            <button
+                              className="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-[#29261b] hover:bg-[#f5f3ee] transition-colors"
+                              onClick={() => {
+                                setMenuSkill(null);
+                                startNewConversation();
+                                setPendingInput(`/${selected.name} `);
+                                closeToolbox();
+                              }}
+                            >
+                              <MessageCircle className="h-3 w-3" />
+                              {t.toolbox.skillTryInChat}
+                            </button>
+                          )}
+                          {/* Edit & Delete - only for user skills */}
+                          {!isSystemSkill(selected) && (
+                            <>
+                              <button
+                                className="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-[#29261b] hover:bg-[#f5f3ee] transition-colors"
+                                onClick={() => { setEditorSkill(selected); setMenuSkill(null); }}
+                              >
+                                <Pencil className="h-3 w-3" />
+                                {t.toolbox.skillEdit}
+                              </button>
+                              <button
+                                className="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-red-600 hover:bg-red-50 transition-colors"
+                                onClick={() => { handleDelete(selected); setMenuSkill(null); }}
+                              >
+                                <Trash2 className="h-3 w-3" />
+                                {t.toolbox.uninstall}
+                              </button>
+                            </>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              </div>
 
-      <div className="flex-1 overflow-y-auto px-4 pb-4">
-        {/* Error Display */}
-        {error && (
-          <div className="mb-4 p-3 rounded-lg bg-red-50 border border-red-200 flex items-start gap-2">
-            <AlertCircle className="h-4 w-4 text-red-500 shrink-0 mt-0.5" />
-            <div className="text-sm text-red-700">{error}</div>
+              {/* Row 2: Added by */}
+              <div className="mb-4">
+                <div className="text-xs text-[#888579]">{t.toolbox.skillAddedBy}</div>
+                <div className="text-sm text-[#29261b]">{isSystemSkill(selected) ? 'Anthropic' : 'User'}</div>
+              </div>
+
+              {/* Description */}
+              <div className="flex items-center gap-1 mb-1">
+                <span className="text-xs text-[#888579]">Description</span>
+                <Info className="h-3 w-3 text-[#888579]/60" />
+              </div>
+              <p className="text-sm text-[#29261b] mb-5">{selected.description}</p>
+
+              {/* Content area: License + SKILL.md with preview/source toggle */}
+              <div className="border border-[#e8e4dd] rounded-lg overflow-hidden">
+                {/* Toggle bar */}
+                <div className="flex items-center justify-end gap-1 px-3 py-2 bg-[#faf8f5] border-b border-[#e8e4dd]/60">
+                  <button
+                    onClick={() => setContentViewMode('preview')}
+                    className={`p-1 rounded transition-colors ${contentViewMode === 'preview' ? 'text-[#29261b] bg-[#eae7e0]' : 'text-[#888579] hover:text-[#29261b]'}`}
+                    title="Preview"
+                  >
+                    <Eye className="h-3.5 w-3.5" />
+                  </button>
+                  <button
+                    onClick={() => setContentViewMode('source')}
+                    className={`p-1 rounded transition-colors ${contentViewMode === 'source' ? 'text-[#29261b] bg-[#eae7e0]' : 'text-[#888579] hover:text-[#29261b]'}`}
+                    title="Source"
+                  >
+                    <Code className="h-3.5 w-3.5" />
+                  </button>
+                </div>
+                <div className="px-5 py-4 bg-[#faf8f5]">
+                  {contentViewMode === 'preview' ? (
+                    <MarkdownRenderer content={selected.content} />
+                  ) : (
+                    <pre className="text-xs text-[#29261b] whitespace-pre-wrap break-words font-mono leading-relaxed">{selected.content}</pre>
+                  )}
+                </div>
+              </div>
+            </div>
+          )
+        ) : (
+          <div className="flex items-center justify-center h-full text-sm text-[#888579]">
+            {t.toolbox.noSkillsFound}
           </div>
         )}
-
-        {/* System tab: marketplace template grid */}
-        {activeSubTab === 'system' && (
-          <>
-            {systemTemplates.length === 0 ? (
-              <div className="text-sm text-neutral-400 py-8 text-center">{t.toolbox.noSkillsFound}</div>
-            ) : (
-              <div className="grid grid-cols-2 gap-3">
-                {systemTemplates.map((template) => (
-                  <MarketplaceCard
-                    key={template.id}
-                    item={template}
-                    isInstalled={installedNames.has(template.name)}
-                    isInstalling={installingItem === template.id}
-                    isEnabled={!disabledSet.has(template.name)}
-                    onInstall={() => handleInstall(template)}
-                    onUninstall={
-                      installedNames.has(template.name)
-                        ? (() => {
-                            const skill = installedSkills.find((s) => s.name === template.name);
-                            if (skill && !skill.filePath.includes('builtin-skills')) {
-                              handleDelete(skill);
-                            }
-                          })
-                        : undefined
-                    }
-                    onToggleEnabled={
-                      installedNames.has(template.name)
-                        ? () => toggleSkillEnabled(template.name)
-                        : undefined
-                    }
-                    onClick={() => handleCardClick(template)}
-                  />
-                ))}
-              </div>
-            )}
-          </>
-        )}
-
-        {/* Custom tab: installed custom skills list */}
-        {activeSubTab === 'custom' && (
-          <>
-            {customInstalledSkills.length === 0 ? (
-              <div className="text-sm text-neutral-400 py-8 text-center">{t.toolbox.noCustomSkills}</div>
-            ) : (
-              <div className="space-y-2">
-                {customInstalledSkills.map((skill) => {
-                  const source = getSourceLabel(skill);
-                  const isEnabled = !disabledSet.has(skill.name);
-                  return (
-                    <div
-                      key={skill.name}
-                      onClick={() => handleCustomSkillClick(skill)}
-                      className={`group flex items-center gap-3 p-3 rounded-lg bg-white border border-neutral-200/60 cursor-pointer hover:border-neutral-300 ${
-                        !isEnabled ? 'opacity-60' : ''
-                      }`}
-                    >
-                      <div className="flex-1 min-w-0">
-                        <div className="flex items-center gap-2">
-                          <span className="font-medium text-sm text-neutral-900">/{skill.name}</span>
-                          <span className={`text-[10px] px-1.5 py-0.5 rounded ${source.color}`}>
-                            {source.label}
-                          </span>
-                        </div>
-                        <p className="text-xs text-neutral-500 mt-1 truncate">{skill.description}</p>
-                      </div>
-                      <Toggle checked={isEnabled} onChange={() => toggleSkillEnabled(skill.name)} />
-                      <button
-                        onClick={(e) => { e.stopPropagation(); handleDelete(skill); }}
-                        className="shrink-0 p-1.5 text-neutral-400 hover:text-red-500 hover:bg-red-50 rounded transition-colors opacity-0 group-hover:opacity-100"
-                      >
-                        <Trash2 className="h-4 w-4" />
-                      </button>
-                    </div>
-                  );
-                })}
-              </div>
-            )}
-          </>
-        )}
       </div>
-
-      {/* Skill Detail Modal */}
-      {detailItem && (
-        <SkillDetailModal
-          skill={detailItem.kind === 'skill' ? detailItem.data : null}
-          template={detailItem.kind === 'template' ? detailItem.data : null}
-          isInstalled={detailItem.kind === 'skill' || installedNames.has(detailItem.data.name)}
-          onClose={() => setDetailItem(null)}
-          onInstall={detailItem.kind === 'template' ? () => handleInstall(detailItem.data as MarketplaceItem) : undefined}
-          onEdit={detailItem.kind === 'skill' ? () => handleEditSkill(detailItem.data as Skill) : undefined}
-        />
-      )}
     </div>
   );
 }

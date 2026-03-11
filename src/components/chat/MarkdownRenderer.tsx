@@ -359,11 +359,19 @@ const SAFE_URL_PATTERN = /^(https?:\/\/|mailto:|tel:|#)/i;
 
 type MarkdownVariant = 'assistant' | 'user';
 
+/** Check if inline code looks like a filename with extension */
+function looksLikeFileName(text: string): boolean {
+  const t = text.trim();
+  if (t.includes('\n') || t.includes('/') || t.includes('\\')) return false;
+  return /^[^/\\]+\.\w{1,10}$/.test(t);
+}
+
 /** Build markdown component overrides, optionally citation-aware */
 function buildMarkdownComponents(
   searchResults: SearchResult[] | null,
   onCitationClick?: (index: number) => void,
-  variant: MarkdownVariant = 'assistant'
+  variant: MarkdownVariant = 'assistant',
+  fileOutputMap?: Map<string, string>
 ) {
   const sr = searchResults && searchResults.length > 0 ? searchResults : null;
   const isUser = variant === 'user';
@@ -378,6 +386,15 @@ function buildMarkdownComponents(
         if (!isUser && isAbsolutePath(codeString)) {
           return <FilePathChip filePath={codeString.trim()} />;
         }
+        // Match bare filename to known file outputs
+        if (!isUser && fileOutputMap && looksLikeFileName(codeString)) {
+          const fullPath = fileOutputMap.get(codeString.trim());
+          if (fullPath) {
+            return <FilePathChip filePath={fullPath} />;
+          }
+        }
+        // Detect hex color codes and show a swatch
+        const hexMatch = /^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/.exec(codeString.trim());
         return (
           <code
             className={isUser
@@ -386,6 +403,12 @@ function buildMarkdownComponents(
             }
             {...props}
           >
+            {hexMatch && (
+              <span
+                className="inline-block w-3 h-3 rounded-sm mr-1 align-middle border border-black/10"
+                style={{ backgroundColor: hexMatch[0] }}
+              />
+            )}
             {children}
           </code>
         );
@@ -472,14 +495,16 @@ interface MarkdownRendererProps {
   searchResults?: SearchResult[];
   onCitationClick?: (index: number) => void;
   variant?: MarkdownVariant;
+  /** Map of filename -> full path for file outputs, enables clickable file chips */
+  fileOutputMap?: Map<string, string>;
 }
 
-export default memo(function MarkdownRenderer({ content, searchResults, onCitationClick, variant = 'assistant' }: MarkdownRendererProps) {
+export default memo(function MarkdownRenderer({ content, searchResults, onCitationClick, variant = 'assistant', fileOutputMap }: MarkdownRendererProps) {
   const components = useMemo(
-    () => searchResults && searchResults.length > 0
-      ? buildMarkdownComponents(searchResults, onCitationClick, variant)
+    () => (searchResults && searchResults.length > 0) || fileOutputMap
+      ? buildMarkdownComponents(searchResults ?? null, onCitationClick, variant, fileOutputMap)
       : variant === 'user' ? defaultUserComponents : defaultAssistantComponents,
-    [searchResults, onCitationClick, variant]
+    [searchResults, onCitationClick, variant, fileOutputMap]
   );
 
   return (

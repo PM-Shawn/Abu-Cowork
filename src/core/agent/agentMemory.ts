@@ -89,3 +89,69 @@ export async function appendAgentMemory(agentName: string, newContent: string): 
 export async function clearAgentMemory(agentName: string): Promise<void> {
   await saveAgentMemory(agentName, '');
 }
+
+// ============ Project-level Memory ============
+
+const MAX_PROJECT_MEMORY_CHARS = 8000;
+
+/**
+ * Get the project memory file path (sync — no IPC needed)
+ * Storage: {workspacePath}/.abu/MEMORY.md
+ */
+function getProjectMemoryPath(workspacePath: string): string {
+  return joinPath(workspacePath, '.abu', 'MEMORY.md');
+}
+
+/**
+ * Read raw project memory without truncation (for internal write operations).
+ */
+async function readRawProjectMemory(workspacePath: string): Promise<string> {
+  try {
+    const memoryPath = getProjectMemoryPath(workspacePath);
+    return await readTextFile(memoryPath);
+  } catch {
+    return '';
+  }
+}
+
+/**
+ * Load project memory. Returns empty string if no memory exists.
+ * Truncates for prompt injection — does NOT modify the file on disk.
+ */
+export async function loadProjectMemory(workspacePath: string): Promise<string> {
+  const content = await readRawProjectMemory(workspacePath);
+  if (!content) return '';
+  if (content.length > MAX_PROJECT_MEMORY_CHARS) {
+    return content.slice(0, MAX_PROJECT_MEMORY_CHARS) + '\n...(项目记忆已截断)';
+  }
+  return content;
+}
+
+/**
+ * Save project memory (overwrite).
+ */
+export async function saveProjectMemory(workspacePath: string, content: string): Promise<void> {
+  const memoryPath = getProjectMemoryPath(workspacePath);
+  await ensureParentDir(memoryPath);
+  const truncated = content.length > MAX_PROJECT_MEMORY_CHARS
+    ? content.slice(0, MAX_PROJECT_MEMORY_CHARS)
+    : content;
+  await writeTextFile(memoryPath, truncated);
+}
+
+/**
+ * Append to project memory.
+ */
+export async function appendProjectMemory(workspacePath: string, newContent: string): Promise<string> {
+  const existing = await readRawProjectMemory(workspacePath);
+  const updated = existing ? `${existing}\n\n${newContent}` : newContent;
+  await saveProjectMemory(workspacePath, updated);
+  return updated;
+}
+
+/**
+ * Clear project memory.
+ */
+export async function clearProjectMemory(workspacePath: string): Promise<void> {
+  await saveProjectMemory(workspacePath, '');
+}

@@ -564,8 +564,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
     }
   }
 
-  // builtinWebSearch config (static per loop — provider doesn't change mid-conversation)
-  const builtinWebSearch = getBuiltinSearchConfig(settings.provider, settings.useBuiltinWebSearch);
+  // builtinWebSearch config — refreshed per-turn below (user may change settings mid-conversation)
 
   // ── Handle @agent direct delegation ──
   if (route.type === 'delegate' && route.delegateAgent) {
@@ -756,6 +755,8 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
 
     try {
       // ── Per-turn: refresh tools and dynamic prompt sections ──
+      const freshSettings = useSettingsStore.getState();
+      const builtinWebSearch = getBuiltinSearchConfig(freshSettings.provider, freshSettings.useBuiltinWebSearch);
       const { tools, inputValidators } = resolveTools(route, !!builtinWebSearch);
       const dynamicCapabilities = buildDynamicCapabilities(tools);
       const conv = useChatStore.getState().conversations[conversationId];
@@ -845,16 +846,16 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
 
       const chatOptions = {
         model: effectiveModelId,
-        apiKey: settings.apiKey,
-        baseUrl: settings.baseUrl || undefined,
+        apiKey: freshSettings.apiKey,
+        baseUrl: freshSettings.baseUrl || undefined,
         systemPrompt: effectiveSystemPrompt,
         tools: tools.length > 0 ? tools : undefined,
         maxTokens: maxOutputTokens,
         signal: abortController.signal,
-        temperature: settings.temperature,
-        enableThinking: settings.enableThinking,
-        thinkingBudget: settings.thinkingBudget,
-        supportsVision: modelSupportsVision(effectiveModelId, settings.apiFormat),
+        temperature: freshSettings.temperature,
+        enableThinking: freshSettings.enableThinking,
+        thinkingBudget: freshSettings.thinkingBudget,
+        supportsVision: modelSupportsVision(effectiveModelId, freshSettings.apiFormat),
         builtinWebSearch,
       };
 
@@ -1190,9 +1191,25 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
           }
           results = sequentialResults;
         } else {
-          // Parallel execution for non-computer batches
-          const toolPromises = collectedToolCalls.map(tc => executeSingleTool(tc));
-          results = await Promise.allSettled(toolPromises);
+          // run_command may have implicit dependencies (e.g. npm install → npm build), serialize them
+          const allRunCommand = collectedToolCalls.every(tc => tc.name === 'run_command');
+          if (allRunCommand) {
+            const sequentialResults: PromiseSettledResult<ToolExecResult>[] = [];
+            for (const tc of collectedToolCalls) {
+              if (abortController.signal.aborted) break;
+              try {
+                const value = await executeSingleTool(tc);
+                sequentialResults.push({ status: 'fulfilled', value });
+              } catch (err) {
+                sequentialResults.push({ status: 'rejected', reason: err });
+              }
+            }
+            results = sequentialResults;
+          } else {
+            // Parallel execution for non-command batches
+            const toolPromises = collectedToolCalls.map(tc => executeSingleTool(tc));
+            results = await Promise.allSettled(toolPromises);
+          }
         }
 
         // Update tool call results via EventRouter (use index to match rejected results)

@@ -345,6 +345,7 @@ const zhCN: TranslationDict = {
     localModels: '本地模型',
     openaiCompatible: 'OpenAI / 兼容',
     qiniuCloud: '七牛云',
+    openrouter: 'OpenRouter',
     deepseek: '深度求索 (DeepSeek)',
     anthropic: 'Anthropic',
     volcengine: '火山引擎',
@@ -359,6 +360,12 @@ const zhCN: TranslationDict = {
     tabRecommended: '推荐',
     createMCP: '添加 MCP',
     uploadFile: '上传文件',
+    uploadSuccess: '导入成功',
+    uploadFailed: '导入失败',
+    uploadFileCount: '个文件',
+    exportSkill: '导出技能包',
+    exportSuccess: '导出成功',
+    exportFailed: '导出失败',
     manualAdd: '手动配置',
     // Skill detail & editor
     skillDetail: '技能详情',
@@ -713,6 +720,15 @@ const zhCN: TranslationDict = {
     userDeniedAccess: '用户拒绝了访问',
     pathAccessDenied: '路径访问被拒绝',
     needsAuthorization: '需要用户授权才能访问',
+  },
+
+  projectRules: {
+    title: '项目规则',
+    userRules: '用户规则',
+    projectMainRules: '项目主规则',
+    modularRules: '模块化规则',
+    rulesTruncated: '规则已截断',
+    rulesNotModifiable: '项目规则由用户手动维护，不可通过 AI 修改',
   },
 };
 

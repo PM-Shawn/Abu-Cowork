@@ -345,6 +345,7 @@ const enUS: TranslationDict = {
     localModels: 'Local Models',
     openaiCompatible: 'OpenAI / Compatible',
     qiniuCloud: 'Qiniu Cloud',
+    openrouter: 'OpenRouter',
     deepseek: 'DeepSeek',
     anthropic: 'Anthropic',
     volcengine: 'Volcengine',
@@ -359,6 +360,12 @@ const enUS: TranslationDict = {
     tabRecommended: 'Recommended',
     createMCP: 'Add MCP',
     uploadFile: 'Upload File',
+    uploadSuccess: 'Import Successful',
+    uploadFailed: 'Import Failed',
+    uploadFileCount: 'files',
+    exportSkill: 'Export Skill Package',
+    exportSuccess: 'Export Successful',
+    exportFailed: 'Export Failed',
     manualAdd: 'Manual Setup',
     // Skill detail & editor
     skillDetail: 'Skill Details',
@@ -712,6 +719,15 @@ const enUS: TranslationDict = {
     userDeniedAccess: 'User denied access to',
     pathAccessDenied: 'Path access denied',
     needsAuthorization: 'User authorization required to access',
+  },
+
+  projectRules: {
+    title: 'Project Rules',
+    userRules: 'User Rules',
+    projectMainRules: 'Project Main Rules',
+    modularRules: 'Modular Rules',
+    rulesTruncated: 'Rules truncated',
+    rulesNotModifiable: 'Project rules are manually maintained by users, not modifiable by AI',
   },
 };
 

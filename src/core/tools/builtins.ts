@@ -16,7 +16,7 @@ import { getCurrentLoopContext } from '../agent/agentLoop';
 import { runSubagentLoop, extractParentConversationSummary } from '../agent/subagentLoop';
 import type { SubagentProgressEvent } from '../agent/subagentLoop';
 import { createSubagentController } from '../agent/subagentAbort';
-import { appendAgentMemory, saveAgentMemory, clearAgentMemory } from '../agent/agentMemory';
+import { appendAgentMemory, saveAgentMemory, clearAgentMemory, saveProjectMemory, appendProjectMemory, clearProjectMemory } from '../agent/agentMemory';
 import { appendTaskLog, type TaskCategory } from '../agent/taskLog';
 import { searchMCPRegistry, installMCPServer, getRegistryEntry } from '../agent/mcpDiscovery';
 import { addWatchRule, removeWatchRule, toggleWatchRule, listWatchRules, type FileWatchRule } from '../agent/fileWatcher';
@@ -1183,7 +1183,7 @@ const delegateToAgentTool: ToolDefinition = {
  */
 const updateMemoryTool: ToolDefinition = {
   name: 'update_memory',
-  description: '管理你的持久记忆（跨会话保持的 memory.md 文件）。适合保存：用户偏好、项目规范、常用路径、经验教训等。',
+  description: '管理持久记忆（AI 积累的知识）。scope="user" 保存个人偏好（跨项目），scope="project" 保存项目知识（仅当前工作区）。注意：项目规则（.abu/ABU.md）由用户手动维护，不要用此工具修改规则。',
   inputSchema: {
     type: 'object',
     properties: {
@@ -1194,6 +1194,11 @@ const updateMemoryTool: ToolDefinition = {
         enum: ['append', 'rewrite', 'clear'],
       },
       content: { type: 'string', description: '记忆内容（append 和 rewrite 时必填）' },
+      scope: {
+        type: 'string',
+        description: '记忆范围: user(个人级，跨项目永久保持) / project(项目级，仅当前工作区)',
+        enum: ['user', 'project'],
+      },
     },
     required: ['agent_name'],
   },
@@ -1201,8 +1206,32 @@ const updateMemoryTool: ToolDefinition = {
     const agentName = input.agent_name as string;
     const action = (input.action as string) || 'append';
     const content = (input.content as string) || '';
+    const scope = (input.scope as string) || 'user';
 
     try {
+      // Project-level memory
+      if (scope === 'project') {
+        const workspacePath = useWorkspaceStore.getState().currentPath;
+        if (!workspacePath) {
+          return '错误：当前没有设置工作区，无法使用项目级记忆。请先设置工作区路径。';
+        }
+        switch (action) {
+          case 'rewrite':
+            if (!content) return '错误：rewrite 操作需要提供 content。';
+            await saveProjectMemory(workspacePath, content);
+            return `已重写项目记忆（${workspacePath}）。`;
+          case 'clear':
+            await clearProjectMemory(workspacePath);
+            return `已清空项目记忆（${workspacePath}）。`;
+          case 'append':
+          default:
+            if (!content) return '错误：append 操作需要提供 content。';
+            await appendProjectMemory(workspacePath, content);
+            return `已追加项目记忆（${workspacePath}）。`;
+        }
+      }
+
+      // User-level memory (original logic)
       switch (action) {
         case 'rewrite':
           if (!content) return '错误：rewrite 操作需要提供 content。';

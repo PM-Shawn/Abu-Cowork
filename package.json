@@ -29,6 +29,7 @@
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "docx-preview": "^0.3.7",
+    "fflate": "^0.8.2",
     "immer": "^11.1.4",
     "lucide-react": "^0.575.0",
     "radix-ui": "^1.4.3",

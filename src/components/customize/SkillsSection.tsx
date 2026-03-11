@@ -7,8 +7,12 @@ import { skillTemplates } from '@/data/marketplace/skills';
 import { skillLoader } from '@/core/skill/loader';
 import SkillEditor from './SkillEditor';
 import { Toggle } from '@/components/ui/toggle';
-import { Trash2, File, Folder, ChevronDown, ChevronRight, Pencil, MoreHorizontal, Eye, Code, Info, MessageCircle, Search, Plus, X, Wand2, PenLine, Upload } from 'lucide-react';
+import { Trash2, File, Folder, ChevronDown, ChevronRight, Pencil, MoreHorizontal, Eye, Code, Info, MessageCircle, Search, Plus, X, Wand2, PenLine, Upload, Download } from 'lucide-react';
 import { remove } from '@tauri-apps/plugin-fs';
+import { save as saveDialog } from '@tauri-apps/plugin-dialog';
+import { writeFile } from '@tauri-apps/plugin-fs';
+import { packSkill } from '@/core/skill/packager';
+import { useToastStore } from '@/stores/toastStore';
 import { getParentDir } from '@/utils/pathUtils';
 import type { Skill } from '@/types';
 import MarkdownRenderer from '@/components/chat/MarkdownRenderer';
@@ -228,6 +232,25 @@ export default function SkillsSection({ manualCreateTrigger, onAICreate, onManua
       await refresh();
     } catch (err) {
       console.error('Failed to delete skill:', err);
+    }
+  };
+
+  // Export a skill as .askill package
+  const handleExport = async (skill: Skill) => {
+    const addToast = useToastStore.getState().addToast;
+    try {
+      const filePath = await saveDialog({
+        defaultPath: `${skill.name}.askill`,
+        filters: [{ name: 'Skill Package', extensions: ['askill'] }],
+      });
+      if (!filePath) return;
+
+      const bytes = await packSkill(skill.skillDir);
+      await writeFile(filePath, bytes);
+      addToast({ type: 'success', title: t.toolbox.exportSuccess, message: `"${skill.name}"` });
+    } catch (err) {
+      console.error('Export skill failed:', err);
+      addToast({ type: 'error', title: t.toolbox.exportFailed, message: String(err) });
     }
   };
 
@@ -505,9 +528,8 @@ export default function SkillsSection({ manualCreateTrigger, onAICreate, onManua
                     checked={!disabledSet.has(selected.name)}
                     onChange={() => toggleSkillEnabled(selected.name)}
                   />
-                  {/* Show "..." menu only when there are items: user skills always have edit/delete; system skills only when enabled (try in chat) */}
-                  {(!isSystemSkill(selected) || !disabledSet.has(selected.name)) && (
-                    <div className="relative">
+                  {/* "..." menu: export always available; user skills also have edit/delete */}
+                  <div className="relative">
                       <button
                         onClick={(e) => { e.stopPropagation(); setMenuSkill(menuSkill === selected.name ? null : selected.name); }}
                         className="p-1.5 rounded-lg text-[#656358] hover:text-[#29261b] hover:bg-[#f5f3ee] transition-colors"
@@ -531,6 +553,14 @@ export default function SkillsSection({ manualCreateTrigger, onAICreate, onManua
                               {t.toolbox.skillTryInChat}
                             </button>
                           )}
+                          {/* Export - available for all skills */}
+                          <button
+                            className="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-[#29261b] hover:bg-[#f5f3ee] transition-colors"
+                            onClick={() => { handleExport(selected); setMenuSkill(null); }}
+                          >
+                            <Download className="h-3 w-3" />
+                            {t.toolbox.exportSkill}
+                          </button>
                           {/* Edit & Delete - only for user skills */}
                           {!isSystemSkill(selected) && (
                             <>
@@ -553,7 +583,6 @@ export default function SkillsSection({ manualCreateTrigger, onAICreate, onManua
                         </div>
                       )}
                     </div>
-                  )}
                 </div>
               </div>
 

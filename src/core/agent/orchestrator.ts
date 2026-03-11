@@ -1,7 +1,8 @@
 import type { SubagentDefinition, Skill } from '../../types';
 import { agentRegistry } from './registry';
 import { skillLoader } from '../skill/loader';
-import { loadAgentMemory } from './agentMemory';
+import { loadAgentMemory, loadProjectMemory } from './agentMemory';
+import { loadAllRules } from './projectRules';
 import { useWorkspaceStore } from '../../stores/workspaceStore';
 import { useSettingsStore } from '../../stores/settingsStore';
 import { getSessionOutputDir } from '../session/sessionDir';
@@ -278,6 +279,18 @@ ${outputDir}
 
   const settingsState = useSettingsStore.getState();
 
+  // Inject project rules (user-maintained, high priority)
+  if (!isForkContext) {
+    try {
+      const rules = await loadAllRules(workspacePath);
+      if (rules.trim()) {
+        parts.push(`\n## 项目规则\n以下是用户定义的规则，必须始终遵守。规则由用户手动维护，不要尝试修改。\n${rules}`);
+      }
+    } catch (err) {
+      console.warn('Failed to load project rules:', err);
+    }
+  }
+
   // Inject main agent (abu) long-term memory
   if (!isForkContext) {
     try {
@@ -288,9 +301,26 @@ ${outputDir}
 ${memory}`);
       }
       // Brief memory management reminder
-      parts.push(`\n在对话中观察到值得记住的信息时，用 update_memory 工具保存到长期记忆。记忆应精炼有条理。`);
+      parts.push(`\n在对话中观察到值得记住的信息时，用 update_memory 工具保存到记忆。记忆应精炼有条理。
+- scope="user": 个人记忆，跨项目永久保持（如用户偏好、格式习惯）
+- scope="project": 项目记忆，仅在当前工作区生效（如项目规范、技术栈、业务术语、数据结构）
+- 项目规则（.abu/ABU.md 和 .abu/rules/）由用户手动维护，不要用 update_memory 修改规则文件`);
     } catch (err) {
       console.warn('Failed to load abu memory:', err);
+    }
+
+    // Inject project-level memory
+    if (workspacePath) {
+      try {
+        const projectMemory = await loadProjectMemory(workspacePath);
+        if (projectMemory.trim()) {
+          parts.push(`\n## 项目记忆
+以下是本项目的持久化记忆（存储在工作区 .abu/MEMORY.md），包含项目规范、数据结构、业务术语等信息。始终参考这些信息。
+${projectMemory}`);
+        }
+      } catch (err) {
+        console.warn('Failed to load project memory:', err);
+      }
     }
 
     // Inject computer use guidance (if enabled)

@@ -6,10 +6,12 @@ import { useI18n } from '@/i18n';
 import { Sparkles, Bot, Server, ArrowLeft } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { open as openDialog } from '@tauri-apps/plugin-dialog';
-import { readTextFile, writeTextFile, mkdir } from '@tauri-apps/plugin-fs';
+import { readTextFile, readFile, writeTextFile, mkdir } from '@tauri-apps/plugin-fs';
 import { homeDir } from '@tauri-apps/api/path';
 import { joinPath, normalizeSeparators } from '@/utils/pathUtils';
 import { ITEM_NAME_RE } from '@/utils/validation';
+import { validateArchive, unpackSkill, ConflictError } from '@/core/skill/packager';
+import { useToastStore } from '@/stores/toastStore';
 import SkillsSection from '../customize/SkillsSection';
 import AgentsSection from '../customize/AgentsSection';
 import MCPSection from '../customize/MCPSection';
@@ -50,16 +52,64 @@ export default function ToolboxView() {
     const isAgent = activeToolboxTab === 'agents';
     const expectedFileName = isAgent ? 'AGENT.md' : 'SKILL.md';
     const targetFolder = isAgent ? 'agents' : 'skills';
+    const addToast = useToastStore.getState().addToast;
 
     try {
-      const filePath = await openDialog({
-        filters: [{ name: 'Markdown', extensions: ['md'] }],
-        multiple: false,
-      });
+      const filters = isAgent
+        ? [{ name: 'Markdown', extensions: ['md'] }]
+        : [
+            { name: 'Skill Package', extensions: ['askill', 'zip'] },
+            { name: 'Markdown', extensions: ['md'] },
+          ];
+
+      const filePath = await openDialog({ filters, multiple: false });
 
       if (!filePath) return;
-
       const pathStr = filePath as string;
+
+      // ── .askill / .zip package mode (skills only) ──
+      if (!isAgent && (pathStr.endsWith('.askill') || pathStr.endsWith('.zip'))) {
+        const bytes = await readFile(pathStr);
+        const archiveBytes = new Uint8Array(bytes);
+
+        // Validate
+        const error = validateArchive(archiveBytes);
+        if (error) {
+          addToast({ type: 'error', title: t.toolbox.uploadFailed, message: error.message });
+          return;
+        }
+
+        // Unpack
+        const home = await homeDir();
+        const baseDir = joinPath(home, '.abu', targetFolder);
+        await mkdir(baseDir, { recursive: true });
+
+        try {
+          const result = await unpackSkill(archiveBytes, baseDir);
+          await refresh();
+          addToast({
+            type: 'success',
+            title: t.toolbox.uploadSuccess,
+            message: `"${result.name}" (${result.files.length} ${t.toolbox.uploadFileCount})`,
+          });
+        } catch (err) {
+          if (err instanceof ConflictError) {
+            // Overwrite on conflict (could add a confirm dialog later)
+            const result = await unpackSkill(archiveBytes, baseDir, { overwrite: true });
+            await refresh();
+            addToast({
+              type: 'success',
+              title: t.toolbox.uploadSuccess,
+              message: `"${result.name}" (${result.files.length} ${t.toolbox.uploadFileCount})`,
+            });
+          } else {
+            throw err;
+          }
+        }
+        return;
+      }
+
+      // ── Single .md file mode (original logic) ──
       const content = await readTextFile(pathStr);
 
       // Extract name from parent directory or filename
@@ -68,10 +118,8 @@ export default function ToolboxView() {
       let rawName: string;
 
       if (fileName.toUpperCase() === expectedFileName) {
-        // Use parent directory name
         rawName = parts[parts.length - 2] || fileName.replace(/\.md$/i, '');
       } else {
-        // Use filename without extension
         rawName = fileName.replace(/\.md$/i, '');
       }
 
@@ -83,7 +131,7 @@ export default function ToolboxView() {
         .replace(/^-+|-+$/g, '');
 
       if (!name || !ITEM_NAME_RE.test(name)) {
-        console.warn('[Upload] Invalid name after normalization:', rawName, '→', name);
+        addToast({ type: 'error', title: t.toolbox.uploadFailed, message: `Invalid skill name: "${rawName}"` });
         return;
       }
 
@@ -96,10 +144,11 @@ export default function ToolboxView() {
       const targetPath = joinPath(targetDir, expectedFileName);
       await writeTextFile(targetPath, content);
 
-      // Refresh discovery
       await refresh();
+      addToast({ type: 'success', title: t.toolbox.uploadSuccess, message: `"${name}"` });
     } catch (err) {
       console.error('Upload file failed:', err);
+      addToast({ type: 'error', title: t.toolbox.uploadFailed, message: String(err) });
     }
   };
 

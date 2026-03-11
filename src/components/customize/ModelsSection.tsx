@@ -19,6 +19,7 @@ const PRESET_GROUP_KEYS = [
   { key: 'anthropic', labelKey: 'anthropic' as const },
   { key: 'openai', labelKey: 'openaiCompatible' as const },
   { key: 'qiniu', labelKey: 'qiniuCloud' as const },
+  { key: 'openrouter', labelKey: 'openrouter' as const },
   { key: 'local', labelKey: 'localModels' as const },
 ] as const;
 

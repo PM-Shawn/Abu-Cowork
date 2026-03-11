@@ -365,6 +365,7 @@ export interface TranslationDict {
     localModels: string;
     openaiCompatible: string;
     qiniuCloud: string;
+    openrouter: string;
     deepseek: string;
     anthropic: string;
     volcengine: string;
@@ -379,6 +380,12 @@ export interface TranslationDict {
     tabRecommended: string;
     createMCP: string;
     uploadFile: string;
+    uploadSuccess: string;
+    uploadFailed: string;
+    uploadFileCount: string;
+    exportSkill: string;
+    exportSuccess: string;
+    exportFailed: string;
     manualAdd: string;
     // Skill detail & editor
     skillDetail: string;
@@ -727,5 +734,15 @@ export interface TranslationDict {
     userDeniedAccess: string;
     pathAccessDenied: string;
     needsAuthorization: string;
+  };
+
+  // Project Rules
+  projectRules: {
+    title: string;
+    userRules: string;
+    projectMainRules: string;
+    modularRules: string;
+    rulesTruncated: string;
+    rulesNotModifiable: string;
   };
 }

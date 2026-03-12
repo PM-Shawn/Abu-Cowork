@@ -74,6 +74,7 @@ export interface TranslationDict {
     imageAdded: string;
     removeImage: string;
     openInFinder: string;
+    openInBrowser: string;
     clickToPreview: string;
     sources: string;
     showAllSources: string;
@@ -95,6 +96,13 @@ export interface TranslationDict {
     inputTokens: string;
     outputTokens: string;
     addAttachment: string;
+    // Scenario guide
+    trySaying: string;
+    scenarios: Record<string, string>;
+    scenarioPlaceholders: Record<string, string>;
+    scenarioPrompts: Record<string, string>;
+    /** Full prompt sent on click (falls back to scenarioPrompts if absent) */
+    scenarioFullPrompts: Record<string, string>;
   };
 
   // Status Bar
@@ -476,6 +484,14 @@ export interface TranslationDict {
     aiCreateAgentPrompt: string;
     aiCreateSkillPrompt: string;
     agentTestPrompt: string;
+    // JSON config import
+    formMode: string;
+    jsonMode: string;
+    jsonConfigLabel: string;
+    jsonConfigPlaceholder: string;
+    jsonConfigHint: string;
+    jsonConfigInvalid: string;
+    jsonConfigEmpty: string;
   };
 
   // Permission Dialog

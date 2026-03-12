@@ -53,7 +53,7 @@ const zhCN: TranslationDict = {
     start: '开始',
     stop: '停止',
     welcomeTitle: '交给阿布就行啦 ✨',
-    welcomeSubtitle: '嘿～我是阿布，你的桌面小伙伴！\n从今天起啥都交给我吧～',
+    welcomeSubtitle: '嘿～我是阿布，你的桌面小伙伴！从今天起啥都交给我吧～',
     disclaimer: '阿布可能会犯小迷糊，重要信息记得核查哦～',
     thinking: '阿布在想～',
     dropFilesHere: '拖放文件到这里',
@@ -61,6 +61,7 @@ const zhCN: TranslationDict = {
     imageAdded: '已添加图片',
     removeImage: '移除图片',
     openInFinder: '在文件管理器中显示',
+    openInBrowser: '在浏览器中打开',
     clickToPreview: '点击预览',
     sources: '来源',
     showAllSources: '显示全部',
@@ -81,6 +82,66 @@ const zhCN: TranslationDict = {
     inputTokens: '输入',
     outputTokens: '输出',
     addAttachment: '添加图片或文件',
+    // Scenario guide
+    trySaying: '试试这样说',
+    scenarios: {
+      office: '办公整理',
+      data: '数据处理',
+      content: '内容创作',
+      web: '网页生成',
+      schedule: '定时任务',
+    },
+    scenarioPlaceholders: {
+      officePlaceholder: '描述你想整理的文件和规则…',
+      dataPlaceholder: '描述你想处理的数据…',
+      contentPlaceholder: '描述你想创作的内容…',
+      webPlaceholder: '描述你想生成的网页…',
+      schedulePlaceholder: '描述你想定时执行的任务…',
+    },
+    scenarioPrompts: {
+      // Default (no scenario selected) — showcase variety across categories
+      default1: '整理桌面文件，按类型分到不同文件夹',
+      default2: '帮我分析这份销售数据并生成图表',
+      default3: '写一份本周项目进展周报',
+      default4: '生成一个个人介绍网页',
+      // Office — file management & organization
+      office1: '整理桌面文件，按类型分到不同文件夹',
+      office2: '列出下载文件夹里超过 100MB 的大文件',
+      office3: '把文档文件夹里的文件按年月归档',
+      office4: '批量重命名照片，加上拍摄日期前缀',
+      // Data — data processing & analysis
+      data1: '多个 CSV 合并成一个 Excel',
+      data2: 'PDF 表格提取为 Excel',
+      data3: '销售数据月度趋势分析并生成图表',
+      data4: '学生成绩统计与排名',
+      // Content — writing & creation
+      content1: '写一份本周项目进展周报',
+      content2: '写一封会议邀请邮件，主题是 Q2 复盘',
+      content3: '把一篇文章翻译成英文并保存到桌面',
+      content4: '用 Markdown 写一份产品需求文档模板',
+      // Web — web page generation
+      web1: '个人作品集网页',
+      web2: '产品发布落地页',
+      web3: '销售数据可视化看板',
+      web4: '公司官网首页',
+      // Schedule — recurring automated tasks
+      schedule1: '每天早上 8 点推送今日科技资讯摘要',
+      schedule2: '每天早上抓取天气预报并推送给我',
+      schedule3: '每隔 2 小时提醒我喝水和休息',
+      schedule4: '每周一早上推送本周热门电影和书籍推荐',
+    },
+    scenarioFullPrompts: {
+      // Data — need sample data generation before analysis
+      data1: '先生成 3 个示例 CSV 文件（员工信息、部门信息、薪资记录），然后合并成一个汇总 Excel，保存到桌面',
+      data2: '先生成一个包含表格的示例 PDF 文件，然后把其中的表格提取出来保存为 Excel',
+      data3: '先生成一份 12 个月的示例销售数据 CSV，然后做月度趋势分析图表，保存到桌面',
+      data4: '先生成一份 30 名学生的语数英成绩 CSV，然后统计各科平均分、最高分，并按总分排名，保存为 Excel',
+      // Web — expand short titles into full instructions
+      web1: '生成一个个人作品集网页，包含项目展示、技能标签和联系方式，保存到桌面',
+      web2: '生成一个产品发布落地页，要有 Hero 区、功能介绍、价格表和 CTA 按钮，保存到桌面',
+      web3: '先生成一份 12 个月的示例销售数据，然后生成一个可视化数据看板网页，包含图表和关键指标，保存到桌面',
+      web4: '生成一个简洁的公司官网首页，包含导航栏、公司简介、团队介绍和联系方式，保存到桌面',
+    },
   },
 
   status: {
@@ -457,6 +518,14 @@ const zhCN: TranslationDict = {
     aiCreateAgentPrompt: '帮我创建一个 Agent，我的需求是：',
     aiCreateSkillPrompt: '帮我创建一个 Skill，我的需求是：',
     agentTestPrompt: '请使用 {name} 代理来帮我完成一个简单任务，测试一下它是否正常工作。',
+    // JSON config import
+    formMode: '表单',
+    jsonMode: 'JSON',
+    jsonConfigLabel: '粘贴 MCP 服务器 JSON 配置',
+    jsonConfigPlaceholder: '{\n  "server-name": {\n    "url": "https://mcp.example.com/mcp"\n  }\n}',
+    jsonConfigHint: 'JSON 的 key 即为服务器名称，可直接粘贴 Claude Desktop、Cursor 等客户端的配置',
+    jsonConfigInvalid: 'JSON 格式无效',
+    jsonConfigEmpty: 'JSON 中未找到服务器配置',
   },
 
   permission: {
@@ -501,10 +570,10 @@ const zhCN: TranslationDict = {
       warning: '阿布可以读取此目录下的所有文件内容。',
     },
     folderSelect: {
-      title: '阿布需要访问一个文件夹',
-      description: '选择一个工作文件夹来开始任务',
+      title: '选择工作目录',
+      description: '阿布需要知道在哪个文件夹里工作',
       selectButton: '选择文件夹',
-      hint: '阿布只能访问你选择的文件夹',
+      hint: '仅访问你选择的文件夹',
     },
     abuCanDo: '阿布将可以：',
     allowOnce: '允许本次',

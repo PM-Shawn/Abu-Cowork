@@ -258,13 +258,18 @@ export async function buildSystemPrompt(
 路径: ${workspacePath}
 你可以使用文件工具在此目录下读写文件。当用户提到文件或目录时，默认在此工作区路径下操作。`);
   } else {
-    // No workspace selected - use session output directory
+    // No workspace selected — instruct LLM to request workspace for file ops
     const outputDir = await getSessionOutputDir(conversationId);
-    parts.push(`\n## 输出目录
-当前没有设置工作区。生成的文件请保存到：
-${outputDir}
+    parts.push(`\n## 工作区提醒
+当前没有设置工作区。
 
-这是专门为本次会话创建的输出目录。`);
+**重要规则**：当用户的请求涉及操作具体的文件或目录时（如整理文件、查看桌面、操作文档、代码相关等），
+你必须先调用 request_workspace 工具让用户选择工作目录，然后再执行文件操作。
+不涉及文件操作的请求（闲聊、知识问答、搜索信息、写作、翻译、计算等）直接回复即可。
+
+如果用户拒绝选择工作区，友好告知需要先选择工作目录才能操作文件。
+
+生成的文件（非用户指定路径）保存到：${outputDir}`);
   }
 
   // Inject Windows-specific guidance when on Windows
@@ -407,14 +412,17 @@ ${projectMemory}
   // NOTE: Active skills content (from use_skill tool) is now injected dynamically
   // per-turn inside agentLoop via loadActiveSkillContent(), not here.
 
-  // List available skills for discovery (filter out disabled skills)
+  // List available skills for discovery
   // Apply context budget: max(16K chars, contextWindow × 2%)
   try {
     const disabledSkills = new Set(settingsState.disabledSkills ?? []);
-    const skills = skillLoader.getAvailableSkills().filter(
-      (s) => s.userInvocable !== false && !disabledSkills.has(s.name)
+    const allSkills = skillLoader.getAvailableSkills().filter(
+      (s) => s.userInvocable !== false
     );
-    if (skills.length > 0) {
+    const skills = allSkills.filter((s) => !disabledSkills.has(s.name));
+    const disabled = allSkills.filter((s) => disabledSkills.has(s.name));
+
+    if (skills.length > 0 || disabled.length > 0) {
       const contextWindowSize = settingsState.contextWindowSize ?? 200000;
       // Budget in characters (rough estimate: 1 token ≈ 4 chars)
       const budget = Math.max(16000, Math.floor(contextWindowSize * 4 * 0.02));
@@ -454,6 +462,16 @@ ${projectMemory}
         '技能包含最佳实践和完整工作流，使用技能 = 更好的结果。\n\n' +
         skillLines.join('\n')
       );
+
+      // Show disabled skills so Agent can recommend enabling them when relevant
+      if (disabled.length > 0) {
+        const disabledLines = disabled.map((s) => `- ${s.name}: ${s.description}`);
+        parts.push(
+          '\n### 已禁用的技能\n' +
+          '以下技能已被用户禁用，无法直接使用。如果用户的任务恰好匹配，可以告知用户有对应的技能可以开启。\n\n' +
+          disabledLines.join('\n')
+        );
+      }
     }
   } catch (err) {
     console.warn('Failed to load available skills for system prompt:', err);

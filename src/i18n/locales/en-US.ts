@@ -53,7 +53,7 @@ const enUS: TranslationDict = {
     start: 'Start',
     stop: 'Stop',
     welcomeTitle: 'Leave it to Abu ✨',
-    welcomeSubtitle: "Hey~ I'm Abu, your desktop buddy!\nFrom now on, leave everything to me~",
+    welcomeSubtitle: "Hey~ I'm Abu, your desktop buddy! From now on, leave everything to me~",
     disclaimer: 'Abu may make mistakes. Please verify important information.',
     thinking: 'Abu is thinking...',
     dropFilesHere: 'Drop files here',
@@ -61,6 +61,7 @@ const enUS: TranslationDict = {
     imageAdded: 'Image added',
     removeImage: 'Remove image',
     openInFinder: 'Show in File Manager',
+    openInBrowser: 'Open in Browser',
     clickToPreview: 'Click to preview',
     sources: 'Sources',
     showAllSources: 'Show all',
@@ -81,6 +82,66 @@ const enUS: TranslationDict = {
     inputTokens: 'Input',
     outputTokens: 'Output',
     addAttachment: 'Add images or files',
+    // Scenario guide
+    trySaying: 'Try saying',
+    scenarios: {
+      office: 'File Organizer',
+      data: 'Data Processing',
+      content: 'Content Creation',
+      web: 'Web Pages',
+      schedule: 'Scheduled Tasks',
+    },
+    scenarioPlaceholders: {
+      officePlaceholder: 'Describe the files you want to organize…',
+      dataPlaceholder: 'Describe the data you want to process…',
+      contentPlaceholder: 'Describe the content you want to create…',
+      webPlaceholder: 'Describe the web page you want to create…',
+      schedulePlaceholder: 'Describe the task you want to schedule…',
+    },
+    scenarioPrompts: {
+      // Default (no scenario selected) — showcase variety across categories
+      default1: 'Organize desktop files into folders by type',
+      default2: 'Analyze this sales data and generate charts',
+      default3: 'Write a weekly project progress report',
+      default4: 'Create a personal introduction web page',
+      // Office — file management & organization
+      office1: 'Organize desktop files into folders by type',
+      office2: 'List files larger than 100MB in my Downloads folder',
+      office3: 'Archive Documents folder files by year and month',
+      office4: 'Batch rename photos with date prefix',
+      // Data — data processing & analysis
+      data1: 'Merge multiple CSVs into one Excel',
+      data2: 'Extract PDF tables to Excel',
+      data3: 'Monthly sales trend analysis with charts',
+      data4: 'Student grades statistics and ranking',
+      // Content — writing & creation
+      content1: 'Write a weekly project progress report',
+      content2: 'Draft a meeting invite email for Q2 review',
+      content3: 'Translate an article to English and save to Desktop',
+      content4: 'Create a product requirements doc template in Markdown',
+      // Web — web page generation
+      web1: 'Personal portfolio page',
+      web2: 'Product landing page',
+      web3: 'Sales data dashboard',
+      web4: 'Company homepage',
+      // Schedule — recurring automated tasks
+      schedule1: 'Push a daily tech news digest every morning at 8 AM',
+      schedule2: 'Fetch weather forecast and push to me every morning',
+      schedule3: 'Remind me to drink water and take a break every 2 hours',
+      schedule4: 'Push trending movies and book picks every Monday morning',
+    },
+    scenarioFullPrompts: {
+      // Data — generate sample data first, then analyze
+      data1: 'Generate 3 sample CSV files (employee info, departments, salaries), merge them into one summary Excel, and save to Desktop',
+      data2: 'Generate a sample PDF with tables, then extract the tables and save as Excel',
+      data3: 'Generate a 12-month sample sales data CSV, then create a monthly trend chart and save to Desktop',
+      data4: 'Generate a CSV with 30 students\' math/English/science scores, then compute averages, top scores, and rank by total. Save as Excel',
+      // Web — expand short titles into full instructions
+      web1: 'Create a personal portfolio page with project showcase, skill tags, and contact info. Save to Desktop',
+      web2: 'Create a product landing page with hero section, feature highlights, pricing table, and CTA button. Save to Desktop',
+      web3: 'Generate 12 months of sample sales data, then create a visual dashboard page with charts and key metrics. Save to Desktop',
+      web4: 'Create a clean company homepage with navbar, about section, team introduction, and contact info. Save to Desktop',
+    },
   },
 
   status: {
@@ -456,6 +517,14 @@ const enUS: TranslationDict = {
     aiCreateAgentPrompt: 'Help me create an Agent. My requirements are:',
     aiCreateSkillPrompt: 'Help me create a Skill. My requirements are:',
     agentTestPrompt: 'Use the {name} agent to help me with a simple task to test if it works correctly.',
+    // JSON config import
+    formMode: 'Form',
+    jsonMode: 'JSON',
+    jsonConfigLabel: 'Paste MCP server JSON config',
+    jsonConfigPlaceholder: '{\n  "server-name": {\n    "url": "https://mcp.example.com/mcp"\n  }\n}',
+    jsonConfigHint: 'The JSON key is used as the server name. Paste the config from Claude Desktop, Cursor, etc.',
+    jsonConfigInvalid: 'Invalid JSON format',
+    jsonConfigEmpty: 'No servers found in JSON',
   },
 
   permission: {
@@ -500,10 +569,10 @@ const enUS: TranslationDict = {
       warning: 'Abu can read all file contents under this directory.',
     },
     folderSelect: {
-      title: 'Abu needs access to a folder',
-      description: 'Select a working folder to start the task',
+      title: 'Select Working Folder',
+      description: 'Abu needs to know which folder to work in',
       selectButton: 'Select Folder',
-      hint: 'Abu can only access the folder you select',
+      hint: 'Only accesses the folder you select',
     },
     abuCanDo: 'Abu will be able to:',
     allowOnce: 'Allow Once',

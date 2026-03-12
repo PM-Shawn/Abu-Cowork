@@ -28,7 +28,7 @@ import { drainQueuedInputs, clearInputQueue } from './userInputQueue';
 import { snapshotExecutionSteps } from './executionSnapshot';
 import { emitHook } from './lifecycleHooks';
 import { invoke } from '@tauri-apps/api/core';
-import { setComputerUseBatchMode, setSkipAutoScreenshot } from '../tools/builtins';
+import { setComputerUseBatchMode, setSkipAutoScreenshot, clearAllSkillHooks } from '../tools/builtins';
 
 /** Persist execution steps onto the last assistant message for the given loop, then evict from memory */
 function persistExecutionSnapshot(conversationId: string, loopId: string): void {
@@ -68,6 +68,7 @@ let currentLoopContext: {
   signal: AbortSignal;
   eventRouter: import('./eventRouter').EventRouter;
   loopId: string;
+  conversationId: string;
   toolCallToStepId: Map<string, string>;
 } | null = null;
 
@@ -78,12 +79,14 @@ export function getCurrentLoopContext() {
 // Global state for pending command confirmation
 let pendingConfirmation: {
   info: ConfirmationInfo;
+  conversationId: string;
   resolve: (confirmed: boolean) => void;
 } | null = null;
 
 // Queue for command confirmations — prevents overwriting when multiple dangerous commands fire in sequence
 const confirmationQueue: Array<{
   info: ConfirmationInfo;
+  conversationId: string;
   resolve: (confirmed: boolean) => void;
 }> = [];
 
@@ -154,12 +157,13 @@ export function drainConfirmationQueue() {
  * If another confirmation is already pending, this request is queued.
  */
 async function requestCommandConfirmation(info: ConfirmationInfo): Promise<boolean> {
+  const convId = currentLoopContext?.conversationId ?? '';
   return new Promise((resolve) => {
     if (pendingConfirmation) {
       // Queue instead of overwriting
-      confirmationQueue.push({ info, resolve });
+      confirmationQueue.push({ info, conversationId: convId, resolve });
     } else {
-      pendingConfirmation = { info, resolve };
+      pendingConfirmation = { info, conversationId: convId, resolve };
       notifyConfirmationListeners();
     }
   });
@@ -171,6 +175,7 @@ export interface FilePermissionRequest {
   path: string;
   capability: 'read' | 'write';
   toolName: string;
+  conversationId: string;
   resolve: (granted: boolean) => void;
 }
 
@@ -279,8 +284,9 @@ async function requestFilePermission(request: {
     return true;
   }
 
+  const convId = currentLoopContext?.conversationId ?? '';
   return new Promise((resolve) => {
-    const filePermReq: FilePermissionRequest = { ...request, resolve };
+    const filePermReq: FilePermissionRequest = { ...request, conversationId: convId, resolve };
 
     if (!isProcessingFilePermission) {
       isProcessingFilePermission = true;
@@ -290,6 +296,70 @@ async function requestFilePermission(request: {
       // Queue for later processing
       filePermissionQueue.push(filePermReq);
     }
+  });
+}
+
+// ── Workspace Request Infrastructure ──
+
+export interface WorkspaceRequest {
+  reason: string;
+  conversationId: string;
+  resolve: (path: string | null) => void;
+}
+
+let pendingWorkspaceRequest: WorkspaceRequest | null = null;
+const workspaceRequestListeners = new Set<() => void>();
+
+function notifyWorkspaceRequestListeners() {
+  workspaceRequestListeners.forEach(listener => listener());
+}
+
+/**
+ * Subscribe to workspace request state changes (for useSyncExternalStore)
+ */
+export function subscribeToWorkspaceRequest(callback: () => void): () => void {
+  workspaceRequestListeners.add(callback);
+  return () => workspaceRequestListeners.delete(callback);
+}
+
+/**
+ * Get the current pending workspace request
+ */
+export function getPendingWorkspaceRequest(): WorkspaceRequest | null {
+  return pendingWorkspaceRequest;
+}
+
+/**
+ * Resolve the pending workspace request (called from UI)
+ */
+export function resolveWorkspaceRequest(path: string | null): void {
+  if (pendingWorkspaceRequest) {
+    pendingWorkspaceRequest.resolve(path);
+    pendingWorkspaceRequest = null;
+    notifyWorkspaceRequestListeners();
+  }
+}
+
+/**
+ * Drain workspace request — reject pending request on abort
+ */
+export function drainWorkspaceRequest(): void {
+  if (pendingWorkspaceRequest) {
+    pendingWorkspaceRequest.resolve(null);
+    pendingWorkspaceRequest = null;
+    notifyWorkspaceRequestListeners();
+  }
+}
+
+/**
+ * Request the user to select a workspace folder.
+ * Called from the request_workspace tool.
+ */
+export async function requestWorkspace(reason: string, conversationId?: string): Promise<string | null> {
+  const convId = conversationId ?? currentLoopContext?.conversationId ?? '';
+  return new Promise((resolve) => {
+    pendingWorkspaceRequest = { reason, conversationId: convId, resolve };
+    notifyWorkspaceRequestListeners();
   });
 }
 
@@ -457,6 +527,26 @@ async function loadActiveSkillContent(
   }
   if (skillContents.length === 0) return '';
   return `## Active Skill Instructions\n${skillContents.join('\n\n')}`;
+}
+
+/**
+ * Deactivate all active skills for a conversation (single-turn lifecycle).
+ * Called when the agent loop ends (complete, abort, or error).
+ */
+function deactivateAllSkills(conversationId: string): void {
+  const conv = useChatStore.getState().conversations[conversationId];
+  if (!conv?.activeSkills || conv.activeSkills.length === 0) return;
+
+  useChatStore.setState((draft: { conversations: Record<string, import('@/types').Conversation> }) => {
+    const c = draft.conversations[conversationId];
+    if (c) {
+      c.activeSkills = [];
+      c.activeSkillArgs = {};
+    }
+  });
+
+  // Clean up skill-scoped hooks
+  clearAllSkillHooks();
 }
 
 export interface AgentLoopOptions {
@@ -1101,6 +1191,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
           signal: abortController.signal,
           eventRouter,
           loopId,
+          conversationId,
           toolCallToStepId,
         };
 
@@ -1367,6 +1458,8 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
           loopId,
           reason: 'end_turn',
         });
+        // Auto-deactivate skills after loop completes (single-turn lifecycle)
+        deactivateAllSkills(conversationId);
         // Mark conversation as completed and send notification
         chatStore.setConversationStatus(conversationId, 'completed');
         const convTitle = useChatStore.getState().conversations[conversationId]?.title ?? '任务';
@@ -1380,11 +1473,14 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
         clearInputQueue(conversationId);
         drainConfirmationQueue();
         drainFilePermissionQueue();
+        drainWorkspaceRequest();
 
         chatStore.cancelStreaming(conversationId);
         chatStore.clearAbortController(conversationId);
         // Cancel the TaskExecution
         taskExecutionStore.cancelExecution(execution.id);
+        // Auto-deactivate skills on abort
+        deactivateAllSkills(conversationId);
         // Set status back to idle on cancel
         chatStore.setConversationStatus(conversationId, 'idle');
         continueLoop = false;
@@ -1402,6 +1498,8 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
       // Error the TaskExecution
       eventRouter.route({ type: 'error', loopId, error: errorMessage });
       persistExecutionSnapshot(conversationId, loopId);
+      // Auto-deactivate skills on error
+      deactivateAllSkills(conversationId);
       // Mark conversation as error and send notification
       chatStore.setConversationStatus(conversationId, 'error');
       const convTitle = useChatStore.getState().conversations[conversationId]?.title ?? '任务';

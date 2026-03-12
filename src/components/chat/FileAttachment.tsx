@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
-import { FileCode, FileText, FileImage, File, FileJson, ExternalLink } from 'lucide-react';
+import { FileCode, FileText, FileImage, File, FileJson, ExternalLink, Globe } from 'lucide-react';
 import { usePreviewStore } from '@/stores/previewStore';
 import { useI18n } from '@/i18n';
 import { cn } from '@/lib/utils';
@@ -48,6 +48,11 @@ function isImageFile(filePath: string): boolean {
   return IMAGE_EXTENSIONS.has(ext);
 }
 
+function isHtmlFile(filePath: string): boolean {
+  const ext = filePath.split('.').pop()?.toLowerCase() || '';
+  return ext === 'html' || ext === 'htm';
+}
+
 // eslint-disable-next-line react-refresh/only-export-components
 export { IMAGE_EXTENSIONS, isImageFile };
 
@@ -58,9 +63,11 @@ interface FileAttachmentProps {
 
 export default function FileAttachment({ filePath, operation }: FileAttachmentProps) {
   const openPreview = usePreviewStore((s) => s.openPreview);
+  const { t } = useI18n();
   const { icon: Icon, label, category } = getFileTypeInfo(filePath);
   const fileName = getBaseName(filePath);
   const showThumbnail = isImageFile(filePath);
+  const showBrowserBtn = isHtmlFile(filePath);
   const [thumbUrl, setThumbUrl] = useState<string | null>(null);
 
   // Load image thumbnail via Tauri readFile
@@ -79,6 +86,28 @@ export default function FileAttachment({ filePath, operation }: FileAttachmentPr
 
   const handleClick = () => {
     openPreview(filePath);
+  };
+
+  const handleOpenInBrowser = async (e: React.MouseEvent) => {
+    e.stopPropagation();
+    try {
+      const { invoke } = await import('@tauri-apps/api/core');
+      const platform = navigator.platform.toLowerCase();
+      const command = platform.includes('win')
+        ? `start "" "${filePath}"`
+        : platform.includes('linux')
+          ? `xdg-open "${filePath}"`
+          : `open "${filePath}"`;
+      await invoke('run_shell_command', {
+        command,
+        cwd: null,
+        background: true,
+        timeout: 5,
+        sandboxEnabled: false,
+      });
+    } catch (err) {
+      console.error('[FileAttachment] Failed to open in browser:', err);
+    }
   };
 
   // Image file: show thumbnail card
@@ -110,32 +139,52 @@ export default function FileAttachment({ filePath, operation }: FileAttachmentPr
   // Default: icon + text card
   return (
     <div
-      onClick={handleClick}
       className={cn(
-        'group inline-flex items-center gap-2.5 px-3 py-2 rounded-lg cursor-pointer transition-all',
-        'bg-white border border-[#e5e2db] hover:border-[#d97757]/40 hover:shadow-sm',
+        'group inline-flex items-center rounded-xl overflow-hidden transition-all',
+        'bg-white border border-[#e5e2db] hover:shadow-sm',
         operation === 'create' && 'border-l-2 border-l-green-500',
         operation === 'write' && 'border-l-2 border-l-amber-500'
       )}
-      title="点击预览文件"
     >
-      {/* File Icon */}
-      <div className={cn(
-        'w-8 h-8 rounded-md flex items-center justify-center shrink-0',
-        'bg-[#f5f3ee]'
-      )}>
-        <Icon className="w-4 h-4 text-[#656358]" />
+      {/* File card area - clickable to preview */}
+      <div
+        onClick={handleClick}
+        className="flex items-center gap-2.5 px-3 py-2.5 cursor-pointer hover:bg-[#f9f8f5] transition-colors"
+        title={t.chat.clickToPreview}
+      >
+        {/* File Icon */}
+        <div className={cn(
+          'w-9 h-9 rounded-lg flex items-center justify-center shrink-0',
+          'bg-[#f0eee8]'
+        )}>
+          <Icon className="w-4.5 h-4.5 text-[#656358]" />
+        </div>
+
+        {/* File Info */}
+        <div className="flex flex-col min-w-0">
+          <span className="text-[13px] font-medium text-[#29261b] truncate max-w-[160px]">
+            {fileName.replace(/\.[^/.]+$/, '') || fileName}
+          </span>
+          <span className="text-[11px] text-[#888579]">
+            {category} · {label}
+          </span>
+        </div>
       </div>
 
-      {/* File Info */}
-      <div className="flex flex-col min-w-0">
-        <span className="text-[13px] font-medium text-[#29261b] truncate max-w-[160px]">
-          {fileName.replace(/\.[^/.]+$/, '') || fileName}
-        </span>
-        <span className="text-[11px] text-[#888579]">
-          {category} · {label}
-        </span>
-      </div>
+      {/* Open in Browser button for HTML files - separated by divider */}
+      {showBrowserBtn && (
+        <>
+          <div className="w-px h-8 bg-[#e5e2db] shrink-0" />
+          <button
+            onClick={handleOpenInBrowser}
+            className="flex items-center gap-1.5 px-3.5 py-2.5 cursor-pointer hover:bg-[#f9f8f5] transition-colors whitespace-nowrap"
+            title={t.chat.openInBrowser}
+          >
+            <Globe className="w-4 h-4 text-[#888579]" />
+            <span className="text-[12.5px] text-[#555249]">{t.chat.openInBrowser}</span>
+          </button>
+        </>
+      )}
     </div>
   );
 }

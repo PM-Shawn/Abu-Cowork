@@ -135,25 +135,6 @@ export default function FolderSelector({
       {/* Dropdown Menu — opens upward to avoid bottom overflow */}
       {isOpen && (
         <div className="absolute bottom-full left-0 mb-1.5 w-72 bg-white rounded-lg border border-[#e8e5de] shadow-lg z-50 overflow-hidden animate-in fade-in slide-in-from-bottom-1 duration-150">
-          {/* Choose different folder — placed at top for upward menu */}
-          <div className="py-1">
-            <button
-              onClick={handleOpenDialog}
-              className="w-full flex items-center gap-2.5 px-3 py-2.5 text-left hover:bg-[#f5f3ee] transition-colors"
-            >
-              <div className="w-4 h-4" /> {/* Spacer for alignment */}
-              <Folder className="h-4 w-4 text-[#656358] shrink-0" />
-              <span className="text-[13px] text-[#656358]">
-                {recentPaths.length > 0 ? t.folder.selectOtherFolder : `${t.folder.selectFolder}...`}
-              </span>
-            </button>
-          </div>
-
-          {/* Separator */}
-          {recentPaths.length > 0 && (
-            <div className="border-t border-[#f0ede6]" />
-          )}
-
           {/* Recent folders section */}
           {(recentPaths.length > 0) && (
             <>
@@ -201,6 +182,25 @@ export default function FolderSelector({
               </div>
             </>
           )}
+
+          {/* Separator */}
+          {recentPaths.length > 0 && (
+            <div className="border-t border-[#f0ede6]" />
+          )}
+
+          {/* Choose different folder — at bottom */}
+          <div className="py-1">
+            <button
+              onClick={handleOpenDialog}
+              className="w-full flex items-center gap-2.5 px-3 py-2.5 text-left hover:bg-[#f5f3ee] transition-colors"
+            >
+              <div className="w-4 h-4" /> {/* Spacer for alignment */}
+              <Folder className="h-4 w-4 text-[#656358] shrink-0" />
+              <span className="text-[13px] text-[#656358]">
+                {recentPaths.length > 0 ? t.folder.selectOtherFolder : `${t.folder.selectFolder}...`}
+              </span>
+            </button>
+          </div>
         </div>
       )}
     </div>

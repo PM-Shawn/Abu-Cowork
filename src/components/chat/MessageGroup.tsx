@@ -209,7 +209,7 @@ export default function MessageGroup({ messages }: MessageGroupProps) {
     .filter(Boolean);
 
   return (
-    <div ref={groupRef} className="message-group space-y-6 w-full">
+    <div ref={groupRef} className="message-group space-y-4 w-full">
       {/* User message renders standalone */}
       {userMsg && <MessageBubble message={userMsg} />}
 

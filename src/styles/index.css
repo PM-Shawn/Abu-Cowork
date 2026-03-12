@@ -352,3 +352,17 @@ input[type="range"].slider-filled::-moz-range-thumb {
 .animate-slide-in-right {
   animation: slide-in-right 0.2s ease-out;
 }
+
+/* Scenario Guide */
+.scenario-guide {
+  animation: fadeIn 0.25s ease-out forwards;
+}
+
+.scenario-prompt-item {
+  animation: fadeIn 0.2s ease-out forwards;
+  opacity: 0;
+}
+.scenario-prompt-item:nth-child(1) { animation-delay: 0.05s; }
+.scenario-prompt-item:nth-child(2) { animation-delay: 0.1s; }
+.scenario-prompt-item:nth-child(3) { animation-delay: 0.15s; }
+.scenario-prompt-item:nth-child(4) { animation-delay: 0.2s; }

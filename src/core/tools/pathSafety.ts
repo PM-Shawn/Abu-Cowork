@@ -474,9 +474,12 @@ export async function checkReadPath(path: string): Promise<PathCheckResult> {
     };
   }
 
+  // Path passed all security checks but isn't pre-authorized — offer permission dialog
   return {
     allowed: false,
-    reason: `路径不在授权范围内。请先选择工作区文件夹，或访问 Desktop/Documents/Downloads 等常用目录。`
+    needsPermission: true,
+    permissionPath: normalizedPath,
+    capability: 'read',
   };
 }
 
@@ -557,9 +560,12 @@ export async function checkWritePath(path: string): Promise<PathCheckResult> {
     };
   }
 
+  // Path passed all security checks but isn't pre-authorized — offer permission dialog
   return {
     allowed: false,
-    reason: `路径不在授权范围内。请先选择工作区文件夹，或使用 Desktop/Documents/Downloads 等常用目录。`
+    needsPermission: true,
+    permissionPath: normalizedPath,
+    capability: 'write',
   };
 }
 
@@ -637,8 +643,11 @@ export async function checkListPath(path: string): Promise<PathCheckResult> {
     };
   }
 
+  // Path passed all security checks but isn't pre-authorized — offer permission dialog
   return {
     allowed: false,
-    reason: `路径不在授权范围内`
+    needsPermission: true,
+    permissionPath: normalizedPath,
+    capability: 'read',
   };
 }

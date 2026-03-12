@@ -1,14 +1,16 @@
-import { useLayoutEffect, useSyncExternalStore } from 'react';
+import { useState, useCallback, useLayoutEffect, useSyncExternalStore } from 'react';
 import { useChatStore, useActiveConversation } from '@/stores/chatStore';
 import type { Message, ImageAttachment } from '@/types';
 import { useAutoScroll } from '@/hooks/useAutoScroll';
-import { runAgentLoop, getPendingCommandConfirmation, resolveCommandConfirmation, subscribeToCommandConfirmation, getPendingFilePermission, resolveFilePermission, subscribeToFilePermission } from '@/core/agent/agentLoop';
+import { runAgentLoop, getPendingCommandConfirmation, resolveCommandConfirmation, subscribeToCommandConfirmation, getPendingFilePermission, resolveFilePermission, subscribeToFilePermission, getPendingWorkspaceRequest, resolveWorkspaceRequest, subscribeToWorkspaceRequest } from '@/core/agent/agentLoop';
 import { useSettingsStore } from '@/stores/settingsStore';
+import { useWorkspaceStore } from '@/stores/workspaceStore';
 import type { PermissionDuration } from '@/stores/permissionStore';
+import { open as openDialog } from '@tauri-apps/plugin-dialog';
 import { useI18n } from '@/i18n';
 import MessageGroup from './MessageGroup';
 import ChatInput from './ChatInput';
-import ActiveSkillsBar from './ActiveSkillsBar';
+import ScenarioGuide from './ScenarioGuide';
 import PermissionDialog from '@/components/common/PermissionDialog';
 import CommandConfirmDialog from '@/components/common/CommandConfirmDialog';
 import { ChevronDown, Settings } from 'lucide-react';
@@ -66,6 +68,12 @@ export default function ChatView() {
     getPendingFilePermission
   );
 
+  // Subscribe to workspace request state
+  const workspaceRequest = useSyncExternalStore(
+    subscribeToWorkspaceRequest,
+    getPendingWorkspaceRequest
+  );
+
   const handleCommandConfirm = () => {
     resolveCommandConfirmation(true);
   };
@@ -86,6 +94,25 @@ export default function ChatView() {
 
   const handleFilePermissionDeny = () => {
     resolveFilePermission(false);
+  };
+
+  const handleWorkspaceSelect = async () => {
+    try {
+      const selected = await openDialog({ directory: true, multiple: false });
+      if (selected && typeof selected === 'string') {
+        // Set workspace globally
+        useWorkspaceStore.getState().setWorkspace(selected);
+        resolveWorkspaceRequest(selected);
+      } else {
+        resolveWorkspaceRequest(null);
+      }
+    } catch {
+      resolveWorkspaceRequest(null);
+    }
+  };
+
+  const handleWorkspaceDeny = () => {
+    resolveWorkspaceRequest(null);
   };
 
   const { containerRef, endRef, isAtBottom, scrollToBottom, resetToBottom } = useAutoScroll();
@@ -128,6 +155,24 @@ export default function ChatView() {
   const apiKey = useSettingsStore((s) => s.apiKey);
   const needsSetup = !apiKey?.trim();
 
+  // Scenario guide state — lifted here so ChatInput can receive the custom placeholder
+  const [scenarioPlaceholder, setScenarioPlaceholder] = useState<string | null>(null);
+  const [guideVisible, setGuideVisible] = useState(true);
+
+  const handleSelectPrompt = useCallback((prompt: string) => {
+    // Fill the prompt into the input via pendingInput
+    useChatStore.getState().setPendingInput(prompt);
+  }, []);
+
+  const handleScenarioChange = useCallback((placeholder: string | null) => {
+    setScenarioPlaceholder(placeholder);
+  }, []);
+
+  // Hide guide when user starts typing (called from ChatInput)
+  const handleWelcomeInputChange = useCallback((hasText: boolean) => {
+    setGuideVisible(!hasText);
+  }, []);
+
   if (!activeConv) {
     return (
       <div className="flex flex-col h-full bg-[#faf9f5]">
@@ -141,12 +186,10 @@ export default function ChatView() {
               </div>
 
               {/* Slogan */}
-              <h1 className="text-[28px] font-semibold text-[#29261b] leading-tight mb-3">
+              <h1 className="text-[28px] font-semibold text-[#29261b] leading-tight mb-2">
                 {t.chat.welcomeTitle}
               </h1>
-
-              {/* Greeting */}
-              <p className="text-[15px] text-[#656358] leading-relaxed whitespace-pre-line">
+              <p className="text-[15px] text-[#656358]">
                 {t.chat.welcomeSubtitle}
               </p>
             </div>
@@ -174,8 +217,20 @@ export default function ChatView() {
 
             {/* Main input */}
             <div>
-              <ChatInput variant="welcome" onSend={handleSend} />
+              <ChatInput
+                variant="welcome"
+                onSend={handleSend}
+                scenarioPlaceholder={scenarioPlaceholder}
+                onInputChange={handleWelcomeInputChange}
+              />
             </div>
+
+            {/* Scenario Guide */}
+            <ScenarioGuide
+              onSelectPrompt={handleSelectPrompt}
+              onScenarioChange={handleScenarioChange}
+              visible={guideVisible}
+            />
           </div>
         </div>
       </div>
@@ -188,8 +243,8 @@ export default function ChatView() {
 
   return (
     <div className="flex flex-col h-full min-h-0 min-w-0 bg-[#faf9f5]">
-      {/* Command Confirmation Dialog */}
-      {commandConfirmRequest && (
+      {/* Command Confirmation Dialog — only show if it belongs to this conversation */}
+      {commandConfirmRequest && commandConfirmRequest.conversationId === activeConvId && (
         <CommandConfirmDialog
           request={commandConfirmRequest.info}
           onConfirm={handleCommandConfirm}
@@ -197,8 +252,8 @@ export default function ChatView() {
         />
       )}
 
-      {/* File Permission Dialog */}
-      {filePermissionRequest && (
+      {/* File Permission Dialog — only show if it belongs to this conversation */}
+      {filePermissionRequest && filePermissionRequest.conversationId === activeConvId && (
         <PermissionDialog
           request={{
             type: filePermissionRequest.capability === 'write' ? 'file-write' : 'file-read',
@@ -209,10 +264,23 @@ export default function ChatView() {
         />
       )}
 
+      {/* Workspace Selection Dialog — only show if it belongs to this conversation */}
+      {workspaceRequest && workspaceRequest.conversationId === activeConvId && (
+        <PermissionDialog
+          request={{
+            type: 'folder-select',
+            reason: workspaceRequest.reason,
+          }}
+          onAllow={() => {}}
+          onChooseFolder={handleWorkspaceSelect}
+          onDeny={handleWorkspaceDeny}
+        />
+      )}
+
       {/* Messages Area */}
       <div className="relative flex-1 min-h-0 overflow-y-auto" ref={containerRef}>
-        <div className="w-full max-w-3xl mx-auto px-6 md:px-10 py-8 overflow-hidden">
-          <div className="space-y-6">
+        <div className="w-full max-w-3xl mx-auto px-6 md:px-10 py-5 overflow-hidden">
+          <div className="space-y-5">
             {messageGroups.map((group) => (
               <MessageGroup key={group[0].id} messages={group} />
             ))}
@@ -247,11 +315,10 @@ export default function ChatView() {
       </div>
 
       {/* Bottom Input */}
-      <div className="shrink-0 px-6 md:px-10 pb-5 pt-2 bg-[#faf9f5]">
+      <div className="shrink-0 px-6 md:px-10 pb-4 pt-1.5 bg-[#faf9f5]">
         <div className="max-w-3xl mx-auto">
-          <ActiveSkillsBar />
           <ChatInput variant="chat" onSend={handleSend} />
-          <p className="text-center text-[11px] text-[#656358]/70 mt-2">
+          <p className="text-center text-[11px] text-[#656358]/70 mt-1.5">
             {t.chat.disclaimer}
           </p>
         </div>

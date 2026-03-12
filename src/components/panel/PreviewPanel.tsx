@@ -8,7 +8,7 @@ import { ScrollArea } from '@/components/ui/scroll-area';
 import MarkdownRenderer from '@/components/chat/MarkdownRenderer';
 import { PrismLight as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { oneDark } from 'react-syntax-highlighter/dist/esm/styles/prism';
-import { Loader2, X, FolderOpen, Code, Eye, FileCode, FileText, FileImage, FileSpreadsheet, FileType, File } from 'lucide-react';
+import { Loader2, X, FolderOpen, Code, Eye, Globe, FileCode, FileText, FileImage, FileSpreadsheet, FileType, File } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 
 const PdfPreview = lazy(() => import('@/components/preview/PdfPreview'));
@@ -158,6 +158,28 @@ export default function PreviewPanel() {
     }
   };
 
+  const handleOpenInBrowser = async () => {
+    if (!previewFilePath) return;
+    try {
+      const { invoke } = await import('@tauri-apps/api/core');
+      const platform = navigator.platform.toLowerCase();
+      const command = platform.includes('win')
+        ? `start "" "${previewFilePath}"`
+        : platform.includes('linux')
+          ? `xdg-open "${previewFilePath}"`
+          : `open "${previewFilePath}"`;
+      await invoke('run_shell_command', {
+        command,
+        cwd: null,
+        background: true,
+        timeout: 5,
+        sandboxEnabled: false,
+      });
+    } catch (err) {
+      console.error('[PreviewPanel] Failed to open in browser:', err);
+    }
+  };
+
   if (!previewFilePath) return null;
 
   return (
@@ -169,22 +191,33 @@ export default function PreviewPanel() {
           {fileName}
         </span>
         {rendererType === 'html' && (
-          <div className="flex items-center bg-[#e8e5de] rounded p-0.5 mr-1">
-            <button
-              onClick={() => setHtmlViewMode('preview')}
-              className={`p-1 rounded text-[10px] ${htmlViewMode === 'preview' ? 'bg-white shadow-sm' : ''}`}
-              title={t.panel.previewMode}
+          <>
+            <div className="flex items-center bg-[#e8e5de] rounded p-0.5 mr-1">
+              <button
+                onClick={() => setHtmlViewMode('preview')}
+                className={`p-1 rounded text-[10px] ${htmlViewMode === 'preview' ? 'bg-white shadow-sm' : ''}`}
+                title={t.panel.previewMode}
+              >
+                <Eye className="w-3 h-3" />
+              </button>
+              <button
+                onClick={() => setHtmlViewMode('source')}
+                className={`p-1 rounded text-[10px] ${htmlViewMode === 'source' ? 'bg-white shadow-sm' : ''}`}
+                title={t.panel.sourceMode}
+              >
+                <Code className="w-3 h-3" />
+              </button>
+            </div>
+            <Button
+              variant="ghost"
+              size="icon"
+              onClick={handleOpenInBrowser}
+              className="h-6 w-6 text-[#656358] hover:text-[#d97757]"
+              title={t.chat.openInBrowser}
             >
-              <Eye className="w-3 h-3" />
-            </button>
-            <button
-              onClick={() => setHtmlViewMode('source')}
-              className={`p-1 rounded text-[10px] ${htmlViewMode === 'source' ? 'bg-white shadow-sm' : ''}`}
-              title={t.panel.sourceMode}
-            >
-              <Code className="w-3 h-3" />
-            </button>
-          </div>
+              <Globe className="h-3.5 w-3.5" />
+            </Button>
+          </>
         )}
         <Button
           variant="ghost"

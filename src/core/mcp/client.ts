@@ -6,6 +6,7 @@ import type { ToolDefinition, ToolParameter } from '../../types';
 import { invoke } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import { expandConfigEnvVars } from '@/utils/envExpansion';
+import { getTauriFetch } from '@/core/llm/tauriFetch';
 
 export interface MCPServerConfig {
   name: string;
@@ -216,12 +217,16 @@ export class MCPClientManager {
       console.log(`[MCP] Connecting to server: ${config.name} (${transportType})`);
 
       let transport: unknown;
+      let client: InstanceType<typeof Client>;
 
       if (transportType === 'http') {
         if (!expandedConfig.url) {
           throw new Error('HTTP transport requires a URL');
         }
-        transport = await this.createHTTPTransport(expandedConfig);
+        // HTTP: use connectHTTPWithFallback (StreamableHTTP → SSE, with Tauri fetch for CORS)
+        const result = await this.connectHTTPWithFallback(expandedConfig, config.name);
+        transport = result.transport;
+        client = result.client as InstanceType<typeof Client>;
       } else {
         // Stdio — use TauriStdioTransport (Rust backend manages the child process)
         if (!expandedConfig.command) {
@@ -243,16 +248,14 @@ export class MCPClientManager {
           args: expandedConfig.args ?? [],
           env: expandedConfig.env ?? {},
         });
+
+        // Create MCP client and connect for stdio
+        client = new Client(
+          { name: 'abu-desktop', version: '0.1.0' },
+          { capabilities: {} }
+        );
+        await client.connect(transport as Parameters<typeof client.connect>[0]);
       }
-
-      // Create MCP client
-      const client = new Client(
-        { name: 'abu-desktop', version: '0.1.0' },
-        { capabilities: {} }
-      );
-
-      // Connect
-      await client.connect(transport as Parameters<typeof client.connect>[0]);
 
       // Discover tools
       const toolsResponse = await client.listTools();
@@ -323,30 +326,54 @@ export class MCPClientManager {
   }
 
   /**
-   * Create HTTP transport, preferring StreamableHTTP over SSE.
+   * Connect via HTTP with automatic StreamableHTTP → SSE fallback.
+   * Uses Tauri fetch to bypass CORS in the webview.
    */
-  private async createHTTPTransport(config: MCPServerConfig): Promise<unknown> {
-    const url = new URL(config.url!);
+  private async connectHTTPWithFallback(
+    config: MCPServerConfig,
+    displayName: string
+  ): Promise<{ transport: unknown; client: unknown }> {
+    if (!Client) throw new Error('MCP Client not loaded');
 
+    const url = new URL(config.url!);
+    const tauriFetch = await getTauriFetch();
+    const transportOpts = {
+      fetch: tauriFetch as unknown as typeof globalThis.fetch,
+      requestInit: config.headers ? { headers: config.headers } : undefined,
+    };
+
+    // Try StreamableHTTP first
     if (StreamableHTTPClientTransport) {
       try {
-        console.log(`[MCP] Using StreamableHTTP transport for ${config.name}`);
-        return new StreamableHTTPClientTransport(url, {
-          requestInit: config.headers ? { headers: config.headers } : undefined,
-        });
+        this.addLog(displayName, 'info', 'Trying StreamableHTTP transport...');
+        const transport = new StreamableHTTPClientTransport(url, transportOpts);
+        const client = new Client(
+          { name: 'abu-desktop', version: '0.1.0' },
+          { capabilities: {} }
+        );
+        await client.connect(transport as Parameters<typeof client.connect>[0]);
+        this.addLog(displayName, 'info', 'Connected via StreamableHTTP');
+        return { transport, client };
       } catch (err) {
-        console.log(`[MCP] StreamableHTTP constructor failed for ${config.name}, trying SSE:`, err);
+        const msg = err instanceof Error ? err.message : String(err);
+        this.addLog(displayName, 'warn', `StreamableHTTP failed: ${msg}, trying SSE...`);
       }
     }
 
+    // Fallback to SSE
     if (SSEClientTransport) {
-      console.log(`[MCP] Using SSE transport for ${config.name}`);
-      return new SSEClientTransport(url, {
-        requestInit: config.headers ? { headers: config.headers } : undefined,
-      });
+      this.addLog(displayName, 'info', 'Trying SSE transport...');
+      const transport = new SSEClientTransport(url, transportOpts);
+      const client = new Client(
+        { name: 'abu-desktop', version: '0.1.0' },
+        { capabilities: {} }
+      );
+      await client.connect(transport as Parameters<typeof client.connect>[0]);
+      this.addLog(displayName, 'info', 'Connected via SSE');
+      return { transport, client };
     }
 
-    throw new Error('No HTTP transport available');
+    throw new Error('No HTTP transport available (neither StreamableHTTP nor SSE)');
   }
 
   /**

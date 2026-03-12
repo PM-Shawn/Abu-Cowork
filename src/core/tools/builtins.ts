@@ -12,7 +12,7 @@ import { initPlatform, isWindows } from '../../utils/platform';
 import { extractUsername, joinPath, ensureParentDir, getParentDir } from '../../utils/pathUtils';
 import { getTauriFetch } from '../llm/tauriFetch';
 import { agentRegistry } from '../agent/registry';
-import { getCurrentLoopContext } from '../agent/agentLoop';
+import { getCurrentLoopContext, requestWorkspace } from '../agent/agentLoop';
 import { runSubagentLoop, extractParentConversationSummary } from '../agent/subagentLoop';
 import type { SubagentProgressEvent } from '../agent/subagentLoop';
 import { createSubagentController } from '../agent/subagentAbort';
@@ -177,7 +177,12 @@ const writeFileTool: ToolDefinition = {
 
     try {
       await ensureParentDir(path);
-      await writeTextFile(path, content);
+      // Add UTF-8 BOM for CSV files so Excel opens them with correct encoding
+      let finalContent = content;
+      if (ext === '.csv' && !content.startsWith('\uFEFF')) {
+        finalContent = '\uFEFF' + content;
+      }
+      await writeTextFile(path, finalContent);
       return `Successfully wrote ${content.length} characters to ${path}`;
     } catch (err) {
       return `Error writing file: ${err instanceof Error ? err.message : String(err)}`;
@@ -501,7 +506,7 @@ export function clearAllSkillHooks(): void {
  */
 const useSkillTool: ToolDefinition = {
   name: 'use_skill',
-  description: 'Load and activate a skill to help with the current task. The skill instructions will be injected into your system prompt for better compliance. Returns a brief confirmation.',
+  description: 'Load a skill to help with the current task. The skill instructions will be injected into your system prompt for this turn only (auto-deactivates when the loop ends). Returns a brief confirmation.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -574,68 +579,15 @@ const useSkillTool: ToolDefinition = {
       }
     }
 
-    let result = `已激活技能 "${skill.name}": ${skill.description}`;
+    let result = `已加载技能 "${skill.name}": ${skill.description}`;
     if (context) {
       result += `\n用户上下文: ${context}`;
     }
-    result += '\n技能指令已注入系统提示，请按照技能要求完成任务。';
+    result += '\n技能指令已注入本轮系统提示，任务结束后自动释放。';
     return result;
   },
 };
 
-/**
- * deactivate_skill tool - removes a skill from the current conversation's activeSkills
- */
-const deactivateSkillTool: ToolDefinition = {
-  name: 'deactivate_skill',
-  description: 'Deactivate a previously activated skill in this conversation. Removes its instructions from the system prompt.',
-  inputSchema: {
-    type: 'object',
-    properties: {
-      skill_name: {
-        type: 'string',
-        description: 'The name of the skill to deactivate',
-      },
-    },
-    required: ['skill_name'],
-  },
-  execute: async (input) => {
-    const skillName = input.skill_name as string;
-
-
-    const state = useChatStore.getState();
-    const activeId = state.activeConversationId;
-
-    if (!activeId) {
-      return `Error: No active conversation.`;
-    }
-
-    const conv = state.conversations[activeId];
-    if (!conv?.activeSkills?.includes(skillName)) {
-      return `技能 "${skillName}" 未在当前会话中激活。`;
-    }
-
-    useChatStore.setState((draft: { conversations: Record<string, Conversation> }) => {
-      const c = draft.conversations[activeId];
-      if (c?.activeSkills) {
-        c.activeSkills = c.activeSkills.filter((n: string) => n !== skillName);
-      }
-      // Clean up stored arguments
-      if (c?.activeSkillArgs) {
-        delete c.activeSkillArgs[skillName];
-      }
-    });
-
-    // Clean up skill-scoped hooks
-    const cleanup = skillHookCleanups.get(skillName);
-    if (cleanup) {
-      cleanup();
-      skillHookCleanups.delete(skillName);
-    }
-
-    return `已停用技能 "${skillName}"。其指令已从系统提示中移除。`;
-  },
-};
 
 /**
  * report_plan tool - AI reports task steps in user-friendly terms
@@ -2220,6 +2172,35 @@ const readSkillFileTool: ToolDefinition = {
   },
 };
 
+/**
+ * request_workspace tool — asks the user to select a workspace folder
+ * Used when the user's request requires file operations but no workspace is set.
+ */
+const requestWorkspaceTool: ToolDefinition = {
+  name: 'request_workspace',
+  description: '请求用户选择工作区文件夹。当用户的请求涉及文件操作但没有设置工作区时，调用此工具让用户选择工作目录。',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      reason: {
+        type: 'string',
+        description: '向用户解释为什么需要选择工作区，例如"你想整理文件，需要先选择一个工作目录"',
+      },
+    },
+    required: ['reason'],
+  },
+  execute: async (input) => {
+    const reason = input.reason as string;
+    const ctx = getCurrentLoopContext();
+    const convId = ctx?.conversationId ?? '';
+    const result = await requestWorkspace(reason, convId);
+    if (result) {
+      return `用户已选择工作区：${result}`;
+    }
+    return '用户取消了工作区选择。请告知用户需要先选择工作目录才能进行文件操作。';
+  },
+};
+
 export function registerBuiltinTools(): void {
   toolRegistry.register(getSystemInfoTool);
   toolRegistry.register(readFileTool);
@@ -2230,7 +2211,6 @@ export function registerBuiltinTools(): void {
   toolRegistry.register(searchFilesTool);
   toolRegistry.register(findFilesTool);
   toolRegistry.register(useSkillTool);
-  toolRegistry.register(deactivateSkillTool);
   toolRegistry.register(readSkillFileTool);
   toolRegistry.register(reportPlanTool);
   toolRegistry.register(generateImageTool);
@@ -2252,4 +2232,5 @@ export function registerBuiltinTools(): void {
   toolRegistry.register(clipboardWriteTool);
   toolRegistry.register(systemNotifyTool);
   toolRegistry.register(computerTool);
+  toolRegistry.register(requestWorkspaceTool);
 }

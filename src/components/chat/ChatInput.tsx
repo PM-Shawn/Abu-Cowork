@@ -25,6 +25,10 @@ interface ChatInputProps {
   variant: 'welcome' | 'chat';
   onSend: (message: string, images?: ImageAttachment[], workspacePath?: string | null) => void;
   disabled?: boolean;
+  /** Custom placeholder from scenario guide (welcome variant only) */
+  scenarioPlaceholder?: string | null;
+  /** Called when input text changes (welcome variant only, for hiding guide) */
+  onInputChange?: (hasText: boolean) => void;
 }
 
 interface SuggestionItem {
@@ -76,7 +80,7 @@ async function processFilePaths(
   }
 }
 
-export default function ChatInput({ variant, onSend, disabled }: ChatInputProps) {
+export default function ChatInput({ variant, onSend, disabled, scenarioPlaceholder, onInputChange }: ChatInputProps) {
   const isWelcome = variant === 'welcome';
 
   const [text, setText] = useState('');
@@ -427,7 +431,7 @@ export default function ChatInput({ variant, onSend, disabled }: ChatInputProps)
   const hasAttachments = images.length > 0 || files.length > 0;
   const hasContent = text.trim().length > 0 || selectedSkill !== null || selectedAgent !== null || hasAttachments;
 
-  // Determine placeholder based on selected command
+  // Determine placeholder based on selected command or scenario
   const placeholder = disabled
     ? t.chat.inputPlaceholderBusy
     : isRunning
@@ -436,7 +440,9 @@ export default function ChatInput({ variant, onSend, disabled }: ChatInputProps)
         ? selectedAgent.description
         : selectedSkill
           ? selectedSkill.description
-          : t.chat.inputPlaceholder;
+          : (isWelcome && scenarioPlaceholder)
+            ? scenarioPlaceholder
+            : t.chat.inputPlaceholder;
 
   return (
     <>
@@ -564,7 +570,10 @@ export default function ChatInput({ variant, onSend, disabled }: ChatInputProps)
             <textarea
               ref={textareaRef}
               value={text}
-              onChange={(e) => setText(e.target.value)}
+              onChange={(e) => {
+                setText(e.target.value);
+                if (isWelcome && onInputChange) onInputChange(e.target.value.trim().length > 0);
+              }}
               onKeyDown={handleKeyDown}
               onPaste={handlePaste}
               placeholder={placeholder}
@@ -616,7 +625,7 @@ export default function ChatInput({ variant, onSend, disabled }: ChatInputProps)
             </div>
           ) : (
             /* Chat variant: Model label + [+] + --- + Stop/Send */
-            <div className="flex items-center justify-between px-4 pb-3 pt-1">
+            <div className="flex items-center justify-between px-4 pb-2.5 pt-0.5">
               {/* Left Actions */}
               <div className="flex items-center gap-0.5">
                 {/* Model picker dropdown */}

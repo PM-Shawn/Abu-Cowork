@@ -5,7 +5,7 @@ import { useI18n } from '@/i18n';
 import { mcpTemplates } from '@/data/marketplace/mcp';
 import { mcpManager, type MCPServerConfig, type MCPLogEntry } from '@/core/mcp/client';
 import { parseArgs } from '@/utils/argsParser';
-import { Trash2, Plus, Loader2, Check, X, Plug, PlugZap, ChevronDown, ChevronRight, Wrench, Zap, AlertCircle, ScrollText, Server, Search } from 'lucide-react';
+import { Trash2, Plus, Loader2, Check, X, Plug, PlugZap, ChevronDown, ChevronRight, Wrench, Zap, AlertCircle, ScrollText, Server, Search, Pencil } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { open } from '@tauri-apps/plugin-shell';
 
@@ -73,22 +73,7 @@ export default function MCPSection({ showAddForm: externalShowAddForm, onAddForm
   // Selection
   const [selected, setSelected] = useState<SelectedItem>(null);
 
-  // Auto-select first item when none selected (initial load or after deletion)
-  useEffect(() => {
-    if (selected) {
-      // Verify the selected item still exists
-      if (selected.kind === 'server' && !servers[selected.name]) {
-        setSelected(null);
-      }
-    }
-    if (!selected) {
-      if (mcpServers.length > 0) {
-        setSelected({ kind: 'server', name: mcpServers[0].config.name });
-      } else if (mcpTemplates.length > 0) {
-        setSelected({ kind: 'template', id: mcpTemplates[0].id });
-      }
-    }
-  }, [mcpServers, selected]);
+
 
   // Connection UI state
   const [connectingServer, setConnectingServer] = useState<string | null>(null);
@@ -108,7 +93,7 @@ export default function MCPSection({ showAddForm: externalShowAddForm, onAddForm
   const [showSearch, setShowSearch] = useState(false);
   const [collapsedCategories, setCollapsedCategories] = useState<Set<string>>(new Set());
 
-  // New server form
+  // New/Edit server form
   const [internalShowAddForm, setInternalShowAddForm] = useState(false);
   const showAddForm = externalShowAddForm ?? internalShowAddForm;
   const setShowAddForm = (open: boolean) => {
@@ -116,12 +101,47 @@ export default function MCPSection({ showAddForm: externalShowAddForm, onAddForm
     setInternalShowAddForm(open);
   };
 
+  const [editingServerName, setEditingServerName] = useState<string | null>(null); // non-null = edit mode
   const [newServerName, setNewServerName] = useState('');
   const [newTransportType, setNewTransportType] = useState<'stdio' | 'http'>('stdio');
   const [newServerCommand, setNewServerCommand] = useState('');
   const [newServerArgs, setNewServerArgs] = useState('');
   const [newServerUrl, setNewServerUrl] = useState('');
   const [newServerHeaders, setNewServerHeaders] = useState('');
+  const [newServerEnv, setNewServerEnv] = useState('');
+
+  // JSON import mode
+  const [addMode, setAddMode] = useState<'form' | 'json'>('form');
+  const [jsonInput, setJsonInput] = useState('');
+  const [jsonError, setJsonError] = useState('');
+
+  // Open form in edit mode with existing config pre-filled
+  const handleEditServer = (entry: MCPServerEntry) => {
+    const c = entry.config;
+    const isHttp = !!(c.url || c.transport === 'http');
+    setEditingServerName(c.name);
+    setNewServerName(c.name);
+    setNewTransportType(isHttp ? 'http' : 'stdio');
+    setNewServerCommand(c.command ?? '');
+    setNewServerArgs(c.args?.join(' ') ?? '');
+    setNewServerUrl(c.url ?? '');
+    setNewServerHeaders(c.headers ? JSON.stringify(c.headers) : '');
+    setNewServerEnv(c.env ? JSON.stringify(c.env) : '');
+    // Pre-fill JSON view with current config
+    const jsonObj: Record<string, unknown> = {};
+    if (isHttp) {
+      jsonObj.url = c.url;
+      if (c.headers && Object.keys(c.headers).length > 0) jsonObj.headers = c.headers;
+    } else {
+      if (c.command) jsonObj.command = c.command;
+      if (c.args && c.args.length > 0) jsonObj.args = c.args;
+      if (c.env && Object.keys(c.env).length > 0) jsonObj.env = c.env;
+    }
+    setJsonInput(JSON.stringify({ [c.name]: jsonObj }, null, 2));
+    setJsonError('');
+    setAddMode('form');
+    setShowAddForm(true);
+  };
 
   // Template installation
   const [installingTemplate, setInstallingTemplate] = useState<string | null>(null);
@@ -155,9 +175,32 @@ export default function MCPSection({ showAddForm: externalShowAddForm, onAddForm
     return items;
   }, [servers, searchLower]);
 
-  // Add custom server
+  // Auto-select first visible item when none selected (initial load or after deletion)
+  useEffect(() => {
+    if (selected) {
+      // Verify the selected item still exists
+      if (selected.kind === 'server' && !servers[selected.name]) {
+        setSelected(null);
+      }
+      return;
+    }
+    // Follow UI order: customServers first, then exampleItems
+    if (customServers.length > 0) {
+      setSelected({ kind: 'server', name: customServers[0].config.name });
+    } else if (exampleItems.length > 0) {
+      const first = exampleItems[0];
+      if (first.kind === 'installed') {
+        setSelected({ kind: 'server', name: first.entry.config.name });
+      } else {
+        setSelected({ kind: 'template', id: first.template.id });
+      }
+    }
+  }, [mcpServers, customServers, exampleItems, selected]);
+
+  // Add or update custom server
   const handleAddServer = async () => {
     if (!newServerName.trim()) return;
+    const isEdit = !!editingServerName;
     const config: MCPServerConfig = {
       name: newServerName.trim(),
       transport: newTransportType,
@@ -167,6 +210,9 @@ export default function MCPSection({ showAddForm: externalShowAddForm, onAddForm
       if (!newServerCommand.trim()) return;
       config.command = newServerCommand.trim();
       config.args = newServerArgs.trim() ? parseArgs(newServerArgs.trim()) : [];
+      if (newServerEnv.trim()) {
+        try { config.env = JSON.parse(newServerEnv.trim()); } catch { /* ignore */ }
+      }
     } else {
       if (!newServerUrl.trim()) return;
       config.url = newServerUrl.trim();
@@ -174,17 +220,99 @@ export default function MCPSection({ showAddForm: externalShowAddForm, onAddForm
         try { config.headers = JSON.parse(newServerHeaders.trim()); } catch { /* ignore */ }
       }
     }
-    addServer(config);
-    setNewServerName(''); setNewTransportType('stdio'); setNewServerCommand('');
-    setNewServerArgs(''); setNewServerUrl(''); setNewServerHeaders('');
-    setShowAddForm(false);
+
+    if (isEdit) {
+      // Disconnect old connection first
+      try { await disconnectServer(config.name); } catch { /* ignore */ }
+      // Update config via store
+      const updateServer = useMCPStore.getState().updateServer;
+      updateServer(config.name, config);
+    } else {
+      addServer(config);
+    }
+
+    handleCloseAddForm();
     setSelected({ kind: 'server', name: config.name });
 
+    // Connect (or reconnect)
     setConnectingServer(config.name);
     setServerErrors((prev) => { const next = { ...prev }; delete next[config.name]; return next; });
     try { await connectServer(config.name); }
     catch (err) { setServerErrors((prev) => ({ ...prev, [config.name]: err instanceof Error ? err.message : String(err) })); }
     finally { setConnectingServer(null); }
+  };
+
+  // Add/update server(s) from JSON config
+  const handleAddFromJSON = async () => {
+    try {
+      const parsed = JSON.parse(jsonInput.trim());
+      // Support both { "name": { ... } } and { "mcpServers": { "name": { ... } } }
+      const serverMap = (parsed.mcpServers ?? parsed) as Record<string, Record<string, unknown>>;
+      const entries = Object.entries(serverMap);
+      if (entries.length === 0) {
+        setJsonError(t.toolbox.jsonConfigEmpty);
+        return;
+      }
+
+      const isEdit = !!editingServerName;
+
+      if (isEdit) {
+        // In edit mode, use the first entry (or the entry matching editingServerName)
+        const [, serverDef] = entries.find(([n]) => n === editingServerName) ?? entries[0];
+        const config: MCPServerConfig = { name: editingServerName!, enabled: true };
+
+        if ((serverDef as Record<string, unknown>).url) {
+          config.transport = 'http';
+          config.url = (serverDef as Record<string, unknown>).url as string;
+          if ((serverDef as Record<string, unknown>).headers) config.headers = (serverDef as Record<string, unknown>).headers as Record<string, string>;
+        } else {
+          config.transport = 'stdio';
+          config.command = ((serverDef as Record<string, unknown>).command as string) ?? 'npx';
+          config.args = ((serverDef as Record<string, unknown>).args as string[]) ?? [];
+          if ((serverDef as Record<string, unknown>).env) config.env = (serverDef as Record<string, unknown>).env as Record<string, string>;
+        }
+
+        try { await disconnectServer(config.name); } catch { /* ignore */ }
+        const updateServer = useMCPStore.getState().updateServer;
+        updateServer(config.name, config);
+        handleCloseAddForm();
+        setSelected({ kind: 'server', name: config.name });
+        setConnectingServer(config.name);
+        setServerErrors((prev) => { const next = { ...prev }; delete next[config.name]; return next; });
+        try { await connectServer(config.name); }
+        catch (err) { setServerErrors((prev) => ({ ...prev, [config.name]: err instanceof Error ? err.message : String(err) })); }
+        finally { setConnectingServer(null); }
+      } else {
+        let firstName = '';
+        for (const [name, serverDef] of entries) {
+          if (!firstName) firstName = name;
+          const config: MCPServerConfig = { name, enabled: true };
+
+          if (serverDef.url) {
+            config.transport = 'http';
+            config.url = serverDef.url as string;
+            if (serverDef.headers) config.headers = serverDef.headers as Record<string, string>;
+          } else {
+            config.transport = 'stdio';
+            config.command = (serverDef.command as string) ?? 'npx';
+            config.args = (serverDef.args as string[]) ?? [];
+            if (serverDef.env) config.env = serverDef.env as Record<string, string>;
+          }
+
+          addServer(config);
+          connectServer(name).catch((err) => {
+            setServerErrors((prev) => ({ ...prev, [name]: err instanceof Error ? err.message : String(err) }));
+          });
+        }
+
+        setJsonInput('');
+        setJsonError('');
+        setShowAddForm(false);
+        setSelected({ kind: 'server', name: firstName });
+      }
+    } catch {
+      setJsonError(t.toolbox.jsonConfigInvalid);
+    }
   };
 
   useEffect(() => {
@@ -196,8 +324,10 @@ export default function MCPSection({ showAddForm: externalShowAddForm, onAddForm
 
   const handleCloseAddForm = () => {
     setShowAddForm(false);
+    setEditingServerName(null);
     setNewServerName(''); setNewTransportType('stdio'); setNewServerCommand('');
-    setNewServerArgs(''); setNewServerUrl(''); setNewServerHeaders('');
+    setNewServerArgs(''); setNewServerUrl(''); setNewServerHeaders(''); setNewServerEnv('');
+    setAddMode('form'); setJsonInput(''); setJsonError('');
   };
 
   // Install from template
@@ -442,6 +572,7 @@ export default function MCPSection({ showAddForm: externalShowAddForm, onAddForm
             onToggleConnection={() => handleToggleConnection(selectedServer)}
             onTestConnection={() => handleTestConnection(selectedServer)}
             onRemove={() => handleRemoveServer(selectedServer.config.name)}
+            onEdit={() => handleEditServer(selectedServer)}
           />
         ) : selectedTemplate ? (
           <TemplateDetail
@@ -458,75 +589,116 @@ export default function MCPSection({ showAddForm: externalShowAddForm, onAddForm
         )}
       </div>
 
-      {/* Add Server Modal */}
+      {/* Add / Edit Server Modal */}
       {showAddForm && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={handleCloseAddForm}>
           <div className="bg-white rounded-2xl shadow-xl w-full max-w-md flex flex-col overflow-hidden" onClick={(e) => e.stopPropagation()}>
             <div className="flex items-center justify-between px-5 py-4 border-b border-[#e8e4dd]/60">
               <div className="flex items-center gap-2">
                 <Server className="h-5 w-5 text-[#d97757]" />
-                <h2 className="text-base font-semibold text-[#29261b]">{t.toolbox.addCustomServer}</h2>
+                <h2 className="text-base font-semibold text-[#29261b]">
+                  {editingServerName ? t.toolbox.skillEdit : t.toolbox.addCustomServer}
+                </h2>
               </div>
               <button onClick={handleCloseAddForm} className="p-1.5 rounded-lg text-[#888579] hover:text-[#29261b] hover:bg-[#f5f3ee] transition-colors">
                 <X className="h-4 w-4" />
               </button>
             </div>
-            <div className="px-5 py-4 space-y-3">
-              <div>
-                <label className="block text-xs font-medium text-[#29261b]/70 mb-1">{t.toolbox.serverName}</label>
-                <input type="text" placeholder={t.toolbox.serverName} value={newServerName} onChange={(e) => setNewServerName(e.target.value)}
-                  className="w-full px-3 py-1.5 rounded-lg border border-[#e8e4dd] text-sm text-[#29261b] bg-white focus:outline-none focus:ring-2 focus:ring-[#d97757]/30 focus:border-[#d97757] transition-all" />
+            {/* Form / JSON mode toggle */}
+            <div className="px-5 pt-3 pb-0">
+              <div className="flex gap-1 p-0.5 bg-[#f5f3ee] rounded-md">
+                <button onClick={() => setAddMode('form')}
+                  className={cn('flex-1 py-1.5 text-xs font-medium rounded transition-colors', addMode === 'form' ? 'bg-white text-[#29261b] shadow-sm' : 'text-[#888579] hover:text-[#29261b]')}>
+                  {t.toolbox.formMode}
+                </button>
+                <button onClick={() => setAddMode('json')}
+                  className={cn('flex-1 py-1.5 text-xs font-medium rounded transition-colors', addMode === 'json' ? 'bg-white text-[#29261b] shadow-sm' : 'text-[#888579] hover:text-[#29261b]')}>
+                  {t.toolbox.jsonMode}
+                </button>
               </div>
-              <div>
-                <label className="block text-xs font-medium text-[#29261b]/70 mb-1">{t.toolbox.transportType}</label>
-                <div className="flex gap-1 p-0.5 bg-[#f5f3ee] rounded-md">
-                  <button onClick={() => setNewTransportType('stdio')}
-                    className={cn('flex-1 py-1.5 text-xs font-medium rounded transition-colors', newTransportType === 'stdio' ? 'bg-white text-[#29261b] shadow-sm' : 'text-[#888579] hover:text-[#29261b]')}>
-                    {t.toolbox.transportStdio}
-                  </button>
-                  <button onClick={() => setNewTransportType('http')}
-                    className={cn('flex-1 py-1.5 text-xs font-medium rounded transition-colors', newTransportType === 'http' ? 'bg-white text-[#29261b] shadow-sm' : 'text-[#888579] hover:text-[#29261b]')}>
-                    {t.toolbox.transportHttp}
-                  </button>
+            </div>
+
+            {addMode === 'json' ? (
+              <div className="px-5 py-4 space-y-3">
+                <div>
+                  <label className="block text-xs font-medium text-[#29261b]/70 mb-1">{t.toolbox.jsonConfigLabel}</label>
+                  <textarea
+                    value={jsonInput}
+                    onChange={(e) => { setJsonInput(e.target.value); setJsonError(''); }}
+                    placeholder={t.toolbox.jsonConfigPlaceholder}
+                    rows={10}
+                    className="w-full px-3 py-2 rounded-lg border border-[#e8e4dd] text-xs text-[#29261b] bg-white focus:outline-none focus:ring-2 focus:ring-[#d97757]/30 focus:border-[#d97757] transition-all font-mono resize-none"
+                  />
+                  <p className="text-[11px] text-[#888579] mt-1.5">{t.toolbox.jsonConfigHint}</p>
+                  {jsonError && <p className="text-xs text-red-500 mt-1">{jsonError}</p>}
                 </div>
               </div>
-              {newTransportType === 'stdio' ? (
-                <>
-                  <div>
-                    <label className="block text-xs font-medium text-[#29261b]/70 mb-1">{t.toolbox.serverCommand}</label>
-                    <input type="text" placeholder={t.toolbox.serverCommand} value={newServerCommand} onChange={(e) => setNewServerCommand(e.target.value)}
-                      className="w-full px-3 py-1.5 rounded-lg border border-[#e8e4dd] text-sm text-[#29261b] bg-white focus:outline-none focus:ring-2 focus:ring-[#d97757]/30 focus:border-[#d97757] transition-all" />
+            ) : (
+              <div className="px-5 py-4 space-y-3">
+                <div>
+                  <label className="block text-xs font-medium text-[#29261b]/70 mb-1">{t.toolbox.serverName}</label>
+                  <input type="text" placeholder={t.toolbox.serverName} value={newServerName}
+                    onChange={(e) => setNewServerName(e.target.value)}
+                    disabled={!!editingServerName}
+                    className={cn('w-full px-3 py-1.5 rounded-lg border border-[#e8e4dd] text-sm text-[#29261b] bg-white focus:outline-none focus:ring-2 focus:ring-[#d97757]/30 focus:border-[#d97757] transition-all',
+                      editingServerName && 'opacity-60 cursor-not-allowed')} />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-[#29261b]/70 mb-1">{t.toolbox.transportType}</label>
+                  <div className="flex gap-1 p-0.5 bg-[#f5f3ee] rounded-md">
+                    <button onClick={() => setNewTransportType('stdio')}
+                      className={cn('flex-1 py-1.5 text-xs font-medium rounded transition-colors', newTransportType === 'stdio' ? 'bg-white text-[#29261b] shadow-sm' : 'text-[#888579] hover:text-[#29261b]')}>
+                      {t.toolbox.transportStdio}
+                    </button>
+                    <button onClick={() => setNewTransportType('http')}
+                      className={cn('flex-1 py-1.5 text-xs font-medium rounded transition-colors', newTransportType === 'http' ? 'bg-white text-[#29261b] shadow-sm' : 'text-[#888579] hover:text-[#29261b]')}>
+                      {t.toolbox.transportHttp}
+                    </button>
                   </div>
-                  <div>
-                    <label className="block text-xs font-medium text-[#29261b]/70 mb-1">{t.toolbox.serverArgs}</label>
-                    <input type="text" placeholder={t.toolbox.serverArgs} value={newServerArgs} onChange={(e) => setNewServerArgs(e.target.value)}
-                      className="w-full px-3 py-1.5 rounded-lg border border-[#e8e4dd] text-sm text-[#29261b] bg-white focus:outline-none focus:ring-2 focus:ring-[#d97757]/30 focus:border-[#d97757] transition-all" />
-                  </div>
-                </>
-              ) : (
-                <>
-                  <div>
-                    <label className="block text-xs font-medium text-[#29261b]/70 mb-1">URL</label>
-                    <input type="text" placeholder={t.toolbox.serverUrlPlaceholder} value={newServerUrl} onChange={(e) => setNewServerUrl(e.target.value)}
-                      className="w-full px-3 py-1.5 rounded-lg border border-[#e8e4dd] text-sm text-[#29261b] bg-white focus:outline-none focus:ring-2 focus:ring-[#d97757]/30 focus:border-[#d97757] transition-all" />
-                  </div>
-                  <div>
-                    <label className="block text-xs font-medium text-[#29261b]/70 mb-1">Headers (JSON)</label>
-                    <input type="text" placeholder={t.toolbox.serverHeadersPlaceholder} value={newServerHeaders} onChange={(e) => setNewServerHeaders(e.target.value)}
-                      className="w-full px-3 py-1.5 rounded-lg border border-[#e8e4dd] text-sm text-[#29261b] bg-white focus:outline-none focus:ring-2 focus:ring-[#d97757]/30 focus:border-[#d97757] transition-all font-mono" />
-                  </div>
-                </>
-              )}
-            </div>
+                </div>
+                {newTransportType === 'stdio' ? (
+                  <>
+                    <div>
+                      <label className="block text-xs font-medium text-[#29261b]/70 mb-1">{t.toolbox.serverCommand}</label>
+                      <input type="text" placeholder={t.toolbox.serverCommand} value={newServerCommand} onChange={(e) => setNewServerCommand(e.target.value)}
+                        className="w-full px-3 py-1.5 rounded-lg border border-[#e8e4dd] text-sm text-[#29261b] bg-white focus:outline-none focus:ring-2 focus:ring-[#d97757]/30 focus:border-[#d97757] transition-all" />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-medium text-[#29261b]/70 mb-1">{t.toolbox.serverArgs}</label>
+                      <input type="text" placeholder={t.toolbox.serverArgs} value={newServerArgs} onChange={(e) => setNewServerArgs(e.target.value)}
+                        className="w-full px-3 py-1.5 rounded-lg border border-[#e8e4dd] text-sm text-[#29261b] bg-white focus:outline-none focus:ring-2 focus:ring-[#d97757]/30 focus:border-[#d97757] transition-all" />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-medium text-[#29261b]/70 mb-1">Env (JSON)</label>
+                      <input type="text" placeholder='{"API_KEY": "..."}' value={newServerEnv} onChange={(e) => setNewServerEnv(e.target.value)}
+                        className="w-full px-3 py-1.5 rounded-lg border border-[#e8e4dd] text-sm text-[#29261b] bg-white focus:outline-none focus:ring-2 focus:ring-[#d97757]/30 focus:border-[#d97757] transition-all font-mono" />
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    <div>
+                      <label className="block text-xs font-medium text-[#29261b]/70 mb-1">URL</label>
+                      <input type="text" placeholder={t.toolbox.serverUrlPlaceholder} value={newServerUrl} onChange={(e) => setNewServerUrl(e.target.value)}
+                        className="w-full px-3 py-1.5 rounded-lg border border-[#e8e4dd] text-sm text-[#29261b] bg-white focus:outline-none focus:ring-2 focus:ring-[#d97757]/30 focus:border-[#d97757] transition-all" />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-medium text-[#29261b]/70 mb-1">Headers (JSON)</label>
+                      <input type="text" placeholder={t.toolbox.serverHeadersPlaceholder} value={newServerHeaders} onChange={(e) => setNewServerHeaders(e.target.value)}
+                        className="w-full px-3 py-1.5 rounded-lg border border-[#e8e4dd] text-sm text-[#29261b] bg-white focus:outline-none focus:ring-2 focus:ring-[#d97757]/30 focus:border-[#d97757] transition-all font-mono" />
+                    </div>
+                  </>
+                )}
+              </div>
+            )}
             <div className="flex items-center justify-end gap-2 px-5 py-3 border-t border-[#e8e4dd]/60">
               <button onClick={handleCloseAddForm} className="px-4 py-1.5 rounded-lg text-sm font-medium text-[#656358] hover:bg-[#f5f3ee] transition-colors">
                 {t.common.cancel}
               </button>
-              <button onClick={handleAddServer}
-                disabled={!newServerName.trim() || (newTransportType === 'stdio' && !newServerCommand.trim()) || (newTransportType === 'http' && !newServerUrl.trim())}
+              <button onClick={addMode === 'json' ? handleAddFromJSON : handleAddServer}
+                disabled={addMode === 'json' ? !jsonInput.trim() : (!newServerName.trim() || (newTransportType === 'stdio' && !newServerCommand.trim()) || (newTransportType === 'http' && !newServerUrl.trim()))}
                 className="flex items-center gap-1.5 px-4 py-1.5 rounded-lg text-sm font-medium bg-[#d97757] text-white hover:bg-[#c5664a] disabled:opacity-50 disabled:cursor-not-allowed transition-colors">
                 <Check className="h-3.5 w-3.5" />
-                {t.toolbox.add}
+                {editingServerName ? t.common.save : t.toolbox.add}
               </button>
             </div>
           </div>
@@ -541,7 +713,7 @@ export default function MCPSection({ showAddForm: externalShowAddForm, onAddForm
 function ServerDetail({
   entry, connectingServer, serverErrors, testingServer, testResults,
   expandedTools, showLogs,
-  onToggleTools, onToggleLogs, onToggleConnection, onTestConnection, onRemove,
+  onToggleTools, onToggleLogs, onToggleConnection, onTestConnection, onRemove, onEdit,
 }: {
   entry: MCPServerEntry;
   connectingServer: string | null;
@@ -555,6 +727,7 @@ function ServerDetail({
   onToggleConnection: () => void;
   onTestConnection: () => void;
   onRemove: () => void;
+  onEdit: () => void;
 }) {
   const { t } = useI18n();
   const { config, status, tools } = entry;
@@ -565,6 +738,7 @@ function ServerDetail({
   const isTesting = testingServer === config.name;
   const testResult = testResults[config.name];
   const toolDetails = (tools ?? []) as { name: string; description?: string }[];
+  const isHttp = !!(config.url || config.transport === 'http');
 
   const statusLabel = isReconnecting ? t.toolbox.reconnecting
     : isConnecting ? t.toolbox.connecting
@@ -590,6 +764,9 @@ function ServerDetail({
         <div className="flex items-center gap-1">
           <button onClick={onToggleLogs} className="p-1.5 rounded-lg text-[#888579] hover:text-[#29261b] hover:bg-[#f5f3ee] transition-colors" title={t.toolbox.viewLogs}>
             <ScrollText className="h-4 w-4" />
+          </button>
+          <button onClick={onEdit} className="p-1.5 rounded-lg text-[#888579] hover:text-[#29261b] hover:bg-[#f5f3ee] transition-colors" title={t.toolbox.skillEdit}>
+            <Pencil className="h-4 w-4" />
           </button>
           <button onClick={onTestConnection} disabled={isTesting || isConnecting}
             className="p-1.5 rounded-lg text-[#888579] hover:text-blue-600 hover:bg-blue-50 transition-colors disabled:opacity-50" title={t.toolbox.testConnection}>
@@ -627,10 +804,22 @@ function ServerDetail({
 
       {/* Connection info */}
       <div className="mb-5">
-        <span className="text-xs text-[#888579]">{config.url ? 'URL' : 'Command'}</span>
+        <span className="text-xs text-[#888579]">{isHttp ? 'URL' : 'Command'}</span>
         <p className="text-sm text-[#29261b] mt-1 font-mono break-all">
           {config.url ? config.url : `${config.command} ${config.args?.join(' ') ?? ''}`}
         </p>
+        {isHttp && config.headers && Object.keys(config.headers).length > 0 && (
+          <div className="mt-2">
+            <span className="text-xs text-[#888579]">Headers</span>
+            <p className="text-xs text-[#29261b] mt-0.5 font-mono break-all">{JSON.stringify(config.headers)}</p>
+          </div>
+        )}
+        {!isHttp && config.env && Object.keys(config.env).length > 0 && (
+          <div className="mt-2">
+            <span className="text-xs text-[#888579]">Env</span>
+            <p className="text-xs text-[#29261b] mt-0.5 font-mono break-all">{JSON.stringify(config.env)}</p>
+          </div>
+        )}
       </div>
 
       {/* Tools */}

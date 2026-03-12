@@ -2,8 +2,6 @@ import { useState, useEffect, useRef } from 'react';
 import { Wrench, ChevronDown, ChevronRight, CheckCircle2, Loader2, Circle, Maximize2 } from 'lucide-react';
 import type { ToolCall, ToolResultContent } from '@/types';
 import { cn } from '@/lib/utils';
-import FileAttachment from './FileAttachment';
-import { extractFileOutputs } from '@/utils/workflowExtractor';
 
 interface ToolCallsGroupProps {
   toolCalls: ToolCall[];
@@ -43,10 +41,6 @@ export default function ToolCallsGroup({ toolCalls }: ToolCallsGroupProps) {
   const isAnyExecuting = executingIndex !== -1;
 
   if (visibleToolCalls.length === 0) return null;
-
-  // Extract file outputs to show as attachments
-  const fileOutputs = extractFileOutputs(visibleToolCalls);
-
 
   return (
     <div className="my-2 space-y-2">
@@ -129,16 +123,6 @@ export default function ToolCallsGroup({ toolCalls }: ToolCallsGroupProps) {
         </div>
       )}
       </div>
-
-      {/* File attachments - show created/modified files */}
-      {fileOutputs.length > 0 && (
-        <div className="flex flex-wrap gap-2">
-          {fileOutputs.map((file) => (
-            <FileAttachment key={file.path} filePath={file.path} operation={file.operation} />
-          ))}
-        </div>
-      )}
-
     </div>
   );
 }

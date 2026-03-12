@@ -236,6 +236,10 @@ export async function executeAnyTool(
     const result = await toolRegistry.execute(name, input);
     // Only truncate string results; rich content (images) passes through
     if (typeof result === 'string') {
+      // Detect OS-level permission errors for file tools and add guidance
+      if (isFileToolName(name) && isOSPermissionError(result)) {
+        return formatOSPermissionGuide(result);
+      }
       return truncateToolResult(name, result);
     }
     return result;
@@ -251,6 +255,23 @@ export async function executeAnyTool(
   }
 
   return `Error: Unknown tool "${name}"`;
+}
+
+// ── OS Permission Error Detection ──
+
+function isFileToolName(name: string): boolean {
+  return name in FILE_TOOL_PATH_MAP;
+}
+
+function isOSPermissionError(result: string): boolean {
+  return /operation not permitted|EACCES|EPERM|access is denied/i.test(result);
+}
+
+function formatOSPermissionGuide(originalError: string): string {
+  if (isWindows()) {
+    return `${originalError}\n\n系统未授权阿布访问此位置。请以管理员身份运行 Abu，或检查文件夹权限设置。`;
+  }
+  return `${originalError}\n\nmacOS 系统未授权阿布访问此位置。请前往「系统设置 → 隐私与安全性 → 文件和文件夹」中授权 Abu，然后重启 Abu。`;
 }
 
 // Re-export types for convenience

@@ -348,6 +348,12 @@ export function generateCompletionMessage(
 
 // ── File output extraction helpers ──
 
+/** Extensions for scripts that may be intermediate build artifacts */
+const SCRIPT_EXTENSIONS = new Set([
+  'py', 'js', 'ts', 'sh', 'bash', 'rb', 'pl', 'lua',
+  'r', 'bat', 'ps1', 'cmd', 'zsh', 'fish',
+]);
+
 export type FileOutput = { path: string; operation: 'read' | 'write' | 'create' };
 
 /**
@@ -507,5 +513,21 @@ export function extractFileOutputs(
     }
   }
 
-  return files;
+  // ── Filter out intermediate scripts that were executed by run_command ──
+  // If a script file (e.g. .py) was written AND then executed, it's an intermediate
+  // artifact — the user cares about the output file, not the script itself.
+  const executedScripts = new Set<string>();
+  for (const tc of toolCalls) {
+    if (COMMAND_TOOLS.includes(tc.name) && tc.result !== undefined) {
+      const cmd = String((tc.input as Record<string, unknown>).command || (tc.input as Record<string, unknown>).cmd || '');
+      for (const f of files) {
+        const ext = f.path.split('.').pop()?.toLowerCase() || '';
+        if (SCRIPT_EXTENSIONS.has(ext) && cmd.includes(f.path)) {
+          executedScripts.add(f.path);
+        }
+      }
+    }
+  }
+
+  return files.filter((f) => !executedScripts.has(f.path));
 }

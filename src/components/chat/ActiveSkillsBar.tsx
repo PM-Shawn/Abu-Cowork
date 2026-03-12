@@ -23,7 +23,7 @@ export default function ActiveSkillsBar() {
   };
 
   return (
-    <div className="flex items-center gap-2 flex-wrap">
+    <div className="flex items-center gap-2 flex-wrap mb-1.5">
       <span className="text-[11px] text-[#656358] font-medium">{t.toolbox.activeSkills}</span>
       {activeSkills.map((name) => (
         <span

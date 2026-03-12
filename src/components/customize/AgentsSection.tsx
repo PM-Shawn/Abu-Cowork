@@ -79,7 +79,9 @@ export default function AgentsSection({ manualCreateTrigger, onAICreate, onManua
       }
       setInstalledAgents(fullAgents);
       if (!selectedAgent && fullAgents.length > 0) {
-        setSelectedAgent(fullAgents[0].name);
+        // Select first visible: user agents first, then system agents (matching UI order)
+        const userFirst = fullAgents.find((a) => !isSystemAgent(a));
+        setSelectedAgent((userFirst ?? fullAgents[0]).name);
       }
     };
     loadAgentDetails();

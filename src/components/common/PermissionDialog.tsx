@@ -9,6 +9,7 @@ export interface PermissionRequest {
   type: 'workspace' | 'shell' | 'file-write' | 'file-read' | 'folder-select';
   path?: string;
   details?: string;
+  reason?: string;  // For folder-select: why the workspace is needed
 }
 
 export type { PermissionDuration };
@@ -79,7 +80,7 @@ export default function PermissionDialog({ request, onAllow, onDeny, onChooseFol
               {t.permission.folderSelect?.title ?? ''}
             </h3>
 
-            <p className="text-[14px] text-[#656358] mb-6">
+            <p className="text-[14px] text-[#656358] mb-4">
               {t.permission.folderSelect?.description ?? ''}
             </p>
 

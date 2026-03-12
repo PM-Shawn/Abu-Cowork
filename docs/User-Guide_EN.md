@@ -324,22 +324,22 @@ Open **Settings** → **AI Services** to view your current configuration.
 
 ### Supported Providers
 
-| Provider | API Format | Built-in Web Search | Built-in Image Gen | Notes |
-|----------|-----------|:---:|:---:|-------|
-| **Anthropic** | Anthropic native | ✅ | — | Claude models, recommended |
-| **Volcengine** | OpenAI-compatible | ✅ | — | ByteDance cloud, Doubao models |
-| **Bailian (Alibaba)** | OpenAI-compatible | ✅ | ✅ | Alibaba Cloud, Qwen and more |
-| **Zhipu AI** | OpenAI-compatible | ✅ | ✅ | Tsinghua's GLM series |
-| **Moonshot** | OpenAI-compatible | ✅ | — | Kimi's underlying model |
-| **OpenAI** | OpenAI-compatible | — | ✅ | GPT series |
-| **SiliconFlow** | OpenAI-compatible | — | ✅ | Multi-model aggregation |
-| **DeepSeek** | OpenAI-compatible | — | — | Cost-effective, reasoning models |
-| **Qiniu** | OpenAI-compatible | — | — | Multi-model aggregation, 15+ models |
-| **OpenRouter** | OpenAI-compatible | — | — | International model router |
-| **Local Models** | OpenAI-compatible | — | — | Ollama, LM Studio, etc. |
-| **Custom API** | Configurable | — | — | Any OpenAI/Anthropic-compatible endpoint |
+| Provider | Built-in Web Search | Notes |
+|----------|:---:|-------|
+| **Anthropic** | ✅ | Claude models, recommended |
+| **Volcengine** | ✅ | ByteDance cloud, Doubao models |
+| **Bailian (Alibaba)** | ✅ | Alibaba Cloud, Qwen and more |
+| **Zhipu AI** | ✅ | Tsinghua's GLM series |
+| **Moonshot** | ✅ | Kimi's underlying model |
+| **OpenAI** | — | GPT series |
+| **SiliconFlow** | — | Multi-model aggregation |
+| **DeepSeek** | — | Cost-effective, reasoning models |
+| **Qiniu** | — | Multi-model aggregation, 15+ models |
+| **OpenRouter** | — | International model router |
+| **Local Models** | — | Ollama, LM Studio, etc. |
+| **Custom API** | — | Any OpenAI/Anthropic-compatible endpoint |
 
-> **✅** = Provider natively supports this capability — works out of the box.
+> **✅** = Provider natively supports web search — works out of the box.
 > **—** = Not built-in, but can be configured separately via custom settings.
 
 ### Model Configuration Steps

@@ -1,6 +1,6 @@
 {
   "name": "abu-browser-bridge",
-  "version": "0.5.2",
+  "version": "0.6.4",
   "description": "MCP Server that bridges Abu AI assistant with Chrome Extension for browser automation",
   "type": "module",
   "license": "SEE LICENSE IN LICENSE",

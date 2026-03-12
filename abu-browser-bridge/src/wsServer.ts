@@ -14,6 +14,7 @@ import { WebSocketServer, WebSocket } from 'ws';
 import { createServer, type Server as HTTPServer } from 'http';
 import { randomBytes } from 'crypto';
 import type { BridgeRequest, BridgeResponse } from './types.js';
+import { PKG_VERSION } from './version.js';
 
 const DEFAULT_WS_PORT = 9876;
 const DISCOVERY_PORT = 9875;
@@ -88,7 +89,7 @@ function startDiscoveryServer(): Promise<void> {
           pid: process.pid,
           extensionConnected: isExtensionConnected(),
           uptime: Math.round((Date.now() - startTime) / 1000),
-          version: '0.5.2',
+          version: PKG_VERSION,
           token: authToken,
         }));
         return;

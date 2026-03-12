@@ -19,6 +19,7 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { startWSServer, stopWSServer } from './wsServer.js';
 import { registerTools } from './tools.js';
+import { PKG_VERSION } from './version.js';
 
 const DEFAULT_WS_PORT = 9876;
 const DISCOVERY_PORT = 9875;
@@ -131,7 +132,7 @@ async function main(): Promise<void> {
   // 2. Create MCP server
   const mcpServer = new McpServer({
     name: 'abu-browser-bridge',
-    version: '0.5.2',
+    version: PKG_VERSION,
   });
 
   // 3. Register browser tools

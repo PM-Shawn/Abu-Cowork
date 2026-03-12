@@ -188,7 +188,7 @@ export const AVAILABLE_MODELS = Object.fromEntries(
 ) as Record<LLMProvider, { id: string; label: string }[]>;
 
 // View mode for main area
-export type ViewMode = 'chat' | 'schedule' | 'toolbox' | 'settings';
+export type ViewMode = 'chat' | 'schedule' | 'trigger' | 'toolbox' | 'settings';
 
 // System settings tabs
 export type SystemSettingsTab = 'general' | 'ai-services' | 'sandbox' | 'about' | 'feedback' | 'sponsor';

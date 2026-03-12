@@ -31,6 +31,7 @@ export interface TranslationDict {
   sidebar: {
     newTask: string;
     scheduledTasks: string;
+    triggers: string;
     toolbox: string;
     recents: string;
     noSessionsYet: string;
@@ -526,6 +527,12 @@ export interface TranslationDict {
       description: string;
       selectButton: string;
       hint: string;
+      authorizeTitle: string;
+      authorizeDescription: string;
+      authorizeButton: string;
+      chooseDifferent: string;
+      authorizeCapabilities: string[];
+      authorizeWarning: string;
     };
     abuCanDo: string;
     allowOnce: string;
@@ -686,6 +693,124 @@ export interface TranslationDict {
     onlyRunWhileAwake: string;
     askAbuToCreate: string;
     askAbuCreatePrompt: string;
+  };
+
+  // Triggers
+  trigger: {
+    title: string;
+    newTrigger: string;
+    editTrigger: string;
+    infoBanner: string;
+    triggerName: string;
+    triggerNamePlaceholder: string;
+    description: string;
+    descriptionPlaceholder: string;
+    triggerPrompt: string;
+    triggerPromptPlaceholder: string;
+    promptHint: string;
+    filterType: string;
+    filterAlways: string;
+    filterKeyword: string;
+    filterRegex: string;
+    keywords: string;
+    keywordsPlaceholder: string;
+    regexPattern: string;
+    regexPlaceholder: string;
+    filterField: string;
+    filterFieldPlaceholder: string;
+    filter: string;
+    debounceEnabled: string;
+    debounce: string;
+    seconds: string;
+    bindSkill: string;
+    bindSkillNone: string;
+    workspacePath: string;
+    workspacePathPlaceholder: string;
+    status: string;
+    statusActive: string;
+    statusPaused: string;
+    pause: string;
+    resume: string;
+    edit: string;
+    delete: string;
+    deleteConfirm: string;
+    totalRuns: string;
+    httpEndpoint: string;
+    copyEndpoint: string;
+    curlExample: string;
+    prompt: string;
+    runHistory: string;
+    noRuns: string;
+    runStatusRunning: string;
+    runStatusCompleted: string;
+    runStatusError: string;
+    runStatusFiltered: string;
+    runStatusDebounced: string;
+    viewConversation: string;
+    lastTriggered: string;
+    noTriggers: string;
+    noTriggersHint: string;
+    noTriggersCTA: string;
+    askAbuToCreate: string;
+    askAbuCreatePrompt: string;
+    // Statistics
+    statsSuccessRate: string;
+    statsAvgNotAvailable: string;
+    statsCompleted: string;
+    statsErrors: string;
+    statsFiltered: string;
+    // Templates
+    useTemplate: string;
+    templateAlertSOP: string;
+    templateAlertSOPDesc: string;
+    templateAlertSOPPrompt: string;
+    templateAlertSOPKeywords: string;
+    templateLogWatch: string;
+    templateLogWatchDesc: string;
+    templateLogWatchPrompt: string;
+    templatePeriodicCheck: string;
+    templatePeriodicCheckDesc: string;
+    templatePeriodicCheckPrompt: string;
+    // Toast messages
+    triggerCompleted: string;
+    triggerError: string;
+    // Source types
+    sourceType: string;
+    sourceHttp: string;
+    sourceFile: string;
+    sourceCron: string;
+    // File source
+    filePath: string;
+    filePathPlaceholder: string;
+    fileEvents: string;
+    fileEventCreate: string;
+    fileEventModify: string;
+    fileEventDelete: string;
+    filePattern: string;
+    filePatternPlaceholder: string;
+    // Cron source
+    cronInterval: string;
+    cronIntervalPlaceholder: string;
+    // Quiet hours
+    quietHours: string;
+    quietHoursEnabled: string;
+    quietHoursStart: string;
+    quietHoursEnd: string;
+    quietHoursHint: string;
+    // Time formatting
+    timeJustNow: string;
+    timeMinutes: string;
+    timeHours: string;
+    timeDays: string;
+    // Detail page units
+    debounceSeconds: string;
+    debounceOff: string;
+    totalRunsCount: string;
+    cronIntervalSeconds: string;
+    duplicateName: string;
+    testTrigger: string;
+    testTriggerSent: string;
+    conversationDeleted: string;
   };
 
   // Window Close Dialog

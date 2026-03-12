@@ -84,6 +84,36 @@ export async function notifyScheduledTaskError(taskName: string): Promise<void> 
 }
 
 /**
+ * Send a trigger task completion notification
+ */
+export async function notifyTriggerCompleted(triggerName: string): Promise<void> {
+  if (!permissionGranted) return;
+  try {
+    await sendNotification({
+      title: '触发器执行完成',
+      body: `「${triggerName}」已处理完成`,
+    });
+  } catch (err) {
+    console.warn('[Notification] Failed to send:', err);
+  }
+}
+
+/**
+ * Send a trigger task error notification
+ */
+export async function notifyTriggerError(triggerName: string): Promise<void> {
+  if (!permissionGranted) return;
+  try {
+    await sendNotification({
+      title: '触发器执行出错',
+      body: `「${triggerName}」执行出错了`,
+    });
+  } catch (err) {
+    console.warn('[Notification] Failed to send:', err);
+  }
+}
+
+/**
  * Send an error notification
  */
 export async function notifyTaskError(conversationTitle: string): Promise<void> {

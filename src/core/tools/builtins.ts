@@ -28,6 +28,9 @@ import { useWorkspaceStore } from '../../stores/workspaceStore';
 import { isSandboxEnabled, isNetworkIsolationEnabled } from '../sandbox/config';
 import { useScheduleStore } from '../../stores/scheduleStore';
 import type { ScheduleConfig, ScheduleFrequency } from '../../types/schedule';
+import { useTriggerStore } from '../../stores/triggerStore';
+import { triggerEngine } from '../trigger/triggerEngine';
+import type { TriggerFilter, TriggerAction, DebounceConfig } from '../../types/trigger';
 // Path safety checks are now handled centrally in registry.ts executeAnyTool
 
 interface CommandOutput {
@@ -1534,6 +1537,220 @@ const manageScheduledTaskTool: ToolDefinition = {
   },
 };
 
+/**
+ * manage_trigger tool — create, list, update, delete, pause, or resume triggers
+ */
+const manageTriggerTool: ToolDefinition = {
+  name: 'manage_trigger',
+  description: '创建、查看、更新、删除、暂停或恢复触发器（事件驱动的自动化任务）。当用户需要监听外部事件并自动响应时使用。',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      action: {
+        type: 'string',
+        enum: ['create', 'list', 'update', 'delete', 'pause', 'resume'],
+        description: '操作类型',
+      },
+      name: { type: 'string', description: '触发器名称（create/update 时使用）' },
+      description: { type: 'string', description: '触发器描述（可选）' },
+      prompt: { type: 'string', description: '触发时执行的指令。用 $EVENT_DATA 引用事件数据（create/update 时使用）' },
+      skill_name: { type: 'string', description: '绑定技能名称（可选，如 alert-sop）' },
+      workspace_path: { type: 'string', description: '工作区路径（可选）' },
+      filter_type: {
+        type: 'string',
+        enum: ['always', 'keyword', 'regex'],
+        description: '过滤方式（默认 always）',
+      },
+      filter_keywords: {
+        type: 'array',
+        items: { type: 'string' },
+        description: '关键词列表（filter_type=keyword 时）',
+      },
+      filter_pattern: { type: 'string', description: '正则表达式（filter_type=regex 时）' },
+      filter_field: { type: 'string', description: '在事件数据的哪个字段上匹配（可选，默认整个 JSON）' },
+      debounce_enabled: { type: 'boolean', description: '是否启用防抖（默认 true）' },
+      debounce_seconds: { type: 'number', description: '防抖时间窗口秒数（默认 300）' },
+      trigger_id: { type: 'string', description: '触发器 ID（update/delete/pause/resume 时必填）' },
+      status_filter: {
+        type: 'string',
+        enum: ['active', 'paused', 'all'],
+        description: '列表过滤条件（list 时使用，默认 all）',
+      },
+    },
+    required: ['action'],
+  },
+  execute: async (input) => {
+    const action = input.action as string;
+    const store = useTriggerStore.getState();
+    const serverPort = triggerEngine.getServerPort() ?? 18080;
+
+    switch (action) {
+      case 'create': {
+        const name = input.name as string | undefined;
+        const prompt = input.prompt as string | undefined;
+
+        if (!name) return 'Error: 缺少触发器名称 (name)';
+        if (!prompt) return 'Error: 缺少执行指令 (prompt)';
+
+        // Duplicate name check
+        const existingTriggers = Object.values(store.triggers);
+        const duplicate = existingTriggers.find(
+          (t) => t.name === name && t.status === 'active'
+        );
+        if (duplicate) {
+          return `Error: 已存在同名活跃触发器「${name}」(ID: ${duplicate.id})，请勿重复创建。如需修改请使用 update 操作。`;
+        }
+
+        // Build filter
+        const filterType = (input.filter_type as string) || 'always';
+        const filter: TriggerFilter = {
+          type: filterType as TriggerFilter['type'],
+          keywords: input.filter_keywords as string[] | undefined,
+          pattern: input.filter_pattern as string | undefined,
+          field: input.filter_field as string | undefined,
+        };
+
+        // Build action
+        const triggerAction: TriggerAction = {
+          prompt,
+          skillName: input.skill_name as string | undefined,
+          workspacePath: input.workspace_path as string | undefined,
+        };
+
+        // Build debounce
+        const debounce: DebounceConfig = {
+          enabled: (input.debounce_enabled as boolean) ?? true,
+          windowSeconds: (input.debounce_seconds as number) ?? 300,
+        };
+
+        const triggerId = store.createTrigger({
+          name,
+          description: input.description as string | undefined,
+          source: { type: 'http' },
+          filter,
+          action: triggerAction,
+          debounce,
+        });
+
+        const endpoint = `http://localhost:${serverPort}/trigger/${triggerId}`;
+
+        return [
+          `成功创建触发器「${name}」`,
+          `ID: ${triggerId}`,
+          `HTTP 端点: POST ${endpoint}`,
+          `过滤: ${filterType}${filter.keywords ? ` [${filter.keywords.join(', ')}]` : ''}`,
+          `防抖: ${debounce.enabled ? `${debounce.windowSeconds}秒` : '关闭'}`,
+          '',
+          '外部触发命令:',
+          `curl -X POST ${endpoint} \\`,
+          `  -H "Content-Type: application/json" \\`,
+          `  -d '{"data": {"content": "测试消息"}}'`,
+        ].join('\n');
+      }
+
+      case 'list': {
+        const filter = (input.status_filter as string) || 'all';
+        const allTriggers = Object.values(store.triggers);
+
+        const filtered = filter === 'all'
+          ? allTriggers
+          : allTriggers.filter((t) => t.status === filter);
+
+        if (filtered.length === 0) {
+          return filter === 'all'
+            ? '当前没有触发器。'
+            : `没有${filter === 'active' ? '活跃' : '已暂停'}的触发器。`;
+        }
+
+        const lines = filtered.map((t) => {
+          const lastRun = t.lastTriggeredAt
+            ? new Date(t.lastTriggeredAt).toLocaleString('zh-CN')
+            : '从未';
+          const endpoint = `http://localhost:${serverPort}/trigger/${t.id}`;
+          return `- [${t.status === 'active' ? '✅' : '⏸️'}] ${t.name} (ID: ${t.id})\n  过滤: ${t.filter.type} | 最近触发: ${lastRun} | 已执行: ${t.totalRuns} 次\n  端点: POST ${endpoint}`;
+        });
+
+        return `触发器列表 (${filtered.length} 个):\n\n${lines.join('\n')}`;
+      }
+
+      case 'update': {
+        const triggerId = input.trigger_id as string | undefined;
+        if (!triggerId) return 'Error: 缺少 trigger_id';
+
+        const existing = store.triggers[triggerId];
+        if (!existing) return `Error: 找不到触发器 (ID: ${triggerId})`;
+
+        const updateData: Record<string, unknown> = {};
+        if (input.name !== undefined) updateData.name = input.name;
+        if (input.description !== undefined) updateData.description = input.description;
+        if (input.prompt !== undefined || input.skill_name !== undefined || input.workspace_path !== undefined) {
+          updateData.action = {
+            prompt: (input.prompt as string) ?? existing.action.prompt,
+            skillName: input.skill_name !== undefined ? input.skill_name : existing.action.skillName,
+            workspacePath: input.workspace_path !== undefined ? input.workspace_path : existing.action.workspacePath,
+          };
+        }
+        if (input.filter_type !== undefined || input.filter_keywords !== undefined || input.filter_pattern !== undefined || input.filter_field !== undefined) {
+          updateData.filter = {
+            type: (input.filter_type as string) ?? existing.filter.type,
+            keywords: input.filter_keywords !== undefined ? input.filter_keywords : existing.filter.keywords,
+            pattern: input.filter_pattern !== undefined ? input.filter_pattern : existing.filter.pattern,
+            field: input.filter_field !== undefined ? input.filter_field : existing.filter.field,
+          };
+        }
+        if (input.debounce_enabled !== undefined || input.debounce_seconds !== undefined) {
+          updateData.debounce = {
+            enabled: (input.debounce_enabled as boolean) ?? existing.debounce.enabled,
+            windowSeconds: (input.debounce_seconds as number) ?? existing.debounce.windowSeconds,
+          };
+        }
+
+        store.updateTrigger(triggerId, updateData as Parameters<typeof store.updateTrigger>[1]);
+        return `成功更新触发器「${input.name || existing.name}」(ID: ${triggerId})`;
+      }
+
+      case 'delete': {
+        const triggerId = input.trigger_id as string | undefined;
+        if (!triggerId) return 'Error: 缺少 trigger_id';
+
+        const existing = store.triggers[triggerId];
+        if (!existing) return `Error: 找不到触发器 (ID: ${triggerId})`;
+
+        const triggerName = existing.name;
+        store.deleteTrigger(triggerId);
+        return `成功删除触发器「${triggerName}」(ID: ${triggerId})`;
+      }
+
+      case 'pause': {
+        const triggerId = input.trigger_id as string | undefined;
+        if (!triggerId) return 'Error: 缺少 trigger_id';
+
+        const existing = store.triggers[triggerId];
+        if (!existing) return `Error: 找不到触发器 (ID: ${triggerId})`;
+        if (existing.status === 'paused') return `触发器「${existing.name}」已经处于暂停状态。`;
+
+        store.setTriggerStatus(triggerId, 'paused');
+        return `已暂停触发器「${existing.name}」(ID: ${triggerId})`;
+      }
+
+      case 'resume': {
+        const triggerId = input.trigger_id as string | undefined;
+        if (!triggerId) return 'Error: 缺少 trigger_id';
+
+        const existing = store.triggers[triggerId];
+        if (!existing) return `Error: 找不到触发器 (ID: ${triggerId})`;
+        if (existing.status === 'active') return `触发器「${existing.name}」已经处于活跃状态。`;
+
+        store.setTriggerStatus(triggerId, 'active');
+        return `已恢复触发器「${existing.name}」(ID: ${triggerId})`;
+      }
+
+      default:
+        return `Error: 未知操作 "${action}"。可用操作: create, list, update, delete, pause, resume`;
+    }
+  },
+};
+
 // --- save_skill / save_agent: bypass pathSafety for ~/.abu/ writes ---
 
 import { ITEM_NAME_RE } from '../../utils/validation';
@@ -2249,6 +2466,7 @@ export function registerBuiltinTools(): void {
   toolRegistry.register(todoWriteTool);
   toolRegistry.register(todoReadTool);
   toolRegistry.register(manageScheduledTaskTool);
+  toolRegistry.register(manageTriggerTool);
   toolRegistry.register(saveSkillTool);
   toolRegistry.register(saveAgentTool);
   toolRegistry.register(logTaskCompletionTool);

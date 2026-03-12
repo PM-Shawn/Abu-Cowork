@@ -115,6 +115,14 @@ export default function ChatView() {
     }
   };
 
+  // Directly authorize the suggested path without opening file picker
+  const handleWorkspaceAuthorize = () => {
+    if (workspaceRequest?.suggestedPath) {
+      useWorkspaceStore.getState().setWorkspace(workspaceRequest.suggestedPath);
+      resolveWorkspaceRequest(workspaceRequest.suggestedPath);
+    }
+  };
+
   const handleWorkspaceDeny = () => {
     resolveWorkspaceRequest(null);
   };
@@ -278,6 +286,7 @@ export default function ChatView() {
           }}
           onAllow={() => {}}
           onChooseFolder={handleWorkspaceSelect}
+          onAuthorize={handleWorkspaceAuthorize}
           onDeny={handleWorkspaceDeny}
         />
       )}

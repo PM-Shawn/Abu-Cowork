@@ -11,6 +11,7 @@ use tauri::tray::{TrayIconBuilder, TrayIconEvent, MouseButton, MouseButtonState}
 
 mod sandbox;
 mod proxy;
+mod trigger_server;
 mod window_info;
 mod computer_use;
 
@@ -941,7 +942,9 @@ pub fn run() {
             computer_use::keyboard_type,
             computer_use::keyboard_press,
             computer_use::check_macos_permissions,
-            computer_use::request_screen_recording
+            computer_use::request_screen_recording,
+            trigger_server::start_trigger_server,
+            trigger_server::get_trigger_server_port
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

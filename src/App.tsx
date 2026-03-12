@@ -6,6 +6,7 @@ import { invoke } from '@tauri-apps/api/core';
 import Sidebar from '@/components/sidebar/Sidebar';
 import ChatView from '@/components/chat/ChatView';
 import ScheduleView from '@/components/schedule/ScheduleView';
+import TriggerView from '@/components/trigger/TriggerView';
 import SystemSettingsView from '@/components/settings/SystemSettingsModal';
 import ToolboxView from '@/components/settings/ToolboxModal';
 import RightPanel from '@/components/panel/RightPanel';
@@ -33,6 +34,7 @@ import { isMacOS } from '@/utils/platform';
 import { cn } from '@/lib/utils';
 import { initNotifications } from '@/utils/notifications';
 import { schedulerEngine } from '@/core/scheduler/scheduler';
+import { triggerEngine } from '@/core/trigger/triggerEngine';
 import { initMCPStoreSync, cleanupMCPStoreSync } from '@/stores/mcpStore';
 import { initFileWatchers, stopAllWatchers } from '@/core/agent/fileWatcher';
 import { startBehaviorSensor, stopBehaviorSensor } from '@/core/agent/behaviorSensor';
@@ -110,10 +112,14 @@ function App() {
     };
   }, [refreshDiscovery]);
 
-  // Start scheduler engine
+  // Start scheduler engine and trigger engine
   useEffect(() => {
     schedulerEngine.start();
-    return () => schedulerEngine.stop();
+    triggerEngine.start();
+    return () => {
+      schedulerEngine.stop();
+      triggerEngine.stop();
+    };
   }, []);
 
   // Behavior sensor — controlled by setting
@@ -211,6 +217,7 @@ function App() {
         {/* Main — pt-7 on macOS to clear overlay title bar; no padding on Windows (native title bar) */}
         <main className={cn('flex-1 min-w-0 bg-[#faf9f5]', mac && 'pt-7')}>
           {viewMode === 'schedule' && <ScheduleView />}
+          {viewMode === 'trigger' && <TriggerView />}
           {viewMode === 'toolbox' && <ToolboxView />}
           {viewMode === 'settings' && <SystemSettingsView />}
           {(viewMode === 'chat' || !viewMode) && <ChatView />}

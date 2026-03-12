@@ -2,8 +2,9 @@ import { useEffect, useCallback, useState, useRef } from 'react';
 import { useChatStore } from '@/stores/chatStore';
 import { useSettingsStore } from '@/stores/settingsStore';
 import { useScheduleStore } from '@/stores/scheduleStore';
+import { useTriggerStore } from '@/stores/triggerStore';
 import { useI18n } from '@/i18n';
-import { Plus, Clock, Wrench, Trash2, Settings, Download, Upload, Pencil, Undo2, HelpCircle } from 'lucide-react';
+import { Plus, Clock, Zap, Wrench, Trash2, Settings, Download, Upload, Pencil, Undo2, HelpCircle } from 'lucide-react';
 import GuideModal from '@/components/common/GuideModal';
 import ProfileEditModal from '@/components/common/ProfileEditModal';
 import { Button } from '@/components/ui/button';
@@ -49,6 +50,9 @@ export default function Sidebar() {
   const setViewMode = useSettingsStore((s) => s.setViewMode);
   const updateInfo = useSettingsStore((s) => s.updateInfo);
   const activeTaskCount = useScheduleStore((s) => s.getActiveTaskCount());
+  const activeTriggerCount = useTriggerStore((s) =>
+    Object.values(s.triggers).filter((t) => t.status === 'active').length
+  );
   const { t } = useI18n();
 
   // Context menu state
@@ -211,6 +215,23 @@ export default function Sidebar() {
           {activeTaskCount > 0 && (
             <span className="text-[9px] px-1.5 py-0.5 rounded-full bg-[#d97757]/15 text-[#d97757] font-medium">
               {activeTaskCount}
+            </span>
+          )}
+        </button>
+        <button
+          onClick={() => setViewMode('trigger')}
+          className={cn(
+            'btn-ghost flex items-center gap-3 w-full px-3 py-2.5 text-[14px] rounded-lg',
+            viewMode === 'trigger'
+              ? 'bg-white shadow-sm text-[#29261b] font-medium'
+              : 'text-[#3d3929] hover:bg-[#e8e5de]'
+          )}
+        >
+          <Zap className="h-[18px] w-[18px] text-[#656358]" strokeWidth={1.75} />
+          <span>{t.sidebar.triggers}</span>
+          {activeTriggerCount > 0 && (
+            <span className="text-[9px] px-1.5 py-0.5 rounded-full bg-[#d97757]/15 text-[#d97757] font-medium">
+              {activeTriggerCount}
             </span>
           )}
         </button>

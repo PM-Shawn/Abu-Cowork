@@ -233,7 +233,9 @@ export const useChatStore = create<ChatStore>()(
         set((state) => {
           delete state.conversations[id];
           if (state.activeConversationId === id) {
-            const ids = Object.keys(state.conversations);
+            // Only pick non-scheduled-task conversations as the next active one
+            const ids = Object.keys(state.conversations)
+              .filter((cid) => !state.conversations[cid]?.scheduledTaskId);
             state.activeConversationId = ids.length > 0 ? ids[ids.length - 1] : null;
           }
         });
@@ -697,7 +699,8 @@ export const useChatStore = create<ChatStore>()(
           }
           // Fix activeConversationId if deleted (pick last = most recent, consistent with deleteConversation)
           if (state.activeConversationId && !state.conversations[state.activeConversationId]) {
-            const ids = Object.keys(state.conversations);
+            const ids = Object.keys(state.conversations)
+              .filter((cid) => !state.conversations[cid]?.scheduledTaskId);
             state.activeConversationId = ids.length > 0 ? ids[ids.length - 1] : null;
           }
         }
@@ -710,6 +713,6 @@ export const useChatStore = create<ChatStore>()(
 export function useActiveConversation() {
   return useChatStore((s) => {
     const id = s.activeConversationId;
-    return id ? s.conversations[id] : null;
+    return id ? s.conversations[id] ?? null : null;
   });
 }

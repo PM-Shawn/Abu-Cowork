@@ -59,6 +59,10 @@ function simpleHash(str: string): string {
   return hash.toString(36);
 }
 
+const MAX_CONCURRENT_TRIGGERS = 5;
+const MAX_RETRY_ATTEMPTS = 3;
+const MAX_DEBOUNCE_CACHE_SIZE = 10_000;
+
 class TriggerEngine {
   private runningTriggers = new Set<string>();
   private debounceCache = new Map<string, number>(); // "triggerId:hash" → timestamp
@@ -105,8 +109,11 @@ class TriggerEngine {
     this.setupSourceWatchers();
 
     // Subscribe to store changes to manage file/cron watchers dynamically
+    // Only react to trigger addition/removal, status changes, and source config changes
     this.unsubscribeStore = useTriggerStore.subscribe((state, prevState) => {
-      // Check for added/removed/changed triggers
+      // Quick check: skip if triggers object reference is unchanged
+      if (state.triggers === prevState.triggers) return;
+
       const currentIds = new Set(Object.keys(state.triggers));
       const prevIds = new Set(Object.keys(prevState.triggers));
 
@@ -117,23 +124,21 @@ class TriggerEngine {
         }
       }
 
-      // Added or changed triggers — start/restart watchers if needed
+      // Added or changed triggers — only check source/status fields
       for (const id of currentIds) {
         const trigger = state.triggers[id];
         const prev = prevState.triggers[id];
 
         if (!prev) {
-          // New trigger
           if (trigger.status === 'active') this.startSourceWatcher(trigger);
         } else if (trigger.status !== prev.status) {
-          // Status changed
           if (trigger.status === 'active') {
             this.startSourceWatcher(trigger);
           } else {
             this.stopSourceWatcher(id);
           }
-        } else if (JSON.stringify(trigger.source) !== JSON.stringify(prev.source)) {
-          // Source config changed — restart watcher
+        } else if (trigger.source !== prev.source) {
+          // Immer produces new references on change, so identity check is sufficient
           this.stopSourceWatcher(id);
           if (trigger.status === 'active') this.startSourceWatcher(trigger);
         }
@@ -194,10 +199,11 @@ class TriggerEngine {
 
   // ── Event handling ──
 
-  async handleEvent(triggerId: string, payload: TriggerEventPayload, options?: { skipChecks?: boolean }) {
+  async handleEvent(triggerId: string, payload: TriggerEventPayload, options?: { skipChecks?: boolean; _retryCount?: number }) {
     const store = useTriggerStore.getState();
     const trigger = store.triggers[triggerId];
     const skipChecks = options?.skipChecks ?? false;
+    const retryCount = options?._retryCount ?? 0;
 
     if (!trigger) {
       console.warn(`[Trigger] Unknown trigger ID: ${triggerId}`);
@@ -234,14 +240,31 @@ class TriggerEngine {
       }
     }
 
-    // 4. Prevent concurrent execution of same trigger — queue retry
+    // 4. Prevent concurrent execution of same trigger — retry with backoff (max 3 times)
     if (this.runningTriggers.has(triggerId)) {
-      console.log(`[Trigger] Already running: ${trigger.name}, will retry in 5s`);
-      setTimeout(() => this.handleEvent(triggerId, payload, options), 5000);
+      if (retryCount >= MAX_RETRY_ATTEMPTS) {
+        console.log(`[Trigger] Max retries reached for ${trigger.name}, dropping event`);
+        return;
+      }
+      const delay = 5000 * (retryCount + 1); // 5s, 10s, 15s
+      console.log(`[Trigger] Already running: ${trigger.name}, retry ${retryCount + 1}/${MAX_RETRY_ATTEMPTS} in ${delay / 1000}s`);
+      setTimeout(() => this.handleEvent(triggerId, payload, { ...options, _retryCount: retryCount + 1 }), delay);
       return;
     }
 
-    // 5. Execute
+    // 5. Global concurrency limit
+    if (this.runningTriggers.size >= MAX_CONCURRENT_TRIGGERS) {
+      if (retryCount >= MAX_RETRY_ATTEMPTS) {
+        console.log(`[Trigger] Concurrency limit reached, dropping event for ${trigger.name}`);
+        return;
+      }
+      const delay = 5000 * (retryCount + 1);
+      console.log(`[Trigger] Concurrency limit (${MAX_CONCURRENT_TRIGGERS}), retry ${retryCount + 1}/${MAX_RETRY_ATTEMPTS} in ${delay / 1000}s`);
+      setTimeout(() => this.handleEvent(triggerId, payload, { ...options, _retryCount: retryCount + 1 }), delay);
+      return;
+    }
+
+    // 6. Execute
     this.runningTriggers.add(triggerId);
 
     try {
@@ -367,6 +390,16 @@ class TriggerEngine {
       return true;
     }
 
+    // Evict oldest entries if cache is too large
+    if (this.debounceCache.size >= MAX_DEBOUNCE_CACHE_SIZE) {
+      let oldest = Infinity;
+      let oldestKey = '';
+      for (const [k, ts] of this.debounceCache) {
+        if (ts < oldest) { oldest = ts; oldestKey = k; }
+      }
+      if (oldestKey) this.debounceCache.delete(oldestKey);
+    }
+
     this.debounceCache.set(key, now);
     return false;
   }
@@ -470,6 +503,12 @@ class TriggerEngine {
       console.log(`[Trigger] File watcher started: ${trigger.name} → ${watchPath}`);
     } catch (err) {
       console.error(`[Trigger] Failed to start file watcher for ${trigger.name}:`, err);
+      const t = getI18n();
+      useToastStore.getState().addToast({
+        type: 'error',
+        title: t.trigger.triggerError.replace('{name}', trigger.name),
+        message: err instanceof Error ? err.message : String(err),
+      });
     }
   }
 

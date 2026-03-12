@@ -101,6 +101,9 @@ fn handle_connection(
             if trigger_id.is_empty() {
                 return send_json(&mut client, 400, r#"{"success":false,"message":"Missing trigger ID"}"#);
             }
+            if trigger_id.len() > 64 || !trigger_id.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-') {
+                return send_json(&mut client, 400, r#"{"success":false,"message":"Invalid trigger ID"}"#);
+            }
 
             // Read body
             let body = if content_length > 0 {

@@ -2,8 +2,9 @@ import { useEffect, useCallback, useState, useRef } from 'react';
 import { useChatStore } from '@/stores/chatStore';
 import { useSettingsStore } from '@/stores/settingsStore';
 import { useScheduleStore } from '@/stores/scheduleStore';
+import { useTriggerStore } from '@/stores/triggerStore';
 import { useI18n } from '@/i18n';
-import { Plus, Clock, Wrench, Trash2, Settings, Download, Upload, Pencil, Undo2, HelpCircle } from 'lucide-react';
+import { Plus, Clock, Zap, Wrench, Trash2, Settings, Download, Upload, Pencil, Undo2, HelpCircle } from 'lucide-react';
 import GuideModal from '@/components/common/GuideModal';
 import ProfileEditModal from '@/components/common/ProfileEditModal';
 import { Button } from '@/components/ui/button';
@@ -11,6 +12,7 @@ import { ScrollArea } from '@/components/ui/scroll-area';
 import { cn } from '@/lib/utils';
 import type { ConversationStatus } from '@/types';
 import ScheduledSection from '@/components/sidebar/ScheduledSection';
+import TriggerSection from '@/components/sidebar/TriggerSection';
 import abuAvatar from '@/assets/abu-avatar.png';
 import { save as saveDialog, open as openDialog } from '@tauri-apps/plugin-dialog';
 import { writeTextFile, readTextFile } from '@tauri-apps/plugin-fs';
@@ -27,6 +29,11 @@ function StatusIndicator({ status, onComplete }: StatusIndicatorProps) {
       const timer = setTimeout(onComplete, 3000);
       return () => clearTimeout(timer);
     }
+    if (status === 'error') {
+      // Auto-clear error indicator after 10 seconds (user has seen it)
+      const timer = setTimeout(onComplete, 10_000);
+      return () => clearTimeout(timer);
+    }
   }, [status, onComplete]);
 
   if (status === 'running') {
@@ -41,6 +48,20 @@ function StatusIndicator({ status, onComplete }: StatusIndicatorProps) {
   return null;
 }
 
+function IMPlatformDot({ platform }: { platform: string }) {
+  const labels: Record<string, string> = {
+    dchat: 'DC', feishu: '飞', dingtalk: '钉', wecom: '微', slack: 'SL',
+  };
+  return (
+    <span
+      className="shrink-0 h-4 w-4 rounded text-[8px] font-bold leading-4 text-center bg-[#d97757]/15 text-[#d97757]"
+      title={platform}
+    >
+      {labels[platform] ?? platform.slice(0, 2).toUpperCase()}
+    </span>
+  );
+}
+
 export default function Sidebar() {
   const { conversations, activeConversationId, startNewConversation, switchConversation, deleteConversation, renameConversation, clearCompletedStatus, exportConversation, importConversation } = useChatStore();
   const openToolbox = useSettingsStore((s) => s.openToolbox);
@@ -49,6 +70,9 @@ export default function Sidebar() {
   const setViewMode = useSettingsStore((s) => s.setViewMode);
   const updateInfo = useSettingsStore((s) => s.updateInfo);
   const activeTaskCount = useScheduleStore((s) => s.getActiveTaskCount());
+  const activeTriggerCount = useTriggerStore((s) =>
+    Object.values(s.triggers).filter((t) => t.status === 'active').length
+  );
   const { t } = useI18n();
 
   // Context menu state
@@ -100,9 +124,9 @@ export default function Sidebar() {
   }, [contextMenu]);
 
   // Sort by createdAt to keep positions stable during status updates
-  // Filter out conversations created by scheduled tasks — they appear in ScheduledSection
+  // Filter out conversations created by scheduled tasks or triggers — they appear in their own sections
   const sortedConvs = Object.values(conversations)
-    .filter((c) => !c.scheduledTaskId)
+    .filter((c) => !c.scheduledTaskId && !c.triggerId)
     .sort((a, b) => b.createdAt - a.createdAt);
 
   const handleDeleteConversation = (e: React.MouseEvent, convId: string) => {
@@ -215,6 +239,23 @@ export default function Sidebar() {
           )}
         </button>
         <button
+          onClick={() => setViewMode('trigger')}
+          className={cn(
+            'btn-ghost flex items-center gap-3 w-full px-3 py-2.5 text-[14px] rounded-lg',
+            viewMode === 'trigger'
+              ? 'bg-white shadow-sm text-[#29261b] font-medium'
+              : 'text-[#3d3929] hover:bg-[#e8e5de]'
+          )}
+        >
+          <Zap className="h-[18px] w-[18px] text-[#656358]" strokeWidth={1.75} />
+          <span>{t.sidebar.triggers}</span>
+          {activeTriggerCount > 0 && (
+            <span className="text-[9px] px-1.5 py-0.5 rounded-full bg-[#d97757]/15 text-[#d97757] font-medium">
+              {activeTriggerCount}
+            </span>
+          )}
+        </button>
+        <button
           onClick={() => openToolbox()}
           className={cn(
             'btn-ghost flex items-center gap-3 w-full px-3 py-2.5 text-[14px] rounded-lg',
@@ -230,6 +271,9 @@ export default function Sidebar() {
 
       {/* Scheduled Section */}
       <ScheduledSection />
+
+      {/* Trigger Section */}
+      <TriggerSection />
 
       {/* Recents Section */}
       <div className="px-6 pt-4 pb-1.5">
@@ -249,7 +293,7 @@ export default function Sidebar() {
                 key={conv.id}
                 role="button"
                 tabIndex={0}
-                onClick={() => { switchConversation(conv.id); setViewMode('chat'); }}
+                onClick={() => { switchConversation(conv.id); setViewMode('chat'); if (conv.status === 'error') clearCompletedStatus(conv.id); }}
                 onContextMenu={(e) => handleContextMenu(e, conv.id)}
                 aria-current={conv.id === activeConversationId && viewMode === 'chat' ? 'true' : undefined}
                 className={cn(
@@ -263,6 +307,9 @@ export default function Sidebar() {
                   status={conv.status ?? 'idle'}
                   onComplete={() => handleClearCompletedStatus(conv.id)}
                 />
+                {conv.imPlatform && (
+                  <IMPlatformDot platform={conv.imPlatform} />
+                )}
                 {editingId === conv.id ? (
                   <input
                     autoFocus

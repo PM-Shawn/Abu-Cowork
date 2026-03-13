@@ -11,7 +11,7 @@ import { useTaskExecutionStore } from '../../stores/taskExecutionStore';
 import { usePermissionStore } from '../../stores/permissionStore';
 import { authorizeWorkspace } from '../tools/pathSafety';
 import { createEventRouter } from './eventRouter';
-import { routeInput, buildSystemPrompt, type RouteResult } from './orchestrator';
+import { routeInput, buildSystemPrompt, type RouteResult, type IMContext } from './orchestrator';
 import { skillLoader } from '../skill/loader';
 import { substituteVariables } from '../skill/preprocessor';
 import { joinPath } from '../../utils/pathUtils';
@@ -448,6 +448,7 @@ function generateId(): string {
 function resolveTools(
   route: RouteResult,
   hasBuiltinWebSearch: boolean,
+  blockedTools?: string[],
 ): { tools: ToolDefinition[]; inputValidators: Map<string, (input: Record<string, unknown>) => boolean> } {
   let tools = getAllTools();
   let inputValidators = new Map<string, (input: Record<string, unknown>) => boolean>();
@@ -475,6 +476,11 @@ function resolveTools(
   }
   if (hasBuiltinWebSearch) {
     tools = tools.filter(t => t.name !== 'web_search');
+  }
+  // Headless / IM mode: block specific tools that require UI interaction
+  if (blockedTools && blockedTools.length > 0) {
+    const blocked = new Set(blockedTools);
+    tools = tools.filter(t => !blocked.has(t.name));
   }
   return { tools, inputValidators };
 }
@@ -557,6 +563,10 @@ export interface AgentLoopOptions {
   filePermissionCallback?: FilePermissionCallback;
   /** Images attached by the user (paste/drag) */
   images?: ImageAttachment[];
+  /** Tool names to block from this run (e.g. 'request_workspace' in headless/IM mode) */
+  blockedTools?: string[];
+  /** IM headless context — injected into system prompt to replace UI-dependent workspace logic */
+  imContext?: IMContext;
 }
 
 export async function runAgentLoop(conversationId: string, userMessage: string, options?: AgentLoopOptions): Promise<void> {
@@ -610,7 +620,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
   }
 
   // Build static system prompt once (active skills are injected dynamically per-turn)
-  const systemPrompt = await buildSystemPrompt(route, getBaseSystemPrompt(), conversationId);
+  const systemPrompt = await buildSystemPrompt(route, getBaseSystemPrompt(), conversationId, options?.imContext);
 
   // Determine effective model — agent can override (with provider compatibility check)
   let effectiveModelId = getEffectiveModel(settings);
@@ -872,7 +882,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
       // ── Per-turn: refresh tools and dynamic prompt sections ──
       const freshSettings = useSettingsStore.getState();
       const builtinWebSearch = getBuiltinSearchConfig(freshSettings.provider, freshSettings.useBuiltinWebSearch);
-      const { tools, inputValidators } = resolveTools(route, !!builtinWebSearch);
+      const { tools, inputValidators } = resolveTools(route, !!builtinWebSearch, options?.blockedTools);
       const dynamicCapabilities = buildDynamicCapabilities(tools);
       const conv = useChatStore.getState().conversations[conversationId];
       const activeSkillContent = await loadActiveSkillContent(
@@ -1419,7 +1429,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
         );
         if (mcpChanged) {
           const toolNames = new Set(tools.map(t => t.name));
-          const { tools: freshTools } = resolveTools(route, !!builtinWebSearch);
+          const { tools: freshTools } = resolveTools(route, !!builtinWebSearch, options?.blockedTools);
           const freshNames = new Set(freshTools.map(t => t.name));
           const added = freshTools.filter(t => !toolNames.has(t.name));
           const removed = tools.filter(t => !freshNames.has(t.name));

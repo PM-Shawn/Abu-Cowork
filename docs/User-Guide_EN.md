@@ -14,6 +14,8 @@ This guide covers all Abu features and how to use them effectively.
 - [Skill System](#skill-system)
 - [MCP Protocol](#mcp-protocol)
 - [Scheduled Tasks](#scheduled-tasks)
+- [Triggers](#triggers)
+- [IM Channels](#im-channels)
 - [Browser Automation](#browser-automation)
 - [AI Services Configuration](#ai-services-configuration)
 - [Web Search](#web-search)
@@ -275,6 +277,162 @@ Every Monday at 10 AM, organize last week's meeting notes into a weekly report
 - Previously authorized paths/commands are auto-allowed; unauthorized sensitive operations are auto-skipped
 - Desktop **notifications** are sent on completion
 - Abu must be running for scheduled tasks to execute
+
+---
+
+## Triggers
+
+Triggers let Abu **automatically respond to external events** — incoming webhooks, file changes, timers, or IM messages — and execute your pre-configured tasks.
+
+### Creating a Trigger
+
+1. Click the **Triggers** icon in the sidebar
+2. Click **"New Trigger"** (or choose from templates)
+3. Enter a name and description
+4. Configure the event source, filters, and action
+5. Save
+
+### Event Sources
+
+| Source Type | Description | Configuration |
+|------------|-------------|---------------|
+| **HTTP Webhook** | Receive POST requests from external systems | Auto-generated unique endpoint URL |
+| **File Watch** | Monitor file/directory changes | Watch path, event types (create/modify/delete), file pattern (e.g., `*.log`) |
+| **Timer** | Execute at fixed intervals | Interval in seconds (minimum 10s) |
+| **IM Message** | Listen for IM platform messages | Platform, App ID/Secret, listen scope (all/mentions/DMs only) |
+
+### Filters
+
+Control which events trigger execution:
+
+| Filter Type | Description |
+|------------|-------------|
+| **Always** | Execute on every event |
+| **Keyword Match** | Execute only if event contains specified keywords (comma-separated) |
+| **Regex Match** | Execute only if event matches a regular expression |
+
+### Debounce
+
+When enabled, identical events within a time window are deduplicated. Useful for high-frequency events (log writes, repeated alerts). Default window: 300 seconds.
+
+### Quiet Hours
+
+Set a time range (e.g., 22:00 ~ 08:00) during which triggers won't execute. Supports cross-midnight ranges.
+
+### Action
+
+When triggered, Abu executes your **prompt instructions**. Use `$EVENT_DATA` in your prompt to reference the raw event payload.
+
+You can also:
+- **Bind a Skill** — select an existing Skill to invoke
+- **Specify a workspace** — run in a specific directory
+
+### Output
+
+After execution, results can be pushed externally:
+
+| Output Target | Description |
+|--------------|-------------|
+| **Webhook** | Push results to a URL (supports custom headers and templates) |
+| **Reply to Source** | Reply directly to the IM message that triggered the event |
+
+**Template variables**: `$TRIGGER_NAME`, `$EVENT_SUMMARY`, `$AI_RESPONSE`, `$RUN_TIME`, `$TIMESTAMP`, `$EVENT_DATA`
+
+### Built-in Templates
+
+| Template | Description |
+|----------|-------------|
+| **Alert Handler** | Pre-configured keywords for `error, alert, warning, P0, P1, critical` |
+| **Log File Monitor** | Watch log files, auto-analyze new entries |
+| **Periodic Health Check** | Timer-based system health checks with reporting |
+
+### Run History
+
+Each trigger logs recent executions. View them in the sidebar **"Triggers"** panel:
+
+- Status (running / completed / error / filtered / debounced)
+- Execution time
+- Linked conversation
+- Success rate stats
+
+---
+
+## IM Channels
+
+IM Channels let external users chat with Abu directly through messaging platforms (Feishu, Slack, etc.) without opening the Abu desktop app.
+
+### Supported Platforms
+
+| Platform | Notes |
+|----------|-------|
+| **Feishu (Lark)** | Supports WebSocket — no public IP needed |
+| **DingTalk** | Webhook callback |
+| **WeCom** | Webhook callback |
+| **Slack** | Events API |
+| **D-Chat** | Webhook callback |
+
+### Quick Setup (Feishu Example)
+
+#### Step 1: Create an App on Feishu Open Platform
+
+1. Visit [Feishu Open Platform](https://open.feishu.cn/) and create an enterprise app
+2. Get the **App ID** and **App Secret**
+3. Add the `im.message.receive_v1` event subscription
+4. Enable the "Bot" capability
+
+#### Step 2: Add a Channel in Abu
+
+1. Open **Settings** → **IM Channels**
+2. Click **"Add Channel"**
+3. Enter a channel name (e.g., "Dev Team Bot")
+4. Select **Feishu** as the platform
+5. Enter App ID and App Secret
+6. Choose a capability level
+7. Save
+
+#### Step 3: Configure Callback URL
+
+After saving, a **Webhook URL** is auto-generated. Copy it and paste it into Feishu's event subscription request URL.
+
+> Feishu also supports WebSocket mode — Abu connects automatically without needing a callback URL or public IP.
+
+#### Step 4: Test
+
+Send a message to the bot in Feishu (DM or @mention in a group). Abu will reply automatically.
+
+### Capability Levels
+
+| Level | Permissions | Use Case |
+|-------|-----------|----------|
+| **Chat Only** | Conversation only, no file access | Public-facing Q&A bot |
+| **Read Only** | Can view files, no modifications | Code/doc review scenarios |
+| **Standard** | Read/write files in authorized directories | Daily development collaboration (recommended) |
+| **Full Control** | Complete access including command execution | Trusted admins only — requires whitelist |
+
+### Whitelist
+
+- **Empty**: Everyone can use the channel. If set to "Full Control", non-whitelisted users are automatically downgraded to "Standard"
+- **With user IDs**: Only whitelisted users can access the channel
+
+### Session Management
+
+IM Channels automatically manage conversation lifecycles:
+
+- **Session Timeout**: After a period of inactivity, the next message starts a new conversation (default: 30 minutes)
+- **Max Rounds**: Conversations auto-reset after reaching the round limit (default: 50)
+- **Resume Context**: Users can send "continue" to restore the previous session
+- **Session Isolation**: Different users in the same group chat have independent conversations
+
+### Viewing IM Conversations in Abu
+
+IM messages appear in the **"Recent"** list in Abu's sidebar. Click to view the full conversation. The info bar at the top shows the source platform and round count — click the **⋯** menu for details or to end the session.
+
+### Important Notes
+
+- Abu must be running to receive and reply to IM messages
+- Feishu WebSocket mode doesn't require a public IP; other platforms need Abu's machine to be externally accessible (or use a tunnel like ngrok)
+- In IM mode, Abu won't show desktop confirmation dialogs — operations requiring confirmation are automatically skipped
+- Consider creating separate channels for different teams/purposes for better access control
 
 ---
 
@@ -601,6 +759,18 @@ Say "Help me create a new skill" in conversation. Abu will guide you through the
 - Check that required runtimes are installed (Node.js, Python, etc.)
 - Verify environment variables are correctly configured
 - For HTTP servers, confirm the URL is accessible
+
+### Q: What's the difference between triggers and scheduled tasks?
+
+Scheduled tasks only support time-based execution. Triggers are more flexible — besides timers, they can respond to webhook requests, file changes, and IM messages, with advanced features like filtering, debounce, quiet hours, and output delivery.
+
+### Q: Do IM Channels require a public IP?
+
+Feishu supports WebSocket mode where Abu connects outbound to Feishu servers — **no public IP needed**. Other platforms use webhook callbacks and require Abu's machine to be externally accessible (you can use ngrok or similar tunneling tools).
+
+### Q: Can IM users perform dangerous operations?
+
+It depends on the channel's "Capability Level" setting. We recommend "Standard" (default) — Abu can only read/write authorized directories. "Full Control" must be paired with a whitelist; only whitelisted users get full permissions.
 
 ### Q: How do I use browser automation?
 

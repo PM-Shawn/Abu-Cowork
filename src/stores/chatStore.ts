@@ -99,7 +99,7 @@ interface ChatState {
 }
 
 interface ChatActions {
-  createConversation: (workspacePath?: string | null, options?: { scheduledTaskId?: string; skipActivate?: boolean }) => string;
+  createConversation: (workspacePath?: string | null, options?: { scheduledTaskId?: string; triggerId?: string; imChannelId?: string; imPlatform?: string; skipActivate?: boolean }) => string;
   startNewConversation: () => void;
   switchConversation: (id: string) => void;
   setConversationWorkspace: (convId: string, path: string | null) => void;
@@ -174,6 +174,8 @@ export const useChatStore = create<ChatStore>()(
             status: 'idle',
             workspacePath: workspacePath ?? null,
             ...(options?.scheduledTaskId ? { scheduledTaskId: options.scheduledTaskId } : {}),
+            ...(options?.triggerId ? { triggerId: options.triggerId } : {}),
+            ...(options?.imChannelId ? { imChannelId: options.imChannelId, imPlatform: options.imPlatform } : {}),
           };
           if (!options?.skipActivate) {
             state.activeConversationId = id;
@@ -229,13 +231,22 @@ export const useChatStore = create<ChatStore>()(
         clearInputQueue(id);
         clearAllSkillHooks();
         useTaskExecutionStore.getState().clearConversation(id);
+        // Clean up IM session pointing to this conversation (lazy import to avoid circular deps)
+        import('./imChannelStore').then(({ useIMChannelStore }) => {
+          const imStore = useIMChannelStore.getState();
+          for (const [key, session] of Object.entries(imStore.sessions)) {
+            if (session.conversationId === id) {
+              imStore.removeSession(key);
+            }
+          }
+        }).catch(() => {});
         const wasActive = get().activeConversationId === id;
         set((state) => {
           delete state.conversations[id];
           if (state.activeConversationId === id) {
-            // Only pick non-scheduled-task conversations as the next active one
+            // Only pick non-automated conversations as the next active one
             const ids = Object.keys(state.conversations)
-              .filter((cid) => !state.conversations[cid]?.scheduledTaskId);
+              .filter((cid) => !state.conversations[cid]?.scheduledTaskId && !state.conversations[cid]?.triggerId);
             state.activeConversationId = ids.length > 0 ? ids[ids.length - 1] : null;
           }
         });
@@ -552,7 +563,7 @@ export const useChatStore = create<ChatStore>()(
       clearCompletedStatus: (convId) => {
         set((state) => {
           const conv = state.conversations[convId];
-          if (conv && conv.status === 'completed') {
+          if (conv && (conv.status === 'completed' || conv.status === 'error')) {
             conv.status = 'idle';
             conv.completedAt = undefined;
           }
@@ -700,7 +711,7 @@ export const useChatStore = create<ChatStore>()(
           // Fix activeConversationId if deleted (pick last = most recent, consistent with deleteConversation)
           if (state.activeConversationId && !state.conversations[state.activeConversationId]) {
             const ids = Object.keys(state.conversations)
-              .filter((cid) => !state.conversations[cid]?.scheduledTaskId);
+              .filter((cid) => !state.conversations[cid]?.scheduledTaskId && !state.conversations[cid]?.triggerId);
             state.activeConversationId = ids.length > 0 ? ids[ids.length - 1] : null;
           }
         }

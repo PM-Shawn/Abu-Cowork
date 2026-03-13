@@ -6,11 +6,13 @@ use std::thread;
 use std::sync::{Arc, Mutex};
 use tauri::async_runtime;
 use tauri::{AppHandle, Emitter, Manager, WindowEvent};
-use tauri::menu::{Menu, MenuItem};
+use tauri::menu::{IsMenuItem, Menu, MenuItem};
 use tauri::tray::{TrayIconBuilder, TrayIconEvent, MouseButton, MouseButtonState};
 
 mod sandbox;
 mod proxy;
+mod trigger_server;
+mod feishu_ws;
 mod window_info;
 mod computer_use;
 
@@ -865,6 +867,65 @@ fn window_show(app: AppHandle) {
     show_main_window(&app);
 }
 
+/// IM channel status entry for tray menu display
+#[derive(serde::Deserialize)]
+struct IMTrayStatus {
+    platform: String,
+    label: String,
+    sessions: u32,
+}
+
+/// Update the system tray menu with IM channel status.
+/// Called from the frontend whenever IM channel state changes.
+#[tauri::command]
+fn update_tray_menu(app: AppHandle, im_channels: Vec<IMTrayStatus>, trigger_count: u32) {
+    let tray = match app.tray_by_id("main") {
+        Some(t) => t,
+        None => return,
+    };
+
+    // Build menu items
+    let mut items: Vec<MenuItem<tauri::Wry>> = Vec::new();
+
+    // IM channel section (if any channels exist)
+    if !im_channels.is_empty() {
+        if let Ok(header) = MenuItem::with_id(&app, "im_header", "── IM ──", false, None::<&str>) {
+            items.push(header);
+        }
+        for ch in &im_channels {
+            let label = format!("  {} · {} sessions", ch.label, ch.sessions);
+            if let Ok(item) = MenuItem::with_id(&app, format!("im_{}", ch.platform), label, false, None::<&str>) {
+                items.push(item);
+            }
+        }
+    }
+
+    // Trigger count
+    if trigger_count > 0 {
+        let label = format!("⚡ {} triggers active", trigger_count);
+        if let Ok(item) = MenuItem::with_id(&app, "triggers", label, false, None::<&str>) {
+            items.push(item);
+        }
+    }
+
+    // Separator + actions
+    if let Ok(sep) = MenuItem::with_id(&app, "sep", "────────────", false, None::<&str>) {
+        items.push(sep);
+    }
+    if let Ok(show) = MenuItem::with_id(&app, "show", "Show Abu / 显示窗口", true, None::<&str>) {
+        items.push(show);
+    }
+    if let Ok(quit) = MenuItem::with_id(&app, "quit", "Quit / 退出", true, None::<&str>) {
+        items.push(quit);
+    }
+
+    // Build menu from items
+    let item_refs: Vec<&dyn IsMenuItem<tauri::Wry>> = items.iter().map(|i| i as &dyn IsMenuItem<tauri::Wry>).collect();
+    if let Ok(menu) = Menu::with_items(&app, &item_refs) {
+        let _ = tray.set_menu(Some(menu));
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -883,8 +944,8 @@ pub fn run() {
             let quit_item = MenuItem::with_id(app, "quit", "Quit / 退出", true, None::<&str>)?;
             let menu = Menu::with_items(app, &[&show_item, &quit_item])?;
 
-            // Create tray icon
-            TrayIconBuilder::new()
+            // Create tray icon with known ID for update_tray_menu
+            TrayIconBuilder::with_id("main")
                 .icon(app.default_window_icon().expect("default window icon must be set in tauri.conf.json").clone())
                 .menu(&menu)
                 .show_menu_on_left_click(false)
@@ -941,7 +1002,13 @@ pub fn run() {
             computer_use::keyboard_type,
             computer_use::keyboard_press,
             computer_use::check_macos_permissions,
-            computer_use::request_screen_recording
+            computer_use::request_screen_recording,
+            trigger_server::start_trigger_server,
+            trigger_server::get_trigger_server_port,
+            feishu_ws::start_feishu_ws,
+            feishu_ws::stop_feishu_ws,
+            feishu_ws::get_feishu_ws_status,
+            update_tray_menu
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

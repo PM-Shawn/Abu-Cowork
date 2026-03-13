@@ -34,8 +34,8 @@ export default function AIServicesSection() {
       <ModelConfigSection />
 
       {/* Capabilities Section */}
-      <div className="border border-[#e8e4dd] rounded-xl overflow-hidden">
-        <div className="px-4 py-3 bg-[#f5f3ee]">
+      <div className="border border-[#e8e4dd] rounded-xl">
+        <div className="px-4 py-3 bg-[#f5f3ee] rounded-t-xl">
           <h4 className="text-xs font-medium text-[#656358] uppercase tracking-wider">
             {t.settings.capabilities}
           </h4>
@@ -49,8 +49,8 @@ export default function AIServicesSection() {
           </div>
 
           {/* Web Search */}
-          <div>
-            <div className="px-4 py-3 flex items-center justify-between">
+          <div className="px-4 py-3">
+            <div className="flex items-center justify-between">
               <div className="flex items-center gap-3">
                 {hasBuiltinSearch ? (
                   <CircleCheck className="h-4 w-4 text-green-600 shrink-0" />
@@ -61,14 +61,25 @@ export default function AIServicesSection() {
                   <Globe className="h-3.5 w-3.5 text-[#888579]" />
                   <span className="text-sm text-[#29261b]">{t.settings.capabilityWebSearch}</span>
                 </div>
-                <span className={cn(
-                  'text-xs px-1.5 py-0.5 rounded',
-                  hasBuiltinSearch
-                    ? 'bg-green-50 text-green-700'
-                    : 'bg-amber-50 text-amber-700'
-                )}>
-                  {hasBuiltinSearch ? t.settings.builtinSupported : t.settings.builtinNotSupported}
-                </span>
+                {showCustomSearch ? (
+                  <button
+                    type="button"
+                    onClick={() => setSearchExpanded(!searchExpanded)}
+                    className={cn(
+                      'text-xs px-1.5 py-0.5 rounded cursor-pointer transition-colors',
+                      'bg-amber-50 text-amber-700 hover:bg-amber-100'
+                    )}
+                  >
+                    <span className="flex items-center gap-1">
+                      {t.settings.builtinNotSupported}
+                      <ChevronDown className={cn('h-3 w-3 transition-transform', searchExpanded && 'rotate-180')} />
+                    </span>
+                  </button>
+                ) : (
+                  <span className="text-xs px-1.5 py-0.5 rounded bg-green-50 text-green-700">
+                    {t.settings.builtinSupported}
+                  </span>
+                )}
               </div>
 
               {/* Builtin search toggle (only when provider supports it) */}
@@ -84,29 +95,19 @@ export default function AIServicesSection() {
               )}
             </div>
 
-            {/* Custom search config (expandable) */}
-            {showCustomSearch && (
-              <div className="border-t border-[#e8e4dd]">
-                <button
-                  type="button"
-                  onClick={() => setSearchExpanded(!searchExpanded)}
-                  className="w-full flex items-center justify-between px-4 py-2.5 bg-[#faf9f7] hover:bg-[#f5f3ee] transition-colors"
-                >
-                  <span className="text-xs font-medium text-[#656358]">{t.settings.configCustomSearch}</span>
-                  <ChevronDown className={cn('h-3.5 w-3.5 text-[#888579] transition-transform', searchExpanded && 'rotate-180')} />
-                </button>
-                {searchExpanded && (
-                  <div className="px-4 py-3 bg-white">
-                    <WebSearchForm />
-                  </div>
-                )}
+            {/* Custom search config (nested card) */}
+            {showCustomSearch && searchExpanded && (
+              <div className="ml-7 mt-2 rounded-lg border border-[#e8e4dd] bg-[#faf9f7]">
+                <div className="p-3">
+                  <WebSearchForm />
+                </div>
               </div>
             )}
           </div>
 
           {/* Image Generation */}
-          <div>
-            <div className="px-4 py-3 flex items-center gap-3">
+          <div className="px-4 py-3">
+            <div className="flex items-center gap-3">
               {hasBuiltinImageGen ? (
                 <CircleCheck className="h-4 w-4 text-green-600 shrink-0" />
               ) : (
@@ -116,32 +117,33 @@ export default function AIServicesSection() {
                 <ImageIcon className="h-3.5 w-3.5 text-[#888579]" />
                 <span className="text-sm text-[#29261b]">{t.settings.capabilityImageGen}</span>
               </div>
-              <span className={cn(
-                'text-xs px-1.5 py-0.5 rounded',
-                hasBuiltinImageGen
-                  ? 'bg-green-50 text-green-700'
-                  : 'bg-amber-50 text-amber-700'
-              )}>
-                {hasBuiltinImageGen ? t.settings.builtinSupported : t.settings.builtinNotSupported}
-              </span>
-            </div>
-
-            {/* Custom image gen config (expandable) */}
-            {showCustomImageGen && (
-              <div className="border-t border-[#e8e4dd]">
+              {showCustomImageGen ? (
                 <button
                   type="button"
                   onClick={() => setImageGenExpanded(!imageGenExpanded)}
-                  className="w-full flex items-center justify-between px-4 py-2.5 bg-[#faf9f7] hover:bg-[#f5f3ee] transition-colors"
+                  className={cn(
+                    'text-xs px-1.5 py-0.5 rounded cursor-pointer transition-colors',
+                    'bg-amber-50 text-amber-700 hover:bg-amber-100'
+                  )}
                 >
-                  <span className="text-xs font-medium text-[#656358]">{t.settings.configCustomImageGen}</span>
-                  <ChevronDown className={cn('h-3.5 w-3.5 text-[#888579] transition-transform', imageGenExpanded && 'rotate-180')} />
+                  <span className="flex items-center gap-1">
+                    {t.settings.builtinNotSupported}
+                    <ChevronDown className={cn('h-3 w-3 transition-transform', imageGenExpanded && 'rotate-180')} />
+                  </span>
                 </button>
-                {imageGenExpanded && (
-                  <div className="px-4 py-3 bg-white">
-                    <ImageGenForm />
-                  </div>
-                )}
+              ) : (
+                <span className="text-xs px-1.5 py-0.5 rounded bg-green-50 text-green-700">
+                  {t.settings.builtinSupported}
+                </span>
+              )}
+            </div>
+
+            {/* Custom image gen config (nested card) */}
+            {showCustomImageGen && imageGenExpanded && (
+              <div className="ml-7 mt-2 rounded-lg border border-[#e8e4dd] bg-[#faf9f7]">
+                <div className="p-3">
+                  <ImageGenForm />
+                </div>
               </div>
             )}
           </div>

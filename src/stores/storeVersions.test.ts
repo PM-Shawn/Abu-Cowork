@@ -10,6 +10,8 @@ const PERSISTED_STORES = [
   { key: 'abu-workspace', minVersion: 1 },
   { key: 'abu-mcp-store', minVersion: 1 },
   { key: 'abu-schedule', minVersion: 1 },
+  { key: 'abu-triggers', minVersion: 2 },
+  { key: 'abu-im-channel', minVersion: 1 },
 ] as const;
 
 // Import all stores to trigger persist initialization
@@ -21,6 +23,8 @@ beforeAll(async () => {
   await import('./workspaceStore');
   await import('./mcpStore');
   await import('./scheduleStore');
+  await import('./triggerStore');
+  await import('./imChannelStore');
 });
 
 describe('Store version compliance', () => {

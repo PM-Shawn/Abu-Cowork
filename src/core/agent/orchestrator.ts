@@ -181,10 +181,42 @@ export function routeInput(input: string): RouteResult {
  * - Active skills content (injected via use_skill tool)
  * - Available skills list for discovery
  */
+/** IM headless context — passed from channelRouter to avoid UI interaction tools */
+export interface IMContext {
+  platform: string;
+  workspacePath: string | null;
+  /** Capability level determines what the AI can/cannot do in this IM session */
+  capability?: import('../../types/imChannel').IMCapabilityLevel;
+}
+
+function buildIMCapabilityGuide(capability: import('../../types/imChannel').IMCapabilityLevel): string {
+  switch (capability) {
+    case 'chat_only':
+      return `\n## 当前能力等级：仅对话
+你在此 IM 频道中只能进行文字对话，**不能**使用任何工具（不能读写文件、不能执行命令、不能搜索）。
+如果用户请求涉及文件操作、执行命令、代码修改等，请简要说明："当前频道为仅对话模式，无法执行此操作。如需工具能力，请联系管理员调整频道权限。"`;
+
+    case 'read_tools':
+      return `\n## 当前能力等级：只读
+你可以**读取文件和搜索**，但**不能**写入文件、不能执行任何命令。
+如果用户请求涉及写文件、执行命令、启动程序等，请简要说明："当前频道为只读模式，我可以帮你查看和搜索文件，但无法修改或执行命令。如需写入权限，请联系管理员调整频道权限。"`;
+
+    case 'safe_tools':
+      return `\n## 当前能力等级：标准
+你可以读写已授权目录下的文件，但**不能执行命令行命令**（包括启动程序、运行脚本等）。
+如果用户请求涉及执行命令或启动程序，请简要说明："当前频道为标准模式，我可以帮你读写文件，但无法执行命令。如需命令执行能力，请联系管理员将频道权限调整为完整模式。"`;
+
+    case 'full':
+      return `\n## 当前能力等级：完整
+你拥有完整权限，可以读写文件并执行命令。请谨慎使用命令执行能力，避免破坏性操作。`;
+  }
+}
+
 export async function buildSystemPrompt(
   route: RouteResult,
   basePrompt: string,
   conversationId: string,
+  imContext?: IMContext,
 ): Promise<string> {
   const parts: string[] = [];
   const isSkillMode = route.type === 'skill' && route.skillContent;
@@ -250,17 +282,57 @@ export async function buildSystemPrompt(
   const timeStr = now.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', hour12: false });
   parts.push(`\n## 当前时间\n${dateStr} ${timeStr}`);
 
-  // Inject workspace context or session output directory
-  const workspacePath = useWorkspaceStore.getState().currentPath;
+  // Inject workspace context — IM headless mode vs interactive mode
+  // workspacePath must be defined for ALL branches since it's used later for rules/memory loading
+  let workspacePath: string | null;
 
-  if (workspacePath) {
-    parts.push(`\n## 当前工作区
+  if (imContext) {
+    // IM headless mode: use pre-configured workspace, no UI interaction tools
+    workspacePath = imContext.workspacePath;
+
+    if (workspacePath) {
+      parts.push(`\n## 当前工作区（IM 模式）
+路径: ${workspacePath}
+你可以使用文件工具在此目录下读写文件。当用户提到文件或目录时，默认在此工作区路径下操作。
+
+注意：你正在通过 IM 频道（${imContext.platform}）远程服务用户，无法弹出任何桌面弹窗或交互式对话框。
+所有操作必须在预配置的工作区内自主完成，不要尝试调用 request_workspace 工具。`);
+    } else {
+      const outputDir = await getSessionOutputDir(conversationId);
+      parts.push(`\n## 工作区提醒（IM 模式）
+你正在通过 IM 频道（${imContext.platform}）远程服务用户，无法弹出任何桌面弹窗。
+当前管理员未配置工作目录，因此你无法进行文件操作。
+
+如果用户请求涉及文件操作，请回复："当前 IM 频道未配置工作目录，请联系管理员在 Abu 设置中配置后重试。"
+不涉及文件操作的请求（闲聊、知识问答、搜索信息、写作、翻译、计算等）直接回复即可。
+
+生成的文件保存到：${outputDir}`);
+    }
+
+    // Inject capability boundary so AI knows exactly what it can/cannot do
+    if (imContext.capability) {
+      const capabilityGuide = buildIMCapabilityGuide(imContext.capability);
+      parts.push(capabilityGuide);
+    }
+
+    // IM response style guide
+    parts.push(`\n## IM 回复风格
+你正在 IM 聊天中回复，请遵循以下风格：
+- 用合适的文本格式回复。
+- 如果做不到某件事，说明原因和替代方案。
+- 语气自然、像同事对话，不要像客服文档。`);
+  } else {
+    // Interactive desktop mode
+    workspacePath = useWorkspaceStore.getState().currentPath;
+
+    if (workspacePath) {
+      parts.push(`\n## 当前工作区
 路径: ${workspacePath}
 你可以使用文件工具在此目录下读写文件。当用户提到文件或目录时，默认在此工作区路径下操作。`);
-  } else {
-    // No workspace selected — instruct LLM to request workspace for file ops
-    const outputDir = await getSessionOutputDir(conversationId);
-    parts.push(`\n## 工作区提醒
+    } else {
+      // No workspace selected — instruct LLM to request workspace for file ops
+      const outputDir = await getSessionOutputDir(conversationId);
+      parts.push(`\n## 工作区提醒
 当前没有设置工作区。
 
 当用户的请求涉及文件或目录操作时（如整理文件、查看桌面、操作文档等），
@@ -271,6 +343,7 @@ export async function buildSystemPrompt(
 如果用户拒绝选择工作区，友好告知需要先选择工作目录才能操作文件。
 
 生成的文件（非用户指定路径）保存到：${outputDir}`);
+    }
   }
 
   // Inject Windows-specific guidance when on Windows

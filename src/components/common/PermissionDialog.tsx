@@ -19,6 +19,7 @@ interface PermissionDialogProps {
   onAllow: (duration: PermissionDuration) => void;
   onDeny: () => void;
   onChooseFolder?: () => void;  // For folder-select type
+  onAuthorize?: () => void;     // For folder-select: directly authorize suggestedPath
 }
 
 const iconMap = {
@@ -37,7 +38,7 @@ const colorMap = {
   'folder-select': { color: 'text-[#d97757]', bgColor: 'bg-[#d97757]/10' },
 };
 
-export default function PermissionDialog({ request, onAllow, onDeny, onChooseFolder }: PermissionDialogProps) {
+export default function PermissionDialog({ request, onAllow, onDeny, onChooseFolder, onAuthorize }: PermissionDialogProps) {
   const [selectedDuration, setSelectedDuration] = useState<PermissionDuration>('session');
   const [showAlwaysConfirm, setShowAlwaysConfirm] = useState(false);
   const { t } = useI18n();
@@ -57,8 +58,96 @@ export default function PermissionDialog({ request, onAllow, onDeny, onChooseFol
   const Icon = iconMap[request.type];
   const colors = colorMap[request.type];
 
-  // Cowork-style folder selection variant
+  // Folder selection variant — two modes:
+  // 1. hasSuggestedPath: authorization-style dialog matching existing permission dialogs
+  // 2. no path: lightweight folder picker prompt
   if (request.type === 'folder-select') {
+    const hasSuggestedPath = !!request.path;
+    const folderSelectT = t.permission.folderSelect;
+
+    // Authorization mode — matches existing permission dialog layout
+    if (hasSuggestedPath) {
+      return (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
+          <div className="w-full max-w-md mx-4 bg-white rounded-2xl shadow-xl overflow-hidden animate-in fade-in zoom-in-95 duration-200">
+            {/* Header */}
+            <div className="relative px-6 pt-6 pb-4">
+              <button
+                onClick={onDeny}
+                className="absolute top-4 right-4 p-1.5 rounded-lg text-neutral-400 hover:text-neutral-600 hover:bg-neutral-100 transition-colors"
+              >
+                <X className="h-4 w-4" />
+              </button>
+
+              <div className="flex items-start gap-4">
+                <div className={`p-3 rounded-xl ${colors.bgColor}`}>
+                  <Icon className={`h-6 w-6 ${colors.color}`} />
+                </div>
+                <div className="flex-1 min-w-0">
+                  <h2 className="text-lg font-semibold text-[#29261b]">{folderSelectT?.authorizeTitle ?? ''}</h2>
+                  <p className="text-[14px] text-[#656358] mt-0.5">{folderSelectT?.authorizeDescription ?? ''}</p>
+                </div>
+              </div>
+            </div>
+
+            {/* Path display */}
+            <div className="mx-6 px-3 py-2 bg-[#f5f3ee] rounded-lg border border-[#e8e4dd]">
+              <p className="text-[13px] text-[#656358] truncate font-mono">{request.path}</p>
+            </div>
+
+            {/* Capabilities */}
+            <div className="px-6 py-4">
+              <p className="text-[13px] font-medium text-[#29261b] mb-2">{t.permission.abuCanDo}</p>
+              <ul className="space-y-1.5">
+                {(folderSelectT?.authorizeCapabilities ?? []).map((cap, i) => (
+                  <li key={i} className="flex items-center gap-2 text-[13px] text-[#3d3929]">
+                    <Shield className="h-3.5 w-3.5 text-green-500 shrink-0" />
+                    {cap}
+                  </li>
+                ))}
+              </ul>
+            </div>
+
+            {/* Warning */}
+            <div className="mx-6 mb-4 p-3 bg-amber-50 border border-amber-200 rounded-lg">
+              <div className="flex gap-2">
+                <AlertTriangle className="h-4 w-4 text-amber-500 shrink-0 mt-0.5" />
+                <p className="text-[12px] text-amber-700 leading-relaxed">{folderSelectT?.authorizeWarning ?? ''}</p>
+              </div>
+            </div>
+
+            {/* Actions */}
+            <div className="flex gap-3 px-6 pb-4">
+              <Button
+                variant="outline"
+                onClick={onDeny}
+                className="flex-1 h-10 text-[14px] border-[#d5d2c9] hover:bg-[#f5f3ee]"
+              >
+                {t.permission.deny}
+              </Button>
+              <Button
+                onClick={onAuthorize}
+                className="flex-1 h-10 text-[14px] text-white bg-[#29261b] hover:bg-[#3d3929]"
+              >
+                {folderSelectT?.authorizeButton ?? ''}
+              </Button>
+            </div>
+
+            {/* Choose different folder link */}
+            <div className="px-6 pb-6">
+              <button
+                onClick={onChooseFolder}
+                className="w-full text-center text-[12px] text-[#8b887c] hover:text-[#656358] transition-colors underline underline-offset-2"
+              >
+                {folderSelectT?.chooseDifferent ?? ''}
+              </button>
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    // No suggested path — lightweight folder picker prompt
     return (
       <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
         <div className="relative w-full max-w-sm mx-4 bg-white rounded-2xl shadow-xl overflow-hidden animate-in fade-in zoom-in-95 duration-200">
@@ -77,33 +166,26 @@ export default function PermissionDialog({ request, onAllow, onDeny, onChooseFol
             </div>
 
             <h3 className="text-lg font-semibold text-[#29261b] mb-2">
-              {t.permission.folderSelect?.title ?? ''}
+              {folderSelectT?.title ?? ''}
             </h3>
 
             <p className="text-[14px] text-[#656358] mb-4">
-              {t.permission.folderSelect?.description ?? ''}
+              {folderSelectT?.description ?? ''}
             </p>
-
-            {/* Show suggested path if available */}
-            {request.path && (
-              <div className="mb-4 px-3 py-2 bg-[#f5f3ee] rounded-lg border border-[#e8e4dd] inline-block">
-                <p className="text-[13px] text-[#656358] font-mono">{request.path}</p>
-              </div>
-            )}
 
             <Button
               size="lg"
               onClick={onChooseFolder}
               className="px-8 h-11 text-[15px] bg-[#d97757] hover:bg-[#c66646] text-white"
             >
-              {t.permission.folderSelect?.selectButton ?? ''}
+              {folderSelectT?.selectButton ?? ''}
             </Button>
           </div>
 
           {/* Footer hint */}
           <div className="px-6 pb-6">
             <p className="text-[12px] text-[#8b887c] text-center">
-              {t.permission.folderSelect?.hint ?? ''}
+              {folderSelectT?.hint ?? ''}
             </p>
           </div>
         </div>

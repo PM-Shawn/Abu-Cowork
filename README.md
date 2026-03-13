@@ -51,11 +51,45 @@
 
 ## 功能介绍
 
+### 核心能力
+
 - **Agent 自主执行** — 不只是聊天，能自主规划、调用工具、读写文件、执行命令，完成复杂任务
-- **Skill 技能系统** — 内置翻译、周报、代码审查、深度研究、文章写作等技能，一键安装，支持自定义
+- **Skill 技能系统** — 内置 20+ 技能（翻译、周报、代码审查、深度研究、文档写作等），一键安装，支持自定义
 - **MCP 工具协议** — 通过 Model Context Protocol 连接数据库、搜索引擎、GitHub 等外部服务
-- **定时任务** — 设定定时计划，让阿布定期执行任务（如每天早上发送 AI 日报）
 - **多模型支持** — 支持 Anthropic Claude、DeepSeek、通义千问、豆包、Moonshot、智谱等主流模型
+
+### 自动化与触发器
+
+- **定时任务** — Cron 表达式定时执行（如每天早上 9 点发 AI 日报）
+- **触发器系统** — 支持多种事件源自动触发 Agent 执行：
+  - **文件监听** — 监控文件创建/修改/删除，支持 glob 模式匹配
+  - **HTTP Webhook** — 自动生成 POST 端点，接收外部系统回调
+  - **IM 消息** — 收到特定消息时触发任务
+  - **Cron 定时** — 按时间计划周期执行
+- **触发器权限模型** — 四级能力等级（只读 → 安全工具 → 完整权限 → 自定义白名单），精细控制自动任务的操作范围
+
+### IM 频道集成
+
+让阿布成为你的团队机器人 — 在 IM 中 @阿布 即可对话：
+
+- **支持平台** — D-Chat、飞书、钉钉、企业微信、Slack
+- **会话管理** — 自动按用户/群/线程隔离对话，超时自动归档，支持"继续上次"恢复
+- **安全控制** — 用户白名单、工作空间路径限制、能力等级管控
+- **响应模式** — 仅 @提及响应 或 全部消息响应
+
+### 记忆与上下文
+
+- **个人记忆** — 阿布会记住你的偏好和工作习惯（`~/.abu/agents/memory.md`）
+- **项目记忆** — 自动维护项目级上下文（`{workspace}/.abu/MEMORY.md`）
+- **项目指令** — 手动配置项目专属规则（`{workspace}/.abu/ABU.md`）
+
+### 浏览器集成
+
+- **浏览器桥接** — 通过 MCP Server 连接 Chrome，实现网页自动化操作
+- **Chrome 扩展** — 配合阿布完成网页元素点击、表单填写、截图、JS 执行等操作
+
+### 安全与隐私
+
 - **沙箱安全** — macOS Seatbelt 沙箱隔离 + 敏感路径保护 + 命令安全检查
 - **本地优先** — 数据存在本地，API Key 存在本地，不经过第三方服务器
 - **跨平台** — 支持 macOS (Apple Silicon / Intel) 和 Windows
@@ -159,15 +193,18 @@ src/
 │   ├── sidebar/      # 侧边栏导航
 │   ├── panel/        # 右侧详情面板
 │   ├── schedule/     # 定时任务视图
-│   ├── settings/     # 系统设置
+│   ├── trigger/      # 触发器管理视图
+│   ├── settings/     # 系统设置（含 IM 频道配置）
 │   └── ui/           # 基础 UI 组件 (shadcn/Radix)
 ├── core/             # 核心引擎（非 UI）
-│   ├── agent/        # Agent 循环、重试、记忆
+│   ├── agent/        # Agent 循环、重试、记忆系统
 │   ├── llm/          # LLM 适配层 (Claude + OpenAI-compatible)
 │   ├── tools/        # 工具注册、内置工具、安全校验
 │   ├── mcp/          # MCP 客户端
 │   ├── skill/        # Skill 加载与预处理
 │   ├── scheduler/    # 定时调度引擎
+│   ├── trigger/      # 触发器引擎（文件监听/Webhook/Cron/IM）
+│   ├── im/           # IM 频道适配（D-Chat/飞书/钉钉/企微/Slack）
 │   ├── context/      # 上下文管理与 Token 估算
 │   └── sandbox/      # 沙箱配置
 ├── stores/           # Zustand 状态管理
@@ -178,9 +215,9 @@ src/
 
 builtin-skills/       # 内置技能定义 (翻译、周报、代码审查等)
 builtin-agents/       # 内置 Agent 定义
-src-tauri/            # Tauri Rust 后端 (沙箱、命令执行、网络代理)
-abu-browser-bridge/   # 浏览器桥接服务
+abu-browser-bridge/   # 浏览器桥接 MCP Server
 abu-chrome-extension/ # Chrome 扩展
+src-tauri/            # Tauri Rust 后端 (沙箱、命令执行、网络代理)
 ```
 
 ## 文档

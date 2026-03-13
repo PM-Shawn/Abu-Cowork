@@ -51,11 +51,45 @@ Bring your own API keys and models — flexibly connect to various LLM providers
 
 ## Features
 
+### Core
+
 - **Autonomous Agent** — More than chat: plans, invokes tools, reads/writes files, executes commands, and completes complex tasks
-- **Skill System** — Built-in skills for translation, weekly reports, code review, deep research, article writing, and more — one-click install, fully customizable
+- **Skill System** — 20+ built-in skills (translation, weekly reports, code review, deep research, doc writing, and more) — one-click install, fully customizable
 - **MCP Protocol** — Connect to databases, search engines, GitHub, and other external services via Model Context Protocol
-- **Scheduled Tasks** — Set recurring schedules for Abu to run tasks automatically (e.g., daily AI news digest every morning)
 - **Multi-Model Support** — Works with Anthropic Claude, DeepSeek, Qwen, Doubao, Moonshot, GLM, and other major LLM providers
+
+### Automation & Triggers
+
+- **Scheduled Tasks** — Cron-based scheduling (e.g., daily AI news digest at 9 AM)
+- **Trigger System** — Multiple event sources to automatically invoke agents:
+  - **File Watcher** — Monitor file create/modify/delete events with glob patterns
+  - **HTTP Webhook** — Auto-generated POST endpoints for external callbacks
+  - **IM Messages** — Trigger tasks on specific incoming messages
+  - **Cron Schedule** — Periodic execution on a time-based plan
+- **Trigger Permission Model** — Four capability levels (read-only → safe tools → full access → custom whitelist) for fine-grained control over automated tasks
+
+### IM Channel Integration
+
+Turn Abu into your team bot — just @Abu in your chat:
+
+- **Supported Platforms** — D-Chat, Feishu (Lark), DingTalk, WeCom, Slack
+- **Session Management** — Auto-isolate conversations by user/group/thread, auto-archive on timeout, "continue last" recovery
+- **Security Controls** — User allowlist, workspace path restrictions, capability level enforcement
+- **Response Modes** — Mention-only or all-messages
+
+### Memory & Context
+
+- **Personal Memory** — Abu remembers your preferences and work habits (`~/.abu/agents/memory.md`)
+- **Project Memory** — Auto-maintained project-level context (`{workspace}/.abu/MEMORY.md`)
+- **Project Instructions** — Manually configure project-specific rules (`{workspace}/.abu/ABU.md`)
+
+### Browser Integration
+
+- **Browser Bridge** — MCP Server connecting to Chrome for web automation
+- **Chrome Extension** — Works with Abu for element clicking, form filling, screenshots, JS execution, and more
+
+### Security & Privacy
+
 - **Sandbox Security** — macOS Seatbelt sandbox isolation + sensitive path protection + command safety checks
 - **Local-First** — Your data stays local, your API keys stay local — nothing goes through third-party servers
 - **Cross-Platform** — Supports macOS (Apple Silicon / Intel) and Windows
@@ -159,15 +193,18 @@ src/
 │   ├── sidebar/      # Sidebar navigation
 │   ├── panel/        # Right-side detail panel
 │   ├── schedule/     # Scheduled task views
-│   ├── settings/     # System settings
+│   ├── trigger/      # Trigger management views
+│   ├── settings/     # System settings (incl. IM channel config)
 │   └── ui/           # Base UI components (shadcn/Radix)
 ├── core/             # Core engine (non-UI)
-│   ├── agent/        # Agent loop, retry, memory
+│   ├── agent/        # Agent loop, retry, memory system
 │   ├── llm/          # LLM adapter layer (Claude + OpenAI-compatible)
 │   ├── tools/        # Tool registry, built-in tools, safety checks
 │   ├── mcp/          # MCP client
 │   ├── skill/        # Skill loading & preprocessing
 │   ├── scheduler/    # Scheduling engine
+│   ├── trigger/      # Trigger engine (file watcher/webhook/cron/IM)
+│   ├── im/           # IM channel adapters (D-Chat/Feishu/DingTalk/WeCom/Slack)
 │   ├── context/      # Context management & token estimation
 │   └── sandbox/      # Sandbox configuration
 ├── stores/           # Zustand state management
@@ -178,9 +215,9 @@ src/
 
 builtin-skills/       # Built-in skill definitions (translation, reports, code review, etc.)
 builtin-agents/       # Built-in agent definitions
-src-tauri/            # Tauri Rust backend (sandbox, command execution, network proxy)
-abu-browser-bridge/   # Browser bridge service
+abu-browser-bridge/   # Browser bridge MCP Server
 abu-chrome-extension/ # Chrome extension
+src-tauri/            # Tauri Rust backend (sandbox, command execution, network proxy)
 ```
 
 ## Documentation

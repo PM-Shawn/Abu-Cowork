@@ -15,12 +15,12 @@ export default function SystemSettingsView() {
 
   const navItems: { id: SystemSettingsTab; label: string; icon: typeof Settings2 }[] = [
     { id: 'ai-services', label: t.settings.aiServices, icon: Settings2 },
+    { id: 'im-channels', label: t.imChannel.title, icon: Radio },
     { id: 'sandbox', label: t.settings.sandbox, icon: Shield },
     { id: 'general', label: t.settings.general, icon: SlidersHorizontal },
-    { id: 'im-channels', label: t.imChannel.title, icon: Radio },
-    { id: 'about', label: t.common.version, icon: Info },
     { id: 'feedback', label: t.about.feedback, icon: MessageCircle },
     { id: 'sponsor', label: t.about.sponsor, icon: Heart },
+    { id: 'about', label: t.common.version, icon: Info },
   ];
 
   const renderContent = () => {

@@ -13,7 +13,7 @@
 import { useIMChannelStore } from '../../stores/imChannelStore';
 import { useChatStore } from '../../stores/chatStore';
 import type { IMSession, IMCapabilityLevel } from '../../types/imChannel';
-import type { IMPlatform } from '../../types/trigger';
+
 import type { NormalizedIMMessage } from './inboundRouter';
 import type { IMChannel } from '../../types/imChannel';
 

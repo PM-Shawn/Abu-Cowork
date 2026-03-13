@@ -191,7 +191,7 @@ export const useIMChannelStore = create<IMChannelStore>()(
       onRehydrateStorage: () => (state) => {
         if (!state) return;
         // Reset all channel statuses to disconnected on reload
-        for (const channel of Object.values(state.channels)) {
+        for (const channel of Object.values(state.channels) as IMChannel[]) {
           channel.status = 'disconnected';
           channel.lastError = undefined;
           // Fix: repair enabled field if corrupted to undefined (from prior Toggle bug)

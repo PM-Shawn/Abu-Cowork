@@ -45,7 +45,7 @@ function syncTray() {
   }
 
   // Count active triggers
-  const triggerCount = Object.values(triggerState.triggers).filter((t) => t.enabled).length;
+  const triggerCount = Object.values(triggerState.triggers).filter((t) => t.status === 'active').length;
 
   invoke('update_tray_menu', {
     imChannels,

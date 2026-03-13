@@ -1,4 +1,4 @@
-import type { ToolDefinition, ToolResult, ToolResultContent } from '../../types';
+import type { ToolDefinition, ToolResult, ToolResultContent, ToolExecutionContext } from '../../types';
 import { mcpManager } from '../mcp/client';
 import { analyzeCommand, type ConfirmationInfo, type DangerLevel } from './commandSafety';
 import { checkReadPath, checkWritePath, checkListPath } from './pathSafety';
@@ -50,13 +50,13 @@ class ToolRegistry {
     this.tools.delete(name);
   }
 
-  async execute(name: string, input: Record<string, unknown>): Promise<ToolResult> {
+  async execute(name: string, input: Record<string, unknown>, context?: ToolExecutionContext): Promise<ToolResult> {
     const tool = this.tools.get(name);
     if (!tool) {
       return `Error: Unknown tool "${name}"`;
     }
     try {
-      return await tool.execute(input);
+      return await tool.execute(input, context);
     } catch (err) {
       return `Error executing tool "${name}": ${err instanceof Error ? err.message : String(err)}`;
     }
@@ -160,7 +160,8 @@ export async function executeAnyTool(
   name: string,
   input: Record<string, unknown>,
   onRequireConfirmation?: CommandConfirmCallback,
-  onRequireFilePermission?: FilePermissionCallback
+  onRequireFilePermission?: FilePermissionCallback,
+  toolContext?: ToolExecutionContext
 ): Promise<ToolResult> {
   const t = getI18n();
 
@@ -234,7 +235,7 @@ export async function executeAnyTool(
 
   // First check builtin tools
   if (toolRegistry.has(name)) {
-    const result = await toolRegistry.execute(name, input);
+    const result = await toolRegistry.execute(name, input, toolContext);
     // Only truncate string results; rich content (images) passes through
     if (typeof result === 'string') {
       // Detect OS-level permission errors for file tools and add guidance

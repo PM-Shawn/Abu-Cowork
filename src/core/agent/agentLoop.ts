@@ -1,4 +1,4 @@
-import type { StreamEvent, ToolCall, TokenUsage, ImageAttachment, MessageContent } from '../../types';
+import type { StreamEvent, ToolCall, TokenUsage, ImageAttachment, MessageContent, ToolExecutionContext } from '../../types';
 import type { LLMAdapter } from '../llm/adapter';
 import { LLMError } from '../llm/adapter';
 import { ClaudeAdapter } from '../llm/claude';
@@ -7,6 +7,7 @@ import { getAllTools, executeAnyTool, toolResultToString, type ConfirmationInfo,
 import type { ToolResult, ToolResultContent, ToolDefinition } from '../../types';
 import { useChatStore } from '../../stores/chatStore';
 import { useSettingsStore, getEffectiveModel, resolveAgentModel } from '../../stores/settingsStore';
+import { useWorkspaceStore } from '../../stores/workspaceStore';
 import { useTaskExecutionStore } from '../../stores/taskExecutionStore';
 import { usePermissionStore } from '../../stores/permissionStore';
 import { authorizeWorkspace } from '../tools/pathSafety';
@@ -352,14 +353,32 @@ export function drainWorkspaceRequest(): void {
   }
 }
 
+/** Timeout for workspace selection — auto-resolve(null) if user doesn't respond */
+const WORKSPACE_REQUEST_TIMEOUT_MS = 60_000; // 60 seconds
+
 /**
  * Request the user to select a workspace folder.
  * Called from the request_workspace tool.
+ * Auto-resolves to null after timeout to prevent indefinite hangs.
  */
 export async function requestWorkspace(reason: string, conversationId?: string, suggestedPath?: string): Promise<string | null> {
   const convId = conversationId ?? currentLoopContext?.conversationId ?? '';
   return new Promise((resolve) => {
-    pendingWorkspaceRequest = { reason, conversationId: convId, suggestedPath, resolve };
+    const timer = setTimeout(() => {
+      if (pendingWorkspaceRequest?.resolve === wrappedResolve) {
+        console.warn('[AgentLoop] Workspace request timed out, auto-cancelling');
+        pendingWorkspaceRequest = null;
+        notifyWorkspaceRequestListeners();
+        resolve(null);
+      }
+    }, WORKSPACE_REQUEST_TIMEOUT_MS);
+
+    const wrappedResolve = (path: string | null) => {
+      clearTimeout(timer);
+      resolve(path);
+    };
+
+    pendingWorkspaceRequest = { reason, conversationId: convId, suggestedPath, resolve: wrappedResolve };
     notifyWorkspaceRequestListeners();
   });
 }
@@ -622,6 +641,11 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
   // Build static system prompt once (active skills are injected dynamically per-turn)
   const systemPrompt = await buildSystemPrompt(route, getBaseSystemPrompt(), conversationId, options?.imContext);
 
+  // Build tool execution context — provides resolved workspace for tools like update_memory
+  const toolContext: ToolExecutionContext = {
+    workspacePath: options?.imContext?.workspacePath ?? useWorkspaceStore.getState().currentPath,
+  };
+
   // Determine effective model — agent can override (with provider compatibility check)
   let effectiveModelId = getEffectiveModel(settings);
   if (route.type === 'agent' && route.definition?.model) {
@@ -747,6 +771,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
         commandConfirmCallback: confirmCb,
         filePermissionCallback: filePermCb,
         onProgress,
+        imContext: options?.imContext,
       });
 
       // Complete the delegate step
@@ -1240,7 +1265,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
 
           const startTime = Date.now();
           try {
-            const rawResult: ToolResult = await executeAnyTool(tc.name, effectiveInput, confirmCb, filePermCb);
+            const rawResult: ToolResult = await executeAnyTool(tc.name, effectiveInput, confirmCb, filePermCb, toolContext);
             const durationMs = Date.now() - startTime;
             completedCount++;
             if (totalCount > 1) {

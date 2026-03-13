@@ -60,7 +60,21 @@ export default function TriggerDetail() {
   };
 
   const handleTestTrigger = () => {
-    const testPayload = { data: { content: 'test message', _test: true, timestamp: Date.now() } };
+    let testPayload;
+    if (trigger.source.type === 'file') {
+      // Simulate a realistic file event payload
+      testPayload = { data: {
+        event: 'create',
+        paths: [`${trigger.source.path}/test-file.txt`],
+        watchPath: trigger.source.path,
+        _test: true,
+        timestamp: Date.now(),
+      } };
+    } else if (trigger.source.type === 'cron') {
+      testPayload = { data: { event: 'cron', run: 1, _test: true, timestamp: Date.now() } };
+    } else {
+      testPayload = { data: { content: 'test message', _test: true, timestamp: Date.now() } };
+    }
     triggerEngine.handleEvent(trigger.id, testPayload, { skipChecks: true });
     useToastStore.getState().addToast({ type: 'success', title: t.trigger.testTriggerSent });
   };

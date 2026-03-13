@@ -26,12 +26,16 @@
         { "path": "$HOME/**" },
         { "path": "$HOME/.abu/**" },
         { "path": "$DESKTOP/**" },
+        { "path": "$DESKTOP/**/.abu/**" },
         { "path": "$DOCUMENT/**" },
+        { "path": "$DOCUMENT/**/.abu/**" },
         { "path": "$DOWNLOAD/**" },
+        { "path": "$DOWNLOAD/**/.abu/**" },
         { "path": "$RESOURCE/**" },
         { "path": "/tmp/**" },
         { "path": "/private/tmp/**" },
         { "path": "/Volumes/**" },
+        { "path": "/Volumes/**/.abu/**" },
         { "path": "$TEMP/**" }
       ]
     },
@@ -41,12 +45,16 @@
         { "path": "$HOME/**" },
         { "path": "$HOME/.abu/**" },
         { "path": "$DESKTOP/**" },
+        { "path": "$DESKTOP/**/.abu/**" },
         { "path": "$DOCUMENT/**" },
+        { "path": "$DOCUMENT/**/.abu/**" },
         { "path": "$DOWNLOAD/**" },
+        { "path": "$DOWNLOAD/**/.abu/**" },
         { "path": "$RESOURCE/**" },
         { "path": "/tmp/**" },
         { "path": "/private/tmp/**" },
         { "path": "/Volumes/**" },
+        { "path": "/Volumes/**/.abu/**" },
         { "path": "$TEMP/**" }
       ]
     },
@@ -56,10 +64,14 @@
         { "path": "$HOME/**" },
         { "path": "$HOME/.abu/**" },
         { "path": "$DESKTOP/**" },
+        { "path": "$DESKTOP/**/.abu/**" },
         { "path": "$DOCUMENT/**" },
+        { "path": "$DOCUMENT/**/.abu/**" },
         { "path": "$DOWNLOAD/**" },
+        { "path": "$DOWNLOAD/**/.abu/**" },
         { "path": "/tmp/**" },
         { "path": "/private/tmp/**" },
+        { "path": "/Volumes/**/.abu/**" },
         { "path": "$TEMP/**" }
       ]
     },
@@ -69,10 +81,14 @@
         { "path": "$HOME/**" },
         { "path": "$HOME/.abu/**" },
         { "path": "$DESKTOP/**" },
+        { "path": "$DESKTOP/**/.abu/**" },
         { "path": "$DOCUMENT/**" },
+        { "path": "$DOCUMENT/**/.abu/**" },
         { "path": "$DOWNLOAD/**" },
+        { "path": "$DOWNLOAD/**/.abu/**" },
         { "path": "/tmp/**" },
         { "path": "/private/tmp/**" },
+        { "path": "/Volumes/**/.abu/**" },
         { "path": "$TEMP/**" }
       ]
     },
@@ -82,12 +98,16 @@
         { "path": "$HOME/**" },
         { "path": "$HOME/.abu/**" },
         { "path": "$DESKTOP/**" },
+        { "path": "$DESKTOP/**/.abu/**" },
         { "path": "$DOCUMENT/**" },
+        { "path": "$DOCUMENT/**/.abu/**" },
         { "path": "$DOWNLOAD/**" },
+        { "path": "$DOWNLOAD/**/.abu/**" },
         { "path": "$RESOURCE/**" },
         { "path": "/tmp/**" },
         { "path": "/private/tmp/**" },
         { "path": "/Volumes/**" },
+        { "path": "/Volumes/**/.abu/**" },
         { "path": "$TEMP/**" }
       ]
     },
@@ -97,12 +117,20 @@
         { "path": "$HOME/**" },
         { "path": "$HOME/.abu/**" },
         { "path": "$DESKTOP/**" },
+        { "path": "$DESKTOP/**/.abu" },
+        { "path": "$DESKTOP/**/.abu/**" },
         { "path": "$DOCUMENT/**" },
+        { "path": "$DOCUMENT/**/.abu" },
+        { "path": "$DOCUMENT/**/.abu/**" },
         { "path": "$DOWNLOAD/**" },
+        { "path": "$DOWNLOAD/**/.abu" },
+        { "path": "$DOWNLOAD/**/.abu/**" },
         { "path": "$RESOURCE/**" },
         { "path": "/tmp/**" },
         { "path": "/private/tmp/**" },
         { "path": "/Volumes/**" },
+        { "path": "/Volumes/**/.abu" },
+        { "path": "/Volumes/**/.abu/**" },
         { "path": "$TEMP/**" }
       ]
     },
@@ -113,8 +141,16 @@
         { "path": "$HOME/.abu" },
         { "path": "$HOME/.abu/**" },
         { "path": "$DESKTOP/**" },
+        { "path": "$DESKTOP/**/.abu" },
+        { "path": "$DESKTOP/**/.abu/**" },
         { "path": "$DOCUMENT/**" },
+        { "path": "$DOCUMENT/**/.abu" },
+        { "path": "$DOCUMENT/**/.abu/**" },
         { "path": "$DOWNLOAD/**" },
+        { "path": "$DOWNLOAD/**/.abu" },
+        { "path": "$DOWNLOAD/**/.abu/**" },
+        { "path": "/Volumes/**/.abu" },
+        { "path": "/Volumes/**/.abu/**" },
         { "path": "$TEMP/**" }
       ]
     },
@@ -131,6 +167,21 @@
         { "url": "http://*" }
       ]
     },
+    {
+      "identifier": "fs:allow-watch",
+      "allow": [
+        { "path": "$HOME/**" },
+        { "path": "$HOME/.abu/**" },
+        { "path": "$DESKTOP/**" },
+        { "path": "$DOCUMENT/**" },
+        { "path": "$DOWNLOAD/**" },
+        { "path": "/tmp/**" },
+        { "path": "/private/tmp/**" },
+        { "path": "/Volumes/**" },
+        { "path": "$TEMP/**" }
+      ]
+    },
+    "fs:allow-unwatch",
     "clipboard-manager:allow-read-text",
     "clipboard-manager:allow-write-text",
     "shell:default",

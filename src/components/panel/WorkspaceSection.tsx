@@ -12,12 +12,16 @@ import {
   ChevronDown,
   Check,
   Folder,
+  Brain,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { useEffect, useState, useRef } from 'react';
 import PermissionDialog from '@/components/common/PermissionDialog';
+import InstructionsEditModal from '@/components/common/InstructionsEditModal';
+import MemoryViewModal from '@/components/common/MemoryViewModal';
 import FilesSection from './FilesSection';
 import { cn } from '@/lib/utils';
+import { joinPath } from '@/utils/pathUtils';
 
 export default function WorkspaceSection() {
   const currentPath = useWorkspaceStore((s) => s.currentPath);
@@ -36,10 +40,13 @@ export default function WorkspaceSection() {
 
   const grantPermission = usePermissionStore((s) => s.grantPermission);
   const hasPermission = usePermissionStore((s) => s.hasPermission);
-  const [hasClaudeMd, setHasClaudeMd] = useState(false);
+  const [hasInstructions, setHasInstructions] = useState(false);
+  const [hasMemory, setHasMemory] = useState(false);
   const [pendingFolder, setPendingFolder] = useState<string | null>(null);
   const [isDropdownOpen, setIsDropdownOpen] = useState(false);
   const [expanded, setExpanded] = useState(true);  // Main section expand/collapse
+  const [showInstructionsModal, setShowInstructionsModal] = useState(false);
+  const [showMemoryModal, setShowMemoryModal] = useState(false);
   const dropdownRef = useRef<HTMLDivElement>(null);
   const { t } = useI18n();
 
@@ -56,22 +63,28 @@ export default function WorkspaceSection() {
     }
   }, [isDropdownOpen]);
 
-  // Check for CLAUDE.md when workspace changes
+  // Check for .abu/ABU.md and .abu/MEMORY.md when workspace changes
   useEffect(() => {
-    async function checkClaudeMd() {
+    async function checkFiles() {
       if (!currentPath) {
-        setHasClaudeMd(false);
+        setHasInstructions(false);
+        setHasMemory(false);
         return;
       }
       try {
-        const claudePath = `${currentPath}/CLAUDE.md`;
-        const fileExists = await exists(claudePath);
-        setHasClaudeMd(fileExists);
+        const abuMdPath = joinPath(currentPath, '.abu', 'ABU.md');
+        setHasInstructions(await exists(abuMdPath));
       } catch {
-        setHasClaudeMd(false);
+        setHasInstructions(false);
+      }
+      try {
+        const memoryPath = joinPath(currentPath, '.abu', 'MEMORY.md');
+        setHasMemory(await exists(memoryPath));
+      } catch {
+        setHasMemory(false);
       }
     }
-    checkClaudeMd();
+    checkFiles();
   }, [currentPath]);
 
   const handleOpenInFinder = async () => {
@@ -136,6 +149,32 @@ export default function WorkspaceSection() {
           request={{ type: 'workspace', path: pendingFolder }}
           onAllow={handleAllowPermission}
           onDeny={handleDenyPermission}
+        />
+      )}
+
+      {/* Instructions Edit Modal */}
+      {currentPath && (
+        <InstructionsEditModal
+          open={showInstructionsModal}
+          onClose={() => {
+            setShowInstructionsModal(false);
+            // Re-check if file was created/modified
+            exists(joinPath(currentPath, '.abu', 'ABU.md')).then(setHasInstructions).catch(() => setHasInstructions(false));
+          }}
+          workspacePath={currentPath}
+        />
+      )}
+
+      {/* Memory View Modal */}
+      {currentPath && (
+        <MemoryViewModal
+          open={showMemoryModal}
+          onClose={() => {
+            setShowMemoryModal(false);
+            exists(joinPath(currentPath, '.abu', 'MEMORY.md')).then(setHasMemory).catch(() => setHasMemory(false));
+          }}
+          scope="project"
+          workspacePath={currentPath}
         />
       )}
 
@@ -253,15 +292,37 @@ export default function WorkspaceSection() {
               )}
             </div>
 
-            {/* CLAUDE.md indicator */}
-            {hasClaudeMd && (
-              <div className="flex items-center gap-2 px-2.5 py-1.5 rounded-md bg-green-500/10 border border-green-500/20">
-                <FileText className="w-3.5 h-3.5 text-green-600" />
-                <span className="text-[11px] text-green-700 font-medium">
-                  {t.panel.instructionFile} · CLAUDE.md
-                </span>
-              </div>
-            )}
+            {/* Instructions entry */}
+            <button
+              onClick={() => setShowInstructionsModal(true)}
+              className={cn(
+                'w-full flex items-center gap-2 px-2.5 py-1.5 rounded-md transition-colors text-left',
+                hasInstructions
+                  ? 'bg-[#d97757]/[0.08] hover:bg-[#d97757]/[0.15]'
+                  : 'bg-[#f5f3ee] hover:bg-[#e8e5de]'
+              )}
+            >
+              <FileText className={cn('w-3.5 h-3.5', hasInstructions ? 'text-[#d97757]' : 'text-[#b0ada4]')} />
+              <span className={cn('text-[11px] font-medium', hasInstructions ? 'text-[#3d3929]' : 'text-[#888579]')}>
+                {hasInstructions ? `${t.panel.instructions} · ABU.md` : t.panel.instructionsAdd}
+              </span>
+            </button>
+
+            {/* Memory entry */}
+            <button
+              onClick={() => setShowMemoryModal(true)}
+              className={cn(
+                'w-full flex items-center gap-2 px-2.5 py-1.5 rounded-md transition-colors text-left',
+                hasMemory
+                  ? 'bg-[#8b7ec8]/[0.08] hover:bg-[#8b7ec8]/[0.15]'
+                  : 'bg-[#f5f3ee] hover:bg-[#e8e5de]'
+              )}
+            >
+              <Brain className={cn('w-3.5 h-3.5', hasMemory ? 'text-[#8b7ec8]' : 'text-[#b0ada4]')} />
+              <span className={cn('text-[11px] font-medium', hasMemory ? 'text-[#3d3929]' : 'text-[#888579]')}>
+                {hasMemory ? t.panel.memory : t.panel.memoryEmpty}
+              </span>
+            </button>
           </div>
         ) : (
           // Empty state - clickable to select workspace

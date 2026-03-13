@@ -10,6 +10,7 @@ This guide covers all Abu features and how to use them effectively.
 
 - [Quick Start](#quick-start)
 - [Chat & Agent](#chat--agent)
+- [Workspace & Memory](#workspace--memory)
 - [Built-in Tools](#built-in-tools)
 - [Skill System](#skill-system)
 - [MCP Protocol](#mcp-protocol)
@@ -71,6 +72,96 @@ You can **Allow**, **Deny**, or set **Always Allow** for specific operations.
 - The left sidebar shows all conversation history
 - Click **"New Chat"** to start a fresh task
 - Search and delete conversations as needed
+
+---
+
+## Workspace & Memory
+
+Workspace and memory let Abu understand your project context and personal preferences without repeating yourself.
+
+### Workspace
+
+A workspace is the root directory Abu operates in. Once set, Abu can read and write files within it.
+
+1. Click the **Workspace** area in the right panel
+2. Select your project folder
+3. Grant access permissions
+
+Below the workspace, you'll see two entries: **Project Instructions** and **Project Memory**.
+
+### Three Layers of Memory
+
+Abu has three types of memory, each serving a different scope:
+
+#### 1. Personal Memory
+
+| Property | Description |
+|----------|-------------|
+| **Location** | Settings → Personal Memory |
+| **Storage** | `~/.abu/agents/abu/memory.md` |
+| **Scope** | Applies across all projects |
+| **Who writes** | Abu accumulates automatically; you can also edit manually |
+| **Content** | Your name, communication preferences, tools you use, etc. |
+
+**Example**: When you say "Remember my name is Shawn", Abu stores this in personal memory. She'll remember you in future conversations.
+
+#### 2. Project Memory
+
+| Property | Description |
+|----------|-------------|
+| **Location** | Right panel → Project Memory |
+| **Storage** | `{workspace}/.abu/MEMORY.md` |
+| **Scope** | Current workspace only |
+| **Who writes** | Abu accumulates automatically; you can also edit manually |
+| **Content** | Tech stack, common issues, architecture patterns, etc. |
+
+**Note**: This file is AI-generated — **do not commit to git**.
+
+#### 3. Project Instructions
+
+| Property | Description |
+|----------|-------------|
+| **Location** | Right panel → Project Instructions |
+| **Storage** | `{workspace}/.abu/ABU.md` |
+| **Scope** | Current workspace only |
+| **Who writes** | You write manually |
+| **Content** | Coding standards, build commands, team conventions |
+| **Priority** | Highest — Abu strictly follows these |
+
+**Recommended to commit to git** so team members share the same rules.
+
+Click **"Instructions · Click to add"** in the right panel to edit. Supports Markdown format.
+
+**Example project instructions**:
+
+```markdown
+## Overview
+This is a React + Tailwind admin dashboard
+
+## Tech Stack
+- Frontend: React 18 + TypeScript + Tailwind CSS
+- Build: Vite, run pnpm dev to start
+- Testing: Vitest, run pnpm test
+
+## Coding Standards
+- Use function components + Hooks, no class components
+- camelCase for variables, PascalCase for components
+- Run pnpm lint before committing
+```
+
+### Modular Rules
+
+For large projects, split rules into multiple `.md` files under `{workspace}/.abu/rules/`. Abu loads them all alphabetically (max 20 files).
+
+### Memory Priority
+
+When processing your requests, Abu injects context in this order:
+
+```
+Project Instructions (highest) → Project Memory → Personal Memory (lowest)
+```
+
+If project instructions conflict with personal memory, project instructions take precedence.
 
 ---
 

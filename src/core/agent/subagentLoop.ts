@@ -6,7 +6,8 @@
  * Message history is maintained in a local array and never written to chatStore.
  */
 
-import type { StreamEvent, Message, SubagentDefinition } from '../../types';
+import type { StreamEvent, Message, SubagentDefinition, ToolExecutionContext } from '../../types';
+import type { IMContext } from './orchestrator';
 import type { LLMAdapter } from '../llm/adapter';
 import { ClaudeAdapter } from '../llm/claude';
 import { OpenAICompatibleAdapter } from '../llm/openai-compatible';
@@ -71,6 +72,8 @@ export interface SubagentLoopOptions {
   commandConfirmCallback?: (info: ConfirmationInfo) => Promise<boolean>;
   filePermissionCallback?: FilePermissionCallback;
   onProgress?: (event: SubagentProgressEvent) => void;
+  /** IM context — provides correct workspace path in headless mode */
+  imContext?: IMContext;
 }
 
 export async function runSubagentLoop(options: SubagentLoopOptions): Promise<string> {
@@ -84,7 +87,7 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<str
     const settings = useSettingsStore.getState();
 
     // 1. Build system prompt
-    const workspacePath = useWorkspaceStore.getState().currentPath;
+    const workspacePath = options.imContext?.workspacePath ?? useWorkspaceStore.getState().currentPath;
     const now = new Date();
     const dateStr = now.toLocaleDateString('zh-CN', {
       year: 'numeric', month: 'long', day: 'numeric', weekday: 'long',
@@ -271,11 +274,13 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<str
             return { id: tc.id, result: '[已取消]' };
           }
           try {
+            const subagentToolContext: ToolExecutionContext = { workspacePath };
             const rawResult = await executeAnyTool(
               tc.name,
               tc.input,
               commandConfirmCallback,
               filePermissionCallback,
+              subagentToolContext,
             );
             return { id: tc.id, result: toolResultToString(rawResult) };
           } catch (err) {

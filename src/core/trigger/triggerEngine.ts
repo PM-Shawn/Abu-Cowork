@@ -12,36 +12,11 @@ import type { Trigger, TriggerEventPayload, IMReplyContext, IMPlatform } from '.
 import { parseInboundMessage } from '../im/inboundRouter';
 import type { NormalizedIMMessage } from '../im/inboundRouter';
 import { getI18n } from '../../i18n';
-import type { ConfirmationInfo, FilePermissionCallback } from '../tools/registry';
-import { usePermissionStore } from '../../stores/permissionStore';
 import { useIMChannelStore } from '../../stores/imChannelStore';
-import { authorizeWorkspace } from '../tools/pathSafety';
+import { resolveTriggerCallbacks } from './triggerPermission';
 import { invoke } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import { watch, type UnwatchFn } from '@tauri-apps/plugin-fs';
-
-/**
- * Auto-deny confirmation callback for trigger tasks.
- * Trigger tasks run unattended, so dangerous commands are automatically rejected.
- */
-async function autoDenyConfirmation(_info: ConfirmationInfo): Promise<boolean> {
-  console.log('[Trigger] Auto-denied dangerous command:', _info.command);
-  return false;
-}
-
-/**
- * Auto file permission callback for trigger tasks.
- * Auto-allows paths that have persisted grants; auto-denies everything else.
- */
-const autoFilePermission: FilePermissionCallback = async (request) => {
-  const permStore = usePermissionStore.getState();
-  if (permStore.hasPermission(request.path, request.capability)) {
-    authorizeWorkspace(request.path);
-    return true;
-  }
-  console.log(`[Trigger] Auto-denied file access: ${request.path} (${request.capability})`);
-  return false;
-};
 
 const DEFAULT_PORT = 18080;
 
@@ -301,9 +276,15 @@ class TriggerEngine {
     const chatStore = useChatStore.getState();
     const triggerStore = useTriggerStore.getState();
 
+    // Determine workspace path: explicit config > file source path > null
+    let workspacePath = trigger.action.workspacePath ?? null;
+    if (!workspacePath && trigger.source.type === 'file') {
+      workspacePath = trigger.source.path;
+    }
+
     // Create a hidden conversation (same pattern as scheduler.ts)
     const conversationId = chatStore.createConversation(
-      trigger.action.workspacePath ?? null,
+      workspacePath,
       { triggerId: trigger.id, skipActivate: true }
     );
 
@@ -333,10 +314,13 @@ class TriggerEngine {
     }
 
     try {
-      // runAgentLoop returns Promise<void> — no polling needed
+      // Resolve permission callbacks based on trigger's capability level.
+      // Permissions are declared at creation time — no runtime dialogs.
+      const callbacks = resolveTriggerCallbacks(trigger.action);
       await runAgentLoop(conversationId, prompt, {
-        commandConfirmCallback: autoDenyConfirmation,
-        filePermissionCallback: autoFilePermission,
+        commandConfirmCallback: callbacks.commandConfirmCallback,
+        filePermissionCallback: callbacks.filePermissionCallback,
+        blockedTools: callbacks.blockedTools,
       });
 
       useTriggerStore.getState().completeRun(trigger.id, runId);

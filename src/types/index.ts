@@ -156,6 +156,12 @@ export interface ToolParameter {
   [key: string]: unknown;    // Allow extra JSON Schema fields (e.g. default, properties)
 }
 
+/** Runtime context passed to tool execute(), e.g. the effective workspace for this conversation */
+export interface ToolExecutionContext {
+  /** Resolved workspace path (from IMContext or global store) */
+  workspacePath?: string | null;
+}
+
 export interface ToolDefinition {
   name: string;
   description: string;
@@ -164,7 +170,7 @@ export interface ToolDefinition {
     properties: Record<string, ToolParameter>;
     required?: string[];
   };
-  execute: (input: Record<string, unknown>) => Promise<ToolResult>;
+  execute: (input: Record<string, unknown>, context?: ToolExecutionContext) => Promise<ToolResult>;
 }
 
 // --- LLM ---

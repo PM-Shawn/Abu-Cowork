@@ -80,6 +80,28 @@ export interface QuietHoursConfig {
   end: string;
 }
 
+// ── Capability & Permissions ──
+
+/**
+ * Trigger capability level — determines what the trigger can do at runtime.
+ * Permissions are declared at creation time (no runtime dialogs for unattended execution).
+ *
+ * - read_tools:  Read files, search, web fetch — no modifications (default, safest)
+ * - safe_tools:  Read + write within workspace, safe commands only (ls, git status, etc.)
+ * - full:        All operations except hard-blocked paths/commands (.ssh, rm -rf /, etc.)
+ * - custom:      Fine-grained control via TriggerPermissions whitelist
+ */
+export type TriggerCapability = 'read_tools' | 'safe_tools' | 'full' | 'custom';
+
+export interface TriggerPermissions {
+  /** Command whitelist — glob patterns (e.g. "npm run *", "git pull", "curl *") */
+  allowedCommands?: string[];
+  /** Path whitelist — auto-authorized at execution time (e.g. "/Users/xx/project/src") */
+  allowedPaths?: string[];
+  /** Tool whitelist — if empty, no restriction (e.g. ["read_file", "http_fetch"]) */
+  allowedTools?: string[];
+}
+
 // ── Action ──
 
 export interface TriggerAction {
@@ -89,6 +111,10 @@ export interface TriggerAction {
   prompt: string;
   /** Workspace path for the agent (optional) */
   workspacePath?: string;
+  /** Capability level (default: read_tools) */
+  capability?: TriggerCapability;
+  /** Custom permissions (only used when capability='custom') */
+  permissions?: TriggerPermissions;
 }
 
 // ── Output Config ──

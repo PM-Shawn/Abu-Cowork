@@ -58,6 +58,19 @@ export interface TranslationDict {
     changeAvatar: string;
     defaultNickname: string;
     resetProfile: string;
+    personalMemory: string;
+    personalMemoryTitle: string;
+    personalMemoryDesc: string;
+    personalMemoryPlaceholder: string;
+    personalMemoryClearMessage: string;
+    memoryGuideTitle: string;
+    memoryGuidePersonalName: string;
+    memoryGuidePersonalDesc: string;
+    memoryGuideProjectMemoryName: string;
+    memoryGuideProjectMemoryDesc: string;
+    memoryGuideProjectRulesName: string;
+    memoryGuideProjectRulesDesc: string;
+    memoryGuideTip: string;
   };
 
   // Chat/Welcome
@@ -570,6 +583,21 @@ export interface TranslationDict {
     recentlyUsed: string;
     selectOtherFolder: string;
     instructionFile: string;
+    instructions: string;
+    instructionsAdd: string;
+    instructionsTitle: string;
+    instructionsDesc: string;
+    instructionsPlaceholder: string;
+    instructionsSaving: string;
+    memory: string;
+    memoryEmpty: string;
+    memoryTitle: string;
+    memoryDesc: string;
+    memoryPlaceholder: string;
+    memoryClear: string;
+    memoryClearTitle: string;
+    memoryClearMessage: string;
+    memoryClearConfirm: string;
     openInFinder: string;
     closePreview: string;
     previewMode: string;

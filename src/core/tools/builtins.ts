@@ -1176,8 +1176,11 @@ const updateMemoryTool: ToolDefinition = {
     },
     required: ['agent_name'],
   },
-  execute: async (input) => {
-    const agentName = input.agent_name as string;
+  execute: async (input, context) => {
+    // Normalize agent name: AI may use display name (阿布) instead of internal id (abu)
+    const AGENT_NAME_ALIASES: Record<string, string> = { '阿布': 'abu' };
+    const rawName = input.agent_name as string;
+    const agentName = AGENT_NAME_ALIASES[rawName] || rawName;
     const action = (input.action as string) || 'append';
     const content = (input.content as string) || '';
     const scope = (input.scope as string) || 'user';
@@ -1185,7 +1188,7 @@ const updateMemoryTool: ToolDefinition = {
     try {
       // Project-level memory
       if (scope === 'project') {
-        const workspacePath = useWorkspaceStore.getState().currentPath;
+        const workspacePath = context?.workspacePath ?? useWorkspaceStore.getState().currentPath;
         if (!workspacePath) {
           return '错误：当前没有设置工作区，无法使用项目级记忆。请先设置工作区路径。';
         }
@@ -1568,8 +1571,41 @@ const manageTriggerTool: ToolDefinition = {
       },
       filter_pattern: { type: 'string', description: '正则表达式（filter_type=regex 时）' },
       filter_field: { type: 'string', description: '在事件数据的哪个字段上匹配（可选，默认整个 JSON）' },
+      source_type: {
+        type: 'string',
+        enum: ['http', 'file', 'cron'],
+        description: '触发源类型（默认 http）。file=文件监听，cron=定时轮询',
+      },
+      source_path: { type: 'string', description: '监听的文件或目录路径（source_type=file 时必填）' },
+      source_events: {
+        type: 'array',
+        items: { type: 'string', enum: ['create', 'modify', 'delete'] },
+        description: '监听的文件事件类型（source_type=file 时使用，默认 ["create"]）',
+      },
+      source_pattern: { type: 'string', description: '文件名 glob 过滤（source_type=file 时可选，如 "*.pdf"）' },
+      source_interval: { type: 'number', description: '轮询间隔秒数（source_type=cron 时必填，最小 10）' },
       debounce_enabled: { type: 'boolean', description: '是否启用防抖（默认 true）' },
       debounce_seconds: { type: 'number', description: '防抖时间窗口秒数（默认 300）' },
+      capability: {
+        type: 'string',
+        enum: ['read_tools', 'safe_tools', 'full', 'custom'],
+        description: '能力等级（默认 read_tools）。read_tools=只读分析；safe_tools=可读写工作区+安全命令；full=几乎所有操作；custom=自定义白名单',
+      },
+      allowed_commands: {
+        type: 'array',
+        items: { type: 'string' },
+        description: '命令白名单，glob 模式（capability=custom 时使用，如 ["npm run *", "git pull"]）',
+      },
+      allowed_paths: {
+        type: 'array',
+        items: { type: 'string' },
+        description: '路径白名单，运行时自动授权（capability=custom 时使用）',
+      },
+      allowed_tools: {
+        type: 'array',
+        items: { type: 'string' },
+        description: '工具白名单（capability=custom 时使用，如 ["read_file", "http_fetch"]）',
+      },
       trigger_id: { type: 'string', description: '触发器 ID（update/delete/pause/resume 时必填）' },
       status_filter: {
         type: 'string',
@@ -1610,11 +1646,18 @@ const manageTriggerTool: ToolDefinition = {
           field: input.filter_field as string | undefined,
         };
 
-        // Build action
+        // Build action with capability
+        const capabilityInput = input.capability as string | undefined;
         const triggerAction: TriggerAction = {
           prompt,
           skillName: input.skill_name as string | undefined,
           workspacePath: input.workspace_path as string | undefined,
+          capability: (capabilityInput as TriggerAction['capability']) ?? undefined,
+          permissions: capabilityInput === 'custom' ? {
+            allowedCommands: input.allowed_commands as string[] | undefined,
+            allowedPaths: input.allowed_paths as string[] | undefined,
+            allowedTools: input.allowed_tools as string[] | undefined,
+          } : undefined,
         };
 
         // Build debounce
@@ -1623,29 +1666,85 @@ const manageTriggerTool: ToolDefinition = {
           windowSeconds: (input.debounce_seconds as number) ?? 300,
         };
 
+        // Build source based on source_type
+        const sourceType = (input.source_type as string) || 'http';
+        let source: import('../../types/trigger').TriggerSource;
+
+        if (sourceType === 'file') {
+          const sourcePath = input.source_path as string | undefined;
+          if (!sourcePath) return 'Error: source_type=file 时必须提供 source_path（监听路径）';
+          const sourceEvents = (input.source_events as string[] | undefined) ?? ['create'];
+          source = {
+            type: 'file',
+            path: sourcePath,
+            events: sourceEvents as ('create' | 'modify' | 'delete')[],
+            pattern: input.source_pattern as string | undefined,
+          };
+        } else if (sourceType === 'cron') {
+          const interval = input.source_interval as number | undefined;
+          if (!interval || interval < 10) return 'Error: source_type=cron 时必须提供 source_interval（最小 10 秒）';
+          source = { type: 'cron', intervalSeconds: interval };
+        } else {
+          source = { type: 'http' };
+        }
+
         const triggerId = store.createTrigger({
           name,
           description: input.description as string | undefined,
-          source: { type: 'http' },
+          source,
           filter,
           action: triggerAction,
           debounce,
         });
 
-        const endpoint = `http://localhost:${serverPort}/trigger/${triggerId}`;
-
-        return [
+        // Build response based on source type
+        const resultLines = [
           `成功创建触发器「${name}」`,
           `ID: ${triggerId}`,
-          `HTTP 端点: POST ${endpoint}`,
+          `类型: ${sourceType === 'file' ? '文件监听' : sourceType === 'cron' ? '定时轮询' : 'HTTP'}`,
+        ];
+
+        if (sourceType === 'file' && source.type === 'file') {
+          resultLines.push(
+            `监听路径: ${source.path}`,
+            `监听事件: ${source.events.join(', ')}`,
+            source.pattern ? `文件过滤: ${source.pattern}` : '',
+          );
+        } else if (sourceType === 'cron' && source.type === 'cron') {
+          resultLines.push(`轮询间隔: ${source.intervalSeconds} 秒`);
+        } else {
+          const endpoint = `http://localhost:${serverPort}/trigger/${triggerId}`;
+          resultLines.push(
+            `HTTP 端点: POST ${endpoint}`,
+            '',
+            '外部触发命令:',
+            `curl -X POST ${endpoint} \\`,
+            `  -H "Content-Type: application/json" \\`,
+            `  -d '{"data": {"content": "测试消息"}}'`,
+          );
+        }
+
+        const capLabel = {
+          read_tools: '只读分析',
+          safe_tools: '读写+安全命令',
+          full: '完全自主',
+          custom: '自定义白名单',
+        }[triggerAction.capability ?? 'read_tools'] ?? '只读分析';
+
+        resultLines.push(
+          `能力等级: ${capLabel}`,
           `过滤: ${filterType}${filter.keywords ? ` [${filter.keywords.join(', ')}]` : ''}`,
           `防抖: ${debounce.enabled ? `${debounce.windowSeconds}秒` : '关闭'}`,
-          '',
-          '外部触发命令:',
-          `curl -X POST ${endpoint} \\`,
-          `  -H "Content-Type: application/json" \\`,
-          `  -d '{"data": {"content": "测试消息"}}'`,
-        ].join('\n');
+        );
+
+        if (triggerAction.capability === 'custom' && triggerAction.permissions) {
+          const p = triggerAction.permissions;
+          if (p.allowedCommands?.length) resultLines.push(`允许命令: ${p.allowedCommands.join(', ')}`);
+          if (p.allowedPaths?.length) resultLines.push(`允许路径: ${p.allowedPaths.join(', ')}`);
+          if (p.allowedTools?.length) resultLines.push(`允许工具: ${p.allowedTools.join(', ')}`);
+        }
+
+        return resultLines.filter(Boolean).join('\n');
       }
 
       case 'list': {
@@ -1666,8 +1765,11 @@ const manageTriggerTool: ToolDefinition = {
           const lastRun = t.lastTriggeredAt
             ? new Date(t.lastTriggeredAt).toLocaleString('zh-CN')
             : '从未';
-          const endpoint = `http://localhost:${serverPort}/trigger/${t.id}`;
-          return `- [${t.status === 'active' ? '✅' : '⏸️'}] ${t.name} (ID: ${t.id})\n  过滤: ${t.filter.type} | 最近触发: ${lastRun} | 已执行: ${t.totalRuns} 次\n  端点: POST ${endpoint}`;
+          const sourceLabel =
+            t.source.type === 'file' ? `文件监听: ${t.source.path}` :
+            t.source.type === 'cron' ? `定时轮询: ${t.source.intervalSeconds}秒` :
+            `HTTP 端点: POST http://localhost:${serverPort}/trigger/${t.id}`;
+          return `- [${t.status === 'active' ? '✅' : '⏸️'}] ${t.name} (ID: ${t.id})\n  ${sourceLabel}\n  过滤: ${t.filter.type} | 最近触发: ${lastRun} | 已执行: ${t.totalRuns} 次`;
         });
 
         return `触发器列表 (${filtered.length} 个):\n\n${lines.join('\n')}`;
@@ -1683,11 +1785,20 @@ const manageTriggerTool: ToolDefinition = {
         const updateData: Record<string, unknown> = {};
         if (input.name !== undefined) updateData.name = input.name;
         if (input.description !== undefined) updateData.description = input.description;
-        if (input.prompt !== undefined || input.skill_name !== undefined || input.workspace_path !== undefined) {
+        if (input.prompt !== undefined || input.skill_name !== undefined || input.workspace_path !== undefined || input.capability !== undefined) {
+          const updatedCapability = input.capability !== undefined
+            ? (input.capability as TriggerAction['capability'])
+            : existing.action.capability;
           updateData.action = {
             prompt: (input.prompt as string) ?? existing.action.prompt,
             skillName: input.skill_name !== undefined ? input.skill_name : existing.action.skillName,
             workspacePath: input.workspace_path !== undefined ? input.workspace_path : existing.action.workspacePath,
+            capability: updatedCapability,
+            permissions: updatedCapability === 'custom' ? {
+              allowedCommands: input.allowed_commands !== undefined ? input.allowed_commands : existing.action.permissions?.allowedCommands,
+              allowedPaths: input.allowed_paths !== undefined ? input.allowed_paths : existing.action.permissions?.allowedPaths,
+              allowedTools: input.allowed_tools !== undefined ? input.allowed_tools : existing.action.permissions?.allowedTools,
+            } : existing.action.permissions,
           };
         }
         if (input.filter_type !== undefined || input.filter_keywords !== undefined || input.filter_pattern !== undefined || input.filter_field !== undefined) {

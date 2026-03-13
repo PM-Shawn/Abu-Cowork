@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, useSyncExternalStore } from 'react';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { listen } from '@tauri-apps/api/event';
 
@@ -40,6 +40,7 @@ import { startTraySync, stopTraySync } from '@/core/im/traySync';
 import { startFeishuWsManager, stopFeishuWsManager } from '@/core/im/feishuWsManager';
 import { initMCPStoreSync, cleanupMCPStoreSync } from '@/stores/mcpStore';
 import { initFileWatchers, stopAllWatchers } from '@/core/agent/fileWatcher';
+import { getPendingWorkspaceRequest, resolveWorkspaceRequest, subscribeToWorkspaceRequest } from '@/core/agent/agentLoop';
 import { startBehaviorSensor, stopBehaviorSensor } from '@/core/agent/behaviorSensor';
 import { useI18n } from '@/i18n';
 import CloseDialog from '@/components/common/CloseDialog';
@@ -141,6 +142,19 @@ function App() {
     }
     return () => stopBehaviorSensor();
   }, [behaviorSensorEnabled]);
+
+  // Auto-drain workspace requests that can never be shown to the user.
+  // This happens when: (1) a trigger/background task calls request_workspace but the
+  // conversation is not active, or (2) the user navigates away from the chat view.
+  // Without this, the agent loop Promise hangs forever showing "执行中...".
+  const pendingWsReq = useSyncExternalStore(subscribeToWorkspaceRequest, getPendingWorkspaceRequest);
+  const activeConvIdForDrain = activeConv?.id ?? null;
+  useEffect(() => {
+    if (pendingWsReq && pendingWsReq.conversationId !== activeConvIdForDrain) {
+      // Request belongs to a non-visible conversation — auto-cancel so agent loop can proceed
+      resolveWorkspaceRequest(null);
+    }
+  }, [pendingWsReq, activeConvIdForDrain]);
 
   // Check for updates on startup (throttled to once per 24h)
   useEffect(() => {

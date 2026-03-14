@@ -125,33 +125,66 @@
         <div class="container">
             <h2>产品预览</h2>
             <p class="section-desc">简洁直观的界面，强大灵活的能力</p>
-            <div class="screenshot-tabs">
-                <button class="tab-btn active" data-tab="0">主界面</button>
-                <button class="tab-btn" data-tab="1">任务执行</button>
-                <button class="tab-btn" data-tab="2">定时任务</button>
-                <button class="tab-btn" data-tab="3">工具箱</button>
-                <button class="tab-btn" data-tab="4">自定义模型</button>
-            </div>
-            <div class="screenshot-viewer">
-                <div class="screenshot-item active" data-index="0">
-                    <img src="assets/screenshot-home.png" alt="主界面 - 对话式交互">
-                    <p class="screenshot-caption">对话式交互，用自然语言告诉阿布你想做什么</p>
+            <div class="screenshot-grid">
+                <div class="screenshot-card">
+                    <img src="assets/screenshot-welcome.png" alt="欢迎页" loading="lazy">
+                    <div class="screenshot-label">欢迎页</div>
+                    <p class="screenshot-caption">自然语言输入，对话即指令</p>
                 </div>
-                <div class="screenshot-item" data-index="1">
-                    <img src="assets/screenshot-task.png" alt="任务执行">
-                    <p class="screenshot-caption">智能调用工具，自动完成文件整理等复杂任务</p>
+                <div class="screenshot-card">
+                    <img src="assets/screenshot-execution.png" alt="任务执行" loading="lazy">
+                    <div class="screenshot-label">任务执行</div>
+                    <p class="screenshot-caption">自主规划步骤，调用工具完成复杂任务</p>
                 </div>
-                <div class="screenshot-item" data-index="2">
-                    <img src="assets/screenshot-schedule.png" alt="定时任务">
-                    <p class="screenshot-caption">设定定时计划，让阿布每天自动为你工作</p>
+                <div class="screenshot-card">
+                    <img src="assets/screenshot-permission.png" alt="权限控制" loading="lazy">
+                    <div class="screenshot-label">权限控制</div>
+                    <p class="screenshot-caption">文件访问需用户授权，安全可控</p>
                 </div>
-                <div class="screenshot-item" data-index="3">
-                    <img src="assets/screenshot-toolbox.png" alt="工具箱">
-                    <p class="screenshot-caption">丰富的 Skills、Agents 和 MCP 工具，按需安装扩展</p>
+                <div class="screenshot-card">
+                    <img src="assets/screenshot-im-chat.png" alt="IM 频道对话" loading="lazy">
+                    <div class="screenshot-label">IM 频道对话</div>
+                    <p class="screenshot-caption">在飞书 / 钉钉中 @阿布 即可交互</p>
                 </div>
-                <div class="screenshot-item" data-index="4">
-                    <img src="assets/screenshot-model.png" alt="自定义模型">
-                    <p class="screenshot-caption">支持自定义 API 和模型，灵活接入各类 LLM</p>
+                <div class="screenshot-card">
+                    <img src="assets/screenshot-skills.png" alt="Skill 技能" loading="lazy">
+                    <div class="screenshot-label">Skill 技能</div>
+                    <p class="screenshot-caption">内置 20+ 技能，支持自定义扩展</p>
+                </div>
+                <div class="screenshot-card">
+                    <img src="assets/screenshot-mcp.png" alt="MCP 连接器" loading="lazy">
+                    <div class="screenshot-label">MCP 连接器</div>
+                    <p class="screenshot-caption">一键接入 Playwright、GitHub 等外部工具</p>
+                </div>
+                <div class="screenshot-card">
+                    <img src="assets/screenshot-schedule-create.png" alt="定时任务" loading="lazy">
+                    <div class="screenshot-label">定时任务</div>
+                    <p class="screenshot-caption">Cron 定时执行，让阿布每天自动工作</p>
+                </div>
+                <div class="screenshot-card">
+                    <img src="assets/screenshot-triggers.png" alt="触发器 / 值班" loading="lazy">
+                    <div class="screenshot-label">触发器 / 值班</div>
+                    <p class="screenshot-caption">HTTP、文件变更、IM 消息等事件自动触发</p>
+                </div>
+                <div class="screenshot-card">
+                    <img src="assets/screenshot-settings-ai.png" alt="AI 服务配置" loading="lazy">
+                    <div class="screenshot-label">AI 服务配置</div>
+                    <p class="screenshot-caption">支持多厂商模型，灵活切换</p>
+                </div>
+                <div class="screenshot-card">
+                    <img src="assets/screenshot-memory.png" alt="个人记忆" loading="lazy">
+                    <div class="screenshot-label">个人记忆</div>
+                    <p class="screenshot-caption">记住你的偏好和工作习惯</p>
+                </div>
+                <div class="screenshot-card">
+                    <img src="assets/screenshot-security.png" alt="安全沙箱" loading="lazy">
+                    <div class="screenshot-label">安全沙箱</div>
+                    <p class="screenshot-caption">Seatbelt 沙箱 + 网络隔离，保护隐私</p>
+                </div>
+                <div class="screenshot-card">
+                    <img src="assets/screenshot-settings-im.png" alt="IM 频道配置" loading="lazy">
+                    <div class="screenshot-label">IM 频道配置</div>
+                    <p class="screenshot-caption">连接飞书、钉钉、企微等 IM 平台</p>
                 </div>
             </div>
         </div>
@@ -399,17 +432,6 @@
             link.addEventListener('click', () => {
                 navLinks.classList.remove('open');
                 navToggle.classList.remove('open');
-            });
-        });
-
-        // Screenshot tabs
-        document.querySelectorAll('.tab-btn').forEach(btn => {
-            btn.addEventListener('click', function() {
-                const index = this.dataset.tab;
-                document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
-                document.querySelectorAll('.screenshot-item').forEach(s => s.classList.remove('active'));
-                this.classList.add('active');
-                document.querySelector('.screenshot-item[data-index="' + index + '"]').classList.add('active');
             });
         });
 

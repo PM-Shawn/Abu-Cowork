@@ -92,10 +92,11 @@ class OutputSender {
     output: TriggerOutput,
     message: AbuMessage,
     replyContext?: IMReplyContext,
+    receiveIdType?: 'chat_id' | 'open_id',
   ): Promise<{ success: boolean; error?: string }> {
     // im_channel: send via the IM channel's API credentials
     if (output.target === 'im_channel') {
-      return this.sendViaIMChannel(output, message, replyContext);
+      return this.sendViaIMChannel(output, message, replyContext, receiveIdType);
     }
 
     // webhook: send to configured URL
@@ -125,6 +126,7 @@ class OutputSender {
     output: TriggerOutput,
     message: AbuMessage,
     replyContext?: IMReplyContext,
+    receiveIdType?: 'chat_id' | 'open_id',
   ): Promise<{ success: boolean; error?: string }> {
     const channelId = output.outputChannelId;
     if (!channelId) {
@@ -143,35 +145,75 @@ class OutputSender {
       return { success: false, error: `Unknown platform: ${platform}` };
     }
 
-    // Determine target chatId: explicit outputChatId > replyContext chatId
-    const targetChatId = output.outputChatId || this.extractChatIdFromReplyContext(replyContext);
+    // Build target list from outputChatIds + outputUserIds
+    const targets: { id: string; receiveIdType?: 'chat_id' | 'open_id' }[] = [];
 
-    // DingTalk: use sessionWebhook if available (temporary webhook URL)
-    if (platform === 'dingtalk' && replyContext?.sessionWebhook && !output.outputChatId) {
-      try {
-        await adapter.sendMessage(replyContext.sessionWebhook, message);
-        return { success: true };
-      } catch (err) {
-        return { success: false, error: err instanceof Error ? err.message : String(err) };
+    if (output.outputChatIds) {
+      for (const id of output.outputChatIds.split(',').map((s) => s.trim()).filter(Boolean)) {
+        targets.push({ id, receiveIdType: 'chat_id' });
+      }
+    }
+    if (output.outputUserIds) {
+      for (const id of output.outputUserIds.split(',').map((s) => s.trim()).filter(Boolean)) {
+        targets.push({ id, receiveIdType: 'open_id' });
       }
     }
 
-    // For API-based reply, we need the adapter's replyToChat method
+    // Single target passed directly (e.g. from scheduler)
+    if (targets.length === 0 && output.outputChatId) {
+      targets.push({ id: output.outputChatId, receiveIdType: receiveIdType ?? 'chat_id' });
+    }
+
+    // Fallback: reply to source chat (for IM triggers)
+    if (targets.length === 0) {
+      // DingTalk: use sessionWebhook
+      if (platform === 'dingtalk' && replyContext?.sessionWebhook) {
+        try {
+          await adapter.sendMessage(replyContext.sessionWebhook, message);
+          return { success: true };
+        } catch (err) {
+          return { success: false, error: err instanceof Error ? err.message : String(err) };
+        }
+      }
+
+      const fallbackChatId = this.extractChatIdFromReplyContext(replyContext);
+      if (fallbackChatId) {
+        targets.push({ id: fallbackChatId, receiveIdType: 'chat_id' });
+      }
+    }
+
+    if (targets.length === 0) {
+      return { success: false, error: 'No target chat/user ID available' };
+    }
+
     if (!adapter.replyToChat) {
       return { success: false, error: `Platform ${platform} does not support API-based message sending` };
     }
 
-    if (!targetChatId) {
-      return { success: false, error: 'No target chat ID available (provide outputChatId or use IM source trigger)' };
-    }
-
+    // Send to all targets
     try {
       const token = await tokenManager.getToken(platform, appId, appSecret);
-      await adapter.replyToChat(token, { chatId: targetChatId }, message);
-      return { success: true };
+      const results = await Promise.allSettled(
+        targets.map((t) =>
+          adapter.replyToChat!(token, { chatId: t.id, receiveIdType: t.receiveIdType }, message)
+        )
+      );
+
+      const failures = results.filter((r) => r.status === 'rejected');
+      if (failures.length === 0) {
+        return { success: true };
+      }
+      const firstError = (failures[0] as PromiseRejectedResult).reason;
+      const errorMsg = firstError instanceof Error ? firstError.message : String(firstError);
+      if (errorMsg.includes('401') || errorMsg.includes('token') || errorMsg.includes('auth')) {
+        tokenManager.invalidate(platform, appId);
+      }
+      return {
+        success: failures.length < targets.length, // partial success
+        error: `${targets.length - failures.length}/${targets.length} sent. Error: ${errorMsg}`,
+      };
     } catch (err) {
       const errorMsg = err instanceof Error ? err.message : String(err);
-      // Invalidate token on auth errors
       if (errorMsg.includes('401') || errorMsg.includes('token') || errorMsg.includes('auth')) {
         tokenManager.invalidate(platform, appId);
       }

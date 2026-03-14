@@ -26,6 +26,12 @@ export interface ScheduledTask {
   skillName?: string;
   /** Optional workspace path */
   workspacePath?: string;
+  /** Optional IM channel ID to push results to after completion */
+  outputChannelId?: string;
+  /** Comma-separated group chat IDs to push to */
+  outputChatIds?: string;
+  /** Comma-separated user open_ids to DM */
+  outputUserIds?: string;
   createdAt: number;
   updatedAt: number;
   lastRunAt?: number;

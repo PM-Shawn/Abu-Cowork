@@ -98,8 +98,10 @@ export interface AdapterCredentials {
  * Reply context for API-token-based direct replies (Phase 3A)
  */
 export interface DirectReplyContext {
-  /** Target chat/channel ID */
+  /** Target chat/channel/user ID */
   chatId: string;
+  /** Feishu receive_id_type: 'chat_id' (group) or 'open_id' (DM). Default: 'chat_id' */
+  receiveIdType?: 'chat_id' | 'open_id';
   /** Original message ID (for threading) */
   messageId?: string;
   /** Thread timestamp (Slack) */

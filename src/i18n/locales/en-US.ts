@@ -772,6 +772,14 @@ const enUS: TranslationDict = {
     onlyRunWhileAwake: 'Scheduled tasks only run while the app is open and your computer is awake',
     askAbuToCreate: 'Ask Abu to create',
     askAbuCreatePrompt: 'Help me create a scheduled task',
+    outputChannel: 'Push results to',
+    outputChannelNone: 'No push',
+    outputChannelHint: 'Push task results to the selected IM channel after completion',
+    outputToGroup: 'Group chat',
+    outputToDM: 'Direct message',
+    outputChatIdPlaceholder: 'Chat IDs, separated by commas',
+    outputUserIdPlaceholder: 'User IDs, separated by commas',
+    outputPushFailed: 'Failed to push results to IM channel',
   },
 
   trigger: {
@@ -929,8 +937,10 @@ const enUS: TranslationDict = {
     outputTargetWebhook: 'Push to Webhook',
     outputTargetIMChannel: 'Push to IM Channel',
     outputSelectChannel: 'Select push channel',
-    outputChatId: 'Target chat ID (optional)',
-    outputChatIdPlaceholder: 'Leave empty to reply to source chat',
+    outputToGroup: 'Group chat',
+    outputToDM: 'Direct message',
+    outputChatIdPlaceholder: 'Chat IDs, comma-separated. Empty = reply to source',
+    outputUserIdPlaceholder: 'User IDs, comma-separated',
   },
 
   imChannel: {

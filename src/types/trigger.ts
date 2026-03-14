@@ -136,7 +136,11 @@ export interface TriggerOutput {
   webhookUrl?: string;
   /** IM channel ID to push to (required when target='im_channel') */
   outputChannelId?: string;
-  /** Specific chat/group ID to push to (optional, defaults to reply source chat) */
+  /** Comma-separated group chat IDs (optional, defaults to reply source chat for IM triggers) */
+  outputChatIds?: string;
+  /** Comma-separated user IDs for DM */
+  outputUserIds?: string;
+  /** Single target chat ID (internal, used by scheduler per-target dispatch) */
   outputChatId?: string;
   extractMode: OutputExtractMode;
   customTemplate?: string;

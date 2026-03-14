@@ -773,6 +773,14 @@ const zhCN: TranslationDict = {
     onlyRunWhileAwake: '定时任务仅在应用打开且电脑未休眠时运行',
     askAbuToCreate: '让阿布帮你创建',
     askAbuCreatePrompt: '帮我创建一个定时任务',
+    outputChannel: '结果推送频道',
+    outputChannelNone: '不推送',
+    outputChannelHint: '任务完成后将结果推送到选定的 IM 频道',
+    outputToGroup: '群聊',
+    outputToDM: '私聊',
+    outputChatIdPlaceholder: '群 ID，多个用逗号分隔',
+    outputUserIdPlaceholder: '用户 ID，多个用逗号分隔',
+    outputPushFailed: '结果推送到 IM 频道失败',
   },
 
   trigger: {
@@ -930,8 +938,10 @@ const zhCN: TranslationDict = {
     outputTargetWebhook: '推送到 Webhook',
     outputTargetIMChannel: '推送到 IM 频道',
     outputSelectChannel: '选择推送频道',
-    outputChatId: '指定群 ID（可选）',
-    outputChatIdPlaceholder: '不填=回复来源群',
+    outputToGroup: '群聊',
+    outputToDM: '私聊',
+    outputChatIdPlaceholder: '群 ID，多个用逗号分隔，不填=回复来源群',
+    outputUserIdPlaceholder: '用户 ID，多个用逗号分隔',
   },
 
   imChannel: {

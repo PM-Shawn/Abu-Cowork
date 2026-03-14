@@ -11,6 +11,8 @@ import type { ScheduledTask } from '../../types/schedule';
 import type { ConfirmationInfo, FilePermissionCallback } from '../tools/registry';
 import { usePermissionStore } from '../../stores/permissionStore';
 import { authorizeWorkspace } from '../tools/pathSafety';
+import { outputSender } from '../im/outputSender';
+import type { OutputContext } from '../im/adapters/types';
 
 /**
  * Auto-deny confirmation callback for scheduled tasks.
@@ -109,6 +111,12 @@ class SchedulerEngine {
         filePermissionCallback: autoFilePermission,
       });
       useScheduleStore.getState().completeRun(task.id, runId);
+
+      // Push results to IM channel if configured
+      if (task.outputChannelId) {
+        await this.pushToIMChannel(task, conversationId);
+      }
+
       notifyScheduledTaskCompleted(task.name);
       const t = getI18n();
       useToastStore.getState().addToast({
@@ -148,6 +156,70 @@ class SchedulerEngine {
 
   isTaskRunning(taskId: string): boolean {
     return this.runningTasks.has(taskId);
+  }
+
+  private async pushToIMChannel(task: ScheduledTask, conversationId: string) {
+    const context: OutputContext = {
+      triggerName: task.name,
+      aiResponse: '',
+      timestamp: new Date().toLocaleString('zh-CN'),
+    };
+
+    const baseOutput = {
+      enabled: true as const,
+      target: 'im_channel' as const,
+      outputChannelId: task.outputChannelId,
+      extractMode: 'last_message' as const,
+    };
+
+    const message = outputSender.buildMessage(conversationId, baseOutput, context);
+
+    // Collect all targets: group chats + DM users
+    const targets: { id: string; receiveIdType?: 'chat_id' | 'open_id' }[] = [];
+
+    if (task.outputChatIds) {
+      for (const id of task.outputChatIds.split(',').map((s) => s.trim()).filter(Boolean)) {
+        targets.push({ id, receiveIdType: 'chat_id' });
+      }
+    }
+    if (task.outputUserIds) {
+      for (const id of task.outputUserIds.split(',').map((s) => s.trim()).filter(Boolean)) {
+        targets.push({ id, receiveIdType: 'open_id' });
+      }
+    }
+
+    if (targets.length === 0) {
+      console.warn(`[Scheduler] No chat/user IDs configured for ${task.name}, skipping push`);
+      return;
+    }
+
+    // Send to all targets
+    const results = await Promise.allSettled(
+      targets.map((t) =>
+        outputSender.send(
+          { ...baseOutput, outputChatId: t.id },
+          message,
+          undefined,
+          t.receiveIdType,
+        )
+      )
+    );
+
+    const failures = results.filter(
+      (r) => r.status === 'rejected' || (r.status === 'fulfilled' && !r.value.success)
+    );
+
+    if (failures.length === 0) {
+      console.log(`[Scheduler] Result pushed to ${targets.length} target(s): ${task.name}`);
+    } else {
+      console.warn(`[Scheduler] IM push: ${targets.length - failures.length}/${targets.length} succeeded for ${task.name}`);
+      const t = getI18n();
+      useToastStore.getState().addToast({
+        type: 'error',
+        title: format(t.schedule.taskCompleted, { name: task.name }),
+        message: t.schedule.outputPushFailed,
+      });
+    }
   }
 }
 

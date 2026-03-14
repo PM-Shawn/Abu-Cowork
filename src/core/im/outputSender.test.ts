@@ -257,7 +257,7 @@ describe('OutputSender.send', () => {
     const result = await outputSender.send(output, { content: 'alert result' });
     expect(result.success).toBe(true);
     expect(mockGetToken).toHaveBeenCalledWith('feishu', 'cli_x', 'sec');
-    expect(mockReplyToChat).toHaveBeenCalledWith('token-123', { chatId: 'oc_target' }, { content: 'alert result' });
+    expect(mockReplyToChat).toHaveBeenCalledWith('token-123', { chatId: 'oc_target', receiveIdType: 'chat_id' }, { content: 'alert result' });
   });
 
   it('im_channel target — uses replyContext chatId when no outputChatId', async () => {
@@ -289,7 +289,7 @@ describe('OutputSender.send', () => {
 
     const result = await outputSender.send(output, { content: 'reply' }, replyContext);
     expect(result.success).toBe(true);
-    expect(mockReplyToChat).toHaveBeenCalledWith('token-456', { chatId: 'oc_from_reply' }, { content: 'reply' });
+    expect(mockReplyToChat).toHaveBeenCalledWith('token-456', { chatId: 'oc_from_reply', receiveIdType: 'chat_id' }, { content: 'reply' });
   });
 
   it('im_channel target — DingTalk uses sessionWebhook', async () => {

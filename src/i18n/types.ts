@@ -724,6 +724,15 @@ export interface TranslationDict {
     onlyRunWhileAwake: string;
     askAbuToCreate: string;
     askAbuCreatePrompt: string;
+    // Output
+    outputChannel: string;
+    outputChannelNone: string;
+    outputChannelHint: string;
+    outputToGroup: string;
+    outputToDM: string;
+    outputChatIdPlaceholder: string;
+    outputUserIdPlaceholder: string;
+    outputPushFailed: string;
   };
 
   // Triggers
@@ -882,8 +891,10 @@ export interface TranslationDict {
     outputTargetWebhook: string;
     outputTargetIMChannel: string;
     outputSelectChannel: string;
-    outputChatId: string;
+    outputToGroup: string;
+    outputToDM: string;
     outputChatIdPlaceholder: string;
+    outputUserIdPlaceholder: string;
   };
 
   // IM Channel Settings

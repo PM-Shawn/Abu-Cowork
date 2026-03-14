@@ -57,7 +57,8 @@ export default function TriggerEditor() {
   const [outputPlatform, setOutputPlatform] = useState<OutputPlatform>('dchat');
   const [outputWebhookUrl, setOutputWebhookUrl] = useState('');
   const [outputChannelId, setOutputChannelId] = useState('');
-  const [outputChatId, setOutputChatId] = useState('');
+  const [outputChatIds, setOutputChatIds] = useState('');
+  const [outputUserIds, setOutputUserIds] = useState('');
   const [outputExtractMode, setOutputExtractMode] = useState<OutputExtractMode>('last_message');
   const [outputCustomTemplate, setOutputCustomTemplate] = useState('');
   const [outputCustomHeaders, setOutputCustomHeaders] = useState('');
@@ -104,7 +105,8 @@ export default function TriggerEditor() {
       setOutputPlatform(editingTrigger.output?.platform ?? 'dchat');
       setOutputWebhookUrl(editingTrigger.output?.webhookUrl ?? '');
       setOutputChannelId(editingTrigger.output?.outputChannelId ?? '');
-      setOutputChatId(editingTrigger.output?.outputChatId ?? '');
+      setOutputChatIds(editingTrigger.output?.outputChatIds ?? '');
+      setOutputUserIds(editingTrigger.output?.outputUserIds ?? '');
       setOutputExtractMode(editingTrigger.output?.extractMode ?? 'last_message');
       setOutputCustomTemplate(editingTrigger.output?.customTemplate ?? '');
       setOutputCustomHeaders(
@@ -143,7 +145,8 @@ export default function TriggerEditor() {
       setOutputPlatform('dchat');
       setOutputWebhookUrl('');
       setOutputChannelId('');
-      setOutputChatId('');
+      setOutputChatIds('');
+      setOutputUserIds('');
       setOutputExtractMode('last_message');
       setOutputCustomTemplate('');
       setOutputCustomHeaders('');
@@ -232,7 +235,8 @@ export default function TriggerEditor() {
           platform: outputTarget === 'webhook' ? outputPlatform : undefined,
           webhookUrl: outputTarget === 'webhook' ? outputWebhookUrl : undefined,
           outputChannelId: outputTarget === 'im_channel' ? outputChannelId : undefined,
-          outputChatId: outputTarget === 'im_channel' && outputChatId ? outputChatId : undefined,
+          outputChatIds: outputTarget === 'im_channel' && outputChatIds.trim() ? outputChatIds.trim() : undefined,
+          outputUserIds: outputTarget === 'im_channel' && outputUserIds.trim() ? outputUserIds.trim() : undefined,
           extractMode: outputExtractMode,
           customTemplate: outputExtractMode === 'custom_template' ? outputCustomTemplate : undefined,
           customHeaders: outputTarget === 'webhook' && Object.keys(parsedHeaders).length > 0 ? parsedHeaders : undefined,
@@ -733,12 +737,22 @@ export default function TriggerEditor() {
                       )}
                     </div>
                     <div>
-                      <label className="block text-[12px] text-[#656358] mb-1">{t.trigger.outputChatId}</label>
+                      <label className="block text-[12px] text-[#656358] mb-1">{t.trigger.outputToGroup}</label>
                       <input
                         type="text"
-                        value={outputChatId}
-                        onChange={(e) => setOutputChatId(e.target.value)}
+                        value={outputChatIds}
+                        onChange={(e) => setOutputChatIds(e.target.value)}
                         placeholder={t.trigger.outputChatIdPlaceholder}
+                        className="w-full h-9 px-3 bg-white border border-[#e8e4dd] rounded-lg text-sm text-[#29261b] focus:outline-none focus:ring-2 focus:ring-[#d97757]/30 focus:border-[#d97757]"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-[12px] text-[#656358] mb-1">{t.trigger.outputToDM}</label>
+                      <input
+                        type="text"
+                        value={outputUserIds}
+                        onChange={(e) => setOutputUserIds(e.target.value)}
+                        placeholder={t.trigger.outputUserIdPlaceholder}
                         className="w-full h-9 px-3 bg-white border border-[#e8e4dd] rounded-lg text-sm text-[#29261b] focus:outline-none focus:ring-2 focus:ring-[#d97757]/30 focus:border-[#d97757]"
                       />
                     </div>

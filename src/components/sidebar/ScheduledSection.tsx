@@ -64,7 +64,7 @@ export default function ScheduledSection() {
   const setViewMode = useSettingsStore((s) => s.setViewMode);
   const viewMode = useSettingsStore((s) => s.viewMode);
 
-  const [sectionOpen, setSectionOpen] = useState(true);
+  const [sectionOpen, setSectionOpen] = useState(false);
   const [expandedTasks, setExpandedTasks] = useState<Record<string, boolean>>({});
 
   // Context menu for child runs
@@ -149,7 +149,7 @@ export default function ScheduledSection() {
       {sectionOpen && (
         <div className="space-y-0.5">
           {tasksWithRuns.map((task) => {
-            const isExpanded = expandedTasks[task.id] ?? true;
+            const isExpanded = expandedTasks[task.id] ?? false;
             const visibleRuns = isExpanded
               ? task.runs.slice(0, MAX_VISIBLE_RUNS)
               : [];

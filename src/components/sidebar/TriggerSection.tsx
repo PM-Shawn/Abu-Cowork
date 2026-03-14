@@ -66,7 +66,7 @@ export default function TriggerSection() {
   const setViewMode = useSettingsStore((s) => s.setViewMode);
   const viewMode = useSettingsStore((s) => s.viewMode);
 
-  const [sectionOpen, setSectionOpen] = useState(true);
+  const [sectionOpen, setSectionOpen] = useState(false);
   const [expandedTriggers, setExpandedTriggers] = useState<Record<string, boolean>>({});
 
   // Context menu for child runs
@@ -150,7 +150,7 @@ export default function TriggerSection() {
       {sectionOpen && (
         <div className="space-y-0.5">
           {triggersWithRuns.map((trigger) => {
-            const isExpanded = expandedTriggers[trigger.id] ?? true;
+            const isExpanded = expandedTriggers[trigger.id] ?? false;
             // Only show runs that have conversations
             const runsWithConv = trigger.runs.filter(
               (r) => r.conversationId && conversations[r.conversationId]

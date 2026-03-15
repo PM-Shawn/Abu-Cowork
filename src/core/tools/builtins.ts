@@ -5,7 +5,7 @@ import { sendNotification, isPermissionGranted, requestPermission } from '@tauri
 import { useDiscoveryStore } from '../../stores/discoveryStore';
 import { platform } from '@tauri-apps/plugin-os';
 import { invoke } from '@tauri-apps/api/core';
-import type { ToolDefinition, ToolResult, ToolResultContent, Conversation } from '../../types';
+import type { ToolDefinition, ToolResult, ToolResultContent, Conversation, SubagentDefinition } from '../../types';
 import { toolRegistry } from './registry';
 import { skillLoader } from '../skill/loader';
 import { initPlatform, isWindows } from '../../utils/platform';
@@ -1085,45 +1085,91 @@ const httpFetchTool: ToolDefinition = {
 /**
  * delegate_to_agent tool — delegate a task to a specialist subagent
  */
+// System preset agent definitions — used by delegate_to_agent type parameter
+// These are internal roles, not visible to users in the toolbox
+const PRESET_AGENTS: Record<string, { description: string; systemPrompt: string; tools: string[] }> = {
+  research: {
+    description: '信息搜索和调研',
+    systemPrompt: '你是一个专业的调研助手。专注于搜索、阅读和分析信息，输出结构化的调研结果。',
+    tools: ['read_file', 'list_directory', 'find_files', 'search_files', 'web_search', 'http_fetch'],
+  },
+  writer: {
+    description: '内容创作和文档撰写',
+    systemPrompt: '你是一个专业的写作助手。擅长撰写文档、报告、邮件等各类文字内容。',
+    tools: ['read_file', 'write_file', 'edit_file', 'list_directory', 'find_files', 'search_files', 'web_search'],
+  },
+  executor: {
+    description: '执行复杂操作任务',
+    systemPrompt: '你是一个高效的执行助手。能够使用各种工具完成文件操作、命令执行等任务。',
+    tools: [], // Empty = all tools allowed (except delegate_to_agent which is always blocked)
+  },
+};
+
+function buildPresetAgent(type: string, _task: string): SubagentDefinition {
+  const preset = PRESET_AGENTS[type];
+  return {
+    name: `preset-${type}`,
+    description: preset.description,
+    systemPrompt: preset.systemPrompt,
+    filePath: '__preset__',
+    tools: preset.tools.length > 0 ? preset.tools : undefined,
+    maxTurns: type === 'research' ? 15 : 20,
+  };
+}
+
 const delegateToAgentTool: ToolDefinition = {
   name: 'delegate_to_agent',
-  description: '将任务委派给专门的代理独立执行，完成后返回结果。适用于任务匹配某个代理专长的场景。',
+  description: '将任务委派给代理独立执行。可指定 agent_name（用户自定义代理）或 type（系统内置角色：research 调研/writer 写作/executor 执行）。',
   inputSchema: {
     type: 'object',
     properties: {
-      agent_name: { type: 'string', description: '代理名称' },
+      agent_name: { type: 'string', description: '用户自定义代理名称（与 type 二选一）' },
+      type: { type: 'string', description: '系统内置角色：research（只读调研）、writer（读写创作）、executor（全能执行）。与 agent_name 二选一', enum: ['research', 'writer', 'executor'] },
       task: { type: 'string', description: '委派的任务描述' },
       context: { type: 'string', description: '附加上下文（可选）' },
     },
-    required: ['agent_name', 'task'],
+    required: ['task'],
   },
   execute: async (input) => {
-    const agentName = input.agent_name as string;
+    const agentName = input.agent_name as string | undefined;
+    const agentType = input.type as string | undefined;
     const task = input.task as string;
     const context = input.context as string | undefined;
 
-    // 1. Look up agent
-    const agent = agentRegistry.getAgent(agentName);
-    if (!agent) {
-      const available = agentRegistry.getAvailableAgents()
-        .filter((a) => a.name !== 'abu')
-        .map((a) => `${a.name} (${a.description})`)
-        .join(', ');
-      return `Error: 代理 "${agentName}" 未找到。可用代理: ${available || '无'}`;
+    // 1. Resolve agent: by name (user-defined) or by type (system preset)
+    let agent: SubagentDefinition | undefined;
+
+    if (agentType && PRESET_AGENTS[agentType]) {
+      // System preset role
+      agent = buildPresetAgent(agentType, task);
+    } else if (agentName) {
+      // User-defined agent
+      agent = agentRegistry.getAgent(agentName);
+      if (!agent) {
+        const available = agentRegistry.getAvailableAgents()
+          .filter((a) => a.name !== 'abu')
+          .map((a) => `${a.name} (${a.description})`)
+          .join(', ');
+        const presetList = Object.keys(PRESET_AGENTS).join(', ');
+        return `Error: 代理 "${agentName}" 未找到。可用代理: ${available || '无'}。也可使用系统角色 type: ${presetList}`;
+      }
+
+      // Check if disabled
+      const { disabledAgents } = useSettingsStore.getState();
+      if (disabledAgents.includes(agentName)) {
+        return `Error: 代理 "${agentName}" 已被停用。`;
+      }
+    } else {
+      return 'Error: 必须指定 agent_name（用户代理）或 type（系统角色：research/writer/executor）';
     }
 
-    // 2. Check if disabled
-    const { disabledAgents } = useSettingsStore.getState();
-    if (disabledAgents.includes(agentName)) {
-      return `Error: 代理 "${agentName}" 已被停用。`;
-    }
+    const effectiveAgentName = agent.name;
 
     // 3. Get parent loop context
     const loopCtx = getCurrentLoopContext();
 
     // 4. Set agent status indicator
-
-    useChatStore.getState().setAgentStatus('tool-calling', 'delegate_to_agent', agentName);
+    useChatStore.getState().setAgentStatus('tool-calling', 'delegate_to_agent', effectiveAgentName);
 
     // 5. Build onProgress callback for subagent visualization
     let onProgress: ((event: SubagentProgressEvent) => void) | undefined;
@@ -1186,7 +1232,7 @@ const delegateToAgentTool: ToolDefinition = {
 
     // 7. Create per-subagent AbortController (linked to parent)
     const { signal: subagentSignal, cleanup: subagentCleanup } = createSubagentController(
-      agentName,
+      effectiveAgentName,
       loopCtx?.signal
     );
 
@@ -1205,11 +1251,11 @@ const delegateToAgentTool: ToolDefinition = {
 
       // Clear this agent from tracking and cleanup
       subagentCleanup();
-      useChatStore.getState().removeActiveAgent(agentName);
+      useChatStore.getState().removeActiveAgent(effectiveAgentName);
       return result;
     } catch (err) {
       subagentCleanup();
-      useChatStore.getState().removeActiveAgent(agentName);
+      useChatStore.getState().removeActiveAgent(effectiveAgentName);
       throw err;
     }
   },

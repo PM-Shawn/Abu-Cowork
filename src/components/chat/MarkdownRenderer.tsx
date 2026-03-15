@@ -8,13 +8,15 @@ import python from 'react-syntax-highlighter/dist/esm/languages/prism/python';
 import bash from 'react-syntax-highlighter/dist/esm/languages/prism/bash';
 import json from 'react-syntax-highlighter/dist/esm/languages/prism/json';
 import markdown from 'react-syntax-highlighter/dist/esm/languages/prism/markdown';
-import { useState, memo, useMemo, useCallback, type ReactNode } from 'react';
+import { useState, memo, useMemo, useCallback, Suspense, type ReactNode } from 'react';
 import { Copy, Check, FileText, FolderOpen, Download, ChevronDown, ChevronUp } from 'lucide-react';
 import { usePreviewStore } from '@/stores/previewStore';
 import { useI18n, format } from '@/i18n';
 import { cn } from '@/lib/utils';
 import { getBaseName, isLocalFilePath } from '@/utils/pathUtils';
 import type { SearchResult } from '@/types';
+
+import { getCodeBlockRenderer } from './codeBlockRenderers';
 
 SyntaxHighlighter.registerLanguage('tsx', tsx);
 SyntaxHighlighter.registerLanguage('typescript', tsx);
@@ -247,7 +249,7 @@ const LANG_EXT_MAP: Record<string, string> = {
 
 const COLLAPSE_THRESHOLD = 15;
 
-function CollapsibleCodeBlock({ codeString, language }: { codeString: string; language: string | null }) {
+export function CollapsibleCodeBlock({ codeString, language }: { codeString: string; language: string | null }) {
   const { t } = useI18n();
   const [collapsed, setCollapsed] = useState(true);
   const [copied, setCopied] = useState(false);
@@ -411,6 +413,16 @@ function buildMarkdownComponents(
             )}
             {children}
           </code>
+        );
+      }
+
+      const renderer = match?.[1] ? getCodeBlockRenderer(match[1]) : undefined;
+      if (renderer) {
+        const BlockComponent = renderer.component;
+        return (
+          <Suspense fallback={<div className="my-3 rounded-lg bg-[#f5f3ee] p-6 text-center text-sm text-[#888579]">…</div>}>
+            <BlockComponent code={codeString} />
+          </Suspense>
         );
       }
 

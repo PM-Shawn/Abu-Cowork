@@ -375,11 +375,55 @@ section h2 {
     background: var(--color-bg-alt);
 }
 
+.screenshot-tabs {
+    display: flex;
+    justify-content: center;
+    gap: 8px;
+    margin-bottom: 36px;
+}
+
+.screenshot-tab {
+    padding: 10px 24px;
+    border-radius: var(--radius-full);
+    border: 1px solid var(--color-border);
+    background: var(--color-bg-white);
+    color: var(--color-text-secondary);
+    font-size: 0.95rem;
+    font-weight: 550;
+    cursor: pointer;
+    transition: var(--transition);
+}
+
+.screenshot-tab:hover {
+    border-color: var(--color-primary-light);
+    color: var(--color-text);
+}
+
+.screenshot-tab.active {
+    background: var(--color-primary);
+    border-color: var(--color-primary);
+    color: #fff;
+}
+
+.screenshot-panel {
+    display: none;
+}
+
+.screenshot-panel.active {
+    display: block;
+    animation: fadeIn 0.3s ease;
+}
+
+@keyframes fadeIn {
+    from { opacity: 0; transform: translateY(8px); }
+    to { opacity: 1; transform: translateY(0); }
+}
+
 .screenshot-grid {
     display: grid;
-    grid-template-columns: repeat(2, 1fr);
+    grid-template-columns: repeat(3, 1fr);
     gap: 24px;
-    max-width: 1000px;
+    max-width: 1200px;
     margin: 0 auto;
 }
 
@@ -922,6 +966,15 @@ section h2 {
 
     .steps {
         gap: 32px;
+    }
+
+    .screenshot-tabs {
+        flex-wrap: wrap;
+    }
+
+    .screenshot-tab {
+        padding: 8px 18px;
+        font-size: 0.875rem;
     }
 
     .screenshot-grid {

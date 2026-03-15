@@ -100,6 +100,14 @@ export interface TranslationDict {
     codeBlockExpand: string;
     codeBlockCollapse: string;
     codeBlockSaveAs: string;
+    mermaidLoading: string;
+    mermaidRenderError: string;
+    mermaidExpand: string;
+    mermaidCollapse: string;
+    infographicLoading: string;
+    infographicRenderError: string;
+    infographicExpand: string;
+    infographicCollapse: string;
     setupRequired: string;
     setupRequiredDesc: string;
     setupButton: string;

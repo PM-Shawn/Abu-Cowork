@@ -144,9 +144,174 @@ function getFileExtension(path: string): string {
   return dot >= 0 ? path.slice(dot).toLowerCase() : '';
 }
 
+// Office document extensions that can be extracted as text
+const OFFICE_EXTENSIONS = new Set(['.docx', '.xlsx', '.pptx', '.xls', '.doc']);
+
+// Archive extensions that can be listed
+const ARCHIVE_EXTENSIONS = new Set(['.zip', '.tar', '.tar.gz', '.tgz', '.gz', '.7z', '.rar']);
+
+/**
+ * Extract text content from Office documents.
+ * - .xlsx/.xls: Uses xlsx npm package (already installed, no Python needed)
+ * - .docx: Extracts XML text from the docx zip structure (no Python needed)
+ * - .pptx: Falls back to Python python-pptx
+ */
+async function extractOfficeText(filePath: string, ext: string): Promise<string> {
+  if (ext === '.xlsx' || ext === '.xls') {
+    return extractXlsxText(filePath);
+  }
+  if (ext === '.docx') {
+    return extractDocxText(filePath);
+  }
+  if (ext === '.pptx') {
+    return extractPptxViaPython(filePath);
+  }
+  return `Error: Unsupported Office format: ${ext}`;
+}
+
+/** Extract Excel text using the xlsx npm package (already in dependencies) */
+async function extractXlsxText(filePath: string): Promise<string> {
+  try {
+    const data = new Uint8Array(await readBinFile(filePath));
+    const XLSX = await import('xlsx');
+    const workbook = XLSX.read(data, { type: 'array' });
+    const lines: string[] = [];
+
+    for (const sheetName of workbook.SheetNames) {
+      lines.push(`=== Sheet: ${sheetName} ===`);
+      const sheet = workbook.Sheets[sheetName];
+      const rows = XLSX.utils.sheet_to_json<string[]>(sheet, { header: 1, defval: '' }) as string[][];
+      const maxRows = Math.min(rows.length, 500);
+      for (let i = 0; i < maxRows; i++) {
+        lines.push(rows[i].map(String).join('\t'));
+      }
+      if (rows.length > 500) {
+        lines.push(`[... ${rows.length - 500} more rows omitted ...]`);
+      }
+    }
+    return lines.join('\n');
+  } catch (err) {
+    return `Error reading Excel file: ${err instanceof Error ? err.message : String(err)}`;
+  }
+}
+
+/** Extract Word document text by parsing the docx XML structure (docx = zip of XML files) */
+async function extractDocxText(filePath: string): Promise<string> {
+  try {
+    const data = new Uint8Array(await readBinFile(filePath));
+    // docx is a zip file — use fflate to decompress and read word/document.xml
+    const { unzipSync } = await import('fflate');
+    const unzipped = unzipSync(data);
+
+    // Main document content is in word/document.xml
+    const docXml = unzipped['word/document.xml'];
+    if (!docXml) {
+      return 'Error: Invalid docx file — word/document.xml not found.';
+    }
+
+    // Parse XML text content — extract text between <w:t> tags
+    const xmlStr = new TextDecoder().decode(docXml);
+    const lines: string[] = [];
+    let currentParagraph = '';
+
+    // Split by paragraph markers <w:p> and extract text from <w:t> tags
+    const paragraphs = xmlStr.split(/<w:p[\s>]/);
+    for (const para of paragraphs) {
+      const texts: string[] = [];
+      const textMatches = para.matchAll(/<w:t[^>]*>([^<]*)<\/w:t>/g);
+      for (const match of textMatches) {
+        texts.push(match[1]);
+      }
+      currentParagraph = texts.join('');
+      if (currentParagraph.trim()) {
+        lines.push(currentParagraph);
+      }
+    }
+
+    if (lines.length === 0) {
+      return 'Document is empty or contains only images/embedded objects.';
+    }
+    return lines.join('\n');
+  } catch (err) {
+    return `Error reading Word file: ${err instanceof Error ? err.message : String(err)}`;
+  }
+}
+
+/** Extract PowerPoint text via Python (python-pptx) — no JS alternative */
+async function extractPptxViaPython(filePath: string): Promise<string> {
+  const pyBin = isWindows() ? 'python' : 'python3';
+  const escapedPath = isWindows()
+    ? filePath.replace(/'/g, "''")
+    : filePath.replace(/'/g, "'\\''");
+
+  const pyCmd = `${pyBin} -c "
+from pptx import Presentation
+prs = Presentation('${escapedPath}')
+for i, slide in enumerate(prs.slides, 1):
+    print(f'=== Slide {i} ===')
+    for shape in slide.shapes:
+        if hasattr(shape, 'text') and shape.text:
+            print(shape.text)
+"`;
+
+  try {
+    const output = await invoke<CommandOutput>('run_shell_command', {
+      command: pyCmd,
+      cwd: null,
+      background: false,
+      timeout: 30,
+    });
+    if (output.code === 0 && output.stdout.trim()) {
+      return output.stdout;
+    }
+    if (output.stderr?.includes('ModuleNotFoundError')) {
+      return 'Error: Python module not installed. Run: pip3 install python-pptx';
+    }
+    return `Error extracting pptx: ${output.stderr?.slice(0, 500) || 'Unknown error'}`;
+  } catch {
+    return `Error: Python3 not available. Install Python and python-pptx to read .pptx files.`;
+  }
+}
+
+/**
+ * List contents of an archive file using system commands.
+ */
+async function listArchiveContents(filePath: string, ext: string): Promise<string> {
+  let command: string;
+
+  if (ext === '.zip') {
+    command = isWindows()
+      ? `powershell -c "Expand-Archive -Path '${filePath}' -DestinationPath . -WhatIf 2>&1; [IO.Compression.ZipFile]::OpenRead('${filePath}').Entries | Select-Object FullName, Length | Format-Table -AutoSize"`
+      : `unzip -l "${filePath}"`;
+  } else if (ext === '.tar' || ext === '.tar.gz' || ext === '.tgz') {
+    command = isWindows()
+      ? `tar -tf "${filePath}"`
+      : `tar -tf "${filePath}"`;
+  } else if (ext === '.gz' && !filePath.endsWith('.tar.gz')) {
+    command = `file "${filePath}"`;
+  } else {
+    return `Archive listing not supported for ${ext}. Use run_command to extract.`;
+  }
+
+  try {
+    const output = await invoke<CommandOutput>('run_shell_command', {
+      command,
+      cwd: null,
+      background: false,
+      timeout: 15,
+    });
+    if (output.code === 0) {
+      return output.stdout || 'Archive is empty.';
+    }
+    return `Error listing archive: ${output.stderr || 'Unknown error'}`;
+  } catch {
+    return `Error: Could not list archive contents.`;
+  }
+}
+
 const readFileTool: ToolDefinition = {
   name: 'read_file',
-  description: 'Read the contents of a file. Supports text files, images (png/jpg/gif/webp — returned as visual content), and PDFs (extracted as text).',
+  description: 'Read the contents of a file. Supports text files, images (png/jpg/gif/webp — visual content), PDFs (text extraction), Office documents (.docx/.xlsx/.pptx — text extraction), and archives (.zip/.tar.gz — list contents).',
   inputSchema: {
     type: 'object',
     properties: {
@@ -212,6 +377,17 @@ const readFileTool: ToolDefinition = {
         return isWindows()
           ? 'Error: Cannot read PDF as text. Please install Python and run: pip install pdfplumber'
           : 'Error: Cannot read PDF as text. Install pdftotext (brew install poppler) or: pip3 install pdfplumber';
+      }
+
+      // --- Office documents: extract text via Python ---
+      if (OFFICE_EXTENSIONS.has(ext)) {
+        return await extractOfficeText(filePath, ext);
+      }
+
+      // --- Archives: list contents ---
+      if (ARCHIVE_EXTENSIONS.has(ext) || filePath.endsWith('.tar.gz')) {
+        const archiveExt = filePath.endsWith('.tar.gz') ? '.tar.gz' : ext;
+        return await listArchiveContents(filePath, archiveExt);
       }
 
       // --- Text files: read as UTF-8 ---
@@ -595,6 +771,12 @@ const useSkillTool: ToolDefinition = {
   execute: async (input) => {
     const skillName = input.skill_name as string;
     const context = input.context as string | undefined;
+
+    // Check if skill is disabled by user
+    const { disabledSkills } = useSettingsStore.getState();
+    if (disabledSkills?.includes(skillName)) {
+      return `Error: 技能 "${skillName}" 已被用户禁用。请直接使用工具完成任务，不要调用此技能。`;
+    }
 
     const skill = skillLoader.getSkill(skillName);
     if (!skill) {

@@ -1,4 +1,4 @@
-import { readTextFile, writeTextFile, writeFile as writeBinFile, readDir, exists } from '@tauri-apps/plugin-fs';
+import { readTextFile, readFile as readBinFile, writeTextFile, writeFile as writeBinFile, readDir, exists } from '@tauri-apps/plugin-fs';
 import { homeDir, desktopDir, documentDir, downloadDir } from '@tauri-apps/api/path';
 import { readText as clipboardReadText, writeText as clipboardWriteText } from '@tauri-apps/plugin-clipboard-manager';
 import { sendNotification, isPermissionGranted, requestPermission } from '@tauri-apps/plugin-notification';
@@ -92,9 +92,61 @@ const getSystemInfoTool: ToolDefinition = {
   },
 };
 
+// Image extensions that can be sent as vision content
+const IMAGE_EXTENSIONS = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.svg']);
+const IMAGE_MEDIA_TYPES: Record<string, string> = {
+  '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg',
+  '.gif': 'image/gif', '.webp': 'image/webp', '.bmp': 'image/bmp', '.svg': 'image/svg+xml',
+};
+// Max image size in bytes before auto-resize (2MB)
+const IMAGE_MAX_BYTES = 2 * 1024 * 1024;
+
+/**
+ * Resize an image to fit within maxWidth using system tools.
+ * Returns base64 string of the resized image, or null on failure.
+ */
+async function resizeImageIfNeeded(bytes: Uint8Array, maxWidth: number): Promise<{ data: string; resized: boolean }> {
+  const base64 = uint8ArrayToBase64(bytes);
+
+  if (bytes.length <= IMAGE_MAX_BYTES) {
+    return { data: base64, resized: false };
+  }
+
+  // Use sips on macOS to resize
+  if (!isWindows()) {
+    try {
+      const tmpPath = `/tmp/abu-resize-${Date.now()}.png`;
+      await writeBinFile(tmpPath, bytes);
+      await invoke<CommandOutput>('run_shell_command', {
+        command: `sips --resampleWidth ${maxWidth} "${tmpPath}" --out "${tmpPath}"`,
+        cwd: null, background: false, timeout: 15,
+      });
+      const resized = await readBinFile(tmpPath);
+      // Clean up
+      invoke<CommandOutput>('run_shell_command', { command: `rm -f "${tmpPath}"`, cwd: null, background: false, timeout: 5 }).catch(() => {});
+      return { data: uint8ArrayToBase64(new Uint8Array(resized)), resized: true };
+    } catch { /* fall through to original */ }
+  }
+
+  return { data: base64, resized: false };
+}
+
+function uint8ArrayToBase64(bytes: Uint8Array): string {
+  let binary = '';
+  for (let i = 0; i < bytes.length; i++) {
+    binary += String.fromCharCode(bytes[i]);
+  }
+  return btoa(binary);
+}
+
+function getFileExtension(path: string): string {
+  const dot = path.lastIndexOf('.');
+  return dot >= 0 ? path.slice(dot).toLowerCase() : '';
+}
+
 const readFileTool: ToolDefinition = {
   name: 'read_file',
-  description: 'Read the contents of a file at the given path. Returns the file content as text.',
+  description: 'Read the contents of a file. Supports text files, images (png/jpg/gif/webp — returned as visual content), and PDFs (extracted as text).',
   inputSchema: {
     type: 'object',
     properties: {
@@ -104,10 +156,25 @@ const readFileTool: ToolDefinition = {
   },
   execute: async (input) => {
     const filePath = input.path as string;
+    const ext = getFileExtension(filePath);
 
     try {
-      // PDF files: extract text instead of returning raw binary
-      if (filePath.toLowerCase().endsWith('.pdf')) {
+      // --- Image files: return as vision content ---
+      if (IMAGE_EXTENSIONS.has(ext)) {
+        const bytes = new Uint8Array(await readBinFile(filePath));
+        const mediaType = IMAGE_MEDIA_TYPES[ext] || 'image/png';
+        const { data, resized } = await resizeImageIfNeeded(bytes, 1280);
+        const sizeKB = Math.round(bytes.length / 1024);
+        const resizeNote = resized ? ' (auto-resized to 1280px width)' : '';
+
+        return [
+          { type: 'text', text: `Image: ${filePath} (${sizeKB}KB, ${mediaType})${resizeNote}` },
+          { type: 'image', source: { type: 'base64', media_type: mediaType, data } },
+        ] as ToolResultContent[];
+      }
+
+      // --- PDF files: extract text ---
+      if (ext === '.pdf') {
         // Strategy 1: pdftotext (macOS/Linux — fast, native)
         if (!isWindows()) {
           try {
@@ -147,6 +214,7 @@ const readFileTool: ToolDefinition = {
           : 'Error: Cannot read PDF as text. Install pdftotext (brew install poppler) or: pip3 install pdfplumber';
       }
 
+      // --- Text files: read as UTF-8 ---
       const content = await readTextFile(filePath);
       return content;
     } catch (err) {

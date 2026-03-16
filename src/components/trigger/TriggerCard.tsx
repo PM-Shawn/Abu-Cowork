@@ -1,6 +1,6 @@
 import { useTriggerStore } from '@/stores/triggerStore';
 import { useI18n } from '@/i18n';
-import { Zap } from 'lucide-react';
+import { Zap, Send } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import type { Trigger } from '@/types/trigger';
 import type { TranslationDict } from '@/i18n/types';
@@ -72,6 +72,12 @@ export default function TriggerCard({ trigger }: Props) {
               <Zap className="h-3 w-3" />
               {getFilterDescription(trigger, t.trigger)}
             </span>
+            {trigger.output?.enabled && (
+              <span className="flex items-center gap-0.5 text-[#d97757]">
+                <Send className="h-3 w-3" />
+                {t.trigger.outputEnabled}
+              </span>
+            )}
             {trigger.lastTriggeredAt && (
               <span>
                 {t.trigger.lastTriggered}: {formatTimeAgo(trigger.lastTriggeredAt, t.trigger)}

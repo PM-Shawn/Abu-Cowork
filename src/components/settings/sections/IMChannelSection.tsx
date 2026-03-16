@@ -5,7 +5,7 @@ import { triggerEngine } from '@/core/trigger/triggerEngine';
 import { Plus, Trash2, ChevronDown, ChevronUp, Copy, Check, HelpCircle } from 'lucide-react';
 import { Toggle } from '@/components/ui/toggle';
 import { Select } from '@/components/ui/select';
-import type { IMPlatform } from '@/types/trigger';
+import type { IMPlatform } from '@/types/im';
 import type { IMCapabilityLevel, IMResponseMode } from '@/types/imChannel';
 
 const PLATFORMS: { value: IMPlatform; label: string }[] = [

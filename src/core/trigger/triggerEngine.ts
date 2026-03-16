@@ -8,12 +8,13 @@ import {
 } from '../../utils/notifications';
 import { outputSender } from '../im/outputSender';
 import type { OutputContext } from '../im/adapters/types';
-import type { Trigger, TriggerEventPayload, IMReplyContext, IMPlatform } from '../../types/trigger';
-import { parseInboundMessage } from '../im/inboundRouter';
+import type { Trigger, TriggerEventPayload } from '../../types/trigger';
+import type { IMReplyContext } from '../../types/im';
 import type { NormalizedIMMessage } from '../im/inboundRouter';
 import { getI18n } from '../../i18n';
 import { useIMChannelStore } from '../../stores/imChannelStore';
 import { resolveTriggerCallbacks } from './triggerPermission';
+import { cacheTriggerContext } from '../im/triggerContextCache';
 import { invoke } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import { watch, type UnwatchFn } from '@tauri-apps/plugin-fs';
@@ -47,12 +48,11 @@ class TriggerEngine {
   private runningTriggers = new Set<string>();
   private debounceCache = new Map<string, number>(); // "triggerId:hash" → timestamp
   private unlistenHttp: UnlistenFn | null = null;
-  private unlistenIM: UnlistenFn | null = null;
   private debounceCleanupInterval: ReturnType<typeof setInterval> | null = null;
   private serverPort: number | null = null;
   private fileWatchers = new Map<string, UnwatchFn>(); // triggerId → unwatch
   private cronTimers = new Map<string, ReturnType<typeof setInterval>>(); // triggerId → timer
-  private imTriggersMap = new Map<string, Set<string>>(); // "platform" → Set<triggerId>
+  private imTriggersMap = new Map<string, Set<string>>(); // "channelId" → Set<triggerId>
   private unsubscribeStore: (() => void) | null = null;
 
   async start() {
@@ -87,14 +87,7 @@ class TriggerEngine {
       }
     );
 
-    // Listen for IM inbound events from Rust (Phase 1B)
-    this.unlistenIM = await listen<{ platform: string; payload: Record<string, unknown> }>(
-      'im-inbound-event',
-      (event) => {
-        const { platform, payload } = event.payload;
-        this.handleIMEvent(platform, payload);
-      }
-    );
+    // IM inbound events are handled by inboundDispatcher (single dispatcher pattern)
 
     // Start file watchers, cron timers, and IM listeners for existing triggers
     this.setupSourceWatchers();
@@ -153,8 +146,6 @@ class TriggerEngine {
   stop() {
     this.unlistenHttp?.();
     this.unlistenHttp = null;
-    this.unlistenIM?.();
-    this.unlistenIM = null;
 
     if (this.debounceCleanupInterval) {
       clearInterval(this.debounceCleanupInterval);
@@ -308,6 +299,11 @@ class TriggerEngine {
     const eventDataStr = JSON.stringify(payload.data, null, 2);
     prompt = prompt.replace(/\$EVENT_DATA/g, eventDataStr);
 
+    // Append no-followup instruction for IM triggers (single-turn, no interactive Q&A)
+    if (trigger.source.type === 'im') {
+      prompt += '\n\n（注意：这是自动触发器任务，请直接给出完整结果，不要反问用户或等待确认。）';
+    }
+
     // Prepend skill if configured
     if (trigger.action.skillName) {
       prompt = `/${trigger.action.skillName} ${prompt}`;
@@ -316,7 +312,11 @@ class TriggerEngine {
     try {
       // Resolve permission callbacks based on trigger's capability level.
       // Permissions are declared at creation time — no runtime dialogs.
-      const callbacks = resolveTriggerCallbacks(trigger.action);
+      // Pass resolved workspacePath so it gets pre-authorized for file access.
+      const actionWithWorkspace = workspacePath
+        ? { ...trigger.action, workspacePath }
+        : trigger.action;
+      const callbacks = resolveTriggerCallbacks(actionWithWorkspace);
       await runAgentLoop(conversationId, prompt, {
         commandConfirmCallback: callbacks.commandConfirmCallback,
         filePermissionCallback: callbacks.filePermissionCallback,
@@ -325,7 +325,20 @@ class TriggerEngine {
 
       useTriggerStore.getState().completeRun(trigger.id, runId);
 
-      // Output push — send results to IM platform or reply to source
+      // Cache trigger result for channel follow-up context (IM source only)
+      if (trigger.source.type === 'im') {
+        const chatIdFromPayload = String(payload.data?.chatId ?? '');
+        if (chatIdFromPayload) {
+          const aiResponse = this.extractLastAIReply(conversationId);
+          if (aiResponse) {
+            // Truncate to avoid bloating the channel session prompt
+            const truncated = aiResponse.length > 800 ? aiResponse.slice(0, 800) + '...' : aiResponse;
+            cacheTriggerContext(chatIdFromPayload, trigger.name, truncated);
+          }
+        }
+      }
+
+      // Output push — send results to IM channel or webhook
       if (trigger.output?.enabled) {
         const replyContext = (payload as TriggerEventPayload & { _replyContext?: IMReplyContext })._replyContext;
         await this.pushOutput(trigger, runId, conversationId, payload, replyContext);
@@ -390,16 +403,21 @@ class TriggerEngine {
       .getState()
       .updateRunOutput(trigger.id, runId, success ? 'sent' : 'failed', error);
 
+    const t = getI18n();
     if (!success) {
       console.warn(`[Trigger] Output push failed for ${trigger.name}: ${error}`);
-      const t = getI18n();
       useToastStore.getState().addToast({
         type: 'error',
-        title: t.trigger.triggerError.replace('{name}', trigger.name),
+        title: t.trigger.outputPushFailed.replace('{name}', trigger.name),
         message: error?.slice(0, 100),
       });
+      notifyTriggerError(trigger.name);
     } else {
-      console.log(`[Trigger] Output pushed: ${trigger.name} → ${trigger.output.platform}`);
+      console.log(`[Trigger] Output pushed: ${trigger.name}`);
+      useToastStore.getState().addToast({
+        type: 'success',
+        title: t.trigger.outputPushSent.replace('{name}', trigger.name),
+      });
     }
   }
 
@@ -407,6 +425,16 @@ class TriggerEngine {
 
   private matchFilter(trigger: Trigger, payload: TriggerEventPayload): boolean {
     const { filter } = trigger;
+
+    // Sender match filter (IM source only)
+    if (trigger.source.type === 'im' && trigger.source.senderMatch) {
+      const senderName = String(payload.data?.sender ?? '');
+      const senderId = String(payload.data?.senderId ?? '');
+      const match = trigger.source.senderMatch;
+      if (!senderName.includes(match) && !senderId.includes(match)) {
+        return false;
+      }
+    }
 
     // Determine text to match against (supports nested paths like "data.content")
     let text: string;
@@ -532,8 +560,16 @@ class TriggerEngine {
 
     try {
       const unwatch = await watch(watchPath, (event) => {
-        // event.type can be: 'create' | 'modify' | 'remove' | 'access' | 'any' | etc.
-        const eventType = typeof event.type === 'string' ? event.type : String(event.type);
+        // Tauri 2.0 event.type can be a string ("create") or object ({ create: { kind: "file" } })
+        let eventType: string;
+        if (typeof event.type === 'string') {
+          eventType = event.type;
+        } else if (event.type && typeof event.type === 'object') {
+          // Extract first key from object format: { create: {...} } → "create"
+          eventType = Object.keys(event.type as Record<string, unknown>)[0] ?? '';
+        } else {
+          eventType = String(event.type);
+        }
         const mappedType =
           eventType === 'create' ? 'create' :
           eventType === 'modify' ? 'modify' :
@@ -604,85 +640,90 @@ class TriggerEngine {
     console.log(`[Trigger] Cron timer started: ${trigger.name} every ${trigger.source.intervalSeconds}s`);
   }
 
-  // ── IM source (Phase 1B) ──
+  // ── IM source ──
 
-  /** Register a trigger to receive IM messages for its platform */
+  /** Register a trigger to receive IM messages for its referenced channel */
   private registerIMTrigger(trigger: Trigger) {
     if (trigger.source.type !== 'im') return;
-    const platform = trigger.source.platform;
-    if (!this.imTriggersMap.has(platform)) {
-      this.imTriggersMap.set(platform, new Set());
+    const channelId = trigger.source.channelId;
+    if (!this.imTriggersMap.has(channelId)) {
+      this.imTriggersMap.set(channelId, new Set());
     }
-    this.imTriggersMap.get(platform)!.add(trigger.id);
-    console.log(`[Trigger] IM listener registered: ${trigger.name} → ${platform}`);
+    this.imTriggersMap.get(channelId)!.add(trigger.id);
+
+    // Resolve channel name for logging
+    const channel = useIMChannelStore.getState().channels[channelId];
+    const channelName = channel?.name ?? channelId;
+    console.log(`[Trigger] IM listener registered: ${trigger.name} → channel "${channelName}"`);
   }
 
   /** Unregister a trigger from IM messages */
   private unregisterIMTrigger(triggerId: string) {
-    for (const [platform, triggerIds] of this.imTriggersMap) {
+    for (const [channelId, triggerIds] of this.imTriggersMap) {
       if (triggerIds.delete(triggerId)) {
-        console.log(`[Trigger] IM listener unregistered: ${triggerId} from ${platform}`);
+        console.log(`[Trigger] IM listener unregistered: ${triggerId} from channel ${channelId}`);
         if (triggerIds.size === 0) {
-          this.imTriggersMap.delete(platform);
+          this.imTriggersMap.delete(channelId);
         }
       }
     }
   }
 
   /**
-   * Handle an inbound IM message from Rust trigger_server.
-   * Finds matching IM-source triggers and dispatches events.
+   * Try to match an inbound IM message against registered IM triggers.
+   * Called by inboundDispatcher. Returns the number of triggers dispatched.
+   * If > 0, the dispatcher will NOT forward the message to channelRouter.
    */
-  private handleIMEvent(platform: string, rawPayload: Record<string, unknown>) {
-    // If an IM channel is configured for this platform, let channelRouter handle it
-    // to avoid duplicate processing of the same message
-    const imChannels = useIMChannelStore.getState().getChannelsByPlatform(platform as IMPlatform);
-    if (imChannels.some((c) => c.enabled)) {
-      return; // Handled by imChannelRouter
-    }
-
-    const triggerIds = this.imTriggersMap.get(platform);
-    if (!triggerIds || triggerIds.size === 0) {
-      console.log(`[Trigger] No IM triggers for platform: ${platform}`);
-      return;
-    }
-
-    // Parse platform-specific payload into normalized message
-    const message = parseInboundMessage(platform, rawPayload);
-    if (!message) {
-      console.log(`[Trigger] Could not parse IM message from ${platform}`);
-      return;
-    }
-
+  tryMatchIMTriggers(message: NormalizedIMMessage): number {
     const store = useTriggerStore.getState();
+    const channelStore = useIMChannelStore.getState();
+    let dispatched = 0;
 
-    for (const triggerId of triggerIds) {
-      const trigger = store.triggers[triggerId];
-      if (!trigger || trigger.status !== 'active') continue;
-      if (trigger.source.type !== 'im') continue;
+    for (const [channelId, triggerIds] of this.imTriggersMap) {
+      const channel = channelStore.channels[channelId];
+      if (!channel || channel.platform !== message.platform) continue;
 
-      // Apply listenScope filter
-      if (!this.matchIMScope(trigger.source.listenScope, message)) {
-        continue;
+      for (const triggerId of triggerIds) {
+        const trigger = store.triggers[triggerId];
+        if (!trigger || trigger.status !== 'active') continue;
+        if (trigger.source.type !== 'im') continue;
+
+        // chatId filter
+        if (trigger.source.chatId && message.chatId !== trigger.source.chatId) {
+          continue;
+        }
+
+        // listenScope filter
+        if (!this.matchIMScope(trigger.source.listenScope, message)) {
+          continue;
+        }
+
+        // Build payload and check content filter (keyword/regex/senderMatch)
+        const payload: TriggerEventPayload & { _replyContext?: IMReplyContext } = {
+          data: {
+            platform: message.platform,
+            sender: message.senderName,
+            senderId: message.senderId,
+            text: message.text,
+            chatId: message.chatId,
+            chatName: message.chatName,
+            isDirect: message.isDirect,
+            isMention: message.isMention,
+          },
+          _replyContext: message.replyContext,
+        };
+
+        // Pre-check filter synchronously so dispatcher can decide routing
+        if (!this.matchFilter(trigger, payload)) {
+          continue;
+        }
+
+        this.handleEvent(triggerId, payload);
+        dispatched++;
       }
-
-      // Build trigger event payload with IM message data + reply context
-      const payload: TriggerEventPayload & { _replyContext?: IMReplyContext } = {
-        data: {
-          platform: message.platform,
-          sender: message.senderName,
-          senderId: message.senderId,
-          text: message.text,
-          chatId: message.chatId,
-          chatName: message.chatName,
-          isDirect: message.isDirect,
-          isMention: message.isMention,
-        },
-        _replyContext: message.replyContext,
-      };
-
-      this.handleEvent(triggerId, payload);
     }
+
+    return dispatched;
   }
 
   /** Check if a message matches the IM trigger's listen scope */
@@ -702,6 +743,18 @@ class TriggerEngine {
 
   isTriggerRunning(triggerId: string): boolean {
     return this.runningTriggers.has(triggerId);
+  }
+
+  private extractLastAIReply(conversationId: string): string | null {
+    const conv = useChatStore.getState().conversations[conversationId];
+    if (!conv) return null;
+    const lastAI = [...conv.messages].reverse().find((m) => m.role === 'assistant');
+    if (!lastAI) return null;
+    if (typeof lastAI.content === 'string') return lastAI.content;
+    return (lastAI.content as { type: string; text?: string }[])
+      .filter((c) => c.type === 'text')
+      .map((c) => c.text ?? '')
+      .join('\n');
   }
 }
 

@@ -19,21 +19,21 @@ describe('truncation', () => {
     });
 
     it('returns result within maxChars as-is', () => {
-      // read_file maxChars = 20000, this is under that
-      const text = 'x'.repeat(19999);
+      // read_file maxChars = 15000, this is under that
+      const text = 'x'.repeat(14999);
       expect(truncateToolResult('read_file', text)).toBe(text);
     });
   });
 
   // ── Line-based truncation (read_file) ──
-  // read_file: headLines=200, tailLines=20, maxChars=20000
+  // read_file: headLines=150, tailLines=20, maxChars=15000
   describe('line-based truncation — read_file', () => {
     it('truncates with head and tail lines when exceeding maxChars', () => {
-      // 500 lines × 100 chars each = 50000 chars (exceeds maxChars=20000)
+      // 500 lines × 100 chars each = 50000 chars (exceeds maxChars=15000)
       const lines = Array.from({ length: 500 }, (_, i) => `Line ${i + 1}: ${'x'.repeat(90)}`);
       const result = truncateToolResult('read_file', lines.join('\n'));
       expect(result).toContain('Line 1:');
-      // Line-based truncation creates head(200)+omission+tail(20) → still > 20000 chars
+      // Line-based truncation creates head(150)+omission+tail(20) → still > 15000 chars
       // Then char-level truncation kicks in, so we check for the omission message
       expect(result).toContain('omitted');
       expect(result.length).toBeLessThan(lines.join('\n').length);
@@ -109,7 +109,7 @@ describe('truncation', () => {
   // ── Further char truncation after line truncation ──
   describe('combined truncation', () => {
     it('applies char truncation if line-truncated result still exceeds maxChars', () => {
-      // read_file maxChars = 20000, headLines = 200
+      // read_file maxChars = 15000, headLines = 150
       // Create 250 lines of 200 chars each → head 200 lines = 40000 chars → exceeds maxChars
       const lines = Array.from({ length: 250 }, () => 'x'.repeat(200));
       const result = truncateToolResult('read_file', lines.join('\n'));

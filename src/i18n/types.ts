@@ -100,6 +100,25 @@ export interface TranslationDict {
     codeBlockExpand: string;
     codeBlockCollapse: string;
     codeBlockSaveAs: string;
+    mermaidLoading: string;
+    mermaidRenderError: string;
+    mermaidExpand: string;
+    mermaidCollapse: string;
+    infographicLoading: string;
+    infographicRenderError: string;
+    infographicExpand: string;
+    infographicCollapse: string;
+    htmlWidgetLabel: string;
+    htmlWidgetLoading: string;
+    htmlWidgetRenderError: string;
+    htmlWidgetExpand: string;
+    htmlWidgetCollapse: string;
+    htmlWidgetFullscreen: string;
+    htmlWidgetCopyCode: string;
+    htmlWidgetCopied: string;
+    htmlWidgetDownload: string;
+    htmlWidgetViewCode: string;
+    htmlWidgetViewPreview: string;
     setupRequired: string;
     setupRequiredDesc: string;
     setupButton: string;
@@ -724,6 +743,15 @@ export interface TranslationDict {
     onlyRunWhileAwake: string;
     askAbuToCreate: string;
     askAbuCreatePrompt: string;
+    // Output
+    outputChannel: string;
+    outputChannelNone: string;
+    outputChannelHint: string;
+    outputToGroup: string;
+    outputToDM: string;
+    outputChatIdPlaceholder: string;
+    outputUserIdPlaceholder: string;
+    outputPushFailed: string;
   };
 
   // Triggers
@@ -805,6 +833,9 @@ export interface TranslationDict {
     // Toast messages
     triggerCompleted: string;
     triggerError: string;
+    outputPushSent: string;
+    outputPushFailed: string;
+    outputEnabled: string;
     // Source types
     sourceType: string;
     sourceHttp: string;
@@ -862,21 +893,27 @@ export interface TranslationDict {
     outputSent: string;
     outputFailed: string;
     outputRetry: string;
-    // Phase 1B: IM source
+    // IM source
     imSource: string;
-    imPlatform: string;
-    imAppId: string;
-    imAppIdPlaceholder: string;
-    imAppSecret: string;
-    imAppSecretPlaceholder: string;
+    imSelectChannel: string;
+    imNoChannels: string;
     imListenScope: string;
     imScopeAll: string;
     imScopeMentionOnly: string;
     imScopeDirectOnly: string;
+    imChatId: string;
+    imChatIdPlaceholder: string;
+    senderMatch: string;
+    senderMatchPlaceholder: string;
     imWebhookUrl: string;
     imWebhookUrlHint: string;
     outputTargetWebhook: string;
-    outputTargetReplySource: string;
+    outputTargetIMChannel: string;
+    outputSelectChannel: string;
+    outputToGroup: string;
+    outputToDM: string;
+    outputChatIdPlaceholder: string;
+    outputUserIdPlaceholder: string;
   };
 
   // IM Channel Settings

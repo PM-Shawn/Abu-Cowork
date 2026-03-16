@@ -242,10 +242,8 @@ export class ClaudeAdapter implements LLMAdapter {
       params.metadata = { user_id: options.metadata.userId };
     }
 
-    // Extended thinking (for Claude Opus 4+ models)
-    if (options.enableThinking && options.model.includes('opus')) {
-      // Extended thinking requires specific parameters
-      // Use type assertion to add thinking parameter
+    // Extended thinking — enableThinking is already gated by modelCapabilities in agentLoop
+    if (options.enableThinking) {
       (params as unknown as Record<string, unknown>).thinking = {
         type: 'enabled',
         budget_tokens: options.thinkingBudget ?? 10000,

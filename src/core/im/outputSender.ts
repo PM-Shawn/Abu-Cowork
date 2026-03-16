@@ -5,10 +5,13 @@
  */
 
 import { useChatStore } from '../../stores/chatStore';
+import { useIMChannelStore } from '../../stores/imChannelStore';
 import { getAdapter } from './adapters/registry';
 import type { AbuMessage, OutputContext } from './adapters/types';
-import type { TriggerOutput, OutputPlatform, OutputExtractMode, IMReplyContext } from '../../types/trigger';
+import type { TriggerOutput, OutputPlatform, OutputExtractMode } from '../../types/trigger';
+import type { IMReplyContext } from '../../types/im';
 import type { MessageContent } from '../../types';
+import { tokenManager } from './tokenManager';
 
 /** Extract plain text from message content (string or multimodal array) */
 function contentToString(content: string | MessageContent[]): string {
@@ -83,18 +86,17 @@ class OutputSender {
 
   /**
    * Send result to target platform.
-   * Supports both 'webhook' (Phase 1A) and 'reply_source' (Phase 1B) targets.
-   * Retry logic is at per-chunk level in BaseAdapter.sendMessage,
-   * no whole-message retry here to avoid duplicate chunks.
+   * Supports 'webhook' (HTTP push) and 'im_channel' (via IM channel's API) targets.
    */
   async send(
     output: TriggerOutput,
     message: AbuMessage,
     replyContext?: IMReplyContext,
+    receiveIdType?: 'chat_id' | 'open_id',
   ): Promise<{ success: boolean; error?: string }> {
-    // reply_source: use the IM platform's reply mechanism
-    if (output.target === 'reply_source') {
-      return this.sendReplySource(message, replyContext);
+    // im_channel: send via the IM channel's API credentials
+    if (output.target === 'im_channel') {
+      return this.sendViaIMChannel(output, message, replyContext, receiveIdType);
     }
 
     // webhook: send to configured URL
@@ -117,43 +119,120 @@ class OutputSender {
   }
 
   /**
-   * Reply to the IM source that triggered this run.
-   * Uses the platform's reply API via the stored replyContext.
-   *
-   * For Phase 1B, we reply via the same webhook mechanism (sending a new message).
-   * Each platform's reply approach:
-   * - DingTalk: use sessionWebhook (temporary webhook URL provided in callback)
-   * - Others: use the adapter's sendMessage to the webhook URL
-   *
-   * Full platform reply APIs (POST to message send/reply endpoints with tokens)
-   * will be added in Phase 2 when InboundAdapter has full API auth.
+   * Send via IM channel — uses the channel's credentials and platform API.
+   * Determines target chat from outputChatId, replyContext, or channel config.
    */
-  private async sendReplySource(
+  private async sendViaIMChannel(
+    output: TriggerOutput,
     message: AbuMessage,
     replyContext?: IMReplyContext,
+    receiveIdType?: 'chat_id' | 'open_id',
   ): Promise<{ success: boolean; error?: string }> {
-    if (!replyContext) {
-      return { success: false, error: 'No reply context available (trigger may not be an IM source)' };
+    const channelId = output.outputChannelId;
+    if (!channelId) {
+      return { success: false, error: 'No output channel ID configured' };
     }
 
-    // DingTalk: sessionWebhook is a temporary URL that can be POSTed to directly
-    if (replyContext.platform === 'dingtalk' && replyContext.sessionWebhook) {
-      const adapter = getAdapter('dingtalk');
-      if (!adapter) return { success: false, error: 'DingTalk adapter not found' };
-      try {
-        await adapter.sendMessage(replyContext.sessionWebhook, message);
-        return { success: true };
-      } catch (err) {
-        return { success: false, error: err instanceof Error ? err.message : String(err) };
+    const store = useIMChannelStore.getState();
+    const channel = store.channels[channelId];
+    if (!channel) {
+      return { success: false, error: `IM channel not found: ${channelId}` };
+    }
+
+    const { platform, appId, appSecret } = channel;
+    const adapter = getAdapter(platform);
+    if (!adapter) {
+      return { success: false, error: `Unknown platform: ${platform}` };
+    }
+
+    // Build target list from outputChatIds + outputUserIds
+    const targets: { id: string; receiveIdType?: 'chat_id' | 'open_id' }[] = [];
+
+    if (output.outputChatIds) {
+      for (const id of output.outputChatIds.split(',').map((s) => s.trim()).filter(Boolean)) {
+        targets.push({ id, receiveIdType: 'chat_id' });
+      }
+    }
+    if (output.outputUserIds) {
+      for (const id of output.outputUserIds.split(',').map((s) => s.trim()).filter(Boolean)) {
+        targets.push({ id, receiveIdType: 'open_id' });
       }
     }
 
-    // For other platforms, reply_source requires full API auth (Phase 2).
-    // For now, return a clear error message.
-    return {
-      success: false,
-      error: `reply_source for ${replyContext.platform} requires API auth (available in Phase 2). Use 'webhook' target for now.`,
-    };
+    // Single target passed directly (e.g. from scheduler)
+    if (targets.length === 0 && output.outputChatId) {
+      targets.push({ id: output.outputChatId, receiveIdType: receiveIdType ?? 'chat_id' });
+    }
+
+    // Fallback: reply to source chat (for IM triggers)
+    if (targets.length === 0) {
+      // DingTalk: use sessionWebhook
+      if (platform === 'dingtalk' && replyContext?.sessionWebhook) {
+        try {
+          await adapter.sendMessage(replyContext.sessionWebhook, message);
+          return { success: true };
+        } catch (err) {
+          return { success: false, error: err instanceof Error ? err.message : String(err) };
+        }
+      }
+
+      const fallbackChatId = this.extractChatIdFromReplyContext(replyContext);
+      if (fallbackChatId) {
+        targets.push({ id: fallbackChatId, receiveIdType: 'chat_id' });
+      }
+    }
+
+    if (targets.length === 0) {
+      return { success: false, error: 'No target chat/user ID available' };
+    }
+
+    if (!adapter.replyToChat) {
+      return { success: false, error: `Platform ${platform} does not support API-based message sending` };
+    }
+
+    // Send to all targets
+    try {
+      const token = await tokenManager.getToken(platform, appId, appSecret);
+      const results = await Promise.allSettled(
+        targets.map((t) =>
+          adapter.replyToChat!(token, { chatId: t.id, receiveIdType: t.receiveIdType }, message)
+        )
+      );
+
+      const failures = results.filter((r) => r.status === 'rejected');
+      if (failures.length === 0) {
+        return { success: true };
+      }
+      const firstError = (failures[0] as PromiseRejectedResult).reason;
+      const errorMsg = firstError instanceof Error ? firstError.message : String(firstError);
+      if (errorMsg.includes('401') || errorMsg.includes('token') || errorMsg.includes('auth')) {
+        tokenManager.invalidate(platform, appId);
+      }
+      return {
+        success: failures.length < targets.length, // partial success
+        error: `${targets.length - failures.length}/${targets.length} sent. Error: ${errorMsg}`,
+      };
+    } catch (err) {
+      const errorMsg = err instanceof Error ? err.message : String(err);
+      if (errorMsg.includes('401') || errorMsg.includes('token') || errorMsg.includes('auth')) {
+        tokenManager.invalidate(platform, appId);
+      }
+      return { success: false, error: errorMsg };
+    }
+  }
+
+  /**
+   * Extract chat ID from reply context based on platform
+   */
+  private extractChatIdFromReplyContext(replyContext?: IMReplyContext): string | undefined {
+    if (!replyContext) return undefined;
+    switch (replyContext.platform) {
+      case 'feishu': return replyContext.chatId;
+      case 'slack': return replyContext.channelId;
+      case 'wecom': return replyContext.chatid;
+      case 'dchat': return replyContext.vchannelId;
+      default: return undefined;
+    }
   }
 
   /**

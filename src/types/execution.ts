@@ -33,7 +33,8 @@ export type DetailBlockType =
   | 'list'     // Clickable list (e.g., search results)
   | 'json'     // Structured JSON
   | 'diff'     // File diff
-  | 'table';   // Table data
+  | 'table'    // Table data
+  | 'image';   // Image content (base64)
 
 /**
  * List item for 'list' type DetailBlock
@@ -73,6 +74,9 @@ export interface DetailBlock {
 
   // Extended fields for table type
   tableData?: TableData;
+
+  // Extended fields for image type
+  imageData?: { mediaType: string; base64: string };
 
   // Long content handling
   isTruncated: boolean;

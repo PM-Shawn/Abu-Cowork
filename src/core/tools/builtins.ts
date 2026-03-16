@@ -1,11 +1,11 @@
-import { readTextFile, writeTextFile, writeFile as writeBinFile, readDir, exists } from '@tauri-apps/plugin-fs';
+import { readTextFile, readFile as readBinFile, writeTextFile, writeFile as writeBinFile, readDir, exists } from '@tauri-apps/plugin-fs';
 import { homeDir, desktopDir, documentDir, downloadDir } from '@tauri-apps/api/path';
 import { readText as clipboardReadText, writeText as clipboardWriteText } from '@tauri-apps/plugin-clipboard-manager';
 import { sendNotification, isPermissionGranted, requestPermission } from '@tauri-apps/plugin-notification';
 import { useDiscoveryStore } from '../../stores/discoveryStore';
 import { platform } from '@tauri-apps/plugin-os';
 import { invoke } from '@tauri-apps/api/core';
-import type { ToolDefinition, ToolResult, ToolResultContent, Conversation } from '../../types';
+import type { ToolDefinition, ToolResult, ToolResultContent, Conversation, SubagentDefinition } from '../../types';
 import { toolRegistry } from './registry';
 import { skillLoader } from '../skill/loader';
 import { initPlatform, isWindows } from '../../utils/platform';
@@ -92,9 +92,226 @@ const getSystemInfoTool: ToolDefinition = {
   },
 };
 
+// Image extensions that can be sent as vision content
+const IMAGE_EXTENSIONS = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.svg']);
+const IMAGE_MEDIA_TYPES: Record<string, string> = {
+  '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg',
+  '.gif': 'image/gif', '.webp': 'image/webp', '.bmp': 'image/bmp', '.svg': 'image/svg+xml',
+};
+// Max image size in bytes before auto-resize (2MB)
+const IMAGE_MAX_BYTES = 2 * 1024 * 1024;
+
+/**
+ * Resize an image to fit within maxWidth using system tools.
+ * Returns base64 string of the resized image, or null on failure.
+ */
+async function resizeImageIfNeeded(bytes: Uint8Array, maxWidth: number): Promise<{ data: string; resized: boolean }> {
+  const base64 = uint8ArrayToBase64(bytes);
+
+  if (bytes.length <= IMAGE_MAX_BYTES) {
+    return { data: base64, resized: false };
+  }
+
+  // Use sips on macOS to resize
+  if (!isWindows()) {
+    try {
+      const tmpPath = `/tmp/abu-resize-${Date.now()}.png`;
+      await writeBinFile(tmpPath, bytes);
+      await invoke<CommandOutput>('run_shell_command', {
+        command: `sips --resampleWidth ${maxWidth} "${tmpPath}" --out "${tmpPath}"`,
+        cwd: null, background: false, timeout: 15,
+      });
+      const resized = await readBinFile(tmpPath);
+      // Clean up
+      invoke<CommandOutput>('run_shell_command', { command: `rm -f "${tmpPath}"`, cwd: null, background: false, timeout: 5 }).catch(() => {});
+      return { data: uint8ArrayToBase64(new Uint8Array(resized)), resized: true };
+    } catch { /* fall through to original */ }
+  }
+
+  return { data: base64, resized: false };
+}
+
+function uint8ArrayToBase64(bytes: Uint8Array): string {
+  let binary = '';
+  for (let i = 0; i < bytes.length; i++) {
+    binary += String.fromCharCode(bytes[i]);
+  }
+  return btoa(binary);
+}
+
+function getFileExtension(path: string): string {
+  const dot = path.lastIndexOf('.');
+  return dot >= 0 ? path.slice(dot).toLowerCase() : '';
+}
+
+// Office document extensions that can be extracted as text
+const OFFICE_EXTENSIONS = new Set(['.docx', '.xlsx', '.pptx', '.xls', '.doc']);
+
+// Archive extensions that can be listed
+const ARCHIVE_EXTENSIONS = new Set(['.zip', '.tar', '.tar.gz', '.tgz', '.gz', '.7z', '.rar']);
+
+/**
+ * Extract text content from Office documents.
+ * - .xlsx/.xls: Uses xlsx npm package (already installed, no Python needed)
+ * - .docx: Extracts XML text from the docx zip structure (no Python needed)
+ * - .pptx: Falls back to Python python-pptx
+ */
+async function extractOfficeText(filePath: string, ext: string): Promise<string> {
+  if (ext === '.xlsx' || ext === '.xls') {
+    return extractXlsxText(filePath);
+  }
+  if (ext === '.docx') {
+    return extractDocxText(filePath);
+  }
+  if (ext === '.pptx') {
+    return extractPptxViaPython(filePath);
+  }
+  return `Error: Unsupported Office format: ${ext}`;
+}
+
+/** Extract Excel text using the xlsx npm package (already in dependencies) */
+async function extractXlsxText(filePath: string): Promise<string> {
+  try {
+    const data = new Uint8Array(await readBinFile(filePath));
+    const XLSX = await import('xlsx');
+    const workbook = XLSX.read(data, { type: 'array' });
+    const lines: string[] = [];
+
+    for (const sheetName of workbook.SheetNames) {
+      lines.push(`=== Sheet: ${sheetName} ===`);
+      const sheet = workbook.Sheets[sheetName];
+      const rows = XLSX.utils.sheet_to_json<string[]>(sheet, { header: 1, defval: '' }) as string[][];
+      const maxRows = Math.min(rows.length, 500);
+      for (let i = 0; i < maxRows; i++) {
+        lines.push(rows[i].map(String).join('\t'));
+      }
+      if (rows.length > 500) {
+        lines.push(`[... ${rows.length - 500} more rows omitted ...]`);
+      }
+    }
+    return lines.join('\n');
+  } catch (err) {
+    return `Error reading Excel file: ${err instanceof Error ? err.message : String(err)}`;
+  }
+}
+
+/** Extract Word document text by parsing the docx XML structure (docx = zip of XML files) */
+async function extractDocxText(filePath: string): Promise<string> {
+  try {
+    const data = new Uint8Array(await readBinFile(filePath));
+    // docx is a zip file — use fflate to decompress and read word/document.xml
+    const { unzipSync } = await import('fflate');
+    const unzipped = unzipSync(data);
+
+    // Main document content is in word/document.xml
+    const docXml = unzipped['word/document.xml'];
+    if (!docXml) {
+      return 'Error: Invalid docx file — word/document.xml not found.';
+    }
+
+    // Parse XML text content — extract text between <w:t> tags
+    const xmlStr = new TextDecoder().decode(docXml);
+    const lines: string[] = [];
+    let currentParagraph = '';
+
+    // Split by paragraph markers <w:p> and extract text from <w:t> tags
+    const paragraphs = xmlStr.split(/<w:p[\s>]/);
+    for (const para of paragraphs) {
+      const texts: string[] = [];
+      const textMatches = para.matchAll(/<w:t[^>]*>([^<]*)<\/w:t>/g);
+      for (const match of textMatches) {
+        texts.push(match[1]);
+      }
+      currentParagraph = texts.join('');
+      if (currentParagraph.trim()) {
+        lines.push(currentParagraph);
+      }
+    }
+
+    if (lines.length === 0) {
+      return 'Document is empty or contains only images/embedded objects.';
+    }
+    return lines.join('\n');
+  } catch (err) {
+    return `Error reading Word file: ${err instanceof Error ? err.message : String(err)}`;
+  }
+}
+
+/** Extract PowerPoint text via Python (python-pptx) — no JS alternative */
+async function extractPptxViaPython(filePath: string): Promise<string> {
+  const pyBin = isWindows() ? 'python' : 'python3';
+  const escapedPath = isWindows()
+    ? filePath.replace(/'/g, "''")
+    : filePath.replace(/'/g, "'\\''");
+
+  const pyCmd = `${pyBin} -c "
+from pptx import Presentation
+prs = Presentation('${escapedPath}')
+for i, slide in enumerate(prs.slides, 1):
+    print(f'=== Slide {i} ===')
+    for shape in slide.shapes:
+        if hasattr(shape, 'text') and shape.text:
+            print(shape.text)
+"`;
+
+  try {
+    const output = await invoke<CommandOutput>('run_shell_command', {
+      command: pyCmd,
+      cwd: null,
+      background: false,
+      timeout: 30,
+    });
+    if (output.code === 0 && output.stdout.trim()) {
+      return output.stdout;
+    }
+    if (output.stderr?.includes('ModuleNotFoundError')) {
+      return 'Error: Python module not installed. Run: pip3 install python-pptx';
+    }
+    return `Error extracting pptx: ${output.stderr?.slice(0, 500) || 'Unknown error'}`;
+  } catch {
+    return `Error: Python3 not available. Install Python and python-pptx to read .pptx files.`;
+  }
+}
+
+/**
+ * List contents of an archive file using system commands.
+ */
+async function listArchiveContents(filePath: string, ext: string): Promise<string> {
+  let command: string;
+
+  if (ext === '.zip') {
+    command = isWindows()
+      ? `powershell -c "Expand-Archive -Path '${filePath}' -DestinationPath . -WhatIf 2>&1; [IO.Compression.ZipFile]::OpenRead('${filePath}').Entries | Select-Object FullName, Length | Format-Table -AutoSize"`
+      : `unzip -l "${filePath}"`;
+  } else if (ext === '.tar' || ext === '.tar.gz' || ext === '.tgz') {
+    command = isWindows()
+      ? `tar -tf "${filePath}"`
+      : `tar -tf "${filePath}"`;
+  } else if (ext === '.gz' && !filePath.endsWith('.tar.gz')) {
+    command = `file "${filePath}"`;
+  } else {
+    return `Archive listing not supported for ${ext}. Use run_command to extract.`;
+  }
+
+  try {
+    const output = await invoke<CommandOutput>('run_shell_command', {
+      command,
+      cwd: null,
+      background: false,
+      timeout: 15,
+    });
+    if (output.code === 0) {
+      return output.stdout || 'Archive is empty.';
+    }
+    return `Error listing archive: ${output.stderr || 'Unknown error'}`;
+  } catch {
+    return `Error: Could not list archive contents.`;
+  }
+}
+
 const readFileTool: ToolDefinition = {
   name: 'read_file',
-  description: 'Read the contents of a file at the given path. Returns the file content as text.',
+  description: 'Read the contents of a file. Supports text files, images (png/jpg/gif/webp — visual content), PDFs (text extraction), Office documents (.docx/.xlsx/.pptx — text extraction), and archives (.zip/.tar.gz — list contents).',
   inputSchema: {
     type: 'object',
     properties: {
@@ -104,10 +321,25 @@ const readFileTool: ToolDefinition = {
   },
   execute: async (input) => {
     const filePath = input.path as string;
+    const ext = getFileExtension(filePath);
 
     try {
-      // PDF files: extract text instead of returning raw binary
-      if (filePath.toLowerCase().endsWith('.pdf')) {
+      // --- Image files: return as vision content ---
+      if (IMAGE_EXTENSIONS.has(ext)) {
+        const bytes = new Uint8Array(await readBinFile(filePath));
+        const mediaType = IMAGE_MEDIA_TYPES[ext] || 'image/png';
+        const { data, resized } = await resizeImageIfNeeded(bytes, 1280);
+        const sizeKB = Math.round(bytes.length / 1024);
+        const resizeNote = resized ? ' (auto-resized to 1280px width)' : '';
+
+        return [
+          { type: 'text', text: `Image: ${filePath} (${sizeKB}KB, ${mediaType})${resizeNote}` },
+          { type: 'image', source: { type: 'base64', media_type: mediaType, data } },
+        ] as ToolResultContent[];
+      }
+
+      // --- PDF files: extract text ---
+      if (ext === '.pdf') {
         // Strategy 1: pdftotext (macOS/Linux — fast, native)
         if (!isWindows()) {
           try {
@@ -147,6 +379,18 @@ const readFileTool: ToolDefinition = {
           : 'Error: Cannot read PDF as text. Install pdftotext (brew install poppler) or: pip3 install pdfplumber';
       }
 
+      // --- Office documents: extract text via Python ---
+      if (OFFICE_EXTENSIONS.has(ext)) {
+        return await extractOfficeText(filePath, ext);
+      }
+
+      // --- Archives: list contents ---
+      if (ARCHIVE_EXTENSIONS.has(ext) || filePath.endsWith('.tar.gz')) {
+        const archiveExt = filePath.endsWith('.tar.gz') ? '.tar.gz' : ext;
+        return await listArchiveContents(filePath, archiveExt);
+      }
+
+      // --- Text files: read as UTF-8 ---
       const content = await readTextFile(filePath);
       return content;
     } catch (err) {
@@ -527,6 +771,12 @@ const useSkillTool: ToolDefinition = {
   execute: async (input) => {
     const skillName = input.skill_name as string;
     const context = input.context as string | undefined;
+
+    // Check if skill is disabled by user
+    const { disabledSkills } = useSettingsStore.getState();
+    if (disabledSkills?.includes(skillName)) {
+      return `Error: 技能 "${skillName}" 已被用户禁用。请直接使用工具完成任务，不要调用此技能。`;
+    }
 
     const skill = skillLoader.getSkill(skillName);
     if (!skill) {
@@ -1017,45 +1267,91 @@ const httpFetchTool: ToolDefinition = {
 /**
  * delegate_to_agent tool — delegate a task to a specialist subagent
  */
+// System preset agent definitions — used by delegate_to_agent type parameter
+// These are internal roles, not visible to users in the toolbox
+const PRESET_AGENTS: Record<string, { description: string; systemPrompt: string; tools: string[] }> = {
+  research: {
+    description: '信息搜索和调研',
+    systemPrompt: '你是一个专业的调研助手。专注于搜索、阅读和分析信息，输出结构化的调研结果。',
+    tools: ['read_file', 'list_directory', 'find_files', 'search_files', 'web_search', 'http_fetch'],
+  },
+  writer: {
+    description: '内容创作和文档撰写',
+    systemPrompt: '你是一个专业的写作助手。擅长撰写文档、报告、邮件等各类文字内容。',
+    tools: ['read_file', 'write_file', 'edit_file', 'list_directory', 'find_files', 'search_files', 'web_search'],
+  },
+  executor: {
+    description: '执行复杂操作任务',
+    systemPrompt: '你是一个高效的执行助手。能够使用各种工具完成文件操作、命令执行等任务。',
+    tools: [], // Empty = all tools allowed (except delegate_to_agent which is always blocked)
+  },
+};
+
+function buildPresetAgent(type: string, _task: string): SubagentDefinition {
+  const preset = PRESET_AGENTS[type];
+  return {
+    name: `preset-${type}`,
+    description: preset.description,
+    systemPrompt: preset.systemPrompt,
+    filePath: '__preset__',
+    tools: preset.tools.length > 0 ? preset.tools : undefined,
+    maxTurns: type === 'research' ? 15 : 20,
+  };
+}
+
 const delegateToAgentTool: ToolDefinition = {
   name: 'delegate_to_agent',
-  description: '将任务委派给专门的代理独立执行，完成后返回结果。适用于任务匹配某个代理专长的场景。',
+  description: '将任务委派给代理独立执行。可指定 agent_name（用户自定义代理）或 type（系统内置角色：research 调研/writer 写作/executor 执行）。',
   inputSchema: {
     type: 'object',
     properties: {
-      agent_name: { type: 'string', description: '代理名称' },
+      agent_name: { type: 'string', description: '用户自定义代理名称（与 type 二选一）' },
+      type: { type: 'string', description: '系统内置角色：research（只读调研）、writer（读写创作）、executor（全能执行）。与 agent_name 二选一', enum: ['research', 'writer', 'executor'] },
       task: { type: 'string', description: '委派的任务描述' },
       context: { type: 'string', description: '附加上下文（可选）' },
     },
-    required: ['agent_name', 'task'],
+    required: ['task'],
   },
   execute: async (input) => {
-    const agentName = input.agent_name as string;
+    const agentName = input.agent_name as string | undefined;
+    const agentType = input.type as string | undefined;
     const task = input.task as string;
     const context = input.context as string | undefined;
 
-    // 1. Look up agent
-    const agent = agentRegistry.getAgent(agentName);
-    if (!agent) {
-      const available = agentRegistry.getAvailableAgents()
-        .filter((a) => a.name !== 'abu')
-        .map((a) => `${a.name} (${a.description})`)
-        .join(', ');
-      return `Error: 代理 "${agentName}" 未找到。可用代理: ${available || '无'}`;
+    // 1. Resolve agent: by name (user-defined) or by type (system preset)
+    let agent: SubagentDefinition | undefined;
+
+    if (agentType && PRESET_AGENTS[agentType]) {
+      // System preset role
+      agent = buildPresetAgent(agentType, task);
+    } else if (agentName) {
+      // User-defined agent
+      agent = agentRegistry.getAgent(agentName);
+      if (!agent) {
+        const available = agentRegistry.getAvailableAgents()
+          .filter((a) => a.name !== 'abu')
+          .map((a) => `${a.name} (${a.description})`)
+          .join(', ');
+        const presetList = Object.keys(PRESET_AGENTS).join(', ');
+        return `Error: 代理 "${agentName}" 未找到。可用代理: ${available || '无'}。也可使用系统角色 type: ${presetList}`;
+      }
+
+      // Check if disabled
+      const { disabledAgents } = useSettingsStore.getState();
+      if (disabledAgents.includes(agentName)) {
+        return `Error: 代理 "${agentName}" 已被停用。`;
+      }
+    } else {
+      return 'Error: 必须指定 agent_name（用户代理）或 type（系统角色：research/writer/executor）';
     }
 
-    // 2. Check if disabled
-    const { disabledAgents } = useSettingsStore.getState();
-    if (disabledAgents.includes(agentName)) {
-      return `Error: 代理 "${agentName}" 已被停用。`;
-    }
+    const effectiveAgentName = agent.name;
 
     // 3. Get parent loop context
     const loopCtx = getCurrentLoopContext();
 
     // 4. Set agent status indicator
-
-    useChatStore.getState().setAgentStatus('tool-calling', 'delegate_to_agent', agentName);
+    useChatStore.getState().setAgentStatus('tool-calling', 'delegate_to_agent', effectiveAgentName);
 
     // 5. Build onProgress callback for subagent visualization
     let onProgress: ((event: SubagentProgressEvent) => void) | undefined;
@@ -1118,7 +1414,7 @@ const delegateToAgentTool: ToolDefinition = {
 
     // 7. Create per-subagent AbortController (linked to parent)
     const { signal: subagentSignal, cleanup: subagentCleanup } = createSubagentController(
-      agentName,
+      effectiveAgentName,
       loopCtx?.signal
     );
 
@@ -1137,11 +1433,11 @@ const delegateToAgentTool: ToolDefinition = {
 
       // Clear this agent from tracking and cleanup
       subagentCleanup();
-      useChatStore.getState().removeActiveAgent(agentName);
+      useChatStore.getState().removeActiveAgent(effectiveAgentName);
       return result;
     } catch (err) {
       subagentCleanup();
-      useChatStore.getState().removeActiveAgent(agentName);
+      useChatStore.getState().removeActiveAgent(effectiveAgentName);
       throw err;
     }
   },

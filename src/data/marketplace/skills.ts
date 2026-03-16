@@ -52,6 +52,16 @@ export const skillTemplates: MarketplaceItem[] = [
     isBuiltin: true,
   },
 
+  // ============ 可视化类 ============
+  {
+    id: 'html-widget',
+    name: 'html-widget',
+    description: '在对话中生成可交互的可视化组件 — 图表、动画、小工具、游戏等',
+    author: 'Abu',
+    category: '可视化',
+    isBuiltin: true,
+  },
+
   // ============ 设计创意类 ============
   {
     id: 'algorithmic-art',

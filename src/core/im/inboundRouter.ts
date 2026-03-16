@@ -5,7 +5,7 @@
  * into a common format that the trigger engine can process.
  */
 
-import type { IMPlatform, IMReplyContext } from '../../types/trigger';
+import type { IMPlatform, IMReplyContext } from '../../types/im';
 
 /** Normalized inbound IM message */
 export interface NormalizedIMMessage {

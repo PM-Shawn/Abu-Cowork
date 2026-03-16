@@ -16,6 +16,71 @@ function generateId(): string {
 // Store abort controllers for each conversation
 const abortControllers: Map<string, AbortController> = new Map();
 
+// ── Streaming token buffer (RAF-based debounce) ──
+// Tokens accumulate in the buffer and flush once per animation frame,
+// reducing React re-renders from 1000+/sec to ~60/sec during streaming.
+const tokenBuffer: Map<string, string> = new Map();
+let flushScheduled = false;
+
+function scheduleFlush() {
+  if (flushScheduled) return;
+  flushScheduled = true;
+  requestAnimationFrame(() => {
+    flushScheduled = false;
+    if (tokenBuffer.size === 0) return;
+    const entries = Array.from(tokenBuffer.entries());
+    tokenBuffer.clear();
+    // Single Zustand set() call to batch all buffered tokens
+    useChatStore.setState((state) => {
+      for (const [convId, buffered] of entries) {
+        const messages = state.conversations[convId]?.messages;
+        if (messages?.length) {
+          const lastMsg = messages[messages.length - 1];
+          if (typeof lastMsg.content === 'string') {
+            lastMsg.content += buffered;
+          }
+        }
+      }
+    });
+  });
+}
+
+/** Flush any pending buffered tokens immediately (call before finishStreaming) */
+export function flushTokenBuffer(convId?: string) {
+  if (convId) {
+    const buffered = tokenBuffer.get(convId);
+    if (buffered) {
+      tokenBuffer.delete(convId);
+      useChatStore.setState((state) => {
+        const messages = state.conversations[convId]?.messages;
+        if (messages?.length) {
+          const lastMsg = messages[messages.length - 1];
+          if (typeof lastMsg.content === 'string') {
+            lastMsg.content += buffered;
+          }
+        }
+      });
+    }
+  } else {
+    // Flush all
+    const entries = Array.from(tokenBuffer.entries());
+    tokenBuffer.clear();
+    if (entries.length > 0) {
+      useChatStore.setState((state) => {
+        for (const [cId, buffered] of entries) {
+          const messages = state.conversations[cId]?.messages;
+          if (messages?.length) {
+            const lastMsg = messages[messages.length - 1];
+            if (typeof lastMsg.content === 'string') {
+              lastMsg.content += buffered;
+            }
+          }
+        }
+      });
+    }
+  }
+}
+
 // Persistence limits
 const MAX_CONVERSATIONS = 50;
 const MAX_MESSAGES_PER_CONVERSATION = 200;
@@ -293,15 +358,10 @@ export const useChatStore = create<ChatStore>()(
       },
 
       appendToLastMessage: (convId, token) => {
-        set((state) => {
-          const messages = state.conversations[convId]?.messages;
-          if (messages?.length) {
-            const lastMsg = messages[messages.length - 1];
-            if (typeof lastMsg.content === 'string') {
-              lastMsg.content += token;
-            }
-          }
-        });
+        // Buffer tokens and flush once per animation frame for smooth rendering
+        const existing = tokenBuffer.get(convId) ?? '';
+        tokenBuffer.set(convId, existing + token);
+        scheduleFlush();
       },
 
       setLastMessageContent: (convId, content) => {
@@ -315,6 +375,8 @@ export const useChatStore = create<ChatStore>()(
       },
 
       finishStreaming: (convId) => {
+        // Flush any buffered tokens before marking streaming complete
+        flushTokenBuffer(convId);
         set((state) => {
           const messages = state.conversations[convId]?.messages;
           if (messages?.length) {

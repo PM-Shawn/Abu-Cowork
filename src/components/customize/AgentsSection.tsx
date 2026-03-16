@@ -3,7 +3,6 @@ import { useDiscoveryStore } from '@/stores/discoveryStore';
 import { useSettingsStore } from '@/stores/settingsStore';
 import { useChatStore } from '@/stores/chatStore';
 import { useI18n } from '@/i18n';
-import { agentTemplates } from '@/data/marketplace/agents';
 import { agentRegistry } from '@/core/agent/registry';
 import AgentEditor from './AgentEditor';
 import { Toggle } from '@/components/ui/toggle';
@@ -14,14 +13,9 @@ import type { SubagentDefinition } from '@/types';
 import MarkdownRenderer from '@/components/chat/MarkdownRenderer';
 import abuAvatar from '@/assets/abu-avatar.png';
 
-// Marketplace agent names — used to distinguish "installed from marketplace" vs "truly custom"
-const marketplaceNames = new Set(agentTemplates.map((t) => t.name));
-
 function isSystemAgent(agent: SubagentDefinition): boolean {
-  if (agent.name === 'abu') return true;
-  if (agent.filePath === '__builtin__' || agent.filePath.includes('builtin-agents')) return true;
-  if (marketplaceNames.has(agent.name)) return true;
-  return false;
+  // Only 'abu' is a system agent — all others (including marketplace-installed) are user agents
+  return agent.name === 'abu';
 }
 
 /** Render agent avatar: use real image for abu, emoji for others */
@@ -89,29 +83,20 @@ export default function AgentsSection({ manualCreateTrigger, onAICreate, onManua
 
   const disabledSet = useMemo(() => new Set(disabledAgents), [disabledAgents]);
 
-  // Filter by search
-  const searchLower = toolboxSearchQuery.toLowerCase();
+  // Filter by search, exclude system agents (abu) from display
   const filteredAgents = useMemo(() => {
-    if (!toolboxSearchQuery) return installedAgents;
-    return installedAgents.filter((a) =>
-      a.name.toLowerCase().includes(searchLower) ||
-      a.description.toLowerCase().includes(searchLower)
+    const visible = installedAgents.filter((a) => !isSystemAgent(a));
+    if (!toolboxSearchQuery) return visible;
+    const q = toolboxSearchQuery.toLowerCase();
+    return visible.filter((a) =>
+      a.name.toLowerCase().includes(q) ||
+      a.description.toLowerCase().includes(q)
     );
-  }, [installedAgents, searchLower]);
+  }, [installedAgents, toolboxSearchQuery]);
 
-  // Group into "My agents" (user-created) and "System" (builtin/marketplace)
-  const { userAgents, systemAgents } = useMemo(() => {
-    const user: SubagentDefinition[] = [];
-    const system: SubagentDefinition[] = [];
-    for (const a of filteredAgents) {
-      if (isSystemAgent(a)) {
-        system.push(a);
-      } else {
-        user.push(a);
-      }
-    }
-    return { userAgents: user, systemAgents: system };
-  }, [filteredAgents]);
+  // All visible agents are user agents (system agents like 'abu' are filtered out above)
+  const userAgents = filteredAgents;
+  const systemAgents: SubagentDefinition[] = [];
 
   const toggleCategory = (cat: string) => {
     setCollapsedCategories((prev) => {

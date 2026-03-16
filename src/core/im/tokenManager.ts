@@ -9,7 +9,7 @@
  * - DingTalk: uses sessionWebhook (no token needed for reply)
  */
 
-import type { IMPlatform } from '../../types/trigger';
+import type { IMPlatform } from '../../types/im';
 import { getTauriFetch } from '../llm/tauriFetch';
 
 interface CachedToken {

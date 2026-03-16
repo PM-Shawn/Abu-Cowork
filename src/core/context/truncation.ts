@@ -12,7 +12,7 @@ interface TruncationRule {
 }
 
 const TRUNCATION_RULES: Record<string, TruncationRule> = {
-  read_file: { headLines: 200, tailLines: 20, maxChars: 20000 },
+  read_file: { headLines: 150, tailLines: 20, maxChars: 15000 },
   list_directory: { headLines: 100, tailLines: 0, maxChars: 8000 },
   run_command: { headLines: 150, tailLines: 30, maxChars: 15000 },
   search_files: { headLines: 50, tailLines: 0, maxChars: 8000 },

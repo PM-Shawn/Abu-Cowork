@@ -1,8 +1,6 @@
 import { useEffect, useCallback, useState, useRef } from 'react';
 import { useChatStore } from '@/stores/chatStore';
 import { useSettingsStore } from '@/stores/settingsStore';
-import { useScheduleStore } from '@/stores/scheduleStore';
-import { useTriggerStore } from '@/stores/triggerStore';
 import { useI18n } from '@/i18n';
 import { Plus, Clock, Zap, Wrench, Trash2, Settings, Download, Upload, Pencil, Undo2, HelpCircle } from 'lucide-react';
 import GuideModal from '@/components/common/GuideModal';
@@ -69,10 +67,6 @@ export default function Sidebar() {
   const viewMode = useSettingsStore((s) => s.viewMode);
   const setViewMode = useSettingsStore((s) => s.setViewMode);
   const updateInfo = useSettingsStore((s) => s.updateInfo);
-  const activeTaskCount = useScheduleStore((s) => s.getActiveTaskCount());
-  const activeTriggerCount = useTriggerStore((s) =>
-    Object.values(s.triggers).filter((t) => t.status === 'active').length
-  );
   const { t } = useI18n();
 
   // Context menu state
@@ -232,11 +226,6 @@ export default function Sidebar() {
         >
           <Clock className="h-[18px] w-[18px] text-[#656358]" strokeWidth={1.75} />
           <span>{t.sidebar.scheduledTasks}</span>
-          {activeTaskCount > 0 && (
-            <span className="text-[9px] px-1.5 py-0.5 rounded-full bg-[#d97757]/15 text-[#d97757] font-medium">
-              {activeTaskCount}
-            </span>
-          )}
         </button>
         <button
           onClick={() => setViewMode('trigger')}
@@ -249,11 +238,6 @@ export default function Sidebar() {
         >
           <Zap className="h-[18px] w-[18px] text-[#656358]" strokeWidth={1.75} />
           <span>{t.sidebar.triggers}</span>
-          {activeTriggerCount > 0 && (
-            <span className="text-[9px] px-1.5 py-0.5 rounded-full bg-[#d97757]/15 text-[#d97757] font-medium">
-              {activeTriggerCount}
-            </span>
-          )}
         </button>
         <button
           onClick={() => openToolbox()}
@@ -269,19 +253,21 @@ export default function Sidebar() {
         </button>
       </nav>
 
-      {/* Scheduled Section */}
-      <ScheduledSection />
+      {/* Scrollable middle section: scheduled + triggers + recents */}
+      <ScrollArea className="flex-1 min-h-0">
+        {/* Scheduled Section */}
+        <ScheduledSection />
 
-      {/* Trigger Section */}
-      <TriggerSection />
+        {/* Trigger Section */}
+        <TriggerSection />
 
-      {/* Recents Section */}
-      <div className="px-6 pt-4 pb-1.5">
-        <span className="text-[12px] font-medium text-[#656358]">{t.sidebar.recents}</span>
-      </div>
+        {/* Recents Section */}
+        <div className="px-6 pt-4 pb-1.5">
+          <span className="text-[12px] font-medium text-[#656358]">{t.sidebar.recents}</span>
+        </div>
 
-      {/* Conversation List */}
-      <ScrollArea className="flex-1 min-h-0 px-4">
+        {/* Conversation List */}
+        <div className="px-4">
         {sortedConvs.length === 0 ? (
           <div className="px-4 py-3">
             <p className="text-[13px] text-[#656358]">{t.sidebar.noSessionsYet}</p>
@@ -341,6 +327,7 @@ export default function Sidebar() {
             ))}
           </div>
         )}
+        </div>
       </ScrollArea>
 
       {/* User Section */}

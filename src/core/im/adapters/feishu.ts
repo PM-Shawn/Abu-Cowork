@@ -80,8 +80,9 @@ export class FeishuAdapter extends BaseAdapter {
       url = `https://open.feishu.cn/open-apis/im/v1/messages/${context.messageId}/reply`;
       reqBody = body;
     } else {
-      // New message to chat
-      url = `https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=chat_id`;
+      // New message to chat or DM to user
+      const idType = context.receiveIdType ?? 'chat_id';
+      url = `https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=${idType}`;
       reqBody = { ...body, receive_id: context.chatId };
     }
 

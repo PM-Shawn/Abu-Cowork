@@ -20,7 +20,7 @@ const ASSISTANT_SUMMARY_MAX_CHARS = 200;
  * Older screenshots are replaced with a text placeholder to save tokens.
  * Each screenshot image is ~100K+ tokens — keeping too many quickly overflows context.
  */
-const MAX_RECENT_SCREENSHOTS = 3;
+const MAX_RECENT_SCREENSHOTS = 2;
 
 /**
  * Strip old screenshot images from messages, keeping only the N most recent.

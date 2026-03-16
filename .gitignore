@@ -41,3 +41,4 @@ test-browser.html
 # Internal reference docs (not for release)
 仅供了解*
 docs/
+!website/docs/

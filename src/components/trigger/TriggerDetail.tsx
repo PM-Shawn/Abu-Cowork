@@ -13,6 +13,7 @@ import {
   Zap,
 } from 'lucide-react';
 import { useToastStore } from '@/stores/toastStore';
+import { useIMChannelStore } from '@/stores/imChannelStore';
 import { cn } from '@/lib/utils';
 import TriggerRunHistory from './TriggerRunHistory';
 import ConfirmDialog from '@/components/common/ConfirmDialog';
@@ -126,7 +127,7 @@ export default function TriggerDetail() {
             <div className="flex items-center justify-between">
               <span className="text-[13px] text-[#656358]">{t.trigger.sourceType}</span>
               <span className="text-[13px] text-[#29261b]">
-                {trigger.source.type === 'http' ? t.trigger.sourceHttp : trigger.source.type === 'file' ? t.trigger.sourceFile : t.trigger.sourceCron}
+                {trigger.source.type === 'http' ? t.trigger.sourceHttp : trigger.source.type === 'file' ? t.trigger.sourceFile : trigger.source.type === 'im' ? t.trigger.imSource : t.trigger.sourceCron}
               </span>
             </div>
             {trigger.source.type === 'file' && (
@@ -140,6 +141,9 @@ export default function TriggerDetail() {
                 <span className="text-[13px] text-[#656358]">{t.trigger.cronInterval}</span>
                 <span className="text-[13px] text-[#29261b]">{t.trigger.cronIntervalSeconds.replace('{n}', String(trigger.source.intervalSeconds))}</span>
               </div>
+            )}
+            {trigger.source.type === 'im' && (
+              <IMSourceDetail channelId={trigger.source.channelId} />
             )}
             <div className="flex items-center justify-between">
               <span className="text-[13px] text-[#656358]">{t.trigger.filter}</span>
@@ -289,6 +293,20 @@ export default function TriggerDetail() {
         onCancel={() => setShowDeleteConfirm(false)}
         variant="danger"
       />
+    </div>
+  );
+}
+
+/** Show IM channel name in trigger detail */
+function IMSourceDetail({ channelId }: { channelId: string }) {
+  const channel = useIMChannelStore((s) => s.channels[channelId]);
+  const { t } = useI18n();
+  return (
+    <div className="flex items-center justify-between">
+      <span className="text-[13px] text-[#656358]">{t.trigger.imSelectChannel}</span>
+      <span className="text-[13px] text-[#29261b]">
+        {channel ? `${channel.name} (${channel.platform})` : channelId}
+      </span>
     </div>
   );
 }

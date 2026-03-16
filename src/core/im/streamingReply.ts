@@ -17,7 +17,7 @@
 
 import { getAdapter } from './adapters/registry';
 import type { AbuMessage, DirectReplyContext } from './adapters/types';
-import type { IMPlatform, IMReplyContext } from '../../types/trigger';
+import type { IMPlatform, IMReplyContext } from '../../types/im';
 import { tokenManager } from './tokenManager';
 import { useIMChannelStore } from '../../stores/imChannelStore';
 

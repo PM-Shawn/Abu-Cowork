@@ -40,7 +40,7 @@ vi.mock('../../stores/imChannelStore', () => ({
 }));
 
 import { sendThinking, sendFinal } from './streamingReply';
-import type { IMReplyContext } from '../../types/trigger';
+import type { IMReplyContext } from '../../types/im';
 
 function makeContext(overrides: Partial<IMReplyContext> = {}): IMReplyContext {
   return {

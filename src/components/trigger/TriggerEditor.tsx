@@ -1,12 +1,14 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { useTriggerStore } from '@/stores/triggerStore';
+import { useIMChannelStore } from '@/stores/imChannelStore';
 import { useDiscoveryStore } from '@/stores/discoveryStore';
 import { useI18n } from '@/i18n';
 import { X } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { Select } from '@/components/ui/select';
 import { outputSender } from '@/core/im/outputSender';
-import type { TriggerFilterType, TriggerSourceType, OutputPlatform, OutputExtractMode, IMPlatform, IMListenScope } from '@/types/trigger';
+import type { TriggerFilterType, TriggerSourceType, OutputPlatform, OutputExtractMode } from '@/types/trigger';
+import type { IMListenScope } from '@/types/trigger';
 import { triggerEngine } from '@/core/trigger/triggerEngine';
 
 const SOURCE_TYPES: TriggerSourceType[] = ['http', 'file', 'cron', 'im'];
@@ -14,9 +16,11 @@ const FILTER_TYPES: TriggerFilterType[] = ['always', 'keyword', 'regex'];
 
 export default function TriggerEditor() {
   const { t } = useI18n();
-  const { showEditor, editingTriggerId, editorTemplateDefaults, closeEditor, createTrigger, updateTrigger, triggers } =
+  const { showEditor, editingTriggerId, editorTemplateDefaults, closeEditor, createTrigger, updateTrigger, triggers, setSelectedTriggerId } =
     useTriggerStore();
   const skills = useDiscoveryStore((s) => s.skills);
+  const channelsMap = useIMChannelStore((s) => s.channels);
+  const imChannels = useMemo(() => Object.values(channelsMap), [channelsMap]);
 
   const editingTrigger = editingTriggerId ? triggers[editingTriggerId] : null;
 
@@ -41,22 +45,28 @@ export default function TriggerEditor() {
   const [quietHoursStart, setQuietHoursStart] = useState('22:00');
   const [quietHoursEnd, setQuietHoursEnd] = useState('08:00');
 
-  // IM source state
-  const [imPlatform, setImPlatform] = useState<IMPlatform>('dchat');
-  const [imAppId, setImAppId] = useState('');
-  const [imAppSecret, setImAppSecret] = useState('');
+  // IM source state — now references a channel
+  const [imChannelId, setImChannelId] = useState('');
   const [imListenScope, setImListenScope] = useState<IMListenScope>('mention_only');
+  const [imChatId, setImChatId] = useState('');
+  const [imSenderMatch, setImSenderMatch] = useState('');
 
   // Output config state
   const [outputEnabled, setOutputEnabled] = useState(false);
-  const [outputTarget, setOutputTarget] = useState<'webhook' | 'reply_source'>('webhook');
+  const [outputTarget, setOutputTarget] = useState<'webhook' | 'im_channel'>('webhook');
   const [outputPlatform, setOutputPlatform] = useState<OutputPlatform>('dchat');
   const [outputWebhookUrl, setOutputWebhookUrl] = useState('');
+  const [outputChannelId, setOutputChannelId] = useState('');
+  const [outputChatIds, setOutputChatIds] = useState('');
+  const [outputUserIds, setOutputUserIds] = useState('');
   const [outputExtractMode, setOutputExtractMode] = useState<OutputExtractMode>('last_message');
   const [outputCustomTemplate, setOutputCustomTemplate] = useState('');
   const [outputCustomHeaders, setOutputCustomHeaders] = useState('');
   const [testPushStatus, setTestPushStatus] = useState<'idle' | 'testing' | 'success' | 'error'>('idle');
   const [testPushError, setTestPushError] = useState('');
+
+  // Derive the selected IM channel's platform for webhook URL display
+  const selectedIMChannel = imChannels.find((c) => c.id === imChannelId);
 
   // Initialize form when editing
   useEffect(() => {
@@ -74,10 +84,10 @@ export default function TriggerEditor() {
         setCronInterval(editingTrigger.source.intervalSeconds);
       }
       if (editingTrigger.source.type === 'im') {
-        setImPlatform(editingTrigger.source.platform);
-        setImAppId(editingTrigger.source.appId);
-        setImAppSecret(editingTrigger.source.appSecret);
+        setImChannelId(editingTrigger.source.channelId);
         setImListenScope(editingTrigger.source.listenScope);
+        setImChatId(editingTrigger.source.chatId ?? '');
+        setImSenderMatch(editingTrigger.source.senderMatch ?? '');
       }
       setFilterType(editingTrigger.filter.type);
       setKeywords((editingTrigger.filter.keywords ?? []).join(', '));
@@ -94,6 +104,9 @@ export default function TriggerEditor() {
       setOutputTarget(editingTrigger.output?.target ?? 'webhook');
       setOutputPlatform(editingTrigger.output?.platform ?? 'dchat');
       setOutputWebhookUrl(editingTrigger.output?.webhookUrl ?? '');
+      setOutputChannelId(editingTrigger.output?.outputChannelId ?? '');
+      setOutputChatIds(editingTrigger.output?.outputChatIds ?? '');
+      setOutputUserIds(editingTrigger.output?.outputUserIds ?? '');
       setOutputExtractMode(editingTrigger.output?.extractMode ?? 'last_message');
       setOutputCustomTemplate(editingTrigger.output?.customTemplate ?? '');
       setOutputCustomHeaders(
@@ -112,10 +125,10 @@ export default function TriggerEditor() {
       setFileEvents(['create', 'modify']);
       setFilePattern('');
       setCronInterval(60);
-      setImPlatform('dchat');
-      setImAppId('');
-      setImAppSecret('');
+      setImChannelId('');
       setImListenScope('mention_only');
+      setImChatId('');
+      setImSenderMatch('');
       setFilterType(tpl?.filterType ?? 'always');
       setKeywords(tpl?.keywords ?? '');
       setRegexPattern('');
@@ -131,6 +144,9 @@ export default function TriggerEditor() {
       setOutputTarget('webhook');
       setOutputPlatform('dchat');
       setOutputWebhookUrl('');
+      setOutputChannelId('');
+      setOutputChatIds('');
+      setOutputUserIds('');
       setOutputExtractMode('last_message');
       setOutputCustomTemplate('');
       setOutputCustomHeaders('');
@@ -162,10 +178,16 @@ export default function TriggerEditor() {
     regex: t.trigger.filterRegex,
   };
 
+  // Channel options for Select
+  const channelOptions = imChannels.map((c) => ({
+    value: c.id,
+    label: `${c.name} (${c.platform})`,
+  }));
+
   const handleSave = () => {
     if (!name.trim() || !prompt.trim()) return;
     if (sourceType === 'file' && !fileWatchPath.trim()) return;
-    if (sourceType === 'im' && (!imAppId.trim() || !imAppSecret.trim())) return;
+    if (sourceType === 'im' && !imChannelId) return;
     if (isDuplicateName) return;
 
     const keywordList = keywords
@@ -212,6 +234,9 @@ export default function TriggerEditor() {
           target: outputTarget,
           platform: outputTarget === 'webhook' ? outputPlatform : undefined,
           webhookUrl: outputTarget === 'webhook' ? outputWebhookUrl : undefined,
+          outputChannelId: outputTarget === 'im_channel' ? outputChannelId : undefined,
+          outputChatIds: outputTarget === 'im_channel' && outputChatIds.trim() ? outputChatIds.trim() : undefined,
+          outputUserIds: outputTarget === 'im_channel' && outputUserIds.trim() ? outputUserIds.trim() : undefined,
           extractMode: outputExtractMode,
           customTemplate: outputExtractMode === 'custom_template' ? outputCustomTemplate : undefined,
           customHeaders: outputTarget === 'webhook' && Object.keys(parsedHeaders).length > 0 ? parsedHeaders : undefined,
@@ -224,7 +249,13 @@ export default function TriggerEditor() {
         : sourceType === 'cron'
           ? { type: 'cron' as const, intervalSeconds: Math.max(10, cronInterval) }
           : sourceType === 'im'
-            ? { type: 'im' as const, platform: imPlatform, appId: imAppId.trim(), appSecret: imAppSecret.trim(), listenScope: imListenScope }
+            ? {
+                type: 'im' as const,
+                channelId: imChannelId,
+                listenScope: imListenScope,
+                chatId: imChatId || undefined,
+                senderMatch: imSenderMatch || undefined,
+              }
             : { type: 'http' as const };
 
     if (editingTriggerId) {
@@ -239,7 +270,7 @@ export default function TriggerEditor() {
         output,
       });
     } else {
-      createTrigger({
+      const newId = createTrigger({
         name: name.trim(),
         description: description.trim() || undefined,
         source,
@@ -249,6 +280,8 @@ export default function TriggerEditor() {
         quietHours,
         output,
       });
+      // Auto-select new trigger to show detail view (with HTTP endpoint)
+      setSelectedTriggerId(newId);
     }
 
     closeEditor();
@@ -407,56 +440,23 @@ export default function TriggerEditor() {
           {/* IM source fields */}
           {sourceType === 'im' && (
             <>
-              {/* IM Platform */}
+              {/* IM Channel select */}
               <div>
                 <label className="block text-[13px] font-medium text-[#29261b] mb-1.5">
-                  {t.trigger.imPlatform}
+                  {t.trigger.imSelectChannel}
                 </label>
-                <div className="flex flex-wrap gap-1.5">
-                  {(['dchat', 'feishu', 'dingtalk', 'wecom', 'slack'] as IMPlatform[]).map((p) => {
-                    const labels: Record<IMPlatform, string> = {
-                      dchat: 'D-Chat', feishu: '飞书', dingtalk: '钉钉', wecom: '企业微信', slack: 'Slack',
-                    };
-                    return (
-                      <button
-                        key={p}
-                        onClick={() => setImPlatform(p)}
-                        className={cn(
-                          'px-2.5 py-1 rounded-lg text-[11px] font-medium transition-colors',
-                          imPlatform === p
-                            ? 'bg-[#d97757] text-white'
-                            : 'bg-[#f5f3ee] text-[#3d3929] hover:bg-[#e8e5de]'
-                        )}
-                      >
-                        {labels[p]}
-                      </button>
-                    );
-                  })}
-                </div>
-              </div>
-
-              {/* App ID & Secret */}
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="block text-[12px] text-[#656358] mb-1">{t.trigger.imAppId}</label>
-                  <input
-                    type="text"
-                    value={imAppId}
-                    onChange={(e) => setImAppId(e.target.value)}
-                    placeholder={t.trigger.imAppIdPlaceholder}
-                    className="w-full h-9 px-3 bg-white border border-[#e8e4dd] rounded-lg text-sm text-[#29261b] focus:outline-none focus:ring-2 focus:ring-[#d97757]/30 focus:border-[#d97757]"
+                {channelOptions.length > 0 ? (
+                  <Select
+                    value={imChannelId}
+                    onChange={setImChannelId}
+                    placeholder={t.trigger.imSelectChannel}
+                    options={channelOptions}
                   />
-                </div>
-                <div>
-                  <label className="block text-[12px] text-[#656358] mb-1">{t.trigger.imAppSecret}</label>
-                  <input
-                    type="password"
-                    value={imAppSecret}
-                    onChange={(e) => setImAppSecret(e.target.value)}
-                    placeholder={t.trigger.imAppSecretPlaceholder}
-                    className="w-full h-9 px-3 bg-white border border-[#e8e4dd] rounded-lg text-sm text-[#29261b] focus:outline-none focus:ring-2 focus:ring-[#d97757]/30 focus:border-[#d97757]"
-                  />
-                </div>
+                ) : (
+                  <p className="text-[12px] text-[#9a9689] bg-[#f5f3ee] rounded-lg px-3 py-2">
+                    {t.trigger.imNoChannels}
+                  </p>
+                )}
               </div>
 
               {/* Listen scope */}
@@ -481,20 +481,46 @@ export default function TriggerEditor() {
                 </div>
               </div>
 
-              {/* Webhook callback URL (read-only, for user to configure in IM platform) */}
+              {/* Chat ID filter (optional) */}
               <div>
-                <label className="block text-[12px] text-[#656358] mb-1">{t.trigger.imWebhookUrl}</label>
-                <div className="flex gap-2 items-center">
-                  <input
-                    type="text"
-                    value={`http://127.0.0.1:${triggerEngine.getServerPort() ?? 18080}/im/${imPlatform}/webhook`}
-                    readOnly
-                    className="flex-1 h-9 px-3 bg-[#f5f3ee] border border-[#e8e4dd] rounded-lg text-xs text-[#656358] font-mono select-all"
-                    onClick={(e) => (e.target as HTMLInputElement).select()}
-                  />
-                </div>
-                <p className="text-[10px] text-[#9a9689] mt-1">{t.trigger.imWebhookUrlHint}</p>
+                <label className="block text-[12px] text-[#656358] mb-1">{t.trigger.imChatId}</label>
+                <input
+                  type="text"
+                  value={imChatId}
+                  onChange={(e) => setImChatId(e.target.value)}
+                  placeholder={t.trigger.imChatIdPlaceholder}
+                  className="w-full h-9 px-3 bg-white border border-[#e8e4dd] rounded-lg text-sm text-[#29261b] focus:outline-none focus:ring-2 focus:ring-[#d97757]/30 focus:border-[#d97757]"
+                />
               </div>
+
+              {/* Sender match (optional) */}
+              <div>
+                <label className="block text-[12px] text-[#656358] mb-1">{t.trigger.senderMatch}</label>
+                <input
+                  type="text"
+                  value={imSenderMatch}
+                  onChange={(e) => setImSenderMatch(e.target.value)}
+                  placeholder={t.trigger.senderMatchPlaceholder}
+                  className="w-full h-9 px-3 bg-white border border-[#e8e4dd] rounded-lg text-sm text-[#29261b] focus:outline-none focus:ring-2 focus:ring-[#d97757]/30 focus:border-[#d97757]"
+                />
+              </div>
+
+              {/* Webhook callback URL (read-only) */}
+              {selectedIMChannel && (
+                <div>
+                  <label className="block text-[12px] text-[#656358] mb-1">{t.trigger.imWebhookUrl}</label>
+                  <div className="flex gap-2 items-center">
+                    <input
+                      type="text"
+                      value={`http://127.0.0.1:${triggerEngine.getServerPort() ?? 18080}/im/${selectedIMChannel.platform}/webhook`}
+                      readOnly
+                      className="flex-1 h-9 px-3 bg-[#f5f3ee] border border-[#e8e4dd] rounded-lg text-xs text-[#656358] font-mono select-all"
+                      onClick={(e) => (e.target as HTMLInputElement).select()}
+                    />
+                  </div>
+                  <p className="text-[10px] text-[#9a9689] mt-1">{t.trigger.imWebhookUrlHint}</p>
+                </div>
+              )}
             </>
           )}
 
@@ -662,34 +688,75 @@ export default function TriggerEditor() {
 
             {outputEnabled && (
               <div className="space-y-3 mt-2 ml-0.5">
-                {/* Output target (webhook vs reply_source) */}
-                {sourceType === 'im' && (
-                  <div>
-                    <div className="flex gap-1.5">
-                      <button
-                        onClick={() => setOutputTarget('webhook')}
-                        className={cn(
-                          'px-2.5 py-1 rounded-lg text-[11px] font-medium transition-colors',
-                          outputTarget === 'webhook'
-                            ? 'bg-[#d97757] text-white'
-                            : 'bg-[#f5f3ee] text-[#3d3929] hover:bg-[#e8e5de]'
-                        )}
-                      >
-                        {t.trigger.outputTargetWebhook}
-                      </button>
-                      <button
-                        onClick={() => setOutputTarget('reply_source')}
-                        className={cn(
-                          'px-2.5 py-1 rounded-lg text-[11px] font-medium transition-colors',
-                          outputTarget === 'reply_source'
-                            ? 'bg-[#d97757] text-white'
-                            : 'bg-[#f5f3ee] text-[#3d3929] hover:bg-[#e8e5de]'
-                        )}
-                      >
-                        {t.trigger.outputTargetReplySource}
-                      </button>
-                    </div>
+                {/* Output target (webhook vs im_channel) */}
+                <div>
+                  <div className="flex gap-1.5">
+                    <button
+                      onClick={() => setOutputTarget('webhook')}
+                      className={cn(
+                        'px-2.5 py-1 rounded-lg text-[11px] font-medium transition-colors',
+                        outputTarget === 'webhook'
+                          ? 'bg-[#d97757] text-white'
+                          : 'bg-[#f5f3ee] text-[#3d3929] hover:bg-[#e8e5de]'
+                      )}
+                    >
+                      {t.trigger.outputTargetWebhook}
+                    </button>
+                    <button
+                      onClick={() => setOutputTarget('im_channel')}
+                      className={cn(
+                        'px-2.5 py-1 rounded-lg text-[11px] font-medium transition-colors',
+                        outputTarget === 'im_channel'
+                          ? 'bg-[#d97757] text-white'
+                          : 'bg-[#f5f3ee] text-[#3d3929] hover:bg-[#e8e5de]'
+                      )}
+                    >
+                      {t.trigger.outputTargetIMChannel}
+                    </button>
                   </div>
+                </div>
+
+                {/* im_channel target: channel select + optional chat ID */}
+                {outputTarget === 'im_channel' && (
+                  <>
+                    <div>
+                      <label className="block text-[12px] text-[#656358] mb-1">
+                        {t.trigger.outputSelectChannel}
+                      </label>
+                      {channelOptions.length > 0 ? (
+                        <Select
+                          value={outputChannelId}
+                          onChange={setOutputChannelId}
+                          placeholder={t.trigger.outputSelectChannel}
+                          options={channelOptions}
+                        />
+                      ) : (
+                        <p className="text-[12px] text-[#9a9689] bg-[#f5f3ee] rounded-lg px-3 py-2">
+                          {t.trigger.imNoChannels}
+                        </p>
+                      )}
+                    </div>
+                    <div>
+                      <label className="block text-[12px] text-[#656358] mb-1">{t.trigger.outputToGroup}</label>
+                      <input
+                        type="text"
+                        value={outputChatIds}
+                        onChange={(e) => setOutputChatIds(e.target.value)}
+                        placeholder={t.trigger.outputChatIdPlaceholder}
+                        className="w-full h-9 px-3 bg-white border border-[#e8e4dd] rounded-lg text-sm text-[#29261b] focus:outline-none focus:ring-2 focus:ring-[#d97757]/30 focus:border-[#d97757]"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-[12px] text-[#656358] mb-1">{t.trigger.outputToDM}</label>
+                      <input
+                        type="text"
+                        value={outputUserIds}
+                        onChange={(e) => setOutputUserIds(e.target.value)}
+                        placeholder={t.trigger.outputUserIdPlaceholder}
+                        className="w-full h-9 px-3 bg-white border border-[#e8e4dd] rounded-lg text-sm text-[#29261b] focus:outline-none focus:ring-2 focus:ring-[#d97757]/30 focus:border-[#d97757]"
+                      />
+                    </div>
+                  </>
                 )}
 
                 {/* Platform select (only for webhook target) */}
@@ -879,10 +946,10 @@ export default function TriggerEditor() {
           </button>
           <button
             onClick={handleSave}
-            disabled={!name.trim() || !prompt.trim() || (sourceType === 'file' && !fileWatchPath.trim()) || !!isDuplicateName}
+            disabled={!name.trim() || !prompt.trim() || (sourceType === 'file' && !fileWatchPath.trim()) || (sourceType === 'im' && !imChannelId) || !!isDuplicateName}
             className={cn(
               'px-4 py-2 rounded-lg text-[13px] font-medium transition-colors',
-              name.trim() && prompt.trim() && !(sourceType === 'file' && !fileWatchPath.trim()) && !isDuplicateName
+              name.trim() && prompt.trim() && !(sourceType === 'file' && !fileWatchPath.trim()) && !(sourceType === 'im' && !imChannelId) && !isDuplicateName
                 ? 'bg-[#d97757] text-white hover:bg-[#c8664a]'
                 : 'bg-[#e8e4dd] text-[#656358] cursor-not-allowed'
             )}

@@ -19,7 +19,7 @@ import type { ChatOptions } from '../llm/adapter';
 import { estimateTokens, estimateMessageTokens } from './tokenEstimator';
 import { getMessageText, identifyRounds, RECENT_ROUNDS_TO_KEEP } from './contextUtils';
 
-const COMPRESSION_THRESHOLD = 0.75; // Trigger at 75% context usage
+const COMPRESSION_THRESHOLD = 0.65; // Trigger at 65% — compress early to avoid context_too_long errors
 const SUMMARY_MAX_TOKENS = 1024;
 
 /** Configuration for context compression */

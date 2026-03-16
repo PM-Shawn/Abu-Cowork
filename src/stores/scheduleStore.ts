@@ -96,6 +96,9 @@ interface ScheduleActions {
     schedule: ScheduleConfig;
     skillName?: string;
     workspacePath?: string;
+    outputChannelId?: string;
+    outputChatIds?: string;
+    outputUserIds?: string;
   }) => string;
   updateTask: (
     id: string,
@@ -106,6 +109,9 @@ interface ScheduleActions {
       schedule: ScheduleConfig;
       skillName: string | undefined;
       workspacePath: string | undefined;
+      outputChannelId: string | undefined;
+      outputChatIds: string | undefined;
+      outputUserIds: string | undefined;
     }>
   ) => void;
   deleteTask: (id: string) => void;
@@ -155,6 +161,9 @@ export const useScheduleStore = create<ScheduleStore>()(
           status: 'active',
           skillName: data.skillName,
           workspacePath: data.workspacePath,
+          outputChannelId: data.outputChannelId,
+          outputChatIds: data.outputChatIds,
+          outputUserIds: data.outputUserIds,
           createdAt: now,
           updatedAt: now,
           nextRunAt: computeNextRunAt(data.schedule, 'active', now),
@@ -176,6 +185,9 @@ export const useScheduleStore = create<ScheduleStore>()(
           if (data.prompt !== undefined) task.prompt = data.prompt;
           if (data.skillName !== undefined) task.skillName = data.skillName;
           if (data.workspacePath !== undefined) task.workspacePath = data.workspacePath;
+          if (data.outputChannelId !== undefined) task.outputChannelId = data.outputChannelId;
+          if (data.outputChatIds !== undefined) task.outputChatIds = data.outputChatIds;
+          if (data.outputUserIds !== undefined) task.outputUserIds = data.outputUserIds;
           if (data.schedule !== undefined) {
             task.schedule = data.schedule;
             task.nextRunAt = computeNextRunAt(data.schedule, task.status);
@@ -325,7 +337,7 @@ export const useScheduleStore = create<ScheduleStore>()(
     })),
     {
       name: 'abu-schedule',
-      version: 1,
+      version: 2,
       partialize: (state) => ({
         tasks: state.tasks,
       }),

@@ -1,5 +1,5 @@
 import { useState, useMemo, useEffect } from 'react';
-import { ChevronDown, ChevronRight, ExternalLink } from 'lucide-react';
+import { ChevronDown, ChevronRight, ExternalLink, Maximize2 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useI18n } from '@/i18n';
 import type { DetailBlock } from '@/types/execution';
@@ -19,6 +19,7 @@ export default function DetailBlockView({ block, onToggle, onLoadMore }: DetailB
   const { locale } = useI18n();
   // Local expanded state — syncs with block.isExpanded from store when available
   const [localExpanded, setLocalExpanded] = useState(block.isExpanded);
+  const [imageFullscreen, setImageFullscreen] = useState(false);
 
   // Sync from external state changes (e.g. store updates during live execution)
   useEffect(() => {
@@ -62,6 +63,13 @@ export default function DetailBlockView({ block, onToggle, onLoadMore }: DetailB
           contentBg: 'bg-purple-50/50',
           borderColor: 'border-purple-100',
         };
+      case 'image':
+        return {
+          labelBg: 'bg-emerald-50',
+          labelText: 'text-emerald-600',
+          contentBg: 'bg-white',
+          borderColor: 'border-emerald-100',
+        };
       default:
         return {
           labelBg: 'bg-[#e8e5de]',
@@ -75,6 +83,8 @@ export default function DetailBlockView({ block, onToggle, onLoadMore }: DetailB
   // Render content based on type
   const renderContent = () => {
     switch (block.type) {
+      case 'image':
+        return renderImageContent();
       case 'list':
         return renderListContent();
       case 'json':
@@ -117,6 +127,44 @@ export default function DetailBlockView({ block, onToggle, onLoadMore }: DetailB
       )}
     </>
   );
+
+  // Render image content (from read_file images, screenshots)
+  const renderImageContent = () => {
+    if (!block.imageData) return renderTextContent();
+    const src = `data:${block.imageData.mediaType};base64,${block.imageData.base64}`;
+    return (
+      <>
+        <div className="p-2">
+          <div
+            className="relative group cursor-pointer inline-block"
+            onClick={() => setImageFullscreen(true)}
+          >
+            <img
+              src={src}
+              alt={block.content || 'Image'}
+              className="rounded border border-[#e8e5de] max-w-[320px] max-h-[200px] object-contain"
+            />
+            <div className="absolute inset-0 bg-black/0 group-hover:bg-black/30 transition-colors rounded flex items-center justify-center">
+              <Maximize2 className="h-5 w-5 text-white opacity-0 group-hover:opacity-80 transition-opacity" />
+            </div>
+          </div>
+          <div className="mt-1 text-[11px] text-[#8b887c]">{block.content}</div>
+        </div>
+        {imageFullscreen && (
+          <div
+            className="fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-8 cursor-pointer"
+            onClick={() => setImageFullscreen(false)}
+          >
+            <img
+              src={src}
+              alt={block.content || 'Image (full)'}
+              className="max-w-full max-h-full object-contain rounded-lg shadow-2xl"
+            />
+          </div>
+        )}
+      </>
+    );
+  };
 
   // Render list content (e.g., search results)
   const renderListContent = () => {

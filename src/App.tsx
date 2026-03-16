@@ -37,6 +37,7 @@ import { schedulerEngine } from '@/core/scheduler/scheduler';
 import { triggerEngine } from '@/core/trigger/triggerEngine';
 import { imChannelRouter } from '@/core/im/channelRouter';
 import { startTraySync, stopTraySync } from '@/core/im/traySync';
+import { startInboundDispatcher, stopInboundDispatcher } from '@/core/im/inboundDispatcher';
 import { startFeishuWsManager, stopFeishuWsManager } from '@/core/im/feishuWsManager';
 import { initMCPStoreSync, cleanupMCPStoreSync } from '@/stores/mcpStore';
 import { initFileWatchers, stopAllWatchers } from '@/core/agent/fileWatcher';
@@ -121,12 +122,14 @@ function App() {
     schedulerEngine.start();
     triggerEngine.start();
     imChannelRouter.start();
+    startInboundDispatcher();
     startTraySync();
     startFeishuWsManager();
     return () => {
       schedulerEngine.stop();
       triggerEngine.stop();
       imChannelRouter.stop();
+      stopInboundDispatcher();
       stopTraySync();
       stopFeishuWsManager();
     };

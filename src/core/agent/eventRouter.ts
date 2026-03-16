@@ -534,6 +534,24 @@ export class EventRouter {
       };
       this.deps.executionStore.addDetailBlock(execution.id, stepId, summaryBlock);
     } else {
+      // Add image block if resultContent contains images
+      if (resultContent && Array.isArray(resultContent)) {
+        const imageBlock = resultContent.find(b => b.type === 'image');
+        if (imageBlock && imageBlock.type === 'image') {
+          const isZh = this.locale.startsWith('zh');
+          const imgDetailBlock: DetailBlock = {
+            id: `${stepId}-image`,
+            stepId,
+            type: 'image',
+            label: isZh ? '图片' : 'Image',
+            content: result,
+            imageData: { mediaType: imageBlock.source.media_type, base64: imageBlock.source.data },
+            isTruncated: false,
+            isExpanded: true,
+          };
+          this.deps.executionStore.addDetailBlock(execution.id, stepId, imgDetailBlock);
+        }
+      }
       const resultBlock = createResultBlock(stepId, result, step.toolName, this.locale);
       this.deps.executionStore.addDetailBlock(execution.id, stepId, resultBlock);
     }

@@ -15,6 +15,7 @@ import type {
   DebounceConfig,
   QuietHoursConfig,
 } from '../types/trigger';
+import { useIMChannelStore } from './imChannelStore';
 
 function generateId(): string {
   return Date.now().toString(36) + Math.random().toString(36).substring(2, 8);
@@ -294,7 +295,7 @@ export const useTriggerStore = create<TriggerStore>()(
     })),
     {
       name: 'abu-triggers',
-      version: 2,
+      version: 3,
       partialize: (state) => ({
         triggers: state.triggers,
       }),
@@ -302,8 +303,59 @@ export const useTriggerStore = create<TriggerStore>()(
         // v1 → v2: TriggerRun gains outputStatus/outputError/outputSentAt; Trigger gains output
         // No data transformation needed — new fields are optional
         if (version < 2) {
-          return persisted;
+          // no-op, new fields are optional
         }
+
+        // v2 → v3: IMSource loses platform/appId/appSecret, gains channelId
+        //           TriggerOutput target 'reply_source' → 'im_channel'
+        if (version < 3) {
+          const state = persisted as { triggers?: Record<string, Record<string, unknown>> };
+          if (state.triggers) {
+            for (const trigger of Object.values(state.triggers)) {
+              const source = trigger.source as Record<string, unknown> | undefined;
+              if (source?.type === 'im' && source.appId) {
+                // Try to find an existing IM channel matching platform + appId
+                let matchedChannelId: string | undefined;
+
+                const channels = useIMChannelStore.getState().channels;
+                for (const ch of Object.values(channels)) {
+                  if (ch.platform === source.platform && ch.appId === source.appId) {
+                    matchedChannelId = ch.id;
+                    break;
+                  }
+                }
+
+                // If no matching channel found, create one
+                if (!matchedChannelId) {
+                  matchedChannelId = useIMChannelStore.getState().addChannel({
+                    platform: source.platform as 'dchat' | 'feishu' | 'dingtalk' | 'wecom' | 'slack',
+                    name: `${source.platform} (migrated)`,
+                    appId: String(source.appId),
+                    appSecret: String(source.appSecret ?? ''),
+                  });
+                }
+
+                // Update source: remove old fields, add channelId
+                source.channelId = matchedChannelId ?? '';
+                delete source.platform;
+                delete source.appId;
+                delete source.appSecret;
+              }
+
+              // Migrate output target
+              const output = trigger.output as Record<string, unknown> | undefined;
+              if (output?.target === 'reply_source') {
+                output.target = 'im_channel';
+                // Use the IM source's channel ID for output
+                const src = trigger.source as Record<string, unknown> | undefined;
+                if (src?.type === 'im' && src.channelId) {
+                  output.outputChannelId = src.channelId;
+                }
+              }
+            }
+          }
+        }
+
         return persisted;
       },
       onRehydrateStorage: () => (state) => {

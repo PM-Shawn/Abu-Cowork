@@ -82,7 +82,10 @@ export default function MessageGroup({ messages }: MessageGroupProps) {
   const lastAssistantMsg = assistantMsgs[assistantMsgs.length - 1];
 
   // Aggregate all tool calls from assistant messages
-  const allToolCalls: ToolCall[] = assistantMsgs.flatMap((m) => m.toolCalls || []);
+  const allToolCalls = useMemo<ToolCall[]>(
+    () => assistantMsgs.flatMap((m) => m.toolCalls || []),
+    [assistantMsgs]
+  );
 
   // Extract search results: prefer structured data from tool calls, fallback to text parsing
   const searchResults = useMemo(() => {
@@ -153,7 +156,7 @@ export default function MessageGroup({ messages }: MessageGroupProps) {
   const hasNonThinkingSteps = workflowSteps.some((s) => s.type !== 'thinking');
 
   // Extract file outputs for attachments
-  const fileOutputs = extractFileOutputs(allToolCalls);
+  const fileOutputs = useMemo(() => extractFileOutputs(allToolCalls), [allToolCalls]);
 
   // Build filename -> full path map for inline file chip matching
   const fileOutputMap = useMemo(() => {

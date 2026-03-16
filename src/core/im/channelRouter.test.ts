@@ -5,6 +5,8 @@
  * Uses mocks for all external dependencies (stores, agentLoop, streamingReply).
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import type { NormalizedIMMessage } from './inboundRouter';
+import type { IMChannel } from '@/types/imChannel';
 
 // ── Mocks ──
 
@@ -20,7 +22,7 @@ vi.mock('../../stores/imChannelStore', () => ({
       removeSession: vi.fn((key: string) => { delete mockSessions[key]; }),
       incrementSessionRound: vi.fn(),
       getChannelsByPlatform: vi.fn((platform: string) =>
-        Object.values(mockChannels).filter((c: any) => c.platform === platform),
+        Object.values(mockChannels).filter((c) => (c as { platform: string }).platform === platform),
       ),
       setChannelStatus: mockSetChannelStatus,
     }),
@@ -38,7 +40,7 @@ vi.mock('../../stores/chatStore', () => ({
         return id;
       }),
       renameConversation: vi.fn(),
-      addMessage: vi.fn((convId: string, msg: any) => {
+      addMessage: vi.fn((convId: string, msg: { role: string; content: string }) => {
         if (mockConversations[convId]) mockConversations[convId].messages.push(msg);
       }),
     }),
@@ -115,7 +117,7 @@ import { imChannelRouter } from './channelRouter';
 
 // Access private methods via type cast for testing
 type RouterInternal = {
-  processMessage(msg: any, channel: any, capability: string): Promise<void>;
+  processMessage(msg: NormalizedIMMessage, channel: IMChannel, capability: string): Promise<void>;
   runWithTimeout<T>(promise: Promise<T>, ms: number): Promise<T>;
   runningCount: number;
 };
@@ -124,10 +126,11 @@ function getInternal(): RouterInternal {
   return imChannelRouter as unknown as RouterInternal;
 }
 
-function makeChannel(overrides: Partial<Record<string, unknown>> = {}) {
+function makeChannel(overrides: Partial<IMChannel> = {}): IMChannel {
   return {
     id: 'ch1', platform: 'dingtalk', name: 'Test', enabled: true,
     appId: 'a', appSecret: 's', capability: 'safe_tools',
+    responseMode: 'mention_only',
     allowedUsers: [], workspacePaths: [], sessionTimeoutMinutes: 30,
     maxRoundsPerSession: 50, status: 'connected',
     createdAt: Date.now(), updatedAt: Date.now(),
@@ -135,7 +138,7 @@ function makeChannel(overrides: Partial<Record<string, unknown>> = {}) {
   };
 }
 
-function makeMessage(overrides: Partial<Record<string, unknown>> = {}) {
+function makeMessage(overrides: Partial<NormalizedIMMessage> = {}): NormalizedIMMessage {
   return {
     senderId: 'u1', senderName: '张三', text: 'hello',
     isMention: true, isDirect: false, chatId: 'chat1',
@@ -168,7 +171,7 @@ describe('IMChannelRouter', () => {
       }
     });
 
-    await getInternal().processMessage(message, channel as any, 'safe_tools');
+    await getInternal().processMessage(message, channel, 'safe_tools');
 
     expect(mockSendThinking).toHaveBeenCalledOnce();
     expect(mockRunAgentLoop).toHaveBeenCalledOnce();
@@ -181,7 +184,7 @@ describe('IMChannelRouter', () => {
     const channel = makeChannel();
     mockSetChannelStatus.mockClear();
 
-    await getInternal().processMessage(makeMessage(), channel as any, 'safe_tools');
+    await getInternal().processMessage(makeMessage(), channel, 'safe_tools');
 
     expect(mockSetChannelStatus).toHaveBeenCalledWith('ch1', 'error', 'LLM connection failed');
   });
@@ -189,7 +192,7 @@ describe('IMChannelRouter', () => {
   it('attempts error reply to user on failure', async () => {
     mockRunAgentLoop.mockRejectedValue(new Error('agent crash'));
 
-    await getInternal().processMessage(makeMessage(), makeChannel() as any, 'safe_tools');
+    await getInternal().processMessage(makeMessage(), makeChannel(), 'safe_tools');
 
     // sendFinal is called with error message
     const finalCalls = mockSendFinal.mock.calls;
@@ -202,7 +205,7 @@ describe('IMChannelRouter', () => {
     mockRunAgentLoop.mockRejectedValue(new Error('fail'));
     getInternal().runningCount = 1;
 
-    await getInternal().processMessage(makeMessage(), makeChannel() as any, 'safe_tools');
+    await getInternal().processMessage(makeMessage(), makeChannel(), 'safe_tools');
 
     // runningCount was incremented to 2 at start, then decremented to 1 in finally
     expect(getInternal().runningCount).toBe(1);
@@ -216,7 +219,7 @@ describe('IMChannelRouter', () => {
     });
     mockSetChannelStatus.mockClear();
 
-    await getInternal().processMessage(makeMessage(), makeChannel() as any, 'safe_tools');
+    await getInternal().processMessage(makeMessage(), makeChannel(), 'safe_tools');
 
     expect(mockSetChannelStatus).toHaveBeenCalledWith('ch1', 'connected');
   });

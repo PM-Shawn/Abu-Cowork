@@ -10,6 +10,26 @@ vi.mock('../../stores/chatStore', () => ({
   },
 }));
 
+const mockImChannelStoreGetState = vi.fn(() => ({ channels: {} }));
+vi.mock('../../stores/imChannelStore', () => ({
+  useIMChannelStore: {
+    getState: () => mockImChannelStoreGetState(),
+  },
+}));
+
+const mockGetAdapter = vi.fn();
+vi.mock('./adapters/registry', () => ({
+  getAdapter: (...args: unknown[]) => mockGetAdapter(...args),
+}));
+
+const mockGetToken = vi.fn();
+vi.mock('./tokenManager', () => ({
+  tokenManager: {
+    getToken: (...args: unknown[]) => mockGetToken(...args),
+    invalidate: vi.fn(),
+  },
+}));
+
 import { useChatStore } from '../../stores/chatStore';
 import { outputSender } from './outputSender';
 import type { TriggerOutput } from '../../types/trigger';
@@ -171,5 +191,166 @@ describe('OutputSender.buildMessage', () => {
 
     const msg = outputSender.buildMessage('conv-1', output, context);
     expect(msg.content).toBe('T|E|ok|5s|TS|{"k":"v"}');
+  });
+});
+
+describe('OutputSender.send', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockImChannelStoreGetState.mockReturnValue({ channels: {} });
+  });
+
+  it('im_channel target — fails if no outputChannelId', async () => {
+    const output: TriggerOutput = {
+      enabled: true,
+      target: 'im_channel',
+      extractMode: 'last_message',
+    };
+
+    const result = await outputSender.send(output, { content: 'test' });
+    expect(result.success).toBe(false);
+    expect(result.error).toContain('No output channel ID');
+  });
+
+  it('im_channel target — fails if channel not found', async () => {
+    mockImChannelStoreGetState.mockReturnValue({ channels: {} });
+
+    const output: TriggerOutput = {
+      enabled: true,
+      target: 'im_channel',
+      outputChannelId: 'nonexistent',
+      extractMode: 'last_message',
+    };
+
+    const result = await outputSender.send(output, { content: 'test' });
+    expect(result.success).toBe(false);
+    expect(result.error).toContain('not found');
+  });
+
+  it('im_channel target — sends via API token when adapter has replyToChat', async () => {
+    mockImChannelStoreGetState.mockReturnValue({
+      channels: {
+        'ch-1': {
+          id: 'ch-1',
+          platform: 'feishu',
+          appId: 'cli_x',
+          appSecret: 'sec',
+          name: 'FS Bot',
+        },
+      },
+    });
+
+    const mockReplyToChat = vi.fn().mockResolvedValue({ messageId: 'sent-1' });
+    mockGetAdapter.mockReturnValue({
+      replyToChat: mockReplyToChat,
+    });
+    mockGetToken.mockResolvedValue('token-123');
+
+    const output: TriggerOutput = {
+      enabled: true,
+      target: 'im_channel',
+      outputChannelId: 'ch-1',
+      outputChatId: 'oc_target',
+      extractMode: 'last_message',
+    };
+
+    const result = await outputSender.send(output, { content: 'alert result' });
+    expect(result.success).toBe(true);
+    expect(mockGetToken).toHaveBeenCalledWith('feishu', 'cli_x', 'sec');
+    expect(mockReplyToChat).toHaveBeenCalledWith('token-123', { chatId: 'oc_target', receiveIdType: 'chat_id' }, { content: 'alert result' });
+  });
+
+  it('im_channel target — uses replyContext chatId when no outputChatId', async () => {
+    mockImChannelStoreGetState.mockReturnValue({
+      channels: {
+        'ch-2': {
+          id: 'ch-2',
+          platform: 'feishu',
+          appId: 'cli_y',
+          appSecret: 'sec2',
+          name: 'FS Bot 2',
+        },
+      },
+    });
+
+    const mockReplyToChat = vi.fn().mockResolvedValue({ messageId: 'sent-2' });
+    mockGetAdapter.mockReturnValue({ replyToChat: mockReplyToChat });
+    mockGetToken.mockResolvedValue('token-456');
+
+    const output: TriggerOutput = {
+      enabled: true,
+      target: 'im_channel',
+      outputChannelId: 'ch-2',
+      // no outputChatId — should use replyContext
+      extractMode: 'last_message',
+    };
+
+    const replyContext = { platform: 'feishu' as const, chatId: 'oc_from_reply' };
+
+    const result = await outputSender.send(output, { content: 'reply' }, replyContext);
+    expect(result.success).toBe(true);
+    expect(mockReplyToChat).toHaveBeenCalledWith('token-456', { chatId: 'oc_from_reply', receiveIdType: 'chat_id' }, { content: 'reply' });
+  });
+
+  it('im_channel target — DingTalk uses sessionWebhook', async () => {
+    mockImChannelStoreGetState.mockReturnValue({
+      channels: {
+        'ch-dt': {
+          id: 'ch-dt',
+          platform: 'dingtalk',
+          appId: 'dt_app',
+          appSecret: 'dt_sec',
+          name: 'DT Bot',
+        },
+      },
+    });
+
+    const mockSendMessage = vi.fn().mockResolvedValue(undefined);
+    mockGetAdapter.mockReturnValue({ sendMessage: mockSendMessage });
+
+    const output: TriggerOutput = {
+      enabled: true,
+      target: 'im_channel',
+      outputChannelId: 'ch-dt',
+      extractMode: 'last_message',
+    };
+
+    const replyContext = {
+      platform: 'dingtalk' as const,
+      sessionWebhook: 'https://oapi.dingtalk.com/robot/sendBySession?session=xxx',
+    };
+
+    const result = await outputSender.send(output, { content: 'ding reply' }, replyContext);
+    expect(result.success).toBe(true);
+    expect(mockSendMessage).toHaveBeenCalledWith(replyContext.sessionWebhook, { content: 'ding reply' });
+  });
+
+  it('webhook target — sends to webhook URL via adapter', async () => {
+    const mockSendMessage = vi.fn().mockResolvedValue(undefined);
+    mockGetAdapter.mockReturnValue({ sendMessage: mockSendMessage });
+
+    const output: TriggerOutput = {
+      enabled: true,
+      target: 'webhook',
+      platform: 'dchat',
+      webhookUrl: 'https://example.com/hook',
+      extractMode: 'last_message',
+    };
+
+    const result = await outputSender.send(output, { content: 'webhook msg' });
+    expect(result.success).toBe(true);
+    expect(mockSendMessage).toHaveBeenCalledWith('https://example.com/hook', { content: 'webhook msg' }, undefined);
+  });
+
+  it('webhook target — fails if missing platform or URL', async () => {
+    const output: TriggerOutput = {
+      enabled: true,
+      target: 'webhook',
+      extractMode: 'last_message',
+    };
+
+    const result = await outputSender.send(output, { content: 'test' });
+    expect(result.success).toBe(false);
+    expect(result.error).toContain('Missing platform or webhookUrl');
   });
 });

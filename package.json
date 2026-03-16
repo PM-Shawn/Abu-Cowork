@@ -1,7 +1,7 @@
 {
   "name": "abu",
   "private": false,
-  "version": "0.6.8",
+  "version": "0.6.12",
   "description": "Abu - AI Desktop Office Assistant",
   "type": "module",
   "scripts": {
@@ -17,6 +17,7 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.78.0",
+    "@antv/infographic": "^0.2.16",
     "@modelcontextprotocol/sdk": "^1.27.1",
     "@tauri-apps/api": "^2.10.1",
     "@tauri-apps/plugin-clipboard-manager": "^2.3.2",
@@ -33,6 +34,7 @@
     "fflate": "^0.8.2",
     "immer": "^11.1.4",
     "lucide-react": "^0.575.0",
+    "mermaid": "^11.13.0",
     "radix-ui": "^1.4.3",
     "react": "^19.2.0",
     "react-dom": "^19.2.0",

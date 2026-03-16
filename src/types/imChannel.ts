@@ -5,7 +5,7 @@
  * Users can @Abu in groups or DM the bot to use Abu's capabilities.
  */
 
-import type { IMPlatform } from './trigger';
+import type { IMPlatform } from './im';
 
 // ── Capability Levels ──
 

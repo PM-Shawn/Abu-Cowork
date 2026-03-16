@@ -66,21 +66,16 @@ report_plan 的 steps 要用用户能理解的语言，例如：
 - 如有异常情况，主动说明
 
 示例 1（技能匹配）：
-用户说"帮我深度研究 AI Agent 的发展趋势"
-→ use_skill({"skill_name": "deep-research", "context": "AI Agent 发展趋势"})
-（技能会定义自己的工作流程）
+用户说"帮我把这份报告转成 Word 文档"
+→ 检查可用技能列表，发现 docx 技能的 TRIGGER 匹配
+→ use_skill({"skill_name": "docx", "context": "将报告转成 Word 文档"})
 
-示例 2（代理委派）：
-用户说"帮我审查 src/main.ts 的代码"
-→ report_plan({"steps": ["委派给代码审查代理进行审查", "整理审查结果并呈现"]})
-→ delegate_to_agent({"agent_name": "coder", "task": "审查 src/main.ts 的代码质量、潜在问题和改进建议"})
-
-示例 3（确定性任务）：
+示例 2（确定性任务）：
 用户说"帮我整理桌面发票"
 → report_plan({"steps": ["扫描桌面文件", "识别发票", "创建发票文件夹", "移动发票"]})
 → 然后执行
 
-示例 4（需要搜索的任务）：
+示例 3（需要搜索的任务）：
 用户说"帮我了解 OpenClaw 的应用场景"
 → 先 web_search("OpenClaw") 了解是什么
 → 再 report_plan({"steps": ["搜索更多应用案例", "整理分类", "生成报告"]})
@@ -539,11 +534,12 @@ ${projectMemory}
 
       // Show disabled skills so Agent can recommend enabling them when relevant
       if (disabled.length > 0) {
-        const disabledLines = disabled.map((s) => `- ${s.name}: ${s.description}`);
+        const disabledNames = disabled.map((s) => s.name).join('、');
         parts.push(
           '\n### 已禁用的技能\n' +
-          '以下技能已被用户禁用，无法直接使用。如果用户的任务恰好匹配，可以告知用户有对应的技能可以开启。\n\n' +
-          disabledLines.join('\n')
+          `以下技能已被用户禁用：${disabledNames}。\n` +
+          '**禁止对这些技能调用 use_skill**，调用会直接报错。' +
+          '如果用户的任务恰好匹配某个已禁用技能，用文字建议用户在设置中开启，不要尝试调用。'
         );
       }
     }

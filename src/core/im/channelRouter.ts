@@ -11,7 +11,6 @@
 import { useIMChannelStore } from '../../stores/imChannelStore';
 import { useChatStore } from '../../stores/chatStore';
 import { runAgentLoop } from '../agent/agentLoop';
-import { parseInboundMessage } from './inboundRouter';
 import type { NormalizedIMMessage } from './inboundRouter';
 import { resolveCapability, getCallbacksForLevel } from './authGate';
 import { sessionMapper } from './sessionMapper';
@@ -19,7 +18,7 @@ import { sendThinking, sendFinal, addProcessingReaction } from './streamingReply
 import type { AbuMessage } from './adapters/types';
 import type { IMChannel, IMCapabilityLevel } from '../../types/imChannel';
 import { tokenManager } from './tokenManager';
-import { listen, type UnlistenFn } from '@tauri-apps/api/event';
+import { consumeTriggerContext } from './triggerContextCache';
 
 const MAX_CONCURRENT_IM = 5;
 /** Maximum time (ms) to wait for agentLoop before aborting */
@@ -28,19 +27,14 @@ const AGENT_TIMEOUT_MS = 3 * 60 * 1000; // 3 minutes
 class IMChannelRouter {
   private runningCount = 0;
   private queuedMessages: { message: NormalizedIMMessage; channelId: string }[] = [];
-  private unlistenIM: UnlistenFn | null = null;
   private cleanupInterval: ReturnType<typeof setInterval> | null = null;
   /** Track recently processed message IDs with timestamps for TTL-based dedup */
   private recentMessageIds = new Map<string, number>();
 
   async start() {
-    this.unlistenIM = await listen<{ platform: string; payload: Record<string, unknown> }>(
-      'im-inbound-event',
-      (event) => {
-        const { platform, payload } = event.payload;
-        this.handleInbound(platform, payload);
-      }
-    );
+    // IM inbound events are dispatched by inboundDispatcher (single dispatcher pattern).
+    // channelRouter no longer listens directly — it receives pre-parsed messages
+    // via dispatchMessage() when no trigger matched.
 
     // Periodic session cleanup (every 5 minutes)
     this.cleanupInterval = setInterval(() => {
@@ -57,8 +51,6 @@ class IMChannelRouter {
   }
 
   stop() {
-    this.unlistenIM?.();
-    this.unlistenIM = null;
     if (this.cleanupInterval) {
       clearInterval(this.cleanupInterval);
       this.cleanupInterval = null;
@@ -69,10 +61,15 @@ class IMChannelRouter {
     console.log('[IMChannel] Router stopped');
   }
 
-  private handleInbound(platform: string, rawPayload: Record<string, unknown>) {
-    const message = parseInboundMessage(platform, rawPayload);
-    if (!message) return;
+  /**
+   * Called by inboundDispatcher when no trigger matched the message.
+   * Accepts a pre-parsed NormalizedIMMessage.
+   */
+  dispatchMessage(message: NormalizedIMMessage): void {
+    this.handleMessage(message);
+  }
 
+  private handleMessage(message: NormalizedIMMessage) {
     // Dedup: prefer messageId (stable ID) over content-based key
     const dedupKey = message.replyContext.messageId
       ? `${message.platform}:${message.replyContext.messageId}`
@@ -185,9 +182,19 @@ class IMChannelRouter {
 
       // 3. Run agent with timeout (agentLoop adds the user message internally)
 
+      // Inject trigger context if a trigger recently processed a message in this chat
+      let userText = message.text;
+      if (resolveResult.isNew) {
+        const triggerCtx = consumeTriggerContext(message.chatId);
+        if (triggerCtx) {
+          userText = `${message.text}\n\n[上下文] 触发器「${triggerCtx.triggerName}」刚才在这个群处理了一条消息，结果如下：\n${triggerCtx.summary}\n\n用户可能在追问上述触发器的处理结果，请结合这个上下文回答。`;
+          console.log(`[IMChannel] Injected trigger context from "${triggerCtx.triggerName}" for chat ${message.chatId}`);
+        }
+      }
+
       const callbacks = getCallbacksForLevel(capability);
       await this.runWithTimeout(
-        runAgentLoop(session.conversationId, message.text, {
+        runAgentLoop(session.conversationId, userText, {
           commandConfirmCallback: callbacks.commandConfirmCallback,
           filePermissionCallback: callbacks.filePermissionCallback,
           blockedTools: ['request_workspace'],

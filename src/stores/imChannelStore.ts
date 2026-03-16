@@ -11,7 +11,7 @@ import type {
   IMSession,
   IMCapabilityLevel,
 } from '../types/imChannel';
-import type { IMPlatform } from '../types/trigger';
+import type { IMPlatform } from '../types/im';
 
 function generateId(): string {
   return Date.now().toString(36) + Math.random().toString(36).substring(2, 8);
@@ -97,6 +97,11 @@ export const useIMChannelStore = create<IMChannelStore>()(
           if ('enabled' in data && typeof data.enabled !== 'boolean') return;
           Object.assign(channel, data);
           channel.updatedAt = Date.now();
+          // For non-Feishu (webhook) platforms, set status based on enabled toggle.
+          // Feishu uses WebSocket with its own status lifecycle managed by feishuWsManager.
+          if ('enabled' in data && channel.platform !== 'feishu') {
+            channel.status = data.enabled ? 'connected' : 'disconnected';
+          }
         });
       },
 
@@ -190,12 +195,13 @@ export const useIMChannelStore = create<IMChannelStore>()(
       }),
       onRehydrateStorage: () => (state) => {
         if (!state) return;
-        // Reset all channel statuses to disconnected on reload
+        // Reset channel statuses on reload
         for (const channel of Object.values(state.channels) as IMChannel[]) {
-          channel.status = 'disconnected';
           channel.lastError = undefined;
           // Fix: repair enabled field if corrupted to undefined (from prior Toggle bug)
           if (channel.enabled === undefined) channel.enabled = false;
+          // Webhook platforms are ready immediately when enabled; Feishu uses WS lifecycle
+          channel.status = (channel.enabled && channel.platform !== 'feishu') ? 'connected' : 'disconnected';
         }
         // Clear sessions (runtime only)
         state.sessions = {};

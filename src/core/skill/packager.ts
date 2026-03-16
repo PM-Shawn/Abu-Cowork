@@ -147,7 +147,7 @@ export async function unpackSkill(
   const files: string[] = [];
   for (const [path, data] of Object.entries(entries)) {
     // Strip prefix and skip directory entries (trailing /)
-    let relativePath = prefix ? path.replace(prefix, '') : path;
+    const relativePath = prefix ? path.replace(prefix, '') : path;
     if (!relativePath || relativePath.endsWith('/')) continue;
 
     const targetPath = joinPath(targetDir, relativePath);

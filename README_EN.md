@@ -24,30 +24,32 @@ Tell Abu what you need — it reads files, runs commands, writes docs, and build
 
 > Clean interface, powerful capabilities
 
-### Conversational Interaction
-Tell Abu what you want in natural language — conversation is the command.
-
-<img src="website/assets/screenshot-home.png" width="800" />
-
-### Task Execution
-Intelligently invokes tools to complete complex tasks like file organization automatically.
-
-<img src="website/assets/screenshot-task.png" width="800" />
-
-### Toolbox
-Rich collection of Skills, Agents, and MCP tools — install on demand to extend capabilities.
-
-<img src="website/assets/screenshot-toolbox.png" width="800" />
-
-### Scheduled Tasks
-Set up recurring schedules and let Abu work for you automatically every day.
-
-<img src="website/assets/screenshot-schedule.png" width="800" />
-
-### Custom Models
-Bring your own API keys and models — flexibly connect to various LLM providers.
-
-<img src="website/assets/screenshot-model.png" width="800" />
+<table>
+<tr>
+<td align="center" width="50%"><b>Welcome</b><br/>Natural language input — conversation is the command<br/><br/><img src="website/assets/screenshot-welcome.png" width="100%" /></td>
+<td align="center" width="50%"><b>Task Execution</b><br/>Autonomous planning & tool invocation for complex tasks<br/><br/><img src="website/assets/screenshot-execution.png" width="100%" /></td>
+</tr>
+<tr>
+<td align="center"><b>Permission Control</b><br/>File access requires user authorization<br/><br/><img src="website/assets/screenshot-permission.png" width="100%" /></td>
+<td align="center"><b>IM Channel Chat</b><br/>@Abu in Lark/DingTalk to interact<br/><br/><img src="website/assets/screenshot-im-chat.png" width="100%" /></td>
+</tr>
+<tr>
+<td align="center"><b>Skills</b><br/>20+ built-in skills, fully customizable<br/><br/><img src="website/assets/screenshot-skills.png" width="100%" /></td>
+<td align="center"><b>MCP Connectors</b><br/>One-click integration with Playwright, GitHub & more<br/><br/><img src="website/assets/screenshot-mcp.png" width="100%" /></td>
+</tr>
+<tr>
+<td align="center"><b>Scheduled Tasks</b><br/>Cron-based scheduling for automated workflows<br/><br/><img src="website/assets/screenshot-schedule-create.png" width="100%" /></td>
+<td align="center"><b>Triggers / Watch</b><br/>HTTP, file changes, IM messages auto-trigger tasks<br/><br/><img src="website/assets/screenshot-triggers.png" width="100%" /></td>
+</tr>
+<tr>
+<td align="center"><b>AI Service Config</b><br/>Multi-provider model support, easy switching<br/><br/><img src="website/assets/screenshot-settings-ai.png" width="100%" /></td>
+<td align="center"><b>IM Channel Config</b><br/>Connect Lark, DingTalk, WeCom & more<br/><br/><img src="website/assets/screenshot-settings-im.png" width="100%" /></td>
+</tr>
+<tr>
+<td align="center"><b>Personal Memory</b><br/>Remembers your preferences and work habits<br/><br/><img src="website/assets/screenshot-memory.png" width="100%" /></td>
+<td align="center"><b>Security Sandbox</b><br/>Seatbelt sandbox + network isolation for privacy<br/><br/><img src="website/assets/screenshot-security.png" width="100%" /></td>
+</tr>
+</table>
 
 ## Features
 

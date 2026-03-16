@@ -1,5 +1,6 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { useScheduleStore } from '@/stores/scheduleStore';
+import { useIMChannelStore } from '@/stores/imChannelStore';
 import { useDiscoveryStore } from '@/stores/discoveryStore';
 import { useI18n } from '@/i18n';
 import { X } from 'lucide-react';
@@ -14,6 +15,8 @@ export default function ScheduleEditor() {
   const { showEditor, editingTaskId, closeEditor, createTask, updateTask, tasks } =
     useScheduleStore();
   const skills = useDiscoveryStore((s) => s.skills);
+  const channelsMap = useIMChannelStore((s) => s.channels);
+  const imChannels = useMemo(() => Object.values(channelsMap), [channelsMap]);
 
   const editingTask = editingTaskId ? tasks[editingTaskId] : null;
 
@@ -27,6 +30,9 @@ export default function ScheduleEditor() {
   const [dayOfWeek, setDayOfWeek] = useState(1);
   const [skillName, setSkillName] = useState('');
   const [workspacePath, setWorkspacePath] = useState('');
+  const [outputChannelId, setOutputChannelId] = useState('');
+  const [outputChatIds, setOutputChatIds] = useState('');
+  const [outputUserIds, setOutputUserIds] = useState('');
 
   // Initialize form when editing task changes
   useEffect(() => {
@@ -40,6 +46,9 @@ export default function ScheduleEditor() {
       setDayOfWeek(editingTask.schedule.dayOfWeek ?? 1);
       setSkillName(editingTask.skillName ?? '');
       setWorkspacePath(editingTask.workspacePath ?? '');
+      setOutputChannelId(editingTask.outputChannelId ?? '');
+      setOutputChatIds(editingTask.outputChatIds ?? '');
+      setOutputUserIds(editingTask.outputUserIds ?? '');
     } else {
       setName('');
       setDescription('');
@@ -50,6 +59,9 @@ export default function ScheduleEditor() {
       setDayOfWeek(1);
       setSkillName('');
       setWorkspacePath('');
+      setOutputChannelId('');
+      setOutputChatIds('');
+      setOutputUserIds('');
     }
   }, [editingTask, showEditor]);
 
@@ -104,6 +116,9 @@ export default function ScheduleEditor() {
         schedule,
         skillName: skillName || undefined,
         workspacePath: workspacePath || undefined,
+        outputChannelId: outputChannelId || undefined,
+        outputChatIds: outputChannelId && outputChatIds.trim() ? outputChatIds.trim() : undefined,
+        outputUserIds: outputChannelId && outputUserIds.trim() ? outputUserIds.trim() : undefined,
       });
     } else {
       createTask({
@@ -113,6 +128,9 @@ export default function ScheduleEditor() {
         schedule,
         skillName: skillName || undefined,
         workspacePath: workspacePath || undefined,
+        outputChannelId: outputChannelId || undefined,
+        outputChatIds: outputChannelId && outputChatIds.trim() ? outputChatIds.trim() : undefined,
+        outputUserIds: outputChannelId && outputUserIds.trim() ? outputUserIds.trim() : undefined,
       });
     }
 
@@ -293,6 +311,50 @@ export default function ScheduleEditor() {
               placeholder={t.schedule.workspacePathPlaceholder}
               className="w-full h-10 px-3 bg-white border border-[#e8e4dd] rounded-lg text-sm text-[#29261b] focus:outline-none focus:ring-2 focus:ring-[#d97757]/30 focus:border-[#d97757]"
             />
+          </div>
+
+          {/* Output to IM channel */}
+          <div>
+            <label className="block text-[13px] font-medium text-[#29261b] mb-1.5">
+              {t.schedule.outputChannel}
+            </label>
+            <Select
+              value={outputChannelId}
+              onChange={setOutputChannelId}
+              placeholder={t.schedule.outputChannelNone}
+              options={[
+                { value: '', label: t.schedule.outputChannelNone },
+                ...imChannels.map((c) => ({
+                  value: c.id,
+                  label: `${c.name} (${c.platform})`,
+                })),
+              ]}
+            />
+            <p className="text-[11px] text-[#9a9689] mt-1">{t.schedule.outputChannelHint}</p>
+            {outputChannelId && (
+              <div className="space-y-2 mt-2">
+                <div>
+                  <label className="block text-[12px] text-[#656358] mb-1">{t.schedule.outputToGroup}</label>
+                  <input
+                    type="text"
+                    value={outputChatIds}
+                    onChange={(e) => setOutputChatIds(e.target.value)}
+                    placeholder={t.schedule.outputChatIdPlaceholder}
+                    className="w-full h-9 px-3 bg-white border border-[#e8e4dd] rounded-lg text-sm text-[#29261b] focus:outline-none focus:ring-2 focus:ring-[#d97757]/30 focus:border-[#d97757]"
+                  />
+                </div>
+                <div>
+                  <label className="block text-[12px] text-[#656358] mb-1">{t.schedule.outputToDM}</label>
+                  <input
+                    type="text"
+                    value={outputUserIds}
+                    onChange={(e) => setOutputUserIds(e.target.value)}
+                    placeholder={t.schedule.outputUserIdPlaceholder}
+                    className="w-full h-9 px-3 bg-white border border-[#e8e4dd] rounded-lg text-sm text-[#29261b] focus:outline-none focus:ring-2 focus:ring-[#d97757]/30 focus:border-[#d97757]"
+                  />
+                </div>
+              </div>
+            )}
           </div>
         </div>
 

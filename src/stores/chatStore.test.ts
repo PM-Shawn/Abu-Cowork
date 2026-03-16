@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { useChatStore } from './chatStore';
+import { useChatStore, flushTokenBuffer } from './chatStore';
 
 // Mock workspaceStore to avoid cross-store side effects
 vi.mock('./workspaceStore', () => ({
@@ -126,6 +126,8 @@ describe('chatStore', () => {
         id: 'msg1', role: 'assistant', content: 'Hello', timestamp: Date.now(),
       });
       useChatStore.getState().appendToLastMessage(id, ' World');
+      // Tokens are buffered via RAF; flush to apply immediately in test
+      flushTokenBuffer(id);
       const msg = useChatStore.getState().conversations[id].messages[0];
       expect(msg.content).toBe('Hello World');
     });

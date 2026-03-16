@@ -1,10 +1,9 @@
 import { useSettingsStore, type SystemSettingsTab } from '@/stores/settingsStore';
 import { useI18n } from '@/i18n';
-import { Settings2, Info, Shield, Check, SlidersHorizontal, MessageCircle, Heart, Radio, Brain } from 'lucide-react';
+import { Settings2, Info, Shield, Check, SlidersHorizontal, MessageCircle, Radio, Brain } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { AIServicesSection, AboutSection, SandboxSection, GeneralSection, IMChannelSection } from './sections';
 import FeedbackSection from './sections/FeedbackSection';
-import SponsorSection from './sections/SponsorSection';
 import PersonalMemorySection from './sections/PersonalMemorySection';
 
 export default function SystemSettingsView() {
@@ -21,7 +20,6 @@ export default function SystemSettingsView() {
     { id: 'sandbox', label: t.settings.sandbox, icon: Shield },
     { id: 'general', label: t.settings.general, icon: SlidersHorizontal },
     { id: 'feedback', label: t.about.feedback, icon: MessageCircle },
-    { id: 'sponsor', label: t.about.sponsor, icon: Heart },
     { id: 'about', label: t.common.version, icon: Info },
   ];
 
@@ -41,8 +39,6 @@ export default function SystemSettingsView() {
         return <AboutSection />;
       case 'feedback':
         return <FeedbackSection />;
-      case 'sponsor':
-        return <SponsorSection />;
       default:
         return <GeneralSection />;
     }

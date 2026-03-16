@@ -24,30 +24,32 @@
 
 > 简洁直观的界面，强大灵活的能力
 
-### 对话式交互
-用自然语言告诉阿布你想做什么，对话即指令。
-
-<img src="website/assets/screenshot-home.png" width="800" />
-
-### 任务执行
-智能调用工具，自动完成文件整理等复杂任务。
-
-<img src="website/assets/screenshot-task.png" width="800" />
-
-### 工具箱
-丰富的 Skills、Agents 和 MCP 工具，按需安装扩展能力。
-
-<img src="website/assets/screenshot-toolbox.png" width="800" />
-
-### 定时任务
-设定定时计划，让阿布每天自动为你工作。
-
-<img src="website/assets/screenshot-schedule.png" width="800" />
-
-### 自定义模型
-支持自定义 API 和模型，灵活接入各类 LLM 服务。
-
-<img src="website/assets/screenshot-model.png" width="800" />
+<table>
+<tr>
+<td align="center" width="50%"><b>欢迎页</b><br/>自然语言输入，对话即指令<br/><br/><img src="website/assets/screenshot-welcome.png" width="100%" /></td>
+<td align="center" width="50%"><b>任务执行</b><br/>自主规划步骤，调用工具完成复杂任务<br/><br/><img src="website/assets/screenshot-execution.png" width="100%" /></td>
+</tr>
+<tr>
+<td align="center"><b>权限控制</b><br/>文件访问需用户授权，安全可控<br/><br/><img src="website/assets/screenshot-permission.png" width="100%" /></td>
+<td align="center"><b>IM 频道对话</b><br/>在飞书/钉钉中 @阿布 即可交互<br/><br/><img src="website/assets/screenshot-im-chat.png" width="100%" /></td>
+</tr>
+<tr>
+<td align="center"><b>Skill 技能</b><br/>内置 20+ 技能，支持自定义扩展<br/><br/><img src="website/assets/screenshot-skills.png" width="100%" /></td>
+<td align="center"><b>MCP 连接器</b><br/>一键接入 Playwright、GitHub 等外部工具<br/><br/><img src="website/assets/screenshot-mcp.png" width="100%" /></td>
+</tr>
+<tr>
+<td align="center"><b>定时任务</b><br/>Cron 定时执行，让阿布每天自动工作<br/><br/><img src="website/assets/screenshot-schedule-create.png" width="100%" /></td>
+<td align="center"><b>触发器 / 值班</b><br/>HTTP、文件变更、IM 消息等事件自动触发<br/><br/><img src="website/assets/screenshot-triggers.png" width="100%" /></td>
+</tr>
+<tr>
+<td align="center"><b>AI 服务配置</b><br/>支持多厂商模型，灵活切换<br/><br/><img src="website/assets/screenshot-settings-ai.png" width="100%" /></td>
+<td align="center"><b>IM 频道配置</b><br/>连接飞书、钉钉、企微等 IM 平台<br/><br/><img src="website/assets/screenshot-settings-im.png" width="100%" /></td>
+</tr>
+<tr>
+<td align="center"><b>个人记忆</b><br/>记住你的偏好和工作习惯<br/><br/><img src="website/assets/screenshot-memory.png" width="100%" /></td>
+<td align="center"><b>安全沙箱</b><br/>Seatbelt 沙箱 + 网络隔离，保护隐私<br/><br/><img src="website/assets/screenshot-security.png" width="100%" /></td>
+</tr>
+</table>
 
 ## 功能介绍
 

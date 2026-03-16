@@ -380,64 +380,86 @@ section h2 {
     justify-content: center;
     gap: 8px;
     margin-bottom: 36px;
-    flex-wrap: wrap;
 }
 
-.tab-btn {
-    padding: 8px 20px;
-    border: 1.5px solid var(--color-border);
-    background: var(--color-bg-white);
+.screenshot-tab {
+    padding: 10px 24px;
     border-radius: var(--radius-full);
-    font-size: 0.875rem;
-    font-weight: 500;
+    border: 1px solid var(--color-border);
+    background: var(--color-bg-white);
     color: var(--color-text-secondary);
+    font-size: 0.95rem;
+    font-weight: 550;
     cursor: pointer;
     transition: var(--transition);
-    font-family: inherit;
 }
 
-.tab-btn:hover {
+.screenshot-tab:hover {
     border-color: var(--color-primary-light);
-    color: var(--color-primary);
+    color: var(--color-text);
 }
 
-.tab-btn.active {
+.screenshot-tab.active {
     background: var(--color-primary);
-    color: white;
     border-color: var(--color-primary);
+    color: #fff;
 }
 
-.screenshot-viewer {
-    max-width: 920px;
-    margin: 0 auto;
-}
-
-.screenshot-item {
+.screenshot-panel {
     display: none;
-    text-align: center;
+}
+
+.screenshot-panel.active {
+    display: block;
     animation: fadeIn 0.3s ease;
 }
 
-.screenshot-item.active {
-    display: block;
-}
-
 @keyframes fadeIn {
-    from { opacity: 0; transform: translateY(6px); }
+    from { opacity: 0; transform: translateY(8px); }
     to { opacity: 1; transform: translateY(0); }
 }
 
-.screenshot-item img {
-    width: 100%;
+.screenshot-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 24px;
+    max-width: 1200px;
+    margin: 0 auto;
+}
+
+.screenshot-card {
+    background: var(--color-bg-white);
     border-radius: var(--radius-lg);
-    box-shadow: var(--shadow-lg);
-    border: 2px solid rgba(255, 255, 255, 0.8);
+    padding: 12px 12px 16px;
+    border: 1px solid var(--color-border);
+    transition: var(--transition);
+    text-align: center;
+}
+
+.screenshot-card:hover {
+    transform: translateY(-3px);
+    box-shadow: var(--shadow-md);
+    border-color: var(--color-primary-light);
+}
+
+.screenshot-card img {
+    width: 100%;
+    border-radius: var(--radius-md);
+    box-shadow: var(--shadow-sm);
+}
+
+.screenshot-label {
+    margin-top: 12px;
+    font-size: 0.95rem;
+    font-weight: 650;
+    color: var(--color-text);
 }
 
 .screenshot-caption {
-    margin-top: 16px;
-    font-size: 0.9rem;
+    margin-top: 4px;
+    font-size: 0.825rem;
     color: var(--color-text-secondary);
+    line-height: 1.5;
 }
 
 /* ============================================
@@ -947,12 +969,17 @@ section h2 {
     }
 
     .screenshot-tabs {
-        gap: 6px;
+        flex-wrap: wrap;
     }
 
-    .tab-btn {
-        padding: 6px 14px;
-        font-size: 0.8rem;
+    .screenshot-tab {
+        padding: 8px 18px;
+        font-size: 0.875rem;
+    }
+
+    .screenshot-grid {
+        grid-template-columns: 1fr;
+        max-width: 560px;
     }
 }
 
@@ -976,11 +1003,6 @@ section h2 {
     .hero-meta {
         flex-direction: column;
         gap: 8px;
-    }
-
-    .tab-btn {
-        padding: 5px 10px;
-        font-size: 0.75rem;
     }
 
     .steps {

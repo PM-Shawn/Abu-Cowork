@@ -1,0 +1,310 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>文档 - Abu (阿布)</title>
+    <meta name="description" content="Abu (阿布) 使用文档 — 使用指南、安装指南、浏览器桥接说明">
+    <link rel="icon" href="assets/abu-avatar.png" type="image/png">
+    <link rel="stylesheet" href="style.css">
+    <link rel="stylesheet" href="docs.css">
+    <!-- Marked.js for markdown rendering -->
+    <script src="https://cdn.jsdelivr.net/npm/marked@15/marked.min.js"></script>
+</head>
+<body class="docs-body">
+    <!-- Navigation (same as main site) -->
+    <nav class="navbar scrolled" id="navbar">
+        <div class="container nav-container">
+            <a href="index.html" class="nav-brand">
+                <img src="assets/abu-avatar.png" alt="Abu" class="nav-logo">
+                <span class="nav-title">Abu <span class="nav-title-cn">阿布</span></span>
+            </a>
+            <div class="nav-links" id="navLinks">
+                <a href="index.html#features" class="nav-link">功能</a>
+                <a href="index.html#screenshots" class="nav-link">预览</a>
+                <a href="docs.html" class="nav-link nav-link-active">文档</a>
+                <a href="https://github.com/PM-Shawn/Abu-Cowork" target="_blank" rel="noopener" class="nav-link nav-github">
+                    <svg class="icon" viewBox="0 0 16 16" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+                    GitHub
+                </a>
+            </div>
+            <button class="nav-toggle" id="navToggle" aria-label="Toggle menu">
+                <span></span><span></span><span></span>
+            </button>
+        </div>
+    </nav>
+
+    <div class="docs-layout">
+        <!-- Left Sidebar: Document List + TOC -->
+        <aside class="docs-sidebar" id="docsSidebar">
+            <div class="docs-sidebar-inner">
+                <div class="docs-nav-section">
+                    <div class="docs-nav-title">文档</div>
+                    <a href="#user-guide" class="docs-nav-item active" data-doc="user-guide">
+                        <svg class="docs-nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"/><path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"/></svg>
+                        使用指南
+                    </a>
+                    <a href="#installation" class="docs-nav-item" data-doc="installation">
+                        <svg class="docs-nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+                        安装指南
+                    </a>
+                    <a href="#browser-bridge" class="docs-nav-item" data-doc="browser-bridge">
+                        <svg class="docs-nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
+                        浏览器桥接
+                    </a>
+                </div>
+                <div class="docs-toc-section" id="docsToc">
+                    <div class="docs-nav-title">目录</div>
+                    <!-- Auto-generated from headings -->
+                </div>
+            </div>
+        </aside>
+
+        <!-- Mobile sidebar toggle -->
+        <button class="docs-sidebar-toggle" id="sidebarToggle" aria-label="Toggle sidebar">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
+        </button>
+
+        <!-- Main Content -->
+        <main class="docs-content" id="docsContent">
+            <div class="docs-content-inner">
+                <div class="docs-loading" id="docsLoading">
+                    <div class="docs-loading-spinner"></div>
+                    <p>加载文档中...</p>
+                </div>
+                <article class="docs-article" id="docsArticle"></article>
+            </div>
+        </main>
+    </div>
+
+    <script>
+        // Document registry
+        const DOCS = {
+            'user-guide': { file: 'docs/User-Guide.md', title: '使用指南' },
+            'installation': { file: 'docs/Installation-Guide.md', title: '安装指南' },
+            'browser-bridge': { file: 'docs/browser-bridge-vs-playwright.md', title: '浏览器桥接' }
+        };
+
+        let currentDoc = 'user-guide';
+
+        // Initialize marked
+        marked.setOptions({
+            gfm: true,
+            breaks: false
+        });
+
+        // Slugify heading text for IDs
+        function slugify(text) {
+            return text
+                .toLowerCase()
+                .replace(/[^\w\u4e00-\u9fff\s-]/g, '')
+                .replace(/\s+/g, '-')
+                .replace(/-+/g, '-')
+                .trim();
+        }
+
+        // Custom renderer to add IDs to headings
+        const renderer = new marked.Renderer();
+        const headingCounts = {};
+        renderer.heading = function({ tokens, depth }) {
+            const text = tokens.map(t => t.raw || t.text || '').join('');
+            let slug = slugify(text);
+            // Deduplicate
+            if (headingCounts[slug]) {
+                headingCounts[slug]++;
+                slug += '-' + headingCounts[slug];
+            } else {
+                headingCounts[slug] = 1;
+            }
+            return `<h${depth} id="${slug}">${this.parser.parseInline(tokens)}</h${depth}>`;
+        };
+
+        // Render table with wrapper for horizontal scroll
+        renderer.table = function({ header, rows }) {
+            const headerCells = header.map(cell => {
+                const align = cell.align ? ` style="text-align:${cell.align}"` : '';
+                return `<th${align}>${this.parser.parseInline(cell.tokens)}</th>`;
+            }).join('');
+
+            const bodyRows = rows.map(row => {
+                const cells = row.map(cell => {
+                    const align = cell.align ? ` style="text-align:${cell.align}"` : '';
+                    return `<td${align}>${this.parser.parseInline(cell.tokens)}</td>`;
+                }).join('');
+                return `<tr>${cells}</tr>`;
+            }).join('');
+
+            return `<div class="table-wrapper"><table><thead><tr>${headerCells}</tr></thead><tbody>${bodyRows}</tbody></table></div>`;
+        };
+
+        marked.use({ renderer });
+
+        // Load and render a document
+        async function loadDoc(docKey) {
+            const doc = DOCS[docKey];
+            if (!doc) return;
+
+            currentDoc = docKey;
+            const article = document.getElementById('docsArticle');
+            const loading = document.getElementById('docsLoading');
+
+            // Update nav active state
+            document.querySelectorAll('.docs-nav-item').forEach(item => {
+                item.classList.toggle('active', item.dataset.doc === docKey);
+            });
+
+            // Show loading
+            loading.style.display = 'flex';
+            article.style.display = 'none';
+
+            try {
+                const resp = await fetch(doc.file);
+                if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+                let md = await resp.text();
+
+                // Remove the h1 title (first line starting with #)
+                md = md.replace(/^# .+\n*/m, '');
+
+                // Reset heading counts
+                Object.keys(headingCounts).forEach(k => delete headingCounts[k]);
+
+                // Render markdown
+                article.innerHTML = marked.parse(md);
+
+                // Update page title
+                document.title = `${doc.title} - Abu (阿布)`;
+
+                // Build TOC from rendered headings
+                buildToc();
+
+                // Scroll to top or to hash
+                const hash = window.location.hash.replace('#', '');
+                if (hash && hash !== docKey) {
+                    const target = document.getElementById(hash);
+                    if (target) {
+                        setTimeout(() => target.scrollIntoView({ behavior: 'smooth', block: 'start' }), 100);
+                    }
+                } else {
+                    document.querySelector('.docs-content').scrollTop = 0;
+                }
+            } catch (err) {
+                article.innerHTML = `<div class="docs-error">
+                    <h2>加载失败</h2>
+                    <p>无法加载文档 "${doc.title}"</p>
+                    <p class="docs-error-detail">${err.message}</p>
+                </div>`;
+            }
+
+            loading.style.display = 'none';
+            article.style.display = 'block';
+
+            // Close mobile sidebar
+            document.getElementById('docsSidebar').classList.remove('open');
+        }
+
+        // Build table of contents from headings
+        function buildToc() {
+            const article = document.getElementById('docsArticle');
+            const tocSection = document.getElementById('docsToc');
+            const headings = article.querySelectorAll('h2, h3');
+
+            let tocHTML = '<div class="docs-nav-title">目录</div>';
+
+            headings.forEach(h => {
+                const level = h.tagName === 'H2' ? 'toc-h2' : 'toc-h3';
+                const id = h.id;
+                const text = h.textContent;
+                tocHTML += `<a href="#${id}" class="docs-toc-item ${level}" data-heading="${id}">${text}</a>`;
+            });
+
+            tocSection.innerHTML = tocHTML;
+
+            // TOC click handler
+            tocSection.querySelectorAll('.docs-toc-item').forEach(item => {
+                item.addEventListener('click', function(e) {
+                    e.preventDefault();
+                    const target = document.getElementById(this.dataset.heading);
+                    if (target) {
+                        target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                        history.replaceState(null, '', '#' + this.dataset.heading);
+                    }
+                    // Close mobile sidebar
+                    document.getElementById('docsSidebar').classList.remove('open');
+                });
+            });
+        }
+
+        // Scroll spy: highlight current heading in TOC
+        function setupScrollSpy() {
+            const content = document.querySelector('.docs-content');
+            let ticking = false;
+
+            content.addEventListener('scroll', () => {
+                if (!ticking) {
+                    requestAnimationFrame(() => {
+                        const headings = document.querySelectorAll('.docs-article h2, .docs-article h3');
+                        const tocItems = document.querySelectorAll('.docs-toc-item');
+                        let activeId = '';
+
+                        headings.forEach(h => {
+                            const rect = h.getBoundingClientRect();
+                            if (rect.top <= 120) {
+                                activeId = h.id;
+                            }
+                        });
+
+                        tocItems.forEach(item => {
+                            item.classList.toggle('active', item.dataset.heading === activeId);
+                        });
+
+                        ticking = false;
+                    });
+                    ticking = true;
+                }
+            }, { passive: true });
+        }
+
+        // Nav click handlers
+        document.querySelectorAll('.docs-nav-item').forEach(item => {
+            item.addEventListener('click', function(e) {
+                e.preventDefault();
+                const docKey = this.dataset.doc;
+                history.replaceState(null, '', '#' + docKey);
+                loadDoc(docKey);
+            });
+        });
+
+        // Mobile sidebar toggle
+        document.getElementById('sidebarToggle').addEventListener('click', () => {
+            document.getElementById('docsSidebar').classList.toggle('open');
+        });
+
+        // Mobile nav toggle
+        const navToggle = document.getElementById('navToggle');
+        const navLinks = document.getElementById('navLinks');
+        navToggle.addEventListener('click', () => {
+            navLinks.classList.toggle('open');
+            navToggle.classList.toggle('open');
+        });
+
+        // Route on load
+        function route() {
+            const hash = window.location.hash.replace('#', '');
+            // Check if hash matches a doc key
+            if (DOCS[hash]) {
+                loadDoc(hash);
+            } else {
+                // Default to user guide
+                loadDoc('user-guide');
+            }
+        }
+
+        // Init
+        route();
+        setupScrollSpy();
+
+        // Handle back/forward
+        window.addEventListener('hashchange', route);
+    </script>
+</body>
+</html>

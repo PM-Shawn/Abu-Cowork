@@ -128,7 +128,8 @@ export default function ChatView() {
     resolveWorkspaceRequest(null);
   };
 
-  const { containerRef, endRef, isAtBottom, scrollToBottom, resetToBottom } = useAutoScroll();
+  const isFollowing = activeConv?.status === 'running';
+  const { containerRef, isAtBottom, scrollToBottom, resetToBottom } = useAutoScroll({ following: isFollowing });
 
   // Scroll to bottom when switching conversations.
   // useLayoutEffect runs after DOM commit but before paint,
@@ -297,7 +298,7 @@ export default function ChatView() {
 
       {/* Messages Area */}
       <div className="relative flex-1 min-h-0 overflow-y-auto" ref={containerRef}>
-        <div className="w-full max-w-3xl mx-auto px-6 md:px-10 py-5 overflow-hidden">
+        <div className="w-full max-w-3xl mx-auto px-6 md:px-10 pt-5 pb-16 overflow-hidden">
           <div className="space-y-5">
             {messageGroups.map((group) => (
               <MessageGroup key={group[0].id} messages={group} />
@@ -316,8 +317,8 @@ export default function ChatView() {
             )}
           </div>
 
-          {/* Bottom sentinel */}
-          <div ref={endRef} className="h-px w-full" />
+          {/* Bottom sentinel — keeps a sliver of space after last message */}
+          <div className="h-px w-full" />
         </div>
 
         {/* Scroll-to-bottom button */}

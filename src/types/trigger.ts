@@ -5,6 +5,11 @@
  * When an external event occurs, Abu automatically executes the configured action.
  */
 
+import type { IMReplyContext } from './im';
+
+// Re-export shared IM types for backwards compatibility
+export type { IMPlatform, IMReplyContext } from './im';
+
 // ── Trigger Source ──
 
 export type TriggerSourceType = 'http' | 'file' | 'cron' | 'im';
@@ -30,20 +35,18 @@ export interface CronSource {
   intervalSeconds: number;
 }
 
-export type IMPlatform = 'dchat' | 'feishu' | 'dingtalk' | 'wecom' | 'slack';
-
 export type IMListenScope = 'all' | 'mention_only' | 'direct_only';
 
 export interface IMSource {
   type: 'im';
-  /** IM platform */
-  platform: IMPlatform;
-  /** App ID for authentication (used by platform webhook verification) */
-  appId: string;
-  /** App Secret for authentication */
-  appSecret: string;
+  /** Reference to an IM channel ID (credentials managed by the channel) */
+  channelId: string;
   /** Listening scope: all messages, @mentions only, or direct messages only */
   listenScope: IMListenScope;
+  /** Only listen to messages from a specific chat/group (optional, user copies ID from IM platform) */
+  chatId?: string;
+  /** Sender match filter — name or ID (optional) */
+  senderMatch?: string;
 }
 
 export type TriggerSource = HttpSource | FileSource | CronSource | IMSource;
@@ -125,12 +128,20 @@ export type OutputExtractMode = 'last_message' | 'full' | 'custom_template';
 
 export interface TriggerOutput {
   enabled: boolean;
-  /** Output target: webhook sends to URL, reply_source replies to the IM that triggered */
-  target: 'webhook' | 'reply_source';
+  /** Output target: webhook sends to URL, im_channel pushes via IM channel */
+  target: 'webhook' | 'im_channel';
   /** Platform (required when target='webhook') */
   platform?: OutputPlatform;
   /** Webhook URL (required when target='webhook') */
   webhookUrl?: string;
+  /** IM channel ID to push to (required when target='im_channel') */
+  outputChannelId?: string;
+  /** Comma-separated group chat IDs (optional, defaults to reply source chat for IM triggers) */
+  outputChatIds?: string;
+  /** Comma-separated user IDs for DM */
+  outputUserIds?: string;
+  /** Single target chat ID (internal, used by scheduler per-target dispatch) */
+  outputChatId?: string;
   extractMode: OutputExtractMode;
   customTemplate?: string;
   /** Custom HTTP headers (for 'custom' platform, e.g. Authorization) */
@@ -158,27 +169,8 @@ export interface TriggerRun {
   outputStatus?: TriggerOutputStatus;
   outputError?: string;
   outputSentAt?: number;
-  /** Reply context for reply_source output (Phase 1B) */
+  /** Reply context for im_channel output */
   replyContext?: IMReplyContext;
-}
-
-/** Context needed to reply back to the IM source */
-export interface IMReplyContext {
-  platform: IMPlatform;
-  /** D-Chat: vchannel ID */
-  vchannelId?: string;
-  /** Feishu: chat ID for replying */
-  chatId?: string;
-  /** Feishu: original message ID for threading */
-  messageId?: string;
-  /** DingTalk: session webhook URL (expires in 1h) */
-  sessionWebhook?: string;
-  /** Slack: channel ID */
-  channelId?: string;
-  /** Slack: thread timestamp for threading */
-  threadTs?: string;
-  /** WeCom: chat ID */
-  chatid?: string;
 }
 
 // ── Main Trigger ──

@@ -12,12 +12,12 @@ import type { Conversation } from '@/types';
 import type { IMCapabilityLevel } from '@/types/imChannel';
 import { MoreHorizontal, Clock, MessageSquare, Shield, Hash, XCircle } from 'lucide-react';
 
-const PLATFORM_ICONS: Record<string, string> = {
-  feishu: '🔷',
-  dchat: '🟡',
-  dingtalk: '🔵',
-  wecom: '🟢',
-  slack: '🟣',
+const PLATFORM_SHORT: Record<string, string> = {
+  feishu: '飞',
+  dchat: 'DC',
+  dingtalk: '钉',
+  wecom: '微',
+  slack: 'SL',
 };
 
 const PLATFORM_LABELS: Record<string, string> = {
@@ -60,7 +60,7 @@ export default function IMInfoBar({ conversation }: IMInfoBarProps) {
   const session = Object.values(sessions).find((s) => s.conversationId === conversation.id);
 
   // Get channel info
-  const channel = channelId ? useIMChannelStore((s) => s.channels[channelId]) : null;
+  const channel = useIMChannelStore((s) => channelId ? s.channels[channelId] : null);
 
   const capabilityLabels: Record<IMCapabilityLevel, string> = {
     chat_only: t.imChannel.capabilityChatOnly,
@@ -88,7 +88,9 @@ export default function IMInfoBar({ conversation }: IMInfoBarProps) {
     <div className="shrink-0 flex items-center gap-2 px-6 md:px-10 py-1.5 bg-white/60 border-b border-[#e8e6df] text-[13px]">
       {/* Platform icon + title */}
       <div className="flex items-center gap-1.5 min-w-0">
-        <span className="shrink-0">{PLATFORM_ICONS[platform] ?? '💬'}</span>
+        <span className="shrink-0 h-4 w-4 rounded text-[8px] font-bold leading-4 text-center bg-[#d97757]/15 text-[#d97757]">
+          {PLATFORM_SHORT[platform] ?? platform.slice(0, 2).toUpperCase()}
+        </span>
         <span className="font-medium text-[#29261b] truncate">{title}</span>
         <span className="text-[#d5d3cb]">·</span>
         <span className="text-[#656358] shrink-0">{platformLabel}</span>

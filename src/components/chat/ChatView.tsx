@@ -53,7 +53,7 @@ function groupMessagesByLoop(messages: Message[]): Message[][] {
 
 export default function ChatView() {
   const activeConv = useActiveConversation();
-  const { createConversation } = useChatStore();
+  const createConversation = useChatStore((s) => s.createConversation);
   const messages = activeConv?.messages ?? [];
   const { t } = useI18n();
 

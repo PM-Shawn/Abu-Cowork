@@ -365,40 +365,84 @@ export async function buildSystemPrompt(
     }
   }
 
-  // Inject main agent (abu) long-term memory
+  // Inject structured memories (user-level + project-level)
   if (!isForkContext) {
     try {
-      const memory = await loadAgentMemory('abu');
-      if (memory.trim()) {
+      // Try structured memory first, fall back to legacy flat file
+      const { getMemoryBackend } = await import('../memory/router');
+      const backend = getMemoryBackend();
+
+      const userMemories = await backend.list({ scope: 'user' });
+      const projectMemories = workspacePath
+        ? await backend.list({ scope: 'project', projectPath: workspacePath })
+        : [];
+
+      const allMemories = [...userMemories, ...projectMemories];
+
+      if (allMemories.length > 0) {
+        // Sort by relevance: recent + frequently accessed first, limit to 15
+        allMemories.sort((a, b) => {
+          const scoreA = a.accessCount * 0.3 + a.updatedAt / 1e12;
+          const scoreB = b.accessCount * 0.3 + b.updatedAt / 1e12;
+          return scoreB - scoreA;
+        });
+        const top = allMemories.slice(0, 15);
+
+        const memoryText = top
+          .map(e => `- [${e.category}] ${e.summary}${e.content !== e.summary ? ': ' + e.content.slice(0, 200) : ''}`)
+          .join('\n');
+
         parts.push(`\n## 你的长期记忆
+以下是你跨会话保持的记忆，始终参考这些信息来个性化你的回复。
+<agent-memory>
+${memoryText}
+</agent-memory>`);
+
+        // Touch accessed entries (fire-and-forget)
+        for (const e of top) {
+          backend.touch(e.id).catch(() => {});
+        }
+      } else {
+        // Fallback: load legacy memory.md if structured memories are empty
+        const memory = await loadAgentMemory('abu');
+        if (memory.trim()) {
+          parts.push(`\n## 你的长期记忆
 以下是你跨会话保持的记忆，始终参考这些信息来个性化你的回复。
 <agent-memory>
 ${memory}
 </agent-memory>`);
-      }
-      // Brief memory management reminder
-      parts.push(`\n在对话中观察到值得记住的信息时，用 update_memory 工具保存到记忆。记忆应精炼有条理。
-- scope="user": 个人记忆，跨项目永久保持（如用户偏好、格式习惯）
-- scope="project": 项目记忆，仅在当前工作区生效（如项目规范、技术栈、业务术语、数据结构）
-- 项目规则（.abu/ABU.md 和 .abu/rules/）由用户手动维护，不要用 update_memory 修改规则文件`);
-    } catch (err) {
-      console.warn('Failed to load abu memory:', err);
-    }
+        }
 
-    // Inject project-level memory
-    if (workspacePath) {
-      try {
-        const projectMemory = await loadProjectMemory(workspacePath);
-        if (projectMemory.trim()) {
-          parts.push(`\n## 项目记忆
-以下是本项目的持久化记忆，包含项目规范、数据结构、业务术语等信息。始终参考这些信息。
+        // Legacy project memory fallback
+        if (workspacePath) {
+          const projectMemory = await loadProjectMemory(workspacePath);
+          if (projectMemory.trim()) {
+            parts.push(`\n## 项目记忆
 <project-memory>
 ${projectMemory}
 </project-memory>`);
+          }
         }
-      } catch (err) {
-        console.warn('Failed to load project memory:', err);
       }
+
+      // Memory management instruction
+      parts.push(`\n在以下情况主动用 update_memory 工具保存记忆：
+- 用户表达了偏好或习惯 → category="user_preference"
+- 发现了项目技术/业务知识 → category="project_knowledge"
+- 做出了重要决策 → category="decision"
+- 确定了后续行动 → category="action_item"
+- 对话中出现了值得长期记住的事实 → category="conversation_fact"
+不要保存临时性内容。每条记忆需提供 summary、content、keywords。
+- 项目规则（.abu/ABU.md 和 .abu/rules/）由用户手动维护，不要用 update_memory 修改规则文件`);
+    } catch (err) {
+      console.warn('Failed to load memories:', err);
+      // Final fallback: try legacy memory
+      try {
+        const memory = await loadAgentMemory('abu');
+        if (memory.trim()) {
+          parts.push(`\n## 你的长期记忆\n<agent-memory>\n${memory}\n</agent-memory>`);
+        }
+      } catch { /* ignore */ }
     }
 
     // Inject computer use guidance (if enabled)

@@ -767,7 +767,9 @@ export const useChatStore = create<ChatStore>()(
         if (convEntries.length > MAX_CONVERSATIONS) {
           convEntries.sort(([, a], [, b]) => b.updatedAt - a.updatedAt);
           const toRemove = convEntries.slice(MAX_CONVERSATIONS);
-          for (const [id] of toRemove) {
+          for (const [id, conv] of toRemove) {
+            // Protect IM-linked conversations — they have active sessions
+            if (conv.imChannelId) continue;
             delete state.conversations[id];
           }
           // Fix activeConversationId if deleted (pick last = most recent, consistent with deleteConversation)

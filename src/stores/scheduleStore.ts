@@ -338,6 +338,13 @@ export const useScheduleStore = create<ScheduleStore>()(
     {
       name: 'abu-schedule',
       version: 2,
+      migrate(persisted: unknown, version: number) {
+        if (version < 2) {
+          // v1→v2 added optional IM output fields (outputChannelId, outputChatIds, outputUserIds).
+          // These default to undefined, so no data transform needed — just pass through.
+        }
+        return persisted as Record<string, unknown>;
+      },
       partialize: (state) => ({
         tasks: state.tasks,
       }),

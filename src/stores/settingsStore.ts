@@ -403,7 +403,13 @@ export const useSettingsStore = create<SettingsStore>()(
       toolboxSearchQuery: '',
       installingItem: null,
       viewMode: 'chat' as ViewMode,
-      disabledSkills: [],
+      disabledSkills: [
+        'alert-sop', 'algorithmic-art', 'brand-guidelines', 'canvas-design',
+        'claude-api', 'create-agent', 'doc-coauthoring', 'docx',
+        'frontend-design', 'infographic', 'internal-comms', 'pdf',
+        'pptx', 'slack-gif-creator', 'theme-factory', 'web-artifacts-builder',
+        'webapp-testing', 'xlsx',
+      ],
       disabledAgents: [],
       sandboxEnabled: true,
       networkIsolationEnabled: false,
@@ -520,9 +526,18 @@ export const useSettingsStore = create<SettingsStore>()(
     }),
     {
       name: 'abu-settings',
-      version: 6,
+      version: 7,
       migrate: (persisted: unknown, version: number) => {
         const state = persisted as Record<string, unknown>;
+        if (version < 7) {
+          state.disabledSkills = [
+            'alert-sop', 'algorithmic-art', 'brand-guidelines', 'canvas-design',
+            'claude-api', 'create-agent', 'doc-coauthoring', 'docx',
+            'frontend-design', 'infographic', 'internal-comms', 'pdf',
+            'pptx', 'slack-gif-creator', 'theme-factory', 'web-artifacts-builder',
+            'webapp-testing', 'xlsx',
+          ];
+        }
         if (version < 6) {
           if (state.allowSkillCommands === undefined) state.allowSkillCommands = true;
         }

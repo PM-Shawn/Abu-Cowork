@@ -19,10 +19,13 @@ import type { AbuMessage } from './adapters/types';
 import type { IMChannel, IMCapabilityLevel } from '../../types/imChannel';
 import { tokenManager } from './tokenManager';
 import { consumeTriggerContext } from './triggerContextCache';
+import { getI18n, format } from '../../i18n';
 
 const MAX_CONCURRENT_IM = 5;
 /** Maximum time (ms) to wait for agentLoop before aborting */
 const AGENT_TIMEOUT_MS = 3 * 60 * 1000; // 3 minutes
+
+const MAX_SESSION_QUEUE = 5;
 
 class IMChannelRouter {
   private runningCount = 0;
@@ -30,6 +33,10 @@ class IMChannelRouter {
   private cleanupInterval: ReturnType<typeof setInterval> | null = null;
   /** Track recently processed message IDs with timestamps for TTL-based dedup */
   private recentMessageIds = new Map<string, number>();
+  /** Per-session active flag — ensures same-session messages are processed sequentially */
+  private activeSessions = new Set<string>();
+  /** Per-session message queue — messages waiting for the active turn to finish */
+  private sessionQueues = new Map<string, { message: NormalizedIMMessage; channel: IMChannel; capability: IMCapabilityLevel }[]>();
 
   async start() {
     // IM inbound events are dispatched by inboundDispatcher (single dispatcher pattern).
@@ -58,6 +65,8 @@ class IMChannelRouter {
     this.queuedMessages = [];
     this.runningCount = 0;
     this.recentMessageIds.clear();
+    this.activeSessions.clear();
+    this.sessionQueues.clear();
     console.log('[IMChannel] Router stopped');
   }
 
@@ -102,11 +111,26 @@ class IMChannelRouter {
       return;
     }
 
-    // Concurrency check
+    // Per-session queue: ensure same-session messages are processed sequentially
+    const sessionKey = sessionMapper.peekSessionKey(message);
+    if (this.activeSessions.has(sessionKey)) {
+      const queue = this.sessionQueues.get(sessionKey) ?? [];
+      if (queue.length >= MAX_SESSION_QUEUE) {
+        console.log('[IMChannel] Session queue full, dropping message');
+        sendThinking(message.platform, message.replyContext)
+          .then((h) => sendFinal(h, { content: getI18n().imChannel.sessionQueueFull }))
+          .catch(() => {});
+        return;
+      }
+      queue.push({ message, channel, capability: authResult.capability });
+      this.sessionQueues.set(sessionKey, queue);
+      return;
+    }
+
+    // Global concurrency check
     if (this.runningCount >= MAX_CONCURRENT_IM) {
       console.log('[IMChannel] Concurrency limit reached, queueing message');
       this.queuedMessages.push({ message, channelId: channel.id });
-      // Best-effort: notify user they're in queue
       const queuePos = this.queuedMessages.length;
       const queueMsg: AbuMessage = {
         content: `收到！当前有 ${this.runningCount} 个请求正在处理，你的请求已排队（第 ${queuePos} 位），请稍候。`,
@@ -117,6 +141,7 @@ class IMChannelRouter {
       return;
     }
 
+    this.activeSessions.add(sessionKey);
     this.processMessage(message, channel, authResult.capability);
   }
 
@@ -133,7 +158,14 @@ class IMChannelRouter {
       const resolveResult = sessionMapper.resolve(message, channel, capability);
       const { session, isRecovered, hasRecoverableSession, recoverableContext } = resolveResult;
 
-      // 1b. Async user name resolution (non-blocking)
+      // 1b. Auto-extract memories from archived session (non-blocking)
+      if (resolveResult.archivedConversationId) {
+        import('../memory/extractor').then(({ extractMemoriesFromConversation }) =>
+          extractMemoriesFromConversation(resolveResult.archivedConversationId!, 'user')
+        ).catch(() => {});
+      }
+
+      // 1c. Async user name resolution (non-blocking)
       if (resolveResult.isNew && message.platform === 'feishu' && message.senderId) {
         this.resolveFeishuUserName(message.senderId, channel, session.conversationId, session.key)
           .catch(() => {});
@@ -142,10 +174,20 @@ class IMChannelRouter {
       // 2. Send thinking acknowledgment (or recovery/hint messages)
       let replyHandle;
 
+      // Handle "新对话" reset — confirm and wait for next message
+      if (resolveResult.isReset) {
+        const resetMsg: AbuMessage = { content: getI18n().imChannel.sessionResetConfirm };
+        replyHandle = await sendThinking(message.platform, message.replyContext);
+        await sendFinal(replyHandle, resetMsg);
+        useIMChannelStore.getState().setChannelStatus(channel.id, 'connected');
+        console.log(`[IMChannel] Session reset for ${message.senderName}`);
+        return;
+      }
+
       if (isRecovered) {
         // Send recovery confirmation
         const confirmMsg: AbuMessage = {
-          content: `已恢复上次对话上下文（${recoverableContext ?? ''}）。请继续。`,
+          content: format(getI18n().imChannel.sessionRecovered, { context: recoverableContext ?? '' }),
         };
         replyHandle = await sendThinking(message.platform, message.replyContext);
         await sendFinal(replyHandle, confirmMsg);
@@ -157,7 +199,7 @@ class IMChannelRouter {
       if (hasRecoverableSession) {
         // Hint the user that they can recover
         const hintMsg: AbuMessage = {
-          content: `上一个话题已结束。回复"继续上次"可恢复上下文，或直接描述新的问题。`,
+          content: getI18n().imChannel.sessionExpiredHint,
         };
         // Send hint as a side-effect, don't block main flow
         sendThinking(message.platform, message.replyContext)
@@ -239,8 +281,20 @@ class IMChannelRouter {
       if (removeReaction) {
         removeReaction().catch(() => {});
       }
-      this.runningCount--;
-      this.processQueue();
+
+      // Drain per-session queue: process next message for same session
+      const sessionKey = sessionMapper.peekSessionKey(message);
+      const queue = this.sessionQueues.get(sessionKey);
+      if (queue && queue.length > 0) {
+        const next = queue.shift()!;
+        if (queue.length === 0) this.sessionQueues.delete(sessionKey);
+        // Reuse the same slot — don't decrement/increment runningCount
+        this.processMessage(next.message, next.channel, next.capability);
+      } else {
+        this.activeSessions.delete(sessionKey);
+        this.runningCount--;
+        this.processQueue();
+      }
     }
   }
 

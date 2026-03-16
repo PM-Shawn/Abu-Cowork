@@ -35,9 +35,9 @@ export interface IMChannel {
   allowedUsers: string[];
   /** Allowed workspace paths */
   workspacePaths: string[];
-  /** Session timeout in minutes (default 30) */
+  /** Session timeout in minutes (0 = no timeout, default 0) */
   sessionTimeoutMinutes: number;
-  /** Max rounds per session (default 50) */
+  /** @deprecated No longer used for session cutoff. Kept for backward compatibility. */
   maxRoundsPerSession: number;
   /** Whether channel is enabled */
   enabled: boolean;

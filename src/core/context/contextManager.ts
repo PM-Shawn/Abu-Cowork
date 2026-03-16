@@ -16,6 +16,14 @@ import { getMessageText, identifyRounds, RECENT_ROUNDS_TO_KEEP } from './context
 const ASSISTANT_SUMMARY_MAX_CHARS = 200;
 
 /**
+ * If the first round is older than this, treat it as stale and include it
+ * in the compressible middle rounds instead of preserving it unconditionally.
+ * This prevents very old "task context" from wasting tokens in long-lived
+ * IM sessions where the original topic is no longer relevant.
+ */
+const FIRST_ROUND_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
+
+/**
  * Maximum number of recent screenshots to keep in conversation history.
  * Older screenshots are replaced with a text placeholder to save tokens.
  * Each screenshot image is ~100K+ tokens — keeping too many quickly overflows context.
@@ -140,10 +148,15 @@ export function prepareContextMessages(
   const rounds = identifyRounds(messages);
   if (rounds.length <= 1) return messages; // Can't compress further
 
-  // Always keep the first round (task context) and recent rounds
-  const firstRound = rounds[0];
+  // Keep first round only if it's recent enough to be relevant context.
+  // In long-lived IM sessions, the first round from weeks ago is stale noise.
+  const firstRoundAge = Date.now() - (rounds[0]?.[0]?.timestamp ?? Date.now());
+  const keepFirstRound = firstRoundAge < FIRST_ROUND_MAX_AGE_MS;
+
+  const firstRound = keepFirstRound ? rounds[0] : [];
   const recentRounds = rounds.slice(-RECENT_ROUNDS_TO_KEEP);
-  const middleRounds = rounds.slice(1, -RECENT_ROUNDS_TO_KEEP);
+  const middleStart = keepFirstRound ? 1 : 0;
+  const middleRounds = rounds.slice(middleStart, rounds.length - RECENT_ROUNDS_TO_KEEP);
 
   // If no middle rounds, we can only return what we have
   if (middleRounds.length === 0) {
@@ -184,12 +197,13 @@ export function prepareContextMessages(
     return result2;
   }
 
-  // Step 3: Aggressive — keep first user message + last 2 rounds
+  // Step 3: Aggressive — keep first user message (if recent) + last 2 rounds
   const lastTwoRounds = rounds.slice(-2);
-  const firstUserMsg = messages.find((m) => m.role === 'user');
-  const result3 = firstUserMsg
-    ? [firstUserMsg, ...lastTwoRounds.flat()]
-    : lastTwoRounds.flat();
-
-  return result3;
+  if (keepFirstRound) {
+    const firstUserMsg = messages.find((m) => m.role === 'user');
+    if (firstUserMsg) {
+      return [firstUserMsg, ...lastTwoRounds.flat()];
+    }
+  }
+  return lastTwoRounds.flat();
 }

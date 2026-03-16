@@ -6,6 +6,7 @@ import MarkdownRenderer from './MarkdownRenderer';
 import FileAttachment, { ImagePreviewCard, ImageThumbnail, isImageFile } from './FileAttachment';
 import SourcesSection from './SourcesSection';
 import { useChatStore, useActiveConversation } from '@/stores/chatStore';
+import { MessageErrorBoundary } from '@/components/common/ErrorBoundary';
 import { useTaskExecutionStore } from '@/stores/taskExecutionStore';
 import { extractWorkflowSteps, extractFileOutputs } from '@/utils/workflowExtractor';
 import { parseSearchResults, stripSourcesBlock, parseSourcesFromText } from '@/utils/searchParser';
@@ -50,7 +51,7 @@ export default function MessageGroup({ messages }: MessageGroupProps) {
   const assistantMsgs = messages.filter((m) => m.role === 'assistant');
   const agentStatus = useChatStore((s) => s.agentStatus);
   const activeConv = useActiveConversation();
-  const { deleteMessagesFrom } = useChatStore();
+  // Action accessed via getState() in handler — no reactive subscription needed
 
   // Get loopId from messages (all messages in group share same loopId)
   const loopId = messages[0]?.loopId;
@@ -197,7 +198,7 @@ export default function MessageGroup({ messages }: MessageGroupProps) {
     // Delete all assistant messages in this loop
     const firstAssistantInLoop = assistantMsgs[0];
     if (firstAssistantInLoop) {
-      deleteMessagesFrom(convId, firstAssistantInLoop.id);
+      useChatStore.getState().deleteMessagesFrom(convId, firstAssistantInLoop.id);
     }
 
     // Re-run the agent loop with images
@@ -212,7 +213,7 @@ export default function MessageGroup({ messages }: MessageGroupProps) {
   return (
     <div ref={groupRef} className="message-group space-y-4 w-full">
       {/* User message renders standalone */}
-      {userMsg && <MessageBubble message={userMsg} />}
+      {userMsg && <MessageErrorBoundary><MessageBubble message={userMsg} /></MessageErrorBoundary>}
 
       {/* Multiple assistant messages grouped with single avatar */}
       {assistantMsgs.length > 0 && (

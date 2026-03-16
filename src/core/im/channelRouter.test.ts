@@ -94,6 +94,7 @@ vi.mock('./sessionMapper', () => {
           isRecovered: false,
         };
       }),
+      peekSessionKey: vi.fn(() => 'test:chat1:window'),
       cleanup: vi.fn(),
     },
   };
@@ -120,6 +121,7 @@ type RouterInternal = {
   processMessage(msg: NormalizedIMMessage, channel: IMChannel, capability: string): Promise<void>;
   runWithTimeout<T>(promise: Promise<T>, ms: number): Promise<T>;
   runningCount: number;
+  activeSessions: Set<string>;
 };
 
 function getInternal(): RouterInternal {
@@ -156,8 +158,9 @@ describe('IMChannelRouter', () => {
     mockSendFinal.mockReset();
     mockSendThinking.mockResolvedValue({ platform: 'dingtalk', supportsUpdate: false, replyContext: {} });
     mockSendFinal.mockResolvedValue({ success: true });
-    // Reset runningCount
+    // Reset runningCount and session tracking
     getInternal().runningCount = 0;
+    getInternal().activeSessions.clear();
   });
 
   it('processes message through full pipeline', async () => {

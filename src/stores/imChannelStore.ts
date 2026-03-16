@@ -21,8 +21,10 @@ function generateId(): string {
 
 interface IMChannelState {
   channels: Record<string, IMChannel>;
-  /** Active sessions (runtime only, not persisted) */
+  /** Active sessions — now persisted for session continuity across restarts */
   sessions: Record<string, IMSession>;
+  /** Archived sessions for "continue last" recovery */
+  archivedSessions: Record<string, IMSession>;
 }
 
 interface IMChannelActions {
@@ -48,6 +50,10 @@ interface IMChannelActions {
   incrementSessionRound(key: string): void;
   clearExpiredSessions(): void;
 
+  // Archived session management
+  archiveSession(windowKey: string, session: IMSession): void;
+  removeArchivedSession(windowKey: string): void;
+
   // Queries
   getChannelsByPlatform(platform: IMPlatform): IMChannel[];
   getActiveChannels(): IMChannel[];
@@ -61,6 +67,7 @@ export const useIMChannelStore = create<IMChannelStore>()(
     immer((set, get) => ({
       channels: {},
       sessions: {},
+      archivedSessions: {},
 
       // ── Channel CRUD ──
 
@@ -78,7 +85,7 @@ export const useIMChannelStore = create<IMChannelStore>()(
             responseMode: 'mention_only',
             allowedUsers: data.allowedUsers ?? [],
             workspacePaths: data.workspacePaths ?? [],
-            sessionTimeoutMinutes: data.sessionTimeoutMinutes ?? 30,
+            sessionTimeoutMinutes: data.sessionTimeoutMinutes ?? 0,
             maxRoundsPerSession: 50,
             enabled: true,
             status: 'disconnected',
@@ -112,6 +119,12 @@ export const useIMChannelStore = create<IMChannelStore>()(
           for (const [key, session] of Object.entries(state.sessions)) {
             if (session.channelId === id) {
               delete state.sessions[key];
+            }
+          }
+          // Also clean up archived sessions for this channel
+          for (const [key, session] of Object.entries(state.archivedSessions)) {
+            if (session.channelId === id) {
+              delete state.archivedSessions[key];
             }
           }
         });
@@ -164,11 +177,24 @@ export const useIMChannelStore = create<IMChannelStore>()(
         set((state) => {
           for (const [key, session] of Object.entries(state.sessions)) {
             const channel = state.channels[session.channelId];
-            const timeoutMs = (channel?.sessionTimeoutMinutes ?? 30) * 60 * 1000;
-            if (now - session.lastActiveAt > timeoutMs) {
+            const timeoutMs = (channel?.sessionTimeoutMinutes ?? 0) * 60 * 1000;
+            // timeout 0 = no timeout, skip expiration
+            if (timeoutMs > 0 && now - session.lastActiveAt > timeoutMs) {
               delete state.sessions[key];
             }
           }
+        });
+      },
+
+      archiveSession(windowKey, session) {
+        set((state) => {
+          state.archivedSessions[windowKey] = session;
+        });
+      },
+
+      removeArchivedSession(windowKey) {
+        set((state) => {
+          delete state.archivedSessions[windowKey];
         });
       },
 
@@ -188,10 +214,20 @@ export const useIMChannelStore = create<IMChannelStore>()(
     })),
     {
       name: 'abu-im-channel',
-      version: 1,
+      version: 2,
+      migrate(persisted: unknown, version: number) {
+        const state = persisted as Record<string, unknown>;
+        if (version < 2) {
+          // v1 didn't persist sessions/archivedSessions — initialize empty
+          state.archivedSessions = {};
+          // sessions will be empty from v1 (was cleared on rehydrate)
+        }
+        return state as unknown as IMChannelStore;
+      },
       partialize: (state) => ({
-        // Only persist channels, not runtime sessions
         channels: state.channels,
+        sessions: state.sessions,
+        archivedSessions: state.archivedSessions,
       }),
       onRehydrateStorage: () => (state) => {
         if (!state) return;
@@ -203,8 +239,20 @@ export const useIMChannelStore = create<IMChannelStore>()(
           // Webhook platforms are ready immediately when enabled; Feishu uses WS lifecycle
           channel.status = (channel.enabled && channel.platform !== 'feishu') ? 'connected' : 'disconnected';
         }
-        // Clear sessions (runtime only)
-        state.sessions = {};
+        // Clean up archived sessions older than 24h
+        const now = Date.now();
+        const MAX_ARCHIVE_AGE_MS = 24 * 60 * 60 * 1000;
+        if (state.archivedSessions) {
+          for (const [key, s] of Object.entries(state.archivedSessions as Record<string, IMSession>)) {
+            if (now - s.lastActiveAt > MAX_ARCHIVE_AGE_MS) {
+              delete (state.archivedSessions as Record<string, IMSession>)[key];
+            }
+          }
+        } else {
+          state.archivedSessions = {};
+        }
+        // Sessions are now persisted — only ensure the field exists (v1 migration)
+        if (!state.sessions) state.sessions = {};
       },
     }
   )

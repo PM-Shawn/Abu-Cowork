@@ -3,6 +3,7 @@ import { getCurrentWindow } from '@tauri-apps/api/window';
 import { listen } from '@tauri-apps/api/event';
 
 import { invoke } from '@tauri-apps/api/core';
+import { ErrorBoundary } from '@/components/common/ErrorBoundary';
 import Sidebar from '@/components/sidebar/Sidebar';
 import ChatView from '@/components/chat/ChatView';
 import ScheduleView from '@/components/schedule/ScheduleView';
@@ -39,6 +40,7 @@ import { imChannelRouter } from '@/core/im/channelRouter';
 import { startTraySync, stopTraySync } from '@/core/im/traySync';
 import { startInboundDispatcher, stopInboundDispatcher } from '@/core/im/inboundDispatcher';
 import { startFeishuWsManager, stopFeishuWsManager } from '@/core/im/feishuWsManager';
+import { reconcileIMSessions } from '@/core/im/sessionReconcile';
 import { initMCPStoreSync, cleanupMCPStoreSync } from '@/stores/mcpStore';
 import { initFileWatchers, stopAllWatchers } from '@/core/agent/fileWatcher';
 import { getPendingWorkspaceRequest, resolveWorkspaceRequest, subscribeToWorkspaceRequest } from '@/core/agent/agentLoop';
@@ -122,6 +124,8 @@ function App() {
     schedulerEngine.start();
     triggerEngine.start();
     imChannelRouter.start();
+    reconcileIMSessions();
+    import('@/core/memory/migrator').then(m => m.migrateIfNeeded()).catch(() => {});
     startInboundDispatcher();
     startTraySync();
     startFeishuWsManager();
@@ -191,6 +195,7 @@ function App() {
   const mac = isMacOS();
 
   return (
+    <ErrorBoundary>
     <TooltipProvider delayDuration={200}>
       {/* Title bar drag region — only needed on macOS where we use overlay title bar */}
       {mac && (
@@ -263,6 +268,7 @@ function App() {
         />
       </div>
     </TooltipProvider>
+    </ErrorBoundary>
   );
 }
 

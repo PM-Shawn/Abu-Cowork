@@ -61,7 +61,15 @@ function IMPlatformDot({ platform }: { platform: string }) {
 }
 
 export default function Sidebar() {
-  const { conversations, activeConversationId, startNewConversation, switchConversation, deleteConversation, renameConversation, clearCompletedStatus, exportConversation, importConversation } = useChatStore();
+  const conversations = useChatStore((s) => s.conversations);
+  const activeConversationId = useChatStore((s) => s.activeConversationId);
+  const startNewConversation = useChatStore((s) => s.startNewConversation);
+  const switchConversation = useChatStore((s) => s.switchConversation);
+  const deleteConversation = useChatStore((s) => s.deleteConversation);
+  const renameConversation = useChatStore((s) => s.renameConversation);
+  const clearCompletedStatus = useChatStore((s) => s.clearCompletedStatus);
+  const exportConversation = useChatStore((s) => s.exportConversation);
+  const importConversation = useChatStore((s) => s.importConversation);
   const openToolbox = useSettingsStore((s) => s.openToolbox);
   const openSystemSettings = useSettingsStore((s) => s.openSystemSettings);
   const viewMode = useSettingsStore((s) => s.viewMode);

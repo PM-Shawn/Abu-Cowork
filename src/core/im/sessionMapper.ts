@@ -5,9 +5,9 @@
  * 1. Has thread (Slack thread_ts, Feishu messageId reply) → key = "platform:chatId:threadId"
  * 2. Group chat, no thread → key = "platform:chatId:senderId:window" (per-user isolation)
  * 3. P2P/direct chat → key = "platform:chatId:window"
- * 3. Timeout (default 30 min no interaction) → create new session
- * 4. Exceeded maxRounds → create new session
+ * 4. Timeout (0 = no timeout, otherwise N minutes) → create new session
  * 5. "继续上次" / "continue" → recover previous session
+ * 6. "新对话" / "new chat" / "reset" → force new session
  */
 
 import { useIMChannelStore } from '../../stores/imChannelStore';
@@ -22,10 +22,14 @@ export interface SessionResolveResult {
   isNew: boolean;
   /** If user asked to recover previous session */
   isRecovered?: boolean;
+  /** If user explicitly requested a session reset ("新对话") */
+  isReset?: boolean;
   /** If there's a previous session that can be recovered (hint the user) */
   hasRecoverableSession?: boolean;
   /** Brief context of the recoverable session */
   recoverableContext?: string;
+  /** ConversationId of the previous session that was archived (for memory extraction) */
+  archivedConversationId?: string;
 }
 
 const CONTINUE_PATTERNS = [
@@ -37,8 +41,21 @@ const CONTINUE_PATTERNS = [
   'resume',
 ];
 
+const RESET_PATTERNS = [
+  '新对话',
+  '新话题',
+  'new chat',
+  'reset',
+];
+
 export class SessionMapper {
-  private previousSessions = new Map<string, IMSession>(); // key → last expired session
+  /**
+   * Peek at the session key for a message without any side effects.
+   * Useful for per-session queue routing.
+   */
+  peekSessionKey(message: NormalizedIMMessage): string {
+    return this.buildKey(message);
+  }
 
   /**
    * Resolve which Abu conversation this IM message belongs to.
@@ -51,9 +68,22 @@ export class SessionMapper {
     const store = useIMChannelStore.getState();
     const sessionKey = this.buildKey(message);
 
+    // Check for "new chat" reset request
+    if (this.isResetRequest(message.text)) {
+      const existing = store.sessions[sessionKey];
+      const archivedConvId = existing?.conversationId;
+      if (existing) {
+        store.archiveSession(this.buildWindowKey(message), existing);
+        store.removeSession(sessionKey);
+      }
+      const newSession = this.createSession(message, channel, capability);
+      store.upsertSession(sessionKey, newSession);
+      return { session: newSession, isNew: true, isReset: true, archivedConversationId: archivedConvId };
+    }
+
     // Check for "continue last" request
     if (this.isContinueRequest(message.text)) {
-      const prev = this.previousSessions.get(this.buildWindowKey(message));
+      const prev = store.archivedSessions[this.buildWindowKey(message)];
       if (prev) {
         // Recover previous session
         const recovered: IMSession = {
@@ -63,29 +93,30 @@ export class SessionMapper {
         };
         const context = this.getSessionContext(prev.conversationId);
         store.upsertSession(prev.key, recovered);
-        this.previousSessions.delete(this.buildWindowKey(message));
+        store.removeArchivedSession(this.buildWindowKey(message));
         return { session: recovered, isNew: false, isRecovered: true, recoverableContext: context };
       }
     }
 
     // Look for existing session
     const existing = store.sessions[sessionKey];
+    let archivedConvId: string | undefined;
 
     if (existing) {
       // Check if the underlying conversation still exists (user may have deleted it in Abu)
       const convExists = !!useChatStore.getState().conversations[existing.conversationId];
       const timeoutMs = channel.sessionTimeoutMinutes * 60 * 1000;
-      const isExpired = Date.now() - existing.lastActiveAt > timeoutMs;
-      const isMaxRounds = existing.messageCount >= channel.maxRoundsPerSession;
+      const isExpired = timeoutMs > 0 && (Date.now() - existing.lastActiveAt > timeoutMs);
 
-      if (convExists && !isExpired && !isMaxRounds) {
+      if (convExists && !isExpired) {
         // Session still valid
         store.incrementSessionRound(sessionKey);
         return { session: { ...existing, messageCount: existing.messageCount + 1 }, isNew: false };
       }
 
-      // Session expired or max rounds — archive for potential recovery
-      this.previousSessions.set(this.buildWindowKey(message), existing);
+      // Session expired or conversation deleted — archive for potential recovery
+      archivedConvId = existing.conversationId;
+      store.archiveSession(this.buildWindowKey(message), existing);
       store.removeSession(sessionKey);
     }
 
@@ -95,7 +126,7 @@ export class SessionMapper {
 
     // Check if there's a recoverable previous session to hint the user
     const windowKey = this.buildWindowKey(message);
-    const prev = this.previousSessions.get(windowKey);
+    const prev = store.archivedSessions[windowKey];
     if (prev) {
       const context = this.getSessionContext(prev.conversationId);
       return {
@@ -103,10 +134,11 @@ export class SessionMapper {
         isNew: true,
         hasRecoverableSession: true,
         recoverableContext: context,
+        archivedConversationId: archivedConvId,
       };
     }
 
-    return { session: newSession, isNew: true };
+    return { session: newSession, isNew: true, archivedConversationId: archivedConvId };
   }
 
   /**
@@ -219,6 +251,11 @@ export class SessionMapper {
     return CONTINUE_PATTERNS.some((p) => lower === p || lower.startsWith(p));
   }
 
+  private isResetRequest(text: string): boolean {
+    const lower = text.toLowerCase().trim();
+    return RESET_PATTERNS.some((p) => lower === p || lower.startsWith(p));
+  }
+
   /**
    * Clean up expired sessions and archive them for recovery.
    */
@@ -228,21 +265,21 @@ export class SessionMapper {
 
     for (const [key, session] of Object.entries(store.sessions)) {
       const channel = store.channels[session.channelId];
-      const timeoutMs = (channel?.sessionTimeoutMinutes ?? 30) * 60 * 1000;
+      const timeoutMs = (channel?.sessionTimeoutMinutes ?? 0) * 60 * 1000;
 
-      if (now - session.lastActiveAt > timeoutMs) {
-        // Archive for "continue last" recovery — use the session's own key
-        // which already includes senderId for group chats
-        this.previousSessions.set(session.key, session);
+      // timeout 0 = no timeout, skip expiry for that session
+      if (timeoutMs > 0 && now - session.lastActiveAt > timeoutMs) {
+        // Archive for "continue last" recovery
+        store.archiveSession(session.key, session);
         store.removeSession(key);
       }
     }
 
     // Clean up very old archived sessions (>24h)
     const maxArchiveAge = 24 * 60 * 60 * 1000;
-    for (const [key, session] of this.previousSessions) {
+    for (const [key, session] of Object.entries(store.archivedSessions)) {
       if (now - session.lastActiveAt > maxArchiveAge) {
-        this.previousSessions.delete(key);
+        store.removeArchivedSession(key);
       }
     }
   }

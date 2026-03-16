@@ -25,6 +25,34 @@ export interface TranslationDict {
     search: string;
     loading: string;
     comingSoon: string;
+    retry: string;
+  };
+
+  // Error Boundary
+  errorBoundary: {
+    renderError: string;
+    unknownError: string;
+    appError: string;
+    appErrorHint: string;
+    refresh: string;
+    messageError: string;
+  };
+
+  // Memory UI
+  memory: {
+    categoryPreference: string;
+    categoryProject: string;
+    categoryFact: string;
+    categoryDecision: string;
+    categoryAction: string;
+    entryCount: string;
+    sourceAutoFlush: string;
+    sourceAgentExplicit: string;
+    sourceUserManual: string;
+    recallCount: string;
+    deleteTitle: string;
+    legacyHint: string;
+    emptyHint: string;
   };
 
   // Sidebar
@@ -964,6 +992,14 @@ export interface TranslationDict {
     infoBarRounds: string;
     infoBarEndSession: string;
     infoBarEndConfirm: string;
+    sessionResetConfirm: string;
+    sessionRecovered: string;
+    sessionExpiredHint: string;
+    sessionQueueFull: string;
+    timeoutHint: string;
+    groupConnection: string;
+    groupBehavior: string;
+    groupAccess: string;
   };
 
   // Window Close Dialog

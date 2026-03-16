@@ -16,7 +16,7 @@ import { getCurrentLoopContext, requestWorkspace } from '../agent/agentLoop';
 import { runSubagentLoop, extractParentConversationSummary } from '../agent/subagentLoop';
 import type { SubagentProgressEvent } from '../agent/subagentLoop';
 import { createSubagentController } from '../agent/subagentAbort';
-import { appendAgentMemory, saveAgentMemory, clearAgentMemory, saveProjectMemory, appendProjectMemory, clearProjectMemory } from '../agent/agentMemory';
+import { clearAgentMemory, clearProjectMemory } from '../agent/agentMemory';
 import { appendTaskLog, type TaskCategory } from '../agent/taskLog';
 import { searchMCPRegistry, installMCPServer, getRegistryEntry } from '../agent/mcpDiscovery';
 import { addWatchRule, removeWatchRule, toggleWatchRule, listWatchRules, type FileWatchRule } from '../agent/fileWatcher';
@@ -1453,77 +1453,92 @@ const delegateToAgentTool: ToolDefinition = {
  */
 const updateMemoryTool: ToolDefinition = {
   name: 'update_memory',
-  description: '管理持久记忆（AI 积累的知识）。scope="user" 保存个人偏好（跨项目），scope="project" 保存项目知识（仅当前工作区）。注意：项目规则（.abu/ABU.md）由用户手动维护，不要用此工具修改规则。',
+  description: '保存持久记忆。每条记忆需指定 category 分类。scope="user" 保存个人偏好（跨项目），scope="project" 保存项目知识（仅当前工作区）。注意：项目规则（.abu/ABU.md）由用户手动维护，不要用此工具修改规则。',
   inputSchema: {
     type: 'object',
     properties: {
-      agent_name: { type: 'string', description: '要更新记忆的代理名称' },
-      action: {
+      agent_name: { type: 'string', description: '代理名称' },
+      content: { type: 'string', description: '记忆内容（必填）' },
+      summary: { type: 'string', description: '一句话摘要' },
+      category: {
         type: 'string',
-        description: '操作类型: append(追加) / rewrite(重写整理) / clear(清空)',
-        enum: ['append', 'rewrite', 'clear'],
+        description: '分类: user_preference(用户偏好) / project_knowledge(项目知识) / conversation_fact(对话事实) / decision(决策) / action_item(待办)',
+        enum: ['user_preference', 'project_knowledge', 'conversation_fact', 'decision', 'action_item'],
       },
-      content: { type: 'string', description: '记忆内容（append 和 rewrite 时必填）' },
+      keywords: {
+        type: 'array',
+        items: { type: 'string' },
+        description: '关键词列表，用于检索（2-5个）',
+      },
       scope: {
         type: 'string',
-        description: '记忆范围: user(个人级，跨项目永久保持) / project(项目级，仅当前工作区)',
+        description: '记忆范围: user(个人级) / project(项目级)',
         enum: ['user', 'project'],
       },
+      action: {
+        type: 'string',
+        description: '操作类型: append(添加，默认) / clear(清空所有记忆)',
+        enum: ['append', 'clear'],
+      },
     },
-    required: ['agent_name'],
+    required: ['agent_name', 'content'],
   },
   execute: async (input, context) => {
-    // Normalize agent name: AI may use display name (阿布) instead of internal id (abu)
-    const AGENT_NAME_ALIASES: Record<string, string> = { '阿布': 'abu' };
-    const rawName = input.agent_name as string;
-    const agentName = AGENT_NAME_ALIASES[rawName] || rawName;
     const action = (input.action as string) || 'append';
     const content = (input.content as string) || '';
-    const scope = (input.scope as string) || 'user';
+    const scope = ((input.scope as string) || 'user') as 'user' | 'project';
+    const summary = (input.summary as string) || content.slice(0, 80);
+    const category = ((input.category as string) || 'conversation_fact') as import('../memory/types').MemoryCategory;
+    const keywords = (input.keywords as string[]) || [];
 
     try {
-      // Project-level memory
-      if (scope === 'project') {
-        const workspacePath = context?.workspacePath ?? useWorkspaceStore.getState().currentPath;
-        if (!workspacePath) {
-          return '错误：当前没有设置工作区，无法使用项目级记忆。请先设置工作区路径。';
-        }
-        switch (action) {
-          case 'rewrite':
-            if (!content) return '错误：rewrite 操作需要提供 content。';
-            await saveProjectMemory(workspacePath, content);
-            return `已重写项目记忆（${workspacePath}）。`;
-          case 'clear':
-            await clearProjectMemory(workspacePath);
-            return `已清空项目记忆（${workspacePath}）。`;
-          case 'append':
-          default:
-            if (!content) return '错误：append 操作需要提供 content。';
-            await appendProjectMemory(workspacePath, content);
-            return `已追加项目记忆（${workspacePath}）。`;
-        }
+      const workspacePath = context?.workspacePath ?? useWorkspaceStore.getState().currentPath;
+
+      if (scope === 'project' && !workspacePath) {
+        return '错误：当前没有设置工作区，无法使用项目级记忆。请先设置工作区路径。';
       }
 
-      // User-level memory (original logic)
-      switch (action) {
-        case 'rewrite':
-          if (!content) return '错误：rewrite 操作需要提供 content。';
-          await saveAgentMemory(agentName, content);
-          return `已重写 ${agentName} 的记忆。`;
-        case 'clear':
-          await clearAgentMemory(agentName);
-          return `已清空 ${agentName} 的记忆。`;
-        case 'append':
-        default:
-          if (!content) return '错误：append 操作需要提供 content。';
-          await appendAgentMemory(agentName, content);
-          return `已追加 ${agentName} 的记忆。`;
+      if (action === 'clear') {
+        // Clear all entries for this scope — use legacy functions as fallback
+        if (scope === 'project' && workspacePath) {
+          await clearProjectMemory(workspacePath);
+        } else {
+          await clearAgentMemory('abu');
+        }
+        return `已清空${scope === 'project' ? '项目' : '个人'}记忆。`;
       }
+
+      // Add structured memory entry
+      if (!content) return '错误：content 不能为空。';
+
+      const { getMemoryBackend } = await import('../memory/router');
+      const backend = getMemoryBackend();
+      const entry = await backend.add({
+        category,
+        summary,
+        content,
+        keywords: keywords.length > 0 ? keywords : autoExtractKeywords(content),
+        sourceType: 'agent_explicit',
+        scope,
+        projectPath: scope === 'project' ? workspacePath ?? undefined : undefined,
+      });
+
+      return `已保存记忆 [${category}]: ${entry.summary}`;
     } catch (err) {
       return `Error updating memory: ${err instanceof Error ? err.message : String(err)}`;
     }
   },
 };
+
+/** Auto-extract keywords from content when none provided */
+function autoExtractKeywords(text: string): string[] {
+  return text
+    .toLowerCase()
+    .split(/[\s,;.!?，。！？、；：""''（）[\]{}:：\-\n]+/)
+    .filter(w => w.length >= 2 && w.length <= 20 && !/^\d+$/.test(w))
+    .filter((w, i, arr) => arr.indexOf(w) === i) // dedupe
+    .slice(0, 10);
+}
 
 /**
  * todo_write tool — create or update a structured task plan

@@ -14,6 +14,32 @@ const enUS: TranslationDict = {
     search: 'Search',
     loading: 'Loading...',
     comingSoon: 'Coming Soon',
+    retry: 'Retry',
+  },
+
+  errorBoundary: {
+    renderError: 'Render Error',
+    unknownError: 'Unknown error',
+    appError: 'Something went wrong',
+    appErrorHint: 'Please refresh to try again',
+    refresh: 'Refresh',
+    messageError: 'Failed to render this message',
+  },
+
+  memory: {
+    categoryPreference: 'Preference',
+    categoryProject: 'Project',
+    categoryFact: 'Fact',
+    categoryDecision: 'Decision',
+    categoryAction: 'Action',
+    entryCount: '{count} memories',
+    sourceAutoFlush: 'Auto-extracted',
+    sourceAgentExplicit: 'AI recorded',
+    sourceUserManual: 'Manual',
+    recallCount: 'Recalled {count} times',
+    deleteTitle: 'Delete Memory',
+    legacyHint: 'Legacy memory (will be auto-migrated on next conversation)',
+    emptyHint: 'AI will automatically accumulate memories during conversations',
   },
 
   sidebar: {
@@ -1008,6 +1034,14 @@ const enUS: TranslationDict = {
     infoBarRounds: 'rounds',
     infoBarEndSession: 'End Session',
     infoBarEndConfirm: 'End this IM session?',
+    sessionResetConfirm: 'OK, started a new conversation.',
+    sessionRecovered: 'Restored previous context ({context}). Please continue.',
+    sessionExpiredHint: 'Previous topic ended. Reply "continue" to restore context, or describe a new question.',
+    sessionQueueFull: 'Too many messages. Please wait for the current one to finish.',
+    timeoutHint: '0 = no timeout',
+    groupConnection: 'Connection',
+    groupBehavior: 'Session Behavior',
+    groupAccess: 'Access Control',
   },
 
   windowClose: {

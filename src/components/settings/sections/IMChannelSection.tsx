@@ -245,7 +245,7 @@ export default function IMChannelSection() {
             {isExpanded && (
               <div className="border-t border-[#e8e4dd] px-5 py-5 space-y-5">
                 {/* Group 1: Connection */}
-                <FormGroup title="连接配置">
+                <FormGroup title={t.imChannel.groupConnection}>
                   <FormRow label={t.imChannel.channelName}>
                     <FormInput
                       value={channel.name}
@@ -273,7 +273,7 @@ export default function IMChannelSection() {
                 <div className="border-t border-[#f0ede8]" />
 
                 {/* Group 2: Behavior */}
-                <FormGroup title="会话行为">
+                <FormGroup title={t.imChannel.groupBehavior}>
                   <FormRow label={t.imChannel.responseMode} hint={<>{t.imChannel.responseMentionOnly}：{t.imChannel.responseMentionOnlyHint}<br/>{t.imChannel.responseAllMessages}：{t.imChannel.responseAllMessagesHint}</>}>
                     <Select
                       value={channel.responseMode ?? 'mention_only'}
@@ -291,20 +291,12 @@ export default function IMChannelSection() {
                       onChange={(v) => updateChannel(channel.id, { capability: v as IMCapabilityLevel })}
                     />
                   </FormRow>
-                  <FormRow label={`${t.imChannel.sessionTimeout}（${t.imChannel.sessionTimeoutMinutes}）`}>
+                  <FormRow label={`${t.imChannel.sessionTimeout}（${t.imChannel.sessionTimeoutMinutes}）`} hint={t.imChannel.timeoutHint}>
                     <FormNumber
                       value={channel.sessionTimeoutMinutes}
                       onChange={(v) => updateChannel(channel.id, { sessionTimeoutMinutes: v })}
-                      min={1}
+                      min={0}
                       max={1440}
-                    />
-                  </FormRow>
-                  <FormRow label={t.imChannel.maxRounds}>
-                    <FormNumber
-                      value={channel.maxRoundsPerSession}
-                      onChange={(v) => updateChannel(channel.id, { maxRoundsPerSession: v })}
-                      min={1}
-                      max={500}
                     />
                   </FormRow>
                 </FormGroup>
@@ -312,7 +304,7 @@ export default function IMChannelSection() {
                 <div className="border-t border-[#f0ede8]" />
 
                 {/* Group 3: Access */}
-                <FormGroup title="访问控制">
+                <FormGroup title={t.imChannel.groupAccess}>
                   <TagInput
                     label={t.imChannel.allowedUsers}
                     hint={t.imChannel.allowedUsersHint}

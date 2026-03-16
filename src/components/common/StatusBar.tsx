@@ -31,10 +31,13 @@ function useElapsedTime(startTime: number | null): number {
 }
 
 export default function StatusBar() {
-  const { agentStatus, currentTool, thinkingStartTime, currentUsage } = useChatStore();
-  const store = useSettingsStore();
-  const { provider, model } = store;
-  const effectiveModel = getEffectiveModel(store);
+  const agentStatus = useChatStore((s) => s.agentStatus);
+  const currentTool = useChatStore((s) => s.currentTool);
+  const thinkingStartTime = useChatStore((s) => s.thinkingStartTime);
+  const currentUsage = useChatStore((s) => s.currentUsage);
+  const provider = useSettingsStore((s) => s.provider);
+  const model = useSettingsStore((s) => s.model);
+  const effectiveModel = getEffectiveModel(useSettingsStore.getState());
   const modelLabel = AVAILABLE_MODELS[provider]?.find((m) => m.id === model)?.label ?? effectiveModel;
   const { t } = useI18n();
 

@@ -1,42 +1,73 @@
-import { useState, useEffect, useRef } from 'react';
-import { useI18n } from '@/i18n';
-import { HelpCircle } from 'lucide-react';
-import {
-  loadAgentMemory, saveAgentMemory, clearAgentMemory,
-} from '@/core/agent/agentMemory';
+import { useState, useEffect, useCallback, useRef } from 'react';
+import { useI18n, format } from '@/i18n';
+import { HelpCircle, Trash2, ChevronDown, ChevronUp } from 'lucide-react';
+import { getMemoryBackend } from '@/core/memory/router';
+import { loadAgentMemory } from '@/core/agent/agentMemory';
+import type { MemoryEntry, MemoryCategory } from '@/core/memory/types';
 import ConfirmDialog from '@/components/common/ConfirmDialog';
 
-const MAIN_AGENT_NAME = 'abu';
+function getCategoryLabel(category: MemoryCategory, t: ReturnType<typeof useI18n>['t']): string {
+  const map: Record<MemoryCategory, string> = {
+    user_preference: t.memory.categoryPreference,
+    project_knowledge: t.memory.categoryProject,
+    conversation_fact: t.memory.categoryFact,
+    decision: t.memory.categoryDecision,
+    action_item: t.memory.categoryAction,
+  };
+  return map[category];
+}
+
+const CATEGORY_COLORS: Record<MemoryCategory, string> = {
+  user_preference: 'bg-orange-100 text-orange-700',
+  project_knowledge: 'bg-purple-100 text-purple-700',
+  conversation_fact: 'bg-blue-100 text-blue-700',
+  decision: 'bg-green-100 text-green-700',
+  action_item: 'bg-yellow-100 text-yellow-700',
+};
+
+function formatAge(timestamp: number): string {
+  const diffMs = Date.now() - timestamp;
+  const minutes = Math.floor(diffMs / 60000);
+  if (minutes < 60) return `${minutes}分钟前`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}小时前`;
+  const days = Math.floor(hours / 24);
+  if (days < 30) return `${days}天前`;
+  return `${Math.floor(days / 30)}个月前`;
+}
 
 export default function PersonalMemorySection() {
   const { t } = useI18n();
-  const [content, setContent] = useState('');
+  const [entries, setEntries] = useState<MemoryEntry[]>([]);
+  const [legacyContent, setLegacyContent] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
-  const [saving, setSaving] = useState(false);
-  const [showClearConfirm, setShowClearConfirm] = useState(false);
-  const [dirty, setDirty] = useState(false);
+  const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<MemoryEntry | null>(null);
   const [showTip, setShowTip] = useState(false);
   const tipRef = useRef<HTMLDivElement>(null);
 
-  useEffect(() => {
-    let cancelled = false;
-    async function load() {
-      setLoading(true);
-      try {
-        const text = await loadAgentMemory(MAIN_AGENT_NAME);
-        if (!cancelled) {
-          setContent(text);
-          setDirty(false);
-        }
-      } catch {
-        if (!cancelled) setContent('');
-      } finally {
-        if (!cancelled) setLoading(false);
+  const loadEntries = useCallback(async () => {
+    setLoading(true);
+    try {
+      const backend = getMemoryBackend();
+      const items = await backend.list({ scope: 'user' });
+      if (items.length > 0) {
+        setEntries(items.sort((a, b) => b.updatedAt - a.updatedAt));
+        setLegacyContent(null);
+      } else {
+        // Fallback: show legacy memory.md content if structured entries are empty
+        const legacy = await loadAgentMemory('abu');
+        setLegacyContent(legacy.trim() || null);
+        setEntries([]);
       }
+    } catch {
+      setEntries([]);
+    } finally {
+      setLoading(false);
     }
-    load();
-    return () => { cancelled = true; };
   }, []);
+
+  useEffect(() => { loadEntries(); }, [loadEntries]);
 
   // Close tip on click outside
   useEffect(() => {
@@ -50,39 +81,28 @@ export default function PersonalMemorySection() {
     return () => document.removeEventListener('mousedown', handleClick);
   }, [showTip]);
 
-  const handleSave = async () => {
-    setSaving(true);
+  const handleDelete = async () => {
+    if (!deleteTarget) return;
     try {
-      await saveAgentMemory(MAIN_AGENT_NAME, content);
-      setDirty(false);
+      const backend = getMemoryBackend();
+      await backend.remove(deleteTarget.id);
+      setDeleteTarget(null);
+      await loadEntries();
     } catch (err) {
-      console.error('Failed to save personal memory:', err);
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  const handleClear = async () => {
-    try {
-      await clearAgentMemory(MAIN_AGENT_NAME);
-      setContent('');
-      setDirty(false);
-      setShowClearConfirm(false);
-    } catch (err) {
-      console.error('Failed to clear personal memory:', err);
+      console.error('Failed to delete memory:', err);
     }
   };
 
   return (
     <>
       <ConfirmDialog
-        open={showClearConfirm}
-        title={t.panel.memoryClearTitle}
-        message={t.sidebar.personalMemoryClearMessage}
-        confirmText={t.panel.memoryClearConfirm}
+        open={!!deleteTarget}
+        title={t.memory.deleteTitle}
+        message={deleteTarget?.summary ?? ''}
+        confirmText={t.common.delete}
         cancelText={t.common.cancel}
-        onConfirm={handleClear}
-        onCancel={() => setShowClearConfirm(false)}
+        onConfirm={handleDelete}
+        onCancel={() => setDeleteTarget(null)}
         variant="danger"
       />
 
@@ -122,35 +142,87 @@ export default function PersonalMemorySection() {
           <div className="flex items-center justify-center py-16">
             <div className="w-5 h-5 border-2 border-[#d97757] border-t-transparent rounded-full animate-spin" />
           </div>
-        ) : (
-          <textarea
-            value={content}
-            onChange={(e) => { setContent(e.target.value); setDirty(true); }}
-            placeholder={t.sidebar.personalMemoryPlaceholder}
-            className="w-full min-h-[320px] px-3 py-3 rounded-lg border border-[#e8e4dd] text-[13px] text-[#29261b] bg-white focus:outline-none focus:border-[#d97757] transition-colors resize-none font-mono leading-relaxed"
-          />
-        )}
+        ) : entries.length > 0 ? (
+          <div className="space-y-2">
+            <div className="text-[12px] text-[#b0ada4] mb-2">
+              {format(t.memory.entryCount, { count: String(entries.length) })}
+            </div>
+            {entries.map((entry) => (
+              <div
+                key={entry.id}
+                className="border border-[#e8e4dd] rounded-lg bg-white overflow-hidden"
+              >
+                <div
+                  className="flex items-center gap-2 px-3 py-2.5 cursor-pointer hover:bg-[#faf9f7] transition-colors"
+                  onClick={() => setExpandedId(expandedId === entry.id ? null : entry.id)}
+                >
+                  <span className={`text-[10px] font-medium px-1.5 py-0.5 rounded ${CATEGORY_COLORS[entry.category]}`}>
+                    {getCategoryLabel(entry.category, t)}
+                  </span>
+                  <span className="text-[13px] text-[#29261b] flex-1 truncate">
+                    {entry.summary}
+                  </span>
+                  <span className="text-[11px] text-[#b0ada4] whitespace-nowrap">
+                    {formatAge(entry.updatedAt)}
+                  </span>
+                  {expandedId === entry.id ? (
+                    <ChevronUp className="h-3.5 w-3.5 text-[#b0ada4]" />
+                  ) : (
+                    <ChevronDown className="h-3.5 w-3.5 text-[#b0ada4]" />
+                  )}
+                </div>
 
-        <div className="flex items-center gap-3">
-          {content.trim() && (
-            <button
-              onClick={() => setShowClearConfirm(true)}
-              className="px-4 py-2 rounded-lg text-[13px] font-medium text-red-500 hover:bg-red-50 transition-colors"
-            >
-              {t.panel.memoryClear}
-            </button>
-          )}
-          <div className="flex-1" />
-          {dirty && (
-            <button
-              onClick={handleSave}
-              disabled={saving}
-              className="px-5 py-2 rounded-lg text-[13px] font-medium bg-[#d97757] text-white hover:bg-[#c4684a] transition-colors disabled:opacity-50"
-            >
-              {saving ? t.panel.instructionsSaving : t.common.save}
-            </button>
-          )}
-        </div>
+                {expandedId === entry.id && (
+                  <div className="px-3 pb-3 border-t border-[#f0ede8]">
+                    <p className="text-[12px] text-[#656358] leading-relaxed mt-2 whitespace-pre-wrap">
+                      {entry.content}
+                    </p>
+                    {entry.keywords.length > 0 && (
+                      <div className="flex flex-wrap gap-1 mt-2">
+                        {entry.keywords.map((kw, i) => (
+                          <span key={i} className="text-[10px] px-1.5 py-0.5 rounded bg-[#f5f3ee] text-[#888579]">
+                            {kw}
+                          </span>
+                        ))}
+                      </div>
+                    )}
+                    <div className="flex items-center justify-between mt-2 pt-2 border-t border-[#f5f3ee]">
+                      <span className="text-[10px] text-[#b0ada4]">
+                        {entry.sourceType === 'auto_flush' ? t.memory.sourceAutoFlush : entry.sourceType === 'agent_explicit' ? t.memory.sourceAgentExplicit : t.memory.sourceUserManual}
+                        {' · '}
+                        {format(t.memory.recallCount, { count: String(entry.accessCount) })}
+                      </span>
+                      <button
+                        onClick={(e) => { e.stopPropagation(); setDeleteTarget(entry); }}
+                        className="p-1 rounded text-[#b0ada4] hover:text-red-500 hover:bg-red-50 transition-colors"
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        ) : legacyContent ? (
+          <div className="space-y-2">
+            <div className="text-[12px] text-[#b0ada4]">
+              {t.memory.legacyHint}
+            </div>
+            <div className="px-3 py-3 rounded-lg border border-[#e8e4dd] text-[13px] text-[#656358] bg-white font-mono leading-relaxed whitespace-pre-wrap">
+              {legacyContent}
+            </div>
+          </div>
+        ) : (
+          <div className="flex flex-col items-center justify-center py-12 text-center">
+            <p className="text-[13px] text-[#b0ada4]">
+              {t.panel.memoryEmpty}
+            </p>
+            <p className="text-[12px] text-[#ccc9c0] mt-1">
+              {t.memory.emptyHint}
+            </p>
+          </div>
+        )}
       </div>
     </>
   );

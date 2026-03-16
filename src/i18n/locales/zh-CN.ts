@@ -14,6 +14,32 @@ const zhCN: TranslationDict = {
     search: '搜索',
     loading: '加载中...',
     comingSoon: '即将上线',
+    retry: '重试',
+  },
+
+  errorBoundary: {
+    renderError: '渲染出错了',
+    unknownError: '未知错误',
+    appError: '应用遇到了问题',
+    appErrorHint: '请刷新页面重试',
+    refresh: '刷新',
+    messageError: '此消息渲染出错',
+  },
+
+  memory: {
+    categoryPreference: '偏好',
+    categoryProject: '项目',
+    categoryFact: '事实',
+    categoryDecision: '决策',
+    categoryAction: '待办',
+    entryCount: '{count} 条记忆',
+    sourceAutoFlush: '自动提取',
+    sourceAgentExplicit: 'AI 主动记忆',
+    sourceUserManual: '手动添加',
+    recallCount: '被召回 {count} 次',
+    deleteTitle: '删除记忆',
+    legacyHint: '旧版记忆（将在下次对话时自动迁移为结构化格式）',
+    emptyHint: '对话时 AI 会自动积累记忆，或你可以让 AI "记住这个"',
   },
 
   sidebar: {
@@ -1009,6 +1035,14 @@ const zhCN: TranslationDict = {
     infoBarRounds: '轮对话',
     infoBarEndSession: '结束会话',
     infoBarEndConfirm: '确定结束当前 IM 会话吗？',
+    sessionResetConfirm: '好的，已开始新对话。',
+    sessionRecovered: '已恢复上次对话上下文（{context}）。请继续。',
+    sessionExpiredHint: '上一个话题已结束。回复"继续上次"可恢复上下文，或直接描述新的问题。',
+    sessionQueueFull: '消息过多，请等待当前处理完成后再发送。',
+    timeoutHint: '0 = 不超时',
+    groupConnection: '连接配置',
+    groupBehavior: '会话行为',
+    groupAccess: '访问控制',
   },
 
   windowClose: {

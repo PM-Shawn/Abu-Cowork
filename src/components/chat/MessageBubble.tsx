@@ -221,7 +221,6 @@ export default function MessageBubble({
   const isUser = message.role === 'user';
   const [isEditing, setIsEditing] = useState(false);
   const activeConv = useActiveConversation();
-  const { deleteMessage, deleteMessagesFrom, deleteLoopMessages } = useChatStore();
   const isConvRunning = activeConv?.status === 'running';
 
   const textContent = getTextContent(message.content);
@@ -238,7 +237,7 @@ export default function MessageBubble({
     const originalImages = getImageBlocks(message.content);
     setIsEditing(false);
     // Delete this message and all subsequent messages, then runAgentLoop creates a fresh one
-    deleteMessagesFrom(convId, message.id);
+    useChatStore.getState().deleteMessagesFrom(convId, message.id);
     // Regenerate response, passing original images if any
     const imageAttachments = originalImages.map((img, i) => ({
       id: `edit-${Date.now()}-${i}`,
@@ -252,18 +251,18 @@ export default function MessageBubble({
     if (!convId || !activeConv) return;
     if (isUser && message.loopId) {
       // For user messages, delete user + all assistant messages in this loop
-      deleteLoopMessages(convId, message.loopId);
+      useChatStore.getState().deleteLoopMessages(convId, message.loopId);
     } else if (!isUser && message.loopId) {
       // For assistant messages, only delete assistant messages in this loop (keep user message)
       const assistantIdsInLoop = activeConv.messages
         .filter((m) => m.loopId === message.loopId && m.role === 'assistant')
         .map((m) => m.id);
       for (const id of assistantIdsInLoop) {
-        deleteMessage(convId, id);
+        useChatStore.getState().deleteMessage(convId, id);
       }
     } else {
       // No loopId, just delete this one message
-      deleteMessage(convId, message.id);
+      useChatStore.getState().deleteMessage(convId, message.id);
     }
   };
 
@@ -296,7 +295,7 @@ export default function MessageBubble({
 
     if (userMsgToRegenerate) {
       // Delete from user message onwards and regenerate
-      deleteMessagesFrom(convId, userMsgToRegenerate.id);
+      useChatStore.getState().deleteMessagesFrom(convId, userMsgToRegenerate.id);
       const userContent = getTextContent(userMsgToRegenerate.content);
       // Preserve image blocks from original user message
       const originalImages = getImageBlocks(userMsgToRegenerate.content);

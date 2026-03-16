@@ -7,6 +7,7 @@
  *
  * Each entry has id, category, summary, content, keywords, timestamps.
  * Search uses keyword matching + time decay scoring.
+ * All write operations use a per-path mutex to prevent concurrent write corruption.
  */
 
 import { readTextFile, writeTextFile } from '@tauri-apps/plugin-fs';
@@ -20,7 +21,25 @@ function generateId(): string {
   return Date.now().toString(36) + Math.random().toString(36).substring(2, 8);
 }
 
-// Cache homeDir
+// ── Write mutex: serialize all writes per file path ──
+
+const writeLocks = new Map<string, Promise<void>>();
+
+async function withWriteLock<T>(path: string, fn: () => Promise<T>): Promise<T> {
+  const prev = writeLocks.get(path) ?? Promise.resolve();
+  let releaseLock: () => void;
+  const next = new Promise<void>((resolve) => { releaseLock = resolve; });
+  writeLocks.set(path, next);
+  await prev;
+  try {
+    return await fn();
+  } finally {
+    releaseLock!();
+  }
+}
+
+// ── Path helpers ──
+
 let cachedHomeDir: string | null = null;
 async function getCachedHomeDir(): Promise<string> {
   if (!cachedHomeDir) cachedHomeDir = await homeDir();
@@ -43,11 +62,14 @@ async function getMemoryPath(scope: 'user' | 'project', projectPath?: string): P
   return getUserMemoryPath();
 }
 
+// ── File I/O ──
+
 async function loadEntries(scope: 'user' | 'project', projectPath?: string): Promise<MemoryEntry[]> {
   try {
     const path = await getMemoryPath(scope, projectPath);
     const raw = await readTextFile(path);
-    return JSON.parse(raw) as MemoryEntry[];
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : [];
   } catch {
     return [];
   }
@@ -59,7 +81,9 @@ async function saveEntries(entries: MemoryEntry[], scope: 'user' | 'project', pr
   await writeTextFile(path, JSON.stringify(entries, null, 2));
 }
 
-/** Simple tokenizer: split on CJK chars, whitespace, and punctuation */
+// ── Search helpers ──
+
+/** Simple tokenizer: split on whitespace and CJK/ASCII punctuation */
 function tokenize(text: string): string[] {
   return text
     .toLowerCase()
@@ -76,11 +100,8 @@ function scoreEntry(queryTokens: string[], entry: MemoryEntry): number {
   let score = 0;
 
   for (const token of queryTokens) {
-    // Keyword exact match (highest weight)
     if (keywordSet.has(token)) score += 3;
-    // Summary contains token
     if (summaryLower.includes(token)) score += 2;
-    // Content contains token
     if (contentLower.includes(token)) score += 1;
   }
 
@@ -94,32 +115,36 @@ function scoreEntry(queryTokens: string[], entry: MemoryEntry): number {
   return score * timeDecay + accessBoost;
 }
 
+// ── Backend implementation ──
+
 export class LocalMemoryBackend implements MemoryBackend {
   async add(data: Omit<MemoryEntry, 'id' | 'createdAt' | 'updatedAt' | 'accessCount'>): Promise<MemoryEntry> {
-    const entries = await loadEntries(data.scope, data.projectPath);
-    const now = Date.now();
-    const entry: MemoryEntry = {
-      ...data,
-      id: generateId(),
-      createdAt: now,
-      updatedAt: now,
-      accessCount: 0,
-    };
+    const path = await getMemoryPath(data.scope, data.projectPath);
+    return withWriteLock(path, async () => {
+      const entries = await loadEntries(data.scope, data.projectPath);
+      const now = Date.now();
+      const entry: MemoryEntry = {
+        ...data,
+        id: generateId(),
+        createdAt: now,
+        updatedAt: now,
+        accessCount: 0,
+      };
 
-    entries.push(entry);
+      entries.push(entry);
 
-    // Enforce max entries: remove oldest with lowest access count
-    if (entries.length > MAX_ENTRIES) {
-      entries.sort((a, b) => {
-        // Keep high-access entries; among equal access, keep newer
-        const scoreDiff = b.accessCount - a.accessCount;
-        return scoreDiff !== 0 ? scoreDiff : b.updatedAt - a.updatedAt;
-      });
-      entries.length = MAX_ENTRIES;
-    }
+      // Enforce max entries: remove oldest with lowest access count
+      if (entries.length > MAX_ENTRIES) {
+        entries.sort((a, b) => {
+          const scoreDiff = b.accessCount - a.accessCount;
+          return scoreDiff !== 0 ? scoreDiff : b.updatedAt - a.updatedAt;
+        });
+        entries.length = MAX_ENTRIES;
+      }
 
-    await saveEntries(entries, data.scope, data.projectPath);
-    return entry;
+      await saveEntries(entries, data.scope, data.projectPath);
+      return entry;
+    });
   }
 
   async search(query: string, options?: SearchOptions): Promise<MemoryEntry[]> {
@@ -139,24 +164,27 @@ export class LocalMemoryBackend implements MemoryBackend {
     return scored.map(s => s.entry);
   }
 
-  async update(id: string, data: Partial<Pick<MemoryEntry, 'summary' | 'content' | 'keywords' | 'category'>>): Promise<void> {
-    // Try user scope first, then all project scopes
-    const userEntries = await loadEntries('user');
-    const idx = userEntries.findIndex(e => e.id === id);
-    if (idx >= 0) {
-      Object.assign(userEntries[idx], data, { updatedAt: Date.now() });
-      await saveEntries(userEntries, 'user');
-      return;
-    }
-    // Entry not found in user scope — caller may need to specify project scope
+  async update(id: string, data: Partial<Pick<MemoryEntry, 'summary' | 'content' | 'keywords' | 'category'>>, scope: 'user' | 'project' = 'user', projectPath?: string): Promise<void> {
+    const path = await getMemoryPath(scope, projectPath);
+    return withWriteLock(path, async () => {
+      const entries = await loadEntries(scope, projectPath);
+      const idx = entries.findIndex(e => e.id === id);
+      if (idx >= 0) {
+        Object.assign(entries[idx], data, { updatedAt: Date.now() });
+        await saveEntries(entries, scope, projectPath);
+      }
+    });
   }
 
-  async remove(id: string): Promise<void> {
-    const userEntries = await loadEntries('user');
-    const filtered = userEntries.filter(e => e.id !== id);
-    if (filtered.length < userEntries.length) {
-      await saveEntries(filtered, 'user');
-    }
+  async remove(id: string, scope: 'user' | 'project' = 'user', projectPath?: string): Promise<void> {
+    const path = await getMemoryPath(scope, projectPath);
+    return withWriteLock(path, async () => {
+      const entries = await loadEntries(scope, projectPath);
+      const filtered = entries.filter(e => e.id !== id);
+      if (filtered.length < entries.length) {
+        await saveEntries(filtered, scope, projectPath);
+      }
+    });
   }
 
   async list(options?: ListOptions): Promise<MemoryEntry[]> {
@@ -168,12 +196,15 @@ export class LocalMemoryBackend implements MemoryBackend {
     return entries;
   }
 
-  async touch(id: string): Promise<void> {
-    const userEntries = await loadEntries('user');
-    const entry = userEntries.find(e => e.id === id);
-    if (entry) {
-      entry.accessCount++;
-      await saveEntries(userEntries, 'user');
-    }
+  async touch(id: string, scope: 'user' | 'project' = 'user', projectPath?: string): Promise<void> {
+    const path = await getMemoryPath(scope, projectPath);
+    return withWriteLock(path, async () => {
+      const entries = await loadEntries(scope, projectPath);
+      const entry = entries.find(e => e.id === id);
+      if (entry) {
+        entry.accessCount++;
+        await saveEntries(entries, scope, projectPath);
+      }
+    });
   }
 }

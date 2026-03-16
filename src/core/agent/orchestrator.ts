@@ -368,14 +368,15 @@ export async function buildSystemPrompt(
   // Inject structured memories (user-level + project-level)
   if (!isForkContext) {
     try {
-      // Try structured memory first, fall back to legacy flat file
+      // Load structured memories — use lazy-cached backend to avoid repeated module resolution
       const { getMemoryBackend } = await import('../memory/router');
       const backend = getMemoryBackend();
 
-      const userMemories = await backend.list({ scope: 'user' });
-      const projectMemories = workspacePath
-        ? await backend.list({ scope: 'project', projectPath: workspacePath })
-        : [];
+      // Parallel load: user + project memories in one go
+      const [userMemories, projectMemories] = await Promise.all([
+        backend.list({ scope: 'user' }),
+        workspacePath ? backend.list({ scope: 'project', projectPath: workspacePath }) : Promise.resolve([]),
+      ]);
 
       const allMemories = [...userMemories, ...projectMemories];
 
@@ -403,8 +404,11 @@ ${memoryText}
           backend.touch(e.id).catch(() => {});
         }
       } else {
-        // Fallback: load legacy memory.md if structured memories are empty
-        const memory = await loadAgentMemory('abu');
+        // No structured entries yet — fall back to legacy flat file (single read each)
+        const [memory, projectMemory] = await Promise.all([
+          loadAgentMemory('abu'),
+          workspacePath ? loadProjectMemory(workspacePath) : Promise.resolve(''),
+        ]);
         if (memory.trim()) {
           parts.push(`\n## 你的长期记忆
 以下是你跨会话保持的记忆，始终参考这些信息来个性化你的回复。
@@ -413,15 +417,11 @@ ${memory}
 </agent-memory>`);
         }
 
-        // Legacy project memory fallback
-        if (workspacePath) {
-          const projectMemory = await loadProjectMemory(workspacePath);
-          if (projectMemory.trim()) {
-            parts.push(`\n## 项目记忆
+        if (projectMemory.trim()) {
+          parts.push(`\n## 项目记忆
 <project-memory>
 ${projectMemory}
 </project-memory>`);
-          }
         }
       }
 

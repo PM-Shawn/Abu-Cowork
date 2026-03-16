@@ -54,7 +54,15 @@ function groupMessagesByLoop(messages: Message[]): Message[][] {
 export default function ChatView() {
   const activeConv = useActiveConversation();
   const createConversation = useChatStore((s) => s.createConversation);
+  // Subscribe to messages count so ChatView re-renders when background processes
+  // (IM agentLoop) add messages — even if the conversation object reference is stale
+  const messageCount = useChatStore((s) => {
+    const id = s.activeConversationId;
+    return id ? s.conversations[id]?.messages.length ?? 0 : 0;
+  });
+  // Derive messages from activeConv (re-evaluated when messageCount changes)
   const messages = activeConv?.messages ?? [];
+  void messageCount; // used only to trigger re-render
   const { t } = useI18n();
 
   // Subscribe to command confirmation state using useSyncExternalStore

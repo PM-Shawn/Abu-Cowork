@@ -1,5 +1,7 @@
 import { useState, useMemo, useCallback, useRef, useEffect } from 'react';
 import type { Message, MessageContent, ToolCall, ImageAttachment } from '@/types';
+import type { ExecutionStep } from '@/types/execution';
+import type { WorkflowStep } from '@/utils/workflowExtractor';
 import MessageBubble from './MessageBubble';
 import TaskBlock from './TaskBlock';
 import MarkdownRenderer from './MarkdownRenderer';
@@ -40,10 +42,103 @@ function stripMarkdownImages(text: string): string {
   return text.replace(/!\[[^\]]*\]\([^)]+\)\n?/g, '').trim();
 }
 
+// --- Render segment types ---
+
+type RenderSegment =
+  | { kind: 'text'; text: string; message: Message; isLastTurn: boolean }
+  | { kind: 'steps'; executionSteps: ExecutionStep[]; legacySteps: WorkflowStep[]; isLastGroup: boolean };
+
+/**
+ * Build render segments from assistant messages and their steps.
+ *
+ * Produces alternating text and steps segments. Consecutive tool-only turns
+ * are merged into a single 'steps' segment so they render as one TaskBlock.
+ *
+ * Order: text → merged steps → text → merged steps → ...
+ */
+function buildRenderSegments(
+  assistantMsgs: Message[],
+  allExecSteps: ExecutionStep[],
+  allLegacySteps: WorkflowStep[],
+): RenderSegment[] {
+  if (assistantMsgs.length === 0) return [];
+
+  // Separate thinking steps from tool steps
+  const thinkingExecSteps = allExecSteps.filter((s) => s.type === 'thinking');
+  const toolExecSteps = allExecSteps.filter((s) => s.type !== 'thinking');
+  const thinkingLegacySteps = allLegacySteps.filter((s) => s.type === 'thinking');
+  const toolLegacySteps = allLegacySteps.filter((s) => s.type !== 'thinking');
+
+  const segments: RenderSegment[] = [];
+  let pendingExecSteps: ExecutionStep[] = [...thinkingExecSteps]; // thinking goes first
+  let pendingLegacySteps: WorkflowStep[] = [...thinkingLegacySteps];
+
+  let execOffset = 0;
+  let legacyOffset = 0;
+
+  for (let idx = 0; idx < assistantMsgs.length; idx++) {
+    const msg = assistantMsgs[idx];
+    const isLastTurn = idx === assistantMsgs.length - 1;
+    const text = getTextContent(msg.content);
+    const visibleToolCount = (msg.toolCalls || []).filter((tc) => !tc.hidden).length;
+
+    // Slice this turn's steps
+    const turnExecSteps = toolExecSteps.slice(execOffset, execOffset + visibleToolCount);
+    execOffset += visibleToolCount;
+    const turnLegacySteps = toolLegacySteps.slice(legacyOffset, legacyOffset + visibleToolCount);
+    legacyOffset += visibleToolCount;
+
+    if (text) {
+      // Flush accumulated steps before this text
+      if (pendingExecSteps.length > 0 || pendingLegacySteps.some((s) => s.type !== 'thinking')) {
+        segments.push({
+          kind: 'steps',
+          executionSteps: pendingExecSteps,
+          legacySteps: pendingLegacySteps,
+          isLastGroup: false, // not last yet, there's text after
+        });
+        pendingExecSteps = [];
+        pendingLegacySteps = [];
+      }
+
+      // Emit text segment
+      segments.push({ kind: 'text', text, message: msg, isLastTurn });
+
+      // Start accumulating this turn's steps
+      pendingExecSteps = [...turnExecSteps];
+      pendingLegacySteps = [...turnLegacySteps];
+    } else {
+      // No text — accumulate steps
+      pendingExecSteps.push(...turnExecSteps);
+      pendingLegacySteps.push(...turnLegacySteps);
+    }
+  }
+
+  // Flush remaining accumulated steps
+  if (pendingExecSteps.length > 0 || pendingLegacySteps.some((s) => s.type !== 'thinking')) {
+    segments.push({
+      kind: 'steps',
+      executionSteps: pendingExecSteps,
+      legacySteps: pendingLegacySteps,
+      isLastGroup: true,
+    });
+  }
+
+  // Mark the last 'steps' segment
+  for (let i = segments.length - 1; i >= 0; i--) {
+    if (segments[i].kind === 'steps') {
+      (segments[i] as Extract<RenderSegment, { kind: 'steps' }>).isLastGroup = true;
+      break;
+    }
+  }
+
+  return segments;
+}
+
 /**
  * Groups multiple messages from the same agent loop into a single visual block.
  * User messages render standalone, assistant messages share one avatar.
- * Content is rendered in order: workflow chain -> text -> file attachments
+ * Renders text → merged tool steps, with consecutive tool-only turns combined.
  */
 export default function MessageGroup({ messages }: MessageGroupProps) {
   // Separate user and assistant messages
@@ -51,7 +146,6 @@ export default function MessageGroup({ messages }: MessageGroupProps) {
   const assistantMsgs = messages.filter((m) => m.role === 'assistant');
   const agentStatus = useChatStore((s) => s.agentStatus);
   const activeConv = useActiveConversation();
-  // Action accessed via getState() in handler — no reactive subscription needed
 
   // Get loopId from messages (all messages in group share same loopId)
   const loopId = messages[0]?.loopId;
@@ -66,7 +160,6 @@ export default function MessageGroup({ messages }: MessageGroupProps) {
   // Fallback: if no live execution data, try persisted snapshot from message
   const persistedExecutionSteps = useMemo(() => {
     if (executionSteps && executionSteps.length > 0) return undefined;
-    // Derive assistant messages from `messages` prop directly to keep deps consistent
     const assistantMessages = messages.filter((m) => m.role === 'assistant');
     const msgWithSnapshot = [...assistantMessages].reverse().find((m) => m.executionSteps && m.executionSteps.length > 0);
     if (!msgWithSnapshot?.executionSteps) return undefined;
@@ -90,7 +183,6 @@ export default function MessageGroup({ messages }: MessageGroupProps) {
 
   // Extract search results: prefer structured data from tool calls, fallback to text parsing
   const searchResults = useMemo(() => {
-    // 1. Try structured SEARCH_JSON from tool call results
     const fromTools = messages
       .filter((m) => m.role === 'assistant')
       .flatMap((m) => m.toolCalls || [])
@@ -100,7 +192,6 @@ export default function MessageGroup({ messages }: MessageGroupProps) {
       });
     if (fromTools.length > 0) return fromTools;
 
-    // 2. Fallback: parse sources from the LLM's text output (e.g. Anthropic native web search)
     for (const msg of messages) {
       if (msg.role !== 'assistant') continue;
       const text = typeof msg.content === 'string'
@@ -119,21 +210,18 @@ export default function MessageGroup({ messages }: MessageGroupProps) {
   const groupRef = useRef<HTMLDivElement>(null);
   const highlightTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
 
-  // Cleanup highlight timer on unmount
   useEffect(() => {
     return () => { clearTimeout(highlightTimerRef.current); };
   }, []);
 
   const handleCitationClick = useCallback((index: number) => {
     setHighlightedSource(index);
-    // Scroll to source card scoped to this message group
     requestAnimationFrame(() => {
       const card = groupRef.current?.querySelector(`[data-source-index="${index}"]`);
       if (card) {
         card.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
       }
     });
-    // Clear highlight after animation, cancelling any previous timer
     clearTimeout(highlightTimerRef.current);
     highlightTimerRef.current = setTimeout(() => setHighlightedSource(null), 2000);
   }, []);
@@ -144,7 +232,6 @@ export default function MessageGroup({ messages }: MessageGroupProps) {
     .filter(Boolean)
     .join('\n');
 
-  // Get thinking duration (from the message with thinking content)
   const thinkingDuration = assistantMsgs.find((m) => m.thinkingDuration)?.thinkingDuration;
 
   // Get skill info from user message (if skill was triggered)
@@ -152,9 +239,6 @@ export default function MessageGroup({ messages }: MessageGroupProps) {
 
   // Extract workflow steps from all tool calls (legacy fallback)
   const workflowSteps = extractWorkflowSteps(allToolCalls, thinkingContent, agentStatus, skillInfo, thinkingDuration);
-
-  // Check if legacy workflow has non-thinking steps (thinking-only shouldn't show TaskBlock)
-  const hasNonThinkingSteps = workflowSteps.some((s) => s.type !== 'thinking');
 
   // Extract file outputs for attachments
   const fileOutputs = useMemo(() => extractFileOutputs(allToolCalls), [allToolCalls]);
@@ -176,13 +260,12 @@ export default function MessageGroup({ messages }: MessageGroupProps) {
   // Check if any tool has error result
   const hasError = allToolCalls.some((tc) => tc.result?.toLowerCase().includes('error'));
 
-  // Handle retry - re-run the agent loop with the same user message (preserving images)
+  // Handle retry
   const handleRetry = async () => {
     if (!userMsg || !activeConv?.id) return;
     const convId = activeConv.id;
     const userContent = getTextContent(userMsg.content);
 
-    // Extract images from the original user message
     let retryImages: ImageAttachment[] | undefined;
     if (Array.isArray(userMsg.content)) {
       const imgBlocks = userMsg.content.filter((c): c is Extract<MessageContent, { type: 'image' }> => c.type === 'image');
@@ -195,20 +278,30 @@ export default function MessageGroup({ messages }: MessageGroupProps) {
       }
     }
 
-    // Delete all assistant messages in this loop
     const firstAssistantInLoop = assistantMsgs[0];
     if (firstAssistantInLoop) {
       useChatStore.getState().deleteMessagesFrom(convId, firstAssistantInLoop.id);
     }
 
-    // Re-run the agent loop with images
     await runAgentLoop(convId, userContent, { images: retryImages });
   };
 
-  // Collect text content from all assistant messages
-  const textContents = assistantMsgs
-    .map((msg) => getTextContent(msg.content))
-    .filter(Boolean);
+  // Determine which step data source to use
+  const activeExecSteps = useMemo(
+    () => (executionSteps && executionSteps.length > 0)
+      ? executionSteps
+      : persistedExecutionSteps ?? [],
+    [executionSteps, persistedExecutionSteps]
+  );
+
+  // Build render segments: text and merged step groups
+  const segments = useMemo(
+    () => buildRenderSegments(assistantMsgs, activeExecSteps, workflowSteps),
+    [assistantMsgs, activeExecSteps, workflowSteps]
+  );
+
+  // Check if we have any content (for thinking indicator fallback)
+  const hasAnyContent = segments.length > 0;
 
   return (
     <div ref={groupRef} className="message-group space-y-4 w-full">
@@ -225,30 +318,10 @@ export default function MessageGroup({ messages }: MessageGroupProps) {
             </div>
           </div>
 
-          {/* Content area: workflow chain -> text -> file attachments */}
+          {/* Content area */}
           <div className="flex-1 min-w-0 overflow-hidden">
-            {/* 1. Task block (workflow progress) - prefer executionSteps > persisted snapshot > legacy */}
-            {(executionSteps && executionSteps.length > 0) ? (
-              <TaskBlock
-                executionSteps={executionSteps}
-                isActive={isThisExecutionActive}
-                onRetry={hasError && !isStreaming ? handleRetry : undefined}
-              />
-            ) : persistedExecutionSteps ? (
-              <TaskBlock
-                executionSteps={persistedExecutionSteps}
-                isActive={false}
-              />
-            ) : hasNonThinkingSteps && (
-              <TaskBlock
-                steps={workflowSteps}
-                isActive={isAnyExecuting}
-                onRetry={hasError && !isStreaming ? handleRetry : undefined}
-              />
-            )}
-
             {/* Thinking indicator - when streaming but no content yet */}
-            {isStreaming && textContents.length === 0 && !hasNonThinkingSteps && !(executionSteps && executionSteps.length > 0) && !persistedExecutionSteps && (
+            {isStreaming && !hasAnyContent && (
               <div className="flex items-center gap-1.5 py-2">
                 <span className="typing-dot w-1.5 h-1.5 rounded-full bg-[#d97757]/60" />
                 <span className="typing-dot w-1.5 h-1.5 rounded-full bg-[#d97757]/60" />
@@ -256,46 +329,69 @@ export default function MessageGroup({ messages }: MessageGroupProps) {
               </div>
             )}
 
-            {/* 2. Text content from all messages (with images extracted above) */}
-            {textContents.map((textContent, index) => {
-              const mdImages = extractMarkdownImages(textContent);
-              let cleanedText = mdImages.length > 0 ? stripMarkdownImages(textContent) : textContent;
-              // Strip LLM-generated sources block when we have structured search results
-              if (searchResults.length > 0) {
-                cleanedText = stripSourcesBlock(cleanedText);
+            {/* Render segments: text blocks and merged step groups */}
+            {segments.map((seg, segIdx) => {
+              if (seg.kind === 'text') {
+                const mdImages = extractMarkdownImages(seg.text);
+                let cleanedText = mdImages.length > 0 ? stripMarkdownImages(seg.text) : seg.text;
+                if (searchResults.length > 0 && cleanedText) {
+                  cleanedText = stripSourcesBlock(cleanedText);
+                }
+                const showCursor = seg.isLastTurn && seg.message.isStreaming && !!cleanedText;
+
+                return (
+                  <div key={`text-${seg.message.id || segIdx}`}>
+                    {mdImages.length > 0 && (
+                      <div className="flex flex-wrap gap-2 mb-2">
+                        {mdImages.map((src, i) => (
+                          <ImageThumbnail key={`${src}-${i}`} src={src} />
+                        ))}
+                      </div>
+                    )}
+                    {cleanedText && (
+                      <div className="text-[#29261b] break-words mb-2">
+                        <MarkdownRenderer
+                          content={cleanedText}
+                          searchResults={searchResults.length > 0 ? searchResults : undefined}
+                          onCitationClick={searchResults.length > 0 ? handleCitationClick : undefined}
+                          fileOutputMap={fileOutputMap}
+                        />
+                      </div>
+                    )}
+                    {showCursor && <span className="streaming-cursor" />}
+                  </div>
+                );
               }
+
+              // kind === 'steps' — merged TaskBlock
+              const hasExecSteps = seg.executionSteps.length > 0;
+              const hasLegacyNonThinking = seg.legacySteps.some((s) => s.type !== 'thinking');
+
               return (
-                <div key={index}>
-                  {mdImages.length > 0 && (
-                    <div className="flex flex-wrap gap-2 mb-2">
-                      {mdImages.map((src, i) => (
-                        <ImageThumbnail key={`${src}-${i}`} src={src} />
-                      ))}
-                    </div>
-                  )}
-                  {cleanedText && (
-                    <div className="text-[#29261b] break-words mb-2">
-                      <MarkdownRenderer
-                        content={cleanedText}
-                        searchResults={searchResults.length > 0 ? searchResults : undefined}
-                        onCitationClick={searchResults.length > 0 ? handleCitationClick : undefined}
-                        fileOutputMap={fileOutputMap}
-                      />
-                    </div>
+                <div key={`steps-${segIdx}`}>
+                  {hasExecSteps ? (
+                    <TaskBlock
+                      executionSteps={seg.executionSteps}
+                      isActive={seg.isLastGroup && isThisExecutionActive}
+                      onRetry={seg.isLastGroup && hasError && !isStreaming ? handleRetry : undefined}
+                    />
+                  ) : hasLegacyNonThinking && (
+                    <TaskBlock
+                      steps={seg.legacySteps}
+                      isActive={seg.isLastGroup && isAnyExecuting}
+                      onRetry={seg.isLastGroup && hasError && !isStreaming ? handleRetry : undefined}
+                    />
                   )}
                 </div>
               );
             })}
 
-            {/* 2.5. Sources section - prominent display below text */}
+            {/* Sources section - prominent display below all segments */}
             {searchResults.length > 0 && !isStreaming && (
               <SourcesSection results={searchResults} highlightedIndex={highlightedSource} />
             )}
 
-            {/* Streaming cursor - only when text is actively being streamed */}
-            {lastAssistantMsg?.isStreaming && textContents.length > 0 && <span className="streaming-cursor" />}
-
-            {/* 3. File attachments - show created/modified files */}
+            {/* File attachments - show created/modified files */}
             {fileOutputs.length > 0 && !isAnyExecuting && (() => {
               const imageFiles = fileOutputs.filter((f) => isImageFile(f.path));
               const otherFiles = fileOutputs.filter((f) => !isImageFile(f.path));
@@ -339,4 +435,3 @@ export default function MessageGroup({ messages }: MessageGroupProps) {
     </div>
   );
 }
-

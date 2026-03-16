@@ -24,9 +24,10 @@ export async function migrateIfNeeded(): Promise<void> {
     const entriesPath = joinPath(home, '.abu', 'memory', 'entries.json');
     try {
       const existing = await readTextFile(entriesPath);
-      if (existing.trim().length > 2) return; // entries.json exists and is non-empty
+      const parsed = JSON.parse(existing);
+      if (Array.isArray(parsed) && parsed.length > 0) return; // has entries, skip
     } catch {
-      // entries.json doesn't exist — proceed with migration
+      // entries.json doesn't exist or is invalid — proceed with migration
     }
 
     // Check if legacy memory.md exists

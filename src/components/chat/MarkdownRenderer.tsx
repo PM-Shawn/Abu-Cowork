@@ -450,10 +450,10 @@ function buildMarkdownComponents(
       return <h3 className={cn('text-base font-semibold mt-3 mb-1', isUser ? 'text-white' : 'text-neutral-800')}>{children}</h3>;
     },
     ul({ children }: { children?: ReactNode }) {
-      return <ul className="my-2 ml-4 list-inside list-disc space-y-1">{children}</ul>;
+      return <ul className="my-2 pl-6 list-outside list-disc space-y-1">{children}</ul>;
     },
     ol({ children }: { children?: ReactNode }) {
-      return <ol className="my-2 ml-4 list-inside list-decimal space-y-1">{children}</ol>;
+      return <ol className="my-2 pl-6 list-outside list-decimal space-y-1">{children}</ol>;
     },
     li({ children }: { children?: ReactNode }) {
       return <li className={isUser ? 'leading-relaxed text-[14.5px]' : 'leading-7 text-[15px]'}>{processChildren(children, sr, onCitationClick)}</li>;

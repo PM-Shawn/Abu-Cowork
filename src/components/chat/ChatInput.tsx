@@ -7,6 +7,7 @@ import { uint8ArrayToBase64 } from '@/utils/base64';
 import { getBaseName, IMAGE_MIME_MAP } from '@/utils/pathUtils';
 import { isImageFile } from '@/components/chat/FileAttachment';
 import { enqueueUserInput } from '@/core/agent/userInputQueue';
+import { getCurrentLoopContext } from '@/core/agent/agentLoop';
 import { useChatStore, useActiveConversation } from '@/stores/chatStore';
 import { useDiscoveryStore } from '@/stores/discoveryStore';
 import { useSettingsStore, getEffectiveModel, AVAILABLE_MODELS } from '@/stores/settingsStore';
@@ -358,12 +359,15 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
     // Mid-task input: if agent is running, enqueue the message instead of starting a new loop
     if (isRunning && activeConv?.id && message) {
       enqueueUserInput(activeConv.id, message);
-      // Also add as a user message to the UI immediately
+      // Also add as a user message to the UI immediately, with the current loopId
+      // so it groups correctly with the ongoing assistant response
+      const currentLoopId = getCurrentLoopContext()?.loopId;
       useChatStore.getState().addMessage(activeConv.id, {
         id: generateId(),
         role: 'user',
         content: message,
         timestamp: Date.now(),
+        loopId: currentLoopId,
       });
       resetInput();
       return;

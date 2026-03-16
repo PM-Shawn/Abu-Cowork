@@ -71,7 +71,10 @@ export async function extractMemoriesFromConversation(
 
     // Create adapter
     const settings = useSettingsStore.getState();
-    if (!settings.apiKey) return;
+    if (!settings.apiKey) {
+      console.warn('[Memory] Auto-extraction skipped: no API key configured');
+      return;
+    }
 
     const adapter: LLMAdapter = settings.apiFormat === 'openai-compatible'
       ? new OpenAICompatibleAdapter()

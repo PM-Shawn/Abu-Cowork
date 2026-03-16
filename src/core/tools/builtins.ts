@@ -1477,8 +1477,8 @@ const updateMemoryTool: ToolDefinition = {
       },
       action: {
         type: 'string',
-        description: '操作类型: append(添加，默认) / clear(清空所有记忆)',
-        enum: ['append', 'clear'],
+        description: '操作类型: append(添加，默认) / rewrite(清空并重写) / clear(清空所有记忆)',
+        enum: ['append', 'rewrite', 'clear'],
       },
     },
     required: ['agent_name', 'content'],
@@ -1499,16 +1499,44 @@ const updateMemoryTool: ToolDefinition = {
       }
 
       if (action === 'clear') {
-        // Clear all entries for this scope — use legacy functions as fallback
+        // Clear both structured entries AND legacy files
+        const { getMemoryBackend } = await import('../memory/router');
+        const backend = getMemoryBackend();
+        const entries = await backend.list({ scope, projectPath: scope === 'project' ? workspacePath ?? undefined : undefined });
+        for (const e of entries) {
+          await backend.remove(e.id);
+        }
+        // Also clear legacy files for completeness
         if (scope === 'project' && workspacePath) {
           await clearProjectMemory(workspacePath);
         } else {
           await clearAgentMemory('abu');
         }
-        return `已清空${scope === 'project' ? '项目' : '个人'}记忆。`;
+        return `已清空${scope === 'project' ? '项目' : '个人'}记忆（${entries.length} 条）。`;
       }
 
-      // Add structured memory entry
+      if (action === 'rewrite') {
+        // Rewrite = clear all + add new entry
+        if (!content) return '错误：rewrite 操作需要提供 content。';
+        const { getMemoryBackend } = await import('../memory/router');
+        const backend = getMemoryBackend();
+        const entries = await backend.list({ scope, projectPath: scope === 'project' ? workspacePath ?? undefined : undefined });
+        for (const e of entries) {
+          await backend.remove(e.id);
+        }
+        const entry = await backend.add({
+          category,
+          summary,
+          content,
+          keywords: keywords.length > 0 ? keywords : autoExtractKeywords(content),
+          sourceType: 'agent_explicit',
+          scope,
+          projectPath: scope === 'project' ? workspacePath ?? undefined : undefined,
+        });
+        return `已重写记忆 [${category}]: ${entry.summary}`;
+      }
+
+      // Append: add structured memory entry
       if (!content) return '错误：content 不能为空。';
 
       const { getMemoryBackend } = await import('../memory/router');

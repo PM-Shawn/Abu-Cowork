@@ -54,9 +54,9 @@ export interface ListOptions {
 export interface MemoryBackend {
   add(entry: Omit<MemoryEntry, 'id' | 'createdAt' | 'updatedAt' | 'accessCount'>): Promise<MemoryEntry>;
   search(query: string, options?: SearchOptions): Promise<MemoryEntry[]>;
-  update(id: string, data: Partial<Pick<MemoryEntry, 'summary' | 'content' | 'keywords' | 'category'>>): Promise<void>;
-  remove(id: string): Promise<void>;
+  update(id: string, data: Partial<Pick<MemoryEntry, 'summary' | 'content' | 'keywords' | 'category'>>, scope?: 'user' | 'project', projectPath?: string): Promise<void>;
+  remove(id: string, scope?: 'user' | 'project', projectPath?: string): Promise<void>;
   list(options?: ListOptions): Promise<MemoryEntry[]>;
   /** Increment access count (called when a memory is injected into context) */
-  touch(id: string): Promise<void>;
+  touch(id: string, scope?: 'user' | 'project', projectPath?: string): Promise<void>;
 }

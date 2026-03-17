@@ -8,6 +8,7 @@ import ProfileEditModal from '@/components/common/ProfileEditModal';
 import { Button } from '@/components/ui/button';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { cn } from '@/lib/utils';
+import { getPlatformShortLabel } from '@/core/im/platformLabels';
 import type { ConversationStatus } from '@/types';
 import ScheduledSection from '@/components/sidebar/ScheduledSection';
 import TriggerSection from '@/components/sidebar/TriggerSection';
@@ -47,15 +48,12 @@ function StatusIndicator({ status, onComplete }: StatusIndicatorProps) {
 }
 
 function IMPlatformDot({ platform }: { platform: string }) {
-  const labels: Record<string, string> = {
-    dchat: 'DC', feishu: '飞', dingtalk: '钉', wecom: '微', slack: 'SL',
-  };
   return (
     <span
       className="shrink-0 h-4 w-4 rounded text-[8px] font-bold leading-4 text-center bg-[#d97757]/15 text-[#d97757]"
       title={platform}
     >
-      {labels[platform] ?? platform.slice(0, 2).toUpperCase()}
+      {getPlatformShortLabel(platform)}
     </span>
   );
 }

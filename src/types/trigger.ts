@@ -122,7 +122,8 @@ export interface TriggerAction {
 
 // ── Output Config ──
 
-export type OutputPlatform = 'dchat' | 'feishu' | 'dingtalk' | 'wecom' | 'slack' | 'custom';
+/** Output platform — built-in platforms + 'custom' + any plugin-registered platform */
+export type OutputPlatform = 'feishu' | 'dingtalk' | 'wecom' | 'slack' | 'custom' | (string & {});
 
 export type OutputExtractMode = 'last_message' | 'full' | 'custom_template';
 

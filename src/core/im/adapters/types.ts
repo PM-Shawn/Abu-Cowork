@@ -146,15 +146,14 @@ export interface InboundMessage {
 
 export interface ReplyContext {
   platform: string;
-  // D-Chat
-  vchannelId?: string;
-  // Feishu
+  /** Unified chat/channel ID */
   chatId?: string;
+  /** Original message ID */
   messageId?: string;
-  // DingTalk
+  /** Thread identifier */
+  threadId?: string;
+  /** Session webhook URL (DingTalk) */
   sessionWebhook?: string;
-  sessionWebhookExpiredTime?: number;
-  // Slack
-  channelId?: string;
-  threadTs?: string;
+  /** Platform-specific extra data */
+  extra?: Record<string, unknown>;
 }

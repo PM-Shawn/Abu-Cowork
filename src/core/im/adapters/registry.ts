@@ -1,17 +1,19 @@
 /**
- * Adapter Registry — platform lookup and plugin-style registration
+ * Adapter Registry — platform lookup with plugin fallback
+ *
+ * Built-in adapters are statically imported. Plugin adapters are queried
+ * from the plugin registry as fallback.
  */
 
 import type { IMAdapter, AdapterConfig } from './types';
-import { DchatAdapter } from './dchat';
 import { FeishuAdapter } from './feishu';
 import { DingtalkAdapter } from './dingtalk';
 import { WecomAdapter } from './wecom';
 import { SlackAdapter } from './slack';
 import { CustomAdapter } from './custom';
+import { getIMPlugin, getRegisteredPluginManifests } from '../pluginRegistry';
 
-const adapters: Record<string, IMAdapter> = {
-  dchat: new DchatAdapter(),
+const builtinAdapters: Record<string, IMAdapter> = {
   feishu: new FeishuAdapter(),
   dingtalk: new DingtalkAdapter(),
   wecom: new WecomAdapter(),
@@ -19,17 +21,46 @@ const adapters: Record<string, IMAdapter> = {
   custom: new CustomAdapter(),
 };
 
+/**
+ * Get adapter for a platform. Checks built-in first, then plugin registry.
+ */
 export function getAdapter(platform: string): IMAdapter | undefined {
-  return adapters[platform];
+  const builtin = builtinAdapters[platform];
+  if (builtin) return builtin;
+
+  // Fallback: plugin-registered adapter
+  const plugin = getIMPlugin(platform);
+  return plugin?.adapter;
 }
 
+/**
+ * Get all available platforms (built-in + plugins) for UI rendering.
+ */
 export function getAvailablePlatforms(): AdapterConfig[] {
-  return Object.values(adapters).map((a) => a.config);
+  const builtin = Object.values(builtinAdapters).map((a) => a.config);
+  const pluginConfigs = getRegisteredPluginManifests().map((m) => {
+    // Plugin already registered its adapter — get config from there
+    const plugin = getIMPlugin(m.platform);
+    if (plugin) return plugin.adapter.config;
+    // Fallback: synthesize from manifest
+    return {
+      platform: m.platform,
+      displayName: m.displayName,
+      maxLength: 20000,
+      chunkMode: 'newline' as const,
+      supportsMarkdown: m.capabilities.markdown,
+      supportsCard: m.capabilities.card,
+      supportsMessageUpdate: m.capabilities.messageUpdate,
+    };
+  });
+  return [...builtin, ...pluginConfigs];
 }
 
-/** Dynamic registration for future plugin extension */
+/**
+ * Register a built-in adapter at runtime (for testing or late initialization).
+ */
 export function registerAdapter(adapter: IMAdapter): void {
-  adapters[adapter.config.platform] = adapter;
+  builtinAdapters[adapter.config.platform] = adapter;
 }
 
 // Re-export types for convenience

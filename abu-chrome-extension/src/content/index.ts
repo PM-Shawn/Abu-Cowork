@@ -52,6 +52,9 @@ async function handleAction(action: string, payload: Record<string, unknown>): P
     case 'keyboard': return sendKeyboard(payload as Record<string, unknown>);
     case 'start_recording': return startRecording();
     case 'stop_recording': return stopRecording();
+    case 'fullpage_prepare': return fullpagePrepare();
+    case 'fullpage_scroll': return fullpageScroll(payload.scrollTop as number);
+    case 'fullpage_restore': return fullpageRestore(payload.scrollX as number, payload.scrollY as number);
     default: throw new Error(`Unknown content action: ${action}`);
   }
 }
@@ -664,6 +667,82 @@ function stopRecording(): { success: boolean; steps: RecordedStep[]; message: st
     steps: [...recordedSteps],
     message: `Recorded ${recordedSteps.length} steps. Use these as a template for automation.`,
   };
+}
+
+// =============================================================================
+// 12. FULL-PAGE SCREENSHOT — prepare/scroll/restore for scroll-and-stitch
+// =============================================================================
+
+/**
+ * Elements whose position was temporarily overridden during full-page capture.
+ * Stored as [element, originalPosition, originalTop] tuples for restoration.
+ */
+let savedFixedElements: [HTMLElement, string, string][] = [];
+
+/**
+ * Prepare for full-page screenshot:
+ * 1. Record current scroll position
+ * 2. Measure full page dimensions
+ * 3. Hide fixed/sticky elements (except on first viewport) to avoid duplication
+ */
+function fullpagePrepare(): {
+  scrollHeight: number;
+  viewportHeight: number;
+  viewportWidth: number;
+  scrollX: number;
+  scrollY: number;
+} {
+  const scrollX = window.scrollX;
+  const scrollY = window.scrollY;
+  const viewportHeight = window.innerHeight;
+  const viewportWidth = window.innerWidth;
+  const scrollHeight = Math.max(
+    document.body.scrollHeight,
+    document.documentElement.scrollHeight
+  );
+
+  // Find and hide fixed/sticky elements to prevent them repeating in every slice
+  savedFixedElements = [];
+  const allElements = document.querySelectorAll('*');
+  for (const el of allElements) {
+    const htmlEl = el as HTMLElement;
+    const style = getComputedStyle(htmlEl);
+    if (style.position === 'fixed' || style.position === 'sticky') {
+      // Skip tiny elements (likely not headers/navbars)
+      const rect = htmlEl.getBoundingClientRect();
+      if (rect.width < 50 || rect.height < 10) continue;
+      savedFixedElements.push([htmlEl, style.position, htmlEl.style.top]);
+      htmlEl.style.setProperty('position', 'absolute', 'important');
+    }
+  }
+
+  return { scrollHeight, viewportHeight, viewportWidth, scrollX, scrollY };
+}
+
+/**
+ * Scroll to a specific Y position (instant, no animation).
+ */
+function fullpageScroll(scrollTop: number): { success: boolean } {
+  window.scrollTo({ top: scrollTop, left: 0, behavior: 'instant' as ScrollBehavior });
+  return { success: true };
+}
+
+/**
+ * Restore state after full-page capture:
+ * 1. Restore fixed/sticky elements
+ * 2. Restore original scroll position
+ */
+function fullpageRestore(scrollX: number, scrollY: number): { success: boolean } {
+  // Restore fixed/sticky elements
+  for (const [el, originalPosition, originalTop] of savedFixedElements) {
+    el.style.position = originalPosition;
+    el.style.top = originalTop;
+  }
+  savedFixedElements = [];
+
+  // Restore scroll position
+  window.scrollTo({ top: scrollY, left: scrollX, behavior: 'instant' as ScrollBehavior });
+  return { success: true };
 }
 
 // =============================================================================

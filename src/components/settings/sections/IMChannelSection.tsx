@@ -7,14 +7,7 @@ import { Toggle } from '@/components/ui/toggle';
 import { Select } from '@/components/ui/select';
 import type { IMPlatform } from '@/types/im';
 import type { IMCapabilityLevel, IMResponseMode } from '@/types/imChannel';
-
-const PLATFORMS: { value: IMPlatform; label: string }[] = [
-  { value: 'dchat', label: 'D-Chat' },
-  { value: 'feishu', label: '飞书' },
-  { value: 'dingtalk', label: '钉钉' },
-  { value: 'wecom', label: '企业微信' },
-  { value: 'slack', label: 'Slack' },
-];
+import { getIMPlatformOptions, getPlatformDisplayName } from '@/core/im/platformLabels';
 
 const CAPABILITY_OPTIONS: { value: IMCapabilityLevel; labelKey: keyof ReturnType<typeof useCapLabels> }[] = [
   { value: 'chat_only', labelKey: 'chat_only' },
@@ -354,7 +347,7 @@ export default function IMChannelSection() {
           {/* Platform */}
           <FormRow label={t.imChannel.platform}>
             <div className="flex items-center gap-1.5 flex-wrap">
-              {PLATFORMS.map((p) => (
+              {getIMPlatformOptions().map((p) => (
                 <button
                   key={p.value}
                   onClick={() => setNewPlatform(p.value)}
@@ -423,16 +416,9 @@ export default function IMChannelSection() {
 // ── Sub-components ──
 
 function PlatformBadge({ platform }: { platform: IMPlatform }) {
-  const labels: Record<IMPlatform, string> = {
-    dchat: 'DC',
-    feishu: '飞书',
-    dingtalk: '钉钉',
-    wecom: '微信',
-    slack: 'SL',
-  };
   return (
     <div className="h-8 w-8 rounded-lg bg-[#d97757]/10 flex items-center justify-center text-xs font-medium text-[#d97757] shrink-0">
-      {labels[platform]?.slice(0, 2) ?? platform.slice(0, 2).toUpperCase()}
+      {getPlatformDisplayName(platform).slice(0, 2)}
     </div>
   );
 }

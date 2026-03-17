@@ -209,7 +209,7 @@ describe('sendFinal', () => {
     const handle = {
       platform: 'slack' as const,
       supportsUpdate: true,
-      replyContext: makeContext({ platform: 'slack', channelId: 'C123', threadTs: '123.456' }),
+      replyContext: makeContext({ platform: 'slack', chatId: 'C123', threadId: '123.456' }),
     };
     const result = await sendFinal(handle, { content: 'Hello from Slack' });
     expect(result.success).toBe(true);

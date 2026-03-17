@@ -60,7 +60,13 @@ class TriggerEngine {
 
     // Start HTTP server (Rust side)
     try {
-      const port = await invoke<number>('start_trigger_server', { port: DEFAULT_PORT });
+      // Use 0.0.0.0 if any IM plugin needs heartbeat/callback (LAN-accessible),
+      // otherwise use 127.0.0.1 (localhost-only, more secure)
+      const { getRegisteredPluginManifests } = await import('../im/pluginRegistry');
+      const hasHeartbeatPlugin = getRegisteredPluginManifests()
+        .some((m) => m.capabilities.connectionType === 'heartbeat');
+      const bindAddr = hasHeartbeatPlugin ? '0.0.0.0' : '127.0.0.1';
+      const port = await invoke<number>('start_trigger_server', { port: DEFAULT_PORT, bindAddr });
       this.serverPort = port;
       console.log(`[Trigger] HTTP server started on port ${port}`);
     } catch (err) {

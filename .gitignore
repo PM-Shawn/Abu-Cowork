@@ -25,6 +25,9 @@ Thumbs.db
 # Archive (internal docs, personal assets)
 _archive/
 
+# Claude Code agent workspace
+.agent/
+
 # Temporary research/reference docs in src-tauri
 src-tauri/*.md
 

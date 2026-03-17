@@ -260,6 +260,8 @@ interface SettingsState {
   computerUseEnabled: boolean;
   // Skill inline command execution (!`command` syntax)
   allowSkillCommands: boolean;
+  // npm skill registry
+  skillRegistry: string;
 }
 
 interface SettingsActions {
@@ -427,6 +429,7 @@ export const useSettingsStore = create<SettingsStore>()(
       behaviorSensorEnabled: false,
       computerUseEnabled: false,
       allowSkillCommands: true,
+      skillRegistry: '',
 
       setProvider: (provider) => set({ provider }),
       setApiFormat: (apiFormat) => set({ apiFormat }),
@@ -526,9 +529,12 @@ export const useSettingsStore = create<SettingsStore>()(
     }),
     {
       name: 'abu-settings',
-      version: 7,
+      version: 8,
       migrate: (persisted: unknown, version: number) => {
         const state = persisted as Record<string, unknown>;
+        if (version < 8) {
+          if (state.skillRegistry === undefined) state.skillRegistry = '';
+        }
         if (version < 7) {
           state.disabledSkills = [
             'alert-sop', 'algorithmic-art', 'brand-guidelines', 'canvas-design',
@@ -640,6 +646,7 @@ export const useSettingsStore = create<SettingsStore>()(
         behaviorSensorEnabled: state.behaviorSensorEnabled,
         computerUseEnabled: state.computerUseEnabled,
         allowSkillCommands: state.allowSkillCommands,
+        skillRegistry: state.skillRegistry,
       }),
       onRehydrateStorage: () => (state) => {
         if (!state) return;

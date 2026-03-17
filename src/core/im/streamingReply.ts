@@ -34,24 +34,15 @@ export interface ReplyHandle {
 
 /**
  * Build a DirectReplyContext from IMReplyContext for API-based reply.
+ * Uses unified chatId field — no platform-specific branching needed.
  */
 function toDirectReplyContext(replyCtx: IMReplyContext): DirectReplyContext | null {
-  switch (replyCtx.platform) {
-    case 'feishu':
-      if (!replyCtx.chatId) return null;
-      return { chatId: replyCtx.chatId, messageId: replyCtx.messageId };
-    case 'slack':
-      if (!replyCtx.channelId) return null;
-      return { chatId: replyCtx.channelId, threadTs: replyCtx.threadTs };
-    case 'wecom':
-      if (!replyCtx.chatid) return null;
-      return { chatId: replyCtx.chatid };
-    case 'dchat':
-      if (!replyCtx.vchannelId) return null;
-      return { chatId: replyCtx.vchannelId };
-    default:
-      return null;
-  }
+  if (!replyCtx.chatId) return null;
+  return {
+    chatId: replyCtx.chatId,
+    messageId: replyCtx.messageId,
+    threadTs: replyCtx.threadId,
+  };
 }
 
 /**

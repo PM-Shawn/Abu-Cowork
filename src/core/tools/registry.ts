@@ -252,7 +252,11 @@ export async function executeAnyTool(
     const [serverName, toolName] = name.split('__', 2);
     if (mcpManager.isConnected(serverName)) {
       const result = await mcpManager.callTool(serverName, toolName, input);
-      return truncateToolResult(name, result);
+      // Only truncate string results; rich content (images) passes through
+      if (typeof result === 'string') {
+        return truncateToolResult(name, result);
+      }
+      return result;
     }
   }
 

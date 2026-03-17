@@ -2,7 +2,7 @@
 // Stdio transport uses Tauri Rust backend for child process management.
 // HTTP transports (StreamableHTTP, SSE) use the MCP SDK directly.
 
-import type { ToolDefinition, ToolParameter } from '../../types';
+import type { ToolDefinition, ToolParameter, ToolResult, ToolResultContent } from '../../types';
 import { invoke } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import { expandConfigEnvVars } from '@/utils/envExpansion';
@@ -551,7 +551,7 @@ export class MCPClientManager {
     serverName: string,
     toolName: string,
     args: Record<string, unknown>
-  ): Promise<string> {
+  ): Promise<ToolResult> {
     const server = this.servers.get(serverName);
     if (!server) {
       throw new Error(`Server ${serverName} not connected`);
@@ -561,7 +561,7 @@ export class MCPClientManager {
     try {
       const client = server.client as {
         callTool: (params: { name: string; arguments: Record<string, unknown> }) => Promise<{
-          content?: Array<{ type: string; text?: string; mimeType?: string }>;
+          content?: Array<{ type: string; text?: string; data?: string; mimeType?: string }>;
         }>;
       };
       // Browser automation tools need longer timeouts (waiting for popups, page loads, etc.)
@@ -577,10 +577,31 @@ export class MCPClientManager {
       clearTimeout(timerId!);
 
       if (result.content && Array.isArray(result.content)) {
+        const hasImages = result.content.some((c) => c.type === 'image' && c.data);
+        if (hasImages) {
+          // Return rich content blocks so images are preserved for LLM and UI
+          const blocks: ToolResultContent[] = result.content.map((c) => {
+            if (c.type === 'image' && c.data) {
+              return {
+                type: 'image' as const,
+                source: {
+                  type: 'base64' as const,
+                  media_type: c.mimeType ?? 'image/png',
+                  data: c.data,
+                },
+              };
+            }
+            if (c.type === 'text') {
+              return { type: 'text' as const, text: c.text ?? '' };
+            }
+            return { type: 'text' as const, text: JSON.stringify(c) };
+          });
+          return blocks;
+        }
+        // Text-only results — return as plain string
         return result.content
           .map((c) => {
             if (c.type === 'text') return c.text;
-            if (c.type === 'image') return `[Image: ${c.mimeType}]`;
             return JSON.stringify(c);
           })
           .join('\n');

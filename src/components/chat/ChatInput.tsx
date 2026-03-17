@@ -92,6 +92,7 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
   const [suggestionsDismissed, setSuggestionsDismissed] = useState(false);
   const [selectedIndex, setSelectedIndex] = useState(0);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const composingRef = useRef(false);
 
   // Welcome-only state (always declared for hook stability)
   const [pendingFolder, setPendingFolder] = useState<string | null>(null);
@@ -389,7 +390,7 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
         setSelectedIndex((prev) => (prev + 1) % suggestions.length);
         return;
       }
-      if (e.key === 'Tab' || (e.key === 'Enter' && !e.shiftKey)) {
+      if (e.key === 'Tab' || (e.key === 'Enter' && !e.shiftKey && !composingRef.current)) {
         e.preventDefault();
         applySuggestion(suggestions[selectedIndex]);
         return;
@@ -413,7 +414,7 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
         return;
       }
     }
-    if (e.key === 'Enter' && !e.shiftKey) {
+    if (e.key === 'Enter' && !e.shiftKey && !composingRef.current) {
       e.preventDefault();
       handleSend();
     }
@@ -579,6 +580,12 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
                 if (isWelcome && onInputChange) onInputChange(e.target.value.trim().length > 0);
               }}
               onKeyDown={handleKeyDown}
+              onCompositionStart={() => { composingRef.current = true; }}
+              onCompositionEnd={() => {
+                // Safari/WebKit fires compositionEnd BEFORE keydown,
+                // so delay reset to let the Enter keydown still see composingRef=true
+                setTimeout(() => { composingRef.current = false; }, 0);
+              }}
               onPaste={handlePaste}
               placeholder={placeholder}
               disabled={disabled}

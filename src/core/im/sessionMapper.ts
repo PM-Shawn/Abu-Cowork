@@ -146,9 +146,9 @@ export class SessionMapper {
    * Thread-aware platforms use thread ID; others use window-based key.
    */
   private buildKey(message: NormalizedIMMessage): string {
-    // Slack thread
-    if (message.platform === 'slack' && message.replyContext.threadTs) {
-      return `slack:${message.chatId}:${message.replyContext.threadTs}`;
+    // Thread-aware platforms (Slack thread_ts, etc.)
+    if (message.replyContext.threadId) {
+      return `${message.platform}:${message.chatId}:${message.replyContext.threadId}`;
     }
     // Feishu: only use messageId as thread key for group replies (not every message)
     // In p2p (direct) chats, all messages belong to the same window session.

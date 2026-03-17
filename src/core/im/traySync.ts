@@ -8,14 +8,7 @@
 import { invoke } from '@tauri-apps/api/core';
 import { useIMChannelStore } from '../../stores/imChannelStore';
 import { useTriggerStore } from '../../stores/triggerStore';
-
-const PLATFORM_LABELS: Record<string, string> = {
-  feishu: '飞书',
-  dchat: 'D-Chat',
-  dingtalk: '钉钉',
-  wecom: '企微',
-  slack: 'Slack',
-};
+import { getPlatformDisplayName } from './platformLabels';
 
 interface IMTrayStatus {
   platform: string;
@@ -39,7 +32,7 @@ function syncTray() {
     const statusDot = ch.status === 'connected' ? '●' : ch.status === 'error' ? '✗' : '○';
     imChannels.push({
       platform: ch.platform,
-      label: `${statusDot} ${PLATFORM_LABELS[ch.platform] ?? ch.platform}`,
+      label: `${statusDot} ${getPlatformDisplayName(ch.platform)}`,
       sessions: sessions.length,
     });
   }

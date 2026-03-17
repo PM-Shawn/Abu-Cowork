@@ -62,7 +62,7 @@ function makeMessage(overrides: Partial<NormalizedIMMessage> = {}): NormalizedIM
     isDirect: false,
     chatId: 'chat1',
     platform: 'dchat',
-    replyContext: { platform: 'dchat', vchannelId: 'vc1' },
+    replyContext: { platform: 'dchat', chatId: 'vc1' },
     raw: {},
     ...overrides,
   };
@@ -138,7 +138,7 @@ describe('SessionMapper', () => {
   it('uses thread key for Slack with thread_ts', () => {
     const msg = makeMessage({
       platform: 'slack',
-      replyContext: { platform: 'slack', channelId: 'C1', threadTs: '123.456' },
+      replyContext: { platform: 'slack', chatId: 'C1', threadId: '123.456' },
     });
     const result = mapper.resolve(msg, makeChannel({ platform: 'slack' }), 'safe_tools');
     expect(result.session.key).toBe('slack:chat1:123.456');

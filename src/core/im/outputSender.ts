@@ -222,17 +222,10 @@ class OutputSender {
   }
 
   /**
-   * Extract chat ID from reply context based on platform
+   * Extract chat ID from reply context (unified field)
    */
   private extractChatIdFromReplyContext(replyContext?: IMReplyContext): string | undefined {
-    if (!replyContext) return undefined;
-    switch (replyContext.platform) {
-      case 'feishu': return replyContext.chatId;
-      case 'slack': return replyContext.channelId;
-      case 'wecom': return replyContext.chatid;
-      case 'dchat': return replyContext.vchannelId;
-      default: return undefined;
-    }
+    return replyContext?.chatId;
   }
 
   /**

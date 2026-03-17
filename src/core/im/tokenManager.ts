@@ -5,12 +5,13 @@
  * - Feishu: POST app_id + app_secret → tenant_access_token (2h TTL)
  * - Slack: Bot token IS the appSecret (no exchange needed)
  * - WeCom: GET corpid + corpsecret → access_token (2h TTL)
- * - D-Chat: POST app_id + app_secret → access_token
  * - DingTalk: uses sessionWebhook (no token needed for reply)
+ * - Plugin platforms: delegated to plugin's fetchToken()
  */
 
 import type { IMPlatform } from '../../types/im';
 import { getTauriFetch } from '../llm/tauriFetch';
+import { getIMPlugin } from './pluginRegistry';
 
 interface CachedToken {
   token: string;
@@ -65,6 +66,7 @@ class TokenManager {
     appId: string,
     appSecret: string,
   ): Promise<CachedToken> {
+    // Built-in platforms
     switch (platform) {
       case 'feishu':
         return this.fetchFeishuToken(appId, appSecret);
@@ -72,13 +74,18 @@ class TokenManager {
         return this.fetchSlackToken(appSecret);
       case 'wecom':
         return this.fetchWecomToken(appId, appSecret);
-      case 'dchat':
-        return this.fetchDchatToken(appId, appSecret);
       case 'dingtalk':
         // DingTalk uses sessionWebhook, not API token
         throw new Error('DingTalk does not use token-based auth for reply');
-      default:
+      default: {
+        // Fallback: plugin-registered token fetcher
+        const plugin = getIMPlugin(platform);
+        if (plugin?.fetchToken) {
+          const result = await plugin.fetchToken(appId, appSecret);
+          return { token: result.token, expiresAt: result.expiresAt };
+        }
         throw new Error(`Unsupported platform for token auth: ${platform}`);
+      }
     }
   }
 
@@ -161,43 +168,6 @@ class TokenManager {
     };
   }
 
-  /**
-   * D-Chat: access_token
-   * POST internal API with app_id + app_secret
-   * Actual endpoint depends on internal infra — using placeholder URL.
-   * Users can configure base URL in channel settings if needed.
-   */
-  private async fetchDchatToken(appId: string, appSecret: string): Promise<CachedToken> {
-    const f = await getTauriFetch();
-    const resp = await f(
-      'https://dchat-api.xiaojukeji.com/open-apis/auth/v1/token',
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ app_id: appId, app_secret: appSecret }),
-      },
-    );
-
-    if (!resp.ok) {
-      throw new Error(`[D-Chat] Token fetch failed: HTTP ${resp.status}`);
-    }
-
-    const data = await resp.json() as {
-      code?: number;
-      msg?: string;
-      access_token?: string;
-      expire?: number;
-    };
-
-    if (data.code !== 0 || !data.access_token) {
-      throw new Error(`[D-Chat] Token error: ${data.msg ?? 'unknown'}`);
-    }
-
-    return {
-      token: data.access_token,
-      expiresAt: Date.now() + (data.expire ?? 7200) * 1000,
-    };
-  }
 }
 
 export const tokenManager = new TokenManager();

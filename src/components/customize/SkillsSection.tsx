@@ -7,13 +7,17 @@ import { skillTemplates } from '@/data/marketplace/skills';
 import { skillLoader } from '@/core/skill/loader';
 import SkillEditor from './SkillEditor';
 import { Toggle } from '@/components/ui/toggle';
-import { Trash2, FileText, Folder, ChevronDown, ChevronRight, Pencil, MoreHorizontal, Eye, Code, Info, MessageCircle, Search, Plus, X, Wand2, PenLine, Upload, Download } from 'lucide-react';
+import { Trash2, FileText, Folder, ChevronDown, ChevronRight, Pencil, MoreHorizontal, Eye, Code, Info, MessageCircle, Search, Plus, X, Wand2, PenLine, Upload, Download, Package, Loader2, Check, AlertCircle } from 'lucide-react';
 import { remove } from '@tauri-apps/plugin-fs';
 import { save as saveDialog } from '@tauri-apps/plugin-dialog';
 import { writeFile } from '@tauri-apps/plugin-fs';
 import { packSkill } from '@/core/skill/packager';
+import { installSkillFromNpm, NpmInstallError } from '@/core/skill/npmInstaller';
+import type { InstallStep } from '@/core/skill/npmInstaller';
 import { useToastStore } from '@/stores/toastStore';
 import { getParentDir } from '@/utils/pathUtils';
+import { Input } from '@/components/ui/input';
+import { format } from '@/i18n';
 import type { Skill } from '@/types';
 import MarkdownRenderer from '@/components/chat/MarkdownRenderer';
 
@@ -143,6 +147,16 @@ export default function SkillsSection({ manualCreateTrigger, onAICreate, onManua
   const [showCreateMenu, setShowCreateMenu] = useState(false);
   // Content view mode: preview (rendered) or source (raw)
   const [contentViewMode, setContentViewMode] = useState<'preview' | 'source'>('preview');
+  // npm install dialog state
+  const [showNpmInstall, setShowNpmInstall] = useState(false);
+  const [npmPackageName, setNpmPackageName] = useState('');
+  const [npmRegistry, setNpmRegistry] = useState('');
+  const [npmInstalling, setNpmInstalling] = useState(false);
+  const [npmStep, setNpmStep] = useState<InstallStep | null>(null);
+  const [npmStepDetail, setNpmStepDetail] = useState('');
+  const [npmError, setNpmError] = useState('');
+  const [npmSuccess, setNpmSuccess] = useState('');
+  const skillRegistryDefault = useSettingsStore((s) => s.skillRegistry);
 
   // Open blank editor when manual create is triggered from parent
   useEffect(() => {
@@ -271,6 +285,56 @@ export default function SkillsSection({ manualCreateTrigger, onAICreate, onManua
       }
       return new Set([skillName]);
     });
+  };
+
+  // npm install handler
+  const handleNpmInstall = async (overwrite = false) => {
+    if (!npmPackageName.trim()) return;
+    setNpmInstalling(true);
+    setNpmError('');
+    setNpmSuccess('');
+    setNpmStep(null);
+
+    const registry = npmRegistry.trim() || skillRegistryDefault || undefined;
+    const addToast = useToastStore.getState().addToast;
+
+    try {
+      const result = await installSkillFromNpm(
+        npmPackageName.trim(),
+        registry,
+        {
+          overwrite,
+          onProgress: (step: InstallStep, detail?: string) => {
+            setNpmStep(step);
+            setNpmStepDetail(detail ?? '');
+          },
+        },
+      );
+      await refresh();
+      setNpmSuccess(result.skillName);
+      setSelectedSkill(result.skillName);
+      addToast({ type: 'success', title: format(t.toolbox.npmInstallSuccess, { name: result.skillName }) });
+    } catch (err) {
+      if (err instanceof NpmInstallError && err.code === 'ALREADY_EXISTS') {
+        setNpmError('ALREADY_EXISTS');
+      } else {
+        const msg = err instanceof Error ? err.message : String(err);
+        setNpmError(msg);
+        addToast({ type: 'error', title: t.toolbox.npmInstallFailed, message: msg });
+      }
+    } finally {
+      setNpmInstalling(false);
+    }
+  };
+
+  const resetNpmDialog = () => {
+    setShowNpmInstall(false);
+    setNpmPackageName('');
+    setNpmRegistry('');
+    setNpmError('');
+    setNpmSuccess('');
+    setNpmStep(null);
+    setNpmInstalling(false);
   };
 
   // Close menus when clicking outside
@@ -421,6 +485,13 @@ export default function SkillsSection({ manualCreateTrigger, onAICreate, onManua
                           <span>{t.toolbox.uploadFile}</span>
                         </button>
                       )}
+                      <button
+                        onClick={() => { setShowCreateMenu(false); setShowNpmInstall(true); }}
+                        className="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-[#29261b] hover:bg-[#f0ede6] transition-colors"
+                      >
+                        <Package className="h-3.5 w-3.5 text-[#888579]" />
+                        <span>{t.toolbox.installFromNpm}</span>
+                      </button>
                     </div>
                   )}
                 </div>
@@ -617,6 +688,114 @@ export default function SkillsSection({ manualCreateTrigger, onAICreate, onManua
           </div>
         )}
       </div>
+
+      {/* npm install dialog */}
+      {showNpmInstall && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 backdrop-blur-sm">
+          <div className="w-[420px] bg-white rounded-xl shadow-xl border border-[#e8e4dd] overflow-hidden">
+            {/* Header */}
+            <div className="flex items-center justify-between px-5 py-3.5 border-b border-[#e8e4dd]/60">
+              <div className="flex items-center gap-2">
+                <Package className="h-4 w-4 text-[#d97757]" />
+                <h2 className="text-sm font-semibold text-[#29261b]">{t.toolbox.installFromNpm}</h2>
+              </div>
+              <button onClick={resetNpmDialog} className="p-1.5 rounded-lg text-[#888579] hover:text-[#29261b] hover:bg-[#f5f3ee] transition-colors">
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+
+            {/* Body */}
+            <div className="px-5 py-4 space-y-3">
+              {/* Package name */}
+              <div>
+                <label className="block text-xs font-medium text-[#29261b]/70 mb-1">{t.toolbox.npmPackageName}</label>
+                <Input
+                  type="text"
+                  placeholder={t.toolbox.npmPackagePlaceholder}
+                  value={npmPackageName}
+                  onChange={(e) => { setNpmPackageName(e.target.value); setNpmError(''); setNpmSuccess(''); }}
+                  disabled={npmInstalling}
+                />
+              </div>
+
+              {/* Registry (optional) */}
+              <div>
+                <label className="block text-xs font-medium text-[#29261b]/70 mb-1">{t.toolbox.npmRegistry}</label>
+                <Input
+                  type="text"
+                  placeholder={skillRegistryDefault || t.toolbox.npmRegistryPlaceholder}
+                  value={npmRegistry}
+                  onChange={(e) => setNpmRegistry(e.target.value)}
+                  disabled={npmInstalling}
+                />
+                <p className="text-[11px] text-[#888579] mt-1">{t.toolbox.npmRegistryHint}</p>
+              </div>
+
+              {/* Progress */}
+              {npmInstalling && npmStep && (
+                <div className="flex items-center gap-2 py-2 px-3 bg-[#faf8f5] rounded-lg">
+                  <Loader2 className="h-3.5 w-3.5 text-[#d97757] animate-spin shrink-0" />
+                  <span className="text-xs text-[#656358]">
+                    {npmStep === 'fetching_metadata' && t.toolbox.npmStepFetchingMetadata}
+                    {npmStep === 'downloading' && format(t.toolbox.npmStepDownloading, { version: npmStepDetail })}
+                    {npmStep === 'extracting' && t.toolbox.npmStepExtracting}
+                    {npmStep === 'installing' && format(t.toolbox.npmStepInstalling, { name: npmStepDetail })}
+                  </span>
+                </div>
+              )}
+
+              {/* Success */}
+              {npmSuccess && (
+                <div className="flex items-center gap-2 py-2 px-3 bg-green-50 rounded-lg">
+                  <Check className="h-3.5 w-3.5 text-green-600 shrink-0" />
+                  <span className="text-xs text-green-700">{format(t.toolbox.npmInstallSuccess, { name: npmSuccess })}</span>
+                </div>
+              )}
+
+              {/* Error */}
+              {npmError && npmError !== 'ALREADY_EXISTS' && (
+                <div className="flex items-start gap-2 py-2 px-3 bg-red-50 rounded-lg">
+                  <AlertCircle className="h-3.5 w-3.5 text-red-500 shrink-0 mt-0.5" />
+                  <span className="text-xs text-red-600">{npmError}</span>
+                </div>
+              )}
+
+              {/* Already exists — offer overwrite */}
+              {npmError === 'ALREADY_EXISTS' && (
+                <div className="flex items-center justify-between py-2 px-3 bg-amber-50 rounded-lg">
+                  <div className="flex items-center gap-2">
+                    <AlertCircle className="h-3.5 w-3.5 text-amber-600 shrink-0" />
+                    <span className="text-xs text-amber-700">{format(t.toolbox.npmAlreadyExists, { name: npmPackageName.trim() })}</span>
+                  </div>
+                  <button
+                    onClick={() => { setNpmError(''); handleNpmInstall(true); }}
+                    className="text-xs font-medium text-[#d97757] hover:text-[#c5664a] transition-colors"
+                  >
+                    {t.toolbox.npmOverwrite}
+                  </button>
+                </div>
+              )}
+            </div>
+
+            {/* Footer */}
+            <div className="flex items-center justify-end gap-2 px-5 py-3 border-t border-[#e8e4dd]/60">
+              <button onClick={resetNpmDialog} className="px-4 py-1.5 rounded-lg text-sm font-medium text-[#656358] hover:bg-[#f5f3ee] transition-colors">
+                {npmSuccess ? t.common.close : t.common.cancel}
+              </button>
+              {!npmSuccess && (
+                <button
+                  onClick={() => handleNpmInstall()}
+                  disabled={!npmPackageName.trim() || npmInstalling}
+                  className="flex items-center gap-1.5 px-4 py-1.5 rounded-lg text-sm font-medium bg-[#d97757] text-white hover:bg-[#c5664a] disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                >
+                  {npmInstalling ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Package className="h-3.5 w-3.5" />}
+                  {t.toolbox.npmFindAndInstall}
+                </button>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

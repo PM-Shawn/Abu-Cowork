@@ -40,6 +40,7 @@ import { imChannelRouter } from '@/core/im/channelRouter';
 import { startTraySync, stopTraySync } from '@/core/im/traySync';
 import { startInboundDispatcher, stopInboundDispatcher } from '@/core/im/inboundDispatcher';
 import { startFeishuWsManager, stopFeishuWsManager } from '@/core/im/feishuWsManager';
+import { loadIMPlugins } from '@/core/im/pluginLoader';
 import { reconcileIMSessions } from '@/core/im/sessionReconcile';
 import { initMCPStoreSync, cleanupMCPStoreSync } from '@/stores/mcpStore';
 import { initFileWatchers, stopAllWatchers } from '@/core/agent/fileWatcher';
@@ -120,15 +121,22 @@ function App() {
   }, [refreshDiscovery]);
 
   // Start scheduler engine and trigger engine
+  // Plugins must load BEFORE triggerEngine so the HTTP server knows to bind 0.0.0.0
   useEffect(() => {
-    schedulerEngine.start();
-    triggerEngine.start();
-    imChannelRouter.start();
-    reconcileIMSessions();
-    import('@/core/memory/migrator').then(m => m.migrateIfNeeded()).catch(() => {});
-    startInboundDispatcher();
-    startTraySync();
-    startFeishuWsManager();
+    const init = async () => {
+      // Load IM plugins first — determines whether trigger server binds LAN or localhost
+      await loadIMPlugins().catch((err) => console.warn('[App] IM plugin loading failed:', err));
+
+      schedulerEngine.start();
+      triggerEngine.start();
+      imChannelRouter.start();
+      reconcileIMSessions();
+      import('@/core/memory/migrator').then(m => m.migrateIfNeeded()).catch(() => {});
+      startInboundDispatcher();
+      startTraySync();
+      startFeishuWsManager();
+    };
+    init();
     return () => {
       schedulerEngine.stop();
       triggerEngine.stop();

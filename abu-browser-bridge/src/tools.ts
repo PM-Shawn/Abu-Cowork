@@ -290,7 +290,31 @@ export function registerTools(server: McpServer): void {
     }
   );
 
-  // 14. browser_connection_status
+  // 14. browser_screenshot_full_page
+  server.tool(
+    'screenshot_full_page',
+    'Take a full-page screenshot by scrolling and stitching the entire page content. Returns a base64-encoded PNG image of the complete page. Use this when the user asks for a "long screenshot" or wants to capture content beyond the visible viewport. This is slower than a regular screenshot.',
+    {
+      tabId: z.number().describe('Tab ID from get_tabs'),
+    },
+    async ({ tabId }) => {
+      ensureConnected();
+      // Full-page capture needs more time: scroll + multiple captures + stitch
+      const res = await sendToExtension('screenshot_full_page', { tabId }, 120_000);
+      if (res.success && typeof res.data === 'string') {
+        return {
+          content: [{
+            type: 'image' as const,
+            data: res.data.replace(/^data:image\/png;base64,/, ''),
+            mimeType: 'image/png' as const,
+          }]
+        };
+      }
+      return { content: [{ type: 'text' as const, text: formatResult(res) }] };
+    }
+  );
+
+  // 15. browser_connection_status
   server.tool(
     'connection_status',
     'Check whether the Chrome Extension is connected to this bridge. Use this to verify the extension is ready before performing browser actions.',

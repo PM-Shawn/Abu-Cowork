@@ -3,7 +3,6 @@
  */
 import { describe, it, expect } from 'vitest';
 import type { AbuMessage } from './types';
-import { DchatAdapter } from './dchat';
 import { FeishuAdapter } from './feishu';
 import { DingtalkAdapter } from './dingtalk';
 import { WecomAdapter } from './wecom';
@@ -13,41 +12,7 @@ import { getAdapter, getAvailablePlatforms, registerAdapter } from './registry';
 import { BaseAdapter } from './base';
 import type { AdapterConfig } from './types';
 
-// ── D-Chat ──
-
-describe('DchatAdapter', () => {
-  const adapter = new DchatAdapter();
-
-  it('short message → plain text', () => {
-    const msg: AbuMessage = { content: 'hello' };
-    const payload = adapter.formatOutbound(msg) as { text: string; attachments?: unknown };
-    expect(payload.text).toBe('hello');
-    expect(payload.attachments).toBeUndefined();
-  });
-
-  it('long message → attachment format', () => {
-    const msg: AbuMessage = {
-      content: 'a'.repeat(3001),
-      title: 'Test',
-      color: 'danger',
-      footer: 'Abu AI',
-    };
-    const payload = adapter.formatOutbound(msg) as {
-      text: string;
-      attachments: { title: string; text: string; color: string; footer: string }[];
-    };
-    expect(payload.attachments).toHaveLength(1);
-    expect(payload.attachments[0].title).toBe('Test');
-    expect(payload.attachments[0].color).toBe('#e53935');
-    expect(payload.attachments[0].footer).toBe('Abu AI');
-  });
-
-  it('message with title → attachment format even if short', () => {
-    const msg: AbuMessage = { content: 'short', title: 'Title' };
-    const payload = adapter.formatOutbound(msg) as { attachments?: unknown };
-    expect(payload.attachments).toBeDefined();
-  });
-});
+// D-Chat adapter tests moved to plugin — see ~/.abu/plugins/dchat/
 
 // ── Feishu ──
 
@@ -260,8 +225,7 @@ describe('BaseAdapter chunking', () => {
 // ── Registry ──
 
 describe('Adapter Registry', () => {
-  it('getAdapter returns known adapters', () => {
-    expect(getAdapter('dchat')).toBeDefined();
+  it('getAdapter returns known built-in adapters', () => {
     expect(getAdapter('feishu')).toBeDefined();
     expect(getAdapter('dingtalk')).toBeDefined();
     expect(getAdapter('wecom')).toBeDefined();
@@ -273,11 +237,10 @@ describe('Adapter Registry', () => {
     expect(getAdapter('telegram')).toBeUndefined();
   });
 
-  it('getAvailablePlatforms returns all 6', () => {
+  it('getAvailablePlatforms returns built-in platforms', () => {
     const platforms = getAvailablePlatforms();
-    expect(platforms).toHaveLength(6);
+    expect(platforms.length).toBeGreaterThanOrEqual(5);
     const names = platforms.map((p) => p.platform);
-    expect(names).toContain('dchat');
     expect(names).toContain('feishu');
     expect(names).toContain('slack');
   });

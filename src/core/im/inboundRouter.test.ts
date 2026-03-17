@@ -5,46 +5,7 @@ import { describe, it, expect } from 'vitest';
 import { parseInboundMessage } from './inboundRouter';
 
 describe('parseInboundMessage', () => {
-  describe('D-Chat', () => {
-    it('parses basic message', () => {
-      const msg = parseInboundMessage('dchat', {
-        sender: { uid: 'u1', nickname: '张三' },
-        message: { text: 'hello world', vchannel_id: 'vc1', vchannel_name: '技术群' },
-      });
-      expect(msg).not.toBeNull();
-      expect(msg!.senderId).toBe('u1');
-      expect(msg!.senderName).toBe('张三');
-      expect(msg!.text).toBe('hello world');
-      expect(msg!.platform).toBe('dchat');
-      expect(msg!.replyContext.vchannelId).toBe('vc1');
-    });
-
-    it('detects @Abu mention and strips it', () => {
-      const msg = parseInboundMessage('dchat', {
-        sender: { uid: 'u1', nickname: '张三' },
-        message: { text: '@Abu 帮我查日志', vchannel_id: 'vc1' },
-      });
-      expect(msg!.isMention).toBe(true);
-      expect(msg!.text).toBe('帮我查日志');
-    });
-
-    it('skips bot messages', () => {
-      const msg = parseInboundMessage('dchat', {
-        sender: { uid: 'bot1', nickname: 'Bot', is_bot: true },
-        message: { text: 'auto reply', vchannel_id: 'vc1' },
-      });
-      expect(msg).toBeNull();
-    });
-
-    it('detects direct messages', () => {
-      const msg = parseInboundMessage('dchat', {
-        sender: { uid: 'u1', nickname: '张三' },
-        message: { text: 'hello', vchannel_id: 'vc1' },
-        chat_type: 'direct',
-      });
-      expect(msg!.isDirect).toBe(true);
-    });
-  });
+  // D-Chat tests moved to plugin — see ~/.abu/plugins/dchat/
 
   describe('Feishu', () => {
     it('parses event callback format', () => {
@@ -137,8 +98,8 @@ describe('parseInboundMessage', () => {
       expect(msg!.senderId).toBe('U67890');
       expect(msg!.text).toBe('help me debug');
       expect(msg!.isMention).toBe(true);
-      expect(msg!.replyContext.channelId).toBe('C111');
-      expect(msg!.replyContext.threadTs).toBe('1234567890.123456');
+      expect(msg!.replyContext.chatId).toBe('C111');
+      expect(msg!.replyContext.threadId).toBe('1234567890.123456');
     });
 
     it('skips bot messages (subtype)', () => {
@@ -181,7 +142,7 @@ describe('parseInboundMessage', () => {
       expect(msg!.senderName).toBe('王五');
       expect(msg!.text).toBe('检查服务状态');
       expect(msg!.isMention).toBe(true);
-      expect(msg!.replyContext.chatid).toBe('chat_group1');
+      expect(msg!.replyContext.chatId).toBe('chat_group1');
     });
 
     it('skips non-text messages', () => {

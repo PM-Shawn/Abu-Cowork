@@ -12,6 +12,7 @@ import type {
   IMCapabilityLevel,
 } from '../types/imChannel';
 import type { IMPlatform } from '../types/im';
+import { needsActiveConnection } from '../core/im/pluginRegistry';
 
 function generateId(): string {
   return Date.now().toString(36) + Math.random().toString(36).substring(2, 8);
@@ -104,9 +105,9 @@ export const useIMChannelStore = create<IMChannelStore>()(
           if ('enabled' in data && typeof data.enabled !== 'boolean') return;
           Object.assign(channel, data);
           channel.updatedAt = Date.now();
-          // For non-Feishu (webhook) platforms, set status based on enabled toggle.
-          // Feishu uses WebSocket with its own status lifecycle managed by feishuWsManager.
-          if ('enabled' in data && channel.platform !== 'feishu') {
+          // Webhook platforms: enabled = connected. Active-connection platforms
+          // (Feishu WS, DChat heartbeat, etc.) manage their own status lifecycle.
+          if ('enabled' in data && !needsActiveConnection(channel.platform)) {
             channel.status = data.enabled ? 'connected' : 'disconnected';
           }
         });
@@ -236,8 +237,9 @@ export const useIMChannelStore = create<IMChannelStore>()(
           channel.lastError = undefined;
           // Fix: repair enabled field if corrupted to undefined (from prior Toggle bug)
           if (channel.enabled === undefined) channel.enabled = false;
-          // Webhook platforms are ready immediately when enabled; Feishu uses WS lifecycle
-          channel.status = (channel.enabled && channel.platform !== 'feishu') ? 'connected' : 'disconnected';
+          // Webhook platforms are ready immediately when enabled;
+          // active-connection platforms (Feishu WS, DChat heartbeat) start disconnected
+          channel.status = (channel.enabled && !needsActiveConnection(channel.platform)) ? 'connected' : 'disconnected';
         }
         // Clean up archived sessions older than 24h
         const now = Date.now();

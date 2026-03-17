@@ -1,12 +1,12 @@
 //! Local HTTP trigger server for event-driven automation.
 //!
-//! Listens on `127.0.0.1` (localhost only) and accepts POST requests
-//! to fire triggers. Events are forwarded to the frontend via Tauri events.
+//! Listens on a configurable bind address (default: `127.0.0.1`) and accepts
+//! POST requests to fire triggers. Events are forwarded to the frontend via Tauri events.
 //!
 //! Endpoints:
 //! - `GET  /health`              — health check
 //! - `POST /trigger/{id}`        — fire a trigger
-//! - `POST /im/{platform}/webhook` — IM platform inbound webhook (Phase 1B)
+//! - `POST /im/{platform}/webhook` — IM platform inbound webhook
 
 use std::io::{BufRead, BufReader, Read as IoRead, Write};
 use std::net::TcpListener;
@@ -24,23 +24,25 @@ pub fn get_trigger_port() -> Option<u16> {
     TRIGGER_PORT.get().copied()
 }
 
-/// Start the trigger HTTP server on the given port.
+/// Start the trigger HTTP server on the given port and bind address.
 /// If port is 0, an available port is chosen automatically.
+/// bind_addr: "127.0.0.1" for localhost-only, "0.0.0.0" for LAN access.
 /// Returns the actual port.
-pub fn start_server(app: AppHandle, port: u16) -> Result<u16, String> {
+pub fn start_server(app: AppHandle, port: u16, bind_addr: &str) -> Result<u16, String> {
     if TRIGGER_PORT.get().is_some() {
         return Err("Trigger server already running".into());
     }
 
-    let addr = format!("127.0.0.1:{}", port);
+    let addr = format!("{}:{}", bind_addr, port);
     let listener = TcpListener::bind(&addr)
         .map_err(|e| format!("Failed to bind {}: {}", addr, e))?;
 
     let actual_port = listener.local_addr().unwrap().port();
     TRIGGER_PORT.set(actual_port).ok();
 
+    let bind_display = bind_addr.to_string();
     thread::spawn(move || {
-        eprintln!("[TriggerServer] Listening on 127.0.0.1:{}", actual_port);
+        eprintln!("[TriggerServer] Listening on {}:{}", bind_display, actual_port);
         for stream in listener.incoming().flatten() {
             let app = app.clone();
             thread::spawn(move || {
@@ -136,15 +138,19 @@ fn handle_connection(
                 }
             }
         }
-        // Phase 1B: IM platform inbound webhooks
+        // IM platform inbound webhooks
         // Route: POST /im/{platform}/webhook
-        // Supported platforms: dchat, feishu, dingtalk, wecom, slack
+        // Accepts any platform name (built-in + plugin-registered)
         ("POST", p) if p.starts_with("/im/") && p.ends_with("/webhook") => {
             let inner = &p[4..p.len()-8]; // strip "/im/" and "/webhook"
             let platform = inner.trim_matches('/');
 
-            if !matches!(platform, "dchat" | "feishu" | "dingtalk" | "wecom" | "slack") {
-                return send_json(&mut client, 400, r#"{"success":false,"message":"Unknown IM platform"}"#);
+            // Validate platform name: alphanumeric + underscore/hyphen, max 32 chars
+            if platform.is_empty()
+                || platform.len() > 32
+                || !platform.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+            {
+                return send_json(&mut client, 400, r#"{"success":false,"message":"Invalid platform name"}"#);
             }
 
             let body = read_body(&mut reader, content_length);
@@ -159,7 +165,6 @@ fn handle_connection(
                 }
             }
 
-            // DingTalk returns empty 200 for verification
             // Slack URL verification challenge
             if platform == "slack" {
                 if let Ok(v) = serde_json::from_str::<serde_json::Value>(&body) {
@@ -195,10 +200,36 @@ fn handle_connection(
                 }
             }
         }
+        // Short alias: POST /{platform} — single-segment webhook path
+        // Some IM gateways only support simple to_path values (e.g. /dchat, /wecom).
+        // Maps to the same handler as /im/{platform}/webhook.
+        ("POST", p) if is_short_platform_path(p) => {
+            let platform = &p[1..]; // strip leading /
+            let body = read_body(&mut reader, content_length);
+            let payload: serde_json::Value = match serde_json::from_str(&body) {
+                Ok(v) => v,
+                Err(_) => {
+                    return send_json(&mut client, 400, r#"{"success":false,"message":"Invalid JSON body"}"#);
+                }
+            };
+            let event_data = serde_json::json!({
+                "platform": platform,
+                "payload": payload
+            });
+            let _ = app.emit("im-inbound-event", event_data);
+            send_json(&mut client, 200, "{}")
+        }
         _ => {
             send_json(&mut client, 404, r#"{"success":false,"message":"Not found"}"#)
         }
     }
+}
+
+/// Check if path is a short platform webhook alias: /somename (no sub-paths, alphanum + _/-)
+fn is_short_platform_path(path: &str) -> bool {
+    if path.len() <= 1 || path.len() > 33 { return false; }
+    let name = &path[1..]; // strip leading /
+    !name.contains('/') && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
 }
 
 /// Read HTTP body from a buffered reader, capped at 1MB.
@@ -235,8 +266,9 @@ fn send_json(client: &mut std::net::TcpStream, code: u16, body: &str) -> std::io
 // ── Tauri commands ──
 
 #[tauri::command]
-pub fn start_trigger_server(app: AppHandle, port: u16) -> Result<u16, String> {
-    start_server(app, port)
+pub fn start_trigger_server(app: AppHandle, port: u16, bind_addr: Option<String>) -> Result<u16, String> {
+    let addr = bind_addr.as_deref().unwrap_or("127.0.0.1");
+    start_server(app, port, addr)
 }
 
 #[tauri::command]

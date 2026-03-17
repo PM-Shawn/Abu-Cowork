@@ -7,6 +7,7 @@ import { X } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { Select } from '@/components/ui/select';
 import { outputSender } from '@/core/im/outputSender';
+import { getOutputPlatformOptions } from '@/core/im/platformLabels';
 import type { TriggerFilterType, TriggerSourceType, OutputPlatform, OutputExtractMode } from '@/types/trigger';
 import type { IMListenScope } from '@/types/trigger';
 import { triggerEngine } from '@/core/trigger/triggerEngine';
@@ -54,7 +55,7 @@ export default function TriggerEditor() {
   // Output config state
   const [outputEnabled, setOutputEnabled] = useState(false);
   const [outputTarget, setOutputTarget] = useState<'webhook' | 'im_channel'>('webhook');
-  const [outputPlatform, setOutputPlatform] = useState<OutputPlatform>('dchat');
+  const [outputPlatform, setOutputPlatform] = useState<OutputPlatform>('feishu');
   const [outputWebhookUrl, setOutputWebhookUrl] = useState('');
   const [outputChannelId, setOutputChannelId] = useState('');
   const [outputChatIds, setOutputChatIds] = useState('');
@@ -767,26 +768,20 @@ export default function TriggerEditor() {
                     {t.trigger.outputPlatform}
                   </label>
                   <div className="flex flex-wrap gap-1.5">
-                    {(['dchat', 'feishu', 'dingtalk', 'wecom', 'slack', 'custom'] as OutputPlatform[]).map((p) => {
-                      const labels: Record<OutputPlatform, string> = {
-                        dchat: 'D-Chat', feishu: '飞书', dingtalk: '钉钉',
-                        wecom: '企业微信', slack: 'Slack', custom: 'HTTP',
-                      };
-                      return (
+                    {getOutputPlatformOptions().map((opt) => (
                         <button
-                          key={p}
-                          onClick={() => setOutputPlatform(p)}
+                          key={opt.value}
+                          onClick={() => setOutputPlatform(opt.value as OutputPlatform)}
                           className={cn(
                             'px-2.5 py-1 rounded-lg text-[11px] font-medium transition-colors',
-                            outputPlatform === p
+                            outputPlatform === opt.value
                               ? 'bg-[#d97757] text-white'
                               : 'bg-[#f5f3ee] text-[#3d3929] hover:bg-[#e8e5de]'
                           )}
                         >
-                          {labels[p]}
+                          {opt.label}
                         </button>
-                      );
-                    })}
+                    ))}
                   </div>
                 </div>
 

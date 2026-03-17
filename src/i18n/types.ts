@@ -371,6 +371,24 @@ export interface TranslationDict {
     nameFormatHint: string;
     aiAssistedCreate: string;
     installFailed: string;
+    // npm registry install
+    installFromNpm: string;
+    npmPackageName: string;
+    npmPackagePlaceholder: string;
+    npmRegistry: string;
+    npmRegistryPlaceholder: string;
+    npmRegistryHint: string;
+    npmStepFetchingMetadata: string;
+    npmStepDownloading: string;
+    npmStepExtracting: string;
+    npmStepInstalling: string;
+    npmInstallSuccess: string;
+    npmInstallFailed: string;
+    npmNoSkillMd: string;
+    npmPackageNotFound: string;
+    npmAlreadyExists: string;
+    npmOverwrite: string;
+    npmFindAndInstall: string;
     // Agents Section
     installedAgents: string;
     noInstalledAgents: string;

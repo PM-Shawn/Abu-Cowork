@@ -11,22 +11,7 @@ import { useI18n } from '@/i18n';
 import type { Conversation } from '@/types';
 import type { IMCapabilityLevel } from '@/types/imChannel';
 import { MoreHorizontal, Clock, MessageSquare, Shield, Hash, XCircle } from 'lucide-react';
-
-const PLATFORM_SHORT: Record<string, string> = {
-  feishu: '飞',
-  dchat: 'DC',
-  dingtalk: '钉',
-  wecom: '微',
-  slack: 'SL',
-};
-
-const PLATFORM_LABELS: Record<string, string> = {
-  feishu: '飞书',
-  dchat: 'D-Chat',
-  dingtalk: '钉钉',
-  wecom: '企微',
-  slack: 'Slack',
-};
+import { getPlatformShortLabel, getPlatformDisplayName } from '@/core/im/platformLabels';
 
 function formatTime(ts: number): string {
   return new Date(ts).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
@@ -73,7 +58,7 @@ export default function IMInfoBar({ conversation }: IMInfoBarProps) {
   const rounds = session?.messageCount ?? conversation.messages.filter((m) => m.role === 'user').length;
   const startTime = conversation.createdAt;
   const chatName = session?.chatName;
-  const platformLabel = PLATFORM_LABELS[platform] ?? platform;
+  const platformLabel = getPlatformDisplayName(platform);
 
   // Title: same as sidebar (conversation.title), fallback to platform label
   const title = conversation.title || platformLabel;
@@ -89,7 +74,7 @@ export default function IMInfoBar({ conversation }: IMInfoBarProps) {
       {/* Platform icon + title */}
       <div className="flex items-center gap-1.5 min-w-0">
         <span className="shrink-0 h-4 w-4 rounded text-[8px] font-bold leading-4 text-center bg-[#d97757]/15 text-[#d97757]">
-          {PLATFORM_SHORT[platform] ?? platform.slice(0, 2).toUpperCase()}
+          {getPlatformShortLabel(platform)}
         </span>
         <span className="font-medium text-[#29261b] truncate">{title}</span>
         <span className="text-[#d5d3cb]">·</span>

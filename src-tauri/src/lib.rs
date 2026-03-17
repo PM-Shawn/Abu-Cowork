@@ -867,6 +867,59 @@ fn window_show(app: AppHandle) {
     show_main_window(&app);
 }
 
+/// Get the local LAN IPv4 address (non-loopback, non-VPN).
+/// Used by IM plugin heartbeat to register callback URL.
+///
+/// Strategy: run `ifconfig en0` to get the physical interface IP on macOS.
+/// Falls back to UDP socket trick if shell fails.
+#[tauri::command]
+fn get_local_ip() -> Option<String> {
+    // Strategy 1: Parse ifconfig en0 (macOS physical Ethernet/WiFi)
+    #[cfg(target_os = "macos")]
+    {
+        if let Ok(output) = StdCommand::new("ifconfig")
+            .arg("en0")
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .output()
+        {
+            let text = String::from_utf8_lossy(&output.stdout);
+            for line in text.lines() {
+                let trimmed = line.trim();
+                if trimmed.starts_with("inet ") && !trimmed.contains("127.0.0.1") {
+                    // Format: "inet 172.23.188.111 netmask ..."
+                    if let Some(ip) = trimmed.split_whitespace().nth(1) {
+                        if !ip.starts_with("198.18.") {
+                            return Some(ip.to_string());
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Strategy 2: UDP socket trick (works cross-platform but may pick VPN)
+    {
+        use std::net::UdpSocket;
+        if let Ok(socket) = UdpSocket::bind("0.0.0.0:0") {
+            // Connect to an internal IP to prefer LAN route over VPN
+            let targets = ["10.0.0.1:80", "172.16.0.1:80", "192.168.1.1:80", "8.8.8.8:80"];
+            for target in &targets {
+                if socket.connect(target).is_ok() {
+                    if let Ok(addr) = socket.local_addr() {
+                        let ip = addr.ip().to_string();
+                        if ip != "0.0.0.0" && ip != "127.0.0.1" && !ip.starts_with("198.18.") {
+                            return Some(ip);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    None
+}
+
 /// IM channel status entry for tray menu display
 #[derive(serde::Deserialize)]
 struct IMTrayStatus {
@@ -1005,6 +1058,7 @@ pub fn run() {
             computer_use::request_screen_recording,
             trigger_server::start_trigger_server,
             trigger_server::get_trigger_server_port,
+            get_local_ip,
             feishu_ws::start_feishu_ws,
             feishu_ws::stop_feishu_ws,
             feishu_ws::get_feishu_ws_status,

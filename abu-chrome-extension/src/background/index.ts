@@ -444,6 +444,17 @@ async function handleRequest(request: BridgeRequest): Promise<BridgeResponse> {
         return { id, success: true, data: dataUrl };
       }
 
+      case 'screenshot_full_page': {
+        const tabId = payload.tabId as number;
+        const tab = await chrome.tabs.get(tabId);
+        if (!tab.active) {
+          await chrome.tabs.update(tabId, { active: true });
+          await new Promise(r => setTimeout(r, 300));
+        }
+        const result = await captureFullPage(tabId, tab.windowId);
+        return { id, success: true, data: result };
+      }
+
       case 'navigate': {
         const tabId = payload.tabId as number;
         const navAction = (payload.action as string) ?? 'goto';
@@ -614,6 +625,91 @@ chrome.alarms.onAlarm.addListener((alarm) => {
     }
   }
 });
+
+// --- Full-Page Screenshot ---
+
+let offscreenCreated = false;
+
+async function ensureOffscreen(): Promise<void> {
+  if (offscreenCreated) return;
+  // Check if already exists (e.g. after SW restart)
+  const contexts = await chrome.runtime.getContexts({
+    contextTypes: [chrome.runtime.ContextType.OFFSCREEN_DOCUMENT as chrome.runtime.ContextType],
+  });
+  if (contexts.length > 0) {
+    offscreenCreated = true;
+    return;
+  }
+  await chrome.offscreen.createDocument({
+    url: 'offscreen.html',
+    reasons: [chrome.offscreen.Reason.CANVAS],
+    justification: 'Stitching full-page screenshot slices on canvas',
+  });
+  offscreenCreated = true;
+}
+
+/**
+ * Capture a full-page screenshot by scrolling and stitching viewport slices.
+ *
+ * Flow:
+ * 1. Content script reports page dimensions & hides fixed/sticky elements
+ * 2. Background orchestrates scroll → captureVisibleTab loop
+ * 3. Offscreen document stitches slices on canvas
+ * 4. Content script restores fixed/sticky elements
+ */
+async function captureFullPage(tabId: number, windowId: number): Promise<string> {
+  // Step 1: Get page dimensions and prepare (hide fixed elements)
+  const dims = await sendToContentScript(tabId, 'fullpage_prepare', {}) as {
+    scrollHeight: number;
+    viewportHeight: number;
+    viewportWidth: number;
+    scrollX: number;
+    scrollY: number;
+  };
+
+  const { scrollHeight, viewportHeight, viewportWidth, scrollX, scrollY } = dims;
+  const sliceCount = Math.ceil(scrollHeight / viewportHeight);
+
+  // Step 2: Capture each viewport slice
+  const slices: string[] = [];
+  try {
+    for (let i = 0; i < sliceCount; i++) {
+      const scrollTop = i * viewportHeight;
+      // Scroll to position via content script (instant, no smooth)
+      await sendToContentScript(tabId, 'fullpage_scroll', { scrollTop });
+      // Wait for rendering + respect Chrome's captureVisibleTab rate limit (max 2/sec)
+      await new Promise(r => setTimeout(r, 600));
+      // Capture the visible viewport
+      const dataUrl = await chrome.tabs.captureVisibleTab(windowId, { format: 'png' });
+      slices.push(dataUrl);
+    }
+  } finally {
+    // Step 4: Restore original state (fixed elements + scroll position)
+    await sendToContentScript(tabId, 'fullpage_restore', { scrollX, scrollY }).catch(() => {
+      // Best-effort restore
+    });
+  }
+
+  // Calculate actual height of last slice
+  const lastSliceHeight = scrollHeight - (sliceCount - 1) * viewportHeight;
+
+  // Step 3: Stitch slices in offscreen document
+  await ensureOffscreen();
+  const stitchResult = await chrome.runtime.sendMessage({
+    type: 'stitch',
+    slices,
+    viewportWidth,
+    viewportHeight,
+    totalHeight: scrollHeight,
+    lastSliceHeight,
+  }) as { success: boolean; data?: string; error?: string };
+
+  if (!stitchResult.success) {
+    throw new Error(`Stitch failed: ${stitchResult.error}`);
+  }
+
+  return stitchResult.data!;
+}
 
 // --- Initialize ---
 connect();

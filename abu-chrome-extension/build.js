@@ -9,6 +9,7 @@ const entryPoints = [
   { in: 'src/background/index.ts', out: 'background' },
   { in: 'src/content/index.ts', out: 'content' },
   { in: 'src/popup/popup.ts', out: 'popup' },
+  { in: 'src/offscreen/offscreen.ts', out: 'offscreen' },
 ];
 
 const buildOptions = {
@@ -36,6 +37,9 @@ writeFileSync('dist/manifest.json', JSON.stringify(manifest, null, 2));
 let popupHtml = readFileSync('src/popup/index.html', 'utf-8');
 popupHtml = popupHtml.replace('__VERSION__', version);
 writeFileSync('dist/popup.html', popupHtml);
+
+// Copy offscreen HTML
+cpSync('src/offscreen/offscreen.html', 'dist/offscreen.html');
 
 try { cpSync('icons', 'dist/icons', { recursive: true }); } catch { /* no icons yet */ }
 

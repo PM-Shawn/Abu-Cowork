@@ -6,6 +6,7 @@
  */
 
 import type { IMPlatform, IMReplyContext } from '../../types/im';
+import { getIMPlugin } from './pluginRegistry';
 
 /** Normalized inbound IM message */
 export interface NormalizedIMMessage {
@@ -39,9 +40,8 @@ export function parseInboundMessage(
   platform: string,
   payload: Record<string, unknown>,
 ): NormalizedIMMessage | null {
+  // Built-in parsers
   switch (platform) {
-    case 'dchat':
-      return parseDChat(payload);
     case 'feishu':
       return parseFeishu(payload);
     case 'dingtalk':
@@ -50,47 +50,14 @@ export function parseInboundMessage(
       return parseWeCom(payload);
     case 'slack':
       return parseSlack(payload);
-    default:
+    default: {
+      // Fallback: plugin-registered parser
+      const plugin = getIMPlugin(platform);
+      if (plugin) return plugin.parseInbound(payload);
       console.warn(`[InboundRouter] Unknown platform: ${platform}`);
       return null;
+    }
   }
-}
-
-// ── D-Chat ──
-
-function parseDChat(payload: Record<string, unknown>): NormalizedIMMessage | null {
-  // D-Chat webhook format:
-  // { sender: { uid, nickname }, message: { text, vchannel_id }, ... }
-  const sender = payload.sender as Record<string, unknown> | undefined;
-  const message = payload.message as Record<string, unknown> | undefined;
-  if (!sender || !message) return null;
-
-  const text = String(message.text ?? '');
-  const uid = String(sender.uid ?? '');
-  if (!text || !uid) return null;
-
-  // Skip bot messages
-  if (sender.is_bot) return null;
-
-  const vchannelId = String(message.vchannel_id ?? '');
-  const isMention = text.includes('@Abu') || text.includes('@abu');
-  const isDirect = (payload.chat_type ?? message.chat_type) === 'direct';
-
-  return {
-    senderId: uid,
-    senderName: String(sender.nickname ?? sender.name ?? uid),
-    text: text.replace(/@[Aa]bu\s*/g, '').trim(),
-    isMention,
-    isDirect,
-    chatId: vchannelId,
-    chatName: String(message.vchannel_name ?? ''),
-    platform: 'dchat',
-    replyContext: {
-      platform: 'dchat',
-      vchannelId,
-    },
-    raw: payload,
-  };
 }
 
 // ── Feishu ──
@@ -208,6 +175,7 @@ function parseDingTalk(payload: Record<string, unknown>): NormalizedIMMessage | 
     platform: 'dingtalk',
     replyContext: {
       platform: 'dingtalk',
+      chatId: conversationId || undefined,
       sessionWebhook: sessionWebhook || undefined,
     },
     raw: payload,
@@ -243,7 +211,7 @@ function parseWeCom(payload: Record<string, unknown>): NormalizedIMMessage | nul
     platform: 'wecom',
     replyContext: {
       platform: 'wecom',
-      chatid: chatId || undefined,
+      chatId: chatId || undefined,
     },
     raw: payload,
   };
@@ -286,8 +254,8 @@ function parseSlack(payload: Record<string, unknown>): NormalizedIMMessage | nul
     platform: 'slack',
     replyContext: {
       platform: 'slack',
-      channelId,
-      threadTs,
+      chatId: channelId,
+      threadId: threadTs,
     },
     raw: payload,
   };

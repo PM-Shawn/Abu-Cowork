@@ -1,6 +1,6 @@
 /**
  * Update Checker Module
- * Checks for new versions from a remote version.json endpoint.
+ * Checks for new versions from GitHub Releases API.
  */
 
 import { fetch } from '@tauri-apps/plugin-http';
@@ -8,13 +8,9 @@ import { APP_VERSION } from '@/utils/version';
 import { getPlatform } from '@/utils/platform';
 import { useSettingsStore } from '@/stores/settingsStore';
 
-// TODO: Replace with actual R2/CDN URL when deployed
-const UPDATE_CHECK_URL = 'https://abu-releases.your-domain.com/version.json';
-
-/** Guard: skip network call if the URL is still a placeholder */
-function isPlaceholderUrl(url: string): boolean {
-  return url.includes('your-domain.com') || url.includes('example.com');
-}
+const GITHUB_OWNER = 'PM-Shawn';
+const GITHUB_REPO = 'Abu-Cowork';
+const GITHUB_API_URL = `https://api.github.com/repos/${GITHUB_OWNER}/${GITHUB_REPO}/releases/latest`;
 
 // 24 hours in milliseconds
 const CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000;
@@ -26,11 +22,17 @@ export interface UpdateInfo {
   downloadUrl: string;
 }
 
-interface VersionManifest {
-  version: string;
-  publishedAt: string;
-  releaseNotes: string;
-  downloads: Record<string, string>;
+interface GitHubAsset {
+  name: string;
+  browser_download_url: string;
+}
+
+interface GitHubRelease {
+  tag_name: string;
+  body: string;
+  published_at: string;
+  html_url: string;
+  assets: GitHubAsset[];
 }
 
 /**
@@ -50,22 +52,36 @@ function isNewerVersion(remote: string, local: string): boolean {
 }
 
 /**
- * Pick the download URL for the current platform from the manifest.
+ * Pick the best download URL from GitHub Release assets for the current platform.
+ * Falls back to the release page URL if no matching asset is found.
  */
-function pickDownloadUrl(downloads: Record<string, string>): string | null {
-  const p = getPlatform();
-  if (p === 'macos') {
-    // Prefer arm64 DMG, fallback to generic DMG
-    return downloads['macos-arm64-dmg'] ?? downloads['macos-dmg'] ?? null;
+function pickDownloadUrl(release: GitHubRelease): string {
+  const platform = getPlatform();
+  const assets = release.assets;
+
+  if (platform === 'macos') {
+    // Prefer .dmg, then .app.tar.gz
+    const dmg = assets.find((a) => a.name.endsWith('.dmg'));
+    if (dmg) return dmg.browser_download_url;
+    const tarball = assets.find((a) => a.name.endsWith('.app.tar.gz'));
+    if (tarball) return tarball.browser_download_url;
   }
-  if (p === 'windows') {
-    return downloads['windows-exe'] ?? null;
+
+  if (platform === 'windows') {
+    // Prefer .msi, then .exe
+    const msi = assets.find((a) => a.name.endsWith('.msi'));
+    if (msi) return msi.browser_download_url;
+    const exe = assets.find((a) => a.name.endsWith('.exe'));
+    if (exe) return exe.browser_download_url;
   }
-  return null;
+
+  // Fallback: open the release page in browser
+  return release.html_url;
 }
 
 /**
- * Check for updates. Returns UpdateInfo if a newer version is available, null otherwise.
+ * Check for updates via GitHub Releases API.
+ * Returns UpdateInfo if a newer version is available, null otherwise.
  * Respects a 24-hour throttle for automatic checks (pass force=true to bypass).
  */
 export async function checkForUpdate(force = false): Promise<UpdateInfo | null> {
@@ -79,24 +95,21 @@ export async function checkForUpdate(force = false): Promise<UpdateInfo | null> 
     }
   }
 
-  // Skip if the update URL is still a placeholder to avoid plugin-http resource errors
-  if (isPlaceholderUrl(UPDATE_CHECK_URL)) {
-    return null;
-  }
-
   store.setUpdateChecking(true);
 
   try {
-    // Wrap fetch in an inner try-catch to guard against plugin-http
-    // resource cleanup errors that escape the outer catch
     let response: Awaited<ReturnType<typeof fetch>>;
     try {
-      response = await fetch(UPDATE_CHECK_URL, {
+      response = await fetch(GITHUB_API_URL, {
         method: 'GET',
+        headers: {
+          'Accept': 'application/vnd.github.v3+json',
+          'User-Agent': `${GITHUB_REPO}/${APP_VERSION}`,
+        },
         connectTimeout: 10000,
       });
     } catch {
-      // Network/DNS/resource errors from plugin-http — silently skip
+      // Network/DNS errors — silently skip
       return null;
     }
 
@@ -105,22 +118,22 @@ export async function checkForUpdate(force = false): Promise<UpdateInfo | null> 
       return null;
     }
 
-    const manifest = (await response.json()) as VersionManifest;
+    const release = (await response.json()) as GitHubRelease;
 
     // Update the last check timestamp
     store.setLastUpdateCheck(Date.now());
 
-    if (!isNewerVersion(manifest.version, APP_VERSION)) {
+    const remoteVersion = release.tag_name;
+    if (!isNewerVersion(remoteVersion, APP_VERSION)) {
       store.setUpdateInfo(null);
       return null;
     }
 
-    const downloadUrl = pickDownloadUrl(manifest.downloads) ?? '';
     const info: UpdateInfo = {
-      version: manifest.version,
-      releaseNotes: manifest.releaseNotes,
-      publishedAt: manifest.publishedAt,
-      downloadUrl,
+      version: remoteVersion.replace(/^v/, ''),
+      releaseNotes: release.body ?? '',
+      publishedAt: release.published_at,
+      downloadUrl: pickDownloadUrl(release),
     };
 
     store.setUpdateInfo(info);

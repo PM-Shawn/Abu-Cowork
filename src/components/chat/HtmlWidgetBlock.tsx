@@ -148,6 +148,19 @@ function setHeightCache(key: string, h: number) {
 // Sanitize — strip/truncate scripts for safe streaming preview
 // ---------------------------------------------------------------------------
 
+/** Check if HTML has visible content (not just style/script/meta tags) */
+function hasVisibleContent(html: string): boolean {
+  // Strip style blocks, script blocks, and HTML comments
+  const stripped = html
+    .replace(/<style[\s\S]*?<\/style>/gi, '')
+    .replace(/<script[\s\S]*?<\/script>/gi, '')
+    .replace(/<!--[\s\S]*?-->/g, '')
+    .replace(/<(meta|link|title)[^>]*>/gi, '')
+    .replace(/<\/?[^>]+(>|$)/g, '') // strip remaining tags
+    .trim();
+  return stripped.length > 0;
+}
+
 function sanitizeForStreaming(html: string): string {
   // Remove complete <script>...</script> blocks
   let safe = html.replace(/<script[\s\S]*?<\/script>/gi, '');
@@ -201,8 +214,9 @@ function getOrCreateIframe(container: HTMLDivElement, code: string): HTMLIFrameE
     const d = e.data;
     if (d?.type === 'abu-widget-resize' && typeof d.height === 'number') {
       const h = Math.min(d.height, MAX_IFRAME_HEIGHT);
-      // First report: snap instantly (no transition). Subsequent: smooth.
-      iframe.style.transition = d.first ? 'none' : 'height 0.2s ease';
+      // No transition — instant height changes ensure scrollHeight is always
+      // up-to-date so auto-scroll can track content growth accurately.
+      iframe.style.transition = 'none';
       iframe.style.height = `${h}px`;
       setHeightCache(hKey(code), h);
     }
@@ -260,7 +274,11 @@ let lastPreviewTime = 0;
 let pendingPreview: ReturnType<typeof setTimeout> | undefined;
 const PREVIEW_INTERVAL = 150;
 
-function previewHtmlWidget(code: string, container: HTMLDivElement): void {
+function previewHtmlWidget(code: string, container: HTMLDivElement): boolean {
+  // Don't create iframe until HTML has visible content — avoids a blank
+  // white block sitting for seconds while LLM outputs <style> etc.
+  if (!hasVisibleContent(code)) return false;
+
   const iframe = getOrCreateIframe(container, code);
   const now = Date.now();
 
@@ -282,6 +300,7 @@ function previewHtmlWidget(code: string, container: HTMLDivElement): void {
       doSend();
     }, PREVIEW_INTERVAL - (now - lastPreviewTime));
   }
+  return true;
 }
 
 async function renderHtmlWidget(code: string, container: HTMLDivElement): Promise<string> {

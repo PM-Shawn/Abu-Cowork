@@ -306,7 +306,7 @@ export default function ChatView() {
 
       {/* Messages Area */}
       <div className="relative flex-1 min-h-0 overflow-y-auto" ref={containerRef}>
-        <div className="w-full max-w-3xl mx-auto px-6 md:px-10 pt-5 pb-16 overflow-hidden">
+        <div className="w-full max-w-4xl mx-auto px-6 md:px-10 pt-5 pb-16 overflow-hidden">
           <div className="space-y-5">
             {messageGroups.map((group) => (
               <MessageGroup key={group[0].id} messages={group} />
@@ -343,7 +343,7 @@ export default function ChatView() {
 
       {/* Bottom Input */}
       <div className="shrink-0 px-6 md:px-10 pb-4 pt-1.5 bg-[#faf9f5]">
-        <div className="max-w-3xl mx-auto">
+        <div className="max-w-4xl mx-auto">
           <ChatInput variant="chat" onSend={handleSend} />
           <p className="text-center text-[11px] text-[#656358]/70 mt-1.5">
             {t.chat.disclaimer}

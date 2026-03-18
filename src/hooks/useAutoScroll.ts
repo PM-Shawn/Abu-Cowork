@@ -105,8 +105,6 @@ export function useAutoScroll(options?: { following?: boolean }) {
     if (!container) return;
 
     const scheduleScroll = () => {
-      // Don't scroll if user has scrolled up
-      if (!isAtBottomRef.current) return;
       // During following, the RAF loop handles scrolling exclusively
       if (followingRef.current) return;
       // Already have a pending scroll for this frame — skip
@@ -115,7 +113,20 @@ export function useAutoScroll(options?: { following?: boolean }) {
       rafId.current = requestAnimationFrame(() => {
         rafId.current = 0;
         const c = containerRef.current;
-        if (!c || !isAtBottomRef.current) return;
+        if (!c) return;
+
+        // Re-check isAtBottom on content resize — content can grow without
+        // scroll events (e.g. iframe height change via postMessage), causing
+        // isAtBottom to go stale. If we're actually at bottom, re-enable.
+        if (!isAtBottomRef.current) {
+          const atBottom = checkIfAtBottom();
+          if (atBottom) {
+            isAtBottomRef.current = true;
+            setIsAtBottom(true);
+          }
+          return;
+        }
+
         isProgrammaticScroll.current = true;
         c.scrollTop = c.scrollHeight;
         // Safety: clear the flag next frame if no scroll event fires
@@ -162,7 +173,7 @@ export function useAutoScroll(options?: { following?: boolean }) {
       mutationObserver.disconnect();
       resizeObserver.disconnect();
     };
-  }, []);
+  }, [checkIfAtBottom]);
 
   // RAF loop for frame-perfect scroll following during streaming.
   // Runs every animation frame and directly sets scrollTop = scrollHeight.

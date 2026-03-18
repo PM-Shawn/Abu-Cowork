@@ -52,8 +52,8 @@ export interface CodeBlockRendererConfig {
    *  be lightweight (e.g. postMessage, no heavy DOM work).
    *  Renderers that don't provide this keep the existing loading behavior. */
   preview?: {
-    /** Lightweight preview render (e.g. visual-only, no script execution). */
-    render: (code: string, container: HTMLDivElement) => void;
+    /** Lightweight preview render. Return false to skip (content not ready yet). */
+    render: (code: string, container: HTMLDivElement) => void | boolean;
   };
   /** i18n strings */
   i18n: {
@@ -139,8 +139,11 @@ export default function RenderableCodeBlock({
     // streaming tokens reset the timer faster (~16ms) than it can fire (~120ms).
     const previewConfig = configRef.current.preview;
     if (previewConfig && containerRef.current) {
-      previewConfig.render(code, containerRef.current);
-      setState(prev => prev.status === 'previewing' ? prev : { status: 'previewing' });
+      const shown = previewConfig.render(code, containerRef.current);
+      // Only transition to previewing if render didn't explicitly skip (return false)
+      if (shown !== false) {
+        setState(prev => prev.status === 'previewing' ? prev : { status: 'previewing' });
+      }
     }
 
     // Full render path (existing logic)
@@ -260,7 +263,8 @@ export default function RenderableCodeBlock({
   const isSuccess = state.status === 'success' && !showFallback;
   const isVisible = isSuccess || isPreviewing;
   const seamless = config.seamless ?? false;
-  const isCollapsed = isVisible && overflows && !expanded;
+  // Seamless mode: no collapse — widget grows with streaming content
+  const isCollapsed = !seamless && isVisible && overflows && !expanded;
 
   // --- Shared pieces ---
 
@@ -277,9 +281,7 @@ export default function RenderableCodeBlock({
     />
   );
 
-  // Shimmer overlay: only for bordered mode. Seamless mode relies on per-element
-  // placeholders (e.g. canvas → "图表加载中…") instead of a full-widget overlay.
-  const shimmerOverlay = isPreviewing && !seamless && (
+  const shimmerOverlay = isPreviewing && (
     <div className="absolute inset-0 z-[5] pointer-events-none">
       <div className="absolute inset-0 bg-gradient-to-r from-transparent via-white/40 to-transparent"
         style={{ backgroundSize: '200% 100%', animation: 'shimmer 3s infinite linear' }} />
@@ -309,11 +311,23 @@ export default function RenderableCodeBlock({
     </button>
   );
 
-  const loadingOverlay = isLoading && (
+  const loadingOverlay = isLoading && (seamless ? (
+    // Skeleton placeholder for seamless mode — pulse animation instead of blank white
+    <div className="rounded-lg bg-[#f5f3ee] p-5 space-y-3 animate-pulse">
+      <div className="h-5 w-2/5 rounded bg-[#e5e2db]" />
+      <div className="h-3 w-4/5 rounded bg-[#e5e2db]" />
+      <div className="h-3 w-3/5 rounded bg-[#e5e2db]" />
+      <div className="flex gap-3 mt-4">
+        <div className="h-16 flex-1 rounded bg-[#e5e2db]" />
+        <div className="h-16 flex-1 rounded bg-[#e5e2db]" />
+        <div className="h-16 flex-1 rounded bg-[#e5e2db]" />
+      </div>
+    </div>
+  ) : (
     <div className="absolute inset-0 z-10 flex items-center justify-center rounded-lg bg-[#f5f3ee] text-sm text-[#888579]">
       {config.i18n.loading}
     </div>
-  );
+  ));
 
   const sourceFallback = showFallback && (
     <div>
@@ -360,8 +374,9 @@ export default function RenderableCodeBlock({
       <div className="my-3 group/widget relative">
         {sourceFallback}
         <div className={cn(showFallback && 'hidden')}>
-          <div className="relative">
-            {loadingOverlay}
+          {/* Seamless skeleton — shown as standalone block, not overlay */}
+          {isLoading && loadingOverlay}
+          <div className={cn('relative', isLoading && 'hidden')}>
             {renderContainer}
             {shimmerOverlay}
             {expandButton}

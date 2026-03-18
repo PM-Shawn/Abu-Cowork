@@ -1040,6 +1040,7 @@ export interface TranslationDict {
     downloadUpdate: string;
     releaseNotes: string;
     checkFailed: string;
+    justChecked: string;
   };
 
   // About

@@ -1080,6 +1080,7 @@ const enUS: TranslationDict = {
     downloadUpdate: 'Download Update',
     releaseNotes: 'Release Notes',
     checkFailed: 'Update check failed',
+    justChecked: 'Just checked',
   },
 
   about: {

@@ -1081,6 +1081,7 @@ const zhCN: TranslationDict = {
     downloadUpdate: '下载更新',
     releaseNotes: '更新日志',
     checkFailed: '检查更新失败',
+    justChecked: '刚刚已检查',
   },
 
   about: {

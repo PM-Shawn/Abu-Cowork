@@ -201,11 +201,36 @@ export default function RenderableCodeBlock({
     };
   }, []);
 
-  // Check overflow
+  // Check overflow — use MutationObserver to catch async content changes
+  // (e.g. iframe height set via postMessage after React render)
   useEffect(() => {
-    if ((state.status === 'success' || state.status === 'previewing') && containerRef.current) {
-      setOverflows(containerRef.current.scrollHeight > maxHeight);
-    }
+    const container = containerRef.current;
+    if (!container) return;
+
+    const check = () => {
+      if (state.status === 'success' || state.status === 'previewing') {
+        // Check first child's actual height (iframe) rather than scrollHeight,
+        // because scrollHeight may be clipped by overflow:hidden when collapsed.
+        const child = container.firstElementChild;
+        const contentHeight = child instanceof HTMLElement
+          ? child.offsetHeight
+          : container.scrollHeight;
+        setOverflows(contentHeight > maxHeight);
+      }
+    };
+
+    check();
+
+    // Watch for child style.height changes (iframe resize via postMessage)
+    const observer = new MutationObserver(check);
+    observer.observe(container, {
+      childList: true,
+      subtree: true,
+      attributes: true,
+      attributeFilter: ['style'],
+    });
+
+    return () => observer.disconnect();
   }, [state, maxHeight]);
 
   const handleCopy = useCallback(async () => {
@@ -235,8 +260,7 @@ export default function RenderableCodeBlock({
   const isSuccess = state.status === 'success' && !showFallback;
   const isVisible = isSuccess || isPreviewing;
   const seamless = config.seamless ?? false;
-  // Seamless mode: no expand/collapse, show full height (like Claude)
-  const isCollapsed = !seamless && isVisible && overflows && !expanded;
+  const isCollapsed = isVisible && overflows && !expanded;
 
   // --- Shared pieces ---
 

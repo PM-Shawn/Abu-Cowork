@@ -5,7 +5,9 @@ import RenderableCodeBlock, { type CodeBlockRendererConfig } from './RenderableC
 // Constants
 // ---------------------------------------------------------------------------
 
-const MAX_IFRAME_HEIGHT = 800;
+// Max iframe height — generous limit to prevent runaway content.
+// Visual clipping is handled by RenderableCodeBlock's container maxHeight.
+const MAX_IFRAME_HEIGHT = 4000;
 
 const CDN_ALLOWLIST = [
   'https://cdnjs.cloudflare.com',

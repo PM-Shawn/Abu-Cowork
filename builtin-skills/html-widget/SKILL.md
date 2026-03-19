@@ -400,7 +400,8 @@ Chart.defaults.font.family = "system-ui, -apple-system, 'PingFang SC', sans-seri
 Chart.defaults.font.size = 12;
 Chart.defaults.color = '#888579';
 Chart.defaults.plugins.legend.labels.usePointStyle = true;
-Chart.defaults.plugins.legend.labels.pointStyleWidth = 8;
+Chart.defaults.plugins.legend.labels.boxWidth = 8;
+Chart.defaults.plugins.legend.labels.boxHeight = 8;
 Chart.defaults.plugins.legend.labels.padding = 16;
 
 // 推荐配置
@@ -410,7 +411,7 @@ const chartOptions = {
   plugins: {
     legend: {
       position: 'bottom',           // 图例放底部，不占标题空间
-      labels: { usePointStyle: true, padding: 16 }
+      labels: { usePointStyle: true, boxWidth: 8, boxHeight: 8, padding: 16 }
     },
     tooltip: {
       backgroundColor: '#29261b',
@@ -464,6 +465,7 @@ const echartsTheme = {
 - **折线图**：线宽 `2px`，圆点 `4px`，hover `6px`
 - **饼图/环图**：环图优先（更现代），中间显示总计
 - **数值格式化**：Y 轴大数字用 `万` `亿` 单位，tooltip 显示完整数字
+- **脚注生成时间**：不要硬编码日期，用 `<span class="generated-date"></span>` 占位，JS 中用 `new Date().toLocaleDateString('zh-CN', { year: 'numeric', month: '2-digit', day: '2-digit' }).replace(/\//g, '-')` 动态填充
 
 ### 动画与交互
 
@@ -693,12 +695,16 @@ const echartsTheme = {
   </table>
 </div>
 
-<div class="footnote">数据来源：内部销售系统 · 生成时间：2025-01-15</div>
+<div class="footnote">数据来源：内部销售系统 · 生成时间：<span class="generated-date"></span></div>
 
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
 <script>
 (function() {
   Chart.defaults.font.family = "system-ui, -apple-system, 'PingFang SC', sans-serif";
+  // 动态填充生成日期
+  var dateEl = document.querySelector('.generated-date');
+  if (dateEl) dateEl.textContent = new Date().toLocaleDateString('zh-CN', { year: 'numeric', month: '2-digit', day: '2-digit' }).replace(/\//g, '-');
+
   Chart.defaults.color = '#888579';
   new Chart(document.getElementById('chart'), {
     type: 'line',
@@ -712,7 +718,7 @@ const echartsTheme = {
     options: {
       responsive: true, maintainAspectRatio: false,
       plugins: {
-        legend: { position: 'bottom', labels: { usePointStyle: true, pointStyleWidth: 8, padding: 16 } },
+        legend: { position: 'bottom', labels: { usePointStyle: true, boxWidth: 8, boxHeight: 8, padding: 16 } },
         tooltip: { backgroundColor: '#29261b', cornerRadius: 6, padding: 10 }
       },
       scales: {

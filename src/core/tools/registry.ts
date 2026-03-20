@@ -6,6 +6,7 @@ import { isWindows } from '../../utils/platform';
 import { getI18n } from '../../i18n';
 import { truncateToolResult } from '../context/truncation';
 import { useSettingsStore } from '../../stores/settingsStore';
+import { TOOL_NAMES } from './toolNames';
 
 /**
  * Extract text-only representation from a ToolResult.
@@ -142,7 +143,7 @@ const PLAYWRIGHT_BROWSER_TOOLS = new Set([
  * Deduplicates by tool name — builtin tools take priority over MCP tools
  * Filters out conflicting playwright browser tools when abu-browser-bridge is connected
  */
-const COMPUTER_USE_TOOLS = new Set(['computer']);
+const COMPUTER_USE_TOOLS = new Set<string>([TOOL_NAMES.COMPUTER]);
 
 export function getAllTools(): ToolDefinition[] {
   const builtinTools = toolRegistry.getAll();
@@ -191,12 +192,12 @@ export type FilePermissionCallback = (request: {
  * Map of file-related tools to their path extraction logic
  */
 const FILE_TOOL_PATH_MAP: Record<string, (input: Record<string, unknown>) => { path: string; capability: 'read' | 'write' } | null> = {
-  read_file:      (i) => i.path ? { path: i.path as string, capability: 'read' } : null,
-  list_directory: (i) => i.path ? { path: i.path as string, capability: 'read' } : null,
-  write_file:     (i) => i.path ? { path: i.path as string, capability: 'write' } : null,
-  edit_file:      (i) => i.path ? { path: i.path as string, capability: 'write' } : null,
-  search_files:   (i) => i.path ? { path: i.path as string, capability: 'read' } : null,
-  find_files:     (i) => i.path ? { path: i.path as string, capability: 'read' } : null,
+  [TOOL_NAMES.READ_FILE]:      (i) => i.path ? { path: i.path as string, capability: 'read' } : null,
+  [TOOL_NAMES.LIST_DIRECTORY]: (i) => i.path ? { path: i.path as string, capability: 'read' } : null,
+  [TOOL_NAMES.WRITE_FILE]:     (i) => i.path ? { path: i.path as string, capability: 'write' } : null,
+  [TOOL_NAMES.EDIT_FILE]:      (i) => i.path ? { path: i.path as string, capability: 'write' } : null,
+  [TOOL_NAMES.SEARCH_FILES]:   (i) => i.path ? { path: i.path as string, capability: 'read' } : null,
+  [TOOL_NAMES.FIND_FILES]:     (i) => i.path ? { path: i.path as string, capability: 'read' } : null,
 };
 
 /**
@@ -213,7 +214,7 @@ export async function executeAnyTool(
   const t = getI18n();
 
   // Safety check for run_command tool
-  if (name === 'run_command') {
+  if (name === TOOL_NAMES.RUN_COMMAND) {
     const command = input.command as string;
     if (command) {
       const analysis = analyzeCommand(command);
@@ -247,7 +248,7 @@ export async function executeAnyTool(
       // Use the appropriate check function based on capability
       const checkFn = pathInfo.capability === 'write'
         ? checkWritePath
-        : (name === 'list_directory' ? checkListPath : checkReadPath);
+        : (name === TOOL_NAMES.LIST_DIRECTORY ? checkListPath : checkReadPath);
 
       const pathCheck = await checkFn(pathInfo.path);
 

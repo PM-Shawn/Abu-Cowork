@@ -1,4 +1,5 @@
 import type { TaskStep } from '../stores/taskProgressStore';
+import { TOOL_NAMES } from '@/core/tools/toolNames';
 
 /**
  * Parse task steps from AI response text
@@ -224,11 +225,11 @@ export function matchToolCallToStep(
 
   // Add tool-specific keywords
   const toolKeywords: Record<string, string[]> = {
-    list_directory: ['目录', '文件夹', '列出', 'directory', 'folder', 'list'],
-    read_file: ['读取', '读', '看', 'read', 'view'],
-    write_file: ['写入', '写', '保存', 'write', 'save'],
-    run_command: ['执行', '运行', 'run', 'execute'],
-    get_system_info: ['系统', '信息', 'system', 'info'],
+    [TOOL_NAMES.LIST_DIRECTORY]: ['目录', '文件夹', '列出', 'directory', 'folder', 'list'],
+    [TOOL_NAMES.READ_FILE]: ['读取', '读', '看', 'read', 'view'],
+    [TOOL_NAMES.WRITE_FILE]: ['写入', '写', '保存', 'write', 'save'],
+    [TOOL_NAMES.RUN_COMMAND]: ['执行', '运行', 'run', 'execute'],
+    [TOOL_NAMES.GET_SYSTEM_INFO]: ['系统', '信息', 'system', 'info'],
   };
 
   if (toolKeywords[toolName]) {
@@ -250,13 +251,13 @@ export function matchToolCallToStep(
     }
 
     // Bonus for tool type match
-    if (toolName === 'list_directory' && (stepText.includes('找') || stepText.includes('查看'))) {
+    if (toolName === TOOL_NAMES.LIST_DIRECTORY && (stepText.includes('找') || stepText.includes('查看'))) {
       score += 2;
     }
-    if (toolName === 'read_file' && (stepText.includes('读') || stepText.includes('内容'))) {
+    if (toolName === TOOL_NAMES.READ_FILE && (stepText.includes('读') || stepText.includes('内容'))) {
       score += 2;
     }
-    if (toolName === 'write_file' && (stepText.includes('写') || stepText.includes('重命名') || stepText.includes('保存'))) {
+    if (toolName === TOOL_NAMES.WRITE_FILE && (stepText.includes('写') || stepText.includes('重命名') || stepText.includes('保存'))) {
       score += 2;
     }
 
@@ -285,22 +286,22 @@ export function inferStepsFromToolCalls(
   const fileName = path ? path.split(/[/\\]/).pop() : undefined;
 
   switch (toolName) {
-    case 'list_directory':
+    case TOOL_NAMES.LIST_DIRECTORY:
       label = fileName ? `查看 ${fileName} 文件夹` : '查看文件夹内容';
       break;
-    case 'read_file':
+    case TOOL_NAMES.READ_FILE:
       label = fileName ? `读取 ${fileName}` : '读取文件';
       break;
-    case 'write_file':
+    case TOOL_NAMES.WRITE_FILE:
       label = fileName ? `写入 ${fileName}` : '写入文件';
       break;
-    case 'run_command': {
+    case TOOL_NAMES.RUN_COMMAND: {
       const cmd = (toolInput.command || toolInput.cmd) as string | undefined;
       const shortCmd = cmd ? cmd.slice(0, 20) + (cmd.length > 20 ? '...' : '') : '';
       label = shortCmd ? `执行 ${shortCmd}` : '执行命令';
       break;
     }
-    case 'get_system_info':
+    case TOOL_NAMES.GET_SYSTEM_INFO:
       label = '获取系统信息';
       break;
     default:

@@ -1,4 +1,5 @@
 import type { ToolCall, AgentStatus } from '@/types';
+import { TOOL_NAMES } from '@/core/tools/toolNames';
 
 /**
  * Check if a tool result indicates a real tool execution error.
@@ -34,11 +35,11 @@ export interface SkillInfo {
 }
 
 // Tool name to step type mapping
-const FILE_READ_TOOLS = ['read_file', 'read', 'get_file_contents'];
-const FILE_WRITE_TOOLS = ['write_file', 'edit_file', 'write', 'edit'];
-const FILE_CREATE_TOOLS = ['create_file', 'create'];
-const COMMAND_TOOLS = ['run_command', 'bash', 'execute', 'shell'];
-const SKILL_TOOLS = ['use_skill'];
+const FILE_READ_TOOLS: string[] = [TOOL_NAMES.READ_FILE, 'read', 'get_file_contents'];
+const FILE_WRITE_TOOLS: string[] = [TOOL_NAMES.WRITE_FILE, TOOL_NAMES.EDIT_FILE, 'write', 'edit'];
+const FILE_CREATE_TOOLS: string[] = ['create_file', 'create'];
+const COMMAND_TOOLS: string[] = [TOOL_NAMES.RUN_COMMAND, 'bash', 'execute', 'shell'];
+const SKILL_TOOLS: string[] = [TOOL_NAMES.USE_SKILL];
 
 function getStepTypeFromTool(toolName: string): StepType {
   if (FILE_READ_TOOLS.includes(toolName)) return 'file-read';
@@ -61,20 +62,20 @@ function getToolLabel(toolName: string, input: Record<string, unknown>): { label
   const fileName = path ? getFileName(path) : undefined;
 
   switch (toolName) {
-    case 'read_file':
+    case TOOL_NAMES.READ_FILE:
     case 'read':
     case 'get_file_contents':
       return {
         label: fileName ? `读取 ${fileName}` : '读取文件',
         detail: path,
       };
-    case 'write_file':
+    case TOOL_NAMES.WRITE_FILE:
     case 'write':
       return {
         label: fileName ? `写入 ${fileName}` : '写入文件',
         detail: path,
       };
-    case 'edit_file':
+    case TOOL_NAMES.EDIT_FILE:
     case 'edit':
       return {
         label: fileName ? `修改 ${fileName}` : '修改文件',
@@ -87,7 +88,7 @@ function getToolLabel(toolName: string, input: Record<string, unknown>): { label
         detail: path,
       };
     case 'bash':
-    case 'run_command':
+    case TOOL_NAMES.RUN_COMMAND:
     case 'execute':
     case 'shell': {
       const cmd = (input.command || input.cmd) as string | undefined;
@@ -106,7 +107,7 @@ function getToolLabel(toolName: string, input: Record<string, unknown>): { label
         detail: query,
       };
     }
-    case 'use_skill': {
+    case TOOL_NAMES.USE_SKILL: {
       const skillName = input.skill_name as string | undefined;
       return {
         label: skillName ? `使用技能 ${skillName}` : '使用技能',
@@ -173,7 +174,7 @@ export function extractWorkflowSteps(
   // Add steps from tool calls
   for (const tc of toolCalls) {
     // Skip use_skill tool - we already show skill at the top
-    if (tc.name === 'use_skill') {
+    if (tc.name === TOOL_NAMES.USE_SKILL) {
       // Extract skill name and add as a skill step
       const skillName = tc.input.skill_name as string | undefined;
       if (skillName) {
@@ -254,14 +255,14 @@ export function generateCompletionMessage(
   const isSuccess = !isToolResultError(result);
 
   switch (toolName) {
-    case 'list_directory': {
+    case TOOL_NAMES.LIST_DIRECTORY: {
       const count = parseFileCount(result);
       return isZh
         ? `成功列出 ${count} 个文件和文件夹`
         : `Listed ${count} files and folders`;
     }
 
-    case 'read_file':
+    case TOOL_NAMES.READ_FILE:
     case 'read':
     case 'get_file_contents':
       if (!isSuccess) {
@@ -271,7 +272,7 @@ export function generateCompletionMessage(
         ? `成功读取 ${fileName || '文件'}`
         : `Read ${fileName || 'file'} successfully`;
 
-    case 'write_file':
+    case TOOL_NAMES.WRITE_FILE:
     case 'write':
       if (!isSuccess) {
         return isZh ? `写入失败` : `Failed to write`;
@@ -280,7 +281,7 @@ export function generateCompletionMessage(
         ? `成功写入 ${fileName || '文件'}`
         : `Wrote to ${fileName || 'file'} successfully`;
 
-    case 'edit_file':
+    case TOOL_NAMES.EDIT_FILE:
     case 'edit':
       if (!isSuccess) {
         return isZh ? `修改失败` : `Failed to edit`;
@@ -298,7 +299,7 @@ export function generateCompletionMessage(
         ? `成功创建 ${fileName || '文件'}`
         : `Created ${fileName || 'file'} successfully`;
 
-    case 'run_command':
+    case TOOL_NAMES.RUN_COMMAND:
     case 'bash':
     case 'execute':
     case 'shell': {
@@ -312,7 +313,7 @@ export function generateCompletionMessage(
         : `Command executed${shortCmd ? `: ${shortCmd}` : ''} successfully`;
     }
 
-    case 'get_system_info':
+    case TOOL_NAMES.GET_SYSTEM_INFO:
       return isZh ? `获取系统信息成功` : `Got system info`;
 
     case 'search':
@@ -324,7 +325,7 @@ export function generateCompletionMessage(
         : `Search complete, found ${matchCount} results`;
     }
 
-    case 'manage_scheduled_task': {
+    case TOOL_NAMES.MANAGE_SCHEDULED_TASK: {
       const action = (input.action as string) || '';
       const taskName = (input.name as string) || '';
       if (!isSuccess) return isZh ? '操作失败' : 'Operation failed';
@@ -504,14 +505,14 @@ export function extractFileOutputs(
     }
 
     // 4. generate_image — extract path from result
-    if (tc.name === 'generate_image' && tc.result) {
+    if (tc.name === TOOL_NAMES.GENERATE_IMAGE && tc.result) {
       const match = tc.result.match(/(?:图片已保存到|Image saved to): (.+?)(?:\n|$)/);
       if (match) addFile(match[1].trim(), 'create');
       continue;
     }
 
     // 5. process_image — result regex + fallback to input.output_path
-    if (tc.name === 'process_image' && tc.result) {
+    if (tc.name === TOOL_NAMES.PROCESS_IMAGE && tc.result) {
       const match = tc.result.match(/(?:Image processed successfully|图片处理成功): (.+?)(?:\n|$)/);
       if (match) {
         addFile(match[1].trim(), 'create');
@@ -540,7 +541,7 @@ export function extractFileOutputs(
     }
 
     // 7. delegate_to_agent — search result text for file paths
-    if (tc.name === 'delegate_to_agent' && tc.result) {
+    if (tc.name === TOOL_NAMES.DELEGATE_TO_AGENT && tc.result) {
       const foundPaths = extractFilePathsFromText(tc.result);
       for (const p of foundPaths) addFile(p, 'create');
       continue;

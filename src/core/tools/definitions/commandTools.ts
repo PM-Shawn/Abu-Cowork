@@ -4,9 +4,10 @@ import { getPlatform, getShell } from '../../../utils/platform';
 import { resolveCommandPython } from '../../../utils/pythonRuntime';
 import { isSandboxEnabled, isNetworkIsolationEnabled } from '../../sandbox/config';
 import type { CommandOutput } from '../helpers/toolHelpers';
+import { TOOL_NAMES } from '../toolNames';
 
 export const runCommandTool: ToolDefinition = {
-  name: 'run_command',
+  name: TOOL_NAMES.RUN_COMMAND,
   get description() {
     const plat = getPlatform();
     const shell = getShell();

@@ -9,6 +9,8 @@
  * - "delegate_to_agent(coder)"   → tool name + argument restriction
  */
 
+import { TOOL_NAMES } from '../tools/toolNames';
+
 interface ParsedPattern {
   toolName: string;
   constraint?: string;   // The part inside parentheses
@@ -100,13 +102,13 @@ function validateConstraint(
   // Determine which input field to check based on tool name
   let fieldValue: string | undefined;
 
-  if (toolName === 'run_command') {
+  if (toolName === TOOL_NAMES.RUN_COMMAND) {
     fieldValue = input.command as string | undefined;
-  } else if (['read_file', 'write_file', 'edit_file', 'list_directory'].includes(toolName)) {
+  } else if (([TOOL_NAMES.READ_FILE, TOOL_NAMES.WRITE_FILE, TOOL_NAMES.EDIT_FILE, TOOL_NAMES.LIST_DIRECTORY] as string[]).includes(toolName)) {
     fieldValue = input.path as string | undefined;
-  } else if (toolName === 'delegate_to_agent') {
+  } else if (toolName === TOOL_NAMES.DELEGATE_TO_AGENT) {
     fieldValue = input.agent_name as string | undefined;
-  } else if (toolName === 'use_skill') {
+  } else if (toolName === TOOL_NAMES.USE_SKILL) {
     fieldValue = input.skill_name as string | undefined;
   } else {
     // Generic: check first string value in input

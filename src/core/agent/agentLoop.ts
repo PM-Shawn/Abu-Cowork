@@ -32,6 +32,7 @@ import { formatTodosForPrompt } from './todoManager';
 import { isWindows } from '../../utils/platform';
 import { getBuiltinSearchConfig } from '../capabilities';
 import { resolveCapabilities } from '../llm/modelCapabilities';
+import { TOOL_NAMES } from '../tools/toolNames';
 import { CORE_TOOL_NAMES, prefetchTools } from '../tools/toolPrefetch';
 import {
   setCurrentLoopContext,
@@ -197,7 +198,7 @@ function resolveTools(
     }
   }
   if (hasBuiltinWebSearch) {
-    tools = tools.filter(t => t.name !== 'web_search');
+    tools = tools.filter(t => t.name !== TOOL_NAMES.WEB_SEARCH);
   }
   // Headless / IM mode: block specific tools that require UI interaction
   if (blockedTools && blockedTools.length > 0) {
@@ -423,11 +424,11 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
     const delegateAgent = route.delegateAgent;
     const taskText = route.cleanInput;
 
-    chatStore.setAgentStatus('tool-calling', 'delegate_to_agent', delegateAgent.name);
+    chatStore.setAgentStatus('tool-calling', TOOL_NAMES.DELEGATE_TO_AGENT, delegateAgent.name);
 
     // Create a delegate step in the execution
     const delegateStepId = eventRouter.createStepForToolUse(loopId, {
-      toolName: 'delegate_to_agent',
+      toolName: TOOL_NAMES.DELEGATE_TO_AGENT,
       toolInput: { agent_name: delegateAgent.name, task: taskText },
     });
 
@@ -757,7 +758,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
               }
 
               // Special handling for report_plan - save to store, hide from UI
-              if (event.name === 'report_plan') {
+              if (event.name === TOOL_NAMES.REPORT_PLAN) {
                 const steps = (event.input as { steps?: string[] }).steps;
                 if (steps && steps.length > 0) {
                   // Convert to PlannedStep format and save

@@ -16,9 +16,10 @@ import {
   similarityScore,
   type CommandOutput,
 } from '../helpers/toolHelpers';
+import { TOOL_NAMES } from '../toolNames';
 
 export const readFileTool: ToolDefinition = {
-  name: 'read_file',
+  name: TOOL_NAMES.READ_FILE,
   description: '读取文件内容。支持文本文件、图片（png/jpg/gif/webp，返回视觉内容）、PDF（提取文字）、Office 文档（.docx/.xlsx/.pptx，提取文字）和压缩包（.zip/.tar.gz，列出内容）。返回文件内容或提取的文本。',
   inputSchema: {
     type: 'object',
@@ -108,7 +109,7 @@ export const readFileTool: ToolDefinition = {
 };
 
 export const writeFileTool: ToolDefinition = {
-  name: 'write_file',
+  name: TOOL_NAMES.WRITE_FILE,
   description: '将内容写入文件。文件不存在则创建，已存在则覆盖。创建新文件或完整覆写时使用，局部修改用 edit_file。仅支持纯文本，不能创建二进制文件（.docx/.xlsx 等）。',
   inputSchema: {
     type: 'object',
@@ -146,7 +147,7 @@ export const writeFileTool: ToolDefinition = {
 };
 
 export const editFileTool: ToolDefinition = {
-  name: 'edit_file',
+  name: TOOL_NAMES.EDIT_FILE,
   description: '通过精确匹配替换来编辑文件。局部修改文件时使用，比 write_file 更安全。old_content 必须与文件中的文本完全匹配（包括空白和缩进）。',
   inputSchema: {
     type: 'object',
@@ -216,7 +217,7 @@ export const editFileTool: ToolDefinition = {
 };
 
 export const listDirectoryTool: ToolDefinition = {
-  name: 'list_directory',
+  name: TOOL_NAMES.LIST_DIRECTORY,
   description: '列出目录内容。返回文件和子目录名称及类型，按字母排序。',
   inputSchema: {
     type: 'object',
@@ -249,7 +250,7 @@ export const listDirectoryTool: ToolDefinition = {
 };
 
 export const searchFilesTool: ToolDefinition = {
-  name: 'search_files',
+  name: TOOL_NAMES.SEARCH_FILES,
   description: '在目录中搜索文件内容（类似 grep）。搜索文件内容用这个，搜索文件名用 find_files。返回匹配行及其文件路径和行号。',
   inputSchema: {
     type: 'object',
@@ -319,7 +320,7 @@ export const searchFilesTool: ToolDefinition = {
 };
 
 export const findFilesTool: ToolDefinition = {
-  name: 'find_files',
+  name: TOOL_NAMES.FIND_FILES,
   description: '按文件名模式查找文件（类似 find 命令）。搜索文件名用这个，搜索文件内容用 search_files。返回匹配的文件路径列表。',
   inputSchema: {
     type: 'object',

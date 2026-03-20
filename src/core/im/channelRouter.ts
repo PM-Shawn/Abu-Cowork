@@ -8,6 +8,7 @@
  * alongside the trigger engine's own IM listener.
  */
 
+import { TOOL_NAMES } from '../tools/toolNames';
 import { useIMChannelStore } from '../../stores/imChannelStore';
 import { useChatStore } from '../../stores/chatStore';
 import { runAgentLoop } from '../agent/agentLoop';
@@ -241,7 +242,7 @@ class IMChannelRouter {
         runAgentLoop(session.conversationId, userText, {
           commandConfirmCallback: callbacks.commandConfirmCallback,
           filePermissionCallback: callbacks.filePermissionCallback,
-          blockedTools: ['request_workspace'],
+          blockedTools: [TOOL_NAMES.REQUEST_WORKSPACE],
           imContext: {
             platform: message.platform,
             workspacePath: channel.workspacePaths[0] ?? null,

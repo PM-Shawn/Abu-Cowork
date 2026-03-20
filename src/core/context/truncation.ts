@@ -5,6 +5,8 @@
  * while preserving the most useful information.
  */
 
+import { TOOL_NAMES } from '../tools/toolNames';
+
 interface TruncationRule {
   headLines: number;
   tailLines: number;
@@ -12,12 +14,12 @@ interface TruncationRule {
 }
 
 const TRUNCATION_RULES: Record<string, TruncationRule> = {
-  read_file: { headLines: 150, tailLines: 20, maxChars: 15000 },
-  list_directory: { headLines: 100, tailLines: 0, maxChars: 8000 },
-  run_command: { headLines: 150, tailLines: 30, maxChars: 15000 },
-  search_files: { headLines: 50, tailLines: 0, maxChars: 8000 },
-  find_files: { headLines: 100, tailLines: 0, maxChars: 8000 },
-  web_search: { headLines: 0, tailLines: 0, maxChars: 8000 },
+  [TOOL_NAMES.READ_FILE]: { headLines: 150, tailLines: 20, maxChars: 15000 },
+  [TOOL_NAMES.LIST_DIRECTORY]: { headLines: 100, tailLines: 0, maxChars: 8000 },
+  [TOOL_NAMES.RUN_COMMAND]: { headLines: 150, tailLines: 30, maxChars: 15000 },
+  [TOOL_NAMES.SEARCH_FILES]: { headLines: 50, tailLines: 0, maxChars: 8000 },
+  [TOOL_NAMES.FIND_FILES]: { headLines: 100, tailLines: 0, maxChars: 8000 },
+  [TOOL_NAMES.WEB_SEARCH]: { headLines: 0, tailLines: 0, maxChars: 8000 },
 };
 
 const DEFAULT_RULE: TruncationRule = { headLines: 0, tailLines: 0, maxChars: 3500 };

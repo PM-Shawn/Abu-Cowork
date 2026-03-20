@@ -11,6 +11,7 @@ import type { TriggerAction, TriggerPermissions } from '../../types/trigger';
 import type { ConfirmationInfo, FilePermissionCallback } from '../tools/registry';
 import { authorizeWorkspace } from '../tools/pathSafety';
 import { usePermissionStore } from '../../stores/permissionStore';
+import { TOOL_NAMES } from '../tools/toolNames';
 
 /** Simple glob matching for command patterns (e.g. "npm run *", "git *") */
 function matchCommandGlob(command: string, pattern: string): boolean {
@@ -155,7 +156,7 @@ function buildBlockedTools(
   permissions: TriggerPermissions | undefined,
 ): string[] {
   // request_workspace is always blocked — triggers can't pop UI dialogs
-  const blocked = ['request_workspace'];
+  const blocked = [TOOL_NAMES.REQUEST_WORKSPACE];
 
   // For custom capability with tool whitelist, we don't add extra blocks here
   // because tool filtering is handled via allowedTools in the agent loop options.

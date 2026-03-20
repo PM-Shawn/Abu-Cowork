@@ -22,6 +22,7 @@ import {
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useI18n, format, type TranslationDict } from '@/i18n';
+import { TOOL_NAMES } from '@/core/tools/toolNames';
 import type { WorkflowStep, StepType } from '@/utils/workflowExtractor';
 import type { ExecutionStep, DetailBlock, StepType as ExecStepType } from '@/types/execution';
 import { generateCompletionMessage } from '@/utils/workflowExtractor';
@@ -65,7 +66,7 @@ const stepIcons: Record<string, React.ElementType> = {
 
 // Get icon for specific tool names
 function getStepIcon(step: UnifiedStep): React.ElementType {
-  if (step.detail?.includes('list_directory') || step.label.includes('目录') || step.label.includes('directory')) {
+  if (step.detail?.includes(TOOL_NAMES.LIST_DIRECTORY) || step.label.includes('目录') || step.label.includes('directory')) {
     return FolderOpen;
   }
   if (step.label.includes('搜索') || step.label.includes('search') || step.type === 'search') {
@@ -599,12 +600,12 @@ function CollapsibleDetail({
   const formattedInput = useMemo(() => {
     if (!toolInput) return null;
 
-    if (toolName && ['run_command', 'bash', 'execute', 'shell'].includes(toolName)) {
+    if (toolName && [TOOL_NAMES.RUN_COMMAND, 'bash', 'execute', 'shell'].includes(toolName)) {
       const cmd = toolInput.command || toolInput.cmd;
       return cmd ? String(cmd) : null;
     }
 
-    if (toolName && ['read_file', 'read', 'write_file', 'write', 'edit_file', 'edit', 'create_file', 'create'].includes(toolName)) {
+    if (toolName && [TOOL_NAMES.READ_FILE, 'read', TOOL_NAMES.WRITE_FILE, 'write', TOOL_NAMES.EDIT_FILE, 'edit', 'create_file', 'create'].includes(toolName)) {
       const path = toolInput.path || toolInput.file_path || toolInput.filePath;
       return path ? String(path) : null;
     }
@@ -643,7 +644,7 @@ function CollapsibleDetail({
           {formattedInput && (
             <div className="border-b border-[#e8e5de]">
               <div className="px-3 py-1.5 text-[11px] text-[#8b887c] bg-[#edeae4]">
-                {toolName && ['run_command', 'bash', 'execute', 'shell'].includes(toolName)
+                {toolName && [TOOL_NAMES.RUN_COMMAND, 'bash', 'execute', 'shell'].includes(toolName)
                   ? 'bash'
                   : t.task.input}
               </div>

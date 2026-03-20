@@ -12,6 +12,7 @@ import { useDiscoveryStore } from '../../../stores/discoveryStore';
 import { joinPath, ensureParentDir } from '../../../utils/pathUtils';
 import { ITEM_NAME_RE } from '../../../utils/validation';
 import { getSystemInfoData } from '../helpers/toolHelpers';
+import { TOOL_NAMES } from '../toolNames';
 
 // Module-level map to track skill hook cleanup functions.
 // Exported for cleanup on conversation delete/switch.
@@ -30,7 +31,7 @@ export function clearAllSkillHooks(): void {
  * This mimics Claude Code's behavior where Claude decides when to use skills
  */
 export const useSkillTool: ToolDefinition = {
-  name: 'use_skill',
+  name: TOOL_NAMES.USE_SKILL,
   description: '加载技能来辅助当前任务。技能指令会注入本轮系统提示（任务结束后自动释放）。当用户请求匹配某个技能的 TRIGGER 条件时使用。返回加载确认。',
   inputSchema: {
     type: 'object',
@@ -125,12 +126,12 @@ const PRESET_AGENTS: Record<string, { description: string; systemPrompt: string;
   research: {
     description: '信息搜索和调研',
     systemPrompt: '你是一个专业的调研助手。专注于搜索、阅读和分析信息，输出结构化的调研结果。',
-    tools: ['read_file', 'list_directory', 'find_files', 'search_files', 'web_search', 'http_fetch'],
+    tools: [TOOL_NAMES.READ_FILE, TOOL_NAMES.LIST_DIRECTORY, TOOL_NAMES.FIND_FILES, TOOL_NAMES.SEARCH_FILES, TOOL_NAMES.WEB_SEARCH, TOOL_NAMES.HTTP_FETCH],
   },
   writer: {
     description: '内容创作和文档撰写',
     systemPrompt: '你是一个专业的写作助手。擅长撰写文档、报告、邮件等各类文字内容。',
-    tools: ['read_file', 'write_file', 'edit_file', 'list_directory', 'find_files', 'search_files', 'web_search'],
+    tools: [TOOL_NAMES.READ_FILE, TOOL_NAMES.WRITE_FILE, TOOL_NAMES.EDIT_FILE, TOOL_NAMES.LIST_DIRECTORY, TOOL_NAMES.FIND_FILES, TOOL_NAMES.SEARCH_FILES, TOOL_NAMES.WEB_SEARCH],
   },
   executor: {
     description: '执行复杂操作任务',
@@ -152,7 +153,7 @@ function buildPresetAgent(type: string, _task: string): SubagentDefinition {
 }
 
 export const delegateToAgentTool: ToolDefinition = {
-  name: 'delegate_to_agent',
+  name: TOOL_NAMES.DELEGATE_TO_AGENT,
   description: '将任务委派给代理独立执行。可指定 agent_name（用户自定义代理）或 type（系统内置角色：research 调研/writer 写作/executor 执行）。',
   inputSchema: {
     type: 'object',
@@ -203,7 +204,7 @@ export const delegateToAgentTool: ToolDefinition = {
     const loopCtx = getCurrentLoopContext();
 
     // 4. Set agent status indicator
-    useChatStore.getState().setAgentStatus('tool-calling', 'delegate_to_agent', effectiveAgentName);
+    useChatStore.getState().setAgentStatus('tool-calling', TOOL_NAMES.DELEGATE_TO_AGENT, effectiveAgentName);
 
     // 5. Build onProgress callback for subagent visualization
     let onProgress: ((event: SubagentProgressEvent) => void) | undefined;
@@ -299,7 +300,7 @@ export const delegateToAgentTool: ToolDefinition = {
  * read_skill_file tool — reads supporting files from a skill's directory
  */
 export const readSkillFileTool: ToolDefinition = {
-  name: 'read_skill_file',
+  name: TOOL_NAMES.READ_SKILL_FILE,
   description: '读取已激活技能目录中的辅助文件（参考文档、模板、示例等）。当技能的 SKILL.md 中引用了支持文件时使用。',
   inputSchema: {
     type: 'object',
@@ -341,7 +342,7 @@ function createSaveItemTool(kind: 'skill' | 'agent'): ToolDefinition {
   const label = isSkill ? '技能' : '代理';
 
   return {
-    name: isSkill ? 'save_skill' : 'save_agent',
+    name: isSkill ? TOOL_NAMES.SAVE_SKILL : TOOL_NAMES.SAVE_AGENT,
     description: `保存自定义${label}文件到 ~/.abu/${folder}/{name}/${fileName}。当用户要求创建或修改${label}时使用。只需提供名称和内容，路径自动计算。`,
     inputSchema: {
       type: 'object',
@@ -388,7 +389,7 @@ const FOLDER_HINT_MAP: Record<string, string> = {
 };
 
 export const requestWorkspaceTool: ToolDefinition = {
-  name: 'request_workspace',
+  name: TOOL_NAMES.REQUEST_WORKSPACE,
   description: '请求用户选择工作区文件夹。当用户的请求涉及文件操作但没有设置工作区时，调用此工具让用户选择工作目录。',
   inputSchema: {
     type: 'object',

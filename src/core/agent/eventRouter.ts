@@ -28,6 +28,7 @@ import {
 } from '../../stores/scratchpadStore';
 import { parseSearchResults } from '../../utils/searchParser';
 import { isToolResultError } from '../../utils/workflowExtractor';
+import { TOOL_NAMES } from '../tools/toolNames';
 
 // --- Helper Functions ---
 
@@ -37,13 +38,13 @@ function generateId(): string {
 
 // --- Tool Classification ---
 
-const FILE_READ_TOOLS = ['read_file', 'read', 'get_file_contents'];
-const FILE_WRITE_TOOLS = ['write_file', 'write', 'edit_file', 'edit'];
-const FILE_CREATE_TOOLS = ['create_file', 'create'];
-const COMMAND_TOOLS = ['run_command', 'bash', 'execute', 'shell'];
-const SEARCH_TOOLS = ['search', 'grep', 'find', 'web_search', 'search_files', 'find_files'];
-const SKILL_TOOLS = ['use_skill'];
-const DELEGATE_TOOLS = ['delegate_to_agent'];
+const FILE_READ_TOOLS: string[] = [TOOL_NAMES.READ_FILE, 'read', 'get_file_contents'];
+const FILE_WRITE_TOOLS: string[] = [TOOL_NAMES.WRITE_FILE, 'write', TOOL_NAMES.EDIT_FILE, 'edit'];
+const FILE_CREATE_TOOLS: string[] = ['create_file', 'create'];
+const COMMAND_TOOLS: string[] = [TOOL_NAMES.RUN_COMMAND, 'bash', 'execute', 'shell'];
+const SEARCH_TOOLS: string[] = ['search', 'grep', 'find', TOOL_NAMES.WEB_SEARCH, TOOL_NAMES.SEARCH_FILES, TOOL_NAMES.FIND_FILES];
+const SKILL_TOOLS: string[] = [TOOL_NAMES.USE_SKILL];
+const DELEGATE_TOOLS: string[] = [TOOL_NAMES.DELEGATE_TO_AGENT];
 
 /**
  * Check if a tool is an MCP tool (format: serverName__toolName)
@@ -124,7 +125,7 @@ function generateStepLabel(
   }
 
   switch (toolName) {
-    case 'read_file':
+    case TOOL_NAMES.READ_FILE:
     case 'read':
     case 'get_file_contents':
       return {
@@ -132,14 +133,14 @@ function generateStepLabel(
         detail: path,
       };
 
-    case 'write_file':
+    case TOOL_NAMES.WRITE_FILE:
     case 'write':
       return {
         label: isZh ? (fileName ? `写入 ${fileName}` : '写入文件') : (fileName ? `Write ${fileName}` : 'Write file'),
         detail: path,
       };
 
-    case 'edit_file':
+    case TOOL_NAMES.EDIT_FILE:
     case 'edit':
       return {
         label: isZh ? (fileName ? `修改 ${fileName}` : '修改文件') : (fileName ? `Edit ${fileName}` : 'Edit file'),
@@ -154,7 +155,7 @@ function generateStepLabel(
       };
 
     case 'bash':
-    case 'run_command':
+    case TOOL_NAMES.RUN_COMMAND:
     case 'execute':
     case 'shell': {
       const cmd = (toolInput.command || toolInput.cmd) as string | undefined;
@@ -168,7 +169,7 @@ function generateStepLabel(
     case 'search':
     case 'grep':
     case 'find':
-    case 'search_files': {
+    case TOOL_NAMES.SEARCH_FILES: {
       const query = (toolInput.query || toolInput.pattern) as string | undefined;
       const shortQuery = query ? (query.length > 15 ? query.slice(0, 15) + '...' : query) : undefined;
       return {
@@ -177,7 +178,7 @@ function generateStepLabel(
       };
     }
 
-    case 'find_files': {
+    case TOOL_NAMES.FIND_FILES: {
       const filePattern = toolInput.pattern as string | undefined;
       const shortPattern = filePattern ? (filePattern.length > 15 ? filePattern.slice(0, 15) + '...' : filePattern) : undefined;
       return {
@@ -186,7 +187,7 @@ function generateStepLabel(
       };
     }
 
-    case 'web_search': {
+    case TOOL_NAMES.WEB_SEARCH: {
       const query = toolInput.query as string | undefined;
       const shortQuery = query ? (query.length > 15 ? query.slice(0, 15) + '...' : query) : undefined;
       return {
@@ -195,7 +196,7 @@ function generateStepLabel(
       };
     }
 
-    case 'use_skill': {
+    case TOOL_NAMES.USE_SKILL: {
       const skillName = (toolInput.skill_name as string | undefined)?.replace(/^\/+/, '');
       return {
         label: isZh ? (skillName ? `使用 /${skillName} 技能` : '使用技能') : (skillName ? `Use /${skillName} skill` : 'Use skill'),
@@ -203,7 +204,7 @@ function generateStepLabel(
       };
     }
 
-    case 'delegate_to_agent': {
+    case TOOL_NAMES.DELEGATE_TO_AGENT: {
       const agentName = toolInput.agent_name as string | undefined;
       return {
         label: isZh
@@ -213,7 +214,7 @@ function generateStepLabel(
       };
     }
 
-    case 'manage_scheduled_task': {
+    case TOOL_NAMES.MANAGE_SCHEDULED_TASK: {
       const action = toolInput.action as string | undefined;
       const taskName = toolInput.name as string | undefined;
       const labels: Record<string, string> = {
@@ -228,12 +229,12 @@ function generateStepLabel(
       return { label: taskName ? `${label}「${taskName}」` : label };
     }
 
-    case 'get_system_info':
+    case TOOL_NAMES.GET_SYSTEM_INFO:
       return {
         label: isZh ? '获取系统信息' : 'Get system info',
       };
 
-    case 'list_directory': {
+    case TOOL_NAMES.LIST_DIRECTORY: {
       const dirPath = path || (toolInput.directory as string);
       const dirName = dirPath ? getFileName(dirPath) : undefined;
       return {
@@ -324,7 +325,7 @@ function createResultBlock(stepId: string, result: string, toolName: string, loc
   let language: string | undefined;
 
   // Try to parse search results from SEARCH_JSON marker or raw JSON
-  if (toolName === 'web_search' || toolName === 'search') {
+  if (toolName === TOOL_NAMES.WEB_SEARCH || toolName === 'search') {
     const results = parseSearchResults(result);
     if (results) {
       parsedItems = results.map((item) => ({

@@ -12,6 +12,7 @@ import {
   Loader2,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { TOOL_NAMES } from '@/core/tools/toolNames';
 import { useActiveConversation } from '@/stores/chatStore';
 import { useMCPStore, initMCPStoreSync, type MCPServerEntry } from '@/stores/mcpStore';
 import { useI18n, format } from '@/i18n';
@@ -69,7 +70,7 @@ export default function ContextSection() {
           const path = (input.path || input.file_path || input.filePath) as string | undefined;
 
           // Capture content from read_file results
-          if (path && ['read_file', 'read', 'get_file_contents'].includes(tc.name)) {
+          if (path && [TOOL_NAMES.READ_FILE, 'read', 'get_file_contents'].includes(tc.name)) {
             if (tc.result && typeof tc.result === 'string' && !tc.result.toLowerCase().startsWith('error:')) {
               fileContents[path] = tc.result;
             }
@@ -79,9 +80,9 @@ export default function ContextSection() {
             seenFiles.add(path);
             let operation: 'read' | 'write' | 'execute' = 'read';
 
-            if (['write_file', 'write', 'edit_file', 'edit', 'create_file', 'create'].includes(tc.name)) {
+            if ([TOOL_NAMES.WRITE_FILE, 'write', TOOL_NAMES.EDIT_FILE, 'edit', 'create_file', 'create'].includes(tc.name)) {
               operation = 'write';
-            } else if (['run_command', 'bash', 'execute', 'shell'].includes(tc.name)) {
+            } else if ([TOOL_NAMES.RUN_COMMAND, 'bash', 'execute', 'shell'].includes(tc.name)) {
               operation = 'execute';
             }
 

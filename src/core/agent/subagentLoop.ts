@@ -12,6 +12,7 @@ import type { LLMAdapter } from '../llm/adapter';
 import { ClaudeAdapter } from '../llm/claude';
 import { OpenAICompatibleAdapter } from '../llm/openai-compatible';
 import { getAllTools, executeAnyTool, toolResultToString, type ConfirmationInfo, type FilePermissionCallback } from '../tools/registry';
+import { TOOL_NAMES } from '../tools/toolNames';
 import { useSettingsStore, getActiveApiKey, resolveAgentModel } from '../../stores/settingsStore';
 import { useWorkspaceStore } from '../../stores/workspaceStore';
 import { prepareContextMessages } from '../context/contextManager';
@@ -148,7 +149,7 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<str
       tools = tools.filter((t) => !blocked.has(t.name));
     }
     // Always remove delegate_to_agent to prevent recursion
-    tools = tools.filter((t) => t.name !== 'delegate_to_agent');
+    tools = tools.filter((t) => t.name !== TOOL_NAMES.DELEGATE_TO_AGENT);
 
     // 4. Create LLM adapter
     const adapter: LLMAdapter = settings.apiFormat === 'openai-compatible'

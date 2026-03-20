@@ -5,9 +5,10 @@ import { useTriggerStore } from '../../../stores/triggerStore';
 import { triggerEngine } from '../../trigger/triggerEngine';
 import type { TriggerFilter, TriggerAction, DebounceConfig } from '../../../types/trigger';
 import { addWatchRule, removeWatchRule, toggleWatchRule, listWatchRules, type FileWatchRule } from '../../agent/fileWatcher';
+import { TOOL_NAMES } from '../toolNames';
 
 export const manageScheduledTaskTool: ToolDefinition = {
-  name: 'manage_scheduled_task',
+  name: TOOL_NAMES.MANAGE_SCHEDULED_TASK,
   description: '创建、查看、更新、删除、暂停或恢复定时任务。当用户需要定期/定时自动执行某操作时使用。',
   inputSchema: {
     type: 'object',
@@ -216,7 +217,7 @@ export const manageScheduledTaskTool: ToolDefinition = {
 };
 
 export const manageTriggerTool: ToolDefinition = {
-  name: 'manage_trigger',
+  name: TOOL_NAMES.MANAGE_TRIGGER,
   description: '创建、查看、更新、删除、暂停或恢复触发器（事件驱动的自动化任务）。当用户需要监听外部事件并自动响应时使用。',
   inputSchema: {
     type: 'object',
@@ -535,7 +536,7 @@ export const manageTriggerTool: ToolDefinition = {
 };
 
 export const manageFileWatchTool: ToolDefinition = {
-  name: 'manage_file_watch',
+  name: TOOL_NAMES.MANAGE_FILE_WATCH,
   description: '管理文件监听规则。当检测到目录中的文件变化时，自动触发后台任务。',
   inputSchema: {
     type: 'object',

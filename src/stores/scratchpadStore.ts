@@ -7,6 +7,7 @@ import { create } from 'zustand';
 import { immer } from 'zustand/middleware/immer';
 import { persist } from 'zustand/middleware';
 import { useShallow } from 'zustand/react/shallow';
+import { TOOL_NAMES } from '@/core/tools/toolNames';
 
 export type ScratchpadEntryType = 'extraction' | 'analysis' | 'search' | 'summary' | 'preview';
 
@@ -215,17 +216,17 @@ export function generateScratchpadTitle(
  */
 export function inferScratchpadType(toolName: string): ScratchpadEntryType | null {
   // File read tools → extraction
-  if (['read_file', 'read', 'get_file_contents'].includes(toolName)) {
+  if ([TOOL_NAMES.READ_FILE, 'read', 'get_file_contents'].includes(toolName)) {
     return 'extraction';
   }
 
   // Search tools → search
-  if (['web_search', 'search', 'grep', 'find'].includes(toolName)) {
+  if ([TOOL_NAMES.WEB_SEARCH, 'search', 'grep', 'find'].includes(toolName)) {
     return 'search';
   }
 
   // List directory → preview
-  if (['list_directory'].includes(toolName)) {
+  if (toolName === TOOL_NAMES.LIST_DIRECTORY) {
     return 'preview';
   }
 

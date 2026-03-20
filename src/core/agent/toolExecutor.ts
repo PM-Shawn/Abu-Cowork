@@ -14,6 +14,7 @@ import { executeAnyTool, toolResultToString } from '../tools/registry';
 import { emitHook } from './lifecycleHooks';
 import type { PreToolCallEvent } from './lifecycleHooks';
 import { setComputerUseBatchMode, setSkipAutoScreenshot } from '../tools/builtins';
+import { TOOL_NAMES } from '../tools/toolNames';
 import { invoke } from '@tauri-apps/api/core';
 import { useChatStore } from '../../stores/chatStore';
 import { useTaskExecutionStore } from '../../stores/taskExecutionStore';
@@ -216,7 +217,7 @@ export async function executeToolBatch(params: ToolBatchParams): Promise<ToolBat
 
   // If batch contains any computer tool call, execute ALL sequentially
   // (e.g. click → wait → type must run in order, not race each other)
-  const hasComputerTool = collectedToolCalls.some(tc => tc.name === 'computer');
+  const hasComputerTool = collectedToolCalls.some(tc => tc.name === TOOL_NAMES.COMPUTER);
 
   let results: PromiseSettledResult<ToolExecResult>[];
   if (hasComputerTool) {
@@ -231,8 +232,8 @@ export async function executeToolBatch(params: ToolBatchParams): Promise<ToolBat
       for (let i = 0; i < collectedToolCalls.length; i++) {
         const tc = collectedToolCalls[i];
         // Only auto-screenshot on the last computer tool in the batch
-        const hasMoreComputerTools = collectedToolCalls.slice(i + 1).some(t => t.name === 'computer');
-        setSkipAutoScreenshot(tc.name === 'computer' && hasMoreComputerTools);
+        const hasMoreComputerTools = collectedToolCalls.slice(i + 1).some(t => t.name === TOOL_NAMES.COMPUTER);
+        setSkipAutoScreenshot(tc.name === TOOL_NAMES.COMPUTER && hasMoreComputerTools);
         try {
           const value = await executeSingleTool(tc);
           sequentialResults.push({ status: 'fulfilled', value });
@@ -248,7 +249,7 @@ export async function executeToolBatch(params: ToolBatchParams): Promise<ToolBat
     results = sequentialResults;
   } else {
     // run_command may have implicit dependencies (e.g. npm install → npm build), serialize them
-    const allRunCommand = collectedToolCalls.every(tc => tc.name === 'run_command');
+    const allRunCommand = collectedToolCalls.every(tc => tc.name === TOOL_NAMES.RUN_COMMAND);
     if (allRunCommand) {
       const sequentialResults: PromiseSettledResult<ToolExecResult>[] = [];
       for (const tc of collectedToolCalls) {
@@ -275,7 +276,7 @@ export async function executeToolBatch(params: ToolBatchParams): Promise<ToolBat
       // Determine hideScreenshot for computer tool
       let hideScreenshot: boolean | undefined;
       const matchedTc = collectedToolCalls[i];
-      if (matchedTc?.name === 'computer') {
+      if (matchedTc?.name === TOOL_NAMES.COMPUTER) {
         const showUser = matchedTc.input.show_user;
         const action = matchedTc.input.action as string;
         if (typeof showUser === 'boolean') {
@@ -355,7 +356,7 @@ export async function executeToolBatch(params: ToolBatchParams): Promise<ToolBat
 
   // Detect tool changes (e.g. manage_mcp_server install)
   const mcpChanged = continueLoop && collectedToolCalls.some(tc =>
-    tc.name === 'manage_mcp_server' && (tc.input as Record<string, unknown>)?.action === 'install' ||
+    tc.name === TOOL_NAMES.MANAGE_MCP_SERVER && (tc.input as Record<string, unknown>)?.action === 'install' ||
     tc.name === 'install_mcp_server' || tc.name === 'uninstall_mcp_server'
   );
 

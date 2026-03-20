@@ -1,5 +1,6 @@
 import { useState, useMemo, useCallback, useRef, useEffect } from 'react';
 import type { Message, MessageContent, ToolCall, ImageAttachment } from '@/types';
+import { TOOL_NAMES } from '@/core/tools/toolNames';
 import type { ExecutionStep } from '@/types/execution';
 import type { WorkflowStep } from '@/utils/workflowExtractor';
 import MessageBubble from './MessageBubble';
@@ -188,7 +189,7 @@ export default function MessageGroup({ messages }: MessageGroupProps) {
       .filter((m) => m.role === 'assistant')
       .flatMap((m) => m.toolCalls || [])
       .flatMap((tc) => {
-        if (tc.name !== 'web_search' || !tc.result) return [];
+        if (tc.name !== TOOL_NAMES.WEB_SEARCH || !tc.result) return [];
         return parseSearchResults(tc.result) ?? [];
       });
     if (fromTools.length > 0) return fromTools;

@@ -1,9 +1,10 @@
 import type { ToolDefinition } from '../../../types';
 import { getTauriFetch } from '../../llm/tauriFetch';
 import { useSettingsStore } from '../../../stores/settingsStore';
+import { TOOL_NAMES } from '../toolNames';
 
 export const webSearchTool: ToolDefinition = {
-  name: 'web_search',
+  name: TOOL_NAMES.WEB_SEARCH,
   description: 'Search the web for information. Returns search results with titles, URLs, and snippets. Use this when: (1) you encounter unfamiliar terms, proper nouns, or product names, (2) the user asks to research/investigate a topic, (3) you need current information. IMPORTANT: Keep proper nouns in original form (e.g. "OpenClaw" not "开放爪子"), prefer searching over guessing.',
   inputSchema: {
     type: 'object',
@@ -61,7 +62,7 @@ export const webSearchTool: ToolDefinition = {
 };
 
 export const httpFetchTool: ToolDefinition = {
-  name: 'http_fetch',
+  name: TOOL_NAMES.HTTP_FETCH,
   description: '发送 HTTP 请求到任意 URL。支持 GET/POST/PUT/DELETE/PATCH 方法。比通过 run_command 执行 curl 更可靠且跨平台。返回 HTTP 状态码和响应内容。',
   inputSchema: {
     type: 'object',

@@ -6,6 +6,7 @@ import type { ToolDefinition, ToolResult, ToolResultContent } from '../../../typ
 import { useSettingsStore } from '../../../stores/settingsStore';
 import { useWorkspaceStore } from '../../../stores/workspaceStore';
 import { joinPath } from '../../../utils/pathUtils';
+import { TOOL_NAMES } from '../toolNames';
 
 let lastScreenScaleFactor = 1;
 const SCREENSHOT_MAX_WIDTH = 1280;
@@ -109,7 +110,7 @@ async function executeScreenshot(input: Record<string, unknown>): Promise<ToolRe
 }
 
 export const computerTool: ToolDefinition = {
-  name: 'computer',
+  name: TOOL_NAMES.COMPUTER,
   description: `操控电脑屏幕：截图、鼠标和键盘操作。仅在必须看屏幕画面或操作 GUI 界面时才用，能用其他工具完成的不要用此工具。
 
 操作类型（action）：

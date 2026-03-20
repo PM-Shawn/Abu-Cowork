@@ -3,9 +3,10 @@ import { sendNotification, isPermissionGranted, requestPermission } from '@tauri
 import type { ToolDefinition } from '../../../types';
 import { searchMCPRegistry, installMCPServer, getRegistryEntry } from '../../agent/mcpDiscovery';
 import { getSystemInfoData } from '../helpers/toolHelpers';
+import { TOOL_NAMES } from '../toolNames';
 
 export const getSystemInfoTool: ToolDefinition = {
-  name: 'get_system_info',
+  name: TOOL_NAMES.GET_SYSTEM_INFO,
   description: '获取系统环境信息（主目录、桌面、文档、下载等路径）。首次需要定位文件时使用。返回平台类型和常用目录的绝对路径。',
   inputSchema: {
     type: 'object',
@@ -33,7 +34,7 @@ export const getSystemInfoTool: ToolDefinition = {
 // ============================================================
 
 export const clipboardReadTool: ToolDefinition = {
-  name: 'clipboard_read',
+  name: TOOL_NAMES.CLIPBOARD_READ,
   description: '读取系统剪贴板中的文本内容。当用户提到"剪贴板"、"粘贴板"、"我复制的内容"时使用。返回剪贴板文本或空提示。',
   inputSchema: {
     type: 'object',
@@ -50,7 +51,7 @@ export const clipboardReadTool: ToolDefinition = {
 };
 
 export const clipboardWriteTool: ToolDefinition = {
-  name: 'clipboard_write',
+  name: TOOL_NAMES.CLIPBOARD_WRITE,
   description: '将文本内容写入系统剪贴板。',
   inputSchema: {
     type: 'object',
@@ -74,7 +75,7 @@ export const clipboardWriteTool: ToolDefinition = {
 // ============================================================
 
 export const systemNotifyTool: ToolDefinition = {
-  name: 'system_notify',
+  name: TOOL_NAMES.SYSTEM_NOTIFY,
   description: '发送系统桌面通知。当用户要求"完成后通知我"或需要重要提醒时使用。',
   inputSchema: {
     type: 'object',
@@ -106,7 +107,7 @@ export const systemNotifyTool: ToolDefinition = {
  * manage_mcp_server — search and install MCP servers
  */
 export const manageMCPServerTool: ToolDefinition = {
-  name: 'manage_mcp_server',
+  name: TOOL_NAMES.MANAGE_MCP_SERVER,
   description: '搜索和安装 MCP 工具服务。当执行任务时发现缺少某种工具能力（如操作 GitHub、Slack、数据库等）时使用。注意：这不是通用软件安装工具，不要用于安装普通软件。',
   inputSchema: {
     type: 'object',

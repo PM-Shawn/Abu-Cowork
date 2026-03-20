@@ -5,6 +5,7 @@ import { appendTaskLog, type TaskCategory } from '../../agent/taskLog';
 import { getTodos, addTodo, updateTodo, setTodos, formatTodosForPrompt } from '../../agent/todoManager';
 import type { TodoStatus } from '../../agent/todoManager';
 import { clearAgentMemory, clearProjectMemory } from '../../agent/agentMemory';
+import { TOOL_NAMES } from '../toolNames';
 
 /** Auto-extract keywords from content when none provided */
 function autoExtractKeywords(text: string): string[] {
@@ -17,7 +18,7 @@ function autoExtractKeywords(text: string): string[] {
 }
 
 export const reportPlanTool: ToolDefinition = {
-  name: 'report_plan',
+  name: TOOL_NAMES.REPORT_PLAN,
   description: '上报任务执行计划。在开始执行任何任务前必须先调用此工具，告知用户你将要执行的步骤。步骤描述要用用户能理解的业务语言，不要提及工具名称。',
   inputSchema: {
     type: 'object',
@@ -40,7 +41,7 @@ export const reportPlanTool: ToolDefinition = {
 };
 
 export const updateMemoryTool: ToolDefinition = {
-  name: 'update_memory',
+  name: TOOL_NAMES.UPDATE_MEMORY,
   description: '保存持久记忆。每条记忆需指定 category 分类。scope="user" 保存个人偏好（跨项目），scope="project" 保存项目知识（仅当前工作区）。注意：项目规则（.abu/ABU.md）由用户手动维护，不要用此工具修改规则。',
   inputSchema: {
     type: 'object',
@@ -147,7 +148,7 @@ export const updateMemoryTool: ToolDefinition = {
 };
 
 export const todoWriteTool: ToolDefinition = {
-  name: 'todo_write',
+  name: TOOL_NAMES.TODO_WRITE,
   description: '创建或更新任务计划。可以批量设置计划项，或更新单个项的状态。计划会在每轮对话中注入，确保你始终能看到当前进度。',
   inputSchema: {
     type: 'object',
@@ -222,7 +223,7 @@ export const todoWriteTool: ToolDefinition = {
 };
 
 export const logTaskCompletionTool: ToolDefinition = {
-  name: 'log_task_completion',
+  name: TOOL_NAMES.LOG_TASK_COMPLETION,
   description: '任务完成后记录摘要。完成用户交办的实际任务后应调用（闲聊和简单问答不记录）。',
   inputSchema: {
     type: 'object',

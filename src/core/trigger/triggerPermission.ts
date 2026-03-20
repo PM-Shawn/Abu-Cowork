@@ -59,10 +59,10 @@ export function resolveTriggerCallbacks(action: TriggerAction): TriggerCallbacks
         },
         filePermissionCallback: async (req) => {
           if (req.capability === 'read') {
-            // Auto-allow reads for pre-authorized workspaces
+            // Auto-allow reads for pre-authorized workspaces (read-only)
             const permStore = usePermissionStore.getState();
             if (permStore.hasPermission(req.path, 'read')) {
-              authorizeWorkspace(req.path);
+              authorizeWorkspace(req.path, ['read']);
               return true;
             }
           }

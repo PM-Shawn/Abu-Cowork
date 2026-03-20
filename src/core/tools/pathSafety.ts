@@ -178,16 +178,24 @@ const ALWAYS_ALLOWED_PATHS = [
   '/Applications',  // Allow reading app bundles (needed for computer use / open -a)
 ];
 
-// Workspace paths that user has explicitly authorized
-const authorizedWorkspaces: Set<string> = new Set();
+// Workspace paths that user has explicitly authorized, with capability tracking
+// Each entry maps a normalized path to its authorized capabilities
+const authorizedWorkspaces: Map<string, Set<'read' | 'write'>> = new Map();
 
 /**
- * Add a workspace path to the authorized list
+ * Add a workspace path to the authorized list.
+ * @param capabilities - defaults to ['read', 'write'] for backward compatibility (user-selected workspace).
+ *   Pass ['read'] for read-only authorization (e.g., read_tools triggers).
  */
-export function authorizeWorkspace(path: string): void {
-  // Normalize path (backslashes → forward slashes, remove trailing slash)
+export function authorizeWorkspace(path: string, capabilities?: ('read' | 'write')[]): void {
   const normalized = path.replace(/\\/g, '/').replace(/\/+$/, '');
-  authorizedWorkspaces.add(normalized);
+  const caps = capabilities ?? ['read', 'write'];
+  const existing = authorizedWorkspaces.get(normalized);
+  if (existing) {
+    for (const c of caps) existing.add(c);
+  } else {
+    authorizedWorkspaces.set(normalized, new Set(caps));
+  }
 }
 
 /**
@@ -199,15 +207,15 @@ export function revokeWorkspace(path: string): void {
 }
 
 /**
- * Check if a path is within an authorized workspace
+ * Check if a path is within an authorized workspace with the required capability
  */
-function isInAuthorizedWorkspace(path: string): boolean {
+function isInAuthorizedWorkspace(path: string, capability: 'read' | 'write' = 'read'): boolean {
   let normalized = path.replace(/\\/g, '/').replace(/\/+$/, '');
   if (isWindows()) normalized = normalized.toLowerCase();
-  for (const workspace of authorizedWorkspaces) {
+  for (const [workspace, caps] of authorizedWorkspaces) {
     const compareWs = isWindows() ? workspace.toLowerCase() : workspace;
     if (normalized === compareWs || normalized.startsWith(compareWs + '/')) {
-      return true;
+      return caps.has(capability);
     }
   }
   return false;
@@ -432,7 +440,7 @@ export async function checkReadPath(path: string): Promise<PathCheckResult> {
   }
 
   // Check if in authorized workspace (already granted permission)
-  if (isInAuthorizedWorkspace(normalizedPath)) {
+  if (isInAuthorizedWorkspace(normalizedPath, 'read')) {
     return { allowed: true };
   }
 
@@ -518,7 +526,7 @@ export async function checkWritePath(path: string): Promise<PathCheckResult> {
   }
 
   // Check if in authorized workspace (already granted permission)
-  if (isInAuthorizedWorkspace(normalizedPath)) {
+  if (isInAuthorizedWorkspace(normalizedPath, 'write')) {
     return { allowed: true };
   }
 
@@ -587,7 +595,7 @@ export async function checkListPath(path: string): Promise<PathCheckResult> {
   }
 
   // Check if in authorized workspace
-  if (isInAuthorizedWorkspace(normalizedPath)) {
+  if (isInAuthorizedWorkspace(normalizedPath, 'read')) {
     return { allowed: true };
   }
 

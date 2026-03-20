@@ -11,14 +11,12 @@ blocked-tools:
   - delegate_to_agent
   - update_memory
   - todo_write
-  - todo_read
   - generate_image
   - process_image
   - clipboard_read
   - clipboard_write
   - system_notify
-  - search_mcp_server
-  - install_mcp_server
+  - manage_mcp_server
   - log_task_completion
   - save_skill
   - save_agent

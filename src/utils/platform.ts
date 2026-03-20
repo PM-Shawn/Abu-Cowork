@@ -30,3 +30,9 @@ export function getPlatform(): string {
   }
   return cached ?? 'unknown';
 }
+
+/** Get the default shell for the current platform. */
+export function getShell(): string {
+  if (cached === 'windows') return 'PowerShell';
+  return 'zsh/bash';
+}

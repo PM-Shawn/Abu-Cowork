@@ -35,6 +35,7 @@ import { formatTodosForPrompt } from './todoManager';
 import { isWindows } from '../../utils/platform';
 import { getBuiltinSearchConfig } from '../capabilities';
 import { resolveCapabilities } from '../llm/modelCapabilities';
+import { CORE_TOOL_NAMES, prefetchTools } from '../tools/toolPrefetch';
 
 /** Persist execution steps onto the last assistant message for the given loop, then evict from memory */
 function persistExecutionSnapshot(conversationId: string, loopId: string): void {
@@ -469,9 +470,19 @@ function resolveTools(
   route: RouteResult,
   hasBuiltinWebSearch: boolean,
   blockedTools?: string[],
+  prefetchContext?: { userInput: string; computerUseEnabled: boolean; activeSkills: import('../../types').Skill[]; turnCount: number },
 ): { tools: ToolDefinition[]; inputValidators: Map<string, (input: Record<string, unknown>) => boolean> } {
   let tools = getAllTools();
   let inputValidators = new Map<string, (input: Record<string, unknown>) => boolean>();
+
+  // Conditional tool loading: filter to core + prefetched tools
+  // Only when skill doesn't define its own allowed-tools whitelist
+  if (prefetchContext && !route.skill?.allowedTools) {
+    const additionalToolNames = prefetchTools(prefetchContext);
+    tools = tools.filter(t =>
+      CORE_TOOL_NAMES.has(t.name) || additionalToolNames.includes(t.name)
+    );
+  }
 
   if (route.type === 'skill' && route.skill?.allowedTools) {
     const patterns = route.skill.allowedTools;
@@ -647,7 +658,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
   }
 
   // Build static system prompt once (active skills are injected dynamically per-turn)
-  const systemPrompt = await buildSystemPrompt(route, getBaseSystemPrompt(), conversationId, options?.imContext);
+  const systemPrompt = await buildSystemPrompt(route, getBaseSystemPrompt(), conversationId, options?.imContext, 0);
 
   // Build tool execution context — provides resolved workspace for tools like update_memory
   const toolContext: ToolExecutionContext = {
@@ -918,9 +929,19 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
       // ── Per-turn: refresh tools and dynamic prompt sections ──
       const freshSettings = useSettingsStore.getState();
       const builtinWebSearch = getBuiltinSearchConfig(freshSettings.provider, freshSettings.useBuiltinWebSearch);
-      const { tools, inputValidators } = resolveTools(route, !!builtinWebSearch, options?.blockedTools);
-      const dynamicCapabilities = buildDynamicCapabilities(tools);
+      // Build prefetch context for conditional tool loading
       const conv = useChatStore.getState().conversations[conversationId];
+      const activeSkillObjects = (conv?.activeSkills ?? [])
+        .map(name => skillLoader.getSkill(name))
+        .filter((s): s is NonNullable<typeof s> => s !== undefined);
+      const prefetchCtx = {
+        userInput: userMessage,
+        computerUseEnabled: freshSettings.computerUseEnabled ?? false,
+        activeSkills: activeSkillObjects,
+        turnCount,
+      };
+      const { tools, inputValidators } = resolveTools(route, !!builtinWebSearch, options?.blockedTools, prefetchCtx);
+      const dynamicCapabilities = buildDynamicCapabilities(tools);
       const activeSkillContent = await loadActiveSkillContent(
         conv?.activeSkills,
         conv?.activeSkillArgs,
@@ -1499,8 +1520,9 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
         // Clear loop context after tool execution
         currentLoopContext = null;
 
-        // Detect tool changes (e.g. install_mcp_server) and inject notification
+        // Detect tool changes (e.g. manage_mcp_server install) and inject notification
         const mcpChanged = continueLoop && collectedToolCalls.some(tc =>
+          tc.name === 'manage_mcp_server' && (tc.input as Record<string, unknown>)?.action === 'install' ||
           tc.name === 'install_mcp_server' || tc.name === 'uninstall_mcp_server'
         );
         if (mcpChanged) {

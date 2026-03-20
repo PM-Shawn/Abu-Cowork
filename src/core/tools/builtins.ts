@@ -8,7 +8,7 @@ import { invoke } from '@tauri-apps/api/core';
 import type { ToolDefinition, ToolResult, ToolResultContent, Conversation, SubagentDefinition } from '../../types';
 import { toolRegistry } from './registry';
 import { skillLoader } from '../skill/loader';
-import { initPlatform, isWindows } from '../../utils/platform';
+import { initPlatform, isWindows, getPlatform, getShell } from '../../utils/platform';
 import { extractUsername, joinPath, ensureParentDir, getParentDir } from '../../utils/pathUtils';
 import { getTauriFetch } from '../llm/tauriFetch';
 import { resolveCommandPython } from '../../utils/pythonRuntime';
@@ -71,7 +71,7 @@ async function getSystemInfoData(): Promise<Record<string, string>> {
 
 const getSystemInfoTool: ToolDefinition = {
   name: 'get_system_info',
-  description: 'Get system environment information including home directory, desktop path, documents path, etc. Use this FIRST when you need to know where files are located on the user\'s computer.',
+  description: '获取系统环境信息（主目录、桌面、文档、下载等路径）。首次需要定位文件时使用。返回平台类型和常用目录的绝对路径。',
   inputSchema: {
     type: 'object',
     properties: {},
@@ -312,7 +312,7 @@ async function listArchiveContents(filePath: string, ext: string): Promise<strin
 
 const readFileTool: ToolDefinition = {
   name: 'read_file',
-  description: 'Read the contents of a file. Supports text files, images (png/jpg/gif/webp — visual content), PDFs (text extraction), Office documents (.docx/.xlsx/.pptx — text extraction), and archives (.zip/.tar.gz — list contents).',
+  description: '读取文件内容。支持文本文件、图片（png/jpg/gif/webp，返回视觉内容）、PDF（提取文字）、Office 文档（.docx/.xlsx/.pptx，提取文字）和压缩包（.zip/.tar.gz，列出内容）。返回文件内容或提取的文本。',
   inputSchema: {
     type: 'object',
     properties: {
@@ -402,7 +402,7 @@ const readFileTool: ToolDefinition = {
 
 const writeFileTool: ToolDefinition = {
   name: 'write_file',
-  description: 'Write content to a file at the given path. Creates the file if it does not exist, overwrites if it does.',
+  description: '将内容写入文件。文件不存在则创建，已存在则覆盖。创建新文件或完整覆写时使用，局部修改用 edit_file。仅支持纯文本，不能创建二进制文件（.docx/.xlsx 等）。',
   inputSchema: {
     type: 'object',
     properties: {
@@ -440,7 +440,7 @@ const writeFileTool: ToolDefinition = {
 
 const listDirectoryTool: ToolDefinition = {
   name: 'list_directory',
-  description: 'List the contents of a directory. Returns file and directory names with their types, sorted alphabetically.',
+  description: '列出目录内容。返回文件和子目录名称及类型，按字母排序。',
   inputSchema: {
     type: 'object',
     properties: {
@@ -473,7 +473,21 @@ const listDirectoryTool: ToolDefinition = {
 
 const runCommandTool: ToolDefinition = {
   name: 'run_command',
-  description: 'Execute a shell command on the user\'s computer and return the output. Use this for tasks that require running programs, scripts, or system commands. For long-running services (like web servers), set background=true to start in background mode and get initial output.',
+  get description() {
+    const plat = getPlatform();
+    const shell = getShell();
+    return `在用户电脑上执行 shell 命令（当前平台：${plat}，Shell：${shell}）。
+
+重要：当有专用工具时优先使用专用工具：
+- 读取文件 → read_file
+- 查看目录 → list_directory
+- 搜索文件内容 → search_files
+- 查找文件 → find_files
+- HTTP 请求 → http_fetch
+- 编辑文件 → edit_file
+
+本工具适用于：文件移动/复制/重命名（mv/cp）、包管理（npm/pip/brew）、构建测试（npm run/cargo build）、Git 操作、Python 脚本执行（自动使用内置运行时）。长时间运行的服务设置 background=true。`;
+  },
   inputSchema: {
     type: 'object',
     properties: {
@@ -531,7 +545,7 @@ const runCommandTool: ToolDefinition = {
  */
 const editFileTool: ToolDefinition = {
   name: 'edit_file',
-  description: 'Edit a file by replacing a specific text substring with new text. The old_content must be an exact match of the text in the file. Use this instead of write_file when you only need to change part of a file.',
+  description: '通过精确匹配替换来编辑文件。局部修改文件时使用，比 write_file 更安全。old_content 必须与文件中的文本完全匹配（包括空白和缩进）。',
   inputSchema: {
     type: 'object',
     properties: {
@@ -614,7 +628,7 @@ function similarityScore(a: string, b: string): number {
  */
 const searchFilesTool: ToolDefinition = {
   name: 'search_files',
-  description: 'Search for a text pattern across files in a directory (like grep). Returns matching lines with file paths and line numbers.',
+  description: '在目录中搜索文件内容（类似 grep）。搜索文件内容用这个，搜索文件名用 find_files。返回匹配行及其文件路径和行号。',
   inputSchema: {
     type: 'object',
     properties: {
@@ -687,7 +701,7 @@ const searchFilesTool: ToolDefinition = {
  */
 const findFilesTool: ToolDefinition = {
   name: 'find_files',
-  description: 'Find files by name pattern in a directory (like the find command). Returns matching file paths.',
+  description: '按文件名模式查找文件（类似 find 命令）。搜索文件名用这个，搜索文件内容用 search_files。返回匹配的文件路径列表。',
   inputSchema: {
     type: 'object',
     properties: {
@@ -757,7 +771,7 @@ export function clearAllSkillHooks(): void {
  */
 const useSkillTool: ToolDefinition = {
   name: 'use_skill',
-  description: 'Load a skill to help with the current task. The skill instructions will be injected into your system prompt for this turn only (auto-deactivates when the loop ends). Returns a brief confirmation.',
+  description: '加载技能来辅助当前任务。技能指令会注入本轮系统提示（任务结束后自动释放）。当用户请求匹配某个技能的 TRIGGER 条件时使用。返回加载确认。',
   inputSchema: {
     type: 'object',
     properties: {
@@ -878,7 +892,7 @@ const reportPlanTool: ToolDefinition = {
  */
 const generateImageTool: ToolDefinition = {
   name: 'generate_image',
-  description: 'Generate an image from a text prompt using DALL-E 3. Returns the local file path of the saved image.',
+  description: '根据文字描述生成图片（使用 DALL-E）。当用户要求生成真实感图片、插图、logo 等时使用。图表和数据可视化请直接输出 HTML 代码块。返回保存的图片文件路径。',
   inputSchema: {
     type: 'object',
     properties: {
@@ -994,7 +1008,7 @@ const generateImageTool: ToolDefinition = {
  */
 const processImageTool: ToolDefinition = {
   name: 'process_image',
-  description: 'Process an image file: resize, crop, convert format, or compress. Uses system tools (sips on macOS, PowerShell on Windows).',
+  description: '处理图片文件：缩放、裁剪、转换格式或压缩。当用户需要调整图片尺寸、格式转换等时使用。返回处理后的文件路径。',
   inputSchema: {
     type: 'object',
     properties: {
@@ -1214,7 +1228,7 @@ const webSearchTool: ToolDefinition = {
  */
 const httpFetchTool: ToolDefinition = {
   name: 'http_fetch',
-  description: 'Make an HTTP request to any URL. Uses Tauri native HTTP client which bypasses CORS restrictions. More reliable and cross-platform than curl via run_command.',
+  description: '发送 HTTP 请求到任意 URL。支持 GET/POST/PUT/DELETE/PATCH 方法。比通过 run_command 执行 curl 更可靠且跨平台。返回 HTTP 状态码和响应内容。',
   inputSchema: {
     type: 'object',
     properties: {
@@ -1583,8 +1597,8 @@ const todoWriteTool: ToolDefinition = {
     properties: {
       action: {
         type: 'string',
-        description: '操作类型: set(批量设置计划) / add(添加单个) / update(更新状态)',
-        enum: ['set', 'add', 'update'],
+        description: '操作类型: set(批量设置计划) / add(添加单个) / update(更新状态) / read(读取当前计划)',
+        enum: ['set', 'add', 'update', 'read'],
       },
       items: {
         type: 'array',
@@ -1635,39 +1649,18 @@ const todoWriteTool: ToolDefinition = {
         if (!updated) return `Error: 计划项 ${todoId} 不存在`;
         return `已更新计划项: ${updated.content} → ${updated.status}`;
       }
+      case 'read': {
+        const todos = getTodos(conversationId);
+        if (todos.length === 0) {
+          return '当前没有任务计划。使用 todo_write(action: "set") 创建计划。';
+        }
+        const formatted = formatTodosForPrompt(conversationId);
+        const details = todos.map(t => `- ID: ${t.id} | ${t.status} | ${t.content}`).join('\n');
+        return `${formatted}\n\n详细信息（含 ID）:\n${details}`;
+      }
       default:
-        return `Error: 未知操作 "${action}"。可用操作: set, add, update`;
+        return `Error: 未知操作 "${action}"。可用操作: set, add, update, read`;
     }
-  },
-};
-
-/**
- * todo_read tool — read current task plan
- */
-const todoReadTool: ToolDefinition = {
-  name: 'todo_read',
-  description: '读取当前任务计划和进度。返回所有计划项及其状态。',
-  inputSchema: {
-    type: 'object',
-    properties: {},
-    required: [],
-  },
-  execute: async () => {
-
-    const conversationId = useChatStore.getState().activeConversationId;
-    if (!conversationId) {
-      return 'Error: 没有活跃会话';
-    }
-
-    const todos = getTodos(conversationId);
-    if (todos.length === 0) {
-      return '当前没有任务计划。使用 todo_write 创建计划。';
-    }
-
-    const formatted = formatTodosForPrompt(conversationId);
-    // Include IDs for update reference
-    const details = todos.map(t => `- ID: ${t.id} | ${t.status} | ${t.content}`).join('\n');
-    return `${formatted}\n\n详细信息（含 ID）:\n${details}`;
   },
 };
 
@@ -2217,7 +2210,7 @@ function createSaveItemTool(kind: 'skill' | 'agent'): ToolDefinition {
 
   return {
     name: isSkill ? 'save_skill' : 'save_agent',
-    description: `Save a custom ${kind} file to ~/.abu/${folder}/{name}/${fileName}. Only accepts a name and content — the path is computed internally.`,
+    description: `保存自定义${label}文件到 ~/.abu/${folder}/{name}/${fileName}。当用户要求创建或修改${label}时使用。只需提供名称和内容，路径自动计算。`,
     inputSchema: {
       type: 'object',
       properties: {
@@ -2301,65 +2294,65 @@ const logTaskCompletionTool: ToolDefinition = {
 };
 
 /**
- * search_mcp_server — search for installable MCP servers
+ * manage_mcp_server — search and install MCP servers
  */
-const searchMCPServerTool: ToolDefinition = {
-  name: 'search_mcp_server',
-  description: '搜索可安装的 MCP Server（一种工具协议服务）。仅当你在执行任务过程中发现缺少某种工具能力（如操作 GitHub、Slack、数据库等）时才使用。注意：这不是通用软件安装工具，不要用于安装普通软件、CLI 工具或应用程序。',
+const manageMCPServerTool: ToolDefinition = {
+  name: 'manage_mcp_server',
+  description: '搜索和安装 MCP 工具服务。当执行任务时发现缺少某种工具能力（如操作 GitHub、Slack、数据库等）时使用。注意：这不是通用软件安装工具，不要用于安装普通软件。',
   inputSchema: {
     type: 'object',
     properties: {
-      query: { type: 'string', description: '搜索关键词，如 "github"、"slack"、"database"、"notion"' },
-    },
-    required: ['query'],
-  },
-  execute: async (input) => {
-    const query = input.query as string;
-    const results = searchMCPRegistry(query);
-    if (results.length === 0) {
-      return `未找到匹配 "${query}" 的 MCP Server。你可以用 web_search 搜索 "${query} MCP server" 寻找社区方案。`;
-    }
-    const lines = results.map((r) => {
-      const envNeeded = Object.keys(r.env).filter((k) => r.envHints?.[k]);
-      const envNote = envNeeded.length > 0 ? ` (需要: ${envNeeded.join(', ')})` : '';
-      return `- **${r.name}**: ${r.description}${envNote}`;
-    });
-    return `找到 ${results.length} 个可用的 MCP Server:\n${lines.join('\n')}\n\n使用 install_mcp_server 安装。安装前请告知用户并获得确认。`;
-  },
-};
-
-/**
- * install_mcp_server — install and connect an MCP server
- */
-const installMCPServerTool: ToolDefinition = {
-  name: 'install_mcp_server',
-  description: '安装并连接 MCP Server。安装前必须告知用户并获得确认。',
-  inputSchema: {
-    type: 'object',
-    properties: {
-      name: { type: 'string', description: 'MCP Server 名称（来自 search_mcp_server 的结果）' },
+      action: {
+        type: 'string',
+        enum: ['search', 'install'],
+        description: '操作类型：search（搜索可用服务）或 install（安装服务）',
+      },
+      query: { type: 'string', description: '搜索关键词（action=search 时必填），如 "github"、"slack"、"database"' },
+      name: { type: 'string', description: 'MCP Server 名称（action=install 时必填，来自 search 结果）' },
       env: {
         type: 'object',
-        description: '环境变量键值对（如 API Key 等，用户提供的值）',
+        description: '环境变量键值对（action=install 时可选，如 API Key 等）',
       },
     },
-    required: ['name'],
+    required: ['action'],
   },
   execute: async (input) => {
-    const name = input.name as string;
-    const env = input.env as Record<string, string> | undefined;
+    const action = input.action as string;
 
-    const entry = getRegistryEntry(name);
-    if (!entry) {
-      return `未找到名为 "${name}" 的 MCP Server。请先用 search_mcp_server 搜索。`;
+    if (action === 'search') {
+      const query = input.query as string;
+      if (!query) return 'Error: action=search 时必须提供 query 参数';
+      const results = searchMCPRegistry(query);
+      if (results.length === 0) {
+        return `未找到匹配 "${query}" 的 MCP Server。你可以用 web_search 搜索 "${query} MCP server" 寻找社区方案。`;
+      }
+      const lines = results.map((r) => {
+        const envNeeded = Object.keys(r.env).filter((k) => r.envHints?.[k]);
+        const envNote = envNeeded.length > 0 ? ` (需要: ${envNeeded.join(', ')})` : '';
+        return `- **${r.name}**: ${r.description}${envNote}`;
+      });
+      return `找到 ${results.length} 个可用的 MCP Server:\n${lines.join('\n')}\n\n使用 manage_mcp_server(action: "install", name: "...") 安装。安装前请告知用户并获得确认。`;
     }
 
-    try {
-      const result = await installMCPServer(entry, env);
-      return result.message;
-    } catch (err) {
-      return `安装失败: ${err instanceof Error ? err.message : String(err)}`;
+    if (action === 'install') {
+      const name = input.name as string;
+      if (!name) return 'Error: action=install 时必须提供 name 参数';
+      const env = input.env as Record<string, string> | undefined;
+
+      const entry = getRegistryEntry(name);
+      if (!entry) {
+        return `未找到名为 "${name}" 的 MCP Server。请先用 manage_mcp_server(action: "search") 搜索。`;
+      }
+
+      try {
+        const result = await installMCPServer(entry, env);
+        return result.message;
+      } catch (err) {
+        return `安装失败: ${err instanceof Error ? err.message : String(err)}`;
+      }
     }
+
+    return `Error: 未知操作 "${action}"。可用操作: search, install`;
   },
 };
 
@@ -2446,7 +2439,7 @@ const manageFileWatchTool: ToolDefinition = {
 
 const clipboardReadTool: ToolDefinition = {
   name: 'clipboard_read',
-  description: 'Read text content from the system clipboard.',
+  description: '读取系统剪贴板中的文本内容。当用户提到"剪贴板"、"粘贴板"、"我复制的内容"时使用。返回剪贴板文本或空提示。',
   inputSchema: {
     type: 'object',
     properties: {},
@@ -2463,7 +2456,7 @@ const clipboardReadTool: ToolDefinition = {
 
 const clipboardWriteTool: ToolDefinition = {
   name: 'clipboard_write',
-  description: 'Write text content to the system clipboard.',
+  description: '将文本内容写入系统剪贴板。',
   inputSchema: {
     type: 'object',
     properties: {
@@ -2487,7 +2480,7 @@ const clipboardWriteTool: ToolDefinition = {
 
 const systemNotifyTool: ToolDefinition = {
   name: 'system_notify',
-  description: 'Send a system desktop notification to the user. Use for important alerts or task completion notices.',
+  description: '发送系统桌面通知。当用户要求"完成后通知我"或需要重要提醒时使用。',
   inputSchema: {
     type: 'object',
     properties: {
@@ -2624,20 +2617,19 @@ async function executeScreenshot(input: Record<string, unknown>): Promise<ToolRe
 
 const computerTool: ToolDefinition = {
   name: 'computer',
-  description: `Interact with the computer screen via screenshot, mouse, and keyboard. Use action parameter to specify the operation.
+  description: `操控电脑屏幕：截图、鼠标和键盘操作。仅在必须看屏幕画面或操作 GUI 界面时才用，能用其他工具完成的不要用此工具。
 
-Actions:
-- screenshot: Capture the screen (Abu window auto-hidden). Optional: x, y, width, height to crop.
-- click: Click at coordinate. Params: x, y, button (left/right/middle/double, default left).
-- move: Move mouse to coordinate. Params: x, y.
-- scroll: Scroll at coordinate. Params: x, y, direction (up/down/left/right), amount (ticks, default 3).
-- drag: Drag from one point to another. Params: startX, startY, endX, endY.
-- type: Type text (Chinese/CJK text auto-uses clipboard paste). Params: text.
-- key: Press key combo. Params: key (e.g. Return, Tab, a), modifiers (e.g. ["ctrl","shift"]).
-- wait: Wait for specified milliseconds. Params: duration (ms, default 1000, max 10000). Use between operations to let UI load.
+操作类型（action）：
+- screenshot：截屏（阿布窗口自动隐藏）。可选 x, y, width, height 裁剪区域。
+- click：点击坐标。参数：x, y, button（left/right/middle/double，默认 left）。
+- move：移动鼠标。参数：x, y。
+- scroll：滚动。参数：x, y, direction（up/down/left/right）, amount（默认 3）。
+- drag：拖拽。参数：startX, startY, endX, endY。
+- type：输入文本（中文自动使用剪贴板粘贴）。参数：text。
+- key：按键组合。参数：key（如 Return, Tab, a）, modifiers（如 ["ctrl","shift"]）。
+- wait：等待指定毫秒数。参数：duration（默认 1000，最大 10000）。
 
-All coordinates use the screenshot pixel space (max width: ${SCREENSHOT_MAX_WIDTH}px). Screenshots are auto-scaled to fit; coordinates are auto-mapped back to real screen pixels.
-After click/type/key/scroll/drag actions, an auto-screenshot is taken and returned so you can verify the result immediately.`,
+所有坐标使用截图像素坐标系（最大宽度 ${SCREENSHOT_MAX_WIDTH}px），自动映射回真实屏幕坐标。操作后自动截图返回以验证结果。`,
   inputSchema: {
     type: 'object',
     properties: {
@@ -2811,7 +2803,7 @@ After click/type/key/scroll/drag actions, an auto-screenshot is taken and return
  */
 const readSkillFileTool: ToolDefinition = {
   name: 'read_skill_file',
-  description: 'Read a supporting file from an active skill\'s directory (reference docs, templates, examples, etc.).',
+  description: '读取已激活技能目录中的辅助文件（参考文档、模板、示例等）。当技能的 SKILL.md 中引用了支持文件时使用。',
   inputSchema: {
     type: 'object',
     properties: {
@@ -2918,14 +2910,12 @@ export function registerBuiltinTools(): void {
   toolRegistry.register(delegateToAgentTool);
   toolRegistry.register(updateMemoryTool);
   toolRegistry.register(todoWriteTool);
-  toolRegistry.register(todoReadTool);
   toolRegistry.register(manageScheduledTaskTool);
   toolRegistry.register(manageTriggerTool);
   toolRegistry.register(saveSkillTool);
   toolRegistry.register(saveAgentTool);
   toolRegistry.register(logTaskCompletionTool);
-  toolRegistry.register(searchMCPServerTool);
-  toolRegistry.register(installMCPServerTool);
+  toolRegistry.register(manageMCPServerTool);
   toolRegistry.register(manageFileWatchTool);
   toolRegistry.register(clipboardReadTool);
   toolRegistry.register(clipboardWriteTool);

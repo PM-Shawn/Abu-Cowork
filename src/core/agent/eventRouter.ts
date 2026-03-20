@@ -196,7 +196,7 @@ function generateStepLabel(
     }
 
     case 'use_skill': {
-      const skillName = toolInput.skill_name as string | undefined;
+      const skillName = (toolInput.skill_name as string | undefined)?.replace(/^\/+/, '');
       return {
         label: isZh ? (skillName ? `使用 /${skillName} 技能` : '使用技能') : (skillName ? `Use /${skillName} skill` : 'Use skill'),
         detail: toolInput.context as string | undefined,

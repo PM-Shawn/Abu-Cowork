@@ -773,7 +773,7 @@ const useSkillTool: ToolDefinition = {
     required: ['skill_name'],
   },
   execute: async (input) => {
-    const skillName = input.skill_name as string;
+    const skillName = (input.skill_name as string).replace(/^\/+/, '');
     const context = input.context as string | undefined;
 
     // Check if skill is disabled by user

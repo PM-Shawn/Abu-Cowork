@@ -9,7 +9,7 @@
 import type { Skill } from '../../types';
 import { TOOL_NAMES } from './toolNames';
 
-/** Tools always present in every turn (~4500 tokens) */
+/** Tools always present in every turn (~3000 tokens) */
 export const CORE_TOOL_NAMES: ReadonlySet<string> = new Set([
   TOOL_NAMES.READ_FILE,
   TOOL_NAMES.WRITE_FILE,
@@ -20,13 +20,9 @@ export const CORE_TOOL_NAMES: ReadonlySet<string> = new Set([
   TOOL_NAMES.RUN_COMMAND,
   TOOL_NAMES.WEB_SEARCH,
   TOOL_NAMES.HTTP_FETCH,
-  TOOL_NAMES.GET_SYSTEM_INFO,
   TOOL_NAMES.REQUEST_WORKSPACE,
   TOOL_NAMES.USE_SKILL,
   TOOL_NAMES.DELEGATE_TO_AGENT,
-  TOOL_NAMES.REPORT_PLAN,
-  TOOL_NAMES.TODO_WRITE,
-  TOOL_NAMES.UPDATE_MEMORY,
 ]);
 
 /** Keyword → tool mapping for demand-based loading */
@@ -107,9 +103,19 @@ export function prefetchTools(ctx: PrefetchContext): string[] {
     additionalTools.push(TOOL_NAMES.READ_SKILL_FILE);
   }
 
-  // Non-first turns → load log_task_completion (task in progress)
+  // First turn: load planning + system info tools
+  if (ctx.turnCount === 0) {
+    additionalTools.push(TOOL_NAMES.REPORT_PLAN);
+    additionalTools.push(TOOL_NAMES.GET_SYSTEM_INFO);
+  }
+
+  // Non-first turns: load task tracking + memory tools
+  if (ctx.turnCount > 0) {
+    additionalTools.push(TOOL_NAMES.TODO_WRITE);
+  }
   if (ctx.turnCount > 2) {
     additionalTools.push(TOOL_NAMES.LOG_TASK_COMPLETION);
+    additionalTools.push(TOOL_NAMES.UPDATE_MEMORY);
   }
 
   return [...new Set(additionalTools)];

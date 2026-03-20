@@ -12,6 +12,9 @@
 import type { Message, ToolCallForContext, ToolResultContent } from '../../types';
 import { estimateTokens, estimateMessageTokens } from './tokenEstimator';
 import { getMessageText, identifyRounds, RECENT_ROUNDS_TO_KEEP } from './contextUtils';
+import { createLogger } from '../logging/logger';
+
+const logger = createLogger('contextManager');
 
 const ASSISTANT_SUMMARY_MAX_CHARS = 200;
 
@@ -141,10 +144,21 @@ export function prepareContextMessages(
   const systemTokens = estimateTokens(systemPrompt);
 
   // Fast path: everything fits
-  const totalTokens = systemTokens + estimateMessageTokens(messages) + (toolSchemaTokens ?? 0);
+  const messageTokens = estimateMessageTokens(messages);
+  const totalTokens = systemTokens + messageTokens + (toolSchemaTokens ?? 0);
   if (totalTokens <= maxInputTokens) {
     return messages;
   }
+
+  const usagePercent = Math.round((totalTokens / maxInputTokens) * 100);
+  logger.info('Hard truncation needed', {
+    systemTokens,
+    messageTokens,
+    toolSchemaTokens: toolSchemaTokens ?? 0,
+    totalTokens,
+    maxInputTokens,
+    usagePercent,
+  });
 
   const rounds = identifyRounds(messages);
   if (rounds.length <= 1) return messages; // Can't compress further

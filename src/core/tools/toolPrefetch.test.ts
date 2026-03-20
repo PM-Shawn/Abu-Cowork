@@ -13,8 +13,8 @@ function makeCtx(overrides: Partial<PrefetchContext> = {}): PrefetchContext {
 
 describe('toolPrefetch', () => {
   describe('CORE_TOOL_NAMES', () => {
-    it('should contain 16 core tools', () => {
-      expect(CORE_TOOL_NAMES.size).toBe(16);
+    it('should contain 12 core tools', () => {
+      expect(CORE_TOOL_NAMES.size).toBe(12);
     });
 
     it('should include essential tools', () => {
@@ -32,9 +32,17 @@ describe('toolPrefetch', () => {
   });
 
   describe('prefetchTools', () => {
-    it('should return empty array for generic input', () => {
-      const result = prefetchTools(makeCtx({ userInput: '你好' }));
-      expect(result).toEqual([]);
+    it('should return first-turn tools for generic input on turn 0', () => {
+      const result = prefetchTools(makeCtx({ userInput: '你好', turnCount: 0 }));
+      expect(result).toContain('report_plan');
+      expect(result).toContain('get_system_info');
+    });
+
+    it('should return todo_write for generic input on turn 1+', () => {
+      const result = prefetchTools(makeCtx({ userInput: '你好', turnCount: 1 }));
+      expect(result).toContain('todo_write');
+      expect(result).not.toContain('report_plan');
+      expect(result).not.toContain('get_system_info');
     });
 
     it('should match schedule keywords', () => {

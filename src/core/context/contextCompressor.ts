@@ -84,7 +84,16 @@ export async function compressContextIfNeeded(
     return { messages, compressed: false, savedTokens: 0 };
   }
 
-  logger.info('Context compression triggered', { messageTokens, threshold: COMPRESSION_THRESHOLD, maxInputTokens });
+  const usagePercent = Math.round((totalTokens / maxInputTokens) * 100);
+  logger.info('Context compression triggered', {
+    systemTokens,
+    messageTokens,
+    toolSchemaTokens: toolSchemaTokens ?? 0,
+    totalTokens,
+    maxInputTokens,
+    usagePercent,
+    threshold: COMPRESSION_THRESHOLD,
+  });
 
   const rounds = identifyRounds(messages);
   if (rounds.length <= RECENT_ROUNDS_TO_KEEP + 1) {

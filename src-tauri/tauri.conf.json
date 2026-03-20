@@ -1,6 +1,6 @@
 {
   "productName": "Abu",
-  "version": "0.6.26",
+  "version": "0.6.27",
   "identifier": "com.abu.app",
   "build": {
     "beforeDevCommand": "npm run dev",

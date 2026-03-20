@@ -520,17 +520,22 @@ export class EventRouter {
     // Update step result
     this.deps.executionStore.setStepResult(execution.id, stepId, result);
 
-    // Add result block (skip full content for delegate steps — the result is shown as assistant message)
+    // Add result block for delegate steps — show summary instead of hiding content
     if (step.type === 'delegate') {
       const isZh = this.locale.startsWith('zh');
       const isError = isToolResultError(result);
+      // Truncate delegate result to a readable summary (first 500 chars)
+      const maxSummaryLen = 500;
+      const summary = result.length > maxSummaryLen
+        ? result.slice(0, maxSummaryLen) + '...'
+        : result;
       const summaryBlock: DetailBlock = {
         id: `${stepId}-result`,
         stepId,
         type: isError ? 'error' : 'result',
-        label: isError ? (isZh ? '错误' : 'Error') : (isZh ? '执行成功' : 'Success'),
-        content: isError ? result : (isZh ? '执行成功' : 'Completed successfully'),
-        isTruncated: false,
+        label: isError ? (isZh ? '错误' : 'Error') : (isZh ? '执行摘要' : 'Result Summary'),
+        content: summary,
+        isTruncated: result.length > maxSummaryLen,
         isExpanded: isError,
       };
       this.deps.executionStore.addDetailBlock(execution.id, stepId, summaryBlock);

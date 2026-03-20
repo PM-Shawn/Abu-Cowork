@@ -27,18 +27,28 @@ const ASSISTANT_SUMMARY_MAX_CHARS = 200;
 const FIRST_ROUND_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
 
 /**
- * Maximum number of recent screenshots to keep in conversation history.
- * Older screenshots are replaced with a text placeholder to save tokens.
- * Each screenshot image is ~100K+ tokens — keeping too many quickly overflows context.
+ * Dynamic screenshot retention based on context usage.
+ * When context is plentiful, keep more screenshots for better computer-use continuity.
+ * When context is tight, keep fewer to leave room for messages.
+ *
+ * @param usagePercent - current context usage as 0-100 (optional, defaults to conservative)
  */
-const MAX_RECENT_SCREENSHOTS = 2;
+function getMaxScreenshots(usagePercent?: number): number {
+  if (usagePercent === undefined) return 3;  // default: moderate
+  if (usagePercent < 40) return 4;   // plenty of room
+  if (usagePercent < 60) return 3;   // moderate
+  return 2;                          // tight — aggressive trimming
+}
 
 /**
  * Strip old screenshot images from messages, keeping only the N most recent.
  * This prevents context overflow from accumulated screenshot base64 data.
  * Modifies messages in-place for efficiency (called before LLM send).
+ *
+ * @param usagePercent - optional context usage percent for dynamic retention
  */
-export function trimOldScreenshots(messages: Message[]): Message[] {
+export function trimOldScreenshots(messages: Message[], usagePercent?: number): Message[] {
+  const maxScreenshots = getMaxScreenshots(usagePercent);
   // Collect all screenshot image locations (message index + toolCall index)
   const imageLocations: { msgIdx: number; tcIdx: number }[] = [];
 
@@ -53,10 +63,10 @@ export function trimOldScreenshots(messages: Message[]): Message[] {
     }
   }
 
-  if (imageLocations.length <= MAX_RECENT_SCREENSHOTS) return messages;
+  if (imageLocations.length <= maxScreenshots) return messages;
 
   // Strip images from older screenshots, keep only the most recent N
-  const toStrip = imageLocations.slice(0, -MAX_RECENT_SCREENSHOTS);
+  const toStrip = imageLocations.slice(0, -maxScreenshots);
   const result = messages.map((msg, i) => {
     const strippedTcIndices = toStrip.filter(loc => loc.msgIdx === i).map(loc => loc.tcIdx);
     if (strippedTcIndices.length === 0) return msg;

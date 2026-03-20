@@ -715,8 +715,11 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
         }
       }
 
-      // Step 2: Trim old screenshots to save context (keep only 3 most recent)
-      const trimmedMessages = trimOldScreenshots(messagesForContext);
+      // Step 2: Trim old screenshots dynamically based on context usage
+      const preScreenshotTokens = estimateTokens(effectiveSystemPrompt) + estimateMessageTokens(messagesForContext) + toolTokens;
+      const maxInputTokens = contextWindowSize - maxOutputTokens;
+      const usagePercent = maxInputTokens > 0 ? Math.round((preScreenshotTokens / maxInputTokens) * 100) : 50;
+      const trimmedMessages = trimOldScreenshots(messagesForContext, usagePercent);
 
       // Step 3: Hard truncation as safety net
       let preparedMessages = prepareContextMessages(

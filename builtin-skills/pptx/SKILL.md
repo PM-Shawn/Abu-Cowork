@@ -80,6 +80,11 @@ SCRIPT_EOF
 
 如果脚本超过 200 行，用 `>>` 追加模式分批写入。
 
+### Output rules
+
+- **只输出 .pptx 文件**，不要生成 HTML 预览、临时 PDF、截图等中间文件
+- 脚本文件（.js/.py）写到 /tmp，用完即弃，不要放在输出目录
+
 ---
 
 ## Design Ideas
@@ -172,69 +177,21 @@ Choose colors that match your topic — don't default to generic blue. Use these
 
 ---
 
-## QA (Required)
+## QA (Quick Check)
 
-**Assume there are problems. Your job is to find them.**
-
-Your first render is almost never correct. Approach QA as a bug hunt, not a confirmation step. If you found zero issues on first inspection, you weren't looking hard enough.
-
-### Content QA
+After generating, do a quick content check:
 
 ```bash
 python -m markitdown output.pptx
 ```
 
-Check for missing content, typos, wrong order.
-
-**When using templates, check for leftover placeholder text:**
+Verify: all content is present, no typos, correct order. If using templates, check for leftover placeholders:
 
 ```bash
-python -m markitdown output.pptx | grep -iE "xxxx|lorem|ipsum|this.*(page|slide).*layout"
+python -m markitdown output.pptx | grep -iE "xxxx|lorem|ipsum|placeholder"
 ```
 
-If grep returns results, fix them before declaring success.
-
-### Visual QA
-
-**⚠️ USE SUBAGENTS** — even for 2-3 slides. You've been staring at the code and will see what you expect, not what's there. Subagents have fresh eyes.
-
-Convert slides to images (see [Converting to Images](#converting-to-images)), then use this prompt:
-
-```
-Visually inspect these slides. Assume there are issues — find them.
-
-Look for:
-- Overlapping elements (text through shapes, lines through words, stacked elements)
-- Text overflow or cut off at edges/box boundaries
-- Decorative lines positioned for single-line text but title wrapped to two lines
-- Source citations or footers colliding with content above
-- Elements too close (< 0.3" gaps) or cards/sections nearly touching
-- Uneven gaps (large empty area in one place, cramped in another)
-- Insufficient margin from slide edges (< 0.5")
-- Columns or similar elements not aligned consistently
-- Low-contrast text (e.g., light gray text on cream-colored background)
-- Low-contrast icons (e.g., dark icons on dark backgrounds without a contrasting circle)
-- Text boxes too narrow causing excessive wrapping
-- Leftover placeholder content
-
-For each slide, list issues or areas of concern, even if minor.
-
-Read and analyze these images:
-1. /path/to/slide-01.jpg (Expected: [brief description])
-2. /path/to/slide-02.jpg (Expected: [brief description])
-
-Report ALL issues found, including minor ones.
-```
-
-### Verification Loop
-
-1. Generate slides → Convert to images → Inspect
-2. **List issues found** (if none found, look again more critically)
-3. Fix issues
-4. **Re-verify affected slides** — one fix often creates another problem
-5. Repeat until a full pass reveals no new issues
-
-**Do not declare success until you've completed at least one fix-and-verify cycle.**
+Fix any issues found, then deliver the result. Do NOT convert to images or delegate to subagents for visual inspection — deliver promptly and let the user request adjustments if needed.
 
 ---
 

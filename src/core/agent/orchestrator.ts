@@ -160,17 +160,26 @@ export function routeInput(input: string): RouteResult {
 
   // 3. Auto-skill: if natural language strongly matches a skill trigger, activate it directly
   // This saves one LLM round-trip (no need for LLM to call use_skill first)
-  // Only auto-activate if the skill has a trigger field AND multiple words match (reduces false positives)
+  // Split on whitespace AND CJK punctuation for proper Chinese tokenization
   {
     const lower = trimmed.toLowerCase();
-    const inputWords = lower.split(/\s+/).filter(w => w.length > 1);
+    const inputTokens = lower.split(/[\s,，。！？：；、·\-—""''「」【】（）()]+/).filter(w => w.length > 0);
     const allSkills = skillLoader.findMatchingSkills(trimmed);
     for (const skill of allSkills) {
       if (!skill.trigger) continue;
       const haystack = `${skill.name} ${skill.description} ${skill.trigger}`.toLowerCase();
-      const matchCount = inputWords.filter(w => haystack.includes(w)).length;
-      // Require at least 2 keyword matches to auto-activate
-      if (matchCount >= 2) {
+      // Check both token-level and substring-level matching
+      const tokenMatches = inputTokens.filter(t => haystack.includes(t)).length;
+      // Also check if specific keywords from trigger/name appear in the input
+      // Extract short keywords (2-6 chars) that are meaningful signal words
+      const triggerSource = `${skill.name} ${skill.trigger}`.toLowerCase();
+      const triggerTokens = triggerSource
+        .split(/[\s,，。！？：；、·\-—""''「」【】（）()/]+/)
+        .filter(k => k.length >= 2 && k.length <= 6);
+      const reverseMatches = triggerTokens.filter(k => lower.includes(k)).length;
+      // Trigger keywords are high-quality signals — 1 match is enough
+      // Input tokens matching description need 2+ to avoid false positives
+      if (reverseMatches >= 1 || tokenMatches >= 2) {
         return {
           type: 'skill',
           name: skill.name,

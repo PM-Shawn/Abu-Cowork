@@ -1,5 +1,6 @@
 import type { ToolCall, AgentStatus } from '@/types';
 import { TOOL_NAMES } from '@/core/tools/toolNames';
+import { normalizeSeparators } from '@/utils/pathUtils';
 
 /**
  * Check if a tool result indicates a real tool execution error.
@@ -461,12 +462,25 @@ export function extractFileOutputs(
   const seen = new Set<string>();
   const includeReads = options?.includeReads ?? false;
 
-  const addFile = (path: string, operation: FileOutput['operation']) => {
+  // Track both full paths and basenames to deduplicate aggressively.
+  // Same basename in one turn = same file (it's impossible to generate two
+  // different files with identical names in a single agent turn).
+  const seenBasenames = new Set<string>();
+
+  const addFile = (rawPath: string, operation: FileOutput['operation']) => {
+    if (!rawPath) return;
+    // Normalize: strip trailing punctuation, unify separators
+    let path = rawPath.replace(/[)）\]】}"'`。，,;；:：.]+$/, '');
+    path = normalizeSeparators(path.trim());
     if (!path) return;
-    if (seen.has(path)) {
+
+    const basename = path.split('/').pop() || path;
+
+    // Deduplicate by full path OR basename
+    if (seen.has(path) || seenBasenames.has(basename)) {
       // Allow write/create to upgrade a previous read entry
       if (operation !== 'read') {
-        const existing = files.find((f) => f.path === path);
+        const existing = files.find((f) => f.path === path || (f.path.split('/').pop() || '') === basename);
         if (existing && existing.operation === 'read') {
           existing.operation = operation;
         }
@@ -474,6 +488,7 @@ export function extractFileOutputs(
       return;
     }
     seen.add(path);
+    seenBasenames.add(basename);
     files.push({ path, operation });
   };
 

@@ -1,4 +1,4 @@
-import { useSettingsStore, getEffectiveModel, PROVIDER_CONFIGS, getAvailableProviders } from '@/stores/settingsStore';
+import { useSettingsStore, getEffectiveModel, getActiveApiKey, PROVIDER_CONFIGS, getAvailableProviders } from '@/stores/settingsStore';
 import type { LLMProvider } from '@/types';
 import type { SelectOptionGroup } from '@/components/ui/select';
 import { Eye, EyeOff, CircleCheck, CircleAlert, Thermometer, ChevronDown, Save, Pencil, Trash2 } from 'lucide-react';
@@ -14,7 +14,7 @@ const CUSTOM_SERVICE_PREFIX = 'cs:';
 export default function ModelConfigSection() {
   const store = useSettingsStore();
   const {
-    provider, apiFormat, model, customModel, apiKey, baseUrl,
+    provider, apiFormat, model, customModel, baseUrl,
     temperature, customServices, activeCustomServiceId,
     setApiFormat, setModel, setCustomModel, setApiKey, setBaseUrl,
     setTemperature,
@@ -28,6 +28,7 @@ export default function ModelConfigSection() {
   const [saveName, setSaveName] = useState('');
 
   const effectiveModel = getEffectiveModel(store);
+  const apiKey = getActiveApiKey(store);
   const hasApiKey = apiKey.trim().length > 0;
 
   const currentProviderConfig = PROVIDER_CONFIGS[provider] ?? PROVIDER_CONFIGS.anthropic;

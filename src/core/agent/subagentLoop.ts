@@ -12,7 +12,7 @@ import type { LLMAdapter } from '../llm/adapter';
 import { ClaudeAdapter } from '../llm/claude';
 import { OpenAICompatibleAdapter } from '../llm/openai-compatible';
 import { getAllTools, executeAnyTool, toolResultToString, type ConfirmationInfo, type FilePermissionCallback } from '../tools/registry';
-import { useSettingsStore, resolveAgentModel } from '../../stores/settingsStore';
+import { useSettingsStore, getActiveApiKey, resolveAgentModel } from '../../stores/settingsStore';
 import { useWorkspaceStore } from '../../stores/workspaceStore';
 import { prepareContextMessages } from '../context/contextManager';
 import { compressContextIfNeeded } from '../context/contextCompressor';
@@ -196,7 +196,7 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<str
             systemPrompt,
             contextWindowSize,
             maxOutputTokens,
-            { adapter, model: effectiveModelId, apiKey: settings.apiKey, baseUrl: settings.baseUrl || undefined, signal }
+            { adapter, model: effectiveModelId, apiKey: getActiveApiKey(settings), baseUrl: settings.baseUrl || undefined, signal }
           );
           if (compressionResult.compressed) {
             messagesForContext = compressionResult.messages;
@@ -216,7 +216,7 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<str
 
       const chatOptions = {
         model: effectiveModelId,
-        apiKey: settings.apiKey,
+        apiKey: getActiveApiKey(settings),
         baseUrl: settings.baseUrl || undefined,
         systemPrompt,
         tools: tools.length > 0 ? tools : undefined,

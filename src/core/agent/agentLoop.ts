@@ -6,7 +6,7 @@ import { OpenAICompatibleAdapter } from '../llm/openai-compatible';
 import { getAllTools, executeAnyTool, toolResultToString, type ConfirmationInfo, type FilePermissionCallback } from '../tools/registry';
 import type { ToolResult, ToolResultContent, ToolDefinition } from '../../types';
 import { useChatStore, flushTokenBuffer } from '../../stores/chatStore';
-import { useSettingsStore, getEffectiveModel, resolveAgentModel } from '../../stores/settingsStore';
+import { useSettingsStore, getEffectiveModel, getActiveApiKey, resolveAgentModel } from '../../stores/settingsStore';
 import { useWorkspaceStore } from '../../stores/workspaceStore';
 import { useTaskExecutionStore } from '../../stores/taskExecutionStore';
 import { usePermissionStore } from '../../stores/permissionStore';
@@ -612,7 +612,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
     },
   });
 
-  if (!settings.apiKey) {
+  if (!getActiveApiKey(settings)) {
     chatStore.addMessage(conversationId, {
       id: generateId(),
       role: 'assistant',
@@ -973,7 +973,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
               {
                 adapter,
                 model: effectiveModelId,
-                apiKey: freshSettings.apiKey,
+                apiKey: getActiveApiKey(freshSettings),
                 baseUrl: freshSettings.baseUrl || undefined,
                 signal: abortController.signal,
               }
@@ -1012,7 +1012,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
 
       const chatOptions = {
         model: effectiveModelId,
-        apiKey: freshSettings.apiKey,
+        apiKey: getActiveApiKey(freshSettings),
         baseUrl: freshSettings.baseUrl || undefined,
         systemPrompt: effectiveSystemPrompt,
         tools: tools.length > 0 ? tools : undefined,
@@ -1178,7 +1178,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
               {
                 adapter,
                 model: effectiveModelId,
-                apiKey: freshSettings.apiKey,
+                apiKey: getActiveApiKey(freshSettings),
                 baseUrl: freshSettings.baseUrl || undefined,
                 signal: abortController.signal,
               }

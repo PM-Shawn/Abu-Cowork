@@ -1,4 +1,4 @@
-import { useSettingsStore } from '@/stores/settingsStore';
+import { useSettingsStore, getActiveApiKey } from '@/stores/settingsStore';
 import type { LLMProvider } from '@/types';
 import { useI18n } from '@/i18n';
 import { Eye, EyeOff } from 'lucide-react';
@@ -7,10 +7,12 @@ import { cn } from '@/lib/utils';
 import { Select } from '@/components/ui/select';
 
 export default function APISection() {
+  const store = useSettingsStore();
   const {
-    provider, apiFormat, apiKey, baseUrl,
+    provider, apiFormat, baseUrl,
     setApiFormat, setApiKey, setBaseUrl, switchProvider,
-  } = useSettingsStore();
+  } = store;
+  const apiKey = getActiveApiKey(store);
   const { t } = useI18n();
 
   const [showKey, setShowKey] = useState(false);

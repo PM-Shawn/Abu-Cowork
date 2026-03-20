@@ -24,7 +24,7 @@ import { addWatchRule, removeWatchRule, toggleWatchRule, listWatchRules, type Fi
 import { getTodos, addTodo, updateTodo, setTodos, formatTodosForPrompt } from '../agent/todoManager';
 import type { TodoStatus } from '../agent/todoManager';
 import { useChatStore } from '../../stores/chatStore';
-import { useSettingsStore } from '../../stores/settingsStore';
+import { useSettingsStore, getActiveApiKey } from '../../stores/settingsStore';
 import { useWorkspaceStore } from '../../stores/workspaceStore';
 import { isSandboxEnabled, isNetworkIsolationEnabled } from '../sandbox/config';
 import { useScheduleStore } from '../../stores/scheduleStore';
@@ -902,7 +902,7 @@ const generateImageTool: ToolDefinition = {
       // Resolve API key: imageGenApiKey > OpenAI provider key
       let apiKey = state.imageGenApiKey;
       if (!apiKey && state.provider === 'openai') {
-        apiKey = state.apiKey;
+        apiKey = getActiveApiKey(state);
       }
       if (!apiKey) {
         return 'Error: No API key configured for image generation. Please set an OpenAI API key in Settings → Image Generation, or configure an OpenAI provider.';

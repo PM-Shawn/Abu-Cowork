@@ -212,7 +212,7 @@ interface SettingsState {
   apiFormat: ApiFormat;
   model: string;
   customModel: string;
-  apiKey: string;
+  apiKeys: Partial<Record<LLMProvider, string>>;
   baseUrl: string;
   theme: 'dark' | 'light';
   showSettings: boolean;
@@ -350,6 +350,11 @@ interface SettingsActions {
   switchToCustomService: (id: string) => void;
 }
 
+/** Returns the active API key for the current provider */
+export function getActiveApiKey(state: SettingsState): string {
+  return state.apiKeys[state.provider] ?? '';
+}
+
 /** Returns the effective model ID to use for API calls */
 export function getEffectiveModel(state: SettingsState): string {
   if (state.model === '__custom__') {
@@ -394,7 +399,7 @@ export const useSettingsStore = create<SettingsStore>()(
       apiFormat: 'openai-compatible' as ApiFormat,
       model: 'deepseek/deepseek-v3.2-251201',
       customModel: '',
-      apiKey: '',
+      apiKeys: {},
       baseUrl: 'https://api.qnaigc.com/v1',
       theme: 'dark',
       showSettings: false,
@@ -456,7 +461,7 @@ export const useSettingsStore = create<SettingsStore>()(
       setApiFormat: (apiFormat) => set({ apiFormat }),
       setModel: (model) => set({ model }),
       setCustomModel: (model) => set({ customModel: model }),
-      setApiKey: (key) => set({ apiKey: key }),
+      setApiKey: (key) => set((s) => ({ apiKeys: { ...s.apiKeys, [s.provider]: key } })),
       setBaseUrl: (url) => set({ baseUrl: url }),
       setTheme: (theme) => set({ theme }),
       toggleSettings: () => set((s) => ({ showSettings: !s.showSettings })),
@@ -556,7 +561,7 @@ export const useSettingsStore = create<SettingsStore>()(
           baseUrl: s.baseUrl,
           apiFormat: s.apiFormat,
           model: s.customModel || getEffectiveModel(s),
-          apiKey: s.apiKey,
+          apiKey: s.apiKeys[s.provider] ?? '',
         };
         return {
           customServices: [...s.customServices, service],
@@ -566,7 +571,7 @@ export const useSettingsStore = create<SettingsStore>()(
       updateCustomService: (id) => set((s) => ({
         customServices: s.customServices.map((svc) =>
           svc.id === id
-            ? { ...svc, baseUrl: s.baseUrl, apiFormat: s.apiFormat, model: s.customModel || getEffectiveModel(s), apiKey: s.apiKey }
+            ? { ...svc, baseUrl: s.baseUrl, apiFormat: s.apiFormat, model: s.customModel || getEffectiveModel(s), apiKey: s.apiKeys[s.provider] ?? '' }
             : svc
         ),
       })),
@@ -583,16 +588,27 @@ export const useSettingsStore = create<SettingsStore>()(
           apiFormat: svc.apiFormat,
           customModel: svc.model,
           model: '__custom__',
-          apiKey: svc.apiKey,
+          apiKeys: { ...s.apiKeys, custom: svc.apiKey },
           activeCustomServiceId: id,
         };
       }),
     }),
     {
       name: 'abu-settings',
-      version: 9,
+      version: 10,
       migrate: (persisted: unknown, version: number) => {
         const state = persisted as Record<string, unknown>;
+        if (version < 10) {
+          // Migrate single apiKey → per-provider apiKeys map
+          const oldKey = state.apiKey as string | undefined;
+          const currentProvider = (state.provider as string) || 'qiniu';
+          if (oldKey) {
+            state.apiKeys = { [currentProvider]: oldKey };
+          } else {
+            state.apiKeys = {};
+          }
+          delete state.apiKey;
+        }
         if (version < 9) {
           if (state.customServices === undefined) state.customServices = [];
           if (state.activeCustomServiceId === undefined) state.activeCustomServiceId = null;
@@ -679,7 +695,7 @@ export const useSettingsStore = create<SettingsStore>()(
         apiFormat: state.apiFormat,
         model: state.model,
         customModel: state.customModel,
-        apiKey: state.apiKey,
+        apiKeys: state.apiKeys,
         baseUrl: state.baseUrl,
         theme: state.theme,
         language: state.language,

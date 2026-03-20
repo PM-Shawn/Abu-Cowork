@@ -30,7 +30,6 @@ export default function ModelsSection() {
     model,
     customModel,
     baseUrl,
-    apiKey,
     setProvider,
     setApiFormat,
     setModel,
@@ -74,7 +73,7 @@ export default function ModelsSection() {
     }
   };
 
-  const hasApiKey = !!apiKey;
+  const hasApiKey = !!useSettingsStore((s) => s.apiKeys[s.provider]);
 
   return (
     <div className="flex flex-col h-full overflow-hidden">

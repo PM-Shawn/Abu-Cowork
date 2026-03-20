@@ -3,7 +3,7 @@ import { useChatStore, useActiveConversation } from '@/stores/chatStore';
 import type { Message, ImageAttachment } from '@/types';
 import { useAutoScroll } from '@/hooks/useAutoScroll';
 import { runAgentLoop, getPendingCommandConfirmation, resolveCommandConfirmation, subscribeToCommandConfirmation, getPendingFilePermission, resolveFilePermission, subscribeToFilePermission, getPendingWorkspaceRequest, resolveWorkspaceRequest, subscribeToWorkspaceRequest } from '@/core/agent/agentLoop';
-import { useSettingsStore } from '@/stores/settingsStore';
+import { useSettingsStore, getActiveApiKey } from '@/stores/settingsStore';
 import { useWorkspaceStore } from '@/stores/workspaceStore';
 import type { PermissionDuration } from '@/stores/permissionStore';
 import { open as openDialog } from '@tauri-apps/plugin-dialog';
@@ -151,7 +151,7 @@ export default function ChatView() {
 
   const handleSend = async (text: string, images?: ImageAttachment[], workspacePath?: string | null) => {
     // Block sending if API key is not configured
-    const currentApiKey = useSettingsStore.getState().apiKey;
+    const currentApiKey = getActiveApiKey(useSettingsStore.getState());
     if (!currentApiKey?.trim()) {
       useSettingsStore.getState().openSystemSettings('ai-services');
       return;
@@ -174,7 +174,7 @@ export default function ChatView() {
 
 
   // Welcome screen - new conversation state (activeConversationId is null)
-  const apiKey = useSettingsStore((s) => s.apiKey);
+  const apiKey = useSettingsStore((s) => s.apiKeys[s.provider] ?? '');
   const needsSetup = !apiKey?.trim();
 
   // Scenario guide state — lifted here so ChatInput can receive the custom placeholder

@@ -5,7 +5,7 @@
   "build": {
     "beforeDevCommand": "npm run dev",
     "devUrl": "http://localhost:5173",
-    "beforeBuildCommand": "npm run build && npm run copy-resources",
+    "beforeBuildCommand": "mkdir -p src-tauri/python-runtime && npm run build && npm run copy-resources",
     "frontendDist": "../dist"
   },
   "app": {

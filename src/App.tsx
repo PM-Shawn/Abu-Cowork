@@ -41,6 +41,7 @@ import { startTraySync, stopTraySync } from '@/core/im/traySync';
 import { startInboundDispatcher, stopInboundDispatcher } from '@/core/im/inboundDispatcher';
 import { startFeishuWsManager, stopFeishuWsManager } from '@/core/im/feishuWsManager';
 import { loadIMPlugins } from '@/core/im/pluginLoader';
+import { stopAllHeartbeats } from '@/core/im/pluginHeartbeat';
 import { reconcileIMSessions } from '@/core/im/sessionReconcile';
 import { initMCPStoreSync, cleanupMCPStoreSync } from '@/stores/mcpStore';
 import { initFileWatchers, stopAllWatchers } from '@/core/agent/fileWatcher';
@@ -144,6 +145,7 @@ function App() {
       stopInboundDispatcher();
       stopTraySync();
       stopFeishuWsManager();
+      stopAllHeartbeats();
     };
   }, []);
 

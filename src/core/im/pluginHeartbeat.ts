@@ -3,6 +3,10 @@
  *
  * Some IM platforms (e.g. D-Chat) require periodic heartbeat POSTs to register
  * the bot's callback URL with a gateway. This module manages the lifecycle.
+ *
+ * Resilience: uses setTimeout (not setInterval) with exponential backoff on
+ * consecutive failures. After 3 failures the interval ramps up to cap at 5min,
+ * and noisy logs are suppressed to console.debug.
  */
 
 import { getTauriFetch } from '../llm/tauriFetch';
@@ -10,12 +14,26 @@ import { get_trigger_port } from './pluginHeartbeatUtils';
 import type { PluginManifestFile } from './pluginLoader';
 import { replaceTemplateVars } from './pluginLoader';
 
+/** Max backoff cap: 5 minutes */
+const MAX_BACKOFF_MS = 5 * 60 * 1000;
+/** After this many consecutive failures, suppress warn → debug */
+const QUIET_AFTER = 3;
+
 interface HeartbeatState {
-  timer: ReturnType<typeof setInterval> | null;
+  timer: ReturnType<typeof setTimeout> | null;
   lastPath: string | null;
+  failures: number;
 }
 
 const heartbeats = new Map<string, HeartbeatState>();
+
+/**
+ * Calculate next delay: base * 2^failures, capped at MAX_BACKOFF_MS.
+ */
+function nextDelay(baseMs: number, failures: number): number {
+  if (failures <= 0) return baseMs;
+  return Math.min(baseMs * Math.pow(2, failures), MAX_BACKOFF_MS);
+}
 
 /**
  * Start heartbeat for a plugin if configured.
@@ -29,27 +47,40 @@ export function startPluginHeartbeat(
 
   const platform = manifest.platform;
   if (heartbeats.has(platform)) {
-    console.log(`[Heartbeat] ${platform}: already running`);
-    return;
+    return; // already running, silent
   }
 
-  const state: HeartbeatState = { timer: null, lastPath: null };
+  const state: HeartbeatState = { timer: null, lastPath: null, failures: 0 };
   heartbeats.set(platform, state);
 
-  const intervalMs = hb.intervalMs || 10000;
+  const baseMs = hb.intervalMs || 10000;
 
-  // Execute immediately, then on interval
-  executeHeartbeat(manifest, userConfig, state).catch((err) => {
-    console.warn(`[Heartbeat] ${platform}: initial error:`, err);
-  });
+  function scheduleNext() {
+    if (!heartbeats.has(platform)) return; // stopped
+    const delay = nextDelay(baseMs, state.failures);
+    state.timer = setTimeout(async () => {
+      await tick();
+      scheduleNext();
+    }, delay);
+  }
 
-  state.timer = setInterval(() => {
-    executeHeartbeat(manifest, userConfig, state).catch((err) => {
-      console.warn(`[Heartbeat] ${platform}: error:`, err);
-    });
-  }, intervalMs);
+  async function tick() {
+    try {
+      await executeHeartbeat(manifest, userConfig, state);
+      // success — reset failures
+      if (state.failures > 0) {
+        console.log(`[Heartbeat] ${platform}: recovered after ${state.failures} failures`);
+        state.failures = 0;
+      }
+    } catch {
+      // executeHeartbeat handles its own errors internally and never throws,
+      // but guard just in case
+    }
+  }
 
-  console.log(`[Heartbeat] ${platform}: started (interval=${intervalMs}ms)`);
+  // Execute immediately, then schedule
+  tick().then(() => scheduleNext());
+  console.log(`[Heartbeat] ${platform}: started (interval=${baseMs}ms)`);
 }
 
 /**
@@ -58,7 +89,7 @@ export function startPluginHeartbeat(
 export function stopPluginHeartbeat(platform: string): void {
   const state = heartbeats.get(platform);
   if (state?.timer) {
-    clearInterval(state.timer);
+    clearTimeout(state.timer);
     state.timer = null;
   }
   heartbeats.delete(platform);
@@ -76,6 +107,7 @@ export function stopAllHeartbeats(): void {
 
 /**
  * Execute a single heartbeat cycle.
+ * On failure: increments state.failures and logs appropriately.
  */
 async function executeHeartbeat(
   manifest: PluginManifestFile,
@@ -84,23 +116,29 @@ async function executeHeartbeat(
 ): Promise<void> {
   const hb = manifest.heartbeat!;
   const platform = manifest.platform;
+  const quiet = state.failures >= QUIET_AFTER;
+  // Helper: use debug when already in backoff, warn on first few failures
+  const log = quiet ? console.debug : console.warn;
 
   // Resolve dynamic variables
   const localIp = await getLocalIp();
   if (!localIp) {
-    console.warn(`[Heartbeat] ${platform}: cannot determine local IP`);
+    state.failures++;
+    log(`[Heartbeat] ${platform}: cannot determine local IP`);
     return;
   }
 
   const port = await get_trigger_port();
   if (!port) {
-    console.warn(`[Heartbeat] ${platform}: trigger server port not available`);
+    state.failures++;
+    log(`[Heartbeat] ${platform}: trigger server port not available`);
     return;
   }
 
   const botId = String(userConfig.botId ?? '');
   if (!botId) {
-    console.warn(`[Heartbeat] ${platform}: botId not configured`);
+    state.failures++;
+    log(`[Heartbeat] ${platform}: botId not configured`);
     return;
   }
 
@@ -134,7 +172,9 @@ async function executeHeartbeat(
 
   try {
     const f = await getTauriFetch();
-    console.log(`[Heartbeat] ${platform}: POST ${hb.url} body=${JSON.stringify(body)}`);
+    if (!quiet) {
+      console.log(`[Heartbeat] ${platform}: POST ${hb.url} body=${JSON.stringify(body)}`);
+    }
     const resp = await f(hb.url, {
       method: 'POST',
       headers,
@@ -143,19 +183,30 @@ async function executeHeartbeat(
 
     if (!resp.ok) {
       const text = await resp.text().catch(() => '');
-      console.warn(`[Heartbeat] ${platform}: HTTP ${resp.status}: ${text}`);
+      state.failures++;
+      log(`[Heartbeat] ${platform}: HTTP ${resp.status}: ${text}`);
+      if (state.failures === QUIET_AFTER) {
+        console.warn(`[Heartbeat] ${platform}: ${QUIET_AFTER} consecutive failures, backing off (next in ${nextDelay(hb.intervalMs || 10000, state.failures) / 1000}s)`);
+      }
       return;
     }
 
     const data = await resp.json() as Record<string, unknown>;
     if (data.code === 0) {
       state.lastPath = resolvedUrl;
+      state.failures = 0;
       console.log(`[Heartbeat] ${platform}: registered → ${resolvedUrl}`);
     } else {
-      console.warn(`[Heartbeat] ${platform}: API response:`, JSON.stringify(data));
+      state.failures++;
+      log(`[Heartbeat] ${platform}: API response:`, JSON.stringify(data));
     }
   } catch (err) {
-    console.warn(`[Heartbeat] ${platform}: request failed:`, err);
+    state.failures++;
+    if (state.failures === QUIET_AFTER) {
+      console.warn(`[Heartbeat] ${platform}: ${QUIET_AFTER} consecutive failures, backing off (next in ${nextDelay(hb.intervalMs || 10000, state.failures) / 1000}s)`);
+    } else {
+      log(`[Heartbeat] ${platform}: request failed:`, err);
+    }
   }
 }
 

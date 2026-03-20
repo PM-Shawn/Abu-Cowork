@@ -46,6 +46,10 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Setup embedded Python runtime
+        run: bash scripts/setup-python-runtime.sh
+        shell: bash
+
       - name: Build Tauri app
         uses: tauri-apps/tauri-action@v0.5
         env:

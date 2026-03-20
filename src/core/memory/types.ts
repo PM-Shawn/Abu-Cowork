@@ -7,7 +7,8 @@ export type MemoryCategory =
   | 'project_knowledge'    // tech stack, architecture, terminology
   | 'conversation_fact'    // key facts from conversations
   | 'decision'             // important decisions and rationale
-  | 'action_item';         // follow-ups, pending tasks
+  | 'action_item'          // follow-ups, pending tasks
+  | 'conversation_index';  // lightweight conversation metadata (auto-generated)
 
 export type MemorySourceType = 'agent_explicit' | 'auto_flush' | 'user_manual';
 

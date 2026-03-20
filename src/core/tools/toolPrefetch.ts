@@ -63,6 +63,10 @@ const PREFETCH_RULES: ReadonlyArray<{
     tools: [TOOL_NAMES.MANAGE_MCP_SERVER],
   },
   {
+    keywords: ['之前', '上次', '最近', '记得', '回忆', '干了什么', '干了啥', '聊过', '做过', '历史', 'recall', '记忆'],
+    tools: [TOOL_NAMES.RECALL],
+  },
+  {
     keywords: ['通知我', '提醒我', '完成后通知', 'notify'],
     tools: [TOOL_NAMES.SYSTEM_NOTIFY],
   },

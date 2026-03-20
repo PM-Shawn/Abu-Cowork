@@ -22,6 +22,7 @@ import { webSearchTool, httpFetchTool } from './definitions/webTools';
 
 // --- Memory tools ---
 import { reportPlanTool, updateMemoryTool, todoWriteTool, logTaskCompletionTool } from './definitions/memoryTools';
+import { recallTool } from './definitions/recallTool';
 
 // --- System tools ---
 import { getSystemInfoTool, clipboardReadTool, clipboardWriteTool, systemNotifyTool, manageMCPServerTool } from './definitions/systemTools';
@@ -48,6 +49,7 @@ export function registerBuiltinTools(): void {
   toolRegistry.register(webSearchTool);
   toolRegistry.register(delegateToAgentTool);
   toolRegistry.register(updateMemoryTool);
+  toolRegistry.register(recallTool);
   toolRegistry.register(todoWriteTool);
   toolRegistry.register(manageScheduledTaskTool);
   toolRegistry.register(manageTriggerTool);

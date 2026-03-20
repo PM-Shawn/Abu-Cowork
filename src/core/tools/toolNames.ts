@@ -31,6 +31,7 @@ export const TOOL_NAMES = {
 
   // Memory & planning
   UPDATE_MEMORY: 'update_memory',
+  RECALL: 'recall',
   TODO_WRITE: 'todo_write',
 
   // Automation

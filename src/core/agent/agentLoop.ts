@@ -150,6 +150,16 @@ function generateId(): string {
   return Date.now().toString(36) + Math.random().toString(36).substring(2, 8);
 }
 
+/** Fire-and-forget: index conversation metadata for recall tool */
+function indexConversationAsync(conversationId: string): void {
+  const conv = useChatStore.getState().conversations[conversationId];
+  if (conv && conv.messages.length >= 2) {
+    import('../memory/conversationIndexer').then(({ indexConversation }) => {
+      indexConversation(conv).catch(() => {});
+    });
+  }
+}
+
 /**
  * Resolve and filter tools for current turn — called per-turn inside the while loop.
  * Supports advanced allowed-tools patterns (wildcards, constraints).
@@ -506,6 +516,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
       persistExecutionSnapshot(conversationId, loopId);
       chatStore.setAgentStatus('idle');
       chatStore.setConversationStatus(conversationId, 'completed');
+      indexConversationAsync(conversationId);
       const convTitle = useChatStore.getState().conversations[conversationId]?.title ?? '任务';
       notifyTaskCompleted(convTitle);
     } catch (err) {
@@ -1014,6 +1025,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
         deactivateAllSkills(conversationId);
         // Mark conversation as completed and send notification
         chatStore.setConversationStatus(conversationId, 'completed');
+        indexConversationAsync(conversationId);
         const convTitle = useChatStore.getState().conversations[conversationId]?.title ?? '任务';
         notifyTaskCompleted(convTitle);
       }
@@ -1036,6 +1048,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
         deactivateAllSkills(conversationId);
         // Set status back to idle on cancel
         chatStore.setConversationStatus(conversationId, 'idle');
+        indexConversationAsync(conversationId);
         continueLoop = false;
         return;
       }
@@ -1058,6 +1071,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
       deactivateAllSkills(conversationId);
       // Mark conversation as error and send notification
       chatStore.setConversationStatus(conversationId, 'error');
+      indexConversationAsync(conversationId);
       const convTitle = useChatStore.getState().conversations[conversationId]?.title ?? '任务';
       notifyTaskError(convTitle);
       continueLoop = false;

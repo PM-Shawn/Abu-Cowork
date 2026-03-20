@@ -94,6 +94,17 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const composingRef = useRef(false);
 
+  // Per-conversation draft cache (session-only, not persisted)
+  interface InputDraft {
+    text: string;
+    images: ImageAttachment[];
+    files: FileAttachmentItem[];
+    selectedSkill: SuggestionItem | null;
+    selectedAgent: SuggestionItem | null;
+  }
+  const draftsRef = useRef<Map<string, InputDraft>>(new Map());
+  const prevConvIdRef = useRef<string | null>(null);
+
   // Welcome-only state (always declared for hook stability)
   const [pendingFolder, setPendingFolder] = useState<string | null>(null);
   const [localWorkspace, setLocalWorkspace] = useState<string | null>(null);
@@ -159,6 +170,57 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
   const removeFile = useCallback((id: string) => {
     setFiles((prev) => prev.filter((f) => f.id !== id));
   }, []);
+
+  // Save draft & restore on conversation switch
+  const activeConvId = activeConv?.id ?? null;
+  useEffect(() => {
+    const prevId = prevConvIdRef.current;
+    // Save draft for previous conversation (read from DOM to avoid stale closure)
+    if (prevId) {
+      const currentText = textareaRef.current?.value ?? '';
+      // We need to read latest state — use the setter callback trick to peek
+      let curImages: ImageAttachment[] = [];
+      let curFiles: FileAttachmentItem[] = [];
+      let curSkill: SuggestionItem | null = null;
+      let curAgent: SuggestionItem | null = null;
+      setImages((prev) => { curImages = prev; return prev; });
+      setFiles((prev) => { curFiles = prev; return prev; });
+      setSelectedSkill((prev) => { curSkill = prev; return prev; });
+      setSelectedAgent((prev) => { curAgent = prev; return prev; });
+
+      if (currentText || curImages.length > 0 || curFiles.length > 0 || curSkill || curAgent) {
+        draftsRef.current.set(prevId, {
+          text: currentText,
+          images: curImages,
+          files: curFiles,
+          selectedSkill: curSkill,
+          selectedAgent: curAgent,
+        });
+      } else {
+        draftsRef.current.delete(prevId);
+      }
+    }
+
+    // Restore draft for new conversation (or clear)
+    const draft = activeConvId ? draftsRef.current.get(activeConvId) : undefined;
+    if (draft) {
+      setText(draft.text);
+      setImages(draft.images);
+      setFiles(draft.files);
+      setSelectedSkill(draft.selectedSkill);
+      setSelectedAgent(draft.selectedAgent);
+    } else {
+      setText('');
+      setImages([]);
+      setFiles([]);
+      setSelectedSkill(null);
+      setSelectedAgent(null);
+    }
+    setSuggestionsDismissed(false);
+    if (textareaRef.current) textareaRef.current.style.height = 'auto';
+
+    prevConvIdRef.current = activeConvId;
+  }, [activeConvId]);
 
   // Consume pending input (just set text; auto-selection handled in a later effect)
   useEffect(() => {
@@ -334,6 +396,8 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
     setSelectedAgent(null);
     setSuggestionsDismissed(false);
     if (textareaRef.current) textareaRef.current.style.height = 'auto';
+    // Clear saved draft for current conversation
+    if (activeConvId) draftsRef.current.delete(activeConvId);
   };
 
   const handleSend = () => {

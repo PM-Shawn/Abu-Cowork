@@ -12,7 +12,7 @@ import { ensureParentDir, joinPath } from '../../utils/pathUtils';
 import { skillLoader } from '../skill/loader';
 import { agentRegistry } from './registry';
 
-const MAX_LOG_ENTRIES = 100;
+const MAX_LOG_ENTRIES = 500;
 
 export type TaskCategory =
   | 'translation'

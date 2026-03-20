@@ -15,7 +15,7 @@ import { homeDir } from '@tauri-apps/api/path';
 import { ensureParentDir, joinPath } from '../../utils/pathUtils';
 import type { MemoryBackend, MemoryEntry, SearchOptions, ListOptions } from './types';
 
-const MAX_ENTRIES = 200;
+const MAX_ENTRIES = 500;
 
 function generateId(): string {
   return Date.now().toString(36) + Math.random().toString(36).substring(2, 8);
@@ -133,13 +133,32 @@ export class LocalMemoryBackend implements MemoryBackend {
 
       entries.push(entry);
 
-      // Enforce max entries: remove oldest with lowest access count
+      // Enforce max entries: evict cold memories, but protect recent ones (7-day grace period)
       if (entries.length > MAX_ENTRIES) {
-        entries.sort((a, b) => {
+        const GRACE_PERIOD_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
+        const cutoff = Date.now() - GRACE_PERIOD_MS;
+
+        // Partition: protected (created within grace period) vs evictable
+        const protected_: MemoryEntry[] = [];
+        const evictable: MemoryEntry[] = [];
+        for (const e of entries) {
+          if (e.createdAt > cutoff) {
+            protected_.push(e);
+          } else {
+            evictable.push(e);
+          }
+        }
+
+        // Sort evictable: lowest access count + oldest first (evict from tail)
+        evictable.sort((a, b) => {
           const scoreDiff = b.accessCount - a.accessCount;
           return scoreDiff !== 0 ? scoreDiff : b.updatedAt - a.updatedAt;
         });
-        entries.length = MAX_ENTRIES;
+
+        // Keep as many evictable as we have room for after protected entries
+        const evictableKeep = Math.max(0, MAX_ENTRIES - protected_.length);
+        entries.length = 0;
+        entries.push(...protected_, ...evictable.slice(0, evictableKeep));
       }
 
       await saveEntries(entries, data.scope, data.projectPath);

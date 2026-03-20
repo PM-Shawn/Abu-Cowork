@@ -6,7 +6,7 @@
  * instead of hard-truncating them.
  *
  * Strategy:
- * 1. Check if context usage > threshold (default 75%)
+ * 1. Check if context usage > threshold (default 65%)
  * 2. Identify older messages that can be summarized (keep first + recent)
  * 3. Call LLM to generate a concise summary
  * 4. Replace older messages with a single summary message

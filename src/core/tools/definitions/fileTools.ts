@@ -67,8 +67,10 @@ export const readFileTool: ToolDefinition = {
         // Strategy 2: Python pdfplumber (cross-platform)
         try {
           const pyBin = isWindows() ? 'python' : 'python3';
+          // On Windows, convert backslashes to forward slashes (Python handles both) and
+          // escape single quotes for Python; on Unix, escape single quotes for shell.
           const escapedPath = isWindows()
-            ? filePath.replace(/'/g, "''")
+            ? filePath.replace(/\\/g, '/').replace(/'/g, "\\'")
             : filePath.replace(/'/g, "'\\''");
           const pyCmd = `${pyBin} -c "import pdfplumber; pdf=pdfplumber.open('${escapedPath}'); print('\\n'.join(p.extract_text() or '' for p in pdf.pages)); pdf.close()"`;
           const output = await invoke<CommandOutput>('run_shell_command', {

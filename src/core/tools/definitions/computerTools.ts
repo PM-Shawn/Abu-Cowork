@@ -6,6 +6,7 @@ import type { ToolDefinition, ToolResult, ToolResultContent } from '../../../typ
 import { useSettingsStore } from '../../../stores/settingsStore';
 import { useWorkspaceStore } from '../../../stores/workspaceStore';
 import { joinPath } from '../../../utils/pathUtils';
+import { isMacOS } from '../../../utils/platform';
 import { TOOL_NAMES } from '../toolNames';
 
 let lastScreenScaleFactor = 1;
@@ -252,7 +253,8 @@ export const computerTool: ToolDefinition = {
           if (hasNonAscii) {
             await clipboardWriteText(text);
             await new Promise(r => setTimeout(r, 50));
-            await invoke<string>('keyboard_press', { key: 'v', modifiers: ['meta'] });
+            const pasteModifier = isMacOS() ? 'meta' : 'ctrl';
+            await invoke<string>('keyboard_press', { key: 'v', modifiers: [pasteModifier] });
             actionResult = `Typed (via paste): ${text} (${text.length} characters)`;
           } else {
             actionResult = await invoke<string>('keyboard_type', { text });

@@ -1,5 +1,5 @@
 import { readFile as readBinFile, writeFile as writeBinFile } from '@tauri-apps/plugin-fs';
-import { homeDir, desktopDir, documentDir, downloadDir } from '@tauri-apps/api/path';
+import { homeDir, desktopDir, documentDir, downloadDir, tempDir } from '@tauri-apps/api/path';
 import { platform } from '@tauri-apps/plugin-os';
 import { invoke } from '@tauri-apps/api/core';
 import { initPlatform, isWindows } from '../../../utils/platform';
@@ -63,7 +63,8 @@ export async function resizeImageIfNeeded(bytes: Uint8Array, maxWidth: number): 
   // Use sips on macOS to resize
   if (!isWindows()) {
     try {
-      const tmpPath = `/tmp/abu-resize-${Date.now()}.png`;
+      const tmpDir = await tempDir();
+      const tmpPath = `${tmpDir}abu-resize-${Date.now()}.png`;
       await writeBinFile(tmpPath, bytes);
       await invoke<CommandOutput>('run_shell_command', {
         command: `sips --resampleWidth ${maxWidth} "${tmpPath}" --out "${tmpPath}"`,
@@ -188,8 +189,10 @@ async function extractDocxText(filePath: string): Promise<string> {
 /** Extract PowerPoint text via Python (python-pptx) — no JS alternative */
 async function extractPptxViaPython(filePath: string): Promise<string> {
   const pyBin = isWindows() ? 'python' : 'python3';
+  // On Windows, convert backslashes to forward slashes (Python handles both) and
+  // escape single quotes for Python; on Unix, escape single quotes for shell.
   const escapedPath = isWindows()
-    ? filePath.replace(/'/g, "''")
+    ? filePath.replace(/\\/g, '/').replace(/'/g, "\\'")
     : filePath.replace(/'/g, "'\\''");
 
   const pyCmd = `${pyBin} -c "
@@ -228,9 +231,12 @@ export async function listArchiveContents(filePath: string, ext: string): Promis
   let command: string;
 
   if (ext === '.zip') {
-    command = isWindows()
-      ? `powershell -c "Expand-Archive -Path '${filePath}' -DestinationPath . -WhatIf 2>&1; [IO.Compression.ZipFile]::OpenRead('${filePath}').Entries | Select-Object FullName, Length | Format-Table -AutoSize"`
-      : `unzip -l "${filePath}"`;
+    if (isWindows()) {
+      const psPath = filePath.replace(/'/g, "''");
+      command = `powershell -NoProfile -Command "Add-Type -AssemblyName System.IO.Compression.FileSystem; [IO.Compression.ZipFile]::OpenRead('${psPath}').Entries | Select-Object FullName, Length | Format-Table -AutoSize"`;
+    } else {
+      command = `unzip -l "${filePath}"`;
+    }
   } else if (ext === '.tar' || ext === '.tar.gz' || ext === '.tgz') {
     command = isWindows()
       ? `tar -tf "${filePath}"`

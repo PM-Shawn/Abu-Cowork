@@ -158,7 +158,32 @@ export function routeInput(input: string): RouteResult {
     }
   }
 
-  // 3. General: let Claude decide when to use skills via use_skill tool
+  // 3. Auto-skill: if natural language strongly matches a skill trigger, activate it directly
+  // This saves one LLM round-trip (no need for LLM to call use_skill first)
+  // Only auto-activate if the skill has a trigger field AND multiple words match (reduces false positives)
+  {
+    const lower = trimmed.toLowerCase();
+    const inputWords = lower.split(/\s+/).filter(w => w.length > 1);
+    const allSkills = skillLoader.findMatchingSkills(trimmed);
+    for (const skill of allSkills) {
+      if (!skill.trigger) continue;
+      const haystack = `${skill.name} ${skill.description} ${skill.trigger}`.toLowerCase();
+      const matchCount = inputWords.filter(w => haystack.includes(w)).length;
+      // Require at least 2 keyword matches to auto-activate
+      if (matchCount >= 2) {
+        return {
+          type: 'skill',
+          name: skill.name,
+          skill,
+          skillContent: skill.content,
+          args: trimmed,
+          cleanInput: trimmed,
+        };
+      }
+    }
+  }
+
+  // 4. General: let Claude decide when to use skills via use_skill tool
   // Skills are listed in system prompt, Claude can call use_skill when relevant
   return {
     type: 'general',

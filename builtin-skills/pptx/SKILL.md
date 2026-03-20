@@ -2,7 +2,7 @@
 name: pptx
 description: "Use this skill any time a .pptx file is involved in any way — as input, output, or both. This includes: creating slide decks, pitch decks, or presentations; reading, parsing, or extracting text from any .pptx file (even if the extracted content will be used elsewhere, like in an email or summary); editing, modifying, or updating existing presentations; combining or splitting slide files; working with templates, layouts, speaker notes, or comments. Trigger whenever the user mentions \"deck,\" \"slides,\" \"presentation,\" or references a .pptx filename, regardless of what they plan to do with the content afterward. If a .pptx file needs to be opened, created, or touched, use this skill."
 license: Proprietary. LICENSE.txt has complete terms
-trigger: 用户要求创建、读取、编辑演示文稿（.pptx），提到幻灯片、演示、deck、slides，或需要处理任何 .pptx 文件
+trigger: 用户要求创建、读取、编辑演示文稿（PPT/PPTX/.pptx），提到PPT、幻灯片、演示文稿、演示、presentation、deck、slides、slide，或需要处理任何 .pptx 文件
 do-not-trigger: 用户只是讨论演示技巧但不涉及 .pptx 文件操作
 blocked-tools:
   - manage_scheduled_task

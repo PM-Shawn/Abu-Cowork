@@ -242,10 +242,11 @@ export default function MessageGroup({ messages }: MessageGroupProps) {
   const workflowSteps = extractWorkflowSteps(allToolCalls, thinkingContent, agentStatus, skillInfo, thinkingDuration);
 
   // Extract file outputs for attachments — from tool calls + assistant message text
+  // Dedup by filename (keep last occurrence, most likely the final location)
   const fileOutputs = useMemo(() => {
     const fromToolCalls = extractFileOutputs(allToolCalls);
     const seenPaths = new Set(fromToolCalls.map((f) => f.path));
-    // Also extract file paths mentioned in assistant message text (e.g., "文件位置: /path/to/file.pptx")
+    // Also extract file paths mentioned in assistant message text
     for (const msg of assistantMsgs) {
       const text = getTextContent(msg.content);
       if (!text) continue;
@@ -257,7 +258,14 @@ export default function MessageGroup({ messages }: MessageGroupProps) {
         }
       }
     }
-    return fromToolCalls;
+    // Dedup by filename: if multiple paths have the same filename, keep only the last one
+    const byName = new Map<string, number>();
+    for (let i = 0; i < fromToolCalls.length; i++) {
+      const name = fromToolCalls[i].path.split('/').pop() || fromToolCalls[i].path;
+      byName.set(name, i);
+    }
+    const keepIndices = new Set(byName.values());
+    return fromToolCalls.filter((_, i) => keepIndices.has(i));
   }, [allToolCalls, assistantMsgs]);
 
   // Build filename -> full path map for inline file chip matching

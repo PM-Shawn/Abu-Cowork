@@ -18,6 +18,7 @@ import { matchesToolName, parseToolPatterns } from '../skill/toolFilter';
 import { notifyTaskCompleted, notifyTaskError } from '../../utils/notifications';
 import { prepareContextMessages, trimOldScreenshots } from '../context/contextManager';
 import { compressContextIfNeeded } from '../context/contextCompressor';
+import { estimateToolSchemaTokens, estimateTokens, estimateMessageTokens, calibrateFromUsage } from '../context/tokenEstimator';
 import { identifyRounds, RECENT_ROUNDS_TO_KEEP } from '../context/contextUtils';
 import { withRetry } from './retry';
 import { runSubagentLoop, extractParentConversationSummary } from './subagentLoop';
@@ -633,6 +634,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
         turnCount,
       };
       const { tools, inputValidators } = resolveTools(route, !!builtinWebSearch, options?.blockedTools, prefetchCtx);
+      const toolTokens = estimateToolSchemaTokens(tools);
       const dynamicCapabilities = buildDynamicCapabilities(tools);
       const activeSkillContent = await loadActiveSkillContent(
         conv?.activeSkills,
@@ -689,7 +691,8 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
                 apiKey: getActiveApiKey(freshSettings),
                 baseUrl: freshSettings.baseUrl || undefined,
                 signal: abortController.signal,
-              }
+              },
+              toolTokens
             );
             if (compressionResult.compressed) {
               messagesForContext = compressionResult.messages;
@@ -720,7 +723,8 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
         trimmedMessages,
         effectiveSystemPrompt,
         contextWindowSize,
-        maxOutputTokens
+        maxOutputTokens,
+        toolTokens
       );
 
       const chatOptions = {
@@ -894,14 +898,16 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
                 apiKey: getActiveApiKey(freshSettings),
                 baseUrl: freshSettings.baseUrl || undefined,
                 signal: abortController.signal,
-              }
+              },
+              toolTokens
             );
             if (compressionResult.compressed) {
               preparedMessages = prepareContextMessages(
                 compressionResult.messages,
                 effectiveSystemPrompt,
                 contextWindowSize,
-                maxOutputTokens
+                maxOutputTokens,
+                toolTokens
               );
               compressed = true;
             }
@@ -931,6 +937,9 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
       // Update usage on message if available
       if (finalUsage) {
         useChatStore.getState().updateMessageUsage(conversationId, finalUsage);
+        // Calibrate token estimator with actual API usage
+        const estimatedInput = estimateTokens(effectiveSystemPrompt) + estimateMessageTokens(preparedMessages) + toolTokens;
+        calibrateFromUsage(estimatedInput, finalUsage.inputTokens);
       }
 
       // If there are tool calls, execute them via toolExecutor

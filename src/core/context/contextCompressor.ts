@@ -71,12 +71,13 @@ export async function compressContextIfNeeded(
   systemPrompt: string,
   contextWindowSize: number,
   reserveForOutput: number,
-  config: CompressionConfig
+  config: CompressionConfig,
+  toolSchemaTokens?: number
 ): Promise<CompressionResult> {
   const maxInputTokens = contextWindowSize - reserveForOutput;
   const systemTokens = estimateTokens(systemPrompt);
   const messageTokens = estimateMessageTokens(messages);
-  const totalTokens = systemTokens + messageTokens;
+  const totalTokens = systemTokens + messageTokens + (toolSchemaTokens ?? 0);
 
   // Check if compression is needed
   if (totalTokens <= maxInputTokens * COMPRESSION_THRESHOLD) {

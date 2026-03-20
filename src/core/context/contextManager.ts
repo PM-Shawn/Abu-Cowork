@@ -134,13 +134,14 @@ export function prepareContextMessages(
   messages: Message[],
   systemPrompt: string,
   contextWindowSize: number,
-  reserveForOutput: number
+  reserveForOutput: number,
+  toolSchemaTokens?: number
 ): Message[] {
   const maxInputTokens = contextWindowSize - reserveForOutput;
   const systemTokens = estimateTokens(systemPrompt);
 
   // Fast path: everything fits
-  const totalTokens = systemTokens + estimateMessageTokens(messages);
+  const totalTokens = systemTokens + estimateMessageTokens(messages) + (toolSchemaTokens ?? 0);
   if (totalTokens <= maxInputTokens) {
     return messages;
   }

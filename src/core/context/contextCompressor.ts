@@ -18,6 +18,9 @@ import type { LLMAdapter } from '../llm/adapter';
 import type { ChatOptions } from '../llm/adapter';
 import { estimateTokens, estimateMessageTokens } from './tokenEstimator';
 import { getMessageText, identifyRounds, RECENT_ROUNDS_TO_KEEP } from './contextUtils';
+import { createLogger } from '../logging/logger';
+
+const logger = createLogger('contextCompressor');
 
 const COMPRESSION_THRESHOLD = 0.65; // Trigger at 65% — compress early to avoid context_too_long errors
 const SUMMARY_MAX_TOKENS = 1024;
@@ -79,6 +82,8 @@ export async function compressContextIfNeeded(
   if (totalTokens <= maxInputTokens * COMPRESSION_THRESHOLD) {
     return { messages, compressed: false, savedTokens: 0 };
   }
+
+  logger.info('Context compression triggered', { messageTokens, threshold: COMPRESSION_THRESHOLD, maxInputTokens });
 
   const rounds = identifyRounds(messages);
   if (rounds.length <= RECENT_ROUNDS_TO_KEEP + 1) {
@@ -165,13 +170,17 @@ ${middleText}
     const compressedTokens = estimateMessageTokens(compressedMessages);
     const savedTokens = messageTokens - compressedTokens;
 
+    logger.info('Context compressed', { savedTokens: Math.max(0, savedTokens), originalCount: middleMessages.length, compressedCount: compressedMessages.length });
+
     return {
       messages: compressedMessages,
       compressed: true,
       savedTokens: Math.max(0, savedTokens),
     };
-  } catch {
+  } catch (err) {
     // LLM call failed — fall back gracefully, don't block the agent
+    const errorMessage = err instanceof Error ? err.message : String(err);
+    logger.warn('Context compression failed', { error: errorMessage });
     return { messages, compressed: false, savedTokens: 0 };
   }
 }

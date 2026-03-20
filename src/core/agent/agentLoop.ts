@@ -34,6 +34,9 @@ import { getBuiltinSearchConfig } from '../capabilities';
 import { resolveCapabilities } from '../llm/modelCapabilities';
 import { TOOL_NAMES } from '../tools/toolNames';
 import { CORE_TOOL_NAMES, prefetchTools } from '../tools/toolPrefetch';
+import { createLogger } from '../logging/logger';
+
+const logger = createLogger('agentLoop');
 import {
   setCurrentLoopContext,
   requestCommandConfirmation,
@@ -322,6 +325,8 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
   // Create TaskExecution for this agent loop (after apiKey check to avoid leaking executions)
   const execution = taskExecutionStore.createExecution(conversationId, loopId);
 
+  logger.info('Agent loop started', { conversationId, loopId });
+
   // Get abort controller for this conversation.
   // Force-clear any stale controller first to avoid inheriting aborted state from a previous run.
   chatStore.clearAbortController(conversationId);
@@ -560,6 +565,8 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
 
     continueLoop = false;
     turnCount++;
+
+    logger.info('Turn started', { turnCount, maxTurns });
 
     // Check for mid-task user input (already added to UI by ChatInput)
     // Just drain the queue — messages are already in the conversation store
@@ -978,6 +985,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
       if (!continueLoop) {
         chatStore.finishStreaming(conversationId);
         chatStore.clearAbortController(conversationId);
+        logger.info('Agent loop ended', { conversationId, loopId, turnCount, reason: 'end_turn' });
         // Complete the TaskExecution
         eventRouter.route({ type: 'done', loopId, reason: 'end_turn' });
         persistExecutionSnapshot(conversationId, loopId);
@@ -1000,6 +1008,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
     } catch (err) {
       // Handle abort errors gracefully
       if (err instanceof Error && (err.name === 'AbortError' || abortController.signal.aborted)) {
+        logger.warn('Agent loop aborted', { conversationId, loopId });
         // Clear loop context and any pending confirmation/permission dialogs
         setCurrentLoopContext(null);
         clearInputQueue(conversationId);
@@ -1021,6 +1030,9 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
 
       setCurrentLoopContext(null);
       const errorMessage = err instanceof Error ? err.message : String(err);
+      const errorCode = err instanceof LLMError ? err.code : undefined;
+      logger.error('LLM call failed', { error: errorMessage, code: errorCode });
+      logger.info('Agent loop ended', { conversationId, loopId, turnCount, reason: 'error' });
       chatStore.appendToLastMessage(
         conversationId,
         `\n\n**Error:** ${errorMessage}`

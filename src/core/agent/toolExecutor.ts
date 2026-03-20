@@ -20,6 +20,9 @@ import { useChatStore } from '../../stores/chatStore';
 import { useTaskExecutionStore } from '../../stores/taskExecutionStore';
 import { setCurrentLoopContext } from './permissionBridge';
 import type { EventRouter } from './eventRouter';
+import { createLogger } from '../logging/logger';
+
+const logger = createLogger('toolExecutor');
 
 export interface ToolBatchParams {
   collectedToolCalls: ToolCall[];
@@ -188,6 +191,7 @@ export async function executeToolBatch(params: ToolBatchParams): Promise<ToolBat
         error: false,
         durationMs,
       });
+      logger.info('Tool executed', { toolName: tc.name, durationMs, error: false });
       return { id: tc.id, result: resultStr, resultContent, error: false, duration: durationMs / 1000 };
     } catch (err) {
       // Re-throw AbortError so outer catch handles cancellation properly
@@ -211,6 +215,7 @@ export async function executeToolBatch(params: ToolBatchParams): Promise<ToolBat
         error: true,
         durationMs,
       });
+      logger.info('Tool executed', { toolName: tc.name, durationMs, error: true });
       return { id: tc.id, result: `Error: ${errorMsg}`, resultContent: undefined, error: true, duration: durationMs / 1000 };
     }
   };
@@ -218,6 +223,10 @@ export async function executeToolBatch(params: ToolBatchParams): Promise<ToolBat
   // If batch contains any computer tool call, execute ALL sequentially
   // (e.g. click → wait → type must run in order, not race each other)
   const hasComputerTool = collectedToolCalls.some(tc => tc.name === TOOL_NAMES.COMPUTER);
+
+  const allRunCommand = collectedToolCalls.every(tc => tc.name === TOOL_NAMES.RUN_COMMAND);
+  const strategy = hasComputerTool ? 'computer-sequential' : allRunCommand ? 'command-sequential' : 'parallel';
+  logger.info('Tool batch started', { toolCount: collectedToolCalls.length, strategy });
 
   let results: PromiseSettledResult<ToolExecResult>[];
   if (hasComputerTool) {
@@ -249,7 +258,6 @@ export async function executeToolBatch(params: ToolBatchParams): Promise<ToolBat
     results = sequentialResults;
   } else {
     // run_command may have implicit dependencies (e.g. npm install → npm build), serialize them
-    const allRunCommand = collectedToolCalls.every(tc => tc.name === TOOL_NAMES.RUN_COMMAND);
     if (allRunCommand) {
       const sequentialResults: PromiseSettledResult<ToolExecResult>[] = [];
       for (const tc of collectedToolCalls) {

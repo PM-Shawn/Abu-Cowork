@@ -7,6 +7,9 @@ import { invoke } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import { expandConfigEnvVars } from '@/utils/envExpansion';
 import { getTauriFetch } from '@/core/llm/tauriFetch';
+import { createLogger } from '@/core/logging/logger';
+
+const mcpLogger = createLogger('mcp');
 
 export interface MCPServerConfig {
   name: string;
@@ -317,9 +320,12 @@ export class MCPClientManager {
         };
       }
 
+      mcpLogger.info('MCP server connected', { name: config.name, toolCount: tools.size });
       console.log(`[MCP] Connected to ${config.name}, discovered ${tools.size} tools`);
       this.notifyListeners();
     } catch (err) {
+      const errorMessage = err instanceof Error ? err.message : String(err);
+      mcpLogger.error('MCP server connection failed', { name: config.name, error: errorMessage });
       console.error(`[MCP] Failed to connect to ${config.name}:`, err);
       throw err;
     }
@@ -386,6 +392,7 @@ export class MCPClientManager {
     // Don't reconnect temp test connections
     if (name.startsWith('__test_')) return;
 
+    mcpLogger.warn('MCP server disconnected', { name });
     console.warn(`[MCP] Server ${name} disconnected unexpectedly`);
 
     // Kill the old child process to prevent zombie processes

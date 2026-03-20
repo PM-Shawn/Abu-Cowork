@@ -38,11 +38,16 @@ describe('toolPrefetch', () => {
       expect(result).toContain('get_system_info');
     });
 
-    it('should return todo_write for generic input on turn 1+', () => {
+    it('should return report_plan + todo_write on turn 1-3', () => {
       const result = prefetchTools(makeCtx({ userInput: '你好', turnCount: 1 }));
       expect(result).toContain('todo_write');
-      expect(result).not.toContain('report_plan');
+      expect(result).toContain('report_plan');
       expect(result).not.toContain('get_system_info');
+    });
+
+    it('should not return report_plan after turn 3', () => {
+      const result = prefetchTools(makeCtx({ userInput: '你好', turnCount: 4 }));
+      expect(result).not.toContain('report_plan');
     });
 
     it('should match schedule keywords', () => {

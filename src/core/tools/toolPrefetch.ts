@@ -103,9 +103,11 @@ export function prefetchTools(ctx: PrefetchContext): string[] {
     additionalTools.push(TOOL_NAMES.READ_SKILL_FILE);
   }
 
-  // First turn: load planning + system info tools
-  if (ctx.turnCount === 0) {
+  // Early turns: load planning + system info tools (LLM may plan after initial research)
+  if (ctx.turnCount <= 3) {
     additionalTools.push(TOOL_NAMES.REPORT_PLAN);
+  }
+  if (ctx.turnCount === 0) {
     additionalTools.push(TOOL_NAMES.GET_SYSTEM_INFO);
   }
 

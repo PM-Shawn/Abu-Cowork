@@ -1,7 +1,7 @@
 {
   "name": "abu",
   "private": false,
-  "version": "0.6.23",
+  "version": "0.6.24",
   "description": "Abu - AI Desktop Office Assistant",
   "type": "module",
   "scripts": {

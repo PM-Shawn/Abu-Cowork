@@ -554,6 +554,74 @@ export class MCPClientManager {
     return server ? Array.from(server.tools.values()) : [];
   }
 
+  /**
+   * Re-discover tools from a connected server without reconnecting.
+   * Useful when the server's tool set changes during a session.
+   * Returns the number of tools discovered, or -1 if server not connected.
+   */
+  async refreshServerTools(serverName: string): Promise<number> {
+    const server = this.servers.get(serverName);
+    if (!server) return -1;
+
+    try {
+      const client = server.client as { listTools: () => Promise<{ tools: Array<{ name: string; description?: string; inputSchema: Record<string, unknown> }> }> };
+      const toolsResponse = await client.listTools();
+      const tools = new Map<string, ToolDefinition>();
+
+      for (const tool of toolsResponse.tools) {
+        const inputSchema = tool.inputSchema as {
+          type: 'object';
+          properties?: Record<string, Record<string, unknown>>;
+          required?: string[];
+        };
+
+        const properties: Record<string, ToolParameter> = {};
+        if (inputSchema.properties) {
+          for (const [key, prop] of Object.entries(inputSchema.properties)) {
+            properties[key] = {
+              ...prop,
+              type: (prop.type as string) || 'string',
+              description: (prop.description as string) ?? '',
+            } as ToolParameter;
+          }
+        }
+
+        const config = server.config;
+        const toolDef: ToolDefinition = {
+          name: `${config.name}__${tool.name}`,
+          description: tool.description ?? '',
+          inputSchema: {
+            type: 'object',
+            properties,
+            required: inputSchema.required,
+          },
+          execute: async (input) => {
+            return this.callTool(config.name, tool.name, input);
+          },
+        };
+
+        tools.set(tool.name, toolDef);
+      }
+
+      const oldCount = server.tools.size;
+      server.tools = tools;
+
+      mcpLogger.info('MCP server tools refreshed', {
+        name: serverName,
+        oldCount,
+        newCount: tools.size,
+      });
+      this.addLog(serverName, 'info', `Tools refreshed: ${oldCount} → ${tools.size}`);
+      this.notifyListeners();
+      return tools.size;
+    } catch (err) {
+      const errorMessage = err instanceof Error ? err.message : String(err);
+      mcpLogger.warn('MCP server tools refresh failed', { name: serverName, error: errorMessage });
+      this.addLog(serverName, 'warn', `Tools refresh failed: ${errorMessage}`);
+      return -1;
+    }
+  }
+
   async callTool(
     serverName: string,
     toolName: string,

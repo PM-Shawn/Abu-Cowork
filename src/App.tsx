@@ -44,7 +44,7 @@ import { loadIMPlugins } from '@/core/im/pluginLoader';
 import { reconcileIMSessions } from '@/core/im/sessionReconcile';
 import { initMCPStoreSync, cleanupMCPStoreSync } from '@/stores/mcpStore';
 import { initFileWatchers, stopAllWatchers } from '@/core/agent/fileWatcher';
-import { getPendingWorkspaceRequest, resolveWorkspaceRequest, subscribeToWorkspaceRequest } from '@/core/agent/agentLoop';
+import { getPendingWorkspaceRequest, resolveWorkspaceRequest, subscribeToWorkspaceRequest } from '@/core/agent/permissionBridge';
 import { startBehaviorSensor, stopBehaviorSensor } from '@/core/agent/behaviorSensor';
 import { useI18n } from '@/i18n';
 import CloseDialog from '@/components/common/CloseDialog';

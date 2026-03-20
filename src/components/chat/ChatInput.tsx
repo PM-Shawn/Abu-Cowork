@@ -7,7 +7,7 @@ import { uint8ArrayToBase64 } from '@/utils/base64';
 import { getBaseName, IMAGE_MIME_MAP } from '@/utils/pathUtils';
 import { isImageFile } from '@/components/chat/FileAttachment';
 import { enqueueUserInput } from '@/core/agent/userInputQueue';
-import { getCurrentLoopContext } from '@/core/agent/agentLoop';
+import { getCurrentLoopContext } from '@/core/agent/permissionBridge';
 import { useChatStore, useActiveConversation } from '@/stores/chatStore';
 import { useDiscoveryStore } from '@/stores/discoveryStore';
 import { useSettingsStore, getEffectiveModel, AVAILABLE_MODELS } from '@/stores/settingsStore';

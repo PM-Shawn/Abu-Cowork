@@ -3,14 +3,12 @@ import type { LLMAdapter } from '../llm/adapter';
 import { LLMError } from '../llm/adapter';
 import { ClaudeAdapter } from '../llm/claude';
 import { OpenAICompatibleAdapter } from '../llm/openai-compatible';
-import { getAllTools, executeAnyTool, toolResultToString, type ConfirmationInfo, type FilePermissionCallback } from '../tools/registry';
-import type { ToolResult, ToolResultContent, ToolDefinition } from '../../types';
+import { getAllTools, type ConfirmationInfo, type FilePermissionCallback } from '../tools/registry';
+import type { ToolDefinition } from '../../types';
 import { useChatStore, flushTokenBuffer } from '../../stores/chatStore';
 import { useSettingsStore, getEffectiveModel, getActiveApiKey, resolveAgentModel } from '../../stores/settingsStore';
 import { useWorkspaceStore } from '../../stores/workspaceStore';
 import { useTaskExecutionStore } from '../../stores/taskExecutionStore';
-import { usePermissionStore } from '../../stores/permissionStore';
-import { authorizeWorkspace } from '../tools/pathSafety';
 import { createEventRouter } from './eventRouter';
 import { routeInput, buildSystemPrompt, type RouteResult, type IMContext } from './orchestrator';
 import { skillLoader } from '../skill/loader';
@@ -28,14 +26,21 @@ import { createSubagentController } from './subagentAbort';
 import { drainQueuedInputs, clearInputQueue } from './userInputQueue';
 import { snapshotExecutionSteps } from './executionSnapshot';
 import { emitHook } from './lifecycleHooks';
-import type { PreToolCallEvent } from './lifecycleHooks';
-import { invoke } from '@tauri-apps/api/core';
-import { setComputerUseBatchMode, setSkipAutoScreenshot, clearAllSkillHooks } from '../tools/builtins';
+import { clearAllSkillHooks } from '../tools/builtins';
+import { executeToolBatch } from './toolExecutor';
 import { formatTodosForPrompt } from './todoManager';
 import { isWindows } from '../../utils/platform';
 import { getBuiltinSearchConfig } from '../capabilities';
 import { resolveCapabilities } from '../llm/modelCapabilities';
 import { CORE_TOOL_NAMES, prefetchTools } from '../tools/toolPrefetch';
+import {
+  setCurrentLoopContext,
+  requestCommandConfirmation,
+  requestFilePermission,
+  drainConfirmationQueue,
+  drainFilePermissionQueue,
+  drainWorkspaceRequest,
+} from './permissionBridge';
 
 /** Persist execution steps onto the last assistant message for the given loop, then evict from memory */
 function persistExecutionSnapshot(conversationId: string, loopId: string): void {
@@ -46,327 +51,6 @@ function persistExecutionSnapshot(conversationId: string, loopId: string): void 
     // Evict completed execution from memory — data now lives on the persisted message
     store.evictExecution(exec.id);
   }
-}
-
-// Module-level: current loop's context for delegate_to_agent tool
-let currentLoopContext: {
-  commandConfirmCallback: (info: ConfirmationInfo) => Promise<boolean>;
-  filePermissionCallback: FilePermissionCallback;
-  signal: AbortSignal;
-  eventRouter: import('./eventRouter').EventRouter;
-  loopId: string;
-  conversationId: string;
-  toolCallToStepId: Map<string, string>;
-} | null = null;
-
-export function getCurrentLoopContext() {
-  return currentLoopContext;
-}
-
-// Global state for pending command confirmation
-let pendingConfirmation: {
-  info: ConfirmationInfo;
-  conversationId: string;
-  resolve: (confirmed: boolean) => void;
-} | null = null;
-
-// Queue for command confirmations — prevents overwriting when multiple dangerous commands fire in sequence
-const confirmationQueue: Array<{
-  info: ConfirmationInfo;
-  conversationId: string;
-  resolve: (confirmed: boolean) => void;
-}> = [];
-
-// Subscribers for command confirmation state changes
-// NOTE: Listeners are auto-cleaned via the unsubscribe function returned by subscribeToCommandConfirmation,
-// which is used as the cleanup callback in useSyncExternalStore. No manual cleanup needed.
-const confirmationListeners = new Set<() => void>();
-
-function notifyConfirmationListeners() {
-  confirmationListeners.forEach(listener => listener());
-}
-
-/**
- * Subscribe to command confirmation state changes
- * For use with useSyncExternalStore
- */
-export function subscribeToCommandConfirmation(callback: () => void): () => void {
-  confirmationListeners.add(callback);
-  return () => confirmationListeners.delete(callback);
-}
-
-/**
- * Get the current pending command confirmation request
- */
-export function getPendingCommandConfirmation() {
-  return pendingConfirmation;
-}
-
-/**
- * Resolve the pending command confirmation and process next in queue
- */
-export function resolveCommandConfirmation(confirmed: boolean) {
-  if (pendingConfirmation) {
-    pendingConfirmation.resolve(confirmed);
-    pendingConfirmation = null;
-
-    // Process next queued confirmation
-    processNextConfirmation();
-  }
-}
-
-function processNextConfirmation() {
-  if (confirmationQueue.length > 0) {
-    pendingConfirmation = confirmationQueue.shift()!;
-  }
-  notifyConfirmationListeners();
-}
-
-/**
- * Drain the confirmation queue — reject all pending confirmations.
- * Called on abort to prevent stale confirmation dialogs.
- */
-export function drainConfirmationQueue() {
-  while (confirmationQueue.length > 0) {
-    const req = confirmationQueue.shift()!;
-    req.resolve(false);
-  }
-  if (pendingConfirmation) {
-    pendingConfirmation.resolve(false);
-    pendingConfirmation = null;
-    notifyConfirmationListeners();
-  }
-}
-
-/**
- * Request confirmation for a dangerous command
- * Returns a promise that resolves when user confirms or cancels.
- * If another confirmation is already pending, this request is queued.
- */
-async function requestCommandConfirmation(info: ConfirmationInfo): Promise<boolean> {
-  const convId = currentLoopContext?.conversationId ?? '';
-  return new Promise((resolve) => {
-    if (pendingConfirmation) {
-      // Queue instead of overwriting
-      confirmationQueue.push({ info, conversationId: convId, resolve });
-    } else {
-      pendingConfirmation = { info, conversationId: convId, resolve };
-      notifyConfirmationListeners();
-    }
-  });
-}
-
-// ── File Permission Request Infrastructure ──
-
-export interface FilePermissionRequest {
-  path: string;
-  capability: 'read' | 'write';
-  toolName: string;
-  conversationId: string;
-  resolve: (granted: boolean) => void;
-}
-
-let pendingFilePermission: FilePermissionRequest | null = null;
-const filePermissionQueue: FilePermissionRequest[] = [];
-let isProcessingFilePermission = false;
-
-// NOTE: Listeners are auto-cleaned via the unsubscribe function returned by subscribeToFilePermission,
-// which is used as the cleanup callback in useSyncExternalStore. No manual cleanup needed.
-const filePermissionListeners = new Set<() => void>();
-
-function notifyFilePermissionListeners() {
-  filePermissionListeners.forEach(listener => listener());
-}
-
-/**
- * Subscribe to file permission state changes (for useSyncExternalStore)
- */
-export function subscribeToFilePermission(callback: () => void): () => void {
-  filePermissionListeners.add(callback);
-  return () => filePermissionListeners.delete(callback);
-}
-
-/**
- * Get the current pending file permission request
- */
-export function getPendingFilePermission(): FilePermissionRequest | null {
-  return pendingFilePermission;
-}
-
-/**
- * Resolve the pending file permission request
- */
-export function resolveFilePermission(
-  granted: boolean,
-  path?: string,
-  capabilities?: ('read' | 'write' | 'execute')[],
-  duration?: import('../../stores/permissionStore').PermissionDuration
-) {
-  if (pendingFilePermission) {
-    if (granted && path && capabilities && duration) {
-      // Grant permission via permissionStore (which syncs to pathSafety)
-      usePermissionStore.getState().grantPermission(path, capabilities, duration);
-    }
-    pendingFilePermission.resolve(granted);
-    pendingFilePermission = null;
-    notifyFilePermissionListeners();
-
-    // Process next queued request
-    processNextFilePermission();
-  }
-}
-
-function processNextFilePermission() {
-  while (filePermissionQueue.length > 0) {
-    const next = filePermissionQueue.shift()!;
-
-    // Re-check if permission was already granted (another tool may have triggered it)
-    const permStore = usePermissionStore.getState();
-    if (permStore.hasPermission(next.path, next.capability)) {
-      next.resolve(true);
-      continue;
-    }
-
-    pendingFilePermission = next;
-    notifyFilePermissionListeners();
-    return;
-  }
-
-  isProcessingFilePermission = false;
-}
-
-/**
- * Drain the file permission queue — reject all pending requests.
- * Called on abort to prevent stale permission dialogs.
- */
-export function drainFilePermissionQueue() {
-  // Reject all queued requests
-  while (filePermissionQueue.length > 0) {
-    const req = filePermissionQueue.shift()!;
-    req.resolve(false);
-  }
-  // Clear current pending request
-  if (pendingFilePermission) {
-    pendingFilePermission.resolve(false);
-    pendingFilePermission = null;
-    notifyFilePermissionListeners();
-  }
-  isProcessingFilePermission = false;
-}
-
-/**
- * Request file permission — checks permissionStore first, then queues for UI
- */
-async function requestFilePermission(request: {
-  path: string;
-  capability: 'read' | 'write';
-  toolName: string;
-}): Promise<boolean> {
-  const permStore = usePermissionStore.getState();
-
-  // Already has permission → auto-allow
-  if (permStore.hasPermission(request.path, request.capability)) {
-    // Also sync to pathSafety in case it wasn't already
-    authorizeWorkspace(request.path);
-    return true;
-  }
-
-  const convId = currentLoopContext?.conversationId ?? '';
-  return new Promise((resolve) => {
-    const filePermReq: FilePermissionRequest = { ...request, conversationId: convId, resolve };
-
-    if (!isProcessingFilePermission) {
-      isProcessingFilePermission = true;
-      pendingFilePermission = filePermReq;
-      notifyFilePermissionListeners();
-    } else {
-      // Queue for later processing
-      filePermissionQueue.push(filePermReq);
-    }
-  });
-}
-
-// ── Workspace Request Infrastructure ──
-
-export interface WorkspaceRequest {
-  reason: string;
-  conversationId: string;
-  suggestedPath?: string;
-  resolve: (path: string | null) => void;
-}
-
-let pendingWorkspaceRequest: WorkspaceRequest | null = null;
-const workspaceRequestListeners = new Set<() => void>();
-
-function notifyWorkspaceRequestListeners() {
-  workspaceRequestListeners.forEach(listener => listener());
-}
-
-/**
- * Subscribe to workspace request state changes (for useSyncExternalStore)
- */
-export function subscribeToWorkspaceRequest(callback: () => void): () => void {
-  workspaceRequestListeners.add(callback);
-  return () => workspaceRequestListeners.delete(callback);
-}
-
-/**
- * Get the current pending workspace request
- */
-export function getPendingWorkspaceRequest(): WorkspaceRequest | null {
-  return pendingWorkspaceRequest;
-}
-
-/**
- * Resolve the pending workspace request (called from UI)
- */
-export function resolveWorkspaceRequest(path: string | null): void {
-  if (pendingWorkspaceRequest) {
-    pendingWorkspaceRequest.resolve(path);
-    pendingWorkspaceRequest = null;
-    notifyWorkspaceRequestListeners();
-  }
-}
-
-/**
- * Drain workspace request — reject pending request on abort
- */
-export function drainWorkspaceRequest(): void {
-  if (pendingWorkspaceRequest) {
-    pendingWorkspaceRequest.resolve(null);
-    pendingWorkspaceRequest = null;
-    notifyWorkspaceRequestListeners();
-  }
-}
-
-/** Timeout for workspace selection — auto-resolve(null) if user doesn't respond */
-const WORKSPACE_REQUEST_TIMEOUT_MS = 60_000; // 60 seconds
-
-/**
- * Request the user to select a workspace folder.
- * Called from the request_workspace tool.
- * Auto-resolves to null after timeout to prevent indefinite hangs.
- */
-export async function requestWorkspace(reason: string, conversationId?: string, suggestedPath?: string): Promise<string | null> {
-  const convId = conversationId ?? currentLoopContext?.conversationId ?? '';
-  return new Promise((resolve) => {
-    const timer = setTimeout(() => {
-      if (pendingWorkspaceRequest?.resolve === wrappedResolve) {
-        console.warn('[AgentLoop] Workspace request timed out, auto-cancelling');
-        pendingWorkspaceRequest = null;
-        notifyWorkspaceRequestListeners();
-        resolve(null);
-      }
-    }, WORKSPACE_REQUEST_TIMEOUT_MS);
-
-    const wrappedResolve = (path: string | null) => {
-      clearTimeout(timer);
-      resolve(path);
-    };
-
-    pendingWorkspaceRequest = { reason, conversationId: convId, suggestedPath, resolve: wrappedResolve };
-    notifyWorkspaceRequestListeners();
-  });
 }
 
 function getBaseSystemPrompt(): string {
@@ -1241,291 +925,29 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
         useChatStore.getState().updateMessageUsage(conversationId, finalUsage);
       }
 
-      // If there are tool calls, execute them in parallel
+      // If there are tool calls, execute them via toolExecutor
       if (collectedToolCalls.length > 0) {
-        // Update the assistant message with tool calls
-        useChatStore.setState((state) => {
-          const msg = state.conversations[conversationId]?.messages.find(
-            (m) => m.id === assistantMsgId
-          );
-          if (msg) {
-            msg.toolCalls = collectedToolCalls;
-            msg.isStreaming = false;
-          }
-        });
-
-        // Execute tools in parallel using Promise.allSettled
-        chatStore.setAgentStatus('tool-calling', `${collectedToolCalls.length} tools`);
-
-        // Expose loop context for delegate_to_agent tool
         const confirmCb = options?.commandConfirmCallback ?? requestCommandConfirmation;
         const filePermCb = options?.filePermissionCallback ?? requestFilePermission;
-        currentLoopContext = {
-          commandConfirmCallback: confirmCb,
-          filePermissionCallback: filePermCb,
-          signal: abortController.signal,
-          eventRouter,
-          loopId,
-          conversationId,
+
+        const batchResult = await executeToolBatch({
+          collectedToolCalls,
           toolCallToStepId,
-        };
-
-        let completedCount = 0;
-        const totalCount = collectedToolCalls.length;
-
-        type ToolExecResult = { id: string; result: string; resultContent: ToolResultContent[] | undefined; error: boolean; duration: number };
-
-        const executeSingleTool = async (tc: typeof collectedToolCalls[number]): Promise<ToolExecResult> => {
-          // Check if cancelled before executing
-          if (abortController.signal.aborted) {
-            return { id: tc.id, result: '[已取消]', resultContent: undefined, error: false, duration: 0 };
-          }
-
-          // Emit preToolCall hook (can block or modify input)
-          const preEvent = await emitHook({
-            type: 'preToolCall' as const,
-            timestamp: Date.now(),
-            conversationId,
-            toolName: tc.name,
-            toolInput: tc.input,
-          } as PreToolCallEvent);
-
-          if (preEvent.blocked) {
-            return { id: tc.id, result: '[被 hook 拦截]', resultContent: undefined, error: false, duration: 0 };
-          }
-
-          const effectiveInput = preEvent.modifiedInput ?? tc.input;
-
-          // Enforce allowed-tools input constraints (e.g., run_command(npm *))
-          const validator = inputValidators.get(tc.name);
-          if (validator && !validator(effectiveInput)) {
-            return { id: tc.id, result: `此操作被技能的 allowed-tools 限制拦截：工具 ${tc.name} 的输入不符合约束条件`, resultContent: undefined, error: true, duration: 0 };
-          }
-
-          const startTime = Date.now();
-          try {
-            // Race tool execution against abort signal so stop button works during long-running tools (e.g. MCP)
-            const rawResult: ToolResult = await new Promise<ToolResult>((resolve, reject) => {
-              if (abortController.signal.aborted) {
-                reject(new DOMException('Aborted', 'AbortError'));
-                return;
-              }
-              let settled = false;
-              const onAbort = () => {
-                if (!settled) {
-                  settled = true;
-                  reject(new DOMException('Aborted', 'AbortError'));
-                }
-              };
-              abortController.signal.addEventListener('abort', onAbort, { once: true });
-              executeAnyTool(tc.name, effectiveInput, confirmCb, filePermCb, toolContext)
-                .then((result) => {
-                  if (!settled) {
-                    settled = true;
-                    abortController.signal.removeEventListener('abort', onAbort);
-                    resolve(result);
-                  }
-                })
-                .catch((err) => {
-                  if (!settled) {
-                    settled = true;
-                    abortController.signal.removeEventListener('abort', onAbort);
-                    reject(err);
-                  }
-                });
-            });
-            const durationMs = Date.now() - startTime;
-            completedCount++;
-            if (totalCount > 1) {
-              chatStore.setAgentStatus('tool-calling', `${completedCount}/${totalCount}: ${tc.name}`);
-            }
-            // Extract string for display/hooks; keep rich content for LLM
-            const resultStr = toolResultToString(rawResult);
-            const resultContent: ToolResultContent[] | undefined =
-              typeof rawResult !== 'string' ? rawResult : undefined;
-            // Emit postToolCall hook
-            await emitHook({
-              type: 'postToolCall',
-              timestamp: Date.now(),
-              conversationId,
-              toolName: tc.name,
-              toolInput: effectiveInput,
-              result: resultStr,
-              error: false,
-              durationMs,
-            });
-            return { id: tc.id, result: resultStr, resultContent, error: false, duration: durationMs / 1000 };
-          } catch (err) {
-            // Re-throw AbortError so outer catch handles cancellation properly
-            if (err instanceof Error && err.name === 'AbortError') {
-              throw err;
-            }
-            const durationMs = Date.now() - startTime;
-            completedCount++;
-            if (totalCount > 1) {
-              chatStore.setAgentStatus('tool-calling', `${completedCount}/${totalCount}: ${tc.name}`);
-            }
-            const errorMsg = err instanceof Error ? err.message : String(err);
-            // Emit postToolCall hook for errors too
-            await emitHook({
-              type: 'postToolCall',
-              timestamp: Date.now(),
-              conversationId,
-              toolName: tc.name,
-              toolInput: effectiveInput,
-              result: `Error: ${errorMsg}`,
-              error: true,
-              durationMs,
-            });
-            return { id: tc.id, result: `Error: ${errorMsg}`, resultContent: undefined, error: true, duration: durationMs / 1000 };
-          }
-        };
-
-        // If batch contains any computer tool call, execute ALL sequentially
-        // (e.g. click → wait → type must run in order, not race each other)
-        const hasComputerTool = collectedToolCalls.some(tc => tc.name === 'computer');
-
-        let results: PromiseSettledResult<ToolExecResult>[];
-        if (hasComputerTool) {
-          // Sequential execution for computer use batches
-          // Batch-level window management: hide once before, show once after
-          try { await invoke('window_hide'); } catch { /* ignore */ }
-          await new Promise(r => setTimeout(r, 200));
-          setComputerUseBatchMode(true);
-
-          const sequentialResults: PromiseSettledResult<ToolExecResult>[] = [];
-          try {
-            for (let i = 0; i < collectedToolCalls.length; i++) {
-              const tc = collectedToolCalls[i];
-              // Only auto-screenshot on the last computer tool in the batch
-              const hasMoreComputerTools = collectedToolCalls.slice(i + 1).some(t => t.name === 'computer');
-              setSkipAutoScreenshot(tc.name === 'computer' && hasMoreComputerTools);
-              try {
-                const value = await executeSingleTool(tc);
-                sequentialResults.push({ status: 'fulfilled', value });
-              } catch (err) {
-                sequentialResults.push({ status: 'rejected', reason: err });
-              }
-            }
-          } finally {
-            setSkipAutoScreenshot(false);
-            setComputerUseBatchMode(false);
-            try { await invoke('window_show'); } catch { /* ignore */ }
-          }
-          results = sequentialResults;
-        } else {
-          // run_command may have implicit dependencies (e.g. npm install → npm build), serialize them
-          const allRunCommand = collectedToolCalls.every(tc => tc.name === 'run_command');
-          if (allRunCommand) {
-            const sequentialResults: PromiseSettledResult<ToolExecResult>[] = [];
-            for (const tc of collectedToolCalls) {
-              if (abortController.signal.aborted) break;
-              try {
-                const value = await executeSingleTool(tc);
-                sequentialResults.push({ status: 'fulfilled', value });
-              } catch (err) {
-                sequentialResults.push({ status: 'rejected', reason: err });
-              }
-            }
-            results = sequentialResults;
-          } else {
-            // Parallel execution for non-command batches
-            const toolPromises = collectedToolCalls.map(tc => executeSingleTool(tc));
-            results = await Promise.allSettled(toolPromises);
-          }
-        }
-
-        // Update tool call results via EventRouter (use index to match rejected results)
-        results.forEach((result, i) => {
-          if (result.status === 'fulfilled') {
-            const { id, result: toolResult, resultContent, error } = result.value;
-            // Determine hideScreenshot for computer tool
-            let hideScreenshot: boolean | undefined;
-            const matchedTc = collectedToolCalls[i];
-            if (matchedTc?.name === 'computer') {
-              const showUser = matchedTc.input.show_user;
-              const action = matchedTc.input.action as string;
-              if (typeof showUser === 'boolean') {
-                hideScreenshot = !showUser;
-              } else {
-                hideScreenshot = action !== 'screenshot';
-              }
-            }
-            chatStore.updateToolCall(conversationId, assistantMsgId, id, toolResult, resultContent, error, hideScreenshot);
-
-            // Update TaskExecutionStore via EventRouter
-            const stepId = toolCallToStepId.get(id);
-            if (stepId) {
-              if (error) {
-                eventRouter.route({ type: 'step-error', loopId, stepId, error: toolResult });
-              } else {
-                eventRouter.route({ type: 'step-end', loopId, stepId, result: toolResult, resultContent });
-              }
-
-              // Update linked planned step status and auto-advance to next
-              const execState = useTaskExecutionStore.getState().executions[execution.id];
-              if (execState) {
-                const linkedPlanned = execState.plannedSteps.find(s => s.linkedStepId === stepId);
-                if (linkedPlanned) {
-                  useTaskExecutionStore.getState().updatePlannedStepStatus(
-                    execution.id,
-                    linkedPlanned.index,
-                    error ? 'error' : 'completed'
-                  );
-                  // Auto-advance: link the next pending planned step to the next
-                  // tool call's execution step (using collectedToolCalls index for reliability)
-                  const nextPending = useTaskExecutionStore.getState().executions[execution.id]
-                    ?.plannedSteps.find(s => s.status === 'pending');
-                  if (nextPending) {
-                    for (let j = i + 1; j < collectedToolCalls.length; j++) {
-                      const nextStepId = toolCallToStepId.get(collectedToolCalls[j].id);
-                      if (nextStepId) {
-                        useTaskExecutionStore.getState().linkPlannedStep(execution.id, nextPending.index, nextStepId);
-                        useTaskExecutionStore.getState().updatePlannedStepStatus(execution.id, nextPending.index, 'running');
-                        break;
-                      }
-                    }
-                  }
-                }
-              }
-            }
-          } else {
-            // Use index to find the corresponding tool call
-            const tc = collectedToolCalls[i];
-            if (tc) {
-              chatStore.updateToolCall(conversationId, assistantMsgId, tc.id, `Error: ${result.reason}`, undefined, true);
-
-              // Update TaskExecutionStore via EventRouter
-              const stepId = toolCallToStepId.get(tc.id);
-              if (stepId) {
-                eventRouter.route({ type: 'step-error', loopId, stepId, error: String(result.reason) });
-
-                // Update linked planned step status
-                const execState = useTaskExecutionStore.getState().executions[execution.id];
-                if (execState) {
-                  const linkedPlanned = execState.plannedSteps.find(s => s.linkedStepId === stepId);
-                  if (linkedPlanned) {
-                    useTaskExecutionStore.getState().updatePlannedStepStatus(
-                      execution.id,
-                      linkedPlanned.index,
-                      'error'
-                    );
-                  }
-                }
-              }
-            }
-          }
+          conversationId,
+          assistantMsgId,
+          loopId,
+          abortController,
+          eventRouter,
+          executionId: execution.id,
+          inputValidators,
+          confirmCb,
+          filePermCb,
+          toolContext,
+          continueLoop,
         });
 
-        // Clear loop context after tool execution
-        currentLoopContext = null;
-
-        // Detect tool changes (e.g. manage_mcp_server install) and inject notification
-        const mcpChanged = continueLoop && collectedToolCalls.some(tc =>
-          tc.name === 'manage_mcp_server' && (tc.input as Record<string, unknown>)?.action === 'install' ||
-          tc.name === 'install_mcp_server' || tc.name === 'uninstall_mcp_server'
-        );
-        if (mcpChanged) {
+        // Handle MCP tool changes — inject notification into conversation
+        if (batchResult.mcpChanged) {
           const toolNames = new Set(tools.map(t => t.name));
           const { tools: freshTools } = resolveTools(route, !!builtinWebSearch, options?.blockedTools);
           const freshNames = new Set(freshTools.map(t => t.name));
@@ -1578,7 +1000,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
       // Handle abort errors gracefully
       if (err instanceof Error && (err.name === 'AbortError' || abortController.signal.aborted)) {
         // Clear loop context and any pending confirmation/permission dialogs
-        currentLoopContext = null;
+        setCurrentLoopContext(null);
         clearInputQueue(conversationId);
         drainConfirmationQueue();
         drainFilePermissionQueue();
@@ -1596,7 +1018,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
         return;
       }
 
-      currentLoopContext = null;
+      setCurrentLoopContext(null);
       const errorMessage = err instanceof Error ? err.message : String(err);
       chatStore.appendToLastMessage(
         conversationId,

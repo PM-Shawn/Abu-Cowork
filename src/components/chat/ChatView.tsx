@@ -2,7 +2,8 @@ import { useState, useCallback, useLayoutEffect, useSyncExternalStore } from 're
 import { useChatStore, useActiveConversation } from '@/stores/chatStore';
 import type { Message, ImageAttachment } from '@/types';
 import { useAutoScroll } from '@/hooks/useAutoScroll';
-import { runAgentLoop, getPendingCommandConfirmation, resolveCommandConfirmation, subscribeToCommandConfirmation, getPendingFilePermission, resolveFilePermission, subscribeToFilePermission, getPendingWorkspaceRequest, resolveWorkspaceRequest, subscribeToWorkspaceRequest } from '@/core/agent/agentLoop';
+import { runAgentLoop } from '@/core/agent/agentLoop';
+import { getPendingCommandConfirmation, resolveCommandConfirmation, subscribeToCommandConfirmation, getPendingFilePermission, resolveFilePermission, subscribeToFilePermission, getPendingWorkspaceRequest, resolveWorkspaceRequest, subscribeToWorkspaceRequest } from '@/core/agent/permissionBridge';
 import { useSettingsStore, getActiveApiKey } from '@/stores/settingsStore';
 import { useWorkspaceStore } from '@/stores/workspaceStore';
 import type { PermissionDuration } from '@/stores/permissionStore';

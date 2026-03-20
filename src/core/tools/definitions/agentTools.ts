@@ -2,7 +2,7 @@ import { writeTextFile } from '@tauri-apps/plugin-fs';
 import type { ToolDefinition, Conversation, SubagentDefinition } from '../../../types';
 import { skillLoader } from '../../skill/loader';
 import { agentRegistry } from '../../agent/registry';
-import { getCurrentLoopContext, requestWorkspace } from '../../agent/agentLoop';
+import { getCurrentLoopContext, requestWorkspace } from '../../agent/permissionBridge';
 import { runSubagentLoop, extractParentConversationSummary } from '../../agent/subagentLoop';
 import type { SubagentProgressEvent } from '../../agent/subagentLoop';
 import { createSubagentController } from '../../agent/subagentAbort';

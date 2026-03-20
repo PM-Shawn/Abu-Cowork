@@ -32,6 +32,7 @@ const enUS: TranslationDict = {
     categoryFact: 'Fact',
     categoryDecision: 'Decision',
     categoryAction: 'Action',
+    categoryConversationIndex: 'Conversation',
     entryCount: '{count} memories',
     sourceAutoFlush: 'Auto-extracted',
     sourceAgentExplicit: 'AI recorded',

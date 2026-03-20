@@ -474,14 +474,26 @@ ${projectMemory}
       }
 
       // Memory management instruction
-      parts.push(`\n在以下情况主动用 update_memory 工具保存记忆：
-- 用户表达了偏好或习惯 → category="user_preference"
-- 发现了项目技术/业务知识 → category="project_knowledge"
-- 做出了重要决策 → category="decision"
+      parts.push(`\n## 记忆管理
+你有 update_memory 工具保存持久记忆，recall 工具检索过去的记忆和经验。
+
+### 何时主动保存（update_memory）
+不等用户要求，在以下场景主动调用：
+- 用户说"我喜欢/不喜欢/以后都/默认用…" → category="user_preference"
+- 用户分享角色、团队、工作流 → category="user_preference"
+- 完成复杂任务后，保存关键结论 → category="conversation_fact"
+- 用户在方案间做出选择 → category="decision"
+- 发现项目技术栈/架构/约定 → category="project_knowledge"（scope="project"）
 - 确定了后续行动 → category="action_item"
-- 对话中出现了值得长期记住的事实 → category="conversation_fact"
-不要保存临时性内容。每条记忆需提供 summary、content、keywords。
-- 项目规则（.abu/ABU.md 和 .abu/rules/）由用户手动维护，不要用 update_memory 修改规则文件`);
+每条记忆需提供 summary、content、keywords。
+
+### 不要保存
+- 临时性查询（天气、一次性计算、闲聊）
+- 已在项目规则文件（.abu/ABU.md）中的内容
+项目规则由用户手动维护，不要用 update_memory 修改。
+
+### 何时回忆（recall）
+用户问到"之前…"、"上次…"、"最近做了什么"、"我们聊过…"时，先用 recall 搜索。`);
     } catch (err) {
       console.warn('Failed to load memories:', err);
       // Final fallback: try legacy memory

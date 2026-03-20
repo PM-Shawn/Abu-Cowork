@@ -32,6 +32,7 @@ const zhCN: TranslationDict = {
     categoryFact: '事实',
     categoryDecision: '决策',
     categoryAction: '待办',
+    categoryConversationIndex: '会话',
     entryCount: '{count} 条记忆',
     sourceAutoFlush: '自动提取',
     sourceAgentExplicit: 'AI 主动记忆',

@@ -13,6 +13,7 @@ function getCategoryLabel(category: MemoryCategory, t: ReturnType<typeof useI18n
     conversation_fact: t.memory.categoryFact,
     decision: t.memory.categoryDecision,
     action_item: t.memory.categoryAction,
+    conversation_index: t.memory.categoryConversationIndex,
   };
   return map[category];
 }
@@ -23,6 +24,7 @@ const CATEGORY_COLORS: Record<MemoryCategory, string> = {
   conversation_fact: 'bg-blue-100 text-blue-700',
   decision: 'bg-green-100 text-green-700',
   action_item: 'bg-yellow-100 text-yellow-700',
+  conversation_index: 'bg-gray-100 text-gray-700',
 };
 
 function formatAge(timestamp: number): string {
@@ -51,8 +53,10 @@ export default function PersonalMemorySection() {
     try {
       const backend = getMemoryBackend();
       const items = await backend.list({ scope: 'user' });
-      if (items.length > 0) {
-        setEntries(items.sort((a, b) => b.updatedAt - a.updatedAt));
+      // Filter out conversation_index entries — internal data, not user-facing
+      const visible = items.filter(e => e.category !== 'conversation_index');
+      if (visible.length > 0) {
+        setEntries(visible.sort((a, b) => b.updatedAt - a.updatedAt));
         setLegacyContent(null);
       } else {
         // Fallback: show legacy memory.md content if structured entries are empty

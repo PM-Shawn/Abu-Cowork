@@ -45,6 +45,7 @@ export interface TranslationDict {
     categoryFact: string;
     categoryDecision: string;
     categoryAction: string;
+    categoryConversationIndex: string;
     entryCount: string;
     sourceAutoFlush: string;
     sourceAgentExplicit: string;

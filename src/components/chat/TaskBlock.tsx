@@ -209,7 +209,7 @@ const PREVIEW_LIMIT = 3;
 type DisplayMode = 'collapsed' | 'preview' | 'expanded';
 
 export default function TaskBlock({ steps, executionSteps, isActive, onRetry }: TaskBlockProps) {
-  const [displayMode, setDisplayMode] = useState<DisplayMode>(isActive ? 'preview' : 'collapsed');
+  const [displayMode, setDisplayMode] = useState<DisplayMode>('collapsed');
   const { t, locale } = useI18n();
 
   // Auto-collapse when execution finishes (isActive: true → false)
@@ -245,7 +245,12 @@ export default function TaskBlock({ steps, executionSteps, isActive, onRetry }: 
     : unifiedSteps;
 
   const handleHeaderClick = () => {
-    setDisplayMode(displayMode === 'collapsed' ? 'preview' : 'collapsed');
+    if (allCompleted && !hasError) {
+      // Completed: toggle between collapsed and fully expanded (skip preview)
+      setDisplayMode(displayMode === 'collapsed' ? 'expanded' : 'collapsed');
+    } else {
+      setDisplayMode(displayMode === 'collapsed' ? 'preview' : 'collapsed');
+    }
   };
 
   const handleShowMore = () => {
@@ -261,25 +266,42 @@ export default function TaskBlock({ steps, executionSteps, isActive, onRetry }: 
   return (
     <div className="task-block mb-4">
       {/* Summary Header */}
-      <button
-        onClick={handleHeaderClick}
-        className="flex items-center gap-1.5 text-[13px] text-[#656358] hover:text-[#29261b] transition-colors mb-2"
-      >
-        <span>{isActive ? summary.replace(/\.{3}$/, '').replace(/…$/, '') : summary}</span>
-        {isActive && (
-          <span className="inline-flex items-center gap-[3px] ml-0.5">
-            <span className="typing-dot w-[3px] h-[3px] rounded-full bg-[#d97757]" />
-            <span className="typing-dot w-[3px] h-[3px] rounded-full bg-[#d97757]" />
-            <span className="typing-dot w-[3px] h-[3px] rounded-full bg-[#d97757]" />
-          </span>
-        )}
-        <ChevronDown
-          className={cn(
-            'h-3.5 w-3.5 transition-transform',
-            !isOpen && '-rotate-90'
+      {allCompleted && !hasError ? (
+        // Minimal completed header — single text line, no icons
+        <button
+          onClick={handleHeaderClick}
+          className="flex items-center gap-1 text-[13px] text-[#a8a49a] hover:text-[#8b887c] transition-colors mb-2"
+        >
+          <span>{summary}</span>
+          <ChevronDown
+            className={cn(
+              'h-3.5 w-3.5 transition-transform',
+              !isOpen && '-rotate-90'
+            )}
+          />
+        </button>
+      ) : (
+        // Active / error header — with animated dots and chevron
+        <button
+          onClick={handleHeaderClick}
+          className="flex items-center gap-1.5 text-[13px] text-[#656358] hover:text-[#29261b] transition-colors mb-2"
+        >
+          <span>{isActive ? summary.replace(/\.{3}$/, '').replace(/…$/, '') : summary}</span>
+          {isActive && (
+            <span className="inline-flex items-center gap-[3px] ml-0.5">
+              <span className="typing-dot w-[3px] h-[3px] rounded-full bg-[#d97757]" />
+              <span className="typing-dot w-[3px] h-[3px] rounded-full bg-[#d97757]" />
+              <span className="typing-dot w-[3px] h-[3px] rounded-full bg-[#d97757]" />
+            </span>
           )}
-        />
-      </button>
+          <ChevronDown
+            className={cn(
+              'h-3.5 w-3.5 transition-transform',
+              !isOpen && '-rotate-90'
+            )}
+          />
+        </button>
+      )}
 
       {/* Flow Timeline */}
       {isOpen && visibleSteps.length > 0 && (

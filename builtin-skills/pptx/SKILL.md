@@ -4,6 +4,25 @@ description: "Use this skill any time a .pptx file is involved in any way — as
 license: Proprietary. LICENSE.txt has complete terms
 trigger: 用户要求创建、读取、编辑演示文稿（.pptx），提到幻灯片、演示、deck、slides，或需要处理任何 .pptx 文件
 do-not-trigger: 用户只是讨论演示技巧但不涉及 .pptx 文件操作
+blocked-tools:
+  - manage_scheduled_task
+  - manage_trigger
+  - manage_file_watch
+  - delegate_to_agent
+  - update_memory
+  - todo_write
+  - todo_read
+  - generate_image
+  - process_image
+  - clipboard_read
+  - clipboard_write
+  - system_notify
+  - search_mcp_server
+  - install_mcp_server
+  - log_task_completion
+  - save_skill
+  - save_agent
+  - computer
 ---
 
 # PPTX Skill
@@ -14,7 +33,7 @@ do-not-trigger: 用户只是讨论演示技巧但不涉及 .pptx 文件操作
 |------|-------|
 | Read/analyze content | `python -m markitdown presentation.pptx` |
 | Edit or create from template | Read [editing.md](editing.md) |
-| Create from scratch | Read [pptxgenjs.md](pptxgenjs.md) |
+| Create from scratch | Read [pptxgenjs.md](pptxgenjs.md) or [python-pptx.md](python-pptx.md) |
 
 ---
 
@@ -44,9 +63,22 @@ python scripts/office/unpack.py presentation.pptx unpacked/
 
 ## Creating from Scratch
 
-**Read [pptxgenjs.md](pptxgenjs.md) for full details.**
+**Read [pptxgenjs.md](pptxgenjs.md) for full details.** Alternatively, read [python-pptx.md](python-pptx.md) if Python is available.
 
 Use when no template or reference presentation is available.
+
+### Writing large scripts
+
+生成脚本通常几百行。**不要用 write_file 写大脚本**（会导致 JSON 截断），改用 run_command + heredoc：
+
+```bash
+cat << 'SCRIPT_EOF' > /tmp/build_ppt.js
+const pptxgen = require("pptxgenjs");
+// ... your script here ...
+SCRIPT_EOF
+```
+
+如果脚本超过 200 行，用 `>>` 追加模式分批写入。
 
 ---
 
@@ -229,6 +261,7 @@ pdftoppm -jpeg -r 150 -f N -l N output.pdf slide-fixed
 
 - `pip install "markitdown[pptx]"` - text extraction
 - `pip install Pillow` - thumbnail grids
-- `npm install -g pptxgenjs` - creating from scratch
+- `npm install pptxgenjs` - creating from scratch (JS approach)
+- `python-pptx` - creating from scratch (Python approach, may be pre-installed)
 - LibreOffice (`soffice`) - PDF conversion (auto-configured for sandboxed environments via `scripts/office/soffice.py`)
 - Poppler (`pdftoppm`) - PDF to images

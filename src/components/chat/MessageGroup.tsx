@@ -8,9 +8,10 @@ import MarkdownRenderer from './MarkdownRenderer';
 import FileAttachment, { ImagePreviewCard, ImageThumbnail, isImageFile } from './FileAttachment';
 import SourcesSection from './SourcesSection';
 import { useChatStore, useActiveConversation } from '@/stores/chatStore';
+import { usePreviewStore } from '@/stores/previewStore';
 import { MessageErrorBoundary } from '@/components/common/ErrorBoundary';
 import { useTaskExecutionStore } from '@/stores/taskExecutionStore';
-import { extractWorkflowSteps, extractFileOutputs } from '@/utils/workflowExtractor';
+import { extractWorkflowSteps, extractFileOutputs, extractFilePathsFromText } from '@/utils/workflowExtractor';
 import { parseSearchResults, stripSourcesBlock, parseSourcesFromText } from '@/utils/searchParser';
 import { snapshotToExecutionSteps } from '@/core/agent/executionSnapshot';
 import { runAgentLoop } from '@/core/agent/agentLoop';
@@ -240,8 +241,24 @@ export default function MessageGroup({ messages }: MessageGroupProps) {
   // Extract workflow steps from all tool calls (legacy fallback)
   const workflowSteps = extractWorkflowSteps(allToolCalls, thinkingContent, agentStatus, skillInfo, thinkingDuration);
 
-  // Extract file outputs for attachments
-  const fileOutputs = useMemo(() => extractFileOutputs(allToolCalls), [allToolCalls]);
+  // Extract file outputs for attachments — from tool calls + assistant message text
+  const fileOutputs = useMemo(() => {
+    const fromToolCalls = extractFileOutputs(allToolCalls);
+    const seenPaths = new Set(fromToolCalls.map((f) => f.path));
+    // Also extract file paths mentioned in assistant message text (e.g., "文件位置: /path/to/file.pptx")
+    for (const msg of assistantMsgs) {
+      const text = getTextContent(msg.content);
+      if (!text) continue;
+      const textPaths = extractFilePathsFromText(text);
+      for (const p of textPaths) {
+        if (!seenPaths.has(p)) {
+          seenPaths.add(p);
+          fromToolCalls.push({ path: p, operation: 'create' });
+        }
+      }
+    }
+    return fromToolCalls;
+  }, [allToolCalls, assistantMsgs]);
 
   // Build filename -> full path map for inline file chip matching
   const fileOutputMap = useMemo(() => {
@@ -259,6 +276,22 @@ export default function MessageGroup({ messages }: MessageGroupProps) {
 
   // Check if any tool has error result
   const hasError = allToolCalls.some((tc) => tc.result?.toLowerCase().includes('error'));
+
+  // Auto-preview: when agent loop fully ends and files were produced, open the last non-image file
+  // Use conversation status + execution status to detect true completion (not inter-batch gaps)
+  const autoPreviewedRef = useRef(false);
+  const openPreview = usePreviewStore((s) => s.openPreview);
+  const isAgentDone = !isStreaming && !isThisExecutionActive && activeConv?.status !== 'running';
+  useEffect(() => {
+    if (autoPreviewedRef.current || !isAgentDone || fileOutputs.length === 0) return;
+    // Prefer the LAST non-image file (most likely the final output, not intermediate scripts)
+    const nonImageFiles = fileOutputs.filter((f) => !isImageFile(f.path));
+    const previewableFile = nonImageFiles[nonImageFiles.length - 1] || fileOutputs[fileOutputs.length - 1];
+    if (previewableFile) {
+      autoPreviewedRef.current = true;
+      openPreview(previewableFile.path);
+    }
+  }, [isAgentDone, fileOutputs, openPreview]);
 
   // Handle retry
   const handleRetry = async () => {
@@ -332,6 +365,14 @@ export default function MessageGroup({ messages }: MessageGroupProps) {
             {/* Render segments: text blocks and merged step groups */}
             {segments.map((seg, segIdx) => {
               if (seg.kind === 'text') {
+                // Hide intermediate narration: text followed by steps is "setup" text,
+                // not final output. Only show text that is NOT followed by steps.
+                const nextSeg = segments[segIdx + 1];
+                const isIntermediateNarration = nextSeg?.kind === 'steps';
+                if (isIntermediateNarration && !seg.message.isStreaming) {
+                  return null;
+                }
+
                 const mdImages = extractMarkdownImages(seg.text);
                 let cleanedText = mdImages.length > 0 ? stripMarkdownImages(seg.text) : seg.text;
                 if (searchResults.length > 0 && cleanedText) {
@@ -386,13 +427,9 @@ export default function MessageGroup({ messages }: MessageGroupProps) {
               );
             })}
 
-            {/* Sources section - prominent display below all segments */}
-            {searchResults.length > 0 && !isStreaming && (
-              <SourcesSection results={searchResults} highlightedIndex={highlightedSource} />
-            )}
-
-            {/* File attachments - show created/modified files */}
-            {fileOutputs.length > 0 && !isAnyExecuting && (() => {
+            {/* File attachments - only show after agent loop fully ends
+                (ensures intermediate scripts are properly filtered out) */}
+            {fileOutputs.length > 0 && isAgentDone && (() => {
               const imageFiles = fileOutputs.filter((f) => isImageFile(f.path));
               const otherFiles = fileOutputs.filter((f) => !isImageFile(f.path));
               return (
@@ -415,12 +452,9 @@ export default function MessageGroup({ messages }: MessageGroupProps) {
               );
             })()}
 
-            {/* Token usage - show from last message */}
-            {lastAssistantMsg?.usage && !isStreaming && (
-              <div className="mt-2 text-[11px] text-[#656358]/70">
-                {lastAssistantMsg.usage.inputTokens && `输入: ${lastAssistantMsg.usage.inputTokens}`}
-                {lastAssistantMsg.usage.outputTokens && ` · 输出: ${lastAssistantMsg.usage.outputTokens}`}
-              </div>
+            {/* Sources section - below file attachments */}
+            {searchResults.length > 0 && !isStreaming && (
+              <SourcesSection results={searchResults} highlightedIndex={highlightedSource} />
             )}
 
             {/* Actions - use lastAssistantMsg for regenerate/delete */}

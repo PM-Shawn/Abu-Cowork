@@ -4,6 +4,25 @@ description: Use this skill whenever the user wants to do anything with PDF file
 license: Proprietary. LICENSE.txt has complete terms
 trigger: 用户要求处理 PDF 文件，包括读取、提取文本/表格、合并、拆分、旋转、加水印、创建、填表、加密解密、提取图片、OCR。用户提到 .pdf 文件或要求生成 PDF 时触发
 do-not-trigger: 用户只是在对话中提到 PDF 一词但不涉及实际 PDF 文件操作
+blocked-tools:
+  - manage_scheduled_task
+  - manage_trigger
+  - manage_file_watch
+  - delegate_to_agent
+  - update_memory
+  - todo_write
+  - todo_read
+  - generate_image
+  - process_image
+  - clipboard_read
+  - clipboard_write
+  - system_notify
+  - search_mcp_server
+  - install_mcp_server
+  - log_task_completion
+  - save_skill
+  - save_agent
+  - computer
 ---
 
 # PDF Processing Guide

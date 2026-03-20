@@ -4,6 +4,25 @@ description: "Use this skill whenever the user wants to create, read, edit, or m
 license: Proprietary. LICENSE.txt has complete terms
 trigger: 用户要求创建、读取、编辑 Word 文档（.docx），提到 Word 文档、.docx 文件，或要求生成带格式的报告、备忘录、信件等 Word 文件
 do-not-trigger: 用户要求处理 PDF、电子表格、Google Docs，或与 Word 文档无关的编码任务
+blocked-tools:
+  - manage_scheduled_task
+  - manage_trigger
+  - manage_file_watch
+  - delegate_to_agent
+  - update_memory
+  - todo_write
+  - todo_read
+  - generate_image
+  - process_image
+  - clipboard_read
+  - clipboard_write
+  - system_notify
+  - search_mcp_server
+  - install_mcp_server
+  - log_task_completion
+  - save_skill
+  - save_agent
+  - computer
 ---
 
 # DOCX creation, editing, and analysis

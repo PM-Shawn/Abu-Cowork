@@ -31,8 +31,8 @@ export interface ModelCapabilities {
 
 const KNOWN_MODELS: Record<string, ModelCapabilities> = {
   // Claude 4.x series
-  'claude-opus-4-6':            { vision: true,  thinking: 'anthropic',        toolResultImages: 'native', documentBlock: true,  maxOutputTokens: 16384, contextWindow: 200000 },
-  'claude-sonnet-4-6':          { vision: true,  thinking: 'anthropic',        toolResultImages: 'native', documentBlock: true,  maxOutputTokens: 16384, contextWindow: 200000 },
+  'claude-opus-4-6':            { vision: true,  thinking: 'anthropic',        toolResultImages: 'native', documentBlock: true,  maxOutputTokens: 32768, contextWindow: 200000 },
+  'claude-sonnet-4-6':          { vision: true,  thinking: 'anthropic',        toolResultImages: 'native', documentBlock: true,  maxOutputTokens: 32768, contextWindow: 200000 },
   'claude-haiku-4-5-20251001':  { vision: true,  thinking: false,              toolResultImages: 'native', documentBlock: true,  maxOutputTokens: 8192,  contextWindow: 200000 },
   // Claude 3.x series
   'claude-3-5-sonnet-20241022': { vision: true,  thinking: false,              toolResultImages: 'native', documentBlock: true,  maxOutputTokens: 8192,  contextWindow: 200000 },
@@ -63,6 +63,12 @@ const KNOWN_MODELS: Record<string, ModelCapabilities> = {
   // Moonshot
   'moonshot-v1-128k':           { vision: false, thinking: false,              toolResultImages: 'none',       documentBlock: false, maxOutputTokens: 4096,  contextWindow: 128000 },
 
+  // MiniMax series
+  'MiniMax-M2.7':              { vision: false, thinking: false,              toolResultImages: 'workaround', documentBlock: false, maxOutputTokens: 8192,  contextWindow: 204800 },
+  'MiniMax-M2.7-highspeed':    { vision: false, thinking: false,              toolResultImages: 'workaround', documentBlock: false, maxOutputTokens: 8192,  contextWindow: 204800 },
+  'MiniMax-M2.5':              { vision: false, thinking: false,              toolResultImages: 'workaround', documentBlock: false, maxOutputTokens: 8192,  contextWindow: 204800 },
+  'MiniMax-M2.5-highspeed':    { vision: false, thinking: false,              toolResultImages: 'workaround', documentBlock: false, maxOutputTokens: 8192,  contextWindow: 204800 },
+
   // Local models
   'llama3.2':                   { vision: true,  thinking: false,              toolResultImages: 'none',       documentBlock: false, maxOutputTokens: 4096,  contextWindow: 128000 },
   'qwen2.5':                    { vision: false, thinking: false,              toolResultImages: 'none',       documentBlock: false, maxOutputTokens: 8192,  contextWindow: 32768 },
@@ -70,7 +76,7 @@ const KNOWN_MODELS: Record<string, ModelCapabilities> = {
 
 // ── Pattern-based defaults ──────────────────────────────────────────
 
-const CLAUDE_DEFAULT: ModelCapabilities =       { vision: true,  thinking: false,              toolResultImages: 'native',     documentBlock: true,  maxOutputTokens: 8192,  contextWindow: 200000 };
+const CLAUDE_DEFAULT: ModelCapabilities =       { vision: true,  thinking: false,              toolResultImages: 'native',     documentBlock: true,  maxOutputTokens: 16384, contextWindow: 200000 };
 const GPT_MODERN_DEFAULT: ModelCapabilities =   { vision: true,  thinking: false,              toolResultImages: 'workaround', documentBlock: false, maxOutputTokens: 16384, contextWindow: 128000 };
 const DEEPSEEK_DEFAULT: ModelCapabilities =     { vision: false, thinking: false,              toolResultImages: 'none',       documentBlock: false, maxOutputTokens: 8192,  contextWindow: 128000 };
 const QWEN_DEFAULT: ModelCapabilities =         { vision: false, thinking: false,              toolResultImages: 'workaround', documentBlock: false, maxOutputTokens: 8192,  contextWindow: 131072 };
@@ -114,6 +120,7 @@ export function resolveCapabilities(modelId: string): ModelCapabilities {
 
   if (/qwen/i.test(id)) return QWEN_DEFAULT;
   if (/doubao|seed/i.test(id)) return { ...GPT_MODERN_DEFAULT, maxOutputTokens: 8192 };
+  if (/minimax/i.test(id)) return { vision: false, thinking: false, toolResultImages: 'workaround', documentBlock: false, maxOutputTokens: 8192, contextWindow: 204800 };
   if (/moonshot|kimi/i.test(id)) return { ...FALLBACK_DEFAULT, vision: false };
   if (/llama|mistral|gemma/i.test(id)) return { ...FALLBACK_DEFAULT, toolResultImages: 'none' };
 

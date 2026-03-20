@@ -11,6 +11,7 @@ import { skillLoader } from '../skill/loader';
 import { initPlatform, isWindows } from '../../utils/platform';
 import { extractUsername, joinPath, ensureParentDir, getParentDir } from '../../utils/pathUtils';
 import { getTauriFetch } from '../llm/tauriFetch';
+import { resolveCommandPython } from '../../utils/pythonRuntime';
 import { agentRegistry } from '../agent/registry';
 import { getCurrentLoopContext, requestWorkspace } from '../agent/agentLoop';
 import { runSubagentLoop, extractParentConversationSummary } from '../agent/subagentLoop';
@@ -416,7 +417,7 @@ const writeFileTool: ToolDefinition = {
 
     // Guard: reject binary formats with helpful error message
     const binaryExts = ['.docx', '.xlsx', '.pptx', '.zip', '.pdf', '.png', '.jpg', '.gif'];
-    const ext = path.toLowerCase().slice(path.lastIndexOf('.'));
+    const ext = getFileExtension(path);
     if (binaryExts.includes(ext)) {
       return `Error: write_file only writes plain text. Cannot create ${ext} files directly. ` +
         `Use run_command to execute a script that generates the binary file programmatically.`;
@@ -490,14 +491,17 @@ const runCommandTool: ToolDefinition = {
     const timeout = input.timeout as number | undefined;
 
     try {
+      // Use embedded Python runtime if command starts with python/python3
+      const resolvedCommand = await resolveCommandPython(command);
+
       // Exempt `open` commands from sandbox — they use LaunchServices
       // which requires XPC operations blocked by Seatbelt
-      const isOpenCmd = /^\s*open\s/.test(command);
+      const isOpenCmd = /^\s*open\s/.test(resolvedCommand);
       const sandbox = isOpenCmd ? false : isSandboxEnabled();
 
       // Use custom Tauri command defined in Rust
       const output = await invoke<CommandOutput>('run_shell_command', {
-        command,
+        command: resolvedCommand,
         cwd: cwd || null,
         background: background || false,
         timeout: Math.min(Math.max(1, timeout ?? 30), 300),

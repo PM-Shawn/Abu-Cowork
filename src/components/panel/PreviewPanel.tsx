@@ -15,11 +15,12 @@ const PdfPreview = lazy(() => import('@/components/preview/PdfPreview'));
 const DocxPreview = lazy(() => import('@/components/preview/DocxPreview'));
 const XlsxPreview = lazy(() => import('@/components/preview/XlsxPreview'));
 const CsvPreview = lazy(() => import('@/components/preview/CsvPreview'));
+const PptxPreview = lazy(() => import('@/components/preview/PptxPreview'));
 
-type RendererType = 'markdown' | 'code' | 'image' | 'text' | 'html' | 'pdf' | 'docx' | 'xlsx' | 'csv' | 'unsupported';
+type RendererType = 'markdown' | 'code' | 'image' | 'text' | 'html' | 'pdf' | 'docx' | 'pptx' | 'xlsx' | 'csv' | 'unsupported';
 
 /** Binary types that handle their own file reading */
-const BINARY_TYPES = new Set<RendererType>(['pdf', 'docx', 'xlsx']);
+const BINARY_TYPES = new Set<RendererType>(['pdf', 'docx', 'pptx', 'xlsx']);
 
 function isDataUrl(path: string): boolean {
   return path.startsWith('data:');
@@ -32,6 +33,7 @@ function getRendererType(filePath: string): RendererType {
   if (ext === 'html' || ext === 'htm') return 'html';
   if (ext === 'pdf') return 'pdf';
   if (ext === 'docx') return 'docx';
+  if (ext === 'pptx' || ext === 'ppt') return 'pptx';
   if (ext === 'xlsx' || ext === 'xls') return 'xlsx';
   if (ext === 'csv') return 'csv';
   if ([
@@ -60,7 +62,7 @@ function getFileIcon(filePath: string) {
   if (['md', 'txt', 'log'].includes(ext)) return FileText;
   if (['png', 'jpg', 'jpeg', 'gif', 'svg', 'webp'].includes(ext)) return FileImage;
   if (['xlsx', 'xls', 'csv'].includes(ext)) return FileSpreadsheet;
-  if (ext === 'pdf' || ext === 'docx') return FileType;
+  if (ext === 'pdf' || ext === 'docx' || ext === 'pptx' || ext === 'ppt') return FileType;
   return File;
 }
 
@@ -240,10 +242,11 @@ export default function PreviewPanel() {
           <div className="flex flex-col items-center justify-center h-full p-4 text-center">
             <p className="text-[13px] text-red-500">{error}</p>
           </div>
-        ) : rendererType === 'pdf' || rendererType === 'docx' || rendererType === 'xlsx' || (rendererType === 'csv' && content !== null) ? (
+        ) : rendererType === 'pdf' || rendererType === 'docx' || rendererType === 'pptx' || rendererType === 'xlsx' || (rendererType === 'csv' && content !== null) ? (
           <Suspense fallback={<LazyFallback />}>
             {rendererType === 'pdf' && <PdfPreview filePath={previewFilePath} />}
             {rendererType === 'docx' && <DocxPreview filePath={previewFilePath} />}
+            {rendererType === 'pptx' && <PptxPreview filePath={previewFilePath} />}
             {rendererType === 'xlsx' && <XlsxPreview filePath={previewFilePath} />}
             {rendererType === 'csv' && content !== null && <CsvPreview content={content} />}
           </Suspense>

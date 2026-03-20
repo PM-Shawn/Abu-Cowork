@@ -1,7 +1,7 @@
 {
   "name": "abu",
   "private": false,
-  "version": "0.6.20",
+  "version": "0.6.21",
   "description": "Abu - AI Desktop Office Assistant",
   "type": "module",
   "scripts": {
@@ -13,7 +13,8 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
-    "copy-resources": "node scripts/copy-resources.js"
+    "copy-resources": "node scripts/copy-resources.js",
+    "setup-python": "bash scripts/setup-python-runtime.sh"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.78.0",
@@ -35,6 +36,7 @@
     "immer": "^11.1.4",
     "lucide-react": "^0.575.0",
     "mermaid": "^11.13.0",
+    "pptx-preview": "^1.0.7",
     "radix-ui": "^1.4.3",
     "react": "^19.2.0",
     "react-dom": "^19.2.0",

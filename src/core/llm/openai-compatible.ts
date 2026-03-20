@@ -223,6 +223,71 @@ export class OpenAICompatibleAdapter implements LLMAdapter {
     // Track tool calls being assembled
     const toolCallBuffers: Map<number, { id: string; name: string; args: string }> = new Map();
 
+    // <think> tag parser state — handles models that embed thinking in content (MiniMax, QwQ, etc.)
+    let inThinkTag = false;
+    let pendingContent = '';
+
+    /** Returns length of longest suffix of `str` that matches a prefix of `tag` */
+    function partialTagMatch(str: string, tag: string): number {
+      const maxCheck = Math.min(str.length, tag.length - 1);
+      for (let len = maxCheck; len > 0; len--) {
+        if (str.endsWith(tag.slice(0, len))) return len;
+      }
+      return 0;
+    }
+
+    /** Process content chunk, splitting <think> blocks into thinking events */
+    function emitContent(chunk: string) {
+      pendingContent += chunk;
+      while (pendingContent) {
+        if (inThinkTag) {
+          const closeIdx = pendingContent.indexOf('</think>');
+          if (closeIdx >= 0) {
+            const thinking = pendingContent.slice(0, closeIdx);
+            if (thinking) onEvent({ type: 'thinking', thinking });
+            pendingContent = pendingContent.slice(closeIdx + 8);
+            inThinkTag = false;
+            continue;
+          }
+          const partialLen = partialTagMatch(pendingContent, '</think>');
+          const safeLen = pendingContent.length - partialLen;
+          if (safeLen > 0) {
+            onEvent({ type: 'thinking', thinking: pendingContent.slice(0, safeLen) });
+            pendingContent = pendingContent.slice(safeLen);
+          }
+          break;
+        } else {
+          const openIdx = pendingContent.indexOf('<think>');
+          if (openIdx >= 0) {
+            const text = pendingContent.slice(0, openIdx);
+            if (text) onEvent({ type: 'text', text });
+            pendingContent = pendingContent.slice(openIdx + 7);
+            inThinkTag = true;
+            continue;
+          }
+          const partialLen = partialTagMatch(pendingContent, '<think>');
+          const safeLen = pendingContent.length - partialLen;
+          if (safeLen > 0) {
+            onEvent({ type: 'text', text: pendingContent.slice(0, safeLen) });
+            pendingContent = pendingContent.slice(safeLen);
+          }
+          break;
+        }
+      }
+    }
+
+    /** Flush any remaining buffered content */
+    function flushPendingContent() {
+      if (pendingContent) {
+        if (inThinkTag) {
+          onEvent({ type: 'thinking', thinking: pendingContent });
+        } else {
+          onEvent({ type: 'text', text: pendingContent });
+        }
+        pendingContent = '';
+      }
+    }
+
     try {
       while (true) {
         const { done: streamDone, value } = await reader.read();
@@ -239,6 +304,8 @@ export class OpenAICompatibleAdapter implements LLMAdapter {
 
           const data = trimmed.slice(6);
           if (data === '[DONE]') {
+            // Flush any buffered <think> tag content
+            flushPendingContent();
             // Emit any remaining tool calls
             for (const [, tc] of toolCallBuffers) {
               let input: Record<string, unknown> = {};
@@ -264,9 +331,9 @@ export class OpenAICompatibleAdapter implements LLMAdapter {
               onEvent({ type: 'thinking', thinking: delta.reasoning_content });
             }
 
-            // Text content
+            // Text content — parse <think> tags into thinking events
             if (delta?.content) {
-              onEvent({ type: 'text', text: delta.content });
+              emitContent(delta.content);
             }
 
             // Tool calls (streamed incrementally)
@@ -285,7 +352,8 @@ export class OpenAICompatibleAdapter implements LLMAdapter {
               }
             }
 
-            // Check finish_reason
+            // Check finish_reason — flush pending content before finishing
+            if (choice.finish_reason) flushPendingContent();
             if (choice.finish_reason === 'tool_calls' || choice.finish_reason === 'tool_use') {
               for (const [, tc] of toolCallBuffers) {
                 let input: Record<string, unknown> = {};

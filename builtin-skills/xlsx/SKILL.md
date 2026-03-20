@@ -4,6 +4,25 @@ description: "Use this skill any time a spreadsheet file is the primary input or
 license: Proprietary. LICENSE.txt has complete terms
 trigger: 用户要求打开、读取、编辑 Excel/CSV/TSV 文件，创建电子表格，清理表格数据，或处理任何 .xlsx/.xlsm/.csv/.tsv 文件
 do-not-trigger: 用户要求生成 Word 文档、HTML 报告、独立 Python 脚本，或 Google Sheets API 集成
+blocked-tools:
+  - manage_scheduled_task
+  - manage_trigger
+  - manage_file_watch
+  - delegate_to_agent
+  - update_memory
+  - todo_write
+  - todo_read
+  - generate_image
+  - process_image
+  - clipboard_read
+  - clipboard_write
+  - system_notify
+  - search_mcp_server
+  - install_mcp_server
+  - log_task_completion
+  - save_skill
+  - save_agent
+  - computer
 ---
 
 # Requirements for Outputs

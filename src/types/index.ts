@@ -175,7 +175,7 @@ export interface ToolDefinition {
 
 // --- LLM ---
 
-export type LLMProvider = 'volcengine' | 'bailian' | 'anthropic' | 'openai' | 'deepseek' | 'moonshot' | 'zhipu' | 'siliconflow' | 'qiniu' | 'openrouter' | 'local' | 'custom';
+export type LLMProvider = 'volcengine' | 'bailian' | 'anthropic' | 'openai' | 'deepseek' | 'moonshot' | 'zhipu' | 'minimax' | 'siliconflow' | 'qiniu' | 'openrouter' | 'local' | 'custom';
 
 // --- Provider Capabilities ---
 
@@ -189,6 +189,16 @@ export interface ProviderCapabilities {
 }
 
 export type ApiFormat = 'anthropic' | 'openai-compatible';
+
+/** User-saved custom AI service configuration */
+export interface CustomService {
+  id: string;
+  name: string;
+  baseUrl: string;
+  apiFormat: ApiFormat;
+  model: string;
+  apiKey: string;
+}
 
 export interface LLMConfig {
   provider: LLMProvider;
@@ -234,6 +244,7 @@ export interface SkillMetadata {
   disableAutoInvoke?: boolean;
   argumentHint?: string;
   allowedTools?: string[];    // Whitelist filter — only these tools are available to the LLM
+  blockedTools?: string[];    // Blacklist filter — these tools are hidden from the LLM
   requiredTools?: string[];   // Must be available or skill execution is blocked
   model?: string;
   maxTurns?: number;          // Max agent loop turns (default 20, increase for browsing-heavy skills)

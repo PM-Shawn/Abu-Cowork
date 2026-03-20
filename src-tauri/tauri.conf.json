@@ -1,6 +1,6 @@
 {
   "productName": "Abu",
-  "version": "0.6.20",
+  "version": "0.6.21",
   "identifier": "com.abu.app",
   "build": {
     "beforeDevCommand": "npm run dev",
@@ -41,7 +41,8 @@
     "targets": ["dmg", "nsis"],
     "resources": [
       "builtin-skills/",
-      "builtin-agents/"
+      "builtin-agents/",
+      "python-runtime/"
     ],
     "icon": [
       "icons/32x32.png",

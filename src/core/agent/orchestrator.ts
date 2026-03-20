@@ -341,6 +341,22 @@ export async function buildSystemPrompt(
     }
   }
 
+  // Inject embedded Python runtime info
+  const { hasEmbeddedPython } = await import('../../utils/pythonRuntime');
+  if (await hasEmbeddedPython()) {
+    parts.push(`\n## 内置 Python 环境
+系统已内置 Python 运行时，以下库可直接 import，无需 pip install：
+- python-pptx（PPT 生成）
+- python-docx（Word 文档生成）
+- openpyxl（Excel 生成）
+- Pillow（图像处理）
+- fpdf2（PDF 生成）
+- lxml（XML 处理）
+
+直接写 Python 脚本并用 run_command 执行即可。不要运行 pip install，不要安装 Node.js 包。
+用 python3 命令即可，系统会自动使用内置 Python。`);
+  }
+
   // Inject Windows-specific guidance when on Windows
   if (isWindows()) {
     parts.push(`\n## 操作系统: Windows

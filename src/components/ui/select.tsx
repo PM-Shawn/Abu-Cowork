@@ -7,10 +7,28 @@ export interface SelectOption {
   label: string;
 }
 
+export interface SelectOptionGroup {
+  label: string;
+  options: SelectOption[];
+}
+
+/** Check if options array contains groups */
+function isGrouped(options: SelectOption[] | SelectOptionGroup[]): options is SelectOptionGroup[] {
+  return options.length > 0 && 'options' in options[0];
+}
+
+/** Flatten grouped options into a flat list for lookup */
+function flattenOptions(options: SelectOption[] | SelectOptionGroup[]): SelectOption[] {
+  if (isGrouped(options)) {
+    return options.flatMap((g) => g.options);
+  }
+  return options;
+}
+
 export interface SelectProps {
   value: string;
   onChange: (value: string) => void;
-  options: SelectOption[];
+  options: SelectOption[] | SelectOptionGroup[];
   placeholder?: string;
   /** 'default' = full-width form field, 'inline' = compact for settings rows */
   variant?: 'default' | 'inline';
@@ -21,7 +39,8 @@ export function Select({ value, onChange, options, placeholder, variant = 'defau
   const [open, setOpen] = React.useState(false);
   const containerRef = React.useRef<HTMLDivElement>(null);
 
-  const selectedOption = options.find((opt) => opt.value === value);
+  const allOptions = flattenOptions(options);
+  const selectedOption = allOptions.find((opt) => opt.value === value);
   const isInline = variant === 'inline';
 
   React.useEffect(() => {
@@ -41,6 +60,35 @@ export function Select({ value, onChange, options, placeholder, variant = 'defau
       document.removeEventListener('keydown', handleEscape);
     };
   }, [open]);
+
+  const renderOption = (opt: SelectOption) => (
+    <button
+      key={opt.value}
+      type="button"
+      onClick={() => {
+        onChange(opt.value);
+        setOpen(false);
+      }}
+      className={cn(
+        'w-full px-3 py-2 text-sm text-left transition-colors',
+        'hover:bg-[#f5f3ee]',
+        opt.value === value
+          ? 'text-[#d97757] bg-[#d97757]/5'
+          : 'text-[#29261b]'
+      )}
+    >
+      {isInline ? (
+        opt.label
+      ) : (
+        <span className="inline-flex items-center gap-2">
+          <span className="w-4 shrink-0">
+            {opt.value === value && <Check className="h-4 w-4 text-[#d97757]" />}
+          </span>
+          {opt.label}
+        </span>
+      )}
+    </button>
+  );
 
   return (
     <div ref={containerRef} className={cn('relative', !isInline && 'w-full', className)}>
@@ -75,34 +123,19 @@ export function Select({ value, onChange, options, placeholder, variant = 'defau
           'absolute z-50 top-full mt-1 py-1 bg-white border border-[#e8e4dd] rounded-xl shadow-lg max-h-60 overflow-auto',
           isInline ? 'right-0 min-w-[140px]' : 'left-0 right-0',
         )}>
-          {options.map((opt) => (
-            <button
-              key={opt.value}
-              type="button"
-              onClick={() => {
-                onChange(opt.value);
-                setOpen(false);
-              }}
-              className={cn(
-                'w-full px-3 py-2 text-sm text-left transition-colors',
-                'hover:bg-[#f5f3ee]',
-                opt.value === value
-                  ? 'text-[#d97757] bg-[#d97757]/5'
-                  : 'text-[#29261b]'
-              )}
-            >
-              {isInline ? (
-                opt.label
-              ) : (
-                <span className="inline-flex items-center gap-2">
-                  <span className="w-4 shrink-0">
-                    {opt.value === value && <Check className="h-4 w-4 text-[#d97757]" />}
-                  </span>
-                  {opt.label}
-                </span>
-              )}
-            </button>
-          ))}
+          {isGrouped(options) ? (
+            options.map((group, gi) => (
+              <div key={group.label}>
+                {gi > 0 && <div className="my-1 border-t border-[#e8e4dd]" />}
+                <div className="px-3 py-1.5 text-xs font-medium text-[#888579] select-none">
+                  {group.label}
+                </div>
+                {group.options.map(renderOption)}
+              </div>
+            ))
+          ) : (
+            options.map(renderOption)
+          )}
         </div>
       )}
     </div>

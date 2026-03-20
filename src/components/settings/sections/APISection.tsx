@@ -55,13 +55,13 @@ export default function APISection() {
                 : 'bg-white text-[#656358] border-[#e8e4dd] hover:border-[#d0cdc6]'
             )}
           >
-            {t.settings.anthropicNative}
+            {t.settings.anthropicCompatible}
           </button>
         </div>
         <p className="text-xs text-[#656358]">
           {apiFormat === 'openai-compatible'
             ? t.settings.openaiCompatibleDesc
-            : t.settings.anthropicNativeDesc}
+            : t.settings.anthropicCompatibleDesc}
         </p>
       </div>
 

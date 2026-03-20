@@ -39,6 +39,19 @@ function getFileTypeInfo(filePath: string): { icon: typeof File; label: string; 
   if (['css', 'scss', 'less'].includes(ext)) {
     return { icon: FileCode, label: 'CSS', category: 'Style' };
   }
+  // Office documents
+  if (['pptx', 'ppt'].includes(ext)) {
+    return { icon: FileText, label: 'PPTX', category: 'Presentation' };
+  }
+  if (['docx', 'doc'].includes(ext)) {
+    return { icon: FileText, label: 'DOCX', category: 'Document' };
+  }
+  if (['xlsx', 'xls'].includes(ext)) {
+    return { icon: FileText, label: 'XLSX', category: 'Spreadsheet' };
+  }
+  if (ext === 'pdf') {
+    return { icon: FileText, label: 'PDF', category: 'Document' };
+  }
 
   return { icon: File, label: ext.toUpperCase() || 'FILE', category: 'File' };
 }

@@ -483,6 +483,13 @@ function resolveTools(
       patterns.some(pattern => matchesToolName(t.name, pattern)),
     );
   }
+  // Skill blocked-tools: blacklist mode (softer than allowedTools whitelist)
+  if (route.type === 'skill' && route.skill?.blockedTools) {
+    const blockedPatterns = route.skill.blockedTools;
+    tools = tools.filter(t =>
+      !blockedPatterns.some(pattern => matchesToolName(t.name, pattern)),
+    );
+  }
   if (route.type === 'agent' && route.definition) {
     const def = route.definition;
     if (def.tools && def.tools.length > 0) {

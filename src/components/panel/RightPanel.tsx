@@ -11,8 +11,11 @@ import PreviewPanel from './PreviewPanel';
 
 const PANEL_WIDTH = 280;
 const PREVIEW_WIDTH = 420;
+const PREVIEW_WIDTH_WIDE = 520; // For slides (PPTX) that need more width
 const MIN_PANEL_WIDTH = 220;
 const MAX_PANEL_WIDTH = 800;
+
+const WIDE_PREVIEW_EXTENSIONS = new Set(['pptx', 'ppt']);
 
 export default function RightPanel() {
   const collapsed = useSettingsStore((s) => s.rightPanelCollapsed);
@@ -91,38 +94,42 @@ export default function RightPanel() {
   // Conversation has a workspace → panel is meaningful
   const hasWorkspace = !!conversation?.workspacePath;
 
-  // Conversation has tool calls → task steps in progress
-  const hasToolCalls = conversation?.messages?.some(
-    (m) => m.toolCalls && m.toolCalls.length > 0
-  ) ?? false;
-
   // Reset auto-expand flag when switching conversations
+  // Also auto-collapse if new conversation has no workspace
   const conversationId = conversation?.id ?? null;
   useEffect(() => {
     autoExpandedRef.current = false;
+    if (!conversation?.workspacePath && !collapsed) {
+      setRightPanelCollapsed(true);
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [conversationId]);
 
-  // Auto-expand: workspace attached or tool calls started (not pure Q&A)
+  // Auto-expand: only when workspace is attached (meaningful context)
+  // Tool calls alone don't justify opening an empty panel
   // Only fires once per conversation — does not fight manual collapse
   useEffect(() => {
     if (autoExpandedRef.current || !collapsed || !hasMessages) return;
-    if (hasWorkspace || hasToolCalls) {
+    if (hasWorkspace) {
       autoExpandedRef.current = true;
       setRightPanelCollapsed(false);
     }
-  }, [hasMessages, hasWorkspace, hasToolCalls, collapsed, setRightPanelCollapsed]);
+  }, [hasMessages, hasWorkspace, collapsed, setRightPanelCollapsed]);
 
   // Track message state for rendering logic
   useEffect(() => {
     prevHasMessagesRef.current = hasMessages;
   }, [hasMessages]);
 
-  // Auto-expand panel when a file preview is opened
+  // Auto-expand right panel + collapse left sidebar when preview opens
+  const sidebarCollapsed = useSettingsStore((s) => s.sidebarCollapsed);
+  const toggleSidebar = useSettingsStore((s) => s.toggleSidebar);
   useEffect(() => {
-    if (previewFilePath && collapsed) {
-      setRightPanelCollapsed(false);
-    }
-  }, [previewFilePath, collapsed, setRightPanelCollapsed]);
+    if (!previewFilePath) return;
+    if (collapsed) setRightPanelCollapsed(false);
+    if (!sidebarCollapsed) toggleSidebar();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [previewFilePath]);
 
   // Close preview when switching conversations
   useEffect(() => {
@@ -135,7 +142,10 @@ export default function RightPanel() {
     setDragWidth(null);
   }, [showPreview]);
 
-  const currentWidth = dragWidth ?? (showPreview ? PREVIEW_WIDTH : PANEL_WIDTH);
+  const previewExt = previewFilePath?.split('.').pop()?.toLowerCase() || '';
+  const isWidePreview = WIDE_PREVIEW_EXTENSIONS.has(previewExt);
+  const defaultPreviewWidth = isWidePreview ? PREVIEW_WIDTH_WIDE : PREVIEW_WIDTH;
+  const currentWidth = dragWidth ?? (showPreview ? defaultPreviewWidth : PANEL_WIDTH);
 
   // Hide panel when not in chat view or no conversation has started yet
   if (viewMode !== 'chat' || (!hasMessages && !showPreview)) {

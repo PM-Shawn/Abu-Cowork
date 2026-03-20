@@ -27,6 +27,46 @@ export function toolResultHasImages(result: ToolResult): boolean {
   return result.some((c) => c.type === 'image');
 }
 
+/**
+ * Validate tool input against its schema's required fields.
+ * Only checks for missing/null/undefined — does NOT over-validate types
+ * (LLMs may pass numbers as strings, etc., and that's usually fine).
+ * Returns an error string if validation fails, null if OK.
+ */
+function validateToolInput(tool: ToolDefinition, input: Record<string, unknown>): string | null {
+  // Detect truncated tool call JSON (LLM output hit max_tokens mid-JSON)
+  if ('_parse_error' in input) {
+    return `Error: tool "${tool.name}" 的参数 JSON 被截断，无法解析。` +
+      `这通常是因为输出内容过长（超过 max_tokens 限制），导致 JSON 不完整。\n` +
+      `解决方法：不要在 write_file 的 content 参数中放大量代码。` +
+      `改用 run_command 执行 heredoc 或 echo 写入文件，将内容分批写入。` +
+      `例如：run_command({ command: "cat << 'SCRIPT_EOF' > /tmp/build.js\\n...脚本内容...\\nSCRIPT_EOF" })`;
+  }
+
+  const required = tool.inputSchema.required;
+  if (!required || required.length === 0) return null;
+
+  const missing: string[] = [];
+  for (const field of required) {
+    if (input[field] === undefined || input[field] === null) {
+      missing.push(field);
+    }
+  }
+
+  if (missing.length === 0) return null;
+
+  // Build actionable error message with expected schema
+  const schemaHint = required.map(f => {
+    const prop = tool.inputSchema.properties[f];
+    const type = prop?.type ?? 'string';
+    return `  ${f}: ${type}${prop?.description ? ` — ${prop.description}` : ''}`;
+  }).join('\n');
+
+  return `Error: tool "${tool.name}" is missing required parameter(s): ${missing.join(', ')}.\n` +
+    `Expected parameters:\n${schemaHint}\n` +
+    `Please retry with all required parameters.`;
+}
+
 class ToolRegistry {
   private tools: Map<string, ToolDefinition> = new Map();
 
@@ -55,6 +95,13 @@ class ToolRegistry {
     if (!tool) {
       return `Error: Unknown tool "${name}"`;
     }
+
+    // Validate required parameters before execution
+    const validationError = validateToolInput(tool, input);
+    if (validationError) {
+      return validationError;
+    }
+
     try {
       return await tool.execute(input, context);
     } catch (err) {
@@ -282,3 +329,15 @@ function formatOSPermissionGuide(originalError: string): string {
 
 // Re-export types for convenience
 export type { ConfirmationInfo, DangerLevel };
+
+// ── HMR: re-register builtin tools when this module is hot-reloaded ──
+if (import.meta.hot) {
+  import.meta.hot.accept(() => {
+    // Module replaced — toolRegistry is now a fresh empty instance.
+    // Re-register builtins so tools don't disappear during development.
+    import('./builtins').then(({ registerBuiltinTools }) => {
+      registerBuiltinTools();
+      console.info('[HMR] Builtin tools re-registered');
+    });
+  });
+}

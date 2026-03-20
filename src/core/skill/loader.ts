@@ -32,6 +32,7 @@ function parseSkillFile(raw: string, filePath: string): Skill | null {
       disableAutoInvoke: meta['disable-auto-invoke'] === true,
       argumentHint: meta['argument-hint'] as string | undefined,
       allowedTools: meta['allowed-tools'] as string[] | undefined,
+      blockedTools: meta['blocked-tools'] as string[] | undefined,
       requiredTools: meta['required-tools'] as string[] | undefined,
       model: meta.model as string | undefined,
       maxTurns: typeof meta['max-turns'] === 'number' ? meta['max-turns'] : undefined,

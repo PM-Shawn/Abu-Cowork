@@ -230,9 +230,9 @@ export interface TranslationDict {
     providerLocal: string;
     apiProtocol: string;
     openaiCompatible: string;
-    anthropicNative: string;
+    anthropicCompatible: string;
     openaiCompatibleDesc: string;
-    anthropicNativeDesc: string;
+    anthropicCompatibleDesc: string;
     apiUrl: string;
     apiUrlHint: string;
     apiUrlDesc: string;
@@ -253,6 +253,19 @@ export interface TranslationDict {
     apiFormat: string;
     selectModel: string;
     customModel: string;
+    // Custom services
+    builtinProviders: string;
+    myCustomServices: string;
+    otherProviders: string;
+    saveCurrentConfig: string;
+    updateConfig: string;
+    deleteConfig: string;
+    saveServiceName: string;
+    saveServicePlaceholder: string;
+    saveServiceConfirm: string;
+    saveServiceCancel: string;
+    deleteServiceConfirm: string;
+    serviceNameRequired: string;
     temperature: string;
     temperaturePrecise: string;
     temperatureCreative: string;

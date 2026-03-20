@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
-import type { LLMProvider, ApiFormat, ProviderCapabilities } from '../types';
+import type { LLMProvider, ApiFormat, ProviderCapabilities, CustomService } from '../types';
 import type { WebSearchProviderType } from '../core/search/providers';
 import { setLanguage, initLanguage, type LanguageSetting } from '@/i18n';
 import type { UpdateInfo } from '@/core/updates/checker';
@@ -119,6 +119,17 @@ export const PROVIDER_CONFIGS = {
       webSearch: { type: 'tool', toolSpec: { type: 'web_search', web_search: { enable: true, search_engine: 'search_pro' } } },
       imageGen: true,
     },
+  },
+  minimax: {
+    name: 'MiniMax',
+    baseUrl: 'https://api.minimaxi.com/v1',
+    format: 'openai-compatible',
+    models: [
+      { id: 'MiniMax-M2.7', label: 'MiniMax M2.7' },
+      { id: 'MiniMax-M2.7-highspeed', label: 'MiniMax M2.7 Highspeed' },
+      { id: 'MiniMax-M2.5', label: 'MiniMax M2.5' },
+      { id: 'MiniMax-M2.5-highspeed', label: 'MiniMax M2.5 Highspeed' },
+    ],
   },
   siliconflow: {
     name: '硅基流动 (SiliconFlow)',
@@ -262,6 +273,9 @@ interface SettingsState {
   allowSkillCommands: boolean;
   // npm skill registry
   skillRegistry: string;
+  // Custom AI services
+  customServices: CustomService[];
+  activeCustomServiceId: string | null;
 }
 
 interface SettingsActions {
@@ -329,6 +343,11 @@ interface SettingsActions {
   setGuideShown: (shown: boolean) => void;
   setBehaviorSensorEnabled: (enabled: boolean) => void;
   setComputerUseEnabled: (enabled: boolean) => void;
+  // Custom AI services
+  saveCustomService: (name: string) => void;
+  updateCustomService: (id: string) => void;
+  deleteCustomService: (id: string) => void;
+  switchToCustomService: (id: string) => void;
 }
 
 /** Returns the effective model ID to use for API calls */
@@ -430,6 +449,8 @@ export const useSettingsStore = create<SettingsStore>()(
       computerUseEnabled: false,
       allowSkillCommands: true,
       skillRegistry: '',
+      customServices: [],
+      activeCustomServiceId: null,
 
       setProvider: (provider) => set({ provider }),
       setApiFormat: (apiFormat) => set({ apiFormat }),
@@ -516,22 +537,66 @@ export const useSettingsStore = create<SettingsStore>()(
       switchProvider: (p) => {
         const config = PROVIDER_CONFIGS[p];
         if (p === 'custom') {
-          set({ provider: p, apiFormat: config.format, baseUrl: '', model: '__custom__' });
+          set({ provider: p, apiFormat: config.format, baseUrl: '', model: '__custom__', activeCustomServiceId: null });
         } else {
           set({
             provider: p,
             apiFormat: config.format,
             baseUrl: config.baseUrl,
             model: config.models[0]?.id ?? '__custom__',
+            activeCustomServiceId: null,
           });
         }
       },
+      saveCustomService: (name) => set((s) => {
+        const id = Date.now().toString(36) + Math.random().toString(36).substring(2, 8);
+        const service: CustomService = {
+          id,
+          name,
+          baseUrl: s.baseUrl,
+          apiFormat: s.apiFormat,
+          model: s.customModel || getEffectiveModel(s),
+          apiKey: s.apiKey,
+        };
+        return {
+          customServices: [...s.customServices, service],
+          activeCustomServiceId: id,
+        };
+      }),
+      updateCustomService: (id) => set((s) => ({
+        customServices: s.customServices.map((svc) =>
+          svc.id === id
+            ? { ...svc, baseUrl: s.baseUrl, apiFormat: s.apiFormat, model: s.customModel || getEffectiveModel(s), apiKey: s.apiKey }
+            : svc
+        ),
+      })),
+      deleteCustomService: (id) => set((s) => ({
+        customServices: s.customServices.filter((svc) => svc.id !== id),
+        activeCustomServiceId: s.activeCustomServiceId === id ? null : s.activeCustomServiceId,
+      })),
+      switchToCustomService: (id) => set((s) => {
+        const svc = s.customServices.find((cs) => cs.id === id);
+        if (!svc) return {};
+        return {
+          provider: 'custom' as LLMProvider,
+          baseUrl: svc.baseUrl,
+          apiFormat: svc.apiFormat,
+          customModel: svc.model,
+          model: '__custom__',
+          apiKey: svc.apiKey,
+          activeCustomServiceId: id,
+        };
+      }),
     }),
     {
       name: 'abu-settings',
-      version: 8,
+      version: 9,
       migrate: (persisted: unknown, version: number) => {
         const state = persisted as Record<string, unknown>;
+        if (version < 9) {
+          if (state.customServices === undefined) state.customServices = [];
+          if (state.activeCustomServiceId === undefined) state.activeCustomServiceId = null;
+        }
         if (version < 8) {
           if (state.skillRegistry === undefined) state.skillRegistry = '';
         }
@@ -647,6 +712,8 @@ export const useSettingsStore = create<SettingsStore>()(
         computerUseEnabled: state.computerUseEnabled,
         allowSkillCommands: state.allowSkillCommands,
         skillRegistry: state.skillRegistry,
+        customServices: state.customServices,
+        activeCustomServiceId: state.activeCustomServiceId,
       }),
       onRehydrateStorage: () => (state) => {
         if (!state) return;
@@ -667,9 +734,11 @@ export const useSettingsStore = create<SettingsStore>()(
         if (state.provider !== 'custom' && !state.baseUrl && cfg?.baseUrl) {
           state.baseUrl = cfg.baseUrl;
         }
-        // Runtime fix: apiFormat mismatch after provider switch
-        if (state.provider !== 'custom' && cfg) {
+        // Runtime fix: lock apiFormat to provider config for built-in providers
+        if (state.provider !== 'custom' && state.provider !== 'local' && cfg) {
           state.apiFormat = cfg.format;
+        } else if (state.apiFormat !== 'anthropic' && state.apiFormat !== 'openai-compatible') {
+          state.apiFormat = 'openai-compatible';
         }
         // Runtime fix: stale model='__custom__' from provider-switch bug
         if (state.provider !== 'custom' && state.model === '__custom__') {

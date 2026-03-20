@@ -371,6 +371,42 @@ function hasFileExtension(path: string): boolean {
   return /\.\w{1,10}$/.test(path);
 }
 
+/** Document extensions that are likely final user-facing outputs */
+const DOCUMENT_EXTENSIONS = new Set([
+  'pptx', 'ppt', 'docx', 'doc', 'pdf', 'xlsx', 'xls', 'csv',
+  'png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'bmp',
+  'html', 'htm', 'zip', 'tar', 'gz',
+]);
+
+/**
+ * Extract document file paths from a shell command string.
+ * Matches absolute paths (or ~/ paths) with known document extensions.
+ * Handles both quoted and unquoted paths.
+ */
+function extractDocumentPathsFromCommand(cmd: string): string[] {
+  const paths: string[] = [];
+  // Match quoted paths: "/path/to/file.pptx" or '/path/to/file.pptx'
+  const quotedRegex = /["']((?:\/|~\/)[^"'\n]+\.(\w{1,10}))["']/g;
+  let match: RegExpExecArray | null;
+  while ((match = quotedRegex.exec(cmd)) !== null) {
+    const ext = match[2].toLowerCase();
+    if (DOCUMENT_EXTENSIONS.has(ext)) {
+      paths.push(match[1]);
+    }
+  }
+  // Match unquoted paths (no spaces): /path/to/file.pptx
+  if (paths.length === 0) {
+    const unquotedRegex = /(?:^|\s)((?:\/|~\/)\S+\.(\w{1,10}))(?:\s|$)/g;
+    while ((match = unquotedRegex.exec(cmd)) !== null) {
+      const ext = match[2].toLowerCase();
+      if (DOCUMENT_EXTENSIONS.has(ext)) {
+        paths.push(match[1]);
+      }
+    }
+  }
+  return paths;
+}
+
 /**
  * Extract file paths from text output (stdout, delegate results, etc.)
  * Matches common Chinese/English patterns for file output announcements.
@@ -479,12 +515,22 @@ export function extractFileOutputs(
       continue;
     }
 
-    // 6. Command tools — parse stdout for file paths
-    if (COMMAND_TOOLS.includes(tc.name) && tc.result) {
-      const stdout = extractStdout(tc.result);
-      const textToSearch = stdout || tc.result;
-      const foundPaths = extractFilePathsFromText(textToSearch);
-      for (const p of foundPaths) addFile(p, 'create');
+    // 6. Command tools — parse stdout + command string for file paths
+    if (COMMAND_TOOLS.includes(tc.name)) {
+      // 6a. Search stdout for announced file paths
+      if (tc.result) {
+        const stdout = extractStdout(tc.result);
+        const textToSearch = stdout || tc.result;
+        const foundPaths = extractFilePathsFromText(textToSearch);
+        for (const p of foundPaths) addFile(p, 'create');
+      }
+      // 6b. Extract document output paths from command string itself
+      // Catches: cat > /path/file.pptx, unzip -l "/path/file.pptx", node script > /path/file.pdf
+      const cmd = String(input.command || input.cmd || '');
+      if (cmd) {
+        const docPaths = extractDocumentPathsFromCommand(cmd);
+        for (const p of docPaths) addFile(p, 'create');
+      }
       continue;
     }
 
@@ -514,17 +560,33 @@ export function extractFileOutputs(
   }
 
   // ── Filter out intermediate scripts that were executed by run_command ──
-  // If a script file (e.g. .py) was written AND then executed, it's an intermediate
+  // If a script file (e.g. .py, .js) was written AND then executed, it's an intermediate
   // artifact — the user cares about the output file, not the script itself.
   const executedScripts = new Set<string>();
+
+  // Collect all commands for matching
+  const allCommands: string[] = [];
   for (const tc of toolCalls) {
     if (COMMAND_TOOLS.includes(tc.name) && tc.result !== undefined) {
       const cmd = String((tc.input as Record<string, unknown>).command || (tc.input as Record<string, unknown>).cmd || '');
-      for (const f of files) {
-        const ext = f.path.split('.').pop()?.toLowerCase() || '';
-        if (SCRIPT_EXTENSIONS.has(ext) && cmd.includes(f.path)) {
-          executedScripts.add(f.path);
-        }
+      if (cmd) allCommands.push(cmd);
+    }
+  }
+
+  for (const f of files) {
+    const ext = f.path.split('.').pop()?.toLowerCase() || '';
+    if (!SCRIPT_EXTENSIONS.has(ext)) continue;
+
+    // Extract just the filename for flexible matching
+    // e.g. "/Users/didi/Desktop/PPT/build_ppt.js" → "build_ppt.js"
+    const fileName = f.path.split('/').pop() || f.path.split('\\').pop() || '';
+
+    for (const cmd of allCommands) {
+      // Match either full path or just filename in the command
+      // Handles: "node /full/path/build.js", "cd /dir && node build.js", "python3 build.py"
+      if (cmd.includes(f.path) || (fileName && cmd.includes(fileName))) {
+        executedScripts.add(f.path);
+        break;
       }
     }
   }

@@ -371,37 +371,43 @@ function hasFileExtension(path: string): boolean {
   return /\.\w{1,10}$/.test(path);
 }
 
+/** Check if a command is read-only (should not extract file paths as outputs) */
+function isReadOnlyCommand(cmd: string): boolean {
+  const trimmed = cmd.trim();
+  const readPatterns = [
+    /^(python3?|python)\s+(-\w\s+)*-m\s+markitdown\b/,
+    /^cat\s+(?!.*>)/,
+    /^(head|tail|less|more)\b/,
+    /^ls\b/,
+    /^file\b/,
+    /^stat\b/,
+    /^wc\b/,
+    /^unzip\s+-[ltv]/,
+  ];
+  return readPatterns.some(p => p.test(trimmed));
+}
+
 /** Document extensions that are likely final user-facing outputs */
 const DOCUMENT_EXTENSIONS = new Set([
   'pptx', 'ppt', 'docx', 'doc', 'pdf', 'xlsx', 'xls', 'csv',
-  'png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'bmp',
-  'html', 'htm', 'zip', 'tar', 'gz',
+  'png', 'jpg', 'jpeg', 'gif', 'webp', 'svg',
+  'html', 'htm',
 ]);
 
-/**
- * Extract document file paths from a shell command string.
- * Matches absolute paths (or ~/ paths) with known document extensions.
- * Handles both quoted and unquoted paths.
- */
+/** Extract document file paths from a shell command string */
 function extractDocumentPathsFromCommand(cmd: string): string[] {
   const paths: string[] = [];
-  // Match quoted paths: "/path/to/file.pptx" or '/path/to/file.pptx'
+  // Match quoted paths
   const quotedRegex = /["']((?:\/|~\/)[^"'\n]+\.(\w{1,10}))["']/g;
   let match: RegExpExecArray | null;
   while ((match = quotedRegex.exec(cmd)) !== null) {
-    const ext = match[2].toLowerCase();
-    if (DOCUMENT_EXTENSIONS.has(ext)) {
-      paths.push(match[1]);
-    }
+    if (DOCUMENT_EXTENSIONS.has(match[2].toLowerCase())) paths.push(match[1]);
   }
-  // Match unquoted paths (no spaces): /path/to/file.pptx
+  // Match unquoted absolute paths
   if (paths.length === 0) {
     const unquotedRegex = /(?:^|\s)((?:\/|~\/)\S+\.(\w{1,10}))(?:\s|$)/g;
     while ((match = unquotedRegex.exec(cmd)) !== null) {
-      const ext = match[2].toLowerCase();
-      if (DOCUMENT_EXTENSIONS.has(ext)) {
-        paths.push(match[1]);
-      }
+      if (DOCUMENT_EXTENSIONS.has(match[2].toLowerCase())) paths.push(match[1]);
     }
   }
   return paths;
@@ -418,11 +424,11 @@ export function extractFilePathsFromText(text: string): string[] {
   // Optional leading quote/bracket is consumed but not captured
   const patterns: RegExp[] = [
     // Chinese: 已保存到 /path/to/file.ext
-    /(?:已保存到|输出到|写入到|生成到|导出到)\s*[:：]?\s*['"`]?((?:[A-Za-z]:\\|\/)[^\s"'`,，。、;；\n]+)/g,
+    /(?:已保存到|输出到|写入到|生成到|导出到|已创建|生成完成)\s*[:：]?\s*['"`]?((?:[A-Za-z]:\\|\/)[^\s"'`,，。、;；\n]+)/g,
     // English: saved to /path/to/file.ext
-    /(?:saved to|output to|written to|exported to|generated at|created)\s*[:：]?\s*['"`]?((?:[A-Za-z]:\\|\/)[^\s"'`,，。、;；\n]+)/gi,
-    // Label: Output file: /path  or  输出文件: /path
-    /(?:Output file|输出文件)\s*[:：]\s*['"`]?((?:[A-Za-z]:\\|\/)[^\s"'`,，。、;；\n]+)/gi,
+    /(?:saved to|output to|written to|exported to|generated at|created at|created)\s*[:：]?\s*['"`]?((?:[A-Za-z]:\\|\/)[^\s"'`,，。、;；\n]+)/gi,
+    // Label: Output file: /path  or  输出文件: /path  or  文件位置: /path
+    /(?:Output file|输出文件|文件位置|文件路径|保存在|保存到)\s*[:：]\s*['"`]?((?:[A-Za-z]:\\|\/|[^\s"'`,，。、;；\n/\\])[^\s"'`,，。、;；\n]*\.\w{1,10})/gi,
     // Arrow: -> /path  or  → /path
     /(?:->|→)\s*['"`]?((?:[A-Za-z]:\\|\/)[^\s"'`,，。、;；\n]+)/g,
   ];
@@ -524,10 +530,9 @@ export function extractFileOutputs(
         const foundPaths = extractFilePathsFromText(textToSearch);
         for (const p of foundPaths) addFile(p, 'create');
       }
-      // 6b. Extract document output paths from command string itself
-      // Catches: cat > /path/file.pptx, unzip -l "/path/file.pptx", node script > /path/file.pdf
+      // 6b. Extract document paths from command string (skip read-only commands)
       const cmd = String(input.command || input.cmd || '');
-      if (cmd) {
+      if (cmd && !isReadOnlyCommand(cmd)) {
         const docPaths = extractDocumentPathsFromCommand(cmd);
         for (const p of docPaths) addFile(p, 'create');
       }

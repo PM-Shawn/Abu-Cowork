@@ -63,9 +63,9 @@ const KNOWN_MODELS: Record<string, ModelCapabilities> = {
   // Moonshot
   'moonshot-v1-128k':           { vision: false, thinking: false,              toolResultImages: 'none',       documentBlock: false, maxOutputTokens: 4096,  contextWindow: 128000 },
 
-  // MiniMax series
-  'MiniMax-M2.7':              { vision: false, thinking: false,              toolResultImages: 'workaround', documentBlock: false, maxOutputTokens: 8192,  contextWindow: 204800 },
-  'MiniMax-M2.7-highspeed':    { vision: false, thinking: false,              toolResultImages: 'workaround', documentBlock: false, maxOutputTokens: 8192,  contextWindow: 204800 },
+  // MiniMax series (M2.7 supports vision via OpenAI-compatible image_url format)
+  'MiniMax-M2.7':              { vision: true,  thinking: false,              toolResultImages: 'workaround', documentBlock: false, maxOutputTokens: 8192,  contextWindow: 204800 },
+  'MiniMax-M2.7-highspeed':    { vision: true,  thinking: false,              toolResultImages: 'workaround', documentBlock: false, maxOutputTokens: 8192,  contextWindow: 204800 },
   'MiniMax-M2.5':              { vision: false, thinking: false,              toolResultImages: 'workaround', documentBlock: false, maxOutputTokens: 8192,  contextWindow: 204800 },
   'MiniMax-M2.5-highspeed':    { vision: false, thinking: false,              toolResultImages: 'workaround', documentBlock: false, maxOutputTokens: 8192,  contextWindow: 204800 },
 
@@ -120,6 +120,7 @@ export function resolveCapabilities(modelId: string): ModelCapabilities {
 
   if (/qwen/i.test(id)) return QWEN_DEFAULT;
   if (/doubao|seed/i.test(id)) return { ...GPT_MODERN_DEFAULT, maxOutputTokens: 8192 };
+  if (/minimax.*m2\.7/i.test(id)) return { vision: true, thinking: false, toolResultImages: 'workaround', documentBlock: false, maxOutputTokens: 8192, contextWindow: 204800 };
   if (/minimax/i.test(id)) return { vision: false, thinking: false, toolResultImages: 'workaround', documentBlock: false, maxOutputTokens: 8192, contextWindow: 204800 };
   if (/moonshot|kimi/i.test(id)) return { ...FALLBACK_DEFAULT, vision: false };
   if (/llama|mistral|gemma/i.test(id)) return { ...FALLBACK_DEFAULT, toolResultImages: 'none' };

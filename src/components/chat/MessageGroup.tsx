@@ -241,31 +241,26 @@ export default function MessageGroup({ messages }: MessageGroupProps) {
   // Extract workflow steps from all tool calls (legacy fallback)
   const workflowSteps = extractWorkflowSteps(allToolCalls, thinkingContent, agentStatus, skillInfo, thinkingDuration);
 
-  // Extract file outputs for attachments — from tool calls + assistant message text
-  // Dedup by filename (keep last occurrence, most likely the final location)
+  // Extract file outputs for attachments
+  // Source 1: tool calls (reliable). Source 2: last assistant message text (for announced paths)
   const fileOutputs = useMemo(() => {
-    const fromToolCalls = extractFileOutputs(allToolCalls);
-    const seenPaths = new Set(fromToolCalls.map((f) => f.path));
-    // Also extract file paths mentioned in assistant message text
-    for (const msg of assistantMsgs) {
-      const text = getTextContent(msg.content);
-      if (!text) continue;
-      const textPaths = extractFilePathsFromText(text);
-      for (const p of textPaths) {
-        if (!seenPaths.has(p)) {
-          seenPaths.add(p);
-          fromToolCalls.push({ path: p, operation: 'create' });
+    const files = extractFileOutputs(allToolCalls);
+    const seenPaths = new Set(files.map(f => f.path));
+    // Only check the LAST assistant message for file paths (final result, not intermediate narration)
+    const lastMsg = assistantMsgs[assistantMsgs.length - 1];
+    if (lastMsg) {
+      const text = getTextContent(lastMsg.content);
+      if (text) {
+        const textPaths = extractFilePathsFromText(text);
+        for (const p of textPaths) {
+          if (!seenPaths.has(p)) {
+            seenPaths.add(p);
+            files.push({ path: p, operation: 'create' });
+          }
         }
       }
     }
-    // Dedup by filename: if multiple paths have the same filename, keep only the last one
-    const byName = new Map<string, number>();
-    for (let i = 0; i < fromToolCalls.length; i++) {
-      const name = fromToolCalls[i].path.split('/').pop() || fromToolCalls[i].path;
-      byName.set(name, i);
-    }
-    const keepIndices = new Set(byName.values());
-    return fromToolCalls.filter((_, i) => keepIndices.has(i));
+    return files;
   }, [allToolCalls, assistantMsgs]);
 
   // Build filename -> full path map for inline file chip matching
@@ -373,14 +368,6 @@ export default function MessageGroup({ messages }: MessageGroupProps) {
             {/* Render segments: text blocks and merged step groups */}
             {segments.map((seg, segIdx) => {
               if (seg.kind === 'text') {
-                // Hide intermediate narration: text followed by steps is "setup" text,
-                // not final output. Only show text that is NOT followed by steps.
-                const nextSeg = segments[segIdx + 1];
-                const isIntermediateNarration = nextSeg?.kind === 'steps';
-                if (isIntermediateNarration && !seg.message.isStreaming) {
-                  return null;
-                }
-
                 const mdImages = extractMarkdownImages(seg.text);
                 let cleanedText = mdImages.length > 0 ? stripMarkdownImages(seg.text) : seg.text;
                 if (searchResults.length > 0 && cleanedText) {

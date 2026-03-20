@@ -12,6 +12,7 @@ vi.mock('../skill/loader', () => ({
   skillLoader: {
     getSkill: vi.fn(),
     getAvailableSkills: vi.fn().mockReturnValue([]),
+    findMatchingSkills: vi.fn().mockReturnValue([]),
   },
 }));
 

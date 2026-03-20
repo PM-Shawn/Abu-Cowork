@@ -60,9 +60,13 @@ export function getCallbacksForLevel(level: IMCapabilityLevel): {
       };
     case 'safe_tools':
       return {
-        commandConfirmCallback: async () => {
-          // Auto-deny dangerous commands (same as trigger behavior)
-          return false;
+        commandConfirmCallback: async (info) => {
+          // Only allow commands classified as 'safe' by commandSafety (same as trigger behavior)
+          const allowed = info.level === 'safe';
+          if (!allowed) {
+            console.log(`[IM] safe_tools: denied ${info.level} command "${info.command}"`);
+          }
+          return allowed;
         },
         filePermissionCallback: async (request) => {
           const permStore = usePermissionStore.getState();

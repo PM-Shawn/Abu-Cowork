@@ -32,24 +32,24 @@ export default function MarketplaceCard({
       className={cn(
         'group relative flex flex-col justify-between p-3 rounded-lg border transition-colors min-h-[88px]',
         !isEnabled && isInstalled
-          ? 'border-neutral-200/40 bg-neutral-50/50 opacity-60'
-          : 'border-neutral-200/60 hover:border-neutral-300 hover:bg-neutral-50/50',
+          ? 'border-[var(--abu-border)]/40 bg-[var(--abu-bg-muted)]/50 opacity-60'
+          : 'border-[var(--abu-border)]/60 hover:border-[var(--abu-border-hover)] hover:bg-[var(--abu-bg-muted)]/50',
         onClick && 'cursor-pointer'
       )}
       onClick={onClick}
     >
       <div className="min-w-0 pr-6">
         <div className="flex items-center gap-2">
-          <span className="font-medium text-sm text-neutral-900">{item.name}</span>
-          <span className="text-[10px] px-1.5 py-0.5 bg-neutral-100 text-neutral-500 rounded">
+          <span className="font-medium text-sm text-[var(--abu-text-primary)]">{item.name}</span>
+          <span className="text-[10px] px-1.5 py-0.5 bg-[var(--abu-bg-active)] text-[var(--abu-text-tertiary)] rounded">
             {item.category}
           </span>
         </div>
-        <p className="text-xs text-neutral-500 mt-1 line-clamp-2">{item.description}</p>
+        <p className="text-xs text-[var(--abu-text-tertiary)] mt-1 line-clamp-2">{item.description}</p>
       </div>
       <div className="flex items-center justify-between mt-2">
         <div className="flex items-center gap-2">
-          <p className="text-[10px] text-neutral-400">by {item.author}</p>
+          <p className="text-[10px] text-[var(--abu-text-muted)]">by {item.author}</p>
           {isInstalled && onToggleEnabled && (
             <Toggle checked={isEnabled} onChange={onToggleEnabled} />
           )}
@@ -63,8 +63,8 @@ export default function MarketplaceCard({
               isInstalled
                 ? 'bg-green-50 text-green-600 cursor-default'
                 : isInstalling
-                  ? 'bg-neutral-100 text-neutral-400 cursor-wait'
-                  : 'bg-[#d97757] text-white hover:bg-[#c5664a]'
+                  ? 'bg-[var(--abu-bg-active)] text-[var(--abu-text-muted)] cursor-wait'
+                  : 'bg-[var(--abu-clay)] text-white hover:bg-[var(--abu-clay-hover)]'
             )}
           >
             {isInstalling ? (
@@ -87,7 +87,7 @@ export default function MarketplaceCard({
           {isInstalled && onUninstall && (
             <button
               onClick={(e) => { e.stopPropagation(); onUninstall(); }}
-              className="absolute right-1 bottom-1 p-1 text-neutral-400 hover:text-red-500 hover:bg-red-50 rounded transition-colors opacity-0 group-hover:opacity-100"
+              className="absolute right-1 bottom-1 p-1 text-[var(--abu-text-muted)] hover:text-red-500 hover:bg-red-50 rounded transition-colors opacity-0 group-hover:opacity-100"
             >
               <Trash2 className="h-3.5 w-3.5" />
             </button>

@@ -29,7 +29,7 @@ export default function ScratchpadSection() {
   }
 
   return (
-    <div className="scratchpad-section pb-5 border-b border-[#e8e4dd]">
+    <div className="scratchpad-section pb-5 border-b border-[var(--abu-border)]">
       {/* Header */}
       <button
         onClick={() => setExpanded(!expanded)}
@@ -37,12 +37,12 @@ export default function ScratchpadSection() {
         className="flex items-center justify-between w-full text-left group"
       >
         <div className="flex items-center gap-2">
-          <FileText className="h-4 w-4 text-[#656358]" />
-          <span className="text-[13px] font-medium text-[#29261b]">Scratchpad</span>
+          <FileText className="h-4 w-4 text-[var(--abu-text-tertiary)]" />
+          <span className="text-[13px] font-medium text-[var(--abu-text-primary)]">Scratchpad</span>
         </div>
         <ChevronDown
           className={cn(
-            'h-4 w-4 text-[#8b887c] transition-transform',
+            'h-4 w-4 text-[var(--abu-text-muted)] transition-transform',
             !expanded && '-rotate-90'
           )}
         />
@@ -55,7 +55,7 @@ export default function ScratchpadSection() {
             <ScratchpadEntryRow key={entry.id} entry={entry} />
           ))}
           {entries.length > 5 && (
-            <div className="text-[11px] text-[#8b887c] pl-7">
+            <div className="text-[11px] text-[var(--abu-text-muted)] pl-7">
               +{entries.length - 5} more
             </div>
           )}
@@ -87,15 +87,15 @@ function ScratchpadEntryRow({ entry }: ScratchpadEntryRowProps) {
     const ext = entry.sourceFile?.split('.').pop()?.toLowerCase();
 
     if (ext && ['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg'].includes(ext)) {
-      return <Image className="h-4 w-4 text-[#8b887c]" />;
+      return <Image className="h-4 w-4 text-[var(--abu-text-muted)]" />;
     }
     if (ext && ['ts', 'tsx', 'js', 'jsx', 'py', 'rs', 'go'].includes(ext)) {
-      return <FileCode className="h-4 w-4 text-[#8b887c]" />;
+      return <FileCode className="h-4 w-4 text-[var(--abu-text-muted)]" />;
     }
     if (entry.type === 'search') {
-      return <FileText className="h-4 w-4 text-[#8b887c]" />;
+      return <FileText className="h-4 w-4 text-[var(--abu-text-muted)]" />;
     }
-    return <File className="h-4 w-4 text-[#8b887c]" />;
+    return <File className="h-4 w-4 text-[var(--abu-text-muted)]" />;
   };
 
   // Get display name
@@ -115,27 +115,27 @@ function ScratchpadEntryRow({ entry }: ScratchpadEntryRowProps) {
         onKeyDown={(e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), handleClick())}
         className={cn(
           'flex items-center gap-3 py-1.5 px-2 -mx-2 rounded cursor-pointer',
-          'hover:bg-[#ede9e2]'
+          'hover:bg-[var(--abu-bg-hover)]'
         )}
       >
         {/* File icon */}
         <div className="shrink-0">{getFileIcon()}</div>
 
         {/* File name */}
-        <span className="flex-1 text-[13px] text-[#656358] truncate">
+        <span className="flex-1 text-[13px] text-[var(--abu-text-tertiary)] truncate">
           {getDisplayName()}
         </span>
 
         {/* Viewed status */}
-        <span className="text-[11px] text-[#a8a59c] shrink-0">
+        <span className="text-[11px] text-[var(--abu-text-muted)] shrink-0">
           {entry.isViewed ? 'viewed' : 'new'}
         </span>
       </div>
 
       {/* Expanded detail */}
       {showDetail && (
-        <div className="ml-7 mt-1 p-2 bg-[#f5f3ee] rounded">
-          <div className="font-mono text-[11px] text-[#656358] break-all max-h-[200px] overflow-y-auto whitespace-pre-wrap">
+        <div className="ml-7 mt-1 p-2 bg-[var(--abu-bg-muted)] rounded">
+          <div className="font-mono text-[11px] text-[var(--abu-text-tertiary)] break-all max-h-[200px] overflow-y-auto whitespace-pre-wrap">
             {entry.content.length > 1000
               ? entry.content.slice(0, 1000) + '...'
               : entry.content}

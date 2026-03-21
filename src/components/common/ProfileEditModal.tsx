@@ -72,7 +72,7 @@ export default function ProfileEditModal({ open, onClose }: ProfileEditModalProp
       }}
     >
       <div className="bg-white rounded-2xl shadow-xl w-[360px] p-6 animate-in zoom-in-95 duration-150">
-        <h3 className="text-[16px] font-semibold text-[#29261b] mb-5">
+        <h3 className="text-[16px] font-semibold text-[var(--abu-text-primary)] mb-5">
           {t.sidebar.editProfile}
         </h3>
 
@@ -98,7 +98,7 @@ export default function ProfileEditModal({ open, onClose }: ProfileEditModalProp
           />
           <button
             onClick={() => fileInputRef.current?.click()}
-            className="text-[12px] text-[#d97757] mt-2 hover:underline"
+            className="text-[12px] text-[var(--abu-clay)] mt-2 hover:underline"
           >
             {t.sidebar.changeAvatar}
           </button>
@@ -106,7 +106,7 @@ export default function ProfileEditModal({ open, onClose }: ProfileEditModalProp
 
         {/* Nickname */}
         <div className="mb-5">
-          <label className="text-[13px] font-medium text-[#3d3929] mb-1.5 block">
+          <label className="text-[13px] font-medium text-[var(--abu-text-secondary)] mb-1.5 block">
             {t.sidebar.nickname}
           </label>
           <input
@@ -114,7 +114,7 @@ export default function ProfileEditModal({ open, onClose }: ProfileEditModalProp
             onChange={(e) => setNickname(e.target.value)}
             placeholder={t.sidebar.nicknamePlaceholder}
             maxLength={20}
-            className="w-full px-3 py-2 rounded-lg border border-[#e8e4dd] text-[14px] text-[#29261b] bg-[#faf9f5] focus:outline-none focus:border-[#d97757] transition-colors"
+            className="w-full px-3 py-2 rounded-lg border border-[var(--abu-border)] text-[14px] text-[var(--abu-text-primary)] bg-[var(--abu-bg-base)] focus:outline-none focus:border-[var(--abu-clay)] transition-colors"
             onKeyDown={(e) => {
               if (e.key === 'Enter') handleSave();
             }}
@@ -125,7 +125,7 @@ export default function ProfileEditModal({ open, onClose }: ProfileEditModalProp
         {isModified && (
           <button
             onClick={handleReset}
-            className="text-[12px] text-[#656358] hover:text-[#d97757] mb-4 transition-colors"
+            className="text-[12px] text-[var(--abu-text-tertiary)] hover:text-[var(--abu-clay)] mb-4 transition-colors"
           >
             {t.sidebar.resetProfile}
           </button>
@@ -135,13 +135,13 @@ export default function ProfileEditModal({ open, onClose }: ProfileEditModalProp
         <div className="flex gap-3">
           <button
             onClick={onClose}
-            className="flex-1 py-2.5 rounded-lg text-[13px] font-medium bg-[#f5f3ee] text-[#3d3929] hover:bg-[#e8e5de] transition-colors"
+            className="flex-1 py-2.5 rounded-lg text-[13px] font-medium bg-[var(--abu-bg-muted)] text-[var(--abu-text-secondary)] hover:bg-[var(--abu-bg-hover)] transition-colors"
           >
             {t.common.cancel}
           </button>
           <button
             onClick={handleSave}
-            className="flex-1 py-2.5 rounded-lg text-[14px] font-medium bg-[#d97757] text-white hover:bg-[#c4684a] transition-colors"
+            className="flex-1 py-2.5 rounded-lg text-[14px] font-medium bg-[var(--abu-clay)] text-white hover:bg-[var(--abu-clay-hover)] transition-colors"
           >
             {t.common.save}
           </button>

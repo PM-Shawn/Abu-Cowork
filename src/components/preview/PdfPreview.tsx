@@ -15,8 +15,8 @@ pdfjs.GlobalWorkerOptions.workerSrc = '/pdf.worker.min.mjs';
 function LoadingIndicator({ label }: { label?: string }) {
   return (
     <div className="flex items-center justify-center gap-2 h-full">
-      <Loader2 className="w-5 h-5 text-[#d97757] animate-spin" />
-      {label && <span className="text-[13px] text-[#656358]">{label}</span>}
+      <Loader2 className="w-5 h-5 text-[var(--abu-clay)] animate-spin" />
+      {label && <span className="text-[13px] text-[var(--abu-text-tertiary)]">{label}</span>}
     </div>
   );
 }
@@ -75,7 +75,7 @@ export default function PdfPreview({ filePath }: { filePath: string }) {
     <div className="flex flex-col h-full">
       {/* Controls */}
       {numPages > 0 && (
-        <div className="shrink-0 flex items-center justify-between px-3 py-1.5 bg-[#f5f3ee] border-b border-[#e5e2db]">
+        <div className="shrink-0 flex items-center justify-between px-3 py-1.5 bg-[var(--abu-bg-muted)] border-b border-[var(--abu-bg-pressed)]">
           <div className="flex items-center gap-1">
             <Button
               variant="ghost"
@@ -87,7 +87,7 @@ export default function PdfPreview({ filePath }: { filePath: string }) {
             >
               <ChevronLeft className="h-3.5 w-3.5" />
             </Button>
-            <span className="text-[11px] text-[#656358] min-w-[80px] text-center">
+            <span className="text-[11px] text-[var(--abu-text-tertiary)] min-w-[80px] text-center">
               {format(t.panel.pdfPage, { current: String(currentPage), total: String(numPages) })}
             </span>
             <Button
@@ -112,7 +112,7 @@ export default function PdfPreview({ filePath }: { filePath: string }) {
             >
               <ZoomOut className="h-3.5 w-3.5" />
             </Button>
-            <span className="text-[11px] text-[#656358] min-w-[40px] text-center">
+            <span className="text-[11px] text-[var(--abu-text-tertiary)] min-w-[40px] text-center">
               {Math.round(scale * 100)}%
             </span>
             <Button
@@ -131,7 +131,7 @@ export default function PdfPreview({ filePath }: { filePath: string }) {
 
       {/* PDF Content */}
       <ScrollArea className="flex-1 min-h-0">
-        <div className="flex justify-center p-4 bg-[#e8e5de]/50">
+        <div className="flex justify-center p-4 bg-[var(--abu-bg-hover)]">
           {loading && (
             <LoadingIndicator label={t.panel.loadingDocument} />
           )}

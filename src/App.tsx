@@ -220,43 +220,41 @@ function App() {
         {viewMode !== 'toolbox' && (
           <button
             onClick={toggleSidebar}
-            className="absolute btn-ghost p-1 text-[#656358] hover:text-[#29261b] hover:bg-[#e8e5de]/80 rounded-md transition-[left] duration-200 pointer-events-auto"
+            className="absolute btn-ghost p-1 text-[var(--abu-text-tertiary)] hover:text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-hover)] rounded-md transition-[left] duration-200 pointer-events-auto"
             style={{ top: mac ? 6 : 4, left: sidebarCollapsed ? 70 : 232 }}
             title={sidebarCollapsed ? t.sidebar.showSidebar : t.sidebar.hideSidebar}
           >
             {sidebarCollapsed
-              ? <PanelLeftOpen className="h-3.5 w-3.5" />
-              : <PanelLeftClose className="h-3.5 w-3.5" />}
+              ? <PanelLeftOpen className="h-4 w-4" strokeWidth={1.5} />
+              : <PanelLeftClose className="h-4 w-4" strokeWidth={1.5} />}
           </button>
         )}
 
         {showRightPanelToggle && (
           <button
             onClick={toggleRightPanel}
-            className="absolute right-2 btn-ghost p-1 text-[#656358] hover:text-[#29261b] hover:bg-[#e8e5de]/80 rounded-md pointer-events-auto"
+            className="absolute right-2 btn-ghost p-1 text-[var(--abu-text-tertiary)] hover:text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-hover)] rounded-md pointer-events-auto"
             style={{ top: mac ? 6 : 4 }}
             title={rightPanelCollapsed ? t.panel.showPanel : t.panel.hidePanel}
           >
             {rightPanelCollapsed
-              ? <PanelRightOpen className="h-3.5 w-3.5" />
-              : <PanelRightClose className="h-3.5 w-3.5" />}
+              ? <PanelRightOpen className="h-4 w-4" strokeWidth={1.5} />
+              : <PanelRightClose className="h-4 w-4" strokeWidth={1.5} />}
           </button>
         )}
       </div>
 
       <div className="flex h-full w-full">
-        {/* Sidebar - hidden in toolbox mode */}
-        {viewMode !== 'toolbox' && (
-          <div
-            className="sidebar-transition shrink-0 overflow-hidden"
-            style={{ width: sidebarCollapsed ? 0 : 260 }}
-          >
-            <Sidebar />
-          </div>
-        )}
+        {/* Sidebar - collapses smoothly in toolbox mode */}
+        <div
+          className="sidebar-transition shrink-0 overflow-hidden"
+          style={{ width: (viewMode === 'toolbox' || sidebarCollapsed) ? 0 : 260 }}
+        >
+          <Sidebar />
+        </div>
 
         {/* Main — pt-7 on macOS to clear overlay title bar; no padding on Windows (native title bar) */}
-        <main className={cn('flex-1 min-w-0 bg-[#faf9f5]', mac && 'pt-7')}>
+        <main className={cn('flex-1 min-w-0 bg-[var(--abu-bg-base)]', mac && 'pt-7')}>
           {viewMode === 'schedule' && <ScheduleView />}
           {viewMode === 'trigger' && <TriggerView />}
           {viewMode === 'toolbox' && <ToolboxView />}

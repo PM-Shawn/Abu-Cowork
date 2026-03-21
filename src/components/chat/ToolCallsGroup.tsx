@@ -45,24 +45,24 @@ export default function ToolCallsGroup({ toolCalls }: ToolCallsGroupProps) {
   return (
     <div className="my-2 space-y-2">
       {/* Tool calls block */}
-      <div className="rounded-lg overflow-hidden border border-[#706b5730] bg-white">
+      <div className="rounded-lg overflow-hidden border border-[var(--abu-border-subtle)] bg-[var(--abu-bg-muted)]">
         {/* Collapsed header - single line */}
         <button
           onClick={() => setExpanded(!expanded)}
-          className="btn-ghost w-full flex items-center gap-2 px-3 py-2 text-sm hover:bg-[#f5f3ee] transition-colors"
+          className="btn-ghost w-full flex items-center gap-2 px-3 py-2 text-sm hover:bg-[var(--abu-bg-muted)] transition-colors"
         >
         {/* Expand/collapse chevron */}
         {expanded ? (
-          <ChevronDown className="h-3.5 w-3.5 text-[#656358] shrink-0" />
+          <ChevronDown className="h-3.5 w-3.5 text-[var(--abu-text-tertiary)] shrink-0" />
         ) : (
-          <ChevronRight className="h-3.5 w-3.5 text-[#656358] shrink-0" />
+          <ChevronRight className="h-3.5 w-3.5 text-[var(--abu-text-tertiary)] shrink-0" />
         )}
 
         {/* Tool icon with status color */}
         <div className="relative shrink-0">
           <Wrench className={cn(
             "h-3.5 w-3.5",
-            isAnyExecuting ? "text-[#d97757]" : allCompleted ? "text-emerald-600" : "text-[#656358]"
+            isAnyExecuting ? "text-[var(--abu-clay)]" : allCompleted ? "text-emerald-600" : "text-[var(--abu-text-tertiary)]"
           )} />
         </div>
 
@@ -74,13 +74,13 @@ export default function ToolCallsGroup({ toolCalls }: ToolCallsGroupProps) {
           >
             {isAnyExecuting ? (
               <>
-                <Loader2 className="h-3 w-3 animate-spin text-[#d97757] shrink-0" />
-                <span className="font-mono text-[12px] text-[#29261b] truncate">
+                <Loader2 className="h-3 w-3 animate-spin text-[var(--abu-clay)] shrink-0" />
+                <span className="font-mono text-[12px] text-[var(--abu-text-primary)] truncate">
                   {currentTool?.name}
                 </span>
               </>
             ) : allCompleted ? (
-              <span className="text-[12px] text-[#656358]">
+              <span className="text-[12px] text-[var(--abu-text-tertiary)]">
                 {totalCount === 1 ? (
                   <span className="font-mono">{currentTool?.name}</span>
                 ) : (
@@ -88,7 +88,7 @@ export default function ToolCallsGroup({ toolCalls }: ToolCallsGroupProps) {
                 )}
               </span>
             ) : (
-              <span className="font-mono text-[12px] text-[#29261b] truncate">
+              <span className="font-mono text-[12px] text-[var(--abu-text-primary)] truncate">
                 {currentTool?.name}
               </span>
             )}
@@ -98,7 +98,7 @@ export default function ToolCallsGroup({ toolCalls }: ToolCallsGroupProps) {
         {/* Status badge */}
         <div className="shrink-0">
           {isAnyExecuting ? (
-            <span className="text-[10px] px-1.5 py-0.5 rounded bg-[#d97757]/10 text-[#d97757] font-medium">
+            <span className="text-[10px] px-1.5 py-0.5 rounded bg-[var(--abu-clay-bg)] text-[var(--abu-clay)] font-medium">
               {completedCount}/{totalCount}
             </span>
           ) : allCompleted ? (
@@ -107,7 +107,7 @@ export default function ToolCallsGroup({ toolCalls }: ToolCallsGroupProps) {
               Done
             </span>
           ) : (
-            <span className="text-[10px] text-[#656358]">
+            <span className="text-[10px] text-[var(--abu-text-tertiary)]">
               {completedCount}/{totalCount}
             </span>
           )}
@@ -116,7 +116,7 @@ export default function ToolCallsGroup({ toolCalls }: ToolCallsGroupProps) {
 
       {/* Expanded content - tool list with details */}
       {expanded && (
-        <div className="border-t border-[#706b5720]">
+        <div className="border-t border-[var(--abu-border-subtle)]">
           {visibleToolCalls.map((tc, index) => (
             <ToolCallItem key={tc.id} toolCall={tc} isLast={index === visibleToolCalls.length - 1} />
           ))}
@@ -136,30 +136,30 @@ function ToolCallItem({ toolCall, isLast }: { toolCall: ToolCall; isLast: boolea
   const isCompleted = toolCall.result !== undefined;
 
   return (
-    <div className={cn("border-b border-[#706b5715]", isLast && "border-b-0")}>
+    <div className={cn("border-b border-[var(--abu-border-subtle)]", isLast && "border-b-0")}>
       {/* Tool header */}
       <button
         onClick={() => setShowDetails(!showDetails)}
-        className="btn-ghost w-full flex items-center gap-2.5 px-3 py-2 text-sm hover:bg-[#f5f3ee]"
+        className="btn-ghost w-full flex items-center gap-2.5 px-3 py-2 text-sm hover:bg-[var(--abu-bg-muted)]"
       >
         {/* Status indicator */}
         <div className={cn(
           "w-4 h-4 rounded-full flex items-center justify-center shrink-0",
           isCompleted && "bg-emerald-500/15",
-          isExecuting && "bg-[#d97757]/15",
-          !isCompleted && !isExecuting && "bg-[#e8e5de]"
+          isExecuting && "bg-[var(--abu-clay-bg-15)]",
+          !isCompleted && !isExecuting && "bg-[var(--abu-bg-hover)]"
         )}>
           {isCompleted && <CheckCircle2 className="h-2.5 w-2.5 text-emerald-600" />}
-          {isExecuting && <Loader2 className="h-2.5 w-2.5 text-[#d97757] animate-spin" />}
-          {!isCompleted && !isExecuting && <Circle className="h-1.5 w-1.5 text-[#888579] fill-current" />}
+          {isExecuting && <Loader2 className="h-2.5 w-2.5 text-[var(--abu-clay)] animate-spin" />}
+          {!isCompleted && !isExecuting && <Circle className="h-1.5 w-1.5 text-[var(--abu-text-muted)] fill-current" />}
         </div>
 
         {/* Tool name */}
         <span className={cn(
           "font-mono text-[12px] truncate flex-1 text-left",
-          isCompleted && "text-[#29261b]",
-          isExecuting && "text-[#d97757] font-medium",
-          !isCompleted && !isExecuting && "text-[#888579]"
+          isCompleted && "text-[var(--abu-text-primary)]",
+          isExecuting && "text-[var(--abu-clay)] font-medium",
+          !isCompleted && !isExecuting && "text-[var(--abu-text-muted)]"
         )}>
           {toolCall.name}
         </span>
@@ -167,7 +167,7 @@ function ToolCallItem({ toolCall, isLast }: { toolCall: ToolCall; isLast: boolea
         {/* Expand indicator for details */}
         {(isCompleted || isExecuting) && (
           <ChevronRight className={cn(
-            "h-3 w-3 text-[#888579] transition-transform",
+            "h-3 w-3 text-[var(--abu-text-muted)] transition-transform",
             showDetails && "rotate-90"
           )} />
         )}

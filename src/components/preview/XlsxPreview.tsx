@@ -55,8 +55,8 @@ export default function XlsxPreview({ filePath }: { filePath: string }) {
   if (loading) {
     return (
       <div className="flex items-center justify-center h-full">
-        <Loader2 className="w-5 h-5 text-[#d97757] animate-spin" />
-        <span className="ml-2 text-[13px] text-[#656358]">{t.panel.loadingDocument}</span>
+        <Loader2 className="w-5 h-5 text-[var(--abu-clay)] animate-spin" />
+        <span className="ml-2 text-[13px] text-[var(--abu-text-tertiary)]">{t.panel.loadingDocument}</span>
       </div>
     );
   }
@@ -73,18 +73,18 @@ export default function XlsxPreview({ filePath }: { filePath: string }) {
   if (!current) return null;
 
   return (
-    <div className="flex flex-col h-full bg-white">
+    <div className="flex flex-col h-full bg-[var(--abu-bg-base)]">
       {/* Sheet tabs */}
       {sheets.length > 1 && (
-        <div className="shrink-0 flex gap-0 border-b border-[#e5e2db] overflow-x-auto bg-[#f5f3ee]">
+        <div className="shrink-0 flex gap-0 border-b border-[var(--abu-bg-pressed)] overflow-x-auto bg-[var(--abu-bg-muted)]">
           {sheets.map((s, i) => (
             <button
               key={s.name}
               onClick={() => setActiveSheet(i)}
-              className={`px-3 py-1.5 text-[11px] border-r border-[#e5e2db] whitespace-nowrap transition-colors ${
+              className={`px-3 py-1.5 text-[11px] border-r border-[var(--abu-bg-pressed)] whitespace-nowrap transition-colors ${
                 i === activeSheet
-                  ? 'bg-white text-[#29261b] font-medium'
-                  : 'text-[#656358] hover:bg-[#eae7e0]'
+                  ? 'bg-[var(--abu-bg-base)] text-[var(--abu-text-primary)] font-medium'
+                  : 'text-[var(--abu-text-tertiary)] hover:bg-[var(--abu-bg-hover)]'
               }`}
             >
               {s.name}

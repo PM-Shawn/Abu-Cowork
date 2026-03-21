@@ -47,41 +47,41 @@ export function ImageGenForm() {
     <div className="space-y-4">
       {/* API Key */}
       <div className="space-y-2">
-        <label className="text-sm font-medium text-[#29261b]">{t.settings.imageGenApiKey}</label>
+        <label className="text-sm font-medium text-[var(--abu-text-primary)]">{t.settings.imageGenApiKey}</label>
         <div className="relative">
           <input
             type={showKey ? 'text' : 'password'}
             value={imageGenApiKey}
             onChange={(e) => setImageGenApiKey(e.target.value)}
             placeholder={t.settings.imageGenApiKeyPlaceholder}
-            className="w-full px-3 py-2 pr-10 text-sm border border-[#e8e4dd] rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-[#d97757]/30 focus:border-[#d97757] text-[#29261b]"
+            className="w-full px-3 py-2 pr-10 text-sm border border-[var(--abu-border)] rounded-lg bg-[var(--abu-bg-base)] focus:outline-none focus:ring-2 focus:ring-[var(--abu-clay-ring)] focus:border-[var(--abu-clay)] text-[var(--abu-text-primary)]"
           />
           <button
             onClick={() => setShowKey(!showKey)}
-            className="absolute right-2 top-1/2 -translate-y-1/2 p-1 text-[#888579] hover:text-[#29261b] rounded"
+            className="absolute right-2 top-1/2 -translate-y-1/2 p-1 text-[var(--abu-text-muted)] hover:text-[var(--abu-text-primary)] rounded"
           >
             {showKey ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
           </button>
         </div>
-        <p className="text-xs text-[#888579]">{t.settings.imageGenApiKeyDesc}</p>
+        <p className="text-xs text-[var(--abu-text-muted)]">{t.settings.imageGenApiKeyDesc}</p>
       </div>
 
       {/* Base URL */}
       <div className="space-y-2">
-        <label className="text-sm font-medium text-[#29261b]">{t.settings.imageGenBaseUrl}</label>
+        <label className="text-sm font-medium text-[var(--abu-text-primary)]">{t.settings.imageGenBaseUrl}</label>
         <input
           type="text"
           value={imageGenBaseUrl}
           onChange={(e) => setImageGenBaseUrl(e.target.value)}
           placeholder={t.settings.imageGenBaseUrlPlaceholder}
-          className="w-full px-3 py-2 text-sm border border-[#e8e4dd] rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-[#d97757]/30 focus:border-[#d97757] text-[#29261b]"
+          className="w-full px-3 py-2 text-sm border border-[var(--abu-border)] rounded-lg bg-[var(--abu-bg-base)] focus:outline-none focus:ring-2 focus:ring-[var(--abu-clay-ring)] focus:border-[var(--abu-clay)] text-[var(--abu-text-primary)]"
         />
-        <p className="text-xs text-[#888579]">{t.settings.imageGenBaseUrlDesc}</p>
+        <p className="text-xs text-[var(--abu-text-muted)]">{t.settings.imageGenBaseUrlDesc}</p>
       </div>
 
       {/* Model */}
       <div className="space-y-2">
-        <label className="text-sm font-medium text-[#29261b]">{t.settings.imageGenModel}</label>
+        <label className="text-sm font-medium text-[var(--abu-text-primary)]">{t.settings.imageGenModel}</label>
         <Select
           value={isCustomModel ? '__custom__' : imageGenModel}
           onChange={handleModelChange}
@@ -92,13 +92,13 @@ export function ImageGenForm() {
       {/* Custom model name input */}
       {isCustomModel && (
         <div className="space-y-2">
-          <label className="text-sm font-medium text-[#29261b]">{t.settings.imageGenCustomModel}</label>
+          <label className="text-sm font-medium text-[var(--abu-text-primary)]">{t.settings.imageGenCustomModel}</label>
           <input
             type="text"
             value={customModel}
             onChange={(e) => handleCustomModelChange(e.target.value)}
             placeholder="gpt-image-1"
-            className="w-full px-3 py-2 text-sm border border-[#e8e4dd] rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-[#d97757]/30 focus:border-[#d97757] text-[#29261b] font-mono"
+            className="w-full px-3 py-2 text-sm border border-[var(--abu-border)] rounded-lg bg-[var(--abu-bg-base)] focus:outline-none focus:ring-2 focus:ring-[var(--abu-clay-ring)] focus:border-[var(--abu-clay)] text-[var(--abu-text-primary)] font-mono"
           />
         </div>
       )}
@@ -111,8 +111,8 @@ export default function ImageGenSection() {
   return (
     <div className="space-y-6">
       <div>
-        <h3 className="text-base font-semibold text-[#29261b]">{t.settings.imageGen}</h3>
-        <p className="text-sm text-[#888579] mt-1">{t.settings.imageGenDescription}</p>
+        <h3 className="text-base font-semibold text-[var(--abu-text-primary)]">{t.settings.imageGen}</h3>
+        <p className="text-sm text-[var(--abu-text-muted)] mt-1">{t.settings.imageGenDescription}</p>
       </div>
       <ImageGenForm />
     </div>

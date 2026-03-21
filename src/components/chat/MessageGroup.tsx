@@ -281,18 +281,18 @@ export default function MessageGroup({ messages }: MessageGroupProps) {
   // Check if any tool has error result
   const hasError = allToolCalls.some((tc) => tc.result?.toLowerCase().includes('error'));
 
-  // Auto-preview: when agent loop fully ends and files were produced, open the last non-image file
-  // Use conversation status + execution status to detect true completion (not inter-batch gaps)
-  const autoPreviewedRef = useRef(false);
+  // Auto-preview: only when agent transitions from running → done (not on mount/conversation switch)
   const openPreview = usePreviewStore((s) => s.openPreview);
   const isAgentDone = !isStreaming && !isThisExecutionActive && activeConv?.status !== 'running';
+  const prevAgentDoneRef = useRef(isAgentDone);
   useEffect(() => {
-    if (autoPreviewedRef.current || !isAgentDone || fileOutputs.length === 0) return;
-    // Prefer the LAST non-image file (most likely the final output, not intermediate scripts)
+    const wasDone = prevAgentDoneRef.current;
+    prevAgentDoneRef.current = isAgentDone;
+    // Only trigger on false→true transition (agent just finished, not already done on mount/switch)
+    if (wasDone || !isAgentDone || fileOutputs.length === 0) return;
     const nonImageFiles = fileOutputs.filter((f) => !isImageFile(f.path));
     const previewableFile = nonImageFiles[nonImageFiles.length - 1] || fileOutputs[fileOutputs.length - 1];
     if (previewableFile) {
-      autoPreviewedRef.current = true;
       openPreview(previewableFile.path);
     }
   }, [isAgentDone, fileOutputs, openPreview]);
@@ -360,9 +360,9 @@ export default function MessageGroup({ messages }: MessageGroupProps) {
             {/* Thinking indicator - when streaming but no content yet */}
             {isStreaming && !hasAnyContent && (
               <div className="flex items-center gap-1.5 py-2">
-                <span className="typing-dot w-1.5 h-1.5 rounded-full bg-[#d97757]/60" />
-                <span className="typing-dot w-1.5 h-1.5 rounded-full bg-[#d97757]/60" />
-                <span className="typing-dot w-1.5 h-1.5 rounded-full bg-[#d97757]/60" />
+                <span className="typing-dot w-1.5 h-1.5 rounded-full bg-[var(--abu-clay-60)]" />
+                <span className="typing-dot w-1.5 h-1.5 rounded-full bg-[var(--abu-clay-60)]" />
+                <span className="typing-dot w-1.5 h-1.5 rounded-full bg-[var(--abu-clay-60)]" />
               </div>
             )}
 
@@ -386,7 +386,7 @@ export default function MessageGroup({ messages }: MessageGroupProps) {
                       </div>
                     )}
                     {cleanedText && (
-                      <div className="text-[#29261b] break-words mb-2">
+                      <div className="text-[var(--abu-text-primary)] break-words mb-2">
                         <MarkdownRenderer
                           content={cleanedText}
                           searchResults={searchResults.length > 0 ? searchResults : undefined}

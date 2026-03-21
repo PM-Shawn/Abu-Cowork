@@ -40,15 +40,15 @@ export class ErrorBoundary extends Component<Props, State> {
       const t = getI18n();
       return (
         <div className="flex flex-col items-center justify-center p-8 text-center">
-          <p className="text-[14px] text-[#656358] mb-3">
+          <p className="text-[14px] text-[var(--abu-text-tertiary)] mb-3">
             {t.errorBoundary.renderError}
           </p>
-          <p className="text-[12px] text-[#b0ada4] mb-4 max-w-[300px]">
+          <p className="text-[12px] text-[var(--abu-text-placeholder)] mb-4 max-w-[300px]">
             {this.state.error?.message?.slice(0, 100) ?? t.errorBoundary.unknownError}
           </p>
           <button
             onClick={() => this.setState({ hasError: false, error: null })}
-            className="px-4 py-2 text-[13px] rounded-lg bg-[#f5f3ee] text-[#3d3929] hover:bg-[#ebe8e1] transition-colors"
+            className="px-4 py-2 text-[13px] rounded-lg bg-[var(--abu-bg-muted)] text-[var(--abu-text-secondary)] hover:bg-[var(--abu-bg-hover)] transition-colors"
           >
             {t.common.retry}
           </button>
@@ -75,11 +75,11 @@ export class MessageErrorBoundary extends Component<{ children: ReactNode }, { h
     if (this.state.hasError) {
       const t = getI18n();
       return (
-        <div className="px-3 py-2 text-[12px] text-[#b0ada4] bg-[#faf9f7] rounded-lg border border-[#f0ede8]">
+        <div className="px-3 py-2 text-[12px] text-[var(--abu-text-placeholder)] bg-[var(--abu-bg-muted)] rounded-lg border border-[var(--abu-bg-active)]">
           {t.errorBoundary.messageError}
           <button
             onClick={() => this.setState({ hasError: false })}
-            className="ml-2 text-[#d97757] hover:underline"
+            className="ml-2 text-[var(--abu-clay)] hover:underline"
           >
             {t.common.retry}
           </button>

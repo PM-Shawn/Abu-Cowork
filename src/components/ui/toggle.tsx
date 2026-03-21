@@ -27,7 +27,7 @@ export function Toggle({ checked, onChange, size = 'sm', disabled, className }: 
       className={cn(
         'relative inline-flex items-center rounded-full transition-colors shrink-0',
         s.track,
-        checked ? 'bg-[#d97757]' : 'bg-[#d4d1c9]',
+        checked ? 'bg-[var(--abu-clay)]' : 'bg-[var(--abu-bg-pressed)]',
         disabled && 'opacity-50 cursor-not-allowed',
         className
       )}

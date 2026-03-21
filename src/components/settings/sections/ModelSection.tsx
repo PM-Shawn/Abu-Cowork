@@ -18,7 +18,7 @@ export default function ModelSection() {
     <div className="space-y-5">
       {/* Model select */}
       <div className="space-y-2">
-        <label className="text-sm font-medium text-[#29261b]">{t.settings.model}</label>
+        <label className="text-sm font-medium text-[var(--abu-text-primary)]">{t.settings.model}</label>
         <Select
           value={model}
           onChange={(value) => setModel(value)}
@@ -32,23 +32,23 @@ export default function ModelSection() {
       {/* Custom model input */}
       {isCustomModel && (
         <div className="space-y-2">
-          <label className="text-sm font-medium text-[#29261b]">{t.settings.customModelName}</label>
+          <label className="text-sm font-medium text-[var(--abu-text-primary)]">{t.settings.customModelName}</label>
           <input
             type="text"
             value={customModel}
             onChange={(e) => setCustomModel(e.target.value)}
             placeholder={t.settings.customModelPlaceholder}
-            className="w-full h-10 px-3 bg-white border border-[#e8e4dd] rounded-lg text-sm text-[#29261b] focus:outline-none focus:ring-2 focus:ring-[#d97757]/30 focus:border-[#d97757] transition-all"
+            className="w-full h-10 px-3 bg-[var(--abu-bg-base)] border border-[var(--abu-border)] rounded-lg text-sm text-[var(--abu-text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--abu-clay-ring)] focus:border-[var(--abu-clay)] transition-all"
           />
-          <p className="text-xs text-[#656358]">
+          <p className="text-xs text-[var(--abu-text-tertiary)]">
             {t.settings.customModelDesc}
           </p>
         </div>
       )}
 
       {/* Current model status */}
-      <div className="p-4 rounded-lg bg-white border border-[#e8e4dd]">
-        <h3 className="text-sm font-medium text-[#29261b] mb-3">{t.settings.currentModel}</h3>
+      <div className="p-4 rounded-lg bg-[var(--abu-bg-muted)] border border-[var(--abu-border)]">
+        <h3 className="text-sm font-medium text-[var(--abu-text-primary)] mb-3">{t.settings.currentModel}</h3>
         <div className="flex items-center gap-2.5">
           {hasModel ? (
             <CircleCheck className="h-4 w-4 text-green-500 flex-none" />
@@ -57,7 +57,7 @@ export default function ModelSection() {
           )}
           <span className={cn(
             'text-sm font-mono',
-            hasModel ? 'text-[#29261b]' : 'text-[#656358]'
+            hasModel ? 'text-[var(--abu-text-primary)]' : 'text-[var(--abu-text-tertiary)]'
           )}>
             {effectiveModel || t.settings.notSet}
           </span>

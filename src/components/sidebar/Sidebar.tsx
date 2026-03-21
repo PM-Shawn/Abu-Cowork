@@ -50,7 +50,7 @@ function StatusIndicator({ status, onComplete }: StatusIndicatorProps) {
 function IMPlatformDot({ platform }: { platform: string }) {
   return (
     <span
-      className="shrink-0 h-4 w-4 rounded text-[8px] font-bold leading-4 text-center bg-[#d97757]/15 text-[#d97757]"
+      className="shrink-0 h-4 w-4 rounded text-[8px] font-bold leading-4 text-center bg-[var(--abu-clay-bg-15)] text-[var(--abu-clay)]"
       title={platform}
     >
       {getPlatformShortLabel(platform)}
@@ -199,7 +199,7 @@ export default function Sidebar() {
   };
 
   return (
-    <div className="flex flex-col h-full w-[260px] bg-[#f5f3ee] border-r border-[#e8e4dd]">
+    <div className="flex flex-col h-full w-[260px] bg-[var(--abu-bg-subtle)] border-r border-[var(--abu-border)]">
       {/* Drag region — covers the title bar area above sidebar content (macOS overlay only) */}
       {isMacOS() && (
         <div
@@ -214,11 +214,11 @@ export default function Sidebar() {
           className={cn(
             'btn-ghost flex items-center gap-3 w-full px-3 py-2.5 text-[14px] font-medium rounded-lg',
             activeConversationId === null && viewMode === 'chat'
-              ? 'bg-white shadow-sm text-[#29261b]'
-              : 'text-[#29261b] hover:bg-[#e8e5de]'
+              ? 'bg-[var(--abu-bg-active)] text-[var(--abu-text-primary)]'
+              : 'text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-hover)]'
           )}
         >
-          <Plus className="h-[18px] w-[18px] text-[#3d3929]" strokeWidth={2} />
+          <Plus className="h-[18px] w-[18px] text-[var(--abu-text-secondary)]" strokeWidth={2} />
           <span>{t.sidebar.newTask}</span>
         </button>
         <button
@@ -226,11 +226,11 @@ export default function Sidebar() {
           className={cn(
             'btn-ghost flex items-center gap-3 w-full px-3 py-2.5 text-[14px] rounded-lg',
             viewMode === 'schedule'
-              ? 'bg-white shadow-sm text-[#29261b] font-medium'
-              : 'text-[#3d3929] hover:bg-[#e8e5de]'
+              ? 'bg-[var(--abu-bg-active)] text-[var(--abu-text-primary)]'
+              : 'text-[var(--abu-text-secondary)] hover:bg-[var(--abu-bg-hover)]'
           )}
         >
-          <Clock className="h-[18px] w-[18px] text-[#656358]" strokeWidth={1.75} />
+          <Clock className={cn('h-[18px] w-[18px]', viewMode === 'schedule' ? 'text-[var(--abu-clay)]' : 'text-[var(--abu-text-tertiary)]')} strokeWidth={1.75} />
           <span>{t.sidebar.scheduledTasks}</span>
         </button>
         <button
@@ -238,11 +238,11 @@ export default function Sidebar() {
           className={cn(
             'btn-ghost flex items-center gap-3 w-full px-3 py-2.5 text-[14px] rounded-lg',
             viewMode === 'trigger'
-              ? 'bg-white shadow-sm text-[#29261b] font-medium'
-              : 'text-[#3d3929] hover:bg-[#e8e5de]'
+              ? 'bg-[var(--abu-bg-active)] text-[var(--abu-text-primary)]'
+              : 'text-[var(--abu-text-secondary)] hover:bg-[var(--abu-bg-hover)]'
           )}
         >
-          <Zap className="h-[18px] w-[18px] text-[#656358]" strokeWidth={1.75} />
+          <Zap className={cn('h-[18px] w-[18px]', viewMode === 'trigger' ? 'text-[var(--abu-clay)]' : 'text-[var(--abu-text-tertiary)]')} strokeWidth={1.75} />
           <span>{t.sidebar.triggers}</span>
         </button>
         <button
@@ -250,11 +250,11 @@ export default function Sidebar() {
           className={cn(
             'btn-ghost flex items-center gap-3 w-full px-3 py-2.5 text-[14px] rounded-lg',
             viewMode === 'toolbox'
-              ? 'bg-white shadow-sm text-[#29261b] font-medium'
-              : 'text-[#3d3929] hover:bg-[#e8e5de]'
+              ? 'bg-[var(--abu-bg-active)] text-[var(--abu-text-primary)]'
+              : 'text-[var(--abu-text-secondary)] hover:bg-[var(--abu-bg-hover)]'
           )}
         >
-          <Wrench className="h-[18px] w-[18px] text-[#656358]" strokeWidth={1.75} />
+          <Wrench className={cn('h-[18px] w-[18px]', viewMode === 'toolbox' ? 'text-[var(--abu-clay)]' : 'text-[var(--abu-text-tertiary)]')} strokeWidth={1.75} />
           <span>{t.sidebar.toolbox}</span>
         </button>
       </nav>
@@ -269,14 +269,14 @@ export default function Sidebar() {
 
         {/* Recents Section */}
         <div className="px-6 pt-4 pb-1.5">
-          <span className="text-[12px] font-medium text-[#656358]">{t.sidebar.recents}</span>
+          <span className="text-[13px] font-medium text-[var(--abu-text-muted)]">{t.sidebar.recents}</span>
         </div>
 
         {/* Conversation List */}
         <div className="px-4">
         {sortedConvs.length === 0 ? (
           <div className="px-4 py-3">
-            <p className="text-[13px] text-[#656358]">{t.sidebar.noSessionsYet}</p>
+            <p className="text-[13px] text-[var(--abu-text-tertiary)]">{t.sidebar.noSessionsYet}</p>
           </div>
         ) : (
           <div className="space-y-0.5">
@@ -291,8 +291,8 @@ export default function Sidebar() {
                 className={cn(
                   'group flex items-center gap-2 px-3 py-2 rounded-lg cursor-pointer transition-colors w-full text-left',
                   conv.id === activeConversationId && viewMode === 'chat'
-                    ? 'bg-white shadow-sm text-[#29261b]'
-                    : 'text-[#3d3929] hover:bg-[#e8e5de]'
+                    ? 'bg-[var(--abu-bg-active)] text-[var(--abu-text-primary)]'
+                    : 'text-[var(--abu-text-secondary)] hover:bg-[var(--abu-bg-hover)]'
                 )}
               >
                 <StatusIndicator
@@ -306,7 +306,7 @@ export default function Sidebar() {
                   <input
                     autoFocus
                     defaultValue={conv.title}
-                    className="flex-1 text-[13px] bg-transparent border-b border-[#d97757] outline-none min-w-0"
+                    className="flex-1 text-[13px] bg-transparent border-b border-[var(--abu-clay)] outline-none min-w-0"
                     onClick={(e) => e.stopPropagation()}
                     onBlur={(e) => {
                       const val = e.target.value.trim();
@@ -325,7 +325,7 @@ export default function Sidebar() {
                   variant="ghost"
                   size="icon"
                   onClick={(e) => handleDeleteConversation(e, conv.id)}
-                  className="h-5 w-5 opacity-0 group-hover:opacity-100 text-[#656358] hover:text-red-500 hover:bg-transparent shrink-0"
+                  className="h-5 w-5 opacity-0 group-hover:opacity-100 text-[var(--abu-text-tertiary)] hover:text-red-500 hover:bg-transparent shrink-0"
                 >
                   <Trash2 className="h-3.5 w-3.5" />
                 </Button>
@@ -342,7 +342,7 @@ export default function Sidebar() {
           {/* User avatar + nickname (clickable to edit) */}
           <button
             onClick={() => setProfileOpen(true)}
-            className="w-8 h-8 rounded-full overflow-hidden shrink-0 hover:ring-2 hover:ring-[#d97757]/40 transition-shadow"
+            className="w-8 h-8 rounded-full overflow-hidden shrink-0 hover:ring-2 hover:ring-[var(--abu-clay-40)] transition-shadow"
             title={t.sidebar.editProfile}
           >
             <img src={userAvatar || abuAvatar} alt="Avatar" className="w-full h-full object-cover" />
@@ -352,13 +352,13 @@ export default function Sidebar() {
             className="flex-1 min-w-0 text-left"
             title={t.sidebar.editProfile}
           >
-            <div className="text-[13px] font-semibold text-[#29261b] truncate">
+            <div className="text-[13px] font-semibold text-[var(--abu-text-primary)] truncate">
               {userNickname || t.sidebar.defaultNickname}
             </div>
           </button>
           <button
             onClick={handleImport}
-            className="btn-ghost p-1.5 text-[#656358] hover:text-[#29261b] hover:bg-[#e8e5de] rounded-md"
+            className="btn-ghost p-1.5 text-[var(--abu-text-tertiary)] hover:text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-hover)] rounded-md"
             title={t.sidebar.importSession}
           >
             <Upload className="h-3.5 w-3.5" />
@@ -368,8 +368,8 @@ export default function Sidebar() {
             className={cn(
               'btn-ghost p-1.5 rounded-md relative',
               viewMode === 'settings'
-                ? 'text-[#d97757] bg-[#d97757]/10'
-                : 'text-[#656358] hover:text-[#29261b] hover:bg-[#e8e5de]'
+                ? 'text-[var(--abu-clay)] bg-[var(--abu-bg-active)]'
+                : 'text-[var(--abu-text-tertiary)] hover:text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-hover)]'
             )}
           >
             <Settings className="h-3.5 w-3.5" />
@@ -379,7 +379,7 @@ export default function Sidebar() {
           </button>
           <button
             onClick={() => setGuideOpen(true)}
-            className="btn-ghost p-1.5 text-[#656358] hover:text-[#29261b] hover:bg-[#e8e5de] rounded-md"
+            className="btn-ghost p-1.5 text-[var(--abu-text-tertiary)] hover:text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-hover)] rounded-md"
             title={t.sidebar.help}
           >
             <HelpCircle className="h-3.5 w-3.5" />
@@ -391,7 +391,7 @@ export default function Sidebar() {
       {contextMenu && (
         <div
           ref={contextMenuRef}
-          className="fixed z-50 bg-white rounded-lg shadow-lg border border-[#e8e4dd] py-1 min-w-[140px]"
+          className="fixed z-50 bg-white rounded-lg shadow-lg border border-[var(--abu-border)] py-1 min-w-[140px]"
           style={{ left: contextMenu.x, top: contextMenu.y }}
         >
           <button
@@ -399,14 +399,14 @@ export default function Sidebar() {
               setEditingId(contextMenu.convId);
               setContextMenu(null);
             }}
-            className="flex items-center gap-2 w-full px-3 py-1.5 text-[13px] text-[#3d3929] hover:bg-[#f0ede6]"
+            className="flex items-center gap-2 w-full px-3 py-1.5 text-[13px] text-[var(--abu-text-secondary)] hover:bg-[var(--abu-bg-active)]"
           >
             <Pencil className="h-3.5 w-3.5" />
             {t.sidebar.renameConversation}
           </button>
           <button
             onClick={() => handleExport(contextMenu.convId)}
-            className="flex items-center gap-2 w-full px-3 py-1.5 text-[13px] text-[#3d3929] hover:bg-[#f0ede6]"
+            className="flex items-center gap-2 w-full px-3 py-1.5 text-[13px] text-[var(--abu-text-secondary)] hover:bg-[var(--abu-bg-active)]"
           >
             <Download className="h-3.5 w-3.5" />
             {t.sidebar.exportConversation}
@@ -416,7 +416,7 @@ export default function Sidebar() {
               handleDeleteConversation(e, contextMenu.convId);
               setContextMenu(null);
             }}
-            className="flex items-center gap-2 w-full px-3 py-1.5 text-[13px] text-red-500 hover:bg-[#f0ede6]"
+            className="flex items-center gap-2 w-full px-3 py-1.5 text-[13px] text-red-500 hover:bg-[var(--abu-bg-active)]"
           >
             <Trash2 className="h-3.5 w-3.5" />
             {t.sidebar.deleteConversation}
@@ -433,11 +433,11 @@ export default function Sidebar() {
 
       {/* Undo delete toast */}
       {pendingDelete && (
-        <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-50 flex items-center gap-3 px-4 py-2.5 bg-[#29261b] text-white rounded-xl shadow-lg animate-in fade-in slide-in-from-bottom-2 duration-200" role="alert" aria-live="assertive">
+        <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-50 flex items-center gap-3 px-4 py-2.5 bg-[var(--abu-text-primary)] text-white rounded-xl shadow-lg animate-in fade-in slide-in-from-bottom-2 duration-200" role="alert" aria-live="assertive">
           <span className="text-sm">{t.sidebar.conversationDeleted}</span>
           <button
             onClick={handleUndoDelete}
-            className="flex items-center gap-1 text-sm font-medium text-[#d97757] hover:text-[#e8956e] transition-colors"
+            className="flex items-center gap-1 text-sm font-medium text-[var(--abu-clay)] hover:text-[var(--abu-clay)] transition-colors"
           >
             <Undo2 className="h-3.5 w-3.5" />
             {t.sidebar.undo}

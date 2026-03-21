@@ -64,7 +64,7 @@ function FileCard({ file, onPreview, onOpenInFinder, operationLabels, previewTit
       role="button"
       tabIndex={0}
       className={cn(
-        'group flex items-center gap-2 px-2 py-1.5 rounded-md bg-white hover:bg-[#faf9f7] transition-colors cursor-pointer shadow-sm',
+        'group flex items-center gap-2 px-2 py-1.5 rounded-md bg-[var(--abu-bg-base)] hover:bg-[var(--abu-bg-muted)] transition-colors cursor-pointer',
         file.operation === 'write' && 'ring-1 ring-amber-500/30',
         file.operation === 'create' && 'ring-1 ring-green-500/30'
       )}
@@ -72,8 +72,8 @@ function FileCard({ file, onPreview, onOpenInFinder, operationLabels, previewTit
       onClick={handleClick}
       onKeyDown={(e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), handleClick())}
     >
-      <Icon className="w-3.5 h-3.5 text-[#656358] shrink-0" />
-      <span className="text-[12px] text-[#29261b] truncate flex-1">{fileName}</span>
+      <Icon className="w-3.5 h-3.5 text-[var(--abu-text-tertiary)] shrink-0" />
+      <span className="text-[12px] text-[var(--abu-text-primary)] truncate flex-1">{fileName}</span>
       <span
         className={cn(
           'text-[9px] px-1 py-0.5 rounded font-medium',
@@ -86,10 +86,10 @@ function FileCard({ file, onPreview, onOpenInFinder, operationLabels, previewTit
       </span>
       <button
         onClick={handleOpenExternal}
-        className="p-0.5 rounded hover:bg-[#e8e5de] opacity-0 group-hover:opacity-100 transition-opacity shrink-0"
+        className="p-0.5 rounded hover:bg-[var(--abu-bg-hover)] opacity-0 group-hover:opacity-100 transition-opacity shrink-0"
         title={finderTitle}
       >
-        <ExternalLink className="w-3 h-3 text-[#888579]" />
+        <ExternalLink className="w-3 h-3 text-[var(--abu-text-muted)]" />
       </button>
     </div>
   );
@@ -158,10 +158,10 @@ export default function FilesSection() {
   return (
     <div className="space-y-2 mt-3">
       <div className="flex items-center justify-between">
-        <h4 className="text-[11px] font-medium text-[#888579] uppercase tracking-wider">
+        <h4 className="text-[11px] font-medium text-[var(--abu-text-muted)] uppercase tracking-wider">
           {t.panel.files}
         </h4>
-        <span className="text-[10px] text-[#888579]">
+        <span className="text-[10px] text-[var(--abu-text-muted)]">
           {i18nFormat(t.panel.filesCount, { count: trackedFiles.length })}
         </span>
       </div>
@@ -181,7 +181,7 @@ export default function FilesSection() {
         {hiddenCount > 0 && (
           <button
             onClick={() => setExpanded(!expanded)}
-            className="w-full text-center text-[11px] text-[#888579] hover:text-[#656358] py-1 transition-colors"
+            className="w-full text-center text-[11px] text-[var(--abu-text-muted)] hover:text-[var(--abu-text-tertiary)] py-1 transition-colors"
           >
             {expanded ? t.panel.collapse : i18nFormat(t.panel.moreFiles, { count: hiddenCount })}
           </button>

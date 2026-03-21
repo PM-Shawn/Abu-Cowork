@@ -139,7 +139,7 @@ export default function TriggerSection() {
       {/* Section header */}
       <button
         onClick={() => setSectionOpen(!sectionOpen)}
-        className="flex items-center gap-1 w-full px-2 py-1 text-[12px] font-medium text-[#656358] hover:text-[#29261b]"
+        className="flex items-center gap-1 w-full px-2 py-1 text-[13px] font-medium text-[var(--abu-text-muted)] hover:text-[var(--abu-text-primary)]"
       >
         <ChevronRight
           className={cn('h-3 w-3 transition-transform', sectionOpen && 'rotate-90')}
@@ -165,7 +165,7 @@ export default function TriggerSection() {
                 <div className="flex items-center gap-1 px-2">
                   <button
                     onClick={() => toggleTrigger(trigger.id)}
-                    className="shrink-0 p-1 text-[#656358] hover:text-[#29261b]"
+                    className="shrink-0 p-1 text-[var(--abu-text-tertiary)] hover:text-[var(--abu-text-primary)]"
                   >
                     <ChevronRight
                       className={cn('h-3 w-3 transition-transform', isExpanded && 'rotate-90')}
@@ -175,7 +175,7 @@ export default function TriggerSection() {
                     onClick={() => handleParentClick(trigger.id)}
                     className={cn(
                       'flex-1 min-w-0 text-left py-1 rounded-md text-[12px] truncate',
-                      'text-[#3d3929] hover:text-[#29261b]'
+                      'text-[var(--abu-text-secondary)] hover:text-[var(--abu-text-primary)]'
                     )}
                   >
                     <span className="truncate">{trigger.name}</span>
@@ -199,10 +199,10 @@ export default function TriggerSection() {
                           className={cn(
                             'flex items-center gap-1.5 w-full px-2 py-1 rounded-md text-[12px] truncate transition-colors',
                             isActive
-                              ? 'bg-white shadow-sm text-[#29261b]'
+                              ? 'bg-[var(--abu-bg-active)] text-[var(--abu-text-primary)]'
                               : convExists
-                                ? 'text-[#656358] hover:bg-[#e8e5de] hover:text-[#3d3929]'
-                                : 'text-[#b0ad9f] cursor-not-allowed'
+                                ? 'text-[var(--abu-text-tertiary)] hover:bg-[var(--abu-bg-hover)] hover:text-[var(--abu-text-secondary)]'
+                                : 'text-[var(--abu-text-placeholder)] cursor-not-allowed'
                           )}
                         >
                           <RunStatusDot status={run.status} startedAt={run.startedAt} />
@@ -213,7 +213,7 @@ export default function TriggerSection() {
                     {runsWithConv.length > MAX_VISIBLE_RUNS && (
                       <button
                         onClick={() => toggleTrigger(trigger.id)}
-                        className="w-full px-2 py-0.5 text-[11px] text-[#999] hover:text-[#656358] text-left"
+                        className="w-full px-2 py-0.5 text-[11px] text-[var(--abu-text-muted)] hover:text-[var(--abu-text-tertiary)] text-left"
                       >
                         +{runsWithConv.length - MAX_VISIBLE_RUNS} more
                       </button>
@@ -230,19 +230,19 @@ export default function TriggerSection() {
       {contextMenu && (
         <div
           ref={contextMenuRef}
-          className="fixed z-50 bg-white rounded-lg shadow-lg border border-[#e8e4dd] py-1 min-w-[160px]"
+          className="fixed z-50 bg-white rounded-lg shadow-lg border border-[var(--abu-border)] py-1 min-w-[160px]"
           style={{ left: contextMenu.x, top: contextMenu.y }}
         >
           <button
             onClick={handleViewTrigger}
-            className="flex items-center gap-2 w-full px-3 py-1.5 text-[13px] text-[#3d3929] hover:bg-[#f0ede6]"
+            className="flex items-center gap-2 w-full px-3 py-1.5 text-[13px] text-[var(--abu-text-secondary)] hover:bg-[var(--abu-bg-active)]"
           >
             <Zap className="h-3.5 w-3.5" />
             {t.sidebar.viewTrigger}
           </button>
           <button
             onClick={handleArchiveRun}
-            className="flex items-center gap-2 w-full px-3 py-1.5 text-[13px] text-red-500 hover:bg-[#f0ede6]"
+            className="flex items-center gap-2 w-full px-3 py-1.5 text-[13px] text-red-500 hover:bg-[var(--abu-bg-active)]"
           >
             <Trash2 className="h-3.5 w-3.5" />
             {t.sidebar.archiveTriggerRun}

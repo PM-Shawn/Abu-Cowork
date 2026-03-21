@@ -73,8 +73,8 @@ export default function GeneralSection() {
   return (
     <div className="space-y-8">
       {/* Language */}
-      <div className="flex items-center justify-between p-4 rounded-xl border border-[#e8e4dd] bg-white">
-        <p className="text-sm text-[#29261b]">{t.settings.language}</p>
+      <div className="flex items-center justify-between p-4 rounded-xl border border-[var(--abu-border)] bg-[var(--abu-bg-muted)]">
+        <p className="text-sm text-[var(--abu-text-primary)]">{t.settings.language}</p>
         <Select
           variant="inline"
           value={language}
@@ -84,8 +84,8 @@ export default function GeneralSection() {
       </div>
 
       {/* Close window behavior */}
-      <div className="flex items-center justify-between p-4 rounded-xl border border-[#e8e4dd] bg-white">
-        <p className="text-sm text-[#29261b]">{t.settings.closeWindowBehavior}</p>
+      <div className="flex items-center justify-between p-4 rounded-xl border border-[var(--abu-border)] bg-[var(--abu-bg-muted)]">
+        <p className="text-sm text-[var(--abu-text-primary)]">{t.settings.closeWindowBehavior}</p>
         <Select
           variant="inline"
           value={closeAction}
@@ -96,10 +96,10 @@ export default function GeneralSection() {
 
       {/* Behavior sensor */}
       <div className="space-y-3">
-        <div className="flex items-center justify-between p-4 rounded-xl border border-[#e8e4dd] bg-white">
+        <div className="flex items-center justify-between p-4 rounded-xl border border-[var(--abu-border)] bg-[var(--abu-bg-muted)]">
           <div className="flex-1 mr-4">
-            <p className="text-sm text-[#29261b]">{t.settings.behaviorSensor}</p>
-            <p className="text-xs text-[#888579] mt-0.5">{t.settings.behaviorSensorDesc}</p>
+            <p className="text-sm text-[var(--abu-text-primary)]">{t.settings.behaviorSensor}</p>
+            <p className="text-xs text-[var(--abu-text-muted)] mt-0.5">{t.settings.behaviorSensorDesc}</p>
           </div>
           <Toggle
             checked={behaviorSensorEnabled}
@@ -127,10 +127,10 @@ export default function GeneralSection() {
 
       {/* Computer Use */}
       <div className="space-y-3">
-        <div className="flex items-center justify-between p-4 rounded-xl border border-[#e8e4dd] bg-white">
+        <div className="flex items-center justify-between p-4 rounded-xl border border-[var(--abu-border)] bg-[var(--abu-bg-muted)]">
           <div className="flex-1 mr-4">
-            <p className="text-sm text-[#29261b]">{t.settings.computerUse}</p>
-            <p className="text-xs text-[#888579] mt-0.5">{t.settings.computerUseDesc}</p>
+            <p className="text-sm text-[var(--abu-text-primary)]">{t.settings.computerUse}</p>
+            <p className="text-xs text-[var(--abu-text-muted)] mt-0.5">{t.settings.computerUseDesc}</p>
           </div>
           <Toggle
             checked={computerUseEnabled}

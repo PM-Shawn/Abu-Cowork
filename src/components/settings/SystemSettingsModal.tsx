@@ -45,16 +45,16 @@ export default function SystemSettingsView() {
   };
 
   return (
-    <div className="h-full bg-[#faf8f5] flex flex-col">
+    <div className="h-full bg-[var(--abu-bg-base)] flex flex-col">
       {/* Header */}
-      <div className="shrink-0 flex items-center px-6 py-4 border-b border-[#e8e4dd]">
+      <div className="shrink-0 flex items-center px-6 py-4 border-b border-[var(--abu-border)]">
         <div className="flex items-center gap-3">
-          <div className="h-8 w-8 rounded-lg bg-[#d97757]/10 flex items-center justify-center">
-            <Settings2 className="h-4 w-4 text-[#d97757]" />
+          <div className="h-8 w-8 rounded-lg bg-[var(--abu-clay-bg)] flex items-center justify-center">
+            <Settings2 className="h-4 w-4 text-[var(--abu-clay)]" />
           </div>
-          <h2 className="text-lg font-semibold text-[#29261b]">{t.settings.title}</h2>
+          <h2 className="text-lg font-semibold text-[var(--abu-text-primary)]">{t.settings.title}</h2>
         </div>
-        <div className="flex items-center gap-1 text-[11px] text-[#888579]">
+        <div className="flex items-center gap-1 text-[11px] text-[var(--abu-text-muted)]">
           <Check className="h-3 w-3 text-green-500" />
           <span>{t.settings.autoSaved}</span>
         </div>
@@ -63,7 +63,7 @@ export default function SystemSettingsView() {
       {/* Body - Left/Right Layout */}
       <div className="flex-1 flex min-h-0">
         {/* Left Navigation */}
-        <nav className="w-[180px] shrink-0 border-r border-[#e8e4dd] py-4 px-3">
+        <nav className="w-[180px] shrink-0 border-r border-[var(--abu-border)] py-4 px-3">
           <div className="space-y-1">
             {navItems.map((item) => {
               const Icon = item.icon;
@@ -75,13 +75,13 @@ export default function SystemSettingsView() {
                   className={cn(
                     'w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors text-left',
                     isActive
-                      ? 'bg-white text-[#29261b] shadow-sm'
-                      : 'text-[#656358] hover:text-[#29261b] hover:bg-white/50'
+                      ? 'bg-[var(--abu-bg-active)] text-[var(--abu-text-primary)]'
+                      : 'text-[var(--abu-text-tertiary)] hover:text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-hover)]'
                   )}
                 >
                   <Icon className={cn(
                     'h-4 w-4 shrink-0',
-                    isActive ? 'text-[#d97757]' : 'text-[#888579]'
+                    isActive ? 'text-[var(--abu-clay)]' : 'text-[var(--abu-text-muted)]'
                   )} />
                   <span>{item.label}</span>
                 </button>

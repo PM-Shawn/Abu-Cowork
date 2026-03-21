@@ -71,10 +71,10 @@ export function Select({ value, onChange, options, placeholder, variant = 'defau
       }}
       className={cn(
         'w-full px-3 py-2 text-sm text-left transition-colors',
-        'hover:bg-[#f5f3ee]',
+        'hover:bg-[var(--abu-bg-muted)]',
         opt.value === value
-          ? 'text-[#d97757] bg-[#d97757]/5'
-          : 'text-[#29261b]'
+          ? 'text-[var(--abu-clay)] bg-[var(--abu-clay-bg)]'
+          : 'text-[var(--abu-text-primary)]'
       )}
     >
       {isInline ? (
@@ -82,7 +82,7 @@ export function Select({ value, onChange, options, placeholder, variant = 'defau
       ) : (
         <span className="inline-flex items-center gap-2">
           <span className="w-4 shrink-0">
-            {opt.value === value && <Check className="h-4 w-4 text-[#d97757]" />}
+            {opt.value === value && <Check className="h-4 w-4 text-[var(--abu-clay)]" />}
           </span>
           {opt.label}
         </span>
@@ -97,21 +97,21 @@ export function Select({ value, onChange, options, placeholder, variant = 'defau
         type="button"
         onClick={() => setOpen(!open)}
         className={cn(
-          'flex items-center gap-2 rounded-lg border border-[#e8e4dd] text-sm text-left transition-all',
-          'focus:outline-none focus:ring-2 focus:ring-[#d97757]/30 focus:border-[#d97757]',
-          'hover:border-[#d0cdc6]',
-          open && 'ring-2 ring-[#d97757]/30 border-[#d97757]',
+          'flex items-center gap-2 rounded-lg border border-[var(--abu-border)] text-sm text-left transition-all',
+          'focus:outline-none focus:ring-2 focus:ring-[var(--abu-clay-ring)] focus:border-[var(--abu-clay)]',
+          'hover:border-[var(--abu-border-hover)]',
+          open && 'ring-2 ring-[var(--abu-clay-ring)] border-[var(--abu-clay)]',
           isInline
-            ? 'px-3 py-1.5 bg-[#faf9f5]'
-            : 'w-full h-9 px-3 justify-between bg-[#faf9f7]',
+            ? 'px-3 py-1.5 bg-[var(--abu-bg-base)]'
+            : 'w-full h-9 px-3 justify-between bg-[var(--abu-bg-muted)]',
         )}
       >
-        <span className={cn(!selectedOption ? 'text-[#b8b5ab]' : 'text-[#29261b]')}>
+        <span className={cn(!selectedOption ? 'text-[var(--abu-text-placeholder)]' : 'text-[var(--abu-text-primary)]')}>
           {selectedOption?.label ?? placeholder ?? '...'}
         </span>
         <ChevronDown
           className={cn(
-            'h-3.5 w-3.5 text-[#888579] transition-transform shrink-0',
+            'h-3.5 w-3.5 text-[var(--abu-text-muted)] transition-transform shrink-0',
             open && 'rotate-180'
           )}
         />
@@ -120,14 +120,14 @@ export function Select({ value, onChange, options, placeholder, variant = 'defau
       {/* Dropdown */}
       {open && (
         <div className={cn(
-          'absolute z-50 top-full mt-1 py-1 bg-white border border-[#e8e4dd] rounded-xl shadow-lg max-h-60 overflow-auto',
+          'absolute z-50 top-full mt-1 py-1 bg-white border border-[var(--abu-border)] rounded-xl shadow-lg max-h-60 overflow-auto',
           isInline ? 'right-0 min-w-[140px]' : 'left-0 right-0',
         )}>
           {isGrouped(options) ? (
             options.map((group, gi) => (
               <div key={group.label}>
-                {gi > 0 && <div className="my-1 border-t border-[#e8e4dd]" />}
-                <div className="px-3 py-1.5 text-xs font-medium text-[#888579] select-none">
+                {gi > 0 && <div className="my-1 border-t border-[var(--abu-border)]" />}
+                <div className="px-3 py-1.5 text-xs font-medium text-[var(--abu-text-muted)] select-none">
                   {group.label}
                 </div>
                 {group.options.map(renderOption)}

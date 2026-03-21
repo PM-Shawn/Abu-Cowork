@@ -43,16 +43,16 @@ export default function ConfirmDialog({
       <div
         className="bg-white rounded-2xl shadow-xl w-[360px] p-6 animate-in zoom-in-95 duration-150"
       >
-        <h3 className="text-[16px] font-semibold text-[#29261b] mb-2">
+        <h3 className="text-[16px] font-semibold text-[var(--abu-text-primary)] mb-2">
           {title}
         </h3>
-        <p className="text-[14px] text-[#656358] leading-relaxed mb-6">
+        <p className="text-[14px] text-[var(--abu-text-tertiary)] leading-relaxed mb-6">
           {message}
         </p>
         <div className="flex items-center justify-end gap-3">
           <button
             onClick={onCancel}
-            className="px-4 py-2 rounded-lg text-[13px] font-medium text-[#656358] hover:bg-[#f5f3ee] transition-colors"
+            className="px-4 py-2 rounded-lg text-[13px] font-medium text-[var(--abu-text-tertiary)] hover:bg-[var(--abu-bg-muted)] transition-colors"
           >
             {cancelText}
           </button>
@@ -62,7 +62,7 @@ export default function ConfirmDialog({
               'px-4 py-2 rounded-lg text-[13px] font-medium text-white transition-colors',
               variant === 'danger'
                 ? 'bg-red-500 hover:bg-red-600'
-                : 'bg-[#d97757] hover:bg-[#c8664a]'
+                : 'bg-[var(--abu-clay)] hover:bg-[var(--abu-clay-hover)]'
             )}
           >
             {confirmText}

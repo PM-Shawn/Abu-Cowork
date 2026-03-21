@@ -92,19 +92,19 @@ export default function AgentEditor({ agent, onClose, onSave }: AgentEditorProps
   return (
     <div className="flex flex-col h-full overflow-hidden">
       {/* Header */}
-      <div className="shrink-0 flex items-center gap-3 px-4 py-3 border-b border-[#e8e4dd]/60">
+      <div className="shrink-0 flex items-center gap-3 px-4 py-3 border-b border-[var(--abu-border)]">
         <button
           onClick={onClose}
-          className="p-1.5 rounded-lg text-[#656358] hover:text-[#29261b] hover:bg-[#f5f3ee] transition-colors"
+          className="p-1.5 rounded-lg text-[var(--abu-text-tertiary)] hover:text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-muted)] transition-colors"
         >
           <ArrowLeft className="h-4 w-4" />
         </button>
-        <h2 className="text-sm font-semibold text-[#29261b] flex-1">{t.toolbox.agentEditorTitle}</h2>
+        <h2 className="text-sm font-semibold text-[var(--abu-text-primary)] flex-1">{t.toolbox.agentEditorTitle}</h2>
         <div className="flex gap-2">
           <button
             onClick={handleSave}
             disabled={!isValid || saving}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-[#29261b] text-[#faf9f5] hover:bg-[#3d3a2f] disabled:opacity-50 transition-colors"
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-[var(--abu-text-primary)] text-[var(--abu-bg-base)] hover:bg-[var(--abu-text-primary)] disabled:opacity-50 transition-colors"
           >
             <Save className="h-3.5 w-3.5" />
             {t.toolbox.agentSave}
@@ -112,7 +112,7 @@ export default function AgentEditor({ agent, onClose, onSave }: AgentEditorProps
           <button
             onClick={handleSaveAndTest}
             disabled={!isValid || saving}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-[#d97757] text-white hover:bg-[#c5664a] disabled:opacity-50 transition-colors"
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-[var(--abu-clay)] text-white hover:bg-[var(--abu-clay-hover)] disabled:opacity-50 transition-colors"
           >
             <Play className="h-3.5 w-3.5" />
             {t.toolbox.agentSaveAndTest}
@@ -124,22 +124,22 @@ export default function AgentEditor({ agent, onClose, onSave }: AgentEditorProps
       <div className="flex-1 overflow-y-auto px-4 py-4 space-y-4">
         {/* Metadata Section */}
         <div className="space-y-3">
-          <h3 className="text-xs font-semibold text-[#656358] uppercase tracking-wide">
+          <h3 className="text-xs font-semibold text-[var(--abu-text-tertiary)] uppercase tracking-wide">
             {t.toolbox.agentEditorMetadata}
           </h3>
 
           {/* Name + Avatar row */}
           <div className="flex gap-3">
             <div className="flex-1">
-              <label className="block text-xs font-medium text-[#29261b]/70 mb-1">{t.toolbox.agentEditorName}</label>
+              <label className="block text-xs font-medium text-[var(--abu-text-secondary)] mb-1">{t.toolbox.agentEditorName}</label>
               <input
                 type="text"
                 value={name}
                 onChange={(e) => setName(e.target.value)}
                 placeholder="my-agent"
                 className={cn(
-                  'w-full px-3 py-1.5 rounded-lg border text-sm text-[#29261b] bg-white focus:outline-none focus:ring-2 focus:ring-[#d97757]/30 focus:border-[#d97757] transition-all',
-                  name.trim() && !nameValid ? 'border-red-300' : 'border-[#e8e4dd]',
+                  'w-full px-3 py-1.5 rounded-lg border text-sm text-[var(--abu-text-primary)] bg-[var(--abu-bg-base)] focus:outline-none focus:ring-2 focus:ring-[var(--abu-clay-ring)] focus:border-[var(--abu-clay)] transition-all',
+                  name.trim() && !nameValid ? 'border-red-300' : 'border-[var(--abu-border)]',
                 )}
               />
               {name.trim() && !nameValid && (
@@ -147,32 +147,32 @@ export default function AgentEditor({ agent, onClose, onSave }: AgentEditorProps
               )}
             </div>
             <div className="w-20">
-              <label className="block text-xs font-medium text-[#29261b]/70 mb-1">{t.toolbox.agentAvatar}</label>
+              <label className="block text-xs font-medium text-[var(--abu-text-secondary)] mb-1">{t.toolbox.agentAvatar}</label>
               <input
                 type="text"
                 value={avatar}
                 onChange={(e) => setAvatar(e.target.value)}
                 placeholder="🤖"
-                className="w-full px-3 py-1.5 rounded-lg border border-[#e8e4dd] text-sm text-[#29261b] bg-white focus:outline-none focus:ring-2 focus:ring-[#d97757]/30 focus:border-[#d97757] transition-all text-center"
+                className="w-full px-3 py-1.5 rounded-lg border border-[var(--abu-border)] text-sm text-[var(--abu-text-primary)] bg-[var(--abu-bg-base)] focus:outline-none focus:ring-2 focus:ring-[var(--abu-clay-ring)] focus:border-[var(--abu-clay)] transition-all text-center"
               />
             </div>
           </div>
 
           {/* Description */}
           <div>
-            <label className="block text-xs font-medium text-[#29261b]/70 mb-1">{t.toolbox.agentEditorDescription}</label>
+            <label className="block text-xs font-medium text-[var(--abu-text-secondary)] mb-1">{t.toolbox.agentEditorDescription}</label>
             <input
               type="text"
               value={description}
               onChange={(e) => setDescription(e.target.value)}
-              className="w-full px-3 py-1.5 rounded-lg border border-[#e8e4dd] text-sm text-[#29261b] bg-white focus:outline-none focus:ring-2 focus:ring-[#d97757]/30 focus:border-[#d97757] transition-all"
+              className="w-full px-3 py-1.5 rounded-lg border border-[var(--abu-border)] text-sm text-[var(--abu-text-primary)] bg-[var(--abu-bg-base)] focus:outline-none focus:ring-2 focus:ring-[var(--abu-clay-ring)] focus:border-[var(--abu-clay)] transition-all"
             />
           </div>
 
           {/* Model + Max Turns row */}
           <div className="flex gap-3">
             <div className="flex-1">
-              <label className="block text-xs font-medium text-[#29261b]/70 mb-1">{t.toolbox.agentModel}</label>
+              <label className="block text-xs font-medium text-[var(--abu-text-secondary)] mb-1">{t.toolbox.agentModel}</label>
               <Select
                 value={model}
                 onChange={setModel}
@@ -186,57 +186,57 @@ export default function AgentEditor({ agent, onClose, onSave }: AgentEditorProps
               />
             </div>
             <div className="w-24">
-              <label className="block text-xs font-medium text-[#29261b]/70 mb-1">{t.toolbox.agentMaxTurns}</label>
+              <label className="block text-xs font-medium text-[var(--abu-text-secondary)] mb-1">{t.toolbox.agentMaxTurns}</label>
               <input
                 type="number"
                 value={maxTurns}
                 onChange={(e) => setMaxTurns(e.target.value)}
                 placeholder="20"
-                className="w-full px-3 py-1.5 rounded-lg border border-[#e8e4dd] text-sm text-[#29261b] bg-white focus:outline-none focus:ring-2 focus:ring-[#d97757]/30 focus:border-[#d97757] transition-all"
+                className="w-full px-3 py-1.5 rounded-lg border border-[var(--abu-border)] text-sm text-[var(--abu-text-primary)] bg-[var(--abu-bg-base)] focus:outline-none focus:ring-2 focus:ring-[var(--abu-clay-ring)] focus:border-[var(--abu-clay)] transition-all"
               />
             </div>
           </div>
 
           {/* Tools */}
           <div>
-            <label className="block text-xs font-medium text-[#29261b]/70 mb-1">{t.toolbox.agentTools}</label>
+            <label className="block text-xs font-medium text-[var(--abu-text-secondary)] mb-1">{t.toolbox.agentTools}</label>
             <input
               type="text"
               value={toolsStr}
               onChange={(e) => setToolsStr(e.target.value)}
               placeholder="web_search, read_file, write_file"
-              className="w-full px-3 py-1.5 rounded-lg border border-[#e8e4dd] text-sm text-[#29261b] bg-white focus:outline-none focus:ring-2 focus:ring-[#d97757]/30 focus:border-[#d97757] transition-all"
+              className="w-full px-3 py-1.5 rounded-lg border border-[var(--abu-border)] text-sm text-[var(--abu-text-primary)] bg-[var(--abu-bg-base)] focus:outline-none focus:ring-2 focus:ring-[var(--abu-clay-ring)] focus:border-[var(--abu-clay)] transition-all"
             />
           </div>
 
           {/* Disallowed Tools */}
           <div>
-            <label className="block text-xs font-medium text-[#29261b]/70 mb-1">{t.toolbox.agentDisallowedTools}</label>
+            <label className="block text-xs font-medium text-[var(--abu-text-secondary)] mb-1">{t.toolbox.agentDisallowedTools}</label>
             <input
               type="text"
               value={disallowedToolsStr}
               onChange={(e) => setDisallowedToolsStr(e.target.value)}
               placeholder="execute_command"
-              className="w-full px-3 py-1.5 rounded-lg border border-[#e8e4dd] text-sm text-[#29261b] bg-white focus:outline-none focus:ring-2 focus:ring-[#d97757]/30 focus:border-[#d97757] transition-all"
+              className="w-full px-3 py-1.5 rounded-lg border border-[var(--abu-border)] text-sm text-[var(--abu-text-primary)] bg-[var(--abu-bg-base)] focus:outline-none focus:ring-2 focus:ring-[var(--abu-clay-ring)] focus:border-[var(--abu-clay)] transition-all"
             />
           </div>
 
           {/* Skills */}
           <div>
-            <label className="block text-xs font-medium text-[#29261b]/70 mb-1">{t.toolbox.agentSkills}</label>
+            <label className="block text-xs font-medium text-[var(--abu-text-secondary)] mb-1">{t.toolbox.agentSkills}</label>
             <input
               type="text"
               value={skillsStr}
               onChange={(e) => setSkillsStr(e.target.value)}
               placeholder="deep-research, code-review"
-              className="w-full px-3 py-1.5 rounded-lg border border-[#e8e4dd] text-sm text-[#29261b] bg-white focus:outline-none focus:ring-2 focus:ring-[#d97757]/30 focus:border-[#d97757] transition-all"
+              className="w-full px-3 py-1.5 rounded-lg border border-[var(--abu-border)] text-sm text-[var(--abu-text-primary)] bg-[var(--abu-bg-base)] focus:outline-none focus:ring-2 focus:ring-[var(--abu-clay-ring)] focus:border-[var(--abu-clay)] transition-all"
             />
           </div>
 
           {/* Memory + Background row */}
           <div className="flex gap-3 items-end">
             <div className="flex-1">
-              <label className="block text-xs font-medium text-[#29261b]/70 mb-1">{t.toolbox.agentMemory}</label>
+              <label className="block text-xs font-medium text-[var(--abu-text-secondary)] mb-1">{t.toolbox.agentMemory}</label>
               <Select
                 value={memory}
                 onChange={(v) => setMemory(v as 'session' | 'project' | 'user')}
@@ -248,7 +248,7 @@ export default function AgentEditor({ agent, onClose, onSave }: AgentEditorProps
               />
             </div>
             <div className="flex items-center gap-2 pb-1">
-              <label className="text-xs font-medium text-[#29261b]/70">{t.toolbox.agentBackground}</label>
+              <label className="text-xs font-medium text-[var(--abu-text-secondary)]">{t.toolbox.agentBackground}</label>
               <Toggle checked={background} onChange={() => setBackground(!background)} size="md" />
             </div>
           </div>
@@ -257,15 +257,15 @@ export default function AgentEditor({ agent, onClose, onSave }: AgentEditorProps
         {/* Content Section */}
         <div className="space-y-2">
           <div className="flex items-center justify-between">
-            <h3 className="text-xs font-semibold text-[#656358] uppercase tracking-wide">
+            <h3 className="text-xs font-semibold text-[var(--abu-text-tertiary)] uppercase tracking-wide">
               {t.toolbox.agentEditorContent}
             </h3>
             <button
               onClick={() => setShowPreview(!showPreview)}
               className={`text-[11px] px-2 py-0.5 rounded-full transition-colors ${
                 showPreview
-                  ? 'bg-[#29261b] text-[#faf9f5]'
-                  : 'bg-[#f5f3ee] text-[#656358] hover:bg-[#e8e4dd]'
+                  ? 'bg-[var(--abu-text-primary)] text-[var(--abu-bg-base)]'
+                  : 'bg-[var(--abu-bg-muted)] text-[var(--abu-text-tertiary)] hover:bg-[var(--abu-border)]'
               }`}
             >
               {t.toolbox.agentEditorPreview}
@@ -273,7 +273,7 @@ export default function AgentEditor({ agent, onClose, onSave }: AgentEditorProps
           </div>
 
           {showPreview ? (
-            <div className="border border-[#e8e4dd] rounded-lg p-4 bg-[#faf9f5] min-h-[200px] max-h-[400px] overflow-y-auto">
+            <div className="border border-[var(--abu-border)] rounded-lg p-4 bg-[var(--abu-bg-base)] min-h-[200px] max-h-[400px] overflow-y-auto">
               <MarkdownRenderer content={systemPrompt || '*No content yet*'} />
             </div>
           ) : (
@@ -281,7 +281,7 @@ export default function AgentEditor({ agent, onClose, onSave }: AgentEditorProps
               value={systemPrompt}
               onChange={(e) => setSystemPrompt(e.target.value)}
               placeholder="Write agent system prompt in Markdown..."
-              className="w-full min-h-[200px] max-h-[400px] px-3 py-2 rounded-lg border border-[#e8e4dd] text-sm text-[#29261b] bg-white font-mono focus:outline-none focus:ring-2 focus:ring-[#d97757]/30 focus:border-[#d97757] transition-all resize-y"
+              className="w-full min-h-[200px] max-h-[400px] px-3 py-2 rounded-lg border border-[var(--abu-border)] text-sm text-[var(--abu-text-primary)] bg-[var(--abu-bg-base)] font-mono focus:outline-none focus:ring-2 focus:ring-[var(--abu-clay-ring)] focus:border-[var(--abu-clay)] transition-all resize-y"
             />
           )}
         </div>

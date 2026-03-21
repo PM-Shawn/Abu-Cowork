@@ -198,7 +198,7 @@ export default function ChatView() {
 
   if (!activeConv) {
     return (
-      <div className="flex flex-col h-full bg-[#faf9f5]">
+      <div className="flex flex-col h-full bg-[var(--abu-bg-base)]">
         <div className="flex-1 flex flex-col items-center justify-center px-8 py-12">
           <div className="w-full max-w-2xl">
             {/* Title */}
@@ -209,10 +209,10 @@ export default function ChatView() {
               </div>
 
               {/* Slogan */}
-              <h1 className="text-[28px] font-semibold text-[#29261b] leading-tight mb-2">
+              <h1 className="text-[28px] font-semibold text-[var(--abu-text-primary)] leading-tight mb-2">
                 {t.chat.welcomeTitle}
               </h1>
-              <p className="text-[15px] text-[#656358]">
+              <p className="text-[15px] text-[var(--abu-text-tertiary)]">
                 {t.chat.welcomeSubtitle}
               </p>
             </div>
@@ -220,11 +220,11 @@ export default function ChatView() {
             {/* First-run setup prompt */}
             {needsSetup && (
               <div className="mb-6 mx-auto max-w-md">
-                <div className="rounded-xl border border-[#e8e6df] bg-white/80 px-5 py-4 text-center shadow-sm">
-                  <p className="text-[15px] font-medium text-[#29261b] mb-1">
+                <div className="rounded-xl border border-[var(--abu-border)] bg-white/80 px-5 py-4 text-center">
+                  <p className="text-[15px] font-medium text-[var(--abu-text-primary)] mb-1">
                     {t.chat.setupRequired}
                   </p>
-                  <p className="text-[13px] text-[#656358] mb-3">
+                  <p className="text-[13px] text-[var(--abu-text-tertiary)] mb-3">
                     {t.chat.setupRequiredDesc}
                   </p>
                   <button
@@ -265,7 +265,7 @@ export default function ChatView() {
   const messageGroups = groupMessagesByLoop(messages);
 
   return (
-    <div className="flex flex-col h-full min-h-0 min-w-0 bg-[#faf9f5]">
+    <div className="flex flex-col h-full min-h-0 min-w-0 bg-[var(--abu-bg-base)]">
       {/* Command Confirmation Dialog — only show if it belongs to this conversation */}
       {commandConfirmRequest && commandConfirmRequest.conversationId === activeConvId && (
         <CommandConfirmDialog
@@ -317,11 +317,11 @@ export default function ChatView() {
             {activeConv?.status === 'running' && messages.every((m) => m.role === 'user') && (
               <div className="flex items-center gap-3 pl-9 py-1">
                 <div className="flex items-center gap-1">
-                  <span className="typing-dot w-1.5 h-1.5 rounded-full bg-[#d97757]/60" />
-                  <span className="typing-dot w-1.5 h-1.5 rounded-full bg-[#d97757]/60" />
-                  <span className="typing-dot w-1.5 h-1.5 rounded-full bg-[#d97757]/60" />
+                  <span className="typing-dot w-1.5 h-1.5 rounded-full bg-[var(--abu-clay-60)]" />
+                  <span className="typing-dot w-1.5 h-1.5 rounded-full bg-[var(--abu-clay-60)]" />
+                  <span className="typing-dot w-1.5 h-1.5 rounded-full bg-[var(--abu-clay-60)]" />
                 </div>
-                <span className="text-[13px] text-[#656358]">{t.chat.thinking}</span>
+                <span className="text-[13px] text-[var(--abu-text-tertiary)]">{t.chat.thinking}</span>
               </div>
             )}
           </div>
@@ -334,7 +334,7 @@ export default function ChatView() {
         {!isAtBottom && (
           <button
             onClick={scrollToBottom}
-            className="sticky bottom-3 left-1/2 -translate-x-1/2 z-10 flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-white/90 border border-[#706b5730] shadow-md text-[13px] text-[#656358] hover:text-[#29261b] hover:bg-white transition-all backdrop-blur-sm"
+            className="sticky bottom-3 left-1/2 -translate-x-1/2 z-10 flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-white/90 border border-[var(--abu-border)] text-[13px] text-[var(--abu-text-tertiary)] hover:text-[var(--abu-text-primary)] hover:bg-white transition-all backdrop-blur-sm"
           >
             <ChevronDown className="h-3.5 w-3.5" />
             <span>{t.chat.scrollToBottom}</span>
@@ -343,10 +343,10 @@ export default function ChatView() {
       </div>
 
       {/* Bottom Input */}
-      <div className="shrink-0 px-6 md:px-10 pb-4 pt-1.5 bg-[#faf9f5]">
+      <div className="shrink-0 px-6 md:px-10 pb-4 pt-1.5 bg-[var(--abu-bg-base)]">
         <div className="max-w-4xl mx-auto">
           <ChatInput variant="chat" onSend={handleSend} />
-          <p className="text-center text-[11px] text-[#656358]/70 mt-1.5">
+          <p className="text-center text-[11px] text-[var(--abu-text-muted)] mt-1.5">
             {t.chat.disclaimer}
           </p>
         </div>

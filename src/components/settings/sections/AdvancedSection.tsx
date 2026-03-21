@@ -22,11 +22,11 @@ export default function AdvancedSection() {
       {/* Temperature slider */}
       <div className="space-y-3">
         <div className="flex items-center justify-between">
-          <label className="text-sm font-medium text-[#29261b] flex items-center gap-2">
-            <Thermometer className="h-4 w-4 text-[#656358]" />
+          <label className="text-sm font-medium text-[var(--abu-text-primary)] flex items-center gap-2">
+            <Thermometer className="h-4 w-4 text-[var(--abu-text-tertiary)]" />
             {t.settings.temperature}
           </label>
-          <span className="text-sm font-mono text-[#29261b] bg-white border border-[#e8e4dd] px-2 py-0.5 rounded">
+          <span className="text-sm font-mono text-[var(--abu-text-primary)] bg-[var(--abu-bg-muted)] border border-[var(--abu-border)] px-2 py-0.5 rounded">
             {temperature.toFixed(2)}
           </span>
         </div>
@@ -37,22 +37,22 @@ export default function AdvancedSection() {
           step="0.05"
           value={temperature}
           onChange={(e) => setTemperature(parseFloat(e.target.value))}
-          className="w-full h-2 bg-[#e8e5de] rounded-lg appearance-none cursor-pointer accent-[#d97757]"
+          className="w-full h-2 bg-[var(--abu-bg-hover)] rounded-lg appearance-none cursor-pointer accent-[var(--abu-clay)]"
         />
-        <div className="flex justify-between text-xs text-[#656358]">
+        <div className="flex justify-between text-xs text-[var(--abu-text-tertiary)]">
           <span>{t.settings.temperaturePrecise}</span>
           <span>{t.settings.temperatureCreative}</span>
         </div>
-        <p className="text-xs text-[#656358] leading-relaxed">
+        <p className="text-xs text-[var(--abu-text-tertiary)] leading-relaxed">
           {t.settings.temperatureDescription}
         </p>
       </div>
 
       {/* Extended Thinking toggle */}
-      <div className="p-4 rounded-lg border border-[#e8e4dd] bg-white space-y-3">
+      <div className="p-4 rounded-lg border border-[var(--abu-border)] bg-[var(--abu-bg-muted)] space-y-3">
         <div className="flex items-center justify-between">
-          <label className="text-sm font-medium text-[#29261b] flex items-center gap-2">
-            <Brain className="h-4 w-4 text-[#656358]" />
+          <label className="text-sm font-medium text-[var(--abu-text-primary)] flex items-center gap-2">
+            <Brain className="h-4 w-4 text-[var(--abu-text-tertiary)]" />
             {t.settings.extendedThinking}
           </label>
           <Toggle
@@ -61,16 +61,16 @@ export default function AdvancedSection() {
             size="lg"
           />
         </div>
-        <p className="text-xs text-[#656358]">
+        <p className="text-xs text-[var(--abu-text-tertiary)]">
           {t.settings.extendedThinkingDescription}
         </p>
 
         {/* Thinking Budget */}
         {enableThinking && (
-          <div className="pt-3 border-t border-[#e8e4dd] space-y-3">
+          <div className="pt-3 border-t border-[var(--abu-border)] space-y-3">
             <div className="flex items-center justify-between">
-              <label className="text-sm text-[#656358]">{t.settings.thinkingBudget}</label>
-              <span className="text-sm font-mono text-[#29261b]">
+              <label className="text-sm text-[var(--abu-text-tertiary)]">{t.settings.thinkingBudget}</label>
+              <span className="text-sm font-mono text-[var(--abu-text-primary)]">
                 {thinkingBudget.toLocaleString()}
               </span>
             </div>
@@ -81,9 +81,9 @@ export default function AdvancedSection() {
               step="1000"
               value={thinkingBudget}
               onChange={(e) => setThinkingBudget(parseInt(e.target.value))}
-              className="w-full h-2 bg-[#e8e5de] rounded-lg appearance-none cursor-pointer accent-[#d97757]"
+              className="w-full h-2 bg-[var(--abu-bg-hover)] rounded-lg appearance-none cursor-pointer accent-[var(--abu-clay)]"
             />
-            <div className="flex justify-between text-xs text-[#656358]">
+            <div className="flex justify-between text-xs text-[var(--abu-text-tertiary)]">
               <span>{t.settings.thinkingBudgetFast}</span>
               <span>{t.settings.thinkingBudgetDeep}</span>
             </div>
@@ -92,14 +92,14 @@ export default function AdvancedSection() {
       </div>
 
       {/* Language selector */}
-      <div className="p-4 rounded-lg border border-[#e8e4dd] bg-white space-y-3">
+      <div className="p-4 rounded-lg border border-[var(--abu-border)] bg-[var(--abu-bg-muted)] space-y-3">
         <div className="flex items-center justify-between">
-          <label className="text-sm font-medium text-[#29261b] flex items-center gap-2">
-            <Globe className="h-4 w-4 text-[#656358]" />
+          <label className="text-sm font-medium text-[var(--abu-text-primary)] flex items-center gap-2">
+            <Globe className="h-4 w-4 text-[var(--abu-text-tertiary)]" />
             {t.settings.language}
           </label>
         </div>
-        <p className="text-xs text-[#656358]">
+        <p className="text-xs text-[var(--abu-text-tertiary)]">
           {t.settings.languageDescription}
         </p>
         <div className="flex gap-2 pt-1">
@@ -110,8 +110,8 @@ export default function AdvancedSection() {
               className={cn(
                 'px-3 py-1.5 text-sm rounded-lg border transition-colors',
                 language === option.value
-                  ? 'bg-[#29261b] text-white border-[#29261b]'
-                  : 'bg-white text-[#656358] border-[#e8e4dd] hover:border-[#c5c2b8] hover:text-[#29261b]'
+                  ? 'bg-[var(--abu-text-primary)] text-white border-[var(--abu-text-primary)]'
+                  : 'bg-[var(--abu-bg-muted)] text-[var(--abu-text-tertiary)] border-[var(--abu-border)] hover:border-[var(--abu-border-hover)] hover:text-[var(--abu-text-primary)]'
               )}
             >
               {option.value === 'system'

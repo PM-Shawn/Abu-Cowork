@@ -45,20 +45,20 @@ function FormRow({ label, children, hint }: { label: string; children: React.Rea
   return (
     <div className="flex items-start justify-between gap-4">
       <div className="shrink-0 pt-1.5">
-        <span className="inline-flex items-center gap-1 text-[13px] text-[#656358]">
+        <span className="inline-flex items-center gap-1 text-[13px] text-[var(--abu-text-tertiary)]">
           {label}
           {hint && (
             <div className="relative" ref={hintRef}>
               <button
                 onClick={() => setShowHint(!showHint)}
-                className="text-[#aaa89e] hover:text-[#888579] transition-colors"
+                className="text-[var(--abu-text-muted)] hover:text-[var(--abu-text-muted)] transition-colors"
               >
                 <HelpCircle className="h-3.5 w-3.5" />
               </button>
               {showHint && (
-                <div className="absolute left-full top-1/2 -translate-y-1/2 ml-2 w-52 px-3 py-2 rounded-lg bg-[#29261b] text-white text-[11px] leading-relaxed shadow-lg z-[9999]">
+                <div className="absolute left-full top-1/2 -translate-y-1/2 ml-2 w-52 px-3 py-2 rounded-lg bg-[var(--abu-text-primary)] text-white text-[11px] leading-relaxed shadow-lg z-[9999]">
                   {hint}
-                  <div className="absolute right-full top-1/2 -translate-y-1/2 w-0 h-0 border-y-[5px] border-y-transparent border-r-[5px] border-r-[#29261b]" />
+                  <div className="absolute right-full top-1/2 -translate-y-1/2 w-0 h-0 border-y-[5px] border-y-transparent border-r-[5px] border-r-[var(--abu-text-primary)]" />
                 </div>
               )}
             </div>
@@ -75,7 +75,7 @@ function FormGroup({ title, children }: { title?: string; children: React.ReactN
   return (
     <div className="space-y-3">
       {title && (
-        <div className="text-[11px] font-medium text-[#aaa89e] uppercase tracking-wider">{title}</div>
+        <div className="text-[11px] font-medium text-[var(--abu-text-muted)] uppercase tracking-wider">{title}</div>
       )}
       {children}
     </div>
@@ -102,7 +102,7 @@ function FormInput({
       value={value}
       onChange={(e) => onChange(e.target.value)}
       placeholder={placeholder}
-      className={`w-full px-3 py-1.5 text-[13px] rounded-lg border border-[#e8e4dd] bg-[#faf8f5] focus:border-[#d97757]/50 focus:outline-none transition-colors ${mono ? 'font-mono' : ''}`}
+      className={`w-full px-3 py-1.5 text-[13px] rounded-lg border border-[var(--abu-border)] bg-[var(--abu-bg-base)] focus:border-[var(--abu-clay-50)] focus:outline-none transition-colors ${mono ? 'font-mono' : ''}`}
     />
   );
 }
@@ -126,7 +126,7 @@ function FormNumber({
       max={max}
       value={value}
       onChange={(e) => onChange(Number(e.target.value) || min)}
-      className="w-full px-3 py-1.5 text-[13px] rounded-lg border border-[#e8e4dd] bg-[#faf8f5] focus:border-[#d97757]/50 focus:outline-none transition-colors"
+      className="w-full px-3 py-1.5 text-[13px] rounded-lg border border-[var(--abu-border)] bg-[var(--abu-bg-base)] focus:border-[var(--abu-clay-50)] focus:outline-none transition-colors"
     />
   );
 }
@@ -183,15 +183,15 @@ export default function IMChannelSection() {
     <div className="space-y-6">
       {/* Header */}
       <div>
-        <h3 className="text-base font-semibold text-[#29261b]">{t.imChannel.title}</h3>
-        <p className="text-xs text-[#888579] mt-1">{t.imChannel.description}</p>
+        <h3 className="text-base font-semibold text-[var(--abu-text-primary)]">{t.imChannel.title}</h3>
+        <p className="text-xs text-[var(--abu-text-muted)] mt-1">{t.imChannel.description}</p>
       </div>
 
       {/* Channel List */}
       {channelList.length === 0 && !showAddForm && (
-        <div className="p-8 rounded-xl border border-dashed border-[#d4d0c8] bg-white text-center">
-          <p className="text-sm text-[#888579]">{t.imChannel.noChannels}</p>
-          <p className="text-xs text-[#aaa89e] mt-1">{t.imChannel.noChannelsHint}</p>
+        <div className="p-8 rounded-xl border border-dashed border-[var(--abu-border-hover)] bg-[var(--abu-bg-muted)] text-center">
+          <p className="text-sm text-[var(--abu-text-muted)]">{t.imChannel.noChannels}</p>
+          <p className="text-xs text-[var(--abu-text-muted)] mt-1">{t.imChannel.noChannelsHint}</p>
         </div>
       )}
 
@@ -201,19 +201,19 @@ export default function IMChannelSection() {
         const webhookUrl = `http://127.0.0.1:${serverPort}/im/${channel.platform}/webhook`;
 
         return (
-          <div key={channel.id} className="rounded-xl border border-[#e8e4dd] bg-white overflow-hidden">
+          <div key={channel.id} className="rounded-xl border border-[var(--abu-border)] bg-[var(--abu-bg-muted)] overflow-hidden">
             {/* Channel header row */}
             <div
-              className="flex items-center gap-3 px-4 py-3 cursor-pointer hover:bg-[#faf8f5] transition-colors"
+              className="flex items-center gap-3 px-4 py-3 cursor-pointer hover:bg-[var(--abu-bg-base)] transition-colors"
               onClick={() => setExpandedId(isExpanded ? null : channel.id)}
             >
               <PlatformBadge platform={channel.platform} />
               <div className="flex-1 min-w-0">
                 <div className="flex items-center gap-2">
-                  <span className="text-sm font-medium text-[#29261b] truncate">{channel.name}</span>
+                  <span className="text-sm font-medium text-[var(--abu-text-primary)] truncate">{channel.name}</span>
                   <StatusDot status={channel.status} />
                 </div>
-                <div className="flex items-center gap-3 text-xs text-[#888579] mt-0.5">
+                <div className="flex items-center gap-3 text-xs text-[var(--abu-text-muted)] mt-0.5">
                   <span>{capLabels[channel.capability]}</span>
                   {sessionCount > 0 && (
                     <span>{t.imChannel.activeSessions}: {sessionCount}</span>
@@ -228,15 +228,15 @@ export default function IMChannelSection() {
                 size="sm"
               />
               {isExpanded ? (
-                <ChevronUp className="h-4 w-4 text-[#888579] shrink-0" />
+                <ChevronUp className="h-4 w-4 text-[var(--abu-text-muted)] shrink-0" />
               ) : (
-                <ChevronDown className="h-4 w-4 text-[#888579] shrink-0" />
+                <ChevronDown className="h-4 w-4 text-[var(--abu-text-muted)] shrink-0" />
               )}
             </div>
 
             {/* Expanded detail — grouped layout */}
             {isExpanded && (
-              <div className="border-t border-[#e8e4dd] px-5 py-5 space-y-5">
+              <div className="border-t border-[var(--abu-border)] px-5 py-5 space-y-5">
                 {/* Group 1: Connection */}
                 <FormGroup title={t.imChannel.groupConnection}>
                   <FormRow label={t.imChannel.channelName}>
@@ -263,7 +263,7 @@ export default function IMChannelSection() {
                   <WebhookUrlField url={webhookUrl} hint={t.imChannel.webhookUrlHint} label={t.imChannel.webhookUrl} />
                 </FormGroup>
 
-                <div className="border-t border-[#f0ede8]" />
+                <div className="border-t border-[var(--abu-bg-active)]" />
 
                 {/* Group 2: Behavior */}
                 <FormGroup title={t.imChannel.groupBehavior}>
@@ -294,7 +294,7 @@ export default function IMChannelSection() {
                   </FormRow>
                 </FormGroup>
 
-                <div className="border-t border-[#f0ede8]" />
+                <div className="border-t border-[var(--abu-bg-active)]" />
 
                 {/* Group 3: Access */}
                 <FormGroup title={t.imChannel.groupAccess}>
@@ -315,7 +315,7 @@ export default function IMChannelSection() {
                 )}
 
                 {/* Delete button */}
-                <div className="pt-1 border-t border-[#f0ede8]">
+                <div className="pt-1 border-t border-[var(--abu-bg-active)]">
                   <button
                     onClick={() => handleDelete(channel.id)}
                     className="flex items-center gap-2 text-xs text-red-400 hover:text-red-500 hover:bg-red-50 px-3 py-2 rounded-lg transition-colors"
@@ -332,8 +332,8 @@ export default function IMChannelSection() {
 
       {/* Add Channel Form */}
       {showAddForm && (
-        <div className="rounded-xl border border-[#d97757]/30 bg-white p-5 space-y-5">
-          <h4 className="text-sm font-medium text-[#29261b]">{t.imChannel.addChannel}</h4>
+        <div className="rounded-xl border border-[var(--abu-clay-ring)] bg-[var(--abu-bg-muted)] p-5 space-y-5">
+          <h4 className="text-sm font-medium text-[var(--abu-text-primary)]">{t.imChannel.addChannel}</h4>
 
           {/* Name */}
           <FormRow label={t.imChannel.channelName}>
@@ -353,8 +353,8 @@ export default function IMChannelSection() {
                   onClick={() => setNewPlatform(p.value)}
                   className={`px-3 py-1.5 text-xs rounded-lg border transition-colors ${
                     newPlatform === p.value
-                      ? 'border-[#d97757] bg-[#d97757]/10 text-[#d97757] font-medium'
-                      : 'border-[#e8e4dd] text-[#656358] hover:border-[#d97757]/50'
+                      ? 'border-[var(--abu-clay)] bg-[var(--abu-clay-bg)] text-[var(--abu-clay)] font-medium'
+                      : 'border-[var(--abu-border)] text-[var(--abu-text-tertiary)] hover:border-[var(--abu-clay-50)]'
                   }`}
                 >
                   {p.label}
@@ -384,14 +384,14 @@ export default function IMChannelSection() {
           <div className="flex items-center gap-2 justify-end pt-2">
             <button
               onClick={() => setShowAddForm(false)}
-              className="px-4 py-2 text-sm text-[#656358] hover:text-[#29261b] rounded-lg transition-colors"
+              className="px-4 py-2 text-sm text-[var(--abu-text-tertiary)] hover:text-[var(--abu-text-primary)] rounded-lg transition-colors"
             >
               {t.common.cancel}
             </button>
             <button
               onClick={handleAdd}
               disabled={!newName.trim() || !newAppId.trim() || !newAppSecret.trim()}
-              className="px-4 py-2 text-sm text-white bg-[#d97757] hover:bg-[#c4684a] rounded-lg transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+              className="px-4 py-2 text-sm text-white bg-[var(--abu-clay)] hover:bg-[var(--abu-clay-hover)] rounded-lg transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
             >
               {t.common.save}
             </button>
@@ -403,7 +403,7 @@ export default function IMChannelSection() {
       {!showAddForm && (
         <button
           onClick={() => setShowAddForm(true)}
-          className="w-full flex items-center justify-center gap-2 px-4 py-3 text-sm text-[#d97757] border border-dashed border-[#d97757]/40 rounded-xl hover:bg-[#d97757]/5 transition-colors"
+          className="w-full flex items-center justify-center gap-2 px-4 py-3 text-sm text-[var(--abu-clay)] border border-dashed border-[var(--abu-clay-40)] rounded-xl hover:bg-[var(--abu-clay-5)] transition-colors"
         >
           <Plus className="h-4 w-4" />
           {t.imChannel.addChannel}
@@ -417,14 +417,14 @@ export default function IMChannelSection() {
 
 function PlatformBadge({ platform }: { platform: IMPlatform }) {
   return (
-    <div className="h-8 w-8 rounded-lg bg-[#d97757]/10 flex items-center justify-center text-xs font-medium text-[#d97757] shrink-0">
+    <div className="h-8 w-8 rounded-lg bg-[var(--abu-clay-bg)] flex items-center justify-center text-xs font-medium text-[var(--abu-clay)] shrink-0">
       {getPlatformDisplayName(platform).slice(0, 2)}
     </div>
   );
 }
 
 function StatusDot({ status }: { status: string }) {
-  const color = status === 'connected' ? 'bg-green-400' : status === 'error' ? 'bg-red-400' : 'bg-gray-300';
+  const color = status === 'connected' ? 'bg-green-400' : status === 'error' ? 'bg-red-400' : 'bg-[var(--abu-text-placeholder)]';
   return <span className={`inline-block h-1.5 w-1.5 rounded-full ${color}`} />;
 }
 
@@ -438,15 +438,15 @@ function WebhookUrlField({ url, hint, label }: { url: string; hint: string; labe
   return (
     <FormRow label={label} hint={hint}>
       <div className="relative">
-        <code className="block w-full px-3 py-1.5 pr-9 text-[12px] bg-[#f5f3ef] border border-[#e8e4dd] rounded-lg text-[#656358] truncate select-all font-mono">
+        <code className="block w-full px-3 py-1.5 pr-9 text-[12px] bg-[var(--abu-bg-muted)] border border-[var(--abu-border)] rounded-lg text-[var(--abu-text-tertiary)] truncate select-all font-mono">
           {url}
         </code>
         <button
           onClick={handleCopy}
-          className="absolute right-1.5 top-1/2 -translate-y-1/2 p-1 rounded hover:bg-[#e8e4dd]/60 transition-colors"
+          className="absolute right-1.5 top-1/2 -translate-y-1/2 p-1 rounded hover:bg-[var(--abu-bg-hover)] transition-colors"
           title="Copy"
         >
-          {copied ? <Check className="h-3.5 w-3.5 text-green-500" /> : <Copy className="h-3.5 w-3.5 text-[#888579]" />}
+          {copied ? <Check className="h-3.5 w-3.5 text-green-500" /> : <Copy className="h-3.5 w-3.5 text-[var(--abu-text-muted)]" />}
         </button>
       </div>
     </FormRow>
@@ -480,11 +480,11 @@ function TagInput({
 
   return (
     <FormRow label={label} hint={hint}>
-      <div className="flex flex-wrap items-center gap-1.5 min-h-[34px] px-3 py-1.5 rounded-lg border border-[#e8e4dd] bg-[#faf8f5]">
+      <div className="flex flex-wrap items-center gap-1.5 min-h-[34px] px-3 py-1.5 rounded-lg border border-[var(--abu-border)] bg-[var(--abu-bg-base)]">
         {values.map((v) => (
           <span
             key={v}
-            className="inline-flex items-center gap-1 px-2 py-0.5 text-xs bg-[#d97757]/10 text-[#d97757] rounded-md"
+            className="inline-flex items-center gap-1 px-2 py-0.5 text-xs bg-[var(--abu-clay-bg)] text-[var(--abu-clay)] rounded-md"
           >
             {v}
             <button onClick={() => removeTag(v)} className="hover:text-red-500">×</button>
@@ -496,7 +496,7 @@ function TagInput({
           onChange={(e) => setInput(e.target.value)}
           onKeyDown={handleKeyDown}
           placeholder={values.length === 0 ? placeholder : ''}
-          className="flex-1 min-w-[80px] text-xs bg-transparent outline-none placeholder:text-[#aaa89e]"
+          className="flex-1 min-w-[80px] text-xs bg-transparent outline-none placeholder:text-[var(--abu-text-muted)]"
         />
       </div>
     </FormRow>

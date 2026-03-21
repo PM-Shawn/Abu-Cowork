@@ -293,7 +293,7 @@ export default function RenderableCodeBlock({
     <div className="absolute bottom-0 left-0 right-0 h-20 bg-gradient-to-t from-white to-transparent flex items-end justify-center pb-2">
       <button
         onClick={() => setExpanded(true)}
-        className="flex items-center gap-1 px-3 py-1 rounded-full bg-black/5 hover:bg-black/10 text-xs text-[#888579] transition-colors"
+        className="flex items-center gap-1 px-3 py-1 rounded-full bg-black/5 hover:bg-black/10 text-xs text-[var(--abu-text-muted)] transition-colors"
       >
         <ChevronDown className="h-3.5 w-3.5" />
         {config.i18n.expand}
@@ -304,7 +304,7 @@ export default function RenderableCodeBlock({
   const collapseButton = overflows && expanded && (
     <button
       onClick={() => setExpanded(false)}
-      className="flex items-center gap-0.5 text-xs text-[#888579] hover:text-[#29261b] transition-colors"
+      className="flex items-center gap-0.5 text-xs text-[var(--abu-text-muted)] hover:text-[var(--abu-text-primary)] transition-colors"
     >
       <ChevronUp className="h-3.5 w-3.5" />
       {config.i18n.collapse}
@@ -313,18 +313,18 @@ export default function RenderableCodeBlock({
 
   const loadingOverlay = isLoading && (seamless ? (
     // Skeleton placeholder for seamless mode — pulse animation instead of blank white
-    <div className="rounded-lg bg-[#f5f3ee] p-5 space-y-3 animate-pulse">
-      <div className="h-5 w-2/5 rounded bg-[#e5e2db]" />
-      <div className="h-3 w-4/5 rounded bg-[#e5e2db]" />
-      <div className="h-3 w-3/5 rounded bg-[#e5e2db]" />
+    <div className="rounded-lg bg-[var(--abu-bg-muted)] p-5 space-y-3 animate-pulse">
+      <div className="h-5 w-2/5 rounded bg-[var(--abu-bg-pressed)]" />
+      <div className="h-3 w-4/5 rounded bg-[var(--abu-bg-pressed)]" />
+      <div className="h-3 w-3/5 rounded bg-[var(--abu-bg-pressed)]" />
       <div className="flex gap-3 mt-4">
-        <div className="h-16 flex-1 rounded bg-[#e5e2db]" />
-        <div className="h-16 flex-1 rounded bg-[#e5e2db]" />
-        <div className="h-16 flex-1 rounded bg-[#e5e2db]" />
+        <div className="h-16 flex-1 rounded bg-[var(--abu-bg-pressed)]" />
+        <div className="h-16 flex-1 rounded bg-[var(--abu-bg-pressed)]" />
+        <div className="h-16 flex-1 rounded bg-[var(--abu-bg-pressed)]" />
       </div>
     </div>
   ) : (
-    <div className="absolute inset-0 z-10 flex items-center justify-center rounded-lg bg-[#f5f3ee] text-sm text-[#888579]">
+    <div className="absolute inset-0 z-10 flex items-center justify-center rounded-lg bg-[var(--abu-bg-muted)] text-sm text-[var(--abu-text-muted)]">
       {config.i18n.loading}
     </div>
   ));
@@ -353,9 +353,9 @@ export default function RenderableCodeBlock({
         <button
           onClick={() => setFullscreen(false)}
           className="absolute -top-3 -right-3 z-10 p-1.5 rounded-full bg-white shadow-md
-            hover:bg-[#f5f3ee] transition-colors"
+            hover:bg-[var(--abu-bg-muted)] transition-colors"
         >
-          <X className="h-4 w-4 text-[#888579]" />
+          <X className="h-4 w-4 text-[var(--abu-text-muted)]" />
         </button>
         <iframe
           srcDoc={config.buildFullscreenHtml(code)}
@@ -387,53 +387,53 @@ export default function RenderableCodeBlock({
                 <div className="relative">
                   <button
                     onClick={() => setMenuOpen(!menuOpen)}
-                    className="p-1.5 rounded-lg bg-white/90 shadow-sm border border-[#e5e2db]
-                      hover:bg-[#f5f3ee] transition-colors"
+                    className="p-1.5 rounded-lg bg-white/90 shadow-sm border border-[var(--abu-bg-pressed)]
+                      hover:bg-[var(--abu-bg-muted)] transition-colors"
                   >
-                    <Ellipsis className="h-4 w-4 text-[#888579]" />
+                    <Ellipsis className="h-4 w-4 text-[var(--abu-text-muted)]" />
                   </button>
                   {menuOpen && (
                     <>
                       <div className="fixed inset-0 z-20" onClick={() => setMenuOpen(false)} />
-                      <div className="absolute right-0 top-full mt-1 z-30 bg-white rounded-lg shadow-lg border border-[#e5e2db]
+                      <div className="absolute right-0 top-full mt-1 z-30 bg-white rounded-lg shadow-lg border border-[var(--abu-bg-pressed)]
                         py-1 min-w-[160px]">
                         {config.buildFullscreenHtml && (
                           <button
                             onClick={() => { setFullscreen(true); setMenuOpen(false); }}
-                            className="flex items-center gap-2.5 w-full px-3 py-2 text-sm text-[#29261b]
-                              hover:bg-[#f5f3ee] transition-colors"
+                            className="flex items-center gap-2.5 w-full px-3 py-2 text-sm text-[var(--abu-text-primary)]
+                              hover:bg-[var(--abu-bg-muted)] transition-colors"
                           >
-                            <Maximize2 className="h-4 w-4 text-[#888579]" />
+                            <Maximize2 className="h-4 w-4 text-[var(--abu-text-muted)]" />
                             {config.i18n.fullscreen ?? 'Fullscreen'}
                           </button>
                         )}
                         <button
                           onClick={handleCopy}
-                          className="flex items-center gap-2.5 w-full px-3 py-2 text-sm text-[#29261b]
-                            hover:bg-[#f5f3ee] transition-colors"
+                          className="flex items-center gap-2.5 w-full px-3 py-2 text-sm text-[var(--abu-text-primary)]
+                            hover:bg-[var(--abu-bg-muted)] transition-colors"
                         >
                           {copied
                             ? <Check className="h-4 w-4 text-green-600" />
-                            : <Copy className="h-4 w-4 text-[#888579]" />
+                            : <Copy className="h-4 w-4 text-[var(--abu-text-muted)]" />
                           }
                           {copied ? (config.i18n.copied ?? 'Copied') : (config.i18n.copyCode ?? 'Copy')}
                         </button>
                         <button
                           onClick={handleDownload}
-                          className="flex items-center gap-2.5 w-full px-3 py-2 text-sm text-[#29261b]
-                            hover:bg-[#f5f3ee] transition-colors"
+                          className="flex items-center gap-2.5 w-full px-3 py-2 text-sm text-[var(--abu-text-primary)]
+                            hover:bg-[var(--abu-bg-muted)] transition-colors"
                         >
-                          <Download className="h-4 w-4 text-[#888579]" />
+                          <Download className="h-4 w-4 text-[var(--abu-text-muted)]" />
                           {config.i18n.download ?? 'Download'}
                         </button>
                         <button
                           onClick={() => { setShowSource(!showSource); setMenuOpen(false); }}
-                          className="flex items-center gap-2.5 w-full px-3 py-2 text-sm text-[#29261b]
-                            hover:bg-[#f5f3ee] transition-colors"
+                          className="flex items-center gap-2.5 w-full px-3 py-2 text-sm text-[var(--abu-text-primary)]
+                            hover:bg-[var(--abu-bg-muted)] transition-colors"
                         >
                           {showSource
-                            ? <Eye className="h-4 w-4 text-[#888579]" />
-                            : <Code className="h-4 w-4 text-[#888579]" />
+                            ? <Eye className="h-4 w-4 text-[var(--abu-text-muted)]" />
+                            : <Code className="h-4 w-4 text-[var(--abu-text-muted)]" />
                           }
                           {showSource ? (config.i18n.viewPreview ?? 'Preview') : (config.i18n.viewCode ?? 'Code')}
                         </button>
@@ -459,7 +459,7 @@ export default function RenderableCodeBlock({
   return (
     <div className="my-3">
       {sourceFallback}
-      <div className={cn('rounded-lg overflow-hidden border border-[#e5e2db]', showFallback && 'hidden')}>
+      <div className={cn('rounded-lg overflow-hidden border border-[var(--abu-bg-pressed)]', showFallback && 'hidden')}>
         <div className="relative bg-white">
           {loadingOverlay}
           {renderContainer}
@@ -467,7 +467,7 @@ export default function RenderableCodeBlock({
           {expandButton}
         </div>
         {/* Bottom toolbar */}
-        <div className="flex items-center justify-between px-3 py-1.5 bg-[#f5f3ee] text-xs text-[#888579] border-t border-[#e5e2db]">
+        <div className="flex items-center justify-between px-3 py-1.5 bg-[var(--abu-bg-muted)] text-xs text-[var(--abu-text-muted)] border-t border-[var(--abu-bg-pressed)]">
           <div className="flex items-center gap-2">
             <span>{config.label}</span>
             {collapseButton}

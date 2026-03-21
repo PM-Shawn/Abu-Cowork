@@ -58,11 +58,11 @@ export default function DocxPreview({ filePath }: { filePath: string }) {
   }
 
   return (
-    <div className="flex flex-col h-full bg-[#e8e5de]">
+    <div className="flex flex-col h-full bg-[var(--abu-bg-hover)]">
       {loading && (
         <div className="flex items-center justify-center h-full">
-          <Loader2 className="w-5 h-5 text-[#d97757] animate-spin" />
-          <span className="ml-2 text-[13px] text-[#656358]">{t.panel.loadingDocument}</span>
+          <Loader2 className="w-5 h-5 text-[var(--abu-clay)] animate-spin" />
+          <span className="ml-2 text-[13px] text-[var(--abu-text-tertiary)]">{t.panel.loadingDocument}</span>
         </div>
       )}
       <ScrollArea className={`flex-1 min-h-0 ${loading ? 'hidden' : ''}`}>

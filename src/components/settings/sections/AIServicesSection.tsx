@@ -34,18 +34,18 @@ export default function AIServicesSection() {
       <ModelConfigSection />
 
       {/* Capabilities Section */}
-      <div className="border border-[#e8e4dd] rounded-xl">
-        <div className="px-4 py-3 bg-[#f5f3ee] rounded-t-xl">
-          <h4 className="text-xs font-medium text-[#656358] uppercase tracking-wider">
+      <div className="border border-[var(--abu-border)] rounded-xl">
+        <div className="px-4 py-3 bg-[var(--abu-bg-muted)] rounded-t-xl">
+          <h4 className="text-xs font-medium text-[var(--abu-text-tertiary)] uppercase tracking-wider">
             {t.settings.capabilities}
           </h4>
         </div>
 
-        <div className="divide-y divide-[#e8e4dd]">
+        <div className="divide-y divide-[var(--abu-border)]">
           {/* Chat - always supported */}
           <div className="px-4 py-3 flex items-center gap-3">
             <CircleCheck className="h-4 w-4 text-green-600 shrink-0" />
-            <span className="text-sm text-[#29261b]">{t.settings.capabilityChat}</span>
+            <span className="text-sm text-[var(--abu-text-primary)]">{t.settings.capabilityChat}</span>
           </div>
 
           {/* Web Search */}
@@ -58,8 +58,8 @@ export default function AIServicesSection() {
                   <CircleAlert className="h-4 w-4 text-amber-500 shrink-0" />
                 )}
                 <div className="flex items-center gap-2">
-                  <Globe className="h-3.5 w-3.5 text-[#888579]" />
-                  <span className="text-sm text-[#29261b]">{t.settings.capabilityWebSearch}</span>
+                  <Globe className="h-3.5 w-3.5 text-[var(--abu-text-muted)]" />
+                  <span className="text-sm text-[var(--abu-text-primary)]">{t.settings.capabilityWebSearch}</span>
                 </div>
                 {showCustomSearch ? (
                   <button
@@ -85,7 +85,7 @@ export default function AIServicesSection() {
               {/* Builtin search toggle (only when provider supports it) */}
               {hasBuiltinSearch && (
                 <div className="flex items-center gap-2">
-                  <span className="text-xs text-[#888579]">{t.settings.useBuiltinSearch}</span>
+                  <span className="text-xs text-[var(--abu-text-muted)]">{t.settings.useBuiltinSearch}</span>
                   <Toggle
                     checked={useBuiltinWebSearch}
                     onChange={() => setUseBuiltinWebSearch(!useBuiltinWebSearch)}
@@ -97,7 +97,7 @@ export default function AIServicesSection() {
 
             {/* Custom search config (nested card) */}
             {showCustomSearch && searchExpanded && (
-              <div className="ml-7 mt-2 rounded-lg border border-[#e8e4dd] bg-[#faf9f7]">
+              <div className="ml-7 mt-2 rounded-lg border border-[var(--abu-border)] bg-[var(--abu-bg-muted)]">
                 <div className="p-3">
                   <WebSearchForm />
                 </div>
@@ -114,8 +114,8 @@ export default function AIServicesSection() {
                 <CircleAlert className="h-4 w-4 text-amber-500 shrink-0" />
               )}
               <div className="flex items-center gap-2">
-                <ImageIcon className="h-3.5 w-3.5 text-[#888579]" />
-                <span className="text-sm text-[#29261b]">{t.settings.capabilityImageGen}</span>
+                <ImageIcon className="h-3.5 w-3.5 text-[var(--abu-text-muted)]" />
+                <span className="text-sm text-[var(--abu-text-primary)]">{t.settings.capabilityImageGen}</span>
               </div>
               {showCustomImageGen ? (
                 <button
@@ -140,7 +140,7 @@ export default function AIServicesSection() {
 
             {/* Custom image gen config (nested card) */}
             {showCustomImageGen && imageGenExpanded && (
-              <div className="ml-7 mt-2 rounded-lg border border-[#e8e4dd] bg-[#faf9f7]">
+              <div className="ml-7 mt-2 rounded-lg border border-[var(--abu-border)] bg-[var(--abu-bg-muted)]">
                 <div className="p-3">
                   <ImageGenForm />
                 </div>

@@ -71,7 +71,7 @@ export default function TriggerView() {
   // Show detail page if a trigger is selected
   if (selectedTriggerId && triggers[selectedTriggerId]) {
     return (
-      <div className="flex flex-col h-full bg-[#faf8f5]">
+      <div className="flex flex-col h-full bg-[var(--abu-bg-base)]">
         <TriggerDetail />
         <TriggerEditor />
       </div>
@@ -79,22 +79,22 @@ export default function TriggerView() {
   }
 
   return (
-    <div className="flex flex-col h-full bg-[#faf8f5]">
+    <div className="flex flex-col h-full bg-[var(--abu-bg-base)]">
       {/* Header */}
-      <div className="flex items-center justify-between px-6 py-4 border-b border-[#e8e4dd]/60">
-        <h1 className="text-[16px] font-semibold text-[#29261b]">{t.trigger.title}</h1>
+      <div className="flex items-center justify-between px-6 py-4 border-b border-[var(--abu-border)]">
+        <h1 className="text-[16px] font-semibold text-[var(--abu-text-primary)]">{t.trigger.title}</h1>
         {sortedTriggers.length > 0 && (
           <div className="flex items-center gap-2">
             <button
               onClick={handleAskAbu}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[13px] font-medium bg-[#f0ede6] text-[#29261b] hover:bg-[#e8e4dd] transition-colors shrink-0"
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[13px] font-medium bg-[var(--abu-bg-active)] text-[var(--abu-text-primary)] hover:bg-[var(--abu-border)] transition-colors shrink-0"
             >
-              <Wand2 className="h-3.5 w-3.5 text-[#d97757]" />
+              <Wand2 className="h-3.5 w-3.5 text-[var(--abu-clay)]" />
               {t.trigger.askAbuToCreate}
             </button>
             <button
               onClick={() => openEditor()}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[13px] font-medium bg-[#d97757] text-white hover:bg-[#c8664a] transition-colors shrink-0"
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[13px] font-medium bg-[var(--abu-clay)] text-white hover:bg-[var(--abu-clay-hover)] transition-colors shrink-0"
             >
               <Plus className="h-3.5 w-3.5" />
               {t.trigger.newTrigger}
@@ -104,56 +104,56 @@ export default function TriggerView() {
       </div>
 
       {/* Info banner */}
-      <div className="mx-6 mt-4 flex items-center gap-2 px-3 py-2 rounded-lg bg-[#f0ede6]/80 border border-[#e8e4dd]/50">
-        <Info className="h-3.5 w-3.5 text-[#656358] shrink-0" />
-        <span className="text-[12px] text-[#656358]">{t.trigger.infoBanner}</span>
+      <div className="mx-6 mt-4 flex items-center gap-2 px-3 py-2 rounded-lg bg-[var(--abu-bg-active)]/80 border border-[var(--abu-border-subtle)]">
+        <Info className="h-3.5 w-3.5 text-[var(--abu-text-tertiary)] shrink-0" />
+        <span className="text-[12px] text-[var(--abu-text-tertiary)]">{t.trigger.infoBanner}</span>
       </div>
 
       {/* Trigger list or empty state */}
       {sortedTriggers.length === 0 ? (
         <div className="flex-1 overflow-auto">
           <div className="flex flex-col items-center text-center px-6 pt-10">
-            <div className="w-16 h-16 rounded-full bg-[#f0ede6] flex items-center justify-center mb-4">
-              <Zap className="h-7 w-7 text-[#9a9689]" />
+            <div className="w-16 h-16 rounded-full bg-[var(--abu-bg-active)] flex items-center justify-center mb-4">
+              <Zap className="h-7 w-7 text-[var(--abu-text-muted)]" />
             </div>
-            <p className="text-[15px] text-[#29261b] font-medium mb-1.5">
+            <p className="text-[15px] text-[var(--abu-text-primary)] font-medium mb-1.5">
               {t.trigger.noTriggers}
             </p>
-            <p className="text-[13px] text-[#656358] mb-5">
+            <p className="text-[13px] text-[var(--abu-text-tertiary)] mb-5">
               {t.trigger.noTriggersHint}
             </p>
             <div className="flex items-center gap-3 mb-8">
               <button
                 onClick={() => openEditor()}
-                className="flex items-center gap-1.5 px-4 py-2 rounded-lg text-[13px] font-medium bg-[#d97757] text-white hover:bg-[#c8664a] transition-colors"
+                className="flex items-center gap-1.5 px-4 py-2 rounded-lg text-[13px] font-medium bg-[var(--abu-clay)] text-white hover:bg-[var(--abu-clay-hover)] transition-colors"
               >
                 <Plus className="h-4 w-4" />
                 {t.trigger.noTriggersCTA}
               </button>
               <button
                 onClick={handleAskAbu}
-                className="flex items-center gap-1.5 px-4 py-2 rounded-lg text-[13px] font-medium bg-[#f0ede6] text-[#29261b] hover:bg-[#e8e4dd] transition-colors"
+                className="flex items-center gap-1.5 px-4 py-2 rounded-lg text-[13px] font-medium bg-[var(--abu-bg-active)] text-[var(--abu-text-primary)] hover:bg-[var(--abu-border)] transition-colors"
               >
-                <Wand2 className="h-4 w-4 text-[#d97757]" />
+                <Wand2 className="h-4 w-4 text-[var(--abu-clay)]" />
                 {t.trigger.askAbuToCreate}
               </button>
             </div>
 
             {/* Template cards */}
             <div className="w-full max-w-md space-y-2">
-              <p className="text-[12px] font-medium text-[#656358] text-left">{t.trigger.useTemplate}</p>
+              <p className="text-[12px] font-medium text-[var(--abu-text-tertiary)] text-left">{t.trigger.useTemplate}</p>
               {TEMPLATES.map((tpl) => (
                 <button
                   key={tpl.nameKey}
                   onClick={() => handleUseTemplate(tpl)}
-                  className="w-full flex items-center gap-3 px-4 py-3 rounded-xl bg-white border border-[#e8e4dd] hover:border-[#d4d0c8] hover:shadow-sm transition-all text-left"
+                  className="w-full flex items-center gap-3 px-4 py-3 rounded-xl bg-[var(--abu-bg-muted)] border border-[var(--abu-border)] hover:border-[var(--abu-border-hover)] transition-all text-left"
                 >
-                  <div className="w-8 h-8 rounded-lg bg-[#f5f3ee] flex items-center justify-center shrink-0">
+                  <div className="w-8 h-8 rounded-lg bg-[var(--abu-bg-muted)] flex items-center justify-center shrink-0">
                     {tpl.icon}
                   </div>
                   <div className="flex-1 min-w-0">
-                    <p className="text-[13px] font-medium text-[#29261b]">{t.trigger[tpl.nameKey]}</p>
-                    <p className="text-[11px] text-[#656358] truncate">{t.trigger[tpl.descKey]}</p>
+                    <p className="text-[13px] font-medium text-[var(--abu-text-primary)]">{t.trigger[tpl.nameKey]}</p>
+                    <p className="text-[11px] text-[var(--abu-text-tertiary)] truncate">{t.trigger[tpl.descKey]}</p>
                   </div>
                 </button>
               ))}

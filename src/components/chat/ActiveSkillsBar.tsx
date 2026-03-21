@@ -24,7 +24,7 @@ export default function ActiveSkillsBar() {
 
   return (
     <div className="flex items-center gap-2 flex-wrap mb-1.5">
-      <span className="text-[11px] text-[#656358] font-medium">{t.toolbox.activeSkills}</span>
+      <span className="text-[11px] text-[var(--abu-text-tertiary)] font-medium">{t.toolbox.activeSkills}</span>
       {activeSkills.map((name) => (
         <span
           key={name}

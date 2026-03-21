@@ -44,10 +44,10 @@ export default function DetailBlockView({ block, onToggle, onLoadMore }: DetailB
         };
       case 'script':
         return {
-          labelBg: 'bg-[#e8e5de]',
-          labelText: 'text-[#656358]',
-          contentBg: 'bg-[#f5f3ee]',
-          borderColor: 'border-[#e8e5de]',
+          labelBg: 'bg-[var(--abu-bg-hover)]',
+          labelText: 'text-[var(--abu-text-tertiary)]',
+          contentBg: 'bg-[var(--abu-bg-muted)]',
+          borderColor: 'border-[var(--abu-bg-hover)]',
         };
       case 'list':
         return {
@@ -67,15 +67,15 @@ export default function DetailBlockView({ block, onToggle, onLoadMore }: DetailB
         return {
           labelBg: 'bg-emerald-50',
           labelText: 'text-emerald-600',
-          contentBg: 'bg-white',
+          contentBg: 'bg-[var(--abu-bg-base)]',
           borderColor: 'border-emerald-100',
         };
       default:
         return {
-          labelBg: 'bg-[#e8e5de]',
-          labelText: 'text-[#8b887c]',
-          contentBg: 'bg-[#f5f3ee]',
-          borderColor: 'border-[#e8e5de]',
+          labelBg: 'bg-[var(--abu-bg-hover)]',
+          labelText: 'text-[var(--abu-text-muted)]',
+          contentBg: 'bg-[var(--abu-bg-muted)]',
+          borderColor: 'border-[var(--abu-bg-hover)]',
         };
     }
   }, [block.type]);
@@ -101,7 +101,7 @@ export default function DetailBlockView({ block, onToggle, onLoadMore }: DetailB
     <>
       {/* Language tag */}
       {block.language && (
-        <div className="px-3 py-1.5 text-[11px] text-[#8b887c] bg-[#edeae4] border-b border-[#e8e5de]">
+        <div className="px-3 py-1.5 text-[11px] text-[var(--abu-text-muted)] bg-[var(--abu-bg-hover)] border-b border-[var(--abu-bg-hover)]">
           {block.language}
         </div>
       )}
@@ -109,17 +109,17 @@ export default function DetailBlockView({ block, onToggle, onLoadMore }: DetailB
       {/* Content area */}
       <pre className={cn(
         'px-3 py-2 text-[12px] font-mono whitespace-pre-wrap break-all overflow-x-auto max-h-[300px] overflow-y-auto',
-        block.type === 'error' ? 'text-red-600' : 'text-[#656358]'
+        block.type === 'error' ? 'text-red-600' : 'text-[var(--abu-text-tertiary)]'
       )}>
         {block.content}
       </pre>
 
       {/* Load more button */}
       {block.isTruncated && onLoadMore && (
-        <div className="px-3 py-2 border-t border-[#e8e5de]">
+        <div className="px-3 py-2 border-t border-[var(--abu-bg-hover)]">
           <button
             onClick={onLoadMore}
-            className="text-[11px] text-[#d97757] hover:underline"
+            className="text-[11px] text-[var(--abu-clay)] hover:underline"
           >
             {isZh ? '查看更多' : 'Show more'} ({(block.fullContentLength || 0) - block.content.length} {isZh ? '字符' : 'chars'})
           </button>
@@ -142,13 +142,13 @@ export default function DetailBlockView({ block, onToggle, onLoadMore }: DetailB
             <img
               src={src}
               alt={block.content || 'Image'}
-              className="rounded border border-[#e8e5de] max-w-[320px] max-h-[200px] object-contain"
+              className="rounded border border-[var(--abu-bg-hover)] max-w-[320px] max-h-[200px] object-contain"
             />
             <div className="absolute inset-0 bg-black/0 group-hover:bg-black/30 transition-colors rounded flex items-center justify-center">
               <Maximize2 className="h-5 w-5 text-white opacity-0 group-hover:opacity-80 transition-opacity" />
             </div>
           </div>
-          <div className="mt-1 text-[11px] text-[#8b887c]">{block.content}</div>
+          <div className="mt-1 text-[11px] text-[var(--abu-text-muted)]">{block.content}</div>
         </div>
         {imageFullscreen && (
           <div
@@ -173,9 +173,9 @@ export default function DetailBlockView({ block, onToggle, onLoadMore }: DetailB
     }
 
     return (
-      <div className="divide-y divide-[#e8e5de]">
+      <div className="divide-y divide-[var(--abu-bg-hover)]">
         {block.parsedItems.slice(0, 5).map((item, index) => (
-          <div key={index} className="px-3 py-2 hover:bg-[#edeae4] transition-colors">
+          <div key={index} className="px-3 py-2 hover:bg-[var(--abu-bg-hover)] transition-colors">
             <div className="flex items-start gap-2">
               {item.icon && <span className="text-sm">{item.icon}</span>}
               <div className="flex-1 min-w-0">
@@ -184,16 +184,16 @@ export default function DetailBlockView({ block, onToggle, onLoadMore }: DetailB
                     href={item.url}
                     target="_blank"
                     rel="noopener noreferrer"
-                    className="text-[13px] text-[#656358] hover:text-[#d97757] font-medium flex items-center gap-1"
+                    className="text-[13px] text-[var(--abu-text-tertiary)] hover:text-[var(--abu-clay)] font-medium flex items-center gap-1"
                   >
                     {item.title}
                     <ExternalLink className="h-3 w-3 opacity-50" />
                   </a>
                 ) : (
-                  <div className="text-[13px] text-[#656358] font-medium">{item.title}</div>
+                  <div className="text-[13px] text-[var(--abu-text-tertiary)] font-medium">{item.title}</div>
                 )}
                 {item.description && (
-                  <div className="text-[11px] text-[#8b887c] mt-0.5 line-clamp-2">
+                  <div className="text-[11px] text-[var(--abu-text-muted)] mt-0.5 line-clamp-2">
                     {item.description}
                   </div>
                 )}
@@ -202,7 +202,7 @@ export default function DetailBlockView({ block, onToggle, onLoadMore }: DetailB
           </div>
         ))}
         {block.parsedItems.length > 5 && (
-          <div className="px-3 py-2 text-[11px] text-[#8b887c]">
+          <div className="px-3 py-2 text-[11px] text-[var(--abu-text-muted)]">
             {isZh ? `还有 ${block.parsedItems.length - 5} 项...` : `${block.parsedItems.length - 5} more items...`}
           </div>
         )}
@@ -221,7 +221,7 @@ export default function DetailBlockView({ block, onToggle, onLoadMore }: DetailB
     }
 
     return (
-      <pre className="px-3 py-2 text-[12px] text-[#656358] font-mono whitespace-pre-wrap break-all overflow-x-auto max-h-[300px] overflow-y-auto">
+      <pre className="px-3 py-2 text-[12px] text-[var(--abu-text-tertiary)] font-mono whitespace-pre-wrap break-all overflow-x-auto max-h-[300px] overflow-y-auto">
         {formattedJson}
       </pre>
     );
@@ -239,9 +239,9 @@ export default function DetailBlockView({ block, onToggle, onLoadMore }: DetailB
       <div className="overflow-x-auto">
         <table className="w-full text-[12px]">
           <thead>
-            <tr className="bg-[#edeae4]">
+            <tr className="bg-[var(--abu-bg-hover)]">
               {headers.map((header, i) => (
-                <th key={i} className="px-3 py-1.5 text-left text-[#656358] font-medium border-b border-[#e8e5de]">
+                <th key={i} className="px-3 py-1.5 text-left text-[var(--abu-text-tertiary)] font-medium border-b border-[var(--abu-bg-hover)]">
                   {header}
                 </th>
               ))}
@@ -249,9 +249,9 @@ export default function DetailBlockView({ block, onToggle, onLoadMore }: DetailB
           </thead>
           <tbody>
             {rows.slice(0, 10).map((row, i) => (
-              <tr key={i} className="hover:bg-[#f5f3ee]">
+              <tr key={i} className="hover:bg-[var(--abu-bg-muted)]">
                 {row.map((cell, j) => (
-                  <td key={j} className="px-3 py-1.5 text-[#656358] border-b border-[#e8e5de]">
+                  <td key={j} className="px-3 py-1.5 text-[var(--abu-text-tertiary)] border-b border-[var(--abu-bg-hover)]">
                     {cell}
                   </td>
                 ))}
@@ -260,7 +260,7 @@ export default function DetailBlockView({ block, onToggle, onLoadMore }: DetailB
           </tbody>
         </table>
         {rows.length > 10 && (
-          <div className="px-3 py-2 text-[11px] text-[#8b887c] border-t border-[#e8e5de]">
+          <div className="px-3 py-2 text-[11px] text-[var(--abu-text-muted)] border-t border-[var(--abu-bg-hover)]">
             {isZh ? `还有 ${rows.length - 10} 行...` : `${rows.length - 10} more rows...`}
           </div>
         )}

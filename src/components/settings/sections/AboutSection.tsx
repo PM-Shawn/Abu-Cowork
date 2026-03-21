@@ -46,16 +46,16 @@ export default function AboutSection() {
       <div className="flex flex-col items-center text-center space-y-3">
         <img src={abuAvatar} alt="阿布" className="w-20 h-20 rounded-2xl" />
         <div>
-          <h4 className="text-2xl font-bold text-[#29261b]">{t.common.appName}</h4>
-          <p className="text-sm text-[#656358]">{t.common.appSlogan}</p>
+          <h4 className="text-2xl font-bold text-[var(--abu-text-primary)]">{t.common.appName}</h4>
+          <p className="text-sm text-[var(--abu-text-tertiary)]">{t.common.appSlogan}</p>
         </div>
       </div>
 
       {/* Version info */}
       <div className="space-y-1">
-        <div className="flex justify-between items-center py-3 border-b border-[#e8e4dd]">
-          <span className="text-sm text-[#656358]">{t.updates.currentVersion}</span>
-          <span className="text-sm font-semibold text-[#29261b]">
+        <div className="flex justify-between items-center py-3 border-b border-[var(--abu-border)]">
+          <span className="text-sm text-[var(--abu-text-tertiary)]">{t.updates.currentVersion}</span>
+          <span className="text-sm font-semibold text-[var(--abu-text-primary)]">
             v{APP_VERSION}
           </span>
         </div>
@@ -63,21 +63,21 @@ export default function AboutSection() {
 
       {/* Update card */}
       {updateInfo ? (
-        <div className="rounded-xl border border-[#d97757]/30 bg-[#d97757]/5 p-4 space-y-3">
+        <div className="rounded-xl border border-[var(--abu-clay-ring)] bg-[var(--abu-clay-5)] p-4 space-y-3">
           <div className="flex items-center justify-between">
-            <span className="text-sm font-semibold text-[#d97757]">{t.updates.newVersionAvailable}</span>
-            <span className="text-sm font-mono font-semibold text-[#29261b]">v{updateInfo.version}</span>
+            <span className="text-sm font-semibold text-[var(--abu-clay)]">{t.updates.newVersionAvailable}</span>
+            <span className="text-sm font-mono font-semibold text-[var(--abu-text-primary)]">v{updateInfo.version}</span>
           </div>
           {updateInfo.releaseNotes && (
             <div className="space-y-1">
-              <span className="text-xs font-medium text-[#656358]">{t.updates.releaseNotes}</span>
-              <p className="text-sm text-[#3d3929] whitespace-pre-line">{updateInfo.releaseNotes}</p>
+              <span className="text-xs font-medium text-[var(--abu-text-tertiary)]">{t.updates.releaseNotes}</span>
+              <p className="text-sm text-[var(--abu-text-secondary)] whitespace-pre-line">{updateInfo.releaseNotes}</p>
             </div>
           )}
           {updateInfo.downloadUrl && (
             <button
               onClick={() => handleOpenLink(updateInfo.downloadUrl)}
-              className="flex items-center gap-2 w-full justify-center py-2 px-4 rounded-lg bg-[#d97757] text-white text-sm font-medium hover:bg-[#c4684a] transition-colors"
+              className="flex items-center gap-2 w-full justify-center py-2 px-4 rounded-lg bg-[var(--abu-clay)] text-white text-sm font-medium hover:bg-[var(--abu-clay-hover)] transition-colors"
             >
               <Download className="h-4 w-4" />
               {t.updates.downloadUpdate}
@@ -92,7 +92,7 @@ export default function AboutSection() {
               ? 'text-green-600'
               : checkResult === 'error'
                 ? 'text-red-500'
-                : 'text-[#656358]'
+                : 'text-[var(--abu-text-tertiary)]'
           )}
         >
           {checkResult === 'error' ? (
@@ -105,7 +105,7 @@ export default function AboutSection() {
               <CheckCircle className={cn('h-4 w-4 text-green-500', checkResult === 'just-checked' && 'scale-110')} />
               <span>{t.updates.upToDate}</span>
               {checkResult === 'just-checked' && (
-                <span className="text-xs text-[#888579] ml-auto" style={{ animation: 'fadeIn 0.3s ease-out' }}>
+                <span className="text-xs text-[var(--abu-text-muted)] ml-auto" style={{ animation: 'fadeIn 0.3s ease-out' }}>
                   {t.updates.justChecked}
                 </span>
               )}
@@ -121,8 +121,8 @@ export default function AboutSection() {
         className={cn(
           'flex items-center gap-2 w-full justify-center py-2.5 px-4 rounded-lg border text-sm font-medium transition-all duration-200',
           updateChecking
-            ? 'border-[#e8e4dd] text-[#888579] cursor-not-allowed'
-            : 'border-[#e8e4dd] text-[#3d3929] hover:bg-[#f0ede6] hover:border-[#d5d1c9] active:scale-[0.98]'
+            ? 'border-[var(--abu-border)] text-[var(--abu-text-muted)] cursor-not-allowed'
+            : 'border-[var(--abu-border)] text-[var(--abu-text-secondary)] hover:bg-[var(--abu-bg-active)] hover:border-[var(--abu-border-hover)] active:scale-[0.98]'
         )}
       >
         <RefreshCw className={cn('h-4 w-4 transition-transform', updateChecking && 'animate-spin')} />
@@ -131,16 +131,16 @@ export default function AboutSection() {
 
       {/* Footer */}
       <div className="text-center space-y-2 pt-4">
-        <p className="text-sm text-[#656358]">
+        <p className="text-sm text-[var(--abu-text-tertiary)]">
           Made with ❤️ by{' '}
           <button
               onClick={() => handleOpenLink('https://xhslink.com/m/1YlQGiTd4ls')}
-              className="text-[#d97757] hover:underline font-medium"
+              className="text-[var(--abu-clay)] hover:underline font-medium"
             >
               Shawn
             </button>
         </p>
-        <p className="text-xs text-[#888579]">
+        <p className="text-xs text-[var(--abu-text-muted)]">
           © 2026 {t.common.appName}. All rights reserved.
         </p>
       </div>

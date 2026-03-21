@@ -188,8 +188,8 @@ export default function WorkspaceSection() {
           className="flex items-center justify-between w-full text-left group cursor-pointer"
         >
           <div className="flex items-center gap-2">
-            <FolderOpen className="h-4 w-4 text-[#656358]" />
-            <h3 className="text-[13px] font-medium text-[#29261b]">
+            <FolderOpen className="h-4 w-4 text-[var(--abu-text-tertiary)]" />
+            <h3 className="text-[13px] font-medium text-[var(--abu-text-primary)]">
               {t.panel.workspace}
             </h3>
           </div>
@@ -198,19 +198,19 @@ export default function WorkspaceSection() {
               <Button
                 variant="ghost"
                 size="icon"
-                className="h-5 w-5 text-[#656358] hover:text-[#29261b] hover:bg-[#e8e5de]"
+                className="h-5 w-5 text-[var(--abu-text-tertiary)] hover:text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-hover)]"
                 onClick={(e) => {
                   e.stopPropagation();
                   handleOpenInFinder();
                 }}
                 title={t.panel.openInFinder}
               >
-                <ExternalLink className="h-3 w-3" />
+                <ExternalLink className="h-3 w-3" strokeWidth={1.5} />
               </Button>
             )}
             <ChevronDown
               className={cn(
-                'h-4 w-4 text-[#8b887c] transition-transform',
+                'h-4 w-4 text-[var(--abu-text-muted)] transition-transform',
                 !expanded && '-rotate-90'
               )}
             />
@@ -225,29 +225,29 @@ export default function WorkspaceSection() {
             <div ref={dropdownRef} className="relative">
               <button
                 onClick={() => setIsDropdownOpen(!isDropdownOpen)}
-                className="w-full flex items-center gap-2.5 p-2.5 rounded-lg bg-white hover:bg-[#faf9f7] transition-colors text-left group shadow-sm"
+                className="w-full flex items-center gap-2.5 p-2.5 rounded-lg bg-[var(--abu-bg-base)] hover:bg-[var(--abu-bg-muted)] transition-colors text-left group"
               >
-                <div className="w-8 h-8 rounded-md bg-[#d97757]/10 flex items-center justify-center shrink-0">
-                  <FolderOpen className="w-4 h-4 text-[#d97757]" />
+                <div className="w-8 h-8 rounded-md bg-[var(--abu-clay-bg)] flex items-center justify-center shrink-0">
+                  <FolderOpen className="w-4 h-4 text-[var(--abu-clay)]" />
                 </div>
                 <div className="flex-1 min-w-0">
-                  <span className="text-[13px] font-medium text-[#29261b] truncate block">
+                  <span className="text-[13px] font-medium text-[var(--abu-text-primary)] truncate block">
                     {folderName}
                   </span>
-                  <div className="text-[10px] text-[#888579] truncate">
+                  <div className="text-[10px] text-[var(--abu-text-muted)] truncate">
                     {currentPath}
                   </div>
                 </div>
-                <ChevronDown className={`w-3.5 h-3.5 text-[#888579] transition-transform ${isDropdownOpen ? 'rotate-180' : ''}`} />
+                <ChevronDown className={`w-3.5 h-3.5 text-[var(--abu-text-muted)] transition-transform ${isDropdownOpen ? 'rotate-180' : ''}`} />
               </button>
 
               {/* Dropdown menu */}
               {isDropdownOpen && (
-                <div className="absolute top-full left-0 right-0 mt-1.5 bg-white rounded-lg border border-[#e8e5de] shadow-lg z-50 overflow-hidden animate-in fade-in slide-in-from-top-1 duration-150">
+                <div className="absolute top-full left-0 right-0 mt-1.5 bg-white rounded-lg border border-[var(--abu-bg-hover)] shadow-lg z-50 overflow-hidden animate-in fade-in slide-in-from-top-1 duration-150">
                   {/* Recent folders */}
                   {recentPaths.length > 0 && (
                     <>
-                      <div className="px-3 py-2 text-[10px] font-medium text-[#888579] uppercase tracking-wider border-b border-[#f0ede6]">
+                      <div className="px-3 py-2 text-[10px] font-medium text-[var(--abu-text-muted)] uppercase tracking-wider border-b border-[var(--abu-bg-active)]">
                         {t.panel.recentlyUsed}
                       </div>
                       <div className="py-1 max-h-[200px] overflow-y-auto">
@@ -255,15 +255,15 @@ export default function WorkspaceSection() {
                           <button
                             key={path}
                             onClick={() => handleSelectRecent(path)}
-                            className="w-full flex items-center gap-2 px-3 py-2 text-left hover:bg-[#f5f3ee] transition-colors"
+                            className="w-full flex items-center gap-2 px-3 py-2 text-left hover:bg-[var(--abu-bg-muted)] transition-colors"
                           >
                             <div className="w-4 h-4 flex items-center justify-center shrink-0">
                               {path === currentPath && (
-                                <Check className="h-3.5 w-3.5 text-[#d97757]" />
+                                <Check className="h-3.5 w-3.5 text-[var(--abu-clay)]" />
                               )}
                             </div>
-                            <Folder className={`h-3.5 w-3.5 shrink-0 ${path === currentPath ? 'text-[#d97757]' : 'text-[#888579]'}`} />
-                            <span className={`text-[12px] truncate ${path === currentPath ? 'text-[#29261b] font-medium' : 'text-[#3d3929]'}`}>
+                            <Folder className={`h-3.5 w-3.5 shrink-0 ${path === currentPath ? 'text-[var(--abu-clay)]' : 'text-[var(--abu-text-muted)]'}`} />
+                            <span className={`text-[12px] truncate ${path === currentPath ? 'text-[var(--abu-text-primary)] font-medium' : 'text-[var(--abu-text-secondary)]'}`}>
                               {getFolderName(path)}
                             </span>
                           </button>
@@ -273,17 +273,17 @@ export default function WorkspaceSection() {
                   )}
 
                   {/* Separator */}
-                  {recentPaths.length > 0 && <div className="border-t border-[#f0ede6]" />}
+                  {recentPaths.length > 0 && <div className="border-t border-[var(--abu-bg-active)]" />}
 
                   {/* Choose different folder */}
                   <div className="py-1">
                     <button
                       onClick={handleSelectWorkspace}
-                      className="w-full flex items-center gap-2 px-3 py-2 text-left hover:bg-[#f5f3ee] transition-colors"
+                      className="w-full flex items-center gap-2 px-3 py-2 text-left hover:bg-[var(--abu-bg-muted)] transition-colors"
                     >
                       <div className="w-4 h-4" />
-                      <Folder className="h-3.5 w-3.5 text-[#656358] shrink-0" />
-                      <span className="text-[12px] text-[#656358]">
+                      <Folder className="h-3.5 w-3.5 text-[var(--abu-text-tertiary)] shrink-0" />
+                      <span className="text-[12px] text-[var(--abu-text-tertiary)]">
                         {t.panel.selectOtherFolder}
                       </span>
                     </button>
@@ -298,12 +298,12 @@ export default function WorkspaceSection() {
               className={cn(
                 'w-full flex items-center gap-2 px-2.5 py-1.5 rounded-md transition-colors text-left',
                 hasInstructions
-                  ? 'bg-[#d97757]/[0.08] hover:bg-[#d97757]/[0.15]'
-                  : 'bg-[#f5f3ee] hover:bg-[#e8e5de]'
+                  ? 'bg-[var(--abu-clay-bg)] hover:bg-[var(--abu-clay-bg-15)]'
+                  : 'bg-[var(--abu-bg-muted)] hover:bg-[var(--abu-bg-hover)]'
               )}
             >
-              <FileText className={cn('w-3.5 h-3.5', hasInstructions ? 'text-[#d97757]' : 'text-[#b0ada4]')} />
-              <span className={cn('text-[11px] font-medium', hasInstructions ? 'text-[#3d3929]' : 'text-[#888579]')}>
+              <FileText className={cn('w-3.5 h-3.5', hasInstructions ? 'text-[var(--abu-clay)]' : 'text-[var(--abu-text-placeholder)]')} />
+              <span className={cn('text-[11px] font-medium', hasInstructions ? 'text-[var(--abu-text-secondary)]' : 'text-[var(--abu-text-muted)]')}>
                 {hasInstructions ? `${t.panel.instructions} · ABU.md` : t.panel.instructionsAdd}
               </span>
             </button>
@@ -315,11 +315,11 @@ export default function WorkspaceSection() {
                 'w-full flex items-center gap-2 px-2.5 py-1.5 rounded-md transition-colors text-left',
                 hasMemory
                   ? 'bg-[#8b7ec8]/[0.08] hover:bg-[#8b7ec8]/[0.15]'
-                  : 'bg-[#f5f3ee] hover:bg-[#e8e5de]'
+                  : 'bg-[var(--abu-bg-muted)] hover:bg-[var(--abu-bg-hover)]'
               )}
             >
-              <Brain className={cn('w-3.5 h-3.5', hasMemory ? 'text-[#8b7ec8]' : 'text-[#b0ada4]')} />
-              <span className={cn('text-[11px] font-medium', hasMemory ? 'text-[#3d3929]' : 'text-[#888579]')}>
+              <Brain className={cn('w-3.5 h-3.5', hasMemory ? 'text-[#8b7ec8]' : 'text-[var(--abu-text-placeholder)]')} />
+              <span className={cn('text-[11px] font-medium', hasMemory ? 'text-[var(--abu-text-secondary)]' : 'text-[var(--abu-text-muted)]')}>
                 {hasMemory ? t.panel.memory : t.panel.memoryEmpty}
               </span>
             </button>
@@ -328,7 +328,7 @@ export default function WorkspaceSection() {
           // Empty state - clickable to select workspace
           <button
             onClick={handleSelectWorkspace}
-            className="text-[12px] text-[#8b887c] hover:text-[#d97757] py-2 mt-3 cursor-pointer transition-colors text-left"
+            className="text-[12px] text-[var(--abu-text-muted)] hover:text-[var(--abu-clay)] py-2 mt-3 cursor-pointer transition-colors text-left"
           >
             {t.panel.selectWorkspace}
           </button>

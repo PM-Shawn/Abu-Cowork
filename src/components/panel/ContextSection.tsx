@@ -131,17 +131,17 @@ export default function ContextSection() {
         className="flex items-center justify-between w-full text-left group"
       >
         <div className="flex items-center gap-2">
-          <Clock className="h-4 w-4 text-[#656358]" />
-          <span className="text-[13px] font-medium text-[#29261b]">{t.panel.context}</span>
+          <Clock className="h-4 w-4 text-[var(--abu-text-tertiary)]" />
+          <span className="text-[13px] font-medium text-[var(--abu-text-primary)]">{t.panel.context}</span>
           {contextData.totalToolCalls > 0 && (
-            <span className="text-[12px] text-[#8b887c]">
+            <span className="text-[12px] text-[var(--abu-text-muted)]">
               {contextData.totalToolCalls} ops
             </span>
           )}
         </div>
         <ChevronDown
           className={cn(
-            'h-4 w-4 text-[#8b887c] transition-transform',
+            'h-4 w-4 text-[var(--abu-text-muted)] transition-transform',
             !expanded && '-rotate-90'
           )}
         />
@@ -154,7 +154,7 @@ export default function ContextSection() {
               {/* Accessed Files - now with expandable content */}
               {contextData.accessedFiles.length > 0 && (
                 <div>
-                  <div className="text-[12px] text-[#8b887c] mb-2">{t.panel.accessedFiles}</div>
+                  <div className="text-[12px] text-[var(--abu-text-muted)] mb-2">{t.panel.accessedFiles}</div>
                   <div className="space-y-1">
                     {contextData.accessedFiles.slice(0, 10).map((file, i) => (
                       <FileRow
@@ -165,7 +165,7 @@ export default function ContextSection() {
                       />
                     ))}
                     {contextData.accessedFiles.length > 10 && (
-                      <div className="text-[11px] text-[#8b887c]">
+                      <div className="text-[11px] text-[var(--abu-text-muted)]">
                         {format(t.panel.moreFiles, { count: contextData.accessedFiles.length - 10 })}
                       </div>
                     )}
@@ -176,16 +176,16 @@ export default function ContextSection() {
               {/* Tool Stats */}
               {Object.keys(contextData.toolStats).length > 0 && (
                 <div>
-                  <div className="text-[12px] text-[#8b887c] mb-2">{t.panel.toolUsage}</div>
+                  <div className="text-[12px] text-[var(--abu-text-muted)] mb-2">{t.panel.toolUsage}</div>
                   <div className="flex flex-wrap gap-1.5">
                     {Object.entries(contextData.toolStats).map(([tool, count]) => (
                       <span
                         key={tool}
-                        className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-[#f5f3ee] text-[11px] text-[#656358]"
+                        className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-[var(--abu-bg-muted)] text-[11px] text-[var(--abu-text-tertiary)]"
                       >
                         <Wrench className="h-3 w-3" />
                         {formatToolName(tool)}
-                        <span className="text-[#8b887c]">x{count}</span>
+                        <span className="text-[var(--abu-text-muted)]">x{count}</span>
                       </span>
                     ))}
                   </div>
@@ -207,11 +207,11 @@ export default function ContextSection() {
             // Empty state - Claude Cowork style
             <div className="flex flex-col items-center py-4 text-center">
               <div className="flex items-center gap-2 mb-2">
-                <div className="w-5 h-6 rounded bg-[#e8e5de]" />
-                <div className="w-5 h-6 rounded bg-[#e8e5de]" />
-                <div className="w-5 h-6 rounded bg-[#e8e5de]" />
+                <div className="w-5 h-6 rounded bg-[var(--abu-bg-hover)]" />
+                <div className="w-5 h-6 rounded bg-[var(--abu-bg-hover)]" />
+                <div className="w-5 h-6 rounded bg-[var(--abu-bg-hover)]" />
               </div>
-              <p className="text-[12px] text-[#8b887c]">
+              <p className="text-[12px] text-[var(--abu-text-muted)]">
                 {t.panel.contextEmptyHint}
               </p>
             </div>
@@ -252,15 +252,15 @@ function FileRow({ file, isExpanded, onToggle }: FileRowProps) {
         onClick={hasContent ? onToggle : undefined}
         onKeyDown={hasContent ? (e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), onToggle()) : undefined}
         className={cn(
-          'flex items-center gap-2 text-[12px] text-[#656358] py-0.5 rounded',
-          hasContent && 'cursor-pointer hover:bg-[#f5f3ee] -mx-1 px-1'
+          'flex items-center gap-2 text-[12px] text-[var(--abu-text-tertiary)] py-0.5 rounded',
+          hasContent && 'cursor-pointer hover:bg-[var(--abu-bg-muted)] -mx-1 px-1'
         )}
       >
         {hasContent ? (
           isExpanded ? (
-            <ChevronDown className="h-3 w-3 text-[#8b887c] shrink-0" />
+            <ChevronDown className="h-3 w-3 text-[var(--abu-text-muted)] shrink-0" />
           ) : (
-            <ChevronRight className="h-3 w-3 text-[#8b887c] shrink-0" />
+            <ChevronRight className="h-3 w-3 text-[var(--abu-text-muted)] shrink-0" />
           )
         ) : (
           <span className="w-3" />
@@ -271,8 +271,8 @@ function FileRow({ file, isExpanded, onToggle }: FileRowProps) {
 
       {/* Expanded content */}
       {isExpanded && hasContent && (
-        <div className="ml-5 mt-1 p-2 bg-[#f5f3ee] rounded border border-[#e8e5de]">
-          <pre className="font-mono text-[11px] text-[#656358] whitespace-pre-wrap break-all max-h-[200px] overflow-y-auto">
+        <div className="ml-5 mt-1 p-2 bg-[var(--abu-bg-muted)] rounded border border-[var(--abu-bg-hover)]">
+          <pre className="font-mono text-[11px] text-[var(--abu-text-tertiary)] whitespace-pre-wrap break-all max-h-[200px] overflow-y-auto">
             {truncateContent(file.content!, 2000)}
           </pre>
         </div>
@@ -301,15 +301,15 @@ function ConnectorsSection({ servers, expanded, onToggle, isLoading, t }: Connec
         className="flex items-center justify-between w-full text-left group"
       >
         <div className="flex items-center gap-2">
-          <Plug className="h-3.5 w-3.5 text-[#8b887c]" />
-          <span className="text-[12px] text-[#8b887c]">{t.panel.connectors}</span>
-          <span className="text-[11px] text-[#a8a59c]">
+          <Plug className="h-3.5 w-3.5 text-[var(--abu-text-muted)]" />
+          <span className="text-[12px] text-[var(--abu-text-muted)]">{t.panel.connectors}</span>
+          <span className="text-[11px] text-[var(--abu-text-muted)]">
             {connectedCount}/{servers.length}
           </span>
         </div>
         <ChevronDown
           className={cn(
-            'h-3 w-3 text-[#a8a59c] transition-transform',
+            'h-3 w-3 text-[var(--abu-text-muted)] transition-transform',
             !expanded && '-rotate-90'
           )}
         />
@@ -321,7 +321,7 @@ function ConnectorsSection({ servers, expanded, onToggle, isLoading, t }: Connec
             <ConnectorRow key={server.config.name} server={server} />
           ))}
           {isLoading && (
-            <div className="flex items-center gap-2 text-[11px] text-[#8b887c]">
+            <div className="flex items-center gap-2 text-[11px] text-[var(--abu-text-muted)]">
               <Loader2 className="h-3 w-3 animate-spin" />
               <span>{t.panel.refreshing}</span>
             </div>
@@ -342,20 +342,20 @@ function ConnectorRow({ server }: ConnectorRowProps) {
   // Simple status icon - Claude Cowork style
   const renderStatusIcon = () => {
     if (status === 'connected') {
-      return <Plug className="h-4 w-4 text-[#656358]" />;
+      return <Plug className="h-4 w-4 text-[var(--abu-text-tertiary)]" />;
     }
     if (status === 'reconnecting') {
-      return <Loader2 className="h-4 w-4 text-[#8b887c] animate-spin" />;
+      return <Loader2 className="h-4 w-4 text-[var(--abu-text-muted)] animate-spin" />;
     }
-    return <Circle className="h-4 w-4 text-[#c5c2b8]" />;
+    return <Circle className="h-4 w-4 text-[var(--abu-text-placeholder)]" />;
   };
 
   return (
     <div className="flex items-center gap-3 py-1">
       {renderStatusIcon()}
-      <span className="text-[13px] text-[#656358]">{config.name}</span>
+      <span className="text-[13px] text-[var(--abu-text-tertiary)]">{config.name}</span>
       {status === 'connected' && tools.length > 0 && (
-        <span className="text-[11px] text-[#a8a59c]">{tools.length} tools</span>
+        <span className="text-[11px] text-[var(--abu-text-muted)]">{tools.length} tools</span>
       )}
     </div>
   );

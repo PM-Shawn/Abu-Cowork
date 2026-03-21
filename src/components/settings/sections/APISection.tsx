@@ -21,7 +21,7 @@ export default function APISection() {
     <div className="space-y-5">
       {/* Provider */}
       <div className="space-y-2">
-        <label className="text-sm font-medium text-[#29261b]">{t.settings.provider}</label>
+        <label className="text-sm font-medium text-[var(--abu-text-primary)]">{t.settings.provider}</label>
         <Select
           value={provider}
           onChange={(value) => switchProvider(value as LLMProvider)}
@@ -35,15 +35,15 @@ export default function APISection() {
 
       {/* API Format */}
       <div className="space-y-2">
-        <label className="text-sm font-medium text-[#29261b]">{t.settings.apiProtocol}</label>
+        <label className="text-sm font-medium text-[var(--abu-text-primary)]">{t.settings.apiProtocol}</label>
         <div className="flex gap-2">
           <button
             onClick={() => setApiFormat('openai-compatible')}
             className={cn(
               'flex-1 h-9 rounded-lg text-sm font-medium transition-colors border',
               apiFormat === 'openai-compatible'
-                ? 'bg-[#29261b] text-white border-[#29261b]'
-                : 'bg-white text-[#656358] border-[#e8e4dd] hover:border-[#d0cdc6]'
+                ? 'bg-[var(--abu-text-primary)] text-white border-[var(--abu-text-primary)]'
+                : 'bg-[var(--abu-bg-muted)] text-[var(--abu-text-tertiary)] border-[var(--abu-border)] hover:border-[var(--abu-border-hover)]'
             )}
           >
             {t.settings.openaiCompatible}
@@ -53,14 +53,14 @@ export default function APISection() {
             className={cn(
               'flex-1 h-9 rounded-lg text-sm font-medium transition-colors border',
               apiFormat === 'anthropic'
-                ? 'bg-[#29261b] text-white border-[#29261b]'
-                : 'bg-white text-[#656358] border-[#e8e4dd] hover:border-[#d0cdc6]'
+                ? 'bg-[var(--abu-text-primary)] text-white border-[var(--abu-text-primary)]'
+                : 'bg-[var(--abu-bg-muted)] text-[var(--abu-text-tertiary)] border-[var(--abu-border)] hover:border-[var(--abu-border-hover)]'
             )}
           >
             {t.settings.anthropicCompatible}
           </button>
         </div>
-        <p className="text-xs text-[#656358]">
+        <p className="text-xs text-[var(--abu-text-tertiary)]">
           {apiFormat === 'openai-compatible'
             ? t.settings.openaiCompatibleDesc
             : t.settings.anthropicCompatibleDesc}
@@ -69,41 +69,41 @@ export default function APISection() {
 
       {/* API Base URL */}
       <div className="space-y-2">
-        <label className="text-sm font-medium text-[#29261b]">
+        <label className="text-sm font-medium text-[var(--abu-text-primary)]">
           {t.settings.apiUrl}
-          <span className="ml-1 text-[#656358] font-normal text-xs">({t.settings.apiUrlHint})</span>
+          <span className="ml-1 text-[var(--abu-text-tertiary)] font-normal text-xs">({t.settings.apiUrlHint})</span>
         </label>
         <input
           type="text"
           value={baseUrl}
           onChange={(e) => setBaseUrl(e.target.value)}
           placeholder="https://your-proxy.com"
-          className="w-full h-10 px-3 bg-white border border-[#e8e4dd] rounded-lg text-sm text-[#29261b] focus:outline-none focus:ring-2 focus:ring-[#d97757]/30 focus:border-[#d97757] transition-all"
+          className="w-full h-10 px-3 bg-[var(--abu-bg-base)] border border-[var(--abu-border)] rounded-lg text-sm text-[var(--abu-text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--abu-clay-ring)] focus:border-[var(--abu-clay)] transition-all"
         />
-        <p className="text-xs text-[#656358]">
+        <p className="text-xs text-[var(--abu-text-tertiary)]">
           {t.settings.apiUrlDesc}
         </p>
       </div>
 
       {/* API Key */}
       <div className="space-y-2">
-        <label className="text-sm font-medium text-[#29261b]">{t.settings.apiKey}</label>
+        <label className="text-sm font-medium text-[var(--abu-text-primary)]">{t.settings.apiKey}</label>
         <div className="relative">
           <input
             type={showKey ? 'text' : 'password'}
             value={apiKey}
             onChange={(e) => setApiKey(e.target.value)}
             placeholder={provider === 'anthropic' ? 'sk-ant-...' : 'sk-...'}
-            className="w-full h-10 px-3 pr-10 bg-white border border-[#e8e4dd] rounded-lg text-sm text-[#29261b] focus:outline-none focus:ring-2 focus:ring-[#d97757]/30 focus:border-[#d97757] transition-all"
+            className="w-full h-10 px-3 pr-10 bg-[var(--abu-bg-base)] border border-[var(--abu-border)] rounded-lg text-sm text-[var(--abu-text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--abu-clay-ring)] focus:border-[var(--abu-clay)] transition-all"
           />
           <button
             onClick={() => setShowKey(!showKey)}
-            className="absolute right-2 top-1/2 -translate-y-1/2 p-1.5 text-[#656358] hover:text-[#29261b] rounded-md hover:bg-[#e8e5de] transition-colors"
+            className="absolute right-2 top-1/2 -translate-y-1/2 p-1.5 text-[var(--abu-text-tertiary)] hover:text-[var(--abu-text-primary)] rounded-md hover:bg-[var(--abu-bg-hover)] transition-colors"
           >
             {showKey ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
           </button>
         </div>
-        <p className="text-xs text-[#656358]">
+        <p className="text-xs text-[var(--abu-text-tertiary)]">
           {t.settings.apiKeyDesc}
         </p>
       </div>

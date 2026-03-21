@@ -95,18 +95,18 @@ export default function AgentDetailModal({
         onClick={(e) => e.stopPropagation()}
       >
         {/* Header */}
-        <div className="flex items-center justify-between px-5 py-4 border-b border-neutral-100">
+        <div className="flex items-center justify-between px-5 py-4 border-b border-[var(--abu-bg-active)]">
           <div className="flex items-center gap-2">
             {avatar ? (
               <span className="text-xl">{avatar}</span>
             ) : (
               <Bot className="h-5 w-5 text-blue-500" />
             )}
-            <h2 className="text-base font-semibold text-neutral-900">{name}</h2>
+            <h2 className="text-base font-semibold text-[var(--abu-text-primary)]">{name}</h2>
           </div>
           <button
             onClick={onClose}
-            className="p-1.5 rounded-lg text-neutral-400 hover:text-neutral-600 hover:bg-neutral-100 transition-colors"
+            className="p-1.5 rounded-lg text-[var(--abu-text-muted)] hover:text-[var(--abu-text-secondary)] hover:bg-[var(--abu-bg-active)] transition-colors"
           >
             <X className="h-4 w-4" />
           </button>
@@ -115,15 +115,15 @@ export default function AgentDetailModal({
         {/* Body */}
         <div className="flex-1 overflow-y-auto px-5 py-4 space-y-4">
           {/* Description */}
-          <p className="text-sm text-neutral-600">{description}</p>
+          <p className="text-sm text-[var(--abu-text-secondary)]">{description}</p>
 
           {/* Model */}
           <div className="space-y-1">
-            <div className="flex items-center gap-1.5 text-xs font-medium text-neutral-500">
+            <div className="flex items-center gap-1.5 text-xs font-medium text-[var(--abu-text-tertiary)]">
               <Cpu className="h-3.5 w-3.5" />
               {t.toolbox.agentModel}
             </div>
-            <p className="text-xs text-neutral-600 pl-5 font-mono">
+            <p className="text-xs text-[var(--abu-text-secondary)] pl-5 font-mono">
               {isInherit
                 ? `${t.toolbox.agentModelInherit}（${globalModel}）`
                 : resolvedModel !== model
@@ -135,7 +135,7 @@ export default function AgentDetailModal({
           {/* Tools */}
           {tools && tools.length > 0 && (
             <div className="space-y-1">
-              <div className="flex items-center gap-1.5 text-xs font-medium text-neutral-500">
+              <div className="flex items-center gap-1.5 text-xs font-medium text-[var(--abu-text-tertiary)]">
                 <Wrench className="h-3.5 w-3.5" />
                 {t.toolbox.agentTools}
               </div>
@@ -169,7 +169,7 @@ export default function AgentDetailModal({
           {/* Skills */}
           {skills && skills.length > 0 && (
             <div className="space-y-1">
-              <div className="flex items-center gap-1.5 text-xs font-medium text-neutral-500">
+              <div className="flex items-center gap-1.5 text-xs font-medium text-[var(--abu-text-tertiary)]">
                 <Wand2 className="h-3.5 w-3.5" />
                 {t.toolbox.agentSkills}
               </div>
@@ -187,29 +187,29 @@ export default function AgentDetailModal({
           <div className="flex gap-4 flex-wrap">
             {memory && (
               <div className="space-y-1">
-                <div className="flex items-center gap-1.5 text-xs font-medium text-neutral-500">
+                <div className="flex items-center gap-1.5 text-xs font-medium text-[var(--abu-text-tertiary)]">
                   <Database className="h-3.5 w-3.5" />
                   {t.toolbox.agentMemory}
                 </div>
-                <p className="text-xs text-neutral-600 pl-5">{memoryLabel}</p>
+                <p className="text-xs text-[var(--abu-text-secondary)] pl-5">{memoryLabel}</p>
               </div>
             )}
             {maxTurns && (
               <div className="space-y-1">
-                <div className="flex items-center gap-1.5 text-xs font-medium text-neutral-500">
+                <div className="flex items-center gap-1.5 text-xs font-medium text-[var(--abu-text-tertiary)]">
                   <RotateCcw className="h-3.5 w-3.5" />
                   {t.toolbox.agentMaxTurns}
                 </div>
-                <p className="text-xs text-neutral-600 pl-5">{maxTurns}</p>
+                <p className="text-xs text-[var(--abu-text-secondary)] pl-5">{maxTurns}</p>
               </div>
             )}
             {background !== undefined && (
               <div className="space-y-1">
-                <div className="flex items-center gap-1.5 text-xs font-medium text-neutral-500">
+                <div className="flex items-center gap-1.5 text-xs font-medium text-[var(--abu-text-tertiary)]">
                   <Cog className="h-3.5 w-3.5" />
                   {t.toolbox.agentBackground}
                 </div>
-                <p className="text-xs text-neutral-600 pl-5">{background ? '✓' : '✗'}</p>
+                <p className="text-xs text-[var(--abu-text-secondary)] pl-5">{background ? '✓' : '✗'}</p>
               </div>
             )}
           </div>
@@ -217,8 +217,8 @@ export default function AgentDetailModal({
           {/* System Prompt */}
           {systemPrompt && (
             <div className="space-y-1">
-              <div className="text-xs font-medium text-neutral-500">{t.toolbox.agentSystemPrompt}</div>
-              <div className="border border-neutral-200 rounded-lg p-3 bg-neutral-50 max-h-60 overflow-y-auto">
+              <div className="text-xs font-medium text-[var(--abu-text-tertiary)]">{t.toolbox.agentSystemPrompt}</div>
+              <div className="border border-[var(--abu-border)] rounded-lg p-3 bg-[var(--abu-bg-muted)] max-h-60 overflow-y-auto">
                 <MarkdownRenderer content={systemPrompt} />
               </div>
             </div>
@@ -226,11 +226,11 @@ export default function AgentDetailModal({
         </div>
 
         {/* Footer */}
-        <div className="flex items-center justify-end gap-2 px-5 py-3 border-t border-neutral-100">
+        <div className="flex items-center justify-end gap-2 px-5 py-3 border-t border-[var(--abu-bg-active)]">
           {!isInstalled && onInstall && (
             <button
               onClick={onInstall}
-              className="flex items-center gap-1.5 px-4 py-1.5 rounded-lg text-sm font-medium bg-[#d97757] text-white hover:bg-[#c5664a] transition-colors"
+              className="flex items-center gap-1.5 px-4 py-1.5 rounded-lg text-sm font-medium bg-[var(--abu-clay)] text-white hover:bg-[var(--abu-clay-hover)] transition-colors"
             >
               <Download className="h-3.5 w-3.5" />
               {t.toolbox.install}
@@ -239,7 +239,7 @@ export default function AgentDetailModal({
           {isInstalled && onEdit && (
             <button
               onClick={onEdit}
-              className="flex items-center gap-1.5 px-4 py-1.5 rounded-lg text-sm font-medium bg-[#29261b] text-[#faf9f5] hover:bg-[#3d3a2f] transition-colors"
+              className="flex items-center gap-1.5 px-4 py-1.5 rounded-lg text-sm font-medium bg-[var(--abu-text-primary)] text-[var(--abu-bg-base)] hover:bg-[var(--abu-text-primary)] transition-colors"
             >
               <Pencil className="h-3.5 w-3.5" />
               {t.toolbox.agentEdit}

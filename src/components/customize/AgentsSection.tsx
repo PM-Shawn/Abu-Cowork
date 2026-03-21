@@ -137,13 +137,13 @@ export default function AgentsSection({ manualCreateTrigger, onAICreate, onManua
       <div key={agent.name} className="mb-0.5">
         <div
           className={`flex items-center gap-3 mx-2 pl-7 pr-3 py-2.5 rounded-lg cursor-pointer transition-colors ${
-            isSelected ? 'bg-[#f0ede6]' : 'hover:bg-[#f0ede6]/60'
+            isSelected ? 'bg-[var(--abu-bg-active)]' : 'hover:bg-[var(--abu-bg-active)]/60'
           }`}
           onClick={() => setSelectedAgent(agent.name)}
         >
           <AgentAvatar agent={agent} size="sm" />
           <span className={`text-sm flex-1 truncate ${
-            !isEnabled && agent.name !== 'abu' ? 'text-[#b5b0a6]' : isSelected ? 'text-[#29261b] font-medium' : 'text-[#656358]'
+            !isEnabled && agent.name !== 'abu' ? 'text-[var(--abu-text-placeholder)]' : isSelected ? 'text-[var(--abu-text-primary)] font-medium' : 'text-[var(--abu-text-tertiary)]'
           }`}>
             {displayName(agent)}
           </span>
@@ -166,12 +166,12 @@ export default function AgentsSection({ manualCreateTrigger, onAICreate, onManua
   return (
     <div className="flex h-full overflow-hidden">
       {/* Left: Agent list */}
-      <div className="w-[340px] shrink-0 border-r border-[#e8e4dd]/60 flex flex-col overflow-hidden bg-[#faf8f5]">
+      <div className="w-[340px] shrink-0 border-r border-[var(--abu-border)] flex flex-col overflow-hidden bg-[var(--abu-bg-base)]">
         {/* Header: Title + Search + Create */}
-        <div className="shrink-0 px-4 pt-4 pb-3 border-b border-[#e8e4dd]/60">
+        <div className="shrink-0 px-4 pt-4 pb-3 border-b border-[var(--abu-border)]">
           {showSearch ? (
             <div className="relative">
-              <Search className="absolute left-2 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-[#656358]" />
+              <Search className="absolute left-2 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-[var(--abu-text-tertiary)]" />
               <input
                 autoFocus
                 type="text"
@@ -180,58 +180,58 @@ export default function AgentsSection({ manualCreateTrigger, onAICreate, onManua
                 onChange={(e) => setToolboxSearchQuery(e.target.value)}
                 onBlur={() => { if (!toolboxSearchQuery) setShowSearch(false); }}
                 onKeyDown={(e) => { if (e.key === 'Escape') { setToolboxSearchQuery(''); setShowSearch(false); } }}
-                className="w-full pl-7 pr-7 py-1 text-sm border border-[#e8e4dd] rounded-md bg-white focus:outline-none focus:ring-1 focus:ring-[#d97757]/30 text-[#29261b]"
+                className="w-full pl-7 pr-7 py-1 text-sm border border-[var(--abu-border)] rounded-md bg-[var(--abu-bg-base)] focus:outline-none focus:ring-1 focus:ring-[var(--abu-clay-ring)] text-[var(--abu-text-primary)]"
               />
               <button
                 onClick={() => { setToolboxSearchQuery(''); setShowSearch(false); }}
-                className="absolute right-2 top-1/2 -translate-y-1/2 text-[#656358] hover:text-[#29261b]"
+                className="absolute right-2 top-1/2 -translate-y-1/2 text-[var(--abu-text-tertiary)] hover:text-[var(--abu-text-primary)]"
               >
                 <X className="h-3.5 w-3.5" />
               </button>
             </div>
           ) : (
             <div className="flex items-center justify-between">
-              <span className="text-base font-semibold text-[#29261b]">{t.toolbox.agents}</span>
+              <span className="text-base font-semibold text-[var(--abu-text-primary)]">{t.toolbox.agents}</span>
               <div className="flex items-center gap-1">
                 <button
                   onClick={() => setShowSearch(true)}
-                  className="p-1 text-[#888579] hover:text-[#29261b] transition-colors"
+                  className="p-1 text-[var(--abu-text-muted)] hover:text-[var(--abu-text-primary)] transition-colors"
                 >
                   <Search className="h-3.5 w-3.5" />
                 </button>
                 <div className="relative">
                   <button
                     onClick={(e) => { e.stopPropagation(); setShowCreateMenu(!showCreateMenu); }}
-                    className="p-1 text-[#888579] hover:text-[#29261b] transition-colors"
+                    className="p-1 text-[var(--abu-text-muted)] hover:text-[var(--abu-text-primary)] transition-colors"
                   >
                     <Plus className="h-4 w-4" />
                   </button>
                   {showCreateMenu && (
-                    <div className="absolute z-50 top-full right-0 mt-1 w-44 bg-white rounded-lg shadow-lg border border-[#e8e4dd] py-1">
+                    <div className="absolute z-50 top-full right-0 mt-1 w-44 bg-white rounded-lg shadow-lg border border-[var(--abu-border)] py-1">
                       {onAICreate && (
                         <button
                           onClick={() => { setShowCreateMenu(false); onAICreate(); }}
-                          className="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-[#29261b] hover:bg-[#f0ede6] transition-colors"
+                          className="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-active)] transition-colors"
                         >
-                          <Wand2 className="h-3.5 w-3.5 text-[#d97757]" />
+                          <Wand2 className="h-3.5 w-3.5 text-[var(--abu-clay)]" />
                           <span>{t.toolbox.createWithAbu}</span>
                         </button>
                       )}
                       {onManualCreate && (
                         <button
                           onClick={() => { setShowCreateMenu(false); onManualCreate(); }}
-                          className="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-[#29261b] hover:bg-[#f0ede6] transition-colors"
+                          className="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-active)] transition-colors"
                         >
-                          <PenLine className="h-3.5 w-3.5 text-[#888579]" />
+                          <PenLine className="h-3.5 w-3.5 text-[var(--abu-text-muted)]" />
                           <span>{t.toolbox.createManually}</span>
                         </button>
                       )}
                       {onUploadFile && (
                         <button
                           onClick={() => { setShowCreateMenu(false); onUploadFile(); }}
-                          className="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-[#29261b] hover:bg-[#f0ede6] transition-colors"
+                          className="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-active)] transition-colors"
                         >
-                          <Upload className="h-3.5 w-3.5 text-[#888579]" />
+                          <Upload className="h-3.5 w-3.5 text-[var(--abu-text-muted)]" />
                           <span>{t.toolbox.uploadFile}</span>
                         </button>
                       )}
@@ -244,14 +244,14 @@ export default function AgentsSection({ manualCreateTrigger, onAICreate, onManua
         </div>
         <div className="flex-1 overflow-y-auto overlay-scroll py-2">
           {filteredAgents.length === 0 ? (
-            <div className="text-xs text-[#888579] py-8 text-center">{t.toolbox.noAgentsFound}</div>
+            <div className="text-xs text-[var(--abu-text-muted)] py-8 text-center">{t.toolbox.noAgentsFound}</div>
           ) : (
             <>
               {/* My agents (user-created) */}
               {userAgents.length > 0 && (
                 <div>
                   <div
-                    className="flex items-center gap-1.5 px-5 py-2.5 cursor-pointer text-[#888579] hover:text-[#29261b]"
+                    className="flex items-center gap-1.5 px-5 py-2.5 cursor-pointer text-[var(--abu-text-muted)] hover:text-[var(--abu-text-primary)]"
                     onClick={() => toggleCategory('my')}
                   >
                     {collapsedCategories.has('my')
@@ -267,7 +267,7 @@ export default function AgentsSection({ manualCreateTrigger, onAICreate, onManua
               {systemAgents.length > 0 && (
                 <div>
                   <div
-                    className="flex items-center gap-1.5 px-5 py-2.5 cursor-pointer text-[#888579] hover:text-[#29261b]"
+                    className="flex items-center gap-1.5 px-5 py-2.5 cursor-pointer text-[var(--abu-text-muted)] hover:text-[var(--abu-text-primary)]"
                     onClick={() => toggleCategory('system')}
                   >
                     {collapsedCategories.has('system')
@@ -285,14 +285,14 @@ export default function AgentsSection({ manualCreateTrigger, onAICreate, onManua
       </div>
 
       {/* Right: Agent detail */}
-      <div className="flex-1 overflow-y-auto overlay-scroll bg-white">
+      <div className="flex-1 overflow-y-auto overlay-scroll bg-[var(--abu-bg-base)]">
         {selected ? (
           <div className="px-6 py-6">
             {/* Row 1: Name + Toggle + Menu */}
             <div className="flex items-center justify-between mb-4">
               <div className="flex items-center gap-3">
                 <AgentAvatar agent={selected} />
-                <h2 className="text-xl font-semibold text-[#29261b]">{displayName(selected)}</h2>
+                <h2 className="text-xl font-semibold text-[var(--abu-text-primary)]">{displayName(selected)}</h2>
               </div>
               <div className="flex items-center gap-2">
                 {selected.name !== 'abu' && (
@@ -306,16 +306,16 @@ export default function AgentsSection({ manualCreateTrigger, onAICreate, onManua
                       <div className="relative">
                         <button
                           onClick={(e) => { e.stopPropagation(); setMenuAgent(menuAgent === selected.name ? null : selected.name); }}
-                          className="p-1.5 rounded-lg text-[#656358] hover:text-[#29261b] hover:bg-[#f5f3ee] transition-colors"
+                          className="p-1.5 rounded-lg text-[var(--abu-text-tertiary)] hover:text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-muted)] transition-colors"
                         >
                           <MoreHorizontal className="h-4 w-4" />
                         </button>
                         {menuAgent === selected.name && (
-                          <div className="absolute right-0 top-8 z-10 bg-white border border-[#e8e4dd] rounded-lg shadow-lg py-1 min-w-[140px]">
+                          <div className="absolute right-0 top-8 z-10 bg-white border border-[var(--abu-border)] rounded-lg shadow-lg py-1 min-w-[140px]">
                             {/* Try in chat - only when enabled */}
                             {!disabledSet.has(selected.name) && (
                               <button
-                                className="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-[#29261b] hover:bg-[#f5f3ee] transition-colors"
+                                className="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-muted)] transition-colors"
                                 onClick={() => {
                                   setMenuAgent(null);
                                   startNewConversation();
@@ -331,7 +331,7 @@ export default function AgentsSection({ manualCreateTrigger, onAICreate, onManua
                             {!isSystemAgent(selected) && (
                               <>
                                 <button
-                                  className="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-[#29261b] hover:bg-[#f5f3ee] transition-colors"
+                                  className="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-muted)] transition-colors"
                                   onClick={() => { setEditorAgent(selected); setMenuAgent(null); }}
                                 >
                                   <Pencil className="h-3 w-3" />
@@ -357,48 +357,48 @@ export default function AgentsSection({ manualCreateTrigger, onAICreate, onManua
 
             {/* Row 2: Added by */}
             <div className="mb-5">
-              <div className="text-xs text-[#888579] mb-0.5">{t.toolbox.skillAddedBy}</div>
-              <div className="text-sm font-medium text-[#29261b]">{isSystemAgent(selected) ? 'System' : 'User'}</div>
+              <div className="text-xs text-[var(--abu-text-muted)] mb-0.5">{t.toolbox.skillAddedBy}</div>
+              <div className="text-sm font-medium text-[var(--abu-text-primary)]">{isSystemAgent(selected) ? 'System' : 'User'}</div>
             </div>
 
             {/* Description */}
             <div className="mb-7">
-              <span className="text-xs text-[#888579]">Description</span>
-              <p className="text-sm text-[#29261b] leading-relaxed mt-1.5">{selected.description}</p>
+              <span className="text-xs text-[var(--abu-text-muted)]">Description</span>
+              <p className="text-sm text-[var(--abu-text-primary)] leading-relaxed mt-1.5">{selected.description}</p>
             </div>
 
             {/* System Prompt content area (hidden for abu — internal prompt) */}
             {selected.systemPrompt && selected.name !== 'abu' && (
-              <div className="border border-[#e8e4dd] rounded-lg overflow-hidden">
+              <div className="border border-[var(--abu-border)] rounded-lg overflow-hidden">
                 {/* Toggle bar */}
-                <div className="flex items-center justify-end gap-1.5 px-4 py-2.5 bg-[#faf8f5] border-b border-[#e8e4dd]/60">
+                <div className="flex items-center justify-end gap-1.5 px-4 py-2.5 bg-[var(--abu-bg-base)] border-b border-[var(--abu-border)]">
                   <button
                     onClick={() => setContentViewMode('preview')}
-                    className={`p-1.5 rounded transition-colors ${contentViewMode === 'preview' ? 'text-[#29261b] bg-[#eae7e0]' : 'text-[#888579] hover:text-[#29261b]'}`}
+                    className={`p-1.5 rounded transition-colors ${contentViewMode === 'preview' ? 'text-[var(--abu-text-primary)] bg-[var(--abu-bg-hover)]' : 'text-[var(--abu-text-muted)] hover:text-[var(--abu-text-primary)]'}`}
                     title="Preview"
                   >
                     <Eye className="h-4 w-4" />
                   </button>
                   <button
                     onClick={() => setContentViewMode('source')}
-                    className={`p-1.5 rounded transition-colors ${contentViewMode === 'source' ? 'text-[#29261b] bg-[#eae7e0]' : 'text-[#888579] hover:text-[#29261b]'}`}
+                    className={`p-1.5 rounded transition-colors ${contentViewMode === 'source' ? 'text-[var(--abu-text-primary)] bg-[var(--abu-bg-hover)]' : 'text-[var(--abu-text-muted)] hover:text-[var(--abu-text-primary)]'}`}
                     title="Source"
                   >
                     <Code className="h-4 w-4" />
                   </button>
                 </div>
-                <div className="px-6 py-5 bg-[#faf8f5]">
+                <div className="px-6 py-5 bg-[var(--abu-bg-base)]">
                   {contentViewMode === 'preview' ? (
                     <MarkdownRenderer content={selected.systemPrompt} />
                   ) : (
-                    <pre className="text-xs text-[#29261b] whitespace-pre-wrap break-words font-mono leading-relaxed">{selected.systemPrompt}</pre>
+                    <pre className="text-xs text-[var(--abu-text-primary)] whitespace-pre-wrap break-words font-mono leading-relaxed">{selected.systemPrompt}</pre>
                   )}
                 </div>
               </div>
             )}
           </div>
         ) : (
-          <div className="flex items-center justify-center h-full text-sm text-[#888579]">
+          <div className="flex items-center justify-center h-full text-sm text-[var(--abu-text-muted)]">
             {t.toolbox.noAgentsFound}
           </div>
         )}

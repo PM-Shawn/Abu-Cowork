@@ -70,19 +70,19 @@ export default function IMInfoBar({ conversation }: IMInfoBarProps) {
   };
 
   return (
-    <div className="shrink-0 flex items-center gap-2 px-6 md:px-10 py-1.5 bg-white/60 border-b border-[#e8e6df] text-[13px]">
+    <div className="shrink-0 flex items-center gap-2 px-6 md:px-10 py-1.5 bg-white/60 border-b border-[var(--abu-border)] text-[13px]">
       {/* Platform icon + title */}
       <div className="flex items-center gap-1.5 min-w-0">
-        <span className="shrink-0 h-4 w-4 rounded text-[8px] font-bold leading-4 text-center bg-[#d97757]/15 text-[#d97757]">
+        <span className="shrink-0 h-4 w-4 rounded text-[8px] font-bold leading-4 text-center bg-[var(--abu-clay-bg-15)] text-[var(--abu-clay)]">
           {getPlatformShortLabel(platform)}
         </span>
-        <span className="font-medium text-[#29261b] truncate">{title}</span>
-        <span className="text-[#d5d3cb]">·</span>
-        <span className="text-[#656358] shrink-0">{platformLabel}</span>
+        <span className="font-medium text-[var(--abu-text-primary)] truncate">{title}</span>
+        <span className="text-[var(--abu-text-placeholder)]">·</span>
+        <span className="text-[var(--abu-text-tertiary)] shrink-0">{platformLabel}</span>
       </div>
 
       {/* Rounds badge */}
-      <span className="shrink-0 px-1.5 py-0.5 rounded bg-[#f5f4f0] text-[11px] text-[#656358]">
+      <span className="shrink-0 px-1.5 py-0.5 rounded bg-[var(--abu-bg-muted)] text-[11px] text-[var(--abu-text-tertiary)]">
         {rounds} {t.imChannel.infoBarRounds}
       </span>
 
@@ -93,50 +93,50 @@ export default function IMInfoBar({ conversation }: IMInfoBarProps) {
       <div className="relative shrink-0" ref={menuRef}>
         <button
           onClick={() => setShowMenu(!showMenu)}
-          className="flex items-center justify-center w-6 h-6 rounded text-[#656358] hover:bg-[#f0efe8] transition-colors"
+          className="flex items-center justify-center w-6 h-6 rounded text-[var(--abu-text-tertiary)] hover:bg-[var(--abu-bg-active)] transition-colors"
         >
           <MoreHorizontal className="h-4 w-4" />
         </button>
 
         {showMenu && (
-          <div className="absolute top-full right-0 mt-1 w-60 bg-white rounded-lg shadow-lg border border-[#e8e6df] py-1.5 z-50">
+          <div className="absolute top-full right-0 mt-1 w-60 bg-white rounded-lg shadow-lg border border-[var(--abu-border)] py-1.5 z-50">
             {/* Capability */}
             <div className="flex items-center gap-2 px-3 py-1.5 text-[12px]">
-              <Shield className="h-3.5 w-3.5 text-[#9e9b8e] shrink-0" />
-              <span className="text-[#9e9b8e] shrink-0">{t.imChannel.infoBarCapability}</span>
-              <span className="text-[#29261b] ml-auto text-right">{capabilityLabels[capability]}</span>
+              <Shield className="h-3.5 w-3.5 text-[var(--abu-text-muted)] shrink-0" />
+              <span className="text-[var(--abu-text-muted)] shrink-0">{t.imChannel.infoBarCapability}</span>
+              <span className="text-[var(--abu-text-primary)] ml-auto text-right">{capabilityLabels[capability]}</span>
             </div>
 
             {/* Start time */}
             <div className="flex items-center gap-2 px-3 py-1.5 text-[12px]">
-              <Clock className="h-3.5 w-3.5 text-[#9e9b8e] shrink-0" />
-              <span className="text-[#9e9b8e]">{t.imChannel.infoBarStarted}</span>
-              <span className="text-[#29261b] ml-auto">{formatTime(startTime)}</span>
+              <Clock className="h-3.5 w-3.5 text-[var(--abu-text-muted)] shrink-0" />
+              <span className="text-[var(--abu-text-muted)]">{t.imChannel.infoBarStarted}</span>
+              <span className="text-[var(--abu-text-primary)] ml-auto">{formatTime(startTime)}</span>
             </div>
 
             {/* Rounds */}
             <div className="flex items-center gap-2 px-3 py-1.5 text-[12px]">
-              <MessageSquare className="h-3.5 w-3.5 text-[#9e9b8e] shrink-0" />
-              <span className="text-[#9e9b8e]">{t.imChannel.infoBarRounds}</span>
-              <span className="text-[#29261b] ml-auto">{rounds}</span>
+              <MessageSquare className="h-3.5 w-3.5 text-[var(--abu-text-muted)] shrink-0" />
+              <span className="text-[var(--abu-text-muted)]">{t.imChannel.infoBarRounds}</span>
+              <span className="text-[var(--abu-text-primary)] ml-auto">{rounds}</span>
             </div>
 
             {/* Chat name (if group) */}
             {chatName && (
               <div className="flex items-center gap-2 px-3 py-1.5 text-[12px]">
-                <Hash className="h-3.5 w-3.5 text-[#9e9b8e] shrink-0" />
-                <span className="text-[#9e9b8e] shrink-0">群组</span>
-                <span className="text-[#29261b] ml-auto truncate max-w-[120px]">{chatName}</span>
+                <Hash className="h-3.5 w-3.5 text-[var(--abu-text-muted)] shrink-0" />
+                <span className="text-[var(--abu-text-muted)] shrink-0">群组</span>
+                <span className="text-[var(--abu-text-primary)] ml-auto truncate max-w-[120px]">{chatName}</span>
               </div>
             )}
 
             {/* Divider + End session */}
             {session && (
               <>
-                <div className="my-1 border-t border-[#e8e6df]" />
+                <div className="my-1 border-t border-[var(--abu-border)]" />
                 <button
                   onClick={handleEndSession}
-                  className="w-full flex items-center gap-2 px-3 py-1.5 text-[12px] text-[#e53935] hover:bg-red-50 transition-colors"
+                  className="w-full flex items-center gap-2 px-3 py-1.5 text-[12px] text-red-500 hover:bg-red-50 transition-colors"
                 >
                   <XCircle className="h-3.5 w-3.5 shrink-0" />
                   {t.imChannel.infoBarEndSession}

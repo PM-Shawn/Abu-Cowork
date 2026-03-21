@@ -271,7 +271,7 @@ export default function TaskBlock({ steps, executionSteps, isActive, onRetry }: 
         // Minimal completed header — single text line, no icons
         <button
           onClick={handleHeaderClick}
-          className="flex items-center gap-1 text-[13px] text-[#a8a49a] hover:text-[#8b887c] transition-colors mb-2"
+          className="flex items-center gap-1 text-[13px] text-[var(--abu-text-muted)] hover:text-[var(--abu-text-muted)] transition-colors mb-2"
         >
           <span>{summary}</span>
           <ChevronDown
@@ -285,14 +285,14 @@ export default function TaskBlock({ steps, executionSteps, isActive, onRetry }: 
         // Active / error header — with animated dots and chevron
         <button
           onClick={handleHeaderClick}
-          className="flex items-center gap-1.5 text-[13px] text-[#656358] hover:text-[#29261b] transition-colors mb-2"
+          className="flex items-center gap-1.5 text-[13px] text-[var(--abu-text-tertiary)] hover:text-[var(--abu-text-primary)] transition-colors mb-2"
         >
           <span>{isActive ? summary.replace(/\.{3}$/, '').replace(/…$/, '') : summary}</span>
           {isActive && (
             <span className="inline-flex items-center gap-[3px] ml-0.5">
-              <span className="typing-dot w-[3px] h-[3px] rounded-full bg-[#d97757]" />
-              <span className="typing-dot w-[3px] h-[3px] rounded-full bg-[#d97757]" />
-              <span className="typing-dot w-[3px] h-[3px] rounded-full bg-[#d97757]" />
+              <span className="typing-dot w-[3px] h-[3px] rounded-full bg-[var(--abu-clay)]" />
+              <span className="typing-dot w-[3px] h-[3px] rounded-full bg-[var(--abu-clay)]" />
+              <span className="typing-dot w-[3px] h-[3px] rounded-full bg-[var(--abu-clay)]" />
             </span>
           )}
           <ChevronDown
@@ -333,14 +333,14 @@ export default function TaskBlock({ steps, executionSteps, isActive, onRetry }: 
                 {displayMode === 'preview' ? (
                   <button
                     onClick={handleShowMore}
-                    className="text-[12px] text-[#d97757] hover:text-[#c5684a] transition-colors"
+                    className="text-[12px] text-[var(--abu-clay)] hover:text-[var(--abu-clay-hover)] transition-colors"
                   >
                     {t.task.showMore}
                   </button>
                 ) : (
                   <button
                     onClick={handleCollapse}
-                    className="text-[12px] text-[#d97757] hover:text-[#c5684a] transition-colors"
+                    className="text-[12px] text-[var(--abu-clay)] hover:text-[var(--abu-clay-hover)] transition-colors"
                   >
                     {t.task.collapse}
                   </button>
@@ -353,10 +353,10 @@ export default function TaskBlock({ steps, executionSteps, isActive, onRetry }: 
           {allCompleted && (displayMode === 'expanded' || !needsTruncation) && (
             <div className="flex items-start gap-3">
               <div className="w-3.5 h-3.5 mt-0.5 flex items-center justify-center shrink-0">
-                <Check className="h-3.5 w-3.5 text-[#8b887c]" />
+                <Check className="h-3.5 w-3.5 text-[var(--abu-text-muted)]" />
               </div>
               <div className="flex-1 min-w-0 pb-2">
-                <div className="text-[13px] leading-5 text-[#8b887c]">{t.task.done}</div>
+                <div className="text-[13px] leading-5 text-[var(--abu-text-muted)]">{t.task.done}</div>
               </div>
             </div>
           )}
@@ -375,7 +375,7 @@ export default function TaskBlock({ steps, executionSteps, isActive, onRetry }: 
                   {onRetry && (
                     <button
                       onClick={onRetry}
-                      className="flex items-center gap-1 px-2 py-0.5 text-[11px] text-[#8b887c] hover:text-[#656358] bg-[#e8e5de] hover:bg-[#ddd9d0] rounded transition-colors"
+                      className="flex items-center gap-1 px-2 py-0.5 text-[11px] text-[var(--abu-text-muted)] hover:text-[var(--abu-text-tertiary)] bg-[var(--abu-bg-hover)] hover:bg-[var(--abu-bg-pressed)] rounded transition-colors"
                     >
                       <RotateCcw className="h-3 w-3" />
                       {t.task.retryAction}
@@ -390,10 +390,10 @@ export default function TaskBlock({ steps, executionSteps, isActive, onRetry }: 
           {isActive && (
             <div className="flex items-start gap-3">
               <div className="w-3.5 h-3.5 mt-0.5 flex items-center justify-center shrink-0">
-                <Loader2 className="h-3.5 w-3.5 text-[#d97757] animate-spin" />
+                <Loader2 className="h-3.5 w-3.5 text-[var(--abu-clay)] animate-spin" />
               </div>
               <div className="flex-1 min-w-0 pb-2">
-                <div className="text-[13px] leading-5 text-[#8b887c]">
+                <div className="text-[13px] leading-5 text-[var(--abu-text-muted)]">
                   {t.task.running}
                 </div>
               </div>
@@ -507,15 +507,15 @@ function TaskStepItem({ step, showConnector, locale, t }: {
       <div className="flex flex-col items-center">
         <div className="w-3.5 h-3.5 mt-0.5 flex items-center justify-center shrink-0">
           {isRunning ? (
-            <Loader2 className="h-3.5 w-3.5 text-[#d97757] animate-spin" />
+            <Loader2 className="h-3.5 w-3.5 text-[var(--abu-clay)] animate-spin" />
           ) : isError ? (
             <AlertCircle className="h-3.5 w-3.5 text-red-400" />
           ) : (
-            <Icon className="h-3.5 w-3.5 text-[#a8a49a]" />
+            <Icon className="h-3.5 w-3.5 text-[var(--abu-text-muted)]" />
           )}
         </div>
         {showConnector && (
-          <div className="w-px flex-1 min-h-[16px] bg-[#e8e5de] mt-1" />
+          <div className="w-px flex-1 min-h-[16px] bg-[var(--abu-bg-hover)] mt-1" />
         )}
       </div>
 
@@ -525,7 +525,7 @@ function TaskStepItem({ step, showConnector, locale, t }: {
         <div
           className={cn(
             'text-[13px] leading-5',
-            isRunning ? 'text-[#656358]' : isError ? 'text-red-500' : 'text-[#8b887c]'
+            isRunning ? 'text-[var(--abu-text-tertiary)]' : isError ? 'text-red-500' : 'text-[var(--abu-text-muted)]'
           )}
         >
           {stepLabel}
@@ -543,7 +543,7 @@ function TaskStepItem({ step, showConnector, locale, t }: {
 
         {/* Completion message */}
         {isCompleted && completionMsg && (
-          <div className="text-[12px] text-[#a8a49a] mt-0.5">
+          <div className="text-[12px] text-[var(--abu-text-muted)] mt-0.5">
             {completionMsg}
           </div>
         )}
@@ -551,7 +551,7 @@ function TaskStepItem({ step, showConnector, locale, t }: {
         {/* Step detail (e.g., filename) - only show if no detail blocks or legacy details */}
         {step.detail && !completionMsg && !typeLabel && !step.detailBlocks?.length && (
           <div className="mt-1">
-            <span className="inline-flex items-center px-2 py-0.5 rounded bg-[#f5f3ee] text-[12px] text-[#8b887c] font-mono">
+            <span className="inline-flex items-center px-2 py-0.5 rounded bg-[var(--abu-bg-muted)] text-[12px] text-[var(--abu-text-muted)] font-mono">
               {getFileName(step.detail)}
             </span>
           </div>
@@ -559,7 +559,7 @@ function TaskStepItem({ step, showConnector, locale, t }: {
 
         {/* Nested child steps for delegate (subagent) */}
         {step.type === 'delegate' && step.childSteps && step.childSteps.length > 0 && (
-          <div className="mt-2 pl-1 border-l-2 border-[#e8e5de] ml-0.5">
+          <div className="mt-2 pl-1 border-l-2 border-[var(--abu-bg-hover)] ml-0.5">
             {step.childSteps.map((childStep, childIndex) => {
               const isLastChild = childIndex === step.childSteps!.length - 1;
               return (
@@ -629,7 +629,7 @@ function CollapsibleDetail({
     <div className="mt-1">
       <button
         onClick={() => setExpanded(!expanded)}
-        className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[11px] bg-[#e8e5de] text-[#8b887c] hover:bg-[#ddd9d0] hover:text-[#656358] transition-colors"
+        className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[11px] bg-[var(--abu-bg-hover)] text-[var(--abu-text-muted)] hover:bg-[var(--abu-bg-pressed)] hover:text-[var(--abu-text-tertiary)] transition-colors"
       >
         {expanded ? (
           <ChevronDown className="h-3 w-3" />
@@ -640,15 +640,15 @@ function CollapsibleDetail({
       </button>
 
       {expanded && (
-        <div className="mt-2 rounded-lg bg-[#f5f3ee] border border-[#e8e5de] overflow-hidden">
+        <div className="mt-2 rounded-lg bg-[var(--abu-bg-muted)] border border-[var(--abu-bg-hover)] overflow-hidden">
           {formattedInput && (
-            <div className="border-b border-[#e8e5de]">
-              <div className="px-3 py-1.5 text-[11px] text-[#8b887c] bg-[#edeae4]">
+            <div className="border-b border-[var(--abu-bg-hover)]">
+              <div className="px-3 py-1.5 text-[11px] text-[var(--abu-text-muted)] bg-[var(--abu-bg-hover)]">
                 {toolName && [TOOL_NAMES.RUN_COMMAND, 'bash', 'execute', 'shell'].includes(toolName)
                   ? 'bash'
                   : t.task.input}
               </div>
-              <pre className="px-3 py-2 text-[12px] text-[#656358] font-mono whitespace-pre-wrap break-all overflow-x-auto max-h-[200px] overflow-y-auto">
+              <pre className="px-3 py-2 text-[12px] text-[var(--abu-text-tertiary)] font-mono whitespace-pre-wrap break-all overflow-x-auto max-h-[200px] overflow-y-auto">
                 {formattedInput}
               </pre>
             </div>
@@ -656,10 +656,10 @@ function CollapsibleDetail({
 
           {truncatedResult && (
             <div>
-              <div className="px-3 py-1.5 text-[11px] text-[#8b887c] bg-[#edeae4]">
+              <div className="px-3 py-1.5 text-[11px] text-[var(--abu-text-muted)] bg-[var(--abu-bg-hover)]">
                 {t.task.output}
               </div>
-              <pre className="px-3 py-2 text-[12px] text-[#656358] font-mono whitespace-pre-wrap break-all overflow-x-auto max-h-[300px] overflow-y-auto">
+              <pre className="px-3 py-2 text-[12px] text-[var(--abu-text-tertiary)] font-mono whitespace-pre-wrap break-all overflow-x-auto max-h-[300px] overflow-y-auto">
                 {truncatedResult}
               </pre>
             </div>

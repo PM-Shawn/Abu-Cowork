@@ -527,28 +527,28 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
       <div className="relative">
         {/* Suggestions Popup (Skills / Agents) */}
         {showSuggestions && suggestions.length > 0 && (
-          <div className="absolute bottom-full left-0 right-0 mb-2 bg-white rounded-xl border border-[#706b5750] shadow-lg overflow-x-hidden overflow-y-auto max-h-[320px] z-20">
+          <div className="absolute bottom-full left-0 right-0 mb-2 bg-white rounded-xl border border-[var(--abu-border)] shadow-lg overflow-x-hidden overflow-y-auto max-h-[320px] z-20">
             {suggestions.map((item, idx) => (
               <button
                 key={item.name}
                 onClick={() => applySuggestion(item)}
                 className={cn(
                   'btn-ghost w-full flex flex-col gap-0.5 px-4 py-2.5 text-sm text-left',
-                  idx === selectedIndex ? 'bg-[#e8e5de]' : 'hover:bg-[#f5f3ee]'
+                  idx === selectedIndex ? 'bg-[var(--abu-bg-hover)]' : 'hover:bg-[var(--abu-bg-muted)]'
                 )}
               >
                 <div className="flex items-center gap-3">
                   <span className={cn(
                     'w-5 text-center font-mono text-[12px] shrink-0',
-                    suggestionType === 'agent' ? 'text-blue-500' : 'text-[#656358]'
+                    suggestionType === 'agent' ? 'text-blue-500' : 'text-[var(--abu-text-tertiary)]'
                   )}>
                     {suggestionType === 'agent' ? '@' : '/'}
                   </span>
-                  <span className="font-medium text-[#29261b] text-[13px]">{item.name}</span>
-                  <span className="text-[12px] text-[#656358] truncate">{item.description}</span>
+                  <span className="font-medium text-[var(--abu-text-primary)] text-[13px]">{item.name}</span>
+                  <span className="text-[12px] text-[var(--abu-text-tertiary)] truncate">{item.description}</span>
                 </div>
                 {item.trigger && (
-                  <div className="pl-8 text-[11px] text-[#656358]/70 truncate">
+                  <div className="pl-8 text-[11px] text-[var(--abu-text-muted)] truncate">
                     TRIGGER: {item.trigger}
                   </div>
                 )}
@@ -562,14 +562,14 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
           className={cn(
             'relative bg-white rounded-2xl border transition-all',
             !isWelcome && isDragging
-              ? 'border-[#d97757] ring-2 ring-[#d97757]/20'
-              : 'border-[#706b5760] focus-within:border-[#706b5790] focus-within:shadow-md shadow-sm'
+              ? 'border-[var(--abu-clay)] ring-2 ring-[var(--abu-clay-ring)]'
+              : 'border-[var(--abu-border-subtle)] focus-within:border-[var(--abu-border-hover)]'
           )}
         >
           {/* Chat-only: Drag overlay */}
           {!isWelcome && isDragging && (
             <div className="absolute inset-0 flex items-center justify-center rounded-2xl bg-orange-50/90 z-10">
-              <span className="text-sm text-[#d97757] font-medium">{t.chat.dropFilesHere}</span>
+              <span className="text-sm text-[var(--abu-clay)] font-medium">{t.chat.dropFilesHere}</span>
             </div>
           )}
 
@@ -581,11 +581,11 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
                   <img
                     src={`data:${img.mediaType};base64,${img.data}`}
                     alt=""
-                    className="w-12 h-12 rounded-lg object-cover border border-[#706b5730]"
+                    className="w-12 h-12 rounded-lg object-cover border border-[var(--abu-border-subtle)]"
                   />
                   <button
                     onClick={() => removeImage(img.id)}
-                    className="absolute -top-1.5 -right-1.5 w-4 h-4 rounded-full bg-[#29261b] text-white flex items-center justify-center opacity-0 group-hover/img:opacity-100 transition-opacity"
+                    className="absolute -top-1.5 -right-1.5 w-4 h-4 rounded-full bg-[var(--abu-text-primary)] text-white flex items-center justify-center opacity-0 group-hover/img:opacity-100 transition-opacity"
                     title={t.chat.removeImage}
                   >
                     <X className="h-2.5 w-2.5" />
@@ -595,13 +595,13 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
               {files.map((f) => (
                 <div
                   key={f.id}
-                  className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-[#f5f3ee] border border-[#706b5730] shrink-0 group/file"
+                  className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-[var(--abu-bg-muted)] border border-[var(--abu-border-subtle)] shrink-0 group/file"
                 >
-                  <FileText className="h-3.5 w-3.5 text-[#656358] shrink-0" />
-                  <span className="text-[12px] text-[#29261b] max-w-[160px] truncate">{f.name}</span>
+                  <FileText className="h-3.5 w-3.5 text-[var(--abu-text-tertiary)] shrink-0" />
+                  <span className="text-[12px] text-[var(--abu-text-primary)] max-w-[160px] truncate">{f.name}</span>
                   <button
                     onClick={() => removeFile(f.id)}
-                    className="p-0.5 rounded hover:bg-[#e8e5de] text-[#656358] hover:text-[#29261b] transition-colors"
+                    className="p-0.5 rounded hover:bg-[var(--abu-bg-hover)] text-[var(--abu-text-tertiary)] hover:text-[var(--abu-text-primary)] transition-colors"
                   >
                     <X className="h-3 w-3" />
                   </button>
@@ -655,7 +655,7 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
               disabled={disabled}
               rows={isWelcome ? 2 : 1}
               className={cn(
-                'flex-1 bg-transparent resize-none outline-none text-[#29261b] leading-relaxed',
+                'flex-1 bg-transparent resize-none outline-none text-[var(--abu-text-primary)] leading-relaxed',
                 isWelcome
                   ? 'min-h-[52px] max-h-[180px] text-[15px]'
                   : 'min-h-[24px] max-h-[160px] py-0.5 text-[14.5px] disabled:opacity-40'
@@ -678,7 +678,7 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
                 size="icon"
                 onClick={handleAttach}
                 aria-label={t.chat.addAttachment}
-                className="btn-ghost h-7 w-7 text-[#656358] hover:text-[#29261b] hover:bg-[#e8e5de] rounded-lg"
+                className="btn-ghost h-7 w-7 text-[var(--abu-text-tertiary)] hover:text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-hover)] rounded-lg"
               >
                 <Plus className="h-4 w-4" />
               </Button>
@@ -690,8 +690,8 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
                 className={cn(
                   'btn-claude-primary flex items-center gap-1.5 px-4 py-1.5 rounded-lg text-[13px] font-medium',
                   hasContent
-                    ? 'bg-[#29261b] text-[#faf9f5] shadow-sm'
-                    : 'bg-[#e8e5de] text-[#656358]/50 cursor-not-allowed'
+                    ? 'bg-[var(--abu-text-primary)] text-[var(--abu-bg-base)] shadow-sm'
+                    : 'bg-[var(--abu-bg-hover)] text-[var(--abu-text-muted)] cursor-not-allowed'
                 )}
               >
                 <span>{t.chat.start}</span>
@@ -707,13 +707,13 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
                 <div className="relative" ref={modelPickerRef}>
                   <button
                     onClick={() => setShowModelPicker(!showModelPicker)}
-                    className="btn-ghost flex items-center gap-1 px-2 py-1 text-[12px] text-[#656358] font-medium hover:text-[#29261b] hover:bg-[#e8e5de] rounded-md transition-colors"
+                    className="btn-ghost flex items-center gap-1 px-2 py-1 text-[12px] text-[var(--abu-text-tertiary)] font-medium hover:text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-hover)] rounded-md transition-colors"
                   >
                     {modelDisplay}
                     <ChevronDown className={cn('h-3 w-3 transition-transform', showModelPicker && 'rotate-180')} />
                   </button>
                   {showModelPicker && availableModels.length > 0 && (
-                    <div className="absolute bottom-full left-0 mb-1.5 w-56 bg-white rounded-lg border border-neutral-200 shadow-lg py-1 z-50">
+                    <div className="absolute bottom-full left-0 mb-1.5 w-56 bg-white rounded-lg border border-[var(--abu-border)] shadow-lg py-1 z-50">
                       {availableModels.map((m) => (
                         <button
                           key={m.id}
@@ -724,12 +724,12 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
                           className={cn(
                             'w-full flex items-center justify-between px-3 py-1.5 text-[12px] transition-colors text-left',
                             m.id === currentModel
-                              ? 'text-[#d97757] font-medium bg-[#d97757]/5'
-                              : 'text-[#29261b] hover:bg-[#f5f3ee]'
+                              ? 'text-[var(--abu-clay)] font-medium bg-[var(--abu-clay-5)]'
+                              : 'text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-muted)]'
                           )}
                         >
                           <span>{m.label}</span>
-                          {m.id === currentModel && <Check className="h-3.5 w-3.5 text-[#d97757]" />}
+                          {m.id === currentModel && <Check className="h-3.5 w-3.5 text-[var(--abu-clay)]" />}
                         </button>
                       ))}
                     </div>
@@ -741,7 +741,7 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
                   size="icon"
                   onClick={handleAttach}
                   aria-label={t.chat.addAttachment}
-                  className="btn-ghost h-7 w-7 text-[#656358] hover:text-[#29261b] hover:bg-[#e8e5de] rounded-lg"
+                  className="btn-ghost h-7 w-7 text-[var(--abu-text-tertiary)] hover:text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-hover)] rounded-lg"
                 >
                   <Plus className="h-4 w-4" />
                 </Button>
@@ -766,8 +766,8 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
                   className={cn(
                     'h-7 w-7 rounded-lg transition-colors',
                     hasContent && !disabled
-                      ? 'bg-[#29261b] hover:bg-[#3d3a2f] text-[#faf9f5] shadow-sm'
-                      : 'bg-[#e8e5de] text-[#656358]/50 cursor-not-allowed hover:bg-[#e8e5de]'
+                      ? 'bg-[var(--abu-text-primary)] hover:bg-[var(--abu-text-primary)] text-[var(--abu-bg-base)] shadow-sm'
+                      : 'bg-[var(--abu-bg-hover)] text-[var(--abu-text-muted)] cursor-not-allowed hover:bg-[var(--abu-bg-hover)]'
                   )}
                 >
                   <ArrowUp className="h-3.5 w-3.5" strokeWidth={2.5} />

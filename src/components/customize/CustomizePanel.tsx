@@ -89,26 +89,26 @@ export default function CustomizePanel() {
       />
 
       {/* Panel */}
-      <div className="fixed right-0 top-0 bottom-0 w-[420px] bg-[#faf9f7] shadow-2xl z-50 flex flex-col animate-slide-in-right">
+      <div className="fixed right-0 top-0 bottom-0 w-[420px] bg-[var(--abu-bg-muted)] shadow-2xl z-50 flex flex-col animate-slide-in-right">
         {/* Header */}
-        <div className="shrink-0 px-5 pt-5 pb-4 border-b border-neutral-200">
+        <div className="shrink-0 px-5 pt-5 pb-4 border-b border-[var(--abu-border)]">
           <div className="flex items-center justify-between mb-4">
             <div className="flex items-center gap-2">
-              <div className="h-8 w-8 rounded-lg bg-[#d97757]/10 flex items-center justify-center">
-                <Sparkles className="h-4 w-4 text-[#d97757]" />
+              <div className="h-8 w-8 rounded-lg bg-[var(--abu-clay-bg)] flex items-center justify-center">
+                <Sparkles className="h-4 w-4 text-[var(--abu-clay)]" />
               </div>
-              <h2 className="text-lg font-semibold text-neutral-900">{t.toolbox.customize}</h2>
+              <h2 className="text-lg font-semibold text-[var(--abu-text-primary)]">{t.toolbox.customize}</h2>
             </div>
             <button
               onClick={closeCustomize}
-              className="p-1.5 text-neutral-400 hover:text-neutral-600 hover:bg-neutral-100 rounded-md transition-colors"
+              className="p-1.5 text-[var(--abu-text-muted)] hover:text-[var(--abu-text-secondary)] hover:bg-[var(--abu-bg-active)] rounded-md transition-colors"
             >
               <X className="h-5 w-5" />
             </button>
           </div>
 
           {/* Tabs */}
-          <div className="flex gap-1 p-1 bg-neutral-100/80 rounded-lg">
+          <div className="flex gap-1 p-1 bg-[var(--abu-bg-active)]/80 rounded-lg">
             {tabs.map((tab) => {
               const Icon = tab.icon;
               const isActive = activeTab === tab.id;
@@ -119,8 +119,8 @@ export default function CustomizePanel() {
                   className={cn(
                     'flex-1 flex items-center justify-center gap-1.5 py-2 px-3 rounded-md text-sm font-medium transition-colors',
                     isActive
-                      ? 'bg-white text-neutral-900 shadow-sm'
-                      : 'text-neutral-500 hover:text-neutral-700'
+                      ? 'bg-[var(--abu-bg-active)] text-[var(--abu-text-primary)]'
+                      : 'text-[var(--abu-text-tertiary)] hover:text-[var(--abu-text-secondary)]'
                   )}
                 >
                   <Icon className="h-4 w-4" />
@@ -133,13 +133,13 @@ export default function CustomizePanel() {
           {/* Search */}
           {(activeTab === 'skills' || activeTab === 'agents' || activeTab === 'mcp') && (
             <div className="relative mt-3">
-              <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-neutral-400" />
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-[var(--abu-text-muted)]" />
               <input
                 type="text"
                 placeholder={t.toolbox.searchPlaceholder}
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
-                className="w-full pl-9 pr-3 py-2 text-sm border border-neutral-200 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-[#d97757]/30 focus:border-[#d97757]"
+                className="w-full pl-9 pr-3 py-2 text-sm border border-[var(--abu-border)] rounded-lg bg-[var(--abu-bg-muted)] focus:outline-none focus:ring-2 focus:ring-[var(--abu-clay-ring)] focus:border-[var(--abu-clay)]"
               />
             </div>
           )}
@@ -149,8 +149,8 @@ export default function CustomizePanel() {
         <div className="flex-1 min-h-0 overflow-hidden">{renderContent()}</div>
 
         {/* Footer */}
-        <div className="shrink-0 px-5 py-3 border-t border-neutral-200 bg-neutral-50/50">
-          <div className="flex items-center justify-between text-xs text-neutral-400">
+        <div className="shrink-0 px-5 py-3 border-t border-[var(--abu-border)] bg-[var(--abu-bg-muted)]/50">
+          <div className="flex items-center justify-between text-xs text-[var(--abu-text-muted)]">
             <span>{t.toolbox.customizeFooter}</span>
             <span>v{APP_VERSION}</span>
           </div>

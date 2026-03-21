@@ -160,7 +160,7 @@ export default function RightPanel() {
   // When expanded, render the full panel
   return (
     <div
-      className="shrink-0 bg-[#f5f3ee] h-full flex overflow-hidden relative"
+      className="shrink-0 bg-[var(--abu-bg-subtle)] h-full flex overflow-hidden relative"
       style={{ width: currentWidth, minWidth: currentWidth, maxWidth: currentWidth, transition: isDragging ? 'none' : 'width 200ms, min-width 200ms, max-width 200ms' }}
     >
       {/* Full-screen overlay during drag — blocks iframe from stealing mouse events */}
@@ -172,12 +172,12 @@ export default function RightPanel() {
         onMouseDown={handleDragStart}
         className={cn(
           'absolute left-0 top-0 bottom-0 w-[5px] cursor-col-resize z-20',
-          'hover:bg-[#d97757]/20 transition-colors',
-          isDragging && 'bg-[#d97757]/40'
+          'hover:bg-[var(--abu-clay-20)] transition-colors',
+          isDragging && 'bg-[var(--abu-clay-40)]'
         )}
       />
       {/* Panel content */}
-      <div className="flex-1 flex flex-col overflow-hidden border-l border-[#e8e4dd]">
+      <div className="flex-1 flex flex-col overflow-hidden border-l border-[var(--abu-border)]">
       {showPreview ? (
         // Preview mode - full panel is preview
         <PreviewPanel />
@@ -185,13 +185,13 @@ export default function RightPanel() {
         // Normal mode - show details sections
         <>
           {/* Scrollable content — pt-8 to clear overlay title bar area */}
-          <ScrollArea className="flex-1 pt-5">
+          <ScrollArea className="flex-1 min-h-0 pt-5">
             <div className="p-4 space-y-5">
               {/* Progress - only show when has planned steps */}
               <TaskProgressPanel />
               {/* Workspace with files inside */}
               <WorkspaceSection />
-              <div className="border-t border-[#e8e4dd]" />
+              <div className="border-t border-[var(--abu-border)]" />
               <ContextSection />
             </div>
           </ScrollArea>

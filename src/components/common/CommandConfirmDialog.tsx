@@ -80,7 +80,7 @@ export default function CommandConfirmDialog({
         <div className="relative px-6 pt-6 pb-4">
           <button
             onClick={onCancel}
-            className="absolute top-4 right-4 p-1.5 rounded-lg text-neutral-400 hover:text-neutral-600 hover:bg-neutral-100 transition-colors"
+            className="absolute top-4 right-4 p-1.5 rounded-lg text-[var(--abu-text-muted)] hover:text-[var(--abu-text-secondary)] hover:bg-[var(--abu-bg-active)] transition-colors"
           >
             <X className="h-4 w-4" />
           </button>
@@ -90,10 +90,10 @@ export default function CommandConfirmDialog({
               <Icon className={`h-6 w-6 ${config.iconColor}`} />
             </div>
             <div className="flex-1 min-w-0">
-              <h2 className="text-lg font-semibold text-[#29261b]">
+              <h2 className="text-lg font-semibold text-[var(--abu-text-primary)]">
                 {t.commandConfirm[config.titleKey]}
               </h2>
-              <p className="text-[14px] text-[#656358] mt-0.5">
+              <p className="text-[14px] text-[var(--abu-text-tertiary)] mt-0.5">
                 {t.commandConfirm[config.descKey]}
               </p>
             </div>
@@ -124,7 +124,7 @@ export default function CommandConfirmDialog({
           <Button
             variant="outline"
             onClick={onCancel}
-            className="flex-1 h-10 text-[14px] border-[#d5d2c9] hover:bg-[#f5f3ee]"
+            className="flex-1 h-10 text-[14px] border-[var(--abu-border-hover)] hover:bg-[var(--abu-bg-muted)]"
           >
             {t.commandConfirm.cancel}
           </Button>
@@ -134,7 +134,7 @@ export default function CommandConfirmDialog({
               className={`flex-1 h-10 text-[14px] ${
                 request.level === 'danger'
                   ? 'bg-red-600 hover:bg-red-700'
-                  : 'bg-[#29261b] hover:bg-[#3d3929]'
+                  : 'bg-[var(--abu-text-primary)] hover:bg-[var(--abu-text-secondary)]'
               } text-white`}
             >
               {t.commandConfirm.confirm}

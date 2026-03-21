@@ -33,7 +33,7 @@ export function WebSearchForm() {
     <div className="space-y-4">
       {/* Provider selection */}
       <div className="space-y-2">
-        <label className="text-sm font-medium text-[#29261b]">{t.settings.webSearchProvider}</label>
+        <label className="text-sm font-medium text-[var(--abu-text-primary)]">{t.settings.webSearchProvider}</label>
         <Select
           value={webSearchProvider}
           onChange={(value) => setWebSearchProvider(value as WebSearchProviderType)}
@@ -44,7 +44,7 @@ export function WebSearchForm() {
             href={currentProvider.signupUrl}
             target="_blank"
             rel="noopener noreferrer"
-            className="inline-flex items-center gap-1 text-xs text-[#d97757] hover:underline mt-1"
+            className="inline-flex items-center gap-1 text-xs text-[var(--abu-clay)] hover:underline mt-1"
             onClick={(e) => {
               e.preventDefault();
               open(currentProvider.signupUrl!);
@@ -59,38 +59,38 @@ export function WebSearchForm() {
       {/* API Key - hidden for SearXNG */}
       {!isSearXNG && (
         <div className="space-y-2">
-          <label className="text-sm font-medium text-[#29261b]">{t.settings.webSearchApiKey}</label>
+          <label className="text-sm font-medium text-[var(--abu-text-primary)]">{t.settings.webSearchApiKey}</label>
           <div className="relative">
             <input
               type={showKey ? 'text' : 'password'}
               value={webSearchApiKey}
               onChange={(e) => setWebSearchApiKey(e.target.value)}
               placeholder={t.settings.webSearchApiKeyPlaceholder}
-              className="w-full px-3 py-2 pr-10 text-sm border border-[#e8e4dd] rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-[#d97757]/30 focus:border-[#d97757] text-[#29261b]"
+              className="w-full px-3 py-2 pr-10 text-sm border border-[var(--abu-border)] rounded-lg bg-[var(--abu-bg-base)] focus:outline-none focus:ring-2 focus:ring-[var(--abu-clay-ring)] focus:border-[var(--abu-clay)] text-[var(--abu-text-primary)]"
             />
             <button
               onClick={() => setShowKey(!showKey)}
-              className="absolute right-2 top-1/2 -translate-y-1/2 p-1 text-[#888579] hover:text-[#29261b] rounded"
+              className="absolute right-2 top-1/2 -translate-y-1/2 p-1 text-[var(--abu-text-muted)] hover:text-[var(--abu-text-primary)] rounded"
             >
               {showKey ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
             </button>
           </div>
-          <p className="text-xs text-[#888579]">{t.settings.webSearchApiKeyDesc}</p>
+          <p className="text-xs text-[var(--abu-text-muted)]">{t.settings.webSearchApiKeyDesc}</p>
         </div>
       )}
 
       {/* Base URL - only for SearXNG */}
       {isSearXNG && (
         <div className="space-y-2">
-          <label className="text-sm font-medium text-[#29261b]">{t.settings.webSearchBaseUrl}</label>
+          <label className="text-sm font-medium text-[var(--abu-text-primary)]">{t.settings.webSearchBaseUrl}</label>
           <input
             type="text"
             value={webSearchBaseUrl}
             onChange={(e) => setWebSearchBaseUrl(e.target.value)}
             placeholder={t.settings.webSearchBaseUrlPlaceholder}
-            className="w-full px-3 py-2 text-sm border border-[#e8e4dd] rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-[#d97757]/30 focus:border-[#d97757] text-[#29261b]"
+            className="w-full px-3 py-2 text-sm border border-[var(--abu-border)] rounded-lg bg-[var(--abu-bg-base)] focus:outline-none focus:ring-2 focus:ring-[var(--abu-clay-ring)] focus:border-[var(--abu-clay)] text-[var(--abu-text-primary)]"
           />
-          <p className="text-xs text-[#888579]">{t.settings.webSearchBaseUrlDesc}</p>
+          <p className="text-xs text-[var(--abu-text-muted)]">{t.settings.webSearchBaseUrlDesc}</p>
         </div>
       )}
     </div>
@@ -102,8 +102,8 @@ export default function WebSearchSection() {
   return (
     <div className="space-y-6">
       <div>
-        <h3 className="text-base font-semibold text-[#29261b]">{t.settings.webSearch}</h3>
-        <p className="text-sm text-[#888579] mt-1">{t.settings.webSearchDescription}</p>
+        <h3 className="text-base font-semibold text-[var(--abu-text-primary)]">{t.settings.webSearch}</h3>
+        <p className="text-sm text-[var(--abu-text-muted)] mt-1">{t.settings.webSearchDescription}</p>
       </div>
       <WebSearchForm />
     </div>

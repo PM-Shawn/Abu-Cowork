@@ -37,7 +37,7 @@ export default function TriggerRunHistory({ runs }: Props) {
 
   if (runs.length === 0) {
     return (
-      <div className="px-4 py-3 text-[12px] text-[#656358]">
+      <div className="px-4 py-3 text-[12px] text-[var(--abu-text-tertiary)]">
         {t.trigger.noRuns}
       </div>
     );
@@ -48,7 +48,7 @@ export default function TriggerRunHistory({ runs }: Props) {
       {runs.map((run) => (
         <div
           key={run.id}
-          className="flex items-center gap-2 px-2 py-1.5 rounded-md hover:bg-[#f5f3ee] transition-colors"
+          className="flex items-center gap-2 px-2 py-1.5 rounded-md hover:bg-[var(--abu-bg-muted)] transition-colors"
         >
           {/* Status dot */}
           <span
@@ -63,7 +63,7 @@ export default function TriggerRunHistory({ runs }: Props) {
           />
 
           {/* Time */}
-          <span className="text-[11px] text-[#656358] shrink-0">
+          <span className="text-[11px] text-[var(--abu-text-tertiary)] shrink-0">
             {formatTimeAgo(run.startedAt, t.trigger)}
           </span>
 
@@ -74,7 +74,7 @@ export default function TriggerRunHistory({ runs }: Props) {
               run.status === 'running' && 'text-amber-600',
               run.status === 'completed' && 'text-green-600',
               run.status === 'error' && 'text-red-500',
-              (run.status === 'filtered' || run.status === 'debounced') && 'text-neutral-400'
+              (run.status === 'filtered' || run.status === 'debounced') && 'text-[var(--abu-text-muted)]'
             )}
           >
             {run.status === 'running' && t.trigger.runStatusRunning}
@@ -101,7 +101,7 @@ export default function TriggerRunHistory({ runs }: Props) {
           {run.conversationId && conversations[run.conversationId] ? (
             <button
               onClick={() => handleViewConversation(run.conversationId)}
-              className="text-[#656358] hover:text-[#d97757] p-0.5 shrink-0"
+              className="text-[var(--abu-text-tertiary)] hover:text-[var(--abu-clay)] p-0.5 shrink-0"
               title={t.trigger.viewConversation}
             >
               <ExternalLink className="h-3 w-3" />

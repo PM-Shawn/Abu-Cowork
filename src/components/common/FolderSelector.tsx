@@ -100,12 +100,12 @@ export default function FolderSelector({
           className={cn(
             'flex items-center gap-1.5 px-2.5 py-1.5 text-[13px] rounded-lg transition-colors',
             currentPath
-              ? 'text-[#29261b] bg-[#d97757]/10 hover:bg-[#d97757]/20'
-              : 'text-[#656358] hover:text-[#29261b] hover:bg-[#e8e5de]'
+              ? 'text-[var(--abu-text-primary)] bg-[var(--abu-clay-bg)] hover:bg-[var(--abu-clay-20)]'
+              : 'text-[var(--abu-text-tertiary)] hover:text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-hover)]'
           )}
         >
           {currentPath ? (
-            <FolderOpen className="h-3.5 w-3.5 text-[#d97757]" />
+            <FolderOpen className="h-3.5 w-3.5 text-[var(--abu-clay)]" />
           ) : (
             <Folder className="h-3.5 w-3.5" />
           )}
@@ -124,7 +124,7 @@ export default function FolderSelector({
         {currentPath && onClear && (
           <button
             onClick={handleClear}
-            className="flex items-center justify-center w-6 h-6 text-[#656358] hover:text-[#29261b] hover:bg-[#e8e5de] rounded-md transition-colors"
+            className="flex items-center justify-center w-6 h-6 text-[var(--abu-text-tertiary)] hover:text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-hover)] rounded-md transition-colors"
             title={t.folder.clearWorkspace}
           >
             <X className="h-3.5 w-3.5" />
@@ -134,11 +134,11 @@ export default function FolderSelector({
 
       {/* Dropdown Menu — opens upward to avoid bottom overflow */}
       {isOpen && (
-        <div className="absolute bottom-full left-0 mb-1.5 w-72 bg-white rounded-lg border border-[#e8e5de] shadow-lg z-50 overflow-hidden animate-in fade-in slide-in-from-bottom-1 duration-150">
+        <div className="absolute bottom-full left-0 mb-1.5 w-72 bg-white rounded-lg border border-[var(--abu-bg-hover)] shadow-lg z-50 overflow-hidden animate-in fade-in slide-in-from-bottom-1 duration-150">
           {/* Recent folders section */}
           {(recentPaths.length > 0) && (
             <>
-              <div className="px-3 py-2 text-[11px] font-medium text-[#888579] uppercase tracking-wider border-b border-[#f0ede6]">
+              <div className="px-3 py-2 text-[11px] font-medium text-[var(--abu-text-muted)] uppercase tracking-wider border-b border-[var(--abu-bg-active)]">
                 {t.folder.recentFolders}
               </div>
               <div className="py-1 max-h-[200px] overflow-y-auto">
@@ -146,19 +146,19 @@ export default function FolderSelector({
                   <button
                     key={path}
                     onClick={() => handleSelectRecent(path)}
-                    className="w-full flex items-center gap-2.5 px-3 py-2 text-left hover:bg-[#f5f3ee] transition-colors"
+                    className="w-full flex items-center gap-2.5 px-3 py-2 text-left hover:bg-[var(--abu-bg-muted)] transition-colors"
                   >
                     {/* Selection indicator */}
                     <div className="w-4 h-4 flex items-center justify-center shrink-0">
                       {path === currentPath && (
-                        <Check className="h-4 w-4 text-[#d97757]" />
+                        <Check className="h-4 w-4 text-[var(--abu-clay)]" />
                       )}
                     </div>
                     {/* Folder icon */}
                     <Folder
                       className={cn(
                         'h-4 w-4 shrink-0',
-                        path === currentPath ? 'text-[#d97757]' : 'text-[#888579]'
+                        path === currentPath ? 'text-[var(--abu-clay)]' : 'text-[var(--abu-text-muted)]'
                       )}
                     />
                     {/* Folder name and path */}
@@ -167,13 +167,13 @@ export default function FolderSelector({
                         className={cn(
                           'text-[13px] truncate',
                           path === currentPath
-                            ? 'text-[#29261b] font-medium'
-                            : 'text-[#3d3929]'
+                            ? 'text-[var(--abu-text-primary)] font-medium'
+                            : 'text-[var(--abu-text-secondary)]'
                         )}
                       >
                         {getFolderName(path)}
                       </div>
-                      <div className="text-[11px] text-[#888579] truncate">
+                      <div className="text-[11px] text-[var(--abu-text-muted)] truncate">
                         {path}
                       </div>
                     </div>
@@ -185,18 +185,18 @@ export default function FolderSelector({
 
           {/* Separator */}
           {recentPaths.length > 0 && (
-            <div className="border-t border-[#f0ede6]" />
+            <div className="border-t border-[var(--abu-bg-active)]" />
           )}
 
           {/* Choose different folder — at bottom */}
           <div className="py-1">
             <button
               onClick={handleOpenDialog}
-              className="w-full flex items-center gap-2.5 px-3 py-2.5 text-left hover:bg-[#f5f3ee] transition-colors"
+              className="w-full flex items-center gap-2.5 px-3 py-2.5 text-left hover:bg-[var(--abu-bg-muted)] transition-colors"
             >
               <div className="w-4 h-4" /> {/* Spacer for alignment */}
-              <Folder className="h-4 w-4 text-[#656358] shrink-0" />
-              <span className="text-[13px] text-[#656358]">
+              <Folder className="h-4 w-4 text-[var(--abu-text-tertiary)] shrink-0" />
+              <span className="text-[13px] text-[var(--abu-text-tertiary)]">
                 {recentPaths.length > 0 ? t.folder.selectOtherFolder : `${t.folder.selectFolder}...`}
               </span>
             </button>

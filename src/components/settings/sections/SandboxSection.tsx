@@ -58,7 +58,7 @@ export default function SandboxSection() {
 
   return (
     <div className="space-y-4">
-      <p className="text-sm text-[#656358]">
+      <p className="text-sm text-[var(--abu-text-tertiary)]">
         {t.settings.sandboxDescription}
       </p>
 
@@ -71,14 +71,14 @@ export default function SandboxSection() {
               'w-full flex items-center justify-between p-4 rounded-xl border transition-all text-left',
               sandboxEnabled
                 ? 'border-emerald-500/50 bg-emerald-50'
-                : 'border-[#e8e4dd] bg-white'
+                : 'border-[var(--abu-border)] bg-[var(--abu-bg-muted)]'
             )}
           >
             <div className="flex items-center gap-3">
-              <Shield className={cn('h-5 w-5', sandboxEnabled ? 'text-emerald-600' : 'text-[#888579]')} />
+              <Shield className={cn('h-5 w-5', sandboxEnabled ? 'text-emerald-600' : 'text-[var(--abu-text-muted)]')} />
               <div>
                 <div className="flex items-center gap-1.5">
-                  <p className={cn('text-sm font-medium', sandboxEnabled ? 'text-emerald-700' : 'text-[#656358]')}>
+                  <p className={cn('text-sm font-medium', sandboxEnabled ? 'text-emerald-700' : 'text-[var(--abu-text-tertiary)]')}>
                     {t.settings.sandboxProtection}
                   </p>
                   <div
@@ -86,21 +86,21 @@ export default function SandboxSection() {
                     onMouseEnter={() => setShowDetails(true)}
                     onMouseLeave={() => setShowDetails(false)}
                   >
-                    <Info className={cn('h-3.5 w-3.5 cursor-help', sandboxEnabled ? 'text-emerald-400' : 'text-[#b5b1a8]')} />
+                    <Info className={cn('h-3.5 w-3.5 cursor-help', sandboxEnabled ? 'text-emerald-400' : 'text-[var(--abu-text-placeholder)]')} />
                     {showDetails && (
-                      <div className="absolute left-1/2 -translate-x-1/2 top-6 z-50 w-72 p-3 rounded-lg border border-[#e8e4dd] bg-white shadow-lg text-left pointer-events-none">
-                        <p className="text-[11px] text-[#656358] leading-relaxed">
+                      <div className="absolute left-1/2 -translate-x-1/2 top-6 z-50 w-72 p-3 rounded-lg border border-[var(--abu-border)] bg-[var(--abu-bg-muted)] shadow-lg text-left pointer-events-none">
+                        <p className="text-[11px] text-[var(--abu-text-tertiary)] leading-relaxed">
                           {t.settings.sandboxProtectedPaths}
                         </p>
-                        <div className="border-t border-[#e8e4dd] my-1.5" />
-                        <p className="text-[11px] text-[#888579] leading-relaxed">
+                        <div className="border-t border-[var(--abu-border)] my-1.5" />
+                        <p className="text-[11px] text-[var(--abu-text-muted)] leading-relaxed">
                           {t.settings.sandboxWritablePaths}
                         </p>
                       </div>
                     )}
                   </div>
                 </div>
-                <p className="text-xs text-[#888579] mt-0.5">
+                <p className="text-xs text-[var(--abu-text-muted)] mt-0.5">
                   {t.settings.sandboxProtectionDescription}
                 </p>
               </div>
@@ -121,16 +121,16 @@ export default function SandboxSection() {
                   'w-full flex items-center justify-between p-4 rounded-xl border transition-all text-left',
                   networkIsolationEnabled
                     ? 'border-blue-500/50 bg-blue-50'
-                    : 'border-[#e8e4dd] bg-white'
+                    : 'border-[var(--abu-border)] bg-[var(--abu-bg-muted)]'
                 )}
               >
                 <div className="flex items-center gap-3">
-                  <Globe className={cn('h-5 w-5', networkIsolationEnabled ? 'text-blue-600' : 'text-[#888579]')} />
+                  <Globe className={cn('h-5 w-5', networkIsolationEnabled ? 'text-blue-600' : 'text-[var(--abu-text-muted)]')} />
                   <div>
-                    <p className={cn('text-sm font-medium', networkIsolationEnabled ? 'text-blue-700' : 'text-[#656358]')}>
+                    <p className={cn('text-sm font-medium', networkIsolationEnabled ? 'text-blue-700' : 'text-[var(--abu-text-tertiary)]')}>
                       {t.settings.networkIsolation}
                     </p>
-                    <p className="text-xs text-[#888579] mt-0.5">
+                    <p className="text-xs text-[var(--abu-text-muted)] mt-0.5">
                       {t.settings.networkIsolationDescription}
                     </p>
                   </div>
@@ -144,10 +144,10 @@ export default function SandboxSection() {
 
               {/* Network whitelist config */}
               {networkIsolationEnabled && (
-                <div className="space-y-3 p-4 rounded-xl border border-[#e8e4dd] bg-white">
+                <div className="space-y-3 p-4 rounded-xl border border-[var(--abu-border)] bg-[var(--abu-bg-muted)]">
                   {/* Private networks toggle */}
                   <label className="flex items-center justify-between cursor-pointer">
-                    <span className="text-xs text-[#656358]">
+                    <span className="text-xs text-[var(--abu-text-tertiary)]">
                       {t.settings.allowPrivateNetworks}
                     </span>
                     <Toggle
@@ -157,16 +157,16 @@ export default function SandboxSection() {
                     />
                   </label>
 
-                  <div className="border-t border-[#e8e4dd]" />
+                  <div className="border-t border-[var(--abu-border)]" />
 
                   {/* Whitelist entries */}
                   <div>
-                    <p className="text-xs text-[#656358] mb-2">{t.settings.networkWhitelist}</p>
+                    <p className="text-xs text-[var(--abu-text-tertiary)] mb-2">{t.settings.networkWhitelist}</p>
 
                     {/* Default entries (read-only) */}
                     <div className="space-y-1 mb-2">
-                      <p className="text-[10px] text-[#888579] uppercase tracking-wider">{t.settings.networkPreset}</p>
-                      <p className="text-xs text-[#888579] leading-relaxed">
+                      <p className="text-[10px] text-[var(--abu-text-muted)] uppercase tracking-wider">{t.settings.networkPreset}</p>
+                      <p className="text-xs text-[var(--abu-text-muted)] leading-relaxed">
                         npm · PyPI · GitHub · GitLab · Anthropic · OpenAI · DeepSeek
                       </p>
                     </div>
@@ -174,10 +174,10 @@ export default function SandboxSection() {
                     {/* User entries */}
                     {networkWhitelist.length > 0 && (
                       <div className="space-y-1 mb-2">
-                        <p className="text-[10px] text-[#656358] uppercase tracking-wider">{t.settings.networkCustom}</p>
+                        <p className="text-[10px] text-[var(--abu-text-tertiary)] uppercase tracking-wider">{t.settings.networkCustom}</p>
                         {networkWhitelist.map(domain => (
-                          <div key={domain} className="flex items-center justify-between py-1 px-2 rounded bg-[#f5f3ee] group">
-                            <span className="text-xs text-[#29261b] font-mono">{domain}</span>
+                          <div key={domain} className="flex items-center justify-between py-1 px-2 rounded bg-[var(--abu-bg-muted)] group">
+                            <span className="text-xs text-[var(--abu-text-primary)] font-mono">{domain}</span>
                             <button
                               onClick={() => handleRemoveDomain(domain)}
                               className="opacity-0 group-hover:opacity-100 transition-opacity p-0.5 rounded hover:bg-red-100"
@@ -197,7 +197,7 @@ export default function SandboxSection() {
                         onChange={e => setNewDomain(e.target.value)}
                         onKeyDown={e => e.key === 'Enter' && handleAddDomain()}
                         placeholder="*.company.com / 10.0.0.0/8"
-                        className="flex-1 text-xs px-3 py-1.5 rounded-lg border border-[#e8e4dd] bg-[#faf9f5] text-[#29261b] placeholder:text-[#b5b1a8] focus:outline-none focus:border-blue-400"
+                        className="flex-1 text-xs px-3 py-1.5 rounded-lg border border-[var(--abu-border)] bg-[var(--abu-bg-base)] text-[var(--abu-text-primary)] placeholder:text-[var(--abu-text-placeholder)] focus:outline-none focus:border-blue-400"
                       />
                       <button
                         onClick={handleAddDomain}

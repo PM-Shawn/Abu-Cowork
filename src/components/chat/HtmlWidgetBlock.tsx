@@ -21,11 +21,11 @@ const BASE_STYLES = `
 body {
   font-family: system-ui, -apple-system, sans-serif;
   font-size: 14px; line-height: 1.6;
-  color: #29261b; background: #fff; padding: 16px; overflow: hidden;
+  color: var(--abu-text-primary); background: #fff; padding: 16px; overflow: hidden;
 }
 :root {
-  --abu-primary: #d97757; --abu-text: #29261b; --abu-text-muted: #888579;
-  --abu-bg: #fff; --abu-bg-secondary: #f5f3ee; --abu-border: #e5e2db;
+  --abu-primary: var(--abu-clay); --abu-text: var(--abu-text-primary); --abu-text-muted: var(--abu-text-muted);
+  --abu-bg: #fff; --abu-bg-secondary: var(--abu-bg-muted); --abu-border: var(--abu-bg-pressed);
   --abu-font: system-ui, -apple-system, sans-serif;
 }
 button {

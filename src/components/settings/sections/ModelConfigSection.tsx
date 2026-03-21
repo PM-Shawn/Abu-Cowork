@@ -106,8 +106,8 @@ export default function ModelConfigSection() {
   return (
     <div className="space-y-5">
       {/* Current config status */}
-      <div className="p-4 bg-[#f5f3ee] rounded-xl space-y-3">
-        <h4 className="text-xs font-medium text-[#656358] uppercase tracking-wider">{t.settings.currentConfig}</h4>
+      <div className="p-4 bg-[var(--abu-bg-muted)] rounded-xl space-y-3">
+        <h4 className="text-xs font-medium text-[var(--abu-text-tertiary)] uppercase tracking-wider">{t.settings.currentConfig}</h4>
         <div className="space-y-2 text-sm">
           <div className="flex items-center gap-2">
             {hasApiKey ? (
@@ -115,7 +115,7 @@ export default function ModelConfigSection() {
             ) : (
               <CircleAlert className="h-4 w-4 text-amber-500 flex-none" />
             )}
-            <span className="text-[#656358]">{t.settings.apiKey}:</span>
+            <span className="text-[var(--abu-text-tertiary)]">{t.settings.apiKey}:</span>
             <span className={cn(hasApiKey ? 'text-green-600' : 'text-amber-600', 'font-medium')}>
               {hasApiKey ? t.settings.configured : t.settings.notConfigured}
             </span>
@@ -126,8 +126,8 @@ export default function ModelConfigSection() {
             ) : (
               <CircleAlert className="h-4 w-4 text-amber-500 flex-none" />
             )}
-            <span className="text-[#656358]">{t.settings.provider}:</span>
-            <span className={cn(hasBaseUrl ? 'text-[#29261b]' : 'text-amber-600', 'font-medium')}>
+            <span className="text-[var(--abu-text-tertiary)]">{t.settings.provider}:</span>
+            <span className={cn(hasBaseUrl ? 'text-[var(--abu-text-primary)]' : 'text-amber-600', 'font-medium')}>
               {activeCustomServiceId
                 ? customServices.find((s) => s.id === activeCustomServiceId)?.name ?? currentProviderConfig.name
                 : currentProviderConfig.name}
@@ -140,8 +140,8 @@ export default function ModelConfigSection() {
             ) : (
               <CircleAlert className="h-4 w-4 text-amber-500 flex-none" />
             )}
-            <span className="text-[#656358]">{t.settings.model}:</span>
-            <span className={cn(hasModel ? 'text-[#29261b]' : 'text-amber-600', 'font-medium truncate')}>
+            <span className="text-[var(--abu-text-tertiary)]">{t.settings.model}:</span>
+            <span className={cn(hasModel ? 'text-[var(--abu-text-primary)]' : 'text-amber-600', 'font-medium truncate')}>
               {effectiveModel || t.settings.notSet}
             </span>
           </div>
@@ -150,7 +150,7 @@ export default function ModelConfigSection() {
 
       {/* Provider selector (grouped) */}
       <div className="space-y-2">
-        <label className="text-xs text-[#656358] font-medium">{t.settings.provider}</label>
+        <label className="text-xs text-[var(--abu-text-tertiary)] font-medium">{t.settings.provider}</label>
         <Select
           value={selectedDropdownValue}
           options={providerOptions}
@@ -162,21 +162,21 @@ export default function ModelConfigSection() {
       {/* Custom API URL (custom provider only) */}
       {isCustomProvider && (
         <div className="space-y-2">
-          <label className="text-xs text-[#656358] font-medium">{t.settings.apiUrl} <span className="text-red-400">*</span></label>
+          <label className="text-xs text-[var(--abu-text-tertiary)] font-medium">{t.settings.apiUrl} <span className="text-red-400">*</span></label>
           <Input
             type="text"
             value={baseUrl}
             onChange={(e) => setBaseUrl(e.target.value)}
             placeholder="https://your-api.com"
           />
-          <p className="text-xs text-[#888579]">{t.settings.apiUrlDesc}</p>
+          <p className="text-xs text-[var(--abu-text-muted)]">{t.settings.apiUrlDesc}</p>
         </div>
       )}
 
       {/* Custom model name (custom provider only) */}
       {isCustomProvider && (
         <div className="space-y-2">
-          <label className="text-xs text-[#656358] font-medium">{t.settings.customModelName} <span className="text-red-400">*</span></label>
+          <label className="text-xs text-[var(--abu-text-tertiary)] font-medium">{t.settings.customModelName} <span className="text-red-400">*</span></label>
           <Input
             type="text"
             value={customModel}
@@ -189,15 +189,15 @@ export default function ModelConfigSection() {
       {/* API format selector — only for custom/local where we can't auto-detect */}
       {(isCustomProvider || provider === 'local') && (
         <div className="space-y-2">
-          <label className="text-xs text-[#656358] font-medium">{t.settings.apiFormat}</label>
+          <label className="text-xs text-[var(--abu-text-tertiary)] font-medium">{t.settings.apiFormat}</label>
           <div className="flex gap-2">
             <button
               onClick={() => setApiFormat('openai-compatible')}
               className={cn(
                 'flex-1 h-9 px-3 rounded-lg text-sm font-medium transition-all',
                 apiFormat === 'openai-compatible'
-                  ? 'bg-[#d97757] text-white'
-                  : 'bg-[#f5f3ee] text-[#656358] hover:bg-[#e8e5de]'
+                  ? 'bg-[var(--abu-clay)] text-white'
+                  : 'bg-[var(--abu-bg-muted)] text-[var(--abu-text-tertiary)] hover:bg-[var(--abu-bg-hover)]'
               )}
             >
               {t.settings.openaiCompatible}
@@ -207,8 +207,8 @@ export default function ModelConfigSection() {
               className={cn(
                 'flex-1 h-9 px-3 rounded-lg text-sm font-medium transition-all',
                 apiFormat === 'anthropic'
-                  ? 'bg-[#d97757] text-white'
-                  : 'bg-[#f5f3ee] text-[#656358] hover:bg-[#e8e5de]'
+                  ? 'bg-[var(--abu-clay)] text-white'
+                  : 'bg-[var(--abu-bg-muted)] text-[var(--abu-text-tertiary)] hover:bg-[var(--abu-bg-hover)]'
               )}
             >
               {t.settings.anthropicCompatible}
@@ -220,7 +220,7 @@ export default function ModelConfigSection() {
       {/* Model selector (built-in providers) */}
       {!isCustomProvider && availableModels.length > 0 && (
         <div className="space-y-2">
-          <label className="text-xs text-[#656358] font-medium">{t.settings.model}</label>
+          <label className="text-xs text-[var(--abu-text-tertiary)] font-medium">{t.settings.model}</label>
           <Select
             value={model}
             options={availableModels}
@@ -232,7 +232,7 @@ export default function ModelConfigSection() {
 
       {/* API Key */}
       <div className="space-y-2">
-        <label className="text-xs text-[#656358] font-medium">{t.settings.apiKey} <span className="text-red-400">*</span></label>
+        <label className="text-xs text-[var(--abu-text-tertiary)] font-medium">{t.settings.apiKey} <span className="text-red-400">*</span></label>
         <div className="relative">
           <Input
             type={showKey ? 'text' : 'password'}
@@ -244,20 +244,20 @@ export default function ModelConfigSection() {
           <button
             type="button"
             onClick={() => setShowKey(!showKey)}
-            className="absolute right-2 top-1/2 -translate-y-1/2 p-1.5 text-[#888579] hover:text-[#656358] transition-colors"
+            className="absolute right-2 top-1/2 -translate-y-1/2 p-1.5 text-[var(--abu-text-muted)] hover:text-[var(--abu-text-tertiary)] transition-colors"
           >
             {showKey ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
           </button>
         </div>
-        <p className="text-xs text-[#888579]">{t.settings.apiKeyDesc}</p>
+        <p className="text-xs text-[var(--abu-text-muted)]">{t.settings.apiKeyDesc}</p>
       </div>
 
       {/* Save / Update / Delete custom service (custom provider only) */}
       {isCustomProvider && (
         <div className="space-y-3">
           {showSaveDialog ? (
-            <div className="p-3 bg-[#f5f3ee] rounded-xl space-y-3">
-              <label className="text-xs text-[#656358] font-medium">{t.settings.saveServiceName}</label>
+            <div className="p-3 bg-[var(--abu-bg-muted)] rounded-xl space-y-3">
+              <label className="text-xs text-[var(--abu-text-tertiary)] font-medium">{t.settings.saveServiceName}</label>
               <Input
                 type="text"
                 value={saveName}
@@ -273,15 +273,15 @@ export default function ModelConfigSection() {
                   className={cn(
                     'flex-1 h-8 px-3 rounded-lg text-sm font-medium transition-all',
                     saveName.trim()
-                      ? 'bg-[#d97757] text-white hover:bg-[#c4684a]'
-                      : 'bg-[#e8e4dd] text-[#b8b5ab] cursor-not-allowed'
+                      ? 'bg-[var(--abu-clay)] text-white hover:bg-[var(--abu-clay-hover)]'
+                      : 'bg-[var(--abu-border)] text-[var(--abu-text-placeholder)] cursor-not-allowed'
                   )}
                 >
                   {t.settings.saveServiceConfirm}
                 </button>
                 <button
                   onClick={() => { setShowSaveDialog(false); setSaveName(''); }}
-                  className="flex-1 h-8 px-3 rounded-lg text-sm font-medium bg-[#f5f3ee] text-[#656358] hover:bg-[#e8e5de] transition-all"
+                  className="flex-1 h-8 px-3 rounded-lg text-sm font-medium bg-[var(--abu-bg-muted)] text-[var(--abu-text-tertiary)] hover:bg-[var(--abu-bg-hover)] transition-all"
                 >
                   {t.settings.saveServiceCancel}
                 </button>
@@ -293,14 +293,14 @@ export default function ModelConfigSection() {
                 <>
                   <button
                     onClick={() => updateCustomService(activeCustomServiceId)}
-                    className="flex-1 flex items-center justify-center gap-1.5 h-9 px-3 rounded-lg text-sm font-medium bg-[#f5f3ee] text-[#656358] hover:bg-[#e8e5de] transition-all"
+                    className="flex-1 flex items-center justify-center gap-1.5 h-9 px-3 rounded-lg text-sm font-medium bg-[var(--abu-bg-muted)] text-[var(--abu-text-tertiary)] hover:bg-[var(--abu-bg-hover)] transition-all"
                   >
                     <Pencil className="h-3.5 w-3.5" />
                     {t.settings.updateConfig}
                   </button>
                   <button
                     onClick={handleDelete}
-                    className="flex items-center justify-center gap-1.5 h-9 px-3 rounded-lg text-sm font-medium bg-[#f5f3ee] text-red-500 hover:bg-red-50 transition-all"
+                    className="flex items-center justify-center gap-1.5 h-9 px-3 rounded-lg text-sm font-medium bg-[var(--abu-bg-muted)] text-red-500 hover:bg-red-50 transition-all"
                   >
                     <Trash2 className="h-3.5 w-3.5" />
                     {t.settings.deleteConfig}
@@ -313,8 +313,8 @@ export default function ModelConfigSection() {
                   className={cn(
                     'flex-1 flex items-center justify-center gap-1.5 h-9 px-3 rounded-lg text-sm font-medium transition-all',
                     baseUrl.trim() && customModel.trim()
-                      ? 'bg-[#d97757] text-white hover:bg-[#c4684a]'
-                      : 'bg-[#e8e4dd] text-[#b8b5ab] cursor-not-allowed'
+                      ? 'bg-[var(--abu-clay)] text-white hover:bg-[var(--abu-clay-hover)]'
+                      : 'bg-[var(--abu-border)] text-[var(--abu-text-placeholder)] cursor-not-allowed'
                   )}
                 >
                   <Save className="h-3.5 w-3.5" />
@@ -327,26 +327,26 @@ export default function ModelConfigSection() {
       )}
 
       {/* Advanced parameters */}
-      <div className="border border-[#e8e4dd] rounded-xl overflow-hidden">
+      <div className="border border-[var(--abu-border)] rounded-xl overflow-hidden">
         <button
           type="button"
           onClick={() => setShowAdvanced(!showAdvanced)}
-          className="w-full flex items-center justify-between px-4 py-3 bg-white hover:bg-[#f5f3ee] transition-colors"
+          className="w-full flex items-center justify-between px-4 py-3 bg-[var(--abu-bg-muted)] hover:bg-[var(--abu-bg-hover)] transition-colors"
         >
-          <span className="text-sm font-medium text-[#29261b]">{t.settings.advanced}</span>
-          <ChevronDown className={cn('h-4 w-4 text-[#888579] transition-transform', showAdvanced && 'rotate-180')} />
+          <span className="text-sm font-medium text-[var(--abu-text-primary)]">{t.settings.advanced}</span>
+          <ChevronDown className={cn('h-4 w-4 text-[var(--abu-text-muted)] transition-transform', showAdvanced && 'rotate-180')} />
         </button>
 
         {showAdvanced && (
-          <div className="px-4 pb-4 space-y-4 bg-white border-t border-[#e8e4dd]">
+          <div className="px-4 pb-4 space-y-4 bg-[var(--abu-bg-muted)] border-t border-[var(--abu-border)]">
             {/* Temperature */}
             <div className="space-y-2 pt-4">
               <div className="flex items-center justify-between">
-                <label className="text-xs text-[#656358] font-medium flex items-center gap-1.5">
+                <label className="text-xs text-[var(--abu-text-tertiary)] font-medium flex items-center gap-1.5">
                   <Thermometer className="h-3.5 w-3.5" />
                   {t.settings.temperature}
                 </label>
-                <span className="text-xs font-mono text-[#29261b]">{temperature.toFixed(2)}</span>
+                <span className="text-xs font-mono text-[var(--abu-text-primary)]">{temperature.toFixed(2)}</span>
               </div>
               <input
                 type="range"
@@ -358,7 +358,7 @@ export default function ModelConfigSection() {
                 className="w-full slider-filled"
                 style={{ '--slider-progress': `${temperature * 100}%` } as React.CSSProperties}
               />
-              <div className="flex justify-between text-[10px] text-[#888579]">
+              <div className="flex justify-between text-[10px] text-[var(--abu-text-muted)]">
                 <span>{t.settings.temperaturePrecise}</span>
                 <span>{t.settings.temperatureCreative}</span>
               </div>

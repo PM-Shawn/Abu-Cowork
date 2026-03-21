@@ -106,11 +106,11 @@ export default function PptxPreview({ filePath }: { filePath: string }) {
   }
 
   return (
-    <div ref={wrapperRef} className="flex flex-col h-full bg-[#e8e5de] overflow-auto">
+    <div ref={wrapperRef} className="flex flex-col h-full bg-[var(--abu-bg-hover)] overflow-auto">
       {loading && (
         <div className="flex items-center justify-center h-full">
-          <Loader2 className="w-5 h-5 text-[#d97757] animate-spin" />
-          <span className="ml-2 text-[13px] text-[#656358]">{t.panel.loadingDocument}</span>
+          <Loader2 className="w-5 h-5 text-[var(--abu-clay)] animate-spin" />
+          <span className="ml-2 text-[13px] text-[var(--abu-text-tertiary)]">{t.panel.loadingDocument}</span>
         </div>
       )}
       <div

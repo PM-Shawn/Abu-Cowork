@@ -15,7 +15,7 @@ export default function LanguageSection() {
 
   return (
     <div className="space-y-4">
-      <p className="text-sm text-[#656358]">
+      <p className="text-sm text-[var(--abu-text-tertiary)]">
         {t.settings.languageDescription}
       </p>
 
@@ -27,21 +27,21 @@ export default function LanguageSection() {
             className={cn(
               'w-full flex items-center justify-between p-4 rounded-xl border transition-all text-left',
               language === option.value
-                ? 'border-[#d97757] bg-[#d97757]/5'
-                : 'border-[#e8e4dd] bg-white hover:border-[#d97757]/50'
+                ? 'border-[var(--abu-clay)] bg-[var(--abu-clay-5)]'
+                : 'border-[var(--abu-border)] bg-[var(--abu-bg-muted)] hover:border-[var(--abu-clay-50)]'
             )}
           >
             <div>
               <p className={cn(
                 'text-sm font-medium',
-                language === option.value ? 'text-[#d97757]' : 'text-[#29261b]'
+                language === option.value ? 'text-[var(--abu-clay)]' : 'text-[var(--abu-text-primary)]'
               )}>
                 {option.label}
               </p>
-              <p className="text-xs text-[#888579] mt-0.5">{option.desc}</p>
+              <p className="text-xs text-[var(--abu-text-muted)] mt-0.5">{option.desc}</p>
             </div>
             {language === option.value && (
-              <div className="w-5 h-5 rounded-full bg-[#d97757] flex items-center justify-center">
+              <div className="w-5 h-5 rounded-full bg-[var(--abu-clay)] flex items-center justify-center">
                 <Check className="h-3 w-3 text-white" />
               </div>
             )}

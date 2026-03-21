@@ -48,17 +48,17 @@ export default function CloseDialog({
         if (e.target === e.currentTarget) onCancel();
       }}
     >
-      <div className="relative bg-[#faf8f5] rounded-2xl shadow-2xl ring-1 ring-black/8 w-[400px] p-7 animate-in zoom-in-95 duration-150">
+      <div className="relative bg-[var(--abu-bg-base)] rounded-2xl shadow-2xl ring-1 ring-black/8 w-[400px] p-7 animate-in zoom-in-95 duration-150">
         <button
           onClick={onCancel}
-          className="absolute top-4 right-4 p-1 rounded-md text-[#b0ad9f] hover:text-[#29261b] hover:bg-[#e8e5de] transition-colors"
+          className="absolute top-4 right-4 p-1 rounded-md text-[var(--abu-text-placeholder)] hover:text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-hover)] transition-colors"
         >
           <X className="h-4 w-4" />
         </button>
-        <h3 className="text-[16px] font-semibold text-[#29261b] mb-1.5">
+        <h3 className="text-[16px] font-semibold text-[var(--abu-text-primary)] mb-1.5">
           {t.windowClose.title}
         </h3>
-        <p className="text-[13.5px] text-[#8a8578] leading-relaxed mb-5">
+        <p className="text-[13.5px] text-[var(--abu-text-muted)] leading-relaxed mb-5">
           {t.windowClose.message}
         </p>
 
@@ -69,23 +69,23 @@ export default function CloseDialog({
               type="checkbox"
               checked={remember}
               onChange={(e) => setRemember(e.target.checked)}
-              className="w-3.5 h-3.5 rounded border-[#d5d1c9] text-[#d97757] focus:ring-[#d97757] accent-[#d97757]"
+              className="w-3.5 h-3.5 rounded border-[var(--abu-border-hover)] text-[var(--abu-clay)] focus:ring-[var(--abu-clay)] accent-[var(--abu-clay)]"
             />
-            <span className="text-[12px] text-[#8a8578]">
+            <span className="text-[12px] text-[var(--abu-text-muted)]">
               {t.windowClose.rememberChoice}
             </span>
           </label>
           <div className="flex items-center gap-2">
             <button
               onClick={handleMinimize}
-              className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg text-[13px] font-medium border border-[#e0ddd6] bg-white text-[#3d3929] hover:bg-[#f0ede6] transition-colors"
+              className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg text-[13px] font-medium border border-[var(--abu-border)] bg-white text-[var(--abu-text-secondary)] hover:bg-[var(--abu-bg-active)] transition-colors"
             >
               <Minus className="h-3.5 w-3.5" />
               {t.windowClose.minimize}
             </button>
             <button
               onClick={handleQuit}
-              className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg text-[13px] font-medium bg-[#d97757] text-white hover:bg-[#c96747] transition-colors"
+              className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg text-[13px] font-medium bg-[var(--abu-clay)] text-white hover:bg-[var(--abu-clay-hover)] transition-colors"
             >
               <X className="h-3.5 w-3.5" />
               {t.windowClose.quit}

@@ -42,7 +42,7 @@ function CitationBadge({ index, title, onClick }: {
   return (
     <span
       onClick={handleClick}
-      className="inline-flex items-center justify-center mx-[2px] px-[5px] py-[1px] text-[11px] text-[#d97757] bg-[#d97757]/8 rounded cursor-pointer hover:bg-[#d97757]/15 transition-colors leading-tight align-baseline"
+      className="inline-flex items-center justify-center mx-[2px] px-[5px] py-[1px] text-[11px] text-[var(--abu-clay)] bg-[var(--abu-clay-bg)] rounded cursor-pointer hover:bg-[var(--abu-clay-bg-15)] transition-colors leading-tight align-baseline"
       title={title}
     >
       {index}
@@ -221,7 +221,7 @@ export function CollapsibleCodeBlock({ codeString, language }: { codeString: str
         )}
       </div>
       {/* Bottom toolbar — always visible */}
-      <div className="flex items-center justify-between px-3 py-1.5 bg-neutral-800 text-xs text-neutral-400">
+      <div className="flex items-center justify-between px-3 py-1.5 bg-neutral-800 text-xs text-[var(--abu-text-muted)]">
         <div className="flex items-center gap-2">
           {language && <span>{language}</span>}
           {shouldCollapse && !isCollapsed && (
@@ -287,7 +287,7 @@ function buildMarkdownComponents(
           <code
             className={isUser
               ? 'px-1 py-0.5 rounded bg-white/15 text-white text-[0.9em]'
-              : 'px-1 py-0.5 rounded bg-neutral-100 text-orange-600 text-[0.9em]'
+              : 'px-1 py-0.5 rounded bg-[var(--abu-bg-active)] text-orange-600 text-[0.9em]'
             }
             {...props}
           >
@@ -306,7 +306,7 @@ function buildMarkdownComponents(
       if (renderer) {
         const BlockComponent = renderer.component;
         return (
-          <Suspense fallback={<div className="my-3 rounded-lg bg-[#f5f3ee] p-6 text-center text-sm text-[#888579]">…</div>}>
+          <Suspense fallback={<div className="my-3 rounded-lg bg-[var(--abu-bg-muted)] p-6 text-center text-sm text-[var(--abu-text-muted)]">…</div>}>
             <BlockComponent code={codeString} />
           </Suspense>
         );
@@ -327,13 +327,13 @@ function buildMarkdownComponents(
       return <p className={isUser ? 'my-1 leading-relaxed text-[14.5px]' : 'my-2 leading-7 text-[15px]'}>{processChildren(children, sr, onCitationClick)}</p>;
     },
     h1({ children }: { children?: ReactNode }) {
-      return <h1 className={cn('text-xl font-semibold mt-5 mb-2', isUser ? 'text-white' : 'text-neutral-800')}>{children}</h1>;
+      return <h1 className={cn('text-xl font-semibold mt-5 mb-2', isUser ? 'text-white' : 'text-[var(--abu-text-primary)]')}>{children}</h1>;
     },
     h2({ children }: { children?: ReactNode }) {
-      return <h2 className={cn('text-lg font-semibold mt-4 mb-2', isUser ? 'text-white' : 'text-neutral-800')}>{children}</h2>;
+      return <h2 className={cn('text-lg font-semibold mt-4 mb-2', isUser ? 'text-white' : 'text-[var(--abu-text-primary)]')}>{children}</h2>;
     },
     h3({ children }: { children?: ReactNode }) {
-      return <h3 className={cn('text-base font-semibold mt-3 mb-1', isUser ? 'text-white' : 'text-neutral-800')}>{children}</h3>;
+      return <h3 className={cn('text-base font-semibold mt-3 mb-1', isUser ? 'text-white' : 'text-[var(--abu-text-primary)]')}>{children}</h3>;
     },
     ul({ children }: { children?: ReactNode }) {
       return <ul className="my-2 pl-6 list-outside list-disc space-y-1">{children}</ul>;
@@ -346,7 +346,7 @@ function buildMarkdownComponents(
     },
     blockquote({ children }: { children?: ReactNode }) {
       return (
-        <blockquote className={cn('my-3 pl-3 border-l-2 italic', isUser ? 'border-white/40 text-white/80' : 'border-orange-300 text-neutral-500')}>
+        <blockquote className={cn('my-3 pl-3 border-l-2 italic', isUser ? 'border-white/40 text-white/80' : 'border-orange-300 text-[var(--abu-text-tertiary)]')}>
           {children}
         </blockquote>
       );
@@ -355,32 +355,32 @@ function buildMarkdownComponents(
       const isLocalPath = /^(\/|[A-Za-z]:[/\\]|~\/)/.test(href ?? '');
       const safeHref = SAFE_URL_PATTERN.test(href ?? '') ? href : undefined;
       return (
-        <a href={safeHref} target="_blank" rel="noopener noreferrer" className={isUser ? 'text-white underline' : isLocalPath ? 'text-neutral-500 hover:underline hover:text-neutral-700' : 'text-neutral-600 hover:underline hover:text-neutral-800'}>
+        <a href={safeHref} target="_blank" rel="noopener noreferrer" className={isUser ? 'underline decoration-[var(--abu-text-tertiary)]' : isLocalPath ? 'text-[var(--abu-text-tertiary)] hover:underline hover:text-[var(--abu-text-secondary)]' : 'text-[var(--abu-text-tertiary)] hover:underline hover:text-[var(--abu-text-secondary)]'}>
           {children}
         </a>
       );
     },
     strong({ children }: { children?: ReactNode }) {
-      return <strong className={cn('font-semibold', isUser ? 'text-white' : 'text-neutral-800')}>{children}</strong>;
+      return <strong className={cn('font-semibold', isUser ? 'text-white' : 'text-[var(--abu-text-primary)]')}>{children}</strong>;
     },
     table({ children }: { children?: ReactNode }) {
       return (
-        <div className="my-3 overflow-x-auto rounded-lg bg-white shadow-sm">
+        <div className="my-3 overflow-x-auto rounded-lg bg-white border border-[var(--abu-border-subtle)]">
           <table className="w-full text-sm">{children}</table>
         </div>
       );
     },
     thead({ children }: { children?: ReactNode }) {
-      return <thead className="bg-neutral-50">{children}</thead>;
+      return <thead className="bg-[var(--abu-bg-muted)]">{children}</thead>;
     },
     th({ children }: { children?: ReactNode }) {
-      return <th className="px-3 py-2 text-left font-medium text-neutral-700">{children}</th>;
+      return <th className="px-3 py-2 text-left font-medium text-[var(--abu-text-secondary)]">{children}</th>;
     },
     td({ children }: { children?: ReactNode }) {
-      return <td className="px-3 py-2 text-neutral-600">{children}</td>;
+      return <td className="px-3 py-2 text-[var(--abu-text-secondary)]">{children}</td>;
     },
     hr() {
-      return <hr className={cn('my-4', isUser ? 'border-white/30' : 'border-neutral-200')} />;
+      return <hr className={cn('my-4', isUser ? 'border-white/30' : 'border-[var(--abu-border)]')} />;
     },
   };
 }

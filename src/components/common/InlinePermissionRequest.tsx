@@ -76,15 +76,15 @@ export default function InlinePermissionRequest({
           <Icon className={cn('h-5 w-5', colors.icon)} />
         </div>
         <div className="flex-1 min-w-0">
-          <h4 className="text-[14px] font-medium text-[#29261b]">{getTitle()}</h4>
-          <p className="text-[13px] text-[#656358] mt-0.5">{getDescription()}</p>
+          <h4 className="text-[14px] font-medium text-[var(--abu-text-primary)]">{getTitle()}</h4>
+          <p className="text-[13px] text-[var(--abu-text-tertiary)] mt-0.5">{getDescription()}</p>
         </div>
       </div>
 
       {/* Path display */}
       {path && (
         <div className="mt-3 px-3 py-2 bg-white/60 rounded-lg">
-          <p className="text-[12px] text-[#656358] truncate font-mono">{path}</p>
+          <p className="text-[12px] text-[var(--abu-text-tertiary)] truncate font-mono">{path}</p>
         </div>
       )}
 
@@ -92,7 +92,7 @@ export default function InlinePermissionRequest({
       {details && (
         <div className="mt-2 flex items-start gap-2 px-1">
           <AlertTriangle className="h-3.5 w-3.5 text-amber-500 shrink-0 mt-0.5" />
-          <p className="text-[12px] text-[#656358] leading-relaxed">{details}</p>
+          <p className="text-[12px] text-[var(--abu-text-tertiary)] leading-relaxed">{details}</p>
         </div>
       )}
 
@@ -101,7 +101,7 @@ export default function InlinePermissionRequest({
         <Button
           size="sm"
           onClick={onAllow}
-          className="h-8 px-4 text-[13px] bg-[#29261b] hover:bg-[#3d3929] text-white"
+          className="h-8 px-4 text-[13px] bg-[var(--abu-text-primary)] hover:bg-[var(--abu-text-secondary)] text-white"
         >
           <Check className="h-3.5 w-3.5 mr-1.5" />
           允许
@@ -110,12 +110,12 @@ export default function InlinePermissionRequest({
           size="sm"
           variant="outline"
           onClick={onDeny}
-          className="h-8 px-4 text-[13px] border-[#d5d2c9] hover:bg-white/80"
+          className="h-8 px-4 text-[13px] border-[var(--abu-border-hover)] hover:bg-white/80"
         >
           <X className="h-3.5 w-3.5 mr-1.5" />
           拒绝
         </Button>
-        <span className="text-[11px] text-[#8b887c] ml-2">
+        <span className="text-[11px] text-[var(--abu-text-muted)] ml-2">
           仅本次
         </span>
       </div>
@@ -157,10 +157,10 @@ export function CompactPermissionRequest({
       )}
     >
       <Icon className={cn('h-4 w-4', colors.icon)} />
-      <span className="text-[13px] text-[#29261b]">
+      <span className="text-[13px] text-[var(--abu-text-primary)]">
         {getLabel()}
         {fileName && (
-          <span className="font-mono ml-1 text-[#656358]">{fileName}</span>
+          <span className="font-mono ml-1 text-[var(--abu-text-tertiary)]">{fileName}</span>
         )}
         ?
       </span>

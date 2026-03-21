@@ -98,7 +98,7 @@ export default function MemoryViewModal(props: MemoryViewModalProps) {
   const title = isPersonal ? t.sidebar.personalMemoryTitle : t.panel.memoryTitle;
   const desc = isPersonal ? t.sidebar.personalMemoryDesc : t.panel.memoryDesc;
   const placeholder = isPersonal ? t.sidebar.personalMemoryPlaceholder : t.panel.memoryPlaceholder;
-  const accentColor = isPersonal ? '#d97757' : '#8b7ec8';
+  const accentColor = isPersonal ? 'var(--abu-clay)' : '#8b7ec8';
 
   return (
     <>
@@ -120,10 +120,10 @@ export default function MemoryViewModal(props: MemoryViewModalProps) {
         }}
       >
         <div className="bg-white rounded-2xl shadow-xl w-[480px] max-h-[80vh] flex flex-col p-6 animate-in zoom-in-95 duration-150">
-          <h3 className="text-[16px] font-semibold text-[#29261b] mb-1">
+          <h3 className="text-[16px] font-semibold text-[var(--abu-text-primary)] mb-1">
             {title}
           </h3>
-          <p className="text-[13px] text-[#888579] mb-4">
+          <p className="text-[13px] text-[var(--abu-text-muted)] mb-4">
             {desc}
           </p>
 
@@ -139,10 +139,10 @@ export default function MemoryViewModal(props: MemoryViewModalProps) {
               value={content}
               onChange={(e) => setContent(e.target.value)}
               placeholder={placeholder}
-              className="flex-1 min-h-[280px] max-h-[50vh] w-full px-3 py-3 rounded-lg border border-[#e8e4dd] text-[13px] text-[#29261b] bg-[#faf9f5] focus:outline-none transition-colors resize-none font-mono leading-relaxed"
+              className="flex-1 min-h-[280px] max-h-[50vh] w-full px-3 py-3 rounded-lg border border-[var(--abu-border)] text-[13px] text-[var(--abu-text-primary)] bg-[var(--abu-bg-base)] focus:outline-none transition-colors resize-none font-mono leading-relaxed"
               style={{ '--tw-ring-color': accentColor } as React.CSSProperties}
               onFocus={(e) => e.target.style.borderColor = accentColor}
-              onBlur={(e) => e.target.style.borderColor = '#e8e4dd'}
+              onBlur={(e) => e.target.style.borderColor = 'var(--abu-border)'}
             />
           )}
 
@@ -158,14 +158,14 @@ export default function MemoryViewModal(props: MemoryViewModalProps) {
             <div className="flex-1" />
             <button
               onClick={onClose}
-              className="px-4 py-2.5 rounded-lg text-[13px] font-medium bg-[#f5f3ee] text-[#3d3929] hover:bg-[#e8e5de] transition-colors"
+              className="px-4 py-2.5 rounded-lg text-[13px] font-medium bg-[var(--abu-bg-muted)] text-[var(--abu-text-secondary)] hover:bg-[var(--abu-bg-hover)] transition-colors"
             >
               {t.common.cancel}
             </button>
             <button
               onClick={handleSave}
               disabled={saving || loading}
-              className="px-4 py-2.5 rounded-lg text-[14px] font-medium bg-[#d97757] text-white hover:bg-[#c4684a] transition-colors disabled:opacity-50"
+              className="px-4 py-2.5 rounded-lg text-[14px] font-medium bg-[var(--abu-clay)] text-white hover:bg-[var(--abu-clay-hover)] transition-colors disabled:opacity-50"
             >
               {saving ? t.panel.instructionsSaving : t.common.save}
             </button>

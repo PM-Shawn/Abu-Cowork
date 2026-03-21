@@ -204,7 +204,7 @@ export default function Sidebar() {
       {isMacOS() && (
         <div
           data-tauri-drag-region
-          className="h-7 shrink-0"
+          className="h-11 shrink-0"
         />
       )}
       {/* Top Navigation */}
@@ -218,7 +218,7 @@ export default function Sidebar() {
               : 'text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-hover)]'
           )}
         >
-          <Plus className="h-[18px] w-[18px] text-[var(--abu-text-secondary)]" strokeWidth={2} />
+          <Plus className={cn('h-[18px] w-[18px]', activeConversationId === null && viewMode === 'chat' ? 'text-[var(--abu-clay)]' : 'text-[var(--abu-text-tertiary)]')} strokeWidth={2} />
           <span>{t.sidebar.newTask}</span>
         </button>
         <button

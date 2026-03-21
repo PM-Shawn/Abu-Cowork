@@ -30,7 +30,7 @@ initPlatform().then(() => {
 });
 import { useSettingsStore } from '@/stores/settingsStore';
 import { TooltipProvider } from '@/components/ui/tooltip';
-import { PanelLeftClose, PanelLeftOpen, PanelRightClose, PanelRightOpen } from 'lucide-react';
+import { PanelLeft, PanelRight } from 'lucide-react';
 import { isMacOS } from '@/utils/platform';
 import { cn } from '@/lib/utils';
 import { initNotifications } from '@/utils/notifications';
@@ -211,22 +211,20 @@ function App() {
       {mac && (
         <div
           data-tauri-drag-region
-          className="fixed top-0 left-0 right-0 h-7 z-40"
+          className="fixed top-0 left-0 right-0 h-11 z-40"
         />
       )}
 
       {/* Sidebar & panel toggle buttons — positioned in title bar area on macOS, top bar on Windows */}
-      <div className={cn('fixed left-0 right-0 z-40 pointer-events-none', mac ? 'top-0 h-7' : 'top-0 h-8')}>
+      <div className={cn('fixed left-0 right-0 z-40 pointer-events-none', mac ? 'top-0 h-11' : 'top-0 h-8')}>
         {viewMode !== 'toolbox' && (
           <button
             onClick={toggleSidebar}
             className="absolute btn-ghost p-1 text-[var(--abu-text-tertiary)] hover:text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-hover)] rounded-md transition-[left] duration-200 pointer-events-auto"
-            style={{ top: mac ? 6 : 4, left: sidebarCollapsed ? 70 : 232 }}
+            style={{ top: mac ? 8 : 4, left: sidebarCollapsed ? 96 : 232 }}
             title={sidebarCollapsed ? t.sidebar.showSidebar : t.sidebar.hideSidebar}
           >
-            {sidebarCollapsed
-              ? <PanelLeftOpen className="h-4 w-4" strokeWidth={1.5} />
-              : <PanelLeftClose className="h-4 w-4" strokeWidth={1.5} />}
+            <PanelLeft className="h-3.5 w-[18px]" strokeWidth={1.5} />
           </button>
         )}
 
@@ -234,12 +232,10 @@ function App() {
           <button
             onClick={toggleRightPanel}
             className="absolute right-2 btn-ghost p-1 text-[var(--abu-text-tertiary)] hover:text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-hover)] rounded-md pointer-events-auto"
-            style={{ top: mac ? 6 : 4 }}
+            style={{ top: mac ? 8 : 4 }}
             title={rightPanelCollapsed ? t.panel.showPanel : t.panel.hidePanel}
           >
-            {rightPanelCollapsed
-              ? <PanelRightOpen className="h-4 w-4" strokeWidth={1.5} />
-              : <PanelRightClose className="h-4 w-4" strokeWidth={1.5} />}
+            <PanelRight className="h-3.5 w-[18px]" strokeWidth={1.5} />
           </button>
         )}
       </div>
@@ -254,7 +250,7 @@ function App() {
         </div>
 
         {/* Main — pt-7 on macOS to clear overlay title bar; no padding on Windows (native title bar) */}
-        <main className={cn('flex-1 min-w-0 bg-[var(--abu-bg-base)]', mac && 'pt-7')}>
+        <main className={cn('flex-1 min-w-0 bg-[var(--abu-bg-base)]', mac && 'pt-11')}>
           {viewMode === 'schedule' && <ScheduleView />}
           {viewMode === 'trigger' && <TriggerView />}
           {viewMode === 'toolbox' && <ToolboxView />}

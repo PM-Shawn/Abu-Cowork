@@ -54,15 +54,21 @@ function convertMessages(messages: Message[], systemPrompt?: string, supportsVis
         if (hasImages && supportsVision !== false) {
           // Convert to OpenAI multimodal format (vision-capable models)
           const parts: OpenAIContentPart[] = [];
+          let hasText = false;
           for (const block of msg.content) {
             if (block.type === 'text') {
               parts.push({ type: 'text', text: block.text });
+              hasText = true;
             } else if (block.type === 'image') {
               parts.push({
                 type: 'image_url',
                 image_url: { url: `data:${block.source.media_type};base64,${block.source.data}` },
               });
             }
+          }
+          // Some providers require at least one text part alongside images
+          if (!hasText) {
+            parts.unshift({ type: 'text', text: ' ' });
           }
           result.push({ role: 'user', content: parts });
         } else {

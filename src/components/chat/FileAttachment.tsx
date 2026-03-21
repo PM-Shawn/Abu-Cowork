@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
-import { FileCode, FileText, FileImage, File, FileJson, ExternalLink, Globe } from 'lucide-react';
+import { FileCode, FileText, FileImage, File, FileJson, ExternalLink, Globe, SquareArrowOutUpRight, Presentation, Sheet, FileType2, FileSearch } from 'lucide-react';
 import { usePreviewStore } from '@/stores/previewStore';
 import { useI18n } from '@/i18n';
 import { cn } from '@/lib/utils';
@@ -41,19 +41,37 @@ function getFileTypeInfo(filePath: string): { icon: typeof File; label: string; 
   }
   // Office documents
   if (['pptx', 'ppt'].includes(ext)) {
-    return { icon: FileText, label: 'PPTX', category: 'Presentation' };
+    return { icon: Presentation, label: 'PPTX', category: 'Presentation' };
   }
   if (['docx', 'doc'].includes(ext)) {
-    return { icon: FileText, label: 'DOCX', category: 'Document' };
+    return { icon: FileType2, label: 'DOCX', category: 'Document' };
   }
   if (['xlsx', 'xls'].includes(ext)) {
-    return { icon: FileText, label: 'XLSX', category: 'Spreadsheet' };
+    return { icon: Sheet, label: 'XLSX', category: 'Spreadsheet' };
   }
   if (ext === 'pdf') {
-    return { icon: FileText, label: 'PDF', category: 'Document' };
+    return { icon: FileSearch, label: 'PDF', category: 'Document' };
   }
 
   return { icon: File, label: ext.toUpperCase() || 'FILE', category: 'File' };
+}
+
+// Get open-with label and icon by file extension
+function getOpenWithInfo(filePath: string): { label: string; icon: typeof File } {
+  const ext = filePath.split('.').pop()?.toLowerCase() || '';
+  const map: Record<string, { label: string; icon: typeof File }> = {
+    pptx: { label: 'PowerPoint', icon: Presentation },
+    ppt: { label: 'PowerPoint', icon: Presentation },
+    xlsx: { label: 'Excel', icon: Sheet },
+    xls: { label: 'Excel', icon: Sheet },
+    csv: { label: 'Excel', icon: Sheet },
+    docx: { label: 'Word', icon: FileType2 },
+    doc: { label: 'Word', icon: FileType2 },
+    pdf: { label: '预览', icon: FileSearch },
+    html: { label: '浏览器', icon: Globe },
+    htm: { label: '浏览器', icon: Globe },
+  };
+  return map[ext] || { label: '', icon: SquareArrowOutUpRight };
 }
 
 function isImageFile(filePath: string): boolean {
@@ -61,10 +79,6 @@ function isImageFile(filePath: string): boolean {
   return IMAGE_EXTENSIONS.has(ext);
 }
 
-function isHtmlFile(filePath: string): boolean {
-  const ext = filePath.split('.').pop()?.toLowerCase() || '';
-  return ext === 'html' || ext === 'htm';
-}
 
 // eslint-disable-next-line react-refresh/only-export-components
 export { IMAGE_EXTENSIONS, isImageFile };
@@ -74,14 +88,29 @@ interface FileAttachmentProps {
   operation?: 'read' | 'write' | 'create';
 }
 
-export default function FileAttachment({ filePath, operation }: FileAttachmentProps) {
+export default function FileAttachment({ filePath }: FileAttachmentProps) {
   const openPreview = usePreviewStore((s) => s.openPreview);
   const { t } = useI18n();
   const { icon: Icon, label, category } = getFileTypeInfo(filePath);
   const fileName = getBaseName(filePath);
   const showThumbnail = isImageFile(filePath);
-  const showBrowserBtn = isHtmlFile(filePath);
+  const { label: openWithLabel, icon: OpenWithIcon } = getOpenWithInfo(filePath);
   const [thumbUrl, setThumbUrl] = useState<string | null>(null);
+  const [fileExists, setFileExists] = useState(true);
+
+  // Check file existence — hide card if file doesn't exist
+  useEffect(() => {
+    // Non-absolute paths are definitely invalid (e.g. markdown artifacts like "**file.pptx")
+    if (!filePath.startsWith('/') && !/^[A-Za-z]:[\\/]/.test(filePath)) {
+      setFileExists(false);
+      return;
+    }
+    let cancelled = false;
+    import('@tauri-apps/plugin-fs').then(({ exists }) =>
+      exists(filePath).then((ok) => { if (!cancelled) setFileExists(ok); })
+    ).catch(() => { if (!cancelled) setFileExists(false); });
+    return () => { cancelled = true; };
+  }, [filePath]);
 
   // Load image thumbnail via Tauri readFile
   useEffect(() => {
@@ -101,7 +130,7 @@ export default function FileAttachment({ filePath, operation }: FileAttachmentPr
     openPreview(filePath);
   };
 
-  const handleOpenInBrowser = async (e: React.MouseEvent) => {
+  const handleOpenWithDefaultApp = async (e: React.MouseEvent) => {
     e.stopPropagation();
     try {
       const { invoke } = await import('@tauri-apps/api/core');
@@ -119,9 +148,12 @@ export default function FileAttachment({ filePath, operation }: FileAttachmentPr
         sandboxEnabled: false,
       });
     } catch (err) {
-      console.error('[FileAttachment] Failed to open in browser:', err);
+      console.error('[FileAttachment] Failed to open with default app:', err);
     }
   };
+
+  // Hide card if file doesn't exist on disk
+  if (!fileExists) return null;
 
   // Image file: show thumbnail card
   if (showThumbnail && thumbUrl) {
@@ -153,29 +185,28 @@ export default function FileAttachment({ filePath, operation }: FileAttachmentPr
   return (
     <div
       className={cn(
-        'group inline-flex items-center rounded-xl overflow-hidden transition-all',
+        'group flex items-center gap-3 w-full rounded-lg transition-all',
         'bg-white border border-[#e5e2db] hover:shadow-sm',
-        operation === 'create' && 'border-l-2 border-l-green-500',
-        operation === 'write' && 'border-l-2 border-l-amber-500'
+        'px-4 py-3',
       )}
     >
       {/* File card area - clickable to preview */}
       <div
         onClick={handleClick}
-        className="flex items-center gap-2.5 px-3 py-2.5 cursor-pointer hover:bg-[#f9f8f5] transition-colors"
+        className="flex items-center gap-3 min-w-0 flex-1 cursor-pointer"
         title={t.chat.clickToPreview}
       >
         {/* File Icon */}
         <div className={cn(
-          'w-9 h-9 rounded-lg flex items-center justify-center shrink-0',
+          'w-10 h-10 rounded-lg flex items-center justify-center shrink-0',
           'bg-[#f0eee8]'
         )}>
-          <Icon className="w-4.5 h-4.5 text-[#656358]" />
+          <Icon className="w-5 h-5 text-[#656358]" />
         </div>
 
         {/* File Info */}
         <div className="flex flex-col min-w-0">
-          <span className="text-[13px] font-medium text-[#29261b] truncate max-w-[160px]">
+          <span className="text-[13.5px] font-medium text-[#29261b] truncate">
             {fileName.replace(/\.[^/.]+$/, '') || fileName}
           </span>
           <span className="text-[11px] text-[#888579]">
@@ -184,20 +215,20 @@ export default function FileAttachment({ filePath, operation }: FileAttachmentPr
         </div>
       </div>
 
-      {/* Open in Browser button for HTML files - separated by divider */}
-      {showBrowserBtn && (
-        <>
-          <div className="w-px h-8 bg-[#e5e2db] shrink-0" />
-          <button
-            onClick={handleOpenInBrowser}
-            className="flex items-center gap-1.5 px-3.5 py-2.5 cursor-pointer hover:bg-[#f9f8f5] transition-colors whitespace-nowrap"
-            title={t.chat.openInBrowser}
-          >
-            <Globe className="w-4 h-4 text-[#888579]" />
-            <span className="text-[12.5px] text-[#555249]">{t.chat.openInBrowser}</span>
-          </button>
-        </>
-      )}
+      {/* Open with default app button */}
+      <button
+        onClick={handleOpenWithDefaultApp}
+        className={cn(
+          'flex items-center gap-1.5 px-3 py-2 shrink-0 cursor-pointer whitespace-nowrap',
+          'rounded-lg border border-[#e5e2db] hover:bg-[#f9f8f5] transition-colors',
+        )}
+        title={openWithLabel ? `用 ${openWithLabel} 打开` : t.chat.openWithDefaultApp}
+      >
+        <OpenWithIcon className="w-4 h-4 text-[#888579]" />
+        <span className="text-[12.5px] text-[#555249]">
+          {openWithLabel ? `用 ${openWithLabel} 打开` : t.chat.openWithDefaultApp}
+        </span>
+      </button>
     </div>
   );
 }

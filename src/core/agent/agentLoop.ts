@@ -38,6 +38,56 @@ import { CORE_TOOL_NAMES, prefetchTools } from '../tools/toolPrefetch';
 import { createLogger } from '../logging/logger';
 
 const logger = createLogger('agentLoop');
+
+/** MIME type to file extension mapping */
+const MIME_TO_EXT: Record<string, string> = {
+  'image/png': 'png',
+  'image/jpeg': 'jpg',
+  'image/gif': 'gif',
+  'image/webp': 'webp',
+};
+
+/**
+ * Save user-pasted images to disk so they survive localStorage persistence.
+ * Returns array of file paths (one per image). On failure, returns undefined for that slot.
+ */
+async function saveUserImagesToDisk(
+  conversationId: string,
+  images: ImageAttachment[],
+): Promise<(string | undefined)[]> {
+  try {
+    const { getSessionOutputDir } = await import('../session/sessionDir');
+    const { writeFile, mkdir, exists } = await import('@tauri-apps/plugin-fs');
+    const outputDir = await getSessionOutputDir(conversationId);
+    const imagesDir = joinPath(outputDir, 'images');
+    if (!(await exists(imagesDir))) {
+      await mkdir(imagesDir, { recursive: true });
+    }
+
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+    return await Promise.all(
+      images.map(async (img, index) => {
+        try {
+          const ext = MIME_TO_EXT[img.mediaType] || 'png';
+          const fileName = `${timestamp}_${index}.${ext}`;
+          const filePath = joinPath(imagesDir, fileName);
+          const binaryStr = atob(img.data);
+          const bytes = new Uint8Array(binaryStr.length);
+          for (let i = 0; i < binaryStr.length; i++) {
+            bytes[i] = binaryStr.charCodeAt(i);
+          }
+          await writeFile(filePath, bytes);
+          return filePath;
+        } catch {
+          return undefined;
+        }
+      }),
+    );
+  } catch {
+    // Graceful degradation: images still work in current session, just won't persist
+    return images.map(() => undefined);
+  }
+}
 import {
   setCurrentLoopContext,
   requestCommandConfirmation,
@@ -378,13 +428,16 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
   const userImages = options?.images;
   let userContent: string | MessageContent[];
   if (userImages && userImages.length > 0) {
-    const blocks: MessageContent[] = userImages.map((img) => ({
+    // Save images to disk so they survive localStorage persistence
+    const savedPaths = await saveUserImagesToDisk(conversationId, userImages);
+    const blocks: MessageContent[] = userImages.map((img, i) => ({
       type: 'image' as const,
       source: {
         type: 'base64' as const,
         media_type: img.mediaType,
         data: img.data,
       },
+      filePath: savedPaths[i],
     }));
     if (route.cleanInput) {
       blocks.push({ type: 'text' as const, text: route.cleanInput });

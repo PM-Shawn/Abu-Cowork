@@ -121,6 +121,7 @@ export interface TranslationDict {
     removeImage: string;
     openInFinder: string;
     openInBrowser: string;
+    openWithDefaultApp: string;
     clickToPreview: string;
     sources: string;
     showAllSources: string;
@@ -158,6 +159,7 @@ export interface TranslationDict {
     regenerate: string;
     saveAndResend: string;
     clickToViewFull: string;
+    imageExpired: string;
     inputTokens: string;
     outputTokens: string;
     addAttachment: string;
@@ -486,6 +488,7 @@ export interface TranslationDict {
     createMCP: string;
     uploadFile: string;
     uploadSuccess: string;
+    uploadSuccessDetail: string;
     uploadFailed: string;
     uploadFileCount: string;
     exportSkill: string;

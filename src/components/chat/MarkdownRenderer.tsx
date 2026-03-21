@@ -9,11 +9,9 @@ import bash from 'react-syntax-highlighter/dist/esm/languages/prism/bash';
 import json from 'react-syntax-highlighter/dist/esm/languages/prism/json';
 import markdown from 'react-syntax-highlighter/dist/esm/languages/prism/markdown';
 import { useState, memo, useMemo, useCallback, Suspense, type ReactNode } from 'react';
-import { Copy, Check, FileText, FolderOpen, Download, ChevronDown, ChevronUp } from 'lucide-react';
-import { usePreviewStore } from '@/stores/previewStore';
+import { Copy, Check, Download, ChevronDown, ChevronUp } from 'lucide-react';
 import { useI18n, format } from '@/i18n';
 import { cn } from '@/lib/utils';
-import { getBaseName, isLocalFilePath } from '@/utils/pathUtils';
 import type { SearchResult } from '@/types';
 
 import { getCodeBlockRenderer } from './codeBlockRenderers';
@@ -26,60 +24,6 @@ SyntaxHighlighter.registerLanguage('bash', bash);
 SyntaxHighlighter.registerLanguage('shell', bash);
 SyntaxHighlighter.registerLanguage('json', json);
 SyntaxHighlighter.registerLanguage('markdown', markdown);
-
-// --- Path detection utilities ---
-
-/** Check if a string looks like an absolute file path (for inline code) */
-function isAbsolutePath(text: string): boolean {
-  const t = text.trim();
-  if (t.includes('\n')) return false;
-  if (!isLocalFilePath(t)) return false;
-  const normalized = t.replace(/\\/g, '/');
-  const segments = normalized.split('/').filter(Boolean);
-  return segments.length >= 2;
-}
-
-/**
- * Match absolute paths in bare text.
- * Only matches paths with well-known filesystem prefixes to avoid false positives from URLs.
- * Requires a file extension at the end (to avoid partial matches on paths with spaces).
- */
-const FS_PREFIXES = 'Users|home|tmp|var|opt|etc|Library|Applications|private|Volumes|mnt';
-const STOP_CHARS = '[^\\s,，。；！？：)）\\]】」]+';
-// Unix: /Users/foo/bar.txt
-const UNIX_PATH_RE = `\\/(?:${FS_PREFIXES})\\/${STOP_CHARS}\\.\\w{1,10}`;
-// Windows: C:/Users/foo/bar.txt or C:\Users\foo\bar.txt
-const WIN_PATH_RE = `[A-Za-z]:[/\\\\](?:${FS_PREFIXES}|Windows|Program Files|AppData)[/\\\\]${STOP_CHARS}\\.\\w{1,10}`;
-const BARE_PATH_REGEX = new RegExp(`${WIN_PATH_RE}|${UNIX_PATH_RE}`, 'g');
-
-/** Split a text string into parts, replacing detected file paths with FilePathChip elements */
-function splitTextWithPaths(text: string): ReactNode[] {
-  const parts: ReactNode[] = [];
-  let lastIndex = 0;
-  let match;
-  let keyIdx = 0;
-
-  BARE_PATH_REGEX.lastIndex = 0;
-  while ((match = BARE_PATH_REGEX.exec(text)) !== null) {
-    const path = match[0];
-    const idx = match.index;
-
-    // Skip if preceded by / (part of URL like ://)
-    if (idx > 0 && text[idx - 1] === '/') continue;
-
-    if (idx > lastIndex) {
-      parts.push(text.slice(lastIndex, idx));
-    }
-    parts.push(<FilePathChip key={`bp-${keyIdx++}`} filePath={path} />);
-    lastIndex = idx + path.length;
-  }
-
-  if (parts.length === 0) return [text];
-  if (lastIndex < text.length) {
-    parts.push(text.slice(lastIndex));
-  }
-  return parts;
-}
 
 // --- Citation utilities ---
 
@@ -150,7 +94,7 @@ function splitTextNode(
   searchResults: SearchResult[] | null,
   onCitationClick?: (index: number) => void
 ): ReactNode[] {
-  let parts = splitTextWithPaths(text);
+  let parts: ReactNode[] = [text];
   if (searchResults && searchResults.length > 0) {
     const expanded: ReactNode[] = [];
     for (const part of parts) {
@@ -195,46 +139,6 @@ function processChildren(
   }
 
   return modified ? result : children;
-}
-
-// --- Components ---
-
-function FilePathChip({ filePath }: { filePath: string }) {
-  const openPreview = usePreviewStore((s) => s.openPreview);
-  const { t } = useI18n();
-  const fileName = getBaseName(filePath);
-
-  const handleClick = (e: React.MouseEvent) => {
-    e.stopPropagation();
-    openPreview(filePath);
-  };
-
-  const handleReveal = async (e: React.MouseEvent) => {
-    e.stopPropagation();
-    e.preventDefault();
-    try {
-      const { revealItemInDir } = await import('@tauri-apps/plugin-opener');
-      await revealItemInDir(filePath);
-    } catch { /* ignore in non-Tauri env */ }
-  };
-
-  return (
-    <span
-      className="inline-flex items-center gap-1 px-1.5 py-0.5 mx-0.5 rounded-md bg-[#f5f3ee] border border-[#e5e2db] hover:border-[#d97757]/40 hover:shadow-sm cursor-pointer transition-all text-[13px] align-middle group/chip"
-      title={filePath}
-      onClick={handleClick}
-    >
-      <FileText className="w-3.5 h-3.5 text-[#888579] shrink-0" />
-      <span className="text-[#29261b] truncate max-w-[200px]">{fileName}</span>
-      <button
-        onClick={handleReveal}
-        className="p-0.5 rounded hover:bg-[#e5e2db] opacity-0 group-hover/chip:opacity-100 transition-opacity shrink-0"
-        title={t.chat.openInFinder}
-      >
-        <FolderOpen className="w-3 h-3 text-[#888579]" />
-      </button>
-    </span>
-  );
 }
 
 // --- Language to file extension map ---
@@ -361,19 +265,11 @@ const SAFE_URL_PATTERN = /^(https?:\/\/|mailto:|tel:|#)/i;
 
 type MarkdownVariant = 'assistant' | 'user';
 
-/** Check if inline code looks like a filename with extension */
-function looksLikeFileName(text: string): boolean {
-  const t = text.trim();
-  if (t.includes('\n') || t.includes('/') || t.includes('\\')) return false;
-  return /^[^/\\]+\.\w{1,10}$/.test(t);
-}
-
 /** Build markdown component overrides, optionally citation-aware */
 function buildMarkdownComponents(
   searchResults: SearchResult[] | null,
   onCitationClick?: (index: number) => void,
   variant: MarkdownVariant = 'assistant',
-  fileOutputMap?: Map<string, string>
 ) {
   const sr = searchResults && searchResults.length > 0 ? searchResults : null;
   const isUser = variant === 'user';
@@ -385,16 +281,6 @@ function buildMarkdownComponents(
       const isInline = !match && !codeString.includes('\n');
 
       if (isInline) {
-        if (!isUser && isAbsolutePath(codeString)) {
-          return <FilePathChip filePath={codeString.trim()} />;
-        }
-        // Match bare filename to known file outputs
-        if (!isUser && fileOutputMap && looksLikeFileName(codeString)) {
-          const fullPath = fileOutputMap.get(codeString.trim());
-          if (fullPath) {
-            return <FilePathChip filePath={fullPath} />;
-          }
-        }
         // Detect hex color codes and show a swatch
         const hexMatch = /^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/.exec(codeString.trim());
         return (
@@ -466,9 +352,10 @@ function buildMarkdownComponents(
       );
     },
     a({ href, children }: { href?: string; children?: ReactNode }) {
+      const isLocalPath = /^(\/|[A-Za-z]:[/\\]|~\/)/.test(href ?? '');
       const safeHref = SAFE_URL_PATTERN.test(href ?? '') ? href : undefined;
       return (
-        <a href={safeHref} target="_blank" rel="noopener noreferrer" className={isUser ? 'text-white underline' : 'text-orange-600 hover:underline'}>
+        <a href={safeHref} target="_blank" rel="noopener noreferrer" className={isUser ? 'text-white underline' : isLocalPath ? 'text-neutral-500 hover:underline hover:text-neutral-700' : 'text-neutral-600 hover:underline hover:text-neutral-800'}>
           {children}
         </a>
       );
@@ -507,16 +394,14 @@ interface MarkdownRendererProps {
   searchResults?: SearchResult[];
   onCitationClick?: (index: number) => void;
   variant?: MarkdownVariant;
-  /** Map of filename -> full path for file outputs, enables clickable file chips */
-  fileOutputMap?: Map<string, string>;
 }
 
-export default memo(function MarkdownRenderer({ content, searchResults, onCitationClick, variant = 'assistant', fileOutputMap }: MarkdownRendererProps) {
+export default memo(function MarkdownRenderer({ content, searchResults, onCitationClick, variant = 'assistant' }: MarkdownRendererProps) {
   const components = useMemo(
-    () => (searchResults && searchResults.length > 0) || fileOutputMap
-      ? buildMarkdownComponents(searchResults ?? null, onCitationClick, variant, fileOutputMap)
+    () => (searchResults && searchResults.length > 0)
+      ? buildMarkdownComponents(searchResults ?? null, onCitationClick, variant)
       : variant === 'user' ? defaultUserComponents : defaultAssistantComponents,
-    [searchResults, onCitationClick, variant, fileOutputMap]
+    [searchResults, onCitationClick, variant]
   );
 
   return (

@@ -2,16 +2,13 @@ import { useEffect, useState } from 'react';
 import { useSettingsStore, type ToolboxTab } from '@/stores/settingsStore';
 import { useChatStore } from '@/stores/chatStore';
 import { useDiscoveryStore } from '@/stores/discoveryStore';
-import { useI18n } from '@/i18n';
+import { useI18n, format } from '@/i18n';
 import { Sparkles, Bot, Server, ArrowLeft } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { open as openDialog } from '@tauri-apps/plugin-dialog';
-import { readTextFile, readFile, writeTextFile, mkdir } from '@tauri-apps/plugin-fs';
-import { homeDir } from '@tauri-apps/api/path';
-import { joinPath, normalizeSeparators } from '@/utils/pathUtils';
-import { ITEM_NAME_RE } from '@/utils/validation';
-import { validateArchive, unpackSkill, ConflictError } from '@/core/skill/packager';
 import { useToastStore } from '@/stores/toastStore';
+import { installSkillFromFolder } from '@/core/skill/installer';
+import { installAgentFromFolder } from '@/core/agent/installer';
 import SkillsSection from '../customize/SkillsSection';
 import AgentsSection from '../customize/AgentsSection';
 import MCPSection from '../customize/MCPSection';
@@ -47,107 +44,32 @@ export default function ToolboxView() {
     closeToolbox();
   };
 
-  // Handler for uploading a file (Skills/Agents)
+  // Handler for uploading a folder (Skills/Agents)
   const handleUploadFile = async () => {
     const isAgent = activeToolboxTab === 'agents';
-    const expectedFileName = isAgent ? 'AGENT.md' : 'SKILL.md';
-    const targetFolder = isAgent ? 'agents' : 'skills';
     const addToast = useToastStore.getState().addToast;
 
     try {
-      const filters = isAgent
-        ? [{ name: 'Markdown', extensions: ['md'] }]
-        : [
-            { name: 'Skill Package', extensions: ['askill', 'zip'] },
-            { name: 'Markdown', extensions: ['md'] },
-          ];
+      const folderPath = await openDialog({ directory: true, multiple: false });
+      if (!folderPath) return;
 
-      const filePath = await openDialog({ filters, multiple: false });
+      const result = isAgent
+        ? await installAgentFromFolder(folderPath as string, { overwrite: true })
+        : await installSkillFromFolder(folderPath as string, { overwrite: true });
 
-      if (!filePath) return;
-      const pathStr = filePath as string;
-
-      // ── .askill / .zip package mode (skills only) ──
-      if (!isAgent && (pathStr.endsWith('.askill') || pathStr.endsWith('.zip'))) {
-        const bytes = await readFile(pathStr);
-        const archiveBytes = new Uint8Array(bytes);
-
-        // Validate
-        const error = validateArchive(archiveBytes);
-        if (error) {
-          addToast({ type: 'error', title: t.toolbox.uploadFailed, message: error.message });
-          return;
-        }
-
-        // Unpack
-        const home = await homeDir();
-        const baseDir = joinPath(home, '.abu', targetFolder);
-        await mkdir(baseDir, { recursive: true });
-
-        try {
-          const result = await unpackSkill(archiveBytes, baseDir);
-          await refresh();
-          addToast({
-            type: 'success',
-            title: t.toolbox.uploadSuccess,
-            message: `"${result.name}" (${result.files.length} ${t.toolbox.uploadFileCount})`,
-          });
-        } catch (err) {
-          if (err instanceof ConflictError) {
-            // Overwrite on conflict (could add a confirm dialog later)
-            const result = await unpackSkill(archiveBytes, baseDir, { overwrite: true });
-            await refresh();
-            addToast({
-              type: 'success',
-              title: t.toolbox.uploadSuccess,
-              message: `"${result.name}" (${result.files.length} ${t.toolbox.uploadFileCount})`,
-            });
-          } else {
-            throw err;
-          }
-        }
+      if (!result.ok) {
+        addToast({ type: 'error', title: t.toolbox.uploadFailed, message: result.message });
         return;
       }
-
-      // ── Single .md file mode (original logic) ──
-      const content = await readTextFile(pathStr);
-
-      // Extract name from parent directory or filename
-      const parts = normalizeSeparators(pathStr).split('/');
-      const fileName = parts[parts.length - 1];
-      let rawName: string;
-
-      if (fileName.toUpperCase() === expectedFileName) {
-        rawName = parts[parts.length - 2] || fileName.replace(/\.md$/i, '');
-      } else {
-        rawName = fileName.replace(/\.md$/i, '');
-      }
-
-      // Normalize: lowercase, spaces/underscores → hyphens, strip invalid chars
-      const name = rawName
-        .toLowerCase()
-        .replace(/[\s_]+/g, '-')
-        .replace(/[^a-z0-9-]/g, '')
-        .replace(/^-+|-+$/g, '');
-
-      if (!name || !ITEM_NAME_RE.test(name)) {
-        addToast({ type: 'error', title: t.toolbox.uploadFailed, message: `Invalid skill name: "${rawName}"` });
-        return;
-      }
-
-      // Write to ~/.abu/{skills|agents}/{name}/{SKILL|AGENT}.md
-      const home = await homeDir();
-      const targetDir = joinPath(home, '.abu', targetFolder, name);
-
-      await mkdir(targetDir, { recursive: true });
-
-      const targetPath = joinPath(targetDir, expectedFileName);
-      await writeTextFile(targetPath, content);
 
       await refresh();
-      addToast({ type: 'success', title: t.toolbox.uploadSuccess, message: `"${name}"` });
+      addToast({
+        type: 'success',
+        title: t.toolbox.uploadSuccess,
+        message: format(t.toolbox.uploadSuccessDetail, { name: result.name, count: String(result.fileCount) }),
+      });
     } catch (err) {
-      console.error('Upload file failed:', err);
+      console.error('Upload folder failed:', err);
       addToast({ type: 'error', title: t.toolbox.uploadFailed, message: String(err) });
     }
   };

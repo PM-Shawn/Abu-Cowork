@@ -246,16 +246,27 @@ export default function MessageGroup({ messages }: MessageGroupProps) {
   // Source 1: tool calls (reliable). Source 2: last assistant message text (for announced paths)
   const fileOutputs = useMemo(() => {
     const files = extractFileOutputs(allToolCalls);
+    // Deduplicate by both full path and basename
     const seenPaths = new Set(files.map(f => f.path));
+    const seenBasenames = new Set(files.map(f => f.path.split('/').pop() || f.path));
     // Only check the LAST assistant message for file paths (final result, not intermediate narration)
     const lastMsg = assistantMsgs[assistantMsgs.length - 1];
     if (lastMsg) {
       const text = getTextContent(lastMsg.content);
       if (text) {
         const textPaths = extractFilePathsFromText(text);
-        for (const p of textPaths) {
-          if (!seenPaths.has(p)) {
+        for (const rawP of textPaths) {
+          // Normalize to match the same normalization in extractFileOutputs
+          // Strip markdown formatting (**, __, ``) that wraps filenames in LLM text
+          const p = rawP
+            .replace(/^[*_`~]+/, '')
+            .replace(/[*_`~)）\]】}"'。，,;；:：.]+$/, '')
+            .trim().replace(/\\/g, '/');
+          if (!p) continue;
+          const basename = p.split('/').pop() || p;
+          if (!seenPaths.has(p) && !seenBasenames.has(basename)) {
             seenPaths.add(p);
+            seenBasenames.add(basename);
             files.push({ path: p, operation: 'create' });
           }
         }
@@ -263,17 +274,6 @@ export default function MessageGroup({ messages }: MessageGroupProps) {
     }
     return files;
   }, [allToolCalls, assistantMsgs]);
-
-  // Build filename -> full path map for inline file chip matching
-  const fileOutputMap = useMemo(() => {
-    if (fileOutputs.length === 0) return undefined;
-    const map = new Map<string, string>();
-    for (const f of fileOutputs) {
-      const name = f.path.split('/').pop() || f.path;
-      map.set(name, f.path);
-    }
-    return map;
-  }, [fileOutputs]);
 
   // Check if any tool is executing
   const isAnyExecuting = allToolCalls.some((tc) => tc.isExecuting);
@@ -391,7 +391,6 @@ export default function MessageGroup({ messages }: MessageGroupProps) {
                           content={cleanedText}
                           searchResults={searchResults.length > 0 ? searchResults : undefined}
                           onCitationClick={searchResults.length > 0 ? handleCitationClick : undefined}
-                          fileOutputMap={fileOutputMap}
                         />
                       </div>
                     )}

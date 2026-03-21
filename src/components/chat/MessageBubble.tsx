@@ -1,5 +1,5 @@
-import { ChevronDown, ChevronRight, Copy, Pencil, Trash2, RefreshCw, Check, Brain, Wand2, AtSign, FileText, FolderOpen } from 'lucide-react';
-import { useState } from 'react';
+import { ChevronDown, ChevronRight, Copy, Pencil, Trash2, RefreshCw, Check, Brain, Wand2, AtSign, FileText, FolderOpen, ImageOff } from 'lucide-react';
+import { useState, useEffect } from 'react';
 import type { Message, MessageContent } from '@/types';
 import MarkdownRenderer from './MarkdownRenderer';
 import ToolCallsGroup from './ToolCallsGroup';
@@ -7,7 +7,7 @@ import { useChatStore, useActiveConversation } from '@/stores/chatStore';
 import { usePreviewStore } from '@/stores/previewStore';
 import { runAgentLoop } from '@/core/agent/agentLoop';
 import { useI18n } from '@/i18n';
-import { getBaseName } from '@/utils/pathUtils';
+import { getBaseName, loadLocalImage } from '@/utils/pathUtils';
 import abuAvatar from '@/assets/abu-avatar.png';
 
 // Regex to match [Attachment: `path`] patterns in user messages
@@ -21,6 +21,55 @@ function extractAttachments(text: string): { cleanText: string; attachmentPaths:
     return '';
   }).trim();
   return { cleanText, attachmentPaths: paths };
+}
+
+/** Image thumbnail that loads from base64 data or disk filePath */
+function UserImageThumbnail({ image }: { image: Extract<MessageContent, { type: 'image' }> }) {
+  const { t } = useI18n();
+  const openPreview = usePreviewStore.getState().openPreview;
+  const hasData = !!image.source.data;
+  const [diskSrc, setDiskSrc] = useState<string | null>(null);
+  const [expired, setExpired] = useState(false);
+
+  useEffect(() => {
+    if (hasData || !image.filePath) return;
+    let revoke: string | null = null;
+    loadLocalImage(image.filePath)
+      .then((url) => { revoke = url; setDiskSrc(url); })
+      .catch(() => setExpired(true));
+    return () => { if (revoke) URL.revokeObjectURL(revoke); };
+  }, [hasData, image.filePath]);
+
+  const src = hasData
+    ? `data:${image.source.media_type};base64,${image.source.data}`
+    : diskSrc;
+
+  if (expired) {
+    return (
+      <div
+        className="w-8 h-8 rounded overflow-hidden border border-[#e5e2db] flex items-center justify-center bg-[#f5f3ee]"
+        title={t.chat.imageExpired}
+      >
+        <ImageOff className="w-4 h-4 text-[#9a9689]" />
+      </div>
+    );
+  }
+
+  if (!src) {
+    return (
+      <div className="w-8 h-8 rounded overflow-hidden border border-[#e5e2db] bg-[#f5f3ee] animate-pulse" />
+    );
+  }
+
+  return (
+    <div
+      className="w-8 h-8 rounded overflow-hidden border border-[#e5e2db] cursor-pointer hover:shadow-md transition-shadow"
+      onClick={() => openPreview(image.filePath || src)}
+      title={t.chat.clickToViewFull}
+    >
+      <img src={src} alt="" className="w-full h-full object-cover" />
+    </div>
+  );
 }
 
 /** Clickable file chip for user message attachments */
@@ -322,7 +371,6 @@ export default function MessageBubble({
   }
 
   if (isUser) {
-    const openPreview = usePreviewStore.getState().openPreview;
     // Extract file attachments from user message text
     const { cleanText: userCleanText, attachmentPaths } = extractAttachments(textContent);
     return (
@@ -331,23 +379,9 @@ export default function MessageBubble({
           {/* Image thumbnails — above the text bubble */}
           {imageBlocks.length > 0 && !isEditing && (
             <div className="flex flex-wrap justify-end gap-1.5">
-              {imageBlocks.map((img, idx) => {
-                const dataUrl = `data:${img.source.media_type};base64,${img.source.data}`;
-                return (
-                  <div
-                    key={idx}
-                    className="w-8 h-8 rounded overflow-hidden border border-[#e5e2db] cursor-pointer hover:shadow-md transition-shadow"
-                    onClick={() => openPreview(dataUrl)}
-                    title={t.chat.clickToViewFull}
-                  >
-                    <img
-                      src={dataUrl}
-                      alt=""
-                      className="w-full h-full object-cover"
-                    />
-                  </div>
-                );
-              })}
+              {imageBlocks.map((img, idx) => (
+                <UserImageThumbnail key={idx} image={img} />
+              ))}
             </div>
           )}
           {/* File attachment chips — above the bubble */}
@@ -383,20 +417,23 @@ export default function MessageBubble({
                   isUser={true}
                 />
               )}
-              <div className="px-4 py-2.5 rounded-2xl rounded-br-sm bg-[#d97757] text-white shadow-sm">
-                {/* Skill badge inside bubble */}
-                {message.skill && (
-                  <div className="flex items-center gap-1.5 mb-1.5 opacity-90">
-                    <Wand2 className="h-3 w-3" />
-                    <span className="text-[11px] font-medium">/{message.skill.name}</span>
-                  </div>
-                )}
-                {userCleanText && (
-                  <div className="text-[14.5px] leading-relaxed break-words">
-                    <MarkdownRenderer content={userCleanText} variant="user" />
-                  </div>
-                )}
-              </div>
+              {/* Hide bubble when there's no text and no skill badge (pure image message) */}
+              {(userCleanText || message.skill) && (
+                <div className="px-4 py-2.5 rounded-2xl rounded-br-sm bg-[#d97757] text-white shadow-sm">
+                  {/* Skill badge inside bubble */}
+                  {message.skill && (
+                    <div className="flex items-center gap-1.5 mb-1.5 opacity-90">
+                      <Wand2 className="h-3 w-3" />
+                      <span className="text-[11px] font-medium">/{message.skill.name}</span>
+                    </div>
+                  )}
+                  {userCleanText && (
+                    <div className="text-[14.5px] leading-relaxed break-words">
+                      <MarkdownRenderer content={userCleanText} variant="user" />
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
           )}
         </div>

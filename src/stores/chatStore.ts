@@ -102,13 +102,20 @@ function stripImageDataForPersist(conversations: Record<string, Conversation>): 
 
       const strippedMsg = { ...msg };
 
-      // Strip images from user message content (e.g. pasted screenshots)
+      // Strip base64 data from user message images, but preserve filePath for disk recovery
       if (hasContentImages && Array.isArray(msg.content)) {
-        strippedMsg.content = msg.content.map((block) =>
-          block.type === 'image'
-            ? { type: 'text' as const, text: '[image]' }
-            : block
-        );
+        strippedMsg.content = msg.content.map((block) => {
+          if (block.type !== 'image') return block;
+          // If image was saved to disk, keep the ImageContent structure with empty data
+          if (block.filePath) {
+            return {
+              ...block,
+              source: { ...block.source, data: '' },
+            };
+          }
+          // No disk path — fallback to placeholder text
+          return { type: 'text' as const, text: '[image]' };
+        });
       }
 
       // Strip images from tool result content

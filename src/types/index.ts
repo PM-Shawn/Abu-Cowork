@@ -31,6 +31,7 @@ export interface ImageContent {
     media_type: 'image/jpeg' | 'image/png' | 'image/gif' | 'image/webp';
     data: string;
   };
+  filePath?: string;  // Disk path for persistence — base64 data is stripped on persist, filePath survives
 }
 
 export interface DocumentContent {

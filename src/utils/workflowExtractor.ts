@@ -438,8 +438,10 @@ export function extractFilePathsFromText(text: string): string[] {
   for (const pattern of patterns) {
     let match: RegExpExecArray | null;
     while ((match = pattern.exec(text)) !== null) {
-      // Strip trailing punctuation/quotes
-      let p = match[1].replace(/[)）\]】}"'`。，,;；:：]+$/, '');
+      // Strip markdown formatting + trailing punctuation/quotes
+      let p = match[1]
+        .replace(/^[*_`~]+/, '')                    // leading markdown chars
+        .replace(/[*_`~)）\]】}"'。，,;；:：]+$/, ''); // trailing markdown + punctuation
       // Trim trailing dots that aren't part of extension
       p = p.replace(/\.+$/, '');
       if (hasFileExtension(p)) {
@@ -469,8 +471,10 @@ export function extractFileOutputs(
 
   const addFile = (rawPath: string, operation: FileOutput['operation']) => {
     if (!rawPath) return;
-    // Normalize: strip trailing punctuation, unify separators
-    let path = rawPath.replace(/[)）\]】}"'`。，,;；:：.]+$/, '');
+    // Normalize: strip markdown formatting chars + trailing punctuation, unify separators
+    let path = rawPath
+      .replace(/^[*_`~]+/, '')          // leading markdown: **bold**, _italic_, `code`, ~~strike~~
+      .replace(/[*_`~)）\]】}"'。，,;；:：.]+$/, ''); // trailing markdown + punctuation
     path = normalizeSeparators(path.trim());
     if (!path) return;
 

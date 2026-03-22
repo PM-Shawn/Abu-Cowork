@@ -287,7 +287,7 @@ function buildMarkdownComponents(
           <code
             className={isUser
               ? 'px-1 py-0.5 rounded bg-white/15 text-white text-[0.9em]'
-              : 'px-1 py-0.5 rounded bg-[var(--abu-bg-active)] text-orange-600 text-[0.9em]'
+              : 'px-1 py-0.5 rounded bg-[var(--abu-bg-active)] text-[var(--abu-text-secondary)] text-[0.9em]'
             }
             {...props}
           >

@@ -4,14 +4,15 @@ import { describe, it, expect, beforeAll } from 'vitest';
 // When adding a new persist store, add it to this list — otherwise this test fails.
 const PERSISTED_STORES = [
   { key: 'abu-settings', minVersion: 8 },
-  { key: 'abu-chat', minVersion: 2 },
+  { key: 'abu-chat', minVersion: 3 },
   { key: 'abu-scratchpad-store', minVersion: 1 },
   { key: 'abu-permissions', minVersion: 1 },
   { key: 'abu-workspace', minVersion: 1 },
   { key: 'abu-mcp-store', minVersion: 1 },
-  { key: 'abu-schedule', minVersion: 2 },
-  { key: 'abu-triggers', minVersion: 3 },
+  { key: 'abu-schedule', minVersion: 3 },
+  { key: 'abu-triggers', minVersion: 4 },
   { key: 'abu-im-channel', minVersion: 2 },
+  { key: 'abu-projects', minVersion: 1 },
 ] as const;
 
 // Import all stores to trigger persist initialization
@@ -25,6 +26,7 @@ beforeAll(async () => {
   await import('./scheduleStore');
   await import('./triggerStore');
   await import('./imChannelStore');
+  await import('./projectStore');
 });
 
 describe('Store version compliance', () => {

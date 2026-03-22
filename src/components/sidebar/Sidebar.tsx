@@ -1,8 +1,9 @@
 import { useEffect, useCallback, useState, useRef } from 'react';
 import { useChatStore } from '@/stores/chatStore';
 import { useSettingsStore } from '@/stores/settingsStore';
+import { useProjectStore } from '@/stores/projectStore';
 import { useI18n } from '@/i18n';
-import { Plus, Clock, Zap, Wrench, Trash2, Settings, Download, Upload, Pencil, Undo2, HelpCircle } from 'lucide-react';
+import { Plus, Workflow, Wrench, Trash2, Settings, Download, Upload, Pencil, Undo2, HelpCircle, FolderInput, FolderClosed, ChevronRight, Minus } from 'lucide-react';
 import GuideModal from '@/components/common/GuideModal';
 import ProfileEditModal from '@/components/common/ProfileEditModal';
 import { Button } from '@/components/ui/button';
@@ -10,8 +11,7 @@ import { ScrollArea } from '@/components/ui/scroll-area';
 import { cn } from '@/lib/utils';
 import { getPlatformShortLabel } from '@/core/im/platformLabels';
 import type { ConversationStatus } from '@/types';
-import ScheduledSection from '@/components/sidebar/ScheduledSection';
-import TriggerSection from '@/components/sidebar/TriggerSection';
+import ProjectsSection from '@/components/sidebar/ProjectsSection';
 import abuAvatar from '@/assets/abu-avatar.png';
 import { save as saveDialog, open as openDialog } from '@tauri-apps/plugin-dialog';
 import { writeTextFile, readTextFile } from '@tauri-apps/plugin-fs';
@@ -69,6 +69,7 @@ export default function Sidebar() {
   const exportConversation = useChatStore((s) => s.exportConversation);
   const importConversation = useChatStore((s) => s.importConversation);
   const openToolbox = useSettingsStore((s) => s.openToolbox);
+  const openAutomation = useSettingsStore((s) => s.openAutomation);
   const openSystemSettings = useSettingsStore((s) => s.openSystemSettings);
   const viewMode = useSettingsStore((s) => s.viewMode);
   const setViewMode = useSettingsStore((s) => s.setViewMode);
@@ -78,6 +79,9 @@ export default function Sidebar() {
   // Context menu state
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; convId: string } | null>(null);
   const contextMenuRef = useRef<HTMLDivElement>(null);
+  const [showMoveSubmenu, setShowMoveSubmenu] = useState(false);
+  const projectsMap = useProjectStore((s) => s.projects);
+  const [recentsCollapsed, setRecentsCollapsed] = useState(false);
 
   // Undo delete state
   const [pendingDelete, setPendingDelete] = useState<{ id: string; data: string } | null>(null);
@@ -118,15 +122,15 @@ export default function Sidebar() {
   // Close context menu when clicking outside
   useEffect(() => {
     if (!contextMenu) return;
-    const handleClick = () => setContextMenu(null);
+    const handleClick = () => { setContextMenu(null); setShowMoveSubmenu(false); };
     document.addEventListener('click', handleClick);
     return () => document.removeEventListener('click', handleClick);
   }, [contextMenu]);
 
   // Sort by createdAt to keep positions stable during status updates
-  // Filter out conversations created by scheduled tasks or triggers — they appear in their own sections
+  // Filter out conversations belonging to projects, scheduled tasks, or triggers — they appear in their own sections
   const sortedConvs = Object.values(conversations)
-    .filter((c) => !c.scheduledTaskId && !c.triggerId)
+    .filter((c) => !c.scheduledTaskId && !c.triggerId && !c.projectId)
     .sort((a, b) => b.createdAt - a.createdAt);
 
   const handleDeleteConversation = (e: React.MouseEvent, convId: string) => {
@@ -222,28 +226,16 @@ export default function Sidebar() {
           <span>{t.sidebar.newTask}</span>
         </button>
         <button
-          onClick={() => setViewMode('schedule')}
+          onClick={() => openAutomation()}
           className={cn(
             'btn-ghost flex items-center gap-3 w-full px-3 py-2.5 text-[14px] rounded-lg',
-            viewMode === 'schedule'
+            viewMode === 'automation'
               ? 'bg-[var(--abu-bg-active)] text-[var(--abu-text-primary)]'
               : 'text-[var(--abu-text-secondary)] hover:bg-[var(--abu-bg-hover)]'
           )}
         >
-          <Clock className={cn('h-[18px] w-[18px]', viewMode === 'schedule' ? 'text-[var(--abu-clay)]' : 'text-[var(--abu-text-tertiary)]')} strokeWidth={1.75} />
-          <span>{t.sidebar.scheduledTasks}</span>
-        </button>
-        <button
-          onClick={() => setViewMode('trigger')}
-          className={cn(
-            'btn-ghost flex items-center gap-3 w-full px-3 py-2.5 text-[14px] rounded-lg',
-            viewMode === 'trigger'
-              ? 'bg-[var(--abu-bg-active)] text-[var(--abu-text-primary)]'
-              : 'text-[var(--abu-text-secondary)] hover:bg-[var(--abu-bg-hover)]'
-          )}
-        >
-          <Zap className={cn('h-[18px] w-[18px]', viewMode === 'trigger' ? 'text-[var(--abu-clay)]' : 'text-[var(--abu-text-tertiary)]')} strokeWidth={1.75} />
-          <span>{t.sidebar.triggers}</span>
+          <Workflow className={cn('h-[18px] w-[18px]', viewMode === 'automation' ? 'text-[var(--abu-clay)]' : 'text-[var(--abu-text-tertiary)]')} strokeWidth={1.75} />
+          <span>{t.sidebar.automation}</span>
         </button>
         <button
           onClick={() => openToolbox()}
@@ -259,20 +251,23 @@ export default function Sidebar() {
         </button>
       </nav>
 
-      {/* Scrollable middle section: scheduled + triggers + recents */}
+      {/* Scrollable middle section: projects + scheduled + triggers + recents */}
       <ScrollArea className="flex-1 min-h-0">
-        {/* Scheduled Section */}
-        <ScheduledSection />
-
-        {/* Trigger Section */}
-        <TriggerSection />
+        {/* Projects Section */}
+        <ProjectsSection />
 
         {/* Recents Section */}
-        <div className="px-6 pt-4 pb-1.5">
-          <span className="text-[13px] font-medium text-[var(--abu-text-muted)]">{t.sidebar.recents}</span>
+        <div className="px-4 pt-2 pb-0">
+          <button
+            onClick={() => setRecentsCollapsed(!recentsCollapsed)}
+            className="flex items-center gap-1 px-2 py-1.5 text-[13px] font-medium text-[var(--abu-text-muted)] hover:text-[var(--abu-text-primary)]"
+          >
+            <span>{t.sidebar.recents}</span>
+          </button>
         </div>
 
         {/* Conversation List */}
+        {!recentsCollapsed && (
         <div className="px-4">
         {sortedConvs.length === 0 ? (
           <div className="px-4 py-3">
@@ -334,6 +329,7 @@ export default function Sidebar() {
           </div>
         )}
         </div>
+        )}
       </ScrollArea>
 
       {/* User Section */}
@@ -411,6 +407,61 @@ export default function Sidebar() {
             <Download className="h-3.5 w-3.5" />
             {t.sidebar.exportConversation}
           </button>
+          {/* Move to project — submenu with project list */}
+          {(() => {
+            const activeProjects = Object.values(projectsMap).filter(p => !p.archived);
+            if (activeProjects.length === 0) return null;
+            const conv = conversations[contextMenu.convId];
+            return (
+              <div className="relative">
+                <button
+                  onClick={(e) => { e.stopPropagation(); setShowMoveSubmenu(!showMoveSubmenu); }}
+                  className="flex items-center gap-2 w-full px-3 py-1.5 text-[13px] text-[var(--abu-text-secondary)] hover:bg-[var(--abu-bg-active)]"
+                >
+                  <FolderInput className="h-3.5 w-3.5" />
+                  <span className="flex-1 text-left">{t.project.moveToProject}</span>
+                  <ChevronRight className="h-3 w-3" />
+                </button>
+                {showMoveSubmenu && (
+                  <div className="absolute left-full top-0 ml-1 bg-white rounded-lg shadow-lg border border-[var(--abu-border)] py-1 min-w-[140px] z-10">
+                    {activeProjects.map((p) => (
+                      <button
+                        key={p.id}
+                        onClick={() => {
+                          useChatStore.getState().setConversationProject(contextMenu.convId, p.id);
+                          setContextMenu(null);
+                          setShowMoveSubmenu(false);
+                        }}
+                        className={cn(
+                          'flex items-center gap-2 w-full px-3 py-1.5 text-[13px] hover:bg-[var(--abu-bg-active)]',
+                          conv?.projectId === p.id ? 'text-[var(--abu-clay)]' : 'text-[var(--abu-text-secondary)]'
+                        )}
+                      >
+                        <FolderClosed className="h-3.5 w-3.5" strokeWidth={1.5} />
+                        <span className="truncate">{p.name}</span>
+                      </button>
+                    ))}
+                    {conv?.projectId && (
+                      <>
+                        <div className="my-1 border-t border-[var(--abu-border)]" />
+                        <button
+                          onClick={() => {
+                            useChatStore.getState().setConversationProject(contextMenu.convId, undefined);
+                            setContextMenu(null);
+                            setShowMoveSubmenu(false);
+                          }}
+                          className="flex items-center gap-2 w-full px-3 py-1.5 text-[13px] text-[var(--abu-text-tertiary)] hover:bg-[var(--abu-bg-active)]"
+                        >
+                          <Minus className="h-3.5 w-3.5" />
+                          {t.project.removeFromProject}
+                        </button>
+                      </>
+                    )}
+                  </div>
+                )}
+              </div>
+            );
+          })()}
           <button
             onClick={(e) => {
               handleDeleteConversation(e, contextMenu.convId);

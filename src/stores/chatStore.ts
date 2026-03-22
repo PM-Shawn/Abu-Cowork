@@ -13,6 +13,9 @@ function generateId(): string {
   return Date.now().toString(36) + Math.random().toString(36).substring(2, 8);
 }
 
+/** Default title for new conversations — used for auto-title detection */
+export const DEFAULT_CONV_TITLE = '新任务';
+
 // Store abort controllers for each conversation
 const abortControllers: Map<string, AbortController> = new Map();
 
@@ -171,10 +174,11 @@ interface ChatState {
 }
 
 interface ChatActions {
-  createConversation: (workspacePath?: string | null, options?: { scheduledTaskId?: string; triggerId?: string; imChannelId?: string; imPlatform?: string; skipActivate?: boolean }) => string;
+  createConversation: (workspacePath?: string | null, options?: { scheduledTaskId?: string; triggerId?: string; imChannelId?: string; imPlatform?: string; projectId?: string; skipActivate?: boolean }) => string;
   startNewConversation: () => void;
   switchConversation: (id: string) => void;
   setConversationWorkspace: (convId: string, path: string | null) => void;
+  setConversationProject: (convId: string, projectId: string | undefined) => void;
   deleteConversation: (id: string) => void;
   renameConversation: (id: string, title: string) => void;
 
@@ -239,7 +243,7 @@ export const useChatStore = create<ChatStore>()(
         set((state) => {
           state.conversations[id] = {
             id,
-            title: '新对话',
+            title: DEFAULT_CONV_TITLE,
             messages: [],
             createdAt: now,
             updatedAt: now,
@@ -248,6 +252,7 @@ export const useChatStore = create<ChatStore>()(
             ...(options?.scheduledTaskId ? { scheduledTaskId: options.scheduledTaskId } : {}),
             ...(options?.triggerId ? { triggerId: options.triggerId } : {}),
             ...(options?.imChannelId ? { imChannelId: options.imChannelId, imPlatform: options.imPlatform } : {}),
+            ...(options?.projectId ? { projectId: options.projectId } : {}),
           };
           if (!options?.skipActivate) {
             state.activeConversationId = id;
@@ -305,6 +310,15 @@ export const useChatStore = create<ChatStore>()(
           const conv = state.conversations[convId];
           if (conv) {
             conv.workspacePath = path;
+          }
+        });
+      },
+
+      setConversationProject: (convId, projectId) => {
+        set((state) => {
+          const conv = state.conversations[convId];
+          if (conv) {
+            conv.projectId = projectId;
           }
         });
       },
@@ -368,7 +382,7 @@ export const useChatStore = create<ChatStore>()(
             conv.messages.push(message);
             conv.updatedAt = Date.now();
             // Auto-title from first user message
-            if (conv.title === '新对话' && message.role === 'user') {
+            if (conv.title === DEFAULT_CONV_TITLE && message.role === 'user') {
               let content = typeof message.content === 'string'
                 ? message.content
                 : message.content.find(c => c.type === 'text')?.text || '';
@@ -745,11 +759,13 @@ export const useChatStore = create<ChatStore>()(
     })),
     {
       name: 'abu-chat',
-      version: 2,
+      version: 3,
       migrate: (persisted, version) => {
         const state = persisted as Record<string, unknown>;
         // v1 → v2: added executionSteps on Message (optional field, no-op migration)
         if (version < 2) { /* no transform needed */ }
+        // v2 → v3: added projectId on Conversation (optional field, no-op migration)
+        if (version < 3) { /* no transform needed */ }
         return state;
       },
       partialize: (state) => ({

@@ -130,6 +130,7 @@ export interface Conversation {
   triggerId?: string;  // If set, this conversation was created by a trigger
   imChannelId?: string;  // If set, this conversation was created by an IM channel
   imPlatform?: string;  // IM platform name (dchat/feishu/dingtalk/wecom/slack)
+  projectId?: string;  // If set, this conversation belongs to a project
   contextCache?: ContextCache;  // Ephemeral compression cache (not persisted)
 }
 

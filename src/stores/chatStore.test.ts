@@ -30,7 +30,7 @@ describe('chatStore', () => {
       const id = useChatStore.getState().createConversation();
       const state = useChatStore.getState();
       expect(state.conversations[id]).toBeDefined();
-      expect(state.conversations[id].title).toBe('新对话');
+      expect(state.conversations[id].title).toBe('新任务');
       expect(state.activeConversationId).toBe(id);
     });
 

@@ -3,6 +3,7 @@ import type { ToolDefinition } from '../../../types';
 import { getPlatform, getShell } from '../../../utils/platform';
 import { resolveCommandPython } from '../../../utils/pythonRuntime';
 import { isSandboxEnabled, isNetworkIsolationEnabled } from '../../sandbox/config';
+import { useWorkspaceStore } from '../../../stores/workspaceStore';
 import type { CommandOutput } from '../helpers/toolHelpers';
 import { TOOL_NAMES } from '../toolNames';
 
@@ -48,6 +49,10 @@ export const runCommandTool: ToolDefinition = {
       const isOpenCmd = /^\s*open\s/.test(resolvedCommand);
       const sandbox = isOpenCmd ? false : isSandboxEnabled();
 
+      // Allow writes to workspace directory under sandbox
+      const workspacePath = useWorkspaceStore.getState().currentPath;
+      const extraWritablePaths = workspacePath ? [workspacePath] : [];
+
       // Use custom Tauri command defined in Rust
       const output = await invoke<CommandOutput>('run_shell_command', {
         command: resolvedCommand,
@@ -56,7 +61,7 @@ export const runCommandTool: ToolDefinition = {
         timeout: Math.min(Math.max(1, timeout ?? 30), 300),
         sandboxEnabled: sandbox,
         networkIsolation: isNetworkIsolationEnabled(),
-        extraWritablePaths: [],
+        extraWritablePaths,
       });
 
       const parts: string[] = [];

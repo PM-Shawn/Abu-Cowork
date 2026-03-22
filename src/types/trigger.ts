@@ -190,6 +190,8 @@ export interface Trigger {
   quietHours?: QuietHoursConfig;
   /** Output push config (optional) */
   output?: TriggerOutput;
+  /** Project this trigger belongs to */
+  projectId?: string;
   createdAt: number;
   updatedAt: number;
   lastTriggeredAt?: number;

@@ -179,6 +179,7 @@ export class SessionMapper {
       skipActivate: true,
       imChannelId: channel.id,
       imPlatform: message.platform,
+      projectId: channel.projectId,
     });
 
     // Set conversation title — use readable name or first message text (no platform prefix)

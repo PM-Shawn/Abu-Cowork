@@ -3,7 +3,7 @@ import { useSettingsStore, type ToolboxTab } from '@/stores/settingsStore';
 import { useChatStore } from '@/stores/chatStore';
 import { useDiscoveryStore } from '@/stores/discoveryStore';
 import { useI18n, format } from '@/i18n';
-import { Sparkles, Bot, Server, ArrowLeft } from 'lucide-react';
+import { Sparkles, Bot, Server } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { open as openDialog } from '@tauri-apps/plugin-dialog';
 import { useToastStore } from '@/stores/toastStore';
@@ -109,19 +109,9 @@ export default function ToolboxView() {
   };
 
   return (
-    <div className="h-full bg-[var(--abu-bg-base)] flex toolbox-slide-in">
-      {/* Left Navigation - includes back button */}
-      <nav className="w-[260px] shrink-0 border-r border-[var(--abu-border)] flex flex-col">
-        {/* Back button + Title */}
-        <div className="px-5 pt-5 pb-4">
-          <button
-            onClick={closeToolbox}
-            className="flex items-center gap-2.5 text-sm text-[var(--abu-text-primary)] hover:text-[var(--abu-text-tertiary)] transition-colors"
-          >
-            <ArrowLeft className="h-4 w-4" />
-            <span className="text-base font-semibold">{t.toolbox.title}</span>
-          </button>
-        </div>
+    <div className="h-full bg-[var(--abu-bg-base)] flex">
+      {/* Left Navigation — sub-nav for toolbox types */}
+      <nav className="w-[200px] shrink-0 border-r border-[var(--abu-border)] flex flex-col pt-4">
         {/* Nav items */}
         <div className="px-3 space-y-0.5">
           {navItems.map((item) => {

@@ -39,6 +39,8 @@ export interface IMChannel {
   sessionTimeoutMinutes: number;
   /** @deprecated No longer used for session cutoff. Kept for backward compatibility. */
   maxRoundsPerSession: number;
+  /** Project this channel is associated with */
+  projectId?: string;
   /** Whether channel is enabled */
   enabled: boolean;
   /** Connection status (runtime, not persisted) */

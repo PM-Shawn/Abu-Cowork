@@ -2,6 +2,7 @@ import { useState, useEffect, useMemo } from 'react';
 import { useTriggerStore } from '@/stores/triggerStore';
 import { useIMChannelStore } from '@/stores/imChannelStore';
 import { useDiscoveryStore } from '@/stores/discoveryStore';
+import { useProjectStore } from '@/stores/projectStore';
 import { useI18n } from '@/i18n';
 import { X } from 'lucide-react';
 import { cn } from '@/lib/utils';
@@ -22,6 +23,11 @@ export default function TriggerEditor() {
   const skills = useDiscoveryStore((s) => s.skills);
   const channelsMap = useIMChannelStore((s) => s.channels);
   const imChannels = useMemo(() => Object.values(channelsMap), [channelsMap]);
+  const projectsMap = useProjectStore((s) => s.projects);
+  const activeProjects = useMemo(() =>
+    Object.values(projectsMap).filter((p) => !p.archived).sort((a, b) => b.lastActiveAt - a.lastActiveAt),
+    [projectsMap]
+  );
 
   const editingTrigger = editingTriggerId ? triggers[editingTriggerId] : null;
 
@@ -35,6 +41,7 @@ export default function TriggerEditor() {
   const [filterField, setFilterField] = useState('');
   const [skillName, setSkillName] = useState('');
   const [workspacePath, setWorkspacePath] = useState('');
+  const [projectId, setProjectId] = useState('');
   const [sourceType, setSourceType] = useState<TriggerSourceType>('http');
   const [fileWatchPath, setFileWatchPath] = useState('');
   const [fileEvents, setFileEvents] = useState<string[]>(['create', 'modify']);
@@ -96,6 +103,7 @@ export default function TriggerEditor() {
       setFilterField(editingTrigger.filter.field ?? '');
       setSkillName(editingTrigger.action.skillName ?? '');
       setWorkspacePath(editingTrigger.action.workspacePath ?? '');
+      setProjectId(editingTrigger.projectId ?? '');
       setDebounceEnabled(editingTrigger.debounce.enabled);
       setDebounceSeconds(editingTrigger.debounce.windowSeconds);
       setQuietHoursEnabled(editingTrigger.quietHours?.enabled ?? false);
@@ -136,6 +144,7 @@ export default function TriggerEditor() {
       setFilterField('');
       setSkillName('');
       setWorkspacePath('');
+      setProjectId('');
       setDebounceEnabled(true);
       setDebounceSeconds(300);
       setQuietHoursEnabled(false);
@@ -203,10 +212,15 @@ export default function TriggerEditor() {
       field: filterField || undefined,
     };
 
+    // Resolve effective workspace: project's path takes priority
+    const effectiveWorkspace = projectId
+      ? useProjectStore.getState().projects[projectId]?.workspacePath || workspacePath
+      : workspacePath;
+
     const action = {
       prompt: prompt.trim(),
       skillName: skillName || undefined,
-      workspacePath: workspacePath || undefined,
+      workspacePath: effectiveWorkspace || undefined,
     };
 
     const debounce = {
@@ -269,6 +283,7 @@ export default function TriggerEditor() {
         debounce,
         quietHours,
         output,
+        projectId: projectId || undefined,
       });
     } else {
       const newId = createTrigger({
@@ -280,6 +295,7 @@ export default function TriggerEditor() {
         debounce,
         quietHours,
         output,
+        projectId: projectId || undefined,
       });
       // Auto-select new trigger to show detail view (with HTTP endpoint)
       setSelectedTriggerId(newId);
@@ -916,6 +932,32 @@ export default function TriggerEditor() {
             </div>
           )}
 
+          {/* Project selector */}
+          {activeProjects.length > 0 && (
+            <div>
+              <label className="block text-[13px] font-medium text-[var(--abu-text-primary)] mb-1.5">
+                {t.project.projectLabel}
+              </label>
+              <Select
+                value={projectId}
+                onChange={(val) => {
+                  setProjectId(val);
+                  if (val) {
+                    const proj = useProjectStore.getState().projects[val];
+                    if (proj) setWorkspacePath(proj.workspacePath);
+                  }
+                }}
+                options={[
+                  { value: '', label: t.project.projectNone },
+                  ...activeProjects.map((p) => ({
+                    value: p.id,
+                    label: p.name,
+                  })),
+                ]}
+              />
+            </div>
+          )}
+
           {/* Workspace path */}
           <div>
             <label className="block text-[13px] font-medium text-[var(--abu-text-primary)] mb-1.5">
@@ -923,10 +965,14 @@ export default function TriggerEditor() {
             </label>
             <input
               type="text"
-              value={workspacePath}
+              value={projectId ? (useProjectStore.getState().projects[projectId]?.workspacePath || workspacePath) : workspacePath}
               onChange={(e) => setWorkspacePath(e.target.value)}
               placeholder={t.trigger.workspacePathPlaceholder}
-              className="w-full h-10 px-3 bg-[var(--abu-bg-base)] border border-[var(--abu-border)] rounded-lg text-sm text-[var(--abu-text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--abu-clay-ring)] focus:border-[var(--abu-clay)]"
+              disabled={!!projectId}
+              className={cn(
+                'w-full h-10 px-3 bg-[var(--abu-bg-base)] border border-[var(--abu-border)] rounded-lg text-sm text-[var(--abu-text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--abu-clay-ring)] focus:border-[var(--abu-clay)]',
+                projectId && 'opacity-60 cursor-not-allowed'
+              )}
             />
           </div>
         </div>

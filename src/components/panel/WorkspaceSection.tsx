@@ -1,5 +1,6 @@
 import { useWorkspaceStore, getFolderName } from '@/stores/workspaceStore';
 import { useChatStore } from '@/stores/chatStore';
+import { useProjectStore } from '@/stores/projectStore';
 import { usePermissionStore, type PermissionDuration } from '@/stores/permissionStore';
 import { useI18n } from '@/i18n';
 import { revealItemInDir } from '@tauri-apps/plugin-opener';
@@ -140,6 +141,10 @@ export default function WorkspaceSection() {
   };
 
   const folderName = currentPath ? getFolderName(currentPath) : null;
+  const projectsMap = useProjectStore((s) => s.projects);
+  const activeProject = currentPath
+    ? Object.values(projectsMap).find((p) => p.workspacePath === currentPath)
+    : undefined;
 
   return (
     <>
@@ -187,11 +192,16 @@ export default function WorkspaceSection() {
           onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setExpanded(!expanded); } }}
           className="flex items-center justify-between w-full text-left group cursor-pointer"
         >
-          <div className="flex items-center gap-2">
-            <FolderOpen className="h-4 w-4 text-[var(--abu-text-tertiary)]" />
+          <div className="flex items-center gap-2 min-w-0">
+            <FolderOpen className="h-4 w-4 text-[var(--abu-text-tertiary)] shrink-0" />
             <h3 className="text-[13px] font-medium text-[var(--abu-text-primary)]">
               {t.panel.workspace}
             </h3>
+            {activeProject && (
+              <span className="text-[11px] text-[var(--abu-clay)] bg-[var(--abu-clay-bg-15)] px-1.5 py-0.5 rounded truncate max-w-[120px]">
+                {activeProject.name}
+              </span>
+            )}
           </div>
           <div className="flex items-center gap-1">
             {currentPath && (

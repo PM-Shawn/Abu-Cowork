@@ -32,6 +32,8 @@ export interface ScheduledTask {
   outputChatIds?: string;
   /** Comma-separated user open_ids to DM */
   outputUserIds?: string;
+  /** Project this task belongs to */
+  projectId?: string;
   createdAt: number;
   updatedAt: number;
   lastRunAt?: number;

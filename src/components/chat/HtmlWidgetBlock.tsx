@@ -18,6 +18,7 @@ const CDN_ALLOWLIST = [
 
 const BASE_STYLES = `
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+html, body { height: auto !important; min-height: 0 !important; }
 body {
   font-family: system-ui, -apple-system, sans-serif;
   font-size: 14px; line-height: 1.6;

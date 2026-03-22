@@ -199,7 +199,10 @@ export const AVAILABLE_MODELS = Object.fromEntries(
 ) as Record<LLMProvider, { id: string; label: string }[]>;
 
 // View mode for main area
-export type ViewMode = 'chat' | 'schedule' | 'trigger' | 'toolbox' | 'settings';
+export type ViewMode = 'chat' | 'automation' | 'toolbox' | 'settings';
+
+// Automation sub-tabs (Schedule, Trigger)
+export type AutomationTab = 'schedule' | 'trigger';
 
 // System settings tabs
 export type SystemSettingsTab = 'general' | 'ai-services' | 'sandbox' | 'im-channels' | 'personal-memory' | 'about' | 'feedback' | 'sponsor';
@@ -238,6 +241,8 @@ interface SettingsState {
   language: LanguageSetting;
   // System settings tab
   activeSystemTab: SystemSettingsTab;
+  // Automation tab
+  activeAutomationTab: AutomationTab;
   // Toolbox tab
   activeToolboxTab: ToolboxTab;
   toolboxSearchQuery: string;
@@ -311,6 +316,10 @@ interface SettingsActions {
   openSystemSettings: (tab?: SystemSettingsTab) => void;
   closeSystemSettings: () => void;
   setActiveSystemTab: (tab: SystemSettingsTab) => void;
+  // Automation actions
+  openAutomation: (tab?: AutomationTab) => void;
+  closeAutomation: () => void;
+  setActiveAutomationTab: (tab: AutomationTab) => void;
   // Toolbox modal actions
   openToolbox: (tab?: ToolboxTab) => void;
   closeToolbox: () => void;
@@ -424,6 +433,8 @@ export const useSettingsStore = create<SettingsStore>()(
       language: 'system' as LanguageSetting,
       // System settings defaults
       activeSystemTab: 'ai-services' as SystemSettingsTab,
+      // Automation defaults
+      activeAutomationTab: 'schedule' as AutomationTab,
       // Toolbox defaults
       activeToolboxTab: 'skills' as ToolboxTab,
       toolboxSearchQuery: '',
@@ -497,6 +508,15 @@ export const useSettingsStore = create<SettingsStore>()(
       closeSystemSettings: () =>
         set({ viewMode: 'chat' as ViewMode }),
       setActiveSystemTab: (tab) => set({ activeSystemTab: tab }),
+      // Automation actions
+      openAutomation: (tab) =>
+        set({
+          viewMode: 'automation' as ViewMode,
+          activeAutomationTab: tab ?? 'schedule',
+        }),
+      closeAutomation: () =>
+        set({ viewMode: 'chat' as ViewMode }),
+      setActiveAutomationTab: (tab) => set({ activeAutomationTab: tab }),
       // Toolbox actions
       openToolbox: (tab) =>
         set(() => ({
@@ -770,6 +790,7 @@ export const useSettingsStore = create<SettingsStore>()(
         // Force reset UI state
         state.showSettings = false;
         state.activeSystemTab = 'ai-services';
+        state.activeAutomationTab = 'schedule';
         state.activeToolboxTab = 'skills';
         state.toolboxSearchQuery = '';
         state.installingItem = null;

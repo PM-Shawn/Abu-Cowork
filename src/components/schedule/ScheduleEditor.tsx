@@ -2,6 +2,7 @@ import { useState, useEffect, useMemo } from 'react';
 import { useScheduleStore } from '@/stores/scheduleStore';
 import { useIMChannelStore } from '@/stores/imChannelStore';
 import { useDiscoveryStore } from '@/stores/discoveryStore';
+import { useProjectStore } from '@/stores/projectStore';
 import { useI18n } from '@/i18n';
 import { X } from 'lucide-react';
 import { cn } from '@/lib/utils';
@@ -17,6 +18,11 @@ export default function ScheduleEditor() {
   const skills = useDiscoveryStore((s) => s.skills);
   const channelsMap = useIMChannelStore((s) => s.channels);
   const imChannels = useMemo(() => Object.values(channelsMap), [channelsMap]);
+  const projectsMap = useProjectStore((s) => s.projects);
+  const activeProjects = useMemo(() =>
+    Object.values(projectsMap).filter((p) => !p.archived).sort((a, b) => b.lastActiveAt - a.lastActiveAt),
+    [projectsMap]
+  );
 
   const editingTask = editingTaskId ? tasks[editingTaskId] : null;
 
@@ -30,6 +36,7 @@ export default function ScheduleEditor() {
   const [dayOfWeek, setDayOfWeek] = useState(1);
   const [skillName, setSkillName] = useState('');
   const [workspacePath, setWorkspacePath] = useState('');
+  const [projectId, setProjectId] = useState('');
   const [outputChannelId, setOutputChannelId] = useState('');
   const [outputChatIds, setOutputChatIds] = useState('');
   const [outputUserIds, setOutputUserIds] = useState('');
@@ -46,6 +53,7 @@ export default function ScheduleEditor() {
       setDayOfWeek(editingTask.schedule.dayOfWeek ?? 1);
       setSkillName(editingTask.skillName ?? '');
       setWorkspacePath(editingTask.workspacePath ?? '');
+      setProjectId(editingTask.projectId ?? '');
       setOutputChannelId(editingTask.outputChannelId ?? '');
       setOutputChatIds(editingTask.outputChatIds ?? '');
       setOutputUserIds(editingTask.outputUserIds ?? '');
@@ -59,6 +67,7 @@ export default function ScheduleEditor() {
       setDayOfWeek(1);
       setSkillName('');
       setWorkspacePath('');
+      setProjectId('');
       setOutputChannelId('');
       setOutputChatIds('');
       setOutputUserIds('');
@@ -108,6 +117,11 @@ export default function ScheduleEditor() {
       dayOfWeek: frequency === 'weekly' ? dayOfWeek : undefined,
     };
 
+    // Resolve effective workspace: project's path takes priority
+    const effectiveWorkspace = projectId
+      ? useProjectStore.getState().projects[projectId]?.workspacePath || workspacePath
+      : workspacePath;
+
     if (editingTaskId) {
       updateTask(editingTaskId, {
         name: name.trim(),
@@ -115,7 +129,8 @@ export default function ScheduleEditor() {
         prompt: prompt.trim(),
         schedule,
         skillName: skillName || undefined,
-        workspacePath: workspacePath || undefined,
+        workspacePath: effectiveWorkspace || undefined,
+        projectId: projectId || undefined,
         outputChannelId: outputChannelId || undefined,
         outputChatIds: outputChannelId && outputChatIds.trim() ? outputChatIds.trim() : undefined,
         outputUserIds: outputChannelId && outputUserIds.trim() ? outputUserIds.trim() : undefined,
@@ -127,7 +142,8 @@ export default function ScheduleEditor() {
         prompt: prompt.trim(),
         schedule,
         skillName: skillName || undefined,
-        workspacePath: workspacePath || undefined,
+        workspacePath: effectiveWorkspace || undefined,
+        projectId: projectId || undefined,
         outputChannelId: outputChannelId || undefined,
         outputChatIds: outputChannelId && outputChatIds.trim() ? outputChatIds.trim() : undefined,
         outputUserIds: outputChannelId && outputUserIds.trim() ? outputUserIds.trim() : undefined,
@@ -299,6 +315,33 @@ export default function ScheduleEditor() {
             </div>
           )}
 
+          {/* Project selector */}
+          {activeProjects.length > 0 && (
+            <div>
+              <label className="block text-[13px] font-medium text-[var(--abu-text-primary)] mb-1.5">
+                {t.project.projectLabel}
+              </label>
+              <Select
+                value={projectId}
+                onChange={(val) => {
+                  setProjectId(val);
+                  // Auto-fill workspace from project
+                  if (val) {
+                    const proj = useProjectStore.getState().projects[val];
+                    if (proj) setWorkspacePath(proj.workspacePath);
+                  }
+                }}
+                options={[
+                  { value: '', label: t.project.projectNone },
+                  ...activeProjects.map((p) => ({
+                    value: p.id,
+                    label: p.name,
+                  })),
+                ]}
+              />
+            </div>
+          )}
+
           {/* Workspace path */}
           <div>
             <label className="block text-[13px] font-medium text-[var(--abu-text-primary)] mb-1.5">
@@ -306,10 +349,14 @@ export default function ScheduleEditor() {
             </label>
             <input
               type="text"
-              value={workspacePath}
+              value={projectId ? (useProjectStore.getState().projects[projectId]?.workspacePath || workspacePath) : workspacePath}
               onChange={(e) => setWorkspacePath(e.target.value)}
               placeholder={t.schedule.workspacePathPlaceholder}
-              className="w-full h-10 px-3 bg-[var(--abu-bg-base)] border border-[var(--abu-border)] rounded-lg text-sm text-[var(--abu-text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--abu-clay-ring)] focus:border-[var(--abu-clay)]"
+              disabled={!!projectId}
+              className={cn(
+                'w-full h-10 px-3 bg-[var(--abu-bg-base)] border border-[var(--abu-border)] rounded-lg text-sm text-[var(--abu-text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--abu-clay-ring)] focus:border-[var(--abu-clay)]',
+                projectId && 'opacity-60 cursor-not-allowed'
+              )}
             />
           </div>
 

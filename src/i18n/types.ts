@@ -59,6 +59,7 @@ export interface TranslationDict {
   // Sidebar
   sidebar: {
     newTask: string;
+    automation: string;
     scheduledTasks: string;
     triggers: string;
     toolbox: string;
@@ -163,6 +164,9 @@ export interface TranslationDict {
     inputTokens: string;
     outputTokens: string;
     addAttachment: string;
+    // Source navigation bar (for scheduled/trigger conversations)
+    fromScheduledTask: string;
+    fromTrigger: string;
     // Scenario guide
     trySaying: string;
     scenarios: Record<string, string>;
@@ -1101,6 +1105,65 @@ export interface TranslationDict {
     userDeniedAccess: string;
     pathAccessDenied: string;
     needsAuthorization: string;
+  };
+
+  // Projects
+  project: {
+    sectionTitle: string;
+    newTask: string;
+    createProject: string;
+    createTitle: string;
+    createDesc: string;
+    modeFromScratch: string;
+    modeFromScratchDesc: string;
+    modeFromConversation: string;
+    modeFromConversationDesc: string;
+    modeExistingFolder: string;
+    modeExistingFolderDesc: string;
+    nameLabel: string;
+    namePlaceholder: string;
+    iconLabel: string;
+    descLabel: string;
+    descPlaceholder: string;
+    defaultSkillsLabel: string;
+    defaultMCPLabel: string;
+    modelOverrideLabel: string;
+    modelOverrideNone: string;
+    detectedConfig: string;
+    detectedMemory: string;
+    folderConflict: string;
+    suggestMigrate: string;
+    settingsTitle: string;
+    dangerZone: string;
+    archiveProject: string;
+    archiveConfirm: string;
+    deleteProject: string;
+    deleteConfirm: string;
+    pin: string;
+    unpin: string;
+    editSettings: string;
+    openInFinder: string;
+    archive: string;
+    restore: string;
+    delete: string;
+    archived: string;
+    archivedCount: string;
+    conversationCount: string;
+    convertToProject: string;
+    moveToProject: string;
+    removeFromProject: string;
+    migrationBanner: string;
+    migrationAction: string;
+    migrationDismiss: string;
+    emptyState: string;
+    selectFolder: string;
+    next: string;
+    create: string;
+    cancel: string;
+    belongsToProject: string;
+    projectLabel: string;
+    projectNone: string;
+    save: string;
   };
 
   // Project Rules

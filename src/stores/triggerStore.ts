@@ -54,6 +54,7 @@ interface TriggerActions {
     debounce: DebounceConfig;
     quietHours?: QuietHoursConfig;
     output?: TriggerOutput;
+    projectId?: string;
   }) => string;
   updateTrigger: (
     id: string,
@@ -66,6 +67,7 @@ interface TriggerActions {
       debounce: DebounceConfig;
       quietHours: QuietHoursConfig | undefined;
       output: TriggerOutput | undefined;
+      projectId: string | undefined;
     }>
   ) => void;
   deleteTrigger: (id: string) => void;
@@ -117,6 +119,7 @@ export const useTriggerStore = create<TriggerStore>()(
           debounce: data.debounce,
           quietHours: data.quietHours,
           output: data.output,
+          projectId: data.projectId,
           createdAt: now,
           updatedAt: now,
           runs: [],
@@ -140,6 +143,7 @@ export const useTriggerStore = create<TriggerStore>()(
           if (data.debounce !== undefined) trigger.debounce = data.debounce;
           if (data.quietHours !== undefined) trigger.quietHours = data.quietHours;
           if (data.output !== undefined) trigger.output = data.output;
+          if (data.projectId !== undefined) trigger.projectId = data.projectId;
           trigger.updatedAt = Date.now();
         });
       },
@@ -295,7 +299,7 @@ export const useTriggerStore = create<TriggerStore>()(
     })),
     {
       name: 'abu-triggers',
-      version: 3,
+      version: 4,
       partialize: (state) => ({
         triggers: state.triggers,
       }),
@@ -354,6 +358,11 @@ export const useTriggerStore = create<TriggerStore>()(
               }
             }
           }
+        }
+
+        // v3 → v4: added optional projectId on Trigger. No data transform needed.
+        if (version < 4) {
+          // no-op, projectId is optional
         }
 
         return persisted;

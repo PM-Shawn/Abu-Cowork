@@ -6,8 +6,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { ErrorBoundary } from '@/components/common/ErrorBoundary';
 import Sidebar from '@/components/sidebar/Sidebar';
 import ChatView from '@/components/chat/ChatView';
-import ScheduleView from '@/components/schedule/ScheduleView';
-import TriggerView from '@/components/trigger/TriggerView';
+import AutomationView from '@/components/automation/AutomationView';
 import SystemSettingsView from '@/components/settings/SystemSettingsModal';
 import ToolboxView from '@/components/settings/ToolboxModal';
 import RightPanel from '@/components/panel/RightPanel';
@@ -244,15 +243,14 @@ function App() {
         {/* Sidebar - collapses smoothly in toolbox mode */}
         <div
           className="sidebar-transition shrink-0 overflow-hidden"
-          style={{ width: (viewMode === 'toolbox' || sidebarCollapsed) ? 0 : 260 }}
+          style={{ width: sidebarCollapsed ? 0 : 260 }}
         >
           <Sidebar />
         </div>
 
         {/* Main — pt-7 on macOS to clear overlay title bar; no padding on Windows (native title bar) */}
         <main className={cn('flex-1 min-w-0 bg-[var(--abu-bg-base)]', mac && 'pt-11')}>
-          {viewMode === 'schedule' && <ScheduleView />}
-          {viewMode === 'trigger' && <TriggerView />}
+          {viewMode === 'automation' && <AutomationView />}
           {viewMode === 'toolbox' && <ToolboxView />}
           {viewMode === 'settings' && <SystemSettingsView />}
           {(viewMode === 'chat' || !viewMode) && <ChatView />}

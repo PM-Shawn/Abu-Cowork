@@ -77,6 +77,10 @@ function buildFullscreenHtml(code: string): string {
 </head><body>${svg}</body></html>`;
 }
 
+async function captureMermaidImage(code: string): Promise<string | null> {
+  return svgCache.get(code) ?? null;
+}
+
 // --- Component ---
 
 export default function MermaidBlock({ code }: { code: string }) {
@@ -86,6 +90,7 @@ export default function MermaidBlock({ code }: { code: string }) {
     label: 'mermaid',
     fallbackLanguage: 'mermaid',
     render: renderMermaid,
+    captureImage: captureMermaidImage,
     buildFullscreenHtml,
     debounceMs: 300,
     errorSettleMs: 1000,

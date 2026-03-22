@@ -120,6 +120,24 @@ const RECEIVER_HTML = `<!DOCTYPE html><html><head>
       }
       runNext(0);
     }
+    if(e.data.type==='widget:capture'){
+      // Load html2canvas from CDN (lazy, cached after first load)
+      function doCapture(){
+        html2canvas(document.body,{scale:2,useCORS:true,backgroundColor:'#ffffff'}).then(function(canvas){
+          window.parent.postMessage({type:'abu-widget-capture',png:canvas.toDataURL('image/png')},'*');
+        }).catch(function(){
+          window.parent.postMessage({type:'abu-widget-capture',png:null},'*');
+        });
+      }
+      if(typeof html2canvas!=='undefined'){doCapture();}
+      else{
+        var s=document.createElement('script');
+        s.src='https://cdn.jsdelivr.net/npm/html2canvas@1/dist/html2canvas.min.js';
+        s.onload=doCapture;
+        s.onerror=function(){window.parent.postMessage({type:'abu-widget-capture',png:null},'*');};
+        document.body.appendChild(s);
+      }
+    }
   });
 })();
 </script>
@@ -323,6 +341,36 @@ function cleanupHtmlWidget(container: HTMLDivElement) {
 }
 
 // ---------------------------------------------------------------------------
+// Image capture — serialize iframe DOM as SVG foreignObject
+// ---------------------------------------------------------------------------
+
+/** Capture HTML widget as PNG via html2canvas running inside the iframe */
+function captureHtmlWidgetImage(_code: string, container: HTMLDivElement): Promise<string | null> {
+  const iframe = iframeMap.get(container);
+  if (!iframe?.contentWindow) return Promise.resolve(null);
+
+  return new Promise((resolve) => {
+    const timeout = setTimeout(() => { cleanup(); resolve(null); }, 8000);
+
+    const onMessage = (e: MessageEvent) => {
+      if (e.source !== iframe.contentWindow) return;
+      if (e.data?.type === 'abu-widget-capture') {
+        cleanup();
+        resolve(e.data.png ?? null);
+      }
+    };
+
+    const cleanup = () => {
+      clearTimeout(timeout);
+      window.removeEventListener('message', onMessage);
+    };
+
+    window.addEventListener('message', onMessage);
+    iframe.contentWindow!.postMessage({ type: 'widget:capture' }, '*');
+  });
+}
+
+// ---------------------------------------------------------------------------
 // Fullscreen — opens widget in a new browser window
 // ---------------------------------------------------------------------------
 
@@ -345,6 +393,7 @@ export default function HtmlWidgetBlock({ code }: { code: string }) {
     fallbackLanguage: 'html',
     seamless: true,
     render: renderHtmlWidget,
+    captureImage: captureHtmlWidgetImage,
     cleanup: cleanupHtmlWidget,
     buildFullscreenHtml: buildFullHtml,
     debounceMs: 200,

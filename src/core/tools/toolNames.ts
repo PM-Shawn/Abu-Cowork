@@ -28,6 +28,8 @@ export const TOOL_NAMES = {
   REPORT_PLAN: 'report_plan',
   SAVE_SKILL: 'save_skill',
   SAVE_AGENT: 'save_agent',
+  TEST_SKILL_TRIGGER: 'test_skill_trigger',
+  IMPROVE_SKILL_DESCRIPTION: 'improve_skill_description',
 
   // Memory & planning
   UPDATE_MEMORY: 'update_memory',

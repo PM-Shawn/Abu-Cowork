@@ -56,7 +56,7 @@ const PREFETCH_RULES: ReadonlyArray<{
   },
   {
     keywords: ['创建技能', '保存技能', '新技能', '修改技能', '创建代理', '新代理'],
-    tools: [TOOL_NAMES.SAVE_SKILL, TOOL_NAMES.SAVE_AGENT],
+    tools: [TOOL_NAMES.SAVE_SKILL, TOOL_NAMES.SAVE_AGENT, TOOL_NAMES.TEST_SKILL_TRIGGER, TOOL_NAMES.IMPROVE_SKILL_DESCRIPTION],
   },
   {
     keywords: ['mcp', '工具服务', '缺少工具', '安装服务'],

@@ -1,6 +1,7 @@
 ---
 name: skill-creator
 description: Create new skills, modify and improve existing skills, and measure skill performance. Use when users want to create a skill from scratch, edit, or optimize an existing skill, run evals to test a skill, benchmark skill performance with variance analysis, or optimize a skill's description for better triggering accuracy.
+max-turns: 50
 ---
 
 # Skill Creator
@@ -453,6 +454,140 @@ If you're in Cowork, the main things to know are:
 - Packaging works — `package_skill.py` just needs Python and a filesystem.
 - Description optimization (`run_loop.py` / `run_eval.py`) should work in Cowork just fine since it uses `claude -p` via subprocess, not a browser, but please save it until you've fully finished making the skill and the user agrees it's in good shape.
 - **Updating an existing skill**: The user might be asking you to update an existing skill, not create a new one. Follow the update guidance in the claude.ai section above.
+
+---
+
+## Abu Desktop Instructions
+
+You are running inside **Abu (阿布)**, a desktop AI assistant built with Tauri. The core skill creation workflow is the same, but there are critical differences in how you save, test, and optimize skills. **Read this section carefully — ignoring it will produce broken skills.**
+
+### SKILL.md Format — YAML Frontmatter is MANDATORY
+
+Every SKILL.md **must** start with YAML frontmatter wrapped in `---` fences. Without it, the skill loader cannot parse the file and the skill will not appear in Abu's skill list.
+
+```markdown
+---
+name: my-skill-name
+description: |
+  What this skill does and when to trigger it.
+  Be specific and slightly "pushy" about trigger conditions.
+trigger: |
+  用户要求做 X、Y、Z 时使用此技能
+do-not-trigger: |
+  用户只是做 A、B、C 时不要触发
+tags:
+  - visualization
+  - data
+---
+
+# Skill Title
+
+Instructions go here...
+```
+
+**Required fields**: `name`, `description`
+**Recommended fields**: `trigger`, `do-not-trigger`, `tags`
+
+### Saving Skills — Use `save_skill` Tool, NOT `write_file`
+
+**CRITICAL**: Always use the `save_skill` tool to save skills. Never use `write_file` to write SKILL.md directly. The `save_skill` tool:
+- Automatically saves to `~/.abu/skills/{name}/SKILL.md`
+- Refreshes the skill discovery so the new skill appears in the UI immediately
+- Supports a `files` parameter for bundling scripts and references
+
+```json
+{
+  "name": "infographic-gen",
+  "content": "---\nname: infographic-gen\ndescription: |\n  Generate infographics...\n---\n\n# Infographic Generator\n...",
+  "files": [
+    {
+      "path": "scripts/render.mjs",
+      "content": "#!/usr/bin/env node\nimport { renderToString } from '@antv/infographic/ssr';\n..."
+    },
+    {
+      "path": "references/template-list.md",
+      "content": "# Available Templates\n- list-grid-badge-card\n- sequence-timeline-horizontal\n..."
+    }
+  ]
+}
+```
+
+If the skill needs executable scripts (renderers, data processors, format converters), **put them in `files` with path `scripts/...`**. If the skill references external documentation, use `references/...`.
+
+### Research-First Workflow — No Hallucinating
+
+When creating a skill that references a specific library, framework, or technology:
+
+1. **Research first** — Use `web_search` and `http_fetch` to verify the library exists, read its API docs, and understand how it works.
+2. **Install if needed** — Use `run_command` to `npm install` or set up the dependency.
+3. **Write working scripts** — If the skill needs a renderer/processor, write the script and bundle it via `save_skill`'s `files` parameter.
+4. **Test the script** — Use `run_command` to actually execute the script and verify it produces correct output.
+5. **Save with `save_skill`** — Only after testing, save the complete skill.
+
+**NEVER claim a skill uses a library if you haven't verified it exists and written working code for it.** If you cannot get a library to work, be honest in the SKILL.md description — say "generates pure HTML/CSS" rather than falsely claiming to use a specific library.
+
+### Testing Skill Triggering — Use `test_skill_trigger`
+
+Abu has a built-in `test_skill_trigger` tool that replaces `claude -p` based eval. Use it to test whether your skill's description triggers correctly:
+
+```json
+{
+  "skill_name": "infographic-gen",
+  "skill_description": "Generate beautiful infographics...",
+  "queries": [
+    { "query": "帮我做个季度汇报的信息图", "should_trigger": "true" },
+    { "query": "画一个产品对比分析图", "should_trigger": "true" },
+    { "query": "帮我写一段 Python 代码", "should_trigger": "false" },
+    { "query": "读一下这个 PDF", "should_trigger": "false" }
+  ]
+}
+```
+
+This runs real LLM calls using the user's configured model to check trigger accuracy. Aim for >80% pass rate.
+
+### Optimizing Description — Use `improve_skill_description`
+
+If trigger test results are poor, use `improve_skill_description` to generate a better description:
+
+```json
+{
+  "skill_name": "infographic-gen",
+  "current_description": "Generate infographics...",
+  "skill_content": "(full SKILL.md content)",
+  "eval_results": "(JSON from test_skill_trigger)"
+}
+```
+
+This calls the LLM to produce an improved description based on which queries failed. Update the SKILL.md frontmatter with the improved description, then re-test.
+
+### Eval Pipeline — Adapted for Abu
+
+Abu has subagents (`delegate_to_agent`) so the eval pipeline works, but with these differences:
+
+- **No `claude -p`**: Use `test_skill_trigger` and `improve_skill_description` tools instead of Python scripts. Do not run `run_eval.py` or `improve_description.py` — they require `claude` CLI which Abu doesn't have.
+- **No browser viewer**: Skip `generate_review.py`. Instead, present eval results directly in the conversation. Show each test case's output and ask the user for feedback inline.
+- **Subagent types**: Use `delegate_to_agent` with `type: "executor"` for test runs (has all tools). Use `type: "writer"` for baseline runs.
+- **Description optimization loop**: Call `test_skill_trigger` → check results → call `improve_skill_description` → update SKILL.md → re-test. Repeat 2-3 times or until >90% pass rate.
+
+### Recommended Workflow Order
+
+1. **Capture intent** (same as main instructions)
+2. **Interview & research** (same, but use `web_search`/`http_fetch` actively)
+3. **Write SKILL.md + scripts** (research-first, test scripts before saving)
+4. **Save with `save_skill`** (with `files` parameter if scripts needed)
+5. **Quick test** — Tell the user to try `/{skill-name}` in the current conversation
+6. **Trigger testing** — Run `test_skill_trigger` with 6-10 queries
+7. **Optimize description** — If pass rate <80%, run `improve_skill_description`
+8. **Iterate** — Fix issues based on user feedback and re-save
+
+### What NOT to Do
+
+- ❌ Do NOT use `write_file` to create SKILL.md — use `save_skill`
+- ❌ Do NOT omit YAML frontmatter — the skill will be invisible
+- ❌ Do NOT claim to use a library without verifying it exists
+- ❌ Do NOT run `run_eval.py`, `improve_description.py`, or `generate_review.py` — they need `claude` CLI
+- ❌ Do NOT spend all turns on eval ceremony before the skill itself is good
+- ❌ Do NOT create workspace directories for eval iterations — keep it simple, use the tools
 
 ---
 

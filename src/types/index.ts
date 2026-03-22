@@ -154,7 +154,7 @@ export interface ToolParameter {
   type: string;
   description: string;
   enum?: string[];
-  items?: { type: string; enum?: string[] };  // For array types
+  items?: { type: string; enum?: string[]; properties?: Record<string, ToolParameter>; required?: string[] };  // For array types
   [key: string]: unknown;    // Allow extra JSON Schema fields (e.g. default, properties)
 }
 

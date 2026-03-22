@@ -27,6 +27,9 @@ import { recallTool } from './definitions/recallTool';
 // --- System tools ---
 import { getSystemInfoTool, clipboardReadTool, clipboardWriteTool, systemNotifyTool, manageMCPServerTool } from './definitions/systemTools';
 
+// --- Skill eval tools ---
+import { testSkillTriggerTool, improveSkillDescriptionTool } from './definitions/skillEvalTools';
+
 // --- Computer tools ---
 import { computerTool } from './definitions/computerTools';
 export { setComputerUseBatchMode, setSkipAutoScreenshot } from './definitions/computerTools';
@@ -63,4 +66,6 @@ export function registerBuiltinTools(): void {
   toolRegistry.register(systemNotifyTool);
   toolRegistry.register(computerTool);
   toolRegistry.register(requestWorkspaceTool);
+  toolRegistry.register(testSkillTriggerTool);
+  toolRegistry.register(improveSkillDescriptionTool);
 }

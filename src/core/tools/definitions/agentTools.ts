@@ -343,12 +343,24 @@ function createSaveItemTool(kind: 'skill' | 'agent'): ToolDefinition {
 
   return {
     name: isSkill ? TOOL_NAMES.SAVE_SKILL : TOOL_NAMES.SAVE_AGENT,
-    description: `保存自定义${label}文件到 ~/.abu/${folder}/{name}/${fileName}。当用户要求创建或修改${label}时使用。只需提供名称和内容，路径自动计算。`,
+    description: `保存自定义${label}文件到 ~/.abu/${folder}/{name}/${fileName}。当用户要求创建或修改${label}时使用。只需提供名称和内容，路径自动计算。可选传入 files 数组来同时保存脚本、参考文档等附属文件。`,
     inputSchema: {
       type: 'object',
       properties: {
         name: { type: 'string', description: `${kind} name (lowercase, hyphens allowed, e.g. "${isSkill ? 'git-commit' : 'doc-writer'}")` },
         content: { type: 'string', description: `Full ${fileName} content including YAML frontmatter` },
+        files: {
+          type: 'array',
+          description: 'Optional supporting files (scripts, references, assets) to save alongside the main file.',
+          items: {
+            type: 'object',
+            properties: {
+              path: { type: 'string', description: 'Relative path within the skill/agent dir, e.g. "scripts/render.mjs" or "references/api-docs.md"' },
+              content: { type: 'string', description: 'File text content' },
+            },
+            required: ['path', 'content'],
+          },
+        },
       },
       required: ['name', 'content'],
     },
@@ -361,18 +373,40 @@ function createSaveItemTool(kind: 'skill' | 'agent'): ToolDefinition {
       }
 
       const info = await getSystemInfoData();
-      const filePath = joinPath(info.home, '.abu', folder, name, fileName);
+      const itemDir = joinPath(info.home, '.abu', folder, name);
+      const filePath = joinPath(itemDir, fileName);
 
       await ensureParentDir(filePath);
       await writeTextFile(filePath, content);
 
+      // Write supporting files if provided
+      const files = input.files as Array<{ path: string; content: string }> | undefined;
+      const writtenFiles: string[] = [];
+
+      if (files?.length) {
+        for (const file of files) {
+          const p = file.path;
+          if (p.includes('..') || p.startsWith('/') || p.startsWith('\\')) {
+            return `Error: 文件路径不安全: "${p}"。不允许 .. 或绝对路径。`;
+          }
+          const targetPath = joinPath(itemDir, p);
+          await ensureParentDir(targetPath);
+          await writeTextFile(targetPath, file.content);
+          writtenFiles.push(p);
+        }
+      }
+
       // Refresh discovery so the new item appears in UI immediately
       await useDiscoveryStore.getState().refresh();
 
+      const fileList = writtenFiles.length
+        ? '\n附属文件：\n' + writtenFiles.map(f => `  - ${f}`).join('\n')
+        : '';
+
       if (isSkill) {
-        return `✅ ${label}「${name}」已保存到 ${filePath}\n\n你可以：\n- 到「工具箱 → 技能」查看和编辑\n- 使用 /${name} 调用此技能`;
+        return `✅ ${label}「${name}」已保存到 ${filePath}${fileList}\n\n你可以：\n- 到「工具箱 → 技能」查看和编辑\n- 使用 /${name} 调用此技能`;
       }
-      return `✅ ${label}「${name}」已保存到 ${filePath}\n\n你可以到「工具箱 → 代理」查看和管理此代理。`;
+      return `✅ ${label}「${name}」已保存到 ${filePath}${fileList}\n\n你可以到「工具箱 → 代理」查看和管理此代理。`;
     },
   };
 }

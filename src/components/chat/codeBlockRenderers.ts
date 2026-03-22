@@ -2,10 +2,18 @@
  * Code Block Renderer Registry
  *
  * Decouples MarkdownRenderer from specific visualization libraries.
+ *
+ * Architecture:
+ * - Built-in DSL formats (mermaid) use dedicated renderers for best quality
+ *   (bundled library, no CDN, no iframe overhead, proper streaming handling)
+ * - html/svg use HtmlWidgetBlock (iframe sandbox)
+ * - User-created skills should output ```html code blocks with any CDN library
+ *   — HtmlWidgetBlock handles them directly, no frontend changes needed.
+ *
  * To add a new renderable code block type:
- * 1. Create a renderer component (e.g. MyBlock.tsx) with props { code: string }
+ * 1. Create a renderer component with props { code: string }
  * 2. Register it here with registerCodeBlockRenderer('language', ...)
- * 3. Create a corresponding skill in builtin-skills/ to guide LLM output
+ * 3. (Optional) Create a corresponding skill in builtin-skills/ to guide LLM output
  *
  * MarkdownRenderer will automatically pick it up — no changes needed there.
  */
@@ -36,17 +44,21 @@ export function getCodeBlockRenderer(language: string): CodeBlockRenderer | unde
 
 // --- Built-in registrations ---
 
+// Mermaid: dedicated renderer (bundled library, no CDN, proper streaming)
 registerCodeBlockRenderer(
   'mermaid',
   lazy(() => import('./MermaidBlock')),
 );
 
-registerCodeBlockRenderer(
-  'infographic',
-  lazy(() => import('./InfographicBlock')),
-);
-
+// HTML widget: iframe sandbox, streaming preview, user-extensible via skills
 registerCodeBlockRenderer(
   'html',
   lazy(() => import('./HtmlWidgetBlock')),
 );
+
+// SVG: thin wrapper → HtmlWidgetBlock (no scripts needed, just CSS)
+registerCodeBlockRenderer(
+  'svg',
+  lazy(() => import('./SvgHtmlBlock')),
+);
+

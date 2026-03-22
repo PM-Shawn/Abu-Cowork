@@ -42,7 +42,7 @@ input[type="range"] { accent-color: var(--abu-primary); }
 
 // Receiver page loaded once into iframe.srcdoc — all updates come via postMessage.
 const RECEIVER_HTML = `<!DOCTYPE html><html><head>
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline' ${CDN_ALLOWLIST}; style-src 'unsafe-inline'; img-src data: blob: ${CDN_ALLOWLIST}; connect-src ${CDN_ALLOWLIST}; font-src ${CDN_ALLOWLIST};">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline' ${CDN_ALLOWLIST}; style-src 'unsafe-inline'; img-src data: blob: ${CDN_ALLOWLIST}; media-src data: blob: ${CDN_ALLOWLIST}; connect-src ${CDN_ALLOWLIST}; font-src ${CDN_ALLOWLIST};">
 <style>${BASE_STYLES}</style>
 </head><body>
 <script>
@@ -88,7 +88,7 @@ const RECEIVER_HTML = `<!DOCTYPE html><html><head>
       tmp.innerHTML=e.data.html;
       var scripts=[];
       tmp.querySelectorAll('script').forEach(function(s){
-        scripts.push({src:s.src,text:s.textContent});s.remove();
+        scripts.push({src:s.src,text:s.textContent,type:s.type});s.remove();
       });
       var cur=document.createElement('div');
       cur.innerHTML=document.body.innerHTML;
@@ -105,6 +105,7 @@ const RECEIVER_HTML = `<!DOCTYPE html><html><head>
           return;
         }
         var s=scripts[i];var el=document.createElement('script');
+        if(s.type) el.type=s.type;
         if(s.src){
           el.src=s.src;
           el.onload=function(){reportHeight();runNext(i+1);};

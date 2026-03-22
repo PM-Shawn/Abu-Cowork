@@ -7,14 +7,9 @@
  * Each renderer only needs to provide:
  * - render(code, container): produce output into a DOM container
  * - cleanup(container): optional cleanup on unmount
- *
- * TODO: Infographic (AntV) renders blank — the container needs real visible dimensions
- * when @antv/infographic calls render(). Current approach (invisible + min-height)
- * doesn't work. Need to investigate AntV's layout requirements or render into
- * a detached container first then transplant. Mermaid works fine (pure SVG).
  */
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { Copy, Check, ChevronDown, ChevronUp, Code, Eye, Maximize2, X, Ellipsis, Download } from 'lucide-react';
+import { Copy, Check, ChevronDown, ChevronUp, Code, Eye, Maximize2, X, Download } from 'lucide-react';
 import { createPortal } from 'react-dom';
 import { cn } from '@/lib/utils';
 import { CollapsibleCodeBlock } from './MarkdownRenderer';
@@ -27,7 +22,7 @@ type RenderState =
 
 /** Configuration for a code block renderer */
 export interface CodeBlockRendererConfig {
-  /** Unique label shown in the toolbar (e.g. "mermaid", "infographic") */
+  /** Unique label shown in the toolbar (e.g. "mermaid", "html") */
   label: string;
   /** Language name used for CollapsibleCodeBlock fallback */
   fallbackLanguage: string;
@@ -105,7 +100,7 @@ export default function RenderableCodeBlock({
   const [copied, setCopied] = useState(false);
   const [overflows, setOverflows] = useState(false);
   const [fullscreen, setFullscreen] = useState(false);
-  const [menuOpen, setMenuOpen] = useState(false);
+
 
   const containerRef = useRef<HTMLDivElement>(null);
   const codeRef = useRef(code);
@@ -240,7 +235,6 @@ export default function RenderableCodeBlock({
     await navigator.clipboard.writeText(code);
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
-    setMenuOpen(false);
   }, [code]);
 
   const handleDownload = useCallback(() => {
@@ -251,7 +245,6 @@ export default function RenderableCodeBlock({
     a.download = `widget-${Date.now().toString(36)}.html`;
     a.click();
     URL.revokeObjectURL(url);
-    setMenuOpen(false);
   }, [code]);
 
   if (!code.trim()) return null;
@@ -329,16 +322,6 @@ export default function RenderableCodeBlock({
     </div>
   ));
 
-  const sourceFallback = showFallback && (
-    <div>
-      {isError && !showSource && (
-        <div className="rounded-t-lg bg-red-50 border border-red-200 border-b-0 px-3 py-2 text-xs text-red-600">
-          {config.i18n.renderError}
-        </div>
-      )}
-      <CollapsibleCodeBlock codeString={code} language={config.fallbackLanguage} />
-    </div>
-  );
 
   const fullscreenOverlay = fullscreen && config.buildFullscreenHtml && createPortal(
     <div
@@ -370,83 +353,62 @@ export default function RenderableCodeBlock({
   // --- Seamless mode (Claude-like) ---
 
   if (seamless) {
-    return (
-      <div className="my-3 group/widget relative">
-        {sourceFallback}
-        <div className={cn(showFallback && 'hidden')}>
-          {/* Seamless skeleton — shown as standalone block, not overlay */}
-          {isLoading && loadingOverlay}
-          <div className={cn('relative', isLoading && 'hidden')}>
-            {renderContainer}
-            {shimmerOverlay}
-            {expandButton}
+    // Error-only fallback for seamless mode
+    const seamlessErrorFallback = isError && !showSource && (
+      <div>
+        <div className="rounded-t-lg bg-red-50 border border-red-200 border-b-0 px-3 py-2 text-xs text-red-600">
+          {config.i18n.renderError}
+        </div>
+        <CollapsibleCodeBlock codeString={code} language={config.fallbackLanguage} />
+      </div>
+    );
 
-            {/* Hover menu — top-right ··· button */}
-            {!isLoading && (
-              <div className="absolute top-2 right-2 z-10 opacity-0 group-hover/widget:opacity-100 transition-opacity">
-                <div className="relative">
-                  <button
-                    onClick={() => setMenuOpen(!menuOpen)}
-                    className="p-1.5 rounded-lg bg-white/90 shadow-sm border border-[var(--abu-bg-pressed)]
-                      hover:bg-[var(--abu-bg-muted)] transition-colors"
-                  >
-                    <Ellipsis className="h-4 w-4 text-[var(--abu-text-muted)]" />
-                  </button>
-                  {menuOpen && (
-                    <>
-                      <div className="fixed inset-0 z-20" onClick={() => setMenuOpen(false)} />
-                      <div className="absolute right-0 top-full mt-1 z-30 bg-white rounded-lg shadow-lg border border-[var(--abu-bg-pressed)]
-                        py-1 min-w-[160px]">
-                        {config.buildFullscreenHtml && (
-                          <button
-                            onClick={() => { setFullscreen(true); setMenuOpen(false); }}
-                            className="flex items-center gap-2.5 w-full px-3 py-2 text-sm text-[var(--abu-text-primary)]
-                              hover:bg-[var(--abu-bg-muted)] transition-colors"
-                          >
-                            <Maximize2 className="h-4 w-4 text-[var(--abu-text-muted)]" />
-                            {config.i18n.fullscreen ?? 'Fullscreen'}
-                          </button>
-                        )}
-                        <button
-                          onClick={handleCopy}
-                          className="flex items-center gap-2.5 w-full px-3 py-2 text-sm text-[var(--abu-text-primary)]
-                            hover:bg-[var(--abu-bg-muted)] transition-colors"
-                        >
-                          {copied
-                            ? <Check className="h-4 w-4 text-green-600" />
-                            : <Copy className="h-4 w-4 text-[var(--abu-text-muted)]" />
-                          }
-                          {copied ? (config.i18n.copied ?? 'Copied') : (config.i18n.copyCode ?? 'Copy')}
-                        </button>
-                        <button
-                          onClick={handleDownload}
-                          className="flex items-center gap-2.5 w-full px-3 py-2 text-sm text-[var(--abu-text-primary)]
-                            hover:bg-[var(--abu-bg-muted)] transition-colors"
-                        >
-                          <Download className="h-4 w-4 text-[var(--abu-text-muted)]" />
-                          {config.i18n.download ?? 'Download'}
-                        </button>
-                        <button
-                          onClick={() => { setShowSource(!showSource); setMenuOpen(false); }}
-                          className="flex items-center gap-2.5 w-full px-3 py-2 text-sm text-[var(--abu-text-primary)]
-                            hover:bg-[var(--abu-bg-muted)] transition-colors"
-                        >
-                          {showSource
-                            ? <Eye className="h-4 w-4 text-[var(--abu-text-muted)]" />
-                            : <Code className="h-4 w-4 text-[var(--abu-text-muted)]" />
-                          }
-                          {showSource ? (config.i18n.viewPreview ?? 'Preview') : (config.i18n.viewCode ?? 'Code')}
-                        </button>
-                      </div>
-                    </>
-                  )}
-                </div>
-              </div>
+    return (
+      <div className="my-3 group/widget">
+        {seamlessErrorFallback}
+        <div className={cn('rounded-lg overflow-hidden border border-transparent group-hover/widget:border-[var(--abu-bg-pressed)] transition-colors', isError && !showSource && 'hidden')}>
+          <div className="relative">
+            {/* Source code view */}
+            {showSource && (
+              <CollapsibleCodeBlock codeString={code} language={config.fallbackLanguage} />
             )}
+            {/* Seamless skeleton */}
+            {isLoading && !showSource && loadingOverlay}
+            <div className={cn((isLoading || showSource) && 'hidden')}>
+              {renderContainer}
+              {shimmerOverlay}
+              {expandButton}
+            </div>
           </div>
-          {/* Collapse button — shown inline below widget when expanded */}
-          {collapseButton && (
-            <div className="flex justify-center mt-1">{collapseButton}</div>
+          {/* Bottom toolbar — same style as bordered mode, visible on hover */}
+          {!isLoading && (
+            <div className={cn(
+              'flex items-center justify-between px-3 py-1.5 text-xs text-[var(--abu-text-muted)] border-t border-[var(--abu-bg-pressed)] transition-all',
+              showSource
+                ? 'opacity-100 bg-[var(--abu-bg-muted)]'
+                : 'opacity-0 group-hover/widget:opacity-100 bg-[var(--abu-bg-muted)]',
+            )}>
+              <div className="flex items-center gap-2">
+                <span>{config.label}</span>
+                {collapseButton}
+              </div>
+              <div className="flex items-center gap-1">
+                {config.buildFullscreenHtml && (
+                  <button onClick={() => setFullscreen(true)} className="p-1 rounded hover:bg-black/5 transition-colors">
+                    <Maximize2 className="h-3.5 w-3.5" />
+                  </button>
+                )}
+                <button onClick={handleCopy} className="p-1 rounded hover:bg-black/5 transition-colors" title={copied ? '✓' : 'Copy'}>
+                  {copied ? <Check className="h-3.5 w-3.5 text-green-600" /> : <Copy className="h-3.5 w-3.5" />}
+                </button>
+                <button onClick={handleDownload} className="p-1 rounded hover:bg-black/5 transition-colors">
+                  <Download className="h-3.5 w-3.5" />
+                </button>
+                <button onClick={() => setShowSource(!showSource)} className="p-1 rounded hover:bg-black/5 transition-colors">
+                  {showSource ? <Eye className="h-3.5 w-3.5" /> : <Code className="h-3.5 w-3.5" />}
+                </button>
+              </div>
+            </div>
           )}
         </div>
         {fullscreenOverlay}
@@ -454,19 +416,34 @@ export default function RenderableCodeBlock({
     );
   }
 
-  // --- Bordered mode (Mermaid, Infographic) ---
+  // --- Bordered mode (Mermaid, SVG) ---
+
+  // Error-only fallback (showSource is handled inside the bordered container)
+  const errorFallback = isError && !showSource && (
+    <div>
+      <div className="rounded-t-lg bg-red-50 border border-red-200 border-b-0 px-3 py-2 text-xs text-red-600">
+        {config.i18n.renderError}
+      </div>
+      <CollapsibleCodeBlock codeString={code} language={config.fallbackLanguage} />
+    </div>
+  );
 
   return (
     <div className="my-3">
-      {sourceFallback}
-      <div className={cn('rounded-lg overflow-hidden border border-[var(--abu-bg-pressed)]', showFallback && 'hidden')}>
+      {errorFallback}
+      <div className={cn('rounded-lg overflow-hidden border border-[var(--abu-bg-pressed)]', isError && !showSource && 'hidden')}>
         <div className="relative bg-white">
-          {loadingOverlay}
-          {renderContainer}
-          {shimmerOverlay}
-          {expandButton}
+          {showSource && (
+            <CollapsibleCodeBlock codeString={code} language={config.fallbackLanguage} />
+          )}
+          <div className={cn(showSource && 'hidden')}>
+            {loadingOverlay}
+            {renderContainer}
+            {shimmerOverlay}
+            {expandButton}
+          </div>
         </div>
-        {/* Bottom toolbar */}
+        {/* Bottom toolbar — always visible so user can toggle back */}
         <div className="flex items-center justify-between px-3 py-1.5 bg-[var(--abu-bg-muted)] text-xs text-[var(--abu-text-muted)] border-t border-[var(--abu-bg-pressed)]">
           <div className="flex items-center gap-2">
             <span>{config.label}</span>

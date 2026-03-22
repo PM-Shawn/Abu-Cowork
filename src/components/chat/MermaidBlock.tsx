@@ -4,18 +4,12 @@ import RenderableCodeBlock, { type CodeBlockRendererConfig } from './RenderableC
 // --- Mermaid-specific rendering logic ---
 
 let mermaidInitPromise: Promise<typeof import('mermaid')['default']> | null = null;
-let offscreenContainer: HTMLDivElement | null = null;
 
-function getOffscreenContainer(): HTMLDivElement {
-  if (!offscreenContainer) {
-    offscreenContainer = document.createElement('div');
-    offscreenContainer.style.cssText = 'position:absolute;left:-9999px;top:-9999px;width:0;height:0;overflow:hidden';
-    offscreenContainer.setAttribute('aria-hidden', 'true');
-    document.body.appendChild(offscreenContainer);
-  }
-  return offscreenContainer;
-}
+/** Cache rendered SVGs for fullscreen view */
+const svgCache = new Map<string, string>();
+const SVG_CACHE_MAX = 30;
 
+/** Remove temporary DOM elements that mermaid.render() leaves behind */
 function cleanupMermaidArtifacts(id: string) {
   for (const sel of [`#${id}`, `#d${id}`, `[data-id="${id}"]`]) {
     try { document.querySelector(sel)?.remove(); } catch { /* skip */ }
@@ -34,11 +28,11 @@ function getMermaid() {
         theme: 'base',
         themeVariables: {
           primaryColor: '#faf0e6',
-          primaryTextColor: 'var(--abu-text-primary)',
-          primaryBorderColor: 'var(--abu-clay)',
-          lineColor: 'var(--abu-text-muted)',
-          secondaryColor: 'var(--abu-bg-muted)',
-          tertiaryColor: 'var(--abu-bg-pressed)',
+          primaryTextColor: '#29261b',
+          primaryBorderColor: '#d97757',
+          lineColor: '#888579',
+          secondaryColor: '#f5f0ea',
+          tertiaryColor: '#ebe6df',
           fontFamily: 'system-ui, -apple-system, sans-serif',
         },
         securityLevel: 'strict',
@@ -54,14 +48,33 @@ async function renderMermaid(code: string, container: HTMLDivElement): Promise<s
   const id = `mermaid-${Date.now().toString(36)}${Math.random().toString(36).substring(2, 8)}`;
   try {
     const mermaid = await getMermaid();
-    const { svg } = await mermaid.render(id, code, getOffscreenContainer());
+    const { svg } = await mermaid.render(id, code);
     cleanupMermaidArtifacts(id);
     container.innerHTML = svg;
+    // Cache SVG for fullscreen view
+    if (svgCache.size >= SVG_CACHE_MAX) {
+      const firstKey = svgCache.keys().next().value;
+      if (firstKey !== undefined) svgCache.delete(firstKey);
+    }
+    svgCache.set(code, svg);
     return svg;
   } catch (err) {
     cleanupMermaidArtifacts(id);
+    console.error('[MermaidBlock] render failed:', err instanceof Error ? err.message : err);
     throw err;
   }
+}
+
+function buildFullscreenHtml(code: string): string {
+  const svg = svgCache.get(code) || '';
+  return `<!DOCTYPE html><html><head>
+<meta charset="utf-8">
+<style>
+  body { display:flex; justify-content:center; align-items:flex-start;
+         padding:40px; background:#fff; margin:0; overflow:auto; }
+  svg { max-width:100%; height:auto; }
+</style>
+</head><body>${svg}</body></html>`;
 }
 
 // --- Component ---
@@ -73,6 +86,7 @@ export default function MermaidBlock({ code }: { code: string }) {
     label: 'mermaid',
     fallbackLanguage: 'mermaid',
     render: renderMermaid,
+    buildFullscreenHtml,
     debounceMs: 300,
     errorSettleMs: 1000,
     maxHeight: 400,

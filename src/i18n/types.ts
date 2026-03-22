@@ -135,10 +135,6 @@ export interface TranslationDict {
     mermaidRenderError: string;
     mermaidExpand: string;
     mermaidCollapse: string;
-    infographicLoading: string;
-    infographicRenderError: string;
-    infographicExpand: string;
-    infographicCollapse: string;
     htmlWidgetLabel: string;
     htmlWidgetLoading: string;
     htmlWidgetRenderError: string;

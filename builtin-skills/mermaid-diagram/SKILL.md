@@ -1,6 +1,6 @@
 ---
 name: mermaid-diagram
-description: 用 Mermaid 语法生成可视化图表 — 流程图、架构图、序列图、ER 图、甘特图、状态图、思维导图、饼图等结构化图表。当用户要求画图/画架构图/画流程图等结构化可视化需求时触发，直接输出 mermaid 代码块，前端会自动渲染为 SVG 图表。
+description: 用 Mermaid 语法生成可视化图表 — 流程图、架构图、序列图、ER 图、甘特图、状态图、思维导图、饼图等结构化图表。当用户要求画图/画架构图/画流程图等结构化可视化需求时触发，直接输出 mermaid 代码块，前端会自动转换为 HTML 并在沙箱 iframe 中渲染。
 trigger: 用户要求画流程图、架构图、序列图、ER 图、甘特图、状态图、思维导图、饼图、类图、时间线、关系图、拓扑图、部署图、数据库设计图、系统架构、技术架构、业务流程、数据流、状态机，或任何结构化的图表/可视化需求
 do-not-trigger: 用户要求生成照片、插画、艺术画、海报、UI 设计图、Logo、手绘风格图片等需要像素级渲染的视觉内容；用户明确要求用 generate_image 生图
 user-invocable: true
@@ -16,7 +16,7 @@ tags:
   - visualization
 ---
 
-你现在帮用户生成 **Mermaid 图表**。直接在回复中输出 ` ```mermaid ` 代码块，前端会自动渲染为可交互的 SVG 图表。
+你现在帮用户生成 **Mermaid 图表**。直接在回复中输出 ` ```mermaid ` 代码块，前端会自动将其转换为 HTML 并在沙箱 iframe 中通过 Mermaid CDN 渲染为 SVG 图表。
 
 **不要调用 generate_image 工具**，Mermaid 代码块就是最终输出。
 

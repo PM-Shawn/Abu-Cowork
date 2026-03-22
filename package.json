@@ -18,8 +18,8 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.78.0",
-    "@antv/infographic": "^0.2.16",
     "@modelcontextprotocol/sdk": "^1.27.1",
+    "@mozilla/readability": "^0.6.0",
     "@tauri-apps/api": "^2.10.1",
     "@tauri-apps/plugin-clipboard-manager": "^2.3.2",
     "@tauri-apps/plugin-dialog": "^2.6.0",
@@ -34,6 +34,7 @@
     "docx-preview": "^0.3.7",
     "fflate": "^0.8.2",
     "immer": "^11.1.4",
+    "linkedom": "^0.18.12",
     "lucide-react": "^0.575.0",
     "mermaid": "^11.13.0",
     "pptx-preview": "^1.0.7",

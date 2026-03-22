@@ -49,7 +49,7 @@ export function useAutoScroll(options?: { following?: boolean }) {
     container.scrollTop = container.scrollHeight;
     isAtBottomRef.current = true;
     setIsAtBottom(true);
-    settlingUntilRef.current = Date.now() + 300;
+    settlingUntilRef.current = Date.now() + 800;
   }, []);
 
   // Re-enable auto-scroll and scroll to bottom immediately.
@@ -62,7 +62,7 @@ export function useAutoScroll(options?: { following?: boolean }) {
     }
     isAtBottomRef.current = true;
     setIsAtBottom(true);
-    settlingUntilRef.current = Date.now() + 300;
+    settlingUntilRef.current = Date.now() + 800;
   }, []);
 
   // Track scroll position — works for both user and programmatic scrolls.
@@ -115,17 +115,24 @@ export function useAutoScroll(options?: { following?: boolean }) {
         const c = containerRef.current;
         if (!c) return;
 
-        // Re-check isAtBottom on content resize — content can grow without
-        // scroll events (e.g. iframe height change via postMessage), causing
-        // isAtBottom to go stale. If we're actually at bottom, re-enable.
-        if (!isAtBottomRef.current) {
-          const atBottom = checkIfAtBottom();
-          if (atBottom) {
-            isAtBottomRef.current = true;
-            setIsAtBottom(true);
-          }
+        // During settling (conversation switch / send), iframe heights may
+        // change asynchronously and trigger scroll events that falsely set
+        // isAtBottomRef to false. Force-scroll to bottom and restore the flag.
+        if (Date.now() < settlingUntilRef.current) {
+          isProgrammaticScroll.current = true;
+          c.scrollTop = c.scrollHeight;
+          isAtBottomRef.current = true;
+          requestAnimationFrame(() => { isProgrammaticScroll.current = false; });
           return;
         }
+
+        // User has scrolled away from bottom — don't auto-scroll.
+        // Re-enabling is handled exclusively by the scroll event handler
+        // when the user scrolls back down. Re-checking here caused false
+        // re-enables: iframe height changes would fire ResizeObserver,
+        // and the 100px threshold could match before the user scrolled
+        // far enough, snapping the view back to bottom ("jumping").
+        if (!isAtBottomRef.current) return;
 
         isProgrammaticScroll.current = true;
         c.scrollTop = c.scrollHeight;

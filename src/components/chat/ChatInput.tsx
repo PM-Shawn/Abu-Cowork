@@ -291,7 +291,7 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
 
     // Agent suggestions when typing @
     if (suggestionType === 'agent') {
-      const query = trimmed.slice(1).toLowerCase();
+      const query = trimmed.slice(1).split(/\s+/)[0].toLowerCase();
       return agents
         .filter((a) => a.name !== 'abu' && !disabledAgentSet.has(a.name))
         .filter((a) => {
@@ -307,7 +307,7 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
 
     // Skill suggestions when typing /
     if (suggestionType === 'skill') {
-      const query = trimmed.slice(1).toLowerCase();
+      const query = trimmed.slice(1).split(/\s+/)[0].toLowerCase();
       return skills
         .filter((s) => s.userInvocable !== false && !disabledSkillSet.has(s.name))
         .filter((s) => {
@@ -341,17 +341,17 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
     const trimmed = text.trim();
 
     if (suggestionType === 'skill') {
-      const skillMatch = /^\/([a-z0-9-]+)$/.exec(trimmed);
+      const skillMatch = /^\/([a-z0-9-]+)(?:\s+(.*))?$/.exec(trimmed);
       if (skillMatch && suggestions.length === 1 && suggestions[0].name === skillMatch[1]) {
         setSelectedSkill(suggestions[0]);
-        setText('');
+        setText(skillMatch[2] ?? '');
         setSuggestionsDismissed(true);
       }
     } else if (suggestionType === 'agent') {
-      const agentMatch = /^@([a-z0-9-]+)$/.exec(trimmed);
+      const agentMatch = /^@([a-z0-9-]+)(?:\s+(.*))?$/.exec(trimmed);
       if (agentMatch && suggestions.length === 1 && suggestions[0].name === agentMatch[1]) {
         setSelectedAgent(suggestions[0]);
-        setText('');
+        setText(agentMatch[2] ?? '');
         setSuggestionsDismissed(true);
       }
     }

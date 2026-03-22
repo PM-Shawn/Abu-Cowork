@@ -284,16 +284,12 @@ export default function Sidebar() {
                 onContextMenu={(e) => handleContextMenu(e, conv.id)}
                 aria-current={conv.id === activeConversationId && viewMode === 'chat' ? 'true' : undefined}
                 className={cn(
-                  'group flex items-center gap-2 px-3 py-2 rounded-lg cursor-pointer transition-colors w-full text-left',
+                  'group flex items-center gap-2 px-2 py-2 rounded-lg cursor-pointer transition-colors w-full text-left',
                   conv.id === activeConversationId && viewMode === 'chat'
                     ? 'bg-[var(--abu-bg-active)] text-[var(--abu-text-primary)]'
                     : 'text-[var(--abu-text-secondary)] hover:bg-[var(--abu-bg-hover)]'
                 )}
               >
-                <StatusIndicator
-                  status={conv.status ?? 'idle'}
-                  onComplete={() => handleClearCompletedStatus(conv.id)}
-                />
                 {conv.imPlatform && (
                   <IMPlatformDot platform={conv.imPlatform} />
                 )}
@@ -316,6 +312,10 @@ export default function Sidebar() {
                 ) : (
                   <span className="flex-1 truncate text-[13px]">{conv.title.replace(/\[Attachment:\s*`[^`]*`\]\s*/g, '').trim() || conv.title}</span>
                 )}
+                <StatusIndicator
+                  status={conv.status ?? 'idle'}
+                  onComplete={() => handleClearCompletedStatus(conv.id)}
+                />
                 <Button
                   variant="ghost"
                   size="icon"

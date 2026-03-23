@@ -69,7 +69,12 @@ async function loadEntries(scope: 'user' | 'project', projectPath?: string): Pro
     const path = await getMemoryPath(scope, projectPath);
     const raw = await readTextFile(path);
     const parsed = JSON.parse(raw);
-    return Array.isArray(parsed) ? parsed : [];
+    if (!Array.isArray(parsed)) return [];
+    // Normalize: ensure keywords is always an array (guards against malformed persisted data)
+    return parsed.map((e: MemoryEntry) => ({
+      ...e,
+      keywords: Array.isArray(e.keywords) ? e.keywords : [],
+    }));
   } catch {
     return [];
   }

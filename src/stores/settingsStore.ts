@@ -418,7 +418,7 @@ export const useSettingsStore = create<SettingsStore>()(
       temperature: 0.7,
       enableThinking: false,
       thinkingBudget: 10000,
-      maxOutputTokens: 8192,
+      maxOutputTokens: 32768,
       contextWindowSize: 200000,
       // Image generation defaults
       imageGenApiKey: '',
@@ -615,9 +615,15 @@ export const useSettingsStore = create<SettingsStore>()(
     }),
     {
       name: 'abu-settings',
-      version: 10,
+      version: 11,
       migrate: (persisted: unknown, version: number) => {
         const state = persisted as Record<string, unknown>;
+        if (version < 11) {
+          // Bump default maxOutputTokens from 8192 to 32768 for users who never changed it
+          if (state.maxOutputTokens === 8192) {
+            state.maxOutputTokens = 32768;
+          }
+        }
         if (version < 10) {
           // Migrate single apiKey → per-provider apiKeys map
           const oldKey = state.apiKey as string | undefined;

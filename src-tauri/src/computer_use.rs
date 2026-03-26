@@ -54,10 +54,14 @@ pub fn check_macos_permissions() -> MacPermissions {
         // Windows doesn't require explicit screen recording permission.
         // Accessibility (controlling other windows) works best with elevated privileges.
         use std::process::Command as StdCommand;
-        let is_elevated = StdCommand::new("powershell")
-            .args(["-NoProfile", "-NonInteractive", "-Command",
-                "([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)"])
-            .output()
+        use std::os::windows::process::CommandExt;
+        
+        let mut cmd = StdCommand::new("powershell");
+        cmd.args(["-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-Command",
+            "([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)"]);
+        cmd.creation_flags(0x08000000);  // CREATE_NO_WINDOW
+        
+        let is_elevated = cmd.output()
             .map(|o| String::from_utf8_lossy(&o.stdout).trim() == "True")
             .unwrap_or(false);
         MacPermissions { screen_recording: true, accessibility: is_elevated }

@@ -82,10 +82,26 @@ fn get_active_window_impl() -> Result<ActiveWindowInfo, String> {
         Write-Output "$appName|||$title"
     "#;
 
-    let output = Command::new("powershell")
-        .args(["-NoProfile", "-Command", script])
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
+    let mut cmd = Command::new("powershell");
+    cmd.args([
+        "-NoProfile",
+        "-NonInteractive",
+        "-WindowStyle",
+        "Hidden",
+        "-Command",
+        script,
+    ])
+    .stdout(Stdio::piped())
+    .stderr(Stdio::null());
+
+    // 隐藏 PowerShell 窗口 (CREATE_NO_WINDOW)
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x08000000);
+    }
+
+    let output = cmd
         .output()
         .map_err(|e| format!("Failed to run PowerShell: {}", e))?;
 

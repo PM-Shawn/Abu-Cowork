@@ -156,12 +156,8 @@ pub fn build_sandboxed_command(
     {
         if sandbox_enabled {
             let home_dir = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
-            let profile = generate_seatbelt_profile(
-                cwd,
-                extra_writable_paths,
-                &home_dir,
-                network_proxy_port,
-            );
+            let profile =
+                generate_seatbelt_profile(cwd, extra_writable_paths, &home_dir, network_proxy_port);
 
             let mut cmd = StdCommand::new("sandbox-exec");
             cmd.args(["-p", &profile]);
@@ -196,9 +192,8 @@ pub fn build_sandboxed_command(
             let mut wrapped = String::with_capacity(command.len() + 256);
 
             // ConstrainedLanguage mode: blocks .NET reflection, COM objects, Add-Type
-            wrapped.push_str(
-                "$ExecutionContext.SessionState.LanguageMode = 'ConstrainedLanguage'; "
-            );
+            wrapped
+                .push_str("$ExecutionContext.SessionState.LanguageMode = 'ConstrainedLanguage'; ");
 
             // Execute user command
             wrapped.push_str(command);
@@ -206,9 +201,20 @@ pub fn build_sandboxed_command(
             cmd.args([
                 "-NoProfile",
                 "-NonInteractive",
-                "-ExecutionPolicy", "Restricted",
-                "-Command", &wrapped,
+                "-ExecutionPolicy",
+                "Restricted",
+                "-WindowStyle",
+                "Hidden",
+                "-Command",
+                &wrapped,
             ]);
+
+            // 隐藏 PowerShell 窗口 (CREATE_NO_WINDOW)
+            #[cfg(target_os = "windows")]
+            {
+                use std::os::windows::process::CommandExt;
+                cmd.creation_flags(0x08000000);
+            }
 
             // Network isolation via proxy
             if let Some(port) = network_proxy_port {
@@ -227,7 +233,22 @@ pub fn build_sandboxed_command(
 
         let _ = (cwd, extra_writable_paths);
         let mut cmd = StdCommand::new("powershell");
-        cmd.args(["-NoProfile", "-NonInteractive", "-Command", command]);
+        cmd.args([
+            "-NoProfile",
+            "-NonInteractive",
+            "-WindowStyle",
+            "Hidden",
+            "-Command",
+            command,
+        ]);
+
+        // 隐藏 PowerShell 窗口 (CREATE_NO_WINDOW)
+        #[cfg(target_os = "windows")]
+        {
+            use std::os::windows::process::CommandExt;
+            cmd.creation_flags(0x08000000);
+        }
+
         return cmd;
     }
 
@@ -290,14 +311,16 @@ mod tests {
 
     #[test]
     fn profile_allows_cwd_write() {
-        let profile = generate_seatbelt_profile(Some("/Users/test/project"), &[], "/Users/test", None);
+        let profile =
+            generate_seatbelt_profile(Some("/Users/test/project"), &[], "/Users/test", None);
         assert!(profile.contains("(allow file-write* (subpath \"/Users/test/project\"))"));
     }
 
     #[test]
     fn profile_allows_extra_writable_paths() {
         let extra = vec!["/Users/test/output".to_string()];
-        let profile = generate_seatbelt_profile(Some("/Users/test/project"), &extra, "/Users/test", None);
+        let profile =
+            generate_seatbelt_profile(Some("/Users/test/project"), &extra, "/Users/test", None);
         assert!(profile.contains("(allow file-write* (subpath \"/Users/test/output\"))"));
     }
 
@@ -319,12 +342,8 @@ mod tests {
 
     #[test]
     fn profile_escapes_special_chars() {
-        let profile = generate_seatbelt_profile(
-            Some("/Users/test/my \"project\""),
-            &[],
-            "/Users/test",
-            None,
-        );
+        let profile =
+            generate_seatbelt_profile(Some("/Users/test/my \"project\""), &[], "/Users/test", None);
         assert!(profile.contains("my \\\"project\\\""));
     }
 
@@ -375,7 +394,10 @@ mod tests {
         let cmd = build_sandboxed_command("echo hello", Some("/tmp/test"), &[], true, Some(18080));
         let envs: Vec<_> = cmd.get_envs().collect();
         let has_proxy = envs.iter().any(|(k, v)| {
-            *k == "HTTP_PROXY" && v.map(|v| v.to_str().unwrap_or("")).unwrap_or("").contains("18080")
+            *k == "HTTP_PROXY"
+                && v.map(|v| v.to_str().unwrap_or(""))
+                    .unwrap_or("")
+                    .contains("18080")
         });
         assert!(has_proxy, "HTTP_PROXY env var should contain proxy port");
     }

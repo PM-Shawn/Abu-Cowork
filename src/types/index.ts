@@ -91,6 +91,8 @@ export interface Message {
   toolCallsForContext?: ToolCallForContext[];
   // Persisted execution steps snapshot (for post-restart rich display)
   executionSteps?: import('./execution').ExecutionStepSnapshot[];
+  // System-injected messages (e.g. max_tokens recovery) — hidden from chat UI
+  isSystem?: boolean;
 }
 
 // Simplified tool call info for LLM context building
@@ -137,7 +139,7 @@ export interface Conversation {
 
 // --- Agent ---
 
-export type AgentStatus = 'idle' | 'thinking' | 'tool-calling' | 'streaming';
+export type AgentStatus = 'idle' | 'thinking' | 'tool-calling' | 'streaming' | 'rate-limited';
 
 // --- Tool Results ---
 

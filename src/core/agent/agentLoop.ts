@@ -555,14 +555,14 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
       subagentCleanup();
       chatStore.removeActiveAgent(delegateAgent.name);
       if (delegateStepId) {
-        eventRouter.route({ type: 'step-end', loopId, stepId: delegateStepId, result });
+        eventRouter.route({ type: 'step-end', loopId, stepId: delegateStepId, result: result.text });
       }
 
       // Add result as assistant message
       chatStore.addMessage(conversationId, {
         id: generateId(),
         role: 'assistant',
-        content: result,
+        content: result.text,
         timestamp: Date.now(),
         loopId,
       });
@@ -621,6 +621,8 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
   const maxTurns = route.skill?.maxTurns ?? route.definition?.maxTurns ?? defaultMaxTurns;
   let turnCount = 0;
   const autoCompactTracker = new AutoCompactTracker();
+  let maxOutputTokensRecoveryCount = 0;
+  const MAX_OUTPUT_TOKENS_RECOVERY_LIMIT = 3;
 
   while (continueLoop) {
     // Check if cancelled before starting new turn
@@ -686,6 +688,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
     let collectedThinking = '';
     let finalUsage: TokenUsage | undefined;
     let thinkingEndTime: number | undefined;  // Track when thinking ends
+    let lastStopReason = '';
 
     try {
       // ── Per-turn: refresh tools and dynamic prompt sections ──
@@ -942,9 +945,12 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
                   useChatStore.getState().updateMessageThinkingDuration(conversationId, thinkingDuration);
                 }
               }
+              // Track stop reason for max_tokens recovery
+              lastStopReason = event.stopReason;
               // Continue if there are tool calls
               if (event.stopReason === 'tool_use' && collectedToolCalls.length > 0) {
                 continueLoop = true;
+                maxOutputTokensRecoveryCount = 0; // Reset on normal tool_use continuation
               }
               if (event.usage) {
                 finalUsage = event.usage;
@@ -964,54 +970,67 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
           chatFn,
           { maxRetries: 3, baseDelayMs: 1000, maxDelayMs: 30000 },
           abortController.signal,
-          (attempt, _error, delayMs) => {
+          (attempt, error, delayMs) => {
+            // Show rate-limited status in UI when it's a rate limit error
+            if (error.code === 'rate_limit') {
+              chatStore.setAgentStatus('rate-limited', `${Math.round(delayMs / 1000)}s`);
+            }
             chatStore.appendToLastMessage(
               conversationId,
-              `\n*重试中 (${attempt}/3)... ${Math.round(delayMs / 1000)}s 后重试*`
+              `\n*${error.code === 'rate_limit' ? 'API 限流' : '重试'}中 (${attempt})... ${Math.round(delayMs / 1000)}s 后重试*`
             );
           }
         );
       } catch (retryErr) {
-        // Handle context_too_long by compression first, then aggressive truncation
+        // Handle context_too_long with two-stage recovery:
+        // Stage 1: Semantic compression → retry
+        // Stage 2: Hard truncation → retry
+        // Stage 3: Surface error to user
         if (retryErr instanceof LLMError && retryErr.code === 'context_too_long') {
           chatStore.appendToLastMessage(
             conversationId,
-            '\n*上下文过长，尝试压缩后重试...*'
+            '\n*上下文过长，正在优化上下文...*'
           );
 
-          // Step A: Try semantic compression first
-          let compressed = false;
-          try {
-            const compressionResult = await compressContextIfNeeded(
-              historyMessages,
-              effectiveSystemPrompt,
-              contextWindowSize,
-              maxOutputTokens,
-              {
-                adapter,
-                model: effectiveModelId,
-                apiKey: getActiveApiKey(freshSettings),
-                baseUrl: freshSettings.baseUrl || undefined,
-                signal: abortController.signal,
-              },
-              toolTokens
-            );
-            if (compressionResult.compressed) {
-              preparedMessages = prepareContextMessages(
-                compressionResult.messages,
+          let recovered = false;
+
+          // Stage 1: Try semantic compression (if not already attempted this turn)
+          if (!autoCompactTracker.isDisabled()) {
+            try {
+              const compressionResult = await compressContextIfNeeded(
+                historyMessages,
                 effectiveSystemPrompt,
                 contextWindowSize,
                 maxOutputTokens,
+                {
+                  adapter,
+                  model: effectiveModelId,
+                  apiKey: getActiveApiKey(freshSettings),
+                  baseUrl: freshSettings.baseUrl || undefined,
+                  signal: abortController.signal,
+                },
                 toolTokens
               );
-              compressed = true;
+              if (compressionResult.compressed) {
+                preparedMessages = prepareContextMessages(
+                  compressionResult.messages,
+                  effectiveSystemPrompt,
+                  contextWindowSize,
+                  maxOutputTokens,
+                  toolTokens
+                );
+                autoCompactTracker.recordSuccess();
+                recovered = true;
+                logger.info('Context recovered via semantic compression');
+              }
+            } catch {
+              autoCompactTracker.recordFailure();
             }
-          } catch {
-            // Compression failed — fall through to hard truncation
           }
 
-          // Step B: Hard truncation as last resort
-          if (!compressed) {
+          // Stage 2: Hard truncation as fallback
+          if (!recovered) {
+            logger.info('Attempting hard truncation recovery');
             const emergencyRounds = identifyRounds(historyMessages);
             if (emergencyRounds.length > 3) {
               const firstRound = emergencyRounds[0];
@@ -1021,9 +1040,20 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
               const lastTwoRounds = emergencyRounds.slice(-2);
               preparedMessages = lastTwoRounds.flat();
             }
+            recovered = true;
           }
 
-          await adapter.chat(preparedMessages, chatOptions, eventHandler);
+          // Retry with recovered messages
+          try {
+            await adapter.chat(preparedMessages, chatOptions, eventHandler);
+          } catch (retryErr2) {
+            // Stage 3: Even after truncation, still too long — surface error
+            if (retryErr2 instanceof LLMError && retryErr2.code === 'context_too_long') {
+              logger.error('Context recovery failed after both compression and truncation');
+              throw retryErr2;
+            }
+            throw retryErr2;
+          }
         } else {
           throw retryErr;
         }
@@ -1085,6 +1115,26 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
             });
           }
         }
+      }
+
+      // Max Output Tokens recovery: if LLM output was truncated (not tool_use),
+      // inject a continuation prompt and retry, up to MAX_OUTPUT_TOKENS_RECOVERY_LIMIT times.
+      // This matches Claude Code's max_output_tokens_recovery pattern.
+      if (!continueLoop && lastStopReason === 'max_tokens' && collectedToolCalls.length === 0
+          && maxOutputTokensRecoveryCount < MAX_OUTPUT_TOKENS_RECOVERY_LIMIT) {
+        maxOutputTokensRecoveryCount++;
+        logger.info('Max output tokens recovery', { attempt: maxOutputTokensRecoveryCount, limit: MAX_OUTPUT_TOKENS_RECOVERY_LIMIT });
+        // Inject a system continuation message (not shown in UI)
+        const recoveryMsg = {
+          id: generateId(),
+          role: 'user' as const,
+          content: 'Output token limit reached. Resume directly — no apology, no recap of what you were doing. Pick up mid-thought if that is where the cut happened. Break remaining work into smaller pieces.',
+          timestamp: Date.now(),
+          loopId,
+          isSystem: true as const,
+        };
+        useChatStore.getState().addMessage(conversationId, recoveryMsg);
+        continueLoop = true;
       }
 
       if (!continueLoop) {

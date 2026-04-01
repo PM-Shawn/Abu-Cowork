@@ -74,17 +74,19 @@ describe('retry', () => {
   });
 
   it('respects retryAfterMs from error', async () => {
+    vi.useRealTimers(); // Use real timers — fake timers cause flaky behavior with jitter
     const fn = vi.fn()
-      .mockRejectedValueOnce(new LLMError('rate limit', 'rate_limit', { retryable: true, retryAfterMs: 5000 }))
+      .mockRejectedValueOnce(new LLMError('rate limit', 'rate_limit', { retryable: true, retryAfterMs: 50 }))
       .mockResolvedValueOnce('ok');
 
     const onRetry = vi.fn();
-    const promise = withRetry(fn, { baseDelayMs: 100 }, undefined, onRetry);
-    await vi.advanceTimersByTimeAsync(5100);
-    await promise;
+    await withRetry(fn, { baseDelayMs: 10 }, undefined, onRetry);
 
-    // The delay should use retryAfterMs (5000) not baseDelayMs
-    expect(onRetry).toHaveBeenCalledWith(1, expect.any(LLMError), 5000);
+    // The delay should be based on retryAfterMs (50) with small jitter (±10%)
+    const actualDelay = onRetry.mock.calls[0][2] as number;
+    expect(actualDelay).toBeGreaterThanOrEqual(45);
+    expect(actualDelay).toBeLessThanOrEqual(60);
+    vi.useFakeTimers(); // Restore
   });
 
   it('cancels on abort signal (before retry)', async () => {

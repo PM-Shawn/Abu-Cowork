@@ -27,7 +27,7 @@ import { withRetry } from './retry';
  */
 export function extractParentConversationSummary(
   messages: Message[],
-  maxMessages: number = 6,
+  maxMessages: number = 10,
   maxCharsPerMessage: number = 300
 ): string {
   if (messages.length === 0) return '';
@@ -63,6 +63,38 @@ export type SubagentProgressEvent =
   | { type: 'tool-end'; id: string; toolName: string; result: string; error: boolean }
   | { type: 'turn-complete'; turn: number; totalTurns: number };
 
+/**
+ * Structured result from subagent execution.
+ * Provides metrics alongside the text result.
+ * Backward-compatible: toString() returns the text content.
+ */
+export class SubagentResult {
+  readonly text: string;
+  readonly toolCallCount: number;
+  readonly turnCount: number;
+  readonly tokenUsage: { input: number; output: number };
+  readonly duration: number; // seconds
+
+  constructor(params: {
+    text: string;
+    toolCallCount: number;
+    turnCount: number;
+    tokenUsage: { input: number; output: number };
+    duration: number;
+  }) {
+    this.text = params.text;
+    this.toolCallCount = params.toolCallCount;
+    this.turnCount = params.turnCount;
+    this.tokenUsage = params.tokenUsage;
+    this.duration = params.duration;
+  }
+
+  /** Backward compatible — callers that expect `string` get the text content */
+  toString(): string {
+    return this.text;
+  }
+}
+
 export interface SubagentLoopOptions {
   agent: SubagentDefinition;
   task: string;
@@ -77,8 +109,12 @@ export interface SubagentLoopOptions {
   imContext?: IMContext;
 }
 
-export async function runSubagentLoop(options: SubagentLoopOptions): Promise<string> {
+export async function runSubagentLoop(options: SubagentLoopOptions): Promise<SubagentResult> {
   const { agent, task, context, parentConversationSummary, commandConfirmCallback, filePermissionCallback, onProgress } = options;
+  const startTime = Date.now();
+  let totalToolCalls = 0;
+  let totalInputTokens = 0;
+  let totalOutputTokens = 0;
 
   // Guard: if signal is already aborted at entry, ignore it to avoid stale abort state from previous runs.
   // A genuinely cancelled request will re-abort the fresh controller created by the caller.
@@ -173,7 +209,13 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<str
 
     for (let turn = 0; turn < maxTurns; turn++) {
       if (signal?.aborted) {
-        return resultBuffer || 'Error: 任务被取消';
+        return new SubagentResult({
+          text: resultBuffer || 'Error: 任务被取消',
+          toolCallCount: totalToolCalls,
+          turnCount: turn,
+          tokenUsage: { input: totalInputTokens, output: totalOutputTokens },
+          duration: (Date.now() - startTime) / 1000,
+        });
       }
 
       const collectedToolCalls: Array<{
@@ -239,9 +281,16 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<str
             });
             onProgress?.({ type: 'tool-start', id: event.id, toolName: event.name, toolInput: event.input });
             break;
+          case 'usage':
+            totalInputTokens += event.usage.inputTokens ?? 0;
+            totalOutputTokens += event.usage.outputTokens ?? 0;
+            break;
           case 'done':
             if (event.stopReason === 'tool_use' && collectedToolCalls.length > 0) {
               shouldContinue = true;
+            }
+            if (event.usage) {
+              totalOutputTokens += event.usage.outputTokens ?? 0;
             }
             break;
         }
@@ -263,6 +312,7 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<str
       if (!shouldContinue) {
         break;
       }
+      totalToolCalls += collectedToolCalls.length;
 
       // Append assistant message with tool calls to local history
       const assistantMsg: Message = {
@@ -330,9 +380,21 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<str
       );
     }
 
-    return resultBuffer || 'Error: 代理未返回任何结果';
+    return new SubagentResult({
+      text: resultBuffer || 'Error: 代理未返回任何结果',
+      toolCallCount: totalToolCalls,
+      turnCount: maxTurns,
+      tokenUsage: { input: totalInputTokens, output: totalOutputTokens },
+      duration: (Date.now() - startTime) / 1000,
+    });
   } catch (err) {
     const errMsg = err instanceof Error ? err.message : String(err);
-    return `Error: ${errMsg}`;
+    return new SubagentResult({
+      text: `Error: ${errMsg}`,
+      toolCallCount: totalToolCalls,
+      turnCount: 0,
+      tokenUsage: { input: totalInputTokens, output: totalOutputTokens },
+      duration: (Date.now() - startTime) / 1000,
+    });
   }
 }

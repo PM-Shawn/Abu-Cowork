@@ -64,6 +64,7 @@ export interface TranslationDict {
     triggers: string;
     toolbox: string;
     recents: string;
+    searchPlaceholder: string;
     noSessionsYet: string;
     hideSidebar: string;
     showSidebar: string;
@@ -1113,6 +1114,7 @@ export interface TranslationDict {
     title: string;
     step1Title: string;
     step1Desc: string;
+    step1Link: string;
     step2Title: string;
     step2Desc: string;
     step3Title: string;

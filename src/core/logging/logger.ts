@@ -1,8 +1,10 @@
 /**
  * Structured Logger — lightweight ring-buffer logger for Abu desktop app.
  *
- * No external dependencies. Stores the last N entries in memory and
- * passes each log call through to the corresponding console.* method.
+ * - In-memory ring buffer (500 entries) for all levels
+ * - Disk persistence for warn/error (Tauri appDataDir/logs/)
+ * - Daily rotation, keeps last 7 days
+ * - Console passthrough for all levels
  */
 
 type LogLevel = 'debug' | 'info' | 'warn' | 'error';
@@ -54,6 +56,98 @@ const consoleMethods: Record<LogLevel, (...args: unknown[]) => void> = {
   error: console.error,
 };
 
+// ── Disk persistence (warn/error only) ──
+
+const DISK_LOG_LEVELS: Set<LogLevel> = new Set(['warn', 'error']);
+const LOG_RETENTION_DAYS = 7;
+let logDirPath: string | null = null;
+let diskWriteQueue: string[] = [];
+let flushScheduled = false;
+
+/** Lazy-init log directory path (only resolved once, async) */
+async function getLogDir(): Promise<string> {
+  if (logDirPath) return logDirPath;
+  try {
+    const { appDataDir } = await import('@tauri-apps/api/path');
+    const { mkdir, exists } = await import('@tauri-apps/plugin-fs');
+    const base = await appDataDir();
+    logDirPath = `${base}logs`;
+    if (!await exists(logDirPath)) {
+      await mkdir(logDirPath, { recursive: true });
+    }
+    return logDirPath;
+  } catch {
+    logDirPath = null;
+    return '';
+  }
+}
+
+function getTodayFileName(): string {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}.log`;
+}
+
+function formatEntryForDisk(entry: LogEntry): string {
+  const time = new Date(entry.timestamp).toISOString();
+  const dataStr = entry.data ? ' ' + JSON.stringify(entry.data) : '';
+  return `${time} [${entry.level.toUpperCase()}] [${entry.module}] ${entry.message}${dataStr}`;
+}
+
+/** Batch-flush queued log lines to disk (debounced to avoid excessive I/O) */
+async function flushToDisk(): Promise<void> {
+  flushScheduled = false;
+  if (diskWriteQueue.length === 0) return;
+  const lines = diskWriteQueue.join('\n') + '\n';
+  diskWriteQueue = [];
+  try {
+    const dir = await getLogDir();
+    if (!dir) return;
+    const { writeTextFile } = await import('@tauri-apps/plugin-fs');
+    const filePath = `${dir}/${getTodayFileName()}`;
+    await writeTextFile(filePath, lines, { append: true });
+  } catch {
+    // Disk write failed — silently drop (don't block the app)
+  }
+}
+
+function scheduleFlush(): void {
+  if (flushScheduled) return;
+  flushScheduled = true;
+  setTimeout(flushToDisk, 500); // batch writes within 500ms
+}
+
+function writeToDiskIfNeeded(entry: LogEntry): void {
+  if (!DISK_LOG_LEVELS.has(entry.level)) return;
+  diskWriteQueue.push(formatEntryForDisk(entry));
+  scheduleFlush();
+}
+
+/** Clean up log files older than LOG_RETENTION_DAYS. Call once on app start. */
+async function cleanupOldLogs(): Promise<void> {
+  try {
+    const dir = await getLogDir();
+    if (!dir) return;
+    const { readDir, remove } = await import('@tauri-apps/plugin-fs');
+    const entries = await readDir(dir);
+    const cutoff = Date.now() - LOG_RETENTION_DAYS * 24 * 60 * 60 * 1000;
+    for (const entry of entries) {
+      if (!entry.name?.endsWith('.log')) continue;
+      // Parse date from filename: YYYY-MM-DD.log
+      const match = entry.name.match(/^(\d{4})-(\d{2})-(\d{2})\.log$/);
+      if (!match) continue;
+      const fileDate = new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3])).getTime();
+      if (fileDate < cutoff) {
+        await remove(`${dir}/${entry.name}`).catch(() => {});
+      }
+    }
+  } catch {
+    // Non-critical
+  }
+}
+
+// Fire-and-forget cleanup on module load
+void cleanupOldLogs();
+
 // ── Public API ──
 
 /**
@@ -68,6 +162,7 @@ function createLogger(module: string): Logger {
   const log = (level: LogLevel, message: string, data?: Record<string, unknown>): void => {
     const entry: LogEntry = { level, module, message, timestamp: Date.now(), ...(data !== undefined ? { data } : {}) };
     pushEntry(entry);
+    writeToDiskIfNeeded(entry);
     const prefix = `[${module}]`;
     if (data) {
       consoleMethods[level](prefix, message, data);

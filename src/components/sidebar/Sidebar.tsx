@@ -3,7 +3,7 @@ import { useChatStore } from '@/stores/chatStore';
 import { useSettingsStore } from '@/stores/settingsStore';
 import { useProjectStore } from '@/stores/projectStore';
 import { useI18n } from '@/i18n';
-import { Plus, Workflow, Wrench, Trash2, Settings, Download, Upload, Pencil, Undo2, HelpCircle, FolderInput, FolderClosed, ChevronRight, Minus } from 'lucide-react';
+import { Plus, Workflow, Wrench, Trash2, Settings, Download, Upload, Pencil, Undo2, HelpCircle, FolderInput, FolderClosed, ChevronRight, Minus, Search, X } from 'lucide-react';
 import GuideModal from '@/components/common/GuideModal';
 import ProfileEditModal from '@/components/common/ProfileEditModal';
 import { Button } from '@/components/ui/button';
@@ -82,6 +82,7 @@ export default function Sidebar() {
   const [showMoveSubmenu, setShowMoveSubmenu] = useState(false);
   const projectsMap = useProjectStore((s) => s.projects);
   const [recentsCollapsed, setRecentsCollapsed] = useState(false);
+  const [searchQuery, setSearchQuery] = useState('');
 
   // Undo delete state
   const [pendingDelete, setPendingDelete] = useState<{ id: string; data: string } | null>(null);
@@ -131,6 +132,7 @@ export default function Sidebar() {
   // Filter out conversations belonging to projects, scheduled tasks, or triggers — they appear in their own sections
   const sortedConvs = Object.values(conversations)
     .filter((c) => !c.scheduledTaskId && !c.triggerId && !c.projectId)
+    .filter((c) => !searchQuery || c.title.toLowerCase().includes(searchQuery.toLowerCase()))
     .sort((a, b) => b.createdAt - a.createdAt);
 
   const handleDeleteConversation = (e: React.MouseEvent, convId: string) => {
@@ -265,6 +267,30 @@ export default function Sidebar() {
             <span>{t.sidebar.recents}</span>
           </button>
         </div>
+
+        {/* Search Box */}
+        {!recentsCollapsed && (
+          <div className="px-4 pb-1">
+            <div className="relative">
+              <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-[var(--abu-text-muted)]" />
+              <input
+                type="text"
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                placeholder={t.sidebar.searchPlaceholder}
+                className="w-full h-7 pl-8 pr-7 rounded-md text-xs bg-[var(--abu-bg-secondary)] border border-transparent focus:border-[var(--abu-clay-30)] focus:outline-none text-[var(--abu-text-primary)] placeholder:text-[var(--abu-text-muted)]"
+              />
+              {searchQuery && (
+                <button
+                  onClick={() => setSearchQuery('')}
+                  className="absolute right-2 top-1/2 -translate-y-1/2 text-[var(--abu-text-muted)] hover:text-[var(--abu-text-primary)]"
+                >
+                  <X className="h-3 w-3" />
+                </button>
+              )}
+            </div>
+          </div>
+        )}
 
         {/* Conversation List */}
         {!recentsCollapsed && (
@@ -476,7 +502,13 @@ export default function Sidebar() {
       )}
 
       {/* Guide modal */}
-      <GuideModal open={guideOpen} onClose={() => { setGuideOpen(false); setGuideShown(true); }} />
+      <GuideModal
+        open={guideOpen}
+        onClose={() => { setGuideOpen(false); setGuideShown(true); }}
+        onNavigateToAIServices={() => {
+          useSettingsStore.getState().openSystemSettings('ai-services');
+        }}
+      />
 
       {/* Profile edit modal */}
       <ProfileEditModal open={profileOpen} onClose={() => setProfileOpen(false)} />

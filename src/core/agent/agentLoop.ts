@@ -208,6 +208,14 @@ function getBaseSystemPrompt(): string {
 - 如果多个代理做了类似调研，用对比表格或要点列表呈现差异
 - 用自己的话总结，不要复制粘贴代理的原始输出
 
+## 大文件读取策略
+- 读取文本文件时，如果文件超过 256KB，read_file 会提示你使用 offset/limit 参数分段读取
+- 收到"File is too large"提示后，根据需求决定策略：
+  - 需要了解文件整体结构：先读前 200 行（offset=0, limit=200）了解大致内容
+  - 需要查找特定内容：用 search_files 按关键词搜索定位，再用 offset/limit 读取对应区域
+  - 需要全面分析：分多次读取，每次 2000 行，逐段处理
+- 不要尝试一次性读取大文件的全部内容
+
 ## 多轮对话管理
 - 长对话中如果发现之前的信息可能已过时（比如文件内容可能已变），主动重新获取而不是依赖旧数据
 - 当用户的问题明显与之前的上下文无关（换了话题），简洁回应即可，不需要联系之前的上下文
@@ -1227,6 +1235,13 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
         // Mark conversation as completed and send notification
         chatStore.setConversationStatus(conversationId, 'completed');
         indexConversationAsync(conversationId);
+        // Auto-extract memories from desktop conversations (non-blocking)
+        // IM conversations have their own extraction in channelRouter.ts
+        if (!options?.imContext) {
+          import('../memory/extractor').then(({ extractMemoriesFromConversation }) =>
+            extractMemoriesFromConversation(conversationId)
+          ).catch(() => {});
+        }
         const convTitle = useChatStore.getState().conversations[conversationId]?.title ?? '任务';
         notifyTaskCompleted(convTitle);
       }

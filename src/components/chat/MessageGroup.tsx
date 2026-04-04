@@ -20,6 +20,7 @@ import abuAvatar from '@/assets/abu-avatar.png';
 
 interface MessageGroupProps {
   messages: Message[];
+  isLastGroup?: boolean;
 }
 
 // Helper to get text content from Message
@@ -142,7 +143,7 @@ function buildRenderSegments(
  * User messages render standalone, assistant messages share one avatar.
  * Renders text → merged tool steps, with consecutive tool-only turns combined.
  */
-export default function MessageGroup({ messages }: MessageGroupProps) {
+export default function MessageGroup({ messages, isLastGroup: isLastGroupProp = false }: MessageGroupProps) {
   // Separate user and assistant messages
   const userMsg = messages.find((m) => m.role === 'user');
   const assistantMsgs = messages.filter((m) => m.role === 'assistant');
@@ -288,8 +289,8 @@ export default function MessageGroup({ messages }: MessageGroupProps) {
   useEffect(() => {
     const wasDone = prevAgentDoneRef.current;
     prevAgentDoneRef.current = isAgentDone;
-    // Only trigger on false→true transition (agent just finished, not already done on mount/switch)
-    if (wasDone || !isAgentDone || fileOutputs.length === 0) return;
+    // Only trigger on false→true transition for the LAST group (prevent old groups from re-triggering)
+    if (!isLastGroupProp || wasDone || !isAgentDone || fileOutputs.length === 0) return;
     const nonImageFiles = fileOutputs.filter((f) => !isImageFile(f.path));
     const previewableFile = nonImageFiles[nonImageFiles.length - 1] || fileOutputs[fileOutputs.length - 1];
     if (previewableFile) {

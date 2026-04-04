@@ -285,9 +285,12 @@ export class OpenAICompatibleAdapter implements LLMAdapter {
     // Track tool calls being assembled
     const toolCallBuffers: Map<number, { id: string; name: string; args: string }> = new Map();
 
-    // <think> tag parser state — handles models that embed thinking in content (MiniMax, QwQ, etc.)
+    // Tag parser state — handles <think> (thinking) and <tool_call> (fallback tool calls) in content
     let inThinkTag = false;
+    let inToolCallTag = false;
     let pendingContent = '';
+    /** Collected text-based tool calls (from <tool_call> tags) */
+    const textToolCalls: Array<{ id: string; name: string; input: Record<string, unknown> }> = [];
 
     /** Returns length of longest suffix of `str` that matches a prefix of `tag` */
     function partialTagMatch(str: string, tag: string): number {
@@ -298,7 +301,12 @@ export class OpenAICompatibleAdapter implements LLMAdapter {
       return 0;
     }
 
-    /** Process content chunk, splitting <think> blocks into thinking events */
+    /**
+     * Process content chunk, splitting special tags:
+     * - <think>...</think> → thinking events
+     * - <tool_call>...</tool_call> → buffered, parsed as tool_use on close
+     * - Everything else → text events
+     */
     function emitContent(chunk: string) {
       pendingContent += chunk;
       while (pendingContent) {
@@ -318,17 +326,62 @@ export class OpenAICompatibleAdapter implements LLMAdapter {
             pendingContent = pendingContent.slice(safeLen);
           }
           break;
-        } else {
-          const openIdx = pendingContent.indexOf('<think>');
-          if (openIdx >= 0) {
-            const text = pendingContent.slice(0, openIdx);
-            if (text) onEvent({ type: 'text', text });
-            pendingContent = pendingContent.slice(openIdx + 7);
-            inThinkTag = true;
+        } else if (inToolCallTag) {
+          // Buffer <tool_call> content — don't emit as text
+          const closeIdx = pendingContent.indexOf('</tool_call>');
+          if (closeIdx >= 0) {
+            const jsonStr = pendingContent.slice(0, closeIdx).trim();
+            pendingContent = pendingContent.slice(closeIdx + 12);
+            inToolCallTag = false;
+            // Parse the tool call JSON
+            try {
+              const parsed = JSON.parse(jsonStr);
+              const name = parsed.name as string;
+              const args = parsed.arguments ?? parsed.parameters ?? {};
+              const input = typeof args === 'string' ? JSON.parse(args) : args;
+              const id = `text-tc-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
+              textToolCalls.push({ id, name, input });
+            } catch {
+              // Unparseable — emit as text fallback
+              onEvent({ type: 'text', text: `<tool_call>${jsonStr}</tool_call>` });
+            }
             continue;
           }
-          const partialLen = partialTagMatch(pendingContent, '<think>');
-          const safeLen = pendingContent.length - partialLen;
+          // Wait for more data (closing tag not yet received)
+          const partialLen = partialTagMatch(pendingContent, '</tool_call>');
+          if (partialLen > 0) break; // Hold buffer
+          // No partial match and content is large enough — keep waiting
+          break;
+        } else {
+          // Check for <think> first
+          const thinkIdx = pendingContent.indexOf('<think>');
+          const toolCallIdx = pendingContent.indexOf('<tool_call>');
+
+          // Find earliest tag
+          const earliest = [
+            thinkIdx >= 0 ? { idx: thinkIdx, tag: 'think' as const } : null,
+            toolCallIdx >= 0 ? { idx: toolCallIdx, tag: 'tool_call' as const } : null,
+          ].filter(Boolean).sort((a, b) => a!.idx - b!.idx)[0];
+
+          if (earliest) {
+            // Emit text before the tag
+            const text = pendingContent.slice(0, earliest.idx);
+            if (text) onEvent({ type: 'text', text });
+            if (earliest.tag === 'think') {
+              pendingContent = pendingContent.slice(earliest.idx + 7); // '<think>'.length
+              inThinkTag = true;
+            } else {
+              pendingContent = pendingContent.slice(earliest.idx + 11); // '<tool_call>'.length
+              inToolCallTag = true;
+            }
+            continue;
+          }
+
+          // Check for partial tag matches at end
+          const partialThink = partialTagMatch(pendingContent, '<think>');
+          const partialToolCall = partialTagMatch(pendingContent, '<tool_call>');
+          const maxPartial = Math.max(partialThink, partialToolCall);
+          const safeLen = pendingContent.length - maxPartial;
           if (safeLen > 0) {
             onEvent({ type: 'text', text: pendingContent.slice(0, safeLen) });
             pendingContent = pendingContent.slice(safeLen);
@@ -338,19 +391,14 @@ export class OpenAICompatibleAdapter implements LLMAdapter {
       }
     }
 
-    // Track all emitted text for fallback tool_call parsing
-    let accumulatedText = '';
-    const originalOnEvent = onEvent;
-    onEvent = (event: StreamEvent) => {
-      if (event.type === 'text') accumulatedText += event.text;
-      originalOnEvent(event);
-    };
-
     /** Flush any remaining buffered content */
     function flushPendingContent() {
       if (pendingContent) {
         if (inThinkTag) {
           onEvent({ type: 'thinking', thinking: pendingContent });
+        } else if (inToolCallTag) {
+          // Incomplete tool_call tag — emit as text
+          onEvent({ type: 'text', text: `<tool_call>${pendingContent}` });
         } else {
           onEvent({ type: 'text', text: pendingContent });
         }
@@ -358,29 +406,13 @@ export class OpenAICompatibleAdapter implements LLMAdapter {
       }
     }
 
-    /**
-     * Fallback: parse <tool_call> XML tags from text content.
-     * Some providers (OpenRouter, etc.) don't return structured tool_calls;
-     * instead the model outputs tool invocations as <tool_call>...</tool_call> XML in text.
-     */
-    function tryParseTextToolCalls(): boolean {
-      const toolCallRegex = /<tool_call>\s*(\{[\s\S]*?\})\s*<\/tool_call>/g;
-      const matches = [...accumulatedText.matchAll(toolCallRegex)];
-      if (matches.length === 0) return false;
-
-      for (const match of matches) {
-        try {
-          const parsed = JSON.parse(match[1]);
-          const name = parsed.name as string;
-          const args = parsed.arguments ?? parsed.parameters ?? {};
-          const input = typeof args === 'string' ? JSON.parse(args) : args;
-          const id = `text-tc-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
-          originalOnEvent({ type: 'tool_use', id, name, input });
-        } catch {
-          // Skip unparseable tool calls
-        }
+    /** Emit all buffered text-based tool calls as tool_use events */
+    function emitTextToolCalls(): boolean {
+      if (textToolCalls.length === 0) return false;
+      for (const tc of textToolCalls) {
+        onEvent({ type: 'tool_use', id: tc.id, name: tc.name, input: tc.input });
       }
-      return matches.length > 0;
+      return true;
     }
 
     try {
@@ -399,20 +431,19 @@ export class OpenAICompatibleAdapter implements LLMAdapter {
 
           const data = trimmed.slice(6);
           if (data === '[DONE]') {
-            // Flush any buffered <think> tag content
             flushPendingContent();
-            // Emit any remaining tool calls
+            // Emit structured tool calls
             for (const [, tc] of toolCallBuffers) {
               let input: Record<string, unknown> = {};
               try { input = JSON.parse(tc.args); } catch {
                 input = { _parse_error: `Failed to parse tool input: ${tc.args.slice(0, 200)}` };
               }
-              originalOnEvent({ type: 'tool_use', id: tc.id, name: tc.name, input });
+              onEvent({ type: 'tool_use', id: tc.id, name: tc.name, input });
             }
-            // Fallback: check for <tool_call> XML in text if no structured tool calls
-            const hasStructuredToolCalls = toolCallBuffers.size > 0;
-            const hasTextToolCalls = !hasStructuredToolCalls && tryParseTextToolCalls();
-            originalOnEvent({ type: 'done', stopReason: (hasStructuredToolCalls || hasTextToolCalls) ? 'tool_use' : 'end_turn' });
+            // Emit text-based <tool_call> tool calls
+            const hasTextTC = emitTextToolCalls();
+            const hasToolCalls = toolCallBuffers.size > 0 || hasTextTC;
+            onEvent({ type: 'done', stopReason: hasToolCalls ? 'tool_use' : 'end_turn' });
             return;
           }
 
@@ -462,12 +493,13 @@ export class OpenAICompatibleAdapter implements LLMAdapter {
               onEvent({ type: 'done', stopReason: 'tool_use' });
               return;
             } else if (choice.finish_reason === 'stop') {
-              // Fallback: check if model output tool calls as <tool_call> XML in text
-              if (toolCallBuffers.size === 0 && tryParseTextToolCalls()) {
-                originalOnEvent({ type: 'done', stopReason: 'tool_use' });
+              // Emit text-based <tool_call> tool calls if any were buffered
+              const hasTextTC = emitTextToolCalls();
+              if (hasTextTC) {
+                onEvent({ type: 'done', stopReason: 'tool_use' });
                 return;
               }
-              originalOnEvent({ type: 'done', stopReason: 'end_turn' });
+              onEvent({ type: 'done', stopReason: 'end_turn' });
               return;
             }
           } catch {

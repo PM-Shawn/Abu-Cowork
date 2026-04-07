@@ -178,12 +178,16 @@ export default function ChatView() {
 
 
   // Welcome screen - new conversation state (activeConversationId is null)
-  // Only show setup prompt when NO enabled provider has an API key at all
+  // First-run banner: show only when no provider has been actually configured.
+  // "Configured" = has an API key OR is a keyless provider (ollama).
+  // We deliberately do NOT count `enabled && !apiKey` as configured, otherwise
+  // the default qiniu placeholder (enabled by default) would suppress the banner
+  // for first-run users. The send-time guard in handleSend (line 159) catches
+  // the secondary "active provider has no key" case.
   const needsSetup = useSettingsStore((s) => {
-    const hasAnyConfigured = s.providers.some(
-      p => p.enabled && (p.apiKey.trim().length > 0 || p.id === 'ollama')
+    return !s.providers.some(
+      p => p.apiKey.trim().length > 0 || p.id === 'ollama'
     );
-    return !hasAnyConfigured;
   });
 
   // Scenario guide state — lifted here so ChatInput can receive the custom placeholder

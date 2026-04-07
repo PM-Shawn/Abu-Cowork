@@ -4,7 +4,6 @@ import { useSettingsStore } from '@/stores/settingsStore';
 import { useI18n } from '@/i18n';
 import { cn } from '@/lib/utils';
 import { Input } from '@/components/ui/input';
-import { ScrollArea } from '@/components/ui/scroll-area';
 import type { ModelCapability, ModelInfo, ProviderInstance } from '@/types';
 
 interface ModelSelectorProps {
@@ -48,6 +47,7 @@ function ModelRow({
   isFavorite,
   onSelect,
   onToggleFavorite,
+  dim = false,
 }: {
   model: ModelInfo;
   provider: ProviderInstance;
@@ -55,6 +55,7 @@ function ModelRow({
   isFavorite: boolean;
   onSelect: () => void;
   onToggleFavorite: () => void;
+  dim?: boolean;
 }) {
   const caps = getEffectiveCaps(model, provider);
 
@@ -65,16 +66,19 @@ function ModelRow({
       className={cn(
         'flex items-center w-full px-3 py-1.5 text-left text-sm rounded-md transition-colors cursor-pointer',
         'hover:bg-[var(--abu-bg-hover)]',
-        isActive && 'bg-[var(--abu-bg-hover)]'
+        isActive && !dim && 'bg-[var(--abu-bg-hover)]'
       )}
       onClick={onSelect}
       onKeyDown={(e) => { if (e.key === 'Enter') onSelect(); }}
     >
-      <span className="flex-1 truncate text-[var(--abu-text-secondary)]">
+      <span className={cn(
+        'flex-1 truncate',
+        dim ? 'text-[var(--abu-text-muted)]' : 'text-[var(--abu-text-secondary)]'
+      )}>
         {model.label || model.id}
       </span>
 
-      {isActive && (
+      {isActive && !dim && (
         <Check className="h-3.5 w-3.5 text-[var(--abu-clay)] shrink-0 mr-1" />
       )}
 
@@ -295,7 +299,7 @@ export function ModelSelector({ open, onClose, anchorRef }: ModelSelectorProps) 
         </div>
       ) : (
         /* Model list */
-        <ScrollArea className="max-h-80">
+        <div className="overflow-y-auto max-h-80">
           <div className="p-1">
             {/* Favorites section */}
             {resolvedFavorites.length > 0 && (
@@ -335,10 +339,11 @@ export function ModelSelector({ open, onClose, anchorRef }: ModelSelectorProps) 
                     <ModelRow
                       model={model}
                       provider={provider}
-                      isActive={isModelActive(provider.id, model.id)}
+                      isActive={false}
                       isFavorite={isModelFavorite(provider.id, model.id)}
                       onSelect={() => handleSelect(provider.id, model.id)}
                       onToggleFavorite={() => handleToggleFavorite(provider.id, model.id)}
+                      dim
                     />
                   </div>
                 ))}
@@ -380,7 +385,7 @@ export function ModelSelector({ open, onClose, anchorRef }: ModelSelectorProps) 
               </div>
             )}
           </div>
-        </ScrollArea>
+        </div>
       )}
     </div>
   );

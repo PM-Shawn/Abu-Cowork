@@ -363,6 +363,67 @@ export function getActiveProvider(state: SettingsState): ProviderInstance | unde
   return state.providers.find(p => p.id === state.activeModel.providerId);
 }
 
+/**
+ * Reconcile activeModel after rehydration so that downstream code
+ * (getActiveProvider, ChatInput, agentLoop) always sees a consistent state.
+ *
+ * Mutates `state` in place. Exported for unit testing — also called from
+ * `onRehydrateStorage` below.
+ *
+ * Rules:
+ * 1. Active provider missing  → switch to a usable enabled provider, falling
+ *    back to any enabled provider.
+ * 2. Active provider disabled but has key (or is ollama) → silently re-enable.
+ * 3. Active provider disabled and unusable → switch to a usable fallback;
+ *    only force-enable as a last resort so getActiveProvider() keeps resolving.
+ */
+export function reconcileActiveProvider(
+  state: Pick<SettingsState, 'providers' | 'activeModel'>
+): void {
+  const activeProvider = state.providers.find(
+    p => p.id === state.activeModel.providerId
+  );
+  if (!activeProvider) {
+    const fallback =
+      state.providers.find(
+        p => p.enabled && (p.apiKey.trim().length > 0 || p.id === 'ollama')
+      ) ?? state.providers.find(p => p.enabled);
+    if (fallback) {
+      state.activeModel = {
+        providerId: fallback.id,
+        modelId: fallback.models[0]?.id ?? '',
+      };
+    }
+    return;
+  }
+  if (activeProvider.enabled) return;
+
+  const isUsable =
+    activeProvider.apiKey.trim().length > 0 || activeProvider.id === 'ollama';
+  if (isUsable) {
+    activeProvider.enabled = true;
+    return;
+  }
+
+  const fallback = state.providers.find(
+    p =>
+      p.id !== activeProvider.id &&
+      p.enabled &&
+      (p.apiKey.trim().length > 0 || p.id === 'ollama')
+  );
+  if (fallback) {
+    state.activeModel = {
+      providerId: fallback.id,
+      modelId: fallback.models[0]?.id ?? '',
+    };
+    // Leave activeProvider disabled — user's intent is preserved.
+  } else {
+    // No usable alternative; degrade to original behavior so that
+    // getActiveProvider() and the send-time guard still work.
+    activeProvider.enabled = true;
+  }
+}
+
 /** Get the active provider + model in one call */
 export function getActiveProviderAndModel(state: SettingsState): {
   provider: ProviderInstance;
@@ -990,23 +1051,8 @@ export const useSettingsStore = create<SettingsStore>()(
         if (state.language) {
           initLanguage(state.language);
         }
-        // Validate active model points to an enabled provider
-        const activeProvider = state.providers.find(
-          p => p.id === state.activeModel.providerId
-        );
-        if (!activeProvider) {
-          // Fallback: find first enabled provider
-          const fallback = state.providers.find(p => p.enabled);
-          if (fallback) {
-            state.activeModel = {
-              providerId: fallback.id,
-              modelId: fallback.models[0]?.id ?? '',
-            };
-          }
-        } else if (!activeProvider.enabled) {
-          // Provider exists but disabled — enable it
-          activeProvider.enabled = true;
-        }
+        // Validate active model points to a usable provider
+        reconcileActiveProvider(state);
         // Force reset ephemeral UI state
         state.showSettings = false;
         state.activeSystemTab = 'ai-services';

@@ -302,6 +302,56 @@ export async function appendMessage(
 }
 
 /**
+ * Replace a message in the JSONL file by its id.
+ * Unlike updateLastMessage, this scans for the matching id, so it correctly
+ * updates intermediate-turn messages even after later turns have appended new
+ * lines. Used by the agent loop to flush each turn's full state (including
+ * tool calls) immediately after the tool batch completes — without this,
+ * only the very last turn's tool calls would survive a restart.
+ */
+export async function replaceMessageById(
+  convId: string,
+  message: Message,
+): Promise<void> {
+  await ensureBase();
+  const path = messagesPath(convId);
+  if (!(await exists(path))) return;
+
+  try {
+    // Flush pending writes for this file first to avoid races
+    const pending = writeQueues.get(path);
+    if (pending && pending.length > 0) {
+      await flushWrites();
+    }
+
+    const raw = await readTextFile(path);
+    const lines = raw.trimEnd().split('\n');
+    let replaced = false;
+    for (let i = 0; i < lines.length; i++) {
+      // Cheap pre-check: only parse lines that contain the id substring
+      if (!lines[i].includes(`"${message.id}"`)) continue;
+      try {
+        const parsed = JSON.parse(lines[i]) as Message;
+        if (parsed.id === message.id) {
+          lines[i] = JSON.stringify(stripForDisk(message));
+          replaced = true;
+          break;
+        }
+      } catch {
+        // Skip corrupt line
+      }
+    }
+
+    if (replaced) {
+      await writeTextFile(path, lines.join('\n') + '\n');
+      writtenIds.add(message.id);
+    }
+  } catch {
+    // Non-critical: leave the file as-is. Worst case the message disk state lags behind memory.
+  }
+}
+
+/**
  * Replace the last line in the JSONL file.
  * Used when streaming completes or tool results are added.
  */

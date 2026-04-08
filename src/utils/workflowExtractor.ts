@@ -430,30 +430,42 @@ function extractDocumentPathsFromCommand(cmd: string): string[] {
 /**
  * Extract file paths from text output (stdout, delegate results, etc.)
  * Matches common Chinese/English patterns for file output announcements.
+ *
+ * Supports paths with spaces when wrapped in quotes/backticks (e.g. ~/Library/Application Support/...)
+ * — the quoted-form patterns run first and take precedence.
  */
 export function extractFilePathsFromText(text: string): string[] {
   const paths = new Set<string>();
 
-  // Pattern groups for file output announcements
-  // Optional leading quote/bracket is consumed but not captured
+  // Pattern groups, ordered: quoted-form first (allows spaces), then bare form.
   const patterns: RegExp[] = [
+    // ── Quoted forms (allow spaces in path) ──
+    // Backtick-quoted: 文件位置: `path with spaces.ext`
+    /(?:已保存到|已保存|输出到|写入到|生成到|导出到|已创建|已生成|生成了|生成完成|创建了|创建于|Output file|输出文件|文件位置|文件路径|保存在|保存到|saved to|output to|written to|exported to|generated at|created at|created)\s*[:：]?\s*`([^`\n]+\.\w{1,10})`/gi,
+    // Single-quoted: 文件位置: 'path with spaces.ext'
+    /(?:已保存到|已保存|输出到|写入到|生成到|导出到|已创建|已生成|生成了|生成完成|创建了|创建于|Output file|输出文件|文件位置|文件路径|保存在|保存到|saved to|output to|written to|exported to|generated at|created at|created)\s*[:：]?\s*'([^'\n]+\.\w{1,10})'/gi,
+    // Double-quoted: 文件位置: "path with spaces.ext"
+    /(?:已保存到|已保存|输出到|写入到|生成到|导出到|已创建|已生成|生成了|生成完成|创建了|创建于|Output file|输出文件|文件位置|文件路径|保存在|保存到|saved to|output to|written to|exported to|generated at|created at|created)\s*[:：]?\s*"([^"\n]+\.\w{1,10})"/gi,
+
+    // ── Bare forms (no spaces allowed) ──
     // Chinese: 已保存到 /path/to/file.ext
-    /(?:已保存到|输出到|写入到|生成到|导出到|已创建|生成完成)\s*[:：]?\s*['"`]?((?:[A-Za-z]:\\|\/)[^\s"'`,，。、;；\n]+)/g,
+    /(?:已保存到|已保存|输出到|写入到|生成到|导出到|已创建|已生成|生成了|生成完成|创建了|创建于)\s*[:：]?\s*((?:[A-Za-z]:\\|\/|~\/)[^\s"'`,，。、;；\n]+)/g,
     // English: saved to /path/to/file.ext
-    /(?:saved to|output to|written to|exported to|generated at|created at|created)\s*[:：]?\s*['"`]?((?:[A-Za-z]:\\|\/)[^\s"'`,，。、;；\n]+)/gi,
+    /(?:saved to|output to|written to|exported to|generated at|created at|created)\s*[:：]?\s*((?:[A-Za-z]:\\|\/|~\/)[^\s"'`,，。、;；\n]+)/gi,
     // Label: Output file: /path  or  输出文件: /path  or  文件位置: /path
-    /(?:Output file|输出文件|文件位置|文件路径|保存在|保存到)\s*[:：]\s*['"`]?((?:[A-Za-z]:\\|\/|[^\s"'`,，。、;；\n/\\])[^\s"'`,，。、;；\n]*\.\w{1,10})/gi,
+    /(?:Output file|输出文件|文件位置|文件路径|保存在|保存到)\s*[:：]\s*((?:[A-Za-z]:\\|\/|~\/|[^\s"'`,，。、;；\n/\\])[^\s"'`,，。、;；\n]*\.\w{1,10})/gi,
     // Arrow: -> /path  or  → /path
-    /(?:->|→)\s*['"`]?((?:[A-Za-z]:\\|\/)[^\s"'`,，。、;；\n]+)/g,
+    /(?:->|→)\s*((?:[A-Za-z]:\\|\/|~\/)[^\s"'`,，。、;；\n]+)/g,
   ];
 
   for (const pattern of patterns) {
     let match: RegExpExecArray | null;
     while ((match = pattern.exec(text)) !== null) {
-      // Strip markdown formatting + trailing punctuation/quotes
+      // Strip markdown formatting + trailing punctuation/quotes.
+      // NOTE: do NOT strip leading `~` — it could be a real home-relative path like ~/Library/...
       let p = match[1]
-        .replace(/^[*_`~]+/, '')                    // leading markdown chars
-        .replace(/[*_`~)）\]】}"'。，,;；:：]+$/, ''); // trailing markdown + punctuation
+        .replace(/^[*_`]+/, '')                     // leading markdown chars (no ~)
+        .replace(/[*_`~)）\]】}"'。，,;；:：]+$/, ''); // trailing markdown + punctuation (~ here is fine, it's strikethrough closer)
       // Trim trailing dots that aren't part of extension
       p = p.replace(/\.+$/, '');
       if (hasFileExtension(p)) {

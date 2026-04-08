@@ -161,6 +161,61 @@
       ]
     },
     {
+      "identifier": "fs:allow-stat",
+      "allow": [
+        { "path": "$HOME/**" },
+        { "path": "$HOME/.abu/**" },
+        { "path": "$DESKTOP/**" },
+        { "path": "$DESKTOP/**/.abu/**" },
+        { "path": "$DOCUMENT/**" },
+        { "path": "$DOCUMENT/**/.abu/**" },
+        { "path": "$DOWNLOAD/**" },
+        { "path": "$DOWNLOAD/**/.abu/**" },
+        { "path": "$RESOURCE/**" },
+        { "path": "/tmp/**" },
+        { "path": "/private/tmp/**" },
+        { "path": "/Volumes/**" },
+        { "path": "/Volumes/**/.abu/**" },
+        { "path": "$TEMP/**" }
+      ]
+    },
+    {
+      "identifier": "fs:allow-copy-file",
+      "allow": [
+        { "path": "$HOME/**" },
+        { "path": "$HOME/.abu/**" },
+        { "path": "$DESKTOP/**" },
+        { "path": "$DESKTOP/**/.abu/**" },
+        { "path": "$DOCUMENT/**" },
+        { "path": "$DOCUMENT/**/.abu/**" },
+        { "path": "$DOWNLOAD/**" },
+        { "path": "$DOWNLOAD/**/.abu/**" },
+        { "path": "/tmp/**" },
+        { "path": "/private/tmp/**" },
+        { "path": "/Volumes/**" },
+        { "path": "/Volumes/**/.abu/**" },
+        { "path": "$TEMP/**" }
+      ]
+    },
+    {
+      "identifier": "fs:allow-rename",
+      "allow": [
+        { "path": "$HOME/**" },
+        { "path": "$HOME/.abu/**" },
+        { "path": "$DESKTOP/**" },
+        { "path": "$DESKTOP/**/.abu/**" },
+        { "path": "$DOCUMENT/**" },
+        { "path": "$DOCUMENT/**/.abu/**" },
+        { "path": "$DOWNLOAD/**" },
+        { "path": "$DOWNLOAD/**/.abu/**" },
+        { "path": "/tmp/**" },
+        { "path": "/private/tmp/**" },
+        { "path": "/Volumes/**" },
+        { "path": "/Volumes/**/.abu/**" },
+        { "path": "$TEMP/**" }
+      ]
+    },
+    {
       "identifier": "http:default",
       "allow": [
         { "url": "https://*" },

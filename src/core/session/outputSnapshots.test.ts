@@ -203,6 +203,20 @@ describe('outputSnapshots', () => {
       expect(entry).toBeNull();
     });
 
+    it('expands ~/... before treating as absolute path', async () => {
+      // homeDir mock returns /Users/testuser
+      memFs.addUserFile('/Users/testuser/Desktop/Test/sample.csv', 500);
+
+      const entry = await mod.snapshotFile(CONV_ID, '~/Desktop/Test/sample.csv', {
+        source: 'tool-output', refId: 'tu_001', refKind: 'write_file',
+      });
+
+      expect(entry).not.toBeNull();
+      expect(entry!.originalPath).toBe('/Users/testuser/Desktop/Test/sample.csv');
+      expect(entry!.snapshotRelPath).toMatch(/^files\/.+\/sample\.csv$/);
+      expect(memFs.copyFile).toHaveBeenCalled();
+    });
+
     it('skips files already inside outputs/ (idempotency loop guard)', async () => {
       const innerPath = `${OUTPUTS_DIR}/files/aabbcc/inner.txt`;
       memFs.addUserFile(innerPath, 50);
@@ -304,6 +318,85 @@ describe('outputSnapshots', () => {
       const result = await mod.resolveFileSource(undefined, '/Users/testuser/Desktop/x.csv');
       expect(result.status).toBe('missing');
     });
+
+    it('probes session outputs/ when given a bare basename (AI wrote to outputDir)', async () => {
+      // Simulate AI following the no-workspace prompt: it wrote the file directly
+      // to the session output dir, then mentioned only the basename in chat text.
+      const fileInOutputs = `${OUTPUTS_DIR}/业务分润体系指标诊断.pptx`;
+      memFs.addUserFile(fileInOutputs, 80000);
+
+      const result = await mod.resolveFileSource(CONV_ID, '业务分润体系指标诊断.pptx');
+      expect(result.status).toBe('available');
+      if (result.status === 'available') {
+        expect(result.path).toBe(fileInOutputs);
+        expect(result.isFromSnapshot).toBe(false);
+      }
+    });
+
+    it('probes session outputs/ for relative paths too', async () => {
+      const fileInOutputs = `${OUTPUTS_DIR}/report.csv`;
+      memFs.addUserFile(fileInOutputs, 100);
+
+      // Path comes in as "subdir/report.csv" or just "report.csv" — basename probe wins
+      const result = await mod.resolveFileSource(CONV_ID, 'subdir/report.csv');
+      expect(result.status).toBe('available');
+      if (result.status === 'available') {
+        expect(result.path).toBe(fileInOutputs);
+      }
+    });
+
+    it('outputs probe does not fire when file is not in outputs dir', async () => {
+      // Don't add the file anywhere
+      const result = await mod.resolveFileSource(CONV_ID, 'mystery.csv');
+      expect(result.status).toBe('missing');
+    });
+
+    it('expands ~/... to absolute home path before checking existence', async () => {
+      // Mock home dir is /Users/testuser per test setup
+      memFs.addUserFile('/Users/testuser/Library/Application Support/com.abu.app/conversations/conv_test_123/outputs/x.pptx', 1000);
+
+      const result = await mod.resolveFileSource(
+        CONV_ID,
+        '~/Library/Application Support/com.abu.app/conversations/conv_test_123/outputs/x.pptx',
+      );
+      expect(result.status).toBe('available');
+      if (result.status === 'available') {
+        expect(result.path).toBe(
+          '/Users/testuser/Library/Application Support/com.abu.app/conversations/conv_test_123/outputs/x.pptx',
+        );
+      }
+    });
+
+    it('expanded ~/... still falls through to outputs probe by basename', async () => {
+      // The ~ path doesn't actually exist, but the file is in outputs dir
+      memFs.addUserFile(`${OUTPUTS_DIR}/business-report.pptx`, 5000);
+
+      const result = await mod.resolveFileSource(
+        CONV_ID,
+        '~/Desktop/business-report.pptx',  // wrong location, but basename matches outputs entry
+      );
+      expect(result.status).toBe('available');
+      if (result.status === 'available') {
+        expect(result.path).toBe(`${OUTPUTS_DIR}/business-report.pptx`);
+      }
+    });
+
+    it('falls back to manifest basename match when bare basename is given', async () => {
+      // Code-block save scenario: file is at user's chosen location, snapshot is in
+      // outputs/files/{hash}/, AI text mentions only the bare basename.
+      memFs.addUserFile('/Users/testuser/Desktop/Test/sample_data.csv', 1000);
+      await mod.snapshotCodeBlockSave(CONV_ID, '/Users/testuser/Desktop/Test/sample_data.csv', 'csv');
+      // User deletes the original
+      memFs.files.delete('/Users/testuser/Desktop/Test/sample_data.csv');
+
+      // Lookup with just the basename (as text-extraction would yield)
+      const result = await mod.resolveFileSource(CONV_ID, 'sample_data.csv');
+      expect(result.status).toBe('available');
+      if (result.status === 'available') {
+        expect(result.isFromSnapshot).toBe(true);
+        expect(result.path).toMatch(/outputs\/files\/.+\/sample_data\.csv$/);
+      }
+    });
   });
 
   // ──────────────────────────────────────────────────────────────────
@@ -347,6 +440,85 @@ describe('outputSnapshots', () => {
       expect(entry.source).toBe('user-upload');
       expect(entry.refId).toBe('msg_001');
       expect(entry.refKind).toBe('image');
+    });
+  });
+
+  // ──────────────────────────────────────────────────────────────────
+  describe('restoreSnapshotToOriginal', () => {
+    it('copies snapshot back to original path when original is gone', async () => {
+      memFs.addUserFile('/Users/testuser/Desktop/Test/restore-me.csv', 200);
+      await mod.snapshotFile(CONV_ID, '/Users/testuser/Desktop/Test/restore-me.csv', {
+        source: 'tool-output', refId: 't1', refKind: 'write_file',
+      });
+      // User deletes original
+      memFs.files.delete('/Users/testuser/Desktop/Test/restore-me.csv');
+
+      const result = await mod.restoreSnapshotToOriginal(
+        CONV_ID,
+        '/Users/testuser/Desktop/Test/restore-me.csv',
+      );
+
+      expect(result.ok).toBe(true);
+      if (result.ok) {
+        expect(result.path).toBe('/Users/testuser/Desktop/Test/restore-me.csv');
+      }
+      // After restore, the file should exist again
+      expect(memFs.files.has('/Users/testuser/Desktop/Test/restore-me.csv')).toBe(true);
+    });
+
+    it('looks up by basename when given a bare filename', async () => {
+      memFs.addUserFile('/Users/testuser/Desktop/Test/bare.csv', 100);
+      await mod.snapshotFile(CONV_ID, '/Users/testuser/Desktop/Test/bare.csv', {
+        source: 'tool-output', refId: 't1', refKind: 'write_file',
+      });
+      memFs.files.delete('/Users/testuser/Desktop/Test/bare.csv');
+
+      const result = await mod.restoreSnapshotToOriginal(CONV_ID, 'bare.csv');
+      expect(result.ok).toBe(true);
+      if (result.ok) {
+        expect(result.path).toBe('/Users/testuser/Desktop/Test/bare.csv');
+      }
+    });
+
+    it('returns no-snapshot error when manifest has no entry', async () => {
+      const result = await mod.restoreSnapshotToOriginal(CONV_ID, '/no/such/file.csv');
+      expect(result.ok).toBe(false);
+      if (!result.ok) {
+        expect(result.error).toBe('no-snapshot');
+      }
+    });
+
+    it('returns no-snapshot error when manifest entry is oversized (no actual snapshot)', async () => {
+      const sixGB = mod.__testing.MAX_FILE_BYTES + 1;
+      memFs.addUserFile('/Users/testuser/movies/big.mp4', sixGB);
+      await mod.snapshotFile(CONV_ID, '/Users/testuser/movies/big.mp4', {
+        source: 'tool-output', refId: 't1', refKind: 'run_command',
+      });
+
+      const result = await mod.restoreSnapshotToOriginal(CONV_ID, '/Users/testuser/movies/big.mp4');
+      expect(result.ok).toBe(false);
+      if (!result.ok) {
+        expect(result.error).toBe('no-snapshot');
+      }
+    });
+  });
+
+  // ──────────────────────────────────────────────────────────────────
+  describe('saveSnapshotAs', () => {
+    it('copies snapshot to a user-chosen destination', async () => {
+      memFs.addUserFile('/Users/testuser/Desktop/orig.csv', 200);
+      await mod.snapshotFile(CONV_ID, '/Users/testuser/Desktop/orig.csv', {
+        source: 'tool-output', refId: 't1', refKind: 'write_file',
+      });
+
+      const result = await mod.saveSnapshotAs(
+        CONV_ID,
+        '/Users/testuser/Desktop/orig.csv',
+        '/Users/testuser/Documents/copy.csv',
+      );
+
+      expect(result.ok).toBe(true);
+      expect(memFs.files.has('/Users/testuser/Documents/copy.csv')).toBe(true);
     });
   });
 

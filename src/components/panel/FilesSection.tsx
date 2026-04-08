@@ -1,12 +1,15 @@
 import { useActiveConversation } from '@/stores/chatStore';
 import { usePreviewStore } from '@/stores/previewStore';
 import { useI18n, format as i18nFormat } from '@/i18n';
-import { File, FileCode, FileJson, FileText, FileImage, ExternalLink } from 'lucide-react';
+import { File, FileCode, FileJson, FileText, FileImage, ExternalLink, Undo2 } from 'lucide-react';
 import { cn } from '@/lib/utils';
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { revealItemInDir } from '@tauri-apps/plugin-opener';
 import { getBaseName } from '@/utils/pathUtils';
 import { extractFileOutputs } from '@/utils/workflowExtractor';
+import { resolveFileSource, type ResolvedSource } from '@/core/session/outputSnapshots';
+import { runRestoreFlow } from '@/utils/restoreFlow';
+import { useFileRefreshStore } from '@/stores/fileRefreshStore';
 
 // Extract file extension and return appropriate icon
 function getFileIcon(path: string) {
@@ -39,24 +42,56 @@ interface TrackedFile {
 
 interface FileCardProps {
   file: TrackedFile;
-  onPreview: (path: string) => void;
-  onOpenInFinder: (path: string) => void;
+  conversationId: string | undefined;
   operationLabels: Record<string, string>;
   previewTitle: string;
   finderTitle: string;
+  restoreTitle: string;
+  fileMissingTitle: string;
 }
 
-function FileCard({ file, onPreview, onOpenInFinder, operationLabels, previewTitle, finderTitle }: FileCardProps) {
+function FileCard({ file, conversationId, operationLabels, previewTitle, finderTitle, restoreTitle, fileMissingTitle }: FileCardProps) {
   const Icon = getFileIcon(file.path);
   const fileName = getFileName(file.path);
+  const openPreview = usePreviewStore((s) => s.openPreview);
+  const [resolved, setResolved] = useState<ResolvedSource | null>(null);
+  // Subscribe to global refresh tick: any restore (here or elsewhere) re-resolves us.
+  const refreshTick = useFileRefreshStore((s) => s.tick);
+
+  // Resolve effective state (live / snapshot / unavailable) so action buttons
+  // can switch behavior intelligently.
+  useEffect(() => {
+    let cancelled = false;
+    resolveFileSource(conversationId, file.path)
+      .then((r) => { if (!cancelled) setResolved(r); })
+      .catch(() => {
+        if (!cancelled) setResolved({ status: 'missing', basename: getBaseName(file.path), originalPath: file.path });
+      });
+    return () => { cancelled = true; };
+  }, [file.path, conversationId, refreshTick]);
+
+  const isFromSnapshot = resolved?.status === 'available' && resolved.isFromSnapshot;
+  const isUnavailable = resolved?.status === 'missing' || resolved?.status === 'skipped';
+  const effectivePath = resolved?.status === 'available' ? resolved.path : null;
 
   const handleClick = () => {
-    onPreview(file.path);
+    if (effectivePath) openPreview(effectivePath);
   };
 
-  const handleOpenExternal = (e: React.MouseEvent) => {
+  const handleAction = async (e: React.MouseEvent) => {
     e.stopPropagation();
-    onOpenInFinder(file.path);
+    if (!resolved) return;
+    if (resolved.status === 'available' && !resolved.isFromSnapshot) {
+      // Live: reveal original in Finder
+      try { await revealItemInDir(resolved.path); } catch (err) { console.error(err); }
+      return;
+    }
+    if (resolved.status === 'available' && resolved.isFromSnapshot && conversationId) {
+      // Snapshot: restore to original location.
+      // runRestoreFlow handles the global refresh signal — no manual tick bump needed.
+      await runRestoreFlow(conversationId, file.path);
+    }
+    // unavailable: nothing to do
   };
 
   return (
@@ -66,14 +101,18 @@ function FileCard({ file, onPreview, onOpenInFinder, operationLabels, previewTit
       className={cn(
         'group flex items-center gap-2 px-2 py-1.5 rounded-md bg-[var(--abu-bg-base)] hover:bg-[var(--abu-bg-muted)] transition-colors cursor-pointer',
         file.operation === 'write' && 'ring-1 ring-amber-500/30',
-        file.operation === 'create' && 'ring-1 ring-green-500/30'
+        file.operation === 'create' && 'ring-1 ring-green-500/30',
+        isUnavailable && 'opacity-60'
       )}
-      title={`${previewTitle}: ${file.path}`}
+      title={isUnavailable ? `${fileMissingTitle}: ${file.path}` : `${previewTitle}: ${file.path}`}
       onClick={handleClick}
       onKeyDown={(e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), handleClick())}
     >
       <Icon className="w-3.5 h-3.5 text-[var(--abu-text-tertiary)] shrink-0" />
-      <span className="text-[12px] text-[var(--abu-text-primary)] truncate flex-1">{fileName}</span>
+      <span className={cn(
+        'text-[12px] truncate flex-1',
+        isUnavailable ? 'text-[var(--abu-text-muted)] line-through' : 'text-[var(--abu-text-primary)]'
+      )}>{fileName}</span>
       <span
         className={cn(
           'text-[9px] px-1 py-0.5 rounded font-medium',
@@ -84,13 +123,17 @@ function FileCard({ file, onPreview, onOpenInFinder, operationLabels, previewTit
       >
         {operationLabels[file.operation]}
       </span>
-      <button
-        onClick={handleOpenExternal}
-        className="p-0.5 rounded hover:bg-[var(--abu-bg-hover)] opacity-0 group-hover:opacity-100 transition-opacity shrink-0"
-        title={finderTitle}
-      >
-        <ExternalLink className="w-3 h-3 text-[var(--abu-text-muted)]" />
-      </button>
+      {!isUnavailable && (
+        <button
+          onClick={handleAction}
+          className="p-0.5 rounded hover:bg-[var(--abu-bg-hover)] opacity-0 group-hover:opacity-100 transition-opacity shrink-0"
+          title={isFromSnapshot ? `${restoreTitle}: ${file.path}` : finderTitle}
+        >
+          {isFromSnapshot
+            ? <Undo2 className="w-3 h-3 text-amber-600" />
+            : <ExternalLink className="w-3 h-3 text-[var(--abu-text-muted)]" />}
+        </button>
+      )}
     </div>
   );
 }
@@ -107,7 +150,6 @@ function sortFiles(files: TrackedFile[]): TrackedFile[] {
 
 export default function FilesSection() {
   const conversation = useActiveConversation();
-  const openPreview = usePreviewStore((s) => s.openPreview);
   const { t } = useI18n();
 
   const operationLabels: Record<string, string> = {
@@ -134,19 +176,6 @@ export default function FilesSection() {
     return sortFiles(Array.from(fileMap.values()));
   }, [conversation]);
 
-  const handlePreview = (path: string) => {
-    openPreview(path);
-  };
-
-  const handleOpenInFinder = async (path: string) => {
-    try {
-      // Use revealItemInDir to open Finder/Explorer and select the file
-      await revealItemInDir(path);
-    } catch (err) {
-      console.error('Failed to reveal file:', err);
-    }
-  };
-
   const MAX_VISIBLE = 7;
   const [expanded, setExpanded] = useState(false);
   const hiddenCount = trackedFiles.length - MAX_VISIBLE;
@@ -171,11 +200,12 @@ export default function FilesSection() {
           <FileCard
             key={file.path}
             file={file}
-            onPreview={handlePreview}
-            onOpenInFinder={handleOpenInFinder}
+            conversationId={conversation?.id}
             operationLabels={operationLabels}
             previewTitle={t.panel.clickToPreview}
             finderTitle={t.panel.showInFinderButton}
+            restoreTitle={t.chat.restoreToOriginal}
+            fileMissingTitle={t.chat.fileMissing}
           />
         ))}
         {hiddenCount > 0 && (

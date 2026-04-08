@@ -504,6 +504,23 @@ describe('workflowExtractor', () => {
       expect(extractFilePathsFromText('Hello world')).toEqual([]);
     });
 
+    it('extracts Chinese pattern: 已生成 (backtick wrapped)', () => {
+      const text = '搞定了，已生成 `sample_data.csv`，包含10行假数据';
+      expect(extractFilePathsFromText(text)).toEqual(['sample_data.csv']);
+    });
+
+    it('extracts Chinese pattern: 生成了 (with absolute path)', () => {
+      const text = '生成了 /Users/me/Desktop/report.xlsx';
+      expect(extractFilePathsFromText(text)).toEqual(['/Users/me/Desktop/report.xlsx']);
+    });
+
+    it('extracts Chinese pattern: 已保存 (with backtick path that has spaces)', () => {
+      const text = '已保存 `~/Library/Application Support/com.abu.app/conversations/foo/outputs/file.pptx`';
+      expect(extractFilePathsFromText(text)).toEqual([
+        '~/Library/Application Support/com.abu.app/conversations/foo/outputs/file.pptx',
+      ]);
+    });
+
     it('rejects paths without file extension', () => {
       const text = '已保存到 /tmp/mydir';
       expect(extractFilePathsFromText(text)).toEqual([]);

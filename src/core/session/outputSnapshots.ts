@@ -26,8 +26,8 @@
  */
 
 import { exists, mkdir, readTextFile, writeTextFile, remove, stat, copyFile, rename } from '@tauri-apps/plugin-fs';
-import { appDataDir } from '@tauri-apps/api/path';
-import { joinPath, normalizeSeparators, getBaseName } from '@/utils/pathUtils';
+import { appDataDir, homeDir } from '@tauri-apps/api/path';
+import { joinPath, normalizeSeparators, getBaseName, getParentDir, ensureParentDir } from '@/utils/pathUtils';
 import { extractFileOutputs } from '@/utils/workflowExtractor';
 import type { ToolCall } from '@/types';
 import { createLogger } from '../logging/logger';
@@ -48,7 +48,7 @@ const MANIFEST_VERSION = 1 as const;
 // Types
 // ────────────────────────────────────────────────────────────────────────────
 
-export type SnapshotSource = 'tool-output' | 'user-upload';
+export type SnapshotSource = 'tool-output' | 'user-upload' | 'code-save';
 
 export interface SnapshotEntry {
   /** Normalized absolute path of the original file (manifest index key) */
@@ -120,6 +120,8 @@ const convLocks = new Map<string, Promise<unknown>>();
 
 /** Cached app data base path */
 let cachedAppDataBase: string | null = null;
+/** Cached home directory (for ~ expansion) */
+let cachedHomeDir: string | null = null;
 
 // ────────────────────────────────────────────────────────────────────────────
 // Helpers
@@ -146,6 +148,25 @@ function normalizePath(p: string): string {
 /** Check if a path looks like an absolute filesystem path (Unix or Windows). */
 function isAbsolutePath(p: string): boolean {
   return p.startsWith('/') || /^[A-Za-z]:[\\/]/.test(p);
+}
+
+/**
+ * Expand a leading `~` to the user's home directory.
+ * Returns the original path unchanged if no expansion is needed or homeDir() fails.
+ * The AI sometimes emits ~/... paths in chat narrative even though they're not real
+ * filesystem paths until expanded.
+ */
+async function expandTilde(p: string): Promise<string> {
+  if (!p.startsWith('~/') && p !== '~') return p;
+  try {
+    if (!cachedHomeDir) {
+      cachedHomeDir = await homeDir();
+    }
+    if (p === '~') return cachedHomeDir;
+    return joinPath(cachedHomeDir, p.slice(2));
+  } catch {
+    return p;
+  }
 }
 
 /**
@@ -178,7 +199,8 @@ async function withConvLock<T>(convId: string, fn: () => Promise<T>): Promise<T>
 async function safeStat(path: string) {
   try {
     return await stat(path);
-  } catch {
+  } catch (e) {
+    logger.warn('[snapshot] stat failed (capability or missing file?)', { path, err: String(e) });
     return null;
   }
 }
@@ -283,8 +305,14 @@ export async function snapshotFile(
   meta: SnapshotMeta,
 ): Promise<SnapshotEntry | null> {
   if (!rawPath) return null;
-  const normalized = normalizePath(rawPath);
-  if (!isAbsolutePath(normalized)) return null;
+  // Expand ~/... before normalization — AI tools sometimes pass home-relative paths
+  // through their input even when the underlying tool expands them internally.
+  const expanded = await expandTilde(rawPath);
+  const normalized = normalizePath(expanded);
+  if (!isAbsolutePath(normalized)) {
+    logger.warn('[snapshot] rejected non-absolute path', { rawPath, normalized });
+    return null;
+  }
 
   return withConvLock(convId, async () => {
     const outputsDir = await getOutputsDir(convId);
@@ -380,13 +408,40 @@ export async function snapshotUserUpload(
   });
 }
 
+/**
+ * Snapshot a file the user manually saved from a markdown code block in chat.
+ * Called fire-and-forget from MarkdownRenderer.handleSaveAs after a successful
+ * write. Without this, code-block-saved files are at the mercy of the user's
+ * file management — exactly the case the snapshot system is meant to protect.
+ */
+export async function snapshotCodeBlockSave(
+  convId: string,
+  filePath: string,
+  language: string | undefined,
+): Promise<void> {
+  await snapshotFile(convId, filePath, {
+    source: 'code-save',
+    refId: '',  // no message context — code blocks don't have a stable id
+    refKind: language || 'text',
+  });
+}
+
 // ────────────────────────────────────────────────────────────────────────────
 // Public read entry point
 // ────────────────────────────────────────────────────────────────────────────
 
 /**
  * Resolve where to actually load a file from when rendering a card.
- * Priority: live original > snapshot fallback > skipped/missing placeholder.
+ * Priority chain:
+ *   1. Live original (when path is absolute and exists)
+ *   2. Session outputs/ probe by basename — covers two real cases:
+ *      a. AI followed the no-workspace prompt and wrote directly to outputDir,
+ *         then the chat narrative mentions only a bare basename.
+ *      b. The path was passed through markdown text-extraction and lost its
+ *         directory part.
+ *   3. Snapshot fallback via manifest
+ *   4. skipped (manifest entry exists but no usable copy)
+ *   5. missing
  */
 export async function resolveFileSource(
   convId: string | undefined,
@@ -394,33 +449,167 @@ export async function resolveFileSource(
 ): Promise<ResolvedSource> {
   const basename = getBaseName(originalPath);
 
+  // 0. Expand `~/...` if present — AI sometimes emits home-relative paths in narrative text.
+  const expandedPath = await expandTilde(originalPath);
+
   // 1. Live original takes priority — even if a snapshot exists, the user's
   //    in-place edits should be reflected.
-  if (originalPath && isAbsolutePath(originalPath)) {
-    if (await exists(originalPath)) {
-      return { status: 'available', path: originalPath, isFromSnapshot: false };
+  if (expandedPath && isAbsolutePath(expandedPath)) {
+    if (await exists(expandedPath)) {
+      return { status: 'available', path: expandedPath, isFromSnapshot: false };
     }
   }
 
-  // 2. Fall back to snapshot via manifest
+  // 2. Session outputs/ top-level probe (handles AI-wrote-to-outputDir directly case)
+  if (convId && basename) {
+    try {
+      const outputsDir = await getOutputsDir(convId);
+      const candidate = joinPath(outputsDir, basename);
+      if (await exists(candidate)) {
+        return { status: 'available', path: candidate, isFromSnapshot: false };
+      }
+    } catch {
+      // ignore — fall through to manifest lookup
+    }
+  }
+
+  // 3. Fall back to snapshot via manifest
   if (convId) {
     const manifest = await loadManifest(convId);
-    const entry = manifest.entries[normalizePath(originalPath)];
-    if (entry) {
-      if (entry.snapshotRelPath) {
+
+    // 3a. Exact path match (the common case — toolCall input.path matches the lookup)
+    const exactEntry = manifest.entries[normalizePath(expandedPath)];
+    if (exactEntry) {
+      if (exactEntry.snapshotRelPath) {
         const dir = await getOutputsDir(convId);
-        const full = joinPath(dir, entry.snapshotRelPath);
+        const full = joinPath(dir, exactEntry.snapshotRelPath);
         if (await exists(full)) {
           return { status: 'available', path: full, isFromSnapshot: true };
         }
       }
       // Manifest knows but no usable snapshot file
-      return { status: 'skipped', entry };
+      return { status: 'skipped', entry: exactEntry };
+    }
+
+    // 3b. Basename match — handles "AI text mentioned bare basename" case where the
+    //      lookup path lacks directory info but a manifest entry exists for the same filename.
+    if (basename) {
+      const basenameMatch = Object.values(manifest.entries).find(
+        (e) => e.basename === basename && e.snapshotRelPath,
+      );
+      if (basenameMatch) {
+        const dir = await getOutputsDir(convId);
+        const full = joinPath(dir, basenameMatch.snapshotRelPath);
+        if (await exists(full)) {
+          return { status: 'available', path: full, isFromSnapshot: true };
+        }
+      }
     }
   }
 
-  // 3. No record at all
+  // 4. No record at all
   return { status: 'missing', basename, originalPath };
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// Restore — copy a snapshot back to the original (or chosen) path
+// ────────────────────────────────────────────────────────────────────────────
+
+export type RestoreResult =
+  | { ok: true; path: string }
+  | { ok: false; error: 'no-snapshot' | 'no-parent-dir' | 'copy-failed'; message?: string };
+
+/**
+ * Restore a snapshot to its original location on disk.
+ * Looks up the manifest entry by exact path or by basename fallback (mirrors
+ * resolveFileSource semantics) and copies the snapshot file back to its
+ * recorded originalPath.
+ *
+ * After a successful restore, the next resolveFileSource call will see the
+ * file at originalPath and return live status — the UI will naturally swap
+ * the "restore" button back to the normal "reveal in finder" / open action.
+ */
+export async function restoreSnapshotToOriginal(
+  convId: string,
+  lookupPath: string,
+): Promise<RestoreResult> {
+  const manifest = await loadManifest(convId);
+  const normalized = normalizePath(lookupPath);
+  const basename = getBaseName(lookupPath);
+
+  // Look up by exact path first, then basename fallback
+  let entry: SnapshotEntry | undefined = manifest.entries[normalized];
+  if (!entry && basename) {
+    entry = Object.values(manifest.entries).find(
+      (e) => e.basename === basename && e.snapshotRelPath,
+    );
+  }
+  if (!entry || !entry.snapshotRelPath) {
+    return { ok: false, error: 'no-snapshot' };
+  }
+
+  const dir = await getOutputsDir(convId);
+  const src = joinPath(dir, entry.snapshotRelPath);
+  if (!(await exists(src))) {
+    return { ok: false, error: 'no-snapshot' };
+  }
+
+  // Ensure parent dir exists — user may have moved/deleted the original directory
+  try {
+    const parent = getParentDir(entry.originalPath);
+    if (parent && parent !== '/') {
+      if (!(await exists(parent))) {
+        await ensureParentDir(entry.originalPath);
+      }
+    }
+  } catch (e) {
+    return { ok: false, error: 'no-parent-dir', message: String(e) };
+  }
+
+  try {
+    await copyFile(src, entry.originalPath);
+    return { ok: true, path: entry.originalPath };
+  } catch (e) {
+    return { ok: false, error: 'copy-failed', message: String(e) };
+  }
+}
+
+/**
+ * Save a snapshot to a user-chosen destination (escape hatch when restore-to-original
+ * fails or when the user wants a copy elsewhere).
+ */
+export async function saveSnapshotAs(
+  convId: string,
+  lookupPath: string,
+  destPath: string,
+): Promise<RestoreResult> {
+  const manifest = await loadManifest(convId);
+  const normalized = normalizePath(lookupPath);
+  const basename = getBaseName(lookupPath);
+
+  let entry: SnapshotEntry | undefined = manifest.entries[normalized];
+  if (!entry && basename) {
+    entry = Object.values(manifest.entries).find(
+      (e) => e.basename === basename && e.snapshotRelPath,
+    );
+  }
+  if (!entry || !entry.snapshotRelPath) {
+    return { ok: false, error: 'no-snapshot' };
+  }
+
+  const dir = await getOutputsDir(convId);
+  const src = joinPath(dir, entry.snapshotRelPath);
+  if (!(await exists(src))) {
+    return { ok: false, error: 'no-snapshot' };
+  }
+
+  try {
+    await ensureParentDir(destPath);
+    await copyFile(src, destPath);
+    return { ok: true, path: destPath };
+  } catch (e) {
+    return { ok: false, error: 'copy-failed', message: String(e) };
+  }
 }
 
 // ────────────────────────────────────────────────────────────────────────────

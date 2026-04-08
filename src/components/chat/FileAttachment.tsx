@@ -1,11 +1,13 @@
 import { useState, useEffect, useCallback } from 'react';
-import { FileCode, FileText, FileImage, File, FileJson, ExternalLink, Globe, SquareArrowOutUpRight, Presentation, Sheet, FileType2, FileSearch, FileX, FileWarning } from 'lucide-react';
+import { FileCode, FileText, FileImage, File, FileJson, ExternalLink, Globe, SquareArrowOutUpRight, Presentation, Sheet, FileType2, FileSearch, FileX, FileWarning, Undo2 } from 'lucide-react';
 import { usePreviewStore } from '@/stores/previewStore';
 import { useChatStore } from '@/stores/chatStore';
+import { useFileRefreshStore } from '@/stores/fileRefreshStore';
 import { useI18n } from '@/i18n';
 import { cn } from '@/lib/utils';
 import { loadLocalImage, getBaseName, isLocalFilePath } from '@/utils/pathUtils';
 import { resolveFileSource, type ResolvedSource } from '@/core/session/outputSnapshots';
+import { runRestoreFlow } from '@/utils/restoreFlow';
 
 const IMAGE_EXTENSIONS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp']);
 
@@ -105,6 +107,10 @@ export default function FileAttachment({ filePath }: FileAttachmentProps) {
   const { label: openWithLabel, icon: OpenWithIcon } = getOpenWithInfo(filePath);
   const [thumbUrl, setThumbUrl] = useState<string | null>(null);
   const [resolved, setResolved] = useState<ResolvedSource | null>(null);
+  // Subscribe to the global file refresh tick so a restore triggered ANYWHERE
+  // (this card, FilesSection, future components) makes us re-resolve and the
+  // "Restore" button flips back to the normal state automatically.
+  const refreshTick = useFileRefreshStore((s) => s.tick);
 
   // Resolve where to actually load the file from: live original > snapshot > skipped/missing
   useEffect(() => {
@@ -115,7 +121,16 @@ export default function FileAttachment({ filePath }: FileAttachmentProps) {
         if (!cancelled) setResolved({ status: 'missing', basename: getBaseName(filePath), originalPath: filePath });
       });
     return () => { cancelled = true; };
-  }, [filePath, conversationId]);
+  }, [filePath, conversationId, refreshTick]);
+
+  const isFromSnapshot = resolved?.status === 'available' && resolved.isFromSnapshot;
+
+  const handleRestore = useCallback(async (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (!conversationId) return;
+    // runRestoreFlow handles its own refresh signal via bumpFileRefresh()
+    await runRestoreFlow(conversationId, filePath);
+  }, [conversationId, filePath]);
 
   // Effective path: where to actually read bytes from for thumbnail / preview / open-with.
   // null when the file is not loadable (skipped/missing/loading).
@@ -278,6 +293,25 @@ export default function FileAttachment({ filePath }: FileAttachmentProps) {
           </span>
         </div>
       </div>
+
+      {/* Restore-to-original button — only when the live original is gone and a snapshot is available.
+          The button label itself ("Restore to original") is the only state indication;
+          we deliberately do not add a badge or icon to the card. */}
+      {isFromSnapshot && (
+        <button
+          onClick={handleRestore}
+          className={cn(
+            'flex items-center gap-1.5 px-3 py-2 shrink-0 cursor-pointer whitespace-nowrap',
+            'rounded-lg border border-amber-500/40 bg-amber-500/5 hover:bg-amber-500/10 transition-colors',
+          )}
+          title={`${t.chat.restoreToOriginal}: ${filePath}`}
+        >
+          <Undo2 className="w-4 h-4 text-amber-600" />
+          <span className="text-[12.5px] text-amber-700">
+            {t.chat.restoreToOriginal}
+          </span>
+        </button>
+      )}
 
       {/* Open with default app button */}
       <button

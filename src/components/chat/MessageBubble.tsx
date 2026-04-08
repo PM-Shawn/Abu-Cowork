@@ -4,6 +4,7 @@ import type { Message, MessageContent } from '@/types';
 import MarkdownRenderer from './MarkdownRenderer';
 import ToolCallsGroup from './ToolCallsGroup';
 import { useChatStore, useActiveConversation } from '@/stores/chatStore';
+import { useFileRefreshStore } from '@/stores/fileRefreshStore';
 import { usePreviewStore } from '@/stores/previewStore';
 import { runAgentLoop } from '@/core/agent/agentLoop';
 import { useI18n } from '@/i18n';
@@ -28,6 +29,8 @@ function UserImageThumbnail({ image }: { image: Extract<MessageContent, { type: 
   const { t } = useI18n();
   const openPreview = usePreviewStore.getState().openPreview;
   const conversationId = useChatStore((s) => s.activeConversationId) ?? undefined;
+  // Subscribe to global file refresh signal so a restore elsewhere re-runs the resolve.
+  const refreshTick = useFileRefreshStore((s) => s.tick);
   const hasData = !!image.source.data;
   const [diskSrc, setDiskSrc] = useState<string | null>(null);
   const [effectivePath, setEffectivePath] = useState<string | null>(null);
@@ -59,7 +62,7 @@ function UserImageThumbnail({ image }: { image: Extract<MessageContent, { type: 
     })();
 
     return () => { cancelled = true; if (revoke) URL.revokeObjectURL(revoke); };
-  }, [hasData, image.filePath, conversationId]);
+  }, [hasData, image.filePath, conversationId, refreshTick]);
 
   const src = hasData
     ? `data:${image.source.media_type};base64,${image.source.data}`

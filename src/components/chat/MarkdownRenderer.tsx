@@ -179,6 +179,15 @@ export function CollapsibleCodeBlock({ codeString, language }: { codeString: str
       });
       if (filePath) {
         await writeTextFile(filePath, codeString);
+        // Snapshot the saved file so it survives later user-initiated deletion.
+        // Fire-and-forget; never block the save flow.
+        const { useChatStore } = await import('@/stores/chatStore');
+        const convId = useChatStore.getState().activeConversationId;
+        if (convId) {
+          import('@/core/session/outputSnapshots').then(({ snapshotCodeBlockSave }) => {
+            snapshotCodeBlockSave(convId, filePath, language ?? undefined).catch(() => {});
+          }).catch(() => {});
+        }
       }
     } catch { /* ignore in non-Tauri env */ }
   }, [codeString, language]);

@@ -1251,6 +1251,24 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
           contextUsagePercent: usagePercent,
         });
 
+        // ★ Persist this turn's full message state (including completed tool calls)
+        // to disk RIGHT NOW. We must use replaceMessageById (not updateLastMessage)
+        // because by the time the next turn's addMessage races with our write, the
+        // "last line" may already have shifted to the next turn's placeholder, and
+        // updateLastMessage would either clobber the new placeholder or update the
+        // wrong line. Awaiting here adds a few ms of latency but guarantees disk
+        // state matches in-memory state before the loop continues.
+        const turnMsg = useChatStore.getState().conversations[conversationId]
+          ?.messages.find((m) => m.id === assistantMsgId);
+        if (turnMsg) {
+          try {
+            const { replaceMessageById } = await import('../session/conversationStorage');
+            await replaceMessageById(conversationId, turnMsg);
+          } catch {
+            // Non-critical — message still lives in memory until next finishStreaming
+          }
+        }
+
         // Handle MCP tool changes — inject notification into conversation
         if (batchResult.mcpChanged) {
           const toolNames = new Set(tools.map(t => t.name));

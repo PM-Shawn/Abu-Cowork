@@ -257,10 +257,11 @@ export default function MessageGroup({ messages, isLastGroup: isLastGroupProp = 
       if (text) {
         const textPaths = extractFilePathsFromText(text);
         for (const rawP of textPaths) {
-          // Normalize to match the same normalization in extractFileOutputs
-          // Strip markdown formatting (**, __, ``) that wraps filenames in LLM text
+          // Normalize to match the same normalization in extractFileOutputs.
+          // Strip markdown formatting (**, __, ``) that wraps filenames in LLM text.
+          // NOTE: do NOT strip leading `~` — it could be a real ~/path home-relative reference.
           const p = rawP
-            .replace(/^[*_`~]+/, '')
+            .replace(/^[*_`]+/, '')
             .replace(/[*_`~)）\]】}"'。，,;；:：.]+$/, '')
             .trim().replace(/\\/g, '/');
           if (!p) continue;
@@ -294,10 +295,16 @@ export default function MessageGroup({ messages, isLastGroup: isLastGroupProp = 
     const nonImageFiles = fileOutputs.filter((f) => !isImageFile(f.path));
     const previewableFile = nonImageFiles[nonImageFiles.length - 1] || fileOutputs[fileOutputs.length - 1];
     if (previewableFile) {
-      openPreview(previewableFile.path);
+      // Resolve through outputSnapshots so we never hand a non-absolute / missing
+      // path to openPreview (which would trigger a Tauri capability error).
+      import('@/core/session/outputSnapshots').then(({ resolveFileSource }) => {
+        resolveFileSource(activeConv?.id, previewableFile.path).then((r) => {
+          if (r.status === 'available') openPreview(r.path);
+        }).catch(() => {});
+      }).catch(() => {});
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps -- isLastGroupProp omitted: adding it would re-trigger preview when a new group demotes this one
-  }, [isAgentDone, fileOutputs, openPreview]);
+  }, [isAgentDone, fileOutputs, openPreview, activeConv?.id]);
 
   // Handle retry
   const handleRetry = async () => {

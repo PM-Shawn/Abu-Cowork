@@ -986,19 +986,30 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
       const eventHandler = (event: StreamEvent) => {
           switch (event.type) {
             case 'text':
-              // Record thinking end time when we transition from thinking to streaming
+              // Record thinking end time when we transition from thinking to streaming.
+              // Also flush thinkingDuration to the store immediately so the UI can mark
+              // the thinking step as completed without waiting for the 'done' event at
+              // end-of-turn — otherwise the spinning circle stays next to "思考中..."
+              // while the body text is already streaming, which looks broken.
               if (!thinkingEndTime && collectedThinking) {
                 thinkingEndTime = Date.now();
+                const thinkingStartTime = useChatStore.getState().thinkingStartTime;
+                if (thinkingStartTime) {
+                  const thinkingDuration = Math.max(1, Math.round((thinkingEndTime - thinkingStartTime) / 1000));
+                  useChatStore.getState().updateMessageThinkingDuration(conversationId, thinkingDuration, assistantMsgId);
+                }
               }
               chatStore.setAgentStatus('streaming');
-              chatStore.appendToLastMessage(conversationId, event.text);
-              // Periodic disk flush for crash safety
+              chatStore.appendToLastMessage(conversationId, event.text, assistantMsgId);
+              // Periodic disk flush for crash safety — must look up by id, not "last",
+              // because the user may have sent another message mid-stream.
               if (Date.now() - lastStreamFlushTime > STREAM_FLUSH_INTERVAL) {
                 lastStreamFlushTime = Date.now();
-                const currentMsg = useChatStore.getState().conversations[conversationId]?.messages.slice(-1)[0];
+                const currentMsg = useChatStore.getState().conversations[conversationId]
+                  ?.messages.find((m) => m.id === assistantMsgId);
                 if (currentMsg) {
-                  import('../session/conversationStorage').then(({ updateLastMessage }) => {
-                    updateLastMessage(conversationId, currentMsg).catch(() => {});
+                  import('../session/conversationStorage').then(({ replaceMessageById }) => {
+                    replaceMessageById(conversationId, currentMsg).catch(() => {});
                   }).catch(() => {});
                 }
               }
@@ -1006,15 +1017,22 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
 
             case 'thinking':
               collectedThinking += event.thinking;
-              useChatStore.getState().updateMessageThinking(conversationId, collectedThinking);
+              useChatStore.getState().updateMessageThinking(conversationId, collectedThinking, assistantMsgId);
               break;
 
             case 'tool_use': {
               // Flush any buffered streaming tokens before processing tool calls
               flushTokenBuffer(conversationId);
               // Record thinking end time when we transition from thinking to tool-calling
+              // and immediately push thinkingDuration so the UI's thinking step flips to
+              // completed (same reason as the 'text' branch above).
               if (!thinkingEndTime && collectedThinking) {
                 thinkingEndTime = Date.now();
+                const thinkingStartTime = useChatStore.getState().thinkingStartTime;
+                if (thinkingStartTime) {
+                  const thinkingDuration = Math.max(1, Math.round((thinkingEndTime - thinkingStartTime) / 1000));
+                  useChatStore.getState().updateMessageThinkingDuration(conversationId, thinkingDuration, assistantMsgId);
+                }
               }
 
               // Special handling for report_plan - save to store, hide from UI
@@ -1094,7 +1112,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
                 const thinkingStartTime = useChatStore.getState().thinkingStartTime;
                 if (thinkingStartTime) {
                   const thinkingDuration = Math.round((thinkingEndTime - thinkingStartTime) / 1000);
-                  useChatStore.getState().updateMessageThinkingDuration(conversationId, thinkingDuration);
+                  useChatStore.getState().updateMessageThinkingDuration(conversationId, thinkingDuration, assistantMsgId);
                 }
               }
               // Track stop reason for max_tokens recovery
@@ -1111,7 +1129,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
               break;
 
             case 'error':
-              chatStore.appendToLastMessage(conversationId, `\n\n**Error:** ${event.error}`);
+              chatStore.appendToLastMessage(conversationId, `\n\n**Error:** ${event.error}`, assistantMsgId);
               break;
           }
         };
@@ -1129,7 +1147,8 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
             }
             chatStore.appendToLastMessage(
               conversationId,
-              `\n*${error.code === 'rate_limit' ? 'API 限流' : '重试'}中 (${attempt})... ${Math.round(delayMs / 1000)}s 后重试*`
+              `\n*${error.code === 'rate_limit' ? 'API 限流' : '重试'}中 (${attempt})... ${Math.round(delayMs / 1000)}s 后重试*`,
+              assistantMsgId
             );
           }
         );
@@ -1141,7 +1160,8 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
         if (retryErr instanceof LLMError && retryErr.code === 'context_too_long') {
           chatStore.appendToLastMessage(
             conversationId,
-            '\n*上下文过长，正在优化上下文...*'
+            '\n*上下文过长，正在优化上下文...*',
+            assistantMsgId
           );
 
           let recovered = false;
@@ -1213,7 +1233,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
 
       // Update usage on message if available
       if (finalUsage) {
-        useChatStore.getState().updateMessageUsage(conversationId, finalUsage);
+        useChatStore.getState().updateMessageUsage(conversationId, finalUsage, assistantMsgId);
         // Calibrate token estimator with actual API usage
         const estimatedInput = estimateTokens(effectiveSystemPrompt) + estimateMessageTokens(preparedMessages) + toolTokens;
         calibrateFromUsage(estimatedInput, finalUsage.inputTokens);
@@ -1333,9 +1353,29 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
             `1. 缩短当前对话或开启新会话\n` +
             `2. 把任务拆分成更小的步骤\n` +
             `3. 切换到上下文更大的模型\n` +
-            `4. 写入大文件时让模型用 \`run_command\` + heredoc 追加（\`>>\`）而非单次 \`write_file\``
+            `4. 写入大文件时让模型用 \`run_command\` + heredoc 追加（\`>>\`）而非单次 \`write_file\``,
+            assistantMsgId
           );
         }
+      }
+
+      // If the user enqueued additional input mid-stream (handled by ChatInput when
+      // a message is sent while a turn is still running), and the current turn ended
+      // with plain text rather than tool_use, run another turn so the LLM actually
+      // responds to that follow-up. Without this, mid-stream user messages get added
+      // to the conversation but never receive a reply.
+      if (!continueLoop && hasQueuedInputs(conversationId) && !abortController.signal.aborted) {
+        // Flush any buffered tokens and finalize the previous assistant message
+        // (toolExecutor normally does this between tool_use turns; we have to do it
+        // ourselves on the no-tool path).
+        flushTokenBuffer(conversationId, assistantMsgId);
+        useChatStore.setState((state) => {
+          const msg = state.conversations[conversationId]?.messages.find(
+            (m) => m.id === assistantMsgId
+          );
+          if (msg) msg.isStreaming = false;
+        });
+        continueLoop = true;
       }
 
       // If there are running background agents, wait for them to complete before ending
@@ -1353,7 +1393,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
       }
 
       if (!continueLoop) {
-        chatStore.finishStreaming(conversationId);
+        chatStore.finishStreaming(conversationId, assistantMsgId);
         chatStore.clearAbortController(conversationId);
         const endReason = maxTokensRecoveryExhausted ? 'max_tokens_exhausted' : 'end_turn';
         logger.info('Agent loop ended', { conversationId, loopId, turnCount, reason: endReason });
@@ -1441,9 +1481,10 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
       logger.info('Agent loop ended', { conversationId, loopId, turnCount, reason: 'error' });
       chatStore.appendToLastMessage(
         conversationId,
-        `\n\n**Error:** ${errorMessage}`
+        `\n\n**Error:** ${errorMessage}`,
+        assistantMsgId
       );
-      chatStore.finishStreaming(conversationId);
+      chatStore.finishStreaming(conversationId, assistantMsgId);
       chatStore.clearAbortController(conversationId);
       // Error the TaskExecution
       eventRouter.route({ type: 'error', loopId, error: errorMessage });

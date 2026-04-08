@@ -51,7 +51,8 @@ Inspired by Claude Code's Cowork mode. Features multi-agent architecture with ex
 
 ## Key Commands
 - `npm run dev` — Start Vite dev server (frontend only)
-- `npm run tauri dev` — Start full Tauri desktop app
+- ⚠️ **`npm run tauri:dev`** (注意冒号) — Start Tauri 桌面端,**走 dev 隔离配置** (`com.abu.app.dev`),数据写到 `~/Library/Application Support/com.abu.app.dev/`,跟正式安装的 Abu 完全隔离
+- ❌ **不要用 `npm run tauri dev`**(空格)—— 这会用默认 `tauri.conf.json` (`com.abu.app`),数据**会污染你正式环境的对话历史**
 - `npm run build` — Build frontend (`tsc -b && vite build`)
 - `npm run tauri build` — Build desktop app bundle
 - `npm test` — Run tests once (`vitest run`)

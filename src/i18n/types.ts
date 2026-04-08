@@ -139,6 +139,10 @@ export interface TranslationDict {
     openInBrowser: string;
     openWithDefaultApp: string;
     clickToPreview: string;
+    fileMissing: string;
+    fileOversized: string;
+    fileBackupFailed: string;
+    cannotRevealOriginal: string;
     sources: string;
     showAllSources: string;
     collapseSources: string;

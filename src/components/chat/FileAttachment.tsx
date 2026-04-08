@@ -1,9 +1,11 @@
 import { useState, useEffect, useCallback } from 'react';
-import { FileCode, FileText, FileImage, File, FileJson, ExternalLink, Globe, SquareArrowOutUpRight, Presentation, Sheet, FileType2, FileSearch } from 'lucide-react';
+import { FileCode, FileText, FileImage, File, FileJson, ExternalLink, Globe, SquareArrowOutUpRight, Presentation, Sheet, FileType2, FileSearch, FileX, FileWarning } from 'lucide-react';
 import { usePreviewStore } from '@/stores/previewStore';
+import { useChatStore } from '@/stores/chatStore';
 import { useI18n } from '@/i18n';
 import { cn } from '@/lib/utils';
 import { loadLocalImage, getBaseName, isLocalFilePath } from '@/utils/pathUtils';
+import { resolveFileSource, type ResolvedSource } from '@/core/session/outputSnapshots';
 
 const IMAGE_EXTENSIONS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp']);
 
@@ -90,56 +92,67 @@ interface FileAttachmentProps {
 
 export default function FileAttachment({ filePath }: FileAttachmentProps) {
   const openPreview = usePreviewStore((s) => s.openPreview);
+  // Read conversationId directly from store rather than threading via props through
+  // MessageGroup → MessageBubble → ToolCallView → FileAttachment.
+  // Caveat: this only works when FileAttachment renders inside the active conversation.
+  // If we ever render this card in a non-active context (e.g. conversation list preview),
+  // pass conversationId via props and fall back to the store.
+  const conversationId = useChatStore((s) => s.activeConversationId) ?? undefined;
   const { t } = useI18n();
   const { icon: Icon, label, category } = getFileTypeInfo(filePath);
   const fileName = getBaseName(filePath);
   const showThumbnail = isImageFile(filePath);
   const { label: openWithLabel, icon: OpenWithIcon } = getOpenWithInfo(filePath);
   const [thumbUrl, setThumbUrl] = useState<string | null>(null);
-  const [fileExists, setFileExists] = useState(true);
+  const [resolved, setResolved] = useState<ResolvedSource | null>(null);
 
-  // Check file existence — hide card if file doesn't exist
+  // Resolve where to actually load the file from: live original > snapshot > skipped/missing
   useEffect(() => {
-    // Non-absolute paths are definitely invalid (e.g. markdown artifacts like "**file.pptx")
-    if (!filePath.startsWith('/') && !/^[A-Za-z]:[\\/]/.test(filePath)) {
-      setFileExists(false);
+    let cancelled = false;
+    resolveFileSource(conversationId, filePath)
+      .then((r) => { if (!cancelled) setResolved(r); })
+      .catch(() => {
+        if (!cancelled) setResolved({ status: 'missing', basename: getBaseName(filePath), originalPath: filePath });
+      });
+    return () => { cancelled = true; };
+  }, [filePath, conversationId]);
+
+  // Effective path: where to actually read bytes from for thumbnail / preview / open-with.
+  // null when the file is not loadable (skipped/missing/loading).
+  const effectivePath = resolved && resolved.status === 'available' ? resolved.path : null;
+
+  // Load image thumbnail via Tauri readFile (uses effective path so snapshots work)
+  useEffect(() => {
+    if (!showThumbnail || !effectivePath) {
+      setThumbUrl(null);
       return;
     }
     let cancelled = false;
-    import('@tauri-apps/plugin-fs').then(({ exists }) =>
-      exists(filePath).then((ok) => { if (!cancelled) setFileExists(ok); })
-    ).catch(() => { if (!cancelled) setFileExists(false); });
-    return () => { cancelled = true; };
-  }, [filePath]);
-
-  // Load image thumbnail via Tauri readFile
-  useEffect(() => {
-    if (!showThumbnail) return;
-    let cancelled = false;
     let blobUrl: string | null = null;
-    loadLocalImage(filePath)
+    loadLocalImage(effectivePath)
       .then((url) => {
         if (!cancelled) { blobUrl = url; setThumbUrl(url); }
         else URL.revokeObjectURL(url);
       })
       .catch(() => {});
     return () => { cancelled = true; if (blobUrl) URL.revokeObjectURL(blobUrl); };
-  }, [filePath, showThumbnail]);
+  }, [effectivePath, showThumbnail]);
 
   const handleClick = () => {
-    openPreview(filePath);
+    if (effectivePath) openPreview(effectivePath);
   };
 
   const handleOpenWithDefaultApp = async (e: React.MouseEvent) => {
     e.stopPropagation();
+    if (!effectivePath) return;
     try {
       const { invoke } = await import('@tauri-apps/api/core');
       const platform = navigator.platform.toLowerCase();
       const command = platform.includes('win')
-        ? `start "" "${filePath}"`
+        ? `start "" "${effectivePath}"`
         : platform.includes('linux')
-          ? `xdg-open "${filePath}"`
-          : `open "${filePath}"`;
+          ? `xdg-open "${effectivePath}"`
+          : `open "${effectivePath}"`;
       await invoke('run_shell_command', {
         command,
         cwd: null,
@@ -152,8 +165,59 @@ export default function FileAttachment({ filePath }: FileAttachmentProps) {
     }
   };
 
-  // Hide card if file doesn't exist on disk
-  if (!fileExists) return null;
+  // Loading skeleton — match the standard card shape so the layout doesn't jump
+  if (!resolved) {
+    return (
+      <div className="w-full rounded-lg bg-[var(--abu-bg-muted)] border border-[var(--abu-border)] px-4 py-3 opacity-50">
+        <div className="h-5 w-32 bg-[var(--abu-border)] rounded animate-pulse" />
+      </div>
+    );
+  }
+
+  // Missing: no original on disk and no snapshot record at all
+  if (resolved.status === 'missing') {
+    return (
+      <div className="flex items-center gap-3 w-full rounded-lg border border-dashed border-[var(--abu-border)] bg-[var(--abu-bg-muted)] px-4 py-3 opacity-60">
+        <div className="w-10 h-10 rounded-lg flex items-center justify-center shrink-0 bg-[var(--abu-bg-muted)]">
+          <FileX className="w-5 h-5 text-[var(--abu-text-muted)]" />
+        </div>
+        <div className="flex flex-col min-w-0">
+          <span className="text-[13.5px] font-medium text-[var(--abu-text-muted)] truncate line-through">
+            {resolved.basename}
+          </span>
+          <span className="text-[11px] text-[var(--abu-text-muted)]">
+            {t.chat.fileMissing}
+          </span>
+        </div>
+      </div>
+    );
+  }
+
+  // Skipped: manifest knows about it but no usable snapshot (oversized or copy-failed)
+  if (resolved.status === 'skipped') {
+    const reasonLabel =
+      resolved.entry.skipReason === 'oversized'
+        ? t.chat.fileOversized
+        : t.chat.fileBackupFailed;
+    return (
+      <div className="flex items-center gap-3 w-full rounded-lg border border-[var(--abu-border)] bg-[var(--abu-bg-muted)] px-4 py-3 opacity-70">
+        <div className="w-10 h-10 rounded-lg flex items-center justify-center shrink-0 bg-[var(--abu-bg-muted)]">
+          <FileWarning className="w-5 h-5 text-amber-500/80" />
+        </div>
+        <div className="flex flex-col min-w-0">
+          <span className="text-[13.5px] font-medium text-[var(--abu-text-primary)] truncate">
+            {resolved.entry.basename}
+          </span>
+          <span className="text-[11px] text-[var(--abu-text-muted)]">
+            {reasonLabel}
+          </span>
+        </div>
+      </div>
+    );
+  }
+
+  // status === 'available' — file is loadable, render normally regardless of source.
+  // No badge / no visual difference between live and snapshot — the user just sees a file.
 
   // Image file: show thumbnail card
   if (showThumbnail && thumbUrl) {

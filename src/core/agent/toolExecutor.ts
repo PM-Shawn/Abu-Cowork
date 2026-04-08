@@ -312,6 +312,20 @@ export async function executeToolBatch(params: ToolBatchParams): Promise<ToolBat
         // Offload failed — store full result in memory (fallback)
       }
 
+      // Snapshot any output files this tool produced so they survive original-file deletion.
+      // Fire-and-forget: snapshot failures must never block the agent loop.
+      // Uses the un-offloaded toolResult so extractFileOutputs can still parse stdout.
+      if (!error && matchedTc) {
+        import('../session/outputSnapshots').then(({ snapshotToolOutputs }) => {
+          snapshotToolOutputs(conversationId, {
+            id,
+            name: matchedTc.name,
+            input: matchedTc.input,
+            result: toolResult,
+          }).catch((e) => logger.warn('snapshot tool output failed', { tool: matchedTc.name, err: e }));
+        }).catch(() => {});
+      }
+
       chatStore.updateToolCall(conversationId, assistantMsgId, id, storedResult, resultContent, error, hideScreenshot);
 
       // Update TaskExecutionStore via EventRouter

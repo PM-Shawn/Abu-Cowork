@@ -335,6 +335,11 @@ export const useChatStore = create<ChatStore>()(
         import('../core/session/sessionMemory').then(({ cleanupConversationResults }) => {
           cleanupConversationResults(id).catch(() => {});
         }).catch(() => {});
+        // Output snapshots: clears in-memory manifest cache + defensive disk rm
+        // (deleteConversationFiles already rm -rf's the conv dir, this is mostly for cache)
+        import('../core/session/outputSnapshots').then(({ cleanupConversationOutputs }) => {
+          cleanupConversationOutputs(id).catch(() => {});
+        }).catch(() => {});
         // Clean up IM session pointing to this conversation (lazy import to avoid circular deps)
         import('./imChannelStore').then(({ useIMChannelStore }) => {
           const imStore = useIMChannelStore.getState();
@@ -420,6 +425,26 @@ export const useChatStore = create<ChatStore>()(
             if (meta) updateIndexEntry(meta).catch(() => {});
           }
         });
+        // Snapshot any user-uploaded files (currently only images with filePath).
+        // Fire-and-forget — must never block the UI flow.
+        // ★ Architecture contract: when adding new content types with stripForDisk
+        //   behavior (e.g. DocumentContent + filePath), add the corresponding
+        //   snapshotUserUpload call here. ★
+        if (message.role === 'user' && Array.isArray(message.content)) {
+          const imageBlocks = message.content.filter(
+            (c): c is Extract<typeof c, { type: 'image' }> =>
+              c.type === 'image' && !!(c as { filePath?: string }).filePath,
+          );
+          if (imageBlocks.length > 0) {
+            import('../core/session/outputSnapshots').then(({ snapshotUserUpload }) => {
+              for (const block of imageBlocks) {
+                if (block.filePath) {
+                  snapshotUserUpload(convId, block.filePath, message.id, 'image').catch(() => {});
+                }
+              }
+            }).catch(() => {});
+          }
+        }
       },
 
       appendToLastMessage: (convId, token) => {

@@ -23,22 +23,43 @@ function extractAttachments(text: string): { cleanText: string; attachmentPaths:
   return { cleanText, attachmentPaths: paths };
 }
 
-/** Image thumbnail that loads from base64 data or disk filePath */
+/** Image thumbnail that loads from base64 data, disk filePath, or snapshot fallback */
 function UserImageThumbnail({ image }: { image: Extract<MessageContent, { type: 'image' }> }) {
   const { t } = useI18n();
   const openPreview = usePreviewStore.getState().openPreview;
+  const conversationId = useChatStore((s) => s.activeConversationId) ?? undefined;
   const hasData = !!image.source.data;
   const [diskSrc, setDiskSrc] = useState<string | null>(null);
+  const [effectivePath, setEffectivePath] = useState<string | null>(null);
   const [expired, setExpired] = useState(false);
 
   useEffect(() => {
     if (hasData || !image.filePath) return;
+    let cancelled = false;
     let revoke: string | null = null;
-    loadLocalImage(image.filePath)
-      .then((url) => { revoke = url; setDiskSrc(url); })
-      .catch(() => setExpired(true));
-    return () => { if (revoke) URL.revokeObjectURL(revoke); };
-  }, [hasData, image.filePath]);
+
+    // Try original first; fall back to snapshot via resolveFileSource
+    (async () => {
+      const { resolveFileSource } = await import('@/core/session/outputSnapshots');
+      const resolved = await resolveFileSource(conversationId, image.filePath!);
+      if (cancelled) return;
+      if (resolved.status !== 'available') {
+        setExpired(true);
+        return;
+      }
+      setEffectivePath(resolved.path);
+      try {
+        const url = await loadLocalImage(resolved.path);
+        if (cancelled) { URL.revokeObjectURL(url); return; }
+        revoke = url;
+        setDiskSrc(url);
+      } catch {
+        if (!cancelled) setExpired(true);
+      }
+    })();
+
+    return () => { cancelled = true; if (revoke) URL.revokeObjectURL(revoke); };
+  }, [hasData, image.filePath, conversationId]);
 
   const src = hasData
     ? `data:${image.source.media_type};base64,${image.source.data}`
@@ -64,7 +85,7 @@ function UserImageThumbnail({ image }: { image: Extract<MessageContent, { type: 
   return (
     <div
       className="w-8 h-8 rounded overflow-hidden border border-[var(--abu-border-subtle)] cursor-pointer hover:border-[var(--abu-border-hover)] transition-colors"
-      onClick={() => openPreview(image.filePath || src)}
+      onClick={() => openPreview(effectivePath || image.filePath || src)}
       title={t.chat.clickToViewFull}
     >
       <img src={src} alt="" className="w-full h-full object-cover" />

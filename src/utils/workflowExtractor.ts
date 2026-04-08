@@ -553,6 +553,13 @@ export function extractFileOutputs(
       continue;
     }
 
+    // 5b. computer screenshot — saved to disk, path announced in result text
+    if (tc.name === TOOL_NAMES.COMPUTER && tc.result) {
+      const match = tc.result.match(/Screenshot saved to: (.+?)(?:\n|$)/);
+      if (match) addFile(match[1].trim(), 'create');
+      continue;
+    }
+
     // 6. Command tools — parse stdout + command string for file paths
     if (COMMAND_TOOLS.includes(tc.name)) {
       // Skip failed commands — don't extract paths from cp/mv that got sandbox-blocked

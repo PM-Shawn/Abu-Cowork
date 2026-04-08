@@ -22,10 +22,10 @@ const PLANNING_INSTRUCTION = `
 
 **收到任务后，根据情况选择执行方式：**
 
-### 情况 A：不需要工具就能回答（闲聊、知识问答、计算、翻译、写作等）
+### 情况 A：不需要工具就能回答（闲聊、知识问答、计算、翻译、写作、询问能力（"你能…吗"/"会不会"/"支持…吗"）等）
 → 直接回复，不需要调用任何工具，也不需要 report_plan
 
-### 情况 B：任务匹配某个技能的 TRIGGER 条件
+### 情况 B：用户提出**可执行任务**且匹配某个技能的 TRIGGER 条件
 → 先调用 use_skill 激活匹配的技能
 → 然后按照技能指令完成任务（技能会定义自己的工作流程）
 
@@ -157,41 +157,7 @@ export function routeInput(input: string): RouteResult {
     }
   }
 
-  // 3. Auto-skill: if natural language strongly matches a skill trigger, activate it directly
-  // This saves one LLM round-trip (no need for LLM to call use_skill first)
-  // Split on whitespace AND CJK punctuation for proper Chinese tokenization
-  {
-    const lower = trimmed.toLowerCase();
-    const inputTokens = lower.split(/[\s,，。！？：；、·\-—""''「」【】（）()]+/).filter(w => w.length > 0);
-    const allSkills = skillLoader.findMatchingSkills(trimmed);
-    for (const skill of allSkills) {
-      if (!skill.trigger) continue;
-      const haystack = `${skill.name} ${skill.description} ${skill.trigger}`.toLowerCase();
-      // Check both token-level and substring-level matching
-      const tokenMatches = inputTokens.filter(t => haystack.includes(t)).length;
-      // Also check if specific keywords from trigger/name appear in the input
-      // Extract short keywords (2-6 chars) that are meaningful signal words
-      const triggerSource = `${skill.name} ${skill.trigger}`.toLowerCase();
-      const triggerTokens = triggerSource
-        .split(/[\s,，。！？：；、·\-—""''「」【】（）()/]+/)
-        .filter(k => k.length >= 2 && k.length <= 6);
-      const reverseMatches = triggerTokens.filter(k => lower.includes(k)).length;
-      // Trigger keywords are high-quality signals — 1 match is enough
-      // Input tokens matching description need 2+ to avoid false positives
-      if (reverseMatches >= 1 || tokenMatches >= 2) {
-        return {
-          type: 'skill',
-          name: skill.name,
-          skill,
-          skillContent: skill.content,
-          args: trimmed,
-          cleanInput: trimmed,
-        };
-      }
-    }
-  }
-
-  // 4. General: let Claude decide when to use skills via use_skill tool
+  // 3. General: let Claude decide when to use skills via use_skill tool
   // Skills are listed in system prompt, Claude can call use_skill when relevant
   return {
     type: 'general',
@@ -658,7 +624,7 @@ ${isWindows()
   try {
     const disabledSkills = new Set(settingsState.disabledSkills ?? []);
     const allSkills = skillLoader.getAvailableSkills().filter(
-      (s) => s.userInvocable !== false
+      (s) => s.userInvocable !== false && !s.disableAutoInvoke
     );
     const skills = allSkills.filter((s) => !disabledSkills.has(s.name));
     const disabled = allSkills.filter((s) => disabledSkills.has(s.name));
@@ -697,9 +663,10 @@ ${isWindows()
         : '以下技能可通过 use_skill 工具主动使用。\n';
       let skillText = '\n## 可用技能\n' +
         header +
-        '**决策规则**：收到用户请求后，首先检查是否匹配某个技能的 TRIGGER 条件。\n' +
-        '如果匹配（且不符合 DO NOT TRIGGER 条件），必须通过 use_skill 激活该技能。\n' +
-        '技能包含最佳实践和完整工作流，使用技能 = 更好的结果。\n\n' +
+        '**决策规则**：收到用户请求后，检查是否匹配某个技能的 TRIGGER 条件。\n' +
+        '**仅当用户明确提出可执行任务**且匹配 TRIGGER（不符合 DO NOT TRIGGER）时，通过 use_skill 激活该技能。\n' +
+        '如果用户只是询问能力（"你能…吗"/"会不会"/"支持…吗"）或在脑暴讨论概念，**不要**调用 use_skill，先用文字回答。\n' +
+        '**永远不要**在不调用 use_skill 的情况下口头承诺"我有 X 技能/工具可以…"——要么真正调用激活技能，要么用通用工具直接完成任务。\n\n' +
         skillLines.join('\n');
 
       // Show disabled skills so Agent can recommend enabling them when relevant

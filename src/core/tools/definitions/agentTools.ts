@@ -75,11 +75,20 @@ export const useSkillTool: ToolDefinition = {
       return `Error: Skill "${skillName}" not found. Available skills: ${available}`;
     }
 
+    // Dedup: if already active in this conversation, short-circuit to prevent
+    // wasted tool calls. Skill instructions are already in the system prompt.
+    const state = useChatStore.getState();
+    const activeId = state.activeConversationId;
+    if (activeId) {
+      const existing = state.conversations[activeId]?.activeSkills;
+      if (existing?.includes(skillName)) {
+        return `技能 "${skillName}" 已在本对话激活，无需重复调用。直接根据已注入的技能指令继续工作。`;
+      }
+    }
+
     // Store the skill activation and arguments — the agentLoop will pick this up
     // and inject it into the system prompt via orchestrator
 
-    const state = useChatStore.getState();
-    const activeId = state.activeConversationId;
     if (activeId) {
       useChatStore.setState((draft: { conversations: Record<string, Conversation> }) => {
         const conv = draft.conversations[activeId];

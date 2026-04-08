@@ -1,6 +1,9 @@
 ---
 name: skill-creator
-description: Create new skills, modify and improve existing skills, and measure skill performance. Use when users want to create a skill from scratch, edit, or optimize an existing skill, run evals to test a skill, benchmark skill performance with variance analysis, or optimize a skill's description for better triggering accuracy.
+description: 创建、编辑、优化和测试 skills。当用户明确要求创建一个具体的新 skill、修改已有 skill 的内容或描述、运行 skill 评测，或优化 skill 触发准确率时使用。
+trigger: 用户明确要求创建、编辑、优化、测试某个具体 skill（例如"帮我创建一个 xxx 技能"、"修改 yyy 技能的描述"、"测试 zzz 技能的触发准确率"）
+do-not-trigger: 用户只是询问能力（"你能不能创建 skill"/"会不会做"/"支持吗"）；用户还在脑暴阶段没确定要做什么 skill；用户在讨论 skill 系统的概念或工作原理；用户在对话里偶然提到 "skill" 一词
+user-invocable: true
 max-turns: 50
 ---
 

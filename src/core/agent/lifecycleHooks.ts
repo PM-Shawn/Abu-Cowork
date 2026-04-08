@@ -83,7 +83,7 @@ export interface SubagentEndEvent extends BaseHookEvent {
 export interface TurnStartEvent extends BaseHookEvent {
   type: 'turnStart';
   turnNumber: number;
-  maxTurns: number;
+  maxTurns?: number; // undefined = unlimited
 }
 
 export interface TurnEndEvent extends BaseHookEvent {

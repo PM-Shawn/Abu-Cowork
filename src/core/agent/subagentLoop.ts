@@ -204,7 +204,9 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
     ];
 
     // 6. Main loop
-    const maxTurns = agent.maxTurns ?? 20;
+    // maxTurns priority: agent definition > global setting > 50 (safety cap for background loops)
+    const globalMaxTurns = useSettingsStore.getState().agentMaxTurns;
+    const maxTurns = agent.maxTurns ?? globalMaxTurns ?? 50;
     let resultBuffer = '';
 
     for (let turn = 0; turn < maxTurns; turn++) {

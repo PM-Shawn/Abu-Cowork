@@ -224,6 +224,7 @@ const enUS: TranslationDict = {
     contextCritical: 'Context nearly full, auto-compressing...',
     contextCompressBtn: 'Compress',
     contextNewChatBtn: 'New Chat',
+    maxTurnsReached: 'Completed {n} turns. Send a new message to continue if the task is not finished.',
   },
 
   status: {
@@ -327,6 +328,9 @@ const enUS: TranslationDict = {
     thinkingBudget: 'Thinking Budget (tokens)',
     thinkingBudgetFast: 'Fast (1k)',
     thinkingBudgetDeep: 'Deep (50k)',
+    agentMaxTurns: 'Max Agent Turns',
+    agentMaxTurnsDesc: 'Maximum tool-call turns the agent runs per task. Leave empty for no limit (long tasks may incur higher API cost)',
+    agentMaxTurnsPlaceholder: 'No limit',
     language: 'Language',
     languageDescription: 'Select display language',
     followSystem: 'Follow System',
@@ -638,6 +642,7 @@ const enUS: TranslationDict = {
     skillContextInline: 'Inline (default)',
     skillContextFork: 'Fork (replaces base prompt)',
     skillMaxTurns: 'Max Turns',
+    maxTurnsInheritGlobalHint: 'Leave empty to inherit global setting',
     skillContent: 'Skill Content',
     skillEnabled: 'Enabled',
     skillDisabled: 'Disabled',

@@ -256,6 +256,7 @@ interface SettingsState {
   sidebarCollapsed: boolean;
   rightPanelCollapsed: boolean;
   temperature: number;
+  agentMaxTurns?: number; // undefined = 不限制
   enableThinking: boolean;
   thinkingBudget: number;
   maxOutputTokens: number;
@@ -317,6 +318,7 @@ interface SettingsActions {
   toggleRightPanel: () => void;
   setRightPanelCollapsed: (collapsed: boolean) => void;
   setTemperature: (temp: number) => void;
+  setAgentMaxTurns: (n: number | undefined) => void;
   setEnableThinking: (enabled: boolean) => void;
   setThinkingBudget: (budget: number) => void;
   setMaxOutputTokens: (tokens: number) => void;
@@ -675,6 +677,7 @@ export const useSettingsStore = create<SettingsStore>()(
       toggleRightPanel: () => set((s) => ({ rightPanelCollapsed: !s.rightPanelCollapsed })),
       setRightPanelCollapsed: (collapsed) => set({ rightPanelCollapsed: collapsed }),
       setTemperature: (temperature) => set({ temperature }),
+      setAgentMaxTurns: (agentMaxTurns) => set({ agentMaxTurns }),
       setEnableThinking: (enableThinking) => set({ enableThinking }),
       setThinkingBudget: (thinkingBudget) => set({ thinkingBudget }),
       setMaxOutputTokens: (maxOutputTokens) => set({ maxOutputTokens }),
@@ -748,9 +751,19 @@ export const useSettingsStore = create<SettingsStore>()(
     }),
     {
       name: 'abu-settings',
-      version: 15,
+      version: 16,
       migrate: (persisted: unknown, version: number) => {
         const state = persisted as Record<string, unknown>;
+
+        // ════════════════════════════════════════════════
+        // V16: Agent max turns — added optional agentMaxTurns
+        // (undefined = unlimited; replaces hardcoded default of 20)
+        // ════════════════════════════════════════════════
+        if (version < 16) {
+          // Optional additive field; no data transform needed.
+          // Old users get undefined → unlimited (looser than previous 20).
+          void state;
+        }
 
         // ════════════════════════════════════════════════
         // V15: Soul personality — add soulInitialized flag
@@ -1021,6 +1034,7 @@ export const useSettingsStore = create<SettingsStore>()(
         theme: state.theme,
         language: state.language,
         temperature: state.temperature,
+        agentMaxTurns: state.agentMaxTurns,
         enableThinking: state.enableThinking,
         thinkingBudget: state.thinkingBudget,
         maxOutputTokens: state.maxOutputTokens,

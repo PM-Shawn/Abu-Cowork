@@ -272,7 +272,7 @@ export interface SkillMetadata {
   blockedTools?: string[];    // Blacklist filter — these tools are hidden from the LLM
   requiredTools?: string[];   // Must be available or skill execution is blocked
   model?: string;
-  maxTurns?: number;          // Max agent loop turns (default 20, increase for browsing-heavy skills)
+  maxTurns?: number;          // Optional cap on agent loop turns. Falls back to global settings; if global also unset, runs unlimited.
   context?: 'inline' | 'fork';
   tags?: string[];
   agent?: string;             // Fork mode subagent type
@@ -301,7 +301,7 @@ export interface SubagentMetadata {
   description: string;
   avatar?: string;
   model?: string;
-  maxTurns?: number;
+  maxTurns?: number;          // Optional cap on subagent loop turns. Falls back to global settings; ultimate fallback is 50 for safety.
   tools?: string[];
   disallowedTools?: string[];
   skills?: string[];

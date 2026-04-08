@@ -190,6 +190,8 @@ export interface TranslationDict {
     contextCritical: string;
     contextCompressBtn: string;
     contextNewChatBtn: string;
+    // Agent loop max turns
+    maxTurnsReached: string;
   };
 
   // Status Bar
@@ -298,6 +300,9 @@ export interface TranslationDict {
     thinkingBudget: string;
     thinkingBudgetFast: string;
     thinkingBudgetDeep: string;
+    agentMaxTurns: string;
+    agentMaxTurnsDesc: string;
+    agentMaxTurnsPlaceholder: string;
     // Language
     language: string;
     languageDescription: string;
@@ -612,6 +617,7 @@ export interface TranslationDict {
     skillContextInline: string;
     skillContextFork: string;
     skillMaxTurns: string;
+    maxTurnsInheritGlobalHint: string;
     skillContent: string;
     skillEnabled: string;
     skillDisabled: string;

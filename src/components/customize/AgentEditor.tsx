@@ -185,13 +185,19 @@ export default function AgentEditor({ agent, onClose, onSave }: AgentEditorProps
                 ]}
               />
             </div>
-            <div className="w-24">
+            <div className="w-32">
               <label className="block text-xs font-medium text-[var(--abu-text-secondary)] mb-1">{t.toolbox.agentMaxTurns}</label>
               <input
                 type="number"
+                min={1}
                 value={maxTurns}
-                onChange={(e) => setMaxTurns(e.target.value)}
-                placeholder="20"
+                onChange={(e) => {
+                  const raw = e.target.value;
+                  if (raw === '') { setMaxTurns(''); return; }
+                  const v = parseInt(raw, 10);
+                  if (!isNaN(v) && v >= 1) setMaxTurns(String(v));
+                }}
+                placeholder={t.toolbox.maxTurnsInheritGlobalHint}
                 className="w-full px-3 py-1.5 rounded-lg border border-[var(--abu-border)] text-sm text-[var(--abu-text-primary)] bg-[var(--abu-bg-base)] focus:outline-none focus:ring-2 focus:ring-[var(--abu-clay-ring)] focus:border-[var(--abu-clay)] transition-all"
               />
             </div>

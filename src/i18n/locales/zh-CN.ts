@@ -224,6 +224,7 @@ const zhCN: TranslationDict = {
     contextCritical: '上下文即将满载，正在自动压缩...',
     contextCompressBtn: '压缩历史',
     contextNewChatBtn: '新对话',
+    maxTurnsReached: '已完成 {n} 轮执行。如果任务尚未完成，直接发送消息即可继续。',
   },
 
   status: {
@@ -327,6 +328,9 @@ const zhCN: TranslationDict = {
     thinkingBudget: '思考预算 (tokens)',
     thinkingBudgetFast: '快速 (1k)',
     thinkingBudgetDeep: '深度 (50k)',
+    agentMaxTurns: '最大执行轮次',
+    agentMaxTurnsDesc: '单次任务中 Agent 最多执行的工具调用轮次。留空表示不限制（适合复杂长任务，注意 API 费用）',
+    agentMaxTurnsPlaceholder: '不限制',
     language: '语言',
     languageDescription: '选择界面显示语言',
     followSystem: '跟随系统',
@@ -638,6 +642,7 @@ const zhCN: TranslationDict = {
     skillContextInline: '内联（默认）',
     skillContextFork: '独立（替代基础提示）',
     skillMaxTurns: '最大轮次',
+    maxTurnsInheritGlobalHint: '留空跟随全局设置',
     skillContent: '技能内容',
     skillEnabled: '已启用',
     skillDisabled: '已停用',

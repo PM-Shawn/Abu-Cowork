@@ -31,7 +31,31 @@ const abortControllers: Map<string, AbortController> = new Map();
 // ── Streaming token buffer (RAF-based debounce) ──
 // Tokens accumulate in the buffer and flush once per animation frame,
 // reducing React re-renders from 1000+/sec to ~60/sec during streaming.
-const tokenBuffer: Map<string, string> = new Map();
+//
+// Buffer is keyed by `${convId}::${msgId}` so that if the user sends a new
+// message mid-stream (which becomes the "last" message in the conversation),
+// streaming tokens still flow to the correct assistant message instead of
+// being appended to the new user bubble.
+type BufferKey = string;
+const tokenBuffer: Map<BufferKey, string> = new Map();
+const FALLBACK_LAST = '__last__';
+function bufferKey(convId: string, msgId?: string): BufferKey {
+  return `${convId}::${msgId ?? FALLBACK_LAST}`;
+}
+function parseBufferKey(key: BufferKey): { convId: string; msgId: string } {
+  const idx = key.indexOf('::');
+  return { convId: key.slice(0, idx), msgId: key.slice(idx + 2) };
+}
+
+/** Find target message: by id if provided, else last message. */
+function findTargetMessage(messages: Message[] | undefined, msgId: string): Message | undefined {
+  if (!messages?.length) return undefined;
+  if (msgId !== FALLBACK_LAST) {
+    return messages.find((m) => m.id === msgId);
+  }
+  return messages[messages.length - 1];
+}
+
 let flushScheduled = false;
 
 function scheduleFlush() {
@@ -44,13 +68,11 @@ function scheduleFlush() {
     tokenBuffer.clear();
     // Single Zustand set() call to batch all buffered tokens
     useChatStore.setState((state) => {
-      for (const [convId, buffered] of entries) {
-        const messages = state.conversations[convId]?.messages;
-        if (messages?.length) {
-          const lastMsg = messages[messages.length - 1];
-          if (typeof lastMsg.content === 'string') {
-            lastMsg.content += buffered;
-          }
+      for (const [key, buffered] of entries) {
+        const { convId, msgId } = parseBufferKey(key);
+        const target = findTargetMessage(state.conversations[convId]?.messages, msgId);
+        if (target && typeof target.content === 'string') {
+          target.content += buffered;
         }
       }
     });
@@ -58,39 +80,30 @@ function scheduleFlush() {
 }
 
 /** Flush any pending buffered tokens immediately (call before finishStreaming) */
-export function flushTokenBuffer(convId?: string) {
-  if (convId) {
-    const buffered = tokenBuffer.get(convId);
-    if (buffered) {
-      tokenBuffer.delete(convId);
-      useChatStore.setState((state) => {
-        const messages = state.conversations[convId]?.messages;
-        if (messages?.length) {
-          const lastMsg = messages[messages.length - 1];
-          if (typeof lastMsg.content === 'string') {
-            lastMsg.content += buffered;
-          }
-        }
-      });
-    }
-  } else {
-    // Flush all
-    const entries = Array.from(tokenBuffer.entries());
-    tokenBuffer.clear();
-    if (entries.length > 0) {
-      useChatStore.setState((state) => {
-        for (const [cId, buffered] of entries) {
-          const messages = state.conversations[cId]?.messages;
-          if (messages?.length) {
-            const lastMsg = messages[messages.length - 1];
-            if (typeof lastMsg.content === 'string') {
-              lastMsg.content += buffered;
-            }
-          }
-        }
-      });
+export function flushTokenBuffer(convId?: string, msgId?: string) {
+  const matchingKeys: BufferKey[] = [];
+  for (const key of tokenBuffer.keys()) {
+    if (!convId) {
+      matchingKeys.push(key);
+    } else {
+      const parsed = parseBufferKey(key);
+      if (parsed.convId !== convId) continue;
+      if (msgId && parsed.msgId !== msgId && parsed.msgId !== FALLBACK_LAST) continue;
+      matchingKeys.push(key);
     }
   }
+  if (matchingKeys.length === 0) return;
+  const entries = matchingKeys.map((k) => [k, tokenBuffer.get(k)!] as const);
+  for (const k of matchingKeys) tokenBuffer.delete(k);
+  useChatStore.setState((state) => {
+    for (const [key, buffered] of entries) {
+      const { convId: cId, msgId: mId } = parseBufferKey(key);
+      const target = findTargetMessage(state.conversations[cId]?.messages, mId);
+      if (target && typeof target.content === 'string') {
+        target.content += buffered;
+      }
+    }
+  });
 }
 
 // Note: Old localStorage persistence limits (MAX_CONVERSATIONS, MAX_MESSAGES_PER_CONVERSATION,
@@ -127,9 +140,12 @@ interface ChatActions {
   renameConversation: (id: string, title: string) => void;
 
   addMessage: (convId: string, message: Message) => void;
-  appendToLastMessage: (convId: string, token: string) => void;
-  setLastMessageContent: (convId: string, content: string) => void;
-  finishStreaming: (convId: string) => void;
+  /** Append a streaming token. If `msgId` is provided, append to that specific message;
+   *  otherwise fall back to the last message in the conversation. Pass `msgId` whenever
+   *  the agent loop is streaming so mid-stream user messages don't get corrupted. */
+  appendToLastMessage: (convId: string, token: string, msgId?: string) => void;
+  setLastMessageContent: (convId: string, content: string, msgId?: string) => void;
+  finishStreaming: (convId: string, msgId?: string) => void;
   updateToolCall: (convId: string, messageId: string, toolCallId: string, result: string, resultContent?: ToolResultContent[], isError?: boolean, hideScreenshot?: boolean) => void;
 
   // New message operations
@@ -137,9 +153,9 @@ interface ChatActions {
   deleteMessage: (convId: string, messageId: string) => void;
   deleteMessagesFrom: (convId: string, messageId: string) => void;
   deleteLoopMessages: (convId: string, loopId: string) => void;
-  updateMessageThinking: (convId: string, thinking: string) => void;
-  updateMessageThinkingDuration: (convId: string, duration: number) => void;
-  updateMessageUsage: (convId: string, usage: TokenUsage) => void;
+  updateMessageThinking: (convId: string, thinking: string, msgId?: string) => void;
+  updateMessageThinkingDuration: (convId: string, duration: number, msgId?: string) => void;
+  updateMessageUsage: (convId: string, usage: TokenUsage, msgId?: string) => void;
   appendToolCallContext: (convId: string, loopId: string, context: ToolCallForContext) => void;
   setExecutionStepsSnapshot: (convId: string, loopId: string, steps: ExecutionStepSnapshot[]) => void;
 
@@ -447,43 +463,54 @@ export const useChatStore = create<ChatStore>()(
         }
       },
 
-      appendToLastMessage: (convId, token) => {
+      appendToLastMessage: (convId, token, msgId) => {
         // Buffer tokens and flush once per animation frame for smooth rendering
-        const existing = tokenBuffer.get(convId) ?? '';
-        tokenBuffer.set(convId, existing + token);
+        const key = bufferKey(convId, msgId);
+        const existing = tokenBuffer.get(key) ?? '';
+        tokenBuffer.set(key, existing + token);
         scheduleFlush();
       },
 
-      setLastMessageContent: (convId, content) => {
+      setLastMessageContent: (convId, content, msgId) => {
         set((state) => {
-          const messages = state.conversations[convId]?.messages;
-          if (messages?.length) {
-            const lastMsg = messages[messages.length - 1];
-            lastMsg.content = content;
-          }
+          const target = findTargetMessage(
+            state.conversations[convId]?.messages,
+            msgId ?? FALLBACK_LAST,
+          );
+          if (target) target.content = content;
         });
       },
 
-      finishStreaming: (convId) => {
+      finishStreaming: (convId, msgId) => {
         // Flush any buffered tokens before marking streaming complete
-        flushTokenBuffer(convId);
+        flushTokenBuffer(convId, msgId);
         set((state) => {
-          const messages = state.conversations[convId]?.messages;
-          if (messages?.length) {
-            messages[messages.length - 1].isStreaming = false;
-          }
+          const target = findTargetMessage(
+            state.conversations[convId]?.messages,
+            msgId ?? FALLBACK_LAST,
+          );
+          if (target) target.isStreaming = false;
           state.agentStatus = 'idle';
           state.currentTool = null;
         });
         // Persist the final completed message to disk.
-        // The initial placeholder (content: '') was already written by addMessage,
-        // but tokens accumulated in-memory only. updateLastMessage overwrites the
-        // last JSONL line so reloads see the full response.
-        const finalMsg = get().conversations[convId]?.messages.slice(-1)[0];
+        // When msgId is provided, we must replace by id (not "last line") because the
+        // user may have sent another message mid-stream — the assistant message we are
+        // finishing is no longer the last JSONL line.
+        const messages = get().conversations[convId]?.messages;
+        const finalMsg = msgId
+          ? messages?.find((m) => m.id === msgId)
+          : messages?.slice(-1)[0];
         if (finalMsg) {
-          import('../core/session/conversationStorage').then(({ updateLastMessage }) => {
-            updateLastMessage(convId, finalMsg).catch(() => {});
-          });
+          if (msgId) {
+            import('../core/session/conversationStorage').then(({ replaceMessageById }) => {
+              replaceMessageById(convId, finalMsg).catch(() => {});
+            });
+          } else {
+            import('../core/session/conversationStorage').then(({ updateLastMessage }) => {
+              updateLastMessage(convId, finalMsg).catch(() => {});
+            });
+          }
         }
       },
 
@@ -561,29 +588,34 @@ export const useChatStore = create<ChatStore>()(
         });
       },
 
-      updateMessageThinking: (convId, thinking) => {
+      updateMessageThinking: (convId, thinking, msgId) => {
         set((state) => {
-          const messages = state.conversations[convId]?.messages;
-          if (messages?.length) {
-            messages[messages.length - 1].thinking = thinking;
-          }
+          const target = findTargetMessage(
+            state.conversations[convId]?.messages,
+            msgId ?? FALLBACK_LAST,
+          );
+          if (target) target.thinking = thinking;
         });
       },
 
-      updateMessageThinkingDuration: (convId, duration) => {
+      updateMessageThinkingDuration: (convId, duration, msgId) => {
         set((state) => {
-          const messages = state.conversations[convId]?.messages;
-          if (messages?.length) {
-            messages[messages.length - 1].thinkingDuration = duration;
-          }
+          const target = findTargetMessage(
+            state.conversations[convId]?.messages,
+            msgId ?? FALLBACK_LAST,
+          );
+          if (target) target.thinkingDuration = duration;
         });
       },
 
-      updateMessageUsage: (convId, usage) => {
+      updateMessageUsage: (convId, usage, msgId) => {
         set((state) => {
-          const messages = state.conversations[convId]?.messages;
-          if (messages?.length) {
-            messages[messages.length - 1].usage = {
+          const target = findTargetMessage(
+            state.conversations[convId]?.messages,
+            msgId ?? FALLBACK_LAST,
+          );
+          if (target) {
+            target.usage = {
               inputTokens: usage.inputTokens,
               outputTokens: usage.outputTokens,
             };

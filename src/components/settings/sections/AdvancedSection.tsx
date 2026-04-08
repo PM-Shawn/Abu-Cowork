@@ -1,9 +1,8 @@
 import { useSettingsStore } from '@/stores/settingsStore';
 import { useI18n, type LanguageSetting } from '@/i18n';
-import { Brain, Thermometer, Globe, Repeat } from 'lucide-react';
+import { Brain, Thermometer, Globe } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { Toggle } from '@/components/ui/toggle';
-import { Input } from '@/components/ui/input';
 
 const languageOptions: { value: LanguageSetting; label: string; nativeLabel?: string }[] = [
   { value: 'system', label: 'Follow System', nativeLabel: '跟随系统' },
@@ -14,8 +13,8 @@ const languageOptions: { value: LanguageSetting; label: string; nativeLabel?: st
 export default function AdvancedSection() {
   const { t } = useI18n();
   const {
-    temperature, enableThinking, thinkingBudget, language, agentMaxTurns,
-    setTemperature, setEnableThinking, setThinkingBudget, setLanguage, setAgentMaxTurns,
+    temperature, enableThinking, thinkingBudget, language,
+    setTemperature, setEnableThinking, setThinkingBudget, setLanguage,
   } = useSettingsStore();
 
   return (
@@ -90,32 +89,6 @@ export default function AdvancedSection() {
             </div>
           </div>
         )}
-      </div>
-
-      {/* Agent Max Turns */}
-      <div className="p-4 rounded-lg border border-[var(--abu-border)] bg-[var(--abu-bg-muted)] space-y-3">
-        <div className="flex items-center justify-between gap-4">
-          <label className="text-sm font-medium text-[var(--abu-text-primary)] flex items-center gap-2">
-            <Repeat className="h-4 w-4 text-[var(--abu-text-tertiary)]" />
-            {t.settings.agentMaxTurns}
-          </label>
-          <Input
-            type="number"
-            min={1}
-            value={agentMaxTurns?.toString() ?? ''}
-            onChange={(e) => {
-              const raw = e.target.value;
-              if (raw === '') { setAgentMaxTurns(undefined); return; }
-              const v = parseInt(raw, 10);
-              if (!isNaN(v) && v >= 1) setAgentMaxTurns(v);
-            }}
-            placeholder={t.settings.agentMaxTurnsPlaceholder}
-            className="w-28 text-right"
-          />
-        </div>
-        <p className="text-xs text-[var(--abu-text-tertiary)] leading-relaxed">
-          {t.settings.agentMaxTurnsDesc}
-        </p>
       </div>
 
       {/* Language selector */}

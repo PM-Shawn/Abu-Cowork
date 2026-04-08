@@ -300,9 +300,6 @@ export interface TranslationDict {
     thinkingBudget: string;
     thinkingBudgetFast: string;
     thinkingBudgetDeep: string;
-    agentMaxTurns: string;
-    agentMaxTurnsDesc: string;
-    agentMaxTurnsPlaceholder: string;
     // Language
     language: string;
     languageDescription: string;

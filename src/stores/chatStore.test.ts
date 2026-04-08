@@ -131,6 +131,48 @@ describe('chatStore', () => {
       const msg = useChatStore.getState().conversations[id].messages[0];
       expect(msg.content).toBe('Hello World');
     });
+
+    // Regression: mid-stream user input bug. ChatInput adds a user message to the
+    // store while a turn is still streaming → that user msg becomes the new "last
+    // message". Without explicit msgId routing, subsequent assistant tokens would
+    // get appended into the user bubble.
+    it('routes tokens by msgId so a mid-stream user message is not corrupted', () => {
+      const id = useChatStore.getState().createConversation();
+      const store = useChatStore.getState();
+      store.addMessage(id, {
+        id: 'user-1', role: 'user', content: 'first', timestamp: Date.now(),
+      });
+      store.addMessage(id, {
+        id: 'assistant-1', role: 'assistant', content: 'Hello', timestamp: Date.now(), isStreaming: true,
+      });
+      // User sends another message mid-stream — now last message is user-2.
+      store.addMessage(id, {
+        id: 'user-2', role: 'user', content: 'second', timestamp: Date.now(),
+      });
+      // Streaming token should still land on assistant-1, not user-2.
+      store.appendToLastMessage(id, ' World', 'assistant-1');
+      flushTokenBuffer(id, 'assistant-1');
+      const msgs = useChatStore.getState().conversations[id].messages;
+      expect(msgs.find((m) => m.id === 'assistant-1')?.content).toBe('Hello World');
+      expect(msgs.find((m) => m.id === 'user-2')?.content).toBe('second');
+    });
+
+    it('flushTokenBuffer drains the per-msgId buffer not the convId fallback', () => {
+      const id = useChatStore.getState().createConversation();
+      const store = useChatStore.getState();
+      store.addMessage(id, {
+        id: 'assistant-a', role: 'assistant', content: 'A', timestamp: Date.now(), isStreaming: true,
+      });
+      store.addMessage(id, {
+        id: 'user-x', role: 'user', content: 'tail', timestamp: Date.now(),
+      });
+      store.appendToLastMessage(id, '+1', 'assistant-a');
+      store.appendToLastMessage(id, '+2', 'assistant-a');
+      flushTokenBuffer(id, 'assistant-a');
+      const msgs = useChatStore.getState().conversations[id].messages;
+      expect(msgs.find((m) => m.id === 'assistant-a')?.content).toBe('A+1+2');
+      expect(msgs.find((m) => m.id === 'user-x')?.content).toBe('tail');
+    });
   });
 
   // ── finishStreaming ──
@@ -144,6 +186,26 @@ describe('chatStore', () => {
       const state = useChatStore.getState();
       expect(state.conversations[id].messages[0].isStreaming).toBe(false);
       expect(state.agentStatus).toBe('idle');
+    });
+
+    // Regression: without msgId, finishStreaming flipped isStreaming on whatever
+    // happened to be the last message — so a mid-stream user message left the
+    // original assistant placeholder stuck in "执行中..." forever.
+    it('finishStreaming(msgId) flips the right message even when not last', () => {
+      const id = useChatStore.getState().createConversation();
+      const store = useChatStore.getState();
+      store.addMessage(id, {
+        id: 'assistant-1', role: 'assistant', content: 'partial', timestamp: Date.now(), isStreaming: true,
+      });
+      // Mid-stream user input becomes the new last message.
+      store.addMessage(id, {
+        id: 'user-2', role: 'user', content: 'follow-up', timestamp: Date.now(),
+      });
+      store.finishStreaming(id, 'assistant-1');
+      const msgs = useChatStore.getState().conversations[id].messages;
+      expect(msgs.find((m) => m.id === 'assistant-1')?.isStreaming).toBe(false);
+      // user-2 should be untouched (it never had isStreaming, must stay falsy not true)
+      expect(msgs.find((m) => m.id === 'user-2')?.isStreaming).toBeFalsy();
     });
   });
 

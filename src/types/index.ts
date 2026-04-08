@@ -301,7 +301,7 @@ export interface SubagentMetadata {
   description: string;
   avatar?: string;
   model?: string;
-  maxTurns?: number;          // Optional cap on subagent loop turns. Falls back to global settings; ultimate fallback is 50 for safety.
+  maxTurns?: number;          // Optional cap on subagent loop turns. Falls back to global settings; ultimate fallback is 200 for safety.
   tools?: string[];
   disallowedTools?: string[];
   skills?: string[];

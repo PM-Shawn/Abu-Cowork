@@ -204,9 +204,10 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
     ];
 
     // 6. Main loop
-    // maxTurns priority: agent definition > global setting > 50 (safety cap for background loops)
+    // maxTurns priority: agent definition > global setting > 200 (safety cap for background loops)
+    // 200 matches Claude Code's fork subagent default (forkSubagent.ts:65).
     const globalMaxTurns = useSettingsStore.getState().agentMaxTurns;
-    const maxTurns = agent.maxTurns ?? globalMaxTurns ?? 50;
+    const maxTurns = agent.maxTurns ?? globalMaxTurns ?? 200;
     let resultBuffer = '';
 
     for (let turn = 0; turn < maxTurns; turn++) {

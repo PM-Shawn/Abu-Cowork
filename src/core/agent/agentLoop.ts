@@ -1427,7 +1427,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
         // IM conversations have their own extraction in channelRouter.ts
         if (!options?.imContext) {
           const wsPath = useWorkspaceStore.getState().currentPath;
-          import('../memory/extractor').then(({ extractMemoriesFromConversation }) =>
+          import('../memdir/extractor').then(({ extractMemoriesFromConversation }) =>
             extractMemoriesFromConversation(conversationId, wsPath)
           ).catch(() => {});
         }

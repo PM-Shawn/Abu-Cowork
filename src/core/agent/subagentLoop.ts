@@ -18,7 +18,6 @@ import { useWorkspaceStore } from '../../stores/workspaceStore';
 import { prepareContextMessages } from '../context/contextManager';
 import { compressContextIfNeeded } from '../context/contextCompressor';
 import { getMessageText } from '../context/contextUtils';
-import { loadAgentMemory } from './agentMemory';
 import { withRetry } from './retry';
 
 /**
@@ -163,12 +162,6 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
         systemPrompt += `\n\n## 你的记忆\n以下是跨会话积累的记忆，可参考使用：\n${memText}`;
       } else if (globalIndex.trim()) {
         systemPrompt += `\n\n## 你的记忆\n${globalIndex}`;
-      } else {
-        // Final fallback to legacy per-agent memory file
-        const memory = await loadAgentMemory(agent.name);
-        if (memory.trim()) {
-          systemPrompt += `\n\n## 你的记忆\n以下是你在之前会话中积累的记忆，可参考使用：\n${memory}`;
-        }
       }
     } catch {
       // Non-critical: proceed without memory

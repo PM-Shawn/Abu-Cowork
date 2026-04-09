@@ -1,7 +1,6 @@
 import type { SubagentDefinition, Skill } from '../../types';
 import { agentRegistry } from './registry';
 import { skillLoader } from '../skill/loader';
-import { loadAgentMemory } from './agentMemory';
 import { loadAllRules } from './projectRules';
 import { loadSoul } from './soulConfig';
 import { getDefaultSoul } from './agentLoop';
@@ -492,14 +491,6 @@ ${indexContent.trim()}
 ${memoryTexts.join('\n\n')}
 </agent-memory>`, cacheable: true });
         }
-      } else {
-        // No memdir files yet — fall back to legacy flat file
-        try {
-          const memory = await loadAgentMemory('abu');
-          if (memory.trim()) {
-            sections.push({ name: 'memories-legacy', text: `\n## 你的长期记忆\n<agent-memory>\n${memory}\n</agent-memory>`, cacheable: true });
-          }
-        } catch { /* ignore */ }
       }
 
       // Memory management instruction
@@ -526,13 +517,6 @@ ${memoryTexts.join('\n\n')}
 用户问到"之前…"、"上次…"、"最近做了什么"、"我们聊过…"时，先用 recall 搜索。`, cacheable: true });
     } catch (err) {
       console.warn('Failed to load memories:', err);
-      // Final fallback: try legacy memory
-      try {
-        const memory = await loadAgentMemory('abu');
-        if (memory.trim()) {
-          sections.push({ name: 'memories-fallback', text: `\n## 你的长期记忆\n<agent-memory>\n${memory}\n</agent-memory>`, cacheable: true });
-        }
-      } catch { /* ignore */ }
     }
 
     // Inject computer use guidance (if enabled)

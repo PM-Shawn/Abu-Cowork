@@ -162,7 +162,7 @@ class IMChannelRouter {
       // 1b. Auto-extract memories from archived session (non-blocking)
       if (resolveResult.archivedConversationId) {
         const extractWorkspace = channel.workspacePaths[0] ?? null;
-        import('../memory/extractor').then(({ extractMemoriesFromConversation }) =>
+        import('../memdir/extractor').then(({ extractMemoriesFromConversation }) =>
           extractMemoriesFromConversation(resolveResult.archivedConversationId!, extractWorkspace)
         ).catch(() => {});
       }

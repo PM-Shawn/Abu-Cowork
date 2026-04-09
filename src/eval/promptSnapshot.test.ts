@@ -22,9 +22,14 @@ vi.mock('@/core/skill/loader', () => ({
   },
 }));
 
-vi.mock('@/core/agent/agentMemory', () => ({
-  loadAgentMemory: vi.fn().mockResolvedValue(''),
-  loadProjectMemory: vi.fn().mockResolvedValue(''),
+vi.mock('@/core/memdir/scan', () => ({
+  loadMemoryIndex: vi.fn().mockResolvedValue(''),
+  scanMemoryFiles: vi.fn().mockResolvedValue([]),
+  readMemoryFile: vi.fn().mockResolvedValue(null),
+}));
+
+vi.mock('@/core/memdir/write', () => ({
+  touchMemory: vi.fn().mockResolvedValue(undefined),
 }));
 
 vi.mock('@/core/agent/projectRules', () => ({

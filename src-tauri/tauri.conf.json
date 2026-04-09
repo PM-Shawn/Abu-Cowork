@@ -3,7 +3,7 @@
   "version": "0.9.7",
   "identifier": "com.abu.app",
   "build": {
-    "beforeDevCommand": "npm run dev",
+    "beforeDevCommand": "npm run copy-resources && npm run dev",
     "devUrl": "http://localhost:5173",
     "beforeBuildCommand": "npm run build && npm run copy-resources",
     "frontendDist": "../dist"
@@ -43,7 +43,8 @@
     "resources": [
       "builtin-skills/",
       "builtin-agents/",
-      "python-runtime/"
+      "python-runtime/",
+      "browser-extension/"
     ],
     "icon": [
       "icons/32x32.png",

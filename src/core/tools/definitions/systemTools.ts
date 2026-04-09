@@ -1,7 +1,7 @@
 import { readText as clipboardReadText, writeText as clipboardWriteText } from '@tauri-apps/plugin-clipboard-manager';
 import { sendNotification, isPermissionGranted, requestPermission } from '@tauri-apps/plugin-notification';
 import type { ToolDefinition } from '../../../types';
-import { searchMCPRegistry, installMCPServer, getRegistryEntry } from '../../agent/mcpDiscovery';
+import { searchMCPRegistry, installMCPServer, getRegistryEntry, ensureMCPServer } from '../../agent/mcpDiscovery';
 import { getSystemInfoData } from '../helpers/toolHelpers';
 import { TOOL_NAMES } from '../toolNames';
 
@@ -112,14 +112,14 @@ export const systemNotifyTool: ToolDefinition = {
  */
 export const manageMCPServerTool: ToolDefinition = {
   name: TOOL_NAMES.MANAGE_MCP_SERVER,
-  description: '搜索和安装 MCP 工具服务。当执行任务时发现缺少某种工具能力（如操作 GitHub、Slack、数据库等）时使用。注意：这不是通用软件安装工具，不要用于安装普通软件。',
+  description: '搜索、安装或确保 MCP 工具服务可用。当执行任务时发现缺少某种工具能力（如操作 GitHub、Slack、数据库、浏览器等）时使用。注意：这不是通用软件安装工具，不要用于安装普通软件。',
   inputSchema: {
     type: 'object',
     properties: {
       action: {
         type: 'string',
-        enum: ['search', 'install'],
-        description: '操作类型：search（搜索可用服务）或 install（安装服务）',
+        enum: ['search', 'install', 'ensure'],
+        description: '操作类型：search（搜索可用服务）、install（安装服务，需用户确认）、ensure（确保服务可用，自动安装无需确认）',
       },
       query: { type: 'string', description: '搜索关键词（action=search 时必填），如 "github"、"slack"、"database"' },
       name: { type: 'string', description: 'MCP Server 名称（action=install 时必填，来自 search 结果）' },
@@ -166,7 +166,23 @@ export const manageMCPServerTool: ToolDefinition = {
       }
     }
 
-    return `Error: 未知操作 "${action}"。可用操作: search, install`;
+    if (action === 'ensure') {
+      const name = input.name as string;
+      if (!name) return 'Error: action=ensure 时必须提供 name 参数';
+
+      try {
+        const result = await ensureMCPServer(name);
+        const parts = [result.message];
+        if (result.extensionPath) {
+          parts.push(`extensionPath: ${result.extensionPath}`);
+        }
+        return parts.join('\n');
+      } catch (err) {
+        return `确保 MCP 服务可用失败: ${err instanceof Error ? err.message : String(err)}`;
+      }
+    }
+
+    return `Error: 未知操作 "${action}"。可用操作: search, install, ensure`;
   },
   isConcurrencySafe: false,
 };

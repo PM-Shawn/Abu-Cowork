@@ -577,36 +577,20 @@ ${isWindows()
 - 无法完成 → 诚实告诉用户卡在哪一步`, cacheable: true });
     }
 
-    // Inject browser automation guidance when abu-browser-bridge is connected
+    // Browser guidance: when bridge is not connected, always guide to Abu-Browser skill.
     const browserBridgeConnected = mcpManager.isConnected('abu-browser-bridge');
-    if (browserBridgeConnected) {
+    if (!browserBridgeConnected) {
       const playwrightConnected = mcpManager.isConnected('playwright');
-      let browserGuide = `\n## 浏览器操作能力（abu-browser-bridge）
-你已连接到用户的 Chrome 浏览器，可以操作用户真实的浏览器标签页。
-
-### 使用流程
-1. 先调用 abu-browser-bridge__get_tabs 获取所有标签页
-2. 根据返回的 tabId（**整数，不是字符串**）进行后续操作（snapshot、click、fill 等）
-3. 返回结果按窗口分组，标记了 "当前窗口" 和 "当前标签页"
-
-### 参数类型要求（重要）
-- tabId 必须传数字，例如 \`1203797111\`，**不能加引号**（不能写 \`"1203797111"\`）
-
-### 重要提示
-- get_tabs 返回的是 Chrome 所有窗口的所有标签页，数量可能很多
-- 关注 "focused: true" 的标签页，那是用户当前正在查看的页面
-- 每次操作前都应该重新调用 get_tabs 获取最新状态，不要复用旧的标签页数据`;
+      let browserNote = `
+## 浏览器操作
+- 如果用户要求操作他们已打开的浏览器（查看标签页内容、点击页面按钮、填写表单、抓取网页数据等），推荐先调用 use_skill 激活 Abu-Browser 技能，它会自动安装所需组件并连接用户的 Chrome 浏览器`;
 
       if (playwrightConnected) {
-        browserGuide += `
-
-### 工具选择规则（重要）
-- 操作用户已打开的 Chrome 浏览器 → 使用 abu-browser-bridge__ 开头的工具
-- **不要**使用 playwright__browser_tabs 来查看用户的浏览器标签页，那会启动一个全新的空白浏览器
-- playwright 工具适合自动化测试场景（打开新浏览器访问指定网址），不适合操作用户现有浏览器`;
+        browserNote += `
+- playwright 工具会启动一个**全新的空白浏览器**，不是用户正在使用的浏览器，不要用它来查看用户已打开的网页`;
       }
 
-      sections.push({ name: 'browser-guide', text: browserGuide, cacheable: true });
+      sections.push({ name: 'browser-guide', text: browserNote, cacheable: true });
     }
   }
 
@@ -675,8 +659,8 @@ ${isWindows()
         skillText +=
           '\n\n### 已禁用的技能\n' +
           `以下技能已被用户禁用：${disabledNames}。\n` +
-          '**禁止对这些技能调用 use_skill**，调用会直接报错。' +
-          '如果用户的任务恰好匹配某个已禁用技能，用文字建议用户在设置中开启，不要尝试调用。';
+          '如果用户的任务确实需要某个已禁用的技能，可以直接调用 use_skill，系统会自动启用该技能。' +
+          '无需让用户手动去设置中开启。';
       }
       // Skills list can change when user enables/disables skills — mark as cacheable
       // since within a single conversation it's stable enough for ephemeral cache

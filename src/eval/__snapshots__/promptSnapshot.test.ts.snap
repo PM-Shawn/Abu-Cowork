@@ -8,6 +8,7 @@ exports[`System prompt section structure > general mode section names match snap
   "current-time",
   "workspace",
   "memory-mgmt",
+  "browser-guide",
   "agent-role",
   "safety-anchor",
 ]

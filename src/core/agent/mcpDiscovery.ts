@@ -6,6 +6,8 @@
  * and install servers with user confirmation.
  */
 
+import { resolveResource } from '@tauri-apps/api/path';
+import { exists } from '@tauri-apps/plugin-fs';
 import { useMCPStore } from '../../stores/mcpStore';
 
 export interface MCPRegistryEntry {
@@ -16,6 +18,8 @@ export interface MCPRegistryEntry {
   args: string[];
   env: Record<string, string>;
   envHints?: Record<string, string>; // hints for env vars the user needs to provide
+  /** Path to a bundled resource directory associated with this server */
+  bundledResourceDir?: string;
 }
 
 /**
@@ -125,6 +129,15 @@ const BUILTIN_REGISTRY: MCPRegistryEntry[] = [
     args: ['-y', '@modelcontextprotocol/server-fetch'],
     env: {},
   },
+  {
+    name: 'abu-browser-bridge',
+    description: '浏览器桥接：操作用户真实的 Chrome 浏览器，点击、填写、截图、提取数据',
+    keywords: ['browser', 'chrome', 'click', 'fill', 'screenshot', 'scrape', 'web', 'automation', 'tab'],
+    command: 'npx',
+    args: ['-y', 'abu-browser-bridge@latest'],
+    env: {},
+    bundledResourceDir: 'browser-extension',
+  },
 ];
 
 /**
@@ -232,4 +245,111 @@ export async function installMCPServer(
  */
 export function getRegistryEntry(name: string): MCPRegistryEntry | undefined {
   return BUILTIN_REGISTRY.find((e) => e.name === name);
+}
+
+/**
+ * Resolve the absolute path to a bundled resource directory.
+ * Returns null if the resource doesn't exist (e.g. dev mode without build).
+ */
+async function resolveBundledResource(dirName: string): Promise<string | null> {
+  // Production: Tauri resolveResource
+  try {
+    const resolved = await resolveResource(dirName);
+    if (resolved && await exists(resolved)) return resolved;
+  } catch { /* dev mode fallback */ }
+
+  // Dev mode: try relative paths from Tauri CWD (src-tauri/)
+  const { resolve } = await import('@tauri-apps/api/path');
+  for (const candidate of [`../${dirName}`, dirName]) {
+    try {
+      const p = await resolve(candidate);
+      if (p && await exists(p)) return p;
+    } catch { /* ignore */ }
+  }
+  return null;
+}
+
+export interface EnsureResult {
+  status: 'connected' | 'reconnected' | 'installed' | 'needs_config' | 'failed';
+  message: string;
+  toolCount?: number;
+  /** Absolute path to a bundled companion resource (e.g. Chrome extension dir) */
+  extensionPath?: string | null;
+}
+
+/**
+ * Ensure an MCP server is installed and connected.
+ * Unlike install, this is idempotent and does not require user confirmation.
+ * - Already connected → returns immediately
+ * - Configured but disconnected → reconnects
+ * - Not configured → auto-installs from registry (if no env vars required)
+ */
+export async function ensureMCPServer(name: string): Promise<EnsureResult> {
+  const store = useMCPStore.getState();
+  const entry = getRegistryEntry(name);
+
+  // Resolve companion resource path if applicable
+  const extensionPath = entry?.bundledResourceDir
+    ? await resolveBundledResource(entry.bundledResourceDir)
+    : null;
+
+  // Case 1: already configured
+  if (store.servers[name]) {
+    const server = store.servers[name];
+    if (server.status === 'connected') {
+      return {
+        status: 'connected',
+        message: `${name} 已连接，有 ${server.tools.length} 个工具可用。`,
+        toolCount: server.tools.length,
+        extensionPath,
+      };
+    }
+    // Try reconnecting
+    await store.connectServer(name);
+    const updated = useMCPStore.getState().servers[name];
+    if (updated?.status === 'connected') {
+      return {
+        status: 'reconnected',
+        message: `${name} 重新连接成功，有 ${updated.tools.length} 个工具。`,
+        toolCount: updated.tools.length,
+        extensionPath,
+      };
+    }
+    return {
+      status: 'failed',
+      message: `${name} 连接失败: ${updated?.error ?? '未知错误'}`,
+      extensionPath,
+    };
+  }
+
+  // Case 2: not configured — try auto-install from registry
+  if (!entry) {
+    return {
+      status: 'failed',
+      message: `未在内置注册表中找到 "${name}"。请用 manage_mcp_server(action: "search") 搜索。`,
+    };
+  }
+
+  // Check if env vars are needed
+  const missingEnv = Object.entries(entry.env).filter(([, v]) => v === '').map(([k]) => k);
+  if (missingEnv.length > 0) {
+    const hints = missingEnv.map((k) => {
+      const hint = entry.envHints?.[k];
+      return hint ? `${k}: ${hint}` : k;
+    });
+    return {
+      status: 'needs_config',
+      message: `安装 ${name} 需要配置: ${hints.join(', ')}`,
+      extensionPath,
+    };
+  }
+
+  // Auto-install: no env vars needed, proceed without confirmation
+  const result = await installMCPServer(entry);
+  return {
+    status: result.success ? 'installed' : 'failed',
+    message: result.message,
+    toolCount: result.toolCount,
+    extensionPath,
+  };
 }

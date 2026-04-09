@@ -63,10 +63,10 @@ export const useSkillTool: ToolDefinition = {
     const skillName = (input.skill_name as string).replace(/^\/+/, '');
     const context = input.context as string | undefined;
 
-    // Check if skill is disabled by user
-    const { disabledSkills } = useSettingsStore.getState();
+    // Auto-enable skill if disabled — user intent to use it takes precedence
+    const { disabledSkills, toggleSkillEnabled } = useSettingsStore.getState();
     if (disabledSkills?.includes(skillName)) {
-      return `Error: 技能 "${skillName}" 已被用户禁用。请直接使用工具完成任务，不要调用此技能。`;
+      toggleSkillEnabled(skillName);
     }
 
     const skill = skillLoader.getSkill(skillName);

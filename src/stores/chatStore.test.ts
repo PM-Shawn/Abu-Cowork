@@ -51,10 +51,10 @@ describe('chatStore', () => {
 
   // ── switchConversation ──
   describe('switchConversation', () => {
-    it('switches active conversation', () => {
+    it('switches active conversation', async () => {
       const id1 = useChatStore.getState().createConversation();
       useChatStore.getState().createConversation();
-      useChatStore.getState().switchConversation(id1);
+      await useChatStore.getState().switchConversation(id1);
       expect(useChatStore.getState().activeConversationId).toBe(id1);
     });
   });
@@ -67,10 +67,10 @@ describe('chatStore', () => {
       expect(useChatStore.getState().conversations[id]).toBeUndefined();
     });
 
-    it('switches to another conversation when active is deleted', () => {
+    it('switches to another conversation when active is deleted', async () => {
       const id1 = useChatStore.getState().createConversation();
       const id2 = useChatStore.getState().createConversation();
-      useChatStore.getState().switchConversation(id2);
+      await useChatStore.getState().switchConversation(id2);
       useChatStore.getState().deleteConversation(id2);
       // Should fallback to remaining conversation
       const state = useChatStore.getState();

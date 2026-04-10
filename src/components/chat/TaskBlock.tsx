@@ -210,32 +210,6 @@ interface TaskBlockProps {
   onRetry?: () => void;
 }
 
-// Small toggle button used to re-open a completed thinking step's content.
-// Mirrors the visual idiom of CollapsibleDetail (the "结果" pill below tool steps).
-function ThinkingDetailToggle({ content, t }: { content: string; t: TranslationDict }) {
-  const [expanded, setExpanded] = useState(false);
-  return (
-    <div className="mt-1">
-      <button
-        onClick={() => setExpanded(!expanded)}
-        className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[11px] bg-[var(--abu-bg-hover)] text-[var(--abu-text-muted)] hover:bg-[var(--abu-bg-pressed)] hover:text-[var(--abu-text-tertiary)] transition-colors"
-      >
-        {expanded ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
-        {t.chat.thinkingProcess}
-      </button>
-      {expanded && (
-        <div className="mt-2 rounded-lg bg-[var(--abu-bg-muted)] border border-[var(--abu-bg-hover)] overflow-hidden">
-          <div className="px-3 py-2 max-h-48 overflow-y-auto">
-            <pre className="text-[12px] text-[var(--abu-text-tertiary)] italic whitespace-pre-wrap break-words leading-relaxed font-sans m-0">
-              {content}
-            </pre>
-          </div>
-        </div>
-      )}
-    </div>
-  );
-}
-
 /**
  * TaskBlock component - Cowork-style workflow display with timeline
  * Supports both legacy WorkflowStep[] and new ExecutionStep[]
@@ -482,6 +456,19 @@ function TaskStepItem({ step, showConnector, locale, t }: {
     return null;
   }, [step, isCompleted, locale]);
 
+  // Thinking expanded state — starts true when running so content is visible
+  // during streaming, and persists across the running→completed transition
+  // so the user doesn't lose sight of thinking content mid-read.
+  const [thinkingExpanded, setThinkingExpanded] = useState(isThinking && isRunning);
+  const prevThinkingRunning = useRef(isRunning);
+  useEffect(() => {
+    // Auto-expand when thinking starts running
+    if (isThinking && isRunning && !prevThinkingRunning.current) {
+      setThinkingExpanded(true);
+    }
+    prevThinkingRunning.current = isRunning;
+  }, [isThinking, isRunning]);
+
   // Auto-scroll the streaming thinking pane to the bottom as new tokens arrive,
   // so the latest reasoning text stays in view instead of being clipped by max-height.
   const thinkingScrollRef = useRef<HTMLDivElement>(null);
@@ -519,7 +506,7 @@ function TaskStepItem({ step, showConnector, locale, t }: {
   };
 
   // Render thinking content — inline (with cursor) while still streaming reasoning,
-  // collapsible (default closed) once the thinking phase is done.
+  // collapsible once the thinking phase is done (preserves expanded state from streaming).
   const renderThinkingDetail = () => {
     if (!isThinking || !step.detail) return null;
     if (isRunning) {
@@ -535,7 +522,26 @@ function TaskStepItem({ step, showConnector, locale, t }: {
       );
     }
     if (isCompleted) {
-      return <ThinkingDetailToggle content={step.detail} t={t} />;
+      return (
+        <div className="mt-1">
+          <button
+            onClick={() => setThinkingExpanded(!thinkingExpanded)}
+            className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[11px] bg-[var(--abu-bg-hover)] text-[var(--abu-text-muted)] hover:bg-[var(--abu-bg-pressed)] hover:text-[var(--abu-text-tertiary)] transition-colors"
+          >
+            {thinkingExpanded ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
+            {t.chat.thinkingProcess}
+          </button>
+          {thinkingExpanded && (
+            <div className="mt-2 rounded-lg bg-[var(--abu-bg-muted)] border border-[var(--abu-bg-hover)] overflow-hidden">
+              <div className="px-3 py-2 max-h-48 overflow-y-auto">
+                <pre className="text-[12px] text-[var(--abu-text-tertiary)] italic whitespace-pre-wrap break-words leading-relaxed font-sans m-0">
+                  {step.detail}
+                </pre>
+              </div>
+            </div>
+          )}
+        </div>
+      );
     }
     return null;
   };

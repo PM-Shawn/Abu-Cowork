@@ -269,6 +269,10 @@ export const useChatStore = create<ChatStore>()(
           state.activeConversationId = id;
         });
 
+        // Unload old conversations AFTER activeConversationId is set,
+        // so the target conversation is protected from eviction
+        get().unloadOldConversations();
+
         // Sync workspace
         const ws = useWorkspaceStore.getState();
         const conv = get().conversations[id];
@@ -918,8 +922,6 @@ export const useChatStore = create<ChatStore>()(
           }
         }
 
-        // Unload old conversations to limit memory usage
-        get().unloadOldConversations();
       },
 
       unloadOldConversations: () => {

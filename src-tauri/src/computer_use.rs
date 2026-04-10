@@ -195,8 +195,8 @@ pub fn mouse_click(
         .move_mouse(x, y, Coordinate::Abs)
         .map_err(|e| format!("Mouse move failed: {}", e))?;
 
-    // Small delay to let the OS register the move
-    std::thread::sleep(std::time::Duration::from_millis(200));
+    // HID settle delay — let OS register the move before clicking
+    std::thread::sleep(std::time::Duration::from_millis(100));
 
     let btn = match button.as_deref().unwrap_or("left") {
         "right" => EnigoButton::Right,
@@ -210,7 +210,7 @@ pub fn mouse_click(
         enigo
             .button(EnigoButton::Left, Direction::Click)
             .map_err(|e| format!("Click failed: {}", e))?;
-        std::thread::sleep(std::time::Duration::from_millis(200));
+        std::thread::sleep(std::time::Duration::from_millis(100));
         enigo
             .button(EnigoButton::Left, Direction::Click)
             .map_err(|e| format!("Click failed: {}", e))?;
@@ -262,27 +262,36 @@ pub fn keyboard_press(
 
     let mods = modifiers.unwrap_or_default();
 
-    // Press modifiers down
-    for m in &mods {
-        let k = parse_modifier(m)?;
+    // Track successfully pressed modifiers for safe cleanup on error
+    let mut pressed_keys: Vec<Key> = Vec::new();
+
+    let result = (|| -> Result<(), String> {
+        // Press modifiers down
+        for m in &mods {
+            let k = parse_modifier(m)?;
+            enigo
+                .key(k, Direction::Press)
+                .map_err(|e| format!("Modifier press failed: {}", e))?;
+            pressed_keys.push(k);
+        }
+
+        // Press and release the main key
+        let main_key = parse_key(&key)?;
         enigo
-            .key(k, Direction::Press)
-            .map_err(|e| format!("Modifier press failed: {}", e))?;
+            .key(main_key, Direction::Click)
+            .map_err(|e| format!("Key press failed: {}", e))?;
+
+        Ok(())
+    })();
+
+    // Always release pressed modifiers in reverse order (even on error)
+    // This prevents stuck modifier keys when the main key press fails
+    for k in pressed_keys.into_iter().rev() {
+        let _ = enigo.key(k, Direction::Release); // Best-effort, swallow errors
     }
 
-    // Press and release the main key
-    let main_key = parse_key(&key)?;
-    enigo
-        .key(main_key, Direction::Click)
-        .map_err(|e| format!("Key press failed: {}", e))?;
-
-    // Release modifiers in reverse
-    for m in mods.iter().rev() {
-        let k = parse_modifier(m)?;
-        enigo
-            .key(k, Direction::Release)
-            .map_err(|e| format!("Modifier release failed: {}", e))?;
-    }
+    // Propagate any error from the press phase
+    result?;
 
     let mod_str = if mods.is_empty() {
         String::new()
@@ -307,7 +316,7 @@ pub fn mouse_scroll(
     enigo
         .move_mouse(x, y, Coordinate::Abs)
         .map_err(|e| format!("Mouse move failed: {}", e))?;
-    std::thread::sleep(std::time::Duration::from_millis(200));
+    std::thread::sleep(std::time::Duration::from_millis(100));
 
     let ticks = amount.unwrap_or(3);
     let (axis, value) = match direction.as_str() {
@@ -326,6 +335,7 @@ pub fn mouse_scroll(
 }
 
 /// Click and drag from (start_x, start_y) to (end_x, end_y).
+/// Uses ease-out-cubic animation for smooth, natural drag movement.
 #[tauri::command]
 pub fn mouse_drag(
     start_x: i32,
@@ -333,24 +343,51 @@ pub fn mouse_drag(
     end_x: i32,
     end_y: i32,
 ) -> Result<String, String> {
+    use std::time::Duration;
+
     let mut enigo = Enigo::new(&Settings::default())
         .map_err(|e| format!("Enigo init failed: {}", e))?;
 
+    // Move to start position
     enigo
         .move_mouse(start_x, start_y, Coordinate::Abs)
         .map_err(|e| format!("Mouse move failed: {}", e))?;
-    std::thread::sleep(std::time::Duration::from_millis(200));
+    std::thread::sleep(Duration::from_millis(100));
 
+    // Press mouse button
     enigo
         .button(EnigoButton::Left, Direction::Press)
         .map_err(|e| format!("Mouse down failed: {}", e))?;
-    std::thread::sleep(std::time::Duration::from_millis(200));
+    std::thread::sleep(Duration::from_millis(100));
 
-    enigo
-        .move_mouse(end_x, end_y, Coordinate::Abs)
-        .map_err(|e| format!("Mouse drag move failed: {}", e))?;
-    std::thread::sleep(std::time::Duration::from_millis(200));
+    // Animated move: ease-out-cubic at 60fps, 2000px/s speed, max 0.5s
+    let dx = (end_x - start_x) as f64;
+    let dy = (end_y - start_y) as f64;
+    let distance = (dx * dx + dy * dy).sqrt();
+    let duration_sec = (distance / 2000.0).min(0.5).max(0.05);
+    let total_frames = (duration_sec * 60.0) as i32;
 
+    if total_frames > 1 {
+        let frame_ms = (duration_sec * 1000.0 / total_frames as f64) as u64;
+        for frame in 1..=total_frames {
+            let t = frame as f64 / total_frames as f64;
+            let eased = 1.0 - (1.0 - t).powi(3); // ease-out-cubic
+            let x = start_x + (dx * eased) as i32;
+            let y = start_y + (dy * eased) as i32;
+            let _ = enigo.move_mouse(x, y, Coordinate::Abs);
+            if frame < total_frames {
+                std::thread::sleep(Duration::from_millis(frame_ms));
+            }
+        }
+    } else {
+        enigo
+            .move_mouse(end_x, end_y, Coordinate::Abs)
+            .map_err(|e| format!("Mouse drag move failed: {}", e))?;
+    }
+
+    std::thread::sleep(Duration::from_millis(100));
+
+    // Release mouse button
     enigo
         .button(EnigoButton::Left, Direction::Release)
         .map_err(|e| format!("Mouse up failed: {}", e))?;

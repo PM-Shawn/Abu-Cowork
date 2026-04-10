@@ -243,7 +243,9 @@ export default function MessageGroup({ messages, isLastGroup: isLastGroupProp = 
   const skillInfo = userMsg?.skill;
 
   // Extract workflow steps from all tool calls (legacy fallback)
-  const workflowSteps = extractWorkflowSteps(allToolCalls, thinkingContent, agentStatus, skillInfo, thinkingDuration);
+  // Only pass agentStatus to the currently streaming group — prevents the global
+  // 'thinking' status from injecting a phantom thinking step into completed groups
+  const workflowSteps = extractWorkflowSteps(allToolCalls, thinkingContent, isStreaming ? agentStatus : undefined, skillInfo, thinkingDuration);
 
   // Extract file outputs for attachments
   // Source 1: tool calls (reliable). Source 2: last assistant message text (for announced paths)

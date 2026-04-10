@@ -1104,7 +1104,13 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
             }
 
             case 'usage':
-              chatStore.setCurrentUsage(event.usage);
+              // Merge into finalUsage so cost tracking and token calibration work.
+              // Claude: message_start has cache fields, message_delta has output tokens.
+              // OpenAI-compatible: single usage chunk has both input and output.
+              finalUsage = finalUsage
+                ? { ...finalUsage, ...event.usage }
+                : { ...event.usage };
+              chatStore.setCurrentUsage(finalUsage);
               break;
 
             case 'done':

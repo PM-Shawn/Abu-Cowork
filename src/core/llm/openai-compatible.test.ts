@@ -214,6 +214,49 @@ describe('OpenAICompatibleAdapter streaming finish_reason handling', () => {
     });
   });
 
+  describe('streaming usage parsing (stream_options)', () => {
+    it('emits usage event from streaming usage chunk', async () => {
+      const events = await runChat([
+        { choices: [{ delta: { content: 'hello' } }] },
+        { choices: [{ delta: {}, finish_reason: 'stop' }] },
+        // Usage chunk: empty choices + usage object (OpenAI stream_options format)
+        { choices: [], usage: { prompt_tokens: 150, completion_tokens: 50 } },
+      ]);
+
+      const usage = events.find((e) => e.type === 'usage');
+      expect(usage).toBeDefined();
+      if (usage?.type === 'usage') {
+        expect(usage.usage.inputTokens).toBe(150);
+        expect(usage.usage.outputTokens).toBe(50);
+      }
+    });
+
+    it('emits usage even when choices field is absent', async () => {
+      const events = await runChat([
+        { choices: [{ delta: { content: 'hi' } }] },
+        { choices: [{ delta: {}, finish_reason: 'stop' }] },
+        // Some providers omit choices entirely on usage chunk
+        { usage: { prompt_tokens: 200, completion_tokens: 80 } },
+      ]);
+
+      const usage = events.find((e) => e.type === 'usage');
+      expect(usage).toBeDefined();
+      if (usage?.type === 'usage') {
+        expect(usage.usage.inputTokens).toBe(200);
+        expect(usage.usage.outputTokens).toBe(80);
+      }
+    });
+
+    it('does not emit usage when no usage chunk is present', async () => {
+      const events = await runChat([
+        { choices: [{ delta: { content: 'hi' } }] },
+        { choices: [{ delta: {}, finish_reason: 'stop' }] },
+      ]);
+
+      expect(events.find((e) => e.type === 'usage')).toBeUndefined();
+    });
+  });
+
   describe('regression: _parse_error fallback when tool args are invalid JSON', () => {
     it('marks tool input with _parse_error in [DONE] path when JSON parse fails', async () => {
       // Send incomplete args via [DONE] without explicit finish_reason on last chunk.

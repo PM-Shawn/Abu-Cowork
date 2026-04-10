@@ -21,12 +21,13 @@ describe('costTracker', () => {
     });
 
     it('accounts for cache read tokens', () => {
+      // Anthropic: inputTokens = uncached portion only (excludes cache read/creation)
       const cost = calculateTurnCost('claude-sonnet-4-20250514', {
-        inputTokens: 10000,
+        inputTokens: 2000,      // uncached input
         outputTokens: 500,
         cacheReadInputTokens: 8000,
       });
-      // input: (10000-8000) * 3/1M = 0.006
+      // input: 2000 * 3/1M = 0.006
       // output: 500 * 15/1M = 0.0075
       // cacheRead: 8000 * 0.3/1M = 0.0024
       expect(cost).toBeCloseTo(0.006 + 0.0075 + 0.0024, 5);
@@ -34,11 +35,11 @@ describe('costTracker', () => {
 
     it('accounts for cache creation tokens', () => {
       const cost = calculateTurnCost('claude-sonnet-4-20250514', {
-        inputTokens: 5000,
+        inputTokens: 2000,      // uncached input
         outputTokens: 100,
         cacheCreationInputTokens: 3000,
       });
-      // input: (5000-3000) * 3/1M = 0.006
+      // input: 2000 * 3/1M = 0.006
       // output: 100 * 15/1M = 0.0015
       // cacheCreation: 3000 * 3.75/1M = 0.01125
       expect(cost).toBeCloseTo(0.006 + 0.0015 + 0.01125, 5);
@@ -79,15 +80,16 @@ describe('costTracker', () => {
       expect(cost).toBeCloseTo(0.0082, 4);
     });
 
-    it('never returns negative', () => {
-      // Edge case: all tokens are cache tokens
+    it('handles zero uncached input with cache tokens', () => {
+      // All input from cache — inputTokens = 0 (uncached), cache fields populated
       const cost = calculateTurnCost('claude-sonnet-4', {
-        inputTokens: 100,
-        outputTokens: 0,
-        cacheReadInputTokens: 50,
-        cacheCreationInputTokens: 100,
+        inputTokens: 0,
+        outputTokens: 50,
+        cacheReadInputTokens: 1000,
+        cacheCreationInputTokens: 0,
       });
-      expect(cost).toBeGreaterThanOrEqual(0);
+      // input: 0, output: 50 * 15/1M = 0.00075, cacheRead: 1000 * 0.3/1M = 0.0003
+      expect(cost).toBeCloseTo(0.00075 + 0.0003, 5);
     });
   });
 

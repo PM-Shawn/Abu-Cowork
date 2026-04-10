@@ -72,9 +72,9 @@ export function calculateTurnCost(model: string, usage: TokenUsage): number {
   const pricing = findPricing(model);
   if (!pricing) return 0;
 
-  const inputCost =
-    ((usage.inputTokens ?? 0) - (usage.cacheReadInputTokens ?? 0) - (usage.cacheCreationInputTokens ?? 0))
-    * pricing.input / 1_000_000;
+  // inputTokens = uncached input tokens (Anthropic already excludes cache tokens;
+  // OpenAI-compatible providers typically don't report cache fields at all).
+  const inputCost = (usage.inputTokens ?? 0) * pricing.input / 1_000_000;
   const outputCost = (usage.outputTokens ?? 0) * pricing.output / 1_000_000;
   const cacheReadCost = (usage.cacheReadInputTokens ?? 0) * pricing.cacheRead / 1_000_000;
   const cacheCreationCost = (usage.cacheCreationInputTokens ?? 0) * pricing.cacheCreation / 1_000_000;

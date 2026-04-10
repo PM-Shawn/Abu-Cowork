@@ -257,6 +257,12 @@ export class OpenAICompatibleAdapter implements LLMAdapter {
         onEvent({ type: 'text', text: msg.content });
       }
 
+      // Emit usage before done so agentLoop can capture it in finalUsage
+      const usage = data.usage as Record<string, number> | undefined;
+      if (usage) {
+        onEvent({ type: 'usage', usage: { inputTokens: usage.prompt_tokens ?? 0, outputTokens: usage.completion_tokens ?? 0 } });
+      }
+
       const toolCalls = msg?.tool_calls as Array<Record<string, unknown>> | undefined;
       if (toolCalls && toolCalls.length > 0) {
         for (const tc of toolCalls) {
@@ -287,12 +293,6 @@ export class OpenAICompatibleAdapter implements LLMAdapter {
           onEvent({ type: 'done', stopReason: 'end_turn' });
         }
       }
-
-      // Emit usage if present
-      const usage = data.usage as Record<string, number> | undefined;
-      if (usage) {
-        onEvent({ type: 'usage', usage: { inputTokens: usage.prompt_tokens ?? 0, outputTokens: usage.completion_tokens ?? 0 } });
-      }
       return;
     }
 
@@ -310,6 +310,8 @@ export class OpenAICompatibleAdapter implements LLMAdapter {
 
     // Track tool calls being assembled
     const toolCallBuffers: Map<number, { id: string; name: string; args: string }> = new Map();
+    // After done is emitted, keep looping only to capture the trailing usage chunk
+    let doneEmitted = false;
 
     // Tag parser state — handles <think> (thinking) and <tool_call> (fallback tool calls) in content
     let inThinkTag = false;
@@ -459,23 +461,43 @@ export class OpenAICompatibleAdapter implements LLMAdapter {
 
           const data = trimmed.slice(6);
           if (data === '[DONE]') {
-            flushPendingContent();
-            // Emit structured tool calls
-            for (const [, tc] of toolCallBuffers) {
-              const input = buildToolInput(tc, '[DONE]');
-              onEvent({ type: 'tool_use', id: tc.id, name: tc.name, input });
+            if (!doneEmitted) {
+              flushPendingContent();
+              // Emit structured tool calls
+              for (const [, tc] of toolCallBuffers) {
+                const input = buildToolInput(tc, '[DONE]');
+                onEvent({ type: 'tool_use', id: tc.id, name: tc.name, input });
+              }
+              // Emit text-based <tool_call> tool calls
+              const hasTextTC = emitTextToolCalls();
+              const hasToolCalls = toolCallBuffers.size > 0 || hasTextTC;
+              onEvent({ type: 'done', stopReason: hasToolCalls ? 'tool_use' : 'end_turn' });
             }
-            // Emit text-based <tool_call> tool calls
-            const hasTextTC = emitTextToolCalls();
-            const hasToolCalls = toolCallBuffers.size > 0 || hasTextTC;
-            onEvent({ type: 'done', stopReason: hasToolCalls ? 'tool_use' : 'end_turn' });
             return;
           }
 
           try {
             const parsed = JSON.parse(data);
+
+            // Extract usage from ANY chunk that carries it — some providers
+            // send it as a standalone chunk (OpenAI stream_options), others
+            // embed it in the finish_reason chunk alongside choices.
+            if (parsed.usage) {
+              const u = parsed.usage as Record<string, number>;
+              onEvent({
+                type: 'usage',
+                usage: {
+                  inputTokens: u.prompt_tokens ?? 0,
+                  outputTokens: u.completion_tokens ?? 0,
+                },
+              });
+            }
+
             const choice = parsed.choices?.[0];
             if (!choice) continue;
+
+            // After done, skip content/tool processing — only usage matters
+            if (doneEmitted) continue;
 
             const delta = choice.delta;
 
@@ -505,7 +527,9 @@ export class OpenAICompatibleAdapter implements LLMAdapter {
               }
             }
 
-            // Check finish_reason — flush pending content before finishing
+            // Check finish_reason — flush pending content before finishing.
+            // After emitting done, don't return immediately — continue the loop
+            // to capture the trailing usage chunk that arrives before [DONE].
             if (choice.finish_reason) flushPendingContent();
             if (
               choice.finish_reason === 'tool_calls' ||
@@ -522,16 +546,16 @@ export class OpenAICompatibleAdapter implements LLMAdapter {
               const hasTextTC = emitTextToolCalls();
               const hasToolCalls = toolCallBuffers.size > 0 || hasTextTC;
               onEvent({ type: 'done', stopReason: hasToolCalls ? 'tool_use' : 'end_turn' });
-              return;
+              doneEmitted = true;
             } else if (choice.finish_reason === 'stop') {
               // Emit text-based <tool_call> tool calls if any were buffered
               const hasTextTC = emitTextToolCalls();
               if (hasTextTC) {
                 onEvent({ type: 'done', stopReason: 'tool_use' });
-                return;
+              } else {
+                onEvent({ type: 'done', stopReason: 'end_turn' });
               }
-              onEvent({ type: 'done', stopReason: 'end_turn' });
-              return;
+              doneEmitted = true;
             } else if (choice.finish_reason === 'length') {
               // Model output reached max_tokens. Three sub-cases:
               //   (a) Tool args fully accumulated → emit tool_use, signal tool_use
@@ -569,7 +593,7 @@ export class OpenAICompatibleAdapter implements LLMAdapter {
                 });
                 onEvent({ type: 'done', stopReason: 'max_tokens' });
               }
-              return;
+              doneEmitted = true;
             } else if (choice.finish_reason) {
               // Unknown finish_reason — log so we can diagnose new providers
               logger.warn('unknown finish_reason', {
@@ -584,11 +608,13 @@ export class OpenAICompatibleAdapter implements LLMAdapter {
       }
 
       // Fallback: stream ended without [DONE] or finish_reason — emit pending tool calls and done
-      for (const [, tc] of toolCallBuffers) {
-        const input = buildToolInput(tc, 'stream-end-fallback');
-        onEvent({ type: 'tool_use', id: tc.id, name: tc.name, input });
+      if (!doneEmitted) {
+        for (const [, tc] of toolCallBuffers) {
+          const input = buildToolInput(tc, 'stream-end-fallback');
+          onEvent({ type: 'tool_use', id: tc.id, name: tc.name, input });
+        }
+        onEvent({ type: 'done', stopReason: toolCallBuffers.size > 0 ? 'tool_use' : 'end_turn' });
       }
-      onEvent({ type: 'done', stopReason: toolCallBuffers.size > 0 ? 'tool_use' : 'end_turn' });
     } finally {
       heartbeat.clear();
       reader.releaseLock();

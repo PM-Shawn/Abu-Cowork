@@ -654,6 +654,15 @@ export const useChatStore = create<ChatStore>()(
           controller.abort();
           abortControllers.delete(convId);
         }
+        // Clean up Computer Use overlay and status on abort
+        import('@tauri-apps/api/core').then(({ invoke }) => {
+          invoke('hide_screen_border').catch(() => {});
+          invoke('window_show').catch(() => {});
+        }).catch(() => {});
+        import('../core/agent/computerUseStatus').then(({ setComputerUseActive }) => {
+          setComputerUseActive(false);
+        }).catch(() => {});
+
         set((state) => {
           const messages = state.conversations[convId]?.messages;
           if (messages?.length) {

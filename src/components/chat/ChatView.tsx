@@ -20,6 +20,7 @@ import { ChevronDown, Settings } from 'lucide-react';
 import abuAvatar from '@/assets/abu-avatar.png';
 import IMInfoBar from './IMInfoBar';
 import SourceInfoBar from './SourceInfoBar';
+import ComputerUseStatusBar from './ComputerUseStatusBar';
 
 /**
  * Groups messages by loopId for rendering.
@@ -56,6 +57,7 @@ function groupMessagesByLoop(messages: Message[]): Message[][] {
 }
 
 export default function ChatView() {
+  const activeConvId = useChatStore((s) => s.activeConversationId);
   const activeConv = useActiveConversation();
   const createConversation = useChatStore((s) => s.createConversation);
   // Subscribe to messages count so ChatView re-renders when background processes
@@ -146,7 +148,6 @@ export default function ChatView() {
   // Scroll to bottom when switching conversations.
   // useLayoutEffect runs after DOM commit but before paint,
   // so the user never sees the wrong scroll position.
-  const activeConvId = activeConv?.id;
   useLayoutEffect(() => {
     if (activeConvId) {
       scrollToBottom();
@@ -207,6 +208,33 @@ export default function ChatView() {
   const handleWelcomeInputChange = useCallback((hasText: boolean) => {
     setGuideVisible(!hasText);
   }, []);
+
+  // Conversation loading from disk (LRU cache miss) — show skeleton instead of welcome page
+  if (activeConvId && !activeConv) {
+    return (
+      <div className="flex flex-col h-full bg-[var(--abu-bg-base)]">
+        <div className="flex-1 overflow-hidden">
+          <div className="w-full max-w-4xl mx-auto px-6 md:px-10 pt-5 pb-16 space-y-5">
+            {/* User message skeleton */}
+            <div className="flex justify-end">
+              <div className="max-w-[70%] space-y-2">
+                <div className="h-4 w-48 bg-[var(--abu-bg-muted)] rounded animate-pulse" />
+              </div>
+            </div>
+            {/* Assistant message skeleton */}
+            <div className="flex gap-3">
+              <div className="w-7 h-7 rounded-full bg-[var(--abu-bg-muted)] animate-pulse shrink-0" />
+              <div className="flex-1 space-y-2.5">
+                <div className="h-4 w-full bg-[var(--abu-bg-muted)] rounded animate-pulse" />
+                <div className="h-4 w-3/4 bg-[var(--abu-bg-muted)] rounded animate-pulse" />
+                <div className="h-4 w-1/2 bg-[var(--abu-bg-muted)] rounded animate-pulse" />
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   if (!activeConv) {
     return (
@@ -321,6 +349,9 @@ export default function ChatView() {
 
       {/* Source Info Bar — show for scheduled task / trigger conversations */}
       {!activeConv.imPlatform && <SourceInfoBar conversation={activeConv} />}
+
+      {/* Computer Use Status Bar — visible during screen control */}
+      <ComputerUseStatusBar onStop={() => useChatStore.getState().cancelStreaming(activeConv.id)} />
 
       {/* Messages Area */}
       <div className="relative flex-1 min-h-0 overflow-y-auto" ref={containerRef}>

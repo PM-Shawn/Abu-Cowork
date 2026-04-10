@@ -13,7 +13,7 @@ crate-type = ["lib", "cdylib", "staticlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = ["tray-icon"] }
+tauri = { version = "2", features = ["tray-icon", "macos-private-api"] }
 tauri-plugin-dialog = "2"
 tauri-plugin-fs = { version = "2", features = ["watch"] }
 tauri-plugin-shell = "2"
@@ -33,6 +33,11 @@ xcap = "0.3"
 enigo = { version = "0.3", features = ["serde"] }
 base64 = "0.22"
 image = { version = "0.25", default-features = false, features = ["png"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-app-kit = { version = "0.3", features = ["NSWindow", "NSResponder"] }
+objc2-core-graphics = "0.3"
 
 [profile.release]
 strip = true

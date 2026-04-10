@@ -15,6 +15,7 @@ import { processToolResult } from '../session/sessionMemory';
 import { emitHook } from './lifecycleHooks';
 import type { PreToolCallEvent } from './lifecycleHooks';
 import { setComputerUseBatchMode, setSkipAutoScreenshot } from '../tools/builtins';
+import { setComputerUseActive, incrementComputerUseStep, setCurrentAction } from './computerUseStatus';
 import { TOOL_NAMES } from '../tools/toolNames';
 import { invoke } from '@tauri-apps/api/core';
 import { useChatStore } from '../../stores/chatStore';
@@ -24,6 +25,21 @@ import type { EventRouter } from './eventRouter';
 import { createLogger } from '../logging/logger';
 
 const logger = createLogger('toolExecutor');
+
+/** Human-readable description of a computer use action for the floating console. */
+function actionToDescription(action: string, input: Record<string, unknown>): string {
+  switch (action) {
+    case 'screenshot': return '截屏';
+    case 'click': return `点击 (${input.x}, ${input.y})`;
+    case 'move': return `移动鼠标 (${input.x}, ${input.y})`;
+    case 'scroll': return `滚动 ${input.direction}`;
+    case 'drag': return `拖拽 (${input.startX},${input.startY}) → (${input.endX},${input.endY})`;
+    case 'type': return `输入: ${(input.text as string)?.slice(0, 30) ?? ''}`;
+    case 'key': return `按键: ${input.modifiers ? (input.modifiers as string[]).join('+') + '+' : ''}${input.key}`;
+    case 'wait': return `等待 ${input.duration ?? 1000}ms`;
+    default: return action;
+  }
+}
 
 export interface ToolBatchParams {
   collectedToolCalls: ToolCall[];
@@ -234,10 +250,22 @@ export async function executeToolBatch(params: ToolBatchParams): Promise<ToolBat
 
   let results: PromiseSettledResult<ToolExecResult>[];
   if (hasComputerTool) {
-    // Sequential execution for computer use batches
-    // Batch-level window management: hide once before, show once after
-    try { await invoke('window_hide'); } catch { /* ignore */ }
-    await new Promise(r => setTimeout(r, 200));
+    // Sequential execution for computer use batches.
+    // Window hide is only needed when batch contains actions that physically interact
+    // with the screen (click, type, etc.) — Abu's window may block the target.
+    // Pure screenshot batches use capture_screen_excluding and don't need window hide.
+    const ACTION_TYPES = new Set(['click', 'move', 'scroll', 'drag', 'type', 'key']);
+    const hasInteractiveAction = collectedToolCalls.some(tc =>
+      tc.name === TOOL_NAMES.COMPUTER && ACTION_TYPES.has(tc.input.action as string)
+    );
+
+    // Show screen border overlay + status bar for interactive actions
+    if (hasInteractiveAction) {
+      try { await invoke('show_screen_border'); } catch { /* ignore */ }
+      try { await invoke('window_hide'); } catch { /* ignore */ }
+      await new Promise(r => setTimeout(r, 200));
+    }
+    setComputerUseActive(true);
     setComputerUseBatchMode(true);
 
     const sequentialResults: PromiseSettledResult<ToolExecResult>[] = [];
@@ -248,6 +276,11 @@ export async function executeToolBatch(params: ToolBatchParams): Promise<ToolBat
         const hasMoreComputerTools = collectedToolCalls.slice(i + 1).some(t => t.name === TOOL_NAMES.COMPUTER);
         setSkipAutoScreenshot(tc.name === TOOL_NAMES.COMPUTER && hasMoreComputerTools);
         try {
+          if (tc.name === TOOL_NAMES.COMPUTER) {
+            const action = tc.input.action as string;
+            setCurrentAction(actionToDescription(action, tc.input));
+            incrementComputerUseStep(action);
+          }
           const value = await executeSingleTool(tc);
           sequentialResults.push({ status: 'fulfilled', value });
         } catch (err) {
@@ -257,7 +290,12 @@ export async function executeToolBatch(params: ToolBatchParams): Promise<ToolBat
     } finally {
       setSkipAutoScreenshot(false);
       setComputerUseBatchMode(false);
-      try { await invoke('window_show'); } catch { /* ignore */ }
+      // Always clean up — restore window, hide overlay, reset status
+      if (hasInteractiveAction) {
+        try { await invoke('window_show'); } catch { /* ignore */ }
+      }
+      try { await invoke('hide_screen_border'); } catch { /* ignore */ }
+      setComputerUseActive(false);
     }
     results = sequentialResults;
   } else {

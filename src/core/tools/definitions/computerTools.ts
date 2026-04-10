@@ -8,6 +8,7 @@ import { useWorkspaceStore } from '../../../stores/workspaceStore';
 import { joinPath } from '../../../utils/pathUtils';
 import { isMacOS } from '../../../utils/platform';
 import { TOOL_NAMES } from '../toolNames';
+import { updateLatestScreenshot } from '../../agent/computerUseStatus';
 
 let lastScreenScaleFactor = 1;
 const SCREENSHOT_MAX_WIDTH = 1280;
@@ -30,19 +31,35 @@ function toScreenCoords(x: number, y: number): { x: number; y: number } {
 
 /**
  * Take a lightweight auto-screenshot after an action.
- * IMPORTANT: Assumes Abu window is ALREADY hidden (caller must not show it before calling).
- * This function waits for UI to settle, captures, then shows the window.
+ * Uses exclusion-based capture when available (no window hide needed).
+ * Falls back to regular capture when Abu window is already hidden (batch mode).
  */
 async function takeAutoScreenshot(): Promise<ToolResultContent[]> {
   // Wait for UI to settle after the action (e.g. click animation, page load)
   await new Promise(r => setTimeout(r, AUTO_SCREENSHOT_DELAY_MS));
-  // Window should already be hidden by the caller — just capture
+
   try {
-    const result = await invoke<{ base64: string; width: number; height: number; scale_factor: number }>('capture_screen', {
-      x: null, y: null, width: null, height: null,
-      maxWidth: SCREENSHOT_MAX_WIDTH,
-    });
+    const excludeId = await getExcludeWindowId();
+    let result: { base64: string; width: number; height: number; scale_factor: number };
+
+    if (excludeId != null && !computerUseBatchMode) {
+      // Exclusion mode: Abu is visible, exclude from screenshot (+ overlay if present)
+      result = await invoke('capture_screen_excluding', {
+        excludeWindowId: excludeId,
+        x: null, y: null, width: null, height: null,
+        maxWidth: SCREENSHOT_MAX_WIDTH,
+      });
+    } else {
+      // Batch mode: Abu window is already hidden by toolExecutor, use regular capture
+      result = await invoke('capture_screen', {
+        x: null, y: null, width: null, height: null,
+        maxWidth: SCREENSHOT_MAX_WIDTH,
+      });
+    }
+
     lastScreenScaleFactor = result.scale_factor;
+    // Update floating console preview
+    updateLatestScreenshot(result.base64);
     return [
       { type: 'text', text: `Auto-screenshot after action: ${result.width}x${result.height} (scale: ${result.scale_factor.toFixed(2)}x)\nExamine the screenshot to verify the action result and determine next steps.` },
       { type: 'image', source: { type: 'base64', media_type: 'image/png', data: result.base64 } },
@@ -50,23 +67,88 @@ async function takeAutoScreenshot(): Promise<ToolResultContent[]> {
   } catch (e) {
     return [{ type: 'text', text: `Auto-screenshot failed: ${e instanceof Error ? e.message : String(e)}` }];
   }
-  // NOTE: window_show is handled by the caller's finally block
+}
+
+/** Cached Abu window ID for screenshot exclusion (macOS). */
+let cachedAbuWindowId: number | null = null;
+
+/** Get the Abu window's CGWindowID, cached after first call. */
+async function getAbuWindowId(): Promise<number | null> {
+  if (cachedAbuWindowId != null) return cachedAbuWindowId;
+  try {
+    cachedAbuWindowId = await invoke<number>('get_abu_window_id');
+    return cachedAbuWindowId;
+  } catch {
+    return null; // Non-macOS or API unavailable
+  }
+}
+
+/**
+ * Get the best window ID for screenshot exclusion.
+ * If the overlay is visible, use its ID (higher level → excludes both overlay and Abu).
+ * Otherwise use Abu's window ID.
+ */
+async function getExcludeWindowId(): Promise<number | null> {
+  try {
+    const overlayId = await invoke<number | null>('get_overlay_window_id');
+    if (overlayId != null) return overlayId;
+  } catch { /* ignore */ }
+  return getAbuWindowId();
+}
+
+/** Open macOS System Settings to a specific privacy panel. */
+async function openMacOSSettings(panel: 'ScreenCapture' | 'Accessibility'): Promise<void> {
+  try {
+    // macOS 13+ uses the new URL scheme
+    const url = `x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension?Privacy_${panel}`;
+    await invoke('run_shell_command', {
+      command: `open "${url}"`,
+      cwd: null, timeout: 5000, env: null,
+    });
+  } catch {
+    // Fallback for older macOS
+    try {
+      const url = `x-apple.systempreferences:com.apple.preference.security?Privacy_${panel}`;
+      await invoke('run_shell_command', {
+        command: `open "${url}"`,
+        cwd: null, timeout: 5000, env: null,
+      });
+    } catch { /* ignore */ }
+  }
 }
 
 async function executeScreenshot(input: Record<string, unknown>): Promise<ToolResult> {
-  // Check macOS permissions before attempting screenshot
-  try {
-    const perms = await invoke<{ screen_recording: boolean; accessibility: boolean }>('check_macos_permissions');
-    if (!perms.screen_recording) {
-      // Try to trigger the system permission prompt
-      await invoke<boolean>('request_screen_recording');
-      return 'Error: 没有录屏权限。请在 系统设置 → 隐私与安全性 → 录屏与系统录音 中授权 Abu，然后重启 Abu。\n\nNo Screen Recording permission. Please grant Abu access in System Settings → Privacy & Security → Screen Recording, then restart Abu.';
-    }
-  } catch {
-    // Non-macOS or FFI unavailable — proceed
-  }
+  // Permission is already checked in the main execute() entry point.
+  // Capture screenshot excluding Abu + overlay windows (no need to hide/show).
+  // Falls back to old capture_screen with window_hide if exclusion is unavailable.
+  const excludeId = await getExcludeWindowId();
 
-  // Hide Abu window so it doesn't appear in the screenshot
+  if (excludeId != null) {
+    // macOS: use capture_screen_excluding — Abu window stays visible to user
+    return captureWithExclusion(excludeId, input);
+  } else {
+    // Fallback (Windows / error): hide window, capture, show window
+    return captureWithWindowHide(input);
+  }
+}
+
+/** Screenshot via CGWindowListCreateImage excluding Abu window. No window hide needed. */
+async function captureWithExclusion(abuWindowId: number, input: Record<string, unknown>): Promise<ToolResult> {
+  const result = await invoke<{ base64: string; width: number; height: number; scale_factor: number }>('capture_screen_excluding', {
+    excludeWindowId: abuWindowId,
+    x: input.x != null ? Math.round((input.x as number) * lastScreenScaleFactor) : null,
+    y: input.y != null ? Math.round((input.y as number) * lastScreenScaleFactor) : null,
+    width: input.width != null ? Math.round((input.width as number) * lastScreenScaleFactor) : null,
+    height: input.height != null ? Math.round((input.height as number) * lastScreenScaleFactor) : null,
+    maxWidth: SCREENSHOT_MAX_WIDTH,
+  });
+  lastScreenScaleFactor = result.scale_factor;
+
+  return formatScreenshotResult(result);
+}
+
+/** Fallback: hide Abu window → capture → show window. Used on Windows or when exclusion fails. */
+async function captureWithWindowHide(input: Record<string, unknown>): Promise<ToolResult> {
   try { await invoke('window_hide'); } catch { /* ignore */ }
   await new Promise(r => setTimeout(r, 300));
 
@@ -80,34 +162,38 @@ async function executeScreenshot(input: Record<string, unknown>): Promise<ToolRe
     });
     lastScreenScaleFactor = result.scale_factor;
 
-    // Save screenshot — prefer workspace, then desktop (not ~/Library which is inaccessible)
-    let savedPath = '';
-    try {
-      const workspacePath = useWorkspaceStore.getState().currentPath;
-      const saveDir = workspacePath || await desktopDir();
-      const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
-      const fileName = `screenshot-${timestamp}.png`;
-      const filePath = joinPath(saveDir, fileName);
-      // Decode base64 and write as binary file
-      const binaryStr = atob(result.base64);
-      const bytes = new Uint8Array(binaryStr.length);
-      for (let i = 0; i < binaryStr.length; i++) {
-        bytes[i] = binaryStr.charCodeAt(i);
-      }
-      await writeBinFile(filePath, bytes);
-      savedPath = filePath;
-    } catch (e) {
-      console.warn('Failed to save screenshot file:', e);
-    }
-
-    const saveInfo = savedPath ? `\nScreenshot saved to: ${savedPath}` : '';
-    return [
-      { type: 'text', text: `Screenshot: ${result.width}x${result.height} (scale: ${result.scale_factor.toFixed(2)}x)${saveInfo}\nThe screenshot image is attached. Examine it carefully to identify UI elements and their coordinates. Do NOT use screencapture command to take another screenshot.` },
-      { type: 'image', source: { type: 'base64', media_type: 'image/png', data: result.base64 } },
-    ];
+    return formatScreenshotResult(result);
   } finally {
     try { await invoke('window_show'); } catch { /* ignore */ }
   }
+}
+
+/** Format screenshot result with saved file path. */
+async function formatScreenshotResult(result: { base64: string; width: number; height: number; scale_factor: number }): Promise<ToolResultContent[]> {
+  // Save screenshot — prefer workspace, then desktop
+  let savedPath = '';
+  try {
+    const workspacePath = useWorkspaceStore.getState().currentPath;
+    const saveDir = workspacePath || await desktopDir();
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+    const fileName = `screenshot-${timestamp}.png`;
+    const filePath = joinPath(saveDir, fileName);
+    const binaryStr = atob(result.base64);
+    const bytes = new Uint8Array(binaryStr.length);
+    for (let i = 0; i < binaryStr.length; i++) {
+      bytes[i] = binaryStr.charCodeAt(i);
+    }
+    await writeBinFile(filePath, bytes);
+    savedPath = filePath;
+  } catch (e) {
+    console.warn('Failed to save screenshot file:', e);
+  }
+
+  const saveInfo = savedPath ? `\nScreenshot saved to: ${savedPath}` : '';
+  return [
+    { type: 'text', text: `Screenshot: ${result.width}x${result.height} (scale: ${result.scale_factor.toFixed(2)}x)${saveInfo}\nThe screenshot image is attached. Examine it carefully to identify UI elements and their coordinates. Do NOT use screencapture command to take another screenshot.` },
+    { type: 'image', source: { type: 'base64', media_type: 'image/png', data: result.base64 } },
+  ];
 }
 
 export const computerTool: ToolDefinition = {
@@ -115,7 +201,7 @@ export const computerTool: ToolDefinition = {
   description: `操控电脑屏幕：截图、鼠标和键盘操作。仅在必须看屏幕画面或操作 GUI 界面时才用，能用其他工具完成的不要用此工具。
 
 操作类型（action）：
-- screenshot：截屏（阿布窗口自动隐藏）。可选 x, y, width, height 裁剪区域。
+- screenshot：截屏（阿布窗口不会出现在截图中）。可选 x, y, width, height 裁剪区域。
 - click：点击坐标。参数：x, y, button（left/right/middle/double，默认 left）。
 - move：移动鼠标。参数：x, y。
 - scroll：滚动。参数：x, y, direction（up/down/left/right）, amount（默认 3）。
@@ -168,9 +254,9 @@ export const computerTool: ToolDefinition = {
     required: ['action'],
   },
   execute: async (input): Promise<ToolResult> => {
-    const enabled = useSettingsStore.getState().computerUseEnabled;
-    if (!enabled) {
-      throw new Error('Computer Use is not enabled. Please ask the user to enable it in Settings → General → Computer Use.');
+    // Auto-enable Computer Use on first call — no need for user to find the toggle
+    if (!useSettingsStore.getState().computerUseEnabled) {
+      useSettingsStore.getState().setComputerUseEnabled(true);
     }
 
     const action = input.action as string;
@@ -182,16 +268,26 @@ export const computerTool: ToolDefinition = {
       return `Waited ${ms}ms`;
     }
 
-    // Check Accessibility permission for mouse/keyboard actions (macOS)
-    if (action !== 'screenshot') {
-      try {
-        const perms = await invoke<{ screen_recording: boolean; accessibility: boolean }>('check_macos_permissions');
-        if (!perms.accessibility) {
-          return 'Error: 没有辅助功能权限。请在 系统设置 → 隐私与安全性 → 辅助功能 中授权 Abu，然后重启 Abu。\n\nNo Accessibility permission. Please grant Abu access in System Settings → Privacy & Security → Accessibility, then restart Abu.';
+    // Check system permissions (macOS) — auto-open Settings if missing
+    try {
+      const perms = await invoke<{ screen_recording: boolean; accessibility: boolean }>('check_macos_permissions');
+
+      if (!perms.screen_recording) {
+        // Trigger the system permission dialog (first time shows the dialog,
+        // subsequent times it's a no-op). The dialog has an "Open System Settings" button.
+        const granted = await invoke<boolean>('request_screen_recording');
+        if (!granted) {
+          return 'Error: 没有录屏权限。请在弹出的系统对话框中点击「打开系统设置」，授权 Abu 后重启。\n\nNo Screen Recording permission. Please click "Open System Settings" in the dialog, grant Abu access, then restart Abu.';
         }
-      } catch {
-        // Non-macOS or FFI unavailable — proceed
       }
+
+      if (action !== 'screenshot' && !perms.accessibility) {
+        // No system dialog for Accessibility — need to open Settings directly
+        await openMacOSSettings('Accessibility');
+        return 'Error: 没有辅助功能权限。已自动打开系统设置，请在「辅助功能」中授权 Abu，然后重启 Abu。\n\nNo Accessibility permission. System Settings has been opened — please grant Abu access in Accessibility, then restart Abu.';
+      }
+    } catch {
+      // Non-macOS or FFI unavailable — proceed
     }
 
     // Hide Abu window during operations so it doesn't block click targets

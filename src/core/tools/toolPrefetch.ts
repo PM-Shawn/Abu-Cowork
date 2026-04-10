@@ -98,10 +98,8 @@ export function prefetchTools(ctx: PrefetchContext): string[] {
     }
   }
 
-  // Computer use: load when enabled in settings
-  if (ctx.computerUseEnabled) {
-    additionalTools.push(TOOL_NAMES.COMPUTER);
-  }
+  // Computer use: always loaded — tool handles auto-enable and permission checks internally
+  additionalTools.push(TOOL_NAMES.COMPUTER);
 
   // Active skill exists → may need read_skill_file
   if (ctx.activeSkills.length > 0) {

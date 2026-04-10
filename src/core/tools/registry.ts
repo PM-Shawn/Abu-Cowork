@@ -151,8 +151,6 @@ const PLAYWRIGHT_BROWSER_TOOLS = new Set([
  * Deduplicates by tool name — builtin tools take priority over MCP tools
  * Filters out conflicting playwright browser tools when abu-browser-bridge is connected
  */
-const COMPUTER_USE_TOOLS = new Set<string>([TOOL_NAMES.COMPUTER]);
-
 export function getAllTools(): ToolDefinition[] {
   const builtinTools = toolRegistry.getAll();
   const mcpTools = mcpManager.listTools();
@@ -161,12 +159,11 @@ export function getAllTools(): ToolDefinition[] {
   // Check if abu-browser-bridge is connected — if so, filter out playwright browser tools
   const hasBrowserBridge = mcpManager.isConnected('abu-browser-bridge');
 
-  // Hide computer use tools when disabled — prevents LLM from calling them and getting errors
-  const computerUseEnabled = useSettingsStore.getState().computerUseEnabled;
+  // Computer use tools are always registered — the tool itself handles
+  // auto-enabling and permission checks when first called.
 
   // Builtin tools first (higher priority)
   for (const tool of builtinTools) {
-    if (!computerUseEnabled && COMPUTER_USE_TOOLS.has(tool.name)) continue;
     toolMap.set(tool.name, tool);
   }
   // MCP tools — only add if no name conflict

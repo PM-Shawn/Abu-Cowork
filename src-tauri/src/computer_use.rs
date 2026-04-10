@@ -19,6 +19,16 @@ use serde::Serialize;
 use std::io::Cursor;
 use xcap::Monitor;
 
+// macOS CGWindowList API for screenshot-with-exclusion.
+// CGWindowListCreateImage is deprecated by Apple in favor of ScreenCaptureKit,
+// but still works on all current macOS versions and is much simpler to use.
+#[cfg(target_os = "macos")]
+#[allow(deprecated)]
+use objc2_core_graphics::{
+    CGRectInfinite, CGWindowID, CGWindowImageOption, CGWindowListCreateImage,
+    CGWindowListOption,
+};
+
 // macOS permission checks via FFI
 #[cfg(target_os = "macos")]
 extern "C" {
@@ -394,5 +404,170 @@ fn parse_key(k: &str) -> Result<Key, String> {
         "f12" => Ok(Key::F12),
         "capslock" => Ok(Key::CapsLock),
         other => Err(format!("Unknown key: {}", other)),
+    }
+}
+
+// ─── Screenshot with window exclusion (macOS) ────────────────────────
+
+/// Get the CGWindowID of the Tauri main window.
+/// This is the macOS window number used by CGWindowListCreateImage.
+#[tauri::command]
+pub fn get_abu_window_id(window: tauri::Window) -> Result<u32, String> {
+    #[cfg(target_os = "macos")]
+    {
+        use objc2::rc::Retained;
+        use objc2_app_kit::NSWindow;
+
+        let ns_window_ptr = window.ns_window()
+            .map_err(|e| format!("Failed to get NSWindow: {}", e))?;
+
+        // ns_window() returns *mut c_void pointing to the NSWindow
+        let ns_window: Retained<NSWindow> = unsafe {
+            Retained::retain(ns_window_ptr as *mut NSWindow)
+                .ok_or_else(|| "NSWindow pointer is null".to_string())?
+        };
+
+        Ok(ns_window.windowNumber() as u32)
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = window;
+        Err("get_abu_window_id is only supported on macOS".to_string())
+    }
+}
+
+/// Capture the screen excluding a specific window (by CGWindowID).
+///
+/// Uses CGWindowListCreateImage with OptionOnScreenBelowWindow to capture
+/// everything on screen BELOW the specified window — effectively excluding
+/// that window and any windows above it from the screenshot.
+///
+/// This allows Abu to take screenshots without hiding its own window.
+#[tauri::command]
+pub async fn capture_screen_excluding(
+    exclude_window_id: u32,
+    x: Option<i32>,
+    y: Option<i32>,
+    width: Option<u32>,
+    height: Option<u32>,
+    max_width: Option<u32>,
+) -> Result<ScreenshotResult, String> {
+    #[cfg(target_os = "macos")]
+    {
+        tauri::async_runtime::spawn_blocking(move || {
+            capture_excluding_impl(exclude_window_id, x, y, width, height, max_width)
+        })
+        .await
+        .map_err(|e| format!("Task join error: {}", e))?
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        // Fallback to regular capture on non-macOS (xcap doesn't support exclusion)
+        capture_screen(x, y, width, height, max_width).await
+    }
+}
+
+#[cfg(target_os = "macos")]
+#[allow(deprecated)] // CGWindowListCreateImage — still functional, simpler than ScreenCaptureKit
+fn capture_excluding_impl(
+    exclude_window_id: u32,
+    x: Option<i32>,
+    y: Option<i32>,
+    width: Option<u32>,
+    height: Option<u32>,
+    max_width: Option<u32>,
+) -> Result<ScreenshotResult, String> {
+    unsafe {
+        // Capture everything on screen below the excluded window.
+        // This excludes the Abu window (and any window above it) from the screenshot.
+        let cg_image = CGWindowListCreateImage(
+            CGRectInfinite,
+            CGWindowListOption::OptionOnScreenBelowWindow,
+            exclude_window_id as CGWindowID,
+            CGWindowImageOption::Default,
+        );
+
+        let cg_image = cg_image
+            .ok_or_else(|| "CGWindowListCreateImage returned null — check Screen Recording permission".to_string())?;
+
+        use objc2_core_graphics::{CGImage, CGDataProvider};
+
+        let img_w = CGImage::width(Some(&cg_image));
+        let img_h = CGImage::height(Some(&cg_image));
+        let bytes_per_row = CGImage::bytes_per_row(Some(&cg_image));
+
+        if img_w == 0 || img_h == 0 {
+            return Err("Screenshot captured empty image".to_string());
+        }
+
+        let data_provider = CGImage::data_provider(Some(&cg_image))
+            .ok_or_else(|| "Failed to get data provider".to_string())?;
+        let data = CGDataProvider::data(Some(&data_provider))
+            .ok_or_else(|| "Failed to copy image data".to_string())?
+            .to_vec();
+
+        // Convert BGRA → RGBA, stripping row padding
+        let mut buffer = Vec::with_capacity(img_w * img_h * 4);
+        for row in data.chunks_exact(bytes_per_row) {
+            let row_pixels = &row[..img_w * 4];
+            for bgra in row_pixels.chunks_exact(4) {
+                buffer.push(bgra[2]); // R
+                buffer.push(bgra[1]); // G
+                buffer.push(bgra[0]); // B
+                buffer.push(bgra[3]); // A
+            }
+        }
+
+        let img = image::RgbaImage::from_raw(img_w as u32, img_h as u32, buffer)
+            .ok_or_else(|| "Failed to create image from raw data".to_string())?;
+        let dynamic = image::DynamicImage::from(img);
+
+        // Optional crop
+        let cropped = if let (Some(rx), Some(ry), Some(rw), Some(rh)) = (x, y, width, height) {
+            let rx = rx.max(0) as u32;
+            let ry = ry.max(0) as u32;
+            let rw = rw.min(dynamic.width().saturating_sub(rx));
+            let rh = rh.min(dynamic.height().saturating_sub(ry));
+            if rw == 0 || rh == 0 {
+                return Err("Crop region is empty".to_string());
+            }
+            dynamic.crop_imm(rx, ry, rw, rh)
+        } else {
+            dynamic
+        };
+
+        // Downscale if needed
+        let orig_w = cropped.width();
+        let (final_img, scale_factor) = if let Some(mw) = max_width {
+            if orig_w > mw {
+                let scale = orig_w as f64 / mw as f64;
+                let new_h = (cropped.height() as f64 / scale) as u32;
+                let resized = cropped.resize(mw, new_h, image::imageops::FilterType::Lanczos3);
+                (resized, scale)
+            } else {
+                (cropped, 1.0)
+            }
+        } else {
+            (cropped, 1.0)
+        };
+
+        let w = final_img.width();
+        let h = final_img.height();
+
+        // Encode to PNG
+        let mut buf = Cursor::new(Vec::new());
+        let encoder = PngEncoder::new(&mut buf);
+        encoder
+            .write_image(final_img.as_bytes(), w, h, final_img.color().into())
+            .map_err(|e| format!("PNG encode failed: {}", e))?;
+
+        Ok(ScreenshotResult {
+            base64: BASE64.encode(buf.into_inner()),
+            width: w,
+            height: h,
+            scale_factor,
+        })
     }
 }

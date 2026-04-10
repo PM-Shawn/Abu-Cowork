@@ -15,6 +15,7 @@ mod trigger_server;
 mod feishu_ws;
 mod window_info;
 mod computer_use;
+mod overlay;
 
 /// Maximum number of output lines to collect from a shell command.
 /// Prevents OOM when commands produce unbounded output.
@@ -889,6 +890,87 @@ fn window_show(app: AppHandle) {
     show_main_window(&app);
 }
 
+// ─── Floating mode for Computer Use ─────────────────────────
+
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
+struct SavedWindowState {
+    x: f64,
+    y: f64,
+    width: f64,
+    height: f64,
+}
+
+static SAVED_WINDOW_STATE: Mutex<Option<SavedWindowState>> = Mutex::new(None);
+
+/// Shrink the main window to a small floating panel in the bottom-right corner.
+/// Saves the current position/size for later restoration.
+#[tauri::command]
+fn enter_floating_mode(app: AppHandle) -> Result<(), String> {
+    let window = app.get_webview_window("main")
+        .ok_or_else(|| "Main window not found".to_string())?;
+
+    // Save current state
+    let pos = window.outer_position().map_err(|e| e.to_string())?;
+    let size = window.outer_size().map_err(|e| e.to_string())?;
+    let scale = window.scale_factor().unwrap_or(1.0);
+
+    let state = SavedWindowState {
+        x: pos.x as f64 / scale,
+        y: pos.y as f64 / scale,
+        width: size.width as f64 / scale,
+        height: size.height as f64 / scale,
+    };
+    *SAVED_WINDOW_STATE.lock().unwrap() = Some(state);
+
+    // Get screen dimensions for bottom-right positioning
+    let monitor = window.primary_monitor().map_err(|e| e.to_string())?
+        .ok_or_else(|| "No monitor".to_string())?;
+    let screen_size = monitor.size();
+    let screen_scale = monitor.scale_factor();
+
+    let panel_w: f64 = 320.0;
+    let panel_h: f64 = 480.0;
+    let margin: f64 = 20.0;
+
+    let logical_screen_w = screen_size.width as f64 / screen_scale;
+    let logical_screen_h = screen_size.height as f64 / screen_scale;
+
+    // Position: bottom-right corner
+    let target_x = logical_screen_w - panel_w - margin;
+    let target_y = logical_screen_h - panel_h - margin;
+
+    let _ = window.set_size(tauri::LogicalSize::new(panel_w, panel_h));
+    let _ = window.set_position(tauri::LogicalPosition::new(target_x, target_y));
+    let _ = window.set_always_on_top(true);
+    let _ = window.set_resizable(false);
+
+    Ok(())
+}
+
+/// Restore the main window to its previous size and position.
+#[tauri::command]
+fn exit_floating_mode(app: AppHandle) -> Result<(), String> {
+    let window = app.get_webview_window("main")
+        .ok_or_else(|| "Main window not found".to_string())?;
+
+    let state = SAVED_WINDOW_STATE.lock().unwrap().take();
+
+    if let Some(s) = state {
+        let _ = window.set_always_on_top(false);
+        let _ = window.set_resizable(true);
+        let _ = window.set_size(tauri::LogicalSize::new(s.width, s.height));
+        let _ = window.set_position(tauri::LogicalPosition::new(s.x, s.y));
+    } else {
+        // No saved state — just restore defaults
+        let _ = window.set_always_on_top(false);
+        let _ = window.set_resizable(true);
+        let _ = window.set_size(tauri::LogicalSize::new(1200.0, 800.0));
+        let _ = window.center();
+    }
+
+    Ok(())
+}
+
 /// Get the local LAN IPv4 address (non-loopback, non-VPN).
 /// Used by IM plugin heartbeat to register callback URL.
 ///
@@ -1078,6 +1160,13 @@ pub fn run() {
             computer_use::keyboard_press,
             computer_use::check_macos_permissions,
             computer_use::request_screen_recording,
+            computer_use::get_abu_window_id,
+            computer_use::capture_screen_excluding,
+            overlay::show_screen_border,
+            overlay::hide_screen_border,
+            overlay::get_overlay_window_id,
+            enter_floating_mode,
+            exit_floating_mode,
             trigger_server::start_trigger_server,
             trigger_server::get_trigger_server_port,
             get_local_ip,

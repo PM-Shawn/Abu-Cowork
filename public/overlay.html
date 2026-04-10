@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body {
+    width: 100vw;
+    height: 100vh;
+    background: transparent;
+    overflow: hidden;
+    pointer-events: none;
+    -webkit-user-select: none;
+    user-select: none;
+  }
+
+  .overlay {
+    position: fixed;
+    inset: 0;
+    animation: breathe 3s ease-in-out infinite;
+  }
+
+  /* Four-edge blue border — thick and visible */
+  .overlay::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    border: 6px solid rgba(56, 152, 255, 0.75);
+    border-radius: 4px;
+    box-shadow:
+      inset 0 0 20px rgba(56, 152, 255, 0.3),
+            0 0 20px rgba(56, 152, 255, 0.3);
+    pointer-events: none;
+  }
+
+  /* Radial gradient vignette: transparent center → blue edges */
+  .overlay::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background: radial-gradient(
+      ellipse at center,
+      transparent 40%,
+      rgba(56, 152, 255, 0.04) 55%,
+      rgba(56, 152, 255, 0.10) 68%,
+      rgba(56, 152, 255, 0.18) 80%,
+      rgba(56, 152, 255, 0.28) 90%,
+      rgba(56, 152, 255, 0.38) 100%
+    );
+    pointer-events: none;
+  }
+
+  @keyframes breathe {
+    0%, 100% {
+      opacity: 0.55;
+    }
+    50% {
+      opacity: 1.0;
+    }
+  }
+</style>
+</head>
+<body>
+  <div class="overlay"></div>
+</body>
+</html>

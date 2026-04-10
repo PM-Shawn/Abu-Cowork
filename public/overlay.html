@@ -51,16 +51,55 @@
   }
 
   @keyframes breathe {
-    0%, 100% {
-      opacity: 0.55;
-    }
-    50% {
-      opacity: 1.0;
-    }
+    0%, 100% { opacity: 0.55; }
+    50% { opacity: 1.0; }
   }
+
+  /* Bottom status bar */
+  .status-bar {
+    position: fixed;
+    bottom: 12px;
+    left: 50%;
+    transform: translateX(-50%);
+    padding: 6px 20px;
+    background: rgba(10, 10, 20, 0.7);
+    border: 1px solid rgba(56, 152, 255, 0.3);
+    border-radius: 20px;
+    color: rgba(180, 210, 255, 0.85);
+    font-size: 12px;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    backdrop-filter: blur(8px);
+    -webkit-backdrop-filter: blur(8px);
+    white-space: nowrap;
+    max-width: 80vw;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    opacity: 0;
+    transition: opacity 0.3s ease;
+    pointer-events: none;
+  }
+  .status-bar.visible { opacity: 1; }
 </style>
 </head>
 <body>
   <div class="overlay"></div>
+  <div class="status-bar" id="statusBar"></div>
+
+  <script>
+    const statusBar = document.getElementById('statusBar');
+
+    // Listen for status updates from main window via Tauri event
+    if (window.__TAURI__) {
+      window.__TAURI__.event.listen('computer-use-status', (event) => {
+        const { step, action } = event.payload;
+        if (action) {
+          statusBar.textContent = `第 ${step} 步 · ${action}`;
+          statusBar.classList.add('visible');
+        } else {
+          statusBar.classList.remove('visible');
+        }
+      });
+    }
+  </script>
 </body>
 </html>

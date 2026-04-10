@@ -9,6 +9,11 @@
 
 export type CUSessionStatus = 'idle' | 'active' | 'paused';
 
+/** Max steps per CU session before auto-stop */
+const MAX_CU_STEPS = 30;
+/** Max duration per CU session (ms) */
+const MAX_CU_DURATION_MS = 5 * 60 * 1000; // 5 minutes
+
 export interface CUState {
   status: CUSessionStatus;
   stepCount: number;
@@ -17,6 +22,8 @@ export interface CUState {
   activeConversationId: string | null; // for abort targeting
   /** Whether Abu window is hidden and border/stop-btn are shown (session-level, survives across batches) */
   sessionWindowHidden: boolean;
+  /** Session start timestamp for timeout check */
+  sessionStartTime: number | null;
 }
 
 let state: CUState = {
@@ -26,6 +33,7 @@ let state: CUState = {
   latestScreenshot: null,
   activeConversationId: null,
   sessionWindowHidden: false,
+  sessionStartTime: null,
 };
 
 const listeners = new Set<() => void>();
@@ -44,11 +52,11 @@ function update(partial: Partial<CUState>) {
 /** Enter Computer Use session. */
 export function setComputerUseActive(active: boolean, conversationId?: string) {
   if (active) {
-    update({ status: 'active', stepCount: 0, currentAction: null, latestScreenshot: null, activeConversationId: conversationId ?? null });
+    update({ status: 'active', stepCount: 0, currentAction: null, latestScreenshot: null, activeConversationId: conversationId ?? null, sessionStartTime: Date.now() });
     setupAbortListener();
   } else {
     const wasHidden = state.sessionWindowHidden;
-    update({ status: 'idle', stepCount: 0, currentAction: null, latestScreenshot: null, activeConversationId: null, sessionWindowHidden: false });
+    update({ status: 'idle', stepCount: 0, currentAction: null, latestScreenshot: null, activeConversationId: null, sessionWindowHidden: false, sessionStartTime: null });
     cleanupAbortListener();
     // Session-level cleanup: restore window and hide overlay
     if (wasHidden) {
@@ -63,8 +71,18 @@ export function setComputerUseActive(active: boolean, conversationId?: string) {
 /** Increment step count and optionally set current action description. */
 export function incrementComputerUseStep(action?: string) {
   if (state.status === 'active') {
-    update({ stepCount: state.stepCount + 1, currentAction: action ?? null });
+    const newStep = state.stepCount + 1;
+    update({ stepCount: newStep, currentAction: action ?? null });
+    // Push status to overlay window for display
+    emitStatusToOverlay(newStep, action ?? null);
   }
+}
+
+/** Emit current step/action to the overlay window for display. */
+function emitStatusToOverlay(step: number, action: string | null) {
+  import('@tauri-apps/api/event').then(({ emit }) => {
+    emit('computer-use-status', { step, action }).catch(() => {});
+  }).catch(() => {});
 }
 
 /** Update the latest screenshot for live preview. */
@@ -84,36 +102,73 @@ export function isSessionWindowHidden(): boolean {
   return state.sessionWindowHidden;
 }
 
+/**
+ * Check if the CU session has exceeded step or time limits.
+ * Returns error message if exceeded, null if OK.
+ */
+export function checkCUSessionLimits(): string | null {
+  if (state.status !== 'active') return null;
+
+  if (state.stepCount >= MAX_CU_STEPS) {
+    return `Computer Use 操作已达上限（${MAX_CU_STEPS} 步）。请向用户汇报当前进度和结果，询问是否继续。`;
+  }
+
+  if (state.sessionStartTime && Date.now() - state.sessionStartTime > MAX_CU_DURATION_MS) {
+    return `Computer Use 操作已超时（${MAX_CU_DURATION_MS / 60000} 分钟）。请向用户汇报当前进度和结果。`;
+  }
+
+  return null;
+}
+
 /** Set current action description. */
 export function setCurrentAction(action: string | null) {
   update({ currentAction: action });
 }
 
-// ─── Stop button abort listener ───
+// ─── Stop button abort listener + global shortcut ───
 
 let abortUnlisten: (() => void) | null = null;
+let shortcutRegistered = false;
+
+function triggerAbort() {
+  const convId = state.activeConversationId;
+  if (convId) {
+    import('../../stores/chatStore').then(({ useChatStore }) => {
+      useChatStore.getState().cancelStreaming(convId);
+    }).catch(() => {});
+  }
+}
 
 async function setupAbortListener() {
   if (abortUnlisten) return;
+
+  // 1. Listen for stop button click event from overlay window
   try {
     const { listen } = await import('@tauri-apps/api/event');
-    const unlisten = await listen('computer-use-abort', () => {
-      const convId = state.activeConversationId;
-      if (convId) {
-        // Dynamic import to avoid circular dependency
-        import('../../stores/chatStore').then(({ useChatStore }) => {
-          useChatStore.getState().cancelStreaming(convId);
-        }).catch(() => {});
-      }
-    });
+    const unlisten = await listen('computer-use-abort', triggerAbort);
     abortUnlisten = unlisten;
   } catch { /* ignore — event API unavailable */ }
+
+  // 2. Register global shortcut Cmd+. (macOS) / Ctrl+. (Windows)
+  if (!shortcutRegistered) {
+    try {
+      const { register } = await import('@tauri-apps/plugin-global-shortcut');
+      await register('CommandOrControl+.', triggerAbort);
+      shortcutRegistered = true;
+    } catch { /* ignore — plugin unavailable or shortcut conflict */ }
+  }
 }
 
 function cleanupAbortListener() {
   if (abortUnlisten) {
     abortUnlisten();
     abortUnlisten = null;
+  }
+  if (shortcutRegistered) {
+    import('@tauri-apps/plugin-global-shortcut').then(({ unregister }) => {
+      unregister('CommandOrControl+.').catch(() => {});
+    }).catch(() => {});
+    shortcutRegistered = false;
   }
 }
 

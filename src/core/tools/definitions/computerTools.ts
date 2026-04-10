@@ -8,7 +8,7 @@ import { useWorkspaceStore } from '../../../stores/workspaceStore';
 import { joinPath } from '../../../utils/pathUtils';
 import { isMacOS } from '../../../utils/platform';
 import { TOOL_NAMES } from '../toolNames';
-import { updateLatestScreenshot } from '../../agent/computerUseStatus';
+import { updateLatestScreenshot, checkCUSessionLimits } from '../../agent/computerUseStatus';
 import { checkSensitiveApp, checkBlockedKeyCombo } from '../computerUseSafety';
 
 let lastScreenScaleFactor = 1;
@@ -261,6 +261,10 @@ export const computerTool: ToolDefinition = {
     }
 
     const action = input.action as string;
+
+    // Check session limits (max steps / timeout)
+    const limitError = checkCUSessionLimits();
+    if (limitError) return limitError;
 
     // Wait action — no permission needed
     if (action === 'wait') {

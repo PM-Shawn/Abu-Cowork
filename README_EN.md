@@ -27,10 +27,11 @@ Tell Abu what you need — it reads files, runs commands, writes docs, and build
 | Autonomous planning & task execution | :white_check_mark: | :x: | :x: |
 | Read/write local files, run commands | :white_check_mark: | :x: | :white_check_mark: |
 | Natural language interaction | :white_check_mark: | :white_check_mark: | :x: |
-| 26+ extensible skills | :white_check_mark: | :x: | :x: |
+| 27 extensible skills | :white_check_mark: | :x: | :x: |
 | Scheduled tasks & event triggers | :white_check_mark: | :x: | :white_check_mark: |
-| IM bot (Lark/DingTalk/WeCom) | :white_check_mark: | :x: | Partial |
+| IM bot (Lark/DingTalk/WeCom/Slack) | :white_check_mark: | :x: | Partial |
 | Multi-agent parallel execution | :white_check_mark: | :x: | :x: |
+| Browser & computer control | :white_check_mark: | :x: | Partial |
 | 100% local data, privacy-safe | :white_check_mark: | :x: | :white_check_mark: |
 
 ---
@@ -72,9 +73,11 @@ Tell Abu what you need — it reads files, runs commands, writes docs, and build
 
 - **Autonomous Agent** — More than chat: plans, invokes tools, reads/writes files, executes commands, and completes complex tasks end-to-end
 - **Multi-Agent Parallel Execution** — Run up to 5 background agents simultaneously, each executing tasks independently with real-time progress tracking
-- **Skill System** — 26+ built-in skills (PDF/PPTX/DOCX/Excel generation, frontend design, algorithmic art, code review, deep research, workflow automation, and more) — one-click install, fully customizable
+- **27 Built-in Skills** — PDF/PPTX/DOCX/Excel generation, frontend design, canvas design, algorithmic art, Mermaid/SVG/infographics, Web Artifacts, Chrome automation (Abu-Browser), deep research, workflow automation, and more — one-click install, fully customizable
 - **MCP Protocol** — Connect to databases, search engines, GitHub, and other external services via Model Context Protocol
 - **Browser Automation** — Built-in Browser Bridge + Chrome extension for web element interaction, form filling, screenshots, and JS execution
+- **Computer Use** — Screenshot + mouse/keyboard control for desktop-level tasks, with sensitive app blocking, dangerous key interception, and a 5-minute session timeout
+- **HTTP Fetch** — Built-in safety gateway: URL length cap, embedded credential blocking, cloud metadata endpoint blocking, 10 MB download limit, 60-second timeout — no more raw `curl` blind spots
 
 ### AI Services & Models
 
@@ -111,15 +114,23 @@ Turn Abu into your team bot — just @Abu in your chat:
 
 ### Memory & Context
 
-- **Personal Memory** — Abu remembers your preferences and work habits across projects (`~/.abu/agents/memory.md`)
-- **Project Memory** — Auto-maintained project-level context with keyword matching, time decay, and access frequency ranking (`{workspace}/.abu/MEMORY.md`)
-- **Project Instructions** — Manually configure project-specific rules (`{workspace}/.abu/ABU.md`)
+- **Three-tier file-based memory (Memdir architecture)**:
+  - **Personal Memory** — `~/.abu/memory/` multi-file directory, applies across all projects, auto-organized by topic with `MEMORY.md` index injected into the prompt
+  - **Project Memory** — `~/.abu/projects/<workspace>/memory/` auto-isolated per workspace, each entry is a separate `.md` file for easy reading, search, and pruning
+  - **Auto-migration** — Legacy `~/.abu/agents/abu/memory.md` and `{workspace}/.abu/MEMORY.md` are migrated automatically on startup
+- **Project Rules** (hand-written):
+  - `~/.abu/ABU.md` — User-level rules (cross-project)
+  - `{workspace}/.abu/ABU.md` — Project-level rules
+  - `{workspace}/.abu/rules/*.md` — Modular rules (loaded alphabetically, max 20 files)
 - **Session Memory** — Large tool outputs automatically persisted to disk; compact summaries kept in-context to prevent context explosion
 - **Auto-Compaction** — Intelligently compresses long conversation history while preserving key context
 
 ### Security & Privacy
 
-- **Sandbox Security** — macOS Seatbelt sandbox isolation + sensitive path protection + command safety checks
+- **OS Sandbox** — macOS Seatbelt (`sandbox-exec`) / Windows PowerShell ConstrainedLanguage isolates shell command file access
+- **Network Isolation** — Local proxy + domain whitelist + private-network toggle to control every outbound request
+- **Path & Command Safety** — Sensitive directories (system folders, SSH keys, etc.) blocked by default; dangerous commands (`rm -rf /`, etc.) caught statically
+- **Computer Use Safeguards** — 15+ blocked sensitive apps (Keychain, System Settings, WeChat, Slack, etc.), dangerous key interception (Cmd+Q, Cmd+Tab, Force Quit), session-level window hiding, 5-minute timeout
 - **Local-First** — Your data stays local, your API keys stay local — nothing goes through third-party servers
 - **Cross-Platform** — Supports macOS (Apple Silicon / Intel) and Windows
 
@@ -178,18 +189,18 @@ Create a weekly report PPT for this week
 
 > For more use cases, see the [User Guide](docs/User-Guide_EN.md)
 
-## Built-in Skills
+## Built-in Skills (27 total)
 
 | Category | Skills |
 |----------|--------|
 | Document Generation | PDF, PPTX, DOCX, XLSX |
-| Design & Creative | Frontend Design, Canvas Design, Algorithmic Art, SVG Diagrams, Mermaid Diagrams, Infographics, Slack GIF |
-| Developer Tools | Claude API, MCP Server Builder, Web Artifacts |
-| Content Writing | Doc Co-authoring, Brand Guidelines, Internal Comms, Blog Writer |
-| Automation | Scheduled Tasks, Triggers, Alert SOP, Workflow Orchestrator |
-| Project Management | Skill Creator, Project Init, Agent Creator |
-| Testing | Web App Testing (Playwright) |
-| Theming | Theme Factory (10+ preset themes for any artifact) |
+| Design & Creative | Frontend Design, Canvas Design, Algorithmic Art, SVG Diagram, Mermaid Diagram, Infographic, Slack GIF Creator, HTML Widget |
+| Browser Automation | **Abu-Browser** (Chrome bridge with auto extension setup, drives a real browser) |
+| Developer Tools | Claude API, MCP Builder, Web Artifacts Builder, Webapp Testing (Playwright) |
+| Content Writing | Doc Co-authoring, Brand Guidelines, Internal Comms |
+| Automation | Schedule, Trigger, Alert SOP |
+| Project Management | Skill Creator, Project Init, Create Agent |
+| Theming | Theme Factory (10+ preset themes applicable to any artifact) |
 
 ## Tech Stack
 
@@ -203,7 +214,8 @@ Create a weekly report PPT for this week
 | Web Search | Bing / Brave / Tavily / SearXNG |
 | Sandbox | macOS Seatbelt + path/command dual validation |
 | UI Components | Radix UI + Lucide Icons + shadcn-style |
-| Testing | Vitest + happy-dom (1000+ test cases) |
+| Testing | Vitest + happy-dom (1300+ test cases) |
+| Evaluation | Built-in OpenAI-protocol tool-selection eval runner (`npm run eval:tool-selection`) |
 
 ## Build from Source
 
@@ -223,8 +235,8 @@ cd Abu-Cowork
 # Install dependencies
 npm install
 
-# Launch desktop app (recommended)
-npm run tauri dev
+# Launch desktop app (uses dev-isolated config, fully separate from your installed Abu)
+npm run tauri:dev
 
 # Frontend only (no Rust required)
 npm run dev
@@ -253,39 +265,52 @@ npm run lint          # ESLint check
 src/
 ├── components/       # React UI components
 │   ├── chat/         # Chat interface, messages, model selector
-│   ├── sidebar/      # Sidebar navigation
-│   ├── panel/        # Right-side detail panel
+│   ├── sidebar/      # Sidebar navigation (with collapsed Recents search)
+│   ├── panel/        # Right-side detail panel (workspace, project memory/instructions)
 │   ├── customize/    # Customization (skills, agents, models)
 │   ├── schedule/     # Scheduled task views
-│   ├── trigger/      # Trigger management views
-│   ├── settings/     # System settings (AI services, IM channels)
-│   ├── preview/      # File preview
+│   ├── trigger/      # Trigger ("on-call") management views
+│   ├── settings/     # System settings (16 panels, see settings/sections/)
+│   ├── preview/      # File preview (PDF/Office/image/Markdown)
 │   └── ui/           # Base UI components (shadcn/Radix)
 ├── core/             # Core engine (non-UI)
-│   ├── agent/        # Agent loop, background agents, memory
-│   ├── llm/          # LLM adapter layer (Claude + OpenAI + Ollama)
+│   ├── agent/        # Agent loop, background agents, project rules
+│   ├── llm/          # LLM adapter layer (Claude / OpenAI-compatible / Ollama)
 │   ├── tools/        # Tool registry, built-in tools, safety checks
 │   ├── mcp/          # MCP client
 │   ├── skill/        # Skill loading & preprocessing
 │   ├── search/       # Web search (Bing/Brave/Tavily/SearXNG)
-│   ├── memory/       # Memory system (storage, retrieval, scoring)
+│   ├── memdir/       # File-based memory system (personal/project, multi-file + index)
 │   ├── scheduler/    # Scheduling engine
-│   ├── trigger/      # Trigger engine (file/webhook/cron/IM)
+│   ├── trigger/      # Trigger engine (HTTP/file/cron/IM)
 │   ├── im/           # IM channel adapters (D-Chat/Lark/DingTalk/WeCom/Slack)
+│   ├── permissions/  # Permission model & capability levels
 │   ├── context/      # Context management & auto-compaction
 │   ├── session/      # Session management & disk persistence
-│   └── sandbox/      # Sandbox configuration
+│   ├── sandbox/      # Sandbox configuration
+│   ├── logging/      # Structured logging
+│   └── updates/      # Auto-update channel
+├── eval/             # Tool-call / model capability eval scaffold (developer use)
 ├── stores/           # Zustand state management
 ├── hooks/            # React Hooks
 ├── i18n/             # Internationalization (Chinese / English)
 ├── types/            # TypeScript type definitions
 └── utils/            # Utility functions
 
-builtin-skills/       # Built-in skill definitions (26+ skills)
-builtin-agents/       # Built-in agent definitions
+builtin-skills/       # 27 built-in skills (one directory each)
+builtin-agents/       # Built-in agent definitions (placeholder)
 abu-browser-bridge/   # Browser bridge MCP Server
-abu-chrome-extension/ # Chrome extension
-src-tauri/            # Tauri Rust backend (sandbox, command exec, network proxy)
+abu-chrome-extension/ # Chrome extension (used by the Abu-Browser skill)
+src-tauri/
+├── src/
+│   ├── computer_use.rs    # Screenshot + mouse/keyboard + sensitive app blocking
+│   ├── feishu_ws.rs       # Lark/Feishu WebSocket long connection
+│   ├── overlay.rs         # Computer-use status overlay
+│   ├── proxy.rs           # Network isolation proxy
+│   ├── sandbox.rs         # macOS Seatbelt / Win ConstrainedLanguage
+│   ├── trigger_server.rs  # HTTP trigger server
+│   └── window_info.rs     # Behavior awareness (active app sampling)
+└── tauri.conf.json
 ```
 
 ## Documentation

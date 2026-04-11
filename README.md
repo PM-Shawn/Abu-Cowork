@@ -27,10 +27,11 @@
 | 自主规划并执行复杂任务 | :white_check_mark: | :x: | :x: |
 | 读写本地文件、执行命令 | :white_check_mark: | :x: | :white_check_mark: |
 | 自然语言交互 | :white_check_mark: | :white_check_mark: | :x: |
-| 26+ 可扩展技能 | :white_check_mark: | :x: | :x: |
+| 27 个可扩展技能 | :white_check_mark: | :x: | :x: |
 | 定时任务 & 事件触发 | :white_check_mark: | :x: | :white_check_mark: |
-| IM 机器人（飞书/钉钉/企微） | :white_check_mark: | :x: | 部分 |
+| IM 机器人（飞书/钉钉/企微/Slack） | :white_check_mark: | :x: | 部分 |
 | 多 Agent 后台并行 | :white_check_mark: | :x: | :x: |
+| 浏览器 & 电脑操控 | :white_check_mark: | :x: | 部分 |
 | 数据 100% 本地，隐私安全 | :white_check_mark: | :x: | :white_check_mark: |
 
 ---
@@ -72,9 +73,11 @@
 
 - **Agent 自主执行** — 不只是聊天，能自主规划、调用工具、读写文件、执行命令，完成复杂任务
 - **多 Agent 后台并行** — 支持同时运行多个后台 Agent（最多 5 个），各自独立执行任务，进度实时可见
-- **Skill 技能系统** — 内置 26+ 技能（PDF/PPTX/DOCX/Excel 生成、前端设计、算法艺术、代码审查、深度研究、工作流自动化等），一键安装，支持自定义
+- **27 个内置技能** — PDF/PPTX/DOCX/Excel 生成、前端设计、画布设计、算法艺术、Mermaid/SVG/信息图、Web Artifacts、Chrome 自动化（Abu-Browser）、深度研究、工作流自动化等，一键安装，支持自定义
 - **MCP 工具协议** — 通过 Model Context Protocol 连接数据库、搜索引擎、GitHub 等外部服务
 - **浏览器自动化** — 内置 Browser Bridge + Chrome 扩展，实现网页元素操作、表单填写、截图、JS 执行
+- **电脑操控** — 通过截屏 + 键鼠控制完成桌面级任务，内置敏感应用拦截、危险按键拦截、5 分钟超时熔断等多重防护
+- **HTTP Fetch** — 内置安全网关：URL 长度校验、凭据嵌入拦截、云元数据端点拦截、10 MB 下载上限、60 秒超时，避免裸 curl 的盲区
 
 ### AI 服务与模型
 
@@ -111,15 +114,23 @@
 
 ### 记忆与上下文
 
-- **个人记忆** — 阿布会记住你的偏好和工作习惯，跨项目生效（`~/.abu/agents/memory.md`）
-- **项目记忆** — 自动维护项目级上下文，支持关键词匹配 + 时间衰减 + 访问频率排序（`{workspace}/.abu/MEMORY.md`）
-- **项目指令** — 手动配置项目专属规则（`{workspace}/.abu/ABU.md`）
+- **三层记忆体系（Memdir 文件化架构）**：
+  - **个人记忆** — `~/.abu/memory/` 多文件目录，跨项目生效，自动按主题分文件存储，`MEMORY.md` 作为索引注入对话
+  - **项目记忆** — `~/.abu/projects/<工作区>/memory/` 自动按工作区隔离，每条记忆为独立 `.md` 文件，便于阅读、搜索和回收
+  - **历史升级自动迁移** — 老版本的 `~/.abu/agents/abu/memory.md` 和 `{workspace}/.abu/MEMORY.md` 启动时自动迁移到新结构
+- **项目规则**（手写）：
+  - `~/.abu/ABU.md` — 用户级规则（跨项目）
+  - `{workspace}/.abu/ABU.md` — 项目级规则
+  - `{workspace}/.abu/rules/*.md` — 模块化规则（按字母序加载，最多 20 个文件）
 - **会话记忆** — 大体积工具输出自动落盘，会话内保留紧凑摘要，防止上下文爆炸
 - **自动压缩** — 对话过长时智能压缩历史消息，保留关键上下文
 
 ### 安全与隐私
 
-- **沙箱安全** — macOS Seatbelt 沙箱隔离 + 敏感路径保护 + 命令安全检查
+- **OS 沙箱** — macOS Seatbelt (`sandbox-exec`) / Windows PowerShell ConstrainedLanguage，隔离 shell 命令的文件访问范围
+- **网络隔离** — 本地代理 + 域名白名单 + 私有网络访问开关，可控制每条请求的目标
+- **路径与命令双重校验** — 敏感目录（系统目录、SSH 密钥等）默认拦截；危险命令（`rm -rf /` 等）静态识别
+- **电脑操控防护** — 敏感应用黑名单（钥匙串/系统设置/微信/Slack 等 15+）、危险按键拦截（Cmd+Q、Cmd+Tab、Force Quit 等）、会话级窗口隐藏、5 分钟超时熔断
 - **本地优先** — 数据存在本地，API Key 存在本地，不经过第三方服务器
 - **跨平台** — 支持 macOS (Apple Silicon / Intel) 和 Windows
 
@@ -178,18 +189,18 @@
 
 > 更多使用场景请查看 [使用指南](docs/User-Guide.md)
 
-## 内置技能一览
+## 内置技能一览（共 27 个）
 
 | 类别 | 技能 |
 |------|------|
 | 文档生成 | PDF、PPTX、DOCX、XLSX |
-| 设计创作 | 前端设计、画布设计、算法艺术、SVG 图表、Mermaid 图表、信息图、Slack GIF |
-| 开发工具 | Claude API、MCP Server 构建、Web Artifacts |
-| 内容写作 | 文档协作、品牌规范、内部通讯、博客写作 |
-| 自动化 | 定时任务、触发器、告警 SOP、工作流编排 |
-| 项目管理 | 技能创建器、项目初始化、Agent 创建 |
-| 测试 | Web 应用测试 (Playwright) |
-| 主题 | 主题工厂（10+ 预设主题，应用到任何产出物） |
+| 设计创作 | 前端设计 (frontend-design)、画布设计 (canvas-design)、算法艺术 (algorithmic-art)、SVG 图表 (svg-diagram)、Mermaid 图表 (mermaid-diagram)、信息图 (infographic)、Slack GIF (slack-gif-creator)、HTML 小组件 (html-widget) |
+| 浏览器自动化 | **Abu-Browser**（Chrome 桥接，自动安装扩展，操控真实浏览器） |
+| 开发工具 | Claude API、MCP Server 构建 (mcp-builder)、Web Artifacts (web-artifacts-builder)、Web 应用测试 (webapp-testing) |
+| 内容写作 | 文档协作 (doc-coauthoring)、品牌规范 (brand-guidelines)、内部通讯 (internal-comms) |
+| 自动化 | 定时任务 (schedule)、触发器 (trigger)、告警 SOP (alert-sop) |
+| 项目管理 | 技能创建器 (skill-creator)、项目初始化 (init)、Agent 创建 (create-agent) |
+| 主题 | 主题工厂 (theme-factory)（10+ 预设主题，应用到任何产出物） |
 
 ## 技术栈
 
@@ -203,7 +214,8 @@
 | 联网搜索 | Bing / Brave / Tavily / SearXNG |
 | 安全沙箱 | macOS Seatbelt + 路径/命令双重校验 |
 | UI 组件 | Radix UI + Lucide Icons + shadcn 风格 |
-| 测试 | Vitest + happy-dom (1000+ 测试用例) |
+| 测试 | Vitest + happy-dom (1300+ 测试用例) |
+| 评测 | 自带 OpenAI 协议工具调用评测器（`npm run eval:tool-selection`） |
 
 ## 从源码构建
 
@@ -223,8 +235,8 @@ cd Abu-Cowork
 # 安装依赖
 npm install
 
-# 启动桌面应用（推荐）
-npm run tauri dev
+# 启动桌面应用（dev 隔离配置，与正式安装的 Abu 完全隔离）
+npm run tauri:dev
 
 # 仅启动前端（不需要 Rust）
 npm run dev
@@ -253,39 +265,52 @@ npm run lint          # ESLint 检查
 src/
 ├── components/       # React UI 组件
 │   ├── chat/         # 对话界面、消息气泡、模型选择器
-│   ├── sidebar/      # 侧边栏导航
-│   ├── panel/        # 右侧详情面板
+│   ├── sidebar/      # 侧边栏导航（含 Recents 折叠搜索）
+│   ├── panel/        # 右侧详情面板（工作区、项目记忆/指令）
 │   ├── customize/    # 自定义（技能、Agent、模型）
 │   ├── schedule/     # 定时任务视图
-│   ├── trigger/      # 触发器管理视图
-│   ├── settings/     # 系统设置（AI 服务、IM 频道）
-│   ├── preview/      # 文件预览
+│   ├── trigger/      # 触发器（值班）管理视图
+│   ├── settings/     # 系统设置（16 个面板，详见 settings/sections/）
+│   ├── preview/      # 文件预览（PDF/Office/图片/Markdown）
 │   └── ui/           # 基础 UI 组件 (shadcn/Radix)
 ├── core/             # 核心引擎（非 UI）
-│   ├── agent/        # Agent 循环、后台 Agent、记忆系统
-│   ├── llm/          # LLM 适配层（Claude + OpenAI + Ollama）
+│   ├── agent/        # Agent 循环、后台 Agent、project rules
+│   ├── llm/          # LLM 适配层（Claude / OpenAI-compatible / Ollama）
 │   ├── tools/        # 工具注册、内置工具、安全校验
 │   ├── mcp/          # MCP 客户端
 │   ├── skill/        # Skill 加载与预处理
 │   ├── search/       # 联网搜索（Bing/Brave/Tavily/SearXNG）
-│   ├── memory/       # 记忆系统（存储、检索、评分）
+│   ├── memdir/       # 文件化记忆体系（personal/project，多文件 + 索引）
 │   ├── scheduler/    # 定时调度引擎
-│   ├── trigger/      # 触发器引擎（文件/Webhook/Cron/IM）
+│   ├── trigger/      # 触发器引擎（HTTP/文件/Cron/IM）
 │   ├── im/           # IM 频道适配（D-Chat/飞书/钉钉/企微/Slack）
+│   ├── permissions/  # 权限模型、能力等级
 │   ├── context/      # 上下文管理与自动压缩
 │   ├── session/      # 会话管理与磁盘落盘
-│   └── sandbox/      # 沙箱配置
+│   ├── sandbox/      # 沙箱配置
+│   ├── logging/      # 结构化日志
+│   └── updates/      # 自动更新通道
+├── eval/             # 工具调用 / 模型能力评测脚手架（开发者使用）
 ├── stores/           # Zustand 状态管理
 ├── hooks/            # React Hooks
 ├── i18n/             # 国际化 (中文 / English)
 ├── types/            # TypeScript 类型定义
 └── utils/            # 工具函数
 
-builtin-skills/       # 内置技能定义 (26+ 技能)
-builtin-agents/       # 内置 Agent 定义
+builtin-skills/       # 27 个内置技能（每个为独立目录）
+builtin-agents/       # 内置 Agent 定义（预留）
 abu-browser-bridge/   # 浏览器桥接 MCP Server
-abu-chrome-extension/ # Chrome 扩展
-src-tauri/            # Tauri Rust 后端 (沙箱、命令执行、网络代理)
+abu-chrome-extension/ # Chrome 扩展（Abu-Browser 技能依赖）
+src-tauri/
+├── src/
+│   ├── computer_use.rs    # 截屏 + 键鼠控制 + 敏感应用拦截
+│   ├── feishu_ws.rs       # 飞书 WebSocket 长连接
+│   ├── overlay.rs         # 电脑操控状态浮层
+│   ├── proxy.rs           # 网络隔离代理
+│   ├── sandbox.rs         # macOS Seatbelt / Win ConstrainedLanguage
+│   ├── trigger_server.rs  # HTTP 触发器服务器
+│   └── window_info.rs     # 行为感知（活跃应用采样）
+└── tauri.conf.json
 ```
 
 ## 文档

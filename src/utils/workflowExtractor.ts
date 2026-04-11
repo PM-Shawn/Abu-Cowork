@@ -1,6 +1,7 @@
 import type { ToolCall, AgentStatus } from '@/types';
 import { TOOL_NAMES } from '@/core/tools/toolNames';
-import { normalizeSeparators } from '@/utils/pathUtils';
+import { normalizeSeparators, joinPath, getBaseName } from '@/utils/pathUtils';
+import { parseArgs } from '@/utils/argsParser';
 
 /**
  * Check if a tool result indicates a real tool execution error.
@@ -412,6 +413,55 @@ const DOCUMENT_EXTENSIONS = new Set([
   'html', 'htm',
 ]);
 
+/**
+ * Parse a simple `mv` / `cp` command and return its {sources, destination}.
+ *
+ * Why this exists: the generic extractDocumentPathsFromCommand() was designed
+ * for single-output commands like `python gen.py /tmp/out.xlsx` — it regex-
+ * matches any absolute path with a document extension. But `mv a.xlsx b.xlsx`
+ * is a structurally different shape: two paths with the *same basename* but
+ * opposite semantics. The generic extractor returns them in left-to-right
+ * order, and the caller dedupes by basename (first wins), so the *source*
+ * path survives — pointing at a file that no longer exists after the move.
+ *
+ * This parser carves out a semantic fast-path for mv/cp: we recognize the
+ * verb, tokenize argv with parseArgs (quotes/escapes), strip flags, and
+ * return (sources[], destination). The caller then maps each source to its
+ * final destination path and records only that.
+ *
+ * Returns null — and lets the generic extractor take over — when the command
+ * contains pipes, redirects, subshells, logical operators, or too few args.
+ * We stay conservative on purpose: misclassifying a complex shell construct
+ * as a simple move is worse than falling back.
+ *
+ * Intentionally NOT handled:
+ *   - GNU `-t DEST` (target-first) — rare in AI-generated commands
+ *   - `rename` — Perl and util-linux versions have incompatible syntaxes
+ *   - `rsync`, `install`, `ln` — different semantics, add later if needed
+ */
+function parseCopyMoveCommand(cmd: string): { sources: string[]; destination: string } | null {
+  const trimmed = cmd.trim();
+  // Must start with mv or cp as the literal first token
+  if (!/^(mv|cp)\b/.test(trimmed)) return null;
+  // Bail on any shell construct that makes "the rest is argv to mv/cp" false:
+  //   | pipe, ; sequence, && || logic, > < redirect, $(…) subshell, `…` backtick
+  if (/[|;<>`]|&&|\|\||\$\(/.test(trimmed)) return null;
+
+  // Drop the verb, tokenize the rest via the shared argv parser
+  const afterVerb = trimmed.replace(/^(mv|cp)\s+/, '');
+  const tokens = parseArgs(afterVerb);
+  // Strip flags (e.g. -f, -v, -r, --verbose). GNU `--target-directory=...` is
+  // also dropped — we treat it as opaque flag and fall through by returning null
+  // if what's left is insufficient.
+  const nonFlags = tokens.filter((t) => !t.startsWith('-'));
+  if (nonFlags.length < 2) return null;
+
+  return {
+    sources: nonFlags.slice(0, -1),
+    destination: nonFlags[nonFlags.length - 1],
+  };
+}
+
 /** Extract document file paths from a shell command string */
 function extractDocumentPathsFromCommand(cmd: string): string[] {
   const paths: string[] = [];
@@ -592,8 +642,48 @@ export function extractFileOutputs(
       // 6b. Extract document paths from command string (skip read-only commands)
       const cmd = String(input.command || input.cmd || '');
       if (cmd && !isReadOnlyCommand(cmd)) {
-        const docPaths = extractDocumentPathsFromCommand(cmd);
-        for (const p of docPaths) addFile(p, 'create');
+        // 6b-i. Fast-path for simple mv/cp: the DESTINATION is the meaningful
+        // output, not the source. The generic regex extractor would grab both
+        // paths and then dedupe by basename (source wins), binding file cards
+        // and snapshots to a path that has just been deleted.
+        const mv = parseCopyMoveCommand(cmd);
+        if (mv) {
+          // Wipe any entries (from this or prior tool calls) that point at a
+          // source path — they now refer to a file that no longer exists.
+          // We also clean `seen` and `seenBasenames` so the destination can be
+          // added fresh without being blocked by stale basename dedup.
+          for (const src of mv.sources) {
+            const srcNorm = normalizeSeparators(src);
+            const srcBase = getBaseName(srcNorm);
+            for (let i = files.length - 1; i >= 0; i--) {
+              const f = files[i];
+              const fBase = getBaseName(f.path);
+              if (f.path === srcNorm || fBase === srcBase) {
+                seen.delete(f.path);
+                seenBasenames.delete(fBase);
+                files.splice(i, 1);
+              }
+            }
+          }
+          // Map each source to its final destination path. If the destination
+          // has no extension, treat it as a directory and join with source
+          // basename (the POSIX convention for `mv a b/`).
+          const destHasExt = hasFileExtension(mv.destination);
+          for (const src of mv.sources) {
+            const srcBase = getBaseName(normalizeSeparators(src));
+            const destPath = destHasExt
+              ? mv.destination
+              : joinPath(mv.destination, srcBase);
+            const destExt = (destPath.split('.').pop() || '').toLowerCase();
+            if (DOCUMENT_EXTENSIONS.has(destExt)) {
+              addFile(destPath, 'create');
+            }
+          }
+        } else {
+          // 6b-ii. Generic path: regex-extract any document path from argv.
+          const docPaths = extractDocumentPathsFromCommand(cmd);
+          for (const p of docPaths) addFile(p, 'create');
+        }
       }
       continue;
     }

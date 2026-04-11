@@ -1,0 +1,24 @@
+{
+  "manifest_version": 3,
+  "name": "Abu Browser Bridge",
+  "version": "0.2.0",
+  "description": "Connect Abu AI assistant to your browser for page automation",
+  "permissions": [
+    "activeTab",
+    "tabs",
+    "scripting",
+    "alarms",
+    "storage",
+    "downloads",
+    "offscreen"
+  ],
+  "host_permissions": [
+    "<all_urls>"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_popup": "popup.html"
+  }
+}

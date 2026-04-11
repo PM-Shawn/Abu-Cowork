@@ -1,0 +1,233 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      width: 320px;
+      padding: 16px;
+      font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", sans-serif;
+      background: #faf9f5;
+      color: #29261b;
+    }
+
+    /* Header */
+    .header {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 14px;
+      padding-bottom: 12px;
+      border-bottom: 1px solid rgba(112, 107, 87, 0.15);
+    }
+    .header-logo {
+      width: 28px;
+      height: 28px;
+      border-radius: 8px;
+      background: linear-gradient(135deg, #d97757, #c4613f);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: #fff;
+      font-weight: 700;
+      font-size: 14px;
+      flex-shrink: 0;
+    }
+    .header h1 {
+      font-size: 14px;
+      font-weight: 600;
+      color: #29261b;
+      letter-spacing: -0.01em;
+    }
+    .header .version {
+      margin-left: auto;
+      font-size: 10px;
+      color: #b8b5ab;
+      font-weight: 500;
+    }
+
+    /* Status card */
+    .status-card {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 10px 12px;
+      background: #fff;
+      border: 1px solid rgba(112, 107, 87, 0.12);
+      border-radius: 10px;
+      margin-bottom: 10px;
+      box-shadow: 0 1px 2px rgba(41, 38, 27, 0.04);
+    }
+    .status-dot {
+      width: 9px;
+      height: 9px;
+      border-radius: 50%;
+      flex-shrink: 0;
+    }
+    .status-dot.connected {
+      background: #4a9e6e;
+      box-shadow: 0 0 0 3px rgba(74, 158, 110, 0.15);
+    }
+    .status-dot.disconnected {
+      background: #c4613f;
+      box-shadow: 0 0 0 3px rgba(196, 97, 63, 0.12);
+    }
+    .status-dot.reconnecting {
+      background: #c49a3f;
+      box-shadow: 0 0 0 3px rgba(196, 154, 63, 0.12);
+      animation: pulse 1.2s ease-in-out infinite;
+    }
+    @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
+
+    .status-info { flex: 1; min-width: 0; }
+    .status-label {
+      font-size: 13px;
+      font-weight: 600;
+      color: #29261b;
+      line-height: 1.3;
+    }
+    .status-detail {
+      font-size: 11px;
+      color: #656358;
+      line-height: 1.3;
+      margin-top: 1px;
+    }
+
+    /* Tags row */
+    .tags-row {
+      display: flex;
+      gap: 6px;
+      margin-bottom: 10px;
+    }
+    .tag {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      padding: 3px 8px;
+      border-radius: 6px;
+      font-size: 11px;
+      font-weight: 500;
+      border: 1px solid transparent;
+    }
+    .tag.ok {
+      color: #3a7d56;
+      background: rgba(74, 158, 110, 0.1);
+      border-color: rgba(74, 158, 110, 0.15);
+    }
+    .tag.warn {
+      color: #9a7a2e;
+      background: rgba(196, 154, 63, 0.1);
+      border-color: rgba(196, 154, 63, 0.15);
+    }
+    .tag.err {
+      color: #b5503a;
+      background: rgba(196, 97, 63, 0.08);
+      border-color: rgba(196, 97, 63, 0.15);
+    }
+
+    /* Reconnect button */
+    .btn {
+      width: 100%;
+      padding: 8px 12px;
+      border: 1px solid rgba(112, 107, 87, 0.2);
+      border-radius: 8px;
+      background: #fff;
+      color: #3d3929;
+      font-size: 12px;
+      font-weight: 500;
+      cursor: pointer;
+      transition: all 0.15s ease;
+    }
+    .btn:hover {
+      background: #f5f3ee;
+      border-color: rgba(112, 107, 87, 0.3);
+    }
+    .btn:active {
+      transform: scale(0.985);
+      background: #eeeae2;
+    }
+
+    /* Section */
+    .section-title {
+      font-size: 11px;
+      color: #b8b5ab;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      margin: 14px 0 6px;
+    }
+
+    /* Log list */
+    .log-list {
+      max-height: 140px;
+      overflow-y: auto;
+      background: #fff;
+      border: 1px solid rgba(112, 107, 87, 0.1);
+      border-radius: 8px;
+    }
+    .log-list::-webkit-scrollbar { width: 4px; }
+    .log-list::-webkit-scrollbar-track { background: transparent; }
+    .log-list::-webkit-scrollbar-thumb { background: rgba(112, 107, 87, 0.15); border-radius: 4px; }
+    .log-list::-webkit-scrollbar-thumb:hover { background: rgba(112, 107, 87, 0.25); }
+
+    .log-item {
+      font-size: 11px;
+      padding: 5px 10px;
+      color: #656358;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 8px;
+      border-bottom: 1px solid rgba(112, 107, 87, 0.06);
+    }
+    .log-item:last-child { border-bottom: none; }
+    .log-item .action {
+      font-family: ui-monospace, "SF Mono", "Cascadia Code", Menlo, monospace;
+      font-size: 10.5px;
+    }
+    .log-item .time {
+      color: #b8b5ab;
+      flex-shrink: 0;
+      font-size: 10px;
+      font-variant-numeric: tabular-nums;
+    }
+    .log-item.error .action { color: #b5503a; }
+    .log-item.success .action { color: #3a7d56; }
+
+    .log-empty {
+      font-size: 11px;
+      color: #b8b5ab;
+      text-align: center;
+      padding: 16px 12px;
+    }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <div class="header-logo">A</div>
+    <h1>Abu Browser Bridge</h1>
+    <span class="version">v0.2.0</span>
+  </div>
+
+  <div class="status-card">
+    <div id="statusDot" class="status-dot disconnected"></div>
+    <div class="status-info">
+      <div id="statusLabel" class="status-label">Disconnected</div>
+      <div id="statusDetail" class="status-detail">Waiting for abu-browser-bridge...</div>
+    </div>
+  </div>
+
+  <div class="tags-row" id="infoRow"></div>
+
+  <button id="reconnectBtn" class="btn">Reconnect</button>
+
+  <div class="section-title">Recent Operations</div>
+  <div class="log-list" id="logList">
+    <div class="log-empty">No operations yet</div>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>

@@ -197,7 +197,11 @@ export function CollapsibleCodeBlock({ codeString, language }: { codeString: str
       {/* Code area */}
       <div className="relative">
         <div
-          style={isCollapsed ? { maxHeight: '360px', overflow: 'hidden' } : undefined}
+          style={
+            isCollapsed
+              ? { maxHeight: '360px', overflow: 'hidden' }
+              : { maxHeight: '70vh', overflow: 'auto' }
+          }
         >
           <SyntaxHighlighter
             style={oneDark}

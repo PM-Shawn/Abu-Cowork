@@ -166,18 +166,61 @@ export const httpFetchTool: ToolDefinition = {
     const body = input.body as string | undefined;
     const extract = (input.extract as string) || 'article';
 
+    // ── Pre-flight guards ──────────────────────────────────────────
+    // URL length cap (matches CC WebFetch). Blocks log-bomb + unreasonable inputs.
+    if (url.length > 2000) {
+      return `Error: URL too long (${url.length} chars, max 2000).`;
+    }
+
+    let parsedUrl: URL;
+    try {
+      parsedUrl = new URL(url);
+    } catch {
+      return `Error: invalid URL: ${url}`;
+    }
+
+    // Reject embedded credentials — LLM should pass auth via headers, not URL.
+    if (parsedUrl.username || parsedUrl.password) {
+      return `Error: URLs with embedded credentials (user:pass@host) are not allowed. Use the headers argument to pass authentication.`;
+    }
+
+    // Hard-block cloud metadata endpoints — no legitimate desktop use case.
+    // AWS/Azure: 169.254.169.254, GCP: metadata.google.internal, Alibaba: 100.100.100.200
+    const CLOUD_METADATA_HOSTS = new Set([
+      '169.254.169.254',
+      'metadata.google.internal',
+      '100.100.100.200',
+    ]);
+    if (CLOUD_METADATA_HOSTS.has(parsedUrl.hostname)) {
+      return `Error: access to cloud metadata endpoint ${parsedUrl.hostname} is blocked.`;
+    }
+
+    const FETCH_TIMEOUT_MS = 60_000;
+    const MAX_DOWNLOAD_BYTES = 10 * 1024 * 1024; // 10MB
+
     try {
       const fetchFn = await getTauriFetch();
 
       const options: RequestInit = {
         method,
         headers,
+        signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
       };
       if (body && ['POST', 'PUT', 'PATCH'].includes(method)) {
         options.body = body;
       }
 
       const response = await fetchFn(url, options);
+
+      // Pre-flight body size check via Content-Length. Servers that omit this
+      // header fall through to the post-download char-limit truncation below.
+      const contentLength = response.headers.get('content-length');
+      if (contentLength) {
+        const size = Number(contentLength);
+        if (!isNaN(size) && size > MAX_DOWNLOAD_BYTES) {
+          return `Error: response too large (${(size / 1024 / 1024).toFixed(1)}MB, max 10MB).`;
+        }
+      }
 
       const MAX_RESPONSE_LENGTH = 50000;
       let responseBody = await response.text();

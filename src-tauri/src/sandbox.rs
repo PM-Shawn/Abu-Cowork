@@ -329,6 +329,26 @@ mod tests {
     }
 
     #[test]
+    fn profile_treats_dollar_and_parens_literally() {
+        // SBPL string literals treat $ and ( ) as ordinary characters — no
+        // shell-style $VAR expansion, no list-open/close inside strings.
+        // Only \ and " need escaping (verified by live sandbox-exec parse
+        // test against macOS 14). Guards against a recurring false-alarm
+        // review finding.
+        let profile = generate_seatbelt_profile(
+            Some("/tmp/x$HOME(evil)"),
+            &[],
+            "/Users/test",
+            None,
+        );
+        assert!(
+            profile.contains("(allow file-write* (subpath \"/tmp/x$HOME(evil)\"))"),
+            "dollar and parens should appear literally in SBPL string, got:\n{}",
+            profile
+        );
+    }
+
+    #[test]
     fn build_command_without_sandbox() {
         let cmd = build_sandboxed_command("echo hello", None, &[], false, None);
         let program = cmd.get_program().to_string_lossy().to_string();

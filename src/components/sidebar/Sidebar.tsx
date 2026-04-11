@@ -85,6 +85,8 @@ export default function Sidebar() {
   const projectsMap = useProjectStore((s) => s.projects);
   const [recentsCollapsed, setRecentsCollapsed] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
+  const [searchOpen, setSearchOpen] = useState(false);
+  const searchInputRef = useRef<HTMLInputElement>(null);
 
   // Undo delete state
   const [pendingDelete, setPendingDelete] = useState<{ id: string; data: string } | null>(null);
@@ -265,25 +267,48 @@ export default function Sidebar() {
 
         {/* Recents Section */}
         <div className="px-4 pt-2 pb-0">
-          <button
-            onClick={() => setRecentsCollapsed(!recentsCollapsed)}
-            className="flex items-center gap-1 px-2 py-1.5 text-[13px] font-medium text-[var(--abu-text-muted)] hover:text-[var(--abu-text-primary)]"
-          >
-            <span>{t.sidebar.recents}</span>
-          </button>
+          <div className="flex items-center justify-between pr-1">
+            <button
+              onClick={() => setRecentsCollapsed(!recentsCollapsed)}
+              className="flex items-center gap-1 px-2 py-1.5 text-[13px] font-medium text-[var(--abu-text-muted)] hover:text-[var(--abu-text-primary)]"
+            >
+              <span>{t.sidebar.recents}</span>
+            </button>
+            {!recentsCollapsed && (
+              <button
+                onClick={() => {
+                  const next = !searchOpen;
+                  setSearchOpen(next);
+                  if (!next) setSearchQuery('');
+                  else setTimeout(() => searchInputRef.current?.focus(), 0);
+                }}
+                className="p-1 rounded hover:bg-[var(--abu-bg-hover)] text-[var(--abu-text-muted)] hover:text-[var(--abu-text-primary)]"
+                title={t.sidebar.searchPlaceholder}
+              >
+                <Search className="h-3.5 w-3.5" strokeWidth={2} />
+              </button>
+            )}
+          </div>
         </div>
 
         {/* Search Box */}
-        {!recentsCollapsed && (
-          <div className="px-4 pb-1">
+        {!recentsCollapsed && searchOpen && (
+          <div className="px-4 pt-1 pb-1">
             <div className="relative">
               <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-[var(--abu-text-muted)]" />
               <input
+                ref={searchInputRef}
                 type="text"
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Escape') {
+                    setSearchQuery('');
+                    setSearchOpen(false);
+                  }
+                }}
                 placeholder={t.sidebar.searchPlaceholder}
-                className="w-full h-7 pl-8 pr-7 rounded-md text-xs bg-[var(--abu-bg-secondary)] border border-transparent focus:border-[var(--abu-clay-30)] focus:outline-none text-[var(--abu-text-primary)] placeholder:text-[var(--abu-text-muted)]"
+                className="w-full h-7 pl-8 pr-7 rounded-md text-xs bg-[var(--abu-bg-muted)] border border-[var(--abu-border-subtle)] focus:border-[var(--abu-clay-40)] focus:outline-none text-[var(--abu-text-primary)] placeholder:text-[var(--abu-text-muted)]"
               />
               {searchQuery && (
                 <button

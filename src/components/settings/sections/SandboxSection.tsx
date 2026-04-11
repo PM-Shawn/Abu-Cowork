@@ -353,8 +353,8 @@ function PermissionModeSelector() {
           className={cn(
             'flex flex-col items-center gap-1.5 p-3 rounded-lg border transition-all text-center',
             permissionMode === value
-              ? 'border-[var(--abu-accent)] bg-[var(--abu-accent)]/10'
-              : 'border-[var(--abu-border)] hover:border-[var(--abu-border-hover)]',
+              ? 'border-[var(--abu-clay)] bg-[var(--abu-clay-bg)]'
+              : 'border-[var(--abu-border-subtle)] hover:border-[var(--abu-border)]',
           )}
         >
           <Icon className={cn('h-5 w-5', permissionMode === value ? color : 'text-[var(--abu-text-muted)]')} />

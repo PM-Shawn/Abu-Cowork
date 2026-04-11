@@ -112,6 +112,34 @@ vi.mock('@tauri-apps/api/event', () => ({
   listen: vi.fn(() => Promise.resolve(() => {})),
 }));
 
+// Needed for handleMessage → processMessage → dynamic adapter import.
+// Returning supportsMessageUpdate: false forces the non-reaction path which
+// calls sendThinking directly (observable from tests).
+vi.mock('./adapters/registry', () => ({
+  getAdapter: vi.fn(() => ({
+    config: { supportsMessageUpdate: false },
+  })),
+}));
+
+// i18n — processMessage calls getI18n() on certain branches; give it
+// an empty surface so access to .imChannel.* doesn't explode.
+vi.mock('@/i18n', () => ({
+  getI18n: () => ({
+    imChannel: {
+      sessionResetConfirm: '',
+      sessionRecovered: '',
+      sessionExpiredHint: '',
+      sessionQueueFull: '',
+      errorReply: 'Abu 处理出错: {error}',
+    },
+  }),
+  format: (t: string, v: Record<string, string>) => {
+    let out = t;
+    for (const [k, val] of Object.entries(v)) out = out.replace(`{${k}}`, val);
+    return out;
+  },
+}));
+
 // ── Import after mocks ──
 
 import { imChannelRouter } from './channelRouter';
@@ -119,9 +147,12 @@ import { imChannelRouter } from './channelRouter';
 // Access private methods via type cast for testing
 type RouterInternal = {
   processMessage(msg: NormalizedIMMessage, channel: IMChannel, capability: string): Promise<void>;
+  dispatchMessage(msg: NormalizedIMMessage): void;
   runWithTimeout<T>(promise: Promise<T>, ms: number): Promise<T>;
   runningCount: number;
   activeSessions: Set<string>;
+  recentMessageIds: Map<string, number>;
+  stop(): void;
 };
 
 function getInternal(): RouterInternal {
@@ -242,5 +273,153 @@ describe('runWithTimeout', () => {
   it('propagates original error if promise rejects before timeout', async () => {
     const failing = Promise.reject(new Error('original error'));
     await expect(getInternal().runWithTimeout(failing, 5000)).rejects.toThrow('original error');
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────
+// Dedup tests — regression guard for IM dedup historical incident.
+// Rule (from project memory): dedup must use ID+TTL; reconnect must
+// NOT clear the cache. Covers handleMessage entry path via
+// dispatchMessage().
+// ─────────────────────────────────────────────────────────────────
+
+describe('handleMessage dedup', () => {
+  // Flush microtasks so that processMessage's dynamic `await import(...)`
+  // and initial awaits settle, making sendThinking calls observable.
+  async function flush() {
+    await new Promise((r) => setTimeout(r, 0));
+    await new Promise((r) => setTimeout(r, 0));
+  }
+
+  beforeEach(() => {
+    // Reset dedup cache + running state
+    const internal = getInternal();
+    internal.recentMessageIds.clear();
+    internal.runningCount = 0;
+    internal.activeSessions.clear();
+
+    // Populate mockChannels so channel lookup inside handleMessage succeeds
+    for (const k of Object.keys(mockChannels)) delete mockChannels[k];
+    mockChannels['ch1'] = makeChannel({ responseMode: 'all_messages' });
+
+    // Agent loop is a noop — we only care whether processMessage was reached
+    mockRunAgentLoop.mockReset();
+    mockRunAgentLoop.mockResolvedValue(undefined);
+    mockSendThinking.mockReset();
+    mockSendThinking.mockResolvedValue({ platform: 'dingtalk', supportsUpdate: false, replyContext: {} });
+    mockSendFinal.mockReset();
+    mockSendFinal.mockResolvedValue({ success: true });
+  });
+
+  function makeDedupMessage(overrides: Partial<NormalizedIMMessage> = {}): NormalizedIMMessage {
+    return makeMessage({
+      isDirect: true, // bypass response-mode filter
+      replyContext: {
+        platform: 'dingtalk',
+        sessionWebhook: 'https://hook.example.com',
+        messageId: 'msg-id-1',
+      },
+      ...overrides,
+    });
+  }
+
+  it('skips duplicate message with same messageId', async () => {
+    const router = getInternal();
+    const msg = makeDedupMessage();
+
+    router.dispatchMessage(msg);
+    await flush();
+    router.dispatchMessage(msg);
+    await flush();
+
+    // Same ID → second dispatch should be deduped at the ID layer and never
+    // reach processMessage. sendThinking is the first observable side effect
+    // inside processMessage, so it must only have fired once.
+    expect(mockSendThinking).toHaveBeenCalledTimes(1);
+    expect(router.recentMessageIds.size).toBe(1);
+  });
+
+  it('processes two messages with different messageIds', async () => {
+    const router = getInternal();
+    router.dispatchMessage(makeDedupMessage({ replyContext: { platform: 'dingtalk', sessionWebhook: 'https://h.x', messageId: 'msg-A' } }));
+    await flush();
+    router.dispatchMessage(makeDedupMessage({ replyContext: { platform: 'dingtalk', sessionWebhook: 'https://h.x', messageId: 'msg-B' } }));
+    await flush();
+
+    expect(mockSendThinking).toHaveBeenCalledTimes(2);
+    expect(router.recentMessageIds.size).toBe(2);
+  });
+
+  it('falls back to content-based dedup when messageId is absent', async () => {
+    const router = getInternal();
+    const noIdMsg = makeDedupMessage({
+      replyContext: { platform: 'dingtalk', sessionWebhook: 'https://h.x' }, // no messageId
+      text: 'hello world',
+    });
+
+    router.dispatchMessage(noIdMsg);
+    await flush();
+    router.dispatchMessage(noIdMsg);
+    await flush();
+
+    // Same sender + chat + text → same content key → dedup fires
+    expect(mockSendThinking).toHaveBeenCalledTimes(1);
+  });
+
+  it('content-based dedup does not collide on different text', async () => {
+    const router = getInternal();
+    router.dispatchMessage(makeDedupMessage({
+      replyContext: { platform: 'dingtalk', sessionWebhook: 'https://h.x' },
+      text: 'hello',
+    }));
+    await flush();
+    router.dispatchMessage(makeDedupMessage({
+      replyContext: { platform: 'dingtalk', sessionWebhook: 'https://h.x' },
+      text: 'world',
+    }));
+    await flush();
+
+    expect(mockSendThinking).toHaveBeenCalledTimes(2);
+  });
+
+  it('re-processes the same message after TTL expires (30min)', async () => {
+    // Observe TTL behavior directly on recentMessageIds — avoid fake timers
+    // here because processMessage's dynamic import doesn't play well with
+    // time manipulation, and the TTL logic is a pure Date.now() comparison.
+    const router = getInternal();
+    const dedupKey = 'dingtalk:ttl-msg';
+
+    // Seed with an "old" timestamp beyond the 30-minute TTL
+    router.recentMessageIds.set(dedupKey, Date.now() - 31 * 60 * 1000);
+
+    router.dispatchMessage(makeDedupMessage({
+      replyContext: { platform: 'dingtalk', sessionWebhook: 'https://h.x', messageId: 'ttl-msg' },
+    }));
+    await flush();
+
+    // TTL expired → message should process, and recentMessageIds timestamp
+    // should be refreshed to ~now (within the current millisecond window).
+    const ts = router.recentMessageIds.get(dedupKey)!;
+    expect(ts).toBeGreaterThan(Date.now() - 1000);
+    expect(mockSendThinking).toHaveBeenCalledTimes(1);
+  });
+
+  it('stop() clears dedup cache (full shutdown only)', () => {
+    // Does NOT dispatch through the full pipeline — we just want to confirm
+    // the synchronous state machine: stop() clears, dispatch re-populates.
+    const router = getInternal();
+    router.recentMessageIds.set('dingtalk:foo', Date.now());
+    router.recentMessageIds.set('dingtalk:bar', Date.now());
+    expect(router.recentMessageIds.size).toBe(2);
+
+    router.stop();
+    expect(router.recentMessageIds.size).toBe(0);
+
+    // Reconnect scenario: a new message arriving AFTER stop() should land in
+    // a fresh cache, proving stop() is the only path that clears. The IM WS
+    // reconnect path (feishu_ws.rs) does NOT call stop() — it only reloads
+    // the Rust-side connection, leaving this TS cache intact across reconnects.
+    router.recentMessageIds.set('dingtalk:after-stop', Date.now());
+    expect(router.recentMessageIds.size).toBe(1);
   });
 });

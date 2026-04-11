@@ -275,7 +275,7 @@ export default function AddProviderModal({ open: isOpen, onClose }: AddProviderM
     } catch {
       // Ollama fetch failed silently
     }
-  }, [baseUrl, t]);
+  }, [baseUrl]);
 
   // ── Validate connection ──
   const handleValidate = useCallback(async () => {

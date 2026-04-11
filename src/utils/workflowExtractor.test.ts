@@ -428,6 +428,144 @@ describe('workflowExtractor', () => {
       const files = extractFileOutputs(toolCalls);
       expect(files).toHaveLength(0);
     });
+
+    // ── mv/cp destination-wins fast-path ──
+    // Regression tests for the case where `mv source dest` both paths share a
+    // basename. The generic extractor took the first match (source) and let
+    // basename dedup drop the destination, binding file cards to a path that
+    // had just been deleted. parseCopyMoveCommand now surfaces the destination.
+    describe('mv/cp destination extraction', () => {
+      it('mv file to file: returns destination only', () => {
+        const toolCalls: ToolCall[] = [{
+          id: 'tc1', name: 'run_command',
+          input: { command: 'mv /Users/me/Downloads/report.xlsx /Users/me/Desktop/Test/report.xlsx' },
+          result: 'stdout:\n\nexit code: 0',
+        }];
+        const files = extractFileOutputs(toolCalls);
+        expect(files).toHaveLength(1);
+        expect(files[0].path).toBe('/Users/me/Desktop/Test/report.xlsx');
+        expect(files[0].operation).toBe('create');
+      });
+
+      it('mv file to directory (trailing slash): joins basename', () => {
+        const toolCalls: ToolCall[] = [{
+          id: 'tc1', name: 'run_command',
+          input: { command: 'mv ~/Downloads/a.xlsx /Users/me/Desktop/Test/' },
+          result: 'stdout:\n\nexit code: 0',
+        }];
+        const files = extractFileOutputs(toolCalls);
+        expect(files).toHaveLength(1);
+        expect(files[0].path).toBe('/Users/me/Desktop/Test/a.xlsx');
+      });
+
+      it('prior tool recorded source path → mv wipes it and replaces with dest', () => {
+        const toolCalls: ToolCall[] = [
+          {
+            id: 'tc1', name: 'run_command',
+            input: { command: 'curl -o /tmp/report.pdf https://example.com/r.pdf' },
+            result: 'stdout:\n已保存到 /tmp/report.pdf\n\nexit code: 0',
+          },
+          {
+            id: 'tc2', name: 'run_command',
+            input: { command: 'mv /tmp/report.pdf /Users/me/Desktop/Test/report.pdf' },
+            result: 'stdout:\n\nexit code: 0',
+          },
+        ];
+        const files = extractFileOutputs(toolCalls);
+        expect(files).toHaveLength(1);
+        expect(files[0].path).toBe('/Users/me/Desktop/Test/report.pdf');
+        expect(files[0].operation).toBe('create');
+      });
+
+      it('cp file to file: returns destination only', () => {
+        const toolCalls: ToolCall[] = [{
+          id: 'tc1', name: 'run_command',
+          input: { command: 'cp /tmp/old.docx /Users/me/Desktop/new.docx' },
+          result: 'stdout:\n\nexit code: 0',
+        }];
+        const files = extractFileOutputs(toolCalls);
+        expect(files).toHaveLength(1);
+        expect(files[0].path).toBe('/Users/me/Desktop/new.docx');
+      });
+
+      it('mv with -f flag: flag stripped, destination returned', () => {
+        const toolCalls: ToolCall[] = [{
+          id: 'tc1', name: 'run_command',
+          input: { command: 'mv -f /tmp/a.xlsx /Users/me/Desktop/a.xlsx' },
+          result: 'stdout:\n\nexit code: 0',
+        }];
+        const files = extractFileOutputs(toolCalls);
+        expect(files).toHaveLength(1);
+        expect(files[0].path).toBe('/Users/me/Desktop/a.xlsx');
+      });
+
+      it('mv with quoted paths containing spaces', () => {
+        const toolCalls: ToolCall[] = [{
+          id: 'tc1', name: 'run_command',
+          input: { command: 'mv "/tmp/my report.xlsx" "/Users/me/Desktop/Test/my report.xlsx"' },
+          result: 'stdout:\n\nexit code: 0',
+        }];
+        const files = extractFileOutputs(toolCalls);
+        expect(files).toHaveLength(1);
+        expect(files[0].path).toBe('/Users/me/Desktop/Test/my report.xlsx');
+      });
+
+      it('complex command with pipe: falls back to generic extractor', () => {
+        // With a pipe the parser bails. Generic extractor still runs and
+        // returns the source path (legacy behavior) — we're not regressing it.
+        const toolCalls: ToolCall[] = [{
+          id: 'tc1', name: 'run_command',
+          input: { command: 'mv /tmp/a.xlsx /tmp/b.xlsx | tee log.txt' },
+          result: 'stdout:\n\nexit code: 0',
+        }];
+        const files = extractFileOutputs(toolCalls);
+        // Generic fallback emits *something* — we just assert we didn't crash
+        // and emit a sensible .xlsx entry. Exact path may be source or dest
+        // depending on regex scan order; this is documented as pre-existing
+        // behavior, not what this test is protecting.
+        expect(files.length).toBeGreaterThanOrEqual(1);
+        expect(files[0].path).toMatch(/\.xlsx$/);
+      });
+
+      it('chained cd && mv: falls back to generic extractor', () => {
+        // && is a shell operator, parser bails.
+        const toolCalls: ToolCall[] = [{
+          id: 'tc1', name: 'run_command',
+          input: { command: 'cd /tmp && mv a.xlsx /Users/me/Desktop/a.xlsx' },
+          result: 'stdout:\n\nexit code: 0',
+        }];
+        const files = extractFileOutputs(toolCalls);
+        // Generic extractor will find /Users/me/Desktop/a.xlsx (the only
+        // absolute path in the command). Not the case we're optimizing for,
+        // but shouldn't regress.
+        expect(files.length).toBeGreaterThanOrEqual(1);
+      });
+
+      it('sandbox-blocked mv: still short-circuits (existing behavior)', () => {
+        // Regression guard for the pre-existing sandbox-blocked path — the
+        // isCommandFailed check runs before our fast-path, so this must
+        // still return zero files.
+        const toolCalls: ToolCall[] = [{
+          id: 'tc1', name: 'run_command',
+          input: { command: 'mv /tmp/a.xlsx /Users/me/Desktop/a.xlsx' },
+          result: 'stderr:\n[sandbox-blocked]\n\nexit code: 1',
+        }];
+        const files = extractFileOutputs(toolCalls);
+        expect(files).toHaveLength(0);
+      });
+
+      it('mv with non-document extension destination: not emitted', () => {
+        // Our destination filter only emits DOCUMENT_EXTENSIONS. .log isn't
+        // one, so nothing is returned — same as generic extractor behavior.
+        const toolCalls: ToolCall[] = [{
+          id: 'tc1', name: 'run_command',
+          input: { command: 'mv /tmp/a.log /tmp/b.log' },
+          result: 'stdout:\n\nexit code: 0',
+        }];
+        const files = extractFileOutputs(toolCalls);
+        expect(files).toHaveLength(0);
+      });
+    });
   });
 
   // ── extractStdout ──

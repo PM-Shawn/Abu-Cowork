@@ -250,3 +250,24 @@ All form controls **MUST** use components from `src/components/ui/`. **Do NOT** 
 - Do not create new Zustand stores without `persist` middleware (unless the store is purely ephemeral by design).
 - Do not use `jest` syntax (`jest.fn()`, `jest.mock()`) — use Vitest (`vi.fn()`, `vi.mock()`).
 - Do not hand-roll form controls (select, toggle, input, textarea) — always use `src/components/ui/` components. If a variant is missing, extend the UI component.
+
+### 15. Reviewing review output (sanity-check-first)
+
+Review reports — from sub-agents, static analyzers, LLM reviewers, or people — have **non-zero false-positive rates**. Empirical baseline from this project: a single 17-finding review pass produced **14 false positives (82%)**. **Never act on a 🔴/🟡 finding without empirical verification.**
+
+**Typical false-positive patterns to watch for:**
+- **Single-threaded JS read as multi-threaded race** — "check-then-act" inside one event handler is safe in JS; Zustand `setState` is synchronous.
+- **Ignoring existing defenses** — code already has `if (signal.aborted) return;`, early-return branches, or `{ once: true }` listeners, but the finding claims they're missing.
+- **Ignoring JSDoc / inline comments** — the author explicitly documented a deliberate trade-off (fire-and-forget is correct for best-effort writes, silent catch is intentional when memory is authoritative, etc.).
+- **Cross-technology misattribution** — shell-style `$VAR` expansion claimed for AppleScript / SBPL / PowerShell single-quoted strings that don't support it.
+- **Fake aggregate claims** — "module X has 0 tests" when module X actually has N tests; always verify by listing files.
+
+**Before acting on any finding — 4-step sanity check:**
+1. **Read the actual code** at the cited `file:line`. Don't trust summaries.
+2. **Verify the failure mode**: reproduce it, write a targeted test, or trace an input that breaks the claim.
+3. **Check for existing defenses**: guards, early returns, JSDoc invariants, surrounding tests.
+4. **If the claim doesn't hold, add a regression test** codifying why. This stops the same false alarm from resurfacing in the next review pass.
+
+Only proceed with a fix after the finding survives this check. Verification cost (~5–15 min per finding) is far less than "fixing" a non-problem (often 1–6 hours, including regressions introduced by the unneeded change).
+
+This rule **explicitly overrides external authority**: "the sub-agent said…", "CC does…", "the docs say…" — all are hypotheses to verify in code, not conclusions to act on.

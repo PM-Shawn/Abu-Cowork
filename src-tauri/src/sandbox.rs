@@ -137,6 +137,77 @@ fn escape_sbpl_path(path: &str) -> String {
     path.replace('\\', "\\\\").replace('"', "\\\"")
 }
 
+/// Build an argv-based command (no shell interpolation) that may be wrapped
+/// with macOS sandbox-exec.
+///
+/// Arguments are passed verbatim to the target program — file names containing
+/// quotes, semicolons, backticks, or other shell metacharacters cannot be
+/// reinterpreted as code. Use this instead of [`build_sandboxed_command`] for
+/// structured invocations like `pdftotext`, `python3 -c ...`, `unzip`, etc.
+///
+/// On macOS with sandbox_enabled=true:
+///   `sandbox-exec -p <profile> -- <program> <args...>`
+pub fn build_sandboxed_argv_command(
+    program: &str,
+    args: &[String],
+    cwd: Option<&str>,
+    extra_writable_paths: &[String],
+    sandbox_enabled: bool,
+    network_proxy_port: Option<u16>,
+) -> StdCommand {
+    #[cfg(target_os = "macos")]
+    {
+        if sandbox_enabled {
+            let home_dir = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
+            let profile = generate_seatbelt_profile(
+                cwd,
+                extra_writable_paths,
+                &home_dir,
+                network_proxy_port,
+            );
+
+            let mut cmd = StdCommand::new("sandbox-exec");
+            // `--` separates sandbox-exec's own flags from the target argv,
+            // so a program name starting with `-` cannot be misinterpreted.
+            cmd.args(["-p", &profile, "--", program]);
+            cmd.args(args);
+
+            if let Some(port) = network_proxy_port {
+                let proxy_url = format!("http://127.0.0.1:{}", port);
+                cmd.env("HTTP_PROXY", &proxy_url);
+                cmd.env("HTTPS_PROXY", &proxy_url);
+                cmd.env("http_proxy", &proxy_url);
+                cmd.env("https_proxy", &proxy_url);
+                cmd.env("ALL_PROXY", &proxy_url);
+                cmd.env("NO_PROXY", "localhost,127.0.0.1,::1");
+                cmd.env("no_proxy", "localhost,127.0.0.1,::1");
+            }
+
+            return cmd;
+        }
+    }
+
+    // Windows, Linux, or macOS-without-sandbox: spawn the target directly.
+    // There is no intermediate shell, so arguments are always treated as
+    // literal strings by the OS process executor.
+    let _ = (cwd, extra_writable_paths, sandbox_enabled);
+    let mut cmd = StdCommand::new(program);
+    cmd.args(args);
+
+    if let Some(port) = network_proxy_port {
+        let proxy_url = format!("http://127.0.0.1:{}", port);
+        cmd.env("HTTP_PROXY", &proxy_url);
+        cmd.env("HTTPS_PROXY", &proxy_url);
+        cmd.env("http_proxy", &proxy_url);
+        cmd.env("https_proxy", &proxy_url);
+        cmd.env("ALL_PROXY", &proxy_url);
+        cmd.env("NO_PROXY", "localhost,127.0.0.1,::1");
+        cmd.env("no_proxy", "localhost,127.0.0.1,::1");
+    }
+
+    cmd
+}
+
 /// Build a command that may be wrapped with macOS sandbox-exec.
 ///
 /// On macOS with sandbox_enabled=true:
@@ -396,6 +467,83 @@ mod tests {
         let envs: Vec<_> = cmd.get_envs().collect();
         let has_proxy = envs.iter().any(|(k, v)| {
             *k == "HTTP_PROXY" && v.map(|v| v.to_str().unwrap_or("")).unwrap_or("").contains("18080")
+        });
+        assert!(has_proxy, "HTTP_PROXY env var should contain proxy port");
+    }
+
+    // ── build_sandboxed_argv_command tests ──
+
+    #[test]
+    fn build_argv_without_sandbox_spawns_program_directly() {
+        let args = vec!["hello".to_string(), "world".to_string()];
+        let cmd = build_sandboxed_argv_command("echo", &args, None, &[], false, None);
+        let program = cmd.get_program().to_string_lossy().to_string();
+        assert_eq!(program, "echo");
+        let collected: Vec<String> = cmd
+            .get_args()
+            .map(|a| a.to_string_lossy().to_string())
+            .collect();
+        assert_eq!(collected, vec!["hello".to_string(), "world".to_string()]);
+    }
+
+    #[test]
+    fn build_argv_passes_shell_metachars_literally() {
+        // The whole point of the argv path: filenames containing quotes,
+        // semicolons, backticks, $(...) must NOT be interpreted by any shell.
+        // If this test ever fails because the command starts going through
+        // a shell, the PDF-injection regression is back.
+        let evil = "/tmp/x\"; rm -rf ~; echo \"$(id)`whoami`".to_string();
+        let args = vec![evil.clone(), "-".to_string()];
+        let cmd = build_sandboxed_argv_command("pdftotext", &args, None, &[], false, None);
+        assert_eq!(cmd.get_program().to_string_lossy(), "pdftotext");
+        let collected: Vec<String> = cmd
+            .get_args()
+            .map(|a| a.to_string_lossy().to_string())
+            .collect();
+        assert_eq!(collected[0], evil, "filename must be passed verbatim");
+        assert_eq!(collected[1], "-");
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn build_argv_with_sandbox_uses_sandbox_exec_with_double_dash() {
+        let args = vec!["file.pdf".to_string(), "-".to_string()];
+        let cmd = build_sandboxed_argv_command(
+            "pdftotext",
+            &args,
+            Some("/tmp/test"),
+            &[],
+            true,
+            None,
+        );
+        assert_eq!(cmd.get_program().to_string_lossy(), "sandbox-exec");
+        let collected: Vec<String> = cmd
+            .get_args()
+            .map(|a| a.to_string_lossy().to_string())
+            .collect();
+        // sandbox-exec -p <profile> -- pdftotext file.pdf -
+        assert_eq!(collected[0], "-p");
+        assert!(collected[1].contains("(deny default)"));
+        assert_eq!(collected[2], "--");
+        assert_eq!(collected[3], "pdftotext");
+        assert_eq!(collected[4], "file.pdf");
+        assert_eq!(collected[5], "-");
+    }
+
+    #[test]
+    fn build_argv_with_network_isolation_sets_proxy_env() {
+        let cmd = build_sandboxed_argv_command(
+            "curl",
+            &["https://example.com".to_string()],
+            None,
+            &[],
+            false,
+            Some(18080),
+        );
+        let envs: Vec<_> = cmd.get_envs().collect();
+        let has_proxy = envs.iter().any(|(k, v)| {
+            *k == "HTTP_PROXY"
+                && v.map(|v| v.to_str().unwrap_or("")).unwrap_or("").contains("18080")
         });
         assert!(has_proxy, "HTTP_PROXY env var should contain proxy port");
     }

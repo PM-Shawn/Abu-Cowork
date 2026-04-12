@@ -314,6 +314,79 @@ async fn run_shell_command(
     })
 }
 
+/// Run a structured external program with an argv array — **no shell**.
+///
+/// This is the safe counterpart to [`run_shell_command`] for structured
+/// invocations like `pdftotext`, `python3 -c ...`, `unzip`, etc. Arguments
+/// are passed verbatim to the OS process executor, so file names containing
+/// quotes, semicolons, backticks, or `$(...)` substitutions cannot be
+/// reinterpreted as code. Use this whenever the caller knows the target
+/// program and its argv statically — i.e. everywhere except the user-facing
+/// `run_command` tool.
+///
+/// No `background` mode: argv tools are always foreground with a timeout.
+#[tauri::command]
+async fn run_argv_command(
+    program: String,
+    args: Vec<String>,
+    cwd: Option<String>,
+    timeout: Option<u64>,
+    sandbox_enabled: Option<bool>,
+    extra_writable_paths: Option<Vec<String>>,
+    network_isolation: Option<bool>,
+) -> Result<CommandOutput, String> {
+    let timeout_secs = timeout.unwrap_or(30).min(300);
+    let is_sandboxed = sandbox_enabled.unwrap_or(true);
+    let program_for_annotation = program.clone();
+
+    async_runtime::spawn_blocking(move || {
+        let extra_paths = extra_writable_paths.unwrap_or_default();
+        let proxy_port = if network_isolation.unwrap_or(false) {
+            proxy::get_proxy_port()
+        } else {
+            None
+        };
+        let mut cmd = sandbox::build_sandboxed_argv_command(
+            &program,
+            &args,
+            cwd.as_deref(),
+            &extra_paths,
+            is_sandboxed,
+            proxy_port,
+        );
+
+        // Inject enhanced PATH so bundled tools (pdftotext, python3, etc.)
+        // resolve the same way they do under run_shell_command.
+        #[cfg(target_os = "windows")]
+        if let Some(path) = get_enhanced_path_windows() {
+            cmd.env("PATH", &path);
+        }
+        #[cfg(not(target_os = "windows"))]
+        if let Some(path) = get_login_shell_path() {
+            cmd.env("PATH", &path);
+        }
+
+        cmd.stdout(Stdio::piped());
+        cmd.stderr(Stdio::piped());
+
+        if let Some(ref dir) = cwd {
+            cmd.current_dir(dir);
+        }
+
+        execute_foreground_command(cmd, timeout_secs)
+    })
+    .await
+    .map_err(|e| format!("Task join error: {}", e))?
+    .map(|mut output| {
+        output.stderr = annotate_sandbox_violations(
+            &output.stderr,
+            &program_for_annotation,
+            is_sandboxed,
+        );
+        output
+    })
+}
+
 #[derive(serde::Serialize, Clone)]
 struct CommandOutputLine {
     stream: String,  // "stdout" or "stderr"
@@ -1074,6 +1147,7 @@ pub fn run() {
             greet,
             run_shell_command,
             run_shell_command_streaming,
+            run_argv_command,
             mcp_spawn,
             mcp_write,
             mcp_kill,
@@ -1132,4 +1206,67 @@ pub fn run() {
             }
             let _ = (app, event);
         });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn execute_foreground_captures_stdout_and_exit_code() {
+        let mut cmd = StdCommand::new("echo");
+        cmd.args(["hello", "world"]);
+        cmd.stdout(Stdio::piped());
+        cmd.stderr(Stdio::piped());
+        let out = execute_foreground_command(cmd, 5).expect("echo should succeed");
+        assert_eq!(out.code, 0);
+        assert_eq!(out.stdout, "hello world");
+        assert_eq!(out.stderr, "");
+    }
+
+    #[test]
+    fn execute_foreground_kills_child_on_timeout() {
+        let mut cmd = StdCommand::new("sleep");
+        cmd.args(["10"]);
+        cmd.stdout(Stdio::piped());
+        cmd.stderr(Stdio::piped());
+        let start = Instant::now();
+        let out = execute_foreground_command(cmd, 1).expect("sleep should not error");
+        let elapsed = start.elapsed();
+        assert_eq!(out.code, -1, "timed-out command must report code -1");
+        assert!(
+            out.stderr.contains("timed out after 1s"),
+            "stderr should mention timeout, got: {}",
+            out.stderr
+        );
+        // Allow generous slack — the poll loop ticks at 100ms.
+        assert!(
+            elapsed < Duration::from_secs(3),
+            "timeout enforcement took too long: {:?}",
+            elapsed
+        );
+    }
+
+    #[test]
+    fn execute_foreground_passes_argv_literally_no_shell() {
+        // Regression: prove that the new run_argv_command path cannot be
+        // tricked by shell metacharacters in arguments. We pass a string
+        // packed with `;`, `"`, `$()`, backticks — if any of it reached a
+        // shell, we'd see side effects (e.g. echo of the substituted text).
+        // Since we go straight through Command::args, `printf %s` should
+        // emit the exact bytes back.
+        let evil = "x\"; touch /tmp/abu_argv_pwned; $(id)`whoami`";
+        let mut cmd = StdCommand::new("printf");
+        cmd.args(["%s", evil]);
+        cmd.stdout(Stdio::piped());
+        cmd.stderr(Stdio::piped());
+        let out = execute_foreground_command(cmd, 5).expect("printf should succeed");
+        assert_eq!(out.code, 0);
+        assert_eq!(out.stdout, evil, "argv must be passed verbatim, no shell parsing");
+        // Belt-and-suspenders: confirm the side-effect file was never created.
+        assert!(
+            !std::path::Path::new("/tmp/abu_argv_pwned").exists(),
+            "shell injection side effect detected — argv path is broken"
+        );
+    }
 }

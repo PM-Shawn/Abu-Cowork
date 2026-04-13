@@ -33,7 +33,37 @@
 
 ### 1. 安装
 
-从 [GitHub Releases](https://github.com/PM-Shawn/Abu-Cowork/releases) 下载对应平台的安装包。首次安装遇到安全提示，请参考 [安装指南](Installation-Guide.md)。
+#### 下载
+
+从 [GitHub Releases](https://github.com/PM-Shawn/Abu-Cowork/releases) 下载对应平台的安装包：
+
+| 平台 | 文件格式 |
+|------|----------|
+| macOS (Apple Silicon) | `Abu_x.x.x_aarch64.dmg` |
+| macOS (Intel) | `Abu_x.x.x_x64.dmg` |
+| Windows | `Abu_x.x.x_x64-setup.exe` |
+
+#### macOS
+
+1. 双击 `.dmg` 文件，将 Abu 拖入 `Applications` 文件夹
+2. **首次打开会提示"已损坏，无法打开"**（因为未进行 Apple 签名），打开终端执行：
+   ```bash
+   xattr -cr /Applications/Abu.app
+   ```
+3. 再次双击打开 Abu 即可
+
+> 如果 Abu 放在其他位置，将路径替换为实际路径。也可以输入 `xattr -cr ` 后把 Abu.app 拖入终端窗口自动填充。
+
+> 如果上述命令无效，可尝试 `sudo spctl --master-disable` 临时关闭 Gatekeeper，安装后用 `sudo spctl --master-enable` 重新启用。
+
+#### Windows
+
+1. 双击 `.exe` 安装包，按提示完成安装
+2. **首次运行可能被 SmartScreen 拦截**（因为未进行代码签名），点击 **「更多信息」** → **「仍要运行」** 即可
+
+> 如果安装包下载后无法运行：右键 `.exe` → 属性 → 勾选底部「解除锁定」→ 确定，再双击安装。
+
+> Abu 是开源软件，安全提示是因为未购买商业签名证书，非应用本身问题。macOS 每次更新后需重新执行 `xattr -cr`，Windows 通常仅首次需要放行。
 
 ### 2. 配置模型
 

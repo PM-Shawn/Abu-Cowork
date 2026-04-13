@@ -33,7 +33,37 @@ This guide covers all Abu features and how to use them effectively.
 
 ### 1. Install
 
-Download the installer for your platform from [GitHub Releases](https://github.com/PM-Shawn/Abu-Cowork/releases). For first-launch security prompts, see the [Installation Guide](Installation-Guide_EN.md).
+#### Download
+
+Download the installer for your platform from [GitHub Releases](https://github.com/PM-Shawn/Abu-Cowork/releases):
+
+| Platform | File |
+|----------|------|
+| macOS (Apple Silicon) | `Abu_x.x.x_aarch64.dmg` |
+| macOS (Intel) | `Abu_x.x.x_x64.dmg` |
+| Windows | `Abu_x.x.x_x64-setup.exe` |
+
+#### macOS
+
+1. Double-click the `.dmg` file and drag Abu into the `Applications` folder
+2. **First launch will show an "App is Damaged" warning** (because the app is not yet Apple-signed). Open Terminal and run:
+   ```bash
+   xattr -cr /Applications/Abu.app
+   ```
+3. Double-click Abu again to open it
+
+> If Abu is installed elsewhere, replace the path accordingly. You can also type `xattr -cr ` and drag Abu.app into the Terminal window to auto-fill the path.
+
+> If the command above doesn't work, try `sudo spctl --master-disable` to temporarily disable Gatekeeper, then re-enable it with `sudo spctl --master-enable` after installation.
+
+#### Windows
+
+1. Double-click the `.exe` installer and follow the prompts
+2. **SmartScreen may block the first launch** (because the app is not yet code-signed). Click **"More info"** → **"Run anyway"**
+
+> If the installer won't run after downloading: right-click the `.exe` → Properties → check "Unblock" at the bottom → OK, then double-click to install.
+
+> Abu is open-source software. The security warnings appear because the app hasn't been signed with a commercial certificate, not because there's anything wrong with the app. macOS requires re-running `xattr -cr` after each update; Windows usually only needs SmartScreen approval on first launch.
 
 ### 2. Configure a Model
 

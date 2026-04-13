@@ -112,12 +112,11 @@ export const todoWriteTool: ToolDefinition = {
     },
     required: ['action'],
   },
-  execute: async (input) => {
+  execute: async (input, context) => {
     const action = input.action as string;
 
-    // Get conversation ID from chatStore
-
-    const conversationId = useChatStore.getState().activeConversationId;
+    // Prefer context (correct for scheduled/trigger tasks) over activeConversationId
+    const conversationId = context?.conversationId ?? useChatStore.getState().activeConversationId;
     if (!conversationId) {
       return 'Error: 没有活跃会话';
     }

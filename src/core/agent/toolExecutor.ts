@@ -15,7 +15,7 @@ import { processToolResult } from '../session/sessionMemory';
 import { emitHook } from './lifecycleHooks';
 import type { PreToolCallEvent } from './lifecycleHooks';
 import { setComputerUseBatchMode, setSkipAutoScreenshot } from '../tools/builtins';
-import { setComputerUseActive, incrementComputerUseStep, setCurrentAction, isSessionWindowHidden, setSessionWindowHidden } from './computerUseStatus';
+import { setComputerUseActive, incrementComputerUseStep, setCurrentAction, isSessionWindowHidden, setSessionWindowHidden, pauseComputerUseStatus } from './computerUseStatus';
 import { TOOL_NAMES } from '../tools/toolNames';
 import { invoke } from '@tauri-apps/api/core';
 import { useChatStore } from '../../stores/chatStore';
@@ -314,6 +314,11 @@ export async function executeToolBatch(params: ToolBatchParams): Promise<ToolBat
     }
     results = sequentialResults;
   } else {
+    // Non-computer batch — pause the CU status bar if it was active from a
+    // previous batch.  The session state (window hidden) is preserved so a
+    // later computer batch can resume without flickering.
+    pauseComputerUseStatus();
+
     // run_command may have implicit dependencies (e.g. npm install → npm build), serialize them
     if (allRunCommand) {
       const sequentialResults: PromiseSettledResult<ToolExecResult>[] = [];

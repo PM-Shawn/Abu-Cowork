@@ -421,11 +421,9 @@ export const useChatStore = create<ChatStore>()(
         // Async write to disk (non-blocking)
         import('../core/session/conversationStorage').then(({ appendMessage: diskAppend, updateIndexEntry }) => {
           diskAppend(convId, message).catch(() => {});
-          // Persist auto-generated title to disk index
-          if (newTitle) {
-            const meta = get().conversationIndex[convId];
-            if (meta) updateIndexEntry(meta).catch(() => {});
-          }
+          // Always persist updated index (messageCount, updatedAt, and title if changed)
+          const meta = get().conversationIndex[convId];
+          if (meta) updateIndexEntry(meta).catch(() => {});
         });
         // Snapshot any user-uploaded files (currently only images with filePath).
         // Fire-and-forget — must never block the UI flow.
@@ -1019,8 +1017,19 @@ export const useChatStore = create<ChatStore>()(
         import('../core/session/conversationStorage').then(async ({ loadIndex }) => {
           const diskIndex = await loadIndex();
           const diskEntries = diskIndex.entries;
-          // Merge: disk is authoritative, but keep localStorage entries that aren't on disk yet
-          const merged = { ...state.conversationIndex, ...diskEntries };
+          // Disk is authoritative. Only keep localStorage entries that were created
+          // very recently (within 60s) — these survive the brief window between
+          // conversation creation and the first disk index flush.
+          // Older localStorage-only entries are ghost leftovers from failed v3→v4
+          // migration and must be dropped (their JSONL files never existed).
+          const cutoff = Date.now() - 60_000;
+          const localOnly: Record<string, ConversationMeta> = {};
+          for (const [id, meta] of Object.entries(state.conversationIndex)) {
+            if (!diskEntries[id] && meta.createdAt > cutoff) {
+              localOnly[id] = meta;
+            }
+          }
+          const merged = { ...localOnly, ...diskEntries };
           useChatStore.setState({ conversationIndex: merged });
         }).catch(() => {});
 

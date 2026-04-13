@@ -95,7 +95,11 @@ function FileCard({ file, conversationId, operationLabels, previewTitle, finderT
       <Icon className="w-3.5 h-3.5 text-[var(--abu-text-tertiary)] shrink-0" />
       <span className={cn(
         'text-[12px] truncate flex-1',
-        isUnavailable ? 'text-[var(--abu-text-muted)] line-through' : 'text-[var(--abu-text-primary)]'
+        isUnavailable
+          ? file.operation === 'read'
+            ? 'text-[var(--abu-text-muted)]'              // read: dim only, no strikethrough
+            : 'text-[var(--abu-text-muted)] line-through' // write/create: strikethrough = artifact lost
+          : 'text-[var(--abu-text-primary)]'
       )}>{fileName}</span>
       <span
         className={cn(

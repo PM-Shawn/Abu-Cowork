@@ -168,6 +168,8 @@ export interface ToolExecutionContext {
   workspacePath?: string | null;
   /** Loop ID for multi-agent context lookup */
   loopId?: string;
+  /** Conversation ID — tools should prefer this over activeConversationId */
+  conversationId?: string;
 }
 
 export interface ToolDefinition {

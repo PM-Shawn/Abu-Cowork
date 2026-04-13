@@ -106,24 +106,41 @@ class SchedulerEngine {
     }
 
     try {
-      await runAgentLoop(conversationId, prompt, {
+      const result = await runAgentLoop(conversationId, prompt, {
         commandConfirmCallback: autoDenyConfirmation,
         filePermissionCallback: autoFilePermission,
       });
-      useScheduleStore.getState().completeRun(task.id, runId);
 
-      // Push results to IM channel if configured
-      if (task.outputChannelId) {
-        await this.pushToIMChannel(task, conversationId);
+      if (result.reason === 'completed') {
+        useScheduleStore.getState().completeRun(task.id, runId);
+
+        // Push results to IM channel if configured
+        if (task.outputChannelId) {
+          await this.pushToIMChannel(task, conversationId);
+        }
+
+        notifyScheduledTaskCompleted(task.name);
+        const t = getI18n();
+        useToastStore.getState().addToast({
+          type: 'success',
+          title: format(t.schedule.taskCompleted, { name: task.name }),
+        });
+        console.log(`[Scheduler] Task completed: ${task.name}`);
+      } else {
+        // aborted or error — mark run accordingly
+        const errorMsg = result.error ?? (result.reason === 'aborted' ? 'Task was cancelled' : 'Unknown error');
+        useScheduleStore.getState().errorRun(task.id, runId, errorMsg);
+        if (result.reason === 'error') {
+          notifyScheduledTaskError(task.name);
+        }
+        const t = getI18n();
+        useToastStore.getState().addToast({
+          type: result.reason === 'aborted' ? 'info' : 'error',
+          title: format(result.reason === 'aborted' ? t.schedule.taskCompleted : t.schedule.taskError, { name: task.name }),
+          message: result.reason === 'aborted' ? undefined : errorMsg.slice(0, 100),
+        });
+        console.log(`[Scheduler] Task ${result.reason}: ${task.name}`, result.error ?? '');
       }
-
-      notifyScheduledTaskCompleted(task.name);
-      const t = getI18n();
-      useToastStore.getState().addToast({
-        type: 'success',
-        title: format(t.schedule.taskCompleted, { name: task.name }),
-      });
-      console.log(`[Scheduler] Task completed: ${task.name}`);
     } catch (err) {
       const errorMsg = err instanceof Error ? err.message : String(err);
       useScheduleStore.getState().errorRun(task.id, runId, errorMsg);

@@ -233,6 +233,7 @@ export class SkillLoader {
       const raw = await readTextFile(existing.filePath);
       const skill = parseSkillFile(raw, existing.filePath);
       if (skill) {
+        skill.source = existing.source;
         this.skills.set(skill.name, skill);
         return skill;
       }

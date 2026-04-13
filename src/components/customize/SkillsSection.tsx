@@ -219,7 +219,8 @@ export default function SkillsSection({ manualCreateTrigger, onAICreate, onManua
         case 'standard': groups.standard.push(s); break;
         case 'project':
         case 'project-standard': groups.project.push(s); break;
-        default: groups.builtin.push(s); break;
+        case 'builtin': groups.builtin.push(s); break;
+        default: groups.user.push(s); break;
       }
     }
     return groups;

@@ -146,10 +146,20 @@ async function appendToFile(filePath: string, data: string): Promise<void> {
       await writeTextFile(filePath, data);
     }
   } catch {
-    // Retry with directory creation
+    // Retry: ensure directory exists, then re-read existing content to preserve it.
+    // Previous implementation wrote only `data` here, which would overwrite the
+    // entire file and destroy all existing messages — a catastrophic data loss bug.
     const dir = filePath.substring(0, filePath.lastIndexOf('/'));
     if (dir) await mkdir(dir, { recursive: true });
-    await writeTextFile(filePath, data);
+    let existing = '';
+    try {
+      if (await exists(filePath)) {
+        existing = await readTextFile(filePath);
+      }
+    } catch {
+      // If we still can't read, at least don't destroy what's there — let it throw
+    }
+    await writeTextFile(filePath, existing + data);
   }
 }
 

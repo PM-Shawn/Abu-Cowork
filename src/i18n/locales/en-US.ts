@@ -956,6 +956,8 @@ const enUS: TranslationDict = {
     runStatusError: 'Error',
     viewConversation: 'View Conversation',
     ago: '{time} ago',
+    startedAtLabel: 'Start',
+    completedAtLabel: 'End',
     running: 'Running...',
     activeCount: '{count} active',
     skippedDangerousOp: 'Skipped operations requiring confirmation',

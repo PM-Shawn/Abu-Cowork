@@ -70,7 +70,10 @@ export function updateTodo(
   const todos = todoLists.get(conversationId);
   if (!todos) return null;
 
-  const item = todos.find(t => t.id === todoId);
+  // Support 1-based index (LLM sees sequential numbers in prompt) or real ID
+  const item = /^\d+$/.test(todoId)
+    ? todos[parseInt(todoId, 10) - 1]
+    : todos.find(t => t.id === todoId);
   if (!item) return null;
 
   if (updates.status) item.status = updates.status;
@@ -88,8 +91,11 @@ export function removeTodo(conversationId: string, todoId: string): boolean {
   const todos = todoLists.get(conversationId);
   if (!todos) return false;
 
-  const index = todos.findIndex(t => t.id === todoId);
-  if (index < 0) return false;
+  // Support 1-based index or real ID
+  const index = /^\d+$/.test(todoId)
+    ? parseInt(todoId, 10) - 1
+    : todos.findIndex(t => t.id === todoId);
+  if (index < 0 || index >= todos.length) return false;
 
   todos.splice(index, 1);
   notifyListeners();

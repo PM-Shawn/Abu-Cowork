@@ -68,6 +68,16 @@ export function setComputerUseActive(active: boolean, conversationId?: string) {
   }
 }
 
+/** Pause the CU status bar without ending the session.
+ *  Called when a non-computer tool batch starts so the "正在操控电脑" banner
+ *  disappears, but the session (window hidden state) is preserved for
+ *  potential future computer batches in the same agent loop. */
+export function pauseComputerUseStatus() {
+  if (state.status === 'active') {
+    update({ status: 'paused', currentAction: null });
+  }
+}
+
 /** Increment step count and optionally set current action description. */
 export function incrementComputerUseStep(action?: string) {
   if (state.status === 'active') {

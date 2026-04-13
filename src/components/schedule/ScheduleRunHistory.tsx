@@ -5,19 +5,10 @@ import { ExternalLink } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import type { ScheduledTaskRun } from '@/types/schedule';
 
-function formatTimeAgo(timestamp: number, agoTemplate: string): string {
-  const diff = Date.now() - timestamp;
-  const minutes = Math.floor(diff / 60000);
-  const hours = Math.floor(diff / 3600000);
-  const days = Math.floor(diff / 86400000);
-
-  let time: string;
-  if (minutes < 1) time = '<1m';
-  else if (minutes < 60) time = `${minutes}m`;
-  else if (hours < 24) time = `${hours}h`;
-  else time = `${days}d`;
-
-  return agoTemplate.replace('{time}', time);
+function formatDateTime(timestamp: number): string {
+  const d = new Date(timestamp);
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}/${pad(d.getMonth() + 1)}/${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
 }
 
 interface Props {
@@ -62,24 +53,31 @@ export default function ScheduleRunHistory({ runs }: Props) {
             )}
           />
 
-          {/* Time */}
-          <span className="text-[11px] text-[var(--abu-text-tertiary)] shrink-0">
-            {formatTimeAgo(run.startedAt, t.schedule.ago)}
-          </span>
-
-          {/* Status text */}
-          <span
-            className={cn(
-              'text-[11px] flex-1 truncate',
-              run.status === 'running' && 'text-amber-600',
-              run.status === 'completed' && 'text-green-600',
-              run.status === 'error' && 'text-red-500'
+          {/* Start / End times + status */}
+          <div className="flex-1 min-w-0">
+            <div className="flex items-center gap-1.5">
+              <span className="text-[11px] text-[var(--abu-text-secondary)]">
+                {t.schedule.startedAtLabel} {formatDateTime(run.startedAt)}
+              </span>
+              <span
+                className={cn(
+                  'text-[11px]',
+                  run.status === 'running' && 'text-amber-600',
+                  run.status === 'completed' && 'text-green-600',
+                  run.status === 'error' && 'text-red-500'
+                )}
+              >
+                {run.status === 'running' && t.schedule.runStatusRunning}
+                {run.status === 'completed' && t.schedule.runStatusCompleted}
+                {run.status === 'error' && (run.error ? run.error.slice(0, 30) : t.schedule.runStatusError)}
+              </span>
+            </div>
+            {run.completedAt && (
+              <div className="text-[11px] text-[var(--abu-text-tertiary)]">
+                {t.schedule.completedAtLabel} {formatDateTime(run.completedAt)}
+              </div>
             )}
-          >
-            {run.status === 'running' && t.schedule.runStatusRunning}
-            {run.status === 'completed' && t.schedule.runStatusCompleted}
-            {run.status === 'error' && (run.error ? run.error.slice(0, 30) : t.schedule.runStatusError)}
-          </span>
+          </div>
 
           {/* View conversation button */}
           {conversationIndex[run.conversationId] && (

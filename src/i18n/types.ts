@@ -916,6 +916,8 @@ export interface TranslationDict {
     runStatusError: string;
     viewConversation: string;
     ago: string;
+    startedAtLabel: string;
+    completedAtLabel: string;
     running: string;
     activeCount: string;
     skippedDangerousOp: string;

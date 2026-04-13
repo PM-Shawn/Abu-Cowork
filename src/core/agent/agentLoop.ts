@@ -421,6 +421,15 @@ export interface AgentLoopOptions {
   imContext?: IMContext;
 }
 
+/** Exit reason returned by runAgentLoop so callers (scheduler, trigger) can
+ *  distinguish normal completion from abort / error. */
+export type AgentLoopExitReason = 'completed' | 'aborted' | 'error';
+
+export interface AgentLoopResult {
+  reason: AgentLoopExitReason;
+  error?: string;
+}
+
 /**
  * Calculate escalated maxOutputTokens after a max_tokens hit.
  * Doubles the limit (capped by context window) on first recovery attempt.
@@ -442,7 +451,7 @@ export function escalateMaxOutputTokens(
   return { maxOutputTokens: currentMax, changed: false };
 }
 
-export async function runAgentLoop(conversationId: string, userMessage: string, options?: AgentLoopOptions): Promise<void> {
+export async function runAgentLoop(conversationId: string, userMessage: string, options?: AgentLoopOptions): Promise<AgentLoopResult> {
   const chatStore = useChatStore.getState();
   const settings = useSettingsStore.getState();
   const taskExecutionStore = useTaskExecutionStore.getState();
@@ -466,7 +475,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
       timestamp: Date.now(),
       loopId,
     });
-    return;
+    return { reason: 'error', error: 'API Key not configured' };
   }
 
   // Create TaskExecution for this agent loop (after apiKey check to avoid leaking executions)
@@ -501,6 +510,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
   const toolContext: ToolExecutionContext = {
     workspacePath: options?.imContext?.workspacePath ?? useWorkspaceStore.getState().currentPath,
     loopId,
+    conversationId,
   };
 
   // Determine effective model — agent can override (with provider compatibility check)
@@ -571,7 +581,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
       });
       chatStore.setConversationStatus(conversationId, 'idle');
       taskExecutionStore.cancelExecution(execution.id);
-      return;
+      return { reason: 'error', error: `Missing required tools: ${missing.join(', ')}` };
     }
   }
 
@@ -670,7 +680,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
         chatStore.clearAbortController(conversationId);
         taskExecutionStore.cancelExecution(execution.id);
         chatStore.setConversationStatus(conversationId, 'idle');
-        return;
+        return { reason: 'aborted' };
       }
       const errorMessage = err instanceof Error ? err.message : String(err);
       chatStore.addMessage(conversationId, {
@@ -687,8 +697,9 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
       chatStore.setConversationStatus(conversationId, 'error');
       const convTitle = useChatStore.getState().conversationIndex[conversationId]?.title ?? '任务';
       notifyTaskError(convTitle);
+      return { reason: 'error', error: errorMessage };
     }
-    return;
+    return { reason: 'completed' };
   }
 
   // Emit agentStart hook
@@ -701,6 +712,8 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
   });
 
   let continueLoop = true;
+  let exitReason: AgentLoopExitReason = 'completed';
+  let exitError: string | undefined;
   // maxTurns priority: skill > agent definition > global setting > undefined (unlimited)
   const globalMaxTurns = useSettingsStore.getState().agentMaxTurns;
   const maxTurns = route.skill?.maxTurns ?? route.definition?.maxTurns ?? globalMaxTurns;
@@ -1431,6 +1444,10 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
           clearCheckpoint(conversationId);
         }).catch(() => {});
         // Mark conversation status — error if recovery exhausted, otherwise completed
+        if (maxTokensRecoveryExhausted) {
+          exitReason = 'error';
+          exitError = 'Max output tokens recovery exhausted';
+        }
         chatStore.setConversationStatus(conversationId, maxTokensRecoveryExhausted ? 'error' : 'completed');
   
         // Auto-extract memories from desktop conversations (non-blocking)
@@ -1487,7 +1504,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
         chatStore.setConversationStatus(conversationId, 'idle');
   
         continueLoop = false;
-        return;
+        return { reason: 'aborted' as const };
       }
 
       clearLoopContext(loopId);
@@ -1530,7 +1547,10 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
 
       const convTitle = useChatStore.getState().conversationIndex[conversationId]?.title ?? '任务';
       notifyTaskError(convTitle);
+      exitReason = 'error';
+      exitError = errorMessage;
       continueLoop = false;
     }
   }
+  return { reason: exitReason, error: exitError };
 }

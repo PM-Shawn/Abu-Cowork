@@ -957,6 +957,8 @@ const zhCN: TranslationDict = {
     runStatusError: '出错',
     viewConversation: '查看会话',
     ago: '{time}前',
+    startedAtLabel: '开始',
+    completedAtLabel: '结束',
     running: '执行中...',
     activeCount: '{count} 个活跃',
     skippedDangerousOp: '跳过了需确认的操作',

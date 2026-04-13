@@ -323,11 +323,19 @@ class TriggerEngine {
         ? { ...trigger.action, workspacePath }
         : trigger.action;
       const callbacks = resolveTriggerCallbacks(actionWithWorkspace);
-      await runAgentLoop(conversationId, prompt, {
+      const result = await runAgentLoop(conversationId, prompt, {
         commandConfirmCallback: callbacks.commandConfirmCallback,
         filePermissionCallback: callbacks.filePermissionCallback,
         blockedTools: callbacks.blockedTools,
       });
+
+      if (result.reason !== 'completed') {
+        // aborted or error — mark run as error and skip output push
+        const errorMsg = result.error ?? (result.reason === 'aborted' ? 'Trigger was cancelled' : 'Unknown error');
+        useTriggerStore.getState().errorRun(trigger.id, runId, errorMsg);
+        console.log(`[Trigger] ${result.reason}: ${trigger.name}`, result.error ?? '');
+        return;
+      }
 
       useTriggerStore.getState().completeRun(trigger.id, runId);
 

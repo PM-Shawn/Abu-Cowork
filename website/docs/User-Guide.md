@@ -1035,6 +1035,37 @@ API Key 加密存储在本地应用数据目录中，不会上传到任何服务
 - 查看环境变量是否正确配置
 - 如果是 HTTP 类型，确认 URL 可访问
 
+### Q: MCP 启动报 "Connection closed"，终端里有 EACCES / permission denied？
+
+这是 npm 缓存目录被 root 拥有了导致普通用户无法写入，**跟网络和镜像无关**。常见原因是之前用 `sudo npm install` 或 `sudo npx` 跑过命令，缓存目录的 owner 变成了 root。
+
+**一键修复（macOS / Linux）**：
+
+```bash
+sudo chown -R $(whoami):staff ~/.npm
+rm -rf ~/.npm/_cacache
+npm config set registry https://registry.npmmirror.com   # 可选，加速
+npx -y abu-browser-bridge@latest --help                  # 验证
+```
+
+看到 bridge 的启动日志（`WS server listening on ws://127.0.0.1:9876`）就说明修好了，Ctrl+C 退出，回 Abu 重连 MCP 即可。
+
+**长期避免**：
+
+- ❌ 不要在 `npm` / `npx` 命令前加 `sudo`
+- ✅ 推荐用 [nvm](https://github.com/nvm-sh/nvm) 管理 Node，之后所有全局安装都无需 sudo
+
+### Q: Chrome 扩展管理页一直显示 `ws://127.0.0.1:9876 ERR_CONNECTION_REFUSED`？
+
+正常现象，不是 bug。Abu 的浏览器桥（`abu-browser-bridge`）只有在你**激活对应 MCP 服务**或让对话用到浏览器工具时才会启动，插件 Service Worker 空转时连不上是预期的。
+
+只要满足以下任一条件就会自动连上：
+
+1. 在 Abu 中启用了 `abu-browser-bridge` MCP
+2. 让阿布执行一个需要浏览器的操作（如"帮我截图当前标签页"）
+
+如果已经启用了 MCP 但仍连不上，按上一条 FAQ 修 npm 权限即可。
+
 ### Q: 如何使用浏览器操控功能？
 
 1. 安装 Abu Chrome 扩展

@@ -142,6 +142,11 @@ function serializeForOpenAI(turns: PreparedTurn[], systemPrompt?: string): OpenA
         };
         if (turn.thinking) {
           assistantMsg.reasoning_content = turn.thinking;
+        } else {
+          // Kimi K2.5 / DeepSeek R1 in thinking mode require reasoning_content
+          // on every assistant message carrying tool_calls. Fill empty string
+          // when the turn has no captured thinking — other providers ignore it.
+          assistantMsg.reasoning_content = '';
         }
         result.push(assistantMsg);
 

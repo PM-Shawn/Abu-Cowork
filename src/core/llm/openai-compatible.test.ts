@@ -257,6 +257,82 @@ describe('OpenAICompatibleAdapter streaming finish_reason handling', () => {
     });
   });
 
+  describe('regression: assistant tool_call messages carry reasoning_content', () => {
+    // Kimi K2.5 (and DeepSeek R1) in thinking mode reject assistant messages
+    // that carry tool_calls but no reasoning_content field with HTTP 400:
+    //   "thinking is enabled but reasoning_content is missing in assistant
+    //    tool call message at index N"
+    // The serializer must always set reasoning_content on tool_call assistant
+    // messages — real thinking when captured, empty string otherwise.
+    it("sets reasoning_content='' when prior assistant tool_call has no thinking", async () => {
+      // Prior turn: assistant with tool_calls but no thinking captured
+      const assistantWithToolCall: Message = {
+        id: 'a1',
+        role: 'assistant',
+        content: '',
+        timestamp: Date.now(),
+        toolCalls: [{
+          id: 'tc_prior',
+          name: 'read_file',
+          input: { path: 'x.txt' },
+          result: 'file content',
+        }],
+        // thinking: undefined — no reasoning captured for this turn
+      };
+      const history: Message[] = [
+        userMessage,
+        assistantWithToolCall,
+        { id: 'u2', role: 'user', content: 'now summarize', timestamp: Date.now() },
+      ];
+
+      mockFetch.mockResolvedValueOnce(makeSSEResponse([
+        { choices: [{ delta: { content: 'ok' } }] },
+        { choices: [{ delta: {}, finish_reason: 'stop' }] },
+      ]));
+      const adapter = new OpenAICompatibleAdapter();
+      await adapter.chat(history, makeOptions(), () => {});
+
+      expect(mockFetch).toHaveBeenCalledOnce();
+      const body = JSON.parse(mockFetch.mock.calls[0][1].body as string) as { messages: Array<Record<string, unknown>> };
+      const asstMsg = body.messages.find((m) => m.role === 'assistant' && Array.isArray(m.tool_calls));
+      expect(asstMsg).toBeDefined();
+      expect(asstMsg).toHaveProperty('reasoning_content');
+      expect(asstMsg!.reasoning_content).toBe('');
+    });
+
+    it('preserves real thinking content when present on the turn', async () => {
+      const assistantWithThinking: Message = {
+        id: 'a1',
+        role: 'assistant',
+        content: '',
+        timestamp: Date.now(),
+        thinking: 'let me think about this',
+        toolCalls: [{
+          id: 'tc_prior',
+          name: 'read_file',
+          input: { path: 'x.txt' },
+          result: 'file content',
+        }],
+      };
+      const history: Message[] = [
+        userMessage,
+        assistantWithThinking,
+        { id: 'u2', role: 'user', content: 'next', timestamp: Date.now() },
+      ];
+
+      mockFetch.mockResolvedValueOnce(makeSSEResponse([
+        { choices: [{ delta: { content: 'ok' } }] },
+        { choices: [{ delta: {}, finish_reason: 'stop' }] },
+      ]));
+      const adapter = new OpenAICompatibleAdapter();
+      await adapter.chat(history, makeOptions(), () => {});
+
+      const body = JSON.parse(mockFetch.mock.calls[0][1].body as string) as { messages: Array<Record<string, unknown>> };
+      const asstMsg = body.messages.find((m) => m.role === 'assistant' && Array.isArray(m.tool_calls));
+      expect(asstMsg!.reasoning_content).toBe('let me think about this');
+    });
+  });
+
   describe('regression: _parse_error fallback when tool args are invalid JSON', () => {
     it('marks tool input with _parse_error in [DONE] path when JSON parse fails', async () => {
       // Send incomplete args via [DONE] without explicit finish_reason on last chunk.

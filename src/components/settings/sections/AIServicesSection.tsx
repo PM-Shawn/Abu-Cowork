@@ -1,9 +1,10 @@
 import { useState } from 'react';
 import { useSettingsStore } from '@/stores/settingsStore';
 import { useI18n } from '@/i18n';
-import { Plus, CircleCheck, CircleAlert, ChevronDown, Globe, ImageIcon } from 'lucide-react';
+import { Plus, CircleCheck, CircleAlert, ChevronDown, Globe, ImageIcon, Trash2 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
+import ConfirmDialog from '@/components/common/ConfirmDialog';
 import ProviderCard from './ai-services/ProviderCard';
 import AddProviderModal from './ai-services/AddProviderModal';
 import { WebSearchForm } from './WebSearchSection';
@@ -13,7 +14,9 @@ export default function AIServicesSection() {
   const { t } = useI18n();
   const providers = useSettingsStore((s) => s.providers);
   const activeModel = useSettingsStore((s) => s.activeModel);
+  const clearAllStoredKeys = useSettingsStore((s) => s.clearAllStoredKeys);
   const [showAddModal, setShowAddModal] = useState(false);
+  const [showClearConfirm, setShowClearConfirm] = useState(false);
 
   // Check if any enabled provider has builtin capabilities
   const enabledProviders = providers.filter(p => p.enabled);
@@ -185,10 +188,39 @@ export default function AIServicesSection() {
         </div>
       </div>
 
+      {/* Danger zone: hard-reset escape hatch for stuck / migrated / compromised keys */}
+      {providers.some((p) => p.apiKey.trim().length > 0) && (
+        <div className="pt-2 flex justify-end">
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => setShowClearConfirm(true)}
+            className="gap-1.5 text-red-600 hover:text-red-700 hover:bg-red-50"
+          >
+            <Trash2 className="h-3.5 w-3.5" />
+            {t.settings.clearAllKeys}
+          </Button>
+        </div>
+      )}
+
       {/* Add Provider Modal */}
       <AddProviderModal
         open={showAddModal}
         onClose={() => setShowAddModal(false)}
+      />
+
+      <ConfirmDialog
+        open={showClearConfirm}
+        title={t.settings.clearAllKeys}
+        message={t.settings.clearAllKeysConfirm}
+        confirmText={t.common.confirm}
+        cancelText={t.common.cancel}
+        variant="danger"
+        onConfirm={async () => {
+          setShowClearConfirm(false);
+          await clearAllStoredKeys();
+        }}
+        onCancel={() => setShowClearConfirm(false)}
       />
     </div>
   );

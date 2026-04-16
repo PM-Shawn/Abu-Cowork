@@ -9,6 +9,7 @@ import { useSettingsStore } from '@/stores/settingsStore';
 import { checkProviderHealth } from '@/core/llm/healthCheck';
 import ConfirmDialog from '@/components/common/ConfirmDialog';
 import type { ProviderInstance, ModelInfo } from '@/types/provider';
+import { SECRET_KEYS } from '@/utils/secretStore';
 
 interface ProviderCardProps {
   provider: ProviderInstance;
@@ -54,6 +55,11 @@ const isOllamaProvider = (p: ProviderInstance): boolean =>
 export default function ProviderCard({ provider, isActive }: ProviderCardProps) {
   const { t } = useI18n();
   const { updateProvider, removeProvider, toggleProvider, setProviderStatus } = useSettingsStore();
+  // True when bootstrapSecrets detected a prior ciphertext for this
+  // provider but couldn't decrypt it (typical cause: hardware/UUID change).
+  const keyDecryptFailed = useSettingsStore((s) =>
+    s.failedSecretKeys.includes(SECRET_KEYS.provider(provider.id)),
+  );
 
   const [editing, setEditing] = useState(false);
   const [showApiKey, setShowApiKey] = useState(false);
@@ -152,6 +158,12 @@ export default function ProviderCard({ provider, isActive }: ProviderCardProps) 
         'rounded-xl border border-[var(--abu-border)] bg-[var(--abu-bg-muted)] p-4 space-y-3',
         isActive && 'ring-2 ring-[var(--abu-clay-ring)]',
       )}>
+        {keyDecryptFailed && (
+          <div className="flex items-start gap-2 rounded-md border border-red-300 bg-red-50 px-3 py-2 text-[11px] text-red-700">
+            <AlertTriangle className="h-3.5 w-3.5 shrink-0 mt-0.5" />
+            <span>{t.settings.apiKeyDecryptFailed}</span>
+          </div>
+        )}
         {/* Edit: Name */}
         <div className="space-y-1">
           <label className="text-xs font-medium text-[var(--abu-text-tertiary)]">{t.settings.serviceName}</label>
@@ -246,11 +258,19 @@ export default function ProviderCard({ provider, isActive }: ProviderCardProps) 
     <div
       className={cn(
         'group rounded-xl border px-4 py-2.5 transition-colors',
-        'border-[var(--abu-border)] hover:border-[var(--abu-clay-ring)]',
+        keyDecryptFailed
+          ? 'border-red-300 bg-red-50/30'
+          : 'border-[var(--abu-border)] hover:border-[var(--abu-clay-ring)]',
         isActive && 'ring-1 ring-[var(--abu-clay-ring)]',
-        !provider.enabled && 'opacity-50'
+        !provider.enabled && !keyDecryptFailed && 'opacity-50',
       )}
     >
+      {keyDecryptFailed && (
+        <div className="flex items-start gap-1.5 text-[11px] text-red-700 mb-1.5">
+          <AlertTriangle className="h-3 w-3 shrink-0 mt-0.5" />
+          <span>{t.settings.apiKeyDecryptFailed}</span>
+        </div>
+      )}
       {/* Row 1: Name + status + toggle */}
       <div className="flex items-center gap-3">
         <span className="text-sm font-medium text-[var(--abu-text-primary)] truncate min-w-0 flex-1">

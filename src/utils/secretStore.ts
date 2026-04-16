@@ -47,6 +47,27 @@ export async function listSecrets(): Promise<string[] | null> {
 }
 
 /**
+ * Keys that could not be decrypted at load time (macOS only). Typically a
+ * non-empty list signals a hardware change — IOPlatformUUID rotated so the
+ * derived AES key no longer matches the stored ciphertext. The UI surfaces
+ * these per-provider so users know their prior keys need re-entering.
+ * On Windows/Linux this always returns `[]`.
+ */
+export async function listFailedSecrets(): Promise<string[]> {
+  return await invoke<string[]>('secret_failed_keys');
+}
+
+/**
+ * Wipe every stored secret. On Windows/Linux the `keyring` crate has no
+ * enumeration API, so the caller must pass the full list of keys to remove
+ * (the settings UI already knows these from its in-memory provider list).
+ * macOS ignores `knownKeys` and truncates the ciphertext file directly.
+ */
+export async function clearAllSecrets(knownKeys: string[]): Promise<void> {
+  await invoke<void>('secret_clear_all', { knownKeys });
+}
+
+/**
  * Write-through helper: on empty/missing value, delete the entry instead
  * of storing `""`. Keeps the store clean and matches the "field cleared"
  * semantics the settings UI already uses (empty string = unconfigured).

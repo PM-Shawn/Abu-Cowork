@@ -28,7 +28,7 @@ const zhCN: TranslationDict = {
 
   memory: {
     categoryPreference: '偏好',
-    categoryProject: '项目',
+    categoryProject: '场景',
     categoryFact: '事实',
     categoryDecision: '决策',
     categoryAction: '待办',
@@ -298,6 +298,10 @@ const zhCN: TranslationDict = {
     apiKey: 'API Key',
     apiKeyPlaceholder: '输入你的 API Key',
     apiKeyDesc: '存储在本地，不会上传到任何服务器',
+    apiKeyDecryptFailed: 'API Key 无法解密，请重新输入（可能是更换了硬件或迁移了系统）',
+    clearAllKeys: '清除所有已保存密钥',
+    clearAllKeysConfirm: '这会把所有 provider 和辅助服务的 API Key 从本机清除，下次使用时需重新输入。确定继续？',
+    clearAllKeysDone: '已清除所有密钥',
     // Model Section
     model: '模型',
     customModelOption: '自定义模型...',

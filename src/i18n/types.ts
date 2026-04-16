@@ -269,6 +269,10 @@ export interface TranslationDict {
     apiKey: string;
     apiKeyPlaceholder: string;
     apiKeyDesc: string;
+    apiKeyDecryptFailed: string;
+    clearAllKeys: string;
+    clearAllKeysConfirm: string;
+    clearAllKeysDone: string;
     // Model Section
     model: string;
     customModelOption: string;

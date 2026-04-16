@@ -134,6 +134,48 @@ impl SecretStore {
             Ok(None)
         }
     }
+
+    /// Keys that were present on disk but could not be decrypted with the
+    /// current machine-derived key (e.g. after a hardware change or UUID
+    /// rotation). The UI surfaces these so users know their prior API
+    /// keys need to be re-entered rather than silently finding them blank.
+    ///
+    /// Windows/Linux have no equivalent failure mode exposed here: a
+    /// keyring read that fails is reported per-call via `get`. We return
+    /// an empty slice in that case to keep the API shape uniform.
+    pub fn failed_keys(&self) -> Result<Vec<String>, SecretError> {
+        #[cfg(target_os = "macos")]
+        {
+            let inner = self.inner.lock().map_err(|e| SecretError::Backend(e.to_string()))?;
+            Ok(inner.failed_keys())
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            Ok(Vec::new())
+        }
+    }
+
+    /// Wipe every stored secret. On macOS the file is overwritten with an
+    /// empty entry map (not deleted, so permissions stay consistent); on
+    /// Windows/Linux we iterate `keyring` entries via a frontend-provided
+    /// list because the crate has no `clear_service` API.
+    pub fn clear_all(&self, known_keys: &[String]) -> Result<(), SecretError> {
+        #[cfg(target_os = "macos")]
+        {
+            let _ = known_keys;
+            let mut inner = self.inner.lock().map_err(|e| SecretError::Backend(e.to_string()))?;
+            inner.clear_all()
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            for key in known_keys {
+                if let Err(e) = self.delete(key) {
+                    return Err(e);
+                }
+            }
+            Ok(())
+        }
+    }
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -182,6 +224,10 @@ mod macos {
         path: PathBuf,
         cipher: Aes256Gcm,
         entries: BTreeMap<String, String>, // plaintext, cached
+        /// Keys that existed on disk but failed to decrypt on load (e.g.
+        /// hardware UUID changed, ciphertext tampered). Cleared on next
+        /// successful write so stale entries don't linger forever.
+        failed: Vec<String>,
     }
 
     impl Inner {
@@ -191,10 +237,10 @@ mod macos {
             let key = derive_key(machine_uid.as_bytes())?;
             let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(&key));
 
-            let entries = if path.exists() {
+            let (entries, failed) = if path.exists() {
                 let bytes = std::fs::read(path).map_err(|e| SecretError::Io(e.to_string()))?;
                 if bytes.is_empty() {
-                    BTreeMap::new()
+                    (BTreeMap::new(), Vec::new())
                 } else {
                     let model: FileModel = serde_json::from_slice(&bytes)
                         .map_err(|e| SecretError::Io(format!("parse secrets.bin: {}", e)))?;
@@ -204,13 +250,21 @@ mod macos {
                             model.version
                         )));
                     }
-                    decrypt_all(&cipher, &model.entries)?
+                    decrypt_all(&cipher, &model.entries)
                 }
             } else {
-                BTreeMap::new()
+                (BTreeMap::new(), Vec::new())
             };
 
-            Ok(Self { path: path.to_path_buf(), cipher, entries })
+            if !failed.is_empty() {
+                eprintln!(
+                    "[secrets] {} entries failed to decrypt (likely hardware change): {:?}",
+                    failed.len(),
+                    failed
+                );
+            }
+
+            Ok(Self { path: path.to_path_buf(), cipher, entries, failed })
         }
 
         pub fn get(&self, key: &str) -> Result<Option<String>, SecretError> {
@@ -219,16 +273,29 @@ mod macos {
 
         pub fn set(&mut self, key: &str, value: &str) -> Result<(), SecretError> {
             self.entries.insert(key.to_string(), value.to_string());
+            // Overwriting a key makes any prior decrypt failure for it moot.
+            self.failed.retain(|k| k != key);
             self.persist()
         }
 
         pub fn delete(&mut self, key: &str) -> Result<(), SecretError> {
             self.entries.remove(key);
+            self.failed.retain(|k| k != key);
             self.persist()
         }
 
         pub fn keys(&self) -> Vec<String> {
             self.entries.keys().cloned().collect()
+        }
+
+        pub fn failed_keys(&self) -> Vec<String> {
+            self.failed.clone()
+        }
+
+        pub fn clear_all(&mut self) -> Result<(), SecretError> {
+            self.entries.clear();
+            self.failed.clear();
+            self.persist()
         }
 
         /// Encrypt the full in-memory map and write atomically
@@ -285,28 +352,44 @@ mod macos {
         Ok(out)
     }
 
+    /// Decrypt every entry in `encrypted`, returning successfully decrypted
+    /// pairs plus the list of keys that failed. Partial recovery is intentional:
+    /// one tampered or machine-rotated entry must not lock the user out of
+    /// their other providers. Failed keys are surfaced via
+    /// [`Inner::failed_keys`] so the UI can show "please re-enter" hints.
     fn decrypt_all(
         cipher: &Aes256Gcm,
         encrypted: &BTreeMap<String, String>,
-    ) -> Result<BTreeMap<String, String>, SecretError> {
+    ) -> (BTreeMap<String, String>, Vec<String>) {
         let mut out = BTreeMap::new();
+        let mut failed = Vec::new();
         for (k, b64) in encrypted {
-            let packed = base64::engine::general_purpose::STANDARD
-                .decode(b64)
-                .map_err(|e| SecretError::DecryptFailed(format!("base64: {}", e)))?;
-            if packed.len() <= NONCE_LEN {
-                return Err(SecretError::DecryptFailed("truncated entry".to_string()));
+            match try_decrypt_entry(cipher, b64) {
+                Ok(plain) => {
+                    out.insert(k.clone(), plain);
+                }
+                Err(_) => {
+                    failed.push(k.clone());
+                }
             }
-            let (nonce_bytes, ct) = packed.split_at(NONCE_LEN);
-            let nonce = Nonce::from_slice(nonce_bytes);
-            let plain = cipher
-                .decrypt(nonce, ct)
-                .map_err(|e| SecretError::DecryptFailed(format!("aes-gcm: {}", e)))?;
-            let s = String::from_utf8(plain)
-                .map_err(|e| SecretError::DecryptFailed(format!("utf8: {}", e)))?;
-            out.insert(k.clone(), s);
         }
-        Ok(out)
+        (out, failed)
+    }
+
+    fn try_decrypt_entry(cipher: &Aes256Gcm, b64: &str) -> Result<String, SecretError> {
+        let packed = base64::engine::general_purpose::STANDARD
+            .decode(b64)
+            .map_err(|e| SecretError::DecryptFailed(format!("base64: {}", e)))?;
+        if packed.len() <= NONCE_LEN {
+            return Err(SecretError::DecryptFailed("truncated entry".to_string()));
+        }
+        let (nonce_bytes, ct) = packed.split_at(NONCE_LEN);
+        let nonce = Nonce::from_slice(nonce_bytes);
+        let plain = cipher
+            .decrypt(nonce, ct)
+            .map_err(|e| SecretError::DecryptFailed(format!("aes-gcm: {}", e)))?;
+        String::from_utf8(plain)
+            .map_err(|e| SecretError::DecryptFailed(format!("utf8: {}", e)))
     }
 
     #[cfg(test)]
@@ -321,7 +404,7 @@ mod macos {
         }
 
         fn inner_with_cipher(path: PathBuf, cipher: Aes256Gcm) -> Inner {
-            Inner { path, cipher, entries: BTreeMap::new() }
+            Inner { path, cipher, entries: BTreeMap::new(), failed: Vec::new() }
         }
 
         #[test]
@@ -340,7 +423,8 @@ mod macos {
             let bytes = std::fs::read(&path).unwrap();
             let model: FileModel = serde_json::from_slice(&bytes).unwrap();
             assert_eq!(model.version, FILE_FORMAT_VERSION);
-            let reloaded = decrypt_all(&fixed_cipher(), &model.entries).unwrap();
+            let (reloaded, failed) = decrypt_all(&fixed_cipher(), &model.entries);
+            assert!(failed.is_empty());
             assert_eq!(reloaded.get("provider:claude").unwrap(), "sk-ant-test-123");
 
             inner.delete("provider:claude").unwrap();
@@ -363,38 +447,49 @@ mod macos {
         }
 
         #[test]
-        fn corrupted_ciphertext_reports_decrypt_failure() {
+        fn corrupted_entry_yields_failed_key_not_total_failure() {
             let cipher = fixed_cipher();
             let mut map = BTreeMap::new();
-            map.insert("k".to_string(), "v".to_string());
+            map.insert("good".to_string(), "v1".to_string());
+            map.insert("bad".to_string(), "v2".to_string());
             let mut encrypted = encrypt_all(&cipher, &map).unwrap();
-            // Flip one bit in the ciphertext → GCM auth tag must reject.
+            // Flip one bit in the "bad" ciphertext → GCM auth tag rejects.
             let tampered = {
-                let b64 = encrypted.get("k").unwrap();
+                let b64 = encrypted.get("bad").unwrap();
                 let mut bytes = base64::engine::general_purpose::STANDARD.decode(b64).unwrap();
                 let last = bytes.len() - 1;
                 bytes[last] ^= 0x01;
                 base64::engine::general_purpose::STANDARD.encode(&bytes)
             };
-            encrypted.insert("k".to_string(), tampered);
+            encrypted.insert("bad".to_string(), tampered);
 
-            let err = decrypt_all(&cipher, &encrypted).unwrap_err();
-            assert!(matches!(err, SecretError::DecryptFailed(_)), "got: {:?}", err);
+            let (ok, failed) = decrypt_all(&cipher, &encrypted);
+            // Partial recovery: the good entry is preserved, the bad one is
+            // listed as failed. The user's other providers stay accessible.
+            assert_eq!(ok.get("good").unwrap(), "v1");
+            assert!(ok.get("bad").is_none());
+            assert_eq!(failed, vec!["bad".to_string()]);
         }
 
         #[test]
-        fn wrong_key_reports_decrypt_failure() {
+        fn wrong_key_marks_all_entries_failed() {
             let cipher_a = fixed_cipher();
             let cipher_b = {
                 let key = [9u8; KEY_LEN];
                 Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(&key))
             };
             let mut map = BTreeMap::new();
-            map.insert("k".to_string(), "v".to_string());
+            map.insert("a".to_string(), "1".to_string());
+            map.insert("b".to_string(), "2".to_string());
             let encrypted = encrypt_all(&cipher_a, &map).unwrap();
-            // Simulates IOPlatformUUID change / hardware swap.
-            let err = decrypt_all(&cipher_b, &encrypted).unwrap_err();
-            assert!(matches!(err, SecretError::DecryptFailed(_)), "got: {:?}", err);
+            // Simulates IOPlatformUUID change / hardware swap: every entry
+            // should end up in `failed`, but load itself succeeds so the UI
+            // can prompt the user instead of the app crashing.
+            let (ok, failed) = decrypt_all(&cipher_b, &encrypted);
+            assert!(ok.is_empty());
+            assert_eq!(failed.len(), 2);
+            assert!(failed.contains(&"a".to_string()));
+            assert!(failed.contains(&"b".to_string()));
         }
 
         #[test]
@@ -403,6 +498,33 @@ mod macos {
             let path = tmp.path().join("does-not-exist.bin");
             let inner = Inner::load(&path).unwrap();
             assert!(inner.keys().is_empty());
+            assert!(inner.failed_keys().is_empty());
+        }
+
+        #[test]
+        fn set_on_previously_failed_key_clears_failed_flag() {
+            // After user re-enters a key that failed to decrypt, the
+            // "needs re-enter" hint must disappear.
+            let tmp = TempDir::new().unwrap();
+            let path = tmp.path().join("secrets.bin");
+            let mut inner = inner_with_cipher(path, fixed_cipher());
+            inner.failed.push("provider:claude".to_string());
+
+            inner.set("provider:claude", "sk-new").unwrap();
+            assert!(inner.failed_keys().is_empty());
+        }
+
+        #[test]
+        fn clear_all_wipes_entries_and_failed() {
+            let tmp = TempDir::new().unwrap();
+            let path = tmp.path().join("secrets.bin");
+            let mut inner = inner_with_cipher(path, fixed_cipher());
+            inner.set("k1", "v1").unwrap();
+            inner.failed.push("k2".to_string());
+
+            inner.clear_all().unwrap();
+            assert!(inner.keys().is_empty());
+            assert!(inner.failed_keys().is_empty());
         }
     }
 }

@@ -12,6 +12,8 @@ import {
   setSecret,
   writeSecretOrDelete,
   deleteSecret,
+  listFailedSecrets,
+  clearAllSecrets,
 } from '@/utils/secretStore';
 
 /**
@@ -323,6 +325,14 @@ interface SettingsState {
   soulInitialized: boolean;
   skillRegistry: string;
   permissionMode: PermissionMode;
+
+  /**
+   * Secret-store keys (e.g. `provider:claude`, `aux:webSearch`) that failed
+   * to decrypt at app start. Ephemeral — never persisted — repopulated each
+   * launch by `bootstrapSecrets`. The AI-services UI reads this to show a
+   * "please re-enter" hint on affected provider cards.
+   */
+  failedSecretKeys: string[];
 }
 
 interface SettingsActions {
@@ -392,6 +402,14 @@ interface SettingsActions {
   setComputerUseEnabled: (enabled: boolean) => void;
   setSoulInitialized: (initialized: boolean) => void;
   setPermissionMode: (mode: PermissionMode) => void;
+
+  /**
+   * Wipe every stored API key — both in the encrypted store and in memory.
+   * Meant as a hard reset escape hatch; also used automatically by the
+   * "clear all data" flow if one is ever added. The settings snapshot is
+   * otherwise preserved (provider entries, models, preferences).
+   */
+  clearAllStoredKeys: () => Promise<void>;
 }
 
 // ============================================================
@@ -575,6 +593,7 @@ export const useSettingsStore = create<SettingsStore>()(
       soulInitialized: false,
       skillRegistry: '',
       permissionMode: 'default' as PermissionMode,
+      failedSecretKeys: [],
 
       // ════════════════════════════════════════════════
       // Provider management actions (V2)
@@ -817,6 +836,37 @@ export const useSettingsStore = create<SettingsStore>()(
       setComputerUseEnabled: (computerUseEnabled) => set({ computerUseEnabled }),
       setSoulInitialized: (soulInitialized) => set({ soulInitialized }),
       setPermissionMode: (mode) => set({ permissionMode: mode }),
+
+      clearAllStoredKeys: async () => {
+        const s = useSettingsStore.getState();
+        // Collect the full set of known secret keys so the Windows/Linux
+        // keyring path (no enumeration API) has something to iterate.
+        const knownKeys = [
+          ...s.providers.map((p) => SECRET_KEYS.provider(p.id)),
+          SECRET_KEYS.auxWebSearch,
+          SECRET_KEYS.auxImageGen,
+        ];
+        try {
+          await clearAllSecrets(knownKeys);
+        } catch (err) {
+          console.warn('[secrets] clearAll backend failed:', err);
+          // Continue anyway — at minimum blank the in-memory keys so the
+          // user sees immediate effect. Next bootstrap will re-report any
+          // orphaned entries the backend couldn't remove.
+        }
+        set((state) => ({
+          providers: state.providers.map((p) => ({ ...p, apiKey: '' })),
+          auxiliaryServices: {
+            ...(state.auxiliaryServices.webSearch && {
+              webSearch: { ...state.auxiliaryServices.webSearch, apiKey: '' },
+            }),
+            ...(state.auxiliaryServices.imageGen && {
+              imageGen: { ...state.auxiliaryServices.imageGen, apiKey: '' },
+            }),
+          },
+          failedSecretKeys: [],
+        }));
+      },
     }),
     {
       name: 'abu-settings',
@@ -1274,6 +1324,19 @@ export async function bootstrapSecrets(): Promise<void> {
     }
   }
 
+  // Query the set of keys the backend couldn't decrypt (macOS hardware
+  // change scenario). Failure here is non-fatal; we just end up with an
+  // empty list and the UI skips the "please re-enter" hints.
+  let failedSecretKeys: string[] = [];
+  try {
+    failedSecretKeys = await listFailedSecrets();
+    if (failedSecretKeys.length > 0) {
+      console.warn('[secrets] decrypt failed for keys:', failedSecretKeys);
+    }
+  } catch (err) {
+    console.warn('[secrets] listFailedSecrets failed:', err);
+  }
+
   // Apply hydration — overwrite in-memory apiKey only when we fetched a
   // non-null value from the store (backfilled keys already match in-memory).
   useSettingsStore.setState((s) => {
@@ -1290,7 +1353,7 @@ export async function bootstrapSecrets(): Promise<void> {
       auxiliaryServices.imageGen = { ...auxiliaryServices.imageGen, apiKey: imageGenSecret };
     }
 
-    return { providers, auxiliaryServices };
+    return { providers, auxiliaryServices, failedSecretKeys };
   });
 
   // Flip the gate only if everything round-tripped cleanly. Subsequent

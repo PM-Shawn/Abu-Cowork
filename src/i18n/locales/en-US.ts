@@ -28,7 +28,7 @@ const enUS: TranslationDict = {
 
   memory: {
     categoryPreference: 'Preference',
-    categoryProject: 'Project',
+    categoryProject: 'Scenario',
     categoryFact: 'Fact',
     categoryDecision: 'Decision',
     categoryAction: 'Action',
@@ -298,6 +298,10 @@ const enUS: TranslationDict = {
     apiKey: 'API Key',
     apiKeyPlaceholder: 'Enter your API Key',
     apiKeyDesc: 'Stored locally, never uploaded to any server',
+    apiKeyDecryptFailed: 'API Key could not be decrypted. Please re-enter it (likely a hardware change or system migration).',
+    clearAllKeys: 'Clear all stored keys',
+    clearAllKeysConfirm: 'This removes every provider and auxiliary-service API key from this machine. You will have to re-enter them next time. Continue?',
+    clearAllKeysDone: 'All keys cleared',
     // Model Section
     model: 'Model',
     customModelOption: 'Custom Model...',

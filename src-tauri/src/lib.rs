@@ -1012,6 +1012,28 @@ fn secret_list(
     state.list().map_err(|e| e.to_string())
 }
 
+/// Keys that could not be decrypted at load time (macOS only; Windows/Linux
+/// always returns empty). The UI uses this to show a "please re-enter"
+/// indicator on affected provider cards after a hardware change.
+#[tauri::command]
+fn secret_failed_keys(
+    state: tauri::State<'_, secrets::SecretStore>,
+) -> Result<Vec<String>, String> {
+    state.failed_keys().map_err(|e| e.to_string())
+}
+
+/// Wipe every stored secret. `known_keys` is used on Windows/Linux because
+/// the `keyring` crate has no enumeration API; callers must pass the full
+/// list they want cleared. macOS ignores `known_keys` and truncates the
+/// ciphertext file directly.
+#[tauri::command]
+fn secret_clear_all(
+    state: tauri::State<'_, secrets::SecretStore>,
+    known_keys: Vec<String>,
+) -> Result<(), String> {
+    state.clear_all(&known_keys).map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 fn window_hide(app: AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
@@ -1260,7 +1282,9 @@ pub fn run() {
             secret_set,
             secret_delete,
             secret_has,
-            secret_list
+            secret_list,
+            secret_failed_keys,
+            secret_clear_all
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

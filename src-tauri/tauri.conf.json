@@ -46,6 +46,7 @@
   },
   "bundle": {
     "active": true,
+    "createUpdaterArtifacts": true,
     "targets": ["dmg", "nsis"],
     "resources": [
       "builtin-skills/",

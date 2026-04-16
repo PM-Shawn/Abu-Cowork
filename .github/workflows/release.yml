@@ -53,14 +53,25 @@ jobs:
       - name: Build Tauri app
         env:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          RAW_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
         shell: bash
         run: |
-          # Write signing key to file and strip ALL whitespace (key is single-line base64).
-          # echo/GitHub secret injection can introduce trailing \n or \r, which breaks base64
-          # decoding because the "==" padding must be exactly at the end.
+          # Write signing key to file. GitHub Secrets injection or shell expansion
+          # can append trailing bytes (observed: extra %/\n at end). Use Python to
+          # strip all non-base64 chars then truncate to a multiple of 4, which is
+          # the only valid length for base64.
+          #
           # Tauri 2 only reads TAURI_SIGNING_PRIVATE_KEY; it auto-detects file path vs content.
-          printf '%s' "${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}" | tr -d ' \t\r\n' > "$RUNNER_TEMP/tauri-signing-key.txt"
+          python3 <<'PYEOF' > "$RUNNER_TEMP/tauri-signing-key.txt"
+          import os, sys, re
+          raw = os.environ.get('RAW_KEY', '')
+          cleaned = re.sub(r'[^A-Za-z0-9+/=]', '', raw)
+          valid_len = (len(cleaned) // 4) * 4
+          sys.stdout.write(cleaned[:valid_len])
+          PYEOF
           echo "Key file size: $(wc -c < "$RUNNER_TEMP/tauri-signing-key.txt") bytes"
+          echo "Last 16 bytes (hex):"
+          tail -c 16 "$RUNNER_TEMP/tauri-signing-key.txt" | od -c | head -2
           export TAURI_SIGNING_PRIVATE_KEY="$RUNNER_TEMP/tauri-signing-key.txt"
           npx tauri build --target ${{ matrix.target }}
           rm -f "$RUNNER_TEMP/tauri-signing-key.txt"

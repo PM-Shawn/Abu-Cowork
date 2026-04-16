@@ -127,6 +127,11 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+      # Checkout FIRST: actions/checkout@v4 defaults to clean: true which runs
+      # `git clean -ffdx` and would wipe any untracked dirs (like release-assets/)
+      # created by a prior step. Keep checkout ahead of the download.
+      - uses: actions/checkout@v4
+
       - name: Download updater assets from GitHub Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -143,8 +148,6 @@ jobs:
 
           echo "=== Downloaded ==="
           ls -la release-assets/
-
-      - uses: actions/checkout@v4
 
       - name: Generate latest.json
         shell: bash

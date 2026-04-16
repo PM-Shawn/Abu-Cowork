@@ -56,9 +56,10 @@ jobs:
         shell: bash
         run: |
           # Write signing key to file — avoids Windows env var corruption
-          # (Windows appends stray chars to multi-line secrets, causing base64 decode errors)
+          # (Windows runner adds stray chars to multi-line secrets, breaking base64 decode)
+          # Tauri 2 only reads TAURI_SIGNING_PRIVATE_KEY; it auto-detects file path vs content.
           echo "${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}" > "$RUNNER_TEMP/tauri-signing-key.txt"
-          export TAURI_SIGNING_PRIVATE_KEY_PATH="$RUNNER_TEMP/tauri-signing-key.txt"
+          export TAURI_SIGNING_PRIVATE_KEY="$RUNNER_TEMP/tauri-signing-key.txt"
           npx tauri build --target ${{ matrix.target }}
           rm -f "$RUNNER_TEMP/tauri-signing-key.txt"
 

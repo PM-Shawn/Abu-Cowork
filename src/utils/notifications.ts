@@ -3,8 +3,45 @@ import {
   requestPermission,
   sendNotification,
 } from '@tauri-apps/plugin-notification';
+import { getCurrentWindow } from '@tauri-apps/api/window';
+import { isMacOS } from './platform';
 
 let permissionGranted = false;
+let unreadCount = 0;
+
+async function shouldBadge(): Promise<boolean> {
+  try {
+    const focused = await getCurrentWindow().isFocused();
+    return !focused;
+  } catch {
+    return false;
+  }
+}
+
+async function bumpDockBadge(): Promise<void> {
+  if (!isMacOS()) return;
+  try {
+    unreadCount += 1;
+    await getCurrentWindow().setBadgeCount(unreadCount);
+  } catch (err) {
+    console.warn('[Notification] Failed to set dock badge:', err);
+  }
+}
+
+export async function clearDockBadge(): Promise<void> {
+  if (unreadCount === 0) return;
+  if (!isMacOS()) return;
+  try {
+    unreadCount = 0;
+    await getCurrentWindow().setBadgeCount(undefined);
+  } catch (err) {
+    console.warn('[Notification] Failed to clear dock badge:', err);
+  }
+}
+
+async function maybeBadge(): Promise<void> {
+  if (await shouldBadge()) await bumpDockBadge();
+}
 
 /**
  * Initialize notification permissions on app startup
@@ -48,6 +85,7 @@ export async function notifyTaskCompleted(conversationTitle: string): Promise<vo
       body: `「${conversationTitle}」已完成 ✨`,
     });
     console.log('[Notification] Notification sent successfully');
+    await maybeBadge();
   } catch (err) {
     console.warn('[Notification] Failed to send:', err);
   }
@@ -63,6 +101,7 @@ export async function notifyScheduledTaskCompleted(taskName: string): Promise<vo
       title: '定时任务完成',
       body: `「${taskName}」已执行完成 ✨`,
     });
+    await maybeBadge();
   } catch (err) {
     console.warn('[Notification] Failed to send:', err);
   }
@@ -78,6 +117,7 @@ export async function notifyScheduledTaskError(taskName: string): Promise<void> 
       title: '定时任务出错',
       body: `「${taskName}」执行出错了 😢`,
     });
+    await maybeBadge();
   } catch (err) {
     console.warn('[Notification] Failed to send:', err);
   }
@@ -93,6 +133,7 @@ export async function notifyTriggerCompleted(triggerName: string): Promise<void>
       title: '触发器执行完成',
       body: `「${triggerName}」已处理完成`,
     });
+    await maybeBadge();
   } catch (err) {
     console.warn('[Notification] Failed to send:', err);
   }
@@ -108,6 +149,7 @@ export async function notifyTriggerError(triggerName: string): Promise<void> {
       title: '触发器执行出错',
       body: `「${triggerName}」执行出错了`,
     });
+    await maybeBadge();
   } catch (err) {
     console.warn('[Notification] Failed to send:', err);
   }
@@ -126,6 +168,7 @@ export async function notifyTaskError(conversationTitle: string): Promise<void> 
       title: '哎呀出错了',
       body: `「${conversationTitle}」执行出错了 😢`,
     });
+    await maybeBadge();
   } catch (err) {
     console.warn('[Notification] Failed to send:', err);
   }

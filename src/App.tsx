@@ -32,7 +32,7 @@ import { TooltipProvider } from '@/components/ui/tooltip';
 import { PanelLeft, PanelRight } from 'lucide-react';
 import { isMacOS } from '@/utils/platform';
 import { cn } from '@/lib/utils';
-import { initNotifications } from '@/utils/notifications';
+import { initNotifications, clearDockBadge } from '@/utils/notifications';
 import { schedulerEngine } from '@/core/scheduler/scheduler';
 import { triggerEngine } from '@/core/trigger/triggerEngine';
 import { imChannelRouter } from '@/core/im/channelRouter';
@@ -72,6 +72,24 @@ function App() {
   const handleMinimize = useCallback(() => {
     setShowCloseDialog(false);
     invoke('window_hide');
+  }, []);
+
+  // Clear dock badge whenever the window regains focus
+  useEffect(() => {
+    let unlistenFn: (() => void) | null = null;
+    let cancelled = false;
+    getCurrentWindow()
+      .onFocusChanged(({ payload: focused }) => {
+        if (focused) clearDockBadge();
+      })
+      .then((fn) => {
+        if (cancelled) fn();
+        else unlistenFn = fn;
+      });
+    return () => {
+      cancelled = true;
+      unlistenFn?.();
+    };
   }, []);
 
   // Listen for window close-requested event from Rust

@@ -9,6 +9,7 @@
     "core:window:allow-hide",
     "core:window:allow-close",
     "core:window:allow-start-dragging",
+    "core:window:allow-set-badge-count",
     "opener:default",
     "opener:allow-open-path",
     "opener:allow-open-url",

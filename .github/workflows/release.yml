@@ -55,10 +55,12 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         shell: bash
         run: |
-          # Write signing key to file — avoids Windows env var corruption
-          # (Windows runner adds stray chars to multi-line secrets, breaking base64 decode)
+          # Write signing key to file and strip ALL whitespace (key is single-line base64).
+          # echo/GitHub secret injection can introduce trailing \n or \r, which breaks base64
+          # decoding because the "==" padding must be exactly at the end.
           # Tauri 2 only reads TAURI_SIGNING_PRIVATE_KEY; it auto-detects file path vs content.
-          echo "${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}" > "$RUNNER_TEMP/tauri-signing-key.txt"
+          printf '%s' "${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}" | tr -d ' \t\r\n' > "$RUNNER_TEMP/tauri-signing-key.txt"
+          echo "Key file size: $(wc -c < "$RUNNER_TEMP/tauri-signing-key.txt") bytes"
           export TAURI_SIGNING_PRIVATE_KEY="$RUNNER_TEMP/tauri-signing-key.txt"
           npx tauri build --target ${{ matrix.target }}
           rm -f "$RUNNER_TEMP/tauri-signing-key.txt"

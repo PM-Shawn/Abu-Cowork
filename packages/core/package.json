@@ -1,0 +1,12 @@
+{
+  "name": "@abu/core",
+  "version": "0.0.1",
+  "private": true,
+  "description": "Abu shared agent engine (scaffold)",
+  "type": "module",
+  "main": "src/index.ts",
+  "types": "src/index.ts",
+  "scripts": {
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  }
+}

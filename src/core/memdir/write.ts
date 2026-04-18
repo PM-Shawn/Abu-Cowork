@@ -8,8 +8,9 @@
  * All writes use a per-directory mutex to prevent concurrent corruption.
  */
 
-import { readTextFile, writeTextFile, remove } from '@tauri-apps/plugin-fs';
+import { readTextFile, remove } from '@tauri-apps/plugin-fs';
 import { exists } from '@tauri-apps/plugin-fs';
+import { atomicWrite } from '../../utils/atomicFs';
 import { ensureParentDir, joinPath } from '../../utils/pathUtils';
 import { getMemoryDir } from './paths';
 import { scanMemoryFiles } from './scan';
@@ -77,7 +78,7 @@ async function rebuildIndex(dir: string, headers: MemoryHeader[]): Promise<void>
     lines.push(`- [${h.filename}](${h.filename}) — ${h.description}`);
   }
   const indexPath = joinPath(dir, MEMORY_INDEX_FILENAME);
-  await writeTextFile(indexPath, lines.join('\n') + '\n');
+  await atomicWrite(indexPath, lines.join('\n') + '\n');
 }
 
 /**
@@ -103,7 +104,7 @@ async function addToIndex(dir: string, filename: string, description: string): P
     const updated = lines.map(l =>
       l.includes(`[${filename}]`) ? newLine : l
     );
-    await writeTextFile(indexPath, updated.join('\n'));
+    await atomicWrite(indexPath, updated.join('\n'));
     return;
   }
 
@@ -118,7 +119,7 @@ async function addToIndex(dir: string, filename: string, description: string): P
     return;
   }
 
-  await writeTextFile(indexPath, lines.join('\n'));
+  await atomicWrite(indexPath, lines.join('\n'));
 }
 
 /**
@@ -130,7 +131,7 @@ async function removeFromIndex(dir: string, filename: string): Promise<void> {
     const content = await readTextFile(indexPath);
     const lines = content.split('\n');
     const filtered = lines.filter(l => !l.includes(`[${filename}]`));
-    await writeTextFile(indexPath, filtered.join('\n'));
+    await atomicWrite(indexPath, filtered.join('\n'));
   } catch {
     // Index doesn't exist — nothing to remove
   }
@@ -185,7 +186,7 @@ export async function writeMemory(options: WriteMemoryOptions): Promise<string> 
     await ensureParentDir(filePath);
 
     const fileContent = buildFileContent(name, description, type, source, content);
-    await writeTextFile(filePath, fileContent);
+    await atomicWrite(filePath, fileContent);
     await addToIndex(dir, filename, description);
 
     return filename;
@@ -209,7 +210,7 @@ export async function touchMemory(filePath: string): Promise<void> {
         /^(updated:\s*)(\d+)/m,
         () => `updated: ${Date.now()}`,
       );
-      await writeTextFile(filePath, updated);
+      await atomicWrite(filePath, updated);
     } catch {
       // File may have been deleted
     }
@@ -252,7 +253,7 @@ export async function clearAllMemories(workspacePath?: string | null): Promise<n
     // Clear the index
     const indexPath = joinPath(dir, MEMORY_INDEX_FILENAME);
     try {
-      await writeTextFile(indexPath, '# Memory Index\n');
+      await atomicWrite(indexPath, '# Memory Index\n');
     } catch { /* ignore */ }
     return count;
   });

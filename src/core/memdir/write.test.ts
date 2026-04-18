@@ -1,13 +1,28 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { readTextFile, writeTextFile, exists, remove, readDir } from '@tauri-apps/plugin-fs';
+import { readTextFile, exists, remove, readDir } from '@tauri-apps/plugin-fs';
+import { invoke } from '@tauri-apps/api/core';
 import { writeMemory, deleteMemory, clearAllMemories, touchMemory } from './write';
 import { _resetCachedHome } from './paths';
 
 const mockReadTextFile = vi.mocked(readTextFile);
-const mockWriteTextFile = vi.mocked(writeTextFile);
 const mockExists = vi.mocked(exists);
 const mockRemove = vi.mocked(remove);
 const mockReadDir = vi.mocked(readDir);
+const mockInvoke = vi.mocked(invoke);
+
+/**
+ * Read-back helper: extract all atomic_write_text invocations as [path, content]
+ * tuples. Mirrors the old `mockWriteTextFile.mock.calls` shape so existing
+ * assertions can port with minimal diff.
+ */
+function atomicWriteCalls(): Array<[string, string]> {
+  return mockInvoke.mock.calls
+    .filter(([cmd]) => cmd === 'atomic_write_text')
+    .map(([, args]) => {
+      const a = args as { path: string; content: string };
+      return [a.path, a.content];
+    });
+}
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -16,6 +31,8 @@ beforeEach(() => {
   mockReadDir.mockResolvedValue([]);
   mockReadTextFile.mockRejectedValue(new Error('not found'));
   mockExists.mockResolvedValue(false);
+  // atomic_write_text returns void on success
+  mockInvoke.mockResolvedValue(undefined);
 });
 
 describe('writeMemory', () => {
@@ -32,22 +49,22 @@ describe('writeMemory', () => {
     expect(filename).toMatch(/^feedback_test_memory\.md$/);
 
     // Should have written the .md file
-    const writeCalls = mockWriteTextFile.mock.calls;
+    const writeCalls = atomicWriteCalls();
     expect(writeCalls.length).toBeGreaterThanOrEqual(2); // file + index
 
     // Check file content has frontmatter
-    const fileCall = writeCalls.find(c => (c[0] as string).includes('feedback_'));
+    const fileCall = writeCalls.find(([p]) => p.includes('feedback_'));
     expect(fileCall).toBeDefined();
-    const fileContent = fileCall![1] as string;
+    const fileContent = fileCall![1];
     expect(fileContent).toContain('---');
     expect(fileContent).toContain('name: Test memory');
     expect(fileContent).toContain('type: feedback');
     expect(fileContent).toContain('Remember this.');
 
     // Check index was updated
-    const indexCall = writeCalls.find(c => (c[0] as string).includes('MEMORY.md'));
+    const indexCall = writeCalls.find(([p]) => p.includes('MEMORY.md'));
     expect(indexCall).toBeDefined();
-    const indexContent = indexCall![1] as string;
+    const indexContent = indexCall![1];
     expect(indexContent).toContain('feedback_test_memory.md');
   });
 
@@ -60,12 +77,12 @@ describe('writeMemory', () => {
       workspacePath: '/workspace/myapp',
     });
 
-    const writeCalls = mockWriteTextFile.mock.calls;
-    const fileCall = writeCalls.find(c => (c[0] as string).includes('project_'));
+    const writeCalls = atomicWriteCalls();
+    const fileCall = writeCalls.find(([p]) => p.includes('project_'));
     expect(fileCall).toBeDefined();
     // Path should go through projects/<sanitized>/memory/
-    expect((fileCall![0] as string)).toContain('/projects/');
-    expect((fileCall![0] as string)).toContain('/memory/');
+    expect(fileCall![0]).toContain('/projects/');
+    expect(fileCall![0]).toContain('/memory/');
   });
 
   it('generates filename from type and name', async () => {
@@ -92,8 +109,9 @@ Content`;
 
     await touchMemory('/mock/test.md');
 
-    expect(mockWriteTextFile).toHaveBeenCalledOnce();
-    const written = mockWriteTextFile.mock.calls[0][1] as string;
+    const writes = atomicWriteCalls();
+    expect(writes).toHaveLength(1);
+    const written = writes[0][1];
     expect(written).toContain('accessCount: 6');
     expect(written).not.toContain('updated: 1000');
   });
@@ -112,8 +130,9 @@ describe('deleteMemory', () => {
     await deleteMemory('test.md', null);
 
     expect(mockRemove).toHaveBeenCalledOnce();
-    expect(mockWriteTextFile).toHaveBeenCalledOnce();
-    const indexContent = mockWriteTextFile.mock.calls[0][1] as string;
+    const writes = atomicWriteCalls();
+    expect(writes).toHaveLength(1);
+    const indexContent = writes[0][1];
     expect(indexContent).not.toContain('test.md');
     expect(indexContent).toContain('other.md');
   });
@@ -140,7 +159,7 @@ describe('clearAllMemories', () => {
     expect(count).toBe(2);
     expect(mockRemove).toHaveBeenCalledTimes(2);
     // Index should be reset
-    const indexCall = mockWriteTextFile.mock.calls.find(c => (c[0] as string).includes('MEMORY.md'));
+    const indexCall = atomicWriteCalls().find(([p]) => p.includes('MEMORY.md'));
     expect(indexCall).toBeDefined();
     expect(indexCall![1]).toBe('# Memory Index\n');
   });

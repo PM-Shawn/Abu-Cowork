@@ -139,9 +139,22 @@ function App() {
       console.warn('[App] File watcher init error:', err);
     });
 
+    // Skill drafts: boot-time refresh + hourly TTL sweeper (workspace-switch
+    // refresh is already wired in skillDraftsStore). startDraftsSweeper is
+    // idempotent.
+    import('@/stores/skillDraftsStore').then(({ useSkillDraftsStore, startDraftsSweeper }) => {
+      void useSkillDraftsStore.getState().refresh();
+      void useSkillDraftsStore.getState().cleanExpired();
+      void useSkillDraftsStore.getState().cleanTrash();
+      startDraftsSweeper();
+    }).catch((err) => {
+      console.warn('[App] Drafts store init error:', err);
+    });
+
     return () => {
       cleanupMCPStoreSync();
       stopAllWatchers();
+      import('@/stores/skillDraftsStore').then(({ stopDraftsSweeper }) => stopDraftsSweeper()).catch(() => {});
     };
   }, [refreshDiscovery]);
 

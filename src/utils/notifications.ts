@@ -156,6 +156,36 @@ export async function notifyTriggerError(triggerName: string): Promise<void> {
 }
 
 /**
+ * Notify the user that the agent has proposed a new skill draft. Routing
+ * follows the proactivity preset (PRD §G):
+ *   - shy      → nothing (agent shouldn't propose at all; silent no-op for safety)
+ *   - companion → dock badge only, window-unfocused gate still applies
+ *   - butler   → system notification + dock badge
+ *
+ * This is intentionally distinct from `notifyTaskCompleted` etc. — draft
+ * proposals are quieter and shouldn't compete with task-completion UX.
+ */
+export async function notifyDraftProposal(
+  draftName: string,
+  proactivity: 'shy' | 'companion' | 'butler',
+): Promise<void> {
+  if (proactivity === 'shy') return;
+
+  await maybeBadge();
+
+  if (proactivity === 'butler' && permissionGranted) {
+    try {
+      await sendNotification({
+        title: '阿布想存一个技能',
+        body: `「${draftName}」已落入草稿区，等你审核 ✨`,
+      });
+    } catch (err) {
+      console.warn('[Notification] Failed to send draft proposal:', err);
+    }
+  }
+}
+
+/**
  * Send an error notification
  */
 export async function notifyTaskError(conversationTitle: string): Promise<void> {

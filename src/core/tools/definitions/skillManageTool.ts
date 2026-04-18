@@ -439,6 +439,20 @@ async function createAction(input: Record<string, unknown>): Promise<ActionResul
     /* best-effort refresh */
   });
 
+  // Surface the new draft in the drafts store so the UI (Task #21) and
+  // notification layer know immediately. Best-effort: a refresh failure
+  // mustn't break the tool response.
+  const { useSkillDraftsStore } = await import('../../../stores/skillDraftsStore');
+  await useSkillDraftsStore.getState().refresh().catch(() => {
+    /* best-effort refresh */
+  });
+
+  // Notify per proactivity preset (shy=silent, companion=badge, butler=system).
+  const { notifyDraftProposal } = await import('../../../utils/notifications');
+  await notifyDraftProposal(name, proactivity).catch(() => {
+    /* notification is best-effort */
+  });
+
   return {
     success: true,
     status: 'pending-user-approval',

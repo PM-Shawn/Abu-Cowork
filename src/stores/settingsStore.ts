@@ -327,6 +327,17 @@ interface SettingsState {
   permissionMode: PermissionMode;
 
   /**
+   * Soul (persona) settings. Currently holds `proactivity` which controls
+   * how aggressively the agent consumes/creates skills (see
+   * `src/core/agent/prompts/skillsGuidance.ts`). No UI yet — defaults to
+   * 'companion'; power users edit settings JSON directly until Module H's
+   * Preset UI ships.
+   */
+  soul: {
+    proactivity: 'shy' | 'companion' | 'butler';
+  };
+
+  /**
    * Content safety scanner settings (see `src/core/safety/contentGuard.ts`).
    *
    * Intentionally **no Settings UI** — these are an escape hatch for power
@@ -610,6 +621,9 @@ export const useSettingsStore = create<SettingsStore>()(
       soulInitialized: false,
       skillRegistry: '',
       permissionMode: 'default' as PermissionMode,
+      soul: {
+        proactivity: 'companion',
+      },
       safety: {
         enableContentGuard: true,
         bypass: [],
@@ -891,9 +905,21 @@ export const useSettingsStore = create<SettingsStore>()(
     }),
     {
       name: 'abu-settings',
-      version: 18,
+      version: 19,
       migrate: (persisted: unknown, version: number) => {
         const state = persisted as Record<string, unknown>;
+
+        // ════════════════════════════════════════════════
+        // V19: Soul personality — add proactivity preset
+        // (shy / companion / butler). Default 'companion' for existing users
+        // so the companion guidance prompt governs self-evolution behavior.
+        // Additive — no data transform needed.
+        // ════════════════════════════════════════════════
+        if (version < 19) {
+          if (state.soul === undefined) {
+            state.soul = { proactivity: 'companion' };
+          }
+        }
 
         // ════════════════════════════════════════════════
         // V18: Content safety settings (scanner feature flag + bypass list).
@@ -1233,6 +1259,7 @@ export const useSettingsStore = create<SettingsStore>()(
         soulInitialized: state.soulInitialized,
         skillRegistry: state.skillRegistry,
         permissionMode: state.permissionMode,
+        soul: state.soul,
         safety: state.safety,
       }),
       onRehydrateStorage: () => (state) => {

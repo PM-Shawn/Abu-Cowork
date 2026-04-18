@@ -10,6 +10,7 @@ import { getSessionOutputDir } from '../session/sessionDir';
 import { isWindows } from '../../utils/platform';
 import { mcpManager } from '../mcp/client';
 import { substituteVariables, executeInlineCommands } from '../skill/preprocessor';
+import { getSkillsGuidance } from './prompts/skillsGuidance';
 import type { PromptSection } from '../llm/promptSections';
 import { sectionsToString } from '../llm/promptSections';
 
@@ -601,6 +602,19 @@ ${isWindows()
     const disabled = allSkills.filter((s) => disabledSkills.has(s.name));
 
     if (skills.length > 0 || disabled.length > 0) {
+      // Skills-guidance: per-proactivity prompt that tells the agent when
+      // to skill_view and when to skill_manage. Sits immediately before
+      // available-skills so the behavior rules colocate with the list.
+      // Suppressed in fork contexts — subagents have their own tool policies.
+      if (!isForkContext) {
+        const proactivity = settingsState.soul?.proactivity;
+        sections.push({
+          name: 'skills-guidance',
+          text: '\n' + getSkillsGuidance(proactivity),
+          cacheable: true,
+        });
+      }
+
       const contextWindowSize = settingsState.contextWindowSize ?? 200000;
       // Budget in characters (rough estimate: 1 token ≈ 4 chars)
       const budget = Math.max(16000, Math.floor(contextWindowSize * 4 * 0.02));

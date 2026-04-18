@@ -131,6 +131,18 @@ describe('skillDraftsStore · acceptDraft', () => {
     expect(mockAcceptDraft).toHaveBeenCalledWith('from-card', '/captured/ws');
   });
 
+  it('acceptDraft syncs global workspaceStore to the override', async () => {
+    // Regression guard for "accepted skill invisible in Toolbox":
+    // discoveryStore.refresh reads the live global workspace. If accept
+    // leaves the global at null while writing the skill under the override
+    // workspace, the skill never appears in the main list.
+    useWorkspaceStore.setState({ currentPath: null });
+
+    await useSkillDraftsStore.getState().acceptDraft('any', '/captured/ws');
+
+    expect(useWorkspaceStore.getState().currentPath).toBe('/captured/ws');
+  });
+
   it('captures filesystem errors without crashing', async () => {
     mockAcceptDraft.mockRejectedValueOnce(new Error('already exists'));
 

@@ -97,6 +97,18 @@ export const useSkillDraftsStore = create<SkillDraftsStore>()((set, get) => ({
     if (!wp) return { ok: false, error: 'no active workspace' };
     try {
       await acceptDraftFs(name, wp);
+
+      // Align the global workspaceStore to the workspace the skill was
+      // just written to, so discoveryStore.refresh (which reads the
+      // global store) scans the right project. Without this, accepting
+      // from an old conversation whose conv.workspacePath was never
+      // bound leaves currentPath=null, and the promoted skill stays
+      // invisible in the Toolbox even though it's on disk.
+      const globalWp = useWorkspaceStore.getState().currentPath;
+      if (globalWp !== wp) {
+        useWorkspaceStore.getState().setWorkspace(wp);
+      }
+
       // Accepted skills need to show up in the main skills list — refresh the
       // loader so discoveryStore picks them up on its next read.
       await skillLoader.discoverSkills(wp).catch(() => {
@@ -117,6 +129,13 @@ export const useSkillDraftsStore = create<SkillDraftsStore>()((set, get) => ({
     if (!wp) return { ok: false, error: 'no active workspace' };
     try {
       await rejectDraftFs(name, wp, reason);
+      // Mirror the acceptDraft sync: if override is steering us, bring the
+      // global store along so the drafts panel (which reads globalStore in
+      // its own refresh) doesn't fall back to an empty "no workspace" view.
+      const globalWp = useWorkspaceStore.getState().currentPath;
+      if (globalWp !== wp) {
+        useWorkspaceStore.getState().setWorkspace(wp);
+      }
       await get().refresh();
       return { ok: true };
     } catch (err) {

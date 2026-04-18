@@ -2,7 +2,8 @@ import { parse as parseYaml, stringify as stringifyYaml } from 'yaml';
 import { readTextFile, readDir, exists } from '@tauri-apps/plugin-fs';
 import { homeDir, resolve, resolveResource } from '@tauri-apps/api/path';
 import type { Skill, SkillMetadata, SkillHookEntry, SkillSource } from '../../types';
-import { joinPath, getParentDir } from '../../utils/pathUtils';
+import { joinPath, getParentDir, normalizeSeparators } from '../../utils/pathUtils';
+import { sanitizePath } from '../memdir/paths';
 
 /**
  * Normalize tool list: accept both YAML array (Abu format) and
@@ -119,14 +120,33 @@ function parseSkillHooks(
 
 export class SkillLoader {
   private skills: Map<string, Skill> = new Map();
+  /** Last workspace this loader was discovered against (null = global-only). */
+  private currentWorkspace: string | null = null;
 
-  /** Scan all skill directories and load SKILL.md files */
-  async discoverSkills(): Promise<SkillMetadata[]> {
+  /**
+   * Scan all skill directories and load SKILL.md files.
+   *
+   * Scan order (first-win on name collision):
+   *
+   *   WITH workspacePath:
+   *     1. {workspace}/.abu/skills/              (project, git-shareable)
+   *     2. {workspace}/.agents/skills/           (project-standard)
+   *     3. ~/.abu/projects/<key>/skills/         (workspace-auto, agent-written)
+   *     4. ~/.abu/projects/<key>/skills/.drafts/ (draft, pending review)
+   *
+   *   ALWAYS:
+   *     5. ~/.abu/skills/                        (user global)
+   *     6. ~/.agents/skills/                     (standard cross-client)
+   *     7. <resource>/builtin-skills/            (bundled)
+   *
+   * With `workspacePath=null`, steps 1-4 are skipped and the loader
+   * returns only the global + builtin set.
+   */
+  async discoverSkills(workspacePath?: string | null): Promise<SkillMetadata[]> {
     this.skills.clear();
+    this.currentWorkspace = workspacePath ?? null;
 
     const home = await homeDir();
-    const projectAbuDir = await resolve('.abu/skills');
-    const projectStandardDir = await resolve('.agents/skills');
 
     // Bundled resources: resolveResource points to the app bundle's resource dir
     let builtinDir: string | null = null;
@@ -155,22 +175,43 @@ export class SkillLoader {
       }
     }
 
-    // Scan order: earlier entries take priority on name conflicts.
-    // Abu-specific dirs first, then cross-client standard dirs (.agents/),
-    // then builtin. This ensures Abu-specific overrides always win.
-    const dirs: Array<{ path: string; source: SkillSource }> = [
+    const dirs: Array<{ path: string; source: SkillSource }> = [];
+
+    // Workspace-scoped dirs take priority so project-local skills override globals.
+    if (workspacePath) {
+      dirs.push(
+        { path: joinPath(workspacePath, '.abu/skills'), source: 'project' },
+        { path: joinPath(workspacePath, '.agents/skills'), source: 'project-standard' },
+      );
+      // Agent auto-write + drafts land under ~/.abu/projects/<sanitized>/, aligned
+      // with the memdir key-sanitization convention so memory + skills share the
+      // same per-workspace namespace on disk.
+      const key = sanitizePath(normalizeSeparators(workspacePath));
+      dirs.push(
+        { path: joinPath(home, '.abu/projects', key, 'skills'), source: 'workspace-auto' },
+        { path: joinPath(home, '.abu/projects', key, 'skills/.drafts'), source: 'draft' },
+      );
+    }
+
+    // Global + cross-client + bundled, always scanned.
+    dirs.push(
       { path: joinPath(home, '.abu/skills'), source: 'user' },
       { path: joinPath(home, '.agents/skills'), source: 'standard' },
-      { path: projectAbuDir, source: 'project' },
-      { path: projectStandardDir, source: 'project-standard' },
-      ...(builtinDir ? [{ path: builtinDir, source: 'builtin' as SkillSource }] : []),
-    ];
+    );
+    if (builtinDir) {
+      dirs.push({ path: builtinDir, source: 'builtin' });
+    }
 
     for (const { path, source } of dirs) {
       await this.scanDirectory(path, source);
     }
 
     return this.getAvailableSkills();
+  }
+
+  /** Currently-active workspace path (null when discovered without one). */
+  getCurrentWorkspace(): string | null {
+    return this.currentWorkspace;
   }
 
   private async scanDirectory(dir: string, source: SkillSource): Promise<void> {
@@ -210,14 +251,29 @@ export class SkillLoader {
     return this.skills.get(name) ?? null;
   }
 
-  /** Get metadata for all discovered skills (without full content) */
-  getAvailableSkills(): SkillMetadata[] {
-    return Array.from(this.skills.values()).map((skill) => {
-      // Omit runtime-only fields not part of SkillMetadata
-      const { content, filePath, skillDir, ...meta } = skill;
-      void content; void filePath; void skillDir;
-      return meta;
-    });
+  /**
+   * Get metadata for all discovered skills (without full content).
+   *
+   * `draft` source skills are excluded by default — drafts are a pending-
+   * review staging area and should never appear in the L0 system-prompt
+   * index or agent-facing skill list. Pass `{ includeDrafts: true }` to
+   * surface them (for the Settings → Skills → Drafts tab).
+   */
+  getAvailableSkills(options: { includeDrafts?: boolean } = {}): SkillMetadata[] {
+    const includeDrafts = options.includeDrafts ?? false;
+    return Array.from(this.skills.values())
+      .filter((skill) => includeDrafts || skill.source !== 'draft')
+      .map((skill) => {
+        // Omit runtime-only fields not part of SkillMetadata
+        const { content, filePath, skillDir, ...meta } = skill;
+        void content; void filePath; void skillDir;
+        return meta;
+      });
+  }
+
+  /** Get full draft entries (includes content) for the review UI. */
+  getDraftSkills(): Skill[] {
+    return Array.from(this.skills.values()).filter((s) => s.source === 'draft');
   }
 
   /** Get full skill by name */

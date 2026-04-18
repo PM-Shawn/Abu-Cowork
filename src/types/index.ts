@@ -258,8 +258,27 @@ export interface SkillHookEntry {
   }>;
 }
 
-// Skill source — where the skill was loaded from
-export type SkillSource = 'builtin' | 'user' | 'standard' | 'project' | 'project-standard';
+// Skill source — where the skill was loaded from.
+//
+// Priority order (first-win; earlier scans beat later ones on name collision):
+//   1. project            — {workspace}/.abu/skills/, git-shareable
+//   2. project-standard   — {workspace}/.agents/skills/, git-shareable cross-client
+//   3. workspace-auto     — ~/.abu/projects/<key>/skills/, agent-auto-written for this project
+//   4. draft              — ~/.abu/projects/<key>/skills/.drafts/, pending user review
+//   5. user               — ~/.abu/skills/, user's personal global
+//   6. standard           — ~/.agents/skills/, cross-client global
+//   7. builtin            — bundled with Abu, read-only
+//
+// Agent is allowed to create/modify only `workspace-auto` and (with confirm) `user`
+// scopes — everything else is read-only to the agent (see PRD 2.4).
+export type SkillSource =
+  | 'builtin'
+  | 'user'
+  | 'standard'
+  | 'project'
+  | 'project-standard'
+  | 'workspace-auto'
+  | 'draft';
 
 export interface SkillMetadata {
   name: string;

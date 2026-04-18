@@ -264,7 +264,7 @@ export interface SkillHookEntry {
 //   1. project            — {workspace}/.abu/skills/, git-shareable
 //   2. project-standard   — {workspace}/.agents/skills/, git-shareable cross-client
 //   3. workspace-auto     — ~/.abu/projects/<key>/skills/, agent-auto-written for this project
-//   4. draft              — ~/.abu/projects/<key>/skills/.drafts/, pending user review
+//   4. draft              — ~/.abu/projects/<key>/skills/drafts/, pending user review
 //   5. user               — ~/.abu/skills/, user's personal global
 //   6. standard           — ~/.agents/skills/, cross-client global
 //   7. builtin            — bundled with Abu, read-only

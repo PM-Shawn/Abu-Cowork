@@ -132,7 +132,7 @@ export class SkillLoader {
    *     1. {workspace}/.abu/skills/              (project, git-shareable)
    *     2. {workspace}/.agents/skills/           (project-standard)
    *     3. ~/.abu/projects/<key>/skills/         (workspace-auto, agent-written)
-   *     4. ~/.abu/projects/<key>/skills/.drafts/ (draft, pending review)
+   *     4. ~/.abu/projects/<key>/skills/drafts/ (draft, pending review)
    *
    *   ALWAYS:
    *     5. ~/.abu/skills/                        (user global)
@@ -186,10 +186,16 @@ export class SkillLoader {
       // Agent auto-write + drafts land under ~/.abu/projects/<sanitized>/, aligned
       // with the memdir key-sanitization convention so memory + skills share the
       // same per-workspace namespace on disk.
+      //
+      // NOTE: drafts dir is "drafts" (visible), not ".drafts" (hidden). Tauri's
+      // fs plugin glob scopes ($HOME/**) follow Unix glob rules where **
+      // does not traverse dot-prefixed directories — a hidden drafts/ dir
+      // would be read-blocked at the capability layer. The visible name lets
+      // $HOME/.abu/** cover it without per-path capability entries.
       const key = sanitizePath(normalizeSeparators(workspacePath));
       dirs.push(
         { path: joinPath(home, '.abu/projects', key, 'skills'), source: 'workspace-auto' },
-        { path: joinPath(home, '.abu/projects', key, 'skills/.drafts'), source: 'draft' },
+        { path: joinPath(home, '.abu/projects', key, 'skills/drafts'), source: 'draft' },
       );
     }
 

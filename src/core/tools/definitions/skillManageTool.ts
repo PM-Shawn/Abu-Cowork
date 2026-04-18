@@ -2,7 +2,7 @@
  * skill_manage — agent-managed skill creation + patching (MVP).
  *
  * Three actions the MVP covers:
- *   - create:     propose a new skill (always lands in .drafts/ for user review)
+ *   - create:     propose a new skill (always lands in drafts/ for user review)
  *   - patch:      modify an existing skill in place; Copy-on-Modify when the
  *                 original lives outside agent's write scope
  *   - write_file: add or update a supporting file in a skill directory
@@ -15,7 +15,7 @@
  * ## Scope rules
  *
  *   writable:  workspace-auto  (~/.abu/projects/<key>/skills/)
- *   writable:  draft           (~/.abu/projects/<key>/skills/.drafts/) — via create
+ *   writable:  draft           (~/.abu/projects/<key>/skills/drafts/) — via create
  *   read-only: user, project, project-standard, standard, builtin
  *
  * Agent attempts to patch a read-only source transparently Copy-on-Modify
@@ -88,7 +88,9 @@ async function getWorkspaceAutoSkillsDir(workspacePath: string): Promise<string>
 }
 
 async function getDraftSkillsDir(workspacePath: string): Promise<string> {
-  return joinPath(await getWorkspaceAutoSkillsDir(workspacePath), '.drafts');
+  // Visible "drafts" (not ".drafts") so Tauri $HOME/** globs traverse it.
+  // See loader.ts comment on why hidden-prefix was rejected.
+  return joinPath(await getWorkspaceAutoSkillsDir(workspacePath), 'drafts');
 }
 
 /** Require an active workspace for any write — no writes to global dirs without one. */

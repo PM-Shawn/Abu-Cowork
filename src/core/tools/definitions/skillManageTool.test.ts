@@ -84,12 +84,12 @@ describe('skill_manage · create', () => {
 
     expect(result.success).toBe(true);
     expect(result.status).toBe('pending-user-approval');
-    expect(result.path).toContain('.drafts/weekly-report/SKILL.md');
+    expect(result.path).toContain('drafts/weekly-report/SKILL.md');
 
     // Actually called atomicWriteWithBackup
     expect(mockAtomicWriteWithBackup).toHaveBeenCalledOnce();
     const [writtenPath, writtenContent] = mockAtomicWriteWithBackup.mock.calls[0];
-    expect(writtenPath).toContain('.drafts/weekly-report/SKILL.md');
+    expect(writtenPath).toContain('drafts/weekly-report/SKILL.md');
     expect(writtenContent).toContain('name: weekly-report');
     expect(writtenContent).toContain('# Procedure');
   });

@@ -117,7 +117,7 @@ describe('SkillLoader.discoverSkills · workspace awareness', () => {
 
   it('drafts are NOT in getAvailableSkills() by default (excluded from L0 index)', async () => {
     const workspace = '/Users/testuser/projects/myapp';
-    const draftDir = '/Users/testuser/.abu/projects/-Users-testuser-projects-myapp/skills/.drafts';
+    const draftDir = '/Users/testuser/.abu/projects/-Users-testuser-projects-myapp/skills/drafts';
     stubFs(
       {
         [draftDir]: ['pending-skill'],

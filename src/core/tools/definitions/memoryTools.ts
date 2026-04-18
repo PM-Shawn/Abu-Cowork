@@ -73,16 +73,34 @@ export const updateMemoryTool: ToolDefinition = {
       if (!content) return '错误：content 不能为空。';
 
       const { writeMemory } = await import('../../memdir/write');
-      const filename = await writeMemory({
-        name,
-        description,
-        type,
-        content,
-        source: 'agent_explicit',
-        workspacePath,
-      });
-
-      return `已保存记忆 [${type}]: ${name} → ${filename}`;
+      const { ContentSafetyError } = await import('../../safety/contentGuard');
+      try {
+        const filename = await writeMemory({
+          name,
+          description,
+          type,
+          content,
+          source: 'agent_explicit',
+          workspacePath,
+        });
+        return `已保存记忆 [${type}]: ${name} → ${filename}`;
+      } catch (err) {
+        if (err instanceof ContentSafetyError) {
+          // Give the agent a directive, self-correctable error rather than a
+          // generic failure — include pattern IDs + lines so it can rewrite
+          // without the offending content.
+          const patterns = err.scan.findings
+            .filter((f) => f.severity === 'critical' || f.severity === 'high')
+            .map((f) => `[${f.patternId}] ${f.description} (line ${f.line}: "${f.match}")`)
+            .join('\n  ');
+          return (
+            `Error: memory content was blocked by the safety scanner.\n` +
+            `Matched patterns:\n  ${patterns}\n` +
+            `Rewrite the memory without these patterns and retry.`
+          );
+        }
+        throw err;
+      }
     } catch (err) {
       return `Error updating memory: ${err instanceof Error ? err.message : String(err)}`;
     }

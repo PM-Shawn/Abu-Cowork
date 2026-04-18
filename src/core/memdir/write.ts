@@ -12,6 +12,7 @@ import { readTextFile, remove } from '@tauri-apps/plugin-fs';
 import { exists } from '@tauri-apps/plugin-fs';
 import { atomicWrite } from '../../utils/atomicFs';
 import { ensureParentDir, joinPath } from '../../utils/pathUtils';
+import { scanContent, evaluate, ContentSafetyError } from '../safety/contentGuard';
 import { getMemoryDir } from './paths';
 import { scanMemoryFiles } from './scan';
 import type { MemoryType, MemorySource, MemoryHeader } from './types';
@@ -148,6 +149,15 @@ export interface WriteMemoryOptions {
   workspacePath?: string | null;
   /** Override filename (for updates) */
   filename?: string;
+  /**
+   * Skip the contentGuard safety scan.
+   *
+   * Intended for grandfathering historical data during migration, where
+   * old entries predate the scanner and blocking them would strand the
+   * user's existing memory. **DO NOT** use for agent-originated writes —
+   * those must always be scanned.
+   */
+  bypassScan?: boolean;
 }
 
 /**
@@ -163,7 +173,18 @@ export async function writeMemory(options: WriteMemoryOptions): Promise<string> 
     source = 'agent_explicit',
     workspacePath,
     filename: overrideFilename,
+    bypassScan = false,
   } = options;
+
+  // Safety scan before any disk I/O. Memory content is injected into the
+  // system prompt — a blocked injection pattern here is as bad as a prompt
+  // injection attack, so we fail fast.
+  if (!bypassScan) {
+    const scan = scanContent(content);
+    if (evaluate(scan, 'memory') === 'block') {
+      throw new ContentSafetyError(scan, 'memory');
+    }
+  }
 
   const dir = await getMemoryDir(workspacePath);
 

@@ -160,23 +160,44 @@ export async function extractMemoriesFromConversation(
 
     // Write to memdir as .md files
     const { writeMemory } = await import('../memdir/write');
+    const { ContentSafetyError } = await import('../safety/contentGuard');
     let written = 0;
+    let safetyBlocked = 0;
     for (const mem of extracted.slice(0, 5)) { // max 5 entries per extraction
       if (!mem.name || !mem.content || !mem.type) continue;
 
-      await writeMemory({
-        name: mem.name,
-        description: mem.content.slice(0, 80),
-        type: mem.type,
-        content: mem.content,
-        source: 'auto_flush',
-        workspacePath,
-      });
-      written++;
+      // Each write is independent: if one entry trips the scanner, skip it
+      // and continue with the rest. Auto-extraction is best-effort — we
+      // never abort the whole flush on a single bad entry.
+      try {
+        await writeMemory({
+          name: mem.name,
+          description: mem.content.slice(0, 80),
+          type: mem.type,
+          content: mem.content,
+          source: 'auto_flush',
+          workspacePath,
+        });
+        written++;
+      } catch (err) {
+        if (err instanceof ContentSafetyError) {
+          safetyBlocked++;
+          console.warn(
+            `[Memory] Auto-extraction skipped "${mem.name}" — content safety block:`,
+            err.scan.findings.map((f) => f.patternId).join(', '),
+          );
+        } else {
+          // Unexpected error — rethrow to outer catch for logging
+          throw err;
+        }
+      }
     }
 
     if (written > 0) {
-      console.log(`[Memory] Extracted ${written} memories from conversation ${conversationId}`);
+      const suffix = safetyBlocked > 0 ? ` (${safetyBlocked} blocked by safety scan)` : '';
+      console.log(`[Memory] Extracted ${written} memories from conversation ${conversationId}${suffix}`);
+    } else if (safetyBlocked > 0) {
+      console.log(`[Memory] All ${safetyBlocked} extracted entries blocked by safety scan for ${conversationId}`);
     }
   } catch (err) {
     // Best-effort — never block session flow

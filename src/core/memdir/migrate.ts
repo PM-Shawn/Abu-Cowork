@@ -101,6 +101,10 @@ async function migrateEntries(
         content: entry.content,
         source: mapSource(entry.sourceType),
         workspacePath,
+        // Grandfather clause: legacy entries predate the content scanner.
+        // Blocking them would strand the user's existing memory, which is
+        // worse than the residual risk of keeping already-persisted data.
+        bypassScan: true,
       });
       count++;
     } catch (err) {
@@ -128,6 +132,8 @@ async function migrateFlatFile(
       content: content.trim(),
       source: 'user_manual',
       workspacePath,
+      // Grandfather: legacy flat-file entry predates the content scanner.
+      bypassScan: true,
     });
     return true;
   } catch {

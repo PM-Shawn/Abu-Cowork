@@ -131,6 +131,47 @@ describe('skill_manage · create', () => {
     expect(sidecar?.content).toContain('"triggerReason": "5 步任务成功"');
   });
 
+  it('agent_proposed=true result carries an Interactive Notice Card (Module I)', async () => {
+    // Chat renderer picks this payload up and renders SkillProposalCard.
+    vi.spyOn(skillLoader, 'getSkill').mockReturnValue(undefined);
+    const input = Object.freeze({
+      action: 'create',
+      name: 'proposal-card',
+      agent_proposed: true,
+      trigger_reason: '3 步成功任务',
+      frontmatter: Object.freeze({ name: 'proposal-card', description: '测试提议卡' }),
+      content: '# Proposal body',
+    });
+    const result = JSON.parse((await skillManageTool.execute(input, {})) as string);
+
+    expect(result.notice_card).toBeDefined();
+    expect(result.notice_card.type).toBe('skill-proposal');
+    expect(result.notice_card.id).toBe('proposal-card');
+    expect(result.notice_card.skillProposal).toEqual(
+      expect.objectContaining({
+        skillName: 'proposal-card',
+        description: '测试提议卡',
+        triggerReason: '3 步成功任务',
+        draftPath: expect.stringContaining('/drafts/proposal-card/SKILL.md'),
+        fullContent: expect.stringContaining('# Proposal body'),
+      }),
+    );
+  });
+
+  it('default direct-write path does NOT emit a notice card', async () => {
+    // User explicitly asked → live skill → nothing to review, no card.
+    vi.spyOn(skillLoader, 'getSkill').mockReturnValue(undefined);
+    const input = Object.freeze({
+      action: 'create',
+      name: 'direct-noop',
+      frontmatter: Object.freeze({ name: 'direct-noop', description: 'x' }),
+      content: '# body',
+    });
+    const result = JSON.parse((await skillManageTool.execute(input, {})) as string);
+    expect(result.success).toBe(true);
+    expect(result.notice_card).toBeUndefined();
+  });
+
   it('accepts flat description when LLM flattens the schema', async () => {
     // Some LLM tool-call encodings flatten nested objects; the tool should
     // fall back to top-level fields rather than failing with "frontmatter required".

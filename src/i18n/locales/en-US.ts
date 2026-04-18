@@ -774,6 +774,18 @@ const enUS: TranslationDict = {
     draftsOnboardCompanionDesc: 'Propose when clearly helpful (recommended)',
     draftsOnboardButlerDesc: 'Capture every successful workflow',
     draftsOnboardConfirm: 'Got it',
+    // Interactive notice card · skill proposal (Module I)
+    skillProposalCardTitle: '💡 Abu proposes saving a skill',
+    skillProposalCardWhy: 'Reason',
+    skillProposalCardExpand: 'View full content',
+    skillProposalCardCollapse: 'Collapse',
+    skillProposalCardAccept: 'Accept',
+    skillProposalCardReject: 'Reject',
+    skillProposalCardRejectCategory: "Don't propose this kind",
+    skillProposalCardAccepted: '✓ Accepted',
+    skillProposalCardRejected: 'Rejected (in trash for 7 days)',
+    skillProposalCardRejectedCategory: 'Rejected · this kind will not be proposed',
+    skillProposalCardMissing: 'Draft no longer exists (may have been processed via the drafts panel or expired)',
   },
 
   permission: {

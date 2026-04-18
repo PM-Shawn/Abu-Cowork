@@ -44,7 +44,7 @@
 import { readTextFile, exists, mkdir, readDir } from '@tauri-apps/plugin-fs';
 import { homeDir } from '@tauri-apps/api/path';
 
-import type { ToolDefinition, SkillMetadata, Skill, ToolExecutionContext } from '../../../types';
+import type { ToolDefinition, SkillMetadata, Skill, ToolExecutionContext, InteractiveNoticeCard } from '../../../types';
 import { TOOL_NAMES } from '../toolNames';
 import {
   atomicWrite,
@@ -256,6 +256,13 @@ interface SuccessResult {
   path?: string;
   strategy?: string; // fuzzy patch strategy used
   match_count?: number;
+  /**
+   * Interactive notice card attached to this result. Chat renderer parses
+   * the tool's JSON output, pulls this field off, and renders a card below
+   * the tool call. Currently only populated by the agent-proposed create
+   * branch (Module I), but the field is generic to accept future card types.
+   */
+  notice_card?: InteractiveNoticeCard;
 }
 
 interface ErrorResult {
@@ -466,12 +473,29 @@ async function createAction(input: Record<string, unknown>, context?: ToolExecut
       /* notification is best-effort */
     });
 
+    // Build the inline notice card so the chat renderer can surface the
+    // proposal right in the conversation (Module I). Agent's full SKILL.md
+    // serialized content is embedded so the expand-to-preview UI doesn't
+    // need an extra disk read; the card data is self-contained.
+    const noticeCard: InteractiveNoticeCard = {
+      type: 'skill-proposal',
+      id: name,
+      skillProposal: {
+        skillName: name,
+        description: frontmatter.description ?? '',
+        triggerReason,
+        draftPath: record.skillMdPath,
+        fullContent: serialized,
+      },
+    };
+
     return {
       success: true,
       status: 'pending-user-approval',
       message:
-        `草稿 "${name}" 已提议，待用户审核。路径：${record.skillMdPath}。用户可在「工具箱 → 技能」的草稿面板里采纳或拒绝。`,
+        `草稿 "${name}" 已提议。用户可在聊天里直接采纳或拒绝；也可到「工具箱 → 技能」的草稿面板处理。路径：${record.skillMdPath}。`,
       path: record.skillMdPath,
+      notice_card: noticeCard,
     };
   }
 

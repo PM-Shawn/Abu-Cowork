@@ -775,6 +775,18 @@ const zhCN: TranslationDict = {
     draftsOnboardCompanionDesc: '明确能帮上时主动提议（推荐）',
     draftsOnboardButlerDesc: '积极沉淀，每个成功任务都考虑建 skill',
     draftsOnboardConfirm: '开始吧',
+    // Interactive notice card · skill proposal (Module I)
+    skillProposalCardTitle: '💡 阿布提议沉淀技能',
+    skillProposalCardWhy: '提议原因',
+    skillProposalCardExpand: '查看完整内容',
+    skillProposalCardCollapse: '收起',
+    skillProposalCardAccept: '采纳',
+    skillProposalCardReject: '拒绝',
+    skillProposalCardRejectCategory: '这类别再提议',
+    skillProposalCardAccepted: '✓ 已采纳',
+    skillProposalCardRejected: '已拒绝（放回收区 7 天）',
+    skillProposalCardRejectedCategory: '已拒绝 · 同类不再提议',
+    skillProposalCardMissing: '草稿已不存在（可能已通过草稿面板处理或已过期）',
   },
 
   permission: {

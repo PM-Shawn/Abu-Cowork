@@ -749,6 +749,18 @@ export interface TranslationDict {
     draftsOnboardCompanionDesc: string;
     draftsOnboardButlerDesc: string;
     draftsOnboardConfirm: string;
+    // Interactive notice card · skill proposal (Module I)
+    skillProposalCardTitle: string;
+    skillProposalCardWhy: string;
+    skillProposalCardExpand: string;
+    skillProposalCardCollapse: string;
+    skillProposalCardAccept: string;
+    skillProposalCardReject: string;
+    skillProposalCardRejectCategory: string;
+    skillProposalCardAccepted: string;
+    skillProposalCardRejected: string;
+    skillProposalCardRejectedCategory: string;
+    skillProposalCardMissing: string;   // draft file gone (accepted/expired elsewhere)
   };
 
   // Permission Dialog

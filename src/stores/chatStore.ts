@@ -1,7 +1,7 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import { immer } from 'zustand/middleware/immer';
-import type { Message, Conversation, AgentStatus, TokenUsage, ConversationStatus, ToolCallForContext, ToolResultContent } from '../types';
+import type { Message, Conversation, AgentStatus, TokenUsage, ConversationStatus, ToolCallForContext, ToolResultContent, ToolCall, NoticeCardAction } from '../types';
 import type { ExecutionStepSnapshot } from '../types/execution';
 import { useWorkspaceStore } from './workspaceStore';
 import { useTaskExecutionStore } from './taskExecutionStore';
@@ -148,6 +148,13 @@ interface ChatActions {
   setLastMessageContent: (convId: string, content: string, msgId?: string) => void;
   finishStreaming: (convId: string, msgId?: string) => void;
   updateToolCall: (convId: string, messageId: string, toolCallId: string, result: string, resultContent?: ToolResultContent[], isError?: boolean, hideScreenshot?: boolean) => void;
+  /**
+   * Persist the user's click on an interactive notice card attached to a
+   * tool call (see `ToolCall.noticeCardAction`). Called from the card
+   * React component when [采纳] / [拒绝] / [这类别] is clicked. Writes
+   * through to disk via replaceMessageById so reload keeps the state.
+   */
+  setToolCallNoticeCardAction: (convId: string, messageId: string, toolCallId: string, action: NoticeCardAction) => void;
 
   // New message operations
   editMessage: (convId: string, messageId: string, newContent: string) => void;
@@ -509,6 +516,19 @@ export const useChatStore = create<ChatStore>()(
               if (isError) tc.isError = true;
               if (hideScreenshot != null) tc.hideScreenshot = hideScreenshot;
               tc.isExecuting = false;
+
+              // Lift notice_card out of the tool's JSON result into a
+              // first-class field on the tool call so the chat renderer
+              // can pick it up without re-parsing on every frame. Best-
+              // effort — a malformed result just leaves noticeCard unset.
+              try {
+                const parsed = JSON.parse(result) as { notice_card?: ToolCall['noticeCard'] };
+                if (parsed?.notice_card) {
+                  tc.noticeCard = parsed.notice_card;
+                }
+              } catch {
+                /* non-JSON result — skip card extraction */
+              }
             }
           }
         });
@@ -516,6 +536,24 @@ export const useChatStore = create<ChatStore>()(
         // only hit disk when finishStreaming / turn-boundary replaceMessageById fires —
         // so a crash/force-quit mid-stream (or a late-arriving result after the
         // enclosing message was already snapshotted) loses toolCalls on reload.
+        const updatedMsg = get().conversations[convId]?.messages.find((m) => m.id === messageId);
+        if (updatedMsg) {
+          import('../core/session/conversationStorage').then(({ replaceMessageById }) => {
+            replaceMessageById(convId, updatedMsg).catch(() => {});
+          });
+        }
+      },
+
+      setToolCallNoticeCardAction: (convId, messageId, toolCallId, action) => {
+        set((state) => {
+          const msg = state.conversations[convId]?.messages.find((m) => m.id === messageId);
+          const tc: ToolCall | undefined = msg?.toolCalls?.find((t) => t.id === toolCallId);
+          if (tc) {
+            tc.noticeCardAction = action;
+          }
+        });
+        // Persist so the settled state survives reload. Mirrors the pattern
+        // used by updateToolCall above.
         const updatedMsg = get().conversations[convId]?.messages.find((m) => m.id === messageId);
         if (updatedMsg) {
           import('../core/session/conversationStorage').then(({ replaceMessageById }) => {

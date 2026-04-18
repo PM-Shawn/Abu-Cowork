@@ -4,6 +4,45 @@
 
 // --- Messages & Conversations ---
 
+// ─── Interactive Notice Cards (Module I) ───────────────────────────────
+//
+// Cards render inline in the chat stream right after the tool call that
+// produced them. They're the user-facing UI for "agent wants to do X,
+// click to confirm". The source of truth is the tool's JSON result —
+// chat renderer parses `notice_card` out of the stringified result and
+// renders a React component per card.type.
+//
+// Action persistence lives in the tool call's `noticeCardAction` field
+// (serialized with conversation state), so reloading the conversation
+// preserves the "already accepted/rejected" UI state.
+
+export type NoticeCardAction = 'accepted' | 'rejected' | 'rejected-category';
+
+/** Payload for a "save this as a skill?" proposal card. */
+export interface SkillProposalPayload {
+  skillName: string;
+  /** Short description from SKILL.md frontmatter. */
+  description: string;
+  /** Agent's one-line reason for proposing ("6 步任务完成"). */
+  triggerReason?: string;
+  /** Absolute path to the draft SKILL.md, so the card can click-through to files. */
+  draftPath: string;
+  /** Full SKILL.md content for the expand-to-preview UI. */
+  fullContent: string;
+}
+
+/**
+ * Base card shape. Extend by adding new `type` values + the matching
+ * type-specific payload field. Keeping one union in one file avoids
+ * scattered ad-hoc card shapes across the codebase.
+ */
+export interface InteractiveNoticeCard {
+  type: 'skill-proposal';
+  /** Stable ID per card — currently the skill name for skill-proposal cards. */
+  id: string;
+  skillProposal?: SkillProposalPayload;
+}
+
 export interface ToolCall {
   id: string;
   name: string;
@@ -16,6 +55,20 @@ export interface ToolCall {
   endTime?: number;    // Timestamp when tool execution completed
   hidden?: boolean;    // Hidden from UI (e.g., report_plan)
   hideScreenshot?: boolean;  // If true, screenshot thumbnails hidden from chat UI (still sent to LLM)
+  /**
+   * Interactive notice card attached to this tool call (e.g. a
+   * "save as skill?" proposal). Populated from the tool's JSON result
+   * when present. Chat renderer picks it up and renders the card right
+   * below the tool's regular output.
+   */
+  noticeCard?: InteractiveNoticeCard;
+  /**
+   * User's action on the notice card, if any. Persisted with the
+   * conversation so reopening shows the settled state. Absence means
+   * "card still actionable" — absence is the normal state for fresh
+   * cards until the user clicks a button.
+   */
+  noticeCardAction?: NoticeCardAction;
 }
 
 // Multimodal content types for messages

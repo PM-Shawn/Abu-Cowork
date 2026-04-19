@@ -51,14 +51,25 @@ vi.mock('@/stores/toastStore', () => ({
     selector({ addToast: mockAddToast }),
 }));
 
-vi.mock('@/stores/settingsStore', () => ({
-  useSettingsStore: {
-    getState: () => ({
-      openToolbox: mockOpenToolbox,
-      setToolboxSearchQuery: mockSetToolboxSearchQuery,
-    }),
-  },
-}));
+// Mutable per-test settings state so tests can toggle the Task #50
+// onboarding gate on/off. Default: onboarding done (mimics steady-
+// state users) so the existing accept/reject/defer tests keep working
+// without needing to mock around the gate.
+const settingsState = {
+  soul: { draftsOnboardingShown: true, proactivity: 'companion' as const },
+  openToolbox: mockOpenToolbox,
+  setToolboxSearchQuery: mockSetToolboxSearchQuery,
+};
+
+vi.mock('@/stores/settingsStore', () => {
+  const useSettingsStore = ((selector: (s: typeof settingsState) => unknown) =>
+    selector(settingsState)) as {
+    (selector: (s: typeof settingsState) => unknown): unknown;
+    getState: () => typeof settingsState;
+  };
+  useSettingsStore.getState = () => settingsState;
+  return { useSettingsStore };
+});
 
 vi.mock('@/core/memdir/write', () => ({
   writeMemory: (...args: unknown[]) => mockWriteMemory(...args),
@@ -107,6 +118,9 @@ beforeEach(() => {
   draftsStoreState.drafts = [{ skillName: 'weekly-digest' }];
   draftsStoreState.isLoading = false;
   draftsStoreState.lastRefreshedAt = Date.now();
+  // Reset onboarding to "done" baseline — the Task #50 gate tests flip
+  // this to false locally.
+  settingsState.soul.draftsOnboardingShown = true;
 });
 
 // @testing-library/react's auto-cleanup doesn't always fire with
@@ -304,6 +318,51 @@ describe('SkillProposalCard · settled state', () => {
     expect(screen.queryByText(/→ Open skills panel/)).not.toBeInTheDocument();
     // Read-only — no accept / reject / defer buttons on settled pill.
     expect(screen.queryByRole('button', { name: /^Accept$/ })).not.toBeInTheDocument();
+  });
+});
+
+describe('SkillProposalCard · first-use onboarding gate (Task #50)', () => {
+  it('renders onboarding prompt when draftsOnboardingShown is false', () => {
+    settingsState.soul.draftsOnboardingShown = false;
+    renderCard();
+
+    // Shows context (skill name + description) so user knows what
+    // they're being asked about, but not the accept/reject buttons.
+    expect(screen.getByText('weekly-digest')).toBeInTheDocument();
+    expect(screen.getByText('Generate a weekly Jira digest')).toBeInTheDocument();
+    expect(screen.getByText(/pick a proactivity level/)).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /^Accept$/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /^Reject$/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Decide later/ })).not.toBeInTheDocument();
+  });
+
+  it('clicking the gate button opens the Toolbox skills tab', async () => {
+    settingsState.soul.draftsOnboardingShown = false;
+    const user = userEvent.setup();
+    renderCard();
+
+    await user.click(screen.getByRole('button', { name: /Open Toolbox/ }));
+    expect(mockOpenToolbox).toHaveBeenCalledWith('skills');
+  });
+
+  it('settled actions take priority over the onboarding gate', () => {
+    // Regression: if the user has already settled this card (pre-onboard,
+    // against all odds), don't retroactively gate it behind onboarding.
+    settingsState.soul.draftsOnboardingShown = false;
+    renderCard({ settledAction: 'accepted' });
+
+    expect(screen.queryByText(/pick a proactivity level/)).not.toBeInTheDocument();
+    expect(screen.getByText(/Accepted/)).toBeInTheDocument();
+  });
+
+  it('once onboarding is done, the card renders normally', () => {
+    settingsState.soul.draftsOnboardingShown = true;
+    renderCard();
+
+    expect(screen.queryByText(/pick a proactivity level/)).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /^Accept$/ })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /^Reject$/ })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Decide later/ })).toBeInTheDocument();
   });
 });
 

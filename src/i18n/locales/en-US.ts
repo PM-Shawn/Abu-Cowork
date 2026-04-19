@@ -796,6 +796,8 @@ const enUS: TranslationDict = {
     skillProposalCardDeferred: 'Decide later · still available in drafts panel',
     skillProposalCardMissing: 'Draft no longer exists (may have been processed via the drafts panel or expired)',
     skillProposalCardJump: '→ Open skills panel',
+    skillProposalCardOnboardGate: "Abu proposed your first skill. Open the Toolbox to pick a proactivity level, then come back to decide.",
+    skillProposalCardOnboardGateAction: 'Open Toolbox to finish setup',
     skillPatchedCardLabel: 'Abu patched skill',
     categoryBlocksTitle: 'Blocked proposal categories',
     categoryBlocksCount: '{count} blocked',

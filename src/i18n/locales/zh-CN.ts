@@ -797,6 +797,8 @@ const zhCN: TranslationDict = {
     skillProposalCardDeferred: '稍后处理 · 可在草稿面板操作',
     skillProposalCardMissing: '草稿已不存在（可能已通过草稿面板处理或已过期）',
     skillProposalCardJump: '→ 打开技能面板',
+    skillProposalCardOnboardGate: '阿布给你推荐了第一个技能。点开工具箱选一下"主动度"，再来决定留不留。',
+    skillProposalCardOnboardGateAction: '打开工具箱完成引导',
     skillPatchedCardLabel: 'Abu 修正了技能',
     categoryBlocksTitle: '已屏蔽的同类提议',
     categoryBlocksCount: '{count} 条',

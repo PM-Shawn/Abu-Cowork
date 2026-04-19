@@ -773,6 +773,9 @@ export interface TranslationDict {
     skillProposalCardDeferred: string;   // settled-pill label for deferred state
     skillProposalCardMissing: string;   // draft file gone (accepted/expired elsewhere)
     skillProposalCardJump: string;      // "→ 打开技能面板" link label
+    // First-use onboarding gate (Task #50)
+    skillProposalCardOnboardGate: string;        // explanatory text
+    skillProposalCardOnboardGateAction: string;  // button label
     // Interactive notice card · skill patched (Task #41)
     skillPatchedCardLabel: string;      // "Abu 修正了技能" / "Abu patched skill"
     // Category blocks (Task #45 — reject-category undo)

@@ -62,6 +62,17 @@ export default function SkillProposalCard({
   );
   const draftsLoading = useSkillDraftsStore((s) => s.isLoading);
   const draftsInitialized = useSkillDraftsStore((s) => s.lastRefreshedAt !== null);
+  // Task #50: Gate actionable buttons behind first-time onboarding.
+  // Without this, a first-run user sees a skill proposal card before
+  // they've ever encountered the Toolbox's proactivity-preset picker —
+  // so they either commit blindly or dismiss something they don't
+  // understand. Agent-auto proposals still fire (gating them would be
+  // a chicken-and-egg deadlock: no proposal → no visible draft → no
+  // onboarding trigger), but the in-chat buttons wait until the user
+  // completes Toolbox onboarding.
+  const onboardingShown = useSettingsStore(
+    (s) => s.soul?.draftsOnboardingShown ?? false,
+  );
 
   // ── Skill-patched notice (Task #41) ─────────────────────────────
   // Lightweight read-only pill for "agent silently modified a skill".
@@ -229,6 +240,42 @@ export default function SkillProposalCard({
     return (
       <div className="my-2 px-3 py-2 rounded-lg border border-[var(--abu-border-subtle)] bg-[var(--abu-bg-muted)] text-xs text-[var(--abu-text-tertiary)]">
         <span className="font-medium">{proposal.skillName}</span> — {t.toolbox.skillProposalCardMissing}
+      </div>
+    );
+  }
+
+  // ── First-use onboarding gate (Task #50) ─────────────────────────
+  // If the user hasn't completed the Toolbox drafts onboarding yet,
+  // render a muted prompt card with a one-tap button that opens
+  // Toolbox → Drafts, where the proactivity-preset picker is waiting.
+  // Still shows the skill name + description so the user has context,
+  // but buttons are suppressed until preferences are set.
+  if (!onboardingShown) {
+    const handleOpenToolbox = () => {
+      useSettingsStore.getState().openToolbox('skills');
+    };
+    return (
+      <div className="my-2 rounded-xl border border-[var(--abu-border-subtle)] bg-[var(--abu-bg-muted)] overflow-hidden">
+        <div className="px-3 py-2.5">
+          <div className="text-xs font-semibold text-[var(--abu-text-primary)] flex items-center gap-1.5">
+            <Sparkles className="h-3.5 w-3.5 text-[var(--abu-clay)]" />
+            {proposal.skillName}
+          </div>
+          {proposal.description && (
+            <div className="text-[11px] text-[var(--abu-text-muted)] mt-0.5 leading-relaxed line-clamp-2">
+              {proposal.description}
+            </div>
+          )}
+          <div className="text-[11px] text-[var(--abu-text-tertiary)] mt-2 leading-relaxed">
+            {t.toolbox.skillProposalCardOnboardGate}
+          </div>
+          <button
+            onClick={handleOpenToolbox}
+            className="mt-2 px-2.5 py-1 rounded-md text-[11px] font-medium text-white bg-[var(--abu-clay)] hover:bg-[var(--abu-clay-hover)] transition-colors"
+          >
+            {t.toolbox.skillProposalCardOnboardGateAction}
+          </button>
+        </div>
       </div>
     );
   }

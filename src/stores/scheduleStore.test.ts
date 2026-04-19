@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import { useScheduleStore, computeNextRunAt } from './scheduleStore';
-import type { ScheduleConfig } from '../types/schedule';
+import { useScheduleStore, computeNextRunAt, applyCatchupOnRehydrate } from './scheduleStore';
+import type { ScheduleConfig, ScheduledTask } from '../types/schedule';
 
 describe('scheduleStore', () => {
   beforeEach(() => {
@@ -256,6 +256,137 @@ describe('scheduleStore', () => {
       expect(state.editingTaskId).toBe('task1');
       useScheduleStore.getState().closeEditor();
       expect(useScheduleStore.getState().showEditor).toBe(false);
+    });
+  });
+
+  // ── applyCatchupOnRehydrate (cold-start catchup) ──
+  describe('applyCatchupOnRehydrate', () => {
+    // Local helper: build only the fields the catchup logic touches. The
+    // rest of ScheduledTask is filled with safe defaults via the cast —
+    // the test would fail loudly if applyCatchupOnRehydrate started
+    // reading a field we're not providing.
+    function mkTask(overrides: Partial<ScheduledTask>): ScheduledTask {
+      return {
+        id: 'task-1',
+        name: 'test',
+        prompt: 'do something',
+        schedule: { frequency: 'daily', time: { hour: 9, minute: 0 } },
+        status: 'active',
+        createdAt: 0,
+        updatedAt: 0,
+        runs: [],
+        totalRuns: 0,
+        workspacePath: null,
+        ...overrides,
+      } as ScheduledTask;
+    }
+
+    const DAY = 24 * 60 * 60 * 1000;
+    const HOUR = 60 * 60 * 1000;
+
+    it('triggers an immediate catchup when a daily task missed its window', () => {
+      // App was closed for 3 days. The "next expected" run (24h after
+      // lastRunAt) is now ~2 days in the past — this is the signal to
+      // collapse the gap into a single immediate run on boot.
+      const now = Date.now();
+      const tasks: Record<string, ScheduledTask> = {
+        t1: mkTask({ id: 't1', lastRunAt: now - 3 * DAY }),
+      };
+      applyCatchupOnRehydrate(tasks, now);
+      expect(tasks.t1.nextRunAt).toBe(now);
+    });
+
+    it('picks the natural next slot when no run has been missed', () => {
+      // Ran 1 hour ago. The "next expected" is at most 1 day out,
+      // still in the future, so no catchup fires and we fall through
+      // to the normal schedule.
+      const now = Date.now();
+      const tasks: Record<string, ScheduledTask> = {
+        t1: mkTask({ id: 't1', lastRunAt: now - 1 * HOUR }),
+      };
+      applyCatchupOnRehydrate(tasks, now);
+      expect(tasks.t1.nextRunAt).not.toBe(now);
+      expect(tasks.t1.nextRunAt).toBeGreaterThan(now);
+    });
+
+    it('never catches up a task that has never run', () => {
+      // lastRunAt undefined → expectedIfCaughtUp undefined → catchup
+      // branch short-circuits. Fresh tasks follow their natural
+      // schedule; they do NOT fire on boot just because they exist.
+      const now = Date.now();
+      const tasks: Record<string, ScheduledTask> = {
+        t1: mkTask({ id: 't1', lastRunAt: undefined }),
+      };
+      applyCatchupOnRehydrate(tasks, now);
+      expect(tasks.t1.nextRunAt).not.toBe(now);
+    });
+
+    it('skips catchup for paused tasks (nextRunAt stays undefined)', () => {
+      // computeNextRunAt returns undefined for paused — both
+      // expectedIfCaughtUp and naturalNext are undefined, so neither
+      // path fires. Paused tasks must never trigger on rehydrate.
+      const now = Date.now();
+      const tasks: Record<string, ScheduledTask> = {
+        t1: mkTask({ id: 't1', status: 'paused', lastRunAt: now - 7 * DAY }),
+      };
+      applyCatchupOnRehydrate(tasks, now);
+      expect(tasks.t1.nextRunAt).toBeUndefined();
+    });
+
+    it('skips catchup for manual-frequency tasks', () => {
+      // Manual-frequency tasks are user-triggered. Same undefined-return
+      // path as paused — catchup math never kicks in.
+      const now = Date.now();
+      const tasks: Record<string, ScheduledTask> = {
+        t1: mkTask({
+          id: 't1',
+          schedule: { frequency: 'manual' },
+          lastRunAt: now - 7 * DAY,
+        }),
+      };
+      applyCatchupOnRehydrate(tasks, now);
+      expect(tasks.t1.nextRunAt).toBeUndefined();
+    });
+
+    it('resets stuck "running" runs to error on rehydrate', () => {
+      // The app crashed mid-execution; the persisted run was left in
+      // `running` state and would otherwise show a permanent spinner
+      // in the UI forever. Rehydrate must flip these to error.
+      const now = Date.now();
+      const tasks: Record<string, ScheduledTask> = {
+        t1: mkTask({
+          id: 't1',
+          runs: [
+            {
+              id: 'r1',
+              scheduledTaskId: 't1',
+              conversationId: 'c1',
+              startedAt: now - 10 * 60 * 1000,
+              status: 'running',
+            },
+          ],
+        }),
+      };
+      applyCatchupOnRehydrate(tasks, now);
+      expect(tasks.t1.runs[0].status).toBe('error');
+      expect(tasks.t1.runs[0].completedAt).toBe(now);
+      expect(tasks.t1.runs[0].error).toContain('restarted');
+    });
+
+    it('handles multiple tasks independently in one pass', () => {
+      // Mixed fleet; each task follows its own state without bleeding
+      // into the others. Guards against accidental shared-state bugs
+      // in future rewrites of the loop.
+      const now = Date.now();
+      const tasks: Record<string, ScheduledTask> = {
+        missed: mkTask({ id: 'missed', lastRunAt: now - 3 * DAY }),
+        onTime: mkTask({ id: 'onTime', lastRunAt: now - 1 * HOUR }),
+        paused: mkTask({ id: 'paused', status: 'paused', lastRunAt: now - 7 * DAY }),
+      };
+      applyCatchupOnRehydrate(tasks, now);
+      expect(tasks.missed.nextRunAt).toBe(now);
+      expect(tasks.onTime.nextRunAt).toBeGreaterThan(now);
+      expect(tasks.paused.nextRunAt).toBeUndefined();
     });
   });
 });

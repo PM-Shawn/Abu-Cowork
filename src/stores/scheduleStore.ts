@@ -76,6 +76,54 @@ export function computeNextRunAt(
   }
 }
 
+/**
+ * Cold-start catchup: rehydrate-time helper that decides, for each task,
+ * whether a missed occurrence should collapse into a single immediate
+ * run. Exported for unit testing — the real call site is inside
+ * `onRehydrateStorage` below.
+ *
+ * Without catchup: an app that's been closed through the task's natural
+ * trigger time (e.g. daily 9am task, app closed for 3 days) would reset
+ * `nextRunAt` to tomorrow 9am and silently drop every missed occurrence.
+ *
+ * With catchup: when `lastRunAt` exists and the occurrence that *would
+ * have* followed it is already in the past, we point `nextRunAt` at
+ * `now`. The scheduler's boot tick() picks it up on the next loop and
+ * runs exactly once — we deliberately don't replay every missed slot
+ * because (a) burst-firing N agent loops on boot is expensive and
+ * user-disruptive, (b) most scheduled tasks are idempotent-enough that
+ * one catch-up run covers the gap, and (c) `completeRun` re-computes
+ * `nextRunAt` from "now", so after this one catch-up run we're back on
+ * the normal cadence.
+ *
+ * `computeNextRunAt` returns `undefined` for paused/manual tasks, so
+ * those skip catchup automatically (no false triggers).
+ *
+ * Also resets any run that was left stuck in `running` state when the
+ * app crashed mid-execution, so the UI doesn't show a permanent spinner.
+ */
+export function applyCatchupOnRehydrate(
+  tasks: Record<string, ScheduledTask>,
+  now: number,
+): void {
+  for (const task of Object.values(tasks)) {
+    const naturalNext = computeNextRunAt(task.schedule, task.status, now);
+    const expectedIfCaughtUp = task.lastRunAt
+      ? computeNextRunAt(task.schedule, task.status, task.lastRunAt)
+      : undefined;
+    const missedRun =
+      expectedIfCaughtUp !== undefined && expectedIfCaughtUp < now;
+    task.nextRunAt = missedRun ? now : naturalNext;
+    for (const run of task.runs) {
+      if (run.status === 'running') {
+        run.status = 'error';
+        run.completedAt = now;
+        run.error = 'App restarted during execution';
+      }
+    }
+  }
+}
+
 // --- Store types ---
 
 interface ScheduleState {
@@ -362,19 +410,8 @@ export const useScheduleStore = create<ScheduleStore>()(
         state.selectedTaskId = null;
         state.showEditor = false;
         state.editingTaskId = null;
-        // Recalculate nextRunAt for all tasks
-        const now = Date.now();
-        for (const task of Object.values(state.tasks)) {
-          task.nextRunAt = computeNextRunAt(task.schedule, task.status, now);
-          // Reset any stuck running runs
-          for (const run of task.runs) {
-            if (run.status === 'running') {
-              run.status = 'error';
-              run.completedAt = now;
-              run.error = 'App restarted during execution';
-            }
-          }
-        }
+        // Recalculate nextRunAt for all tasks, with cold-start catchup.
+        applyCatchupOnRehydrate(state.tasks, Date.now());
       },
     }
   )

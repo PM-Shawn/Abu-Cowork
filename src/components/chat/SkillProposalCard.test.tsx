@@ -86,7 +86,7 @@ const SAMPLE_CARD: InteractiveNoticeCard = {
   },
 };
 
-function renderCard(overrides: { settledAction?: 'accepted' | 'rejected' | 'rejected-category' } = {}) {
+function renderCard(overrides: { settledAction?: 'accepted' | 'rejected' | 'rejected-category' | 'deferred' } = {}) {
   return render(
     <SkillProposalCard
       conversationId="conv-1"
@@ -295,6 +295,30 @@ describe('SkillProposalCard · settled state', () => {
   it('rejected-category pill shows the "this kind will not be proposed" variant', () => {
     renderCard({ settledAction: 'rejected-category' });
     expect(screen.getByText(/this kind will not be proposed/)).toBeInTheDocument();
+  });
+
+  it('deferred pill shows the "decide later" variant (Task #43)', () => {
+    renderCard({ settledAction: 'deferred' });
+    expect(screen.getByText(/Decide later · still available in drafts panel/)).toBeInTheDocument();
+    // No toolbox jump link (only 'accepted' pills get that deep-link).
+    expect(screen.queryByText(/→ Open skills panel/)).not.toBeInTheDocument();
+    // Read-only — no accept / reject / defer buttons on settled pill.
+    expect(screen.queryByRole('button', { name: /^Accept$/ })).not.toBeInTheDocument();
+  });
+});
+
+describe('SkillProposalCard · defer (Task #43)', () => {
+  it('commits "deferred" without touching the draft filesystem', async () => {
+    const user = userEvent.setup();
+    renderCard();
+
+    await user.click(screen.getByRole('button', { name: /Decide later/ }));
+
+    // Crucially: defer must NOT call accept/reject — the draft stays
+    // live so the user can still act on it from the drafts panel.
+    expect(mockAcceptDraft).not.toHaveBeenCalled();
+    expect(mockRejectDraft).not.toHaveBeenCalled();
+    expect(mockSetAction).toHaveBeenCalledWith('conv-1', 'msg-1', 'tc-1', 'deferred');
   });
 });
 

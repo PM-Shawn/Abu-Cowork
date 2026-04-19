@@ -51,10 +51,18 @@ function settleCardsForSkill(skillName: string, action: NoticeCardAction): void 
   Object.entries(chatStore.conversations).forEach(([convId, conv]) => {
     conv.messages.forEach((msg) => {
       msg.toolCalls?.forEach((tc) => {
+        // Flip cards that are either untouched OR deferred. A deferred
+        // card means "I'll decide later" — so when the user does decide
+        // later via the panel, that decision should overwrite the
+        // deferred state. Committed cards (accepted / rejected /
+        // rejected-category) stay frozen so we don't clobber the
+        // user's original trace.
+        const current = tc.noticeCardAction;
+        const isReplaceable = !current || current === 'deferred';
         if (
           tc.noticeCard?.type === 'skill-proposal' &&
           tc.noticeCard.id === skillName &&
-          !tc.noticeCardAction
+          isReplaceable
         ) {
           chatStore.setToolCallNoticeCardAction(convId, msg.id, tc.id, action);
         }

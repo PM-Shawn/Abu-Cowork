@@ -793,6 +793,8 @@ const zhCN: TranslationDict = {
     skillProposalCardAccepted: '✓ 已采纳',
     skillProposalCardRejected: '已拒绝（放回收区 7 天）',
     skillProposalCardRejectedCategory: '已拒绝 · 同类不再提议',
+    skillProposalCardDefer: '稍后处理',
+    skillProposalCardDeferred: '稍后处理 · 可在草稿面板操作',
     skillProposalCardMissing: '草稿已不存在（可能已通过草稿面板处理或已过期）',
     skillProposalCardJump: '→ 打开技能面板',
     skillPatchedCardLabel: 'Abu 修正了技能',

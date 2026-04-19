@@ -266,6 +266,18 @@ describe('skillDraftsStore · card sync', () => {
     expect(getToolCall()?.noticeCardAction).toBe('rejected-category');
   });
 
+  it('flips deferred cards when the user later commits via panel (Task #43)', async () => {
+    // Deferred = "decide later" — so when the user does decide later
+    // (via panel accept/reject), the in-chat card should update too.
+    // Committed actions (accepted / rejected / rejected-category) stay
+    // frozen; only untouched + deferred are replaceable.
+    seedCard('weekly-digest', { noticeCardAction: 'deferred' });
+
+    await useSkillDraftsStore.getState().acceptDraft('weekly-digest');
+
+    expect(getToolCall()?.noticeCardAction).toBe('accepted');
+  });
+
   it('ignores cards with a different skill name', async () => {
     seedCard('other-skill');
 

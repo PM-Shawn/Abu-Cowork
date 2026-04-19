@@ -16,7 +16,12 @@
 // (serialized with conversation state), so reloading the conversation
 // preserves the "already accepted/rejected" UI state.
 
-export type NoticeCardAction = 'accepted' | 'rejected' | 'rejected-category';
+// 'deferred' (Task #43): user dismissed the card without committing to
+// accept/reject. The draft stays on disk and remains actionable from the
+// drafts panel — "稍后处理" just clears the in-chat card. Settled cards
+// in 'deferred' state get flipped by later panel actions (see
+// settleCardsForSkill's guard).
+export type NoticeCardAction = 'accepted' | 'rejected' | 'rejected-category' | 'deferred';
 
 /** Payload for a "save this as a skill?" proposal card. */
 export interface SkillProposalPayload {

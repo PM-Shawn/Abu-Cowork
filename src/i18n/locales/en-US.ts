@@ -792,6 +792,8 @@ const enUS: TranslationDict = {
     skillProposalCardAccepted: '✓ Accepted',
     skillProposalCardRejected: 'Rejected (in trash for 7 days)',
     skillProposalCardRejectedCategory: 'Rejected · this kind will not be proposed',
+    skillProposalCardDefer: 'Decide later',
+    skillProposalCardDeferred: 'Decide later · still available in drafts panel',
     skillProposalCardMissing: 'Draft no longer exists (may have been processed via the drafts panel or expired)',
     skillProposalCardJump: '→ Open skills panel',
     skillPatchedCardLabel: 'Abu patched skill',

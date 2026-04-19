@@ -17,7 +17,7 @@
  */
 
 import { useState } from 'react';
-import { Sparkles, Check, X, Ban, ChevronDown, ChevronRight, Loader2 } from 'lucide-react';
+import { Sparkles, Check, X, Ban, Clock, ChevronDown, ChevronRight, Loader2 } from 'lucide-react';
 import { useI18n } from '@/i18n';
 import { useChatStore } from '@/stores/chatStore';
 import { useSettingsStore } from '@/stores/settingsStore';
@@ -162,6 +162,14 @@ export default function SkillProposalCard({
     commit('rejected-category');
   };
 
+  // Defer is a no-op against the filesystem — the draft stays live,
+  // only the in-chat card is cleared. User can still accept/reject
+  // from the drafts panel later (and settleCardsForSkill will flip
+  // this card's state when they do).
+  const handleDefer = () => {
+    commit('deferred');
+  };
+
   // ── Settled state: render the outcome, no buttons ────────────────────
   if (settledAction) {
     const label =
@@ -169,7 +177,9 @@ export default function SkillProposalCard({
         ? t.toolbox.skillProposalCardAccepted
         : settledAction === 'rejected-category'
           ? t.toolbox.skillProposalCardRejectedCategory
-          : t.toolbox.skillProposalCardRejected;
+          : settledAction === 'deferred'
+            ? t.toolbox.skillProposalCardDeferred
+            : t.toolbox.skillProposalCardRejected;
 
     // Task #33: clicking an "accepted" pill deep-links to the Toolbox
     // with the skill pre-filtered in the search box. Rejected pills stay
@@ -307,6 +317,18 @@ export default function SkillProposalCard({
         >
           <Ban className="h-3 w-3" />
           {t.toolbox.skillProposalCardRejectCategory}
+        </button>
+        {/* Defer — pushed to the right edge via ml-auto so the three
+            accept/reject actions stay visually grouped; "decide later"
+            is a neutral escape hatch, not another commit. */}
+        <button
+          onClick={handleDefer}
+          disabled={processing}
+          className="ml-auto px-3 py-1 rounded-md text-xs text-[var(--abu-text-muted)] hover:text-[var(--abu-text-tertiary)] hover:bg-[var(--abu-bg-muted)] transition-colors flex items-center gap-1 disabled:opacity-60"
+          title={t.toolbox.skillProposalCardDefer}
+        >
+          <Clock className="h-3 w-3" />
+          {t.toolbox.skillProposalCardDefer}
         </button>
       </div>
     </div>

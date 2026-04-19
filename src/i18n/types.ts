@@ -769,6 +769,8 @@ export interface TranslationDict {
     skillProposalCardAccepted: string;
     skillProposalCardRejected: string;
     skillProposalCardRejectedCategory: string;
+    skillProposalCardDefer: string;      // "稍后处理" button (Task #43)
+    skillProposalCardDeferred: string;   // settled-pill label for deferred state
     skillProposalCardMissing: string;   // draft file gone (accepted/expired elsewhere)
     skillProposalCardJump: string;      // "→ 打开技能面板" link label
     // Interactive notice card · skill patched (Task #41)

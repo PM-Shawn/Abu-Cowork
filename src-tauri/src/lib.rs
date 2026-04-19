@@ -18,6 +18,7 @@ mod computer_use;
 mod overlay;
 mod secrets;
 mod atomic_write;
+mod notice;
 
 /// Maximum number of output lines to collect from a shell command.
 /// Prevents OOM when commands produce unbounded output.
@@ -1257,6 +1258,7 @@ pub fn run() {
             update_network_whitelist,
             get_network_proxy_port,
             window_info::get_active_window,
+            notice::check_fullscreen,
             computer_use::capture_screen,
             computer_use::mouse_click,
             computer_use::mouse_move,

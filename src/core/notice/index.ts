@@ -23,7 +23,7 @@ export { checkL2Quota, consumeL2Quota } from './quota';
 export { queryAudit, aggregateDecisions } from './audit';
 export type { AuditEntry } from './audit';
 
-export { queueToInbox, getPendingInbox, markDelivered, cleanupInbox } from './inbox';
+export { queueToInbox, getPendingInbox, markDelivered, cleanupInbox, drainInbox } from './inbox';
 export type { InboxEntry } from './inbox';
 
 export type {

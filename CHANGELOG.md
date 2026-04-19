@@ -2,6 +2,13 @@
 
 本文档记录阿布的每次版本更新。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/)。
 
+## v0.13.1 · 2026-04-20
+
+### 修复
+
+- 🛟 **对话历史写入原子化**：`messages.jsonl` 和 `index.json` 所有写入路径（append、replaceMessage、updateLastMessage、flushIndex、备份）全部走 tempfile + fsync + rename 原子写。以前 read-modify-write 中途崩溃（停电、force kill、磁盘满）可能截断文件丢整个对话历史；现在读者要么看到旧文件、要么看到新文件，永远不会看到中间态。
+- 🛟 **Settings 迁移防崩**：`settingsStore` 的每个版本迁移分支独立 try/catch 隔离。以前某一段 migrate 抛异常会让整个 rehydrate 失败 → Zustand 回退 initial defaults → 用户 providers / models / 偏好全丢。现在失败段打 log 跳过，其他分支继续跑。
+
 ## v0.13.0 · 2026-04-20
 
 ### 新增

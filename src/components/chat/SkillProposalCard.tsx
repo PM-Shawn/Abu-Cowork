@@ -105,8 +105,13 @@ export default function SkillProposalCard({
     setProcessing(true);
     // Reject the draft first, then write a feedback memory so future
     // companion/butler-level prompts pick it up (Module F's "create 前
-    // 扫 feedback memory" guardrail).
-    const r = await rejectDraft(proposal.skillName, undefined, cardWorkspace);
+    // 扫 feedback memory" guardrail). `category: true` flags this as
+    // a whole-category reject so skillDraftsStore settles peer cards
+    // with 'rejected-category' tone instead of plain 'rejected'.
+    const r = await rejectDraft(proposal.skillName, {
+      category: true,
+      workspaceOverride: cardWorkspace,
+    });
     if (!r.ok) {
       setProcessing(false);
       addToast({ type: 'error', title: t.toolbox.draftsRejectError, message: r.error });

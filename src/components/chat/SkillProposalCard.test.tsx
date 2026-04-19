@@ -213,6 +213,16 @@ describe('SkillProposalCard · reject-category (writes feedback memory)', () => 
     await waitFor(() => {
       expect(mockRejectDraft).toHaveBeenCalled();
     });
+    // Options form with `category: true` so skillDraftsStore settles peer
+    // cards with 'rejected-category' tone instead of plain 'rejected'
+    // (Task #39 sync).
+    expect(mockRejectDraft).toHaveBeenCalledWith(
+      'weekly-digest',
+      expect.objectContaining({
+        category: true,
+        workspaceOverride: '/Users/test/myproj',
+      }),
+    );
     // Feedback memory captures the skill name + description so Module F's
     // "scan feedback before proposing" guardrail can match on re-proposal.
     expect(mockWriteMemory).toHaveBeenCalledWith(

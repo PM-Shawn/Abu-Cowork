@@ -30,8 +30,38 @@ import {
   emptyExpiredTrash,
 } from '../core/skill/drafts';
 import { skillLoader } from '../core/skill/loader';
+import type { NoticeCardAction } from '../types';
+import { useChatStore } from './chatStore';
 import { useWorkspaceStore } from './workspaceStore';
 import { useDiscoveryStore } from './discoveryStore';
+
+/**
+ * Settle every notice card across loaded conversations whose skill
+ * matches the given name. Invoked after any drafts-store mutation so
+ * in-chat cards stay in sync with panel-level actions. Defensive — only
+ * settles cards that haven't been settled yet, so user trace (accepted
+ * vs rejected-category clicks) isn't overwritten by a panel action.
+ *
+ * Cheap: chatStore holds only ~5 active conversations under LRU + each
+ * has a bounded message count. Full scan is O(conversations × messages
+ * × toolCalls) but realistically under a few hundred iterations.
+ */
+function settleCardsForSkill(skillName: string, action: NoticeCardAction): void {
+  const chatStore = useChatStore.getState();
+  Object.entries(chatStore.conversations).forEach(([convId, conv]) => {
+    conv.messages.forEach((msg) => {
+      msg.toolCalls?.forEach((tc) => {
+        if (
+          tc.noticeCard?.type === 'skill-proposal' &&
+          tc.noticeCard.id === skillName &&
+          !tc.noticeCardAction
+        ) {
+          chatStore.setToolCallNoticeCardAction(convId, msg.id, tc.id, action);
+        }
+      });
+    });
+  });
+}
 
 interface SkillDraftsState {
   drafts: DraftRecord[];
@@ -42,6 +72,20 @@ interface SkillDraftsState {
    * Cleared on the next successful refresh / accept / reject.
    */
   lastError: string | null;
+}
+
+export interface RejectDraftOptions {
+  /** Free-form reason text (reserved for future feedback-capture UX). */
+  reason?: string;
+  /** Workspace captured at proposal time — see acceptDraft comment. */
+  workspaceOverride?: string;
+  /**
+   * Distinguishes "reject this one specific proposal" from "reject this
+   * whole category of proposals" (the latter also writes a feedback memo
+   * upstream, see SkillProposalCard.handleRejectCategory). Without this
+   * flag, settled-state sync can't tell which tone to use.
+   */
+  category?: boolean;
 }
 
 interface SkillDraftsActions {
@@ -57,9 +101,14 @@ interface SkillDraftsActions {
     name: string,
     workspaceOverride?: string,
   ) => Promise<{ ok: true } | { ok: false; error: string }>;
+  /**
+   * Reject a draft. See `RejectDraftOptions` for the shape. Accepts the
+   * legacy `(name, reason, workspaceOverride)` arg style for backward
+   * compat with older callers (SkillDraftsPanel's plain reject).
+   */
   rejectDraft: (
     name: string,
-    reason?: string,
+    reasonOrOptions?: string | RejectDraftOptions,
     workspaceOverride?: string,
   ) => Promise<{ ok: true } | { ok: false; error: string }>;
   cleanExpired: () => Promise<number>;
@@ -116,6 +165,7 @@ export const useSkillDraftsStore = create<SkillDraftsStore>()((set, get) => ({
       });
       await useDiscoveryStore.getState().refresh();
       await get().refresh();
+      settleCardsForSkill(name, 'accepted');
       return { ok: true };
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -124,11 +174,20 @@ export const useSkillDraftsStore = create<SkillDraftsStore>()((set, get) => ({
     }
   },
 
-  rejectDraft: async (name, reason, workspaceOverride) => {
-    const wp = workspaceOverride ?? useWorkspaceStore.getState().currentPath;
+  rejectDraft: async (name, reasonOrOptions, workspaceOverride) => {
+    // Normalize both call styles: legacy `(name, reason, workspaceOverride)`
+    // and new `(name, { reason, category, workspaceOverride })`. Object form
+    // takes precedence when present — the positional workspaceOverride is
+    // only consulted in the string-reason path.
+    const opts: RejectDraftOptions =
+      typeof reasonOrOptions === 'string' || reasonOrOptions === undefined
+        ? { reason: reasonOrOptions, workspaceOverride }
+        : reasonOrOptions;
+
+    const wp = opts.workspaceOverride ?? useWorkspaceStore.getState().currentPath;
     if (!wp) return { ok: false, error: 'no active workspace' };
     try {
-      await rejectDraftFs(name, wp, reason);
+      await rejectDraftFs(name, wp, opts.reason);
       // Mirror the acceptDraft sync: if override is steering us, bring the
       // global store along so the drafts panel (which reads globalStore in
       // its own refresh) doesn't fall back to an empty "no workspace" view.
@@ -137,6 +196,7 @@ export const useSkillDraftsStore = create<SkillDraftsStore>()((set, get) => ({
         useWorkspaceStore.getState().setWorkspace(wp);
       }
       await get().refresh();
+      settleCardsForSkill(name, opts.category ? 'rejected-category' : 'rejected');
       return { ok: true };
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);

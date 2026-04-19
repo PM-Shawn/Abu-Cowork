@@ -1,8 +1,10 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { useSkillDraftsStore, stopDraftsSweeper } from './skillDraftsStore';
 import { useWorkspaceStore } from './workspaceStore';
+import { useChatStore } from './chatStore';
 import * as drafts from '../core/skill/drafts';
 import type { DraftRecord } from '../core/skill/drafts';
+import type { Conversation, ToolCall } from '../types';
 
 // The store imports these stores at module init; they're real zustand so we
 // just manipulate state via setState. Drafts module is mocked — we're testing
@@ -166,6 +168,111 @@ describe('skillDraftsStore · rejectDraft', () => {
     useWorkspaceStore.setState({ currentPath: null });
     const result = await useSkillDraftsStore.getState().rejectDraft('x');
     expect(result.ok).toBe(false);
+  });
+
+  it('accepts new options object form with workspaceOverride', async () => {
+    // Regression guard: SkillProposalCard now calls rejectDraft with
+    // `{ category: true, workspaceOverride }` so the store settles peer
+    // cards with the correct tone. Legacy string form still works.
+    useWorkspaceStore.setState({ currentPath: null });
+
+    const result = await useSkillDraftsStore.getState().rejectDraft('x', {
+      category: true,
+      workspaceOverride: '/captured/ws',
+    });
+
+    expect(result).toEqual({ ok: true });
+    expect(mockRejectDraft).toHaveBeenCalledWith('x', '/captured/ws', undefined);
+  });
+});
+
+// ── Card ↔ Panel sync (Task #39) ────────────────────────────────────
+// After accept/reject FS operations complete, any matching
+// skill-proposal cards in chat history must flip to settled state so
+// the user sees consistent UX whether they clicked in the panel or
+// in the in-chat card. Uses real chatStore state + setState.
+describe('skillDraftsStore · card sync', () => {
+  const CONV_ID = 'conv-1';
+  const MSG_ID = 'msg-1';
+  const TC_ID = 'tc-1';
+
+  function seedCard(skillName: string, overrides: Partial<ToolCall> = {}) {
+    const tc: ToolCall = {
+      id: TC_ID,
+      name: 'skill_manage',
+      input: {},
+      noticeCard: {
+        type: 'skill-proposal',
+        id: skillName,
+      },
+      ...overrides,
+    };
+    const conv: Conversation = {
+      id: CONV_ID,
+      title: 'test',
+      messages: [
+        {
+          id: MSG_ID,
+          role: 'assistant',
+          content: '',
+          timestamp: Date.now(),
+          toolCalls: [tc],
+        },
+      ],
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+      status: 'idle',
+    };
+    useChatStore.setState({ conversations: { [CONV_ID]: conv } });
+  }
+
+  function getToolCall() {
+    return useChatStore.getState().conversations[CONV_ID]?.messages[0]?.toolCalls?.[0];
+  }
+
+  it('accepted draft flips matching chat cards to settled=accepted', async () => {
+    seedCard('weekly-digest');
+
+    await useSkillDraftsStore.getState().acceptDraft('weekly-digest');
+
+    expect(getToolCall()?.noticeCardAction).toBe('accepted');
+  });
+
+  it('rejectDraft (plain) flips matching cards to settled=rejected', async () => {
+    seedCard('weekly-digest');
+
+    await useSkillDraftsStore.getState().rejectDraft('weekly-digest');
+
+    expect(getToolCall()?.noticeCardAction).toBe('rejected');
+  });
+
+  it('rejectDraft with category:true flips cards to settled=rejected-category', async () => {
+    seedCard('weekly-digest');
+
+    await useSkillDraftsStore
+      .getState()
+      .rejectDraft('weekly-digest', { category: true });
+
+    expect(getToolCall()?.noticeCardAction).toBe('rejected-category');
+  });
+
+  it('does not overwrite cards the user already settled', async () => {
+    // Prior accept/reject click on the card should win even if a later
+    // panel-side action fires — preserves the original user trace.
+    seedCard('weekly-digest', { noticeCardAction: 'rejected-category' });
+
+    await useSkillDraftsStore.getState().acceptDraft('weekly-digest');
+
+    expect(getToolCall()?.noticeCardAction).toBe('rejected-category');
+  });
+
+  it('ignores cards with a different skill name', async () => {
+    seedCard('other-skill');
+
+    await useSkillDraftsStore.getState().acceptDraft('weekly-digest');
+
+    // Untouched — skill name mismatch.
+    expect(getToolCall()?.noticeCardAction).toBeUndefined();
   });
 });
 

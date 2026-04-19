@@ -46,27 +46,29 @@ function ChipMultiSelect({ selected, options, onChange, placeholder }: {
         type="button"
         onClick={() => setOpen(!open)}
         className={cn(
-          'flex items-center justify-between w-full min-h-[36px] px-3 py-1.5 rounded-lg border text-left text-[13px]',
-          'border-[var(--abu-border)] bg-[var(--abu-bg-primary)] hover:border-[var(--abu-border-hover)]',
-          'focus:outline-none focus:ring-2 focus:ring-[var(--abu-ring)]',
+          'flex items-center gap-2 w-full min-h-9 px-3 py-1.5 rounded-lg border text-sm text-left transition-all',
+          'border-[var(--abu-border)] bg-[var(--abu-bg-muted)]',
+          'focus:outline-none focus:ring-2 focus:ring-[var(--abu-clay-ring)] focus:border-[var(--abu-clay)]',
+          'hover:border-[var(--abu-border-hover)]',
+          open && 'ring-2 ring-[var(--abu-clay-ring)] border-[var(--abu-clay)]',
         )}
       >
         <span className="flex flex-wrap gap-1 flex-1 min-w-0">
           {selected.length === 0 ? (
-            <span className="text-[var(--abu-text-muted)]">{placeholder}</span>
+            <span className="text-[var(--abu-text-placeholder)]">{placeholder}</span>
           ) : (
             selected.map((v) => {
               const opt = options.find((o) => o.value === v);
               return (
                 <span
                   key={v}
-                  className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-[var(--abu-bg-subtle)] text-[12px] text-[var(--abu-text-secondary)]"
+                  className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-[var(--abu-clay-bg)] text-xs text-[var(--abu-clay)]"
                 >
                   {opt?.label ?? v}
                   <button
                     type="button"
                     onClick={(e) => { e.stopPropagation(); onChange(selected.filter((s) => s !== v)); }}
-                    className="text-[var(--abu-text-muted)] hover:text-[var(--abu-text-primary)]"
+                    className="text-[var(--abu-clay)] hover:text-[var(--abu-text-primary)]"
                   >
                     <X className="h-3 w-3" />
                   </button>
@@ -75,15 +77,18 @@ function ChipMultiSelect({ selected, options, onChange, placeholder }: {
             })
           )}
         </span>
-        <ChevronDown className={cn('h-3.5 w-3.5 shrink-0 ml-1 text-[var(--abu-text-muted)] transition-transform', open && 'rotate-180')} />
+        <ChevronDown className={cn('h-3.5 w-3.5 shrink-0 text-[var(--abu-text-muted)] transition-transform', open && 'rotate-180')} />
       </button>
 
       {open && createPortal(
         <>
           <div className="fixed inset-0 z-[10000]" onClick={() => setOpen(false)} />
-          <div className="fixed z-[10001] max-h-[200px] overflow-auto rounded-lg border border-[var(--abu-border)] bg-white shadow-lg" style={dropdownStyle}>
+          <div
+            className="fixed z-[10001] py-1 bg-white border border-[var(--abu-border)] rounded-xl shadow-lg max-h-60 overflow-auto"
+            style={dropdownStyle}
+          >
             {options.length === 0 ? (
-              <div className="px-3 py-2 text-[12px] text-[var(--abu-text-muted)]">-</div>
+              <div className="px-3 py-2 text-sm text-[var(--abu-text-muted)]">-</div>
             ) : (
               options.map((opt) => {
                 const isSelected = selected.includes(opt.value);
@@ -95,14 +100,18 @@ function ChipMultiSelect({ selected, options, onChange, placeholder }: {
                       onChange(isSelected ? selected.filter((s) => s !== opt.value) : [...selected, opt.value]);
                     }}
                     className={cn(
-                      'flex items-center gap-2 w-full px-3 py-1.5 text-[13px] text-left hover:bg-[var(--abu-bg-hover)]',
-                      isSelected && 'text-[var(--abu-accent)]',
+                      'w-full px-3 py-2 text-sm text-left transition-colors hover:bg-[var(--abu-bg-muted)]',
+                      isSelected
+                        ? 'text-[var(--abu-clay)] bg-[var(--abu-clay-bg)]'
+                        : 'text-[var(--abu-text-primary)]',
                     )}
                   >
-                    <span className={cn('h-3.5 w-3.5 shrink-0 flex items-center justify-center', !isSelected && 'opacity-0')}>
-                      <Check className="h-3.5 w-3.5" />
+                    <span className="inline-flex items-center gap-2">
+                      <span className="w-4 shrink-0">
+                        {isSelected && <Check className="h-4 w-4 text-[var(--abu-clay)]" />}
+                      </span>
+                      <span className="truncate">{opt.label}</span>
                     </span>
-                    <span className="truncate">{opt.label}</span>
                   </button>
                 );
               })

@@ -187,12 +187,21 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
   // whenever the conv (or its bound workspace) changes. Covers "user on
   // welcome page clicks a different project's +" — without this, the
   // FolderSelector would keep showing the previous workspace pick.
+  //
+  // Also subscribe to the global workspaceStore.currentPath: the
+  // "create project → welcome → type" flow never touches activeConvId
+  // (it stays null the whole time), but CreateProjectDialog DOES call
+  // setWorkspace(finalFolder). Without the global subscription the
+  // welcome input's localWorkspace would stay at its stale init value
+  // and onSend would pass null to createConversation — the new conv
+  // would then have no workspace, no project lookup, no auto-associate.
   const activeConvWorkspace = activeConv?.workspacePath ?? null;
+  const globalWorkspace = useWorkspaceStore((s) => s.currentPath);
   useEffect(() => {
     if (!isWelcome) return;
-    const next = activeConvWorkspace ?? useWorkspaceStore.getState().currentPath;
+    const next = activeConvWorkspace ?? globalWorkspace;
     setLocalWorkspace(next);
-  }, [activeConvId, activeConvWorkspace, isWelcome]);
+  }, [activeConvId, activeConvWorkspace, globalWorkspace, isWelcome]);
 
   useEffect(() => {
     const prevId = prevConvIdRef.current;

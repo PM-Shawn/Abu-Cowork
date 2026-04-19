@@ -33,6 +33,7 @@ import { PanelLeft, PanelRight } from 'lucide-react';
 import { isMacOS } from '@/utils/platform';
 import { cn } from '@/lib/utils';
 import { initNotifications, clearDockBadge } from '@/utils/notifications';
+import { initSidebarBadgeChannel } from '@/stores/noticeBadgeStore';
 import { schedulerEngine } from '@/core/scheduler/scheduler';
 import { triggerEngine } from '@/core/trigger/triggerEngine';
 import { imChannelRouter } from '@/core/im/channelRouter';
@@ -133,6 +134,9 @@ function App() {
     }).catch((err) => {
       console.error('[App] Notification init error:', err);
     });
+
+    // Register Notice System channel handlers
+    initSidebarBadgeChannel();
 
     // Initialize file watchers
     initFileWatchers().catch((err) => {

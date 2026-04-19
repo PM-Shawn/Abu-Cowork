@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { exists, readTextFile, writeTextFile, mkdir, remove, readDir } from '@tauri-apps/plugin-fs';
+import { invoke } from '@tauri-apps/api/core';
 import type { Message } from '@/types';
 
 // Must import AFTER vi.mock (global mock in setup.ts handles @tauri-apps/plugin-fs)
@@ -31,13 +32,30 @@ function createMemoryFs() {
     return files.get(path)!;
   });
 
-  (writeTextFile as ReturnType<typeof vi.fn>).mockImplementation(async (path: string, content: string) => {
+  const writeToMemory = (path: string, content: string) => {
     files.set(path, content);
     // Auto-create parent dirs
     const parts = path.split('/');
     for (let i = 1; i < parts.length; i++) {
       dirs.add(parts.slice(0, i).join('/'));
     }
+  };
+
+  (writeTextFile as ReturnType<typeof vi.fn>).mockImplementation(async (path: string, content: string) => {
+    writeToMemory(path, content);
+  });
+
+  // conversationStorage now uses atomicWrite which calls invoke('atomic_write_text').
+  // Route that command to the same in-memory fs so the tests see writes.
+  (invoke as ReturnType<typeof vi.fn>).mockImplementation(async (
+    cmd: string,
+    args?: { path?: string; content?: string },
+  ) => {
+    if (cmd === 'atomic_write_text' && args?.path !== undefined) {
+      writeToMemory(args.path, args.content ?? '');
+      return;
+    }
+    return undefined;
   });
 
   (mkdir as ReturnType<typeof vi.fn>).mockImplementation(async (path: string) => {

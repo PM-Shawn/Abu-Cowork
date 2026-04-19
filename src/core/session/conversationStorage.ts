@@ -21,9 +21,10 @@
  *   - Periodic flush (5s) during streaming for crash protection
  */
 
-import { exists, readTextFile, writeTextFile, mkdir, remove, readDir } from '@tauri-apps/plugin-fs';
+import { exists, readTextFile, mkdir, remove, readDir } from '@tauri-apps/plugin-fs';
 import { appDataDir } from '@tauri-apps/api/path';
 import { joinPath } from '@/utils/pathUtils';
+import { atomicWrite } from '@/utils/atomicFs';
 import type { Message, MessageContent } from '@/types';
 
 // ════════════════════════════════════════════════════════════
@@ -177,8 +178,12 @@ async function drainAll(): Promise<void> {
 
 /**
  * Append data to a file. Creates parent directory on first write.
- * Tauri's writeTextFile doesn't support native append, so we
- * read + append + write. For typical conversation files (<1MB) this is fine.
+ * Tauri's plugin-fs writeTextFile doesn't support native append, so we
+ * read + append + atomic-write. For typical conversation files (<1MB) this is fine.
+ *
+ * Atomic writes (tempfile + fsync + rename) prevent partial writes on
+ * crash / kill / power loss — readers either see the pre-append content
+ * or the fully-appended content, never a truncated middle state.
  *
  * Serialized against concurrent mutations on the same path via `withFileLock`.
  */
@@ -187,14 +192,10 @@ async function appendToFile(filePath: string, data: string): Promise<void> {
     try {
       if (await exists(filePath)) {
         const current = await readTextFile(filePath);
-        await writeTextFile(filePath, current + data);
+        await atomicWrite(filePath, current + data);
       } else {
-        // Ensure directory exists on first write
-        const dir = filePath.substring(0, filePath.lastIndexOf('/'));
-        if (dir && !(await exists(dir))) {
-          await mkdir(dir, { recursive: true });
-        }
-        await writeTextFile(filePath, data);
+        // atomicWrite creates parent dirs as needed — no pre-mkdir required.
+        await atomicWrite(filePath, data);
       }
     } catch {
       // Retry: ensure directory exists, then re-read existing content to preserve it.
@@ -210,7 +211,7 @@ async function appendToFile(filePath: string, data: string): Promise<void> {
       } catch {
         // If we still can't read, at least don't destroy what's there — let it throw
       }
-      await writeTextFile(filePath, existing + data);
+      await atomicWrite(filePath, existing + data);
     }
   });
 }
@@ -340,7 +341,7 @@ export async function flushIndex(): Promise<void> {
   }
   if (!indexCache) return;
   await ensureBase();
-  await writeTextFile(indexFilePath(), JSON.stringify(indexCache, null, 2));
+  await atomicWrite(indexFilePath(), JSON.stringify(indexCache, null, 2));
 }
 
 // ════════════════════════════════════════════════════════════
@@ -404,7 +405,7 @@ export async function replaceMessageById(
       }
 
       if (replaced) {
-        await writeTextFile(path, lines.join('\n') + '\n');
+        await atomicWrite(path, lines.join('\n') + '\n');
         writtenIds.add(message.id);
       }
     } catch {
@@ -434,7 +435,7 @@ export async function updateLastMessage(
       const raw = await readTextFile(path);
       const lines = raw.trimEnd().split('\n');
       lines[lines.length - 1] = JSON.stringify(stripForDisk(message));
-      await writeTextFile(path, lines.join('\n') + '\n');
+      await atomicWrite(path, lines.join('\n') + '\n');
       writtenIds.add(message.id);
       updated = true;
     });
@@ -589,7 +590,7 @@ export async function dailyBackup(): Promise<void> {
   if (await exists(srcPath)) {
     try {
       const content = await readTextFile(srcPath);
-      await writeTextFile(backupPath, content);
+      await atomicWrite(backupPath, content);
     } catch {
       // Backup failure is non-critical
     }

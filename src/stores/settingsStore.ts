@@ -929,12 +929,29 @@ export const useSettingsStore = create<SettingsStore>()(
       migrate: (persisted: unknown, version: number) => {
         const state = persisted as Record<string, unknown>;
 
+        // Each version branch is wrapped so a failure in one step doesn't
+        // wipe the user's entire settings snapshot. Zustand's default
+        // behavior on migrate throw is to fall back to the initial state —
+        // catastrophic for a store this large. Inner try/catch keeps
+        // downstream branches running (they're all additive-with-defaults,
+        // so partial migration is strictly safer than full reset).
+        const step = (label: string, fn: () => void) => {
+          try {
+            fn();
+          } catch (err) {
+            console.error(
+              `[settingsStore] migration step "${label}" failed; preserving pre-step state:`,
+              err,
+            );
+          }
+        };
+
         // ════════════════════════════════════════════════
         // V20: Drafts onboarding flag — add draftsOnboardingShown to soul
         // (defaults to false so existing users also see the onboarding once
         // when their first draft appears).
         // ════════════════════════════════════════════════
-        if (version < 20) {
+        if (version < 20) step('V20 draftsOnboardingShown', () => {
           const soul = (state.soul as Record<string, unknown> | undefined) ?? {
             proactivity: 'companion',
           };
@@ -942,7 +959,7 @@ export const useSettingsStore = create<SettingsStore>()(
             soul.draftsOnboardingShown = false;
           }
           state.soul = soul;
-        }
+        });
 
         // ════════════════════════════════════════════════
         // V19: Soul personality — add proactivity preset
@@ -950,21 +967,21 @@ export const useSettingsStore = create<SettingsStore>()(
         // so the companion guidance prompt governs self-evolution behavior.
         // Additive — no data transform needed.
         // ════════════════════════════════════════════════
-        if (version < 19) {
+        if (version < 19) step('V19 soul default', () => {
           if (state.soul === undefined) {
             state.soul = { proactivity: 'companion', draftsOnboardingShown: false };
           }
-        }
+        });
 
         // ════════════════════════════════════════════════
         // V18: Content safety settings (scanner feature flag + bypass list).
         // Additive — defaults installed if missing.
         // ════════════════════════════════════════════════
-        if (version < 18) {
+        if (version < 18) step('V18 safety defaults', () => {
           if (state.safety === undefined) {
             state.safety = { enableContentGuard: true, bypass: [] };
           }
-        }
+        });
 
         // ════════════════════════════════════════════════
         // V17: API keys moved to the encrypted secret store.
@@ -973,33 +990,33 @@ export const useSettingsStore = create<SettingsStore>()(
         // version marker so the next persist-save will strip the
         // plaintext via the new partialize.
         // ════════════════════════════════════════════════
-        if (version < 17) {
+        if (version < 17) step('V17 secret store marker', () => {
           void state;
-        }
+        });
 
         // ════════════════════════════════════════════════
         // V16: Agent max turns — added optional agentMaxTurns
         // (undefined = unlimited; replaces hardcoded default of 20)
         // ════════════════════════════════════════════════
-        if (version < 16) {
+        if (version < 16) step('V16 agentMaxTurns', () => {
           // Optional additive field; no data transform needed.
           // Old users get undefined → unlimited (looser than previous 20).
           void state;
-        }
+        });
 
         // ════════════════════════════════════════════════
         // V15: Soul personality — add soulInitialized flag
         // ════════════════════════════════════════════════
-        if (version < 15) {
+        if (version < 15) step('V15 soulInitialized', () => {
           if (state.soulInitialized === undefined) {
             state.soulInitialized = false;
           }
-        }
+        });
 
         // ════════════════════════════════════════════════
         // V14: Provider V2 migration
         // ════════════════════════════════════════════════
-        if (version < 14) {
+        if (version < 14) step('V14 provider V2', () => {
           const oldApiKeys = (state.apiKeys as Record<string, string>) ?? {};
           const oldCustomServices = (state.customServices as CustomService[]) ?? [];
           const oldProvider = (state.provider as string) ?? 'qiniu';
@@ -1143,25 +1160,25 @@ export const useSettingsStore = create<SettingsStore>()(
           delete state.webSearchProvider;
           delete state.webSearchApiKey;
           delete state.webSearchBaseUrl;
-        }
+        });
 
         // ════════════════════════════════════════════════
         // Pre-V14 migrations (keep for upgrade chains)
         // ════════════════════════════════════════════════
-        if (version < 13) {
+        if (version < 13) step('V13 ollama model', () => {
           if (state.provider === 'ollama' && state.model !== '__custom__') {
             state.model = '__custom__';
           }
-        }
-        if (version < 12) {
+        });
+        if (version < 12) step('V12 permissionMode default', () => {
           if (state.permissionMode === undefined) state.permissionMode = 'default';
-        }
-        if (version < 11) {
+        });
+        if (version < 11) step('V11 maxOutputTokens bump', () => {
           if (state.maxOutputTokens === 8192) {
             state.maxOutputTokens = 32768;
           }
-        }
-        if (version < 10) {
+        });
+        if (version < 10) step('V10 apiKeys map', () => {
           const oldKey = state.apiKey as string | undefined;
           const currentProvider = (state.provider as string) || 'qiniu';
           if (oldKey) {
@@ -1170,15 +1187,15 @@ export const useSettingsStore = create<SettingsStore>()(
             state.apiKeys = {};
           }
           delete state.apiKey;
-        }
-        if (version < 9) {
+        });
+        if (version < 9) step('V9 customServices', () => {
           if (state.customServices === undefined) state.customServices = [];
           if (state.activeCustomServiceId === undefined) state.activeCustomServiceId = null;
-        }
-        if (version < 8) {
+        });
+        if (version < 8) step('V8 skillRegistry', () => {
           if (state.skillRegistry === undefined) state.skillRegistry = '';
-        }
-        if (version < 7) {
+        });
+        if (version < 7) step('V7 disabledSkills defaults', () => {
           state.disabledSkills = [
             'alert-sop', 'algorithmic-art', 'brand-guidelines', 'canvas-design',
             'claude-api', 'create-agent', 'doc-coauthoring', 'docx',
@@ -1186,27 +1203,27 @@ export const useSettingsStore = create<SettingsStore>()(
             'pptx', 'slack-gif-creator', 'theme-factory', 'web-artifacts-builder',
             'webapp-testing', 'xlsx',
           ];
-        }
-        if (version < 6) {
+        });
+        if (version < 6) step('V6 allowSkillCommands', () => {
           if (state.allowSkillCommands === undefined) state.allowSkillCommands = true;
-        }
-        if (version < 5) {
+        });
+        if (version < 5) step('V5 computerUseEnabled', () => {
           if (state.computerUseEnabled === undefined) state.computerUseEnabled = false;
-        }
-        if (version < 4) {
+        });
+        if (version < 4) step('V4 behaviorSensorEnabled', () => {
           if (state.behaviorSensorEnabled === undefined) state.behaviorSensorEnabled = false;
-        }
-        if (version < 3) {
+        });
+        if (version < 3) step('V3 network isolation', () => {
           if (state.networkIsolationEnabled === undefined) state.networkIsolationEnabled = false;
           if (state.networkWhitelist === undefined) state.networkWhitelist = [];
           if (state.allowPrivateNetworks === undefined) state.allowPrivateNetworks = true;
-        }
-        if (version < 2) {
+        });
+        if (version < 2) step('V2 user profile', () => {
           if (state.userNickname === undefined) state.userNickname = '';
           if (state.userAvatar === undefined) state.userAvatar = '';
           if (state.guideShown === undefined) state.guideShown = false;
-        }
-        if (version === 0) {
+        });
+        if (version === 0) step('V0 mcp migration + zhipu fix', () => {
           // Cross-store migration: mcpServers → abu-mcp-store
           const mcpServers = state.mcpServers as
             | { name: string; command?: string; args?: string[]; url?: string;
@@ -1242,7 +1259,7 @@ export const useSettingsStore = create<SettingsStore>()(
           if (state.sandboxEnabled === undefined) state.sandboxEnabled = true;
           if (state.closeAction === undefined) state.closeAction = 'ask';
           if (state.lastUpdateCheck === undefined) state.lastUpdateCheck = 0;
-        }
+        });
         return state;
       },
       partialize: (state) => ({

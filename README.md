@@ -27,7 +27,8 @@
 | 自主规划并执行复杂任务 | :white_check_mark: | :x: | :x: |
 | 读写本地文件、执行命令 | :white_check_mark: | :x: | :white_check_mark: |
 | 自然语言交互 | :white_check_mark: | :white_check_mark: | :x: |
-| 27 个可扩展技能 | :white_check_mark: | :x: | :x: |
+| 28 个内置技能 + 自进化（阿布自己攒新技能） | :white_check_mark: | :x: | :x: |
+| 多对话按项目聚合（Projects） | :white_check_mark: | :x: | :x: |
 | 定时任务 & 事件触发 | :white_check_mark: | :x: | :white_check_mark: |
 | IM 机器人（飞书/钉钉/企微/Slack） | :white_check_mark: | :x: | 部分 |
 | 多 Agent 后台并行 | :white_check_mark: | :x: | :x: |
@@ -72,8 +73,11 @@
 ### 核心能力
 
 - **Agent 自主执行** — 不只是聊天，能自主规划、调用工具、读写文件、执行命令，完成复杂任务
+- **自进化 Skills**（v0.13.0+）— 跑完一段复杂流程后，阿布会主动提议"这套要不要固化成技能"，一键生成草稿 → 你审阅 → 采纳上架；下次直接叫技能名字调用，不用重讲
+- **智能通知系统**（v0.13.0+）— 菜单栏未读数 / sidebar 小红点 / 系统通知 三条兜底通道自动选择；全屏 / 勿扰时通知暂存进 inbox，回主窗口通过 badge 感知；打扰记录可审计半年
+- **Projects 管理**（v0.13.0+）— 工作区可升级成 Project，同一方向的对话自动聚合，每个项目独立配置图标、默认模型、技能集、MCP
 - **多 Agent 后台并行** — 支持同时运行多个后台 Agent（最多 5 个），各自独立执行任务，进度实时可见
-- **27 个内置技能** — PDF/PPTX/DOCX/Excel 生成、前端设计、画布设计、算法艺术、Mermaid/SVG/信息图、Web Artifacts、Chrome 自动化（Abu-Browser）、深度研究、工作流自动化等，一键安装，支持自定义
+- **28 个内置技能** — PDF/PPTX/DOCX/Excel 生成、前端设计、画布设计、算法艺术、Mermaid/SVG/信息图、Web Artifacts、Chrome 自动化（Abu-Browser）、深度研究、Agent 自我反思（reflect）、工作流自动化等，一键安装，支持自定义
 - **MCP 工具协议** — 通过 Model Context Protocol 连接数据库、搜索引擎、GitHub 等外部服务
 - **浏览器自动化** — 内置 Browser Bridge + Chrome 扩展，实现网页元素操作、表单填写、截图、JS 执行
 - **电脑操控** — 通过截屏 + 键鼠控制完成桌面级任务，内置敏感应用拦截、危险按键拦截、5 分钟超时熔断等多重防护
@@ -95,7 +99,7 @@
 
 ### 自动化与触发器
 
-- **定时任务** — Cron 表达式定时执行（如每天早上 9 点发 AI 日报）
+- **定时任务** — Cron 表达式定时执行（如每天早上 9 点发 AI 日报）；app 关着期间错过的执行，下次启动会按时间顺序补跑
 - **触发器系统** — 支持多种事件源自动触发 Agent 执行：
   - **文件监听** — 监控文件创建/修改/删除，支持 glob 模式匹配
   - **HTTP Webhook** — 自动生成 POST 端点，接收外部系统回调
@@ -122,7 +126,9 @@
   - `~/.abu/ABU.md` — 用户级规则（跨项目）
   - `{workspace}/.abu/ABU.md` — 项目级规则
   - `{workspace}/.abu/rules/*.md` — 模块化规则（按字母序加载，最多 20 个文件）
+- **Projects 聚合**（v0.13.0+）— 工作区可升级成 Project，同一文件夹下的对话自动归到一起，老对话启动时自动回填 projectId；每个项目可独立配置默认模型、技能集、MCP 连接器
 - **会话记忆** — 大体积工具输出自动落盘，会话内保留紧凑摘要，防止上下文爆炸
+- **Todo 跨重启**（v0.13.0+）— 对话里的 todo_write 计划持久化到本地磁盘，重启续聊直接接着用
 - **自动压缩** — 对话过长时智能压缩历史消息，保留关键上下文
 
 ### 安全与隐私
@@ -190,7 +196,7 @@
 
 > 更多使用场景请查看 [使用指南](docs/User-Guide.md)
 
-## 内置技能一览（共 27 个）
+## 内置技能一览（共 28 个）
 
 | 类别 | 技能 |
 |------|------|
@@ -201,7 +207,10 @@
 | 内容写作 | 文档协作 (doc-coauthoring)、品牌规范 (brand-guidelines)、内部通讯 (internal-comms) |
 | 自动化 | 定时任务 (schedule)、触发器 (trigger)、告警 SOP (alert-sop) |
 | 项目管理 | 技能创建器 (skill-creator)、项目初始化 (init)、Agent 创建 (create-agent) |
+| Agent 反思 | 自省技能 (reflect) — v0.13.0 新增，让 agent 跑完任务后回溯沉淀 |
 | 主题 | 主题工厂 (theme-factory)（10+ 预设主题，应用到任何产出物） |
+
+> 除了内置技能，v0.13.0 起阿布支持**自进化 Skills** — 在你跑完多轮复杂流程后主动提议"固化成技能"，自己攒出专属于你工作流的能力库。详见 [使用指南 · Skill 技能系统](docs/User-Guide.md#skill-技能系统)。
 
 ## 技术栈
 
@@ -215,7 +224,7 @@
 | 联网搜索 | Bing / Brave / Tavily / SearXNG |
 | 安全沙箱 | macOS Seatbelt + 路径/命令双重校验 |
 | UI 组件 | Radix UI + Lucide Icons + shadcn 风格 |
-| 测试 | Vitest + happy-dom (1300+ 测试用例) |
+| 测试 | Vitest + happy-dom (1773+ 测试用例) |
 | 评测 | 自带 OpenAI 协议工具调用评测器（`npm run eval:tool-selection`） |
 
 ## 从源码构建

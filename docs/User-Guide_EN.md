@@ -11,8 +11,9 @@ This guide covers all Abu features and how to use them effectively.
 - [Quick Start](#quick-start)
 - [Chat & Agent](#chat--agent)
 - [Workspace & Memory](#workspace--memory)
+- [Projects](#projects-v0130)
 - [Built-in Tools](#built-in-tools)
-- [Skill System](#skill-system)
+- [Skill System](#skill-system) (incl. **Self-Evolving Skills**)
 - [MCP Protocol](#mcp-protocol)
 - [Scheduled Tasks](#scheduled-tasks)
 - [Triggers](#triggers)
@@ -23,6 +24,7 @@ This guide covers all Abu features and how to use them effectively.
 - [Web Search](#web-search)
 - [Image Generation](#image-generation)
 - [Sandbox & Security](#sandbox--security)
+- [Notification System](#notification-system-v0130)
 - [Behavior Awareness](#behavior-awareness)
 - [Common Use Cases](#common-use-cases)
 - [FAQ](#faq)
@@ -208,6 +210,54 @@ Hand-written rules always take priority over auto-accumulated memory. If project
 
 ---
 
+## Projects (v0.13.0+)
+
+**Projects** is a conversation-aggregation feature: promote a workspace into a Project, and subsequent new conversations automatically belong to that project — related chats stay organized together.
+
+### What is a Project
+
+A Project = **one workspace** + **multiple conversations** + **a set of project-level defaults**.
+
+Typical scenario: you have a "PRD Collaboration" folder where, over time, you've opened 20+ conversations with Abu — drafting PRDs, sketching flowcharts, generating slide decks, writing weekly reports. Originally these scatter across your sidebar. After promoting the workspace to a Project:
+
+- The sidebar groups them under a single "PRD Collaboration" project node
+- Clicking the project shows all its conversations in one list
+- Project-level defaults (model / skills / MCP) are independent from global settings
+
+### Creating a Project
+
+Two entry points:
+
+1. **Welcome page non-blocking hint**: when the Welcome page has a bound workspace, Abu hints "Would you like to promote this workspace to a Project?" — click "Promote" to upgrade, or "Dismiss" to silence the prompt for this workspace forever
+2. **Sidebar manual upgrade**: right-click a workspace node in the sidebar → "Promote to Project"
+
+### Backfill of older conversations
+
+Conversations that already existed in the same workspace before the upgrade don't need manual handling. On next startup, Abu scans every conversation once and backfills `projectId` on those whose `workspacePath` matches. This backfill is **one-shot**, running only on the first launch after the upgrade.
+
+### Project-level Configuration
+
+Each Project can independently set:
+
+- **Icon** — the emoji shown on the project node
+- **Default model** — overrides the global default for new conversations in this project
+- **Skill set** — skills loaded by default for new conversations
+- **MCP connectors** — default MCP servers wired into new conversations
+- **Custom instructions** — project-level prompt supplement (analogous to `~/.abu/ABU.md` but scoped to this project)
+
+Entry: right-click the project node in the sidebar → "Project Settings".
+
+### Projects vs Workspace
+
+They live on different axes:
+
+- **Workspace** is a folder path — it decides "which files Abu can access"
+- **Project** is an aggregation container — it decides "how multiple conversations are organized and which defaults apply"
+
+A workspace **maps to at most one Project** (one-to-one); a Project can hold unlimited conversations.
+
+---
+
 ## Built-in Tools
 
 Abu comes with built-in system tools — no extra installation needed:
@@ -335,6 +385,51 @@ Skills are pre-defined capability modules that make Abu more professional in spe
 | **Skill Creator** | `skill-creator` | Create, modify, and test custom skills |
 | **Project Init** | `init` | Analyze project structure and generate config files like `.abu/ABU.md` |
 | **Create Agent** | `create-agent` | Build custom agents with specific tools and memory |
+
+### Self-Evolving Skills (v0.13.0+)
+
+Beyond manual install and custom authoring, Abu from v0.13.0 **proactively suggests crystallizing your ad-hoc flows into reusable skills** — so you don't have to re-explain the same thing next time.
+
+#### When Abu offers
+
+Abu evaluates whether to suggest a skill in situations like:
+
+- You completed a **multi-step complex flow** (e.g. a cross-tool task chain like "export Lark spreadsheet → format → upload to Slack")
+- The task involved **multiple tool calls** and ran for a while
+- The workflow is **reusable** (clear logic, well-defined inputs/outputs)
+
+When Abu thinks it's worth crystallizing, it drops a **skill-proposal card** in chat.
+
+#### Full flow: offer → draft → review → accept
+
+1. **Offer stage**: card shows Abu's proposed name + one-line description for the flow; three actions:
+   - **Generate draft** — Abu runs `skill-creator` to author a full draft (~8-15 s)
+   - **Later** — keep the proposal, decide on this conversation's next turn
+   - **Not useful** — reject; Abu remembers "don't suggest this class of task again"
+2. **Draft ready**: when generation finishes, the card becomes "Draft ready · Review"; clicking jumps to the Toolbox skill-review page
+3. **Review stage**: the Toolbox page displays the full SKILL.md + triggers + usage. Three actions:
+   - **Accept directly** — skill goes live, available next time
+   - **Edit** — rename / rewrite description / adjust content, then accept
+   - **Discard** — sent to `.trash`, recoverable within 24 hours
+4. **After accept**: the skill appears under Toolbox → Skills → "Abu's Deposit" category, callable like any built-in
+
+#### Tuning offer frequency
+
+Settings → Soul → "Abu Proactivity" has three levels:
+
+- **Off** — Abu never offers spontaneously; only responds to explicit "save this as a skill" requests
+- **Normal** (default) — Abu offers at a pace bounded by a 2-hour dedup window; the same class of task isn't re-offered
+- **Companion** — Abu is more eager to spot reusable flows
+
+#### Content safety (Content Guard)
+
+All self-evolved drafts go through **Content Guard**: 120+ rules catching common sensitive patterns (API keys, tokens, phone numbers, ID numbers, etc.). Drafts that leak sensitive content are blocked before acceptance.
+
+Settings → Security → Content Guard lets you adjust the rules or add allow-list exceptions. Enabled by default.
+
+#### History & revert
+
+Every mutation to a skill (accept, edit, patch) is recorded. From the skill's detail page in the Toolbox, click "History" to view all revisions with unified diff and one-click revert.
 
 ### Custom Skills
 
@@ -1043,6 +1138,47 @@ Abu will not access without permission:
 
 ---
 
+## Notification System (v0.13.0+)
+
+Previously, Abu's various proactive notifications (task complete, scheduled-task fires, errors, IM inbound, skill proposals) took ad-hoc paths. v0.13.0 unifies them behind a **Notice pipeline** and adds "**read-the-room**" intelligence.
+
+### Three fallback channels
+
+Each notice picks the most appropriate channel based on current context:
+
+| Channel | When it's used |
+|---------|---------------|
+| **In-chat card** | Event happens inside the conversation you're viewing — shown directly in chat |
+| **Sidebar badge** | Event belongs to another conversation — small red dot + count on its sidebar node |
+| **Menubar unread count** | Fallback when the main window isn't focused / you're in fullscreen |
+| **System notification** | L1 important events (task done, errors, meeting prep) — OS-level banner |
+
+### Read-the-room policy
+
+Abu decides whether to interrupt based on your state:
+
+- **Fullscreen** (Bilibili, Keynote, video calls) — Abu stays silent; notices are queued to an inbox (SQLite-persisted) and surfaced via unread count once you return
+- **Over quota** (default L2 cap: 3/hour) — excess notices queue, don't pop
+- **Do-Not-Disturb** — deferred to v1.1
+
+### Priority tiers
+
+| Tier | Meaning | Examples |
+|------|---------|----------|
+| **L1** | Cannot be dropped (important + time-sensitive) | Meeting prep, permission request, task complete, errors |
+| **L2** | Droppable (valuable but not urgent) | Skill proposals, scheduled-task fires, IM messages |
+| **L3** | Status-light only | Deep-focus enter/exit, context resume |
+
+L1 notices are **never dropped** — even in fullscreen / over quota they fall back to system notifications.
+
+### Audit trail
+
+Every notice's delivery (emit time, channels dispatched, whether the user clicked, response latency) is written to SQLite. Settings → Notifications → History shows the last 180 days, letting you review "when did Abu interrupt me, and how did I respond?"
+
+This data also helps Abu **learn**: if L2 response rate in a given time window stays persistently low, Abu auto-lowers the interruption cadence for that window (L2 → L3, status-light only).
+
+---
+
 ## Behavior Awareness
 
 Behavior Awareness lets Abu understand your work patterns so it can give context-aware answers.
@@ -1217,3 +1353,21 @@ No. Behavior Awareness only records window titles (e.g. app names), not screen c
 ### Q: What languages are supported?
 
 Abu's UI supports **Simplified Chinese** and **English**. Switch in Settings, or set to "Follow System" for automatic detection.
+
+### Q: Will Abu remember flows I've taught it?
+
+Yes. The **Self-Evolving Skills** feature introduced in v0.13.0 recognizes multi-step complex flows you've run and proactively suggests "want to crystallize this into a skill?" Once you review and accept, the next similar task is just a skill-name away — no re-explaining. See [Skill System → Self-Evolving Skills](#self-evolving-skills-v0130).
+
+You can tune offer frequency under Settings → Soul → Abu Proactivity (Off / Normal / Companion).
+
+### Q: What's the difference between Projects and Workspaces?
+
+**Workspace** is a folder path — it decides "which files Abu can access". **Project** is an aggregation container — it groups multiple conversations under the same workspace together, with project-level defaults.
+
+One-to-one binding: a workspace maps to at most one Project; a Project can hold unlimited conversations. Upgrade is reversible — a project can be dissolved at any time; the underlying workspace stays intact.
+
+### Q: I don't get notifications in fullscreen — is that a bug?
+
+It's **by design**, not a bug. From v0.13.0, Abu reads your state before interrupting: in fullscreen, L2-tier notices (skill proposals, scheduled tasks, etc.) queue to inbox, surfaced via menubar unread count + sidebar badge once you return.
+
+L1-tier notices (meeting prep, errors, permission requests) **are not affected** — they always fall back to system notifications. See [Notification System](#notification-system-v0130).

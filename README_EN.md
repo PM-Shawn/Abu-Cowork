@@ -27,7 +27,8 @@ Tell Abu what you need — it reads files, runs commands, writes docs, and build
 | Autonomous planning & task execution | :white_check_mark: | :x: | :x: |
 | Read/write local files, run commands | :white_check_mark: | :x: | :white_check_mark: |
 | Natural language interaction | :white_check_mark: | :white_check_mark: | :x: |
-| 27 extensible skills | :white_check_mark: | :x: | :x: |
+| 28 built-in skills + self-evolving (Abu grows its own) | :white_check_mark: | :x: | :x: |
+| Multi-conversation Project aggregation | :white_check_mark: | :x: | :x: |
 | Scheduled tasks & event triggers | :white_check_mark: | :x: | :white_check_mark: |
 | IM bot (Lark/DingTalk/WeCom/Slack) | :white_check_mark: | :x: | Partial |
 | Multi-agent parallel execution | :white_check_mark: | :x: | :x: |
@@ -72,8 +73,11 @@ Tell Abu what you need — it reads files, runs commands, writes docs, and build
 ### Core Capabilities
 
 - **Autonomous Agent** — More than chat: plans, invokes tools, reads/writes files, executes commands, and completes complex tasks end-to-end
+- **Self-Evolving Skills** (v0.13.0+) — After you run a multi-step complex flow, Abu proactively offers "want to crystallize this into a skill?" — one click drafts it, you review, you accept. Next time, just name the skill; no need to re-explain
+- **Smart Notification System** (v0.13.0+) — Menubar unread count / sidebar badge / system notification auto-routed; notices queued to inbox while you're in fullscreen / DnD, surfaced via badges once you're back; audit trail kept for 180 days
+- **Projects** (v0.13.0+) — Promote a workspace into a Project: conversations in the same direction auto-aggregate; each project gets its own default model, skill set, and MCP connectors
 - **Multi-Agent Parallel Execution** — Run up to 5 background agents simultaneously, each executing tasks independently with real-time progress tracking
-- **27 Built-in Skills** — PDF/PPTX/DOCX/Excel generation, frontend design, canvas design, algorithmic art, Mermaid/SVG/infographics, Web Artifacts, Chrome automation (Abu-Browser), deep research, workflow automation, and more — one-click install, fully customizable
+- **28 Built-in Skills** — PDF/PPTX/DOCX/Excel generation, frontend design, canvas design, algorithmic art, Mermaid/SVG/infographics, Web Artifacts, Chrome automation (Abu-Browser), deep research, Agent self-reflection (reflect), workflow automation, and more — one-click install, fully customizable
 - **MCP Protocol** — Connect to databases, search engines, GitHub, and other external services via Model Context Protocol
 - **Browser Automation** — Built-in Browser Bridge + Chrome extension for web element interaction, form filling, screenshots, and JS execution
 - **Computer Use** — Screenshot + mouse/keyboard control for desktop-level tasks, with sensitive app blocking, dangerous key interception, and a 5-minute session timeout
@@ -95,7 +99,7 @@ Tell Abu what you need — it reads files, runs commands, writes docs, and build
 
 ### Automation & Triggers
 
-- **Scheduled Tasks** — Cron-based scheduling (e.g., daily AI news digest at 9 AM)
+- **Scheduled Tasks** — Cron-based scheduling (e.g., daily AI news digest at 9 AM); runs missed while the app was closed are replayed in time order on next launch
 - **Trigger System** — Multiple event sources to automatically invoke agents:
   - **File Watcher** — Monitor file create/modify/delete events with glob patterns
   - **HTTP Webhook** — Auto-generated POST endpoints for external callbacks
@@ -122,7 +126,9 @@ Turn Abu into your team bot — just @Abu in your chat:
   - `~/.abu/ABU.md` — User-level rules (cross-project)
   - `{workspace}/.abu/ABU.md` — Project-level rules
   - `{workspace}/.abu/rules/*.md` — Modular rules (loaded alphabetically, max 20 files)
+- **Project Aggregation** (v0.13.0+) — Promote a workspace into a Project to aggregate its conversations; older conversations auto-backfilled with `projectId` on startup. Each project can independently configure default model, skill set, and MCP connectors
 - **Session Memory** — Large tool outputs automatically persisted to disk; compact summaries kept in-context to prevent context explosion
+- **Persistent Todos** (v0.13.0+) — Per-conversation `todo_write` plans persisted to disk and survive app restarts
 - **Auto-Compaction** — Intelligently compresses long conversation history while preserving key context
 
 ### Security & Privacy
@@ -190,7 +196,7 @@ Create a weekly report PPT for this week
 
 > For more use cases, see the [User Guide](docs/User-Guide_EN.md)
 
-## Built-in Skills (27 total)
+## Built-in Skills (28 total)
 
 | Category | Skills |
 |----------|--------|
@@ -201,7 +207,10 @@ Create a weekly report PPT for this week
 | Content Writing | Doc Co-authoring, Brand Guidelines, Internal Comms |
 | Automation | Schedule, Trigger, Alert SOP |
 | Project Management | Skill Creator, Project Init, Create Agent |
+| Agent Reflection | Reflect (v0.13.0) — lets the agent look back on a run and distill learnings |
 | Theming | Theme Factory (10+ preset themes applicable to any artifact) |
+
+> Beyond built-ins, v0.13.0 adds **Self-Evolving Skills** — after multi-step complex flows, Abu proactively suggests "crystallize this into a skill" and grows a library tailored to your workflow. See [User Guide → Skill System](docs/User-Guide_EN.md#skill-system).
 
 ## Tech Stack
 
@@ -215,7 +224,7 @@ Create a weekly report PPT for this week
 | Web Search | Bing / Brave / Tavily / SearXNG |
 | Sandbox | macOS Seatbelt + path/command dual validation |
 | UI Components | Radix UI + Lucide Icons + shadcn-style |
-| Testing | Vitest + happy-dom (1300+ test cases) |
+| Testing | Vitest + happy-dom (1773+ test cases) |
 | Evaluation | Built-in OpenAI-protocol tool-selection eval runner (`npm run eval:tool-selection`) |
 
 ## Build from Source
@@ -298,7 +307,7 @@ src/
 ├── types/            # TypeScript type definitions
 └── utils/            # Utility functions
 
-builtin-skills/       # 27 built-in skills (one directory each)
+builtin-skills/       # 28 built-in skills (one directory each)
 builtin-agents/       # Built-in agent definitions (placeholder)
 abu-browser-bridge/   # Browser bridge MCP Server
 abu-chrome-extension/ # Chrome extension (used by the Abu-Browser skill)

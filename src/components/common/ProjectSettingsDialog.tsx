@@ -1,4 +1,5 @@
-import { useState, useEffect, useCallback, useMemo } from 'react';
+import { useState, useEffect, useLayoutEffect, useCallback, useMemo, useRef } from 'react';
+import { createPortal } from 'react-dom';
 import { useI18n } from '@/i18n';
 import { format } from '@/i18n';
 import { useProjectStore } from '@/stores/projectStore';
@@ -29,10 +30,19 @@ function ChipMultiSelect({ selected, options, onChange, placeholder }: {
   placeholder: string;
 }) {
   const [open, setOpen] = useState(false);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const [dropdownStyle, setDropdownStyle] = useState<React.CSSProperties>({});
+
+  useLayoutEffect(() => {
+    if (!open || !triggerRef.current) return;
+    const rect = triggerRef.current.getBoundingClientRect();
+    setDropdownStyle({ top: rect.bottom + 4, left: rect.left, width: rect.width });
+  }, [open]);
 
   return (
     <div className="relative">
       <button
+        ref={triggerRef}
         type="button"
         onClick={() => setOpen(!open)}
         className={cn(
@@ -68,10 +78,10 @@ function ChipMultiSelect({ selected, options, onChange, placeholder }: {
         <ChevronDown className={cn('h-3.5 w-3.5 shrink-0 ml-1 text-[var(--abu-text-muted)] transition-transform', open && 'rotate-180')} />
       </button>
 
-      {open && (
+      {open && createPortal(
         <>
-          <div className="fixed inset-0 z-10" onClick={() => setOpen(false)} />
-          <div className="absolute z-20 mt-1 w-full max-h-[200px] overflow-auto rounded-lg border border-[var(--abu-border)] bg-[var(--abu-bg-primary)] shadow-lg">
+          <div className="fixed inset-0 z-[10000]" onClick={() => setOpen(false)} />
+          <div className="fixed z-[10001] max-h-[200px] overflow-auto rounded-lg border border-[var(--abu-border)] bg-white shadow-lg" style={dropdownStyle}>
             {options.length === 0 ? (
               <div className="px-3 py-2 text-[12px] text-[var(--abu-text-muted)]">-</div>
             ) : (
@@ -98,7 +108,8 @@ function ChipMultiSelect({ selected, options, onChange, placeholder }: {
               })
             )}
           </div>
-        </>
+        </>,
+        document.body,
       )}
     </div>
   );

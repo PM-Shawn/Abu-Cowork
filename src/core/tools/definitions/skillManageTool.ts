@@ -60,6 +60,7 @@ import {
 import { skillLoader, serializeSkillMd } from '../../skill/loader';
 import { fuzzyFindAndReplace } from '../../skill/fuzzyPatch';
 import { writeDraft, writeSkillDirect, rejectDraft } from '../../skill/drafts';
+import { appendHistoryEntry, writeTombstone, newTurnId } from '../../skill/history';
 import { joinPath, normalizeSeparators } from '../../../utils/pathUtils';
 import { sanitizePath } from '../../memdir/paths';
 import { useWorkspaceStore } from '../../../stores/workspaceStore';
@@ -688,6 +689,22 @@ async function patchAction(input: Record<string, unknown>, context?: ToolExecuti
     .find((s) => s.length > 0) ?? '';
   const summary = firstLine.length > 80 ? `${firstLine.slice(0, 77)}...` : firstLine;
 
+  // Record history — best-effort, must not abort the successful write.
+  // The backupPath on disk is what restoreFromBackup will consume
+  // during a future revert.
+  await appendHistoryEntry(targetDir, {
+    turnId: newTurnId(),
+    op: 'patch',
+    files: [
+      {
+        relPath: filePath ?? 'SKILL.md',
+        snapshotPath: backupPath,
+        action: 'modified',
+      },
+    ],
+    summary: `${fuzzy.matchCount} replacement${fuzzy.matchCount > 1 ? 's' : ''} via ${fuzzy.strategy}`,
+  }).catch(() => {});
+
   const noticeCard: InteractiveNoticeCard = {
     type: 'skill-patched',
     // Timestamp disambiguator — rapid successive patches of the same
@@ -809,6 +826,20 @@ async function writeFileAction(input: Record<string, unknown>, context?: ToolExe
 
   await skillLoader.discoverSkills(workspacePath).catch(() => {});
 
+  await appendHistoryEntry(targetDir, {
+    turnId: newTurnId(),
+    op: 'write_file',
+    files: [
+      {
+        relPath: filePath,
+        snapshotPath: backupPath,
+        // backupPath is null when the file didn't exist before — so
+        // the action was a creation, not a modification.
+        action: backupPath ? 'modified' : 'created',
+      },
+    ],
+  }).catch(() => {});
+
   return {
     success: true,
     status: 'applied',
@@ -910,6 +941,19 @@ async function editAction(input: Record<string, unknown>, context?: ToolExecutio
   // want to multiply card types that render identically.
   const firstLine = content.split('\n').map((s) => s.trim()).find((s) => s.length > 0) ?? '';
   const summary = firstLine.length > 80 ? `${firstLine.slice(0, 77)}...` : firstLine;
+
+  await appendHistoryEntry(targetDir, {
+    turnId: newTurnId(),
+    op: 'edit',
+    files: [
+      {
+        relPath: filePath ?? 'SKILL.md',
+        snapshotPath: backupPath,
+        action: backupPath ? 'modified' : 'created',
+      },
+    ],
+    summary: summary || undefined,
+  }).catch(() => {});
 
   const noticeCard: InteractiveNoticeCard = {
     type: 'skill-patched',
@@ -1049,6 +1093,12 @@ async function removeFileAction(input: Record<string, unknown>, context?: ToolEx
     return { success: false, error: `file not found: ${filePath}` };
   }
 
+  // Tombstone the current content BEFORE deleting so a future revert
+  // can put the file back. atomicWriteWithBackup can't help here —
+  // there's no "write with backup" when the intent is removal.
+  const ts = Date.now();
+  const tombstonePath = await writeTombstone(targetDir, filePath, ts).catch(() => null);
+
   try {
     const { remove } = await import('@tauri-apps/plugin-fs');
     await remove(targetPath);
@@ -1057,6 +1107,19 @@ async function removeFileAction(input: Record<string, unknown>, context?: ToolEx
   }
 
   await skillLoader.discoverSkills(workspacePath).catch(() => {});
+
+  await appendHistoryEntry(targetDir, {
+    turnId: newTurnId(),
+    ts,
+    op: 'remove_file',
+    files: [
+      {
+        relPath: filePath,
+        snapshotPath: tombstonePath,
+        action: 'removed',
+      },
+    ],
+  }).catch(() => {});
 
   return {
     success: true,

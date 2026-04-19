@@ -106,9 +106,19 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
   const draftsRef = useRef<Map<string, InputDraft>>(new Map());
   const prevConvIdRef = useRef<string | null>(null);
 
-  // Welcome-only state (always declared for hook stability)
+  // Welcome-only state (always declared for hook stability).
+  // `localWorkspace` defaults to the active conv's bound workspace (set
+  // by project "+") or the current global workspace. Without this, the
+  // FolderSelector always started empty even when the user had just
+  // entered a project context — forcing a pointless re-pick. See below
+  // effect that re-syncs when the active conv changes (e.g. user clicks
+  // a different project's "+" while welcome is already mounted).
   const [pendingFolder, setPendingFolder] = useState<string | null>(null);
-  const [localWorkspace, setLocalWorkspace] = useState<string | null>(null);
+  const [localWorkspace, setLocalWorkspace] = useState<string | null>(() => {
+    const convId = useChatStore.getState().activeConversationId;
+    const conv = convId ? useChatStore.getState().conversations[convId] : null;
+    return conv?.workspacePath ?? useWorkspaceStore.getState().currentPath;
+  });
 
   // Store hooks (always called)
   const cancelStreaming = useChatStore((s) => s.cancelStreaming);
@@ -172,6 +182,18 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
 
   // Save draft & restore on conversation switch
   const activeConvId = activeConv?.id ?? null;
+
+  // Welcome-only: re-sync FolderSelector to the active conv's workspace
+  // whenever the conv (or its bound workspace) changes. Covers "user on
+  // welcome page clicks a different project's +" — without this, the
+  // FolderSelector would keep showing the previous workspace pick.
+  const activeConvWorkspace = activeConv?.workspacePath ?? null;
+  useEffect(() => {
+    if (!isWelcome) return;
+    const next = activeConvWorkspace ?? useWorkspaceStore.getState().currentPath;
+    setLocalWorkspace(next);
+  }, [activeConvId, activeConvWorkspace, isWelcome]);
+
   useEffect(() => {
     const prevId = prevConvIdRef.current;
     // Save draft for previous conversation (read from DOM to avoid stale closure)

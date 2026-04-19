@@ -16,14 +16,11 @@ import BackgroundAgents from './BackgroundAgents';
 import ScenarioGuide from './ScenarioGuide';
 import PermissionDialog from '@/components/common/PermissionDialog';
 import CommandConfirmDialog from '@/components/common/CommandConfirmDialog';
-import { ChevronDown, Settings, Folder, FolderOpen } from 'lucide-react';
+import { ChevronDown, Settings } from 'lucide-react';
 import abuAvatar from '@/assets/abu-avatar.png';
 import IMInfoBar from './IMInfoBar';
 import SourceInfoBar from './SourceInfoBar';
 import ComputerUseStatusBar from './ComputerUseStatusBar';
-import type { Conversation } from '@/types';
-import { useProjectStore } from '@/stores/projectStore';
-import { getBaseName } from '@/utils/pathUtils';
 
 /**
  * Groups messages by loopId for rendering.
@@ -257,12 +254,6 @@ export default function ChatView() {
                 <img src={abuAvatar} alt="Abu" className="w-full h-full object-cover" />
               </div>
 
-              {/* Context badge — shows which project / workspace this
-                  conversation will belong to. Only rendered when there's
-                  meaningful context (project bound or workspace set), so
-                  the very first startup still looks clean. */}
-              <WelcomeContextBadge activeConv={activeConv} />
-
               {/* Slogan */}
               <h1 className="text-[28px] font-semibold text-[var(--abu-text-primary)] leading-tight mb-2">
                 {t.chat.welcomeTitle}
@@ -423,42 +414,3 @@ export default function ChatView() {
   );
 }
 
-/**
- * Small context chip shown above the welcome slogan. Tells the user
- * which project + workspace the next message will land in, so the
- * "project → +" entry point doesn't look identical to the top-level
- * "new task" button. Renders nothing when there's no context worth
- * surfacing (fresh startup, no project, no workspace).
- */
-function WelcomeContextBadge({ activeConv }: { activeConv: Conversation | null }) {
-  const projectId = activeConv?.projectId;
-  const project = useProjectStore((s) => (projectId ? s.projects[projectId] : undefined));
-  const currentWorkspace = useWorkspaceStore((s) => s.currentPath);
-
-  // Prefer project (most specific) over raw workspace. Hide entirely
-  // when nothing to show.
-  if (project) {
-    return (
-      <div className="inline-flex items-center gap-1.5 px-2.5 py-1 mb-3 rounded-full bg-[var(--abu-clay-tint)] text-[12px] text-[var(--abu-clay)]">
-        <FolderOpen className="h-3 w-3" />
-        <span className="font-medium">{project.name}</span>
-        {project.workspacePath && (
-          <span className="text-[11px] text-[var(--abu-clay)]/70 truncate max-w-[240px]">
-            · {getBaseName(project.workspacePath)}
-          </span>
-        )}
-      </div>
-    );
-  }
-
-  if (currentWorkspace) {
-    return (
-      <div className="inline-flex items-center gap-1.5 px-2.5 py-1 mb-3 rounded-full bg-[var(--abu-bg-muted)] text-[11px] text-[var(--abu-text-muted)]">
-        <Folder className="h-3 w-3" />
-        <span className="truncate max-w-[280px]">{currentWorkspace}</span>
-      </div>
-    );
-  }
-
-  return null;
-}

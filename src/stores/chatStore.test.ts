@@ -419,6 +419,91 @@ describe('chatStore', () => {
     it('returns null for invalid JSON', () => {
       expect(useChatStore.getState().importConversation('not json')).toBeNull();
     });
+
+    describe('importConversation · share bundle path', () => {
+      // Minimal share bundle fixture that satisfies the v1 schema check.
+      // Anything inside bundle.conversation that isn't id/title/createdAt/
+      // updatedAt must be ignored — external refs are intentionally not
+      // carried by the bundle shape.
+      const makeBundle = () => ({
+        schema: { abuShareVersion: 1, tier: 'standard', exportedAt: Date.now() },
+        conversation: {
+          id: 'original-conv-id',
+          title: 'Shared from Alice',
+          createdAt: 1_700_000_000_000,
+          updatedAt: 1_700_000_100_000,
+        },
+        messages: [
+          { id: 'msg1', role: 'user', content: 'Hi', timestamp: 1_700_000_000_100 },
+          { id: 'msg2', role: 'assistant', content: 'Hello back', timestamp: 1_700_000_000_200 },
+        ],
+        attachments: {},
+        stats: { redactionCount: 0, attachmentCount: 0, embeddedCount: 0, sizeBytes: 0 },
+      });
+
+      it('creates a read-only conversation with a fresh ID', () => {
+        const json = JSON.stringify(makeBundle());
+        const newId = useChatStore.getState().importConversation(json);
+        expect(newId).not.toBeNull();
+        expect(newId).not.toBe('original-conv-id');
+        const conv = useChatStore.getState().conversations[newId!];
+        expect(conv.readOnly).toBe(true);
+        expect(conv.messages).toHaveLength(2);
+        expect(conv.messages[0].content).toBe('Hi');
+      });
+
+      it('stamps importedFrom with the source schema version', () => {
+        const json = JSON.stringify(makeBundle());
+        const newId = useChatStore.getState().importConversation(json)!;
+        const conv = useChatStore.getState().conversations[newId];
+        expect(conv.importedFrom?.schemaVersion).toBe(1);
+        expect(conv.importedFrom?.importedAt).toBeGreaterThan(0);
+      });
+
+      it('mirrors readOnly + importedFrom into the index meta so they survive restart', () => {
+        const json = JSON.stringify(makeBundle());
+        const newId = useChatStore.getState().importConversation(json)!;
+        const meta = useChatStore.getState().conversationIndex[newId];
+        expect(meta.readOnly).toBe(true);
+        expect(meta.importedFrom?.schemaVersion).toBe(1);
+      });
+
+      it('strips external references even if a misbehaving exporter inlines them', () => {
+        const bundle = makeBundle() as Record<string, unknown>;
+        // Simulate a broken exporter that leaked refs into the bundle root.
+        bundle.scheduledTaskId = 'task-999';
+        bundle.triggerId = 'trig-999';
+        bundle.projectId = 'proj-999';
+        bundle.imChannelId = 'chan-999';
+        bundle.workspacePath = '/Users/stranger/private';
+        bundle.activeSkills = ['leak-skill'];
+        bundle.enabledMCPServers = ['leak-mcp'];
+
+        const json = JSON.stringify(bundle);
+        const newId = useChatStore.getState().importConversation(json)!;
+        const conv = useChatStore.getState().conversations[newId];
+        expect(conv.scheduledTaskId).toBeUndefined();
+        expect(conv.triggerId).toBeUndefined();
+        expect(conv.projectId).toBeUndefined();
+        expect(conv.imChannelId).toBeUndefined();
+        expect(conv.workspacePath).toBeUndefined();
+        expect(conv.activeSkills).toBeUndefined();
+        expect(conv.enabledMCPServers).toBeUndefined();
+      });
+
+      it('clears the workspace so the read-only dialogue is not bound to one', () => {
+        mockClearWorkspace.mockClear();
+        const json = JSON.stringify(makeBundle());
+        useChatStore.getState().importConversation(json);
+        expect(mockClearWorkspace).toHaveBeenCalled();
+      });
+
+      it('rejects a bundle without a messages array', () => {
+        const bundle = makeBundle() as Record<string, unknown>;
+        delete bundle.messages;
+        expect(useChatStore.getState().importConversation(JSON.stringify(bundle))).toBeNull();
+      });
+    });
   });
 
   // ── setPendingInput ──

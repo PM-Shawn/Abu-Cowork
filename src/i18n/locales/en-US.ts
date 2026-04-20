@@ -167,6 +167,9 @@ const enUS: TranslationDict = {
     addAttachment: 'Add images or files',
     fromScheduledTask: 'Scheduled Task',
     fromTrigger: 'Trigger',
+    readOnlyBannerTitle: 'Read-only conversation',
+    readOnlyBannerSubtitle: 'Imported from a shared bundle — cannot be continued',
+    readOnlyImportedAt: 'Imported {date}',
     // Scenario guide
     trySaying: 'Try saying',
     scenarios: {

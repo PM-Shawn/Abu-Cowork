@@ -13,9 +13,52 @@ import { removeAgentsByConversation, setConversationLookup } from '../core/agent
 import { cancelSubagent } from '../core/agent/subagentAbort';
 import { setComputerUseActive } from '../core/agent/computerUseStatus';
 import type { ConversationMeta } from '../core/session/conversationStorage';
+import type { ShareBundle } from '../core/session/shareBundle';
 
 function generateId(): string {
   return Date.now().toString(36) + Math.random().toString(36).substring(2, 8);
+}
+
+/** Extra safety net for messages coming in via import — ensures no streaming
+ * flag survives even if the source bundle was built by a broken exporter. */
+function sanitizeImportedMessage(msg: Message): Message {
+  return {
+    ...msg,
+    isStreaming: false,
+    toolCalls: msg.toolCalls?.map((tc) => ({ ...tc, isExecuting: false })),
+  };
+}
+
+/** Build an in-memory Conversation + Meta from a validated ShareBundle.
+ * Intentionally drops external references (workspacePath, scheduledTaskId,
+ * triggerId, projectId, imChannelId/imPlatform, activeSkills,
+ * enabledMCPServers) so the imported copy is self-contained and read-only. */
+function buildImportedFromShareBundle(bundle: ShareBundle): { conv: Conversation; meta: ConversationMeta } {
+  const newId = generateId();
+  const importedFrom = {
+    schemaVersion: bundle.schema.abuShareVersion,
+    importedAt: Date.now(),
+  };
+  const conv: Conversation = {
+    id: newId,
+    title: bundle.conversation.title,
+    createdAt: bundle.conversation.createdAt,
+    updatedAt: bundle.conversation.updatedAt,
+    messages: bundle.messages.map(sanitizeImportedMessage),
+    status: 'idle',
+    readOnly: true,
+    importedFrom,
+  };
+  const meta: ConversationMeta = {
+    id: newId,
+    title: conv.title,
+    createdAt: conv.createdAt,
+    updatedAt: conv.updatedAt,
+    messageCount: conv.messages.length,
+    readOnly: true,
+    importedFrom,
+  };
+  return { conv, meta };
 }
 
 // Wire up conversation lookup for backgroundAgentRegistry (avoids circular import)
@@ -931,10 +974,44 @@ export const useChatStore = create<ChatStore>()(
         return JSON.stringify(conv, null, 2);
       },
 
-      // Import conversation from JSON string, returns new conversation ID
+      // Import conversation from JSON string, returns new conversation ID.
+      //
+      // Accepts two payload shapes, auto-dispatched by inspecting the parsed
+      // structure:
+      //   1. Share bundle (`schema.abuShareVersion === 1`) — built by
+      //      `exportConversationForShare`. Produces a read-only conversation
+      //      with external references stripped and an `importedFrom` stamp.
+      //   2. Raw conversation JSON (legacy, used by the undo-delete flow via
+      //      `exportConversation`). Retained verbatim so undo keeps working.
       importConversation: (json: string) => {
         try {
-          const conv = JSON.parse(json) as Conversation;
+          const parsed = JSON.parse(json) as unknown;
+
+          // ── Share bundle path ───────────────────────────────────────────
+          if (
+            parsed &&
+            typeof parsed === 'object' &&
+            (parsed as { schema?: { abuShareVersion?: unknown } }).schema?.abuShareVersion === 1
+          ) {
+            const bundle = parsed as ShareBundle;
+            if (!Array.isArray(bundle.messages) || !bundle.conversation) return null;
+            const { conv, meta } = buildImportedFromShareBundle(bundle);
+
+            set((state) => {
+              state.conversations[conv.id] = conv;
+              state.conversationIndex[conv.id] = meta;
+              state.activeConversationId = conv.id;
+            });
+            import('../core/session/conversationStorage').then(async ({ migrateConversation }) => {
+              await migrateConversation(conv);
+            }).catch(() => {});
+            // Imported share bundles are not bound to any workspace.
+            useWorkspaceStore.getState().clearWorkspace();
+            return conv.id;
+          }
+
+          // ── Legacy raw conversation path (undo-delete) ──────────────────
+          const conv = parsed as Conversation;
           if (!conv.id || !conv.messages) return null;
 
           // Generate new ID to avoid conflicts
@@ -968,6 +1045,8 @@ export const useChatStore = create<ChatStore>()(
             scheduledTaskId: imported.scheduledTaskId,
             triggerId: imported.triggerId,
             projectId: imported.projectId,
+            readOnly: imported.readOnly,
+            importedFrom: imported.importedFrom,
           };
 
           set((state) => {

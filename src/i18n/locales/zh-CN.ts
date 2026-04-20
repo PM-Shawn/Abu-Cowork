@@ -167,6 +167,9 @@ const zhCN: TranslationDict = {
     addAttachment: '添加图片或文件',
     fromScheduledTask: '定时任务',
     fromTrigger: '监听事件',
+    readOnlyBannerTitle: '只读对话',
+    readOnlyBannerSubtitle: '此对话由他人分享导入，无法继续',
+    readOnlyImportedAt: '导入于 {date}',
     // Scenario guide
     trySaying: '试试这样说',
     scenarios: {

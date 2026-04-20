@@ -37,8 +37,10 @@ import { initSidebarBadgeChannel } from '@/stores/noticeBadgeStore';
 import { initMenubarChannel, useNoticeMenubarStore } from '@/stores/noticeMenubarStore';
 import { initNoticeChannelHandlers } from '@/core/notice/channels';
 import { setContextProvider } from '@/core/notice/pipeline';
-import { cachedContextProvider, primeContextCaches } from '@/core/notice/contextProvider';
+import { cachedContextProvider, primeContextCaches, assembleGateContext } from '@/core/notice/contextProvider';
+import { drainInbox } from '@/core/notice/inbox';
 import { startPetStatusBridge, resyncPetStatus } from '@/core/pet/petStatusBridge';
+import { startPetReceiver } from '@/core/pet/petReceiver';
 import { schedulerEngine } from '@/core/scheduler/scheduler';
 import { triggerEngine } from '@/core/trigger/triggerEngine';
 import { imChannelRouter } from '@/core/im/channelRouter';
@@ -55,6 +57,22 @@ import { startBehaviorSensor, stopBehaviorSensor } from '@/core/agent/behaviorSe
 import { useI18n } from '@/i18n';
 import CloseDialog from '@/components/common/CloseDialog';
 import { checkForUpdate } from '@/core/updates/checker';
+
+/**
+ * Drain Notice inbox if we're in a state that can actually deliver.
+ * Runs at boot + on every window refocus — a no-op if the queue is
+ * empty or the user is still in a fullscreen app (defer until next
+ * focus event). Fire-and-forget; all failures are non-fatal.
+ */
+async function drainPendingInbox(): Promise<void> {
+  try {
+    const ctx = await assembleGateContext(Date.now());
+    if (ctx.fullscreenApp) return;
+    await drainInbox(ctx);
+  } catch (err) {
+    console.warn('[App] Notice inbox drain error:', err);
+  }
+}
 
 function App() {
   const refreshDiscovery = useDiscoveryStore((s) => s.refresh);
@@ -89,6 +107,11 @@ function App() {
         if (focused) {
           clearDockBadge();
           useNoticeMenubarStore.getState().dismissAll();
+          // Re-deliver L2 notices Gate queued while we were
+          // fullscreen / unfocused. Phase-2 main-window-toast will
+          // aggregate these; for v0.13.0 they just flow back through
+          // sidebar_badge / menubar so the user isn't left unaware.
+          void drainPendingInbox();
         }
       })
       .then((fn) => {
@@ -164,11 +187,19 @@ function App() {
     initSidebarBadgeChannel();
     initMenubarChannel();
     initNoticeChannelHandlers();
-    primeContextCaches().catch(() => {});
+    primeContextCaches()
+      .then(() => drainPendingInbox())
+      .catch(() => {});
 
     // Pet status bridge: aggregate chatStore conversation statuses and
     // push to pet window via Tauri event. Idempotent.
     startPetStatusBridge();
+
+    // Pet receiver: turn pet-drop-files / pet-mini-send / pet-focus-main /
+    // pet-open-settings events from the pet window into main-side actions.
+    startPetReceiver().catch((err) => {
+      console.warn('[App] Pet receiver init error:', err);
+    });
 
     // Initialize file watchers
     initFileWatchers().catch((err) => {

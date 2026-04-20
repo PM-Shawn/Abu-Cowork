@@ -93,6 +93,18 @@ pub fn pet_hide(app: AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+/// Resize the pet window. Used by mini input expand/collapse in Phase C.
+#[tauri::command]
+pub fn pet_resize(app: AppHandle, width: f64, height: f64) -> Result<(), String> {
+    use tauri::LogicalSize;
+    if let Some(window) = app.get_webview_window(PET_LABEL) {
+        window
+            .set_size(LogicalSize::new(width, height))
+            .map_err(|e| format!("pet_resize failed: {}", e))?;
+    }
+    Ok(())
+}
+
 /// Toggle pet visibility. Convenience for dev/testing — later Settings UI
 /// will drive show/hide based on `pet.mode` instead.
 #[tauri::command]

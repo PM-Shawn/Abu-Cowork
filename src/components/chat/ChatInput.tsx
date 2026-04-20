@@ -4,6 +4,7 @@ import { ModelSelector } from '@/components/chat/ModelSelector';
 import { open } from '@tauri-apps/plugin-dialog';
 import { readFile } from '@tauri-apps/plugin-fs';
 import { useFileDragDrop } from '@/hooks/useFileDragDrop';
+import { consumePendingAttachments, hasPendingAttachments } from '@/core/pet/pendingAttachments';
 import { uint8ArrayToBase64 } from '@/utils/base64';
 import { getBaseName, IMAGE_MIME_MAP } from '@/utils/pathUtils';
 import { isImageFile } from '@/components/chat/FileAttachment';
@@ -281,6 +282,25 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
     );
     textareaRef.current?.focus();
   });
+
+  // Drain pending attachments pushed by the pet window (Phase C).
+  // Fires on mount and whenever the active conversation changes, so a
+  // pet drop that arrives mid-transition still lands in the right input.
+  useEffect(() => {
+    if (!hasPendingAttachments()) return;
+    const paths = consumePendingAttachments();
+    if (paths.length === 0) return;
+    void processFilePaths(
+      paths,
+      (imgs) => setImages((prev) => [...prev, ...imgs]),
+      (items) => setFiles((prev) => {
+        const existingPaths = new Set(prev.map((f) => f.path));
+        const deduped = items.filter((f) => !existingPaths.has(f.path));
+        return deduped.length > 0 ? [...prev, ...deduped] : prev;
+      }),
+    );
+    textareaRef.current?.focus();
+  }, [activeConv?.id]);
 
   // Welcome-only: folder & permission handlers
   const handleSelectFolder = (folderPath: string) => {

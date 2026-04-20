@@ -98,6 +98,12 @@ export default function FileAttachment({ filePath }: FileAttachmentProps) {
   // If we ever render this card in a non-active context (e.g. conversation list preview),
   // pass conversationId via props and fall back to the store.
   const conversationId = useChatStore((s) => s.activeConversationId) ?? undefined;
+  // Bumped by chatStore whenever the outputs manifest for this conversation
+  // materially changes (e.g. share import finishes installing attachments).
+  // Including this in the resolve effect's deps ensures the card re-resolves
+  // once the async install settles, instead of getting stuck on the empty
+  // snapshot it saw on first render.
+  const outputsRev = useChatStore((s) => (conversationId ? s.outputsRev[conversationId] ?? 0 : 0));
   const { t } = useI18n();
   const { icon: Icon, label, category } = getFileTypeInfo(filePath);
   const fileName = getBaseName(filePath);
@@ -106,7 +112,8 @@ export default function FileAttachment({ filePath }: FileAttachmentProps) {
   const [thumbUrl, setThumbUrl] = useState<string | null>(null);
   const [resolved, setResolved] = useState<ResolvedSource | null>(null);
 
-  // Resolve where to actually load the file from: live original > snapshot > skipped/missing
+  // Resolve where to actually load the file from: live original > snapshot > skipped/missing.
+  // Re-runs when outputsRev bumps so async share-import writes become visible.
   useEffect(() => {
     let cancelled = false;
     resolveFileSource(conversationId, filePath)
@@ -115,7 +122,7 @@ export default function FileAttachment({ filePath }: FileAttachmentProps) {
         if (!cancelled) setResolved({ status: 'missing', basename: getBaseName(filePath), originalPath: filePath });
       });
     return () => { cancelled = true; };
-  }, [filePath, conversationId]);
+  }, [filePath, conversationId, outputsRev]);
 
   // Effective path: where to actually read bytes from for thumbnail / preview / open-with.
   // null when the file is not loadable (skipped/missing/loading).

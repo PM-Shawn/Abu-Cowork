@@ -175,6 +175,13 @@ interface ChatState {
   thinkingStartTime: number | null;
   // Track multiple concurrent active agents
   activeAgentNames: string[];
+  /** Bumped whenever a conversation's outputs manifest materially changes
+   *  from outside the snapshot hot path — currently: after
+   *  installSharedAttachments writes newly imported files. FileAttachment
+   *  watches this so it re-resolves once the async import finishes, rather
+   *  than getting stuck showing "missing" because it read the manifest
+   *  before the install side-effects landed. Ephemeral, not persisted. */
+  outputsRev: Record<string, number>;
 }
 
 interface ChatActions {
@@ -272,6 +279,7 @@ export const useChatStore = create<ChatStore>()(
       agentStatus: 'idle' as AgentStatus,
       currentTool: null,
       currentUsage: null,
+      outputsRev: {} as Record<string, number>,
       pendingInput: null,
       thinkingStartTime: null,
       activeAgentNames: [],
@@ -1004,17 +1012,29 @@ export const useChatStore = create<ChatStore>()(
               state.conversationIndex[conv.id] = meta;
               state.activeConversationId = conv.id;
             });
-            import('../core/session/conversationStorage').then(async ({ migrateConversation }) => {
-              await migrateConversation(conv);
-            }).catch(() => {});
-            // Materialise attached AI-generated files so file cards resolve
-            // instead of showing "missing". Fire-and-forget to match the
-            // migrateConversation pattern — failure does not block import.
-            if (bundle.attachments && Object.keys(bundle.attachments).length > 0) {
-              import('../core/session/outputSnapshots').then(({ installSharedAttachments }) => {
-                installSharedAttachments(conv.id, bundle.attachments).catch(() => {});
-              }).catch(() => {});
-            }
+            // Persist messages to JSONL + install bundled attachments. Both
+            // happen async; attach a rev bump at the end so FileAttachment
+            // components re-resolve once the outputs manifest materially
+            // changes (otherwise they'd stay stuck on the empty snapshot
+            // they read in the same tick as `set` landed).
+            const attachmentsToInstall = bundle.attachments && Object.keys(bundle.attachments).length > 0
+              ? bundle.attachments
+              : null;
+            (async () => {
+              try {
+                const { migrateConversation } = await import('../core/session/conversationStorage');
+                await migrateConversation(conv);
+              } catch { /* non-fatal */ }
+              if (attachmentsToInstall) {
+                try {
+                  const { installSharedAttachments } = await import('../core/session/outputSnapshots');
+                  await installSharedAttachments(conv.id, attachmentsToInstall);
+                } catch { /* non-fatal */ }
+                set((state) => {
+                  state.outputsRev[conv.id] = (state.outputsRev[conv.id] ?? 0) + 1;
+                });
+              }
+            })();
             // Imported share bundles are not bound to any workspace.
             useWorkspaceStore.getState().clearWorkspace();
             return conv.id;

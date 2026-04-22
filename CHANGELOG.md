@@ -2,6 +2,12 @@
 
 本文档记录阿布的每次版本更新。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/)。
 
+## v0.13.4 · 2026-04-22
+
+### 修复
+
+- 🖱️ **切回阿布不再"第一下点了没反应"**：从其他 app 切回来后，点输入框 / 按钮直接生效，无需再点第二下。启用了 macOS 的 `acceptFirstMouse`，跟 VSCode / Chrome / Figma 等主流桌面 app 行为一致。
+
 ## v0.13.1 · 2026-04-20
 
 ### 修复

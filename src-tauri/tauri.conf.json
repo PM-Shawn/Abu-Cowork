@@ -1,6 +1,6 @@
 {
   "productName": "Abu",
-  "version": "0.13.3",
+  "version": "0.13.4",
   "identifier": "com.abu.app",
   "build": {
     "beforeDevCommand": "npm run copy-resources && npm run dev",
@@ -22,7 +22,8 @@
         "resizable": true,
         "center": true,
         "titleBarStyle": "Overlay",
-        "trafficLightPosition": { "x": 20, "y": 18 }
+        "trafficLightPosition": { "x": 20, "y": 18 },
+        "acceptFirstMouse": true
       }
     ],
     "security": {

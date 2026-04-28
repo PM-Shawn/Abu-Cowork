@@ -1,9 +1,10 @@
 import { useState, useEffect } from 'react';
 import { useI18n } from '@/i18n';
-import { X, Minus } from 'lucide-react';
+import { X, Minus, AlertTriangle } from 'lucide-react';
 
 interface CloseDialogProps {
   open: boolean;
+  hasRunningAgent: boolean;
   onQuit: () => void;
   onMinimize: () => void;
   onCancel: () => void;
@@ -12,6 +13,7 @@ interface CloseDialogProps {
 
 export default function CloseDialog({
   open,
+  hasRunningAgent,
   onQuit,
   onMinimize,
   onCancel,
@@ -58,9 +60,17 @@ export default function CloseDialog({
         <h3 className="text-[16px] font-semibold text-[var(--abu-text-primary)] mb-1.5">
           {t.windowClose.title}
         </h3>
-        <p className="text-[13.5px] text-[var(--abu-text-muted)] leading-relaxed mb-5">
+        <p className="text-[13.5px] text-[var(--abu-text-muted)] leading-relaxed mb-3">
           {t.windowClose.message}
         </p>
+        {hasRunningAgent && (
+          <div className="flex items-start gap-2 mb-4 px-3 py-2 rounded-lg bg-amber-500/10 border border-amber-500/20">
+            <AlertTriangle className="h-3.5 w-3.5 text-amber-500 mt-0.5 shrink-0" />
+            <p className="text-[12.5px] text-amber-600 dark:text-amber-400 leading-snug">
+              {t.windowClose.agentRunningWarning}
+            </p>
+          </div>
+        )}
 
         {/* Footer: checkbox left, buttons right */}
         <div className="flex items-center justify-between">

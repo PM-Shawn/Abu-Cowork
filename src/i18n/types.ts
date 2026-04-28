@@ -1299,6 +1299,7 @@ export interface TranslationDict {
   windowClose: {
     title: string;
     message: string;
+    agentRunningWarning: string;
     quit: string;
     minimize: string;
     rememberChoice: string;

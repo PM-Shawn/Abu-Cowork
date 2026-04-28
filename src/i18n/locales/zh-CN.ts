@@ -1320,6 +1320,7 @@ const zhCN: TranslationDict = {
   windowClose: {
     title: '关闭窗口',
     message: '你想要退出应用还是最小化到系统托盘？',
+    agentRunningWarning: 'AI 任务正在运行，退出后下次启动可恢复进度。',
     quit: '退出',
     minimize: '最小化到托盘',
     rememberChoice: '记住我的选择',

@@ -14,7 +14,7 @@ import ToastContainer from '@/components/common/ToastContainer';
 import { registerBuiltinTools } from '@/core/tools/builtins';
 import { initPlatform } from '@/utils/platform';
 import { useDiscoveryStore } from '@/stores/discoveryStore';
-import { useActiveConversation } from '@/stores/chatStore';
+import { useChatStore, useActiveConversation } from '@/stores/chatStore';
 import { initNetworkProxy } from '@/core/sandbox/config';
 
 // Initialize platform detection at module load time (before any component renders)
@@ -95,6 +95,9 @@ function App() {
   // Right panel toggle only when there's an active conversation with messages
   const showRightPanelToggle = viewMode === 'chat' && (activeConv?.messages?.length ?? 0) > 0;
   const [showCloseDialog, setShowCloseDialog] = useState(false);
+  const hasRunningAgent = useChatStore((s) =>
+    Object.values(s.conversations).some((c) => c.status === 'running')
+  );
 
   const handleQuit = useCallback(() => {
     setShowCloseDialog(false);
@@ -419,6 +422,7 @@ function App() {
 
         <CloseDialog
           open={showCloseDialog}
+          hasRunningAgent={hasRunningAgent}
           onQuit={handleQuit}
           onMinimize={handleMinimize}
           onCancel={() => setShowCloseDialog(false)}

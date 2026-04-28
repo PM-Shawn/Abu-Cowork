@@ -1319,6 +1319,7 @@ const enUS: TranslationDict = {
   windowClose: {
     title: 'Close Window',
     message: 'Would you like to quit the app or minimize to system tray?',
+    agentRunningWarning: 'An AI task is in progress. Progress will be recoverable on next launch.',
     quit: 'Quit',
     minimize: 'Minimize to Tray',
     rememberChoice: 'Remember my choice',

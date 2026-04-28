@@ -1,8 +1,3 @@
-export { default as APISection } from './APISection';
-export { default as ModelSection } from './ModelSection';
-export { default as AdvancedSection } from './AdvancedSection';
-export { default as ModelConfigSection } from './ModelConfigSection';
-
 export { default as AboutSection } from './AboutSection';
 export { default as ImageGenSection } from './ImageGenSection';
 export { default as WebSearchSection } from './WebSearchSection';

@@ -182,6 +182,7 @@ vi.mock('../core/llm/modelCapabilities', () => ({
     thinking: false,
     vision: true,
   }),
+  deriveUiCaps: vi.fn().mockReturnValue([]),
 }));
 
 vi.mock('../core/tools/toolNames', () => ({

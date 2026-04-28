@@ -902,7 +902,8 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
       const modelCaps = resolveCapabilities(effectiveModelId);
 
       // Determine dynamic maxTokens — use model caps as default, user settings as override
-      let maxOutputTokens = freshSettings.enableThinking && modelCaps.thinking
+      const autoThinking = modelCaps.thinking === 'anthropic';
+      let maxOutputTokens = autoThinking
         ? Math.max(freshSettings.maxOutputTokens ?? modelCaps.maxOutputTokens, 16384)
         : (freshSettings.maxOutputTokens ?? modelCaps.maxOutputTokens);
       const contextWindowSize = freshSettings.contextWindowSize ?? modelCaps.contextWindow;
@@ -1037,9 +1038,8 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
         tools: tools.length > 0 ? tools : undefined,
         maxTokens: maxOutputTokens,
         signal: abortController.signal,
-        temperature: freshSettings.temperature,
-        enableThinking: freshSettings.enableThinking && modelCaps.thinking !== false,
-        thinkingBudget: freshSettings.thinkingBudget,
+        enableThinking: autoThinking,
+        thinkingBudget: 10000,
         supportsVision: modelCaps.vision,
         builtinWebSearch,
       };

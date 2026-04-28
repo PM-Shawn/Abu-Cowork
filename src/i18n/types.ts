@@ -332,15 +332,6 @@ export interface TranslationDict {
     saveServiceCancel: string;
     deleteServiceConfirm: string;
     serviceNameRequired: string;
-    temperature: string;
-    temperaturePrecise: string;
-    temperatureCreative: string;
-    temperatureDescription: string;
-    extendedThinking: string;
-    extendedThinkingDescription: string;
-    thinkingBudget: string;
-    thinkingBudgetFast: string;
-    thinkingBudgetDeep: string;
     // Language
     language: string;
     languageDescription: string;

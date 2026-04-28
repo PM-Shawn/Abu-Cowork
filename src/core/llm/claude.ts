@@ -214,30 +214,28 @@ export class ClaudeAdapter implements LLMAdapter {
       }
     }
 
-    // Temperature and sampling
-    if (options.temperature !== undefined) {
-      params.temperature = options.temperature;
-    }
-    if (options.topP !== undefined) {
-      params.top_p = options.topP;
-    }
-
-    // Stop sequences
-    if (options.stopSequences && options.stopSequences.length > 0) {
-      params.stop_sequences = options.stopSequences;
-    }
-
-    // Metadata for tracking
-    if (options.metadata?.userId) {
-      params.metadata = { user_id: options.metadata.userId };
-    }
-
-    // Extended thinking — enableThinking is already gated by modelCapabilities in agentLoop
+    // Extended thinking — auto-enabled when model supports 'anthropic' thinking protocol
     if (options.enableThinking) {
+      // Anthropic API requires temperature=1 when extended thinking is enabled
+      params.temperature = 1;
       (params as unknown as Record<string, unknown>).thinking = {
         type: 'enabled',
         budget_tokens: options.thinkingBudget ?? 10000,
       };
+    } else if (options.temperature !== undefined) {
+      params.temperature = options.temperature;
+    }
+
+    if (options.topP !== undefined) {
+      params.top_p = options.topP;
+    }
+
+    if (options.stopSequences && options.stopSequences.length > 0) {
+      params.stop_sequences = options.stopSequences;
+    }
+
+    if (options.metadata?.userId) {
+      params.metadata = { user_id: options.metadata.userId };
     }
 
     // Create stream with abort signal support

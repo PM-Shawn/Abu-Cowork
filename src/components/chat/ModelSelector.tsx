@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Check, Globe, Wrench, MessageCircle, Eye, Image, Search, Star, Clock, Settings } from 'lucide-react';
+import { Check, Globe, Wrench, Brain, Eye, Image, Search, Star, Clock, Settings, BookOpen } from 'lucide-react';
 import { useSettingsStore } from '@/stores/settingsStore';
 import { useI18n } from '@/i18n';
 import { cn } from '@/lib/utils';
@@ -13,19 +13,22 @@ interface ModelSelectorProps {
 }
 
 /** Capability icon mapping */
-function CapabilityBadge({ cap }: { cap: ModelCapability }) {
-  const iconClass = 'h-3 w-3 text-[var(--abu-text-muted)]';
+export function CapabilityBadge({ cap, size = 'sm' }: { cap: ModelCapability; size?: 'sm' | 'xs' }) {
+  const cls = size === 'xs' ? 'h-2.5 w-2.5' : 'h-3 w-3';
+  const muted = `${cls} text-[var(--abu-text-muted)] opacity-70`;
   switch (cap) {
-    case 'tool_use':
-      return <Wrench className={iconClass} />;
-    case 'web_search':
-      return <Globe className={iconClass} />;
     case 'thinking':
-      return <MessageCircle className={iconClass} />;
+      return <Brain className={muted} />;
     case 'vision':
-      return <Eye className={iconClass} />;
+      return <Eye className={muted} />;
+    case 'long_context':
+      return <BookOpen className={muted} />;
+    case 'web_search':
+      return <Globe className={muted} />;
+    case 'tool_use':
+      return <Wrench className={muted} />;
     case 'image_gen':
-      return <Image className={iconClass} />;
+      return <Image className={muted} />;
     default:
       return null;
   }

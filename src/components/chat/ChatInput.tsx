@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect, useMemo, useCallback } from 'react';
 import { Plus, ArrowUp, ArrowRight, Square, X, ChevronDown, FileText } from 'lucide-react';
-import { ModelSelector } from '@/components/chat/ModelSelector';
+import { ModelSelector, CapabilityBadge } from '@/components/chat/ModelSelector';
 import { open } from '@tauri-apps/plugin-dialog';
 import { readFile } from '@tauri-apps/plugin-fs';
 import { useFileDragDrop } from '@/hooks/useFileDragDrop';
@@ -140,8 +140,10 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
   const isRunning = activeConv?.status === 'running';
   const isStreaming = !isWelcome && isRunning;
   const availableModels = useSettingsStore((s) => getActiveProvider(s)?.models ?? []);
-  const modelDisplay = availableModels.find((m) => m.id === currentModel)?.label
+  const activeModelInfo = availableModels.find((m) => m.id === currentModel);
+  const modelDisplay = activeModelInfo?.label
     ?? (currentModel ? currentModel.split('/').pop()?.split('-').slice(0, 2).join(' ') : 'Claude');
+  const modelCaps = activeModelInfo?.capabilities ?? [];
   const [showModelPicker, setShowModelPicker] = useState(false);
   const modelPickerRef = useRef<HTMLDivElement>(null);
 
@@ -709,6 +711,11 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
                   className="btn-ghost flex items-center gap-1 px-2 py-1 text-[12px] text-[var(--abu-text-tertiary)] font-medium hover:text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-hover)] rounded-md transition-colors"
                 >
                   {modelDisplay}
+                  {modelCaps.length > 0 && (
+                    <span className="flex items-center gap-0.5 ml-0.5">
+                      {modelCaps.map((cap) => <CapabilityBadge key={cap} cap={cap} size="xs" />)}
+                    </span>
+                  )}
                   <ChevronDown className={cn('h-3 w-3 transition-transform', showModelPicker && 'rotate-180')} />
                 </button>
                 <ModelSelector
@@ -760,6 +767,11 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
                     className="btn-ghost flex items-center gap-1 px-2 py-1 text-[12px] text-[var(--abu-text-tertiary)] font-medium hover:text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-hover)] rounded-md transition-colors"
                   >
                     {modelDisplay}
+                    {modelCaps.length > 0 && (
+                      <span className="flex items-center gap-0.5 ml-0.5">
+                        {modelCaps.map((cap) => <CapabilityBadge key={cap} cap={cap} size="xs" />)}
+                      </span>
+                    )}
                     <ChevronDown className={cn('h-3 w-3 transition-transform', showModelPicker && 'rotate-180')} />
                   </button>
                   <ModelSelector

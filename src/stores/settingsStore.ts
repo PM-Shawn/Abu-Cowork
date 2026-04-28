@@ -2,6 +2,7 @@ import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import type { LLMProvider, ApiFormat, ProviderCapabilities, CustomService } from '../types';
 import type { ProviderInstance, ActiveModel, AuxiliaryServices, ModelInfo } from '../types/provider';
+import { deriveUiCaps } from '../core/llm/modelCapabilities';
 import type { PermissionMode } from '../core/permissions/permissionMode';
 import type { WebSearchProviderType } from '../core/search/providers';
 import { setLanguage, initLanguage, type LanguageSetting } from '@/i18n';
@@ -257,7 +258,7 @@ function createDefaultProviders(): ProviderInstance[] {
     apiFormat: PROVIDER_CONFIGS[id].format,
     baseUrl: PROVIDER_CONFIGS[id].baseUrl,
     apiKey: '',
-    models: PROVIDER_CONFIGS[id].models.map(m => ({ id: m.id, label: m.label })),
+    models: PROVIDER_CONFIGS[id].models.map(m => ({ id: m.id, label: m.label, capabilities: deriveUiCaps(m.id) })),
     capabilities: PROVIDER_CONFIGS[id].capabilities,
     status: 'unchecked' as const,
     sortOrder: index,
@@ -290,10 +291,7 @@ interface SettingsState {
   showSettings: boolean;
   sidebarCollapsed: boolean;
   rightPanelCollapsed: boolean;
-  temperature: number;
   agentMaxTurns?: number; // undefined = 不限制
-  enableThinking: boolean;
-  thinkingBudget: number;
   maxOutputTokens: number;
   contextWindowSize: number;
   language: LanguageSetting;
@@ -395,10 +393,7 @@ interface SettingsActions {
   toggleSidebar: () => void;
   toggleRightPanel: () => void;
   setRightPanelCollapsed: (collapsed: boolean) => void;
-  setTemperature: (temp: number) => void;
   setAgentMaxTurns: (n: number | undefined) => void;
-  setEnableThinking: (enabled: boolean) => void;
-  setThinkingBudget: (budget: number) => void;
   setMaxOutputTokens: (tokens: number) => void;
   setContextWindowSize: (size: number) => void;
   setLanguage: (lang: LanguageSetting) => void;
@@ -594,9 +589,6 @@ export const useSettingsStore = create<SettingsStore>()(
       showSettings: false,
       sidebarCollapsed: false,
       rightPanelCollapsed: false,
-      temperature: 0.7,
-      enableThinking: false,
-      thinkingBudget: 10000,
       maxOutputTokens: 32768,
       contextWindowSize: 200000,
       language: 'system' as LanguageSetting,
@@ -829,10 +821,7 @@ export const useSettingsStore = create<SettingsStore>()(
       toggleSidebar: () => set((s) => ({ sidebarCollapsed: !s.sidebarCollapsed })),
       toggleRightPanel: () => set((s) => ({ rightPanelCollapsed: !s.rightPanelCollapsed })),
       setRightPanelCollapsed: (collapsed) => set({ rightPanelCollapsed: collapsed }),
-      setTemperature: (temperature) => set({ temperature }),
       setAgentMaxTurns: (agentMaxTurns) => set({ agentMaxTurns }),
-      setEnableThinking: (enableThinking) => set({ enableThinking }),
-      setThinkingBudget: (thinkingBudget) => set({ thinkingBudget }),
       setMaxOutputTokens: (maxOutputTokens) => set({ maxOutputTokens }),
       setContextWindowSize: (contextWindowSize) => set({ contextWindowSize }),
       setLanguage: (lang) => {
@@ -943,7 +932,7 @@ export const useSettingsStore = create<SettingsStore>()(
     }),
     {
       name: 'abu-settings',
-      version: 22,
+      version: 24,
       migrate: (persisted: unknown, version: number) => {
         const state = persisted as Record<string, unknown>;
 
@@ -963,6 +952,37 @@ export const useSettingsStore = create<SettingsStore>()(
             );
           }
         };
+
+        // ════════════════════════════════════════════════
+        // V24: Remove temperature / enableThinking / thinkingBudget from persisted state.
+        // These are now internal constants — users no longer configure them.
+        if (version < 24) step('V24 drop user-configurable inference params', () => {
+          delete (state as Record<string, unknown>).temperature;
+          delete (state as Record<string, unknown>).enableThinking;
+          delete (state as Record<string, unknown>).thinkingBudget;
+        });
+
+        // V23: Backfill model capabilities for existing users.
+        // Before this version, models fetched from provider APIs or created from
+        // the static PROVIDER_CONFIGS list had an empty capabilities array, so
+        // thinking/vision badges never appeared in ModelSelector. This one-shot
+        // pass runs deriveUiCaps on every stored model that has no capabilities.
+        // ════════════════════════════════════════════════
+        if (version < 23) step('V23 backfill model capabilities', () => {
+          if (!Array.isArray(state.providers)) return;
+          state.providers = (state.providers as Array<Record<string, unknown>>).map((p) => {
+            const models = p.models as Array<Record<string, unknown>> | undefined;
+            if (!Array.isArray(models)) return p;
+            return {
+              ...p,
+              models: models.map((m) => {
+                if (Array.isArray(m.capabilities) && m.capabilities.length > 0) return m;
+                const id = typeof m.id === 'string' ? m.id : '';
+                return { ...m, capabilities: deriveUiCaps(id) };
+              }),
+            };
+          });
+        });
 
         // ════════════════════════════════════════════════
         // V22: Strip stale `capabilities.webSearch` from persisted Volcengine
@@ -1360,10 +1380,7 @@ export const useSettingsStore = create<SettingsStore>()(
         // General settings
         theme: state.theme,
         language: state.language,
-        temperature: state.temperature,
         agentMaxTurns: state.agentMaxTurns,
-        enableThinking: state.enableThinking,
-        thinkingBudget: state.thinkingBudget,
         maxOutputTokens: state.maxOutputTokens,
         contextWindowSize: state.contextWindowSize,
         sidebarCollapsed: state.sidebarCollapsed,

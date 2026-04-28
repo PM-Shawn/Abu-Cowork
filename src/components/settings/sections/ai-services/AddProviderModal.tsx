@@ -20,6 +20,7 @@ import {
   fetchOllamaModels,
   formatOllamaModelLabel,
 } from '@/core/llm/ollama';
+import { fetchProviderModels } from '@/core/llm/modelFetcher';
 
 // ── Types ────────────────────────────────────────────────────────
 
@@ -43,6 +44,7 @@ type ProviderGroup = {
 };
 
 type OllamaConnectionStatus = 'idle' | 'checking' | 'online' | 'offline';
+type FetchModelsStatus = 'idle' | 'fetching' | 'success' | 'error';
 
 // ── Constants ────────────────────────────────────────────────────
 
@@ -144,6 +146,11 @@ export default function AddProviderModal({ open: isOpen, onClose }: AddProviderM
   const [ollamaStatus, setOllamaStatus] = useState<OllamaConnectionStatus>('idle');
   const [ollamaModels, setOllamaModels] = useState<ModelInfo[]>([]);
 
+  // ── Fetch-models state (cloud providers) ──
+  const [fetchModelsStatus, setFetchModelsStatus] = useState<FetchModelsStatus>('idle');
+  const [fetchedModels, setFetchedModels] = useState<ModelInfo[]>([]);
+  const [fetchModelsError, setFetchModelsError] = useState('');
+
   // ── Validate state ──
   const [validating, setValidating] = useState(false);
   const [validateResult, setValidateResult] = useState<{ success: boolean; message: string } | null>(null);
@@ -211,6 +218,11 @@ export default function AddProviderModal({ open: isOpen, onClose }: AddProviderM
       // Reset Ollama state
       setOllamaStatus('idle');
       setOllamaModels([]);
+
+      // Reset fetch-models state
+      setFetchModelsStatus('idle');
+      setFetchedModels([]);
+      setFetchModelsError('');
       setApiKey('');
       setShowApiKey(false);
       // (fetch removed)
@@ -243,6 +255,33 @@ export default function AddProviderModal({ open: isOpen, onClose }: AddProviderM
     setSelectedModels((prev) => new Set(prev).add(id));
     setManualModelInput('');
   }, [manualModelInput]);
+
+  // ── Fetch models handler (cloud providers) ──
+
+  const handleFetchModels = useCallback(async () => {
+    if (!baseUrl.trim()) return;
+    setFetchModelsStatus('fetching');
+    setFetchedModels([]);
+    setFetchModelsError('');
+
+    const result = await fetchProviderModels(
+      baseUrl,
+      apiKey,
+      selectedOption?.format ?? 'openai-compatible',
+    );
+
+    if (result.success && result.models.length > 0) {
+      setFetchedModels(result.models);
+      setSelectedModels(new Set(result.models.map((m) => m.id)));
+      setFetchModelsStatus('success');
+    } else if (result.success) {
+      setFetchModelsStatus('error');
+      setFetchModelsError('未获取到模型，请手动添加');
+    } else {
+      setFetchModelsStatus('error');
+      setFetchModelsError(result.error ?? '获取失败');
+    }
+  }, [baseUrl, apiKey, selectedOption?.format]);
 
   // ── Ollama handlers ──
 
@@ -391,8 +430,9 @@ export default function AddProviderModal({ open: isOpen, onClose }: AddProviderM
     setDropdownOpen(false);
     setOllamaStatus('idle');
     setOllamaModels([]);
-    // (fetch removed)
-    // (fetch removed)
+    setFetchModelsStatus('idle');
+    setFetchedModels([]);
+    setFetchModelsError('');
     onClose();
   }, [onClose]);
 
@@ -591,26 +631,12 @@ export default function AddProviderModal({ open: isOpen, onClose }: AddProviderM
               <label className="text-sm font-medium text-[var(--abu-text-primary)]">
                 {isOllama ? t.settings.ollamaUrlLabel : t.settings.apiUrl}
               </label>
-              <div className="flex gap-2">
-                <Input
-                  value={baseUrl}
-                  onChange={(e) => setBaseUrl(e.target.value)}
-                  placeholder={isOllama ? 'http://localhost:11434' : 'https://...'}
-                  onBlur={isOllama ? handleCheckOllama : undefined}
-                />
-                {isOllama && (
-                  <Button
-                    variant="outline"
-                    size="default"
-                    onClick={handleCheckOllama}
-                    disabled={ollamaStatus === 'checking'}
-                  >
-                    {ollamaStatus === 'checking'
-                      ? <Loader2 className="h-4 w-4 animate-spin" />
-                      : <RefreshCw className="h-4 w-4" />}
-                  </Button>
-                )}
-              </div>
+              <Input
+                value={baseUrl}
+                onChange={(e) => setBaseUrl(e.target.value)}
+                placeholder={isOllama ? 'http://localhost:11434' : 'https://...'}
+                onBlur={isOllama ? handleCheckOllama : undefined}
+              />
               <p className="text-xs text-[var(--abu-text-tertiary)]">
                 {isOllama ? t.settings.ollamaUrlHint : t.settings.apiUrlNoChange}
               </p>
@@ -641,30 +667,104 @@ export default function AddProviderModal({ open: isOpen, onClose }: AddProviderM
           {/* 6. Model Selection */}
           {selectedId && (
             <div className="space-y-2">
-              <label className="text-sm font-medium text-[var(--abu-text-primary)]">
-                {t.settings.models}
-              </label>
+              <div className="flex items-center justify-between">
+                <label className="text-sm font-medium text-[var(--abu-text-primary)]">
+                  {t.settings.models}
+                </label>
+                {/* Fetch/refresh models button */}
+                {!isOllama && selectedOption?.format !== 'anthropic' && (
+                  <button
+                    type="button"
+                    onClick={handleFetchModels}
+                    disabled={fetchModelsStatus === 'fetching' || !baseUrl.trim()}
+                    className="flex items-center gap-1 text-xs text-[var(--abu-clay)] hover:underline disabled:opacity-40 disabled:no-underline"
+                  >
+                    {fetchModelsStatus === 'fetching'
+                      ? <Loader2 className="h-3 w-3 animate-spin" />
+                      : <RefreshCw className="h-3 w-3" />}
+                    {fetchModelsStatus === 'fetching' ? t.settings.fetchingModels : t.settings.fetchModels}
+                  </button>
+                )}
+                {isOllama && (
+                  <button
+                    type="button"
+                    onClick={handleCheckOllama}
+                    disabled={ollamaStatus === 'checking'}
+                    className="flex items-center gap-1 text-xs text-[var(--abu-clay)] hover:underline disabled:opacity-40 disabled:no-underline"
+                  >
+                    {ollamaStatus === 'checking'
+                      ? <Loader2 className="h-3 w-3 animate-spin" />
+                      : <RefreshCw className="h-3 w-3" />}
+                    {ollamaStatus === 'checking' ? t.settings.fetchingModels : t.settings.fetchModels}
+                  </button>
+                )}
+              </div>
 
-              {/* Fetched models — checkbox list (for all non-Ollama providers) */}
-              {!isOllama && selectedModels.size > 0 && (
+              {/* Fetch status messages */}
+              {fetchModelsStatus === 'success' && (
+                <p className="text-xs text-green-600">
+                  {t.settings.fetchModelsSuccess.replace('{count}', String(fetchedModels.length))}
+                </p>
+              )}
+              {fetchModelsStatus === 'error' && (
+                <p className="text-xs text-red-500">
+                  {fetchModelsError || t.settings.fetchModelsError}
+                </p>
+              )}
+
+              {/* Fetched models — selectable checklist (cloud providers after fetch) */}
+              {!isOllama && fetchedModels.length > 0 && (() => {
+                // Merge: fetched models first, then any manually-added IDs not in the list
+                const extraIds = [...selectedModels].filter(
+                  (id) => !fetchedModels.some((m) => m.id === id)
+                );
+                const displayList: ModelInfo[] = [
+                  ...fetchedModels,
+                  ...extraIds.map((id) => ({ id, label: id })),
+                ];
+                return (
+                  <div className="space-y-1 max-h-48 overflow-y-auto rounded-lg border border-[var(--abu-border)] p-2">
+                    {displayList.map((model) => (
+                      <label
+                        key={model.id}
+                        className="flex items-center gap-2.5 px-2 py-1.5 rounded-md hover:bg-[var(--abu-bg-hover)] cursor-pointer"
+                        onClick={() => handleToggleModel(model.id)}
+                      >
+                        <div className={cn(
+                          'flex items-center justify-center h-4 w-4 rounded border transition-colors shrink-0',
+                          selectedModels.has(model.id)
+                            ? 'bg-[var(--abu-clay)] border-[var(--abu-clay)]'
+                            : 'border-[var(--abu-border)]',
+                        )}>
+                          {selectedModels.has(model.id) && <Check className="h-3 w-3 text-white" />}
+                        </div>
+                        <span className="text-sm text-[var(--abu-text-primary)] flex-1 truncate">{model.label}</span>
+                      </label>
+                    ))}
+                  </div>
+                );
+              })()}
+
+              {/* No fetch yet — show manually selected models with remove buttons */}
+              {!isOllama && fetchedModels.length === 0 && selectedModels.size > 0 && (
                 <div className="space-y-1 max-h-48 overflow-y-auto rounded-lg border border-[var(--abu-border)] p-2">
                   {[...selectedModels].map((modelId) => (
-                    <label
+                    <div
                       key={modelId}
-                      className="flex items-center gap-2.5 px-2 py-1.5 rounded-md hover:bg-[var(--abu-bg-hover)] cursor-pointer"
+                      className="flex items-center gap-2.5 px-2 py-1.5 rounded-md hover:bg-[var(--abu-bg-hover)]"
                     >
-                      <div className="flex items-center justify-center h-4 w-4 rounded border bg-[var(--abu-clay)] border-[var(--abu-clay)] transition-colors">
+                      <div className="flex items-center justify-center h-4 w-4 rounded border bg-[var(--abu-clay)] border-[var(--abu-clay)] shrink-0">
                         <Check className="h-3 w-3 text-white" />
                       </div>
-                      <span className="text-sm text-[var(--abu-text-primary)]">{modelId}</span>
+                      <span className="text-sm text-[var(--abu-text-primary)] flex-1 truncate">{modelId}</span>
                       <button
                         type="button"
-                        onClick={(e) => { e.preventDefault(); handleToggleModel(modelId); }}
-                        className="ml-auto text-[var(--abu-text-muted)] hover:text-red-400"
+                        onClick={() => handleToggleModel(modelId)}
+                        className="text-[var(--abu-text-muted)] hover:text-red-400 shrink-0"
                       >
                         <X className="h-3 w-3" />
                       </button>
-                    </label>
+                    </div>
                   ))}
                 </div>
               )}

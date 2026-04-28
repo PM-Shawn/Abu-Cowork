@@ -1,5 +1,5 @@
 import { useState, useCallback } from 'react';
-import { Check, X, AlertTriangle, Loader2, Eye, EyeOff, Pencil, RefreshCw, Trash2, Plus } from 'lucide-react';
+import { Check, X, AlertTriangle, Loader2, Eye, EyeOff, Pencil, RefreshCw, Trash2, Plus, CircleCheck, CircleX } from 'lucide-react';
 import { useI18n } from '@/i18n';
 import { cn } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
@@ -8,6 +8,7 @@ import { Toggle } from '@/components/ui/toggle';
 import { useSettingsStore } from '@/stores/settingsStore';
 import { checkProviderHealth } from '@/core/llm/healthCheck';
 import { buildFullChatUrl } from '@/core/llm/urlUtils';
+import { fetchProviderModels } from '@/core/llm/modelFetcher';
 import ConfirmDialog from '@/components/common/ConfirmDialog';
 import type { ProviderInstance, ModelInfo } from '@/types/provider';
 import { SECRET_KEYS } from '@/utils/secretStore';
@@ -73,7 +74,13 @@ export default function ProviderCard({ provider, isActive }: ProviderCardProps) 
   const [newModelId, setNewModelId] = useState('');
   const [showStatus, setShowStatus] = useState(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+  const [fetchingModels, setFetchingModels] = useState(false);
+  const [fetchModelsMsg, setFetchModelsMsg] = useState<{ ok: boolean; text: string } | null>(null);
+  const [modelsExpanded, setModelsExpanded] = useState(false);
   const isOllama = isOllamaProvider(provider);
+  const isBuiltin = provider.source === 'builtin';
+
+  const MODELS_COLLAPSED_COUNT = 5;
 
   const handleEditStart = useCallback(() => {
     setFormName(provider.name);
@@ -82,6 +89,8 @@ export default function ProviderCard({ provider, isActive }: ProviderCardProps) 
     setFormModels([...provider.models]);
     setNewModelId('');
     setShowApiKey(false);
+    setModelsExpanded(false);
+    setFetchModelsMsg(null);
     setEditing(true);
   }, [provider]);
 
@@ -137,6 +146,20 @@ export default function ProviderCard({ provider, isActive }: ProviderCardProps) 
     setFormModels((prev) => [...prev, { id: trimmed, label: trimmed, isCustom: true }]);
     setNewModelId('');
   }, [newModelId, formModels]);
+
+  const handleFetchModels = useCallback(async () => {
+    if (!formBaseUrl.trim()) return;
+    setFetchingModels(true);
+    setFetchModelsMsg(null);
+    const result = await fetchProviderModels(formBaseUrl, formApiKey, provider.apiFormat);
+    setFetchingModels(false);
+    if (result.success && result.models.length > 0) {
+      setFormModels(result.models);
+      setFetchModelsMsg({ ok: true, text: `获取到 ${result.models.length} 个模型` });
+    } else {
+      setFetchModelsMsg({ ok: false, text: result.error ?? '获取失败，请手动添加' });
+    }
+  }, [formBaseUrl, formApiKey, provider.apiFormat]);
 
 
   // Build compact model summary: "Model1, Model2 +3"
@@ -194,14 +217,19 @@ export default function ProviderCard({ provider, isActive }: ProviderCardProps) 
           </div>
         )}
 
-        {/* Edit: Base URL */}
+        {/* Edit: Base URL — read-only for builtin providers */}
         <div className="space-y-1">
           <label className="text-xs font-medium text-[var(--abu-text-tertiary)]">{t.settings.apiUrl}</label>
-          <Input value={formBaseUrl} onChange={(e) => setFormBaseUrl(e.target.value)} />
-          <p className="text-[11px] text-[var(--abu-text-muted)]">{t.settings.apiUrlNoChange}</p>
+          {isBuiltin ? (
+            <p className="text-xs text-[var(--abu-text-secondary)] font-mono bg-[var(--abu-bg-hover)] rounded-lg px-3 py-2 break-all select-all">
+              {formBaseUrl}
+            </p>
+          ) : (
+            <Input value={formBaseUrl} onChange={(e) => setFormBaseUrl(e.target.value)} />
+          )}
           {!isOllama && formBaseUrl.trim() && (
             <p className="text-[11px] font-mono text-[var(--abu-text-muted)] break-all">
-              ↳ {t.settings.apiUrlPreview}: POST {buildFullChatUrl(formBaseUrl, provider.apiFormat)}
+              ↳ POST {buildFullChatUrl(formBaseUrl, provider.apiFormat)}
             </p>
           )}
         </div>
@@ -210,43 +238,90 @@ export default function ProviderCard({ provider, isActive }: ProviderCardProps) 
         <div className="space-y-1.5">
           <div className="flex items-center justify-between">
             <label className="text-xs font-medium text-[var(--abu-text-tertiary)]">{t.settings.models}</label>
-          </div>
-          {/* Model chips + inline add */}
-          <div className="flex flex-wrap items-center gap-1.5">
-            {formModels.map((model) => (
-              <span
-                key={model.id}
-                className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] bg-[var(--abu-bg-muted)] text-[var(--abu-text-secondary)] border border-[var(--abu-border)]"
-              >
-                {model.label || model.id}
-                <button
-                  type="button"
-                  onClick={() => setFormModels(prev => prev.filter(m => m.id !== model.id))}
-                  className="text-[var(--abu-text-muted)] hover:text-red-400"
-                >
-                  <X className="h-2.5 w-2.5" />
-                </button>
-              </span>
-            ))}
-            {/* Inline add input */}
-            <div className="inline-flex items-center gap-1">
-              <input
-                type="text"
-                value={newModelId}
-                onChange={(e) => setNewModelId(e.target.value)}
-                placeholder={t.settings.addModelPlaceholder}
-                className="h-6 w-28 px-2 text-[11px] rounded border border-[var(--abu-border)] bg-transparent text-[var(--abu-text-primary)] placeholder:text-[var(--abu-text-placeholder)] outline-none focus:border-[var(--abu-clay)]"
-                onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); handleAddModel(); } }}
-              />
+            {provider.apiFormat !== 'anthropic' && (
               <button
                 type="button"
-                onClick={handleAddModel}
-                disabled={!newModelId.trim()}
-                className="h-6 w-6 flex items-center justify-center rounded border border-[var(--abu-border)] text-[var(--abu-text-muted)] hover:border-[var(--abu-clay)] hover:text-[var(--abu-clay)] disabled:opacity-30 transition-colors"
+                onClick={handleFetchModels}
+                disabled={fetchingModels || !formBaseUrl.trim()}
+                className="flex items-center gap-1 text-[11px] text-[var(--abu-clay)] hover:underline disabled:opacity-40 disabled:no-underline"
               >
-                <Plus className="h-3 w-3" />
+                {fetchingModels
+                  ? <Loader2 className="h-3 w-3 animate-spin" />
+                  : <RefreshCw className="h-3 w-3" />}
+                {fetchingModels ? t.settings.fetchingModels : t.settings.fetchModels}
               </button>
-            </div>
+            )}
+          </div>
+          {/* Fetch status */}
+          {fetchModelsMsg && (
+            <p className={`flex items-center gap-1 text-[11px] ${fetchModelsMsg.ok ? 'text-green-600' : 'text-red-500'}`}>
+              {fetchModelsMsg.ok
+                ? <CircleCheck className="h-3 w-3 shrink-0" />
+                : <CircleX className="h-3 w-3 shrink-0" />}
+              {fetchModelsMsg.text}
+            </p>
+          )}
+          {/* Model chips — collapsed by default, expand to see all */}
+          {formModels.length > 0 && (() => {
+            const visible = modelsExpanded ? formModels : formModels.slice(0, MODELS_COLLAPSED_COUNT);
+            const hidden = formModels.length - MODELS_COLLAPSED_COUNT;
+            return (
+              <div className="flex flex-wrap items-center gap-1.5">
+                {visible.map((model) => (
+                  <span
+                    key={model.id}
+                    className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] bg-[var(--abu-bg-muted)] text-[var(--abu-text-secondary)] border border-[var(--abu-border)]"
+                  >
+                    {model.label || model.id}
+                    <button
+                      type="button"
+                      onClick={() => setFormModels(prev => prev.filter(m => m.id !== model.id))}
+                      className="text-[var(--abu-text-muted)] hover:text-red-400"
+                    >
+                      <X className="h-2.5 w-2.5" />
+                    </button>
+                  </span>
+                ))}
+                {/* Collapse / expand toggle */}
+                {!modelsExpanded && hidden > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => setModelsExpanded(true)}
+                    className="px-2 py-0.5 rounded text-[11px] text-[var(--abu-clay)] border border-dashed border-[var(--abu-clay)]/50 hover:border-[var(--abu-clay)] transition-colors"
+                  >
+                    +{hidden} 展开全部
+                  </button>
+                )}
+                {modelsExpanded && formModels.length > MODELS_COLLAPSED_COUNT && (
+                  <button
+                    type="button"
+                    onClick={() => setModelsExpanded(false)}
+                    className="px-2 py-0.5 rounded text-[11px] text-[var(--abu-clay)] border border-dashed border-[var(--abu-clay)]/50 hover:border-[var(--abu-clay)] transition-colors"
+                  >
+                    收起
+                  </button>
+                )}
+              </div>
+            );
+          })()}
+          {/* Inline add input */}
+          <div className="inline-flex items-center gap-1">
+            <input
+              type="text"
+              value={newModelId}
+              onChange={(e) => setNewModelId(e.target.value)}
+              placeholder={t.settings.addModelPlaceholder}
+              className="h-6 w-28 px-2 text-[11px] rounded border border-[var(--abu-border)] bg-transparent text-[var(--abu-text-primary)] placeholder:text-[var(--abu-text-placeholder)] outline-none focus:border-[var(--abu-clay)]"
+              onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); handleAddModel(); } }}
+            />
+            <button
+              type="button"
+              onClick={handleAddModel}
+              disabled={!newModelId.trim()}
+              className="h-6 w-6 flex items-center justify-center rounded border border-[var(--abu-border)] text-[var(--abu-text-muted)] hover:border-[var(--abu-clay)] hover:text-[var(--abu-clay)] disabled:opacity-30 transition-colors"
+            >
+              <Plus className="h-3 w-3" />
+            </button>
           </div>
         </div>
 

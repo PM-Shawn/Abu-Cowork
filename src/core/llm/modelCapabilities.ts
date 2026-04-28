@@ -151,3 +151,17 @@ export function resolveCapabilities(modelId: string): ModelCapabilities {
   // 4. Fallback: assume modern model with basic capabilities
   return FALLBACK_DEFAULT;
 }
+
+/**
+ * Derive UI-facing capability tags from a model ID.
+ * Maps technical ModelCapabilities → ModelCapability[] used by ModelSelector badges.
+ * Shared by modelFetcher (dynamic fetch) and settingsStore (static list).
+ */
+export function deriveUiCaps(modelId: string): import('@/types/provider').ModelCapability[] {
+  const caps = resolveCapabilities(modelId);
+  const result: import('@/types/provider').ModelCapability[] = [];
+  if (caps.vision) result.push('vision');
+  if (caps.thinking !== false) result.push('thinking');
+  if (caps.contextWindow >= 512000) result.push('long_context');
+  return result;
+}

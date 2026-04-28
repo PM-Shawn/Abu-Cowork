@@ -1,5 +1,8 @@
 import type { ModelInfo } from '@/types/provider';
 import type { ApiFormat } from '@/types';
+import { getTauriFetch } from './tauriFetch';
+import { resolveOpenAIBaseUrl } from './urlUtils';
+import { deriveUiCaps } from './modelCapabilities';
 
 export interface FetchModelsResult {
   success: boolean;
@@ -7,7 +10,9 @@ export interface FetchModelsResult {
   error?: string;
 }
 
-/** Fetch available models from a provider's API */
+const EXCLUDE_PATTERNS = ['embedding', 'whisper', 'tts', 'dall-e', 'moderation', 'davinci', 'babbage'];
+
+/** Fetch available models from a provider's GET /models endpoint */
 export async function fetchProviderModels(
   baseUrl: string,
   apiKey: string,
@@ -17,40 +22,33 @@ export async function fetchProviderModels(
     return { success: false, models: [], error: 'Anthropic API does not support model listing' };
   }
 
-  // OpenAI-compatible: GET /v1/models
   try {
-    const url = baseUrl.replace(/\/+$/, '');
-    const modelsUrl = url.endsWith('/v1') ? `${url}/models` : `${url}/v1/models`;
+    // Use the same URL resolution as the chat adapter for consistency
+    const resolvedBase = resolveOpenAIBaseUrl(baseUrl);
+    const modelsUrl = `${resolvedBase}/models`;
 
     const headers: Record<string, string> = {};
-    if (apiKey) {
-      headers['Authorization'] = `Bearer ${apiKey}`;
-    }
+    if (apiKey) headers['Authorization'] = `Bearer ${apiKey}`;
 
-    const resp = await fetch(modelsUrl, {
-      headers,
-      signal: AbortSignal.timeout(10000),
-    });
+    const fetchFn = await getTauriFetch();
+    const resp = await fetchFn(modelsUrl, { method: 'GET', headers });
 
     if (!resp.ok) {
-      return { success: false, models: [], error: `HTTP ${resp.status}` };
+      const msg = resp.status === 403 || resp.status === 404
+        ? '该供应商不支持自动获取模型列表，请手动填写模型 ID'
+        : `HTTP ${resp.status}`;
+      return { success: false, models: [], error: msg };
     }
 
-    const data = await resp.json();
+    const data = await resp.json() as { data?: { id: string }[] };
     const rawModels = data.data ?? [];
 
-    // Filter out non-chat models
-    const EXCLUDE_PATTERNS = ['embedding', 'whisper', 'tts', 'dall-e', 'moderation', 'davinci', 'babbage'];
-
     const models: ModelInfo[] = rawModels
-      .filter((m: { id: string }) => {
+      .filter((m) => {
         const id = m.id.toLowerCase();
         return !EXCLUDE_PATTERNS.some(p => id.includes(p));
       })
-      .map((m: { id: string }) => ({
-        id: m.id,
-        label: m.id,
-      }));
+      .map((m) => ({ id: m.id, label: m.id, capabilities: deriveUiCaps(m.id) }));
 
     return { success: true, models };
   } catch (e) {

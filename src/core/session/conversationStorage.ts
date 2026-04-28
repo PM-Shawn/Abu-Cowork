@@ -253,22 +253,13 @@ function populateWrittenIds(messages: Message[]): void {
 // Strip for disk — reduce message size before persisting
 // ════════════════════════════════════════════════════════════
 
-const THINKING_MAX_CHARS = 500;
-
 /**
  * Prepare a message for disk storage:
- * - Truncate thinking content (saves space, not useful for history)
  * - Clear image base64 data (filePath preserved for recovery)
  * - HTML/Mermaid/code blocks preserved intact
  */
 function stripForDisk(msg: Message): Message {
   const stripped: Message = { ...msg };
-
-  // 1. Truncate thinking
-  if (stripped.thinking && stripped.thinking.length > THINKING_MAX_CHARS) {
-    stripped.thinking =
-      stripped.thinking.slice(0, THINKING_MAX_CHARS) + '\n[truncated]';
-  }
 
   // 2. Clear image base64 data (preserve filePath for recovery)
   if (Array.isArray(stripped.content)) {

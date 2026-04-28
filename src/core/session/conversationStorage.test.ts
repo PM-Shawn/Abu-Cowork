@@ -278,7 +278,7 @@ describe('conversationStorage', () => {
   });
 
   describe('stripForDisk', () => {
-    it('truncates thinking content to 500 chars', async () => {
+    it('preserves thinking content at full length', async () => {
       const longThinking = 'x'.repeat(2000);
       const msg = makeMsg({
         id: 'think-1',
@@ -290,8 +290,7 @@ describe('conversationStorage', () => {
       await storage.flushWrites();
 
       const loaded = await storage.loadMessages('conv-1');
-      expect(loaded[0].thinking!.length).toBeLessThan(600); // 500 + "[truncated]"
-      expect(loaded[0].thinking!).toContain('[truncated]');
+      expect(loaded[0].thinking).toBe(longThinking);
     });
 
     it('preserves short thinking content', async () => {

@@ -62,9 +62,18 @@ import { checkForUpdate } from '@/core/updates/checker';
  * Runs at boot + on every window refocus — a no-op if the queue is
  * empty or the user is still in a fullscreen app (defer until next
  * focus event). Fire-and-forget; all failures are non-fatal.
+ *
+ * When abuIsFocused=true (called from the focus event), Abu is definitely
+ * the foreground window, so no fullscreen app can be blocking — skip the
+ * shell-based fullscreen check entirely (avoids spawning PowerShell on Windows).
  */
-async function drainPendingInbox(): Promise<void> {
+async function drainPendingInbox(abuIsFocused = false): Promise<void> {
   try {
+    if (abuIsFocused) {
+      const ctx = { ...cachedContextProvider(Date.now()), mainWindowFocused: true, fullscreenApp: null };
+      await drainInbox(ctx);
+      return;
+    }
     const ctx = await assembleGateContext(Date.now());
     if (ctx.fullscreenApp) return;
     await drainInbox(ctx);
@@ -110,7 +119,7 @@ function App() {
           // fullscreen / unfocused. Phase-2 main-window-toast will
           // aggregate these; for v0.13.0 they just flow back through
           // sidebar_badge / menubar so the user isn't left unaware.
-          void drainPendingInbox();
+          void drainPendingInbox(true);
         }
       })
       .then((fn) => {

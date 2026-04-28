@@ -64,9 +64,11 @@ pub fn check_macos_permissions() -> MacPermissions {
         // Windows doesn't require explicit screen recording permission.
         // Accessibility (controlling other windows) works best with elevated privileges.
         use std::process::Command as StdCommand;
+        use std::os::windows::process::CommandExt;
         let is_elevated = StdCommand::new("powershell")
             .args(["-NoProfile", "-NonInteractive", "-Command",
                 "([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)"])
+            .creation_flags(0x08000000) // CREATE_NO_WINDOW
             .output()
             .map(|o| String::from_utf8_lossy(&o.stdout).trim() == "True")
             .unwrap_or(false);
@@ -654,10 +656,12 @@ fn activate_app_impl(app_name: &str) -> Result<String, String> {
         app_name.replace('\'', "")
     );
 
+    use std::os::windows::process::CommandExt;
     let output = Command::new("powershell")
         .args(["-NoProfile", "-Command", &script])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
+        .creation_flags(0x08000000) // CREATE_NO_WINDOW
         .output()
         .map_err(|e| format!("Failed to run PowerShell: {}", e))?;
 

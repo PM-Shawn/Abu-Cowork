@@ -693,10 +693,12 @@ fn get_enhanced_path_windows() -> Option<String> {
 /// Read the user-level PATH from Windows registry (HKCU\Environment\Path)
 #[cfg(target_os = "windows")]
 fn read_user_path_from_registry() -> Option<String> {
+    use std::os::windows::process::CommandExt;
     let output = StdCommand::new("reg")
         .args(["query", "HKCU\\Environment", "/v", "Path"])
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
+        .creation_flags(0x08000000) // CREATE_NO_WINDOW
         .output()
         .ok()?;
 
@@ -779,6 +781,13 @@ async fn mcp_spawn(
        .stdin(Stdio::piped())
        .stdout(Stdio::piped())
        .stderr(Stdio::piped());
+
+    // Suppress the console window on Windows
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+    }
 
     // Inject enhanced PATH so commands like npx/node can be found
     if !env.contains_key("PATH") {

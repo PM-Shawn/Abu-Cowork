@@ -194,6 +194,13 @@ pub fn build_sandboxed_argv_command(
     let mut cmd = StdCommand::new(program);
     cmd.args(args);
 
+    // Suppress the console window on Windows
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+    }
+
     if let Some(port) = network_proxy_port {
         let proxy_url = format!("http://127.0.0.1:{}", port);
         cmd.env("HTTP_PROXY", &proxy_url);
@@ -293,12 +300,19 @@ pub fn build_sandboxed_command(
                 cmd.env("no_proxy", "localhost,127.0.0.1,::1");
             }
 
+            // Suppress the console window on Windows
+            use std::os::windows::process::CommandExt;
+            cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+
             return cmd;
         }
 
         let _ = (cwd, extra_writable_paths);
         let mut cmd = StdCommand::new("powershell");
         cmd.args(["-NoProfile", "-NonInteractive", "-Command", command]);
+        // Suppress the console window on Windows
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
         return cmd;
     }
 

@@ -14,7 +14,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { useChatStore } from '@/stores/chatStore';
 import type { GateContext } from './gate';
 
-const FULLSCREEN_CACHE_TTL_MS = 5_000;
+const FULLSCREEN_CACHE_TTL_MS = 30_000;
 
 let cachedFullscreenApp: string | null = null;
 let fullscreenCacheExpiry = 0;

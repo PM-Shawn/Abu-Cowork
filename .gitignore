@@ -28,6 +28,10 @@ _archive/
 # Claude Code agent workspace
 .agent/
 
+# Other agent tools (local artifacts, not Abu code)
+.agents/
+AGENTS.md
+
 # Local test / E2E notes
 .abu/
 

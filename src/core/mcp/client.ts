@@ -400,6 +400,8 @@ export class MCPClientManager {
       requestInit: config.headers ? { headers: config.headers } : undefined,
     };
 
+    let streamableErr: string | null = null;
+
     // Try StreamableHTTP first
     if (StreamableHTTPClientTransport) {
       try {
@@ -413,25 +415,39 @@ export class MCPClientManager {
         this.addLog(displayName, 'info', 'Connected via StreamableHTTP');
         return { transport, client };
       } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        this.addLog(displayName, 'warn', `StreamableHTTP failed: ${msg}, trying SSE...`);
+        streamableErr = err instanceof Error ? err.message : String(err);
+        this.addLog(displayName, 'warn', `StreamableHTTP failed: ${streamableErr}, trying SSE...`);
       }
     }
 
     // Fallback to SSE
     if (SSEClientTransport) {
-      this.addLog(displayName, 'info', 'Trying SSE transport...');
-      const transport = new SSEClientTransport(url, transportOpts);
-      const client = new Client(
-        { name: 'abu-desktop', version: '0.1.0' },
-        { capabilities: {} }
-      );
-      await client.connect(transport as Parameters<typeof client.connect>[0]);
-      this.addLog(displayName, 'info', 'Connected via SSE');
-      return { transport, client };
+      try {
+        this.addLog(displayName, 'info', 'Trying SSE transport...');
+        const transport = new SSEClientTransport(url, transportOpts);
+        const client = new Client(
+          { name: 'abu-desktop', version: '0.1.0' },
+          { capabilities: {} }
+        );
+        await client.connect(transport as Parameters<typeof client.connect>[0]);
+        this.addLog(displayName, 'info', 'Connected via SSE');
+        return { transport, client };
+      } catch (err) {
+        const sseErr = err instanceof Error ? err.message : String(err);
+        // Surface BOTH errors so users can see what really failed in StreamableHTTP,
+        // not just the SSE fallback's content-type complaint.
+        const combined = streamableErr
+          ? `HTTP transport failed.\n  StreamableHTTP: ${streamableErr}\n  SSE fallback: ${sseErr}`
+          : `SSE error: ${sseErr}`;
+        throw new Error(combined);
+      }
     }
 
-    throw new Error('No HTTP transport available (neither StreamableHTTP nor SSE)');
+    throw new Error(
+      streamableErr
+        ? `HTTP transport failed (StreamableHTTP only): ${streamableErr}`
+        : 'No HTTP transport available (neither StreamableHTTP nor SSE)'
+    );
   }
 
   /**

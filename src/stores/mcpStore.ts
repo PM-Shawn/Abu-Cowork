@@ -37,6 +37,8 @@ interface MCPActions {
   connectServer: (name: string) => Promise<void>;
   /** Disconnect from a server */
   disconnectServer: (name: string) => Promise<void>;
+  /** Clear the stored error/status for a server (e.g. after a successful test) */
+  clearServerError: (name: string) => void;
   /** Refresh all server statuses */
   refreshStatus: () => Promise<void>;
   /** Sync state from mcpManager */
@@ -116,6 +118,16 @@ export const useMCPStore = create<MCPStore>()(
           if (state.servers[name]) {
             state.servers[name].status = 'disconnected';
             state.servers[name].tools = [];
+          }
+        });
+      },
+
+      clearServerError: (name) => {
+        set((state) => {
+          const entry = state.servers[name];
+          if (entry && entry.status === 'error') {
+            entry.status = 'disconnected';
+            entry.error = undefined;
           }
         });
       },

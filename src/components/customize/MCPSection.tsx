@@ -66,6 +66,7 @@ export default function MCPSection({ showAddForm: externalShowAddForm, onAddForm
   const removeServer = useMCPStore((s) => s.removeServer);
   const connectServer = useMCPStore((s) => s.connectServer);
   const disconnectServer = useMCPStore((s) => s.disconnectServer);
+  const clearServerError = useMCPStore((s) => s.clearServerError);
   const { t } = useI18n();
 
   const mcpServers = useMemo(() => Object.values(servers), [servers]);
@@ -392,7 +393,9 @@ export default function MCPSection({ showAddForm: externalShowAddForm, onAddForm
   const handleToggleConnection = async (entry: MCPServerEntry) => {
     const name = entry.config.name;
     setConnectingServer(name);
+    // Connect/disconnect is the authoritative action — clear any stale test result.
     setServerErrors((prev) => { const next = { ...prev }; delete next[name]; return next; });
+    setTestResults((prev) => { const next = { ...prev }; delete next[name]; return next; });
     try {
       if (entry.status === 'connected') await disconnectServer(name);
       else await connectServer(name);
@@ -404,13 +407,17 @@ export default function MCPSection({ showAddForm: externalShowAddForm, onAddForm
   const handleTestConnection = async (entry: MCPServerEntry) => {
     const name = entry.config.name;
     setTestingServer(name);
+    // Clear both stale test result and stale connect error — test is a fresh probe.
     setTestResults((prev) => { const next = { ...prev }; delete next[name]; return next; });
+    setServerErrors((prev) => { const next = { ...prev }; delete next[name]; return next; });
     try {
       const result = await mcpManager.testConnection(entry.config);
       const message = result.success
         ? `${t.toolbox.testSuccess} (${result.toolCount ?? 0} tools)`
         : (result.error ?? t.toolbox.testFailed);
       setTestResults((prev) => ({ ...prev, [name]: { success: result.success, message } }));
+      // A successful test invalidates any prior connect-time error.
+      if (result.success) clearServerError(name);
     } catch (err) {
       setTestResults((prev) => ({ ...prev, [name]: { success: false, message: err instanceof Error ? err.message : String(err) } }));
     } finally { setTestingServer(null); }

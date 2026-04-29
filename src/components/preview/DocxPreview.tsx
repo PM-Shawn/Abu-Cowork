@@ -3,12 +3,16 @@ import { readFile } from '@tauri-apps/plugin-fs';
 import { useI18n } from '@/i18n';
 import { Loader2 } from 'lucide-react';
 import { ScrollArea } from '@/components/ui/scroll-area';
+import { useFitToWidth } from '@/hooks/useFitToWidth';
 
 export default function DocxPreview({ filePath }: { filePath: string }) {
   const { t } = useI18n();
+  const wrapperRef = useRef<HTMLDivElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+
+  const { scale, scaledWidth, scaledHeight } = useFitToWidth(wrapperRef, containerRef, { padding: 16 });
 
   useEffect(() => {
     let cancelled = false;
@@ -22,7 +26,6 @@ export default function DocxPreview({ filePath }: { filePath: string }) {
 
         if (cancelled || !containerRef.current) return;
 
-        // Clear previous content
         containerRef.current.innerHTML = '';
 
         await renderAsync(data, containerRef.current, undefined, {
@@ -66,11 +69,27 @@ export default function DocxPreview({ filePath }: { filePath: string }) {
         </div>
       )}
       <ScrollArea className={`flex-1 min-h-0 ${loading ? 'hidden' : ''}`}>
-        <div
-          ref={containerRef}
-          className="docx-preview-container mx-auto"
-          style={{ background: 'white' }}
-        />
+        <div ref={wrapperRef} className="p-4">
+          <div
+            style={{
+              width: scaledWidth || '100%',
+              height: scaledHeight,
+              margin: '0 auto',
+              overflow: 'hidden',
+            }}
+          >
+            <div
+              ref={containerRef}
+              className="docx-preview-container"
+              style={{
+                background: 'white',
+                transform: `scale(${scale})`,
+                transformOrigin: 'top left',
+                width: 'max-content',
+              }}
+            />
+          </div>
+        </div>
       </ScrollArea>
     </div>
   );

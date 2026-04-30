@@ -2,7 +2,7 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import remarkBreaks from 'remark-breaks';
 import { PrismLight as SyntaxHighlighter } from 'react-syntax-highlighter';
-import { oneDark } from 'react-syntax-highlighter/dist/esm/styles/prism';
+import { oneLight } from 'react-syntax-highlighter/dist/esm/styles/prism';
 import tsx from 'react-syntax-highlighter/dist/esm/languages/prism/tsx';
 import python from 'react-syntax-highlighter/dist/esm/languages/prism/python';
 import bash from 'react-syntax-highlighter/dist/esm/languages/prism/bash';
@@ -204,7 +204,7 @@ export function CollapsibleCodeBlock({ codeString, language }: { codeString: str
           }
         >
           <SyntaxHighlighter
-            style={oneDark}
+            style={oneLight}
             language={language || 'text'}
             PreTag="div"
             wrapLongLines={true}
@@ -215,17 +215,19 @@ export function CollapsibleCodeBlock({ codeString, language }: { codeString: str
               padding: '12px 16px',
               overflowX: 'auto',
               maxWidth: '100%',
+              background: 'var(--abu-bg-muted)',
             }}
+            codeTagProps={{ style: { background: 'transparent' } }}
           >
             {codeString}
           </SyntaxHighlighter>
         </div>
         {/* Gradient overlay when collapsed */}
         {isCollapsed && (
-          <div className="absolute bottom-0 left-0 right-0 h-20 bg-gradient-to-t from-[#282c34] to-transparent flex items-end justify-center pb-2">
+          <div className="absolute bottom-0 left-0 right-0 h-20 bg-gradient-to-t from-[var(--abu-bg-muted)] to-transparent flex items-end justify-center pb-2">
             <button
               onClick={() => setCollapsed(false)}
-              className="flex items-center gap-1 px-3 py-1 rounded-full bg-white/10 hover:bg-white/20 text-xs text-white/80 transition-colors"
+              className="flex items-center gap-1 px-3 py-1 rounded-full bg-black/5 hover:bg-black/10 text-xs text-[var(--abu-text-secondary)] transition-colors"
             >
               <ChevronDown className="h-3.5 w-3.5" />
               {format(t.chat.codeBlockExpand, { lines: String(lineCount) })}
@@ -234,13 +236,13 @@ export function CollapsibleCodeBlock({ codeString, language }: { codeString: str
         )}
       </div>
       {/* Bottom toolbar — always visible */}
-      <div className="flex items-center justify-between px-3 py-1.5 bg-neutral-800 text-xs text-[var(--abu-text-muted)]">
+      <div className="flex items-center justify-between px-3 py-1.5 bg-[var(--abu-bg-active)] text-xs text-[var(--abu-text-tertiary)] border-t border-[var(--abu-border-subtle)]">
         <div className="flex items-center gap-2">
           {language && <span>{language}</span>}
           {shouldCollapse && !isCollapsed && (
             <button
               onClick={() => setCollapsed(true)}
-              className="flex items-center gap-0.5 hover:text-neutral-200 transition-colors"
+              className="flex items-center gap-0.5 hover:text-[var(--abu-text-primary)] transition-colors"
             >
               <ChevronUp className="h-3.5 w-3.5" />
               {t.chat.codeBlockCollapse}
@@ -250,18 +252,18 @@ export function CollapsibleCodeBlock({ codeString, language }: { codeString: str
         <div className="flex items-center gap-1">
           <button
             onClick={handleCopy}
-            className="p-1 rounded hover:bg-white/10 transition-colors"
+            className="p-1 rounded hover:bg-black/5 transition-colors"
             title={copied ? '✓' : 'Copy'}
           >
             {copied ? (
-              <Check className="h-3.5 w-3.5 text-green-400" />
+              <Check className="h-3.5 w-3.5 text-[var(--abu-success)]" />
             ) : (
               <Copy className="h-3.5 w-3.5" />
             )}
           </button>
           <button
             onClick={handleSaveAs}
-            className="p-1 rounded hover:bg-white/10 transition-colors"
+            className="p-1 rounded hover:bg-black/5 transition-colors"
             title={t.chat.codeBlockSaveAs}
           >
             <Download className="h-3.5 w-3.5" />

@@ -406,12 +406,58 @@ function isReadOnlyCommand(cmd: string): boolean {
   return readPatterns.some(p => p.test(trimmed));
 }
 
-/** Document extensions that are likely final user-facing outputs */
+/**
+ * Document extensions that count as user-facing deliverables.
+ *
+ * Used by 'deliverables' mode (chat message cards + output snapshots) to
+ * keep cards focused on artifacts the user actually cares about, filtering
+ * out scripts, logs, and other intermediate files.
+ *
+ * 2026-04-30: added md/txt/json/yaml/yml. Triggered by user report — the
+ * todo skill writes 2026-04-XX.md via run_command, but .md wasn't in the
+ * whitelist so file cards never appeared. The four added extensions are
+ * common user-readable artifacts (notes, data dumps, configs intentionally
+ * exported by the agent).
+ */
 const DOCUMENT_EXTENSIONS = new Set([
+  // Office / media (high-confidence binary deliverables)
   'pptx', 'ppt', 'docx', 'doc', 'pdf', 'xlsx', 'xls', 'csv',
   'png', 'jpg', 'jpeg', 'gif', 'webp', 'svg',
   'html', 'htm',
+  // User-readable text artifacts
+  'md', 'txt',
+  // Data exports / configs
+  'json', 'yaml', 'yml',
 ]);
+
+/**
+ * Extensions explicitly excluded from 'file-ops' mode as noise.
+ *
+ * file-ops doesn't apply a positive whitelist (the user wants transparency
+ * into what files the AI touched), but we do filter out a small set of
+ * "this is process noise, not a file the user cares about" extensions.
+ *
+ * Conservative list — only extensions that are *almost always* operational
+ * artifacts the user has no reason to inspect.
+ */
+const NOISE_EXTENSIONS = new Set([
+  'log', 'tmp', 'bak', 'cache', 'lock', 'pid',
+]);
+
+/**
+ * Two semantics that previously shared one extraction pipeline:
+ *
+ *  - 'deliverables' — "what did the AI deliver this turn?"
+ *      Strict DOCUMENT_EXTENSIONS whitelist. Filters scripts that were
+ *      later executed (intermediate artifacts). Used by chat message
+ *      cards and outputSnapshots.
+ *
+ *  - 'file-ops' — "what files did this conversation touch?"
+ *      No extension whitelist (any extension OK), only filters obvious
+ *      noise. Doesn't filter executed scripts (the user wants to see
+ *      what the AI ran). Used by RightPanel's audit view.
+ */
+export type ExtractMode = 'deliverables' | 'file-ops';
 
 /**
  * Parse a simple `mv` / `cp` command and return its {sources, destination}.
@@ -462,20 +508,33 @@ function parseCopyMoveCommand(cmd: string): { sources: string[]; destination: st
   };
 }
 
-/** Extract document file paths from a shell command string */
-function extractDocumentPathsFromCommand(cmd: string): string[] {
+/**
+ * Extract file paths from a shell command string.
+ *
+ * Mode controls which extensions count:
+ *   - 'deliverables': only DOCUMENT_EXTENSIONS (strict whitelist)
+ *   - 'file-ops': any extension except NOISE_EXTENSIONS (transparency)
+ */
+function extractPathsFromCommand(cmd: string, mode: ExtractMode): string[] {
   const paths: string[] = [];
+  const accept = (ext: string): boolean => {
+    const lower = ext.toLowerCase();
+    if (mode === 'deliverables') return DOCUMENT_EXTENSIONS.has(lower);
+    // file-ops: accept any extension that isn't noise
+    return !NOISE_EXTENSIONS.has(lower);
+  };
+
   // Match quoted paths
   const quotedRegex = /["']((?:\/|~\/)[^"'\n]+\.(\w{1,10}))["']/g;
   let match: RegExpExecArray | null;
   while ((match = quotedRegex.exec(cmd)) !== null) {
-    if (DOCUMENT_EXTENSIONS.has(match[2].toLowerCase())) paths.push(match[1]);
+    if (accept(match[2])) paths.push(match[1]);
   }
   // Match unquoted absolute paths
   if (paths.length === 0) {
     const unquotedRegex = /(?:^|\s)((?:\/|~\/)\S+\.(\w{1,10}))(?:\s|$)/g;
     while ((match = unquotedRegex.exec(cmd)) !== null) {
-      if (DOCUMENT_EXTENSIONS.has(match[2].toLowerCase())) paths.push(match[1]);
+      if (accept(match[2])) paths.push(match[1]);
     }
   }
   return paths;
@@ -532,20 +591,37 @@ export function extractFilePathsFromText(text: string): string[] {
 }
 
 /**
- * Extract file outputs from tool calls for attachment display
+ * Extract file outputs from tool calls.
+ *
+ * Two semantic modes (see ExtractMode docs):
+ *   - 'deliverables' (default): chat cards / snapshots — strict whitelist
+ *   - 'file-ops': RightPanel audit — transparent, includes reads/scripts
+ *
+ * Default 'deliverables' mode is backwards-compatible with the previous
+ * single-purpose API: callers that don't pass options keep their behavior
+ * (modulo the .md/.txt/.json whitelist additions and basename-dedup removal,
+ * both of which fix latent bugs rather than break existing flows).
+ *
+ * basename dedup was removed entirely. The original assumption ("same
+ * basename in one agent turn = same file") was correct in spirit but
+ * violated in practice: callers like FilesSection pass the entire
+ * conversation's tool calls (cross-turn, cross-day), where same basename
+ * across different paths is a legitimate user pattern (e.g. todo skill
+ * writing 2026-04-{28,29,30}.md). Path-only dedup is sufficient — mv/cp's
+ * source-cleanup logic in parseCopyMoveCommand handles the "two paths
+ * same basename, different semantics" case it was guarding against.
  */
 export function extractFileOutputs(
   toolCalls: ToolCall[],
-  options?: { includeReads?: boolean }
+  options?: { mode?: ExtractMode; includeReads?: boolean }
 ): FileOutput[] {
+  const mode: ExtractMode = options?.mode ?? 'deliverables';
+  // includeReads default depends on mode: file-ops shows reads (audit view),
+  // deliverables doesn't (a read is not a "delivered" artifact).
+  const includeReads = options?.includeReads ?? (mode === 'file-ops');
+
   const files: FileOutput[] = [];
   const seen = new Set<string>();
-  const includeReads = options?.includeReads ?? false;
-
-  // Track both full paths and basenames to deduplicate aggressively.
-  // Same basename in one turn = same file (it's impossible to generate two
-  // different files with identical names in a single agent turn).
-  const seenBasenames = new Set<string>();
 
   const addFile = (rawPath: string, operation: FileOutput['operation']) => {
     if (!rawPath) return;
@@ -556,13 +632,17 @@ export function extractFileOutputs(
     path = normalizeSeparators(path.trim());
     if (!path) return;
 
-    const basename = path.split('/').pop() || path;
+    // file-ops: filter explicit noise extensions (logs/tmp/bak/cache/lock/pid)
+    if (mode === 'file-ops') {
+      const ext = (path.split('.').pop() || '').toLowerCase();
+      if (NOISE_EXTENSIONS.has(ext)) return;
+    }
 
-    // Deduplicate by full path OR basename
-    if (seen.has(path) || seenBasenames.has(basename)) {
+    // Path-only dedup (basename dedup removed — see function docstring).
+    if (seen.has(path)) {
       // Allow write/create to upgrade a previous read entry
       if (operation !== 'read') {
-        const existing = files.find((f) => f.path === path || (f.path.split('/').pop() || '') === basename);
+        const existing = files.find((f) => f.path === path);
         if (existing && existing.operation === 'read') {
           existing.operation = operation;
         }
@@ -570,7 +650,6 @@ export function extractFileOutputs(
       return;
     }
     seen.add(path);
-    seenBasenames.add(basename);
     files.push({ path, operation });
   };
 
@@ -650,17 +729,14 @@ export function extractFileOutputs(
         if (mv) {
           // Wipe any entries (from this or prior tool calls) that point at a
           // source path — they now refer to a file that no longer exists.
-          // We also clean `seen` and `seenBasenames` so the destination can be
-          // added fresh without being blocked by stale basename dedup.
+          // basename dedup was removed, so we only need to remove entries
+          // whose path exactly matches a source (basename-collision is no
+          // longer a hazard for unrelated files).
           for (const src of mv.sources) {
             const srcNorm = normalizeSeparators(src);
-            const srcBase = getBaseName(srcNorm);
             for (let i = files.length - 1; i >= 0; i--) {
-              const f = files[i];
-              const fBase = getBaseName(f.path);
-              if (f.path === srcNorm || fBase === srcBase) {
-                seen.delete(f.path);
-                seenBasenames.delete(fBase);
+              if (files[i].path === srcNorm) {
+                seen.delete(srcNorm);
                 files.splice(i, 1);
               }
             }
@@ -669,19 +745,25 @@ export function extractFileOutputs(
           // has no extension, treat it as a directory and join with source
           // basename (the POSIX convention for `mv a b/`).
           const destHasExt = hasFileExtension(mv.destination);
+          const destAccepted = (ext: string): boolean => {
+            const lower = ext.toLowerCase();
+            return mode === 'deliverables'
+              ? DOCUMENT_EXTENSIONS.has(lower)
+              : !NOISE_EXTENSIONS.has(lower);
+          };
           for (const src of mv.sources) {
             const srcBase = getBaseName(normalizeSeparators(src));
             const destPath = destHasExt
               ? mv.destination
               : joinPath(mv.destination, srcBase);
-            const destExt = (destPath.split('.').pop() || '').toLowerCase();
-            if (DOCUMENT_EXTENSIONS.has(destExt)) {
+            const destExt = destPath.split('.').pop() || '';
+            if (destAccepted(destExt)) {
               addFile(destPath, 'create');
             }
           }
         } else {
-          // 6b-ii. Generic path: regex-extract any document path from argv.
-          const docPaths = extractDocumentPathsFromCommand(cmd);
+          // 6b-ii. Generic path: regex-extract paths from argv per mode.
+          const docPaths = extractPathsFromCommand(cmd, mode);
           for (const p of docPaths) addFile(p, 'create');
         }
       }
@@ -714,36 +796,41 @@ export function extractFileOutputs(
   }
 
   // ── Filter out intermediate scripts that were executed by run_command ──
-  // If a script file (e.g. .py, .js) was written AND then executed, it's an intermediate
-  // artifact — the user cares about the output file, not the script itself.
-  const executedScripts = new Set<string>();
+  //
+  // Only applies in 'deliverables' mode: if a script file (e.g. .py, .js)
+  // was written AND then executed, it's an intermediate artifact — the user
+  // cares about the output, not the script.
+  //
+  // 'file-ops' mode skips this filter on purpose: the audit view should
+  // surface "the AI ran build.py" so the user can see what scripts were
+  // executed, not just the artifacts they produced.
+  if (mode === 'deliverables') {
+    const executedScripts = new Set<string>();
 
-  // Collect all commands for matching
-  const allCommands: string[] = [];
-  for (const tc of toolCalls) {
-    if (COMMAND_TOOLS.includes(tc.name) && tc.result !== undefined) {
-      const cmd = String((tc.input as Record<string, unknown>).command || (tc.input as Record<string, unknown>).cmd || '');
-      if (cmd) allCommands.push(cmd);
-    }
-  }
-
-  for (const f of files) {
-    const ext = f.path.split('.').pop()?.toLowerCase() || '';
-    if (!SCRIPT_EXTENSIONS.has(ext)) continue;
-
-    // Extract just the filename for flexible matching
-    // e.g. "/Users/didi/Desktop/PPT/build_ppt.js" → "build_ppt.js"
-    const fileName = f.path.split('/').pop() || f.path.split('\\').pop() || '';
-
-    for (const cmd of allCommands) {
-      // Match either full path or just filename in the command
-      // Handles: "node /full/path/build.js", "cd /dir && node build.js", "python3 build.py"
-      if (cmd.includes(f.path) || (fileName && cmd.includes(fileName))) {
-        executedScripts.add(f.path);
-        break;
+    const allCommands: string[] = [];
+    for (const tc of toolCalls) {
+      if (COMMAND_TOOLS.includes(tc.name) && tc.result !== undefined) {
+        const cmd = String((tc.input as Record<string, unknown>).command || (tc.input as Record<string, unknown>).cmd || '');
+        if (cmd) allCommands.push(cmd);
       }
     }
+
+    for (const f of files) {
+      const ext = f.path.split('.').pop()?.toLowerCase() || '';
+      if (!SCRIPT_EXTENSIONS.has(ext)) continue;
+
+      const fileName = f.path.split('/').pop() || f.path.split('\\').pop() || '';
+
+      for (const cmd of allCommands) {
+        if (cmd.includes(f.path) || (fileName && cmd.includes(fileName))) {
+          executedScripts.add(f.path);
+          break;
+        }
+      }
+    }
+
+    return files.filter((f) => !executedScripts.has(f.path));
   }
 
-  return files.filter((f) => !executedScripts.has(f.path));
+  return files;
 }

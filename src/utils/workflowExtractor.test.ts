@@ -566,6 +566,116 @@ describe('workflowExtractor', () => {
         expect(files).toHaveLength(0);
       });
     });
+
+    // ──────────────────────────────────────────────────────────────────
+    // Mode-aware extraction (deliverables vs file-ops)
+    // ──────────────────────────────────────────────────────────────────
+    //
+    // Two distinct semantics, previously conflated:
+    //
+    //   deliverables — "what did the AI deliver this turn?"
+    //     Used by: MessageGroup chat cards, outputSnapshots backup.
+    //     Strict whitelist (DOCUMENT_EXTENSIONS), filters out scripts that
+    //     were later executed (intermediate artifacts).
+    //
+    //   file-ops    — "what files did this conversation touch?"
+    //     Used by: RightPanel/FilesSection audit view.
+    //     No extension whitelist, only filters obvious noise (.log/.tmp/.bak/
+    //     .cache/.lock/.pid). Includes reads. Doesn't filter executed scripts
+    //     (the user wants to see what scripts the AI ran).
+    //
+    // Default mode is 'deliverables' for backwards compatibility — all existing
+    // callers continue to work without changes.
+    describe('mode-aware extraction', () => {
+      describe("default mode = 'deliverables'", () => {
+        it('includes .md/.txt/.json/.yaml in DOCUMENT_EXTENSIONS (regression: todo skill .md)', () => {
+          // Reproduces the user-reported bug: todo skill writes
+          // /workspace/todo/2026-04/2026-04-29.md via run_command, but the file
+          // card never showed up because .md wasn't in DOCUMENT_EXTENSIONS.
+          const toolCalls: ToolCall[] = [{
+            id: 'tc1', name: 'run_command',
+            input: { command: 'echo "## 09:23\n- 完成评审" >> /Users/me/todo/2026-04/2026-04-29.md' },
+            result: 'stdout:\n\nstderr:\n\nexit code: 0',
+          }];
+          const files = extractFileOutputs(toolCalls);
+          expect(files).toHaveLength(1);
+          expect(files[0].path).toBe('/Users/me/todo/2026-04/2026-04-29.md');
+        });
+
+        it('extracts cross-turn same-basename writes (regression: basename dedup)', () => {
+          // Same basename (todo.md) but different paths — treated as separate
+          // files. Old behavior aggressively deduped on basename, hiding all
+          // but the first.
+          const toolCalls: ToolCall[] = [
+            { id: '1', name: 'write_file', input: { path: '/a/todo.md' }, result: 'ok' },
+            { id: '2', name: 'write_file', input: { path: '/b/todo.md' }, result: 'ok' },
+            { id: '3', name: 'write_file', input: { path: '/c/todo.md' }, result: 'ok' },
+          ];
+          const files = extractFileOutputs(toolCalls);
+          expect(files).toHaveLength(3);
+          expect(files.map(f => f.path).sort()).toEqual(['/a/todo.md', '/b/todo.md', '/c/todo.md']);
+        });
+
+        it('still filters intermediate scripts that were later executed', () => {
+          // deliverables mode preserves SCRIPT_EXTENSIONS filtering.
+          const toolCalls: ToolCall[] = [
+            { id: '1', name: 'write_file', input: { path: '/tmp/build.py' }, result: 'ok' },
+            { id: '2', name: 'run_command', input: { command: 'python3 /tmp/build.py' }, result: 'stdout:\n\nstderr:\n\nexit code: 0' },
+          ];
+          const files = extractFileOutputs(toolCalls);
+          // build.py was executed → filtered out (intermediate artifact)
+          expect(files.find(f => f.path.endsWith('build.py'))).toBeUndefined();
+        });
+      });
+
+      describe("mode = 'file-ops'", () => {
+        it('includes read operations by default', () => {
+          const toolCalls: ToolCall[] = [{
+            id: '1', name: 'read_file', input: { path: '/data/config.yaml' }, result: '...',
+          }];
+          const files = extractFileOutputs(toolCalls, { mode: 'file-ops' });
+          expect(files).toHaveLength(1);
+          expect(files[0].operation).toBe('read');
+        });
+
+        it('does NOT filter executed scripts (audit transparency)', () => {
+          // file-ops mode wants to show the user "the AI ran build.py" —
+          // unlike deliverables mode which treats build.py as intermediate.
+          const toolCalls: ToolCall[] = [
+            { id: '1', name: 'write_file', input: { path: '/tmp/build.py' }, result: 'ok' },
+            { id: '2', name: 'run_command', input: { command: 'python3 /tmp/build.py' }, result: 'stdout:\n\nstderr:\n\nexit code: 0' },
+          ];
+          const files = extractFileOutputs(toolCalls, { mode: 'file-ops' });
+          expect(files.find(f => f.path === '/tmp/build.py')).toBeDefined();
+        });
+
+        it('does NOT enforce DOCUMENT_EXTENSIONS whitelist (any extension OK)', () => {
+          // run_command writing .py / .sh / .conf → all included in file-ops
+          // because the user wants to see what files the AI touched.
+          const toolCalls: ToolCall[] = [
+            { id: '1', name: 'write_file', input: { path: '/etc/abu/app.conf' }, result: 'ok' },
+            { id: '2', name: 'write_file', input: { path: '/scripts/deploy.sh' }, result: 'ok' },
+          ];
+          const files = extractFileOutputs(toolCalls, { mode: 'file-ops' });
+          expect(files).toHaveLength(2);
+        });
+
+        it('filters obvious noise extensions (.log/.tmp/.bak/.cache/.lock/.pid)', () => {
+          const toolCalls: ToolCall[] = [
+            { id: '1', name: 'write_file', input: { path: '/tmp/debug.log' }, result: 'ok' },
+            { id: '2', name: 'write_file', input: { path: '/tmp/cache.tmp' }, result: 'ok' },
+            { id: '3', name: 'write_file', input: { path: '/tmp/backup.bak' }, result: 'ok' },
+            { id: '4', name: 'write_file', input: { path: '/run/abu.pid' }, result: 'ok' },
+            { id: '5', name: 'write_file', input: { path: '/var/abu/state.cache' }, result: 'ok' },
+            { id: '6', name: 'write_file', input: { path: '/data/report.csv' }, result: 'ok' },
+          ];
+          const files = extractFileOutputs(toolCalls, { mode: 'file-ops' });
+          // Only the .csv survives; all noise extensions are filtered
+          expect(files).toHaveLength(1);
+          expect(files[0].path).toBe('/data/report.csv');
+        });
+      });
+    });
   });
 
   // ── extractStdout ──

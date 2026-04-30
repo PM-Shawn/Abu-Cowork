@@ -8,6 +8,21 @@ import { useWorkspaceStore } from '@/stores/workspaceStore';
 import ConfirmDialog from '@/components/common/ConfirmDialog';
 import { Button } from '@/components/ui/button';
 
+// Abu 设计 token：toolbar 按钮风格（对齐 AboutSection 的"检查更新"按钮）
+const ABU_BTN_OUTLINE =
+  'border border-[var(--abu-border)] bg-transparent text-[var(--abu-text-secondary)] ' +
+  'hover:bg-[var(--abu-bg-active)] hover:text-[var(--abu-text-primary)] hover:border-[var(--abu-border-hover)] ' +
+  'active:scale-[0.98]';
+
+const ABU_BTN_GHOST =
+  'bg-transparent text-[var(--abu-text-muted)] ' +
+  'hover:bg-[var(--abu-bg-active)] hover:text-[var(--abu-text-primary)]';
+
+const ABU_BTN_DESTRUCTIVE =
+  'border border-red-200 bg-red-50 text-red-600 ' +
+  'hover:bg-red-100 hover:border-red-300 hover:text-red-700 ' +
+  'active:scale-[0.98]';
+
 function getTypeLabel(type: MemoryType, t: ReturnType<typeof useI18n>['t']): string {
   const map: Record<MemoryType, string> = {
     user: t.memory.categoryPreference,
@@ -278,34 +293,35 @@ export default function PersonalMemorySection() {
               </div>
               {bulkMode ? (
                 <div className="flex items-center gap-1.5 flex-wrap">
-                  <Button size="xs" variant="outline" onClick={() => selectByFilter(isAutoFlushUnused)}>
+                  <Button size="xs" variant="ghost" className={ABU_BTN_OUTLINE} onClick={() => selectByFilter(isAutoFlushUnused)}>
                     {t.memory.bulkSelectAutoFlushUnused}
                   </Button>
-                  <Button size="xs" variant="outline" onClick={() => selectByFilter(isUnused)}>
+                  <Button size="xs" variant="ghost" className={ABU_BTN_OUTLINE} onClick={() => selectByFilter(isUnused)}>
                     {t.memory.bulkSelectUnused}
                   </Button>
-                  <Button size="xs" variant="outline" onClick={() => selectByFilter(() => true)}>
+                  <Button size="xs" variant="ghost" className={ABU_BTN_OUTLINE} onClick={() => selectByFilter(() => true)}>
                     {t.memory.bulkSelectAll}
                   </Button>
-                  <Button size="xs" variant="outline" onClick={() => setSelectedKeys(new Set())}>
+                  <Button size="xs" variant="ghost" className={ABU_BTN_OUTLINE} onClick={() => setSelectedKeys(new Set())}>
                     {t.memory.bulkClearSelection}
                   </Button>
                   <Button
                     size="xs"
-                    variant="destructive"
+                    variant="ghost"
+                    className={selectedKeys.size === 0 ? ABU_BTN_OUTLINE : ABU_BTN_DESTRUCTIVE}
                     disabled={selectedKeys.size === 0}
                     onClick={() => setBulkConfirmOpen(true)}
                   >
                     <Trash2 className="h-3 w-3 mr-1" />
                     {t.memory.bulkDelete}
                   </Button>
-                  <Button size="xs" variant="outline" onClick={exitBulkMode}>
+                  <Button size="xs" variant="ghost" className={ABU_BTN_GHOST} onClick={exitBulkMode}>
                     <X className="h-3 w-3 mr-1" />
                     {t.memory.bulkExit}
                   </Button>
                 </div>
               ) : (
-                <Button size="xs" variant="outline" onClick={() => setBulkMode(true)}>
+                <Button size="xs" variant="ghost" className={ABU_BTN_OUTLINE} onClick={() => setBulkMode(true)}>
                   <ListChecks className="h-3 w-3 mr-1" />
                   {t.memory.bulkCleanup}
                 </Button>

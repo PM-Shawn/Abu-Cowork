@@ -51,6 +51,22 @@ async function getWindowFocused(now: number): Promise<boolean> {
 }
 
 /**
+ * Push the current focus state from a Tauri focus-change event.
+ *
+ * Without this, `cachedFocused` is only ever set inside `getWindowFocused`,
+ * which is exclusively called from the async `assembleGateContext` path
+ * (run once at boot via `primeContextCaches → drainPendingInbox(false)`).
+ * The synchronous hot path used by `processNotice` reads `cachedFocused`
+ * directly via `cachedContextProvider`, so without an event-driven update
+ * the cache freezes at whatever value boot observed and stale-routes every
+ * subsequent notice.
+ */
+export function setFocused(focused: boolean): void {
+  cachedFocused = focused;
+  focusCacheExpiry = Date.now() + FOCUS_CACHE_TTL_MS;
+}
+
+/**
  * Assemble GateContext from real runtime state.
  *
  * This is async because it reads Tauri window focus and fullscreen.

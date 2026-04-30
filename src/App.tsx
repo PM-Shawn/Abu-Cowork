@@ -37,7 +37,7 @@ import { initSidebarBadgeChannel } from '@/stores/noticeBadgeStore';
 import { initMenubarChannel, useNoticeMenubarStore } from '@/stores/noticeMenubarStore';
 import { initNoticeChannelHandlers } from '@/core/notice/channels';
 import { setContextProvider } from '@/core/notice/pipeline';
-import { cachedContextProvider, primeContextCaches, assembleGateContext } from '@/core/notice/contextProvider';
+import { cachedContextProvider, primeContextCaches, assembleGateContext, setFocused } from '@/core/notice/contextProvider';
 import { drainInbox } from '@/core/notice/inbox';
 import { startPetStatusBridge, resyncPetStatus } from '@/core/pet/petStatusBridge';
 import { schedulerEngine } from '@/core/scheduler/scheduler';
@@ -115,6 +115,7 @@ function App() {
     let cancelled = false;
     getCurrentWindow()
       .onFocusChanged(({ payload: focused }) => {
+        setFocused(focused);
         if (focused) {
           clearDockBadge();
           useNoticeMenubarStore.getState().dismissAll();

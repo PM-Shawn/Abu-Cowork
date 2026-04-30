@@ -166,6 +166,13 @@ const zhCN: TranslationDict = {
     inputTokens: '输入',
     outputTokens: '输出',
     addAttachment: '添加图片或文件',
+    copyConvIdTooltip: '点击复制对话 ID（反馈问题时附带）',
+    copyConvIdCopied: '已复制对话 ID',
+    timeJustNow: '刚刚',
+    timeMinutesAgo: '{n} 分钟前',
+    dayToday: '今天',
+    dayYesterday: '昨天',
+    dayBeforeYesterday: '前天',
     fromScheduledTask: '定时任务',
     fromTrigger: '监听事件',
     // Scenario guide

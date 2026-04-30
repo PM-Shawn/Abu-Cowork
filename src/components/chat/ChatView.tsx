@@ -1,4 +1,4 @@
-import { useState, useCallback, useLayoutEffect, useSyncExternalStore } from 'react';
+import { Fragment, useState, useCallback, useLayoutEffect, useSyncExternalStore } from 'react';
 import { useChatStore, useActiveConversation } from '@/stores/chatStore';
 import type { Message, ImageAttachment } from '@/types';
 import { useAutoScroll } from '@/hooks/useAutoScroll';
@@ -21,6 +21,9 @@ import abuAvatar from '@/assets/abu-avatar.png';
 import IMInfoBar from './IMInfoBar';
 import SourceInfoBar from './SourceInfoBar';
 import ComputerUseStatusBar from './ComputerUseStatusBar';
+import DaySeparator from './DaySeparator';
+import ConvIdBadge from './ConvIdBadge';
+import { isSameLocalDay } from '@/utils/messageTime';
 
 /**
  * Groups messages by loopId for rendering.
@@ -368,9 +371,25 @@ export default function ChatView() {
       <div className="relative flex-1 min-h-0 overflow-y-auto" ref={containerRef}>
         <div className="w-full max-w-4xl mx-auto px-6 md:px-10 pt-5 pb-16 overflow-hidden">
           <div className="space-y-5">
-            {messageGroups.map((group, idx) => (
-              <MessageGroup key={group[0].id} messages={group} isLastGroup={idx === messageGroups.length - 1} />
-            ))}
+            {messageGroups.map((group, idx) => {
+              const firstMsg = group[0];
+              const prevGroup = idx > 0 ? messageGroups[idx - 1] : null;
+              const prevLastMsg = prevGroup ? prevGroup[prevGroup.length - 1] : null;
+              // Insert a day separator before this group if its first message
+              // crosses into a different calendar day from the previous group's
+              // last message. The very first group also gets a separator so
+              // users always see the date of the conversation's earliest msg.
+              const showDaySep =
+                firstMsg.timestamp &&
+                (!prevLastMsg?.timestamp ||
+                  !isSameLocalDay(prevLastMsg.timestamp, firstMsg.timestamp));
+              return (
+                <Fragment key={firstMsg.id}>
+                  {showDaySep && <DaySeparator timestamp={firstMsg.timestamp} />}
+                  <MessageGroup messages={group} isLastGroup={idx === messageGroups.length - 1} />
+                </Fragment>
+              );
+            })}
 
             {/* Typing indicator - brief flash before assistant message is created */}
             {activeConv?.status === 'running' && messages.every((m) => m.role === 'user') && (
@@ -410,9 +429,13 @@ export default function ChatView() {
           />
           <BackgroundAgents />
           <ChatInput variant="chat" onSend={handleSend} />
-          <p className="text-center text-[11px] text-[var(--abu-text-muted)] mt-1.5">
-            {t.chat.disclaimer}
-          </p>
+          <div className="flex items-center justify-center gap-3 mt-1.5">
+            <p className="text-[11px] text-[var(--abu-text-muted)]">
+              {t.chat.disclaimer}
+            </p>
+            <span className="text-[var(--abu-text-muted)] opacity-50">·</span>
+            <ConvIdBadge conversationId={activeConv.id} />
+          </div>
         </div>
       </div>
     </div>

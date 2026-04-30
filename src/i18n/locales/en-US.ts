@@ -166,6 +166,13 @@ const enUS: TranslationDict = {
     inputTokens: 'Input',
     outputTokens: 'Output',
     addAttachment: 'Add images or files',
+    copyConvIdTooltip: 'Click to copy conversation ID (attach when reporting bugs)',
+    copyConvIdCopied: 'Conversation ID copied',
+    timeJustNow: 'Just now',
+    timeMinutesAgo: '{n} min ago',
+    dayToday: 'Today',
+    dayYesterday: 'Yesterday',
+    dayBeforeYesterday: '2 days ago',
     fromScheduledTask: 'Scheduled Task',
     fromTrigger: 'Trigger',
     // Scenario guide

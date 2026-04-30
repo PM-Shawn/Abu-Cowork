@@ -8,6 +8,7 @@ import { usePreviewStore } from '@/stores/previewStore';
 import { runAgentLoop } from '@/core/agent/agentLoop';
 import { useI18n } from '@/i18n';
 import { getBaseName, loadLocalImage } from '@/utils/pathUtils';
+import { formatRelativeTime } from '@/utils/messageTime';
 import abuAvatar from '@/assets/abu-avatar.png';
 
 // Regex to match [Attachment: `path`] patterns in user messages
@@ -184,6 +185,23 @@ interface MessageActionsProps {
   onDelete: () => void;
   onRegenerate: () => void;
   isUser: boolean;
+}
+
+/**
+ * Hover-only timestamp shown next to / below a message bubble.
+ * Inline so callers can position it per role (user → below bubble right-aligned,
+ * assistant → alongside actions). Lives inside a `group` parent that toggles
+ * opacity on hover.
+ */
+function MessageTimestamp({ timestamp, className = '' }: { timestamp: number; className?: string }) {
+  return (
+    <span
+      className={`text-[11px] text-[var(--abu-text-muted)] tabular-nums select-none whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity ${className}`}
+      title={new Date(timestamp).toLocaleString()}
+    >
+      {formatRelativeTime(timestamp)}
+    </span>
+  );
 }
 
 function MessageActions({ message, onEdit, onDelete, onRegenerate, isUser }: MessageActionsProps) {
@@ -385,13 +403,16 @@ export default function MessageBubble({
   // Actions only mode - just render the action buttons
   if (actionsOnly && !isUser) {
     return (
-      <MessageActions
-        message={message}
-        onEdit={() => {}}
-        onDelete={handleDelete}
-        onRegenerate={handleRegenerate}
-        isUser={false}
-      />
+      <div className="flex items-center gap-2">
+        <MessageActions
+          message={message}
+          onEdit={() => {}}
+          onDelete={handleDelete}
+          onRegenerate={handleRegenerate}
+          isUser={false}
+        />
+        {message.timestamp && <MessageTimestamp timestamp={message.timestamp} />}
+      </div>
     );
   }
 
@@ -400,7 +421,7 @@ export default function MessageBubble({
     const { cleanText: userCleanText, attachmentPaths } = extractAttachments(textContent);
     return (
       <div className="flex justify-end w-full group">
-        <div className="flex flex-col items-end gap-1.5 max-w-[85%]">
+        <div className="relative flex flex-col items-end gap-1.5 max-w-[85%]">
           {/* Image thumbnails — above the text bubble */}
           {imageBlocks.length > 0 && !isEditing && (
             <div className="flex flex-wrap justify-end gap-1.5">
@@ -461,6 +482,12 @@ export default function MessageBubble({
               )}
             </div>
           )}
+          {/* Hover timestamp — absolute so it doesn't reserve vertical space when hidden */}
+          {!isEditing && message.timestamp && (
+            <div className="absolute -bottom-4 right-1 pointer-events-none">
+              <MessageTimestamp timestamp={message.timestamp} />
+            </div>
+          )}
         </div>
       </div>
     );
@@ -494,7 +521,7 @@ export default function MessageBubble({
 
         {/* Actions - show on hover when not streaming */}
         {!message.isStreaming && !isConvRunning && (
-          <div className="mt-2">
+          <div className="mt-2 flex items-center gap-2">
             <MessageActions
               message={message}
               onEdit={() => {}}
@@ -502,6 +529,7 @@ export default function MessageBubble({
               onRegenerate={handleRegenerate}
               isUser={false}
             />
+            {message.timestamp && <MessageTimestamp timestamp={message.timestamp} />}
           </div>
         )}
       </div>
@@ -543,7 +571,7 @@ export default function MessageBubble({
 
         {/* Actions - show on hover when not streaming */}
         {!message.isStreaming && !isConvRunning && (
-          <div className="mt-2">
+          <div className="mt-2 flex items-center gap-2">
             <MessageActions
               message={message}
               onEdit={() => {}}
@@ -551,6 +579,7 @@ export default function MessageBubble({
               onRegenerate={handleRegenerate}
               isUser={false}
             />
+            {message.timestamp && <MessageTimestamp timestamp={message.timestamp} />}
           </div>
         )}
       </div>

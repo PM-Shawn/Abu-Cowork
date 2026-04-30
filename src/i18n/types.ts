@@ -184,6 +184,15 @@ export interface TranslationDict {
     inputTokens: string;
     outputTokens: string;
     addAttachment: string;
+    // Conversation ID badge
+    copyConvIdTooltip: string;
+    copyConvIdCopied: string;
+    // Message time / day separator
+    timeJustNow: string;
+    timeMinutesAgo: string;
+    dayToday: string;
+    dayYesterday: string;
+    dayBeforeYesterday: string;
     // Source navigation bar (for scheduled/trigger conversations)
     fromScheduledTask: string;
     fromTrigger: string;

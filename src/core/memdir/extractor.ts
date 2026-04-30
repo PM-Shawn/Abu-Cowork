@@ -22,6 +22,12 @@ interface ExtractedMemory {
   name: string;
   content: string;
   type: MemoryType;
+  /**
+   * Optional. When set, the writer will delete the referenced filename before
+   * writing the new entry — used to atomically replace an outdated/conflicting
+   * memory rather than producing a near-duplicate alongside it.
+   */
+  _replaces?: string;
 }
 
 const EXTRACTION_SYSTEM_PROMPT = `你是一个记忆提取助手。分析给定的对话，提取值得长期记忆的信息。
@@ -84,14 +90,38 @@ feedback content 必须包含：规则本身 + Why（用户为什么这么要求
 ## 工具上下文
 对话中 [工具] 标记表示工具调用及结果。工具偶发错误不提取；但失败导致用户纠正或 AI 总结了规避方法，应提取为 feedback。
 
+## 处理冲突或更新（重要）
+
+如果对话中有信息**与已有记忆索引冲突或更新**（如索引有"用户名为小包"，
+对话里用户改口"我叫小白"；或索引有"用 npm"，用户改口"以后用 bun"），
+输出时附 \`_replaces\` 字段引用要替换的 **filename**（来自已有索引）：
+
+\`\`\`json
+{
+  "name": "用户名为小白",
+  "content": "用户名为小白，希望被这样称呼",
+  "type": "user",
+  "_replaces": "user_用户名为_小包.md"
+}
+\`\`\`
+
+写入逻辑会自动 **删除旧条 + 写入新条**，避免冲突的两条并存。
+
+判断"是否冲突"：
+- 同一事实不同值（名字、偏好、决策被推翻）→ 冲突，要 _replaces
+- feedback 缺 Why/How，新对话补全了 → 替换为完整版本，要 _replaces
+- 完全独立的新事实 → 普通 append（**不**要 _replaces）
+- 近义但没新信息 → 跳过（**不**要输出）
+
 ## 规则
 - 宁可返回 [] 也不要保存可疑内容
 - 高质量 1 条胜于平庸 5 条
 - 每条记忆必须独立、自包含
+- 冲突时主动用 _replaces，**不要**留两条值矛盾的记忆并存
 - 如果没有值得记忆的内容，返回空数组
 
 输出格式：JSON 数组，每个元素：
-{"name":"简短标题","content":"详细内容","type":"分类"}
+{"name":"简短标题","content":"详细内容","type":"分类","_replaces":"可选-旧 filename"}
 
 type 可选值: user, feedback, project, reference`;
 
@@ -170,11 +200,13 @@ export async function extractMemoriesFromConversation(
       ]);
       const allHeaders = [...globalHeaders, ...wsHeaders];
       if (allHeaders.length > 0) {
+        // Include filename so the extractor can reference it in _replaces
+        // when emitting a conflict-resolving update.
         const lines = allHeaders
           .slice(0, MAX_MANIFEST_LINES)
-          .map(h => `- [${h.type}] ${h.description}`)
+          .map(h => `- ${h.filename} [${h.type}]: ${h.description}`)
           .join('\n');
-        manifestSection = `## 已有记忆索引（避免重复提取）\n${lines}\n\n`;
+        manifestSection = `## 已有记忆索引（用于去重 + 引用 _replaces）\n${lines}\n\n`;
       }
     } catch {
       // Manifest is best-effort; skip if scan fails
@@ -221,12 +253,27 @@ export async function extractMemoriesFromConversation(
     if (!Array.isArray(extracted) || extracted.length === 0) return;
 
     // Write to memdir as .md files
-    const { writeMemory } = await import('../memdir/write');
+    const { writeMemory, deleteMemory } = await import('../memdir/write');
     const { ContentSafetyError } = await import('../safety/contentGuard');
     let written = 0;
     let safetyBlocked = 0;
+    let replaced = 0;
     for (const mem of extracted.slice(0, 5)) { // max 5 entries per extraction
       if (!mem.name || !mem.content || !mem.type) continue;
+
+      // Handle _replaces: delete the conflicting old entry before writing
+      // the new one. If delete fails (e.g. already gone) we still write the
+      // new entry — best-effort. Skipping the new write would leave the user
+      // worse off than before.
+      if (mem._replaces && typeof mem._replaces === 'string') {
+        try {
+          await deleteMemory(mem._replaces, workspacePath);
+          replaced++;
+          console.log(`[Memory] Replaced ${mem._replaces} with new entry "${mem.name}"`);
+        } catch (err) {
+          console.warn(`[Memory] Failed to delete ${mem._replaces} (proceeding with new entry):`, err);
+        }
+      }
 
       // Each write is independent: if one entry trips the scanner, skip it
       // and continue with the rest. Auto-extraction is best-effort — we
@@ -256,7 +303,10 @@ export async function extractMemoriesFromConversation(
     }
 
     if (written > 0) {
-      const suffix = safetyBlocked > 0 ? ` (${safetyBlocked} blocked by safety scan)` : '';
+      const parts = [];
+      if (replaced > 0) parts.push(`${replaced} replaced`);
+      if (safetyBlocked > 0) parts.push(`${safetyBlocked} blocked by safety scan`);
+      const suffix = parts.length > 0 ? ` (${parts.join(', ')})` : '';
       console.log(`[Memory] Extracted ${written} memories from conversation ${conversationId}${suffix}`);
     } else if (safetyBlocked > 0) {
       console.log(`[Memory] All ${safetyBlocked} extracted entries blocked by safety scan for ${conversationId}`);

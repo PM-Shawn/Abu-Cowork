@@ -69,12 +69,11 @@ export const recallTool: ToolDefinition = {
         );
       }
 
-      // Sort by relevance (recent + frequently accessed first)
-      allHeaders.sort((a, b) => {
-        const scoreA = a.accessCount * 0.3 + a.updated / 1e12;
-        const scoreB = b.accessCount * 0.3 + b.updated / 1e12;
-        return scoreB - scoreA;
-      });
+      // Recency-first; accessCount as tiebreaker. accessCount now only
+      // counts real recall-tool hits (passive system-prompt injection no
+      // longer touches it), so high counts are a meaningful signal of
+      // utility rather than a self-reinforcing positive feedback loop.
+      allHeaders.sort((a, b) => b.updated - a.updated || b.accessCount - a.accessCount);
       const top = allHeaders.slice(0, limit);
 
       if (top.length > 0) {

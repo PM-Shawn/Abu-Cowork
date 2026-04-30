@@ -38,7 +38,7 @@ const enUS: TranslationDict = {
     sourceAutoFlush: 'Auto-extracted',
     sourceAgentExplicit: 'AI recorded',
     sourceUserManual: 'Manual',
-    recallCount: 'Recalled {count} times',
+    recallCount: 'Used by agent {count} times',
     deleteTitle: 'Delete Memory',
     legacyHint: 'Legacy memory (will be auto-migrated on next conversation)',
     emptyHint: 'AI will automatically accumulate memories during conversations',

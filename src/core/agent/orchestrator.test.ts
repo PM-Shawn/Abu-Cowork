@@ -113,22 +113,23 @@ describe('buildSystemPrompt - security features', () => {
     expect(rulesContent).toContain('使用 TypeScript');
   });
 
-  it('wraps agent memory in <agent-memory> tags when memdir has files', async () => {
-    const { readMemoryFile } = await import('../memdir/scan');
-    const mockReadMemoryFile = vi.mocked(readMemoryFile);
+  it('does not push per-file memory content (pull-based: index only)', async () => {
+    // Regression: previously the orchestrator selected top 5 memories by an
+    // accessCount-based score and inlined their content under <agent-memory>.
+    // That created a positive feedback loop (high accessCount → re-injected →
+    // accessCount bumped again) and pushed content unrelated to the current
+    // query. The new contract: only the MEMORY.md index is injected, and the
+    // agent pulls per-file details on demand via the recall tool.
     mockScanMemoryFiles.mockResolvedValue([{
       filename: 'user_test.md', filePath: '/mock/user_test.md',
       name: '用户喜欢简洁回复', description: '用户喜欢简洁回复',
       type: 'user', source: 'agent_explicit',
       created: Date.now(), updated: Date.now(), accessCount: 0,
     }]);
-    mockReadMemoryFile.mockResolvedValue({
-      header: { filename: 'user_test.md', filePath: '/mock/user_test.md', name: '用户喜欢简洁回复', description: '用户喜欢简洁回复', type: 'user', source: 'agent_explicit', created: Date.now(), updated: Date.now(), accessCount: 0 },
-      content: '用户喜欢简洁回复',
-    });
     const prompt = await buildSystemPrompt(generalRoute, basePrompt, 'test-conv');
-    expect(prompt).toContain('<agent-memory>');
-    expect(prompt).toContain('用户喜欢简洁回复');
+    expect(prompt).not.toContain('## 近期记忆详情');
+    // Memory body content must not appear in the prompt
+    expect(prompt).not.toContain('### [user] 用户喜欢简洁回复');
   });
 
   it('wraps memory index in <memory-index> tags', async () => {

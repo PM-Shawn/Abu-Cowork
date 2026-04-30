@@ -445,58 +445,30 @@ export async function buildSystemPromptSections(
     }
   }
 
-  // Inject memories from memdir (file-based memory system)
+  // Inject memories from memdir (file-based memory system).
+  //
+  // Pull-based: only the MEMORY.md index is injected. Per-file content is
+  // pulled on demand by the agent via the `recall` tool. This avoids the
+  // accessCount feedback loop that previously locked the same N memories
+  // into top slots regardless of relevance to the current query.
   if (!isForkContext) {
     try {
-      const { loadMemoryIndex, scanMemoryFiles, readMemoryFile } = await import('../memdir/scan');
-      const { touchMemory } = await import('../memdir/write');
+      const { loadMemoryIndex } = await import('../memdir/scan');
 
-      // Load from both global (no workspace) and workspace-specific memdir
-      const [globalIndex, wsIndex, globalHeaders, wsHeaders] = await Promise.all([
+      const [globalIndex, wsIndex] = await Promise.all([
         loadMemoryIndex(null),
         workspacePath ? loadMemoryIndex(workspacePath) : Promise.resolve(''),
-        scanMemoryFiles(null),
-        workspacePath ? scanMemoryFiles(workspacePath) : Promise.resolve([]),
       ]);
 
-      const allHeaders = [...globalHeaders, ...wsHeaders];
       const indexContent = [globalIndex, wsIndex].filter(Boolean).join('\n');
 
       // Always inject MEMORY.md index if it has content
       if (indexContent.trim()) {
         sections.push({ name: 'memory-index', text: `\n## 你的长期记忆索引
-以下是你跨会话保持的记忆索引。标记为 [feedback] 的记忆是用户对你行为的指导，应当遵守。
+以下是你跨会话保持的记忆索引。标记为 [feedback] 的记忆是用户对你行为的指导，应当遵守。索引行的描述若不足以判断，调用 recall 工具按关键词拉取详情。
 <memory-index>
 ${indexContent.trim()}
 </memory-index>`, cacheable: true });
-      }
-
-      // Select top 5 most relevant memory files to inject full content
-      if (allHeaders.length > 0) {
-        const top = allHeaders
-          .sort((a, b) => {
-            const scoreA = a.accessCount * 0.3 + a.updated / 1e12;
-            const scoreB = b.accessCount * 0.3 + b.updated / 1e12;
-            return scoreB - scoreA;
-          })
-          .slice(0, 5);
-
-        const memoryTexts: string[] = [];
-        for (const h of top) {
-          const file = await readMemoryFile(h.filePath);
-          if (file) {
-            memoryTexts.push(`### [${h.type}] ${h.name}\n${file.content.slice(0, 500)}`);
-            // Touch accessed memories (fire-and-forget)
-            touchMemory(h.filePath).catch(() => {});
-          }
-        }
-
-        if (memoryTexts.length > 0) {
-          sections.push({ name: 'memories', text: `\n## 近期记忆详情
-<agent-memory>
-${memoryTexts.join('\n\n')}
-</agent-memory>`, cacheable: true });
-        }
       }
 
       // Memory management instruction

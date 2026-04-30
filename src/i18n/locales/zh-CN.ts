@@ -38,7 +38,7 @@ const zhCN: TranslationDict = {
     sourceAutoFlush: '自动提取',
     sourceAgentExplicit: 'AI 主动记忆',
     sourceUserManual: '手动添加',
-    recallCount: '被召回 {count} 次',
+    recallCount: '被 Agent 引用 {count} 次',
     deleteTitle: '删除记忆',
     legacyHint: '旧版记忆（将在下次对话时自动迁移为结构化格式）',
     emptyHint: '对话时 AI 会自动积累记忆，或你可以让 AI "记住这个"',

@@ -202,9 +202,12 @@ export async function writeMemory(options: WriteMemoryOptions): Promise<string> 
     // Evict if at capacity
     const existing = await scanMemoryFiles(workspacePath);
     if (existing.length >= MAX_MEMORY_FILES && !overrideFilename) {
-      // Evict the oldest, lowest-accessCount file
-      const sorted = [...existing]
-        .sort((a, b) => a.accessCount - b.accessCount || a.updated - b.updated);
+      // Evict the least-recently-updated file. accessCount is no longer
+      // factored in: under the pull-based recall model it only counts real
+      // recall-tool hits, so it is too sparse to be a reliable signal at
+      // eviction time and historically produced the wrong outcome (delete
+      // brand-new accessCount=0 memories before stale high-count ones).
+      const sorted = [...existing].sort((a, b) => a.updated - b.updated);
       const evictTarget = sorted[0];
       if (evictTarget) {
         await remove(evictTarget.filePath).catch(() => {});

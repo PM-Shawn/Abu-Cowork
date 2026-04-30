@@ -480,7 +480,8 @@ ${indexContent.trim()}
 
 你有一套基于文件的持久记忆系统。每条记忆是一个 .md 文件，存在
 \`~/.abu/memory/\`（全局）或 \`{workspace}/.abu/memory/\`（按工作区）。
-索引（MEMORY.md）已注入到上面的 <memory-index>，详情可调 recall 工具按需拉取。
+索引（MEMORY.md）已注入到上面的 <memory-index>。详情按需拉取：
+按 filename 精确读取调 \`read_memory\`；按关键词模糊搜调 \`recall\`。
 
 让这套系统随时间不断完善——未来对话能从中看到用户是谁、喜欢怎样
 协作、有哪些该避免/重复的行为、当前工作的背景。如果用户说"记住这个"
@@ -516,11 +517,13 @@ ${indexContent.trim()}
 跳过重复写入；如果是补充（例如原条目缺 Why/How），可写新条但 description
 要写得更具体让以后好分辨。不要在库里堆同一概念的多条近重复表述。
 
-### 何时主动调用 recall
+### 何时调用 recall vs read_memory
 
-- 用户问"之前/上次/最近/我们聊过..."等回溯类问题
-- 当前任务可能依赖过去结论
-- 索引行的 description 不够你判断时
+- **recall（按关键词搜）**：用户问"之前/上次/最近/我们聊过..."等回溯类问题，
+  或当前任务可能依赖过去结论但不确定有没有相关记忆时。
+- **read_memory（按 filename 精确拉）**：在 <memory-index> 看到一行明确相关，
+  但 description 不够判断细节时——直接 read_memory(filename) 拉详情，
+  比 recall 准确，token 也省。
 
 ### 用记忆时的 sanity-check（重要）
 

@@ -4,6 +4,16 @@ import { useWorkspaceStore } from '../../../stores/workspaceStore';
 import { TOOL_NAMES } from '../toolNames';
 
 /**
+ * Format a memory file's content for return. Strips frontmatter (already
+ * parsed into header) and prepends a one-line type/name banner so the
+ * agent immediately sees what kind of memory this is without parsing
+ * frontmatter itself.
+ */
+function formatMemoryContent(type: string, name: string, content: string): string {
+  return `# [${type}] ${name}\n\n${content.trim()}`;
+}
+
+/**
  * Format a timestamp as a short date string (MM-DD HH:mm).
  */
 function formatTime(ts: number): string {
@@ -142,6 +152,79 @@ export const recallTool: ToolDefinition = {
     }
 
     return sections.join('\n\n');
+  },
+  isConcurrencySafe: true,
+};
+
+/**
+ * read_memory — pull the full content of a single memory file by filename.
+ *
+ * Designed to pair with the MEMORY.md index injected in the system prompt:
+ * each index line has the form `- [filename](filename) — description`. When
+ * the description is not enough for the agent to act, it can call
+ * `read_memory(filename)` to load the full body. This is the pull half of
+ * the pull-based recall model; it replaces the previous push-of-top-5
+ * behavior in orchestrator.
+ *
+ * Search order: requested workspace > current workspace > global. accessCount
+ * is bumped on a successful read because this represents a real recall (the
+ * agent decided this file was worth loading), in contrast to passive
+ * system-prompt injection which no longer touches accessCount at all.
+ */
+export const readMemoryTool: ToolDefinition = {
+  name: TOOL_NAMES.READ_MEMORY,
+  description: '按 filename 精确读取一条记忆的完整内容。当 <memory-index> 索引行的 description 不足以判断时使用。索引行格式 `- [filename](filename) — description`，传入 filename 即可。先在当前工作区查，再退到全局。',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      filename: {
+        type: 'string',
+        description: '记忆文件名（如 user_data_team.md），来自 <memory-index> 索引行',
+      },
+      workspace: {
+        type: 'string',
+        description: '可选 workspace 路径。不传时按"当前工作区 → 全局"顺序查找',
+      },
+    },
+    required: ['filename'],
+  },
+  execute: async (input, context) => {
+    const filename = ((input.filename as string) || '').trim();
+    if (!filename) return 'Error: filename 不能为空';
+
+    const requestedWs = (input.workspace as string | undefined)?.trim() || undefined;
+    const currentWs = context?.workspacePath ?? useWorkspaceStore.getState().currentPath;
+
+    const { scanMemoryFiles, readMemoryFile } = await import('../../memdir/scan');
+    const { touchMemory } = await import('../../memdir/write');
+
+    // Build search order: requested workspace > current workspace > global.
+    const searchPaths: Array<string | null> = [];
+    if (requestedWs) {
+      searchPaths.push(requestedWs);
+    } else {
+      if (currentWs) searchPaths.push(currentWs);
+      searchPaths.push(null);
+    }
+
+    for (const path of searchPaths) {
+      try {
+        const headers = await scanMemoryFiles(path);
+        const match = headers.find((h) => h.filename === filename);
+        if (match) {
+          const file = await readMemoryFile(match.filePath);
+          if (file) {
+            // Real active recall — bump accessCount (fire-and-forget).
+            touchMemory(match.filePath).catch(() => {});
+            return formatMemoryContent(file.header.type, file.header.name, file.content);
+          }
+        }
+      } catch {
+        // Skip inaccessible directories
+      }
+    }
+
+    return `没有找到 filename="${filename}" 的记忆。请确认拼写（参考 <memory-index> 中的索引行），或先用 recall 工具按关键词搜索。`;
   },
   isConcurrencySafe: true,
 };

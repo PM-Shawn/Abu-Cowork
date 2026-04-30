@@ -41,6 +41,7 @@ export const TOOL_NAMES = {
   UPDATE_MEMORY: 'update_memory',
   UPDATE_SOUL: 'update_soul',
   RECALL: 'recall',
+  READ_MEMORY: 'read_memory',
   TODO_WRITE: 'todo_write',
 
   // Automation

@@ -1,4 +1,5 @@
 import { useEffect } from 'react';
+import { createPortal } from 'react-dom';
 import { cn } from '@/lib/utils';
 
 interface ConfirmDialogProps {
@@ -33,7 +34,12 @@ export default function ConfirmDialog({
 
   if (!open) return null;
 
-  return (
+  // Portal to body so the dialog escapes any ancestor containing block —
+  // ProviderCard sits inside ScrollArea/transformed parents, and rendering
+  // inline made `fixed inset-0` resolve relative to the nearest transformed
+  // ancestor instead of the viewport, leaving the dialog mis-positioned and
+  // the backdrop clipped.
+  return createPortal(
     <div
       className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/40 animate-in fade-in duration-150"
       onMouseDown={(e) => {
@@ -69,6 +75,7 @@ export default function ConfirmDialog({
           </button>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }

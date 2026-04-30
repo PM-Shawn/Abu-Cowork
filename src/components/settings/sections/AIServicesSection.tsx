@@ -27,10 +27,14 @@ export default function AIServicesSection() {
 
   const enabledCount = enabledProviders.length;
 
-  // Only show providers the user has configured (enabled OR has API key)
-  // Hide untouched builtin providers — user adds them via AddProviderModal
+  // Only show providers the user has actually configured.
+  // `userAdded` is the authoritative flag (set by AddProviderModal); the
+  // `enabled || apiKey` fallback covers legacy data not yet migrated.
+  // Toggling off or clearing the key MUST NOT remove the card — the user
+  // reads disappearance as accidental deletion. Only the trash-can action
+  // (handleDeleteConfirm) hides a builtin provider, by clearing userAdded.
   const visibleProviders = providers
-    .filter(p => p.enabled || p.apiKey.trim().length > 0)
+    .filter(p => p.userAdded || p.enabled || p.apiKey.trim().length > 0)
     .sort((a, b) => {
       if (a.enabled !== b.enabled) return a.enabled ? -1 : 1;
       return a.sortOrder - b.sortOrder;

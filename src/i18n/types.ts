@@ -526,6 +526,126 @@ export interface TranslationDict {
     revoke: string;
   };
 
+  // Diagnostic
+  diagnostic: {
+    title: string;
+    desc: string;
+    // Banner
+    bannerAllPassed: string;
+    bannerHasWarnings: string; // {n}
+    bannerHasFailures: string; // {n}
+    bannerChecking: string;
+    bannerNoData: string;
+    lastChecked: string; // {when}
+    runAll: string;
+    runAllAgain: string;
+    firstRunCta: string;
+    // Categories
+    categoryAiServices: string;
+    categoryPermissions: string;
+    categoryMcp: string;
+    categorySkills: string;
+    categoryNetwork: string;
+    categoryApp: string;
+    categorySummaryAllPassed: string; // {n}
+    categorySummaryMixed: string;     // {pass}, {warn}, {fail}
+    categorySummaryEmpty: string;
+    categoryRecheck: string;
+    // Item statuses
+    statusPassed: string;
+    statusFailed: string;
+    statusWarning: string;
+    statusSkipped: string;
+    statusChecking: string;
+    // Item actions
+    actionRecheck: string;
+    actionCopyError: string;
+    actionOpenAIServices: string;
+    actionOpenAbout: string;
+    actionOpenToolbox: string;
+    copiedError: string;
+    // AI services check
+    aiServicesNoProvider: string;
+    aiServicesNoProviderHint: string;
+    aiServicesNoKey: string;
+    // Permissions check
+    permAppData: string;
+    permWorkspace: string;
+    permWorkspaceAbu: string;
+    permWorkspaceNoSelection: string;
+    // MCP
+    mcpNone: string;
+    mcpNoneHint: string;
+    mcpToolCount: string; // {n}
+    // Skills
+    skillsLoader: string;
+    skillsCount: string; // {total}, {builtin}, {user}
+    skillsZero: string;
+    skillsLoadFailed: string;
+    // Network
+    networkReachability: string;
+    // App
+    appVersion: string;
+    appLatest: string;
+    appUpdateAvailable: string; // {version}
+    // Internal
+    checkInternalError: string;
+    // Detail toggle on failed items
+    detailShow: string;
+    detailHide: string;
+    // Error map — friendly messages + action labels
+    errMap: {
+      // AI service codes
+      aiAuth: string;
+      aiRateLimit: string;
+      aiOverloaded: string;
+      aiServerError: string;
+      aiNetworkError: string;
+      aiContextTooLong: string;
+      aiInvalidRequest: string;
+      aiModelUnsupported: string;
+      aiBudgetExceeded: string;
+      aiTimeout: string;
+      // Permissions
+      permTauriScope: string;
+      permOSDenied: string;
+      permDiskFull: string;
+      // Network
+      netTimeout: string;
+      netUnreachable: string;
+      netGeneric: string;
+      // Action labels
+      actionFixApiKey: string;
+      actionSwitchModel: string;
+      actionOpenAIServices: string;
+      actionRetry: string;
+      // Fallback
+      unknown: string;
+    };
+    // Export
+    exportTitle: string;
+    exportDesc: string;
+    exportButton: string;
+    exportInProgress: string;
+    exportIncluded: string;
+    exportPrivacy: string;
+    exportIncludeRaw: string;
+    exportIncludeRawWarning: string;
+    exportIncludedListTitle: string;
+    exportPrivacyText: string;
+    // Success card
+    successTitle: string;
+    successMeta: string; // {size}, {count}, {scrubbed}
+    successOpenFinder: string;
+    successCopyPath: string;
+    successManifest: string;
+    successDismiss: string;
+    pathCopied: string;
+    // Manifest modal
+    manifestTitle: string;
+    manifestClose: string;
+  };
+
   // Toolbox Modal
   toolbox: {
     title: string;

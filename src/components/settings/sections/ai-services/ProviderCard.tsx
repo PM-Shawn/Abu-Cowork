@@ -112,7 +112,11 @@ export default function ProviderCard({ provider, isActive }: ProviderCardProps) 
     if (provider.source === 'custom') {
       removeProvider(provider.id);
     } else {
-      updateProvider(provider.id, { enabled: false, apiKey: '', status: 'unchecked' });
+      // Builtin providers can't be removed from the array (they're seeded
+      // by createDefaultProviders); we hide them by clearing userAdded so
+      // visibleProviders' filter drops them. Keep also clearing
+      // enabled/apiKey for backward compat with the legacy fallback.
+      updateProvider(provider.id, { enabled: false, apiKey: '', status: 'unchecked', userAdded: false });
     }
 
     // If we deleted the active provider, switch to next enabled one

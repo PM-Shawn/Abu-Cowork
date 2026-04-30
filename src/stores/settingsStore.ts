@@ -271,7 +271,7 @@ function createDefaultProviders(): ProviderInstance[] {
 
 export type ViewMode = 'chat' | 'automation' | 'toolbox' | 'settings';
 export type AutomationTab = 'schedule' | 'trigger';
-export type SystemSettingsTab = 'general' | 'ai-services' | 'sandbox' | 'im-channels' | 'personal-memory' | 'soul' | 'about' | 'feedback' | 'sponsor';
+export type SystemSettingsTab = 'general' | 'ai-services' | 'sandbox' | 'im-channels' | 'personal-memory' | 'soul' | 'diagnostic' | 'about' | 'feedback' | 'sponsor';
 export type ToolboxTab = 'skills' | 'agents' | 'mcp';
 
 // ============================================================
@@ -932,7 +932,7 @@ export const useSettingsStore = create<SettingsStore>()(
     }),
     {
       name: 'abu-settings',
-      version: 24,
+      version: 25,
       migrate: (persisted: unknown, version: number) => {
         const state = persisted as Record<string, unknown>;
 
@@ -952,6 +952,29 @@ export const useSettingsStore = create<SettingsStore>()(
             );
           }
         };
+
+        // ════════════════════════════════════════════════
+        // V25: Backfill `userAdded` for providers the user already configured.
+        // Before this field existed, AIServicesSection used
+        // `enabled || apiKey != ''` as a proxy for "user added this", which
+        // made Ollama / decrypt-failed / cleared-key providers vanish from
+        // the list when toggled off. Mark every provider that is currently
+        // enabled or has a stored apiKey as userAdded so they survive the
+        // toggle, and treat all custom providers as added by definition.
+        // ════════════════════════════════════════════════
+        if (version < 25) step('V25 backfill provider.userAdded', () => {
+          if (!Array.isArray(state.providers)) return;
+          state.providers = (state.providers as Array<Record<string, unknown>>).map((p) => {
+            if (p.userAdded === true) return p;
+            const enabled = p.enabled === true;
+            const apiKey = typeof p.apiKey === 'string' ? p.apiKey.trim() : '';
+            const isCustom = p.source === 'custom';
+            if (isCustom || enabled || apiKey.length > 0) {
+              return { ...p, userAdded: true };
+            }
+            return p;
+          });
+        });
 
         // ════════════════════════════════════════════════
         // V24: Remove temperature / enableThinking / thinkingBudget from persisted state.

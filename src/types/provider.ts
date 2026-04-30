@@ -40,6 +40,15 @@ export interface ProviderInstance {
   statusLatency?: number;
   lastChecked?: number;
   sortOrder: number;
+  /**
+   * True once the user has explicitly added/configured this provider via
+   * AddProviderModal. Decouples "should appear in the list" from
+   * `enabled`/`apiKey` — so toggling off a provider (or clearing its key
+   * via the danger zone) does not make it vanish from the UI, which users
+   * read as accidental deletion. Only flipped back to false when the user
+   * explicitly clicks the trash-can delete action.
+   */
+  userAdded?: boolean;
 }
 
 /** Currently active model selection */

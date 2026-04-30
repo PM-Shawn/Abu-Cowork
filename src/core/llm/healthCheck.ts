@@ -1,11 +1,17 @@
 import type { ProviderInstance } from '@/types/provider';
 import { ClaudeAdapter } from './claude';
 import { OpenAICompatibleAdapter } from './openai-compatible';
+import { LLMError, type LLMErrorCode } from './adapter';
 
 export interface HealthCheckResult {
   success: boolean;
   latencyMs: number;
+  /** One-line error string (kept for backward compat with ProviderCard / older callers). */
   error?: string;
+  /** Classified LLM error code when the failure originated from `adapter.chat`. */
+  errorCode?: LLMErrorCode;
+  /** HTTP status code when available. */
+  statusCode?: number;
 }
 
 /** Perform a basic connection test against a provider */
@@ -59,9 +65,19 @@ export async function checkProviderHealth(
 
     return { success: true, latencyMs: Math.round(performance.now() - start) };
   } catch (e) {
+    const latencyMs = Math.round(performance.now() - start);
+    if (e instanceof LLMError) {
+      return {
+        success: false,
+        latencyMs,
+        error: e.message,
+        errorCode: e.code,
+        statusCode: e.statusCode,
+      };
+    }
     return {
       success: false,
-      latencyMs: Math.round(performance.now() - start),
+      latencyMs,
       error: e instanceof Error ? e.message : 'Unknown error',
     };
   }

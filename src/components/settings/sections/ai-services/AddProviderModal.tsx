@@ -388,6 +388,7 @@ export default function AddProviderModal({ open: isOpen, onClose }: AddProviderM
         baseUrl: resolvedBaseUrl,
         models: modelInfos,
         capabilities,
+        userAdded: true,
       });
       providerId = existingBuiltin.id;
     } else {
@@ -400,6 +401,7 @@ export default function AddProviderModal({ open: isOpen, onClose }: AddProviderM
         apiKey,
         models: modelInfos,
         capabilities,
+        userAdded: true,
       });
     }
 

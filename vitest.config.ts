@@ -14,6 +14,11 @@ export default defineConfig({
       { find: '@modelcontextprotocol/sdk', replacement: path.resolve(__dirname, './src/test/__mocks__/mcp.ts') },
     ],
   },
+  define: {
+    // Mirror vite.config.ts so modules that consume APP_VERSION via
+    // `__APP_VERSION__` (see src/utils/version.ts) don't blow up under vitest.
+    __APP_VERSION__: JSON.stringify('test'),
+  },
   test: {
     environment: 'happy-dom',
     setupFiles: ['./src/test/setup.ts'],

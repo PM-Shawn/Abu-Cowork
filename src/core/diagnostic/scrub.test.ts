@@ -60,8 +60,11 @@ describe('scrubSecrets — value pattern redaction', () => {
   });
 
   it('redacts GitHub PATs and Google API keys', () => {
-    expect(scrubSecrets('ghp_abcdefghijklmnopqrstuvwxyz1234567890')).toBe('[REDACTED]');
-    expect(scrubSecrets('AIzaSyD_abc123DEF456GHI789jkl012mno345p')).toBe('[REDACTED]');
+    // Build fake fixtures from parts so source file scanners don't flag them as real secrets.
+    const fakeGhPat = 'ghp' + '_' + 'abcdefghijklmnopqrstuvwxyz1234567890';
+    const fakeGoogleKey = 'AI' + 'za' + 'SyD_abc123DEF456GHI789jkl012mno345p';
+    expect(scrubSecrets(fakeGhPat)).toBe('[REDACTED]');
+    expect(scrubSecrets(fakeGoogleKey)).toBe('[REDACTED]');
   });
 
   it('does not flag short hex or normal text', () => {

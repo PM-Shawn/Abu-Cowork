@@ -94,7 +94,7 @@ function parseFeishu(payload: Record<string, unknown>): NormalizedIMMessage | nu
   if (!message || !sender) return null;
 
   // Parse content JSON (Feishu wraps text in JSON)
-  let text = '';
+  let text: string;
   const contentStr = String(message.content ?? '');
   try {
     const content = JSON.parse(contentStr);

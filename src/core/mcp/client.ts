@@ -439,7 +439,7 @@ export class MCPClientManager {
         const combined = streamableErr
           ? `HTTP transport failed.\n  StreamableHTTP: ${streamableErr}\n  SSE fallback: ${sseErr}`
           : `SSE error: ${sseErr}`;
-        throw new Error(combined);
+        throw new Error(combined, { cause: err });
       }
     }
 
@@ -751,7 +751,7 @@ export class MCPClientManager {
       clearTimeout(timerId!);
       const errorMsg = err instanceof Error ? err.message : String(err);
       console.error(`[MCP] Tool call failed: ${serverName}:${toolName}`, err);
-      throw new Error(`Tool call failed: ${errorMsg}`);
+      throw new Error(`Tool call failed: ${errorMsg}`, { cause: err });
     }
   }
 

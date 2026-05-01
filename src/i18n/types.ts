@@ -51,7 +51,40 @@ export interface TranslationDict {
     sourceAutoFlush: string;
     sourceAgentExplicit: string;
     sourceUserManual: string;
+    /** @deprecated v0.15+: replaced by `updatedAt` in the UI */
     recallCount: string;
+    /** "更新于 {age}" */
+    updatedAt: string;
+    /** "陈旧" inline badge */
+    staleBadge: string;
+    /** Tooltip explaining what stale means */
+    staleTooltip: string;
+    /** Lock icon tooltip */
+    privateTooltip: string;
+    /** Edit dialog: private toggle label */
+    privateLabel: string;
+    /** Edit dialog: private toggle description */
+    privateDesc: string;
+    /** Description-leak hint shown when toggling private on a memory whose
+     *  description appears to contain the value rather than just the topic */
+    privateDescHintTitle: string;
+    privateDescHintBody: string;
+    privateDescCurrent: string;
+    privateDescNewLabel: string;
+    privateDescPlaceholder: string;
+    privateDescSave: string;
+    privateDescSkip: string;
+    /** Onboarding audit dialog */
+    auditTitle: string;
+    auditIntro: string;
+    auditMarkAll: string;
+    auditCancel: string;
+    auditEmpty: string;
+    auditPatternIdCard: string;
+    auditPatternBankCard: string;
+    auditPatternMobile: string;
+    auditPatternEmailPassword: string;
+    auditPatternSalary: string;
     deleteTitle: string;
     legacyHint: string;
     emptyHint: string;

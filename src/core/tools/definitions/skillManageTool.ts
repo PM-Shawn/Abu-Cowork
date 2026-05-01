@@ -667,7 +667,7 @@ async function patchAction(input: Record<string, unknown>, context?: ToolExecuti
   }
 
   // Atomic write + scan + rollback
-  let backupPath: string | null = null;
+  let backupPath: string | null;
   try {
     const result = await atomicWriteWithBackup(targetPath, fuzzy.newContent);
     backupPath = result.backupPath;
@@ -790,7 +790,7 @@ async function writeFileAction(input: Record<string, unknown>, context?: ToolExe
       : await ensureWorkspaceAutoCopy(existing, workspacePath);
   const targetPath = joinPath(targetDir, filePath);
 
-  let backupPath: string | null = null;
+  let backupPath: string | null;
   try {
     const result = await atomicWriteWithBackup(targetPath, fileContent);
     backupPath = result.backupPath;
@@ -899,7 +899,7 @@ async function editAction(input: Record<string, unknown>, context?: ToolExecutio
   // didn't exist yet (e.g. editing a supporting file not present in
   // the original skill) — rollback for that case just deletes the
   // newly-created file.
-  let backupPath: string | null = null;
+  let backupPath: string | null;
   try {
     const result = await atomicWriteWithBackup(targetPath, content);
     backupPath = result.backupPath;

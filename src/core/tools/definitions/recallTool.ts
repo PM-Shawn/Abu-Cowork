@@ -8,9 +8,26 @@ import { TOOL_NAMES } from '../toolNames';
  * parsed into header) and prepends a one-line type/name banner so the
  * agent immediately sees what kind of memory this is without parsing
  * frontmatter itself.
+ *
+ * For private memories, appends a restraint reminder asking the agent
+ * to quote only the minimum needed and not to splash the content into
+ * conversation history.
  */
-function formatMemoryContent(type: string, name: string, content: string): string {
-  return `# [${type}] ${name}\n\n${content.trim()}`;
+function formatMemoryContent(
+  type: string,
+  name: string,
+  content: string,
+  isPrivate = false,
+): string {
+  const banner = `# [${type}]${isPrivate ? ' 🔒' : ''} ${name}\n\n`;
+  const body = content.trim();
+  if (!isPrivate) return banner + body;
+  return (
+    banner + body + '\n\n' +
+    '[这是用户的私密记忆。回复时**只引用回答当前问题所需的最少部分**，' +
+    '不要完整复述到对话历史中。例如用户问"我证件号是多少"可以直接答数字，' +
+    '但不要主动展开关联信息，也不要在后续无关消息里再次引用。]'
+  );
 }
 
 /**
@@ -89,9 +106,17 @@ export const recallTool: ToolDefinition = {
       if (top.length > 0) {
         const lines: string[] = [];
         for (const h of top) {
+          // For private memories: surface that they exist (so the agent can
+          // tell the user to ask explicitly) but do NOT preview content.
+          const lock = h.private ? ' 🔒' : '';
+          if (h.private) {
+            lines.push(`- [${h.type}]${lock} ${h.name} (${formatTime(h.updated)}) — 私密记忆，需用户明确询问后调 read_memory 拉取`);
+            // Don't bump accessCount for private — surfacing in recall isn't a real read.
+            continue;
+          }
           const file = await readMemoryFile(h.filePath);
           const contentPreview = file ? file.content.slice(0, 150) : '';
-          lines.push(`- [${h.type}] ${h.name}${contentPreview ? ': ' + contentPreview : ''} (${formatTime(h.updated)})`);
+          lines.push(`- [${h.type}]${lock} ${h.name}${contentPreview ? ': ' + contentPreview : ''} (${formatTime(h.updated)})`);
           // Touch accessed memories (fire-and-forget)
           touchMemory(h.filePath).catch(() => {});
         }
@@ -216,7 +241,12 @@ export const readMemoryTool: ToolDefinition = {
           if (file) {
             // Real active recall — bump accessCount (fire-and-forget).
             touchMemory(match.filePath).catch(() => {});
-            return formatMemoryContent(file.header.type, file.header.name, file.content);
+            return formatMemoryContent(
+              file.header.type,
+              file.header.name,
+              file.content,
+              file.header.private,
+            );
           }
         }
       } catch {

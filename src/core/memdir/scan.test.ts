@@ -145,12 +145,56 @@ describe('formatMemoryManifest', () => {
       {
         filename: 'feedback_test.md', filePath: '/mock/feedback_test.md',
         name: 'Test', description: 'A test', type: 'feedback' as const,
-        source: 'agent_explicit' as const, created: 1700000000000, updated: 1700000000000, accessCount: 0,
+        source: 'agent_explicit' as const, created: 1700000000000, updated: 1700000000000,
+        accessCount: 0, private: false,
       },
     ];
     const result = formatMemoryManifest(headers);
     expect(result).toContain('[feedback]');
     expect(result).toContain('feedback_test.md');
     expect(result).toContain('A test');
+  });
+});
+
+describe('private field parsing', () => {
+  it('parses private: true', async () => {
+    mockReadDir.mockResolvedValueOnce([
+      { name: 'private_test.md', isDirectory: false, isFile: true, isSymlink: false },
+    ] as Awaited<ReturnType<typeof readDir>>);
+    mockReadTextFile.mockResolvedValueOnce(`---
+name: Secret
+type: reference
+private: true
+---
+secret content`);
+
+    const result = await scanMemoryFiles(null);
+    expect(result).toHaveLength(1);
+    expect(result[0].private).toBe(true);
+  });
+
+  it('defaults private to false when missing', async () => {
+    mockReadDir.mockResolvedValueOnce([
+      { name: 'plain.md', isDirectory: false, isFile: true, isSymlink: false },
+    ] as Awaited<ReturnType<typeof readDir>>);
+    mockReadTextFile.mockResolvedValueOnce(MINIMAL_FRONTMATTER);
+
+    const result = await scanMemoryFiles(null);
+    expect(result[0].private).toBe(false);
+  });
+
+  it('treats private: false as false', async () => {
+    mockReadDir.mockResolvedValueOnce([
+      { name: 'plain.md', isDirectory: false, isFile: true, isSymlink: false },
+    ] as Awaited<ReturnType<typeof readDir>>);
+    mockReadTextFile.mockResolvedValueOnce(`---
+name: Plain
+type: user
+private: false
+---
+content`);
+
+    const result = await scanMemoryFiles(null);
+    expect(result[0].private).toBe(false);
   });
 });

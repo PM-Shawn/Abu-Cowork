@@ -363,6 +363,14 @@ interface SettingsState {
    * "please re-enter" hint on affected provider cards.
    */
   failedSecretKeys: string[];
+
+  /**
+   * One-shot flag for the v0.15 sensitive-memory audit. Set to true after the
+   * onboarding dialog runs once (whether the user marked memories private,
+   * skipped, or had no flagged memories). Persisted so the dialog never shows
+   * again. New v0.15+ users start with `true` (no legacy data to audit).
+   */
+  hasRunSensitiveAudit_v015: boolean;
 }
 
 interface SettingsActions {
@@ -430,6 +438,7 @@ interface SettingsActions {
   setSoulInitialized: (initialized: boolean) => void;
   setProactivity: (level: 'shy' | 'companion' | 'butler') => void;
   setDraftsOnboardingShown: (shown: boolean) => void;
+  setHasRunSensitiveAudit_v015: (done: boolean) => void;
   /**
    * Toggle the contentGuard safety scanner globally. When off, agent-
    * initiated writes (memory + skill drafts) skip the 120-pattern scan.
@@ -634,6 +643,10 @@ export const useSettingsStore = create<SettingsStore>()(
         bypass: [],
       },
       failedSecretKeys: [],
+      // Defaults to false so existing users get the audit on first v0.15 launch.
+      // The migration below sets `false` explicitly for upgraders; new installs
+      // start with this default (also false).
+      hasRunSensitiveAudit_v015: false,
 
       // ════════════════════════════════════════════════
       // Provider management actions (V2)
@@ -646,7 +659,6 @@ export const useSettingsStore = create<SettingsStore>()(
         // appended with path segments. See urlUtils.normalizeBaseUrl.
         const cleanBaseUrl = (config.baseUrl ?? '').trim();
         const cleanApiKey = (config.apiKey ?? '').trim();
-        let returnId = id;
         set((s) => {
           const newProvider: ProviderInstance = {
             ...config,
@@ -665,10 +677,9 @@ export const useSettingsStore = create<SettingsStore>()(
           }
           return update;
         });
-        returnId = id;
         // Mirror apiKey to encrypted secret store.
         fafSecret(writeSecretOrDelete(SECRET_KEYS.provider(id), cleanApiKey), `addProvider(${id})`);
-        return returnId;
+        return id;
       },
 
       updateProvider: (id, patch) => {
@@ -895,6 +906,7 @@ export const useSettingsStore = create<SettingsStore>()(
         set((s) => ({ soul: { ...s.soul, proactivity: level } })),
       setDraftsOnboardingShown: (shown) =>
         set((s) => ({ soul: { ...s.soul, draftsOnboardingShown: shown } })),
+      setHasRunSensitiveAudit_v015: (done) => set({ hasRunSensitiveAudit_v015: done }),
       setContentGuardEnabled: (enabled) =>
         set((s) => ({ safety: { ...s.safety, enableContentGuard: enabled } })),
       setPermissionMode: (mode) => set({ permissionMode: mode }),
@@ -932,9 +944,24 @@ export const useSettingsStore = create<SettingsStore>()(
     }),
     {
       name: 'abu-settings',
-      version: 25,
+      version: 26,
       migrate: (persisted: unknown, version: number) => {
         const state = persisted as Record<string, unknown>;
+
+        // ════════════════════════════════════════════════
+        // V26: Add hasRunSensitiveAudit_v015 flag. Existing upgraders get
+        // false → onboarding dialog runs once on next launch and detects any
+        // pre-v0.15 memories that look sensitive (id cards, bank cards, etc.)
+        // so they can be marked private before Phase 2 auto-injection starts
+        // surfacing them to the LLM each turn.
+        // ════════════════════════════════════════════════
+        if (version < 26) {
+          const s = state as Record<string, unknown>;
+          if (typeof s.hasRunSensitiveAudit_v015 !== 'boolean') {
+            s.hasRunSensitiveAudit_v015 = false;
+          }
+        }
+
 
         // Each version branch is wrapped so a failure in one step doesn't
         // wipe the user's entire settings snapshot. Zustand's default
@@ -1427,6 +1454,7 @@ export const useSettingsStore = create<SettingsStore>()(
         permissionMode: state.permissionMode,
         soul: state.soul,
         safety: state.safety,
+        hasRunSensitiveAudit_v015: state.hasRunSensitiveAudit_v015,
       }),
       onRehydrateStorage: () => (state) => {
         if (!state) return;

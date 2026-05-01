@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { readTextFile, exists, remove, readDir } from '@tauri-apps/plugin-fs';
 import { invoke } from '@tauri-apps/api/core';
-import { writeMemory, deleteMemory, clearAllMemories, touchMemory } from './write';
+import { writeMemory, deleteMemory, clearAllMemories, touchMemory, setMemoryPrivate } from './write';
 import { _resetCachedHome } from './paths';
 import { ContentSafetyError } from '../safety/contentGuard';
 
@@ -233,6 +233,129 @@ describe('deleteMemory', () => {
     mockExists.mockResolvedValueOnce(false);
     mockReadTextFile.mockRejectedValueOnce(new Error('not found'));
     await expect(deleteMemory('missing.md', null)).resolves.toBeUndefined();
+  });
+});
+
+describe('private memory', () => {
+  it('writes private: true to frontmatter when option set', async () => {
+    await writeMemory({
+      name: 'Secret',
+      description: 'Confidential',
+      type: 'reference',
+      content: 'private content',
+      private: true,
+    });
+
+    const writes = atomicWriteCalls();
+    const fileCall = writes.find(([p]) => p.includes('reference_secret'));
+    expect(fileCall![1]).toContain('private: true');
+  });
+
+  it('defaults private: false when option omitted', async () => {
+    await writeMemory({
+      name: 'Plain',
+      description: 'Normal',
+      type: 'user',
+      content: 'plain content',
+    });
+
+    const writes = atomicWriteCalls();
+    const fileCall = writes.find(([p]) => p.includes('user_plain'));
+    expect(fileCall![1]).toContain('private: false');
+  });
+
+  it('renders 🔒 in MEMORY.md index for private memories', async () => {
+    await writeMemory({
+      name: 'Secret',
+      description: 'Confidential',
+      type: 'reference',
+      content: 'private content',
+      private: true,
+    });
+
+    const writes = atomicWriteCalls();
+    const indexCall = writes.find(([p]) => p.includes('MEMORY.md'));
+    expect(indexCall![1]).toContain('🔒');
+    expect(indexCall![1]).toContain('reference_secret.md');
+  });
+
+  it('does not render 🔒 for non-private memories', async () => {
+    await writeMemory({
+      name: 'Plain',
+      description: 'Normal',
+      type: 'user',
+      content: 'plain content',
+    });
+
+    const writes = atomicWriteCalls();
+    const indexCall = writes.find(([p]) => p.includes('MEMORY.md'));
+    expect(indexCall![1]).not.toContain('🔒');
+  });
+});
+
+describe('setMemoryPrivate', () => {
+  it('flips private: false → true', async () => {
+    const original = `---
+name: Test
+description: existing
+type: user
+private: false
+---
+
+content`;
+    // First read: scan for setMemoryPrivate; second read: index
+    mockReadTextFile
+      .mockResolvedValueOnce(original)
+      .mockResolvedValueOnce('# Memory Index\n- [test.md](test.md) — existing\n');
+
+    await setMemoryPrivate('test.md', true, null);
+
+    const writes = atomicWriteCalls();
+    const fileWrite = writes.find(([p]) => p.endsWith('test.md'));
+    expect(fileWrite![1]).toContain('private: true');
+    const indexWrite = writes.find(([p]) => p.includes('MEMORY.md'));
+    expect(indexWrite![1]).toContain('🔒');
+  });
+
+  it('inserts private field if missing', async () => {
+    const original = `---
+name: Legacy
+description: old
+type: user
+---
+
+content`;
+    mockReadTextFile
+      .mockResolvedValueOnce(original)
+      .mockResolvedValueOnce('# Memory Index\n- [legacy.md](legacy.md) — old\n');
+
+    await setMemoryPrivate('legacy.md', true, null);
+
+    const writes = atomicWriteCalls();
+    const fileWrite = writes.find(([p]) => p.endsWith('legacy.md'));
+    expect(fileWrite![1]).toContain('private: true');
+    // Should still have valid frontmatter (closed by ---)
+    expect(fileWrite![1].split('---').length).toBeGreaterThanOrEqual(3);
+  });
+
+  it('removes 🔒 when toggled false', async () => {
+    const original = `---
+name: WasPrivate
+description: now public
+type: user
+private: true
+---
+
+content`;
+    mockReadTextFile
+      .mockResolvedValueOnce(original)
+      .mockResolvedValueOnce('# Memory Index\n- [pub.md](pub.md) 🔒 — now public\n');
+
+    await setMemoryPrivate('pub.md', false, null);
+
+    const writes = atomicWriteCalls();
+    const indexWrite = writes.find(([p]) => p.includes('MEMORY.md'));
+    expect(indexWrite![1]).not.toContain('🔒');
   });
 });
 

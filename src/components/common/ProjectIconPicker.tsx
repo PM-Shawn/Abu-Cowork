@@ -35,8 +35,8 @@ const ICON_MAP: Record<string, LucideIcon> = {
   'message-square': MessageSquare,
 };
 
-export const PROJECT_ICON_KEYS = Object.keys(ICON_MAP);
-export const DEFAULT_PROJECT_ICON = 'folder';
+const PROJECT_ICON_KEYS = Object.keys(ICON_MAP);
+const DEFAULT_PROJECT_ICON = 'folder';
 
 /** Render a project icon by its string key */
 export function ProjectIcon({ icon, className }: { icon?: string; className?: string }) {

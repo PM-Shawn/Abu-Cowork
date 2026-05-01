@@ -38,6 +38,7 @@ function makeHeader(name: string, filename: string, overrides: Partial<MemoryHea
     created: 1_700_000_000_000,
     updated: 1_700_000_000_000,
     accessCount: 0,
+    private: false,
     ...overrides,
   };
 }

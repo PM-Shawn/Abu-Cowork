@@ -14,6 +14,13 @@ import { getMemoryDir } from './paths';
 const VALID_TYPES: ReadonlySet<string> = new Set(['user', 'feedback', 'project', 'reference']);
 const VALID_SOURCES: ReadonlySet<string> = new Set(['agent_explicit', 'auto_flush', 'user_manual']);
 
+/** Truthy YAML scalars for boolean fields. Missing / falsy → false. */
+function parseBoolField(v: string | undefined): boolean {
+  if (!v) return false;
+  const t = v.trim().toLowerCase();
+  return t === 'true' || t === 'yes' || t === '1';
+}
+
 /**
  * Parse YAML frontmatter from the first N lines of a file.
  * Lightweight parser — no external YAML library needed since our frontmatter
@@ -88,6 +95,7 @@ export async function scanMemoryFiles(workspacePath?: string | null): Promise<Me
         created: created || Date.now(),
         updated: updated || Date.now(),
         accessCount: Number(fm.accessCount) || 0,
+        private: parseBoolField(fm.private),
       });
     } catch {
       // Skip unreadable files
@@ -97,6 +105,54 @@ export async function scanMemoryFiles(workspacePath?: string | null): Promise<Me
   // Sort by updated time (newest first)
   headers.sort((a, b) => b.updated - a.updated);
   return headers;
+}
+
+// ── In-memory scan cache ──
+//
+// scanMemoryFiles() does N+1 fs reads (one per .md file). For Phase 2
+// relevant-memory injection it runs every turn — caching avoids paying that
+// per turn while the memory set is unchanged. TTL is short enough that
+// stale reads after manual file edits self-heal within minutes; write paths
+// (writeMemory / deleteMemory / clearAllMemories) actively invalidate to
+// avoid showing pre-write state to the next turn.
+//
+// Per `feedback_ttl_cache_needs_caller.md`: TTL caches must have a sync
+// invalidation path. invalidateScanCache() is exported and called by write.ts.
+
+const SCAN_TTL_MS = 5 * 60 * 1000;
+const scanCache = new Map<string, { headers: MemoryHeader[]; expiresAt: number }>();
+
+function cacheKey(workspacePath: string | null | undefined): string {
+  return workspacePath ?? '__global__';
+}
+
+/**
+ * Cached variant of scanMemoryFiles. Use this from hot paths (per-turn
+ * injection); use the raw scanMemoryFiles when freshness matters more
+ * than latency (settings UI, manual refresh).
+ */
+export async function scanMemoryFilesCached(workspacePath?: string | null): Promise<MemoryHeader[]> {
+  const key = cacheKey(workspacePath);
+  const cached = scanCache.get(key);
+  if (cached && cached.expiresAt > Date.now()) {
+    return cached.headers;
+  }
+  const headers = await scanMemoryFiles(workspacePath);
+  scanCache.set(key, { headers, expiresAt: Date.now() + SCAN_TTL_MS });
+  return headers;
+}
+
+/**
+ * Drop the cached headers for a workspace (or global). Called by write
+ * operations so the next read sees the updated set.
+ */
+export function invalidateScanCache(workspacePath?: string | null): void {
+  scanCache.delete(cacheKey(workspacePath));
+}
+
+/** Test-only: clear the entire cache. */
+export function _resetScanCache(): void {
+  scanCache.clear();
 }
 
 /**
@@ -134,6 +190,7 @@ export async function readMemoryFile(filePath: string): Promise<{ header: Memory
         created: Number(fm.created) || Date.now(),
         updated: Number(fm.updated) || Date.now(),
         accessCount: Number(fm.accessCount) || 0,
+        private: parseBoolField(fm.private),
       },
       content,
     };

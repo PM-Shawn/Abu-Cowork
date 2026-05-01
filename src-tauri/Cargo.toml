@@ -1,6 +1,6 @@
 [package]
 name = "abu"
-version = "0.14.0"
+version = "0.15.0"
 description = "ABU - AI Desktop Assistant"
 authors = ["you"]
 edition = "2021"
@@ -46,8 +46,8 @@ objc2-core-graphics = "0.3"
 # Secrets: hardware-bound AES-256-GCM (keyring avoided to sidestep
 # ad-hoc-signed ACL re-prompts on every auto-update).
 aes-gcm = "0.10"
-hkdf = "0.12"
-sha2 = "0.10"
+hkdf = "0.13"
+sha2 = "0.11"
 rand = "0.8"
 machine-uid = "0.5"
 

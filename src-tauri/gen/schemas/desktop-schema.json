@@ -1160,10 +1160,22 @@
                         "markdownDescription": "Enables the size command without any pre-configured scope."
                       },
                       {
+                        "description": "Enables the start_accessing_security_scoped_resource command without any pre-configured scope.",
+                        "type": "string",
+                        "const": "fs:allow-start-accessing-security-scoped-resource",
+                        "markdownDescription": "Enables the start_accessing_security_scoped_resource command without any pre-configured scope."
+                      },
+                      {
                         "description": "Enables the stat command without any pre-configured scope.",
                         "type": "string",
                         "const": "fs:allow-stat",
                         "markdownDescription": "Enables the stat command without any pre-configured scope."
+                      },
+                      {
+                        "description": "Enables the stop_accessing_security_scoped_resource command without any pre-configured scope.",
+                        "type": "string",
+                        "const": "fs:allow-stop-accessing-security-scoped-resource",
+                        "markdownDescription": "Enables the stop_accessing_security_scoped_resource command without any pre-configured scope."
                       },
                       {
                         "description": "Enables the truncate command without any pre-configured scope.",
@@ -1316,10 +1328,22 @@
                         "markdownDescription": "Denies the size command without any pre-configured scope."
                       },
                       {
+                        "description": "Denies the start_accessing_security_scoped_resource command without any pre-configured scope.",
+                        "type": "string",
+                        "const": "fs:deny-start-accessing-security-scoped-resource",
+                        "markdownDescription": "Denies the start_accessing_security_scoped_resource command without any pre-configured scope."
+                      },
+                      {
                         "description": "Denies the stat command without any pre-configured scope.",
                         "type": "string",
                         "const": "fs:deny-stat",
                         "markdownDescription": "Denies the stat command without any pre-configured scope."
+                      },
+                      {
+                        "description": "Denies the stop_accessing_security_scoped_resource command without any pre-configured scope.",
+                        "type": "string",
+                        "const": "fs:deny-stop-accessing-security-scoped-resource",
+                        "markdownDescription": "Denies the stop_accessing_security_scoped_resource command without any pre-configured scope."
                       },
                       {
                         "description": "Denies the truncate command without any pre-configured scope.",
@@ -5625,10 +5649,22 @@
           "markdownDescription": "Enables the size command without any pre-configured scope."
         },
         {
+          "description": "Enables the start_accessing_security_scoped_resource command without any pre-configured scope.",
+          "type": "string",
+          "const": "fs:allow-start-accessing-security-scoped-resource",
+          "markdownDescription": "Enables the start_accessing_security_scoped_resource command without any pre-configured scope."
+        },
+        {
           "description": "Enables the stat command without any pre-configured scope.",
           "type": "string",
           "const": "fs:allow-stat",
           "markdownDescription": "Enables the stat command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the stop_accessing_security_scoped_resource command without any pre-configured scope.",
+          "type": "string",
+          "const": "fs:allow-stop-accessing-security-scoped-resource",
+          "markdownDescription": "Enables the stop_accessing_security_scoped_resource command without any pre-configured scope."
         },
         {
           "description": "Enables the truncate command without any pre-configured scope.",
@@ -5781,10 +5817,22 @@
           "markdownDescription": "Denies the size command without any pre-configured scope."
         },
         {
+          "description": "Denies the start_accessing_security_scoped_resource command without any pre-configured scope.",
+          "type": "string",
+          "const": "fs:deny-start-accessing-security-scoped-resource",
+          "markdownDescription": "Denies the start_accessing_security_scoped_resource command without any pre-configured scope."
+        },
+        {
           "description": "Denies the stat command without any pre-configured scope.",
           "type": "string",
           "const": "fs:deny-stat",
           "markdownDescription": "Denies the stat command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the stop_accessing_security_scoped_resource command without any pre-configured scope.",
+          "type": "string",
+          "const": "fs:deny-stop-accessing-security-scoped-resource",
+          "markdownDescription": "Denies the stop_accessing_security_scoped_resource command without any pre-configured scope."
         },
         {
           "description": "Denies the truncate command without any pre-configured scope.",

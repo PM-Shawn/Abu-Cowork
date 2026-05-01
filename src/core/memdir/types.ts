@@ -26,6 +26,7 @@ export type MemorySource = 'agent_explicit' | 'auto_flush' | 'user_manual';
  * created: 1712000000000
  * updated: 1712000000000
  * accessCount: 3
+ * private: false
  * ---
  * ```
  */
@@ -36,7 +37,14 @@ export interface MemoryFrontmatter {
   source: MemorySource;
   created: number;
   updated: number;
+  /** @deprecated v0.15+: kept for backward compat / telemetry only; UI no longer surfaces it. */
   accessCount: number;
+  /**
+   * Private memory: never included in the per-turn relevant-memories
+   * injection. Only readable via explicit read_memory tool calls, where
+   * the tool result carries a restraint reminder.
+   */
+  private: boolean;
 }
 
 /**
@@ -55,7 +63,10 @@ export interface MemoryHeader {
   source: MemorySource;
   created: number;
   updated: number;
+  /** @deprecated v0.15+: see MemoryFrontmatter.accessCount */
   accessCount: number;
+  /** Whether this memory is excluded from auto-injection (see MemoryFrontmatter.private) */
+  private: boolean;
 }
 
 /**

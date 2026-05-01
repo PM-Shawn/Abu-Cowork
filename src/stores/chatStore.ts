@@ -72,6 +72,47 @@ setTimeout(() => {
 /** Default title for new conversations — used for auto-title detection */
 export const DEFAULT_CONV_TITLE = '新任务';
 
+/**
+ * Pick the next active conversation when the currently-active one is being
+ * deleted. Mirrors the visual order the sidebar renders (`createdAt` desc),
+ * scoped to the same "section" the deleted conversation belonged to (project
+ * vs recent vs scheduled vs trigger), so focus moves to a neighbor the user
+ * would expect — not a random conversation from a different section.
+ *
+ * Selection rule:
+ *   1. Same scope = same projectId / scheduledTaskId / triggerId tuple.
+ *   2. Sort by createdAt desc (matches Sidebar.tsx).
+ *   3. Prefer the entry directly *above* the deleted one (newer, "上一个").
+ *   4. Fall back to the entry directly *below* (older, "下一个").
+ *   5. If nothing else is in scope, return null.
+ *
+ * Visible to tests via the export — keep the signature stable.
+ */
+export function findNextActiveConversation(
+  index: Record<string, ConversationMeta>,
+  deletedId: string,
+): string | null {
+  const deleted = index[deletedId];
+  if (!deleted) return null;
+
+  const sorted = Object.values(index)
+    .filter((c) =>
+      c.scheduledTaskId === deleted.scheduledTaskId
+      && c.triggerId === deleted.triggerId
+      && c.projectId === deleted.projectId,
+    )
+    .sort((a, b) => b.createdAt - a.createdAt);
+
+  const pos = sorted.findIndex((c) => c.id === deletedId);
+  if (pos === -1) return null;
+
+  // Prev (above in UI = newer) preferred
+  if (pos > 0) return sorted[pos - 1].id;
+  // Otherwise next (below = older)
+  if (pos + 1 < sorted.length) return sorted[pos + 1].id;
+  return null;
+}
+
 // Store abort controllers for each conversation
 const abortControllers: Map<string, AbortController> = new Map();
 
@@ -456,16 +497,42 @@ export const useChatStore = create<ChatStore>()(
           }
         }).catch(() => {});
         const wasActive = get().activeConversationId === id;
+        // Compute the successor BEFORE the deletion mutates state, so the
+        // helper can see the deleted entry's scope (projectId / scheduledTaskId
+        // / triggerId) and pick a neighbor from the same section. Computing
+        // post-delete would lose that scope info.
+        const nextActiveId = wasActive
+          ? findNextActiveConversation(get().conversationIndex, id)
+          : null;
         set((state) => {
           delete state.conversations[id];
           delete state.conversationIndex[id];
           if (state.activeConversationId === id) {
-            // Only pick non-automated conversations as the next active one
-            const ids = Object.keys(state.conversations)
-              .filter((cid) => !state.conversations[cid]?.scheduledTaskId && !state.conversations[cid]?.triggerId);
-            state.activeConversationId = ids.length > 0 ? ids[ids.length - 1] : null;
+            state.activeConversationId = nextActiveId;
           }
         });
+        // Clear any notice badge attached to the deleted conversation —
+        // the conv no longer exists, leaving the count would just leak
+        // (compounded by clearAll being keyed on conv id).
+        import('./noticeBadgeStore').then(({ useNoticeBadgeStore }) => {
+          useNoticeBadgeStore.getState().clear(id);
+        }).catch(() => {});
+        // The successor active conv: lazy-load model means messages may not
+        // be in `conversations` yet, leaving ChatView stuck on the skeleton
+        // until the user clicks the conv manually. Mirror what
+        // switchConversation does on click: load + clear that conv's badge
+        // (otherwise a stale notification badge would carry into the new
+        // active view).
+        if (nextActiveId) {
+          if (!get().conversations[nextActiveId]) {
+            get().loadConversation(nextActiveId).catch((err) => {
+              console.warn('[chatStore] failed to load successor after delete:', err);
+            });
+          }
+          import('./noticeBadgeStore').then(({ useNoticeBadgeStore }) => {
+            useNoticeBadgeStore.getState().clear(nextActiveId);
+          }).catch(() => {});
+        }
         // Sync workspace to the newly active conversation
         if (wasActive) {
           const { activeConversationId, conversations } = get();

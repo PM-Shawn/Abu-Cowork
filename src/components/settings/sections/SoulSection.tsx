@@ -18,7 +18,9 @@ export default function SoulSection() {
   const debounceRef = useRef<ReturnType<typeof setTimeout>>(undefined);
   const savedTimerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
   const contentRef = useRef(content);
-  contentRef.current = content;
+  useEffect(() => {
+    contentRef.current = content;
+  }, [content]);
   const lastSavedRef = useRef('');
 
   const load = useCallback(async () => {

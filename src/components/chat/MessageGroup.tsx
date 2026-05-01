@@ -141,8 +141,6 @@ function buildRenderSegments(
           legacySteps: pendingLegacySteps,
           isLastGroup: false, // not last yet, there's text after
         });
-        pendingExecSteps = [];
-        pendingLegacySteps = [];
       }
 
       // Emit text segment

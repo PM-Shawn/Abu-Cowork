@@ -14,7 +14,7 @@ import { atomicWrite } from '../../utils/atomicFs';
 import { ensureParentDir, joinPath } from '../../utils/pathUtils';
 import { scanContent, evaluate, ContentSafetyError } from '../safety/contentGuard';
 import { getMemoryDir } from './paths';
-import { scanMemoryFiles } from './scan';
+import { scanMemoryFiles, invalidateScanCache, _resetScanCache } from './scan';
 import type { MemoryType, MemorySource, MemoryHeader } from './types';
 import {
   MEMORY_INDEX_FILENAME,
@@ -51,6 +51,7 @@ function buildFileContent(
   created?: number,
   updated?: number,
   accessCount?: number,
+  isPrivate?: boolean,
 ): string {
   const now = Date.now();
   return `---
@@ -61,6 +62,7 @@ source: ${source}
 created: ${created ?? now}
 updated: ${updated ?? now}
 accessCount: ${accessCount ?? 0}
+private: ${isPrivate ? 'true' : 'false'}
 ---
 
 ${content}
@@ -70,13 +72,22 @@ ${content}
 // ── MEMORY.md index management ──
 
 /**
+ * Format an index line for a memory. Private memories get a 🔒 marker so the
+ * agent can see they exist without their content being auto-injected by Phase 2.
+ */
+function formatIndexLine(filename: string, description: string, isPrivate: boolean): string {
+  const lock = isPrivate ? ' 🔒' : '';
+  return `- [${filename}](${filename})${lock} — ${description}`;
+}
+
+/**
  * Rebuild the MEMORY.md index from the current set of memory files.
- * Format: `- [filename](filename) — description`
+ * Format: `- [filename](filename) — description` (private memories get a 🔒 marker)
  */
 async function rebuildIndex(dir: string, headers: MemoryHeader[]): Promise<void> {
   const lines = ['# Memory Index', ''];
   for (const h of headers.slice(0, MAX_INDEX_LINES - 2)) {
-    lines.push(`- [${h.filename}](${h.filename}) — ${h.description}`);
+    lines.push(formatIndexLine(h.filename, h.description, h.private));
   }
   const indexPath = joinPath(dir, MEMORY_INDEX_FILENAME);
   await atomicWrite(indexPath, lines.join('\n') + '\n');
@@ -87,7 +98,12 @@ async function rebuildIndex(dir: string, headers: MemoryHeader[]): Promise<void>
  * If the index doesn't exist, creates it.
  * If it exceeds MAX_INDEX_LINES, rebuilds from scratch.
  */
-async function addToIndex(dir: string, filename: string, description: string): Promise<void> {
+async function addToIndex(
+  dir: string,
+  filename: string,
+  description: string,
+  isPrivate: boolean,
+): Promise<void> {
   const indexPath = joinPath(dir, MEMORY_INDEX_FILENAME);
   let content: string;
   try {
@@ -96,7 +112,7 @@ async function addToIndex(dir: string, filename: string, description: string): P
     content = '# Memory Index\n';
   }
 
-  const newLine = `- [${filename}](${filename}) — ${description}`;
+  const newLine = formatIndexLine(filename, description, isPrivate);
   const lines = content.split('\n');
 
   // Check if already in index (idempotent)
@@ -150,6 +166,11 @@ export interface WriteMemoryOptions {
   /** Override filename (for updates) */
   filename?: string;
   /**
+   * Mark as private: excluded from per-turn relevant-memories injection.
+   * Defaults to false. See MemoryFrontmatter.private for semantics.
+   */
+  private?: boolean;
+  /**
    * Skip the contentGuard safety scan.
    *
    * Intended for grandfathering historical data during migration, where
@@ -173,6 +194,7 @@ export async function writeMemory(options: WriteMemoryOptions): Promise<string> 
     source = 'agent_explicit',
     workspacePath,
     filename: overrideFilename,
+    private: isPrivate = false,
     bypassScan = false,
   } = options;
 
@@ -219,11 +241,106 @@ export async function writeMemory(options: WriteMemoryOptions): Promise<string> 
     const filePath = joinPath(dir, filename);
     await ensureParentDir(filePath);
 
-    const fileContent = buildFileContent(name, description, type, source, content);
+    const fileContent = buildFileContent(
+      name, description, type, source, content,
+      undefined, undefined, undefined, isPrivate,
+    );
     await atomicWrite(filePath, fileContent);
-    await addToIndex(dir, filename, description);
+    await addToIndex(dir, filename, description, isPrivate);
+
+    // Invalidate scan cache so the next per-turn injection sees fresh state.
+    invalidateScanCache(workspacePath);
 
     return filename;
+  });
+}
+
+/**
+ * Update the `description` field on an existing memory file in-place, plus
+ * the corresponding MEMORY.md index line. Body content is untouched, so we
+ * skip the contentGuard re-scan.
+ *
+ * Used by the UI flow that nudges users to simplify a private memory's
+ * description so it doesn't leak the value through the always-injected
+ * MEMORY.md index. See PersonalMemorySection's privateDescHint.
+ */
+export async function setMemoryDescription(
+  filename: string,
+  newDescription: string,
+  workspacePath?: string | null,
+): Promise<void> {
+  const dir = await getMemoryDir(workspacePath);
+  const filePath = joinPath(dir, filename);
+
+  return withWriteLock(dir, async () => {
+    let raw: string;
+    try {
+      raw = await readTextFile(filePath);
+    } catch {
+      return;
+    }
+
+    // Replace the description line in frontmatter. Tolerates "description: x"
+    // with any single-line value; multi-line YAML descriptions aren't supported
+    // (we never write them).
+    const updated = raw.replace(/^description:\s*.+$/m, `description: ${newDescription}`);
+    await atomicWrite(filePath, updated);
+
+    // Update the index line — read the file's current `private` state so we
+    // preserve the 🔒 marker through the description rewrite.
+    const isPrivateMatch = updated.match(/^private:\s*(\S+)/m);
+    const isPrivate = !!isPrivateMatch && isPrivateMatch[1].trim().toLowerCase() === 'true';
+    await addToIndex(dir, filename, newDescription, isPrivate);
+
+    invalidateScanCache(workspacePath);
+  });
+}
+
+/**
+ * Toggle the `private` field on an existing memory file in-place. Cheaper than
+ * a full rewrite (no contentGuard re-scan, body unchanged) and updates the
+ * MEMORY.md index 🔒 marker atomically.
+ */
+export async function setMemoryPrivate(
+  filename: string,
+  isPrivate: boolean,
+  workspacePath?: string | null,
+): Promise<void> {
+  const dir = await getMemoryDir(workspacePath);
+  const filePath = joinPath(dir, filename);
+
+  return withWriteLock(dir, async () => {
+    let raw: string;
+    try {
+      raw = await readTextFile(filePath);
+    } catch {
+      return; // File missing — nothing to update
+    }
+
+    let updated: string;
+    if (/^private:\s*\S+/m.test(raw)) {
+      updated = raw.replace(/^private:\s*\S+/m, `private: ${isPrivate ? 'true' : 'false'}`);
+    } else {
+      // Inject the field before the closing `---` of frontmatter. The opening
+      // `---` is at offset 0 and gets left alone; the second is the close.
+      let firstSeen = false;
+      updated = raw.replace(/^---\s*$/gm, (match) => {
+        if (!firstSeen) {
+          firstSeen = true;
+          return match;
+        }
+        return `private: ${isPrivate ? 'true' : 'false'}\n${match}`;
+      });
+    }
+    await atomicWrite(filePath, updated);
+
+    // Re-render the index entry so the 🔒 marker matches the new state.
+    // Read description from the (just-written) frontmatter so we don't drift.
+    const descMatch = updated.match(/^description:\s*(.+)$/m);
+    const description = descMatch ? descMatch[1].trim() : filename;
+    await addToIndex(dir, filename, description, isPrivate);
+
+    invalidateScanCache(workspacePath);
   });
 }
 
@@ -245,6 +362,10 @@ export async function touchMemory(filePath: string): Promise<void> {
         () => `updated: ${Date.now()}`,
       );
       await atomicWrite(filePath, updated);
+      // touchMemory mutates `updated`, which affects scan-result ordering.
+      // We don't know from the path alone whether this lives in global or a
+      // workspace dir, so blow the whole cache. Cheap: tiny key set.
+      _resetScanCache();
     } catch {
       // File may have been deleted
     }
@@ -266,6 +387,7 @@ export async function deleteMemory(
       await remove(filePath);
     }
     await removeFromIndex(dir, filename);
+    invalidateScanCache(workspacePath);
   });
 }
 
@@ -289,6 +411,7 @@ export async function clearAllMemories(workspacePath?: string | null): Promise<n
     try {
       await atomicWrite(indexPath, '# Memory Index\n');
     } catch { /* ignore */ }
+    invalidateScanCache(workspacePath);
     return count;
   });
 }

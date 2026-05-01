@@ -790,6 +790,28 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
   const MAX_OUTPUT_TOKENS_RECOVERY_LIMIT = 3;
   let maxOutputTokensEscalated = false;
 
+  // Phase 2 relevant-memory injection — content of memories most relevant to
+  // *this* user message, surfaced as a dynamic system-prompt section. The
+  // agent no longer needs to call read_memory for basic recall.
+  //
+  // Computed ONCE per agent-loop run (per user message) — the user query
+  // doesn't change across iterations of the inner while loop, so the
+  // selection is stable. Cost: scan is cached, then ≤5 fs reads.
+  let relevantMemoriesSection = '';
+  try {
+    const { findRelevantMemories, formatRelevantMemoriesSection, extractQueryText } =
+      await import('../memdir/relevance');
+    const queryText = extractQueryText(route.cleanInput);
+    if (queryText) {
+      const ws = toolContext.workspacePath;
+      const relevant = await findRelevantMemories(queryText, ws ?? null);
+      relevantMemoriesSection = formatRelevantMemoriesSection(relevant);
+    }
+  } catch (err) {
+    // Non-critical: log and continue without Phase 2 injection
+    logger.warn('Phase 2 relevant-memory injection failed', { err });
+  }
+
   while (continueLoop) {
     // Check if cancelled before starting new turn
     if (abortController.signal.aborted) {
@@ -947,6 +969,9 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
       }
       if (deferredToolsSummary) {
         dynamicSections.push({ name: 'deferred-tools', text: deferredToolsSummary, cacheable: false });
+      }
+      if (relevantMemoriesSection) {
+        dynamicSections.push({ name: 'relevant-memories', text: relevantMemoriesSection, cacheable: false });
       }
       let allSections = mergeSections([...systemPromptSections, ...dynamicSections]);
       // String form for token estimation and context management
@@ -1615,7 +1640,6 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
         // Set status back to idle on cancel
         chatStore.setConversationStatus(conversationId, 'idle');
   
-        continueLoop = false;
         return { reason: 'aborted' as const };
       }
 

@@ -34,6 +34,11 @@ describe('chatStore', () => {
     mockGetProjectByWorkspace.mockReturnValue(undefined);
     useChatStore.setState({
       conversations: {},
+      // conversationIndex must reset alongside conversations: deleteConversation
+      // now uses the index (not the conversations map) to compute the successor
+      // active conv after deleting the active one, so leftover index entries
+      // from earlier tests would leak across cases.
+      conversationIndex: {},
       activeConversationId: null,
       agentStatus: 'idle',
       currentTool: null,
@@ -157,6 +162,147 @@ describe('chatStore', () => {
       // Should fallback to remaining conversation
       const state = useChatStore.getState();
       expect(state.activeConversationId).toBe(id1);
+    });
+
+    /**
+     * Direct seed of conversations + conversationIndex with controlled
+     * createdAt so neighbour-by-position assertions are deterministic.
+     * Mirrors the shape created by createConversation but bypasses Date.now().
+     */
+    function seedConvs(items: Array<{
+      id: string;
+      createdAt: number;
+      projectId?: string;
+      scheduledTaskId?: string;
+      triggerId?: string;
+    }>) {
+      type ConvShape = Record<string, unknown>;
+      const conversations: Record<string, ConvShape> = {};
+      const conversationIndex: Record<string, ConvShape> = {};
+      for (const item of items) {
+        const meta: ConvShape = {
+          id: item.id,
+          title: `Conv ${item.id}`,
+          createdAt: item.createdAt,
+          updatedAt: item.createdAt,
+          messageCount: 0,
+          ...(item.projectId ? { projectId: item.projectId } : {}),
+          ...(item.scheduledTaskId ? { scheduledTaskId: item.scheduledTaskId } : {}),
+          ...(item.triggerId ? { triggerId: item.triggerId } : {}),
+        };
+        conversations[item.id] = { ...meta, messages: [], status: 'idle' };
+        conversationIndex[item.id] = meta;
+      }
+      // setState typing is intentionally loose for fixture seeding
+      useChatStore.setState({
+        conversations: conversations as never,
+        conversationIndex: conversationIndex as never,
+      });
+    }
+
+    describe('focus movement after delete (B3)', () => {
+      it('moves focus to prev (newer) neighbour when deleting middle conversation', () => {
+        // Visual order desc: d (newest), c, b, a (oldest)
+        seedConvs([
+          { id: 'a', createdAt: 1000 },
+          { id: 'b', createdAt: 2000 },
+          { id: 'c', createdAt: 3000 },
+          { id: 'd', createdAt: 4000 },
+        ]);
+        useChatStore.setState({ activeConversationId: 'b' });
+        useChatStore.getState().deleteConversation('b');
+        // Deleting b: prev (above b in UI) = c
+        expect(useChatStore.getState().activeConversationId).toBe('c');
+      });
+
+      it('falls back to next (older) when deleting the topmost conversation', () => {
+        seedConvs([
+          { id: 'a', createdAt: 1000 },
+          { id: 'b', createdAt: 2000 },
+        ]);
+        useChatStore.setState({ activeConversationId: 'b' });
+        useChatStore.getState().deleteConversation('b');
+        // b is newest, no prev → next = a
+        expect(useChatStore.getState().activeConversationId).toBe('a');
+      });
+
+      it('returns null when deleting the only conversation in scope', () => {
+        seedConvs([{ id: 'a', createdAt: 1000 }]);
+        useChatStore.setState({ activeConversationId: 'a' });
+        useChatStore.getState().deleteConversation('a');
+        expect(useChatStore.getState().activeConversationId).toBeNull();
+      });
+
+      it('stays within the same project scope', () => {
+        // recent r1, r2 + project p1, p2
+        seedConvs([
+          { id: 'r1', createdAt: 1000 },
+          { id: 'r2', createdAt: 4000 }, // newest in recent
+          { id: 'p1', createdAt: 2000, projectId: 'proj-1' },
+          { id: 'p2', createdAt: 3000, projectId: 'proj-1' }, // newest in project
+        ]);
+        useChatStore.setState({ activeConversationId: 'p2' });
+        useChatStore.getState().deleteConversation('p2');
+        // proj-1 sorted: p2, p1. Deleting p2 → no prev, next = p1.
+        // Must not jump to r2 even though r2 is newer overall.
+        expect(useChatStore.getState().activeConversationId).toBe('p1');
+      });
+
+      it('returns null when project has only the deleted conversation', () => {
+        seedConvs([
+          { id: 'r1', createdAt: 1000 },
+          { id: 'p1', createdAt: 2000, projectId: 'proj-1' },
+        ]);
+        useChatStore.setState({ activeConversationId: 'p1' });
+        useChatStore.getState().deleteConversation('p1');
+        // proj-1 empty after delete → null, NOT pulled into recent (r1)
+        expect(useChatStore.getState().activeConversationId).toBeNull();
+      });
+
+      it('does not change active when deleting a non-active conversation', () => {
+        seedConvs([
+          { id: 'a', createdAt: 1000 },
+          { id: 'b', createdAt: 2000 },
+        ]);
+        useChatStore.setState({ activeConversationId: 'a' });
+        useChatStore.getState().deleteConversation('b');
+        expect(useChatStore.getState().activeConversationId).toBe('a');
+      });
+
+      it('keeps automation conversations isolated from regular pool', () => {
+        seedConvs([
+          { id: 'r1', createdAt: 1000 },
+          { id: 'r2', createdAt: 2000 },
+          { id: 's1', createdAt: 3000, scheduledTaskId: 'task-1' },
+          { id: 's2', createdAt: 4000, scheduledTaskId: 'task-1' },
+        ]);
+        useChatStore.setState({ activeConversationId: 's1' });
+        useChatStore.getState().deleteConversation('s1');
+        // s1 / s2 in same scheduled scope; sorted: s2, s1. Deleting s1: prev = s2.
+        // Should not jump to r2.
+        expect(useChatStore.getState().activeConversationId).toBe('s2');
+      });
+
+      it('clears notice badge for deleted and successor conversations', async () => {
+        const { useNoticeBadgeStore } = await import('./noticeBadgeStore');
+        seedConvs([
+          { id: 'a', createdAt: 1000 },
+          { id: 'b', createdAt: 2000 },
+        ]);
+        // Plant pre-existing badges on both convs
+        useNoticeBadgeStore.setState({ counts: { a: 3, b: 1, other: 5 } });
+        useChatStore.setState({ activeConversationId: 'b' });
+        useChatStore.getState().deleteConversation('b');
+        // Wait for the dynamic import().then() badge clears to settle
+        await new Promise((r) => setTimeout(r, 0));
+        const counts = useNoticeBadgeStore.getState().counts;
+        // Deleted conv's badge gone (no orphan entries on a non-existent conv)
+        expect(counts.b).toBeUndefined();
+        // Successor conv (a) badge cleared — focus moved there, so it's now "viewed"
+        expect(counts.a).toBeUndefined();
+        // Unrelated conv badge untouched
+        expect(counts.other).toBe(5);
+      });
     });
   });
 

@@ -483,6 +483,15 @@ ${indexContent.trim()}
 索引（MEMORY.md）已注入到上面的 <memory-index>。详情按需拉取：
 按 filename 精确读取调 \`read_memory\`；按关键词模糊搜调 \`recall\`。
 
+每轮对话**系统会自动**把本轮最相关的 ≤5 条非私密记忆**完整内容**注入到
+<relevant-memories> 段（出现在本系统提示后段，按相关度排序）。优先用那段
+回答，无需重复 read_memory；只在需要的内容**没**出现在 <relevant-memories>
+但出现在 <memory-index> 时才调 read_memory。
+
+**带 🔒 的索引行是私密记忆**：不会自动注入到 <relevant-memories>。仅当用户
+明确询问相关内容时调 read_memory 拉取，且回复时只引用必要部分（详见下方
+"私密记忆"段）。
+
 让这套系统随时间不断完善——未来对话能从中看到用户是谁、喜欢怎样
 协作、有哪些该避免/重复的行为、当前工作的背景。如果用户说"记住这个"
 立即保存；说"忘掉/别记了"找到并删除对应条目。
@@ -540,11 +549,38 @@ ${indexContent.trim()}
 
 ### 何时调用 recall vs read_memory
 
+- **优先看 <relevant-memories>**：每轮已自动注入相关非私密记忆完整内容，
+  能回答就直接答，不用调任何工具。
 - **recall（按关键词搜）**：用户问"之前/上次/最近/我们聊过..."等回溯类问题，
-  或当前任务可能依赖过去结论但不确定有没有相关记忆时。
-- **read_memory（按 filename 精确拉）**：在 <memory-index> 看到一行明确相关，
-  但 description 不够判断细节时——直接 read_memory(filename) 拉详情，
-  比 recall 准确，token 也省。
+  且 <relevant-memories> 没覆盖；或不确定有没有相关记忆时。
+- **read_memory（按 filename 精确拉）**：当
+  ① 索引中看到带 🔒 的私密记忆且用户明确问起，或
+  ② <relevant-memories> 段未覆盖但 <memory-index> 描述显示相关
+  → 直接 read_memory(filename) 拉详情，比 recall 准确，token 也省。
+
+### 私密记忆（🔒 标记）
+
+某些记忆不希望每轮自动注入对话（如身份证、银行卡、薪资、医疗信息等）。
+索引行末尾带 🔒 的就是私密记忆。
+
+**写入时**：调 update_memory 时传 \`private: true\` 的场景：
+- 身份证 / 护照 / 银行卡 / 社保号 / 驾照
+- 薪资 / 奖金 / 未公开的财务数据
+- 医疗 / 心理健康 / 家庭关系
+- 客户名单 / 未发布产品决策 / 商业敏感信息
+
+**关键：private 记忆的 description 只写"主题"，不要写"值"**——description 会出
+现在 MEMORY.md 索引里被注入对话上下文，写值等于没保护。
+- ✅ description="个人身份证号" / "工行账户" / "本月薪资"
+- ❌ description="身份证 110105199003078412" / "卡号 6228... 密码 xxx"
+
+**不要默认 user 类全 private** —— 用户角色、写作偏好、工作习惯保持非私密，
+方便每轮自动引用。
+
+**读取时**：read_memory 命中私密记忆，返回值末尾会附带提示，要求你：
+- 只引用回答当前问题所需的最少部分
+- 不完整复述到对话历史中
+- 不在后续无关消息里再次引用
 
 ### 用记忆时的 sanity-check（重要）
 

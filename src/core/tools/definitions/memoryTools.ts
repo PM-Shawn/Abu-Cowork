@@ -33,7 +33,7 @@ export const reportPlanTool: ToolDefinition = {
 
 export const updateMemoryTool: ToolDefinition = {
   name: TOOL_NAMES.UPDATE_MEMORY,
-  description: '保存或更新持久记忆。**调用前先核对 system prompt 中的 <memory-index>**：如果已有相同主题的记忆，根据情况选择 edit 覆盖或 delete 删除，不要写重复条目。\n\n四种 action：\n- append（默认）：新写一条记忆。仅在索引中没有相似主题时使用。\n- edit：用 filename 覆盖某条已有记忆（用户改主意/补充 Why/How 时用）。\n- delete：用 filename 删除某条已过时的记忆（信息冲突且新值更合适时用）。\n- clear：清空所有记忆（极少用，仅用户明确要求时）。\n\n不要保存一次性任务结果（"X 已生成"）、临时状态（"测试通过"）、可派生信息（"项目位于 /Users/X"）。项目规则（.abu/ABU.md）由用户手动维护，不要用此工具修改。',
+  description: '保存或更新持久记忆。**调用前先核对 system prompt 中的 <memory-index>**：如果已有相同主题的记忆，根据情况选择 edit 覆盖或 delete 删除，不要写重复条目。\n\n四种 action：\n- append（默认）：新写一条记忆。仅在索引中没有相似主题时使用。\n- edit：用 filename 覆盖某条已有记忆（用户改主意/补充 Why/How 时用）。\n- delete：用 filename 删除某条已过时的记忆（信息冲突且新值更合适时用）。\n- clear：清空所有记忆（极少用，仅用户明确要求时）。\n\n**private 标记 + description 写法**（重要）：保存身份证/银行卡/手机号/薪资/医疗等敏感信息时传 `private: true`。**对于 private 记忆，description 必须只写"主题"，不要写"具体值"**——因为 description 会出现在 MEMORY.md 索引里被注入到每轮对话的 system prompt。例：\n  ✅ description="个人身份证号"（主题，安全）\n  ❌ description="身份证号 110105199003078412"（值泄露，等于没保护）\n  ✅ description="银行账户信息"\n  ❌ description="工行卡 6228...0018，密码 xxx"\n普通用户偏好/工作习惯保持非私密，description 可以写得详细一些方便每轮自动引用。\n\n不要保存一次性任务结果（"X 已生成"）、临时状态（"测试通过"）、可派生信息（"项目位于 /Users/X"）。项目规则（.abu/ABU.md）由用户手动维护，不要用此工具修改。',
   inputSchema: {
     type: 'object',
     properties: {
@@ -53,6 +53,10 @@ export const updateMemoryTool: ToolDefinition = {
         type: 'string',
         description: '分类: user(用户偏好/角色/知识水平) / feedback(行为纠正或确认，含原因和适用场景) / project(项目动态/决策) / reference(外部系统指针)',
         enum: ['user', 'feedback', 'project', 'reference'],
+      },
+      private: {
+        type: 'boolean',
+        description: '是否为私密记忆。true 表示不会自动注入对话上下文，仅用户明确询问时通过 read_memory 拉取。仅对身份证/银行卡/手机号/薪资/医疗/家庭隐私/未公开商业信息等敏感内容设为 true。默认 false。',
       },
     },
     required: ['action'],
@@ -103,6 +107,8 @@ export const updateMemoryTool: ToolDefinition = {
         const name = (input.name as string) || existing.name;
         const description = (input.description as string) || content.slice(0, 80);
         const type = ((input.type as string) || existing.type) as MemoryType;
+        // private: explicit override > existing value
+        const isPrivate = typeof input.private === 'boolean' ? (input.private as boolean) : existing.private;
         // Determine which workspace this memory lives in (preserve, don't relocate)
         const liveWorkspace = wsHeaders.some((h) => h.filename === filename) ? workspacePath : null;
 
@@ -115,8 +121,9 @@ export const updateMemoryTool: ToolDefinition = {
             source: existingFile?.header.source ?? 'agent_explicit',
             workspacePath: liveWorkspace,
             filename, // override → overwrites the existing .md
+            private: isPrivate,
           });
-          return `已更新记忆 [${type}]: ${name} (${filename})`;
+          return `已更新记忆 [${type}]: ${name} (${filename})${isPrivate ? ' 🔒' : ''}`;
         } catch (err) {
           if (err instanceof ContentSafetyError) {
             const patterns = err.scan.findings
@@ -138,6 +145,7 @@ export const updateMemoryTool: ToolDefinition = {
       const name = (input.name as string) || content.slice(0, 40);
       const description = (input.description as string) || content.slice(0, 80);
       const type = ((input.type as string) || 'project') as MemoryType;
+      const isPrivate = (input.private as boolean) === true;
 
       if (!content) return '错误：append 时 content 不能为空。';
 
@@ -151,8 +159,9 @@ export const updateMemoryTool: ToolDefinition = {
           content,
           source: 'agent_explicit',
           workspacePath,
+          private: isPrivate,
         });
-        return `已保存记忆 [${type}]: ${name} → ${filename}`;
+        return `已保存记忆 [${type}]: ${name} → ${filename}${isPrivate ? ' 🔒' : ''}`;
       } catch (err) {
         if (err instanceof ContentSafetyError) {
           const patterns = err.scan.findings

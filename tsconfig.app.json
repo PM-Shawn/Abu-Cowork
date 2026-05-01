@@ -17,7 +17,6 @@
     "jsx": "react-jsx",
 
     /* Path alias */
-    "baseUrl": ".",
     "paths": {
       "@/*": ["./src/*"]
     },

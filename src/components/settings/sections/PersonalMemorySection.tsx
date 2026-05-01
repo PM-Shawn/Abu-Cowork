@@ -1,12 +1,15 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { useI18n, format } from '@/i18n';
-import { HelpCircle, Trash2, ChevronDown, ChevronUp, ChevronRight, FolderOpen, Globe, ListChecks, X, Check } from 'lucide-react';
+import { HelpCircle, Trash2, ChevronDown, ChevronUp, ChevronRight, FolderOpen, Globe, ListChecks, X, Check, Lock, AlertTriangle } from 'lucide-react';
 import { scanMemoryFiles, readMemoryFile } from '@/core/memdir/scan';
-import { deleteMemory } from '@/core/memdir/write';
+import { deleteMemory, setMemoryPrivate, setMemoryDescription } from '@/core/memdir/write';
+import { memoryAge, isStale } from '@/core/memdir/age';
 import type { MemoryHeader, MemoryType } from '@/core/memdir/types';
 import { useWorkspaceStore } from '@/stores/workspaceStore';
 import ConfirmDialog from '@/components/common/ConfirmDialog';
 import { Button } from '@/components/ui/button';
+import { Toggle } from '@/components/ui/toggle';
+import { Input } from '@/components/ui/input';
 
 // Abu 设计 token：toolbar 按钮风格（对齐 AboutSection 的"检查更新"按钮）
 const ABU_BTN_OUTLINE =
@@ -40,26 +43,59 @@ const TYPE_COLORS: Record<MemoryType, string> = {
   reference: 'bg-blue-100 text-blue-700',
 };
 
-function formatAge(timestamp: number): string {
-  const diffMs = Date.now() - timestamp;
-  const minutes = Math.floor(diffMs / 60000);
-  if (minutes < 60) return `${minutes}分钟前`;
-  const hours = Math.floor(minutes / 60);
-  if (hours < 24) return `${hours}小时前`;
-  const days = Math.floor(hours / 24);
-  if (days < 30) return `${days}天前`;
-  return `${Math.floor(days / 30)}个月前`;
+/**
+ * Stale memory: 60+ days untouched. Replaces the old `isUnused` (accessCount-based)
+ * filter — accessCount became meaningless after the v0.15 architecture shift to
+ * Phase 2 content injection (memories are used without accessCount being bumped).
+ * Recency is now the meaningful "is this still useful?" signal.
+ */
+function isStaleHeader(header: MemoryHeader): boolean {
+  return isStale(header.updated);
 }
 
-function isUnused(header: MemoryHeader): boolean {
-  // Never-recalled by the agent. accessCount is now meaningful (P1 removed
-  // passive-injection bumps), so accessCount===0 means "the agent has never
-  // pulled this via recall/read_memory" — a strong cleanup-candidate signal.
-  return header.accessCount === 0;
+function isAutoFlushStale(header: MemoryHeader): boolean {
+  return header.source === 'auto_flush' && isStale(header.updated);
 }
 
-function isAutoFlushUnused(header: MemoryHeader): boolean {
-  return header.source === 'auto_flush' && header.accessCount === 0;
+/**
+ * Heuristic: does this description appear to leak content rather than just
+ * stating a topic? Used to nudge the user when toggling private — if true,
+ * we surface an inline hint suggesting a topic-only rewrite.
+ *
+ * Conservative criteria (false positives are fine; missed leaks are not):
+ * - Length > 20 characters (topics are typically short)
+ * - OR contains any digit (numbers usually mean values, not topics)
+ * - OR contains a comma/period/中文逗号/中文句号 (compound description = content sketch)
+ */
+function descriptionLooksRevealing(description: string): boolean {
+  const desc = description.trim();
+  if (!desc) return false;
+  if (desc.length > 20) return true;
+  if (/\d/.test(desc)) return true;
+  if (/[,，.。]/.test(desc)) return true;
+  return false;
+}
+
+/**
+ * Derive a safe topic-only description for a memory whose current
+ * description leaks content. Tries the `name` field first (it's
+ * usually short and topic-y); falls back to a type-based generic
+ * if `name` itself also looks revealing.
+ *
+ * The user sees this pre-filled in the rewrite input and only has
+ * to click "save" — no need to think up a topic themselves.
+ */
+function deriveTopicDescription(header: MemoryHeader): string {
+  const name = header.name.trim();
+  if (name && !descriptionLooksRevealing(name)) {
+    return name;
+  }
+  switch (header.type) {
+    case 'user': return '用户偏好';
+    case 'feedback': return '用户反馈';
+    case 'project': return '项目信息';
+    case 'reference': return '外部资源';
+  }
 }
 
 interface MemoryGroup {
@@ -90,6 +126,17 @@ export default function PersonalMemorySection() {
   const [bulkMode, setBulkMode] = useState(false);
   const [selectedKeys, setSelectedKeys] = useState<Set<string>>(new Set());
   const [bulkConfirmOpen, setBulkConfirmOpen] = useState(false);
+
+  // Inline "rewrite description" hint, fired when toggling private on a
+  // memory whose description looks like it leaks content. Keyed by
+  // workspacePath:filename so only the relevant row shows the panel.
+  // `draft` is the user-edited new description; `pristineDescription` lets
+  // us show the original below the input for context.
+  const [descHint, setDescHint] = useState<{
+    key: string;
+    pristineDescription: string;
+    draft: string;
+  } | null>(null);
 
   // Collapsed groups: workspace path key, '__global__' for the global group.
   // Default behavior: all groups start expanded so users see what's there;
@@ -223,6 +270,49 @@ export default function PersonalMemorySection() {
     }
   };
 
+  const handleTogglePrivate = async (
+    header: MemoryHeader,
+    workspacePath: string | null,
+    next: boolean,
+  ) => {
+    try {
+      await setMemoryPrivate(header.filename, next, workspacePath);
+      await loadEntries();
+      // After flipping ON, surface the description-leak hint when the
+      // existing description looks like a value rather than a topic.
+      // Flipping OFF clears the hint regardless. Pre-fill `draft` with
+      // a derived topic so the user just clicks save (or tweaks).
+      const key = `${workspacePath ?? 'g'}:${header.filename}`;
+      if (next && descriptionLooksRevealing(header.description)) {
+        setDescHint({
+          key,
+          pristineDescription: header.description,
+          draft: deriveTopicDescription(header),
+        });
+      } else if (descHint?.key === key) {
+        setDescHint(null);
+      }
+    } catch (err) {
+      console.error('Failed to toggle memory private flag:', err);
+    }
+  };
+
+  const handleSaveDescription = async (
+    header: MemoryHeader,
+    workspacePath: string | null,
+  ) => {
+    if (!descHint) return;
+    const draft = descHint.draft.trim();
+    if (!draft) return;
+    try {
+      await setMemoryDescription(header.filename, draft, workspacePath);
+      setDescHint(null);
+      await loadEntries();
+    } catch (err) {
+      console.error('Failed to update memory description:', err);
+    }
+  };
+
   const handleBulkDelete = async () => {
     setBulkConfirmOpen(false);
     const targets = allEntries.filter((e) => selectedKeys.has(e.key));
@@ -308,10 +398,10 @@ export default function PersonalMemorySection() {
               </div>
               {bulkMode ? (
                 <div className="flex items-center gap-1.5 flex-wrap">
-                  <Button size="xs" variant="ghost" className={ABU_BTN_OUTLINE} onClick={() => selectByFilter(isAutoFlushUnused)}>
+                  <Button size="xs" variant="ghost" className={ABU_BTN_OUTLINE} onClick={() => selectByFilter(isAutoFlushStale)}>
                     {t.memory.bulkSelectAutoFlushUnused}
                   </Button>
-                  <Button size="xs" variant="ghost" className={ABU_BTN_OUTLINE} onClick={() => selectByFilter(isUnused)}>
+                  <Button size="xs" variant="ghost" className={ABU_BTN_OUTLINE} onClick={() => selectByFilter(isStaleHeader)}>
                     {t.memory.bulkSelectUnused}
                   </Button>
                   <Button size="xs" variant="ghost" className={ABU_BTN_OUTLINE} onClick={() => selectByFilter(() => true)}>
@@ -399,12 +489,25 @@ export default function PersonalMemorySection() {
                         <span className={`text-[10px] font-medium px-1.5 py-0.5 rounded ${TYPE_COLORS[header.type]}`}>
                           {getTypeLabel(header.type, t)}
                         </span>
-                        <span className="text-[13px] text-[var(--abu-text-primary)] flex-1 truncate">
+                        <span className="text-[13px] text-[var(--abu-text-primary)] flex-1 truncate flex items-center gap-1.5">
                           {header.name}
+                          {header.private && (
+                            <span title={t.memory.privateTooltip} className="shrink-0">
+                              <Lock className="h-3 w-3 text-amber-600" />
+                            </span>
+                          )}
                         </span>
                         <span className="text-[11px] text-[var(--abu-text-placeholder)] whitespace-nowrap">
-                          {formatAge(header.updated)}
+                          {format(t.memory.updatedAt, { age: memoryAge(header.updated) })}
                         </span>
+                        {isStale(header.updated) && (
+                          <span
+                            className="text-[10px] text-amber-700 bg-amber-50 px-1.5 py-0.5 rounded whitespace-nowrap"
+                            title={t.memory.staleTooltip}
+                          >
+                            {t.memory.staleBadge}
+                          </span>
+                        )}
                         {!bulkMode && (
                           expandedId === header.filename ? (
                             <ChevronUp className="h-3.5 w-3.5 text-[var(--abu-text-placeholder)]" />
@@ -419,15 +522,94 @@ export default function PersonalMemorySection() {
                           <p className="text-[12px] text-[var(--abu-text-tertiary)] leading-relaxed mt-2 whitespace-pre-wrap">
                             {expandedContent[header.filename] ?? header.description}
                           </p>
-                          <div className="flex items-center justify-between mt-2 pt-2 border-t border-[var(--abu-bg-muted)]">
-                            <span className="text-[10px] text-[var(--abu-text-placeholder)]">
-                              {header.source === 'auto_flush' ? t.memory.sourceAutoFlush : header.source === 'agent_explicit' ? t.memory.sourceAgentExplicit : t.memory.sourceUserManual}
-                              {' · '}
-                              {format(t.memory.recallCount, { count: String(header.accessCount) })}
-                            </span>
+                          <div
+                            className="flex items-start justify-between gap-3 mt-2 pt-2 border-t border-[var(--abu-bg-muted)]"
+                            onClick={(e) => e.stopPropagation()}
+                          >
+                            <div className="flex-1 min-w-0">
+                              <div className="text-[10px] text-[var(--abu-text-placeholder)]">
+                                {header.source === 'auto_flush' ? t.memory.sourceAutoFlush : header.source === 'agent_explicit' ? t.memory.sourceAgentExplicit : t.memory.sourceUserManual}
+                              </div>
+                              <div className="flex items-center gap-2 mt-1.5">
+                                <Lock className="h-3 w-3 text-amber-600 shrink-0" />
+                                <span className="text-[11px] text-[var(--abu-text-secondary)]">
+                                  {t.memory.privateLabel}
+                                </span>
+                                <Toggle
+                                  size="sm"
+                                  checked={header.private}
+                                  onChange={() => handleTogglePrivate(header, group.workspacePath, !header.private)}
+                                />
+                              </div>
+                              <p className="text-[10.5px] text-[var(--abu-text-placeholder)] mt-1 leading-snug">
+                                {t.memory.privateDesc}
+                              </p>
+
+                              {/* Description-leak hint: shown only when the
+                                  user just flipped private ON for a memory
+                                  whose description looks like a content leak.
+                                  Closing requires explicit user action — no
+                                  outside-click dismiss. */}
+                              {descHint?.key === key && (
+                                <div className="mt-2 p-2.5 border border-amber-200 bg-amber-50/60 rounded-md">
+                                  <div className="flex items-start gap-1.5">
+                                    <AlertTriangle className="h-3.5 w-3.5 text-amber-600 shrink-0 mt-0.5" />
+                                    <div className="flex-1 min-w-0">
+                                      <div className="text-[11px] font-medium text-amber-900">
+                                        {t.memory.privateDescHintTitle}
+                                      </div>
+                                      <p className="text-[10.5px] text-amber-800 leading-snug mt-0.5">
+                                        {t.memory.privateDescHintBody}
+                                      </p>
+                                      <div className="mt-2">
+                                        <div className="text-[10px] text-[var(--abu-text-placeholder)] mb-0.5">
+                                          {t.memory.privateDescCurrent}：
+                                        </div>
+                                        <div className="text-[11px] text-[var(--abu-text-tertiary)] line-through truncate">
+                                          {descHint.pristineDescription}
+                                        </div>
+                                      </div>
+                                      <div className="mt-1.5">
+                                        <label className="text-[10px] text-[var(--abu-text-placeholder)] block mb-0.5">
+                                          {t.memory.privateDescNewLabel}
+                                        </label>
+                                        <Input
+                                          type="text"
+                                          value={descHint.draft}
+                                          placeholder={t.memory.privateDescPlaceholder}
+                                          onChange={(e) =>
+                                            setDescHint((prev) =>
+                                              prev ? { ...prev, draft: e.target.value } : prev,
+                                            )
+                                          }
+                                          className="text-[11px]"
+                                        />
+                                      </div>
+                                      <div className="flex items-center gap-1.5 mt-2">
+                                        <Button
+                                          size="xs"
+                                          variant="default"
+                                          disabled={!descHint.draft.trim()}
+                                          onClick={() => handleSaveDescription(header, group.workspacePath)}
+                                        >
+                                          {t.memory.privateDescSave}
+                                        </Button>
+                                        <Button
+                                          size="xs"
+                                          variant="ghost"
+                                          onClick={() => setDescHint(null)}
+                                        >
+                                          {t.memory.privateDescSkip}
+                                        </Button>
+                                      </div>
+                                    </div>
+                                  </div>
+                                </div>
+                              )}
+                            </div>
                             <button
                               onClick={(e) => { e.stopPropagation(); setDeleteTarget({ header, workspacePath: group.workspacePath }); }}
-                              className="p-1 rounded text-[var(--abu-text-placeholder)] hover:text-red-500 hover:bg-red-50 transition-colors"
+                              className="p-1 rounded text-[var(--abu-text-placeholder)] hover:text-red-500 hover:bg-red-50 transition-colors shrink-0"
                             >
                               <Trash2 className="h-3.5 w-3.5" />
                             </button>

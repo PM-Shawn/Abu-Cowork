@@ -55,6 +55,7 @@ import { getPendingWorkspaceRequest, resolveWorkspaceRequest, subscribeToWorkspa
 import { startBehaviorSensor, stopBehaviorSensor } from '@/core/agent/behaviorSensor';
 import { useI18n } from '@/i18n';
 import CloseDialog from '@/components/common/CloseDialog';
+import SensitiveAuditDialog from '@/components/settings/SensitiveAuditDialog';
 import { checkForUpdate } from '@/core/updates/checker';
 
 /**
@@ -429,6 +430,11 @@ function App() {
           onCancel={() => setShowCloseDialog(false)}
           onCloseActionChange={useSettingsStore.getState().setCloseAction}
         />
+
+        {/* v0.15 one-shot onboarding: scan existing memories for sensitive
+            content and offer to mark them private. Self-gates on the
+            hasRunSensitiveAudit_v015 settings flag. */}
+        <SensitiveAuditDialog />
       </div>
     </TooltipProvider>
     </ErrorBoundary>

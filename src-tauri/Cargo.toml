@@ -47,7 +47,7 @@ objc2-core-graphics = "0.3"
 # ad-hoc-signed ACL re-prompts on every auto-update).
 aes-gcm = "0.10"
 hkdf = "0.12"
-sha2 = "0.10"
+sha2 = "0.11"
 rand = "0.8"
 machine-uid = "0.5"
 

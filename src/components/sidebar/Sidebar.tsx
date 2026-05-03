@@ -245,13 +245,11 @@ export default function Sidebar() {
 
   return (
     <div className="flex flex-col h-full w-[260px] bg-[var(--abu-bg-subtle)] border-r border-[var(--abu-border)]">
-      {/* Drag region — covers the title bar area above sidebar content (macOS overlay only) */}
-      {isMacOS() && (
-        <div
-          data-tauri-drag-region
-          className="h-11 shrink-0"
-        />
-      )}
+      {/* Drag region — covers the title bar area above sidebar content */}
+      <div
+        data-tauri-drag-region
+        className={isMacOS() ? 'h-11 shrink-0' : 'h-8 shrink-0'}
+      />
       {/* Top Navigation */}
       <nav className="px-4 pb-2 space-y-0.5" aria-label="Main navigation">
         <button

@@ -6,6 +6,7 @@ import { deleteMemory, setMemoryPrivate, setMemoryDescription } from '@/core/mem
 import { memoryAge, isStale } from '@/core/memdir/age';
 import type { MemoryHeader, MemoryType } from '@/core/memdir/types';
 import { useWorkspaceStore } from '@/stores/workspaceStore';
+import { useSettingsStore } from '@/stores/settingsStore';
 import ConfirmDialog from '@/components/common/ConfirmDialog';
 import { Button } from '@/components/ui/button';
 import { Toggle } from '@/components/ui/toggle';
@@ -121,6 +122,17 @@ export default function PersonalMemorySection() {
   const [showTip, setShowTip] = useState(false);
   const tipRef = useRef<HTMLDivElement>(null);
   const recentPaths = useWorkspaceStore((s) => s.recentPaths);
+  const hasRunAudit = useSettingsStore((s) => s.hasRunSensitiveAudit_v015);
+  const setShouldRunMemoryAudit = useSettingsStore((s) => s.setShouldRunMemoryAudit);
+
+  // Trigger the one-shot sensitive-memory audit when the user first opens
+  // this panel. SensitiveAuditDialog (mounted in App.tsx) handles the scan
+  // and only shows a dialog if there are actual hits.
+  useEffect(() => {
+    if (!hasRunAudit) {
+      setShouldRunMemoryAudit(true);
+    }
+  }, [hasRunAudit, setShouldRunMemoryAudit]);
 
   // Bulk cleanup mode
   const [bulkMode, setBulkMode] = useState(false);

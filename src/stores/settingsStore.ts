@@ -371,6 +371,9 @@ interface SettingsState {
    * again. New v0.15+ users start with `true` (no legacy data to audit).
    */
   hasRunSensitiveAudit_v015: boolean;
+  /** Ephemeral — not persisted. Set by the memory settings panel to kick off the audit.
+   *  Do NOT add to partialize. */
+  shouldRunMemoryAudit: boolean;
 }
 
 interface SettingsActions {
@@ -439,6 +442,7 @@ interface SettingsActions {
   setProactivity: (level: 'shy' | 'companion' | 'butler') => void;
   setDraftsOnboardingShown: (shown: boolean) => void;
   setHasRunSensitiveAudit_v015: (done: boolean) => void;
+  setShouldRunMemoryAudit: (run: boolean) => void;
   /**
    * Toggle the contentGuard safety scanner globally. When off, agent-
    * initiated writes (memory + skill drafts) skip the 120-pattern scan.
@@ -647,6 +651,7 @@ export const useSettingsStore = create<SettingsStore>()(
       // The migration below sets `false` explicitly for upgraders; new installs
       // start with this default (also false).
       hasRunSensitiveAudit_v015: false,
+      shouldRunMemoryAudit: false,
 
       // ════════════════════════════════════════════════
       // Provider management actions (V2)
@@ -907,6 +912,7 @@ export const useSettingsStore = create<SettingsStore>()(
       setDraftsOnboardingShown: (shown) =>
         set((s) => ({ soul: { ...s.soul, draftsOnboardingShown: shown } })),
       setHasRunSensitiveAudit_v015: (done) => set({ hasRunSensitiveAudit_v015: done }),
+      setShouldRunMemoryAudit: (run) => set({ shouldRunMemoryAudit: run }),
       setContentGuardEnabled: (enabled) =>
         set((s) => ({ safety: { ...s.safety, enableContentGuard: enabled } })),
       setPermissionMode: (mode) => set({ permissionMode: mode }),

@@ -1,13 +1,14 @@
 /**
- * SensitiveAuditDialog — one-shot v0.15 onboarding dialog that scans the
- * user's existing memories for likely-sensitive content (id cards, bank
- * cards, mobile numbers, email+password combos, salary data) and offers
- * to mark them private before Phase 2 auto-injection starts surfacing
- * them to the LLM each turn.
+ * SensitiveAuditDialog — one-shot v0.15 sensitive-memory audit dialog.
  *
- * Triggers automatically on first launch after upgrading to v0.15+ when
- * `hasRunSensitiveAudit_v015` is false. The flag flips to true regardless
- * of user action (mark all / skip), so the dialog never reappears.
+ * Triggered lazily: the personal-memory settings panel sets
+ * `shouldRunMemoryAudit = true` when the user first opens it, which kicks
+ * off the scan here. The dialog only opens when there are actual sensitive
+ * hits — zero-hit cases (including fresh installs with no memories) are
+ * silently marked done so the user is never bothered unnecessarily.
+ *
+ * `hasRunSensitiveAudit_v015` flips to true after any completed scan
+ * (regardless of hits), so the audit never runs again.
  */
 
 import { useEffect, useState, useCallback } from 'react';
@@ -41,6 +42,8 @@ export default function SensitiveAuditDialog() {
   const { t } = useI18n();
   const hasRun = useSettingsStore((s) => s.hasRunSensitiveAudit_v015);
   const setHasRun = useSettingsStore((s) => s.setHasRunSensitiveAudit_v015);
+  const shouldRun = useSettingsStore((s) => s.shouldRunMemoryAudit);
+  const setShouldRun = useSettingsStore((s) => s.setShouldRunMemoryAudit);
   const recentPaths = useWorkspaceStore((s) => s.recentPaths);
 
   const [open, setOpen] = useState(false);
@@ -48,11 +51,11 @@ export default function SensitiveAuditDialog() {
   const [entries, setEntries] = useState<AuditEntry[]>([]);
   const [applying, setApplying] = useState(false);
 
-  // Run the audit exactly once per app lifetime, after the flag has been
-  // confirmed false. Scoped to this effect (not a full module-level guard)
-  // so unit tests can simulate the path with fresh state.
+  // Triggered by the personal-memory settings panel (shouldRun = true).
+  // Only opens the dialog when there are actual sensitive hits — zero-hit
+  // cases (fresh installs included) are silently marked done.
   useEffect(() => {
-    if (hasRun) return;
+    if (!shouldRun || hasRun) return;
     let cancelled = false;
 
     (async () => {
@@ -77,17 +80,25 @@ export default function SensitiveAuditDialog() {
         }
 
         if (cancelled) return;
+        setShouldRun(false);
+        if (flagged.length === 0) {
+          // No sensitive content found — silently mark done, no dialog needed.
+          setHasRun(true);
+          return;
+        }
         setEntries(flagged);
-        // Always show the dialog — even with zero hits, surface the
-        // "all clear" state so the user knows the check ran.
         setOpen(true);
       } finally {
         if (!cancelled) setLoading(false);
       }
     })();
 
-    return () => { cancelled = true; };
-  }, [hasRun, recentPaths]);
+    return () => {
+      cancelled = true;
+      // Reset the trigger so a future panel open can re-fire the audit.
+      setShouldRun(false);
+    };
+  }, [shouldRun, hasRun, recentPaths, setShouldRun, setHasRun]);
 
   const handleClose = useCallback(() => {
     setOpen(false);

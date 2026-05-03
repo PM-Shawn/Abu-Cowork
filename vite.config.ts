@@ -46,6 +46,18 @@ export default defineConfig({
         'node:process',
         'node:stream',
       ],
+      output: {
+        // zustand's `create` was landing in the main chunk while imChannelStore
+        // (and other stores) imported it from there, creating a circular dep that
+        // caused `create` to be undefined at store-module evaluation time →
+        // "ve is not a function" → white screen on Windows before React mounts.
+        // Pinning zustand + immer to their own leaf chunk breaks the cycle.
+        manualChunks(id) {
+          if (id.includes('/node_modules/zustand/') || id.includes('/node_modules/immer/')) {
+            return 'vendor-state';
+          }
+        },
+      },
     },
   },
 })

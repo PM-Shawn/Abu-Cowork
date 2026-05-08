@@ -12,7 +12,7 @@ A locally-run AI desktop assistant inspired by Claude Code's Cowork mode.
 Tell Abu what you need — it reads files, runs commands, writes docs, and builds reports, all on your machine.
 
 [![Release](https://img.shields.io/github/v/release/PM-Shawn/Abu-Cowork?style=flat-square)](https://github.com/PM-Shawn/Abu-Cowork/releases)
-[![License](https://img.shields.io/badge/license-Abu%20License-blue?style=flat-square)](LICENSE)
+[![License](https://img.shields.io/badge/license-Apache%202.0-blue?style=flat-square)](LICENSE)
 
 [Download](#-download) · [Quick Start](#-quick-start) · [Features](#-features) · [User Guide](docs/User-Guide_EN.md) · [Build from Source](#-build-from-source)
 
@@ -37,6 +37,14 @@ Tell Abu what you need — it reads files, runs commands, writes docs, and build
 
 ---
 
+## What's New
+
+- **v0.15** — **Soul personality system**: 3 proactivity presets (Quiet / Buddy / Butler) + custom `SOUL.md` for tone, address, and reply style; **Content safety scan**: scans agents / skills / memory for prompt injection and dangerous instructions (120+ patterns)
+- **v0.13.12** — **Diagnostic panel**: one-click self-check across AI services / data & permissions / MCP / skills / network / app, plus diagnostic-bundle export
+- **v0.13** — **Self-Evolving Skills**, **Projects** (multi-conversation aggregation), **Notification Center**, **Persistent Todos**
+
+> Full changelog: [Releases](https://github.com/PM-Shawn/Abu-Cowork/releases).
+
 ## Preview
 
 > Clean interface, powerful capabilities
@@ -51,7 +59,7 @@ Tell Abu what you need — it reads files, runs commands, writes docs, and build
 <td align="center"><b>IM Channel Chat</b><br/>@Abu in Lark/DingTalk to interact<br/><br/><img src="website/assets/screenshot-im-chat.png" width="100%" /></td>
 </tr>
 <tr>
-<td align="center"><b>Skills</b><br/>26+ built-in skills, fully customizable<br/><br/><img src="website/assets/screenshot-skills.png" width="100%" /></td>
+<td align="center"><b>Skills</b><br/>28 built-in skills + self-evolving + custom<br/><br/><img src="website/assets/screenshot-skills.png" width="100%" /></td>
 <td align="center"><b>MCP Connectors</b><br/>One-click integration with Playwright, GitHub & more<br/><br/><img src="website/assets/screenshot-mcp.png" width="100%" /></td>
 </tr>
 <tr>
@@ -66,6 +74,13 @@ Tell Abu what you need — it reads files, runs commands, writes docs, and build
 <td align="center"><b>Personal Memory</b><br/>Remembers your preferences and work habits<br/><br/><img src="website/assets/screenshot-memory.png" width="100%" /></td>
 <td align="center"><b>Security Sandbox</b><br/>Seatbelt sandbox + network isolation for privacy<br/><br/><img src="website/assets/screenshot-security.png" width="100%" /></td>
 </tr>
+<tr>
+<td align="center"><b>Soul (Personality)</b><br/>3 proactivity presets + custom SOUL.md for tone & style<br/><br/><img src="website/assets/screenshot-soul.png" width="100%" /></td>
+<td align="center"><b>Diagnostic Panel</b><br/>One-click self-check across AI / MCP / skills / network + bundle export<br/><br/><img src="website/assets/screenshot-diagnostic.png" width="100%" /></td>
+</tr>
+<tr>
+<td align="center" colspan="2"><b>Content Safety Scan</b><br/>Three permission modes (Standard / Auto / Strict) + scan agents / skills / memory for prompt injection & dangerous instructions<br/><br/><img src="website/assets/screenshot-security-scan.png" width="60%" /></td>
+</tr>
 </table>
 
 ## Features
@@ -73,10 +88,13 @@ Tell Abu what you need — it reads files, runs commands, writes docs, and build
 ### Core Capabilities
 
 - **Autonomous Agent** — More than chat: plans, invokes tools, reads/writes files, executes commands, and completes complex tasks end-to-end
-- **Self-Evolving Skills** (v0.13.0+) — After you run a multi-step complex flow, Abu proactively offers "want to crystallize this into a skill?" — one click drafts it, you review, you accept. Next time, just name the skill; no need to re-explain
-- **Smart Notification System** (v0.13.0+) — Menubar unread count / sidebar badge / system notification auto-routed; notices queued to inbox while you're in fullscreen / DnD, surfaced via badges once you're back; audit trail kept for 180 days
-- **Projects** (v0.13.0+) — Promote a workspace into a Project: conversations in the same direction auto-aggregate; each project gets its own default model, skill set, and MCP connectors
+- **Soul Personality System** — Three proactivity presets (Quiet / Buddy / Butler) decide when Abu speaks up; customize tone, address, reply style, and boundaries via `SOUL.md`
+- **Self-Evolving Skills** — After you run a multi-step complex flow, Abu proactively offers "want to crystallize this into a skill?" — one click drafts it, you review, you accept. Next time, just name the skill; no need to re-explain
+- **Smart Notification System** — Menubar unread count / sidebar badge / system notification auto-routed; notices queued to inbox while you're in fullscreen / DnD, surfaced via badges once you're back; audit trail kept for 180 days
+- **Projects** — Promote a workspace into a Project: conversations in the same direction auto-aggregate; each project gets its own default model, skill set, and MCP connectors
 - **Multi-Agent Parallel Execution** — Run up to 5 background agents simultaneously, each executing tasks independently with real-time progress tracking
+- **Desktop Pet** — Transparent circular floater pinned to your desktop, follows you across Spaces, summon a quick chat without stealing focus
+- **Conversation Sharing** — Export any conversation to JSON in one click; API keys and local paths are auto-redacted before sharing
 - **28 Built-in Skills** — PDF/PPTX/DOCX/Excel generation, frontend design, canvas design, algorithmic art, Mermaid/SVG/infographics, Web Artifacts, Chrome automation (Abu-Browser), deep research, Agent self-reflection (reflect), workflow automation, and more — one-click install, fully customizable
 - **MCP Protocol** — Connect to databases, search engines, GitHub, and other external services via Model Context Protocol
 - **Browser Automation** — Built-in Browser Bridge + Chrome extension for web element interaction, form filling, screenshots, and JS execution
@@ -91,6 +109,7 @@ Tell Abu what you need — it reads files, runs commands, writes docs, and build
 - **Provider Management** — Add, edit, delete, reorder providers with connection health checks and latency detection
 - **Model Selector** — Switch models on-the-fly during conversations with capability badges (vision, tool use, web search, thinking, image generation, long context)
 - **Favorites & History** — Star frequently used models, quickly switch between recent ones
+- **Image Generation** — Built-in DALL-E 2 / DALL-E 3 support, plus any custom image-generation endpoint
 
 ### Web Search
 
@@ -126,20 +145,27 @@ Turn Abu into your team bot — just @Abu in your chat:
   - `~/.abu/ABU.md` — User-level rules (cross-project)
   - `{workspace}/.abu/ABU.md` — Project-level rules
   - `{workspace}/.abu/rules/*.md` — Modular rules (loaded alphabetically, max 20 files)
-- **Project Aggregation** (v0.13.0+) — Promote a workspace into a Project to aggregate its conversations; older conversations auto-backfilled with `projectId` on startup. Each project can independently configure default model, skill set, and MCP connectors
+- **Project Aggregation** — Promote a workspace into a Project to aggregate its conversations; older conversations auto-backfilled with `projectId` on startup. Each project can independently configure default model, skill set, and MCP connectors
 - **Session Memory** — Large tool outputs automatically persisted to disk; compact summaries kept in-context to prevent context explosion
-- **Persistent Todos** (v0.13.0+) — Per-conversation `todo_write` plans persisted to disk and survive app restarts
+- **Persistent Todos** — Per-conversation `todo_write` plans persisted to disk and survive app restarts
 - **Auto-Compaction** — Intelligently compresses long conversation history while preserving key context
 
 ### Security & Privacy
 
+- **Three Permission Modes** — Standard (confirm dangerous ops + new-directory writes) / Auto (only confirm automated tasks; writes still confirmed) / Strict (every tool call requires confirmation)
+- **Content Safety Scan** — Scans agent-authored skills / memory entries to catch dangerous instructions, prompt injection, hardware commands, and 120+ other risk patterns
 - **OS Sandbox** — macOS Seatbelt (`sandbox-exec`) / Windows PowerShell ConstrainedLanguage isolates shell command file access
 - **Network Isolation** — Local proxy + domain whitelist + private-network toggle to control every outbound request
 - **Path & Command Safety** — Sensitive directories (system folders, SSH keys, etc.) blocked by default; dangerous commands (`rm -rf /`, etc.) caught statically
 - **Computer Use Safeguards** — 15+ blocked sensitive apps (Keychain, System Settings, WeChat, Slack, etc.), dangerous key interception (Cmd+Q, Cmd+Tab, Force Quit), session-level window hiding, 5-minute timeout
-- **Encrypted API Key Storage** (v0.12+) — Windows DPAPI / macOS AES-256-GCM with a hardware-UUID-derived key; keys are no longer written to localStorage in plaintext
+- **Encrypted API Key Storage** — Windows DPAPI / macOS AES-256-GCM with a hardware-UUID-derived key; keys are no longer written to localStorage in plaintext
 - **Local-First** — Your data stays local, your API keys stay local — nothing goes through third-party servers
 - **Cross-Platform** — Supports macOS (Apple Silicon / Intel) and Windows
+
+### Diagnostics & Troubleshooting
+
+- **One-Click Self-Check** — Settings → Diagnostic, runs through AI service connectivity, data & permissions, MCP, skills, network, app environment
+- **Diagnostic Bundle Export** — When something breaks, package logs / config / version info in one click (API keys and paths auto-redacted) and send it to the maintainer
 
 > For detailed feature documentation, see the [User Guide](docs/User-Guide_EN.md)
 
@@ -207,10 +233,10 @@ Create a weekly report PPT for this week
 | Content Writing | Doc Co-authoring, Brand Guidelines, Internal Comms |
 | Automation | Schedule, Trigger, Alert SOP |
 | Project Management | Skill Creator, Project Init, Create Agent |
-| Agent Reflection | Reflect (v0.13.0) — lets the agent look back on a run and distill learnings |
+| Agent Reflection | Reflect — lets the agent look back on a run and distill learnings |
 | Theming | Theme Factory (10+ preset themes applicable to any artifact) |
 
-> Beyond built-ins, v0.13.0 adds **Self-Evolving Skills** — after multi-step complex flows, Abu proactively suggests "crystallize this into a skill" and grows a library tailored to your workflow. See [User Guide → Skill System](docs/User-Guide_EN.md#skill-system).
+> Beyond built-ins, Abu also supports **Self-Evolving Skills** — after multi-step complex flows, Abu proactively suggests "crystallize this into a skill" and grows a library tailored to your workflow. See [User Guide → Skill System](docs/User-Guide_EN.md#skill-system).
 
 ## Tech Stack
 
@@ -224,7 +250,7 @@ Create a weekly report PPT for this week
 | Web Search | Bing / Brave / Tavily / SearXNG |
 | Sandbox | macOS Seatbelt + path/command dual validation |
 | UI Components | Radix UI + Lucide Icons + shadcn-style |
-| Testing | Vitest + happy-dom (1773+ test cases) |
+| Testing | Vitest + happy-dom (covers core store / agent / skill / memdir modules) |
 | Evaluation | Built-in OpenAI-protocol tool-selection eval runner (`npm run eval:tool-selection`) |
 
 ## Build from Source

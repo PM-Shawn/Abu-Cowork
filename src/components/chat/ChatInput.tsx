@@ -798,7 +798,7 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
                   size="icon"
                   onClick={handleStop}
                   aria-label={t.chat.stop}
-                  className="btn-claude-primary h-7 w-7 rounded-lg bg-red-500 hover:bg-red-600 text-white shadow-sm"
+                  className="h-7 w-7 rounded-lg bg-[var(--abu-text-primary)] hover:bg-[var(--abu-text-secondary)] text-[var(--abu-bg-base)] shadow-sm transition-colors"
                   title={t.chat.stop}
                 >
                   <Square className="h-3 w-3" fill="currentColor" />

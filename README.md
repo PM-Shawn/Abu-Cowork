@@ -37,6 +37,14 @@
 
 ---
 
+## 最近更新
+
+- **v0.15** — **性格系统（Soul）**：主动度三档预设（寡言 / 伙伴 / 管家）+ `SOUL.md` 自定义语气称呼；**内容安全扫描**：扫 agent / skill / 记忆里的 prompt 注入与危险指令（120+ 类）
+- **v0.13.12** — **诊断面板**：AI 服务 / 数据&权限 / MCP / 技能 / 网络 / 应用 一键自检，遇到问题一键导出诊断包
+- **v0.13** — **自进化 Skills**、**Projects 多对话聚合**、**通知中心**、**Todo 跨重启**
+
+> 完整 changelog 见 [Releases](https://github.com/PM-Shawn/Abu-Cowork/releases)。
+
 ## 产品预览
 
 > 简洁直观的界面，强大灵活的能力
@@ -51,7 +59,7 @@
 <td align="center"><b>IM 频道对话</b><br/>在飞书/钉钉中 @阿布 即可交互<br/><br/><img src="website/assets/screenshot-im-chat.png" width="100%" /></td>
 </tr>
 <tr>
-<td align="center"><b>Skill 技能</b><br/>内置 26+ 技能，支持自定义扩展<br/><br/><img src="website/assets/screenshot-skills.png" width="100%" /></td>
+<td align="center"><b>Skill 技能</b><br/>28 个内置技能，支持自定义扩展 + 自进化<br/><br/><img src="website/assets/screenshot-skills.png" width="100%" /></td>
 <td align="center"><b>MCP 连接器</b><br/>一键接入 Playwright、GitHub 等外部工具<br/><br/><img src="website/assets/screenshot-mcp.png" width="100%" /></td>
 </tr>
 <tr>
@@ -66,6 +74,13 @@
 <td align="center"><b>个人记忆</b><br/>记住你的偏好和工作习惯<br/><br/><img src="website/assets/screenshot-memory.png" width="100%" /></td>
 <td align="center"><b>安全沙箱</b><br/>Seatbelt 沙箱 + 网络隔离，保护隐私<br/><br/><img src="website/assets/screenshot-security.png" width="100%" /></td>
 </tr>
+<tr>
+<td align="center"><b>性格设置（Soul）</b><br/>主动度三档预设 + SOUL.md 自定义语气、称呼、回复风格<br/><br/><img src="website/assets/screenshot-soul.png" width="100%" /></td>
+<td align="center"><b>诊断面板</b><br/>AI 服务 / MCP / 技能 / 网络 / 应用 一键自检 + 诊断包导出<br/><br/><img src="website/assets/screenshot-diagnostic.png" width="100%" /></td>
+</tr>
+<tr>
+<td align="center" colspan="2"><b>内容安全扫描</b><br/>三档权限模式（标准 / 自动 / 严格）+ 扫描 agent / skill / 记忆里的 prompt 注入与危险指令<br/><br/><img src="website/assets/screenshot-security-scan.png" width="60%" /></td>
+</tr>
 </table>
 
 ## 功能介绍
@@ -73,10 +88,13 @@
 ### 核心能力
 
 - **Agent 自主执行** — 不只是聊天，能自主规划、调用工具、读写文件、执行命令，完成复杂任务
-- **自进化 Skills**（v0.13.0+）— 跑完一段复杂流程后，阿布会主动提议"这套要不要固化成技能"，一键生成草稿 → 你审阅 → 采纳上架；下次直接叫技能名字调用，不用重讲
-- **智能通知系统**（v0.13.0+）— 菜单栏未读数 / sidebar 小红点 / 系统通知 三条兜底通道自动选择；全屏 / 勿扰时通知暂存进 inbox，回主窗口通过 badge 感知；打扰记录可审计半年
-- **Projects 管理**（v0.13.0+）— 工作区可升级成 Project，同一方向的对话自动聚合，每个项目独立配置图标、默认模型、技能集、MCP
+- **性格系统（Soul）** — 三档主动度预设（寡言 / 伙伴 / 管家）控制阿布何时主动出手；`SOUL.md` 自定义语气、称呼、回复风格、边界
+- **自进化 Skills** — 跑完一段复杂流程后，阿布会主动提议"这套要不要固化成技能"，一键生成草稿 → 你审阅 → 采纳上架；下次直接叫技能名字调用，不用重讲
+- **智能通知系统** — 菜单栏未读数 / sidebar 小红点 / 系统通知 三条兜底通道自动选择；全屏 / 勿扰时通知暂存进 inbox，回主窗口通过 badge 感知；打扰记录可审计半年
+- **Projects 管理** — 工作区可升级成 Project，同一方向的对话自动聚合，每个项目独立配置图标、默认模型、技能集、MCP
 - **多 Agent 后台并行** — 支持同时运行多个后台 Agent（最多 5 个），各自独立执行任务，进度实时可见
+- **桌宠模式** — 透明圆形浮窗常驻桌面，跨 Spaces 跟随，随手呼出对话不抢焦点
+- **对话分享 / 导出** — 一键把对话导出成 JSON 分享给同事；自动脱敏 API Key 与本地路径
 - **28 个内置技能** — PDF/PPTX/DOCX/Excel 生成、前端设计、画布设计、算法艺术、Mermaid/SVG/信息图、Web Artifacts、Chrome 自动化（Abu-Browser）、深度研究、Agent 自我反思（reflect）、工作流自动化等，一键安装，支持自定义
 - **MCP 工具协议** — 通过 Model Context Protocol 连接数据库、搜索引擎、GitHub 等外部服务
 - **浏览器自动化** — 内置 Browser Bridge + Chrome 扩展，实现网页元素操作、表单填写、截图、JS 执行
@@ -91,6 +109,7 @@
 - **Provider 管理** — 添加、编辑、删除、排序，连接健康检查 + 延迟检测
 - **模型选择器** — 对话中实时切换模型，能力徽章一目了然（视觉、工具调用、联网搜索、深度思考、图片生成、长上下文）
 - **收藏与历史** — 常用模型一键收藏，最近使用快速切换
+- **图像生成** — 内置 DALL-E 2 / DALL-E 3 接入，也支持任意自定义图片生成端点
 
 ### 联网搜索
 
@@ -126,20 +145,27 @@
   - `~/.abu/ABU.md` — 用户级规则（跨项目）
   - `{workspace}/.abu/ABU.md` — 项目级规则
   - `{workspace}/.abu/rules/*.md` — 模块化规则（按字母序加载，最多 20 个文件）
-- **Projects 聚合**（v0.13.0+）— 工作区可升级成 Project，同一文件夹下的对话自动归到一起，老对话启动时自动回填 projectId；每个项目可独立配置默认模型、技能集、MCP 连接器
+- **Projects 聚合** — 工作区可升级成 Project，同一文件夹下的对话自动归到一起，老对话启动时自动回填 projectId；每个项目可独立配置默认模型、技能集、MCP 连接器
 - **会话记忆** — 大体积工具输出自动落盘，会话内保留紧凑摘要，防止上下文爆炸
-- **Todo 跨重启**（v0.13.0+）— 对话里的 todo_write 计划持久化到本地磁盘，重启续聊直接接着用
+- **Todo 跨重启** — 对话里的 todo_write 计划持久化到本地磁盘，重启续聊直接接着用
 - **自动压缩** — 对话过长时智能压缩历史消息，保留关键上下文
 
 ### 安全与隐私
 
+- **三档权限模式** — 标准（危险操作和新目录写入需要确认）/ 自动（只确认自动化任务，写入仍需确认）/ 严格（所有工具操作都要确认）
+- **内容安全扫描** — 扫描 agent 写入的 skill / 记忆，拦截危险指令、prompt 注入、硬件指令等 120+ 类风险
 - **OS 沙箱** — macOS Seatbelt (`sandbox-exec`) / Windows PowerShell ConstrainedLanguage，隔离 shell 命令的文件访问范围
 - **网络隔离** — 本地代理 + 域名白名单 + 私有网络访问开关，可控制每条请求的目标
 - **路径与命令双重校验** — 敏感目录（系统目录、SSH 密钥等）默认拦截；危险命令（`rm -rf /` 等）静态识别
 - **电脑操控防护** — 敏感应用黑名单（钥匙串/系统设置/微信/Slack 等 15+）、危险按键拦截（Cmd+Q、Cmd+Tab、Force Quit 等）、会话级窗口隐藏、5 分钟超时熔断
-- **API Key 加密存储**（v0.12+）— Windows DPAPI / macOS AES-256-GCM（硬件 UUID 派生），不再明文写 localStorage
+- **API Key 加密存储** — Windows DPAPI / macOS AES-256-GCM（硬件 UUID 派生），不再明文写 localStorage
 - **本地优先** — 数据存在本地，API Key 存在本地，不经过第三方服务器
 - **跨平台** — 支持 macOS (Apple Silicon / Intel) 和 Windows
+
+### 诊断与排障
+
+- **一键自检** — 设置 → 诊断面板，逐项检查 AI 服务连接、数据&权限、MCP、技能、网络、应用环境
+- **诊断包导出** — 出问题时一键打包日志、配置、版本信息（自动脱敏 API Key 和路径），方便发给作者排障
 
 > 详细功能说明请查看 [使用指南](docs/User-Guide.md)
 
@@ -207,10 +233,10 @@
 | 内容写作 | 文档协作 (doc-coauthoring)、品牌规范 (brand-guidelines)、内部通讯 (internal-comms) |
 | 自动化 | 定时任务 (schedule)、触发器 (trigger)、告警 SOP (alert-sop) |
 | 项目管理 | 技能创建器 (skill-creator)、项目初始化 (init)、Agent 创建 (create-agent) |
-| Agent 反思 | 自省技能 (reflect) — v0.13.0 新增，让 agent 跑完任务后回溯沉淀 |
+| Agent 反思 | 自省技能 (reflect) — agent 跑完任务后回溯沉淀 |
 | 主题 | 主题工厂 (theme-factory)（10+ 预设主题，应用到任何产出物） |
 
-> 除了内置技能，v0.13.0 起阿布支持**自进化 Skills** — 在你跑完多轮复杂流程后主动提议"固化成技能"，自己攒出专属于你工作流的能力库。详见 [使用指南 · Skill 技能系统](docs/User-Guide.md#skill-技能系统)。
+> 除了内置技能，阿布还支持**自进化 Skills** — 在你跑完多轮复杂流程后主动提议"固化成技能"，自己攒出专属于你工作流的能力库。详见 [使用指南 · Skill 技能系统](docs/User-Guide.md#skill-技能系统)。
 
 ## 技术栈
 
@@ -224,7 +250,7 @@
 | 联网搜索 | Bing / Brave / Tavily / SearXNG |
 | 安全沙箱 | macOS Seatbelt + 路径/命令双重校验 |
 | UI 组件 | Radix UI + Lucide Icons + shadcn 风格 |
-| 测试 | Vitest + happy-dom (1773+ 测试用例) |
+| 测试 | Vitest + happy-dom（覆盖核心 store / agent / skill / memdir 等模块） |
 | 评测 | 自带 OpenAI 协议工具调用评测器（`npm run eval:tool-selection`） |
 
 ## 从源码构建
@@ -307,7 +333,7 @@ src/
 ├── types/            # TypeScript 类型定义
 └── utils/            # 工具函数
 
-builtin-skills/       # 27 个内置技能（每个为独立目录）
+builtin-skills/       # 28 个内置技能（每个为独立目录）
 builtin-agents/       # 内置 Agent 定义（预留）
 abu-browser-bridge/   # 浏览器桥接 MCP Server
 abu-chrome-extension/ # Chrome 扩展（Abu-Browser 技能依赖）

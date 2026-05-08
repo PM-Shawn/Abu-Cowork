@@ -49,7 +49,7 @@ aes-gcm = "0.10"
 hkdf = "0.13"
 sha2 = "0.11"
 rand = "0.8"
-machine-uid = "0.5"
+machine-uid = "0.6"
 
 # Secrets: Credential Manager (DPAPI) on Windows, secret-service on Linux.
 [target.'cfg(not(target_os = "macos"))'.dependencies]

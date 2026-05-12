@@ -203,9 +203,7 @@ const enUS: TranslationDict = {
     copyConvIdCopied: 'Conversation ID copied',
     timeJustNow: 'Just now',
     timeMinutesAgo: '{n} min ago',
-    dayToday: 'Today',
     dayYesterday: 'Yesterday',
-    dayBeforeYesterday: '2 days ago',
     fromScheduledTask: 'Scheduled Task',
     fromTrigger: 'Trigger',
     // Scenario guide
@@ -660,6 +658,7 @@ const enUS: TranslationDict = {
     exportDesc: 'Self-check inconclusive? Export a diagnostic bundle to share with us.',
     exportButton: '📦 Export diagnostic bundle',
     exportInProgress: 'Bundling…',
+    exportFailed: 'Export failed',
     exportIncluded: 'What\'s included',
     exportPrivacy: 'Privacy notice',
     exportIncludeRaw: 'Include raw message text (off by default)',

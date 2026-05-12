@@ -203,9 +203,7 @@ const zhCN: TranslationDict = {
     copyConvIdCopied: '已复制对话 ID',
     timeJustNow: '刚刚',
     timeMinutesAgo: '{n} 分钟前',
-    dayToday: '今天',
     dayYesterday: '昨天',
-    dayBeforeYesterday: '前天',
     fromScheduledTask: '定时任务',
     fromTrigger: '监听事件',
     // Scenario guide
@@ -660,6 +658,7 @@ const zhCN: TranslationDict = {
     exportDesc: '自检看不出问题？把诊断包发给我们，能更快定位。',
     exportButton: '📦 导出诊断包',
     exportInProgress: '正在打包…',
+    exportFailed: '导出失败',
     exportIncluded: '会包含哪些信息',
     exportPrivacy: '隐私说明',
     exportIncludeRaw: '包含消息原文（默认关闭）',

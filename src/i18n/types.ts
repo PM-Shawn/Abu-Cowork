@@ -233,9 +233,7 @@ export interface TranslationDict {
     // Message time / day separator
     timeJustNow: string;
     timeMinutesAgo: string;
-    dayToday: string;
     dayYesterday: string;
-    dayBeforeYesterday: string;
     // Source navigation bar (for scheduled/trigger conversations)
     fromScheduledTask: string;
     fromTrigger: string;
@@ -670,6 +668,7 @@ export interface TranslationDict {
     exportDesc: string;
     exportButton: string;
     exportInProgress: string;
+    exportFailed: string;
     exportIncluded: string;
     exportPrivacy: string;
     exportIncludeRaw: string;

@@ -745,9 +745,9 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
                 onClick={handleSend}
                 disabled={!hasContent}
                 className={cn(
-                  'btn-claude-primary flex items-center gap-1.5 px-4 py-1.5 rounded-lg text-[13px] font-medium',
+                  'btn-claude-primary flex items-center gap-1.5 px-4 py-1.5 rounded-lg text-[13px] font-medium transition-colors',
                   hasContent
-                    ? 'bg-[var(--abu-text-primary)] text-[var(--abu-bg-base)] shadow-sm'
+                    ? 'bg-[var(--abu-clay)] hover:bg-[var(--abu-clay-hover)] text-white shadow-sm'
                     : 'bg-[var(--abu-bg-hover)] text-[var(--abu-text-muted)] cursor-not-allowed'
                 )}
               >
@@ -798,7 +798,7 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
                   size="icon"
                   onClick={handleStop}
                   aria-label={t.chat.stop}
-                  className="h-7 w-7 rounded-lg bg-[var(--abu-text-primary)] hover:bg-[var(--abu-text-secondary)] text-[var(--abu-bg-base)] shadow-sm transition-colors"
+                  className="h-7 w-7 rounded-lg border border-[var(--abu-border)] bg-transparent text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-hover)] hover:border-[var(--abu-border-hover)] transition-colors"
                   title={t.chat.stop}
                 >
                   <Square className="h-3 w-3" fill="currentColor" />
@@ -811,7 +811,7 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
                   className={cn(
                     'h-7 w-7 rounded-lg transition-colors',
                     hasContent && !disabled
-                      ? 'bg-[var(--abu-text-primary)] hover:bg-[var(--abu-text-primary)] text-[var(--abu-bg-base)] shadow-sm'
+                      ? 'bg-[var(--abu-clay)] hover:bg-[var(--abu-clay-hover)] text-white shadow-sm'
                       : 'bg-[var(--abu-bg-hover)] text-[var(--abu-text-muted)] cursor-not-allowed hover:bg-[var(--abu-bg-hover)]'
                   )}
                 >

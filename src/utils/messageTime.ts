@@ -60,22 +60,3 @@ export function formatRelativeTime(ts: number, now: number = Date.now()): string
   return `${dateOnly(ts, !sameYear)} ${timeOnly(ts)}`;
 }
 
-/**
- * Day-boundary label rendered in the separator between message groups
- * spanning different calendar days.
- * - Today / Yesterday / Day before yesterday → friendly word
- * - Same year → "MM-DD"
- * - Otherwise → "YYYY-MM-DD"
- */
-export function formatDayLabel(ts: number, now: number = Date.now()): string {
-  const t = getI18n();
-  const dayDiff = Math.floor(
-    (startOfLocalDay(now) - startOfLocalDay(ts)) / MS_DAY
-  );
-  if (dayDiff === 0) return t.chat.dayToday;
-  if (dayDiff === 1) return t.chat.dayYesterday;
-  if (dayDiff === 2) return t.chat.dayBeforeYesterday;
-
-  const sameYear = new Date(ts).getFullYear() === new Date(now).getFullYear();
-  return dateOnly(ts, !sameYear);
-}

@@ -6,6 +6,7 @@ import { useToastStore } from '@/stores/toastStore';
 import { useDiagnosticStore } from '@/stores/diagnosticStore';
 import { Toggle } from '@/components/ui/toggle';
 import { produceBundle, type ProduceResult } from '@/core/diagnostic/bundle';
+import { mapPermissionsError } from '@/core/diagnostic/errorMap';
 
 interface Props {
   onExportSuccess: (r: ProduceResult) => void;
@@ -52,11 +53,13 @@ export default function ExportPanel({ onExportSuccess }: Props) {
       setLastExportPath(res.path);
       onExportSuccess(res);
     } catch (e) {
+      const raw = e instanceof Error ? e.message : String(e);
+      const friendly = mapPermissionsError(raw);
       addToast({
-        title: t.diagnostic.exportInProgress,
-        message: e instanceof Error ? e.message : String(e),
+        title: t.diagnostic.exportFailed,
+        message: friendly.message === t.diagnostic.errMap.unknown ? raw : `${friendly.message}\n${raw}`,
         type: 'error',
-        duration: 5000,
+        duration: 6000,
       });
     } finally {
       setExportInProgress(false);

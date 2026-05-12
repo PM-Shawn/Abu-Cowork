@@ -1,0 +1,40 @@
+{
+  "identifier": "windows-extras",
+  "description": "Windows-only fs scope extras. On Windows users frequently relocate the Downloads folder to a non-C: drive (e.g. D:\\Users\\<user>\\Downloads) to save C: space. That path is NOT under $HOME, so the default $HOME/** scope rejects writes there with 'forbidden path'. This capability adds $DOWNLOAD/** for the scopes the diagnostic-bundle export touches. Gated to Windows only — on macOS, declaring $DOWNLOAD in scope causes tauri-plugin-fs to resolve the path at init, which triggers a TCC prompt the instant the app launches (see src/__tests__/tauriCapabilities.test.ts header for the historical incident).",
+  "windows": ["main"],
+  "platforms": ["windows"],
+  "permissions": [
+    {
+      "identifier": "fs:allow-exists",
+      "allow": [
+        { "path": "$DOWNLOAD" },
+        { "path": "$DOWNLOAD/**" }
+      ]
+    },
+    {
+      "identifier": "fs:allow-mkdir",
+      "allow": [
+        { "path": "$DOWNLOAD" },
+        { "path": "$DOWNLOAD/**" }
+      ]
+    },
+    {
+      "identifier": "fs:allow-write-file",
+      "allow": [
+        { "path": "$DOWNLOAD/**" }
+      ]
+    },
+    {
+      "identifier": "fs:allow-write-text-file",
+      "allow": [
+        { "path": "$DOWNLOAD/**" }
+      ]
+    },
+    {
+      "identifier": "fs:allow-stat",
+      "allow": [
+        { "path": "$DOWNLOAD/**" }
+      ]
+    }
+  ]
+}

@@ -14,17 +14,21 @@
  * TCC now fires only on first real file I/O to these folders, which is
  * the intended UX.
  *
- * If a future change re-adds `$DESKTOP`/`$DOCUMENT`/`$DOWNLOAD` paths,
- * this test fails and points future contributors to this explanation.
+ * Exception: Windows users frequently relocate Downloads off the C:
+ * drive, putting it outside `$HOME/**`. To cover that case we allow
+ * `$DOWNLOAD` scope additions, but only inside a capability gated by
+ * `"platforms": ["windows"]` so macOS never loads them.
+ *
+ * If a future change re-adds `$DESKTOP`/`$DOCUMENT`/`$DOWNLOAD` paths
+ * to a macOS-active capability, this test fails and points future
+ * contributors to this explanation.
  */
 import fs from 'node:fs';
 import path from 'node:path';
 import { describe, it, expect } from 'vitest';
 
-const CAPABILITIES_PATH = path.resolve(
-  __dirname,
-  '../../src-tauri/capabilities/default.json'
-);
+const CAPABILITIES_DIR = path.resolve(__dirname, '../../src-tauri/capabilities');
+const CAPABILITIES_PATH = path.join(CAPABILITIES_DIR, 'default.json');
 
 interface PermissionObject {
   identifier?: string;
@@ -34,11 +38,26 @@ interface PermissionObject {
 type Permission = string | PermissionObject;
 
 interface Capabilities {
+  identifier?: string;
+  platforms?: string[];
   permissions: Permission[];
 }
 
 function loadCapabilities(): Capabilities {
   return JSON.parse(fs.readFileSync(CAPABILITIES_PATH, 'utf-8'));
+}
+
+function loadAllCapabilities(): Capabilities[] {
+  return fs
+    .readdirSync(CAPABILITIES_DIR)
+    .filter((f) => f.endsWith('.json'))
+    .map((f) => JSON.parse(fs.readFileSync(path.join(CAPABILITIES_DIR, f), 'utf-8')) as Capabilities);
+}
+
+function appliesToMacOS(cap: Capabilities): boolean {
+  // Missing `platforms` field = all platforms. Otherwise must include "macOS".
+  if (!cap.platforms) return true;
+  return cap.platforms.includes('macOS');
 }
 
 function collectScopePaths(permissions: Permission[]): string[] {
@@ -75,12 +94,16 @@ function permissionScopePaths(
 describe('tauri capabilities — startup TCC regression guard', () => {
   const FORBIDDEN_ROOTS = ['$DESKTOP', '$DOCUMENT', '$DOWNLOAD'];
 
-  it('does not declare $DESKTOP / $DOCUMENT / $DOWNLOAD scope paths (covered by $HOME/**)', () => {
-    const paths = collectScopePaths(loadCapabilities().permissions);
-    const violations = paths.filter((p) =>
-      FORBIDDEN_ROOTS.some((root) => p.startsWith(root))
-    );
-    expect(violations).toEqual([]);
+  it('does not declare $DESKTOP / $DOCUMENT / $DOWNLOAD scope paths in any macOS-active capability', () => {
+    const offenders = loadAllCapabilities()
+      .filter(appliesToMacOS)
+      .flatMap((cap) => {
+        const paths = collectScopePaths(cap.permissions);
+        return paths
+          .filter((p) => FORBIDDEN_ROOTS.some((root) => p.startsWith(root)))
+          .map((p) => `${cap.identifier ?? '<no id>'}: ${p}`);
+      });
+    expect(offenders).toEqual([]);
   });
 
   it('still declares $HOME/** so Desktop/Documents/Downloads remain reachable through the home directory', () => {

@@ -30,7 +30,7 @@ initPlatform().then(() => {
 });
 import { useSettingsStore, bootstrapSecrets } from '@/stores/settingsStore';
 import { TooltipProvider } from '@/components/ui/tooltip';
-import { PanelLeft, PanelRight } from 'lucide-react';
+import { PanelLeft, PanelRight, ArrowLeft } from 'lucide-react';
 import { isMacOS } from '@/utils/platform';
 import { cn } from '@/lib/utils';
 import { initNotifications, clearDockBadge } from '@/utils/notifications';
@@ -91,6 +91,9 @@ function App() {
   const rightPanelCollapsed = useSettingsStore((s) => s.rightPanelCollapsed);
   const toggleRightPanel = useSettingsStore((s) => s.toggleRightPanel);
   const viewMode = useSettingsStore((s) => s.viewMode);
+  const closeSystemSettings = useSettingsStore((s) => s.closeSystemSettings);
+  const closeAutomation = useSettingsStore((s) => s.closeAutomation);
+  const closeToolbox = useSettingsStore((s) => s.closeToolbox);
   const activeConv = useActiveConversation();
   const { t } = useI18n();
 
@@ -381,14 +384,33 @@ function App() {
 
       {/* Sidebar & panel toggle buttons — positioned in title bar area on macOS, top bar on Windows */}
       <div className={cn('fixed left-0 right-0 z-40 pointer-events-none', mac ? 'top-0 h-11' : 'top-0 h-8')}>
-        <button
-          onClick={toggleSidebar}
-          className="absolute btn-ghost p-1 text-[var(--abu-text-tertiary)] hover:text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-hover)] rounded-md transition-[left] duration-200 pointer-events-auto"
-          style={{ top: mac ? 8 : 4, left: sidebarCollapsed ? 96 : 232 }}
-          title={sidebarCollapsed ? t.sidebar.showSidebar : t.sidebar.hideSidebar}
-        >
-          <PanelLeft className="h-3.5 w-[18px]" strokeWidth={1.5} />
-        </button>
+        {viewMode === 'settings' || viewMode === 'automation' || viewMode === 'toolbox' ? (
+          <button
+            onClick={
+              viewMode === 'settings' ? closeSystemSettings
+              : viewMode === 'automation' ? closeAutomation
+              : closeToolbox
+            }
+            className="absolute flex items-center gap-1.5 btn-ghost px-2 py-1 text-[var(--abu-text-tertiary)] hover:text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-hover)] rounded-md pointer-events-auto text-sm"
+            style={{ top: mac ? 8 : 4, left: mac ? 80 : 8 }}
+          >
+            <ArrowLeft className="h-3.5 w-3.5" strokeWidth={1.5} />
+            <span>
+              {viewMode === 'settings' ? t.settings.title
+               : viewMode === 'automation' ? t.sidebar.automation
+               : t.sidebar.toolbox}
+            </span>
+          </button>
+        ) : (
+          <button
+            onClick={toggleSidebar}
+            className="absolute btn-ghost p-1 text-[var(--abu-text-tertiary)] hover:text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-hover)] rounded-md transition-[left] duration-200 pointer-events-auto"
+            style={{ top: mac ? 8 : 4, left: sidebarCollapsed ? 96 : 232 }}
+            title={sidebarCollapsed ? t.sidebar.showSidebar : t.sidebar.hideSidebar}
+          >
+            <PanelLeft className="h-3.5 w-[18px]" strokeWidth={1.5} />
+          </button>
+        )}
 
         {showRightPanelToggle && (
           <button
@@ -406,7 +428,7 @@ function App() {
         {/* Sidebar - collapses smoothly in toolbox mode */}
         <div
           className="sidebar-transition shrink-0 overflow-hidden"
-          style={{ width: sidebarCollapsed ? 0 : 260 }}
+          style={{ width: (sidebarCollapsed || viewMode === 'settings' || viewMode === 'automation' || viewMode === 'toolbox') ? 0 : 260 }}
         >
           <Sidebar />
         </div>

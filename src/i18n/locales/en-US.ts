@@ -1610,7 +1610,7 @@ const enUS: TranslationDict = {
     bySkill: 'By Skill',
     byModel: 'By Model',
     noData: 'No data yet. Usage will be recorded after you send a message.',
-    heatmapTitle: 'Activity (last 12 weeks)',
+    heatmapTitle: 'Activity (last year)',
     dailyTitle: 'Daily usage (last 30 days)',
     heatmapTooltipUsed: '{date}: {tokens} tokens used',
     heatmapTooltipNoData: '{date}: no data',

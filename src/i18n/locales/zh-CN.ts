@@ -1611,7 +1611,7 @@ const zhCN: TranslationDict = {
     bySkill: '按 Skill',
     byModel: '按 Model',
     noData: '暂无数据，发送消息后将记录用量',
-    heatmapTitle: '活跃热图（近 12 周）',
+    heatmapTitle: '活跃热图（近 1 年）',
     dailyTitle: '每日消耗（近 30 天）',
     heatmapTooltipUsed: '{date} 消耗了 {tokens} token',
     heatmapTooltipNoData: '{date} 暂无记录',

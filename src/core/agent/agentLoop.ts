@@ -1364,7 +1364,9 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
           recordTurnUsage(
             conversationId,
             effectiveModelId,
-            route.type === 'skill' ? (route.skill?.name ?? null) : null,
+            route.type === 'skill'
+              ? (route.skill?.name ?? null)
+              : (useChatStore.getState().conversations[conversationId]?.activeSkills?.[0] ?? null),
             {
               inputTokens: usageSnapshot.inputTokens,
               outputTokens: usageSnapshot.outputTokens,

@@ -421,7 +421,7 @@ export default function MessageBubble({
     const { cleanText: userCleanText, attachmentPaths } = extractAttachments(textContent);
     return (
       <div className="flex justify-end w-full group">
-        <div className="relative flex flex-col items-end gap-1.5 max-w-[85%]">
+        <div className="flex flex-col items-end gap-1.5 max-w-[85%]">
           {/* Image thumbnails — above the text bubble */}
           {imageBlocks.length > 0 && !isEditing && (
             <div className="flex flex-wrap justify-end gap-1.5">
@@ -452,17 +452,7 @@ export default function MessageBubble({
               onCancel={() => setIsEditing(false)}
             />
           ) : (
-            <div className="flex items-start gap-2">
-              {/* Actions - show on hover */}
-              {!isConvRunning && (
-                <MessageActions
-                  message={message}
-                  onEdit={handleEdit}
-                  onDelete={handleDelete}
-                  onRegenerate={handleRegenerate}
-                  isUser={true}
-                />
-              )}
+            <>
               {/* Hide bubble when there's no text and no skill badge (pure image message) */}
               {(userCleanText || message.skill) && (
                 <div className="px-4 py-2.5 rounded-2xl rounded-br-sm bg-[var(--abu-bg-active)] text-[var(--abu-text-primary)]">
@@ -480,13 +470,20 @@ export default function MessageBubble({
                   )}
                 </div>
               )}
-            </div>
-          )}
-          {/* Hover timestamp — absolute so it doesn't reserve vertical space when hidden */}
-          {!isEditing && message.timestamp && (
-            <div className="absolute -bottom-4 right-1 pointer-events-none">
-              <MessageTimestamp timestamp={message.timestamp} />
-            </div>
+              {/* Actions + timestamp row below bubble */}
+              <div className="flex items-center gap-1.5">
+                {!isConvRunning && (
+                  <MessageActions
+                    message={message}
+                    onEdit={handleEdit}
+                    onDelete={handleDelete}
+                    onRegenerate={handleRegenerate}
+                    isUser={true}
+                  />
+                )}
+                {message.timestamp && <MessageTimestamp timestamp={message.timestamp} />}
+              </div>
+            </>
           )}
         </div>
       </div>

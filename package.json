@@ -67,7 +67,7 @@
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
-    "@tailwindcss/vite": "^4.2.4",
+    "@tailwindcss/vite": "^4.3.0",
     "@tauri-apps/cli": "^2.11.1",
     "@testing-library/jest-dom": "^6.9.1",
     "@testing-library/react": "^16.3.2",
@@ -91,7 +91,7 @@
     "typescript": "~6.0.3",
     "typescript-eslint": "^8.59.3",
     "vite": "^8.0.12",
-    "vitest": "^4.1.5"
+    "vitest": "^4.1.6"
   },
   "lint-staged": {
     "src/**/*.{ts,tsx}": [

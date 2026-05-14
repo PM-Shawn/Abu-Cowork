@@ -33,7 +33,7 @@ futures-util = "0.3"
 prost = "0.13"
 reqwest = { version = "0.13", default-features = false, features = ["json", "native-tls"] }
 xcap = "0.9"
-enigo = { version = "0.3", features = ["serde"] }
+enigo = { version = "0.6", features = ["serde"] }
 base64 = "0.22"
 image = { version = "0.25", default-features = false, features = ["png"] }
 tempfile = "3"

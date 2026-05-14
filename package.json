@@ -45,7 +45,7 @@
     "diff": "^9.0.0",
     "docx-preview": "^0.3.7",
     "fflate": "^0.8.2",
-    "immer": "^11.1.4",
+    "immer": "^11.1.8",
     "linkedom": "^0.18.12",
     "lucide-react": "^0.575.0",
     "mermaid": "^11.15.0",

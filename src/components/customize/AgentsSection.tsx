@@ -359,12 +359,27 @@ export default function AgentsSection({ manualCreateTrigger, onAICreate, onManua
               <div className="flex items-center gap-2 shrink-0">
                 {selected.name !== 'abu' && (
                   <>
+                    {/* Start Chat — primary action button next to the toggle.
+                     *  Clay-tinted pill (icon + label) so it reads as the main CTA
+                     *  without competing visually with the toggle's filled clay state.
+                     *  Hidden when the agent is disabled (toggle off). */}
+                    {!disabledSet.has(selected.name) && (
+                      <button
+                        onClick={() => startChatWithAgent(selected)}
+                        className="flex items-center gap-1.5 px-2.5 h-7 rounded-md text-xs font-medium text-[var(--abu-clay)] bg-[var(--abu-clay-bg)] hover:bg-[var(--abu-clay-bg-15)] border border-[var(--abu-clay-40)] hover:border-[var(--abu-clay)] transition-colors"
+                        title={t.toolbox.agentStartChat}
+                      >
+                        <MessageCircle className="h-3.5 w-3.5" />
+                        <span>{t.toolbox.agentStartChat}</span>
+                      </button>
+                    )}
                     <Toggle
                       checked={!disabledSet.has(selected.name)}
                       onChange={() => toggleAgentEnabled(selected.name)}
                     />
-                    {/* Show "..." menu only when there are items: user agents always have edit/delete; system agents only when enabled (try in chat) */}
-                    {(!isSystemAgent(selected) || !disabledSet.has(selected.name)) && (
+                    {/* "..." menu — only for user agents (edit / delete). Builtin
+                     *  agents have nothing manageable here so the button collapses. */}
+                    {!isSystemAgent(selected) && (
                       <div className="relative">
                         <button
                           onClick={(e) => { e.stopPropagation(); setMenuAgent(menuAgent === selected.name ? null : selected.name); }}
@@ -374,38 +389,20 @@ export default function AgentsSection({ manualCreateTrigger, onAICreate, onManua
                         </button>
                         {menuAgent === selected.name && (
                           <div className="absolute right-0 top-8 z-10 bg-white border border-[var(--abu-border)] rounded-lg shadow-lg py-1 min-w-[140px]">
-                            {/* Try in chat - only when enabled */}
-                            {!disabledSet.has(selected.name) && (
-                              <button
-                                className="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-muted)] transition-colors"
-                                onClick={() => {
-                                  setMenuAgent(null);
-                                  startChatWithAgent(selected);
-                                }}
-                              >
-                                <MessageCircle className="h-3 w-3" />
-                                {t.toolbox.skillTryInChat}
-                              </button>
-                            )}
-                            {/* Edit & Delete - only for user agents */}
-                            {!isSystemAgent(selected) && (
-                              <>
-                                <button
-                                  className="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-muted)] transition-colors"
-                                  onClick={() => { setEditorAgent(selected); setMenuAgent(null); }}
-                                >
-                                  <Pencil className="h-3 w-3" />
-                                  {t.toolbox.agentEdit}
-                                </button>
-                                <button
-                                  className="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-red-600 hover:bg-red-50 transition-colors"
-                                  onClick={() => { handleDelete(selected); setMenuAgent(null); }}
-                                >
-                                  <Trash2 className="h-3 w-3" />
-                                  {t.toolbox.uninstall}
-                                </button>
-                              </>
-                            )}
+                            <button
+                              className="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-muted)] transition-colors"
+                              onClick={() => { setEditorAgent(selected); setMenuAgent(null); }}
+                            >
+                              <Pencil className="h-3 w-3" />
+                              {t.toolbox.agentEdit}
+                            </button>
+                            <button
+                              className="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-red-600 hover:bg-red-50 transition-colors"
+                              onClick={() => { handleDelete(selected); setMenuAgent(null); }}
+                            >
+                              <Trash2 className="h-3 w-3" />
+                              {t.toolbox.uninstall}
+                            </button>
                           </div>
                         )}
                       </div>
@@ -426,17 +423,6 @@ export default function AgentsSection({ manualCreateTrigger, onAICreate, onManua
               <span className="text-xs text-[var(--abu-text-muted)]">Description</span>
               <p className="text-sm text-[var(--abu-text-primary)] leading-relaxed mt-1.5">{localizedDescription(selected, locale)}</p>
             </div>
-
-            {/* Start Chat CTA — main action; hidden for abu (no @mention path needed) and when disabled */}
-            {selected.name !== 'abu' && !disabledSet.has(selected.name) && (
-              <button
-                onClick={() => startChatWithAgent(selected)}
-                className="mb-7 flex items-center justify-center gap-2 w-full py-2.5 rounded-xl bg-[var(--abu-clay)] text-white text-sm font-medium hover:bg-[var(--abu-clay-hover)] transition-colors"
-              >
-                <MessageCircle className="h-4 w-4" />
-                {t.toolbox.agentStartChat}
-              </button>
-            )}
 
             {/* Intro — agent self-introduction shown when there's an intro paragraph */}
             {localizedIntro(selected, locale) && (

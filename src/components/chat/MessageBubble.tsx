@@ -148,6 +148,23 @@ function getImageBlocks(content: string | MessageContent[]): Extract<MessageCont
   return content.filter((c): c is Extract<MessageContent, { type: 'image' }> => c.type === 'image');
 }
 
+/**
+ * Re-attach the original routing prefix (`@expert` or `/skill`) to user text
+ * for edit / regenerate paths. The user message we store is post-routing
+ * cleanInput (without the prefix), so resending raw text would fall back to
+ * the default route and lose the expert / skill association.
+ */
+function reattachRoutingPrefix(body: string, original: Message): string {
+  const trimmed = body.trim();
+  if (original.delegateAgent) {
+    return trimmed ? `@${original.delegateAgent.name} ${trimmed}` : `@${original.delegateAgent.name}`;
+  }
+  if (original.skill) {
+    return trimmed ? `/${original.skill.name} ${trimmed}` : `/${original.skill.name}`;
+  }
+  return body;
+}
+
 // Thinking block component for extended thinking
 function ThinkingBlock({ thinking }: { thinking: string }) {
   const [expanded, setExpanded] = useState(false);
@@ -330,13 +347,17 @@ export default function MessageBubble({
     setIsEditing(false);
     // Delete this message and all subsequent messages, then runAgentLoop creates a fresh one
     useChatStore.getState().deleteMessagesFrom(convId, message.id);
+    // Re-attach the original routing prefix (@expert or /skill) so the
+    // edited resend stays on the same agent / skill — otherwise the message
+    // falls back to the default `general` route and the expert is lost.
+    const routedContent = reattachRoutingPrefix(newContent, message);
     // Regenerate response, passing original images if any
     const imageAttachments = originalImages.map((img, i) => ({
       id: `edit-${Date.now()}-${i}`,
       data: img.source.data,
       mediaType: img.source.media_type,
     }));
-    await runAgentLoop(convId, newContent, imageAttachments.length > 0 ? { images: imageAttachments } : undefined);
+    await runAgentLoop(convId, routedContent, imageAttachments.length > 0 ? { images: imageAttachments } : undefined);
   };
 
   const handleDelete = () => {
@@ -389,6 +410,10 @@ export default function MessageBubble({
       // Delete from user message onwards and regenerate
       useChatStore.getState().deleteMessagesFrom(convId, userMsgToRegenerate.id);
       const userContent = getTextContent(userMsgToRegenerate.content);
+      // Re-attach the original @expert / /skill prefix so the regenerated
+      // turn stays on the same route — the user message stored content is
+      // post-routing cleanInput, so the prefix is otherwise lost.
+      const routedContent = reattachRoutingPrefix(userContent, userMsgToRegenerate);
       // Preserve image blocks from original user message
       const originalImages = getImageBlocks(userMsgToRegenerate.content);
       const imageAttachments = originalImages.map((img, i) => ({
@@ -396,7 +421,7 @@ export default function MessageBubble({
         data: img.source.data,
         mediaType: img.source.media_type,
       }));
-      await runAgentLoop(convId, userContent, imageAttachments.length > 0 ? { images: imageAttachments } : undefined);
+      await runAgentLoop(convId, routedContent, imageAttachments.length > 0 ? { images: imageAttachments } : undefined);
     }
   };
 

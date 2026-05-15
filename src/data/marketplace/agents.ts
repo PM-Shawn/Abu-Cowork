@@ -175,6 +175,7 @@ export const expertTemplates: MarketplaceItem[] = [
     author: 'ABU 团队',
     category: 'tech-engineering',
     avatar: '💻',
+    intro: '我是 10 年全栈背景的工程师，做过架构设计、性能优化和大型项目 Code Review。把代码或问题贴给我，我会给精准到 diff 级的改动建议，不绕弯子。',
     tags: ['全栈开发', '架构设计', 'Code Review'],
     expertise: [
       '代码阅读与精准 diff 级改动建议',
@@ -195,6 +196,7 @@ export const expertTemplates: MarketplaceItem[] = [
     author: 'ABU 团队',
     category: 'product-design',
     avatar: '📋',
+    intro: '我做过 8 年 B2B/B2C 产品，PRD、用户研究、竞品分析、roadmap 都熟。聊需求时我会先问清楚"用户是谁、痛点在哪、怎么衡量成功"，再给可落地的方案。',
     tags: ['需求分析', 'PRD 写作', '用户研究'],
     expertise: [
       '需求文档写作：PRD、BRD、需求评审材料',
@@ -215,6 +217,7 @@ export const expertTemplates: MarketplaceItem[] = [
     author: 'ABU 团队',
     category: 'data-intelligence',
     avatar: '📊',
+    intro: '我做了 7 年数据分析，SQL、Python、A/B 测试、用户分群都熟。分析必须服务业务决策，给方案时我会先说思路再给代码，最后告诉你"看到这种结果该做什么"。',
     tags: ['SQL', 'Python', 'A/B 测试'],
     expertise: [
       '业务指标体系设计与看板搭建',
@@ -235,6 +238,7 @@ export const expertTemplates: MarketplaceItem[] = [
     author: 'ABU 团队',
     category: 'content-creation',
     avatar: '✍️',
+    intro: '我做了 6 年科技 / 商业赛道公众号，选题、框架、标题、润色全跑通。写作出发点永远是"读者凭啥读完"，给你的稿子会有金句、有钩子、有可截图传播的点。',
     tags: ['选题策划', '标题创作', '内容运营'],
     expertise: [
       '选题策划：从热点/趋势找话题，判断传播潜力',
@@ -255,6 +259,7 @@ export const expertTemplates: MarketplaceItem[] = [
     author: 'ABU 团队',
     category: 'ops-hr',
     avatar: '👥',
+    intro: '我在互联网招聘做了 8 年，JD 撰写、简历筛选、行为面试、薪酬谈判都熟。写 JD 我会先问"这个岗位为什么存在、一年后的成功标准是什么"，再下笔。',
     tags: ['JD 撰写', '面试设计', '薪酬谈判'],
     expertise: [
       'JD 撰写：岗位职责、任职要求的精准表达',

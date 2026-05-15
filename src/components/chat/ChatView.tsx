@@ -14,6 +14,8 @@ import ChatInput from './ChatInput';
 import ContextWarningBar from './ContextWarningBar';
 import BackgroundAgents from './BackgroundAgents';
 import ScenarioGuide from './ScenarioGuide';
+import { expertTemplates } from '@/data/marketplace/agents';
+import { expertsEnUS } from '@/data/experts/expertsI18n';
 import PermissionDialog from '@/components/common/PermissionDialog';
 import CommandConfirmDialog from '@/components/common/CommandConfirmDialog';
 import { ChevronDown, Settings } from 'lucide-react';
@@ -71,7 +73,19 @@ export default function ChatView() {
   // Derive messages from activeConv (re-evaluated when messageCount changes)
   const messages = activeConv?.messages ?? [];
   void messageCount; // used only to trigger re-render
-  const { t } = useI18n();
+  const { t, locale } = useI18n();
+
+  // Pending expert: set when user enters chat from Expert Center.
+  // Drives the welcome banner; cleared once first message is sent.
+  const pendingExpertId = useChatStore((s) => s.pendingExpertId);
+  const pendingExpert = pendingExpertId
+    ? (() => {
+        const base = expertTemplates.find((e) => e.id === pendingExpertId);
+        if (!base) return null;
+        const overrides = locale === 'en-US' ? expertsEnUS[pendingExpertId] : undefined;
+        return overrides ? { ...base, ...overrides } : base;
+      })()
+    : null;
 
   // Subscribe to command confirmation state using useSyncExternalStore
   const commandConfirmRequest = useSyncExternalStore(
@@ -256,18 +270,41 @@ export default function ChatView() {
           <div className="w-full max-w-2xl">
             {/* Title */}
             <div className="text-center mb-8">
-              {/* Mascot */}
-              <div className="w-20 h-20 mx-auto mb-4 rounded-full overflow-hidden">
-                <img src={abuAvatar} alt="Abu" className="w-full h-full object-cover" />
-              </div>
+              {pendingExpert ? (
+                <>
+                  {/* Expert avatar (emoji in tinted circle) */}
+                  <div className="w-20 h-20 mx-auto mb-4 rounded-full bg-[var(--abu-bg-active)] flex items-center justify-center text-5xl select-none">
+                    {pendingExpert.avatar ?? '🤖'}
+                  </div>
 
-              {/* Slogan */}
-              <h1 className="text-[28px] font-semibold text-[var(--abu-text-primary)] leading-tight mb-2">
-                {t.chat.welcomeTitle}
-              </h1>
-              <p className="text-[15px] text-[var(--abu-text-tertiary)]">
-                {t.chat.welcomeSubtitle}
-              </p>
+                  <h1 className="text-[28px] font-semibold text-[var(--abu-text-primary)] leading-tight mb-2">
+                    {pendingExpert.name}
+                  </h1>
+                  <p className="text-[15px] text-[var(--abu-text-tertiary)] mb-3">
+                    {pendingExpert.description}
+                  </p>
+                  {pendingExpert.intro && (
+                    <p className="text-[14px] text-[var(--abu-text-secondary)] leading-relaxed max-w-lg mx-auto">
+                      {pendingExpert.intro}
+                    </p>
+                  )}
+                </>
+              ) : (
+                <>
+                  {/* Mascot */}
+                  <div className="w-20 h-20 mx-auto mb-4 rounded-full overflow-hidden">
+                    <img src={abuAvatar} alt="Abu" className="w-full h-full object-cover" />
+                  </div>
+
+                  {/* Slogan */}
+                  <h1 className="text-[28px] font-semibold text-[var(--abu-text-primary)] leading-tight mb-2">
+                    {t.chat.welcomeTitle}
+                  </h1>
+                  <p className="text-[15px] text-[var(--abu-text-tertiary)]">
+                    {t.chat.welcomeSubtitle}
+                  </p>
+                </>
+              )}
             </div>
 
             {/* First-run setup prompt */}

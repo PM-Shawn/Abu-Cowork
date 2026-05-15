@@ -20,6 +20,7 @@ export default function ExpertsCenter() {
   const closeExperts = useSettingsStore((s) => s.closeExperts);
   const startNewConversation = useChatStore((s) => s.startNewConversation);
   const setPendingInput = useChatStore((s) => s.setPendingInput);
+  const setPendingExpert = useChatStore((s) => s.setPendingExpert);
 
   const localizedExperts = useMemo<MarketplaceItem[]>(() => {
     if (locale !== 'en-US') return expertTemplates;
@@ -61,6 +62,7 @@ export default function ExpertsCenter() {
     const input = promptText ? `@${registryName} ${promptText}` : `@${registryName} `;
     startNewConversation();
     setPendingInput(input);
+    setPendingExpert(expertId);
     closeExperts();
   };
 

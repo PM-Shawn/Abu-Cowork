@@ -720,15 +720,22 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
       }
 
       // Add result as assistant message
+      const delegateAssistantId = generateId();
       chatStore.addMessage(conversationId, {
-        id: generateId(),
+        id: delegateAssistantId,
         role: 'assistant',
         content: result.text,
         timestamp: Date.now(),
         loopId,
       });
 
-      chatStore.finishStreaming(conversationId);
+      // Pass msgId so finishStreaming uses replaceMessageById (precise) instead
+      // of updateLastMessage (blind last-line replace). Without this, the
+      // delegate path could race against the appendMessage batch queue and
+      // either clobber the user message (when the file already has user line)
+      // or duplicate the assistant message (when the user line was still in
+      // the queue) — leaving the user bubble missing after reload.
+      chatStore.finishStreaming(conversationId, delegateAssistantId);
       chatStore.clearAbortController(conversationId);
       eventRouter.route({ type: 'done', loopId, reason: 'delegate_complete' });
       persistExecutionSnapshot(conversationId, loopId);
@@ -755,14 +762,15 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
         return { reason: 'aborted' };
       }
       const errorMessage = err instanceof Error ? err.message : String(err);
+      const delegateErrorId = generateId();
       chatStore.addMessage(conversationId, {
-        id: generateId(),
+        id: delegateErrorId,
         role: 'assistant',
         content: `**Error:** ${errorMessage}`,
         timestamp: Date.now(),
         loopId,
       });
-      chatStore.finishStreaming(conversationId);
+      chatStore.finishStreaming(conversationId, delegateErrorId);
       chatStore.clearAbortController(conversationId);
       eventRouter.route({ type: 'error', loopId, error: errorMessage });
       persistExecutionSnapshot(conversationId, loopId);
@@ -873,14 +881,15 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
     });
 
     if (maxTurns !== undefined && turnCount > maxTurns) {
+      const maxTurnsMsgId = generateId();
       chatStore.addMessage(conversationId, {
-        id: generateId(),
+        id: maxTurnsMsgId,
         role: 'assistant',
         content: format(getI18n().chat.maxTurnsReached, { n: maxTurns }),
         timestamp: Date.now(),
         loopId,
       });
-      chatStore.finishStreaming(conversationId);
+      chatStore.finishStreaming(conversationId, maxTurnsMsgId);
       chatStore.clearAbortController(conversationId);
       eventRouter.route({ type: 'done', loopId, reason: 'max_turns' });
       persistExecutionSnapshot(conversationId, loopId);

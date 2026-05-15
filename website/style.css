@@ -245,6 +245,7 @@ body {
 .dl-trigger {
     gap: 10px;
     cursor: pointer;
+    white-space: nowrap;
 }
 
 .dl-chevron-icon {

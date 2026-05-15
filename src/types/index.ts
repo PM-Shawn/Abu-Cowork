@@ -459,8 +459,14 @@ export interface Skill extends SkillMetadata {
 
 // --- Subagent ---
 
+/** Locale code used for i18n overrides. Mirrors SupportedLocale from i18n/types.ts
+ *  — declared inline here to avoid pulling the i18n module into core agent code. */
+type AgentLocale = 'zh-CN' | 'en-US';
+
 export interface SubagentMetadata {
+  /** Canonical name — primary key in agentRegistry, also the `@mention` token. */
   name: string;
+  /** Default-locale description shown in toolbox / agent selector. */
   description: string;
   avatar?: string;
   model?: string;
@@ -470,6 +476,32 @@ export interface SubagentMetadata {
   skills?: string[];
   memory?: 'session' | 'project' | 'user';
   background?: boolean;
+
+  // ── Display-only fields (rendered by toolbox AgentsSection / chat welcome banner)
+  //   All optional. User-defined agents can fill any subset; builtins ship full data.
+
+  /** Per-locale display names. UI renders `displayNames[locale] ?? name`. Also
+   *  used as `@mention` aliases — an en-US user can type `@product-manager` and
+   *  it routes to the same agent as `@产品经理`. */
+  displayNames?: Partial<Record<AgentLocale, string>>;
+  /** Per-locale description overrides (falls back to `description`). */
+  descriptions?: Partial<Record<AgentLocale, string>>;
+  /** Self-introduction paragraph shown on the chat welcome screen when this
+   *  agent is the pending one. Default locale. */
+  intro?: string;
+  /** Per-locale intro overrides (falls back to `intro`). */
+  intros?: Partial<Record<AgentLocale, string>>;
+  /** What this agent is good at — 3-5 bullet items shown in toolbox detail. */
+  expertise?: string[];
+  expertiseI18n?: Partial<Record<AgentLocale, string[]>>;
+  /** Suggested opening questions — clicking one starts a chat pre-filled with it. */
+  samplePrompts?: string[];
+  samplePromptsI18n?: Partial<Record<AgentLocale, string[]>>;
+  /** Free-form category slug for grouping (no enforced taxonomy). */
+  category?: string;
+  /** Short tags shown as chips in toolbox list / agent selector. */
+  tags?: string[];
+  tagsI18n?: Partial<Record<AgentLocale, string[]>>;
 }
 
 export interface SubagentDefinition extends SubagentMetadata {

@@ -9,7 +9,6 @@ import ChatView from '@/components/chat/ChatView';
 import AutomationView from '@/components/automation/AutomationView';
 import SystemSettingsView from '@/components/settings/SystemSettingsModal';
 import ToolboxView from '@/components/settings/ToolboxModal';
-import ExpertsCenter from '@/components/experts/ExpertsCenter';
 import RightPanel from '@/components/panel/RightPanel';
 import ToastContainer from '@/components/common/ToastContainer';
 import { registerBuiltinTools } from '@/core/tools/builtins';
@@ -95,7 +94,6 @@ function App() {
   const closeSystemSettings = useSettingsStore((s) => s.closeSystemSettings);
   const closeAutomation = useSettingsStore((s) => s.closeAutomation);
   const closeToolbox = useSettingsStore((s) => s.closeToolbox);
-  const closeExperts = useSettingsStore((s) => s.closeExperts);
   const activeConv = useActiveConversation();
   const { t } = useI18n();
 
@@ -386,12 +384,11 @@ function App() {
 
       {/* Sidebar & panel toggle buttons — positioned in title bar area on macOS, top bar on Windows */}
       <div className={cn('fixed left-0 right-0 z-40 pointer-events-none', mac ? 'top-0 h-11' : 'top-0 h-8')}>
-        {viewMode === 'settings' || viewMode === 'automation' || viewMode === 'toolbox' || viewMode === 'experts' ? (
+        {viewMode === 'settings' || viewMode === 'automation' || viewMode === 'toolbox' ? (
           <button
             onClick={
               viewMode === 'settings' ? closeSystemSettings
               : viewMode === 'automation' ? closeAutomation
-              : viewMode === 'experts' ? closeExperts
               : closeToolbox
             }
             className="absolute flex items-center gap-1.5 btn-ghost px-2 py-1 text-[var(--abu-text-tertiary)] hover:text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-hover)] rounded-md pointer-events-auto text-sm"
@@ -401,7 +398,6 @@ function App() {
             <span>
               {viewMode === 'settings' ? t.settings.title
                : viewMode === 'automation' ? t.sidebar.automation
-               : viewMode === 'experts' ? t.sidebar.experts
                : t.sidebar.toolbox}
             </span>
           </button>
@@ -433,7 +429,7 @@ function App() {
         <div
           className="shrink-0 overflow-hidden"
           style={{
-            width: (sidebarCollapsed || viewMode === 'settings' || viewMode === 'automation' || viewMode === 'toolbox' || viewMode === 'experts') ? 0 : 260,
+            width: (sidebarCollapsed || viewMode === 'settings' || viewMode === 'automation' || viewMode === 'toolbox') ? 0 : 260,
           }}
         >
           <Sidebar />
@@ -443,7 +439,6 @@ function App() {
         <main className={cn('flex-1 min-w-0 bg-[var(--abu-bg-base)]', mac ? 'pt-11' : 'pt-8')}>
           {viewMode === 'automation' && <AutomationView />}
           {viewMode === 'toolbox' && <ToolboxView />}
-          {viewMode === 'experts' && <ExpertsCenter />}
           {viewMode === 'settings' && <SystemSettingsView />}
           {(viewMode === 'chat' || !viewMode) && <ChatView />}
         </main>

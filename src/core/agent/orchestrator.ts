@@ -118,20 +118,41 @@ export function routeInput(input: string): RouteResult {
   // 1. @agent delegation: @agent-name [task]
   if (trimmed.startsWith('@')) {
     const parts = trimmed.slice(1).split(/\s+/);
-    const agentName = parts[0];
+    const mention = parts[0];
     const taskText = parts.slice(1).join(' ');
 
-    if (agentName) {
-      const agent = agentRegistry.getAgent(agentName);
+    if (mention) {
+      // First try exact match against the canonical registry name (primary path
+      // — most messages historically use the registry name directly).
+      let agent = agentRegistry.getAgent(mention);
+      // Fallback: scan displayNames for an alias match. Lets en-US users type
+      // `@Product Manager` or `@product-manager` (i.e. the english display
+      // name they see in the toolbox UI) and still route to the canonical
+      // agent whose primary name is '产品经理'. Case-insensitive.
+      if (!agent || agent.name === 'abu') {
+        const mentionLower = mention.toLowerCase();
+        for (const candidate of agentRegistry.getAvailableAgents()) {
+          if (candidate.name === 'abu') continue;
+          const displayNames = candidate.displayNames;
+          if (!displayNames) continue;
+          const hit = Object.values(displayNames).some(
+            (dn) => dn?.toLowerCase() === mentionLower,
+          );
+          if (hit) {
+            agent = agentRegistry.getAgent(candidate.name);
+            break;
+          }
+        }
+      }
       if (agent && agent.name !== 'abu') {
         // Check if disabled
         const disabledAgents = useSettingsStore.getState().disabledAgents ?? [];
-        if (!disabledAgents.includes(agentName)) {
+        if (!disabledAgents.includes(agent.name)) {
           return {
             type: 'delegate',
-            name: agentName,
+            name: agent.name,
             delegateAgent: agent,
-            cleanInput: taskText || `@${agentName}`,
+            cleanInput: taskText || `@${agent.name}`,
           };
         }
       }

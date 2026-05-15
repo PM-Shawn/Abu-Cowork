@@ -42,6 +42,14 @@ export default function AgentEditor({ agent, onClose, onSave }: AgentEditorProps
   const [memory, setMemory] = useState<'session' | 'project' | 'user'>(agent?.memory ?? 'session');
   const [background, setBackground] = useState(agent?.background ?? false);
 
+  // Display-only fields rendered in toolbox detail panel + chat welcome.
+  // All optional; users can leave them blank and the agent still works.
+  const [intro, setIntro] = useState(agent?.intro ?? '');
+  const [expertiseStr, setExpertiseStr] = useState((agent?.expertise ?? []).join('\n'));
+  const [samplePromptsStr, setSamplePromptsStr] = useState((agent?.samplePrompts ?? []).join('\n'));
+  const [category, setCategory] = useState(agent?.category ?? '');
+  const [tagsStr, setTagsStr] = useState((agent?.tags ?? []).join(', '));
+
   // Content state
   const [systemPrompt, setSystemPrompt] = useState(agent?.systemPrompt ?? '');
 
@@ -49,6 +57,12 @@ export default function AgentEditor({ agent, onClose, onSave }: AgentEditorProps
     const tools = toolsStr.split(',').map((s) => s.trim()).filter(Boolean);
     const disallowedTools = disallowedToolsStr.split(',').map((s) => s.trim()).filter(Boolean);
     const skills = skillsStr.split(',').map((s) => s.trim()).filter(Boolean);
+    // Display fields are line-separated (intro is single paragraph, expertise
+    // and samplePrompts are bullet-per-line). Tags use comma separator to match
+    // the existing toolsStr convention.
+    const expertise = expertiseStr.split('\n').map((s) => s.trim()).filter(Boolean);
+    const samplePrompts = samplePromptsStr.split('\n').map((s) => s.trim()).filter(Boolean);
+    const tags = tagsStr.split(',').map((s) => s.trim()).filter(Boolean);
     return {
       name: name.trim(),
       description: description.trim(),
@@ -60,6 +74,11 @@ export default function AgentEditor({ agent, onClose, onSave }: AgentEditorProps
       skills: skills.length > 0 ? skills : undefined,
       memory,
       background,
+      intro: intro.trim() || undefined,
+      expertise: expertise.length > 0 ? expertise : undefined,
+      samplePrompts: samplePrompts.length > 0 ? samplePrompts : undefined,
+      category: category.trim() || undefined,
+      tags: tags.length > 0 ? tags : undefined,
     };
   };
 
@@ -256,6 +275,66 @@ export default function AgentEditor({ agent, onClose, onSave }: AgentEditorProps
             <div className="flex items-center gap-2 pb-1">
               <label className="text-xs font-medium text-[var(--abu-text-secondary)]">{t.toolbox.agentBackground}</label>
               <Toggle checked={background} onChange={() => setBackground(!background)} size="md" />
+            </div>
+          </div>
+
+          {/* Intro — shown on chat welcome screen and toolbox detail */}
+          <div>
+            <label className="block text-xs font-medium text-[var(--abu-text-secondary)] mb-1">{t.toolbox.agentIntro}</label>
+            <textarea
+              value={intro}
+              onChange={(e) => setIntro(e.target.value)}
+              rows={2}
+              placeholder={t.toolbox.agentIntroPlaceholder}
+              className="w-full px-3 py-2 rounded-lg border border-[var(--abu-border)] text-sm text-[var(--abu-text-primary)] bg-[var(--abu-bg-base)] focus:outline-none focus:ring-2 focus:ring-[var(--abu-clay-ring)] focus:border-[var(--abu-clay)] transition-all resize-y"
+            />
+          </div>
+
+          {/* Expertise — one item per line, rendered as bullets */}
+          <div>
+            <label className="block text-xs font-medium text-[var(--abu-text-secondary)] mb-1">{t.toolbox.agentExpertise}</label>
+            <textarea
+              value={expertiseStr}
+              onChange={(e) => setExpertiseStr(e.target.value)}
+              rows={3}
+              placeholder={t.toolbox.agentExpertisePlaceholder}
+              className="w-full px-3 py-2 rounded-lg border border-[var(--abu-border)] text-sm text-[var(--abu-text-primary)] bg-[var(--abu-bg-base)] focus:outline-none focus:ring-2 focus:ring-[var(--abu-clay-ring)] focus:border-[var(--abu-clay)] transition-all resize-y"
+            />
+          </div>
+
+          {/* Sample Prompts — one per line, clickable in toolbox detail */}
+          <div>
+            <label className="block text-xs font-medium text-[var(--abu-text-secondary)] mb-1">{t.toolbox.agentSamplePrompts}</label>
+            <textarea
+              value={samplePromptsStr}
+              onChange={(e) => setSamplePromptsStr(e.target.value)}
+              rows={3}
+              placeholder={t.toolbox.agentSamplePromptsPlaceholder}
+              className="w-full px-3 py-2 rounded-lg border border-[var(--abu-border)] text-sm text-[var(--abu-text-primary)] bg-[var(--abu-bg-base)] focus:outline-none focus:ring-2 focus:ring-[var(--abu-clay-ring)] focus:border-[var(--abu-clay)] transition-all resize-y"
+            />
+          </div>
+
+          {/* Category + Tags row */}
+          <div className="flex gap-3">
+            <div className="flex-1">
+              <label className="block text-xs font-medium text-[var(--abu-text-secondary)] mb-1">{t.toolbox.agentCategoryField}</label>
+              <input
+                type="text"
+                value={category}
+                onChange={(e) => setCategory(e.target.value)}
+                placeholder="tech-engineering"
+                className="w-full px-3 py-1.5 rounded-lg border border-[var(--abu-border)] text-sm text-[var(--abu-text-primary)] bg-[var(--abu-bg-base)] focus:outline-none focus:ring-2 focus:ring-[var(--abu-clay-ring)] focus:border-[var(--abu-clay)] transition-all"
+              />
+            </div>
+            <div className="flex-1">
+              <label className="block text-xs font-medium text-[var(--abu-text-secondary)] mb-1">{t.toolbox.agentTagsField}</label>
+              <input
+                type="text"
+                value={tagsStr}
+                onChange={(e) => setTagsStr(e.target.value)}
+                placeholder={t.toolbox.agentTagsPlaceholder}
+                className="w-full px-3 py-1.5 rounded-lg border border-[var(--abu-border)] text-sm text-[var(--abu-text-primary)] bg-[var(--abu-bg-base)] focus:outline-none focus:ring-2 focus:ring-[var(--abu-clay-ring)] focus:border-[var(--abu-clay)] transition-all"
+              />
             </div>
           </div>
         </div>

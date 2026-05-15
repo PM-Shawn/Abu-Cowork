@@ -28,6 +28,14 @@ export function parseAgentFile(raw: string, filePath: string): SubagentDefinitio
       skills: meta.skills as string[] | undefined,
       memory: (meta.memory as 'session' | 'project' | 'user') ?? 'session',
       background: meta.background === true,
+      // Display-only fields (optional, only filled for agents that opted in via
+      // AgentEditor or the registry.ts builtins). Round-trip through YAML
+      // frontmatter so user-created agents survive a restart.
+      intro: meta.intro as string | undefined,
+      expertise: meta.expertise as string[] | undefined,
+      samplePrompts: meta['sample-prompts'] as string[] | undefined,
+      category: meta.category as string | undefined,
+      tags: meta.tags as string[] | undefined,
       systemPrompt,
       filePath,
     };
@@ -91,6 +99,39 @@ export class AgentRegistry {
         tools: ['read_file', 'write_file', 'edit_file', 'list_directory', 'run_command', 'web_search'],
         memory: 'session',
         filePath: '__builtin__',
+        displayNames: { 'en-US': 'Senior Engineer' },
+        descriptions: { 'en-US': '10+ years full-stack experience, expert in architecture, performance & code review' },
+        intro: '我是 10 年全栈背景的工程师，做过架构设计、性能优化和大型项目 Code Review。把代码或问题贴给我，我会给精准到 diff 级的改动建议，不绕弯子。',
+        intros: { 'en-US': "I'm a full-stack engineer with 10 years across architecture, performance and large-scale code review. Drop your code or problem — I'll give precise diff-level suggestions, no hedging." },
+        expertise: [
+          '代码阅读与精准 diff 级改动建议',
+          '架构设计、技术选型与性能瓶颈排查',
+          'Code review：隐患、边界条件、安全问题',
+          '将模糊需求转化为可执行技术方案',
+        ],
+        expertiseI18n: {
+          'en-US': [
+            'Code reading & precise diff-level improvement suggestions',
+            'Architecture design, tech selection & performance bottleneck analysis',
+            'Code review: hidden risks, edge cases, security issues',
+            'Translating vague requirements into actionable technical plans',
+          ],
+        },
+        samplePrompts: [
+          '帮我看下这段代码有什么问题',
+          'React 状态管理选 Zustand 还是 Redux，为什么',
+          '怎么给这个 API 做性能优化',
+        ],
+        samplePromptsI18n: {
+          'en-US': [
+            "Review this code and tell me what's wrong",
+            'Zustand vs Redux for React state management — which and why',
+            'How do I optimize the performance of this API',
+          ],
+        },
+        category: 'tech-engineering',
+        tags: ['全栈开发', '架构设计', 'Code Review'],
+        tagsI18n: { 'en-US': ['Full-Stack', 'Architecture', 'Code Review'] },
         systemPrompt: `你是一位拥有 10 年以上经验的高级全栈开发工程师，精通 TypeScript/JavaScript、Python、React、Node.js、数据库设计与性能优化，熟悉主流云服务架构。
 
 ## 工作方式
@@ -120,6 +161,39 @@ export class AgentRegistry {
         tools: ['read_file', 'write_file', 'web_search'],
         memory: 'session',
         filePath: '__builtin__',
+        displayNames: { 'en-US': 'Product Manager' },
+        descriptions: { 'en-US': '8 years B2B/B2C product experience, expert in requirements analysis & product strategy' },
+        intro: '我做过 8 年 B2B/B2C 产品，PRD、用户研究、竞品分析、roadmap 都熟。聊需求时我会先问清楚"用户是谁、痛点在哪、怎么衡量成功"，再给可落地的方案。',
+        intros: { 'en-US': "I've done 8 years of B2B/B2C product work — PRDs, user research, competitive analysis, roadmaps. When we discuss requirements I'll first nail down who the user is, what hurts and how we'll measure success." },
+        expertise: [
+          '需求文档写作：PRD、BRD、需求评审材料',
+          '用户故事拆解与优先级排序（RICE/ICE/MoSCoW）',
+          '竞品分析与市场定位',
+          '产品路线图规划',
+        ],
+        expertiseI18n: {
+          'en-US': [
+            'Product docs: PRD, BRD, requirement review materials',
+            'User story decomposition & prioritization (RICE/ICE/MoSCoW)',
+            'Competitive analysis & market positioning',
+            'Product roadmap planning',
+          ],
+        },
+        samplePrompts: [
+          '帮我写一个用户注册功能的 PRD',
+          '这个需求怎么拆分用户故事',
+          '帮我做一份竞品分析框架',
+        ],
+        samplePromptsI18n: {
+          'en-US': [
+            'Write a PRD for a user registration feature',
+            'How do I break this requirement into user stories',
+            'Help me build a competitive analysis framework',
+          ],
+        },
+        category: 'product-design',
+        tags: ['需求分析', 'PRD 写作', '用户研究'],
+        tagsI18n: { 'en-US': ['Requirements', 'PRD Writing', 'User Research'] },
         systemPrompt: `你是一位有 8 年经验的 B2B/B2C 产品经理，擅长需求分析、用户研究和产品策略规划。
 
 ## 工作方式
@@ -150,6 +224,39 @@ export class AgentRegistry {
         tools: ['read_file', 'write_file', 'run_command', 'web_search'],
         memory: 'session',
         filePath: '__builtin__',
+        displayNames: { 'en-US': 'Data Analyst' },
+        descriptions: { 'en-US': '7 years data analysis experience, expert in SQL, Python & statistical modeling' },
+        intro: '我做了 7 年数据分析，SQL、Python、A/B 测试、用户分群都熟。分析必须服务业务决策，给方案时我会先说思路再给代码，最后告诉你"看到这种结果该做什么"。',
+        intros: { 'en-US': "7 years in data analysis — SQL, Python, A/B testing, segmentation. Analysis must serve business decisions: I'll walk through the approach, give the code, then tell you what to do when you see this result." },
+        expertise: [
+          '业务指标体系设计与看板搭建',
+          'SQL 查询编写与优化（漏斗/留存/同期群）',
+          'A/B 测试设计、显著性检验与结果解读',
+          '用户行为分析、RFM 模型、用户分群',
+        ],
+        expertiseI18n: {
+          'en-US': [
+            'Metric system design & dashboard building',
+            'SQL queries & optimization (funnel/retention/cohort)',
+            'A/B test design, significance testing & result interpretation',
+            'User behavior analysis, RFM model & segmentation',
+          ],
+        },
+        samplePrompts: [
+          '帮我写一个 7 日留存率的 SQL',
+          '怎么设计这个功能的 A/B 测试方案',
+          '帮我分析这份数据，找出异常点',
+        ],
+        samplePromptsI18n: {
+          'en-US': [
+            'Write a SQL query for 7-day retention rate',
+            'How do I design an A/B test for this feature',
+            'Analyze this dataset and identify anomalies',
+          ],
+        },
+        category: 'data-intelligence',
+        tags: ['SQL', 'Python', 'A/B 测试'],
+        tagsI18n: { 'en-US': ['SQL', 'Python', 'A/B Testing'] },
         systemPrompt: `你是一位拥有 7 年数据分析经验的数据分析师，精通 SQL、Python（Pandas/NumPy/Matplotlib）、数据可视化（Tableau/DataV/ECharts）和统计分析方法。
 
 ## 工作方式
@@ -180,6 +287,39 @@ export class AgentRegistry {
         tools: ['web_search', 'read_file'],
         memory: 'session',
         filePath: '__builtin__',
+        displayNames: { 'en-US': 'WeChat Editor' },
+        descriptions: { 'en-US': '6 years content operations in tech/business, expert in topic planning & viral articles' },
+        intro: '我做了 6 年科技 / 商业赛道公众号，选题、框架、标题、润色全跑通。写作出发点永远是"读者凭啥读完"，给你的稿子会有金句、有钩子、有可截图传播的点。',
+        intros: { 'en-US': "6 years editing WeChat content in tech/business — topics, structure, headlines, polish. Writing always starts with 'why would the reader finish this?' Drafts come with hooks, share-worthy lines and zero filler." },
+        expertise: [
+          '选题策划：从热点/趋势找话题，判断传播潜力',
+          '文章框架：开头钩子 → 核心内容 → 行动号召',
+          '标题创作：5-10 个候选，注明打开率逻辑',
+          '文章润色：优化表达、加强节奏感、删废话',
+        ],
+        expertiseI18n: {
+          'en-US': [
+            'Topic planning: find angles from trends, assess viral potential',
+            'Article structure: hook → core content → call to action',
+            'Headline creation: 5-10 candidates with open-rate rationale',
+            'Article polish: improve flow, cut filler, strengthen rhythm',
+          ],
+        },
+        samplePrompts: [
+          '帮我围绕 AI 办公写一篇公众号文章',
+          '给这篇文章出 5 个标题候选',
+          '帮我分析为什么这篇文章阅读量低',
+        ],
+        samplePromptsI18n: {
+          'en-US': [
+            'Write a WeChat article about AI productivity tools',
+            'Generate 5 headline candidates for this article',
+            'Why is this article underperforming — help me diagnose',
+          ],
+        },
+        category: 'content-creation',
+        tags: ['选题策划', '标题创作', '内容运营'],
+        tagsI18n: { 'en-US': ['Topic Planning', 'Headline Writing', 'Content Ops'] },
         systemPrompt: `你是一位有 6 年运营经验的公众号内容编辑，熟悉微信生态内容规律，擅长科技/商业/职场赛道的选题策划和文章创作。
 
 ## 工作方式
@@ -210,6 +350,39 @@ export class AgentRegistry {
         tools: ['web_search', 'read_file', 'write_file'],
         memory: 'session',
         filePath: '__builtin__',
+        displayNames: { 'en-US': 'HR Recruiter' },
+        descriptions: { 'en-US': '8 years internet industry recruiting, expert in JD writing, interview design & offer negotiation' },
+        intro: '我在互联网招聘做了 8 年，JD 撰写、简历筛选、行为面试、薪酬谈判都熟。写 JD 我会先问"这个岗位为什么存在、一年后的成功标准是什么"，再下笔。',
+        intros: { 'en-US': "8 years recruiting in tech — JDs, screening, structured interviews, offer negotiation. Before writing a JD I'll ask why this role exists and what success looks like in a year, then put it on paper." },
+        expertise: [
+          'JD 撰写：岗位职责、任职要求的精准表达',
+          '简历筛选：判断候选人潜力的方法和红旗信号',
+          '面试题库设计：行为面试题（STAR）、场景题',
+          '薪酬谈判话术与策略',
+        ],
+        expertiseI18n: {
+          'en-US': [
+            'JD writing: precise job responsibilities & requirements',
+            'Resume screening: spotting potential vs. red flags',
+            'Interview question design: behavioral (STAR), situational',
+            'Offer negotiation tactics & scripts',
+          ],
+        },
+        samplePrompts: [
+          '帮我写一个数据分析师的 JD',
+          '给这个岗位设计 5 道面试题',
+          '候选人期望薪资超预算，怎么谈',
+        ],
+        samplePromptsI18n: {
+          'en-US': [
+            'Write a JD for a Data Analyst role',
+            'Design 5 interview questions for this position',
+            "Candidate's salary expectation is over budget — how do I negotiate",
+          ],
+        },
+        category: 'ops-hr',
+        tags: ['JD 撰写', '面试设计', '薪酬谈判'],
+        tagsI18n: { 'en-US': ['JD Writing', 'Interview Design', 'Offer Negotiation'] },
         systemPrompt: `你是一位拥有 8 年招聘经验的高级 HR，熟悉互联网/科技行业的人才市场，擅长 JD 撰写、简历筛选、面试设计和薪酬谈判。
 
 ## 工作方式
@@ -315,6 +488,13 @@ export function serializeAgentMd(metadata: Partial<SubagentMetadata>, systemProm
   set('skills', metadata.skills);
   set('memory', metadata.memory);
   if (metadata.background) set('background', true);
+  // Display-only fields for the toolbox detail panel and chat welcome banner.
+  // Skipped when empty so the AGENT.md frontmatter stays minimal.
+  set('intro', metadata.intro);
+  set('expertise', metadata.expertise);
+  set('sample-prompts', metadata.samplePrompts);
+  set('category', metadata.category);
+  set('tags', metadata.tags);
 
   const yaml = stringifyYaml(meta, { lineWidth: 0 }).trimEnd();
   return `---\n${yaml}\n---\n\n${systemPrompt}`;

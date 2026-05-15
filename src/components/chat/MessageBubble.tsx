@@ -4,6 +4,7 @@ import type { Message, MessageContent } from '@/types';
 import MarkdownRenderer from './MarkdownRenderer';
 import ToolCallsGroup from './ToolCallsGroup';
 import { useChatStore, useActiveConversation } from '@/stores/chatStore';
+import { cn } from '@/lib/utils';
 import { usePreviewStore } from '@/stores/previewStore';
 import { runAgentLoop } from '@/core/agent/agentLoop';
 import { useI18n } from '@/i18n';
@@ -280,18 +281,34 @@ function MessageActions({ message, onEdit, onDelete, onRegenerate, isUser }: Mes
 // Edit input for user messages — card style
 function EditInput({
   initialContent,
+  delegateAgentName,
+  skillName,
   onSave,
   onCancel
 }: {
   initialContent: string;
+  delegateAgentName?: string;
+  skillName?: string;
   onSave: (content: string) => void;
   onCancel: () => void;
 }) {
   const [text, setText] = useState(initialContent);
   const { t } = useI18n();
+  const routingChip = delegateAgentName
+    ? { label: `@${delegateAgentName}`, color: 'text-blue-600 bg-blue-50' }
+    : skillName
+      ? { label: `/${skillName}`, color: 'text-purple-600 bg-purple-50' }
+      : null;
 
   return (
     <div className="min-w-[280px] rounded-2xl border border-[var(--abu-border-subtle)] bg-white overflow-hidden">
+      {routingChip && (
+        <div className="flex items-center px-4 pt-3 pb-1 bg-[var(--abu-bg-muted)]">
+          <span className={cn('inline-flex items-center px-2 py-0.5 rounded-md text-[12px] font-medium', routingChip.color)}>
+            {routingChip.label}
+          </span>
+        </div>
+      )}
       <textarea
         value={text}
         onChange={(e) => setText(e.target.value)}
@@ -473,6 +490,8 @@ export default function MessageBubble({
           {isEditing ? (
             <EditInput
               initialContent={textContent}
+              delegateAgentName={message.delegateAgent?.name}
+              skillName={message.skill?.name}
               onSave={handleSaveEdit}
               onCancel={() => setIsEditing(false)}
             />

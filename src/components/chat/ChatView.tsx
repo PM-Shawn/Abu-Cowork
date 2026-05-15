@@ -14,8 +14,7 @@ import ChatInput from './ChatInput';
 import ContextWarningBar from './ContextWarningBar';
 import BackgroundAgents from './BackgroundAgents';
 import ScenarioGuide from './ScenarioGuide';
-import { expertTemplates } from '@/data/marketplace/agents';
-import { expertsEnUS } from '@/data/experts/expertsI18n';
+import { agentRegistry } from '@/core/agent/registry';
 import PermissionDialog from '@/components/common/PermissionDialog';
 import CommandConfirmDialog from '@/components/common/CommandConfirmDialog';
 import { ChevronDown, Settings } from 'lucide-react';
@@ -75,16 +74,22 @@ export default function ChatView() {
   void messageCount; // used only to trigger re-render
   const { t, locale } = useI18n();
 
-  // Pending expert: set when user enters chat from Expert Center.
-  // Drives the welcome banner; cleared once first message is sent.
-  const pendingExpertId = useChatStore((s) => s.pendingExpertId);
-  const pendingExpert = pendingExpertId
-    ? (() => {
-        const base = expertTemplates.find((e) => e.id === pendingExpertId);
-        if (!base) return null;
-        const overrides = locale === 'en-US' ? expertsEnUS[pendingExpertId] : undefined;
-        return overrides ? { ...base, ...overrides } : base;
-      })()
+  // Pending agent: set when user enters chat from any agent surface
+  // (toolbox detail "Start Chat" button, etc.). Drives the welcome banner so
+  // the first impression is the agent's persona; cleared once the first
+  // message lands. Works for both builtin experts and user-defined agents.
+  const pendingAgentName = useChatStore((s) => s.pendingAgentName);
+  const pendingAgent = pendingAgentName ? agentRegistry.getAgent(pendingAgentName) ?? null : null;
+  // Resolve i18n display fields with graceful fallback to the canonical name/
+  // description on the agent. Locale-specific fields are populated by builtin
+  // agents (see registry.ts) — user-defined agents only have the base fields.
+  const pendingAgentDisplay = pendingAgent
+    ? {
+        name: pendingAgent.displayNames?.[locale] ?? pendingAgent.name,
+        description: pendingAgent.descriptions?.[locale] ?? pendingAgent.description,
+        avatar: pendingAgent.avatar ?? '🤖',
+        intro: pendingAgent.intros?.[locale] ?? pendingAgent.intro,
+      }
     : null;
 
   // Subscribe to command confirmation state using useSyncExternalStore
@@ -270,22 +275,22 @@ export default function ChatView() {
           <div className="w-full max-w-2xl">
             {/* Title */}
             <div className="text-center mb-8">
-              {pendingExpert ? (
+              {pendingAgentDisplay ? (
                 <>
-                  {/* Expert avatar (emoji in tinted circle) */}
+                  {/* Agent avatar (emoji in tinted circle) */}
                   <div className="w-20 h-20 mx-auto mb-4 rounded-full bg-[var(--abu-bg-active)] flex items-center justify-center text-5xl select-none">
-                    {pendingExpert.avatar ?? '🤖'}
+                    {pendingAgentDisplay.avatar}
                   </div>
 
                   <h1 className="text-[28px] font-semibold text-[var(--abu-text-primary)] leading-tight mb-2">
-                    {pendingExpert.name}
+                    {pendingAgentDisplay.name}
                   </h1>
                   <p className="text-[15px] text-[var(--abu-text-tertiary)] mb-3">
-                    {pendingExpert.description}
+                    {pendingAgentDisplay.description}
                   </p>
-                  {pendingExpert.intro && (
+                  {pendingAgentDisplay.intro && (
                     <p className="text-[14px] text-[var(--abu-text-secondary)] leading-relaxed max-w-lg mx-auto">
-                      {pendingExpert.intro}
+                      {pendingAgentDisplay.intro}
                     </p>
                   )}
                 </>

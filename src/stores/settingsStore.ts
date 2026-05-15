@@ -269,7 +269,7 @@ function createDefaultProviders(): ProviderInstance[] {
 // View mode types
 // ============================================================
 
-export type ViewMode = 'chat' | 'automation' | 'toolbox' | 'experts' | 'settings';
+export type ViewMode = 'chat' | 'automation' | 'toolbox' | 'settings';
 export type AutomationTab = 'schedule' | 'trigger';
 export type SystemSettingsTab = 'general' | 'ai-services' | 'sandbox' | 'im-channels' | 'personal-memory' | 'soul' | 'diagnostic' | 'usage' | 'about' | 'feedback' | 'sponsor';
 export type ToolboxTab = 'skills' | 'agents' | 'mcp';
@@ -418,8 +418,6 @@ interface SettingsActions {
   closeToolbox: () => void;
   setActiveToolboxTab: (tab: ToolboxTab) => void;
   setToolboxSearchQuery: (query: string) => void;
-  openExperts: () => void;
-  closeExperts: () => void;
   setInstallingItem: (itemId: string | null) => void;
   setViewMode: (mode: ViewMode) => void;
   toggleSkillEnabled: (skillName: string) => void;
@@ -876,8 +874,6 @@ export const useSettingsStore = create<SettingsStore>()(
         }),
       setActiveToolboxTab: (tab) => set({ activeToolboxTab: tab, toolboxSearchQuery: '' }),
       setToolboxSearchQuery: (query) => set({ toolboxSearchQuery: query }),
-      openExperts: () => set({ viewMode: 'experts' as ViewMode }),
-      closeExperts: () => set({ viewMode: 'chat' as ViewMode }),
       setInstallingItem: (itemId) => set({ installingItem: itemId }),
       setViewMode: (viewMode) => set({ viewMode }),
       toggleSkillEnabled: (skillName) => set((s) => ({

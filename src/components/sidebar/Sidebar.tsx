@@ -4,7 +4,7 @@ import { useSettingsStore } from '@/stores/settingsStore';
 import { useProjectStore } from '@/stores/projectStore';
 import { useNoticeBadgeStore } from '@/stores/noticeBadgeStore';
 import { useI18n } from '@/i18n';
-import { Plus, Workflow, Wrench, GraduationCap, Trash2, Settings, Download, Upload, Pencil, Undo2, HelpCircle, FolderInput, FolderClosed, ChevronRight, Minus, Search, X } from 'lucide-react';
+import { Plus, Workflow, Wrench, Trash2, Settings, Download, Upload, Pencil, Undo2, HelpCircle, FolderInput, FolderClosed, ChevronRight, Minus, Search, X } from 'lucide-react';
 import GuideModal from '@/components/common/GuideModal';
 import ProfileEditModal from '@/components/common/ProfileEditModal';
 import { Button } from '@/components/ui/button';
@@ -75,7 +75,6 @@ export default function Sidebar() {
   const loadConversation = useChatStore((s) => s.loadConversation);
   const openToolbox = useSettingsStore((s) => s.openToolbox);
   const openAutomation = useSettingsStore((s) => s.openAutomation);
-  const openExperts = useSettingsStore((s) => s.openExperts);
   const openSystemSettings = useSettingsStore((s) => s.openSystemSettings);
   const viewMode = useSettingsStore((s) => s.viewMode);
   const setViewMode = useSettingsStore((s) => s.setViewMode);
@@ -264,18 +263,6 @@ export default function Sidebar() {
         >
           <Plus className={cn('h-[18px] w-[18px]', activeConversationId === null && viewMode === 'chat' ? 'text-[var(--abu-clay)]' : 'text-[var(--abu-text-tertiary)]')} strokeWidth={2} />
           <span>{t.sidebar.newTask}</span>
-        </button>
-        <button
-          onClick={() => openExperts()}
-          className={cn(
-            'btn-ghost flex items-center gap-3 w-full px-3 py-2.5 text-[14px] rounded-lg',
-            viewMode === 'experts'
-              ? 'bg-[var(--abu-bg-active)] text-[var(--abu-text-primary)]'
-              : 'text-[var(--abu-text-secondary)] hover:bg-[var(--abu-bg-hover)]'
-          )}
-        >
-          <GraduationCap className={cn('h-[18px] w-[18px]', viewMode === 'experts' ? 'text-[var(--abu-clay)]' : 'text-[var(--abu-text-tertiary)]')} strokeWidth={1.75} />
-          <span>{t.sidebar.experts}</span>
         </button>
         <button
           onClick={() => openToolbox()}

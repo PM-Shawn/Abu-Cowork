@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect, useMemo, useCallback } from 'react';
 import { Plus, ArrowUp, ArrowRight, Square, X, ChevronDown, FileText } from 'lucide-react';
 import { ModelSelector, CapabilityBadge } from '@/components/chat/ModelSelector';
+import AgentSelector from '@/components/chat/AgentSelector';
 import { open } from '@tauri-apps/plugin-dialog';
 import { readFile } from '@tauri-apps/plugin-fs';
 import { useFileDragDrop } from '@/hooks/useFileDragDrop';
@@ -429,8 +430,10 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
     setText('');
     setImages([]);
     setFiles([]);
-    setSelectedSkill(null);
-    setSelectedAgent(null);
+    // Intentionally KEEP selectedSkill / selectedAgent — the chip is sticky
+    // across messages in the same conversation, so users don't have to re-
+    // pick the expert (or /skill) on every turn. They can clear explicitly
+    // via the toolbar selector, the chip X, or backspace on empty input.
     setSuggestionsDismissed(false);
     if (textareaRef.current) textareaRef.current.style.height = 'auto';
     // Clear saved draft for current conversation
@@ -708,15 +711,16 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
               <div className="relative" ref={modelPickerRef}>
                 <button
                   onClick={() => setShowModelPicker(!showModelPicker)}
-                  className="btn-ghost flex items-center gap-1 px-2 py-1 text-[12px] text-[var(--abu-text-tertiary)] font-medium hover:text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-hover)] rounded-md transition-colors"
+                  title={modelDisplay}
+                  className="btn-ghost flex items-center gap-1 px-2 py-1 text-[12px] text-[var(--abu-text-tertiary)] font-medium hover:text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-hover)] rounded-md transition-colors max-w-[180px]"
                 >
-                  {modelDisplay}
+                  <span className="truncate">{modelDisplay}</span>
                   {modelCaps.length > 0 && (
-                    <span className="flex items-center gap-0.5 ml-0.5">
+                    <span className="flex items-center gap-0.5 ml-0.5 shrink-0">
                       {modelCaps.map((cap) => <CapabilityBadge key={cap} cap={cap} size="xs" />)}
                     </span>
                   )}
-                  <ChevronDown className={cn('h-3 w-3 transition-transform', showModelPicker && 'rotate-180')} />
+                  <ChevronDown className={cn('h-3 w-3 transition-transform shrink-0', showModelPicker && 'rotate-180')} />
                 </button>
                 <ModelSelector
                   open={showModelPicker}
@@ -724,6 +728,12 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
                   anchorRef={modelPickerRef as React.RefObject<HTMLElement>}
                 />
               </div>
+              <AgentSelector
+                agents={agents}
+                selectedName={selectedAgent?.name ?? null}
+                onSelect={setSelectedAgent}
+                disabledAgentSet={disabledAgentSet}
+              />
               <FolderSelector
                 currentPath={localWorkspace}
                 recentPaths={recentPaths}
@@ -764,15 +774,16 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
                 <div className="relative" ref={modelPickerRef}>
                   <button
                     onClick={() => setShowModelPicker(!showModelPicker)}
-                    className="btn-ghost flex items-center gap-1 px-2 py-1 text-[12px] text-[var(--abu-text-tertiary)] font-medium hover:text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-hover)] rounded-md transition-colors"
+                    title={modelDisplay}
+                    className="btn-ghost flex items-center gap-1 px-2 py-1 text-[12px] text-[var(--abu-text-tertiary)] font-medium hover:text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-hover)] rounded-md transition-colors max-w-[180px]"
                   >
-                    {modelDisplay}
+                    <span className="truncate">{modelDisplay}</span>
                     {modelCaps.length > 0 && (
-                      <span className="flex items-center gap-0.5 ml-0.5">
+                      <span className="flex items-center gap-0.5 ml-0.5 shrink-0">
                         {modelCaps.map((cap) => <CapabilityBadge key={cap} cap={cap} size="xs" />)}
                       </span>
                     )}
-                    <ChevronDown className={cn('h-3 w-3 transition-transform', showModelPicker && 'rotate-180')} />
+                    <ChevronDown className={cn('h-3 w-3 transition-transform shrink-0', showModelPicker && 'rotate-180')} />
                   </button>
                   <ModelSelector
                     open={showModelPicker}
@@ -780,6 +791,13 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
                     anchorRef={modelPickerRef as React.RefObject<HTMLElement>}
                   />
                 </div>
+
+                <AgentSelector
+                  agents={agents}
+                  selectedName={selectedAgent?.name ?? null}
+                  onSelect={setSelectedAgent}
+                  disabledAgentSet={disabledAgentSet}
+                />
 
                 <Button
                   variant="ghost"

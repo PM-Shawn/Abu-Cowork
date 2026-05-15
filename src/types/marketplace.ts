@@ -15,10 +15,6 @@ export interface MarketplaceItem {
   content?: string; // SKILL.md or AGENT.md content
   trigger?: string;  // Display-only trigger summary for marketplace cards
   tags?: string[];   // Display-only tags for marketplace cards
-  expertise?: string[];      // Expert detail: what this expert is good at (3-5 items)
-  samplePrompts?: string[];  // Expert detail: suggested opening questions (3 items)
-  avatar?: string;           // Display emoji (falls back to parsing `content` frontmatter)
-  intro?: string;            // Expert self-introduction shown on welcome screen
 }
 
 /** MCP Server template */

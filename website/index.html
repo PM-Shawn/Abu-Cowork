@@ -553,7 +553,12 @@
             function applyFromGitHub(release) {
                 const tag    = release.tag_name;
                 const assets = release.assets || [];
-                const find   = (re) => {
+                // Binaries are on OSS, not GitHub — if assets empty, fall back to OSS pattern
+                if (!assets.length) {
+                    applyFromOSS(tag);
+                    return;
+                }
+                const find = (re) => {
                     const a = assets.find(a => re.test(a.name));
                     return a ? a.browser_download_url : GH_LATEST;
                 };

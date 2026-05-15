@@ -39,9 +39,9 @@ Tell Abu what you need — it reads files, runs commands, writes docs, and build
 
 ## What's New
 
+- **v0.16** — **Usage stats redesign**: heatmap + custom tooltip, per-model/skill token breakdown; **Settings as full-screen views**: Settings, Automation, and Toolbox are now standalone pages; diagnostic bundle export fully shipped (v0.16.1); AI service health-check errors now surfaced transparently (v0.16.2)
 - **v0.15** — **Soul personality system**: 3 proactivity presets (Quiet / Buddy / Butler) + custom `SOUL.md` for tone, address, and reply style; **Content safety scan**: scans agents / skills / memory for prompt injection and dangerous instructions (120+ patterns)
-- **v0.13.12** — **Diagnostic panel**: one-click self-check across AI services / data & permissions / MCP / skills / network / app, plus diagnostic-bundle export
-- **v0.13** — **Self-Evolving Skills**, **Projects** (multi-conversation aggregation), **Notification Center**, **Persistent Todos**
+- **v0.13** — **Self-Evolving Skills**, **Projects** (multi-conversation aggregation), **Notification Center**, **Persistent Todos**, **Diagnostic Panel** one-click self-check
 
 > Full changelog: [Releases](https://github.com/PM-Shawn/Abu-Cowork/releases).
 
@@ -380,4 +380,4 @@ If Abu has been helpful to you, feel free to buy the author a coffee:
 
 ## License
 
-[Abu License](LICENSE) — Free for personal, educational, and non-commercial use. Copyright notices must be retained and may not be modified or removed. Commercial use requires authorization. See [LICENSE](LICENSE) for details.
+**[Apache License 2.0](LICENSE)** — Free to use, modify, and distribute, including commercial use. Copyright notices must be retained. **Enterprise edition requires a license**, offering team collaboration, SSO, audit logs, and private deployment support. [Contact us](mailto:pmshawn@163.com).

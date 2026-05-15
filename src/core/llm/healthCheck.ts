@@ -78,7 +78,7 @@ export async function checkProviderHealth(
     return {
       success: false,
       latencyMs,
-      error: e instanceof Error ? e.message : 'Unknown error',
+      error: e instanceof Error ? `${e.name}: ${e.message}` : String(e),
     };
   }
 }

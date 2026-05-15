@@ -52,10 +52,11 @@ export async function fetchProviderModels(
 
     return { success: true, models };
   } catch (e) {
+    const raw = e instanceof Error ? `${e.name}: ${e.message}` : String(e);
     return {
       success: false,
       models: [],
-      error: e instanceof Error ? e.message : 'Fetch failed',
+      error: raw,
     };
   }
 }

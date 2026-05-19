@@ -226,7 +226,7 @@ export const PROVIDER_CONFIGS = {
     ],
   },
   ollama: { name: 'Ollama', baseUrl: 'http://127.0.0.1:11434', format: 'openai-compatible', models: [] },
-  lmstudio: { name: 'LM Studio', baseUrl: 'http://localhost:1234/v1', format: 'openai-compatible', models: [] },
+  lmstudio: { name: 'LM Studio', baseUrl: 'http://127.0.0.1:1234/v1', format: 'openai-compatible', models: [] },
   local: { name: '本地模型 (Local)', baseUrl: '', format: 'openai-compatible', models: [] },
   custom: { name: '自定义 API', baseUrl: '', format: 'openai-compatible', models: [] },
 } as Record<LLMProvider, ProviderConfig>;
@@ -952,9 +952,28 @@ export const useSettingsStore = create<SettingsStore>()(
     }),
     {
       name: 'abu-settings',
-      version: 28,
+      version: 29,
       migrate: (persisted: unknown, version: number) => {
         const state = persisted as Record<string, unknown>;
+
+        // ════════════════════════════════════════════════
+        // V29: Rewrite LM Studio baseUrl from localhost to 127.0.0.1.
+        // Same Windows IPv6 issue as Ollama (V28): localhost resolves to ::1
+        // while LM Studio listens on 127.0.0.1 (IPv4).
+        // ════════════════════════════════════════════════
+        if (version < 29) {
+          try {
+            if (Array.isArray(state.providers)) {
+              (state.providers as Array<Record<string, unknown>>).forEach(p => {
+                if (p.id === 'lmstudio' && p.baseUrl === 'http://localhost:1234/v1') {
+                  p.baseUrl = 'http://127.0.0.1:1234/v1';
+                }
+              });
+            }
+          } catch (err) {
+            console.error('[settingsStore] migration step "V29 lmstudio localhost fix" failed:', err);
+          }
+        }
 
         // ════════════════════════════════════════════════
         // V28: Rewrite Ollama baseUrl from localhost to 127.0.0.1.

@@ -50,18 +50,24 @@ function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
   ]);
 }
 
+export interface OllamaHealthResult {
+  ok: boolean;
+  error?: string;
+}
+
 /**
  * Check if Ollama service is running.
  * Pings the root endpoint — returns 200 with "Ollama is running" if alive.
  */
-export async function checkOllamaHealth(baseUrl = DEFAULT_OLLAMA_URL): Promise<boolean> {
+export async function checkOllamaHealth(baseUrl = DEFAULT_OLLAMA_URL): Promise<OllamaHealthResult> {
   try {
     const fetchFn = await getTauriFetch();
     const res = await withTimeout(fetchFn(baseUrl), HEALTH_CHECK_TIMEOUT);
-    return res.ok;
+    return res.ok ? { ok: true } : { ok: false, error: `HTTP ${res.status}` };
   } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
     console.warn('[Ollama] Health check failed:', err);
-    return false;
+    return { ok: false, error: msg };
   }
 }
 

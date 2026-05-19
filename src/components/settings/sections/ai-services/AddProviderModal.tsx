@@ -151,6 +151,7 @@ export default function AddProviderModal({ open: isOpen, onClose }: AddProviderM
 
   // ── Ollama-specific state ──
   const [ollamaStatus, setOllamaStatus] = useState<OllamaConnectionStatus>('idle');
+  const [ollamaError, setOllamaError] = useState<string>('');
   const [ollamaModels, setOllamaModels] = useState<ModelInfo[]>([]);
 
   // ── Fetch-models state (cloud providers) ──
@@ -225,6 +226,7 @@ export default function AddProviderModal({ open: isOpen, onClose }: AddProviderM
 
       // Reset Ollama state
       setOllamaStatus('idle');
+      setOllamaError('');
       setOllamaModels([]);
 
       // Reset fetch-models state
@@ -297,11 +299,12 @@ export default function AddProviderModal({ open: isOpen, onClose }: AddProviderM
     const url = baseUrl || 'http://127.0.0.1:11434';
     setOllamaStatus('checking');
     setOllamaModels([]);
-    // (fetch removed)
+    setOllamaError('');
 
-    const isHealthy = await checkOllamaHealth(url);
-    if (!isHealthy) {
+    const result = await checkOllamaHealth(url);
+    if (!result.ok) {
       setOllamaStatus('offline');
+      setOllamaError(result.error ?? '');
       return;
     }
 
@@ -439,6 +442,7 @@ export default function AddProviderModal({ open: isOpen, onClose }: AddProviderM
     setSearchQuery('');
     setDropdownOpen(false);
     setOllamaStatus('idle');
+    setOllamaError('');
     setOllamaModels([]);
     setFetchModelsStatus('idle');
     setFetchedModels([]);
@@ -660,13 +664,18 @@ export default function AddProviderModal({ open: isOpen, onClose }: AddProviderM
 
               {/* Ollama connection status */}
               {isOllama && ollamaStatus !== 'idle' && ollamaStatus !== 'checking' && (
-                <div className={cn(
-                  'flex items-center gap-1.5 text-xs mt-1',
-                  ollamaStatus === 'online' ? 'text-green-500' : 'text-red-400',
-                )}>
-                  {ollamaStatus === 'online'
-                    ? <><CircleCheck className="h-3.5 w-3.5" /> {t.settings.ollamaOnline}</>
-                    : <><CircleX className="h-3.5 w-3.5" /> {t.settings.ollamaOffline}</>}
+                <div className="mt-1 space-y-0.5">
+                  <div className={cn(
+                    'flex items-center gap-1.5 text-xs',
+                    ollamaStatus === 'online' ? 'text-green-500' : 'text-red-400',
+                  )}>
+                    {ollamaStatus === 'online'
+                      ? <><CircleCheck className="h-3.5 w-3.5" /> {t.settings.ollamaOnline}</>
+                      : <><CircleX className="h-3.5 w-3.5" /> {t.settings.ollamaOffline}</>}
+                  </div>
+                  {ollamaStatus === 'offline' && ollamaError && (
+                    <p className="text-[11px] font-mono text-red-400/70 break-all pl-5">{ollamaError}</p>
+                  )}
                 </div>
               )}
 

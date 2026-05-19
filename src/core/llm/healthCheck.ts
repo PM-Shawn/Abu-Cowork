@@ -20,10 +20,30 @@ export async function checkProviderHealth(
 ): Promise<HealthCheckResult> {
   const start = performance.now();
 
-  // Ollama: simple HTTP health check
+  // Ollama: simple HTTP health check via /api/tags
   if (provider.id === 'ollama' || provider.baseUrl.includes(':11434')) {
     try {
       const resp = await fetch(`${provider.baseUrl}/api/tags`, {
+        signal: AbortSignal.timeout(5000),
+      });
+      return {
+        success: resp.ok,
+        latencyMs: Math.round(performance.now() - start),
+        error: resp.ok ? undefined : `HTTP ${resp.status}`,
+      };
+    } catch (e) {
+      return {
+        success: false,
+        latencyMs: Math.round(performance.now() - start),
+        error: e instanceof Error ? e.message : 'Connection failed',
+      };
+    }
+  }
+
+  // LM Studio: health check via OpenAI-compatible /models endpoint
+  if (provider.id === 'lmstudio' || provider.baseUrl.includes(':1234')) {
+    try {
+      const resp = await fetch(`${provider.baseUrl}/models`, {
         signal: AbortSignal.timeout(5000),
       });
       return {

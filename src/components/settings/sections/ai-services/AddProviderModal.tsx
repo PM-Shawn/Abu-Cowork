@@ -91,6 +91,13 @@ function buildProviderGroups(t: ReturnType<typeof useI18n>['t']): ProviderGroup[
           source: 'builtin' as ProviderSource,
           format: 'openai-compatible' as ApiFormat,
         },
+        {
+          id: 'lmstudio',
+          label: PROVIDER_CONFIGS.lmstudio.name,
+          provider: 'lmstudio' as LLMProvider,
+          source: 'builtin' as ProviderSource,
+          format: 'openai-compatible' as ApiFormat,
+        },
       ],
     },
     {
@@ -173,6 +180,7 @@ export default function AddProviderModal({ open: isOpen, onClose }: AddProviderM
   }, [groups, selectedId]);
 
   const isOllama = selectedOption?.provider === 'ollama';
+  const isLMStudio = selectedOption?.provider === 'lmstudio';
   const isCustom = selectedId ? isCustomId(selectedId) : false;
   const guide = selectedOption && !isCustom ? PROVIDER_GUIDES[selectedOption.provider] : null;
 
@@ -578,8 +586,8 @@ export default function AddProviderModal({ open: isOpen, onClose }: AddProviderM
             </p>
           )}
 
-          {/* 4. API Key (hidden for Ollama) */}
-          {selectedId && !isOllama && (
+          {/* 4. API Key (hidden for keyless local providers) */}
+          {selectedId && !isOllama && !isLMStudio && (
             <div className="space-y-1.5">
               <div className="flex items-center gap-2">
                 <label className="text-sm font-medium text-[var(--abu-text-primary)]">
@@ -631,22 +639,20 @@ export default function AddProviderModal({ open: isOpen, onClose }: AddProviderM
           {selectedId && (
             <div className="space-y-1.5">
               <label className="text-sm font-medium text-[var(--abu-text-primary)]">
-                {isOllama ? t.settings.ollamaUrlLabel : t.settings.apiUrl}
+                {isOllama ? t.settings.ollamaUrlLabel : isLMStudio ? t.settings.lmstudioUrlLabel : t.settings.apiUrl}
               </label>
               <Input
                 value={baseUrl}
                 onChange={(e) => setBaseUrl(e.target.value)}
-                placeholder={isOllama ? 'http://localhost:11434' : 'https://...'}
-                onBlur={isOllama ? handleCheckOllama : undefined}
+                placeholder={isOllama ? 'http://localhost:11434' : isLMStudio ? 'http://localhost:1234/v1' : 'https://...'}
+                onBlur={isOllama ? handleCheckOllama : isLMStudio ? handleFetchModels : undefined}
               />
               <p className="text-xs text-[var(--abu-text-tertiary)]">
-                {isOllama ? t.settings.ollamaUrlHint : t.settings.apiUrlNoChange}
+                {isOllama ? t.settings.ollamaUrlHint : isLMStudio ? t.settings.lmstudioUrlHint : t.settings.apiUrlNoChange}
               </p>
 
-              {/* Final request URL preview — helps users spot malformed URLs
-                  (stray whitespace, wrong path, missing /v1) before hitting the
-                  validate button. Hidden for Ollama which has its own status UI. */}
-              {!isOllama && baseUrl.trim() && selectedOption && (
+              {/* Final request URL preview — hidden for local providers which have their own status UI */}
+              {!isOllama && !isLMStudio && baseUrl.trim() && selectedOption && (
                 <p className="text-[11px] font-mono text-[var(--abu-text-muted)] break-all">
                   ↳ {t.settings.apiUrlPreview}: POST {buildFullChatUrl(baseUrl, selectedOption.format)}
                 </p>
@@ -661,6 +667,18 @@ export default function AddProviderModal({ open: isOpen, onClose }: AddProviderM
                   {ollamaStatus === 'online'
                     ? <><CircleCheck className="h-3.5 w-3.5" /> {t.settings.ollamaOnline}</>
                     : <><CircleX className="h-3.5 w-3.5" /> {t.settings.ollamaOffline}</>}
+                </div>
+              )}
+
+              {/* LM Studio connection status */}
+              {isLMStudio && fetchModelsStatus !== 'idle' && fetchModelsStatus !== 'fetching' && (
+                <div className={cn(
+                  'flex items-center gap-1.5 text-xs mt-1',
+                  fetchModelsStatus === 'success' ? 'text-green-500' : 'text-red-400',
+                )}>
+                  {fetchModelsStatus === 'success'
+                    ? <><CircleCheck className="h-3.5 w-3.5" /> {t.settings.lmstudioOnline}</>
+                    : <><CircleX className="h-3.5 w-3.5" /> {t.settings.lmstudioOffline}</>}
                 </div>
               )}
             </div>

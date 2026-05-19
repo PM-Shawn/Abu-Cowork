@@ -507,6 +507,11 @@ export interface TranslationDict {
     ollamaUrlLabel: string;
     ollamaUrlHint: string;
     ollamaModelSize: string;
+    // LM Studio
+    lmstudioUrlLabel: string;
+    lmstudioUrlHint: string;
+    lmstudioOnline: string;
+    lmstudioOffline: string;
 
     // Provider Management V2
     addService: string;

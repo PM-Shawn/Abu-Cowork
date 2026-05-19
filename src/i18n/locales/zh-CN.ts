@@ -516,6 +516,10 @@ const zhCN: TranslationDict = {
     ollamaUrlLabel: 'Ollama 地址',
     ollamaUrlHint: '默认 http://localhost:11434，远程部署可修改',
     ollamaModelSize: '大小',
+    lmstudioUrlLabel: 'LM Studio 地址',
+    lmstudioUrlHint: '默认 http://localhost:1234/v1，在 LM Studio Developer 选项卡启动服务后可用',
+    lmstudioOnline: '已连接',
+    lmstudioOffline: '未连接，请确认 LM Studio 已启动本地服务',
 
     // Provider Management V2
     addService: '添加 AI 服务',

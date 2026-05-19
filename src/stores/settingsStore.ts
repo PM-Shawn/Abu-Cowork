@@ -226,6 +226,7 @@ export const PROVIDER_CONFIGS = {
     ],
   },
   ollama: { name: 'Ollama', baseUrl: 'http://localhost:11434', format: 'openai-compatible', models: [] },
+  lmstudio: { name: 'LM Studio', baseUrl: 'http://localhost:1234/v1', format: 'openai-compatible', models: [] },
   local: { name: '本地模型 (Local)', baseUrl: '', format: 'openai-compatible', models: [] },
   custom: { name: '自定义 API', baseUrl: '', format: 'openai-compatible', models: [] },
 } as Record<LLMProvider, ProviderConfig>;
@@ -492,7 +493,7 @@ export function reconcileActiveProvider(
   if (!activeProvider) {
     const fallback =
       state.providers.find(
-        p => p.enabled && (p.apiKey.trim().length > 0 || p.id === 'ollama')
+        p => p.enabled && (p.apiKey.trim().length > 0 || p.id === 'ollama' || p.id === 'lmstudio')
       ) ?? state.providers.find(p => p.enabled);
     if (fallback) {
       state.activeModel = {
@@ -505,7 +506,7 @@ export function reconcileActiveProvider(
   if (activeProvider.enabled) return;
 
   const isUsable =
-    activeProvider.apiKey.trim().length > 0 || activeProvider.id === 'ollama';
+    activeProvider.apiKey.trim().length > 0 || activeProvider.id === 'ollama' || activeProvider.id === 'lmstudio';
   if (isUsable) {
     activeProvider.enabled = true;
     return;
@@ -515,7 +516,7 @@ export function reconcileActiveProvider(
     p =>
       p.id !== activeProvider.id &&
       p.enabled &&
-      (p.apiKey.trim().length > 0 || p.id === 'ollama')
+      (p.apiKey.trim().length > 0 || p.id === 'ollama' || p.id === 'lmstudio')
   );
   if (fallback) {
     state.activeModel = {
@@ -548,7 +549,8 @@ export function getActiveApiKey(state: SettingsState): string {
 
 /** Whether the current provider requires an API key (backward-compatible) */
 export function providerRequiresApiKey(state: SettingsState): boolean {
-  return state.activeModel.providerId !== 'ollama';
+  const id = state.activeModel.providerId;
+  return id !== 'ollama' && id !== 'lmstudio';
 }
 
 /** Returns the effective model ID (backward-compatible) */
@@ -950,9 +952,38 @@ export const useSettingsStore = create<SettingsStore>()(
     }),
     {
       name: 'abu-settings',
-      version: 26,
+      version: 27,
       migrate: (persisted: unknown, version: number) => {
         const state = persisted as Record<string, unknown>;
+
+        // ════════════════════════════════════════════════
+        // V27: Inject lmstudio builtin provider for existing users.
+        // Added as a first-class local provider alongside Ollama.
+        // ════════════════════════════════════════════════
+        if (version < 27) {
+          try {
+            if (Array.isArray(state.providers)) {
+              const providers = state.providers as Array<Record<string, unknown>>;
+              if (!providers.some(p => p.id === 'lmstudio')) {
+                providers.push({
+                  id: 'lmstudio',
+                  source: 'builtin',
+                  name: 'LM Studio',
+                  enabled: false,
+                  apiFormat: 'openai-compatible',
+                  baseUrl: 'http://localhost:1234/v1',
+                  apiKey: '',
+                  models: [],
+                  status: 'unchecked',
+                  sortOrder: providers.length,
+                  userAdded: false,
+                });
+              }
+            }
+          } catch (err) {
+            console.error('[settingsStore] migration step "V27 lmstudio builtin provider" failed:', err);
+          }
+        }
 
         // ════════════════════════════════════════════════
         // V26: Add hasRunSensitiveAudit_v015 flag. Existing upgraders get

@@ -65,4 +65,9 @@ export const PROVIDER_GUIDES: Record<string, ProviderGuideInfo> = {
     url: 'https://ollama.com/download',
     urlLabel: 'Ollama 官网',
   },
+  lmstudio: {
+    hint: '下载并安装 LM Studio，在 Catalog 中下载模型，然后在 Developer 选项卡中启动本地服务',
+    url: 'https://lmstudio.ai',
+    urlLabel: 'LM Studio 官网',
+  },
 };

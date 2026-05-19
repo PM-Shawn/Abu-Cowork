@@ -58,7 +58,7 @@ export async function runAIServicesChecks(): Promise<CheckResult[]> {
       const id = `ai-services:${p.id}`;
 
       // Skipped path: requires key but none provided
-      if (p.id !== 'ollama' && !p.apiKey.trim()) {
+      if (p.id !== 'ollama' && p.id !== 'lmstudio' && !p.apiKey.trim()) {
         return {
           id,
           category: 'ai-services' as const,

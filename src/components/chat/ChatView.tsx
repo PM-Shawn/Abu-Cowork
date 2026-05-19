@@ -213,7 +213,7 @@ export default function ChatView() {
   // the secondary "active provider has no key" case.
   const needsSetup = useSettingsStore((s) => {
     return !s.providers.some(
-      p => p.apiKey.trim().length > 0 || p.id === 'ollama'
+      p => p.apiKey.trim().length > 0 || p.id === 'ollama' || p.id === 'lmstudio'
     );
   });
 

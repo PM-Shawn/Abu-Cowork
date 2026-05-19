@@ -54,6 +54,9 @@ function StatusBadge({ provider, t }: { provider: ProviderInstance; t: ReturnTyp
 const isOllamaProvider = (p: ProviderInstance): boolean =>
   p.id === 'ollama' || p.baseUrl.includes('localhost:11434');
 
+const isLMStudioProvider = (p: ProviderInstance): boolean =>
+  p.id === 'lmstudio' || p.baseUrl.includes('localhost:1234');
+
 export default function ProviderCard({ provider, isActive }: ProviderCardProps) {
   const { t } = useI18n();
   const { updateProvider, removeProvider, toggleProvider, setProviderStatus } = useSettingsStore();
@@ -78,6 +81,7 @@ export default function ProviderCard({ provider, isActive }: ProviderCardProps) 
   const [fetchModelsMsg, setFetchModelsMsg] = useState<{ ok: boolean; text: string } | null>(null);
   const [modelsExpanded, setModelsExpanded] = useState(false);
   const isOllama = isOllamaProvider(provider);
+  const isLMStudio = isLMStudioProvider(provider);
   const isBuiltin = provider.source === 'builtin';
 
   const MODELS_COLLAPSED_COUNT = 5;
@@ -204,7 +208,7 @@ export default function ProviderCard({ provider, isActive }: ProviderCardProps) 
         </div>
 
         {/* Edit: API Key */}
-        {!isOllama && (
+        {!isOllama && !isLMStudio && (
           <div className="space-y-1">
             <label className="text-xs font-medium text-[var(--abu-text-tertiary)]">{t.settings.apiKey}</label>
             <div className="relative">

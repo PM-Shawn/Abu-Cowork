@@ -516,6 +516,10 @@ const enUS: TranslationDict = {
     ollamaUrlLabel: 'Ollama URL',
     ollamaUrlHint: 'Default http://localhost:11434, change for remote deployment',
     ollamaModelSize: 'Size',
+    lmstudioUrlLabel: 'LM Studio URL',
+    lmstudioUrlHint: 'Default http://localhost:1234/v1, start local server in LM Studio Developer tab first',
+    lmstudioOnline: 'Connected',
+    lmstudioOffline: 'Not connected, make sure LM Studio local server is running',
 
     // Provider Management V2
     addService: 'Add AI Service',

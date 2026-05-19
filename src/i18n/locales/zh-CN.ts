@@ -514,7 +514,7 @@ const zhCN: TranslationDict = {
     ollamaNoModels: '未检测到模型',
     ollamaNoModelsHint: '请先在终端运行 ollama pull <模型名> 下载模型',
     ollamaUrlLabel: 'Ollama 地址',
-    ollamaUrlHint: '默认 http://localhost:11434，远程部署可修改',
+    ollamaUrlHint: '默认 http://127.0.0.1:11434，远程部署可修改（Windows 请勿使用 localhost）',
     ollamaModelSize: '大小',
     lmstudioUrlLabel: 'LM Studio 地址',
     lmstudioUrlHint: '默认 http://localhost:1234/v1，在 LM Studio Developer 选项卡启动服务后可用',

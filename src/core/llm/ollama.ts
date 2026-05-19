@@ -34,7 +34,7 @@ export type OllamaStatus = 'unknown' | 'checking' | 'online' | 'offline';
 
 // ── Constants ──────────────────────────────────────────────────────
 
-const DEFAULT_OLLAMA_URL = 'http://localhost:11434';
+const DEFAULT_OLLAMA_URL = 'http://127.0.0.1:11434';
 const HEALTH_CHECK_TIMEOUT = 5000;   // 5s for health check
 const MODEL_LIST_TIMEOUT = 10000;    // 10s for model list
 

@@ -294,7 +294,7 @@ export default function AddProviderModal({ open: isOpen, onClose }: AddProviderM
   // ── Ollama handlers ──
 
   const handleCheckOllama = useCallback(async () => {
-    const url = baseUrl || 'http://localhost:11434';
+    const url = baseUrl || 'http://127.0.0.1:11434';
     setOllamaStatus('checking');
     setOllamaModels([]);
     // (fetch removed)
@@ -644,7 +644,7 @@ export default function AddProviderModal({ open: isOpen, onClose }: AddProviderM
               <Input
                 value={baseUrl}
                 onChange={(e) => setBaseUrl(e.target.value)}
-                placeholder={isOllama ? 'http://localhost:11434' : isLMStudio ? 'http://localhost:1234/v1' : 'https://...'}
+                placeholder={isOllama ? 'http://127.0.0.1:11434' : isLMStudio ? 'http://127.0.0.1:1234/v1' : 'https://...'}
                 onBlur={isOllama ? handleCheckOllama : isLMStudio ? handleFetchModels : undefined}
               />
               <p className="text-xs text-[var(--abu-text-tertiary)]">

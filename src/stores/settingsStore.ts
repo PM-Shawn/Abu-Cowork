@@ -225,7 +225,7 @@ export const PROVIDER_CONFIGS = {
       { id: 'stepfun/step-3.5-flash:free', label: 'Step 3.5 Flash (Free)' },
     ],
   },
-  ollama: { name: 'Ollama', baseUrl: 'http://localhost:11434', format: 'openai-compatible', models: [] },
+  ollama: { name: 'Ollama', baseUrl: 'http://127.0.0.1:11434', format: 'openai-compatible', models: [] },
   lmstudio: { name: 'LM Studio', baseUrl: 'http://localhost:1234/v1', format: 'openai-compatible', models: [] },
   local: { name: '本地模型 (Local)', baseUrl: '', format: 'openai-compatible', models: [] },
   custom: { name: '自定义 API', baseUrl: '', format: 'openai-compatible', models: [] },
@@ -952,9 +952,28 @@ export const useSettingsStore = create<SettingsStore>()(
     }),
     {
       name: 'abu-settings',
-      version: 27,
+      version: 28,
       migrate: (persisted: unknown, version: number) => {
         const state = persisted as Record<string, unknown>;
+
+        // ════════════════════════════════════════════════
+        // V28: Rewrite Ollama baseUrl from localhost to 127.0.0.1.
+        // Windows resolves localhost to ::1 (IPv6) while Ollama listens on
+        // 127.0.0.1 (IPv4), causing connection failures on Windows.
+        // ════════════════════════════════════════════════
+        if (version < 28) {
+          try {
+            if (Array.isArray(state.providers)) {
+              (state.providers as Array<Record<string, unknown>>).forEach(p => {
+                if (p.id === 'ollama' && p.baseUrl === 'http://localhost:11434') {
+                  p.baseUrl = 'http://127.0.0.1:11434';
+                }
+              });
+            }
+          } catch (err) {
+            console.error('[settingsStore] migration step "V28 ollama localhost fix" failed:', err);
+          }
+        }
 
         // ════════════════════════════════════════════════
         // V27: Inject lmstudio builtin provider for existing users.

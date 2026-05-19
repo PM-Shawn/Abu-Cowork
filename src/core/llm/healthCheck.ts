@@ -2,6 +2,7 @@ import type { ProviderInstance } from '@/types/provider';
 import { ClaudeAdapter } from './claude';
 import { OpenAICompatibleAdapter } from './openai-compatible';
 import { LLMError, type LLMErrorCode } from './adapter';
+import { getTauriFetch } from './tauriFetch';
 
 export interface HealthCheckResult {
   success: boolean;
@@ -20,12 +21,11 @@ export async function checkProviderHealth(
 ): Promise<HealthCheckResult> {
   const start = performance.now();
 
-  // Ollama: simple HTTP health check via /api/tags
+  // Ollama: health check via /api/tags — uses getTauriFetch to bypass WebView2 CORS on Windows
   if (provider.id === 'ollama' || provider.baseUrl.includes(':11434')) {
     try {
-      const resp = await fetch(`${provider.baseUrl}/api/tags`, {
-        signal: AbortSignal.timeout(5000),
-      });
+      const fetchFn = await getTauriFetch();
+      const resp = await fetchFn(`${provider.baseUrl}/api/tags`);
       return {
         success: resp.ok,
         latencyMs: Math.round(performance.now() - start),
@@ -40,12 +40,11 @@ export async function checkProviderHealth(
     }
   }
 
-  // LM Studio: health check via OpenAI-compatible /models endpoint
+  // LM Studio: health check via /models — uses getTauriFetch to bypass WebView2 CORS on Windows
   if (provider.id === 'lmstudio' || provider.baseUrl.includes(':1234')) {
     try {
-      const resp = await fetch(`${provider.baseUrl}/models`, {
-        signal: AbortSignal.timeout(5000),
-      });
+      const fetchFn = await getTauriFetch();
+      const resp = await fetchFn(`${provider.baseUrl}/models`);
       return {
         success: resp.ok,
         latencyMs: Math.round(performance.now() - start),

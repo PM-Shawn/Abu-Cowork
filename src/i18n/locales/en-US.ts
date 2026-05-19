@@ -514,7 +514,7 @@ const enUS: TranslationDict = {
     ollamaNoModels: 'No Models Found',
     ollamaNoModelsHint: 'Run "ollama pull <model>" in terminal to download models first',
     ollamaUrlLabel: 'Ollama URL',
-    ollamaUrlHint: 'Default http://localhost:11434, change for remote deployment',
+    ollamaUrlHint: 'Default http://127.0.0.1:11434, change for remote deployment (avoid localhost on Windows)',
     ollamaModelSize: 'Size',
     lmstudioUrlLabel: 'LM Studio URL',
     lmstudioUrlHint: 'Default http://localhost:1234/v1, start local server in LM Studio Developer tab first',

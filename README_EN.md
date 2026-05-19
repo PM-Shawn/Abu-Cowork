@@ -14,7 +14,7 @@ Tell Abu what you need — it reads files, runs commands, writes docs, and build
 [![Release](https://img.shields.io/github/v/release/PM-Shawn/Abu-Cowork?style=flat-square)](https://github.com/PM-Shawn/Abu-Cowork/releases)
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue?style=flat-square)](LICENSE)
 
-[Download](#-download) · [Quick Start](#-quick-start) · [Features](#-features) · [User Guide](docs/User-Guide_EN.md) · [Build from Source](#-build-from-source)
+[Download](#download) · [Quick Start](#quick-start) · [Features](#features) · [User Guide](docs/User-Guide_EN.md) · [Build from Source](#build-from-source)
 
 </div>
 

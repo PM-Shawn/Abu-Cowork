@@ -14,7 +14,7 @@
 [![Release](https://img.shields.io/github/v/release/PM-Shawn/Abu-Cowork?style=flat-square)](https://github.com/PM-Shawn/Abu-Cowork/releases)
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue?style=flat-square)](LICENSE)
 
-[下载安装](#-下载安装) · [快速开始](#-快速开始) · [功能介绍](#-功能介绍) · [使用指南](docs/User-Guide.md) · [从源码构建](#-从源码构建)
+[下载安装](#下载安装) · [快速开始](#快速开始) · [功能介绍](#功能介绍) · [使用指南](docs/User-Guide.md) · [从源码构建](#从源码构建)
 
 </div>
 

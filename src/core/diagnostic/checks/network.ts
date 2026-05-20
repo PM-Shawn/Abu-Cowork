@@ -23,6 +23,23 @@ import type { CheckResult } from '../types';
 
 const TIMEOUT_MS = 5000;
 
+// DeepSeek and some other providers drop the connection on `/` (no body, no
+// HTTP status), which reqwest surfaces as "error sending request for url" —
+// a false-negative even though the actual API is reachable. Probe an
+// OpenAI-compatible endpoint instead so the server responds with a real HTTP
+// status (401/404), which we already treat as "reachable".
+export function buildProbeUrl(baseUrl: string): string {
+  try {
+    const u = new URL(baseUrl);
+    if (u.pathname === '/' || u.pathname === '') {
+      u.pathname = '/v1/models';
+    }
+    return u.href;
+  } catch {
+    return baseUrl;
+  }
+}
+
 export async function runNetworkChecks(): Promise<CheckResult[]> {
   const t = getI18n();
 
@@ -44,7 +61,7 @@ export async function runNetworkChecks(): Promise<CheckResult[]> {
     }];
   }
 
-  const probeUrl = enabledExternal[0].baseUrl;
+  const probeUrl = buildProbeUrl(enabledExternal[0].baseUrl);
   const start = Date.now();
 
   try {

@@ -492,140 +492,35 @@ ${indexContent.trim()}
 </memory-index>`, cacheable: true });
       }
 
-      // Memory management instruction. Aligned with Claude Code's
-      // buildMemoryLines philosophy but adapted for desktop/office users:
-      // examples are non-technical (not git/migration/PR), and the recall
-      // path uses the `recall` tool rather than grep (since Abu users do
-      // not edit .md files directly).
-      sections.push({ name: 'memory-mgmt', text: `\n## 记忆管理
+      // Memory orientation — slim version (v0.18.6).
+      //
+      // Detailed instructions on the 4 memory types, recall vs read_memory
+      // decision rules, private-memory write conventions, and conflict
+      // resolution all live in the tool descriptions of update_memory /
+      // recall / read_memory. Those descriptions only ship when the tools
+      // are actually registered (deferred + keyword-prefetched), so we
+      // don't pay the ~3k token cost on every turn — only when the user
+      // genuinely asks Abu to remember or recall something.
+      //
+      // What stays here: the two facts the model needs to read every turn
+      // to make sense of the system prompt (where the index lives, where
+      // the relevant content lives, what 🔒 means).
+      sections.push({ name: 'memory-mgmt', text: `\n## 记忆系统（简介）
 
-你有一套基于文件的持久记忆系统。每条记忆是一个 .md 文件，存在
-\`~/.abu/memory/\`（全局）或 \`{workspace}/.abu/memory/\`（按工作区）。
-索引（MEMORY.md）已注入到上面的 <memory-index>。详情按需拉取：
-按 filename 精确读取调 \`read_memory\`；按关键词模糊搜调 \`recall\`。
-
-每轮对话**系统会自动**把本轮最相关的 ≤5 条非私密记忆**完整内容**注入到
-<relevant-memories> 段（出现在本系统提示后段，按相关度排序）。优先用那段
-回答，无需重复 read_memory；只在需要的内容**没**出现在 <relevant-memories>
-但出现在 <memory-index> 时才调 read_memory。
-
-**带 🔒 的索引行是私密记忆**：不会自动注入到 <relevant-memories>。仅当用户
-明确询问相关内容时调 read_memory 拉取，且回复时只引用必要部分（详见下方
-"私密记忆"段）。
-
-让这套系统随时间不断完善——未来对话能从中看到用户是谁、喜欢怎样
-协作、有哪些该避免/重复的行为、当前工作的背景。如果用户说"记住这个"
-立即保存；说"忘掉/别记了"找到并删除对应条目。
-
-### 4 类记忆
-
-- **user** — 用户角色、目标、知识水平、长期偏好。
-  例：用户是数据团队 PM；常写公众号；偏好简洁回复。
-- **feedback** — 用户对你的纠正或确认。**body 结构：规则 + Why + How to apply**。
-  从纠正和确认两端都记；只记纠正会让你逐渐过度谨慎。
-  例（纠正）：规则=不要用 echo 写文件；Why=中文易乱码；How=改用 Write 工具
-  例（确认）：规则=重构按"一类一 commit"拆；Why=便于回溯；How=后续重构沿用
-- **project** — 项目进展、关键决策、待办、约束。**body 结构：事实 + Why + How to apply**。
-  例：事实=Q3 公众号目标 4 篇；Why=老板要求；How=排素材时优先这 4 个主题
-- **reference** — 外部资源指针（看板/文档/频道地址）。
-  例：周报模板在 Cooper /团队空间/模板/周报
-
-### ❌ 不要保存
-
-- **一次性任务结果**："X 已生成"、"翻译完成"、"路线已规划"、"整理了 N 个文件"
-- **临时状态**："测试通过"、"密钥无效"、"端口被占用"、"服务连不上"
-- **可派生信息**：项目路径、技术栈、代码模式（读项目/grep 就知道）
-- 闲聊、问候、一次性查询（天气、临时计算、新闻）
-- 项目规则文件（.abu/ABU.md）已包含的内容
-
-即便用户明确说"记住这个清单/总结"，先问：哪一部分是 *意外的、未来
-还有用的*？只记那部分，不要把整个清单原样存下来。
-
-### 写入前必查（重要！避免重复 / 处理冲突）
-
-调 update_memory 前，**先扫上面的 <memory-index>**，按现有记忆与新信息的关系
-分三种处理：
-
-**情况 A：完全新主题** —— 索引中没有相似条目
-→ \`update_memory(action='append', name, content, type)\` 新写一条。
-
-**情况 B：信息冲突**（同一事实的不同值）—— 索引中已有"用户名为小包"，用户
-现在说"我叫小白"，或先前 feedback "用 npm" 用户改口"以后用 bun"
-→ \`update_memory(action='edit', filename='user_xxx.md', content='用户名为小白')\`
-  覆盖旧条；
-→ 或 \`update_memory(action='delete', filename='user_xxx.md')\` 删除过时的，
-  再 append 新的。
-**永远不要**留下两条值矛盾的记忆并存——会让未来对话困惑。
-
-**情况 C：信息补充**（原条目缺 Why/How，新对话补全了）
-→ \`update_memory(action='edit', filename='...', content='规则 + Why + How to apply 完整版')\`
-  把旧条 edit 成完整版本，而不是新写一条平行的。
-
-**情况 D：完全同义重复** —— 索引已有近义条目，没新信息
-→ **跳过**，什么都不做。
-
-判断三问：①是冲突还是补充？②若同时存在两条会不会让未来 Agent 困惑？
-③用户最近一句话是不是在改之前的偏好？任意一个"是" → 用 edit/delete 修旧的，
-不要 append 新的。
-
-### 何时调用 recall vs read_memory
-
-- **优先看 <relevant-memories>**：每轮已自动注入相关非私密记忆完整内容，
-  能回答就直接答，不用调任何工具。
-- **recall（按关键词搜）**：用户问"之前/上次/最近/我们聊过..."等回溯类问题，
-  且 <relevant-memories> 没覆盖；或不确定有没有相关记忆时。
-- **read_memory（按 filename 精确拉）**：当
-  ① 索引中看到带 🔒 的私密记忆且用户明确问起，或
-  ② <relevant-memories> 段未覆盖但 <memory-index> 描述显示相关
-  → 直接 read_memory(filename) 拉详情，比 recall 准确，token 也省。
-
-### 私密记忆（🔒 标记）
-
-某些记忆不希望每轮自动注入对话（如身份证、银行卡、薪资、医疗信息等）。
-索引行末尾带 🔒 的就是私密记忆。
-
-**写入时**：调 update_memory 时传 \`private: true\` 的场景：
-- 身份证 / 护照 / 银行卡 / 社保号 / 驾照
-- 薪资 / 奖金 / 未公开的财务数据
-- 医疗 / 心理健康 / 家庭关系
-- 客户名单 / 未发布产品决策 / 商业敏感信息
-
-**关键：private 记忆的 description 只写"主题"，不要写"值"**——description 会出
-现在 MEMORY.md 索引里被注入对话上下文，写值等于没保护。
-- ✅ description="个人身份证号" / "工行账户" / "本月薪资"
-- ❌ description="身份证 110105199003078412" / "卡号 6228... 密码 xxx"
-
-**不要默认 user 类全 private** —— 用户角色、写作偏好、工作习惯保持非私密，
-方便每轮自动引用。
-
-**读取时**：read_memory 命中私密记忆，返回值末尾会附带提示，要求你：
-- 只引用回答当前问题所需的最少部分
-- 不完整复述到对话历史中
-- 不在后续无关消息里再次引用
-
-### 用记忆时的 sanity-check（重要）
-
-记忆是过去某时刻的快照，**可能已过时**。基于记忆给建议前：
-- 提到具体文件路径 → 先确认文件还在
-- 提到具体函数/工具名 → 先 grep 确认
-- 用户即将据此行动 → 先验证现状再说
-
-"记忆说 X 存在" ≠ "X 现在还存在"。发现记忆与现状冲突，相信现状，
-并更新或删除过时的记忆，不要据此回答。
-
-### 记忆 vs 当前任务
-
-记忆是给 **未来对话** 用的。**当前对话内** 的步骤、临时进度、未完成
-事项，用 todo_write 工具，不要塞进记忆。
-
-记忆按当前工作区隔离存储，无工作区时存为全局记忆。项目规则
-（.abu/ABU.md）由用户手动维护，不要用 update_memory 修改。`, cacheable: true });
+- 长期记忆索引见上方 <memory-index>；每轮自动注入的相关记忆完整内容见 <relevant-memories>（在本提示后段）。能从这两段回答的就直接答，不用再调工具。
+- 索引行末尾带 🔒 是私密记忆，不会自动注入。仅用户明确问起时调 read_memory 拉取，回复只引用必要部分，不要在后续无关消息里复述。
+- 用户说"记住这个"立即保存；"忘掉/别记了"找到对应条目删除。具体怎么写记忆、何时 recall vs read_memory、如何处理冲突 → 见各记忆工具的 description。
+- 当前对话内的进度用 todo_write，不要塞记忆。项目规则（.abu/ABU.md）用户自维护，不要用 update_memory 改。`, cacheable: true });
     } catch (err) {
       console.warn('Failed to load memories:', err);
     }
 
-    // Inject computer use guidance — always present since computer tool is always registered.
-    // The tool auto-enables the setting on first call.
+    // Computer use guidance — only inject when the user has the feature
+    // enabled. Saves ~1k tokens for the vast majority of turns where the
+    // user isn't doing GUI automation. When the feature *is* enabled, the
+    // computer tool is also registered (toolPrefetch.ts), so guidance and
+    // tool ship together.
+    if (settingsState.computerUseEnabled) {
     sections.push({ name: 'computer-use', text: `\n## 电脑操控能力
 你有 computer 工具，可截屏、鼠标、键盘操作，操控用户屏幕上的任何应用。
 
@@ -668,6 +563,7 @@ ${isWindows()
 - 输入框问题 → 先点击确认焦点再 type
 - 应用无响应 → wait 更长时间，或检查是否有弹窗阻挡
 - 无法完成 → 诚实告诉用户卡在哪一步`, cacheable: true });
+    } // end of computer-use gate (settingsState.computerUseEnabled)
 
     // Browser guidance: when bridge is not connected, always guide to Abu-Browser skill.
     const browserBridgeConnected = mcpManager.isConnected('abu-browser-bridge');
@@ -749,15 +645,32 @@ ${isWindows()
       const skillLines: string[] = [];
       let truncated = false;
 
+      // v0.18.6: skill descriptions in some builtin skills (xlsx/docx/pptx)
+      // run 700-950 chars each. Truncating to ~120 chars at the first
+      // sentence boundary preserves the decision-relevant prefix while
+      // shrinking this section's footprint from ~2.5k to ~700 tokens.
+      // Full descriptions are still available when the model actually
+      // calls use_skill (the skill file is loaded then).
+      const truncateForList = (s: string, maxChars: number): string => {
+        const trimmed = s.trim();
+        if (trimmed.length <= maxChars) return trimmed;
+        const slice = trimmed.slice(0, maxChars);
+        // Cut at the last sentence boundary (Chinese 。 or English .) before maxChars,
+        // falling back to the raw slice if no boundary is found in the last 40 chars.
+        const lastDot = Math.max(slice.lastIndexOf('。'), slice.lastIndexOf('. '));
+        if (lastDot > maxChars * 0.5) return slice.slice(0, lastDot + 1) + ' …';
+        return slice + '…';
+      };
+
       for (const s of skills) {
         let line: string;
         if (s.trigger) {
-          line = `- ${s.name}: ${s.description}\n    TRIGGER when: ${s.trigger}`;
+          line = `- ${s.name}: ${truncateForList(s.description, 100)}\n    TRIGGER: ${truncateForList(s.trigger, 150)}`;
           if (s.doNotTrigger) {
-            line += `\n    DO NOT TRIGGER when: ${s.doNotTrigger}`;
+            line += `\n    DO NOT TRIGGER: ${truncateForList(s.doNotTrigger, 120)}`;
           }
         } else {
-          line = `- /${s.name} — ${s.description}`;
+          line = `- /${s.name} — ${truncateForList(s.description, 100)}`;
         }
 
         if (usedChars + line.length > budget) {
@@ -771,14 +684,14 @@ ${isWindows()
       }
 
       const header = truncated
-        ? '以下技能可通过 use_skill 工具主动使用（部分列表）。\n'
-        : '以下技能可通过 use_skill 工具主动使用。\n';
+        ? '以下技能可 use_skill 调用（部分列表）。'
+        : '以下技能可 use_skill 调用。';
+      // Decision rule slimmed: previously this section opened with 4 lines of
+      // rules about when *not* to call use_skill. The same intent is captured
+      // in use_skill's tool description; here we just give the bare rule.
       let skillText = '\n## 可用技能\n' +
         header +
-        '**决策规则**：收到用户请求后，检查是否匹配某个技能的 TRIGGER 条件。\n' +
-        '**仅当用户明确提出可执行任务**且匹配 TRIGGER（不符合 DO NOT TRIGGER）时，通过 use_skill 激活该技能。\n' +
-        '如果用户只是询问能力（"你能…吗"/"会不会"/"支持…吗"）或在脑暴讨论概念，**不要**调用 use_skill，先用文字回答。\n' +
-        '**永远不要**在不调用 use_skill 的情况下口头承诺"我有 X 技能/工具可以…"——要么真正调用激活技能，要么用通用工具直接完成任务。\n\n' +
+        ' 仅在用户明确请求**可执行任务**且匹配 TRIGGER 时激活；用户只是问"能不能/会不会"时先用文字答。\n\n' +
         skillLines.join('\n');
 
       // Show disabled skills so Agent can recommend enabling them when relevant

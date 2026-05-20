@@ -4,7 +4,23 @@ import { useSettingsStore } from '@/stores/settingsStore';
 import { useI18n } from '@/i18n';
 import { cn } from '@/lib/utils';
 import { Input } from '@/components/ui/input';
+import { resolveCapabilities } from '@/core/llm/modelCapabilities';
 import type { ModelCapability, ModelInfo, ProviderInstance } from '@/types';
+
+/**
+ * Format a context window size (in tokens) as a human-readable label.
+ * 8192 → "8k", 128000 → "128k", 1_048_576 → "1M"
+ */
+function formatContextWindow(tokens: number): string {
+  if (tokens >= 1_000_000) {
+    const m = tokens / 1_000_000;
+    return m >= 10 ? `${Math.round(m)}M` : `${m.toFixed(m >= 1 ? 0 : 1)}M`;
+  }
+  if (tokens >= 1000) {
+    return `${Math.round(tokens / 1000)}k`;
+  }
+  return `${tokens}`;
+}
 
 interface ModelSelectorProps {
   open: boolean;
@@ -61,6 +77,12 @@ function ModelRow({
   dim?: boolean;
 }) {
   const caps = getEffectiveCaps(model, provider);
+  const contextWindow = resolveCapabilities(model.id).contextWindow;
+  const ctxLabel = formatContextWindow(contextWindow);
+  // Flag models with sub-32k context — these often struggle with Abu's
+  // baseline tool / system-prompt overhead. Shows a softer "warn" style
+  // so users can spot them without being blocked from using them.
+  const isSmallContext = contextWindow < 32_000;
 
   return (
     <div
@@ -79,6 +101,18 @@ function ModelRow({
         dim ? 'text-[var(--abu-text-muted)]' : 'text-[var(--abu-text-secondary)]'
       )}>
         {model.label || model.id}
+      </span>
+
+      <span
+        className={cn(
+          'text-[10px] font-mono shrink-0 mr-1.5 px-1 rounded',
+          isSmallContext
+            ? 'text-amber-600/80 bg-amber-500/10'
+            : 'text-[var(--abu-text-muted)] opacity-70'
+        )}
+        title={isSmallContext ? `上下文窗口 ${ctxLabel}，可能不足以承载 Abu 的工具调用` : `上下文窗口 ${ctxLabel}`}
+      >
+        {ctxLabel}
       </span>
 
       {isActive && !dim && (

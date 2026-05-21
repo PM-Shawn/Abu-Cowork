@@ -7,6 +7,7 @@ export function sendFeedback(
   rating: 'positive' | 'negative' | 'cancel',
   conversationId?: string,
   messageId?: string,
+  skillName?: string | null,
 ): void {
   if (!CONSOLE_URL) return
 
@@ -18,6 +19,7 @@ export function sendFeedback(
       conversationId,
       messageId,
       rating,
+      skillName: skillName ?? null,
       appVersion: APP_VERSION,
     }),
   }).catch(() => {})

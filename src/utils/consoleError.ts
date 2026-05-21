@@ -8,6 +8,7 @@ export function reportError(
   errorType: 'api_error' | 'agent_crash',
   errorCode?: string,
   statusCode?: number,
+  model?: string,
 ): void {
   if (!CONSOLE_URL) return
 
@@ -19,6 +20,7 @@ export function reportError(
       errorType,
       errorCode: errorCode ?? null,
       statusCode: statusCode ?? null,
+      model: model ?? null,
       appVersion: APP_VERSION,
       platform: getPlatform() ?? 'unknown',
     }),

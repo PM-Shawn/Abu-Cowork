@@ -228,6 +228,10 @@ function MessageActions({ message, onEdit, onDelete, onRegenerate, isUser, conve
   const { t } = useI18n();
   const [copied, setCopied] = useState(false);
   const [feedbackRating, setFeedbackRating] = useState<'positive' | 'negative' | null>(null);
+  const activeSkill = useChatStore((s) => {
+    const conv = conversationId ? s.conversations[conversationId] : undefined;
+    return conv?.activeSkills?.[0] ?? null;
+  });
 
   const handleCopy = async () => {
     const text = getTextContent(message.content);
@@ -276,7 +280,7 @@ function MessageActions({ message, onEdit, onDelete, onRegenerate, isUser, conve
             onClick={() => {
               const next = feedbackRating === 'positive' ? null : 'positive';
               setFeedbackRating(next);
-              sendFeedback(next ?? 'cancel', conversationId, message.id);
+              sendFeedback(next ?? 'cancel', conversationId, message.id, activeSkill);
             }}
             className={cn(
               'btn-ghost p-1.5 rounded-md transition-colors',
@@ -292,7 +296,7 @@ function MessageActions({ message, onEdit, onDelete, onRegenerate, isUser, conve
             onClick={() => {
               const next = feedbackRating === 'negative' ? null : 'negative';
               setFeedbackRating(next);
-              sendFeedback(next ?? 'cancel', conversationId, message.id);
+              sendFeedback(next ?? 'cancel', conversationId, message.id, activeSkill);
             }}
             className={cn(
               'btn-ghost p-1.5 rounded-md transition-colors',

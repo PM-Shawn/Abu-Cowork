@@ -46,6 +46,7 @@ import { classifyTools, buildDeferredToolsSummary } from '../tools/toolSearch';
 import { getRunningAgents } from './backgroundAgentRegistry';
 import { hasQueuedInputs } from './userInputQueue';
 import { createLogger } from '../logging/logger';
+import { reportError } from '@/utils/consoleError';
 
 const logger = createLogger('agentLoop');
 
@@ -1727,6 +1728,13 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
       const errorMessage = err instanceof Error ? err.message : String(err);
       const errorCode = err instanceof LLMError ? err.code : undefined;
       logger.error('LLM call failed', { error: errorMessage, code: errorCode });
+
+      // Fire-and-forget: report to console for quality monitoring
+      if (err instanceof LLMError) {
+        reportError('api_error', err.code, err.statusCode ?? undefined);
+      } else {
+        reportError('agent_crash', 'unknown');
+      }
       logger.info('Agent loop ended', { conversationId, loopId, turnCount, reason: 'error' });
 
       // Friendly message when a 400 error is likely caused by image content

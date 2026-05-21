@@ -1,6 +1,7 @@
 import { check, type Update } from '@tauri-apps/plugin-updater';
 import { relaunch } from '@tauri-apps/plugin-process';
 import { useSettingsStore } from '@/stores/settingsStore';
+import { publish } from '@/core/notice/bus';
 
 const CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000; // 6 hours
 
@@ -74,6 +75,15 @@ export async function checkForUpdate(force = false): Promise<UpdateInfo | null> 
     };
 
     store.setUpdateInfo(info);
+
+    publish({
+      type: 'update_available',
+      source: 'core',
+      payload: { version: info.version, releaseUrl: info.releaseUrl },
+      // dedupKey includes version so each release only notifies once
+      dedupKey: `update_available:${info.version}`,
+    });
+
     return info;
   } catch (err) {
     console.warn('[Update] Check failed:', err);

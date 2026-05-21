@@ -32,10 +32,8 @@ export default defineConfig({
     minify: !process.env.TAURI_ENV_DEBUG ? 'esbuild' : false,
     sourcemap: !!process.env.TAURI_ENV_DEBUG,
     rollupOptions: {
-      // Multi-entry: main app + desktop pet window (PRD-02)
       input: {
         main: path.resolve(__dirname, 'index.html'),
-        pet: path.resolve(__dirname, 'pet.html'),
       },
       // Only externalize stdio transport (requires Node.js: cross-spawn, node:process, node:stream)
       // Client + HTTP/SSE transports are browser-compatible and should be bundled

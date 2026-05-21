@@ -670,7 +670,7 @@ const zhCN: TranslationDict = {
     },
     exportTitle: '向我们反馈问题',
     exportDesc: '自检看不出问题？把诊断包发给我们，能更快定位。',
-    exportButton: '📦 导出诊断包',
+    exportButton: '导出离线诊断包',
     exportInProgress: '正在打包…',
     exportFailed: '导出失败',
     exportIncluded: '会包含哪些信息',
@@ -679,6 +679,10 @@ const zhCN: TranslationDict = {
     exportIncludeRawWarning: '⚠ 包将包含你的对话原文。仅在你信任接收方时启用。',
     exportIncludedListTitle: '包内信息：',
     exportPrivacyText: 'API Key、密钥、其它对话永远不会被包含。详细规则见包内 README.txt。',
+    uploadButton: '反馈给开发者',
+    uploadInProgress: '上传中…',
+    uploadSuccess: '上传成功',
+    uploadFailed: '上传失败',
     successTitle: '已导出诊断包',
     successMeta: '{size} · {count} 个文件 · 已脱敏 {scrubbed} 处',
     successOpenFinder: '在 Finder 中显示',
@@ -1513,6 +1517,9 @@ const zhCN: TranslationDict = {
     feedbackDesc: '扫码添加微信，反馈问题或交流想法',
     sponsor: '支持',
     sponsorDesc: '如果觉得阿布好用，请作者喝杯咖啡吧',
+    deviceId: '设备 ID',
+    deviceIdHint: '遇到问题时发给开发者，用于定位你的设备记录',
+    copied: '已复制',
   },
 
   guide: {
@@ -1607,6 +1614,15 @@ const zhCN: TranslationDict = {
     projectLabel: '所属项目',
     projectNone: '不关联项目',
     save: '保存',
+  },
+
+  announcement: {
+    typeVersionUpdate: '版本更新',
+    typeFeature: '新功能',
+    typeBreaking: '重要变更',
+    typeGeneral: '通知',
+    dismiss: '知道了',
+    ctaDefault: '查看详情',
   },
 
   projectRules: {

@@ -1,6 +1,7 @@
-import { useEffect, useState, useMemo } from 'react';
-import { Bot, FolderLock, Plug, Sparkles, Globe, AppWindow, Activity } from 'lucide-react';
+import { useEffect, useState, useMemo, useCallback } from 'react';
+import { Bot, FolderLock, Plug, Sparkles, Globe, AppWindow, Activity, Copy, Check } from 'lucide-react';
 import { useI18n } from '@/i18n';
+import { getDeviceId } from '@/utils/deviceId';
 import { useDiagnosticStore } from '@/stores/diagnosticStore';
 import { ALL_CATEGORIES } from '@/core/diagnostic/runner';
 import type { CheckCategory, CheckResult } from '@/core/diagnostic/types';
@@ -27,6 +28,15 @@ export default function DiagnosticSection() {
   const runAll = useDiagnosticStore((s) => s.runAll);
 
   const [exportSuccess, setExportSuccess] = useState<ProduceResult | null>(null);
+  const [idCopied, setIdCopied] = useState(false);
+  const deviceId = getDeviceId();
+
+  const handleCopyDeviceId = useCallback(() => {
+    void navigator.clipboard.writeText(deviceId).then(() => {
+      setIdCopied(true);
+      setTimeout(() => setIdCopied(false), 2000);
+    });
+  }, [deviceId]);
 
   // Auto-run on first visit if no cached results.
   useEffect(() => {
@@ -105,6 +115,22 @@ export default function DiagnosticSection() {
 
       {/* Export panel */}
       <ExportPanel onExportSuccess={setExportSuccess} />
+
+      {/* Device ID — shown here so users can find it when reporting issues */}
+      <div className="flex items-center justify-between pt-2 border-t border-[var(--abu-border)]">
+        <span className="text-xs text-[var(--abu-text-muted)]">{t.about.deviceId}</span>
+        <button
+          onClick={handleCopyDeviceId}
+          className="flex items-center gap-1.5 text-xs font-mono text-[var(--abu-text-muted)] hover:text-[var(--abu-text-secondary)] transition-colors"
+          title={deviceId}
+        >
+          <span>{deviceId.slice(0, 8)}</span>
+          {idCopied
+            ? <Check className="h-3 w-3 text-green-500" />
+            : <Copy className="h-3 w-3" />
+          }
+        </button>
+      </div>
     </div>
   );
 }

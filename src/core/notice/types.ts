@@ -57,6 +57,8 @@ export type NoticeType =
   | 'skill_patch'
   | 'stuck_detection'
   | 'im_inbound'
+  // L2 可吞（续）
+  | 'update_available'
   // L3 只动状态灯
   | 'context_resume'
   | 'deep_focus_enter'
@@ -78,6 +80,7 @@ export const DEFAULT_TIER: Record<NoticeType, NoticeTier> = {
   skill_patch: 'L2',
   stuck_detection: 'L2',
   im_inbound: 'L2',
+  update_available: 'L2',
   context_resume: 'L3',
   deep_focus_enter: 'L3',
   deep_focus_exit: 'L3',
@@ -100,6 +103,7 @@ export const DEFAULT_TTL_MS: Record<NoticeType, number> = {
   skill_patch: 24 * 60 * 60 * 1000,
   stuck_detection: 30 * 60 * 1000,
   im_inbound: 0,
+  update_available: 7 * 24 * 60 * 60 * 1000,
   context_resume: 10 * 60 * 1000,
   deep_focus_enter: 10 * 60 * 1000,
   deep_focus_exit: 10 * 60 * 1000,
@@ -149,6 +153,7 @@ export const NoticeSchema = z.object({
     'skill_patch',
     'stuck_detection',
     'im_inbound',
+    'update_available',
     'context_resume',
     'deep_focus_enter',
     'deep_focus_exit',

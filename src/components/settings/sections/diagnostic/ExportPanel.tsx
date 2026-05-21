@@ -1,12 +1,13 @@
-import { Package, ChevronRight, ChevronDown, Loader2 } from 'lucide-react';
+import { Package, ChevronRight, ChevronDown, Loader2, Upload, Check } from 'lucide-react';
 import { useState } from 'react';
 import { cn } from '@/lib/utils';
 import { useI18n } from '@/i18n';
 import { useToastStore } from '@/stores/toastStore';
 import { useDiagnosticStore } from '@/stores/diagnosticStore';
 import { Toggle } from '@/components/ui/toggle';
-import { produceBundle, type ProduceResult } from '@/core/diagnostic/bundle';
+import { produceBundle, collectAndZip, type ProduceResult } from '@/core/diagnostic/bundle';
 import { mapPermissionsError } from '@/core/diagnostic/errorMap';
+import { uploadDiagnosticBundle } from '@/utils/consoleDiagnostic';
 
 interface Props {
   onExportSuccess: (r: ProduceResult) => void;
@@ -37,11 +38,31 @@ export default function ExportPanel({ onExportSuccess }: Props) {
 
   const [includedExpanded, setIncludedExpanded] = useState(false);
   const [privacyExpanded, setPrivacyExpanded] = useState(false);
+  const [uploadInProgress, setUploadInProgress] = useState(false);
+  const [uploadDone, setUploadDone] = useState(false);
 
   const onToggleRaw = (next: boolean) => {
     setIncludeRawText(next);
     if (next) {
       addToast({ title: t.diagnostic.exportIncludeRawWarning, type: 'warning', duration: 4000 });
+    }
+  };
+
+  const onUpload = async () => {
+    if (uploadInProgress || exportInProgress) return;
+    setUploadInProgress(true);
+    setUploadDone(false);
+    try {
+      const { bytes, filename } = await collectAndZip({ includeRawText });
+      await uploadDiagnosticBundle(bytes, filename);
+      setUploadDone(true);
+      setTimeout(() => setUploadDone(false), 4000);
+      addToast({ title: t.diagnostic.uploadSuccess, type: 'success', duration: 3000 });
+    } catch (e) {
+      const raw = e instanceof Error ? e.message : String(e);
+      addToast({ title: t.diagnostic.uploadFailed, message: raw, type: 'error', duration: 6000 });
+    } finally {
+      setUploadInProgress(false);
     }
   };
 
@@ -120,24 +141,51 @@ export default function ExportPanel({ onExportSuccess }: Props) {
         />
       </div>
 
-      {/* Export button */}
+      {/* Primary: upload to console */}
+      <button
+        type="button"
+        onClick={onUpload}
+        disabled={uploadInProgress || exportInProgress}
+        className={cn(
+          'mt-4 w-full py-2.5 rounded-lg text-[14px] font-medium transition-colors flex items-center justify-center gap-2',
+          uploadDone
+            ? 'bg-green-600/15 text-green-500 cursor-default'
+            : 'bg-[var(--abu-clay)] text-white hover:bg-[var(--abu-clay-hover)] disabled:opacity-50 disabled:cursor-not-allowed'
+        )}
+      >
+        {uploadInProgress ? (
+          <>
+            <Loader2 className="h-4 w-4 animate-spin" />
+            {t.diagnostic.uploadInProgress}
+          </>
+        ) : uploadDone ? (
+          <>
+            <Check className="h-4 w-4" />
+            {t.diagnostic.uploadSuccess}
+          </>
+        ) : (
+          <>
+            <Upload className="h-4 w-4" />
+            {t.diagnostic.uploadButton}
+          </>
+        )}
+      </button>
+
+      {/* Secondary: export offline bundle */}
       <button
         type="button"
         onClick={onExport}
-        disabled={exportInProgress}
-        className={cn(
-          'mt-4 w-full py-2.5 rounded-lg text-[14px] font-medium transition-colors flex items-center justify-center gap-2',
-          'bg-[var(--abu-clay)] text-white hover:bg-[var(--abu-clay-hover)] disabled:opacity-50 disabled:cursor-not-allowed'
-        )}
+        disabled={exportInProgress || uploadInProgress}
+        className="mt-2 w-full py-2 flex items-center justify-center gap-1.5 text-[12px] text-[var(--abu-text-muted)] hover:text-[var(--abu-text-secondary)] transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
       >
         {exportInProgress ? (
           <>
-            <Loader2 className="h-4 w-4 animate-spin" />
+            <Loader2 className="h-3.5 w-3.5 animate-spin" />
             {t.diagnostic.exportInProgress}
           </>
         ) : (
           <>
-            <Package className="h-4 w-4" />
+            <Package className="h-3.5 w-3.5" />
             {t.diagnostic.exportButton}
           </>
         )}

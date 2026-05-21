@@ -670,7 +670,7 @@ const enUS: TranslationDict = {
     },
     exportTitle: 'Report a problem',
     exportDesc: 'Self-check inconclusive? Export a diagnostic bundle to share with us.',
-    exportButton: '📦 Export diagnostic bundle',
+    exportButton: 'Save offline bundle',
     exportInProgress: 'Bundling…',
     exportFailed: 'Export failed',
     exportIncluded: 'What\'s included',
@@ -679,6 +679,10 @@ const enUS: TranslationDict = {
     exportIncludeRawWarning: '⚠ Bundle will include your raw conversation text. Enable only if you trust the recipient.',
     exportIncludedListTitle: 'Bundle contents:',
     exportPrivacyText: 'API keys, secrets, and other conversations are never included. See README.txt inside.',
+    uploadButton: 'Send to developer',
+    uploadInProgress: 'Uploading…',
+    uploadSuccess: 'Uploaded',
+    uploadFailed: 'Upload failed',
     successTitle: 'Bundle exported',
     successMeta: '{size} · {count} files · {scrubbed} text fields scrubbed',
     successOpenFinder: 'Show in Finder',
@@ -1512,6 +1516,9 @@ const enUS: TranslationDict = {
     feedbackDesc: 'Scan to add on WeChat for feedback or discussion',
     sponsor: 'Support',
     sponsorDesc: 'Buy the author a coffee if you find Abu useful',
+    deviceId: 'Device ID',
+    deviceIdHint: 'Share with the developer when reporting issues',
+    copied: 'Copied',
   },
 
   guide: {
@@ -1606,6 +1613,15 @@ const enUS: TranslationDict = {
     projectLabel: 'Project',
     projectNone: 'No project',
     save: 'Save',
+  },
+
+  announcement: {
+    typeVersionUpdate: 'Update',
+    typeFeature: 'New Feature',
+    typeBreaking: 'Breaking Change',
+    typeGeneral: 'Notice',
+    dismiss: 'Got it',
+    ctaDefault: 'Learn more',
   },
 
   projectRules: {

@@ -37,24 +37,33 @@ function fmtTimestampForFilename(d: Date): string {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}-${pad(d.getHours())}-${pad(d.getMinutes())}`;
 }
 
-export async function produceBundle(opts: ProduceOptions): Promise<ProduceResult> {
+interface ZipResult {
+  bytes: Uint8Array;
+  filename: string;
+  scrubbedTextCount: number;
+  fileList: string[];
+}
+
+/** Collect, scrub, and compress — without writing to disk. */
+export async function collectAndZip(opts: ProduceOptions): Promise<ZipResult> {
   const convId = opts.conversationId ?? useChatStore.getState().activeConversationId ?? 'global';
   const shortId = convId.slice(0, 8);
   const filename = `abu-diagnostic-${shortId}-${fmtTimestampForFilename(new Date())}.zip`;
 
-  // 1. Collect & scrub
   const { files, scrubbedTextCount } = await collectBundleFiles(opts);
 
-  // 2. Build the input for fflate.zipSync (Record<string, Uint8Array>)
   const zipInput: Record<string, Uint8Array> = {};
   for (const [name, content] of Object.entries(files)) {
     zipInput[name] = strToU8(content);
   }
 
-  // 3. Zip (level 6 default — text compresses well, fflate is fast)
   const bytes = zipSync(zipInput, { level: 6 });
+  return { bytes, filename, scrubbedTextCount, fileList: Object.keys(files).sort() };
+}
 
-  // 4. Write to ~/Downloads/Abu-Diagnostic/
+export async function produceBundle(opts: ProduceOptions): Promise<ProduceResult> {
+  const { bytes, filename, scrubbedTextCount, fileList } = await collectAndZip(opts);
+
   const dlDir = await downloadDir();
   const outDir = joinPath(dlDir, 'Abu-Diagnostic');
   if (!(await exists(outDir))) {
@@ -67,7 +76,7 @@ export async function produceBundle(opts: ProduceOptions): Promise<ProduceResult
     path: outPath,
     sizeBytes: bytes.byteLength,
     scrubbedTextCount,
-    fileList: Object.keys(files).sort(),
+    fileList,
   };
 }
 

@@ -43,6 +43,7 @@ const noticeTitle: Record<string, string> = {
   skill_proposal_offer: '阿布想存一个技能',
   skill_draft_ready: '技能草稿就绪',
   im_inbound: '收到新消息',
+  update_available: '有新版本可用',
 };
 
 function getTitle(notice: Notice): string {

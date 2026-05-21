@@ -74,11 +74,12 @@ export class LLMError extends Error {
   retryable: boolean;
   retryAfterMs?: number;
   statusCode?: number;
+  rawBody?: string;
 
   constructor(
     message: string,
     code: LLMErrorCode,
-    options?: { retryable?: boolean; retryAfterMs?: number; statusCode?: number }
+    options?: { retryable?: boolean; retryAfterMs?: number; statusCode?: number; rawBody?: string }
   ) {
     super(message);
     this.name = 'LLMError';
@@ -86,6 +87,7 @@ export class LLMError extends Error {
     this.retryable = options?.retryable ?? false;
     this.retryAfterMs = options?.retryAfterMs;
     this.statusCode = options?.statusCode;
+    this.rawBody = options?.rawBody;
   }
 }
 
@@ -95,13 +97,21 @@ export class LLMError extends Error {
  * Falls back to the raw body if not parseable.
  */
 export function extractApiErrorMessage(rawBody: string): string {
+  // Some providers (e.g. mimo) prefix body with status code: "403 {json}"
+  const stripped = rawBody.replace(/^\d{3}\s+/, '');
   try {
-    const parsed = JSON.parse(rawBody) as { error?: { message?: string } };
+    const parsed = JSON.parse(stripped) as {
+      error?: { message?: string };
+      message?: string;
+    };
     if (typeof parsed.error?.message === 'string' && parsed.error.message) {
       return parsed.error.message;
     }
+    if (typeof parsed.message === 'string' && parsed.message) {
+      return parsed.message;
+    }
   } catch { /* not JSON */ }
-  return rawBody;
+  return stripped || rawBody;
 }
 
 /**
@@ -110,48 +120,41 @@ export function extractApiErrorMessage(rawBody: string): string {
  */
 export function classifyError(statusCode: number, rawBody: string): LLMError {
   const message = extractApiErrorMessage(rawBody);
+  const stored = rawBody.slice(0, 1000);
 
   // Rate limiting
   if (statusCode === 429) {
     const retryAfter = extractRetryAfter(message);
     return new LLMError(message, 'rate_limit', {
-      retryable: true,
-      retryAfterMs: retryAfter,
-      statusCode,
+      retryable: true, retryAfterMs: retryAfter, statusCode, rawBody: stored,
     });
   }
 
   // Overloaded
   if (statusCode === 529 || statusCode === 503) {
     return new LLMError(message, 'overloaded', {
-      retryable: true,
-      retryAfterMs: 5000,
-      statusCode,
+      retryable: true, retryAfterMs: 5000, statusCode, rawBody: stored,
     });
   }
 
   // Server errors (retryable)
   if (statusCode === 500 || statusCode === 502) {
     return new LLMError(message, 'server_error', {
-      retryable: true,
-      retryAfterMs: 2000,
-      statusCode,
+      retryable: true, retryAfterMs: 2000, statusCode, rawBody: stored,
     });
   }
 
   // Auth errors (not retryable)
   if (statusCode === 401 || statusCode === 403) {
     return new LLMError(message, 'authentication', {
-      retryable: false,
-      statusCode,
+      retryable: false, statusCode, rawBody: stored,
     });
   }
 
   // Not found
   if (statusCode === 404) {
     return new LLMError(message, 'not_found', {
-      retryable: false,
-      statusCode,
+      retryable: false, statusCode, rawBody: stored,
     });
   }
 
@@ -160,17 +163,15 @@ export function classifyError(statusCode: number, rawBody: string): LLMError {
     const isContextTooLong = /prompt.is.too.long|token.*exceed|too.many.tokens|max.tokens.exceeded|context.window|context.length/i.test(message);
     if (isContextTooLong) {
       return new LLMError(message, 'context_too_long', {
-        retryable: false,
-        statusCode,
+        retryable: false, statusCode, rawBody: stored,
       });
     }
     return new LLMError(message, 'invalid_request', {
-      retryable: false,
-      statusCode,
+      retryable: false, statusCode, rawBody: stored,
     });
   }
 
-  return new LLMError(message, 'unknown', { retryable: false, statusCode });
+  return new LLMError(message, 'unknown', { retryable: false, statusCode, rawBody: stored });
 }
 
 function extractRetryAfter(message: string): number | undefined {

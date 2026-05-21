@@ -692,6 +692,11 @@ export interface TranslationDict {
     exportIncludeRawWarning: string;
     exportIncludedListTitle: string;
     exportPrivacyText: string;
+    // Upload to console
+    uploadButton: string;
+    uploadInProgress: string;
+    uploadSuccess: string;
+    uploadFailed: string;
     // Success card
     successTitle: string;
     successMeta: string; // {size}, {count}, {scrubbed}
@@ -1533,6 +1538,9 @@ export interface TranslationDict {
     feedbackDesc: string;
     sponsor: string;
     sponsorDesc: string;
+    deviceId: string;
+    deviceIdHint: string;
+    copied: string;
   };
 
   // Quick Start Guide
@@ -1655,6 +1663,16 @@ export interface TranslationDict {
     heatmapWeekdays: string[];
     heatmapLegendLess: string;
     heatmapLegendMore: string;
+  };
+
+  // Cloud Announcements
+  announcement: {
+    typeVersionUpdate: string;
+    typeFeature: string;
+    typeBreaking: string;
+    typeGeneral: string;
+    dismiss: string;
+    ctaDefault: string;
   };
 
   // Project Rules

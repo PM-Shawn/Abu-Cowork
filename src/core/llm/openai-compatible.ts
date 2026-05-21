@@ -295,12 +295,19 @@ export class OpenAICompatibleAdapter implements LLMAdapter {
       requestHeaders['Authorization'] = `Bearer ${options.apiKey}`;
     }
     const fetchFn = await getTauriFetch();
-    let response = await fetchFn(`${baseUrl}/chat/completions`, {
-      method: 'POST',
-      headers: requestHeaders,
-      body: JSON.stringify(body),
-      signal: options.signal,
-    });
+    let response: Awaited<ReturnType<typeof fetchFn>>;
+    try {
+      response = await fetchFn(`${baseUrl}/chat/completions`, {
+        method: 'POST',
+        headers: requestHeaders,
+        body: JSON.stringify(body),
+        signal: options.signal,
+      });
+    } catch (fetchErr) {
+      // Connection-level failure (DNS, timeout, refused) — not an agent bug
+      const msg = fetchErr instanceof Error ? fetchErr.message : String(fetchErr);
+      throw new LLMError(msg, 'network_error', { retryable: true, retryAfterMs: 2000 });
+    }
 
     if (!response.ok) {
       const errorText = await response.text();

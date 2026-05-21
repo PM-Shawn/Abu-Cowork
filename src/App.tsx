@@ -58,6 +58,11 @@ import { useI18n } from '@/i18n';
 import CloseDialog from '@/components/common/CloseDialog';
 import SensitiveAuditDialog from '@/components/settings/SensitiveAuditDialog';
 import { checkForUpdate } from '@/core/updates/checker';
+import { sendConsolePing } from '@/utils/consolePing';
+import { fetchUnseenAnnouncements, markSeen, type AnnouncementItem } from '@/utils/consoleAnnouncement';
+import AnnouncementBanner from '@/components/common/AnnouncementBanner';
+import { pushDiagnosticSnapshot } from '@/utils/consoleDiagnostic';
+import { useDiagnosticStore } from '@/stores/diagnosticStore';
 
 /**
  * Drain Notice inbox if we're in a state that can actually deliver.
@@ -100,6 +105,7 @@ function App() {
   // Right panel toggle only when there's an active conversation with messages
   const showRightPanelToggle = viewMode === 'chat' && (activeConv?.messages?.length ?? 0) > 0;
   const [showCloseDialog, setShowCloseDialog] = useState(false);
+  const [pendingAnnouncements, setPendingAnnouncements] = useState<AnnouncementItem[]>([]);
   const hasRunningAgent = useChatStore((s) =>
     Object.values(s.conversations).some((c) => c.status === 'running')
   );
@@ -185,6 +191,7 @@ function App() {
     installLargeWriteGuard();
     refreshDiscovery();
     initMCPStoreSync();
+    sendConsolePing();
 
     // Hydrate API keys from the encrypted secret store. During Phase 2 the
     // plaintext apiKey is still persisted via localStorage as a fallback,
@@ -348,6 +355,43 @@ function App() {
     };
   }, []);
 
+  // Cloud announcements: poll on startup (60s delay) + every 6h.
+  // Shows unseen announcements as a dismissible banner.
+  useEffect(() => {
+    const run = async () => {
+      const items = await fetchUnseenAnnouncements();
+      if (items.length > 0) setPendingAnnouncements(items);
+    };
+
+    const startupTimer = setTimeout(() => { void run() }, 60_000);
+    const pollTimer = setInterval(() => { void run() }, 6 * 60 * 60 * 1000);
+
+    return () => {
+      clearTimeout(startupTimer);
+      clearInterval(pollTimer);
+    };
+  }, []);
+
+  // Diagnostic snapshot push — two triggers:
+  // 1. Startup (90s): push last persisted snapshot so Console always has fresh data.
+  // 2. Store subscription: push whenever a fresh runAll() completes (isChecking true→false).
+  useEffect(() => {
+    const startupTimer = setTimeout(pushDiagnosticSnapshot, 90_000);
+
+    let wasChecking = false;
+    const unsub = useDiagnosticStore.subscribe((state) => {
+      if (wasChecking && !state.isChecking && state.lastCheckedAt !== null) {
+        pushDiagnosticSnapshot();
+      }
+      wasChecking = state.isChecking;
+    });
+
+    return () => {
+      clearTimeout(startupTimer);
+      unsub();
+    };
+  }, []);
+
   // Catch unhandled rejections from Tauri plugin resource cleanup
   // (e.g., plugin-http fetch to unreachable URLs, plugin-fs watch on deleted paths)
   useEffect(() => {
@@ -461,6 +505,18 @@ function App() {
             content and offer to mark them private. Self-gates on the
             hasRunSensitiveAudit_v015 settings flag. */}
         <SensitiveAuditDialog />
+
+        {/* Cloud announcement banner — shows the first unseen announcement */}
+        {pendingAnnouncements.length > 0 && pendingAnnouncements[0] && (
+          <AnnouncementBanner
+            item={pendingAnnouncements[0]}
+            onDismiss={() => {
+              const id = pendingAnnouncements[0]?.id;
+              if (id != null) markSeen(id);
+              setPendingAnnouncements((prev) => prev.slice(1));
+            }}
+          />
+        )}
       </div>
     </TooltipProvider>
     </ErrorBoundary>

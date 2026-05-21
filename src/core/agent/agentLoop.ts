@@ -1731,9 +1731,9 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
 
       // Fire-and-forget: report to console for quality monitoring
       if (err instanceof LLMError) {
-        reportError('api_error', err.code, err.statusCode ?? undefined, effectiveModelId);
+        reportError('api_error', err.code, err.statusCode ?? undefined, effectiveModelId, errorMessage, err.rawBody);
       } else {
-        reportError('agent_crash', 'unknown', undefined, effectiveModelId);
+        reportError('agent_crash', 'unknown', undefined, effectiveModelId, errorMessage);
       }
       logger.info('Agent loop ended', { conversationId, loopId, turnCount, reason: 'error' });
 

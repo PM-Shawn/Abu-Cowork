@@ -9,6 +9,8 @@ export function reportError(
   errorCode?: string,
   statusCode?: number,
   model?: string,
+  errorMessage?: string,
+  rawBody?: string,
 ): void {
   if (!CONSOLE_URL) return
 
@@ -19,6 +21,8 @@ export function reportError(
       deviceId: getDeviceId(),
       errorType,
       errorCode: errorCode ?? null,
+      errorMessage: errorMessage ?? null,
+      rawBody: rawBody ?? null,
       statusCode: statusCode ?? null,
       model: model ?? null,
       appVersion: APP_VERSION,

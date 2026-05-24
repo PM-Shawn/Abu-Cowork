@@ -45,3 +45,28 @@ export function createHeartbeat(
 
   return { reset, clear };
 }
+
+/**
+ * Merge AbortSignals into one that aborts when ANY input aborts.
+ *
+ * Prefers the native `AbortSignal.any` (clean, no listener leak), but falls
+ * back to manual forwarding on engines that lack it — notably WKWebView on
+ * macOS < 14.4 (Safari < 17.4), where `AbortSignal.any` is `undefined`. Without
+ * the fallback, calling it would throw `TypeError` on the first line of every
+ * chat() and break ALL conversations on those systems. Only `addEventListener`
+ * (a 20-year-old API) is used in the fallback, so it runs everywhere.
+ */
+export function anySignal(signals: AbortSignal[]): AbortSignal {
+  if (typeof AbortSignal.any === 'function') {
+    return AbortSignal.any(signals);
+  }
+  const controller = new AbortController();
+  for (const s of signals) {
+    if (s.aborted) {
+      controller.abort(s.reason);
+      break;
+    }
+    s.addEventListener('abort', () => controller.abort(s.reason), { once: true });
+  }
+  return controller.signal;
+}

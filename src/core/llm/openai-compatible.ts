@@ -4,7 +4,7 @@ import type { Message, StreamEvent, ToolDefinition } from '../../types';
 import { getTauriFetch } from './tauriFetch';
 import { normalizeMessages } from './messageNormalizer';
 import type { PreparedTurn, PreparedContentBlock } from './messageNormalizer';
-import { createHeartbeat, DEFAULT_STREAM_HANG_TIMEOUT_MS as STREAM_HANG_TIMEOUT_MS } from './heartbeat';
+import { createHeartbeat, anySignal, DEFAULT_STREAM_HANG_TIMEOUT_MS as STREAM_HANG_TIMEOUT_MS } from './heartbeat';
 import { createLogger } from '../logging/logger';
 import { resolveOpenAIBaseUrl } from './urlUtils';
 
@@ -305,7 +305,7 @@ export class OpenAICompatibleAdapter implements LLMAdapter {
     // the fetch (the merged signal is GC'd with chat() — no listener leak).
     const streamAbort = new AbortController();
     const effectiveSignal = options.signal
-      ? AbortSignal.any([options.signal, streamAbort.signal])
+      ? anySignal([options.signal, streamAbort.signal])
       : streamAbort.signal;
     let idleTimedOut = false;
 

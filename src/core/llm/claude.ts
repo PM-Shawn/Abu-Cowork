@@ -5,7 +5,7 @@ import type { Message, StreamEvent, ToolDefinition } from '../../types';
 import { getTauriFetch } from './tauriFetch';
 import { normalizeMessages } from './messageNormalizer';
 import type { PreparedTurn, PreparedToolCall } from './messageNormalizer';
-import { createHeartbeat, DEFAULT_STREAM_HANG_TIMEOUT_MS as STREAM_HANG_TIMEOUT_MS } from './heartbeat';
+import { createHeartbeat, anySignal, DEFAULT_STREAM_HANG_TIMEOUT_MS as STREAM_HANG_TIMEOUT_MS } from './heartbeat';
 
 function convertTools(tools: ToolDefinition[]): Anthropic.Tool[] {
   return tools.map((t) => ({
@@ -245,7 +245,7 @@ export class ClaudeAdapter implements LLMAdapter {
     // Merge the caller's signal via AbortSignal.any so user cancels still apply.
     const streamAbort = new AbortController();
     const effectiveSignal = options.signal
-      ? AbortSignal.any([options.signal, streamAbort.signal])
+      ? anySignal([options.signal, streamAbort.signal])
       : streamAbort.signal;
     const streamOptions = { signal: effectiveSignal };
     let hangTimedOut = false;

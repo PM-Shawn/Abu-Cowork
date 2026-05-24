@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { createHeartbeat } from './heartbeat';
+import { createHeartbeat, anySignal } from './heartbeat';
 
 describe('heartbeat', () => {
   beforeEach(() => {
@@ -77,5 +77,41 @@ describe('heartbeat', () => {
     const hb = createHeartbeat(1000, onTimeout);
     hb.clear(); // No timer started yet — should not throw
     expect(onTimeout).not.toHaveBeenCalled();
+  });
+});
+
+describe('anySignal', () => {
+  // Verifies the OR-merge contract: result aborts when ANY input aborts, and
+  // starts aborted if any input is already aborted. Run against both the native
+  // AbortSignal.any and the manual fallback so old-WKWebView behavior matches.
+  function runBehaviorChecks() {
+    // A later abort on any input propagates to the merged signal.
+    const a = new AbortController();
+    const b = new AbortController();
+    const merged = anySignal([a.signal, b.signal]);
+    expect(merged.aborted).toBe(false);
+    b.abort();
+    expect(merged.aborted).toBe(true);
+
+    // An already-aborted input makes the merged signal start aborted.
+    const c = new AbortController();
+    c.abort();
+    const d = new AbortController();
+    expect(anySignal([c.signal, d.signal]).aborted).toBe(true);
+  }
+
+  it('works with native AbortSignal.any', () => {
+    expect(typeof AbortSignal.any).toBe('function'); // sanity: native present in test env
+    runBehaviorChecks();
+  });
+
+  it('works via fallback when AbortSignal.any is unavailable (old WKWebView)', () => {
+    const original = AbortSignal.any;
+    try {
+      (AbortSignal as unknown as { any: unknown }).any = undefined;
+      runBehaviorChecks();
+    } finally {
+      (AbortSignal as unknown as { any: typeof original }).any = original;
+    }
   });
 });

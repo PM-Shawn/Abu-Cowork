@@ -75,9 +75,9 @@ export default function CommandConfirmDialog({
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
-      <div className="w-full max-w-md mx-4 bg-white rounded-2xl shadow-xl overflow-hidden animate-in fade-in zoom-in-95 duration-200">
+      <div className="w-full max-w-md mx-4 bg-white rounded-2xl shadow-xl overflow-hidden animate-in fade-in zoom-in-95 duration-200 flex flex-col max-h-[85vh]">
         {/* Header */}
-        <div className="relative px-6 pt-6 pb-4">
+        <div className="relative px-6 pt-6 pb-4 shrink-0">
           <button
             onClick={onCancel}
             className="absolute top-4 right-4 p-1.5 rounded-lg text-[var(--abu-text-muted)] hover:text-[var(--abu-text-secondary)] hover:bg-[var(--abu-bg-active)] transition-colors"
@@ -100,27 +100,30 @@ export default function CommandConfirmDialog({
           </div>
         </div>
 
-        {/* Command display */}
-        <div className="mx-6 px-4 py-3 bg-[#1a1a1a] rounded-lg border border-[#333]">
-          <code className="text-[13px] text-[#e0e0e0] font-mono break-all whitespace-pre-wrap">
-            {request.command}
-          </code>
+        {/* Scrollable body: command + reason */}
+        <div className="flex-1 overflow-y-auto min-h-0 px-6 pb-4">
+          {/* Command display */}
+          <div className="px-4 py-3 bg-[#1a1a1a] rounded-lg border border-[#333]">
+            <code className="text-[13px] text-[#e0e0e0] font-mono break-all whitespace-pre-wrap">
+              {request.command}
+            </code>
+          </div>
+
+          {/* Reason */}
+          {request.reason && (
+            <div className={`mt-4 p-3 ${config.bgColor} border ${config.borderColor} rounded-lg`}>
+              <div className="flex gap-2">
+                <Icon className={`h-4 w-4 ${config.iconColor} shrink-0 mt-0.5`} />
+                <p className={`text-[12px] ${config.iconColor.replace('text-', 'text-').replace('-500', '-700').replace('-600', '-800')} leading-relaxed`}>
+                  {request.reason}
+                </p>
+              </div>
+            </div>
+          )}
         </div>
 
-        {/* Reason */}
-        {request.reason && (
-          <div className={`mx-6 mt-4 p-3 ${config.bgColor} border ${config.borderColor} rounded-lg`}>
-            <div className="flex gap-2">
-              <Icon className={`h-4 w-4 ${config.iconColor} shrink-0 mt-0.5`} />
-              <p className={`text-[12px] ${config.iconColor.replace('text-', 'text-').replace('-500', '-700').replace('-600', '-800')} leading-relaxed`}>
-                {request.reason}
-              </p>
-            </div>
-          </div>
-        )}
-
         {/* Actions */}
-        <div className="flex gap-3 px-6 py-6">
+        <div className="flex gap-3 px-6 py-6 shrink-0 border-t border-[var(--abu-bg-muted)]">
           <Button
             variant="outline"
             onClick={onCancel}

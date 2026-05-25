@@ -1,39 +1,68 @@
 {
   "identifier": "windows-extras",
-  "description": "Windows-only fs scope extras. On Windows users frequently relocate the Downloads folder to a non-C: drive (e.g. D:\\Users\\<user>\\Downloads) to save C: space. That path is NOT under $HOME, so the default $HOME/** scope rejects writes there with 'forbidden path'. This capability adds $DOWNLOAD/** for the scopes the diagnostic-bundle export touches. Gated to Windows only — on macOS, declaring $DOWNLOAD in scope causes tauri-plugin-fs to resolve the path at init, which triggers a TCC prompt the instant the app launches (see src/__tests__/tauriCapabilities.test.ts header for the historical incident).",
+  "description": "Windows-only fs scope extras. On Windows, user workspaces may be on non-C: drives (e.g. D:\\workspace\\Abu) that fall outside the default $HOME/** scope. All such paths were previously rejected with 'forbidden path', even after Abu's pathSafety.ts had authorised the workspace. This capability grants full-path (**) access on Windows for all agent file operations, relying on Abu's pathSafety.ts as the primary security enforcement layer. macOS is unaffected — its workspaces live under $HOME or /Volumes which are already covered by default.json.",
   "windows": ["main"],
   "platforms": ["windows"],
   "permissions": [
     {
+      "identifier": "fs:allow-read-text-file",
+      "allow": [
+        { "path": "**" }
+      ]
+    },
+    {
+      "identifier": "fs:allow-read-file",
+      "allow": [
+        { "path": "**" }
+      ]
+    },
+    {
+      "identifier": "fs:allow-read-dir",
+      "allow": [
+        { "path": "**" }
+      ]
+    },
+    {
+      "identifier": "fs:allow-write-text-file",
+      "allow": [
+        { "path": "$DOWNLOAD/**" },
+        { "path": "**" }
+      ]
+    },
+    {
+      "identifier": "fs:allow-write-file",
+      "allow": [
+        { "path": "$DOWNLOAD/**" },
+        { "path": "**" }
+      ]
+    },
+    {
       "identifier": "fs:allow-exists",
       "allow": [
         { "path": "$DOWNLOAD" },
-        { "path": "$DOWNLOAD/**" }
+        { "path": "$DOWNLOAD/**" },
+        { "path": "**" }
       ]
     },
     {
       "identifier": "fs:allow-mkdir",
       "allow": [
         { "path": "$DOWNLOAD" },
-        { "path": "$DOWNLOAD/**" }
-      ]
-    },
-    {
-      "identifier": "fs:allow-write-file",
-      "allow": [
-        { "path": "$DOWNLOAD/**" }
-      ]
-    },
-    {
-      "identifier": "fs:allow-write-text-file",
-      "allow": [
-        { "path": "$DOWNLOAD/**" }
+        { "path": "$DOWNLOAD/**" },
+        { "path": "**" }
       ]
     },
     {
       "identifier": "fs:allow-stat",
       "allow": [
-        { "path": "$DOWNLOAD/**" }
+        { "path": "$DOWNLOAD/**" },
+        { "path": "**" }
+      ]
+    },
+    {
+      "identifier": "fs:allow-remove",
+      "allow": [
+        { "path": "**" }
       ]
     }
   ]

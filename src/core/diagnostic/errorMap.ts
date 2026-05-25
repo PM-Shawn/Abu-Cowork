@@ -155,7 +155,12 @@ export function mapPermissionsError(rawMessage: string): FriendlyError {
 
   // Tauri capability scope mismatch — this is *our* configuration bug.
   // The diagnostic-bundle export route is the user's path to flag it.
-  if (/forbidden\s+path:.*\ballow-/i.test(raw)) {
+  //
+  // Tauri 2.x error format changed between versions:
+  //   Old: "forbidden path: /some/path allow-write-text-file"  (includes capability id)
+  //   New: "forbidden path: D:/workspace/Abu/file.tmp"         (no capability suffix)
+  // Match on "forbidden path:" alone to catch both formats.
+  if (/forbidden\s+path:/i.test(raw)) {
     return { message: t.diagnostic.errMap.permTauriScope };
   }
   if (/EACCES|permission denied/i.test(raw)) {

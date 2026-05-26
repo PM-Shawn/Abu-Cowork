@@ -50,6 +50,26 @@ describe('discoveredCapabilitiesStore', () => {
     });
   });
 
+  describe('recordReasoningObserved', () => {
+    it('flags a model as reasoning and preserves existing limits', () => {
+      const { recordMaxOutputTokens, recordReasoningObserved, get } = useDiscoveredCapsStore.getState();
+      recordMaxOutputTokens('bailian', 'mystery-model', 16384);
+      recordReasoningObserved('bailian', 'mystery-model');
+      const got = get('bailian', 'mystery-model');
+      expect(got?.isReasoningModel).toBe(true);
+      expect(got?.maxOutputTokens).toBe(16384);
+      expect(got?.source).toBe('reasoning-observed');
+    });
+
+    it('is idempotent (no churn once flagged)', () => {
+      const { recordReasoningObserved, get } = useDiscoveredCapsStore.getState();
+      recordReasoningObserved('bailian', 'm');
+      const first = get('bailian', 'm')?.updatedAt;
+      recordReasoningObserved('bailian', 'm');
+      expect(get('bailian', 'm')?.updatedAt).toBe(first);
+    });
+  });
+
   describe('clear', () => {
     it('removes all discovered caps', () => {
       const { recordMaxOutputTokens, clear, get } = useDiscoveredCapsStore.getState();

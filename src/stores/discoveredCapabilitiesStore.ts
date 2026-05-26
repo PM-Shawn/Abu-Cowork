@@ -32,7 +32,9 @@ import { persist } from 'zustand/middleware';
 export interface DiscoveredCaps {
   maxOutputTokens?: number;
   contextWindow?: number;
-  source: 'error-derived' | 'probed';
+  /** Observed emitting reasoning_content though the static registry says non-reasoning. */
+  isReasoningModel?: boolean;
+  source: 'error-derived' | 'probed' | 'reasoning-observed';
   updatedAt: number;
 }
 
@@ -46,6 +48,8 @@ interface DiscoveredCapsActions {
   recordMaxOutputTokens: (providerId: string, modelId: string, limit: number) => void;
   /** Record an observed context window from an API error. */
   recordContextWindow: (providerId: string, modelId: string, window: number) => void;
+  /** Record that a model emits reasoning_content despite the registry saying otherwise. */
+  recordReasoningObserved: (providerId: string, modelId: string) => void;
   /** Get discovered caps for a model, or undefined if none recorded. */
   get: (providerId: string, modelId: string) => DiscoveredCaps | undefined;
   /** Clear all discovered caps (debug/reset). */
@@ -97,6 +101,25 @@ export const useDiscoveredCapsStore = create<DiscoveredCapsStore>()(
                 ...prev,
                 contextWindow: window,
                 source: 'error-derived',
+                updatedAt: Date.now(),
+              },
+            },
+          };
+        });
+      },
+
+      recordReasoningObserved: (providerId, modelId) => {
+        const key = makeKey(providerId, modelId);
+        set((state) => {
+          const prev = state.capabilities[key];
+          if (prev?.isReasoningModel === true) return state;
+          return {
+            capabilities: {
+              ...state.capabilities,
+              [key]: {
+                ...prev,
+                isReasoningModel: true,
+                source: 'reasoning-observed',
                 updatedAt: Date.now(),
               },
             },

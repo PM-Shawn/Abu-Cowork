@@ -30,7 +30,8 @@ export interface ChatOptions {
   };
   // Extended thinking support (Claude Opus 4+)
   enableThinking?: boolean;
-  thinkingBudget?: number;     // Max tokens for thinking
+  thinkingBudget?: number;     // Max reasoning tokens (Claude budget_tokens / Qwen thinking_budget)
+  reasoningEffort?: 'low' | 'medium' | 'high'; // OpenAI o-series / gpt-5 reasoning depth
   // Whether the model supports vision (image inputs)
   supportsVision?: boolean;
   // Built-in web search method to inject into the request

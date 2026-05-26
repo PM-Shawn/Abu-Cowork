@@ -14,6 +14,8 @@ import { OpenAICompatibleAdapter } from '../llm/openai-compatible';
 import { getAllTools, executeAnyTool, toolResultToString, type ConfirmationInfo, type FilePermissionCallback } from '../tools/registry';
 import { TOOL_NAMES } from '../tools/toolNames';
 import { useSettingsStore, getActiveApiKey, getActiveProvider, resolveAgentModel } from '../../stores/settingsStore';
+import { resolveCapabilities, computeReasoningParams, isReasoningStarvation, type ModelCapabilities } from '../llm/modelCapabilities';
+import { useDiscoveredCapsStore } from '../../stores/discoveredCapabilitiesStore';
 import { useWorkspaceStore } from '../../stores/workspaceStore';
 import { prepareContextMessages } from '../context/contextManager';
 import { compressContextIfNeeded } from '../context/contextCompressor';
@@ -72,8 +74,7 @@ export function isNoProgressTurn(params: {
   const { toolCalls, turnText, stopReason } = params;
   const allToolsUnparseable = toolCalls.length > 0
     && toolCalls.every((tc) => '_parse_error' in tc.input);
-  const truncatedEmpty = stopReason === 'max_tokens'
-    && turnText.trim() === '' && toolCalls.length === 0;
+  const truncatedEmpty = isReasoningStarvation(stopReason, turnText.trim().length, toolCalls.length);
   return allToolsUnparseable || truncatedEmpty;
 }
 
@@ -264,10 +265,32 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
       let turnText = '';
       let shouldContinue = false;
       let lastStopReason = '';
+      let sawThinking = false;
 
+      // Resolve budget + reasoning controls for the subagent's model. Overlay any
+      // runtime-discovered limits/reasoning status, then reserve a content floor so
+      // reasoning can't starve the answer (the cause of "代理未返回任何结果").
+      const provider = getActiveProvider(settings);
+      const discovered = provider
+        ? useDiscoveredCapsStore.getState().get(provider.id, effectiveModelId)
+        : undefined;
+      const baseCaps = resolveCapabilities(effectiveModelId);
+      const subagentCaps: ModelCapabilities = {
+        ...baseCaps,
+        ...(discovered?.maxOutputTokens ? { maxOutputTokens: discovered.maxOutputTokens } : {}),
+        ...(discovered?.contextWindow ? { contextWindow: discovered.contextWindow } : {}),
+        // A model observed emitting reasoning but unknown statically → can't bound it.
+        ...(discovered?.isReasoningModel && baseCaps.thinking === false
+          ? { thinking: 'uncontrollable' as const }
+          : {}),
+      };
+      const reasoningParams = computeReasoningParams(
+        subagentCaps,
+        settings.maxOutputTokens ?? subagentCaps.maxOutputTokens,
+      );
       // Apply context management to prevent subagent context overflow
-      const contextWindowSize = settings.contextWindowSize ?? 200000;
-      const maxOutputTokens = settings.maxOutputTokens ?? 8192;
+      const contextWindowSize = settings.contextWindowSize ?? subagentCaps.contextWindow;
+      const maxOutputTokens = reasoningParams.maxTokens;
 
       // Step 1: Semantic compression for long subagent runs
       let messagesForContext = messages;
@@ -303,6 +326,9 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
         systemPrompt,
         tools: tools.length > 0 ? tools : undefined,
         maxTokens: maxOutputTokens,
+        enableThinking: reasoningParams.enableThinking,
+        thinkingBudget: reasoningParams.thinkingBudget,
+        reasoningEffort: reasoningParams.reasoningEffort,
         signal,
         supportsVision: false, // Subagents don't receive image inputs
       };
@@ -311,6 +337,9 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
         switch (event.type) {
           case 'text':
             turnText += event.text;
+            break;
+          case 'thinking':
+            sawThinking = true;
             break;
           case 'tool_use':
             collectedToolCalls.push({
@@ -343,6 +372,12 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
         { maxRetries: 2, baseDelayMs: 1000, maxDelayMs: 15000 },
         signal,
       );
+
+      // L4: learn that a statically-non-reasoning model actually reasons, so future
+      // runs bound it (treated as 'uncontrollable' → full budget + reactive net).
+      if (sawThinking && baseCaps.thinking === false && provider) {
+        useDiscoveredCapsStore.getState().recordReasoningObserved(provider.id, effectiveModelId);
+      }
 
       // Accumulate text (append, not overwrite — preserve results from all turns)
       if (turnText) {
@@ -435,7 +470,7 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
     }
 
     return new SubagentResult({
-      text: resultBuffer || 'Error: 代理未返回任何结果',
+      text: resultBuffer || 'Error: 子代理未产出内容（可能模型推理占满了输出预算）。建议换用能力更强或非推理的模型重试。',
       toolCallCount: totalToolCalls,
       turnCount: maxTurns,
       tokenUsage: { input: totalInputTokens, output: totalOutputTokens },

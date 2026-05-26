@@ -39,7 +39,7 @@ import { executeToolBatch } from './toolExecutor';
 import { formatTodosForPrompt } from './todoManager';
 import { isWindows } from '../../utils/platform';
 import { getBuiltinSearchConfig } from '../capabilities';
-import { resolveCapabilities } from '../llm/modelCapabilities';
+import { resolveCapabilities, computeReasoningParams, type ModelCapabilities } from '../llm/modelCapabilities';
 import { TOOL_NAMES } from '../tools/toolNames';
 import { prefetchTools } from '../tools/toolPrefetch';
 import { classifyTools, buildDeferredToolsSummary } from '../tools/toolSearch';
@@ -973,28 +973,41 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
       const effectiveModelMaxOutput = discoveredCaps?.maxOutputTokens ?? modelCaps.maxOutputTokens;
       const effectiveModelContext = discoveredCaps?.contextWindow ?? modelCaps.contextWindow;
 
-      // Determine dynamic maxTokens — use model caps as default, user settings as override.
-      // When discovered caps say the model is smaller than the user setting, clamp to the
-      // discovered value to avoid a guaranteed 400 (saves a wasted roundtrip).
-      const autoThinking = modelCaps.thinking === 'anthropic';
-      const userMaxOutput = freshSettings.maxOutputTokens ?? effectiveModelMaxOutput;
-      const cappedUserMaxOutput = discoveredCaps?.maxOutputTokens
-        ? Math.min(userMaxOutput, discoveredCaps.maxOutputTokens)
-        : userMaxOutput;
-      let maxOutputTokens = autoThinking
-        ? Math.max(cappedUserMaxOutput, 16384)
-        : cappedUserMaxOutput;
+      // Resolve budget + reasoning-control params. Overlay runtime-discovered
+      // limits onto the static caps, then let computeReasoningParams reserve a
+      // content floor for reasoning models so reasoning can't starve the answer
+      // (empty reply + finish_reason=length). Non-reasoning models are clamped to
+      // the model's real ceiling to avoid a guaranteed 400.
+      const effectiveCaps: ModelCapabilities = {
+        ...modelCaps,
+        maxOutputTokens: effectiveModelMaxOutput,
+        contextWindow: effectiveModelContext,
+        // A model observed reasoning despite the registry saying otherwise → can't
+        // bound it; treat as uncontrollable so it gets the full budget + reactive net.
+        ...(discoveredCaps?.isReasoningModel && modelCaps.thinking === false
+          ? { thinking: 'uncontrollable' as const }
+          : {}),
+      };
+      const reasoningParams = computeReasoningParams(
+        effectiveCaps,
+        freshSettings.maxOutputTokens ?? effectiveModelMaxOutput,
+      );
+      let maxOutputTokens = reasoningParams.maxTokens;
       const userContextWindow = freshSettings.contextWindowSize ?? effectiveModelContext;
       const contextWindowSize = discoveredCaps?.contextWindow
         ? Math.min(userContextWindow, discoveredCaps.contextWindow)
         : userContextWindow;
 
-      // Escalate maxOutputTokens on first max_tokens recovery (CC pattern: 8k→64k)
+      // Escalate maxOutputTokens on max_tokens recovery (legacy CC pattern),
+      // clamped to the model's real ceiling so we never re-ask above a known limit.
       const escalation = escalateMaxOutputTokens(maxOutputTokens, contextWindowSize, maxOutputTokensRecoveryCount, maxOutputTokensEscalated);
       if (escalation.changed) {
-        logger.info('Escalating maxOutputTokens', { from: maxOutputTokens, to: escalation.maxOutputTokens });
-        maxOutputTokens = escalation.maxOutputTokens;
-        maxOutputTokensEscalated = true;
+        const escalated = Math.min(escalation.maxOutputTokens, effectiveModelMaxOutput);
+        if (escalated > maxOutputTokens) {
+          logger.info('Escalating maxOutputTokens', { from: maxOutputTokens, to: escalated });
+          maxOutputTokens = escalated;
+          maxOutputTokensEscalated = true;
+        }
       }
 
       // Build effective system prompt: static cached sections + dynamic per-turn sections
@@ -1122,8 +1135,9 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
         tools: tools.length > 0 ? tools : undefined,
         maxTokens: maxOutputTokens,
         signal: abortController.signal,
-        enableThinking: autoThinking,
-        thinkingBudget: 10000,
+        enableThinking: reasoningParams.enableThinking,
+        thinkingBudget: reasoningParams.thinkingBudget,
+        reasoningEffort: reasoningParams.reasoningEffort,
         supportsVision: modelCaps.vision,
         builtinWebSearch,
         // When the adapter's max_tokens auto-retry succeeds, persist the
@@ -1512,6 +1526,12 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
             });
           }
         }
+      }
+
+      // L4: learn that a statically-non-reasoning model actually reasons, so future
+      // turns bound it (treated as 'uncontrollable' → full budget + reserved content).
+      if (collectedThinking && modelCaps.thinking === false && activeProvider) {
+        useDiscoveredCapsStore.getState().recordReasoningObserved(activeProvider.id, effectiveModelId);
       }
 
       // Max Output Tokens recovery: if LLM output was truncated (not tool_use),

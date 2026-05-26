@@ -4,6 +4,12 @@
 
 @custom-variant dark (&:is(.dark *));
 
+/* Ungate hover from `@media (hover: hover)` (Tailwind v4 default).
+   WebView2 on Windows touch laptops reports `hover: none`, which silently
+   disables all hover/group-hover reveal affordances (delete icons, etc.).
+   Cascades to group-hover/peer-hover since they compose this base variant. */
+@custom-variant hover (&:hover);
+
 @layer base {
   html, body, #root {
     height: 100%;

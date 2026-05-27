@@ -66,7 +66,7 @@ export const runCommandTool: ToolDefinition = {
       // Use custom Tauri command defined in Rust
       const output = await invoke<CommandOutput>('run_shell_command', {
         command: resolvedCommand,
-        cwd: cwd || null,
+        cwd: cwd || workspacePath || null,
         background: background || false,
         timeout: Math.min(Math.max(1, timeout ?? 30), 300),
         sandboxEnabled: sandbox,

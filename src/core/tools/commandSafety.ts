@@ -53,7 +53,7 @@ function hasCommandInjection(command: string): { injected: boolean; reason: stri
     { pattern: /\|\|\s*rm\s/, reason: '检测到命令注入: || 后跟 rm' },
     { pattern: /\$\(.*rm\s/, reason: '检测到命令替换中的 rm' },
     { pattern: /`.*rm\s.*`/, reason: '检测到反引号中的 rm' },
-    { pattern: /`[^`]*`/, reason: '检测到反引号命令替换，可能隐藏恶意命令' },
+    // No blanket backtick rule: substitution alone isn't dangerous (e.g. files=`ls`); dangerous content is caught by the specific rules.
     { pattern: /;\s*sudo\s/, reason: '检测到命令注入: 分号后跟 sudo' },
     { pattern: /\|\s*sudo\s/, reason: '检测到命令注入: 管道后跟 sudo' },
     { pattern: /eval\s/, reason: '检测到 eval 命令，可能执行任意代码' },

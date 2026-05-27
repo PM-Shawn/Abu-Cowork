@@ -1,6 +1,6 @@
 {
   "productName": "Abu",
-  "version": "0.19.7",
+  "version": "0.20.0",
   "identifier": "com.abu.app",
   "build": {
     "beforeDevCommand": "npm run copy-resources && npm run dev",

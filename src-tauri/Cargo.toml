@@ -1,6 +1,6 @@
 [package]
 name = "abu"
-version = "0.19.7"
+version = "0.20.0"
 description = "ABU - AI Desktop Assistant"
 authors = ["you"]
 edition = "2021"

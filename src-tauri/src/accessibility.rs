@@ -523,39 +523,69 @@ mod macos {
     /// Get an AX element for the visually frontmost application.
     ///
     /// Uses `AXUIElementCreateApplication(pid)` with the PID of the frontmost process,
-    /// obtained via AppleScript `unix id of first process whose frontmost is true`.
+    /// obtained via AppleScript (same "application process whose frontmost is true"
+    /// pattern used by window_info::get_active_window).
     ///
-    /// This is more reliable than `AXFocusedApplication` (which tracks keyboard focus —
-    /// Abu itself holds keyboard focus after the user types a message, causing
-    /// `AXFocusedApplication` to return Abu's own process instead of Notes/Safari/etc.).
+    /// Falls back to `AXFocusedApplication` if the AppleScript path fails (e.g. when
+    /// Automation → System Events permission has not been granted yet).
     ///
     /// Returns the element (caller must CFRelease) and the app name, or an error string.
     fn get_frontmost_app_element() -> Result<(CFTypeRef, Option<String>), String> {
-        // Step 1: Get frontmost process PID via AppleScript.
-        // "unix id" is the POSIX PID; "frontmost is true" matches the visually-front app.
-        let script =
-            "tell application \"System Events\" to unix id of first process whose frontmost is true";
+        // Multi-line AppleScript matching the pattern in window_info::get_active_window.
+        // One-liner form ("tell … to …") can return empty on some macOS versions / permission
+        // states; block form is more robust.
+        let script = r#"tell application "System Events"
+    set frontApp to first application process whose frontmost is true
+    return (unix id of frontApp) as text
+end tell"#;
+
         let output = std::process::Command::new("osascript")
             .args(["-e", script])
             .output()
-            .map_err(|e| format!("osascript failed: {}", e))?;
+            .map_err(|e| format!("osascript failed to launch: {}", e))?;
 
         let pid_str = String::from_utf8_lossy(&output.stdout).trim().to_string();
-        let pid: i32 = pid_str
-            .parse()
-            .map_err(|_| format!("Could not parse PID from osascript output: {:?}", pid_str))?;
 
-        // Step 2: Create an AX element for that PID and extract the app name.
+        // If AppleScript succeeded and returned a PID, use it.
+        if output.status.success() && !pid_str.is_empty() {
+            if let Ok(pid) = pid_str.parse::<i32>() {
+                unsafe {
+                    let app = AXUIElementCreateApplication(pid);
+                    if !app.is_null() {
+                        let app_name = attr_string(app, "AXTitle");
+                        return Ok((app, app_name));
+                    }
+                }
+            }
+        }
+
+        // Fallback: AXFocusedApplication (tracks keyboard focus — less ideal but works
+        // when System Events Automation permission is absent or when the AppleScript
+        // returns something unexpected).
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
         unsafe {
-            let app = AXUIElementCreateApplication(pid);
-            if app.is_null() {
+            let sys = AXUIElementCreateSystemWide();
+            if sys.is_null() {
                 return Err(format!(
-                    "AXUIElementCreateApplication({}) returned null",
-                    pid
+                    "osascript returned {:?} (stderr: {:?}); AXUIElementCreateSystemWide also null",
+                    pid_str, stderr
                 ));
             }
-            let app_name = attr_string(app, "AXTitle");
-            Ok((app, app_name))
+            match copy_attr(sys, "AXFocusedApplication") {
+                Some(app) => {
+                    CFRelease(sys);
+                    let app_name = attr_string(app, "AXTitle");
+                    Ok((app, app_name))
+                }
+                None => {
+                    CFRelease(sys);
+                    Err(format!(
+                        "osascript returned {:?} (stderr: {:?}); AXFocusedApplication also null — \
+                         no app appears to be in focus. Click the target app window and try again.",
+                        pid_str, stderr
+                    ))
+                }
+            }
         }
     }
 
@@ -576,8 +606,7 @@ mod macos {
 
             let (app, app_name) = get_frontmost_app_element().map_err(|e| {
                 format!(
-                    "get_ui 不可用：{}。请确认有一个普通 App 在前台。\
-                     请改用 screenshot 截图后再用 click(x, y) 进行像素坐标操作。",
+                    "get_ui 不可用：{}。请点击目标 App 窗口将其切换到前台，然后重试 get_ui。",
                     e
                 )
             })?;
@@ -732,8 +761,7 @@ mod macos {
 
             let (app, app_name) = get_frontmost_app_element().map_err(|e| {
                 format!(
-                    "get_ui 不可用：{}。请确认有一个普通 App 在前台。\
-                     请改用 screenshot 截图后再用 click(x, y) 进行像素坐标操作。",
+                    "get_ui 不可用：{}。请点击目标 App 窗口将其切换到前台，然后重试 get_ui。",
                     e
                 )
             })?;

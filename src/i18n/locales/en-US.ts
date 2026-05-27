@@ -1522,6 +1522,18 @@ const enUS: TranslationDict = {
     deviceId: 'Device ID',
     deviceIdHint: 'Share with the developer when reporting issues',
     copied: 'Copied',
+    disclaimerLink: 'Disclaimer',
+    licenseLinkLabel: 'Apache 2.0 License',
+    disclaimerTitle: 'Disclaimer',
+    disclaimerClose: 'Collapse',
+  },
+
+  disclaimerBanner: {
+    line1: 'AI output is for reference only — verify important results yourself',
+    line2: 'File / command operations are your responsibility',
+    line3: 'Your API Key is sent directly to your configured LLM provider',
+    viewFull: 'View full disclaimer',
+    dismiss: 'Got it',
   },
 
   guide: {

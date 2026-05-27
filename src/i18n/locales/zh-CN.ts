@@ -1523,6 +1523,18 @@ const zhCN: TranslationDict = {
     deviceId: '设备 ID',
     deviceIdHint: '遇到问题时发给开发者，用于定位你的设备记录',
     copied: '已复制',
+    disclaimerLink: '免责声明',
+    licenseLinkLabel: 'Apache 2.0 许可证',
+    disclaimerTitle: '免责声明',
+    disclaimerClose: '收起',
+  },
+
+  disclaimerBanner: {
+    line1: 'AI 输出仅供参考，重要内容请自行核实',
+    line2: '文件 / 命令操作的后果由用户自行承担',
+    line3: 'API Key 直接发往你配置的 LLM 服务商',
+    viewFull: '查看完整说明',
+    dismiss: '我知道了',
   },
 
   guide: {

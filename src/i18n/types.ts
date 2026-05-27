@@ -1544,6 +1544,19 @@ export interface TranslationDict {
     deviceId: string;
     deviceIdHint: string;
     copied: string;
+    disclaimerLink: string;
+    licenseLinkLabel: string;
+    disclaimerTitle: string;
+    disclaimerClose: string;
+  };
+
+  // First-launch disclaimer banner
+  disclaimerBanner: {
+    line1: string;
+    line2: string;
+    line3: string;
+    viewFull: string;
+    dismiss: string;
   };
 
   // Quick Start Guide

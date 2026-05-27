@@ -375,6 +375,12 @@ interface SettingsState {
   /** Ephemeral — not persisted. Set by the memory settings panel to kick off the audit.
    *  Do NOT add to partialize. */
   shouldRunMemoryAudit: boolean;
+  /**
+   * True once the user has dismissed the first-launch disclaimer banner.
+   * Flips false → true on first dismiss. Persisted so the banner never
+   * shows again after the user has acknowledged it.
+   */
+  hasAcknowledgedDisclaimer: boolean;
 }
 
 interface SettingsActions {
@@ -444,6 +450,7 @@ interface SettingsActions {
   setDraftsOnboardingShown: (shown: boolean) => void;
   setHasRunSensitiveAudit_v015: (done: boolean) => void;
   setShouldRunMemoryAudit: (run: boolean) => void;
+  setHasAcknowledgedDisclaimer: (v: boolean) => void;
   /**
    * Toggle the contentGuard safety scanner globally. When off, agent-
    * initiated writes (memory + skill drafts) skip the 120-pattern scan.
@@ -662,6 +669,7 @@ export const useSettingsStore = create<SettingsStore>()(
       // start with this default (also false).
       hasRunSensitiveAudit_v015: false,
       shouldRunMemoryAudit: false,
+      hasAcknowledgedDisclaimer: false,
 
       // ════════════════════════════════════════════════
       // Provider management actions (V2)
@@ -926,6 +934,7 @@ export const useSettingsStore = create<SettingsStore>()(
         set((s) => ({ soul: { ...s.soul, draftsOnboardingShown: shown } })),
       setHasRunSensitiveAudit_v015: (done) => set({ hasRunSensitiveAudit_v015: done }),
       setShouldRunMemoryAudit: (run) => set({ shouldRunMemoryAudit: run }),
+      setHasAcknowledgedDisclaimer: (v) => set({ hasAcknowledgedDisclaimer: v }),
       setContentGuardEnabled: (enabled) =>
         set((s) => ({ safety: { ...s.safety, enableContentGuard: enabled } })),
       setPermissionMode: (mode) => set({ permissionMode: mode }),
@@ -963,9 +972,23 @@ export const useSettingsStore = create<SettingsStore>()(
     }),
     {
       name: 'abu-settings',
-      version: 30,
+      version: 31,
       migrate: (persisted: unknown, version: number) => {
         const state = persisted as Record<string, unknown>;
+
+        // ════════════════════════════════════════════════
+        // V31: Add hasAcknowledgedDisclaimer flag. Existing users start
+        // with false so the first-launch banner shows once on upgrade.
+        // ════════════════════════════════════════════════
+        if (version < 31) {
+          try {
+            if (typeof state.hasAcknowledgedDisclaimer !== 'boolean') {
+              state.hasAcknowledgedDisclaimer = false;
+            }
+          } catch (err) {
+            console.error('[settingsStore] V31 migration failed:', err);
+          }
+        }
 
         // ════════════════════════════════════════════════
         // V30: Permission modes reworked to a 3-tier autonomy axis
@@ -1559,6 +1582,7 @@ export const useSettingsStore = create<SettingsStore>()(
         soul: state.soul,
         safety: state.safety,
         hasRunSensitiveAudit_v015: state.hasRunSensitiveAudit_v015,
+        hasAcknowledgedDisclaimer: state.hasAcknowledgedDisclaimer,
       }),
       onRehydrateStorage: () => (state) => {
         if (!state) return;

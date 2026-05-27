@@ -1,4 +1,4 @@
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useRef } from 'react';
 import { openUrl } from '@tauri-apps/plugin-opener';
 import { RefreshCw, Download, CheckCircle, CircleAlert, RotateCcw, ExternalLink } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
@@ -12,7 +12,11 @@ import { cn } from '@/lib/utils';
 
 type CheckResult = 'idle' | 'just-checked' | 'error';
 
+const DISCLAIMER_URL = 'https://github.com/PM-Shawn/Abu-Cowork/blob/main/DISCLAIMER.md';
+
 export default function AboutSection() {
+  const [disclaimerOpen, setDisclaimerOpen] = useState(false);
+  const disclaimerRef = useRef<HTMLDivElement>(null);
   const updateInfo = useSettingsStore((s) => s.updateInfo);
   const updateChecking = useSettingsStore((s) => s.updateChecking);
   const downloadProgress = useSettingsStore((s) => s.updateDownloadProgress);
@@ -232,20 +236,65 @@ export default function AboutSection() {
       </button>
 
       {/* Footer */}
-      <div className="text-center space-y-2 pt-4">
+      <div className="text-center space-y-2 pt-2">
         <p className="text-sm text-[var(--abu-text-tertiary)]">
           Made with ❤️ by{' '}
           <button
-              onClick={() => handleOpenLink('https://github.com/PM-Shawn/Abu-Cowork')}
-              className="text-[var(--abu-clay)] hover:underline font-medium"
-            >
-              Shawn
-            </button>
+            onClick={() => handleOpenLink('https://github.com/PM-Shawn/Abu-Cowork')}
+            className="text-[var(--abu-clay)] hover:underline font-medium"
+          >
+            Shawn
+          </button>
         </p>
         <p className="text-xs text-[var(--abu-text-muted)]">
           © 2026 {t.common.appName}. All rights reserved.
+          <span className="mx-1.5">·</span>
+          <button
+            onClick={() => {
+              setDisclaimerOpen((o) => !o);
+              if (!disclaimerOpen) {
+                setTimeout(() => disclaimerRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' }), 50);
+              }
+            }}
+            className={cn(
+              'transition-colors',
+              disclaimerOpen
+                ? 'text-[var(--abu-text-secondary)]'
+                : 'hover:text-[var(--abu-text-secondary)]',
+            )}
+          >
+            {t.about.disclaimerLink}
+          </button>
         </p>
       </div>
+
+      {/* Expandable disclaimer content — renders below footer */}
+      {disclaimerOpen && (
+        <div
+          ref={disclaimerRef}
+          className="rounded-lg border border-[var(--abu-border)] bg-[var(--abu-bg-active)] p-3 max-h-64 overflow-y-auto space-y-2"
+        >
+          <p className="text-xs font-semibold text-[var(--abu-text-primary)]">{t.about.disclaimerTitle}</p>
+          <div className="text-xs text-[var(--abu-text-secondary)] space-y-1.5 leading-relaxed">
+            <p>· {t.disclaimerBanner.line1}</p>
+            <p>· {t.disclaimerBanner.line2}</p>
+            <p>· {t.disclaimerBanner.line3}</p>
+          </div>
+          <button
+            onClick={() => void handleOpenLink(DISCLAIMER_URL)}
+            className="flex items-center gap-1 text-xs text-[var(--abu-clay)] hover:underline mt-1"
+          >
+            <ExternalLink className="h-3 w-3" />
+            {t.about.disclaimerLink}（完整版 / Full）
+          </button>
+          <button
+            onClick={() => setDisclaimerOpen(false)}
+            className="block text-xs text-[var(--abu-text-muted)] hover:text-[var(--abu-text-secondary)] mt-1"
+          >
+            {t.about.disclaimerClose}
+          </button>
+        </div>
+      )}
     </div>
   );
 }

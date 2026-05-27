@@ -7,7 +7,16 @@ import { getI18n } from '../../i18n';
 import { truncateToolResult } from '../context/truncation';
 import { useSettingsStore } from '../../stores/settingsStore';
 import { getPermissionStrategy } from '../permissions/permissionMode';
+import { analyzeCommandBoundary, type CmdBoundary } from '../permissions/commandBoundary';
+import { homeDir } from '@tauri-apps/api/path';
 import { TOOL_NAMES } from './toolNames';
+
+// Cache home dir for command-boundary resolution (only resolved on first safe write command).
+let cachedHomeDir: string | null = null;
+async function getCachedHomeDir(): Promise<string> {
+  if (cachedHomeDir === null) cachedHomeDir = await homeDir();
+  return cachedHomeDir;
+}
 
 /**
  * Extract text-only representation from a ToolResult.
@@ -234,11 +243,23 @@ export async function executeAnyTool(
         return `Error: ${t.commandConfirm.blocked}: ${analysis.reason}`;
       }
 
-      // Check if confirmation is needed based on permission mode
-      const needsConfirm = strategy.shouldConfirmCommand(
+      // Best-effort boundary check: only matters for safe, non-read-only commands
+      // (risky commands already gate on content; autonomous never gates). Detects
+      // commands that write outside the working dirs (e.g. `cp secret ~/Desktop/x`).
+      let boundary: CmdBoundary = 'unknown';
+      if (!analysis.readOnly && analysis.level === 'safe' && permissionMode !== 'autonomous') {
+        const cwd = (input.cwd as string | undefined) || toolContext?.workspacePath || undefined;
+        boundary = analyzeCommandBoundary(command, cwd, await getCachedHomeDir());
+      }
+
+      // Check how this command is gated based on permission mode.
+      // 'review' routes to the AI reviewer (Phase 2); until then it degrades to 'confirm'.
+      const decision = strategy.decideCommand(
         { command, level: analysis.level, reason: analysis.reason },
         analysis.readOnly,
+        boundary,
       );
+      const needsConfirm = decision === 'confirm' || decision === 'review';
       if (needsConfirm && onRequireConfirmation) {
         const confirmed = await onRequireConfirmation({
           command,
@@ -266,11 +287,13 @@ export async function executeAnyTool(
 
       if (!pathCheck.allowed) {
         if (pathCheck.needsPermission && pathCheck.permissionPath) {
-          // Check if confirmation is needed based on permission mode
-          const needsFileConfirm = strategy.shouldConfirmFileAccess(
+          // Decide gating based on permission mode.
+          // 'review' routes to the AI reviewer (Phase 2); until then it degrades to 'confirm'.
+          const fileDecision = strategy.decideFileAccess(
             pathCheck.capability || pathInfo.capability,
             true,
           );
+          const needsFileConfirm = fileDecision === 'confirm' || fileDecision === 'review';
           if (needsFileConfirm) {
             // Needs user permission — ask via callback
             if (onRequireFilePermission) {

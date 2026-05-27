@@ -1,100 +1,100 @@
 import { describe, it, expect } from 'vitest';
-import { getPermissionStrategy } from './permissionMode';
-import type { PermissionMode } from './permissionMode';
+import { getPermissionStrategy, type PermissionMode } from './permissionMode';
+import type { ConfirmationInfo } from '../tools/registry';
+
+const cmd = (level: ConfirmationInfo['level']): ConfirmationInfo => ({ command: 'x', level, reason: '' });
 
 describe('permissionMode', () => {
-  describe('default mode', () => {
-    const strategy = getPermissionStrategy('default');
+  describe('standard mode', () => {
+    const s = getPermissionStrategy('standard');
 
-    it('confirms danger commands', () => {
-      expect(strategy.shouldConfirmCommand(
-        { command: 'rm -rf /', level: 'danger', reason: 'destructive' },
-        false,
-      )).toBe(true);
+    it('read-only commands auto-proceed', () => {
+      expect(s.decideCommand(cmd('danger'), true)).toBe('allow');
+      expect(s.decideCommand(cmd('safe'), true)).toBe('allow');
     });
 
-    it('confirms warn commands', () => {
-      expect(strategy.shouldConfirmCommand(
-        { command: 'npm install', level: 'warn', reason: 'modifying' },
-        false,
-      )).toBe(true);
+    it('safe non-read commands auto-proceed', () => {
+      expect(s.decideCommand(cmd('safe'), false)).toBe('allow');
     });
 
-    it('does not confirm safe commands', () => {
-      expect(strategy.shouldConfirmCommand(
-        { command: 'ls', level: 'safe', reason: '' },
-        true,
-      )).toBe(false);
+    it('warn/danger commands require confirmation', () => {
+      expect(s.decideCommand(cmd('warn'), false)).toBe('confirm');
+      expect(s.decideCommand(cmd('danger'), false)).toBe('confirm');
     });
 
-    it('confirms file access when needsPermission', () => {
-      expect(strategy.shouldConfirmFileAccess('read', true)).toBe(true);
-      expect(strategy.shouldConfirmFileAccess('write', true)).toBe(true);
+    it('safe command writing outside workspace requires confirmation', () => {
+      expect(s.decideCommand(cmd('safe'), false, 'outside')).toBe('confirm');
+      expect(s.decideCommand(cmd('safe'), false, 'inside')).toBe('allow');
+      expect(s.decideCommand(cmd('safe'), false, 'unknown')).toBe('allow');
     });
 
-    it('does not confirm file access when no permission needed', () => {
-      expect(strategy.shouldConfirmFileAccess('read', false)).toBe(false);
+    it('access to new (unauthorized) paths requires confirmation', () => {
+      expect(s.decideFileAccess('read', true)).toBe('confirm');
+      expect(s.decideFileAccess('write', true)).toBe('confirm');
     });
 
-    it('does not confirm other tools', () => {
-      expect(strategy.shouldConfirmOtherTool()).toBe(false);
-    });
-  });
-
-  describe('auto mode', () => {
-    const strategy = getPermissionStrategy('auto');
-
-    it('skips confirmation for read-only commands even if danger', () => {
-      expect(strategy.shouldConfirmCommand(
-        { command: 'cat /etc/passwd', level: 'danger', reason: 'sensitive path' },
-        true,
-      )).toBe(false);
+    it('access inside authorized dirs auto-proceeds', () => {
+      expect(s.decideFileAccess('read', false)).toBe('allow');
+      expect(s.decideFileAccess('write', false)).toBe('allow');
     });
 
-    it('confirms non-read-only dangerous commands', () => {
-      expect(strategy.shouldConfirmCommand(
-        { command: 'rm -rf /', level: 'danger', reason: 'destructive' },
-        false,
-      )).toBe(true);
-    });
-
-    it('skips confirmation for read file access', () => {
-      expect(strategy.shouldConfirmFileAccess('read', true)).toBe(false);
-    });
-
-    it('confirms write file access when needs permission', () => {
-      expect(strategy.shouldConfirmFileAccess('write', true)).toBe(true);
+    it('other tools auto-proceed', () => {
+      expect(s.decideOtherTool()).toBe('allow');
     });
   });
 
-  describe('strict mode', () => {
-    const strategy = getPermissionStrategy('strict');
+  describe('smart mode', () => {
+    const s = getPermissionStrategy('smart');
 
-    it('confirms all commands', () => {
-      expect(strategy.shouldConfirmCommand(
-        { command: 'ls', level: 'safe', reason: '' },
-        true,
-      )).toBe(true);
+    it('escalating commands route to review', () => {
+      expect(s.decideCommand(cmd('warn'), false)).toBe('review');
+      expect(s.decideCommand(cmd('danger'), false)).toBe('review');
     });
 
-    it('confirms all file access', () => {
-      expect(strategy.shouldConfirmFileAccess('read', false)).toBe(true);
-      expect(strategy.shouldConfirmFileAccess('write', false)).toBe(true);
+    it('safe / read-only commands auto-proceed', () => {
+      expect(s.decideCommand(cmd('safe'), false)).toBe('allow');
+      expect(s.decideCommand(cmd('danger'), true)).toBe('allow');
     });
 
-    it('confirms other tools', () => {
-      expect(strategy.shouldConfirmOtherTool()).toBe(true);
+    it('safe command writing outside workspace routes to review', () => {
+      expect(s.decideCommand(cmd('safe'), false, 'outside')).toBe('review');
+      expect(s.decideCommand(cmd('safe'), false, 'inside')).toBe('allow');
+    });
+
+    it('new-path access routes to review', () => {
+      expect(s.decideFileAccess('read', true)).toBe('review');
+      expect(s.decideFileAccess('write', true)).toBe('review');
+    });
+
+    it('access inside authorized dirs auto-proceeds', () => {
+      expect(s.decideFileAccess('write', false)).toBe('allow');
+    });
+  });
+
+  describe('autonomous mode', () => {
+    const s = getPermissionStrategy('autonomous');
+
+    it('all commands auto-proceed (block enforced upstream)', () => {
+      expect(s.decideCommand(cmd('danger'), false)).toBe('allow');
+      expect(s.decideCommand(cmd('warn'), false)).toBe('allow');
+      expect(s.decideCommand(cmd('safe'), false, 'outside')).toBe('allow');
+    });
+
+    it('all file access auto-proceeds (sensitive paths hard-blocked upstream)', () => {
+      expect(s.decideFileAccess('write', true)).toBe('allow');
+      expect(s.decideFileAccess('read', true)).toBe('allow');
+    });
+
+    it('other tools auto-proceed', () => {
+      expect(s.decideOtherTool()).toBe('allow');
     });
   });
 
   describe('getPermissionStrategy', () => {
-    it('returns default strategy for unknown mode', () => {
-      const strategy = getPermissionStrategy('unknown' as PermissionMode);
-      // Should behave like default
-      expect(strategy.shouldConfirmCommand(
-        { command: 'ls', level: 'safe', reason: '' },
-        true,
-      )).toBe(false);
+    it('unknown mode falls back to standard behavior', () => {
+      const s = getPermissionStrategy('bogus' as PermissionMode);
+      expect(s.decideCommand(cmd('danger'), false)).toBe('confirm');
+      expect(s.decideFileAccess('write', true)).toBe('confirm');
     });
   });
 });

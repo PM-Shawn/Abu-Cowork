@@ -1,95 +1,107 @@
 /**
  * Permission Mode System — controls tool execution confirmation behavior.
  *
- * Three modes:
- * - default: Dangerous commands require confirmation. File writes to new directories require permission.
- *            This matches the existing behavior exactly.
- * - auto:    Read-only operations auto-proceed. Write operations and dangerous commands still require confirmation.
- * - strict:  ALL tool operations require user confirmation before execution.
+ * Three tiers along a single autonomy axis (the workspace is the boundary):
+ * - standard:   Inside the workspace, read/write/commands run freely. Escalations
+ *               (writes to new directories, dangerous commands) require confirmation.
+ * - smart:      Same boundary as standard, but escalations are routed to an AI
+ *               reviewer instead of the user. (Reviewer lands in Phase 2; until then
+ *               the gate degrades 'review' to 'confirm'.)
+ * - autonomous: Everything runs automatically. Block-level commands, sensitive-path
+ *               hard-blocks and the content guard still apply — they are enforced
+ *               independently of the mode, not via these strategies.
  */
 
 import type { ConfirmationInfo } from '../tools/registry';
+import type { CmdBoundary } from './commandBoundary';
 
-/** Permission mode determines which tool operations require user confirmation */
-export type PermissionMode = 'default' | 'auto' | 'strict';
+/** Permission mode determines how much autonomy the agent has before asking. */
+export type PermissionMode = 'standard' | 'smart' | 'autonomous';
+
+/**
+ * Outcome of a permission decision:
+ * - allow:   proceed without asking
+ * - confirm: ask the user
+ * - review:  route to the AI reviewer (Phase 2); degrades to 'confirm' until wired
+ */
+export type PermissionDecision = 'allow' | 'confirm' | 'review';
 
 /**
  * Strategy interface for permission decisions.
- * Each mode implements this to decide whether a tool call needs confirmation.
+ * Each mode implements this to decide how a tool call is gated.
  */
 export interface PermissionStrategy {
   /**
-   * Should this command require confirmation?
-   * Called for run_command tool only.
+   * Decide gating for the run_command tool.
+   * @param boundary - whether the command writes outside the working dirs (best-effort)
    */
-  shouldConfirmCommand(info: ConfirmationInfo, readOnly: boolean): boolean;
+  decideCommand(info: ConfirmationInfo, readOnly: boolean, boundary?: CmdBoundary): PermissionDecision;
 
-  /**
-   * Should this file operation require permission?
-   * Called for file tools (read_file, write_file, edit_file, etc.)
-   */
-  shouldConfirmFileAccess(capability: 'read' | 'write', needsPermission: boolean): boolean;
+  /** Decide gating for file tools (read_file, write_file, edit_file, etc.). */
+  decideFileAccess(capability: 'read' | 'write', needsPermission: boolean): PermissionDecision;
 
-  /**
-   * Should this MCP/other tool require confirmation?
-   * Called for tools that aren't commands or file tools.
-   */
-  shouldConfirmOtherTool(): boolean;
+  /** Decide gating for MCP/other tools. */
+  decideOtherTool(): PermissionDecision;
 }
 
-/** Default mode: matches existing behavior — only dangerous/warn commands need confirmation */
-const defaultStrategy: PermissionStrategy = {
-  shouldConfirmCommand(info, _readOnly) {
-    return info.level === 'danger' || info.level === 'warn';
+/** Whether a command's content classification counts as an escalation. */
+function isRiskyCommand(level: ConfirmationInfo['level']): boolean {
+  return level === 'danger' || level === 'warn';
+}
+
+/** standard: workspace-internal is free; escalations ask the user. Matches the old `default` behavior. */
+const standardStrategy: PermissionStrategy = {
+  decideCommand(info, readOnly, boundary) {
+    if (readOnly) return 'allow';
+    if (isRiskyCommand(info.level)) return 'confirm';
+    // Safe content but writing outside the workspace → escalate.
+    if (boundary === 'outside') return 'confirm';
+    return 'allow';
   },
-  shouldConfirmFileAccess(_capability, needsPermission) {
-    return needsPermission;
+  decideFileAccess(_capability, needsPermission) {
+    // needsPermission === true means the path isn't in an authorized working dir yet.
+    return needsPermission ? 'confirm' : 'allow';
   },
-  shouldConfirmOtherTool() {
-    return false;
+  decideOtherTool() {
+    return 'allow';
   },
 };
 
-/** Auto mode: read-only operations auto-proceed, writes still need confirmation */
-const autoStrategy: PermissionStrategy = {
-  shouldConfirmCommand(info, readOnly) {
-    // Read-only commands auto-proceed regardless of danger level analysis
-    if (readOnly) return false;
-    // Non-read-only: same as default
-    return info.level === 'danger' || info.level === 'warn';
+/** smart: same boundary as standard, but escalations go to the AI reviewer. */
+const smartStrategy: PermissionStrategy = {
+  decideCommand(info, readOnly, boundary) {
+    if (readOnly) return 'allow';
+    return (isRiskyCommand(info.level) || boundary === 'outside') ? 'review' : 'allow';
   },
-  shouldConfirmFileAccess(capability, needsPermission) {
-    // Read operations auto-proceed even for new directories
-    if (capability === 'read') return false;
-    // Write operations still need permission for new directories
-    return needsPermission;
+  decideFileAccess(_capability, needsPermission) {
+    return needsPermission ? 'review' : 'allow';
   },
-  shouldConfirmOtherTool() {
-    return false;
+  decideOtherTool() {
+    return 'allow';
   },
 };
 
-/** Strict mode: ALL tool operations require confirmation */
-const strictStrategy: PermissionStrategy = {
-  shouldConfirmCommand() {
-    return true;
+/** autonomous: everything proceeds. Block-level/sensitive-path/content-guard floors are enforced elsewhere. */
+const autonomousStrategy: PermissionStrategy = {
+  decideCommand() {
+    return 'allow';
   },
-  shouldConfirmFileAccess() {
-    return true;
+  decideFileAccess() {
+    return 'allow';
   },
-  shouldConfirmOtherTool() {
-    return true;
+  decideOtherTool() {
+    return 'allow';
   },
 };
 
 /**
- * Get the permission strategy for a given mode.
+ * Get the permission strategy for a given mode. Unknown modes fall back to standard.
  */
 export function getPermissionStrategy(mode: PermissionMode): PermissionStrategy {
   switch (mode) {
-    case 'auto': return autoStrategy;
-    case 'strict': return strictStrategy;
-    case 'default':
-    default: return defaultStrategy;
+    case 'smart': return smartStrategy;
+    case 'autonomous': return autonomousStrategy;
+    case 'standard':
+    default: return standardStrategy;
   }
 }

@@ -647,7 +647,7 @@ export const useSettingsStore = create<SettingsStore>()(
       allowSkillCommands: true,
       soulInitialized: false,
       skillRegistry: '',
-      permissionMode: 'default' as PermissionMode,
+      permissionMode: 'standard' as PermissionMode,
       soul: {
         proactivity: 'companion',
         draftsOnboardingShown: false,
@@ -727,6 +727,9 @@ export const useSettingsStore = create<SettingsStore>()(
                 providerId: fallback.id,
                 modelId: fallback.models[0]?.id ?? '',
               };
+            } else {
+              // No providers left — clear activeModel so UI shows "not configured"
+              update.activeModel = { providerId: '', modelId: '' };
             }
           }
           return update;
@@ -960,9 +963,27 @@ export const useSettingsStore = create<SettingsStore>()(
     }),
     {
       name: 'abu-settings',
-      version: 29,
+      version: 30,
       migrate: (persisted: unknown, version: number) => {
         const state = persisted as Record<string, unknown>;
+
+        // ════════════════════════════════════════════════
+        // V30: Permission modes reworked to a 3-tier autonomy axis
+        // (standard / smart / autonomous). Map the old default/auto/strict
+        // values to 'standard' — the closest daily-driver tier. 'strict' was
+        // effectively unusable (confirmed even reads); 'auto' barely differed
+        // from default. Nobody auto-migrates into 'smart'/'autonomous' (opt-in).
+        // ════════════════════════════════════════════════
+        if (version < 30) {
+          try {
+            const s = state as Record<string, unknown>;
+            if (s.permissionMode !== 'autonomous' && s.permissionMode !== 'smart') {
+              s.permissionMode = 'standard';
+            }
+          } catch (err) {
+            console.error('[settingsStore] migration step "V30 permissionMode 3-tier" failed:', err);
+          }
+        }
 
         // ════════════════════════════════════════════════
         // V29: Rewrite LM Studio baseUrl from localhost to 127.0.0.1.

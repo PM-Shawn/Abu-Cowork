@@ -212,6 +212,15 @@ export function getAuthorizedWritablePaths(): string[] {
 }
 
 /**
+ * Get all authorized directory paths (read or write).
+ * Used by the working-directory boundary (workingDirs.ts) to decide whether a
+ * command operates inside the user's working set.
+ */
+export function getAuthorizedDirs(): string[] {
+  return Array.from(authorizedWorkspaces.keys());
+}
+
+/**
  * Remove a workspace from the authorized list
  */
 export function revokeWorkspace(path: string): void {

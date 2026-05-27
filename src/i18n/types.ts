@@ -194,6 +194,9 @@ export interface TranslationDict {
     sources: string;
     showAllSources: string;
     collapseSources: string;
+    userMessageShowMore: string;
+    userMessageCollapse: string;
+    noModelConfigured: string;
     scrollToBottom: string;
     codeBlockExpand: string;
     codeBlockCollapse: string;
@@ -484,12 +487,10 @@ export interface TranslationDict {
     contentGuardDesc: string;
     contentGuardDisableTitle: string;
     contentGuardDisableMessage: string;
-    permissionModeDefault: string;
-    permissionModeDefaultDesc: string;
-    permissionModeAuto: string;
-    permissionModeAutoDesc: string;
-    permissionModeStrict: string;
-    permissionModeStrictDesc: string;
+    permissionModeStandard: string;
+    permissionModeStandardDesc: string;
+    permissionModeAutonomous: string;
+    permissionModeAutonomousDesc: string;
     // ModelConfigSection
     currentConfig: string;
     configured: string;

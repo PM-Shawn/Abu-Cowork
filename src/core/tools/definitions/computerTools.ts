@@ -257,7 +257,7 @@ export const computerTool: ToolDefinition = {
 操作类型（action）：
 
 无障碍树操作（AX 路径，推荐）：
-- get_ui：读取当前前台应用的无障碍树，返回可交互元素列表（id / role / label / bounds / actions）。不截图、不动鼠标。
+- get_ui：读取目标应用的无障碍树，返回可交互元素列表（id / role / label / bounds / actions）。不截图、不动鼠标。参数：app_name（推荐，如 "Notes"、"Safari"）——指定后不需要该 App 在前台，用户可以继续操作电脑；不指定则读当前前台应用。
 - ax_click：按元素 id 点击控件（AXPress），不移动光标。参数：element_id。可选降级坐标：x, y。
 - ax_type：按元素 id 设置文本（AXSetValue），不合成键盘事件。参数：element_id, text。
 
@@ -308,6 +308,7 @@ export const computerTool: ToolDefinition = {
       duration: { type: 'number', description: 'Wait duration in ms (default 1000, max 10000)' },
       // AX actions (get_ui / ax_click / ax_type)
       element_id: { type: 'number', description: 'Element id from get_ui snapshot (for ax_click / ax_type)' },
+      app_name: { type: 'string', description: 'Target app name for get_ui (e.g. "Notes", "Safari"). When provided, the app does NOT need to be in the foreground — AX operates on any running app. Omit to target the current frontmost window.' },
       // Display control
       show_user: {
         type: 'boolean',
@@ -480,8 +481,11 @@ export const computerTool: ToolDefinition = {
         case 'get_ui': {
           // Close previous session before taking a fresh snapshot.
           await closeCurrentAxSession();
+          const targetApp = (input.app_name as string | undefined) ?? null;
           try {
-            const snap = await invoke<AxSnapshotResult>('ax_snapshot');
+            const snap = await invoke<AxSnapshotResult>('ax_snapshot', {
+              appName: targetApp,
+            });
             currentAxSessionId = snap.session_id;
             const formatted = formatAxElements(snap.elements);
             const note = snap.truncated ? '\n⚠️ 元素列表已截断（树太大）。' : '';
@@ -492,10 +496,8 @@ export const computerTool: ToolDefinition = {
               `要操作元素，使用 ax_click(element_id) 点击按钮/链接，或 ax_type(element_id, text) 输入文字。`;
           } catch (e) {
             const msg = e instanceof Error ? e.message : String(e);
-            // AX unavailable (no permission, non-macOS, etc.) — tell model to fall back
-            actionResult =
-              `get_ui 不可用：${msg}\n` +
-              `请改用 screenshot 截图后再用 click(x, y) 进行像素坐标操作。`;
+            // AX unavailable (no permission, non-macOS, etc.)
+            actionResult = `get_ui 不可用：${msg}`;
           }
           break;
         }

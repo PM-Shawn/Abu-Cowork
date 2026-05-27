@@ -93,13 +93,14 @@ pub struct AxSnapshotResult {
 /// macOS only. Requires Accessibility permission (the same TCC grant used by the
 /// existing Computer Use mouse/keyboard path).
 #[tauri::command]
-pub fn get_ui_snapshot() -> Result<UiSnapshot, String> {
+pub fn get_ui_snapshot(app_name: Option<String>) -> Result<UiSnapshot, String> {
     #[cfg(target_os = "macos")]
     {
-        macos::get_ui_snapshot_impl()
+        macos::get_ui_snapshot_impl(app_name)
     }
     #[cfg(not(target_os = "macos"))]
     {
+        let _ = app_name;
         Err("get_ui_snapshot is only supported on macOS".to_string())
     }
 }
@@ -130,13 +131,14 @@ pub async fn test_ax_snapshot(app_name: String) -> Result<AxQualityReport, Strin
 /// `ax_set_value`, and `ax_close_session`. The session holds CFRetain'd element
 /// refs — call `ax_close_session` when the agent turn is complete to free memory.
 #[tauri::command]
-pub fn ax_snapshot() -> Result<AxSnapshotResult, String> {
+pub fn ax_snapshot(app_name: Option<String>) -> Result<AxSnapshotResult, String> {
     #[cfg(target_os = "macos")]
     {
-        macos::ax_snapshot_impl()
+        macos::ax_snapshot_impl(app_name)
     }
     #[cfg(not(target_os = "macos"))]
     {
+        let _ = app_name;
         Err("ax_snapshot is only supported on macOS".to_string())
     }
 }
@@ -520,6 +522,52 @@ mod macos {
         }
     }
 
+    /// Get an AX element for a named application process (by partial, case-insensitive name).
+    ///
+    /// The app does NOT need to be in the foreground — AX APIs work on any running process.
+    /// This is the primary path when the model specifies `app_name` in a `get_ui` call,
+    /// which lets the user continue using their computer while Abu controls a background app.
+    fn get_app_element_by_name(name: &str) -> Result<(CFTypeRef, Option<String>), String> {
+        // AppleScript: find the first application process whose name contains `name`.
+        // `unix id` returns the POSIX PID; we then create an AX element for that PID.
+        let script = format!(
+            r#"tell application "System Events"
+    set appProcs to every application process whose name contains "{name}"
+    if (count of appProcs) is 0 then
+        error "No running application found matching: {name}"
+    end if
+    set foundApp to item 1 of appProcs
+    return (unix id of foundApp) as text
+end tell"#,
+            name = name.replace('"', "")  // sanitise — no escaping in AppleScript strings
+        );
+
+        let output = std::process::Command::new("osascript")
+            .args(["-e", &script])
+            .output()
+            .map_err(|e| format!("osascript failed to launch: {}", e))?;
+
+        let pid_str = String::from_utf8_lossy(&output.stdout).trim().to_string();
+
+        if output.status.success() && !pid_str.is_empty() {
+            if let Ok(pid) = pid_str.parse::<i32>() {
+                unsafe {
+                    let app = AXUIElementCreateApplication(pid);
+                    if !app.is_null() {
+                        let app_name = attr_string(app, "AXTitle");
+                        return Ok((app, app_name));
+                    }
+                }
+            }
+        }
+
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        Err(format!(
+            "App '{}' not found or not running. stderr: {:?}",
+            name, stderr
+        ))
+    }
+
     /// Get an AX element for the visually frontmost application.
     ///
     /// Uses `AXUIElementCreateApplication(pid)` with the PID of the frontmost process,
@@ -589,7 +637,10 @@ end tell"#;
         }
     }
 
-    pub fn get_ui_snapshot_impl() -> Result<UiSnapshot, String> {
+    /// `target_app`: optional app name to target (e.g. "Notes"). When provided, the app does
+    /// NOT need to be in the foreground — AX works on any running process.
+    /// When None, falls back to the visually frontmost app.
+    pub fn get_ui_snapshot_impl(target_app: Option<String>) -> Result<UiSnapshot, String> {
         unsafe {
             // Use AXIsProcessTrustedWithOptions(prompt=true) — the Apple-recommended
             // API that opens System Settings and writes the correct TCC entry.
@@ -604,12 +655,20 @@ end tell"#;
                 );
             }
 
-            let (app, app_name) = get_frontmost_app_element().map_err(|e| {
-                format!(
-                    "get_ui 不可用：{}。请点击目标 App 窗口将其切换到前台，然后重试 get_ui。",
-                    e
-                )
-            })?;
+            let (app, app_name) = if let Some(ref name) = target_app {
+                get_app_element_by_name(name).map_err(|e| {
+                    format!("get_ui 不可用：{}。请确认应用名称正确且已在运行。", e)
+                })?
+            } else {
+                get_frontmost_app_element().map_err(|e| {
+                    format!(
+                        "get_ui 不可用：{}。\
+                         提示：可以在 get_ui 调用中加 app_name 参数（如 app_name: \"Notes\"）\
+                         直接指定目标应用，无需切换前台。",
+                        e
+                    )
+                })?
+            };
 
             let mut st = WalkState {
                 elements: Vec::new(),
@@ -682,8 +741,8 @@ end tell"#;
         // 3. One more short pause to let the UI settle (window draw, first layout).
         tokio::time::sleep(std::time::Duration::from_millis(400)).await;
 
-        // 4. Capture the snapshot.
-        let snap = get_ui_snapshot_impl()?;
+        // 4. Capture the snapshot — app is already frontmost after the open+wait above.
+        let snap = get_ui_snapshot_impl(Some(app_name.clone()))?;
 
         // 5. Compute quality metrics.
         let n = snap.elements.len();
@@ -746,8 +805,9 @@ end tell"#;
 
     // ── Step 2 implementations ────────────────────────────────────────────────
 
-    /// Snapshot the focused app and cache live element refs for action commands.
-    pub fn ax_snapshot_impl() -> Result<super::AxSnapshotResult, String> {
+    /// Snapshot the target app and cache live element refs for action commands.
+    /// `target_app`: optional app name. When provided the app need not be in the foreground.
+    pub fn ax_snapshot_impl(target_app: Option<String>) -> Result<super::AxSnapshotResult, String> {
         unsafe {
             if !ax_is_trusted_with_prompt() {
                 return Err(
@@ -759,12 +819,20 @@ end tell"#;
                 );
             }
 
-            let (app, app_name) = get_frontmost_app_element().map_err(|e| {
-                format!(
-                    "get_ui 不可用：{}。请点击目标 App 窗口将其切换到前台，然后重试 get_ui。",
-                    e
-                )
-            })?;
+            let (app, app_name) = if let Some(ref name) = target_app {
+                get_app_element_by_name(name).map_err(|e| {
+                    format!("get_ui 不可用：{}。请确认应用名称正确且已在运行。", e)
+                })?
+            } else {
+                get_frontmost_app_element().map_err(|e| {
+                    format!(
+                        "get_ui 不可用：{}。\
+                         提示：可以在 get_ui 调用中加 app_name 参数（如 app_name: \"Notes\"）\
+                         直接指定目标应用，无需切换前台。",
+                        e
+                    )
+                })?
+            };
 
             let mut st = WalkStateWithCache {
                 elements: Vec::new(),

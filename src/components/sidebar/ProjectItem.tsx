@@ -141,7 +141,6 @@ export default function ProjectItem({ project, conversations, expanded, onNewTas
                     : 'text-[var(--abu-text-secondary)] hover:bg-[var(--abu-bg-hover)] hover:text-[var(--abu-text-primary)]'
                 )}
               >
-                <ConvStatusDot status={loadedConversations[conv.id]?.status ?? 'idle'} />
                 {conv.importedFrom && (
                   <ImportedBadge importedAt={conv.importedFrom.importedAt} />
                 )}
@@ -166,6 +165,7 @@ export default function ProjectItem({ project, conversations, expanded, onNewTas
                     {conv.title.replace(/\[Attachment:\s*`[^`]*`\]\s*/g, '').trim() || conv.title}
                   </span>
                 )}
+                <ConvStatusDot status={loadedConversations[conv.id]?.status ?? 'idle'} />
                 <button
                   onClick={(e) => { e.stopPropagation(); deleteConversation(conv.id); }}
                   className="h-4 w-4 flex items-center justify-center opacity-0 group-hover/conv:opacity-100 text-[var(--abu-text-tertiary)] hover:text-red-500 shrink-0"

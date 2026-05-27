@@ -251,11 +251,11 @@ export default function ProviderCard({ provider, isActive }: ProviderCardProps) 
         <div className="space-y-1.5">
           <div className="flex items-center justify-between">
             <label className="text-xs font-medium text-[var(--abu-text-tertiary)]">{t.settings.models}</label>
-            {!isOllama && provider.apiFormat !== 'anthropic' && (
+            {!isOllama && provider.apiFormat !== 'anthropic' && formBaseUrl.trim() && (
               <button
                 type="button"
                 onClick={handleFetchModels}
-                disabled={fetchingModels || !formBaseUrl.trim()}
+                disabled={fetchingModels}
                 className="flex items-center gap-1 text-[11px] text-[var(--abu-clay)] hover:underline disabled:opacity-40 disabled:no-underline"
               >
                 {fetchingModels

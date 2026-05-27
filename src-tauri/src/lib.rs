@@ -15,6 +15,7 @@ mod trigger_server;
 mod feishu_ws;
 mod window_info;
 mod computer_use;
+mod accessibility;
 mod overlay;
 mod pet;
 mod secrets;
@@ -1323,6 +1324,12 @@ pub fn run() {
             computer_use::get_abu_window_id,
             computer_use::capture_screen_excluding,
             computer_use::activate_app,
+            accessibility::get_ui_snapshot,
+            accessibility::test_ax_snapshot,
+            accessibility::ax_snapshot,
+            accessibility::ax_press,
+            accessibility::ax_set_value,
+            accessibility::ax_close_session,
             overlay::show_screen_border,
             overlay::hide_screen_border,
             overlay::get_overlay_window_id,

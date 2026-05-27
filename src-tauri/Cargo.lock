@@ -4,10 +4,12 @@ version = 4
 
 [[package]]
 name = "abu"
-version = "0.19.7"
+version = "0.20.0"
 dependencies = [
  "aes-gcm",
  "base64 0.22.1",
+ "core-foundation 0.10.1",
+ "core-foundation-sys",
  "enigo",
  "futures-util",
  "hkdf",

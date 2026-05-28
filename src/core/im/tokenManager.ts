@@ -74,6 +74,9 @@ class TokenManager {
         return this.fetchSlackToken(appSecret);
       case 'wecom':
         return this.fetchWecomToken(appId, appSecret);
+      case 'wechat':
+        // WeChat iLink: appSecret is JSON { botToken, baseurl }. Return as-is (no exchange needed).
+        return { token: appSecret, expiresAt: Date.now() + 365 * 24 * 60 * 60 * 1000 };
       case 'dingtalk':
         // DingTalk uses sessionWebhook, not API token
         throw new Error('DingTalk does not use token-based auth for reply');

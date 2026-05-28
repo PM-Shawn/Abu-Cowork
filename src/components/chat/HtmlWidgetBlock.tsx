@@ -14,6 +14,9 @@ const CDN_ALLOWLIST = [
   'https://cdn.jsdelivr.net',
   'https://unpkg.com',
   'https://esm.sh',
+  'https://cdn.tailwindcss.com',
+  'https://fonts.googleapis.com',
+  'https://fonts.gstatic.com',
 ].join(' ');
 
 const BASE_STYLES = `
@@ -42,7 +45,7 @@ input[type="range"] { accent-color: var(--abu-primary); }
 
 // Receiver page loaded once into iframe.srcdoc — all updates come via postMessage.
 const RECEIVER_HTML = `<!DOCTYPE html><html><head>
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline' ${CDN_ALLOWLIST}; style-src 'unsafe-inline'; img-src data: blob: ${CDN_ALLOWLIST}; media-src data: blob: ${CDN_ALLOWLIST}; connect-src ${CDN_ALLOWLIST}; font-src ${CDN_ALLOWLIST};">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline' ${CDN_ALLOWLIST}; style-src 'unsafe-inline' ${CDN_ALLOWLIST}; img-src data: blob: ${CDN_ALLOWLIST}; media-src data: blob: ${CDN_ALLOWLIST}; connect-src ${CDN_ALLOWLIST}; font-src data: ${CDN_ALLOWLIST};">
 <style>${BASE_STYLES}</style>
 </head><body>
 <script>
@@ -184,6 +187,8 @@ function hasVisibleContent(html: string): boolean {
 function sanitizeForStreaming(html: string): string {
   // Remove complete <script>...</script> blocks
   let safe = html.replace(/<script[\s\S]*?<\/script>/gi, '');
+  // Strip <title> to prevent its text from rendering visibly when injected into body
+  safe = safe.replace(/<title[^>]*>[\s\S]*?<\/title>/gi, '');
   // Truncate unclosed <script tag to prevent raw JS leaking as text
   const lastOpen = safe.lastIndexOf('<script');
   if (lastOpen !== -1 && !/<\/script>/i.test(safe.substring(lastOpen))) {

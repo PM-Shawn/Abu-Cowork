@@ -56,6 +56,12 @@ export interface AdapterConfig {
   supportsCard: boolean;
   /** Whether the platform supports updating sent messages (Phase 2 streaming reply) */
   supportsMessageUpdate?: boolean;
+  /**
+   * Skip the interim "thinking" acknowledgment message. For platforms that can't
+   * update a sent message (e.g. WeChat), the ack becomes a separate noise message
+   * before the real reply, so we suppress it.
+   */
+  skipThinkingAck?: boolean;
 }
 
 // ── Adapter Interfaces ──

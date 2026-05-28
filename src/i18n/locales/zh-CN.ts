@@ -1488,6 +1488,18 @@ const zhCN: TranslationDict = {
     groupConnection: '连接配置',
     groupBehavior: '会话行为',
     groupAccess: '访问控制',
+    wechatBind: '扫码绑定微信',
+    wechatBindHint: '使用微信扫码，授权阿布接收并回复消息（仅支持私聊）',
+    wechatScanQR: '获取二维码',
+    wechatWaiting: '请用微信扫描二维码',
+    wechatExpireIn: '二维码将在 {secs} 秒后过期',
+    wechatScanned: '已扫码，请在手机上确认',
+    wechatSuccess: '绑定成功',
+    wechatExpired: '二维码已过期',
+    wechatRetry: '重新获取',
+    wechatRebind: '重新扫码绑定',
+    wechatAccount: '绑定账号',
+    wechatSessionExpired: '微信登录已过期，请重新扫码绑定',
   },
 
   windowClose: {

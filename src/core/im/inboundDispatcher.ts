@@ -26,6 +26,14 @@ export async function startInboundDispatcher(): Promise<void> {
   console.log('[InboundDispatcher] Started');
 }
 
+/**
+ * Directly dispatch a message that arrived via a polling adapter (e.g. WeChat iLink),
+ * bypassing the Tauri event bus. Same routing logic as the event listener.
+ */
+export function dispatchDirect(platform: string, payload: Record<string, unknown>): void {
+  dispatch(platform, payload);
+}
+
 export function stopInboundDispatcher(): void {
   unlistenIM?.();
   unlistenIM = null;

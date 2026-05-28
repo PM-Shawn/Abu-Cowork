@@ -1,6 +1,6 @@
 {
   "productName": "Abu",
-  "version": "0.21.0",
+  "version": "0.22.0",
   "identifier": "com.abu.app",
   "build": {
     "beforeDevCommand": "npm run copy-resources && npm run dev",
@@ -27,7 +27,7 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self'; script-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com https://cdn.jsdelivr.net https://unpkg.com https://esm.sh; connect-src 'self' https: http:; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: asset: https://asset.localhost http://asset.localhost",
+      "csp": "default-src 'self'; script-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com https://cdn.jsdelivr.net https://unpkg.com https://esm.sh https://cdn.tailwindcss.com; connect-src 'self' https: http:; style-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com https://cdn.jsdelivr.net https://unpkg.com https://esm.sh https://cdn.tailwindcss.com https://fonts.googleapis.com; font-src 'self' data: https://cdnjs.cloudflare.com https://cdn.jsdelivr.net https://unpkg.com https://esm.sh https://cdn.tailwindcss.com https://fonts.gstatic.com; img-src 'self' data: blob: asset: https://asset.localhost http://asset.localhost",
       "dangerousDisableAssetCspModification": ["script-src"],
       "assetProtocol": {
         "scope": ["**"]

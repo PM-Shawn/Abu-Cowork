@@ -11,6 +11,7 @@ import { DingtalkAdapter } from './dingtalk';
 import { WecomAdapter } from './wecom';
 import { SlackAdapter } from './slack';
 import { CustomAdapter } from './custom';
+import { WeChatAdapter } from './wechat';
 import { getIMPlugin, getRegisteredPluginManifests } from '../pluginRegistry';
 
 const builtinAdapters: Record<string, IMAdapter> = {
@@ -18,6 +19,7 @@ const builtinAdapters: Record<string, IMAdapter> = {
   dingtalk: new DingtalkAdapter(),
   wecom: new WecomAdapter(),
   slack: new SlackAdapter(),
+  wechat: new WeChatAdapter(),
   custom: new CustomAdapter(),
 };
 

@@ -13,6 +13,7 @@ const BUILTIN_SHORT_LABELS: Record<string, string> = {
   feishu: '飞',
   dingtalk: '钉',
   wecom: '微',
+  wechat: '微',
   slack: 'SL',
   custom: 'H',
 };

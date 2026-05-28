@@ -1487,6 +1487,18 @@ const enUS: TranslationDict = {
     groupConnection: 'Connection',
     groupBehavior: 'Session Behavior',
     groupAccess: 'Access Control',
+    wechatBind: 'Bind WeChat via QR',
+    wechatBindHint: 'Scan the QR code with WeChat to let Abu receive and reply to messages (private chat only)',
+    wechatScanQR: 'Get QR code',
+    wechatWaiting: 'Scan with WeChat',
+    wechatExpireIn: 'Expires in {secs}s',
+    wechatScanned: 'Scanned — confirm on your phone',
+    wechatSuccess: 'Bound successfully',
+    wechatExpired: 'QR code expired',
+    wechatRetry: 'Refresh',
+    wechatRebind: 'Re-bind account',
+    wechatAccount: 'Bound account',
+    wechatSessionExpired: 'Session expired, please re-bind',
   },
 
   windowClose: {

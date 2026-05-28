@@ -114,6 +114,12 @@ export async function sendThinking(
     replyContext,
   };
 
+  // Platforms that can't update a sent message (e.g. WeChat): suppress the interim
+  // ack so the user only sees the real reply, not a separate "正在分析" message.
+  if (adapter?.config.skipThinkingAck) {
+    return handle;
+  }
+
   const msg: AbuMessage = { content: text };
 
   // 1. Try sessionWebhook (DingTalk)

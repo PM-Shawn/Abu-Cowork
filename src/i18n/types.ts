@@ -1506,6 +1506,18 @@ export interface TranslationDict {
     groupConnection: string;
     groupBehavior: string;
     groupAccess: string;
+    wechatBind: string;
+    wechatBindHint: string;
+    wechatScanQR: string;
+    wechatWaiting: string;
+    wechatExpireIn: string;
+    wechatScanned: string;
+    wechatSuccess: string;
+    wechatExpired: string;
+    wechatRetry: string;
+    wechatRebind: string;
+    wechatAccount: string;
+    wechatSessionExpired: string;
   };
 
   // Window Close Dialog

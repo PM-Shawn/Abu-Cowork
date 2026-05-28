@@ -50,6 +50,8 @@ export function parseInboundMessage(
       return parseWeCom(payload);
     case 'slack':
       return parseSlack(payload);
+    case 'wechat':
+      return parseWeChatILink(payload);
     default: {
       // Fallback: plugin-registered parser
       const plugin = getIMPlugin(platform);
@@ -256,6 +258,67 @@ function parseSlack(payload: Record<string, unknown>): NormalizedIMMessage | nul
       platform: 'slack',
       chatId: channelId,
       threadId: threadTs,
+    },
+    raw: payload,
+  };
+}
+
+// ── WeChat iLink ──
+
+function parseWeChatILink(payload: Record<string, unknown>): NormalizedIMMessage | null {
+  // WeChat iLink raw message (already parsed by WeChatInboundAdapter.handleMessage)
+  // payload is an ILinkMessage with extra fields merged in by dispatchDirect.
+  // The adapter pre-processes item_list into a text string and puts it in
+  // a wrapper so inboundRouter can normalize it.
+
+  // The adapter calls dispatchDirect('wechat', rawILinkMsg), so payload IS the ILinkMessage.
+  const fromUserId = String(payload.from_user_id ?? '');
+  const messageId = String(payload.message_id ?? '');
+  const contextToken = String(payload.context_token ?? '');
+
+  if (!fromUserId || !contextToken) return null;
+
+  // Reconstruct text from item_list (re-parse, since handleMessage already did this;
+  // here we do a simpler pass for text-only items; media paths were handled by adapter)
+  const itemList = payload.item_list as Array<Record<string, unknown>> | undefined;
+  if (!itemList?.length) return null;
+
+  const parts: string[] = [];
+  for (const item of itemList) {
+    const type = item.type as number;
+    if (type === 1) {
+      const textItem = item.text_item as Record<string, unknown> | undefined;
+      if (textItem?.text) parts.push(String(textItem.text));
+    } else if (type === 3) {
+      // Voice: server-side ASR text
+      const voiceItem = item.voice_item as Record<string, unknown> | undefined;
+      if (voiceItem?.text) parts.push(`[语音] ${voiceItem.text}`);
+      else parts.push('[语音消息]');
+    } else if (type === 2) {
+      parts.push('[图片]');
+    } else if (type === 4) {
+      const fileItem = item.file_item as Record<string, unknown> | undefined;
+      parts.push(`[文件: ${fileItem?.file_name ?? '未知文件'}]`);
+    } else if (type === 5) {
+      parts.push('[视频]');
+    }
+  }
+
+  const text = parts.join('\n').trim();
+  if (!text) return null;
+
+  return {
+    senderId: fromUserId,
+    senderName: fromUserId.split('@')[0] ?? fromUserId,
+    text,
+    isMention: false, // iLink private chat only; no @mention concept
+    isDirect: true,
+    chatId: fromUserId,
+    platform: 'wechat',
+    replyContext: {
+      platform: 'wechat',
+      chatId: fromUserId,
+      messageId,
     },
     raw: payload,
   };

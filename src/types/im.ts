@@ -3,7 +3,7 @@
  */
 
 /** Built-in IM platforms shipped with Abu */
-type BuiltinIMPlatform = 'feishu' | 'dingtalk' | 'wecom' | 'slack';
+type BuiltinIMPlatform = 'feishu' | 'dingtalk' | 'wecom' | 'slack' | 'wechat';
 
 /** IM platform identifier — built-in platforms + any plugin-registered platform */
 export type IMPlatform = BuiltinIMPlatform | (string & {});

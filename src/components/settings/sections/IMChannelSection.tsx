@@ -2,12 +2,14 @@ import { useState, useRef, useEffect } from 'react';
 import { useIMChannelStore } from '@/stores/imChannelStore';
 import { useI18n } from '@/i18n';
 import { triggerEngine } from '@/core/trigger/triggerEngine';
-import { Plus, Trash2, ChevronDown, ChevronUp, Copy, Check, HelpCircle } from 'lucide-react';
+import { Plus, Trash2, ChevronDown, ChevronUp, Copy, Check, HelpCircle, RefreshCw } from 'lucide-react';
 import { Toggle } from '@/components/ui/toggle';
 import { Select } from '@/components/ui/select';
 import type { IMPlatform } from '@/types/im';
 import type { IMCapabilityLevel, IMResponseMode } from '@/types/imChannel';
 import { getIMPlatformOptions, getPlatformDisplayName } from '@/core/im/platformLabels';
+import WeChatQRPanel from './WeChatQRPanel';
+import type { WeChatCredentials } from '@/core/im/adapters/wechat';
 
 const CAPABILITY_OPTIONS: { value: IMCapabilityLevel; labelKey: keyof ReturnType<typeof useCapLabels> }[] = [
   { value: 'chat_only', labelKey: 'chat_only' },
@@ -149,24 +151,45 @@ export default function IMChannelSection() {
   const [newAppId, setNewAppId] = useState('');
   const [newAppSecret, setNewAppSecret] = useState('');
   const [newCapability, setNewCapability] = useState<IMCapabilityLevel>('safe_tools');
+  // WeChat-specific: bound credentials from QR scan
+  const [wechatCreds, setWechatCreds] = useState<WeChatCredentials | null>(null);
 
   const channelList = Object.values(channels);
   const serverPort = triggerEngine.getServerPort() ?? 18080;
 
   const handleAdd = () => {
-    if (!newName.trim() || !newAppId.trim() || !newAppSecret.trim()) return;
-    addChannel({
-      platform: newPlatform,
-      name: newName.trim(),
-      appId: newAppId.trim(),
-      appSecret: newAppSecret.trim(),
-      capability: newCapability,
-    });
+    if (!newName.trim()) return;
+    if (newPlatform === 'wechat') {
+      if (!wechatCreds) return;
+      addChannel({
+        platform: 'wechat',
+        name: newName.trim(),
+        appId: wechatCreds.ilinkBotId,
+        appSecret: JSON.stringify(wechatCreds),
+        capability: newCapability,
+      });
+    } else {
+      if (!newAppId.trim() || !newAppSecret.trim()) return;
+      addChannel({
+        platform: newPlatform,
+        name: newName.trim(),
+        appId: newAppId.trim(),
+        appSecret: newAppSecret.trim(),
+        capability: newCapability,
+      });
+    }
     setNewName('');
     setNewAppId('');
     setNewAppSecret('');
     setNewCapability('safe_tools');
+    setWechatCreds(null);
     setShowAddForm(false);
+  };
+
+  // Reset WeChat creds when platform changes
+  const handlePlatformChange = (p: IMPlatform) => {
+    setNewPlatform(p);
+    if (p !== 'wechat') setWechatCreds(null);
   };
 
   const handleDelete = (id: string) => {
@@ -245,22 +268,34 @@ export default function IMChannelSection() {
                       onChange={(v) => updateChannel(channel.id, { name: v })}
                     />
                   </FormRow>
-                  <FormRow label="App ID">
-                    <FormInput
-                      value={channel.appId}
-                      onChange={(v) => updateChannel(channel.id, { appId: v })}
-                      mono
+                  {channel.platform === 'wechat' ? (
+                    <WeChatConnectionRows
+                      channel={channel}
+                      onRebind={(creds) => updateChannel(channel.id, {
+                        appId: creds.ilinkBotId,
+                        appSecret: JSON.stringify(creds),
+                      })}
                     />
-                  </FormRow>
-                  <FormRow label="App Secret">
-                    <FormInput
-                      type="password"
-                      value={channel.appSecret}
-                      onChange={(v) => updateChannel(channel.id, { appSecret: v })}
-                      mono
-                    />
-                  </FormRow>
-                  <WebhookUrlField url={webhookUrl} hint={t.imChannel.webhookUrlHint} label={t.imChannel.webhookUrl} />
+                  ) : (
+                    <>
+                      <FormRow label="App ID">
+                        <FormInput
+                          value={channel.appId}
+                          onChange={(v) => updateChannel(channel.id, { appId: v })}
+                          mono
+                        />
+                      </FormRow>
+                      <FormRow label="App Secret">
+                        <FormInput
+                          type="password"
+                          value={channel.appSecret}
+                          onChange={(v) => updateChannel(channel.id, { appSecret: v })}
+                          mono
+                        />
+                      </FormRow>
+                      <WebhookUrlField url={webhookUrl} hint={t.imChannel.webhookUrlHint} label={t.imChannel.webhookUrl} />
+                    </>
+                  )}
                 </FormGroup>
 
                 <div className="border-t border-[var(--abu-bg-active)]" />
@@ -350,7 +385,7 @@ export default function IMChannelSection() {
               {getIMPlatformOptions().map((p) => (
                 <button
                   key={p.value}
-                  onClick={() => setNewPlatform(p.value)}
+                  onClick={() => handlePlatformChange(p.value as IMPlatform)}
                   className={`px-3 py-1.5 text-xs rounded-lg border transition-colors ${
                     newPlatform === p.value
                       ? 'border-[var(--abu-clay)] bg-[var(--abu-clay-bg)] text-[var(--abu-clay)] font-medium'
@@ -363,13 +398,21 @@ export default function IMChannelSection() {
             </div>
           </FormRow>
 
-          {/* App ID & Secret */}
-          <FormRow label="App ID">
-            <FormInput value={newAppId} onChange={setNewAppId} placeholder={t.imChannel.appIdPlaceholder} mono />
-          </FormRow>
-          <FormRow label="App Secret">
-            <FormInput type="password" value={newAppSecret} onChange={setNewAppSecret} placeholder={t.imChannel.appSecretPlaceholder} mono />
-          </FormRow>
+          {/* Credentials — WeChat uses QR scan, others use AppId/AppSecret */}
+          {newPlatform === 'wechat' ? (
+            <WeChatQRPanel
+              onBound={(creds) => setWechatCreds(creds)}
+            />
+          ) : (
+            <>
+              <FormRow label="App ID">
+                <FormInput value={newAppId} onChange={setNewAppId} placeholder={t.imChannel.appIdPlaceholder} mono />
+              </FormRow>
+              <FormRow label="App Secret">
+                <FormInput type="password" value={newAppSecret} onChange={setNewAppSecret} placeholder={t.imChannel.appSecretPlaceholder} mono />
+              </FormRow>
+            </>
+          )}
 
           {/* Capability */}
           <FormRow label={t.imChannel.capability}>
@@ -390,7 +433,10 @@ export default function IMChannelSection() {
             </button>
             <button
               onClick={handleAdd}
-              disabled={!newName.trim() || !newAppId.trim() || !newAppSecret.trim()}
+              disabled={
+                !newName.trim() ||
+                (newPlatform === 'wechat' ? !wechatCreds : !newAppId.trim() || !newAppSecret.trim())
+              }
               className="px-4 py-2 text-sm text-white bg-[var(--abu-clay)] hover:bg-[var(--abu-clay-hover)] rounded-lg transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
             >
               {t.common.save}
@@ -500,5 +546,60 @@ function TagInput({
         />
       </div>
     </FormRow>
+  );
+}
+
+/**
+ * WeChat-specific connection rows inside the expanded channel card.
+ *
+ * Shows bound account ID + status. If the session has expired (status=error),
+ * surfaces an inline QR panel for re-binding without leaving the settings page.
+ */
+function WeChatConnectionRows({
+  channel,
+  onRebind,
+}: {
+  channel: Pick<import('@/types/imChannel').IMChannel, 'appId' | 'appSecret' | 'status' | 'lastError'>;
+  onRebind: (creds: WeChatCredentials) => void;
+}) {
+  const { t } = useI18n();
+  const [showRebind, setShowRebind] = useState(false);
+
+  const isExpired = channel.status === 'error';
+
+  return (
+    <>
+      {/* Bound account ID (read-only) */}
+      <FormRow label={t.imChannel.wechatAccount}>
+        <code className="block w-full px-3 py-1.5 text-[12px] bg-[var(--abu-bg-muted)] border border-[var(--abu-border)] rounded-lg text-[var(--abu-text-tertiary)] truncate font-mono">
+          {channel.appId || '—'}
+        </code>
+      </FormRow>
+
+      {/* Re-bind trigger — shown when session expired */}
+      {isExpired && !showRebind && (
+        <div className="flex items-center justify-between rounded-lg border border-red-200 bg-red-50 px-3 py-2.5">
+          <p className="text-[12px] text-red-600">{t.imChannel.wechatSessionExpired}</p>
+          <button
+            onClick={() => setShowRebind(true)}
+            className="inline-flex items-center gap-1 text-[12px] font-medium text-[var(--abu-clay)] hover:text-[var(--abu-clay-hover)] transition-colors shrink-0 ml-3"
+          >
+            <RefreshCw className="h-3 w-3" />
+            {t.imChannel.wechatRebind}
+          </button>
+        </div>
+      )}
+
+      {/* Inline QR panel for re-binding */}
+      {showRebind && (
+        <WeChatQRPanel
+          compact
+          onBound={(creds) => {
+            onRebind(creds);
+            setShowRebind(false);
+          }}
+        />
+      )}
+    </>
   );
 }

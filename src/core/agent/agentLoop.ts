@@ -1122,10 +1122,10 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
       // Step 2: Trim old screenshots dynamically based on context usage
       const postCompressionTokens = estimateTokens(effectiveSystemPrompt) + estimateMessageTokens(messagesForContext) + toolTokens;
       const usagePercent = getUsagePercent(postCompressionTokens, maxInputTokens);
-      // NOTE: warningLevel MUST be computed on post-compression tokens.
-      // Pre-compression tokens stay critically high in long conversations
-      // even after cache-hit compression brings the actual payload below the threshold,
-      // which previously left the UI stuck in the red Critical state.
+      // NOTE: usage MUST be published on post-compression tokens. Pre-compression
+      // tokens stay critically high in long conversations even after cache-hit
+      // compression brings the actual payload below the threshold, which
+      // previously left the UI stuck in the red Critical state.
       // Update tracker (its lastLevel may be read elsewhere downstream)
       autoCompactTracker.updateLevel(postCompressionTokens, maxInputTokens);
       // Publish usage to chatStore for UI consumption

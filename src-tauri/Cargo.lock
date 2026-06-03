@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "abu"
-version = "0.22.0"
+version = "0.22.1"
 dependencies = [
  "aes-gcm",
  "base64 0.22.1",
@@ -42,6 +42,7 @@ dependencies = [
  "tempfile",
  "tokio",
  "tokio-tungstenite",
+ "windows 0.58.0",
  "xcap",
 ]
 

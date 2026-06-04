@@ -1,6 +1,7 @@
 import { useState, useEffect, lazy, Suspense } from 'react';
 import { readTextFile, exists } from '@tauri-apps/plugin-fs';
 import { revealItemInDir } from '@tauri-apps/plugin-opener';
+import { convertFileSrc } from '@tauri-apps/api/core';
 import { getBaseName, loadLocalImage } from '@/utils/pathUtils';
 import { usePreviewStore } from '@/stores/previewStore';
 import { useI18n } from '@/i18n';
@@ -260,15 +261,15 @@ export default function PreviewPanel() {
               <MarkdownRenderer content={content} />
             </div>
           </ScrollArea>
-        ) : rendererType === 'html' && content !== null ? (
+        ) : rendererType === 'html' ? (
           htmlViewMode === 'preview' ? (
             <iframe
-              srcDoc={content}
+              src={convertFileSrc(previewFilePath)}
               title={fileName}
               sandbox="allow-scripts"
               className="w-full h-full border-0 bg-white"
             />
-          ) : (
+          ) : content !== null ? (
             <ScrollArea className="h-full bg-[#1e1e1e]">
               <SyntaxHighlighter
                 style={oneDark}
@@ -278,6 +279,8 @@ export default function PreviewPanel() {
                 {content}
               </SyntaxHighlighter>
             </ScrollArea>
+          ) : (
+            <LazyFallback />
           )
         ) : rendererType === 'code' && content !== null ? (
           <ScrollArea className="h-full bg-[#1e1e1e]">

@@ -38,6 +38,9 @@ import { skillManageTool } from './definitions/skillManageTool';
 // --- Tool discovery ---
 import { toolSearchTool } from './definitions/toolSearchTool';
 
+// --- Todo tools ---
+import { createTodoTool } from './definitions/todoTools';
+
 // --- Computer tools ---
 import { computerTool } from './definitions/computerTools';
 export { setComputerUseBatchMode, setSkipAutoScreenshot } from './definitions/computerTools';
@@ -80,4 +83,5 @@ export function registerBuiltinTools(): void {
   toolRegistry.register(skillViewTool);
   toolRegistry.register(skillManageTool);
   toolRegistry.register(toolSearchTool);
+  toolRegistry.register(createTodoTool);
 }

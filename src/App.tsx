@@ -9,6 +9,8 @@ import ChatView from '@/components/chat/ChatView';
 import AutomationView from '@/components/automation/AutomationView';
 import SystemSettingsView from '@/components/settings/SystemSettingsModal';
 import ToolboxView from '@/components/settings/ToolboxModal';
+import TodoView from '@/components/todos/TodoView';
+import InboxView from '@/components/inbox/InboxView';
 import RightPanel from '@/components/panel/RightPanel';
 import ToastContainer from '@/components/common/ToastContainer';
 import { registerBuiltinTools } from '@/core/tools/builtins';
@@ -496,6 +498,8 @@ function App() {
           {viewMode === 'automation' && <AutomationView />}
           {viewMode === 'toolbox' && <ToolboxView />}
           {viewMode === 'settings' && <SystemSettingsView />}
+          {viewMode === 'todos' && <TodoView />}
+          {viewMode === 'inbox' && <InboxView />}
           {(viewMode === 'chat' || !viewMode) && <ChatView />}
         </main>
 

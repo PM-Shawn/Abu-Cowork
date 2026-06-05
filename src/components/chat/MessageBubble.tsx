@@ -1,4 +1,4 @@
-import { ChevronDown, ChevronRight, ChevronUp, Copy, Pencil, Trash2, RefreshCw, Check, Brain, Wand2, AtSign, FileText, FolderOpen, ImageOff, ThumbsUp, ThumbsDown } from 'lucide-react';
+import { ChevronDown, ChevronRight, ChevronUp, Copy, Pencil, Trash2, RefreshCw, Check, Brain, Wand2, AtSign, FileText, FolderOpen, ImageOff, ThumbsUp, ThumbsDown, CheckSquare } from 'lucide-react';
 import { useState, useEffect } from 'react';
 import type { Message, MessageContent } from '@/types';
 import MarkdownRenderer from './MarkdownRenderer';
@@ -7,6 +7,7 @@ import { useChatStore, useActiveConversation } from '@/stores/chatStore';
 import { sendFeedback } from '@/utils/consoleFeedback';
 import { cn } from '@/lib/utils';
 import { usePreviewStore } from '@/stores/previewStore';
+import { useTodosStore } from '@/stores/todosStore';
 import { runAgentLoop } from '@/core/agent/agentLoop';
 import { useI18n } from '@/i18n';
 import { getBaseName, loadLocalImage } from '@/utils/pathUtils';
@@ -313,6 +314,25 @@ function MessageActions({ message, onEdit, onDelete, onRegenerate, isUser, conve
             <ThumbsDown className="h-3.5 w-3.5" />
           </button>
         </>
+      )}
+
+      {/* Add to Todos button - only for assistant messages */}
+      {!isUser && (
+        <button
+          onClick={() => {
+            const text = getTextContent(message.content).slice(0, 60).trim();
+            if (!text) return;
+            useTodosStore.getState().createTodo({
+              title: text,
+              source: 'conversation',
+              sourceConversationId: conversationId ?? undefined,
+            });
+          }}
+          className="btn-ghost p-1.5 rounded-md text-[var(--abu-text-tertiary)] hover:text-[var(--abu-clay)] hover:bg-[var(--abu-bg-hover)]"
+          title={t.todos.addToTodos}
+        >
+          <CheckSquare className="h-3.5 w-3.5" />
+        </button>
       )}
 
       {/* Delete button */}

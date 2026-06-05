@@ -163,6 +163,48 @@ export interface TranslationDict {
     memoryGuideProjectRulesName: string;
     memoryGuideProjectRulesDesc: string;
     memoryGuideTip: string;
+    todos: string;
+    inbox: string;
+  };
+
+  // Todos
+  todos: {
+    title: string;
+    newTodo: string;
+    placeholder: string;
+    tabAll: string;
+    tabToday: string;
+    empty: string;
+    priorityHigh: string;
+    priorityMedium: string;
+    priorityLow: string;
+    assigneeHuman: string;
+    assigneeAgent: string;
+    quickAddFromConversation: string;
+    addToTodos: string;
+    dueToday: string;
+    dueTomorrow: string;
+    sourceConversation: string;
+    sourceAgent: string;
+  };
+
+  // Inbox
+  inbox: {
+    title: string;
+    empty: string;
+    pendingCount: string;
+    agentProposed: string;
+    agentConfirmation: string;
+    agentResult: string;
+    agentError: string;
+    accept: string;
+    ignore: string;
+    viewResult: string;
+    markDone: string;
+    requestRedo: string;
+    cancelTask: string;
+    retry: string;
+    close: string;
   };
 
   // Chat/Welcome

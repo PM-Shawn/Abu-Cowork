@@ -232,6 +232,7 @@ function MessageTimestamp({ timestamp, className = '' }: { timestamp: number; cl
 function MessageActions({ message, onEdit, onDelete, onRegenerate, isUser, conversationId }: MessageActionsProps) {
   const { t } = useI18n();
   const [copied, setCopied] = useState(false);
+  const [addedToTodos, setAddedToTodos] = useState(false);
   const [feedbackRating, setFeedbackRating] = useState<'positive' | 'negative' | null>(null);
   const activeSkill = useChatStore((s) => {
     const conv = conversationId ? s.conversations[conversationId] : undefined;
@@ -327,11 +328,18 @@ function MessageActions({ message, onEdit, onDelete, onRegenerate, isUser, conve
               source: 'conversation',
               sourceConversationId: conversationId ?? undefined,
             });
+            setAddedToTodos(true);
+            setTimeout(() => setAddedToTodos(false), 1500);
           }}
-          className="btn-ghost p-1.5 rounded-md text-[var(--abu-text-tertiary)] hover:text-[var(--abu-clay)] hover:bg-[var(--abu-bg-hover)]"
-          title={t.todos.addToTodos}
+          className={cn(
+            'btn-ghost p-1.5 rounded-md transition-colors',
+            addedToTodos
+              ? 'text-emerald-500 bg-[var(--abu-bg-hover)]'
+              : 'text-[var(--abu-text-tertiary)] hover:text-[var(--abu-clay)] hover:bg-[var(--abu-bg-hover)]',
+          )}
+          title={addedToTodos ? t.todos.addedToTodos : t.todos.addToTodos}
         >
-          <CheckSquare className="h-3.5 w-3.5" />
+          {addedToTodos ? <Check className="h-3.5 w-3.5" /> : <CheckSquare className="h-3.5 w-3.5" />}
         </button>
       )}
 

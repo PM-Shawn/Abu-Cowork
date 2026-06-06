@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { Plus } from 'lucide-react';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
@@ -10,15 +10,39 @@ import TodoItem from './TodoItem';
 
 type Tab = 'today' | 'all';
 
+function isSameDay(a: number, b: number): boolean {
+  const da = new Date(a);
+  const db = new Date(b);
+  return da.getFullYear() === db.getFullYear()
+    && da.getMonth() === db.getMonth()
+    && da.getDate() === db.getDate();
+}
+
 export default function TodoView() {
   const { t } = useI18n();
   const [tab, setTab] = useState<Tab>('today');
   const [draft, setDraft] = useState('');
-  const openTodos = useTodosStore((s) => s.getOpenTodos());
-  const todayDone = useTodosStore((s) => s.getTodayCompleted());
+  // Subscribe to the raw record (stable identity unless the record actually changes),
+  // then derive lists with useMemo. Selectors that return new arrays each call
+  // (.filter().sort()) would cause "Maximum update depth exceeded" because Zustand's
+  // default `===` equality flags every render as a state change.
+  const todos = useTodosStore((s) => s.todos);
   const createTodo = useTodosStore((s) => s.createTodo);
   const toggleStatus = useTodosStore((s) => s.toggleStatus);
   const deleteTodo = useTodosStore((s) => s.deleteTodo);
+
+  const openTodos = useMemo(
+    () => Object.values(todos)
+      .filter((tt) => tt.status === 'todo' || tt.status === 'in_progress')
+      .sort((a, b) => b.createdAt - a.createdAt),
+    [todos]
+  );
+  const todayDone = useMemo(() => {
+    const now = Date.now();
+    return Object.values(todos)
+      .filter((tt) => tt.status === 'done' && tt.completedAt && isSameDay(tt.completedAt, now))
+      .sort((a, b) => (b.completedAt ?? 0) - (a.completedAt ?? 0));
+  }, [todos]);
 
   const list = tab === 'today'
     ? [...openTodos, ...todayDone]

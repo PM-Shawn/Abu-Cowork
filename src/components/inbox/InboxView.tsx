@@ -1,4 +1,4 @@
-import { useEffect } from 'react';
+import { useEffect, useMemo } from 'react';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { useInboxStore } from '@/stores/inboxStore';
 import { useTodosStore } from '@/stores/todosStore';
@@ -7,7 +7,14 @@ import InboxItemRow from './InboxItem';
 
 export default function InboxView() {
   const { t } = useI18n();
-  const items = useInboxStore((s) => s.getAll());
+  // Subscribe to the raw record then derive the sorted list with useMemo.
+  // A selector that returns `Object.values(...).sort()` creates a new array on every
+  // render, which Zustand's default `===` equality treats as a change → infinite loop.
+  const itemsRecord = useInboxStore((s) => s.items);
+  const items = useMemo(
+    () => Object.values(itemsRecord).sort((a, b) => b.createdAt - a.createdAt),
+    [itemsRecord]
+  );
   const markAllRead = useInboxStore((s) => s.markAllRead);
   const dismiss = useInboxStore((s) => s.dismiss);
   const markRead = useInboxStore((s) => s.markRead);

@@ -172,9 +172,11 @@ export interface TranslationDict {
     title: string;
     newTodo: string;
     placeholder: string;
+    notesPlaceholder: string;
     tabAll: string;
     tabToday: string;
     empty: string;
+    addedToTodos: string;
     priorityHigh: string;
     priorityMedium: string;
     priorityLow: string;
@@ -186,6 +188,14 @@ export interface TranslationDict {
     dueTomorrow: string;
     sourceConversation: string;
     sourceAgent: string;
+  };
+
+  // Inbox tabs and status badges
+  inboxTabs: {
+    pending: string;
+    all: string;
+    statusAccepted: string;
+    statusIgnored: string;
   };
 
   // Inbox

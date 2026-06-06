@@ -1,4 +1,4 @@
-import { useMemo, useState, type KeyboardEvent } from 'react';
+import { useMemo, useRef, useState, type KeyboardEvent } from 'react';
 import { Plus, X } from 'lucide-react';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
@@ -25,6 +25,10 @@ export default function TodoView() {
   const [editorOpen, setEditorOpen] = useState(false);
   const [titleDraft, setTitleDraft] = useState('');
   const [notesDraft, setNotesDraft] = useState('');
+  // IME composition guard — see handleTitleKey below for why a ref + setTimeout(0)
+  // is required on top of the standard isComposing flag (WebKit fires keydown
+  // for Enter AFTER compositionend, with isComposing already false).
+  const composingRef = useRef(false);
 
   // Subscribe to raw record + derive — selectors that return new arrays would
   // cause "Maximum update depth exceeded" under Zustand's default `===` equality.
@@ -72,10 +76,19 @@ export default function TodoView() {
     setEditorOpen(false);
   };
 
-  // Guard Enter handler against IME composition: when typing English via Chinese
-  // IME, pressing Enter to pick a candidate would otherwise fire submit.
+  // Guard Enter handler against IME composition:
+  //   - `e.nativeEvent.isComposing` covers most engines mid-composition
+  //   - BUT in WebKit (Tauri WKWebView) when the user presses Enter to commit
+  //     a candidate, compositionend fires first → keydown for Enter then fires
+  //     with isComposing === false, so the flag check alone fails.
+  //   - Workaround: track composition state in a ref, and defer the reset
+  //     past the synthesized Enter keydown via setTimeout(0).
+  const handleCompositionStart = () => { composingRef.current = true; };
+  const handleCompositionEnd = () => {
+    setTimeout(() => { composingRef.current = false; }, 0);
+  };
   const handleTitleKey = (e: KeyboardEvent<HTMLInputElement>) => {
-    if (e.nativeEvent.isComposing) return;
+    if (composingRef.current || e.nativeEvent.isComposing) return;
     if (e.key === 'Enter') {
       e.preventDefault();
       handleSubmit();
@@ -121,6 +134,8 @@ export default function TodoView() {
                 value={titleDraft}
                 onChange={(e) => setTitleDraft(e.target.value)}
                 onKeyDown={handleTitleKey}
+                onCompositionStart={handleCompositionStart}
+                onCompositionEnd={handleCompositionEnd}
                 placeholder={t.todos.placeholder}
                 className="text-[14px]"
               />

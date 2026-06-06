@@ -1,35 +1,48 @@
-import { useEffect, useMemo } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { useInboxStore } from '@/stores/inboxStore';
 import { useTodosStore } from '@/stores/todosStore';
 import { useI18n, format } from '@/i18n';
+import { cn } from '@/lib/utils';
 import InboxItemRow from './InboxItem';
+
+type Tab = 'pending' | 'all';
 
 export default function InboxView() {
   const { t } = useI18n();
-  // Subscribe to the raw record then derive the sorted list with useMemo.
-  // A selector that returns `Object.values(...).sort()` creates a new array on every
-  // render, which Zustand's default `===` equality treats as a change → infinite loop.
+  const [tab, setTab] = useState<Tab>('pending');
+
   const itemsRecord = useInboxStore((s) => s.items);
-  const items = useMemo(
-    () => Object.values(itemsRecord).sort((a, b) => b.createdAt - a.createdAt),
-    [itemsRecord]
-  );
   const markAllRead = useInboxStore((s) => s.markAllRead);
-  const dismiss = useInboxStore((s) => s.dismiss);
+  const accept = useInboxStore((s) => s.accept);
+  const ignore = useInboxStore((s) => s.ignore);
   const markRead = useInboxStore((s) => s.markRead);
   const createTodo = useTodosStore((s) => s.createTodo);
 
-  // 进入收件箱即视为已读，下次回来不再亮红点
+  // Sort all items by createdAt desc; tab filters status === 'pending' when needed.
+  // Subscribing to the raw record (stable identity) + useMemo prevents the
+  // "Maximum update depth exceeded" loop that selectors returning new arrays cause.
+  const items = useMemo(
+    () => Object.values(itemsRecord).sort((a, b) => b.createdAt - a.createdAt),
+    [itemsRecord],
+  );
+  const pendingItems = useMemo(
+    () => items.filter((i) => i.status === 'pending'),
+    [items],
+  );
+  const list = tab === 'pending' ? pendingItems : items;
+
+  // Visiting the inbox clears the unread badge in the sidebar.
   useEffect(() => {
     markAllRead();
   }, [markAllRead]);
 
-  const unread = items.filter((i) => i.unread).length;
-
   const handleAccept = (id: string) => {
     const item = useInboxStore.getState().items[id];
-    if (!item || item.type !== 'agent_proposed_todo') return;
+    if (!item || item.type !== 'agent_proposed_todo') {
+      accept(id);
+      return;
+    }
     const draft = (item.payload?.draft ?? {}) as { title?: string };
     if (draft.title) {
       createTodo({
@@ -39,32 +52,50 @@ export default function InboxView() {
         sourceConversationId: item.conversationId,
       });
     }
-    dismiss(id);
+    accept(id);
   };
 
   return (
     <div className="flex flex-col h-full bg-[var(--abu-bg-base)]">
       <div className="flex items-center justify-between px-6 py-4 border-b border-[var(--abu-border)]">
         <h1 className="text-[18px] font-semibold text-[var(--abu-text-primary)]">{t.inbox.title}</h1>
-        {items.length > 0 && (
-          <span className="text-[13px] text-[var(--abu-text-muted)]">
-            {format(t.inbox.pendingCount, { count: unread || items.length })}
-          </span>
-        )}
+        <div className="flex items-center gap-2">
+          <div className="flex gap-1 text-[13px]">
+            {(['pending', 'all'] as Tab[]).map((k) => (
+              <button
+                key={k}
+                onClick={() => setTab(k)}
+                className={cn(
+                  'px-3 py-1.5 rounded-md',
+                  tab === k
+                    ? 'bg-[var(--abu-bg-active)] text-[var(--abu-text-primary)]'
+                    : 'text-[var(--abu-text-secondary)] hover:bg-[var(--abu-bg-hover)]',
+                )}
+              >
+                {k === 'pending' ? t.inboxTabs.pending : t.inboxTabs.all}
+              </button>
+            ))}
+          </div>
+          {pendingItems.length > 0 && (
+            <span className="text-[13px] text-[var(--abu-text-muted)]">
+              {format(t.inbox.pendingCount, { count: pendingItems.length })}
+            </span>
+          )}
+        </div>
       </div>
       <ScrollArea className="flex-1 min-h-0">
         <div className="px-6 py-4 space-y-2">
-          {items.length === 0 ? (
+          {list.length === 0 ? (
             <div className="px-6 py-16 text-center text-[var(--abu-text-muted)] text-[14px]">
               {t.inbox.empty}
             </div>
           ) : (
-            items.map((item) => (
+            list.map((item) => (
               <InboxItemRow
                 key={item.id}
                 item={item}
                 onAccept={() => handleAccept(item.id)}
-                onIgnore={() => dismiss(item.id)}
+                onIgnore={() => ignore(item.id)}
                 onView={() => markRead(item.id)}
               />
             ))

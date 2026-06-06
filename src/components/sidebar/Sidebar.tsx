@@ -81,7 +81,10 @@ export default function Sidebar() {
   const setViewMode = useSettingsStore((s) => s.setViewMode);
   const updateInfo = useSettingsStore((s) => s.updateInfo);
   const clearBadge = useNoticeBadgeStore((s) => s.clear);
-  const unreadInboxCount = useInboxStore((s) => s.getUnreadCount());
+  // Badge shows items still requiring user decision (pending), not just unread.
+  // Once a user accepts/ignores an item, the count drops even if other items
+  // remain unread — matches the "things you still owe a decision on" mental model.
+  const pendingInboxCount = useInboxStore((s) => s.getPendingCount());
   const { t } = useI18n();
 
   // Context menu state
@@ -288,9 +291,9 @@ export default function Sidebar() {
         >
           <Inbox className={cn('h-[18px] w-[18px]', viewMode === 'inbox' ? 'text-[var(--abu-clay)]' : 'text-[var(--abu-text-tertiary)]')} strokeWidth={1.75} />
           <span className="flex-1 text-left">{t.sidebar.inbox}</span>
-          {unreadInboxCount > 0 && (
+          {pendingInboxCount > 0 && (
             <span className="min-w-[18px] h-[18px] px-1.5 rounded-full bg-red-500 text-white text-[11px] font-medium leading-[18px] text-center">
-              {unreadInboxCount > 99 ? '99+' : unreadInboxCount}
+              {pendingInboxCount > 99 ? '99+' : pendingInboxCount}
             </span>
           )}
         </button>

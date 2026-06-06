@@ -145,9 +145,11 @@ const zhCN: TranslationDict = {
     title: '待办',
     newTodo: '新建待办',
     placeholder: '写点什么……',
+    notesPlaceholder: '备注 / 正文（选填，支持换行）',
     tabAll: '全部',
     tabToday: '今天',
     empty: '今天还没有待办，新建一个开始吧',
+    addedToTodos: '已加入待办',
     priorityHigh: '高',
     priorityMedium: '中',
     priorityLow: '低',
@@ -159,6 +161,13 @@ const zhCN: TranslationDict = {
     dueTomorrow: '明天',
     sourceConversation: '来自对话',
     sourceAgent: '来自 Agent',
+  },
+
+  inboxTabs: {
+    pending: '待处理',
+    all: '全部',
+    statusAccepted: '已加入',
+    statusIgnored: '已忽略',
   },
 
   inbox: {

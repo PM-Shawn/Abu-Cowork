@@ -17,6 +17,8 @@ export type TodoSource = 'manual' | 'conversation' | 'agent_proposed' | 'agent_c
 export interface Todo {
   id: string;
   title: string;
+  /** 多行备注/正文，支持换行（不强制 Markdown） */
+  notes?: string;
   status: TodoStatus;
   assignee: TodoAssignee;
   priority?: TodoPriority;
@@ -34,6 +36,14 @@ export interface Todo {
   /** 完成时间，用于"今天完成"的时间过滤 */
   completedAt?: number;
 }
+
+/**
+ * InboxItem 状态：
+ * - pending: 待用户处理
+ * - accepted: 用户已接受（如 agent_proposed_todo 已加入待办）
+ * - ignored: 用户已忽略（保留历史，不再展示在"待处理" tab）
+ */
+export type InboxItemStatus = 'pending' | 'accepted' | 'ignored';
 
 /**
  * InboxItem — 收件箱条目
@@ -63,7 +73,11 @@ export interface InboxItem {
   todoId?: string;
   /** 类型特定 payload：agent_proposed_todo 时为 Todo 草稿（不含 id/时间戳） */
   payload?: Record<string, unknown>;
-  /** 是否未读（影响角标计数） */
+  /** 是否未读（影响 sidebar 角标，进入收件箱时自动清零） */
   unread: boolean;
+  /** 处理状态：pending 显示操作按钮；accepted/ignored 仅作为历史显示 */
+  status: InboxItemStatus;
   createdAt: number;
+  /** 用户处理时间（accepted/ignored 时记录） */
+  processedAt?: number;
 }

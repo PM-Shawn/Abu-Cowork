@@ -145,9 +145,11 @@ const enUS: TranslationDict = {
     title: 'Todos',
     newTodo: 'New Todo',
     placeholder: 'Write something…',
+    notesPlaceholder: 'Notes / details (optional, multi-line supported)',
     tabAll: 'All',
     tabToday: 'Today',
     empty: 'No todos for today — create one to start',
+    addedToTodos: 'Added to Todos',
     priorityHigh: 'High',
     priorityMedium: 'Medium',
     priorityLow: 'Low',
@@ -159,6 +161,13 @@ const enUS: TranslationDict = {
     dueTomorrow: 'Tomorrow',
     sourceConversation: 'From conversation',
     sourceAgent: 'From Agent',
+  },
+
+  inboxTabs: {
+    pending: 'Pending',
+    all: 'All',
+    statusAccepted: 'Accepted',
+    statusIgnored: 'Ignored',
   },
 
   inbox: {

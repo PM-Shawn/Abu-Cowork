@@ -6,7 +6,7 @@ describe('inboxStore', () => {
     useInboxStore.setState({ items: {} });
   });
 
-  it('addItem creates an unread item', () => {
+  it('addItem creates an unread, pending item', () => {
     const id = useInboxStore.getState().addItem({
       type: 'agent_proposed_todo',
       summary: '整理 3 篇草稿',
@@ -14,8 +14,40 @@ describe('inboxStore', () => {
     });
     const item = useInboxStore.getState().items[id];
     expect(item.unread).toBe(true);
+    expect(item.status).toBe('pending');
     expect(item.type).toBe('agent_proposed_todo');
     expect(item.summary).toBe('整理 3 篇草稿');
+  });
+
+  it('accept marks the item as accepted with processedAt and clears unread', () => {
+    const id = useInboxStore.getState().addItem({
+      type: 'agent_proposed_todo', summary: 's',
+    });
+    useInboxStore.getState().accept(id);
+    const item = useInboxStore.getState().items[id];
+    expect(item.status).toBe('accepted');
+    expect(item.processedAt).toBeGreaterThan(0);
+    expect(item.unread).toBe(false);
+  });
+
+  it('ignore marks the item as ignored with processedAt and clears unread', () => {
+    const id = useInboxStore.getState().addItem({
+      type: 'agent_proposed_todo', summary: 's',
+    });
+    useInboxStore.getState().ignore(id);
+    const item = useInboxStore.getState().items[id];
+    expect(item.status).toBe('ignored');
+    expect(item.processedAt).toBeGreaterThan(0);
+    expect(item.unread).toBe(false);
+  });
+
+  it('getPendingCount counts only items with status pending', () => {
+    const a = useInboxStore.getState().addItem({ type: 'agent_proposed_todo', summary: 'a' });
+    const b = useInboxStore.getState().addItem({ type: 'agent_proposed_todo', summary: 'b' });
+    useInboxStore.getState().addItem({ type: 'agent_proposed_todo', summary: 'c' });
+    useInboxStore.getState().accept(a);
+    useInboxStore.getState().ignore(b);
+    expect(useInboxStore.getState().getPendingCount()).toBe(1);
   });
 
   it('markRead flips unread to false', () => {

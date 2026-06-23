@@ -415,6 +415,8 @@ function App() {
       if (useEnterpriseStore.getState().mode.kind !== 'personal') {
         const { startHeartbeat } = await import('@/core/enterprise/heartbeat')
         startHeartbeat()
+        const { startCatalogSync } = await import('@/core/enterprise/skill/catalog-sync')
+        startCatalogSync()
       }
     })()
     return () => { cancel = true }

@@ -21,6 +21,7 @@ import { prepareContextMessages } from '../context/contextManager';
 import { compressContextIfNeeded } from '../context/contextCompressor';
 import { getMessageText } from '../context/contextUtils';
 import { withRetry } from './retry';
+import { resolveEffectiveLlmCreds } from '../enterprise/llm-resolver';
 
 /**
  * Extract a brief summary of parent conversation for subagent context.
@@ -216,7 +217,9 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
     tools = tools.filter((t) => t.name !== TOOL_NAMES.DELEGATE_TO_AGENT && t.name !== TOOL_NAMES.UPDATE_SOUL);
 
     // 4. Create LLM adapter
-    const adapter: LLMAdapter = getActiveProvider(settings)?.apiFormat === 'openai-compatible'
+    // Enterprise mode always uses OpenAI-compatible adapter (LiteLLM exposes that interface).
+    const _enterpriseCreds = (() => { try { return resolveEffectiveLlmCreds(getActiveApiKey(settings), undefined) } catch { return null } })()
+    const adapter: LLMAdapter = (_enterpriseCreds?.forceOpenAiCompatible || getActiveProvider(settings)?.apiFormat === 'openai-compatible')
       ? new OpenAICompatibleAdapter()
       : new ClaudeAdapter();
 
@@ -297,12 +300,16 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
       let messagesForContext = messages;
       if (turn >= 3) { // Only attempt compression after a few turns
         try {
+          const subCreds = resolveEffectiveLlmCreds(
+            getActiveApiKey(settings),
+            getActiveProvider(settings)?.baseUrl || undefined,
+          )
           const compressionResult = await compressContextIfNeeded(
             messages,
             systemPrompt,
             contextWindowSize,
             maxOutputTokens,
-            { adapter, model: effectiveModelId, apiKey: getActiveApiKey(settings), baseUrl: getActiveProvider(settings)?.baseUrl || undefined, signal }
+            { adapter, model: effectiveModelId, apiKey: subCreds.apiKey, baseUrl: subCreds.baseUrl, signal }
           );
           if (compressionResult.compressed) {
             messagesForContext = compressionResult.messages;
@@ -320,10 +327,15 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
         maxOutputTokens
       );
 
+      // Resolve apiKey + baseUrl — enterprise gateway overrides personal creds.
+      const subChatCreds = resolveEffectiveLlmCreds(
+        getActiveApiKey(settings),
+        getActiveProvider(settings)?.baseUrl || undefined,
+      )
       const chatOptions = {
         model: effectiveModelId,
-        apiKey: getActiveApiKey(settings),
-        baseUrl: getActiveProvider(settings)?.baseUrl || undefined,
+        apiKey: subChatCreds.apiKey,
+        baseUrl: subChatCreds.baseUrl,
         systemPrompt,
         tools: tools.length > 0 ? tools : undefined,
         maxTokens: maxOutputTokens,

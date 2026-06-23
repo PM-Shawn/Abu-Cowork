@@ -47,6 +47,7 @@ import { prefetchTools } from '../tools/toolPrefetch';
 import { classifyTools, buildDeferredToolsSummary } from '../tools/toolSearch';
 import { getRunningAgents } from './backgroundAgentRegistry';
 import { hasQueuedInputs } from './userInputQueue';
+import { resolveEffectiveLlmCreds } from '../enterprise/llm-resolver';
 import { createLogger } from '../logging/logger';
 import { reportError } from '@/utils/consoleError';
 
@@ -555,7 +556,13 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
     },
   });
 
-  if (providerRequiresApiKey(settings) && !getActiveApiKey(settings)) {
+  // Enterprise mode bypasses personal key requirement — gateway provides the key.
+  const { forceOpenAiCompatible: _startForce } = (() => {
+    try { return resolveEffectiveLlmCreds(getActiveApiKey(settings), undefined) }
+    catch { return { forceOpenAiCompatible: false } }
+  })()
+  const isEnterpriseGatewayMode = _startForce
+  if (!isEnterpriseGatewayMode && providerRequiresApiKey(settings) && !getActiveApiKey(settings)) {
     // Persist the user's input first so the chat history isn't an orphan warning.
     // Use raw userMessage (orchestrator hasn't run); skill metadata is intentionally omitted —
     // the user needs to configure a key before any skill/agent routing takes effect.
@@ -644,7 +651,8 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
     } : undefined,
   });
 
-  const adapter: LLMAdapter = getActiveProvider(settings)?.apiFormat === 'openai-compatible'
+  // Enterprise mode always uses OpenAI-compatible adapter (LiteLLM exposes that interface).
+  const adapter: LLMAdapter = (isEnterpriseGatewayMode || getActiveProvider(settings)?.apiFormat === 'openai-compatible')
     ? new OpenAICompatibleAdapter()
     : new ClaudeAdapter();
 
@@ -1071,6 +1079,10 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
           // No valid cache — attempt compression (set isCompressing for the UI spinner)
           useChatStore.getState().setIsCompressing(conversationId, true);
           try {
+            const compressionCreds = resolveEffectiveLlmCreds(
+              getActiveApiKey(freshSettings),
+              getActiveProvider(freshSettings)?.baseUrl || undefined,
+            )
             const compressionResult = await compressContextIfNeeded(
               historyMessages,
               effectiveSystemPrompt,
@@ -1079,8 +1091,8 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
               {
                 adapter,
                 model: effectiveModelId,
-                apiKey: getActiveApiKey(freshSettings),
-                baseUrl: getActiveProvider(freshSettings)?.baseUrl || undefined,
+                apiKey: compressionCreds.apiKey,
+                baseUrl: compressionCreds.baseUrl,
                 signal: abortController.signal,
               },
               toolTokens
@@ -1163,10 +1175,17 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
         toolTokens
       );
 
+      // Resolve apiKey + baseUrl — enterprise gateway overrides personal creds.
+      // Throws EnterpriseLlmUnavailableError if enforced but gateway unreachable.
+      const effectiveCreds = resolveEffectiveLlmCreds(
+        getActiveApiKey(freshSettings),
+        getActiveProvider(freshSettings)?.baseUrl || undefined,
+      )
+
       const chatOptions = {
         model: effectiveModelId,
-        apiKey: getActiveApiKey(freshSettings),
-        baseUrl: getActiveProvider(freshSettings)?.baseUrl || undefined,
+        apiKey: effectiveCreds.apiKey,
+        baseUrl: effectiveCreds.baseUrl,
         systemPrompt: effectiveSystemPrompt,
         systemPromptSections: allSections,
         tools: tools.length > 0 ? tools : undefined,
@@ -1413,6 +1432,10 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
           // Stage 1: Try semantic compression (if not already attempted this turn)
           if (!autoCompactTracker.isDisabled()) {
             try {
+              const recoveryCreds = resolveEffectiveLlmCreds(
+                getActiveApiKey(freshSettings),
+                getActiveProvider(freshSettings)?.baseUrl || undefined,
+              )
               const compressionResult = await compressContextIfNeeded(
                 historyMessages,
                 effectiveSystemPrompt,
@@ -1421,8 +1444,8 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
                 {
                   adapter,
                   model: effectiveModelId,
-                  apiKey: getActiveApiKey(freshSettings),
-                  baseUrl: getActiveProvider(freshSettings)?.baseUrl || undefined,
+                  apiKey: recoveryCreds.apiKey,
+                  baseUrl: recoveryCreds.baseUrl,
                   signal: abortController.signal,
                 },
                 toolTokens

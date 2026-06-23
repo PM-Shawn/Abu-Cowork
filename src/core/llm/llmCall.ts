@@ -13,6 +13,7 @@ import type { LLMAdapter } from './adapter';
 import { ClaudeAdapter } from './claude';
 import { OpenAICompatibleAdapter } from './openai-compatible';
 import { useSettingsStore, getActiveApiKey, getActiveProvider, getEffectiveModel } from '../../stores/settingsStore';
+import { resolveEffectiveLlmCreds } from '../enterprise/llm-resolver';
 
 export interface LLMCallOptions {
   /** System prompt */
@@ -47,7 +48,16 @@ export interface LLMCallResult {
  */
 export async function llmCall(options: LLMCallOptions): Promise<LLMCallResult> {
   const settings = useSettingsStore.getState();
-  const adapter: LLMAdapter = getActiveProvider(settings)?.apiFormat === 'openai-compatible'
+
+  // Resolve apiKey + baseUrl — enterprise gateway overrides personal creds.
+  // Throws EnterpriseLlmUnavailableError if enforced but gateway unreachable.
+  const effectiveCreds = resolveEffectiveLlmCreds(
+    getActiveApiKey(settings),
+    getActiveProvider(settings)?.baseUrl || undefined,
+  )
+
+  // Enterprise mode always uses OpenAI-compatible adapter (LiteLLM exposes that interface).
+  const adapter: LLMAdapter = (effectiveCreds.forceOpenAiCompatible || getActiveProvider(settings)?.apiFormat === 'openai-compatible')
     ? new OpenAICompatibleAdapter()
     : new ClaudeAdapter();
 
@@ -77,8 +87,8 @@ export async function llmCall(options: LLMCallOptions): Promise<LLMCallResult> {
 
   await adapter.chat(messages, {
     model: getEffectiveModel(settings),
-    apiKey: getActiveApiKey(settings),
-    baseUrl: getActiveProvider(settings)?.baseUrl || undefined,
+    apiKey: effectiveCreds.apiKey,
+    baseUrl: effectiveCreds.baseUrl,
     systemPrompt: options.system,
     tools: options.tools,
     maxTokens: options.maxTokens ?? 4096,

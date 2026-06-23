@@ -3,15 +3,23 @@ import { useSettingsStore, type ToolboxTab } from '@/stores/settingsStore';
 import { useChatStore } from '@/stores/chatStore';
 import { useDiscoveryStore } from '@/stores/discoveryStore';
 import { useI18n, format } from '@/i18n';
-import { Sparkles, Bot, Server } from 'lucide-react';
+import { Sparkles, Bot, Server, Building2 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { open as openDialog } from '@tauri-apps/plugin-dialog';
 import { useToastStore } from '@/stores/toastStore';
 import { installSkillFromFolder } from '@/core/skill/installer';
 import { installAgentFromFolder } from '@/core/agent/installer';
+import { useEnterpriseStore } from '@/stores/enterpriseStore';
+import { getEnterpriseMount } from '@/core/enterprise/mounts';
 import SkillsSection from '../customize/SkillsSection';
 import AgentsSection from '../customize/AgentsSection';
 import MCPSection from '../customize/MCPSection';
+// Side-effect imports to register enterprise mounts
+import '@/components/enterprise/EnterpriseSkillTab';
+import '@/components/enterprise/EnterpriseMcpTab';
+
+// Extended tab type — enterprise tabs are local-only (not persisted in store)
+type ExtendedTab = ToolboxTab | 'enterprise-skills' | 'enterprise-mcp';
 
 export default function ToolboxView() {
   const {
@@ -24,20 +32,36 @@ export default function ToolboxView() {
   const startNewConversation = useChatStore((s) => s.startNewConversation);
   const refresh = useDiscoveryStore((s) => s.refresh);
   const { t } = useI18n();
+  const enterpriseMode = useEnterpriseStore(s => s.mode);
+  const isEnterprise = enterpriseMode.kind !== 'personal';
 
   const [mcpAddFormOpen, setMcpAddFormOpen] = useState(false);
   const [manualCreateTrigger, setManualCreateTrigger] = useState(0);
+  // Local state for enterprise tab selection (not persisted)
+  const [activeExtTab, setActiveExtTab] = useState<ExtendedTab>(activeToolboxTab);
+
+  // Sync store tab changes to local extended tab
+  useEffect(() => {
+    setActiveExtTab(activeToolboxTab);
+  }, [activeToolboxTab]);
 
   // Reset manual-create trigger and clear search when switching tabs
   useEffect(() => {
     setManualCreateTrigger(0);
     setToolboxSearchQuery('');
-  }, [activeToolboxTab, setToolboxSearchQuery]);
+  }, [activeExtTab, setToolboxSearchQuery]);
+
+  const handleTabChange = (tab: ExtendedTab) => {
+    if (tab === 'skills' || tab === 'agents' || tab === 'mcp') {
+      setActiveToolboxTab(tab);
+    }
+    setActiveExtTab(tab);
+  };
 
   // Handler for creating with AI, adapts to active tab
   const handleAICreate = () => {
     startNewConversation();
-    const prompt = activeToolboxTab === 'agents'
+    const prompt = activeExtTab === 'agents'
       ? t.toolbox.aiCreateAgentPrompt
       : t.toolbox.aiCreateSkillPrompt;
     setPendingInput(prompt);
@@ -46,7 +70,7 @@ export default function ToolboxView() {
 
   // Handler for uploading a folder (Skills/Agents)
   const handleUploadFile = async () => {
-    const isAgent = activeToolboxTab === 'agents';
+    const isAgent = activeExtTab === 'agents';
     const addToast = useToastStore.getState().addToast;
 
     try {
@@ -79,14 +103,32 @@ export default function ToolboxView() {
     setManualCreateTrigger((c) => c + 1);
   };
 
-  const navItems: { id: ToolboxTab; label: string; icon: typeof Sparkles }[] = [
+  const baseNavItems: { id: ExtendedTab; label: string; icon: typeof Sparkles }[] = [
     { id: 'skills', label: t.toolbox.skills, icon: Sparkles },
     { id: 'agents', label: t.toolbox.agents, icon: Bot },
     { id: 'mcp', label: t.toolbox.mcp, icon: Server },
   ];
 
+  const enterpriseNavItems: { id: ExtendedTab; label: string; icon: typeof Sparkles }[] = isEnterprise
+    ? [
+        { id: 'enterprise-skills', label: '企业 Skill', icon: Building2 },
+        { id: 'enterprise-mcp', label: '企业 MCP', icon: Building2 },
+      ]
+    : [];
+
+  const navItems = [...baseNavItems, ...enterpriseNavItems];
+
   const renderContent = () => {
-    switch (activeToolboxTab) {
+    const binding = enterpriseMode.kind === 'enterprise' || enterpriseMode.kind === 'offline'
+      ? enterpriseMode.binding
+      : null;
+    const config = enterpriseMode.kind === 'enterprise'
+      ? enterpriseMode.config
+      : enterpriseMode.kind === 'offline'
+        ? enterpriseMode.lastConfig
+        : null;
+
+    switch (activeExtTab) {
       case 'skills':
         return <SkillsSection
           manualCreateTrigger={manualCreateTrigger}
@@ -103,6 +145,16 @@ export default function ToolboxView() {
         />;
       case 'mcp':
         return <MCPSection showAddForm={mcpAddFormOpen} onAddFormChange={setMcpAddFormOpen} />;
+      case 'enterprise-skills': {
+        if (!binding) return null;
+        const SkillTab = getEnterpriseMount('skillTab');
+        return <SkillTab binding={binding} config={config} />;
+      }
+      case 'enterprise-mcp': {
+        if (!binding) return null;
+        const McpTab = getEnterpriseMount('mcpTab');
+        return <McpTab binding={binding} config={config} />;
+      }
       default:
         return null;
     }
@@ -116,11 +168,11 @@ export default function ToolboxView() {
         <div className="px-3 space-y-0.5">
           {navItems.map((item) => {
             const Icon = item.icon;
-            const isActive = activeToolboxTab === item.id;
+            const isActive = activeExtTab === item.id;
             return (
               <button
                 key={item.id}
-                onClick={() => setActiveToolboxTab(item.id)}
+                onClick={() => handleTabChange(item.id)}
                 className={cn(
                   'w-full flex items-center gap-3 px-4 py-3 rounded-lg text-sm font-medium transition-colors text-left',
                   isActive

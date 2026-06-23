@@ -1,7 +1,7 @@
-// src/core/enterprise/policy/enforcer.tsx
+// src/core/enterprise/policy/enforcer.ts
 // Side-effect import: registers policyEnforcer in the enterprise mounts registry.
 // Also exports getCurrentPolicy() — the single read-point for the active policy snapshot.
-import type { ReactNode, ComponentType } from 'react'
+import type { ComponentType } from 'react'
 import type { PolicyEnforcerProps } from '@/core/enterprise/mounts'
 import { registerEnterpriseMount } from '@/core/enterprise/mounts'
 import { useEnterpriseStore } from '@/stores/enterpriseStore'
@@ -31,7 +31,7 @@ export function getCurrentPolicy(): EffectivePolicy | null {
  * Actual enforcement is done imperatively in the tool dispatcher and skill installer.
  * This component renders nothing — the mount registration is the side-effect.
  */
-function PolicyEnforcer(_props: PolicyEnforcerProps): ReactNode {
+function PolicyEnforcer(_props: PolicyEnforcerProps): null {
   return null
 }
 

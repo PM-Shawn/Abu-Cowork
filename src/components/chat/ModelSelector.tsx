@@ -5,6 +5,8 @@ import { useI18n } from '@/i18n';
 import { cn } from '@/lib/utils';
 import { Input } from '@/components/ui/input';
 import type { ModelCapability, ModelInfo, ProviderInstance } from '@/types';
+import { useEnterpriseModels } from '@/core/enterprise/useEnterpriseModels';
+import { useEnterpriseStore } from '@/stores/enterpriseStore';
 
 interface ModelSelectorProps {
   open: boolean;
@@ -119,6 +121,10 @@ export function ModelSelector({ open, onClose, anchorRef }: ModelSelectorProps) 
   const selectModel = useSettingsStore((s) => s.selectModel);
   const toggleFavorite = useSettingsStore((s) => s.toggleFavorite);
   const openSystemSettings = useSettingsStore((s) => s.openSystemSettings);
+
+  // Enterprise mode: model list is scoped to gateway's /v1/models allow list.
+  const isEnterprise = useEnterpriseStore(s => s.mode.kind !== 'personal');
+  const enterpriseModels = useEnterpriseModels();
 
   const [query, setQuery] = useState('');
   const panelRef = useRef<HTMLDivElement>(null);
@@ -257,6 +263,81 @@ export function ModelSelector({ open, onClose, anchorRef }: ModelSelectorProps) 
   );
 
   if (!open) return null;
+
+  // Enterprise mode: replace the personal provider list with the gateway model list.
+  if (isEnterprise) {
+    const gwModels = enterpriseModels ?? []
+    const filtered = lowerQuery
+      ? gwModels.filter(id => id.toLowerCase().includes(lowerQuery))
+      : gwModels
+    return (
+      <div
+        ref={panelRef}
+        className={cn(
+          'absolute bottom-full right-0 mb-1.5 z-50',
+          'w-72 max-h-96 rounded-lg shadow-lg',
+          'bg-[var(--abu-bg-base)] border border-[var(--abu-border)]',
+          'flex flex-col overflow-hidden'
+        )}
+      >
+        <div className="p-2 border-b border-[var(--abu-border)]">
+          <div className="relative">
+            <Search className="absolute left-2 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-[var(--abu-text-muted)]" />
+            <Input
+              ref={searchRef}
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder={t.common.search + '...'}
+              className="h-7 pl-7 pr-2 text-xs bg-transparent border-none focus:ring-0"
+            />
+          </div>
+        </div>
+        <div className="overflow-y-auto max-h-80">
+          <div className="p-1">
+            {enterpriseModels === null ? (
+              <div className="px-3 py-4 text-center text-xs text-[var(--abu-text-muted)]">
+                加载企业模型列表中...
+              </div>
+            ) : filtered.length === 0 ? (
+              <div className="px-3 py-4 text-center text-xs text-[var(--abu-text-muted)]">
+                {lowerQuery ? '未找到匹配的模型' : '暂无可用模型'}
+              </div>
+            ) : (
+              <div className="mb-1">
+                <div className="px-3 py-1">
+                  <span className="text-[10px] font-medium uppercase tracking-wider text-orange-400">
+                    企业网关
+                  </span>
+                </div>
+                {filtered.map(modelId => {
+                  const isActive = activeModel.modelId === modelId
+                  return (
+                    <button
+                      key={modelId}
+                      onClick={() => { selectModel('enterprise-gateway', modelId); onClose(); }}
+                      className={cn(
+                        'w-full flex items-center gap-2 px-3 py-1.5 rounded-md text-left',
+                        'text-xs transition-colors',
+                        isActive
+                          ? 'bg-[var(--abu-bg-active)] text-[var(--abu-text-primary)]'
+                          : 'text-[var(--abu-text-secondary)] hover:bg-[var(--abu-bg-hover)]'
+                      )}
+                    >
+                      {isActive
+                        ? <Check className="h-3 w-3 text-[var(--abu-clay)] shrink-0" />
+                        : <span className="h-3 w-3 shrink-0" />
+                      }
+                      <span className="truncate">{modelId}</span>
+                    </button>
+                  )
+                })}
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+    )
+  }
 
   const hasNoProviders = enabledProviders.length === 0;
 

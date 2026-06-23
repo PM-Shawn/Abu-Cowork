@@ -47,7 +47,7 @@ import { prefetchTools } from '../tools/toolPrefetch';
 import { classifyTools, buildDeferredToolsSummary } from '../tools/toolSearch';
 import { getRunningAgents } from './backgroundAgentRegistry';
 import { hasQueuedInputs } from './userInputQueue';
-import { resolveEffectiveLlmCreds } from '../enterprise/llm-resolver';
+import { resolveEffectiveLlmCreds, EnterpriseLlmUnavailableError } from '../enterprise/llm-resolver';
 import { createLogger } from '../logging/logger';
 import { reportError } from '@/utils/consoleError';
 
@@ -786,11 +786,14 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
         return { reason: 'aborted' };
       }
       const errorMessage = err instanceof Error ? err.message : String(err);
+      const delegateDisplayError = err instanceof EnterpriseLlmUnavailableError
+        ? '无法连接企业 AI 网关。请检查网络连接，或联系管理员。\n\n客户端不会回退到个人 API key（防止预算绕过）。'
+        : errorMessage;
       const delegateErrorId = generateId();
       chatStore.addMessage(conversationId, {
         id: delegateErrorId,
         role: 'assistant',
-        content: `**Error:** ${errorMessage}`,
+        content: `**Error:** ${delegateDisplayError}`,
         timestamp: Date.now(),
         loopId,
       });
@@ -1855,7 +1858,10 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
       const isOllamaForbidden = errorCode === 'authentication'
         && err instanceof LLMError && err.statusCode === 403
         && /^forbidden\s*$/i.test(err.message.trim());
-      const displayError = isLikelyVisionError
+      const isEnterpriseGatewayUnavailable = err instanceof EnterpriseLlmUnavailableError;
+      const displayError = isEnterpriseGatewayUnavailable
+        ? '无法连接企业 AI 网关。请检查网络连接，或联系管理员。\n\n客户端不会回退到个人 API key（防止预算绕过）。'
+        : isLikelyVisionError
         ? '当前模型可能不支持图片/视觉输入，请尝试移除图片或切换到支持视觉的模型（如 Claude、GPT-4o）。'
         : isOllamaForbidden
         ? 'Ollama 返回了 403 Forbidden（CORS 来源限制）。请设置环境变量 `OLLAMA_ORIGINS=*` 后重启 Ollama，例如：`OLLAMA_ORIGINS=* ollama serve`'

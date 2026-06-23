@@ -16,12 +16,16 @@ interface PollResp {
   token_type: string
   expires_in: number
   scopes: string[]
+  llm_virtual_key?: string | null
+  llm_endpoint?: string | null
 }
 
 export interface BindResult {
   serverUrl: string
   accessToken: string
   scopes: string[]
+  llmEndpoint: string | null
+  llmVirtualKey: string | null
 }
 
 export async function startBind(
@@ -55,7 +59,13 @@ export async function startBind(
       })
       if (pollRes.status === 200) {
         const r = (await pollRes.json()) as PollResp
-        return { serverUrl: base, accessToken: r.access_token, scopes: r.scopes }
+        return {
+          serverUrl: base,
+          accessToken: r.access_token,
+          scopes: r.scopes,
+          llmEndpoint: r.llm_endpoint ?? null,
+          llmVirtualKey: r.llm_virtual_key ?? null,
+        }
       }
       if (pollRes.status === 429) { interval += 1000; continue }  // slow_down
       if (pollRes.status === 425) continue                          // authorization_pending

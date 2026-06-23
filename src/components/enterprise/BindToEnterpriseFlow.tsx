@@ -34,6 +34,10 @@ export default function BindToEnterpriseFlow({ onDone, onCancel }: { onDone: () 
         roleId: null,
         accessToken: r.accessToken,
         boundAt: new Date().toISOString(),
+        // === Plan 2.C: LLM gateway — prefer bind response, fall back to heartbeat ===
+        llmEndpoint: r.llmEndpoint ?? heart.llm?.endpoint ?? null,
+        llmVirtualKey: r.llmVirtualKey ?? null,
+        llmKeyExpiresAt: heart.llm?.virtualKeyExpiresAt ?? null,
       })
       onDone()
     } catch (e) {

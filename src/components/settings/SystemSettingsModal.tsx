@@ -1,6 +1,6 @@
 import { useSettingsStore, type SystemSettingsTab } from '@/stores/settingsStore';
 import { useI18n } from '@/i18n';
-import { Settings2, Info, Shield, SlidersHorizontal, MessageCircle, Radio, Brain, Heart, Activity, BarChart3 } from 'lucide-react';
+import { Settings2, Info, Shield, SlidersHorizontal, MessageCircle, Radio, Brain, Heart, Activity, BarChart3, Building2 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { AIServicesSection, AboutSection, SandboxSection, GeneralSection, IMChannelSection } from './sections';
 import FeedbackSection from './sections/FeedbackSection';
@@ -8,6 +8,7 @@ import PersonalMemorySection from './sections/PersonalMemorySection';
 import SoulSection from './sections/SoulSection';
 import DiagnosticSection from './sections/DiagnosticSection';
 import UsageSection from './sections/UsageSection';
+import EnterpriseSection from './sections/EnterpriseSection';
 
 export default function SystemSettingsView() {
   const {
@@ -27,6 +28,7 @@ export default function SystemSettingsView() {
     { id: 'diagnostic', label: t.diagnostic.title, icon: Activity },
     { id: 'feedback', label: t.about.feedback, icon: MessageCircle },
     { id: 'about', label: t.common.version, icon: Info },
+    { id: 'enterprise', label: '企业模式', icon: Building2 },
   ];
 
   const renderContent = () => {
@@ -51,6 +53,8 @@ export default function SystemSettingsView() {
         return <AboutSection />;
       case 'feedback':
         return <FeedbackSection />;
+      case 'enterprise':
+        return <EnterpriseSection />;
       default:
         return <GeneralSection />;
     }

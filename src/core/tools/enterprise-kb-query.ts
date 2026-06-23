@@ -31,9 +31,22 @@ const inputSchema: ToolDefinition['inputSchema'] = {
 
 async function buildDescription(): Promise<string> {
   const catalog = useEnterpriseKbStore.getState().catalog ?? []
-  if (catalog.length === 0) return 'Query enterprise knowledge bases (none currently available).'
-  const list = catalog.slice(0, 10).map(c => `  - ${c.name} (id: ${c.id}${c.description ? `; ${c.description}` : ''})`).join('\n')
-  return `Query enterprise knowledge bases via RAG retrieval. Returns ranked text chunks with filename + relevance score.\n\nAvailable knowledge bases (top 10):\n${list}\n\nIf the user's question is likely answerable from documented company knowledge (policies, OKRs, FAQs, meeting notes), call this tool. Pass a specific kbId if you know which KB is relevant; otherwise omit it to search all visible KBs.`
+  if (catalog.length === 0) return 'Query enterprise and personal knowledge bases (none currently available).'
+  const enterprise = catalog.filter(c => c.scope !== 'personal_synced')
+  const personal = catalog.filter(c => c.scope === 'personal_synced')
+  const sections: string[] = [
+    'Query enterprise and personal knowledge bases via RAG retrieval. Returns ranked text chunks with filename + relevance score.',
+  ]
+  if (enterprise.length > 0) {
+    const list = enterprise.slice(0, 10).map(c => `  - ${c.name} (id: ${c.id}${c.description ? `; ${c.description}` : ''})`).join('\n')
+    sections.push(`\nEnterprise / team KBs (shared with your org or team):\n${list}`)
+  }
+  if (personal.length > 0) {
+    const list = personal.slice(0, 10).map(c => `  - ${c.name} (id: ${c.id})`).join('\n')
+    sections.push(`\nPersonal KBs (only you can access — your own uploaded documents):\n${list}`)
+  }
+  sections.push('\nCall this tool when the user\'s question is likely answerable from documented knowledge (policies, OKRs, FAQs, meeting notes, personal notes). Pass a specific kbId if known; otherwise omit to search all visible KBs.')
+  return sections.join('')
 }
 
 async function execute(input: Record<string, unknown>): Promise<string> {

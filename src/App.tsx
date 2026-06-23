@@ -67,6 +67,7 @@ import AnnouncementBanner from '@/components/common/AnnouncementBanner';
 import DisclaimerBanner from '@/components/common/DisclaimerBanner';
 import { pushDiagnosticSnapshot } from '@/utils/consoleDiagnostic';
 import { useDiagnosticStore } from '@/stores/diagnosticStore';
+import { useEnterpriseStore } from '@/stores/enterpriseStore';
 
 /**
  * Drain Notice inbox if we're in a state that can actually deliver.
@@ -405,6 +406,12 @@ function App() {
       unsub();
     };
   }, []);
+
+  // Enterprise mode: load persisted binding from AppData at startup.
+  // Fire-and-forget; failure is non-fatal (app runs in personal mode).
+  useEffect(() => {
+    useEnterpriseStore.getState().init().catch(e => console.warn('[enterprise] init failed', e))
+  }, [])
 
   // Catch unhandled rejections from Tauri plugin resource cleanup
   // (e.g., plugin-http fetch to unreachable URLs, plugin-fs watch on deleted paths)

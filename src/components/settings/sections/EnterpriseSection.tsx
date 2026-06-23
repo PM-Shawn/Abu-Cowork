@@ -4,6 +4,7 @@ import { useEnterpriseStore } from '@/stores/enterpriseStore'
 import { MountPoint, getEnterpriseMount } from '@/core/enterprise/mounts'
 import { Button } from '@/components/ui/button'
 import BindToEnterpriseFlow from '@/components/enterprise/BindToEnterpriseFlow'
+import MigrationWizard from '@/components/enterprise/MigrationWizard'
 // Side-effect import to register the meTransparencyPage mount
 import '@/components/enterprise/MeTransparencyView'
 
@@ -12,6 +13,7 @@ export default function EnterpriseSection() {
   const unbind = useEnterpriseStore(s => s.unbind)
   const [showBind, setShowBind] = useState(false)
   const [showMe, setShowMe] = useState(false)
+  const [showMigration, setShowMigration] = useState(false)
 
   if (mode.kind === 'personal') {
     return (
@@ -95,6 +97,19 @@ export default function EnterpriseSection() {
         )}
       </section>
 
+      {/* Personal-to-enterprise migration */}
+      <section className="space-y-2">
+        <div className="flex items-center justify-between">
+          <h3 className="text-sm font-medium text-[var(--abu-text-primary)]">数据迁移</h3>
+          <Button variant="ghost" size="sm" onClick={() => setShowMigration(true)}>
+            从个人版迁移数据
+          </Button>
+        </div>
+        <p className="text-xs text-[var(--abu-text-tertiary)]">
+          将本地个人版的 Skills 和记忆上传到企业版，原数据保留不删除。
+        </p>
+      </section>
+
       <Button
         variant="destructive"
         size="sm"
@@ -106,6 +121,8 @@ export default function EnterpriseSection() {
       >
         解绑企业实例
       </Button>
+
+      {showMigration && <MigrationWizard onClose={() => setShowMigration(false)} />}
     </div>
   )
 }

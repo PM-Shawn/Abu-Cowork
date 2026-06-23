@@ -20,6 +20,9 @@ import { readTextFile } from '@tauri-apps/plugin-fs';
 import ShareExportDialog from '@/components/share/ShareExportDialog';
 import ImportedBadge from './ImportedBadge';
 import { isMacOS } from '@/utils/platform';
+import EnterpriseStatusBadge from '@/components/enterprise/EnterpriseStatusBadge';
+// Side-effect import: registers BrandSlot in the enterprise mounts registry
+import '@/components/enterprise/BrandSlot';
 
 interface StatusIndicatorProps {
   status: ConversationStatus;
@@ -457,6 +460,9 @@ export default function Sidebar() {
         </div>
         )}
       </ScrollArea>
+
+      {/* Enterprise status badge — shown above user section when in enterprise mode */}
+      <EnterpriseStatusBadge />
 
       {/* User Section */}
       <div className="px-5 py-4 shrink-0">

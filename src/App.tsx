@@ -408,9 +408,18 @@ function App() {
   }, []);
 
   // Enterprise mode: load persisted binding from AppData at startup.
-  // Fire-and-forget; failure is non-fatal (app runs in personal mode).
+  // If bound, start the background heartbeat that refreshes config every 5 min.
   useEffect(() => {
-    useEnterpriseStore.getState().init().catch(e => console.warn('[enterprise] init failed', e))
+    let cancel = false
+    ;(async () => {
+      await useEnterpriseStore.getState().init().catch(e => console.warn('[enterprise] init failed', e))
+      if (cancel) return
+      if (useEnterpriseStore.getState().mode.kind !== 'personal') {
+        const { startHeartbeat } = await import('@/core/enterprise/heartbeat')
+        startHeartbeat()
+      }
+    })()
+    return () => { cancel = true }
   }, [])
 
   // Catch unhandled rejections from Tauri plugin resource cleanup

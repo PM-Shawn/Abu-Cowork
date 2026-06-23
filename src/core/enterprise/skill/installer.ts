@@ -6,6 +6,8 @@ import { callEnterprise } from '@/core/enterprise/api'
 import { useEnterpriseStore } from '@/stores/enterpriseStore'
 import { useEnterpriseSkillStore } from '@/stores/enterpriseSkillStore'
 import { setInstalled, listInstalled } from './local-store'
+import { getCurrentPolicy } from '@/core/enterprise/policy/enforcer'
+import { checkSkill } from '@/core/enterprise/policy/matcher'
 
 const ROOT = 'skills/enterprise'
 
@@ -69,6 +71,12 @@ export async function installSkill(
     manifest = JSON.parse(strFromU8(manifestRaw)) as { name: string; version: string }
   } catch {
     throw new SkillInstallError('manifest.json invalid', 'parse')
+  }
+
+  // Policy check: deny if the skill name is on the blacklist
+  const policyCheck = checkSkill(getCurrentPolicy(), manifest.name)
+  if (policyCheck.decision === 'deny') {
+    throw new SkillInstallError(`[policy] ${policyCheck.reason ?? `skill '${manifest.name}' blocked by policy`}`, 'verify')
   }
 
   const safeName = manifest.name.replace(/[^a-zA-Z0-9._-]/g, '_').slice(0, 64)

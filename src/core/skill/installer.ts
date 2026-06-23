@@ -9,10 +9,12 @@ import { readTextFile, readDir, readFile, writeFile, mkdir, exists } from '@taur
 import { homeDir } from '@tauri-apps/api/path';
 import { parse as parseYaml } from 'yaml';
 import { joinPath } from '@/utils/pathUtils';
+import { getCurrentPolicy } from '@/core/enterprise/policy/enforcer';
+import { checkSkill } from '@/core/enterprise/policy/matcher';
 
 export type InstallResult =
   | { ok: true; name: string; fileCount: number }
-  | { ok: false; code: 'NO_SKILL_MD' | 'NO_NAME' | 'ALREADY_EXISTS' | 'COPY_FAILED'; message: string };
+  | { ok: false; code: 'NO_SKILL_MD' | 'NO_NAME' | 'ALREADY_EXISTS' | 'COPY_FAILED' | 'POLICY_DENIED'; message: string };
 
 /**
  * Install a skill by copying a folder to ~/.abu/skills/{name}/.
@@ -35,6 +37,12 @@ export async function installSkillFromFolder(
   const name = extractName(raw);
   if (!name) {
     return { ok: false, code: 'NO_NAME', message: 'SKILL.md is missing a valid "name" field in frontmatter' };
+  }
+
+  // 3a. Policy check: deny if skill name is blacklisted
+  const policyCheck = checkSkill(getCurrentPolicy(), name);
+  if (policyCheck.decision === 'deny') {
+    return { ok: false, code: 'POLICY_DENIED', message: `[policy] ${policyCheck.reason ?? `skill '${name}' blocked by policy`}` };
   }
 
   // 3. Determine target directory

@@ -422,7 +422,8 @@ export type SkillSource =
   | 'project'
   | 'project-standard'
   | 'workspace-auto'
-  | 'draft';
+  | 'draft'
+  | 'enterprise';
 
 /**
  * User-facing skill categories surfaced in the Toolbox. This is a

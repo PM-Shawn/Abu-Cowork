@@ -1,6 +1,6 @@
 import { parse as parseYaml, stringify as stringifyYaml } from 'yaml';
 import { readTextFile, readDir, exists } from '@tauri-apps/plugin-fs';
-import { homeDir, resolve, resolveResource } from '@tauri-apps/api/path';
+import { homeDir, appDataDir, resolve, resolveResource } from '@tauri-apps/api/path';
 import type { Skill, SkillMetadata, SkillHookEntry, SkillSource } from '../../types';
 import { joinPath, getParentDir, normalizeSeparators } from '../../utils/pathUtils';
 import { sanitizePath } from '../memdir/paths';
@@ -204,6 +204,14 @@ export class SkillLoader {
       { path: joinPath(home, '.abu/skills'), source: 'user' },
       { path: joinPath(home, '.agents/skills'), source: 'standard' },
     );
+
+    // Enterprise-installed skills (AppData/skills/enterprise/<name>/SKILL.md).
+    // Each sub-directory is a separate skill package written by installer.ts.
+    try {
+      const appData = await appDataDir();
+      dirs.push({ path: joinPath(appData, 'skills/enterprise'), source: 'enterprise' });
+    } catch { /* appDataDir unavailable in non-Tauri/test environments */ }
+
     if (builtinDir) {
       dirs.push({ path: builtinDir, source: 'builtin' });
     }

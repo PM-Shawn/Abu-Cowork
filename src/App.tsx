@@ -419,6 +419,10 @@ function App() {
         startHeartbeat()
         const { startCatalogSync } = await import('@/core/enterprise/skill/catalog-sync')
         startCatalogSync()
+        const { startMcpCatalogSync } = await import('@/core/enterprise/mcp/catalog-sync')
+        startMcpCatalogSync()
+        const { reloadEnterpriseMcpConnections } = await import('@/core/enterprise/mcp/loader')
+        reloadEnterpriseMcpConnections().catch((err: unknown) => console.warn('[enterprise-mcp] reload failed', err))
       }
     })()
     return () => { cancel = true }

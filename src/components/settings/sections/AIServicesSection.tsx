@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { useSettingsStore } from '@/stores/settingsStore';
+import { useEnterpriseStore } from '@/stores/enterpriseStore';
 import { useI18n } from '@/i18n';
 import { Plus, CircleCheck, CircleAlert, ChevronDown, Globe, ImageIcon, Trash2 } from 'lucide-react';
 import { cn } from '@/lib/utils';
@@ -9,9 +10,23 @@ import ProviderCard from './ai-services/ProviderCard';
 import AddProviderModal from './ai-services/AddProviderModal';
 import { WebSearchForm } from './WebSearchSection';
 import { ImageGenForm } from './ImageGenSection';
+import EnterpriseLlmBadge from '@/components/enterprise/EnterpriseLlmBadge';
 
 export default function AIServicesSection() {
   const { t } = useI18n();
+  const isEnterprise = useEnterpriseStore(s => s.mode.kind !== 'personal');
+
+  // In enterprise mode, show the gateway badge and hide personal provider config.
+  if (isEnterprise) {
+    return (
+      <div className="space-y-4">
+        <h3 className="text-base font-semibold text-[var(--abu-text-primary)]">
+          {t.settings.aiServices}
+        </h3>
+        <EnterpriseLlmBadge />
+      </div>
+    );
+  }
   const providers = useSettingsStore((s) => s.providers);
   const activeModel = useSettingsStore((s) => s.activeModel);
   const clearAllStoredKeys = useSettingsStore((s) => s.clearAllStoredKeys);

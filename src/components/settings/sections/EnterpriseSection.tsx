@@ -1,14 +1,17 @@
 // src/components/settings/sections/EnterpriseSection.tsx
 import { useState } from 'react'
 import { useEnterpriseStore } from '@/stores/enterpriseStore'
-import { MountPoint } from '@/core/enterprise/mounts'
+import { MountPoint, getEnterpriseMount } from '@/core/enterprise/mounts'
 import { Button } from '@/components/ui/button'
 import BindToEnterpriseFlow from '@/components/enterprise/BindToEnterpriseFlow'
+// Side-effect import to register the meTransparencyPage mount
+import '@/components/enterprise/MeTransparencyView'
 
 export default function EnterpriseSection() {
   const mode = useEnterpriseStore(s => s.mode)
   const unbind = useEnterpriseStore(s => s.unbind)
   const [showBind, setShowBind] = useState(false)
+  const [showMe, setShowMe] = useState(false)
 
   if (mode.kind === 'personal') {
     return (
@@ -38,6 +41,8 @@ export default function EnterpriseSection() {
 
   const binding = mode.kind === 'enterprise' || mode.kind === 'offline' ? mode.binding : null
   const config = mode.kind === 'enterprise' ? mode.config : mode.kind === 'offline' ? mode.lastConfig : null
+
+  const MeView = getEnterpriseMount('meTransparencyPage')
 
   return (
     <div className="space-y-4">
@@ -75,6 +80,19 @@ export default function EnterpriseSection() {
             </div>
           )}
         </dl>
+      </section>
+
+      {/* /me transparency panel */}
+      <section className="space-y-2">
+        <div className="flex items-center justify-between">
+          <h3 className="text-sm font-medium text-[var(--abu-text-primary)]">我的数据</h3>
+          <Button variant="ghost" size="sm" onClick={() => setShowMe(v => !v)}>
+            {showMe ? '收起' : '查看我的数据'}
+          </Button>
+        </div>
+        {showMe && binding && (
+          <MeView binding={binding} config={config} />
+        )}
       </section>
 
       <Button

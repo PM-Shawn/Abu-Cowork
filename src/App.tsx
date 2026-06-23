@@ -68,6 +68,8 @@ import DisclaimerBanner from '@/components/common/DisclaimerBanner';
 import { pushDiagnosticSnapshot } from '@/utils/consoleDiagnostic';
 import { useDiagnosticStore } from '@/stores/diagnosticStore';
 import { useEnterpriseStore } from '@/stores/enterpriseStore';
+// Side-effect import: registers KbBrowser in the enterprise mounts registry
+import '@/components/enterprise/KbBrowser';
 
 /**
  * Drain Notice inbox if we're in a state that can actually deliver.

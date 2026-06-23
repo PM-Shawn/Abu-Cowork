@@ -7,6 +7,19 @@ export interface ResolvedEnterpriseLlm {
 }
 
 /**
+ * Thrown when the client is in enterprise mode but the LLM gateway is
+ * unreachable or has no virtual key configured.
+ * Per spec 11.e: LLM calls MUST NOT fall back to a personal API key —
+ * budget bypass prevention is more important than availability.
+ */
+export class EnterpriseLlmUnavailableError extends Error {
+  constructor(msg: string) {
+    super(msg)
+    this.name = 'EnterpriseLlmUnavailableError'
+  }
+}
+
+/**
  * Returns enterprise LLM context if usable; null otherwise.
  *
  * Returns null when:
@@ -36,4 +49,28 @@ export function isEnterpriseLlmEnforced(): boolean {
 /** Returns true if enforced AND a resolved context is available. */
 export function canCallEnterpriseLlm(): boolean {
   return isEnterpriseLlmEnforced() && resolveEnterpriseLlm() !== null
+}
+
+/**
+ * Resolves apiKey + baseUrl for a LLM call.
+ * - Enterprise mode with valid gateway → returns gateway creds (openai-compatible)
+ * - Enterprise mode without gateway → throws EnterpriseLlmUnavailableError
+ * - Personal mode → returns personalApiKey + personalBaseUrl unchanged
+ *
+ * Usage: call once before building chatOptions; spread result into chatOptions.
+ */
+export function resolveEffectiveLlmCreds(
+  personalApiKey: string,
+  personalBaseUrl: string | undefined,
+): { apiKey: string; baseUrl: string | undefined; forceOpenAiCompatible: boolean } {
+  const enterprise = resolveEnterpriseLlm()
+  if (enterprise) {
+    return { apiKey: enterprise.apiKey, baseUrl: enterprise.baseUrl, forceOpenAiCompatible: true }
+  }
+  if (isEnterpriseLlmEnforced()) {
+    throw new EnterpriseLlmUnavailableError(
+      '企业 AI 网关不可达，无法执行 LLM 调用。请检查网络连接，或联系管理员。'
+    )
+  }
+  return { apiKey: personalApiKey, baseUrl: personalBaseUrl, forceOpenAiCompatible: false }
 }

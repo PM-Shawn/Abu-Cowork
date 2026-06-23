@@ -423,6 +423,8 @@ function App() {
         startMcpCatalogSync()
         const { reloadEnterpriseMcpConnections } = await import('@/core/enterprise/mcp/loader')
         reloadEnterpriseMcpConnections().catch((err: unknown) => console.warn('[enterprise-mcp] reload failed', err))
+        const { startKbCatalogSync } = await import('@/core/enterprise/kb/catalog-sync')
+        startKbCatalogSync()
       }
     })()
     return () => { cancel = true }

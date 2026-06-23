@@ -28,6 +28,10 @@ export function sourceToUXCategory(source: SkillSource | undefined): SkillUXCate
       return 'mine';
     case 'workspace-auto':
       return 'mine';
+    case 'enterprise':
+      // Enterprise-installed skills appear in the "mine" bucket for now.
+      // A dedicated visual badge will distinguish them (spec 11.d, V1.5+).
+      return 'mine';
     case 'draft':
       return 'agent-evolved';
     case 'builtin':

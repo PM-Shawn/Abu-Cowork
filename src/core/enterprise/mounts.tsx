@@ -77,7 +77,7 @@ const _registry: EnterpriseMounts = {
 }
 
 export function registerEnterpriseMount<K extends keyof EnterpriseMounts>(key: K, impl: EnterpriseMounts[K]): void {
-  (_registry as Record<string, unknown>)[key] = impl
+  (_registry as unknown as Record<string, unknown>)[key] = impl
 }
 
 export function getEnterpriseMount<K extends keyof EnterpriseMounts>(key: K): EnterpriseMounts[K] {

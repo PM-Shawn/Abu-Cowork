@@ -1,46 +1,21 @@
 // src/components/enterprise/PolicyConfirmModal.tsx
-// Promise-based enterprise policy confirmation modal.
-// Call showPolicyConfirm(message) from the tool dispatcher to gate a
-// tool call behind a user decision. The modal renders at z-[60] (above
-// all other overlays) and processes one confirmation at a time.
+// Enterprise policy confirmation modal — rendered once at App root (z-[60]).
+// Call showPolicyConfirm(msg) from any imperative code to gate an action.
 import { useState, useEffect } from 'react'
+import { confirmQueue, setActiveConfirmSetter } from './policyConfirmQueue'
 
 interface PendingConfirm {
   resolve: (ok: boolean) => void
   message: string
 }
 
-/** Module-level queue; processed FIFO. */
-const queue: PendingConfirm[] = []
-
-/** Set by the mounted component; null when component is unmounted. */
-let setActive: ((p: PendingConfirm | null) => void) | null = null
-
-/**
- * Request a policy confirmation dialog.
- * Returns a Promise<boolean>: true = user allowed this call once, false = user denied.
- * If the modal component is not mounted (non-enterprise mode), resolves immediately to true
- * so enforcement doesn't block non-enterprise users.
- */
-export function showPolicyConfirm(message: string): Promise<boolean> {
-  // If no modal is mounted (non-enterprise flow), allow through silently.
-  if (setActive === null) return Promise.resolve(true)
-  return new Promise<boolean>((resolve) => {
-    queue.push({ resolve, message })
-    // If no active item yet, start processing
-    if (queue.length === 1) {
-      setActive?.(queue[0] ?? null)
-    }
-  })
-}
-
 export default function PolicyConfirmModal() {
-  const [active, setActiveState] = useState<PendingConfirm | null>(null)
+  const [active, setActive] = useState<PendingConfirm | null>(null)
 
   useEffect(() => {
-    setActive = setActiveState
+    setActiveConfirmSetter(setActive)
     return () => {
-      setActive = null
+      setActiveConfirmSetter(null)
     }
   }, [])
 
@@ -48,8 +23,8 @@ export default function PolicyConfirmModal() {
 
   const decide = (ok: boolean) => {
     active.resolve(ok)
-    queue.shift()
-    setActiveState(queue[0] ?? null)
+    confirmQueue.shift()
+    setActive(confirmQueue[0] ?? null)
   }
 
   return (

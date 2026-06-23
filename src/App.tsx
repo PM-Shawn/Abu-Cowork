@@ -70,6 +70,9 @@ import { useDiagnosticStore } from '@/stores/diagnosticStore';
 import { useEnterpriseStore } from '@/stores/enterpriseStore';
 // Side-effect import: registers KbBrowser in the enterprise mounts registry
 import '@/components/enterprise/KbBrowser';
+// Side-effect import: registers policyEnforcer in the enterprise mounts registry
+import '@/core/enterprise/policy/enforcer';  // enforcer.ts — non-JSX, side-effect only
+import PolicyConfirmModal from '@/components/enterprise/PolicyConfirmModal';
 
 /**
  * Drain Notice inbox if we're in a state that can actually deliver.
@@ -553,6 +556,10 @@ function App() {
         {/* First-launch disclaimer banner — shows once until dismissed.
             Self-gates on hasAcknowledgedDisclaimer in settingsStore. */}
         <DisclaimerBanner />
+
+        {/* Enterprise policy confirmation modal (z-[60], above all overlays).
+            Only appears when the tool dispatcher detects a require_confirmation policy. */}
+        <PolicyConfirmModal />
 
         {/* Cloud announcement banner — shows the first unseen announcement */}
         {pendingAnnouncements.length > 0 && pendingAnnouncements[0] && (

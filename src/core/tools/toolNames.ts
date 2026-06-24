@@ -66,6 +66,9 @@ export const TOOL_NAMES = {
 
   // Tool discovery
   TOOL_SEARCH: 'tool_search',
+
+  // Orchestration
+  RUN_AGENT_BATCH: 'run_agent_batch',
 } as const;
 
 export type ToolName = typeof TOOL_NAMES[keyof typeof TOOL_NAMES];

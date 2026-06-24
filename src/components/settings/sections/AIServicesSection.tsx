@@ -15,6 +15,13 @@ import EnterpriseLlmBadge from '@/components/enterprise/EnterpriseLlmBadge';
 export default function AIServicesSection() {
   const { t } = useI18n();
   const isEnterprise = useEnterpriseStore(s => s.mode.kind !== 'personal');
+  const providers = useSettingsStore((s) => s.providers);
+  const activeModel = useSettingsStore((s) => s.activeModel);
+  const clearAllStoredKeys = useSettingsStore((s) => s.clearAllStoredKeys);
+  const [showAddModal, setShowAddModal] = useState(false);
+  const [showClearConfirm, setShowClearConfirm] = useState(false);
+  const [searchExpanded, setSearchExpanded] = useState(false);
+  const [imageGenExpanded, setImageGenExpanded] = useState(false);
 
   // In enterprise mode, show the gateway badge and hide personal provider config.
   if (isEnterprise) {
@@ -27,11 +34,6 @@ export default function AIServicesSection() {
       </div>
     );
   }
-  const providers = useSettingsStore((s) => s.providers);
-  const activeModel = useSettingsStore((s) => s.activeModel);
-  const clearAllStoredKeys = useSettingsStore((s) => s.clearAllStoredKeys);
-  const [showAddModal, setShowAddModal] = useState(false);
-  const [showClearConfirm, setShowClearConfirm] = useState(false);
 
   // Check if any enabled provider has builtin capabilities
   const enabledProviders = providers.filter(p => p.enabled);
@@ -54,9 +56,6 @@ export default function AIServicesSection() {
       if (a.enabled !== b.enabled) return a.enabled ? -1 : 1;
       return a.sortOrder - b.sortOrder;
     });
-
-  const [searchExpanded, setSearchExpanded] = useState(false);
-  const [imageGenExpanded, setImageGenExpanded] = useState(false);
 
   return (
     <div className="space-y-6">

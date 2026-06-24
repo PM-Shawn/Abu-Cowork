@@ -2,8 +2,8 @@
 // Side-effect import: registers policyEnforcer in the enterprise mounts registry.
 // Also exports getCurrentPolicy() — the single read-point for the active policy snapshot.
 import type { ComponentType } from 'react'
-import type { PolicyEnforcerProps } from '@/core/enterprise/mounts'
-import { registerEnterpriseMount } from '@/core/enterprise/mounts'
+import type { PolicyEnforcerProps } from '@/core/enterprise/mounts-registry'
+import { registerEnterpriseMount } from '@/core/enterprise/mounts-registry'
 import { useEnterpriseStore } from '@/stores/enterpriseStore'
 import type { EffectivePolicy } from './types'
 

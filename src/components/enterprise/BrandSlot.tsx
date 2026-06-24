@@ -1,7 +1,7 @@
 // src/components/enterprise/BrandSlot.tsx
 import type { ComponentType } from 'react'
-import type { BrandSlotProps } from '@/core/enterprise/mounts'
-import { registerEnterpriseMount } from '@/core/enterprise/mounts'
+import type { BrandSlotProps } from '@/core/enterprise/mounts-registry'
+import { registerEnterpriseMount } from '@/core/enterprise/mounts-registry'
 
 function BrandSlot({ binding, config, size = 'sm' }: BrandSlotProps) {
   if (!binding) return null

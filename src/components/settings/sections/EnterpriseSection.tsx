@@ -1,7 +1,8 @@
 // src/components/settings/sections/EnterpriseSection.tsx
 import { useState } from 'react'
 import { useEnterpriseStore } from '@/stores/enterpriseStore'
-import { MountPoint, getEnterpriseMount } from '@/core/enterprise/mounts'
+import { MountPoint } from '@/core/enterprise/mounts'
+import { getEnterpriseMount } from '@/core/enterprise/mounts-registry'
 import { Button } from '@/components/ui/button'
 import BindToEnterpriseFlow from '@/components/enterprise/BindToEnterpriseFlow'
 import MigrationWizard from '@/components/enterprise/MigrationWizard'

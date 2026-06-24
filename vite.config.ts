@@ -4,6 +4,16 @@ import tailwindcss from '@tailwindcss/vite'
 import path from 'path'
 import { version } from './package.json'
 
+// Build target switch: OSS (default) or Enterprise
+// ABU_BUILD_TARGET=enterprise → resolves @enterprise-modules to sibling private repo
+const BUILD_TARGET = process.env.ABU_BUILD_TARGET ?? 'oss'
+const enterpriseModulesPath = BUILD_TARGET === 'enterprise'
+  ? path.resolve(__dirname, '../Abu-enterprise-modules/src')
+  : path.resolve(__dirname, 'src/enterprise-modules-stub')
+
+// eslint-disable-next-line no-console
+console.log(`[vite] ABU_BUILD_TARGET=${BUILD_TARGET} → @enterprise-modules → ${enterpriseModulesPath}`)
+
 const host = process.env.TAURI_DEV_HOST;
 
 export default defineConfig({
@@ -14,6 +24,7 @@ export default defineConfig({
   resolve: {
     alias: {
       '@': path.resolve(__dirname, './src'),
+      '@enterprise-modules': enterpriseModulesPath,
     },
   },
   clearScreen: false,

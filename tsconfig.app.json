@@ -18,7 +18,9 @@
 
     /* Path alias */
     "paths": {
-      "@/*": ["./src/*"]
+      "@/*": ["./src/*"],
+      "@enterprise-modules": ["./src/enterprise-modules-stub"],
+      "@enterprise-modules/*": ["./src/enterprise-modules-stub/*"]
     },
 
     /* Linting */

@@ -11,7 +11,6 @@ const enterpriseModulesPath = BUILD_TARGET === 'enterprise'
   ? path.resolve(__dirname, '../Abu-enterprise-modules/src')
   : path.resolve(__dirname, 'src/enterprise-modules-stub')
 
-// eslint-disable-next-line no-console
 console.log(`[vite] ABU_BUILD_TARGET=${BUILD_TARGET} → @enterprise-modules → ${enterpriseModulesPath}`)
 
 const host = process.env.TAURI_DEV_HOST;

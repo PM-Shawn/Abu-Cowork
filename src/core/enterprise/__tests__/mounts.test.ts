@@ -1,11 +1,13 @@
 // src/core/enterprise/__tests__/mounts.test.ts
 import { describe, it, expect } from 'vitest'
-import { registerEnterpriseMount, getEnterpriseMount, getAllMounts } from '../mounts'
+import type { ComponentType } from 'react'
+import type { BrandSlotProps, PolicyAdvisorProps } from '../mounts-registry'
+import { registerEnterpriseMount, getEnterpriseMount, getAllMounts } from '../mounts-registry'
 
 describe('enterprise mounts registry', () => {
   it('registers and reads back a slot', () => {
     const Marker = () => null
-    registerEnterpriseMount('brandSlot', Marker as any)
+    registerEnterpriseMount('brandSlot', Marker as unknown as ComponentType<BrandSlotProps>)
     expect(getEnterpriseMount('brandSlot')).toBe(Marker)
   })
 
@@ -32,9 +34,9 @@ describe('enterprise mounts registry', () => {
   it('overwriting a slot replaces the previous impl', () => {
     const First = () => null
     const Second = () => null
-    registerEnterpriseMount('policyAdvisor', First as any)
+    registerEnterpriseMount('policyAdvisor', First as unknown as ComponentType<PolicyAdvisorProps>)
     expect(getEnterpriseMount('policyAdvisor')).toBe(First)
-    registerEnterpriseMount('policyAdvisor', Second as any)
+    registerEnterpriseMount('policyAdvisor', Second as unknown as ComponentType<PolicyAdvisorProps>)
     expect(getEnterpriseMount('policyAdvisor')).toBe(Second)
   })
 })

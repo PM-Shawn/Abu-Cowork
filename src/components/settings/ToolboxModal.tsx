@@ -10,7 +10,7 @@ import { useToastStore } from '@/stores/toastStore';
 import { installSkillFromFolder } from '@/core/skill/installer';
 import { installAgentFromFolder } from '@/core/agent/installer';
 import { useEnterpriseStore } from '@/stores/enterpriseStore';
-import { getEnterpriseMount } from '@/core/enterprise/mounts';
+import { getEnterpriseMount } from '@/core/enterprise/mounts-registry';
 import SkillsSection from '../customize/SkillsSection';
 import AgentsSection from '../customize/AgentsSection';
 import MCPSection from '../customize/MCPSection';

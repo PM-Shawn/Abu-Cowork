@@ -726,6 +726,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
         filePermissionCallback: filePermCb,
         onProgress,
         imContext: options?.imContext,
+        parentConversationId: conversationId,
       });
 
       // Complete the delegate step

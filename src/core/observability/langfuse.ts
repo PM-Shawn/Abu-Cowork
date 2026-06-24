@@ -183,6 +183,71 @@ export function startToolSpan(
   };
 }
 
+/** Handle returned by startSubagentSpan */
+export interface EndableSubagentSpan {
+  end(data?: {
+    output?: unknown;
+    tokenUsage?: { input: number; output: number };
+    toolCallCount?: number;
+    turnCount?: number;
+    duration?: number;
+    error?: string;
+  }): void;
+}
+
+const NOOP_SUBAGENT_SPAN: EndableSubagentSpan = { end() {} };
+
+/**
+ * Start a subagent observability span. If the parent conversation trace exists,
+ * creates a child span on it; otherwise creates a standalone trace + span.
+ * Returns a no-op handle when observability is disabled. Never throws.
+ */
+export function startSubagentSpan(
+  parentConversationId: string | null,
+  data: { agentName: string; task: string },
+): EndableSubagentSpan {
+  const lf = getLangfuse();
+  if (!lf) return NOOP_SUBAGENT_SPAN;
+
+  try {
+    const spanName = `subagent:${data.agentName}`;
+    const spanInput = { task: data.task };
+
+    let span: ReturnType<LangfuseTraceClient['span']>;
+    let standaloneTrace: LangfuseTraceClient | null = null;
+
+    const parentTrace = parentConversationId ? _traces.get(parentConversationId) : undefined;
+    if (parentTrace) {
+      span = parentTrace.span({ name: spanName, input: spanInput });
+    } else {
+      standaloneTrace = lf.trace({ name: spanName, input: spanInput });
+      span = standaloneTrace.span({ name: spanName, input: spanInput });
+    }
+
+    return {
+      end(end) {
+        try {
+          span.end({
+            output: end?.output,
+            metadata: {
+              ...(end?.tokenUsage !== undefined ? { tokenUsage: end.tokenUsage } : {}),
+              ...(end?.toolCallCount !== undefined ? { toolCallCount: end.toolCallCount } : {}),
+              ...(end?.turnCount !== undefined ? { turnCount: end.turnCount } : {}),
+              ...(end?.duration !== undefined ? { duration: end.duration } : {}),
+            },
+            ...(end?.error ? { level: 'ERROR' as const, statusMessage: end.error } : {}),
+          });
+          if (standaloneTrace) {
+            void lf.flushAsync().catch(() => {});
+          }
+        } catch { /* best-effort */ }
+      },
+    };
+  } catch {
+    return NOOP_SUBAGENT_SPAN;
+  }
+}
+
 /**
  * Dev-only smoke test: emit one trace with a child generation + tool span and
  * flush synchronously. Verifies the Tauri→Langfuse transport (Phase A step 1).

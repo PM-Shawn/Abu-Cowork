@@ -31,7 +31,8 @@ vi.mock('./tauriFetch', () => ({
 }));
 
 // Import after mock is registered.
-import { OpenAICompatibleAdapter } from './openai-compatible';
+import { OpenAICompatibleAdapter, toOpenAIToolChoice } from './openai-compatible';
+import type { ToolChoice } from './adapter';
 
 /** Build an SSE Response from a list of JSON-serializable chunks (plus [DONE]). */
 function makeSSEResponse(chunks: unknown[]): Response {
@@ -430,5 +431,56 @@ describe('OpenAICompatibleAdapter hang timeouts (abort on no progress)', () => {
 
     await vi.advanceTimersByTimeAsync(2_000);
     await expect(chatPromise).rejects.toMatchObject({ code: 'network_error', retryable: true });
+  });
+});
+
+describe('toOpenAIToolChoice (pure helper)', () => {
+  it('returns undefined when called with undefined', () => {
+    expect(toOpenAIToolChoice(undefined)).toBeUndefined();
+  });
+
+  it("maps { type: 'auto' } → 'auto'", () => {
+    const tc: ToolChoice = { type: 'auto' };
+    expect(toOpenAIToolChoice(tc)).toBe('auto');
+  });
+
+  it("maps { type: 'any' } → 'required'", () => {
+    const tc: ToolChoice = { type: 'any' };
+    expect(toOpenAIToolChoice(tc)).toBe('required');
+  });
+
+  it("maps { type: 'tool', name: 'X' } → { type: 'function', function: { name: 'X' } }", () => {
+    const tc: ToolChoice = { type: 'tool', name: 'X' };
+    expect(toOpenAIToolChoice(tc)).toEqual({ type: 'function', function: { name: 'X' } });
+  });
+});
+
+describe('OpenAICompatibleAdapter body wiring: tool_choice', () => {
+  beforeEach(() => {
+    mockFetch.mockReset();
+  });
+
+  it('sets body.tool_choice when toolChoice is provided and tools are present', async () => {
+    mockFetch.mockResolvedValueOnce(makeSSEResponse([
+      { choices: [{ delta: { content: 'ok' } }] },
+      { choices: [{ delta: {}, finish_reason: 'stop' }] },
+    ]));
+    const adapter = new OpenAICompatibleAdapter();
+    await adapter.chat([userMessage], makeOptions({ toolChoice: { type: 'any' } }), () => {});
+
+    const body = JSON.parse(mockFetch.mock.calls[0][1].body as string) as Record<string, unknown>;
+    expect(body.tool_choice).toBe('required');
+  });
+
+  it('omits body.tool_choice when toolChoice is not provided', async () => {
+    mockFetch.mockResolvedValueOnce(makeSSEResponse([
+      { choices: [{ delta: { content: 'ok' } }] },
+      { choices: [{ delta: {}, finish_reason: 'stop' }] },
+    ]));
+    const adapter = new OpenAICompatibleAdapter();
+    await adapter.chat([userMessage], makeOptions(), () => {});
+
+    const body = JSON.parse(mockFetch.mock.calls[0][1].body as string) as Record<string, unknown>;
+    expect(body.tool_choice).toBeUndefined();
   });
 });

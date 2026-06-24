@@ -68,8 +68,6 @@ import DisclaimerBanner from '@/components/common/DisclaimerBanner';
 import { pushDiagnosticSnapshot } from '@/utils/consoleDiagnostic';
 import { useDiagnosticStore } from '@/stores/diagnosticStore';
 import { useEnterpriseStore } from '@/stores/enterpriseStore';
-// Side-effect import: registers KbBrowser in the enterprise mounts registry
-import '@/components/enterprise/KbBrowser';
 // Side-effect import: registers policyEnforcer in the enterprise mounts registry
 import '@/core/enterprise/policy/enforcer';  // enforcer.ts — non-JSX, side-effect only
 import PolicyConfirmModal from '@/components/enterprise/PolicyConfirmModal';
@@ -413,25 +411,24 @@ function App() {
   }, []);
 
   // Enterprise mode: load persisted binding from AppData at startup.
-  // If bound, start the background heartbeat that refreshes config every 5 min.
+  // If bound, start the background heartbeat (protocol layer) and mount
+  // all enterprise business modules via the @enterprise-modules alias.
+  //
+  // In OSS builds, @enterprise-modules resolves to enterprise-modules-stub
+  // (noop). In Enterprise builds, it resolves to ../Abu-enterprise-modules/src
+  // which side-effect-registers KB / Skill / MCP / Me / Migration panels.
   useEffect(() => {
     let cancel = false
     ;(async () => {
       await useEnterpriseStore.getState().init().catch(e => console.warn('[enterprise] init failed', e))
       if (cancel) return
       if (useEnterpriseStore.getState().mode.kind !== 'personal') {
+        // Protocol layer: heartbeat stays in Abu-opensource (refreshes config / policies)
         const { startHeartbeat } = await import('@/core/enterprise/heartbeat')
         startHeartbeat()
-        const { startCatalogSync } = await import('@/core/enterprise/skill/catalog-sync')
-        startCatalogSync()
-        const { startMcpCatalogSync } = await import('@/core/enterprise/mcp/catalog-sync')
-        startMcpCatalogSync()
-        const { reloadEnterpriseMcpConnections } = await import('@/core/enterprise/mcp/loader')
-        reloadEnterpriseMcpConnections().catch((err: unknown) => console.warn('[enterprise-mcp] reload failed', err))
-        const { startKbCatalogSync } = await import('@/core/enterprise/kb/catalog-sync')
-        startKbCatalogSync()
-        const { registerEnterpriseKbTool } = await import('@/core/tools/enterprise-kb-query')
-        await registerEnterpriseKbTool()
+        // Business modules: routed through Vite alias (stub in OSS, real impl in Enterprise build)
+        const { initEnterpriseModules } = await import('@enterprise-modules')
+        await initEnterpriseModules()
       }
     })()
     return () => { cancel = true }

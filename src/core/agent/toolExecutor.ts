@@ -12,6 +12,7 @@ import type { ToolCall, ToolResultContent, ToolExecutionContext, ToolResult } fr
 import type { ConfirmationInfo, FilePermissionCallback } from '../tools/registry';
 import { executeAnyTool, toolResultToString } from '../tools/registry';
 import { processToolResult } from '../session/sessionMemory';
+import { evaluatePlanGate, getPlanMode } from './planMode';
 import { emitHook } from './lifecycleHooks';
 import type { PreToolCallEvent } from './lifecycleHooks';
 import { setComputerUseBatchMode, setSkipAutoScreenshot } from '../tools/builtins';
@@ -156,6 +157,21 @@ export async function executeToolBatch(params: ToolBatchParams): Promise<ToolBat
         return { id: tc.id, result: preEvent.blockReason, resultContent: undefined, error: true, duration: 0 };
       }
       return { id: tc.id, result: '[被 hook 拦截]', resultContent: undefined, error: false, duration: 0 };
+    }
+
+    // Plan mode gate: while a plan is pending approval ('planning'), block
+    // mutating tools; read-only tools and report_plan/ask_user_question pass.
+    // Read-only classification comes from planMode's explicit, security-reviewed
+    // allowlist (READONLY_FALLBACK_TOOLS). We deliberately do NOT derive it from
+    // isConcurrencySafe (a parallelism hint, not a security boundary), and
+    // ToolDefinition has no readOnly field — so toolReadOnly stays undefined.
+    const planGate = evaluatePlanGate({
+      toolName: tc.name,
+      toolReadOnly: undefined,
+      planMode: getPlanMode(conversationId),
+    });
+    if (!planGate.allow) {
+      return { id: tc.id, result: planGate.reason ?? '计划模式:已拦截写操作', resultContent: undefined, error: true, duration: 0 };
     }
 
     const effectiveInput = preEvent.modifiedInput ?? tc.input;

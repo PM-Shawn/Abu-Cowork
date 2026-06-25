@@ -6,6 +6,7 @@ import type { ExecutionStep } from '@/types/execution';
 import type { WorkflowStep } from '@/utils/workflowExtractor';
 import MessageBubble from './MessageBubble';
 import SkillProposalCard from './SkillProposalCard';
+import UserQuestionCard from './UserQuestionCard';
 import TaskBlock from './TaskBlock';
 import MarkdownRenderer from './MarkdownRenderer';
 import FileAttachment, { ImagePreviewCard, ImageThumbnail, isImageFile } from './FileAttachment';
@@ -573,6 +574,19 @@ export default function MessageGroup({ messages, isLastGroup: isLastGroupProp = 
                   toolCallId={tc.id}
                   card={tc.noticeCard!}
                   settledAction={tc.noticeCardAction}
+                />
+              );
+            })}
+
+            {activeConv?.id && allToolCalls.filter((tc) => tc.name === TOOL_NAMES.ASK_USER_QUESTION).map((tc) => {
+              const owningMsg = assistantMsgs.find((m) => m.toolCalls?.some((x) => x.id === tc.id));
+              if (!owningMsg) return null;
+              return (
+                <UserQuestionCard
+                  key={`uq-${tc.id}`}
+                  conversationId={activeConv.id}
+                  messageId={owningMsg.id}
+                  toolCall={tc}
                 />
               );
             })}

@@ -1587,6 +1587,18 @@ const zhCN: TranslationDict = {
     needsAuthorization: '需要用户授权才能访问',
   },
 
+  userQuestion: {
+    cardTitle: '请选择',
+    singleSelectHint: '单选',
+    multiSelectHint: '可多选',
+    otherOptionLabel: '其他…',
+    otherInputPlaceholder: '请输入自定义内容',
+    submitButton: '提交',
+    answeredLabel: '已作答',
+    submitDisabledHint: '请为每道题选择或填写答案',
+    cancelledLabel: '已取消',
+  },
+
   project: {
     sectionTitle: '项目',
     newTask: '新任务',

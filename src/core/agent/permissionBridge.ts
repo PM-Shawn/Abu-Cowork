@@ -5,6 +5,7 @@
  * Loop context is stored per-loopId in a Map to support concurrent agents.
  */
 import type { ConfirmationInfo, FilePermissionCallback } from '../tools/registry';
+import type { UserQuestionPayload, UserQuestionResult } from '../../types';
 import { usePermissionStore } from '../../stores/permissionStore';
 import type { PermissionDuration } from '../../stores/permissionStore';
 import { authorizeWorkspace } from '../tools/pathSafety';
@@ -383,5 +384,113 @@ export async function requestWorkspace(reason: string, conversationId?: string, 
 
     pendingWorkspaceRequest = { reason, conversationId: convId, suggestedPath, resolve: wrappedResolve };
     notifyWorkspaceRequestListeners();
+  });
+}
+
+// ── User Question Infrastructure ──
+
+export interface PendingUserQuestion {
+  id: string;              // = toolCallId
+  conversationId: string;
+  payload: UserQuestionPayload;
+  resolve: (r: UserQuestionResult | null) => void;
+}
+
+/** Queue — supports multiple conversations; isConcurrencySafe:false keeps it serial per conv */
+let userQuestionQueue: PendingUserQuestion[] = [];
+
+const userQuestionListeners = new Set<() => void>();
+
+/** 10 minutes — user may need time to read and decide before auto-cancel */
+const USER_QUESTION_TIMEOUT_MS = 10 * 60 * 1000;
+
+function notifyUserQuestionListeners() {
+  userQuestionListeners.forEach((l) => l());
+}
+
+/**
+ * Subscribe to user question state changes (for useSyncExternalStore)
+ */
+export function subscribeUserQuestion(callback: () => void): () => void {
+  userQuestionListeners.add(callback);
+  return () => userQuestionListeners.delete(callback);
+}
+
+/**
+ * Get the current pending user questions snapshot (for useSyncExternalStore).
+ * Returns a stable array reference until the queue mutates.
+ */
+export function getPendingUserQuestions(): PendingUserQuestion[] {
+  return userQuestionQueue;
+}
+
+/**
+ * Resolve a specific user question (from UserQuestionCard on submit, or timeout).
+ */
+export function resolveUserQuestion(id: string, r: UserQuestionResult | null): void {
+  const idx = userQuestionQueue.findIndex((q) => q.id === id);
+  if (idx === -1) return;
+  const item = userQuestionQueue[idx];
+  userQuestionQueue = userQuestionQueue.filter((_, i) => i !== idx);
+  item.resolve(r);
+  notifyUserQuestionListeners();
+}
+
+/**
+ * Drain all pending user questions — resolve(null) so blocked tools exit.
+ */
+export function drainUserQuestions(): void {
+  if (userQuestionQueue.length === 0) return;
+  const drained = userQuestionQueue;
+  userQuestionQueue = [];
+  for (const item of drained) {
+    item.resolve(null);
+  }
+  notifyUserQuestionListeners();
+}
+
+/**
+ * Drain user questions for a specific conversation (on conversation delete).
+ */
+export function drainUserQuestionsForConversation(conversationId: string): void {
+  const keep: PendingUserQuestion[] = [];
+  const drain: PendingUserQuestion[] = [];
+  for (const q of userQuestionQueue) {
+    if (q.conversationId === conversationId) {
+      drain.push(q);
+    } else {
+      keep.push(q);
+    }
+  }
+  if (drain.length === 0) return;
+  userQuestionQueue = keep;
+  for (const item of drain) {
+    item.resolve(null);
+  }
+  notifyUserQuestionListeners();
+}
+
+/**
+ * Request the user to answer a structured question set. Suspends until the
+ * user submits or it times out (10 min). Resolves to result, or null.
+ */
+export function requestUserQuestion(
+  id: string,
+  conversationId: string,
+  payload: UserQuestionPayload,
+): Promise<UserQuestionResult | null> {
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => {
+      console.warn('[permissionBridge] UserQuestion timed out, auto-cancelling', id);
+      resolveUserQuestion(id, null);
+    }, USER_QUESTION_TIMEOUT_MS);
+
+    const wrappedResolve = (r: UserQuestionResult | null) => {
+      clearTimeout(timer);
+      resolve(r);
+    };
+
+    userQuestionQueue = [...userQuestionQueue, { id, conversationId, payload, resolve: wrappedResolve }];
+    notifyUserQuestionListeners();
   });
 }

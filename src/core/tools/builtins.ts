@@ -39,6 +39,7 @@ import { skillManageTool } from './definitions/skillManageTool';
 import { toolSearchTool } from './definitions/toolSearchTool';
 
 // --- Computer tools ---
+import { askUserQuestionTool } from './definitions/askUserQuestionTool';
 import { computerTool } from './definitions/computerTools';
 export { setComputerUseBatchMode, setSkipAutoScreenshot } from './definitions/computerTools';
 
@@ -75,6 +76,7 @@ export function registerBuiltinTools(): void {
   toolRegistry.register(systemNotifyTool);
   toolRegistry.register(computerTool);
   toolRegistry.register(requestWorkspaceTool);
+  toolRegistry.register(askUserQuestionTool);
   toolRegistry.register(testSkillTriggerTool);
   toolRegistry.register(improveSkillDescriptionTool);
   toolRegistry.register(skillViewTool);

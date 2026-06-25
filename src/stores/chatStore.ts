@@ -1,7 +1,7 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import { immer } from 'zustand/middleware/immer';
-import type { Message, Conversation, AgentStatus, TokenUsage, ConversationStatus, ToolCallForContext, ToolResultContent, ToolCall, NoticeCardAction } from '../types';
+import type { Message, Conversation, AgentStatus, TokenUsage, ConversationStatus, ToolCallForContext, ToolResultContent, ToolCall, NoticeCardAction, UserQuestionResult } from '../types';
 import type { ExecutionStepSnapshot } from '../types/execution';
 import { useWorkspaceStore } from './workspaceStore';
 import { useProjectStore } from './projectStore';
@@ -273,6 +273,7 @@ interface ChatActions {
    * through to disk via replaceMessageById so reload keeps the state.
    */
   setToolCallNoticeCardAction: (convId: string, messageId: string, toolCallId: string, action: NoticeCardAction) => void;
+  setToolCallUserQuestionAnswers: (convId: string, messageId: string, toolCallId: string, answers: UserQuestionResult) => void;
   /**
    * Stash a post-loop proposal signal on the conversation so the next
    * turn's orchestrator can surface a one-shot <consider_sinking> nudge.
@@ -528,6 +529,10 @@ export const useChatStore = create<ChatStore>()(
               imStore.removeSession(key);
             }
           }
+        }).catch(() => {});
+        // Drain pending ask_user_question for this conversation on delete.
+        import('../core/agent/permissionBridge').then(({ drainUserQuestionsForConversation }) => {
+          drainUserQuestionsForConversation(id);
         }).catch(() => {});
         const wasActive = get().activeConversationId === id;
         // Compute the successor BEFORE the deletion mutates state, so the
@@ -785,6 +790,22 @@ export const useChatStore = create<ChatStore>()(
         });
         // Persist so the settled state survives reload. Mirrors the pattern
         // used by updateToolCall above.
+        const updatedMsg = get().conversations[convId]?.messages.find((m) => m.id === messageId);
+        if (updatedMsg) {
+          import('../core/session/conversationStorage').then(({ replaceMessageById }) => {
+            replaceMessageById(convId, updatedMsg).catch(() => {});
+          });
+        }
+      },
+
+      setToolCallUserQuestionAnswers: (convId, messageId, toolCallId, answers) => {
+        set((state) => {
+          const msg = state.conversations[convId]?.messages.find((m) => m.id === messageId);
+          const tc: ToolCall | undefined = msg?.toolCalls?.find((t) => t.id === toolCallId);
+          if (tc) {
+            tc.userQuestionAnswers = answers;
+          }
+        });
         const updatedMsg = get().conversations[convId]?.messages.find((m) => m.id === messageId);
         if (updatedMsg) {
           import('../core/session/conversationStorage').then(({ replaceMessageById }) => {

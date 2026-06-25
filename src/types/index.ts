@@ -99,6 +99,35 @@ export interface InteractiveNoticeCard {
   skillDeleted?: SkillDeletedPayload;
 }
 
+// --- ask_user_question — interactive choice cards ---
+
+export interface UserQuestionOption {
+  label: string;
+  description?: string;
+}
+
+export interface UserQuestion {
+  question: string;
+  header: string;                // ≤12 chars short label
+  multiSelect: boolean;
+  options: UserQuestionOption[]; // 2-4 options
+}
+
+export interface UserQuestionPayload {
+  questions: UserQuestion[];     // 1-4 questions
+}
+
+/** Single-question answer: selected labels, or custom free text (Other…) */
+export interface UserQuestionAnswerItem {
+  header: string;
+  question: string;
+  selected: string[];            // single-select length=1; multi-select ≥1; other=custom text
+}
+
+export interface UserQuestionResult {
+  answers: UserQuestionAnswerItem[];
+}
+
 export interface ToolCall {
   id: string;
   name: string;
@@ -125,6 +154,12 @@ export interface ToolCall {
    * cards until the user clicks a button.
    */
   noticeCardAction?: NoticeCardAction;
+  /**
+   * User's answers to an ask_user_question tool call. Set once the user
+   * submits — drives settled read-only rendering. undefined = still
+   * interactive (waiting for the user to answer).
+   */
+  userQuestionAnswers?: UserQuestionResult;
 }
 
 // Multimodal content types for messages
@@ -314,6 +349,8 @@ export interface ToolExecutionContext {
   loopId?: string;
   /** Conversation ID — tools should prefer this over activeConversationId */
   conversationId?: string;
+  /** Tool call ID — injected by toolExecutor so the tool can locate itself */
+  toolCallId?: string;
 }
 
 export interface ToolDefinition {

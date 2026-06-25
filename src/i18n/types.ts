@@ -1664,6 +1664,19 @@ export interface TranslationDict {
     needsAuthorization: string;
   };
 
+  // ask_user_question — interactive choice card
+  userQuestion: {
+    cardTitle: string;
+    singleSelectHint: string;
+    multiSelectHint: string;
+    otherOptionLabel: string;
+    otherInputPlaceholder: string;
+    submitButton: string;
+    answeredLabel: string;
+    submitDisabledHint: string;
+    cancelledLabel: string;
+  };
+
   // Projects
   project: {
     sectionTitle: string;

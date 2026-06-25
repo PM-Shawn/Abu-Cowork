@@ -1635,6 +1635,18 @@ const enUS: TranslationDict = {
     needsAuthorization: 'User authorization required to access',
   },
 
+  userQuestion: {
+    cardTitle: 'Please choose',
+    singleSelectHint: 'Single choice',
+    multiSelectHint: 'Multiple choices allowed',
+    otherOptionLabel: 'Other…',
+    otherInputPlaceholder: 'Enter custom answer',
+    submitButton: 'Submit',
+    answeredLabel: 'Answered',
+    submitDisabledHint: 'Please answer all questions before submitting',
+    cancelledLabel: 'Cancelled',
+  },
+
   project: {
     sectionTitle: 'Projects',
     newTask: 'New Task',

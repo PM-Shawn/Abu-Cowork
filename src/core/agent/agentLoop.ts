@@ -149,6 +149,7 @@ import {
   drainConfirmationQueue,
   drainFilePermissionQueue,
   drainWorkspaceRequest,
+  drainUserQuestions,
 } from './permissionBridge';
 
 /** Persist execution steps onto the last assistant message for the given loop, then evict from memory */
@@ -1816,6 +1817,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
         drainConfirmationQueue();
         drainFilePermissionQueue();
         drainWorkspaceRequest();
+        drainUserQuestions();
 
         chatStore.cancelStreaming(conversationId);
         chatStore.clearAbortController(conversationId);

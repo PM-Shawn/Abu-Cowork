@@ -31,7 +31,6 @@ import type { SubagentProgressEvent } from './subagentLoop';
 import { createSubagentController } from './subagentAbort';
 import { drainQueuedInputs, clearInputQueue } from './userInputQueue';
 import { snapshotExecutionSteps } from './executionSnapshot';
-import { hasPendingAsyncSubAgents } from './asyncSubAgentTracker';
 import { emitHook } from './lifecycleHooks';
 import { getI18n, format } from '../../i18n';
 import { clearAllSkillHooks } from '../tools/builtins';
@@ -45,7 +44,6 @@ import { resolveCapabilities, resolveEffectiveContextWindow, computeReasoningPar
 import { TOOL_NAMES } from '../tools/toolNames';
 import { prefetchTools } from '../tools/toolPrefetch';
 import { classifyTools, buildDeferredToolsSummary } from '../tools/toolSearch';
-import { getRunningAgents } from './backgroundAgentRegistry';
 import { hasQueuedInputs } from './userInputQueue';
 import { createLogger } from '../logging/logger';
 import { reportError } from '@/utils/consoleError';
@@ -156,16 +154,9 @@ export function persistExecutionSnapshot(conversationId: string, loopId: string)
   const exec = store.getExecutionByLoopId(loopId);
   if (!exec || exec.steps.length === 0) return;
 
-  // Always save the latest snapshot (captures whatever child steps exist right now)
+  // Save the latest snapshot, then evict from memory.
   useChatStore.getState().setExecutionStepsSnapshot(conversationId, loopId, snapshotExecutionSteps(exec.steps));
-
-  // Delay eviction until all async sub-agents for this loop have finished.
-  // Evicting early would remove the execution from the store before sub-agents
-  // can add their child steps via addChildStepToDelegate, making those steps
-  // invisible in the expanded TaskBlock after the main loop ends.
-  if (!hasPendingAsyncSubAgents(loopId)) {
-    store.evictExecution(exec.id);
-  }
+  store.evictExecution(exec.id);
 }
 
 /**
@@ -1652,20 +1643,6 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
           if (msg) msg.isStreaming = false;
         });
         continueLoop = true;
-      }
-
-      // If there are running background agents, wait for them to complete before ending
-      if (!continueLoop && getRunningAgents().length > 0) {
-        logger.info('Waiting for background agents to complete', { count: getRunningAgents().length });
-        chatStore.setAgentStatus('thinking');
-        // Poll until all background agents finish or user aborts
-        while (getRunningAgents().length > 0 && !abortController.signal.aborted) {
-          await new Promise(r => setTimeout(r, 1000));
-        }
-        // Background agents injected results via userInputQueue — continue loop to process them
-        if (hasQueuedInputs(conversationId) && !abortController.signal.aborted) {
-          continueLoop = true;
-        }
       }
 
       if (!continueLoop) {

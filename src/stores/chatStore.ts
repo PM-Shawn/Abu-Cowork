@@ -9,8 +9,6 @@ import { useTaskExecutionStore } from './taskExecutionStore';
 import { clearTodos } from '../core/agent/todoManager';
 import { clearInputQueue } from '../core/agent/userInputQueue';
 import { clearSkillHooksByConversation } from '../core/tools/builtins';
-import { removeAgentsByConversation, setConversationLookup } from '../core/agent/backgroundAgentRegistry';
-import { cancelSubagent } from '../core/agent/subagentAbort';
 import { setComputerUseActive } from '../core/agent/computerUseStatus';
 import type { ConversationMeta } from '../core/session/conversationStorage';
 import type { ShareBundle } from '../core/session/shareBundle';
@@ -81,11 +79,6 @@ function buildImportedFromShareBundle(bundle: ShareBundle): { conv: Conversation
   return { conv, meta };
 }
 
-// Wire up conversation lookup for backgroundAgentRegistry (avoids circular import)
-// This runs once when chatStore module is loaded, before any agent completion.
-setTimeout(() => {
-  setConversationLookup(() => useChatStore.getState().conversations);
-}, 0);
 
 /** Default title for new conversations — used for auto-title detection */
 export const DEFAULT_CONV_TITLE = '新任务';
@@ -501,11 +494,6 @@ export const useChatStore = create<ChatStore>()(
         clearInputQueue(id);
         clearSkillHooksByConversation(id);
         useTaskExecutionStore.getState().clearConversation(id);
-        // Cancel and remove all background agents for this conversation
-        const runningSubagentIds = removeAgentsByConversation(id);
-        for (const subId of runningSubagentIds) {
-          cancelSubagent(subId);
-        }
         // Clean up disk files (JSONL messages, tool results, outputs)
         import('../core/session/conversationStorage').then(({ deleteConversationFiles, removeIndexEntry }) => {
           deleteConversationFiles(id).catch(() => {});

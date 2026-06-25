@@ -9,7 +9,23 @@ export interface EnterpriseBinding {
   userEmail: string
   deptId: string | null
   roleId: string | null
-  accessToken: string                   // 90d bearer (from device flow)
+  /**
+   * Short-lived access token (JWT, 15 min TTL in new bindings).
+   * Legacy bindings created before O4 may carry a 90-day opaque token here;
+   * those will NOT have a `refreshToken` field and cannot be auto-refreshed.
+   */
+  accessToken: string
+  /**
+   * ISO 8601 expiry of the current access token.
+   * Absent in legacy (pre-O4) bindings — those are tolerated but cannot be proactively refreshed.
+   */
+  accessExpiresAt?: string
+  /**
+   * Opaque refresh token (rotation-based, 14-day idle / 90-day absolute TTL).
+   * Absent in legacy (pre-O4) bindings created with the old 90-day single-token flow.
+   * When absent: auto-refresh is disabled; the binding is used as-is until it naturally expires.
+   */
+  refreshToken?: string
   boundAt: string                       // ISO 8601
   // === Plan 2.C: LLM gateway ===
   llmEndpoint: string | null            // e.g. 'https://abu.acme.com/litellm'

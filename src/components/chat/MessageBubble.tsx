@@ -8,6 +8,7 @@ import { sendFeedback } from '@/utils/consoleFeedback';
 import { cn } from '@/lib/utils';
 import { usePreviewStore } from '@/stores/previewStore';
 import { useTodosStore } from '@/stores/todosStore';
+import { SHOW_TODOS_INBOX } from '@/config/featureGates';
 import { runAgentLoop } from '@/core/agent/agentLoop';
 import { useI18n } from '@/i18n';
 import { getBaseName, loadLocalImage } from '@/utils/pathUtils';
@@ -318,7 +319,7 @@ function MessageActions({ message, onEdit, onDelete, onRegenerate, isUser, conve
       )}
 
       {/* Add to Todos button - only for assistant messages */}
-      {!isUser && (
+      {SHOW_TODOS_INBOX && !isUser && (
         <button
           onClick={() => {
             const text = getTextContent(message.content).slice(0, 60).trim();

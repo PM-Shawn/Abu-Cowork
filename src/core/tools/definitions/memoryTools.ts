@@ -34,6 +34,34 @@ export function interpretPlanApproval(result: UserQuestionResult | null): boolea
   return result.answers[0]?.selected.includes(PLAN_APPROVE_LABEL) ?? false;
 }
 
+/**
+ * High-risk operation keywords (heuristic). report_plan steps are natural-language
+ * and user-facing (no tool names), so we match destructive / mutating / outbound
+ * verbs to decide whether a plan needs explicit approval before execution. Tunable;
+ * lean inclusive for safety — a borderline approval prompt is cheaper than an
+ * unreviewed destructive run. Read-only verbs (查看/搜索/分析/list/read…) are absent
+ * on purpose so pure-research plans never trigger.
+ */
+export const PLAN_RISK_KEYWORDS: readonly string[] = [
+  // zh — destructive / mutating
+  '删除', '删掉', '移动', '移到', '覆盖', '替换', '重命名', '改名', '清空', '清除',
+  '卸载', '格式化', '重置', '丢弃', '抹除',
+  // zh — outbound / execution
+  '发送', '上传', '推送', '安装', '执行命令', '运行命令',
+  // en (matched lowercase)
+  'delete', 'remove', 'move', 'overwrite', 'replace', 'rename', 'clear',
+  'uninstall', 'format', 'reset', 'discard', 'erase', 'send', 'upload', 'push', 'install',
+];
+
+/** True if any plan step mentions a high-risk operation (heuristic — see PLAN_RISK_KEYWORDS). */
+export function planHasRiskySteps(steps: string[]): boolean {
+  if (!Array.isArray(steps)) return false;
+  return steps.some((s) => {
+    const text = String(s).toLowerCase();
+    return PLAN_RISK_KEYWORDS.some((kw) => text.includes(kw.toLowerCase()));
+  });
+}
+
 export const reportPlanTool: ToolDefinition = {
   name: TOOL_NAMES.REPORT_PLAN,
   description: '上报任务执行计划。在开始执行任何任务前必须先调用此工具，告知用户你将要执行的步骤。步骤描述要用用户能理解的业务语言，不要提及工具名称。',
@@ -50,25 +78,32 @@ export const reportPlanTool: ToolDefinition = {
   },
   execute: async (input, context) => {
     const steps = input.steps as string[];
+    const hasSteps = Array.isArray(steps) && steps.length > 0;
 
-    // Plan-mode approval gate (B1): while the conversation is in 'planning',
-    // presenting a plan requires user approval before writes are unlocked.
-    // Reuses the user-question UI; approve → 'approved' (the tool gate then allows
-    // writes), reject → stay 'planning' so the agent revises and re-submits.
+    // Plan approval (B1, auto-trigger): when a plan contains high-risk steps
+    // (move/delete/overwrite/send/install…), require user approval BEFORE writes
+    // are unlocked — no manual toggle needed; safe/read-only plans pass straight
+    // through unchanged. Also honors an explicitly-set 'planning' mode (e.g. a
+    // future manual toggle). On the gate: setPlanMode('planning') makes the tool
+    // gate (toolExecutor) block writes until the user decides. Approve →
+    // 'approved' (writes unlocked); reject/timeout → stay 'planning' (read-only)
+    // so the agent revises and re-submits report_plan.
     const convId = context?.conversationId;
-    if (convId && context?.toolCallId && getPlanMode(convId) === 'planning' && Array.isArray(steps) && steps.length > 0) {
+    const needsApproval = hasSteps && (planHasRiskySteps(steps) || (convId ? getPlanMode(convId) === 'planning' : false));
+    if (convId && context?.toolCallId && needsApproval) {
+      setPlanMode(convId, 'planning');
       const result = await requestUserQuestion(context.toolCallId, convId, buildPlanApprovalPayload(steps));
       if (interpretPlanApproval(result)) {
         setPlanMode(convId, 'approved');
         return '用户已批准计划，现在可以开始执行。';
       }
       if (result === null) {
-        return '计划审批超时或已取消，仍处于计划模式（只读）。可重新提交计划。';
+        return '计划审批超时或已取消，处于计划模式（只读）。可修改后重新提交计划。';
       }
-      return '用户未批准当前计划，请根据反馈修改后重新调用 report_plan。仍处于计划模式（只读）。';
+      return '用户未批准当前计划，请根据反馈修改后重新调用 report_plan。当前为计划模式（只读）。';
     }
 
-    if (!steps || steps.length === 0) {
+    if (!hasSteps) {
       return '已记录执行计划';
     }
     return `已记录执行计划：${steps.length}个步骤`;

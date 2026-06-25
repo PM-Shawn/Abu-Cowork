@@ -3,7 +3,8 @@ import { useChatStore, useActiveConversation } from '@/stores/chatStore';
 import type { Message, ImageAttachment } from '@/types';
 import { useAutoScroll } from '@/hooks/useAutoScroll';
 import { runAgentLoop } from '@/core/agent/agentLoop';
-import { getPendingCommandConfirmation, resolveCommandConfirmation, subscribeToCommandConfirmation, getPendingFilePermission, resolveFilePermission, subscribeToFilePermission, getPendingWorkspaceRequest, resolveWorkspaceRequest, subscribeToWorkspaceRequest } from '@/core/agent/permissionBridge';
+import { getPendingCommandConfirmation, resolveCommandConfirmation, subscribeToCommandConfirmation, getPendingFilePermission, resolveFilePermission, subscribeToFilePermission, getPendingWorkspaceRequest, resolveWorkspaceRequest, subscribeToWorkspaceRequest, getPendingUserQuestions, subscribeUserQuestion } from '@/core/agent/permissionBridge';
+import { TOOL_NAMES } from '@/core/tools/toolNames';
 import { useSettingsStore, getActiveApiKey, providerRequiresApiKey } from '@/stores/settingsStore';
 import { useWorkspaceStore } from '@/stores/workspaceStore';
 import type { PermissionDuration } from '@/stores/permissionStore';
@@ -12,6 +13,7 @@ import { useI18n } from '@/i18n';
 import MessageGroup from './MessageGroup';
 import ChatInput from './ChatInput';
 import BackgroundAgents from './BackgroundAgents';
+import UserQuestionDock from './UserQuestionDock';
 import ScenarioGuide from './ScenarioGuide';
 import { agentRegistry } from '@/core/agent/registry';
 import PermissionDialog from '@/components/common/PermissionDialog';
@@ -107,6 +109,13 @@ export default function ChatView() {
   const workspaceRequest = useSyncExternalStore(
     subscribeToWorkspaceRequest,
     getPendingWorkspaceRequest
+  );
+
+  // Subscribe to pending ask_user_question entries — the docked card above
+  // the composer renders the first one belonging to the active conversation.
+  const pendingUserQuestions = useSyncExternalStore(
+    subscribeUserQuestion,
+    getPendingUserQuestions
   );
 
   const handleCommandConfirm = () => {
@@ -447,6 +456,26 @@ export default function ChatView() {
       <div className="shrink-0 px-6 md:px-10 pb-4 pt-1.5 bg-[var(--abu-bg-base)]">
         <div className="max-w-4xl mx-auto flex flex-col gap-1.5">
           <BackgroundAgents />
+          {/* Docked ask_user_question card — sits flush above the composer,
+              same width. Render the first pending question that belongs to the
+              active conversation and whose owning message can be located. */}
+          {(() => {
+            const pending = pendingUserQuestions.find((pq) => pq.conversationId === activeConvId);
+            if (!pending) return null;
+            const owningMsg = messages.find((m) =>
+              m.toolCalls?.some((tc) => tc.id === pending.id && tc.name === TOOL_NAMES.ASK_USER_QUESTION),
+            );
+            if (!owningMsg) return null;
+            return (
+              <UserQuestionDock
+                key={pending.id}
+                conversationId={pending.conversationId}
+                messageId={owningMsg.id}
+                toolCallId={pending.id}
+                payload={pending.payload}
+              />
+            );
+          })()}
           <ChatInput variant="chat" onSend={handleSend} />
           <div className="flex items-center justify-center gap-3 mt-1.5">
             <UsageChip conversationId={activeConv.id} />

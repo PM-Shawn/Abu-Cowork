@@ -13,8 +13,8 @@ function makeCtx(overrides: Partial<PrefetchContext> = {}): PrefetchContext {
 
 describe('toolPrefetch', () => {
   describe('CORE_TOOL_NAMES', () => {
-    it('should contain 13 core tools', () => {
-      expect(CORE_TOOL_NAMES.size).toBe(13);
+    it('should contain 14 core tools', () => {
+      expect(CORE_TOOL_NAMES.size).toBe(14);
     });
 
     it('should include essential tools', () => {
@@ -22,6 +22,9 @@ describe('toolPrefetch', () => {
       expect(CORE_TOOL_NAMES.has('write_file')).toBe(true);
       expect(CORE_TOOL_NAMES.has('run_command')).toBe(true);
       expect(CORE_TOOL_NAMES.has('web_search')).toBe(true);
+      // ask_user_question is core (always loaded), matching Claude — so the
+      // model never has to tool_search before showing a choice card.
+      expect(CORE_TOOL_NAMES.has('ask_user_question')).toBe(true);
     });
 
     it('should not include conditional tools', () => {

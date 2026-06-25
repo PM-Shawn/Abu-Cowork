@@ -13,8 +13,8 @@ function makeCtx(overrides: Partial<PrefetchContext> = {}): PrefetchContext {
 
 describe('toolPrefetch', () => {
   describe('CORE_TOOL_NAMES', () => {
-    it('should contain 13 core tools', () => {
-      expect(CORE_TOOL_NAMES.size).toBe(13);
+    it('should contain 14 core tools', () => {
+      expect(CORE_TOOL_NAMES.size).toBe(14);
     });
 
     it('should include essential tools', () => {
@@ -22,6 +22,9 @@ describe('toolPrefetch', () => {
       expect(CORE_TOOL_NAMES.has('write_file')).toBe(true);
       expect(CORE_TOOL_NAMES.has('run_command')).toBe(true);
       expect(CORE_TOOL_NAMES.has('web_search')).toBe(true);
+      // ask_user_question is core (always loaded), matching Claude — so the
+      // model never has to tool_search before showing a choice card.
+      expect(CORE_TOOL_NAMES.has('ask_user_question')).toBe(true);
     });
 
     it('should not include conditional tools', () => {
@@ -130,6 +133,25 @@ describe('toolPrefetch', () => {
     it('should match case-insensitively', () => {
       const result = prefetchTools(makeCtx({ userInput: 'DALL-E image generation' }));
       expect(result).toContain('generate_image');
+    });
+
+    it('should promote run_agent_batch for Chinese parallel keywords', () => {
+      expect(prefetchTools(makeCtx({ userInput: '并行处理这三个任务' }))).toContain('run_agent_batch');
+      expect(prefetchTools(makeCtx({ userInput: '同时执行所有子任务' }))).toContain('run_agent_batch');
+      expect(prefetchTools(makeCtx({ userInput: '分别处理每个文件' }))).toContain('run_agent_batch');
+      expect(prefetchTools(makeCtx({ userInput: '各自独立执行' }))).toContain('run_agent_batch');
+      expect(prefetchTools(makeCtx({ userInput: '批量处理文档' }))).toContain('run_agent_batch');
+    });
+
+    it('should promote run_agent_batch for English parallel keywords', () => {
+      expect(prefetchTools(makeCtx({ userInput: 'run these in parallel' }))).toContain('run_agent_batch');
+      expect(prefetchTools(makeCtx({ userInput: 'process as a batch' }))).toContain('run_agent_batch');
+      expect(prefetchTools(makeCtx({ userInput: 'fan out to multiple agents' }))).toContain('run_agent_batch');
+      expect(prefetchTools(makeCtx({ userInput: 'fan-out across workers' }))).toContain('run_agent_batch');
+    });
+
+    it('should NOT promote run_agent_batch for unrelated input', () => {
+      expect(prefetchTools(makeCtx({ userInput: '帮我写一份报告' }))).not.toContain('run_agent_batch');
     });
   });
 });

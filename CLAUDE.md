@@ -67,6 +67,17 @@ Inspired by Claude Code's Cowork mode. Features multi-agent architecture with ex
 - 🔴 **绝不用带 `.env.local` 的本机环境打“对外分发”包**：`VITE_*` 会在 build 时编进前端 bundle，任何人都能从安装包里扒出 key。官方发布只走 CI（无 `.env.local`）才安全；本机 `npm run tauri build` 出的包仅供自用，不可分发。
 - 真要做面向终端用户的线上遥测（Phase B）必须：**opt-in + 服务端中转（secret key 不下发客户端）+ 脱敏**。
 
+### Enterprise 代码隔离 — 防泄露红线（open-core）
+
+本仓库是**公开仓库**（`github.com/PM-Shawn/Abu-Cowork`）。企业版走 open-core：核心开源，企业闭源能力在**单独的私有仓库** `Abu-enterprise-modules`（sibling 目录），构建期由 `vite.config.ts` 按 `ABU_BUILD_TARGET` 把 `@enterprise-modules` 别名切到私有仓库（enterprise）或 `src/enterprise-modules-stub`（oss）。完整说明见 [`docs/ENTERPRISE-BUILD.md`](./docs/ENTERPRISE-BUILD.md)。
+
+加企业能力时**必须劈成两半**：
+
+- ✅ **公开仓库（本仓）只放「形状」**：扩展点接口 + 空插槽 + 默认 null 实现 + 协议层。即 `src/core/enterprise/mounts-registry.ts` 的 `EnterpriseMounts` slot、宿主 UI 里的 `<MountPoint slot="x"/>`、以及已明确属 OSS 的协议层（device-flow bind、brand badge、LLM gateway 路由、policy confirm modal / matcher、企业模式状态显示）。
+- 🔒 **私有仓库 `Abu-enterprise-modules` 才放「肉」**：真正的闭源实现（KB Browser/同步、skill-installer、mcp-installer、migration wizard、`kb_query` agent tool、企业策略实现、不想公开的服务端契约），在其 `initEnterpriseModules()` 里 `registerEnterpriseMount('x', Impl)` 注册进插槽。
+- 🔴 **绝不能因为本仓 `src/core/enterprise/` 已有文件，就把新的闭源实现也塞进去**——现存那些是协议层（✅ OSS），不是先例。判据：含商业逻辑 / 机密算法 / 付费功能本体 / 服务端契约 → 私有仓库；只是接口 / 插槽 / 默认 null → 公开仓库。拿不准就停下问，别默认往公开仓库写。
+- 🔴 **`npm run build` / `npm test` 全绿 ≠ 没泄露**——这是保密违规，工具链抓不到。一旦闭源逻辑进了本仓 commit 并 push，git 历史里**洗不掉**。`npm run dev` 看不到企业功能是正常的；要带企业功能开发用 `npm run dev:enterprise`（需私有仓库在 sibling 位置）。
+
 ## Key Commands
 - `npm run dev` — Start Vite dev server (frontend only)
 - ⚠️ **`npm run tauri:dev`** (注意冒号) — Start Tauri 桌面端,**走 dev 隔离配置** (`com.abu.app.dev`),数据写到 `~/Library/Application Support/com.abu.app.dev/`,跟正式安装的 Abu 完全隔离

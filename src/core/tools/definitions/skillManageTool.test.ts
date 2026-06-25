@@ -14,6 +14,32 @@ vi.mock('../../../utils/atomicFs', () => ({
   cleanupOldBackups: vi.fn().mockResolvedValue(0),
 }));
 
+// ── Stub the heavy modules that createAction dynamically-imports ───────────
+// createAction's write paths do `await import(...)` of discoveryStore (→
+// agentRegistry + yaml + 8 built-in agents), skillDraftsStore (→ chatStore →
+// builtins/todoManager/userInputQueue) and notifications (→ notice bus). Cold-
+// loading that chain takes ~2.4s alone and, under full-suite parallel load,
+// regularly blows the 5s test timeout for the FIRST test to hit a write path
+// (flaky 2–9 failures). None of the 36 tests assert on refresh()/notifications
+// — they only check result.path/status and the atomicFs write mocks — so stub
+// them out to keep the cold-import cost out of the timing-sensitive path.
+vi.mock('../../../stores/discoveryStore', () => ({
+  useDiscoveryStore: {
+    getState: () => ({ refresh: vi.fn().mockResolvedValue(undefined) }),
+  },
+}));
+vi.mock('../../../stores/skillDraftsStore', () => ({
+  useSkillDraftsStore: {
+    getState: () => ({ refresh: vi.fn().mockResolvedValue(undefined) }),
+    setState: vi.fn(),
+  },
+  startDraftsSweeper: vi.fn(),
+  stopDraftsSweeper: vi.fn(),
+}));
+vi.mock('../../../utils/notifications', () => ({
+  notifyDraftProposal: vi.fn().mockResolvedValue(undefined),
+}));
+
 // Import the mocked versions so tests can assert on them
 import { atomicWrite, atomicWriteWithBackup, restoreFromBackup } from '../../../utils/atomicFs';
 

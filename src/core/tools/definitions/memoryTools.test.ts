@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { updateMemoryTool } from './memoryTools';
+import { updateMemoryTool, reportPlanTool, buildPlanApprovalPayload, interpretPlanApproval, planHasRiskySteps, PLAN_APPROVE_LABEL, PLAN_REJECT_LABEL } from './memoryTools';
 
 // ──────────────────────────────────────────────────────────────────────────
 // Mocks: lazy-imported in updateMemoryTool.execute, so vi.mock the real paths
@@ -39,8 +39,22 @@ vi.mock('../../../stores/workspaceStore', () => ({
   },
 }));
 
+const mockGetPlanMode = vi.fn();
+const mockSetPlanMode = vi.fn();
+const mockRequestUserQuestion = vi.fn();
+
+vi.mock('../../agent/planMode', () => ({
+  getPlanMode: (...a: unknown[]) => mockGetPlanMode(...a),
+  setPlanMode: (...a: unknown[]) => mockSetPlanMode(...a),
+}));
+
+vi.mock('../../agent/permissionBridge', () => ({
+  requestUserQuestion: (...a: unknown[]) => mockRequestUserQuestion(...a),
+}));
+
 beforeEach(() => {
   vi.clearAllMocks();
+  mockGetPlanMode.mockReturnValue('off');
   mockWriteMemory.mockResolvedValue('newfile.md');
   mockDeleteMemory.mockResolvedValue(undefined);
   mockClearAllMemories.mockResolvedValue(0);
@@ -226,5 +240,110 @@ describe('updateMemoryTool — clear', () => {
     expect(mockClearAllMemories).toHaveBeenCalledWith('/test/workspace');
     expect(result).toContain('已清空');
     expect(result).toContain('7');
+  });
+});
+
+describe('reportPlanTool — plan-mode approval (B1)', () => {
+  describe('buildPlanApprovalPayload', () => {
+    it('builds a single approve/reject question listing the steps', () => {
+      const payload = buildPlanApprovalPayload(['扫描文件', '移动发票']);
+      expect(payload.questions).toHaveLength(1);
+      const q = payload.questions[0];
+      expect(q.header).toBe('计划审批');
+      expect(q.multiSelect).toBe(false);
+      expect(q.options.map((o) => o.label)).toEqual([PLAN_APPROVE_LABEL, PLAN_REJECT_LABEL]);
+      expect(q.question).toContain('扫描文件');
+      expect(q.question).toContain('移动发票');
+      expect(q.question).toContain('是否批准');
+    });
+  });
+
+  describe('interpretPlanApproval', () => {
+    it('returns false for null (timeout/cancel)', () => {
+      expect(interpretPlanApproval(null)).toBe(false);
+    });
+    it('returns true when the approve option is selected', () => {
+      expect(interpretPlanApproval({ answers: [{ header: '计划审批', question: 'q', selected: [PLAN_APPROVE_LABEL] }] })).toBe(true);
+    });
+    it('returns false when the reject option is selected', () => {
+      expect(interpretPlanApproval({ answers: [{ header: '计划审批', question: 'q', selected: [PLAN_REJECT_LABEL] }] })).toBe(false);
+    });
+    it('returns false for empty answers', () => {
+      expect(interpretPlanApproval({ answers: [] })).toBe(false);
+    });
+  });
+
+  describe('planHasRiskySteps', () => {
+    it('flags destructive steps (zh)', () => {
+      expect(planHasRiskySteps(['扫描桌面文件', '删除重复文件'])).toBe(true);
+      expect(planHasRiskySteps(['移动发票到文件夹'])).toBe(true);
+    });
+    it('flags destructive/outbound steps (en, case-insensitive)', () => {
+      expect(planHasRiskySteps(['Scan files', 'DELETE duplicates'])).toBe(true);
+      expect(planHasRiskySteps(['upload report to server'])).toBe(true);
+    });
+    it('does not flag pure read-only plans', () => {
+      expect(planHasRiskySteps(['查看文件列表', '分析数据', '总结结果'])).toBe(false);
+      expect(planHasRiskySteps(['search the web', 'read the file'])).toBe(false);
+    });
+    it('returns false for empty/invalid input', () => {
+      expect(planHasRiskySteps([])).toBe(false);
+      expect(planHasRiskySteps(undefined as unknown as string[])).toBe(false);
+    });
+  });
+
+  describe('execute gating', () => {
+    const ctx = { conversationId: 'c1', toolCallId: 't1' };
+    const input = { steps: ['步骤一', '步骤二'] };
+
+    it('does not request approval for a safe plan when mode is off', async () => {
+      mockGetPlanMode.mockReturnValue('off');
+      const result = await reportPlanTool.execute(input, ctx);
+      expect(mockRequestUserQuestion).not.toHaveBeenCalled();
+      expect(mockSetPlanMode).not.toHaveBeenCalled();
+      expect(result).toContain('已记录执行计划');
+    });
+
+    it('auto-triggers approval for a RISKY plan even when mode is off', async () => {
+      mockGetPlanMode.mockReturnValue('off');
+      mockRequestUserQuestion.mockResolvedValue({ answers: [{ header: '计划审批', question: 'q', selected: [PLAN_APPROVE_LABEL] }] });
+      const result = await reportPlanTool.execute({ steps: ['扫描桌面文件', '删除重复文件'] }, ctx);
+      expect(mockSetPlanMode).toHaveBeenCalledWith('c1', 'planning');
+      expect(mockRequestUserQuestion).toHaveBeenCalledOnce();
+      expect(mockSetPlanMode).toHaveBeenCalledWith('c1', 'approved');
+      expect(result).toContain('已批准');
+    });
+
+    it('approves: sets mode to approved and reports approval', async () => {
+      mockGetPlanMode.mockReturnValue('planning');
+      mockRequestUserQuestion.mockResolvedValue({ answers: [{ header: '计划审批', question: 'q', selected: [PLAN_APPROVE_LABEL] }] });
+      const result = await reportPlanTool.execute(input, ctx);
+      expect(mockRequestUserQuestion).toHaveBeenCalledWith('t1', 'c1', expect.objectContaining({ questions: expect.any(Array) }));
+      expect(mockSetPlanMode).toHaveBeenCalledWith('c1', 'approved');
+      expect(result).toContain('已批准');
+    });
+
+    it('rejects: stays in planning, does not approve', async () => {
+      mockGetPlanMode.mockReturnValue('planning');
+      mockRequestUserQuestion.mockResolvedValue({ answers: [{ header: '计划审批', question: 'q', selected: [PLAN_REJECT_LABEL] }] });
+      const result = await reportPlanTool.execute(input, ctx);
+      expect(mockSetPlanMode).not.toHaveBeenCalledWith('c1', 'approved');
+      expect(result).toContain('未批准');
+    });
+
+    it('null result (timeout): stays read-only, does not approve', async () => {
+      mockGetPlanMode.mockReturnValue('planning');
+      mockRequestUserQuestion.mockResolvedValue(null);
+      const result = await reportPlanTool.execute(input, ctx);
+      expect(mockSetPlanMode).not.toHaveBeenCalledWith('c1', 'approved');
+      expect(result).toContain('超时');
+    });
+
+    it('skips approval when toolCallId is absent', async () => {
+      mockGetPlanMode.mockReturnValue('planning');
+      const result = await reportPlanTool.execute(input, { conversationId: 'c1' });
+      expect(mockRequestUserQuestion).not.toHaveBeenCalled();
+      expect(result).toContain('已记录执行计划');
+    });
   });
 });

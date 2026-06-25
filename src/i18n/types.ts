@@ -163,6 +163,58 @@ export interface TranslationDict {
     memoryGuideProjectRulesName: string;
     memoryGuideProjectRulesDesc: string;
     memoryGuideTip: string;
+    todos: string;
+    inbox: string;
+  };
+
+  // Todos
+  todos: {
+    title: string;
+    newTodo: string;
+    placeholder: string;
+    notesPlaceholder: string;
+    tabAll: string;
+    tabToday: string;
+    empty: string;
+    addedToTodos: string;
+    priorityHigh: string;
+    priorityMedium: string;
+    priorityLow: string;
+    assigneeHuman: string;
+    assigneeAgent: string;
+    quickAddFromConversation: string;
+    addToTodos: string;
+    dueToday: string;
+    dueTomorrow: string;
+    sourceConversation: string;
+    sourceAgent: string;
+  };
+
+  // Inbox tabs and status badges
+  inboxTabs: {
+    pending: string;
+    all: string;
+    statusAccepted: string;
+    statusIgnored: string;
+  };
+
+  // Inbox
+  inbox: {
+    title: string;
+    empty: string;
+    pendingCount: string;
+    agentProposed: string;
+    agentConfirmation: string;
+    agentResult: string;
+    agentError: string;
+    accept: string;
+    ignore: string;
+    viewResult: string;
+    markDone: string;
+    requestRedo: string;
+    cancelTask: string;
+    retry: string;
+    close: string;
   };
 
   // Chat/Welcome
@@ -341,6 +393,22 @@ export interface TranslationDict {
     done: string;
     running: string;
     showMore: string;
+    collapse: string;
+  };
+
+  // Batch Progress (run_agent_batch live UI)
+  batch: {
+    /** "并行执行 {n} 个子任务" */
+    runningTitle: string;
+    /** "停止" */
+    stopButton: string;
+    /** "第{n}轮" */
+    turnLabel: string;
+    /** "✓ {n} 个子任务完成" — completion summary */
+    completionSummary: string;
+    /** "展开" */
+    expand: string;
+    /** "收起" */
     collapse: string;
   };
 
@@ -1610,6 +1678,41 @@ export interface TranslationDict {
     userDeniedAccess: string;
     pathAccessDenied: string;
     needsAuthorization: string;
+  };
+
+  // ask_user_question — interactive choice card
+  userQuestion: {
+    cardTitle: string;
+    singleSelectHint: string;
+    multiSelectHint: string;
+    otherOptionLabel: string;
+    otherInputPlaceholder: string;
+    submitButton: string;
+    answeredLabel: string;
+    submitDisabledHint: string;
+    cancelledLabel: string;
+    /** Pager counter, e.g. "1 / 3" — params: {current} {total} */
+    pager: string;
+    /** Waiting-for-answer status in the tool-call group */
+    waitingForAnswer: string;
+    /** Skip this question */
+    skip: string;
+    /** Marker appended to a skipped question's answer in the result */
+    skippedMarker: string;
+    /** Keyboard / interaction hint shown at the bottom of the dock */
+    navHint: string;
+    /** Label prefix for the question line in the settled bubble */
+    qLabel: string;
+    /** Label prefix for the answer line in the settled bubble */
+    aLabel: string;
+    /** aria-label: go to previous question */
+    prevQuestion: string;
+    /** aria-label: go to next question */
+    nextQuestion: string;
+    /** aria-label: dismiss / cancel the question */
+    close: string;
+    /** Header of the settled answers card (agent side) */
+    yourChoiceLabel: string;
   };
 
   // Projects

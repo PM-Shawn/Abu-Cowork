@@ -21,6 +21,22 @@ import { prepareContextMessages } from '../context/contextManager';
 import { compressContextIfNeeded } from '../context/contextCompressor';
 import { getMessageText } from '../context/contextUtils';
 import { withRetry } from './retry';
+import { resolveEffectiveLlmCreds } from '../enterprise/llm-resolver';
+import { emitHook } from './lifecycleHooks';
+import type { SubagentStartEvent, SubagentEndEvent, PreToolCallEvent } from './lifecycleHooks';
+import { startSubagentSpan } from '../observability/langfuse';
+
+// ─── Pure event-builder helpers (exported for unit-testing event shapes) ───
+
+/** Build a subagentStart lifecycle event (no side-effects). */
+export function buildSubagentStartEvent(agentName: string, task: string): SubagentStartEvent {
+  return { type: 'subagentStart', timestamp: Date.now(), agentName, task };
+}
+
+/** Build a subagentEnd lifecycle event (no side-effects). */
+export function buildSubagentEndEvent(agentName: string, result: string, error: boolean): SubagentEndEvent {
+  return { type: 'subagentEnd', timestamp: Date.now(), agentName, result, error };
+}
 
 /**
  * Extract a brief summary of parent conversation for subagent context.
@@ -127,6 +143,8 @@ export interface SubagentLoopOptions {
   onProgress?: (event: SubagentProgressEvent) => void;
   /** IM context — provides correct workspace path in headless mode */
   imContext?: IMContext;
+  /** Parent conversation ID for Langfuse parent-child span linking */
+  parentConversationId?: string;
 }
 
 export async function runSubagentLoop(options: SubagentLoopOptions): Promise<SubagentResult> {
@@ -139,6 +157,12 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
   // Guard: if signal is already aborted at entry, ignore it to avoid stale abort state from previous runs.
   // A genuinely cancelled request will re-abort the fresh controller created by the caller.
   const signal = options.signal?.aborted ? undefined : options.signal;
+
+  // Lifecycle: subagentStart
+  await emitHook({ type: 'subagentStart', timestamp: Date.now(), agentName: agent.name, task });
+
+  // Observability: open a Langfuse span (no-op when Langfuse not configured)
+  const subagentSpan = startSubagentSpan(options.parentConversationId ?? null, { agentName: agent.name, task });
 
   try {
     const settings = useSettingsStore.getState();
@@ -212,11 +236,24 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
       const blocked = new Set(agent.disallowedTools);
       tools = tools.filter((t) => !blocked.has(t.name));
     }
-    // Always remove delegate_to_agent (prevent recursion) and update_soul (main agent only)
-    tools = tools.filter((t) => t.name !== TOOL_NAMES.DELEGATE_TO_AGENT && t.name !== TOOL_NAMES.UPDATE_SOUL);
+    // Always strip the orchestration tools from sub-agents to prevent recursive
+    // fan-out (a sub-agent spawning its own batch → unbounded blow-up, since there
+    // is no depth/total-agent cap). Multi-agent orchestration is a main-agent-only
+    // concern. update_soul is likewise main-agent only. ask_user_question requires
+    // a toolCallId injected by the main harness that sub-agents never receive —
+    // leaving it visible causes a confusing "内部错误" response, so strip it here.
+    tools = tools.filter(
+      (t) =>
+        t.name !== TOOL_NAMES.DELEGATE_TO_AGENT &&
+        t.name !== TOOL_NAMES.RUN_AGENT_BATCH &&
+        t.name !== TOOL_NAMES.UPDATE_SOUL &&
+        t.name !== TOOL_NAMES.ASK_USER_QUESTION,
+    );
 
     // 4. Create LLM adapter
-    const adapter: LLMAdapter = getActiveProvider(settings)?.apiFormat === 'openai-compatible'
+    // Enterprise mode always uses OpenAI-compatible adapter (LiteLLM exposes that interface).
+    const _enterpriseCreds = (() => { try { return resolveEffectiveLlmCreds(getActiveApiKey(settings), undefined) } catch { return null } })()
+    const adapter: LLMAdapter = (_enterpriseCreds?.forceOpenAiCompatible || getActiveProvider(settings)?.apiFormat === 'openai-compatible')
       ? new OpenAICompatibleAdapter()
       : new ClaudeAdapter();
 
@@ -248,13 +285,16 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
 
     for (let turn = 0; turn < maxTurns; turn++) {
       if (signal?.aborted) {
-        return new SubagentResult({
+        const abortResult = new SubagentResult({
           text: resultBuffer || 'Error: 任务被取消',
           toolCallCount: totalToolCalls,
           turnCount: turn,
           tokenUsage: { input: totalInputTokens, output: totalOutputTokens },
           duration: (Date.now() - startTime) / 1000,
         });
+        await emitHook({ type: 'subagentEnd', timestamp: Date.now(), agentName: agent.name, result: abortResult.text, error: false });
+        subagentSpan.end({ output: abortResult.text, tokenUsage: abortResult.tokenUsage, toolCallCount: abortResult.toolCallCount, turnCount: abortResult.turnCount, duration: abortResult.duration });
+        return abortResult;
       }
 
       const collectedToolCalls: Array<{
@@ -297,12 +337,16 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
       let messagesForContext = messages;
       if (turn >= 3) { // Only attempt compression after a few turns
         try {
+          const subCreds = resolveEffectiveLlmCreds(
+            getActiveApiKey(settings),
+            getActiveProvider(settings)?.baseUrl || undefined,
+          )
           const compressionResult = await compressContextIfNeeded(
             messages,
             systemPrompt,
             contextWindowSize,
             maxOutputTokens,
-            { adapter, model: effectiveModelId, apiKey: getActiveApiKey(settings), baseUrl: getActiveProvider(settings)?.baseUrl || undefined, signal }
+            { adapter, model: effectiveModelId, apiKey: subCreds.apiKey, baseUrl: subCreds.baseUrl, signal }
           );
           if (compressionResult.compressed) {
             messagesForContext = compressionResult.messages;
@@ -320,10 +364,15 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
         maxOutputTokens
       );
 
+      // Resolve apiKey + baseUrl — enterprise gateway overrides personal creds.
+      const subChatCreds = resolveEffectiveLlmCreds(
+        getActiveApiKey(settings),
+        getActiveProvider(settings)?.baseUrl || undefined,
+      )
       const chatOptions = {
         model: effectiveModelId,
-        apiKey: getActiveApiKey(settings),
-        baseUrl: getActiveProvider(settings)?.baseUrl || undefined,
+        apiKey: subChatCreds.apiKey,
+        baseUrl: subChatCreds.baseUrl,
         systemPrompt,
         tools: tools.length > 0 ? tools : undefined,
         maxTokens: maxOutputTokens,
@@ -420,25 +469,64 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
       };
       messages.push(assistantMsg);
 
-      // Execute tools in parallel
+      // Execute tools in parallel (routed through preToolCall/postToolCall hooks)
       const toolResults = await Promise.allSettled(
         collectedToolCalls.map(async (tc) => {
           if (signal?.aborted) {
             return { id: tc.id, result: '[已取消]' };
           }
+
+          // Emit preToolCall — may block or modify input
+          const preEvent = await emitHook({
+            type: 'preToolCall' as const,
+            timestamp: Date.now(),
+            toolName: tc.name,
+            toolInput: tc.input,
+          } as PreToolCallEvent);
+          if (preEvent.blocked) {
+            if (preEvent.blockReason) {
+              return { id: tc.id, result: `Error: ${preEvent.blockReason}` };
+            }
+            return { id: tc.id, result: '[被 hook 拦截]' };
+          }
+          const effectiveInput = preEvent.modifiedInput ?? tc.input;
+
+          const toolStart = Date.now();
           try {
             const subagentToolContext: ToolExecutionContext = { workspacePath };
             const rawResult = await executeAnyTool(
               tc.name,
-              tc.input,
+              effectiveInput,
               commandConfirmCallback,
               filePermissionCallback,
               subagentToolContext,
             );
-            return { id: tc.id, result: toolResultToString(rawResult) };
+            const result = toolResultToString(rawResult);
+            const durationMs = Date.now() - toolStart;
+            await emitHook({
+              type: 'postToolCall' as const,
+              timestamp: Date.now(),
+              toolName: tc.name,
+              toolInput: effectiveInput,
+              result,
+              error: false,
+              durationMs,
+            });
+            return { id: tc.id, result };
           } catch (err) {
             const errMsg = err instanceof Error ? err.message : String(err);
-            return { id: tc.id, result: `Error: ${errMsg}` };
+            const result = `Error: ${errMsg}`;
+            const durationMs = Date.now() - toolStart;
+            await emitHook({
+              type: 'postToolCall' as const,
+              timestamp: Date.now(),
+              toolName: tc.name,
+              toolInput: effectiveInput,
+              result,
+              error: true,
+              durationMs,
+            });
+            return { id: tc.id, result };
           }
         })
       );
@@ -470,21 +558,27 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
       );
     }
 
-    return new SubagentResult({
+    const finalResult = new SubagentResult({
       text: resultBuffer || 'Error: 子代理未产出内容（可能模型推理占满了输出预算）。建议换用能力更强或非推理的模型重试。',
       toolCallCount: totalToolCalls,
       turnCount: maxTurns,
       tokenUsage: { input: totalInputTokens, output: totalOutputTokens },
       duration: (Date.now() - startTime) / 1000,
     });
+    await emitHook({ type: 'subagentEnd', timestamp: Date.now(), agentName: agent.name, result: finalResult.text, error: false });
+    subagentSpan.end({ output: finalResult.text, tokenUsage: finalResult.tokenUsage, toolCallCount: finalResult.toolCallCount, turnCount: finalResult.turnCount, duration: finalResult.duration });
+    return finalResult;
   } catch (err) {
     const errMsg = err instanceof Error ? err.message : String(err);
-    return new SubagentResult({
+    const errorResult = new SubagentResult({
       text: `Error: ${errMsg}`,
       toolCallCount: totalToolCalls,
       turnCount: 0,
       tokenUsage: { input: totalInputTokens, output: totalOutputTokens },
       duration: (Date.now() - startTime) / 1000,
     });
+    await emitHook({ type: 'subagentEnd', timestamp: Date.now(), agentName: agent.name, result: errorResult.text, error: true });
+    subagentSpan.end({ output: errorResult.text, tokenUsage: errorResult.tokenUsage, toolCallCount: errorResult.toolCallCount, turnCount: errorResult.turnCount, duration: errorResult.duration, error: errMsg });
+    return errorResult;
   }
 }

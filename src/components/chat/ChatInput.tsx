@@ -15,7 +15,7 @@ import { getCurrentLoopContext } from '@/core/agent/permissionBridge';
 import { useChatStore, useActiveConversation } from '@/stores/chatStore';
 import ContextIndicator from '@/components/chat/ContextIndicator';
 import { useDiscoveryStore } from '@/stores/discoveryStore';
-import { useSettingsStore, getEffectiveModel, getActiveProvider } from '@/stores/settingsStore';
+import { useSettingsStore } from '@/stores/settingsStore';
 import { useWorkspaceStore } from '@/stores/workspaceStore';
 import { usePermissionStore } from '@/stores/permissionStore';
 import type { PermissionDuration } from '@/stores/permissionStore';
@@ -136,7 +136,14 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
   const agents = useDiscoveryStore((s) => s.agents);
   const disabledSkills = useSettingsStore((s) => s.disabledSkills);
   const disabledAgents = useSettingsStore((s) => s.disabledAgents);
-  const currentModel = useSettingsStore((s) => getEffectiveModel(s));
+  const globalActiveModel = useSettingsStore((s) => s.activeModel);
+  const providers = useSettingsStore((s) => s.providers);
+  // The model shown/edited here is the active conversation's pinned model when it
+  // has one, else the global selection — keeps the picker label in sync with what
+  // this specific conversation actually runs on (see per-conversation model pin).
+  const effModel = activeConv?.model ?? globalActiveModel;
+  const currentModel = effModel.modelId;
+  const effProvider = providers.find((p) => p.id === effModel.providerId);
   const recentPaths = useWorkspaceStore((s) => s.recentPaths);
   const grantPermission = usePermissionStore((s) => s.grantPermission);
   const hasPermission = usePermissionStore((s) => s.hasPermission);
@@ -145,11 +152,8 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
   // Chat-only derived state
   const isRunning = activeConv?.status === 'running';
   const isStreaming = !isWelcome && isRunning;
-  const hasActiveProvider = useSettingsStore((s) => {
-    const p = getActiveProvider(s);
-    return !!p && p.enabled;
-  });
-  const availableModels = useSettingsStore((s) => getActiveProvider(s)?.models ?? []);
+  const hasActiveProvider = !!effProvider && effProvider.enabled;
+  const availableModels = effProvider?.models ?? [];
   const activeModelInfo = availableModels.find((m) => m.id === currentModel);
   const modelDisplay = !hasActiveProvider
     ? t.chat.noModelConfigured

@@ -233,11 +233,6 @@ vi.mock('../core/tools/toolSearch', () => ({
   buildDeferredToolsSummary: vi.fn().mockReturnValue(''),
 }));
 
-vi.mock('../core/agent/backgroundAgentRegistry', () => ({
-  getRunningAgents: vi.fn().mockReturnValue([]),
-  setConversationLookup: vi.fn(),
-}));
-
 vi.mock('../core/logging/logger', () => ({
   createLogger: vi.fn().mockReturnValue({
     info: vi.fn(),

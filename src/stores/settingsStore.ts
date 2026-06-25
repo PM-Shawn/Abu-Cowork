@@ -281,9 +281,9 @@ function createDefaultProviders(): ProviderInstance[] {
 // View mode types
 // ============================================================
 
-export type ViewMode = 'chat' | 'automation' | 'toolbox' | 'settings';
+export type ViewMode = 'chat' | 'automation' | 'toolbox' | 'settings' | 'todos' | 'inbox';
 export type AutomationTab = 'schedule' | 'trigger';
-export type SystemSettingsTab = 'general' | 'ai-services' | 'sandbox' | 'im-channels' | 'personal-memory' | 'soul' | 'diagnostic' | 'usage' | 'about' | 'feedback' | 'sponsor';
+export type SystemSettingsTab = 'general' | 'ai-services' | 'sandbox' | 'im-channels' | 'personal-memory' | 'soul' | 'diagnostic' | 'usage' | 'about' | 'feedback' | 'sponsor' | 'enterprise';
 export type ToolboxTab = 'skills' | 'agents' | 'mcp';
 
 // ============================================================
@@ -393,6 +393,15 @@ interface SettingsState {
    * shows again after the user has acknowledged it.
    */
   hasAcknowledgedDisclaimer: boolean;
+
+  /**
+   * Agent 自主度默认档位（待办分配给 Agent 时使用）：
+   * - suggest: 仅建议
+   * - plan_confirm: 计划确认
+   * - execute_review: 执行+审阅（默认）
+   * - autonomous: 全自动
+   */
+  defaultAgentAutonomy: 'suggest' | 'plan_confirm' | 'execute_review' | 'autonomous';
 }
 
 interface SettingsActions {
@@ -464,6 +473,9 @@ interface SettingsActions {
   setHasRunSensitiveAudit_v015: (done: boolean) => void;
   setShouldRunMemoryAudit: (run: boolean) => void;
   setHasAcknowledgedDisclaimer: (v: boolean) => void;
+  setDefaultAgentAutonomy: (mode: 'suggest' | 'plan_confirm' | 'execute_review' | 'autonomous') => void;
+  openTodos: () => void;
+  openInbox: () => void;
   /**
    * Toggle the contentGuard safety scanner globally. When off, agent-
    * initiated writes (memory + skill drafts) skip the 120-pattern scan.
@@ -684,6 +696,7 @@ export const useSettingsStore = create<SettingsStore>()(
       hasRunSensitiveAudit_v015: false,
       shouldRunMemoryAudit: false,
       hasAcknowledgedDisclaimer: false,
+      defaultAgentAutonomy: 'execute_review',
 
       // ════════════════════════════════════════════════
       // Provider management actions (V2)
@@ -911,6 +924,9 @@ export const useSettingsStore = create<SettingsStore>()(
       setToolboxSearchQuery: (query) => set({ toolboxSearchQuery: query }),
       setInstallingItem: (itemId) => set({ installingItem: itemId }),
       setViewMode: (viewMode) => set({ viewMode }),
+      openTodos: () => set({ viewMode: 'todos' as ViewMode }),
+      openInbox: () => set({ viewMode: 'inbox' as ViewMode }),
+      setDefaultAgentAutonomy: (defaultAgentAutonomy) => set({ defaultAgentAutonomy }),
       toggleSkillEnabled: (skillName) => set((s) => ({
         disabledSkills: s.disabledSkills.includes(skillName)
           ? s.disabledSkills.filter((n) => n !== skillName)
@@ -987,9 +1003,24 @@ export const useSettingsStore = create<SettingsStore>()(
     }),
     {
       name: 'abu-settings',
-      version: 32,
+      version: 33,
       migrate: (persisted: unknown, version: number) => {
         const state = persisted as Record<string, unknown>;
+
+        // ════════════════════════════════════════════════
+        // V33: Add defaultAgentAutonomy for Todos × Agent assignment.
+        // Default to 'execute_review' — Agent acts, user reviews result.
+        // ════════════════════════════════════════════════
+        if (version < 33) {
+          try {
+            const validValues = ['suggest', 'plan_confirm', 'execute_review', 'autonomous'];
+            if (typeof state.defaultAgentAutonomy !== 'string' || !validValues.includes(state.defaultAgentAutonomy)) {
+              state.defaultAgentAutonomy = 'execute_review';
+            }
+          } catch (err) {
+            console.error('[settingsStore] V33 migration failed:', err);
+          }
+        }
 
         // ════════════════════════════════════════════════
         // V32: Add preventSleep setting (default false — opt-in only).

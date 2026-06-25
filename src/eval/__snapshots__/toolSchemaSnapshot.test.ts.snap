@@ -1,9 +1,18 @@
 // Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
 
-exports[`Tool count stability > total builtin tool count matches snapshot 1`] = `37`;
+exports[`Tool count stability > total builtin tool count matches snapshot 1`] = `39`;
 
 exports[`Tool schema snapshot > all tool schemas match snapshot 1`] = `
 [
+  {
+    "name": "ask_user_question",
+    "paramNames": [
+      "questions",
+    ],
+    "requiredParams": [
+      "questions",
+    ],
+  },
   {
     "name": "clipboard_read",
     "paramNames": [],
@@ -51,7 +60,6 @@ exports[`Tool schema snapshot > all tool schemas match snapshot 1`] = `
     "name": "delegate_to_agent",
     "paramNames": [
       "agent_name",
-      "async",
       "context",
       "task",
       "type",
@@ -308,6 +316,17 @@ exports[`Tool schema snapshot > all tool schemas match snapshot 1`] = `
     ],
     "requiredParams": [
       "reason",
+    ],
+  },
+  {
+    "name": "run_agent_batch",
+    "paramNames": [
+      "concurrency",
+      "schema",
+      "tasks",
+    ],
+    "requiredParams": [
+      "tasks",
     ],
   },
   {

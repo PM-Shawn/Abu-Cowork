@@ -1,7 +1,7 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import { immer } from 'zustand/middleware/immer';
-import type { Message, Conversation, AgentStatus, TokenUsage, ConversationStatus, ToolCallForContext, ToolResultContent, ToolCall, NoticeCardAction } from '../types';
+import type { Message, Conversation, AgentStatus, TokenUsage, ConversationStatus, ToolCallForContext, ToolResultContent, ToolCall, NoticeCardAction, UserQuestionResult } from '../types';
 import type { ExecutionStepSnapshot } from '../types/execution';
 import { useWorkspaceStore } from './workspaceStore';
 import { useProjectStore } from './projectStore';
@@ -9,8 +9,7 @@ import { useTaskExecutionStore } from './taskExecutionStore';
 import { clearTodos } from '../core/agent/todoManager';
 import { clearInputQueue } from '../core/agent/userInputQueue';
 import { clearSkillHooksByConversation } from '../core/tools/builtins';
-import { removeAgentsByConversation, setConversationLookup } from '../core/agent/backgroundAgentRegistry';
-import { cancelSubagent } from '../core/agent/subagentAbort';
+import { clearPlanMode } from '../core/agent/planMode';
 import { setComputerUseActive } from '../core/agent/computerUseStatus';
 import type { ConversationMeta } from '../core/session/conversationStorage';
 import type { ShareBundle } from '../core/session/shareBundle';
@@ -81,11 +80,6 @@ function buildImportedFromShareBundle(bundle: ShareBundle): { conv: Conversation
   return { conv, meta };
 }
 
-// Wire up conversation lookup for backgroundAgentRegistry (avoids circular import)
-// This runs once when chatStore module is loaded, before any agent completion.
-setTimeout(() => {
-  setConversationLookup(() => useChatStore.getState().conversations);
-}, 0);
 
 /** Default title for new conversations — used for auto-title detection */
 export const DEFAULT_CONV_TITLE = '新任务';
@@ -255,6 +249,7 @@ interface ChatActions {
   switchConversation: (id: string) => Promise<void>;
   setConversationWorkspace: (convId: string, path: string | null) => void;
   setConversationProject: (convId: string, projectId: string | undefined) => void;
+  setConversationModel: (convId: string, model: { providerId: string; modelId: string } | undefined) => void;
   deleteConversation: (id: string) => void;
   renameConversation: (id: string, title: string) => void;
 
@@ -273,6 +268,7 @@ interface ChatActions {
    * through to disk via replaceMessageById so reload keeps the state.
    */
   setToolCallNoticeCardAction: (convId: string, messageId: string, toolCallId: string, action: NoticeCardAction) => void;
+  setToolCallUserQuestionAnswers: (convId: string, messageId: string, toolCallId: string, answers: UserQuestionResult) => void;
   /**
    * Stash a post-loop proposal signal on the conversation so the next
    * turn's orchestrator can surface a one-shot <consider_sinking> nudge.
@@ -489,6 +485,27 @@ export const useChatStore = create<ChatStore>()(
         });
       },
 
+      // Pin a model to a conversation (undefined = clear → inherit global).
+      // Mirrors setConversationProject: updates both the loaded conversation and
+      // the index entry, then persists to disk. agentLoop reads conv.model first
+      // and pins on first run; the ModelSelector writes it on explicit pick.
+      setConversationModel: (convId, model) => {
+        set((state) => {
+          const conv = state.conversations[convId];
+          if (conv) {
+            conv.model = model;
+          }
+          if (state.conversationIndex[convId]) {
+            state.conversationIndex[convId].model = model;
+          }
+        });
+        // Persist to disk index
+        import('../core/session/conversationStorage').then(({ updateIndexEntry }) => {
+          const meta = get().conversationIndex[convId];
+          if (meta) updateIndexEntry(meta).catch(() => {});
+        });
+      },
+
       deleteConversation: (id) => {
         // Cancel any ongoing streaming for this conversation
         const controller = abortControllers.get(id);
@@ -501,11 +518,6 @@ export const useChatStore = create<ChatStore>()(
         clearInputQueue(id);
         clearSkillHooksByConversation(id);
         useTaskExecutionStore.getState().clearConversation(id);
-        // Cancel and remove all background agents for this conversation
-        const runningSubagentIds = removeAgentsByConversation(id);
-        for (const subId of runningSubagentIds) {
-          cancelSubagent(subId);
-        }
         // Clean up disk files (JSONL messages, tool results, outputs)
         import('../core/session/conversationStorage').then(({ deleteConversationFiles, removeIndexEntry }) => {
           deleteConversationFiles(id).catch(() => {});
@@ -529,6 +541,13 @@ export const useChatStore = create<ChatStore>()(
             }
           }
         }).catch(() => {});
+        // Drain pending ask_user_question for this conversation on delete.
+        import('../core/agent/permissionBridge').then(({ drainUserQuestionsForConversation }) => {
+          drainUserQuestionsForConversation(id);
+        }).catch(() => {});
+        // Clear plan mode state to prevent the module-level Map from leaking
+        // an entry for a conversation that no longer exists.
+        clearPlanMode(id);
         const wasActive = get().activeConversationId === id;
         // Compute the successor BEFORE the deletion mutates state, so the
         // helper can see the deleted entry's scope (projectId / scheduledTaskId
@@ -785,6 +804,22 @@ export const useChatStore = create<ChatStore>()(
         });
         // Persist so the settled state survives reload. Mirrors the pattern
         // used by updateToolCall above.
+        const updatedMsg = get().conversations[convId]?.messages.find((m) => m.id === messageId);
+        if (updatedMsg) {
+          import('../core/session/conversationStorage').then(({ replaceMessageById }) => {
+            replaceMessageById(convId, updatedMsg).catch(() => {});
+          });
+        }
+      },
+
+      setToolCallUserQuestionAnswers: (convId, messageId, toolCallId, answers) => {
+        set((state) => {
+          const msg = state.conversations[convId]?.messages.find((m) => m.id === messageId);
+          const tc: ToolCall | undefined = msg?.toolCalls?.find((t) => t.id === toolCallId);
+          if (tc) {
+            tc.userQuestionAnswers = answers;
+          }
+        });
         const updatedMsg = get().conversations[convId]?.messages.find((m) => m.id === messageId);
         if (updatedMsg) {
           import('../core/session/conversationStorage').then(({ replaceMessageById }) => {
@@ -1272,6 +1307,7 @@ export const useChatStore = create<ChatStore>()(
               messages,
               status: 'idle',
               workspacePath: meta.workspacePath,
+              model: meta.model,
               imChannelId: meta.imChannelId,
               imPlatform: meta.imPlatform,
               scheduledTaskId: meta.scheduledTaskId,
@@ -1295,6 +1331,7 @@ export const useChatStore = create<ChatStore>()(
                 messages: [],
                 status: 'idle',
                 workspacePath: meta.workspacePath,
+                model: meta.model,
                 imChannelId: meta.imChannelId,
                 imPlatform: meta.imPlatform,
                 scheduledTaskId: meta.scheduledTaskId,
@@ -1337,7 +1374,7 @@ export const useChatStore = create<ChatStore>()(
     })),
     {
       name: 'abu-chat',
-      version: 5,
+      version: 6,
       migrate: (persisted, version) => {
         const state = persisted as Record<string, unknown>;
         // v1 → v2: added executionSteps on Message (optional field, no-op migration)
@@ -1346,6 +1383,9 @@ export const useChatStore = create<ChatStore>()(
         if (version < 3) { /* no transform needed */ }
         // v4 → v5: added readOnly + importedFrom on ConversationMeta (optional fields, no-op migration)
         if (version < 5) { /* no transform needed */ }
+        // v5 → v6: added per-conversation `model` on ConversationMeta (optional field;
+        // undefined = inherit global activeModel, pinned on first run, no-op migration)
+        if (version < 6) { /* no transform needed */ }
         // v3 → v4: migrate conversations from localStorage to file system
         if (version < 4) {
           // Mark for async migration in onRehydrateStorage

@@ -1,10 +1,16 @@
 import { useState, useEffect, useRef, useMemo } from 'react';
-import { Wrench, ChevronDown, ChevronRight, CheckCircle2, Loader2, Circle, Maximize2 } from 'lucide-react';
+import { Wrench, ChevronDown, ChevronRight, CheckCircle2, Loader2, Circle, Maximize2, MessageSquare } from 'lucide-react';
 import type { ToolCall, ToolResultContent, Message } from '@/types';
 import { TOOL_NAMES } from '@/core/tools/toolNames';
 import { useChatStore } from '@/stores/chatStore';
+import { useI18n } from '@/i18n';
 import { getBaseName } from '@/utils/pathUtils';
 import { cn } from '@/lib/utils';
+
+/** True when an ask_user_question tool call is parked waiting on the user. */
+function isAwaitingUser(tc: ToolCall): boolean {
+  return tc.name === TOOL_NAMES.ASK_USER_QUESTION && tc.result === undefined;
+}
 
 interface ToolCallsGroupProps {
   toolCalls: ToolCall[];
@@ -42,6 +48,10 @@ export default function ToolCallsGroup({ toolCalls }: ToolCallsGroupProps) {
   // Get current tool to display in collapsed state
   const currentTool = visibleToolCalls[currentDisplayIndex] || visibleToolCalls[0];
   const isAnyExecuting = executingIndex !== -1;
+  // When the in-flight tool is an ask_user_question awaiting the user, show a
+  // static "waiting" state rather than a spinner — the model isn't working.
+  const isAwaitingUserCurrent = !!currentTool && isAwaitingUser(currentTool);
+  const { t } = useI18n();
 
   if (visibleToolCalls.length === 0) return null;
 
@@ -75,7 +85,14 @@ export default function ToolCallsGroup({ toolCalls }: ToolCallsGroupProps) {
             ref={scrollRef}
             className="flex items-center gap-1.5 transition-transform duration-300"
           >
-            {isAnyExecuting ? (
+            {isAwaitingUserCurrent ? (
+              <>
+                <MessageSquare className="h-3 w-3 text-[var(--abu-clay)] shrink-0" />
+                <span className="text-[12px] text-[var(--abu-clay)] truncate">
+                  {t.userQuestion.waitingForAnswer}
+                </span>
+              </>
+            ) : isAnyExecuting ? (
               <>
                 <Loader2 className="h-3 w-3 animate-spin text-[var(--abu-clay)] shrink-0" />
                 <span className="font-mono text-[12px] text-[var(--abu-text-primary)] truncate">
@@ -100,7 +117,12 @@ export default function ToolCallsGroup({ toolCalls }: ToolCallsGroupProps) {
 
         {/* Status badge */}
         <div className="shrink-0">
-          {isAnyExecuting ? (
+          {isAwaitingUserCurrent ? (
+            <span className="flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded bg-[var(--abu-clay-bg)] text-[var(--abu-clay)] font-medium">
+              <MessageSquare className="h-3 w-3" />
+              {t.userQuestion.waitingForAnswer}
+            </span>
+          ) : isAnyExecuting ? (
             <span className="text-[10px] px-1.5 py-0.5 rounded bg-[var(--abu-clay-bg)] text-[var(--abu-clay)] font-medium">
               {completedCount}/{totalCount}
             </span>
@@ -134,8 +156,11 @@ export default function ToolCallsGroup({ toolCalls }: ToolCallsGroupProps) {
  * Individual tool call item in expanded view
  */
 function ToolCallItem({ toolCall, isLast }: { toolCall: ToolCall; isLast: boolean }) {
+  const { t } = useI18n();
   const [showDetails, setShowDetails] = useState(false);
-  const isExecuting = toolCall.isExecuting;
+  const awaitingUser = isAwaitingUser(toolCall);
+  const isExecuting = toolCall.isExecuting && !awaitingUser;
+  const [batchResultExpanded, setBatchResultExpanded] = useState(false);
   const isCompleted = toolCall.result !== undefined;
 
   return (
@@ -149,26 +174,32 @@ function ToolCallItem({ toolCall, isLast }: { toolCall: ToolCall; isLast: boolea
         <div className={cn(
           "w-4 h-4 rounded-full flex items-center justify-center shrink-0",
           isCompleted && "bg-emerald-500/15",
-          isExecuting && "bg-[var(--abu-clay-bg-15)]",
-          !isCompleted && !isExecuting && "bg-[var(--abu-bg-hover)]"
+          (isExecuting || awaitingUser) && "bg-[var(--abu-clay-bg-15)]",
+          !isCompleted && !isExecuting && !awaitingUser && "bg-[var(--abu-bg-hover)]"
         )}>
           {isCompleted && <CheckCircle2 className="h-2.5 w-2.5 text-emerald-600" />}
+          {awaitingUser && <MessageSquare className="h-2.5 w-2.5 text-[var(--abu-clay)]" />}
           {isExecuting && <Loader2 className="h-2.5 w-2.5 text-[var(--abu-clay)] animate-spin" />}
-          {!isCompleted && !isExecuting && <Circle className="h-1.5 w-1.5 text-[var(--abu-text-muted)] fill-current" />}
+          {!isCompleted && !isExecuting && !awaitingUser && <Circle className="h-1.5 w-1.5 text-[var(--abu-text-muted)] fill-current" />}
         </div>
 
         {/* Tool name */}
         <span className={cn(
           "font-mono text-[12px] truncate flex-1 text-left",
           isCompleted && "text-[var(--abu-text-primary)]",
-          isExecuting && "text-[var(--abu-clay)] font-medium",
-          !isCompleted && !isExecuting && "text-[var(--abu-text-muted)]"
+          (isExecuting || awaitingUser) && "text-[var(--abu-clay)] font-medium",
+          !isCompleted && !isExecuting && !awaitingUser && "text-[var(--abu-text-muted)]"
         )}>
           {toolCall.name}
+          {awaitingUser && (
+            <span className="ml-1.5 font-sans text-[11px] text-[var(--abu-clay)]">
+              · {t.userQuestion.waitingForAnswer}
+            </span>
+          )}
         </span>
 
         {/* Expand indicator for details */}
-        {(isCompleted || isExecuting) && (
+        {(isCompleted || isExecuting || awaitingUser) && (
           <ChevronRight className={cn(
             "h-3 w-3 text-[var(--abu-text-muted)] transition-transform",
             showDetails && "rotate-90"
@@ -177,7 +208,7 @@ function ToolCallItem({ toolCall, isLast }: { toolCall: ToolCall; isLast: boolea
       </button>
 
       {/* Details panel */}
-      {showDetails && (isCompleted || isExecuting) && (
+      {showDetails && (isCompleted || isExecuting || awaitingUser) && (
         <div className="bg-[#1c1c1e] px-3 py-2.5 space-y-2">
           {/* Input */}
           <div>
@@ -190,29 +221,57 @@ function ToolCallItem({ toolCall, isLast }: { toolCall: ToolCall; isLast: boolea
           {toolCall.result !== undefined && (
             <div className="border-t border-white/10 pt-2">
               <div className="text-[9px] font-semibold text-white/30 uppercase tracking-wider mb-1">Output</div>
-              {/* Screenshot thumbnail from resultContent — Computer Use only.
-                  Non-computer image results (e.g. read_file PNGs / QR codes) render
-                  inline in the message bubble via InlineToolResultImages instead. */}
-              {toolCall.name === TOOL_NAMES.COMPUTER
-                && toolCall.resultContent?.some(b => b.type === 'image')
-                && !toolCall.hideScreenshot && (
-                <ScreenshotThumbnail resultContent={toolCall.resultContent} />
-              )}
-              {toolCall.result.includes('[sandbox-blocked]') ? (
-                <div className="space-y-1.5">
-                  <div className="px-2 py-1.5 rounded bg-red-500/20 border border-red-500/30">
-                    <p className="text-[11px] font-mono text-red-300 leading-relaxed">
-                      {toolCall.result.split('\n')[0].replace('[sandbox-blocked] ', '')}
-                    </p>
+              {toolCall.name === TOOL_NAMES.RUN_AGENT_BATCH ? (
+                <div>
+                  {/* Collapsed summary line with expand toggle */}
+                  <div className="flex items-center gap-1.5 flex-wrap">
+                    <span className="text-[11px] text-[#b5c9a8]">
+                      {toolCall.result.split('\n')[0]}
+                    </span>
+                    <button
+                      onClick={() => setBatchResultExpanded((v) => !v)}
+                      className="inline-flex items-center gap-0.5 text-[10px] text-[var(--abu-clay)] hover:text-[var(--abu-clay-hover)]"
+                    >
+                      {batchResultExpanded ? (
+                        <><ChevronDown className="h-3 w-3" />{t.batch.collapse}</>
+                      ) : (
+                        <><ChevronRight className="h-3 w-3" />{t.batch.expand}</>
+                      )}
+                    </button>
                   </div>
-                  <pre className="text-[11px] font-mono text-[#b5c9a8]/70 whitespace-pre-wrap break-words leading-relaxed max-h-24 overflow-y-auto">
-                    {toolCall.result.split('\n').slice(2).join('\n')}
-                  </pre>
+                  {batchResultExpanded && (
+                    <pre className="mt-2 text-[11px] font-mono text-[#b5c9a8] whitespace-pre-wrap break-words leading-relaxed max-h-64 overflow-y-auto">
+                      {toolCall.result}
+                    </pre>
+                  )}
                 </div>
               ) : (
-                <pre className="text-[11px] font-mono text-[#b5c9a8] whitespace-pre-wrap break-words leading-relaxed max-h-32 overflow-y-auto">
-                  {toolCall.result}
-                </pre>
+                <>
+                  {/* Screenshot thumbnail from resultContent — Computer Use only.
+                      Non-computer image results (e.g. read_file PNGs / QR codes) render
+                      inline in the message bubble via InlineToolResultImages instead. */}
+                  {toolCall.name === TOOL_NAMES.COMPUTER
+                    && toolCall.resultContent?.some(b => b.type === 'image')
+                    && !toolCall.hideScreenshot && (
+                    <ScreenshotThumbnail resultContent={toolCall.resultContent} />
+                  )}
+                  {toolCall.result.includes('[sandbox-blocked]') ? (
+                    <div className="space-y-1.5">
+                      <div className="px-2 py-1.5 rounded bg-red-500/20 border border-red-500/30">
+                        <p className="text-[11px] font-mono text-red-300 leading-relaxed">
+                          {toolCall.result.split('\n')[0].replace('[sandbox-blocked] ', '')}
+                        </p>
+                      </div>
+                      <pre className="text-[11px] font-mono text-[#b5c9a8]/70 whitespace-pre-wrap break-words leading-relaxed max-h-24 overflow-y-auto">
+                        {toolCall.result.split('\n').slice(2).join('\n')}
+                      </pre>
+                    </div>
+                  ) : (
+                    <pre className="text-[11px] font-mono text-[#b5c9a8] whitespace-pre-wrap break-words leading-relaxed max-h-32 overflow-y-auto">
+                      {toolCall.result}
+                    </pre>
+                  )}
+                </>
               )}
             </div>
           )}

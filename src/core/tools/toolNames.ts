@@ -64,8 +64,17 @@ export const TOOL_NAMES = {
   // Workspace
   REQUEST_WORKSPACE: 'request_workspace',
 
+  // Human-in-the-loop
+  ASK_USER_QUESTION: 'ask_user_question',
+
   // Tool discovery
   TOOL_SEARCH: 'tool_search',
+
+  // Inbox proposals
+  CREATE_TODO: 'create_todo',
+
+  // Orchestration
+  RUN_AGENT_BATCH: 'run_agent_batch',
 } as const;
 
 export type ToolName = typeof TOOL_NAMES[keyof typeof TOOL_NAMES];

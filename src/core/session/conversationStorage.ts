@@ -38,6 +38,7 @@ export interface ConversationMeta {
   updatedAt: number;
   messageCount: number;
   workspacePath?: string | null;
+  model?: { providerId: string; modelId: string };  // Model pinned to this conversation (undefined = inherit global)
   imChannelId?: string;
   imPlatform?: string;
   scheduledTaskId?: string;
@@ -536,6 +537,7 @@ export function buildMeta(conv: {
   updatedAt: number;
   messages: { length: number };
   workspacePath?: string | null;
+  model?: { providerId: string; modelId: string };
   imChannelId?: string;
   imPlatform?: string;
   scheduledTaskId?: string;
@@ -551,6 +553,7 @@ export function buildMeta(conv: {
     updatedAt: conv.updatedAt,
     messageCount: conv.messages.length,
     workspacePath: conv.workspacePath,
+    model: conv.model,
     imChannelId: conv.imChannelId,
     imPlatform: conv.imPlatform,
     scheduledTaskId: conv.scheduledTaskId,

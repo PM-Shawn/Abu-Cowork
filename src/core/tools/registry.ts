@@ -12,6 +12,9 @@ import { reviewAction } from '../safety/reviewer';
 import { getLoopContext } from '../agent/permissionBridge';
 import { homeDir } from '@tauri-apps/api/path';
 import { TOOL_NAMES } from './toolNames';
+import { getCurrentPolicy } from '@/core/enterprise/policy/enforcer';
+import { checkTool } from '@/core/enterprise/policy/matcher';
+import { showPolicyConfirm } from '@/components/enterprise/policyConfirmQueue';
 
 // Cache home dir for command-boundary resolution (only resolved on first safe write command).
 let cachedHomeDir: string | null = null;
@@ -353,6 +356,24 @@ export async function executeAnyTool(
           // Hard blocked — always enforced regardless of permission mode
           return `Error: ${pathCheck.reason}`;
         }
+      }
+    }
+  }
+
+  // Enterprise policy pre-check — runs before builtin and MCP tools
+  {
+    const policy = getCurrentPolicy()
+    const summary = typeof input === 'object'
+      ? JSON.stringify(input).slice(0, 200)
+      : String(input).slice(0, 200)
+    const policyCheck = checkTool(policy, name, summary)
+    if (policyCheck.decision === 'deny') {
+      return `Error: [policy] ${policyCheck.reason}`
+    }
+    if (policyCheck.decision === 'confirm') {
+      const allowed = await showPolicyConfirm(policyCheck.reason ?? '此操作需要企业策略二次确认')
+      if (!allowed) {
+        return `Error: [policy] user declined confirmation`
       }
     }
   }

@@ -3,8 +3,10 @@ import { useChatStore } from '@/stores/chatStore';
 import { useSettingsStore } from '@/stores/settingsStore';
 import { useProjectStore } from '@/stores/projectStore';
 import { useNoticeBadgeStore } from '@/stores/noticeBadgeStore';
+import { useInboxStore } from '@/stores/inboxStore';
 import { useI18n } from '@/i18n';
-import { Plus, Workflow, Wrench, Trash2, Settings, Download, Upload, Pencil, Undo2, HelpCircle, FolderInput, FolderClosed, ChevronRight, Minus, Search, X } from 'lucide-react';
+import { SHOW_TODOS_INBOX } from '@/config/featureGates';
+import { Plus, Workflow, Wrench, Trash2, Settings, Download, Upload, Pencil, Undo2, HelpCircle, FolderInput, FolderClosed, ChevronRight, Minus, Search, X, CheckSquare, Inbox } from 'lucide-react';
 import GuideModal from '@/components/common/GuideModal';
 import ProfileEditModal from '@/components/common/ProfileEditModal';
 import { Button } from '@/components/ui/button';
@@ -19,6 +21,9 @@ import { readTextFile } from '@tauri-apps/plugin-fs';
 import ShareExportDialog from '@/components/share/ShareExportDialog';
 import ImportedBadge from './ImportedBadge';
 import { isMacOS } from '@/utils/platform';
+import EnterpriseStatusBadge from '@/components/enterprise/EnterpriseStatusBadge';
+// Side-effect import: registers BrandSlot in the enterprise mounts registry
+import '@/components/enterprise/BrandSlot';
 
 interface StatusIndicatorProps {
   status: ConversationStatus;
@@ -80,6 +85,10 @@ export default function Sidebar() {
   const setViewMode = useSettingsStore((s) => s.setViewMode);
   const updateInfo = useSettingsStore((s) => s.updateInfo);
   const clearBadge = useNoticeBadgeStore((s) => s.clear);
+  // Badge shows items still requiring user decision (pending), not just unread.
+  // Once a user accepts/ignores an item, the count drops even if other items
+  // remain unread — matches the "things you still owe a decision on" mental model.
+  const pendingInboxCount = useInboxStore((s) => s.getPendingCount());
   const { t } = useI18n();
 
   // Context menu state
@@ -263,6 +272,39 @@ export default function Sidebar() {
           <Plus className={cn('h-[18px] w-[18px]', activeConversationId === null && viewMode === 'chat' ? 'text-[var(--abu-clay)]' : 'text-[var(--abu-text-tertiary)]')} strokeWidth={2} />
           <span>{t.sidebar.newTask}</span>
         </button>
+        {SHOW_TODOS_INBOX && (
+          <>
+            <button
+              onClick={() => setViewMode('todos')}
+              className={cn(
+                'btn-ghost flex items-center gap-3 w-full px-3 py-2.5 text-[14px] rounded-lg',
+                viewMode === 'todos'
+                  ? 'bg-[var(--abu-bg-active)] text-[var(--abu-text-primary)]'
+                  : 'text-[var(--abu-text-secondary)] hover:bg-[var(--abu-bg-hover)]'
+              )}
+            >
+              <CheckSquare className={cn('h-[18px] w-[18px]', viewMode === 'todos' ? 'text-[var(--abu-clay)]' : 'text-[var(--abu-text-tertiary)]')} strokeWidth={1.75} />
+              <span>{t.sidebar.todos}</span>
+            </button>
+            <button
+              onClick={() => setViewMode('inbox')}
+              className={cn(
+                'btn-ghost flex items-center gap-3 w-full px-3 py-2.5 text-[14px] rounded-lg',
+                viewMode === 'inbox'
+                  ? 'bg-[var(--abu-bg-active)] text-[var(--abu-text-primary)]'
+                  : 'text-[var(--abu-text-secondary)] hover:bg-[var(--abu-bg-hover)]'
+              )}
+            >
+              <Inbox className={cn('h-[18px] w-[18px]', viewMode === 'inbox' ? 'text-[var(--abu-clay)]' : 'text-[var(--abu-text-tertiary)]')} strokeWidth={1.75} />
+              <span className="flex-1 text-left">{t.sidebar.inbox}</span>
+              {pendingInboxCount > 0 && (
+                <span className="min-w-[18px] h-[18px] px-1.5 rounded-full bg-red-500 text-white text-[11px] font-medium leading-[18px] text-center">
+                  {pendingInboxCount > 99 ? '99+' : pendingInboxCount}
+                </span>
+              )}
+            </button>
+          </>
+        )}
         <button
           onClick={() => openToolbox()}
           className={cn(
@@ -423,6 +465,9 @@ export default function Sidebar() {
         </div>
         )}
       </ScrollArea>
+
+      {/* Enterprise status badge — shown above user section when in enterprise mode */}
+      <EnterpriseStatusBadge />
 
       {/* User Section */}
       <div className="px-5 py-4 shrink-0">

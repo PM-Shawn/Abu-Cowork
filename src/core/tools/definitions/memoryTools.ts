@@ -1,4 +1,6 @@
-import type { ToolDefinition } from '../../../types';
+import type { ToolDefinition, UserQuestionPayload, UserQuestionResult } from '../../../types';
+import { getPlanMode, setPlanMode } from '../../agent/planMode';
+import { requestUserQuestion } from '../../agent/permissionBridge';
 import { useChatStore } from '../../../stores/chatStore';
 import { useWorkspaceStore } from '../../../stores/workspaceStore';
 import { appendTaskLog, type TaskCategory } from '../../agent/taskLog';
@@ -6,6 +8,59 @@ import { getTodos, addTodo, updateTodo, setTodos, formatTodosForPrompt } from '.
 import type { TodoStatus } from '../../agent/todoManager';
 import { TOOL_NAMES } from '../toolNames';
 import type { MemoryType } from '../../memdir/types';
+
+// ── Plan-mode approval (B1) ─────────────────────────────────────────────────
+export const PLAN_APPROVE_LABEL = '批准执行';
+export const PLAN_REJECT_LABEL = '拒绝，重新规划';
+
+/** Build a single approve/reject question presenting the plan steps for approval. */
+export function buildPlanApprovalPayload(steps: string[]): UserQuestionPayload {
+  const stepList = steps.map((s, i) => `${i + 1}. ${s}`).join('\n');
+  return {
+    questions: [
+      {
+        header: '计划审批',
+        question: `${stepList}\n\n是否批准执行此计划？`,
+        multiSelect: false,
+        options: [{ label: PLAN_APPROVE_LABEL }, { label: PLAN_REJECT_LABEL }],
+      },
+    ],
+  };
+}
+
+/** True only if the user explicitly selected the approve option. */
+export function interpretPlanApproval(result: UserQuestionResult | null): boolean {
+  if (!result) return false;
+  return result.answers[0]?.selected.includes(PLAN_APPROVE_LABEL) ?? false;
+}
+
+/**
+ * High-risk operation keywords (heuristic). report_plan steps are natural-language
+ * and user-facing (no tool names), so we match destructive / mutating / outbound
+ * verbs to decide whether a plan needs explicit approval before execution. Tunable;
+ * lean inclusive for safety — a borderline approval prompt is cheaper than an
+ * unreviewed destructive run. Read-only verbs (查看/搜索/分析/list/read…) are absent
+ * on purpose so pure-research plans never trigger.
+ */
+export const PLAN_RISK_KEYWORDS: readonly string[] = [
+  // zh — destructive / mutating
+  '删除', '删掉', '移动', '移到', '覆盖', '替换', '重命名', '改名', '清空', '清除',
+  '卸载', '格式化', '重置', '丢弃', '抹除',
+  // zh — outbound / execution
+  '发送', '上传', '推送', '安装', '执行命令', '运行命令',
+  // en (matched lowercase)
+  'delete', 'remove', 'move', 'overwrite', 'replace', 'rename', 'clear',
+  'uninstall', 'format', 'reset', 'discard', 'erase', 'send', 'upload', 'push', 'install',
+];
+
+/** True if any plan step mentions a high-risk operation (heuristic — see PLAN_RISK_KEYWORDS). */
+export function planHasRiskySteps(steps: string[]): boolean {
+  if (!Array.isArray(steps)) return false;
+  return steps.some((s) => {
+    const text = String(s).toLowerCase();
+    return PLAN_RISK_KEYWORDS.some((kw) => text.includes(kw.toLowerCase()));
+  });
+}
 
 export const reportPlanTool: ToolDefinition = {
   name: TOOL_NAMES.REPORT_PLAN,
@@ -21,9 +76,34 @@ export const reportPlanTool: ToolDefinition = {
     },
     required: ['steps'],
   },
-  execute: async (input) => {
+  execute: async (input, context) => {
     const steps = input.steps as string[];
-    if (!steps || steps.length === 0) {
+    const hasSteps = Array.isArray(steps) && steps.length > 0;
+
+    // Plan approval (B1, auto-trigger): when a plan contains high-risk steps
+    // (move/delete/overwrite/send/install…), require user approval BEFORE writes
+    // are unlocked — no manual toggle needed; safe/read-only plans pass straight
+    // through unchanged. Also honors an explicitly-set 'planning' mode (e.g. a
+    // future manual toggle). On the gate: setPlanMode('planning') makes the tool
+    // gate (toolExecutor) block writes until the user decides. Approve →
+    // 'approved' (writes unlocked); reject/timeout → stay 'planning' (read-only)
+    // so the agent revises and re-submits report_plan.
+    const convId = context?.conversationId;
+    const needsApproval = hasSteps && (planHasRiskySteps(steps) || (convId ? getPlanMode(convId) === 'planning' : false));
+    if (convId && context?.toolCallId && needsApproval) {
+      setPlanMode(convId, 'planning');
+      const result = await requestUserQuestion(context.toolCallId, convId, buildPlanApprovalPayload(steps));
+      if (interpretPlanApproval(result)) {
+        setPlanMode(convId, 'approved');
+        return '用户已批准计划，现在可以开始执行。';
+      }
+      if (result === null) {
+        return '计划审批超时或已取消，处于计划模式（只读）。可修改后重新提交计划。';
+      }
+      return '用户未批准当前计划，请根据反馈修改后重新调用 report_plan。当前为计划模式（只读）。';
+    }
+
+    if (!hasSteps) {
       return '已记录执行计划';
     }
     return `已记录执行计划：${steps.length}个步骤`;

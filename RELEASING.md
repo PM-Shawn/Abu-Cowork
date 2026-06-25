@@ -169,13 +169,41 @@ Full Changelog: https://github.com/PM-Shawn/Abu-Cowork/compare/vX.Y.Z-1...vX.Y.Z
 
 ## gh CLI 速查
 
+### 推荐流程（避免双 release）
+
+⚠️ **本仓库 CI 在 tag push 后会自动建一个 release**（默认标题 `Abu vX.Y.Z`，body 是占位符 "See the assets below…"，正好是本文档的反例），并把构建产物作为 asset 上传。所以**不要用 `gh release create`**——会建出第二份，原有的自动 release 仍在，标题/body 没人改。
+
+正确顺序：
+
 ```bash
-# 创建 release（推荐用 -F 从文件读，避免转义）
-gh release create v0.13.13 --title "v0.13.13 — 主题" -F /tmp/release-notes.md
+# 1. 把 release notes 写到文件（避免 shell 转义）
+vim /tmp/release-notes.md
 
-# 编辑已发布 release
-gh release edit v0.13.13 -F /tmp/release-notes.md
+# 2. push tag（触发 CI 自动建空 release + 跑构建）
+git push origin main --tags
 
-# 看上一版怎么写的
-gh release view v0.13.12 --json body -q .body
+# 3. 等 CI 把 release 建出来（看到 release list 里有这一行即可，不必等 asset 跑完）
+gh release list --limit 3
+
+# 4. 覆盖自动 release 的标题和 body（按 tag 精准命中那一份）
+gh release edit v0.23.1 --title "v0.23.1 — 主题" -F /tmp/release-notes.md
+
+# 5. （可选）等 asset 上传完，对外宣传
 ```
+
+### 其它常用
+
+```bash
+# 看上一版怎么写的（拷模板）
+gh release view v0.23.0 --json body -q .body
+
+# 列出 release 的所有 asset
+gh release view v0.23.1 --json assets -q '.assets[].name'
+
+# 真的需要从零创建（无 CI 自动建 release 的场景）才用 create
+gh release create vX.Y.Z --title "..." -F /tmp/notes.md
+```
+
+### 已知坑
+
+- `gh release create --draft` + `gh release edit --draft=false`：草稿是 untagged 状态，publish 时会**新建**一个 release 占用 tag，而 CI 那份还在。表现为同一 tag 出现两份 release。如要走 draft 流程，必须先用 API 删 CI 自动建的那份（`gh api -X DELETE /repos/PM-Shawn/Abu-Cowork/releases/<id>`），再 publish 你的草稿。一般情况下没必要走 draft——直接 edit 自动 release 更快。

@@ -58,6 +58,9 @@ const PLANNING_INSTRUCTION = `
 - computer use 只在必须看屏幕画面或操作 GUI 界面时才用
 
 多步任务的最后一步应该是验证（如 list_directory 确认文件操作结果），不要仅依赖执行时的输出。
+
+### 交互式询问（ask_user_question）
+需求不明、或存在多条等效路径时，优先用 ask_user_question 弹卡片让用户在选项中选择，而不是擅自假设。有合理默认值就直接用默认；危险操作仍走权限确认机制，不用本工具。
 `;
 
 /** Examples appended to PLANNING_INSTRUCTION on first turn only — saves ~400 tokens per subsequent turn */

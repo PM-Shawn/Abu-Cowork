@@ -3,12 +3,9 @@ import type { ToolDefinition, Conversation, SubagentDefinition } from '../../../
 import { skillLoader } from '../../skill/loader';
 import { agentRegistry } from '../../agent/registry';
 import { getCurrentLoopContext, getLoopContext, requestWorkspace } from '../../agent/permissionBridge';
-import { incrementAsyncSubAgent, decrementAsyncSubAgent } from '../../agent/asyncSubAgentTracker';
-import { persistExecutionSnapshot } from '../../agent/agentLoop';
 import { runSubagentLoop, extractParentConversationSummary } from '../../agent/subagentLoop';
 import type { SubagentProgressEvent } from '../../agent/subagentLoop';
 import { createSubagentController } from '../../agent/subagentAbort';
-import { registerBackgroundAgent, completeBackgroundAgent, failBackgroundAgent, canSpawnAgent, updateAgentProgress } from '../../agent/backgroundAgentRegistry';
 import { useChatStore } from '../../../stores/chatStore';
 import { useSettingsStore } from '../../../stores/settingsStore';
 import { useDiscoveryStore } from '../../../stores/discoveryStore';
@@ -179,7 +176,7 @@ function buildPresetAgent(type: string, _task: string): SubagentDefinition {
 
 export const delegateToAgentTool: ToolDefinition = {
   name: TOOL_NAMES.DELEGATE_TO_AGENT,
-  description: '将任务委派给代理独立执行。可指定 agent_name（用户自定义代理）或 type（系统内置角色：research 调研/writer 写作/executor 执行）。设置 async: true 可在后台并行执行，不阻塞当前对话。',
+  description: '委派任务给单个代理（同步等待结果）。可指定 agent_name（用户自定义代理）或 type（系统内置角色：research 调研/writer 写作/executor 执行）。需要并行处理多个独立子任务时，请改用 run_agent_batch（更可靠）。',
   inputSchema: {
     type: 'object',
     properties: {
@@ -187,7 +184,6 @@ export const delegateToAgentTool: ToolDefinition = {
       type: { type: 'string', description: '系统内置角色：research（只读调研）、writer（读写创作）、executor（全能执行）。与 agent_name 二选一', enum: ['research', 'writer', 'executor'] },
       task: { type: 'string', description: '委派的任务描述' },
       context: { type: 'string', description: '附加上下文（可选）' },
-      async: { type: 'boolean', description: '异步执行：立即返回 taskId，代理在后台运行，完成后结果自动回传。适合并行派出多个代理。' },
     },
     required: ['task'],
   },
@@ -294,89 +290,12 @@ export const delegateToAgentTool: ToolDefinition = {
     }
 
     // 7. Create per-subagent AbortController (linked to parent)
-    const { subagentId, signal: subagentSignal, cleanup: subagentCleanup } = createSubagentController(
+    const { signal: subagentSignal, cleanup: subagentCleanup } = createSubagentController(
       effectiveAgentName,
       loopCtx?.signal
     );
 
-    const isAsync = input.async === true;
-
-    // 8a. Async mode: fire-and-forget, return immediately with taskId
-    if (isAsync) {
-      const convId = loopCtx?.conversationId;
-      if (!convId) {
-        subagentCleanup();
-        return 'Error: 无法确定当前对话 ID，无法启动后台代理。';
-      }
-      if (!canSpawnAgent(convId)) {
-        subagentCleanup();
-        return 'Error: 已达到后台代理并发上限 (5)，请等待现有代理完成后再试。';
-      }
-
-      const taskId = `bg-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
-
-      registerBackgroundAgent({
-        taskId,
-        agentName: effectiveAgentName,
-        task,
-        status: 'running',
-        startTime: Date.now(),
-        conversationId: convId,
-        subagentId,
-      });
-
-      // Capture parent loop identity before the async context so the finally
-      // block can trigger a re-snapshot + eviction after child steps land.
-      const capturedLoopId = loopCtx?.loopId;
-      const capturedConvId = convId;
-      if (capturedLoopId) {
-        incrementAsyncSubAgent(capturedLoopId);
-      }
-
-      // Fire-and-forget: run subagent in background
-      let bgToolCount = 0;
-      void (async () => {
-        try {
-          const result = await runSubagentLoop({
-            agent,
-            task,
-            context,
-            parentConversationSummary,
-            signal: subagentSignal,
-            commandConfirmCallback: loopCtx?.commandConfirmCallback,
-            filePermissionCallback: loopCtx?.filePermissionCallback,
-            onProgress: (event) => {
-              // Update registry with progress for UI display
-              if (event.type === 'tool-start') {
-                bgToolCount++;
-                updateAgentProgress(taskId, event.toolName, bgToolCount);
-              }
-              // Also forward to parent onProgress if available
-              onProgress?.(event);
-            },
-          });
-          completeBackgroundAgent(taskId, result.text);
-        } catch (err) {
-          const msg = err instanceof Error ? err.message : String(err);
-          failBackgroundAgent(taskId, msg);
-        } finally {
-          subagentCleanup();
-          useChatStore.getState().removeActiveAgent(effectiveAgentName);
-          // When the last async sub-agent for this loop finishes, take a fresh
-          // snapshot (now including all child steps) and evict the execution.
-          if (capturedLoopId) {
-            const isLast = decrementAsyncSubAgent(capturedLoopId);
-            if (isLast) {
-              persistExecutionSnapshot(capturedConvId, capturedLoopId);
-            }
-          }
-        }
-      })();
-
-      return `后台代理 "${effectiveAgentName}" 已启动 (taskId: ${taskId})。任务: ${task.slice(0, 100)}${task.length > 100 ? '...' : ''}。完成后结果会自动回传。`;
-    }
-
-    // 8b. Sync mode: blocking await (existing behavior)
+    // 8. Sync mode: blocking await
     try {
       const result = await runSubagentLoop({
         agent,
@@ -399,8 +318,7 @@ export const delegateToAgentTool: ToolDefinition = {
       throw err;
     }
   },
-  // Async delegates can run concurrently; sync delegates cannot
-  isConcurrencySafe: (input) => input.async === true,
+  isConcurrencySafe: false,
 };
 
 /**

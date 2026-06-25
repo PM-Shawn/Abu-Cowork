@@ -18,6 +18,8 @@ export default defineConfig({
     // Mirror vite.config.ts so modules that consume APP_VERSION via
     // `__APP_VERSION__` (see src/utils/version.ts) don't blow up under vitest.
     __APP_VERSION__: JSON.stringify('test'),
+    // Tests run as the OSS build target (enterprise UI hidden).
+    __ENTERPRISE_BUILD__: JSON.stringify(false),
     // Provide a stub URL so modules guarded by `if (!CONSOLE_URL) return`
     // (consoleDiagnostic, consoleAnnouncement) don't early-exit in CI where
     // .env.local is absent. Tests mock fetch independently — this value is

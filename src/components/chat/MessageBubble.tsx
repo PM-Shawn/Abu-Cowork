@@ -1,4 +1,4 @@
-import { ChevronDown, ChevronRight, ChevronUp, Copy, Pencil, Trash2, RefreshCw, Check, Brain, Wand2, AtSign, FileText, FolderOpen, ImageOff, ThumbsUp, ThumbsDown } from 'lucide-react';
+import { ChevronDown, ChevronRight, ChevronUp, Copy, Pencil, Trash2, RefreshCw, Check, Brain, Wand2, AtSign, FileText, FolderOpen, ImageOff, ThumbsUp, ThumbsDown, CheckSquare } from 'lucide-react';
 import { useState, useEffect } from 'react';
 import type { Message, MessageContent } from '@/types';
 import MarkdownRenderer from './MarkdownRenderer';
@@ -7,6 +7,8 @@ import { useChatStore, useActiveConversation } from '@/stores/chatStore';
 import { sendFeedback } from '@/utils/consoleFeedback';
 import { cn } from '@/lib/utils';
 import { usePreviewStore } from '@/stores/previewStore';
+import { useTodosStore } from '@/stores/todosStore';
+import { SHOW_TODOS_INBOX } from '@/config/featureGates';
 import { runAgentLoop } from '@/core/agent/agentLoop';
 import { useI18n } from '@/i18n';
 import { getBaseName, loadLocalImage } from '@/utils/pathUtils';
@@ -231,6 +233,7 @@ function MessageTimestamp({ timestamp, className = '' }: { timestamp: number; cl
 function MessageActions({ message, onEdit, onDelete, onRegenerate, isUser, conversationId }: MessageActionsProps) {
   const { t } = useI18n();
   const [copied, setCopied] = useState(false);
+  const [addedToTodos, setAddedToTodos] = useState(false);
   const [feedbackRating, setFeedbackRating] = useState<'positive' | 'negative' | null>(null);
   const activeSkill = useChatStore((s) => {
     const conv = conversationId ? s.conversations[conversationId] : undefined;
@@ -313,6 +316,32 @@ function MessageActions({ message, onEdit, onDelete, onRegenerate, isUser, conve
             <ThumbsDown className="h-3.5 w-3.5" />
           </button>
         </>
+      )}
+
+      {/* Add to Todos button - only for assistant messages */}
+      {SHOW_TODOS_INBOX && !isUser && (
+        <button
+          onClick={() => {
+            const text = getTextContent(message.content).slice(0, 60).trim();
+            if (!text) return;
+            useTodosStore.getState().createTodo({
+              title: text,
+              source: 'conversation',
+              sourceConversationId: conversationId ?? undefined,
+            });
+            setAddedToTodos(true);
+            setTimeout(() => setAddedToTodos(false), 1500);
+          }}
+          className={cn(
+            'btn-ghost p-1.5 rounded-md transition-colors',
+            addedToTodos
+              ? 'text-emerald-500 bg-[var(--abu-bg-hover)]'
+              : 'text-[var(--abu-text-tertiary)] hover:text-[var(--abu-clay)] hover:bg-[var(--abu-bg-hover)]',
+          )}
+          title={addedToTodos ? t.todos.addedToTodos : t.todos.addToTodos}
+        >
+          {addedToTodos ? <Check className="h-3.5 w-3.5" /> : <CheckSquare className="h-3.5 w-3.5" />}
+        </button>
       )}
 
       {/* Delete button */}

@@ -9,6 +9,8 @@ import ChatView from '@/components/chat/ChatView';
 import AutomationView from '@/components/automation/AutomationView';
 import SystemSettingsView from '@/components/settings/SystemSettingsModal';
 import ToolboxView from '@/components/settings/ToolboxModal';
+import TodoView from '@/components/todos/TodoView';
+import InboxView from '@/components/inbox/InboxView';
 import RightPanel from '@/components/panel/RightPanel';
 import ToastContainer from '@/components/common/ToastContainer';
 import { registerBuiltinTools } from '@/core/tools/builtins';
@@ -65,6 +67,10 @@ import AnnouncementBanner from '@/components/common/AnnouncementBanner';
 import DisclaimerBanner from '@/components/common/DisclaimerBanner';
 import { pushDiagnosticSnapshot } from '@/utils/consoleDiagnostic';
 import { useDiagnosticStore } from '@/stores/diagnosticStore';
+import { useEnterpriseStore } from '@/stores/enterpriseStore';
+// Side-effect import: registers policyEnforcer in the enterprise mounts registry
+import '@/core/enterprise/policy/enforcer';  // enforcer.ts — non-JSX, side-effect only
+import PolicyConfirmModal from '@/components/enterprise/PolicyConfirmModal';
 
 /**
  * Drain Notice inbox if we're in a state that can actually deliver.
@@ -404,6 +410,30 @@ function App() {
     };
   }, []);
 
+  // Enterprise mode: load persisted binding from AppData at startup.
+  // If bound, start the background heartbeat (protocol layer) and mount
+  // all enterprise business modules via the @enterprise-modules alias.
+  //
+  // In OSS builds, @enterprise-modules resolves to enterprise-modules-stub
+  // (noop). In Enterprise builds, it resolves to ../Abu-enterprise-modules/src
+  // which side-effect-registers KB / Skill / MCP / Me / Migration panels.
+  useEffect(() => {
+    let cancel = false
+    ;(async () => {
+      await useEnterpriseStore.getState().init().catch(e => console.warn('[enterprise] init failed', e))
+      if (cancel) return
+      if (useEnterpriseStore.getState().mode.kind !== 'personal') {
+        // Protocol layer: heartbeat stays in Abu-opensource (refreshes config / policies)
+        const { startHeartbeat } = await import('@/core/enterprise/heartbeat')
+        startHeartbeat()
+        // Business modules: routed through Vite alias (stub in OSS, real impl in Enterprise build)
+        const { initEnterpriseModules } = await import('@enterprise-modules')
+        await initEnterpriseModules()
+      }
+    })()
+    return () => { cancel = true }
+  }, [])
+
   // Catch unhandled rejections from Tauri plugin resource cleanup
   // (e.g., plugin-http fetch to unreachable URLs, plugin-fs watch on deleted paths)
   useEffect(() => {
@@ -496,6 +526,8 @@ function App() {
           {viewMode === 'automation' && <AutomationView />}
           {viewMode === 'toolbox' && <ToolboxView />}
           {viewMode === 'settings' && <SystemSettingsView />}
+          {viewMode === 'todos' && <TodoView />}
+          {viewMode === 'inbox' && <InboxView />}
           {(viewMode === 'chat' || !viewMode) && <ChatView />}
         </main>
 
@@ -521,6 +553,10 @@ function App() {
         {/* First-launch disclaimer banner — shows once until dismissed.
             Self-gates on hasAcknowledgedDisclaimer in settingsStore. */}
         <DisclaimerBanner />
+
+        {/* Enterprise policy confirmation modal (z-[60], above all overlays).
+            Only appears when the tool dispatcher detects a require_confirmation policy. */}
+        <PolicyConfirmModal />
 
         {/* Cloud announcement banner — shows the first unseen announcement */}
         {pendingAnnouncements.length > 0 && pendingAnnouncements[0] && (

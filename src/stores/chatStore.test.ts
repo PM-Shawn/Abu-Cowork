@@ -921,4 +921,50 @@ describe('chatStore', () => {
       expect(useChatStore.getState().conversations.nope).toBeUndefined();
     });
   });
+
+  // ── setToolCallUserQuestionAnswers ──
+  describe('setToolCallUserQuestionAnswers', () => {
+    it('writes tc.userQuestionAnswers and reads it back', () => {
+      const convId = useChatStore.getState().createConversation();
+      const msgId = 'msg-1';
+      const tcId = 'tc-1';
+
+      useChatStore.setState((state) => {
+        const conv = state.conversations[convId];
+        if (conv) {
+          conv.messages.push({
+            id: msgId,
+            role: 'assistant',
+            content: '',
+            timestamp: Date.now(),
+            toolCalls: [{ id: tcId, name: 'ask_user_question', input: {} }],
+          });
+        }
+      });
+
+      const answers = {
+        answers: [{ header: '格式', question: '什么格式？', selected: ['详细'] }],
+      };
+
+      useChatStore.getState().setToolCallUserQuestionAnswers(convId, msgId, tcId, answers);
+
+      const tc = useChatStore
+        .getState()
+        .conversations[convId]?.messages.find((m) => m.id === msgId)
+        ?.toolCalls?.find((t) => t.id === tcId);
+
+      expect(tc?.userQuestionAnswers).toEqual(answers);
+    });
+
+    it('does not throw when the tool call does not exist', () => {
+      const convId = useChatStore.getState().createConversation();
+      expect(() => {
+        useChatStore.getState().setToolCallUserQuestionAnswers(
+          convId, 'nonexistent-msg', 'nonexistent-tc',
+          { answers: [{ header: 'x', question: 'q', selected: ['a'] }] },
+        );
+      }).not.toThrow();
+    });
+  });
+
 });

@@ -19,6 +19,7 @@ import {
   Search,
   Plug,
   Users,
+  MessageSquare,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useI18n, format, type TranslationDict } from '@/i18n';
@@ -328,12 +329,18 @@ export default function TaskBlock({ steps, executionSteps, isActive, onRetry }: 
             const hasTrailingNodes = allCompleted || isActive || hasError;
             const isFullyExpanded = displayMode === 'expanded' || !needsTruncation;
             const showConnector = !isLastVisible || (isFullyExpanded && hasTrailingNodes);
+            // For a thinking step, signal whether execution has moved on to a
+            // tool step after it — used to auto-collapse the reasoning panel.
+            const hasLaterToolStep = unifiedSteps
+              .slice(unifiedSteps.indexOf(step) + 1)
+              .some((s) => s.type !== 'thinking');
 
             return (
               <TaskStepItem
                 key={step.id}
                 step={step}
                 showConnector={showConnector}
+                hasLaterToolStep={hasLaterToolStep}
                 locale={locale}
                 t={t}
               />
@@ -423,9 +430,10 @@ export default function TaskBlock({ steps, executionSteps, isActive, onRetry }: 
 /**
  * Individual step item with vertical timeline connector
  */
-function TaskStepItem({ step, showConnector, locale, t }: {
+function TaskStepItem({ step, showConnector, hasLaterToolStep, locale, t }: {
   step: UnifiedStep;
   showConnector: boolean;
+  hasLaterToolStep: boolean;
   locale: string;
   t: TranslationDict;
 }) {
@@ -435,16 +443,18 @@ function TaskStepItem({ step, showConnector, locale, t }: {
   const isCompleted = step.status === 'completed';
   const isError = step.status === 'error';
   const isThinking = step.type === 'thinking';
+  const isWaitingForAnswer = isRunning && step.toolName === TOOL_NAMES.ASK_USER_QUESTION;
 
   const taskExecutionStore = useTaskExecutionStore();
 
-  // Generate step label - for thinking steps, show duration
+  // Generate step label - for thinking steps, show duration; for waiting ask_user_question, show waiting text
   const stepLabel = useMemo(() => {
+    if (isWaitingForAnswer) return t.userQuestion.waitingForAnswer;
     if (isThinking && isCompleted && step.duration) {
       return format(t.task.thoughtFor, { seconds: step.duration });
     }
     return step.label;
-  }, [step, isThinking, isCompleted, t]);
+  }, [step, isThinking, isCompleted, isWaitingForAnswer, t]);
 
   // Generate completion message if we have tool info
   const completionMsg = useMemo(() => {
@@ -468,6 +478,17 @@ function TaskStepItem({ step, showConnector, locale, t }: {
     }
     prevThinkingRunning.current = isRunning;
   }, [isThinking, isRunning]);
+
+  // Once thinking is done and execution has moved on to a tool step, auto-collapse
+  // the reasoning so attention shifts to the running work. Fires once; the user can
+  // still manually re-expand via the "思考过程" toggle without it snapping shut again.
+  const didAutoCollapseThinking = useRef(false);
+  useEffect(() => {
+    if (isThinking && isCompleted && hasLaterToolStep && !didAutoCollapseThinking.current) {
+      setThinkingExpanded(false);
+      didAutoCollapseThinking.current = true;
+    }
+  }, [isThinking, isCompleted, hasLaterToolStep]);
 
   // Auto-scroll the streaming thinking pane to the bottom as new tokens arrive,
   // so the latest reasoning text stays in view instead of being clipped by max-height.
@@ -585,7 +606,9 @@ function TaskStepItem({ step, showConnector, locale, t }: {
       {/* Icon column with vertical line */}
       <div className="flex flex-col items-center">
         <div className="w-3.5 h-3.5 mt-0.5 flex items-center justify-center shrink-0">
-          {isRunning ? (
+          {isWaitingForAnswer ? (
+            <MessageSquare className="h-3.5 w-3.5 text-[var(--abu-clay)]" />
+          ) : isRunning ? (
             <Loader2 className="h-3.5 w-3.5 text-[var(--abu-clay)] animate-spin" />
           ) : isError ? (
             <AlertCircle className="h-3.5 w-3.5 text-red-400" />
@@ -646,11 +669,15 @@ function TaskStepItem({ step, showConnector, locale, t }: {
           <div className="mt-2 pl-1 border-l-2 border-[var(--abu-bg-hover)] ml-0.5">
             {step.childSteps.map((childStep, childIndex) => {
               const isLastChild = childIndex === step.childSteps!.length - 1;
+              const childHasLaterToolStep = step.childSteps!
+                .slice(childIndex + 1)
+                .some((s) => s.type !== 'thinking');
               return (
                 <TaskStepItem
                   key={childStep.id}
                   step={childStep}
                   showConnector={!isLastChild}
+                  hasLaterToolStep={childHasLaterToolStep}
                   locale={locale}
                   t={t}
                 />

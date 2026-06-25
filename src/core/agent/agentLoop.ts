@@ -31,7 +31,6 @@ import type { SubagentProgressEvent } from './subagentLoop';
 import { createSubagentController } from './subagentAbort';
 import { drainQueuedInputs, clearInputQueue } from './userInputQueue';
 import { snapshotExecutionSteps } from './executionSnapshot';
-import { hasPendingAsyncSubAgents } from './asyncSubAgentTracker';
 import { emitHook } from './lifecycleHooks';
 import { getI18n, format } from '../../i18n';
 import { clearAllSkillHooks } from '../tools/builtins';
@@ -45,8 +44,8 @@ import { resolveCapabilities, resolveEffectiveContextWindow, computeReasoningPar
 import { TOOL_NAMES } from '../tools/toolNames';
 import { prefetchTools } from '../tools/toolPrefetch';
 import { classifyTools, buildDeferredToolsSummary } from '../tools/toolSearch';
-import { getRunningAgents } from './backgroundAgentRegistry';
 import { hasQueuedInputs } from './userInputQueue';
+import { resolveEffectiveLlmCreds, EnterpriseLlmUnavailableError } from '../enterprise/llm-resolver';
 import { createLogger } from '../logging/logger';
 import { reportError } from '@/utils/consoleError';
 
@@ -148,7 +147,9 @@ import {
   drainConfirmationQueue,
   drainFilePermissionQueue,
   drainWorkspaceRequest,
+  drainUserQuestions,
 } from './permissionBridge';
+import { clearPlanMode } from './planMode';
 
 /** Persist execution steps onto the last assistant message for the given loop, then evict from memory */
 export function persistExecutionSnapshot(conversationId: string, loopId: string): void {
@@ -156,16 +157,9 @@ export function persistExecutionSnapshot(conversationId: string, loopId: string)
   const exec = store.getExecutionByLoopId(loopId);
   if (!exec || exec.steps.length === 0) return;
 
-  // Always save the latest snapshot (captures whatever child steps exist right now)
+  // Save the latest snapshot, then evict from memory.
   useChatStore.getState().setExecutionStepsSnapshot(conversationId, loopId, snapshotExecutionSteps(exec.steps));
-
-  // Delay eviction until all async sub-agents for this loop have finished.
-  // Evicting early would remove the execution from the store before sub-agents
-  // can add their child steps via addChildStepToDelegate, making those steps
-  // invisible in the expanded TaskBlock after the main loop ends.
-  if (!hasPendingAsyncSubAgents(loopId)) {
-    store.evictExecution(exec.id);
-  }
+  store.evictExecution(exec.id);
 }
 
 /**
@@ -540,9 +534,28 @@ export function escalateMaxOutputTokens(
 }
 
 export async function runAgentLoop(conversationId: string, userMessage: string, options?: AgentLoopOptions): Promise<AgentLoopResult> {
+  // New turn starts clean: drop any stale plan-mode lock from a prior/abandoned plan (see planMode.ts).
+  clearPlanMode(conversationId);
+
   const chatStore = useChatStore.getState();
   const settings = useSettingsStore.getState();
   const taskExecutionStore = useTaskExecutionStore.getState();
+
+  // ── Per-conversation model pin ──────────────────────────────────────────
+  // A conversation runs on its own pinned model (conv.model); a new or legacy
+  // conversation inherits the current global activeModel. Both the model name
+  // and the provider identity (adapter / baseUrl / apiKey) derive from this one
+  // pinned pair via `settingsForModel`, so they can never diverge and a global
+  // model switch made for another conversation never bleeds into this in-flight
+  // one. Pinned onto the conversation on first run (below) so it also survives
+  // later global switches for display + future runs.
+  const pinnedConv = chatStore.conversations[conversationId];
+  const baseModel =
+    pinnedConv?.model ??
+    chatStore.conversationIndex[conversationId]?.model ??
+    settings.activeModel;
+  const settingsForModel: typeof settings =
+    baseModel === settings.activeModel ? settings : { ...settings, activeModel: baseModel };
 
   // Generate a unique loopId for this agent loop - all messages in this loop share it
   const loopId = generateId();
@@ -555,7 +568,13 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
     },
   });
 
-  if (providerRequiresApiKey(settings) && !getActiveApiKey(settings)) {
+  // Enterprise mode bypasses personal key requirement — gateway provides the key.
+  const { forceOpenAiCompatible: _startForce } = (() => {
+    try { return resolveEffectiveLlmCreds(getActiveApiKey(settingsForModel), undefined) }
+    catch { return { forceOpenAiCompatible: false } }
+  })()
+  const isEnterpriseGatewayMode = _startForce
+  if (!isEnterpriseGatewayMode && providerRequiresApiKey(settingsForModel) && !getActiveApiKey(settingsForModel)) {
     // Persist the user's input first so the chat history isn't an orphan warning.
     // Use raw userMessage (orchestrator hasn't run); skill metadata is intentionally omitted —
     // the user needs to configure a key before any skill/agent routing takes effect.
@@ -617,12 +636,24 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
   };
 
   // Determine effective model — agent can override (with provider compatibility check)
-  let effectiveModelId = getEffectiveModel(settings);
+  let effectiveModelId = getEffectiveModel(settingsForModel);
   if (route.type === 'agent' && route.definition?.model) {
     effectiveModelId = resolveAgentModel(route.definition.model, settings);
   }
   // Set active model for per-model token calibration
   setActiveModel(effectiveModelId);
+
+  // Pin the resolved model to the conversation on first run, so it survives
+  // later global model switches (for display + future runs). Pins the
+  // user-selected baseModel, NOT effectiveModelId (which may be agent-overridden
+  // per-invocation). Skipped in enterprise mode (model selection is gateway-
+  // scoped) and when the conversation already carries a pin.
+  if (!isEnterpriseGatewayMode && pinnedConv && !pinnedConv.model) {
+    useChatStore.getState().setConversationModel(conversationId, {
+      providerId: baseModel.providerId,
+      modelId: baseModel.modelId,
+    });
+  }
 
   // Add user message with loopId (use cleanInput for display)
   // Include skill info if a skill was triggered; build multimodal content if images are attached
@@ -644,7 +675,8 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
     } : undefined,
   });
 
-  const adapter: LLMAdapter = getActiveProvider(settings)?.apiFormat === 'openai-compatible'
+  // Enterprise mode always uses OpenAI-compatible adapter (LiteLLM exposes that interface).
+  const adapter: LLMAdapter = (isEnterpriseGatewayMode || getActiveProvider(settingsForModel)?.apiFormat === 'openai-compatible')
     ? new OpenAICompatibleAdapter()
     : new ClaudeAdapter();
 
@@ -726,6 +758,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
         filePermissionCallback: filePermCb,
         onProgress,
         imContext: options?.imContext,
+        parentConversationId: conversationId,
       });
 
       // Complete the delegate step
@@ -778,11 +811,14 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
         return { reason: 'aborted' };
       }
       const errorMessage = err instanceof Error ? err.message : String(err);
+      const delegateDisplayError = err instanceof EnterpriseLlmUnavailableError
+        ? '无法连接企业 AI 网关。请检查网络连接，或联系管理员。\n\n客户端不会回退到个人 API key（防止预算绕过）。'
+        : errorMessage;
       const delegateErrorId = generateId();
       chatStore.addMessage(conversationId, {
         id: delegateErrorId,
         role: 'assistant',
-        content: `**Error:** ${errorMessage}`,
+        content: `**Error:** ${delegateDisplayError}`,
         timestamp: Date.now(),
         loopId,
       });
@@ -944,7 +980,16 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
     try {
       // ── Per-turn: refresh tools and dynamic prompt sections ──
       const freshSettings = useSettingsStore.getState();
-      const activeProvider = getActiveProvider(freshSettings);
+      // Provider identity (id/baseUrl/apiKey/apiFormat) is pinned to the ENTRY
+      // snapshot (`settings`), NOT freshSettings: the model name (effectiveModelId),
+      // the adapter (chosen once at loop start), and the provider must stay a
+      // matched pair for the whole loop. Otherwise switching the global active
+      // model mid-loop (e.g. for another conversation) bleeds into this in-flight
+      // loop — sending the old model name to the new provider's endpoint
+      // ("deepseek endpoint, model mimo-v2.5-pro"). freshSettings below is only
+      // for non-identity, mid-loop-tunable knobs (computerUse, maxOutputTokens,
+      // contextWindowSize).
+      const activeProvider = getActiveProvider(settingsForModel);
       const builtinWebSearch = activeProvider
         ? getBuiltinSearchConfig(activeProvider.id as LLMProvider, true)
         : undefined;
@@ -1071,6 +1116,10 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
           // No valid cache — attempt compression (set isCompressing for the UI spinner)
           useChatStore.getState().setIsCompressing(conversationId, true);
           try {
+            const compressionCreds = resolveEffectiveLlmCreds(
+              getActiveApiKey(settingsForModel),
+              getActiveProvider(settingsForModel)?.baseUrl || undefined,
+            )
             const compressionResult = await compressContextIfNeeded(
               historyMessages,
               effectiveSystemPrompt,
@@ -1079,8 +1128,8 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
               {
                 adapter,
                 model: effectiveModelId,
-                apiKey: getActiveApiKey(freshSettings),
-                baseUrl: getActiveProvider(freshSettings)?.baseUrl || undefined,
+                apiKey: compressionCreds.apiKey,
+                baseUrl: compressionCreds.baseUrl,
                 signal: abortController.signal,
               },
               toolTokens
@@ -1163,10 +1212,17 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
         toolTokens
       );
 
+      // Resolve apiKey + baseUrl — enterprise gateway overrides personal creds.
+      // Throws EnterpriseLlmUnavailableError if enforced but gateway unreachable.
+      const effectiveCreds = resolveEffectiveLlmCreds(
+        getActiveApiKey(settingsForModel),
+        getActiveProvider(settingsForModel)?.baseUrl || undefined,
+      )
+
       const chatOptions = {
         model: effectiveModelId,
-        apiKey: getActiveApiKey(freshSettings),
-        baseUrl: getActiveProvider(freshSettings)?.baseUrl || undefined,
+        apiKey: effectiveCreds.apiKey,
+        baseUrl: effectiveCreds.baseUrl,
         systemPrompt: effectiveSystemPrompt,
         systemPromptSections: allSections,
         tools: tools.length > 0 ? tools : undefined,
@@ -1413,6 +1469,10 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
           // Stage 1: Try semantic compression (if not already attempted this turn)
           if (!autoCompactTracker.isDisabled()) {
             try {
+              const recoveryCreds = resolveEffectiveLlmCreds(
+                getActiveApiKey(settingsForModel),
+                getActiveProvider(settingsForModel)?.baseUrl || undefined,
+              )
               const compressionResult = await compressContextIfNeeded(
                 historyMessages,
                 effectiveSystemPrompt,
@@ -1421,8 +1481,8 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
                 {
                   adapter,
                   model: effectiveModelId,
-                  apiKey: getActiveApiKey(freshSettings),
-                  baseUrl: getActiveProvider(freshSettings)?.baseUrl || undefined,
+                  apiKey: recoveryCreds.apiKey,
+                  baseUrl: recoveryCreds.baseUrl,
                   signal: abortController.signal,
                 },
                 toolTokens
@@ -1653,20 +1713,6 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
         continueLoop = true;
       }
 
-      // If there are running background agents, wait for them to complete before ending
-      if (!continueLoop && getRunningAgents().length > 0) {
-        logger.info('Waiting for background agents to complete', { count: getRunningAgents().length });
-        chatStore.setAgentStatus('thinking');
-        // Poll until all background agents finish or user aborts
-        while (getRunningAgents().length > 0 && !abortController.signal.aborted) {
-          await new Promise(r => setTimeout(r, 1000));
-        }
-        // Background agents injected results via userInputQueue — continue loop to process them
-        if (hasQueuedInputs(conversationId) && !abortController.signal.aborted) {
-          continueLoop = true;
-        }
-      }
-
       if (!continueLoop) {
         chatStore.finishStreaming(conversationId, assistantMsgId);
         chatStore.clearAbortController(conversationId);
@@ -1789,6 +1835,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
         drainConfirmationQueue();
         drainFilePermissionQueue();
         drainWorkspaceRequest();
+        drainUserQuestions();
 
         chatStore.cancelStreaming(conversationId);
         chatStore.clearAbortController(conversationId);
@@ -1832,7 +1879,10 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
       const isOllamaForbidden = errorCode === 'authentication'
         && err instanceof LLMError && err.statusCode === 403
         && /^forbidden\s*$/i.test(err.message.trim());
-      const displayError = isLikelyVisionError
+      const isEnterpriseGatewayUnavailable = err instanceof EnterpriseLlmUnavailableError;
+      const displayError = isEnterpriseGatewayUnavailable
+        ? '无法连接企业 AI 网关。请检查网络连接，或联系管理员。\n\n客户端不会回退到个人 API key（防止预算绕过）。'
+        : isLikelyVisionError
         ? '当前模型可能不支持图片/视觉输入，请尝试移除图片或切换到支持视觉的模型（如 Claude、GPT-4o）。'
         : isOllamaForbidden
         ? 'Ollama 返回了 403 Forbidden（CORS 来源限制）。请设置环境变量 `OLLAMA_ORIGINS=*` 后重启 Ollama，例如：`OLLAMA_ORIGINS=* ollama serve`'

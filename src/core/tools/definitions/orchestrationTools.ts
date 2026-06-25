@@ -16,6 +16,7 @@ import { useSettingsStore } from '../../../stores/settingsStore';
 import { getCurrentLoopContext, getLoopContext } from '../../agent/permissionBridge';
 import { extractParentConversationSummary } from '../../agent/subagentLoop';
 import { useChatStore } from '../../../stores/chatStore';
+import { buildSchemaInstruction, extractJsonObject, validateStructured } from '../../agent/structuredOutput';
 
 // ─── Preset agents (mirrored from agentTools.ts) ──────────────────────────
 // Kept local so orchestrationTools has no runtime dependency on agentTools.ts.
@@ -124,6 +125,23 @@ export function aggregateBatchResults(
   return [header, ...sections].join('\n\n');
 }
 
+/**
+ * Aggregate structured sub-agent results into a JSON array string.
+ *
+ * Each entry carries:
+ *   - `task`: the label (first 60 chars of the task description)
+ *   - `ok`: whether extraction + validation succeeded
+ *   - `data`: the parsed JSON object (present when ok is true)
+ *   - `error`: human-readable reason (present when ok is false)
+ *
+ * Returns `JSON.stringify(entries, null, 2)` — a pretty-printed JSON array.
+ */
+export function aggregateStructuredResults(
+  entries: Array<{ task: string; ok: boolean; data?: Record<string, unknown>; error?: string }>,
+): string {
+  return JSON.stringify(entries, null, 2);
+}
+
 // ─── Task item type ────────────────────────────────────────────────────────
 
 interface BatchTaskItem {
@@ -179,6 +197,11 @@ export const runAgentBatchTool: ToolDefinition = {
         type: 'number',
         description: '最大并发子代理数，默认 4，范围 1-8',
       },
+      schema: {
+        type: 'object',
+        description:
+          '可选。提供 JSON Schema 时，每个子任务返回匹配该结构的 JSON 对象，聚合成 JSON 数组返回（适合批量提取结构化数据）。',
+      },
     },
     required: ['tasks'],
   },
@@ -201,6 +224,11 @@ export const runAgentBatchTool: ToolDefinition = {
     }
 
     const concurrency = clampConcurrency(input.concurrency as unknown);
+    const rawSchema = input.schema;
+    const schema: Record<string, unknown> | undefined =
+      rawSchema !== null && typeof rawSchema === 'object' && !Array.isArray(rawSchema)
+        ? (rawSchema as Record<string, unknown>)
+        : undefined;
 
     // ── 2. Resolve parent loop context for callbacks ───────────────────────
     const loopCtx = toolExecContext?.loopId
@@ -265,9 +293,13 @@ export const runAgentBatchTool: ToolDefinition = {
       resolvedTasks,
       concurrency,
       async (resolved) => {
+        const effectiveTask =
+          schema !== undefined
+            ? resolved.task + buildSchemaInstruction(schema)
+            : resolved.task;
         return runSubagentLoop({
           agent: resolved.agent,
-          task: resolved.task,
+          task: effectiveTask,
           context: resolved.context,
           parentConversationSummary,
           signal: loopCtx?.signal,
@@ -278,6 +310,33 @@ export const runAgentBatchTool: ToolDefinition = {
     );
 
     // ── 6. Aggregate results ───────────────────────────────────────────────
+    if (schema !== undefined) {
+      // Structured path: extract + validate JSON from each sub-agent's output
+      const structuredEntries = settled.map((result, i) => {
+        const task = resolvedTasks[i].label;
+        if (result.status === 'rejected') {
+          const errMsg =
+            result.reason instanceof Error ? result.reason.message : String(result.reason);
+          return { task, ok: false, error: errMsg };
+        }
+        const extracted = extractJsonObject(result.value.text);
+        if (extracted === null) {
+          return { task, ok: false, error: '未能解析出匹配的 JSON' };
+        }
+        const validation = validateStructured(extracted, schema);
+        if (!validation.ok) {
+          return {
+            task,
+            ok: false,
+            error: `缺少必填字段: ${validation.missing.join(', ')}`,
+          };
+        }
+        return { task, ok: true, data: extracted };
+      });
+      return aggregateStructuredResults(structuredEntries);
+    }
+
+    // Text aggregation path (behavior-preserving, schema absent)
     const entries = settled.map((result, i) => {
       const label = resolvedTasks[i].label;
       if (result.status === 'fulfilled') {

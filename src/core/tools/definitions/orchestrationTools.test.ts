@@ -14,7 +14,12 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { clampConcurrency, runWithConcurrency, aggregateBatchResults } from './orchestrationTools';
+import {
+  clampConcurrency,
+  runWithConcurrency,
+  aggregateBatchResults,
+  aggregateStructuredResults,
+} from './orchestrationTools';
 
 // ─── clampConcurrency ──────────────────────────────────────────────────────
 
@@ -210,5 +215,60 @@ describe('aggregateBatchResults', () => {
   it('header is the first line of output', () => {
     const result = aggregateBatchResults([{ label: 'X', status: 'ok', text: 'out' }]);
     expect(result.startsWith('共 1 个子任务')).toBe(true);
+  });
+});
+
+// ─── aggregateStructuredResults ───────────────────────────────────────────
+
+describe('aggregateStructuredResults', () => {
+  it('returns a valid JSON array string', () => {
+    const entries = [
+      { task: 'invoice 1', ok: true, data: { vendor: 'Acme', amount: 100 } },
+      { task: 'invoice 2', ok: false, error: '未能解析出匹配的 JSON' },
+    ];
+    const result = aggregateStructuredResults(entries);
+    const parsed: unknown = JSON.parse(result);
+    expect(Array.isArray(parsed)).toBe(true);
+  });
+
+  it('preserves all fields for ok:true entries', () => {
+    const entries = [{ task: 'task A', ok: true, data: { vendor: 'Beta', amount: 200 } }];
+    const result = aggregateStructuredResults(entries);
+    const parsed = JSON.parse(result) as Array<{ task: string; ok: boolean; data: { vendor: string; amount: number } }>;
+    expect(parsed[0].task).toBe('task A');
+    expect(parsed[0].ok).toBe(true);
+    expect(parsed[0].data).toEqual({ vendor: 'Beta', amount: 200 });
+  });
+
+  it('preserves all fields for ok:false entries', () => {
+    const entries = [{ task: 'task B', ok: false, error: '缺少必填字段: amount' }];
+    const result = aggregateStructuredResults(entries);
+    const parsed = JSON.parse(result) as Array<{ task: string; ok: boolean; error: string }>;
+    expect(parsed[0].task).toBe('task B');
+    expect(parsed[0].ok).toBe(false);
+    expect(parsed[0].error).toBe('缺少必填字段: amount');
+  });
+
+  it('returns a pretty-printed (indented) JSON string', () => {
+    const result = aggregateStructuredResults([{ task: 't', ok: true, data: {} }]);
+    // Pretty-print means at least one newline and indentation
+    expect(result).toContain('\n');
+    expect(result).toContain('  ');
+  });
+
+  it('handles an empty entries array', () => {
+    const result = aggregateStructuredResults([]);
+    expect(JSON.parse(result)).toEqual([]);
+  });
+
+  it('preserves order of entries', () => {
+    const entries = [
+      { task: 'first', ok: true, data: { n: 1 } },
+      { task: 'second', ok: false, error: 'oops' },
+      { task: 'third', ok: true, data: { n: 3 } },
+    ];
+    const result = aggregateStructuredResults(entries);
+    const parsed = JSON.parse(result) as Array<{ task: string }>;
+    expect(parsed.map((e) => e.task)).toEqual(['first', 'second', 'third']);
   });
 });

@@ -1,4 +1,4 @@
-import type { LLMAdapter, ChatOptions } from './adapter';
+import type { LLMAdapter, ChatOptions, ToolChoice } from './adapter';
 import { LLMError, classifyError } from './adapter';
 import type { Message, StreamEvent, ToolDefinition } from '../../types';
 import { getTauriFetch } from './tauriFetch';
@@ -250,6 +250,24 @@ function convertMessages(messages: Message[], systemPrompt?: string, supportsVis
   return serializeForOpenAI(turns, systemPrompt);
 }
 
+/**
+ * Convert Abu's ToolChoice into an OpenAI-compatible tool_choice value.
+ *
+ * Mapping:
+ *   undefined              → undefined  (omit field — preserves current default behaviour)
+ *   { type: 'auto' }      → 'auto'
+ *   { type: 'any' }       → 'required'
+ *   { type: 'tool', name} → { type: 'function', function: { name } }
+ */
+export function toOpenAIToolChoice(
+  tc: ToolChoice | undefined,
+): 'auto' | 'required' | { type: 'function'; function: { name: string } } | undefined {
+  if (tc === undefined) return undefined;
+  if (tc.type === 'auto') return 'auto';
+  if (tc.type === 'any') return 'required';
+  return { type: 'function', function: { name: tc.name } };
+}
+
 export class OpenAICompatibleAdapter implements LLMAdapter {
   async chat(
     messages: Message[],
@@ -288,6 +306,8 @@ export class OpenAICompatibleAdapter implements LLMAdapter {
 
     if (hasTools) {
       body.tools = convertTools(options.tools!);
+      const tc = toOpenAIToolChoice(options.toolChoice);
+      if (tc !== undefined) body.tool_choice = tc;
     }
 
     // Inject built-in web search if configured

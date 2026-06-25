@@ -18,6 +18,7 @@ function isSameDay(a: number, b: number): boolean {
 interface CreateTodoInput {
   title: string;
   source: TodoSource;
+  notes?: string;
   assignee?: TodoAssignee;
   priority?: TodoPriority;
   dueAt?: number;
@@ -31,7 +32,7 @@ interface TodoState {
 
 interface TodoActions {
   createTodo: (input: CreateTodoInput) => string;
-  updateTodo: (id: string, data: Partial<Pick<Todo, 'title' | 'priority' | 'dueAt' | 'projectId' | 'assignee'>>) => void;
+  updateTodo: (id: string, data: Partial<Pick<Todo, 'title' | 'notes' | 'priority' | 'dueAt' | 'projectId' | 'assignee'>>) => void;
   deleteTodo: (id: string) => void;
   toggleStatus: (id: string) => void;
   setStatus: (id: string, status: TodoStatus) => void;
@@ -55,6 +56,7 @@ export const useTodosStore = create<TodoStore>()(
           state.todos[id] = {
             id,
             title: input.title,
+            notes: input.notes,
             status: 'todo',
             assignee: input.assignee ?? 'human',
             priority: input.priority,

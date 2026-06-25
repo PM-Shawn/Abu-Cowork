@@ -66,6 +66,9 @@ export const TOOL_NAMES = {
 
   // Tool discovery
   TOOL_SEARCH: 'tool_search',
+
+  // Inbox proposals
+  CREATE_TODO: 'create_todo',
 } as const;
 
 export type ToolName = typeof TOOL_NAMES[keyof typeof TOOL_NAMES];

@@ -30,9 +30,16 @@ interface InboxActions {
   addItem: (input: AddItemInput) => string;
   markRead: (id: string) => void;
   markAllRead: () => void;
+  /** Soft-process: mark accepted, keep in history */
+  accept: (id: string) => void;
+  /** Soft-process: mark ignored, keep in history */
+  ignore: (id: string) => void;
+  /** Hard delete (used to permanently remove a historical item) */
   dismiss: (id: string) => void;
   getAll: () => InboxItem[];
   getUnreadCount: () => number;
+  /** Count items still requiring user decision (status === 'pending') */
+  getPendingCount: () => number;
 }
 
 export type InboxStore = InboxState & InboxActions;
@@ -53,6 +60,7 @@ export const useInboxStore = create<InboxStore>()(
             todoId: input.todoId,
             payload: input.payload,
             unread: true,
+            status: 'pending',
             createdAt: monotonicNow(),
           };
         });
@@ -74,6 +82,26 @@ export const useInboxStore = create<InboxStore>()(
         });
       },
 
+      accept: (id) => {
+        set((state) => {
+          const item = state.items[id];
+          if (!item) return;
+          item.status = 'accepted';
+          item.processedAt = Date.now();
+          item.unread = false;
+        });
+      },
+
+      ignore: (id) => {
+        set((state) => {
+          const item = state.items[id];
+          if (!item) return;
+          item.status = 'ignored';
+          item.processedAt = Date.now();
+          item.unread = false;
+        });
+      },
+
       dismiss: (id) => {
         set((state) => {
           delete state.items[id];
@@ -87,11 +115,29 @@ export const useInboxStore = create<InboxStore>()(
       getUnreadCount: () => {
         return Object.values(get().items).filter((i) => i.unread).length;
       },
+
+      getPendingCount: () => {
+        return Object.values(get().items).filter((i) => i.status === 'pending').length;
+      },
     })),
     {
       name: 'abu-inbox',
-      version: 1,
+      version: 2,
       partialize: (state) => ({ items: state.items }),
-    }
-  )
+      migrate: (persisted: unknown, version: number) => {
+        const state = persisted as { items?: Record<string, InboxItem> };
+        // V2: add `status` field to existing items (default to 'pending' so
+        // pre-V2 history surfaces in the "待处理" tab on first launch — they
+        // were always actionable before this version anyway).
+        if (version < 2 && state.items) {
+          for (const item of Object.values(state.items)) {
+            if (!('status' in item)) {
+              (item as InboxItem).status = 'pending';
+            }
+          }
+        }
+        return state;
+      },
+    },
+  ),
 );

@@ -184,7 +184,7 @@ export async function executeToolBatch(params: ToolBatchParams): Promise<ToolBat
           }
         };
         abortController.signal.addEventListener('abort', onAbort, { once: true });
-        executeAnyTool(tc.name, effectiveInput, confirmCb, filePermCb, toolContext, contextUsagePercent)
+        executeAnyTool(tc.name, effectiveInput, confirmCb, filePermCb, { ...toolContext, toolCallId: tc.id }, contextUsagePercent)
           .then((result) => {
             if (!settled) {
               settled = true;

@@ -17,6 +17,7 @@ import { getCurrentLoopContext, getLoopContext } from '../../agent/permissionBri
 import { extractParentConversationSummary } from '../../agent/subagentLoop';
 import { useChatStore } from '../../../stores/chatStore';
 import { buildSchemaInstruction, extractJsonObject, validateStructured } from '../../agent/structuredOutput';
+import { useBatchProgressStore } from '../../../stores/batchProgressStore';
 
 // ─── Preset agents (mirrored from agentTools.ts) ──────────────────────────
 // Kept local so orchestrationTools has no runtime dependency on agentTools.ts.
@@ -235,6 +236,9 @@ export const runAgentBatchTool: ToolDefinition = {
       ? getLoopContext(toolExecContext.loopId)
       : getCurrentLoopContext();
 
+    // ── Tool call ID for batch progress tracking ──────────────────────────
+    const batchId = toolExecContext?.toolCallId ?? `batch-${Date.now()}`;
+
     // ── 3. Extract parent conversation summary ─────────────────────────────
     let parentConversationSummary: string | undefined;
     try {
@@ -289,14 +293,23 @@ export const runAgentBatchTool: ToolDefinition = {
     }
 
     // ── 5. Run all sub-agents with concurrency pool ────────────────────────
+
+    // Initialize batch progress (best-effort — store failure must never break the batch)
+    try {
+      useBatchProgressStore.getState().initBatch(batchId, resolvedTasks.map((r) => r.label));
+    } catch {
+      // Best-effort
+    }
+
     const settled = await runWithConcurrency(
       resolvedTasks,
       concurrency,
-      async (resolved) => {
+      async (resolved, idx) => {
         const effectiveTask =
           schema !== undefined
             ? resolved.task + buildSchemaInstruction(schema)
             : resolved.task;
+        let currentTurn = 0;
         return runSubagentLoop({
           agent: resolved.agent,
           task: effectiveTask,
@@ -305,9 +318,37 @@ export const runAgentBatchTool: ToolDefinition = {
           signal: loopCtx?.signal,
           commandConfirmCallback: loopCtx?.commandConfirmCallback,
           filePermissionCallback: loopCtx?.filePermissionCallback,
+          onProgress: (event) => {
+            try {
+              const store = useBatchProgressStore.getState();
+              if (event.type === 'tool-start') {
+                if (store.batches[batchId]?.tasks[idx]?.status === 'queued') {
+                  store.setTaskRunning(batchId, idx);
+                }
+                store.setTaskActivity(batchId, idx, `调用 ${event.toolName}`, currentTurn);
+              } else if (event.type === 'turn-complete') {
+                currentTurn = event.turn;
+                store.setTaskActivity(batchId, idx, '', currentTurn);
+              }
+            } catch {
+              // Best-effort: never let store errors break the batch
+            }
+          },
         });
       },
     );
+
+    // Mark all tasks done in store (best-effort)
+    try {
+      const store = useBatchProgressStore.getState();
+      settled.forEach((result, i) => {
+        const isError = result.status === 'rejected'
+          || (result.status === 'fulfilled' && result.value.text.startsWith('Error:'));
+        store.setTaskDone(batchId, i, isError);
+      });
+    } catch {
+      // Best-effort
+    }
 
     // ── 6. Aggregate results ───────────────────────────────────────────────
     if (schema !== undefined) {

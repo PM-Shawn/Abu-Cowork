@@ -357,6 +357,15 @@ const zhCN: TranslationDict = {
     collapse: '收起',
   },
 
+  batch: {
+    runningTitle: '并行执行 {n} 个子任务',
+    stopButton: '停止',
+    turnLabel: '第{n}轮',
+    completionSummary: '✓ {n} 个子任务完成',
+    expand: '展开',
+    collapse: '收起',
+  },
+
   settings: {
     title: '系统设置',
     apiConfig: 'API 配置',

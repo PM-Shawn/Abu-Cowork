@@ -1,25 +1,7 @@
 import { describe, it, expect, afterEach } from 'vitest';
-import { isNoProgressTurn, buildSubagentStartEvent, buildSubagentEndEvent, isWallClockExceeded } from './subagentLoop';
+import { isNoProgressTurn, buildSubagentStartEvent, buildSubagentEndEvent } from './subagentLoop';
 import { registerHook, clearAllHooks, getHookCount } from './lifecycleHooks';
 import type { SubagentStartEvent, SubagentEndEvent } from './lifecycleHooks';
-
-describe('isWallClockExceeded', () => {
-  it('returns false when elapsed is below threshold', () => {
-    expect(isWallClockExceeded(299_999, 300_000)).toBe(false);
-  });
-
-  it('returns true when elapsed equals threshold (at boundary)', () => {
-    expect(isWallClockExceeded(300_000, 300_000)).toBe(true);
-  });
-
-  it('returns true when elapsed exceeds threshold', () => {
-    expect(isWallClockExceeded(300_001, 300_000)).toBe(true);
-  });
-
-  it('returns false at zero elapsed', () => {
-    expect(isWallClockExceeded(0, 300_000)).toBe(false);
-  });
-});
 
 describe('isNoProgressTurn', () => {
   it('flags a turn where every tool call is unparseable', () => {

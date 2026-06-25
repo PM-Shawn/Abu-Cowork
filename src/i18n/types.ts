@@ -344,6 +344,22 @@ export interface TranslationDict {
     collapse: string;
   };
 
+  // Batch Progress (run_agent_batch live UI)
+  batch: {
+    /** "并行执行 {n} 个子任务" */
+    runningTitle: string;
+    /** "停止" */
+    stopButton: string;
+    /** "第{n}轮" */
+    turnLabel: string;
+    /** "✓ {n} 个子任务完成" — completion summary */
+    completionSummary: string;
+    /** "展开" */
+    expand: string;
+    /** "收起" */
+    collapse: string;
+  };
+
   // Settings Modal
   settings: {
     title: string;

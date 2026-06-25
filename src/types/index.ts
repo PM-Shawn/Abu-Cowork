@@ -314,6 +314,8 @@ export interface ToolExecutionContext {
   loopId?: string;
   /** Conversation ID — tools should prefer this over activeConversationId */
   conversationId?: string;
+  /** Tool call ID — used by run_agent_batch to key the batch progress store */
+  toolCallId?: string;
 }
 
 export interface ToolDefinition {

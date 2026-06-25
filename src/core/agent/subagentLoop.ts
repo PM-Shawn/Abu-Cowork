@@ -25,17 +25,6 @@ import { emitHook } from './lifecycleHooks';
 import type { SubagentStartEvent, SubagentEndEvent, PreToolCallEvent } from './lifecycleHooks';
 import { startSubagentSpan } from '../observability/langfuse';
 
-/** Wall-clock backstop for a single subagent run (5 minutes). */
-const SUBAGENT_WALL_CLOCK_TIMEOUT_MS = 300_000;
-
-/**
- * Returns true when a subagent has been running longer than the allowed wall-clock
- * timeout. Pure helper — no side effects, exported for unit testing.
- */
-export function isWallClockExceeded(elapsedMs: number, timeoutMs: number): boolean {
-  return elapsedMs >= timeoutMs;
-}
-
 // ─── Pure event-builder helpers (exported for unit-testing event shapes) ───
 
 /** Build a subagentStart lifecycle event (no side-effects). */
@@ -292,14 +281,6 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
         await emitHook({ type: 'subagentEnd', timestamp: Date.now(), agentName: agent.name, result: abortResult.text, error: false });
         subagentSpan.end({ output: abortResult.text, tokenUsage: abortResult.tokenUsage, toolCallCount: abortResult.toolCallCount, turnCount: abortResult.turnCount, duration: abortResult.duration });
         return abortResult;
-      }
-
-      // Wall-clock backstop: break if this subagent has been running too long.
-      // Prevents a stuck/slow subagent from blocking a run_agent_batch batch forever.
-      if (isWallClockExceeded(Date.now() - startTime, SUBAGENT_WALL_CLOCK_TIMEOUT_MS)) {
-        const note = '[子代理已超时(5分钟墙钟上限),返回当前已有结果]';
-        resultBuffer = resultBuffer ? resultBuffer + '\n\n' + note : note;
-        break;
       }
 
       const collectedToolCalls: Array<{

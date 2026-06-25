@@ -1,8 +1,7 @@
 import { getDeviceId } from './deviceId'
 import { APP_VERSION } from './version'
 import { getPlatform } from './platform'
-
-const CONSOLE_URL = import.meta.env.VITE_CONSOLE_URL as string | undefined
+import { getTelemetryTarget } from './consoleTelemetryTarget'
 
 export function reportError(
   errorType: 'api_error' | 'agent_crash',
@@ -12,9 +11,10 @@ export function reportError(
   errorMessage?: string,
   rawBody?: string,
 ): void {
-  if (!CONSOLE_URL) return
+  const { baseUrl, enabled } = getTelemetryTarget()
+  if (!enabled) return
 
-  fetch(`${CONSOLE_URL}/api/error`, {
+  fetch(`${baseUrl}/api/error`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({

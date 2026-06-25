@@ -47,6 +47,10 @@ export interface EnterpriseConfigSnapshot {
   licenseStatus: 'valid' | 'expired' | 'missing' | 'invalid_signature' | 'malformed'
   serverTime: string
   fetchedAt: number                     // local ms timestamp for freshness checks
+  /** ETag / configVersion value from GET /session; used as If-None-Match on the next poll. */
+  configVersion?: string
+  /** policy.telemetryEnabled from GET /session; controls whether telemetry is sent to the instance. */
+  telemetryEnabled?: boolean
 }
 
 export type EnterpriseMode =

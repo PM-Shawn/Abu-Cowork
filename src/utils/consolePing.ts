@@ -1,11 +1,11 @@
 import { getDeviceId } from './deviceId'
 import { APP_VERSION } from './version'
 import { getPlatform } from './platform'
-
-const CONSOLE_URL = import.meta.env.VITE_CONSOLE_URL as string | undefined
+import { getTelemetryTarget } from './consoleTelemetryTarget'
 
 export function sendConsolePing(): void {
-  if (!CONSOLE_URL) return
+  const { baseUrl, enabled } = getTelemetryTarget()
+  if (!enabled) return
 
   const payload = {
     deviceId: getDeviceId(),
@@ -14,7 +14,7 @@ export function sendConsolePing(): void {
     osVersion: navigator.userAgent,
   }
 
-  fetch(`${CONSOLE_URL}/api/ping`, {
+  fetch(`${baseUrl}/api/ping`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),

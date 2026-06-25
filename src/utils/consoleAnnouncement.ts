@@ -1,6 +1,6 @@
 import { APP_VERSION } from './version'
+import { getTelemetryTarget } from './consoleTelemetryTarget'
 
-const CONSOLE_URL = import.meta.env.VITE_CONSOLE_URL as string | undefined
 const SEEN_KEY = 'abu_seen_announcements'
 
 export interface AnnouncementItem {
@@ -38,7 +38,8 @@ export function markSeen(id: number): void {
 
 // Returns unseen announcements. Caller decides how to display them.
 export async function fetchUnseenAnnouncements(): Promise<AnnouncementItem[]> {
-  if (!CONSOLE_URL) return []
+  const { baseUrl, enabled } = getTelemetryTarget()
+  if (!enabled) return []
 
   try {
     // AbortSignal.timeout() requires Safari 16.4+; use AbortController for broader macOS 12 compat
@@ -46,7 +47,7 @@ export async function fetchUnseenAnnouncements(): Promise<AnnouncementItem[]> {
     const timer = setTimeout(() => controller.abort(), 8000)
     let res: Response
     try {
-      res = await fetch(`${CONSOLE_URL}/api/announcements?version=${APP_VERSION}`, {
+      res = await fetch(`${baseUrl}/api/announcements?version=${APP_VERSION}`, {
         signal: controller.signal,
       })
     } finally {

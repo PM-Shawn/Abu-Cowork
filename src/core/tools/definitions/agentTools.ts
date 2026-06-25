@@ -179,7 +179,7 @@ function buildPresetAgent(type: string, _task: string): SubagentDefinition {
 
 export const delegateToAgentTool: ToolDefinition = {
   name: TOOL_NAMES.DELEGATE_TO_AGENT,
-  description: '将任务委派给代理独立执行。可指定 agent_name（用户自定义代理）或 type（系统内置角色：research 调研/writer 写作/executor 执行）。设置 async: true 可在后台并行执行，不阻塞当前对话。',
+  description: '委派任务给单个代理（同步等待结果）。可指定 agent_name（用户自定义代理）或 type（系统内置角色：research 调研/writer 写作/executor 执行）。需要并行处理多个独立子任务时，请改用 run_agent_batch（更可靠）。（async 参数即将废弃，不建议使用。）',
   inputSchema: {
     type: 'object',
     properties: {

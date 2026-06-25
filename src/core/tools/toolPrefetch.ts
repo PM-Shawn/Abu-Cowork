@@ -82,6 +82,10 @@ const PREFETCH_RULES: ReadonlyArray<{
     keywords: ['截屏', '截图', '屏幕', '打开应用', '点击', '操控电脑', '操作电脑', '鼠标', '键盘', 'screenshot', 'click', 'computer use', '帮我打开', '帮我点'],
     tools: [TOOL_NAMES.COMPUTER],
   },
+  {
+    keywords: ['并行', '同时', '分别', '各自', '批量', 'parallel', 'batch', 'fan out', 'fan-out'],
+    tools: [TOOL_NAMES.RUN_AGENT_BATCH],
+  },
 ];
 
 export interface PrefetchContext {

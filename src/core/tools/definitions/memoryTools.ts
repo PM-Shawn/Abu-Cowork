@@ -1,4 +1,6 @@
-import type { ToolDefinition } from '../../../types';
+import type { ToolDefinition, UserQuestionPayload, UserQuestionResult } from '../../../types';
+import { getPlanMode, setPlanMode } from '../../agent/planMode';
+import { requestUserQuestion } from '../../agent/permissionBridge';
 import { useChatStore } from '../../../stores/chatStore';
 import { useWorkspaceStore } from '../../../stores/workspaceStore';
 import { appendTaskLog, type TaskCategory } from '../../agent/taskLog';
@@ -6,6 +8,31 @@ import { getTodos, addTodo, updateTodo, setTodos, formatTodosForPrompt } from '.
 import type { TodoStatus } from '../../agent/todoManager';
 import { TOOL_NAMES } from '../toolNames';
 import type { MemoryType } from '../../memdir/types';
+
+// ── Plan-mode approval (B1) ─────────────────────────────────────────────────
+export const PLAN_APPROVE_LABEL = '批准执行';
+export const PLAN_REJECT_LABEL = '拒绝，重新规划';
+
+/** Build a single approve/reject question presenting the plan steps for approval. */
+export function buildPlanApprovalPayload(steps: string[]): UserQuestionPayload {
+  const stepList = steps.map((s, i) => `${i + 1}. ${s}`).join('\n');
+  return {
+    questions: [
+      {
+        header: '计划审批',
+        question: `${stepList}\n\n是否批准执行此计划？`,
+        multiSelect: false,
+        options: [{ label: PLAN_APPROVE_LABEL }, { label: PLAN_REJECT_LABEL }],
+      },
+    ],
+  };
+}
+
+/** True only if the user explicitly selected the approve option. */
+export function interpretPlanApproval(result: UserQuestionResult | null): boolean {
+  if (!result) return false;
+  return result.answers[0]?.selected.includes(PLAN_APPROVE_LABEL) ?? false;
+}
 
 export const reportPlanTool: ToolDefinition = {
   name: TOOL_NAMES.REPORT_PLAN,
@@ -21,8 +48,26 @@ export const reportPlanTool: ToolDefinition = {
     },
     required: ['steps'],
   },
-  execute: async (input) => {
+  execute: async (input, context) => {
     const steps = input.steps as string[];
+
+    // Plan-mode approval gate (B1): while the conversation is in 'planning',
+    // presenting a plan requires user approval before writes are unlocked.
+    // Reuses the user-question UI; approve → 'approved' (the tool gate then allows
+    // writes), reject → stay 'planning' so the agent revises and re-submits.
+    const convId = context?.conversationId;
+    if (convId && context?.toolCallId && getPlanMode(convId) === 'planning' && Array.isArray(steps) && steps.length > 0) {
+      const result = await requestUserQuestion(context.toolCallId, convId, buildPlanApprovalPayload(steps));
+      if (interpretPlanApproval(result)) {
+        setPlanMode(convId, 'approved');
+        return '用户已批准计划，现在可以开始执行。';
+      }
+      if (result === null) {
+        return '计划审批超时或已取消，仍处于计划模式（只读）。可重新提交计划。';
+      }
+      return '用户未批准当前计划，请根据反馈修改后重新调用 report_plan。仍处于计划模式（只读）。';
+    }
+
     if (!steps || steps.length === 0) {
       return '已记录执行计划';
     }

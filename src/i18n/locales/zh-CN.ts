@@ -1597,6 +1597,17 @@ const zhCN: TranslationDict = {
     answeredLabel: '已作答',
     submitDisabledHint: '请为每道题选择或填写答案',
     cancelledLabel: '已取消',
+    pager: '{current} / {total}',
+    waitingForAnswer: '等待回答',
+    skip: '跳过',
+    skippedMarker: '（已跳过）',
+    navHint: '↑↓ 导航 · Enter 选择 · ←→ 翻页 · 也可直接在下方输入',
+    qLabel: '问',
+    aLabel: '答',
+    prevQuestion: '上一题',
+    nextQuestion: '下一题',
+    close: '关闭',
+    yourChoiceLabel: '你的选择',
   },
 
   project: {

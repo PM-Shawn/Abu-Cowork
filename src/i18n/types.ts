@@ -1623,6 +1623,28 @@ export interface TranslationDict {
     answeredLabel: string;
     submitDisabledHint: string;
     cancelledLabel: string;
+    /** Pager counter, e.g. "1 / 3" — params: {current} {total} */
+    pager: string;
+    /** Waiting-for-answer status in the tool-call group */
+    waitingForAnswer: string;
+    /** Skip this question */
+    skip: string;
+    /** Marker appended to a skipped question's answer in the result */
+    skippedMarker: string;
+    /** Keyboard / interaction hint shown at the bottom of the dock */
+    navHint: string;
+    /** Label prefix for the question line in the settled bubble */
+    qLabel: string;
+    /** Label prefix for the answer line in the settled bubble */
+    aLabel: string;
+    /** aria-label: go to previous question */
+    prevQuestion: string;
+    /** aria-label: go to next question */
+    nextQuestion: string;
+    /** aria-label: dismiss / cancel the question */
+    close: string;
+    /** Header of the settled answers card (agent side) */
+    yourChoiceLabel: string;
   };
 
   // Projects

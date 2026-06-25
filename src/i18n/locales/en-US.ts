@@ -1596,6 +1596,17 @@ const enUS: TranslationDict = {
     answeredLabel: 'Answered',
     submitDisabledHint: 'Please answer all questions before submitting',
     cancelledLabel: 'Cancelled',
+    pager: '{current} / {total}',
+    waitingForAnswer: 'Waiting for answer',
+    skip: 'Skip',
+    skippedMarker: '(skipped)',
+    navHint: '↑↓ navigate · Enter select · ←→ page · or just type below',
+    qLabel: 'Q',
+    aLabel: 'A',
+    prevQuestion: 'Previous question',
+    nextQuestion: 'Next question',
+    close: 'Close',
+    yourChoiceLabel: 'Your choices',
   },
 
   project: {

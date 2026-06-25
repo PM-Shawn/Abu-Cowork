@@ -106,7 +106,7 @@ function stripMarkdownImages(text: string): string {
 
 type RenderSegment =
   | { kind: 'text'; text: string; message: Message; isLastTurn: boolean }
-  | { kind: 'steps'; executionSteps: ExecutionStep[]; legacySteps: WorkflowStep[]; isLastGroup: boolean };
+  | { kind: 'steps'; executionSteps: ExecutionStep[]; legacySteps: WorkflowStep[]; isLastGroup: boolean; stepsMsgs: Message[] };
 
 /**
  * Build render segments from assistant messages and their steps.
@@ -132,6 +132,7 @@ function buildRenderSegments(
   const segments: RenderSegment[] = [];
   let pendingExecSteps: ExecutionStep[] = [...thinkingExecSteps]; // thinking goes first
   let pendingLegacySteps: WorkflowStep[] = [...thinkingLegacySteps];
+  let pendingStepsMsgs: Message[] = [];
 
   let execOffset = 0;
   let legacyOffset = 0;
@@ -156,6 +157,7 @@ function buildRenderSegments(
           executionSteps: pendingExecSteps,
           legacySteps: pendingLegacySteps,
           isLastGroup: false, // not last yet, there's text after
+          stepsMsgs: pendingStepsMsgs,
         });
       }
 
@@ -165,10 +167,12 @@ function buildRenderSegments(
       // Start accumulating this turn's steps
       pendingExecSteps = [...turnExecSteps];
       pendingLegacySteps = [...turnLegacySteps];
+      pendingStepsMsgs = visibleToolCount > 0 ? [msg] : [];
     } else {
       // No text — accumulate steps
       pendingExecSteps.push(...turnExecSteps);
       pendingLegacySteps.push(...turnLegacySteps);
+      if (visibleToolCount > 0) pendingStepsMsgs.push(msg);
     }
   }
 
@@ -179,6 +183,7 @@ function buildRenderSegments(
       executionSteps: pendingExecSteps,
       legacySteps: pendingLegacySteps,
       isLastGroup: true,
+      stepsMsgs: pendingStepsMsgs,
     });
   }
 
@@ -527,14 +532,30 @@ export default function MessageGroup({ messages, isLastGroup: isLastGroupProp = 
               // finishing and the next LLM turn starting), we still want the
               // dots to keep pulsing so the user knows the loop is still going.
               const hasLaterSegment = segIdx < segments.length - 1;
+              // Exclude ask_user_question from "running" check — that step is
+              // waiting for user input, not processing, so we don't pulse while blocked.
               const execStepsRunning = seg.executionSteps.some(
-                (s) => s.status === 'running' || s.status === 'pending',
+                (s) => (s.status === 'running' || s.status === 'pending') && s.toolName !== TOOL_NAMES.ASK_USER_QUESTION,
               );
               const legacyStepsRunning = seg.legacySteps.some(
                 (s) => s.status === 'running' || s.status === 'pending',
               );
-              const execIsActive = hasLaterSegment ? (groupActive && execStepsRunning) : groupActive;
+              // For the trailing segment, only suppress pulsing if the sole running
+              // step is ask_user_question (otherwise keep pulsing to show loop is alive).
+              const onlyAskUserQuestionRunning =
+                seg.executionSteps.some((s) => s.status === 'running' && s.toolName === TOOL_NAMES.ASK_USER_QUESTION) &&
+                !execStepsRunning;
+              const execIsActive = hasLaterSegment
+                ? (groupActive && execStepsRunning)
+                : (groupActive && !onlyAskUserQuestionRunning);
               const legacyIsActive = hasLaterSegment ? (groupActive && legacyStepsRunning) : groupActive;
+
+              // Settled ask_user_question answers that belong to this steps segment
+              const segSettledUQCards = activeConv?.id
+                ? seg.stepsMsgs
+                    .flatMap((m) => m.toolCalls ?? [])
+                    .filter((tc) => tc.name === TOOL_NAMES.ASK_USER_QUESTION && tc.userQuestionAnswers)
+                : [];
 
               return (
                 <div key={`steps-${segIdx}`}>
@@ -551,6 +572,9 @@ export default function MessageGroup({ messages, isLastGroup: isLastGroupProp = 
                       onRetry={seg.isLastGroup && hasError && !isStreaming ? handleRetry : undefined}
                     />
                   )}
+                  {segSettledUQCards.map((tc) => (
+                    <UserQuestionCard key={`uq-${tc.id}`} toolCall={tc} />
+                  ))}
                 </div>
               );
             })}
@@ -574,19 +598,6 @@ export default function MessageGroup({ messages, isLastGroup: isLastGroupProp = 
                   toolCallId={tc.id}
                   card={tc.noticeCard!}
                   settledAction={tc.noticeCardAction}
-                />
-              );
-            })}
-
-            {activeConv?.id && allToolCalls.filter((tc) => tc.name === TOOL_NAMES.ASK_USER_QUESTION).map((tc) => {
-              const owningMsg = assistantMsgs.find((m) => m.toolCalls?.some((x) => x.id === tc.id));
-              if (!owningMsg) return null;
-              return (
-                <UserQuestionCard
-                  key={`uq-${tc.id}`}
-                  conversationId={activeConv.id}
-                  messageId={owningMsg.id}
-                  toolCall={tc}
                 />
               );
             })}

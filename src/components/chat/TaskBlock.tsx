@@ -19,6 +19,7 @@ import {
   Search,
   Plug,
   Users,
+  MessageSquare,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useI18n, format, type TranslationDict } from '@/i18n';
@@ -435,16 +436,18 @@ function TaskStepItem({ step, showConnector, locale, t }: {
   const isCompleted = step.status === 'completed';
   const isError = step.status === 'error';
   const isThinking = step.type === 'thinking';
+  const isWaitingForAnswer = isRunning && step.toolName === TOOL_NAMES.ASK_USER_QUESTION;
 
   const taskExecutionStore = useTaskExecutionStore();
 
-  // Generate step label - for thinking steps, show duration
+  // Generate step label - for thinking steps, show duration; for waiting ask_user_question, show waiting text
   const stepLabel = useMemo(() => {
+    if (isWaitingForAnswer) return t.userQuestion.waitingForAnswer;
     if (isThinking && isCompleted && step.duration) {
       return format(t.task.thoughtFor, { seconds: step.duration });
     }
     return step.label;
-  }, [step, isThinking, isCompleted, t]);
+  }, [step, isThinking, isCompleted, isWaitingForAnswer, t]);
 
   // Generate completion message if we have tool info
   const completionMsg = useMemo(() => {
@@ -585,7 +588,9 @@ function TaskStepItem({ step, showConnector, locale, t }: {
       {/* Icon column with vertical line */}
       <div className="flex flex-col items-center">
         <div className="w-3.5 h-3.5 mt-0.5 flex items-center justify-center shrink-0">
-          {isRunning ? (
+          {isWaitingForAnswer ? (
+            <MessageSquare className="h-3.5 w-3.5 text-[var(--abu-clay)]" />
+          ) : isRunning ? (
             <Loader2 className="h-3.5 w-3.5 text-[var(--abu-clay)] animate-spin" />
           ) : isError ? (
             <AlertCircle className="h-3.5 w-3.5 text-red-400" />

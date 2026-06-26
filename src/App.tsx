@@ -71,6 +71,8 @@ import { useEnterpriseStore } from '@/stores/enterpriseStore';
 // Side-effect import: registers policyEnforcer in the enterprise mounts registry
 import '@/core/enterprise/policy/enforcer';  // enforcer.ts — non-JSX, side-effect only
 import PolicyConfirmModal from '@/components/enterprise/PolicyConfirmModal';
+import BindToEnterpriseFlow from '@/components/enterprise/BindToEnterpriseFlow';
+import { useDeepLinkEnroll } from '@/core/enterprise/useDeepLinkEnroll';
 
 /**
  * Drain Notice inbox if we're in a state that can actually deliver.
@@ -114,6 +116,7 @@ function App() {
   const showRightPanelToggle = viewMode === 'chat' && (activeConv?.messages?.length ?? 0) > 0;
   const [showCloseDialog, setShowCloseDialog] = useState(false);
   const [pendingAnnouncements, setPendingAnnouncements] = useState<AnnouncementItem[]>([]);
+  const { pendingEnroll, dismissEnroll } = useDeepLinkEnroll();
   const hasRunningAgent = useChatStore((s) =>
     Object.values(s.conversations).some((c) => c.status === 'running')
   );
@@ -567,6 +570,17 @@ function App() {
               if (id != null) markSeen(id);
               setPendingAnnouncements((prev) => prev.slice(1));
             }}
+          />
+        )}
+
+        {/* Deep-link enrollment: show BindToEnterpriseFlow pre-seeded with serverUrl
+            when the app is opened via abu://enroll?server=<URL>&token=<token>.
+            Renders above all other overlays (z-50 inside BindToEnterpriseFlow). */}
+        {pendingEnroll && (
+          <BindToEnterpriseFlow
+            initialServerUrl={pendingEnroll.serverUrl}
+            onDone={dismissEnroll}
+            onCancel={dismissEnroll}
           />
         )}
       </div>

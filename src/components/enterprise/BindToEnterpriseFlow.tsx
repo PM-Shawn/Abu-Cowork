@@ -7,11 +7,19 @@ import { fetchBootstrap } from '@/core/enterprise/bootstrap'
 import type { BootstrapDTO } from '@/core/enterprise/bootstrap'
 import EnterpriseLoginPage from './EnterpriseLoginPage'
 
-export default function BindToEnterpriseFlow({ onDone, onCancel }: { onDone: () => void; onCancel: () => void }) {
+export default function BindToEnterpriseFlow({
+  onDone,
+  onCancel,
+  initialServerUrl,
+}: {
+  onDone: () => void
+  onCancel: () => void
+  initialServerUrl?: string
+}) {
   const { t } = useI18n()
   const tl = t.enterpriseLogin
 
-  const [serverUrl, setServerUrl] = useState('')
+  const [serverUrl, setServerUrl] = useState(initialServerUrl ?? '')
   const [bootstrap, setBootstrap] = useState<BootstrapDTO | null>(null)
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState<string | null>(null)

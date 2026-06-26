@@ -10,5 +10,16 @@
     <string>Abu 需要访问「文稿」文件夹，以便按照你的指令读取或写入其中的文件。</string>
     <key>NSDownloadsFolderUsageDescription</key>
     <string>Abu 需要访问「下载」文件夹，以便按照你的指令读取或写入其中的文件。</string>
+    <key>CFBundleURLTypes</key>
+    <array>
+        <dict>
+            <key>CFBundleURLName</key>
+            <string>Abu Deep Link</string>
+            <key>CFBundleURLSchemes</key>
+            <array>
+                <string>abu</string>
+            </array>
+        </dict>
+    </array>
 </dict>
 </plist>

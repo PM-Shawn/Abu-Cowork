@@ -85,6 +85,14 @@ vi.mock('@tauri-apps/plugin-clipboard-manager', () => ({
   writeText: vi.fn().mockResolvedValue(undefined),
 }));
 
+vi.mock('@tauri-apps/plugin-deep-link', () => ({
+  getCurrent: vi.fn().mockResolvedValue(null),
+  onOpenUrl: vi.fn().mockResolvedValue(() => {}),
+  register: vi.fn().mockResolvedValue(null),
+  unregister: vi.fn().mockResolvedValue(null),
+  isRegistered: vi.fn().mockResolvedValue(false),
+}));
+
 // ── External SDKs ──
 vi.mock('@anthropic-ai/sdk', () => ({
   default: vi.fn().mockImplementation(() => ({

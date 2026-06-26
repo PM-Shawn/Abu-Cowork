@@ -38,6 +38,11 @@
     "shell": {
       "open": true
     },
+    "deep-link": {
+      "desktop": {
+        "schemes": ["abu"]
+      }
+    },
     "updater": {
       "endpoints": [
         "https://abu-agent.oss-cn-beijing.aliyuncs.com/latest.json"

@@ -30,6 +30,9 @@ export function mergeLayers(
     }
     out.push(merged);
   }
+  for (const id of Object.keys(overrides)) {
+    if (!byId.has(id)) console.warn(`[model-data] abu-override for unknown id '${id}' (not in snapshot/overlays) — ignored`);
+  }
   return out;
 }
 

@@ -49,6 +49,13 @@ describe('costTracker', () => {
       expect(calculateTurnCost('llama-3.1-70b', { inputTokens: 1000, outputTokens: 500 })).toBe(0);
     });
 
+    it('gpt-4-turbo uses its own FALLBACK_PRICING entry, not the shorter gpt-4 prefix', () => {
+      // gpt-4-turbo: input $10/M. Without length sort, bare 'gpt-4' ($30/M) would win.
+      const cost = calculateTurnCost('gpt-4-turbo', { inputTokens: 1_000_000 });
+      // 1M tokens * $10/M = $10
+      expect(cost).toBeCloseTo(10, 2);
+    });
+
     it('returns 0 for empty usage', () => {
       expect(calculateTurnCost('claude-sonnet-4', {})).toBe(0);
     });

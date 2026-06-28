@@ -48,7 +48,8 @@ const FALLBACK_PRICING: [string, ModelPricing][] = [
 
 // Generated exact-id prices first (longest id first) so they win over the
 // family-prefix fallbacks below in findPricing's first-startsWith-match scan.
-const MODEL_PRICING: [string, ModelPricing][] = [...GENERATED_MODEL_PRICING, ...FALLBACK_PRICING];
+const MODEL_PRICING: [string, ModelPricing][] = [...GENERATED_MODEL_PRICING, ...FALLBACK_PRICING]
+  .sort((a, b) => b[0].length - a[0].length);
 
 function findPricing(model: string): ModelPricing | null {
   const lower = model.toLowerCase();

@@ -13,6 +13,7 @@ export const GENERATED_KNOWN_MODELS: Record<string, ModelCapabilities> = {
     toolResultImages: 'native',
     documentBlock: true,
     maxOutputTokens: 64000,
+    outputCeiling: 64000,
     contextWindow: 200000
   },
   'claude-haiku-4-5-20251001': {
@@ -21,6 +22,7 @@ export const GENERATED_KNOWN_MODELS: Record<string, ModelCapabilities> = {
     toolResultImages: 'native',
     documentBlock: true,
     maxOutputTokens: 64000,
+    outputCeiling: 64000,
     contextWindow: 200000
   },
   'claude-opus-4-0': {
@@ -29,6 +31,7 @@ export const GENERATED_KNOWN_MODELS: Record<string, ModelCapabilities> = {
     toolResultImages: 'native',
     documentBlock: true,
     maxOutputTokens: 32000,
+    outputCeiling: 32000,
     contextWindow: 200000
   },
   'claude-3-opus-20240229': {
@@ -37,6 +40,7 @@ export const GENERATED_KNOWN_MODELS: Record<string, ModelCapabilities> = {
     toolResultImages: 'native',
     documentBlock: true,
     maxOutputTokens: 4096,
+    outputCeiling: 4096,
     contextWindow: 200000
   },
   'claude-opus-4-1-20250805': {
@@ -45,6 +49,7 @@ export const GENERATED_KNOWN_MODELS: Record<string, ModelCapabilities> = {
     toolResultImages: 'native',
     documentBlock: true,
     maxOutputTokens: 32000,
+    outputCeiling: 32000,
     contextWindow: 200000
   },
   'claude-sonnet-4-5': {
@@ -53,6 +58,7 @@ export const GENERATED_KNOWN_MODELS: Record<string, ModelCapabilities> = {
     toolResultImages: 'native',
     documentBlock: true,
     maxOutputTokens: 64000,
+    outputCeiling: 64000,
     contextWindow: 200000
   },
   'claude-opus-4-7': {
@@ -61,6 +67,7 @@ export const GENERATED_KNOWN_MODELS: Record<string, ModelCapabilities> = {
     toolResultImages: 'native',
     documentBlock: true,
     maxOutputTokens: 128000,
+    outputCeiling: 128000,
     contextWindow: 1000000
   },
   'claude-opus-4-5-20251101': {
@@ -69,6 +76,7 @@ export const GENERATED_KNOWN_MODELS: Record<string, ModelCapabilities> = {
     toolResultImages: 'native',
     documentBlock: true,
     maxOutputTokens: 64000,
+    outputCeiling: 64000,
     contextWindow: 200000
   },
   'claude-3-5-sonnet-20241022': {
@@ -77,6 +85,7 @@ export const GENERATED_KNOWN_MODELS: Record<string, ModelCapabilities> = {
     toolResultImages: 'native',
     documentBlock: true,
     maxOutputTokens: 8192,
+    outputCeiling: 8192,
     contextWindow: 200000
   },
   'claude-opus-4-8': {
@@ -85,6 +94,7 @@ export const GENERATED_KNOWN_MODELS: Record<string, ModelCapabilities> = {
     toolResultImages: 'native',
     documentBlock: true,
     maxOutputTokens: 128000,
+    outputCeiling: 128000,
     contextWindow: 1000000
   },
   'claude-opus-4-20250514': {
@@ -93,6 +103,7 @@ export const GENERATED_KNOWN_MODELS: Record<string, ModelCapabilities> = {
     toolResultImages: 'native',
     documentBlock: true,
     maxOutputTokens: 32000,
+    outputCeiling: 32000,
     contextWindow: 200000
   },
   'claude-3-5-sonnet-20240620': {
@@ -101,6 +112,7 @@ export const GENERATED_KNOWN_MODELS: Record<string, ModelCapabilities> = {
     toolResultImages: 'native',
     documentBlock: true,
     maxOutputTokens: 8192,
+    outputCeiling: 8192,
     contextWindow: 200000
   },
   'claude-sonnet-4-20250514': {
@@ -109,6 +121,7 @@ export const GENERATED_KNOWN_MODELS: Record<string, ModelCapabilities> = {
     toolResultImages: 'native',
     documentBlock: true,
     maxOutputTokens: 64000,
+    outputCeiling: 64000,
     contextWindow: 200000
   },
   'claude-opus-4-1': {
@@ -117,6 +130,7 @@ export const GENERATED_KNOWN_MODELS: Record<string, ModelCapabilities> = {
     toolResultImages: 'native',
     documentBlock: true,
     maxOutputTokens: 32000,
+    outputCeiling: 32000,
     contextWindow: 200000
   },
   'claude-3-haiku-20240307': {
@@ -125,6 +139,7 @@ export const GENERATED_KNOWN_MODELS: Record<string, ModelCapabilities> = {
     toolResultImages: 'native',
     documentBlock: true,
     maxOutputTokens: 4096,
+    outputCeiling: 4096,
     contextWindow: 200000
   },
   'claude-fable-5': {
@@ -133,6 +148,7 @@ export const GENERATED_KNOWN_MODELS: Record<string, ModelCapabilities> = {
     toolResultImages: 'native',
     documentBlock: true,
     maxOutputTokens: 128000,
+    outputCeiling: 128000,
     contextWindow: 1000000
   },
   'claude-sonnet-4-0': {
@@ -141,6 +157,7 @@ export const GENERATED_KNOWN_MODELS: Record<string, ModelCapabilities> = {
     toolResultImages: 'native',
     documentBlock: true,
     maxOutputTokens: 64000,
+    outputCeiling: 64000,
     contextWindow: 200000
   },
   'claude-3-7-sonnet-20250219': {
@@ -149,6 +166,7 @@ export const GENERATED_KNOWN_MODELS: Record<string, ModelCapabilities> = {
     toolResultImages: 'native',
     documentBlock: true,
     maxOutputTokens: 64000,
+    outputCeiling: 64000,
     contextWindow: 200000
   },
   'claude-haiku-4-5': {
@@ -157,6 +175,7 @@ export const GENERATED_KNOWN_MODELS: Record<string, ModelCapabilities> = {
     toolResultImages: 'native',
     documentBlock: true,
     maxOutputTokens: 64000,
+    outputCeiling: 64000,
     contextWindow: 200000
   },
   'claude-opus-4-6': {
@@ -165,6 +184,7 @@ export const GENERATED_KNOWN_MODELS: Record<string, ModelCapabilities> = {
     toolResultImages: 'native',
     documentBlock: true,
     maxOutputTokens: 128000,
+    outputCeiling: 128000,
     contextWindow: 1000000
   },
   'claude-sonnet-4-5-20250929': {
@@ -173,6 +193,7 @@ export const GENERATED_KNOWN_MODELS: Record<string, ModelCapabilities> = {
     toolResultImages: 'native',
     documentBlock: true,
     maxOutputTokens: 64000,
+    outputCeiling: 64000,
     contextWindow: 200000
   },
   'claude-3-sonnet-20240229': {
@@ -181,6 +202,7 @@ export const GENERATED_KNOWN_MODELS: Record<string, ModelCapabilities> = {
     toolResultImages: 'native',
     documentBlock: true,
     maxOutputTokens: 4096,
+    outputCeiling: 4096,
     contextWindow: 200000
   },
   'claude-sonnet-4-6': {
@@ -189,6 +211,7 @@ export const GENERATED_KNOWN_MODELS: Record<string, ModelCapabilities> = {
     toolResultImages: 'native',
     documentBlock: true,
     maxOutputTokens: 64000,
+    outputCeiling: 64000,
     contextWindow: 1000000
   },
   o3: {
@@ -197,6 +220,7 @@ export const GENERATED_KNOWN_MODELS: Record<string, ModelCapabilities> = {
     toolResultImages: 'workaround',
     documentBlock: false,
     maxOutputTokens: 100000,
+    outputCeiling: 100000,
     contextWindow: 200000
   },
   'text-embedding-3-large': {
@@ -205,6 +229,7 @@ export const GENERATED_KNOWN_MODELS: Record<string, ModelCapabilities> = {
     toolResultImages: 'workaround',
     documentBlock: false,
     maxOutputTokens: 3072,
+    outputCeiling: 3072,
     contextWindow: 8191
   },
   'gpt-5.2-pro': {
@@ -213,6 +238,7 @@ export const GENERATED_KNOWN_MODELS: Record<string, ModelCapabilities> = {
     toolResultImages: 'workaround',
     documentBlock: false,
     maxOutputTokens: 128000,
+    outputCeiling: 128000,
     contextWindow: 400000
   },
   'gpt-5': {
@@ -221,6 +247,7 @@ export const GENERATED_KNOWN_MODELS: Record<string, ModelCapabilities> = {
     toolResultImages: 'workaround',
     documentBlock: false,
     maxOutputTokens: 128000,
+    outputCeiling: 128000,
     contextWindow: 400000
   },
   'gpt-3.5-turbo': {
@@ -229,6 +256,7 @@ export const GENERATED_KNOWN_MODELS: Record<string, ModelCapabilities> = {
     toolResultImages: 'workaround',
     documentBlock: false,
     maxOutputTokens: 4096,
+    outputCeiling: 4096,
     contextWindow: 16385
   },
   'gpt-5-pro': {
@@ -236,7 +264,8 @@ export const GENERATED_KNOWN_MODELS: Record<string, ModelCapabilities> = {
     thinking: 'openai-reasoning',
     toolResultImages: 'workaround',
     documentBlock: false,
-    maxOutputTokens: 272000,
+    maxOutputTokens: 128000,
+    outputCeiling: 272000,
     contextWindow: 400000
   },
   'gpt-4o': {
@@ -245,6 +274,7 @@ export const GENERATED_KNOWN_MODELS: Record<string, ModelCapabilities> = {
     toolResultImages: 'workaround',
     documentBlock: false,
     maxOutputTokens: 16384,
+    outputCeiling: 16384,
     contextWindow: 128000
   },
   'gpt-4': {
@@ -253,6 +283,7 @@ export const GENERATED_KNOWN_MODELS: Record<string, ModelCapabilities> = {
     toolResultImages: 'workaround',
     documentBlock: false,
     maxOutputTokens: 8192,
+    outputCeiling: 8192,
     contextWindow: 8192
   },
   'o4-mini': {
@@ -261,6 +292,7 @@ export const GENERATED_KNOWN_MODELS: Record<string, ModelCapabilities> = {
     toolResultImages: 'workaround',
     documentBlock: false,
     maxOutputTokens: 100000,
+    outputCeiling: 100000,
     contextWindow: 200000
   },
   'o3-pro': {
@@ -269,6 +301,7 @@ export const GENERATED_KNOWN_MODELS: Record<string, ModelCapabilities> = {
     toolResultImages: 'workaround',
     documentBlock: false,
     maxOutputTokens: 100000,
+    outputCeiling: 100000,
     contextWindow: 200000
   },
   'chatgpt-image-latest': {
@@ -277,6 +310,7 @@ export const GENERATED_KNOWN_MODELS: Record<string, ModelCapabilities> = {
     toolResultImages: 'workaround',
     documentBlock: false,
     maxOutputTokens: 0,
+    outputCeiling: 0,
     contextWindow: 0
   },
   'gpt-4o-2024-05-13': {
@@ -285,6 +319,7 @@ export const GENERATED_KNOWN_MODELS: Record<string, ModelCapabilities> = {
     toolResultImages: 'workaround',
     documentBlock: false,
     maxOutputTokens: 4096,
+    outputCeiling: 4096,
     contextWindow: 128000
   },
   'gpt-5.4-nano': {
@@ -293,6 +328,7 @@ export const GENERATED_KNOWN_MODELS: Record<string, ModelCapabilities> = {
     toolResultImages: 'workaround',
     documentBlock: false,
     maxOutputTokens: 128000,
+    outputCeiling: 128000,
     contextWindow: 400000
   },
   'gpt-5-chat-latest': {
@@ -301,6 +337,7 @@ export const GENERATED_KNOWN_MODELS: Record<string, ModelCapabilities> = {
     toolResultImages: 'workaround',
     documentBlock: false,
     maxOutputTokens: 128000,
+    outputCeiling: 128000,
     contextWindow: 400000
   },
   'gpt-5.1-codex': {
@@ -309,6 +346,7 @@ export const GENERATED_KNOWN_MODELS: Record<string, ModelCapabilities> = {
     toolResultImages: 'workaround',
     documentBlock: false,
     maxOutputTokens: 128000,
+    outputCeiling: 128000,
     contextWindow: 400000
   },
   'gpt-5.3-codex-spark': {
@@ -317,6 +355,7 @@ export const GENERATED_KNOWN_MODELS: Record<string, ModelCapabilities> = {
     toolResultImages: 'workaround',
     documentBlock: false,
     maxOutputTokens: 32000,
+    outputCeiling: 32000,
     contextWindow: 128000
   },
   'gpt-5.1-codex-max': {
@@ -325,6 +364,7 @@ export const GENERATED_KNOWN_MODELS: Record<string, ModelCapabilities> = {
     toolResultImages: 'workaround',
     documentBlock: false,
     maxOutputTokens: 128000,
+    outputCeiling: 128000,
     contextWindow: 400000
   },
   'gpt-5.3-chat-latest': {
@@ -333,6 +373,7 @@ export const GENERATED_KNOWN_MODELS: Record<string, ModelCapabilities> = {
     toolResultImages: 'workaround',
     documentBlock: false,
     maxOutputTokens: 16384,
+    outputCeiling: 16384,
     contextWindow: 128000
   },
   'gpt-4o-2024-08-06': {
@@ -341,6 +382,7 @@ export const GENERATED_KNOWN_MODELS: Record<string, ModelCapabilities> = {
     toolResultImages: 'workaround',
     documentBlock: false,
     maxOutputTokens: 16384,
+    outputCeiling: 16384,
     contextWindow: 128000
   },
   'text-embedding-ada-002': {
@@ -349,6 +391,7 @@ export const GENERATED_KNOWN_MODELS: Record<string, ModelCapabilities> = {
     toolResultImages: 'workaround',
     documentBlock: false,
     maxOutputTokens: 1536,
+    outputCeiling: 1536,
     contextWindow: 8192
   },
   'o3-mini': {
@@ -357,6 +400,7 @@ export const GENERATED_KNOWN_MODELS: Record<string, ModelCapabilities> = {
     toolResultImages: 'workaround',
     documentBlock: false,
     maxOutputTokens: 100000,
+    outputCeiling: 100000,
     contextWindow: 200000
   },
   'gpt-5.2': {
@@ -365,6 +409,7 @@ export const GENERATED_KNOWN_MODELS: Record<string, ModelCapabilities> = {
     toolResultImages: 'workaround',
     documentBlock: false,
     maxOutputTokens: 128000,
+    outputCeiling: 128000,
     contextWindow: 400000
   },
   'gpt-5.3-codex': {
@@ -373,6 +418,7 @@ export const GENERATED_KNOWN_MODELS: Record<string, ModelCapabilities> = {
     toolResultImages: 'workaround',
     documentBlock: false,
     maxOutputTokens: 128000,
+    outputCeiling: 128000,
     contextWindow: 400000
   },
   'text-embedding-3-small': {
@@ -381,6 +427,7 @@ export const GENERATED_KNOWN_MODELS: Record<string, ModelCapabilities> = {
     toolResultImages: 'workaround',
     documentBlock: false,
     maxOutputTokens: 1536,
+    outputCeiling: 1536,
     contextWindow: 8191
   },
   'gpt-5.1-codex-mini': {
@@ -389,6 +436,7 @@ export const GENERATED_KNOWN_MODELS: Record<string, ModelCapabilities> = {
     toolResultImages: 'workaround',
     documentBlock: false,
     maxOutputTokens: 128000,
+    outputCeiling: 128000,
     contextWindow: 400000
   },
   'gpt-5.1-chat-latest': {
@@ -397,6 +445,7 @@ export const GENERATED_KNOWN_MODELS: Record<string, ModelCapabilities> = {
     toolResultImages: 'workaround',
     documentBlock: false,
     maxOutputTokens: 16384,
+    outputCeiling: 16384,
     contextWindow: 128000
   },
   'gpt-5.2-chat-latest': {
@@ -405,6 +454,7 @@ export const GENERATED_KNOWN_MODELS: Record<string, ModelCapabilities> = {
     toolResultImages: 'workaround',
     documentBlock: false,
     maxOutputTokens: 16384,
+    outputCeiling: 16384,
     contextWindow: 128000
   },
   'o4-mini-deep-research': {
@@ -413,6 +463,7 @@ export const GENERATED_KNOWN_MODELS: Record<string, ModelCapabilities> = {
     toolResultImages: 'workaround',
     documentBlock: false,
     maxOutputTokens: 100000,
+    outputCeiling: 100000,
     contextWindow: 200000
   },
   'gpt-image-1.5': {
@@ -421,6 +472,7 @@ export const GENERATED_KNOWN_MODELS: Record<string, ModelCapabilities> = {
     toolResultImages: 'workaround',
     documentBlock: false,
     maxOutputTokens: 0,
+    outputCeiling: 0,
     contextWindow: 0
   },
   'gpt-4.1-nano': {
@@ -429,6 +481,7 @@ export const GENERATED_KNOWN_MODELS: Record<string, ModelCapabilities> = {
     toolResultImages: 'workaround',
     documentBlock: false,
     maxOutputTokens: 32768,
+    outputCeiling: 32768,
     contextWindow: 1047576
   },
   'gpt-4o-2024-11-20': {
@@ -437,6 +490,7 @@ export const GENERATED_KNOWN_MODELS: Record<string, ModelCapabilities> = {
     toolResultImages: 'workaround',
     documentBlock: false,
     maxOutputTokens: 16384,
+    outputCeiling: 16384,
     contextWindow: 128000
   },
   o1: {
@@ -444,7 +498,8 @@ export const GENERATED_KNOWN_MODELS: Record<string, ModelCapabilities> = {
     thinking: 'uncontrollable',
     toolResultImages: 'workaround',
     documentBlock: false,
-    maxOutputTokens: 100000,
+    maxOutputTokens: 32768,
+    outputCeiling: 100000,
     contextWindow: 200000
   },
   'o1-pro': {
@@ -452,7 +507,8 @@ export const GENERATED_KNOWN_MODELS: Record<string, ModelCapabilities> = {
     thinking: 'uncontrollable',
     toolResultImages: 'workaround',
     documentBlock: false,
-    maxOutputTokens: 100000,
+    maxOutputTokens: 32768,
+    outputCeiling: 100000,
     contextWindow: 200000
   },
   'gpt-5.4': {
@@ -461,6 +517,7 @@ export const GENERATED_KNOWN_MODELS: Record<string, ModelCapabilities> = {
     toolResultImages: 'workaround',
     documentBlock: false,
     maxOutputTokens: 128000,
+    outputCeiling: 128000,
     contextWindow: 1050000
   },
   'gpt-5.4-mini': {
@@ -469,6 +526,7 @@ export const GENERATED_KNOWN_MODELS: Record<string, ModelCapabilities> = {
     toolResultImages: 'workaround',
     documentBlock: false,
     maxOutputTokens: 128000,
+    outputCeiling: 128000,
     contextWindow: 400000
   },
   'gpt-4.1': {
@@ -477,6 +535,7 @@ export const GENERATED_KNOWN_MODELS: Record<string, ModelCapabilities> = {
     toolResultImages: 'workaround',
     documentBlock: false,
     maxOutputTokens: 32768,
+    outputCeiling: 32768,
     contextWindow: 1047576
   },
   'o3-deep-research': {
@@ -485,6 +544,7 @@ export const GENERATED_KNOWN_MODELS: Record<string, ModelCapabilities> = {
     toolResultImages: 'workaround',
     documentBlock: false,
     maxOutputTokens: 100000,
+    outputCeiling: 100000,
     contextWindow: 200000
   },
   'gpt-5-mini': {
@@ -493,6 +553,7 @@ export const GENERATED_KNOWN_MODELS: Record<string, ModelCapabilities> = {
     toolResultImages: 'workaround',
     documentBlock: false,
     maxOutputTokens: 128000,
+    outputCeiling: 128000,
     contextWindow: 400000
   },
   'gpt-image-1': {
@@ -501,6 +562,7 @@ export const GENERATED_KNOWN_MODELS: Record<string, ModelCapabilities> = {
     toolResultImages: 'workaround',
     documentBlock: false,
     maxOutputTokens: 0,
+    outputCeiling: 0,
     contextWindow: 0
   },
   'gpt-4.1-mini': {
@@ -509,6 +571,7 @@ export const GENERATED_KNOWN_MODELS: Record<string, ModelCapabilities> = {
     toolResultImages: 'workaround',
     documentBlock: false,
     maxOutputTokens: 32768,
+    outputCeiling: 32768,
     contextWindow: 1047576
   },
   'gpt-4-turbo': {
@@ -517,6 +580,7 @@ export const GENERATED_KNOWN_MODELS: Record<string, ModelCapabilities> = {
     toolResultImages: 'workaround',
     documentBlock: false,
     maxOutputTokens: 4096,
+    outputCeiling: 4096,
     contextWindow: 128000
   },
   'gpt-image-1-mini': {
@@ -525,6 +589,7 @@ export const GENERATED_KNOWN_MODELS: Record<string, ModelCapabilities> = {
     toolResultImages: 'workaround',
     documentBlock: false,
     maxOutputTokens: 0,
+    outputCeiling: 0,
     contextWindow: 0
   },
   'gpt-5-nano': {
@@ -533,6 +598,7 @@ export const GENERATED_KNOWN_MODELS: Record<string, ModelCapabilities> = {
     toolResultImages: 'workaround',
     documentBlock: false,
     maxOutputTokens: 128000,
+    outputCeiling: 128000,
     contextWindow: 400000
   },
   'gpt-5.4-pro': {
@@ -541,6 +607,7 @@ export const GENERATED_KNOWN_MODELS: Record<string, ModelCapabilities> = {
     toolResultImages: 'workaround',
     documentBlock: false,
     maxOutputTokens: 128000,
+    outputCeiling: 128000,
     contextWindow: 1050000
   },
   'gpt-5.5-pro': {
@@ -549,6 +616,7 @@ export const GENERATED_KNOWN_MODELS: Record<string, ModelCapabilities> = {
     toolResultImages: 'workaround',
     documentBlock: false,
     maxOutputTokens: 128000,
+    outputCeiling: 128000,
     contextWindow: 1050000
   },
   'gpt-4o-mini': {
@@ -557,6 +625,7 @@ export const GENERATED_KNOWN_MODELS: Record<string, ModelCapabilities> = {
     toolResultImages: 'workaround',
     documentBlock: false,
     maxOutputTokens: 16384,
+    outputCeiling: 16384,
     contextWindow: 128000
   },
   'gpt-5-codex': {
@@ -565,6 +634,7 @@ export const GENERATED_KNOWN_MODELS: Record<string, ModelCapabilities> = {
     toolResultImages: 'workaround',
     documentBlock: false,
     maxOutputTokens: 128000,
+    outputCeiling: 128000,
     contextWindow: 400000
   },
   'gpt-5.2-codex': {
@@ -573,6 +643,7 @@ export const GENERATED_KNOWN_MODELS: Record<string, ModelCapabilities> = {
     toolResultImages: 'workaround',
     documentBlock: false,
     maxOutputTokens: 128000,
+    outputCeiling: 128000,
     contextWindow: 400000
   },
   'gpt-image-2': {
@@ -581,6 +652,7 @@ export const GENERATED_KNOWN_MODELS: Record<string, ModelCapabilities> = {
     toolResultImages: 'workaround',
     documentBlock: false,
     maxOutputTokens: 0,
+    outputCeiling: 0,
     contextWindow: 0
   },
   'gpt-5.1': {
@@ -589,6 +661,7 @@ export const GENERATED_KNOWN_MODELS: Record<string, ModelCapabilities> = {
     toolResultImages: 'workaround',
     documentBlock: false,
     maxOutputTokens: 128000,
+    outputCeiling: 128000,
     contextWindow: 400000
   },
   'gpt-5.5': {
@@ -597,6 +670,7 @@ export const GENERATED_KNOWN_MODELS: Record<string, ModelCapabilities> = {
     toolResultImages: 'workaround',
     documentBlock: false,
     maxOutputTokens: 128000,
+    outputCeiling: 128000,
     contextWindow: 1050000
   },
   'deepseek-v4-flash': {
@@ -604,7 +678,8 @@ export const GENERATED_KNOWN_MODELS: Record<string, ModelCapabilities> = {
     thinking: 'uncontrollable',
     toolResultImages: 'none',
     documentBlock: false,
-    maxOutputTokens: 384000,
+    maxOutputTokens: 32768,
+    outputCeiling: 384000,
     contextWindow: 1000000
   },
   'deepseek-v4-pro': {
@@ -612,23 +687,26 @@ export const GENERATED_KNOWN_MODELS: Record<string, ModelCapabilities> = {
     thinking: 'uncontrollable',
     toolResultImages: 'none',
     documentBlock: false,
-    maxOutputTokens: 384000,
+    maxOutputTokens: 32768,
+    outputCeiling: 384000,
     contextWindow: 1000000
   },
   'deepseek-reasoner': {
-    vision: true,
+    vision: false,
     thinking: 'uncontrollable',
     toolResultImages: 'none',
     documentBlock: false,
-    maxOutputTokens: 384000,
+    maxOutputTokens: 32768,
+    outputCeiling: 384000,
     contextWindow: 1000000
   },
   'deepseek-chat': {
-    vision: true,
+    vision: false,
     thinking: false,
     toolResultImages: 'none',
     documentBlock: false,
-    maxOutputTokens: 384000,
+    maxOutputTokens: 128000,
+    outputCeiling: 384000,
     contextWindow: 1000000
   },
   'kimi-k2-0905-preview': {
@@ -636,7 +714,8 @@ export const GENERATED_KNOWN_MODELS: Record<string, ModelCapabilities> = {
     thinking: false,
     toolResultImages: 'none',
     documentBlock: false,
-    maxOutputTokens: 262144,
+    maxOutputTokens: 128000,
+    outputCeiling: 262144,
     contextWindow: 262144
   },
   'kimi-k2-thinking-turbo': {
@@ -644,7 +723,8 @@ export const GENERATED_KNOWN_MODELS: Record<string, ModelCapabilities> = {
     thinking: 'uncontrollable',
     toolResultImages: 'none',
     documentBlock: false,
-    maxOutputTokens: 262144,
+    maxOutputTokens: 32768,
+    outputCeiling: 262144,
     contextWindow: 262144
   },
   'kimi-k2.7-code': {
@@ -652,7 +732,8 @@ export const GENERATED_KNOWN_MODELS: Record<string, ModelCapabilities> = {
     thinking: 'uncontrollable',
     toolResultImages: 'none',
     documentBlock: false,
-    maxOutputTokens: 262144,
+    maxOutputTokens: 32768,
+    outputCeiling: 262144,
     contextWindow: 262144
   },
   'kimi-k2-thinking': {
@@ -660,7 +741,8 @@ export const GENERATED_KNOWN_MODELS: Record<string, ModelCapabilities> = {
     thinking: 'uncontrollable',
     toolResultImages: 'none',
     documentBlock: false,
-    maxOutputTokens: 262144,
+    maxOutputTokens: 32768,
+    outputCeiling: 262144,
     contextWindow: 262144
   },
   'kimi-k2-0711-preview': {
@@ -669,6 +751,7 @@ export const GENERATED_KNOWN_MODELS: Record<string, ModelCapabilities> = {
     toolResultImages: 'none',
     documentBlock: false,
     maxOutputTokens: 16384,
+    outputCeiling: 16384,
     contextWindow: 131072
   },
   'kimi-k2-turbo-preview': {
@@ -676,7 +759,8 @@ export const GENERATED_KNOWN_MODELS: Record<string, ModelCapabilities> = {
     thinking: false,
     toolResultImages: 'none',
     documentBlock: false,
-    maxOutputTokens: 262144,
+    maxOutputTokens: 128000,
+    outputCeiling: 262144,
     contextWindow: 262144
   },
   'kimi-k2.5': {
@@ -684,7 +768,8 @@ export const GENERATED_KNOWN_MODELS: Record<string, ModelCapabilities> = {
     thinking: 'uncontrollable',
     toolResultImages: 'none',
     documentBlock: false,
-    maxOutputTokens: 262144,
+    maxOutputTokens: 32768,
+    outputCeiling: 262144,
     contextWindow: 262144
   },
   'kimi-k2.6': {
@@ -692,7 +777,8 @@ export const GENERATED_KNOWN_MODELS: Record<string, ModelCapabilities> = {
     thinking: 'uncontrollable',
     toolResultImages: 'none',
     documentBlock: false,
-    maxOutputTokens: 262144,
+    maxOutputTokens: 32768,
+    outputCeiling: 262144,
     contextWindow: 262144
   },
   'kimi-k2.7-code-highspeed': {
@@ -700,7 +786,8 @@ export const GENERATED_KNOWN_MODELS: Record<string, ModelCapabilities> = {
     thinking: 'uncontrollable',
     toolResultImages: 'none',
     documentBlock: false,
-    maxOutputTokens: 262144,
+    maxOutputTokens: 32768,
+    outputCeiling: 262144,
     contextWindow: 262144
   },
   'glm-5.1': {
@@ -708,7 +795,8 @@ export const GENERATED_KNOWN_MODELS: Record<string, ModelCapabilities> = {
     thinking: 'uncontrollable',
     toolResultImages: 'workaround',
     documentBlock: false,
-    maxOutputTokens: 131072,
+    maxOutputTokens: 32768,
+    outputCeiling: 131072,
     contextWindow: 200000
   },
   'glm-5.2': {
@@ -716,7 +804,8 @@ export const GENERATED_KNOWN_MODELS: Record<string, ModelCapabilities> = {
     thinking: 'uncontrollable',
     toolResultImages: 'workaround',
     documentBlock: false,
-    maxOutputTokens: 131072,
+    maxOutputTokens: 32768,
+    outputCeiling: 131072,
     contextWindow: 1000000
   },
   'glm-5v-turbo': {
@@ -724,7 +813,8 @@ export const GENERATED_KNOWN_MODELS: Record<string, ModelCapabilities> = {
     thinking: 'uncontrollable',
     toolResultImages: 'workaround',
     documentBlock: false,
-    maxOutputTokens: 131072,
+    maxOutputTokens: 32768,
+    outputCeiling: 131072,
     contextWindow: 200000
   },
   'glm-5': {
@@ -732,7 +822,8 @@ export const GENERATED_KNOWN_MODELS: Record<string, ModelCapabilities> = {
     thinking: 'uncontrollable',
     toolResultImages: 'workaround',
     documentBlock: false,
-    maxOutputTokens: 131072,
+    maxOutputTokens: 32768,
+    outputCeiling: 131072,
     contextWindow: 204800
   },
   'glm-4.5-flash': {
@@ -740,7 +831,8 @@ export const GENERATED_KNOWN_MODELS: Record<string, ModelCapabilities> = {
     thinking: 'uncontrollable',
     toolResultImages: 'workaround',
     documentBlock: false,
-    maxOutputTokens: 98304,
+    maxOutputTokens: 32768,
+    outputCeiling: 98304,
     contextWindow: 131072
   },
   'glm-4.7-flash': {
@@ -748,7 +840,8 @@ export const GENERATED_KNOWN_MODELS: Record<string, ModelCapabilities> = {
     thinking: 'uncontrollable',
     toolResultImages: 'workaround',
     documentBlock: false,
-    maxOutputTokens: 131072,
+    maxOutputTokens: 32768,
+    outputCeiling: 131072,
     contextWindow: 200000
   },
   'glm-4.5-air': {
@@ -756,7 +849,8 @@ export const GENERATED_KNOWN_MODELS: Record<string, ModelCapabilities> = {
     thinking: 'uncontrollable',
     toolResultImages: 'workaround',
     documentBlock: false,
-    maxOutputTokens: 98304,
+    maxOutputTokens: 32768,
+    outputCeiling: 98304,
     contextWindow: 131072
   },
   'glm-4.6v': {
@@ -765,6 +859,7 @@ export const GENERATED_KNOWN_MODELS: Record<string, ModelCapabilities> = {
     toolResultImages: 'workaround',
     documentBlock: false,
     maxOutputTokens: 32768,
+    outputCeiling: 32768,
     contextWindow: 128000
   },
   'glm-4.6': {
@@ -772,7 +867,8 @@ export const GENERATED_KNOWN_MODELS: Record<string, ModelCapabilities> = {
     thinking: 'uncontrollable',
     toolResultImages: 'workaround',
     documentBlock: false,
-    maxOutputTokens: 131072,
+    maxOutputTokens: 32768,
+    outputCeiling: 131072,
     contextWindow: 204800
   },
   'glm-4.7-flashx': {
@@ -780,7 +876,8 @@ export const GENERATED_KNOWN_MODELS: Record<string, ModelCapabilities> = {
     thinking: 'uncontrollable',
     toolResultImages: 'workaround',
     documentBlock: false,
-    maxOutputTokens: 131072,
+    maxOutputTokens: 32768,
+    outputCeiling: 131072,
     contextWindow: 200000
   },
   'glm-4.5': {
@@ -788,7 +885,8 @@ export const GENERATED_KNOWN_MODELS: Record<string, ModelCapabilities> = {
     thinking: 'uncontrollable',
     toolResultImages: 'workaround',
     documentBlock: false,
-    maxOutputTokens: 98304,
+    maxOutputTokens: 32768,
+    outputCeiling: 98304,
     contextWindow: 131072
   },
   'glm-4.5v': {
@@ -797,6 +895,7 @@ export const GENERATED_KNOWN_MODELS: Record<string, ModelCapabilities> = {
     toolResultImages: 'workaround',
     documentBlock: false,
     maxOutputTokens: 16384,
+    outputCeiling: 16384,
     contextWindow: 64000
   },
   'glm-4.7': {
@@ -804,7 +903,8 @@ export const GENERATED_KNOWN_MODELS: Record<string, ModelCapabilities> = {
     thinking: 'uncontrollable',
     toolResultImages: 'workaround',
     documentBlock: false,
-    maxOutputTokens: 131072,
+    maxOutputTokens: 32768,
+    outputCeiling: 131072,
     contextWindow: 204800
   },
   'qwen3-omni-flash': {
@@ -813,6 +913,7 @@ export const GENERATED_KNOWN_MODELS: Record<string, ModelCapabilities> = {
     toolResultImages: 'workaround',
     documentBlock: false,
     maxOutputTokens: 16384,
+    outputCeiling: 16384,
     contextWindow: 65536
   },
   'qwen3-coder-plus': {
@@ -821,6 +922,7 @@ export const GENERATED_KNOWN_MODELS: Record<string, ModelCapabilities> = {
     toolResultImages: 'workaround',
     documentBlock: false,
     maxOutputTokens: 65536,
+    outputCeiling: 65536,
     contextWindow: 1048576
   },
   'qwen-plus': {
@@ -829,6 +931,7 @@ export const GENERATED_KNOWN_MODELS: Record<string, ModelCapabilities> = {
     toolResultImages: 'workaround',
     documentBlock: false,
     maxOutputTokens: 32768,
+    outputCeiling: 32768,
     contextWindow: 1000000
   },
   'qwen3-coder-30b-a3b-instruct': {
@@ -837,6 +940,7 @@ export const GENERATED_KNOWN_MODELS: Record<string, ModelCapabilities> = {
     toolResultImages: 'workaround',
     documentBlock: false,
     maxOutputTokens: 65536,
+    outputCeiling: 65536,
     contextWindow: 262144
   },
   'qwen3-omni-flash-realtime': {
@@ -845,6 +949,7 @@ export const GENERATED_KNOWN_MODELS: Record<string, ModelCapabilities> = {
     toolResultImages: 'workaround',
     documentBlock: false,
     maxOutputTokens: 16384,
+    outputCeiling: 16384,
     contextWindow: 65536
   },
   'qwen3-32b': {
@@ -853,6 +958,7 @@ export const GENERATED_KNOWN_MODELS: Record<string, ModelCapabilities> = {
     toolResultImages: 'workaround',
     documentBlock: false,
     maxOutputTokens: 16384,
+    outputCeiling: 16384,
     contextWindow: 131072
   },
   'qwen-omni-turbo-realtime': {
@@ -861,6 +967,7 @@ export const GENERATED_KNOWN_MODELS: Record<string, ModelCapabilities> = {
     toolResultImages: 'workaround',
     documentBlock: false,
     maxOutputTokens: 2048,
+    outputCeiling: 2048,
     contextWindow: 32768
   },
   'qwen-plus-character-ja': {
@@ -869,6 +976,7 @@ export const GENERATED_KNOWN_MODELS: Record<string, ModelCapabilities> = {
     toolResultImages: 'workaround',
     documentBlock: false,
     maxOutputTokens: 512,
+    outputCeiling: 512,
     contextWindow: 8192
   },
   'qwen3-next-80b-a3b-instruct': {
@@ -877,6 +985,7 @@ export const GENERATED_KNOWN_MODELS: Record<string, ModelCapabilities> = {
     toolResultImages: 'workaround',
     documentBlock: false,
     maxOutputTokens: 32768,
+    outputCeiling: 32768,
     contextWindow: 131072
   },
   'qwen3.7-plus': {
@@ -884,7 +993,8 @@ export const GENERATED_KNOWN_MODELS: Record<string, ModelCapabilities> = {
     thinking: 'uncontrollable',
     toolResultImages: 'workaround',
     documentBlock: false,
-    maxOutputTokens: 65536,
+    maxOutputTokens: 32768,
+    outputCeiling: 65536,
     contextWindow: 1000000
   },
   'qwen3.6-35b-a3b': {
@@ -892,7 +1002,8 @@ export const GENERATED_KNOWN_MODELS: Record<string, ModelCapabilities> = {
     thinking: 'uncontrollable',
     toolResultImages: 'workaround',
     documentBlock: false,
-    maxOutputTokens: 65536,
+    maxOutputTokens: 32768,
+    outputCeiling: 65536,
     contextWindow: 262144
   },
   'qwen3.7-max': {
@@ -901,6 +1012,7 @@ export const GENERATED_KNOWN_MODELS: Record<string, ModelCapabilities> = {
     toolResultImages: 'workaround',
     documentBlock: false,
     maxOutputTokens: 65536,
+    outputCeiling: 65536,
     contextWindow: 1000000
   },
   'qwen3-max': {
@@ -909,6 +1021,7 @@ export const GENERATED_KNOWN_MODELS: Record<string, ModelCapabilities> = {
     toolResultImages: 'workaround',
     documentBlock: false,
     maxOutputTokens: 65536,
+    outputCeiling: 65536,
     contextWindow: 262144
   },
   'qwen2-5-omni-7b': {
@@ -917,6 +1030,7 @@ export const GENERATED_KNOWN_MODELS: Record<string, ModelCapabilities> = {
     toolResultImages: 'workaround',
     documentBlock: false,
     maxOutputTokens: 2048,
+    outputCeiling: 2048,
     contextWindow: 32768
   },
   'qwen3-8b': {
@@ -925,6 +1039,7 @@ export const GENERATED_KNOWN_MODELS: Record<string, ModelCapabilities> = {
     toolResultImages: 'workaround',
     documentBlock: false,
     maxOutputTokens: 8192,
+    outputCeiling: 8192,
     contextWindow: 131072
   },
   'qwen2-5-14b-instruct': {
@@ -933,6 +1048,7 @@ export const GENERATED_KNOWN_MODELS: Record<string, ModelCapabilities> = {
     toolResultImages: 'workaround',
     documentBlock: false,
     maxOutputTokens: 8192,
+    outputCeiling: 8192,
     contextWindow: 131072
   },
   'qwen3-next-80b-a3b-thinking': {
@@ -941,6 +1057,7 @@ export const GENERATED_KNOWN_MODELS: Record<string, ModelCapabilities> = {
     toolResultImages: 'workaround',
     documentBlock: false,
     maxOutputTokens: 32768,
+    outputCeiling: 32768,
     contextWindow: 131072
   },
   'qvq-max': {
@@ -949,6 +1066,7 @@ export const GENERATED_KNOWN_MODELS: Record<string, ModelCapabilities> = {
     toolResultImages: 'workaround',
     documentBlock: false,
     maxOutputTokens: 8192,
+    outputCeiling: 8192,
     contextWindow: 131072
   },
   'qwen3.6-flash': {
@@ -956,7 +1074,8 @@ export const GENERATED_KNOWN_MODELS: Record<string, ModelCapabilities> = {
     thinking: 'uncontrollable',
     toolResultImages: 'workaround',
     documentBlock: false,
-    maxOutputTokens: 65536,
+    maxOutputTokens: 32768,
+    outputCeiling: 65536,
     contextWindow: 1000000
   },
   'qwen2-5-vl-72b-instruct': {
@@ -965,6 +1084,7 @@ export const GENERATED_KNOWN_MODELS: Record<string, ModelCapabilities> = {
     toolResultImages: 'workaround',
     documentBlock: false,
     maxOutputTokens: 8192,
+    outputCeiling: 8192,
     contextWindow: 131072
   },
   'qwen3-vl-plus': {
@@ -973,6 +1093,7 @@ export const GENERATED_KNOWN_MODELS: Record<string, ModelCapabilities> = {
     toolResultImages: 'workaround',
     documentBlock: false,
     maxOutputTokens: 32768,
+    outputCeiling: 32768,
     contextWindow: 262144
   },
   'qwen-vl-ocr': {
@@ -981,6 +1102,7 @@ export const GENERATED_KNOWN_MODELS: Record<string, ModelCapabilities> = {
     toolResultImages: 'workaround',
     documentBlock: false,
     maxOutputTokens: 4096,
+    outputCeiling: 4096,
     contextWindow: 34096
   },
   'qwen-mt-turbo': {
@@ -989,6 +1111,7 @@ export const GENERATED_KNOWN_MODELS: Record<string, ModelCapabilities> = {
     toolResultImages: 'workaround',
     documentBlock: false,
     maxOutputTokens: 8192,
+    outputCeiling: 8192,
     contextWindow: 16384
   },
   'qwen-mt-plus': {
@@ -997,6 +1120,7 @@ export const GENERATED_KNOWN_MODELS: Record<string, ModelCapabilities> = {
     toolResultImages: 'workaround',
     documentBlock: false,
     maxOutputTokens: 8192,
+    outputCeiling: 8192,
     contextWindow: 16384
   },
   'qwen3.5-plus': {
@@ -1004,7 +1128,8 @@ export const GENERATED_KNOWN_MODELS: Record<string, ModelCapabilities> = {
     thinking: 'uncontrollable',
     toolResultImages: 'workaround',
     documentBlock: false,
-    maxOutputTokens: 65536,
+    maxOutputTokens: 32768,
+    outputCeiling: 65536,
     contextWindow: 1000000
   },
   'qwen-omni-turbo': {
@@ -1013,6 +1138,7 @@ export const GENERATED_KNOWN_MODELS: Record<string, ModelCapabilities> = {
     toolResultImages: 'workaround',
     documentBlock: false,
     maxOutputTokens: 2048,
+    outputCeiling: 2048,
     contextWindow: 32768
   },
   'qwen2-5-72b-instruct': {
@@ -1021,6 +1147,7 @@ export const GENERATED_KNOWN_MODELS: Record<string, ModelCapabilities> = {
     toolResultImages: 'workaround',
     documentBlock: false,
     maxOutputTokens: 8192,
+    outputCeiling: 8192,
     contextWindow: 131072
   },
   'qwen-flash': {
@@ -1029,6 +1156,7 @@ export const GENERATED_KNOWN_MODELS: Record<string, ModelCapabilities> = {
     toolResultImages: 'workaround',
     documentBlock: false,
     maxOutputTokens: 32768,
+    outputCeiling: 32768,
     contextWindow: 1000000
   },
   'qwen3-vl-235b-a22b': {
@@ -1037,6 +1165,7 @@ export const GENERATED_KNOWN_MODELS: Record<string, ModelCapabilities> = {
     toolResultImages: 'workaround',
     documentBlock: false,
     maxOutputTokens: 32768,
+    outputCeiling: 32768,
     contextWindow: 131072
   },
   'qwen3-vl-30b-a3b': {
@@ -1045,6 +1174,7 @@ export const GENERATED_KNOWN_MODELS: Record<string, ModelCapabilities> = {
     toolResultImages: 'workaround',
     documentBlock: false,
     maxOutputTokens: 32768,
+    outputCeiling: 32768,
     contextWindow: 131072
   },
   'qwen-vl-max': {
@@ -1053,6 +1183,7 @@ export const GENERATED_KNOWN_MODELS: Record<string, ModelCapabilities> = {
     toolResultImages: 'workaround',
     documentBlock: false,
     maxOutputTokens: 8192,
+    outputCeiling: 8192,
     contextWindow: 131072
   },
   'qwen3.5-27b': {
@@ -1060,7 +1191,8 @@ export const GENERATED_KNOWN_MODELS: Record<string, ModelCapabilities> = {
     thinking: 'uncontrollable',
     toolResultImages: 'workaround',
     documentBlock: false,
-    maxOutputTokens: 65536,
+    maxOutputTokens: 32768,
+    outputCeiling: 65536,
     contextWindow: 262144
   },
   'qwen-max': {
@@ -1069,6 +1201,7 @@ export const GENERATED_KNOWN_MODELS: Record<string, ModelCapabilities> = {
     toolResultImages: 'workaround',
     documentBlock: false,
     maxOutputTokens: 8192,
+    outputCeiling: 8192,
     contextWindow: 32768
   },
   'qwen3-235b-a22b': {
@@ -1077,6 +1210,7 @@ export const GENERATED_KNOWN_MODELS: Record<string, ModelCapabilities> = {
     toolResultImages: 'workaround',
     documentBlock: false,
     maxOutputTokens: 16384,
+    outputCeiling: 16384,
     contextWindow: 131072
   },
   'qwen3-livetranslate-flash-realtime': {
@@ -1085,6 +1219,7 @@ export const GENERATED_KNOWN_MODELS: Record<string, ModelCapabilities> = {
     toolResultImages: 'workaround',
     documentBlock: false,
     maxOutputTokens: 4096,
+    outputCeiling: 4096,
     contextWindow: 53248
   },
   'qwen3.6-27b': {
@@ -1092,7 +1227,8 @@ export const GENERATED_KNOWN_MODELS: Record<string, ModelCapabilities> = {
     thinking: 'uncontrollable',
     toolResultImages: 'workaround',
     documentBlock: false,
-    maxOutputTokens: 65536,
+    maxOutputTokens: 32768,
+    outputCeiling: 65536,
     contextWindow: 262144
   },
   'qwen3.5-35b-a3b': {
@@ -1100,7 +1236,8 @@ export const GENERATED_KNOWN_MODELS: Record<string, ModelCapabilities> = {
     thinking: 'uncontrollable',
     toolResultImages: 'workaround',
     documentBlock: false,
-    maxOutputTokens: 65536,
+    maxOutputTokens: 32768,
+    outputCeiling: 65536,
     contextWindow: 262144
   },
   'qwen3-coder-480b-a35b-instruct': {
@@ -1109,6 +1246,7 @@ export const GENERATED_KNOWN_MODELS: Record<string, ModelCapabilities> = {
     toolResultImages: 'workaround',
     documentBlock: false,
     maxOutputTokens: 65536,
+    outputCeiling: 65536,
     contextWindow: 262144
   },
   'qwq-plus': {
@@ -1117,6 +1255,7 @@ export const GENERATED_KNOWN_MODELS: Record<string, ModelCapabilities> = {
     toolResultImages: 'workaround',
     documentBlock: false,
     maxOutputTokens: 8192,
+    outputCeiling: 8192,
     contextWindow: 131072
   },
   'qwen2-5-32b-instruct': {
@@ -1125,6 +1264,7 @@ export const GENERATED_KNOWN_MODELS: Record<string, ModelCapabilities> = {
     toolResultImages: 'workaround',
     documentBlock: false,
     maxOutputTokens: 8192,
+    outputCeiling: 8192,
     contextWindow: 131072
   },
   'qwen3.5-397b-a17b': {
@@ -1132,7 +1272,8 @@ export const GENERATED_KNOWN_MODELS: Record<string, ModelCapabilities> = {
     thinking: 'uncontrollable',
     toolResultImages: 'workaround',
     documentBlock: false,
-    maxOutputTokens: 65536,
+    maxOutputTokens: 32768,
+    outputCeiling: 65536,
     contextWindow: 262144
   },
   'qwen3-coder-flash': {
@@ -1141,6 +1282,7 @@ export const GENERATED_KNOWN_MODELS: Record<string, ModelCapabilities> = {
     toolResultImages: 'workaround',
     documentBlock: false,
     maxOutputTokens: 65536,
+    outputCeiling: 65536,
     contextWindow: 1000000
   },
   'qwen3-14b': {
@@ -1149,6 +1291,7 @@ export const GENERATED_KNOWN_MODELS: Record<string, ModelCapabilities> = {
     toolResultImages: 'workaround',
     documentBlock: false,
     maxOutputTokens: 8192,
+    outputCeiling: 8192,
     contextWindow: 131072
   },
   'qwen3-asr-flash': {
@@ -1157,6 +1300,7 @@ export const GENERATED_KNOWN_MODELS: Record<string, ModelCapabilities> = {
     toolResultImages: 'workaround',
     documentBlock: false,
     maxOutputTokens: 4096,
+    outputCeiling: 4096,
     contextWindow: 53248
   },
   'qwen-turbo': {
@@ -1165,6 +1309,7 @@ export const GENERATED_KNOWN_MODELS: Record<string, ModelCapabilities> = {
     toolResultImages: 'workaround',
     documentBlock: false,
     maxOutputTokens: 16384,
+    outputCeiling: 16384,
     contextWindow: 1000000
   },
   'qwen2-5-7b-instruct': {
@@ -1173,6 +1318,7 @@ export const GENERATED_KNOWN_MODELS: Record<string, ModelCapabilities> = {
     toolResultImages: 'workaround',
     documentBlock: false,
     maxOutputTokens: 8192,
+    outputCeiling: 8192,
     contextWindow: 131072
   },
   'qwen2-5-vl-7b-instruct': {
@@ -1181,6 +1327,7 @@ export const GENERATED_KNOWN_MODELS: Record<string, ModelCapabilities> = {
     toolResultImages: 'workaround',
     documentBlock: false,
     maxOutputTokens: 8192,
+    outputCeiling: 8192,
     contextWindow: 131072
   },
   'qwen3.6-max-preview': {
@@ -1189,6 +1336,7 @@ export const GENERATED_KNOWN_MODELS: Record<string, ModelCapabilities> = {
     toolResultImages: 'workaround',
     documentBlock: false,
     maxOutputTokens: 65536,
+    outputCeiling: 65536,
     contextWindow: 262144
   },
   'qwen3.5-122b-a10b': {
@@ -1196,7 +1344,8 @@ export const GENERATED_KNOWN_MODELS: Record<string, ModelCapabilities> = {
     thinking: 'uncontrollable',
     toolResultImages: 'workaround',
     documentBlock: false,
-    maxOutputTokens: 65536,
+    maxOutputTokens: 32768,
+    outputCeiling: 65536,
     contextWindow: 262144
   },
   'qwen-vl-plus': {
@@ -1205,6 +1354,7 @@ export const GENERATED_KNOWN_MODELS: Record<string, ModelCapabilities> = {
     toolResultImages: 'workaround',
     documentBlock: false,
     maxOutputTokens: 8192,
+    outputCeiling: 8192,
     contextWindow: 131072
   },
   'qwen3.6-plus': {
@@ -1212,7 +1362,8 @@ export const GENERATED_KNOWN_MODELS: Record<string, ModelCapabilities> = {
     thinking: 'uncontrollable',
     toolResultImages: 'workaround',
     documentBlock: false,
-    maxOutputTokens: 65536,
+    maxOutputTokens: 32768,
+    outputCeiling: 65536,
     contextWindow: 1000000
   },
   'gemini-3.1-flash-lite': {
@@ -1220,7 +1371,8 @@ export const GENERATED_KNOWN_MODELS: Record<string, ModelCapabilities> = {
     thinking: 'uncontrollable',
     toolResultImages: 'workaround',
     documentBlock: false,
-    maxOutputTokens: 65536,
+    maxOutputTokens: 32768,
+    outputCeiling: 65536,
     contextWindow: 1048576
   },
   'gemini-2.5-flash-preview-tts': {
@@ -1229,6 +1381,7 @@ export const GENERATED_KNOWN_MODELS: Record<string, ModelCapabilities> = {
     toolResultImages: 'workaround',
     documentBlock: false,
     maxOutputTokens: 16384,
+    outputCeiling: 16384,
     contextWindow: 8192
   },
   'gemini-2.5-pro': {
@@ -1236,7 +1389,8 @@ export const GENERATED_KNOWN_MODELS: Record<string, ModelCapabilities> = {
     thinking: 'uncontrollable',
     toolResultImages: 'workaround',
     documentBlock: false,
-    maxOutputTokens: 65536,
+    maxOutputTokens: 32768,
+    outputCeiling: 65536,
     contextWindow: 1048576
   },
   'gemini-2.5-flash': {
@@ -1244,7 +1398,8 @@ export const GENERATED_KNOWN_MODELS: Record<string, ModelCapabilities> = {
     thinking: 'uncontrollable',
     toolResultImages: 'workaround',
     documentBlock: false,
-    maxOutputTokens: 65536,
+    maxOutputTokens: 32768,
+    outputCeiling: 65536,
     contextWindow: 1048576
   },
   'gemini-3.5-flash': {
@@ -1252,7 +1407,8 @@ export const GENERATED_KNOWN_MODELS: Record<string, ModelCapabilities> = {
     thinking: 'uncontrollable',
     toolResultImages: 'workaround',
     documentBlock: false,
-    maxOutputTokens: 65536,
+    maxOutputTokens: 32768,
+    outputCeiling: 65536,
     contextWindow: 1048576
   },
   'gemma-4-31b-it': {
@@ -1261,6 +1417,7 @@ export const GENERATED_KNOWN_MODELS: Record<string, ModelCapabilities> = {
     toolResultImages: 'none',
     documentBlock: false,
     maxOutputTokens: 32768,
+    outputCeiling: 32768,
     contextWindow: 262144
   },
   'gemini-2.0-flash': {
@@ -1269,6 +1426,7 @@ export const GENERATED_KNOWN_MODELS: Record<string, ModelCapabilities> = {
     toolResultImages: 'workaround',
     documentBlock: false,
     maxOutputTokens: 8192,
+    outputCeiling: 8192,
     contextWindow: 1048576
   },
   'gemini-embedding-001': {
@@ -1277,6 +1435,7 @@ export const GENERATED_KNOWN_MODELS: Record<string, ModelCapabilities> = {
     toolResultImages: 'workaround',
     documentBlock: false,
     maxOutputTokens: 1,
+    outputCeiling: 1,
     contextWindow: 2048
   },
   'gemini-3.1-pro-preview-customtools': {
@@ -1284,7 +1443,8 @@ export const GENERATED_KNOWN_MODELS: Record<string, ModelCapabilities> = {
     thinking: 'uncontrollable',
     toolResultImages: 'workaround',
     documentBlock: false,
-    maxOutputTokens: 65536,
+    maxOutputTokens: 32768,
+    outputCeiling: 65536,
     contextWindow: 1048576
   },
   'gemini-flash-lite-latest': {
@@ -1292,7 +1452,8 @@ export const GENERATED_KNOWN_MODELS: Record<string, ModelCapabilities> = {
     thinking: 'uncontrollable',
     toolResultImages: 'workaround',
     documentBlock: false,
-    maxOutputTokens: 65536,
+    maxOutputTokens: 32768,
+    outputCeiling: 65536,
     contextWindow: 1048576
   },
   'gemini-3-pro-image-preview': {
@@ -1301,6 +1462,7 @@ export const GENERATED_KNOWN_MODELS: Record<string, ModelCapabilities> = {
     toolResultImages: 'workaround',
     documentBlock: false,
     maxOutputTokens: 32768,
+    outputCeiling: 32768,
     contextWindow: 131072
   },
   'gemini-2.5-flash-image': {
@@ -1309,6 +1471,7 @@ export const GENERATED_KNOWN_MODELS: Record<string, ModelCapabilities> = {
     toolResultImages: 'workaround',
     documentBlock: false,
     maxOutputTokens: 32768,
+    outputCeiling: 32768,
     contextWindow: 32768
   },
   'gemini-2.5-flash-lite': {
@@ -1316,7 +1479,8 @@ export const GENERATED_KNOWN_MODELS: Record<string, ModelCapabilities> = {
     thinking: 'uncontrollable',
     toolResultImages: 'workaround',
     documentBlock: false,
-    maxOutputTokens: 65536,
+    maxOutputTokens: 32768,
+    outputCeiling: 65536,
     contextWindow: 1048576
   },
   'gemini-3.1-flash-image-preview': {
@@ -1324,7 +1488,8 @@ export const GENERATED_KNOWN_MODELS: Record<string, ModelCapabilities> = {
     thinking: 'uncontrollable',
     toolResultImages: 'workaround',
     documentBlock: false,
-    maxOutputTokens: 65536,
+    maxOutputTokens: 32768,
+    outputCeiling: 65536,
     contextWindow: 65536
   },
   'gemini-3.1-pro-preview': {
@@ -1332,7 +1497,8 @@ export const GENERATED_KNOWN_MODELS: Record<string, ModelCapabilities> = {
     thinking: 'uncontrollable',
     toolResultImages: 'workaround',
     documentBlock: false,
-    maxOutputTokens: 65536,
+    maxOutputTokens: 32768,
+    outputCeiling: 65536,
     contextWindow: 1048576
   },
   'gemma-4-26b-a4b-it': {
@@ -1341,6 +1507,7 @@ export const GENERATED_KNOWN_MODELS: Record<string, ModelCapabilities> = {
     toolResultImages: 'none',
     documentBlock: false,
     maxOutputTokens: 32768,
+    outputCeiling: 32768,
     contextWindow: 262144
   },
   'gemini-3-pro-preview': {
@@ -1348,7 +1515,8 @@ export const GENERATED_KNOWN_MODELS: Record<string, ModelCapabilities> = {
     thinking: 'uncontrollable',
     toolResultImages: 'workaround',
     documentBlock: false,
-    maxOutputTokens: 65536,
+    maxOutputTokens: 32768,
+    outputCeiling: 65536,
     contextWindow: 1048576
   },
   'gemini-3-flash-preview': {
@@ -1356,7 +1524,8 @@ export const GENERATED_KNOWN_MODELS: Record<string, ModelCapabilities> = {
     thinking: 'uncontrollable',
     toolResultImages: 'workaround',
     documentBlock: false,
-    maxOutputTokens: 65536,
+    maxOutputTokens: 32768,
+    outputCeiling: 65536,
     contextWindow: 1048576
   },
   'gemini-2.5-pro-preview-tts': {
@@ -1365,6 +1534,7 @@ export const GENERATED_KNOWN_MODELS: Record<string, ModelCapabilities> = {
     toolResultImages: 'workaround',
     documentBlock: false,
     maxOutputTokens: 16384,
+    outputCeiling: 16384,
     contextWindow: 8192
   },
   'gemini-flash-latest': {
@@ -1372,7 +1542,8 @@ export const GENERATED_KNOWN_MODELS: Record<string, ModelCapabilities> = {
     thinking: 'uncontrollable',
     toolResultImages: 'workaround',
     documentBlock: false,
-    maxOutputTokens: 65536,
+    maxOutputTokens: 32768,
+    outputCeiling: 65536,
     contextWindow: 1048576
   },
   'gemini-3.1-flash-lite-preview': {
@@ -1380,7 +1551,8 @@ export const GENERATED_KNOWN_MODELS: Record<string, ModelCapabilities> = {
     thinking: 'uncontrollable',
     toolResultImages: 'workaround',
     documentBlock: false,
-    maxOutputTokens: 65536,
+    maxOutputTokens: 32768,
+    outputCeiling: 65536,
     contextWindow: 1048576
   },
   'gemini-2.0-flash-lite': {
@@ -1389,6 +1561,7 @@ export const GENERATED_KNOWN_MODELS: Record<string, ModelCapabilities> = {
     toolResultImages: 'workaround',
     documentBlock: false,
     maxOutputTokens: 8192,
+    outputCeiling: 8192,
     contextWindow: 1048576
   },
   'grok-4.20-multi-agent-0309': {
@@ -1397,6 +1570,7 @@ export const GENERATED_KNOWN_MODELS: Record<string, ModelCapabilities> = {
     toolResultImages: 'workaround',
     documentBlock: false,
     maxOutputTokens: 30000,
+    outputCeiling: 30000,
     contextWindow: 1000000
   },
   'grok-4.20-0309-non-reasoning': {
@@ -1405,6 +1579,7 @@ export const GENERATED_KNOWN_MODELS: Record<string, ModelCapabilities> = {
     toolResultImages: 'workaround',
     documentBlock: false,
     maxOutputTokens: 30000,
+    outputCeiling: 30000,
     contextWindow: 1000000
   },
   'grok-4.3': {
@@ -1413,6 +1588,7 @@ export const GENERATED_KNOWN_MODELS: Record<string, ModelCapabilities> = {
     toolResultImages: 'workaround',
     documentBlock: false,
     maxOutputTokens: 30000,
+    outputCeiling: 30000,
     contextWindow: 1000000
   },
   'grok-imagine-image-quality': {
@@ -1421,6 +1597,7 @@ export const GENERATED_KNOWN_MODELS: Record<string, ModelCapabilities> = {
     toolResultImages: 'workaround',
     documentBlock: false,
     maxOutputTokens: 0,
+    outputCeiling: 0,
     contextWindow: 8000
   },
   'grok-imagine-video': {
@@ -1429,6 +1606,7 @@ export const GENERATED_KNOWN_MODELS: Record<string, ModelCapabilities> = {
     toolResultImages: 'workaround',
     documentBlock: false,
     maxOutputTokens: 0,
+    outputCeiling: 0,
     contextWindow: 1024
   },
   'grok-4.20-0309-reasoning': {
@@ -1437,6 +1615,7 @@ export const GENERATED_KNOWN_MODELS: Record<string, ModelCapabilities> = {
     toolResultImages: 'workaround',
     documentBlock: false,
     maxOutputTokens: 30000,
+    outputCeiling: 30000,
     contextWindow: 1000000
   },
   'grok-imagine-image': {
@@ -1445,6 +1624,7 @@ export const GENERATED_KNOWN_MODELS: Record<string, ModelCapabilities> = {
     toolResultImages: 'workaround',
     documentBlock: false,
     maxOutputTokens: 0,
+    outputCeiling: 0,
     contextWindow: 8000
   },
   'grok-build-0.1': {
@@ -1452,7 +1632,8 @@ export const GENERATED_KNOWN_MODELS: Record<string, ModelCapabilities> = {
     thinking: 'uncontrollable',
     toolResultImages: 'workaround',
     documentBlock: false,
-    maxOutputTokens: 256000,
+    maxOutputTokens: 32768,
+    outputCeiling: 256000,
     contextWindow: 256000
   },
   'doubao-seed-2.0-code': {
@@ -1461,6 +1642,7 @@ export const GENERATED_KNOWN_MODELS: Record<string, ModelCapabilities> = {
     toolResultImages: 'workaround',
     documentBlock: false,
     maxOutputTokens: 32768,
+    outputCeiling: 32768,
     contextWindow: 256000
   },
   'doubao-seed-2.0-pro': {
@@ -1469,6 +1651,7 @@ export const GENERATED_KNOWN_MODELS: Record<string, ModelCapabilities> = {
     toolResultImages: 'workaround',
     documentBlock: false,
     maxOutputTokens: 32768,
+    outputCeiling: 32768,
     contextWindow: 256000
   },
   'doubao-seed-2.0-lite': {
@@ -1477,6 +1660,7 @@ export const GENERATED_KNOWN_MODELS: Record<string, ModelCapabilities> = {
     toolResultImages: 'workaround',
     documentBlock: false,
     maxOutputTokens: 16384,
+    outputCeiling: 16384,
     contextWindow: 256000
   },
   'doubao-seed-code': {
@@ -1485,6 +1669,7 @@ export const GENERATED_KNOWN_MODELS: Record<string, ModelCapabilities> = {
     toolResultImages: 'workaround',
     documentBlock: false,
     maxOutputTokens: 32768,
+    outputCeiling: 32768,
     contextWindow: 256000
   }
 };

@@ -19,6 +19,7 @@ export interface ModelRecord {
   vision: boolean;
   contextWindow: number;
   maxOutputTokens: number;
+  outputCeiling?: number;
   reasoning: boolean;
   pdfInput: boolean;
   pricing?: RecordPricing;

@@ -28,6 +28,10 @@ export interface ModelCapabilities {
   documentBlock: boolean;
   /** Suggested max output tokens */
   maxOutputTokens: number;
+  /** The model's true maximum output capability (hard ceiling for clamping/escalation).
+   *  Distinct from maxOutputTokens, which is the conservative per-turn request budget.
+   *  Optional: pattern-fallback caps omit it (consumers fall back to maxOutputTokens). */
+  outputCeiling?: number;
   /** Context window size */
   contextWindow: number;
 }

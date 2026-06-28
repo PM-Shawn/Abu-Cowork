@@ -6,6 +6,16 @@ import type { ModelRecord, ModelsDevApi } from '../src/core/llm/model-data/schem
 import { mapModelsDevModel } from '../src/core/llm/model-data/mapModelsDev';
 import { mergeLayers } from '../src/core/llm/model-data/merge';
 
+// Conservative per-turn request budget caps. The model's true ceiling is kept
+// separately in outputCeiling. 'uncontrollable' reasoning has no budget knob, so
+// bound it hard; controllable reasoning / plain models get a generous universal cap.
+const REQUEST_CAP_UNCONTROLLED = 32768;
+const REQUEST_CAP_DEFAULT = 128000;
+function requestBudget(r: ModelRecord): number {
+  const cap = r.thinking === 'uncontrollable' ? REQUEST_CAP_UNCONTROLLED : REQUEST_CAP_DEFAULT;
+  return Math.min(r.maxOutputTokens, cap);
+}
+
 const HERE = dirname(fileURLToPath(import.meta.url));
 const DATA = resolve(HERE, '../src/core/llm/model-data');
 const OUT = resolve(HERE, '../src/core/llm/generated/modelData.generated.ts');
@@ -18,7 +28,8 @@ export function recordsToCapabilities(recs: ModelRecord[]): Record<string, Model
       thinking: r.thinking ?? false,
       toolResultImages: r.toolResultImages ?? 'workaround',
       documentBlock: r.documentBlock ?? false,
-      maxOutputTokens: r.maxOutputTokens,
+      maxOutputTokens: requestBudget(r),
+      outputCeiling: r.outputCeiling ?? r.maxOutputTokens,
       contextWindow: r.contextWindow,
     };
   }

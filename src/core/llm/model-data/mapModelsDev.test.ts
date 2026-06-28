@@ -14,7 +14,7 @@ describe('mapModelsDevModel', () => {
     const r = mapModelsDevModel(OPUS, 'anthropic');
     expect(r).toMatchObject({
       id: 'claude-opus-4-8', family: 'claude-opus', vision: true,
-      contextWindow: 1000000, maxOutputTokens: 128000, reasoning: true, pdfInput: true,
+      contextWindow: 1000000, maxOutputTokens: 128000, outputCeiling: 128000, reasoning: true, pdfInput: true,
       providers: ['anthropic'],
       pricing: { input: 5, output: 25, cacheRead: 0.5, cacheCreation: 6.25 },
     });

@@ -2,6 +2,7 @@
   "overrides": {
     "qwen3-max":   { "thinking": "qwen", "maxOutputTokens": 65536 },
     "qwen3.7-max": { "thinking": "qwen", "maxOutputTokens": 65536, "contextWindow": 1000000 },
-    "deepseek-reasoner": { "thinking": "uncontrollable" }
+    "deepseek-chat": { "vision": false },
+    "deepseek-reasoner": { "thinking": "uncontrollable", "vision": false }
   }
 }

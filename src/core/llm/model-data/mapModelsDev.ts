@@ -10,6 +10,7 @@ export function mapModelsDevModel(m: ModelsDevModel, providerId: string): ModelR
     vision: m.attachment === true || input.includes('image'),
     contextWindow: m.limit?.context ?? 0,
     maxOutputTokens: m.limit?.output ?? 0,
+    outputCeiling: m.limit?.output ?? 0,
     reasoning: m.reasoning === true,
     pdfInput: input.includes('pdf'),
   };

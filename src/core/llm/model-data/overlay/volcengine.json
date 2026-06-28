@@ -1,12 +1,12 @@
 {
   "models": [
     { "id": "doubao-seed-2.0-code", "label": "Doubao Seed 2.0 Code", "providers": ["volcengine"],
-      "vision": false, "contextWindow": 256000, "maxOutputTokens": 32768, "reasoning": false, "pdfInput": false },
+      "vision": false, "contextWindow": 256000, "maxOutputTokens": 32768, "outputCeiling": 32768, "reasoning": false, "pdfInput": false },
     { "id": "doubao-seed-2.0-pro", "label": "Doubao Seed 2.0 Pro", "providers": ["volcengine"],
-      "vision": true, "contextWindow": 256000, "maxOutputTokens": 32768, "reasoning": false, "pdfInput": false },
+      "vision": true, "contextWindow": 256000, "maxOutputTokens": 32768, "outputCeiling": 32768, "reasoning": false, "pdfInput": false },
     { "id": "doubao-seed-2.0-lite", "label": "Doubao Seed 2.0 Lite", "providers": ["volcengine"],
-      "vision": false, "contextWindow": 256000, "maxOutputTokens": 16384, "reasoning": false, "pdfInput": false },
+      "vision": false, "contextWindow": 256000, "maxOutputTokens": 16384, "outputCeiling": 16384, "reasoning": false, "pdfInput": false },
     { "id": "doubao-seed-code", "label": "Doubao Seed Code", "providers": ["volcengine"],
-      "vision": false, "contextWindow": 256000, "maxOutputTokens": 32768, "reasoning": false, "pdfInput": false }
+      "vision": false, "contextWindow": 256000, "maxOutputTokens": 32768, "outputCeiling": 32768, "reasoning": false, "pdfInput": false }
   ]
 }

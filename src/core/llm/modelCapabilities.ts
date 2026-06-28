@@ -5,6 +5,7 @@
  * Enables correct behavior when using proxy services like OpenRouter
  * that route to different models via a single API format.
  */
+import { GENERATED_KNOWN_MODELS } from './generated/modelData.generated';
 
 // How images in tool results are handled
 export type ToolResultImageSupport = 'native' | 'workaround' | 'none';
@@ -38,72 +39,11 @@ export interface ModelCapabilities {
 
 // ── Known model capabilities ────────────────────────────────────────
 
-const KNOWN_MODELS: Record<string, ModelCapabilities> = {
-  // Claude 4.x series
-  'claude-opus-4-6':            { vision: true,  thinking: 'anthropic',        toolResultImages: 'native', documentBlock: true,  maxOutputTokens: 32768, contextWindow: 200000 },
-  'claude-sonnet-4-6':          { vision: true,  thinking: 'anthropic',        toolResultImages: 'native', documentBlock: true,  maxOutputTokens: 32768, contextWindow: 200000 },
-  'claude-haiku-4-5-20251001':  { vision: true,  thinking: false,              toolResultImages: 'native', documentBlock: true,  maxOutputTokens: 8192,  contextWindow: 200000 },
-  // Claude 3.x series
-  'claude-3-5-sonnet-20241022': { vision: true,  thinking: false,              toolResultImages: 'native', documentBlock: true,  maxOutputTokens: 8192,  contextWindow: 200000 },
-  'claude-3-5-haiku-20241022':  { vision: true,  thinking: false,              toolResultImages: 'native', documentBlock: true,  maxOutputTokens: 8192,  contextWindow: 200000 },
-
-  // OpenAI GPT series
-  'gpt-4o':                     { vision: true,  thinking: false,              toolResultImages: 'workaround', documentBlock: false, maxOutputTokens: 16384,  contextWindow: 128000 },
-  'gpt-4o-mini':                { vision: true,  thinking: false,              toolResultImages: 'workaround', documentBlock: false, maxOutputTokens: 16384,  contextWindow: 128000 },
-  'gpt-4.1':                    { vision: true,  thinking: false,              toolResultImages: 'workaround', documentBlock: false, maxOutputTokens: 32768,  contextWindow: 1048576 },
-  'gpt-4.1-mini':               { vision: true,  thinking: false,              toolResultImages: 'workaround', documentBlock: false, maxOutputTokens: 32768,  contextWindow: 1048576 },
-  'gpt-4.1-nano':               { vision: true,  thinking: false,              toolResultImages: 'workaround', documentBlock: false, maxOutputTokens: 32768,  contextWindow: 1048576 },
-  'gpt-5.4':                    { vision: true,  thinking: 'openai-reasoning', toolResultImages: 'workaround', documentBlock: false, maxOutputTokens: 128000, contextWindow: 1048576 },
-  'o3':                         { vision: true,  thinking: 'openai-reasoning', toolResultImages: 'workaround', documentBlock: false, maxOutputTokens: 100000, contextWindow: 200000 },
-  'o3-mini':                    { vision: false, thinking: 'openai-reasoning', toolResultImages: 'workaround', documentBlock: false, maxOutputTokens: 100000, contextWindow: 200000 },
-  'o4-mini':                    { vision: true,  thinking: 'openai-reasoning', toolResultImages: 'workaround', documentBlock: false, maxOutputTokens: 100000, contextWindow: 200000 },
-
-  // DeepSeek series
-  'deepseek-chat':              { vision: false, thinking: false,              toolResultImages: 'none',       documentBlock: false, maxOutputTokens: 8192,  contextWindow: 128000 },
-  'deepseek-reasoner':          { vision: false, thinking: 'uncontrollable',   toolResultImages: 'none',       documentBlock: false, maxOutputTokens: 8192,  contextWindow: 128000 },
-
-  // Doubao (Volcengine)
-  'doubao-seed-2-0-pro-260215': { vision: true,  thinking: false,              toolResultImages: 'workaround', documentBlock: false, maxOutputTokens: 32768, contextWindow: 256000 },
-
-  // Qwen (Bailian) — text-only models, vision requires separate qwen-vl-* models
-  // Output limits & reasoning status probe-verified against DashScope (2026-05).
-  'qwen-max':                   { vision: false, thinking: false,              toolResultImages: 'workaround', documentBlock: false, maxOutputTokens: 8192,  contextWindow: 262144 },
-  'qwen-plus':                  { vision: false, thinking: false,              toolResultImages: 'workaround', documentBlock: false, maxOutputTokens: 32768, contextWindow: 131072 },
-  // Qwen3.x flagship — reasoning models (thinking always on, bounded via thinking_budget)
-  'qwen3-max':                  { vision: false, thinking: 'qwen',             toolResultImages: 'workaround', documentBlock: false, maxOutputTokens: 65536, contextWindow: 262144 },
-  'qwen3.7-max':                { vision: false, thinking: 'qwen',             toolResultImages: 'workaround', documentBlock: false, maxOutputTokens: 65536, contextWindow: 1000000 },
-
-  // Moonshot
-  'moonshot-v1-128k':           { vision: false, thinking: false,              toolResultImages: 'none',       documentBlock: false, maxOutputTokens: 4096,  contextWindow: 128000 },
-
-  // MiniMax series (M2.7 supports vision via OpenAI-compatible image_url format)
-  'MiniMax-M2.7':              { vision: true,  thinking: false,              toolResultImages: 'workaround', documentBlock: false, maxOutputTokens: 8192,  contextWindow: 204800 },
-  'MiniMax-M2.7-highspeed':    { vision: true,  thinking: false,              toolResultImages: 'workaround', documentBlock: false, maxOutputTokens: 8192,  contextWindow: 204800 },
-  'MiniMax-M2.5':              { vision: false, thinking: false,              toolResultImages: 'workaround', documentBlock: false, maxOutputTokens: 8192,  contextWindow: 204800 },
-  'MiniMax-M2.5-highspeed':    { vision: false, thinking: false,              toolResultImages: 'workaround', documentBlock: false, maxOutputTokens: 8192,  contextWindow: 204800 },
-
-  // Local / Ollama models
-  'gemma3':                     { vision: true,  thinking: false,              toolResultImages: 'none',       documentBlock: false, maxOutputTokens: 8192,  contextWindow: 128000 },
-  'gemma3:27b':                 { vision: true,  thinking: false,              toolResultImages: 'none',       documentBlock: false, maxOutputTokens: 8192,  contextWindow: 128000 },
-  'gemma3:12b':                 { vision: true,  thinking: false,              toolResultImages: 'none',       documentBlock: false, maxOutputTokens: 8192,  contextWindow: 128000 },
-  'gemma3:4b':                  { vision: true,  thinking: false,              toolResultImages: 'none',       documentBlock: false, maxOutputTokens: 8192,  contextWindow: 128000 },
-  'gemma2':                     { vision: false, thinking: false,              toolResultImages: 'none',       documentBlock: false, maxOutputTokens: 8192,  contextWindow: 8192 },
-  'llama3.3':                   { vision: false, thinking: false,              toolResultImages: 'none',       documentBlock: false, maxOutputTokens: 4096,  contextWindow: 128000 },
-  'llama3.2':                   { vision: true,  thinking: false,              toolResultImages: 'none',       documentBlock: false, maxOutputTokens: 4096,  contextWindow: 128000 },
-  'llama3.1':                   { vision: false, thinking: false,              toolResultImages: 'none',       documentBlock: false, maxOutputTokens: 4096,  contextWindow: 128000 },
-  'qwen2.5':                    { vision: false, thinking: false,              toolResultImages: 'none',       documentBlock: false, maxOutputTokens: 8192,  contextWindow: 32768 },
-  'qwen3':                      { vision: false, thinking: false,              toolResultImages: 'none',       documentBlock: false, maxOutputTokens: 8192,  contextWindow: 128000 },
-  'phi4':                       { vision: false, thinking: false,              toolResultImages: 'none',       documentBlock: false, maxOutputTokens: 4096,  contextWindow: 16384 },
-  'phi3':                       { vision: false, thinking: false,              toolResultImages: 'none',       documentBlock: false, maxOutputTokens: 4096,  contextWindow: 128000 },
-  'mistral':                    { vision: false, thinking: false,              toolResultImages: 'none',       documentBlock: false, maxOutputTokens: 4096,  contextWindow: 32768 },
-  'codellama':                  { vision: false, thinking: false,              toolResultImages: 'none',       documentBlock: false, maxOutputTokens: 4096,  contextWindow: 16384 },
-  'deepseek-r1:distill':        { vision: false, thinking: 'uncontrollable',   toolResultImages: 'none',       documentBlock: false, maxOutputTokens: 8192,  contextWindow: 128000 },
-
-  // GLM series (Zhipu AI / Huawei ModelArts)
-  'glm-4':                      { vision: false, thinking: false,              toolResultImages: 'none',       documentBlock: false, maxOutputTokens: 4096,  contextWindow: 128000 },
-  'glm-4v':                     { vision: true,  thinking: false,              toolResultImages: 'workaround', documentBlock: false, maxOutputTokens: 4096,  contextWindow: 128000 },
-  'glm-5':                      { vision: false, thinking: false,              toolResultImages: 'none',       documentBlock: false, maxOutputTokens: 8192,  contextWindow: 128000 },
-};
+// Static capability table, generated from models.dev + overlays.
+// Regenerate with `npm run gen:models`. DO NOT hand-edit model entries here —
+// edit src/core/llm/model-data/overlay/* instead. resolveCapabilities() below
+// keeps its pattern fallback for ids not present in this table.
+const KNOWN_MODELS: Record<string, ModelCapabilities> = GENERATED_KNOWN_MODELS;
 
 // ── Pattern-based defaults ──────────────────────────────────────────
 

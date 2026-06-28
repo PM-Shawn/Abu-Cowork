@@ -8,6 +8,15 @@ import {
 } from './modelCapabilities';
 
 describe('modelCapabilities', () => {
+  describe('resolveCapabilities — generated table wired', () => {
+    it('resolves opus 4.8 from the generated snapshot (table is wired)', () => {
+      const caps = resolveCapabilities('claude-opus-4-8');
+      expect(caps.contextWindow).toBe(1000000);
+      expect(caps.thinking).toBe('anthropic');
+      expect(caps.toolResultImages).toBe('native');
+    });
+  });
+
   describe('resolveCapabilities — reasoning classification', () => {
     it('classifies qwen3.7-max (dated variant) as a qwen reasoning model with 65536 output', () => {
       const caps = resolveCapabilities('qwen3.7-max-2026-05-17');
@@ -141,8 +150,8 @@ describe('modelCapabilities', () => {
     });
 
     it('ignores invalid (zero / negative / undefined) candidates', () => {
-      expect(resolveEffectiveContextWindow('claude-opus-4-6', 0)).toBe(200_000);
-      expect(resolveEffectiveContextWindow('claude-opus-4-6', undefined, -5)).toBe(200_000);
+      expect(resolveEffectiveContextWindow('claude-opus-4-6', 0)).toBe(1_000_000);
+      expect(resolveEffectiveContextWindow('claude-opus-4-6', undefined, -5)).toBe(1_000_000);
     });
   });
 });

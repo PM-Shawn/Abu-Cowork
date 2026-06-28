@@ -26,16 +26,15 @@ const OUT = resolve(HERE, '../src/core/llm/generated/modelData.generated.ts');
 export function recordsToCapabilities(recs: ModelRecord[]): Record<string, ModelCapabilities> {
   const out: Record<string, ModelCapabilities> = {};
   for (const r of recs) {
-    const isClaude = (r.family ?? '').toLowerCase().includes('claude') || r.id.toLowerCase().includes('claude');
-    const contextWindow = isClaude ? Math.min(r.contextWindow, 200000) : r.contextWindow;
+    const budget = requestBudget(r);
     out[r.id] = {
       vision: r.vision,
       thinking: r.thinking ?? false,
       toolResultImages: r.toolResultImages ?? 'workaround',
       documentBlock: r.documentBlock ?? false,
-      maxOutputTokens: requestBudget(r),
-      outputCeiling: r.outputCeiling ?? r.maxOutputTokens,
-      contextWindow,
+      maxOutputTokens: budget,
+      outputCeiling: Math.max(r.outputCeiling ?? r.maxOutputTokens, budget),
+      contextWindow: r.contextWindow,
     };
   }
   return out;

@@ -14,7 +14,8 @@ describe('mapModelsDevModel', () => {
     const r = mapModelsDevModel(OPUS, 'anthropic');
     expect(r).toMatchObject({
       id: 'claude-opus-4-8', family: 'claude-opus', vision: true,
-      contextWindow: 1000000, maxOutputTokens: 128000, outputCeiling: 128000, reasoning: true, pdfInput: true,
+      // Claude models are capped at 200k here so abu-overrides (merged later) can still beat the cap.
+      contextWindow: 200000, maxOutputTokens: 128000, outputCeiling: 128000, reasoning: true, pdfInput: true,
       providers: ['anthropic'],
       pricing: { input: 5, output: 25, cacheRead: 0.5, cacheCreation: 6.25 },
     });

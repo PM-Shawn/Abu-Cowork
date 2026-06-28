@@ -2,13 +2,14 @@ import type { ModelRecord, ModelsDevModel } from './schema';
 
 export function mapModelsDevModel(m: ModelsDevModel, providerId: string): ModelRecord {
   const input = m.modalities?.input ?? [];
+  const isClaude = (m.family ?? '').toLowerCase().includes('claude') || m.id.toLowerCase().includes('claude');
   const rec: ModelRecord = {
     id: m.id,
     family: m.family,
     providers: [providerId],
     label: m.name,
     vision: input.includes('image'),
-    contextWindow: m.limit?.context ?? 0,
+    contextWindow: isClaude ? Math.min(m.limit?.context ?? 0, 200000) : (m.limit?.context ?? 0),
     maxOutputTokens: m.limit?.output ?? 0,
     outputCeiling: m.limit?.output ?? 0,
     reasoning: m.reasoning === true,

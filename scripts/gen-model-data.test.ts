@@ -15,9 +15,11 @@ const recs: ModelRecord[] = [
 describe('gen-model-data builders', () => {
   it('recordsToCapabilities emits the ModelCapabilities shape keyed by id', () => {
     const caps = recordsToCapabilities(recs);
+    // contextWindow passes through unchanged — the 200k Claude cap is applied upstream in
+    // mapModelsDev.ts so that abu-overrides (merged later) can still beat it.
     expect(caps['claude-opus-4-8']).toEqual({
       vision: true, thinking: 'anthropic', toolResultImages: 'native',
-      documentBlock: true, maxOutputTokens: 32768, outputCeiling: 128000, contextWindow: 200000,
+      documentBlock: true, maxOutputTokens: 32768, outputCeiling: 128000, contextWindow: 1000000,
     });
   });
 

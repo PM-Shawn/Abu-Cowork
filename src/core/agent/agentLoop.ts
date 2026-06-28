@@ -1030,6 +1030,9 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
         : undefined;
       const effectiveModelMaxOutput = discoveredCaps?.maxOutputTokens ?? modelCaps.maxOutputTokens;
       const effectiveModelContext = discoveredCaps?.contextWindow ?? modelCaps.contextWindow;
+      // True output ceiling (distinct from the conservative request budget in
+      // maxOutputTokens). max_tokens-recovery escalation may climb toward this.
+      const effectiveModelCeiling = discoveredCaps?.maxOutputTokens ?? modelCaps.outputCeiling ?? modelCaps.maxOutputTokens;
 
       // Resolve budget + reasoning-control params. Overlay runtime-discovered
       // limits onto the static caps, then let computeReasoningParams reserve a
@@ -1062,10 +1065,10 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
       );
 
       // Escalate maxOutputTokens on max_tokens recovery (legacy CC pattern),
-      // clamped to the model's real ceiling so we never re-ask above a known limit.
+      // clamped to the model's true output ceiling so we never re-ask above a known limit.
       const escalation = escalateMaxOutputTokens(maxOutputTokens, contextWindowSize, maxOutputTokensRecoveryCount, maxOutputTokensEscalated);
       if (escalation.changed) {
-        const escalated = Math.min(escalation.maxOutputTokens, effectiveModelMaxOutput);
+        const escalated = Math.min(escalation.maxOutputTokens, effectiveModelCeiling);
         if (escalated > maxOutputTokens) {
           logger.info('Escalating maxOutputTokens', { from: maxOutputTokens, to: escalated });
           maxOutputTokens = escalated;

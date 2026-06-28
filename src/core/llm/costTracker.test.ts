@@ -49,6 +49,13 @@ describe('costTracker', () => {
       expect(calculateTurnCost('llama-3.1-70b', { inputTokens: 1000, outputTokens: 500 })).toBe(0);
     });
 
+    it('gpt-4-turbo uses its own FALLBACK_PRICING entry, not the shorter gpt-4 prefix', () => {
+      // gpt-4-turbo: input $10/M. Without length sort, bare 'gpt-4' ($30/M) would win.
+      const cost = calculateTurnCost('gpt-4-turbo', { inputTokens: 1_000_000 });
+      // 1M tokens * $10/M = $10
+      expect(cost).toBeCloseTo(10, 2);
+    });
+
     it('returns 0 for empty usage', () => {
       expect(calculateTurnCost('claude-sonnet-4', {})).toBe(0);
     });
@@ -76,8 +83,9 @@ describe('costTracker', () => {
         inputTokens: 10000,
         outputTokens: 5000,
       });
-      // input: 10000 * 0.27/1M = 0.0027, output: 5000 * 1.1/1M = 0.0055
-      expect(cost).toBeCloseTo(0.0082, 4);
+      // Price sourced from models.dev (DeepSeek V3.2 price cut), not the stale fallback.
+      // input: 10000 * 0.14/1M = 0.0014, output: 5000 * 0.28/1M = 0.0014
+      expect(cost).toBeCloseTo(0.0028, 4);
     });
 
     it('handles zero uncached input with cache tokens', () => {
@@ -161,6 +169,33 @@ describe('costTracker', () => {
     it('returns 0 cost for unknown models', () => {
       const returned = recordTurnCost('conv-1', 'local-llama', { inputTokens: 1000, outputTokens: 500 });
       expect(returned).toBe(0);
+    });
+  });
+
+  describe('pricing sourced from generated data', () => {
+    it('uses exact models.dev price for opus 4.8 (input $5/M)', () => {
+      const cost = calculateTurnCost('claude-opus-4-8', { inputTokens: 1_000_000 });
+      expect(cost).toBeCloseTo(5, 5);
+    });
+    it('still falls back to family prefix for un-snapshotted dated variants', () => {
+      const cost = calculateTurnCost('claude-opus-4-8-some-future-suffix', { inputTokens: 1_000_000 });
+      expect(cost).toBeGreaterThan(0);
+    });
+  });
+
+  describe('findPricing — OpenRouter vendor prefix stripping', () => {
+    it('strips vendor/ prefix so anthropic/claude-opus-4-8 resolves the same price as bare id', () => {
+      const withPrefix = calculateTurnCost('anthropic/claude-opus-4-8', { inputTokens: 1_000_000 });
+      const bare = calculateTurnCost('claude-opus-4-8', { inputTokens: 1_000_000 });
+      // Both should resolve the opus-4-8 generated price ($5/M input)
+      expect(withPrefix).toBeCloseTo(5, 5);
+      expect(withPrefix).toBeCloseTo(bare, 8);
+    });
+
+    it('prefix lookup is case-insensitive', () => {
+      const lower = calculateTurnCost('claude-opus-4-8', { inputTokens: 1_000_000 });
+      const upper = calculateTurnCost('Claude-Opus-4-8', { inputTokens: 1_000_000 });
+      expect(upper).toBeCloseTo(lower, 8);
     });
   });
 });

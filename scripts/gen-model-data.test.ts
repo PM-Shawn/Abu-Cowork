@@ -17,7 +17,7 @@ describe('gen-model-data builders', () => {
     const caps = recordsToCapabilities(recs);
     expect(caps['claude-opus-4-8']).toEqual({
       vision: true, thinking: 'anthropic', toolResultImages: 'native',
-      documentBlock: true, maxOutputTokens: 128000, outputCeiling: 128000, contextWindow: 1000000,
+      documentBlock: true, maxOutputTokens: 32768, outputCeiling: 128000, contextWindow: 200000,
     });
   });
 
@@ -49,7 +49,6 @@ describe('gen-model-data builders', () => {
     expect(src).toContain('DO NOT EDIT');
     expect(src).toContain('export const GENERATED_KNOWN_MODELS');
     expect(src).toContain('export const GENERATED_MODEL_PRICING');
-    expect(src).toContain('export const GENERATED_PROVIDER_MODELS');
     expect(src).toContain("'claude-opus-4-8'");
   });
 });

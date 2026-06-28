@@ -7,7 +7,7 @@ export function mapModelsDevModel(m: ModelsDevModel, providerId: string): ModelR
     family: m.family,
     providers: [providerId],
     label: m.name,
-    vision: m.attachment === true || input.includes('image'),
+    vision: input.includes('image'),
     contextWindow: m.limit?.context ?? 0,
     maxOutputTokens: m.limit?.output ?? 0,
     outputCeiling: m.limit?.output ?? 0,

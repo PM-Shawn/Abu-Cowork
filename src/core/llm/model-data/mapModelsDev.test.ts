@@ -27,6 +27,14 @@ describe('mapModelsDevModel', () => {
     expect(r.vision).toBe(true);
   });
 
+  it('attachment:true without image modality does NOT set vision:true', () => {
+    const r = mapModelsDevModel(
+      { id: 'file-only-model', attachment: true, modalities: { input: ['text'] }, limit: { context: 128000, output: 8192 } },
+      'openai'
+    );
+    expect(r.vision).toBe(false);
+  });
+
   it('missing cache fields default to 0; no pricing block when cost absent', () => {
     const r = mapModelsDevModel({ id: 'm', limit: { context: 1, output: 1 }, cost: { input: 1, output: 2 } }, 'x');
     expect(r.pricing).toEqual({ input: 1, output: 2, cacheRead: 0, cacheCreation: 0 });

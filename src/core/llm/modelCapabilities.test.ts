@@ -11,7 +11,7 @@ describe('modelCapabilities', () => {
   describe('resolveCapabilities — generated table wired', () => {
     it('resolves opus 4.8 from the generated snapshot (table is wired)', () => {
       const caps = resolveCapabilities('claude-opus-4-8');
-      expect(caps.contextWindow).toBe(1000000);
+      expect(caps.contextWindow).toBe(200000);
       expect(caps.thinking).toBe('anthropic');
       expect(caps.toolResultImages).toBe('native');
     });
@@ -150,8 +150,8 @@ describe('modelCapabilities', () => {
     });
 
     it('ignores invalid (zero / negative / undefined) candidates', () => {
-      expect(resolveEffectiveContextWindow('claude-opus-4-6', 0)).toBe(1_000_000);
-      expect(resolveEffectiveContextWindow('claude-opus-4-6', undefined, -5)).toBe(1_000_000);
+      expect(resolveEffectiveContextWindow('claude-opus-4-6', 0)).toBe(200_000);
+      expect(resolveEffectiveContextWindow('claude-opus-4-6', undefined, -5)).toBe(200_000);
     });
   });
 });

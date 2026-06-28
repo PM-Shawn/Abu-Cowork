@@ -12,7 +12,7 @@ export const GENERATED_KNOWN_MODELS: Record<string, ModelCapabilities> = {
     thinking: 'anthropic',
     toolResultImages: 'native',
     documentBlock: true,
-    maxOutputTokens: 64000,
+    maxOutputTokens: 32768,
     outputCeiling: 64000,
     contextWindow: 200000
   },
@@ -21,7 +21,7 @@ export const GENERATED_KNOWN_MODELS: Record<string, ModelCapabilities> = {
     thinking: 'anthropic',
     toolResultImages: 'native',
     documentBlock: true,
-    maxOutputTokens: 64000,
+    maxOutputTokens: 32768,
     outputCeiling: 64000,
     contextWindow: 200000
   },
@@ -57,7 +57,7 @@ export const GENERATED_KNOWN_MODELS: Record<string, ModelCapabilities> = {
     thinking: 'anthropic',
     toolResultImages: 'native',
     documentBlock: true,
-    maxOutputTokens: 64000,
+    maxOutputTokens: 32768,
     outputCeiling: 64000,
     contextWindow: 200000
   },
@@ -66,16 +66,16 @@ export const GENERATED_KNOWN_MODELS: Record<string, ModelCapabilities> = {
     thinking: 'anthropic',
     toolResultImages: 'native',
     documentBlock: true,
-    maxOutputTokens: 128000,
+    maxOutputTokens: 32768,
     outputCeiling: 128000,
-    contextWindow: 1000000
+    contextWindow: 200000
   },
   'claude-opus-4-5-20251101': {
     vision: true,
     thinking: 'anthropic',
     toolResultImages: 'native',
     documentBlock: true,
-    maxOutputTokens: 64000,
+    maxOutputTokens: 32768,
     outputCeiling: 64000,
     contextWindow: 200000
   },
@@ -93,9 +93,9 @@ export const GENERATED_KNOWN_MODELS: Record<string, ModelCapabilities> = {
     thinking: 'anthropic',
     toolResultImages: 'native',
     documentBlock: true,
-    maxOutputTokens: 128000,
+    maxOutputTokens: 32768,
     outputCeiling: 128000,
-    contextWindow: 1000000
+    contextWindow: 200000
   },
   'claude-opus-4-20250514': {
     vision: true,
@@ -120,7 +120,7 @@ export const GENERATED_KNOWN_MODELS: Record<string, ModelCapabilities> = {
     thinking: 'anthropic',
     toolResultImages: 'native',
     documentBlock: true,
-    maxOutputTokens: 64000,
+    maxOutputTokens: 32768,
     outputCeiling: 64000,
     contextWindow: 200000
   },
@@ -147,16 +147,16 @@ export const GENERATED_KNOWN_MODELS: Record<string, ModelCapabilities> = {
     thinking: 'anthropic',
     toolResultImages: 'native',
     documentBlock: true,
-    maxOutputTokens: 128000,
+    maxOutputTokens: 32768,
     outputCeiling: 128000,
-    contextWindow: 1000000
+    contextWindow: 200000
   },
   'claude-sonnet-4-0': {
     vision: true,
     thinking: 'anthropic',
     toolResultImages: 'native',
     documentBlock: true,
-    maxOutputTokens: 64000,
+    maxOutputTokens: 32768,
     outputCeiling: 64000,
     contextWindow: 200000
   },
@@ -165,7 +165,7 @@ export const GENERATED_KNOWN_MODELS: Record<string, ModelCapabilities> = {
     thinking: 'anthropic',
     toolResultImages: 'native',
     documentBlock: true,
-    maxOutputTokens: 64000,
+    maxOutputTokens: 32768,
     outputCeiling: 64000,
     contextWindow: 200000
   },
@@ -174,7 +174,7 @@ export const GENERATED_KNOWN_MODELS: Record<string, ModelCapabilities> = {
     thinking: 'anthropic',
     toolResultImages: 'native',
     documentBlock: true,
-    maxOutputTokens: 64000,
+    maxOutputTokens: 32768,
     outputCeiling: 64000,
     contextWindow: 200000
   },
@@ -183,16 +183,16 @@ export const GENERATED_KNOWN_MODELS: Record<string, ModelCapabilities> = {
     thinking: 'anthropic',
     toolResultImages: 'native',
     documentBlock: true,
-    maxOutputTokens: 128000,
+    maxOutputTokens: 32768,
     outputCeiling: 128000,
-    contextWindow: 1000000
+    contextWindow: 200000
   },
   'claude-sonnet-4-5-20250929': {
     vision: true,
     thinking: 'anthropic',
     toolResultImages: 'native',
     documentBlock: true,
-    maxOutputTokens: 64000,
+    maxOutputTokens: 32768,
     outputCeiling: 64000,
     contextWindow: 200000
   },
@@ -210,9 +210,9 @@ export const GENERATED_KNOWN_MODELS: Record<string, ModelCapabilities> = {
     thinking: 'anthropic',
     toolResultImages: 'native',
     documentBlock: true,
-    maxOutputTokens: 64000,
+    maxOutputTokens: 32768,
     outputCeiling: 64000,
-    contextWindow: 1000000
+    contextWindow: 200000
   },
   o3: {
     vision: true,
@@ -278,7 +278,7 @@ export const GENERATED_KNOWN_MODELS: Record<string, ModelCapabilities> = {
     contextWindow: 128000
   },
   'gpt-4': {
-    vision: true,
+    vision: false,
     thinking: false,
     toolResultImages: 'workaround',
     documentBlock: false,
@@ -303,15 +303,6 @@ export const GENERATED_KNOWN_MODELS: Record<string, ModelCapabilities> = {
     maxOutputTokens: 100000,
     outputCeiling: 100000,
     contextWindow: 200000
-  },
-  'chatgpt-image-latest': {
-    vision: true,
-    thinking: false,
-    toolResultImages: 'workaround',
-    documentBlock: false,
-    maxOutputTokens: 0,
-    outputCeiling: 0,
-    contextWindow: 0
   },
   'gpt-4o-2024-05-13': {
     vision: true,
@@ -466,15 +457,6 @@ export const GENERATED_KNOWN_MODELS: Record<string, ModelCapabilities> = {
     outputCeiling: 100000,
     contextWindow: 200000
   },
-  'gpt-image-1.5': {
-    vision: true,
-    thinking: false,
-    toolResultImages: 'workaround',
-    documentBlock: false,
-    maxOutputTokens: 0,
-    outputCeiling: 0,
-    contextWindow: 0
-  },
   'gpt-4.1-nano': {
     vision: true,
     thinking: false,
@@ -495,19 +477,19 @@ export const GENERATED_KNOWN_MODELS: Record<string, ModelCapabilities> = {
   },
   o1: {
     vision: true,
-    thinking: 'uncontrollable',
+    thinking: 'openai-reasoning',
     toolResultImages: 'workaround',
     documentBlock: false,
-    maxOutputTokens: 32768,
+    maxOutputTokens: 100000,
     outputCeiling: 100000,
     contextWindow: 200000
   },
   'o1-pro': {
     vision: true,
-    thinking: 'uncontrollable',
+    thinking: 'openai-reasoning',
     toolResultImages: 'workaround',
     documentBlock: false,
-    maxOutputTokens: 32768,
+    maxOutputTokens: 100000,
     outputCeiling: 100000,
     contextWindow: 200000
   },
@@ -556,15 +538,6 @@ export const GENERATED_KNOWN_MODELS: Record<string, ModelCapabilities> = {
     outputCeiling: 128000,
     contextWindow: 400000
   },
-  'gpt-image-1': {
-    vision: true,
-    thinking: false,
-    toolResultImages: 'workaround',
-    documentBlock: false,
-    maxOutputTokens: 0,
-    outputCeiling: 0,
-    contextWindow: 0
-  },
   'gpt-4.1-mini': {
     vision: true,
     thinking: false,
@@ -582,15 +555,6 @@ export const GENERATED_KNOWN_MODELS: Record<string, ModelCapabilities> = {
     maxOutputTokens: 4096,
     outputCeiling: 4096,
     contextWindow: 128000
-  },
-  'gpt-image-1-mini': {
-    vision: true,
-    thinking: false,
-    toolResultImages: 'workaround',
-    documentBlock: false,
-    maxOutputTokens: 0,
-    outputCeiling: 0,
-    contextWindow: 0
   },
   'gpt-5-nano': {
     vision: true,
@@ -646,15 +610,6 @@ export const GENERATED_KNOWN_MODELS: Record<string, ModelCapabilities> = {
     outputCeiling: 128000,
     contextWindow: 400000
   },
-  'gpt-image-2': {
-    vision: true,
-    thinking: false,
-    toolResultImages: 'workaround',
-    documentBlock: false,
-    maxOutputTokens: 0,
-    outputCeiling: 0,
-    contextWindow: 0
-  },
   'gpt-5.1': {
     vision: true,
     thinking: 'openai-reasoning',
@@ -705,7 +660,7 @@ export const GENERATED_KNOWN_MODELS: Record<string, ModelCapabilities> = {
     thinking: false,
     toolResultImages: 'none',
     documentBlock: false,
-    maxOutputTokens: 128000,
+    maxOutputTokens: 32768,
     outputCeiling: 384000,
     contextWindow: 1000000
   },
@@ -714,7 +669,7 @@ export const GENERATED_KNOWN_MODELS: Record<string, ModelCapabilities> = {
     thinking: false,
     toolResultImages: 'none',
     documentBlock: false,
-    maxOutputTokens: 128000,
+    maxOutputTokens: 32768,
     outputCeiling: 262144,
     contextWindow: 262144
   },
@@ -759,7 +714,7 @@ export const GENERATED_KNOWN_MODELS: Record<string, ModelCapabilities> = {
     thinking: false,
     toolResultImages: 'none',
     documentBlock: false,
-    maxOutputTokens: 128000,
+    maxOutputTokens: 32768,
     outputCeiling: 262144,
     contextWindow: 262144
   },
@@ -921,7 +876,7 @@ export const GENERATED_KNOWN_MODELS: Record<string, ModelCapabilities> = {
     thinking: false,
     toolResultImages: 'workaround',
     documentBlock: false,
-    maxOutputTokens: 65536,
+    maxOutputTokens: 32768,
     outputCeiling: 65536,
     contextWindow: 1048576
   },
@@ -939,7 +894,7 @@ export const GENERATED_KNOWN_MODELS: Record<string, ModelCapabilities> = {
     thinking: false,
     toolResultImages: 'workaround',
     documentBlock: false,
-    maxOutputTokens: 65536,
+    maxOutputTokens: 32768,
     outputCeiling: 65536,
     contextWindow: 262144
   },
@@ -1245,7 +1200,7 @@ export const GENERATED_KNOWN_MODELS: Record<string, ModelCapabilities> = {
     thinking: false,
     toolResultImages: 'workaround',
     documentBlock: false,
-    maxOutputTokens: 65536,
+    maxOutputTokens: 32768,
     outputCeiling: 65536,
     contextWindow: 262144
   },
@@ -1281,7 +1236,7 @@ export const GENERATED_KNOWN_MODELS: Record<string, ModelCapabilities> = {
     thinking: false,
     toolResultImages: 'workaround',
     documentBlock: false,
-    maxOutputTokens: 65536,
+    maxOutputTokens: 32768,
     outputCeiling: 65536,
     contextWindow: 1000000
   },
@@ -1374,15 +1329,6 @@ export const GENERATED_KNOWN_MODELS: Record<string, ModelCapabilities> = {
     maxOutputTokens: 32768,
     outputCeiling: 65536,
     contextWindow: 1048576
-  },
-  'gemini-2.5-flash-preview-tts': {
-    vision: false,
-    thinking: false,
-    toolResultImages: 'workaround',
-    documentBlock: false,
-    maxOutputTokens: 16384,
-    outputCeiling: 16384,
-    contextWindow: 8192
   },
   'gemini-2.5-pro': {
     vision: true,
@@ -1528,15 +1474,6 @@ export const GENERATED_KNOWN_MODELS: Record<string, ModelCapabilities> = {
     outputCeiling: 65536,
     contextWindow: 1048576
   },
-  'gemini-2.5-pro-preview-tts': {
-    vision: false,
-    thinking: false,
-    toolResultImages: 'workaround',
-    documentBlock: false,
-    maxOutputTokens: 16384,
-    outputCeiling: 16384,
-    contextWindow: 8192
-  },
   'gemini-flash-latest': {
     vision: true,
     thinking: 'uncontrollable',
@@ -1591,24 +1528,6 @@ export const GENERATED_KNOWN_MODELS: Record<string, ModelCapabilities> = {
     outputCeiling: 30000,
     contextWindow: 1000000
   },
-  'grok-imagine-image-quality': {
-    vision: true,
-    thinking: false,
-    toolResultImages: 'workaround',
-    documentBlock: false,
-    maxOutputTokens: 0,
-    outputCeiling: 0,
-    contextWindow: 8000
-  },
-  'grok-imagine-video': {
-    vision: true,
-    thinking: false,
-    toolResultImages: 'workaround',
-    documentBlock: false,
-    maxOutputTokens: 0,
-    outputCeiling: 0,
-    contextWindow: 1024
-  },
   'grok-4.20-0309-reasoning': {
     vision: true,
     thinking: 'uncontrollable',
@@ -1617,15 +1536,6 @@ export const GENERATED_KNOWN_MODELS: Record<string, ModelCapabilities> = {
     maxOutputTokens: 30000,
     outputCeiling: 30000,
     contextWindow: 1000000
-  },
-  'grok-imagine-image': {
-    vision: true,
-    thinking: false,
-    toolResultImages: 'workaround',
-    documentBlock: false,
-    maxOutputTokens: 0,
-    outputCeiling: 0,
-    contextWindow: 8000
   },
   'grok-build-0.1': {
     vision: true,
@@ -1671,6 +1581,159 @@ export const GENERATED_KNOWN_MODELS: Record<string, ModelCapabilities> = {
     maxOutputTokens: 32768,
     outputCeiling: 32768,
     contextWindow: 256000
+  },
+  gemma3: {
+    vision: true,
+    thinking: false,
+    toolResultImages: 'none',
+    documentBlock: false,
+    maxOutputTokens: 8192,
+    outputCeiling: 8192,
+    contextWindow: 128000
+  },
+  'gemma3:27b': {
+    vision: true,
+    thinking: false,
+    toolResultImages: 'none',
+    documentBlock: false,
+    maxOutputTokens: 8192,
+    outputCeiling: 8192,
+    contextWindow: 128000
+  },
+  'gemma3:12b': {
+    vision: true,
+    thinking: false,
+    toolResultImages: 'none',
+    documentBlock: false,
+    maxOutputTokens: 8192,
+    outputCeiling: 8192,
+    contextWindow: 128000
+  },
+  'gemma3:4b': {
+    vision: true,
+    thinking: false,
+    toolResultImages: 'none',
+    documentBlock: false,
+    maxOutputTokens: 8192,
+    outputCeiling: 8192,
+    contextWindow: 128000
+  },
+  gemma2: {
+    vision: false,
+    thinking: false,
+    toolResultImages: 'none',
+    documentBlock: false,
+    maxOutputTokens: 8192,
+    outputCeiling: 8192,
+    contextWindow: 8192
+  },
+  'llama3.3': {
+    vision: false,
+    thinking: false,
+    toolResultImages: 'none',
+    documentBlock: false,
+    maxOutputTokens: 4096,
+    outputCeiling: 4096,
+    contextWindow: 128000
+  },
+  'llama3.2': {
+    vision: true,
+    thinking: false,
+    toolResultImages: 'none',
+    documentBlock: false,
+    maxOutputTokens: 4096,
+    outputCeiling: 4096,
+    contextWindow: 128000
+  },
+  'llama3.1': {
+    vision: false,
+    thinking: false,
+    toolResultImages: 'none',
+    documentBlock: false,
+    maxOutputTokens: 4096,
+    outputCeiling: 4096,
+    contextWindow: 128000
+  },
+  'qwen2.5': {
+    vision: false,
+    thinking: false,
+    toolResultImages: 'none',
+    documentBlock: false,
+    maxOutputTokens: 8192,
+    outputCeiling: 8192,
+    contextWindow: 32768
+  },
+  qwen3: {
+    vision: false,
+    thinking: false,
+    toolResultImages: 'none',
+    documentBlock: false,
+    maxOutputTokens: 8192,
+    outputCeiling: 8192,
+    contextWindow: 128000
+  },
+  phi4: {
+    vision: false,
+    thinking: false,
+    toolResultImages: 'none',
+    documentBlock: false,
+    maxOutputTokens: 4096,
+    outputCeiling: 4096,
+    contextWindow: 16384
+  },
+  phi3: {
+    vision: false,
+    thinking: false,
+    toolResultImages: 'none',
+    documentBlock: false,
+    maxOutputTokens: 4096,
+    outputCeiling: 4096,
+    contextWindow: 128000
+  },
+  mistral: {
+    vision: false,
+    thinking: false,
+    toolResultImages: 'none',
+    documentBlock: false,
+    maxOutputTokens: 4096,
+    outputCeiling: 4096,
+    contextWindow: 32768
+  },
+  codellama: {
+    vision: false,
+    thinking: false,
+    toolResultImages: 'none',
+    documentBlock: false,
+    maxOutputTokens: 4096,
+    outputCeiling: 4096,
+    contextWindow: 16384
+  },
+  'deepseek-r1:distill': {
+    vision: false,
+    thinking: 'uncontrollable',
+    toolResultImages: 'none',
+    documentBlock: false,
+    maxOutputTokens: 8192,
+    outputCeiling: 8192,
+    contextWindow: 128000
+  },
+  'glm-4': {
+    vision: false,
+    thinking: false,
+    toolResultImages: 'none',
+    documentBlock: false,
+    maxOutputTokens: 4096,
+    outputCeiling: 4096,
+    contextWindow: 128000
+  },
+  'glm-4v': {
+    vision: true,
+    thinking: false,
+    toolResultImages: 'workaround',
+    documentBlock: false,
+    maxOutputTokens: 4096,
+    outputCeiling: 4096,
+    contextWindow: 128000
   }
 };
 
@@ -1725,15 +1788,6 @@ export const GENERATED_MODEL_PRICING: [string, { input: number; output: number; 
     {
       input: 0.45,
       output: 2.25,
-      cacheRead: 0,
-      cacheCreation: 0
-    }
-  ],
-  [
-    'gemini-2.5-flash-preview-tts',
-    {
-      input: 0.5,
-      output: 10,
       cacheRead: 0,
       cacheCreation: 0
     }
@@ -1806,15 +1860,6 @@ export const GENERATED_MODEL_PRICING: [string, { input: number; output: number; 
     {
       input: 2,
       output: 120,
-      cacheRead: 0,
-      cacheCreation: 0
-    }
-  ],
-  [
-    'gemini-2.5-pro-preview-tts',
-    {
-      input: 1,
-      output: 20,
       cacheRead: 0,
       cacheCreation: 0
     }
@@ -2819,15 +2864,6 @@ export const GENERATED_MODEL_PRICING: [string, { input: number; output: number; 
     }
   ],
   [
-    'gpt-image-2',
-    {
-      input: 5,
-      output: 30,
-      cacheRead: 1.25,
-      cacheCreation: 0
-    }
-  ],
-  [
     'glm-4.5-air',
     {
       input: 0.2,
@@ -3224,764 +3260,3 @@ export const GENERATED_MODEL_PRICING: [string, { input: number; output: number; 
     }
   ]
 ];
-
-export const GENERATED_PROVIDER_MODELS: Record<string, { id: string; label: string }[]> = {
-  anthropic: [
-    {
-      id: 'claude-opus-4-5',
-      label: 'Claude Opus 4.5 (latest)'
-    },
-    {
-      id: 'claude-haiku-4-5-20251001',
-      label: 'Claude Haiku 4.5'
-    },
-    {
-      id: 'claude-opus-4-0',
-      label: 'Claude Opus 4 (latest)'
-    },
-    {
-      id: 'claude-3-opus-20240229',
-      label: 'Claude Opus 3'
-    },
-    {
-      id: 'claude-opus-4-1-20250805',
-      label: 'Claude Opus 4.1'
-    },
-    {
-      id: 'claude-sonnet-4-5',
-      label: 'Claude Sonnet 4.5 (latest)'
-    },
-    {
-      id: 'claude-opus-4-7',
-      label: 'Claude Opus 4.7'
-    },
-    {
-      id: 'claude-opus-4-5-20251101',
-      label: 'Claude Opus 4.5'
-    },
-    {
-      id: 'claude-3-5-sonnet-20241022',
-      label: 'Claude Sonnet 3.5 v2'
-    },
-    {
-      id: 'claude-opus-4-8',
-      label: 'Claude Opus 4.8'
-    },
-    {
-      id: 'claude-opus-4-20250514',
-      label: 'Claude Opus 4'
-    },
-    {
-      id: 'claude-3-5-sonnet-20240620',
-      label: 'Claude Sonnet 3.5'
-    },
-    {
-      id: 'claude-sonnet-4-20250514',
-      label: 'Claude Sonnet 4'
-    },
-    {
-      id: 'claude-opus-4-1',
-      label: 'Claude Opus 4.1 (latest)'
-    },
-    {
-      id: 'claude-3-haiku-20240307',
-      label: 'Claude Haiku 3'
-    },
-    {
-      id: 'claude-fable-5',
-      label: 'Claude Fable 5'
-    },
-    {
-      id: 'claude-sonnet-4-0',
-      label: 'Claude Sonnet 4 (latest)'
-    },
-    {
-      id: 'claude-3-7-sonnet-20250219',
-      label: 'Claude Sonnet 3.7'
-    },
-    {
-      id: 'claude-haiku-4-5',
-      label: 'Claude Haiku 4.5 (latest)'
-    },
-    {
-      id: 'claude-opus-4-6',
-      label: 'Claude Opus 4.6'
-    },
-    {
-      id: 'claude-sonnet-4-5-20250929',
-      label: 'Claude Sonnet 4.5'
-    },
-    {
-      id: 'claude-3-sonnet-20240229',
-      label: 'Claude Sonnet 3'
-    },
-    {
-      id: 'claude-sonnet-4-6',
-      label: 'Claude Sonnet 4.6'
-    }
-  ],
-  openai: [
-    {
-      id: 'o3',
-      label: 'o3'
-    },
-    {
-      id: 'text-embedding-3-large',
-      label: 'text-embedding-3-large'
-    },
-    {
-      id: 'gpt-5.2-pro',
-      label: 'GPT-5.2 Pro'
-    },
-    {
-      id: 'gpt-5',
-      label: 'GPT-5'
-    },
-    {
-      id: 'gpt-3.5-turbo',
-      label: 'GPT-3.5-turbo'
-    },
-    {
-      id: 'gpt-5-pro',
-      label: 'GPT-5 Pro'
-    },
-    {
-      id: 'gpt-4o',
-      label: 'GPT-4o'
-    },
-    {
-      id: 'gpt-4',
-      label: 'GPT-4'
-    },
-    {
-      id: 'o4-mini',
-      label: 'o4-mini'
-    },
-    {
-      id: 'o3-pro',
-      label: 'o3-pro'
-    },
-    {
-      id: 'chatgpt-image-latest',
-      label: 'chatgpt-image-latest'
-    },
-    {
-      id: 'gpt-4o-2024-05-13',
-      label: 'GPT-4o (2024-05-13)'
-    },
-    {
-      id: 'gpt-5.4-nano',
-      label: 'GPT-5.4 nano'
-    },
-    {
-      id: 'gpt-5-chat-latest',
-      label: 'GPT-5 Chat (latest)'
-    },
-    {
-      id: 'gpt-5.1-codex',
-      label: 'GPT-5.1 Codex'
-    },
-    {
-      id: 'gpt-5.3-codex-spark',
-      label: 'GPT-5.3 Codex Spark'
-    },
-    {
-      id: 'gpt-5.1-codex-max',
-      label: 'GPT-5.1 Codex Max'
-    },
-    {
-      id: 'gpt-5.3-chat-latest',
-      label: 'GPT-5.3 Chat (latest)'
-    },
-    {
-      id: 'gpt-4o-2024-08-06',
-      label: 'GPT-4o (2024-08-06)'
-    },
-    {
-      id: 'text-embedding-ada-002',
-      label: 'text-embedding-ada-002'
-    },
-    {
-      id: 'o3-mini',
-      label: 'o3-mini'
-    },
-    {
-      id: 'gpt-5.2',
-      label: 'GPT-5.2'
-    },
-    {
-      id: 'gpt-5.3-codex',
-      label: 'GPT-5.3 Codex'
-    },
-    {
-      id: 'text-embedding-3-small',
-      label: 'text-embedding-3-small'
-    },
-    {
-      id: 'gpt-5.1-codex-mini',
-      label: 'GPT-5.1 Codex mini'
-    },
-    {
-      id: 'gpt-5.1-chat-latest',
-      label: 'GPT-5.1 Chat'
-    },
-    {
-      id: 'gpt-5.2-chat-latest',
-      label: 'GPT-5.2 Chat'
-    },
-    {
-      id: 'o4-mini-deep-research',
-      label: 'o4-mini-deep-research'
-    },
-    {
-      id: 'gpt-image-1.5',
-      label: 'gpt-image-1.5'
-    },
-    {
-      id: 'gpt-4.1-nano',
-      label: 'GPT-4.1 nano'
-    },
-    {
-      id: 'gpt-4o-2024-11-20',
-      label: 'GPT-4o (2024-11-20)'
-    },
-    {
-      id: 'o1',
-      label: 'o1'
-    },
-    {
-      id: 'o1-pro',
-      label: 'o1-pro'
-    },
-    {
-      id: 'gpt-5.4',
-      label: 'GPT-5.4'
-    },
-    {
-      id: 'gpt-5.4-mini',
-      label: 'GPT-5.4 mini'
-    },
-    {
-      id: 'gpt-4.1',
-      label: 'GPT-4.1'
-    },
-    {
-      id: 'o3-deep-research',
-      label: 'o3-deep-research'
-    },
-    {
-      id: 'gpt-5-mini',
-      label: 'GPT-5 Mini'
-    },
-    {
-      id: 'gpt-image-1',
-      label: 'gpt-image-1'
-    },
-    {
-      id: 'gpt-4.1-mini',
-      label: 'GPT-4.1 mini'
-    },
-    {
-      id: 'gpt-4-turbo',
-      label: 'GPT-4 Turbo'
-    },
-    {
-      id: 'gpt-image-1-mini',
-      label: 'gpt-image-1-mini'
-    },
-    {
-      id: 'gpt-5-nano',
-      label: 'GPT-5 Nano'
-    },
-    {
-      id: 'gpt-5.4-pro',
-      label: 'GPT-5.4 Pro'
-    },
-    {
-      id: 'gpt-5.5-pro',
-      label: 'GPT-5.5 Pro'
-    },
-    {
-      id: 'gpt-4o-mini',
-      label: 'GPT-4o mini'
-    },
-    {
-      id: 'gpt-5-codex',
-      label: 'GPT-5-Codex'
-    },
-    {
-      id: 'gpt-5.2-codex',
-      label: 'GPT-5.2 Codex'
-    },
-    {
-      id: 'gpt-image-2',
-      label: 'gpt-image-2'
-    },
-    {
-      id: 'gpt-5.1',
-      label: 'GPT-5.1'
-    },
-    {
-      id: 'gpt-5.5',
-      label: 'GPT-5.5'
-    }
-  ],
-  deepseek: [
-    {
-      id: 'deepseek-v4-flash',
-      label: 'DeepSeek V4 Flash'
-    },
-    {
-      id: 'deepseek-v4-pro',
-      label: 'DeepSeek V4 Pro'
-    },
-    {
-      id: 'deepseek-reasoner',
-      label: 'DeepSeek Reasoner'
-    },
-    {
-      id: 'deepseek-chat',
-      label: 'DeepSeek Chat'
-    }
-  ],
-  moonshotai: [
-    {
-      id: 'kimi-k2-0905-preview',
-      label: 'Kimi K2 0905'
-    },
-    {
-      id: 'kimi-k2-thinking-turbo',
-      label: 'Kimi K2 Thinking Turbo'
-    },
-    {
-      id: 'kimi-k2.7-code',
-      label: 'Kimi K2.7 Code'
-    },
-    {
-      id: 'kimi-k2-thinking',
-      label: 'Kimi K2 Thinking'
-    },
-    {
-      id: 'kimi-k2-0711-preview',
-      label: 'Kimi K2 0711'
-    },
-    {
-      id: 'kimi-k2-turbo-preview',
-      label: 'Kimi K2 Turbo'
-    },
-    {
-      id: 'kimi-k2.5',
-      label: 'Kimi K2.5'
-    },
-    {
-      id: 'kimi-k2.6',
-      label: 'Kimi K2.6'
-    },
-    {
-      id: 'kimi-k2.7-code-highspeed',
-      label: 'Kimi K2.7 Code HighSpeed'
-    }
-  ],
-  zhipuai: [
-    {
-      id: 'glm-5.1',
-      label: 'GLM-5.1'
-    },
-    {
-      id: 'glm-5.2',
-      label: 'GLM-5.2'
-    },
-    {
-      id: 'glm-5v-turbo',
-      label: 'GLM-5V-Turbo'
-    },
-    {
-      id: 'glm-5',
-      label: 'GLM-5'
-    },
-    {
-      id: 'glm-4.5-flash',
-      label: 'GLM-4.5-Flash'
-    },
-    {
-      id: 'glm-4.7-flash',
-      label: 'GLM-4.7-Flash'
-    },
-    {
-      id: 'glm-4.5-air',
-      label: 'GLM-4.5-Air'
-    },
-    {
-      id: 'glm-4.6v',
-      label: 'GLM-4.6V'
-    },
-    {
-      id: 'glm-4.6',
-      label: 'GLM-4.6'
-    },
-    {
-      id: 'glm-4.7-flashx',
-      label: 'GLM-4.7-FlashX'
-    },
-    {
-      id: 'glm-4.5',
-      label: 'GLM-4.5'
-    },
-    {
-      id: 'glm-4.5v',
-      label: 'GLM-4.5V'
-    },
-    {
-      id: 'glm-4.7',
-      label: 'GLM-4.7'
-    }
-  ],
-  alibaba: [
-    {
-      id: 'qwen3-omni-flash',
-      label: 'Qwen3-Omni Flash'
-    },
-    {
-      id: 'qwen3-coder-plus',
-      label: 'Qwen3 Coder Plus'
-    },
-    {
-      id: 'qwen-plus',
-      label: 'Qwen Plus'
-    },
-    {
-      id: 'qwen3-coder-30b-a3b-instruct',
-      label: 'Qwen3-Coder 30B-A3B Instruct'
-    },
-    {
-      id: 'qwen3-omni-flash-realtime',
-      label: 'Qwen3-Omni Flash Realtime'
-    },
-    {
-      id: 'qwen3-32b',
-      label: 'Qwen3 32B'
-    },
-    {
-      id: 'qwen-omni-turbo-realtime',
-      label: 'Qwen-Omni Turbo Realtime'
-    },
-    {
-      id: 'qwen-plus-character-ja',
-      label: 'Qwen Plus Character (Japanese)'
-    },
-    {
-      id: 'qwen3-next-80b-a3b-instruct',
-      label: 'Qwen3-Next 80B-A3B Instruct'
-    },
-    {
-      id: 'qwen3.7-plus',
-      label: 'Qwen3.7 Plus'
-    },
-    {
-      id: 'qwen3.6-35b-a3b',
-      label: 'Qwen3.6 35B-A3B'
-    },
-    {
-      id: 'qwen3.7-max',
-      label: 'Qwen3.7 Max'
-    },
-    {
-      id: 'qwen3-max',
-      label: 'Qwen3 Max'
-    },
-    {
-      id: 'qwen2-5-omni-7b',
-      label: 'Qwen2.5-Omni 7B'
-    },
-    {
-      id: 'qwen3-8b',
-      label: 'Qwen3 8B'
-    },
-    {
-      id: 'qwen2-5-14b-instruct',
-      label: 'Qwen2.5 14B Instruct'
-    },
-    {
-      id: 'qwen3-next-80b-a3b-thinking',
-      label: 'Qwen3-Next 80B-A3B (Thinking)'
-    },
-    {
-      id: 'qvq-max',
-      label: 'QVQ Max'
-    },
-    {
-      id: 'qwen3.6-flash',
-      label: 'Qwen3.6 Flash'
-    },
-    {
-      id: 'qwen2-5-vl-72b-instruct',
-      label: 'Qwen2.5-VL 72B Instruct'
-    },
-    {
-      id: 'qwen3-vl-plus',
-      label: 'Qwen3-VL Plus'
-    },
-    {
-      id: 'qwen-vl-ocr',
-      label: 'Qwen-VL OCR'
-    },
-    {
-      id: 'qwen-mt-turbo',
-      label: 'Qwen-MT Turbo'
-    },
-    {
-      id: 'qwen-mt-plus',
-      label: 'Qwen-MT Plus'
-    },
-    {
-      id: 'qwen3.5-plus',
-      label: 'Qwen3.5 Plus'
-    },
-    {
-      id: 'qwen-omni-turbo',
-      label: 'Qwen-Omni Turbo'
-    },
-    {
-      id: 'qwen2-5-72b-instruct',
-      label: 'Qwen2.5 72B Instruct'
-    },
-    {
-      id: 'qwen-flash',
-      label: 'Qwen Flash'
-    },
-    {
-      id: 'qwen3-vl-235b-a22b',
-      label: 'Qwen3-VL 235B-A22B'
-    },
-    {
-      id: 'qwen3-vl-30b-a3b',
-      label: 'Qwen3-VL 30B-A3B'
-    },
-    {
-      id: 'qwen-vl-max',
-      label: 'Qwen-VL Max'
-    },
-    {
-      id: 'qwen3.5-27b',
-      label: 'Qwen3.5 27B'
-    },
-    {
-      id: 'qwen-max',
-      label: 'Qwen Max'
-    },
-    {
-      id: 'qwen3-235b-a22b',
-      label: 'Qwen3 235B-A22B'
-    },
-    {
-      id: 'qwen3-livetranslate-flash-realtime',
-      label: 'Qwen3-LiveTranslate Flash Realtime'
-    },
-    {
-      id: 'qwen3.6-27b',
-      label: 'Qwen3.6 27B'
-    },
-    {
-      id: 'qwen3.5-35b-a3b',
-      label: 'Qwen3.5 35B-A3B'
-    },
-    {
-      id: 'qwen3-coder-480b-a35b-instruct',
-      label: 'Qwen3-Coder 480B-A35B Instruct'
-    },
-    {
-      id: 'qwq-plus',
-      label: 'QwQ Plus'
-    },
-    {
-      id: 'qwen2-5-32b-instruct',
-      label: 'Qwen2.5 32B Instruct'
-    },
-    {
-      id: 'qwen3.5-397b-a17b',
-      label: 'Qwen3.5 397B-A17B'
-    },
-    {
-      id: 'qwen3-coder-flash',
-      label: 'Qwen3 Coder Flash'
-    },
-    {
-      id: 'qwen3-14b',
-      label: 'Qwen3 14B'
-    },
-    {
-      id: 'qwen3-asr-flash',
-      label: 'Qwen3-ASR Flash'
-    },
-    {
-      id: 'qwen-turbo',
-      label: 'Qwen Turbo'
-    },
-    {
-      id: 'qwen2-5-7b-instruct',
-      label: 'Qwen2.5 7B Instruct'
-    },
-    {
-      id: 'qwen2-5-vl-7b-instruct',
-      label: 'Qwen2.5-VL 7B Instruct'
-    },
-    {
-      id: 'qwen3.6-max-preview',
-      label: 'Qwen3.6 Max Preview'
-    },
-    {
-      id: 'qwen3.5-122b-a10b',
-      label: 'Qwen3.5 122B-A10B'
-    },
-    {
-      id: 'qwen-vl-plus',
-      label: 'Qwen-VL Plus'
-    },
-    {
-      id: 'qwen3.6-plus',
-      label: 'Qwen3.6 Plus'
-    }
-  ],
-  google: [
-    {
-      id: 'gemini-3.1-flash-lite',
-      label: 'Gemini 3.1 Flash Lite'
-    },
-    {
-      id: 'gemini-2.5-flash-preview-tts',
-      label: 'Gemini 2.5 Flash Preview TTS'
-    },
-    {
-      id: 'gemini-2.5-pro',
-      label: 'Gemini 2.5 Pro'
-    },
-    {
-      id: 'gemini-2.5-flash',
-      label: 'Gemini 2.5 Flash'
-    },
-    {
-      id: 'gemini-3.5-flash',
-      label: 'Gemini 3.5 Flash'
-    },
-    {
-      id: 'gemma-4-31b-it',
-      label: 'Gemma 4 31B IT'
-    },
-    {
-      id: 'gemini-2.0-flash',
-      label: 'Gemini 2.0 Flash'
-    },
-    {
-      id: 'gemini-embedding-001',
-      label: 'Gemini Embedding 001'
-    },
-    {
-      id: 'gemini-3.1-pro-preview-customtools',
-      label: 'Gemini 3.1 Pro Preview Custom Tools'
-    },
-    {
-      id: 'gemini-flash-lite-latest',
-      label: 'Gemini Flash-Lite Latest'
-    },
-    {
-      id: 'gemini-3-pro-image-preview',
-      label: 'Nano Banana Pro'
-    },
-    {
-      id: 'gemini-2.5-flash-image',
-      label: 'Nano Banana'
-    },
-    {
-      id: 'gemini-2.5-flash-lite',
-      label: 'Gemini 2.5 Flash-Lite'
-    },
-    {
-      id: 'gemini-3.1-flash-image-preview',
-      label: 'Nano Banana 2'
-    },
-    {
-      id: 'gemini-3.1-pro-preview',
-      label: 'Gemini 3.1 Pro Preview'
-    },
-    {
-      id: 'gemma-4-26b-a4b-it',
-      label: 'Gemma 4 26B A4B IT'
-    },
-    {
-      id: 'gemini-3-pro-preview',
-      label: 'Gemini 3 Pro Preview'
-    },
-    {
-      id: 'gemini-3-flash-preview',
-      label: 'Gemini 3 Flash Preview'
-    },
-    {
-      id: 'gemini-2.5-pro-preview-tts',
-      label: 'Gemini 2.5 Pro Preview TTS'
-    },
-    {
-      id: 'gemini-flash-latest',
-      label: 'Gemini Flash Latest'
-    },
-    {
-      id: 'gemini-3.1-flash-lite-preview',
-      label: 'Gemini 3.1 Flash Lite Preview'
-    },
-    {
-      id: 'gemini-2.0-flash-lite',
-      label: 'Gemini 2.0 Flash-Lite'
-    }
-  ],
-  xai: [
-    {
-      id: 'grok-4.20-multi-agent-0309',
-      label: 'Grok 4.20 Multi-Agent'
-    },
-    {
-      id: 'grok-4.20-0309-non-reasoning',
-      label: 'Grok 4.20 (Non-Reasoning)'
-    },
-    {
-      id: 'grok-4.3',
-      label: 'Grok 4.3'
-    },
-    {
-      id: 'grok-imagine-image-quality',
-      label: 'Grok Imagine Image Quality'
-    },
-    {
-      id: 'grok-imagine-video',
-      label: 'Grok Imagine Video'
-    },
-    {
-      id: 'grok-4.20-0309-reasoning',
-      label: 'Grok 4.20 (Reasoning)'
-    },
-    {
-      id: 'grok-imagine-image',
-      label: 'Grok Imagine Image'
-    },
-    {
-      id: 'grok-build-0.1',
-      label: 'Grok Build 0.1'
-    }
-  ],
-  volcengine: [
-    {
-      id: 'doubao-seed-2.0-code',
-      label: 'Doubao Seed 2.0 Code'
-    },
-    {
-      id: 'doubao-seed-2.0-pro',
-      label: 'Doubao Seed 2.0 Pro'
-    },
-    {
-      id: 'doubao-seed-2.0-lite',
-      label: 'Doubao Seed 2.0 Lite'
-    },
-    {
-      id: 'doubao-seed-code',
-      label: 'Doubao Seed Code'
-    }
-  ]
-};

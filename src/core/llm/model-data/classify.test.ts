@@ -21,6 +21,11 @@ describe('classifyThinking', () => {
   it('unknown reasoning family → uncontrollable (safe: reasons, no knob)', () => {
     expect(classifyThinking({ id: 'mystery-r1', family: 'mystery', reasoning: true })).toBe('uncontrollable');
   });
+  it('o1/o1-pro/o1-mini → openai-reasoning (regex covers o1 not just o3/o4)', () => {
+    expect(classifyThinking({ id: 'o1', family: 'o1', reasoning: true })).toBe('openai-reasoning');
+    expect(classifyThinking({ id: 'o1-pro', family: 'o1', reasoning: true })).toBe('openai-reasoning');
+    expect(classifyThinking({ id: 'o1-mini', family: 'o1', reasoning: true })).toBe('openai-reasoning');
+  });
 });
 
 describe('classifyToolResultImages', () => {

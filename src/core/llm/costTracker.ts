@@ -52,9 +52,10 @@ const MODEL_PRICING: [string, ModelPricing][] = [...GENERATED_MODEL_PRICING, ...
   .sort((a, b) => b[0].length - a[0].length);
 
 function findPricing(model: string): ModelPricing | null {
-  const lower = model.toLowerCase();
+  const bare = model.includes('/') ? model.split('/').pop()! : model;
+  const lower = bare.toLowerCase();
   for (const [prefix, pricing] of MODEL_PRICING) {
-    if (lower.startsWith(prefix)) return pricing;
+    if (lower.startsWith(prefix.toLowerCase())) return pricing;
   }
   return null;
 }

@@ -182,4 +182,20 @@ describe('costTracker', () => {
       expect(cost).toBeGreaterThan(0);
     });
   });
+
+  describe('findPricing — OpenRouter vendor prefix stripping', () => {
+    it('strips vendor/ prefix so anthropic/claude-opus-4-8 resolves the same price as bare id', () => {
+      const withPrefix = calculateTurnCost('anthropic/claude-opus-4-8', { inputTokens: 1_000_000 });
+      const bare = calculateTurnCost('claude-opus-4-8', { inputTokens: 1_000_000 });
+      // Both should resolve the opus-4-8 generated price ($5/M input)
+      expect(withPrefix).toBeCloseTo(5, 5);
+      expect(withPrefix).toBeCloseTo(bare, 8);
+    });
+
+    it('prefix lookup is case-insensitive', () => {
+      const lower = calculateTurnCost('claude-opus-4-8', { inputTokens: 1_000_000 });
+      const upper = calculateTurnCost('Claude-Opus-4-8', { inputTokens: 1_000_000 });
+      expect(upper).toBeCloseTo(lower, 8);
+    });
+  });
 });

@@ -1734,6 +1734,69 @@ export const GENERATED_KNOWN_MODELS: Record<string, ModelCapabilities> = {
     maxOutputTokens: 4096,
     outputCeiling: 4096,
     contextWindow: 128000
+  },
+  'claude-3-5-haiku-20241022': {
+    vision: true,
+    thinking: false,
+    toolResultImages: 'native',
+    documentBlock: true,
+    maxOutputTokens: 8192,
+    outputCeiling: 8192,
+    contextWindow: 200000
+  },
+  'doubao-seed-2-0-pro-260215': {
+    vision: true,
+    thinking: false,
+    toolResultImages: 'workaround',
+    documentBlock: false,
+    maxOutputTokens: 32768,
+    outputCeiling: 32768,
+    contextWindow: 256000
+  },
+  'moonshot-v1-128k': {
+    vision: false,
+    thinking: false,
+    toolResultImages: 'none',
+    documentBlock: false,
+    maxOutputTokens: 4096,
+    outputCeiling: 4096,
+    contextWindow: 128000
+  },
+  'MiniMax-M2.7': {
+    vision: true,
+    thinking: false,
+    toolResultImages: 'workaround',
+    documentBlock: false,
+    maxOutputTokens: 8192,
+    outputCeiling: 8192,
+    contextWindow: 204800
+  },
+  'MiniMax-M2.7-highspeed': {
+    vision: true,
+    thinking: false,
+    toolResultImages: 'workaround',
+    documentBlock: false,
+    maxOutputTokens: 8192,
+    outputCeiling: 8192,
+    contextWindow: 204800
+  },
+  'MiniMax-M2.5': {
+    vision: false,
+    thinking: false,
+    toolResultImages: 'workaround',
+    documentBlock: false,
+    maxOutputTokens: 8192,
+    outputCeiling: 8192,
+    contextWindow: 204800
+  },
+  'MiniMax-M2.5-highspeed': {
+    vision: false,
+    thinking: false,
+    toolResultImages: 'workaround',
+    documentBlock: false,
+    maxOutputTokens: 8192,
+    outputCeiling: 8192,
+    contextWindow: 204800
   }
 };
 

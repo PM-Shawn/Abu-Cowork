@@ -76,8 +76,9 @@ describe('costTracker', () => {
         inputTokens: 10000,
         outputTokens: 5000,
       });
-      // input: 10000 * 0.27/1M = 0.0027, output: 5000 * 1.1/1M = 0.0055
-      expect(cost).toBeCloseTo(0.0082, 4);
+      // Price sourced from models.dev (DeepSeek V3.2 price cut), not the stale fallback.
+      // input: 10000 * 0.14/1M = 0.0014, output: 5000 * 0.28/1M = 0.0014
+      expect(cost).toBeCloseTo(0.0028, 4);
     });
 
     it('handles zero uncached input with cache tokens', () => {
@@ -161,6 +162,17 @@ describe('costTracker', () => {
     it('returns 0 cost for unknown models', () => {
       const returned = recordTurnCost('conv-1', 'local-llama', { inputTokens: 1000, outputTokens: 500 });
       expect(returned).toBe(0);
+    });
+  });
+
+  describe('pricing sourced from generated data', () => {
+    it('uses exact models.dev price for opus 4.8 (input $5/M)', () => {
+      const cost = calculateTurnCost('claude-opus-4-8', { inputTokens: 1_000_000 });
+      expect(cost).toBeCloseTo(5, 5);
+    });
+    it('still falls back to family prefix for un-snapshotted dated variants', () => {
+      const cost = calculateTurnCost('claude-opus-4-8-some-future-suffix', { inputTokens: 1_000_000 });
+      expect(cost).toBeGreaterThan(0);
     });
   });
 });

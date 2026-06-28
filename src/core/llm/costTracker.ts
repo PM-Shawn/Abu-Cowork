@@ -7,6 +7,7 @@
  *
  * Unknown models (e.g., Ollama local) return 0 cost.
  */
+import { GENERATED_MODEL_PRICING } from './generated/modelData.generated';
 
 // ════════════════════════════════════════════════════════════
 // Pricing (USD per million tokens)
@@ -20,11 +21,11 @@ interface ModelPricing {
 }
 
 /**
- * Pricing table: model prefix → pricing.
+ * Family-prefix fallbacks for un-snapshotted, dated, or local model variants.
  * Uses prefix matching so we don't need to list every dated variant.
  * Prices in USD per million tokens.
  */
-const MODEL_PRICING: [string, ModelPricing][] = [
+const FALLBACK_PRICING: [string, ModelPricing][] = [
   // Claude 4.x / 4.5 / 4.6
   ['claude-opus-4',   { input: 15, output: 75, cacheRead: 1.5, cacheCreation: 18.75 }],
   ['claude-sonnet-4', { input: 3,  output: 15, cacheRead: 0.3, cacheCreation: 3.75 }],
@@ -44,6 +45,10 @@ const MODEL_PRICING: [string, ModelPricing][] = [
   ['deepseek-chat',   { input: 0.27, output: 1.1, cacheRead: 0.07, cacheCreation: 0.27 }],
   ['deepseek-reasoner', { input: 0.55, output: 2.19, cacheRead: 0.14, cacheCreation: 0.55 }],
 ];
+
+// Generated exact-id prices first (longest id first) so they win over the
+// family-prefix fallbacks below in findPricing's first-startsWith-match scan.
+const MODEL_PRICING: [string, ModelPricing][] = [...GENERATED_MODEL_PRICING, ...FALLBACK_PRICING];
 
 function findPricing(model: string): ModelPricing | null {
   const lower = model.toLowerCase();

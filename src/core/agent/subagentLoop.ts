@@ -25,6 +25,11 @@ import { resolveEffectiveLlmCreds } from '../enterprise/llm-resolver';
 import { emitHook } from './lifecycleHooks';
 import type { SubagentStartEvent, SubagentEndEvent, PreToolCallEvent } from './lifecycleHooks';
 import { startSubagentSpan } from '../observability/langfuse';
+import { escalateMaxOutputTokens } from './agentLoop';
+
+/** Max times a subagent re-prompts after a max_tokens truncation. Mirrors the
+ *  same-named limit in agentLoop (kept in sync deliberately). */
+const MAX_OUTPUT_TOKENS_RECOVERY_LIMIT = 3;
 
 // ─── Pure event-builder helpers (exported for unit-testing event shapes) ───
 
@@ -92,6 +97,38 @@ export function isNoProgressTurn(params: {
     && toolCalls.every((tc) => '_parse_error' in tc.input);
   const truncatedEmpty = isReasoningStarvation(stopReason, turnText.trim().length, toolCalls.length);
   return allToolsUnparseable || truncatedEmpty;
+}
+
+/**
+ * Whether a truncated subagent turn is eligible for max-output-tokens recovery:
+ * the output hit max_tokens with no tool call, and we're still under the attempt
+ * limit. Mirrors agentLoop's recovery gate so the subagent re-prompts with an
+ * escalated budget instead of ending on a single truncation.
+ *
+ * Text presence is intentionally irrelevant (unlike isNoProgressTurn): partial
+ * output is preserved via resultBuffer and the continuation resumes mid-thought,
+ * so a long answer cut off mid-sentence is stitched across turns.
+ */
+export function shouldRecoverMaxTokens(params: {
+  stopReason: string;
+  toolCallCount: number;
+  recoveryCount: number;
+  limit: number;
+}): boolean {
+  const { stopReason, toolCallCount, recoveryCount, limit } = params;
+  return stopReason === 'max_tokens' && toolCallCount === 0 && recoveryCount < limit;
+}
+
+/**
+ * Append a turn's text to the accumulated result buffer. Independent turns are
+ * separated by a blank line; a `seamless` append (the turn that resumes a
+ * max_tokens truncation) is concatenated with no separator so a mid-thought /
+ * mid-word cut is stitched back together rather than gaining a spurious break.
+ */
+export function appendTurnText(buffer: string, text: string, seamless: boolean): string {
+  if (!text) return buffer;
+  if (!buffer) return text;
+  return seamless ? buffer + text : buffer + '\n\n' + text;
 }
 
 export type SubagentProgressEvent =
@@ -283,6 +320,15 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
     const MAX_NO_PROGRESS_TURNS = 3;
     let consecutiveNoProgress = 0;
 
+    // Max-output-tokens recovery state (mirrors agentLoop): on a max_tokens
+    // truncation with no tool call, re-prompt with an escalated budget rather than
+    // ending the subagent on a single truncation. Reset on a normal tool_use turn.
+    let maxOutputTokensRecoveryCount = 0;
+    let maxOutputTokensEscalated = false;
+    // Set when the previous turn was a recovery continuation, so the next turn's
+    // text is stitched onto the buffer with no separator (resume mid-thought).
+    let resumingFromTruncation = false;
+
     for (let turn = 0; turn < maxTurns; turn++) {
       if (signal?.aborted) {
         const abortResult = new SubagentResult({
@@ -330,7 +376,21 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
       );
       // Apply context management to prevent subagent context overflow
       const contextWindowSize = settings.contextWindowSize ?? subagentCaps.contextWindow;
-      const maxOutputTokens = reasoningParams.maxTokens;
+      // True output ceiling (distinct from the conservative per-turn budget below):
+      // max_tokens-recovery escalation may climb toward this, never above a known limit.
+      const effectiveModelCeiling = discovered?.maxOutputTokens ?? baseCaps.outputCeiling ?? subagentCaps.maxOutputTokens;
+      let maxOutputTokens = reasoningParams.maxTokens;
+
+      // Escalate the budget on a max_tokens recovery (mirrors agentLoop), clamped to
+      // the model's true output ceiling so we never re-ask above a known limit.
+      const escalation = escalateMaxOutputTokens(maxOutputTokens, contextWindowSize, maxOutputTokensRecoveryCount, maxOutputTokensEscalated);
+      if (escalation.changed) {
+        const escalated = Math.min(escalation.maxOutputTokens, effectiveModelCeiling);
+        if (escalated > maxOutputTokens) {
+          maxOutputTokens = escalated;
+          maxOutputTokensEscalated = true;
+        }
+      }
 
       // Step 1: Semantic compression for long subagent runs
       // TODO: PR2 follow-up — wire isCompressing for subagent compressions
@@ -407,6 +467,7 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
             lastStopReason = event.stopReason ?? '';
             if (event.stopReason === 'tool_use' && collectedToolCalls.length > 0) {
               shouldContinue = true;
+              maxOutputTokensRecoveryCount = 0; // productive turn resets the recovery counter
             }
             if (event.usage) {
               totalOutputTokens += event.usage.outputTokens ?? 0;
@@ -429,9 +490,50 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
         useDiscoveredCapsStore.getState().recordReasoningObserved(provider.id, effectiveModelId);
       }
 
-      // Accumulate text (append, not overwrite — preserve results from all turns)
-      if (turnText) {
-        resultBuffer = resultBuffer ? resultBuffer + '\n\n' + turnText : turnText;
+      // Accumulate text (append, not overwrite — preserve results from all turns).
+      // A turn that resumes a max_tokens truncation is stitched on with no separator.
+      resultBuffer = appendTurnText(resultBuffer, turnText, resumingFromTruncation);
+      resumingFromTruncation = false;
+
+      // Max-output-tokens recovery: output truncated mid-thought with no tool call →
+      // preserve the partial output in local history, re-prompt to resume, and let the
+      // next turn escalate the budget (mirrors agentLoop). Without this a single
+      // truncation ended the subagent at the `!shouldContinue` break below. Runs before
+      // the no-progress guard so a recoverable truncation doesn't count as no-progress.
+      if (!shouldContinue && shouldRecoverMaxTokens({
+        stopReason: lastStopReason,
+        toolCallCount: collectedToolCalls.length,
+        recoveryCount: maxOutputTokensRecoveryCount,
+        limit: MAX_OUTPUT_TOKENS_RECOVERY_LIMIT,
+      })) {
+        maxOutputTokensRecoveryCount++;
+        consecutiveNoProgress = 0; // recovery is progress; don't let the guard abort
+        resumingFromTruncation = true; // next turn's text resumes mid-thought
+        // Always record an assistant turn (even on an empty truncation) so the local
+        // history alternates user→assistant→user; the normalizer tombstones an empty
+        // one. Without this, an empty truncation would push two consecutive user
+        // messages and the Anthropic API rejects the next request (roles must alternate).
+        messages.push({ id: `sub-asst-${turn}`, role: 'assistant', content: turnText, timestamp: Date.now() });
+        messages.push({
+          id: `sub-recovery-${turn}`,
+          role: 'user',
+          content: 'Output token limit reached. Resume directly — no apology, no recap of what you were doing. Pick up mid-thought if that is where the cut happened. Break remaining work into smaller pieces.',
+          timestamp: Date.now(),
+        });
+        onProgress?.({ type: 'turn-complete', turn: turn + 1, totalTurns: maxTurns });
+        continue;
+      }
+
+      // Recovery exhausted: a max_tokens truncation that can no longer be recovered
+      // (attempt limit reached). Surface a marker so the parent doesn't mistake the
+      // truncated result for a complete answer — mirrors agentLoop's visible
+      // max_tokens_exhausted error.
+      if (!shouldContinue
+        && lastStopReason === 'max_tokens'
+        && collectedToolCalls.length === 0
+        && maxOutputTokensRecoveryCount >= MAX_OUTPUT_TOKENS_RECOVERY_LIMIT) {
+        const note = '[子代理输出多次达到 token 上限仍未完成，以下结果可能不完整，建议换用输出预算更大的模型重试。]';
+        resultBuffer = resultBuffer ? resultBuffer + '\n\n' + note : note;
       }
 
       // No-progress guard: abort a model that can't produce anything actionable

@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach } from 'vitest';
-import { isNoProgressTurn, buildSubagentStartEvent, buildSubagentEndEvent } from './subagentLoop';
+import { isNoProgressTurn, shouldRecoverMaxTokens, appendTurnText, buildSubagentStartEvent, buildSubagentEndEvent } from './subagentLoop';
 import { registerHook, clearAllHooks, getHookCount } from './lifecycleHooks';
 import type { SubagentStartEvent, SubagentEndEvent } from './lifecycleHooks';
 
@@ -67,6 +67,60 @@ describe('isNoProgressTurn', () => {
       turnText: '',
       stopReason: 'end_turn',
     })).toBe(false);
+  });
+});
+
+describe('shouldRecoverMaxTokens', () => {
+  // Mirrors agentLoop's recovery gate: a subagent whose output was truncated
+  // (max_tokens) with no tool call should re-prompt with an escalated budget
+  // instead of ending on a single truncation.
+  it('recovers a max_tokens truncation with no tool calls, below the attempt limit', () => {
+    expect(shouldRecoverMaxTokens({ stopReason: 'max_tokens', toolCallCount: 0, recoveryCount: 0, limit: 3 })).toBe(true);
+    expect(shouldRecoverMaxTokens({ stopReason: 'max_tokens', toolCallCount: 0, recoveryCount: 2, limit: 3 })).toBe(true);
+  });
+
+  it('stops recovering once the attempt limit is reached', () => {
+    expect(shouldRecoverMaxTokens({ stopReason: 'max_tokens', toolCallCount: 0, recoveryCount: 3, limit: 3 })).toBe(false);
+  });
+
+  it('does not recover when the turn made tool calls (recovery is text-only)', () => {
+    // Recovery is deliberately scoped to text truncations; a turn that emitted tool
+    // calls goes through the tool_use continuation path instead. (A tool call itself
+    // truncated at max_tokens is a pre-existing gap, not handled by this recovery.)
+    expect(shouldRecoverMaxTokens({ stopReason: 'max_tokens', toolCallCount: 1, recoveryCount: 0, limit: 3 })).toBe(false);
+  });
+
+  it('does not recover a normal completion (end_turn) or a tool_use stop', () => {
+    expect(shouldRecoverMaxTokens({ stopReason: 'end_turn', toolCallCount: 0, recoveryCount: 0, limit: 3 })).toBe(false);
+    expect(shouldRecoverMaxTokens({ stopReason: 'tool_use', toolCallCount: 0, recoveryCount: 0, limit: 3 })).toBe(false);
+  });
+
+  // Unlike isNoProgressTurn, recovery fires regardless of partial text: the
+  // partial output is kept (resultBuffer) and the continuation resumes mid-thought.
+  it('recovers even when the truncated turn produced partial text', () => {
+    expect(shouldRecoverMaxTokens({ stopReason: 'max_tokens', toolCallCount: 0, recoveryCount: 1, limit: 3 })).toBe(true);
+  });
+});
+
+describe('appendTurnText', () => {
+  it('joins independent turns with a paragraph break', () => {
+    expect(appendTurnText('first answer', 'second answer', false)).toBe('first answer\n\nsecond answer');
+  });
+
+  it('stitches a recovery continuation seamlessly (no separator) to resume mid-thought', () => {
+    // A long answer cut off mid-word ('...fox jum' / max_tokens) then resumed ('ped...')
+    // must rejoin without a spurious blank line or word break.
+    expect(appendTurnText('the quick brown fox jum', 'ped over the lazy dog', true)).toBe('the quick brown fox jumped over the lazy dog');
+  });
+
+  it('returns the buffer unchanged when the new text is empty', () => {
+    expect(appendTurnText('only answer', '', false)).toBe('only answer');
+    expect(appendTurnText('only answer', '', true)).toBe('only answer');
+  });
+
+  it('returns the new text as-is when the buffer is empty (no leading separator)', () => {
+    expect(appendTurnText('', 'first answer', false)).toBe('first answer');
+    expect(appendTurnText('', 'first answer', true)).toBe('first answer');
   });
 });
 

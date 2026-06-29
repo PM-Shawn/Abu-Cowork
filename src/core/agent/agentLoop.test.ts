@@ -4,6 +4,7 @@ import {
   shouldContinueTruncatedToolCalls,
   isInteractiveDesktop,
   shouldComputeProposalSignal,
+  isIncompleteReason,
 } from './agentLoop';
 
 describe('escalateMaxOutputTokens', () => {
@@ -187,5 +188,32 @@ describe('shouldComputeProposalSignal (Task #51 gate)', () => {
         '/workspace/myapp',
       ),
     ).toBe(false);
+  });
+});
+
+// C — structured termination reason. Before this, the maxTurns branch routed a
+// `done` event with reason 'max_turns' to the UI but still returned
+// AgentLoopResult.reason === 'completed', so headless callers (scheduler, trigger)
+// could not tell "ran to completion" from "hit the turn cap". isIncompleteReason
+// marks the reasons where the loop stopped on a guard rather than finishing.
+describe('isIncompleteReason', () => {
+  it('is true for max_turns', () => {
+    expect(isIncompleteReason('max_turns')).toBe(true);
+  });
+
+  it('is true for no_progress', () => {
+    expect(isIncompleteReason('no_progress')).toBe(true);
+  });
+
+  it('is false for completed', () => {
+    expect(isIncompleteReason('completed')).toBe(false);
+  });
+
+  it('is false for aborted', () => {
+    expect(isIncompleteReason('aborted')).toBe(false);
+  });
+
+  it('is false for error', () => {
+    expect(isIncompleteReason('error')).toBe(false);
   });
 });

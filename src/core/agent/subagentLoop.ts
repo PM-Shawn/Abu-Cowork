@@ -21,6 +21,7 @@ import { prepareContextMessages } from '../context/contextManager';
 import { compressContextIfNeeded } from '../context/contextCompressor';
 import { getMessageText } from '../context/contextUtils';
 import { withRetry } from './retry';
+import { allToolsUnparseable, MAX_NO_PROGRESS_TURNS, resolveMaxTurns } from './loopGuards';
 import { resolveEffectiveLlmCreds } from '../enterprise/llm-resolver';
 import { emitHook } from './lifecycleHooks';
 import type { SubagentStartEvent, SubagentEndEvent, PreToolCallEvent } from './lifecycleHooks';
@@ -93,10 +94,9 @@ export function isNoProgressTurn(params: {
   stopReason: string;
 }): boolean {
   const { toolCalls, turnText, stopReason } = params;
-  const allToolsUnparseable = toolCalls.length > 0
-    && toolCalls.every((tc) => '_parse_error' in tc.input);
+  // Shared with agentLoop's no-progress guard so the two can't drift.
   const truncatedEmpty = isReasoningStarvation(stopReason, turnText.trim().length, toolCalls.length);
-  return allToolsUnparseable || truncatedEmpty;
+  return allToolsUnparseable(toolCalls) || truncatedEmpty;
 }
 
 /**
@@ -306,18 +306,19 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
     ];
 
     // 6. Main loop
-    // maxTurns priority: agent definition > global setting > 200 (safety cap for background loops)
-    // 200 matches Claude Code's fork subagent default (forkSubagent.ts:65).
+    // maxTurns priority: agent definition > global setting > DEFAULT_MAX_TURNS
+    // (200, matching Claude Code's fork subagent). Shared with agentLoop via
+    // resolveMaxTurns so the cap chain + unlimited escape hatch can't drift.
     const globalMaxTurns = useSettingsStore.getState().agentMaxTurns;
-    const maxTurns = agent.maxTurns ?? globalMaxTurns ?? 200;
+    const maxTurns = resolveMaxTurns({ definitionMaxTurns: agent.maxTurns, globalMaxTurns });
     let resultBuffer = '';
 
     // Abort sustained no-progress (all tool calls unparseable, or truncated with
-    // no output) after this many consecutive turns. A single bad turn is tolerated
-    // so the model can recover from the _parse_error tool result; only a weak model
-    // that can't produce valid tool calls at all trips this — without it the loop
-    // would spin up to maxTurns (200) burning tokens.
-    const MAX_NO_PROGRESS_TURNS = 3;
+    // no output) after MAX_NO_PROGRESS_TURNS consecutive turns (shared with
+    // agentLoop). A single bad turn is tolerated so the model can recover from the
+    // _parse_error tool result; only a weak model that can't produce valid tool
+    // calls at all trips this — without it the loop would spin up to maxTurns
+    // (200) burning tokens.
     let consecutiveNoProgress = 0;
 
     // Max-output-tokens recovery state (mirrors agentLoop): on a max_tokens

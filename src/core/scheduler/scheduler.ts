@@ -1,7 +1,7 @@
 import { useScheduleStore } from '../../stores/scheduleStore';
 import { useChatStore } from '../../stores/chatStore';
 import { useToastStore } from '../../stores/toastStore';
-import { runAgentLoop } from '../agent/agentLoop';
+import { runAgentLoop, isIncompleteReason } from '../agent/agentLoop';
 import {
   notifyScheduledTaskCompleted,
   notifyScheduledTaskError,
@@ -111,7 +111,12 @@ class SchedulerEngine {
         filePermissionCallback: autoFilePermission,
       });
 
-      if (result.reason === 'completed') {
+      // max_turns hit the cap but still produced a usable (partial) answer — deliver
+      // it like a completion, just flagged as possibly incomplete, rather than
+      // silently dropping the output. (no_progress / error / aborted have no usable
+      // output, so they skip delivery below.)
+      if (result.reason === 'completed' || result.reason === 'max_turns') {
+        const incomplete = result.reason === 'max_turns';
         useScheduleStore.getState().completeRun(task.id, runId);
 
         // Push results to IM channel if configured
@@ -119,18 +124,33 @@ class SchedulerEngine {
           await this.pushToIMChannel(task, conversationId);
         }
 
-        notifyScheduledTaskCompleted(task.name);
         const t = getI18n();
-        useToastStore.getState().addToast({
-          type: 'success',
-          title: format(t.schedule.taskCompleted, { name: task.name }),
-        });
-        console.log(`[Scheduler] Task completed: ${task.name}`);
+        if (incomplete) {
+          // Delivered, but warn the cap was reached.
+          useToastStore.getState().addToast({
+            type: 'info',
+            title: format(t.schedule.taskCompleted, { name: task.name }),
+            message: 'Reached the turn limit — result may be incomplete',
+          });
+          console.log(`[Scheduler] Task hit turn limit (partial result delivered): ${task.name}`);
+        } else {
+          notifyScheduledTaskCompleted(task.name);
+          useToastStore.getState().addToast({
+            type: 'success',
+            title: format(t.schedule.taskCompleted, { name: task.name }),
+          });
+          console.log(`[Scheduler] Task completed: ${task.name}`);
+        }
       } else {
-        // aborted or error — mark run accordingly
-        const errorMsg = result.error ?? (result.reason === 'aborted' ? 'Task was cancelled' : 'Unknown error');
+        // aborted, error, or no_progress (degenerate output) — no delivery; mark the
+        // run with a reason-specific message instead of "Unknown error".
+        const errorMsg = result.error ?? (
+          result.reason === 'aborted' ? 'Task was cancelled'
+          : result.reason === 'no_progress' ? 'Stopped: the model produced no usable tool calls'
+          : 'Unknown error'
+        );
         useScheduleStore.getState().errorRun(task.id, runId, errorMsg);
-        if (result.reason === 'error') {
+        if (result.reason === 'error' || isIncompleteReason(result.reason)) {
           notifyScheduledTaskError(task.name);
         }
         const t = getI18n();

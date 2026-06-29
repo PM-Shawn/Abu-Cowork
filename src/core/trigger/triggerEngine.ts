@@ -329,12 +329,22 @@ class TriggerEngine {
         blockedTools: callbacks.blockedTools,
       });
 
-      if (result.reason !== 'completed') {
-        // aborted or error — mark run as error and skip output push
-        const errorMsg = result.error ?? (result.reason === 'aborted' ? 'Trigger was cancelled' : 'Unknown error');
+      // max_turns hit the cap but still produced a usable (partial) reply — fall
+      // through and deliver it (just flagged below), rather than dropping the
+      // output. aborted / error / no_progress have no usable output → mark the run
+      // and skip the push.
+      if (result.reason !== 'completed' && result.reason !== 'max_turns') {
+        const errorMsg = result.error ?? (
+          result.reason === 'aborted' ? 'Trigger was cancelled'
+          : result.reason === 'no_progress' ? 'Stopped: the model produced no usable tool calls'
+          : 'Unknown error'
+        );
         useTriggerStore.getState().errorRun(trigger.id, runId, errorMsg);
         console.log(`[Trigger] ${result.reason}: ${trigger.name}`, result.error ?? '');
         return;
+      }
+      if (result.reason === 'max_turns') {
+        console.log(`[Trigger] hit turn limit (partial result delivered): ${trigger.name}`);
       }
 
       useTriggerStore.getState().completeRun(trigger.id, runId);

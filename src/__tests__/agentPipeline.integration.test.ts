@@ -388,6 +388,132 @@ describe('Agent Pipeline Integration', () => {
     expect(result.changed).toBe(true);
   });
 
+  // Regression coverage for the loop-termination work (B turn cap / C structured
+  // exit reason / A no-progress guard). These drive runAgentLoop end-to-end with
+  // the mocked adapter and assert the reason it returns to callers.
+  describe('loop termination reasons', () => {
+    // agentMaxTurns is global state; reset it so the small-cap test below can't
+    // bleed into the others (which rely on the default 200 cap).
+    afterEach(() => {
+      useSettingsStore.setState({ agentMaxTurns: undefined });
+    });
+
+    it('stops with reason=no_progress after 3 turns of all-unparseable tool calls', async () => {
+      // A guard: a model emitting only malformed tool calls used to spin
+      // (continueLoop is set on the tool_use branch regardless of parse errors)
+      // up to maxTurns. It must now abort after MAX_NO_PROGRESS_TURNS.
+      let calls = 0;
+      mockClaudeChat.mockImplementation(
+        async (_m: unknown, _o: unknown, onEvent: (e: StreamEvent) => void) => {
+          calls++;
+          onEvent({ type: 'tool_use', id: `bad-${calls}`, name: 'read_file', input: { _parse_error: 'bad json' } });
+          onEvent({ type: 'done', stopReason: 'tool_use' });
+        },
+      );
+
+      const convId = useChatStore.getState().createConversation();
+      const result = await runAgentLoop(convId, 'do the thing');
+
+      expect(result.reason).toBe('no_progress');
+      expect(calls).toBe(3); // two tolerated retries, abort on the third
+    });
+
+    it('stops with reason=max_turns when the turn cap is reached', async () => {
+      // B+C: the cap is now always finite (was unlimited by default), and the cap
+      // branch must report 'max_turns' to callers, not the old silent 'completed'.
+      useSettingsStore.setState({ agentMaxTurns: 2 });
+      let calls = 0;
+      mockClaudeChat.mockImplementation(
+        async (_m: unknown, _o: unknown, onEvent: (e: StreamEvent) => void) => {
+          calls++;
+          onEvent({ type: 'tool_use', id: `t-${calls}`, name: 'read_file', input: { path: '/x' } });
+          onEvent({ type: 'done', stopReason: 'tool_use' });
+        },
+      );
+
+      const convId = useChatStore.getState().createConversation();
+      const result = await runAgentLoop(convId, 'loop on tools');
+
+      expect(result.reason).toBe('max_turns');
+      expect(calls).toBe(2); // turn 3's top-of-loop check trips before its LLM call
+    });
+
+    it('reports reason=aborted (not completed) when cancelled between turns', async () => {
+      // Regression for the pre-existing bug the structured-reason work fixes: the
+      // top-of-loop abort break never set exitReason, so a run cancelled between
+      // turns returned 'completed' and scheduler/trigger pushed its partial output
+      // as a success.
+      const convId = useChatStore.getState().createConversation();
+      let calls = 0;
+      mockClaudeChat.mockImplementation(
+        async (_m: unknown, _o: unknown, onEvent: (e: StreamEvent) => void) => {
+          calls++;
+          onEvent({ type: 'tool_use', id: `t-${calls}`, name: 'read_file', input: { path: '/x' } });
+          onEvent({ type: 'done', stopReason: 'tool_use' });
+          // Cancel after this turn's stream — the NEXT iteration's top-of-loop
+          // abort check is what should fire.
+          useChatStore.getState().cancelStreaming(convId);
+        },
+      );
+
+      const result = await runAgentLoop(convId, 'start, then get cancelled');
+
+      expect(result.reason).toBe('aborted');
+    });
+
+    it('runs skill cleanup when the turn cap is hit (review finding [3])', async () => {
+      // The max_turns break used to skip the terminal cleanup that every other exit
+      // path runs. Now that the cap is always finite this path is routine, so a skill
+      // left active would bleed into the user's NEXT message. Assert it deactivates.
+      useSettingsStore.setState({ agentMaxTurns: 2 });
+      let calls = 0;
+      mockClaudeChat.mockImplementation(
+        async (_m: unknown, _o: unknown, onEvent: (e: StreamEvent) => void) => {
+          calls++;
+          onEvent({ type: 'tool_use', id: `t-${calls}`, name: 'read_file', input: { path: '/x' } });
+          onEvent({ type: 'done', stopReason: 'tool_use' });
+        },
+      );
+
+      const convId = useChatStore.getState().createConversation();
+      // Mark a skill active — the single-turn lifecycle requires every terminal
+      // path (including max_turns) to clear it.
+      useChatStore.setState((s: { conversations: Record<string, { activeSkills?: string[] }> }) => {
+        const c = s.conversations[convId];
+        if (c) c.activeSkills = ['test-skill'];
+      });
+
+      const result = await runAgentLoop(convId, 'loop until capped');
+
+      expect(result.reason).toBe('max_turns');
+      expect(useChatStore.getState().conversations[convId].activeSkills).toEqual([]);
+    });
+
+    it('resets the no-progress counter when a queued-input override rescues the loop (review finding [5])', async () => {
+      // Without the reset, a mid-stream user rescue buys only ONE more turn before
+      // the (still-3) counter trips. With it, the full 3-turn tolerance is restored:
+      // turns 1-3 trip the guard, the rescue at turn 3 resets it, turns 4-6 trip it
+      // again → stop at turn 6 (calls===6). Without the reset it would stop at turn 4.
+      const { hasQueuedInputs } = await import('../core/agent/userInputQueue');
+      vi.mocked(hasQueuedInputs).mockReturnValueOnce(true); // rescue exactly once (turn 3)
+
+      let calls = 0;
+      mockClaudeChat.mockImplementation(
+        async (_m: unknown, _o: unknown, onEvent: (e: StreamEvent) => void) => {
+          calls++;
+          onEvent({ type: 'tool_use', id: `bad-${calls}`, name: 'read_file', input: { _parse_error: 'bad' } });
+          onEvent({ type: 'done', stopReason: 'tool_use' });
+        },
+      );
+
+      const convId = useChatStore.getState().createConversation();
+      const result = await runAgentLoop(convId, 'spin, get rescued, spin again');
+
+      expect(result.reason).toBe('no_progress');
+      expect(calls).toBe(6);
+    });
+  });
+
   describe('context warning level after compression', () => {
     // Restore estimateMessageTokens to its default stub value after each test
     // to prevent bleed-through into the sibling tests above.

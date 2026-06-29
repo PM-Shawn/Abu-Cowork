@@ -52,6 +52,7 @@ vi.mock('../im/pluginRegistry', () => ({
 
 // Import after mocks
 import { triggerEngine } from './triggerEngine';
+import { outputSender } from '../im/outputSender';
 
 function makeTrigger(overrides: Partial<Trigger> = {}): Trigger {
   return {
@@ -352,6 +353,62 @@ describe('TriggerEngine', () => {
       await triggerEngine.handleEvent(trigger.id, { data: {} }, { skipChecks: true });
       const { runAgentLoop } = await import('../agent/agentLoop');
       expect(runAgentLoop).toHaveBeenCalled();
+    });
+  });
+
+  // ── Output delivery by exit reason (review finding [2]) ──
+  // max_turns hit the cap but still produced a usable partial answer, so its output
+  // must still be delivered (regression: making it a non-'completed' reason caused
+  // the guard to early-return before pushOutput). no_progress / aborted have no
+  // usable output and must NOT be delivered.
+  describe('output delivery by exit reason', () => {
+    function makeOutputTrigger(id: string): Trigger {
+      return makeTrigger({
+        id,
+        output: {
+          enabled: true,
+          target: 'webhook',
+          platform: 'custom',
+          webhookUrl: 'https://example.test/hook',
+          extractMode: 'last_message',
+        },
+      });
+    }
+
+    it('delivers output when the run hit the turn cap (max_turns)', async () => {
+      const trigger = makeOutputTrigger('trigger-out-maxturns');
+      useTriggerStore.setState({ triggers: { [trigger.id]: trigger } });
+      const { runAgentLoop } = await import('../agent/agentLoop');
+      vi.mocked(runAgentLoop).mockResolvedValue({ reason: 'max_turns' });
+      vi.mocked(outputSender.send).mockClear();
+
+      await triggerEngine.handleEvent(trigger.id, { data: { n: 1 } });
+
+      expect(outputSender.send).toHaveBeenCalled();
+    });
+
+    it('does NOT deliver output on no_progress (degenerate result)', async () => {
+      const trigger = makeOutputTrigger('trigger-out-noprogress');
+      useTriggerStore.setState({ triggers: { [trigger.id]: trigger } });
+      const { runAgentLoop } = await import('../agent/agentLoop');
+      vi.mocked(runAgentLoop).mockResolvedValue({ reason: 'no_progress' });
+      vi.mocked(outputSender.send).mockClear();
+
+      await triggerEngine.handleEvent(trigger.id, { data: { n: 2 } });
+
+      expect(outputSender.send).not.toHaveBeenCalled();
+    });
+
+    it('does NOT deliver output on aborted', async () => {
+      const trigger = makeOutputTrigger('trigger-out-aborted');
+      useTriggerStore.setState({ triggers: { [trigger.id]: trigger } });
+      const { runAgentLoop } = await import('../agent/agentLoop');
+      vi.mocked(runAgentLoop).mockResolvedValue({ reason: 'aborted' });
+      vi.mocked(outputSender.send).mockClear();
+
+      await triggerEngine.handleEvent(trigger.id, { data: { n: 3 } });
+
+      expect(outputSender.send).not.toHaveBeenCalled();
     });
   });
 });

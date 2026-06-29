@@ -303,7 +303,7 @@ interface SettingsState {
   showSettings: boolean;
   sidebarCollapsed: boolean;
   rightPanelCollapsed: boolean;
-  agentMaxTurns?: number; // undefined = 不限制
+  agentMaxTurns?: number; // undefined = 用默认上界 (resolveMaxTurns: DEFAULT_MAX_TURNS); <=0 = 不限制(显式 opt-in)
   maxOutputTokens: number;
   contextWindowSize: number;
   language: LanguageSetting;

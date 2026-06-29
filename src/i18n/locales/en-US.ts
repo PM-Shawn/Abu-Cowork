@@ -328,6 +328,7 @@ const enUS: TranslationDict = {
     contextTooltipUsage: '{percent}% used · {used} / {max} tokens',
     contextTooltipSubtitle: 'Context water level · Local estimate',
     maxTurnsReached: 'Completed {n} turns. Send a new message to continue if the task is not finished.',
+    noProgressStopped: 'Stopped: the model repeatedly produced unparseable tool calls. The model may be too weak or the context too long — try a more capable model.',
     usageChipInput: 'Input',
     usageChipOutput: 'Output',
     usageChipCache: 'cache',

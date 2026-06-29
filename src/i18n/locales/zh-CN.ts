@@ -328,6 +328,7 @@ const zhCN: TranslationDict = {
     contextTooltipUsage: '{percent}% 已用 · {used} / {max} tokens',
     contextTooltipSubtitle: '上下文水位 · 本地估算',
     maxTurnsReached: '已完成 {n} 轮执行。如果任务尚未完成，直接发送消息即可继续。',
+    noProgressStopped: '已停止：模型连续多次生成无法解析的工具调用，可能是该模型能力不足或上下文过长，建议换用能力更强的模型重试。',
     usageChipInput: '输入',
     usageChipOutput: '输出',
     usageChipCache: 'cache',

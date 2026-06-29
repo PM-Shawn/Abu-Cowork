@@ -29,6 +29,7 @@ import { withRetry } from './retry';
 import { runSubagentLoop, extractParentConversationSummary } from './subagentLoop';
 import type { SubagentProgressEvent } from './subagentLoop';
 import { createSubagentController } from './subagentAbort';
+import { allToolsUnparseable, MAX_NO_PROGRESS_TURNS, resolveMaxTurns } from './loopGuards';
 import { drainQueuedInputs, clearInputQueue } from './userInputQueue';
 import { snapshotExecutionSteps } from './executionSnapshot';
 import { emitHook } from './lifecycleHooks';
@@ -460,8 +461,24 @@ export interface AgentLoopOptions {
 }
 
 /** Exit reason returned by runAgentLoop so callers (scheduler, trigger) can
- *  distinguish normal completion from abort / error. */
-export type AgentLoopExitReason = 'completed' | 'aborted' | 'error';
+ *  distinguish normal completion from abort / error / a guard stop.
+ *  `max_turns` and `no_progress` are "incomplete" terminations: the loop ran but
+ *  hit a safety guard instead of finishing — before, both silently reported
+ *  `completed`, so headless callers couldn't tell. (`max_tokens` exhaustion stays
+ *  under `error`, which already carries a descriptive `error` message.) */
+export type AgentLoopExitReason =
+  | 'completed'
+  | 'aborted'
+  | 'error'
+  | 'max_turns'
+  | 'no_progress';
+
+/** Terminated by a safety guard rather than finishing the task — the result may
+ *  be incomplete. Lets scheduler / trigger surface a meaningful status instead
+ *  of treating these as either success or an opaque "Unknown error". */
+export function isIncompleteReason(reason: AgentLoopExitReason): boolean {
+  return reason === 'max_turns' || reason === 'no_progress';
+}
 
 export interface AgentLoopResult {
   reason: AgentLoopExitReason;
@@ -565,6 +582,7 @@ export function shouldContinueTruncatedToolCalls(
 ): boolean {
   return stopReason === 'max_tokens' && toolCalls.some((tc) => !('_parse_error' in tc.input));
 }
+
 
 export async function runAgentLoop(conversationId: string, userMessage: string, options?: AgentLoopOptions): Promise<AgentLoopResult> {
   // New turn starts clean: drop any stale plan-mode lock from a prior/abandoned plan (see planMode.ts).
@@ -886,10 +904,21 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
   let continueLoop = true;
   let exitReason: AgentLoopExitReason = 'completed';
   let exitError: string | undefined;
-  // maxTurns priority: skill > agent definition > global setting > undefined (unlimited)
+  // maxTurns priority: skill > agent definition > global setting > sane default
+  // (never unlimited — see resolveMaxTurns). Headless runs get a tighter cap.
   const globalMaxTurns = useSettingsStore.getState().agentMaxTurns;
-  const maxTurns = route.skill?.maxTurns ?? route.definition?.maxTurns ?? globalMaxTurns;
+  const maxTurns = resolveMaxTurns({
+    skillMaxTurns: route.skill?.maxTurns,
+    definitionMaxTurns: route.definition?.maxTurns,
+    globalMaxTurns,
+  });
   let turnCount = 0;
+  // No-progress guard (mirrors subagentLoop): abort a model that emits only
+  // unparseable tool calls for MAX_NO_PROGRESS_TURNS in a row — without it agentLoop
+  // would spin to maxTurns (continueLoop is set on the tool_use branch regardless
+  // of parse errors). One bad turn is tolerated so the _parse_error results give
+  // the model a chance to recover.
+  let consecutiveNoProgress = 0;
   const autoCompactTracker = new AutoCompactTracker();
   let maxOutputTokensRecoveryCount = 0;
   const MAX_OUTPUT_TOKENS_RECOVERY_LIMIT = 3;
@@ -924,6 +953,10 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
       taskExecutionStore.cancelExecution(execution.id);
       deactivateAllSkills(conversationId);
       chatStore.setConversationStatus(conversationId, 'idle');
+      // Report the cancellation to callers — without this an abort between turns
+      // falls through to the default 'completed', so scheduler/trigger would treat
+      // a cancelled run as a success and push its partial output downstream.
+      exitReason = 'aborted';
       break;
     }
 
@@ -971,7 +1004,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
       maxTurns,
     });
 
-    if (maxTurns !== undefined && turnCount > maxTurns) {
+    if (turnCount > maxTurns) {
       const maxTurnsMsgId = generateId();
       chatStore.addMessage(conversationId, {
         id: maxTurnsMsgId,
@@ -985,6 +1018,22 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
       eventRouter.route({ type: 'done', loopId, reason: 'max_turns' });
       persistExecutionSnapshot(conversationId, loopId);
       chatStore.setConversationStatus(conversationId, 'completed');
+      // C: report the cap to callers (scheduler/trigger) instead of 'completed'.
+      exitReason = 'max_turns';
+      // Same terminal cleanup as the normal end_turn path — now that the cap is
+      // always finite this break is routinely reached, so skipping these would
+      // leak an active skill into the next message, leave a phantom crash-recovery
+      // checkpoint, and keep the Computer-Use overlay / AX session alive.
+      deactivateAllSkills(conversationId);
+      import('./computerUseStatus').then(({ setComputerUseActive }) => {
+        setComputerUseActive(false);
+      }).catch(() => {});
+      import('../tools/definitions/computerTools').then(({ closeAxSession }) => {
+        closeAxSession().catch(() => {});
+      }).catch(() => {});
+      import('../session/checkpoint').then(({ clearCheckpoint }) => {
+        clearCheckpoint(conversationId);
+      }).catch(() => {});
       break;
     }
 
@@ -1740,6 +1789,23 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
         }
       }
 
+      // A: no-progress guard. A turn whose tool calls are ALL unparseable is not
+      // real progress; tolerate a few in a row (the _parse_error results give the
+      // model a chance to recover) but stop a model stuck emitting only malformed
+      // calls before it spins to maxTurns. Mirrors subagentLoop's isNoProgressTurn
+      // via the shared allToolsUnparseable predicate. Checked before the queued-input
+      // override below, so a present user can still rescue the loop by typing.
+      let noProgressAborted = false;
+      if (allToolsUnparseable(collectedToolCalls)) {
+        consecutiveNoProgress++;
+        if (consecutiveNoProgress >= MAX_NO_PROGRESS_TURNS) {
+          continueLoop = false;
+          noProgressAborted = true;
+        }
+      } else {
+        consecutiveNoProgress = 0;
+      }
+
       // If the user enqueued additional input mid-stream (handled by ChatInput when
       // a message is sent while a turn is still running), and the current turn ended
       // with plain text rather than tool_use, run another turn so the LLM actually
@@ -1757,12 +1823,28 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
           if (msg) msg.isStreaming = false;
         });
         continueLoop = true;
+        // A new user directive is a fresh start: restore the full no-progress
+        // tolerance budget so the rescue actually buys the intended retries, not
+        // just one more turn before the (still-3) counter trips again.
+        consecutiveNoProgress = 0;
       }
 
       if (!continueLoop) {
+        // Surface why we stopped when it was the no-progress guard, so the user
+        // doesn't mistake a degenerate stop for a finished answer (mirrors the
+        // max_tokens-exhausted marker above).
+        if (noProgressAborted) {
+          chatStore.appendToLastMessage(
+            conversationId,
+            `\n\n${getI18n().chat.noProgressStopped}`,
+            assistantMsgId,
+          );
+        }
         chatStore.finishStreaming(conversationId, assistantMsgId);
         chatStore.clearAbortController(conversationId);
-        const endReason = maxTokensRecoveryExhausted ? 'max_tokens_exhausted' : 'end_turn';
+        const endReason = noProgressAborted
+          ? 'no_progress'
+          : maxTokensRecoveryExhausted ? 'max_tokens_exhausted' : 'end_turn';
         logger.info('Agent loop ended', { conversationId, loopId, turnCount, reason: endReason });
         // Complete the TaskExecution
         eventRouter.route({ type: 'done', loopId, reason: endReason });
@@ -1790,10 +1872,13 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
         import('../session/checkpoint').then(({ clearCheckpoint }) => {
           clearCheckpoint(conversationId);
         }).catch(() => {});
-        // Mark conversation status — error if recovery exhausted, otherwise completed
+        // Mark conversation status — error if recovery exhausted, otherwise completed.
+        // no_progress is a soft stop (visible marker, status completed) like maxTurns.
         if (maxTokensRecoveryExhausted) {
           exitReason = 'error';
           exitError = 'Max output tokens recovery exhausted';
+        } else if (noProgressAborted) {
+          exitReason = 'no_progress';
         }
         chatStore.setConversationStatus(conversationId, maxTokensRecoveryExhausted ? 'error' : 'completed');
   

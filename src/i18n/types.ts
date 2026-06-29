@@ -312,6 +312,8 @@ export interface TranslationDict {
     contextTooltipSubtitle: string;
     // Agent loop max turns
     maxTurnsReached: string;
+    // Agent loop no-progress guard (model stuck emitting unparseable tool calls)
+    noProgressStopped: string;
     // Usage chip
     usageChipInput: string;
     usageChipOutput: string;

@@ -6,6 +6,7 @@ import {
   isReasoningStarvation,
   CONTENT_FLOOR_TOKENS,
 } from './modelCapabilities';
+import { classifyThinking } from './model-data/classify';
 
 describe('modelCapabilities', () => {
   describe('resolveCapabilities — generated table wired', () => {
@@ -43,6 +44,33 @@ describe('modelCapabilities', () => {
     it('marks deepseek-r1 reasoning as uncontrollable', () => {
       expect(resolveCapabilities('deepseek-r1').thinking).toBe('uncontrollable');
       expect(resolveCapabilities('deepseek-reasoner').thinking).toBe('uncontrollable');
+    });
+
+    // Regression: the pattern fallback used /^o[34]/ and silently missed o1/o2/o5,
+    // diverging from classifyThinking's /^o[1-9]/. An unknown o-series model (not yet
+    // in the snapshot) was classified non-reasoning at runtime. After the dedup both
+    // paths share classifyThinkingProtocol, so the fallback now catches all o[1-9].
+    it('classifies fallback o-series (o1/o1-mini/o5 not in snapshot) as openai-reasoning', () => {
+      expect(resolveCapabilities('o1').thinking).toBe('openai-reasoning');
+      expect(resolveCapabilities('o1-mini').thinking).toBe('openai-reasoning');
+      expect(resolveCapabilities('o5-preview').thinking).toBe('openai-reasoning');
+    });
+
+    // Same drift as the o-series: the fallback gpt branch (/gpt-[45]/) treated gpt-5
+    // like gpt-4 (non-reasoning), diverging from classifyThinking's /gpt-?5/. Current
+    // gpt-5* are all in the snapshot; an unknown gpt-5 reaching the fallback is now
+    // labelled reasoning to match the single source of truth.
+    it('classifies fallback gpt-5 (unknown variant not in snapshot) as openai-reasoning', () => {
+      expect(resolveCapabilities('gpt-5.9-preview').thinking).toBe('openai-reasoning');
+    });
+
+    // The dedup contract: the runtime pattern fallback and the build-time classifier
+    // must resolve the SAME protocol, so a new reasoning model can't be labelled one
+    // way inside the snapshot and another way outside it.
+    it('fallback reasoning protocol agrees with classifyThinking (single source of truth)', () => {
+      for (const id of ['o1', 'o5-preview', 'gpt-5.9-preview']) {
+        expect(resolveCapabilities(id).thinking).toBe(classifyThinking({ id, reasoning: true }));
+      }
     });
   });
 

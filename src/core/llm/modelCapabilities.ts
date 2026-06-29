@@ -6,6 +6,7 @@
  * that route to different models via a single API format.
  */
 import { GENERATED_KNOWN_MODELS } from './generated/modelData.generated';
+import { classifyThinkingProtocol } from './model-data/classify';
 
 // How images in tool results are handled
 export type ToolResultImageSupport = 'native' | 'workaround' | 'none';
@@ -73,27 +74,39 @@ export function resolveCapabilities(modelId: string): ModelCapabilities {
   // 3. Pattern match
   const id = bare.toLowerCase();
 
+  // Reasoning-protocol labels below come from classifyThinkingProtocol (shared with
+  // the build-time classifier in model-data/classify.ts) so the protocol labels can't
+  // drift. The family branches themselves (which ids reason) are still maintained here.
   if (/claude.*opus/i.test(id)) {
-    return { ...CLAUDE_DEFAULT, thinking: 'anthropic', maxOutputTokens: 16384 };
+    return { ...CLAUDE_DEFAULT, thinking: classifyThinkingProtocol(id), maxOutputTokens: 16384 };
   }
   if (/claude/i.test(id)) return CLAUDE_DEFAULT;
 
-  if (/^o[34]/i.test(id)) {
-    return { ...GPT_MODERN_DEFAULT, thinking: 'openai-reasoning' };
+  // o[1-9]: matches classifyThinkingProtocol's /^o[1-9]/ (was /^o[34]/ here, which
+  // silently dropped o1/o2/o5 to non-reasoning for ids not in the snapshot).
+  if (/^o[1-9]/i.test(id)) {
+    return { ...GPT_MODERN_DEFAULT, thinking: classifyThinkingProtocol(id) };
+  }
+  // gpt-5 family reasons (matches classifyThinkingProtocol's /gpt-?5/). Must precede
+  // the gpt-4/5 branch below, which would otherwise label it non-reasoning. The
+  // non-reasoning gpt-5-chat* variants are all in the snapshot, so only unknown
+  // gpt-5 ids reach this branch.
+  if (/gpt-?5/i.test(id)) {
+    return { ...GPT_MODERN_DEFAULT, thinking: classifyThinkingProtocol(id) };
   }
   if (/gpt-[45]/i.test(id) || /gpt-4o/i.test(id)) return GPT_MODERN_DEFAULT;
   if (/gpt-3\.5/i.test(id)) return { ...GPT_MODERN_DEFAULT, vision: false };
 
   if (/deepseek.*r1|deepseek.*reasoner/i.test(id)) {
     // DeepSeek R1 reasons but exposes no budget knob → can't bound it.
-    return { ...DEEPSEEK_DEFAULT, thinking: 'uncontrollable' };
+    return { ...DEEPSEEK_DEFAULT, thinking: classifyThinkingProtocol(id) };
   }
   if (/deepseek/i.test(id)) return DEEPSEEK_DEFAULT;
 
   // Qwen3.x flagship (e.g. qwen3-max, qwen3.7-max, dated variants) — reasoning,
   // thinking always on, bounded via thinking_budget. Probe-verified 65536 output.
   if (/qwen3\.?\d*-max/i.test(id)) {
-    return { ...QWEN_DEFAULT, thinking: 'qwen', maxOutputTokens: 65536, contextWindow: 1000000 };
+    return { ...QWEN_DEFAULT, thinking: classifyThinkingProtocol(id), maxOutputTokens: 65536, contextWindow: 1000000 };
   }
   if (/qwen/i.test(id)) return QWEN_DEFAULT;
   if (/doubao|seed/i.test(id)) return { ...GPT_MODERN_DEFAULT, maxOutputTokens: 8192 };

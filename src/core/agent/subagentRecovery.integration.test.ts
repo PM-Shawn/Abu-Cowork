@@ -20,9 +20,10 @@ const mockClaudeChat = vi.fn();
 vi.mock('../llm/claude', () => ({ ClaudeAdapter: class { chat = mockClaudeChat; } }));
 vi.mock('../llm/openai-compatible', () => ({ OpenAICompatibleAdapter: class { chat = vi.fn(); } }));
 
+const mockExecuteAnyTool = vi.fn();
 vi.mock('../tools/registry', () => ({
   getAllTools: vi.fn().mockReturnValue([]),
-  executeAnyTool: vi.fn(),
+  executeAnyTool: (...args: unknown[]) => mockExecuteAnyTool(...args),
   toolResultToString: (r: unknown) => String(r),
 }));
 
@@ -68,6 +69,8 @@ const agent = { name: 'tester', systemPrompt: 'sys', tools: [] } as never;
 describe('subagent max_tokens recovery (integration)', () => {
   beforeEach(() => {
     mockClaudeChat.mockReset();
+    mockExecuteAnyTool.mockReset();
+    mockExecuteAnyTool.mockResolvedValue('tool output');
   });
 
   it('recovers from an empty truncation without emitting consecutive user messages', async () => {
@@ -110,6 +113,56 @@ describe('subagent max_tokens recovery (integration)', () => {
     const firstMaxTokens = (mockClaudeChat.mock.calls[0][1] as { maxTokens: number }).maxTokens;
     const secondMaxTokens = (mockClaudeChat.mock.calls[1][1] as { maxTokens: number }).maxTokens;
     expect(secondMaxTokens).toBeGreaterThan(firstMaxTokens);
+  });
+
+  // Bug #4: a turn truncated by max_tokens AFTER emitting a complete tool call.
+  // Previously the subagent broke before executing it (toolCallCount > 0 was
+  // excluded from recovery), discarding the work. It must instead execute the
+  // tool, send the result back, and let the model resume.
+  it('continues a max_tokens turn that carries complete tool calls (executes + resumes)', async () => {
+    mockClaudeChat
+      .mockImplementationOnce(emits([
+        { type: 'tool_use', id: 't1', name: 'do_work', input: { x: 1 } } as StreamEvent,
+        { type: 'done', stopReason: 'max_tokens' } as StreamEvent,
+      ]))
+      .mockImplementationOnce(emits([
+        { type: 'text', text: 'finished after the tool' } as StreamEvent,
+        { type: 'done', stopReason: 'end_turn' } as StreamEvent,
+      ]));
+
+    const result = await runSubagentLoop({ agent, task: 'do the thing' });
+
+    // The truncated-but-complete tool call was executed, not discarded.
+    expect(mockExecuteAnyTool).toHaveBeenCalledTimes(1);
+    // The loop continued to a second turn instead of ending on the truncation.
+    expect(mockClaudeChat).toHaveBeenCalledTimes(2);
+    expect(result.text).toContain('finished after the tool');
+
+    // Tool execution is real progress, so this is treated like a normal tool_use
+    // turn: the recovery counter resets and the budget is NOT escalated (the resume
+    // gets a fresh base budget). This keeps the shared recovery counter clean for a
+    // later pure-text truncation and avoids an unbounded escalate-every-turn loop.
+    const firstMaxTokens = (mockClaudeChat.mock.calls[0][1] as { maxTokens: number }).maxTokens;
+    const secondMaxTokens = (mockClaudeChat.mock.calls[1][1] as { maxTokens: number }).maxTokens;
+    expect(secondMaxTokens).toBe(firstMaxTokens);
+  });
+
+  // Bug #4 follow-up (review pass 2): a max_tokens turn whose tool call is MALFORMED
+  // (_parse_error) is NOT progress — it must not be treated as a continuable tool turn
+  // (which would spin a broken model), so the loop stops rather than re-prompting forever.
+  it('does not spin on a max_tokens turn carrying only a malformed tool call', async () => {
+    // Every turn: one unparseable tool call + max_tokens. A naive "continue on any
+    // tool call" would loop to maxTurns; the well-formed-only guard stops it fast.
+    mockClaudeChat.mockImplementation(emits([
+      { type: 'tool_use', id: 't1', name: 'do_work', input: { _parse_error: 'bad json' } } as StreamEvent,
+      { type: 'done', stopReason: 'max_tokens' } as StreamEvent,
+    ]));
+
+    const result = await runSubagentLoop({ agent, task: 'do the thing' });
+
+    // Did not run away to the 200-turn cap.
+    expect(mockClaudeChat.mock.calls.length).toBeLessThan(10);
+    expect(result).toBeTruthy();
   });
 
   it('stops re-prompting once the recovery limit is exhausted and marks the result incomplete', async () => {

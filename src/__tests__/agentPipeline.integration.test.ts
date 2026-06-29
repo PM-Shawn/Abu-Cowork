@@ -383,7 +383,7 @@ describe('Agent Pipeline Integration', () => {
 
   it('escalateMaxOutputTokens pure function works correctly', () => {
     // Already tested in agentLoop.test.ts, but verify integration
-    const result = escalateMaxOutputTokens(8192, 200000, 1, false);
+    const result = escalateMaxOutputTokens(8192, 200000, 1);
     expect(result.maxOutputTokens).toBe(16384);
     expect(result.changed).toBe(true);
   });

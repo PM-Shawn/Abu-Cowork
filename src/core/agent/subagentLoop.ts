@@ -25,7 +25,7 @@ import { resolveEffectiveLlmCreds } from '../enterprise/llm-resolver';
 import { emitHook } from './lifecycleHooks';
 import type { SubagentStartEvent, SubagentEndEvent, PreToolCallEvent } from './lifecycleHooks';
 import { startSubagentSpan } from '../observability/langfuse';
-import { escalateMaxOutputTokens } from './agentLoop';
+import { escalateMaxOutputTokens, shouldContinueTruncatedToolCalls } from './agentLoop';
 
 /** Max times a subagent re-prompts after a max_tokens truncation. Mirrors the
  *  same-named limit in agentLoop (kept in sync deliberately). */
@@ -324,7 +324,6 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
     // truncation with no tool call, re-prompt with an escalated budget rather than
     // ending the subagent on a single truncation. Reset on a normal tool_use turn.
     let maxOutputTokensRecoveryCount = 0;
-    let maxOutputTokensEscalated = false;
     // Set when the previous turn was a recovery continuation, so the next turn's
     // text is stitched onto the buffer with no separator (resume mid-thought).
     let resumingFromTruncation = false;
@@ -383,12 +382,11 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
 
       // Escalate the budget on a max_tokens recovery (mirrors agentLoop), clamped to
       // the model's true output ceiling so we never re-ask above a known limit.
-      const escalation = escalateMaxOutputTokens(maxOutputTokens, contextWindowSize, maxOutputTokensRecoveryCount, maxOutputTokensEscalated);
+      const escalation = escalateMaxOutputTokens(maxOutputTokens, contextWindowSize, maxOutputTokensRecoveryCount);
       if (escalation.changed) {
         const escalated = Math.min(escalation.maxOutputTokens, effectiveModelCeiling);
         if (escalated > maxOutputTokens) {
           maxOutputTokens = escalated;
-          maxOutputTokensEscalated = true;
         }
       }
 
@@ -468,6 +466,16 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
             if (event.stopReason === 'tool_use' && collectedToolCalls.length > 0) {
               shouldContinue = true;
               maxOutputTokensRecoveryCount = 0; // productive turn resets the recovery counter
+            } else if (shouldContinueTruncatedToolCalls(event.stopReason ?? '', collectedToolCalls)) {
+              // Bug #4: max_tokens cut off the turn AFTER ≥1 well-formed tool call.
+              // Legacy behavior broke before executing them, discarding the work.
+              // Executing + resuming IS real progress, so treat it like a tool_use
+              // continuation: continue and reset the counter (the counter belongs to
+              // the no-tool-call text recovery path; incrementing it on a productive
+              // turn would corrupt that path's budget). An all-malformed batch is
+              // refused by the helper, and the no-progress guard below is the backstop.
+              shouldContinue = true;
+              maxOutputTokensRecoveryCount = 0;
             }
             if (event.usage) {
               totalOutputTokens += event.usage.outputTokens ?? 0;

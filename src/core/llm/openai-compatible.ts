@@ -268,6 +268,22 @@ export function toOpenAIToolChoice(
   return { type: 'function', function: { name: tc.name } };
 }
 
+/**
+ * gpt-5.5 rejects "function tools + reasoning_effort" together on
+ * /v1/chat/completions ("...are not supported for gpt-5.5 in /v1/chat/completions.
+ * Please use /v1/responses instead.", issue #86). The Responses API is the only
+ * endpoint that accepts the combo, but it imposes a reasoning-item pairing rule
+ * that breaks stateless multi-turn tool use, so we stay on chat/completions and
+ * simply drop reasoning_effort for this exact combo. gpt-5.5 still reasons at the
+ * model default; the rest of the gpt-5 / o-series family is unaffected.
+ *
+ * Matches the gpt-5.5 family only: `gpt-5.5`, `gpt-5.5-2026-..`, `gpt-5.5-chat-*`.
+ * NOT `gpt-5`, `gpt-5.1`, or `o5` (those keep reasoning_effort with tools).
+ */
+function isGpt55Model(model: string): boolean {
+  return /gpt-?5\.5/i.test(model);
+}
+
 export class OpenAICompatibleAdapter implements LLMAdapter {
   async chat(
     messages: Message[],
@@ -300,7 +316,9 @@ export class OpenAICompatibleAdapter implements LLMAdapter {
     if (options.thinkingBudget != null) {
       body.thinking_budget = options.thinkingBudget;
     }
-    if (options.reasoningEffort) {
+    // Skip reasoning_effort for gpt-5.5 when tools are present — OpenAI rejects
+    // that combo on /chat/completions (issue #86). See isGpt55Model above.
+    if (options.reasoningEffort && !(hasTools && isGpt55Model(options.model))) {
       body.reasoning_effort = options.reasoningEffort;
     }
 

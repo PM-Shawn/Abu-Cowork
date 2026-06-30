@@ -7,6 +7,7 @@ import type { PreparedTurn, PreparedContentBlock } from './messageNormalizer';
 import { createHeartbeat, anySignal, DEFAULT_STREAM_HANG_TIMEOUT_MS as STREAM_HANG_TIMEOUT_MS } from './heartbeat';
 import { createLogger } from '../logging/logger';
 import { resolveOpenAIBaseUrl } from './urlUtils';
+import { shouldUseResponsesApi, buildResponsesBody, createResponsesParser } from './openai-responses';
 
 const logger = createLogger('openai-compatible');
 
@@ -278,6 +279,12 @@ export class OpenAICompatibleAdapter implements LLMAdapter {
     // and defensively trims whitespace users paste in (e.g. trailing space
     // would otherwise bypass the regex and emit /%20/v1/... to the server).
     const baseUrl = resolveOpenAIBaseUrl(options.baseUrl);
+
+    // gpt-5.5 on official OpenAI rejects /chat/completions when the request
+    // carries function tools + reasoning_effort — route to /responses instead.
+    if (shouldUseResponsesApi(baseUrl, options.model)) {
+      return this.chatViaResponses(baseUrl, messages, options, onEvent);
+    }
 
     // Ollama: streaming + tool calling is broken in /v1/chat/completions.
     // When tools are present and endpoint looks like Ollama, use non-streaming.
@@ -827,6 +834,131 @@ export class OpenAICompatibleAdapter implements LLMAdapter {
       }
       // Wrap raw network/decode errors (e.g. "error decoding response body" from
       // gateway disconnects) as retryable LLMErrors so withRetry can handle them.
+      if (!(streamErr instanceof LLMError)) {
+        const msg = streamErr instanceof Error ? streamErr.message : String(streamErr);
+        throw new LLMError(msg, 'network_error', { retryable: true });
+      }
+      throw streamErr;
+    } finally {
+      heartbeat.clear();
+      reader.releaseLock();
+    }
+  }
+
+  /**
+   * POST to /v1/responses for gpt-5.5 on the official OpenAI endpoint.
+   *
+   * Mirrors the chat() scaffolding (abort controller, connect timeout, idle
+   * heartbeat, error classification) but uses the Responses API wire format:
+   * `input` instead of `messages`, flat tool schema, and typed SSE events
+   * parsed by createResponsesParser.
+   */
+  private async chatViaResponses(
+    baseUrl: string,
+    messages: Message[],
+    options: ChatOptions,
+    onEvent: (e: StreamEvent) => void,
+  ): Promise<void> {
+    const body = buildResponsesBody(messages, options);
+    const requestHeaders: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (options.apiKey) {
+      requestHeaders['Authorization'] = `Bearer ${options.apiKey}`;
+    }
+    const fetchFn = await getTauriFetch();
+
+    const streamAbort = new AbortController();
+    const effectiveSignal = options.signal
+      ? anySignal([options.signal, streamAbort.signal])
+      : streamAbort.signal;
+    let idleTimedOut = false;
+
+    let connectTimedOut = false;
+    const connectTimer = setTimeout(() => {
+      connectTimedOut = true;
+      streamAbort.abort();
+    }, STREAM_HANG_TIMEOUT_MS);
+
+    let response: Awaited<ReturnType<typeof fetchFn>>;
+    try {
+      response = await fetchFn(`${baseUrl}/responses`, {
+        method: 'POST',
+        headers: requestHeaders,
+        body: JSON.stringify(body),
+        signal: effectiveSignal,
+      });
+    } catch (fetchErr) {
+      if (connectTimedOut) {
+        throw new LLMError(
+          `连接超时：${STREAM_HANG_TIMEOUT_MS / 1000} 秒未收到服务器响应头`,
+          'network_error',
+          { retryable: true, retryAfterMs: 2000 },
+        );
+      }
+      const msg = fetchErr instanceof Error ? fetchErr.message : String(fetchErr);
+      throw new LLMError(msg, 'network_error', { retryable: true, retryAfterMs: 2000 });
+    } finally {
+      clearTimeout(connectTimer);
+    }
+
+    if (!response.ok) {
+      throw classifyError(response.status, await response.text());
+    }
+
+    const reader = response.body?.getReader();
+    if (!reader) throw new Error('No response body');
+
+    const heartbeat = createHeartbeat(STREAM_HANG_TIMEOUT_MS, () => {
+      idleTimedOut = true;
+      streamAbort.abort();
+    });
+
+    const parser = createResponsesParser(onEvent);
+    const decoder = new TextDecoder();
+    let buffer = '';
+
+    try {
+      heartbeat.reset();
+      while (true) {
+        const { done: streamDone, value } = await reader.read();
+        if (streamDone) break;
+        heartbeat.reset();
+
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() ?? '';
+
+        for (const line of lines) {
+          const trimmed = line.trim();
+          // Skip SSE event-type lines (event: ...) and blank lines
+          if (!trimmed || trimmed.startsWith('event:')) continue;
+          if (!trimmed.startsWith('data: ')) continue;
+
+          const data = trimmed.slice(6);
+          if (data === '[DONE]') {
+            // response.completed should have already set terminal; end() is a no-op
+            parser.end();
+            return;
+          }
+
+          try {
+            const parsed = JSON.parse(data) as Record<string, unknown>;
+            parser.handle(parsed);
+          } catch {
+            // Skip unparseable lines
+          }
+        }
+      }
+      // Stream ended without [DONE] — flush any buffered state
+      parser.end();
+    } catch (streamErr) {
+      if (idleTimedOut) {
+        throw new LLMError(
+          `连接空闲超时：${STREAM_HANG_TIMEOUT_MS / 1000} 秒未收到任何数据`,
+          'network_error',
+          { retryable: true },
+        );
+      }
+      // Let LLMErrors from parser.handle (response.failed) propagate as-is
       if (!(streamErr instanceof LLMError)) {
         const msg = streamErr instanceof Error ? streamErr.message : String(streamErr);
         throw new LLMError(msg, 'network_error', { retryable: true });

@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "abu"
-version = "0.24.2"
+version = "0.24.3"
 dependencies = [
  "aes-gcm",
  "axum",

@@ -509,6 +509,7 @@ export default function Sidebar() {
           </button>
           <button
             onClick={() => openSystemSettings(updateInfo ? 'about' : undefined)}
+            aria-label={t.settings.title}
             className={cn(
               'btn-ghost p-1.5 rounded-md relative',
               viewMode === 'settings'

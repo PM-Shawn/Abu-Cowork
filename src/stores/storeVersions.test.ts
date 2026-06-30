@@ -39,7 +39,7 @@ beforeAll(async () => {
   await import('./discoveredCapabilitiesStore');
   await import('./todosStore');
   await import('./inboxStore');
-}, 30_000); // 16 store imports trigger on-the-fly transforms; a cold cache (CI) can exceed the default 10s hook timeout
+}, 120_000); // 16 store imports trigger on-the-fly transforms; under v8 coverage instrumentation a cold cache exceeds 30s, so allow a generous ceiling (inline timeout overrides global hookTimeout)
 
 describe('Store version compliance', () => {
   it('all persisted stores should have version in their stored data', () => {

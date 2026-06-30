@@ -84,6 +84,7 @@ async function saveUserImagesToDisk(
     const { getSessionOutputDir } = await import('../session/sessionDir');
     const { writeFile, mkdir, exists } = await import('@tauri-apps/plugin-fs');
     const outputDir = await getSessionOutputDir(conversationId);
+    if (!outputDir) return images.map(() => undefined); // web / E2E: no disk storage
     const imagesDir = joinPath(outputDir, 'images');
     if (!(await exists(imagesDir))) {
       await mkdir(imagesDir, { recursive: true });

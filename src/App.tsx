@@ -3,6 +3,7 @@ import { getCurrentWindow } from '@tauri-apps/api/window';
 import { listen } from '@tauri-apps/api/event';
 
 import { invoke } from '@tauri-apps/api/core';
+import { isTauriEnv } from '@/utils/tauriEnv';
 import { ErrorBoundary } from '@/components/common/ErrorBoundary';
 import Sidebar from '@/components/sidebar/Sidebar';
 import ChatView from '@/components/chat/ChatView';
@@ -133,6 +134,7 @@ function App() {
 
   // Clear dock badge whenever the window regains focus
   useEffect(() => {
+    if (!isTauriEnv()) return; // web / E2E: no Tauri window API
     let unlistenFn: (() => void) | null = null;
     let cancelled = false;
     getCurrentWindow()
@@ -160,6 +162,7 @@ function App() {
 
   // Pet window asks for status resync when it (re)opens
   useEffect(() => {
+    if (!isTauriEnv()) return; // web / E2E: no Tauri IPC
     let unlistenFn: (() => void) | null = null;
     let cancelled = false;
     listen('pet-resync-request', () => {
@@ -176,6 +179,7 @@ function App() {
 
   // Listen for window close-requested event from Rust
   useEffect(() => {
+    if (!isTauriEnv()) return; // web / E2E: no Tauri IPC
     let unlistenFn: (() => void) | null = null;
     let cancelled = false;
     listen('close-requested', () => {
@@ -454,6 +458,7 @@ function App() {
   // Hide native title bar text on macOS (overlay mode — title shown in sidebar instead)
   // On Windows, show app name in native title bar
   useEffect(() => {
+    if (!isTauriEnv()) return; // web / E2E: no Tauri window API
     getCurrentWindow().setTitle(isMacOS() ? '' : 'Abu');
   }, []);
 

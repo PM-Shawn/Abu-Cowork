@@ -1,5 +1,6 @@
 import { useEffect, useState, useRef } from 'react';
 import { listen, TauriEvent } from '@tauri-apps/api/event';
+import { isTauriEnv } from '@/utils/tauriEnv';
 
 interface DragDropPayload {
   paths: string[];
@@ -20,6 +21,7 @@ export function useFileDragDrop(onDrop: (paths: string[]) => void) {
   const lastDropPathsRef = useRef<string>('');
 
   useEffect(() => {
+    if (!isTauriEnv()) return; // web / E2E: no Tauri file-drag-drop API
     const unlisteners: (() => void)[] = [];
 
     async function setup() {

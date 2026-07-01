@@ -9,12 +9,14 @@
  * Edge snap: when the pet stops within 20px of a screen edge, we snap
  * it to hide 40% of its body off-screen (PRD-02 "docked" feel).
  *
- * Position persistence: localStorage in the pet window's own WebView.
- * Phase D will migrate this to settingsStore via cross-window event.
+ * Position persistence: settingsStore (Zustand persist). On first use,
+ * migrates any legacy value from localStorage ('abu-pet-position') and
+ * removes the old key.
  */
 
 import { useEffect, useRef } from 'react';
 import { getCurrentWindow, primaryMonitor, PhysicalPosition } from '@tauri-apps/api/window';
+import { useSettingsStore } from '@/stores/settingsStore';
 
 const STORAGE_KEY = 'abu-pet-position';
 const SNAP_THRESHOLD = 20;
@@ -28,23 +30,26 @@ interface Stored {
 }
 
 function loadStored(): Stored | null {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (!raw) return null;
-    const parsed = JSON.parse(raw) as Stored;
-    if (typeof parsed.x === 'number' && typeof parsed.y === 'number') return parsed;
-    return null;
-  } catch {
-    return null;
+  // Read from settingsStore; migrate from localStorage on first use.
+  const stored = useSettingsStore.getState().petPosition;
+  if (stored) return stored;
+
+  const legacy = localStorage.getItem(STORAGE_KEY);
+  if (legacy) {
+    try {
+      const parsed = JSON.parse(legacy) as Stored;
+      if (typeof parsed.x === 'number' && typeof parsed.y === 'number') {
+        useSettingsStore.getState().setPetPosition(parsed);
+        localStorage.removeItem(STORAGE_KEY);
+        return parsed;
+      }
+    } catch { /* ignore malformed */ }
   }
+  return null;
 }
 
 function saveStored(pos: Stored): void {
-  try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(pos));
-  } catch {
-    // Quota / privacy mode — ignore, position is non-critical.
-  }
+  useSettingsStore.getState().setPetPosition(pos);
 }
 
 async function resolveSnap(x: number, y: number): Promise<Stored> {

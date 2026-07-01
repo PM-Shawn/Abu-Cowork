@@ -402,6 +402,8 @@ interface SettingsState {
    * - autonomous: 全自动
    */
   defaultAgentAutonomy: 'suggest' | 'plan_confirm' | 'execute_review' | 'autonomous';
+  petPosition: { x: number; y: number } | null;
+  dndMode: boolean;
 }
 
 interface SettingsActions {
@@ -491,6 +493,8 @@ interface SettingsActions {
    * otherwise preserved (provider entries, models, preferences).
    */
   clearAllStoredKeys: () => Promise<void>;
+  setPetPosition: (pos: { x: number; y: number } | null) => void;
+  setDndMode: (dnd: boolean) => void;
 }
 
 // ============================================================
@@ -697,6 +701,8 @@ export const useSettingsStore = create<SettingsStore>()(
       shouldRunMemoryAudit: false,
       hasAcknowledgedDisclaimer: false,
       defaultAgentAutonomy: 'execute_review',
+      petPosition: null,
+      dndMode: false,
 
       // ════════════════════════════════════════════════
       // Provider management actions (V2)
@@ -1000,10 +1006,12 @@ export const useSettingsStore = create<SettingsStore>()(
           failedSecretKeys: [],
         }));
       },
+      setPetPosition: (pos) => set({ petPosition: pos }),
+      setDndMode: (dnd) => set({ dndMode: dnd }),
     }),
     {
       name: 'abu-settings',
-      version: 33,
+      version: 34,
       migrate: (persisted: unknown, version: number) => {
         const state = persisted as Record<string, unknown>;
 
@@ -1011,6 +1019,11 @@ export const useSettingsStore = create<SettingsStore>()(
         // V33: Add defaultAgentAutonomy for Todos × Agent assignment.
         // Default to 'execute_review' — Agent acts, user reviews result.
         // ════════════════════════════════════════════════
+        if (version < 34) {
+          if (state.petPosition === undefined) state.petPosition = null;
+          if (state.dndMode === undefined) state.dndMode = false;
+        }
+
         if (version < 33) {
           try {
             const validValues = ['suggest', 'plan_confirm', 'execute_review', 'autonomous'];

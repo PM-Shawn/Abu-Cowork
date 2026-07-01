@@ -136,6 +136,10 @@ export function mapAIServiceError(opts: MapAIErrorOpts): FriendlyError {
         message: t.diagnostic.errMap.aiNetworkError,
         action: { type: 'retry', label: t.diagnostic.errMap.actionRetry },
       };
+    case 'network_blocked':
+      return {
+        message: t.diagnostic.errMap.aiNetworkBlocked,
+      };
   }
 
   // Final fallback — at least don't leak raw JSON into the headline.

@@ -116,6 +116,32 @@ describe('adapter', () => {
       expect(err.code).toBe('unknown');
       expect(err.retryable).toBe(false);
     });
+
+    it('<!doctype html> body → network_blocked regardless of status', () => {
+      const html = '<!doctype html><html><body>网站防火墙</body></html>';
+      const err = classifyError(200, html);
+      expect(err.code).toBe('network_blocked');
+      expect(err.retryable).toBe(false);
+    });
+
+    it('<html> body (no doctype) → network_blocked', () => {
+      const html = '<html><head><title>Firewall</title></head></html>';
+      const err = classifyError(403, html);
+      expect(err.code).toBe('network_blocked');
+    });
+
+    it('HTML with leading whitespace → network_blocked', () => {
+      const html = '  \n<!DOCTYPE HTML><html>blocked</html>';
+      const err = classifyError(200, html);
+      expect(err.code).toBe('network_blocked');
+    });
+
+    it('JSON body starting with < is not misclassified (edge case)', () => {
+      // Some providers (edge case) might return JSON — make sure plain JSON isn't hit
+      const json = '{"error":{"message":"bad request"}}';
+      const err = classifyError(400, json);
+      expect(err.code).toBe('invalid_request');
+    });
   });
 
   // ── Retry-after extraction ──

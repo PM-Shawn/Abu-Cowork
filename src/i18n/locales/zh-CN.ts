@@ -716,6 +716,7 @@ const zhCN: TranslationDict = {
       aiOverloaded: 'provider 服务繁忙，稍后再试',
       aiServerError: 'provider 服务异常，稍后再试',
       aiNetworkError: '无法连接到 provider，请检查网络',
+      aiNetworkBlocked: '请求被网络防火墙或代理拦截。请检查你的代理设置，或确认网络路径上没有对 HTTPS 内容做扫描过滤',
       aiContextTooLong: '本次诊断请求过大（这是阿布的 bug，请反馈）',
       aiInvalidRequest: 'provider 拒绝了请求（参数不合法）',
       aiModelUnsupported: '此 provider 不支持当前选中的模型',

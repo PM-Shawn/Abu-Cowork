@@ -17,7 +17,9 @@
 
 import { emitTo } from '@tauri-apps/api/event';
 import { useChatStore } from '@/stores/chatStore';
+import { subscribe } from '@/core/notice/bus';
 import type { ConversationStatus } from '@/types';
+import type { Notice } from '@/core/notice/types';
 
 export type PetStatus = 'idle' | 'running' | 'waiting' | 'error' | 'done';
 
@@ -38,6 +40,8 @@ let lastEmittedAt = 0;
 let pendingTimer: number | null = null;
 let started = false;
 let storeUnsub: (() => void) | null = null;
+let petBubbleUnsub: (() => void) | null = null;
+let unresolvedBubbleCount = 0;
 
 function mapConversationStatus(s: ConversationStatus): PetStatus {
   switch (s) {
@@ -106,7 +110,12 @@ function scheduleEmit(status: PetStatus): void {
 function aggregateFromStore(): PetStatus {
   const convs = useChatStore.getState().conversations;
   const statuses = Object.values(convs).map((c) => c.status);
-  return aggregate(statuses);
+  const base = aggregate(statuses);
+  // Notice bus pet_bubble events drive the 'waiting' state (Phase D)
+  if (unresolvedBubbleCount > 0 && PRIORITY.waiting > PRIORITY[base]) {
+    return 'waiting';
+  }
+  return base;
 }
 
 /**
@@ -125,6 +134,20 @@ export function startPetStatusBridge(): void {
     const status = aggregateFromStore();
     scheduleEmit(status);
   });
+
+  petBubbleUnsub = subscribe('pet_bubble', (notice: Notice) => {
+    // Only notices requiring user attention drive the waiting state.
+    // Bus currently does blanket fan-out; filter by type until Router lands.
+    if (notice.type !== 'permission_request' && notice.type !== 'user_input_needed') return;
+    unresolvedBubbleCount++;
+    scheduleEmit(aggregateFromStore());
+    // Auto-resolve after TTL so waiting state clears even if no explicit dismiss
+    const ttlMs = typeof notice.ttl === 'number' ? notice.ttl : 30_000;
+    window.setTimeout(() => {
+      unresolvedBubbleCount = Math.max(0, unresolvedBubbleCount - 1);
+      scheduleEmit(aggregateFromStore());
+    }, ttlMs);
+  });
 }
 
 export function stopPetStatusBridge(): void {
@@ -132,6 +155,9 @@ export function stopPetStatusBridge(): void {
   started = false;
   storeUnsub?.();
   storeUnsub = null;
+  petBubbleUnsub?.();
+  petBubbleUnsub = null;
+  unresolvedBubbleCount = 0;
   if (pendingTimer !== null) {
     clearTimeout(pendingTimer);
     pendingTimer = null;

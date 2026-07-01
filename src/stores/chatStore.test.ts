@@ -967,4 +967,28 @@ describe('chatStore', () => {
     });
   });
 
+  // ── setConversationPermissionMode ──
+  describe('setConversationPermissionMode', () => {
+    it('sets permissionMode on a conversation', () => {
+      const id = useChatStore.getState().createConversation();
+      useChatStore.getState().setConversationPermissionMode(id, 'autonomous');
+      const conv = useChatStore.getState().conversations[id];
+      expect(conv?.permissionMode).toBe('autonomous');
+    });
+
+    it('clears permissionMode when set to undefined', () => {
+      const id = useChatStore.getState().createConversation();
+      useChatStore.getState().setConversationPermissionMode(id, 'smart');
+      useChatStore.getState().setConversationPermissionMode(id, undefined);
+      const conv = useChatStore.getState().conversations[id];
+      expect(conv?.permissionMode).toBeUndefined();
+    });
+
+    it('does nothing for non-existent conversation', () => {
+      expect(() =>
+        useChatStore.getState().setConversationPermissionMode('nonexistent', 'autonomous')
+      ).not.toThrow();
+    });
+  });
+
 });

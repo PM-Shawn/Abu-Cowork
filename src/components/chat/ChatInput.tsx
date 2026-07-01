@@ -27,6 +27,7 @@ import { generateAttachmentId, readFileAsBase64, SUPPORTED_IMAGE_TYPES } from '@
 import PermissionDialog from '@/components/common/PermissionDialog';
 import FolderSelector from '@/components/common/FolderSelector';
 import PromoteToProjectHint from '@/components/chat/PromoteToProjectHint';
+import PermissionModeChip from '@/components/chat/PermissionModeChip';
 
 interface ChatInputProps {
   variant: 'welcome' | 'chat';
@@ -804,6 +805,7 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
               >
                 <Plus className="h-4 w-4" />
               </Button>
+              <PermissionModeChip conversationId={null} />
               <div className="flex-1" />
 
               {/* Model picker — right-aligned, before Start button */}
@@ -869,6 +871,7 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
                 >
                   <Plus className="h-4 w-4" />
                 </Button>
+                <PermissionModeChip conversationId={activeConvIdForIndicator} />
               </div>
 
               {/* Right Actions: Model picker + Context indicator + Send / Stop */}

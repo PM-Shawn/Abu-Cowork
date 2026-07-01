@@ -13,6 +13,7 @@ import { clearPlanMode } from '../core/agent/planMode';
 import { setComputerUseActive } from '../core/agent/computerUseStatus';
 import type { ConversationMeta } from '../core/session/conversationStorage';
 import type { ShareBundle } from '../core/session/shareBundle';
+import type { PermissionMode } from '../core/permissions/permissionMode';
 
 function generateId(): string {
   return Date.now().toString(36) + Math.random().toString(36).substring(2, 8);
@@ -250,6 +251,7 @@ interface ChatActions {
   setConversationWorkspace: (convId: string, path: string | null) => void;
   setConversationProject: (convId: string, projectId: string | undefined) => void;
   setConversationModel: (convId: string, model: { providerId: string; modelId: string } | undefined) => void;
+  setConversationPermissionMode: (convId: string, mode: PermissionMode | undefined) => void;
   deleteConversation: (id: string) => void;
   renameConversation: (id: string, title: string) => void;
 
@@ -503,6 +505,15 @@ export const useChatStore = create<ChatStore>()(
         import('../core/session/conversationStorage').then(({ updateIndexEntry }) => {
           const meta = get().conversationIndex[convId];
           if (meta) updateIndexEntry(meta).catch(() => {});
+        });
+      },
+
+      setConversationPermissionMode: (convId, mode) => {
+        set((state) => {
+          const conv = state.conversations[convId];
+          if (conv) {
+            conv.permissionMode = mode;
+          }
         });
       },
 

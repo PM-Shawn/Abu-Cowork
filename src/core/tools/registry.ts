@@ -6,6 +6,7 @@ import { isWindows } from '../../utils/platform';
 import { getI18n } from '../../i18n';
 import { truncateToolResult } from '../context/truncation';
 import { useSettingsStore } from '../../stores/settingsStore';
+import { useChatStore } from '../../stores/chatStore';
 import { getPermissionStrategy } from '../permissions/permissionMode';
 import { analyzeCommandBoundary, type CmdBoundary } from '../permissions/commandBoundary';
 import { reviewAction } from '../safety/reviewer';
@@ -234,7 +235,10 @@ export async function executeAnyTool(
   contextUsagePercent?: number
 ): Promise<ToolResult> {
   const t = getI18n();
-  const permissionMode = useSettingsStore.getState().permissionMode;
+  const convPermissionMode = toolContext?.conversationId
+    ? useChatStore.getState().conversations[toolContext.conversationId]?.permissionMode
+    : undefined;
+  const permissionMode = convPermissionMode ?? useSettingsStore.getState().permissionMode;
   const strategy = getPermissionStrategy(permissionMode);
 
   // Safety check for run_command tool

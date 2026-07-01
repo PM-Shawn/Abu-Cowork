@@ -186,13 +186,18 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
   //       handles drag-drop.
   //   (b) Raw bitmaps with no backing file (screenshots taken with
   //       Cmd+Shift+Ctrl+4 on macOS, snipping-tool pastes on Windows). These
-  //       have no file URL on the pasteboard, so we fall back to the legacy
+  //       have no file URL on the pasteboard, so we fall back to the
   //       getAsFile() image path.
   //
   // The preventDefault MUST run synchronously the moment we see any
   // `kind === 'file'` item — once we hit `await`, the textarea will have
   // already swallowed the default paste (which is what causes filename text
   // to leak into the input on the current build).
+  //
+  // IMPORTANT: getAsFile() must also be called synchronously before any await.
+  // DataTransfer (ClipboardEvent.clipboardData) is only valid during
+  // synchronous handler execution — after an await the browser invalidates
+  // DataTransferItem objects and getAsFile() returns null (Clipboard API §3.2).
   const handlePaste = useCallback(async (e: React.ClipboardEvent) => {
     const items = e.clipboardData?.items;
     if (!items) return;
@@ -201,6 +206,13 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
     if (!hasFileItem) return; // plain text / html → let textarea handle it
 
     e.preventDefault();
+
+    // Pre-extract File objects synchronously before the first await.
+    // getAsFile() returns null on any DataTransferItem touched after an await.
+    const bitmapFiles: File[] = Array.from(items)
+      .filter((it) => SUPPORTED_IMAGE_TYPES.includes(it.type))
+      .map((it) => it.getAsFile())
+      .filter((f): f is File => f !== null);
 
     // (a) Try OS pasteboard for real file paths — full parity with drag-drop.
     let paths: string[] = [];
@@ -223,14 +235,10 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
       return;
     }
 
-    // (b) Bitmap-only fallback (screenshots etc.).
-    for (const item of Array.from(items)) {
-      if (SUPPORTED_IMAGE_TYPES.includes(item.type)) {
-        const file = item.getAsFile();
-        if (!file) continue;
-        const { data, mediaType } = await readFileAsBase64(file);
-        setImages((prev) => [...prev, { id: generateAttachmentId(), data, mediaType }]);
-      }
+    // (b) Bitmap-only fallback (screenshots etc.) — use pre-captured File objects.
+    for (const file of bitmapFiles) {
+      const { data, mediaType } = await readFileAsBase64(file);
+      setImages((prev) => [...prev, { id: generateAttachmentId(), data, mediaType }]);
     }
   }, []);
 

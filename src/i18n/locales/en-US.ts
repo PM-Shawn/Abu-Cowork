@@ -552,8 +552,8 @@ const enUS: TranslationDict = {
     preventSleep: 'Prevent system sleep',
     preventSleepDesc: 'Keep the system awake while Abu is running. When on AC power, closing the lid will not interrupt tasks. (Windows: idle sleep only)',
     // Permission mode
-    permissionMode: 'Permission Mode',
-    permissionModeDesc: 'Controls confirmation behavior for tool execution',
+    permissionMode: 'Default Permission Mode',
+    permissionModeDesc: 'Default confirmation behavior for new conversations; can be overridden per conversation from the toolbar',
     contentGuardTitle: 'Content Safety Scanner',
     contentGuardDesc: 'Scans agent-authored skills / memories and blocks dangerous patterns (exfiltration, prompt injection, destructive commands — 120 categories). Keep it on.',
     contentGuardDisableTitle: 'Disable content safety scanner?',

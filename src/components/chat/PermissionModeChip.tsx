@@ -27,12 +27,13 @@ export default function PermissionModeChip({ conversationId }: Props) {
   const { t } = useI18n();
 
   const convMode = useChatStore(
-    (s) => (conversationId ? s.conversations[conversationId]?.permissionMode : undefined)
+    (s) => (conversationId ? s.conversations[conversationId]?.permissionMode : s.pendingPermissionMode)
   );
   const globalMode = useSettingsStore((s) => s.permissionMode);
   const effectiveMode = convMode ?? globalMode;
 
   const setConversationPermissionMode = useChatStore((s) => s.setConversationPermissionMode);
+  const setPendingPermissionMode = useChatStore((s) => s.setPendingPermissionMode);
 
   const modeLabels: Record<PermissionMode, { label: string; description: string }> = {
     standard: { label: t.settings.permissionModeStandard, description: t.settings.permissionModeStandardDesc },
@@ -58,7 +59,7 @@ export default function PermissionModeChip({ conversationId }: Props) {
     if (conversationId) {
       setConversationPermissionMode(conversationId, mode);
     } else {
-      useSettingsStore.getState().setPermissionMode(mode);
+      setPendingPermissionMode(mode);
     }
     setOpen(false);
   }

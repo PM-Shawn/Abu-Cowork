@@ -83,7 +83,7 @@ describe('PermissionModeChip', () => {
     expect(screen.getAllByRole('button')).toHaveLength(1);
   });
 
-  it('updates global settingsStore when conversationId is null', () => {
+  it('updates pendingPermissionMode in chatStore (not global settingsStore) when conversationId is null', () => {
     render(<PermissionModeChip conversationId={null} />);
     fireEvent.click(screen.getByRole('button'));
     const smartBtn = screen.getAllByRole('button').find(
@@ -91,6 +91,9 @@ describe('PermissionModeChip', () => {
     );
     expect(smartBtn).toBeDefined();
     fireEvent.click(smartBtn!);
-    expect(useSettingsStore.getState().permissionMode).toBe('smart');
+    // Global default must NOT change
+    expect(useSettingsStore.getState().permissionMode).toBe('standard');
+    // Pending mode is set in chatStore for the next conversation
+    expect(useChatStore.getState().pendingPermissionMode).toBe('smart');
   });
 });

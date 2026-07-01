@@ -552,8 +552,8 @@ const zhCN: TranslationDict = {
     preventSleep: '防止系统睡眠',
     preventSleepDesc: '阿布运行时保持系统唤醒，盒盖不中断任务（需接通电源；Windows 仅防空闲睡眠）',
     // Permission mode
-    permissionMode: '权限模式',
-    permissionModeDesc: '控制工具执行时的确认行为',
+    permissionMode: '默认权限模式',
+    permissionModeDesc: '新对话的默认确认行为，对话内可随时临时切换',
     contentGuardTitle: '内容安全扫描',
     contentGuardDesc: '扫描 agent 写入的 skill / 记忆，拦截危险指令（数据窃取、prompt 注入、破坏性命令等 120 类）。建议保持开启。',
     contentGuardDisableTitle: '关闭内容安全扫描？',

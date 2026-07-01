@@ -242,6 +242,10 @@ interface ChatState {
    *  than getting stuck showing "missing" because it read the manifest
    *  before the install side-effects landed. Ephemeral, not persisted. */
   outputsRev: Record<string, number>;
+  /** Permission mode selected on the welcome screen before any conversation exists.
+   *  Consumed by createConversation() and applied as the new conversation's initial
+   *  permissionMode. Does NOT modify the global settingsStore default. Ephemeral. */
+  pendingPermissionMode: PermissionMode | undefined;
 }
 
 interface ChatActions {
@@ -252,6 +256,7 @@ interface ChatActions {
   setConversationProject: (convId: string, projectId: string | undefined) => void;
   setConversationModel: (convId: string, model: { providerId: string; modelId: string } | undefined) => void;
   setConversationPermissionMode: (convId: string, mode: PermissionMode | undefined) => void;
+  setPendingPermissionMode: (mode: PermissionMode | undefined) => void;
   deleteConversation: (id: string) => void;
   renameConversation: (id: string, title: string) => void;
 
@@ -347,6 +352,7 @@ export const useChatStore = create<ChatStore>()(
       outputsRev: {} as Record<string, number>,
       pendingInput: null,
       pendingAgentName: null,
+      pendingPermissionMode: undefined,
       thinkingStartTime: null,
       activeAgentNames: [],
 
@@ -375,15 +381,18 @@ export const useChatStore = create<ChatStore>()(
           ...(resolvedProjectId ? { projectId: resolvedProjectId } : {}),
         };
         set((state) => {
+          const initialPermissionMode = state.pendingPermissionMode;
           state.conversations[id] = {
             ...meta,
             messages: [],
             status: 'idle',
+            ...(initialPermissionMode ? { permissionMode: initialPermissionMode } : {}),
           };
           state.conversationIndex[id] = meta;
           if (!options?.skipActivate) {
             state.activeConversationId = id;
           }
+          state.pendingPermissionMode = undefined;
         });
         // Sync index to disk (fire-and-forget)
         import('../core/session/conversationStorage').then(({ updateIndexEntry }) => {
@@ -514,6 +523,12 @@ export const useChatStore = create<ChatStore>()(
           if (conv) {
             conv.permissionMode = mode;
           }
+        });
+      },
+
+      setPendingPermissionMode: (mode) => {
+        set((state) => {
+          state.pendingPermissionMode = mode;
         });
       },
 

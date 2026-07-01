@@ -5,12 +5,15 @@ import { useI18n } from '@/i18n';
 import { useToastStore } from '@/stores/toastStore';
 import { useDiagnosticStore } from '@/stores/diagnosticStore';
 import { Toggle } from '@/components/ui/toggle';
+import { Textarea } from '@/components/ui/textarea';
 import { produceBundle, collectAndZip, type ProduceResult } from '@/core/diagnostic/bundle';
 import { mapPermissionsError } from '@/core/diagnostic/errorMap';
 import { uploadDiagnosticBundle } from '@/utils/consoleDiagnostic';
 
 interface Props {
   onExportSuccess: (r: ProduceResult) => void;
+  description: string;
+  onDescriptionChange: (v: string) => void;
 }
 
 const BUNDLE_CONTENTS = [
@@ -27,7 +30,7 @@ const BUNDLE_CONTENTS = [
   'README.txt',
 ];
 
-export default function ExportPanel({ onExportSuccess }: Props) {
+export default function DiagnosticUpload({ onExportSuccess, description, onDescriptionChange }: Props) {
   const { t } = useI18n();
   const includeRawText = useDiagnosticStore((s) => s.includeRawText);
   const setIncludeRawText = useDiagnosticStore((s) => s.setIncludeRawText);
@@ -54,7 +57,7 @@ export default function ExportPanel({ onExportSuccess }: Props) {
     setUploadDone(false);
     try {
       const { bytes, filename } = await collectAndZip({ includeRawText });
-      await uploadDiagnosticBundle(bytes, filename);
+      await uploadDiagnosticBundle(bytes, filename, description.trim() || undefined);
       setUploadDone(true);
       setTimeout(() => setUploadDone(false), 4000);
       addToast({ title: t.diagnostic.uploadSuccess, type: 'success', duration: 3000 });
@@ -88,7 +91,7 @@ export default function ExportPanel({ onExportSuccess }: Props) {
   };
 
   return (
-    <section className="border-t border-[var(--abu-border)] pt-6">
+    <section>
       <h3 className="text-[14px] font-medium text-[var(--abu-text-primary)] mb-1">
         {t.diagnostic.exportTitle}
       </h3>
@@ -138,6 +141,17 @@ export default function ExportPanel({ onExportSuccess }: Props) {
           checked={includeRawText}
           onChange={() => onToggleRaw(!includeRawText)}
           size="md"
+        />
+      </div>
+
+      {/* Problem description textarea */}
+      <div className="mt-3">
+        <Textarea
+          value={description}
+          onChange={(e) => onDescriptionChange(e.target.value)}
+          placeholder={t.diagnostic.uploadDescriptionPlaceholder}
+          className="min-h-[72px] text-[12px] resize-none"
+          disabled={uploadInProgress || exportInProgress}
         />
       </div>
 

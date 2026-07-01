@@ -108,3 +108,12 @@ pub fn pet_toggle(app: AppHandle) -> Result<bool, String> {
     pet_show(app)?;
     Ok(true)
 }
+
+#[tauri::command]
+pub async fn pet_focus_main(app: AppHandle) -> Result<(), String> {
+    if let Some(main_win) = app.get_webview_window("main") {
+        main_win.unminimize().map_err(|e| e.to_string())?;
+        main_win.set_focus().map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}

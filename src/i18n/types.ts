@@ -735,6 +735,7 @@ export interface TranslationDict {
       aiOverloaded: string;
       aiServerError: string;
       aiNetworkError: string;
+      aiNetworkBlocked: string;
       aiContextTooLong: string;
       aiInvalidRequest: string;
       aiModelUnsupported: string;

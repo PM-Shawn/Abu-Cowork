@@ -716,6 +716,7 @@ const enUS: TranslationDict = {
       aiOverloaded: 'Provider is busy, try again shortly',
       aiServerError: 'Provider returned a server error',
       aiNetworkError: 'Cannot reach the provider — check your network',
+      aiNetworkBlocked: 'Request intercepted by a network firewall or proxy. Check your proxy settings or whether HTTPS traffic is being scanned on your network',
       aiContextTooLong: 'Probe request was too large (this is an Abu bug, please report)',
       aiInvalidRequest: 'Provider rejected the request (invalid parameters)',
       aiModelUnsupported: 'This provider does not support the currently selected model',

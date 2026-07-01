@@ -67,6 +67,7 @@ export type LLMErrorCode =
   | 'not_found'            // 404
   | 'server_error'         // 500 / 502
   | 'network_error'        // fetch/connection failures
+  | 'network_blocked'      // WAF / proxy intercepted the request and returned HTML
   | 'cancelled'            // user abort
   | 'unknown';
 
@@ -116,10 +117,31 @@ export function extractApiErrorMessage(rawBody: string): string {
 }
 
 /**
+ * Returns true when the body looks like an HTML document (WAF / proxy intercept page).
+ * Some interceptors send 200 OK with HTML; others send 403/other with HTML.
+ * Checking the leading bytes is faster and more reliable than Content-Type alone
+ * because some WAFs forge application/json in the Content-Type header.
+ */
+function isHtmlBody(body: string): boolean {
+  const trimmed = body.trimStart().toLowerCase();
+  return trimmed.startsWith('<!doctype') || trimmed.startsWith('<html');
+}
+
+/**
  * Classify an HTTP status code and error message into an LLMError.
  * Accepts raw response body — will extract a clean message from JSON if possible.
  */
 export function classifyError(statusCode: number, rawBody: string): LLMError {
+  // Detect HTML response before any JSON parsing — a WAF / reverse-proxy
+  // intercepted the request and returned an error page instead of an API response.
+  if (isHtmlBody(rawBody)) {
+    return new LLMError(
+      '请求被网络防火墙或代理拦截（返回了 HTML 页面而非 API 响应）',
+      'network_blocked',
+      { retryable: false, statusCode, rawBody: rawBody.slice(0, 500) },
+    );
+  }
+
   const message = extractApiErrorMessage(rawBody);
   const stored = rawBody.slice(0, 1000);
 

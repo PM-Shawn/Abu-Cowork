@@ -70,9 +70,8 @@ export default function PermissionModeChip({ conversationId }: Props) {
         onClick={() => setOpen((v) => !v)}
         title={`${t.settings.permissionMode}: ${currentLabel}`}
         className={cn(
-          'btn-ghost flex items-center gap-1 px-2 py-1 h-7 text-[12px] font-medium rounded-md transition-colors',
-          'text-[var(--abu-text-tertiary)] hover:text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-hover)]',
-          effectiveMode !== 'standard' && 'text-[var(--abu-text-secondary)]'
+          'btn-ghost flex items-center gap-1 px-2 py-1 h-7 text-[12px] font-normal rounded-md transition-colors',
+          'text-[var(--abu-text-tertiary)] hover:text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-hover)]'
         )}
       >
         <CurrentIcon className="h-3.5 w-3.5 shrink-0" />

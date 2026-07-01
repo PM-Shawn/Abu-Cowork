@@ -57,6 +57,7 @@ import { initMCPStoreSync, cleanupMCPStoreSync } from '@/stores/mcpStore';
 import { initFileWatchers, stopAllWatchers } from '@/core/agent/fileWatcher';
 import { getPendingWorkspaceRequest, resolveWorkspaceRequest, subscribeToWorkspaceRequest } from '@/core/agent/permissionBridge';
 import { startBehaviorSensor, stopBehaviorSensor } from '@/core/agent/behaviorSensor';
+import { runAgentLoop } from '@/core/agent/agentLoop';
 import { useI18n } from '@/i18n';
 import CloseDialog from '@/components/common/CloseDialog';
 import SensitiveAuditDialog from '@/components/settings/SensitiveAuditDialog';
@@ -164,6 +165,27 @@ function App() {
     let cancelled = false;
     listen('pet-resync-request', () => {
       resyncPetStatus();
+    }).then((fn) => {
+      if (cancelled) fn();
+      else unlistenFn = fn;
+    });
+    return () => {
+      cancelled = true;
+      unlistenFn?.();
+    };
+  }, []);
+
+  // Pet window sends a message to the currently active conversation
+  useEffect(() => {
+    let unlistenFn: (() => void) | null = null;
+    let cancelled = false;
+    listen('pet-send-message', (event) => {
+      const { text } = event.payload as { text: string };
+      const store = useChatStore.getState();
+      const convId = store.activeConversationId ?? store.createConversation(null);
+      runAgentLoop(convId, text).catch((err) => {
+        console.warn('[pet-send-message] runAgentLoop error:', err);
+      });
     }).then((fn) => {
       if (cancelled) fn();
       else unlistenFn = fn;

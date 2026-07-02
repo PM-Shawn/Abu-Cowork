@@ -283,7 +283,7 @@ function createDefaultProviders(): ProviderInstance[] {
 
 export type ViewMode = 'chat' | 'automation' | 'toolbox' | 'settings' | 'todos' | 'inbox';
 export type AutomationTab = 'schedule' | 'trigger';
-export type SystemSettingsTab = 'general' | 'ai-services' | 'sandbox' | 'im-channels' | 'personal-memory' | 'soul' | 'diagnostic' | 'usage' | 'about' | 'feedback' | 'sponsor' | 'enterprise';
+export type SystemSettingsTab = 'general' | 'ai-services' | 'sandbox' | 'im-channels' | 'pet' | 'personal-memory' | 'soul' | 'diagnostic' | 'usage' | 'about' | 'feedback' | 'sponsor' | 'enterprise';
 export type ToolboxTab = 'skills' | 'agents' | 'mcp';
 
 // ============================================================
@@ -404,6 +404,8 @@ interface SettingsState {
   defaultAgentAutonomy: 'suggest' | 'plan_confirm' | 'execute_review' | 'autonomous';
   petPosition: { x: number; y: number } | null;
   dndMode: boolean;
+  /** Whether the desktop pet window should be open. Persisted so it's restored on next launch (mirrors last session's state). */
+  petOpen: boolean;
 }
 
 interface SettingsActions {
@@ -495,6 +497,7 @@ interface SettingsActions {
   clearAllStoredKeys: () => Promise<void>;
   setPetPosition: (pos: { x: number; y: number } | null) => void;
   setDndMode: (dnd: boolean) => void;
+  setPetOpen: (open: boolean) => void;
 }
 
 // ============================================================
@@ -703,6 +706,7 @@ export const useSettingsStore = create<SettingsStore>()(
       defaultAgentAutonomy: 'execute_review',
       petPosition: null,
       dndMode: false,
+      petOpen: false,
 
       // ════════════════════════════════════════════════
       // Provider management actions (V2)
@@ -1008,12 +1012,21 @@ export const useSettingsStore = create<SettingsStore>()(
       },
       setPetPosition: (pos) => set({ petPosition: pos }),
       setDndMode: (dnd) => set({ dndMode: dnd }),
+      setPetOpen: (open) => set({ petOpen: open }),
     }),
     {
       name: 'abu-settings',
-      version: 34,
+      version: 35,
       migrate: (persisted: unknown, version: number) => {
         const state = persisted as Record<string, unknown>;
+
+        // ════════════════════════════════════════════════
+        // V35: Add petOpen — remembers whether the desktop pet was open
+        // across restarts (mirrors Codex's petOpenIntent behavior).
+        // ════════════════════════════════════════════════
+        if (version < 35) {
+          if (state.petOpen === undefined) state.petOpen = false;
+        }
 
         // ════════════════════════════════════════════════
         // V33: Add defaultAgentAutonomy for Todos × Agent assignment.
@@ -1656,6 +1669,10 @@ export const useSettingsStore = create<SettingsStore>()(
         safety: state.safety,
         hasRunSensitiveAudit_v015: state.hasRunSensitiveAudit_v015,
         hasAcknowledgedDisclaimer: state.hasAcknowledgedDisclaimer,
+        defaultAgentAutonomy: state.defaultAgentAutonomy,
+        petPosition: state.petPosition,
+        dndMode: state.dndMode,
+        petOpen: state.petOpen,
       }),
       onRehydrateStorage: () => (state) => {
         if (!state) return;

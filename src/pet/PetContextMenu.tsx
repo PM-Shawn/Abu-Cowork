@@ -1,83 +1,67 @@
 import { useEffect, useRef } from 'react'
 import type { PetStatus } from '@/core/pet/petStatusBridge'
-
-const STATUS_LABEL: Record<PetStatus, string> = {
-  idle: '空闲',
-  running: '处理中…',
-  waiting: '等待输入',
-  error: '遇到问题',
-  done: '完成',
-}
-
-const STATUS_COLOR: Record<PetStatus, string> = {
-  idle: '#6b7280',
-  running: '#3b82f6',
-  waiting: '#f97316',
-  error: '#ef4444',
-  done: '#22c55e',
-}
+import { STATUS_COLOR, STATUS_LABEL } from './petStatusMeta'
 
 interface PetContextMenuProps {
   status: PetStatus
-  isDnd: boolean
-  onToggleDnd: () => void
   onOpenMain: () => void
   onClosePet: () => void
   onDismiss: () => void
 }
 
 export function PetContextMenu({
-  status, isDnd, onToggleDnd, onOpenMain, onClosePet, onDismiss,
+  status, onOpenMain, onClosePet, onDismiss,
 }: PetContextMenuProps) {
   const menuRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
     function handleClickOutside(e: MouseEvent) {
-      if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
-        onDismiss()
-      }
+      const target = e.target as Node
+      if (menuRef.current?.contains(target)) return
+      // Avatar interactions are handled by PetApp (its click opens the main
+      // window / dismisses the menu) — dismissing here too would race that
+      // handler and cause a close-then-reopen flicker.
+      if (target instanceof Element && target.closest('[data-pet-avatar]')) return
+      onDismiss()
     }
     document.addEventListener('mousedown', handleClickOutside)
     return () => document.removeEventListener('mousedown', handleClickOutside)
   }, [onDismiss])
 
   return (
+    // No box-shadow — on the transparent pet window it rendered as the
+    // "black shadow" smudge around the menu. The border delimits it.
     <div
       ref={menuRef}
-      className="w-[170px] bg-[#1f2937] rounded-[10px] py-1.5 border border-white/[0.06]"
-      style={{ boxShadow: '0 8px 32px rgba(0,0,0,0.6)' }}
+      className="w-[170px] bg-[var(--abu-bg-base)] rounded-[10px] py-1.5 border border-[var(--abu-border)]"
     >
-      <div className="px-3.5 py-2 flex items-center gap-2 border-b border-[#374151]">
+      <div className="px-3.5 py-2 flex items-center gap-2 border-b border-[var(--abu-border)]">
         <div
           className="w-2 h-2 rounded-full flex-shrink-0"
           style={{ backgroundColor: STATUS_COLOR[status] }}
         />
-        <span className="text-[11px] text-[#9ca3af]">{STATUS_LABEL[status]}</span>
+        <span className="flex-1 text-[11px] text-[var(--abu-text-tertiary)]">{STATUS_LABEL[status]}</span>
+        <button
+          className="w-4 h-4 flex items-center justify-center flex-shrink-0 text-[var(--abu-text-muted)] hover:text-[var(--abu-text-primary)]"
+          onClick={onDismiss}
+          aria-label="关闭菜单"
+        >
+          ×
+        </button>
       </div>
 
       <button
-        className="w-full px-3.5 py-2 text-[12px] text-[#e5e7eb] flex items-center gap-2 hover:bg-white/5 text-left"
-        onClick={onToggleDnd}
-      >
-        <span>🔕</span>
-        <span className="flex-1">勿扰模式</span>
-        {isDnd && <span className="text-[#6366f1]">✓</span>}
-      </button>
-
-      <button
-        className="w-full px-3.5 py-2 text-[12px] text-[#e5e7eb] flex items-center gap-2 hover:bg-white/5 text-left"
+        className="w-full px-3.5 py-2 text-[12px] text-[var(--abu-text-secondary)] text-left hover:bg-[var(--abu-bg-hover)]"
         onClick={onOpenMain}
       >
-        <span>🪟</span>
-        <span>打开主窗口</span>
+        打开主窗口
       </button>
 
       <button
-        className="w-full px-3.5 py-2 text-[12px] text-[#9ca3af] flex items-center gap-2 hover:bg-white/5 text-left"
+        className="w-full px-3.5 py-2 text-[12px] text-[var(--abu-text-tertiary)] text-left hover:bg-[var(--abu-bg-hover)]"
         onClick={onClosePet}
       >
-        <span>👋</span>
-        <span>关闭桌宠</span>
+        关闭桌宠
       </button>
     </div>
   )

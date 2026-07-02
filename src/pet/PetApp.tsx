@@ -1,119 +1,168 @@
-import { useRef, useState, useCallback } from 'react'
-import { getCurrentWindow, LogicalSize, PhysicalPosition, primaryMonitor } from '@tauri-apps/api/window'
+import { useState, useCallback, useEffect } from 'react'
+import { flushSync } from 'react-dom'
+import { getCurrentWindow, primaryMonitor } from '@tauri-apps/api/window'
 import { emit } from '@tauri-apps/api/event'
 import { invoke } from '@tauri-apps/api/core'
 import abuAvatar from '@/assets/abu-avatar.png'
-import StatusLight from './StatusLight'
-import { useStatusLight } from './useStatusLight'
+import { usePetStatus } from './useStatusLight'
 import { usePetDrag } from './usePetDrag'
-import { PetInputBubble } from './PetInputBubble'
+import { PetNotificationBubble } from './PetNotificationBubble'
 import { PetContextMenu } from './PetContextMenu'
-import { useSettingsStore } from '@/stores/settingsStore'
-
-type ExpandState = 'collapsed' | 'bubble' | 'menu'
 
 const COLLAPSED_W = 80, COLLAPSED_H = 80
-const BUBBLE_W = 200, BUBBLE_H = 180
+// Notification tray sizes: avatar (80) + gap (8) + single-line bubble, and
+// a taller variant for the waiting state's inline reply input.
+const NOTIF_W = 200, NOTIF_H = 148
+const NOTIF_WAITING_H = 196
 const MENU_W = 200, MENU_H = 260
-const EXPAND_OFFSET_PX = 100
+// How long the 'done' bubble lingers before we shrink the window back to the
+// bare avatar (matches petNotifFade in index.css).
+const DONE_LINGER_MS = 6000
 
-async function getExpandDir(): Promise<'up' | 'down'> {
+// The pet spawns at the bottom-right of the screen by default (see
+// pet_show in pet.rs), so a popup that only ever grows right/down would
+// routinely push part of itself past the screen edge and get clipped —
+// there's nothing to render out there. Pick a direction per axis based on
+// which half of the screen the pet is currently in, mirroring how a
+// tooltip/popover flips itself to stay on screen.
+async function getExpandDir(): Promise<{ vertical: 'up' | 'down'; horizontal: 'left' | 'right' }> {
   const mon = await primaryMonitor()
   const scale = mon?.scaleFactor ?? 1
+  const screenW = (mon?.size.width ?? 1600) / scale
   const screenH = (mon?.size.height ?? 900) / scale
   const pos = await getCurrentWindow().outerPosition()
-  return pos.y / scale < screenH / 2 ? 'down' : 'up'
+  return {
+    vertical: pos.y / scale < screenH / 2 ? 'down' : 'up',
+    horizontal: pos.x / scale < screenW / 2 ? 'right' : 'left',
+  }
 }
 
 export default function PetApp() {
-  const dragRef = usePetDrag<HTMLDivElement>()
-  const status = useStatusLight()
-  const isDnd = useSettingsStore((s) => s.dndMode ?? false)
-  const setDndMode = useSettingsStore((s) => s.setDndMode)
+  const { ref: dragRef, consumeDrag } = usePetDrag<HTMLDivElement>()
+  const { status, conversationId, title, summary } = usePetStatus()
 
-  const [expandState, setExpandState] = useState<ExpandState>('collapsed')
+  const [menuOpen, setMenuOpen] = useState(false)
   const [expandUp, setExpandUp] = useState(false)
-  const savedPhysPos = useRef<{ x: number; y: number } | null>(null)
-  const clickTimer = useRef<number | null>(null)
-  const expanding = useRef(false)
+  const [expandLeft, setExpandLeft] = useState(false)
+  // The 'done' bubble is dismissed (window shrinks) after a linger even
+  // though the bridge keeps reporting 'done' until the conversation moves on.
+  const [doneDismissed, setDoneDismissed] = useState(false)
 
-  const collapse = useCallback(async () => {
-    if (expanding.current) return
-    await getCurrentWindow().setSize(new LogicalSize(COLLAPSED_W, COLLAPSED_H))
-    if (savedPhysPos.current) {
-      await getCurrentWindow().setPosition(
-        new PhysicalPosition(savedPhysPos.current.x, savedPhysPos.current.y)
-      )
-      savedPhysPos.current = null
-    }
-    setExpandState('collapsed')
-  }, [])
+  // Reset the done-dismissal whenever we leave the done state.
+  useEffect(() => {
+    if (status !== 'done') setDoneDismissed(false)
+  }, [status])
 
-  const openBubble = useCallback(async () => {
-    expanding.current = true
-    try {
+  // Auto-shrink the lingering done bubble.
+  useEffect(() => {
+    if (status !== 'done') return
+    const t = window.setTimeout(() => setDoneDismissed(true), DONE_LINGER_MS)
+    return () => window.clearTimeout(t)
+  }, [status])
+
+  const showNotif = status !== 'idle' && !(status === 'done' && doneDismissed)
+
+  // Single source of truth for the (non-menu) window frame: when a
+  // notification should show, grow the window to fit it; otherwise shrink
+  // back to the bare avatar. The anchor is committed to the DOM *before*
+  // the native resize (flushSync) so the avatar stays glued to whichever
+  // corner the window grows from and never jumps — this is the atomic
+  // resize that fixed the click flicker (see pet_set_frame in pet.rs).
+  useEffect(() => {
+    if (menuOpen) return // the menu controls the frame while it's open
+    let cancelled = false
+    ;(async () => {
       const dir = await getExpandDir()
-      setExpandUp(dir === 'up')
-      const phys = await getCurrentWindow().outerPosition()
-      const scale = (await primaryMonitor())?.scaleFactor ?? 1
-      savedPhysPos.current = { x: phys.x, y: phys.y }
-      if (dir === 'up') {
-        await getCurrentWindow().setPosition(
-          new PhysicalPosition(phys.x, phys.y - Math.round(EXPAND_OFFSET_PX * scale))
-        )
-      }
-      await getCurrentWindow().setSize(new LogicalSize(BUBBLE_W, BUBBLE_H))
-      setExpandState('bubble')
-    } finally {
-      expanding.current = false
-    }
-  }, [])
+      if (cancelled) return
+      const w = showNotif ? NOTIF_W : COLLAPSED_W
+      const h = showNotif ? (status === 'waiting' ? NOTIF_WAITING_H : NOTIF_H) : COLLAPSED_H
+      flushSync(() => {
+        setExpandUp(dir.vertical === 'up')
+        setExpandLeft(dir.horizontal === 'left')
+      })
+      await invoke('pet_set_frame', {
+        width: w,
+        height: h,
+        // Anchor the edge the window grows from / shrinks toward so the
+        // avatar's on-screen corner is fixed across expand and collapse.
+        anchorBottom: dir.vertical === 'up',
+        anchorRight: dir.horizontal === 'left',
+      })
+    })()
+    return () => { cancelled = true }
+  }, [showNotif, status, menuOpen])
 
   const openMenu = useCallback(async () => {
-    expanding.current = true
-    try {
-      await getCurrentWindow().setSize(new LogicalSize(MENU_W, MENU_H))
-      setExpandState('menu')
-    } finally {
-      expanding.current = false
-    }
+    // Menu always expands downward, but still needs the horizontal check —
+    // same off-screen-clipping risk as the notification.
+    const dir = await getExpandDir()
+    flushSync(() => {
+      setExpandUp(false)
+      setExpandLeft(dir.horizontal === 'left')
+    })
+    await invoke('pet_set_frame', {
+      width: MENU_W,
+      height: MENU_H,
+      anchorBottom: false,
+      anchorRight: dir.horizontal === 'left',
+    })
+    setMenuOpen(true)
+  }, [])
+
+  const closeMenu = useCallback(() => {
+    // Just drop out of menu mode — the frame effect re-applies the
+    // notification/collapsed frame based on the current status.
+    setMenuOpen(false)
+  }, [])
+
+  const openMain = useCallback(() => {
+    invoke('pet_focus_main').catch(console.error)
   }, [])
 
   const handleAvatarClick = useCallback(() => {
-    if (clickTimer.current) {
-      clearTimeout(clickTimer.current)
-      clickTimer.current = null
-      // double-click detected
-      if (expandState !== 'collapsed') { collapse(); return }
-      invoke('pet_focus_main').catch(console.error)
-      return
-    }
-    clickTimer.current = window.setTimeout(() => {
-      clickTimer.current = null
-      if (expandState !== 'collapsed') { collapse(); return }
-      openBubble()
-    }, 250)
-  }, [expandState, collapse, openBubble])
+    // WebKit still fires a synthetic `click` after mousedown+mouseup on the
+    // same element even when a real drag happened in between (startDragging()
+    // hands the actual movement off to the native window manager). Suppress
+    // it here so a drag-release doesn't also trigger a click action.
+    if (consumeDrag()) return
+    // Codex-style single interaction: clicking the avatar opens the main
+    // window (no single/double-click distinction). If the right-click menu
+    // is open, a left-click just dismisses it.
+    if (menuOpen) { closeMenu(); return }
+    openMain()
+  }, [consumeDrag, menuOpen, closeMenu, openMain])
 
   const handleRightClick = useCallback(async (e: React.MouseEvent) => {
     e.preventDefault()
-    if (expandState !== 'collapsed') await collapse()
-    openMenu()
-  }, [expandState, collapse, openMenu])
+    if (!menuOpen) await openMenu()
+  }, [menuOpen, openMenu])
 
-  const handleSend = useCallback(async (text: string) => {
-    await emit('pet-send-message', { text })
-    collapse()
-  }, [collapse])
+  const handleReply = useCallback((text: string) => {
+    // waiting-state inline reply → route to the conversation the notice
+    // pointed at (falls back to the active one in App.tsx). Stay on the
+    // desktop — the whole point of the inline reply is not to yank focus.
+    emit('pet-send-message', { text, conversationId }).catch(console.error)
+  }, [conversationId])
 
-  const handleClosePet = useCallback(async () => {
-    await collapse()
+  const handleClosePet = useCallback(() => {
+    setMenuOpen(false)
     invoke('pet_hide').catch(console.error)
-  }, [collapse])
+    // Notify the main window so its Settings toggle stays in sync — this
+    // window's own settingsStore instance isn't shared in-memory with main.
+    emit('pet-open-state-changed', { open: false }).catch(console.error)
+  }, [])
 
-  const isDraggable = expandState === 'collapsed'
-  const avatarTop = expandUp && expandState === 'bubble' ? BUBBLE_H - COLLAPSED_H : 0
-  const avatarLeft = expandState === 'menu' ? (MENU_W - COLLAPSED_W) / 2 : 0
+  // Draggable whenever the menu isn't open (both idle and while a
+  // notification is showing — the user can still reposition the pet).
+  const isDraggable = !menuOpen
+  // The avatar is glued to whichever corner of the window the frame effect
+  // just anchored (top/bottom independently from left/right — see
+  // pet_set_frame), so the webview's own relayout keeps the avatar on that
+  // corner during the native resize, with no JS repositioning step.
+  const avatarAnchor = {
+    ...(expandUp ? { bottom: 0 } : { top: 0 }),
+    ...(expandLeft ? { right: 0 } : { left: 0 }),
+  }
 
   return (
     <div
@@ -122,10 +171,11 @@ export default function PetApp() {
     >
       <div
         ref={isDraggable ? dragRef : undefined}
+        data-pet-avatar=""
         style={{
           width: COLLAPSED_W, height: COLLAPSED_H,
           position: 'absolute',
-          top: avatarTop, left: avatarLeft,
+          ...avatarAnchor,
           cursor: isDraggable ? 'grab' : 'default',
           display: 'flex', alignItems: 'center', justifyContent: 'center',
         }}
@@ -137,27 +187,41 @@ export default function PetApp() {
           draggable={false}
           style={{
             width: '100%', height: '100%', objectFit: 'contain', pointerEvents: 'none',
-            filter: isDnd ? 'grayscale(100%)' : 'none',
           }}
         />
-        <StatusLight status={isDnd ? 'idle' : status} />
       </div>
 
-      {expandState === 'bubble' && (
-        <div style={{ position: 'absolute', top: expandUp ? 0 : COLLAPSED_H + 8, left: 0 }}>
-          <PetInputBubble expandUp={expandUp} onSend={handleSend} onDismiss={collapse} />
+      {showNotif && !menuOpen && (
+        <div
+          style={{
+            position: 'absolute',
+            ...(expandUp ? { bottom: COLLAPSED_H + 8 } : { top: COLLAPSED_H + 8 }),
+            ...(expandLeft ? { right: 0 } : { left: 0 }),
+          }}
+        >
+          <PetNotificationBubble
+            status={status}
+            title={title}
+            summary={summary}
+            onOpenMain={openMain}
+            onReply={handleReply}
+          />
         </div>
       )}
 
-      {expandState === 'menu' && (
-        <div style={{ position: 'absolute', top: COLLAPSED_H + 8, left: 10 }}>
+      {menuOpen && (
+        <div
+          style={{
+            position: 'absolute',
+            top: COLLAPSED_H + 8,
+            ...(expandLeft ? { right: 10 } : { left: 10 }),
+          }}
+        >
           <PetContextMenu
-            status={isDnd ? 'idle' : status}
-            isDnd={isDnd}
-            onToggleDnd={() => setDndMode(!isDnd)}
-            onOpenMain={() => { invoke('pet_focus_main').catch(console.error); collapse() }}
+            status={status}
+            onOpenMain={() => { openMain(); closeMenu() }}
             onClosePet={handleClosePet}
-            onDismiss={collapse}
+            onDismiss={closeMenu}
           />
         </div>
       )}

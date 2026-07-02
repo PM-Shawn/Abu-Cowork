@@ -551,6 +551,8 @@ const zhCN: TranslationDict = {
     computerUsePermissionGuide: '请前往「系统设置 → 隐私与安全性 → 屏幕录制」，允许阿布。键鼠操控还需要在「辅助功能」中授权。',
     preventSleep: '防止系统睡眠',
     preventSleepDesc: '阿布运行时保持系统唤醒，盒盖不中断任务（需接通电源；Windows 仅防空闲睡眠）',
+    petEnable: '桌宠',
+    petEnableDesc: '在桌面显示一个可以随时对话的悬浮小阿布，单击唤起输入框，双击打开主窗口，右键查看更多操作',
     // Permission mode
     permissionMode: '默认权限模式',
     permissionModeDesc: '新对话的默认确认行为，对话内可随时临时切换',

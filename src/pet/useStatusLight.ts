@@ -1,30 +1,44 @@
 /**
- * Pet status light subscription (Phase B).
+ * Pet status subscription (Phase B/C).
  *
  * Listens to 'pet-status-update' events emitted by petStatusBridge in the
  * main window. On mount, emits 'pet-resync-request' so the main window
  * re-broadcasts the current status (handles the case where main emitted
  * before the pet window was open).
+ *
+ * Phase C: the payload carries the featured conversation (id/title/summary)
+ * driving the status, powering the Activity Notification Tray bubble.
  */
 
 import { useEffect, useState } from 'react';
 import { emit, listen } from '@tauri-apps/api/event';
+// Single source of truth for the wire types — re-exported so pet-window
+// components can import them from here without pulling in the heavy bridge
+// module (these are type-only, erased at build).
+import type { PetStatus, PetStatusPayload } from '@/core/pet/petStatusBridge';
 
-export type PetStatus = 'idle' | 'running' | 'waiting' | 'error' | 'done';
+export type { PetStatus, PetStatusPayload };
 
-interface StatusPayload {
-  status: PetStatus;
-}
+const IDLE_PAYLOAD: PetStatusPayload = {
+  status: 'idle',
+  conversationId: null,
+  title: null,
+  summary: null,
+};
 
-export function useStatusLight(): PetStatus {
-  const [status, setStatus] = useState<PetStatus>('idle');
+/**
+ * Full status payload (status + featured conversation). For the bare
+ * status, read `.status`.
+ */
+export function usePetStatus(): PetStatusPayload {
+  const [payload, setPayload] = useState<PetStatusPayload>(IDLE_PAYLOAD);
 
   useEffect(() => {
     let unlisten: (() => void) | null = null;
     let cancelled = false;
 
-    listen<StatusPayload>('pet-status-update', ({ payload }) => {
-      setStatus(payload.status);
+    listen<PetStatusPayload>('pet-status-update', ({ payload }) => {
+      setPayload(payload);
     }).then((fn) => {
       if (cancelled) fn();
       else unlisten = fn;
@@ -39,5 +53,5 @@ export function useStatusLight(): PetStatus {
     };
   }, []);
 
-  return status;
+  return payload;
 }

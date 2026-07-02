@@ -1,5 +1,5 @@
 /**
- * Pet status bridge — main-window side (Phase B).
+ * Pet status bridge — main-window side (Phase B/C).
  *
  * Aggregates agent status across all conversations and emits
  * 'pet-status-update' events to the pet window. The pet window lives in
@@ -8,20 +8,37 @@
  *
  * Priority rule (PRD-02): waiting > error > running > done > idle.
  * Waiting is sourced from Notice System events (permission_request /
- * user_input_needed) — wired in Phase D. For v1-B we only see
- * ConversationStatus, which has no waiting value.
+ * user_input_needed).
+ *
+ * Phase C (Activity Notification Tray): besides the bare status, the
+ * payload now carries the *featured conversation* driving that status —
+ * its id, title, and a short summary of its latest assistant message —
+ * so the pet can render a real notification bubble instead of a bare
+ * colored ring.
  *
  * Debounce: 3 seconds minimum between emits to prevent flicker when
- * multiple conversations transition together.
+ * multiple conversations transition together, or when a streaming reply
+ * updates the summary token-by-token.
  */
 
 import { emitTo } from '@tauri-apps/api/event';
 import { useChatStore } from '@/stores/chatStore';
 import { subscribe } from '@/core/notice/bus';
-import type { ConversationStatus } from '@/types';
+import type { ConversationStatus, Conversation, Message, MessageContent } from '@/types';
 import type { Notice } from '@/core/notice/types';
 
 export type PetStatus = 'idle' | 'running' | 'waiting' | 'error' | 'done';
+
+/** Wire format sent to the pet window. */
+export interface PetStatusPayload {
+  status: PetStatus;
+  /** Conversation driving the current status, or null when idle. */
+  conversationId: string | null;
+  /** Featured conversation title, or null when idle. */
+  title: string | null;
+  /** Short summary of the latest assistant message, or null. */
+  summary: string | null;
+}
 
 const PRIORITY: Record<PetStatus, number> = {
   waiting: 5,
@@ -34,14 +51,22 @@ const PRIORITY: Record<PetStatus, number> = {
 const MIN_INTERVAL_MS = 3_000;
 const PET_WINDOW_LABEL = 'pet';
 const EVENT_NAME = 'pet-status-update';
+const SUMMARY_MAX_LEN = 40;
 
-let lastEmittedStatus: PetStatus | null = null;
+let lastEmittedSig: string | null = null;
 let lastEmittedAt = 0;
 let pendingTimer: number | null = null;
 let started = false;
 let storeUnsub: (() => void) | null = null;
 let petBubbleUnsub: (() => void) | null = null;
-let unresolvedBubbleCount = 0;
+/**
+ * Currently-unresolved waiting notices, oldest→newest. Each entry is removed
+ * by its own TTL timer (identity match), so an earlier notice with a longer
+ * TTL keeps driving the waiting state after a later, shorter-TTL notice
+ * expires — and the featured conversation always tracks a *still-active*
+ * notice, never a stale pointer.
+ */
+let activeWaiting: { convId: string | null }[] = [];
 
 function mapConversationStatus(s: ConversationStatus): PetStatus {
   switch (s) {
@@ -57,31 +82,101 @@ function mapConversationStatus(s: ConversationStatus): PetStatus {
   }
 }
 
-function aggregate(statuses: ConversationStatus[]): PetStatus {
-  if (statuses.length === 0) return 'idle';
+/**
+ * Pick the highest-priority conversation and return its mapped status
+ * plus id. Ties resolve to the first encountered (stable iteration order).
+ */
+function aggregateFeatured(
+  convs: Record<string, Conversation>,
+): { status: PetStatus; conversationId: string | null } {
   let best: PetStatus = 'idle';
   let bestPri = PRIORITY.idle;
-  for (const s of statuses) {
-    const mapped = mapConversationStatus(s);
+  let bestId: string | null = null;
+  for (const conv of Object.values(convs)) {
+    const mapped = mapConversationStatus(conv.status);
     const pri = PRIORITY[mapped];
     if (pri > bestPri) {
       best = mapped;
       bestPri = pri;
+      bestId = conv.id;
     }
   }
-  return best;
+  return { status: best, conversationId: bestId };
 }
 
-function emitNow(status: PetStatus): void {
-  emitTo(PET_WINDOW_LABEL, EVENT_NAME, { status }).catch(() => {
+function extractText(content: string | MessageContent[]): string {
+  if (typeof content === 'string') return content;
+  return content
+    .filter((c): c is Extract<MessageContent, { type: 'text' }> => c.type === 'text')
+    .map((c) => c.text)
+    .join(' ');
+}
+
+/** Latest assistant message text, trimmed to a short preview, or null. */
+function summarizeLatestAssistant(messages: Message[]): string | null {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i];
+    if (m.role !== 'assistant') continue;
+    const text = extractText(m.content).trim().replace(/\s+/g, ' ');
+    if (!text) continue;
+    return text.length > SUMMARY_MAX_LEN ? text.slice(0, SUMMARY_MAX_LEN) + '…' : text;
+  }
+  return null;
+}
+
+/**
+ * Build the full payload from current store state, factoring in the
+ * notice-driven waiting override. Waiting features the conversation the
+ * notice pointed at (if any), else the aggregate winner.
+ */
+/** Most recent still-active waiting notice that points at a live conversation. */
+function currentWaitingConvId(convs: Record<string, Conversation>): string | null {
+  for (let i = activeWaiting.length - 1; i >= 0; i--) {
+    const id = activeWaiting[i].convId;
+    if (id && convs[id]) return id;
+  }
+  return null;
+}
+
+function buildPayload(): PetStatusPayload {
+  const convs = useChatStore.getState().conversations;
+  let { status, conversationId } = aggregateFeatured(convs);
+
+  if (activeWaiting.length > 0 && PRIORITY.waiting > PRIORITY[status]) {
+    status = 'waiting';
+    // Prefer a still-active notice's conversation; fall back to the aggregate winner.
+    const waitingId = currentWaitingConvId(convs);
+    if (waitingId) conversationId = waitingId;
+  }
+
+  if (status === 'idle') {
+    return { status, conversationId: null, title: null, summary: null };
+  }
+
+  const conv = conversationId ? convs[conversationId] : null;
+  return {
+    status,
+    conversationId,
+    title: conv?.title ?? null,
+    summary: conv ? summarizeLatestAssistant(conv.messages) : null,
+  };
+}
+
+function signature(p: PetStatusPayload): string {
+  return `${p.status}|${p.conversationId ?? ''}|${p.title ?? ''}|${p.summary ?? ''}`;
+}
+
+function emitNow(payload: PetStatusPayload): void {
+  emitTo(PET_WINDOW_LABEL, EVENT_NAME, payload).catch(() => {
     // Pet window not open — silently drop, we'll resync on next store change.
   });
-  lastEmittedStatus = status;
+  lastEmittedSig = signature(payload);
   lastEmittedAt = Date.now();
 }
 
-function scheduleEmit(status: PetStatus): void {
-  if (status === lastEmittedStatus) return;
+function scheduleEmit(): void {
+  const payload = buildPayload();
+  if (signature(payload) === lastEmittedSig) return;
 
   const now = Date.now();
   const elapsed = now - lastEmittedAt;
@@ -91,7 +186,7 @@ function scheduleEmit(status: PetStatus): void {
       clearTimeout(pendingTimer);
       pendingTimer = null;
     }
-    emitNow(status);
+    emitNow(payload);
     return;
   }
 
@@ -100,22 +195,13 @@ function scheduleEmit(status: PetStatus): void {
   if (pendingTimer !== null) clearTimeout(pendingTimer);
   pendingTimer = window.setTimeout(() => {
     pendingTimer = null;
-    // Re-read aggregated status at emit time (not capture time) so
-    // brief intermediate states don't get frozen in.
-    const latest = aggregateFromStore();
-    emitNow(latest);
+    // Re-read at emit time (not capture time) so brief intermediate
+    // states / stale summaries don't get frozen in. Re-check the signature:
+    // if the state reverted to what we last emitted while the timer was
+    // pending, skip the redundant IPC.
+    const p = buildPayload();
+    if (signature(p) !== lastEmittedSig) emitNow(p);
   }, wait);
-}
-
-function aggregateFromStore(): PetStatus {
-  const convs = useChatStore.getState().conversations;
-  const statuses = Object.values(convs).map((c) => c.status);
-  const base = aggregate(statuses);
-  // Notice bus pet_bubble events drive the 'waiting' state (Phase D)
-  if (unresolvedBubbleCount > 0 && PRIORITY.waiting > PRIORITY[base]) {
-    return 'waiting';
-  }
-  return base;
 }
 
 /**
@@ -128,24 +214,27 @@ export function startPetStatusBridge(): void {
   started = true;
 
   // Initial emit (after pet window may or may not exist — best effort).
-  emitNow(aggregateFromStore());
+  emitNow(buildPayload());
 
   storeUnsub = useChatStore.subscribe(() => {
-    const status = aggregateFromStore();
-    scheduleEmit(status);
+    scheduleEmit();
   });
 
   petBubbleUnsub = subscribe('pet_bubble', (notice: Notice) => {
     // Only notices requiring user attention drive the waiting state.
     // Bus currently does blanket fan-out; filter by type until Router lands.
     if (notice.type !== 'permission_request' && notice.type !== 'user_input_needed') return;
-    unresolvedBubbleCount++;
-    scheduleEmit(aggregateFromStore());
-    // Auto-resolve after TTL so waiting state clears even if no explicit dismiss
+    const convId = notice.payload?.conversationId;
+    const entry = { convId: typeof convId === 'string' ? convId : null };
+    activeWaiting.push(entry);
+    scheduleEmit();
+    // Auto-resolve after TTL so the waiting state clears even without an
+    // explicit dismiss. Remove *this* entry by identity so an earlier,
+    // longer-lived notice keeps the waiting state (and its conversation).
     const ttlMs = typeof notice.ttl === 'number' ? notice.ttl : 30_000;
     window.setTimeout(() => {
-      unresolvedBubbleCount = Math.max(0, unresolvedBubbleCount - 1);
-      scheduleEmit(aggregateFromStore());
+      activeWaiting = activeWaiting.filter((n) => n !== entry);
+      scheduleEmit();
     }, ttlMs);
   });
 }
@@ -157,7 +246,7 @@ export function stopPetStatusBridge(): void {
   storeUnsub = null;
   petBubbleUnsub?.();
   petBubbleUnsub = null;
-  unresolvedBubbleCount = 0;
+  activeWaiting = [];
   if (pendingTimer !== null) {
     clearTimeout(pendingTimer);
     pendingTimer = null;
@@ -171,5 +260,5 @@ export function stopPetStatusBridge(): void {
  */
 export function resyncPetStatus(): void {
   if (!started) return;
-  emitNow(aggregateFromStore());
+  emitNow(buildPayload());
 }

@@ -551,6 +551,10 @@ const enUS: TranslationDict = {
     computerUsePermissionGuide: 'Go to System Settings → Privacy & Security → Screen Recording, and allow Abu. You may also need to grant Accessibility permission for keyboard/mouse control.',
     preventSleep: 'Prevent system sleep',
     preventSleepDesc: 'Keep the system awake while Abu is running. When on AC power, closing the lid will not interrupt tasks. (Windows: idle sleep only)',
+    appearance: 'Appearance',
+    appearanceLight: 'Light',
+    appearanceDark: 'Dark',
+    appearanceSystem: 'System',
     // Permission mode
     permissionMode: 'Default Permission Mode',
     permissionModeDesc: 'Default confirmation behavior for new conversations; can be overridden per conversation from the toolbar',

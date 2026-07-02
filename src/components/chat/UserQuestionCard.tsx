@@ -38,7 +38,7 @@ export default function UserQuestionCard({ toolCall }: Props) {
 
   return (
     <div className="my-2 flex justify-start w-full">
-      <div className="max-w-[460px] rounded-xl border border-[var(--abu-border)] bg-white px-3.5 py-3">
+      <div className="max-w-[460px] rounded-xl border border-[var(--abu-border)] bg-[var(--abu-bg-base)] px-3.5 py-3">
         <div className="flex items-center gap-1.5 mb-2 text-[11px] font-semibold text-[var(--abu-text-tertiary)]">
           <MessageSquare className="h-3.5 w-3.5 text-[var(--abu-clay)]" />
           {t.userQuestion.yourChoiceLabel}

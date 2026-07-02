@@ -651,7 +651,7 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
       <div className="relative">
         {/* Suggestions Popup (Skills / Agents) */}
         {showSuggestions && suggestions.length > 0 && (
-          <div className="absolute bottom-full left-0 right-0 mb-2 bg-white rounded-xl border border-[var(--abu-border)] shadow-lg overflow-x-hidden overflow-y-auto max-h-[320px] z-20">
+          <div className="absolute bottom-full left-0 right-0 mb-2 bg-[var(--abu-bg-base)] rounded-xl border border-[var(--abu-border)] shadow-lg overflow-x-hidden overflow-y-auto max-h-[320px] z-20">
             {suggestions.map((item, idx) => (
               <button
                 key={item.name}
@@ -684,7 +684,7 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
         {/* Input Card */}
         <div
           className={cn(
-            'relative bg-white rounded-2xl border transition-all',
+            'relative bg-[var(--abu-bg-base)] rounded-2xl border transition-all',
             !isWelcome && isDragging
               ? 'border-[var(--abu-clay)] ring-2 ring-[var(--abu-clay-ring)]'
               : 'border-[var(--abu-border-subtle)] focus-within:border-[var(--abu-border-hover)]'

@@ -260,7 +260,7 @@ export default function WorkspaceSection() {
 
               {/* Dropdown menu */}
               {isDropdownOpen && (
-                <div className="absolute top-full left-0 right-0 mt-1.5 bg-white rounded-lg border border-[var(--abu-bg-hover)] shadow-lg z-50 overflow-hidden animate-in fade-in slide-in-from-top-1 duration-150">
+                <div className="absolute top-full left-0 right-0 mt-1.5 bg-[var(--abu-bg-base)] rounded-lg border border-[var(--abu-bg-hover)] shadow-lg z-50 overflow-hidden animate-in fade-in slide-in-from-top-1 duration-150">
                   {/* Recent folders */}
                   {recentPaths.length > 0 && (
                     <>

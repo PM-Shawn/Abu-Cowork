@@ -265,7 +265,7 @@ export default function UserQuestionDock({ conversationId, messageId, toolCallId
       ref={containerRef}
       tabIndex={-1}
       onKeyDown={handleKeyDown}
-      className="rounded-xl border border-[var(--abu-border)] bg-white shadow-md overflow-hidden outline-none"
+      className="rounded-xl border border-[var(--abu-border)] bg-[var(--abu-bg-base)] shadow-md overflow-hidden outline-none"
     >
       {/* Header: question + pager */}
       <div className="px-3 py-2 border-b border-[var(--abu-border-subtle)] flex items-start gap-2">

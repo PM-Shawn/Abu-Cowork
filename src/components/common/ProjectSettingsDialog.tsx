@@ -84,7 +84,7 @@ function ChipMultiSelect({ selected, options, onChange, placeholder }: {
         <>
           <div className="fixed inset-0 z-[10000]" onClick={() => setOpen(false)} />
           <div
-            className="fixed z-[10001] py-1 bg-white border border-[var(--abu-border)] rounded-xl shadow-lg max-h-60 overflow-auto"
+            className="fixed z-[10001] py-1 bg-[var(--abu-bg-base)] border border-[var(--abu-border)] rounded-xl shadow-lg max-h-60 overflow-auto"
             style={dropdownStyle}
           >
             {options.length === 0 ? (
@@ -210,7 +210,7 @@ export default function ProjectSettingsDialog({ open, onClose, projectId }: Proj
         className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/40 animate-in fade-in duration-150"
         onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}
       >
-        <div className="bg-white rounded-2xl shadow-xl w-[480px] max-h-[85vh] flex flex-col animate-in zoom-in-95 duration-150">
+        <div className="bg-[var(--abu-bg-base)] rounded-2xl shadow-xl w-[480px] max-h-[85vh] flex flex-col animate-in zoom-in-95 duration-150">
           {/* Header */}
           <div className="flex items-center justify-between px-6 pt-6 pb-2 shrink-0">
             <h2 className="text-[16px] font-semibold text-[var(--abu-text-primary)]">
@@ -386,7 +386,7 @@ export default function ProjectSettingsDialog({ open, onClose, projectId }: Proj
           className="fixed inset-0 z-[10000] flex items-center justify-center bg-black/40 animate-in fade-in duration-150"
           onMouseDown={(e) => { if (e.target === e.currentTarget) setShowArchiveConfirm(false); }}
         >
-          <div className="bg-white rounded-2xl shadow-xl w-[380px] p-6 animate-in zoom-in-95 duration-150">
+          <div className="bg-[var(--abu-bg-base)] rounded-2xl shadow-xl w-[380px] p-6 animate-in zoom-in-95 duration-150">
             <h3 className="text-[16px] font-semibold text-[var(--abu-text-primary)] mb-2">
               {t.project.archiveProject}
             </h3>

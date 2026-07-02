@@ -52,7 +52,7 @@ export default function SourceInfoBar({ conversation }: SourceInfoBarProps) {
   return (
     <button
       onClick={handleClick}
-      className="shrink-0 flex items-center gap-2 px-6 md:px-10 py-1.5 bg-white/60 border-b border-[var(--abu-border)] text-[13px] w-full text-left hover:bg-[var(--abu-bg-hover)] transition-colors"
+      className="shrink-0 flex items-center gap-2 px-6 md:px-10 py-1.5 bg-[var(--abu-bg-base)]/60 border-b border-[var(--abu-border)] text-[13px] w-full text-left hover:bg-[var(--abu-bg-hover)] transition-colors"
     >
       <ArrowLeft className="h-3.5 w-3.5 text-[var(--abu-text-tertiary)]" />
       {isSchedule ? (

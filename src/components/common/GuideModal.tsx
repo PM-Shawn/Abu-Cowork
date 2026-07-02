@@ -35,7 +35,7 @@ export default function GuideModal({ open, onClose, onNavigateToAIServices }: Gu
         if (e.target === e.currentTarget) onClose();
       }}
     >
-      <div className="bg-white rounded-2xl shadow-xl w-[420px] p-6 animate-in zoom-in-95 duration-150">
+      <div className="bg-[var(--abu-bg-base)] rounded-2xl shadow-xl w-[420px] p-6 animate-in zoom-in-95 duration-150">
         <h3 className="text-[16px] font-semibold text-[var(--abu-text-primary)] mb-5">
           {t.guide.title}
         </h3>

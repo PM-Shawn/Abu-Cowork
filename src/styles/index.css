@@ -267,6 +267,24 @@
 }
 
 .dark {
+  /* === Abu Design Tokens — Dark overrides === */
+  --abu-bg-base:    #1a1917;
+  --abu-bg-subtle:  #161513;
+  --abu-bg-muted:   #211f1c;
+  --abu-bg-hover:   #2c2a26;
+  --abu-bg-active:  #272522;
+  --abu-bg-pressed: #1e1c1a;
+
+  --abu-text-primary:     #f0ede8;
+  --abu-text-secondary:   #c5c0b7;
+  --abu-text-tertiary:    #8a8479;
+  --abu-text-muted:       #5e5a54;
+  --abu-text-placeholder: #706c66;
+
+  --abu-border:        #302e2b;
+  --abu-border-hover:  #403d39;
+  --abu-border-subtle: rgba(255, 250, 240, 0.08);
+
   --placeholder-foreground: #666666;
 
   --background: 0 0% 7%;

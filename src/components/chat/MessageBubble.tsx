@@ -379,7 +379,7 @@ function EditInput({
       : null;
 
   return (
-    <div className="min-w-[280px] rounded-2xl border border-[var(--abu-border-subtle)] bg-white overflow-hidden">
+    <div className="min-w-[280px] rounded-2xl border border-[var(--abu-border-subtle)] bg-[var(--abu-bg-base)] overflow-hidden">
       {routingChip && (
         <div className="flex items-center px-4 pt-3 pb-1 bg-[var(--abu-bg-muted)]">
           <span className={cn('inline-flex items-center px-2 py-0.5 rounded-md text-[12px] font-medium', routingChip.color)}>

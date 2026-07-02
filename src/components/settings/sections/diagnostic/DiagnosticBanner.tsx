@@ -6,17 +6,17 @@ import { formatRelativeTime } from '@/utils/messageTime';
 
 const STYLES = {
   'all-passed': {
-    bg: 'bg-emerald-50 border-emerald-200 text-emerald-900',
+    bg: 'bg-emerald-50 dark:bg-emerald-900/20 border-emerald-200 dark:border-emerald-700/40 text-emerald-900 dark:text-emerald-300',
     icon: CheckCircle2,
     iconColor: 'text-emerald-600',
   },
   'has-warnings': {
-    bg: 'bg-amber-50 border-amber-200 text-amber-900',
+    bg: 'bg-amber-50 dark:bg-amber-900/20 border-amber-200 dark:border-amber-700/40 text-amber-900 dark:text-amber-300',
     icon: AlertTriangle,
     iconColor: 'text-amber-600',
   },
   'has-failures': {
-    bg: 'bg-red-50 border-red-200 text-red-900',
+    bg: 'bg-red-50 dark:bg-red-900/20 border-red-200 dark:border-red-700/40 text-red-900 dark:text-red-300',
     icon: XCircle,
     iconColor: 'text-red-600',
   },
@@ -75,7 +75,7 @@ export default function DiagnosticBanner() {
         type="button"
         onClick={runAll}
         disabled={isChecking}
-        className="shrink-0 inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-[12px] font-medium bg-white border border-[var(--abu-border)] text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-hover)] transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+        className="shrink-0 inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-[12px] font-medium bg-[var(--abu-bg-base)] border border-[var(--abu-border)] text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-hover)] transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
       >
         <RefreshCw className={cn('h-3.5 w-3.5', isChecking && 'animate-spin')} />
         {overall === 'no-data' ? t.diagnostic.runAll : t.diagnostic.runAllAgain}

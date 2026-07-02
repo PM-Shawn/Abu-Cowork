@@ -72,7 +72,7 @@ export default function InlinePermissionRequest({
     >
       {/* Header */}
       <div className="flex items-start gap-3">
-        <div className={cn('p-2 rounded-lg bg-white/80')}>
+        <div className={cn('p-2 rounded-lg bg-[var(--abu-bg-muted)]/80')}>
           <Icon className={cn('h-5 w-5', colors.icon)} />
         </div>
         <div className="flex-1 min-w-0">
@@ -83,7 +83,7 @@ export default function InlinePermissionRequest({
 
       {/* Path display */}
       {path && (
-        <div className="mt-3 px-3 py-2 bg-white/60 rounded-lg">
+        <div className="mt-3 px-3 py-2 bg-[var(--abu-bg-muted)]/60 rounded-lg">
           <p className="text-[12px] text-[var(--abu-text-tertiary)] truncate font-mono">{path}</p>
         </div>
       )}
@@ -110,7 +110,7 @@ export default function InlinePermissionRequest({
           size="sm"
           variant="outline"
           onClick={onDeny}
-          className="h-8 px-4 text-[13px] border-[var(--abu-border-hover)] hover:bg-white/80"
+          className="h-8 px-4 text-[13px] border-[var(--abu-border-hover)] hover:bg-[var(--abu-bg-hover)]"
         >
           <X className="h-3.5 w-3.5 mr-1.5" />
           拒绝
@@ -167,14 +167,14 @@ export function CompactPermissionRequest({
       <div className="flex items-center gap-1 ml-2">
         <button
           onClick={onAllow}
-          className="p-1 rounded hover:bg-white/80 text-green-600 transition-colors"
+          className="p-1 rounded hover:bg-[var(--abu-bg-hover)] text-green-600 transition-colors"
           title="允许"
         >
           <Check className="h-4 w-4" />
         </button>
         <button
           onClick={onDeny}
-          className="p-1 rounded hover:bg-white/80 text-red-500 transition-colors"
+          className="p-1 rounded hover:bg-[var(--abu-bg-hover)] text-red-500 transition-colors"
           title="拒绝"
         >
           <X className="h-4 w-4" />

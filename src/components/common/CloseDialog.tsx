@@ -88,7 +88,7 @@ export default function CloseDialog({
           <div className="flex items-center gap-2">
             <button
               onClick={handleMinimize}
-              className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg text-[13px] font-medium border border-[var(--abu-border)] bg-white text-[var(--abu-text-secondary)] hover:bg-[var(--abu-bg-active)] transition-colors"
+              className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg text-[13px] font-medium border border-[var(--abu-border)] bg-[var(--abu-bg-base)] text-[var(--abu-text-secondary)] hover:bg-[var(--abu-bg-active)] transition-colors"
             >
               <Minus className="h-3.5 w-3.5" />
               {t.windowClose.minimize}

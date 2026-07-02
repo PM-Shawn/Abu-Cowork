@@ -96,8 +96,8 @@ export default function ScenarioGuide({ onSelectPrompt, onScenarioChange, visibl
               onClick={() => handlePromptClick(key)}
               className={cn(
                 'text-left px-3.5 py-2.5 rounded-xl text-[13px] leading-relaxed transition-all cursor-pointer',
-                'border border-[var(--abu-border-subtle)] bg-white/60 text-[var(--abu-text-secondary)]',
-                'hover:bg-white hover:border-[var(--abu-border-hover)]',
+                'border border-[var(--abu-border-subtle)] bg-[var(--abu-bg-muted)] text-[var(--abu-text-secondary)]',
+                'hover:bg-[var(--abu-bg-hover)] hover:border-[var(--abu-border-hover)]',
                 'active:scale-[0.98]',
                 'scenario-prompt-item'
               )}

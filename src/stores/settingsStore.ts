@@ -299,7 +299,7 @@ interface SettingsState {
   auxiliaryServices: AuxiliaryServices;
 
   // ── General settings (unchanged) ──
-  theme: 'dark' | 'light';
+  theme: 'dark' | 'light' | 'system';
   showSettings: boolean;
   sidebarCollapsed: boolean;
   rightPanelCollapsed: boolean;
@@ -427,7 +427,7 @@ interface SettingsActions {
   setAuxiliaryImageGen: (config: AuxiliaryServices['imageGen']) => void;
 
   // ── General settings actions (unchanged) ──
-  setTheme: (theme: 'dark' | 'light') => void;
+  setTheme: (theme: 'dark' | 'light' | 'system') => void;
   toggleSettings: () => void;
   toggleSidebar: () => void;
   toggleRightPanel: () => void;
@@ -1003,9 +1003,16 @@ export const useSettingsStore = create<SettingsStore>()(
     }),
     {
       name: 'abu-settings',
-      version: 33,
+      version: 34,
       migrate: (persisted: unknown, version: number) => {
         const state = persisted as Record<string, unknown>;
+
+        // ════════════════════════════════════════════════
+        // V34: Add 'system' option for theme; preserve existing value.
+        // ════════════════════════════════════════════════
+        if (version < 34) {
+          // 'system' option added for theme; existing 'dark'/'light' values remain valid.
+        }
 
         // ════════════════════════════════════════════════
         // V33: Add defaultAgentAutonomy for Todos × Agent assignment.

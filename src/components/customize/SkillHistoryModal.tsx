@@ -108,7 +108,7 @@ export default function SkillHistoryModal({ skillDir, skillName, onClose }: Prop
       }}
     >
       <div
-        className="bg-white rounded-2xl shadow-xl w-full max-w-3xl max-h-[85vh] flex flex-col overflow-hidden"
+        className="bg-[var(--abu-bg-base)] rounded-2xl shadow-xl w-full max-w-3xl max-h-[85vh] flex flex-col overflow-hidden"
         onClick={(e) => e.stopPropagation()}
       >
         {/* Header */}
@@ -296,9 +296,9 @@ function FileDiffBlock({ skillDir, change }: { skillDir: string; change: History
       <div className="px-3 py-1.5 bg-[var(--abu-bg-muted)] flex items-center gap-2 text-[11px]">
         <span className={cn(
           'px-1.5 py-0.5 rounded font-medium',
-          change.action === 'modified' && 'bg-blue-50 text-blue-700',
-          change.action === 'created' && 'bg-green-50 text-green-700',
-          change.action === 'removed' && 'bg-red-50 text-red-700',
+          change.action === 'modified' && 'bg-blue-50 dark:bg-blue-900/30 text-blue-700 dark:text-blue-400',
+          change.action === 'created' && 'bg-green-50 dark:bg-green-900/30 text-green-700 dark:text-green-400',
+          change.action === 'removed' && 'bg-red-50 dark:bg-red-900/30 text-red-700 dark:text-red-400',
         )}>
           {t.toolbox[historyActionLabelKey(change.action)]}
         </span>
@@ -330,8 +330,8 @@ function DiffView({ text }: { text: string }) {
 function diffLineClass(line: string): string {
   if (line.startsWith('+++') || line.startsWith('---')) return 'px-3 text-[var(--abu-text-muted)]';
   if (line.startsWith('@@')) return 'px-3 bg-[var(--abu-bg-muted)] text-[var(--abu-text-tertiary)]';
-  if (line.startsWith('+')) return 'px-3 bg-green-50 text-green-800';
-  if (line.startsWith('-')) return 'px-3 bg-red-50 text-red-800';
+  if (line.startsWith('+')) return 'px-3 bg-green-50 dark:bg-green-900/20 text-green-800 dark:text-green-400';
+  if (line.startsWith('-')) return 'px-3 bg-red-50 dark:bg-red-900/20 text-red-800 dark:text-red-400';
   return 'px-3 text-[var(--abu-text-secondary)]';
 }
 

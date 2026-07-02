@@ -468,7 +468,7 @@ export default function AddProviderModal({ open: isOpen, onClose }: AddProviderM
       onMouseDown={(e) => { e.stopPropagation(); }}
     >
       <div
-        className="bg-white rounded-2xl shadow-xl w-full max-w-2xl max-h-[85vh] flex flex-col animate-in zoom-in-95 duration-150"
+        className="bg-[var(--abu-bg-base)] rounded-2xl shadow-xl w-full max-w-2xl max-h-[85vh] flex flex-col animate-in zoom-in-95 duration-150"
         onClick={(e) => e.stopPropagation()}
       >
         {/* Header */}
@@ -518,7 +518,7 @@ export default function AddProviderModal({ open: isOpen, onClose }: AddProviderM
               </button>
 
               {dropdownOpen && (
-                <div className="absolute z-20 mt-1 w-full rounded-lg border border-[var(--abu-border)] bg-white shadow-lg overflow-hidden">
+                <div className="absolute z-20 mt-1 w-full rounded-lg border border-[var(--abu-border)] bg-[var(--abu-bg-base)] shadow-lg overflow-hidden">
                   {/* Search */}
                   <div className="p-2 border-b border-[var(--abu-border)]">
                     <div className="relative">

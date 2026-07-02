@@ -113,6 +113,23 @@ function App() {
   const activeConv = useActiveConversation();
   const { t } = useI18n();
 
+  const theme = useSettingsStore((s) => s.theme);
+  useEffect(() => {
+    const root = document.documentElement;
+    const apply = (dark: boolean) => {
+      root.classList.toggle('dark', dark);
+    };
+    if (theme === 'system') {
+      const mq = window.matchMedia('(prefers-color-scheme: dark)');
+      apply(mq.matches);
+      const handler = (e: MediaQueryListEvent) => apply(e.matches);
+      mq.addEventListener('change', handler);
+      return () => mq.removeEventListener('change', handler);
+    } else {
+      apply(theme === 'dark');
+    }
+  }, [theme]);
+
   // Right panel toggle only when there's an active conversation with messages
   const showRightPanelToggle = viewMode === 'chat' && (activeConv?.messages?.length ?? 0) > 0;
   const [showCloseDialog, setShowCloseDialog] = useState(false);

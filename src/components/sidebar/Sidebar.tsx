@@ -536,7 +536,7 @@ export default function Sidebar() {
       {contextMenu && (
         <div
           ref={contextMenuRef}
-          className="fixed z-50 bg-white rounded-lg shadow-lg border border-[var(--abu-border)] py-1 min-w-[140px]"
+          className="fixed z-50 bg-[var(--abu-bg-base)] rounded-lg shadow-lg border border-[var(--abu-border)] py-1 min-w-[140px]"
           style={{ left: contextMenu.x, top: contextMenu.y }}
         >
           <button
@@ -575,7 +575,7 @@ export default function Sidebar() {
                   <div
                     ref={moveSubmenuRef}
                     style={moveSubmenuStyle}
-                    className="absolute left-full ml-1 bg-white rounded-lg shadow-lg border border-[var(--abu-border)] py-1 min-w-[140px] overflow-y-auto overscroll-contain z-10"
+                    className="absolute left-full ml-1 bg-[var(--abu-bg-base)] rounded-lg shadow-lg border border-[var(--abu-border)] py-1 min-w-[140px] overflow-y-auto overscroll-contain z-10"
                   >
                     {activeProjects.map((p) => (
                       <button

@@ -174,7 +174,7 @@ export default function CreateProjectDialog({
       className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/40 animate-in fade-in duration-150"
       onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}
     >
-      <div className="bg-white rounded-2xl shadow-xl w-[480px] max-h-[80vh] overflow-y-auto animate-in zoom-in-95 duration-150">
+      <div className="bg-[var(--abu-bg-base)] rounded-2xl shadow-xl w-[480px] max-h-[80vh] overflow-y-auto animate-in zoom-in-95 duration-150">
         {/* Header */}
         <div className="flex items-center gap-3 px-6 pt-6 pb-2">
           {mode !== null && !presetMode && (

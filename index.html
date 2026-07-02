@@ -5,6 +5,25 @@
     <link rel="icon" type="image/svg+xml" href="/vite.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Abu</title>
+    <!-- Blocking theme script: must run before first paint to prevent FOUC.
+         Reads persisted theme from Zustand's 'abu-settings' key; defaults to dark. -->
+    <script>
+      (function() {
+        try {
+          var stored = localStorage.getItem('abu-settings');
+          var theme = 'dark'; // match settingsStore default
+          if (stored) {
+            var parsed = JSON.parse(stored);
+            if (parsed && parsed.state && parsed.state.theme) {
+              theme = parsed.state.theme;
+            }
+          }
+          var isDark = theme === 'dark' ||
+            (theme === 'system' && window.matchMedia('(prefers-color-scheme: dark)').matches);
+          if (isDark) document.documentElement.classList.add('dark');
+        } catch(e) {}
+      })();
+    </script>
     <style>
       /* Shown only until React mounts and replaces #root content */
       #app-loading {
@@ -17,6 +36,8 @@
         font-family: -apple-system, BlinkMacSystemFont, sans-serif;
         font-size: 14px;
       }
+      html.dark #app-loading { background: #1a1917; color: #8a8479; }
+      html.dark #app-error   { background: #1a1917; color: #f0ede8; }
       /* Shown only if React fails to mount (JS crash before React renders) */
       #app-error {
         display: none;

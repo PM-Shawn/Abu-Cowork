@@ -51,8 +51,8 @@ function sourceBadge(skill: Skill): SourceBadge {
 const SOURCE_BADGE_TONE: Record<'neutral' | 'clay' | 'blue' | 'slate', string> = {
   neutral: 'bg-[var(--abu-bg-muted)] text-[var(--abu-text-muted)]',
   clay: 'bg-[var(--abu-clay-tint)] text-[var(--abu-clay)]',
-  blue: 'bg-blue-50 text-blue-600',
-  slate: 'bg-slate-100 text-slate-600',
+  blue: 'bg-blue-50 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400',
+  slate: 'bg-slate-100 dark:bg-[var(--abu-bg-muted)] text-slate-600 dark:text-[var(--abu-text-secondary)]',
 };
 
 const systemSkillNames = new Set(
@@ -654,11 +654,11 @@ export default function SkillsSection({ manualCreateTrigger, onAICreate, onManua
                     <Plus className="h-4 w-4" />
                   </button>
                   {showCreateMenu && (
-                    <div className="absolute z-50 top-full right-0 mt-1 w-44 bg-white rounded-lg shadow-lg border border-[var(--abu-border)] py-1">
+                    <div className="absolute z-50 top-full right-0 mt-1 w-44 bg-[var(--abu-bg-base)] rounded-lg shadow-lg border border-[var(--abu-border)] py-1">
                       {onAICreate && (
                         <button
                           onClick={() => { setShowCreateMenu(false); onAICreate(); }}
-                          className="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-active)] transition-colors"
+                          className="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-hover)] transition-colors"
                         >
                           <Wand2 className="h-3.5 w-3.5 text-[var(--abu-clay)]" />
                           <span>{t.toolbox.createWithAbu}</span>
@@ -667,7 +667,7 @@ export default function SkillsSection({ manualCreateTrigger, onAICreate, onManua
                       {onManualCreate && (
                         <button
                           onClick={() => { setShowCreateMenu(false); onManualCreate(); }}
-                          className="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-active)] transition-colors"
+                          className="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-hover)] transition-colors"
                         >
                           <PenLine className="h-3.5 w-3.5 text-[var(--abu-text-muted)]" />
                           <span>{t.toolbox.createManually}</span>
@@ -676,7 +676,7 @@ export default function SkillsSection({ manualCreateTrigger, onAICreate, onManua
                       {onUploadFile && (
                         <button
                           onClick={() => { setShowCreateMenu(false); onUploadFile(); }}
-                          className="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-active)] transition-colors"
+                          className="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-hover)] transition-colors"
                         >
                           <Upload className="h-3.5 w-3.5 text-[var(--abu-text-muted)]" />
                           <span>{t.toolbox.uploadFile}</span>
@@ -692,14 +692,14 @@ export default function SkillsSection({ manualCreateTrigger, onAICreate, onManua
                       </button>
                       <button
                         onClick={() => { setShowCreateMenu(false); setShowNpmInstall(true); }}
-                        className="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-active)] transition-colors"
+                        className="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-hover)] transition-colors"
                       >
                         <Package className="h-3.5 w-3.5 text-[var(--abu-text-muted)]" />
                         <span>{t.toolbox.installFromNpm}</span>
                       </button>
                       <button
                         onClick={() => { setShowCreateMenu(false); setShowAgentSkillsInstall(true); }}
-                        className="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-active)] transition-colors"
+                        className="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-hover)] transition-colors"
                       >
                         <Globe className="h-3.5 w-3.5 text-[var(--abu-text-muted)]" />
                         <span>{t.toolbox.installAgentSkills}</span>
@@ -836,7 +836,7 @@ export default function SkillsSection({ manualCreateTrigger, onAICreate, onManua
                         <MoreHorizontal className="h-4 w-4" />
                       </button>
                       {menuSkill === selected.name && (
-                        <div className="absolute right-0 top-8 z-10 bg-white border border-[var(--abu-border)] rounded-lg shadow-lg py-1 min-w-[140px]">
+                        <div className="absolute right-0 top-8 z-10 bg-[var(--abu-bg-base)] border border-[var(--abu-border)] rounded-lg shadow-lg py-1 min-w-[140px]">
                           {/* Try in chat - only when enabled */}
                           {!disabledSet.has(selected.name) && (
                             <button
@@ -881,7 +881,7 @@ export default function SkillsSection({ manualCreateTrigger, onAICreate, onManua
                                 {t.toolbox.skillEdit}
                               </button>
                               <button
-                                className="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-red-600 hover:bg-red-50 transition-colors"
+                                className="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors"
                                 onClick={() => { handleDelete(selected); setMenuSkill(null); }}
                               >
                                 <Trash2 className="h-3 w-3" />
@@ -953,7 +953,7 @@ export default function SkillsSection({ manualCreateTrigger, onAICreate, onManua
       {/* npm install dialog */}
       {showNpmInstall && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 backdrop-blur-sm">
-          <div className="w-[420px] bg-white rounded-xl shadow-xl border border-[var(--abu-border)] overflow-hidden">
+          <div className="w-[420px] bg-[var(--abu-bg-base)] rounded-xl shadow-xl border border-[var(--abu-border)] overflow-hidden">
             {/* Header */}
             <div className="flex items-center justify-between px-5 py-3.5 border-b border-[var(--abu-border)]">
               <div className="flex items-center gap-2">
@@ -1061,7 +1061,7 @@ export default function SkillsSection({ manualCreateTrigger, onAICreate, onManua
       {/* Agent Skills install dialog (npx skills add) */}
       {showAgentSkillsInstall && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 backdrop-blur-sm">
-          <div className="w-[420px] bg-white rounded-xl shadow-xl border border-[var(--abu-border)] overflow-hidden">
+          <div className="w-[420px] bg-[var(--abu-bg-base)] rounded-xl shadow-xl border border-[var(--abu-border)] overflow-hidden">
             {/* Header */}
             <div className="flex items-center justify-between px-5 py-3.5 border-b border-[var(--abu-border)]">
               <div className="flex items-center gap-2">

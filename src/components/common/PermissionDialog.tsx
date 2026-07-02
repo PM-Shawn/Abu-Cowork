@@ -69,7 +69,7 @@ export default function PermissionDialog({ request, onAllow, onDeny, onChooseFol
     if (hasSuggestedPath) {
       return (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
-          <div className="w-full max-w-md mx-4 bg-white rounded-2xl shadow-xl overflow-hidden animate-in fade-in zoom-in-95 duration-200">
+          <div className="w-full max-w-md mx-4 bg-[var(--abu-bg-base)] rounded-2xl shadow-xl overflow-hidden animate-in fade-in zoom-in-95 duration-200">
             {/* Header */}
             <div className="relative px-6 pt-6 pb-4">
               <button
@@ -150,7 +150,7 @@ export default function PermissionDialog({ request, onAllow, onDeny, onChooseFol
     // No suggested path — lightweight folder picker prompt
     return (
       <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
-        <div className="relative w-full max-w-sm mx-4 bg-white rounded-2xl shadow-xl overflow-hidden animate-in fade-in zoom-in-95 duration-200">
+        <div className="relative w-full max-w-sm mx-4 bg-[var(--abu-bg-base)] rounded-2xl shadow-xl overflow-hidden animate-in fade-in zoom-in-95 duration-200">
           {/* Close button */}
           <button
             onClick={onDeny}
@@ -238,7 +238,7 @@ export default function PermissionDialog({ request, onAllow, onDeny, onChooseFol
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
-      <div className="w-full max-w-md mx-4 bg-white rounded-2xl shadow-xl overflow-hidden animate-in fade-in zoom-in-95 duration-200">
+      <div className="w-full max-w-md mx-4 bg-[var(--abu-bg-base)] rounded-2xl shadow-xl overflow-hidden animate-in fade-in zoom-in-95 duration-200">
         {/* Header */}
         <div className="relative px-6 pt-6 pb-4">
           <button
@@ -298,7 +298,7 @@ export default function PermissionDialog({ request, onAllow, onDeny, onChooseFol
                 className={cn(
                   'flex-1 px-2 py-1.5 rounded-md text-[12px] font-medium transition-colors text-center',
                   option.value === selectedDuration
-                    ? 'bg-white text-[var(--abu-text-primary)]'
+                    ? 'bg-[var(--abu-bg-base)] text-[var(--abu-text-primary)]'
                     : 'text-[var(--abu-text-tertiary)] hover:text-[var(--abu-text-primary)] hover:bg-white/50'
                 )}
               >

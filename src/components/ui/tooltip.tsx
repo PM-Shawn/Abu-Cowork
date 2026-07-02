@@ -44,7 +44,7 @@ function TooltipContent({
         className={cn(
           // Abu design tokens — the shadcn defaults (`bg-foreground` etc.) don't
           // render under our v3-style raw-HSL CSS variables.
-          "bg-[var(--abu-text-primary)] text-[var(--abu-bg-base)] border border-[var(--abu-border)]/20 shadow-md",
+          "bg-[var(--abu-bg-muted)] text-[var(--abu-text-primary)] border border-[var(--abu-border)] shadow-md",
           "animate-in fade-in-0 zoom-in-95 data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95 data-[side=bottom]:slide-in-from-top-2 data-[side=left]:slide-in-from-right-2 data-[side=right]:slide-in-from-left-2 data-[side=top]:slide-in-from-bottom-2 z-50 w-fit origin-(--radix-tooltip-content-transform-origin) rounded-md px-3 py-1.5 text-xs text-balance",
           className
         )}

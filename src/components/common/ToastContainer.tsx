@@ -11,31 +11,31 @@ const iconMap = {
 
 const colorMap = {
   success: {
-    bg: 'bg-green-50 border-green-200',
-    icon: 'text-green-500',
-    title: 'text-green-800',
-    message: 'text-green-600',
+    bg: 'bg-green-50 dark:bg-green-950/80 border-green-200 dark:border-green-900',
+    icon: 'text-green-500 dark:text-green-400',
+    title: 'text-green-800 dark:text-green-300',
+    message: 'text-green-600 dark:text-green-400',
     action: 'bg-green-600 hover:bg-green-700 text-white',
   },
   error: {
-    bg: 'bg-red-50 border-red-200',
-    icon: 'text-red-500',
-    title: 'text-red-800',
-    message: 'text-red-600',
+    bg: 'bg-red-50 dark:bg-red-950/80 border-red-200 dark:border-red-900',
+    icon: 'text-red-500 dark:text-red-400',
+    title: 'text-red-800 dark:text-red-300',
+    message: 'text-red-600 dark:text-red-400',
     action: 'bg-red-600 hover:bg-red-700 text-white',
   },
   info: {
-    bg: 'bg-blue-50 border-blue-200',
-    icon: 'text-blue-500',
-    title: 'text-blue-800',
-    message: 'text-blue-600',
+    bg: 'bg-blue-50 dark:bg-blue-950/80 border-blue-200 dark:border-blue-900',
+    icon: 'text-blue-500 dark:text-blue-400',
+    title: 'text-blue-800 dark:text-blue-300',
+    message: 'text-blue-600 dark:text-blue-400',
     action: 'bg-blue-600 hover:bg-blue-700 text-white',
   },
   warning: {
-    bg: 'bg-amber-50 border-amber-200',
-    icon: 'text-amber-500',
-    title: 'text-amber-800',
-    message: 'text-amber-600',
+    bg: 'bg-amber-50 dark:bg-amber-950/80 border-amber-200 dark:border-amber-900',
+    icon: 'text-amber-500 dark:text-amber-400',
+    title: 'text-amber-800 dark:text-amber-300',
+    message: 'text-amber-600 dark:text-amber-400',
     action: 'bg-amber-600 hover:bg-amber-700 text-white',
   },
 };
@@ -80,7 +80,7 @@ export default function ToastContainer() {
                       }}
                       className={cn(
                         'px-2.5 py-1 text-[11px] font-medium rounded-md transition-colors',
-                        i === 0 ? colors.action : 'bg-black/5 hover:bg-black/10 text-gray-700',
+                        i === 0 ? colors.action : 'bg-black/5 dark:bg-white/10 hover:bg-black/10 dark:hover:bg-white/15 text-gray-700 dark:text-[var(--abu-text-secondary)]',
                       )}
                     >
                       {action.label}

@@ -144,7 +144,7 @@ export default function SensitiveAuditDialog() {
     // user wouldn't see the dialog again. Force them to read and click a
     // button. Same reasoning for not handling ESC.
     <div className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/40 animate-in fade-in duration-150">
-      <div className="bg-white rounded-2xl shadow-xl w-[480px] max-h-[80vh] flex flex-col overflow-hidden animate-in zoom-in-95 duration-150">
+      <div className="bg-[var(--abu-bg-base)] rounded-2xl shadow-xl w-[480px] max-h-[80vh] flex flex-col overflow-hidden animate-in zoom-in-95 duration-150">
         <div className="px-6 pt-6 pb-3 border-b border-[var(--abu-bg-muted)]">
           <div className="flex items-center gap-2 mb-2">
             <ShieldAlert className="h-5 w-5 text-amber-600" />
@@ -190,7 +190,7 @@ export default function SensitiveAuditDialog() {
                       {entry.result.matches.map((m) => (
                         <span
                           key={m.patternId}
-                          className="text-[10px] bg-amber-100 text-amber-800 px-1.5 py-0.5 rounded"
+                          className="text-[10px] bg-amber-100 dark:bg-amber-900/30 text-amber-800 dark:text-amber-400 px-1.5 py-0.5 rounded"
                         >
                           {patternLabel(m.patternId, t)}
                         </span>

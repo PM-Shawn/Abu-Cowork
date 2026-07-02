@@ -331,7 +331,7 @@ function InlineImage({ src }: { src: string }) {
   return (
     <>
       <div
-        className="relative group cursor-pointer inline-block rounded-lg overflow-hidden border border-[var(--abu-border)] bg-white"
+        className="relative group cursor-pointer inline-block rounded-lg overflow-hidden border border-[var(--abu-border)] bg-[var(--abu-bg-base)]"
         onClick={() => setExpanded(true)}
       >
         <img

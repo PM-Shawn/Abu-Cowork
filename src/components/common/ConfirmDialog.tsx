@@ -47,7 +47,7 @@ export default function ConfirmDialog({
       }}
     >
       <div
-        className="bg-white rounded-2xl shadow-xl w-[360px] p-6 animate-in zoom-in-95 duration-150"
+        className="bg-[var(--abu-bg-base)] rounded-2xl shadow-xl w-[360px] p-6 animate-in zoom-in-95 duration-150"
       >
         <h3 className="text-[16px] font-semibold text-[var(--abu-text-primary)] mb-2">
           {title}

@@ -22,7 +22,7 @@ export default function SubTabBar({ tabs, activeTab, onChange }: SubTabBarProps)
           className={cn(
             'flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium transition-colors',
             activeTab === tab.id
-              ? 'bg-white text-[var(--abu-text-primary)]'
+              ? 'bg-[var(--abu-bg-base)] text-[var(--abu-text-primary)]'
               : 'text-[var(--abu-text-tertiary)] hover:text-[var(--abu-text-primary)] hover:bg-white/50'
           )}
         >

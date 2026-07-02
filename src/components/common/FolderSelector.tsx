@@ -134,7 +134,7 @@ export default function FolderSelector({
 
       {/* Dropdown Menu — opens upward to avoid bottom overflow */}
       {isOpen && (
-        <div className="absolute bottom-full left-0 mb-1.5 w-72 bg-white rounded-lg border border-[var(--abu-bg-hover)] shadow-lg z-50 overflow-hidden animate-in fade-in slide-in-from-bottom-1 duration-150">
+        <div className="absolute bottom-full left-0 mb-1.5 w-72 bg-[var(--abu-bg-base)] rounded-lg border border-[var(--abu-bg-hover)] shadow-lg z-50 overflow-hidden animate-in fade-in slide-in-from-bottom-1 duration-150">
           {/* Recent folders section */}
           {(recentPaths.length > 0) && (
             <>

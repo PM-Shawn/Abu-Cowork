@@ -817,12 +817,13 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
               <div className="flex-1" />
 
               {/* Model picker — right-aligned, before Start button */}
+              <PermissionModeChip conversationId={null} />
               <div className="relative" ref={modelPickerRef}>
                 <button
                   onClick={() => setShowModelPicker(!showModelPicker)}
                   title={modelDisplay}
                   className={cn(
-                    'btn-ghost flex items-center gap-1 px-2 py-1 text-[12px] font-medium rounded-md transition-colors max-w-[180px]',
+                    'btn-ghost flex items-center gap-1 px-2 py-1 text-[12px] font-normal rounded-md transition-colors max-w-[180px]',
                     hasActiveProvider
                       ? 'text-[var(--abu-text-tertiary)] hover:text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-hover)]'
                       : 'text-[var(--abu-clay)] hover:text-[var(--abu-clay-hover)] hover:bg-[var(--abu-clay-bg)]'
@@ -884,13 +885,14 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
 
               {/* Right Actions: Model picker + Context indicator + Send / Stop */}
               <div className="flex items-center gap-1">
+                <PermissionModeChip conversationId={activeConvIdForIndicator} />
                 {/* Model picker */}
                 <div className="relative" ref={modelPickerRef}>
                   <button
                     onClick={() => setShowModelPicker(!showModelPicker)}
                     title={modelDisplay}
                     className={cn(
-                      'btn-ghost flex items-center gap-1 px-2 py-1 text-[12px] font-medium rounded-md transition-colors max-w-[180px]',
+                      'btn-ghost flex items-center gap-1 px-2 py-1 text-[12px] font-normal rounded-md transition-colors max-w-[180px]',
                       hasActiveProvider
                         ? 'text-[var(--abu-text-tertiary)] hover:text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-hover)]'
                         : 'text-[var(--abu-clay)] hover:text-[var(--abu-clay-hover)] hover:bg-[var(--abu-clay-bg)]'

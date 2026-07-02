@@ -750,6 +750,7 @@ const enUS: TranslationDict = {
     uploadInProgress: 'Uploading…',
     uploadSuccess: 'Uploaded',
     uploadFailed: 'Upload failed',
+    uploadDescriptionPlaceholder: 'Describe the issue to help us diagnose faster (optional)',
     successTitle: 'Bundle exported',
     successMeta: '{size} · {count} files · {scrubbed} text fields scrubbed',
     successOpenFinder: 'Show in Finder',
@@ -1592,6 +1593,7 @@ const enUS: TranslationDict = {
 
   about: {
     feedback: 'Feedback',
+    wechatSectionTitle: 'Contact Developer',
     feedbackDesc: 'Scan to add on WeChat for feedback or discussion',
     sponsor: 'Support',
     sponsorDesc: 'Buy the author a coffee if you find Abu useful',

@@ -750,6 +750,7 @@ const zhCN: TranslationDict = {
     uploadInProgress: '上传中…',
     uploadSuccess: '上传成功',
     uploadFailed: '上传失败',
+    uploadDescriptionPlaceholder: '描述遇到的问题，帮助我们更快定位（选填）',
     successTitle: '已导出诊断包',
     successMeta: '{size} · {count} 个文件 · 已脱敏 {scrubbed} 处',
     successOpenFinder: '在 Finder 中显示',
@@ -1593,6 +1594,7 @@ const zhCN: TranslationDict = {
 
   about: {
     feedback: '反馈',
+    wechatSectionTitle: '联系开发者',
     feedbackDesc: '扫码添加微信，反馈问题或交流想法',
     sponsor: '支持',
     sponsorDesc: '如果觉得阿布好用，请作者喝杯咖啡吧',

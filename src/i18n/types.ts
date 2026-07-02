@@ -775,6 +775,7 @@ export interface TranslationDict {
     uploadInProgress: string;
     uploadSuccess: string;
     uploadFailed: string;
+    uploadDescriptionPlaceholder: string;
     // Success card
     successTitle: string;
     successMeta: string; // {size}, {count}, {scrubbed}
@@ -1625,6 +1626,7 @@ export interface TranslationDict {
   // About
   about: {
     feedback: string;
+    wechatSectionTitle: string;
     feedbackDesc: string;
     sponsor: string;
     sponsorDesc: string;

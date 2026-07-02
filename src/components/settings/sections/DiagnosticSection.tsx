@@ -1,15 +1,12 @@
-import { useEffect, useState, useMemo, useCallback } from 'react';
-import { Bot, FolderLock, Plug, Sparkles, Globe, AppWindow, Activity, Copy, Check } from 'lucide-react';
+import { useEffect, useMemo } from 'react';
+import { Bot, FolderLock, Plug, Sparkles, Globe, AppWindow, Activity } from 'lucide-react';
 import { useI18n } from '@/i18n';
-import { getDeviceId } from '@/utils/deviceId';
 import { useDiagnosticStore } from '@/stores/diagnosticStore';
+import { useSettingsStore } from '@/stores/settingsStore';
 import { ALL_CATEGORIES } from '@/core/diagnostic/runner';
 import type { CheckCategory, CheckResult } from '@/core/diagnostic/types';
-import type { ProduceResult } from '@/core/diagnostic/bundle';
 import DiagnosticBanner from './diagnostic/DiagnosticBanner';
 import DiagnosticCategory from './diagnostic/DiagnosticCategory';
-import ExportPanel from './diagnostic/ExportPanel';
-import ExportSuccessCard from './diagnostic/ExportSuccessCard';
 
 const CATEGORY_ICON = {
   'ai-services': Bot,
@@ -26,17 +23,7 @@ export default function DiagnosticSection() {
   const lastCheckedAt = useDiagnosticStore((s) => s.lastCheckedAt);
   const isChecking = useDiagnosticStore((s) => s.isChecking);
   const runAll = useDiagnosticStore((s) => s.runAll);
-
-  const [exportSuccess, setExportSuccess] = useState<ProduceResult | null>(null);
-  const [idCopied, setIdCopied] = useState(false);
-  const deviceId = getDeviceId();
-
-  const handleCopyDeviceId = useCallback(() => {
-    void navigator.clipboard.writeText(deviceId).then(() => {
-      setIdCopied(true);
-      setTimeout(() => setIdCopied(false), 2000);
-    });
-  }, [deviceId]);
+  const setActiveSystemTab = useSettingsStore((s) => s.setActiveSystemTab);
 
   // Auto-run on first visit if no cached results.
   useEffect(() => {
@@ -102,35 +89,17 @@ export default function DiagnosticSection() {
         ))}
       </div>
 
-      {/* Export success card (shown after a successful export) */}
-      {exportSuccess && (
-        <ExportSuccessCard
-          path={exportSuccess.path}
-          sizeBytes={exportSuccess.sizeBytes}
-          scrubbedTextCount={exportSuccess.scrubbedTextCount}
-          fileList={exportSuccess.fileList}
-          onDismiss={() => setExportSuccess(null)}
-        />
-      )}
-
-      {/* Export panel */}
-      <ExportPanel onExportSuccess={setExportSuccess} />
-
-      {/* Device ID — shown here so users can find it when reporting issues */}
-      <div className="flex items-center justify-between pt-2 border-t border-[var(--abu-border)]">
-        <span className="text-xs text-[var(--abu-text-muted)]">{t.about.deviceId}</span>
+      {/* Feedback navigation prompt */}
+      <div className="pt-2 border-t border-[var(--abu-border)]">
         <button
-          onClick={handleCopyDeviceId}
-          className="flex items-center gap-1.5 text-xs font-mono text-[var(--abu-text-muted)] hover:text-[var(--abu-text-secondary)] transition-colors"
-          title={deviceId}
+          type="button"
+          onClick={() => setActiveSystemTab('feedback')}
+          className="text-[12px] text-[var(--abu-text-muted)] hover:text-[var(--abu-clay)] transition-colors"
         >
-          <span>{deviceId.slice(0, 8)}</span>
-          {idCopied
-            ? <Check className="h-3 w-3 text-green-500" />
-            : <Copy className="h-3 w-3" />
-          }
+          有问题？在反馈页附上诊断包 →
         </button>
       </div>
+
     </div>
   );
 }

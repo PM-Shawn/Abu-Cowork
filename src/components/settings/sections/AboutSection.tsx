@@ -1,6 +1,7 @@
 import { useState, useCallback, useRef } from 'react';
 import { openUrl } from '@tauri-apps/plugin-opener';
-import { RefreshCw, Download, CheckCircle, CircleAlert, RotateCcw, ExternalLink } from 'lucide-react';
+import { RefreshCw, Download, CheckCircle, CircleAlert, RotateCcw, ExternalLink, Copy, Check } from 'lucide-react';
+import { getDeviceId } from '@/utils/deviceId';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import abuAvatar from '@/assets/abu-avatar.png';
@@ -24,6 +25,15 @@ export default function AboutSection() {
   const { t } = useI18n();
   const [checkResult, setCheckResult] = useState<CheckResult>('idle');
   const [downloadError, setDownloadError] = useState<string | null>(null);
+  const [idCopied, setIdCopied] = useState(false);
+  const deviceId = getDeviceId();
+
+  const handleCopyDeviceId = useCallback(() => {
+    void navigator.clipboard.writeText(deviceId).then(() => {
+      setIdCopied(true);
+      setTimeout(() => setIdCopied(false), 2000);
+    });
+  }, [deviceId]);
 
   const handleOpenLink = async (url: string) => {
     try {
@@ -85,9 +95,19 @@ export default function AboutSection() {
       <div className="space-y-1">
         <div className="flex justify-between items-center py-3 border-b border-[var(--abu-border)]">
           <span className="text-sm text-[var(--abu-text-tertiary)]">{t.updates.currentVersion}</span>
-          <span className="text-sm font-semibold text-[var(--abu-text-primary)]">
-            v{APP_VERSION}
-          </span>
+          <span className="text-sm font-semibold text-[var(--abu-text-primary)]">v{APP_VERSION}</span>
+        </div>
+        <div className="flex justify-between items-center py-3 border-b border-[var(--abu-border)]">
+          <span className="text-sm text-[var(--abu-text-tertiary)]">{t.about.deviceId}</span>
+          <button
+            type="button"
+            onClick={handleCopyDeviceId}
+            className="flex items-center gap-1.5 text-sm font-mono text-[var(--abu-text-secondary)] hover:text-[var(--abu-text-primary)] transition-colors"
+            title={deviceId}
+          >
+            <span>{deviceId.slice(0, 8)}</span>
+            {idCopied ? <Check className="h-3.5 w-3.5 text-green-500" /> : <Copy className="h-3.5 w-3.5" />}
+          </button>
         </div>
       </div>
 

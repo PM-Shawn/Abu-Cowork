@@ -79,6 +79,12 @@ pub fn pet_show(app: AppHandle) -> Result<(), String> {
     .skip_taskbar(true)
     .resizable(false)
     .shadow(false)
+    // The pet is usually NOT the key window when a notification pops up (the
+    // user is working in the main window). Without this, macOS swallows the
+    // first click just to activate the pet window, so clicking the bubble does
+    // nothing until the second click. Accept-first-mouse delivers that first
+    // click straight to the webview.
+    .accept_first_mouse(true)
     .build()
     .map_err(|e| format!("Failed to create pet window: {}", e))?;
 

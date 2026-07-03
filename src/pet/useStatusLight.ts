@@ -15,15 +15,16 @@ import { emit, listen } from '@tauri-apps/api/event';
 // Single source of truth for the wire types — re-exported so pet-window
 // components can import them from here without pulling in the heavy bridge
 // module (these are type-only, erased at build).
-import type { PetStatus, PetStatusPayload } from '@/core/pet/petStatusBridge';
+import type { PetStatus, PetStatusPayload, WaitingKind } from '@/core/pet/petStatusBridge';
 
-export type { PetStatus, PetStatusPayload };
+export type { PetStatus, PetStatusPayload, WaitingKind };
 
 const IDLE_PAYLOAD: PetStatusPayload = {
   status: 'idle',
   conversationId: null,
   title: null,
   summary: null,
+  waitingKind: null,
 };
 
 /**

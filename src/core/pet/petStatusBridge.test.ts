@@ -5,6 +5,34 @@ import { publish } from '@/core/notice/bus'
 import { useChatStore } from '@/stores/chatStore'
 import type { Conversation, ConversationStatus, Message } from '@/types'
 
+// permissionBridge holds the blocking-approval state the pet now reads
+// directly. Mock it so we can drive a pending file-permission dialog and
+// capture the bridge's subscription.
+vi.mock('@/core/agent/permissionBridge', () => {
+  const state: { file: { conversationId: string } | null } = { file: null }
+  const listeners = new Set<() => void>()
+  const noop = () => () => {}
+  return {
+    subscribeToFilePermission: (cb: () => void) => { listeners.add(cb); return () => listeners.delete(cb) },
+    getPendingFilePermission: () => state.file,
+    subscribeToCommandConfirmation: noop,
+    getPendingCommandConfirmation: () => null,
+    subscribeToWorkspaceRequest: noop,
+    getPendingWorkspaceRequest: () => null,
+    subscribeUserQuestion: noop,
+    getPendingUserQuestions: () => [],
+    // Test-only control: set the pending file permission and notify subscribers.
+    __setFilePermission: (v: { conversationId: string } | null) => {
+      state.file = v
+      listeners.forEach((l) => l())
+    },
+  }
+})
+
+import * as permissionBridge from '@/core/agent/permissionBridge'
+const setFilePermission = (v: { conversationId: string } | null) =>
+  (permissionBridge as unknown as { __setFilePermission: (v: { conversationId: string } | null) => void }).__setFilePermission(v)
+
 const mockEmitTo = emitTo as ReturnType<typeof vi.fn>
 
 const DEDUP_CTR = { n: 0 }
@@ -40,6 +68,7 @@ describe('petStatusBridge', () => {
   afterEach(() => {
     stopPetStatusBridge()
     setConversations([])
+    setFilePermission(null)
     vi.useRealTimers()
   })
 
@@ -50,6 +79,7 @@ describe('petStatusBridge', () => {
       conversationId: null,
       title: null,
       summary: null,
+      waitingKind: null,
     })
   })
 
@@ -79,11 +109,12 @@ describe('petStatusBridge', () => {
       title: '整理桌面文件',
       // 40-char truncation with ellipsis
       summary: '好的，先看一下现有的分类结构，然后按类型归档到对应文件夹里去',
+      waitingKind: null,
     })
   })
 
-  it('truncates a long assistant summary to 40 chars + ellipsis', () => {
-    const long = '一二三四五六七八九十'.repeat(6) // 60 chars
+  it('truncates a long assistant summary to 120 chars + ellipsis', () => {
+    const long = '一二三四五六七八九十'.repeat(15) // 150 chars
     setConversations([
       makeConv({ id: 'c1', status: 'running', title: 'T', messages: [assistantMsg(long)] }),
     ])
@@ -91,7 +122,7 @@ describe('petStatusBridge', () => {
     const call = mockEmitTo.mock.calls.at(-1)!
     const payload = call[2] as { summary: string }
     expect(payload.summary.endsWith('…')).toBe(true)
-    expect(payload.summary.length).toBe(41) // 40 + ellipsis
+    expect(payload.summary.length).toBe(121) // 120 + ellipsis
   })
 
   it('picks the highest-priority conversation as featured', () => {
@@ -145,6 +176,7 @@ describe('petStatusBridge', () => {
       conversationId: 'chat',
       title: '需要确认',
       summary: '可以吗？',
+      waitingKind: 'input',
     })
   })
 
@@ -209,6 +241,43 @@ describe('petStatusBridge', () => {
     const last = mockEmitTo.mock.calls.at(-1)![2] as { status: string; conversationId: string }
     expect(last.status).toBe('waiting')
     expect(last.conversationId).toBe('conv1')
+  })
+
+  it('emits waiting with waitingKind=approval when a file-permission dialog is pending', () => {
+    vi.useFakeTimers()
+    setConversations([
+      makeConv({ id: 'c1', status: 'running', title: '整理桌面', messages: [assistantMsg('看看桌面有啥呢')] }),
+    ])
+    startPetStatusBridge()
+    vi.advanceTimersByTime(4_000) // past the debounce so the next emit is synchronous
+    mockEmitTo.mockClear()
+
+    // A blocking "文件读取权限" dialog opens for conv c1.
+    setFilePermission({ conversationId: 'c1' })
+
+    const payload = mockEmitTo.mock.calls.at(-1)![2] as { status: string; conversationId: string; waitingKind: string }
+    expect(payload.status).toBe('waiting')
+    expect(payload.waitingKind).toBe('approval')
+    expect(payload.conversationId).toBe('c1')
+  })
+
+  it('clears the approval waiting once the permission dialog resolves', () => {
+    vi.useFakeTimers()
+    setConversations([
+      makeConv({ id: 'c1', status: 'running', title: '整理桌面', messages: [assistantMsg('看看桌面有啥呢')] }),
+    ])
+    startPetStatusBridge()
+    vi.advanceTimersByTime(4_000)
+    setFilePermission({ conversationId: 'c1' })
+    expect((mockEmitTo.mock.calls.at(-1)![2] as { status: string }).status).toBe('waiting')
+
+    // User resolves the dialog → pending clears → pet falls back to running.
+    vi.advanceTimersByTime(4_000)
+    mockEmitTo.mockClear()
+    setFilePermission(null)
+    const payload = mockEmitTo.mock.calls.at(-1)![2] as { status: string; waitingKind: string | null }
+    expect(payload.status).toBe('running')
+    expect(payload.waitingKind).toBeNull()
   })
 
   it('does not emit waiting for unrelated notice types', () => {

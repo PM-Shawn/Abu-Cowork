@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect } from 'react'
+import { useState, useCallback, useEffect, useRef } from 'react'
 import { flushSync } from 'react-dom'
 import { getCurrentWindow, primaryMonitor } from '@tauri-apps/api/window'
 import { emit } from '@tauri-apps/api/event'
@@ -6,105 +6,162 @@ import { invoke } from '@tauri-apps/api/core'
 import abuAvatar from '@/assets/abu-avatar.png'
 import { usePetStatus } from './useStatusLight'
 import { usePetDrag } from './usePetDrag'
-import { PetNotificationBubble } from './PetNotificationBubble'
+import { PetNotificationBubble, type NotifMode } from './PetNotificationBubble'
 import { PetContextMenu } from './PetContextMenu'
 
 const COLLAPSED_W = 80, COLLAPSED_H = 80
-// Notification tray sizes: avatar (80) + gap (8) + single-line bubble, and
-// a taller variant for the waiting state's inline reply input.
-const NOTIF_W = 200, NOTIF_H = 148
-const NOTIF_WAITING_H = 196
+const NOTIF_W = 200          // bubble width (fixed in both placements)
+const GAP = 8                // avatar ↔ bubble gap
+// Side placement sits the avatar and bubble next to each other horizontally.
+const SIDE_W = NOTIF_W + GAP + COLLAPSED_W // 288
+// Stand-in bubble height before the first real DOM measurement.
+const FALLBACK_BUBBLE_H = 60
 const MENU_W = 200, MENU_H = 260
 // How long the 'done' bubble lingers before we shrink the window back to the
 // bare avatar (matches petNotifFade in index.css).
 const DONE_LINGER_MS = 6000
+// Prefer the bubble ABOVE the avatar; only when the avatar sits within this
+// many px of the screen top (no room above) do we place it to the SIDE
+// instead — never below, which reads worse. Side grows downward, so it can't
+// clip off the top edge.
+const MIN_ROOM_ABOVE = 160
 
-// The pet spawns at the bottom-right of the screen by default (see
-// pet_show in pet.rs), so a popup that only ever grows right/down would
-// routinely push part of itself past the screen edge and get clipped —
-// there's nothing to render out there. Pick a direction per axis based on
-// which half of the screen the pet is currently in, mirroring how a
-// tooltip/popover flips itself to stay on screen.
-async function getExpandDir(): Promise<{ vertical: 'up' | 'down'; horizontal: 'left' | 'right' }> {
+type Placement = { mode: 'above' | 'side'; horizontal: 'left' | 'right' }
+
+// Where to put the bubble relative to the avatar, chosen to stay on-screen.
+// Default above the avatar; if the avatar is too near the screen top, sit the
+// bubble beside it (extending toward screen center) rather than below.
+async function getPlacement(): Promise<Placement> {
   const mon = await primaryMonitor()
   const scale = mon?.scaleFactor ?? 1
   const screenW = (mon?.size.width ?? 1600) / scale
-  const screenH = (mon?.size.height ?? 900) / scale
   const pos = await getCurrentWindow().outerPosition()
+  const avatarTop = pos.y / scale
+  const avatarLeft = pos.x / scale
   return {
-    vertical: pos.y / scale < screenH / 2 ? 'down' : 'up',
-    horizontal: pos.x / scale < screenW / 2 ? 'right' : 'left',
+    mode: avatarTop >= MIN_ROOM_ABOVE ? 'above' : 'side',
+    horizontal: avatarLeft < screenW / 2 ? 'right' : 'left',
   }
 }
 
 export default function PetApp() {
   const { ref: dragRef, consumeDrag } = usePetDrag<HTMLDivElement>()
-  const { status, conversationId, title, summary } = usePetStatus()
+  const { status, conversationId, title, summary, waitingKind } = usePetStatus()
 
   const [menuOpen, setMenuOpen] = useState(false)
-  const [expandUp, setExpandUp] = useState(false)
-  const [expandLeft, setExpandLeft] = useState(false)
+  const [expandUp, setExpandUp] = useState(false)     // bubble above avatar (avatar at bottom)
+  const [expandLeft, setExpandLeft] = useState(false) // bubble on the left / avatar on the right
+  const [sideMode, setSideMode] = useState(false)     // bubble beside avatar (avatar near screen top)
+  // Non-waiting notification display mode (collapsed / expanded / replying),
+  // driven by the bubble's hover-revealed controls. Owns the window height.
+  const [notifMode, setNotifMode] = useState<NotifMode>('collapsed')
   // The 'done' bubble is dismissed (window shrinks) after a linger even
   // though the bridge keeps reporting 'done' until the conversation moves on.
   const [doneDismissed, setDoneDismissed] = useState(false)
+  // Whether the pointer is currently over the bubble. Hovering means the user
+  // is engaging with it (reading, reaching for the 回复/展开 controls), so the
+  // done auto-dismiss must pause — otherwise the 6 s linger can yank the
+  // bubble out from under the cursor right as they go to click 回复.
+  const [hovered, setHovered] = useState(false)
+
+  // A new featured conversation resets the bubble back to collapsed (a fresh
+  // notification shouldn't inherit the previous one's expanded/replying mode).
+  useEffect(() => {
+    setNotifMode('collapsed')
+  }, [conversationId])
 
   // Reset the done-dismissal whenever we leave the done state.
   useEffect(() => {
     if (status !== 'done') setDoneDismissed(false)
   }, [status])
 
-  // Auto-shrink the lingering done bubble.
+  // Auto-shrink the lingering done bubble — but only while collapsed AND not
+  // hovered, so we don't yank a bubble the user is reading, hovering the
+  // controls of, or actively expanding/replying to. Leaving the bubble
+  // restarts the linger from scratch.
   useEffect(() => {
-    if (status !== 'done') return
+    if (status !== 'done' || notifMode !== 'collapsed' || hovered) return
     const t = window.setTimeout(() => setDoneDismissed(true), DONE_LINGER_MS)
     return () => window.clearTimeout(t)
-  }, [status])
+  }, [status, notifMode, hovered])
 
   const showNotif = status !== 'idle' && !(status === 'done' && doneDismissed)
+  // The inline reply row shows for waiting-on-input or when the user clicked
+  // 回复 — NOT for an approval-waiting bubble (which just routes to the main
+  // window). Drives the window height so we don't reserve empty input space.
+  const showReplyInput = notifMode === 'replying' || (status === 'waiting' && waitingKind !== 'approval')
+
+  // Cached placement (only re-detected when a notification first appears — the
+  // pet can only move while collapsed) + the bubble's DOM node, whose measured
+  // height drives the window size so it fits the content exactly (capped +
+  // scrollable inside the bubble, so it never grows off-screen).
+  const placementRef = useRef<Placement>({ mode: 'above', horizontal: 'right' })
+  const bubbleWrapRef = useRef<HTMLDivElement>(null)
+  const prevShowRef = useRef(false)
 
   // Single source of truth for the (non-menu) window frame: when a
   // notification should show, grow the window to fit it; otherwise shrink
-  // back to the bare avatar. The anchor is committed to the DOM *before*
-  // the native resize (flushSync) so the avatar stays glued to whichever
-  // corner the window grows from and never jumps — this is the atomic
-  // resize that fixed the click flicker (see pet_set_frame in pet.rs).
+  // back to the bare avatar.
   useEffect(() => {
     if (menuOpen) return // the menu controls the frame while it's open
     let cancelled = false
+    const justAppeared = showNotif && !prevShowRef.current
     ;(async () => {
-      const dir = await getExpandDir()
+      // Only re-detect placement (async monitor query) + re-anchor (flushSync)
+      // when the notification first appears. Expand/reply toggles reuse the
+      // cached placement and skip both — that async gap + flushSync between
+      // the content re-render and the resize was the click-flicker on those
+      // controls. The avatar stays glued to its corner regardless.
+      if (justAppeared) {
+        const p = await getPlacement()
+        if (cancelled) return
+        placementRef.current = p
+        flushSync(() => {
+          setSideMode(p.mode === 'side')
+          setExpandUp(p.mode === 'above')
+          setExpandLeft(p.horizontal === 'left')
+        })
+      }
       if (cancelled) return
-      const w = showNotif ? NOTIF_W : COLLAPSED_W
-      const h = showNotif ? (status === 'waiting' ? NOTIF_WAITING_H : NOTIF_H) : COLLAPSED_H
-      flushSync(() => {
-        setExpandUp(dir.vertical === 'up')
-        setExpandLeft(dir.horizontal === 'left')
-      })
+      const p = placementRef.current
+      const side = p.mode === 'side'
+      // Measure the bubble's natural height (it renders at a fixed 200px width
+      // in both placements) so the window fits the content exactly instead of
+      // clipping it at a hard-coded height. The bubble caps its own content
+      // height and scrolls internally, so this stays bounded.
+      const bubbleH = bubbleWrapRef.current?.offsetHeight ?? FALLBACK_BUBBLE_H
+      const w = showNotif ? (side ? SIDE_W : NOTIF_W) : COLLAPSED_W
+      const h = showNotif
+        ? (side ? Math.max(COLLAPSED_H, bubbleH) : COLLAPSED_H + GAP + bubbleH)
+        : COLLAPSED_H
       await invoke('pet_set_frame', {
         width: w,
         height: h,
-        // Anchor the edge the window grows from / shrinks toward so the
-        // avatar's on-screen corner is fixed across expand and collapse.
-        anchorBottom: dir.vertical === 'up',
-        anchorRight: dir.horizontal === 'left',
+        // Keep the avatar's on-screen corner fixed as the window grows/shrinks:
+        // 'above' grows upward from the avatar's bottom; 'side' grows downward
+        // from its top.
+        anchorBottom: p.mode === 'above',
+        anchorRight: p.horizontal === 'left',
       })
+      prevShowRef.current = showNotif
     })()
     return () => { cancelled = true }
-  }, [showNotif, status, menuOpen])
+  }, [showNotif, status, menuOpen, notifMode, showReplyInput, title, summary, waitingKind])
 
   const openMenu = useCallback(async () => {
-    // Menu always expands downward, but still needs the horizontal check —
-    // same off-screen-clipping risk as the notification.
-    const dir = await getExpandDir()
+    // Menu always sits below the avatar (avatar at top), but still needs the
+    // horizontal check — same off-screen-clipping risk as the notification.
+    const p = await getPlacement()
     flushSync(() => {
-      setExpandUp(false)
-      setExpandLeft(dir.horizontal === 'left')
+      setSideMode(false)
+      setExpandUp(false) // avatar at top, menu below it
+      setExpandLeft(p.horizontal === 'left')
     })
     await invoke('pet_set_frame', {
       width: MENU_W,
       height: MENU_H,
       anchorBottom: false,
-      anchorRight: dir.horizontal === 'left',
+      anchorRight: p.horizontal === 'left',
     })
     setMenuOpen(true)
   }, [])
@@ -137,11 +194,20 @@ export default function PetApp() {
     if (!menuOpen) await openMenu()
   }, [menuOpen, openMenu])
 
+  const toggleExpand = useCallback(() => {
+    setNotifMode((m) => (m === 'expanded' ? 'collapsed' : 'expanded'))
+  }, [])
+
+  const startReply = useCallback(() => {
+    setNotifMode('replying')
+  }, [])
+
   const handleReply = useCallback((text: string) => {
-    // waiting-state inline reply → route to the conversation the notice
-    // pointed at (falls back to the active one in App.tsx). Stay on the
-    // desktop — the whole point of the inline reply is not to yank focus.
+    // Inline reply → route to the conversation the notice pointed at (falls
+    // back to the active one in App.tsx). Stay on the desktop — the whole
+    // point of the inline reply is not to yank focus. Collapse afterwards.
     emit('pet-send-message', { text, conversationId }).catch(console.error)
+    setNotifMode('collapsed')
   }, [conversationId])
 
   const handleClosePet = useCallback(() => {
@@ -160,7 +226,9 @@ export default function PetApp() {
   // pet_set_frame), so the webview's own relayout keeps the avatar on that
   // corner during the native resize, with no JS repositioning step.
   const avatarAnchor = {
-    ...(expandUp ? { bottom: 0 } : { top: 0 }),
+    // Side placement keeps the avatar at the top corner; 'above' puts it at the
+    // bottom (bubble grows up); menu/collapsed default to the top.
+    ...(sideMode ? { top: 0 } : (expandUp ? { bottom: 0 } : { top: 0 })),
     ...(expandLeft ? { right: 0 } : { left: 0 }),
   }
 
@@ -193,17 +261,30 @@ export default function PetApp() {
 
       {showNotif && !menuOpen && (
         <div
+          ref={bubbleWrapRef}
           style={{
             position: 'absolute',
-            ...(expandUp ? { bottom: COLLAPSED_H + 8 } : { top: COLLAPSED_H + 8 }),
-            ...(expandLeft ? { right: 0 } : { left: 0 }),
+            // Side: beside the avatar (avatar on the opposite corner, top-aligned).
+            // Above/below: stacked, offset past the avatar by one avatar + gap.
+            ...(sideMode
+              ? { top: 0, ...(expandLeft ? { left: 0 } : { right: 0 }) }
+              : {
+                  ...(expandUp ? { bottom: COLLAPSED_H + GAP } : { top: COLLAPSED_H + GAP }),
+                  ...(expandLeft ? { right: 0 } : { left: 0 }),
+                }),
           }}
         >
           <PetNotificationBubble
             status={status}
             title={title}
             summary={summary}
+            mode={notifMode}
+            waitingKind={waitingKind}
+            paused={hovered}
+            onHoverChange={setHovered}
             onOpenMain={openMain}
+            onToggleExpand={toggleExpand}
+            onStartReply={startReply}
             onReply={handleReply}
           />
         </div>

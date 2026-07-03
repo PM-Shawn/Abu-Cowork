@@ -24,10 +24,26 @@
 import { emitTo } from '@tauri-apps/api/event';
 import { useChatStore } from '@/stores/chatStore';
 import { subscribe } from '@/core/notice/bus';
+import {
+  subscribeToFilePermission, getPendingFilePermission,
+  subscribeToCommandConfirmation, getPendingCommandConfirmation,
+  subscribeToWorkspaceRequest, getPendingWorkspaceRequest,
+  subscribeUserQuestion, getPendingUserQuestions,
+} from '@/core/agent/permissionBridge';
 import type { ConversationStatus, Conversation, Message, MessageContent } from '@/types';
 import type { Notice } from '@/core/notice/types';
 
 export type PetStatus = 'idle' | 'running' | 'waiting' | 'error' | 'done';
+
+/**
+ * Sub-kind of the `waiting` status:
+ *  - 'approval': a blocking allow/deny dialog is open in the main window (file
+ *    permission, command confirm, workspace pick, ask_user_question). The pet
+ *    signals this and routes the user to the main window — it does NOT show a
+ *    text reply (typing can't grant a permission).
+ *  - 'input': a notice-bus user_input_needed ping → inline text reply is apt.
+ */
+export type WaitingKind = 'approval' | 'input';
 
 /** Wire format sent to the pet window. */
 export interface PetStatusPayload {
@@ -38,6 +54,8 @@ export interface PetStatusPayload {
   title: string | null;
   /** Short summary of the latest assistant message, or null. */
   summary: string | null;
+  /** Only meaningful when status === 'waiting'; null otherwise. */
+  waitingKind: WaitingKind | null;
 }
 
 const PRIORITY: Record<PetStatus, number> = {
@@ -51,7 +69,10 @@ const PRIORITY: Record<PetStatus, number> = {
 const MIN_INTERVAL_MS = 3_000;
 const PET_WINDOW_LABEL = 'pet';
 const EVENT_NAME = 'pet-status-update';
-const SUMMARY_MAX_LEN = 40;
+// Collapsed the bubble shows one truncated line; expanded it wraps the
+// full text. Cap generously so "expand" reveals something, while keeping
+// the per-update payload tiny.
+const SUMMARY_MAX_LEN = 120;
 
 let lastEmittedSig: string | null = null;
 let lastEmittedAt = 0;
@@ -59,6 +80,7 @@ let pendingTimer: number | null = null;
 let started = false;
 let storeUnsub: (() => void) | null = null;
 let petBubbleUnsub: (() => void) | null = null;
+let permissionUnsubs: (() => void)[] = [];
 /**
  * Currently-unresolved waiting notices, oldest→newest. Each entry is removed
  * by its own TTL timer (identity match), so an earlier notice with a longer
@@ -138,19 +160,48 @@ function currentWaitingConvId(convs: Record<string, Conversation>): string | nul
   return null;
 }
 
+/**
+ * Any in-app blocking approval currently awaiting the user — file/dir read
+ * permission, command confirmation, workspace pick, or an ask_user_question.
+ * These live in permissionBridge (NOT the notice bus), so the pet reads them
+ * directly; otherwise the "文件读取权限" dialog can sit open in the main
+ * window while the pet still shows a blue "running" bubble and the user never
+ * notices. Returns the conversation the dialog belongs to, or null if none.
+ */
+function pendingApprovalConvId(): string | null | undefined {
+  const file = getPendingFilePermission();
+  if (file) return file.conversationId;
+  const cmd = getPendingCommandConfirmation();
+  if (cmd) return cmd.conversationId;
+  const ws = getPendingWorkspaceRequest();
+  if (ws) return ws.conversationId;
+  const questions = getPendingUserQuestions();
+  if (questions.length > 0) return questions[0].conversationId;
+  return undefined; // no pending approval
+}
+
 function buildPayload(): PetStatusPayload {
   const convs = useChatStore.getState().conversations;
   let { status, conversationId } = aggregateFeatured(convs);
+  let waitingKind: WaitingKind | null = null;
 
-  if (activeWaiting.length > 0 && PRIORITY.waiting > PRIORITY[status]) {
+  // A live blocking approval dialog takes precedence — it's the strongest
+  // "needs you right now" signal and is what the user physically can't miss.
+  const approvalConvId = pendingApprovalConvId();
+  if (approvalConvId !== undefined && PRIORITY.waiting > PRIORITY[status]) {
     status = 'waiting';
+    waitingKind = 'approval';
+    if (approvalConvId && convs[approvalConvId]) conversationId = approvalConvId;
+  } else if (activeWaiting.length > 0 && PRIORITY.waiting > PRIORITY[status]) {
+    status = 'waiting';
+    waitingKind = 'input';
     // Prefer a still-active notice's conversation; fall back to the aggregate winner.
     const waitingId = currentWaitingConvId(convs);
     if (waitingId) conversationId = waitingId;
   }
 
   if (status === 'idle') {
-    return { status, conversationId: null, title: null, summary: null };
+    return { status, conversationId: null, title: null, summary: null, waitingKind: null };
   }
 
   const conv = conversationId ? convs[conversationId] : null;
@@ -159,11 +210,12 @@ function buildPayload(): PetStatusPayload {
     conversationId,
     title: conv?.title ?? null,
     summary: conv ? summarizeLatestAssistant(conv.messages) : null,
+    waitingKind,
   };
 }
 
 function signature(p: PetStatusPayload): string {
-  return `${p.status}|${p.conversationId ?? ''}|${p.title ?? ''}|${p.summary ?? ''}`;
+  return `${p.status}|${p.waitingKind ?? ''}|${p.conversationId ?? ''}|${p.title ?? ''}|${p.summary ?? ''}`;
 }
 
 function emitNow(payload: PetStatusPayload): void {
@@ -220,6 +272,18 @@ export function startPetStatusBridge(): void {
     scheduleEmit();
   });
 
+  // Blocking approval dialogs (file permission / command confirm / workspace /
+  // ask_user_question) live in permissionBridge, not the notice bus. Subscribe
+  // directly so the pet flips to `waiting` the moment one opens and clears the
+  // moment the user resolves it — no TTL guessing (the dialog can stay open
+  // arbitrarily long, so a fixed notice TTL would be wrong in both directions).
+  permissionUnsubs = [
+    subscribeToFilePermission(scheduleEmit),
+    subscribeToCommandConfirmation(scheduleEmit),
+    subscribeToWorkspaceRequest(scheduleEmit),
+    subscribeUserQuestion(scheduleEmit),
+  ];
+
   petBubbleUnsub = subscribe('pet_bubble', (notice: Notice) => {
     // Only notices requiring user attention drive the waiting state.
     // Bus currently does blanket fan-out; filter by type until Router lands.
@@ -246,6 +310,8 @@ export function stopPetStatusBridge(): void {
   storeUnsub = null;
   petBubbleUnsub?.();
   petBubbleUnsub = null;
+  permissionUnsubs.forEach((u) => u());
+  permissionUnsubs = [];
   activeWaiting = [];
   if (pendingTimer !== null) {
     clearTimeout(pendingTimer);

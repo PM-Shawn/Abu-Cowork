@@ -13,6 +13,7 @@ import { reviewAction } from '../safety/reviewer';
 import { getLoopContext } from '../agent/permissionBridge';
 import { homeDir } from '@tauri-apps/api/path';
 import { TOOL_NAMES } from './toolNames';
+import { isLabsFlagOn } from '../labs/resolve';
 import { getCurrentPolicy } from '@/core/enterprise/policy/enforcer';
 import { checkTool } from '@/core/enterprise/policy/matcher';
 import { showPolicyConfirm } from '@/components/enterprise/policyConfirmQueue';
@@ -177,8 +178,14 @@ export function getAllTools(): ToolDefinition[] {
   // Computer use tools are always registered — the tool itself handles
   // auto-enabling and permission checks when first called.
 
+  // create_todo is registered unconditionally but only exposed to the agent
+  // when the 'todos-inbox' Labs experiment is enabled — mirrors the sidebar
+  // tabs' visibility so the flag governs the whole feature at once.
+  const todosInboxOn = isLabsFlagOn('todos-inbox');
+
   // Builtin tools first (higher priority)
   for (const tool of builtinTools) {
+    if (tool.name === TOOL_NAMES.CREATE_TODO && !todosInboxOn) continue;
     toolMap.set(tool.name, tool);
   }
   // MCP tools — only add if no name conflict

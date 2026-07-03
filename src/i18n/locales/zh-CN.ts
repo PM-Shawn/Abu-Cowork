@@ -418,6 +418,12 @@ const zhCN: TranslationDict = {
 
   settings: {
     title: '系统设置',
+    labs: '实验室',
+    labsDescription: '这里是还在打磨中的新功能。默认关闭，你可以按需开启抢先体验。',
+    labsChangeHint: '实验功能可能随时调整或移除',
+    labsEmpty: '暂无进行中的实验功能',
+    labsExpTodosInboxTitle: '待办 & 收件箱',
+    labsExpTodosInboxDesc: '在侧边栏启用「待办」和「收件箱」，让阿布把任务和待确认项收拢到一处。',
     apiConfig: 'API 配置',
     modelSelect: '模型选择',
     advanced: '高级参数',

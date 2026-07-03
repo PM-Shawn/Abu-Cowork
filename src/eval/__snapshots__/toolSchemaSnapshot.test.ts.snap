@@ -1,6 +1,6 @@
 // Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
 
-exports[`Tool count stability > total builtin tool count matches snapshot 1`] = `39`;
+exports[`Tool count stability > total builtin tool count matches snapshot 1`] = `40`;
 
 exports[`Tool schema snapshot > all tool schemas match snapshot 1`] = `
 [
@@ -54,6 +54,16 @@ exports[`Tool schema snapshot > all tool schemas match snapshot 1`] = `
     ],
     "requiredParams": [
       "action",
+    ],
+  },
+  {
+    "name": "create_todo",
+    "paramNames": [
+      "reason",
+      "title",
+    ],
+    "requiredParams": [
+      "title",
     ],
   },
   {

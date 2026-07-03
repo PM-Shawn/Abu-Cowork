@@ -5,7 +5,7 @@ import { useProjectStore } from '@/stores/projectStore';
 import { useNoticeBadgeStore } from '@/stores/noticeBadgeStore';
 import { useInboxStore } from '@/stores/inboxStore';
 import { useI18n } from '@/i18n';
-import { SHOW_TODOS_INBOX } from '@/config/featureGates';
+import { useLabsFlag } from '@/core/labs/resolve';
 import { Plus, Workflow, Wrench, Trash2, Settings, Download, Upload, Pencil, Undo2, HelpCircle, FolderInput, FolderClosed, ChevronRight, Minus, Search, X, CheckSquare, Inbox } from 'lucide-react';
 import GuideModal from '@/components/common/GuideModal';
 import ProfileEditModal from '@/components/common/ProfileEditModal';
@@ -90,6 +90,7 @@ export default function Sidebar() {
   // remain unread — matches the "things you still owe a decision on" mental model.
   const pendingInboxCount = useInboxStore((s) => s.getPendingCount());
   const { t } = useI18n();
+  const showTodosInbox = useLabsFlag('todos-inbox');
 
   // Context menu state
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; convId: string } | null>(null);
@@ -272,7 +273,7 @@ export default function Sidebar() {
           <Plus className={cn('h-[18px] w-[18px]', activeConversationId === null && viewMode === 'chat' ? 'text-[var(--abu-clay)]' : 'text-[var(--abu-text-tertiary)]')} strokeWidth={2} />
           <span>{t.sidebar.newTask}</span>
         </button>
-        {SHOW_TODOS_INBOX && (
+        {showTodosInbox && (
           <>
             <button
               onClick={() => setViewMode('todos')}

@@ -529,6 +529,13 @@ export interface TranslationDict {
     networkWhitelist: string;
     networkPreset: string;
     networkCustom: string;
+    // Labs (experimental features)
+    labs: string;
+    labsDescription: string;
+    labsChangeHint: string;
+    labsEmpty: string;
+    labsExpTodosInboxTitle: string;
+    labsExpTodosInboxDesc: string;
     // General section
     general: string;
     generalDescription: string;

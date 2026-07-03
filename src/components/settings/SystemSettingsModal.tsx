@@ -1,6 +1,6 @@
 import { useSettingsStore, type SystemSettingsTab } from '@/stores/settingsStore';
 import { useI18n } from '@/i18n';
-import { Settings2, Info, Shield, SlidersHorizontal, MessageCircle, Radio, Brain, Heart, Activity, BarChart3, Building2 } from 'lucide-react';
+import { Settings2, Info, Shield, SlidersHorizontal, MessageCircle, Radio, Brain, Heart, Activity, BarChart3, Building2, FlaskConical } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { AIServicesSection, AboutSection, SandboxSection, GeneralSection, IMChannelSection } from './sections';
 import FeedbackSection from './sections/FeedbackSection';
@@ -9,6 +9,7 @@ import SoulSection from './sections/SoulSection';
 import DiagnosticSection from './sections/DiagnosticSection';
 import UsageSection from './sections/UsageSection';
 import EnterpriseSection from './sections/EnterpriseSection';
+import LabsSection from './sections/LabsSection';
 import { IS_ENTERPRISE_BUILD } from '@/config/featureGates';
 
 export default function SystemSettingsView() {
@@ -26,6 +27,7 @@ export default function SystemSettingsView() {
     { id: 'soul', label: t.soul.title, icon: Heart },
     { id: 'sandbox', label: t.settings.sandbox, icon: Shield },
     { id: 'general', label: t.settings.general, icon: SlidersHorizontal },
+    { id: 'labs', label: t.settings.labs, icon: FlaskConical },
     { id: 'diagnostic', label: t.diagnostic.title, icon: Activity },
     { id: 'feedback', label: t.about.feedback, icon: MessageCircle },
     { id: 'about', label: t.common.version, icon: Info },
@@ -40,6 +42,8 @@ export default function SystemSettingsView() {
     switch (activeSystemTab) {
       case 'general':
         return <GeneralSection />;
+      case 'labs':
+        return <LabsSection />;
       case 'ai-services':
         return <AIServicesSection />;
       case 'sandbox':

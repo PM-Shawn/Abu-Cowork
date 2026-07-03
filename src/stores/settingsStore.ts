@@ -283,7 +283,7 @@ function createDefaultProviders(): ProviderInstance[] {
 
 export type ViewMode = 'chat' | 'automation' | 'toolbox' | 'settings' | 'todos' | 'inbox';
 export type AutomationTab = 'schedule' | 'trigger';
-export type SystemSettingsTab = 'general' | 'ai-services' | 'sandbox' | 'im-channels' | 'personal-memory' | 'soul' | 'diagnostic' | 'usage' | 'about' | 'feedback' | 'sponsor' | 'enterprise';
+export type SystemSettingsTab = 'general' | 'ai-services' | 'sandbox' | 'im-channels' | 'personal-memory' | 'soul' | 'diagnostic' | 'usage' | 'about' | 'feedback' | 'sponsor' | 'enterprise' | 'labs';
 export type ToolboxTab = 'skills' | 'agents' | 'mcp';
 
 // ============================================================
@@ -307,6 +307,9 @@ interface SettingsState {
   maxOutputTokens: number;
   contextWindowSize: number;
   language: LanguageSetting;
+  /** Labs (experimental features) opt-in map, keyed by LabsExperiment.id.
+   *  Absent id → registry default. See src/core/labs. */
+  labs: Record<string, boolean>;
   activeSystemTab: SystemSettingsTab;
   activeAutomationTab: AutomationTab;
   activeToolboxTab: ToolboxTab;
@@ -439,6 +442,8 @@ interface SettingsActions {
   openSystemSettings: (tab?: SystemSettingsTab) => void;
   closeSystemSettings: () => void;
   setActiveSystemTab: (tab: SystemSettingsTab) => void;
+  /** Toggle a Labs (experimental features) flag. Takes effect immediately. */
+  setLabsFlag: (id: string, enabled: boolean) => void;
   openAutomation: (tab?: AutomationTab) => void;
   closeAutomation: () => void;
   setActiveAutomationTab: (tab: AutomationTab) => void;
@@ -647,6 +652,7 @@ export const useSettingsStore = create<SettingsStore>()(
       maxOutputTokens: 32768,
       contextWindowSize: 200000,
       language: 'system' as LanguageSetting,
+      labs: {},
       activeSystemTab: 'usage' as SystemSettingsTab,
       activeAutomationTab: 'schedule' as AutomationTab,
       activeToolboxTab: 'skills' as ToolboxTab,
@@ -900,6 +906,8 @@ export const useSettingsStore = create<SettingsStore>()(
       closeSystemSettings: () =>
         set({ viewMode: 'chat' as ViewMode }),
       setActiveSystemTab: (tab) => set({ activeSystemTab: tab }),
+      setLabsFlag: (id, enabled) =>
+        set((s) => ({ labs: { ...s.labs, [id]: enabled } })),
       openAutomation: (tab) =>
         set({
           viewMode: 'automation' as ViewMode,
@@ -1003,9 +1011,18 @@ export const useSettingsStore = create<SettingsStore>()(
     }),
     {
       name: 'abu-settings',
-      version: 34,
+      version: 35,
       migrate: (persisted: unknown, version: number) => {
         const state = persisted as Record<string, unknown>;
+
+        // ════════════════════════════════════════════════
+        // V35: Add Labs (experimental features) opt-in map.
+        // ════════════════════════════════════════════════
+        if (version < 35) {
+          if (typeof state.labs !== 'object' || state.labs === null || Array.isArray(state.labs)) {
+            state.labs = {};
+          }
+        }
 
         // ════════════════════════════════════════════════
         // V34: Add 'system' option for theme; preserve existing value.
@@ -1623,6 +1640,7 @@ export const useSettingsStore = create<SettingsStore>()(
         // General settings
         theme: state.theme,
         language: state.language,
+        labs: state.labs,
         agentMaxTurns: state.agentMaxTurns,
         maxOutputTokens: state.maxOutputTokens,
         contextWindowSize: state.contextWindowSize,

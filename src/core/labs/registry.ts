@@ -28,10 +28,18 @@ export interface LabsExperiment {
   expiresAfter: string;
 }
 
+/**
+ * Stable id for the Todos + Inbox experiment. Import this constant at every
+ * gate site instead of re-typing the raw string — a rename then becomes a
+ * compile error rather than a silent feature disable (resolveLabsFlag fails
+ * unknown ids safe to `false`).
+ */
+export const LABS_TODOS_INBOX = 'todos-inbox';
+
 export const LABS_EXPERIMENTS: readonly LabsExperiment[] = [
   {
     // Todos + Inbox are a linked cluster, surfaced as one experiment.
-    id: 'todos-inbox',
+    id: LABS_TODOS_INBOX,
     title: () => getI18n().settings.labsExpTodosInboxTitle,
     description: () => getI18n().settings.labsExpTodosInboxDesc,
     defaultEnabled: false,

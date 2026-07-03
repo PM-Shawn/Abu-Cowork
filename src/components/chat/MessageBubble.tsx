@@ -9,6 +9,7 @@ import { cn } from '@/lib/utils';
 import { usePreviewStore } from '@/stores/previewStore';
 import { useTodosStore } from '@/stores/todosStore';
 import { useLabsFlag } from '@/core/labs/resolve';
+import { LABS_TODOS_INBOX } from '@/core/labs/registry';
 import { runAgentLoop } from '@/core/agent/agentLoop';
 import { useI18n } from '@/i18n';
 import { getBaseName, loadLocalImage } from '@/utils/pathUtils';
@@ -232,7 +233,7 @@ function MessageTimestamp({ timestamp, className = '' }: { timestamp: number; cl
 
 function MessageActions({ message, onEdit, onDelete, onRegenerate, isUser, conversationId }: MessageActionsProps) {
   const { t } = useI18n();
-  const showTodosInbox = useLabsFlag('todos-inbox');
+  const showTodosInbox = useLabsFlag(LABS_TODOS_INBOX);
   const [copied, setCopied] = useState(false);
   const [addedToTodos, setAddedToTodos] = useState(false);
   const [feedbackRating, setFeedbackRating] = useState<'positive' | 'negative' | null>(null);

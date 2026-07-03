@@ -13,7 +13,7 @@
 import Anthropic from '@anthropic-ai/sdk';
 import type { ToolSelectionCase, CaseResult, EvalTarget } from './types';
 import { registerBuiltinTools } from '@/core/tools/builtins';
-import { toolRegistry } from '@/core/tools/registry';
+import { getAllTools } from '@/core/tools/registry';
 import { buildSystemPromptSections, routeInput } from '@/core/agent/orchestrator';
 import { sectionsToString } from '@/core/llm/promptSections';
 import type { ToolDefinition } from '@/types';
@@ -89,8 +89,9 @@ export async function runToolSelectionEval(
   const sections = await buildSystemPromptSections(route, '', 'eval-session', evalImContext, 0);
   const systemPrompt = sectionsToString(sections);
 
-  // Get tool definitions for LLM
-  const tools = toolRegistry.getAll();
+  // Get tool definitions for LLM — the real production toolset (Labs-gated
+  // tools respect their flag), so the benchmark matches what users actually see.
+  const tools = getAllTools();
   const anthropicTools = convertTools(tools);
 
   // Create Anthropic client directly (bypasses tauriFetch)

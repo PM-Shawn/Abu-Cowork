@@ -11,7 +11,9 @@ export function resolveLabsFlag(id: string, stored: Record<string, boolean>): bo
   // No registry entry → not a real (or no-longer-a) experiment. Fail safe to
   // off, ignoring any stale stored value a graduated experiment left behind.
   if (!exp) return false;
-  if (Object.prototype.hasOwnProperty.call(stored, id)) return stored[id];
+  // `=== true` enforces the boolean invariant the type claims: a corrupted or
+  // non-boolean persisted value resolves to off rather than truthy-on.
+  if (Object.prototype.hasOwnProperty.call(stored, id)) return stored[id] === true;
   return exp.defaultEnabled;
 }
 

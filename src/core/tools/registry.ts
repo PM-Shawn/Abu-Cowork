@@ -14,6 +14,23 @@ import { getLoopContext } from '../agent/permissionBridge';
 import { homeDir } from '@tauri-apps/api/path';
 import { TOOL_NAMES } from './toolNames';
 import { isLabsFlagOn } from '../labs/resolve';
+import { LABS_TODOS_INBOX } from '../labs/registry';
+
+/**
+ * Builtin tools whose availability is gated on a Labs experiment. A gated-off
+ * tool must be neither advertised (getAllTools) nor executable (executeAnyTool)
+ * — the two checks below keep parity so toggling the flag off fully retracts
+ * the tool, matching the old compile-time gate's fail-safe (the tool stays
+ * registered, so this map is the single source of truth for "is it live").
+ */
+const LABS_GATED_TOOLS: Record<string, string> = {
+  [TOOL_NAMES.CREATE_TODO]: LABS_TODOS_INBOX,
+};
+
+function isToolGatedOff(name: string): boolean {
+  const experimentId = LABS_GATED_TOOLS[name];
+  return experimentId !== undefined && !isLabsFlagOn(experimentId);
+}
 import { getCurrentPolicy } from '@/core/enterprise/policy/enforcer';
 import { checkTool } from '@/core/enterprise/policy/matcher';
 import { showPolicyConfirm } from '@/components/enterprise/policyConfirmQueue';
@@ -178,14 +195,10 @@ export function getAllTools(): ToolDefinition[] {
   // Computer use tools are always registered — the tool itself handles
   // auto-enabling and permission checks when first called.
 
-  // create_todo is registered unconditionally but only exposed to the agent
-  // when the 'todos-inbox' Labs experiment is enabled — mirrors the sidebar
-  // tabs' visibility so the flag governs the whole feature at once.
-  const todosInboxOn = isLabsFlagOn('todos-inbox');
-
-  // Builtin tools first (higher priority)
+  // Builtin tools first (higher priority). Labs-gated tools whose experiment
+  // is off are withheld from the advertised schema (see LABS_GATED_TOOLS).
   for (const tool of builtinTools) {
-    if (tool.name === TOOL_NAMES.CREATE_TODO && !todosInboxOn) continue;
+    if (isToolGatedOff(tool.name)) continue;
     toolMap.set(tool.name, tool);
   }
   // MCP tools — only add if no name conflict
@@ -389,8 +402,10 @@ export async function executeAnyTool(
     }
   }
 
-  // First check builtin tools
-  if (toolRegistry.has(name)) {
+  // First check builtin tools. A Labs-gated-off tool stays in the registry but
+  // is treated as absent here too, so a stale/hallucinated tool_use falls
+  // through to the "Unknown tool" fail-safe instead of silently executing.
+  if (toolRegistry.has(name) && !isToolGatedOff(name)) {
     const result = await toolRegistry.execute(name, input, toolContext);
     // Only truncate string results; rich content (images) passes through
     if (typeof result === 'string') {

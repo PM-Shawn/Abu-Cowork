@@ -12,6 +12,8 @@ import SystemSettingsView from '@/components/settings/SystemSettingsModal';
 import ToolboxView from '@/components/settings/ToolboxModal';
 import TodoView from '@/components/todos/TodoView';
 import InboxView from '@/components/inbox/InboxView';
+import { useLabsFlag } from '@/core/labs/resolve';
+import { LABS_TODOS_INBOX } from '@/core/labs/registry';
 import RightPanel from '@/components/panel/RightPanel';
 import ToastContainer from '@/components/common/ToastContainer';
 import { registerBuiltinTools } from '@/core/tools/builtins';
@@ -107,11 +109,22 @@ function App() {
   const rightPanelCollapsed = useSettingsStore((s) => s.rightPanelCollapsed);
   const toggleRightPanel = useSettingsStore((s) => s.toggleRightPanel);
   const viewMode = useSettingsStore((s) => s.viewMode);
+  const setViewMode = useSettingsStore((s) => s.setViewMode);
+  const showTodosInbox = useLabsFlag(LABS_TODOS_INBOX);
   const closeSystemSettings = useSettingsStore((s) => s.closeSystemSettings);
   const closeAutomation = useSettingsStore((s) => s.closeAutomation);
   const closeToolbox = useSettingsStore((s) => s.closeToolbox);
   const activeConv = useActiveConversation();
   const { t } = useI18n();
+
+  // If the Todos/Inbox Labs experiment is turned off while the user is parked
+  // on one of its views, fall back to chat — otherwise the sidebar nav out of
+  // that view disappears with it, stranding the user on an orphaned screen.
+  useEffect(() => {
+    if (!showTodosInbox && (viewMode === 'todos' || viewMode === 'inbox')) {
+      setViewMode('chat');
+    }
+  }, [showTodosInbox, viewMode, setViewMode]);
 
   const theme = useSettingsStore((s) => s.theme);
   useEffect(() => {

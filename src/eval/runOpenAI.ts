@@ -24,7 +24,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { ToolSelectionCase } from './types';
 import { registerBuiltinTools } from '@/core/tools/builtins';
-import { toolRegistry } from '@/core/tools/registry';
+import { getAllTools } from '@/core/tools/registry';
 import { buildSystemPromptSections, routeInput } from '@/core/agent/orchestrator';
 import { sectionsToString } from '@/core/llm/promptSections';
 import type { ToolDefinition } from '@/types';
@@ -171,7 +171,9 @@ async function main() {
   const sections = await buildSystemPromptSections(route, '', 'eval-session', evalImContext, 0);
   const systemPrompt = sectionsToString(sections);
 
-  const tools = toolRegistry.getAll();
+  // Real production toolset (Labs-gated tools respect their flag) so the
+  // benchmark matches what users actually see.
+  const tools = getAllTools();
   const openaiTools = convertToolsToOpenAI(tools);
 
   // Load cases

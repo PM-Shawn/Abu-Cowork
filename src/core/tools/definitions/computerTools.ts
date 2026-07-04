@@ -7,7 +7,7 @@ import { useSettingsStore } from '../../../stores/settingsStore';
 import { useWorkspaceStore } from '../../../stores/workspaceStore';
 import { resolveCapabilities } from '../../llm/modelCapabilities';
 import { joinPath } from '../../../utils/pathUtils';
-import { isMacOS } from '../../../utils/platform';
+import { isMacOS, isWindows } from '../../../utils/platform';
 import { TOOL_NAMES } from '../toolNames';
 import { updateLatestScreenshot, checkCUSessionLimits } from '../../agent/computerUseStatus';
 import { checkSensitiveApp, checkBlockedKeyCombo } from '../computerUseSafety';
@@ -455,6 +455,12 @@ export const computerTool: ToolDefinition = {
       // AX actions (and non-screenshot pixel actions) need Accessibility permission.
       const needsAccessibility = isAxAction || action !== 'screenshot';
       if (needsAccessibility && !perms.accessibility) {
+        if (isWindows()) {
+          // On Windows accessibility=false means the process is not elevated
+          // (check_macos_permissions maps it to admin rights). There is no
+          // Settings panel to open and no system dialog will ever appear.
+          return 'Error: 操控其他应用窗口需要管理员权限。请完全退出 Abu，右键 Abu 图标选择「以管理员身份运行」后重试。\n\nControlling other app windows on Windows requires elevation. Please quit Abu and re-launch it via "Run as administrator", then retry.';
+        }
         // No system dialog for Accessibility — need to open Settings directly
         await openMacOSSettings('Accessibility');
         return 'Error: 没有辅助功能权限。已自动打开系统设置，请在「辅助功能」中授权 Abu，然后重启 Abu。\n\nNo Accessibility permission. System Settings has been opened — please grant Abu access in Accessibility, then restart Abu.';

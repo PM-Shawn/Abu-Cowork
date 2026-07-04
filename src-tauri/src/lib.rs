@@ -1352,6 +1352,8 @@ pub fn run() {
             pet::pet_show,
             pet::pet_hide,
             pet::pet_toggle,
+            pet::pet_focus_main,
+            pet::pet_set_frame,
             trigger_server::start_trigger_server,
             trigger_server::get_trigger_server_port,
             get_local_ip,

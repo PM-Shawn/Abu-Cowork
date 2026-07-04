@@ -425,6 +425,25 @@ describe('settingsStore whitespace trim', () => {
   });
 });
 
+describe('settingsStore partialize', () => {
+  // Regression: petPosition/dndMode/petOpen/defaultAgentAutonomy were added to
+  // SettingsState but never added to the persist `partialize` whitelist, so they
+  // silently never survived a real localStorage roundtrip despite passing
+  // in-memory store tests.
+  it('includes pet and autonomy fields in the persisted snapshot', () => {
+    const persistApi = (useSettingsStore as unknown as {
+      persist: { getOptions: () => { partialize?: (state: unknown) => Record<string, unknown> } };
+    }).persist;
+    const partialize = persistApi.getOptions().partialize;
+    expect(partialize).toBeDefined();
+    const snapshot = partialize!(useSettingsStore.getState());
+    expect(snapshot).toHaveProperty('petPosition');
+    expect(snapshot).toHaveProperty('dndMode');
+    expect(snapshot).toHaveProperty('petOpen');
+    expect(snapshot).toHaveProperty('defaultAgentAutonomy');
+  });
+});
+
 describe('settingsStore labs flags', () => {
   beforeEach(() => {
     useSettingsStore.setState({ labs: {} });

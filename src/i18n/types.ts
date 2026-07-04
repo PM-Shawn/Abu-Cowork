@@ -560,6 +560,8 @@ export interface TranslationDict {
     computerUsePermissionGuide: string;
     preventSleep: string;
     preventSleepDesc: string;
+    petEnable: string;
+    petEnableDesc: string;
     appearance: string;
     appearanceLight: string;
     appearanceDark: string;

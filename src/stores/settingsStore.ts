@@ -283,7 +283,7 @@ function createDefaultProviders(): ProviderInstance[] {
 
 export type ViewMode = 'chat' | 'automation' | 'toolbox' | 'settings' | 'todos' | 'inbox';
 export type AutomationTab = 'schedule' | 'trigger';
-export type SystemSettingsTab = 'general' | 'ai-services' | 'sandbox' | 'im-channels' | 'personal-memory' | 'soul' | 'diagnostic' | 'usage' | 'about' | 'feedback' | 'sponsor' | 'enterprise' | 'labs';
+export type SystemSettingsTab = 'general' | 'ai-services' | 'sandbox' | 'im-channels' | 'pet' | 'personal-memory' | 'soul' | 'diagnostic' | 'usage' | 'about' | 'feedback' | 'sponsor' | 'enterprise' | 'labs';
 export type ToolboxTab = 'skills' | 'agents' | 'mcp';
 
 // ============================================================
@@ -405,6 +405,10 @@ interface SettingsState {
    * - autonomous: 全自动
    */
   defaultAgentAutonomy: 'suggest' | 'plan_confirm' | 'execute_review' | 'autonomous';
+  petPosition: { x: number; y: number } | null;
+  dndMode: boolean;
+  /** Whether the desktop pet window should be open. Persisted so it's restored on next launch (mirrors last session's state). */
+  petOpen: boolean;
 }
 
 interface SettingsActions {
@@ -496,6 +500,9 @@ interface SettingsActions {
    * otherwise preserved (provider entries, models, preferences).
    */
   clearAllStoredKeys: () => Promise<void>;
+  setPetPosition: (pos: { x: number; y: number } | null) => void;
+  setDndMode: (dnd: boolean) => void;
+  setPetOpen: (open: boolean) => void;
 }
 
 // ============================================================
@@ -703,6 +710,9 @@ export const useSettingsStore = create<SettingsStore>()(
       shouldRunMemoryAudit: false,
       hasAcknowledgedDisclaimer: false,
       defaultAgentAutonomy: 'execute_review',
+      petPosition: null,
+      dndMode: false,
+      petOpen: false,
 
       // ════════════════════════════════════════════════
       // Provider management actions (V2)
@@ -1008,12 +1018,31 @@ export const useSettingsStore = create<SettingsStore>()(
           failedSecretKeys: [],
         }));
       },
+      setPetPosition: (pos) => set({ petPosition: pos }),
+      setDndMode: (dnd) => set({ dndMode: dnd }),
+      setPetOpen: (open) => set({ petOpen: open }),
     }),
     {
       name: 'abu-settings',
-      version: 35,
+      version: 37,
       migrate: (persisted: unknown, version: number) => {
         const state = persisted as Record<string, unknown>;
+
+        // ════════════════════════════════════════════════
+        // V37: Add petOpen — remembers whether the desktop pet was open
+        // across restarts (mirrors Codex's petOpenIntent behavior).
+        // ════════════════════════════════════════════════
+        if (version < 37) {
+          if (state.petOpen === undefined) state.petOpen = false;
+        }
+
+        // ════════════════════════════════════════════════
+        // V36: Add petPosition + dndMode for the desktop pet.
+        // ════════════════════════════════════════════════
+        if (version < 36) {
+          if (state.petPosition === undefined) state.petPosition = null;
+          if (state.dndMode === undefined) state.dndMode = false;
+        }
 
         // ════════════════════════════════════════════════
         // V35: Add Labs (experimental features) opt-in map.
@@ -1035,6 +1064,7 @@ export const useSettingsStore = create<SettingsStore>()(
         // V33: Add defaultAgentAutonomy for Todos × Agent assignment.
         // Default to 'execute_review' — Agent acts, user reviews result.
         // ════════════════════════════════════════════════
+
         if (version < 33) {
           try {
             const validValues = ['suggest', 'plan_confirm', 'execute_review', 'autonomous'];
@@ -1668,6 +1698,10 @@ export const useSettingsStore = create<SettingsStore>()(
         safety: state.safety,
         hasRunSensitiveAudit_v015: state.hasRunSensitiveAudit_v015,
         hasAcknowledgedDisclaimer: state.hasAcknowledgedDisclaimer,
+        defaultAgentAutonomy: state.defaultAgentAutonomy,
+        petPosition: state.petPosition,
+        dndMode: state.dndMode,
+        petOpen: state.petOpen,
       }),
       onRehydrateStorage: () => (state) => {
         if (!state) return;

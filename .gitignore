@@ -1,6 +1,9 @@
 # Dependencies
 node_modules/
 
+# Superpowers brainstorming visual companion sessions
+.superpowers/
+
 # Build output
 dist/
 src-tauri/target/

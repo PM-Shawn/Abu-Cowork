@@ -24,10 +24,10 @@ interface PersonalMemoryProps {
 type MemoryViewModalProps = ProjectMemoryProps | PersonalMemoryProps;
 
 const TYPE_COLORS: Record<MemoryType, string> = {
-  user: 'bg-orange-100 text-orange-700',
-  project: 'bg-purple-100 text-purple-700',
-  feedback: 'bg-teal-100 text-teal-700',
-  reference: 'bg-blue-100 text-blue-700',
+  user: 'bg-orange-100 text-orange-700 dark:bg-orange-400/15 dark:text-orange-300',
+  project: 'bg-purple-100 text-purple-700 dark:bg-purple-400/15 dark:text-purple-300',
+  feedback: 'bg-teal-100 text-teal-700 dark:bg-teal-400/15 dark:text-teal-300',
+  reference: 'bg-blue-100 text-blue-700 dark:bg-blue-400/15 dark:text-blue-300',
 };
 
 const TYPE_LABELS: Record<MemoryType, string> = {

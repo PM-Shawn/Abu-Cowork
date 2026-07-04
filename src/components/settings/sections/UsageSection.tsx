@@ -1,6 +1,7 @@
 import { useState, useMemo, useRef } from 'react';
 import { useUsageStatsStore, type DailyRecord } from '@/stores/usageStatsStore';
 import { useI18n, format } from '@/i18n';
+import SettingsSectionHeader from '@/components/settings/SettingsSectionHeader';
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -339,6 +340,8 @@ export default function UsageSection() {
 
   return (
     <div className="px-6 py-5 space-y-5 overflow-y-auto h-full">
+      <SettingsSectionHeader title={t.usage.title} />
+
       {/* Period switcher */}
       <div className="flex gap-1">
         {periods.map(({ id, label }) => (

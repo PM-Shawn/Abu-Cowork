@@ -1,5 +1,5 @@
 import { useEffect, useMemo } from 'react';
-import { Bot, FolderLock, Plug, Sparkles, Globe, AppWindow, Activity } from 'lucide-react';
+import { Bot, FolderLock, Plug, Sparkles, Globe, AppWindow } from 'lucide-react';
 import { useI18n } from '@/i18n';
 import { useDiagnosticStore } from '@/stores/diagnosticStore';
 import { useSettingsStore } from '@/stores/settingsStore';
@@ -7,6 +7,7 @@ import { ALL_CATEGORIES } from '@/core/diagnostic/runner';
 import type { CheckCategory, CheckResult } from '@/core/diagnostic/types';
 import DiagnosticBanner from './diagnostic/DiagnosticBanner';
 import DiagnosticCategory from './diagnostic/DiagnosticCategory';
+import SettingsSectionHeader from '@/components/settings/SettingsSectionHeader';
 
 const CATEGORY_ICON = {
   'ai-services': Bot,
@@ -60,18 +61,7 @@ export default function DiagnosticSection() {
 
   return (
     <div className="space-y-6 max-w-3xl">
-      {/* Section header */}
-      <div className="flex items-start gap-3">
-        <div className="h-10 w-10 rounded-xl bg-[var(--abu-clay-bg)] flex items-center justify-center shrink-0">
-          <Activity className="h-5 w-5 text-[var(--abu-clay)]" />
-        </div>
-        <div className="flex-1 min-w-0 pt-0.5">
-          <h2 className="text-[16px] font-semibold text-[var(--abu-text-primary)]">{t.diagnostic.title}</h2>
-          <p className="text-[12px] text-[var(--abu-text-tertiary)] mt-0.5 leading-relaxed">
-            {t.diagnostic.desc}
-          </p>
-        </div>
-      </div>
+      <SettingsSectionHeader title={t.diagnostic.title} description={t.diagnostic.desc} />
 
       {/* Banner */}
       <DiagnosticBanner />

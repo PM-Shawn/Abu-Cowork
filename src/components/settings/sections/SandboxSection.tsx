@@ -8,6 +8,7 @@ import { Shield, ShieldAlert, Globe, Plus, X, Info, Rocket, Bot, ShieldCheck, Fo
 import { Toggle } from '@/components/ui/toggle';
 import { cn } from '@/lib/utils';
 import ConfirmDialog from '@/components/common/ConfirmDialog';
+import SettingsSectionHeader from '@/components/settings/SettingsSectionHeader';
 import { syncNetworkWhitelist } from '@/core/sandbox/config';
 
 const PERMISSION_MODES: { value: PermissionMode; icon: typeof Shield; color: string }[] = [
@@ -66,9 +67,7 @@ export default function SandboxSection() {
 
   return (
     <div className="space-y-4">
-      <p className="text-sm text-[var(--abu-text-tertiary)]">
-        {t.settings.sandboxDescription}
-      </p>
+      <SettingsSectionHeader title={t.settings.sandbox} description={t.settings.sandboxDescription} />
 
       {macOS ? (
         <>

@@ -7,7 +7,7 @@ import { useInboxStore } from '@/stores/inboxStore';
 import { useI18n } from '@/i18n';
 import { useLabsFlag } from '@/core/labs/resolve';
 import { LABS_TODOS_INBOX } from '@/core/labs/registry';
-import { Plus, Workflow, Wrench, Trash2, Settings, Download, Upload, Pencil, Undo2, HelpCircle, FolderInput, FolderClosed, ChevronRight, Minus, Search, X, CheckSquare, Inbox } from 'lucide-react';
+import { Plus, Workflow, Wrench, Trash2, Settings, Download, Pencil, Undo2, HelpCircle, FolderInput, FolderClosed, ChevronRight, Minus, Search, X, CheckSquare, Inbox } from 'lucide-react';
 import GuideModal from '@/components/common/GuideModal';
 import ProfileEditModal from '@/components/common/ProfileEditModal';
 import { Button } from '@/components/ui/button';
@@ -113,9 +113,11 @@ export default function Sidebar() {
   // Inline rename state
   const [editingId, setEditingId] = useState<string | null>(null);
 
-  // Guide modal state — auto-open on first launch only
-  const setGuideShown = useSettingsStore((s) => s.setGuideShown);
-  const [guideOpen, setGuideOpen] = useState(false);
+  // Guide modal state lives in the store so it can be reopened from Settings ›
+  // About. Auto-opens on first launch only (below).
+  const guideOpen = useSettingsStore((s) => s.guideOpen);
+  const openGuide = useSettingsStore((s) => s.openGuide);
+  const closeGuide = useSettingsStore((s) => s.closeGuide);
   const guideCheckedRef = useRef(false);
 
   useEffect(() => {
@@ -124,18 +126,18 @@ export default function Sidebar() {
     const unsub = useSettingsStore.persist.onFinishHydration(() => {
       guideCheckedRef.current = true;
       if (!useSettingsStore.getState().guideShown) {
-        setGuideOpen(true);
+        openGuide();
       }
     });
     // If already hydrated (e.g. hot reload), check immediately
     if (useSettingsStore.persist.hasHydrated()) {
       guideCheckedRef.current = true;
       if (!useSettingsStore.getState().guideShown) {
-        setGuideOpen(true);
+        openGuide();
       }
     }
     return unsub;
-  }, []);
+  }, [openGuide]);
 
   // Profile edit modal state
   const [profileOpen, setProfileOpen] = useState(false);
@@ -340,7 +342,7 @@ export default function Sidebar() {
 
         {/* Recents Section */}
         <div className="px-4 pt-2 pb-0">
-          <div className="flex items-center justify-between pr-1">
+          <div className="group flex items-center justify-between pr-1">
             <button
               onClick={() => setRecentsCollapsed(!recentsCollapsed)}
               className="flex items-center gap-1 px-2 py-1.5 text-[13px] font-medium text-[var(--abu-text-muted)] hover:text-[var(--abu-text-primary)]"
@@ -348,18 +350,28 @@ export default function Sidebar() {
               <span>{t.sidebar.recents}</span>
             </button>
             {!recentsCollapsed && (
-              <button
-                onClick={() => {
-                  const next = !searchOpen;
-                  setSearchOpen(next);
-                  if (!next) setSearchQuery('');
-                  else setTimeout(() => searchInputRef.current?.focus(), 0);
-                }}
-                className="p-1 rounded hover:bg-[var(--abu-bg-hover)] text-[var(--abu-text-muted)] hover:text-[var(--abu-text-primary)]"
-                title={t.sidebar.searchPlaceholder}
-              >
-                <Search className="h-3.5 w-3.5" strokeWidth={2} />
-              </button>
+              <div className="flex items-center gap-0.5">
+                {/* Import is a rare action — revealed only on row hover (or keyboard focus) to keep the header clean */}
+                <button
+                  onClick={handleImport}
+                  className="p-1 rounded hover:bg-[var(--abu-bg-hover)] text-[var(--abu-text-muted)] hover:text-[var(--abu-text-primary)] opacity-0 group-hover:opacity-100 focus-visible:opacity-100 transition-opacity"
+                  title={t.sidebar.importSession}
+                >
+                  <FolderInput className="h-3.5 w-3.5" strokeWidth={2} />
+                </button>
+                <button
+                  onClick={() => {
+                    const next = !searchOpen;
+                    setSearchOpen(next);
+                    if (!next) setSearchQuery('');
+                    else setTimeout(() => searchInputRef.current?.focus(), 0);
+                  }}
+                  className="p-1 rounded hover:bg-[var(--abu-bg-hover)] text-[var(--abu-text-muted)] hover:text-[var(--abu-text-primary)]"
+                  title={t.sidebar.searchPlaceholder}
+                >
+                  <Search className="h-3.5 w-3.5" strokeWidth={2} />
+                </button>
+              </div>
             )}
           </div>
         </div>
@@ -503,13 +515,6 @@ export default function Sidebar() {
             </div>
           </button>
           <button
-            onClick={handleImport}
-            className="btn-ghost p-1.5 text-[var(--abu-text-tertiary)] hover:text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-hover)] rounded-md"
-            title={t.sidebar.importSession}
-          >
-            <Upload className="h-3.5 w-3.5" />
-          </button>
-          <button
             onClick={() => openSystemSettings(updateInfo ? 'about' : undefined)}
             className={cn(
               'btn-ghost p-1.5 rounded-md relative',
@@ -524,7 +529,7 @@ export default function Sidebar() {
             )}
           </button>
           <button
-            onClick={() => setGuideOpen(true)}
+            onClick={() => openGuide()}
             className="btn-ghost p-1.5 text-[var(--abu-text-tertiary)] hover:text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-hover)] rounded-md"
             title={t.sidebar.help}
           >
@@ -632,7 +637,7 @@ export default function Sidebar() {
       {/* Guide modal */}
       <GuideModal
         open={guideOpen}
-        onClose={() => { setGuideOpen(false); setGuideShown(true); }}
+        onClose={() => closeGuide()}
         onNavigateToAIServices={() => {
           useSettingsStore.getState().openSystemSettings('ai-services');
         }}

@@ -331,6 +331,10 @@ interface SettingsState {
   userNickname: string;
   userAvatar: string;
   guideShown: boolean;
+  /** Ephemeral — not persisted. Whether the getting-started guide modal is open.
+   *  Lifted to the store so it can be reopened from Settings › About.
+   *  Do NOT add to partialize. */
+  guideOpen: boolean;
   behaviorSensorEnabled: boolean;
   computerUseEnabled: boolean;
   preventSleep: boolean;
@@ -473,6 +477,8 @@ interface SettingsActions {
   setUserNickname: (nickname: string) => void;
   setUserAvatar: (avatar: string) => void;
   setGuideShown: (shown: boolean) => void;
+  openGuide: () => void;
+  closeGuide: () => void;
   setBehaviorSensorEnabled: (enabled: boolean) => void;
   setComputerUseEnabled: (enabled: boolean) => void;
   setPreventSleep: (enabled: boolean) => void;
@@ -687,6 +693,7 @@ export const useSettingsStore = create<SettingsStore>()(
       userNickname: '',
       userAvatar: '',
       guideShown: false,
+      guideOpen: false,
       behaviorSensorEnabled: false,
       computerUseEnabled: false,
       preventSleep: false,
@@ -973,6 +980,9 @@ export const useSettingsStore = create<SettingsStore>()(
       setUserNickname: (userNickname) => set({ userNickname }),
       setUserAvatar: (userAvatar) => set({ userAvatar }),
       setGuideShown: (guideShown) => set({ guideShown }),
+      openGuide: () => set({ guideOpen: true }),
+      // Closing the guide also marks it as shown so first-launch auto-open never re-triggers.
+      closeGuide: () => set({ guideOpen: false, guideShown: true }),
       setBehaviorSensorEnabled: (behaviorSensorEnabled) => set({ behaviorSensorEnabled }),
       setComputerUseEnabled: (computerUseEnabled) => set({ computerUseEnabled }),
       setPreventSleep: (preventSleep) => set({ preventSleep }),

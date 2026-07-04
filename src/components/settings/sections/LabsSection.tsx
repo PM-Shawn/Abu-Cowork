@@ -4,6 +4,7 @@ import { useSettingsStore } from '@/stores/settingsStore';
 import { LABS_EXPERIMENTS, LABS_PET } from '@/core/labs/registry';
 import { resolveLabsFlag } from '@/core/labs/resolve';
 import { Toggle } from '@/components/ui/toggle';
+import SettingsSectionHeader from '@/components/settings/SettingsSectionHeader';
 import { FlaskConical } from 'lucide-react';
 
 export default function LabsSection() {
@@ -39,9 +40,7 @@ export default function LabsSection() {
 
   return (
     <div className="space-y-4">
-      <p className="text-sm text-[var(--abu-text-tertiary)]">
-        {t.settings.labsDescription}
-      </p>
+      <SettingsSectionHeader title={t.settings.labs} description={t.settings.labsDescription} />
 
       <div className="space-y-2">
         {LABS_EXPERIMENTS.map((exp) => {
@@ -64,9 +63,6 @@ export default function LabsSection() {
                   </p>
                   <p className="text-[11px] text-[var(--abu-clay)] mt-1.5">
                     {exp.locationHint()}
-                  </p>
-                  <p className="text-[11px] text-[var(--abu-text-muted)] mt-1 opacity-70">
-                    {t.settings.labsChangeHint}
                   </p>
                 </div>
                 <Toggle

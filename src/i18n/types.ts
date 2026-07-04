@@ -532,7 +532,6 @@ export interface TranslationDict {
     // Labs (experimental features)
     labs: string;
     labsDescription: string;
-    labsChangeHint: string;
     labsEmpty: string;
     labsEmptyHint: string;
     labsExpTodosInboxTitle: string;

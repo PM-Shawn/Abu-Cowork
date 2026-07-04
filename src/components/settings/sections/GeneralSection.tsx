@@ -8,6 +8,7 @@ import { testScreenshotPermission } from '@/core/agent/computerUsePermission';
 import { useToastStore } from '@/stores/toastStore';
 import { Select } from '@/components/ui/select';
 import { Toggle } from '@/components/ui/toggle';
+import SettingsSectionHeader from '@/components/settings/SettingsSectionHeader';
 import { cn } from '@/lib/utils';
 
 export default function GeneralSection() {
@@ -88,6 +89,8 @@ export default function GeneralSection() {
 
   return (
     <div className="space-y-8">
+      <SettingsSectionHeader title={t.settings.general} description={t.settings.generalDescription} />
+
       {/* Appearance */}
       <div className="flex items-center justify-between p-4 rounded-xl border border-[var(--abu-border)] bg-[var(--abu-bg-muted)]">
         <p className="text-sm text-[var(--abu-text-primary)]">{t.settings.appearance}</p>

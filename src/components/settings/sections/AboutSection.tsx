@@ -112,7 +112,7 @@ export default function AboutSection() {
       </div>
 
       {/* Update card */}
-      {updateInfo ? (
+      {updateInfo && (
         <div className="rounded-xl border border-[var(--abu-clay-ring)] bg-[var(--abu-clay-5)] p-4 space-y-3">
           <div className="flex items-center justify-between">
             <span className="text-sm font-semibold text-[var(--abu-clay)]">{t.updates.newVersionAvailable}</span>
@@ -210,50 +210,49 @@ export default function AboutSection() {
             </button>
           )}
         </div>
-      ) : (
-        <div
-          className={cn(
-            'flex items-center gap-2 py-3 text-sm transition-all duration-300',
-            checkResult === 'just-checked'
-              ? 'text-green-600'
-              : checkResult === 'error'
-                ? 'text-red-500'
-                : 'text-[var(--abu-text-tertiary)]'
-          )}
-        >
-          {checkResult === 'error' ? (
-            <>
-              <CircleAlert className="h-4 w-4" />
-              <span>{t.updates.checkFailed}</span>
-            </>
-          ) : (
-            <>
-              <CheckCircle className={cn('h-4 w-4 text-green-500', checkResult === 'just-checked' && 'scale-110')} />
-              <span>{t.updates.upToDate}</span>
-              {checkResult === 'just-checked' && (
-                <span className="text-xs text-[var(--abu-text-muted)] ml-auto" style={{ animation: 'fadeIn 0.3s ease-out' }}>
-                  {t.updates.justChecked}
-                </span>
-              )}
-            </>
-          )}
-        </div>
       )}
 
       {/* Check for updates button */}
-      <button
-        onClick={handleCheckUpdate}
-        disabled={updateChecking || !!downloadProgress}
-        className={cn(
-          'flex items-center gap-2 w-full justify-center py-2.5 px-4 rounded-lg border text-sm font-medium transition-all duration-200',
-          updateChecking || downloadProgress
-            ? 'border-[var(--abu-border)] text-[var(--abu-text-muted)] cursor-not-allowed'
-            : 'border-[var(--abu-border)] text-[var(--abu-text-secondary)] hover:bg-[var(--abu-bg-active)] hover:border-[var(--abu-border-hover)] active:scale-[0.98]'
+      <div className="space-y-2">
+        <button
+          onClick={handleCheckUpdate}
+          disabled={updateChecking || !!downloadProgress}
+          className={cn(
+            'flex items-center gap-2 w-full justify-center py-2.5 px-4 rounded-lg border text-sm font-medium transition-all duration-200',
+            updateChecking || downloadProgress
+              ? 'border-[var(--abu-border)] text-[var(--abu-text-muted)] cursor-not-allowed'
+              : 'border-[var(--abu-border)] text-[var(--abu-text-secondary)] hover:bg-[var(--abu-bg-active)] hover:border-[var(--abu-border-hover)] active:scale-[0.98]'
+          )}
+        >
+          <RefreshCw className={cn('h-4 w-4 transition-transform', updateChecking && 'animate-spin')} />
+          {updateChecking ? t.updates.checking : t.updates.checkForUpdates}
+        </button>
+
+        {/* Up-to-date / check-result status — subtle caption under the button */}
+        {!updateInfo && !updateChecking && (
+          <div
+            className={cn(
+              'flex items-center justify-center gap-1.5 text-xs transition-all duration-300',
+              checkResult === 'error' ? 'text-red-500' : 'text-[var(--abu-text-muted)]'
+            )}
+          >
+            {checkResult === 'error' ? (
+              <>
+                <CircleAlert className="h-3.5 w-3.5" />
+                <span>{t.updates.checkFailed}</span>
+              </>
+            ) : (
+              <>
+                <CheckCircle className="h-3.5 w-3.5 text-green-500" />
+                <span>{t.updates.upToDate}</span>
+                {checkResult === 'just-checked' && (
+                  <span className="text-[var(--abu-text-muted)]">· {t.updates.justChecked}</span>
+                )}
+              </>
+            )}
+          </div>
         )}
-      >
-        <RefreshCw className={cn('h-4 w-4 transition-transform', updateChecking && 'animate-spin')} />
-        {updateChecking ? t.updates.checking : t.updates.checkForUpdates}
-      </button>
+      </div>
 
       {/* Footer */}
       <div className="text-center space-y-2 pt-2">

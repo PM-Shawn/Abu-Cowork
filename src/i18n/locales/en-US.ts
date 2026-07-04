@@ -419,8 +419,7 @@ const enUS: TranslationDict = {
   settings: {
     title: 'System Settings',
     labs: 'Labs',
-    labsDescription: 'Features still being polished. Off by default — turn them on to try them early.',
-    labsChangeHint: 'Experimental features may change or be removed at any time',
+    labsDescription: 'Features still in the works — off by default, turn on to try early; may change or be removed anytime.',
     labsEmpty: 'No experimental features in progress',
     labsEmptyHint: 'New features will show up here first — stay tuned',
     labsExpTodosInboxTitle: 'Todos & Inbox',

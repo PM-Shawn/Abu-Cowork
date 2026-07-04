@@ -353,6 +353,14 @@ export interface ToolExecutionContext {
   conversationId?: string;
   /** Tool call ID — injected by toolExecutor; lets a tool locate itself and key per-call state (e.g. run_agent_batch progress) */
   toolCallId?: string;
+  /**
+   * Whether the active model supports vision/image input, resolved from the
+   * turn's model capabilities. When explicitly `false`, tools that would emit
+   * image content (e.g. read_file on an image) must return a text note instead
+   * — a base64 image both bloats context and gets rejected (400) by text-only
+   * providers. Undefined means "unknown / assume capable" (default behavior).
+   */
+  supportsVision?: boolean;
 }
 
 export interface ToolDefinition {

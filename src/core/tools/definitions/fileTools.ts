@@ -71,7 +71,7 @@ export const readFileTool: ToolDefinition = {
     },
     required: ['path'],
   },
-  execute: async (input) => {
+  execute: async (input, context) => {
     const filePath = input.path as string;
     const ext = getFileExtension(filePath);
     const offset = typeof input.offset === 'number' ? Math.max(0, Math.floor(input.offset)) : undefined;
@@ -80,8 +80,15 @@ export const readFileTool: ToolDefinition = {
     try {
       // --- Image files: return as vision content ---
       if (IMAGE_EXTENSIONS.has(ext)) {
-        const bytes = new Uint8Array(await readBinFile(filePath));
         const mediaType = IMAGE_MEDIA_TYPES[ext] || 'image/png';
+        // Non-vision models can't consume image content: a base64 block both
+        // bloats context and gets rejected (400) by text-only providers (e.g.
+        // GLM: "messages.content.type 取值范围 ['text']"). Skip the read and
+        // return a text note so the model can inform the user gracefully.
+        if (context?.supportsVision === false) {
+          return `[图片文件 ${filePath}（${mediaType}）：当前模型无视觉能力，未读取图像内容。如需分析图片，请切换到支持视觉的模型（如 Claude / GPT-4o）。]`;
+        }
+        const bytes = new Uint8Array(await readBinFile(filePath));
         const { data, resized } = await resizeImageIfNeeded(bytes, 1280);
         const sizeKB = Math.round(bytes.length / 1024);
         const resizeNote = resized ? ' (auto-resized to 1280px width)' : '';

@@ -694,6 +694,11 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
   // Set active model for per-model token calibration
   setActiveModel(effectiveModelId);
 
+  // Tell tools whether this model can consume images. read_file uses it to
+  // avoid emitting base64 image blocks to text-only models (which bloats
+  // context and triggers a 400 on providers that only accept text content).
+  toolContext.supportsVision = resolveCapabilities(effectiveModelId).vision;
+
   // Pin the resolved model to the conversation on first run, so it survives
   // later global model switches (for display + future runs). Pins the
   // user-selected baseModel, NOT effectiveModelId (which may be agent-overridden

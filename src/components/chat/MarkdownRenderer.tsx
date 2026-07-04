@@ -3,6 +3,7 @@ import remarkGfm from 'remark-gfm';
 import remarkBreaks from 'remark-breaks';
 import { PrismLight as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { oneLight } from 'react-syntax-highlighter/dist/esm/styles/prism';
+import { oneDark } from 'react-syntax-highlighter/dist/esm/styles/prism';
 import tsx from 'react-syntax-highlighter/dist/esm/languages/prism/tsx';
 import python from 'react-syntax-highlighter/dist/esm/languages/prism/python';
 import bash from 'react-syntax-highlighter/dist/esm/languages/prism/bash';
@@ -11,6 +12,7 @@ import markdown from 'react-syntax-highlighter/dist/esm/languages/prism/markdown
 import { useState, memo, useMemo, useCallback, Suspense, type ReactNode } from 'react';
 import { Copy, Check, Download, ChevronDown, ChevronUp } from 'lucide-react';
 import { useI18n, format } from '@/i18n';
+import { useSettingsStore } from '@/stores/settingsStore';
 import { cn } from '@/lib/utils';
 import type { SearchResult } from '@/types';
 
@@ -158,6 +160,8 @@ export function CollapsibleCodeBlock({ codeString, language }: { codeString: str
   const { t } = useI18n();
   const [collapsed, setCollapsed] = useState(true);
   const [copied, setCopied] = useState(false);
+  const theme = useSettingsStore(s => s.theme);
+  const isDark = theme === 'dark' || (theme === 'system' && window.matchMedia('(prefers-color-scheme: dark)').matches);
 
   const lineCount = codeString.split('\n').length;
   const shouldCollapse = lineCount > COLLAPSE_THRESHOLD;
@@ -205,7 +209,7 @@ export function CollapsibleCodeBlock({ codeString, language }: { codeString: str
           }
         >
           <SyntaxHighlighter
-            style={oneLight}
+            style={isDark ? oneDark : oneLight}
             language={language || 'text'}
             PreTag="div"
             wrapLongLines={true}
@@ -343,7 +347,7 @@ function buildMarkdownComponents(
       return null;
     },
     p({ children }: { children?: ReactNode }) {
-      return <p className={isUser ? 'my-1 leading-relaxed text-[14.5px]' : 'my-2 leading-7 text-[15px]'}>{processChildren(children, sr, onCitationClick)}</p>;
+      return <p className={isUser ? 'my-1 leading-relaxed text-[14.5px]' : 'my-2 leading-7 text-[15px] text-[var(--abu-text-secondary)]'}>{processChildren(children, sr, onCitationClick)}</p>;
     },
     h1({ children }: { children?: ReactNode }) {
       return <h1 className={cn('text-xl font-semibold mt-5 mb-2', isUser ? 'text-white' : 'text-[var(--abu-text-primary)]')}>{children}</h1>;
@@ -361,7 +365,7 @@ function buildMarkdownComponents(
       return <ol className="my-2 pl-6 list-outside list-decimal space-y-1">{children}</ol>;
     },
     li({ children }: { children?: ReactNode }) {
-      return <li className={isUser ? 'leading-relaxed text-[14.5px]' : 'leading-7 text-[15px]'}>{processChildren(children, sr, onCitationClick)}</li>;
+      return <li className={isUser ? 'leading-relaxed text-[14.5px]' : 'leading-7 text-[15px] text-[var(--abu-text-secondary)]'}>{processChildren(children, sr, onCitationClick)}</li>;
     },
     blockquote({ children }: { children?: ReactNode }) {
       return (
@@ -384,7 +388,7 @@ function buildMarkdownComponents(
     },
     table({ children }: { children?: ReactNode }) {
       return (
-        <div className="my-3 overflow-x-auto rounded-lg bg-white border border-[var(--abu-border-subtle)]">
+        <div className="my-3 overflow-x-auto rounded-lg bg-[var(--abu-bg-muted)] border border-[var(--abu-border-subtle)]">
           <table className="w-full text-sm">{children}</table>
         </div>
       );

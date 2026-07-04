@@ -40,7 +40,6 @@ import { toolSearchTool } from './definitions/toolSearchTool';
 
 // --- Todo tools ---
 import { createTodoTool } from './definitions/todoTools';
-import { SHOW_TODOS_INBOX } from '@/config/featureGates';
 
 // --- Orchestration tools ---
 import { runAgentBatchTool } from './definitions/orchestrationTools';
@@ -89,8 +88,9 @@ export function registerBuiltinTools(): void {
   toolRegistry.register(skillViewTool);
   toolRegistry.register(skillManageTool);
   toolRegistry.register(toolSearchTool);
-  // create_todo feeds the Inbox, which is hidden until Labs ships — keep the
-  // agent tool out of the schema while the feature is gated off.
-  if (SHOW_TODOS_INBOX) toolRegistry.register(createTodoTool);
+  // create_todo feeds the Inbox. Registered unconditionally; getAllTools()
+  // filters it out of the per-request schema when the 'todos-inbox' Labs flag
+  // is off, so toggling the flag takes effect without an app restart.
+  toolRegistry.register(createTodoTool);
   toolRegistry.register(runAgentBatchTool);
 }

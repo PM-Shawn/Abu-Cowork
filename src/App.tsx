@@ -3,6 +3,7 @@ import { getCurrentWindow } from '@tauri-apps/api/window';
 import { listen } from '@tauri-apps/api/event';
 
 import { invoke } from '@tauri-apps/api/core';
+import { isTauriEnv } from '@/utils/tauriEnv';
 import { ErrorBoundary } from '@/components/common/ErrorBoundary';
 import Sidebar from '@/components/sidebar/Sidebar';
 import ChatView from '@/components/chat/ChatView';
@@ -11,6 +12,8 @@ import SystemSettingsView from '@/components/settings/SystemSettingsModal';
 import ToolboxView from '@/components/settings/ToolboxModal';
 import TodoView from '@/components/todos/TodoView';
 import InboxView from '@/components/inbox/InboxView';
+import { useLabsFlag } from '@/core/labs/resolve';
+import { LABS_TODOS_INBOX } from '@/core/labs/registry';
 import RightPanel from '@/components/panel/RightPanel';
 import ToastContainer from '@/components/common/ToastContainer';
 import { registerBuiltinTools } from '@/core/tools/builtins';
@@ -55,6 +58,7 @@ import { stopAllHeartbeats } from '@/core/im/pluginHeartbeat';
 import { reconcileIMSessions } from '@/core/im/sessionReconcile';
 import { initMCPStoreSync, cleanupMCPStoreSync } from '@/stores/mcpStore';
 import { initFileWatchers, stopAllWatchers } from '@/core/agent/fileWatcher';
+import { startRegistryWatcher, stopRegistryWatcher } from '@/core/skill/registryWatcher';
 import { getPendingWorkspaceRequest, resolveWorkspaceRequest, subscribeToWorkspaceRequest } from '@/core/agent/permissionBridge';
 import { startBehaviorSensor, stopBehaviorSensor } from '@/core/agent/behaviorSensor';
 import { runAgentLoop } from '@/core/agent/agentLoop';
@@ -107,11 +111,39 @@ function App() {
   const rightPanelCollapsed = useSettingsStore((s) => s.rightPanelCollapsed);
   const toggleRightPanel = useSettingsStore((s) => s.toggleRightPanel);
   const viewMode = useSettingsStore((s) => s.viewMode);
+  const setViewMode = useSettingsStore((s) => s.setViewMode);
+  const showTodosInbox = useLabsFlag(LABS_TODOS_INBOX);
   const closeSystemSettings = useSettingsStore((s) => s.closeSystemSettings);
   const closeAutomation = useSettingsStore((s) => s.closeAutomation);
   const closeToolbox = useSettingsStore((s) => s.closeToolbox);
   const activeConv = useActiveConversation();
   const { t } = useI18n();
+
+  // If the Todos/Inbox Labs experiment is turned off while the user is parked
+  // on one of its views, fall back to chat — otherwise the sidebar nav out of
+  // that view disappears with it, stranding the user on an orphaned screen.
+  useEffect(() => {
+    if (!showTodosInbox && (viewMode === 'todos' || viewMode === 'inbox')) {
+      setViewMode('chat');
+    }
+  }, [showTodosInbox, viewMode, setViewMode]);
+
+  const theme = useSettingsStore((s) => s.theme);
+  useEffect(() => {
+    const root = document.documentElement;
+    const apply = (dark: boolean) => {
+      root.classList.toggle('dark', dark);
+    };
+    if (theme === 'system') {
+      const mq = window.matchMedia('(prefers-color-scheme: dark)');
+      apply(mq.matches);
+      const handler = (e: MediaQueryListEvent) => apply(e.matches);
+      mq.addEventListener('change', handler);
+      return () => mq.removeEventListener('change', handler);
+    } else {
+      apply(theme === 'dark');
+    }
+  }, [theme]);
 
   // Right panel toggle only when there's an active conversation with messages
   const showRightPanelToggle = viewMode === 'chat' && (activeConv?.messages?.length ?? 0) > 0;
@@ -134,6 +166,7 @@ function App() {
 
   // Clear dock badge whenever the window regains focus
   useEffect(() => {
+    if (!isTauriEnv()) return; // web / E2E: no Tauri window API
     let unlistenFn: (() => void) | null = null;
     let cancelled = false;
     getCurrentWindow()
@@ -161,6 +194,7 @@ function App() {
 
   // Pet window asks for status resync when it (re)opens
   useEffect(() => {
+    if (!isTauriEnv()) return; // web / E2E: no Tauri IPC
     let unlistenFn: (() => void) | null = null;
     let cancelled = false;
     listen('pet-resync-request', () => {
@@ -222,6 +256,7 @@ function App() {
 
   // Listen for window close-requested event from Rust
   useEffect(() => {
+    if (!isTauriEnv()) return; // web / E2E: no Tauri IPC
     let unlistenFn: (() => void) | null = null;
     let cancelled = false;
     listen('close-requested', () => {
@@ -299,6 +334,12 @@ function App() {
       console.warn('[App] File watcher init error:', err);
     });
 
+    // Watch ~/.abu/skills and ~/.abu/agents so items dropped straight into those
+    // folders appear live (no restart needed). Self-contained + best-effort.
+    startRegistryWatcher().catch((err) => {
+      console.warn('[App] Registry watcher init error:', err);
+    });
+
     // Skill drafts: boot-time refresh + hourly TTL sweeper (workspace-switch
     // refresh is already wired in skillDraftsStore). startDraftsSweeper is
     // idempotent.
@@ -327,6 +368,7 @@ function App() {
     return () => {
       cleanupMCPStoreSync();
       stopAllWatchers();
+      stopRegistryWatcher();
       import('@/stores/skillDraftsStore').then(({ stopDraftsSweeper }) => stopDraftsSweeper()).catch(() => {});
     };
   }, [refreshDiscovery]);
@@ -509,6 +551,7 @@ function App() {
   // Hide native title bar text on macOS (overlay mode — title shown in sidebar instead)
   // On Windows, show app name in native title bar
   useEffect(() => {
+    if (!isTauriEnv()) return; // web / E2E: no Tauri window API
     getCurrentWindow().setTitle(isMacOS() ? '' : 'Abu');
   }, []);
 

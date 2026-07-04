@@ -382,9 +382,9 @@ export async function buildSystemPromptSections(
 当前管理员未配置工作目录，因此你无法进行文件操作。
 
 如果用户请求涉及文件操作，请回复："当前 IM 频道未配置工作目录，请联系管理员在 Abu 设置中配置后重试。"
-不涉及文件操作的请求（闲聊、知识问答、搜索信息、写作、翻译、计算等）直接回复即可。
+不涉及文件操作的请求（闲聊、知识问答、搜索信息、写作、翻译、计算等）直接回复即可。${outputDir ? `
 
-生成的文件保存到：${outputDir}`, cacheable: true });
+生成的文件保存到：${outputDir}` : ''}`, cacheable: true });
     }
 
     // Inject capability boundary so AI knows exactly what it can/cannot do
@@ -423,9 +423,9 @@ export async function buildSystemPromptSections(
 如果用户提到了具体文件夹（如"下载文件夹"、"桌面"、"文档"），在 folder_hint 参数中传入文件夹名称。
 
 **不需要工作区**的请求（闲聊、知识问答、搜索信息、写作、翻译、计算、user 作用域的全局 memory 等）直接回复即可。
-如果用户拒绝选择工作区，友好告知需要先选择工作目录才能执行相关操作。
+如果用户拒绝选择工作区，友好告知需要先选择工作目录才能执行相关操作。${outputDir ? `
 
-生成的文件（非用户指定路径）保存到：${outputDir}`, cacheable: true });
+生成的文件（非用户指定路径）保存到：${outputDir}` : ''}`, cacheable: true });
     }
   }
 

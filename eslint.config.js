@@ -6,7 +6,11 @@ import tseslint from 'typescript-eslint'
 import { defineConfig, globalIgnores } from 'eslint/config'
 
 export default defineConfig([
-  globalIgnores(['dist', 'src-tauri']),
+  // `.wt-*/` are nested git worktrees (feature branches) checked out inside the
+  // repo. Each carries its own tsconfig, which makes typescript-eslint find
+  // multiple candidate TSConfig roots and fail to parse EVERY file. Ignore them
+  // so local `eslint .` matches a clean CI checkout (which has no worktrees).
+  globalIgnores(['dist', 'src-tauri', 'coverage', '.wt-*/']),
   {
     files: ['**/*.{ts,tsx}'],
     extends: [

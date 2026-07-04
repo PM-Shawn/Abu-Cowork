@@ -614,7 +614,7 @@ export default function MCPSection({ showAddForm: externalShowAddForm, onAddForm
       {/* Add / Edit Server Modal */}
       {showAddForm && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onMouseDown={(e) => { if (e.target === e.currentTarget) handleCloseAddForm(); }}>
-          <div className="bg-white rounded-2xl shadow-xl w-full max-w-md flex flex-col overflow-hidden" onClick={(e) => e.stopPropagation()}>
+          <div className="bg-[var(--abu-bg-base)] rounded-2xl shadow-xl w-full max-w-md flex flex-col overflow-hidden" onClick={(e) => e.stopPropagation()}>
             <div className="flex items-center justify-between px-5 py-4 border-b border-[var(--abu-border)]">
               <div className="flex items-center gap-2">
                 <Server className="h-5 w-5 text-[var(--abu-clay)]" />
@@ -630,11 +630,11 @@ export default function MCPSection({ showAddForm: externalShowAddForm, onAddForm
             <div className="px-5 pt-3 pb-0">
               <div className="flex gap-1 p-0.5 bg-[var(--abu-bg-muted)] rounded-md">
                 <button onClick={() => setAddMode('form')}
-                  className={cn('flex-1 py-1.5 text-xs font-medium rounded transition-colors', addMode === 'form' ? 'bg-white text-[var(--abu-text-primary)]' : 'text-[var(--abu-text-muted)] hover:text-[var(--abu-text-primary)]')}>
+                  className={cn('flex-1 py-1.5 text-xs font-medium rounded transition-colors', addMode === 'form' ? 'bg-[var(--abu-bg-base)] text-[var(--abu-text-primary)] shadow-sm ring-1 ring-[var(--abu-border)]' : 'text-[var(--abu-text-muted)] hover:text-[var(--abu-text-primary)]')}>
                   {t.toolbox.formMode}
                 </button>
                 <button onClick={() => setAddMode('json')}
-                  className={cn('flex-1 py-1.5 text-xs font-medium rounded transition-colors', addMode === 'json' ? 'bg-white text-[var(--abu-text-primary)]' : 'text-[var(--abu-text-muted)] hover:text-[var(--abu-text-primary)]')}>
+                  className={cn('flex-1 py-1.5 text-xs font-medium rounded transition-colors', addMode === 'json' ? 'bg-[var(--abu-bg-base)] text-[var(--abu-text-primary)] shadow-sm ring-1 ring-[var(--abu-border)]' : 'text-[var(--abu-text-muted)] hover:text-[var(--abu-text-primary)]')}>
                   {t.toolbox.jsonMode}
                 </button>
               </div>
@@ -669,11 +669,11 @@ export default function MCPSection({ showAddForm: externalShowAddForm, onAddForm
                   <label className="block text-xs font-medium text-[var(--abu-text-secondary)] mb-1">{t.toolbox.transportType}</label>
                   <div className="flex gap-1 p-0.5 bg-[var(--abu-bg-muted)] rounded-md">
                     <button onClick={() => setNewTransportType('stdio')}
-                      className={cn('flex-1 py-1.5 text-xs font-medium rounded transition-colors', newTransportType === 'stdio' ? 'bg-white text-[var(--abu-text-primary)]' : 'text-[var(--abu-text-muted)] hover:text-[var(--abu-text-primary)]')}>
+                      className={cn('flex-1 py-1.5 text-xs font-medium rounded transition-colors', newTransportType === 'stdio' ? 'bg-[var(--abu-bg-base)] text-[var(--abu-text-primary)] shadow-sm ring-1 ring-[var(--abu-border)]' : 'text-[var(--abu-text-muted)] hover:text-[var(--abu-text-primary)]')}>
                       {t.toolbox.transportStdio}
                     </button>
                     <button onClick={() => setNewTransportType('http')}
-                      className={cn('flex-1 py-1.5 text-xs font-medium rounded transition-colors', newTransportType === 'http' ? 'bg-white text-[var(--abu-text-primary)]' : 'text-[var(--abu-text-muted)] hover:text-[var(--abu-text-primary)]')}>
+                      className={cn('flex-1 py-1.5 text-xs font-medium rounded transition-colors', newTransportType === 'http' ? 'bg-[var(--abu-bg-base)] text-[var(--abu-text-primary)] shadow-sm ring-1 ring-[var(--abu-border)]' : 'text-[var(--abu-text-muted)] hover:text-[var(--abu-text-primary)]')}>
                       {t.toolbox.transportHttp}
                     </button>
                   </div>
@@ -891,7 +891,7 @@ function TemplateDetail({
         <div className="flex items-center gap-3">
           <Server className="h-5 w-5 text-[var(--abu-text-placeholder)]" />
           <h2 className="text-xl font-semibold text-[var(--abu-text-primary)]">{template.name}</h2>
-          {isHttp && <span className="px-1.5 py-0.5 rounded text-[10px] font-medium bg-blue-50 text-blue-600">HTTP</span>}
+          {isHttp && <span className="px-1.5 py-0.5 rounded text-[10px] font-medium bg-blue-50 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400">HTTP</span>}
         </div>
         <button onClick={onInstall} disabled={isInstalling}
           className="flex items-center gap-1.5 px-4 py-1.5 rounded-lg text-sm font-medium bg-[var(--abu-clay)] text-white hover:bg-[var(--abu-clay-hover)] disabled:opacity-50 transition-colors">

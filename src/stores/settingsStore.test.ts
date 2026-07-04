@@ -443,3 +443,46 @@ describe('settingsStore partialize', () => {
     expect(snapshot).toHaveProperty('defaultAgentAutonomy');
   });
 });
+
+describe('settingsStore labs flags', () => {
+  beforeEach(() => {
+    useSettingsStore.setState({ labs: {} });
+  });
+
+  it('setLabsFlag records an opt-in without clobbering other flags', () => {
+    useSettingsStore.getState().setLabsFlag('todos-inbox', true);
+    useSettingsStore.getState().setLabsFlag('other-exp', false);
+    expect(useSettingsStore.getState().labs).toEqual({
+      'todos-inbox': true,
+      'other-exp': false,
+    });
+  });
+
+  it('setLabsFlag can flip a flag back off', () => {
+    useSettingsStore.getState().setLabsFlag('todos-inbox', true);
+    useSettingsStore.getState().setLabsFlag('todos-inbox', false);
+    expect(useSettingsStore.getState().labs['todos-inbox']).toBe(false);
+  });
+
+  describe('v35 migration', () => {
+    const getMigrate = () =>
+      (useSettingsStore as unknown as {
+        persist: { getOptions: () => { migrate: (data: unknown, version: number) => Record<string, unknown> } };
+      }).persist.getOptions().migrate;
+
+    it('adds an empty labs map for pre-v35 state that lacks it', () => {
+      const migrated = getMigrate()({ theme: 'dark' }, 34);
+      expect(migrated.labs).toEqual({});
+    });
+
+    it('preserves an existing labs map', () => {
+      const migrated = getMigrate()({ labs: { 'todos-inbox': true } }, 34);
+      expect(migrated.labs).toEqual({ 'todos-inbox': true });
+    });
+
+    it('replaces a malformed labs value with an empty map', () => {
+      const migrated = getMigrate()({ labs: ['bad'] }, 34);
+      expect(migrated.labs).toEqual({});
+    });
+  });
+});

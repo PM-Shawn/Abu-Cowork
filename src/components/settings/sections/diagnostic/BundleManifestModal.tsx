@@ -26,7 +26,7 @@ export default function BundleManifestModal({ open, fileList, onClose }: Props) 
       className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/40 animate-in fade-in duration-150"
       onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}
     >
-      <div className="bg-white rounded-2xl shadow-xl w-[480px] flex flex-col p-6 animate-in zoom-in-95 duration-150">
+      <div className="bg-[var(--abu-bg-base)] rounded-2xl shadow-xl w-[480px] flex flex-col p-6 animate-in zoom-in-95 duration-150">
         <div className="flex items-center justify-between mb-4">
           <h3 className="text-[16px] font-semibold text-[var(--abu-text-primary)]">
             {t.diagnostic.manifestTitle}

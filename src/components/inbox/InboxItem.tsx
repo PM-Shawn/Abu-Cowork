@@ -46,9 +46,9 @@ export default function InboxItemRow({
   const { t } = useI18n();
   const processed = item.status !== 'pending';
   const statusBadge = item.status === 'accepted'
-    ? { label: t.inboxTabs.statusAccepted, cls: 'bg-emerald-50 text-emerald-700' }
+    ? { label: t.inboxTabs.statusAccepted, cls: 'bg-emerald-50 dark:bg-emerald-900/30 text-emerald-700 dark:text-emerald-400' }
     : item.status === 'ignored'
-      ? { label: t.inboxTabs.statusIgnored, cls: 'bg-gray-100 text-gray-500' }
+      ? { label: t.inboxTabs.statusIgnored, cls: 'bg-gray-100 dark:bg-[var(--abu-bg-muted)] text-gray-500 dark:text-[var(--abu-text-secondary)]' }
       : null;
 
   return (

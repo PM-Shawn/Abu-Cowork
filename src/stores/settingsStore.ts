@@ -283,7 +283,7 @@ function createDefaultProviders(): ProviderInstance[] {
 
 export type ViewMode = 'chat' | 'automation' | 'toolbox' | 'settings' | 'todos' | 'inbox';
 export type AutomationTab = 'schedule' | 'trigger';
-export type SystemSettingsTab = 'general' | 'ai-services' | 'sandbox' | 'im-channels' | 'pet' | 'personal-memory' | 'soul' | 'diagnostic' | 'usage' | 'about' | 'feedback' | 'sponsor' | 'enterprise';
+export type SystemSettingsTab = 'general' | 'ai-services' | 'sandbox' | 'im-channels' | 'pet' | 'personal-memory' | 'soul' | 'diagnostic' | 'usage' | 'about' | 'feedback' | 'sponsor' | 'enterprise' | 'labs';
 export type ToolboxTab = 'skills' | 'agents' | 'mcp';
 
 // ============================================================
@@ -299,7 +299,7 @@ interface SettingsState {
   auxiliaryServices: AuxiliaryServices;
 
   // ── General settings (unchanged) ──
-  theme: 'dark' | 'light';
+  theme: 'dark' | 'light' | 'system';
   showSettings: boolean;
   sidebarCollapsed: boolean;
   rightPanelCollapsed: boolean;
@@ -307,6 +307,9 @@ interface SettingsState {
   maxOutputTokens: number;
   contextWindowSize: number;
   language: LanguageSetting;
+  /** Labs (experimental features) opt-in map, keyed by LabsExperiment.id.
+   *  Absent id → registry default. See src/core/labs. */
+  labs: Record<string, boolean>;
   activeSystemTab: SystemSettingsTab;
   activeAutomationTab: AutomationTab;
   activeToolboxTab: ToolboxTab;
@@ -431,7 +434,7 @@ interface SettingsActions {
   setAuxiliaryImageGen: (config: AuxiliaryServices['imageGen']) => void;
 
   // ── General settings actions (unchanged) ──
-  setTheme: (theme: 'dark' | 'light') => void;
+  setTheme: (theme: 'dark' | 'light' | 'system') => void;
   toggleSettings: () => void;
   toggleSidebar: () => void;
   toggleRightPanel: () => void;
@@ -443,6 +446,8 @@ interface SettingsActions {
   openSystemSettings: (tab?: SystemSettingsTab) => void;
   closeSystemSettings: () => void;
   setActiveSystemTab: (tab: SystemSettingsTab) => void;
+  /** Toggle a Labs (experimental features) flag. Takes effect immediately. */
+  setLabsFlag: (id: string, enabled: boolean) => void;
   openAutomation: (tab?: AutomationTab) => void;
   closeAutomation: () => void;
   setActiveAutomationTab: (tab: AutomationTab) => void;
@@ -654,6 +659,7 @@ export const useSettingsStore = create<SettingsStore>()(
       maxOutputTokens: 32768,
       contextWindowSize: 200000,
       language: 'system' as LanguageSetting,
+      labs: {},
       activeSystemTab: 'usage' as SystemSettingsTab,
       activeAutomationTab: 'schedule' as AutomationTab,
       activeToolboxTab: 'skills' as ToolboxTab,
@@ -910,6 +916,8 @@ export const useSettingsStore = create<SettingsStore>()(
       closeSystemSettings: () =>
         set({ viewMode: 'chat' as ViewMode }),
       setActiveSystemTab: (tab) => set({ activeSystemTab: tab }),
+      setLabsFlag: (id, enabled) =>
+        set((s) => ({ labs: { ...s.labs, [id]: enabled } })),
       openAutomation: (tab) =>
         set({
           viewMode: 'automation' as ViewMode,
@@ -1016,26 +1024,46 @@ export const useSettingsStore = create<SettingsStore>()(
     }),
     {
       name: 'abu-settings',
-      version: 35,
+      version: 37,
       migrate: (persisted: unknown, version: number) => {
         const state = persisted as Record<string, unknown>;
 
         // ════════════════════════════════════════════════
-        // V35: Add petOpen — remembers whether the desktop pet was open
+        // V37: Add petOpen — remembers whether the desktop pet was open
         // across restarts (mirrors Codex's petOpenIntent behavior).
         // ════════════════════════════════════════════════
-        if (version < 35) {
+        if (version < 37) {
           if (state.petOpen === undefined) state.petOpen = false;
+        }
+
+        // ════════════════════════════════════════════════
+        // V36: Add petPosition + dndMode for the desktop pet.
+        // ════════════════════════════════════════════════
+        if (version < 36) {
+          if (state.petPosition === undefined) state.petPosition = null;
+          if (state.dndMode === undefined) state.dndMode = false;
+        }
+
+        // ════════════════════════════════════════════════
+        // V35: Add Labs (experimental features) opt-in map.
+        // ════════════════════════════════════════════════
+        if (version < 35) {
+          if (typeof state.labs !== 'object' || state.labs === null || Array.isArray(state.labs)) {
+            state.labs = {};
+          }
+        }
+
+        // ════════════════════════════════════════════════
+        // V34: Add 'system' option for theme; preserve existing value.
+        // ════════════════════════════════════════════════
+        if (version < 34) {
+          // 'system' option added for theme; existing 'dark'/'light' values remain valid.
         }
 
         // ════════════════════════════════════════════════
         // V33: Add defaultAgentAutonomy for Todos × Agent assignment.
         // Default to 'execute_review' — Agent acts, user reviews result.
         // ════════════════════════════════════════════════
-        if (version < 34) {
-          if (state.petPosition === undefined) state.petPosition = null;
-          if (state.dndMode === undefined) state.dndMode = false;
-        }
 
         if (version < 33) {
           try {
@@ -1642,6 +1670,7 @@ export const useSettingsStore = create<SettingsStore>()(
         // General settings
         theme: state.theme,
         language: state.language,
+        labs: state.labs,
         agentMaxTurns: state.agentMaxTurns,
         maxOutputTokens: state.maxOutputTokens,
         contextWindowSize: state.contextWindowSize,

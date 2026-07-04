@@ -897,19 +897,46 @@ describe('skill_manage · install', () => {
     expect(result.error).toMatch(/source/);
   });
 
-  it('routes folder source to installSkillFromFolder', async () => {
+  it('routes folder source to installSkillFromFolder (confirm-first: overwrite defaults to false)', async () => {
     mockDetectSourceType.mockReturnValue('folder');
-    mockInstallSkillFromFolder.mockResolvedValue({ ok: true, name: 'my-skill', fileCount: 3 });
+    mockInstallSkillFromFolder.mockResolvedValue({ ok: true, name: 'my-skill', fileCount: 3, skipped: [] });
 
     const result = JSON.parse(
       (await skillManageTool.execute({ action: 'install', source: '/path/to/my-skill' }, {})) as string,
     );
 
-    expect(mockInstallSkillFromFolder).toHaveBeenCalledWith('/path/to/my-skill');
+    // Default is overwrite:false so a same-named skill is never silently clobbered.
+    expect(mockInstallSkillFromFolder).toHaveBeenCalledWith('/path/to/my-skill', { overwrite: false });
     expect(result.success).toBe(true);
     expect(result.status).toBe('applied');
     expect(result.message).toContain('my-skill');
     expect(result.message).toContain('3');
+  });
+
+  it('passes overwrite:true through when the caller opts in', async () => {
+    mockDetectSourceType.mockReturnValue('folder');
+    mockInstallSkillFromFolder.mockResolvedValue({ ok: true, name: 'my-skill', fileCount: 3, skipped: [] });
+
+    await skillManageTool.execute({ action: 'install', source: '/path/to/my-skill', overwrite: true }, {});
+
+    expect(mockInstallSkillFromFolder).toHaveBeenCalledWith('/path/to/my-skill', { overwrite: true });
+  });
+
+  it('returns an actionable error (not a silent overwrite) on ALREADY_EXISTS', async () => {
+    mockDetectSourceType.mockReturnValue('folder');
+    mockInstallSkillFromFolder.mockResolvedValue({
+      ok: false,
+      code: 'ALREADY_EXISTS',
+      message: 'Skill "my-skill" already exists',
+    });
+
+    const result = JSON.parse(
+      (await skillManageTool.execute({ action: 'install', source: '/path/to/my-skill' }, {})) as string,
+    );
+
+    expect(result.success).toBe(false);
+    expect(result.error).toContain('already exists');
+    expect(result.error).toContain('overwrite: true');
   });
 
   it('routes npm source to installSkillFromNpm', async () => {

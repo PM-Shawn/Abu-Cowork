@@ -5,7 +5,8 @@ import { useProjectStore } from '@/stores/projectStore';
 import { useNoticeBadgeStore } from '@/stores/noticeBadgeStore';
 import { useInboxStore } from '@/stores/inboxStore';
 import { useI18n } from '@/i18n';
-import { SHOW_TODOS_INBOX } from '@/config/featureGates';
+import { useLabsFlag } from '@/core/labs/resolve';
+import { LABS_TODOS_INBOX } from '@/core/labs/registry';
 import { Plus, Workflow, Wrench, Trash2, Settings, Download, Upload, Pencil, Undo2, HelpCircle, FolderInput, FolderClosed, ChevronRight, Minus, Search, X, CheckSquare, Inbox } from 'lucide-react';
 import GuideModal from '@/components/common/GuideModal';
 import ProfileEditModal from '@/components/common/ProfileEditModal';
@@ -90,6 +91,7 @@ export default function Sidebar() {
   // remain unread — matches the "things you still owe a decision on" mental model.
   const pendingInboxCount = useInboxStore((s) => s.getPendingCount());
   const { t } = useI18n();
+  const showTodosInbox = useLabsFlag(LABS_TODOS_INBOX);
 
   // Context menu state
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; convId: string } | null>(null);
@@ -272,7 +274,7 @@ export default function Sidebar() {
           <Plus className={cn('h-[18px] w-[18px]', activeConversationId === null && viewMode === 'chat' ? 'text-[var(--abu-clay)]' : 'text-[var(--abu-text-tertiary)]')} strokeWidth={2} />
           <span>{t.sidebar.newTask}</span>
         </button>
-        {SHOW_TODOS_INBOX && (
+        {showTodosInbox && (
           <>
             <button
               onClick={() => setViewMode('todos')}
@@ -509,6 +511,7 @@ export default function Sidebar() {
           </button>
           <button
             onClick={() => openSystemSettings(updateInfo ? 'about' : undefined)}
+            aria-label={t.settings.title}
             className={cn(
               'btn-ghost p-1.5 rounded-md relative',
               viewMode === 'settings'
@@ -535,7 +538,7 @@ export default function Sidebar() {
       {contextMenu && (
         <div
           ref={contextMenuRef}
-          className="fixed z-50 bg-white rounded-lg shadow-lg border border-[var(--abu-border)] py-1 min-w-[140px]"
+          className="fixed z-50 bg-[var(--abu-bg-base)] rounded-lg shadow-lg border border-[var(--abu-border)] py-1 min-w-[140px]"
           style={{ left: contextMenu.x, top: contextMenu.y }}
         >
           <button
@@ -574,7 +577,7 @@ export default function Sidebar() {
                   <div
                     ref={moveSubmenuRef}
                     style={moveSubmenuStyle}
-                    className="absolute left-full ml-1 bg-white rounded-lg shadow-lg border border-[var(--abu-border)] py-1 min-w-[140px] overflow-y-auto overscroll-contain z-10"
+                    className="absolute left-full ml-1 bg-[var(--abu-bg-base)] rounded-lg shadow-lg border border-[var(--abu-border)] py-1 min-w-[140px] overflow-y-auto overscroll-contain z-10"
                   >
                     {activeProjects.map((p) => (
                       <button

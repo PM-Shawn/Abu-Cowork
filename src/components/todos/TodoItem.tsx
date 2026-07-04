@@ -49,9 +49,9 @@ export default function TodoItem({ todo, onToggle, onDelete, onClick }: TodoItem
       {priorityLabel && (
         <span className={cn(
           'shrink-0 text-[11px] px-1.5 py-0.5 rounded',
-          todo.priority === 'high' ? 'bg-red-100 text-red-700'
-            : todo.priority === 'low' ? 'bg-gray-100 text-gray-600'
-            : 'bg-amber-100 text-amber-700',
+          todo.priority === 'high' ? 'bg-red-100 dark:bg-red-900/30 text-red-700 dark:text-red-400'
+            : todo.priority === 'low' ? 'bg-gray-100 dark:bg-[var(--abu-bg-muted)] text-gray-600 dark:text-[var(--abu-text-secondary)]'
+            : 'bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-400',
         )}>
           {priorityLabel}
         </span>

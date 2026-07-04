@@ -651,7 +651,7 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
       <div className="relative">
         {/* Suggestions Popup (Skills / Agents) */}
         {showSuggestions && suggestions.length > 0 && (
-          <div className="absolute bottom-full left-0 right-0 mb-2 bg-white rounded-xl border border-[var(--abu-border)] shadow-lg overflow-x-hidden overflow-y-auto max-h-[320px] z-20">
+          <div className="absolute bottom-full left-0 right-0 mb-2 bg-[var(--abu-bg-base)] rounded-xl border border-[var(--abu-border)] shadow-lg overflow-x-hidden overflow-y-auto max-h-[320px] z-20">
             {suggestions.map((item, idx) => (
               <button
                 key={item.name}
@@ -684,7 +684,7 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
         {/* Input Card */}
         <div
           className={cn(
-            'relative bg-white rounded-2xl border transition-all',
+            'relative bg-[var(--abu-bg-base)] rounded-2xl border transition-all',
             !isWelcome && isDragging
               ? 'border-[var(--abu-clay)] ring-2 ring-[var(--abu-clay-ring)]'
               : 'border-[var(--abu-border-subtle)] focus-within:border-[var(--abu-border-hover)]'
@@ -813,16 +813,16 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
               >
                 <Plus className="h-4 w-4" />
               </Button>
-              <PermissionModeChip conversationId={null} />
               <div className="flex-1" />
 
               {/* Model picker — right-aligned, before Start button */}
+              <PermissionModeChip conversationId={null} />
               <div className="relative" ref={modelPickerRef}>
                 <button
                   onClick={() => setShowModelPicker(!showModelPicker)}
                   title={modelDisplay}
                   className={cn(
-                    'btn-ghost flex items-center gap-1 px-2 py-1 text-[12px] font-medium rounded-md transition-colors max-w-[180px]',
+                    'btn-ghost flex items-center gap-1 px-2 py-1 text-[12px] font-normal rounded-md transition-colors max-w-[180px]',
                     hasActiveProvider
                       ? 'text-[var(--abu-text-tertiary)] hover:text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-hover)]'
                       : 'text-[var(--abu-clay)] hover:text-[var(--abu-clay-hover)] hover:bg-[var(--abu-clay-bg)]'
@@ -879,18 +879,18 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
                 >
                   <Plus className="h-4 w-4" />
                 </Button>
-                <PermissionModeChip conversationId={activeConvIdForIndicator} />
               </div>
 
               {/* Right Actions: Model picker + Context indicator + Send / Stop */}
               <div className="flex items-center gap-1">
+                <PermissionModeChip conversationId={activeConvIdForIndicator} />
                 {/* Model picker */}
                 <div className="relative" ref={modelPickerRef}>
                   <button
                     onClick={() => setShowModelPicker(!showModelPicker)}
                     title={modelDisplay}
                     className={cn(
-                      'btn-ghost flex items-center gap-1 px-2 py-1 text-[12px] font-medium rounded-md transition-colors max-w-[180px]',
+                      'btn-ghost flex items-center gap-1 px-2 py-1 text-[12px] font-normal rounded-md transition-colors max-w-[180px]',
                       hasActiveProvider
                         ? 'text-[var(--abu-text-tertiary)] hover:text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-hover)]'
                         : 'text-[var(--abu-clay)] hover:text-[var(--abu-clay-hover)] hover:bg-[var(--abu-clay-bg)]'

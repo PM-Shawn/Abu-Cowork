@@ -7,6 +7,7 @@ node_modules/
 # Build output
 dist/
 src-tauri/target/
+coverage/
 
 # Environment
 .env
@@ -51,6 +52,11 @@ src-tauri/python-runtime/
 # Claude Code local config
 .claude/
 
+# Playwright E2E
+test-results/
+playwright-report/
+/playwright/.cache/
+
 # Test files
 test-browser.html
 
@@ -73,3 +79,6 @@ prototype-*.html
 website/one-screen.html
 # Root-level AX / Computer Use diagnostic scratch docs (e.g. AX_TEST.md, AX_DIAG.md)
 AX_*.md
+
+# Nested git worktrees (feature branches checked out inside the repo)
+.wt-*/

@@ -79,7 +79,7 @@ export default function InstructionsEditModal({ open, onClose, workspacePath }: 
         if (e.target === e.currentTarget) onClose();
       }}
     >
-      <div className="bg-white rounded-2xl shadow-xl w-[480px] flex flex-col p-6 animate-in zoom-in-95 duration-150">
+      <div className="bg-[var(--abu-bg-base)] rounded-2xl shadow-xl w-[480px] flex flex-col p-6 animate-in zoom-in-95 duration-150">
         <h3 className="text-[16px] font-semibold text-[var(--abu-text-primary)] mb-1">
           {t.panel.instructionsTitle}
         </h3>

@@ -317,7 +317,7 @@ export default function ChatView() {
             {/* First-run setup prompt */}
             {needsSetup && (
               <div className="mb-6 mx-auto max-w-md">
-                <div className="rounded-xl border border-[var(--abu-border)] bg-white/80 px-5 py-4 text-center">
+                <div className="rounded-xl border border-[var(--abu-border)] bg-[var(--abu-bg-base)]/80 px-5 py-4 text-center">
                   <p className="text-[15px] font-medium text-[var(--abu-text-primary)] mb-1">
                     {t.chat.setupRequired}
                   </p>
@@ -443,7 +443,7 @@ export default function ChatView() {
         {!isAtBottom && (
           <button
             onClick={scrollToBottom}
-            className="sticky bottom-3 left-1/2 -translate-x-1/2 z-10 flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-white/90 border border-[var(--abu-border)] text-[13px] text-[var(--abu-text-tertiary)] hover:text-[var(--abu-text-primary)] hover:bg-white transition-all backdrop-blur-sm"
+            className="sticky bottom-3 left-1/2 -translate-x-1/2 z-10 flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-[var(--abu-bg-base)]/90 border border-[var(--abu-border)] text-[13px] text-[var(--abu-text-tertiary)] hover:text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-base)] transition-all backdrop-blur-sm"
           >
             <ChevronDown className="h-3.5 w-3.5" />
             <span>{t.chat.scrollToBottom}</span>

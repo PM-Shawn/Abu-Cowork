@@ -1,0 +1,87 @@
+name: Tauri Native Smoke
+
+# STATUS: V1 SKELETON — not part of PR gates.
+# Activate manually via workflow_dispatch when the V2 conditions below are met:
+#   - A Linux (or Windows) CI runner with a real display (Xvfb or DISPLAY env)
+#   - A signed Tauri build artifact uploaded to GitHub release or Actions cache
+#   - `tauri-driver` (cargo install tauri-driver) available in PATH
+#   - Tauri 2.x's tauri-driver re-adds macOS support (currently Linux/Windows only)
+#
+# See docs/TAURI-SMOKE.md for the complete V2 readiness checklist and local run guide.
+
+on:
+  workflow_dispatch:
+    inputs:
+      tauri_app_binary:
+        description: 'Path or download URL to the built Tauri binary'
+        required: false
+        default: ''
+
+jobs:
+  tauri-smoke:
+    name: Tauri native smoke tests
+    # Linux needed: tauri-driver does NOT support macOS in Tauri 2.x.
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install npm dependencies
+        run: npm ci
+
+      - name: Install Rust toolchain
+        # Required to build tauri-driver from source if not pre-installed.
+        uses: dtolnay/rust-toolchain@stable
+        continue-on-error: true  # Non-blocking: V2 will use a pre-built binary
+
+      - name: Install tauri-driver
+        # tauri-driver bridges WebDriver ↔ Tauri IPC.
+        # Currently only supports Linux and Windows (not macOS).
+        run: cargo install tauri-driver
+        continue-on-error: true  # Skip if no Rust toolchain or cargo
+
+      - name: Download / locate Tauri binary
+        # In V2 this step will download the signed artifact from the release.
+        # For now, this is a placeholder — the workflow will fail gracefully at the test step.
+        run: |
+          echo "TAURI_APP_BINARY=${{ inputs.tauri_app_binary }}" >> $GITHUB_ENV
+          echo "No binary provided — smoke tests will fail with a clear error (expected in V1)"
+        continue-on-error: true
+
+      - name: Start virtual display (Linux)
+        # tauri-driver on Linux needs a display. In a real desktop CI you'd use a real display;
+        # in headless CI use Xvfb.
+        run: |
+          sudo apt-get install -y xvfb
+          Xvfb :99 -screen 0 1280x720x24 &
+          echo "DISPLAY=:99" >> $GITHUB_ENV
+        continue-on-error: true  # Non-blocking in V1 (no real binary to display)
+
+      - name: Run Tauri smoke tests
+        # continue-on-error: true because:
+        #   1. No signed binary is available in V1.
+        #   2. tauri-driver does not support macOS.
+        #   3. Core commands (capture_screen, keychain) require OS grants unavailable in CI.
+        # In V2 this will be `continue-on-error: false`.
+        run: npx wdio run wdio.conf.ts
+        continue-on-error: true
+        env:
+          DISPLAY: ${{ env.DISPLAY }}
+          TAURI_APP_BINARY: ${{ env.TAURI_APP_BINARY }}
+
+      - name: Upload WDIO logs on failure
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tauri-smoke-logs
+          path: |
+            wdio-*.log
+            .wdio-*
+          if-no-files-found: ignore

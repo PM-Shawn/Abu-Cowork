@@ -85,7 +85,7 @@ export default function SkillDetailModal({
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}>
       <div
-        className="bg-white rounded-2xl shadow-xl w-full max-w-lg max-h-[80vh] flex flex-col overflow-hidden"
+        className="bg-[var(--abu-bg-base)] rounded-2xl shadow-xl w-full max-w-lg max-h-[80vh] flex flex-col overflow-hidden"
         onClick={(e) => e.stopPropagation()}
       >
         {/* Header */}
@@ -166,7 +166,7 @@ export default function SkillDetailModal({
               </div>
               <div className="flex flex-wrap gap-1 pl-5">
                 {allowedTools.map((tool) => (
-                  <span key={tool} className="px-2 py-0.5 rounded bg-blue-50 text-blue-600 text-[10px] font-mono">
+                  <span key={tool} className="px-2 py-0.5 rounded bg-blue-50 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400 text-[10px] font-mono">
                     {tool}
                   </span>
                 ))}

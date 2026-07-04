@@ -18,6 +18,7 @@ import { cacheTriggerContext } from '../im/triggerContextCache';
 import { invoke } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import { watch, type UnwatchFn } from '@tauri-apps/plugin-fs';
+import { isTauriEnv } from '../../utils/tauriEnv';
 
 const DEFAULT_PORT = 18080;
 
@@ -56,6 +57,7 @@ class TriggerEngine {
   private unsubscribeStore: (() => void) | null = null;
 
   async start() {
+    if (!isTauriEnv()) return; // web / E2E: no Tauri IPC or event bus
     console.log('[Trigger] Engine starting...');
 
     // Start HTTP server (Rust side)

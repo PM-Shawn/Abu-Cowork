@@ -269,7 +269,7 @@ export default function AgentsSection({ manualCreateTrigger, onAICreate, onManua
                     <Plus className="h-4 w-4" />
                   </button>
                   {showCreateMenu && (
-                    <div className="absolute z-50 top-full right-0 mt-1 w-44 bg-white rounded-lg shadow-lg border border-[var(--abu-border)] py-1">
+                    <div className="absolute z-50 top-full right-0 mt-1 w-44 bg-[var(--abu-bg-base)] rounded-lg shadow-lg border border-[var(--abu-border)] py-1">
                       {onAICreate && (
                         <button
                           onClick={() => { setShowCreateMenu(false); onAICreate(); }}
@@ -388,7 +388,7 @@ export default function AgentsSection({ manualCreateTrigger, onAICreate, onManua
                           <MoreHorizontal className="h-4 w-4" />
                         </button>
                         {menuAgent === selected.name && (
-                          <div className="absolute right-0 top-8 z-10 bg-white border border-[var(--abu-border)] rounded-lg shadow-lg py-1 min-w-[140px]">
+                          <div className="absolute right-0 top-8 z-10 bg-[var(--abu-bg-base)] border border-[var(--abu-border)] rounded-lg shadow-lg py-1 min-w-[140px]">
                             <button
                               className="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-muted)] transition-colors"
                               onClick={() => { setEditorAgent(selected); setMenuAgent(null); }}

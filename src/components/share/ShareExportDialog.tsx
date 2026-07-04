@@ -85,7 +85,7 @@ export default function ShareExportDialog({ convId, defaultFilename, onClose }: 
         if (e.target === e.currentTarget) onClose();
       }}
     >
-      <div className="bg-white rounded-2xl shadow-xl w-[760px] max-h-[85vh] flex flex-col animate-in zoom-in-95 duration-150">
+      <div className="bg-[var(--abu-bg-base)] rounded-2xl shadow-xl w-[760px] max-h-[85vh] flex flex-col animate-in zoom-in-95 duration-150">
         {/* Header */}
         <div className="flex items-center justify-between px-6 pt-5 pb-3 border-b border-[var(--abu-border)]">
           <div>
@@ -321,7 +321,7 @@ function ToolCallPreviewCard({ toolCall }: { toolCall: ToolCall }) {
       <div className="flex items-center gap-1.5 font-medium text-[var(--abu-text-secondary)]">
         <Wrench className="h-3.5 w-3.5 text-[var(--abu-clay)]" />
         <span>{t.task.calledTool}</span>
-        <code className="font-mono text-[12px] px-1.5 py-0.5 rounded bg-white text-[var(--abu-text-primary)]">
+        <code className="font-mono text-[12px] px-1.5 py-0.5 rounded bg-[var(--abu-bg-muted)] text-[var(--abu-text-primary)]">
           {toolCall.name}
         </code>
       </div>

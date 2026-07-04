@@ -120,7 +120,7 @@ export function Select({ value, onChange, options, placeholder, variant = 'defau
       {/* Dropdown */}
       {open && (
         <div className={cn(
-          'absolute z-50 top-full mt-1 py-1 bg-white border border-[var(--abu-border)] rounded-xl shadow-lg max-h-60 overflow-auto',
+          'absolute z-50 top-full mt-1 py-1 bg-[var(--abu-bg-base)] border border-[var(--abu-border)] rounded-xl shadow-lg max-h-60 overflow-auto',
           isInline ? 'right-0 min-w-[140px]' : 'left-0 right-0',
         )}>
           {isGrouped(options) ? (

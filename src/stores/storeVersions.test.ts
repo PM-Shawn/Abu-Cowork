@@ -3,7 +3,7 @@ import { describe, it, expect, beforeAll } from 'vitest';
 // All persisted stores must be registered here.
 // When adding a new persist store, add it to this list — otherwise this test fails.
 const PERSISTED_STORES = [
-  { key: 'abu-settings', minVersion: 35 },
+  { key: 'abu-settings', minVersion: 37 },
   { key: 'abu-chat', minVersion: 6 },
   { key: 'abu-scratchpad-store', minVersion: 1 },
   { key: 'abu-permissions', minVersion: 1 },
@@ -39,7 +39,7 @@ beforeAll(async () => {
   await import('./discoveredCapabilitiesStore');
   await import('./todosStore');
   await import('./inboxStore');
-}, 30_000); // 16 store imports trigger on-the-fly transforms; a cold cache (CI) can exceed the default 10s hook timeout
+}, 120_000); // 16 store imports trigger on-the-fly transforms; under v8 coverage instrumentation a cold cache exceeds 30s, so allow a generous ceiling (inline timeout overrides global hookTimeout)
 
 describe('Store version compliance', () => {
   it('all persisted stores should have version in their stored data', () => {

@@ -70,7 +70,7 @@ export default function IMInfoBar({ conversation }: IMInfoBarProps) {
   };
 
   return (
-    <div className="shrink-0 flex items-center gap-2 px-6 md:px-10 py-1.5 bg-white/60 border-b border-[var(--abu-border)] text-[13px]">
+    <div className="shrink-0 flex items-center gap-2 px-6 md:px-10 py-1.5 bg-[var(--abu-bg-base)]/60 border-b border-[var(--abu-border)] text-[13px]">
       {/* Platform icon + title */}
       <div className="flex items-center gap-1.5 min-w-0">
         <span className="shrink-0 h-4 w-4 rounded text-[8px] font-bold leading-4 text-center bg-[var(--abu-clay-bg-15)] text-[var(--abu-clay)]">
@@ -99,7 +99,7 @@ export default function IMInfoBar({ conversation }: IMInfoBarProps) {
         </button>
 
         {showMenu && (
-          <div className="absolute top-full right-0 mt-1 w-60 bg-white rounded-lg shadow-lg border border-[var(--abu-border)] py-1.5 z-50">
+          <div className="absolute top-full right-0 mt-1 w-60 bg-[var(--abu-bg-base)] rounded-lg shadow-lg border border-[var(--abu-border)] py-1.5 z-50">
             {/* Capability */}
             <div className="flex items-center gap-2 px-3 py-1.5 text-[12px]">
               <Shield className="h-3.5 w-3.5 text-[var(--abu-text-muted)] shrink-0" />

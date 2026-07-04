@@ -127,15 +127,27 @@ class TauriStdioTransport {
 let Client: typeof import('@modelcontextprotocol/sdk/client/index.js').Client | null = null;
 let StreamableHTTPClientTransport: typeof import('@modelcontextprotocol/sdk/client/streamableHttp.js').StreamableHTTPClientTransport | null = null;
 let SSEClientTransport: typeof import('@modelcontextprotocol/sdk/client/sse.js').SSEClientTransport | null = null;
+// CSP-safe JSON-Schema validator. The SDK's default (ajv) compiles a tool's
+// outputSchema via `new Function`, which the packaged app's CSP (script-src has
+// 'unsafe-inline' but not 'unsafe-eval') blocks — that thrown error rejects
+// listTools() and turns any connector whose tools declare an outputSchema into
+// an Error state in release builds. CfWorkerJsonSchemaValidator validates
+// without code generation (built for eval-restricted runtimes), so it stays
+// CSP-safe while keeping real output-schema validation. Injected into every
+// Client via createMcpClient().
+let cspSafeValidator: InstanceType<
+  typeof import('@modelcontextprotocol/sdk/validation/cfworker').CfWorkerJsonSchemaValidator
+> | null = null;
 let mcpAvailable = false;
 
 async function loadMCPSDK(): Promise<boolean> {
   if (mcpAvailable) return true;
 
-  const [clientResult, streamableResult, sseResult] = await Promise.allSettled([
+  const [clientResult, streamableResult, sseResult, cfworkerResult] = await Promise.allSettled([
     import('@modelcontextprotocol/sdk/client/index.js'),
     import('@modelcontextprotocol/sdk/client/streamableHttp.js'),
     import('@modelcontextprotocol/sdk/client/sse.js'),
+    import('@modelcontextprotocol/sdk/validation/cfworker'),
   ]);
 
   // Core Client — required
@@ -145,6 +157,23 @@ async function loadMCPSDK(): Promise<boolean> {
   } else {
     console.log('[MCP] Client not available:', clientResult.reason);
     return false;
+  }
+
+  // CSP-safe validator — preferred so listTools() doesn't trip ajv's `new Function`
+  // under the packaged app's CSP. OPTIONAL, not required: if it can't load or
+  // construct, leave cspSafeValidator null so createMcpClient() falls back to the
+  // SDK default (ajv). That degrades gracefully — only outputSchema connectors
+  // risk the CSP error again — instead of disabling ALL MCP (incl. stdio/HTTP
+  // connectors with no outputSchema, which never touch the validator).
+  if (cfworkerResult.status === 'fulfilled') {
+    try {
+      cspSafeValidator = new cfworkerResult.value.CfWorkerJsonSchemaValidator();
+      console.log('[MCP] CSP-safe validator loaded');
+    } catch (err) {
+      console.warn('[MCP] CSP-safe validator failed to construct, falling back to SDK default:', err);
+    }
+  } else {
+    console.warn('[MCP] CSP-safe validator not available, falling back to SDK default:', cfworkerResult.reason);
   }
 
   // HTTP transports — optional
@@ -161,6 +190,21 @@ async function loadMCPSDK(): Promise<boolean> {
   mcpAvailable = true;
   console.log('[MCP] SDK loaded successfully');
   return true;
+}
+
+/**
+ * Construct an MCP Client with shared client info and the CSP-safe validator.
+ * Centralizing this ensures every transport (stdio / StreamableHTTP / SSE) gets
+ * the eval-free validator — a copy-pasted Client site that forgets it would
+ * re-introduce the packaged-app CSP failure. Callers must ensure loadMCPSDK()
+ * succeeded (Client + cspSafeValidator are non-null after it returns true).
+ */
+function createMcpClient(): InstanceType<NonNullable<typeof Client>> {
+  if (!Client) throw new Error('MCP Client not loaded');
+  return new Client(
+    { name: 'abu-desktop', version: '0.1.0' },
+    { capabilities: {}, jsonSchemaValidator: cspSafeValidator ?? undefined }
+  );
 }
 
 /** Determine effective transport type from config */
@@ -316,10 +360,7 @@ export class MCPClientManager {
         });
 
         // Create MCP client and connect for stdio
-        client = new Client(
-          { name: 'abu-desktop', version: '0.1.0' },
-          { capabilities: {} }
-        );
+        client = createMcpClient();
         await client.connect(transport as Parameters<typeof client.connect>[0]);
       }
 
@@ -407,10 +448,7 @@ export class MCPClientManager {
       try {
         this.addLog(displayName, 'info', 'Trying StreamableHTTP transport...');
         const transport = new StreamableHTTPClientTransport(url, transportOpts);
-        const client = new Client(
-          { name: 'abu-desktop', version: '0.1.0' },
-          { capabilities: {} }
-        );
+        const client = createMcpClient();
         await client.connect(transport as Parameters<typeof client.connect>[0]);
         this.addLog(displayName, 'info', 'Connected via StreamableHTTP');
         return { transport, client };
@@ -425,10 +463,7 @@ export class MCPClientManager {
       try {
         this.addLog(displayName, 'info', 'Trying SSE transport...');
         const transport = new SSEClientTransport(url, transportOpts);
-        const client = new Client(
-          { name: 'abu-desktop', version: '0.1.0' },
-          { capabilities: {} }
-        );
+        const client = createMcpClient();
         await client.connect(transport as Parameters<typeof client.connect>[0]);
         this.addLog(displayName, 'info', 'Connected via SSE');
         return { transport, client };

@@ -418,6 +418,13 @@ const zhCN: TranslationDict = {
 
   settings: {
     title: '系统设置',
+    labs: '实验',
+    labsDescription: '这里是还在打磨中的新功能。默认关闭，你可以按需开启抢先体验。',
+    labsChangeHint: '实验功能可能随时调整或移除',
+    labsEmpty: '暂无进行中的实验功能',
+    labsEmptyHint: '有新功能会先在这里放出，敬请期待',
+    labsExpTodosInboxTitle: '待办 & 收件箱',
+    labsExpTodosInboxDesc: '在侧边栏启用「待办」和「收件箱」，让阿布把任务和待确认项收拢到一处。',
     apiConfig: 'API 配置',
     modelSelect: '模型选择',
     advanced: '高级参数',
@@ -553,6 +560,10 @@ const zhCN: TranslationDict = {
     preventSleepDesc: '阿布运行时保持系统唤醒，盒盖不中断任务（需接通电源；Windows 仅防空闲睡眠）',
     petEnable: '桌宠',
     petEnableDesc: '在桌面显示一个可以随时对话的悬浮小阿布，单击唤起输入框，双击打开主窗口，右键查看更多操作',
+    appearance: '外观',
+    appearanceLight: '亮色',
+    appearanceDark: '暗色',
+    appearanceSystem: '跟随系统',
     // Permission mode
     permissionMode: '默认权限模式',
     permissionModeDesc: '新对话的默认确认行为，对话内可随时临时切换',
@@ -752,6 +763,7 @@ const zhCN: TranslationDict = {
     uploadInProgress: '上传中…',
     uploadSuccess: '上传成功',
     uploadFailed: '上传失败',
+    uploadDescriptionPlaceholder: '描述遇到的问题，帮助我们更快定位（选填）',
     successTitle: '已导出诊断包',
     successMeta: '{size} · {count} 个文件 · 已脱敏 {scrubbed} 处',
     successOpenFinder: '在 Finder 中显示',
@@ -893,6 +905,11 @@ const zhCN: TranslationDict = {
     importConflictTitle: '技能已存在',
     importConflictMessage: '当前已有同名技能 "{name}"。覆盖会替换掉现有内容。',
     importConflictOverwrite: '覆盖',
+    importEntry: '导入技能',
+    dropZoneHint: '拖放文件夹到这里，或点击选择',
+    pickFolder: '选择文件夹',
+    pickFile: '导入 .askill / .zip 技能包',
+    importSkippedFiles: '跳过 {n} 个隐藏文件：{names}',
     manualAdd: '手动配置',
     // Skill detail & editor
     skillDetail: '技能详情',
@@ -1595,6 +1612,7 @@ const zhCN: TranslationDict = {
 
   about: {
     feedback: '反馈',
+    wechatSectionTitle: '联系开发者',
     feedbackDesc: '扫码添加微信，反馈问题或交流想法',
     sponsor: '支持',
     sponsorDesc: '如果觉得阿布好用，请作者喝杯咖啡吧',

@@ -418,6 +418,13 @@ const enUS: TranslationDict = {
 
   settings: {
     title: 'System Settings',
+    labs: 'Labs',
+    labsDescription: 'Features still being polished. Off by default — turn them on to try them early.',
+    labsChangeHint: 'Experimental features may change or be removed at any time',
+    labsEmpty: 'No experimental features in progress',
+    labsEmptyHint: 'New features will show up here first — stay tuned',
+    labsExpTodosInboxTitle: 'Todos & Inbox',
+    labsExpTodosInboxDesc: 'Enable the Todos and Inbox tabs in the sidebar so Abu can collect tasks and pending items in one place.',
     apiConfig: 'API Config',
     modelSelect: 'Model',
     advanced: 'Advanced',
@@ -553,6 +560,10 @@ const enUS: TranslationDict = {
     preventSleepDesc: 'Keep the system awake while Abu is running. When on AC power, closing the lid will not interrupt tasks. (Windows: idle sleep only)',
     petEnable: 'Desktop Pet',
     petEnableDesc: 'Show a floating Abu avatar on your desktop you can chat with anytime — click to open a quick input, double-click to open the main window, right-click for more options',
+    appearance: 'Appearance',
+    appearanceLight: 'Light',
+    appearanceDark: 'Dark',
+    appearanceSystem: 'System',
     // Permission mode
     permissionMode: 'Default Permission Mode',
     permissionModeDesc: 'Default confirmation behavior for new conversations; can be overridden per conversation from the toolbar',
@@ -752,6 +763,7 @@ const enUS: TranslationDict = {
     uploadInProgress: 'Uploading…',
     uploadSuccess: 'Uploaded',
     uploadFailed: 'Upload failed',
+    uploadDescriptionPlaceholder: 'Describe the issue to help us diagnose faster (optional)',
     successTitle: 'Bundle exported',
     successMeta: '{size} · {count} files · {scrubbed} text fields scrubbed',
     successOpenFinder: 'Show in Finder',
@@ -891,6 +903,11 @@ const enUS: TranslationDict = {
     importConflictTitle: 'Skill already exists',
     importConflictMessage: 'A skill named "{name}" is already installed. Overwrite replaces the existing content.',
     importConflictOverwrite: 'Overwrite',
+    importEntry: 'Import skill',
+    dropZoneHint: 'Drop a folder here, or click to choose',
+    pickFolder: 'Select folder',
+    pickFile: 'Import a .askill / .zip package',
+    importSkippedFiles: 'Skipped {n} hidden file(s): {names}',
     exportSuccess: 'Export Successful',
     exportFailed: 'Export Failed',
     manualAdd: 'Manual Setup',
@@ -1594,6 +1611,7 @@ const enUS: TranslationDict = {
 
   about: {
     feedback: 'Feedback',
+    wechatSectionTitle: 'Contact Developer',
     feedbackDesc: 'Scan to add on WeChat for feedback or discussion',
     sponsor: 'Support',
     sponsorDesc: 'Buy the author a coffee if you find Abu useful',

@@ -2,12 +2,13 @@ import { useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { useSettingsStore } from '@/stores/settingsStore';
 import { type LanguageSetting, useI18n } from '@/i18n';
-import { Trash2 } from 'lucide-react';
+import { Trash2, Sun, Moon, Monitor } from 'lucide-react';
 import { clearBehaviorData, testWindowPermission } from '@/core/agent/behaviorSensor';
 import { testScreenshotPermission } from '@/core/agent/computerUsePermission';
 import { useToastStore } from '@/stores/toastStore';
 import { Select } from '@/components/ui/select';
 import { Toggle } from '@/components/ui/toggle';
+import { cn } from '@/lib/utils';
 
 export default function GeneralSection() {
   const closeAction = useSettingsStore(s => s.closeAction);
@@ -22,6 +23,8 @@ export default function GeneralSection() {
   const [sensorTesting, setSensorTesting] = useState(false);
   const [computerUseTesting, setComputerUseTesting] = useState(false);
   const { t } = useI18n();
+  const theme = useSettingsStore(s => s.theme);
+  const setTheme = useSettingsStore(s => s.setTheme);
 
   const handleToggleSensor = async () => {
     if (behaviorSensorEnabled) {
@@ -85,6 +88,33 @@ export default function GeneralSection() {
 
   return (
     <div className="space-y-8">
+      {/* Appearance */}
+      <div className="flex items-center justify-between p-4 rounded-xl border border-[var(--abu-border)] bg-[var(--abu-bg-muted)]">
+        <p className="text-sm text-[var(--abu-text-primary)]">{t.settings.appearance}</p>
+        <div className="flex gap-1">
+          {([
+            { value: 'light', icon: Sun, label: t.settings.appearanceLight },
+            { value: 'system', icon: Monitor, label: t.settings.appearanceSystem },
+            { value: 'dark', icon: Moon, label: t.settings.appearanceDark },
+          ] as const).map(({ value, icon: Icon, label }) => (
+            <button
+              key={value}
+              onClick={() => setTheme(value)}
+              title={label}
+              className={cn(
+                'flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs transition-colors',
+                theme === value
+                  ? 'bg-[var(--abu-clay)] text-white'
+                  : 'text-[var(--abu-text-tertiary)] hover:bg-[var(--abu-bg-hover)] hover:text-[var(--abu-text-primary)]'
+              )}
+            >
+              <Icon className="h-3.5 w-3.5" />
+              {label}
+            </button>
+          ))}
+        </div>
+      </div>
+
       {/* Language */}
       <div className="flex items-center justify-between p-4 rounded-xl border border-[var(--abu-border)] bg-[var(--abu-bg-muted)]">
         <p className="text-sm text-[var(--abu-text-primary)]">{t.settings.language}</p>

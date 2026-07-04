@@ -529,6 +529,14 @@ export interface TranslationDict {
     networkWhitelist: string;
     networkPreset: string;
     networkCustom: string;
+    // Labs (experimental features)
+    labs: string;
+    labsDescription: string;
+    labsChangeHint: string;
+    labsEmpty: string;
+    labsEmptyHint: string;
+    labsExpTodosInboxTitle: string;
+    labsExpTodosInboxDesc: string;
     // General section
     general: string;
     generalDescription: string;
@@ -554,6 +562,10 @@ export interface TranslationDict {
     preventSleepDesc: string;
     petEnable: string;
     petEnableDesc: string;
+    appearance: string;
+    appearanceLight: string;
+    appearanceDark: string;
+    appearanceSystem: string;
     // Permission mode
     permissionMode: string;
     permissionModeDesc: string;
@@ -777,6 +789,7 @@ export interface TranslationDict {
     uploadInProgress: string;
     uploadSuccess: string;
     uploadFailed: string;
+    uploadDescriptionPlaceholder: string;
     // Success card
     successTitle: string;
     successMeta: string; // {size}, {count}, {scrubbed}
@@ -922,6 +935,12 @@ export interface TranslationDict {
     importConflictTitle: string;     // confirm dialog
     importConflictMessage: string;   // "{name} 已存在，是否覆盖？"
     importConflictOverwrite: string; // "覆盖"
+    // Merged upload entry — folder / .askill / .zip via click or drag-drop
+    importEntry: string;             // menu label + modal title
+    dropZoneHint: string;            // drag-drop zone hint
+    pickFolder: string;              // "选择文件夹"
+    pickFile: string;                // "选择文件 (.askill/.zip)"
+    importSkippedFiles: string;      // "跳过 {n} 个隐藏文件：{names}"
     manualAdd: string;
     // Skill detail & editor
     skillDetail: string;
@@ -1627,6 +1646,7 @@ export interface TranslationDict {
   // About
   about: {
     feedback: string;
+    wechatSectionTitle: string;
     feedbackDesc: string;
     sponsor: string;
     sponsorDesc: string;

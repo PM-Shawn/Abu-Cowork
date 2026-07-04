@@ -183,6 +183,16 @@ function wrapWithLocalFetch(pluginFetch: typeof globalThis.fetch): typeof global
 export function getTauriFetch(): Promise<typeof globalThis.fetch> {
   if (!_loadPromise) {
     _loadPromise = (async () => {
+      // Non-Tauri runtime (web mode / E2E): skip the plugin import entirely and
+      // return native fetch so the browser can make LLM requests directly.
+      // Real desktop builds always have __TAURI_INTERNALS__ injected by the webview;
+      // plain browser and E2E tests do not, so this check is sufficient.
+      if (
+        typeof window === 'undefined' ||
+        !(window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__
+      ) {
+        return globalThis.fetch;
+      }
       try {
         const mod = await import('@tauri-apps/plugin-http');
         return wrapWithLocalFetch(mod.fetch);

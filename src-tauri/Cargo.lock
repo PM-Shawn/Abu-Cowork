@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "abu"
-version = "0.24.3"
+version = "0.24.4"
 dependencies = [
  "aes-gcm",
  "axum",
@@ -2413,7 +2413,7 @@ dependencies = [
  "tokio",
  "tower-service",
  "tracing",
- "windows-registry 0.5.3",
+ "windows-registry 0.6.1",
 ]
 
 [[package]]
@@ -2428,7 +2428,7 @@ dependencies = [
  "js-sys",
  "log",
  "wasm-bindgen",
- "windows-core 0.58.0",
+ "windows-core 0.62.2",
 ]
 
 [[package]]

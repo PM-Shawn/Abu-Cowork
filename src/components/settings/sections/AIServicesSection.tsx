@@ -141,7 +141,7 @@ export default function AIServicesSection() {
                     onClick={() => setSearchExpanded(!searchExpanded)}
                     className={cn(
                       'text-xs px-1.5 py-0.5 rounded cursor-pointer transition-colors',
-                      'bg-amber-50 text-amber-700 hover:bg-amber-100'
+                      'bg-amber-50 dark:bg-amber-900/20 text-amber-700 dark:text-amber-400 hover:bg-amber-100 dark:hover:bg-amber-900/30'
                     )}
                   >
                     <span className="flex items-center gap-1">
@@ -184,7 +184,7 @@ export default function AIServicesSection() {
                   onClick={() => setImageGenExpanded(!imageGenExpanded)}
                   className={cn(
                     'text-xs px-1.5 py-0.5 rounded cursor-pointer transition-colors',
-                    'bg-amber-50 text-amber-700 hover:bg-amber-100'
+                    'bg-amber-50 dark:bg-amber-900/20 text-amber-700 dark:text-amber-400 hover:bg-amber-100 dark:hover:bg-amber-900/30'
                   )}
                 >
                   <span className="flex items-center gap-1">

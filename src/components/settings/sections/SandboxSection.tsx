@@ -78,15 +78,15 @@ export default function SandboxSection() {
             className={cn(
               'w-full flex items-center justify-between p-4 rounded-xl border transition-all text-left',
               sandboxEnabled
-                ? 'border-emerald-500/50 bg-emerald-50'
+                ? 'border-emerald-500/50 dark:border-emerald-600/40 bg-emerald-50 dark:bg-emerald-900/20'
                 : 'border-[var(--abu-border)] bg-[var(--abu-bg-muted)]'
             )}
           >
             <div className="flex items-center gap-3">
-              <Shield className={cn('h-5 w-5', sandboxEnabled ? 'text-emerald-600' : 'text-[var(--abu-text-muted)]')} />
+              <Shield className={cn('h-5 w-5', sandboxEnabled ? 'text-emerald-600 dark:text-emerald-400' : 'text-[var(--abu-text-muted)]')} />
               <div>
                 <div className="flex items-center gap-1.5">
-                  <p className={cn('text-sm font-medium', sandboxEnabled ? 'text-emerald-700' : 'text-[var(--abu-text-tertiary)]')}>
+                  <p className={cn('text-sm font-medium', sandboxEnabled ? 'text-emerald-700 dark:text-emerald-300' : 'text-[var(--abu-text-tertiary)]')}>
                     {t.settings.sandboxProtection}
                   </p>
                   <div
@@ -128,7 +128,7 @@ export default function SandboxSection() {
                 className={cn(
                   'w-full flex items-center justify-between p-4 rounded-xl border transition-all text-left',
                   networkIsolationEnabled
-                    ? 'border-blue-500/50 bg-blue-50'
+                    ? 'border-blue-500/50 dark:border-blue-600/40 bg-blue-50 dark:bg-blue-900/20'
                     : 'border-[var(--abu-border)] bg-[var(--abu-bg-muted)]'
                 )}
               >
@@ -238,16 +238,16 @@ export default function SandboxSection() {
         </>
       ) : (
         <div className="space-y-3">
-          <div className="flex items-center gap-3 p-4 rounded-xl border border-amber-500/50 bg-amber-50">
-            <ShieldAlert className="h-5 w-5 text-amber-600 shrink-0" />
-            <p className="text-sm text-amber-700 font-medium">
+          <div className="flex items-center gap-3 p-4 rounded-xl border border-amber-500/50 dark:border-amber-600/40 bg-amber-50 dark:bg-amber-900/20">
+            <ShieldAlert className="h-5 w-5 text-amber-600 dark:text-amber-400 shrink-0" />
+            <p className="text-sm text-amber-700 dark:text-amber-300 font-medium">
               {t.settings.sandboxMacOSOnly}
             </p>
           </div>
-          <div className="p-4 rounded-xl border border-emerald-500/30 bg-emerald-50">
+          <div className="p-4 rounded-xl border border-emerald-500/30 dark:border-emerald-600/30 bg-emerald-50 dark:bg-emerald-900/20">
             <div className="flex items-center gap-2 mb-2">
-              <Shield className="h-4 w-4 text-emerald-600 shrink-0" />
-              <p className="text-xs text-emerald-700 font-medium">
+              <Shield className="h-4 w-4 text-emerald-600 dark:text-emerald-400 shrink-0" />
+              <p className="text-xs text-emerald-700 dark:text-emerald-300 font-medium">
                 {t.settings.sandboxAppLayerProtection}
               </p>
             </div>
@@ -304,14 +304,14 @@ function ContentGuardToggle() {
         className={cn(
           'w-full flex items-center justify-between p-4 rounded-xl border transition-all text-left',
           enabled
-            ? 'border-emerald-500/50 bg-emerald-50'
-            : 'border-amber-500/50 bg-amber-50',
+            ? 'border-emerald-500/50 dark:border-emerald-600/40 bg-emerald-50 dark:bg-emerald-900/20'
+            : 'border-amber-500/50 dark:border-amber-600/40 bg-amber-50 dark:bg-amber-900/20',
         )}
       >
         <div className="flex items-center gap-3">
-          <ShieldCheck className={cn('h-5 w-5', enabled ? 'text-emerald-600' : 'text-amber-600')} />
+          <ShieldCheck className={cn('h-5 w-5', enabled ? 'text-emerald-600 dark:text-emerald-400' : 'text-amber-600 dark:text-amber-400')} />
           <div>
-            <p className={cn('text-sm font-medium', enabled ? 'text-emerald-700' : 'text-amber-700')}>
+            <p className={cn('text-sm font-medium', enabled ? 'text-emerald-700 dark:text-emerald-300' : 'text-amber-700 dark:text-amber-300')}>
               {t.settings.contentGuardTitle}
             </p>
             <p className="text-xs text-[var(--abu-text-muted)] mt-0.5">

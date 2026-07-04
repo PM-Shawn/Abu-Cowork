@@ -192,7 +192,7 @@ export default function ProjectItem({ project, conversations, expanded, onNewTas
       {contextMenu && (
         <div
           ref={contextMenuRef}
-          className="fixed z-50 bg-white rounded-lg shadow-lg border border-[var(--abu-border)] py-1 min-w-[160px]"
+          className="fixed z-50 bg-[var(--abu-bg-base)] rounded-lg shadow-lg border border-[var(--abu-border)] py-1 min-w-[160px]"
           style={{ left: contextMenu.x, top: contextMenu.y }}
         >
           <button
@@ -245,7 +245,7 @@ export default function ProjectItem({ project, conversations, expanded, onNewTas
           regardless of whether the conversation lives under a project. */}
       {convMenu && (
         <div
-          className="fixed z-50 bg-white rounded-lg shadow-lg border border-[var(--abu-border)] py-1 min-w-[140px]"
+          className="fixed z-50 bg-[var(--abu-bg-base)] rounded-lg shadow-lg border border-[var(--abu-border)] py-1 min-w-[140px]"
           style={{ left: convMenu.x, top: convMenu.y }}
         >
           <button
@@ -311,7 +311,7 @@ export default function ProjectItem({ project, conversations, expanded, onNewTas
           className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/40 animate-in fade-in duration-150"
           onClick={(e) => { if (e.target === e.currentTarget) setShowArchiveConfirm(false); }}
         >
-          <div className="bg-white rounded-2xl shadow-xl w-[380px] p-6 animate-in zoom-in-95 duration-150">
+          <div className="bg-[var(--abu-bg-base)] rounded-2xl shadow-xl w-[380px] p-6 animate-in zoom-in-95 duration-150">
             <h3 className="text-[16px] font-semibold text-[var(--abu-text-primary)] mb-2">
               {t.project.archiveProject}
             </h3>
@@ -345,7 +345,7 @@ export default function ProjectItem({ project, conversations, expanded, onNewTas
           className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/40 animate-in fade-in duration-150"
           onClick={(e) => { if (e.target === e.currentTarget) setShowDeleteConfirm(false); }}
         >
-          <div className="bg-white rounded-2xl shadow-xl w-[380px] p-6 animate-in zoom-in-95 duration-150">
+          <div className="bg-[var(--abu-bg-base)] rounded-2xl shadow-xl w-[380px] p-6 animate-in zoom-in-95 duration-150">
             <h3 className="text-[16px] font-semibold text-[var(--abu-text-primary)] mb-2">
               {t.project.deleteProject}
             </h3>

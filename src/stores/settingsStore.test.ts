@@ -485,4 +485,33 @@ describe('settingsStore labs flags', () => {
       expect(migrated.labs).toEqual({});
     });
   });
+
+  describe('v38 migration', () => {
+    const getMigrate = () =>
+      (useSettingsStore as unknown as {
+        persist: { getOptions: () => { migrate: (data: unknown, version: number) => Record<string, unknown> } };
+      }).persist.getOptions().migrate;
+
+    it('sets labs.pet=true when petOpen was true on upgrade from v37', () => {
+      const migrated = getMigrate()({ petOpen: true, labs: {} }, 37);
+      expect((migrated.labs as Record<string, boolean>)['pet']).toBe(true);
+    });
+
+    it('does NOT set labs.pet when petOpen was false on upgrade from v37', () => {
+      const migrated = getMigrate()({ petOpen: false, labs: {} }, 37);
+      expect((migrated.labs as Record<string, boolean>)['pet']).toBeUndefined();
+    });
+
+    it('creates labs map if absent and petOpen was true', () => {
+      const migrated = getMigrate()({ petOpen: true }, 37);
+      expect((migrated.labs as Record<string, boolean>)['pet']).toBe(true);
+    });
+
+    it('preserves existing labs flags while adding pet unlock', () => {
+      const migrated = getMigrate()({ petOpen: true, labs: { 'todos-inbox': true } }, 37);
+      const labs = migrated.labs as Record<string, boolean>;
+      expect(labs['pet']).toBe(true);
+      expect(labs['todos-inbox']).toBe(true);
+    });
+  });
 });

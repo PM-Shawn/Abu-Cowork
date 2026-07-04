@@ -283,7 +283,7 @@ function createDefaultProviders(): ProviderInstance[] {
 
 export type ViewMode = 'chat' | 'automation' | 'toolbox' | 'settings' | 'todos' | 'inbox';
 export type AutomationTab = 'schedule' | 'trigger';
-export type SystemSettingsTab = 'general' | 'ai-services' | 'sandbox' | 'im-channels' | 'personal-memory' | 'soul' | 'diagnostic' | 'usage' | 'about' | 'feedback' | 'sponsor' | 'enterprise' | 'labs';
+export type SystemSettingsTab = 'general' | 'ai-services' | 'sandbox' | 'im-channels' | 'pet' | 'personal-memory' | 'soul' | 'diagnostic' | 'usage' | 'about' | 'feedback' | 'sponsor' | 'enterprise' | 'labs';
 export type ToolboxTab = 'skills' | 'agents' | 'mcp';
 
 // ============================================================
@@ -1034,9 +1034,24 @@ export const useSettingsStore = create<SettingsStore>()(
     }),
     {
       name: 'abu-settings',
-      version: 37,
+      version: 38,
       migrate: (persisted: unknown, version: number) => {
         const state = persisted as Record<string, unknown>;
+
+        // ════════════════════════════════════════════════
+        // V38: Desktop pet became a two-level Labs feature — the `pet` unlock
+        // flag now lives in `settings.labs` (was previously implicit in petOpen).
+        // Preserve continuity: anyone who already had the pet open stays
+        // "unlocked" so their pet isn't force-hidden on upgrade.
+        // ════════════════════════════════════════════════
+        if (version < 38) {
+          if (typeof state.labs !== 'object' || state.labs === null || Array.isArray(state.labs)) {
+            state.labs = {};
+          }
+          if (state.petOpen === true) {
+            (state.labs as Record<string, boolean>)['pet'] = true;
+          }
+        }
 
         // ════════════════════════════════════════════════
         // V37: Add petOpen — remembers whether the desktop pet was open

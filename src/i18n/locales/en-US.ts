@@ -426,6 +426,7 @@ const enUS: TranslationDict = {
     labsExpTodosInboxDesc: 'Enable the Todos and Inbox tabs in the sidebar so Abu can collect tasks and pending items in one place.',
     labsExpTodosInboxWhere: 'Once on: a Todos and an Inbox entry appear in the left sidebar',
     labsExpPetWhere: 'Once on, enable and configure it in Settings → Desktop Pet',
+    labsExpPetDesc: 'Unlock the desktop pet — a floating Abu you can chat with anytime',
     apiConfig: 'API Config',
     modelSelect: 'Model',
     advanced: 'Advanced',

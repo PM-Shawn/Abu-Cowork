@@ -426,6 +426,7 @@ const zhCN: TranslationDict = {
     labsExpTodosInboxDesc: '在侧边栏启用「待办」和「收件箱」，让阿布把任务和待确认项收拢到一处。',
     labsExpTodosInboxWhere: '开启后：左侧边栏出现「待办」和「收件箱」入口',
     labsExpPetWhere: '开启后可在「系统设置 → 桌宠」中启用并配置',
+    labsExpPetDesc: '解锁「桌宠」——一个可随时对话的桌面悬浮小阿布',
     apiConfig: 'API 配置',
     modelSelect: '模型选择',
     advanced: '高级参数',

@@ -53,7 +53,7 @@ export const LABS_EXPERIMENTS: readonly LabsExperiment[] = [
   {
     id: LABS_PET,
     title: () => getI18n().settings.petEnable,
-    description: () => getI18n().settings.petEnableDesc,
+    description: () => getI18n().settings.labsExpPetDesc,
     locationHint: () => getI18n().settings.labsExpPetWhere,
     defaultEnabled: false,
     expiresAfter: '2026-10-01',

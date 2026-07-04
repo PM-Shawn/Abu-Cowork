@@ -24,6 +24,7 @@ vi.mock('@/i18n', () => ({
     settings: {
       petEnable: 'Desktop Pet',
       petEnableDesc: 'Show a floating pet on your desktop',
+      labsExpPetDesc: 'Unlock the desktop pet — a floating Abu you can chat with anytime',
       labsExpPetWhere: 'Find it under System Settings → Desktop Pet',
     },
   }),
@@ -80,8 +81,8 @@ describe('LabsSection', () => {
       await user.click(toggle);
 
       expect(invoke).toHaveBeenCalledWith('pet_hide');
-      // labs.pet was set to false (the setLabsFlag call succeeds unconditionally)
-      expect(useSettingsStore.getState().labs['pet']).toBe(false);
+      // hide failed → the flag must NOT flip off (user can retry via the tab)
+      expect(useSettingsStore.getState().labs['pet']).toBe(true);
       // petOpen must remain true since the hide failed
       expect(useSettingsStore.getState().petOpen).toBe(true);
     });

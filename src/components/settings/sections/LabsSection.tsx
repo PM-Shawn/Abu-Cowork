@@ -15,15 +15,23 @@ export default function LabsSection() {
   const setPetOpen = useSettingsStore((s) => s.setPetOpen);
 
   const handleToggle = async (id: string, next: boolean) => {
-    setLabsFlag(id, next);
-    // The pet unlock flag is a gate, not the pet switch. Turning it OFF must
-    // fully tear down a running pet; clear petOpen only if the hide succeeded so
-    // a failed hide is retried instead of desyncing from a still-visible window.
-    if (id === LABS_PET && !next && petOpen) {
-      if (await hidePet()) {
-        setPetOpen(false);
+    // The pet unlock's OFF transition is a teardown, not just a flag flip.
+    // Hide the running pet FIRST and only lock (flip the flag off) + clear
+    // petOpen once the hide succeeds — otherwise a failed pet_hide would strip
+    // the pet's settings tab while the pet is still visible, leaving no
+    // in-session control to dismiss it. On failure, leave the flag ON to retry.
+    if (id === LABS_PET && !next) {
+      if (petOpen) {
+        if (await hidePet()) {
+          setPetOpen(false);
+          setLabsFlag(id, false);
+        }
+        return;
       }
+      setLabsFlag(id, false);
+      return;
     }
+    setLabsFlag(id, next);
   };
 
   // Empty state: the section stays in the nav (stable, discoverable), but shows

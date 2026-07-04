@@ -111,3 +111,35 @@ describe('readFileTool — PDF shell injection regression', () => {
     expect(script).toContain('sys.argv[1]');
   });
 });
+
+// Regression coverage for the vision-leak incident (conversation mr6949f59zuixs):
+// a non-vision model (glm-5.1-external) read PNGs extracted from a zip; read_file
+// returned base64 image blocks, which the provider rejected with 400
+// ("messages.content.type 取值范围 ['text']"). read_file must not emit image
+// content when the active model has no vision capability — it should return a
+// text note so the model can tell the user gracefully, without reading the bytes.
+describe('readFileTool — non-vision model image gating', () => {
+  beforeEach(() => {
+    vi.mocked(invoke).mockReset();
+  });
+
+  it('returns a text note (no image block) when supportsVision is false', async () => {
+    const result = await readFileTool.execute({ path: '/tmp/图片.png' }, { supportsVision: false });
+    expect(typeof result).toBe('string');
+    expect(result as string).toContain('/tmp/图片.png');
+    expect(result as string).toContain('无视觉能力');
+    // Must NOT have produced an image content block (which would require
+    // reading the bytes — plugin-fs.readFile isn't even mocked, so hitting
+    // that path would throw and fail this test).
+    expect(Array.isArray(result)).toBe(false);
+  });
+
+  it('does not short-circuit to the skip note for a vision-capable (default) model', async () => {
+    // supportsVision unset → treated as vision-capable → image branch runs and
+    // tries to read bytes. plugin-fs.readFile is unmocked, so the attempt
+    // surfaces as an error string rather than the skip note — the point is it
+    // did NOT take the non-vision shortcut.
+    const result = await readFileTool.execute({ path: '/tmp/图片.png' });
+    expect(String(result)).not.toContain('无视觉能力');
+  });
+});

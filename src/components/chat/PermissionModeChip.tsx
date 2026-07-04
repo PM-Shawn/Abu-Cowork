@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect } from 'react';
-import { ShieldCheck, Bot, Rocket } from 'lucide-react';
+import { Hand, ScanEye, AlertTriangle } from 'lucide-react';
 import { useChatStore } from '@/stores/chatStore';
 import { useSettingsStore } from '@/stores/settingsStore';
 import { useI18n } from '@/i18n';
@@ -12,10 +12,18 @@ interface ModeOption {
 }
 
 const MODE_OPTIONS: ModeOption[] = [
-  { mode: 'standard', Icon: ShieldCheck },
-  { mode: 'smart', Icon: Bot },
-  { mode: 'autonomous', Icon: Rocket },
+  { mode: 'standard', Icon: Hand },
+  { mode: 'smart', Icon: ScanEye },
+  { mode: 'autonomous', Icon: AlertTriangle },
 ];
+
+// Collapsed chip color per mode (icon follows text via currentColor): risk ramp
+// gray → clay → red. Dropdown list items stay neutral.
+const MODE_CHIP_COLOR: Record<PermissionMode, string> = {
+  standard: 'text-[var(--abu-text-tertiary)] hover:text-[var(--abu-text-primary)]',
+  smart: 'text-[var(--abu-clay)] hover:text-[var(--abu-clay-hover)]',
+  autonomous: 'text-[var(--abu-danger)]',
+};
 
 interface Props {
   conversationId: string | null;
@@ -42,7 +50,7 @@ export default function PermissionModeChip({ conversationId }: Props) {
   };
 
   const currentLabel = modeLabels[effectiveMode]?.label ?? t.settings.permissionModeStandard;
-  const CurrentIcon = MODE_OPTIONS.find((o) => o.mode === effectiveMode)?.Icon ?? ShieldCheck;
+  const CurrentIcon = MODE_OPTIONS.find((o) => o.mode === effectiveMode)?.Icon ?? Hand;
 
   useEffect(() => {
     if (!open) return;
@@ -70,8 +78,8 @@ export default function PermissionModeChip({ conversationId }: Props) {
         onClick={() => setOpen((v) => !v)}
         title={`${t.settings.permissionMode}: ${currentLabel}`}
         className={cn(
-          'btn-ghost flex items-center gap-1 px-2 py-1 h-7 text-[12px] font-normal rounded-md transition-colors',
-          'text-[var(--abu-text-tertiary)] hover:text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-hover)]'
+          'btn-ghost flex items-center gap-1 px-2 py-1 h-7 text-[12px] font-normal rounded-md transition-colors hover:bg-[var(--abu-bg-hover)]',
+          MODE_CHIP_COLOR[effectiveMode] ?? MODE_CHIP_COLOR.standard
         )}
       >
         <CurrentIcon className="h-3.5 w-3.5 shrink-0" />

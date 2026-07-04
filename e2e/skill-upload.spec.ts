@@ -38,12 +38,12 @@ test.describe('Skill upload menu (Phase E)', () => {
     await expect(page.getByText('安装 Agent Skills', { exact: true })).toHaveCount(0);
   });
 
-  test('"导入技能" opens the unified upload modal with a drop zone and two pickers', async ({ page }) => {
+  test('"导入技能" opens the unified upload modal: clickable drop zone + archive link', async ({ page }) => {
     await page.getByTestId('skill-create-menu').getByText('导入技能', { exact: true }).click();
 
-    // Drop-zone hint + both click-to-pick buttons render.
-    await expect(page.getByText('拖放文件夹或技能包')).toBeVisible();
-    await expect(page.getByRole('button', { name: '选择文件夹' })).toBeVisible();
+    // The drop zone is itself a clickable button (drag OR click), not just a target.
+    await expect(page.getByRole('button', { name: /拖放文件夹到这里/ })).toBeVisible();
+    // Archives are a secondary link (Tauri can't pick folder+file in one dialog).
     await expect(page.getByRole('button', { name: /\.askill/ })).toBeVisible();
   });
 });

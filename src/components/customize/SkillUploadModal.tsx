@@ -10,7 +10,7 @@ import { useDiscoveryStore } from '@/stores/discoveryStore';
 import { useI18n } from '@/i18n';
 import { format } from '@/i18n';
 import { getParentDir, normalizeSeparators } from '@/utils/pathUtils';
-import { Folder, FileArchive, Upload, X, Loader2 } from 'lucide-react';
+import { FileArchive, Upload, X, Loader2 } from 'lucide-react';
 import ConfirmDialog from '@/components/common/ConfirmDialog';
 
 /**
@@ -226,12 +226,17 @@ export default function SkillUploadModal({ onClose, onInstalled }: SkillUploadMo
 
           {/* Body */}
           <div className="px-5 py-4 space-y-3">
-            {/* Drag-drop zone */}
-            <div
-              className={`flex flex-col items-center justify-center gap-2 py-8 px-4 rounded-lg border-2 border-dashed transition-colors ${
+            {/* Clickable + droppable zone. Click → folder picker (skills are
+                folders); drag accepts a folder OR a .askill/.zip. Tauri can't
+                offer folder+file in one native picker, so archives get the link below. */}
+            <button
+              type="button"
+              onClick={pickFolder}
+              disabled={importInProgress}
+              className={`w-full flex flex-col items-center justify-center gap-2 py-8 px-4 rounded-lg border-2 border-dashed transition-colors disabled:opacity-50 disabled:cursor-not-allowed ${
                 isDragging
                   ? 'border-[var(--abu-clay)] bg-[var(--abu-clay-tint)]'
-                  : 'border-[var(--abu-border)]'
+                  : 'border-[var(--abu-border)] hover:border-[var(--abu-clay)] hover:bg-[var(--abu-bg-hover)]'
               }`}
             >
               {importInProgress ? (
@@ -240,24 +245,17 @@ export default function SkillUploadModal({ onClose, onInstalled }: SkillUploadMo
                 <Upload className="h-6 w-6 text-[var(--abu-text-muted)]" />
               )}
               <span className="text-xs text-[var(--abu-text-muted)] text-center">{t.toolbox.dropZoneHint}</span>
-            </div>
+            </button>
 
-            {/* Click-to-pick buttons */}
-            <div className="flex gap-2">
+            {/* Secondary: import a packaged skill (.askill / .zip). */}
+            <div className="text-center">
               <button
-                onClick={pickFolder}
-                disabled={importInProgress}
-                className="flex-1 flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg text-xs font-medium border border-[var(--abu-border)] text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-hover)] disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-              >
-                <Folder className="h-3.5 w-3.5 text-[var(--abu-text-muted)]" />
-                {t.toolbox.pickFolder}
-              </button>
-              <button
+                type="button"
                 onClick={pickFile}
                 disabled={importInProgress}
-                className="flex-1 flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg text-xs font-medium border border-[var(--abu-border)] text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-hover)] disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                className="inline-flex items-center gap-1 text-xs text-[var(--abu-text-tertiary)] hover:text-[var(--abu-clay)] disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
               >
-                <FileArchive className="h-3.5 w-3.5 text-[var(--abu-text-muted)]" />
+                <FileArchive className="h-3 w-3" />
                 {t.toolbox.pickFile}
               </button>
             </div>

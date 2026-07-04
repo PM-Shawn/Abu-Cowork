@@ -8,7 +8,8 @@ import { sendFeedback } from '@/utils/consoleFeedback';
 import { cn } from '@/lib/utils';
 import { usePreviewStore } from '@/stores/previewStore';
 import { useTodosStore } from '@/stores/todosStore';
-import { SHOW_TODOS_INBOX } from '@/config/featureGates';
+import { useLabsFlag } from '@/core/labs/resolve';
+import { LABS_TODOS_INBOX } from '@/core/labs/registry';
 import { runAgentLoop } from '@/core/agent/agentLoop';
 import { useI18n } from '@/i18n';
 import { getBaseName, loadLocalImage } from '@/utils/pathUtils';
@@ -232,6 +233,7 @@ function MessageTimestamp({ timestamp, className = '' }: { timestamp: number; cl
 
 function MessageActions({ message, onEdit, onDelete, onRegenerate, isUser, conversationId }: MessageActionsProps) {
   const { t } = useI18n();
+  const showTodosInbox = useLabsFlag(LABS_TODOS_INBOX);
   const [copied, setCopied] = useState(false);
   const [addedToTodos, setAddedToTodos] = useState(false);
   const [feedbackRating, setFeedbackRating] = useState<'positive' | 'negative' | null>(null);
@@ -319,7 +321,7 @@ function MessageActions({ message, onEdit, onDelete, onRegenerate, isUser, conve
       )}
 
       {/* Add to Todos button - only for assistant messages */}
-      {SHOW_TODOS_INBOX && !isUser && (
+      {showTodosInbox && !isUser && (
         <button
           onClick={() => {
             const text = getTextContent(message.content).slice(0, 60).trim();

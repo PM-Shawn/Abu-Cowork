@@ -418,6 +418,12 @@ const enUS: TranslationDict = {
 
   settings: {
     title: 'System Settings',
+    labs: 'Labs',
+    labsDescription: 'Features still being polished. Off by default — turn them on to try them early.',
+    labsChangeHint: 'Experimental features may change or be removed at any time',
+    labsEmpty: 'No experimental features in progress',
+    labsExpTodosInboxTitle: 'Todos & Inbox',
+    labsExpTodosInboxDesc: 'Enable the Todos and Inbox tabs in the sidebar so Abu can collect tasks and pending items in one place.',
     apiConfig: 'API Config',
     modelSelect: 'Model',
     advanced: 'Advanced',

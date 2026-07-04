@@ -12,8 +12,10 @@ import SystemSettingsView from '@/components/settings/SystemSettingsModal';
 import ToolboxView from '@/components/settings/ToolboxModal';
 import TodoView from '@/components/todos/TodoView';
 import InboxView from '@/components/inbox/InboxView';
-import { useLabsFlag } from '@/core/labs/resolve';
-import { LABS_TODOS_INBOX } from '@/core/labs/registry';
+import { useLabsFlag, resolveLabsFlag } from '@/core/labs/resolve';
+import { LABS_TODOS_INBOX, LABS_PET } from '@/core/labs/registry';
+import { resolvePetBootAction } from '@/core/pet/petBoot';
+import { setPetVisible, hidePet } from '@/core/pet/petVisibility';
 import RightPanel from '@/components/panel/RightPanel';
 import ToastContainer from '@/components/common/ToastContainer';
 import { registerBuiltinTools } from '@/core/tools/builtins';
@@ -300,13 +302,19 @@ function App() {
       });
     }
 
-    // Restore the desktop pet window if it was open when the app last quit
-    // (mirrors Codex's petOpenIntent behavior — the pet window itself doesn't
-    // persist, only the intent does).
-    if (useSettingsStore.getState().petOpen) {
-      invoke('pet_show').catch((err) => {
-        console.warn('[App] Failed to restore desktop pet:', err);
-      });
+    // Restore (or force-hide) the desktop pet on startup based on the pet Labs
+    // unlock flag + persisted petOpen intent. A pet that is no longer unlocked
+    // but left petOpen=true must never resurface.
+    {
+      const s = useSettingsStore.getState();
+      const petUnlocked = resolveLabsFlag(LABS_PET, s.labs);
+      const action = resolvePetBootAction(petUnlocked, s.petOpen);
+      if (action === 'show') {
+        void setPetVisible(true);
+      } else if (action === 'hide') {
+        void hidePet();
+        s.setPetOpen(false);
+      }
     }
 
     // Initialize notifications with logging

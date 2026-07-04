@@ -1,28 +1,29 @@
-import { invoke } from '@tauri-apps/api/core';
 import { useI18n } from '@/i18n';
 import { useSettingsStore } from '@/stores/settingsStore';
 import { LABS_EXPERIMENTS, LABS_PET } from '@/core/labs/registry';
 import { resolveLabsFlag } from '@/core/labs/resolve';
+import { hidePet } from '@/core/pet/petVisibility';
 import { Toggle } from '@/components/ui/toggle';
 import SettingsSectionHeader from '@/components/settings/SettingsSectionHeader';
 import { FlaskConical } from 'lucide-react';
 
 export default function LabsSection() {
-  // Subscribe to the whole labs slice via useI18n's sibling store so the list
-  // re-renders on toggle; resolveLabsFlag reads the current stored map.
   const { t } = useI18n();
   const labs = useSettingsStore((s) => s.labs);
   const setLabsFlag = useSettingsStore((s) => s.setLabsFlag);
-  // Pet is a Labs experiment too, but its on/off drives a native Tauri window
-  // and lives in `petOpen` (not the generic labs map) — so LABS_PET is bound to
-  // petOpen + pet_show/pet_hide here rather than setLabsFlag.
   const petOpen = useSettingsStore((s) => s.petOpen);
   const setPetOpen = useSettingsStore((s) => s.setPetOpen);
-  const togglePet = async (next: boolean) => {
-    await invoke(next ? 'pet_show' : 'pet_hide').catch((err) => {
-      console.warn('[LabsSection] pet_show/pet_hide failed:', err);
-    });
-    setPetOpen(next);
+
+  const handleToggle = async (id: string, next: boolean) => {
+    setLabsFlag(id, next);
+    // The pet unlock flag is a gate, not the pet switch. Turning it OFF must
+    // fully tear down a running pet; clear petOpen only if the hide succeeded so
+    // a failed hide is retried instead of desyncing from a still-visible window.
+    if (id === LABS_PET && !next && petOpen) {
+      if (await hidePet()) {
+        setPetOpen(false);
+      }
+    }
   };
 
   // Empty state: the section stays in the nav (stable, discoverable), but shows
@@ -44,11 +45,7 @@ export default function LabsSection() {
 
       <div className="space-y-2">
         {LABS_EXPERIMENTS.map((exp) => {
-          const isPet = exp.id === LABS_PET;
-          const enabled = isPet ? petOpen : resolveLabsFlag(exp.id, labs);
-          const onToggle = isPet
-            ? () => togglePet(!petOpen)
-            : () => setLabsFlag(exp.id, !enabled);
+          const enabled = resolveLabsFlag(exp.id, labs);
           return (
               <div
                 key={exp.id}
@@ -67,7 +64,7 @@ export default function LabsSection() {
                 </div>
                 <Toggle
                   checked={enabled}
-                  onChange={onToggle}
+                  onChange={() => handleToggle(exp.id, !enabled)}
                   size="lg"
                 />
               </div>

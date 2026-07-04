@@ -1,6 +1,7 @@
+import { useEffect } from 'react';
 import { useSettingsStore, type SystemSettingsTab } from '@/stores/settingsStore';
 import { useI18n } from '@/i18n';
-import { Settings2, Info, Shield, SlidersHorizontal, MessageCircle, Radio, Brain, Heart, Activity, BarChart3, Building2, FlaskConical } from 'lucide-react';
+import { Settings2, Info, Shield, SlidersHorizontal, MessageCircle, Radio, Brain, Heart, Activity, BarChart3, Building2, FlaskConical, PawPrint } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { AIServicesSection, AboutSection, SandboxSection, GeneralSection, IMChannelSection } from './sections';
 import FeedbackSection from './sections/FeedbackSection';
@@ -10,7 +11,10 @@ import DiagnosticSection from './sections/DiagnosticSection';
 import UsageSection from './sections/UsageSection';
 import EnterpriseSection from './sections/EnterpriseSection';
 import LabsSection from './sections/LabsSection';
+import PetSection from './sections/PetSection';
 import { IS_ENTERPRISE_BUILD } from '@/config/featureGates';
+import { useLabsFlag } from '@/core/labs/resolve';
+import { LABS_PET } from '@/core/labs/registry';
 
 export default function SystemSettingsView() {
   const {
@@ -18,11 +22,23 @@ export default function SystemSettingsView() {
     setActiveSystemTab,
   } = useSettingsStore();
   const { t } = useI18n();
+  const petUnlocked = useLabsFlag(LABS_PET);
+
+  // If the user is on the 桌宠 tab when it gets locked (pet unlock turned off in
+  // Labs), fall back to a stable tab so the pane isn't blank.
+  useEffect(() => {
+    if (activeSystemTab === 'pet' && !petUnlocked) {
+      setActiveSystemTab('labs');
+    }
+  }, [activeSystemTab, petUnlocked, setActiveSystemTab]);
 
   const navItems: { id: SystemSettingsTab; label: string; icon: typeof Settings2 }[] = [
     { id: 'usage', label: t.usage.title, icon: BarChart3 },
     { id: 'ai-services', label: t.settings.aiServices, icon: Settings2 },
     { id: 'im-channels', label: t.imChannel.title, icon: Radio },
+    ...(petUnlocked
+      ? [{ id: 'pet' as SystemSettingsTab, label: t.settings.petEnable, icon: PawPrint }]
+      : []),
     { id: 'personal-memory', label: t.sidebar.personalMemory, icon: Brain },
     { id: 'soul', label: t.soul.title, icon: Heart },
     { id: 'sandbox', label: t.settings.sandbox, icon: Shield },
@@ -62,6 +78,10 @@ export default function SystemSettingsView() {
         return <AboutSection />;
       case 'feedback':
         return <FeedbackSection />;
+      case 'pet':
+        // Guard the one-frame window before the fallback effect fires: never
+        // render the pet pane (with its enable toggle) while locked.
+        return petUnlocked ? <PetSection /> : null;
       case 'enterprise':
         return IS_ENTERPRISE_BUILD ? <EnterpriseSection /> : <GeneralSection />;
       default:

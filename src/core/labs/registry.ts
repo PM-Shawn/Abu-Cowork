@@ -42,10 +42,10 @@ export interface LabsExperiment {
 export const LABS_TODOS_INBOX = 'todos-inbox';
 
 /**
- * Stable id for the Desktop Pet experiment. Unlike other experiments, the pet's
- * enabled state lives in `settings.petOpen` (it drives a native Tauri window via
- * pet_show/pet_hide), not the generic `settings.labs` map — LabsSection special-
- * cases this id. It's still listed here so it surfaces as a Labs card.
+ * Stable id for the Desktop Pet experiment. An *unlock* flag stored in
+ * settings.labs like any other experiment: turning it on reveals the 桌宠 entry
+ * in System Settings (where the pet is actually enabled/configured); it does NOT
+ * spawn the floating pet. Turning it off tears down a running pet (see LabsSection).
  */
 export const LABS_PET = 'pet';
 

@@ -18,6 +18,11 @@ export interface LabsExperiment {
   title: () => string;
   /** i18n description, resolved lazily at render. */
   description: () => string;
+  /**
+   * i18n "where to find it once enabled" hint, resolved lazily at render.
+   * Shown on the card so users aren't left hunting after flipping the toggle.
+   */
+  locationHint: () => string;
   /** Effective value when the user has never toggled it. Almost always false. */
   defaultEnabled: boolean;
   /**
@@ -36,12 +41,29 @@ export interface LabsExperiment {
  */
 export const LABS_TODOS_INBOX = 'todos-inbox';
 
+/**
+ * Stable id for the Desktop Pet experiment. Unlike other experiments, the pet's
+ * enabled state lives in `settings.petOpen` (it drives a native Tauri window via
+ * pet_show/pet_hide), not the generic `settings.labs` map — LabsSection special-
+ * cases this id. It's still listed here so it surfaces as a Labs card.
+ */
+export const LABS_PET = 'pet';
+
 export const LABS_EXPERIMENTS: readonly LabsExperiment[] = [
   {
     // Todos + Inbox are a linked cluster, surfaced as one experiment.
     id: LABS_TODOS_INBOX,
     title: () => getI18n().settings.labsExpTodosInboxTitle,
     description: () => getI18n().settings.labsExpTodosInboxDesc,
+    locationHint: () => getI18n().settings.labsExpTodosInboxWhere,
+    defaultEnabled: false,
+    expiresAfter: '2026-10-01',
+  },
+  {
+    id: LABS_PET,
+    title: () => getI18n().settings.petEnable,
+    description: () => getI18n().settings.petEnableDesc,
+    locationHint: () => getI18n().settings.labsExpPetWhere,
     defaultEnabled: false,
     expiresAfter: '2026-10-01',
   },

@@ -14,15 +14,24 @@ describe('labs registry', () => {
     }
   });
 
-  it('every experiment resolves a non-empty i18n title and description', () => {
+  it('every experiment resolves a non-empty i18n title, description and location hint', () => {
     for (const exp of LABS_EXPERIMENTS) {
       expect(exp.title().length).toBeGreaterThan(0);
       expect(exp.description().length).toBeGreaterThan(0);
+      // locationHint tells users where the feature shows up once enabled —
+      // every experiment must have one so nothing lands "on but invisible".
+      expect(exp.locationHint().length).toBeGreaterThan(0);
     }
   });
 
   it('ships the todos-inbox experiment, default off', () => {
     const exp = getLabsExperiment('todos-inbox');
+    expect(exp).toBeDefined();
+    expect(exp?.defaultEnabled).toBe(false);
+  });
+
+  it('ships the pet experiment (pet is a Labs experiment too)', () => {
+    const exp = getLabsExperiment('pet');
     expect(exp).toBeDefined();
     expect(exp?.defaultEnabled).toBe(false);
   });

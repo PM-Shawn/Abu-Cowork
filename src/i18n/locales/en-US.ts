@@ -425,6 +425,8 @@ const enUS: TranslationDict = {
     labsEmptyHint: 'New features will show up here first — stay tuned',
     labsExpTodosInboxTitle: 'Todos & Inbox',
     labsExpTodosInboxDesc: 'Enable the Todos and Inbox tabs in the sidebar so Abu can collect tasks and pending items in one place.',
+    labsExpTodosInboxWhere: 'Once on: a Todos and an Inbox entry appear in the left sidebar',
+    labsExpPetWhere: 'Once on: a floating pet appears on your desktop — click to open a quick input, double-click for the main window, right-click for more',
     apiConfig: 'API Config',
     modelSelect: 'Model',
     advanced: 'Advanced',

@@ -425,6 +425,8 @@ const zhCN: TranslationDict = {
     labsEmptyHint: '有新功能会先在这里放出，敬请期待',
     labsExpTodosInboxTitle: '待办 & 收件箱',
     labsExpTodosInboxDesc: '在侧边栏启用「待办」和「收件箱」，让阿布把任务和待确认项收拢到一处。',
+    labsExpTodosInboxWhere: '开启后：左侧边栏出现「待办」和「收件箱」入口',
+    labsExpPetWhere: '开启后：桌面出现悬浮桌宠 —— 单击唤起输入，双击打开主窗，右键更多操作',
     apiConfig: 'API 配置',
     modelSelect: '模型选择',
     advanced: '高级参数',

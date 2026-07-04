@@ -537,6 +537,8 @@ export interface TranslationDict {
     labsEmptyHint: string;
     labsExpTodosInboxTitle: string;
     labsExpTodosInboxDesc: string;
+    labsExpTodosInboxWhere: string;
+    labsExpPetWhere: string;
     // General section
     general: string;
     generalDescription: string;

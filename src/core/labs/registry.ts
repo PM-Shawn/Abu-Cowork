@@ -51,15 +51,6 @@ export const LABS_PET = 'pet';
 
 export const LABS_EXPERIMENTS: readonly LabsExperiment[] = [
   {
-    // Todos + Inbox are a linked cluster, surfaced as one experiment.
-    id: LABS_TODOS_INBOX,
-    title: () => getI18n().settings.labsExpTodosInboxTitle,
-    description: () => getI18n().settings.labsExpTodosInboxDesc,
-    locationHint: () => getI18n().settings.labsExpTodosInboxWhere,
-    defaultEnabled: false,
-    expiresAfter: '2026-10-01',
-  },
-  {
     id: LABS_PET,
     title: () => getI18n().settings.petEnable,
     description: () => getI18n().settings.petEnableDesc,
@@ -67,6 +58,19 @@ export const LABS_EXPERIMENTS: readonly LabsExperiment[] = [
     defaultEnabled: false,
     expiresAfter: '2026-10-01',
   },
+  // Todos + Inbox are a linked cluster, surfaced as one experiment. Held back
+  // from the v0.25.0 release — not exposed in Labs yet. The LABS_TODOS_INBOX
+  // constant + its gate sites stay (resolveLabsFlag returns false for the
+  // unregistered id), so the feature is simply off & hidden until we re-add
+  // this entry in a later release.
+  // {
+  //   id: LABS_TODOS_INBOX,
+  //   title: () => getI18n().settings.labsExpTodosInboxTitle,
+  //   description: () => getI18n().settings.labsExpTodosInboxDesc,
+  //   locationHint: () => getI18n().settings.labsExpTodosInboxWhere,
+  //   defaultEnabled: false,
+  //   expiresAfter: '2026-10-01',
+  // },
 ];
 
 export function getLabsExperiment(id: string): LabsExperiment | undefined {

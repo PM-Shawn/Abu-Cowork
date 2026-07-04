@@ -7,35 +7,31 @@ import { TOOL_NAMES } from './toolNames';
 
 // create_todo is registered unconditionally but gated on the 'todos-inbox'
 // Labs flag at BOTH advertisement (getAllTools) and execution (executeAnyTool).
-// These regressions lock in the fail-safe parity with the old compile-time gate.
+// todos-inbox is HELD BACK this release (commented out of LABS_EXPERIMENTS), so
+// resolveLabsFlag returns false for it even if a stale stored flag is set — the
+// tool stays off for everyone. These lock in that the whole feature is dormant.
+// (When todos-inbox is re-exposed, restore the flag-on ↔ tool-on assertions.)
 beforeAll(() => {
   registerBuiltinTools();
 });
 
-describe('Labs-gated tool availability (create_todo / todos-inbox)', () => {
+describe('Labs-gated tool availability (create_todo / todos-inbox held back)', () => {
   beforeEach(() => {
     useSettingsStore.setState({ labs: {} });
   });
 
-  it('withholds create_todo from the advertised schema when the flag is off', () => {
-    useSettingsStore.setState({ labs: { [LABS_TODOS_INBOX]: false } });
+  it('withholds create_todo from the advertised schema by default', () => {
     expect(getAllTools().some((t) => t.name === TOOL_NAMES.CREATE_TODO)).toBe(false);
   });
 
-  it('advertises create_todo when the flag is on', () => {
+  it('still withholds create_todo even with a stale todos-inbox flag set (held back)', () => {
     useSettingsStore.setState({ labs: { [LABS_TODOS_INBOX]: true } });
-    expect(getAllTools().some((t) => t.name === TOOL_NAMES.CREATE_TODO)).toBe(true);
+    expect(getAllTools().some((t) => t.name === TOOL_NAMES.CREATE_TODO)).toBe(false);
   });
 
-  it('rejects create_todo execution as Unknown when the flag is off (fail-safe)', async () => {
-    useSettingsStore.setState({ labs: { [LABS_TODOS_INBOX]: false } });
+  it('rejects create_todo execution as Unknown even with a stale flag set (fail-safe)', async () => {
+    useSettingsStore.setState({ labs: { [LABS_TODOS_INBOX]: true } });
     const result = await executeAnyTool(TOOL_NAMES.CREATE_TODO, { title: 'x' });
     expect(String(result)).toContain('Unknown tool');
-  });
-
-  it('does not reject create_todo as Unknown when the flag is on', async () => {
-    useSettingsStore.setState({ labs: { [LABS_TODOS_INBOX]: true } });
-    const result = await executeAnyTool(TOOL_NAMES.CREATE_TODO, { title: 'x' });
-    expect(String(result)).not.toContain('Unknown tool');
   });
 });

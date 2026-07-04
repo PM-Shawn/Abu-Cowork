@@ -24,10 +24,10 @@ describe('labs registry', () => {
     }
   });
 
-  it('ships the todos-inbox experiment, default off', () => {
-    const exp = getLabsExperiment('todos-inbox');
-    expect(exp).toBeDefined();
-    expect(exp?.defaultEnabled).toBe(false);
+  it('does NOT expose the todos-inbox experiment this release (held back)', () => {
+    // Intentionally commented out of LABS_EXPERIMENTS for v0.25.0 — the gate
+    // still resolves false for the unregistered id, so the feature stays off.
+    expect(getLabsExperiment('todos-inbox')).toBeUndefined();
   });
 
   it('ships the pet experiment (pet is a Labs experiment too)', () => {

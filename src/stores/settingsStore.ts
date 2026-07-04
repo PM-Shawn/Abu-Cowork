@@ -658,7 +658,7 @@ export const useSettingsStore = create<SettingsStore>()(
       auxiliaryServices: {},
 
       // ── General settings defaults ──
-      theme: 'dark',
+      theme: 'light',
       showSettings: false,
       sidebarCollapsed: false,
       rightPanelCollapsed: false,

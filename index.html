@@ -11,7 +11,7 @@
       (function() {
         try {
           var stored = localStorage.getItem('abu-settings');
-          var theme = 'dark'; // match settingsStore default
+          var theme = 'light'; // match settingsStore default
           if (stored) {
             var parsed = JSON.parse(stored);
             if (parsed && parsed.state && parsed.state.theme) {

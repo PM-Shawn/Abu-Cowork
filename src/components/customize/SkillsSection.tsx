@@ -10,24 +10,18 @@ import SkillEditor from './SkillEditor';
 import SkillDraftsPanel from './SkillDraftsPanel';
 import SkillCategoryBlocksPanel from './SkillCategoryBlocksPanel';
 import SkillHistoryModal from './SkillHistoryModal';
+import SkillUploadModal from './SkillUploadModal';
 import { Toggle } from '@/components/ui/toggle';
-import { Trash2, FileText, Folder, ChevronDown, ChevronRight, Pencil, MoreHorizontal, Eye, Code, Info, MessageCircle, Search, Plus, X, Wand2, PenLine, Upload, Download, Package, Loader2, Check, AlertCircle, Globe, Clock } from 'lucide-react';
+import { Trash2, FileText, Folder, ChevronDown, ChevronRight, Pencil, MoreHorizontal, Eye, Code, Info, MessageCircle, Search, Plus, X, Wand2, PenLine, Upload, Download, Clock } from 'lucide-react';
 import { remove } from '@tauri-apps/plugin-fs';
-import { invoke } from '@tauri-apps/api/core';
-import { save as saveDialog, open as openDialog } from '@tauri-apps/plugin-dialog';
-import { writeFile, readFile } from '@tauri-apps/plugin-fs';
-import { homeDir } from '@tauri-apps/api/path';
-import { packSkill, unpackSkill, validateArchive, ConflictError } from '@/core/skill/packager';
-import { installSkillFromNpm, NpmInstallError } from '@/core/skill/npmInstaller';
-import type { InstallStep } from '@/core/skill/npmInstaller';
+import { save as saveDialog } from '@tauri-apps/plugin-dialog';
+import { writeFile } from '@tauri-apps/plugin-fs';
+import { packSkill } from '@/core/skill/packager';
 import { useToastStore } from '@/stores/toastStore';
 import { getParentDir } from '@/utils/pathUtils';
-import { Input } from '@/components/ui/input';
-import { format } from '@/i18n';
 import type { Skill, SkillUXCategory } from '@/types';
 import { sourceToUXCategory } from '@/core/skill/uxCategory';
 import MarkdownRenderer from '@/components/chat/MarkdownRenderer';
-import ConfirmDialog from '@/components/common/ConfirmDialog';
 
 // Build a set of system skill names from marketplace templates
 /**
@@ -154,10 +148,9 @@ interface SkillsSectionProps {
   manualCreateTrigger?: number;
   onAICreate?: () => void;
   onManualCreate?: () => void;
-  onUploadFile?: () => void;
 }
 
-export default function SkillsSection({ manualCreateTrigger, onAICreate, onManualCreate, onUploadFile }: SkillsSectionProps) {
+export default function SkillsSection({ manualCreateTrigger, onAICreate, onManualCreate }: SkillsSectionProps) {
   const { skills, refresh } = useDiscoveryStore();
   // We subscribe to drafts count here (not SkillDraftsPanel itself) so
   // the 阿布沉淀 category's visibility condition accounts for pending
@@ -185,22 +178,8 @@ export default function SkillsSection({ manualCreateTrigger, onAICreate, onManua
   const [showCreateMenu, setShowCreateMenu] = useState(false);
   // Content view mode: preview (rendered) or source (raw)
   const [contentViewMode, setContentViewMode] = useState<'preview' | 'source'>('preview');
-  // npm install dialog state
-  const [showNpmInstall, setShowNpmInstall] = useState(false);
-  const [npmPackageName, setNpmPackageName] = useState('');
-  const [npmRegistry, setNpmRegistry] = useState('');
-  const [npmInstalling, setNpmInstalling] = useState(false);
-  const [npmStep, setNpmStep] = useState<InstallStep | null>(null);
-  const [npmStepDetail, setNpmStepDetail] = useState('');
-  const [npmError, setNpmError] = useState('');
-  const [npmSuccess, setNpmSuccess] = useState('');
-  const skillRegistryDefault = useSettingsStore((s) => s.skillRegistry);
-  // Agent Skills install dialog state (npx skills add)
-  const [showAgentSkillsInstall, setShowAgentSkillsInstall] = useState(false);
-  const [agentSkillsRepo, setAgentSkillsRepo] = useState('');
-  const [agentSkillsInstalling, setAgentSkillsInstalling] = useState(false);
-  const [agentSkillsError, setAgentSkillsError] = useState('');
-  const [agentSkillsSuccess, setAgentSkillsSuccess] = useState('');
+  // Unified upload dialog (folder / .askill / .zip via click or drag-drop)
+  const [showUploadModal, setShowUploadModal] = useState(false);
 
   // Open blank editor when manual create is triggered from parent
   useEffect(() => {
@@ -289,95 +268,6 @@ export default function SkillsSection({ manualCreateTrigger, onAICreate, onManua
     }
   };
 
-  // Confirm dialog for overwriting an existing skill during import.
-  // State lives here (rather than inline) so the confirm flow can
-  // survive React's render cycle between "user picks file" and "user
-  // confirms overwrite".
-  const [importConflict, setImportConflict] = useState<{
-    bytes: Uint8Array;
-    baseDir: string;
-    skillName: string;
-  } | null>(null);
-  const [importInProgress, setImportInProgress] = useState(false);
-
-  // Import a .askill package → unpack into user scope (~/.abu/skills/).
-  // Reuses the existing packager's validation + unpack pipeline. On
-  // name conflict we stash state and pop a ConfirmDialog; everything
-  // else surfaces as a toast.
-  const handleImport = async () => {
-    const addToast = useToastStore.getState().addToast;
-    try {
-      setShowCreateMenu(false);
-      const picked = await openDialog({
-        filters: [{ name: 'Skill Package', extensions: ['askill', 'zip'] }],
-        multiple: false,
-      });
-      if (!picked || typeof picked !== 'string') return;
-
-      setImportInProgress(true);
-      const bytes = await readFile(picked);
-      const archiveBytes = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
-
-      const validationError = validateArchive(archiveBytes);
-      if (validationError) {
-        addToast({ type: 'error', title: t.toolbox.importFailed, message: validationError.message });
-        return;
-      }
-
-      // user scope: global skills live under ~/.abu/skills/, which is
-      // where hand-imported skills naturally belong. The app's own
-      // SkillLoader picks this path up automatically.
-      const home = await homeDir();
-      const baseDir = `${home}/.abu/skills`;
-
-      try {
-        const result = await unpackSkill(archiveBytes, baseDir);
-        addToast({
-          type: 'success',
-          title: t.toolbox.importSuccess,
-          message: `"${result.name}"`,
-        });
-        await refresh();
-      } catch (err) {
-        if (err instanceof ConflictError) {
-          setImportConflict({ bytes: archiveBytes, baseDir, skillName: err.skillName });
-          return; // ConfirmDialog takes over from here
-        }
-        throw err;
-      }
-    } catch (err) {
-      console.error('Import skill failed:', err);
-      addToast({
-        type: 'error',
-        title: t.toolbox.importFailed,
-        message: err instanceof Error ? err.message : String(err),
-      });
-    } finally {
-      setImportInProgress(false);
-    }
-  };
-
-  // Overwrite branch from the ConflictError confirmation above.
-  const handleImportOverwrite = async () => {
-    if (!importConflict) return;
-    const addToast = useToastStore.getState().addToast;
-    setImportInProgress(true);
-    try {
-      const result = await unpackSkill(importConflict.bytes, importConflict.baseDir, { overwrite: true });
-      addToast({ type: 'success', title: t.toolbox.importSuccess, message: `"${result.name}"` });
-      await refresh();
-    } catch (err) {
-      addToast({
-        type: 'error',
-        title: t.toolbox.importFailed,
-        message: err instanceof Error ? err.message : String(err),
-      });
-    } finally {
-      setImportConflict(null);
-      setImportInProgress(false);
-    }
-  };
-
   // Export a skill as .askill package
   const handleExport = async (skill: Skill) => {
     const addToast = useToastStore.getState().addToast;
@@ -430,97 +320,6 @@ export default function SkillsSection({ manualCreateTrigger, onAICreate, onManua
       }
       return new Set([skillName]);
     });
-  };
-
-  // npm install handler
-  const handleNpmInstall = async (overwrite = false) => {
-    if (!npmPackageName.trim()) return;
-    setNpmInstalling(true);
-    setNpmError('');
-    setNpmSuccess('');
-    setNpmStep(null);
-
-    const registry = npmRegistry.trim() || skillRegistryDefault || undefined;
-    const addToast = useToastStore.getState().addToast;
-
-    try {
-      const result = await installSkillFromNpm(
-        npmPackageName.trim(),
-        registry,
-        {
-          overwrite,
-          onProgress: (step: InstallStep, detail?: string) => {
-            setNpmStep(step);
-            setNpmStepDetail(detail ?? '');
-          },
-        },
-      );
-      await refresh();
-      setNpmSuccess(result.skillName);
-      setSelectedSkill(result.skillName);
-      addToast({ type: 'success', title: format(t.toolbox.npmInstallSuccess, { name: result.skillName }) });
-    } catch (err) {
-      if (err instanceof NpmInstallError && err.code === 'ALREADY_EXISTS') {
-        setNpmError('ALREADY_EXISTS');
-      } else {
-        const msg = err instanceof Error ? err.message : String(err);
-        setNpmError(msg);
-        addToast({ type: 'error', title: t.toolbox.npmInstallFailed, message: msg });
-      }
-    } finally {
-      setNpmInstalling(false);
-    }
-  };
-
-  const resetNpmDialog = () => {
-    setShowNpmInstall(false);
-    setNpmPackageName('');
-    setNpmRegistry('');
-    setNpmError('');
-    setNpmSuccess('');
-    setNpmStep(null);
-    setNpmInstalling(false);
-  };
-
-  // Agent Skills install handler (npx skills add <repo> -g)
-  const handleAgentSkillsInstall = async () => {
-    const repo = agentSkillsRepo.trim();
-    if (!repo) return;
-    setAgentSkillsInstalling(true);
-    setAgentSkillsError('');
-    setAgentSkillsSuccess('');
-    const addToast = useToastStore.getState().addToast;
-
-    try {
-      const result = await invoke<{ stdout: string; stderr: string; exitCode: number }>('run_shell_command', {
-        command: `npx -y skills add ${repo} -y -g`,
-        cwd: null,
-        background: false,
-        timeout: 60,
-      });
-
-      if (result.exitCode !== 0) {
-        throw new Error(result.stderr || `Exit code ${result.exitCode}`);
-      }
-
-      await refresh();
-      setAgentSkillsSuccess(repo);
-      addToast({ type: 'success', title: format(t.toolbox.npmInstallSuccess, { name: repo }) });
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      setAgentSkillsError(msg);
-      addToast({ type: 'error', title: t.toolbox.npmInstallFailed, message: msg });
-    } finally {
-      setAgentSkillsInstalling(false);
-    }
-  };
-
-  const resetAgentSkillsDialog = () => {
-    setShowAgentSkillsInstall(false);
-    setAgentSkillsRepo('');
-    setAgentSkillsError('');
-    setAgentSkillsSuccess('');
-    setAgentSkillsInstalling(false);
   };
 
   // Close menus when clicking outside
@@ -648,13 +447,14 @@ export default function SkillsSection({ manualCreateTrigger, onAICreate, onManua
                 </button>
                 <div className="relative">
                   <button
+                    data-testid="skill-create-trigger"
                     onClick={(e) => { e.stopPropagation(); setShowCreateMenu(!showCreateMenu); }}
                     className="p-1 text-[var(--abu-text-muted)] hover:text-[var(--abu-text-primary)] transition-colors"
                   >
                     <Plus className="h-4 w-4" />
                   </button>
                   {showCreateMenu && (
-                    <div className="absolute z-50 top-full right-0 mt-1 w-44 bg-[var(--abu-bg-base)] rounded-lg shadow-lg border border-[var(--abu-border)] py-1">
+                    <div data-testid="skill-create-menu" className="absolute z-50 top-full right-0 mt-1 w-44 bg-[var(--abu-bg-base)] rounded-lg shadow-lg border border-[var(--abu-border)] py-1">
                       {onAICreate && (
                         <button
                           onClick={() => { setShowCreateMenu(false); onAICreate(); }}
@@ -673,36 +473,12 @@ export default function SkillsSection({ manualCreateTrigger, onAICreate, onManua
                           <span>{t.toolbox.createManually}</span>
                         </button>
                       )}
-                      {onUploadFile && (
-                        <button
-                          onClick={() => { setShowCreateMenu(false); onUploadFile(); }}
-                          className="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-hover)] transition-colors"
-                        >
-                          <Upload className="h-3.5 w-3.5 text-[var(--abu-text-muted)]" />
-                          <span>{t.toolbox.uploadFile}</span>
-                        </button>
-                      )}
                       <button
-                        onClick={handleImport}
-                        disabled={importInProgress}
-                        className="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-active)] transition-colors disabled:opacity-50"
+                        onClick={() => { setShowCreateMenu(false); setShowUploadModal(true); }}
+                        className="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-hover)] transition-colors"
                       >
                         <Upload className="h-3.5 w-3.5 text-[var(--abu-text-muted)]" />
-                        <span>{t.toolbox.importSkill}</span>
-                      </button>
-                      <button
-                        onClick={() => { setShowCreateMenu(false); setShowNpmInstall(true); }}
-                        className="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-hover)] transition-colors"
-                      >
-                        <Package className="h-3.5 w-3.5 text-[var(--abu-text-muted)]" />
-                        <span>{t.toolbox.installFromNpm}</span>
-                      </button>
-                      <button
-                        onClick={() => { setShowCreateMenu(false); setShowAgentSkillsInstall(true); }}
-                        className="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-hover)] transition-colors"
-                      >
-                        <Globe className="h-3.5 w-3.5 text-[var(--abu-text-muted)]" />
-                        <span>{t.toolbox.installAgentSkills}</span>
+                        <span>{t.toolbox.importEntry}</span>
                       </button>
                     </div>
                   )}
@@ -950,203 +726,13 @@ export default function SkillsSection({ manualCreateTrigger, onAICreate, onManua
         )}
       </div>
 
-      {/* npm install dialog */}
-      {showNpmInstall && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 backdrop-blur-sm">
-          <div className="w-[420px] bg-[var(--abu-bg-base)] rounded-xl shadow-xl border border-[var(--abu-border)] overflow-hidden">
-            {/* Header */}
-            <div className="flex items-center justify-between px-5 py-3.5 border-b border-[var(--abu-border)]">
-              <div className="flex items-center gap-2">
-                <Package className="h-4 w-4 text-[var(--abu-clay)]" />
-                <h2 className="text-sm font-semibold text-[var(--abu-text-primary)]">{t.toolbox.installFromNpm}</h2>
-              </div>
-              <button onClick={resetNpmDialog} className="p-1.5 rounded-lg text-[var(--abu-text-muted)] hover:text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-muted)] transition-colors">
-                <X className="h-4 w-4" />
-              </button>
-            </div>
-
-            {/* Body */}
-            <div className="px-5 py-4 space-y-3">
-              {/* Package name */}
-              <div>
-                <label className="block text-xs font-medium text-[var(--abu-text-secondary)] mb-1">{t.toolbox.npmPackageName}</label>
-                <Input
-                  type="text"
-                  placeholder={t.toolbox.npmPackagePlaceholder}
-                  value={npmPackageName}
-                  onChange={(e) => { setNpmPackageName(e.target.value); setNpmError(''); setNpmSuccess(''); }}
-                  disabled={npmInstalling}
-                />
-              </div>
-
-              {/* Registry (optional) */}
-              <div>
-                <label className="block text-xs font-medium text-[var(--abu-text-secondary)] mb-1">{t.toolbox.npmRegistry}</label>
-                <Input
-                  type="text"
-                  placeholder={skillRegistryDefault || t.toolbox.npmRegistryPlaceholder}
-                  value={npmRegistry}
-                  onChange={(e) => setNpmRegistry(e.target.value)}
-                  disabled={npmInstalling}
-                />
-                <p className="text-[11px] text-[var(--abu-text-muted)] mt-1">{t.toolbox.npmRegistryHint}</p>
-              </div>
-
-              {/* Progress */}
-              {npmInstalling && npmStep && (
-                <div className="flex items-center gap-2 py-2 px-3 bg-[var(--abu-bg-base)] rounded-lg">
-                  <Loader2 className="h-3.5 w-3.5 text-[var(--abu-clay)] animate-spin shrink-0" />
-                  <span className="text-xs text-[var(--abu-text-tertiary)]">
-                    {npmStep === 'fetching_metadata' && t.toolbox.npmStepFetchingMetadata}
-                    {npmStep === 'downloading' && format(t.toolbox.npmStepDownloading, { version: npmStepDetail })}
-                    {npmStep === 'extracting' && t.toolbox.npmStepExtracting}
-                    {npmStep === 'installing' && format(t.toolbox.npmStepInstalling, { name: npmStepDetail })}
-                  </span>
-                </div>
-              )}
-
-              {/* Success */}
-              {npmSuccess && (
-                <div className="flex items-center gap-2 py-2 px-3 bg-green-50 rounded-lg">
-                  <Check className="h-3.5 w-3.5 text-green-600 shrink-0" />
-                  <span className="text-xs text-green-700">{format(t.toolbox.npmInstallSuccess, { name: npmSuccess })}</span>
-                </div>
-              )}
-
-              {/* Error */}
-              {npmError && npmError !== 'ALREADY_EXISTS' && (
-                <div className="flex items-start gap-2 py-2 px-3 bg-red-50 rounded-lg">
-                  <AlertCircle className="h-3.5 w-3.5 text-red-500 shrink-0 mt-0.5" />
-                  <span className="text-xs text-red-600">{npmError}</span>
-                </div>
-              )}
-
-              {/* Already exists — offer overwrite */}
-              {npmError === 'ALREADY_EXISTS' && (
-                <div className="flex items-center justify-between py-2 px-3 bg-amber-50 rounded-lg">
-                  <div className="flex items-center gap-2">
-                    <AlertCircle className="h-3.5 w-3.5 text-amber-600 shrink-0" />
-                    <span className="text-xs text-amber-700">{format(t.toolbox.npmAlreadyExists, { name: npmPackageName.trim() })}</span>
-                  </div>
-                  <button
-                    onClick={() => { setNpmError(''); handleNpmInstall(true); }}
-                    className="text-xs font-medium text-[var(--abu-clay)] hover:text-[var(--abu-clay-hover)] transition-colors"
-                  >
-                    {t.toolbox.npmOverwrite}
-                  </button>
-                </div>
-              )}
-            </div>
-
-            {/* Footer */}
-            <div className="flex items-center justify-end gap-2 px-5 py-3 border-t border-[var(--abu-border)]">
-              <button onClick={resetNpmDialog} className="px-4 py-1.5 rounded-lg text-sm font-medium text-[var(--abu-text-tertiary)] hover:bg-[var(--abu-bg-muted)] transition-colors">
-                {npmSuccess ? t.common.close : t.common.cancel}
-              </button>
-              {!npmSuccess && (
-                <button
-                  onClick={() => handleNpmInstall()}
-                  disabled={!npmPackageName.trim() || npmInstalling}
-                  className="flex items-center gap-1.5 px-4 py-1.5 rounded-lg text-sm font-medium bg-[var(--abu-clay)] text-white hover:bg-[var(--abu-clay-hover)] disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-                >
-                  {npmInstalling ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Package className="h-3.5 w-3.5" />}
-                  {t.toolbox.npmFindAndInstall}
-                </button>
-              )}
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Agent Skills install dialog (npx skills add) */}
-      {showAgentSkillsInstall && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 backdrop-blur-sm">
-          <div className="w-[420px] bg-[var(--abu-bg-base)] rounded-xl shadow-xl border border-[var(--abu-border)] overflow-hidden">
-            {/* Header */}
-            <div className="flex items-center justify-between px-5 py-3.5 border-b border-[var(--abu-border)]">
-              <div className="flex items-center gap-2">
-                <Globe className="h-4 w-4 text-[var(--abu-clay)]" />
-                <h2 className="text-sm font-semibold text-[var(--abu-text-primary)]">{t.toolbox.installAgentSkills}</h2>
-              </div>
-              <button onClick={resetAgentSkillsDialog} className="p-1.5 rounded-lg text-[var(--abu-text-muted)] hover:text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-muted)] transition-colors">
-                <X className="h-4 w-4" />
-              </button>
-            </div>
-
-            {/* Body */}
-            <div className="px-5 py-4 space-y-3">
-              <div>
-                <label className="block text-xs font-medium text-[var(--abu-text-secondary)] mb-1">GitHub</label>
-                <Input
-                  type="text"
-                  placeholder={t.toolbox.installAgentSkillsPlaceholder}
-                  value={agentSkillsRepo}
-                  onChange={(e) => { setAgentSkillsRepo(e.target.value); setAgentSkillsError(''); setAgentSkillsSuccess(''); }}
-                  disabled={agentSkillsInstalling}
-                  onKeyDown={(e) => { if (e.key === 'Enter') handleAgentSkillsInstall(); }}
-                />
-                <p className="text-[11px] text-[var(--abu-text-muted)] mt-1">{t.toolbox.installAgentSkillsHint}</p>
-              </div>
-
-              {/* Recommended repos */}
-              <div>
-                <div className="text-[11px] font-medium text-[var(--abu-text-muted)] mb-1.5">{t.toolbox.recommendedSkills}</div>
-                <div className="flex flex-wrap gap-1.5">
-                  {['larksuite/cli', 'anthropics/skills', 'vercel-labs/agent-skills'].map((repo) => (
-                    <button
-                      key={repo}
-                      onClick={() => setAgentSkillsRepo(repo)}
-                      className="px-2 py-1 text-[11px] rounded-md bg-[var(--abu-bg-muted)] text-[var(--abu-text-tertiary)] hover:bg-[var(--abu-bg-active)] hover:text-[var(--abu-text-primary)] transition-colors"
-                    >
-                      {repo}
-                    </button>
-                  ))}
-                </div>
-              </div>
-
-              {/* Progress */}
-              {agentSkillsInstalling && (
-                <div className="flex items-center gap-2 py-2 px-3 bg-[var(--abu-bg-base)] rounded-lg">
-                  <Loader2 className="h-3.5 w-3.5 text-[var(--abu-clay)] animate-spin shrink-0" />
-                  <span className="text-xs text-[var(--abu-text-tertiary)]">Installing...</span>
-                </div>
-              )}
-
-              {/* Success */}
-              {agentSkillsSuccess && (
-                <div className="flex items-center gap-2 py-2 px-3 bg-green-50 rounded-lg">
-                  <Check className="h-3.5 w-3.5 text-green-600 shrink-0" />
-                  <span className="text-xs text-green-700">{format(t.toolbox.npmInstallSuccess, { name: agentSkillsSuccess })}</span>
-                </div>
-              )}
-
-              {/* Error */}
-              {agentSkillsError && (
-                <div className="flex items-start gap-2 py-2 px-3 bg-red-50 rounded-lg">
-                  <AlertCircle className="h-3.5 w-3.5 text-red-500 shrink-0 mt-0.5" />
-                  <span className="text-xs text-red-600">{agentSkillsError}</span>
-                </div>
-              )}
-            </div>
-
-            {/* Footer */}
-            <div className="flex items-center justify-end gap-2 px-5 py-3 border-t border-[var(--abu-border)]">
-              <button onClick={resetAgentSkillsDialog} className="px-4 py-1.5 rounded-lg text-sm font-medium text-[var(--abu-text-tertiary)] hover:bg-[var(--abu-bg-muted)] transition-colors">
-                {agentSkillsSuccess ? t.common.close : t.common.cancel}
-              </button>
-              {!agentSkillsSuccess && (
-                <button
-                  onClick={handleAgentSkillsInstall}
-                  disabled={!agentSkillsRepo.trim() || agentSkillsInstalling}
-                  className="flex items-center gap-1.5 px-4 py-1.5 rounded-lg text-sm font-medium bg-[var(--abu-clay)] text-white hover:bg-[var(--abu-clay-hover)] disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-                >
-                  {agentSkillsInstalling ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Globe className="h-3.5 w-3.5" />}
-                  {t.toolbox.installAgentSkillsButton}
-                </button>
-              )}
-            </div>
-          </div>
-        </div>
+      {/* Unified upload modal — conditionally mounted so useFileDragDrop's
+          window-level Tauri listener only runs while the modal is open. */}
+      {showUploadModal && (
+        <SkillUploadModal
+          onClose={() => setShowUploadModal(false)}
+          onInstalled={(name) => setSelectedSkill(name)}
+        />
       )}
 
       {/* Skill history modal (Task #24) — mounted only when opened. */}
@@ -1157,22 +743,6 @@ export default function SkillsSection({ manualCreateTrigger, onAICreate, onManua
           onClose={() => setHistorySkill(null)}
         />
       )}
-
-      {/* Import conflict confirm — pops when `.askill` import finds an
-          existing skill with the same name. User can overwrite (which
-          wipes the old skillDir and unpacks the new archive) or cancel. */}
-      <ConfirmDialog
-        open={!!importConflict}
-        title={t.toolbox.importConflictTitle}
-        message={importConflict
-          ? format(t.toolbox.importConflictMessage, { name: importConflict.skillName })
-          : ''}
-        confirmText={t.toolbox.importConflictOverwrite}
-        cancelText={t.common.cancel}
-        variant="danger"
-        onConfirm={handleImportOverwrite}
-        onCancel={() => setImportConflict(null)}
-      />
     </div>
   );
 }

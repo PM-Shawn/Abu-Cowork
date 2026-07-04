@@ -135,7 +135,6 @@ export default function ToolboxView() {
           manualCreateTrigger={manualCreateTrigger}
           onAICreate={handleAICreate}
           onManualCreate={handleManualCreate}
-          onUploadFile={handleUploadFile}
         />;
       case 'agents':
         return <AgentsSection

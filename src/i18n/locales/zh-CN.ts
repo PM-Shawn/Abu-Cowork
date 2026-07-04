@@ -902,6 +902,11 @@ const zhCN: TranslationDict = {
     importConflictTitle: '技能已存在',
     importConflictMessage: '当前已有同名技能 "{name}"。覆盖会替换掉现有内容。',
     importConflictOverwrite: '覆盖',
+    importEntry: '导入技能',
+    dropZoneHint: '拖放文件夹或技能包（.askill/.zip）到这里',
+    pickFolder: '选择文件夹',
+    pickFile: '选择文件 (.askill/.zip)',
+    importSkippedFiles: '跳过 {n} 个隐藏文件：{names}',
     manualAdd: '手动配置',
     // Skill detail & editor
     skillDetail: '技能详情',

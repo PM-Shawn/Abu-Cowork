@@ -30,12 +30,22 @@ interface DiscoveryActions {
 
 export type DiscoveryStore = DiscoveryState & DiscoveryActions;
 
+// Timestamp (ms) of the last refresh() invocation. The registry fs-watcher uses
+// this to skip its own echo: a fs event triggered by an in-app install arrives
+// just after that install already ran an explicit refresh(), so re-scanning again
+// would be redundant. Module-level (not store state) to avoid extra re-renders.
+let lastRefreshAt = 0;
+export function getLastDiscoveryRefreshAt(): number {
+  return lastRefreshAt;
+}
+
 export const useDiscoveryStore = create<DiscoveryStore>()((set) => ({
   skills: [],
   agents: [],
   isLoading: false,
 
   refresh: async (workspaceOverride) => {
+    lastRefreshAt = Date.now();
     set({ isLoading: true });
     try {
       // Prefer the explicit override when provided (including `null`

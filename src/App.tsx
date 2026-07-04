@@ -58,6 +58,7 @@ import { stopAllHeartbeats } from '@/core/im/pluginHeartbeat';
 import { reconcileIMSessions } from '@/core/im/sessionReconcile';
 import { initMCPStoreSync, cleanupMCPStoreSync } from '@/stores/mcpStore';
 import { initFileWatchers, stopAllWatchers } from '@/core/agent/fileWatcher';
+import { startRegistryWatcher, stopRegistryWatcher } from '@/core/skill/registryWatcher';
 import { getPendingWorkspaceRequest, resolveWorkspaceRequest, subscribeToWorkspaceRequest } from '@/core/agent/permissionBridge';
 import { startBehaviorSensor, stopBehaviorSensor } from '@/core/agent/behaviorSensor';
 import { useI18n } from '@/i18n';
@@ -278,6 +279,12 @@ function App() {
       console.warn('[App] File watcher init error:', err);
     });
 
+    // Watch ~/.abu/skills and ~/.abu/agents so items dropped straight into those
+    // folders appear live (no restart needed). Self-contained + best-effort.
+    startRegistryWatcher().catch((err) => {
+      console.warn('[App] Registry watcher init error:', err);
+    });
+
     // Skill drafts: boot-time refresh + hourly TTL sweeper (workspace-switch
     // refresh is already wired in skillDraftsStore). startDraftsSweeper is
     // idempotent.
@@ -306,6 +313,7 @@ function App() {
     return () => {
       cleanupMCPStoreSync();
       stopAllWatchers();
+      stopRegistryWatcher();
       import('@/stores/skillDraftsStore').then(({ stopDraftsSweeper }) => stopDraftsSweeper()).catch(() => {});
     };
   }, [refreshDiscovery]);

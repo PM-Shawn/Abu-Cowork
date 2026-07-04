@@ -82,6 +82,24 @@ pub struct CommandOutput {
     code: i32,
 }
 
+/// Iterate a byte stream as lines with UTF-8 lossy conversion.
+///
+/// `BufRead::lines()` returns Err on a line containing invalid UTF-8, and the
+/// `map_while(Result::ok)` pattern then silently drops ALL remaining output —
+/// e.g. `unzip -l` printing CP437-mangled filenames, or GBK output from tools
+/// on Chinese Windows, made whole command outputs look empty past the first
+/// non-ASCII line. Reading raw byte chunks and lossy-converting each keeps
+/// every line; invalid sequences become U+FFFD. Only real I/O errors stop it.
+fn lossy_lines<R: BufRead>(reader: R) -> impl Iterator<Item = String> {
+    reader.split(b'\n').map_while(Result::ok).map(|chunk| {
+        let mut s = String::from_utf8_lossy(&chunk).into_owned();
+        if s.ends_with('\r') {
+            s.pop();
+        }
+        s
+    })
+}
+
 /// Spawn a pre-built command, stream stdout/stderr line-by-line with an
 /// output-line cap, enforce `timeout_secs`, and collect the final
 /// CommandOutput. Must be called from a blocking context (e.g. inside
@@ -105,7 +123,7 @@ fn execute_foreground_command(
     if let Some(out) = stdout {
         thread::spawn(move || {
             let reader = BufReader::new(out);
-            for line in reader.lines().map_while(Result::ok) {
+            for line in lossy_lines(reader) {
                 if let Ok(mut lines) = stdout_lines_clone.lock() {
                     if lines.len() >= MAX_OUTPUT_LINES {
                         lines.push(format!("[truncated: exceeded {} lines]", MAX_OUTPUT_LINES));
@@ -121,7 +139,7 @@ fn execute_foreground_command(
     if let Some(err) = stderr {
         thread::spawn(move || {
             let reader = BufReader::new(err);
-            for line in reader.lines().map_while(Result::ok) {
+            for line in lossy_lines(reader) {
                 if let Ok(mut lines) = stderr_lines_clone.lock() {
                     if lines.len() >= MAX_OUTPUT_LINES {
                         lines.push(format!("[truncated: exceeded {} lines]", MAX_OUTPUT_LINES));
@@ -238,7 +256,7 @@ async fn run_shell_command(
             if let Some(out) = stdout {
                 thread::spawn(move || {
                     let reader = BufReader::new(out);
-                    for line in reader.lines().map_while(Result::ok) {
+                    for line in lossy_lines(reader) {
                         if let Ok(mut lines) = stdout_lines_clone.lock() {
                             if lines.len() >= MAX_OUTPUT_LINES {
                                 lines.push(format!("[truncated: exceeded {} lines]", MAX_OUTPUT_LINES));
@@ -255,7 +273,7 @@ async fn run_shell_command(
             if let Some(err) = stderr {
                 thread::spawn(move || {
                     let reader = BufReader::new(err);
-                    for line in reader.lines().map_while(Result::ok) {
+                    for line in lossy_lines(reader) {
                         if let Ok(mut lines) = stderr_lines_clone.lock() {
                             if lines.len() >= MAX_OUTPUT_LINES {
                                 lines.push(format!("[truncated: exceeded {} lines]", MAX_OUTPUT_LINES));
@@ -464,7 +482,7 @@ async fn run_shell_command_streaming(
         if let Some(out) = stdout {
             thread::spawn(move || {
                 let reader = BufReader::new(out);
-                for line in reader.lines().map_while(Result::ok) {
+                for line in lossy_lines(reader) {
                     let _ = app_clone.emit(&format!("abu://command-output-{}", event_id_clone), CommandOutputLine {
                         stream: "stdout".to_string(),
                         line: line.clone(),
@@ -487,7 +505,7 @@ async fn run_shell_command_streaming(
         if let Some(err) = stderr {
             thread::spawn(move || {
                 let reader = BufReader::new(err);
-                for line in reader.lines().map_while(Result::ok) {
+                for line in lossy_lines(reader) {
                     let _ = app_clone2.emit(&format!("abu://command-output-{}", event_id_clone2), CommandOutputLine {
                         stream: "stderr".to_string(),
                         line: line.clone(),
@@ -855,7 +873,7 @@ async fn mcp_spawn(
     let id_stderr = id.clone();
     thread::spawn(move || {
         let reader = BufReader::new(stderr);
-        for line in reader.lines().map_while(Result::ok) {
+        for line in lossy_lines(reader) {
             let _ = app_stderr.emit(&format!("mcp-err-{}", id_stderr), &line);
         }
     });
@@ -1415,6 +1433,38 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn lossy_lines_survives_invalid_utf8_and_strips_crlf() {
+        // Regression: BufRead::lines() errors on a non-UTF-8 line and
+        // map_while(Result::ok) then dropped ALL remaining output — `unzip -l`
+        // with CP437-mangled names / GBK output on Chinese Windows came back
+        // as "empty" listings.
+        let bytes: &[u8] = b"header\r\n\x86\x86name.md\ntail\n";
+        let lines: Vec<String> = lossy_lines(std::io::BufReader::new(bytes)).collect();
+        assert_eq!(lines.len(), 3, "no line may be dropped, got: {:?}", lines);
+        assert_eq!(lines[0], "header", "CRLF must be stripped");
+        assert!(lines[1].contains("name.md"), "invalid bytes become U+FFFD, rest of line kept");
+        assert_eq!(lines[2], "tail", "lines after an invalid one must survive");
+    }
+
+    #[test]
+    fn execute_foreground_keeps_output_after_invalid_utf8_line() {
+        // End-to-end: a child process emitting a non-UTF-8 line mid-stream
+        // (octal \206\206) must not lose the lines that follow it.
+        let mut cmd = StdCommand::new("printf");
+        cmd.args(["ok\\n\\206\\206.md\\ntail\\n"]);
+        cmd.stdout(Stdio::piped());
+        cmd.stderr(Stdio::piped());
+        let out = execute_foreground_command(cmd, 5).expect("printf should succeed");
+        assert_eq!(out.code, 0);
+        assert!(out.stdout.contains("ok"), "stdout: {:?}", out.stdout);
+        assert!(
+            out.stdout.contains("tail"),
+            "output after the invalid-UTF-8 line was dropped: {:?}",
+            out.stdout
+        );
+    }
 
     #[test]
     fn execute_foreground_captures_stdout_and_exit_code() {

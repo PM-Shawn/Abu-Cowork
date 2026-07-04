@@ -365,16 +365,28 @@ async function installAction(input: Record<string, unknown>): Promise<ActionResu
   const { installSkillFromFolder } = await import('@/core/skill/installer');
   const { installSkillFromNpm } = await import('@/core/skill/npmInstaller');
 
+  // Confirm-first: never silently clobber a same-named skill the user may have
+  // hand-edited. Only overwrite when the caller explicitly opts in (after asking
+  // the user). On conflict we return an actionable message telling the AI to retry
+  // with overwrite:true rather than deleting the existing skill.
+  const overwrite = input.overwrite === true;
   const sourceType = detectSourceType(source);
   let skillName: string;
   let fileCount: number;
+  let skipped: string[] = [];
 
   try {
     if (sourceType === 'folder') {
-      const r = await installSkillFromFolder(source);
-      if (!r.ok) return { success: false, error: r.message };
+      const r = await installSkillFromFolder(source, { overwrite });
+      if (!r.ok) {
+        if (r.code === 'ALREADY_EXISTS') {
+          return { success: false, error: `${r.message}。如需覆盖，请先与用户确认，再重新调用本工具并传 overwrite: true。` };
+        }
+        return { success: false, error: r.message };
+      }
       skillName = r.name;
       fileCount = r.fileCount;
+      skipped = r.skipped ?? [];
     } else if (sourceType === 'npm') {
       const r = await installSkillFromNpm(source);
       skillName = r.skillName;
@@ -392,10 +404,14 @@ async function installAction(input: Record<string, unknown>): Promise<ActionResu
   const { useDiscoveryStore } = await import('../../../stores/discoveryStore');
   await useDiscoveryStore.getState().refresh().catch(() => { /* best-effort */ });
 
+  const skippedNote = skipped.length > 0
+    ? `（跳过 ${skipped.length} 个隐藏文件：${skipped.join('、')}，其中 .mcp.json 等可能含密钥，如技能需要请手动配置）`
+    : '';
+
   return {
     success: true,
     status: 'applied',
-    message: `技能 "${skillName}" 安装成功（${fileCount} 个文件），已出现在"我的技能"中。`,
+    message: `技能 "${skillName}" 安装成功（${fileCount} 个文件）${skippedNote}，已出现在"我的技能"中。`,
   };
 }
 
@@ -1166,6 +1182,10 @@ export const skillManageTool: ToolDefinition = {
       source: {
         type: 'string',
         description: '[install] 安装来源：npm 包名（如 "cooper"）、本地路径（如 "/Downloads/my-skill"）、直链 URL（.tgz/.zip）、或 GitHub 链接（https://github.com/user/repo）',
+      },
+      overwrite: {
+        type: 'boolean',
+        description: '[install] 是否覆盖同名已存在的 skill。默认 false —— 同名冲突会返回错误而非静默覆盖。仅在与用户确认后才传 true。',
       },
       name: {
         type: 'string',

@@ -68,7 +68,7 @@ export default function CustomizePanel() {
   const renderContent = () => {
     switch (activeTab) {
       case 'skills':
-        return <SkillsSection onUploadFile={() => handleUploadFolder('skills')} />;
+        return <SkillsSection />;
       case 'agents':
         return <AgentsSection onUploadFile={() => handleUploadFolder('agents')} />;
       case 'mcp':

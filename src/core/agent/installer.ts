@@ -5,13 +5,13 @@
  * then recursively copies the entire directory to ~/.abu/agents/{name}/.
  */
 
-import { readTextFile, readDir, readFile, writeFile, mkdir, exists } from '@tauri-apps/plugin-fs';
+import { readTextFile, readDir, readFile, writeFile, mkdir, exists, remove, rename } from '@tauri-apps/plugin-fs';
 import { homeDir } from '@tauri-apps/api/path';
 import { parse as parseYaml } from 'yaml';
 import { joinPath } from '@/utils/pathUtils';
 
 export type InstallResult =
-  | { ok: true; name: string; fileCount: number }
+  | { ok: true; name: string; fileCount: number; skipped: string[] }
   | { ok: false; code: 'NO_AGENT_MD' | 'NO_NAME' | 'ALREADY_EXISTS' | 'COPY_FAILED'; message: string };
 
 /**
@@ -46,11 +46,46 @@ export async function installAgentFromFolder(
     return { ok: false, code: 'ALREADY_EXISTS', message: `Agent "${name}" already exists` };
   }
 
-  // 5. Recursively copy folder
+  // 5. Atomic copy via a staging dir outside ~/.abu/agents, then swap into place.
+  //    A failure never leaves a partial target (which would falsely report
+  //    "already exists" on retry). On overwrite, the existing target is moved
+  //    aside and restored if the swap fails, so a rename error never leaves the
+  //    user with neither the old nor the new agent. Dotfiles are skipped (see copyDirectory).
+  const stagingDir = joinPath(home, '.abu', 'agent-staging', name);
+  const backupDir = joinPath(home, '.abu', 'agent-staging', `__backup__${name}`);
+  const skipped: string[] = [];
   try {
-    const fileCount = await copyDirectory(folderPath, targetDir);
-    return { ok: true, name, fileCount };
+    if (await exists(stagingDir)) {
+      await remove(stagingDir, { recursive: true });
+    }
+    const fileCount = await copyDirectory(folderPath, stagingDir, skipped, true);
+
+    await mkdir(joinPath(home, '.abu', 'agents'), { recursive: true });
+
+    const hadExisting = await exists(targetDir);
+    if (hadExisting) {
+      if (await exists(backupDir)) await remove(backupDir, { recursive: true });
+      await rename(targetDir, backupDir);
+    }
+    try {
+      await rename(stagingDir, targetDir);
+    } catch (swapErr) {
+      if (hadExisting) {
+        try { await rename(backupDir, targetDir); } catch { /* best-effort restore */ }
+      }
+      throw swapErr;
+    }
+    if (hadExisting) {
+      try { await remove(backupDir, { recursive: true }); } catch { /* best-effort */ }
+    }
+
+    return { ok: true, name, fileCount, skipped };
   } catch (err) {
+    try {
+      await remove(stagingDir, { recursive: true });
+    } catch {
+      /* best-effort cleanup — staging may not exist yet */
+    }
     return { ok: false, code: 'COPY_FAILED', message: String(err) };
   }
 }
@@ -70,18 +105,31 @@ function extractName(content: string): string | null {
   }
 }
 
-/** Recursively copy a directory, returning total file count */
-async function copyDirectory(srcDir: string, destDir: string): Promise<number> {
+/**
+ * Recursively copy a directory, returning total file count.
+ *
+ * Dotfiles / dotdirs (`.DS_Store`, `.mcp.json`, `.claude`, `.git`, …) are skipped:
+ * the Tauri fs scope (`$HOME/**`) cannot read a path segment starting with `.`
+ * (require_literal_leading_dot), so copying them throws "forbidden path" and would
+ * abort the whole install. Only TOP-LEVEL skipped names are collected (isTop) so
+ * nested basenames like `.DS_Store` aren't duplicated in the caller's message.
+ */
+async function copyDirectory(srcDir: string, destDir: string, skipped: string[], isTop = false): Promise<number> {
   await mkdir(destDir, { recursive: true });
   let count = 0;
 
   const entries = await readDir(srcDir);
   for (const entry of entries) {
+    if (entry.name.startsWith('.')) {
+      if (isTop) skipped.push(entry.name);
+      continue;
+    }
+
     const srcPath = joinPath(srcDir, entry.name);
     const destPath = joinPath(destDir, entry.name);
 
     if (entry.isDirectory) {
-      count += await copyDirectory(srcPath, destPath);
+      count += await copyDirectory(srcPath, destPath, skipped);
     } else {
       const bytes = await readFile(srcPath);
       await writeFile(destPath, new Uint8Array(bytes));

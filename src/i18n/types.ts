@@ -933,6 +933,12 @@ export interface TranslationDict {
     importConflictTitle: string;     // confirm dialog
     importConflictMessage: string;   // "{name} 已存在，是否覆盖？"
     importConflictOverwrite: string; // "覆盖"
+    // Merged upload entry — folder / .askill / .zip via click or drag-drop
+    importEntry: string;             // menu label + modal title
+    dropZoneHint: string;            // drag-drop zone hint
+    pickFolder: string;              // "选择文件夹"
+    pickFile: string;                // "选择文件 (.askill/.zip)"
+    importSkippedFiles: string;      // "跳过 {n} 个隐藏文件：{names}"
     manualAdd: string;
     // Skill detail & editor
     skillDetail: string;

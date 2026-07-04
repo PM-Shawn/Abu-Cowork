@@ -1,9 +1,10 @@
 import { useSettingsStore, type SystemSettingsTab } from '@/stores/settingsStore';
 import { useI18n } from '@/i18n';
-import { Settings2, Info, Shield, SlidersHorizontal, MessageCircle, Radio, Brain, Heart, Activity, BarChart3, Building2, FlaskConical } from 'lucide-react';
+import { Settings2, Info, Shield, SlidersHorizontal, MessageCircle, Radio, Brain, Heart, Activity, BarChart3, Building2, PawPrint, FlaskConical } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { AIServicesSection, AboutSection, SandboxSection, GeneralSection, IMChannelSection } from './sections';
 import FeedbackSection from './sections/FeedbackSection';
+import PetSection from './sections/PetSection';
 import PersonalMemorySection from './sections/PersonalMemorySection';
 import SoulSection from './sections/SoulSection';
 import DiagnosticSection from './sections/DiagnosticSection';
@@ -23,6 +24,7 @@ export default function SystemSettingsView() {
     { id: 'usage', label: t.usage.title, icon: BarChart3 },
     { id: 'ai-services', label: t.settings.aiServices, icon: Settings2 },
     { id: 'im-channels', label: t.imChannel.title, icon: Radio },
+    { id: 'pet', label: t.settings.petEnable, icon: PawPrint },
     { id: 'personal-memory', label: t.sidebar.personalMemory, icon: Brain },
     { id: 'soul', label: t.soul.title, icon: Heart },
     { id: 'sandbox', label: t.settings.sandbox, icon: Shield },
@@ -50,6 +52,8 @@ export default function SystemSettingsView() {
         return <SandboxSection />;
       case 'im-channels':
         return <IMChannelSection />;
+      case 'pet':
+        return <PetSection />;
       case 'personal-memory':
         return <PersonalMemorySection />;
       case 'soul':

@@ -1,10 +1,11 @@
 /**
  * Global test setup — mock all Tauri and external SDK modules
  */
-import { vi, beforeEach } from 'vitest';
+import { vi, beforeEach, afterEach } from 'vitest';
 // Extend expect with jest-dom matchers for React component tests
 // (toBeInTheDocument / toBeDisabled / toHaveTextContent / etc.)
 import '@testing-library/jest-dom/vitest';
+import { cleanup } from '@testing-library/react';
 
 // ── @tauri-apps/api ──
 vi.mock('@tauri-apps/api/path', () => ({
@@ -22,6 +23,7 @@ vi.mock('@tauri-apps/api/core', () => ({
 vi.mock('@tauri-apps/api/event', () => ({
   listen: vi.fn().mockResolvedValue(() => {}),
   emit: vi.fn(),
+  emitTo: vi.fn().mockResolvedValue(undefined),
 }));
 
 vi.mock('@tauri-apps/api/window', () => ({
@@ -134,4 +136,9 @@ beforeEach(() => {
   } catch {
     // Fallback: no-op
   }
+});
+
+// ── Cleanup React Testing Library renders after each test ──
+afterEach(() => {
+  cleanup();
 });

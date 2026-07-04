@@ -140,6 +140,12 @@
 .typing-dot:nth-child(2) { animation-delay: 0.15s; }
 .typing-dot:nth-child(3) { animation-delay: 0.3s; }
 
+/* Pet notification bubble: 'done' state lingers briefly then fades out. */
+@keyframes petNotifFade {
+  0%, 70% { opacity: 1; }
+  100% { opacity: 0; }
+}
+
 /* shadcn theme */
 @theme inline {
   --radius-sm: calc(var(--radius) - 4px);

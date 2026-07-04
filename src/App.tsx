@@ -61,6 +61,7 @@ import { initFileWatchers, stopAllWatchers } from '@/core/agent/fileWatcher';
 import { startRegistryWatcher, stopRegistryWatcher } from '@/core/skill/registryWatcher';
 import { getPendingWorkspaceRequest, resolveWorkspaceRequest, subscribeToWorkspaceRequest } from '@/core/agent/permissionBridge';
 import { startBehaviorSensor, stopBehaviorSensor } from '@/core/agent/behaviorSensor';
+import { runAgentLoop } from '@/core/agent/agentLoop';
 import { useI18n } from '@/i18n';
 import CloseDialog from '@/components/common/CloseDialog';
 import SensitiveAuditDialog from '@/components/settings/SensitiveAuditDialog';
@@ -208,6 +209,51 @@ function App() {
     };
   }, []);
 
+  // Pet window sends a message to the currently active conversation
+  useEffect(() => {
+    let unlistenFn: (() => void) | null = null;
+    let cancelled = false;
+    listen('pet-send-message', (event) => {
+      const { text, conversationId } = event.payload as { text: string; conversationId?: string | null };
+      const store = useChatStore.getState();
+      // A waiting-state inline reply targets the conversation the notice
+      // pointed at; a plain quick message falls back to the active one.
+      const convId =
+        (conversationId && store.conversations[conversationId] ? conversationId : null) ??
+        store.activeConversationId ??
+        store.createConversation(null);
+      runAgentLoop(convId, text).catch((err) => {
+        console.warn('[pet-send-message] runAgentLoop error:', err);
+      });
+    }).then((fn) => {
+      if (cancelled) fn();
+      else unlistenFn = fn;
+    });
+    return () => {
+      cancelled = true;
+      unlistenFn?.();
+    };
+  }, []);
+
+  // Pet window notifies the main window when its own open state changes
+  // (e.g. user closes it via the pet's right-click menu), so the Settings
+  // toggle stays in sync without needing a reload.
+  useEffect(() => {
+    let unlistenFn: (() => void) | null = null;
+    let cancelled = false;
+    listen('pet-open-state-changed', (event) => {
+      const { open } = event.payload as { open: boolean };
+      useSettingsStore.getState().setPetOpen(open);
+    }).then((fn) => {
+      if (cancelled) fn();
+      else unlistenFn = fn;
+    });
+    return () => {
+      cancelled = true;
+      unlistenFn?.();
+    };
+  }, []);
+
   // Listen for window close-requested event from Rust
   useEffect(() => {
     if (!isTauriEnv()) return; // web / E2E: no Tauri IPC
@@ -251,6 +297,15 @@ function App() {
     if (useSettingsStore.getState().preventSleep) {
       invoke('set_prevent_sleep', { enabled: true }).catch((err) => {
         console.warn('[App] Failed to restore sleep prevention:', err);
+      });
+    }
+
+    // Restore the desktop pet window if it was open when the app last quit
+    // (mirrors Codex's petOpenIntent behavior — the pet window itself doesn't
+    // persist, only the intent does).
+    if (useSettingsStore.getState().petOpen) {
+      invoke('pet_show').catch((err) => {
+        console.warn('[App] Failed to restore desktop pet:', err);
       });
     }
 

@@ -41,6 +41,32 @@ function makeExecStep(id: string): ExecutionStep {
   };
 }
 
+function makeThinkingAssistant(
+  id: string,
+  opts: { thinking?: string; thinkingDuration?: number; text?: string; toolCount?: number; plan?: string[] },
+): Message {
+  const toolCalls: Message['toolCalls'] = Array.from({ length: opts.toolCount ?? 0 }, (_, i) => ({
+    id: `tc-${id}-${i}`,
+    name: 'read_file',
+    input: {},
+    result: 'ok',
+  }));
+  if (opts.plan) {
+    // report_plan is hidden:true and carries steps in input.steps
+    toolCalls.push({ id: `plan-${id}`, name: 'report_plan', input: { steps: opts.plan }, hidden: true, result: 'ok' });
+  }
+  return {
+    id,
+    role: 'assistant',
+    content: opts.text ?? '',
+    timestamp: 0,
+    loopId: 'loop-1',
+    thinking: opts.thinking,
+    thinkingDuration: opts.thinkingDuration,
+    toolCalls,
+  };
+}
+
 describe('buildRenderSegments', () => {
   it('leading user message is NOT in segments (rendered by top bubble)', () => {
     const msgs: Message[] = [
@@ -91,5 +117,55 @@ describe('buildRenderSegments', () => {
     expect(firstSteps.executionSteps[0].id).toBe('step-1');
     expect(secondSteps.executionSteps).toHaveLength(1);
     expect(secondSteps.executionSteps[0].id).toBe('step-2');
+  });
+
+  it('thinking renders as its own steps segment, NOT hoisted above the plan', () => {
+    // Real shape of conversation mr7k14k0cjzqof, message 2:
+    // thinking(5s) then report_plan. Order must be: thinking, then plan.
+    const msgs: Message[] = [
+      makeUser('u1', 'delete logs'),
+      makeThinkingAssistant('a1', { thinking: 'let me plan', thinkingDuration: 5, plan: ['scan', 'list', 'delete', 'verify'] }),
+    ];
+    const segs = buildRenderSegments(msgs, [], []);
+
+    // Expect exactly: steps(thinking) then plan
+    expect(segs.map((s) => s.kind)).toEqual(['steps', 'plan']);
+    const thinkingSeg = segs[0] as Extract<ReturnType<typeof buildRenderSegments>[0], { kind: 'steps' }>;
+    expect(thinkingSeg.executionSteps).toHaveLength(1);
+    expect(thinkingSeg.executionSteps[0].type).toBe('thinking');
+    expect(thinkingSeg.executionSteps[0].duration).toBe(5);
+  });
+
+  it('multiple thinking blocks stay inline at each message position, interleaved with tools', () => {
+    // thinking5+plan → thinking2+find_files → thinking3+text+list_dir
+    const msgs: Message[] = [
+      makeUser('u1', 'go'),
+      makeThinkingAssistant('a1', { thinking: 't5', thinkingDuration: 5, plan: ['a', 'b'] }),
+      makeThinkingAssistant('a2', { thinking: 't2', thinkingDuration: 2, toolCount: 1 }),
+      makeThinkingAssistant('a3', { thinking: 't3', thinkingDuration: 3, text: 'no logs found', toolCount: 1 }),
+    ];
+    const execSteps = [makeExecStep('find'), makeExecStep('listdir')];
+    const segs = buildRenderSegments(msgs, execSteps, []);
+
+    // thinking(a1), plan, thinking(a2), steps(find), thinking(a3), text(a3), steps(listdir)
+    expect(segs.map((s) => s.kind)).toEqual(['steps', 'plan', 'steps', 'steps', 'steps', 'text', 'steps']);
+    // Each thinking block is standalone (single thinking step, no tool steps mixed in)
+    const stepSegs = segs.filter((s) => s.kind === 'steps') as Extract<ReturnType<typeof buildRenderSegments>[0], { kind: 'steps' }>[];
+    // [thinking-a1, thinking-a2, find, thinking-a3, listdir]
+    expect(stepSegs[0].executionSteps[0].type).toBe('thinking');
+    expect(stepSegs[2].executionSteps[0].id).toBe('find');
+    expect(stepSegs[2].executionSteps.every((s) => s.type !== 'thinking')).toBe(true);
+    expect(stepSegs[4].executionSteps[0].id).toBe('listdir');
+  });
+
+  it('a thinking-typed step in allExecSteps is discarded (thinking comes from messages)', () => {
+    const msgs: Message[] = [makeUser('u1', 'x'), makeThinkingAssistant('a1', { thinking: 'from msg', thinkingDuration: 1, toolCount: 1 })];
+    const thinkingExec: ExecutionStep = { ...makeExecStep('ghost'), type: 'thinking' };
+    const toolExec = makeExecStep('real-tool');
+    const segs = buildRenderSegments(msgs, [thinkingExec, toolExec], []);
+    const stepSegs = segs.filter((s) => s.kind === 'steps') as Extract<ReturnType<typeof buildRenderSegments>[0], { kind: 'steps' }>[];
+    // thinking block (from msg) + tool block (real-tool); ghost thinking-exec dropped
+    const toolSeg = stepSegs.find((s) => s.executionSteps[0]?.type !== 'thinking')!;
+    expect(toolSeg.executionSteps.map((s) => s.id)).toEqual(['real-tool']);
   });
 });

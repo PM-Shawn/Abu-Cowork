@@ -31,7 +31,7 @@ import { useTaskExecutionStore } from '@/stores/taskExecutionStore';
 import DetailBlockView from './DetailBlockView';
 
 // Unified step type for rendering
-type UnifiedStep = {
+export type UnifiedStep = {
   id: string;
   type: StepType | ExecStepType;
   label: string;
@@ -108,7 +108,8 @@ function getTypeLabel(step: UnifiedStep, t: TranslationDict): string | null {
 }
 
 // Generate summary title from steps (with translations)
-function generateSummary(steps: UnifiedStep[], t: TranslationDict, locale: string, isActive: boolean): string {
+// eslint-disable-next-line react-refresh/only-export-components
+export function generateSummary(steps: UnifiedStep[], t: TranslationDict, locale: string, isActive: boolean): string {
   const actions: string[] = [];
   const separator = locale.startsWith('zh') ? '，' : ', ';
 
@@ -132,14 +133,17 @@ function generateSummary(steps: UnifiedStep[], t: TranslationDict, locale: strin
     else otherCount++;
   }
 
-  // Surface thinking-only state in the summary so a "hi" reply with no tools
-  // doesn't fall through to the bland "完成" / "处理中" fallback.
-  // Use the topic label ("思考过程") rather than the duration label so the
-  // collapsed header doesn't repeat the step's own "思考了 N 秒" label.
+  // Thinking is its own standalone block now — the collapsed header is the only
+  // line, so surface the duration ("思考了 N 秒") at a glance; fall back to the
+  // topic label when duration is unknown (still streaming).
   const thinkingStep = steps.find((s) => s.type === 'thinking');
   const onlyThinking = thinkingStep && readCount + writeCount + createCount + commandCount + otherCount === 0 && !skillStep;
   if (onlyThinking) {
-    actions.push(t.chat.thinkingProcess);
+    actions.push(
+      thinkingStep.duration != null
+        ? format(t.task.thoughtFor, { seconds: thinkingStep.duration })
+        : t.chat.thinkingProcess,
+    );
   }
 
   if (skillStep) {

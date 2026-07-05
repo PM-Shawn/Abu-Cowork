@@ -504,9 +504,18 @@ export default function MessageGroup({ messages, isLastGroup: isLastGroupProp = 
   // Fold header label: Codex-style duration + completed/aborted variant. Prefer
   // the execution's start/end timing; fall back to message timestamps when the
   // execution has been evicted (older groups). Aborted = execution cancelled.
-  const workStart = execution?.startTime ?? assistantMsgs[0]?.timestamp ?? userMsg?.timestamp;
+  const workStart = execution?.startTime ?? userMsg?.timestamp ?? assistantMsgs[0]?.timestamp;
   const workEnd = execution?.endTime ?? lastAssistantMsg?.timestamp;
-  const workDurationMs = workStart != null && workEnd != null ? workEnd - workStart : 0;
+  const workSpanMs = workStart != null && workEnd != null ? Math.max(0, workEnd - workStart) : 0;
+  // The message-timestamp span under-counts (the last message's own thinking/
+  // generation isn't captured — its timestamp is set at creation — and the live
+  // execution with the accurate endTime is usually evicted by the time this
+  // settled fold renders). Floor the total at the sum of visible step durations
+  // so "已处理 X" is never less than the thinking/tool times the user can add up.
+  const workStepsSec =
+    assistantMsgs.reduce((a, m) => a + (m.thinkingDuration ?? 0), 0) +
+    activeExecSteps.filter((s) => s.type !== 'thinking').reduce((a, s) => a + (s.duration ?? 0), 0);
+  const workDurationMs = Math.max(workSpanMs, workStepsSec * 1000);
   const workLabel = execution?.status === 'cancelled'
     ? format(t.chat.stoppedAfter, { duration: formatWorkDuration(workDurationMs) })
     : format(t.chat.workedFor, { duration: formatWorkDuration(workDurationMs) });

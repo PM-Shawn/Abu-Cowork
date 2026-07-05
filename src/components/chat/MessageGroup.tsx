@@ -203,16 +203,12 @@ export function buildRenderSegments(
     const isLastTurn = assistantIdx === assistantMsgs.length - 1;
     assistantIdx++;
 
-    // 1. Thinking — standalone block at this message's position, before its tools/text.
+    // 1. Thinking — accumulate as the first step of this message's block (in true
+    //    order, before its tools). NOT a flush boundary, so consecutive
+    //    thinking+tool turns merge into one collapsible block instead of many
+    //    separate "思考了 N 秒" rows. Only text/plan/user break the block.
     if (msg.thinking && msg.thinking.trim().length > 0) {
-      flushSteps();
-      segments.push({
-        kind: 'steps',
-        executionSteps: [buildThinkingStep(msg)],
-        legacySteps: [],
-        isLastGroup: false,
-        stepsMsgs: [],
-      });
+      pendingExecSteps.push(buildThinkingStep(msg));
     }
 
     // Slice this message's tool steps (hidden report_plan excluded — see plan segment).

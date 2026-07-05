@@ -329,6 +329,16 @@ export interface Conversation {
 
 export type AgentStatus = 'idle' | 'thinking' | 'tool-calling' | 'streaming' | 'rate-limited';
 
+/** Live retry state surfaced to the UI so a stalled/flaky provider isn't silent. */
+export interface RetryInfo {
+  /** 1-based attempt number of the retry that is about to happen. */
+  attempt: number;
+  /** Best-effort max attempts for this error class. */
+  maxAttempts: number;
+  /** Delay before the next attempt, in ms. */
+  delayMs: number;
+}
+
 // --- Tool Results ---
 
 // Rich content blocks for tool results (images, text)

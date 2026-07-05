@@ -280,4 +280,24 @@ describe('buildShareBundle', () => {
       expect(block.source?.data.length).toBeGreaterThan(0);
     });
   });
+
+  describe('progress + cancel (#7)', () => {
+    it('calls onProgress once per visible (non-system) message', async () => {
+      const conv = makeConv([
+        { id: 'm1', role: 'user', content: 'a', timestamp: 1 },
+        { id: 'm2', role: 'assistant', content: 'b', timestamp: 2 },
+        { id: 'm3', role: 'user', content: 'sys', timestamp: 3, isSystem: true },
+      ]);
+      const seen: Array<[number, number]> = [];
+      await buildShareBundle(conv, { onProgress: (d, t) => seen.push([d, t]) });
+      expect(seen).toEqual([[1, 2], [2, 2]]); // m3 (system) excluded from total
+    });
+
+    it('rejects when the signal is already aborted', async () => {
+      const conv = makeConv([{ id: 'm1', role: 'user', content: 'a', timestamp: 1 }]);
+      const controller = new AbortController();
+      controller.abort();
+      await expect(buildShareBundle(conv, { signal: controller.signal })).rejects.toThrow();
+    });
+  });
 });

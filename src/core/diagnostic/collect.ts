@@ -58,6 +58,35 @@ interface CollectOptions {
   includeRawText: boolean;
   /** Conversation ID to embed (defaults to active). May be null/undefined. */
   conversationId?: string | null;
+  /**
+   * Cap on how many (most-recent) messages to embed. A large conversation
+   * (1000s of messages) serialized whole freezes the main thread during zip
+   * (Bug 2). Defaults to the last {@link DEFAULT_DIAGNOSTIC_MESSAGE_CAP};
+   * pass 'all' to include everything.
+   */
+  messageCap?: number | 'all';
+}
+
+/** Default number of most-recent messages embedded in a diagnostic bundle. */
+export const DEFAULT_DIAGNOSTIC_MESSAGE_CAP = 200;
+
+/**
+ * Keep only the last `cap` messages (or all, when cap is 'all' or the
+ * conversation is already under the cap). Pure — returns the original array
+ * reference untouched when no capping is needed. Reports the true total so the
+ * bundle can note that older messages were dropped (never a silent truncation).
+ */
+export function capDiagnosticMessages<T>(
+  messages: T[],
+  cap: number | 'all',
+): { messages: T[]; total: number; capped: boolean } {
+  const total = messages.length;
+  if (cap === 'all') return { messages, total, capped: false };
+  // cap <= 0 → embed no messages (diagnostic-only). Guard explicitly:
+  // slice(-0) === slice(0) would otherwise return EVERYTHING.
+  if (cap <= 0) return { messages: [], total, capped: total > 0 };
+  if (total <= cap) return { messages, total, capped: false };
+  return { messages: messages.slice(-cap), total, capped: true };
 }
 
 interface CollectResult {
@@ -161,12 +190,25 @@ export async function collectBundleFiles(opts: CollectOptions): Promise<CollectR
   if (convId) {
     const conv = chat.conversations[convId];
     if (conv) {
-      const scrubbedMessages = conv.messages.map((m) => {
+      // Cap to the most-recent messages so a huge conversation can't freeze the
+      // main thread during scrub + zip (Bug 2). Older messages are dropped with
+      // an explicit note — never silently.
+      const { messages: capped, total, capped: wasCapped } = capDiagnosticMessages(
+        conv.messages,
+        opts.messageCap ?? DEFAULT_DIAGNOSTIC_MESSAGE_CAP,
+      );
+      const scrubbedMessages = capped.map((m) => {
         const out = scrubMessage(m, { includeRawText: opts.includeRawText });
         if (!opts.includeRawText) scrubCount++;
         return out;
       });
       files['conversation/messages.jsonl'] = scrubbedMessages.map((m) => JSON.stringify(m)).join('\n');
+      if (wasCapped) {
+        files['conversation/_truncation-note.txt'] =
+          `Included the most recent ${capped.length} of ${total} messages ` +
+          `(capped to keep the export responsive). Re-export with the "all messages" ` +
+          `option to include the full history.\n`;
+      }
 
       const indexEntry = chat.conversationIndex[convId];
       if (indexEntry) {

@@ -250,6 +250,9 @@ export interface TranslationDict {
     userMessageCollapse: string;
     noModelConfigured: string;
     scrollToBottom: string;
+    compressingContext: string;
+    retrying: string;
+    resuming: string;
     codeBlockExpand: string;
     codeBlockCollapse: string;
     codeBlockSaveAs: string;
@@ -783,6 +786,7 @@ export interface TranslationDict {
     exportIncluded: string;
     exportPrivacy: string;
     exportIncludeRaw: string;
+    exportIncludeAll: string;
     exportIncludeRawWarning: string;
     exportIncludedListTitle: string;
     exportPrivacyText: string;

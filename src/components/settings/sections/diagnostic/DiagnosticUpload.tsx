@@ -43,6 +43,10 @@ export default function DiagnosticUpload({ onExportSuccess, description, onDescr
   const [privacyExpanded, setPrivacyExpanded] = useState(false);
   const [uploadInProgress, setUploadInProgress] = useState(false);
   const [uploadDone, setUploadDone] = useState(false);
+  // Off (default): embed only the most-recent messages so a huge conversation
+  // can't freeze the export (Bug 2). On: include the full history.
+  const [includeAllMessages, setIncludeAllMessages] = useState(false);
+  const messageCap = includeAllMessages ? ('all' as const) : undefined;
 
   const onToggleRaw = (next: boolean) => {
     setIncludeRawText(next);
@@ -56,7 +60,7 @@ export default function DiagnosticUpload({ onExportSuccess, description, onDescr
     setUploadInProgress(true);
     setUploadDone(false);
     try {
-      const { bytes, filename } = await collectAndZip({ includeRawText });
+      const { bytes, filename } = await collectAndZip({ includeRawText, messageCap });
       await uploadDiagnosticBundle(bytes, filename, description.trim() || undefined);
       setUploadDone(true);
       setTimeout(() => setUploadDone(false), 4000);
@@ -73,7 +77,7 @@ export default function DiagnosticUpload({ onExportSuccess, description, onDescr
     if (exportInProgress) return;
     setExportInProgress(true);
     try {
-      const res = await produceBundle({ includeRawText });
+      const res = await produceBundle({ includeRawText, messageCap });
       setLastExportPath(res.path);
       onExportSuccess(res);
     } catch (e) {
@@ -133,6 +137,19 @@ export default function DiagnosticUpload({ onExportSuccess, description, onDescr
         <Toggle
           checked={includeRawText}
           onChange={() => onToggleRaw(!includeRawText)}
+          size="md"
+        />
+      </div>
+
+      {/* Include-all-messages toggle — off caps to the most-recent messages so a
+          huge conversation can't freeze the export. */}
+      <div className="flex items-center justify-between py-2">
+        <label className="text-[12px] text-[var(--abu-text-secondary)] flex-1">
+          {t.diagnostic.exportIncludeAll}
+        </label>
+        <Toggle
+          checked={includeAllMessages}
+          onChange={() => setIncludeAllMessages(!includeAllMessages)}
           size="md"
         />
       </div>

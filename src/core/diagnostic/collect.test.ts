@@ -27,6 +27,13 @@ describe('capDiagnosticMessages (Bug 2: 导出诊断包冻死)', () => {
     expect(r.messages).toHaveLength(250);
   });
 
+  it('cap 0 embeds NO messages (not everything — slice(-0) trap)', () => {
+    const r = capDiagnosticMessages(many, 0);
+    expect(r.messages).toHaveLength(0);
+    expect(r.total).toBe(250);
+    expect(r.capped).toBe(true);
+  });
+
   it('has a sane default cap', () => {
     expect(DEFAULT_DIAGNOSTIC_MESSAGE_CAP).toBe(200);
   });

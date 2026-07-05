@@ -761,6 +761,7 @@ const enUS: TranslationDict = {
     exportIncluded: 'What\'s included',
     exportPrivacy: 'Privacy notice',
     exportIncludeRaw: 'Include raw message text (off by default)',
+    exportIncludeAll: 'Include all messages (default: last 200 only; slower for large chats)',
     exportIncludeRawWarning: '⚠ Bundle will include your raw conversation text. Enable only if you trust the recipient.',
     exportIncludedListTitle: 'Bundle contents:',
     exportPrivacyText: 'API keys, secrets, and other conversations are never included. See README.txt inside.',

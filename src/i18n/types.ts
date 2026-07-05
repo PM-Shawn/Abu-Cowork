@@ -786,6 +786,7 @@ export interface TranslationDict {
     exportIncluded: string;
     exportPrivacy: string;
     exportIncludeRaw: string;
+    exportIncludeAll: string;
     exportIncludeRawWarning: string;
     exportIncludedListTitle: string;
     exportPrivacyText: string;

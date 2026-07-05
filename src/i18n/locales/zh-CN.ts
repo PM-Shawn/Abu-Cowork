@@ -761,6 +761,7 @@ const zhCN: TranslationDict = {
     exportIncluded: '会包含哪些信息',
     exportPrivacy: '隐私说明',
     exportIncludeRaw: '包含消息原文（默认关闭）',
+    exportIncludeAll: '包含全部消息（默认仅最近 200 条，大会话较慢）',
     exportIncludeRawWarning: '⚠ 包将包含你的对话原文。仅在你信任接收方时启用。',
     exportIncludedListTitle: '包内信息：',
     exportPrivacyText: 'API Key、密钥、其它对话永远不会被包含。详细规则见包内 README.txt。',

@@ -81,7 +81,11 @@ export function capDiagnosticMessages<T>(
   cap: number | 'all',
 ): { messages: T[]; total: number; capped: boolean } {
   const total = messages.length;
-  if (cap === 'all' || total <= cap) return { messages, total, capped: false };
+  if (cap === 'all') return { messages, total, capped: false };
+  // cap <= 0 → embed no messages (diagnostic-only). Guard explicitly:
+  // slice(-0) === slice(0) would otherwise return EVERYTHING.
+  if (cap <= 0) return { messages: [], total, capped: total > 0 };
+  if (total <= cap) return { messages, total, capped: false };
   return { messages: messages.slice(-cap), total, capped: true };
 }
 

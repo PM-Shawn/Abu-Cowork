@@ -247,6 +247,21 @@ export function buildRenderSegments(
   return segments;
 }
 
+// Index (exclusive) up to which segments fold into the collapsible "工作过程"
+// group. Segments [0, foldEnd) fold; [foldEnd, end) render inline (the final
+// answer). Returns null when nothing should fold: group not done, no final
+// text answer, or the answer is the first/only segment.
+// eslint-disable-next-line react-refresh/only-export-components
+export function computeWorkProcessFold(segments: RenderSegment[], isDone: boolean): number | null {
+  if (!isDone) return null;
+  let lastTextIdx = -1;
+  for (let i = segments.length - 1; i >= 0; i--) {
+    if (segments[i].kind === 'text') { lastTextIdx = i; break; }
+  }
+  if (lastTextIdx <= 0) return null;
+  return lastTextIdx;
+}
+
 /**
  * Groups multiple messages from the same agent loop into a single visual block.
  * User messages render standalone, assistant messages share one avatar.
@@ -476,6 +491,143 @@ export default function MessageGroup({ messages, isLastGroup: isLastGroupProp = 
   // Check if we have any content (for thinking indicator fallback)
   const hasAnyContent = segments.length > 0;
 
+  // Codex-style turn collapse: once a turn is done and has a final text answer,
+  // fold all intermediate segments (thinking/plan/steps) behind a single row.
+  const workFoldEnd = useMemo(() => computeWorkProcessFold(segments, isGroupDone), [segments, isGroupDone]);
+  const [workExpanded, setWorkExpanded] = useState(false);
+
+  // Per-segment render callback — extracted from the map so it can be reused
+  // against two slices (folded + tail) without duplicating logic. Closes over
+  // all the variables it needs from the component scope.
+  const renderSegment = (seg: RenderSegment, segIdx: number) => {
+    if (seg.kind === 'user') {
+      return (
+        <MessageErrorBoundary key={`user-mid-${seg.message.id}`}>
+          <MessageBubble message={seg.message} />
+        </MessageErrorBoundary>
+      );
+    }
+
+    if (seg.kind === 'text') {
+      const mdImages = extractMarkdownImages(seg.text);
+      let cleanedText = mdImages.length > 0 ? stripMarkdownImages(seg.text) : seg.text;
+      if (searchResults.length > 0 && cleanedText) {
+        cleanedText = stripSourcesBlock(cleanedText);
+      }
+      const showCursor = seg.isLastTurn && seg.message.isStreaming && !!cleanedText;
+
+      return (
+        <div key={`text-${seg.message.id || segIdx}`}>
+          {mdImages.length > 0 && (
+            <div className="flex flex-wrap gap-2 mb-2">
+              {mdImages.map((src, i) => (
+                <ImageThumbnail key={`${src}-${i}`} src={src} />
+              ))}
+            </div>
+          )}
+          {cleanedText && (
+            <div className="text-[var(--abu-text-primary)] break-words mb-2 select-text">
+              <MarkdownRenderer
+                content={cleanedText}
+                searchResults={searchResults.length > 0 ? searchResults : undefined}
+                onCitationClick={searchResults.length > 0 ? handleCitationClick : undefined}
+              />
+            </div>
+          )}
+          {showCursor && <span className="streaming-cursor" />}
+        </div>
+      );
+    }
+
+    if (seg.kind === 'plan') {
+      return (
+        <MessageErrorBoundary key={`plan-${seg.toolCall.id}`}>
+          <PlanStepsCard toolCall={seg.toolCall} />
+        </MessageErrorBoundary>
+      );
+    }
+
+    // kind === 'steps' — merged TaskBlock
+    const hasExecSteps = seg.executionSteps.length > 0;
+    const hasLegacySteps = seg.legacySteps.length > 0;
+
+    // "Active" means the steps area should still pulse / show live state.
+    // Trust isStreaming as a per-group signal — it's always accurate after
+    // the finishStreaming(msgId) fix. Gate isThisExecutionActive on
+    // isLastGroupProp because the per-loop TaskExecution status can stay
+    // stale on older groups (this was the original "执行中..." stuck bug).
+    const execActive = isLastGroupProp && isThisExecutionActive;
+    const toolActive = isLastGroupProp && isAnyExecuting;
+    const groupActive = seg.isLastGroup && (execActive || toolActive || isStreaming);
+
+    // Auto-collapse rule for *non-trailing* steps segments (e.g. the
+    // thinking block when body text is already streaming after it):
+    // once all steps in this segment have completed, drop the active
+    // signal so TaskBlock collapses, since the work has clearly moved
+    // past this segment.
+    //
+    // For the *trailing* steps segment (no later segment in this group),
+    // trust groupActive directly — even if the current step batch
+    // happens to be momentarily complete (e.g. between a tool batch
+    // finishing and the next LLM turn starting), we still want the
+    // dots to keep pulsing so the user knows the loop is still going.
+    const hasLaterSegment = segIdx < segments.length - 1;
+    // Exclude ask_user_question from "running" check — that step is
+    // waiting for user input, not processing, so we don't pulse while blocked.
+    const execStepsRunning = seg.executionSteps.some(
+      (s) => (s.status === 'running' || s.status === 'pending') && s.toolName !== TOOL_NAMES.ASK_USER_QUESTION,
+    );
+    const legacyStepsRunning = seg.legacySteps.some(
+      (s) => s.status === 'running' || s.status === 'pending',
+    );
+    // For the trailing segment, only suppress pulsing if the sole running
+    // step is ask_user_question (otherwise keep pulsing to show loop is alive).
+    const onlyAskUserQuestionRunning =
+      seg.executionSteps.some((s) => s.status === 'running' && s.toolName === TOOL_NAMES.ASK_USER_QUESTION) &&
+      !execStepsRunning;
+    const execIsActive = hasLaterSegment
+      ? (groupActive && execStepsRunning)
+      : (groupActive && !onlyAskUserQuestionRunning);
+    const legacyIsActive = hasLaterSegment ? (groupActive && legacyStepsRunning) : groupActive;
+
+    // Settled ask_user_question answers that belong to this steps segment
+    const segSettledUQCards = activeConv?.id
+      ? seg.stepsMsgs
+          .flatMap((m) => m.toolCalls ?? [])
+          .filter((tc) => tc.name === TOOL_NAMES.ASK_USER_QUESTION && tc.userQuestionAnswers)
+      : [];
+
+    // Live run_agent_batch progress cards for this steps segment (tc.id = LLM
+    // call id, matches the batchProgressStore key set by the tool's execute)
+    const segActiveBatches = seg.stepsMsgs
+      .flatMap((m) => m.toolCalls ?? [])
+      .filter((tc) => tc.name === TOOL_NAMES.RUN_AGENT_BATCH && tc.isExecuting && tc.result === undefined);
+
+    return (
+      <div key={`steps-${segIdx}`}>
+        {hasExecSteps ? (
+          <TaskBlock
+            executionSteps={seg.executionSteps}
+            isActive={execIsActive}
+            onRetry={seg.isLastGroup && hasError && !isStreaming ? handleRetry : undefined}
+          />
+        ) : hasLegacySteps && (
+          <TaskBlock
+            steps={seg.legacySteps}
+            isActive={legacyIsActive}
+            onRetry={seg.isLastGroup && hasError && !isStreaming ? handleRetry : undefined}
+          />
+        )}
+        {segActiveBatches.map((tc) => (
+          <BatchProgress key={`batch-${tc.id}`} toolCallId={tc.id} />
+        ))}
+        {segSettledUQCards.map((tc) => (
+          <UserQuestionCard key={`uq-${tc.id}`} toolCall={tc} />
+        ))}
+      </div>
+    );
+  };
+
   return (
     <div ref={groupRef} className="message-group space-y-4 w-full">
       {/* User message renders standalone */}
@@ -505,135 +657,34 @@ export default function MessageGroup({ messages, isLastGroup: isLastGroupProp = 
               </div>
             )}
 
-            {/* Render segments: text blocks and merged step groups */}
-            {segments.map((seg, segIdx) => {
-              if (seg.kind === 'user') {
-                return (
-                  <MessageErrorBoundary key={`user-mid-${seg.message.id}`}>
-                    <MessageBubble message={seg.message} />
-                  </MessageErrorBoundary>
-                );
-              }
-
-              if (seg.kind === 'text') {
-                const mdImages = extractMarkdownImages(seg.text);
-                let cleanedText = mdImages.length > 0 ? stripMarkdownImages(seg.text) : seg.text;
-                if (searchResults.length > 0 && cleanedText) {
-                  cleanedText = stripSourcesBlock(cleanedText);
-                }
-                const showCursor = seg.isLastTurn && seg.message.isStreaming && !!cleanedText;
-
-                return (
-                  <div key={`text-${seg.message.id || segIdx}`}>
-                    {mdImages.length > 0 && (
-                      <div className="flex flex-wrap gap-2 mb-2">
-                        {mdImages.map((src, i) => (
-                          <ImageThumbnail key={`${src}-${i}`} src={src} />
-                        ))}
-                      </div>
-                    )}
-                    {cleanedText && (
-                      <div className="text-[var(--abu-text-primary)] break-words mb-2 select-text">
-                        <MarkdownRenderer
-                          content={cleanedText}
-                          searchResults={searchResults.length > 0 ? searchResults : undefined}
-                          onCitationClick={searchResults.length > 0 ? handleCitationClick : undefined}
-                        />
-                      </div>
-                    )}
-                    {showCursor && <span className="streaming-cursor" />}
-                  </div>
-                );
-              }
-
-              if (seg.kind === 'plan') {
-                return (
-                  <MessageErrorBoundary key={`plan-${seg.toolCall.id}`}>
-                    <PlanStepsCard toolCall={seg.toolCall} />
-                  </MessageErrorBoundary>
-                );
-              }
-
-              // kind === 'steps' — merged TaskBlock
-              const hasExecSteps = seg.executionSteps.length > 0;
-              const hasLegacySteps = seg.legacySteps.length > 0;
-
-              // "Active" means the steps area should still pulse / show live state.
-              // Trust isStreaming as a per-group signal — it's always accurate after
-              // the finishStreaming(msgId) fix. Gate isThisExecutionActive on
-              // isLastGroupProp because the per-loop TaskExecution status can stay
-              // stale on older groups (this was the original "执行中..." stuck bug).
-              const execActive = isLastGroupProp && isThisExecutionActive;
-              const toolActive = isLastGroupProp && isAnyExecuting;
-              const groupActive = seg.isLastGroup && (execActive || toolActive || isStreaming);
-
-              // Auto-collapse rule for *non-trailing* steps segments (e.g. the
-              // thinking block when body text is already streaming after it):
-              // once all steps in this segment have completed, drop the active
-              // signal so TaskBlock collapses, since the work has clearly moved
-              // past this segment.
-              //
-              // For the *trailing* steps segment (no later segment in this group),
-              // trust groupActive directly — even if the current step batch
-              // happens to be momentarily complete (e.g. between a tool batch
-              // finishing and the next LLM turn starting), we still want the
-              // dots to keep pulsing so the user knows the loop is still going.
-              const hasLaterSegment = segIdx < segments.length - 1;
-              // Exclude ask_user_question from "running" check — that step is
-              // waiting for user input, not processing, so we don't pulse while blocked.
-              const execStepsRunning = seg.executionSteps.some(
-                (s) => (s.status === 'running' || s.status === 'pending') && s.toolName !== TOOL_NAMES.ASK_USER_QUESTION,
-              );
-              const legacyStepsRunning = seg.legacySteps.some(
-                (s) => s.status === 'running' || s.status === 'pending',
-              );
-              // For the trailing segment, only suppress pulsing if the sole running
-              // step is ask_user_question (otherwise keep pulsing to show loop is alive).
-              const onlyAskUserQuestionRunning =
-                seg.executionSteps.some((s) => s.status === 'running' && s.toolName === TOOL_NAMES.ASK_USER_QUESTION) &&
-                !execStepsRunning;
-              const execIsActive = hasLaterSegment
-                ? (groupActive && execStepsRunning)
-                : (groupActive && !onlyAskUserQuestionRunning);
-              const legacyIsActive = hasLaterSegment ? (groupActive && legacyStepsRunning) : groupActive;
-
-              // Settled ask_user_question answers that belong to this steps segment
-              const segSettledUQCards = activeConv?.id
-                ? seg.stepsMsgs
-                    .flatMap((m) => m.toolCalls ?? [])
-                    .filter((tc) => tc.name === TOOL_NAMES.ASK_USER_QUESTION && tc.userQuestionAnswers)
-                : [];
-
-              // Live run_agent_batch progress cards for this steps segment (tc.id = LLM
-              // call id, matches the batchProgressStore key set by the tool's execute)
-              const segActiveBatches = seg.stepsMsgs
-                .flatMap((m) => m.toolCalls ?? [])
-                .filter((tc) => tc.name === TOOL_NAMES.RUN_AGENT_BATCH && tc.isExecuting && tc.result === undefined);
-
-              return (
-                <div key={`steps-${segIdx}`}>
-                  {hasExecSteps ? (
-                    <TaskBlock
-                      executionSteps={seg.executionSteps}
-                      isActive={execIsActive}
-                      onRetry={seg.isLastGroup && hasError && !isStreaming ? handleRetry : undefined}
-                    />
-                  ) : hasLegacySteps && (
-                    <TaskBlock
-                      steps={seg.legacySteps}
-                      isActive={legacyIsActive}
-                      onRetry={seg.isLastGroup && hasError && !isStreaming ? handleRetry : undefined}
-                    />
+            {/* Render segments: text blocks and merged step groups.
+                When the turn is done and has a final text answer, all
+                intermediate segments (thinking/plan/steps) are folded
+                behind a single collapsible "工作过程" row (Codex-style). */}
+            {workFoldEnd == null ? (
+              segments.map(renderSegment)
+            ) : (
+              <>
+                <div className="my-2 rounded-lg border border-[var(--abu-border-subtle)] bg-[var(--abu-bg-muted)] overflow-hidden">
+                  <button
+                    onClick={() => setWorkExpanded((v) => !v)}
+                    className="btn-ghost w-full flex items-center gap-1.5 px-3 py-2 text-left"
+                  >
+                    {workExpanded
+                      ? <ChevronDown className="h-3.5 w-3.5 text-[var(--abu-text-tertiary)] shrink-0" />
+                      : <ChevronRight className="h-3.5 w-3.5 text-[var(--abu-text-tertiary)] shrink-0" />}
+                    <span className="text-[12px] font-medium text-[var(--abu-text-primary)]">{t.chat.workProcess}</span>
+                    <span className="text-[11px] text-[var(--abu-text-muted)]">· {workFoldEnd} {t.planCard.stepsUnit}</span>
+                  </button>
+                  {workExpanded && (
+                    <div className="px-3 pb-2">
+                      {segments.slice(0, workFoldEnd).map((seg, i) => renderSegment(seg, i))}
+                    </div>
                   )}
-                  {segActiveBatches.map((tc) => (
-                    <BatchProgress key={`batch-${tc.id}`} toolCallId={tc.id} />
-                  ))}
-                  {segSettledUQCards.map((tc) => (
-                    <UserQuestionCard key={`uq-${tc.id}`} toolCall={tc} />
-                  ))}
                 </div>
-              );
-            })}
+                {segments.slice(workFoldEnd).map((seg, i) => renderSegment(seg, workFoldEnd + i))}
+              </>
+            )}
 
             {/* Interactive notice cards (Module I) — skill proposals etc.
                 MessageBubble's tool-call branch doesn't fire for assistant

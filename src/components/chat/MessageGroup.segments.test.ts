@@ -3,7 +3,7 @@
  * that interleaves text, tool-step, and mid-loop user-bubble segments.
  */
 import { describe, it, expect } from 'vitest';
-import { buildRenderSegments } from './MessageGroup';
+import { buildRenderSegments, computeWorkProcessFold } from './MessageGroup';
 import type { Message } from '@/types';
 import type { ExecutionStep } from '@/types/execution';
 
@@ -167,5 +167,29 @@ describe('buildRenderSegments', () => {
     // thinking block (from msg) + tool block (real-tool); ghost thinking-exec dropped
     const toolSeg = stepSegs.find((s) => s.executionSteps[0]?.type !== 'thinking')!;
     expect(toolSeg.executionSteps.map((s) => s.id)).toEqual(['real-tool']);
+  });
+});
+
+describe('computeWorkProcessFold', () => {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const seg = (kind: string): any => (kind === 'text' ? { kind, text: 'x', message: { id: 't' }, isLastTurn: true } : { kind, executionSteps: [], legacySteps: [], isLastGroup: false, stepsMsgs: [] });
+
+  it('returns null when the group is not done', () => {
+    expect(computeWorkProcessFold([seg('steps'), seg('text')], false)).toBeNull();
+  });
+  it('folds everything before the final text answer', () => {
+    // [thinking, plan, tool, text] → foldEnd = 3
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    expect(computeWorkProcessFold([seg('steps'), { kind: 'plan', toolCall: { id: 'p' } } as any, seg('steps'), seg('text')], true)).toBe(3);
+  });
+  it('returns null when the only/first segment is the answer (nothing to fold)', () => {
+    expect(computeWorkProcessFold([seg('text')], true)).toBeNull();
+  });
+  it('returns null when there is no final text answer (all steps)', () => {
+    expect(computeWorkProcessFold([seg('steps'), seg('steps')], true)).toBeNull();
+  });
+  it('intermediate text folds in; only the last text stays outside', () => {
+    // [thinking, text(mid), tool, text(final)] → foldEnd = 3
+    expect(computeWorkProcessFold([seg('steps'), seg('text'), seg('steps'), seg('text')], true)).toBe(3);
   });
 });

@@ -222,6 +222,7 @@ const zhCN: TranslationDict = {
     scrollToBottom: '回到底部',
     compressingContext: '正在压缩长对话上下文…',
     retrying: '模型响应慢，正在重试 {attempt}/{max}…',
+    resuming: '已提交 ✓ 正在继续…',
     codeBlockExpand: '展开全部 ({lines} 行)',
     codeBlockCollapse: '收起',
     codeBlockSaveAs: '另存为',

@@ -30,6 +30,9 @@ interface Props {
   messageId: string;
   toolCallId: string;
   payload: UserQuestionPayload;
+  /** Fired the moment an answer is submitted — the dock unmounts synchronously
+   *  on resolve, so the parent uses this for optimistic "正在继续…" feedback. */
+  onSubmitted?: () => void;
 }
 
 /** Per-question local selection state */
@@ -49,7 +52,7 @@ function initQuestionStates(count: number): QuestionState[] {
   }));
 }
 
-export default function UserQuestionDock({ conversationId, messageId, toolCallId, payload }: Props) {
+export default function UserQuestionDock({ conversationId, messageId, toolCallId, payload, onSubmitted }: Props) {
   const { t, format } = useI18n();
   const setAnswers = useChatStore((s) => s.setToolCallUserQuestionAnswers);
 
@@ -168,7 +171,8 @@ export default function UserQuestionDock({ conversationId, messageId, toolCallId
     const result: UserQuestionResult = { answers: buildAnswers(states) };
     setAnswers(conversationId, messageId, toolCallId, result);
     resolveUserQuestion(toolCallId, result);
-  }, [buildAnswers, conversationId, messageId, toolCallId, setAnswers]);
+    onSubmitted?.();
+  }, [buildAnswers, conversationId, messageId, toolCallId, setAnswers, onSubmitted]);
 
   const handleSubmit = useCallback(() => {
     submitWith(questionStates);

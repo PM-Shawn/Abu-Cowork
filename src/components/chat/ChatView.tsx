@@ -18,7 +18,7 @@ import ScenarioGuide from './ScenarioGuide';
 import { agentRegistry } from '@/core/agent/registry';
 import PermissionDialog from '@/components/common/PermissionDialog';
 import CommandConfirmDialog from '@/components/common/CommandConfirmDialog';
-import { ChevronDown, Settings } from 'lucide-react';
+import { ChevronDown, Settings, Check } from 'lucide-react';
 import abuAvatar from '@/assets/abu-avatar.png';
 import IMInfoBar from './IMInfoBar';
 import SourceInfoBar from './SourceInfoBar';
@@ -223,6 +223,10 @@ export default function ChatView() {
   // Scenario guide state — lifted here so ChatInput can receive the custom placeholder
   const [scenarioPlaceholder, setScenarioPlaceholder] = useState<string | null>(null);
   const [guideVisible, setGuideVisible] = useState(true);
+  // Optimistic feedback for the beat between submitting a question/plan answer
+  // and the resumed loop producing anything (Bug 1: 点同意后无反应).
+  const [resuming, setResuming] = useState(false);
+  const agentStatus = useChatStore((s) => s.agentStatus);
 
   const handleSelectPrompt = useCallback((prompt: string) => {
     // Fill the prompt into the input via pendingInput
@@ -470,9 +474,22 @@ export default function ChatView() {
                 messageId={owningMsg.id}
                 toolCallId={pending.id}
                 payload={pending.payload}
+                onSubmitted={() => {
+                  setResuming(true);
+                  // Fallback clear — normally hidden once the loop sets a status.
+                  setTimeout(() => setResuming(false), 4000);
+                }}
               />
             );
           })()}
+          {/* Optimistic "resuming" flash — only in the gap before the loop sets
+              a real status, so it never stacks with AgentStatusStrip. */}
+          {resuming && agentStatus === 'idle' && (
+            <div className="flex items-center gap-2 px-3 py-1.5 text-[12px] text-[var(--abu-text-tertiary)]">
+              <Check className="h-3.5 w-3.5 shrink-0 text-emerald-500" />
+              <span className="truncate">{t.chat.resuming}</span>
+            </div>
+          )}
           {/* Live agent status — compaction / retry, so a slow provider isn't a
               silent dead wait above the composer. */}
           <AgentStatusStrip conversationId={activeConv.id} />

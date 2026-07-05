@@ -222,6 +222,7 @@ const enUS: TranslationDict = {
     scrollToBottom: 'Scroll to bottom',
     compressingContext: 'Compacting long conversation…',
     retrying: 'Model slow to respond — retrying {attempt}/{max}…',
+    resuming: 'Submitted ✓ resuming…',
     codeBlockExpand: 'Expand all ({lines} lines)',
     codeBlockCollapse: 'Collapse',
     codeBlockSaveAs: 'Save as',

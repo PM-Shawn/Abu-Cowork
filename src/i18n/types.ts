@@ -252,6 +252,7 @@ export interface TranslationDict {
     scrollToBottom: string;
     compressingContext: string;
     retrying: string;
+    resuming: string;
     codeBlockExpand: string;
     codeBlockCollapse: string;
     codeBlockSaveAs: string;

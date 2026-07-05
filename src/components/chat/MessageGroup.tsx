@@ -25,6 +25,7 @@ import { runAgentLoop } from '@/core/agent/agentLoop';
 import { allWorkingDirectories } from '@/core/permissions/workingDirs';
 import { homeDir } from '@tauri-apps/api/path';
 import abuAvatar from '@/assets/abu-avatar.png';
+import { cn } from '@/lib/utils';
 
 interface MessageGroupProps {
   messages: Message[];
@@ -665,23 +666,19 @@ export default function MessageGroup({ messages, isLastGroup: isLastGroupProp = 
               segments.map(renderSegment)
             ) : (
               <>
-                <div className="my-2 rounded-lg border border-[var(--abu-border-subtle)] bg-[var(--abu-bg-muted)] overflow-hidden">
-                  <button
-                    onClick={() => setWorkExpanded((v) => !v)}
-                    className="btn-ghost w-full flex items-center gap-1.5 px-3 py-2 text-left"
-                  >
-                    {workExpanded
-                      ? <ChevronDown className="h-3.5 w-3.5 text-[var(--abu-text-tertiary)] shrink-0" />
-                      : <ChevronRight className="h-3.5 w-3.5 text-[var(--abu-text-tertiary)] shrink-0" />}
-                    <span className="text-[12px] font-medium text-[var(--abu-text-primary)]">{t.chat.workProcess}</span>
-                    <span className="text-[11px] text-[var(--abu-text-muted)]">· {workFoldEnd} {t.planCard.stepsUnit}</span>
-                  </button>
-                  {workExpanded && (
-                    <div className="px-3 pb-2">
-                      {segments.slice(0, workFoldEnd).map((seg, i) => renderSegment(seg, i))}
-                    </div>
-                  )}
-                </div>
+                {/* Lightweight fold header — matches the thinking/step block
+                    style (muted text + trailing chevron, no card background). */}
+                <button
+                  onClick={() => setWorkExpanded((v) => !v)}
+                  className="flex items-center gap-1 text-[13px] text-[var(--abu-text-muted)] hover:text-[var(--abu-text-muted)] transition-colors mb-2"
+                >
+                  <span>{t.chat.workProcess}</span>
+                  <span className="text-[var(--abu-text-muted)]">· {workFoldEnd} {t.planCard.stepsUnit}</span>
+                  <ChevronDown
+                    className={cn('h-3.5 w-3.5 transition-transform', !workExpanded && '-rotate-90')}
+                  />
+                </button>
+                {workExpanded && segments.slice(0, workFoldEnd).map((seg, i) => renderSegment(seg, i))}
                 {segments.slice(workFoldEnd).map((seg, i) => renderSegment(seg, workFoldEnd + i))}
               </>
             )}

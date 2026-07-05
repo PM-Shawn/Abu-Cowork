@@ -1238,8 +1238,12 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
           const newMessages = historyMessages.slice(cache.summarizedRange[1]);
           messagesForContext = [...firstRound, cache.summaryMessage, ...newMessages];
           compressionApplied = true;
-        } else {
-          // No valid cache — attempt compression (set isCompressing for the UI spinner)
+        } else if (!autoCompactTracker.isDisabled()) {
+          // No valid cache AND the auto-compact circuit breaker is not tripped —
+          // attempt compression. When the breaker IS tripped (repeated provider
+          // failures/timeouts), skip the LLM call entirely; the deterministic
+          // truncation (prepareContextMessages) below still guarantees the request
+          // fits, so a doomed provider can't re-stall every turn.
           useChatStore.getState().setIsCompressing(conversationId, true);
           try {
             const compressionCreds = resolveEffectiveLlmCreds(
@@ -1276,9 +1280,15 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
                   messageCountAtCompression: historyMessages.length,
                 });
               }
+            } else if (compressionResult.failed) {
+              // Summarization timed out or errored (returned gracefully, not
+              // thrown) — record against the circuit breaker so repeated failures
+              // trip it and stop re-attempting the doomed LLM call every turn.
+              autoCompactTracker.recordFailure(compressionResult.failureCode);
             }
           } catch {
-            // Compression failed — record for circuit breaker
+            // Defensive: compressContextIfNeeded no longer throws, but keep the
+            // circuit-breaker record in case an unexpected error escapes.
             autoCompactTracker.recordFailure();
           } finally {
             useChatStore.getState().setIsCompressing(conversationId, false);

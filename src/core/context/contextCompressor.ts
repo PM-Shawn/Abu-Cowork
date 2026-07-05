@@ -19,11 +19,17 @@ import type { ChatOptions } from '../llm/adapter';
 import { estimateTokens, estimateMessageTokens } from './tokenEstimator';
 import { getMessageText, identifyRounds, RECENT_ROUNDS_TO_KEEP } from './contextUtils';
 import { createLogger } from '../logging/logger';
+import { anySignal } from '../llm/heartbeat';
 
 const logger = createLogger('contextCompressor');
 
 const COMPRESSION_THRESHOLD = 0.65; // Trigger at 65% — compress early to avoid context_too_long errors
 const SUMMARY_MAX_TOKENS = 1024;
+// Independent hard ceiling for a single summarization call. Compression is a
+// best-effort optimization — it must NEVER block the agent loop waiting on a
+// slow/flaky provider. On timeout we abort the request and fall back to
+// deterministic truncation downstream (Bug: 计划同意后死寂).
+const DEFAULT_COMPRESSION_TIMEOUT_MS = 30_000;
 
 /** Configuration for context compression */
 export interface CompressionConfig {
@@ -32,6 +38,8 @@ export interface CompressionConfig {
   apiKey: string;
   baseUrl?: string;
   signal?: AbortSignal;
+  /** Independent timeout for the summarization LLM call. Defaults to 30s. */
+  timeoutMs?: number;
 }
 
 /** Result of compression attempt */
@@ -39,6 +47,11 @@ export interface CompressionResult {
   messages: Message[];
   compressed: boolean;
   savedTokens: number;
+  /** True when the summarization attempt failed (timeout / error), so the
+   *  caller can record it against the auto-compact circuit breaker. */
+  failed?: boolean;
+  /** Coarse reason when `failed` is true: 'timeout' | 'error'. */
+  failureCode?: string;
 }
 
 /**
@@ -144,19 +157,51 @@ ${middleText}
     }];
 
     let summaryText = '';
+    // Independent timeout: abort the summarization if the provider stalls, so a
+    // flaky pool can never hang the agent loop on the pre-work compaction step.
+    const timeoutMs = config.timeoutMs ?? DEFAULT_COMPRESSION_TIMEOUT_MS;
+    const timeoutController = new AbortController();
+    const combinedSignal = config.signal
+      ? anySignal([config.signal, timeoutController.signal])
+      : timeoutController.signal;
     const chatOptions: ChatOptions = {
       model: config.model,
       apiKey: config.apiKey,
       baseUrl: config.baseUrl,
       maxTokens: SUMMARY_MAX_TOKENS,
-      signal: config.signal,
+      signal: combinedSignal,
     };
 
-    await config.adapter.chat(summaryMessages, chatOptions, (event) => {
-      if (event.type === 'text') {
-        summaryText += event.text;
+    let timedOut = false;
+    let timeoutTimer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const chatPromise = config.adapter.chat(summaryMessages, chatOptions, (event) => {
+        if (event.type === 'text') {
+          summaryText += event.text;
+        }
+      });
+      // Prevent an unhandled rejection if the timeout wins the race and the
+      // aborted request rejects later.
+      chatPromise.catch(() => { /* swallowed — handled via the race below */ });
+      await Promise.race([
+        chatPromise,
+        new Promise<never>((_, reject) => {
+          timeoutTimer = setTimeout(() => {
+            timedOut = true;
+            timeoutController.abort();
+            reject(new Error('compression timeout'));
+          }, timeoutMs);
+        }),
+      ]);
+    } catch (err) {
+      if (timedOut) {
+        logger.warn('Context compression timed out — falling back to truncation', { timeoutMs });
+        return { messages, compressed: false, savedTokens: 0, failed: true, failureCode: 'timeout' };
       }
-    });
+      throw err; // non-timeout error — let the outer catch handle it
+    } finally {
+      if (timeoutTimer) clearTimeout(timeoutTimer);
+    }
 
     if (!summaryText.trim()) {
       // LLM returned empty — fall back
@@ -198,6 +243,6 @@ ${middleText}
     // LLM call failed — fall back gracefully, don't block the agent
     const errorMessage = err instanceof Error ? err.message : String(err);
     logger.warn('Context compression failed', { error: errorMessage });
-    return { messages, compressed: false, savedTokens: 0 };
+    return { messages, compressed: false, savedTokens: 0, failed: true, failureCode: 'error' };
   }
 }

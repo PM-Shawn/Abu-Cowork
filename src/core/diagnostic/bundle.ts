@@ -19,6 +19,8 @@ import { useChatStore } from '@/stores/chatStore';
 interface ProduceOptions {
   includeRawText: boolean;
   conversationId?: string | null;
+  /** Cap embedded messages to the most-recent N (or 'all'). See collect.ts. */
+  messageCap?: number | 'all';
 }
 
 export interface ProduceResult {

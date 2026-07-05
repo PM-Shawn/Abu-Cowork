@@ -349,13 +349,18 @@ function guessMediaType(basename: string): string | undefined {
   return map[ext];
 }
 
-function estimateBundleSize(bundle: ShareBundle): number {
-  // Cheap estimate — avoids serializing twice in the hot path. Preview UI
-  // treats this as approximate (UTF-8 length of a JSON.stringify without
-  // attachment re-expansion).
-  try {
-    return JSON.stringify(bundle).length;
-  } catch {
-    return 0;
+export function estimateBundleSize(bundle: ShareBundle): number {
+  // Sum component sizes directly instead of JSON.stringify-ing the whole bundle.
+  // The previous body serialized every embedded base64 attachment here AND again
+  // at save time (serializeShareBundle) — a double full-serialize that froze the
+  // main thread on large conversations with images (Bug 2). Preview UI treats
+  // this as approximate.
+  let size = 0;
+  for (const m of bundle.messages) {
+    size += typeof m.content === 'string' ? m.content.length : JSON.stringify(m.content).length;
   }
+  for (const a of Object.values(bundle.attachments)) {
+    size += a.data ? a.data.length : (a.sizeBytes ?? 0);
+  }
+  return size;
 }

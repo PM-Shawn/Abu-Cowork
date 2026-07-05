@@ -459,31 +459,13 @@ export default function MessageGroup({ messages, isLastGroup: isLastGroupProp = 
     await runAgentLoop(convId, userContent, { images: retryImages });
   };
 
-  // Determine which step data source to use.
-  // If thinking content exists but the upstream execution step list has no thinking
-  // step (eventRouter currently doesn't emit one), synthesize one and prepend it so
-  // it shows up alongside tool steps inside the same TaskBlock.
+  // Tool execution steps for this loop. Thinking is rebuilt per-message inside
+  // buildRenderSegments, so no synthesized thinking step is prepended here.
   const activeExecSteps = useMemo(() => {
-    const base = (executionSteps && executionSteps.length > 0)
+    return (executionSteps && executionSteps.length > 0)
       ? executionSteps
       : persistedExecutionSteps ?? [];
-    if (!thinkingContent) return base;
-    if (base.some((s) => s.type === 'thinking')) return base;
-    const synthThinking: ExecutionStep = {
-      id: 'thinking-synth',
-      executionId: '',
-      type: 'thinking',
-      label: '思考中...',
-      detail: thinkingContent,
-      status: thinkingDuration ? 'completed' : 'running',
-      toolName: '',
-      toolInput: {},
-      source: 'agent',
-      detailBlocks: [],
-      duration: thinkingDuration,
-    };
-    return [synthThinking, ...base];
-  }, [executionSteps, persistedExecutionSteps, thinkingContent, thinkingDuration]);
+  }, [executionSteps, persistedExecutionSteps]);
 
   // Build render segments: text and merged step groups
   const segments = useMemo(

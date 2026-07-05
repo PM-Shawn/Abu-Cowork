@@ -267,6 +267,32 @@ export interface ContextCache {
   messageCountAtCompression: number;
 }
 
+/**
+ * Persistent compaction boundary (Part A of the long-conversation P1 design).
+ *
+ * When a compaction is committed, the original messages before the boundary
+ * are archived to messages.archive.jsonl, and the active messages array is
+ * rewritten to [firstRounds..., summaryMessage, ...post-anchor].
+ *
+ * Unlike the ephemeral `contextCache` (which is a send-only per-turn cache
+ * that does NOT change the messages array), `CompactBoundary` is the
+ * persistent, landed result — it changes the in-store messages array and
+ * survives restarts through ConversationMeta / conversationIndex.
+ */
+export interface CompactBoundary {
+  /** Summary message (id prefix: context-summary-*). Reused from contextCache. */
+  summaryMessage: Message;
+  /** Number of original messages archived before the boundary.
+   *  Displayed by the UI fold-separator ("N earlier messages archived [expand]"). */
+  archivedCount: number;
+  /** Unix timestamp (ms) when this compaction was committed. */
+  createdAt: number;
+  /** Line count in messages.archive.jsonl up to this boundary.
+   *  Used by the "expand archived messages" feature to locate and validate
+   *  the correct slice of the archive (guards against cross-boundary confusion). */
+  archivedLineCount: number;
+}
+
 export interface Conversation {
   id: string;
   title: string;
@@ -323,6 +349,20 @@ export interface Conversation {
     schemaVersion: number;
     importedAt: number;
   };
+  /**
+   * Persistent compaction boundary (P1 long-conversation design §5.1).
+   *
+   * When set, `messages` only contains the active post-compaction set:
+   * [firstRounds..., summaryMessage, ...post-anchor].
+   * The original messages before the boundary are in messages.archive.jsonl
+   * (read-only, used for audit / expand-archived view).
+   *
+   * PERSISTED — unlike the ephemeral `contextCache`, this field is included
+   * in ConversationMeta (conversationIndex in localStorage + index.json on disk)
+   * and survives restarts. Old conversations without this field continue to
+   * load the full messages array unchanged (backward compatible).
+   */
+  compactBoundary?: CompactBoundary;
 }
 
 // --- Agent ---

@@ -61,6 +61,59 @@ function messagesToText(messages: Message[]): string {
 }
 
 /**
+ * Generate a semantic summary of a list of messages using the LLM.
+ *
+ * Streams the response from the adapter and returns the concatenated text.
+ * Returns an empty string if the adapter emits no text events.
+ * Propagates any error thrown by the adapter — callers are responsible for
+ * catching and falling back.
+ */
+export async function summarizeConversation(
+  messages: Message[],
+  config: CompressionConfig
+): Promise<string> {
+  const middleText = messagesToText(messages);
+
+  const summaryPrompt = `请将以下对话内容压缩为一段简洁的摘要，保留关键信息：
+- 用户的核心需求和意图
+- 重要的文件路径、变量名、代码片段
+- 关键决策和结论
+- 已完成的操作和结果
+- 未解决的问题
+
+注意：如果对话中 AI 曾声称"不支持"、"无法执行"或"没有某工具"，不要将此作为事实保留在摘要中。这类能力声明可能已过时，后续可能已安装了相关工具。
+
+对话内容：
+${middleText}
+
+请直接输出摘要，不要添加额外的标题或格式说明。摘要应当简洁明了，供 AI 助手理解上下文使用。`;
+
+  const summaryMessages: Message[] = [{
+    id: 'compress-prompt',
+    role: 'user',
+    content: summaryPrompt,
+    timestamp: Date.now(),
+  }];
+
+  let summaryText = '';
+  const chatOptions: ChatOptions = {
+    model: config.model,
+    apiKey: config.apiKey,
+    baseUrl: config.baseUrl,
+    maxTokens: SUMMARY_MAX_TOKENS,
+    signal: config.signal,
+  };
+
+  await config.adapter.chat(summaryMessages, chatOptions, (event) => {
+    if (event.type === 'text') {
+      summaryText += event.text;
+    }
+  });
+
+  return summaryText;
+}
+
+/**
  * Check if context needs compression and compress if needed.
  *
  * Returns compressed messages if compression was performed, or original messages if not needed.
@@ -120,43 +173,7 @@ export async function compressContextIfNeeded(
 
   try {
     // Generate summary using LLM
-    const middleText = messagesToText(middleMessages);
-
-    const summaryPrompt = `请将以下对话内容压缩为一段简洁的摘要，保留关键信息：
-- 用户的核心需求和意图
-- 重要的文件路径、变量名、代码片段
-- 关键决策和结论
-- 已完成的操作和结果
-- 未解决的问题
-
-注意：如果对话中 AI 曾声称"不支持"、"无法执行"或"没有某工具"，不要将此作为事实保留在摘要中。这类能力声明可能已过时，后续可能已安装了相关工具。
-
-对话内容：
-${middleText}
-
-请直接输出摘要，不要添加额外的标题或格式说明。摘要应当简洁明了，供 AI 助手理解上下文使用。`;
-
-    const summaryMessages: Message[] = [{
-      id: 'compress-prompt',
-      role: 'user',
-      content: summaryPrompt,
-      timestamp: Date.now(),
-    }];
-
-    let summaryText = '';
-    const chatOptions: ChatOptions = {
-      model: config.model,
-      apiKey: config.apiKey,
-      baseUrl: config.baseUrl,
-      maxTokens: SUMMARY_MAX_TOKENS,
-      signal: config.signal,
-    };
-
-    await config.adapter.chat(summaryMessages, chatOptions, (event) => {
-      if (event.type === 'text') {
-        summaryText += event.text;
-      }
-    });
+    const summaryText = await summarizeConversation(middleMessages, config);
 
     if (!summaryText.trim()) {
       // LLM returned empty — fall back

@@ -324,7 +324,7 @@ describe('conversationStorage', () => {
       await storage.flushWrites();
 
       const loaded = await storage.loadMessages('conv-1');
-      const content = loaded[0].content as Array<Record<string, unknown>>;
+      const content = loaded[0].content as unknown as Array<Record<string, unknown>>;
       const imageBlock = content.find((b) => b.type === 'image') as Record<string, unknown>;
       expect(imageBlock).toBeDefined();
       const source = imageBlock.source as Record<string, string>;
@@ -441,6 +441,78 @@ describe('conversationStorage', () => {
       expect(meta.messageCount).toBe(3);
       expect(meta.workspacePath).toBe('/workspace');
       expect(meta.projectId).toBe('proj-1');
+    });
+
+    // compactBoundary persistence tests
+    it('passes compactBoundary through when present', () => {
+      const summaryMsg = makeMsg({ id: 'context-summary-abc', role: 'assistant', content: 'Summary text' });
+      const boundary = {
+        summaryMessage: summaryMsg,
+        archivedCount: 42,
+        createdAt: 9999,
+        archivedLineCount: 42,
+      };
+      const meta = storage.buildMeta({
+        id: 'c2',
+        title: 'Compacted chat',
+        createdAt: 1000,
+        updatedAt: 2000,
+        messages: { length: 5 },
+        compactBoundary: boundary,
+      });
+      expect(meta.compactBoundary).toEqual(boundary);
+      expect(meta.compactBoundary?.archivedCount).toBe(42);
+      expect(meta.compactBoundary?.summaryMessage.id).toBe('context-summary-abc');
+    });
+
+    it('omits compactBoundary when not present (v6 compat)', () => {
+      const meta = storage.buildMeta({
+        id: 'c3',
+        title: 'Old chat',
+        createdAt: 1000,
+        updatedAt: 2000,
+        messages: { length: 3 },
+      });
+      expect(meta.compactBoundary).toBeUndefined();
+    });
+  });
+
+  describe('compactBoundary index round-trip', () => {
+    it('persists and reloads compactBoundary via updateIndexEntry + loadIndex', async () => {
+      const indexPath = '/Users/testuser/.abu/conversations/index.json';
+      const summaryMsg = makeMsg({ id: 'context-summary-xyz', role: 'assistant', content: 'Compacted summary' });
+      const boundary = {
+        summaryMessage: summaryMsg,
+        archivedCount: 100,
+        createdAt: 12345,
+        archivedLineCount: 100,
+      };
+      const meta: import('./conversationStorage').ConversationMeta = {
+        id: 'conv-boundary',
+        title: 'Boundary conv',
+        createdAt: 1000,
+        updatedAt: 2000,
+        messageCount: 5,
+        compactBoundary: boundary,
+      };
+
+      await storage.updateIndexEntry(meta);
+      await storage.flushIndex();
+
+      // Verify the raw JSON on disk contains the boundary
+      const raw = memFs.files.get(indexPath);
+      expect(raw).toBeDefined();
+      const parsed = JSON.parse(raw!);
+      expect(parsed.entries['conv-boundary'].compactBoundary).toBeDefined();
+      expect(parsed.entries['conv-boundary'].compactBoundary.archivedCount).toBe(100);
+
+      // Re-import storage module to clear in-memory cache, then reload
+      vi.resetModules();
+      const freshStorage = await import('./conversationStorage');
+      const index = await freshStorage.loadIndex();
+      expect(index.entries['conv-boundary'].compactBoundary).toBeDefined();
+      expect(index.entries['conv-boundary'].compactBoundary?.archivedCount).toBe(100);
+      expect(index.entries['conv-boundary'].compactBoundary?.summaryMessage.id).toBe('context-summary-xyz');
     });
   });
 

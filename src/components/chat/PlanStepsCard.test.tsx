@@ -61,11 +61,11 @@ describe('PlanStepsCard', () => {
     expect(screen.getByText('移动发票到文件夹')).toBeInTheDocument();
   });
 
-  it('is expanded by default with the awaiting hint while approval is pending', () => {
+  it('shows the awaiting badge while approval is pending (collapsed; dock handles approval UI)', () => {
     render(<PlanStepsCard toolCall={makePlanCall({ result: undefined })} />);
     expect(screen.getByText('等待你确认')).toBeInTheDocument();
-    // The user is deciding — they must see what they are approving.
-    expect(screen.getByText('扫描桌面文件')).toBeInTheDocument();
+    // Collapsed by default — approval lives in the dock above the composer.
+    expect(screen.queryByText('扫描桌面文件')).not.toBeInTheDocument();
   });
 
   it('does not show the awaiting hint once the plan resolved', () => {
@@ -78,6 +78,16 @@ describe('PlanStepsCard', () => {
       <PlanStepsCard toolCall={makePlanCall({ input: { steps: [] } })} />,
     );
     expect(container).toBeEmptyDOMElement();
+  });
+
+  it('defaults to collapsed even while awaiting approval (approval lives in the dock)', () => {
+    const toolCall = { id: 'p1', name: 'report_plan', input: { steps: ['step one', 'step two'] } } as ToolCall;
+    // result undefined = awaiting
+    render(<PlanStepsCard toolCall={toolCall} />);
+    // Collapsed: step text not visible until expanded
+    expect(screen.queryByText('step one')).toBeNull();
+    // Header (title + count) still shown
+    expect(screen.getByText('执行计划')).toBeInTheDocument();
   });
 });
 

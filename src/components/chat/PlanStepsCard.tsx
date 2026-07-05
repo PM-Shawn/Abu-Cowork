@@ -16,7 +16,7 @@ export default function PlanStepsCard({ toolCall }: { toolCall: ToolCall }) {
   const { t } = useI18n();
   const steps = parsePlanSteps(toolCall);
   const awaiting = toolCall.result === undefined;
-  const [expanded, setExpanded] = useState(awaiting);
+  const [expanded, setExpanded] = useState(false);
   if (steps.length === 0) return null;
 
   return (

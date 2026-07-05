@@ -38,10 +38,15 @@ export default function ShareExportDialog({ convId, defaultFilename, onClose }: 
   const exportForShare = useChatStore((s) => s.exportConversationForShare);
   const [state, setState] = useState<DialogState>({ phase: 'loading' });
   const [exporting, setExporting] = useState(false);
+  const [progress, setProgress] = useState<{ done: number; total: number } | null>(null);
 
   useEffect(() => {
     let cancelled = false;
-    exportForShare(convId)
+    const controller = new AbortController();
+    exportForShare(convId, {
+      signal: controller.signal,
+      onProgress: (done, total) => { if (!cancelled) setProgress({ done, total }); },
+    })
       .then((bundle) => {
         if (cancelled) return;
         if (!bundle) {
@@ -51,11 +56,13 @@ export default function ShareExportDialog({ convId, defaultFilename, onClose }: 
         setState({ phase: 'ready', bundle });
       })
       .catch((err: unknown) => {
-        if (cancelled) return;
+        // Ignore the abort we triggered on unmount.
+        if (cancelled || controller.signal.aborted) return;
         setState({ phase: 'error', message: err instanceof Error ? err.message : String(err) });
       });
     return () => {
       cancelled = true;
+      controller.abort();
     };
   }, [convId, exportForShare]);
 
@@ -108,8 +115,18 @@ export default function ShareExportDialog({ convId, defaultFilename, onClose }: 
         {/* Body */}
         <div className="flex-1 overflow-y-auto px-6 py-4">
           {state.phase === 'loading' && (
-            <div className="text-[13px] text-[var(--abu-text-tertiary)] py-8 text-center">
-              {t.share.loading}
+            <div className="py-8 flex flex-col items-center gap-3">
+              <div className="text-[13px] text-[var(--abu-text-tertiary)]">
+                {progress ? `${t.share.loading} ${progress.done}/${progress.total}` : t.share.loading}
+              </div>
+              {progress && progress.total > 0 && (
+                <div className="w-2/3 h-1 rounded-full bg-[var(--abu-bg-active)] overflow-hidden">
+                  <div
+                    className="h-full bg-[var(--abu-clay)] transition-[width] duration-150"
+                    style={{ width: `${Math.round((progress.done / progress.total) * 100)}%` }}
+                  />
+                </div>
+              )}
             </div>
           )}
           {state.phase === 'error' && (

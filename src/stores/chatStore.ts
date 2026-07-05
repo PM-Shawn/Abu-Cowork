@@ -333,7 +333,11 @@ interface ChatActions {
    */
   exportConversationForShare: (
     convId: string,
-    opts?: { tier?: import('../core/session/shareBundle').ShareTier },
+    opts?: {
+      tier?: import('../core/session/shareBundle').ShareTier;
+      signal?: AbortSignal;
+      onProgress?: (done: number, total: number) => void;
+    },
   ) => Promise<import('../core/session/shareBundle').ShareBundle | null>;
 
   // Persistence — load conversation from disk on demand
@@ -1384,7 +1388,11 @@ export const useChatStore = create<ChatStore>()(
         const conv = get().conversations[convId];
         if (!conv) return null;
         const { buildShareBundle } = await import('../core/session/shareBundle');
-        return buildShareBundle(conv, { tier: opts.tier ?? 'standard' });
+        return buildShareBundle(conv, {
+          tier: opts.tier ?? 'standard',
+          signal: opts.signal,
+          onProgress: opts.onProgress,
+        });
       },
 
       // ── Persistence: load conversation from disk on demand ──

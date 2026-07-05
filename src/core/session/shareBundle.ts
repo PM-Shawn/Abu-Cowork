@@ -71,6 +71,10 @@ export interface ShareBundle {
 
 export interface BuildShareBundleOptions {
   tier?: ShareTier;
+  /** Abort the build (e.g. when the preview dialog is closed). */
+  signal?: AbortSignal;
+  /** Progress callback over the per-message pass: (done, total). */
+  onProgress?: (done: number, total: number) => void;
 }
 
 /**
@@ -88,17 +92,18 @@ export async function buildShareBundle(
   const redactionSamples: RedactionSample[] = [];
   let redactionCount = 0;
 
+  // Visible (non-system) messages only — matches ChatView's `!m.isSystem`.
+  const visible = conv.messages.filter((m) => !m.isSystem);
   const cleanedMessages: Message[] = [];
-  for (const src of conv.messages) {
-    // Match ChatView's visibility rule (ChatView.tsx filters `!m.isSystem`).
-    // Without this, system-injected recovery / max-tokens notices pile up in
-    // the bundle — invisible in-app but dumped to the recipient.
-    if (src.isSystem) continue;
+  let done = 0;
+  for (const src of visible) {
+    if (opts.signal?.aborted) throw new DOMException('share bundle build aborted', 'AbortError');
     const cleaned = await prepareMessage(src, conv.id, snapshotByPath, tier, (r) => {
       redactionCount += r.count;
       redactionSamples.push(...r.samples);
     });
     cleanedMessages.push(cleaned);
+    opts.onProgress?.(++done, visible.length);
   }
 
   const attachments = await collectAttachments(conv.id, snapshotEntries, tier);

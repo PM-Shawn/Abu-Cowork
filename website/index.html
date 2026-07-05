@@ -210,6 +210,41 @@
                     <h3>诊断面板</h3>
                     <p>设置 → 诊断，逐项自检 AI 服务、MCP、技能、网络、应用环境；出问题一键导出诊断包，API Key 与路径自动脱敏。</p>
                 </div>
+                <div class="feature-card">
+                    <div class="feature-icon">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="var(--color-primary)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M9 11l3 3L20 6"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>
+                    </div>
+                    <h3>计划模式</h3>
+                    <p>涉及删除、覆盖、发送、安装等高风险步骤时，阿布先出分步计划，你点「确认执行」才动手；待批期间只跑只读操作。</p>
+                </div>
+                <div class="feature-card">
+                    <div class="feature-icon">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="var(--color-primary)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+                    </div>
+                    <h3>交互式提问</h3>
+                    <p>需要你拍板时，阿布在输入框上方弹出选项卡片，单选 / 多选皆可，也能填「其他」自定义，不用在长文字里找问题。</p>
+                </div>
+                <div class="feature-card">
+                    <div class="feature-icon">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="var(--color-primary)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+                    </div>
+                    <h3>多 Agent 并行</h3>
+                    <p>最多 5 个后台 Agent 同时干活，各自独立执行任务，进度实时可见，复杂工作并行推进。</p>
+                </div>
+                <div class="feature-card">
+                    <div class="feature-icon">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="var(--color-primary)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+                    </div>
+                    <h3>主题切换</h3>
+                    <p>亮色 / 暗色 / 跟随系统，一键切换界面外观，跟随你的使用环境。</p>
+                </div>
+                <div class="feature-card">
+                    <div class="feature-icon">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="var(--color-primary)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M10 2v7.31"/><path d="M14 9.3V1.99"/><path d="M8.5 2h7"/><path d="M14 9.3a6.5 6.5 0 1 1-4 0"/><path d="M5.52 16h12.96"/></svg>
+                    </div>
+                    <h3>实验室（Labs）· 桌宠</h3>
+                    <p>打磨中的新功能按需开启；首个实验「桌宠」——常驻桌面的悬浮小阿布，活动通知条实时显示任务状态。</p>
+                </div>
             </div>
         </div>
     </section>
@@ -220,13 +255,48 @@
             <h2>产品预览</h2>
             <p class="section-desc">简洁直观的界面，强大灵活的能力</p>
             <div class="screenshot-tabs">
-                <button class="screenshot-tab active" data-tab="execution">智能执行</button>
+                <button class="screenshot-tab active" data-tab="whatsnew">✨ 新功能</button>
+                <button class="screenshot-tab" data-tab="execution">智能执行</button>
                 <button class="screenshot-tab" data-tab="extension">连接 & 扩展</button>
                 <button class="screenshot-tab" data-tab="automation">自动驾驶</button>
                 <button class="screenshot-tab" data-tab="security">安全 & 配置</button>
             </div>
             <div class="screenshot-panels">
-                <div class="screenshot-panel active" data-panel="execution">
+                <div class="screenshot-panel active" data-panel="whatsnew">
+                    <div class="screenshot-grid">
+                        <div class="screenshot-card">
+                            <img src="assets/screenshot-plan-mode.png" alt="计划模式" loading="lazy">
+                            <div class="screenshot-label">计划模式</div>
+                            <p class="screenshot-caption">高风险任务先出计划，你点确认才动手</p>
+                        </div>
+                        <div class="screenshot-card">
+                            <img src="assets/screenshot-ask-question.png" alt="交互式提问" loading="lazy">
+                            <div class="screenshot-label">交互式提问</div>
+                            <p class="screenshot-caption">需要你拍板时弹出选项卡片，单选 / 多选</p>
+                        </div>
+                        <div class="screenshot-card">
+                            <img src="assets/screenshot-multi-agent.png" alt="多 Agent 并行" loading="lazy">
+                            <div class="screenshot-label">多 Agent 并行</div>
+                            <p class="screenshot-caption">最多 5 个后台 Agent 同时干活，进度实时可见</p>
+                        </div>
+                        <div class="screenshot-card">
+                            <img src="assets/screenshot-pet.png" alt="桌宠 · 活动通知条" loading="lazy">
+                            <div class="screenshot-label">桌宠 · 活动通知条</div>
+                            <p class="screenshot-caption">桌面浮窗常驻，活动条实时显示阿布状态</p>
+                        </div>
+                        <div class="screenshot-card">
+                            <img src="assets/screenshot-theme.png" alt="主题切换" loading="lazy">
+                            <div class="screenshot-label">主题切换</div>
+                            <p class="screenshot-caption">亮色 / 暗色 / 跟随系统一键切换</p>
+                        </div>
+                        <div class="screenshot-card">
+                            <img src="assets/screenshot-labs.png" alt="实验室（Labs）" loading="lazy">
+                            <div class="screenshot-label">实验室（Labs）</div>
+                            <p class="screenshot-caption">打磨中的新功能，按需开启（当前：桌宠）</p>
+                        </div>
+                    </div>
+                </div>
+                <div class="screenshot-panel" data-panel="execution">
                     <div class="screenshot-grid">
                         <div class="screenshot-card">
                             <img src="assets/screenshot-welcome.png" alt="欢迎页" loading="lazy">

@@ -220,6 +220,8 @@ const enUS: TranslationDict = {
     userMessageCollapse: 'Collapse',
     noModelConfigured: 'Set up a model',
     scrollToBottom: 'Scroll to bottom',
+    compressingContext: 'Compacting long conversation…',
+    retrying: 'Model slow to respond — retrying {attempt}/{max}…',
     codeBlockExpand: 'Expand all ({lines} lines)',
     codeBlockCollapse: 'Collapse',
     codeBlockSaveAs: 'Save as',

@@ -1563,8 +1563,12 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
           chatFn,
           { maxRetries: 3, baseDelayMs: 1000, maxDelayMs: 30000 },
           abortController.signal,
-          (_attempt, error, delayMs) => {
-            // Show rate-limited status in UI via status bar (not message body).
+          (attempt, error, delayMs) => {
+            // Surface EVERY retry (not just rate-limits) so a stalled/flaky
+            // provider isn't a silent dead wait. rate_limit gets 5 attempts in
+            // retry.ts, others get 3.
+            const maxAttempts = error.code === 'rate_limit' ? 5 : 3;
+            chatStore.setRetryInfo({ attempt, maxAttempts, delayMs });
             if (error.code === 'rate_limit') {
               chatStore.setAgentStatus('rate-limited', `${Math.round(delayMs / 1000)}s`);
             }

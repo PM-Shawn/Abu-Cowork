@@ -1090,4 +1090,27 @@ describe('chatStore', () => {
     });
   });
 
+  describe('retryInfo (Bug 1: 死寂期重试可见)', () => {
+    beforeEach(() => {
+      useChatStore.setState({ retryInfo: null, agentStatus: 'idle', currentTool: null });
+    });
+
+    it('setRetryInfo stores the live retry state', () => {
+      useChatStore.getState().setRetryInfo({ attempt: 2, maxAttempts: 3, delayMs: 5000 });
+      expect(useChatStore.getState().retryInfo).toEqual({ attempt: 2, maxAttempts: 3, delayMs: 5000 });
+    });
+
+    it('a resumed stream clears the retry strip (retry succeeded)', () => {
+      useChatStore.getState().setRetryInfo({ attempt: 1, maxAttempts: 3, delayMs: 1000 });
+      useChatStore.getState().setAgentStatus('streaming');
+      expect(useChatStore.getState().retryInfo).toBeNull();
+    });
+
+    it('rate-limited status does NOT clear retryInfo (still retrying)', () => {
+      useChatStore.getState().setRetryInfo({ attempt: 1, maxAttempts: 5, delayMs: 2000 });
+      useChatStore.getState().setAgentStatus('rate-limited', '2s');
+      expect(useChatStore.getState().retryInfo).not.toBeNull();
+    });
+  });
+
 });

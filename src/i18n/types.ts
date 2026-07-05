@@ -250,6 +250,8 @@ export interface TranslationDict {
     userMessageCollapse: string;
     noModelConfigured: string;
     scrollToBottom: string;
+    compressingContext: string;
+    retrying: string;
     codeBlockExpand: string;
     codeBlockCollapse: string;
     codeBlockSaveAs: string;

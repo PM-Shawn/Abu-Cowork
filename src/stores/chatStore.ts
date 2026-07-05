@@ -1,7 +1,7 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import { immer } from 'zustand/middleware/immer';
-import type { Message, Conversation, AgentStatus, TokenUsage, ConversationStatus, ToolCallForContext, ToolResultContent, ToolCall, NoticeCardAction, UserQuestionResult } from '../types';
+import type { Message, Conversation, AgentStatus, RetryInfo, TokenUsage, ConversationStatus, ToolCallForContext, ToolResultContent, ToolCall, NoticeCardAction, UserQuestionResult } from '../types';
 import type { ExecutionStepSnapshot, PlannedStep } from '../types/execution';
 import { useWorkspaceStore } from './workspaceStore';
 import { useProjectStore } from './projectStore';
@@ -221,6 +221,8 @@ interface ChatState {
   activeConversationId: string | null;
   agentStatus: AgentStatus;
   currentTool: string | null;
+  /** Live retry state (null when not retrying) — drives the "正在重试" strip. */
+  retryInfo: RetryInfo | null;
   // Token usage tracking
   currentUsage: TokenUsage | null;
   // Pending input for prefilling the chat input
@@ -303,6 +305,7 @@ interface ChatActions {
   clearAbortController: (convId: string) => void;
 
   setAgentStatus: (status: AgentStatus, tool?: string, agentName?: string) => void;
+  setRetryInfo: (info: RetryInfo | null) => void;
   removeActiveAgent: (agentName: string) => void;
   setCurrentUsage: (usage: TokenUsage | null) => void;
   setPendingInput: (text: string | null) => void;
@@ -351,6 +354,7 @@ export const useChatStore = create<ChatStore>()(
       activeConversationId: null,
       agentStatus: 'idle' as AgentStatus,
       currentTool: null,
+      retryInfo: null,
       currentUsage: null,
       outputsRev: {} as Record<string, number>,
       pendingInput: null,
@@ -731,6 +735,7 @@ export const useChatStore = create<ChatStore>()(
           if (target) target.isStreaming = false;
           state.agentStatus = 'idle';
           state.currentTool = null;
+          state.retryInfo = null;
         });
         // Persist the final completed message to disk.
         // When msgId is provided, we must replace by id (not "last line") because the
@@ -1097,6 +1102,7 @@ export const useChatStore = create<ChatStore>()(
           }
           state.agentStatus = 'idle';
           state.currentTool = null;
+          state.retryInfo = null;
           state.thinkingStartTime = null;
         });
 
@@ -1118,10 +1124,21 @@ export const useChatStore = create<ChatStore>()(
         abortControllers.delete(convId);
       },
 
+      setRetryInfo: (info) => {
+        set((state) => {
+          state.retryInfo = info;
+        });
+      },
+
       setAgentStatus: (status, tool, agentName) => {
         set((state) => {
           state.agentStatus = status;
           state.currentTool = tool ?? null;
+          // A resumed stream (any non-retry status) means a prior retry
+          // succeeded — clear the retry strip so it doesn't linger.
+          if (status !== 'rate-limited') {
+            state.retryInfo = null;
+          }
           // Track concurrent active agents
           if (agentName && status === 'tool-calling') {
             if (!state.activeAgentNames.includes(agentName)) {

@@ -220,6 +220,8 @@ const zhCN: TranslationDict = {
     userMessageCollapse: '收起',
     noModelConfigured: '请配置模型',
     scrollToBottom: '回到底部',
+    compressingContext: '正在压缩长对话上下文…',
+    retrying: '模型响应慢，正在重试 {attempt}/{max}…',
     codeBlockExpand: '展开全部 ({lines} 行)',
     codeBlockCollapse: '收起',
     codeBlockSaveAs: '另存为',

@@ -73,7 +73,7 @@ export default function ChatView() {
   // Derive messages from activeConv (re-evaluated when messageCount changes)
   const messages = activeConv?.messages ?? [];
   void messageCount; // used only to trigger re-render
-  const { t, locale } = useI18n();
+  const { t, format, locale } = useI18n();
 
   // Pending agent: set when user enters chat from any agent surface
   // (toolbox detail "Start Chat" button, etc.). Drives the welcome banner so
@@ -227,6 +227,7 @@ export default function ChatView() {
   // and the resumed loop producing anything (Bug 1: 点同意后无反应).
   const [resuming, setResuming] = useState(false);
   const agentStatus = useChatStore((s) => s.agentStatus);
+  const retryInfo = useChatStore((s) => s.retryInfo);
 
   const handleSelectPrompt = useCallback((prompt: string) => {
     // Fill the prompt into the input via pendingInput
@@ -435,7 +436,11 @@ export default function ChatView() {
                   <span className="typing-dot w-1.5 h-1.5 rounded-full bg-[var(--abu-clay-60)]" />
                   <span className="typing-dot w-1.5 h-1.5 rounded-full bg-[var(--abu-clay-60)]" />
                 </div>
-                <span className="text-[13px] text-[var(--abu-text-tertiary)]">{t.chat.thinking}</span>
+                <span className="text-[13px] text-[var(--abu-text-tertiary)]">
+                  {retryInfo
+                    ? format(t.chat.retrying, { attempt: retryInfo.attempt, max: retryInfo.maxAttempts })
+                    : t.chat.thinking}
+                </span>
               </div>
             )}
           </div>

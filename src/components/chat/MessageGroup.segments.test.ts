@@ -136,7 +136,7 @@ describe('buildRenderSegments', () => {
     expect(thinkingSeg.executionSteps[0].duration).toBe(5);
   });
 
-  it('multiple thinking blocks stay inline at each message position, interleaved with tools', () => {
+  it('consecutive thinking+tool turns MERGE into one block; only text/plan break it', () => {
     // thinking5+plan → thinking2+find_files → thinking3+text+list_dir
     const msgs: Message[] = [
       makeUser('u1', 'go'),
@@ -147,26 +147,27 @@ describe('buildRenderSegments', () => {
     const execSteps = [makeExecStep('find'), makeExecStep('listdir')];
     const segs = buildRenderSegments(msgs, execSteps, []);
 
-    // thinking(a1), plan, thinking(a2), steps(find), thinking(a3), text(a3), steps(listdir)
-    expect(segs.map((s) => s.kind)).toEqual(['steps', 'plan', 'steps', 'steps', 'steps', 'text', 'steps']);
-    // Each thinking block is standalone (single thinking step, no tool steps mixed in)
+    // steps(t5) [plan flushes it], plan, steps(t2·find·t3) [merged], text, steps(listdir)
+    expect(segs.map((s) => s.kind)).toEqual(['steps', 'plan', 'steps', 'text', 'steps']);
     const stepSegs = segs.filter((s) => s.kind === 'steps') as Extract<ReturnType<typeof buildRenderSegments>[0], { kind: 'steps' }>[];
-    // [thinking-a1, thinking-a2, find, thinking-a3, listdir]
-    expect(stepSegs[0].executionSteps[0].type).toBe('thinking');
-    expect(stepSegs[2].executionSteps[0].id).toBe('find');
-    expect(stepSegs[2].executionSteps.every((s) => s.type !== 'thinking')).toBe(true);
-    expect(stepSegs[4].executionSteps[0].id).toBe('listdir');
+    // Leading thinking is its own block (report_plan flushed it out)
+    expect(stepSegs[0].executionSteps.map((s) => s.type)).toEqual(['thinking']);
+    // Middle block MERGES thinking + tool + thinking in true order
+    expect(stepSegs[1].executionSteps.map((s) => s.id)).toEqual(['thinking-a2', 'find', 'thinking-a3']);
+    // Trailing tool block (after the intermediate text flush)
+    expect(stepSegs[2].executionSteps.map((s) => s.id)).toEqual(['listdir']);
   });
 
-  it('a thinking-typed step in allExecSteps is discarded (thinking comes from messages)', () => {
+  it('a thinking-typed step in allExecSteps is discarded; msg thinking merges with the tool', () => {
     const msgs: Message[] = [makeUser('u1', 'x'), makeThinkingAssistant('a1', { thinking: 'from msg', thinkingDuration: 1, toolCount: 1 })];
     const thinkingExec: ExecutionStep = { ...makeExecStep('ghost'), type: 'thinking' };
     const toolExec = makeExecStep('real-tool');
     const segs = buildRenderSegments(msgs, [thinkingExec, toolExec], []);
     const stepSegs = segs.filter((s) => s.kind === 'steps') as Extract<ReturnType<typeof buildRenderSegments>[0], { kind: 'steps' }>[];
-    // thinking block (from msg) + tool block (real-tool); ghost thinking-exec dropped
-    const toolSeg = stepSegs.find((s) => s.executionSteps[0]?.type !== 'thinking')!;
-    expect(toolSeg.executionSteps.map((s) => s.id)).toEqual(['real-tool']);
+    // One merged block: msg thinking + real tool, in order. The ghost thinking-exec is dropped.
+    expect(stepSegs).toHaveLength(1);
+    expect(stepSegs[0].executionSteps.map((s) => s.id)).toEqual(['thinking-a1', 'real-tool']);
+    expect(stepSegs[0].executionSteps.some((s) => s.id === 'ghost')).toBe(false);
   });
 });
 

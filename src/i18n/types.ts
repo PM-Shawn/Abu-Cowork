@@ -132,6 +132,9 @@ export interface TranslationDict {
     scheduled: string;
     noScheduledRuns: string;
     exportConversation: string;
+    copyMarkdown: string;
+    copyMarkdownDone: string;
+    copyMarkdownFailed: string;
     deleteConversation: string;
     conversationDeleted: string;
     undo: string;

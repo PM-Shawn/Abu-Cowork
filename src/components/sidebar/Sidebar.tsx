@@ -7,7 +7,10 @@ import { useInboxStore } from '@/stores/inboxStore';
 import { useI18n } from '@/i18n';
 import { useLabsFlag } from '@/core/labs/resolve';
 import { LABS_TODOS_INBOX } from '@/core/labs/registry';
-import { Plus, Workflow, Wrench, Trash2, Settings, Download, Pencil, Undo2, HelpCircle, FolderInput, FolderClosed, ChevronRight, Minus, Search, X, CheckSquare, Inbox } from 'lucide-react';
+import { Plus, Workflow, Wrench, Trash2, Settings, Download, Copy, Pencil, Undo2, HelpCircle, FolderInput, FolderClosed, ChevronRight, Minus, Search, X, CheckSquare, Inbox } from 'lucide-react';
+import { writeText as clipboardWriteText } from '@tauri-apps/plugin-clipboard-manager';
+import { conversationToMarkdown } from '@/core/session/conversationMarkdown';
+import { useToastStore } from '@/stores/toastStore';
 import GuideModal from '@/components/common/GuideModal';
 import ProfileEditModal from '@/components/common/ProfileEditModal';
 import { Button } from '@/components/ui/button';
@@ -91,6 +94,7 @@ export default function Sidebar() {
   // remain unread — matches the "things you still owe a decision on" mental model.
   const pendingInboxCount = useInboxStore((s) => s.getPendingCount());
   const { t } = useI18n();
+  const addToast = useToastStore((s) => s.addToast);
   const showTodosInbox = useLabsFlag(LABS_TODOS_INBOX);
 
   // Context menu state
@@ -238,6 +242,24 @@ export default function Sidebar() {
     await loadConversation(convId);
     setShareConvId(convId);
     setContextMenu(null);
+  };
+
+  const handleCopyMarkdown = async (convId: string) => {
+    setContextMenu(null);
+    try {
+      await loadConversation(convId);
+      const conv = useChatStore.getState().conversations[convId];
+      if (!conv) return;
+      await clipboardWriteText(conversationToMarkdown(conv));
+      addToast({ title: t.sidebar.copyMarkdownDone, type: 'success', duration: 2500 });
+    } catch (e) {
+      addToast({
+        title: t.sidebar.copyMarkdownFailed,
+        message: e instanceof Error ? e.message : String(e),
+        type: 'error',
+        duration: 5000,
+      });
+    }
   };
 
   const handleImport = async () => {
@@ -562,6 +584,13 @@ export default function Sidebar() {
           >
             <Download className="h-3.5 w-3.5" />
             {t.sidebar.exportConversation}
+          </button>
+          <button
+            onClick={() => handleCopyMarkdown(contextMenu.convId)}
+            className="flex items-center gap-2 w-full px-3 py-1.5 text-[13px] text-[var(--abu-text-secondary)] hover:bg-[var(--abu-bg-active)]"
+          >
+            <Copy className="h-3.5 w-3.5" />
+            {t.sidebar.copyMarkdown}
           </button>
           {/* Move to project — submenu with project list */}
           {(() => {

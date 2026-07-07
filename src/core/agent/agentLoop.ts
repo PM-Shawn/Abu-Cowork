@@ -42,6 +42,7 @@ import { formatTodosForPrompt } from './todoManager';
 import { isWindows } from '../../utils/platform';
 import { getBuiltinSearchConfig } from '../capabilities';
 import { resolveCapabilities, resolveEffectiveContextWindow, computeReasoningParams, type ModelCapabilities } from '../llm/modelCapabilities';
+import { applyDeclaredCapabilities } from '../llm/applyDeclaredCapabilities';
 import { TOOL_NAMES } from '../tools/toolNames';
 import { prefetchTools } from '../tools/toolPrefetch';
 import { classifyTools, buildDeferredToolsSummary } from '../tools/toolSearch';
@@ -736,7 +737,10 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
   // Tell tools whether this model can consume images. read_file uses it to
   // avoid emitting base64 image blocks to text-only models (which bloats
   // context and triggers a 400 on providers that only accept text content).
-  toolContext.supportsVision = resolveCapabilities(effectiveModelId).vision;
+  toolContext.supportsVision = applyDeclaredCapabilities(
+    resolveCapabilities(effectiveModelId),
+    getActiveProvider(settingsForModel)?.declaredCapabilities,
+  ).vision;
 
   // Pin the resolved model to the conversation on first run, so it survives
   // later global model switches (for display + future runs). Pins the
@@ -1148,7 +1152,10 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
       // 400 response). Discovered values come from real API errors so they
       // override the registry — but they don't override the *user's* setting,
       // since the user may have a smaller budget on purpose.
-      const modelCaps = resolveCapabilities(effectiveModelId);
+      let modelCaps = resolveCapabilities(effectiveModelId);
+      // Override auto-detected caps with user-declared values (custom/local providers only).
+      // No-op when activeProvider has no declaredCapabilities (builtin providers).
+      modelCaps = applyDeclaredCapabilities(modelCaps, activeProvider?.declaredCapabilities);
       const discoveredCaps = activeProvider
         ? useDiscoveredCapsStore.getState().get(activeProvider.id, effectiveModelId)
         : undefined;
@@ -1368,6 +1375,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
         thinkingBudget: reasoningParams.thinkingBudget,
         reasoningEffort: reasoningParams.reasoningEffort,
         supportsVision: modelCaps.vision,
+        declaredCapabilities: activeProvider?.declaredCapabilities,
         builtinWebSearch,
         // When the adapter's max_tokens auto-retry succeeds, persist the
         // discovered limit so the next request uses it pre-emptively.

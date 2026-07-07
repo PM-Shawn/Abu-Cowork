@@ -14,6 +14,7 @@ import { checkProviderHealth } from '@/core/llm/healthCheck';
 import { buildFullChatUrl } from '@/core/llm/urlUtils';
 import { useSettingsStore, PROVIDER_CONFIGS } from '@/stores/settingsStore';
 import { PROVIDER_GUIDES } from './providerGuides';
+import { computeShowAdvanced, toggleEffort } from './providerCapabilities';
 import type { LLMProvider, ApiFormat } from '@/types';
 import type { ModelInfo, ProviderSource, DeclaredCapabilities } from '@/types/provider';
 import {
@@ -187,7 +188,7 @@ export default function AddProviderModal({ open: isOpen, onClose }: AddProviderM
   const isOllama = selectedOption?.provider === 'ollama';
   const isLMStudio = selectedOption?.provider === 'lmstudio';
   const isCustom = selectedId ? isCustomId(selectedId) : false;
-  const showAdvanced = isCustom || isOllama || isLMStudio;
+  const showAdvanced = computeShowAdvanced(isCustom, selectedOption?.provider);
   const guide = selectedOption && !isCustom ? PROVIDER_GUIDES[selectedOption.provider] : null;
 
   // knownModels removed — models are fetched from API or added manually
@@ -904,11 +905,7 @@ export default function AddProviderModal({ open: isOpen, onClose }: AddProviderM
                     {(['low', 'medium', 'high'] as const).map(e => (
                       <label key={e} className="flex items-center gap-1">
                         <Toggle size="sm" checked={!!declared.supportedEfforts?.includes(e)}
-                          onChange={() => setDeclared(d => {
-                            const cur = new Set(d.supportedEfforts ?? []);
-                            if (cur.has(e)) cur.delete(e); else cur.add(e);
-                            return { ...d, supportedEfforts: [...cur] as Array<'low' | 'medium' | 'high'> };
-                          })} />
+                          onChange={() => setDeclared(d => ({ ...d, supportedEfforts: toggleEffort(d.supportedEfforts, e) }))} />
                         <span className="text-xs text-[var(--abu-text-secondary)]">{e}</span>
                       </label>
                     ))}

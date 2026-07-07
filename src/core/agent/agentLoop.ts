@@ -20,7 +20,8 @@ import { joinPath } from '../../utils/pathUtils';
 import { matchesToolName, parseToolPatterns } from '../skill/toolFilter';
 import { notifyTaskCompleted, notifyTaskError } from '../../utils/notifications';
 import { prepareContextMessages, trimOldScreenshots } from '../context/contextManager';
-import { compressContextIfNeeded } from '../context/contextCompressor';
+import { compressContextIfNeeded, summarizeConversation } from '../context/contextCompressor';
+import { buildContextFromBoundary, computeCompactionPlan, createCompactBoundaryMarker } from '../context/compactBoundary';
 import { applyMicroCompaction } from '../context/microCompactor';
 import { AutoCompactTracker, getUsagePercent } from '../context/autoCompact';
 import { estimateToolSchemaTokens, estimateTokens, estimateMessageTokens, calibrateFromUsage, setActiveModel } from '../context/tokenEstimator';
@@ -51,6 +52,18 @@ import { createLogger } from '../logging/logger';
 import { reportError } from '@/utils/consoleError';
 
 const logger = createLogger('agentLoop');
+
+/**
+ * Persistent compaction threshold (P1 Part A, marker version).
+ *
+ * When post-compression tokens / maxInputTokens exceeds this, we append ONE
+ * compact-boundary marker to messages.jsonl (append-only — no rewrite/truncate)
+ * so future turns read a compact context from the marker instead of re-running
+ * the send-only 65% pass every turn. 85% is intentionally higher than the 65%
+ * ephemeral-compression threshold: the marker persists, so we only land it when
+ * the conversation is still critically large after the send-only pass.
+ */
+const PERSISTENT_COMPACTION_THRESHOLD = 0.85;
 
 /** MIME type to file extension mapping */
 const MIME_TO_EXT: Record<string, string> = {
@@ -964,6 +977,10 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
   // the model a chance to recover.
   let consecutiveNoProgress = 0;
   const autoCompactTracker = new AutoCompactTracker();
+  // Persistent compaction guard: land at most one compact-boundary marker per
+  // runAgentLoop invocation. After one lands, future turns read the marker so
+  // the 85% threshold won't fire again for a while.
+  let persistentCompactionDone = false;
   let maxOutputTokensRecoveryCount = 0;
   const MAX_OUTPUT_TOKENS_RECOVERY_LIMIT = 3;
 
@@ -1227,7 +1244,16 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
       // Compression triggers when: enough turns AND (cached result available OR warning level triggers compaction)
       let messagesForContext = historyMessages;
       let compressionApplied = false;
-      if (turnCount >= 3) {
+      // P1 Part A: honour a persistent compact-boundary marker if one exists.
+      // buildContextFromBoundary returns the compact view (firstRound + summary
+      // + recent, markers stripped) when the LAST marker is present, else the
+      // same array ref. A marker takes over → skip the ephemeral 65% pass;
+      // otherwise fall through to the existing send-only compression path.
+      const boundaryView = buildContextFromBoundary(historyMessages);
+      if (boundaryView !== historyMessages) {
+        messagesForContext = boundaryView;
+        compressionApplied = true;
+      } else if (turnCount >= 3) {
         const convForCache = useChatStore.getState().conversations[conversationId];
         const cache = convForCache?.contextCache;
 
@@ -1327,6 +1353,61 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
         tokensMax: contextWindowSize,
         overhead: systemAndToolsOverhead,
       });
+
+      // Step 2.1: Persistent compaction (P1 Part A, marker version). When still
+      // critically large after the send-only pass, land ONE compact-boundary
+      // marker (append-only) so future turns read a compact context from the
+      // marker instead of re-compressing every turn. The CURRENT turn proceeds
+      // with messagesForContext as-is — one large turn is acceptable; the
+      // benefit compounds from the next turn onward.
+      if (
+        !persistentCompactionDone &&
+        turnCount >= 3 &&
+        postCompressionTokens >= maxInputTokens * PERSISTENT_COMPACTION_THRESHOLD
+      ) {
+        const plan = computeCompactionPlan(historyMessages);
+        if (plan) {
+          const compactionCreds = resolveEffectiveLlmCreds(
+            getActiveApiKey(settingsForModel),
+            getActiveProvider(settingsForModel)?.baseUrl || undefined,
+          );
+          let summaryText = '';
+          try {
+            summaryText = await summarizeConversation(plan.middleMessages, {
+              adapter,
+              model: effectiveModelId,
+              apiKey: compactionCreds.apiKey,
+              baseUrl: compactionCreds.baseUrl,
+              signal: abortController.signal,
+            });
+          } catch (err) {
+            logger.warn('[persistentCompaction] summarize failed — skipping this turn', { error: String(err) });
+          }
+          if (summaryText.trim()) {
+            const marker = createCompactBoundaryMarker({
+              summaryText: summaryText.trim(),
+              summarizedFromId: plan.summarizedFromId,
+              summarizedToId: plan.summarizedToId,
+              source: 'auto',
+              timestamp: Date.now(),
+            });
+            // Append-only: addMessage pushes to store + disk. No existing message
+            // is mutated — the #1 rewrite data-loss class cannot occur here. The
+            // in-flight assistant stub is finalized by id (assistantMsgId), so
+            // appending the marker as the new last message is safe.
+            useChatStore.getState().addMessage(conversationId, marker);
+            // The ephemeral 65% cache indexed pre-marker positions → now stale.
+            useChatStore.getState().clearContextCache(conversationId);
+            persistentCompactionDone = true;
+            logger.info('[persistentCompaction] landed compact-boundary marker', {
+              from: plan.summarizedFromId,
+              to: plan.summarizedToId,
+              summarizedCount: plan.middleMessages.length,
+            });
+          }
+        }
+      }
+
       const trimmedMessages = trimOldScreenshots(messagesForContext, usagePercent);
 
       // Step 3: Hard truncation as safety net
@@ -1604,8 +1685,12 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
                 getActiveApiKey(settingsForModel),
                 getActiveProvider(settingsForModel)?.baseUrl || undefined,
               )
+              // Use boundaryView (marker-free compact view if a marker exists,
+              // else raw history) so this recovery never re-feeds a marker to
+              // the LLM and reuses the existing summary instead of re-summarizing
+              // the full raw history.
               const compressionResult = await compressContextIfNeeded(
-                historyMessages,
+                boundaryView,
                 effectiveSystemPrompt,
                 contextWindowSize,
                 maxOutputTokens,
@@ -1638,7 +1723,9 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
           // Stage 2: Hard truncation as fallback
           if (!recovered) {
             logger.info('Attempting hard truncation recovery');
-            const emergencyRounds = identifyRounds(historyMessages);
+            // boundaryView is marker-free (compact view if a marker exists) so
+            // the truncated payload never contains a boundary marker.
+            const emergencyRounds = identifyRounds(boundaryView);
             if (emergencyRounds.length > 3) {
               const firstRound = emergencyRounds[0];
               const lastTwoRounds = emergencyRounds.slice(-2);

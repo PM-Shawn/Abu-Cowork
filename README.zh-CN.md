@@ -1,6 +1,6 @@
 <div align="center">
 
-**中文** | [English](README.md)
+[English](README.md) | **中文**
 
 <img src="website/assets/abu-avatar.png" width="120" height="120" style="border-radius: 24px" />
 

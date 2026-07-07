@@ -1,4 +1,4 @@
-**中文** | [English](SECURITY.md)
+[English](SECURITY.md) | **中文**
 
 # 安全策略
 

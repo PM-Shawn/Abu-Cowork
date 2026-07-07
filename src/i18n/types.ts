@@ -325,6 +325,12 @@ export interface TranslationDict {
       compacted: string;
       compactedManual: string;
     };
+    // /compact slash command toasts
+    compactCommand: {
+      done: string;
+      tooFew: string;
+      failed: string;
+    };
   };
 
   // Share (conversation export / import)

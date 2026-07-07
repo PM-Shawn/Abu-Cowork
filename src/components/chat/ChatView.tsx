@@ -12,6 +12,8 @@ import { useI18n } from '@/i18n';
 import MessageGroup from './MessageGroup';
 import CompactDivider from './CompactDivider';
 import { isCompactBoundary } from '@/core/context/compactBoundary';
+import { compactConversationManually } from '@/core/context/compactionService';
+import { useToastStore } from '@/stores/toastStore';
 import ChatInput from './ChatInput';
 import UserQuestionDock from './UserQuestionDock';
 import QueuedMessagesStrip from './QueuedMessagesStrip';
@@ -198,6 +200,19 @@ export default function ChatView() {
     }
 
     let convId = activeConv?.id;
+
+    if (text.trim() === '/compact') {
+      const res = await compactConversationManually(convId ?? '');
+      useToastStore.getState().addToast(
+        res.compacted
+          ? { type: 'success', title: t.chat.compactCommand.done }
+          : res.reason === 'too-few'
+            ? { type: 'info', title: t.chat.compactCommand.tooFew }
+            : { type: 'error', title: t.chat.compactCommand.failed },
+      );
+      return;
+    }
+
     const isNewConversation = !convId;
     if (!convId) {
       convId = createConversation(workspacePath);

@@ -338,6 +338,11 @@ const zhCN: TranslationDict = {
       compacted: '上下文已压缩',
       compactedManual: '上下文已压缩（手动）',
     },
+    compactCommand: {
+      done: '上下文已压缩',
+      tooFew: '对话较短，暂无需压缩',
+      failed: '压缩失败，请稍后重试',
+    },
   },
 
   share: {

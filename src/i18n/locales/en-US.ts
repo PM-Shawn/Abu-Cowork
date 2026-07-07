@@ -338,6 +338,11 @@ const enUS: TranslationDict = {
       compacted: 'Context compacted',
       compactedManual: 'Context compacted (manual)',
     },
+    compactCommand: {
+      done: 'Context compacted',
+      tooFew: 'Conversation is short — no compaction needed',
+      failed: 'Compaction failed — please try again',
+    },
   },
 
   share: {

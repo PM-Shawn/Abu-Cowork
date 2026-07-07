@@ -1,94 +1,77 @@
-# 免责声明 | Disclaimer
+[中文](DISCLAIMER.zh-CN.md) | **English**
 
-> Abu（阿布）是由个人开发者以 Apache 2.0 许可证发布的开源桌面软件。  
-> 使用本软件即表示你已阅读并接受以下条款。
->
-> Abu is an open-source desktop application released by an individual developer  
+# Disclaimer
+
+> Abu is an open-source desktop application released by an individual developer
 > under the Apache 2.0 License. By using this software, you agree to the terms below.
 
 ---
 
-## 一、软件现状 / Status
+## 1. Status
 
-本软件处于**积极迭代阶段**，按"现状（AS-IS）"提供，不附带任何明示或暗示的质量保证。  
-版本间可能存在破坏性变更，开发者不承诺功能的完整性或持续可用性。
-
-This software is in **active development** and is provided "AS IS" without any warranty  
-of any kind. Breaking changes may occur between releases.
+This software is in **active development** and is provided "AS IS" without any warranty of any kind, express or implied. Breaking changes may occur between releases, and the developer makes no commitment regarding feature completeness or continued availability.
 
 ---
 
-## 二、AI 输出免责 / AI Output
+## 2. AI Output
 
-Abu 通过调用第三方大语言模型（LLM）生成内容：
+Abu generates content by calling third-party large language models (LLMs):
 
-- AI 输出**仅供参考**，不构成专业建议（法律、医疗、财务、投资等）。
-- 模型可能产生错误、幻觉或偏见，**请自行核实所有关键输出**。
-- 对于因依赖 AI 输出而产生的任何后果，开发者不承担责任。
-
-AI-generated content is **for reference only** and does not constitute professional advice.  
-Always verify critical outputs independently.
+- AI output is **for reference only** and does not constitute professional advice (legal, medical, financial, investment, etc.).
+- Models may produce errors, hallucinations, or bias — **always verify critical outputs independently**.
+- The developer is not liable for any consequences arising from reliance on AI output.
 
 ---
 
-## 三、本地操作风险 / Local Operation Risks
+## 3. Local Operation Risks
 
-Abu 具备以下能力——**在授权前请仔细确认**：
+Abu has the following capabilities — **review carefully before authorizing them**:
 
-| 能力 | 风险提示 |
+| Capability | Risk |
 |---|---|
-| 文件读写 | 可读取 / 修改 / 删除本机文件，请自行备份重要数据 |
-| 命令执行 | 错误指令可能导致数据丢失或系统配置损坏 |
-| 电脑 & 浏览器操控 | 可操作系统界面，请勿在无人监督时授权高风险操作 |
-| 定时 & 自动任务 | 可在后台自动执行，你对所有已配置的自动化任务负全责 |
+| File read/write | Can read / modify / delete local files — back up important data yourself |
+| Command execution | Incorrect commands may cause data loss or damage system configuration |
+| Computer & browser control | Can operate the system UI — do not authorize high-risk actions while unattended |
+| Scheduled & automated tasks | Can run automatically in the background — you are fully responsible for every automation you configure |
 
-**以上操作产生的一切后果由用户自行承担。**  
-All consequences arising from the above operations are solely the user's responsibility.
-
----
-
-## 四、第三方服务与 API Key / Third-Party Services & API Keys
-
-- Abu **不提供任何 LLM 后端**。你的 AI 请求通过**你自己的 API Key** 直接发往第三方服务商（Anthropic、OpenAI 兼容端点等）。
-- 数据处理、隐私保护及费用均由各服务商条款约束，请阅读并遵守所用服务商的 ToS。
-- 开发者对你的 API 用量及由此产生的费用**不承担任何责任**。
-
-Abu provides **no LLM backend**. Your requests go directly to your configured provider  
-via your own API key. Usage costs and data handling are governed by that provider's terms.
+**All consequences arising from the above operations are solely the user's responsibility.**
 
 ---
 
-## 五、隐私与数据 / Privacy & Data
+## 4. Third-Party Services & API Keys
 
-- **本地优先**：对话记录、记忆、配置均存储在你的本机，不经过阿布的服务器。
-- IM 集成（飞书 / 钉钉 / 企微 / Slack 等）发送的内容经对应平台传输，适用其各自隐私政策。
-- 导出诊断包时，请在发送前检查并移除任何敏感信息。
-
-Conversations, memory, and settings are stored **locally on your device**,  
-not on any Abu server.
+- Abu provides **no LLM backend**. Your AI requests go directly to third-party providers (Anthropic, OpenAI-compatible endpoints, etc.) via **your own API key**.
+- Data handling, privacy, and costs are governed by each provider's terms — please read and comply with the Terms of Service of the providers you use.
+- The developer bears **no responsibility** for your API usage or the costs it incurs.
 
 ---
 
-## 六、使用限制 / Acceptable Use
+## 5. Privacy & Data
 
-你同意不将 Abu 用于：
-
-- 违反任何适用法律或法规的活动
-- 生成或传播虚假信息、诈骗内容或有害材料
-- 未经授权访问他人的计算机系统或数据
-- 侵犯他人隐私权或知识产权
+- **Local-first**: conversations, memory, and settings are stored **on your own device**, not on any Abu server.
+- Content sent through IM integrations (Feishu / DingTalk / WeCom / Slack, etc.) is transmitted via the respective platform and subject to its own privacy policy.
+- When exporting a diagnostic bundle, review and remove any sensitive information before sending it.
 
 ---
 
-## 七、责任限制 / Limitation of Liability
+## 6. Acceptable Use
 
-在适用法律允许的最大范围内，开发者对以下内容不承担责任：数据丢失、业务损失、利润损失，  
-以及因软件缺陷、AI 错误输出或自动化操作失误导致的任何直接、间接或附带损失。
+You agree not to use Abu for:
 
-本条款与 Apache 2.0 许可证第 7、8 条共同构成完整的责任限制。  
-This section supplements Apache 2.0 License Sections 7 and 8.
+- Any activity that violates applicable laws or regulations
+- Generating or spreading misinformation, fraudulent content, or harmful material
+- Unauthorized access to other people's computer systems or data
+- Infringing the privacy rights or intellectual property of others
 
 ---
 
-*最后更新 / Last updated: 2026-05-27*  
-*Abu (阿布) · Apache 2.0 · https://github.com/PM-Shawn/Abu-Cowork*
+## 7. Limitation of Liability
+
+To the maximum extent permitted by applicable law, the developer is not liable for any loss of data, business, or profit, nor for any direct, indirect, or incidental damages arising from software defects, erroneous AI output, or automation failures.
+
+This section supplements Sections 7 and 8 of the Apache 2.0 License, together forming the complete limitation of liability.
+
+---
+
+*Last updated: 2026-05-27*
+*Abu · Apache 2.0 · https://github.com/PM-Shawn/Abu-Cowork*

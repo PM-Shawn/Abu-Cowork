@@ -13,6 +13,14 @@ describe('modelRequestProcessors', () => {
     expect(b.reasoning_effort).toBeUndefined();
     expect(Array.isArray(b.tools)).toBe(true);
   });
+  it('responses-native-fallback: gpt-5.5 + tools on NON-openai host also drops reasoning_effort', () => {
+    // Regression: the original guard required isDirectOpenAIHost, so proxies/gateways
+    // would still send reasoning_effort and get a 400 from OpenAI's API.
+    const b = run({ model: 'gpt-5.5', reasoning_effort: 'high', tools: [{}] },
+      { modelId: 'gpt-5.5', requestHost: 'proxy.corp', hasTools: true, caps: undefined });
+    expect(b.reasoning_effort).toBeUndefined();
+    expect(Array.isArray(b.tools)).toBe(true);
+  });
   it('reasoning-support: declared supportsReasoning=false strips reasoning_effort', () => {
     const b = run({ reasoning_effort: 'high' },
       { modelId: 'x', requestHost: 'h', hasTools: false, caps: { supportsReasoning: false } });

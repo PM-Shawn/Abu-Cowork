@@ -40,8 +40,10 @@ export function normalizeChatCompletionsUrl(raw: string | undefined | null): str
  *
  * For openai-compatible: idempotently normalizes to .../chat/completions so a
  * user-pasted full URL (e.g. https://api.x/v1/chat/completions) is not
- * double-appended. Pass opts.useRawUrl to skip normalization entirely and use
- * the URL exactly as typed (for proxies with non-standard paths).
+ * double-appended. Pass opts.useRawUrl to skip the /chat/completions path
+ * normalization — the URL is used as-is apart from trimming whitespace and
+ * trailing slashes (via normalizeBaseUrl). Intended for proxies with non-standard
+ * endpoint paths where auto-appending /v1/chat/completions is wrong.
  */
 export function buildFullChatUrl(
   rawBaseUrl: string | undefined | null,

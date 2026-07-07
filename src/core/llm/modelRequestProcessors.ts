@@ -19,14 +19,13 @@ const EFFORT_ORDER = ['low', 'medium', 'high'] as const;
 function isGpt55(model: string): boolean {
   return /gpt-?5\.5/i.test(model);
 }
-function isDirectOpenAIHost(host: string): boolean {
-  return /(^|\.)openai\.com$/i.test(host) || /(^|\.)azure\.com$/i.test(host);
-}
-
 const responsesNativeFallback: ModelRequestProcessor = {
   name: 'responses-native-fallback',
   priority: 10,
-  matches: (_b, ctx) => ctx.hasTools && isGpt55(ctx.modelId) && isDirectOpenAIHost(ctx.requestHost),
+  // Host-agnostic: gpt-5.5 rejects reasoning_effort when tools are present on ANY
+  // host (direct OpenAI, proxy, gateway). The original fix (#86) guarded only
+  // api.openai.com — this restores protection for routed/proxied deployments.
+  matches: (_b, ctx) => ctx.hasTools && isGpt55(ctx.modelId),
   apply: (b) => { delete b.reasoning_effort; delete (b as { reasoning?: unknown }).reasoning; },
 };
 

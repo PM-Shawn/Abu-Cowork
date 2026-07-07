@@ -394,7 +394,8 @@ describe('OpenAICompatibleAdapter hang timeouts (abort on no progress)', () => {
     let settled = false;
     chatPromise.then(() => { settled = true; }, () => { settled = true; });
 
-    await vi.advanceTimersByTimeAsync(89_000);
+    // Connect phase shares the 180s hang ceiling (see heartbeat.ts).
+    await vi.advanceTimersByTimeAsync(179_000);
     expect(settled).toBe(false);
 
     await vi.advanceTimersByTimeAsync(2_000);
@@ -426,7 +427,8 @@ describe('OpenAICompatibleAdapter hang timeouts (abort on no progress)', () => {
     let settled = false;
     chatPromise.then(() => { settled = true; }, () => { settled = true; });
 
-    await vi.advanceTimersByTimeAsync(89_000);
+    // Idle phase (headers already arrived) uses the patient 180s window.
+    await vi.advanceTimersByTimeAsync(179_000);
     expect(settled).toBe(false);
 
     await vi.advanceTimersByTimeAsync(2_000);

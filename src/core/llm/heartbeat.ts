@@ -3,10 +3,10 @@
  *
  * Detects when a streaming connection stops sending data (network hang,
  * server stall) without closing the connection. Both Claude and OpenAI
- * adapters use this to trigger a timeout error after 90s of silence.
+ * adapters use this to trigger a timeout error after the silence window.
  *
  * Usage:
- *   const hb = createHeartbeat(90_000, () => emit('error', ...));
+ *   const hb = createHeartbeat(DEFAULT_STREAM_HANG_TIMEOUT_MS, () => emit('error', ...));
  *   hb.reset();           // Start / reset timer
  *   for await (chunk) {
  *     hb.reset();         // Reset on each data chunk
@@ -15,12 +15,16 @@
  */
 
 /**
- * Default idle/connect timeout (ms) for LLM streaming connections. 90s is the
- * CC-validated threshold — long enough for slow reasoning models to produce a
- * first token, short enough to detect a real network hang. Shared by both LLM
- * adapters for the connect/header phase and the inter-chunk idle timeout.
+ * Idle/connect timeout (ms) for LLM streaming connections. Raised from 90s to
+ * 180s: slow reasoning models can legitimately think for minutes before (or
+ * between) tokens, and the old 90s ceiling falsely killed those requests and
+ * triggered wasteful retries. Deliberately kept as ONE value shared by both the
+ * connect/header phase and the inter-chunk idle phase — a shorter connect
+ * ceiling would falsely kill non-streaming (Ollama+tools) generations and
+ * header-buffering proxies, which are exactly the slow cases we want to keep
+ * alive. Codex allows 300s here; 3min is enough for the office use case.
  */
-export const DEFAULT_STREAM_HANG_TIMEOUT_MS = 90_000;
+export const DEFAULT_STREAM_HANG_TIMEOUT_MS = 180_000;
 
 /**
  * Create a heartbeat timer that calls `onTimeout` if not reset within `timeoutMs`.

@@ -1,5 +1,13 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { createHeartbeat, anySignal } from './heartbeat';
+import { createHeartbeat, anySignal, DEFAULT_STREAM_HANG_TIMEOUT_MS } from './heartbeat';
+
+describe('stream hang timeout constant', () => {
+  it('is 180s — patient enough for slow reasoning models, not the old 90s ceiling', () => {
+    // Raised from 90s: slow reasoning models can think for minutes before/between
+    // tokens, and 90s falsely killed them and triggered wasteful retries.
+    expect(DEFAULT_STREAM_HANG_TIMEOUT_MS).toBe(180_000);
+  });
+});
 
 describe('heartbeat', () => {
   beforeEach(() => {

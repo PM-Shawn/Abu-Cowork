@@ -1,515 +1,515 @@
-# Abu 使用指南
+# Abu User Guide
 
-[English](User-Guide_EN.md) | **中文**
+**English** | [中文](User-Guide.zh-CN.md)
 
-本文档详细介绍 Abu 的各项功能及使用方法，帮助你快速上手并充分发挥阿布的能力。
+This guide covers all Abu features and how to use them effectively.
 
 ---
 
-## 目录
+## Table of Contents
 
-- [快速开始](#快速开始)
-- [对话与 Agent](#对话与-agent)
-- [工作区与记忆](#工作区与记忆)
+- [Quick Start](#quick-start)
+- [Chat & Agent](#chat--agent)
+- [Workspace & Memory](#workspace--memory)
 - [Projects](#projects-v0130)
-- [内置工具](#内置工具)
-- [Skill 技能系统](#skill-技能系统)（含**自进化 Skills**）
-- [MCP 工具协议](#mcp-工具协议)
-- [定时任务](#定时任务)
-- [触发器](#触发器)
-- [IM 频道](#im-频道)
-- [浏览器操控](#浏览器操控)
-- [电脑操控](#电脑操控)
-- [AI 服务配置](#ai-服务配置)
-- [联网搜索](#联网搜索)
-- [图片生成](#图片生成)
-- [沙箱与安全](#沙箱与安全)
-- [通知系统](#通知系统-v0130)
-- [行为感知](#行为感知)
-- [外观与主题](#外观与主题)
-- [实验室（Labs）](#实验室labs)
-- [常见使用场景](#常见使用场景)
-- [常见问题](#常见问题)
+- [Built-in Tools](#built-in-tools)
+- [Skill System](#skill-system) (incl. **Self-Evolving Skills**)
+- [MCP Protocol](#mcp-protocol)
+- [Scheduled Tasks](#scheduled-tasks)
+- [Triggers](#triggers)
+- [IM Channels](#im-channels)
+- [Browser Automation](#browser-automation)
+- [Computer Use](#computer-use)
+- [AI Services Configuration](#ai-services-configuration)
+- [Web Search](#web-search)
+- [Image Generation](#image-generation)
+- [Sandbox & Security](#sandbox--security)
+- [Notification System](#notification-system-v0130)
+- [Behavior Awareness](#behavior-awareness)
+- [Appearance & Theme](#appearance--theme)
+- [Labs](#labs)
+- [Common Use Cases](#common-use-cases)
+- [FAQ](#faq)
 
 ---
 
-## 快速开始
+## Quick Start
 
-### 1. 安装
+### 1. Install
 
-#### 下载
+#### Download
 
-从 [GitHub Releases](https://github.com/PM-Shawn/Abu-Cowork/releases) 下载对应平台的安装包：
+Download the installer for your platform from [GitHub Releases](https://github.com/PM-Shawn/Abu-Cowork/releases):
 
-| 平台 | 文件格式 |
-|------|----------|
+| Platform | File |
+|----------|------|
 | macOS (Apple Silicon) | `Abu_x.x.x_aarch64.dmg` |
 | macOS (Intel) | `Abu_x.x.x_x64.dmg` |
 | Windows | `Abu_x.x.x_x64-setup.exe` |
 
 #### macOS
 
-1. 双击 `.dmg` 文件，将 Abu 拖入 `Applications` 文件夹
-2. **首次打开会提示"已损坏，无法打开"**（因为未进行 Apple 签名），打开终端执行：
+1. Double-click the `.dmg` file and drag Abu into the `Applications` folder
+2. **First launch will show an "App is Damaged" warning** (because the app is not yet Apple-signed). Open Terminal and run:
    ```bash
    xattr -cr /Applications/Abu.app
    ```
-3. 再次双击打开 Abu 即可
+3. Double-click Abu again to open it
 
-> 如果 Abu 放在其他位置，将路径替换为实际路径。也可以输入 `xattr -cr ` 后把 Abu.app 拖入终端窗口自动填充。
+> If Abu is installed elsewhere, replace the path accordingly. You can also type `xattr -cr ` and drag Abu.app into the Terminal window to auto-fill the path.
 
-> 如果上述命令无效，从 **系统设置 → 隐私与安全性** 滚到底部，点「仍要打开」放行（macOS 15 Sequoia 起 `spctl --master-disable` 已被 Apple 移除，请走这个流程）。
+> If the command above doesn't work, go to **System Settings → Privacy & Security**, scroll to the bottom and click **"Open Anyway"**. Note: macOS 15 (Sequoia) and later removed `sudo spctl --master-disable`.
 
 #### Windows
 
-1. 双击 `.exe` 安装包，按提示完成安装
-2. **首次运行可能被 SmartScreen 拦截**（因为未进行代码签名），点击 **「更多信息」** → **「仍要运行」** 即可
+1. Double-click the `.exe` installer and follow the prompts
+2. **SmartScreen may block the first launch** (because the app is not yet code-signed). Click **"More info"** → **"Run anyway"**
 
-> 如果安装包下载后无法运行：右键 `.exe` → 属性 → 勾选底部「解除锁定」→ 确定，再双击安装。
+> If the installer won't run after downloading: right-click the `.exe` → Properties → check "Unblock" at the bottom → OK, then double-click to install.
 
-> Abu 是开源软件，安全提示是因为未购买商业签名证书，非应用本身问题。macOS 每次更新后需重新执行 `xattr -cr`，Windows 通常仅首次需要放行。
+> Abu is open-source software. The security warnings appear because the app hasn't been signed with a commercial certificate, not because there's anything wrong with the app. macOS requires re-running `xattr -cr` after each update; Windows usually only needs SmartScreen approval on first launch.
 
-### 2. 配置模型
+### 2. Configure a Model
 
-1. 打开 Abu，点击左下角 **设置图标**
-2. 进入 **「AI 服务」** 页面
-3. 选择 API 服务商（如 Anthropic、DeepSeek、通义千问等）
-4. 填入 API Key
-5. 选择要使用的模型
+1. Open Abu and click the **settings icon** at the bottom left
+2. Go to **"AI Services"**
+3. Select your API provider (Anthropic, DeepSeek, OpenAI, etc.)
+4. Enter your API Key
+5. Choose the model to use
 
-### 3. 开始对话
+### 3. Start Chatting
 
-回到主界面，在输入框中用自然语言描述你的需求，阿布会自动规划任务并执行。
-
----
-
-## 对话与 Agent
-
-Abu 的核心是 **Agent 自主执行模式**，不是简单的问答聊天。
-
-### 工作流程
-
-1. **理解需求** — 阿布分析你的指令，理解要完成的任务
-2. **制定计划** — 自主拆解任务步骤
-3. **调用工具** — 根据需要读写文件、执行命令、搜索信息
-4. **迭代完善** — 根据执行结果调整策略，直到任务完成
-5. **汇报结果** — 告诉你完成了什么、生成了哪些文件
-
-### 权限确认
-
-阿布在执行敏感操作时会请求你的确认：
-
-- **命令执行** — 首次运行 shell 命令前会询问是否允许
-- **文件写入** — 创建或修改文件前会展示变更内容
-- **路径访问** — 访问敏感目录时需要你授权
-
-你可以选择 **允许** 或 **拒绝**，也可以设置 **始终允许** 特定操作。
-
-### 权限模式（三档，可按对话切换）
-
-阿布的"要不要先问你"由 **权限模式** 决定。全局默认在 **设置 → 沙箱** 里设，输入框上方的 **权限模式芯片** 还能给当前对话临时切换（只影响这一个对话，不动全局默认）：
-
-| 模式 | 行为 |
-|------|------|
-| **请求批准**（默认） | 工作区内自由读写，越界写入和危险命令需要你确认 |
-| **替我审批** | 越界操作交给 AI 审核：放行低风险、拦截高风险、不确定才问你（可能误判，用在你能接受偶尔纠偏的场景） |
-| **完全自主** | 除系统红线（`rm -rf /`、敏感目录等）外全部自动执行，请在信任当前任务时使用 |
-
-> 提示：新对话继承全局默认；对话内切换是临时的，不会写回设置。
-
-### 计划模式（高风险任务先审批）
-
-当任务涉及 **删除 / 移动 / 覆盖 / 发送 / 安装 / push** 等高风险步骤时，阿布会先给出一份 **分步执行计划**，在聊天里显示成一张「执行计划 · N 步」卡片（琥珀色「等待你确认」标记），并在输入框上方弹出确认卡：
-
-- **批准执行** — 需要你**显式点击「确认执行」按钮**（只点选项不会直接放行，避免手滑批准），阿布随即开跑
-- **拒绝，重新规划** — 打回让阿布换个方案
-
-计划待批期间，阿布 **只能执行只读操作**（读文件、搜索、联网获取），写文件 / 跑命令等一律锁住，直到你批准。超过 10 分钟未响应会自动取消。
-
-### 交互式提问
-
-遇到需要你拍板的岔路（选方案、给参数、确认口径），阿布会在输入框上方弹出一张 **提问卡片**，而不是把问题埋在长段文字里：
-
-- 一次最多 **4 个问题**，每题 **2–4 个选项**
-- **单选**（圆点，选完自动进入下一题 / 提交）或 **可多选**（方块，手动点「下一步 / 提交」）
-- 每题都带 **「其他…」** 行，可以自己填自定义答案；也可以「跳过」
-- 键盘操作：↑↓ 选择、Enter 确认、←→ 翻页、Esc 取消
-- 回答后，你的选择会以只读卡片留在对话里；超过 10 分钟未选自动取消
-
-### 每对话固定模型
-
-用输入框的 **模型选择器** 切换模型时，选择会**同时固定到当前对话**：这条对话之后一直用这个模型，之后你在别处切换全局模型也不会串进来。对话第一次运行时会自动把当前模型钉到该对话，避免跑到一半模型被换掉。新对话默认继承全局 / 项目级默认模型。
-
-### 对话管理
-
-- 左侧边栏显示所有历史对话
-- 点击 **「新对话」** 开始新的任务
-- 支持对话搜索和删除
+Return to the main screen and describe what you need in natural language. Abu will plan and execute the task automatically.
 
 ---
 
-## 工作区与记忆
+## Chat & Agent
 
-工作区和记忆让阿布理解你的项目上下文和个人偏好，不用每次重复说明。
+Abu's core is the **autonomous Agent execution mode** — it's not a simple Q&A chatbot.
 
-### 工作区
+### Workflow
 
-工作区是阿布操作文件的根目录。设置后阿布可以读写该目录下的文件。
+1. **Understand** — Abu analyzes your request
+2. **Plan** — Breaks down the task into steps
+3. **Execute** — Reads/writes files, runs commands, searches for information
+4. **Iterate** — Adjusts strategy based on results
+5. **Report** — Tells you what was done and what files were created
 
-1. 点击右侧面板的 **工作区** 区域
-2. 选择项目文件夹
-3. 授权访问权限
+### Permission Prompts
 
-工作区下面有两个入口：**项目指令** 和 **项目记忆**。
+Abu asks for your confirmation before sensitive operations:
 
-### Memdir 记忆体系
+- **Command execution** — Asks before running shell commands for the first time
+- **File writes** — Shows the changes before creating or modifying files
+- **Path access** — Requests authorization for sensitive directories
 
-从 v0.9.x 起，Abu 的记忆采用 **文件化（Memdir）架构**：每条记忆是一个独立的 `.md` 文件，按主题命名；同目录下的 `MEMORY.md` 是索引文件，启动时自动注入对话上下文。
+You can **Allow**, **Deny**, or set **Always Allow** for specific operations.
 
-> 老版本的 `~/.abu/agents/abu/memory.md` 和 `{workspace}/.abu/MEMORY.md` 在首次启动新版后会自动迁移到新结构，无需手动操作。
+### Permission Modes (three levels, switchable per conversation)
 
-#### 1. 个人记忆（跨项目）
+How much Abu asks before acting is controlled by the **permission mode**. The global default is in **Settings → Sandbox**; the permission-mode chip above the composer lets you switch the current conversation without touching the global default:
 
-| 属性 | 说明 |
-|------|------|
-| **位置** | 设置 → 个人记忆（按工作区分组展示） |
-| **存储** | `~/.abu/memory/` 目录下多个 `.md` 文件 + `MEMORY.md` 索引 |
-| **范围** | 跨所有项目生效 |
-| **谁写** | 阿布在对话中自动积累，你也可以手动编辑 |
-| **内容** | 你的名字、沟通偏好、常用工具等个人信息 |
+| Mode | Behavior |
+|------|----------|
+| **Request Approval** (default) | Free read/write inside workspace; out-of-bounds writes and dangerous commands need your confirmation |
+| **Smart Review** | Out-of-bounds ops go to an AI reviewer: low-risk is allowed, high-risk is blocked, only ambiguous cases ask you (may occasionally be wrong — use when you can tolerate the odd correction) |
+| **Full Autonomy** | Everything runs automatically except hard system red-lines (`rm -rf /`, sensitive directories, etc.) — use only when you fully trust the current task |
 
-**示例**：当你说「记住我叫 Shawn」，阿布会写一个 `user_name.md` 到个人记忆目录，并在 `MEMORY.md` 加一条索引。下次新建对话时她仍然记得你是谁。
+> Tip: new conversations inherit the global default; switching within a conversation is temporary and does not write back to settings.
 
-#### 2. 项目记忆（按工作区隔离）
+### Plan Mode (high-risk tasks need approval)
 
-| 属性 | 说明 |
-|------|------|
-| **位置** | 设置 → 个人记忆 → 选择工作区分组 |
-| **存储** | `~/.abu/projects/<工作区路径键>/memory/` 目录 |
-| **范围** | 仅当前工作区 |
-| **谁写** | 阿布在对话中自动积累，你也可以手动编辑 |
-| **内容** | 项目的技术栈、近期决策、踩坑记录、外部资源指针等 |
+When a task involves high-risk steps like **delete / move / overwrite / send / install / push**, Abu first draws up a **step-by-step execution plan**, shown in chat as an "Execution Plan · N steps" card (amber "awaiting approval" marker) with a confirmation card above the composer:
 
-**新行为**：项目记忆现在统一存放在 **用户主目录下的 `~/.abu/projects/`**（按工作区路径哈希分子目录），不再写入 `{工作区}/.abu/MEMORY.md`。这样做的好处：
+- **Approve** — requires you to **explicitly click "Confirm & run"** (simply selecting an option does not fire it, to prevent accidental approval); Abu then starts executing
+- **Reject, re-plan** — sends it back so Abu can propose an alternative
 
-- 不会污染你的项目目录，也不会被误提交到 git
-- 跨设备同步更简单（只同步 `~/.abu/projects/` 即可）
-- 工作区路径很长时，自动用 DJB2 哈希截断，避免文件名超限
+While the plan is awaiting approval, Abu **can only perform read-only operations** (read files, search, fetch web content); writes and commands are locked until you approve. Auto-cancels after 10 minutes with no response.
 
-#### 3. 项目指令（手写规则）
+### Interactive Questions
 
-项目指令是你手写的、明确告诉阿布"必须遵守"的规则，优先级最高。
+At decision forks (choosing an approach, providing a parameter, confirming a detail), Abu pops a **question card** above the composer instead of burying the question in a long paragraph:
 
-| 属性 | 说明 |
-|------|------|
-| **位置 1** | `~/.abu/ABU.md` — 用户级规则（跨所有项目） |
-| **位置 2** | `{工作区}/.abu/ABU.md` — 项目级规则（仅当前工作区） |
-| **位置 3** | `{工作区}/.abu/rules/*.md` — 模块化规则（按字母序加载，最多 20 个文件） |
-| **谁写** | 你手动编写 |
-| **优先级** | 最高 — 阿布会严格遵守 |
+- Up to **4 questions** per card, **2–4 options** each
+- **Single-select** (radio — auto-advances to the next question / submits) or **multi-select** (checkbox — manual "Next / Submit")
+- Every question has an **"Other…"** row for a free-text custom answer, and a **"Skip"** option
+- Keyboard: ↑↓ to select, Enter to confirm, ←→ to page, Esc to cancel
+- After you answer, your choices remain as a read-only card in chat; auto-cancels after 10 minutes with no response
 
-**用户级 `~/.abu/ABU.md`** 是新增能力，用来放跨项目通用的规则，比如「commit message 用中英双语」「不要在没有 plan 的前提下做大改」等。
+### Per-Conversation Model Pin
 
-**项目级 `{工作区}/.abu/ABU.md`** 建议提交到 git，让团队成员共享同一套规则。点击右面板的 **「项目指令 · 点击添加」** 即可编辑，支持 Markdown 格式。
+When you pick a model in the composer's **model selector**, that choice is also **pinned to the current conversation**: the conversation continues using that model, and a later global model switch won't bleed in. On first run, the current global model is automatically pinned to the conversation. New conversations inherit the global / project-level default.
 
-**模块化规则**：对于大型项目，可以把规则拆到 `{工作区}/.abu/rules/` 下的多个 `.md` 文件，例如 `01-style.md`、`02-testing.md`、`03-deployment.md`，阿布会按字母序全部加载。
+### Conversation Management
 
-**项目指令示例**：
+- The left sidebar shows all conversation history
+- Click **"New Chat"** to start a fresh task
+- Search and delete conversations as needed
+
+---
+
+## Workspace & Memory
+
+Workspace and memory let Abu understand your project context and personal preferences without repeating yourself.
+
+### Workspace
+
+A workspace is the root directory Abu operates in. Once set, Abu can read and write files within it.
+
+1. Click the **Workspace** area in the right panel
+2. Select your project folder
+3. Grant access permissions
+
+Below the workspace, you'll see two entries: **Project Instructions** and **Project Memory**.
+
+### Memdir Architecture
+
+Starting in v0.9.x, Abu's memory uses a **file-based (Memdir) architecture**: each memory entry is a separate `.md` file named by topic, and a `MEMORY.md` index file in the same directory is automatically injected into every conversation as context.
+
+> Legacy `~/.abu/agents/abu/memory.md` and `{workspace}/.abu/MEMORY.md` are migrated automatically the first time you launch the new version — no manual action needed.
+
+#### 1. Personal Memory (cross-project)
+
+| Property | Description |
+|----------|-------------|
+| **Location** | Settings → Personal Memory (grouped by workspace) |
+| **Storage** | `~/.abu/memory/` directory containing multiple `.md` files + a `MEMORY.md` index |
+| **Scope** | Applies across all projects |
+| **Who writes** | Abu accumulates automatically; you can also edit manually |
+| **Content** | Your name, communication preferences, tools you use, etc. |
+
+**Example**: When you say "Remember my name is Shawn", Abu writes a `user_name.md` file to the personal memory directory and adds an entry to `MEMORY.md`. She'll remember you in future conversations.
+
+#### 2. Project Memory (per-workspace)
+
+| Property | Description |
+|----------|-------------|
+| **Location** | Settings → Personal Memory → workspace-grouped view |
+| **Storage** | `~/.abu/projects/<workspace-key>/memory/` directory |
+| **Scope** | Current workspace only |
+| **Who writes** | Abu accumulates automatically; you can also edit manually |
+| **Content** | Tech stack, recent decisions, gotchas, external resource pointers |
+
+**New behavior**: Project memory now lives under your **home directory at `~/.abu/projects/`** (sub-folder per workspace path hash) instead of inside `{workspace}/.abu/MEMORY.md`. Benefits:
+
+- Doesn't pollute your project directory or get accidentally committed to git
+- Easier to sync across machines (just sync `~/.abu/projects/`)
+- Long workspace paths are auto-truncated with a DJB2 hash to stay under filename length limits
+
+#### 3. Project Instructions (hand-written rules)
+
+Project instructions are rules **you write by hand** that Abu must follow. They have the highest priority.
+
+| Property | Description |
+|----------|-------------|
+| **Location 1** | `~/.abu/ABU.md` — User-level rules (cross-project) |
+| **Location 2** | `{workspace}/.abu/ABU.md` — Project-level rules (current workspace only) |
+| **Location 3** | `{workspace}/.abu/rules/*.md` — Modular rules (loaded alphabetically, max 20 files) |
+| **Who writes** | You write manually |
+| **Priority** | Highest — Abu follows these strictly |
+
+**User-level `~/.abu/ABU.md`** is a new capability for cross-project rules (e.g. "use bilingual commit messages", "don't make large changes without a plan first").
+
+**Project-level `{workspace}/.abu/ABU.md`** is recommended to commit to git so your team shares the same rules. Click **"Instructions · Click to add"** in the right panel to edit. Supports Markdown format.
+
+**Modular rules**: For large projects, split rules into multiple `.md` files under `{workspace}/.abu/rules/` (e.g. `01-style.md`, `02-testing.md`, `03-deployment.md`). Abu loads them all alphabetically.
+
+**Example project instructions**:
 
 ```markdown
-## 项目概述
-这是一个基于 React + Tailwind 的后台管理系统
+## Overview
+This is a React + Tailwind admin dashboard
 
-## 技术栈
-- 前端：React 18 + TypeScript + Tailwind CSS
-- 构建：Vite，运行 pnpm dev 启动开发
-- 测试：Vitest，运行 pnpm test
+## Tech Stack
+- Frontend: React 18 + TypeScript + Tailwind CSS
+- Build: Vite, run pnpm dev to start
+- Testing: Vitest, run pnpm test
 
-## 编码规范
-- 使用函数组件 + Hooks，不用 class 组件
-- 命名用 camelCase，组件用 PascalCase
-- 提交前运行 pnpm lint
+## Coding Standards
+- Use function components + Hooks, no class components
+- camelCase for variables, PascalCase for components
+- Run pnpm lint before committing
 ```
 
-### 记忆的优先级
+### Memory Priority
 
-当阿布处理你的请求时，这些信息按以下优先级注入：
+When processing your requests, Abu injects context in this order:
 
 ```
-用户级规则（~/.abu/ABU.md）
-  → 项目级规则（{工作区}/.abu/ABU.md）
-    → 模块化规则（{工作区}/.abu/rules/*.md）
-      → 项目记忆（自动积累）
-        → 个人记忆（自动积累）
+User-level rules (~/.abu/ABU.md)
+  → Project-level rules ({workspace}/.abu/ABU.md)
+    → Modular rules ({workspace}/.abu/rules/*.md)
+      → Project memory (auto-accumulated)
+        → Personal memory (auto-accumulated)
 ```
 
-手写的规则永远优先于自动积累的记忆；如果项目级规则和用户级规则有冲突，以项目级为准。
+Hand-written rules always take priority over auto-accumulated memory. If project-level and user-level rules conflict, project-level wins.
 
 ---
 
-## Projects（v0.13.0+）
+## Projects (v0.13.0+)
 
-**Projects 是对话聚合能力**：把一个工作区（workspace）升级成项目，之后新建的对话自动归属到项目下，相关对话汇总管理。
+**Projects** is a conversation-aggregation feature: promote a workspace into a Project, and subsequent new conversations automatically belong to that project — related chats stay organized together.
 
-### 什么是 Project
+### What is a Project
 
-Project = **一个 workspace** + **多个 conversation** + **一组项目级默认配置**。
+A Project = **one workspace** + **multiple conversations** + **a set of project-level defaults**.
 
-典型场景：你有一个"PRD 协作"文件夹，过去跟阿布开过 20 多个对话（写 PRD、画流程图、生成 PPT、发周报）。这些对话原本散落在侧边栏里切换很费劲。升级成 Project 后：
+Typical scenario: you have a "PRD Collaboration" folder where, over time, you've opened 20+ conversations with Abu — drafting PRDs, sketching flowcharts, generating slide decks, writing weekly reports. Originally these scatter across your sidebar. After promoting the workspace to a Project:
 
-- 侧边栏把它们聚合到"PRD 协作"这个项目节点下
-- 点项目名能看到本项目下所有对话
-- 项目级的默认模型、默认技能、默认 MCP 独立于全局设置
+- The sidebar groups them under a single "PRD Collaboration" project node
+- Clicking the project shows all its conversations in one list
+- Project-level defaults (model / skills / MCP) are independent from global settings
 
-### 创建项目
+### Creating a Project
 
-两种入口：
+Two entry points:
 
-1. **Welcome 页非阻塞提示**：已绑定 workspace 的 Welcome 页会提示"这个工作区要不要升级成项目？"。点"升级"即可，点"忽略"这个 workspace 永久不再提示
-2. **侧边栏手动升级**：侧边栏工作区节点右键 → "升级为项目"
+1. **Welcome page non-blocking hint**: when the Welcome page has a bound workspace, Abu hints "Would you like to promote this workspace to a Project?" — click "Promote" to upgrade, or "Dismiss" to silence the prompt for this workspace forever
+2. **Sidebar manual upgrade**: right-click a workspace node in the sidebar → "Promote to Project"
 
-### 老对话自动回填
+### Backfill of older conversations
 
-升级 Project 之前在同一 workspace 里开过的对话，不需要手动处理。阿布启动时会一次性扫一遍所有 conversation，把 `workspacePath` 匹配的对话自动回填 `projectId`，归到对应项目下。这个回填是**一次性**的，只在升级后的第一次启动跑。
+Conversations that already existed in the same workspace before the upgrade don't need manual handling. On next startup, Abu scans every conversation once and backfills `projectId` on those whose `workspacePath` matches. This backfill is **one-shot**, running only on the first launch after the upgrade.
 
-### 项目级配置
+### Project-level Configuration
 
-每个 Project 可以独立设置：
+Each Project can independently set:
 
-- **图标** — 项目节点显示的 emoji 图标
-- **默认模型** — 新对话默认模型（可覆盖全局默认）
-- **技能集** — 新对话默认加载哪些技能
-- **MCP 连接器** — 新对话默认连接哪些 MCP server
-- **自定义指令** — 项目级 prompt 补充（类似 `~/.abu/ABU.md` 但只作用于本项目）
+- **Icon** — the emoji shown on the project node
+- **Default model** — overrides the global default for new conversations in this project
+- **Skill set** — skills loaded by default for new conversations
+- **MCP connectors** — default MCP servers wired into new conversations
+- **Custom instructions** — project-level prompt supplement (analogous to `~/.abu/ABU.md` but scoped to this project)
 
-入口：侧边栏项目节点 → 右键 → "项目设置"。
+Entry: right-click the project node in the sidebar → "Project Settings".
 
 ### Projects vs Workspace
 
-二者维度不同：
+They live on different axes:
 
-- **Workspace** 是一个文件夹路径，决定"阿布能访问哪些文件"
-- **Project** 是聚合容器，决定"多个对话怎么组织 + 用什么默认配置"
+- **Workspace** is a folder path — it decides "which files Abu can access"
+- **Project** is an aggregation container — it decides "how multiple conversations are organized and which defaults apply"
 
-一个 workspace **最多对应一个 Project**（一对一）；一个 Project 下可以有无限个 conversation。
-
----
-
-## 内置工具
-
-Abu 自带多种系统工具，无需额外安装：
-
-### 文件操作
-
-| 工具 | 功能 |
-|------|------|
-| **读取文件** | 读取文本文件内容，PDF 自动提取文字 |
-| **写入文件** | 创建或覆盖文件 |
-| **编辑文件** | 精确查找替换，修改文件局部内容 |
-| **列出目录** | 列出文件夹下的所有文件和子目录 |
-| **查找文件** | 按名称模式查找文件（glob） |
-| **搜索文件** | 在文件内容中按关键词/正则搜索（基于 ripgrep） |
-
-### 系统操作
-
-| 工具 | 功能 |
-|------|------|
-| **运行命令** | 执行 shell 命令，支持后台运行和超时控制（受沙箱约束） |
-| **系统信息** | 获取系统平台、用户目录、桌面路径等信息 |
-| **发送通知** | 发送桌面通知提醒 |
-| **剪贴板** | 读写系统剪贴板内容 |
-| **电脑操控** | 截屏 + 鼠标 + 键盘控制（详见「电脑操控」章节） |
-
-### 网络与媒体
-
-| 工具 | 功能 |
-|------|------|
-| **联网搜索** | 调用 Bing/Brave/Tavily/SearXNG 搜索引擎或厂商内置搜索 |
-| **HTTP Fetch** | 下载网页 / 调用 REST API，**内置安全网关**：URL 长度上限 2000 字符、嵌入凭据拦截、云元数据端点（AWS/Azure/GCP/阿里云）拦截、10 MB 下载上限、60 秒超时；支持自动正文抽取（基于 Mozilla Readability） |
-| **图片生成** | 调用 DALL·E / 通义万相 / 智谱图片等服务生成图片 |
-| **图片处理** | 缩放、裁剪、压缩、格式转换 |
-
-### 高级功能
-
-| 工具 | 功能 |
-|------|------|
-| **管理定时任务** | 创建、查看、暂停、删除定时任务 |
-| **管理触发器** | 创建、查看、删除触发器 |
-| **管理文件监听** | 配置文件变更监听规则 |
-| **调用 Skill** | 动态调用已安装的技能 |
-| **委派给 Agent** | 启动子 Agent 执行独立子任务（最多 5 个并发） |
-| **记忆更新** | 写入个人记忆 / 项目记忆（Memdir） |
-| **记忆召回** | 按关键词检索历史记忆 |
-| **管理 MCP 服务器** | 搜索、安装、管理 MCP 服务器连接 |
-| **TODO 管理** | 在长任务中维护待办清单 |
-| **更新人格 (Soul)** | 调整 Abu 的全局人格设定 |
+A workspace **maps to at most one Project** (one-to-one); a Project can hold unlimited conversations.
 
 ---
 
-## Skill 技能系统
+## Built-in Tools
 
-Skill 是预定义的专业能力模块，让阿布在特定场景下表现更专业。
+Abu comes with built-in system tools — no extra installation needed:
 
-### 使用方式
+### File Operations
 
-1. 打开 **工具箱**（侧边栏图标）
-2. 浏览可用的 Skills 列表
-3. 点击 **「安装」** 启用所需技能
-4. 在对话中直接描述需求，阿布会自动调用对应技能
+| Tool | Description |
+|------|-------------|
+| **Read File** | Read text files; PDFs auto-extract text |
+| **Write File** | Create or overwrite files |
+| **Edit File** | Find-and-replace editing within files |
+| **List Directory** | List all files and subdirectories |
+| **Find Files** | Find files by name pattern (glob) |
+| **Search Files** | Search file contents by keyword/regex (ripgrep-based) |
 
-### 内置技能一览（共 28 个）
+### System Operations
 
-> 安装位置：`builtin-skills/<技能名>/SKILL.md`。每个技能都是一个独立目录，可以直接编辑。
+| Tool | Description |
+|------|-------------|
+| **Run Command** | Execute shell commands (subject to sandbox) with background mode and timeout |
+| **System Info** | Get platform, home directory, desktop path, etc. |
+| **Send Notification** | Send desktop notifications |
+| **Clipboard** | Read/write system clipboard |
+| **Computer Use** | Screenshot + mouse + keyboard control (see "Computer Use" section) |
 
-#### 文档与内容创作
+### Network & Media
 
-| 技能 | 标识 | 说明 |
-|------|------|------|
-| **文档协作** | `doc-coauthoring` | 结构化的文档写作流程，从需求收集到内容打磨 |
-| **内部沟通** | `internal-comms` | 周报、状态更新、晋升材料等内部文档模板 |
-| **品牌规范** | `brand-guidelines` | 应用 Anthropic 等品牌的官方配色与字体 |
+| Tool | Description |
+|------|-------------|
+| **Web Search** | Call Bing/Brave/Tavily/SearXNG or built-in provider search |
+| **HTTP Fetch** | Download web pages / call REST APIs with **built-in safety gateway**: 2000-char URL limit, embedded credential blocking, cloud metadata endpoint blocking (AWS/Azure/GCP/Alibaba), 10 MB download cap, 60-second timeout; supports automatic article extraction (Mozilla Readability) |
+| **Generate Image** | Call DALL·E / Tongyi Wanxiang / Zhipu Image and similar services |
+| **Process Image** | Resize, crop, compress, format conversion |
 
-#### Office 文件处理
+### Advanced
 
-| 技能 | 标识 | 说明 |
-|------|------|------|
-| **Word** | `docx` | 创建、编辑 Word 文档，支持表格、目录、页眉页脚、图片等 |
-| **Excel** | `xlsx` | 创建、分析电子表格，支持公式、图表、数据清洗 |
-| **PowerPoint** | `pptx` | 制作演示文稿，支持模板、布局、动画 |
-| **PDF** | `pdf` | 提取文字/表格、合并拆分、加水印、加密、OCR 等 |
-
-#### 视觉设计
-
-| 技能 | 标识 | 说明 |
-|------|------|------|
-| **前端设计** | `frontend-design` | 生成高质量的 Web UI 组件和页面 |
-| **画布设计** | `canvas-design` | 创建海报、视觉艺术品（PDF/PNG 格式） |
-| **算法艺术** | `algorithmic-art` | 用 p5.js 生成计算艺术，支持交互参数探索 |
-| **HTML 小组件** | `html-widget` | 单文件 HTML 小组件 / 微页面 |
-| **信息图** | `infographic` | 数据驱动的信息图设计 |
-| **Mermaid 图表** | `mermaid-diagram` | 流程图、时序图、架构图等 |
-| **SVG 图表** | `svg-diagram` | 自定义 SVG 图形 |
-| **Slack GIF** | `slack-gif-creator` | 为 Slack 优化的动画 GIF |
-| **主题工厂** | `theme-factory` | 10+ 套预设专业主题，可应用到任何文档/幻灯片/页面 |
-
-#### 浏览器自动化
-
-| 技能 | 标识 | 说明 |
-|------|------|------|
-| **Abu-Browser** | `Abu-Browser` | 通过原生 Chrome 桥接操控真实浏览器，**首次使用时自动安装扩展**。比 Playwright 更轻量，适合日常网页自动化（点击/填表/截图/抓取） |
-| **Web 应用测试** | `webapp-testing` | 用 Playwright 启动隔离环境测试本地 Web 应用 |
-
-#### 开发工具
-
-| 技能 | 标识 | 说明 |
-|------|------|------|
-| **MCP 服务器构建** | `mcp-builder` | 引导创建 MCP 服务器（TypeScript/Python） |
-| **Claude API** | `claude-api` | Claude API 的完整文档和代码示例（含 prompt caching 最佳实践） |
-| **Web Artifacts 构建** | `web-artifacts-builder` | 构建复杂的 React + Tailwind + shadcn/ui 多组件 artifact |
-
-#### 自动化
-
-| 技能 | 标识 | 说明 |
-|------|------|------|
-| **定时调度** | `schedule` | 创建和管理周期性定时任务 |
-| **触发器** | `trigger` | 创建事件驱动的触发器 |
-| **告警 SOP** | `alert-sop` | 告警处理标准流程模板 |
-
-#### 项目管理
-
-| 技能 | 标识 | 说明 |
-|------|------|------|
-| **技能创建器** | `skill-creator` | 创建、修改和测试自定义技能 |
-| **项目初始化** | `init` | 分析项目结构并生成 `.abu/ABU.md` 等配置规则文件 |
-| **Agent 创建** | `create-agent` | 创建具有特定工具和记忆的自定义 Agent |
-
-#### Agent 反思
-
-| 技能 | 标识 | 说明 |
-|------|------|------|
-| **自省** | `reflect` | 阿布跑完一段任务后回溯复盘，沉淀经验、发现可改进处 |
-
-### 自进化 Skills（v0.13.0+）
-
-除了手动安装和自定义，阿布从 v0.13.0 起会**主动提议把你教过的流程固化成技能**——下次类似任务不用重讲。
-
-#### 触发场景
-
-阿布会在这类情况自动评估要不要提议：
-
-- 跑完了**多轮复杂流程**（例如"导出飞书表格 → 格式化 → 上传 Slack"这种跨工具任务链）
-- 涉及**多个工具调用**且整体耗时较长
-- 工作流具备**可复用性**（逻辑清晰、输入输出明确）
-
-阿布觉得值得固化时，会在聊天里弹一张**技能提议卡片**。
-
-#### 完整流程：offer → 生成 → 审阅 → 采纳
-
-1. **Offer 阶段**：卡片显示阿布对这套流程的命名 + 一句话描述，三个选择：
-   - **生成草稿** — 阿布调 `skill-creator` 生成完整草稿（约 8-15 秒）
-   - **稍后再说** — 保留提议，下次这个对话再选
-   - **不用** — 拒绝，阿布记下"这类任务不提议"
-2. **草稿就绪**：生成完成后卡片变成"草稿就绪 · 查看"，点查看跳到工具箱审阅页
-3. **审阅阶段**：审阅页展示完整 SKILL.md + 触发条件 + 使用方式，三种操作：
-   - **直接采纳** — 技能上架，下次可用
-   - **编辑修改** — 改名 / 改描述 / 改内容再采纳
-   - **丢弃** — 进 `.trash`，24 小时内还能恢复
-4. **采纳后**：技能出现在"工具箱 → 技能 → 阿布沉淀"分类下，和内置技能一样可调用
-
-#### 调节提议频率
-
-Settings → 灵魂 → "阿布主动性" 三档：
-
-- **关** — 阿布不主动提议，只响应你明确指令"把这个存成技能"
-- **普通**（默认）— 按 2 小时内去重的节奏提议，同类任务不反复提
-- **陪伴者** — 更主动识别可复用流程
-
-#### 内容安全（Content Guard）
-
-所有自进化生成的草稿经过 **Content Guard** 扫描：120+ 条规则覆盖常见敏感信息（API Key、token、手机号、身份证号等），误带敏感内容的草稿在采纳前会被拦截。
-
-Settings → 安全 → Content Guard 可调整保护规则，或在白名单里加例外模式。默认开启。
-
-#### 修改历史与回滚
-
-每次对技能的改动（采纳、编辑、打 patch）都记录一条历史。工具箱技能详情页点"历史"可查看所有记录，支持 diff 对比和一键回滚。
-
-### 自定义技能
-
-你可以通过 **技能创建器** 创建自己的技能：
-
-1. 在对话中说「帮我创建一个新技能」
-2. 阿布会引导你定义技能名称、描述、触发条件和行为
-3. 技能以 Markdown 文件存储，可随时编辑
+| Tool | Description |
+|------|-------------|
+| **Manage Scheduled Tasks** | Create, view, pause, delete scheduled tasks |
+| **Manage Triggers** | Create, view, delete triggers |
+| **Manage File Watch** | Configure file change watch rules |
+| **Invoke Skill** | Dynamically call installed skills |
+| **Delegate to Agent** | Launch sub-agents for isolated subtasks (up to 5 concurrent) |
+| **Memory Update** | Write to personal/project memory (Memdir) |
+| **Memory Recall** | Search historical memory by keyword |
+| **Manage MCP Servers** | Search, install, and manage MCP server connections |
+| **TODO Management** | Maintain a task checklist during long workflows |
+| **Update Soul** | Adjust Abu's global personality settings |
 
 ---
 
-## MCP 工具协议
+## Skill System
 
-MCP（Model Context Protocol）让阿布连接各种外部服务和工具。
+Skills are pre-defined capability modules that make Abu more professional in specific scenarios.
 
-### 什么是 MCP？
+### How to Use
 
-MCP 是一个开放协议，让 AI 助手通过标准化接口调用外部工具。比如：
+1. Open the **Toolbox** (sidebar icon)
+2. Browse available Skills
+3. Click **"Install"** to enable a skill
+4. Describe your need in conversation — Abu auto-selects the right skill
 
-- 连接 **数据库**，查询和分析数据
-- 对接 **GitHub**，管理仓库和 Issue
-- 调用 **搜索引擎**，获取实时信息
-- 连接 **Slack/飞书**，发送消息
+### Built-in Skills (28 total)
 
-### 添加 MCP 服务器
+> Skills live at `builtin-skills/<skill-name>/SKILL.md`. Each skill is its own directory and can be edited directly.
 
-1. 打开 **工具箱** → **MCP 工具** 标签页
-2. 点击 **「添加 MCP 服务器」**
-3. 选择连接方式：
-   - **Stdio** — 本地命令行工具（最常用）
-   - **HTTP** — 远程 HTTP 服务
-4. 填入服务器配置（命令、参数、环境变量等）
-5. 点击 **「连接」**
+#### Documents & Content
 
-### MCP 配置示例
+| Skill | ID | Description |
+|-------|------|-------------|
+| **Doc Co-authoring** | `doc-coauthoring` | Structured document writing workflow |
+| **Internal Comms** | `internal-comms` | Templates for status reports, leadership updates, newsletters |
+| **Brand Guidelines** | `brand-guidelines` | Apply Anthropic and other brand color/typography guidelines |
 
-**连接文件系统服务器：**
+#### Office Files
+
+| Skill | ID | Description |
+|-------|------|-------------|
+| **Word** | `docx` | Create/edit Word docs with tables, TOC, headers, images |
+| **Excel** | `xlsx` | Create/analyze spreadsheets with formulas and charts |
+| **PowerPoint** | `pptx` | Build presentations with templates and layouts |
+| **PDF** | `pdf` | Extract text/tables, merge, split, watermark, encrypt, OCR |
+
+#### Visual Design
+
+| Skill | ID | Description |
+|-------|------|-------------|
+| **Frontend Design** | `frontend-design` | Generate high-quality web UI components and pages |
+| **Canvas Design** | `canvas-design` | Create posters and visual art (PDF/PNG) |
+| **Algorithmic Art** | `algorithmic-art` | Generate computational art with p5.js |
+| **HTML Widget** | `html-widget` | Single-file HTML widgets / micro pages |
+| **Infographic** | `infographic` | Data-driven infographic design |
+| **Mermaid Diagram** | `mermaid-diagram` | Flowcharts, sequence diagrams, architecture diagrams |
+| **SVG Diagram** | `svg-diagram` | Custom SVG graphics |
+| **Slack GIF** | `slack-gif-creator` | Animated GIFs optimized for Slack |
+| **Theme Factory** | `theme-factory` | 10+ preset professional themes for any document/slide/page |
+
+#### Browser Automation
+
+| Skill | ID | Description |
+|-------|------|-------------|
+| **Abu-Browser** | `Abu-Browser` | Drives a real browser via native Chrome bridge, **auto-installs the extension on first use**. Lighter than Playwright; great for daily web automation (clicks, forms, screenshots, scraping) |
+| **Webapp Testing** | `webapp-testing` | Use Playwright to test local web apps in an isolated environment |
+
+#### Developer Tools
+
+| Skill | ID | Description |
+|-------|------|-------------|
+| **MCP Builder** | `mcp-builder` | Guide for creating MCP servers (TypeScript/Python) |
+| **Claude API** | `claude-api` | Complete docs and code examples for the Claude API (with prompt caching best practices) |
+| **Web Artifacts Builder** | `web-artifacts-builder` | Build complex React + Tailwind + shadcn/ui multi-component artifacts |
+
+#### Automation
+
+| Skill | ID | Description |
+|-------|------|-------------|
+| **Schedule** | `schedule` | Create and manage recurring scheduled tasks |
+| **Trigger** | `trigger` | Create event-driven triggers |
+| **Alert SOP** | `alert-sop` | Standard operating procedure templates for alert handling |
+
+#### Project Management
+
+| Skill | ID | Description |
+|-------|------|-------------|
+| **Skill Creator** | `skill-creator` | Create, modify, and test custom skills |
+| **Project Init** | `init` | Analyze project structure and generate config files like `.abu/ABU.md` |
+| **Create Agent** | `create-agent` | Build custom agents with specific tools and memory |
+
+#### Agent Reflection
+
+| Skill | ID | Description |
+|-------|------|-------------|
+| **Reflect** | `reflect` | After finishing a task, Abu reviews and reflects to distill lessons and spot improvements |
+
+### Self-Evolving Skills (v0.13.0+)
+
+Beyond manual install and custom authoring, Abu from v0.13.0 **proactively suggests crystallizing your ad-hoc flows into reusable skills** — so you don't have to re-explain the same thing next time.
+
+#### When Abu offers
+
+Abu evaluates whether to suggest a skill in situations like:
+
+- You completed a **multi-step complex flow** (e.g. a cross-tool task chain like "export Lark spreadsheet → format → upload to Slack")
+- The task involved **multiple tool calls** and ran for a while
+- The workflow is **reusable** (clear logic, well-defined inputs/outputs)
+
+When Abu thinks it's worth crystallizing, it drops a **skill-proposal card** in chat.
+
+#### Full flow: offer → draft → review → accept
+
+1. **Offer stage**: card shows Abu's proposed name + one-line description for the flow; three actions:
+   - **Generate draft** — Abu runs `skill-creator` to author a full draft (~8-15 s)
+   - **Later** — keep the proposal, decide on this conversation's next turn
+   - **Not useful** — reject; Abu remembers "don't suggest this class of task again"
+2. **Draft ready**: when generation finishes, the card becomes "Draft ready · Review"; clicking jumps to the Toolbox skill-review page
+3. **Review stage**: the Toolbox page displays the full SKILL.md + triggers + usage. Three actions:
+   - **Accept directly** — skill goes live, available next time
+   - **Edit** — rename / rewrite description / adjust content, then accept
+   - **Discard** — sent to `.trash`, recoverable within 24 hours
+4. **After accept**: the skill appears under Toolbox → Skills → "Abu's Deposit" category, callable like any built-in
+
+#### Tuning offer frequency
+
+Settings → Soul → "Abu Proactivity" has three levels:
+
+- **Off** — Abu never offers spontaneously; only responds to explicit "save this as a skill" requests
+- **Normal** (default) — Abu offers at a pace bounded by a 2-hour dedup window; the same class of task isn't re-offered
+- **Companion** — Abu is more eager to spot reusable flows
+
+#### Content safety (Content Guard)
+
+All self-evolved drafts go through **Content Guard**: 120+ rules catching common sensitive patterns (API keys, tokens, phone numbers, ID numbers, etc.). Drafts that leak sensitive content are blocked before acceptance.
+
+Settings → Security → Content Guard lets you adjust the rules or add allow-list exceptions. Enabled by default.
+
+#### History & revert
+
+Every mutation to a skill (accept, edit, patch) is recorded. From the skill's detail page in the Toolbox, click "History" to view all revisions with unified diff and one-click revert.
+
+### Custom Skills
+
+Use the **Skill Creator** to build your own:
+
+1. Say "Help me create a new skill" in conversation
+2. Abu guides you through defining the skill's name, triggers, and behavior
+3. Skills are stored as Markdown files and can be edited directly
+
+---
+
+## MCP Protocol
+
+MCP (Model Context Protocol) lets Abu connect to external services and tools.
+
+### What is MCP?
+
+MCP is an open protocol that lets AI assistants call external tools through a standardized interface:
+
+- Connect to **databases** for querying and analysis
+- Integrate with **GitHub** for repo and issue management
+- Use **search engines** for real-time information
+- Connect to **Slack/messaging** for sending messages
+
+### Adding MCP Servers
+
+1. Open **Toolbox** → **MCP Tools** tab
+2. Click **"Add MCP Server"**
+3. Choose connection type:
+   - **Stdio** — Local command-line tool (most common)
+   - **HTTP** — Remote HTTP service
+4. Enter server config (command, args, environment variables)
+5. Click **"Connect"**
+
+### Configuration Examples
+
+**Filesystem server:**
 ```json
 {
   "command": "npx",
@@ -518,7 +518,7 @@ MCP 是一个开放协议，让 AI 助手通过标准化接口调用外部工具
 }
 ```
 
-**连接 GitHub 服务器：**
+**GitHub server:**
 ```json
 {
   "command": "npx",
@@ -529,955 +529,946 @@ MCP 是一个开放协议，让 AI 助手通过标准化接口调用外部工具
 }
 ```
 
-### MCP 发现
+### MCP Discovery
 
-你也可以在对话中让阿布帮你搜索和安装 MCP 服务器：
+Ask Abu to search and install MCP servers for you:
 
 ```
-帮我搜索有没有连接 Notion 的 MCP 服务器
+Search for an MCP server that connects to Notion
 ```
 
 ---
 
-## 定时任务
+## Scheduled Tasks
 
-让阿布按计划自动执行重复性工作。
+Let Abu automatically run recurring work on a schedule.
 
-### 创建定时任务
+### Creating Tasks
 
-**方法一：对话创建**
-
-直接告诉阿布你想定时做什么：
+**Method 1: Via conversation**
 
 ```
-每天早上 9 点帮我搜索最新的 AI 新闻，写一份日报发到桌面
+Every morning at 9 AM, search for the latest AI news and create a daily digest on my desktop
 ```
 
 ```
-每周一早上 10 点，帮我整理上周的会议笔记，生成周报
+Every Monday at 10 AM, organize last week's meeting notes into a weekly report
 ```
 
-**方法二：定时任务面板**
+**Method 2: Task panel**
 
-1. 点击侧边栏的 **「自动化」** → **「定时任务」** 标签页
-2. 点击 **「创建任务」**
-3. 设置频率（每小时 / 每天 / 每周 / 自定义）
-4. 填写任务描述
-5. 保存
+1. Click **"Automation"** in the sidebar → **"Scheduled Tasks"** tab
+2. Click **"Create Task"**
+3. Set frequency (hourly / daily / weekly / custom)
+4. Enter task description
+5. Save
 
-### 频率选项
+### Frequency Options
 
-| 频率 | 说明 |
-|------|------|
-| 每小时 | 每小时的指定分钟执行 |
-| 每天 | 每天指定时间执行 |
-| 每周 | 每周指定日期和时间执行 |
-| 工作日 | 周一至周五指定时间执行 |
-| 手动 | 仅手动触发，不自动执行 |
+| Frequency | Description |
+|-----------|-------------|
+| Hourly | Runs every hour |
+| Daily | Runs at a specified time each day |
+| Weekly | Runs on a specified day and time each week |
+| Custom | Custom interval |
 
-### 推送到 IM 频道
+### Managing Tasks
 
-定时任务完成后，除了桌面通知，还可以将结果推送到 IM 频道：
+- **Pause/Resume** — Temporarily pause a task
+- **Edit** — Modify description or frequency
+- **Delete** — Permanently remove a task
+- **View History** — See results of each execution
 
-1. 在任务编辑页面底部找到 **「推送到 IM 频道」**
-2. 选择已配置的 IM 频道（需先在 设置 → IM 频道 中添加）
-3. 填写推送目标：
-   - **推送到群** — 填入群聊 ID（多个用逗号分隔）
-   - **推送到个人** — 填入用户 ID（多个用逗号分隔）
+### Push to IM Channels
 
-> 至少填写一个推送目标（群或个人），否则不会推送。
+After a scheduled task completes, the result can be pushed to IM channels in addition to the desktop notification:
 
-### 管理定时任务
+1. In the task editor, find **"Push to IM channel"** at the bottom
+2. Pick a configured IM channel (set up in Settings → IM Channels first)
+3. Fill in the push targets:
+   - **Push to group** — group chat IDs (comma-separated for multiple)
+   - **Push to user** — user IDs (comma-separated for multiple)
 
-- **暂停/恢复** — 临时暂停某个任务
-- **编辑** — 修改任务描述或频率
-- **删除** — 永久删除任务
-- **查看历史** — 查看每次执行的结果
+> At least one push target (group or user) is required, otherwise nothing will be pushed.
 
-### 注意事项
+### Important Notes
 
-- 定时任务在 **无人值守** 模式下运行，不会弹出确认对话框
-- 已授权的路径和命令会自动放行，未授权的敏感操作会自动跳过
-- 任务完成后会发送 **桌面通知**，也可配置推送到 IM 频道
-- Abu 需要保持运行才能执行定时任务
-- 可绑定特定 Skill，让任务在指定技能的上下文中执行
+- Scheduled tasks run in **unattended mode** — no confirmation dialogs
+- Previously authorized paths/commands are auto-allowed; unauthorized sensitive operations are auto-skipped
+- Desktop **notifications** are sent on completion; you can also push to IM channels
+- Abu must be running for scheduled tasks to execute
+- Tasks can be bound to a specific Skill so they run in that skill's context
 
 ---
 
-## 触发器
+## Triggers
 
-触发器是事件驱动的自动化机制。当外部事件发生时，阿布自动执行预设的任务，无需人工干预。
+Triggers are event-driven automation. When an external event happens, Abu automatically runs a preset task — no human in the loop.
 
-### 触发方式
+### Trigger Types
 
-| 类型 | 说明 |
-|------|------|
-| **HTTP 接收** | 阿布暴露一个本地 HTTP 端点，外部系统 POST 请求即可触发 |
-| **文件变更** | 监听指定文件或目录的创建/修改/删除事件 |
-| **定时触发** | 按固定间隔（秒）周期性触发 |
-| **IM 消息源** | 监听已连接的 IM 频道消息，收到消息时触发 |
+| Type | Description |
+|------|-------------|
+| **HTTP Receive** | Abu exposes a local HTTP endpoint; an external system can POST to trigger the task |
+| **File Change** | Watch a file or directory for create/modify/delete events |
+| **Cron / Interval** | Periodic execution at fixed intervals (in seconds) |
+| **IM Message** | Listen to a configured IM channel and trigger when a message arrives |
 
-### 创建触发器
+### Creating a Trigger
 
-**方法一：手动创建**
+**Method 1: Manual creation**
 
-1. 点击侧边栏的 **「自动化」** → **「监听事件」** 标签页
-2. 点击 **「新建监听」**
-3. 填写触发器配置，点击保存
+1. Click **"Automation"** in the sidebar → **"Triggers"** tab
+2. Click **"New Trigger"**
+3. Fill in the trigger configuration and save
 
-**方法二：让阿布帮你创建**
+**Method 2: Let Abu create it**
 
-点击 **「让阿布帮你创建」**，用自然语言描述你需要的触发器，阿布会帮你生成配置。
+Click **"Let Abu create one"**, describe the trigger you need in natural language, and Abu will generate the config.
 
-**方法三：使用模板**
+**Method 3: Templates**
 
-系统提供三个预置模板：
-- **告警 SOP** — HTTP 接收 + 关键词过滤，适合告警处理
-- **日志监控** — 文件监听，适合日志文件分析
-- **定期巡检** — 定时触发，适合周期性检查报告
+Three preset templates are provided:
+- **Alert SOP** — HTTP receive + keyword filter, ideal for alert handling
+- **Log Monitor** — File watcher, good for log file analysis
+- **Periodic Inspection** — Cron timer, good for recurring health checks
 
-### 配置说明
+### Configuration
 
-#### 基本信息
+#### Basic
 
-- **触发器名称**（必填）— 名称不能重复
-- **描述**（可选）— 触发器用途说明
+- **Name** (required) — must be unique
+- **Description** (optional) — what this trigger does
 
-#### 执行指令
+#### Execution Instructions
 
-填写事件触发后阿布要执行的任务指令。可使用 `$EVENT_DATA` 引用事件数据，阿布会在运行时替换为实际的事件内容。
+The instructions Abu runs when the trigger fires. Use `$EVENT_DATA` to reference the event payload — Abu replaces it with the actual event content at runtime.
 
-**示例：**
+**Example:**
 
 ```
-收到告警信息：$EVENT_DATA
-请分析告警内容，判断严重程度，给出处理建议。
+Received an alert: $EVENT_DATA
+Analyze the alert content, judge severity, and provide handling suggestions.
 ```
 
-#### 触发条件
+#### Trigger Conditions
 
-| 条件 | 说明 |
-|------|------|
-| **所有事件** | 每个事件都触发执行 |
-| **关键词匹配** | 事件数据包含指定关键词时才触发（多个关键词用逗号分隔） |
-| **正则匹配** | 事件数据匹配正则表达式时才触发 |
+| Condition | Description |
+|-----------|-------------|
+| **All events** | Every event triggers execution |
+| **Keyword match** | Only triggers when the event data contains specific keywords (comma-separated for multiple) |
+| **Regex match** | Only triggers when event data matches a regex |
 
-可选择指定 **匹配字段**，只对事件数据中的特定 JSON 字段进行匹配。
+You can also specify a **match field** to apply matching only to a specific JSON field of the event payload.
 
-#### 防抖（去重）
+#### Debounce
 
-开启后，在设定的时间窗口内（默认 5 分钟），相同内容的事件只触发一次，防止重复执行。
+When enabled, identical events within a configurable window (default 5 minutes) only trigger once — prevents duplicate execution.
 
-#### 静默时段
+#### Quiet Hours
 
-开启后，在设定的时间范围内（如 22:00 ~ 08:00）不触发执行，避免深夜打扰。
+When enabled, the trigger doesn't fire during a configured time range (e.g. 22:00 ~ 08:00) — avoids late-night disturbance.
 
-#### 文件变更配置
+#### File Change Configuration
 
-选择「文件变更」触发方式时：
+When using "File Change":
 
-- **监听路径**（必填）— 要监听的文件或目录路径
-- **事件类型** — 选择监听创建、修改、删除中的一种或多种
-- **文件匹配模式**（可选）— glob 模式，如 `*.log`，只有匹配的文件才触发
+- **Watch path** (required) — file or directory to watch
+- **Event types** — pick one or more of create / modify / delete
+- **File pattern** (optional) — glob pattern (e.g. `*.log`); only matching files trigger
 
-#### 定时触发配置
+#### Interval Configuration
 
-选择「定时触发」时：
+When using "Interval":
 
-- **间隔（秒）** — 执行间隔，最小 10 秒，默认 60 秒
+- **Interval (seconds)** — minimum 10s, default 60s
 
-#### IM 消息源配置
+#### IM Source Configuration
 
-选择「IM 消息源」时：
+When using "IM Message":
 
-- **选择频道** — 从已配置的 IM 频道中选择（需先在 设置 → IM 频道 中添加）
-- **监听范围** — 仅 @提及 / 仅私聊 / 所有消息
-- **群聊 ID**（可选）— 只监听指定群聊
-- **发送者匹配**（可选）— 只响应指定用户的消息
+- **Channel** — pick from configured IM channels
+- **Listen scope** — mention-only / DM-only / all messages
+- **Group ID** (optional) — only listen to a specific group
+- **Sender filter** (optional) — only respond to specific user IDs
 
-### 结果推送
+### Result Push
 
-触发器执行完成后，可以将结果推送到外部：
+After a trigger executes, the result can be pushed to external destinations:
 
-**Webhook 推送：**
+**Webhook push:**
 
-| 平台 | 说明 |
-|------|------|
-| D-Chat | D-Chat 群机器人 Webhook |
-| 飞书 | 飞书自定义机器人 Webhook |
-| 钉钉 | 钉钉群机器人 Webhook |
-| 企业微信 | 企微群机器人 Webhook |
-| Slack | Slack Incoming Webhook |
-| HTTP | 自定义 HTTP 端点（可配置请求头） |
+| Platform | Description |
+|----------|-------------|
+| D-Chat | D-Chat group bot webhook |
+| Lark/Feishu | Lark custom bot webhook |
+| DingTalk | DingTalk group bot webhook |
+| WeCom | WeCom group bot webhook |
+| Slack | Slack incoming webhook |
+| HTTP | Custom HTTP endpoint (with headers) |
 
-**IM 频道推送：**
+**IM channel push:** Select a configured IM channel and specify a group or DM target.
 
-选择已配置的 IM 频道，指定推送到群聊或私聊。
+**Extract mode:**
 
-**提取模式：**
+| Mode | Description |
+|------|-------------|
+| Last message | Only push Abu's final reply |
+| Full conversation | Push the entire conversation transcript |
+| Custom template | Use template variables to customize the push body |
 
-| 模式 | 说明 |
-|------|------|
-| 最后一条消息 | 只推送阿布的最终回复 |
-| 完整对话 | 推送完整的对话记录 |
-| 自定义模板 | 使用模板变量自定义推送内容 |
+### Managing Triggers
 
-### 管理触发器
+- **Enable/Disable** — toggle a trigger on or off
+- **View endpoint** — for HTTP triggers, the POST endpoint URL is shown after saving
+- **Execution history** — see status of every fire (running / completed / errored / filtered / debounced)
+- **Delete** — remove triggers you don't need
 
-- **启用/禁用** — 通过开关控制触发器是否生效
-- **查看端点** — HTTP 触发器保存后可查看 POST 端点地址
-- **执行历史** — 查看每次触发的状态（执行中/已完成/错误/已过滤/已去重）
-- **删除** — 删除不再需要的触发器
+### Permission Model
 
-### 权限模型
+Triggers run unattended via a **four-tier capability system**:
 
-触发器在无人值守模式下自动执行，通过四级能力等级控制操作范围：
-
-| 等级 | 说明 |
-|------|------|
-| **只读** | 只能读取文件、联网获取信息，不能做任何修改 |
-| **安全工具** | 可读写工作区内的文件，只能执行安全命令（默认） |
-| **完整权限** | 可执行所有操作（受沙箱限制） |
-| **自定义** | 精细配置允许的命令、路径和工具白名单 |
+| Tier | Description |
+|------|-------------|
+| **Read-only** | Only file reads and web fetches; no modifications allowed |
+| **Safe tools** | Can read/write workspace files and run safe commands (default) |
+| **Full access** | All operations allowed (still subject to OS sandbox) |
+| **Custom** | Fine-grained allowlist of commands, paths, and tools |
 
 ---
 
-## IM 频道
+## IM Channels
 
-IM 频道让阿布成为你的团队机器人，在飞书、钉钉等 IM 中 @阿布即可对话使用。
+IM Channels turn Abu into your team bot — just @Abu in your chat to interact.
 
-### 支持的平台
+### Supported Platforms
 
-| 平台 | 说明 |
-|------|------|
-| **飞书** | 字节跳动 Lark/飞书 |
-| **钉钉** | 阿里钉钉 |
-| **企业微信** | 腾讯企业微信 |
+| Platform | Description |
+|----------|-------------|
+| **Lark/Feishu** | ByteDance's Lark/Feishu (with WebSocket long connection support) |
+| **DingTalk** | Alibaba's DingTalk |
+| **WeCom** | Tencent's WeCom |
 | **Slack** | Slack |
 | **D-Chat** | D-Chat |
 
-### 添加 IM 频道
+### Adding an IM Channel
 
-1. 打开 **设置** → **IM 频道**
-2. 点击 **「添加频道」**
-3. 填写配置：
-   - **频道名称** — 自定义显示名称（如「工作飞书机器人」）
-   - **平台** — 选择 IM 平台
-   - **App ID** — 在 IM 平台开发者后台创建应用获取
-   - **App Secret** — 应用密钥
-   - **能力等级** — 控制阿布可以执行的操作范围
-4. 保存后，复制显示的 **Webhook URL**
-5. 将 Webhook URL 填入 IM 平台开发者后台的 **事件回调地址**
-6. 打开频道开关启用
+1. Open **Settings** → **IM Channels**
+2. Click **"Add channel"**
+3. Fill in the configuration:
+   - **Channel name** — display name (e.g. "Work Lark Bot")
+   - **Platform** — select an IM platform
+   - **App ID** — created in the IM platform's developer portal
+   - **App Secret** — the corresponding secret
+   - **Capability tier** — controls what operations Abu can perform
+4. After saving, copy the displayed **Webhook URL**
+5. Paste the Webhook URL into the IM platform's developer portal as the **event callback URL**
+6. Toggle the channel switch to enable it
 
-### 能力等级
+### Capability Tiers
 
-| 等级 | 说明 |
-|------|------|
-| **仅对话** | 只能聊天，不调用任何工具 |
-| **只读** | 可读取文件、联网获取信息，不能修改 |
-| **安全工具** | 可读写授权文件，执行安全命令（默认） |
-| **完整权限** | 可执行所有操作（受沙箱限制） |
+| Tier | Description |
+|------|-------------|
+| **Chat-only** | Pure chat, no tool calls |
+| **Read-only** | File reads and web fetches; no modifications |
+| **Safe tools** | Read/write authorized files, run safe commands (default) |
+| **Full access** | All operations (still subject to sandbox) |
 
-### 会话管理
+### Session Management
 
-每个频道可配置：
+Each channel can configure:
 
-| 设置 | 说明 | 默认值 |
-|------|------|--------|
-| **响应模式** | 仅 @提及响应 / 所有消息响应 | 仅 @提及 |
-| **会话超时** | 对话上下文保持时间（分钟） | 可配置 1~1440 |
-| **最大轮次** | 每个会话的最大对话轮次 | 可配置 1~500 |
+| Setting | Description | Default |
+|---------|-------------|---------|
+| **Response mode** | Mention-only / All messages | Mention-only |
+| **Session timeout** | Conversation context retention (minutes) | Configurable 1–1440 |
+| **Max turns** | Maximum dialogue turns per session | Configurable 1–500 |
 
-### 访问控制
+### Access Control
 
-通过 **允许的用户** 列表控制哪些人可以使用阿布：
+Use the **Allowed users** list to control who can interact with Abu:
 
-- 为空时所有人都可以交互
-- 添加用户 ID 后，只有列表中的用户可以使用
+- Empty list = anyone can interact
+- After adding user IDs, only listed users can use Abu
 
-### 连接状态
+### Connection Status
 
-每个频道显示连接状态指示灯：
+Each channel shows a connection status indicator:
 
-- 🟢 绿色 — 已连接
-- 🔴 红色 — 连接错误
-- ⚫ 灰色 — 未连接
+- 🟢 Green — Connected
+- 🔴 Red — Connection error
+- ⚫ Gray — Disconnected
 
 ---
 
-## 浏览器操控
+## Browser Automation
 
-Abu 提供 **两套** 浏览器自动化方案，按场景选用：
+Abu offers **two** browser automation paths — pick by use case:
 
-| 方案 | 适用场景 | 启动方式 |
-|------|---------|---------|
-| **Abu-Browser**（推荐） | 日常网页操作（点击/填表/截图/抓取），轻量、与你日常浏览器无缝衔接 | 安装 `Abu-Browser` 技能，首次使用时阿布会引导你**自动安装 Chrome 扩展** |
-| **Webapp Testing** | 本地 Web 应用的端到端测试，需要隔离的浏览器环境 | 安装 `webapp-testing` 技能，使用 Playwright |
+| Path | Best for | Setup |
+|------|----------|-------|
+| **Abu-Browser** (recommended) | Daily web tasks (clicks/forms/screenshots/scraping) — lightweight, integrates with your everyday browser | Install the `Abu-Browser` skill; first use will guide you to **auto-install the Chrome extension** |
+| **Webapp Testing** | End-to-end testing of local web apps with an isolated environment | Install the `webapp-testing` skill, uses Playwright |
 
-### 使用 Abu-Browser（推荐）
+### Using Abu-Browser (recommended)
 
-1. 在 **工具箱 → 技能** 中安装 `Abu-Browser` 技能
-2. 第一次让阿布做浏览器相关任务时，它会引导你**自动安装 Chrome 扩展**
-3. 之后只需对话描述任务即可，例如：
+1. Install the `Abu-Browser` skill from **Toolbox → Skills**
+2. The first time you give Abu a browser-related task, it will guide you to **auto-install the Chrome extension**
+3. After that, just describe what you want, e.g.:
    ```
-   打开知乎，搜索"AI 桌面助手"，把前 5 条回答标题发给我
+   Open Wikipedia, search for "AI desktop assistants", and send me the first 5 result titles
    ```
 
-> Abu-Browser 通过原生桥接和 Chrome 扩展通信，**直接操控你日常使用的浏览器**，免去 Playwright 单独启动浏览器的开销。
+> Abu-Browser uses a native bridge to talk to the Chrome extension, so it **drives the browser you actually use every day** — no extra Playwright browser overhead.
 
-### 手动安装 Chrome 扩展（可选）
+### Manually installing the Chrome extension (optional)
 
-如果你想从源码手动安装：
+If you want to install from source manually:
 
-1. **安装 Chrome 扩展**
-   - 打开 Chrome，进入 `chrome://extensions/`
-   - 开启「开发者模式」
-   - 点击「加载已解压的扩展程序」，选择 `abu-chrome-extension` 目录
+1. **Install the Chrome Extension**
+   - Open Chrome → `chrome://extensions/`
+   - Enable "Developer mode"
+   - Click "Load unpacked" → select the `abu-chrome-extension` directory
 
-2. **启动 Bridge 服务**
-   - Abu 会自动管理 Browser Bridge 的启动和连接
+2. **Bridge Service**
+   - Abu manages the Browser Bridge connection automatically
 
-### 功能
+### Capabilities
 
-| 功能 | 说明 |
-|------|------|
-| **页面快照** | 获取当前页面的结构化信息（元素、文本、状态） |
-| **元素点击** | 点击页面上的按钮、链接等元素 |
-| **表单填写** | 自动填写输入框、下拉框等表单控件 |
-| **页面导航** | 打开网址、前进后退、切换标签页 |
-| **截图** | 对当前页面截图 |
-| **等待条件** | 等待元素出现/消失、URL 变化等 |
-| **执行脚本** | 在页面中执行 JavaScript 代码 |
+| Feature | Description |
+|---------|-------------|
+| **Page Snapshot** | Get structured info about the current page |
+| **Click Elements** | Click buttons, links, and other elements |
+| **Fill Forms** | Auto-fill input fields, dropdowns, etc. |
+| **Navigate** | Open URLs, go back/forward, switch tabs |
+| **Screenshot** | Capture the current page |
+| **Wait Conditions** | Wait for elements to appear/disappear, URL changes |
+| **Run Scripts** | Execute JavaScript on the page |
 
-### 使用示例
-
-```
-打开百度，搜索"Abu AI 助手"，把搜索结果前 5 条整理成表格
-```
+### Examples
 
 ```
-打开我的 GitHub 仓库，检查有没有新的 Issue，把内容整理发给我
+Open Google, search for "Abu AI assistant", and compile the top 5 results into a table
+```
+
+```
+Open my GitHub repo, check for new Issues, and summarize them for me
 ```
 
 ---
 
-## 电脑操控
+## Computer Use
 
-让阿布直接操控你的电脑 — 截屏、点击、打字、滚动，就像有人在帮你操作一样。Abu 的电脑操控内置了多重防护，避免误操作敏感应用或触发系统级危险按键。
+Let Abu directly control your computer — screenshot, click, type, scroll — like having someone help you operate the machine. Abu's Computer Use ships with multi-layered safeguards to prevent accidental control of sensitive apps or system-level dangerous keys.
 
-### 开启方式
+### Enabling Computer Use
 
-1. 打开 **设置** → **偏好**
-2. 找到 **「电脑操控」**，打开开关
-3. 首次开启时，阿布会测试截屏权限
+1. Open **Settings** → **Preferences**
+2. Find **"Computer Use"** and toggle it on
+3. On first enable, Abu will test screen recording permission
 
-### 系统权限（macOS）
+### System Permissions (macOS)
 
-macOS 需要授予两个权限：
+macOS requires two permissions:
 
-| 权限 | 用途 | 设置路径 |
-|------|------|---------|
-| **屏幕录制** | 截屏功能 | 系统设置 → 隐私与安全性 → 屏幕录制与系统音频 |
-| **辅助功能** | 键鼠控制 | 系统设置 → 隐私与安全性 → 辅助功能 |
+| Permission | Purpose | Path |
+|-----------|---------|------|
+| **Screen Recording** | Screenshot capability | System Settings → Privacy & Security → Screen Recording |
+| **Accessibility** | Mouse/keyboard control | System Settings → Privacy & Security → Accessibility |
 
-> Windows 通常不需要额外权限。
+> Windows usually doesn't need extra permissions.
 
-### 支持的操作
+### Supported Operations
 
-| 操作 | 说明 | 参数 |
-|------|------|------|
-| **截屏** | 截取当前屏幕，可选裁剪区域 | `x, y, width, height`（可选） |
-| **点击** | 在指定坐标点击 | `x, y`，按钮（左/右/中/双击） |
-| **移动** | 移动鼠标到指定位置 | `x, y` |
-| **滚动** | 在指定位置滚动 | `x, y`，方向（上/下/左/右），幅度 |
-| **拖拽** | 从一个点拖到另一个点（带平滑动画） | 起点和终点坐标 |
-| **打字** | 输入文本（自动处理中文输入） | 文本内容 |
-| **按键** | 按下键盘快捷键 | 按键名，修饰键（ctrl/shift/alt/meta） |
-| **等待** | 等待界面加载 | 时长（毫秒，最长 10 秒） |
-| **检查权限** | 检查 macOS 屏幕录制 / 辅助功能权限是否授予 | 无 |
+| Operation | Description | Parameters |
+|-----------|-------------|------------|
+| **Screenshot** | Capture screen, with optional region | `x, y, width, height` (optional) |
+| **Click** | Click at coordinates | `x, y`, button (left/right/middle/double) |
+| **Move** | Move mouse to coordinates | `x, y` |
+| **Scroll** | Scroll at coordinates | `x, y`, direction (up/down/left/right), magnitude |
+| **Drag** | Drag from one point to another (with smooth animation) | start and end coordinates |
+| **Type** | Type text (handles CJK input) | text content |
+| **Press Key** | Press keyboard combo | key name + modifiers (ctrl/shift/alt/meta) |
+| **Wait** | Wait for UI to settle | duration in ms (max 10s) |
+| **Check Permissions** | Check macOS Screen Recording / Accessibility permission status | none |
 
-### 安全防护（重点）
+### Safety Guards (important)
 
-Abu 的电脑操控不是裸奔的 `enigo` 调用，而是在 Rust 后端做了多层守护：
+Abu's Computer Use is not a raw `enigo` call — it's wrapped in multiple guards in the Rust backend:
 
-#### 1. 敏感应用拦截
+#### 1. Sensitive App Blocking
 
-15+ 个内置敏感应用黑名单，**当前活跃应用是其中之一时，所有键鼠操作直接被拒绝**：
+15+ apps are on a built-in blocklist. **When the active app is on the list, all mouse/keyboard operations are rejected**:
 
-- **系统级**：钥匙串访问、系统设置、活动监视器、终端、iTerm 2、Warp、VS Code（防止意外改代码）
-- **通讯/会议**：微信、消息、Mail、Outlook、Slack、飞书、钉钉、Discord、Zoom
+- **System-level**: Keychain Access, System Settings, Activity Monitor, Terminal, iTerm 2, Warp, VS Code (to prevent accidental code edits)
+- **Communication/Meeting**: WeChat, Messages, Mail, Outlook, Slack, Lark, DingTalk, Discord, Zoom
 
-> 想让 Abu 在某个被拦的应用里跑任务？需要先从设置里手动放行（暂未开放，规划中）。
+> Want Abu to operate inside a blocked app? You'd need to manually allow it in settings (UI not yet exposed, planned).
 
-#### 2. 危险按键拦截
+#### 2. Dangerous Key Interception
 
-以下组合键会被直接拒绝执行，避免阿布意外退出登录或锁屏：
+The following key combos are rejected outright to prevent Abu from accidentally logging out or locking the screen:
 
-- `Cmd+Q` / `Cmd+Shift+Q`（退出 / 注销）
-- `Alt+Meta+Esc`（强制退出对话框）
-- `Cmd+Tab`（应用切换）
-- `Ctrl+Meta+Q`（macOS 锁屏）
-- `Cmd+Shift+Delete`（清空废纸篓）
-- `Alt+F4`（Windows 关闭窗口）
-- `Ctrl+Alt+Delete`（Windows 安全菜单）
-- `Meta+L`（Windows 锁屏）
-- `Alt+Tab`（Windows 应用切换）
+- `Cmd+Q` / `Cmd+Shift+Q` (Quit / Logout)
+- `Alt+Meta+Esc` (Force Quit dialog)
+- `Cmd+Tab` (App switcher)
+- `Ctrl+Meta+Q` (macOS lock screen)
+- `Cmd+Shift+Delete` (Empty trash)
+- `Alt+F4` (Windows close window)
+- `Ctrl+Alt+Delete` (Windows secure menu)
+- `Meta+L` (Windows lock screen)
+- `Alt+Tab` (Windows app switch)
 
-修饰键命名做了归一化（`cmd→meta`、`control→ctrl`、`option→alt`），避免拼写差异绕过黑名单。
+Modifier names are normalized (`cmd→meta`, `control→ctrl`, `option→alt`) so spelling differences can't bypass the blocklist.
 
-#### 3. 会话级窗口管理
+#### 3. Session-level Window Management
 
-- 进入电脑操控会话时，**Abu 主窗口和状态浮层在整个会话期间隐藏**，避免遮挡目标界面
-- macOS 上使用 `CGWindowListCreateImage` 在截屏时排除 Abu 窗口和浮层，**无需真正隐藏窗口也不会出现在截图里**
-- 会话结束自动恢复显示
+- When entering a Computer Use session, **the Abu main window and status overlay are hidden for the entire session** to avoid blocking the target UI
+- On macOS, screenshots use `CGWindowListCreateImage` to exclude Abu's window and overlay — they **don't appear in screenshots without actually hiding the window**
+- The session end automatically restores window visibility
 
-#### 4. 会话超时与步数熔断
+#### 4. Session Timeout & Step Limit
 
-| 限制 | 默认值 |
-|------|------|
-| **单次会话最长时长** | 5 分钟 |
-| **单次会话最大步数** | 30 步 |
+| Limit | Default |
+|-------|---------|
+| **Max session duration** | 5 minutes |
+| **Max steps per session** | 30 |
 
-超过任一限制会强制结束会话，避免阿布陷入死循环或长时间占用键鼠。
+Exceeding either limit forces the session to end — prevents runaway loops or prolonged keyboard/mouse hijacking.
 
-#### 5. 状态浮层 + 全局停止快捷键
+#### 5. Status Overlay + Global Stop Shortcut
 
-- 屏幕边缘有半透明 **状态浮层**，实时显示当前步数和动作
-- 全局快捷键随时停止当前会话（在设置中可配置）
-- 会话期间可随时点击屏幕边缘的 **停止按钮窗口** 中断阿布
+- A semi-transparent **status overlay** at the screen edge shows the current step count and action in real time
+- A configurable global keyboard shortcut stops the session at any time
+- A **Stop button window** is also available at the screen edge during the session
 
-### 使用示例
-
-```
-帮我打开系统偏好设置，把壁纸换成深色模式
-```
-
-> ⚠️ 上面这个例子在新版会被「敏感应用拦截」挡住（系统设置在黑名单里）。需要这种场景时，建议先手动打开目标应用，再让阿布完成具体操作。
+### Examples
 
 ```
-打开 Finder，在桌面上新建一个叫"工作"的文件夹
+Open System Preferences and switch the wallpaper to dark mode
+```
+
+> ⚠️ This example will be blocked by sensitive-app blocking in the new version (System Settings is on the blocklist). For scenarios like this, manually open the target app first, then let Abu do the specific operations.
+
+```
+Open Finder and create a folder called "Work" on the desktop
 ```
 
 ```
-帮我整理桌面：把所有 PDF 拖到 ~/Documents/PDFs/ 文件夹
+Tidy up my desktop: drag all PDFs into ~/Documents/PDFs/
 ```
 
-### 工作原理
+### How It Works
 
-- 阿布先截屏「看到」当前屏幕（自动排除 Abu 自身窗口）
-- 根据截屏内容定位要操作的元素
-- 执行点击/打字等操作后，**自动再次截屏**验证结果
-- 所有坐标基于截屏图像（最大宽度 1280px），自动转换为实际屏幕坐标
-- 拖拽带平滑动画，避免被某些应用识别为「瞬间传送」而忽略
+- Abu first takes a screenshot to "see" the current screen (auto-excludes Abu's own window)
+- Locates the target element from the screenshot
+- Executes click/type and **automatically takes another screenshot** to verify the result
+- All coordinates are in the screenshot image space (max width 1280px) and auto-converted to actual screen coordinates
+- Drags use a smooth animation to avoid being treated as "instant teleport" by some apps
 
-### 注意事项
+### Notes
 
-- 默认关闭，需用户手动开启
-- 敏感应用 + 危险按键的拦截规则在 Rust 后端，**前端无法绕过**
-- 截屏保存在工作区目录（未设置时保存到桌面）
-- 5 分钟超时是硬上限，无法在 UI 修改，需要更长时间请拆成多个会话
-- 随时可在设置中关闭，立即生效
+- Disabled by default; user must explicitly enable
+- Sensitive app + dangerous key blocking lives in the Rust backend — **frontend cannot bypass**
+- Screenshots are saved in the workspace directory (or desktop if no workspace)
+- The 5-minute timeout is a hard cap and cannot be changed in the UI; for longer work, split into multiple sessions
+- Can be disabled at any time in settings, takes effect immediately
 
 ---
 
-## AI 服务配置
+## AI Services Configuration
 
-Abu 支持多种 LLM 服务商，并提供 **对话**、**联网搜索**、**图片生成** 三大 AI 能力。
+Abu supports multiple LLM providers and offers three core AI capabilities: **Chat**, **Web Search**, and **Image Generation**.
 
-打开 **设置** → **AI 服务** 可以看到当前配置状态。
+Open **Settings** → **AI Services** to view your current configuration.
 
-### 支持的服务商
+### Supported Providers
 
-| 服务商 | 内置联网搜索 | 说明 |
-|--------|:---:|------|
-| **Anthropic** | ✅ | Claude 系列模型，推荐使用 |
-| **火山引擎** | ✅ | 字节跳动云服务，豆包模型 |
-| **阿里百炼** | ✅ | 阿里云大模型平台，通义千问等 |
-| **智谱 AI** | ✅ | 清华技术团队，GLM 系列 |
-| **Moonshot** | ✅ | Kimi 背后的模型 |
-| **OpenAI** | — | GPT 系列模型 |
-| **硅基流动** | — | 多模型聚合平台 |
-| **DeepSeek** | — | 性价比高，支持推理模型 |
-| **七牛云** | — | 多模型聚合，15+ 模型 |
-| **OpenRouter** | — | 海外模型聚合路由 |
-| **MiniMax** | — | MiniMax M2.7/M2.5 系列模型 |
-| **Ollama** | — | 本地 Ollama 服务，免 API Key |
-| **本地模型** | — | LM Studio 等其他本地推理引擎 |
-| **自定义 API** | — | 任意 OpenAI/Anthropic 兼容接口 |
+| Provider | Built-in Web Search | Notes |
+|----------|:---:|-------|
+| **Anthropic** | ✅ | Claude models, recommended |
+| **Volcengine** | ✅ | ByteDance cloud, Doubao models |
+| **Bailian (Alibaba)** | ✅ | Alibaba Cloud, Qwen and more |
+| **Zhipu AI** | ✅ | Tsinghua's GLM series |
+| **Moonshot** | ✅ | Kimi's underlying model |
+| **OpenAI** | — | GPT series |
+| **SiliconFlow** | — | Multi-model aggregation |
+| **DeepSeek** | — | Cost-effective, reasoning models |
+| **Qiniu** | — | Multi-model aggregation, 15+ models |
+| **OpenRouter** | — | International model router |
+| **MiniMax** | — | MiniMax M2.7/M2.5 series |
+| **Ollama** | — | Local Ollama service, no API key needed |
+| **Local Models** | — | LM Studio and other local inference engines |
+| **Custom API** | — | Any OpenAI/Anthropic-compatible endpoint |
 
-> **✅** 表示服务商内置支持联网搜索，选择后可直接使用，无需额外配置。
-> **—** 表示服务商不内置此能力，但你可以通过「自定义配置」单独接入。
+> **✅** = Provider natively supports web search — works out of the box.
+> **—** = Not built-in, but can be configured separately via custom settings.
 
-### 模型配置步骤
+### Model Configuration Steps
 
-1. 打开 **设置** → **AI 服务**
-2. 选择 **服务商**（如 Anthropic、DeepSeek、阿里百炼等）
-3. 填写 **API Key**
-4. 选择 **模型**（每个服务商提供不同的可选模型）
-5. （可选）展开 **高级选项** 调整温度参数
+1. Open **Settings** → **AI Services**
+2. Select a **Provider** (e.g., Anthropic, DeepSeek, Bailian)
+3. Enter your **API Key**
+4. Choose a **Model** (each provider offers different models)
+5. (Optional) Expand **Advanced Options** to adjust temperature
 
-### 自定义 API 配置
+### Custom API Configuration
 
-选择「自定义 API」服务商时，需额外填写：
+When using the "Custom API" provider:
 
-- **API 地址** — 服务的 Base URL
-- **模型名称** — 模型 ID
-- **API 协议** — `OpenAI Compatible` 或 `Anthropic`
+- **API URL** — The service's Base URL
+- **Model Name** — The model ID
+- **API Format** — `OpenAI Compatible` or `Anthropic`
 - **API Key**
 
-### 本地模型配置
+### Local Model Setup
 
-使用 Ollama 等本地模型：
+For Ollama or similar local models:
 
-**Ollama**（推荐）：
-1. 服务商直接选择 **「Ollama」**，无需填写 API Key
-2. API 地址默认 `http://localhost:11434`
-3. 模型名称填入本地模型名（如 `llama3`）
+**Ollama** (recommended):
+1. Select **"Ollama"** as provider — no API key needed
+2. Base URL defaults to `http://localhost:11434`
+3. Enter your local model name (e.g., `llama3`)
 
-**其他本地引擎**（LM Studio 等）：
-1. 服务商选择 **「本地模型」** 或 **「自定义 API」**
-2. API 地址填入对应服务的 Base URL
-3. API Key 填任意值
-4. 模型名称填入本地模型名
+**Other local engines** (LM Studio, etc.):
+1. Select **"Local Models"** or **"Custom API"** as provider
+2. Base URL: your engine's URL
+3. API Key: any value
+4. Model name: your local model name
 
-### 高级参数
+### Advanced Parameters
 
-| 参数 | 说明 | 默认值 |
-|------|------|--------|
-| **温度 (Temperature)** | 控制回复的随机性，越低越确定 | 0.7 |
-| **扩展思维 (Extended Thinking)** | 让模型在回答前进行深度推理（支持的模型） | 关闭 |
-| **思维预算** | 扩展思维的 Token 预算 | 10000 |
-
----
-
-## 联网搜索
-
-联网搜索让阿布能够获取互联网上的最新信息。
-
-### 两种使用方式
-
-#### 方式一：使用服务商内置搜索（推荐）
-
-如果你选择的服务商支持内置联网搜索（如 Anthropic、阿里百炼、智谱等），在 **AI 服务** 设置中会显示绿色 ✅ 标记。
-
-- 默认 **已开启**，可通过「使用内置搜索」开关切换
-- 无需额外配置，直接在对话中使用
-
-**试试：**
-```
-搜索今天的 AI 领域最新新闻
-```
-
-#### 方式二：配置自定义搜索服务
-
-如果服务商不支持内置搜索，或你想使用指定的搜索引擎，可以配置自定义搜索：
-
-1. 在 **AI 服务** 设置中，找到「联网搜索」区域
-2. 点击展开 **「配置自定义搜索」**
-3. 选择搜索服务商并填入配置
-
-### 支持的搜索服务商
-
-| 搜索服务商 | 需要 | 说明 |
-|-----------|------|------|
-| **Brave Search** | API Key | 免费额度充足，推荐使用。[申请 API Key](https://brave.com/search/api/) |
-| **Tavily** | API Key | 专为 AI 优化的搜索引擎。[申请 API Key](https://tavily.com/) |
-| **Bing Search** | API Key | 微软必应搜索 API。[申请 API Key](https://www.microsoft.com/en-us/bing/apis/bing-web-search-api) |
-| **SearXNG** | Base URL | 自托管元搜索引擎，无需 API Key。[部署文档](https://docs.searxng.org/) |
-
-### 搜索工具参数
-
-阿布在调用搜索时可以控制以下参数：
-
-| 参数 | 说明 | 默认值 |
-|------|------|--------|
-| `query` | 搜索关键词 | （必填） |
-| `count` | 返回结果数量 | 8（最多 20） |
-| `market` | 搜索语言/地区 | zh-CN |
-| `freshness` | 时效过滤 | 不限（可选 Day/Week/Month） |
+| Parameter | Description | Default |
+|-----------|-------------|---------|
+| **Temperature** | Controls response randomness (lower = more deterministic) | 0.7 |
+| **Extended Thinking** | Enables deep reasoning before answering (supported models only) | Off |
+| **Thinking Budget** | Token budget for extended thinking | 10000 |
 
 ---
 
-## 图片生成
+## Web Search
 
-阿布可以根据文字描述生成图片。
+Web search allows Abu to fetch up-to-date information from the internet.
 
-### 两种使用方式
+### Two Ways to Use
 
-#### 方式一：使用服务商内置图片生成
+#### Option 1: Built-in Provider Search (Recommended)
 
-如果你选择的服务商支持内置图片生成（如阿里百炼、智谱、OpenAI、硅基流动），在 **AI 服务** 设置中会显示绿色 ✅ 标记，可直接使用。
+If your provider supports built-in web search (Anthropic, Bailian, Zhipu, etc.), a green ✅ badge appears in **AI Services** settings.
 
-#### 方式二：配置自定义图片生成
+- **Enabled by default** — toggle with the "Use built-in search" switch
+- No extra configuration needed
 
-如果服务商不支持内置图片生成，可以单独配置：
-
-1. 在 **AI 服务** 设置中，找到「图片生成」区域
-2. 点击展开 **「配置自定义图片生成」**
-3. 填写以下信息：
-
-| 配置项 | 说明 |
-|--------|------|
-| **API Key** | 图片生成服务的 API Key（如使用 OpenAI 服务商，可自动复用主 API Key） |
-| **API 地址** | 图片生成服务的 Base URL（留空则默认使用 OpenAI） |
-| **模型** | 选择 `DALL-E 3`、`DALL-E 2` 或输入自定义模型名 |
-
-### 图片生成参数
-
-| 参数 | 说明 | 可选值 |
-|------|------|--------|
-| `prompt` | 图片描述 | （必填） |
-| `size` | 图片尺寸 | `1024x1024`（默认）、`1792x1024`、`1024x1792` |
-| `style` | 风格 | `vivid`（生动，默认）、`natural`（自然） |
-| `save_path` | 保存路径 | 留空则自动保存到工作目录 |
-
-### 使用示例
-
+**Try it:**
 ```
-生成一张赛博朋克风格的城市夜景图片
+Search for the latest AI news today
 ```
 
-```
-帮我画一个可爱的卡通猫咪头像，1024x1024
-```
+#### Option 2: Configure Custom Search
 
-```
-生成一张横版海报背景图，主题是科技与未来，尺寸 1792x1024
-```
+If your provider doesn't support built-in search, or you prefer a specific search engine:
+
+1. In **AI Services** settings, find the "Web Search" section
+2. Expand **"Configure Custom Search"**
+3. Select a search provider and enter credentials
+
+### Supported Search Providers
+
+| Provider | Requires | Notes |
+|----------|----------|-------|
+| **Brave Search** | API Key | Generous free tier, recommended. [Get API Key](https://brave.com/search/api/) |
+| **Tavily** | API Key | AI-optimized search engine. [Get API Key](https://tavily.com/) |
+| **Bing Search** | API Key | Microsoft Bing Search API. [Get API Key](https://www.microsoft.com/en-us/bing/apis/bing-web-search-api) |
+| **SearXNG** | Base URL | Self-hosted meta search engine, no API key needed. [Docs](https://docs.searxng.org/) |
+
+### Search Parameters
+
+| Parameter | Description | Default |
+|-----------|-------------|---------|
+| `query` | Search keywords | (required) |
+| `count` | Number of results | 8 (max 20) |
+| `market` | Search locale | zh-CN |
+| `freshness` | Time filter | None (optional: Day/Week/Month) |
 
 ---
 
-## 沙箱与安全
+## Image Generation
 
-Abu 内置多层安全保护机制，确保 AI 操作不会损害你的系统。
+Abu can generate images from text descriptions.
 
-### OS 级沙箱
+### Two Ways to Use
 
-| 平台 | 技术 | 效果 |
-|------|------|------|
-| macOS | Seatbelt (sandbox-exec) | 限制 shell 命令的文件访问范围 |
-| Windows | PowerShell ConstrainedLanguage | 限制脚本执行能力 |
+#### Option 1: Built-in Provider Image Gen
 
-### 网络隔离
+If your provider supports built-in image generation (Bailian, Zhipu, OpenAI, SiliconFlow), a green ✅ badge appears in **AI Services** settings — use it directly.
 
-- **域名白名单** — 只允许访问白名单内的域名
-- **私有网络控制** — 可控制是否允许访问本地网络（127.0.0.1、192.168.* 等）
-- **代理机制** — 通过本地代理实现网络流量管控
+#### Option 2: Configure Custom Image Gen
 
-### 路径保护
+If your provider doesn't support built-in image generation:
 
-阿布不会在未经许可的情况下访问：
+1. In **AI Services** settings, find the "Image Generation" section
+2. Expand **"Configure Custom Image Generation"**
+3. Fill in the following:
 
-- 系统目录（`/System`、`/usr`、`C:\Windows` 等）
-- 其他用户目录
-- 敏感配置文件（SSH 密钥、浏览器数据等）
+| Setting | Description |
+|---------|-------------|
+| **API Key** | Image generation API key (auto-reuses main API Key if using OpenAI provider) |
+| **API URL** | Base URL for image generation (defaults to OpenAI if left blank) |
+| **Model** | Choose `DALL-E 3`, `DALL-E 2`, or enter a custom model name |
 
-### 命令安全
+### Image Generation Parameters
 
-- 危险命令（如 `rm -rf /`）会被自动拦截
-- 首次执行的命令需要用户确认
-- 已授权的命令可以自动放行
+| Parameter | Description | Options |
+|-----------|-------------|---------|
+| `prompt` | Image description | (required) |
+| `size` | Image dimensions | `1024x1024` (default), `1792x1024`, `1024x1792` |
+| `style` | Visual style | `vivid` (default), `natural` |
+| `save_path` | Save location | Auto-saves to workspace if omitted |
 
-### 配置沙箱
-
-1. 打开 **设置** → **安全**
-2. 开启/关闭 **沙箱保护**
-3. 开启/关闭 **网络隔离**
-4. 管理 **域名白名单**
-
----
-
-## 通知系统（v0.13.0+）
-
-之前阿布的各种主动提醒（任务完成、定时任务触发、错误、IM 入站、技能建议）各自走不同路径。v0.13.0 把它们统一到一套 **Notice 管道**，加上"**看场合不打扰**"的智能。
-
-### 三条兜底通道
-
-每条通知根据当前上下文自动选最合适的通道：
-
-| 通道 | 什么时候用 |
-|------|------------|
-| **聊天内卡片** | 你正在看的对话发生事件，直接在聊天里展示 |
-| **侧边栏小红点** | 其他对话的事件，对应 conversation 节点上小圆点 + 数字 |
-| **菜单栏未读数** | 主窗口未聚焦 / 全屏状态下的兜底，菜单栏图标显示未读数 |
-| **系统通知** | L1 重要事件（任务完成、错误、会议准备），系统级弹通知 |
-
-### 看场合不打扰
-
-阿布根据你的状态决定要不要打扰：
-
-- **全屏状态下**（B 站、Keynote、视频会议）—— 阿布**闭嘴**，通知暂存到 inbox（SQLite 持久化），回主窗口时通过未读数感知
-- **超出配额**（L2 级每小时最多 3 次）—— 超出部分暂存，不弹出
-- **勿扰**（v1.1 再加）
-
-### 通知优先级（Tier）
-
-| 等级 | 含义 | 例子 |
-|------|------|------|
-| **L1** | 不可吞（重要，时效强）| 会议准备、权限请求、任务完成、错误 |
-| **L2** | 可吞（有价值但不急）| 技能建议、定时任务触发、IM 消息 |
-| **L3** | 只动状态灯 | 深度专注进入/退出、上下文恢复 |
-
-L1 级通知**永远不会被吞掉**，即使你在全屏或超出配额，也会通过系统通知兜底。
-
-### Audit 审计
-
-每条通知的触达过程（发出时间、派发通道、是否点击、响应时间）都写到 SQLite。Settings → 通知 → 通知历史 可查过去 180 天的数据，复盘"阿布啥时候打扰我、我当时怎么回应的"。
-
-这份数据也让阿布**学习**：如果发现某时段你的 L2 响应率持续低，阿布会自动降低这个时段的打扰频率（L2 降到 L3，只亮状态灯）。
-
----
-
-## 行为感知
-
-行为感知让阿布了解你的工作模式，从而提供更贴合上下文的回答。
-
-### 工作原理
-
-- 每 5 分钟采样一次当前活跃窗口的 **窗口标题**（如 Chrome、VS Code）
-- 数据保留 7 天，超时自动清理
-- 汇总为 3~5 行摘要注入对话上下文
-
-**注入示例：**
-```
-- 今日: Chrome 1.5h, Xcode 45min, Terminal 30min
-- 当前: 正在使用 Xcode
-- 常用时段: 9-12, 14-18
-```
-
-### 开启方式
-
-1. 打开 **设置** → **偏好**
-2. 找到 **「行为感知」**，打开开关
-3. macOS 首次开启需要 **自动化** 权限（系统设置 → 隐私与安全性 → 自动化，允许阿布控制「系统事件」）
-
-### 隐私保护
-
-| 保护措施 | 说明 |
-|---------|------|
-| **默认关闭** | 需用户主动开启 |
-| **仅记录窗口标题** | 不记录屏幕内容或截图 |
-| **原始数据不外传** | 仅将汇总摘要注入对话，原始日志不发送给 AI |
-| **可随时清除** | 开启后设置页会显示「清空行为数据」按钮，一键删除 |
-
-### 数据存储
-
-- 存储路径：`~/.abu/behavior-log.json`
-- 保留时间：7 天
-
----
-
-## 外观与主题
-
-在 **设置 → 外观** 里切换界面主题：
-
-| 选项 | 说明 |
-|------|------|
-| **亮色** | 始终使用浅色界面 |
-| **暗色** | 始终使用深色界面（默认） |
-| **跟随系统** | 跟随操作系统的深色 / 浅色设置实时切换 |
-
-界面语言（简体中文 / English）同样在设置里切换，也支持「跟随系统」。
-
----
-
-## 实验室（Labs）
-
-**实验室（Labs）** 收录还在打磨中的新功能：**默认关闭、按需开启**，可能随时调整或移除。入口在 **设置 → 实验**，每个实验是一张卡片（标题 + 说明 + 「在哪里找到它」提示 + 开关）。没有进行中的实验时显示占位提示。
-
-> 实验功能可能不稳定，行为随版本变化。稳定后会毕业成正式功能。
-
-### 桌宠
-
-当前实验室收录的实验是 **桌宠** —— 一个常驻桌面、可随时对话的悬浮小阿布。
-
-**两步开启**（刻意分两级，避免误触常驻浮窗）：
-
-1. **设置 → 实验**，打开「桌宠」实验 → 系统设置里出现「桌宠」页
-2. **设置 → 桌宠**，打开开关 → 桌宠浮窗出现在桌面
-
-**交互：**
-
-| 操作 | 效果 |
-|------|------|
-| **左键点击** | 唤起 Abu 主窗口 |
-| **右键点击** | 弹出菜单（查看状态 / 打开主窗口 / 关闭桌宠） |
-| **拖拽** | 移动位置；拖到屏幕边缘会 **吸边隐藏**（露出一小截），位置自动记住 |
-
-**活动通知条**：阿布在干活时，桌宠旁边会浮出一条状态气泡，实时显示当前对话标题 + 最新一句回复，并用颜色标注状态：
-
-| 状态 | 颜色 | 含义 |
-|------|------|------|
-| 处理中 | 蓝 | 阿布正在执行任务 |
-| 等待输入 | 橙 | 需要你授权，或需要你回一句 —— **可直接在气泡里回复**（回车发回对话） |
-| 完成 | 绿 | 任务完成（约 6 秒后自动收起） |
-| 遇到问题 | 红 | 执行出错 |
-
-不用切回主窗口，扫一眼桌宠就知道阿布进行到哪、要不要你搭把手。
-
----
-
-## 常见使用场景
-
-### 办公效率
+### Examples
 
 ```
-帮我把桌面上的文件按类型整理到不同文件夹
+Generate a cyberpunk cityscape at night
 ```
 
 ```
-把这个 PDF 里的表格提取出来，生成 Excel，并汇总每列的合计
+Draw a cute cartoon cat avatar, 1024x1024
 ```
 
 ```
-帮我写一份周报，参考这周的会议笔记和项目文档
-```
-
-### 数据处理
-
-```
-分析 data.csv 里的销售数据，按月份统计，生成柱状图报告
-```
-
-```
-把这 10 个 Excel 文件合并成一个，去重并排序
-```
-
-### 开发辅助
-
-```
-检查 src 目录下所有 TypeScript 文件，找出未使用的导入并清理
-```
-
-```
-帮我把这个 API 的响应数据写成 TypeScript 类型定义
-```
-
-### 信息获取
-
-```
-搜索最新的 React 19 新特性，整理成中文文档
-```
-
-```
-每天早上帮我搜索 AI 领域的最新新闻，生成摘要
-```
-
-### 设计创作
-
-```
-帮我设计一个现代风格的产品介绍页面
-```
-
-```
-生成一张科技感的海报，主题是"AI 改变未来"
+Create a wide banner image about "AI Shaping the Future", 1792x1024
 ```
 
 ---
 
-## 常见问题
+## Sandbox & Security
 
-### Q: Abu 会上传我的数据吗？
+Abu includes multiple layers of security to protect your system.
 
-不会。Abu 是本地优先的应用，你的文件和数据只在本地处理。唯一的网络通信是与 LLM API 服务商之间的对话请求。
+### OS-Level Sandbox
 
-### Q: API Key 存在哪里？安全吗？
+| Platform | Technology | Effect |
+|----------|-----------|--------|
+| macOS | Seatbelt (sandbox-exec) | Restricts file access for shell commands |
+| Windows | PowerShell ConstrainedLanguage | Restricts script execution capabilities |
 
-从 v0.12 起，API Key 存储在 OS 级密钥管理器中，不再明文写入 localStorage，也不会上传到任何服务器：
+### Network Isolation
 
-- **Windows**：使用系统凭据管理器（DPAPI 加密，绑定你的登录账户）
-- **macOS**：本地 AES-256-GCM 加密，密钥由硬件 UUID 派生
-- **Linux**：暂不官方支持
+- **Domain whitelist** — Only allows access to whitelisted domains
+- **Private network control** — Toggle access to local networks (127.0.0.1, 192.168.*, etc.)
+- **Proxy mechanism** — Routes network traffic through a local proxy
 
-**升级说明**：从 0.11 升级到 0.12 时，旧的明文 key 会在首次启动时自动迁移加密，无需手动操作，界面无感。
+### Path Protection
 
-**换机器时**：API Key 绑定到当前硬件，迁移或更换 Mac 后需要在设置中重新输入一次。这是安全特性（防止备份盘被拷走后泄漏 key），不是 bug —— 被影响的 provider 卡片会显示红色"请重新输入 API Key"提示。
+Abu will not access without permission:
 
-**硬重置**：设置 → AI 服务 页面底部提供"清除所有已保存密钥"按钮，用于一次性清空所有存储的密钥。
+- System directories (`/System`, `/usr`, `C:\Windows`, etc.)
+- Other users' directories
+- Sensitive config files (SSH keys, browser data, etc.)
 
-### Q: 我的记忆和项目规则存在哪里？
+### Command Safety
 
-- **个人记忆**：`~/.abu/memory/` 多文件目录，每条记忆是独立 `.md` 文件
-- **项目记忆**：`~/.abu/projects/<工作区路径键>/memory/`，按工作区自动隔离
-- **用户级规则**：`~/.abu/ABU.md`（手写）
-- **项目级规则**：`{工作区}/.abu/ABU.md`（手写，建议提交 git）
-- **模块化规则**：`{工作区}/.abu/rules/*.md`（按字母序加载，最多 20 个文件）
+- Dangerous commands (e.g., `rm -rf /`) are automatically blocked
+- First-time commands require user confirmation
+- Authorized commands can be auto-allowed
 
-老版本（`~/.abu/agents/abu/memory.md` 和 `{工作区}/.abu/MEMORY.md`）的内容会在首次启动新版后**自动迁移**到上面的位置，无需手动操作。
+### Configuring the Sandbox
 
-### Q: 可以同时使用多个模型吗？
+1. Open **Settings** → **Security**
+2. Toggle **Sandbox Protection** on/off
+3. Toggle **Network Isolation** on/off
+4. Manage the **domain whitelist**
 
-目前一次只能激活一个模型配置。你可以在设置中随时切换不同的服务商和模型。
+---
 
-### Q: 定时任务不执行怎么办？
+## Notification System (v0.13.0+)
 
-- 确保 Abu 应用正在运行（不能关闭应用）
-- 检查任务是否处于「暂停」状态
-- 查看任务执行历史中的错误信息
+Previously, Abu's various proactive notifications (task complete, scheduled-task fires, errors, IM inbound, skill proposals) took ad-hoc paths. v0.13.0 unifies them behind a **Notice pipeline** and adds "**read-the-room**" intelligence.
 
-### Q: 如何创建自定义 Skill？
+### Three fallback channels
 
-在对话中说「帮我创建一个新技能」，阿布会引导你完成整个流程。技能以 Markdown 文件形式存储在 `builtin-skills/` 目录下，你也可以直接编辑。
+Each notice picks the most appropriate channel based on current context:
 
-### Q: MCP 服务器连接失败？
+| Channel | When it's used |
+|---------|---------------|
+| **In-chat card** | Event happens inside the conversation you're viewing — shown directly in chat |
+| **Sidebar badge** | Event belongs to another conversation — small red dot + count on its sidebar node |
+| **Menubar unread count** | Fallback when the main window isn't focused / you're in fullscreen |
+| **System notification** | L1 important events (task done, errors, meeting prep) — OS-level banner |
 
-- 确认 MCP 服务器的命令和参数正确
-- 检查是否安装了必要的运行时（如 Node.js、Python）
-- 查看环境变量是否正确配置
-- 如果是 HTTP 类型，确认 URL 可访问
+### Read-the-room policy
 
-### Q: 如何使用浏览器操控功能？
+Abu decides whether to interrupt based on your state:
 
-1. 安装 Abu Chrome 扩展
-2. 确保 Browser Bridge 服务已连接（工具箱中可查看状态）
-3. 在对话中描述你想在浏览器中完成的操作
+- **Fullscreen** (Bilibili, Keynote, video calls) — Abu stays silent; notices are queued to an inbox (SQLite-persisted) and surfaced via unread count once you return
+- **Over quota** (default L2 cap: 3/hour) — excess notices queue, don't pop
+- **Do-Not-Disturb** — deferred to v1.1
 
-### Q: 触发器的 HTTP 端点怎么从外部访问？
+### Priority tiers
 
-触发器的 HTTP 端点默认监听 `127.0.0.1`（本机），如果需要从外部系统访问，需要配置内网穿透（如 ngrok）或将 Abu 部署在可访问的服务器上。
+| Tier | Meaning | Examples |
+|------|---------|----------|
+| **L1** | Cannot be dropped (important + time-sensitive) | Meeting prep, permission request, task complete, errors |
+| **L2** | Droppable (valuable but not urgent) | Skill proposals, scheduled-task fires, IM messages |
+| **L3** | Status-light only | Deep-focus enter/exit, context resume |
 
-### Q: IM 频道配置了但收不到消息？
+L1 notices are **never dropped** — even in fullscreen / over quota they fall back to system notifications.
 
-- 确认 Webhook URL 已正确填入 IM 平台开发者后台
-- 确认 IM 平台能访问到你的 Webhook 地址（本地开发时可能需要内网穿透）
-- 确认频道开关已打开
-- 检查访问控制列表是否限制了用户
+### Audit trail
 
-### Q: 电脑操控提示权限不足？
+Every notice's delivery (emit time, channels dispatched, whether the user clicked, response latency) is written to SQLite. Settings → Notifications → History shows the last 180 days, letting you review "when did Abu interrupt me, and how did I respond?"
 
-macOS 需要在 **系统设置 → 隐私与安全性** 中授予 Abu「屏幕录制」和「辅助功能」权限，授权后需重启 Abu。
+This data also helps Abu **learn**: if L2 response rate in a given time window stays persistently low, Abu auto-lowers the interruption cadence for that window (L2 → L3, status-light only).
 
-### Q: 行为感知会泄露隐私吗？
+---
 
-不会。行为感知仅记录窗口标题（如应用名称），不记录屏幕内容或截图。原始数据存在本地，只有汇总摘要会注入对话上下文。可随时在设置中关闭并清除数据。
+## Behavior Awareness
 
-### Q: 支持哪些语言？
+Behavior Awareness lets Abu understand your work patterns so it can give context-aware answers.
 
-Abu 界面支持 **简体中文** 和 **English**，可在设置中切换。也可以设为「跟随系统」自动检测。界面主题（亮色 / 暗色 / 跟随系统）在 **设置 → 外观** 切换，详见 [外观与主题](#外观与主题)。
+### How It Works
 
-### Q: 阿布做危险操作前会先问我吗？
+- Samples the **active window's title** (e.g. Chrome, VS Code) every 5 minutes
+- Data is retained for 7 days, then auto-cleaned
+- Aggregated into a 3–5 line summary that's injected into the conversation context
 
-会，由 **权限模式** 决定确认力度：默认「请求批准」下，工作区内读写自由，越界写入和危险命令都会先问你。此外，涉及删除 / 覆盖 / 发送 / 安装等高风险步骤时会进入 **计划模式**：阿布先给出分步计划，你在卡片上点「确认执行」才会动手，待批期间只跑只读操作。详见 [对话与 Agent → 权限模式 / 计划模式](#权限模式三档可按对话切换)。
+**Example injection:**
+```
+- Today: Chrome 1.5h, Xcode 45min, Terminal 30min
+- Current: Using Xcode
+- Common hours: 9-12, 14-18
+```
 
-### Q: 桌宠怎么开？
+### Enabling It
 
-桌宠是 **实验室（Labs）** 里的实验功能，两步开启：先在 **设置 → 实验** 打开「桌宠」实验，再到 **设置 → 桌宠** 打开开关。详见 [实验室（Labs）→ 桌宠](#桌宠)。
+1. Open **Settings** → **Preferences**
+2. Find **"Behavior Awareness"** and toggle it on
+3. macOS first-time enable requires **Automation** permission (System Settings → Privacy & Security → Automation, allow Abu to control "System Events")
 
-### Q: 阿布会自动记住我教过的流程吗？
+### Privacy Protections
 
-会。v0.13.0 引入的**自进化 Skills**会识别你跑过的多轮复杂流程，主动提议"要不要固化成一个技能"。你审阅采纳后，下次类似任务直接叫技能名字调用，不用重讲一遍。详见 [Skill 技能系统 → 自进化 Skills](#自进化-skills-v0130)。
+| Protection | Description |
+|-----------|-------------|
+| **Off by default** | User must explicitly enable |
+| **Window title only** | Doesn't record screen content or screenshots |
+| **Raw data stays local** | Only the aggregated summary is sent to the AI; raw logs are never sent |
+| **Clearable anytime** | Once enabled, the settings page shows a "Clear Behavior Data" button |
 
-你也可以在 Settings → 灵魂 → 阿布主动性 里调整提议频率（关 / 普通 / 陪伴者）。
+### Storage
 
-### Q: Projects 和 Workspace 有什么区别？
+- Storage path: `~/.abu/behavior-log.json`
+- Retention: 7 days
 
-**Workspace** 是一个文件夹路径（决定阿布能访问哪些文件），**Project** 是一个聚合容器（把同一 workspace 下的多个对话汇总，配以项目级默认配置）。
+---
 
-一对一绑定：一个 workspace 最多有一个 Project；一个 Project 下可以有无限个 conversation。升级可逆，项目也可以随时解散，workspace 本身保留。
+## Appearance & Theme
 
-### Q: 全屏时收不到通知怎么办？
+Switch the UI theme in **Settings → Appearance**:
 
-这是**设计行为**，不是 bug。阿布 v0.13.0 起会根据你的状态判断要不要打扰：全屏时 L2 级通知（技能建议、定时任务等）暂存 inbox，回主窗口后通过菜单栏未读数 + sidebar badge 感知。
+| Option | Description |
+|--------|-------------|
+| **Light** | Always use the light theme |
+| **Dark** | Always use the dark theme (default) |
+| **System** | Follows your OS dark/light setting, switching live |
 
-L1 级通知（会议准备、错误、权限请求）**不受影响**，始终通过系统通知兜底。详见 [通知系统](#通知系统-v0130)。
+UI language (Simplified Chinese / English) is also switched in Settings, including a "Follow System" option.
+
+---
+
+## Labs
+
+**Labs** collects features still in active development: **off by default, opt-in**, may change or be removed at any time. Entry: **Settings → Experiments**; each experiment is a card (title + description + "where to find it" hint + toggle). Shows a placeholder when no experiments are active.
+
+> Experiments may be unstable and their behavior may change between versions. Once stable, they graduate to full features.
+
+### Desktop Pet
+
+The current experiment in Labs is **Desktop Pet** — a floating Abu that stays on your desktop and is always ready to chat.
+
+**Two-step enable** (two levels are intentional to prevent accidentally pinning a floating window):
+
+1. **Settings → Experiments** — turn on "Desktop Pet" → a "Desktop Pet" settings page appears in the sidebar
+2. **Settings → Desktop Pet** — toggle it on → the pet window appears on your desktop
+
+**Interactions:**
+
+| Action | Effect |
+|--------|--------|
+| **Left-click** | Open Abu main window |
+| **Right-click** | Menu (view status / open main window / close pet) |
+| **Drag** | Move; drag to a screen edge to **dock and hide** (only a sliver remains visible); position is remembered |
+
+**Activity tray**: When Abu is doing work, a status bubble floats beside the pet showing the current conversation title + latest reply line, color-coded by state:
+
+| State | Color | Meaning |
+|-------|-------|---------|
+| Working | Blue | Abu is executing a task |
+| Awaiting input | Orange | Needs your authorization or a reply — **you can reply inline right in the bubble** (press Enter to send) |
+| Done | Green | Task complete (auto-dismisses after ~6 s) |
+| Problem | Red | An error occurred |
+
+No need to switch back to the main window — a quick glance at the pet tells you where Abu is at and whether it needs a hand.
+
+---
+
+## Common Use Cases
+
+### Office Productivity
+
+```
+Organize the files on my desktop into folders by type
+```
+
+```
+Extract tables from this PDF, create an Excel file, and add column totals
+```
+
+```
+Write a weekly report based on this week's meeting notes and project docs
+```
+
+### Data Processing
+
+```
+Analyze sales data in data.csv, group by month, and generate a bar chart report
+```
+
+```
+Merge these 10 Excel files into one, deduplicate, and sort
+```
+
+### Development
+
+```
+Check all TypeScript files in src/ for unused imports and clean them up
+```
+
+```
+Generate TypeScript type definitions from this API response
+```
+
+### Information Retrieval
+
+```
+Search for the latest React 19 features and compile them into a document
+```
+
+```
+Every morning, search for the latest AI news and create a summary
+```
+
+### Design
+
+```
+Design a modern product landing page
+```
+
+```
+Create a tech-themed poster about "AI Shaping the Future"
+```
+
+---
+
+## FAQ
+
+### Q: Does Abu upload my data?
+
+No. Abu is a local-first app — your files and data are processed locally. The only network traffic is API requests to your LLM provider.
+
+### Q: Where is my API Key stored? Is it safe?
+
+Starting with v0.12, API Keys live in your OS-level secret manager — never in plaintext localStorage, and never uploaded to any server:
+
+- **Windows**: Credential Manager (encrypted via DPAPI, bound to your login account)
+- **macOS**: local AES-256-GCM encryption with a key derived from your hardware UUID
+- **Linux**: not officially supported
+
+**Upgrading from 0.11**: legacy plaintext keys are automatically migrated to the encrypted store on first launch. The migration is silent and completes in under a second.
+
+**Moving machines**: the derived key is bound to the current hardware, so after migrating to a new Mac or swapping the logic board, you will need to re-enter your API keys in Settings. This is intentional — it prevents stolen backup drives from leaking your keys. Affected provider cards display a red "please re-enter API Key" hint.
+
+**Hard reset**: the Settings → AI Services page has a "Clear all stored keys" button at the bottom for wiping every stored credential at once.
+
+### Q: Where is my memory and where are my project rules stored?
+
+- **Personal memory**: `~/.abu/memory/` multi-file directory, each entry is a separate `.md` file
+- **Project memory**: `~/.abu/projects/<workspace-key>/memory/`, auto-isolated per workspace
+- **User-level rules**: `~/.abu/ABU.md` (hand-written)
+- **Project-level rules**: `{workspace}/.abu/ABU.md` (hand-written, recommended to commit to git)
+- **Modular rules**: `{workspace}/.abu/rules/*.md` (loaded alphabetically, max 20 files)
+
+Legacy locations (`~/.abu/agents/abu/memory.md` and `{workspace}/.abu/MEMORY.md`) are **automatically migrated** the first time you launch the new version — no manual action needed.
+
+### Q: Can I use multiple models at once?
+
+Currently only one model config can be active at a time. You can switch between providers and models in settings at any time.
+
+### Q: Scheduled tasks aren't running?
+
+- Make sure Abu is running (the app must stay open)
+- Check if the task is in "Paused" state
+- Check the task execution history for error messages
+
+### Q: How do I create custom Skills?
+
+Say "Help me create a new skill" in conversation. Abu will guide you through the process. Skills are stored as Markdown files in `builtin-skills/` and can be edited directly.
+
+### Q: MCP server won't connect?
+
+- Verify the server command and arguments are correct
+- Check that required runtimes are installed (Node.js, Python, etc.)
+- Verify environment variables are correctly configured
+- For HTTP servers, confirm the URL is accessible
+
+### Q: How do I use browser automation?
+
+The easiest way is to install the **Abu-Browser** skill — on first use, Abu will guide you through auto-installing the Chrome extension. Then just describe what you want to do in the browser.
+
+### Q: How can the trigger HTTP endpoint be reached from outside?
+
+Trigger HTTP endpoints listen on `127.0.0.1` (localhost) by default. To reach them from external systems, use a tunneling tool (e.g. ngrok) or run Abu on a server with a reachable address.
+
+### Q: I configured an IM channel but I'm not receiving messages?
+
+- Verify the Webhook URL is correctly set in the IM platform's developer portal
+- Verify the IM platform can reach your Webhook (you may need a tunnel for local development)
+- Verify the channel toggle is on
+- Check if access control allowlist is restricting users
+
+### Q: Computer Use says insufficient permissions?
+
+On macOS, grant **Screen Recording** and **Accessibility** to Abu in **System Settings → Privacy & Security**, then restart Abu.
+
+### Q: Does Behavior Awareness leak my privacy?
+
+No. Behavior Awareness only records window titles (e.g. app names), not screen content or screenshots. Raw data stays local; only the aggregated summary is injected into the conversation context. You can disable it and clear data at any time in Settings.
+
+### Q: What languages are supported?
+
+Abu's UI supports **Simplified Chinese** and **English**. Switch in Settings, or set to "Follow System" for automatic detection. Theme (light / dark / system) is also switched in Settings → Appearance — see [Appearance & Theme](#appearance--theme).
+
+### Q: Will Abu ask before doing something dangerous?
+
+Yes — and the extent of confirmation is controlled by the **permission mode**. Under the default "Request Approval" mode, Abu reads and writes freely inside your workspace but asks before any out-of-bounds write or dangerous command. Beyond that, when a task involves high-risk steps like delete / overwrite / send / install, Abu enters **Plan Mode**: it shows a step-by-step plan first, and only proceeds after you explicitly click "Confirm & run" on the card — read-only ops run in the meantime. See [Chat & Agent → Permission Modes / Plan Mode](#permission-modes-three-levels-switchable-per-conversation).
+
+### Q: How do I enable the desktop pet?
+
+The desktop pet is a **Labs** experiment — it needs two steps to enable: first go to **Settings → Experiments** and turn on "Desktop Pet", then go to **Settings → Desktop Pet** and toggle it on. See [Labs → Desktop Pet](#desktop-pet).
+
+### Q: Will Abu remember flows I've taught it?
+
+Yes. The **Self-Evolving Skills** feature introduced in v0.13.0 recognizes multi-step complex flows you've run and proactively suggests "want to crystallize this into a skill?" Once you review and accept, the next similar task is just a skill-name away — no re-explaining. See [Skill System → Self-Evolving Skills](#self-evolving-skills-v0130).
+
+You can tune offer frequency under Settings → Soul → Abu Proactivity (Off / Normal / Companion).
+
+### Q: What's the difference between Projects and Workspaces?
+
+**Workspace** is a folder path — it decides "which files Abu can access". **Project** is an aggregation container — it groups multiple conversations under the same workspace together, with project-level defaults.
+
+One-to-one binding: a workspace maps to at most one Project; a Project can hold unlimited conversations. Upgrade is reversible — a project can be dissolved at any time; the underlying workspace stays intact.
+
+### Q: I don't get notifications in fullscreen — is that a bug?
+
+It's **by design**, not a bug. From v0.13.0, Abu reads your state before interrupting: in fullscreen, L2-tier notices (skill proposals, scheduled tasks, etc.) queue to inbox, surfaced via menubar unread count + sidebar badge once you return.
+
+L1-tier notices (meeting prep, errors, permission requests) **are not affected** — they always fall back to system notifications. See [Notification System](#notification-system-v0130).

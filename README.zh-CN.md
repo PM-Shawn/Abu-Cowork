@@ -14,7 +14,7 @@
 [![Release](https://img.shields.io/github/v/release/PM-Shawn/Abu-Cowork?style=flat-square)](https://github.com/PM-Shawn/Abu-Cowork/releases)
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue?style=flat-square)](LICENSE)
 
-[下载安装](#下载安装) · [快速开始](#快速开始) · [功能介绍](#功能介绍) · [使用指南](docs/User-Guide.md) · [从源码构建](#从源码构建)
+[下载安装](#下载安装) · [快速开始](#快速开始) · [功能介绍](#功能介绍) · [使用指南](docs/User-Guide.zh-CN.md) · [从源码构建](#从源码构建)
 
 </div>
 
@@ -187,7 +187,7 @@
 - **一键自检** — 设置 → 诊断面板，逐项检查 AI 服务连接、数据&权限、MCP、技能、网络、应用环境
 - **诊断包导出** — 出问题时一键打包日志、配置、版本信息（自动脱敏 API Key 和路径），方便发给作者排障
 
-> 详细功能说明请查看 [使用指南](docs/User-Guide.md)
+> 详细功能说明请查看 [使用指南](docs/User-Guide.zh-CN.md)
 
 ## 下载安装
 
@@ -199,7 +199,7 @@
 | macOS (Intel) | `Abu_x.x.x_x64.dmg` |
 | Windows | `Abu_x.x.x_x64-setup.exe` |
 
-> **macOS 用户注意**：首次打开如提示"已损坏"，需执行 `xattr -cr /Applications/Abu.app`，详见 [安装指南](docs/Installation-Guide.md)。
+> **macOS 用户注意**：首次打开如提示"已损坏"，需执行 `xattr -cr /Applications/Abu.app`，详见 [安装指南](docs/Installation-Guide.zh-CN.md)。
 
 ## 快速开始
 
@@ -240,7 +240,7 @@
 - **配置定时任务**：让阿布每天自动搜新闻、跑数据、发报告
 - **连接 IM**：设置 → IM 频道，让团队在飞书/钉钉里直接 @阿布
 
-> 更多使用场景请查看 [使用指南](docs/User-Guide.md)
+> 更多使用场景请查看 [使用指南](docs/User-Guide.zh-CN.md)
 
 ## 内置技能一览（共 28 个）
 
@@ -256,7 +256,7 @@
 | Agent 反思 | 自省技能 (reflect) — agent 跑完任务后回溯沉淀 |
 | 主题 | 主题工厂 (theme-factory)（10+ 预设主题，应用到任何产出物） |
 
-> 除了内置技能，阿布还支持**自进化 Skills** — 在你跑完多轮复杂流程后主动提议"固化成技能"，自己攒出专属于你工作流的能力库。详见 [使用指南 · Skill 技能系统](docs/User-Guide.md#skill-技能系统)。
+> 除了内置技能，阿布还支持**自进化 Skills** — 在你跑完多轮复杂流程后主动提议"固化成技能"，自己攒出专属于你工作流的能力库。详见 [使用指南 · Skill 技能系统](docs/User-Guide.zh-CN.md#skill-技能系统)。
 
 ## 技术栈
 
@@ -373,8 +373,8 @@ src-tauri/
 
 | 文档 | 说明 |
 |------|------|
-| [使用指南](docs/User-Guide.md) | 完整的产品功能介绍与使用说明 |
-| [安装指南](docs/Installation-Guide.md) | 各平台安装与常见问题解决 |
+| [使用指南](docs/User-Guide.zh-CN.md) | 完整的产品功能介绍与使用说明 |
+| [安装指南](docs/Installation-Guide.zh-CN.md) | 各平台安装与常见问题解决 |
 
 ## 贡献
 

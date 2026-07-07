@@ -1,148 +1,148 @@
-# 更新日志
+# Changelog
 
-本文档记录阿布的每次版本更新。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/)。
+All notable changes to Abu are documented here. Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## v0.25.2 · 2026-07-05
 
-### 修复
+### Fixed
 
-- **长会话点「同意」后界面无反应**：上下文压缩改为带独立超时（30 秒）+ 断路器，慢或不稳定的模型渠道不再让整轮卡死；压缩 / 重试过程现在会显示「正在压缩长对话上下文…」「正在重试 N/M…」，不再是无反馈的死寂。
-- **导出离线诊断包一直「导出中」**：超大会话（上千条消息）导出不再冻结界面——默认只打包最近 200 条，需要完整历史可开「包含全部消息」。
+- **UI froze after clicking "Approve" in long conversations**: context compaction now runs with its own timeout (30s) plus a circuit breaker, so a slow or unstable model channel no longer stalls the whole turn. Compaction/retry now shows "Compacting long conversation context…" and "Retrying N/M…" instead of silent dead air.
+- **Offline diagnostic export stuck on "Exporting"**: exporting very large conversations (thousands of messages) no longer freezes the UI — by default only the most recent 200 messages are bundled; enable "Include all messages" if you need the full history.
 
-### 改进
+### Improved
 
-- **会话导出**：导出过程显示进度并可随时取消。
+- **Conversation export**: shows progress and can be cancelled at any time.
 
 ## v0.25.1 · 2026-07-04
 
-### 改进
+### Improved
 
-- **默认主题改为亮色**：新安装默认使用亮色主题（此前为暗色），更贴合办公场景。已选择过主题的老用户不受影响，可随时在「偏好 → 外观」切换亮 / 暗 / 跟随系统。
+- **Default theme changed to light**: fresh installs now default to the light theme (previously dark), a better fit for office scenarios. Existing users who already picked a theme are unaffected and can switch between light / dark / follow-system anytime under Preferences → Appearance.
 
 ## v0.25.0 · 2026-07-04
 
-### 新增
+### Added
 
-- **实验功能**：设置里新增「实验」分区，可以手动开启一些实验性功能试用。
-- **桌宠**：桌面上的悬浮小宠物，显示任务状态和通知，点击可输入、右键出菜单。默认关闭，需先在「实验」里开启，再到系统设置启用配置。
-- **主题切换**：支持暗色 / 亮色 / 跟随系统三档。
-- **反馈页改版**：上传诊断信息时可填写描述，并新增公众号二维码。
+- **Experimental features**: a new "Labs" section in Settings lets you manually enable experimental features to try out.
+- **Desktop Pet**: a floating pet on your desktop that shows task status and notifications — click to type, right-click for a menu. Off by default; enable it in Labs first, then turn it on in system settings.
+- **Theme switching**: dark / light / follow-system.
+- **Redesigned feedback page**: add a description when uploading diagnostics, plus a new WeChat QR code.
 
-### 修复
+### Fixed
 
-- **计划审批卡片恢复显示**：修复审批卡片自 v0.24.0 起不显示的问题；审批期间输入的消息会先排队，中止处理也更稳。
-- **MCP 打包版崩溃**：打包版下 MCP 工具不再因内容安全策略拦截而加载失败崩溃。
-- **非视觉模型读图**：对不支持看图的模型不再发送图片，避免请求出错。
-- **装 Skill 更顺畅**：支持点选 / 拖拽上传，修复带点号文件名、安装中断等问题。
-- **命令输出编码**：运行命令遇到 GBK 等非 UTF-8 编码的输出不再整段丢失。
-- **Windows 权限指引**：缺少辅助功能权限时给出正确指引，不再误显 Mac 文案。
-- 权限模式标签配色与去重优化、暗色模式记忆标签更清晰、设置菜单样式统一。
+- **Plan approval card restored**: fixed the approval card not showing since v0.24.0; messages typed during approval are now queued, and aborting is more robust.
+- **MCP crash in packaged builds**: MCP tools no longer fail to load and crash due to Content Security Policy blocking in packaged builds.
+- **Non-vision models reading images**: images are no longer sent to models that don't support vision, avoiding request errors.
+- **Smoother Skill installation**: supports click-to-select / drag-and-drop upload; fixes dotfile filenames and interrupted installs.
+- **Command output encoding**: command output in non-UTF-8 encodings (e.g. GBK) is no longer dropped entirely.
+- **Windows permission guidance**: shows the correct guidance when Accessibility permission is missing, instead of the Mac wording by mistake.
+- Permission-mode label colors and de-duplication, clearer memory tags in dark mode, and unified settings-menu styling.
 
 ## v0.13.5 · 2026-04-24
 
-### 修复
+### Fixed
 
-- 🔌 **火山引擎模型不再开箱即崩**：Volcengine 默认走 Coding Plan 聚合端点（多家厂商模型的聚合点），只认 OpenAI 标准 function 工具，不认 Ark 私有的 `web_search` 扩展。之前每条消息都会被拒 `missing tools.function parameter`。清理了错配的 webSearch 声明，顺带做了一次 persist 迁移剥掉老用户本地缓存里的陈旧能力标签。
-- 🎞️ **PPT 预览失败不再甩堆栈给你看**：`pptx-preview` 库对某些 python-pptx 输出的 slide 会吞掉解析异常，最终抛出 `undefined is not an object` 这种纯技术错误到用户面前。改成友好降级卡片：文件名 + "用 PowerPoint 打开" + "在文件管理器中显示"。能正常渲染的 PPT 不受影响。
+- 🔌 **Volcengine models no longer crash out of the box**: Volcengine defaults to the Coding Plan aggregation endpoint (an aggregation point for many vendors' models), which only accepts OpenAI-standard function tools, not Ark's proprietary `web_search` extension. Previously every message was rejected with `missing tools.function parameter`. Removed the mismatched webSearch declaration and ran a persist migration to strip stale capability flags from existing users' local cache.
+- 🎞️ **PPT preview failures no longer dump a stack trace at you**: the `pptx-preview` library swallows parse exceptions on some python-pptx slides and ends up throwing raw technical errors like `undefined is not an object` to users. Replaced with a friendly fallback card: filename + "Open in PowerPoint" + "Show in file manager". PPTs that render normally are unaffected.
 
 ## v0.13.4 · 2026-04-22
 
-### 修复
+### Fixed
 
-- 🖱️ **切回阿布不再"第一下点了没反应"**：从其他 app 切回来后，点输入框 / 按钮直接生效，无需再点第二下。启用了 macOS 的 `acceptFirstMouse`，跟 VSCode / Chrome / Figma 等主流桌面 app 行为一致。
+- 🖱️ **Switching back to Abu no longer needs a "throwaway first click"**: after switching back from another app, clicking an input / button works immediately, no second click needed. Enabled macOS `acceptFirstMouse`, matching VSCode / Chrome / Figma and other mainstream desktop apps.
 
 ## v0.13.1 · 2026-04-20
 
-### 修复
+### Fixed
 
-- 🛟 **对话历史写入原子化**：`messages.jsonl` 和 `index.json` 所有写入路径（append、replaceMessage、updateLastMessage、flushIndex、备份）全部走 tempfile + fsync + rename 原子写。以前 read-modify-write 中途崩溃（停电、force kill、磁盘满）可能截断文件丢整个对话历史；现在读者要么看到旧文件、要么看到新文件，永远不会看到中间态。
-- 🛟 **Settings 迁移防崩**：`settingsStore` 的每个版本迁移分支独立 try/catch 隔离。以前某一段 migrate 抛异常会让整个 rehydrate 失败 → Zustand 回退 initial defaults → 用户 providers / models / 偏好全丢。现在失败段打 log 跳过，其他分支继续跑。
+- 🛟 **Atomic conversation-history writes**: every write path for `messages.jsonl` and `index.json` (append, replaceMessage, updateLastMessage, flushIndex, backup) now uses atomic tempfile + fsync + rename. Previously a crash mid read-modify-write (power loss, force kill, disk full) could truncate the file and lose the entire conversation history; now readers see either the old file or the new file, never an intermediate state.
+- 🛟 **Crash-proof settings migration**: each version migration branch in `settingsStore` is isolated in its own try/catch. Previously an exception in one migration step failed the entire rehydrate → Zustand fell back to initial defaults → users lost all providers / models / preferences. Now a failing step is logged and skipped, and the other branches keep running.
 
 ## v0.13.0 · 2026-04-20
 
-### 新增
+### Added
 
-- 🧠 **自进化 Skills：阿布学会记住你教过的流程**。跑完一段复杂流程，阿布会主动问"这套要不要固化成一个技能？"——点一下就起草，你审完采纳，下次直接叫技能名字调用。Settings → 灵魂 可以调提议频率：关 / 普通 / 陪伴者。
+- 🧠 **Self-Evolving Skills: Abu learns to remember the workflows you teach it**. After running a complex flow, Abu proactively asks "Want to crystallize this into a skill?" — one click drafts it, you review and adopt, and next time you just call it by name. Settings → Soul lets you tune the suggestion frequency: off / normal / companion.
 
-- 🔔 **通知会看场合了：全屏时闭嘴，回到窗口再说**。之前全屏看 B 站、开会时通知要么打断你、要么默默丢失。现在：
-  - 全屏 / 勿扰 → 阿布闭嘴，菜单栏图标未读数记着
-  - 回到主窗口 → 侧边栏小红点告诉你期间发生了什么
-  - 定时任务、技能建议、错误、消息走一套管道
+- 🔔 **Notifications now read the room: quiet during fullscreen, speak up when you're back**. Previously, notifications during fullscreen video or meetings would either interrupt you or vanish silently. Now:
+  - Fullscreen / Do Not Disturb → Abu stays quiet, the menu-bar icon tracks the unread count
+  - Back in the main window → a sidebar dot tells you what happened while you were away
+  - Scheduled tasks, skill suggestions, errors, and messages all go through one pipeline
 
-- 📁 **Projects：对话终于能按项目收拾了**。工作区升级成 Project，同一文件夹下的对话自动归到一起。
-  - 老对话启动时一次性回填到对应项目
-  - Welcome 页非阻塞提示"这个工作区要不要升级成项目"（可永久忽略）
+- 📁 **Projects: conversations can finally be organized by project**. A workspace can be upgraded to a Project, and conversations under the same folder are automatically grouped.
+  - Existing conversations are backfilled into their project on startup
+  - The Welcome page shows a non-blocking hint "upgrade this workspace to a project?" (can be dismissed permanently)
 
-### 改进
+### Improved
 
-- ⏰ **定时任务冷启动补跑**：app 关着期间应该跑的定时任务，下次启动会按时间顺序补跑
-- ✅ **Todo 列表跨重启不丢**：对话里的 todo 计划持久化到本地，重启续聊直接继续用
-- 🗑️ **Skill 草稿回收站**：草稿删除先进 `.trash`，24h 后自动清理，误删能恢复
+- ⏰ **Scheduled-task cold-start catch-up**: scheduled tasks that should have run while the app was closed are caught up in chronological order on next launch
+- ✅ **Todo lists survive restarts**: todo plans in a conversation persist locally, so you can pick up where you left off after a restart
+- 🗑️ **Skill draft recycle bin**: deleted drafts go to `.trash` first and are auto-cleaned after 24h, so accidental deletes can be recovered
 
-### 修复
+### Fixed
 
-- 🐛 新建对话不会意外清空已绑定的全局工作区
-- 🐛 工具调用参数预览在超长内容时高度失控
-- 🐛 Project Settings 的多选下拉在弹窗里被截断
-- 🐛 Skill 草稿在工具箱里的类目展示更可靠
+- 🐛 Creating a new conversation no longer accidentally clears the bound global workspace
+- 🐛 Tool-call argument preview no longer blows up in height on very long content
+- 🐛 Project Settings multi-select dropdown no longer gets clipped inside the modal
+- 🐛 More reliable category display for skill drafts in the toolbox
 
-### 注意事项
+### Notes
 
-- ⚠️ **已知问题**：Skill 草稿在某些路径下"工具箱 → 技能"里可能不显示；重启 app 或切换工作区后再回来一般能恢复，下个版本根治
+- ⚠️ **Known issue**: skill drafts may not appear under Toolbox → Skills on certain paths; restarting the app or switching workspaces and back usually restores them, with a proper fix in the next release
 
 ## v0.12.0 · 2026-04-17
 
-### 安全
+### Security
 
-- 🔒 **API Key 加密存储**：API Key 不再以明文存放在 localStorage 中
-  - **Windows**：走系统凭据管理器（DPAPI 加密，绑定你的登录账户）
-  - **macOS**：本地 AES-256-GCM 加密，密钥由硬件 UUID 派生
-  - 从 0.11 升级时会在首次启动自动迁移，全程无感、<1 秒内完成
-- 设置 → AI 服务 页面底部新增"清除所有已保存密钥"按钮，作为硬重置逃生口
+- 🔒 **Encrypted API key storage**: API keys are no longer stored in plaintext in localStorage
+  - **Windows**: uses the system Credential Manager (DPAPI encryption, bound to your login account)
+  - **macOS**: local AES-256-GCM encryption, with the key derived from the hardware UUID
+  - Upgrading from 0.11 migrates automatically on first launch — seamless and under 1 second
+- Settings → AI Services now has a "Clear all saved keys" button at the bottom as a hard-reset escape hatch
 
-### 注意事项
+### Notes
 
-- ⚠️ **单向迁移**：0.12 不向下兼容 0.11。如需回退，请在升级前手动备份 API Key
-- ⚠️ **换机器场景**：由于密钥绑定到当前硬件，迁移到新 Mac 或更换主板后需要在设置中重新输入 API Key。这是**安全特性**（防止备份盘被拷走后泄漏 key），被影响的 provider 卡片会显示红色"请重新输入 API Key"提示
-- 升级过程若加密存储因任何原因无法初始化，阿布会保留明文 localStorage 作为兜底，**不会丢失 key**；下次正常启动时再自动迁移
+- ⚠️ **One-way migration**: 0.12 is not backward-compatible with 0.11. If you need to roll back, back up your API keys manually before upgrading
+- ⚠️ **Switching machines**: because the key is bound to the current hardware, migrating to a new Mac or replacing the mainboard requires re-entering your API key in settings. This is a **security feature** (preventing key leakage if a backup drive is stolen); affected provider cards show a red "Please re-enter API key" prompt
+- If encrypted storage fails to initialize for any reason during upgrade, Abu keeps the plaintext localStorage as a fallback and **won't lose your keys**; it migrates automatically on the next normal launch
 
-### 修复
+### Fixed
 
-- 用户在 thinking 流式阶段取消时，thinking 气泡会永远停留在转圈状态的问题
-- 用户取消请求时偶尔会弹出"Error: Request cancelled"错误气泡的问题
+- Thinking bubble stuck spinning forever when the user cancels during the thinking stream
+- Occasional "Error: Request cancelled" bubble when the user cancels a request
 
 ## v0.11.3 · 2026-04-17
 
-### 改进
-- 自动更新检查更及时：启动 30 秒后检查一次，之后每 6 小时后台检查，长时间开着阿布也不会错过新版本
-- 更新日志显示更清晰，支持 Markdown 列表和链接
+### Improved
+- More timely auto-update checks: checks once 30 seconds after launch, then every 6 hours in the background, so you won't miss a new version even with Abu open for a long time
+- Clearer changelog display, with support for Markdown lists and links
 
-### 修复
-- 修复发版流程缺陷（v0.11.2 因此未能正常分发）：发布流水线里 `actions/checkout` 步骤顺序错误导致下载下来的安装包被清掉，`latest.json` 里 platforms 字段为空，客户端检查更新时识别不到新版本
+### Fixed
+- Fixed a release-pipeline defect (which prevented v0.11.2 from being distributed): an incorrect `actions/checkout` step order in the release pipeline wiped the downloaded installers, leaving the `platforms` field empty in `latest.json` so clients couldn't detect the new version
 
 ## v0.11.2 · 2026-04-17
 
-> ⚠️ 此版本因发版流水线缺陷未能成功分发到用户侧，已由 v0.11.3 取代。保留条目仅作存档。
+> ⚠️ This version was not successfully distributed to users due to a release-pipeline defect and has been superseded by v0.11.3. The entry is kept for the record only.
 
-### 改进
-- 自动更新检查更及时：启动 30 秒后检查一次，之后每 6 小时后台检查，长时间开着阿布也不会错过新版本
-- 更新日志显示更清晰，支持 Markdown 列表和链接
+### Improved
+- More timely auto-update checks: checks once 30 seconds after launch, then every 6 hours in the background, so you won't miss a new version even with Abu open for a long time
+- Clearer changelog display, with support for Markdown lists and links
 
 ## v0.11.1 · 2026-04-16
 
-### 修复
-- 右键菜单在屏幕边缘会被截断的问题
-- 弹窗拖拽到外面会意外关闭的问题
+### Fixed
+- Context menu getting clipped at screen edges
+- Modals unexpectedly closing when dragged outside
 
 ## v0.11.0 · 2026-04-16
 
-### 新增
-- **应用内自动更新**：发现新版本可以直接在设置页"关于"里下载安装，无需再跳浏览器手动下载，更新后也不再触发 macOS Gatekeeper 弹窗
-- 侧边栏齿轮图标在有新版本时会显示红点提醒
+### Added
+- **In-app auto-update**: when a new version is found you can download and install it right from Settings → About, no more jumping to a browser to download manually, and updates no longer trigger the macOS Gatekeeper prompt
+- The sidebar gear icon shows a red dot when a new version is available
 
-### 改进
-- 支持 macOS（Intel + Apple Silicon）和 Windows 三个平台的自动更新
+### Improved
+- Auto-update support across three platforms: macOS (Intel + Apple Silicon) and Windows
 
 ---
 
-更多历史版本请查看 [GitHub Releases](https://github.com/PM-Shawn/Abu-Cowork/releases)。
+For older versions, see the [GitHub Releases](https://github.com/PM-Shawn/Abu-Cowork/releases).

@@ -14,7 +14,7 @@ Tell Abu what you need — it reads files, runs commands, writes docs, and build
 [![Release](https://img.shields.io/github/v/release/PM-Shawn/Abu-Cowork?style=flat-square)](https://github.com/PM-Shawn/Abu-Cowork/releases)
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue?style=flat-square)](LICENSE)
 
-[Download](#download) · [Quick Start](#quick-start) · [Features](#features) · [User Guide](docs/User-Guide_EN.md) · [Build from Source](#build-from-source)
+[Download](#download) · [Quick Start](#quick-start) · [Features](#features) · [User Guide](docs/User-Guide.md) · [Build from Source](#build-from-source)
 
 </div>
 
@@ -187,7 +187,7 @@ Turn Abu into your team bot — just @Abu in your chat:
 - **One-Click Self-Check** — Settings → Diagnostic, runs through AI service connectivity, data & permissions, MCP, skills, network, app environment
 - **Diagnostic Bundle Export** — When something breaks, package logs / config / version info in one click (API keys and paths auto-redacted) and send it to the maintainer
 
-> For detailed feature documentation, see the [User Guide](docs/User-Guide_EN.md)
+> For detailed feature documentation, see the [User Guide](docs/User-Guide.md)
 
 ## Download
 
@@ -199,7 +199,7 @@ Head to [GitHub Releases](https://github.com/PM-Shawn/Abu-Cowork/releases) to do
 | macOS (Intel) | `Abu_x.x.x_x64.dmg` |
 | Windows | `Abu_x.x.x_x64-setup.exe` |
 
-> **macOS Users**: If you see a "damaged" warning on first launch, run `xattr -cr /Applications/Abu.app`. See the [Installation Guide](docs/Installation-Guide_EN.md) for details.
+> **macOS Users**: If you see a "damaged" warning on first launch, run `xattr -cr /Applications/Abu.app`. See the [Installation Guide](docs/Installation-Guide.md) for details.
 
 ## Quick Start
 
@@ -240,7 +240,7 @@ Create a weekly report PPT for this week
 - **Set up schedules**: Have Abu automatically search news, run data, send reports daily
 - **Connect IM**: Settings → IM Channels — let your team @Abu directly in Lark/DingTalk
 
-> For more use cases, see the [User Guide](docs/User-Guide_EN.md)
+> For more use cases, see the [User Guide](docs/User-Guide.md)
 
 ## Built-in Skills (28 total)
 
@@ -256,7 +256,7 @@ Create a weekly report PPT for this week
 | Agent Reflection | Reflect — lets the agent look back on a run and distill learnings |
 | Theming | Theme Factory (10+ preset themes applicable to any artifact) |
 
-> Beyond built-ins, Abu also supports **Self-Evolving Skills** — after multi-step complex flows, Abu proactively suggests "crystallize this into a skill" and grows a library tailored to your workflow. See [User Guide → Skill System](docs/User-Guide_EN.md#skill-system).
+> Beyond built-ins, Abu also supports **Self-Evolving Skills** — after multi-step complex flows, Abu proactively suggests "crystallize this into a skill" and grows a library tailored to your workflow. See [User Guide → Skill System](docs/User-Guide.md#skill-system).
 
 ## Tech Stack
 
@@ -373,8 +373,8 @@ src-tauri/
 
 | Document | Description |
 |----------|-------------|
-| [User Guide](docs/User-Guide_EN.md) | Complete product features and usage instructions |
-| [Installation Guide](docs/Installation-Guide_EN.md) | Platform-specific installation and troubleshooting |
+| [User Guide](docs/User-Guide.md) | Complete product features and usage instructions |
+| [Installation Guide](docs/Installation-Guide.md) | Platform-specific installation and troubleshooting |
 
 ## Contributing
 

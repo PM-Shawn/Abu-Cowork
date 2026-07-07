@@ -34,6 +34,8 @@ export interface ChatOptions {
   reasoningEffort?: 'low' | 'medium' | 'high'; // OpenAI o-series / gpt-5 reasoning depth
   // Whether the model supports vision (image inputs)
   supportsVision?: boolean;
+  /** 自定义端点用户声明的能力，供适配器 URL 归一化与出参规则引擎读取 */
+  declaredCapabilities?: import('@/types/provider').DeclaredCapabilities;
   // Built-in web search method to inject into the request
   builtinWebSearch?: BuiltinSearchMethod;
   // Abort controller for cancellation

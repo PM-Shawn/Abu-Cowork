@@ -23,6 +23,20 @@ export interface ModelInfo {
   isCustom?: boolean;
 }
 
+/**
+ * 用户对自定义/本地端点显式声明的能力。仅 source==='custom' 或本地(ollama/lmstudio)
+ * provider 上出现；builtin 为 undefined → 回退 modelCapabilities.ts 自动探测(非破坏)。
+ */
+export interface DeclaredCapabilities {
+  supportsTools?: boolean;
+  supportsImages?: boolean;
+  supportsReasoning?: boolean;
+  canDisableThinking?: boolean;
+  supportedEfforts?: Array<'low' | 'medium' | 'high'>;
+  /** 自定义协议：接口地址原样使用，跳过 /chat/completions 归一化 */
+  useRawUrl?: boolean;
+}
+
 /** Unified Provider instance (builtin and custom share the same structure) */
 export interface ProviderInstance {
   id: string;
@@ -49,6 +63,7 @@ export interface ProviderInstance {
    * explicitly clicks the trash-can delete action.
    */
   userAdded?: boolean;
+  declaredCapabilities?: DeclaredCapabilities;
 }
 
 /** Currently active model selection */

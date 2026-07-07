@@ -428,7 +428,7 @@ export interface CustomService {
 }
 
 // Re-export V2 provider types
-export type { ProviderSource, ProviderStatus, ModelCapability, ModelInfo, ProviderInstance, ActiveModel, AuxiliaryServices, ProviderGuide } from './provider';
+export type { ProviderSource, ProviderStatus, ModelCapability, ModelInfo, ProviderInstance, ActiveModel, AuxiliaryServices, ProviderGuide, DeclaredCapabilities } from './provider';
 
 export interface LLMConfig {
   provider: LLMProvider;

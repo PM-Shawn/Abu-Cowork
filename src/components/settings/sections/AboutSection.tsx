@@ -13,7 +13,7 @@ import { cn } from '@/lib/utils';
 
 type CheckResult = 'idle' | 'just-checked' | 'error';
 
-const DISCLAIMER_URL = 'https://github.com/PM-Shawn/Abu-Cowork/blob/main/DISCLAIMER.md';
+const DISCLAIMER_URL_BASE = 'https://github.com/PM-Shawn/Abu-Cowork/blob/main';
 
 export default function AboutSection() {
   const [disclaimerOpen, setDisclaimerOpen] = useState(false);
@@ -22,7 +22,8 @@ export default function AboutSection() {
   const updateChecking = useSettingsStore((s) => s.updateChecking);
   const downloadProgress = useSettingsStore((s) => s.updateDownloadProgress);
   const updateInstalling = useSettingsStore((s) => s.updateInstalling);
-  const { t } = useI18n();
+  const { t, locale } = useI18n();
+  const disclaimerUrl = `${DISCLAIMER_URL_BASE}/${locale === 'zh-CN' ? 'DISCLAIMER.zh-CN.md' : 'DISCLAIMER.md'}`;
   const [checkResult, setCheckResult] = useState<CheckResult>('idle');
   const [downloadError, setDownloadError] = useState<string | null>(null);
   const [idCopied, setIdCopied] = useState(false);
@@ -300,7 +301,7 @@ export default function AboutSection() {
             <p>· {t.disclaimerBanner.line3}</p>
           </div>
           <button
-            onClick={() => void handleOpenLink(DISCLAIMER_URL)}
+            onClick={() => void handleOpenLink(disclaimerUrl)}
             className="flex items-center gap-1 text-xs text-[var(--abu-clay)] hover:underline mt-1"
           >
             <ExternalLink className="h-3 w-3" />

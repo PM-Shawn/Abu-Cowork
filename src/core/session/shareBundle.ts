@@ -23,6 +23,7 @@ import { uint8ArrayToBase64 } from '@/utils/base64';
 import { normalizeSeparators } from '@/utils/pathUtils';
 import { listSnapshots, readSnapshotBytes, type SnapshotEntry, type SnapshotSource } from './outputSnapshots';
 import { redactText, redactDeep, type RedactionSample } from './shareRedactor';
+import { isCompactBoundary } from '@/core/context/compactBoundary';
 
 export const SHARE_SCHEMA_VERSION = 1 as const;
 
@@ -94,6 +95,12 @@ export async function buildShareBundle(
     // Without this, system-injected recovery / max-tokens notices pile up in
     // the bundle — invisible in-app but dumped to the recipient.
     if (src.isSystem) continue;
+    // Skip compact-boundary markers: they render as a divider in-app (not a
+    // real message), carry empty content, and their compactBoundary.summaryText
+    // is a summary of the conversation that redactText would NOT scrub (it only
+    // scrubs content) — dropping them avoids leaking an un-redacted summary. The
+    // summarized messages themselves are still present and redacted.
+    if (isCompactBoundary(src)) continue;
     const cleaned = await prepareMessage(src, conv.id, snapshotByPath, tier, (r) => {
       redactionCount += r.count;
       redactionSamples.push(...r.samples);

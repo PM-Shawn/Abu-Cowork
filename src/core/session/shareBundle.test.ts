@@ -160,6 +160,31 @@ describe('buildShareBundle', () => {
     expect(JSON.stringify(bundle)).not.toContain('上次对话在第');
   });
 
+  it('drops compact-boundary markers and never leaks their un-redacted summaryText', async () => {
+    const conv = makeConv([
+      { id: 'real-1', role: 'user', content: 'real question', timestamp: 1 },
+      {
+        id: 'compact-boundary-abc',
+        role: 'system',
+        content: '',
+        timestamp: 2,
+        compactBoundary: {
+          summaryText: 'SECRET_SUMMARY_should_not_leak',
+          summarizedFromId: 'x',
+          summarizedToId: 'y',
+          createdAt: 2,
+          source: 'auto',
+        },
+      },
+      { id: 'real-2', role: 'assistant', content: 'real answer', timestamp: 3 },
+    ]);
+    const bundle = await buildShareBundle(conv);
+    // Marker is dropped — only the two real messages remain.
+    expect(bundle.messages.map((m) => m.id)).toEqual(['real-1', 'real-2']);
+    // The summary (which redactText does not scrub) must not appear anywhere.
+    expect(JSON.stringify(bundle)).not.toContain('SECRET_SUMMARY_should_not_leak');
+  });
+
   it('does not mutate the source conversation object', async () => {
     const conv = makeConv([
       {

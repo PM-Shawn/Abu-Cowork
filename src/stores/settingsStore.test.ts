@@ -514,4 +514,36 @@ describe('settingsStore labs flags', () => {
       expect(labs['todos-inbox']).toBe(true);
     });
   });
+
+  describe('v39 migration', () => {
+    const getMigrate = () =>
+      (useSettingsStore as unknown as {
+        persist: { getOptions: () => { migrate: (data: unknown, version: number) => Record<string, unknown> } };
+      }).persist.getOptions().migrate;
+
+    it('explicitly adds declaredCapabilities key (as undefined) to providers lacking it', () => {
+      const provider = { id: 'openai', name: 'OpenAI', enabled: true };
+      const migrated = getMigrate()({ providers: [provider] }, 38);
+      const providers = migrated.providers as Array<Record<string, unknown>>;
+      expect(providers).toHaveLength(1);
+      expect(providers[0].id).toBe('openai');
+      // Migration must explicitly set the key to undefined so downstream code
+      // can use `'declaredCapabilities' in p` to distinguish "migrated" from "new"
+      expect('declaredCapabilities' in providers[0]).toBe(true);
+      expect(providers[0].declaredCapabilities).toBeUndefined();
+    });
+
+    it('does not overwrite an existing declaredCapabilities field', () => {
+      const caps = { streaming: true };
+      const provider = { id: 'openai', name: 'OpenAI', declaredCapabilities: caps };
+      const migrated = getMigrate()({ providers: [provider] }, 38);
+      const providers = migrated.providers as Array<Record<string, unknown>>;
+      expect(providers[0].declaredCapabilities).toEqual(caps);
+    });
+
+    it('handles missing providers array gracefully', () => {
+      const migrated = getMigrate()({ theme: 'dark' }, 38);
+      expect(migrated.providers).toBeUndefined();
+    });
+  });
 });

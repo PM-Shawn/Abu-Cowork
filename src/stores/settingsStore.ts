@@ -1034,9 +1034,26 @@ export const useSettingsStore = create<SettingsStore>()(
     }),
     {
       name: 'abu-settings',
-      version: 38,
+      version: 39,
       migrate: (persisted: unknown, version: number) => {
         const state = persisted as Record<string, unknown>;
+
+        // ════════════════════════════════════════════════
+        // V39: ProviderInstance gains `declaredCapabilities` (optional).
+        // Existing providers get the key explicitly set to undefined so
+        // downstream code can rely on `'declaredCapabilities' in p` as a
+        // reliable "migrated" sentinel. undefined → fall back to auto-detect.
+        // Non-breaking: existing behaviour is unchanged.
+        // ════════════════════════════════════════════════
+        if (version < 39) {
+          if (Array.isArray(state.providers)) {
+            for (const p of state.providers as Array<Record<string, unknown>>) {
+              if (p && typeof p === 'object' && !('declaredCapabilities' in p)) {
+                p.declaredCapabilities = undefined;
+              }
+            }
+          }
+        }
 
         // ════════════════════════════════════════════════
         // V38: Desktop pet became a two-level Labs feature — the `pet` unlock

@@ -243,6 +243,11 @@ export interface Message {
   plannedSteps?: import('./execution').PlannedStep[];
   // System-injected messages (e.g. max_tokens recovery) — hidden from chat UI
   isSystem?: boolean;
+  /**
+   * 压缩边界 marker 载荷(P1 Part A)。存在时,本条 Message 即一条压缩边界:
+   * role='system'、id 前缀 'compact-boundary-'。渲染成被动分隔线,不发给 LLM。
+   */
+  compactBoundary?: CompactBoundary;
 }
 
 // Simplified tool call info for LLM context building
@@ -268,29 +273,23 @@ export interface ContextCache {
 }
 
 /**
- * Persistent compaction boundary (Part A of the long-conversation P1 design).
- *
- * When a compaction is committed, the original messages before the boundary
- * are archived to messages.archive.jsonl, and the active messages array is
- * rewritten to [firstRounds..., summaryMessage, ...post-anchor].
- *
- * Unlike the ephemeral `contextCache` (which is a send-only per-turn cache
- * that does NOT change the messages array), `CompactBoundary` is the
- * persistent, landed result — it changes the in-store messages array and
- * survives restarts through ConversationMeta / conversationIndex.
+ * 压缩边界 marker 载荷(P1 Part A §5.1)。
+ * 挂在一条 role='system'、id 前缀 'compact-boundary-' 的 Message 上。
+ * 该 Message 持久化进 messages.jsonl(append-only),渲染成被动行内分隔线,
+ * 绝不原样发给 LLM —— 发送侧读 summaryText 构建精简上下文。
+ * 覆盖区间用 message id 表达(不用位置下标,免受数组重排影响)。
  */
 export interface CompactBoundary {
-  /** Summary message (id prefix: context-summary-*). Reused from contextCache. */
-  summaryMessage: Message;
-  /** Number of original messages archived before the boundary.
-   *  Displayed by the UI fold-separator ("N earlier messages archived [expand]"). */
-  archivedCount: number;
-  /** Unix timestamp (ms) when this compaction was committed. */
+  /** summarizeConversation 产出的语义摘要;发送时替代 [summarizedFromId..summarizedToId] 那段。 */
+  summaryText: string;
+  /** 摘要覆盖的第一条原始消息 id(含;firstRound 之后)。 */
+  summarizedFromId: string;
+  /** 摘要覆盖的最后一条原始消息 id(含;保留的最近轮之前)。 */
+  summarizedToId: string;
+  /** 提交时刻 Unix ms。 */
   createdAt: number;
-  /** Line count in messages.archive.jsonl up to this boundary.
-   *  Used by the "expand archived messages" feature to locate and validate
-   *  the correct slice of the archive (guards against cross-boundary confusion). */
-  archivedLineCount: number;
+  /** 'auto'=阈值触发;'manual'=/compact。 */
+  source: 'auto' | 'manual';
 }
 
 export interface Conversation {
@@ -349,20 +348,6 @@ export interface Conversation {
     schemaVersion: number;
     importedAt: number;
   };
-  /**
-   * Persistent compaction boundary (P1 long-conversation design §5.1).
-   *
-   * When set, `messages` only contains the active post-compaction set:
-   * [firstRounds..., summaryMessage, ...post-anchor].
-   * The original messages before the boundary are in messages.archive.jsonl
-   * (read-only, used for audit / expand-archived view).
-   *
-   * PERSISTED — unlike the ephemeral `contextCache`, this field is included
-   * in ConversationMeta (conversationIndex in localStorage + index.json on disk)
-   * and survives restarts. Old conversations without this field continue to
-   * load the full messages array unchanged (backward compatible).
-   */
-  compactBoundary?: CompactBoundary;
 }
 
 // --- Agent ---

@@ -443,76 +443,40 @@ describe('conversationStorage', () => {
       expect(meta.projectId).toBe('proj-1');
     });
 
-    // compactBoundary persistence tests
-    it('passes compactBoundary through when present', () => {
-      const summaryMsg = makeMsg({ id: 'context-summary-abc', role: 'assistant', content: 'Summary text' });
-      const boundary = {
-        summaryMessage: summaryMsg,
-        archivedCount: 42,
-        createdAt: 9999,
-        archivedLineCount: 42,
-      };
-      const meta = storage.buildMeta({
-        id: 'c2',
-        title: 'Compacted chat',
-        createdAt: 1000,
-        updatedAt: 2000,
-        messages: { length: 5 },
-        compactBoundary: boundary,
-      });
-      expect(meta.compactBoundary).toEqual(boundary);
-      expect(meta.compactBoundary?.archivedCount).toBe(42);
-      expect(meta.compactBoundary?.summaryMessage.id).toBe('context-summary-abc');
-    });
-
-    it('omits compactBoundary when not present (v6 compat)', () => {
-      const meta = storage.buildMeta({
-        id: 'c3',
-        title: 'Old chat',
-        createdAt: 1000,
-        updatedAt: 2000,
-        messages: { length: 3 },
-      });
-      expect(meta.compactBoundary).toBeUndefined();
-    });
   });
 
-  describe('compactBoundary index round-trip', () => {
-    it('persists and reloads compactBoundary via updateIndexEntry + loadIndex', async () => {
-      const indexPath = '/Users/testuser/.abu/conversations/index.json';
-      const summaryMsg = makeMsg({ id: 'context-summary-xyz', role: 'assistant', content: 'Compacted summary' });
-      const boundary = {
-        summaryMessage: summaryMsg,
-        archivedCount: 100,
-        createdAt: 12345,
-        archivedLineCount: 100,
-      };
-      const meta: import('./conversationStorage').ConversationMeta = {
-        id: 'conv-boundary',
-        title: 'Boundary conv',
-        createdAt: 1000,
-        updatedAt: 2000,
-        messageCount: 5,
-        compactBoundary: boundary,
-      };
+  describe('compactBoundary marker Message round-trip', () => {
+    it('appendMessage + loadMessages preserves compactBoundary payload on a marker Message', async () => {
+      // A marker Message: role='system', id prefix 'compact-boundary-', carries CompactBoundary payload.
+      const markerMsg = makeMsg({
+        id: 'compact-boundary-test-001',
+        role: 'system',
+        content: '',
+        compactBoundary: {
+          summaryText: 'Earlier messages summarized.',
+          summarizedFromId: 'msg-first-001',
+          summarizedToId: 'msg-last-099',
+          createdAt: 1700000000000,
+          source: 'auto',
+        },
+      });
 
-      await storage.updateIndexEntry(meta);
-      await storage.flushIndex();
+      await storage.appendMessage('conv-marker', markerMsg);
+      await storage.flushWrites();
 
-      // Verify the raw JSON on disk contains the boundary
-      const raw = memFs.files.get(indexPath);
-      expect(raw).toBeDefined();
-      const parsed = JSON.parse(raw!);
-      expect(parsed.entries['conv-boundary'].compactBoundary).toBeDefined();
-      expect(parsed.entries['conv-boundary'].compactBoundary.archivedCount).toBe(100);
+      const loaded = await storage.loadMessages('conv-marker');
+      expect(loaded).toHaveLength(1);
 
-      // Re-import storage module to clear in-memory cache, then reload
-      vi.resetModules();
-      const freshStorage = await import('./conversationStorage');
-      const index = await freshStorage.loadIndex();
-      expect(index.entries['conv-boundary'].compactBoundary).toBeDefined();
-      expect(index.entries['conv-boundary'].compactBoundary?.archivedCount).toBe(100);
-      expect(index.entries['conv-boundary'].compactBoundary?.summaryMessage.id).toBe('context-summary-xyz');
+      const loaded0 = loaded[0];
+      expect(loaded0.id).toBe('compact-boundary-test-001');
+      expect(loaded0.role).toBe('system');
+      // compactBoundary payload must survive JSON serialization round-trip
+      expect(loaded0.compactBoundary).toBeDefined();
+      expect(loaded0.compactBoundary?.summaryText).toBe('Earlier messages summarized.');
+      expect(loaded0.compactBoundary?.summarizedFromId).toBe('msg-first-001');
+      expect(loaded0.compactBoundary?.summarizedToId).toBe('msg-last-099');
+      expect(loaded0.compactBoundary?.createdAt).toBe(1700000000000);
+      expect(loaded0.compactBoundary?.source).toBe('auto');
     });
   });
 

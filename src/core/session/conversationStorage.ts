@@ -25,7 +25,7 @@ import { exists, readTextFile, mkdir, remove, readDir } from '@tauri-apps/plugin
 import { appDataDir } from '@tauri-apps/api/path';
 import { joinPath } from '@/utils/pathUtils';
 import { atomicWrite } from '@/utils/atomicFs';
-import type { Message, MessageContent, CompactBoundary } from '@/types';
+import type { Message, MessageContent } from '@/types';
 
 // ════════════════════════════════════════════════════════════
 // Types
@@ -51,12 +51,6 @@ export interface ConversationMeta {
     schemaVersion: number;
     importedAt: number;
   };
-  /**
-   * Persistent compaction boundary. Mirrors Conversation.compactBoundary so
-   * that loadConversation can reconstruct the boundary on restart without
-   * having to re-parse messages.jsonl. Absent = no compaction yet (v6 compat).
-   */
-  compactBoundary?: CompactBoundary;
 }
 
 interface ConversationIndex {
@@ -551,7 +545,6 @@ export function buildMeta(conv: {
   projectId?: string;
   readOnly?: boolean;
   importedFrom?: { schemaVersion: number; importedAt: number };
-  compactBoundary?: CompactBoundary;
 }): ConversationMeta {
   return {
     id: conv.id,
@@ -568,7 +561,6 @@ export function buildMeta(conv: {
     projectId: conv.projectId,
     readOnly: conv.readOnly,
     importedFrom: conv.importedFrom,
-    compactBoundary: conv.compactBoundary,
   };
 }
 

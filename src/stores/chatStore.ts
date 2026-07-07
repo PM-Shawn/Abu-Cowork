@@ -1401,7 +1401,6 @@ export const useChatStore = create<ChatStore>()(
               projectId: meta.projectId,
               readOnly: meta.readOnly,
               importedFrom: meta.importedFrom,
-              compactBoundary: meta.compactBoundary,
             };
           });
         } catch {
@@ -1426,7 +1425,6 @@ export const useChatStore = create<ChatStore>()(
                 projectId: meta.projectId,
                 readOnly: meta.readOnly,
                 importedFrom: meta.importedFrom,
-                compactBoundary: meta.compactBoundary,
               };
             });
           }
@@ -1474,8 +1472,7 @@ export const useChatStore = create<ChatStore>()(
         // v5 → v6: added per-conversation `model` on ConversationMeta (optional field;
         // undefined = inherit global activeModel, pinned on first run, no-op migration)
         if (version < 6) { /* no transform needed */ }
-        // v6 → v7: added compactBoundary on ConversationMeta (optional field;
-        // undefined = no compaction yet, loads full messages array — backward compatible)
+        // v6 → v7: added compactBoundary marker payload on Message (optional field, no-op migration)
         if (version < 7) { /* no transform needed */ }
         // v3 → v4: migrate conversations from localStorage to file system
         if (version < 4) {

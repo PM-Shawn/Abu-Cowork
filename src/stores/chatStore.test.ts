@@ -1090,13 +1090,13 @@ describe('chatStore', () => {
     });
   });
 
-  // ── compactBoundary persistence (v6→v7 migration compat) ──
-  describe('compactBoundary field', () => {
+  // ── v6→v7 migration compat: compactBoundary marker payload on Message ──
+  describe('v6→v7 migration: loadConversation still works for index entries without compactBoundary', () => {
     // The loadConversation function uses a dynamic import of conversationStorage.
     // The global mock for @tauri-apps/plugin-fs has exists() → false, so
-    // loadMessages returns [] — which is fine; we only verify meta field copying.
+    // loadMessages returns [] — which is fine; we only verify the load succeeds.
 
-    it('loadConversation: v6 index entry without compactBoundary → conv.compactBoundary is undefined', async () => {
+    it('loadConversation: v6 index entry (no boundary fields) loads successfully', async () => {
       useChatStore.setState({
         conversations: {},
         conversationIndex: {
@@ -1106,7 +1106,7 @@ describe('chatStore', () => {
             createdAt: 1000,
             updatedAt: 2000,
             messageCount: 2,
-            // No compactBoundary — represents v6 data
+            // No compactBoundary — represents v6 data; backward compatible no-op migration
           },
         },
         activeConversationId: null,
@@ -1122,52 +1122,8 @@ describe('chatStore', () => {
       const conv = useChatStore.getState().conversations['old-conv'];
       expect(conv).toBeDefined();
       expect(conv.title).toBe('Old conversation');
-      expect(conv.compactBoundary).toBeUndefined();
-    });
-
-    it('loadConversation: copies compactBoundary from index meta to in-memory conversation', async () => {
-      const summaryMsg: Conversation['messages'][number] = {
-        id: 'context-summary-test',
-        role: 'assistant',
-        content: 'Summary of earlier conversation',
-        timestamp: 8888,
-      };
-      const boundary = {
-        summaryMessage: summaryMsg,
-        archivedCount: 77,
-        createdAt: 55555,
-        archivedLineCount: 77,
-      };
-
-      useChatStore.setState({
-        conversations: {},
-        conversationIndex: {
-          'bounded-conv': {
-            id: 'bounded-conv',
-            title: 'Compacted conversation',
-            createdAt: 1000,
-            updatedAt: 2000,
-            messageCount: 5,
-            compactBoundary: boundary,
-          },
-        },
-        activeConversationId: null,
-        agentStatus: 'idle',
-        currentTool: null,
-        currentUsage: null,
-        pendingInput: null,
-        thinkingStartTime: null,
-      });
-
-      await useChatStore.getState().loadConversation('bounded-conv');
-
-      const conv = useChatStore.getState().conversations['bounded-conv'];
-      expect(conv).toBeDefined();
-      expect(conv.compactBoundary).toBeDefined();
-      expect(conv.compactBoundary?.archivedCount).toBe(77);
-      expect(conv.compactBoundary?.createdAt).toBe(55555);
-      expect(conv.compactBoundary?.archivedLineCount).toBe(77);
-      expect(conv.compactBoundary?.summaryMessage.id).toBe('context-summary-test');
+      // compactBoundary is now a Message field, not a Conversation field —
+      // the index entry has no such field and the conversation loads cleanly.
     });
   });
 

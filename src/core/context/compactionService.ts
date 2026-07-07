@@ -1,6 +1,7 @@
 import { computeCompactionPlan, createCompactBoundaryMarker } from './compactBoundary';
 import { summarizeConversation } from './contextCompressor';
 import type { CompressionConfig } from './contextCompressor';
+import type { Message } from '@/types';
 import { useChatStore } from '@/stores/chatStore';
 import {
   useSettingsStore,
@@ -20,6 +21,69 @@ export interface CompactionResult {
   reason: CompactionReason;
 }
 
+/** A compaction plan (from computeCompactionPlan) — the range to summarize. */
+interface CompactionPlan {
+  middleMessages: Message[];
+  summarizedFromId: string;
+  summarizedToId: string;
+}
+
+/**
+ * Land a compact-boundary marker into a conversation (append-only).
+ *
+ * Shared by the auto path (agentLoop Step 2.1) and the manual /compact path so
+ * the marker-landing sequence lives in one place. addMessage pushes to store +
+ * disk without mutating any existing message; the stale ephemeral 65% cache
+ * (indexed by pre-marker positions) is invalidated.
+ */
+export function landCompactBoundaryMarker(
+  convId: string,
+  plan: CompactionPlan,
+  summaryText: string,
+  source: 'auto' | 'manual',
+): Message {
+  const marker = createCompactBoundaryMarker({
+    summaryText: summaryText.trim(),
+    summarizedFromId: plan.summarizedFromId,
+    summarizedToId: plan.summarizedToId,
+    source,
+    timestamp: Date.now(),
+  });
+  useChatStore.getState().addMessage(convId, marker);
+  useChatStore.getState().clearContextCache(convId);
+  return marker;
+}
+
+/**
+ * Resolve the LLM config for a summarization call from the current settings.
+ *
+ * Enterprise gateway mode forces the OpenAI-compatible adapter (LiteLLM exposes
+ * that interface) — matching llmCall.ts. Missing the `forceOpenAiCompatible`
+ * term would pick the Claude adapter under an enforced gateway and fail the call.
+ */
+function resolveSummarizeConfig(): CompressionConfig {
+  const settings = useSettingsStore.getState();
+  const provider = getActiveProvider(settings);
+  const creds = resolveEffectiveLlmCreds(getActiveApiKey(settings), provider?.baseUrl || undefined);
+  const adapter: LLMAdapter =
+    creds.forceOpenAiCompatible || provider?.apiFormat === 'openai-compatible'
+      ? new OpenAICompatibleAdapter()
+      : new ClaudeAdapter();
+  return {
+    adapter,
+    model: getEffectiveModel(settings),
+    apiKey: creds.apiKey,
+    baseUrl: creds.baseUrl,
+  };
+}
+
+/**
+ * Manual /compact: compact the conversation on explicit user request.
+ *
+ * Unlike the auto path, this is unguarded by the substantiveness/delta threshold
+ * (computeCompactionPlan is called without an estimator) — the user asked, so we
+ * compact whenever there are enough rounds.
+ */
 export async function compactConversationManually(
   convId: string,
 ): Promise<CompactionResult> {
@@ -32,39 +96,13 @@ export async function compactConversationManually(
 
   let summaryText: string;
   try {
-    const settings = useSettingsStore.getState();
-    const provider = getActiveProvider(settings);
-    const adapter: LLMAdapter =
-      provider?.apiFormat === 'openai-compatible'
-        ? new OpenAICompatibleAdapter()
-        : new ClaudeAdapter();
-    const creds = resolveEffectiveLlmCreds(
-      getActiveApiKey(settings),
-      provider?.baseUrl || undefined,
-    );
-    const config: CompressionConfig = {
-      adapter,
-      model: getEffectiveModel(settings),
-      apiKey: creds.apiKey,
-      baseUrl: creds.baseUrl,
-    };
-    summaryText = await summarizeConversation(plan.middleMessages, config);
+    summaryText = await summarizeConversation(plan.middleMessages, resolveSummarizeConfig());
   } catch {
     return { compacted: false, reason: 'summarize-failed' };
   }
 
   if (!summaryText.trim()) return { compacted: false, reason: 'summarize-failed' };
 
-  const marker = createCompactBoundaryMarker({
-    summaryText: summaryText.trim(),
-    summarizedFromId: plan.summarizedFromId,
-    summarizedToId: plan.summarizedToId,
-    source: 'manual',
-    timestamp: Date.now(),
-  });
-
-  useChatStore.getState().addMessage(convId, marker);
-  useChatStore.getState().clearContextCache(convId);
-
+  landCompactBoundaryMarker(convId, plan, summaryText, 'manual');
   return { compacted: true, reason: 'ok' };
 }

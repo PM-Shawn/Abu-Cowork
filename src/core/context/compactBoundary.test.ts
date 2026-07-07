@@ -156,7 +156,7 @@ describe('findLastCompactBoundary', () => {
 describe('createCompactBoundaryMarker', () => {
   const TS = 1_700_000_000_000;
 
-  it('builds the correct id (prefix + base-36 timestamp)', () => {
+  it('builds the id with prefix + base-36 timestamp + a random suffix (collision-safe)', () => {
     const m = createCompactBoundaryMarker({
       summaryText: 'text',
       summarizedFromId: 'f',
@@ -164,7 +164,16 @@ describe('createCompactBoundaryMarker', () => {
       source: 'auto',
       timestamp: TS,
     });
-    expect(m.id).toBe(`${COMPACT_BOUNDARY_ID_PREFIX}${TS.toString(36)}`);
+    expect(m.id).toMatch(new RegExp(`^${COMPACT_BOUNDARY_ID_PREFIX}${TS.toString(36)}-[a-z0-9]+$`));
+    // Two markers in the same millisecond must not collide.
+    const m2 = createCompactBoundaryMarker({
+      summaryText: 'text',
+      summarizedFromId: 'f',
+      summarizedToId: 't',
+      source: 'auto',
+      timestamp: TS,
+    });
+    expect(m.id).not.toBe(m2.id);
   });
 
   it('sets role to "system"', () => {
@@ -326,6 +335,47 @@ describe('computeCompactionPlan', () => {
     expect(plan!.summarizedFromId).toBe(messages[2].id);
     expect(plan!.summarizedToId).toBe(messages[3].id);
     expect(plan!.middleMessages).toHaveLength(2);
+  });
+
+  describe('substantiveness + delta guard (opts.estimateTokens)', () => {
+    // 100 tokens per message — deterministic estimator for the guard.
+    const est = (msgs: { length: number }) => msgs.length * 100;
+
+    it('without estimateTokens, always plans (manual /compact path is unguarded)', () => {
+      resetSeq();
+      const messages = buildRounds(RECENT_ROUNDS_TO_KEEP + 2);
+      // no opts → no guard
+      expect(computeCompactionPlan(messages)).not.toBeNull();
+    });
+
+    it('no marker: returns null when the whole middle is below minNewTokens', () => {
+      resetSeq();
+      const messages = buildRounds(RECENT_ROUNDS_TO_KEEP + 2); // middle = 1 round = 2 msgs = 200 tokens
+      expect(computeCompactionPlan(messages, { estimateTokens: est, minNewTokens: 500 })).toBeNull();
+      expect(computeCompactionPlan(messages, { estimateTokens: est, minNewTokens: 100 })).not.toBeNull();
+    });
+
+    it('marker present: returns null when NEW content since the last marker is below the threshold (no per-turn re-fire)', () => {
+      resetSeq();
+      // 8 rounds → clean middle = msg[2..7] (6 msgs). Marker covers up to msg[5].
+      const messages = buildRounds(RECENT_ROUNDS_TO_KEEP + 4);
+      const marker = makeMarker(messages[2].id, messages[5].id);
+      const mixed = [...messages.slice(0, 6), marker, ...messages.slice(6)];
+      // NEW content after msg[5] = msg[6], msg[7] = 2 msgs = 200 tokens
+      expect(computeCompactionPlan(mixed, { estimateTokens: est, minNewTokens: 500 })).toBeNull();
+    });
+
+    it('marker present: plans again once NEW content since the last marker is substantial', () => {
+      resetSeq();
+      const messages = buildRounds(RECENT_ROUNDS_TO_KEEP + 4);
+      const marker = makeMarker(messages[2].id, messages[5].id);
+      const mixed = [...messages.slice(0, 6), marker, ...messages.slice(6)];
+      // 200 new tokens >= 100 → re-fire allowed
+      const plan = computeCompactionPlan(mixed, { estimateTokens: est, minNewTokens: 100 });
+      expect(plan).not.toBeNull();
+      // Still summarizes the whole raw middle (last-marker-wins send-side).
+      expect(plan!.summarizedToId).toBe(messages[7].id);
+    });
   });
 });
 
@@ -525,7 +575,11 @@ describe('buildContextFromBoundary', () => {
   });
 
   describe('defensive cases', () => {
-    it('returns markers-filtered array when summarizedFromId is not found', () => {
+    // A stale marker (anchor id gone / inverted range) must return the SAME array
+    // reference so the caller (agentLoop) treats it as "no usable marker" and
+    // falls through to the live 65% compression — never silently shipping the
+    // full un-compacted history as if it were compacted.
+    it('returns the same array reference when summarizedFromId is not found', () => {
       resetSeq();
       const u1 = msg('user');
       const a1 = msg('assistant');
@@ -534,13 +588,10 @@ describe('buildContextFromBoundary', () => {
 
       const result = buildContextFromBoundary(messages);
 
-      // Fallback: markers filtered out, originals preserved
-      expect(result.every((m) => !isCompactBoundary(m))).toBe(true);
-      expect(result.find((m) => m.id === u1.id)).toBeDefined();
-      expect(result.find((m) => m.id === a1.id)).toBeDefined();
+      expect(result).toBe(messages);
     });
 
-    it('returns markers-filtered array when summarizedToId is not found', () => {
+    it('returns the same array reference when summarizedToId is not found', () => {
       resetSeq();
       const u1 = msg('user');
       const a1 = msg('assistant');
@@ -549,12 +600,10 @@ describe('buildContextFromBoundary', () => {
 
       const result = buildContextFromBoundary(messages);
 
-      expect(result.every((m) => !isCompactBoundary(m))).toBe(true);
-      expect(result.find((m) => m.id === u1.id)).toBeDefined();
-      expect(result.find((m) => m.id === a1.id)).toBeDefined();
+      expect(result).toBe(messages);
     });
 
-    it('returns markers-filtered array when toIdx < fromIdx (inverted range)', () => {
+    it('returns the same array reference when toIdx < fromIdx (inverted range)', () => {
       resetSeq();
       const u1 = msg('user');
       const a1 = msg('assistant');
@@ -564,9 +613,7 @@ describe('buildContextFromBoundary', () => {
 
       const result = buildContextFromBoundary(messages);
 
-      expect(result.every((m) => !isCompactBoundary(m))).toBe(true);
-      expect(result.find((m) => m.id === u1.id)).toBeDefined();
-      expect(result.find((m) => m.id === a1.id)).toBeDefined();
+      expect(result).toBe(messages);
     });
 
     it('does not throw on a messages array containing only a marker', () => {

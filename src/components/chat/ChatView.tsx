@@ -206,7 +206,7 @@ export default function ChatView() {
       useToastStore.getState().addToast(
         res.compacted
           ? { type: 'success', title: t.chat.compactCommand.done }
-          : res.reason === 'too-few'
+          : res.reason === 'too-few' || res.reason === 'no-conversation'
             ? { type: 'info', title: t.chat.compactCommand.tooFew }
             : { type: 'error', title: t.chat.compactCommand.failed },
       );

@@ -21,7 +21,8 @@ import { matchesToolName, parseToolPatterns } from '../skill/toolFilter';
 import { notifyTaskCompleted, notifyTaskError } from '../../utils/notifications';
 import { prepareContextMessages, trimOldScreenshots } from '../context/contextManager';
 import { compressContextIfNeeded, summarizeConversation } from '../context/contextCompressor';
-import { buildContextFromBoundary, computeCompactionPlan, createCompactBoundaryMarker } from '../context/compactBoundary';
+import { buildContextFromBoundary, computeCompactionPlan } from '../context/compactBoundary';
+import { landCompactBoundaryMarker } from '../context/compactionService';
 import { applyMicroCompaction } from '../context/microCompactor';
 import { AutoCompactTracker, getUsagePercent } from '../context/autoCompact';
 import { estimateToolSchemaTokens, estimateTokens, estimateMessageTokens, calibrateFromUsage, setActiveModel } from '../context/tokenEstimator';
@@ -977,10 +978,6 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
   // the model a chance to recover.
   let consecutiveNoProgress = 0;
   const autoCompactTracker = new AutoCompactTracker();
-  // Persistent compaction guard: land at most one compact-boundary marker per
-  // runAgentLoop invocation. After one lands, future turns read the marker so
-  // the 85% threshold won't fire again for a while.
-  let persistentCompactionDone = false;
   let maxOutputTokensRecoveryCount = 0;
   const MAX_OUTPUT_TOKENS_RECOVERY_LIMIT = 3;
 
@@ -1355,17 +1352,26 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
       });
 
       // Step 2.1: Persistent compaction (P1 Part A, marker version). When still
-      // critically large after the send-only pass, land ONE compact-boundary
-      // marker (append-only) so future turns read a compact context from the
-      // marker instead of re-compressing every turn. The CURRENT turn proceeds
-      // with messagesForContext as-is — one large turn is acceptable; the
-      // benefit compounds from the next turn onward.
+      // critically large after the send-only pass, land a compact-boundary marker
+      // (append-only) so future turns read a compact context from the marker.
+      //
+      // Gating (fixes the divider-spam / retry-storm / tail-growth class):
+      //  - computeCompactionPlan is passed the token estimator so it only returns
+      //    a plan when there is enough NEW content the LAST marker doesn't already
+      //    cover (delta guard) — prevents re-summarizing + stacking a marker every
+      //    turn while the conversation stays large.
+      //  - autoCompactTracker (shared with the 65% path) is the failure circuit
+      //    breaker: a failed summarize records a failure and, once tripped, stops
+      //    re-issuing the blocking call every turn.
+      // No per-invocation latch: the marker lands immediately, so the next
+      // iteration's history already contains it and the tail keeps getting
+      // re-compacted as it grows (within a run and across runs).
       if (
-        !persistentCompactionDone &&
         turnCount >= 3 &&
-        postCompressionTokens >= maxInputTokens * PERSISTENT_COMPACTION_THRESHOLD
+        postCompressionTokens >= maxInputTokens * PERSISTENT_COMPACTION_THRESHOLD &&
+        !autoCompactTracker.isDisabled()
       ) {
-        const plan = computeCompactionPlan(historyMessages);
+        const plan = computeCompactionPlan(historyMessages, { estimateTokens: estimateMessageTokens });
         if (plan) {
           const compactionCreds = resolveEffectiveLlmCreds(
             getActiveApiKey(settingsForModel),
@@ -1381,24 +1387,18 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
               signal: abortController.signal,
             });
           } catch (err) {
+            autoCompactTracker.recordFailure();
             logger.warn('[persistentCompaction] summarize failed — skipping this turn', { error: String(err) });
           }
           if (summaryText.trim()) {
-            const marker = createCompactBoundaryMarker({
-              summaryText: summaryText.trim(),
-              summarizedFromId: plan.summarizedFromId,
-              summarizedToId: plan.summarizedToId,
-              source: 'auto',
-              timestamp: Date.now(),
-            });
-            // Append-only: addMessage pushes to store + disk. No existing message
-            // is mutated — the #1 rewrite data-loss class cannot occur here. The
-            // in-flight assistant stub is finalized by id (assistantMsgId), so
-            // appending the marker as the new last message is safe.
-            useChatStore.getState().addMessage(conversationId, marker);
-            // The ephemeral 65% cache indexed pre-marker positions → now stale.
-            useChatStore.getState().clearContextCache(conversationId);
-            persistentCompactionDone = true;
+            // Append-only: landCompactBoundaryMarker pushes to store + disk and
+            // clears the stale 65% cache. No existing message is mutated — the #1
+            // rewrite data-loss class cannot occur. The in-flight assistant stub
+            // is finalized by id (assistantMsgId), so appending the marker as the
+            // new last message is safe. (Known minor: when this fires mid tool-use
+            // loop the divider can visually split that loop's group — cosmetic.)
+            landCompactBoundaryMarker(conversationId, plan, summaryText, 'auto');
+            autoCompactTracker.recordSuccess();
             logger.info('[persistentCompaction] landed compact-boundary marker', {
               from: plan.summarizedFromId,
               to: plan.summarizedToId,

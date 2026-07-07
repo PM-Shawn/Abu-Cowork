@@ -57,8 +57,12 @@ export function createCompactBoundaryMarker(params: {
 }): Message {
   const { summaryText, summarizedFromId, summarizedToId, source, timestamp } =
     params;
+  // Random suffix follows the project id convention — two markers created in the
+  // same millisecond must not collide (appendMessage dedups by id and would drop
+  // the second; React keys would clash).
+  const suffix = Math.random().toString(36).slice(2, 8);
   return {
-    id: `${COMPACT_BOUNDARY_ID_PREFIX}${timestamp.toString(36)}`,
+    id: `${COMPACT_BOUNDARY_ID_PREFIX}${timestamp.toString(36)}-${suffix}`,
     role: 'system',
     content: '',
     timestamp,
@@ -87,7 +91,15 @@ export function createCompactBoundaryMarker(params: {
  *   6. summarizedFromId = middleMessages[0].id
  *      summarizedToId   = middleMessages[middleMessages.length - 1].id
  */
-export function computeCompactionPlan(historyMessages: Message[]): {
+export function computeCompactionPlan(
+  historyMessages: Message[],
+  opts?: {
+    /** Token estimator; when provided, enables the substantiveness + delta guard. */
+    estimateTokens?: (msgs: Message[]) => number;
+    /** Minimum NEW (un-summarized) tokens required to justify a compaction. */
+    minNewTokens?: number;
+  },
+): {
   middleMessages: Message[];
   summarizedFromId: string;
   summarizedToId: string;
@@ -106,6 +118,27 @@ export function computeCompactionPlan(historyMessages: Message[]): {
 
   if (middleMessages.length === 0) {
     return null;
+  }
+
+  // Substantiveness + delta guard (auto path only — the manual /compact caller
+  // omits estimateTokens so it always compacts on explicit request). Without
+  // this, the anchor advances ~1 round per turn, so a still-large conversation
+  // would re-summarize and stack a NEW marker every single turn (divider spam +
+  // a blocking LLM call per turn). We only fire when there is enough NEW content
+  // that the LAST marker does not already cover.
+  if (opts?.estimateTokens) {
+    let newContent = middleMessages;
+    const last = findLastCompactBoundary(historyMessages);
+    if (last) {
+      const prevToId = last.marker.compactBoundary?.summarizedToId;
+      const prevIdx =
+        prevToId != null ? middleMessages.findIndex((m) => m.id === prevToId) : -1;
+      // Content after the previously-summarized point = what is genuinely new.
+      newContent = prevIdx >= 0 ? middleMessages.slice(prevIdx + 1) : middleMessages;
+    }
+    if (opts.estimateTokens(newContent) < (opts.minNewTokens ?? 500)) {
+      return null;
+    }
   }
 
   return {
@@ -151,9 +184,13 @@ export function buildContextFromBoundary(historyMessages: Message[]): Message[] 
   const fromIdx = historyMessages.findIndex((m) => m.id === b.summarizedFromId);
   const toIdx = historyMessages.findIndex((m) => m.id === b.summarizedToId);
 
-  // Defensive: ids not found or range inverted → safe fallback (no crash)
+  // Defensive: an anchor id is gone (e.g. the user deleted a summarized message)
+  // or the range is inverted → the marker is stale and can't be applied. Return
+  // the SAME array reference so the caller's `boundaryView !== historyMessages`
+  // check is false and it falls through to the live 65% send-only compression,
+  // rather than silently shipping the full un-compacted history to the LLM.
   if (fromIdx === -1 || toIdx === -1 || toIdx < fromIdx) {
-    return historyMessages.filter(notMarker);
+    return historyMessages;
   }
 
   const summaryMsg: Message = {

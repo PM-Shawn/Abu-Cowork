@@ -485,9 +485,9 @@ export class OpenAICompatibleAdapter implements LLMAdapter {
     const reader = response.body?.getReader();
     if (!reader) throw new Error('No response body');
 
-    // Idle timeout: if no data received for 90s, treat as network hang.
-    // Aborting streamAbort rejects the pending reader.read() so chat() can
-    // actually return; the catch below turns it into a retryable LLMError.
+    // Idle timeout: if no data received within the window, treat as a network
+    // hang. Aborting streamAbort rejects the pending reader.read() so chat()
+    // can actually return; the catch below turns it into a retryable LLMError.
     // (Emitting events alone, as before, left the read hung and chat() pending.)
     const heartbeat = createHeartbeat(STREAM_HANG_TIMEOUT_MS, () => {
       idleTimedOut = true;

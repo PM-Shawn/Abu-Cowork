@@ -78,11 +78,11 @@ describe('ClaudeAdapter', () => {
       await vi.advanceTimersByTimeAsync(0);
       expect(events).toHaveLength(0);
 
-      // 89s — should NOT have timed out yet
-      await vi.advanceTimersByTimeAsync(89_000);
+      // 179s — should NOT have timed out yet (idle window is 180s)
+      await vi.advanceTimersByTimeAsync(179_000);
       expect(settled).toBe(false);
 
-      // Past 90s — heartbeat aborts the request, chat() rejects with retryable error
+      // Past 180s — heartbeat aborts the request, chat() rejects with retryable error
       await vi.advanceTimersByTimeAsync(2_000);
       await expect(chatPromise).rejects.toMatchObject({
         code: 'network_error',

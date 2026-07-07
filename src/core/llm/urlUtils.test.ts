@@ -66,6 +66,34 @@ describe('urlUtils', () => {
         .toBe('http://x.com/v1/chat/completions');
     });
 
+    // Phase 3: idempotent normalization + useRawUrl
+    describe('idempotent normalization', () => {
+      const f = (u: string, opts?: { useRawUrl?: boolean }) =>
+        buildFullChatUrl(u, 'openai-compatible', opts);
+
+      it('bare host → append /v1/chat/completions', () => {
+        expect(f('https://api.example.com')).toBe('https://api.example.com/v1/chat/completions');
+      });
+      it('base ending /v1 → append once', () => {
+        expect(f('https://api.example.com/v1')).toBe('https://api.example.com/v1/chat/completions');
+      });
+      it('full endpoint → returned as-is (no double append)', () => {
+        expect(f('https://api.example.com/v1/chat/completions')).toBe('https://api.example.com/v1/chat/completions');
+      });
+      it('trailing slash + full endpoint → normalized once', () => {
+        expect(f('https://api.example.com/v1/chat/completions/')).toBe('https://api.example.com/v1/chat/completions');
+      });
+      it('preserves query/fragment suffix', () => {
+        expect(f('https://api.example.com/v1/chat/completions?x=1')).toBe('https://api.example.com/v1/chat/completions?x=1');
+      });
+      it('useRawUrl → use exactly, skip normalization', () => {
+        expect(f('https://proxy.corp/llm/gateway', { useRawUrl: true })).toBe('https://proxy.corp/llm/gateway');
+      });
+      it('anthropic format unchanged by opts', () => {
+        expect(buildFullChatUrl('https://api.anthropic.com', 'anthropic')).toBe('https://api.anthropic.com/v1/messages');
+      });
+    });
+
     it('builds Anthropic messages URL', () => {
       expect(buildFullChatUrl('http://x.com', 'anthropic'))
         .toBe('http://x.com/v1/messages');

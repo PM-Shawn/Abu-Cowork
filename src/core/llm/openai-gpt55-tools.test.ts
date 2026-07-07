@@ -39,6 +39,23 @@ async function capture(opts: Partial<ChatOptions>): Promise<{ url: string; body:
   return { url, body };
 }
 
+describe('URL normalization (Phase 3)', () => {
+  beforeEach(() => mockFetch.mockReset());
+
+  it('posts to full endpoint when baseUrl already has /chat/completions (idempotent)', async () => {
+    const { url } = await capture({ baseUrl: 'https://api.example.com/v1/chat/completions' });
+    expect(url).toBe('https://api.example.com/v1/chat/completions');
+  });
+
+  it('useRawUrl posts to exact baseUrl without normalization', async () => {
+    const { url } = await capture({
+      baseUrl: 'https://proxy.corp/gw',
+      declaredCapabilities: { useRawUrl: true },
+    });
+    expect(url).toBe('https://proxy.corp/gw');
+  });
+});
+
 describe('gpt-5.5 + tools reasoning_effort handling (issue #86)', () => {
   beforeEach(() => mockFetch.mockReset());
 

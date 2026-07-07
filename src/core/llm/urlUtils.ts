@@ -21,16 +21,37 @@ export function resolveOpenAIBaseUrl(raw: string | undefined | null): string {
 }
 
 /**
+ * Idempotently ensure a URL ends in exactly one /chat/completions,
+ * stripping any repeats and preserving ?query / #fragment suffixes.
+ */
+export function normalizeChatCompletionsUrl(raw: string | undefined | null): string {
+  const s = (raw ?? '').trim();
+  const cut = s.search(/[?#]/);
+  const suffix = cut >= 0 ? s.slice(cut) : '';
+  let base = (cut >= 0 ? s.slice(0, cut) : s).replace(/\/+$/, '');
+  while (base.endsWith('/chat/completions')) base = base.slice(0, -'/chat/completions'.length);
+  base = resolveOpenAIBaseUrl(base);
+  return `${base}/chat/completions${suffix}`;
+}
+
+/**
  * Build the full chat endpoint URL the app will hit for a given provider config.
  * Used by the adapter (to POST) and by the settings UI (to preview for the user).
+ *
+ * For openai-compatible: idempotently normalizes to .../chat/completions so a
+ * user-pasted full URL (e.g. https://api.x/v1/chat/completions) is not
+ * double-appended. Pass opts.useRawUrl to skip normalization entirely and use
+ * the URL exactly as typed (for proxies with non-standard paths).
  */
 export function buildFullChatUrl(
   rawBaseUrl: string | undefined | null,
   format: ApiFormat,
+  opts?: { useRawUrl?: boolean },
 ): string {
   if (format === 'anthropic') {
     const base = normalizeBaseUrl(rawBaseUrl) || 'https://api.anthropic.com';
     return `${base}/v1/messages`;
   }
-  return `${resolveOpenAIBaseUrl(rawBaseUrl)}/chat/completions`;
+  if (opts?.useRawUrl) return normalizeBaseUrl(rawBaseUrl);
+  return normalizeChatCompletionsUrl(rawBaseUrl);
 }

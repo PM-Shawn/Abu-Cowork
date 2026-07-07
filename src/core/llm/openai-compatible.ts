@@ -6,7 +6,7 @@ import { normalizeMessages } from './messageNormalizer';
 import type { PreparedTurn, PreparedContentBlock } from './messageNormalizer';
 import { createHeartbeat, anySignal, DEFAULT_STREAM_HANG_TIMEOUT_MS as STREAM_HANG_TIMEOUT_MS } from './heartbeat';
 import { createLogger } from '../logging/logger';
-import { resolveOpenAIBaseUrl } from './urlUtils';
+import { resolveOpenAIBaseUrl, buildFullChatUrl } from './urlUtils';
 
 const logger = createLogger('openai-compatible');
 
@@ -294,6 +294,12 @@ export class OpenAICompatibleAdapter implements LLMAdapter {
     // and defensively trims whitespace users paste in (e.g. trailing space
     // would otherwise bypass the regex and emit /%20/v1/... to the server).
     const baseUrl = resolveOpenAIBaseUrl(options.baseUrl);
+    // Full URL for POST — idempotent: a user-pasted URL that already ends in
+    // /chat/completions is not double-appended. useRawUrl bypasses all
+    // normalization for proxies with non-standard paths.
+    const fullUrl = buildFullChatUrl(options.baseUrl, 'openai-compatible', {
+      useRawUrl: options.declaredCapabilities?.useRawUrl,
+    });
 
     // Ollama: streaming + tool calling is broken in /v1/chat/completions.
     // When tools are present and endpoint looks like Ollama, use non-streaming.
@@ -367,7 +373,7 @@ export class OpenAICompatibleAdapter implements LLMAdapter {
     }, STREAM_HANG_TIMEOUT_MS);
     let response: Awaited<ReturnType<typeof fetchFn>>;
     try {
-      response = await fetchFn(`${baseUrl}/chat/completions`, {
+      response = await fetchFn(fullUrl, {
         method: 'POST',
         headers: requestHeaders,
         body: JSON.stringify(body),
@@ -396,7 +402,7 @@ export class OpenAICompatibleAdapter implements LLMAdapter {
           limit: retryLimit,
         });
         body.max_tokens = retryLimit;
-        response = await fetchFn(`${baseUrl}/chat/completions`, {
+        response = await fetchFn(fullUrl, {
           method: 'POST',
           headers: requestHeaders,
           body: JSON.stringify(body),

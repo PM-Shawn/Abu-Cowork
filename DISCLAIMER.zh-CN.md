@@ -1,4 +1,4 @@
-**中文** | [English](DISCLAIMER.md)
+[English](DISCLAIMER.md) | **中文**
 
 # 免责声明
 

@@ -666,6 +666,15 @@ export interface TranslationDict {
     models: string;
     modelsCount: string;
     capabilitiesLabel: string;
+    // Advanced config (custom/local providers)
+    advancedConfig: string;
+    capTools: string;
+    capImages: string;
+    capReasoning: string;
+    capCanDisableThinking: string;
+    capRawUrl: string;
+    capRawUrlHint: string;
+    capEffort: string;
   };
 
   // Sandbox recovery

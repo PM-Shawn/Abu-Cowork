@@ -661,6 +661,14 @@ const zhCN: TranslationDict = {
     models: '模型',
     modelsCount: '{count} 个模型',
     capabilitiesLabel: '能力',
+    advancedConfig: '高级配置',
+    capTools: '工具调用',
+    capImages: '图片输入',
+    capReasoning: '思考模式',
+    capCanDisableThinking: '允许关闭思考',
+    capRawUrl: '自定义协议',
+    capRawUrlHint: '接口地址原样使用，不自动补全 /chat/completions。适用于代理层已处理协议的场景。',
+    capEffort: '思考档位',
   },
 
   sandbox: {

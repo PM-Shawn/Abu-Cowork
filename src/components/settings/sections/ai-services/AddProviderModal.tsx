@@ -9,12 +9,13 @@ import { useI18n } from '@/i18n';
 import { cn } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import { Toggle } from '@/components/ui/toggle';
 import { checkProviderHealth } from '@/core/llm/healthCheck';
 import { buildFullChatUrl } from '@/core/llm/urlUtils';
 import { useSettingsStore, PROVIDER_CONFIGS } from '@/stores/settingsStore';
 import { PROVIDER_GUIDES } from './providerGuides';
 import type { LLMProvider, ApiFormat } from '@/types';
-import type { ModelInfo, ProviderSource } from '@/types/provider';
+import type { ModelInfo, ProviderSource, DeclaredCapabilities } from '@/types/provider';
 import {
   checkOllamaHealth,
   fetchOllamaModels,
@@ -159,6 +160,9 @@ export default function AddProviderModal({ open: isOpen, onClose }: AddProviderM
   const [fetchedModels, setFetchedModels] = useState<ModelInfo[]>([]);
   const [fetchModelsError, setFetchModelsError] = useState('');
 
+  // ── Advanced capabilities (custom/local providers only) ──
+  const [declared, setDeclared] = useState<DeclaredCapabilities>({});
+
   // ── Validate state ──
   const [validating, setValidating] = useState(false);
   const [validateResult, setValidateResult] = useState<{ success: boolean; message: string } | null>(null);
@@ -183,6 +187,7 @@ export default function AddProviderModal({ open: isOpen, onClose }: AddProviderM
   const isOllama = selectedOption?.provider === 'ollama';
   const isLMStudio = selectedOption?.provider === 'lmstudio';
   const isCustom = selectedId ? isCustomId(selectedId) : false;
+  const showAdvanced = isCustom || isOllama || isLMStudio;
   const guide = selectedOption && !isCustom ? PROVIDER_GUIDES[selectedOption.provider] : null;
 
   // knownModels removed — models are fetched from API or added manually
@@ -224,6 +229,10 @@ export default function AddProviderModal({ open: isOpen, onClose }: AddProviderM
         setSelectedModels(new Set());
       }
 
+      // Reset declared capabilities; load from existing store entry if already configured
+      const existingP = providers.find(p => p.id === option.provider);
+      setDeclared(existingP?.declaredCapabilities ?? {});
+
       // Reset Ollama state
       setOllamaStatus('idle');
       setOllamaError('');
@@ -239,7 +248,7 @@ export default function AddProviderModal({ open: isOpen, onClose }: AddProviderM
       // (fetch removed)
       setManualModelInput('');
     },
-    [nameManuallyEdited]
+    [nameManuallyEdited, providers]
   );
 
   const handleNameChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
@@ -384,6 +393,7 @@ export default function AddProviderModal({ open: isOpen, onClose }: AddProviderM
     const capabilities = selectedOption && !isCustom
       ? PROVIDER_CONFIGS[selectedOption.provider].capabilities
       : undefined;
+    const declaredCapabilities = showAdvanced ? declared : undefined;
 
     // For builtin providers: update the existing entry instead of creating a duplicate
     const existingBuiltin = !isCustom && selectedOption
@@ -400,6 +410,7 @@ export default function AddProviderModal({ open: isOpen, onClose }: AddProviderM
         models: modelInfos,
         capabilities,
         userAdded: true,
+        declaredCapabilities,
       });
       providerId = existingBuiltin.id;
     } else {
@@ -413,6 +424,7 @@ export default function AddProviderModal({ open: isOpen, onClose }: AddProviderM
         models: modelInfos,
         capabilities,
         userAdded: true,
+        declaredCapabilities,
       });
     }
 
@@ -425,8 +437,8 @@ export default function AddProviderModal({ open: isOpen, onClose }: AddProviderM
     onClose();
   }, [
     serviceName, selectedModels, ollamaModels, selectedOption,
-    isCustom, baseUrl, apiKey, providers, addProvider, updateProvider,
-    selectModel, onClose,
+    isCustom, showAdvanced, declared, baseUrl, apiKey, providers,
+    addProvider, updateProvider, selectModel, onClose,
   ]);
 
   // ── Reset on close ──
@@ -447,6 +459,7 @@ export default function AddProviderModal({ open: isOpen, onClose }: AddProviderM
     setFetchModelsStatus('idle');
     setFetchedModels([]);
     setFetchModelsError('');
+    setDeclared({});
     onClose();
   }, [onClose]);
 
@@ -846,6 +859,60 @@ export default function AddProviderModal({ open: isOpen, onClose }: AddProviderM
                   >
                     <Plus className="h-4 w-4" />
                   </Button>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* 7. Advanced capabilities (custom/local providers only) */}
+          {showAdvanced && (
+            <div className="space-y-3">
+              <div className="text-sm font-medium text-[var(--abu-text-primary)]">
+                {t.settings.advancedConfig}
+              </div>
+              <div className="grid grid-cols-2 gap-2">
+                <label className="flex items-center gap-2">
+                  <Toggle size="sm" checked={!!declared.supportsTools}
+                    onChange={() => setDeclared(d => ({ ...d, supportsTools: !d.supportsTools }))} />
+                  <span className="text-sm text-[var(--abu-text-primary)]">{t.settings.capTools}</span>
+                </label>
+                <label className="flex items-center gap-2">
+                  <Toggle size="sm" checked={!!declared.supportsImages}
+                    onChange={() => setDeclared(d => ({ ...d, supportsImages: !d.supportsImages }))} />
+                  <span className="text-sm text-[var(--abu-text-primary)]">{t.settings.capImages}</span>
+                </label>
+                <label className="flex items-center gap-2">
+                  <Toggle size="sm" checked={!!declared.supportsReasoning}
+                    onChange={() => setDeclared(d => ({ ...d, supportsReasoning: !d.supportsReasoning }))} />
+                  <span className="text-sm text-[var(--abu-text-primary)]">{t.settings.capReasoning}</span>
+                </label>
+                <label className="flex items-center gap-2" title={t.settings.capRawUrlHint}>
+                  <Toggle size="sm" checked={!!declared.useRawUrl}
+                    onChange={() => setDeclared(d => ({ ...d, useRawUrl: !d.useRawUrl }))} />
+                  <span className="text-sm text-[var(--abu-text-primary)]">{t.settings.capRawUrl}</span>
+                </label>
+              </div>
+              {declared.supportsReasoning && (
+                <div className="pl-3 space-y-2 border-l border-black/10">
+                  <label className="flex items-center gap-2">
+                    <Toggle size="sm" checked={!!declared.canDisableThinking}
+                      onChange={() => setDeclared(d => ({ ...d, canDisableThinking: !d.canDisableThinking }))} />
+                    <span className="text-sm text-[var(--abu-text-primary)]">{t.settings.capCanDisableThinking}</span>
+                  </label>
+                  <div className="flex items-center gap-2">
+                    <span className="text-sm text-[var(--abu-text-secondary)]">{t.settings.capEffort}</span>
+                    {(['low', 'medium', 'high'] as const).map(e => (
+                      <label key={e} className="flex items-center gap-1">
+                        <Toggle size="sm" checked={!!declared.supportedEfforts?.includes(e)}
+                          onChange={() => setDeclared(d => {
+                            const cur = new Set(d.supportedEfforts ?? []);
+                            if (cur.has(e)) cur.delete(e); else cur.add(e);
+                            return { ...d, supportedEfforts: [...cur] as Array<'low' | 'medium' | 'high'> };
+                          })} />
+                        <span className="text-xs text-[var(--abu-text-secondary)]">{e}</span>
+                      </label>
+                    ))}
+                  </div>
                 </div>
               )}
             </div>

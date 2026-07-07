@@ -334,6 +334,10 @@ const zhCN: TranslationDict = {
     usageChipCache: 'cache',
     usageChipRequests: '次请求',
     usageChipSubtitle: '累计调用 · 模型上报',
+    compactDivider: {
+      compacted: '上下文已压缩',
+      compactedManual: '上下文已压缩（手动）',
+    },
   },
 
   share: {

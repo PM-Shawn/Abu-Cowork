@@ -334,6 +334,10 @@ const enUS: TranslationDict = {
     usageChipCache: 'cache',
     usageChipRequests: 'requests',
     usageChipSubtitle: 'Cumulative API usage · Model-reported',
+    compactDivider: {
+      compacted: 'Context compacted',
+      compactedManual: 'Context compacted (manual)',
+    },
   },
 
   share: {

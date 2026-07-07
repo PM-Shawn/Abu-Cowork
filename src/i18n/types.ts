@@ -320,6 +320,11 @@ export interface TranslationDict {
     usageChipCache: string;
     usageChipRequests: string;
     usageChipSubtitle: string;
+    // Compact boundary divider
+    compactDivider: {
+      compacted: string;
+      compactedManual: string;
+    };
   };
 
   // Share (conversation export / import)

@@ -562,12 +562,10 @@ export default function AddProviderModal({ open: isOpen, onClose }: AddProviderM
                             <button
                               key={option.id}
                               type="button"
-                              disabled={added}
                               onClick={() => handleSelectProvider(option)}
                               className={cn(
                                 'w-full px-3 py-2 flex items-center justify-between text-sm',
                                 'hover:bg-[var(--abu-bg-hover)] transition-colors',
-                                added && 'opacity-50 cursor-not-allowed',
                                 selectedId === option.id && 'bg-[var(--abu-bg-hover)]',
                               )}
                             >
@@ -590,7 +588,7 @@ export default function AddProviderModal({ open: isOpen, onClose }: AddProviderM
         </div>
 
         {/* Scrollable content area: guide, API key, models, etc. */}
-        <div className="flex-1 overflow-y-auto px-6 pb-5 space-y-5">
+        <div className="flex-1 overflow-y-auto px-6 pb-5 space-y-4">
           {/* 3. Usage Guide Card */}
           {guide && (
             <p className="text-xs text-[var(--abu-text-muted)]">
@@ -869,7 +867,7 @@ export default function AddProviderModal({ open: isOpen, onClose }: AddProviderM
 
           {/* 7. Advanced capabilities (custom/local providers only) */}
           {showAdvanced && (
-            <div className="space-y-3">
+            <div className="space-y-2">
               <div className="text-sm font-medium text-[var(--abu-text-primary)]">
                 {t.settings.advancedConfig}
               </div>
@@ -911,15 +909,15 @@ export default function AddProviderModal({ open: isOpen, onClose }: AddProviderM
                   </div>
                 </div>
               )}
-              <div className="grid grid-cols-2 gap-3">
+              <div className="grid grid-cols-2 gap-2">
                 <div className="space-y-1">
                   <div className="text-sm text-[var(--abu-text-primary)]">{t.settings.capMaxInput}</div>
                   <Input
-                    type="number"
-                    min={0}
+                    type="text"
+                    inputMode="numeric"
                     placeholder={t.settings.capTokenDefault}
                     value={declared.maxInputTokens ?? ''}
-                    onChange={e => setDeclared(d => ({ ...d, maxInputTokens: e.target.value === '' ? undefined : Number(e.target.value) }))}
+                    onChange={e => { const raw = e.target.value.replace(/[^0-9]/g, ''); setDeclared(d => ({ ...d, maxInputTokens: raw === '' ? undefined : Number(raw) })); }}
                   />
                   <div className="flex gap-1 flex-wrap">
                     {[32768, 65536, 131072, 262144].map(v => (
@@ -931,11 +929,11 @@ export default function AddProviderModal({ open: isOpen, onClose }: AddProviderM
                 <div className="space-y-1">
                   <div className="text-sm text-[var(--abu-text-primary)]">{t.settings.capMaxOutput}</div>
                   <Input
-                    type="number"
-                    min={0}
+                    type="text"
+                    inputMode="numeric"
                     placeholder={t.settings.capTokenDefault}
                     value={declared.maxOutputTokens ?? ''}
-                    onChange={e => setDeclared(d => ({ ...d, maxOutputTokens: e.target.value === '' ? undefined : Number(e.target.value) }))}
+                    onChange={e => { const raw = e.target.value.replace(/[^0-9]/g, ''); setDeclared(d => ({ ...d, maxOutputTokens: raw === '' ? undefined : Number(raw) })); }}
                   />
                   <div className="flex gap-1 flex-wrap">
                     {[8192, 16384, 32768, 65536].map(v => (

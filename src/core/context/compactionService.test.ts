@@ -7,6 +7,7 @@ import type { Message } from '@/types';
 const mockConversations: Record<string, { messages: Message[] }> = {};
 const mockAddMessage = vi.fn();
 const mockClearContextCache = vi.fn();
+const mockSetIsCompressing = vi.fn();
 
 vi.mock('@/stores/chatStore', () => ({
   useChatStore: {
@@ -14,6 +15,7 @@ vi.mock('@/stores/chatStore', () => ({
       conversations: mockConversations,
       addMessage: mockAddMessage,
       clearContextCache: mockClearContextCache,
+      setIsCompressing: mockSetIsCompressing,
     }),
   },
 }));
@@ -94,6 +96,7 @@ beforeEach(() => {
   vi.mocked(contextCompressor.summarizeConversation).mockReset();
   mockAddMessage.mockReset();
   mockClearContextCache.mockReset();
+  mockSetIsCompressing.mockReset();
   for (const key of Object.keys(mockConversations)) {
     delete mockConversations[key];
   }
@@ -220,6 +223,30 @@ describe('compactConversationManually', () => {
       await compactConversationManually(CONV_ID);
 
       expect(callOrder).toEqual(['addMessage', 'clearContextCache']);
+    });
+
+    it('toggles the in-progress indicator: setIsCompressing(true) before, (false) after', async () => {
+      const order: string[] = [];
+      mockSetIsCompressing.mockImplementation((_id: string, v: boolean) => order.push(`compressing:${v}`));
+      vi.mocked(contextCompressor.summarizeConversation).mockImplementation(async () => {
+        order.push('summarize');
+        return 'summary';
+      });
+      mockConversations[CONV_ID] = { messages: buildRounds(6) };
+
+      await compactConversationManually(CONV_ID);
+
+      expect(order).toEqual(['compressing:true', 'summarize', 'compressing:false']);
+    });
+
+    it('resets the in-progress indicator even when summarize throws', async () => {
+      mockConversations[CONV_ID] = { messages: buildRounds(6) };
+      vi.mocked(contextCompressor.summarizeConversation).mockRejectedValueOnce(new Error('boom'));
+
+      const result = await compactConversationManually(CONV_ID);
+
+      expect(result.reason).toBe('summarize-failed');
+      expect(mockSetIsCompressing).toHaveBeenLastCalledWith(CONV_ID, false);
     });
   });
 });

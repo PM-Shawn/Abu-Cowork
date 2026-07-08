@@ -94,11 +94,17 @@ export async function compactConversationManually(
   const plan = computeCompactionPlan(messages);
   if (!plan) return { compacted: false, reason: 'too-few' };
 
+  // Show the in-progress indicator (same purple spinner the auto 65% path uses)
+  // while the summarization LLM call runs — otherwise manual /compact is silent
+  // for several seconds until the divider appears. Reset in finally on all paths.
   let summaryText: string;
+  useChatStore.getState().setIsCompressing(convId, true);
   try {
     summaryText = await summarizeConversation(plan.middleMessages, resolveSummarizeConfig());
   } catch {
     return { compacted: false, reason: 'summarize-failed' };
+  } finally {
+    useChatStore.getState().setIsCompressing(convId, false);
   }
 
   if (!summaryText.trim()) return { compacted: false, reason: 'summarize-failed' };

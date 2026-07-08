@@ -1,5 +1,5 @@
-import { createDocReference } from '@/types/chatReference';
-import type { SelectionSource } from './SelectionSource';
+import { createDocReference, type ChatReference } from '@/types/chatReference';
+import type { SelectionSource, SelectionSourceContext } from './SelectionSource';
 
 const TEXT_CAP = 8000;
 const CONTEXT_CAP = 500;
@@ -21,19 +21,30 @@ function cap(s: string, n: number): string {
   return s.length > n ? `${s.slice(0, n - 1)}…` : s;
 }
 
+/**
+ * Build a reference from a captured Range. Prefer this over `extract(Selection)`
+ * whenever the reference is created after a UI interaction (e.g. opening a
+ * comment box): a Range keeps its boundaries and `.toString()` even after the
+ * live `window.getSelection()` collapses when a textarea steals focus, so this
+ * still yields the originally-selected text. Returns null for empty ranges.
+ */
+export function extractFromRange(range: Range, ctx: SelectionSourceContext): ChatReference | null {
+  const text = range.toString().trim();
+  if (!text) return null;
+  const context = nearestBlockText(range.startContainer).trim();
+  return createDocReference({
+    path: ctx.path,
+    name: ctx.name,
+    docType: 'markdown',
+    text: cap(text, TEXT_CAP),
+    context: context ? cap(context, CONTEXT_CAP) : undefined,
+  });
+}
+
 export const markdownSelectionSource: SelectionSource = {
   docType: 'markdown',
   extract(sel, ctx) {
     if (!sel || sel.isCollapsed || sel.rangeCount === 0) return null;
-    const text = sel.toString().trim();
-    if (!text) return null;
-    const context = nearestBlockText(sel.anchorNode).trim();
-    return createDocReference({
-      path: ctx.path,
-      name: ctx.name,
-      docType: 'markdown',
-      text: cap(text, TEXT_CAP),
-      context: context ? cap(context, CONTEXT_CAP) : undefined,
-    });
+    return extractFromRange(sel.getRangeAt(0), ctx);
   },
 };

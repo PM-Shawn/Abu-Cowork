@@ -18,7 +18,8 @@ import { useSettingsStore } from '@/stores/settingsStore';
 import { useWorkspaceStore } from '@/stores/workspaceStore';
 import { usePermissionStore } from '@/stores/permissionStore';
 import type { PermissionDuration } from '@/stores/permissionStore';
-import { useI18n } from '@/i18n';
+import { useI18n, format } from '@/i18n';
+import { useToastStore } from '@/stores/toastStore';
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
 import type { ImageAttachment } from '@/types';
@@ -30,6 +31,9 @@ import PermissionModeChip from '@/components/chat/PermissionModeChip';
 import { serializeReferences } from '@/utils/referenceSerializer';
 import { highlightRegistry } from '@/features/reference/highlightRegistry';
 import type { ChatReference } from '@/types/chatReference';
+
+/** Max reference chips per message — guards against prompt bloat. */
+const MAX_REFERENCES = 20;
 
 interface ChatInputProps {
   variant: 'welcome' | 'chat';
@@ -346,18 +350,27 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
   // state, then clear the store buffer (mirrors pendingInput consumption).
   useEffect(() => {
     if (pendingReferences.length === 0) return;
+    let cappedOut = false;
     setReferences((prev) => {
-      const MAX = 20;
       const seen = new Set(prev.map((r) => `${r.source.path}|${r.selection.text}|${r.comment ?? ''}`));
       const merged = [...prev];
       for (const r of pendingReferences) {
         const key = `${r.source.path}|${r.selection.text}|${r.comment ?? ''}`;
-        if (!seen.has(key) && merged.length < MAX) { seen.add(key); merged.push(r); }
+        if (seen.has(key)) continue; // duplicate — skip silently
+        if (merged.length >= MAX_REFERENCES) { cappedOut = true; continue; }
+        seen.add(key);
+        merged.push(r);
       }
       return merged;
     });
+    if (cappedOut) {
+      useToastStore.getState().addToast({
+        type: 'warning',
+        title: format(t.reference.maxReached, { max: MAX_REFERENCES }),
+      });
+    }
     clearPendingReferences();
-  }, [pendingReferences, clearPendingReferences]);
+  }, [pendingReferences, clearPendingReferences, t]);
 
   const handleStop = () => {
     if (activeConv?.id) {

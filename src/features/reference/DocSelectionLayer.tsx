@@ -4,7 +4,7 @@ import { useChatStore } from '@/stores/chatStore';
 import { useI18n } from '@/i18n';
 import { useTextSelection, type TextSelectionResult } from './useTextSelection';
 import { SelectionToolbar } from './SelectionToolbar';
-import { markdownSelectionSource } from './markdownSelectionSource';
+import { extractFromRange } from './markdownSelectionSource';
 import { highlightRegistry } from './highlightRegistry';
 import { getBaseName } from '@/utils/pathUtils';
 
@@ -12,11 +12,19 @@ import { getBaseName } from '@/utils/pathUtils';
 export function DocSelectionLayer({ filePath, children }: { filePath: string; children: React.ReactNode }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [sel, setSel] = useState<TextSelectionResult | null>(null);
+  const [editing, setEditing] = useState(false);
   const addPendingReference = useChatStore((s) => s.addPendingReference);
   const { t } = useI18n();
 
   const onSelect = useCallback((r: TextSelectionResult | null) => setSel(r), []);
   useTextSelection({ containerRef, onSelect });
+
+  // Reset editing when the selection clears (toolbar unmounts).
+  useEffect(() => { if (!sel) setEditing(false); }, [sel]);
+
+  // Clear reference highlights when the previewed file changes / on unmount:
+  // cloned ranges point into this file's DOM and would dangle otherwise.
+  useEffect(() => () => highlightRegistry.clear(), [filePath]);
 
   // Dismiss the toolbar on scroll or window resize: the toolbar uses `position: fixed`
   // with coordinates captured at selection time, so any scroll/resize makes the rect
@@ -24,8 +32,9 @@ export function DocSelectionLayer({ filePath, children }: { filePath: string; ch
   // capture:true catches scrolls inside the Radix ScrollArea viewport (which don't
   // bubble to window). passive:true lets the browser handle scroll without blocking.
   // Note: no success-state flash is intentional — the composer chip is the feedback.
+  // Skip while a comment is being edited so scroll/reflow doesn't discard typed text.
   useEffect(() => {
-    if (!sel) return;
+    if (!sel || editing) return;
     const dismiss = () => setSel(null);
     window.addEventListener('scroll', dismiss, { capture: true, passive: true });
     window.addEventListener('resize', dismiss);
@@ -33,12 +42,14 @@ export function DocSelectionLayer({ filePath, children }: { filePath: string; ch
       window.removeEventListener('scroll', dismiss, { capture: true });
       window.removeEventListener('resize', dismiss);
     };
-  }, [sel]);
+  }, [sel, editing]);
 
   const commit = useCallback((comment?: string) => {
     if (!sel) return;
-    const nativeSel = window.getSelection();
-    const ref = markdownSelectionSource.extract(nativeSel!, {
+    // Use the range captured at selection time, not the live selection: opening
+    // the comment editor moves focus into a textarea and collapses the live
+    // window selection, so re-reading window.getSelection() here would yield nothing.
+    const ref = extractFromRange(sel.range, {
       path: filePath,
       name: getBaseName(filePath),
     });
@@ -47,7 +58,7 @@ export function DocSelectionLayer({ filePath, children }: { filePath: string; ch
       addPendingReference(ref);
       highlightRegistry.add(ref.id, sel.range.cloneRange());
     }
-    nativeSel?.removeAllRanges();
+    window.getSelection()?.removeAllRanges();
     setSel(null);
   }, [sel, filePath, addPendingReference]);
 
@@ -60,6 +71,7 @@ export function DocSelectionLayer({ filePath, children }: { filePath: string; ch
           onAdd={() => commit()}
           onComment={(c) => commit(c)}
           onDismiss={() => setSel(null)}
+          onEditingChange={setEditing}
         />
       )}
     </div>

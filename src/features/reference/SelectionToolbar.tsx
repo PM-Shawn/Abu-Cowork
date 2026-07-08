@@ -11,11 +11,15 @@ interface Props {
   onAdd: () => void;
   onComment: (comment: string) => void;
   onDismiss: () => void;
+  /** Notifies the host when the comment editor opens/closes (to pause dismiss-on-scroll). */
+  onEditingChange?: (editing: boolean) => void;
 }
 
-export function SelectionToolbar({ rect, onAdd, onComment, onDismiss }: Props) {
+export function SelectionToolbar({ rect, onAdd, onComment, onDismiss, onEditingChange }: Props) {
   const { t } = useI18n();
   const [editing, setEditing] = useState(false);
+
+  useEffect(() => { onEditingChange?.(editing); }, [editing, onEditingChange]);
 
   // Keyboard: ⌘/Ctrl+J → open comment editor; Enter → add (only when not in editor)
   useEffect(() => {

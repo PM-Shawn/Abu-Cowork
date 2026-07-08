@@ -13,7 +13,7 @@ export function CommentEditor({ onSubmit, onCancel }: { onSubmit: (v: string) =>
 
   const submit = useCallback(() => {
     const v = value.trim();
-    if (v) onSubmit(v);
+    if (v && value.length <= MAX) onSubmit(v);
   }, [value, onSubmit]);
 
   const onKeyDown = (e: React.KeyboardEvent) => {

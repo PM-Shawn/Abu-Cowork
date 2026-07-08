@@ -1739,8 +1739,6 @@ export interface TranslationDict {
     commentToChat: string;
     addToChat: string;
     commentPlaceholder: string;
-    /** {count} 占位 */
-    limitWarning: string;
     quoteChipFallback: string;
     /** {max} 占位 */
     maxReached: string;

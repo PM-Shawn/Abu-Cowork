@@ -113,4 +113,41 @@ describe('DocSelectionLayer integration', () => {
     expect(refs[0].source.name).toBe('订单数据流转说明.md');
     expect(refs[0].selection.text).toContain('核心业务链路');
   });
+
+  // ── Case 3: comment path survives live-selection collapse (regression) ────
+  // In a real browser, focusing the comment textarea collapses
+  // window.getSelection() BEFORE the comment is submitted. commit() must build
+  // the reference from the CAPTURED range, not the live selection. happy-dom
+  // does not collapse on focus, so we simulate the collapse explicitly.
+  // (Against the old window.getSelection()-based commit, this asserts 0 refs.)
+
+  it('still creates the reference when the live selection is collapsed before submit', async () => {
+    render(
+      <DocSelectionLayer filePath="/w/订单数据流转说明.md">
+        <p>本文档用于定义订单在核心业务链路中的状态流转规则。</p>
+      </DocSelectionLayer>,
+    );
+
+    const para = screen.getByText('本文档用于定义订单在核心业务链路中的状态流转规则。');
+    selectElement(para);
+    const layer = document.querySelector('[data-doc-selection-layer]')!;
+    fireEvent.mouseUp(layer);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(150);
+    });
+
+    fireEvent.click(screen.getByText('Comment to Chat'));
+    const textarea = screen.getByPlaceholderText('Enter your comment…') as HTMLTextAreaElement;
+    fireEvent.change(textarea, { target: { value: '删掉这段' } });
+
+    // Simulate the focus-steals-selection behavior of a real browser:
+    window.getSelection()?.removeAllRanges();
+
+    fireEvent.keyDown(textarea, { key: 'Enter' });
+
+    const refs = useChatStore.getState().pendingReferences;
+    expect(refs).toHaveLength(1);
+    expect(refs[0].comment).toBe('删掉这段');
+    expect(refs[0].selection.text).toContain('核心业务链路');
+  });
 });

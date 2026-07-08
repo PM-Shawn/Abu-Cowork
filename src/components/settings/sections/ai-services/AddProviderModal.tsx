@@ -860,39 +860,44 @@ export default function AddProviderModal({ open: isOpen, onClose }: AddProviderM
               </div>
               <div className="space-y-2">
                   <div className="grid grid-cols-2 gap-2">
-                    <label className="flex items-center gap-2">
+                    <div className="flex items-center gap-2 cursor-pointer select-none"
+                      onClick={() => setDeclared(d => ({ ...d, supportsTools: !d.supportsTools }))}>
                       <Checkbox checked={!!declared.supportsTools}
                         onChange={() => setDeclared(d => ({ ...d, supportsTools: !d.supportsTools }))} />
                       <span className="text-sm text-[var(--abu-text-primary)]">{t.settings.capTools}</span>
-                    </label>
-                    <label className="flex items-center gap-2">
+                    </div>
+                    <div className="flex items-center gap-2 cursor-pointer select-none"
+                      onClick={() => setDeclared(d => ({ ...d, supportsImages: !d.supportsImages }))}>
                       <Checkbox checked={!!declared.supportsImages}
                         onChange={() => setDeclared(d => ({ ...d, supportsImages: !d.supportsImages }))} />
                       <span className="text-sm text-[var(--abu-text-primary)]">{t.settings.capImages}</span>
-                    </label>
-                    <label className="flex items-center gap-2">
+                    </div>
+                    <div className="flex items-center gap-2 cursor-pointer select-none"
+                      onClick={() => setDeclared(d => ({ ...d, supportsReasoning: !d.supportsReasoning }))}>
                       <Checkbox checked={!!declared.supportsReasoning}
                         onChange={() => setDeclared(d => ({ ...d, supportsReasoning: !d.supportsReasoning }))} />
                       <span className="text-sm text-[var(--abu-text-primary)]">{t.settings.capReasoning}</span>
-                    </label>
-                    <label className="flex items-center gap-2" title={t.settings.capRawUrlHint}>
+                    </div>
+                    <div className="flex items-center gap-2 cursor-pointer select-none" title={t.settings.capRawUrlHint}
+                      onClick={() => setDeclared(d => ({ ...d, useRawUrl: !d.useRawUrl }))}>
                       <Checkbox checked={!!declared.useRawUrl}
                         onChange={() => setDeclared(d => ({ ...d, useRawUrl: !d.useRawUrl }))} />
                       <span className="text-sm text-[var(--abu-text-primary)]">{t.settings.capRawUrl}</span>
-                    </label>
+                    </div>
                   </div>
                   {declared.supportsReasoning && (
                     <div className="pl-3 space-y-2 border-l border-black/10">
                       <div className="flex items-center gap-2">
                         <span className="text-sm text-[var(--abu-text-secondary)]">{t.settings.capEffort}</span>
                         {(['low', 'medium', 'high'] as const).map(e => (
-                          <label key={e} className="flex items-center gap-1">
+                          <div key={e} className="flex items-center gap-1 cursor-pointer select-none"
+                            onClick={() => setDeclared(d => ({ ...d, supportedEfforts: toggleEffort(d.supportedEfforts, e) }))}>
                             <Checkbox checked={!!declared.supportedEfforts?.includes(e)}
                               onChange={() => setDeclared(d => ({ ...d, supportedEfforts: toggleEffort(d.supportedEfforts, e) }))} />
                             <span className="text-xs text-[var(--abu-text-secondary)]">
                               {{ low: t.settings.effortLow, medium: t.settings.effortMedium, high: t.settings.effortHigh }[e]}
                             </span>
-                          </label>
+                          </div>
                         ))}
                       </div>
                     </div>

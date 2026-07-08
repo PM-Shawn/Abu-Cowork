@@ -38,6 +38,14 @@ export interface DeclaredCapabilities {
   maxInputTokens?: number;
   /** Max output tokens (request max_tokens); blank → provider default. */
   maxOutputTokens?: number;
+  /** How this provider expects the "reasoning/thinking" toggle to be shaped in the request body.
+   *  Auto-derived from host when omitted; set explicitly to override
+   *  (e.g. self-hosted qwen via vLLM needs 'qwen-chat-template'). */
+  thinkingFormat?: 'openai' | 'deepseek' | 'qwen' | 'qwen-chat-template' | 'zai' | 'together' | 'openrouter';
+  /** Which field name this provider uses for the output-token cap. Auto-derived when omitted. */
+  maxTokensField?: 'max_tokens' | 'max_completion_tokens';
+  /** When true, tool-result (role:tool) messages must carry a `name` field mirroring the tool_call function name. */
+  requiresToolResultName?: boolean;
 }
 
 /** Unified Provider instance (builtin and custom share the same structure) */

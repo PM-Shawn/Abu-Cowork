@@ -17,7 +17,7 @@ import { TOOL_NAMES } from '../toolNames';
 
 export const generateImageTool: ToolDefinition = {
   name: TOOL_NAMES.GENERATE_IMAGE,
-  description: '根据文字描述生成图片（使用 DALL-E）。当用户要求生成真实感图片、插图、logo 等时使用。图表和数据可视化请直接输出 HTML 代码块。返回保存的图片文件路径。',
+  description: 'Generate an image from a text description (using DALL-E). Use when the user asks to generate photorealistic images, illustrations, logos, etc. For charts and data visualizations, output an HTML code block directly. Returns the saved image file path.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -134,7 +134,7 @@ export const generateImageTool: ToolDefinition = {
 
 export const processImageTool: ToolDefinition = {
   name: TOOL_NAMES.PROCESS_IMAGE,
-  description: '处理图片文件：缩放、裁剪、转换格式或压缩。当用户需要调整图片尺寸、格式转换等时使用。返回处理后的文件路径。',
+  description: 'Process an image file: resize, crop, convert format, or compress. Use when the user needs to adjust image dimensions, convert formats, etc. Returns the path of the processed file.',
   inputSchema: {
     type: 'object',
     properties: {

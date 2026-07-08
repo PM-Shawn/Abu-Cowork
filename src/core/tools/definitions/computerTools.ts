@@ -321,35 +321,35 @@ async function formatScreenshotResult(result: ScreenshotResult, workspacePath: s
 
 export const computerTool: ToolDefinition = {
   name: TOOL_NAMES.COMPUTER,
-  description: `操控电脑屏幕：无障碍树操作（推荐）、截图、鼠标键盘操作。仅在必须看屏幕画面或操作 GUI 界面时才用。
+  description: `Control the computer screen: accessibility tree operations (recommended), screenshots, mouse and keyboard. Only use when you must see the screen or interact with a GUI.
 
-【推荐工作流（Codex 同款）】
-① get_app_state（可加 app 参数指定目标应用）→ 同时返回 AX 元素列表 + 截图
-② click(element_id=N) 或 type(element_id=N, text="...") 操作元素 —— AX 路径不移动鼠标、不抢焦点
-③ 每次重要操作后再调 get_app_state 确认结果
+[Recommended workflow (same as Codex)]
+① get_app_state (optionally pass app to target a specific application) → returns AX element list + screenshot together
+② click(element_id=N) or type(element_id=N, text="...") to operate elements — AX path does not move the mouse or steal focus
+③ After each important action, call get_app_state again to confirm the result
 
-只有 get_app_state 拿不到元素（canvas/自绘 app）时才退回 screenshot + click(x,y)。
+Only fall back to screenshot + click(x,y) when get_app_state cannot retrieve elements (canvas/custom-drawn apps).
 
-━━━ 操作列表（action）━━━
+━━━ Action list ━━━
 
-🔍 感知 + 切换（每轮操作前先 get_app_state）
-• get_app_state   先把目标 app 切到前台，再同时读取 AX 树 + 截图（视觉模型）。参数：app（应用名，如 "Notes"、"D-Chat"）。
-• activate_app    只把某个 app 切到前台（不读树）。参数：app。原生切换，不依赖 AppleScript 权限。
-• screenshot      单独截图（AX 树无法覆盖时备用）。可选裁剪：x, y, width, height。
+🔍 Perception + switching (always call get_app_state before each operation turn)
+• get_app_state   Brings the target app to the foreground, then reads the AX tree + screenshot (for vision models) together. Parameter: app (app name, e.g. "Notes", "D-Chat").
+• activate_app    Brings an app to the foreground only (does not read the tree). Parameter: app. Native switch, no AppleScript permission needed.
+• screenshot      Take a standalone screenshot (fallback when AX tree is unavailable). Optional crop: x, y, width, height.
 
-✅ 推荐操作（AX 路径，不动鼠标/不抢焦点）
-• click           点击。element_id=N（AXPress，优先）或 x, y（像素点击）。可选 button(left/right/middle/double)。
-• type            输入文本。element_id=N（AXSetValue，优先）+ text，或只用 text（键盘输入）。
-• perform_action  执行 AX 次级动作，如右键菜单(AXShowMenu)、选中(AXPick)、加减(AXIncrement/AXDecrement)。参数：element_id, action_name。
-• scroll          滚动。element_id=N（按元素位置滚动）或 x, y。direction(up/down/left/right)，amount(默认 3)。
+✅ Recommended operations (AX path — no mouse movement, no focus stealing)
+• click           Click. element_id=N (AXPress, preferred) or x, y (pixel click). Optional button (left/right/middle/double).
+• type            Type text. element_id=N (AXSetValue, preferred) + text, or text alone (keyboard input).
+• perform_action  Execute a secondary AX action, e.g. context menu (AXShowMenu), select (AXPick), increment/decrement (AXIncrement/AXDecrement). Parameters: element_id, action_name.
+• scroll          Scroll. element_id=N (scroll at element position) or x, y. direction (up/down/left/right), amount (default 3).
 
-⌨️ 低级操作（AX 不可用时）
-• move            移动鼠标。参数：x, y。
-• drag            拖拽。参数：startX, startY, endX, endY。
-• key             按键。参数：key(Return/Tab/Escape/a 等)，modifiers([ctrl/shift/alt/meta])。
-• wait            等待。参数：duration(ms，默认 1000，最大 10000)。
+⌨️ Low-level operations (when AX is unavailable)
+• move            Move mouse. Parameters: x, y.
+• drag            Drag. Parameters: startX, startY, endX, endY.
+• key             Press key. Parameters: key (Return/Tab/Escape/a etc.), modifiers ([ctrl/shift/alt/meta]).
+• wait            Wait. Parameters: duration (ms, default 1000, max 10000).
 
-所有像素坐标使用截图空间（最大宽度 ${SCREENSHOT_MAX_WIDTH}px），自动换算为真实屏幕坐标。`,
+All pixel coordinates use screenshot space (max width ${SCREENSHOT_MAX_WIDTH}px) and are automatically converted to real screen coordinates.`,
   inputSchema: {
     type: 'object',
     properties: {

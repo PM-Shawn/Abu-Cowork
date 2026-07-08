@@ -12,17 +12,17 @@ import { searchTools, promoteToolToSession } from '../toolSearch';
  */
 export const toolSearchTool: ToolDefinition = {
   name: TOOL_NAMES.TOOL_SEARCH,
-  description: '搜索并加载延迟加载的工具。当你需要使用系统提示中列出的延迟加载工具时，先用此工具获取完整参数定义，然后就可以在后续回合中直接调用该工具。',
+  description: 'Search for and load deferred tools. When you need to use a deferred tool listed in the system prompt, call this tool first to get its full parameter definition, then you can invoke that tool directly in subsequent turns.',
   inputSchema: {
     type: 'object',
     properties: {
       query: {
         type: 'string',
-        description: '搜索关键词，可以是工具名称或功能描述',
+        description: 'Search keywords — can be a tool name or a description of the desired capability',
       },
       max_results: {
         type: 'number',
-        description: '最多返回几个结果（默认 5）',
+        description: 'Maximum number of results to return (default 5)',
       },
     },
     required: ['query'],

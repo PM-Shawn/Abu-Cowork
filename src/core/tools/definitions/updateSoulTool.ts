@@ -5,13 +5,13 @@ import { TOOL_NAMES } from '../toolNames';
 
 export const updateSoulTool: ToolDefinition = {
   name: TOOL_NAMES.UPDATE_SOUL,
-  description: '更新你的性格设定。当用户要求你调整性格或沟通风格时调用此工具。写入完整内容（不是增量），会替换现有设定。',
+  description: 'Update your personality configuration. Call this tool when the user asks you to adjust your personality or communication style. Writes the full content (not a delta) — replaces the existing configuration.',
   inputSchema: {
     type: 'object',
     properties: {
       content: {
         type: 'string',
-        description: '完整的性格设定内容（markdown 格式）',
+        description: 'Complete personality configuration content (markdown format)',
       },
     },
     required: ['content'],

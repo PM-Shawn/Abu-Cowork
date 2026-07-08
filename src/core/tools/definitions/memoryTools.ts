@@ -109,14 +109,14 @@ export function planHasRiskySteps(steps: string[]): boolean {
 
 export const reportPlanTool: ToolDefinition = {
   name: TOOL_NAMES.REPORT_PLAN,
-  description: '上报任务执行计划。在开始执行任何任务前必须先调用此工具，告知用户你将要执行的步骤。步骤描述要用用户能理解的业务语言，不要提及工具名称。',
+  description: 'Report the task execution plan. Must be called before starting any task to inform the user of the steps you are about to take. Describe steps in plain business language the user can understand — do not mention tool names.',
   inputSchema: {
     type: 'object',
     properties: {
       steps: {
         type: 'array',
         items: { type: 'string' },
-        description: '任务步骤数组，用用户能理解的语言描述。例如：["扫描桌面文件", "识别发票", "创建发票文件夹", "移动发票到文件夹"]'
+        description: 'Array of task steps described in user-understandable language. Example: ["Scan desktop files", "Identify invoices", "Create invoice folder", "Move invoices to folder"]'
       },
     },
     required: ['steps'],
@@ -180,67 +180,67 @@ export const reportPlanTool: ToolDefinition = {
 
 export const updateMemoryTool: ToolDefinition = {
   name: TOOL_NAMES.UPDATE_MEMORY,
-  description: `保存或更新持久记忆。**调用前先核对 system prompt 中的 <memory-index>**：如果已有相同主题的记忆，根据情况选择 edit 覆盖或 delete 删除，不要写重复条目。
+  description: `Save or update persistent memory. **Check <memory-index> in the system prompt before calling**: if a memory on the same topic already exists, choose edit to overwrite or delete to remove it — do not create duplicate entries.
 
-## 四种 action
-- append（默认）：新写一条记忆。仅在索引中没有相似主题时使用。
-- edit：用 filename 覆盖某条已有记忆（用户改主意/补充 Why/How 时用）。
-- delete：用 filename 删除某条已过时的记忆（信息冲突且新值更合适时用）。
-- clear：清空所有记忆（极少用，仅用户明确要求时）。
+## Four actions
+- append (default): Write a new memory. Use only when there is no similar topic in the index.
+- edit: Overwrite an existing memory by filename (use when the user changes their mind or adds Why/How).
+- delete: Delete an outdated memory by filename (use when information conflicts and the new value is more appropriate).
+- clear: Clear all memories (rarely used — only when the user explicitly requests it).
 
-## 4 类记忆 type
-- user — 用户角色、目标、知识水平、长期偏好。例：用户是数据团队 PM；偏好简洁回复。
-- feedback — 用户对你的纠正或确认。body 结构：**规则 + Why + How to apply**。
-  - 例（纠正）：规则=不要用 echo 写文件；Why=中文易乱码；How=改用 Write 工具
-  - 例（确认）：规则=重构按"一类一 commit"拆；Why=便于回溯；How=后续重构沿用
-- project — 项目进展、关键决策、待办、约束。body 结构：**事实 + Why + How to apply**。
-- reference — 外部资源指针（看板/文档/频道地址）。
+## 4 memory types
+- user — User role, goals, knowledge level, long-term preferences. Example: user is a data team PM; prefers concise replies.
+- feedback — User corrections or confirmations. Body structure: **rule + Why + How to apply**.
+  - Example (correction): rule=don't use echo to write files; Why=Chinese text may be garbled; How=use the Write tool instead
+  - Example (confirmation): rule=split refactoring into one-type-per-commit; Why=easier to trace back; How=follow this in future refactors
+- project — Project progress, key decisions, TODOs, constraints. Body structure: **fact + Why + How to apply**.
+- reference — Pointers to external resources (boards/docs/channel links).
 
-## 不要保存
-- 一次性任务结果（"X 已生成"/"翻译完成"）、临时状态（"测试通过"/"端口被占用"）
-- 可派生信息（项目路径、代码模式 — 读项目/grep 就知道）
-- 闲聊、问候、一次性查询（天气、临时计算）
-- 项目规则文件（.abu/ABU.md）已包含的内容
+## Do NOT save
+- One-off task results ("X generated" / "translation done"), temporary state ("tests passed" / "port occupied")
+- Derivable information (project paths, code patterns — readable from the project or grep)
+- Small talk, greetings, one-off queries (weather, ad-hoc calculations)
+- Content already covered in the project rules file (.abu/ABU.md)
 
-即便用户明确说"记住这个清单"，先问：哪部分是 *意外的、未来还有用的*？只记那部分。
+Even if the user explicitly says "remember this list", ask first: which parts are *surprising and useful in the future*? Only save those.
 
-## 写入前必查（避免重复 / 处理冲突）
-先扫 <memory-index>，按现有记忆与新信息的关系分情况：
-- **新主题**（索引无相似条目）→ append
-- **信息冲突**（同一事实不同值，如"用户叫小包" → "用户叫小白"）→ edit 覆盖旧条，或 delete 后再 append。**永远不要留下两条值矛盾的记忆并存**。
-- **信息补充**（原条目缺 Why/How，新对话补全了）→ edit 把旧条补全，不要新写平行的。
-- **完全同义重复** → 跳过。
+## Check before writing (avoid duplicates / handle conflicts)
+Scan <memory-index> first and handle based on the relationship between existing memory and new information:
+- **New topic** (no similar entry in index) → append
+- **Conflicting information** (same fact with different value, e.g. "user is Xiao Bao" → "user is Xiao Bai") → edit to overwrite the old entry, or delete then append. **Never leave two contradictory memories coexisting**.
+- **Supplementary information** (original entry lacks Why/How, new conversation fills it in) → edit to complete the old entry, do not write a parallel new one.
+- **Complete duplicate** → skip.
 
-判断三问：①冲突还是补充？②同时存在会不会让未来 Agent 困惑？③用户最近一句是不是在改之前的偏好？任一"是" → 用 edit/delete，不要 append。
+Three questions to judge: ①Conflict or supplement? ②Will coexistence confuse a future agent? ③Is the user's latest message changing a previous preference? Any "yes" → use edit/delete, not append.
 
-## private 标记 + description 写法（重要）
-保存身份证/银行卡/手机号/薪资/医疗/未公开商业等敏感信息时传 \`private: true\`。**对于 private 记忆，description 必须只写"主题"，不要写"具体值"**——因为 description 会出现在 MEMORY.md 索引里被注入到每轮对话的 system prompt。
-- ✅ description="个人身份证号" / "工行账户" / "本月薪资"
-- ❌ description="身份证 110105..." / "卡号 6228... 密码 xxx"
-普通用户偏好/工作习惯保持非私密，description 可以写得详细一些方便每轮自动引用。`,
+## private flag + description writing (important)
+Pass \`private: true\` when saving sensitive information such as ID numbers/bank cards/phone numbers/salary/medical/undisclosed business data. **For private memories, description must only state the "topic", not the "specific value"** — because description appears in the MEMORY.md index which is injected into every conversation's system prompt.
+- ✅ description="personal ID number" / "ICBC account" / "this month's salary"
+- ❌ description="ID 110105..." / "card 6228... PIN xxx"
+Keep ordinary user preferences/work habits non-private; description can be more detailed to facilitate automatic reference each turn.`,
   inputSchema: {
     type: 'object',
     properties: {
       action: {
         type: 'string',
-        description: '操作类型: append(新写，默认) / edit(覆盖单条) / delete(删除单条) / clear(清空全部)',
+        description: 'Operation type: append (write new, default) / edit (overwrite single entry) / delete (delete single entry) / clear (clear all)',
         enum: ['append', 'edit', 'delete', 'clear'],
       },
       filename: {
         type: 'string',
-        description: '记忆文件名（edit 和 delete 必填）。来自 <memory-index> 索引行的 [filename](filename) 部分。',
+        description: 'Memory filename (required for edit and delete). The [filename](filename) part from a <memory-index> index line.',
       },
-      name: { type: 'string', description: '记忆名称（append 必填，edit 可选）' },
-      content: { type: 'string', description: '记忆内容（append 和 edit 必填）' },
-      description: { type: 'string', description: '一句话描述（append 和 edit 可选；不传则取 content 前 80 字）' },
+      name: { type: 'string', description: 'Memory name (required for append, optional for edit)' },
+      content: { type: 'string', description: 'Memory content (required for append and edit)' },
+      description: { type: 'string', description: 'One-sentence description (optional for append and edit; defaults to first 80 chars of content)' },
       type: {
         type: 'string',
-        description: '分类: user(用户偏好/角色/知识水平) / feedback(行为纠正或确认，含原因和适用场景) / project(项目动态/决策) / reference(外部系统指针)',
+        description: 'Category: user (user preferences/role/knowledge level) / feedback (behavior corrections or confirmations, including reason and applicable scenarios) / project (project progress/decisions) / reference (external system pointers)',
         enum: ['user', 'feedback', 'project', 'reference'],
       },
       private: {
         type: 'boolean',
-        description: '是否为私密记忆。true 表示不会自动注入对话上下文，仅用户明确询问时通过 read_memory 拉取。仅对身份证/银行卡/手机号/薪资/医疗/家庭隐私/未公开商业信息等敏感内容设为 true。默认 false。',
+        description: 'Whether this is a private memory. true means it will not be auto-injected into conversation context and can only be retrieved via read_memory when the user explicitly asks. Set to true only for sensitive content such as ID numbers/bank cards/phone numbers/salary/medical/family privacy/undisclosed business information. Default: false.',
       },
     },
     required: ['action'],
@@ -369,23 +369,23 @@ export const updateMemoryTool: ToolDefinition = {
 
 export const todoWriteTool: ToolDefinition = {
   name: TOOL_NAMES.TODO_WRITE,
-  description: '创建或更新任务计划。可以批量设置计划项，或更新单个项的状态。计划会在每轮对话中注入，确保你始终能看到当前进度。',
+  description: 'Create or update a task plan. Can batch-set plan items or update the status of a single item. The plan is injected every turn so you always have visibility into current progress.',
   inputSchema: {
     type: 'object',
     properties: {
       action: {
         type: 'string',
-        description: '操作类型: set(批量设置计划) / add(添加单个) / update(更新状态) / read(读取当前计划)',
+        description: 'Operation type: set (batch-set plan items) / add (add single item) / update (update status) / read (read current plan)',
         enum: ['set', 'add', 'update', 'read'],
       },
       items: {
         type: 'array',
         items: { type: 'object' },
-        description: '计划项列表（用于 set 和 add 操作）。每项应包含 content(string) 和可选 status(string: pending/in_progress/completed/cancelled)',
+        description: 'List of plan items (used for set and add). Each item should contain content (string) and optional status (string: pending/in_progress/completed/cancelled)',
       },
-      todo_id: { type: 'string', description: '要更新的计划项 ID（用于 update 操作）' },
-      status: { type: 'string', description: '新状态（用于 update 操作）' },
-      content: { type: 'string', description: '新内容（用于 update 或 add 操作）' },
+      todo_id: { type: 'string', description: 'ID of the plan item to update (used for update)' },
+      status: { type: 'string', description: 'New status (used for update)' },
+      content: { type: 'string', description: 'New content (used for update or add)' },
     },
     required: ['action'],
   },
@@ -444,24 +444,24 @@ export const todoWriteTool: ToolDefinition = {
 
 export const logTaskCompletionTool: ToolDefinition = {
   name: TOOL_NAMES.LOG_TASK_COMPLETION,
-  description: '任务完成后记录摘要。完成用户交办的实际任务后应调用（闲聊和简单问答不记录）。',
+  description: 'Log a summary after completing a task. Should be called after completing a real task assigned by the user (do not log for small talk or simple Q&A).',
   inputSchema: {
     type: 'object',
     properties: {
-      summary: { type: 'string', description: '一句话描述完成的任务' },
+      summary: { type: 'string', description: 'One-sentence description of the completed task' },
       category: {
         type: 'string',
-        description: '任务分类',
+        description: 'Task category',
         enum: ['translation', 'coding', 'research', 'writing', 'data-processing', 'file-management', 'communication', 'other'],
       },
       tools_used: {
         type: 'array',
         items: { type: 'string' },
-        description: '本次使用的工具名称列表',
+        description: 'List of tool names used in this task',
       },
-      skill_used: { type: 'string', description: '使用的技能名称（如有）' },
-      agent_used: { type: 'string', description: '委派的代理名称（如有）' },
-      success: { type: 'boolean', description: '任务是否成功完成' },
+      skill_used: { type: 'string', description: 'Name of the skill used (if any)' },
+      agent_used: { type: 'string', description: 'Name of the agent delegated to (if any)' },
+      success: { type: 'boolean', description: 'Whether the task completed successfully' },
     },
     required: ['summary', 'category', 'success'],
   },

@@ -13,48 +13,48 @@ import { requestUserQuestion } from '../../agent/permissionBridge';
 export const askUserQuestionTool: ToolDefinition = {
   name: TOOL_NAMES.ASK_USER_QUESTION,
   description:
-    '向用户弹出结构化选择卡片，等用户作答后继续。' +
-    '\n\n**何时使用**：' +
-    '\n- 存在多条等效路径，需要用户偏好才能决定' +
-    '\n- 无法从上下文推断的关键决策（如输出格式、部署目标）' +
-    '\n- 需要暴露隐含假设让用户确认' +
-    '\n\n**何时不用**：' +
-    '\n- 有合理默认值可用时（直接选默认，不打扰用户）' +
-    '\n- 是/否类简单确认（用 confirm 语气直接提问即可）' +
-    '\n- 危险操作（走权限确认机制，不用本工具）' +
-    '\n\n约束：1-4 题；每题 2-4 选项；header ≤12 字符。' +
-    '每个问题自动追加「其他…」自由文本出口，用户可填写不在选项中的答案。',
+    'Show the user a structured choice card and wait for their answer before continuing.' +
+    '\n\n**When to use**:' +
+    '\n- Multiple equivalent paths exist and user preference is needed to decide' +
+    '\n- Critical decisions that cannot be inferred from context (e.g. output format, deployment target)' +
+    '\n- Implicit assumptions that need user confirmation' +
+    '\n\n**When NOT to use**:' +
+    '\n- When a reasonable default is available (just use the default, do not disturb the user)' +
+    '\n- Simple yes/no confirmations (ask directly in a confirm tone)' +
+    '\n- Dangerous operations (use the permission confirmation mechanism, not this tool)' +
+    '\n\nConstraints: 1–4 questions; 2–4 options per question; header ≤ 12 characters.' +
+    ' Each question automatically appends an "Other…" free-text option so users can provide answers outside the given choices.',
   inputSchema: {
     type: 'object',
     properties: {
       questions: {
         type: 'array',
         description:
-          '问题列表（1-4 题）。每题包含 header（≤12 字符短标签）、question（完整问题文本）、' +
-          'multiSelect（true=多选 / false=单选）、options（2-4 个选项，每个有 label 和可选 description）。',
+          'List of questions (1–4). Each question contains: header (≤12-character short label), question (full question text),' +
+          ' multiSelect (true=multiple choice / false=single choice), options (2–4 choices, each with a label and optional description).',
         items: {
           type: 'object',
           properties: {
             header: {
               type: 'string',
-              description: '≤12 字符的短标签，用于标识题目，如 "格式"、"部署目标"',
+              description: 'Short label ≤12 characters that identifies the question, e.g. "Format", "Deploy target"',
             },
             question: {
               type: 'string',
-              description: '完整的问题文本，清晰描述用户需要做的选择',
+              description: 'Full question text that clearly describes the choice the user needs to make',
             },
             multiSelect: {
               type: 'boolean',
-              description: 'true = 多选（可选多项）；false = 单选',
+              description: 'true = multiple selection (can select multiple options); false = single selection',
             },
             options: {
               type: 'array',
-              description: '2-4 个选项',
+              description: '2–4 options',
               items: {
                 type: 'object',
                 properties: {
-                  label: { type: 'string', description: '选项标签' },
-                  description: { type: 'string', description: '可选的补充说明' },
+                  label: { type: 'string', description: 'Option label' },
+                  description: { type: 'string', description: 'Optional supplementary description' },
                 },
                 required: ['label'],
               },

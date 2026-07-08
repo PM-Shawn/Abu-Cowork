@@ -223,17 +223,17 @@ interface BatchTaskItem {
 export const runAgentBatchTool: ToolDefinition = {
   name: TOOL_NAMES.RUN_AGENT_BATCH,
   description:
-    '并行运行多个子代理任务，所有任务完成后一次性返回聚合报告。' +
-    '每个任务可指定 type（系统内置角色：research/writer/executor）或 agent_name（用户自定义代理）；' +
-    '两者均未指定时默认使用 research 调研角色。' +
-    '适用于需要同时调研多个独立话题、并行处理多个文件、或将大任务拆分为独立子任务并行执行的场景。' +
-    '注意：所有子任务均完成后结果才会一起回传，期间会阻塞当前对话。',
+    'Run multiple sub-agent tasks in parallel and return an aggregated report once all tasks complete.' +
+    ' Each task can specify type (built-in role: research/writer/executor) or agent_name (user-defined agent);' +
+    ' defaults to the research role when neither is specified.' +
+    ' Suitable for simultaneously researching multiple independent topics, processing multiple files in parallel, or splitting a large task into independent sub-tasks for parallel execution.' +
+    ' Note: results are returned together only after all sub-tasks complete; the current conversation is blocked during this time.',
   inputSchema: {
     type: 'object',
     properties: {
       tasks: {
         type: 'array',
-        description: '子任务列表，1-16 个，每个任务独立并行执行',
+        description: 'List of sub-tasks, 1–16 items, each executed independently in parallel',
         minItems: 1,
         maxItems: 16,
         items: {
@@ -241,20 +241,20 @@ export const runAgentBatchTool: ToolDefinition = {
           properties: {
             type: {
               type: 'string',
-              description: '系统内置角色：research（只读调研）、writer（读写创作）、executor（全能执行）。与 agent_name 二选一；两者均不填时默认 research',
+              description: 'Built-in role: research (read-only research), writer (read/write content creation), executor (all-purpose execution). Mutually exclusive with agent_name; defaults to research when neither is provided',
               enum: ['research', 'writer', 'executor'],
             },
             agent_name: {
               type: 'string',
-              description: '用户自定义代理名称。与 type 二选一',
+              description: 'User-defined agent name. Mutually exclusive with type',
             },
             task: {
               type: 'string',
-              description: '该子任务的任务描述（必填）',
+              description: 'Task description for this sub-task (required)',
             },
             context: {
               type: 'string',
-              description: '附加上下文（可选）',
+              description: 'Additional context (optional)',
             },
           },
           required: ['task'],
@@ -262,12 +262,12 @@ export const runAgentBatchTool: ToolDefinition = {
       },
       concurrency: {
         type: 'number',
-        description: '最大并发子代理数，默认 4，范围 1-8',
+        description: 'Maximum number of concurrent sub-agents, default 4, range 1–8',
       },
       schema: {
         type: 'object',
         description:
-          '可选。提供 JSON Schema 时，每个子任务返回匹配该结构的 JSON 对象，聚合成 JSON 数组返回（适合批量提取结构化数据）。',
+          'Optional. When a JSON Schema is provided, each sub-task returns a JSON object matching that structure, aggregated into a JSON array (suitable for batch structured data extraction).',
       },
     },
     required: ['tasks'],

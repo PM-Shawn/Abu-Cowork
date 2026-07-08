@@ -52,30 +52,30 @@ function matchesQuery(text: string, queryTokens: string[]): boolean {
 
 export const recallTool: ToolDefinition = {
   name: TOOL_NAMES.RECALL,
-  description: `回忆过去的记忆、任务记录和历史会话。当用户问到"之前"、"上次"、"最近做了什么"、"你记得吗"、"我们聊过什么"等需要回溯历史的问题时使用。
+  description: `Recall past memories, task records, and conversation history. Use when the user asks questions that require looking back at history, such as "previously", "last time", "what have we done recently", "do you remember", or "what have we talked about".
 
-## 优先级（按顺序）
-1. **先看 <relevant-memories>**（system prompt 后段）：每轮已自动注入相关非私密记忆完整内容，能从这里答就直接答，不用调任何工具。
-2. **recall（关键词搜）**：<relevant-memories> 没覆盖，或不确定有没有相关记忆时用。
-3. **read_memory（按 filename 精确拉）**：在 <memory-index> 看到具体的 filename 且 description 显示相关时（包括 🔒 私密记忆且用户明确问起的场景），直接 read_memory(filename) — 比 recall 准确，token 也省。
+## Priority (in order)
+1. **Check <relevant-memories> first** (at the end of the system prompt): relevant non-private memories are auto-injected in full each turn — answer from there directly without calling any tool if possible.
+2. **recall (keyword search)**: use when <relevant-memories> does not cover the topic, or when you are unsure whether a relevant memory exists.
+3. **read_memory (precise pull by filename)**: when you see a specific filename in <memory-index> and its description looks relevant (including 🔒 private memories the user explicitly asks about), call read_memory(filename) directly — more accurate than recall and uses fewer tokens.
 
-## 用记忆时的 sanity-check
-记忆是过去某时刻的快照，可能已过时。基于记忆给建议前：
-- 提到具体文件路径 → 先确认文件还在
-- 提到具体函数/工具名 → 先 grep 确认
-- 用户即将据此行动 → 先验证现状再说
+## Sanity-check when using memories
+Memories are snapshots from a point in the past and may be outdated. Before giving advice based on memory:
+- Mentions a specific file path → confirm the file still exists first
+- Mentions a specific function/tool name → grep to confirm first
+- User is about to act on it → verify the current state before commenting
 
-"记忆说 X 存在" ≠ "X 现在还存在"。发现记忆与现状冲突，相信现状，并更新或删除过时的记忆。`,
+"Memory says X exists" ≠ "X still exists now". When memory conflicts with the current state, trust the current state and update or delete the outdated memory.`,
   inputSchema: {
     type: 'object',
     properties: {
       query: {
         type: 'string',
-        description: '搜索关键词（匹配记忆内容、任务摘要、对话标题）',
+        description: 'Search keywords (matched against memory content, task summaries, and conversation titles)',
       },
       limit: {
         type: 'number',
-        description: '每类数据源最多返回条数，默认 10',
+        description: 'Maximum number of results to return per data source, default 10',
       },
     },
     required: [],
@@ -211,17 +211,17 @@ export const recallTool: ToolDefinition = {
  */
 export const readMemoryTool: ToolDefinition = {
   name: TOOL_NAMES.READ_MEMORY,
-  description: '按 filename 精确读取一条记忆的完整内容。当 <memory-index> 索引行的 description 不足以判断时使用。索引行格式 `- [filename](filename) — description`，传入 filename 即可。先在当前工作区查，再退到全局。',
+  description: 'Read the full content of a single memory file by exact filename. Use when the description in a <memory-index> index line is not enough to make a decision. Index line format: `- [filename](filename) — description` — just pass the filename. Searches the current workspace first, then falls back to global.',
   inputSchema: {
     type: 'object',
     properties: {
       filename: {
         type: 'string',
-        description: '记忆文件名（如 user_data_team.md），来自 <memory-index> 索引行',
+        description: 'Memory filename (e.g. user_data_team.md), as found in a <memory-index> index line',
       },
       workspace: {
         type: 'string',
-        description: '可选 workspace 路径。不传时按"当前工作区 → 全局"顺序查找',
+        description: 'Optional workspace path. When omitted, searches in order: current workspace → global',
       },
     },
     required: ['filename'],

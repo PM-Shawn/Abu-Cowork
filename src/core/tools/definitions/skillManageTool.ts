@@ -1151,26 +1151,24 @@ async function removeFileAction(input: Record<string, unknown>, context?: ToolEx
 export const skillManageTool: ToolDefinition = {
   name: TOOL_NAMES.SKILL_MANAGE,
   description:
-    '管理 skills（agent 的程序性记忆）。7 个 action：' +
-    '\n- **install**：从外部来源安装 skill（npm 包名 / 本地路径 / URL / GitHub 链接），装入用户"我的技能"' +
-    '\n- **create**：新建 skill（必填 name + content + frontmatter.description）' +
-    '\n- **patch**：原地改已有 skill，基于 fuzzy 查找替换（old_string → new_string）' +
-    '\n- **edit**：整文件替换（比 patch 更可靠——大段改动时用 edit，不要硬塞给 patch）' +
-    '\n- **write_file**：给 skill 加/覆盖 支撑文件（references / templates / scripts / assets）' +
-    '\n- **remove_file**：删除 skill 的一个支撑文件（SKILL.md 不可删，需整体 delete）' +
-    '\n- **delete**：删除整个 skill（仅限 workspace-auto 和 draft；draft 走 trash 7 天可恢复，workspace-auto 永久删）' +
-    '\n\n⚠️ create 必填参数：action="create" + name + content + frontmatter.description。' +
-    '漏任何一个会立即失败。最小示例：' +
-    '\n`skill_manage({ action:"create", name:"my-skill", frontmatter:{ description:"一句话说明这个 skill 干啥" }, content:"# My Skill\\n正文…" })`' +
-    '\n\n**create 的两种模式**（由 agent_proposed 区分）：' +
-    '\n- **省略 agent_proposed（默认）** = 用户明确要求建 → **直接生效**，立刻出现在主技能列表' +
-    '\n- **agent_proposed=true** = 你自发提议（用户没明说要建） → 进草稿区等用户审核采纳' +
-    '\n\n使用时机：完成 5+ 次工具调用的复杂任务、从错误恢复、用户纠正了做法、发现非直觉工作流，' +
-    '考虑 create 沉淀。使用 skill 时发现过时或错误，立即 patch 修正。' +
-    '\n\n**改动自动 Copy-on-Modify**：对非 workspace-auto / draft 的 skill（user / project / builtin 等），' +
-    'patch / edit / write_file / remove_file 会先把整个 skill 拷贝到 workspace-auto 再改，不动原 skill。' +
-    '\n\nscope 默认 workspace-auto（本项目 agent 自治区），建议 99% 情况都保持默认。' +
-    'scope=user（全局写入）在 MVP 暂不支持，需要等 Module I 的确认 UX。',
+    'Manage skills (the agent\'s procedural memory). 7 actions:' +
+    '\n- **install**: Install a skill from an external source (npm package name / local path / URL / GitHub link) into the user\'s "My Skills"' +
+    '\n- **create**: Create a new skill (required: name + content + frontmatter.description)' +
+    '\n- **patch**: Edit an existing skill in place using fuzzy find-and-replace (old_string → new_string)' +
+    '\n- **edit**: Full-file replacement (more reliable than patch — use edit for large-scale changes, do not force them into patch)' +
+    '\n- **write_file**: Add or overwrite a supporting file in a skill (references / templates / scripts / assets)' +
+    '\n- **remove_file**: Delete a single supporting file from a skill (SKILL.md cannot be deleted; use delete to remove the whole skill)' +
+    '\n- **delete**: Delete an entire skill (workspace-auto and draft only; draft goes to trash with 7-day recovery, workspace-auto is permanent)' +
+    '\n\n⚠️ Required parameters for create: action="create" + name + content + frontmatter.description.' +
+    ' Missing any one will fail immediately. Minimal example:' +
+    '\n`skill_manage({ action:"create", name:"my-skill", frontmatter:{ description:"One sentence describing what this skill does" }, content:"# My Skill\\nBody…" })`' +
+    '\n\n**Two modes for create** (distinguished by agent_proposed):' +
+    '\n- **Omit agent_proposed (default)** = user explicitly requested creation → **takes effect immediately**, appears in the main skills list right away' +
+    '\n- **agent_proposed=true** = you are proactively proposing (user did not explicitly ask) → goes to the draft queue for user review and acceptance' +
+    '\n\nWhen to use: after completing complex tasks with 5+ tool calls, recovering from errors, when the user corrects an approach, or when a non-obvious workflow is discovered — consider creating a skill to capture it. If a skill is outdated or wrong while in use, patch it immediately.' +
+    '\n\n**Automatic Copy-on-Modify**: for skills that are not workspace-auto or draft (user / project / builtin etc.), patch / edit / write_file / remove_file will first copy the entire skill to workspace-auto before modifying it, leaving the original untouched.' +
+    '\n\nscope defaults to workspace-auto (the agent\'s autonomous zone for this project); keep the default in 99% of cases.' +
+    ' scope=user (global write) is not yet supported in this MVP — it requires the Module I confirmation UX.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -1181,79 +1179,79 @@ export const skillManageTool: ToolDefinition = {
       },
       source: {
         type: 'string',
-        description: '[install] 安装来源：npm 包名（如 "cooper"）、本地路径（如 "/Downloads/my-skill"）、直链 URL（.tgz/.zip）、或 GitHub 链接（https://github.com/user/repo）',
+        description: '[install] Installation source: npm package name (e.g. "cooper"), local path (e.g. "/Downloads/my-skill"), direct URL (.tgz/.zip), or GitHub link (https://github.com/user/repo)',
       },
       overwrite: {
         type: 'boolean',
-        description: '[install] 是否覆盖同名已存在的 skill。默认 false —— 同名冲突会返回错误而非静默覆盖。仅在与用户确认后才传 true。',
+        description: '[install] Whether to overwrite an existing skill with the same name. Default false — name conflicts return an error rather than silently overwriting. Only pass true after confirming with the user.',
       },
       name: {
         type: 'string',
-        description: 'skill 名（a-z / 0-9 / 点 / 连字符 / 下划线，首字母/数字开头，最长 64 字符）',
+        description: 'Skill name (a-z / 0-9 / dots / hyphens / underscores, must start with a letter or digit, max 64 characters)',
       },
       scope: {
         type: 'string',
         enum: ['workspace-auto', 'user'],
-        description: '写入作用域，默认 workspace-auto。user scope 在 MVP 暂不支持。',
+        description: 'Write scope, default workspace-auto. user scope is not yet supported in this MVP.',
       },
       frontmatter: {
         type: 'object',
-        description: '[create] SKILL.md 前置 YAML。description 必填；trigger / user-invocable / argument-hint 可选。',
+        description: '[create] SKILL.md frontmatter YAML. description is required; trigger / user-invocable / argument-hint are optional.',
         properties: {
           description: {
             type: 'string',
-            description: '一句话说明这个 skill 的用途（必填，最长 1024 字符）。例如："生成小红书风格的图文内容"。',
+            description: 'One sentence describing what this skill does (required, max 1024 characters). Example: "Generate Xiaohongshu-style illustrated posts".',
           },
           trigger: {
             type: 'string',
-            description: '可选。自动触发条件，例如"用户要求做日报"。不填则 skill 只能被 /name 主动调用。',
+            description: 'Optional. Auto-trigger condition, e.g. "user requests a daily report". If omitted, the skill can only be invoked explicitly via /name.',
           },
           'user-invocable': {
             type: 'boolean',
-            description: '可选，默认 true。是否允许用户通过 /name 主动调用。',
+            description: 'Optional, default true. Whether users can invoke this skill explicitly via /name.',
           },
           'argument-hint': {
             type: 'string',
-            description: '可选。/name 调用时的参数提示，例如"主题或关键词"。',
+            description: 'Optional. Argument hint shown when invoking via /name, e.g. "topic or keywords".',
           },
         },
         required: ['description'],
       },
       content: {
         type: 'string',
-        description: '[create|edit] SKILL.md 正文（create 必填；edit 整文件替换，最多 100,000 字符）',
+        description: '[create|edit] SKILL.md body (required for create; for edit this replaces the entire file, max 100,000 characters)',
       },
       old_string: {
         type: 'string',
-        description: '[patch] 要查找替换的原字符串。支持 fuzzy 匹配（exact / line-trimmed / whitespace-normalized 三层）',
+        description: '[patch] The original string to find and replace. Supports fuzzy matching (three levels: exact / line-trimmed / whitespace-normalized)',
       },
       new_string: {
         type: 'string',
-        description: '[patch] 替换后的新字符串',
+        description: '[patch] The replacement string',
       },
       replace_all: {
         type: 'boolean',
-        description: '[patch] 是否替换所有匹配（默认 false，多匹配时拒绝）',
+        description: '[patch] Whether to replace all matches (default false; rejected when multiple matches exist)',
       },
       file_path: {
         type: 'string',
-        description: '[patch|write_file|edit|remove_file] 支撑文件相对路径，必须在 references/ | templates/ | scripts/ | assets/ 下。edit 省略则指向 SKILL.md；remove_file 必填（SKILL.md 根文件不可删，需改用 delete 整个 skill）。',
+        description: '[patch|write_file|edit|remove_file] Relative path of the supporting file, must be under references/ | templates/ | scripts/ | assets/. For edit, omitting this targets SKILL.md; for remove_file this is required (SKILL.md at root cannot be deleted — use delete to remove the entire skill).',
       },
       file_content: {
         type: 'string',
-        description: '[write_file] 文件内容',
+        description: '[write_file] File content',
       },
       trigger_reason: {
         type: 'string',
         description:
-          '[create] 可选。用一句话说明为什么在此刻提议这个 skill，例如"6 步数据导出任务成功"。仅在 agent_proposed=true 时会被用户在草稿面板看到；直写模式下忽略。',
+          '[create] Optional. One sentence explaining why this skill is being proposed right now, e.g. "6-step data export task succeeded". Shown to the user in the draft panel only when agent_proposed=true; ignored in direct-write mode.',
       },
       agent_proposed: {
         type: 'boolean',
         description:
-          '[create] 默认省略（=false）= 直接生效到主技能列表。' +
-          '仅当你自发觉得值得沉淀、用户没明说要建时设 true，进草稿区等用户审核。' +
-          '不确定时省略（走直写）——用户可随时删；草稿误伤反而打扰用户。',
+          '[create] Omit by default (=false) = takes effect immediately in the main skills list.' +
+          ' Set to true only when you proactively think it is worth saving and the user did not explicitly ask to create it — the skill goes to the draft queue for user review.' +
+          ' When in doubt, omit (use direct write) — the user can delete it at any time; an unwanted draft is more disruptive than a deletable skill.',
       },
     },
     required: ['action', 'name'],

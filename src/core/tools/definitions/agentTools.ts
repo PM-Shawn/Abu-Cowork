@@ -43,7 +43,7 @@ export function clearSkillHooksByConversation(conversationId: string): void {
  */
 export const useSkillTool: ToolDefinition = {
   name: TOOL_NAMES.USE_SKILL,
-  description: '加载技能来辅助当前任务。技能指令会注入本轮系统提示（任务结束后自动释放）。当用户请求匹配某个技能的 TRIGGER 条件时使用。返回加载确认。',
+  description: 'Load a skill to assist with the current task. The skill instructions are injected into the system prompt for this turn (automatically released when the task ends). Use when the user request matches a skill\'s TRIGGER condition. Returns a load confirmation.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -176,14 +176,14 @@ function buildPresetAgent(type: string, _task: string): SubagentDefinition {
 
 export const delegateToAgentTool: ToolDefinition = {
   name: TOOL_NAMES.DELEGATE_TO_AGENT,
-  description: '委派任务给单个代理（同步等待结果）。可指定 agent_name（用户自定义代理）或 type（系统内置角色：research 调研/writer 写作/executor 执行）。需要并行处理多个独立子任务时，请改用 run_agent_batch（更可靠）。',
+  description: 'Delegate a task to a single agent (synchronously waits for the result). Can specify agent_name (user-defined agent) or type (built-in role: research/writer/executor). When parallel processing of multiple independent sub-tasks is needed, use run_agent_batch instead (more reliable).',
   inputSchema: {
     type: 'object',
     properties: {
-      agent_name: { type: 'string', description: '用户自定义代理名称（与 type 二选一）' },
-      type: { type: 'string', description: '系统内置角色：research（只读调研）、writer（读写创作）、executor（全能执行）。与 agent_name 二选一', enum: ['research', 'writer', 'executor'] },
-      task: { type: 'string', description: '委派的任务描述' },
-      context: { type: 'string', description: '附加上下文（可选）' },
+      agent_name: { type: 'string', description: 'User-defined agent name (mutually exclusive with type)' },
+      type: { type: 'string', description: 'Built-in role: research (read-only research), writer (read/write content creation), executor (all-purpose execution). Mutually exclusive with agent_name', enum: ['research', 'writer', 'executor'] },
+      task: { type: 'string', description: 'Task description to delegate' },
+      context: { type: 'string', description: 'Additional context (optional)' },
     },
     required: ['task'],
   },
@@ -326,7 +326,7 @@ export const delegateToAgentTool: ToolDefinition = {
  */
 export const readSkillFileTool: ToolDefinition = {
   name: TOOL_NAMES.READ_SKILL_FILE,
-  description: '读取已激活技能目录中的辅助文件（参考文档、模板、示例等）。当技能的 SKILL.md 中引用了支持文件时使用。',
+  description: 'Read supporting files (reference documents, templates, examples, etc.) from an activated skill\'s directory. Use when the skill\'s SKILL.md references supporting files.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -369,7 +369,7 @@ function createSaveItemTool(kind: 'skill' | 'agent'): ToolDefinition {
 
   return {
     name: isSkill ? TOOL_NAMES.SAVE_SKILL : TOOL_NAMES.SAVE_AGENT,
-    description: `保存自定义${label}文件到 ~/.abu/${folder}/{name}/${fileName}。当用户要求创建或修改${label}时使用。只需提供名称和内容，路径自动计算。可选传入 files 数组来同时保存脚本、参考文档等附属文件。`,
+    description: `Save a custom ${label} file to ~/.abu/${folder}/{name}/${fileName}. Use when the user asks to create or modify a ${label}. Only provide the name and content — the path is computed automatically. Optionally pass a files array to also save supporting files such as scripts and reference documents.`,
     inputSchema: {
       type: 'object',
       properties: {
@@ -453,17 +453,17 @@ const FOLDER_HINT_MAP: Record<string, string> = {
 
 export const requestWorkspaceTool: ToolDefinition = {
   name: TOOL_NAMES.REQUEST_WORKSPACE,
-  description: '请求用户选择工作区文件夹。当用户的请求涉及文件操作但没有设置工作区时，调用此工具让用户选择工作目录。',
+  description: 'Ask the user to select a workspace folder. Call this tool to let the user choose a working directory when their request involves file operations but no workspace is set.',
   inputSchema: {
     type: 'object',
     properties: {
       reason: {
         type: 'string',
-        description: '向用户解释为什么需要选择工作区，例如"你想整理文件，需要先选择一个工作目录"',
+        description: 'Explain to the user why a workspace selection is needed, e.g. "You want to organize files and need to select a working directory first"',
       },
       folder_hint: {
         type: 'string',
-        description: '用户提到的文件夹名称，如"下载"、"桌面"、"文档"。工具会自动解析为完整路径',
+        description: 'Folder name mentioned by the user, e.g. "Downloads", "Desktop", "Documents". The tool will automatically resolve it to a full path.',
       },
     },
     required: ['reason'],

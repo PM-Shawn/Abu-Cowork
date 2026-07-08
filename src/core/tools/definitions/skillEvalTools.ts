@@ -53,7 +53,7 @@ function buildSkillsList(
 
 export const testSkillTriggerTool: ToolDefinition = {
   name: TOOL_NAMES.TEST_SKILL_TRIGGER,
-  description: '测试一个技能的 description 是否能被特定查询正确触发。输入技能名称、描述和测试查询，返回每条查询的触发结果和总体通过率。等同于 Claude Code 的 run_eval.py。',
+  description: 'Test whether a skill\'s description is correctly triggered by specific queries. Provide the skill name, description, and test queries; returns the trigger result for each query and an overall pass rate. Equivalent to Claude Code\'s run_eval.py.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -101,7 +101,7 @@ ${skillsList}
 
     const useSkillToolDef: ToolDefinition = {
       name: 'use_skill',
-      description: '激活一个技能',
+      description: 'Activate a skill',
       inputSchema: {
         type: 'object',
         properties: {
@@ -168,7 +168,7 @@ ${skillsList}
 
 export const improveSkillDescriptionTool: ToolDefinition = {
   name: TOOL_NAMES.IMPROVE_SKILL_DESCRIPTION,
-  description: '根据触发测试结果，使用 LLM 优化技能的 description 以提升触发准确率。传入当前描述、测试结果、技能内容，返回改进版描述。等同于 Claude Code 的 improve_description.py。',
+  description: 'Use an LLM to improve a skill\'s description based on trigger test results to raise trigger accuracy. Provide the current description, test results, and skill content; returns an improved description. Equivalent to Claude Code\'s improve_description.py.',
   inputSchema: {
     type: 'object',
     properties: {

@@ -15,17 +15,17 @@ export const runCommandTool: ToolDefinition = {
   get description() {
     const plat = getPlatform();
     const shell = getShell();
-    return `在用户电脑上执行 shell 命令（当前平台：${plat}，Shell：${shell}）。
+    return `Execute a shell command on the user's computer (current platform: ${plat}, shell: ${shell}).
 
-重要：当有专用工具时优先使用专用工具：
-- 读取文件 → read_file
-- 查看目录 → list_directory
-- 搜索文件内容 → search_files
-- 查找文件 → find_files
-- HTTP 请求 → http_fetch
-- 编辑文件 → edit_file
+Important: prefer a dedicated tool when one is available:
+- Read a file → read_file
+- List a directory → list_directory
+- Search file contents → search_files
+- Find files → find_files
+- HTTP requests → http_fetch
+- Edit a file → edit_file
 
-本工具适用于：文件移动/复制/重命名（mv/cp）、包管理（npm/pip/brew）、构建测试（npm run/cargo build）、Git 操作、Python 脚本执行（自动使用内置运行时）。长时间运行的服务设置 background=true。`;
+This tool is suitable for: moving/copying/renaming files (mv/cp), package management (npm/pip/brew), build and test (npm run/cargo build), Git operations, running Python scripts (automatically uses the built-in runtime). Set background=true for long-running services.`;
   },
   inputSchema: {
     type: 'object',

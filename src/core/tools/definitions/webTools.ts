@@ -147,7 +147,7 @@ export const webSearchTool: ToolDefinition = {
 
 export const httpFetchTool: ToolDefinition = {
   name: TOOL_NAMES.HTTP_FETCH,
-  description: '发送 HTTP 请求到任意 URL。支持 GET/POST/PUT/DELETE/PATCH 方法。比通过 run_command 执行 curl 更可靠且跨平台。返回 HTTP 状态码和响应内容。当读取网页文章时，使用 extract="article" 自动提取正文，大幅减少噪音和 token 消耗。',
+  description: 'Send an HTTP request to any URL. Supports GET/POST/PUT/DELETE/PATCH methods. More reliable and cross-platform than running curl via run_command. Returns the HTTP status code and response body. When reading web articles, use extract="article" to automatically extract the main content, significantly reducing noise and token consumption.',
   inputSchema: {
     type: 'object',
     properties: {

@@ -1,137 +1,137 @@
-# abu-browser-bridge vs Playwright 原理对比
+# abu-browser-bridge vs Playwright: Architecture Comparison
 
 ## Playwright
 
-- 直接通过 **CDP（Chrome DevTools Protocol）** 与浏览器进程通信
-- **启动并控制一个独立的浏览器实例**（headless 或 headed）
-- 不需要安装任何浏览器扩展
-- 通信链路：`Playwright → CDP WebSocket → Browser Process`
-- 拥有浏览器的完全控制权（网络拦截、多 tab/context 隔离、浏览器生命周期管理等）
+- Communicates with the browser process directly via **CDP (Chrome DevTools Protocol)**
+- **Launches and controls an independent browser instance** (headless or headed)
+- Requires no browser extension installation
+- Communication chain: `Playwright → CDP WebSocket → Browser Process`
+- Has full control over the browser (network interception, multi-tab/context isolation, browser lifecycle management, etc.)
 
 ## abu-browser-bridge
 
-- 通过 **Chrome Extension + 自定义 WebSocket** 协议与**用户已打开的浏览器**通信
-- 通信链路：`MCP Server → WebSocket(:9876) → Extension Service Worker → Content Script → DOM`
-- **不控制浏览器进程本身**，而是作为"外挂"注入到用户正在使用的浏览器中
-- 依赖 Chrome Extension API（`chrome.scripting.executeScript`、`chrome.tabs.sendMessage` 等）操作 DOM
+- Communicates with the **user's already-open browser** via a **Chrome Extension + custom WebSocket** protocol
+- Communication chain: `MCP Server → WebSocket(:9876) → Extension Service Worker → Content Script → DOM`
+- **Does not control the browser process itself** — instead acts as an "add-on" injected into the browser the user is actively using
+- Relies on Chrome Extension APIs (`chrome.scripting.executeScript`, `chrome.tabs.sendMessage`, etc.) to manipulate the DOM
 
-## 关键差异总结
+## Key Differences Summary
 
-| 维度 | Playwright | abu-browser-bridge |
+| Dimension | Playwright | abu-browser-bridge |
 |------|-----------|-------------------|
-| 协议 | CDP (DevTools Protocol) | 自定义 WebSocket + Chrome Extension API |
-| 浏览器 | 启动新实例，完全受控 | 连接用户已有浏览器，通过扩展协作 |
-| 安装 | 无需扩展 | 需要安装 Chrome Extension |
-| 登录态 | 需要自行处理 | **天然复用用户的登录态和 Cookie** |
-| 控制深度 | 极深（网络层、协议层） | DOM 层为主 |
-| 典型用途 | 自动化测试、爬虫 | AI 助手操控用户真实浏览器 |
+| Protocol | CDP (DevTools Protocol) | Custom WebSocket + Chrome Extension API |
+| Browser | Launches a new instance, fully controlled | Connects to the user's existing browser via extension collaboration |
+| Installation | No extension needed | Requires installing a Chrome Extension |
+| Login state | Must be handled manually | **Natively reuses the user's login state and cookies** |
+| Control depth | Very deep (network layer, protocol layer) | Primarily DOM layer |
+| Typical use | Automated testing, web scraping | AI assistant controlling the user's real browser |
 
-## 为什么 abu-browser-bridge 不用 CDP？
+## Why Doesn't abu-browser-bridge Use CDP?
 
-abu-browser-bridge 的设计目标是**让 AI 操作用户正在使用的浏览器**——复用用户的登录态、Cookie、已打开的页面。而 Playwright/CDP 模式会启动一个"干净"的浏览器实例，无法直接访问用户的真实浏览环境。
+The design goal of abu-browser-bridge is to **let AI operate the browser the user is actively using** — reusing the user's login state, cookies, and already-open pages. The Playwright/CDP approach launches a "clean" browser instance that cannot directly access the user's real browsing environment.
 
-用 Chrome Extension 作为中间层，虽然控制能力不如 CDP 深，但换来了**对用户真实浏览器会话的无缝接入**，这对 AI 助手场景更实用。
+Using a Chrome Extension as the middleware layer provides less control depth than CDP, but in return gives **seamless access to the user's real browser session** — which is far more practical for AI assistant scenarios.
 
-## abu-browser-bridge 架构详解
+## abu-browser-bridge Architecture in Detail
 
-### 三大组件
+### Three Core Components
 
-1. **abu-browser-bridge**（Node.js MCP Server）— 桥接进程
-2. **abu-chrome-extension**（Chrome Extension）— 浏览器端代理
-3. **abu-browser-shared**（共享类型）— 通信协议定义
+1. **abu-browser-bridge** (Node.js MCP Server) — the bridge process
+2. **abu-chrome-extension** (Chrome Extension) — the browser-side agent
+3. **abu-browser-shared** (shared types) — communication protocol definitions
 
-### 通信协议
+### Communication Protocol
 
-#### WebSocket 连接（端口 9876）
+#### WebSocket Connection (Port 9876)
 
-- 传输：原始 TCP WebSocket `ws://127.0.0.1:9876`
-- 认证：基于 Token，通过 `Sec-WebSocket-Protocol` header 传递
-  - Bridge 启动时生成随机 48 字节 hex token
-  - Chrome Extension 通过 HTTP 端点（端口 9875）发现 token
-  - 连接握手时验证 token
-- 心跳：15 秒 ping/pong 检测死连接
-- 单连接：同一时间只允许一个扩展连接
+- Transport: raw TCP WebSocket `ws://127.0.0.1:9876`
+- Authentication: token-based, passed via the `Sec-WebSocket-Protocol` header
+  - Bridge generates a random 48-byte hex token on startup
+  - Chrome Extension discovers the token via an HTTP endpoint (port 9875)
+  - Token is verified during the connection handshake
+- Heartbeat: 15-second ping/pong to detect dead connections
+- Single connection: only one extension connection is allowed at a time
 
-#### HTTP 发现端点（端口 9875）
+#### HTTP Discovery Endpoint (Port 9875)
 
-- 固定端口 9875 上的轻量 HTTP 服务
-- CORS 限制为 `chrome-extension://` 来源
-- 返回 JSON：`{ wsPort, pid, extensionConnected, uptime, version, token }`
+- Lightweight HTTP service on fixed port 9875
+- CORS restricted to `chrome-extension://` origins
+- Returns JSON: `{ wsPort, pid, extensionConnected, uptime, version, token }`
 
-#### 消息格式
+#### Message Format
 
 ```typescript
 // Bridge → Extension
 interface BridgeRequest {
-  id: string;              // 每个请求的唯一 ID
-  action: string;          // 动作名称（如 "click", "snapshot"）
+  id: string;              // unique ID for each request
+  action: string;          // action name (e.g. "click", "snapshot")
   payload: Record<string, unknown>;
 }
 
 // Extension → Bridge
 interface BridgeResponse {
-  id: string;              // 与请求 ID 对应
+  id: string;              // matches the request ID
   success: boolean;
   data?: unknown;
   error?: string;
 }
 ```
 
-### 浏览器通信分层
+### Browser Communication Layers
 
-| 层级 | 通信方式 |
+| Layer | Communication Method |
 |------|---------|
 | Service Worker ↔ MCP Server | WebSocket |
 | Service Worker ↔ Content Script | `chrome.tabs.sendMessage()` |
-| Content Script → DOM | 直接 DOM 操作 |
+| Content Script → DOM | Direct DOM manipulation |
 
-### 支持的 17 个工具
+### 17 Supported Tools
 
-**Tab 管理**：`get_tabs`、`screenshot`、`navigate`、`get_downloads`
+**Tab Management**: `get_tabs`, `screenshot`, `navigate`, `get_downloads`
 
-**DOM 查询与观察**：`snapshot`、`extract_text`、`extract_table`、`wait_for`
+**DOM Query & Observation**: `snapshot`, `extract_text`, `extract_table`, `wait_for`
 
-**DOM 交互**：`click`、`fill`、`select`、`scroll`、`keyboard`
+**DOM Interaction**: `click`, `fill`, `select`, `scroll`, `keyboard`
 
-**高级操作**：`execute_js`、`start_recording`、`stop_recording`、`connection_status`
+**Advanced Operations**: `execute_js`, `start_recording`, `stop_recording`, `connection_status`
 
-### 元素定位策略
+### Element Locator Strategies
 
-支持多种定位方式：
+Multiple locator types are supported:
 
 ```typescript
-{ "css": "#button-id" }                        // CSS 选择器
-{ "text": "Click Me" }                         // 可见文本
+{ "css": "#button-id" }                        // CSS selector
+{ "text": "Click Me" }                         // visible text
 { "role": "button", "name": "Submit" }         // ARIA role + label
-{ "testId": "submit-btn" }                     // data-testid 属性
-{ "ref": "e3" }                                // snapshot 返回的引用 ID
-{ "xpath": "//div[@class='x']" }               // XPath（备选）
+{ "testId": "submit-btn" }                     // data-testid attribute
+{ "ref": "e3" }                                // reference ID returned by snapshot
+{ "xpath": "//div[@class='x']" }               // XPath (fallback)
 ```
 
-### 安全特性
+### Security Features
 
-1. **Auth Token** — 每次启动随机生成，防止未授权连接
-2. **CORS 限制** — 发现端点仅接受 `chrome-extension://` 来源
-3. **URL 校验** — `navigate` 仅接受 `http:` / `https:` 协议
-4. **CSP 绕过** — 通过 `chrome.scripting.executeScript({ world: 'MAIN' })` 执行
-5. **选择器注入防护** — CSS 选择器使用 `CSS.escape()` 转义
+1. **Auth Token** — randomly generated on each startup to prevent unauthorized connections
+2. **CORS Restriction** — discovery endpoint only accepts `chrome-extension://` origins
+3. **URL Validation** — `navigate` only accepts `http:` / `https:` protocols
+4. **CSP Bypass** — executed via `chrome.scripting.executeScript({ world: 'MAIN' })`
+5. **Selector Injection Protection** — CSS selectors are escaped using `CSS.escape()`
 
-### 数据流示例
+### Data Flow Example
 
 ```
-用户请求 "点击提交按钮"
+User requests "click the submit button"
   ↓
-MCP tool: click({ tabId: 5, locator: { "text": "提交" } })
+MCP tool: click({ tabId: 5, locator: { "text": "Submit" } })
   ↓
-Bridge 通过 WS 发送 BridgeRequest
+Bridge sends BridgeRequest over WS
   ↓
-Service Worker 接收，调用 sendToContentScript()
+Service Worker receives it, calls sendToContentScript()
   ↓
-Content Script 定位元素，触发 mousedown/mouseup/click 事件
+Content Script locates the element, fires mousedown/mouseup/click events
   ↓
-Content Script 返回结果
+Content Script returns the result
   ↓
-Service Worker 通过 WS 返回 BridgeResponse
+Service Worker returns BridgeResponse over WS
   ↓
-Bridge 将结果返回给 AI
+Bridge returns the result to AI
 ```

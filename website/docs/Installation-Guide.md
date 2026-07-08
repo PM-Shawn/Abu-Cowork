@@ -1,95 +1,95 @@
-# Abu 安装指南
+# Abu Installation Guide
 
-[English](Installation-Guide_EN.md) | **中文**
+**English** | [中文](Installation-Guide.zh-CN.md)
 
-## 下载
+## Download
 
-前往 [GitHub Releases](https://github.com/PM-Shawn/Abu-Cowork/releases) 下载对应平台的安装包：
+Head to [GitHub Releases](https://github.com/PM-Shawn/Abu-Cowork/releases) to download the installer for your platform:
 
-| 平台 | 文件格式 |
-|------|----------|
+| Platform | File |
+|----------|------|
 | macOS (Apple Silicon) | `Abu_x.x.x_aarch64.dmg` |
 | macOS (Intel) | `Abu_x.x.x_x64.dmg` |
 | Windows | `Abu_x.x.x_x64-setup.exe` |
 
 ---
 
-## macOS 安装
+## macOS Installation
 
-### 1. 安装应用
+### 1. Install the App
 
-双击 `.dmg` 文件，将 Abu 拖入 `Applications` 文件夹。
+Double-click the `.dmg` file and drag Abu into the `Applications` folder.
 
-### 2. 处理"已损坏，无法打开"提示
+### 2. Fix "App is Damaged" Warning
 
-由于 Abu 目前未进行 Apple 签名和公证，首次打开时 macOS 会弹出以下提示：
+Since Abu is not yet signed with an Apple Developer certificate, macOS will show this warning on first launch:
 
-> "Abu"已损坏，无法打开。你应该将它移到废纸篓。
+> "Abu" is damaged and can't be opened. You should move it to the Trash.
 
-**解决方法：**
+**Solution:**
 
-打开「终端」（在启动台搜索"终端"或"Terminal"），输入以下命令：
+Open **Terminal** (search "Terminal" in Launchpad) and run:
 
 ```bash
 xattr -cr /Applications/Abu.app
 ```
 
-按回车执行，然后再次双击打开 Abu 即可。
+Press Enter, then double-click Abu to open it.
 
-> **提示**：如果你把 Abu 放在了其他位置，将 `/Applications/Abu.app` 替换为实际路径。也可以输入 `xattr -cr ` 后直接把 Abu.app 拖入终端窗口，路径会自动填充。
+> **Tip**: If you installed Abu in a different location, replace `/Applications/Abu.app` with the actual path. You can also type `xattr -cr ` and drag the Abu.app icon into the Terminal window — the path will auto-fill.
 
-### 3. 备选方法
+### 3. Alternative Method
 
-如果上述命令无效，从 **系统设置** 放行：
+If the command above doesn't work, allow Abu via System Settings:
 
-1. 双击打开 Abu，在弹出的拦截提示上先不要点「移到废纸篓」
-2. 打开 **系统设置 → 隐私与安全性**，滚到底部会看到「已阻止使用 "Abu"」的提示
-3. 点 **「仍要打开」**（Open Anyway），再确认一次即可
+1. Double-click Abu to open it — do **not** click "Move to Trash" on the warning dialog
+2. Open **System Settings → Privacy & Security**, scroll to the bottom — you'll see a "was blocked" notice for Abu
+3. Click **"Open Anyway"** and confirm once more
 
-> **macOS 15 (Sequoia) 及以上**：Apple 已移除 `sudo spctl --master-disable` 命令，请使用上面的「系统设置 → 隐私与安全性 → 仍要打开」流程。旧版 macOS 若仍需临时关闭 Gatekeeper，可用 `sudo spctl --master-disable`，安装后用 `sudo spctl --master-enable` 重新启用。
-
----
-
-## Windows 安装
-
-### 1. 安装应用
-
-双击 `.exe` 安装包，按提示完成安装。
-
-### 2. 处理 SmartScreen 拦截
-
-由于 Abu 目前未进行代码签名，首次运行时 Windows SmartScreen 可能弹出以下提示：
-
-> Windows 已保护你的电脑 — 阻止了无法识别的应用启动。
-
-**解决方法：**
-
-1. 点击弹窗中的 **「更多信息」**（More info）
-2. 点击 **「仍要运行」**（Run anyway）
-
-应用即可正常启动。
-
-### 备选方法：右键属性解除锁定
-
-如果安装包下载后无法运行：
-
-1. 右键点击 `.exe` 文件 → 选择 **「属性」**
-2. 在底部找到 **「安全」** 区域，勾选 **「解除锁定」**（Unblock）
-3. 点击 **「确定」**，再双击安装
+> **macOS 15 (Sequoia) and later**: Apple removed the `sudo spctl --master-disable` command. Use the System Settings → Privacy & Security → "Open Anyway" flow above instead. On older macOS, you can still temporarily disable Gatekeeper with `sudo spctl --master-disable`; remember to re-enable it afterward with `sudo spctl --master-enable`.
 
 ---
 
-## 常见问题
+## Windows Installation
 
-### Q: 这样操作安全吗？
+### 1. Install the App
 
-Abu 是开源软件，你可以在 GitHub 上查看全部源代码。上述提示是因为应用未购买商业代码签名证书，并非应用本身有问题。
+Double-click the `.exe` installer and follow the prompts.
 
-### Q: 每次更新都需要重新操作吗？
+### 2. Handle SmartScreen Warning
 
-- **macOS**：是的，每次更新后需要重新执行 `xattr -cr` 命令。
-- **Windows**：通常只有首次运行需要放行 SmartScreen。
+Since Abu is not yet code-signed, Windows SmartScreen may show:
 
-### Q: 未来会解决这个问题吗？
+> Windows protected your PC — prevented an unrecognized app from starting.
 
-计划在正式发布时购买代码签名证书（macOS Apple Developer + Windows EV 证书），届时将不再出现安全提示。
+**Solution:**
+
+1. Click **"More info"** in the popup
+2. Click **"Run anyway"**
+
+The app will launch normally.
+
+### Alternative: Unblock via Properties
+
+If the installer won't run after downloading:
+
+1. Right-click the `.exe` file → select **"Properties"**
+2. At the bottom, find the **"Security"** section and check **"Unblock"**
+3. Click **"OK"**, then double-click to install
+
+---
+
+## FAQ
+
+### Q: Is this safe?
+
+Abu is open-source software — you can review the full source code on GitHub. The security warnings appear because the app hasn't been signed with a commercial code-signing certificate, not because there's anything wrong with the app itself.
+
+### Q: Do I need to do this after every update?
+
+- **macOS**: Yes, you'll need to run `xattr -cr` again after each update.
+- **Windows**: Usually only the first launch requires SmartScreen approval.
+
+### Q: Will this be fixed in the future?
+
+We plan to purchase code-signing certificates (Apple Developer + Windows EV certificate) for the official release, which will eliminate these security prompts.

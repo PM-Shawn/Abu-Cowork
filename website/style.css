@@ -147,6 +147,43 @@ body {
     color: var(--color-bg) !important;
 }
 
+/* Language switcher — bordered pill with globe icon, set apart from nav items */
+.nav-lang {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    margin-left: 12px;
+    padding: 5px 13px;
+    font-size: 0.85rem;
+    font-weight: 500;
+    color: var(--color-text-secondary);
+    text-decoration: none;
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-full);
+    transition: var(--transition);
+}
+.nav-lang::before {
+    content: '';
+    position: absolute;
+    left: -12px;
+    top: 50%;
+    transform: translateY(-50%);
+    width: 1px;
+    height: 18px;
+    background: var(--color-border);
+}
+.nav-lang:hover {
+    color: var(--color-text);
+    border-color: var(--color-primary-light);
+    background: rgba(217, 119, 87, 0.06);
+}
+.nav-lang-icon {
+    width: 15px;
+    height: 15px;
+    flex-shrink: 0;
+}
+
 .nav-toggle {
     display: none;
     flex-direction: column;
@@ -621,7 +658,7 @@ section h2 {
     color: var(--color-text-secondary);
 }
 
-/* "更多能力" compact strip under the feature grid */
+/* "More Capabilities" compact strip under the feature grid */
 .more-caps {
     grid-column: 1 / -1;
     margin-top: 12px;
@@ -1120,6 +1157,15 @@ section h2 {
         margin-left: 0;
         margin-top: 8px;
         justify-content: center;
+    }
+
+    .nav-lang {
+        margin-left: 0;
+        margin-top: 8px;
+        justify-content: center;
+    }
+    .nav-lang::before {
+        display: none;
     }
 
     .hero {

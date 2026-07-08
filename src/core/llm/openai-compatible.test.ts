@@ -215,6 +215,31 @@ describe('OpenAICompatibleAdapter streaming finish_reason handling', () => {
         expect(done.stopReason).toBe('end_turn');
       }
     });
+
+    it("flushes a COMPLETED tool call streamed before content_filter", async () => {
+      const events = await runChat([
+        { choices: [{ delta: { tool_calls: [{ index: 0, id: 'tc_1', function: { name: 'read_file', arguments: '{"path":"a.txt"}' } }] } }] },
+        { choices: [{ delta: {}, finish_reason: 'content_filter' }] },
+      ]);
+      const tu = events.find((e) => e.type === 'tool_use');
+      expect(tu).toBeDefined();
+      if (tu?.type === 'tool_use') {
+        expect(tu.input).toEqual({ path: 'a.txt' });
+        expect('_parse_error' in tu.input).toBe(false);
+      }
+      const done = events.find((e) => e.type === 'done');
+      expect(done?.type === 'done' && done.stopReason).toBe('tool_use');
+    });
+
+    it("DROPS a malformed tool call on content_filter (never surfaces _parse_error)", async () => {
+      const events = await runChat([
+        { choices: [{ delta: { tool_calls: [{ index: 0, id: 'tc_1', function: { name: 'read_file', arguments: '{"path":"trunc' } }] } }] },
+        { choices: [{ delta: {}, finish_reason: 'content_filter' }] },
+      ]);
+      expect(events.find((e) => e.type === 'tool_use')).toBeUndefined();
+      const done = events.find((e) => e.type === 'done');
+      expect(done?.type === 'done' && done.stopReason).toBe('end_turn');
+    });
   });
 
   describe("finish_reason='error' (provider-side error in stream)", () => {
@@ -228,6 +253,33 @@ describe('OpenAICompatibleAdapter streaming finish_reason handling', () => {
       if (done?.type === 'done') {
         expect(done.stopReason).toBe('end_turn');
       }
+    });
+
+    it("flushes a COMPLETED tool call streamed before finish_reason='error'", async () => {
+      // A provider may stream a full tool call then close the chunk with 'error';
+      // the invocation must not be silently lost.
+      const events = await runChat([
+        { choices: [{ delta: { tool_calls: [{ index: 0, id: 'tc_1', function: { name: 'read_file', arguments: '{"path":"a.txt"}' } }] } }] },
+        { choices: [{ delta: {}, finish_reason: 'error' }] },
+      ]);
+      const tu = events.find((e) => e.type === 'tool_use');
+      expect(tu).toBeDefined();
+      if (tu?.type === 'tool_use') {
+        expect(tu.input).toEqual({ path: 'a.txt' });
+        expect('_parse_error' in tu.input).toBe(false);
+      }
+      const done = events.find((e) => e.type === 'done');
+      expect(done?.type === 'done' && done.stopReason).toBe('tool_use');
+    });
+
+    it("DROPS a malformed tool call on finish_reason='error'", async () => {
+      const events = await runChat([
+        { choices: [{ delta: { tool_calls: [{ index: 0, id: 'tc_1', function: { name: 'read_file', arguments: '{"path":"trunc' } }] } }] },
+        { choices: [{ delta: {}, finish_reason: 'error' }] },
+      ]);
+      expect(events.find((e) => e.type === 'tool_use')).toBeUndefined();
+      const done = events.find((e) => e.type === 'done');
+      expect(done?.type === 'done' && done.stopReason).toBe('end_turn');
     });
   });
 
@@ -276,6 +328,17 @@ describe('OpenAICompatibleAdapter streaming finish_reason handling', () => {
       if (done?.type === 'done') {
         expect(done.stopReason).toBe('end_turn');
       }
+    });
+
+    it('DROPS a malformed buffered tool call on unknown finish_reason (no _parse_error)', async () => {
+      const events = await runChat([
+        { choices: [{ delta: { tool_calls: [{ index: 0, id: 'tc_1', function: { name: 'read_file', arguments: '{"path":"trunc' } }] } }] },
+        { choices: [{ delta: {}, finish_reason: 'some_new_reason' }] },
+      ]);
+      // Malformed args must not be handed to the agent as a _parse_error tool call.
+      expect(events.find((e) => e.type === 'tool_use')).toBeUndefined();
+      const done = events.find((e) => e.type === 'done');
+      expect(done?.type === 'done' && done.stopReason).toBe('end_turn');
     });
   });
 

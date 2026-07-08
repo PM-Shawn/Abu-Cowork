@@ -561,6 +561,30 @@ describe('modelRequestProcessors', () => {
       expect(google.thought_signature).toBe('skip_thought_signature_validator');
     });
 
+    it('injects thought_signature into ALL parallel tool_calls, not just the first', () => {
+      const messages = [
+        {
+          role: 'assistant',
+          content: null,
+          tool_calls: [
+            { id: 'call_1', type: 'function', function: { name: 'search', arguments: '{}' } },
+            { id: 'call_2', type: 'function', function: { name: 'read_file', arguments: '{}' } },
+            { id: 'call_3', type: 'function', function: { name: 'write', arguments: '{}' } },
+          ],
+        },
+      ];
+      const b = run(
+        { messages },
+        { modelId: 'gemini-3-pro', requestHost: 'generativelanguage.googleapis.com', hasTools: true },
+      );
+      const toolCalls = (b.messages as Record<string, unknown>[])[0].tool_calls as Record<string, unknown>[];
+      // Gemini rejects the next request (400) if ANY parallel tool_call lacks a signature.
+      for (const tc of toolCalls) {
+        const google = (tc.extra_content as Record<string, unknown>).google as Record<string, unknown>;
+        expect(google.thought_signature).toBe('skip_thought_signature_validator');
+      }
+    });
+
     it('gemini-2.5-pro: uses msg.extra_fields.google.thought_signature if present', () => {
       const messages = [
         {

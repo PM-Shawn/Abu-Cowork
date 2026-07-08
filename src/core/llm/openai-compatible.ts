@@ -104,6 +104,29 @@ function buildToolInput(
   return { _parse_error: `Failed to parse tool input: ${tc.args.slice(0, 200)}` };
 }
 
+/**
+ * Flush only the buffered tool calls whose arguments parse successfully, dropping
+ * malformed/partial ones. Mirrors the finish_reason='length' invariant: never hand
+ * a broken tool call to the agent loop (which would surface a spurious `_parse_error`
+ * tool execution instead of a clean turn). Use this on the abnormal terminal
+ * branches (error / content_filter / refusal / unknown finish_reason) where there is
+ * no max_tokens escalation path to recover a truncated call. Returns true if any
+ * tool_use was emitted.
+ */
+function emitParseableToolCalls(
+  toolCallBuffers: Map<number, { id: string; name: string; args: string }>,
+  onEvent: (event: StreamEvent) => void,
+): boolean {
+  let emitted = false;
+  for (const [, tc] of toolCallBuffers) {
+    const parsed = safeParseToolArgs(tc.args);
+    if (parsed === null) continue; // drop malformed — do not emit a _parse_error tool call
+    onEvent({ type: 'tool_use', id: tc.id, name: tc.name, input: parsed });
+    emitted = true;
+  }
+  return emitted;
+}
+
 // Counter-based tool call ID generator — prevents collisions on rapid parallel calls
 let toolCallCounter = 0;
 function generateToolCallId(prefix: string): string {
@@ -286,6 +309,10 @@ export class OpenAICompatibleAdapter implements LLMAdapter {
     const fullUrl = buildFullChatUrl(options.baseUrl, 'openai-compatible', {
       useRawUrl: options.declaredCapabilities?.useRawUrl,
     });
+    // Host of the request URL — used for both the request-processor context and
+    // for observability events emitted from the streaming loop below. fullUrl is
+    // invariant for the whole request, so derive it once here.
+    const requestHost = (() => { try { return new URL(fullUrl).host; } catch { return ''; } })();
 
     // Ollama: streaming + tool calling is broken in /v1/chat/completions.
     // When tools are present and endpoint looks like Ollama, use non-streaming.
@@ -330,7 +357,7 @@ export class OpenAICompatibleAdapter implements LLMAdapter {
 
     applyModelRequestProcessors(body, {
       modelId: options.model,
-      requestHost: (() => { try { return new URL(fullUrl).host; } catch { return ''; } })(),
+      requestHost,
       hasTools,
       caps: options.declaredCapabilities,
     });
@@ -819,20 +846,16 @@ export class OpenAICompatibleAdapter implements LLMAdapter {
               choice.finish_reason === 'content_filter' ||
               choice.finish_reason === 'refusal'
             ) {
-              // Content was filtered or the model refused to respond. Flush any
-              // pending tool calls (best-effort) then close the stream cleanly.
-              // stopReason 'end_turn' is the closest existing value — no dedicated
-              // moderation reason exists in the current StreamEvent union.
-              for (const [, tc] of toolCallBuffers) {
-                const input = buildToolInput(tc, `finish_reason=${choice.finish_reason}`);
-                onEvent({ type: 'tool_use', id: tc.id, name: tc.name, input });
-              }
+              // Content was filtered or the model refused. Flush any COMPLETED tool
+              // calls (dropping malformed/partial ones — same invariant as the length
+              // branch) then close the stream cleanly. stopReason 'end_turn' is the
+              // closest existing value — no dedicated moderation reason exists.
+              const hasNativeTC = emitParseableToolCalls(toolCallBuffers, onEvent);
               const hasTextTC = emitTextToolCalls();
-              const hasToolCalls = toolCallBuffers.size > 0 || hasTextTC;
+              const hasToolCalls = hasNativeTC || hasTextTC;
               logger.warn('content filtered or refused by provider', {
                 finish_reason: choice.finish_reason,
               });
-              const requestHost = (() => { try { return new URL(fullUrl).host; } catch { return ''; } })();
               observeCompatEvent({
                 kind: 'content_filtered',
                 modelId: options.model,
@@ -842,57 +865,48 @@ export class OpenAICompatibleAdapter implements LLMAdapter {
               onEvent({ type: 'done', stopReason: hasToolCalls ? 'tool_use' : 'end_turn' });
               doneEmitted = true;
             } else if (choice.finish_reason === 'error') {
-              // Provider sent finish_reason='error' inside the stream (rare but
-              // seen on some self-hosted endpoints). Surface via logger + observe,
-              // then emit a terminal done so the stream does not hang. We
-              // intentionally do NOT throw here — throwing from inside the SSE
-              // loop would be swallowed by the per-line try/catch above and leave
-              // doneEmitted=false, which would cause a duplicate done in the
-              // stream-end fallback. Conservative path: done + log.
+              // Provider sent finish_reason='error' inside the stream (rare but seen
+              // on some self-hosted endpoints). A provider may stream a full tool call
+              // then close with 'error', so flush completed tool calls (dropping
+              // malformed ones) before finishing. We do NOT throw here — throwing from
+              // inside the SSE per-line try/catch would be swallowed and leave
+              // doneEmitted=false, causing a duplicate done in the stream-end fallback.
+              // Conservative path: flush + done + log.
+              const hasNativeTC = emitParseableToolCalls(toolCallBuffers, onEvent);
+              const hasTextTC = emitTextToolCalls();
+              const hasToolCalls = hasNativeTC || hasTextTC;
               logger.warn('provider signalled error via finish_reason', {
                 finish_reason: choice.finish_reason,
-                hasToolCalls: toolCallBuffers.size > 0,
+                hasToolCalls,
               });
-              const requestHost = (() => { try { return new URL(fullUrl).host; } catch { return ''; } })();
               observeCompatEvent({
                 kind: 'error_finish_reason',
                 modelId: options.model,
                 requestHost,
                 finishReason: choice.finish_reason as string,
               });
-              onEvent({ type: 'done', stopReason: 'end_turn' });
+              onEvent({ type: 'done', stopReason: hasToolCalls ? 'tool_use' : 'end_turn' });
               doneEmitted = true;
             } else if (choice.finish_reason) {
               // Unknown finish_reason — log so we can diagnose new providers.
-              // Best-effort: flush any buffered tool calls so callers receive them,
-              // then emit a terminal done to prevent the stream from hanging.
+              // Best-effort: flush any COMPLETED buffered tool calls (dropping
+              // malformed ones, same invariant as the length branch) so callers
+              // receive them, then emit a terminal done to prevent the stream hanging.
+              const hadBufferedToolCalls = toolCallBuffers.size > 0;
               logger.warn('unknown finish_reason', {
                 finish_reason: choice.finish_reason,
-                hasToolCalls: toolCallBuffers.size > 0,
+                hasToolCalls: hadBufferedToolCalls,
               });
-              const requestHost = (() => { try { return new URL(fullUrl).host; } catch { return ''; } })();
-              if (toolCallBuffers.size > 0) {
-                observeCompatEvent({
-                  kind: 'dropped_tool_calls',
-                  modelId: options.model,
-                  requestHost,
-                  finishReason: choice.finish_reason as string,
-                  toolCallCount: toolCallBuffers.size,
-                });
-                for (const [, tc] of toolCallBuffers) {
-                  const input = buildToolInput(tc, `finish_reason=${choice.finish_reason}`);
-                  onEvent({ type: 'tool_use', id: tc.id, name: tc.name, input });
-                }
-              } else {
-                observeCompatEvent({
-                  kind: 'unknown_finish_reason',
-                  modelId: options.model,
-                  requestHost,
-                  finishReason: choice.finish_reason as string,
-                });
-              }
+              observeCompatEvent({
+                kind: hadBufferedToolCalls ? 'dropped_tool_calls' : 'unknown_finish_reason',
+                modelId: options.model,
+                requestHost,
+                finishReason: choice.finish_reason as string,
+                ...(hadBufferedToolCalls ? { toolCallCount: toolCallBuffers.size } : {}),
+              });
+              const hasNativeTC = emitParseableToolCalls(toolCallBuffers, onEvent);
               const hasTextTC = emitTextToolCalls();
-              const hasToolCalls = toolCallBuffers.size > 0 || hasTextTC;
+              const hasToolCalls = hasNativeTC || hasTextTC;
               onEvent({ type: 'done', stopReason: hasToolCalls ? 'tool_use' : 'end_turn' });
               doneEmitted = true;
             }

@@ -343,21 +343,9 @@ const geminiThoughtSignature: ModelRequestProcessor = {
       const toolCalls = msg.tool_calls;
       if (!Array.isArray(toolCalls) || toolCalls.length === 0) continue;
 
-      const tc = toolCalls[0] as Record<string, unknown>;
-      if (!tc || typeof tc !== 'object') continue;
-
-      // 1. Already set → leave as-is
-      const existingExtraContent = tc.extra_content;
-      if (existingExtraContent != null && typeof existingExtraContent === 'object') {
-        const existingGoogle = (existingExtraContent as Record<string, unknown>).google;
-        if (existingGoogle != null && typeof existingGoogle === 'object') {
-          if (typeof (existingGoogle as Record<string, unknown>).thought_signature === 'string') {
-            continue;
-          }
-        }
-      }
-
-      // 2. Use real signature from msg.extra_fields.google.thought_signature if present
+      // Resolve the signature once per message: real one from
+      // msg.extra_fields.google.thought_signature if present, else the placeholder
+      // that bypasses Gemini's validator.
       let signature = 'skip_thought_signature_validator';
       const extraFields = msg.extra_fields;
       if (extraFields != null && typeof extraFields === 'object') {
@@ -370,15 +358,34 @@ const geminiThoughtSignature: ModelRequestProcessor = {
         }
       }
 
-      // 3. Build extra_content.google safely if absent
-      if (!tc.extra_content || typeof tc.extra_content !== 'object') {
-        tc.extra_content = {};
+      // Inject into EVERY tool call — Gemini's validator rejects the next request
+      // (400) if any parallel tool_call lacks a thought_signature, so signing only
+      // tool_calls[0] breaks multi-tool-call turns.
+      for (const rawTc of toolCalls) {
+        if (!rawTc || typeof rawTc !== 'object') continue;
+        const tc = rawTc as Record<string, unknown>;
+
+        // Already set → leave as-is
+        const existingExtraContent = tc.extra_content;
+        if (existingExtraContent != null && typeof existingExtraContent === 'object') {
+          const existingGoogle = (existingExtraContent as Record<string, unknown>).google;
+          if (existingGoogle != null && typeof existingGoogle === 'object') {
+            if (typeof (existingGoogle as Record<string, unknown>).thought_signature === 'string') {
+              continue;
+            }
+          }
+        }
+
+        // Build extra_content.google safely if absent
+        if (!tc.extra_content || typeof tc.extra_content !== 'object') {
+          tc.extra_content = {};
+        }
+        const ecObj = tc.extra_content as Record<string, unknown>;
+        if (!ecObj.google || typeof ecObj.google !== 'object') {
+          ecObj.google = {};
+        }
+        (ecObj.google as Record<string, unknown>).thought_signature = signature;
       }
-      const ecObj = tc.extra_content as Record<string, unknown>;
-      if (!ecObj.google || typeof ecObj.google !== 'object') {
-        ecObj.google = {};
-      }
-      (ecObj.google as Record<string, unknown>).thought_signature = signature;
     }
   },
 };

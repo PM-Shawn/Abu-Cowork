@@ -1143,7 +1143,7 @@ describe('chatStore', () => {
       useChatStore.getState().addPendingReference(
         createDocReference({ path: 'a.md', name: 'a.md', docType: 'markdown', text: 't' }),
       );
-      // @ts-expect-error 访问 persist 内部 options 仅用于测试
+      // Reverse guard: partialize whitelist must exclude ephemeral pendingReferences
       const persisted = useChatStore.persist.getOptions().partialize?.(useChatStore.getState());
       expect(persisted && 'pendingReferences' in persisted).toBe(false);
     });

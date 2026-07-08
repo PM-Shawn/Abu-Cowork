@@ -484,7 +484,7 @@ export default function AddProviderModal({ open: isOpen, onClose }: AddProviderM
       onMouseDown={(e) => { e.stopPropagation(); }}
     >
       <div
-        className="bg-[var(--abu-bg-base)] rounded-2xl shadow-xl w-full max-w-2xl max-h-[85vh] flex flex-col animate-in zoom-in-95 duration-150"
+        className="bg-[var(--abu-bg-base)] rounded-2xl shadow-xl w-full max-w-2xl max-h-[90vh] flex flex-col animate-in zoom-in-95 duration-150"
         onClick={(e) => e.stopPropagation()}
       >
         {/* Header */}
@@ -522,9 +522,9 @@ export default function AddProviderModal({ open: isOpen, onClose }: AddProviderM
         )}
 
         {/* Fixed top area: name + provider selector (not scrollable, so dropdown won't clip) */}
-        <div className="shrink-0 px-6 pt-5 pb-3 space-y-5">
+        <div className="shrink-0 px-6 pt-4 pb-2 space-y-5">
           {/* 1. Service Name */}
-          <div className="space-y-1.5">
+          <div className="space-y-1">
             <label className="text-xs font-medium text-[var(--abu-text-primary)]">
               {t.settings.serviceName}
             </label>
@@ -537,7 +537,7 @@ export default function AddProviderModal({ open: isOpen, onClose }: AddProviderM
           </div>
 
           {/* 2. Provider Dropdown */}
-          <div className="space-y-1.5">
+          <div className="space-y-1">
             <label className="text-xs font-medium text-[var(--abu-text-primary)]">
               {t.settings.selectProviderType}
             </label>
@@ -613,7 +613,7 @@ export default function AddProviderModal({ open: isOpen, onClose }: AddProviderM
         </div>
 
         {/* Scrollable content area: guide, API key, models, etc. */}
-        <div className="flex-1 overflow-y-auto px-6 pb-5 space-y-3">
+        <div className="flex-1 overflow-y-auto px-6 pb-5 space-y-2.5">
           {/* 3. Usage Guide Card */}
           {guide && (
             <p className="text-xs text-[var(--abu-text-muted)]">
@@ -631,7 +631,7 @@ export default function AddProviderModal({ open: isOpen, onClose }: AddProviderM
 
           {/* 4. API Key (hidden for keyless local providers) */}
           {selectedId && !isOllama && !isLMStudio && (
-            <div className="space-y-1.5">
+            <div className="space-y-1">
               <div className="flex items-center gap-2">
                 <label className="text-xs font-medium text-[var(--abu-text-primary)]">
                   {t.settings.apiKey}
@@ -663,7 +663,7 @@ export default function AddProviderModal({ open: isOpen, onClose }: AddProviderM
 
           {/* 5. API Address */}
           {selectedId && (
-            <div className="space-y-1.5">
+            <div className="space-y-1">
               <label className="text-xs font-medium text-[var(--abu-text-primary)]">
                 {isOllama ? t.settings.ollamaUrlLabel : isLMStudio ? t.settings.lmstudioUrlLabel : t.settings.apiUrl}
               </label>
@@ -919,7 +919,7 @@ export default function AddProviderModal({ open: isOpen, onClose }: AddProviderM
                       </div>
                     </div>
                   )}
-                  <div className="grid grid-cols-2 gap-2 mt-4">
+                  <div className="grid grid-cols-2 gap-2 mt-3">
                     <div className="space-y-1">
                       <div className="text-sm text-[var(--abu-text-primary)]">{t.settings.capMaxInput}</div>
                       <Input

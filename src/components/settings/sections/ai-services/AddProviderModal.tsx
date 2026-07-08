@@ -492,34 +492,10 @@ export default function AddProviderModal({ open: isOpen, onClose }: AddProviderM
           <h2 className="text-lg font-semibold text-[var(--abu-text-primary)]">
             {t.settings.addService}
           </h2>
-          <div className="flex items-center gap-1">
-            {selectedId && !isOllama && !isLMStudio && (
-              <button
-                type="button"
-                onClick={handleValidate}
-                disabled={validating || !apiKey.trim() || !baseUrl.trim()}
-                className="text-xs text-[var(--abu-clay)] hover:underline disabled:opacity-40 disabled:no-underline flex items-center gap-1 px-2 py-1"
-              >
-                {validating && <Loader2 className="h-3 w-3 animate-spin" />}
-                {validating ? t.settings.validating : t.settings.validateConnection}
-              </button>
-            )}
-            <Button variant="ghost" size="icon-sm" onClick={handleClose}>
-              <X className="h-4 w-4" />
-            </Button>
-          </div>
+          <Button variant="ghost" size="icon-sm" onClick={handleClose}>
+            <X className="h-4 w-4" />
+          </Button>
         </div>
-        {/* Validate result — shown just below header when present */}
-        {validateResult && (
-          <div className="shrink-0 px-6 py-1.5 border-b border-[var(--abu-border)] flex items-center gap-1.5">
-            {validateResult.success
-              ? <CircleCheck className="h-3.5 w-3.5 text-green-600 shrink-0" />
-              : <CircleX className="h-3.5 w-3.5 text-red-500 shrink-0" />}
-            <span className={cn('text-xs', validateResult.success ? 'text-green-600' : 'text-red-500')}>
-              {validateResult.message}
-            </span>
-          </div>
-        )}
 
         {/* Fixed top area: name + provider selector (not scrollable, so dropdown won't clip) */}
         <div className="shrink-0 px-6 pt-4 pb-2 space-y-5">
@@ -674,9 +650,11 @@ export default function AddProviderModal({ open: isOpen, onClose }: AddProviderM
                 onBlur={isOllama ? handleCheckOllama : isLMStudio ? handleFetchModels : undefined}
                 className="h-8"
               />
-              <p className="text-xs text-[var(--abu-text-tertiary)]">
-                {isOllama ? t.settings.ollamaUrlHint : isLMStudio ? t.settings.lmstudioUrlHint : t.settings.apiUrlNoChange}
-              </p>
+              {(isOllama || isLMStudio) && (
+                <p className="text-xs text-[var(--abu-text-tertiary)]">
+                  {isOllama ? t.settings.ollamaUrlHint : t.settings.lmstudioUrlHint}
+                </p>
+              )}
 
               {/* Final request URL preview — hidden for local providers which have their own status UI */}
               {!isOllama && !isLMStudio && baseUrl.trim() && selectedOption && (
@@ -961,16 +939,43 @@ export default function AddProviderModal({ open: isOpen, onClose }: AddProviderM
         </div>
 
         {/* Footer */}
-        <div className="shrink-0 px-6 py-4 border-t border-[var(--abu-border)] flex justify-end gap-3">
-          <Button variant="ghost" onClick={handleClose}>
-            {t.common.cancel}
-          </Button>
-          <Button
-            onClick={handleSave}
-            disabled={!canSave}
-          >
-            {t.settings.save}
-          </Button>
+        <div className="shrink-0 px-6 py-4 border-t border-[var(--abu-border)] flex items-center justify-between">
+          {/* Left: validate connection + inline result */}
+          <div className="flex items-center gap-2 min-w-0">
+            {selectedId && !isOllama && !isLMStudio && (
+              <button
+                type="button"
+                onClick={handleValidate}
+                disabled={validating || !apiKey.trim() || !baseUrl.trim()}
+                className="shrink-0 text-xs text-[var(--abu-clay)] hover:underline disabled:opacity-40 disabled:no-underline flex items-center gap-1"
+              >
+                {validating && <Loader2 className="h-3 w-3 animate-spin" />}
+                {validating ? t.settings.validating : t.settings.validateConnection}
+              </button>
+            )}
+            {validateResult && (
+              <div className="flex items-center gap-1 min-w-0">
+                {validateResult.success
+                  ? <CircleCheck className="h-3.5 w-3.5 text-green-600 shrink-0" />
+                  : <CircleX className="h-3.5 w-3.5 text-red-500 shrink-0" />}
+                <span className={cn('text-xs truncate max-w-[280px]', validateResult.success ? 'text-green-600' : 'text-red-500')}>
+                  {validateResult.message}
+                </span>
+              </div>
+            )}
+          </div>
+          {/* Right: cancel + save */}
+          <div className="flex items-center gap-3 shrink-0">
+            <Button variant="ghost" onClick={handleClose}>
+              {t.common.cancel}
+            </Button>
+            <Button
+              onClick={handleSave}
+              disabled={!canSave}
+            >
+              {t.settings.save}
+            </Button>
+          </div>
         </div>
       </div>
     </div>,

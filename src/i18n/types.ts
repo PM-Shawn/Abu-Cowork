@@ -627,7 +627,6 @@ export interface TranslationDict {
     guideGoTo: string;
     apiKeyRequired: string;
     apiKeyOptional: string;
-    apiUrlNoChange: string;
     apiUrlPreview: string;
     fetchModels: string;
     fetchingModels: string;

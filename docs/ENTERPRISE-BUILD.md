@@ -1,14 +1,14 @@
 # Abu Enterprise Build
 
-Abu-opensource 默认产出 OSS 构建（个人模式 + 企业模式协议层）。
-官方 Abu Enterprise 二进制额外合入 `@abu/enterprise-modules` 闭源插件。
+Abu-opensource produces an OSS build by default (personal mode + enterprise mode protocol layer).
+The official Abu Enterprise binary additionally incorporates the `@abu/enterprise-modules` closed-source plugin.
 
-## Sibling 仓库布局
+## Sibling Repository Layout
 
 ```
 Abu/
-├── Abu-opensource/                       # 公开 (Apache 2.0)
-└── Abu-enterprise-modules/               # 私有（git clone 单独）
+├── Abu-opensource/                       # public (Apache 2.0)
+└── Abu-enterprise-modules/               # private (clone separately)
 ```
 
 ## Build
@@ -30,39 +30,39 @@ cd Abu-opensource && npm run tauri:dev:enterprise
 cd Abu-opensource && npm run tauri:build:enterprise
 ```
 
-## Enterprise Build Smoke 验证（手动步骤，Shawn 跑）
+## Enterprise Build Smoke Verification (manual steps, run by Shawn)
 
 ```bash
-# 1. OSS path TS 编译检查（0 错误）
+# 1. OSS path TypeScript compile check (0 errors)
 cd Abu-opensource
 npx tsc -p tsconfig.json --noEmit
 
-# 2. Enterprise path TS 编译检查（0 错误）
+# 2. Enterprise path TypeScript compile check (0 errors)
 ABU_BUILD_TARGET=enterprise npx tsc -p tsconfig.json --noEmit
 
-# 3. OSS 测试（全绿）
+# 3. OSS tests (all passing)
 npm test
 
-# 4. Enterprise dev server smoke（需要 Abu-enterprise-modules 为 sibling）
+# 4. Enterprise dev server smoke (requires Abu-enterprise-modules as a sibling directory)
 npm run dev:enterprise
-# 浏览器开 → 切到企业模式 → KbBrowser / SkillTab / MCPTab /
-# MeTransparencyView 应该都显示出来（需要连接到 Abu Console）
+# Open in browser → switch to enterprise mode → KbBrowser / SkillTab / MCPTab /
+# MeTransparencyView should all appear (requires connection to Abu Console)
 ```
 
 ## What's in / out of OSS
 
-| 功能 | OSS | Enterprise |
+| Feature | OSS | Enterprise |
 |---|---|---|
-| 个人模式（个人 LLM key / Skill / MCP） | ✅ | ✅ |
-| 企业模式 bind flow (device flow + SSO 跳转) | ✅ | ✅ |
-| 企业 brand badge / 状态显示 | ✅ | ✅ |
-| 企业 LLM gateway 路由 | ✅ | ✅ |
-| 策略 confirm modal（默认 UI） | ✅ | ✅ |
-| KB Browser (企业知识库 UI) | ✗ | ✅ |
-| Skill 市场企业 tab | ✗ | ✅ |
-| MCP 市场企业 tab | ✗ | ✅ |
-| /me 透明性页 | ✗ | ✅ |
-| Migration wizard (个人版→企业) | ✗ | ✅ |
+| Personal mode (personal LLM key / Skill / MCP) | ✅ | ✅ |
+| Enterprise mode bind flow (device flow + SSO redirect) | ✅ | ✅ |
+| Enterprise brand badge / status display | ✅ | ✅ |
+| Enterprise LLM gateway routing | ✅ | ✅ |
+| Policy confirm modal (default UI) | ✅ | ✅ |
+| KB Browser (enterprise knowledge base UI) | ✗ | ✅ |
+| Skill Marketplace enterprise tab | ✗ | ✅ |
+| MCP Marketplace enterprise tab | ✗ | ✅ |
+| /me transparency page | ✗ | ✅ |
+| Migration wizard (personal → enterprise) | ✗ | ✅ |
 | Agent kb_query tool | ✗ | ✅ |
 
 ## Architecture

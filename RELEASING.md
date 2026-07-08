@@ -1,209 +1,209 @@
 # Release Notes Convention
 
-Abu 的 release notes 写作规范。配合 `CLAUDE.md` 的 Release Process 一节使用。
+Release notes writing convention for Abu. Use alongside the Release Process section in `CLAUDE.md`.
 
-> **核心原则**：跟 commit message 一样双语，但**中文为主，英文点睛**，不要每行翻译。Patch 走极简、Minor+ 走完整，永远写"为什么"和具体数字。
+> **Core principle**: Like commit messages, write bilingually — but **Chinese-first, English for emphasis** — don't translate every line. Patches use the minimal template; Minor+ uses the full template. Always explain "why" and include specific numbers.
 
 ---
 
-## 三档模板
+## Three-Tier Templates
 
-### Patch (vX.Y.Z++) — 单点修复 / 小优化
+### Patch (vX.Y.Z++) — Single fix / minor improvement
 
-**判定**：1-2 个 commit，单一主题，无新功能或破坏性变更。
+**Criteria**: 1–2 commits, single topic, no new features or breaking changes.
 
 ```markdown
-## vX.Y.Z — 一句话主题
+## vX.Y.Z — One-line topic
 
-**根因**：[一句话讲清楚 bug 的本质 / 优化的动机]
+**Root cause**: [One sentence explaining the nature of the bug / motivation for the improvement]
 
-**修复**：
-- [用户能看到的影响 1]
-- [用户能看到的影响 2]
-- [必要时给出关键技术细节，例如"9 处 spawn 加 CREATE_NO_WINDOW"]
+**Fix**:
+- [User-visible impact 1]
+- [User-visible impact 2]
+- [Key technical detail when necessary, e.g. "9 spawn calls given CREATE_NO_WINDOW"]
 
 Full Changelog: https://github.com/PM-Shawn/Abu-Cowork/compare/vX.Y.Z-1...vX.Y.Z
 ```
 
-**参考范例**：[v0.13.6](https://github.com/PM-Shawn/Abu-Cowork/releases/tag/v0.13.6)（Windows PowerShell 弹窗修复）。
+**Reference example**: [v0.13.6](https://github.com/PM-Shawn/Abu-Cowork/releases/tag/v0.13.6) (Windows PowerShell popup fix).
 
-**反例**：v0.13.5 仅 "See the assets below" — 用户不知道这版改了什么，不要再这样写。
+**Anti-example**: v0.13.5 only had "See the assets below" — users can't tell what changed; don't do this.
 
 ---
 
-### Minor (vX.Y.0) — 新功能 / 多个 fix 合集
+### Minor (vX.Y.0) — New features / multiple fix rollup
 
-**判定**：包含至少一个新功能，或聚合了 ≥3 个有用户感知的 fix。
+**Criteria**: Contains at least one new feature, or aggregates ≥3 user-visible fixes.
 
 ```markdown
-## ✨ Features / 新功能
+## ✨ Features
 
-- **feat(模块)**: 中文一句话描述 — Why it matters
-  - 子点：具体行为 / 用户场景
-  - 子点：必要时给出关键数字
+- **feat(module)**: One-line description — Why it matters
+  - Sub-point: specific behavior / user scenario
+  - Sub-point: key numbers where relevant
 
-## 🐛 Fixes / 修复
+## 🐛 Fixes
 
-- **fix(模块)**: 中文描述（带必要的根因或场景）
-- **fix(模块)**: 中文描述
+- **fix(module)**: Description (with root cause or scenario as needed)
+- **fix(module)**: Description
 
-## 🪟 Platform-Specific (可选，仅当存在 Windows / macOS 专属变更时)
+## 🪟 Platform-Specific (optional — only when Windows / macOS-specific changes exist)
 
 - **Windows**: ...
 - **macOS**: ...
 
 ## English Summary
 
-- 3-5 行英文，给海外用户和 AI crawler 看
-- 重点功能 + 重点 fix，不需要逐条翻译
-- 末尾可附 migration / breaking 提示
+- 3–5 lines in English, for international users and AI crawlers
+- Highlight key features + key fixes; no need to translate line by line
+- Optionally note migration / breaking changes at the end
 
 **Full Changelog**: https://github.com/PM-Shawn/Abu-Cowork/compare/vX.Y-1.0...vX.Y.0
 ```
 
-**参考范例**：[v0.13.9](https://github.com/PM-Shawn/Abu-Cowork/releases/tag/v0.13.9)（PPTX 预览 + 官网刷新）、[v0.13.12](https://github.com/PM-Shawn/Abu-Cowork/releases/tag/v0.13.12)（诊断面板 + confirm-dialog 修复）。
+**Reference examples**: [v0.13.9](https://github.com/PM-Shawn/Abu-Cowork/releases/tag/v0.13.9) (PPTX preview + website refresh), [v0.13.12](https://github.com/PM-Shawn/Abu-Cowork/releases/tag/v0.13.12) (diagnostics panel + confirm-dialog fix).
 
-**English Summary 何时加**：会发到公众号 / 官网下载页 / 海外渠道时加；纯内部修复不加。
+**When to add English Summary**: Add it when the release will be posted to a public channel, website download page, or international distribution. Skip it for purely internal fixes.
 
 ---
 
-### Major (vX.0.0) — 架构变更 / 破坏性更新
+### Major (vX.0.0) — Architectural changes / breaking updates
 
-**判定**：包含 breaking changes、数据迁移、依赖升级（用户需要主动操作）。
+**Criteria**: Contains breaking changes, data migrations, or dependency upgrades that require user action.
 
-在 Minor 模板基础上加：
+Extend the Minor template with:
 
 ```markdown
-## ⚠️ Breaking Changes / 破坏性变更
+## ⚠️ Breaking Changes
 
-- [变更点]：[影响范围] → [用户需要做什么]
+- [Change]: [Scope of impact] → [What users need to do]
 
-## 🔄 Migration Notes / 迁移说明
+## 🔄 Migration Notes
 
-1. [步骤 1]
-2. [步骤 2]
-3. **回滚方案**：[万一升级出问题怎么退回去]
+1. [Step 1]
+2. [Step 2]
+3. **Rollback plan**: [How to revert if the upgrade goes wrong]
 
-## 数据迁移 (如适用)
+## Data Migration (if applicable)
 
-- 旧版本数据自动迁移：是 / 否
-- 受影响的 store：abu-chat (vN→vN+1) 等
-- 迁移失败时的兜底行为
+- Automatic migration from previous version: Yes / No
+- Affected stores: abu-chat (vN→vN+1), etc.
+- Fallback behavior if migration fails
 ```
 
 ---
 
-## 写作规范
+## Writing Guidelines
 
-### 1. Title 格式
+### 1. Title Format
 
-| 档位 | 格式 | 例 |
+| Tier | Format | Example |
 |---|---|---|
-| Patch (单一主题) | `vX.Y.Z — 一句话主题` | `v0.13.6 — 修复 Windows PowerShell 弹窗` |
-| Patch (杂项) | `vX.Y.Z` | `v0.13.10` |
-| Minor | `vX.Y.0 — 主题` 或 `vX.Y.0` | `v0.13.9 — 预览体验优化 + 官网刷新` |
-| Major | `vX.0.0 — 主题` | `v1.0.0 — 公开版本` |
+| Patch (single topic) | `vX.Y.Z — One-line topic` | `v0.13.6 — Fix Windows PowerShell popup` |
+| Patch (miscellaneous) | `vX.Y.Z` | `v0.13.10` |
+| Minor | `vX.Y.0 — Topic` or `vX.Y.0` | `v0.13.9 — Preview improvements + website refresh` |
+| Major | `vX.0.0 — Topic` | `v1.0.0 — Public release` |
 
-副标题让 release 列表能扫读，**强烈推荐 patch 也带**（除非是纯 chore/CI 修复）。
+A subtitle makes the release list scannable. **Strongly recommended even for patches** (except pure chore/CI fixes).
 
-### 2. 双语策略
+### 2. Bilingual Strategy
 
-- **中文为主**：用户群以中文为主，标题、bullet 主体都用中文。
-- **英文点睛**：bullet 开头用 conventional commit prefix（`feat(xxx):` / `fix(xxx):`），末尾可缀英文短语强化（"— Why it matters"）。
-- **不要每行翻译**：浪费字数，看着像机翻。
-- **English Summary**：仅在 minor+ 且确认有海外受众时加，3-5 行总览，不逐条对应。
+- **Chinese-first**: The primary user base is Chinese-speaking; titles and bullet bodies should be in Chinese.
+- **English for emphasis**: Use conventional commit prefixes at the start of bullets (`feat(xxx):` / `fix(xxx):`); a short English phrase at the end can add punch ("— Why it matters").
+- **Don't translate every line**: It wastes space and reads like machine translation.
+- **English Summary**: Add only for minor+ releases with a confirmed international audience — 3–5 lines overview, no line-by-line correspondence.
 
-### 3. 写"为什么"，不只是"什么"
+### 3. Explain "why", not just "what"
 
-每个 bullet 至少有一项是真实价值，不要堆砌实现细节：
+Every bullet should convey real value, not just implementation details:
 
-✅ `MCP 状态修复：MCP 服务报错 / 连接测试结束后状态不再残留` — 用户场景明确
-❌ `重构 mcpStore` — 用户不关心
-❌ `优化性能` — 没说优化了什么
+✅ `MCP status fix: status no longer sticks after MCP service errors or connection tests complete` — clear user scenario
+❌ `Refactor mcpStore` — users don't care
+❌ `Optimize performance` — doesn't say what was optimized
 
-### 4. 数字即证据
+### 4. Numbers are evidence
 
-跟公众号 voice 一致，能给数字给数字：
+Consistent with the house voice style — use numbers when you have them:
 
-✅ "TTL 从 5s 延长至 30s，减少 PowerShell 调用频率"
-✅ "9 处子进程 spawn 统一加 `CREATE_NO_WINDOW`"
-✅ "技能数量从 25+ 更新到 28 个"
+✅ "TTL extended from 5s to 30s, reducing PowerShell invocation frequency"
+✅ "9 subprocess spawn calls given `CREATE_NO_WINDOW`"
+✅ "Skill count updated from 25+ to 28"
 
-❌ "大幅优化性能"
-❌ "显著提升体验"
+❌ "Significant performance improvement"
+❌ "Noticeably better experience"
 
-### 5. Emoji 使用
+### 5. Emoji Usage
 
-- **Patch 标题**：不加 emoji（看着像营销号）。
-- **Minor+ 分区**：可以加 ✨ / 🐛 / 🪟 / 🍎 / ⚠️ / 🔄 等，让分区一眼可识别。
-- **Bullet 内**：尽量不加。
+- **Patch titles**: No emoji (looks like clickbait).
+- **Minor+ sections**: Emoji are fine — ✨ / 🐛 / 🪟 / 🍎 / ⚠️ / 🔄 — to make sections instantly identifiable.
+- **Inside bullets**: Avoid emoji.
 
-### 6. 链接和 Changelog
+### 6. Links and Changelog
 
-- 末尾必加 `Full Changelog: ...compare/...` 链接（gh release 自动生成可保留）。
-- 涉及具体 commit 可挂 commit 短 SHA，但不要堆 PR 编号清单。
-
----
-
-## 常见反模式
-
-1. **空 release**："See the assets below" / "Bug fixes and improvements" — 等于没写，用户没法判断要不要升。
-2. **机翻全文**：每行中英对照，看着臃肿，且英文质量通常不如简洁的 English Summary。
-3. **commit log 堆叠**：直接把 `git log --oneline` 贴上来 — 没有筛选和组织，用户看不懂。
-4. **过度技术细节**：用户看不懂 "重构 chatStore.normalizer 为 nullable schema"，要写 "解决多模型切换时偶发的消息丢失"。
-5. **隐藏破坏性变更**：major 不写 Migration Notes 等于埋雷。
+- Always append a `Full Changelog: ...compare/...` link at the end (auto-generated by `gh release` is fine to keep).
+- You may reference a specific commit short SHA, but don't paste a raw list of PR numbers.
 
 ---
 
-## Checklist (创建 release 前过一遍)
+## Common Anti-Patterns
 
-- [ ] Title 是否带主题副标题？
-- [ ] 是否每个 bullet 都说清了用户感知？
-- [ ] 是否给了至少一个具体数字？
-- [ ] Patch：是否在 200 字以内？Minor+：是否分了区？
-- [ ] 是否有 Full Changelog 链接？
-- [ ] Major：是否有 Breaking Changes 和 Migration Notes？
-- [ ] 是否避免了"大幅优化 / 显著提升"等空话？
+1. **Empty release**: "See the assets below" / "Bug fixes and improvements" — meaningless; users can't decide whether to upgrade.
+2. **Machine-translated full body**: Line-by-line bilingual looks bloated and the English quality is usually worse than a concise English Summary.
+3. **Raw commit log dump**: Pasting `git log --oneline` output directly — no filtering or organization; users can't parse it.
+4. **Excessive technical detail**: Users don't understand "Refactor chatStore.normalizer to nullable schema" — write "Fix occasional message loss when switching models" instead.
+5. **Hiding breaking changes**: A major release without Migration Notes is a landmine.
 
 ---
 
-## gh CLI 速查
+## Checklist (run through before creating a release)
 
-### 推荐流程（避免双 release）
+- [ ] Does the title have a descriptive subtitle?
+- [ ] Does every bullet clearly state the user-facing impact?
+- [ ] Is there at least one specific number?
+- [ ] Patch: under 200 words? Minor+: divided into sections?
+- [ ] Is there a Full Changelog link?
+- [ ] Major: are Breaking Changes and Migration Notes included?
+- [ ] Have vague phrases like "significant improvement" been avoided?
 
-⚠️ **本仓库 CI 在 tag push 后会自动建一个 release**（默认标题 `Abu vX.Y.Z`，body 是占位符 "See the assets below…"，正好是本文档的反例），并把构建产物作为 asset 上传。所以**不要用 `gh release create`**——会建出第二份，原有的自动 release 仍在，标题/body 没人改。
+---
 
-正确顺序：
+## gh CLI Quick Reference
+
+### Recommended workflow (avoid duplicate releases)
+
+⚠️ **This repo's CI automatically creates a release after a tag push** (default title `Abu vX.Y.Z`, body is the placeholder "See the assets below…" — exactly the anti-example in this doc) and uploads build artifacts as assets. So **do not use `gh release create`** — it creates a second release while the auto-generated one remains, with its title/body uncorrected.
+
+Correct order:
 
 ```bash
-# 1. 把 release notes 写到文件（避免 shell 转义）
+# 1. Write release notes to a file (avoids shell escaping issues)
 vim /tmp/release-notes.md
 
-# 2. push tag（触发 CI 自动建空 release + 跑构建）
+# 2. Push the tag (triggers CI to auto-create the empty release + run the build)
 git push origin main --tags
 
-# 3. 等 CI 把 release 建出来（看到 release list 里有这一行即可，不必等 asset 跑完）
+# 3. Wait for CI to create the release (visible in release list is enough — no need to wait for assets)
 gh release list --limit 3
 
-# 4. 覆盖自动 release 的标题和 body（按 tag 精准命中那一份）
-gh release edit v0.23.1 --title "v0.23.1 — 主题" -F /tmp/release-notes.md
+# 4. Overwrite the auto-release title and body (targets that release by tag)
+gh release edit v0.23.1 --title "v0.23.1 — Topic" -F /tmp/release-notes.md
 
-# 5. （可选）等 asset 上传完，对外宣传
+# 5. (Optional) Wait for assets to finish uploading, then announce
 ```
 
-### 其它常用
+### Other common commands
 
 ```bash
-# 看上一版怎么写的（拷模板）
+# View how the previous release was written (copy as template)
 gh release view v0.23.0 --json body -q .body
 
-# 列出 release 的所有 asset
+# List all assets for a release
 gh release view v0.23.1 --json assets -q '.assets[].name'
 
-# 真的需要从零创建（无 CI 自动建 release 的场景）才用 create
+# Only use create when starting from scratch (no CI auto-release scenario)
 gh release create vX.Y.Z --title "..." -F /tmp/notes.md
 ```
 
-### 已知坑
+### Known gotchas
 
-- `gh release create --draft` + `gh release edit --draft=false`：草稿是 untagged 状态，publish 时会**新建**一个 release 占用 tag，而 CI 那份还在。表现为同一 tag 出现两份 release。如要走 draft 流程，必须先用 API 删 CI 自动建的那份（`gh api -X DELETE /repos/PM-Shawn/Abu-Cowork/releases/<id>`），再 publish 你的草稿。一般情况下没必要走 draft——直接 edit 自动 release 更快。
+- `gh release create --draft` + `gh release edit --draft=false`: A draft is in untagged state; publishing it **creates a new** release that claims the tag, while the CI-generated one still exists. The result is two releases for the same tag. If you need a draft workflow, first delete the CI-generated release via the API (`gh api -X DELETE /repos/PM-Shawn/Abu-Cowork/releases/<id>`), then publish your draft. In most cases this isn't necessary — editing the auto-generated release directly is faster.

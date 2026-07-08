@@ -163,7 +163,6 @@ export default function AddProviderModal({ open: isOpen, onClose }: AddProviderM
 
   // ── Advanced capabilities (custom/local providers only) ──
   const [declared, setDeclared] = useState<DeclaredCapabilities>({});
-  const [advancedOpen, setAdvancedOpen] = useState(false);
 
   // ── Validate state ──
   const [validating, setValidating] = useState(false);
@@ -236,7 +235,6 @@ export default function AddProviderModal({ open: isOpen, onClose }: AddProviderM
       const existingP = providers.find(p => p.id === option.provider);
       const willShowAdvanced = computeShowAdvanced(isCustomId(option.id), option.provider, option.format);
       setDeclared(existingP?.declaredCapabilities ?? (willShowAdvanced ? defaultDeclaredCapabilities() : {}));
-      setAdvancedOpen(!!existingP?.declaredCapabilities && Object.keys(existingP.declaredCapabilities).length > 0);
 
       // Reset Ollama state
       setOllamaStatus('idle');
@@ -465,7 +463,6 @@ export default function AddProviderModal({ open: isOpen, onClose }: AddProviderM
     setFetchedModels([]);
     setFetchModelsError('');
     setDeclared({});
-    setAdvancedOpen(false);
     onClose();
   }, [onClose]);
 
@@ -495,10 +492,34 @@ export default function AddProviderModal({ open: isOpen, onClose }: AddProviderM
           <h2 className="text-lg font-semibold text-[var(--abu-text-primary)]">
             {t.settings.addService}
           </h2>
-          <Button variant="ghost" size="icon-sm" onClick={handleClose}>
-            <X className="h-4 w-4" />
-          </Button>
+          <div className="flex items-center gap-1">
+            {selectedId && !isOllama && !isLMStudio && (
+              <button
+                type="button"
+                onClick={handleValidate}
+                disabled={validating || !apiKey.trim() || !baseUrl.trim()}
+                className="text-xs text-[var(--abu-clay)] hover:underline disabled:opacity-40 disabled:no-underline flex items-center gap-1 px-2 py-1"
+              >
+                {validating && <Loader2 className="h-3 w-3 animate-spin" />}
+                {validating ? t.settings.validating : t.settings.validateConnection}
+              </button>
+            )}
+            <Button variant="ghost" size="icon-sm" onClick={handleClose}>
+              <X className="h-4 w-4" />
+            </Button>
+          </div>
         </div>
+        {/* Validate result — shown just below header when present */}
+        {validateResult && (
+          <div className="shrink-0 px-6 py-1.5 border-b border-[var(--abu-border)] flex items-center gap-1.5">
+            {validateResult.success
+              ? <CircleCheck className="h-3.5 w-3.5 text-green-600 shrink-0" />
+              : <CircleX className="h-3.5 w-3.5 text-red-500 shrink-0" />}
+            <span className={cn('text-xs', validateResult.success ? 'text-green-600' : 'text-red-500')}>
+              {validateResult.message}
+            </span>
+          </div>
+        )}
 
         {/* Fixed top area: name + provider selector (not scrollable, so dropdown won't clip) */}
         <div className="shrink-0 px-6 pt-5 pb-3 space-y-5">
@@ -636,23 +657,6 @@ export default function AddProviderModal({ open: isOpen, onClose }: AddProviderM
                     ? <EyeOff className="h-4 w-4" />
                     : <Eye className="h-4 w-4" />}
                 </button>
-              </div>
-              {/* Inline validate */}
-              <div className="flex items-center gap-2">
-                <button
-                  type="button"
-                  onClick={handleValidate}
-                  disabled={validating || !apiKey.trim() || !baseUrl.trim()}
-                  className="text-xs text-[var(--abu-clay)] hover:underline disabled:opacity-40 disabled:no-underline flex items-center gap-1"
-                >
-                  {validating && <Loader2 className="h-3 w-3 animate-spin" />}
-                  {validating ? t.settings.validating : t.settings.validateConnection}
-                </button>
-                {validateResult && (
-                  <span className={cn('text-xs', validateResult.success ? 'text-green-600' : 'text-red-500')}>
-                    {validateResult.message}
-                  </span>
-                )}
               </div>
             </div>
           )}
@@ -873,21 +877,10 @@ export default function AddProviderModal({ open: isOpen, onClose }: AddProviderM
           {/* 7. Advanced capabilities (custom/local providers only) */}
           {showAdvanced && (
             <div className="space-y-2">
-              <button
-                type="button"
-                onClick={() => setAdvancedOpen(!advancedOpen)}
-                className="w-full flex items-center gap-1.5 text-left"
-              >
-                <ChevronDown className={cn(
-                  'h-3.5 w-3.5 text-[var(--abu-text-secondary)] transition-transform shrink-0',
-                  !advancedOpen && '-rotate-90',
-                )} />
-                <span className="text-xs font-medium text-[var(--abu-text-primary)]">
-                  {t.settings.advancedConfig}
-                </span>
-              </button>
-              {advancedOpen && (
-                <div className="space-y-2">
+              <div className="text-xs font-medium text-[var(--abu-text-primary)]">
+                {t.settings.advancedConfig}
+              </div>
+              <div className="space-y-2">
                   <div className="grid grid-cols-2 gap-2">
                     <label className="flex items-center gap-2">
                       <Toggle size="sm" checked={!!declared.supportsTools}
@@ -926,7 +919,7 @@ export default function AddProviderModal({ open: isOpen, onClose }: AddProviderM
                       </div>
                     </div>
                   )}
-                  <div className="grid grid-cols-2 gap-2">
+                  <div className="grid grid-cols-2 gap-2 mt-4">
                     <div className="space-y-1">
                       <div className="text-sm text-[var(--abu-text-primary)]">{t.settings.capMaxInput}</div>
                       <Input
@@ -963,7 +956,6 @@ export default function AddProviderModal({ open: isOpen, onClose }: AddProviderM
                     </div>
                   </div>
                 </div>
-              )}
             </div>
           )}
         </div>

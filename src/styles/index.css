@@ -40,6 +40,11 @@
   -webkit-user-select: text !important;
 }
 
+/* Doc reference highlight (CSS Custom Highlight API) */
+::highlight(abu-reference) {
+  background-color: color-mix(in srgb, var(--abu-clay) 22%, transparent);
+}
+
 /* Scrollbar - default subtle style */
 ::-webkit-scrollbar {
   width: 5px;

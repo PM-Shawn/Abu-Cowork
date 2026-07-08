@@ -11,6 +11,7 @@ import { PrismLight as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { oneDark } from 'react-syntax-highlighter/dist/esm/styles/prism';
 import { Loader2, X, FolderOpen, Code, Eye, Globe, FileCode, FileText, FileImage, FileSpreadsheet, FileType, File } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import { DocSelectionLayer } from '@/features/reference/DocSelectionLayer';
 
 const PdfPreview = lazy(() => import('@/components/preview/PdfPreview'));
 const DocxPreview = lazy(() => import('@/components/preview/DocxPreview'));
@@ -269,9 +270,11 @@ export default function PreviewPanel() {
           </div>
         ) : rendererType === 'markdown' && content !== null ? (
           <ScrollArea className="h-full">
-            <div className="p-4">
-              <MarkdownRenderer content={content} />
-            </div>
+            <DocSelectionLayer filePath={previewFilePath}>
+              <div className="p-4">
+                <MarkdownRenderer content={content} />
+              </div>
+            </DocSelectionLayer>
           </ScrollArea>
         ) : rendererType === 'html' ? (
           htmlViewMode === 'preview' ? (

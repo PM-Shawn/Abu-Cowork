@@ -19,32 +19,32 @@ import { computeShowAdvanced, toggleEffort } from './providerCapabilities';
 // ── Tests ──────────────────────────────────────────────────────────
 
 describe('AddProviderModal — showAdvanced predicate', () => {
-  it('shows advanced section for custom OpenAI provider', () => {
-    expect(computeShowAdvanced(true, 'custom')).toBe(true);
+  it('shows advanced section for custom OpenAI-compatible provider', () => {
+    expect(computeShowAdvanced(true, 'custom', 'openai-compatible')).toBe(true);
   });
 
-  it('shows advanced section for custom Anthropic provider', () => {
-    expect(computeShowAdvanced(true, 'custom')).toBe(true);
+  it('hides advanced section for custom Anthropic-format provider', () => {
+    expect(computeShowAdvanced(true, 'custom', 'anthropic')).toBe(false);
   });
 
   it('shows advanced section for ollama', () => {
-    expect(computeShowAdvanced(false, 'ollama')).toBe(true);
+    expect(computeShowAdvanced(false, 'ollama', undefined)).toBe(true);
   });
 
   it('shows advanced section for lmstudio', () => {
-    expect(computeShowAdvanced(false, 'lmstudio')).toBe(true);
+    expect(computeShowAdvanced(false, 'lmstudio', undefined)).toBe(true);
   });
 
   it('hides advanced section for builtin cloud provider (anthropic)', () => {
-    expect(computeShowAdvanced(false, 'anthropic')).toBe(false);
+    expect(computeShowAdvanced(false, 'anthropic', 'anthropic')).toBe(false);
   });
 
   it('hides advanced section for builtin cloud provider (openai)', () => {
-    expect(computeShowAdvanced(false, 'openai')).toBe(false);
+    expect(computeShowAdvanced(false, 'openai', 'openai-compatible')).toBe(false);
   });
 
   it('hides advanced section when no provider is selected', () => {
-    expect(computeShowAdvanced(false, undefined)).toBe(false);
+    expect(computeShowAdvanced(false, undefined, undefined)).toBe(false);
   });
 });
 

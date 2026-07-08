@@ -242,7 +242,7 @@ export default function ProviderCard({ provider, isActive }: ProviderCardProps) 
           )}
           {!isOllama && formBaseUrl.trim() && (
             <p className="text-[11px] font-mono text-[var(--abu-text-muted)] break-all">
-              ↳ POST {buildFullChatUrl(formBaseUrl, provider.apiFormat)}
+              ↳ POST {buildFullChatUrl(formBaseUrl, provider.apiFormat, { useRawUrl: provider.declaredCapabilities?.useRawUrl })}
             </p>
           )}
         </div>

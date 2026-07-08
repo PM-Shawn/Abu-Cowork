@@ -1,9 +1,22 @@
-import type { LLMProvider } from '@/types';
+import type { LLMProvider, ApiFormat } from '@/types';
+import type { DeclaredCapabilities } from '@/types/provider';
 
-/** Whether the "advanced config" (declared capabilities) section should show:
- *  custom providers, or local Ollama / LM Studio. Builtin cloud providers → false. */
-export function computeShowAdvanced(isCustom: boolean, provider: LLMProvider | undefined): boolean {
-  return isCustom || provider === 'ollama' || provider === 'lmstudio';
+/** Whether the "advanced config" (declared capabilities) section should show.
+ *  Only custom providers using openai-compatible format, or local Ollama / LM Studio.
+ *  Builtin cloud providers and anthropic-format custom providers → false. */
+export function computeShowAdvanced(
+  isCustom: boolean,
+  provider: LLMProvider | undefined,
+  apiFormat: ApiFormat | undefined,
+): boolean {
+  return (isCustom && apiFormat === 'openai-compatible')
+    || provider === 'ollama' || provider === 'lmstudio';
+}
+
+/** Defaults for a newly added custom/local provider so capability toggles are explicit
+ *  (not misleading undefined tri-state). Tools on, images/reasoning off — user adjusts. */
+export function defaultDeclaredCapabilities(): DeclaredCapabilities {
+  return { supportsTools: true, supportsImages: false, supportsReasoning: false };
 }
 
 /** Toggle one effort level in the supportedEfforts array (order-preserving add/remove). */

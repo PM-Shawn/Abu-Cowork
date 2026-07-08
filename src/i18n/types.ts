@@ -671,10 +671,12 @@ export interface TranslationDict {
     capTools: string;
     capImages: string;
     capReasoning: string;
-    capCanDisableThinking: string;
     capRawUrl: string;
     capRawUrlHint: string;
     capEffort: string;
+    effortLow: string;
+    effortMedium: string;
+    effortHigh: string;
   };
 
   // Sandbox recovery

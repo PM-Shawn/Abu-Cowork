@@ -14,7 +14,7 @@ import { checkProviderHealth } from '@/core/llm/healthCheck';
 import { buildFullChatUrl } from '@/core/llm/urlUtils';
 import { useSettingsStore, PROVIDER_CONFIGS } from '@/stores/settingsStore';
 import { PROVIDER_GUIDES } from './providerGuides';
-import { computeShowAdvanced, toggleEffort } from './providerCapabilities';
+import { computeShowAdvanced, defaultDeclaredCapabilities, toggleEffort } from './providerCapabilities';
 import type { LLMProvider, ApiFormat } from '@/types';
 import type { ModelInfo, ProviderSource, DeclaredCapabilities } from '@/types/provider';
 import {
@@ -188,7 +188,7 @@ export default function AddProviderModal({ open: isOpen, onClose }: AddProviderM
   const isOllama = selectedOption?.provider === 'ollama';
   const isLMStudio = selectedOption?.provider === 'lmstudio';
   const isCustom = selectedId ? isCustomId(selectedId) : false;
-  const showAdvanced = computeShowAdvanced(isCustom, selectedOption?.provider);
+  const showAdvanced = computeShowAdvanced(isCustom, selectedOption?.provider, selectedOption?.format);
   const guide = selectedOption && !isCustom ? PROVIDER_GUIDES[selectedOption.provider] : null;
 
   // knownModels removed — models are fetched from API or added manually
@@ -230,9 +230,11 @@ export default function AddProviderModal({ open: isOpen, onClose }: AddProviderM
         setSelectedModels(new Set());
       }
 
-      // Reset declared capabilities; load from existing store entry if already configured
+      // Reset declared capabilities; load from existing store entry if already configured.
+      // New custom/local providers get explicit defaults so toggles are not misleading tri-state.
       const existingP = providers.find(p => p.id === option.provider);
-      setDeclared(existingP?.declaredCapabilities ?? {});
+      const willShowAdvanced = computeShowAdvanced(isCustomId(option.id), option.provider, option.format);
+      setDeclared(existingP?.declaredCapabilities ?? (willShowAdvanced ? defaultDeclaredCapabilities() : {}));
 
       // Reset Ollama state
       setOllamaStatus('idle');
@@ -672,7 +674,7 @@ export default function AddProviderModal({ open: isOpen, onClose }: AddProviderM
               {/* Final request URL preview — hidden for local providers which have their own status UI */}
               {!isOllama && !isLMStudio && baseUrl.trim() && selectedOption && (
                 <p className="text-[11px] font-mono text-[var(--abu-text-muted)] break-all">
-                  ↳ {t.settings.apiUrlPreview}: POST {buildFullChatUrl(baseUrl, selectedOption.format)}
+                  ↳ {t.settings.apiUrlPreview}: POST {buildFullChatUrl(baseUrl, selectedOption.format, { useRawUrl: declared.useRawUrl })}
                 </p>
               )}
 
@@ -895,18 +897,15 @@ export default function AddProviderModal({ open: isOpen, onClose }: AddProviderM
               </div>
               {declared.supportsReasoning && (
                 <div className="pl-3 space-y-2 border-l border-black/10">
-                  <label className="flex items-center gap-2">
-                    <Toggle size="sm" checked={!!declared.canDisableThinking}
-                      onChange={() => setDeclared(d => ({ ...d, canDisableThinking: !d.canDisableThinking }))} />
-                    <span className="text-sm text-[var(--abu-text-primary)]">{t.settings.capCanDisableThinking}</span>
-                  </label>
                   <div className="flex items-center gap-2">
                     <span className="text-sm text-[var(--abu-text-secondary)]">{t.settings.capEffort}</span>
                     {(['low', 'medium', 'high'] as const).map(e => (
                       <label key={e} className="flex items-center gap-1">
                         <Toggle size="sm" checked={!!declared.supportedEfforts?.includes(e)}
                           onChange={() => setDeclared(d => ({ ...d, supportedEfforts: toggleEffort(d.supportedEfforts, e) }))} />
-                        <span className="text-xs text-[var(--abu-text-secondary)]">{e}</span>
+                        <span className="text-xs text-[var(--abu-text-secondary)]">
+                          {{ low: t.settings.effortLow, medium: t.settings.effortMedium, high: t.settings.effortHigh }[e]}
+                        </span>
                       </label>
                     ))}
                   </div>

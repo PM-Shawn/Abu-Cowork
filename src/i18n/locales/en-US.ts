@@ -665,10 +665,12 @@ const enUS: TranslationDict = {
     capTools: 'Tool Calling',
     capImages: 'Image Input',
     capReasoning: 'Reasoning',
-    capCanDisableThinking: 'Allow disabling reasoning',
     capRawUrl: 'Custom Protocol',
     capRawUrlHint: 'Use the endpoint URL as-is; for proxies that handle protocol routing.',
     capEffort: 'Reasoning effort',
+    effortLow: 'Low',
+    effortMedium: 'Medium',
+    effortHigh: 'High',
   },
 
   sandbox: {

@@ -31,7 +31,6 @@ export interface DeclaredCapabilities {
   supportsTools?: boolean;
   supportsImages?: boolean;
   supportsReasoning?: boolean;
-  canDisableThinking?: boolean;
   supportedEfforts?: Array<'low' | 'medium' | 'high'>;
   /** 自定义协议：接口地址原样使用，跳过 /chat/completions 归一化 */
   useRawUrl?: boolean;

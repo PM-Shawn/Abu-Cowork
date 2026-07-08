@@ -911,6 +911,40 @@ export default function AddProviderModal({ open: isOpen, onClose }: AddProviderM
                   </div>
                 </div>
               )}
+              <div className="grid grid-cols-2 gap-3">
+                <div className="space-y-1">
+                  <div className="text-sm text-[var(--abu-text-primary)]">{t.settings.capMaxInput}</div>
+                  <Input
+                    type="number"
+                    min={0}
+                    placeholder={t.settings.capTokenDefault}
+                    value={declared.maxInputTokens ?? ''}
+                    onChange={e => setDeclared(d => ({ ...d, maxInputTokens: e.target.value === '' ? undefined : Number(e.target.value) }))}
+                  />
+                  <div className="flex gap-1 flex-wrap">
+                    {[32768, 65536, 131072, 262144].map(v => (
+                      <Button key={v} variant="ghost" size="xs" type="button"
+                        onClick={() => setDeclared(d => ({ ...d, maxInputTokens: v }))}>{v / 1024}K</Button>
+                    ))}
+                  </div>
+                </div>
+                <div className="space-y-1">
+                  <div className="text-sm text-[var(--abu-text-primary)]">{t.settings.capMaxOutput}</div>
+                  <Input
+                    type="number"
+                    min={0}
+                    placeholder={t.settings.capTokenDefault}
+                    value={declared.maxOutputTokens ?? ''}
+                    onChange={e => setDeclared(d => ({ ...d, maxOutputTokens: e.target.value === '' ? undefined : Number(e.target.value) }))}
+                  />
+                  <div className="flex gap-1 flex-wrap">
+                    {[8192, 16384, 32768, 65536].map(v => (
+                      <Button key={v} variant="ghost" size="xs" type="button"
+                        onClick={() => setDeclared(d => ({ ...d, maxOutputTokens: v }))}>{v / 1024}K</Button>
+                    ))}
+                  </div>
+                </div>
+              </div>
             </div>
           )}
         </div>

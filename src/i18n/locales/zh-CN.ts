@@ -671,6 +671,9 @@ const zhCN: TranslationDict = {
     effortLow: '低',
     effortMedium: '中',
     effortHigh: '高',
+    capMaxInput: '最大输入 Token',
+    capMaxOutput: '最大输出 Token',
+    capTokenDefault: '使用提供商默认值',
   },
 
   sandbox: {

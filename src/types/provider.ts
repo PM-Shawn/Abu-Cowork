@@ -34,6 +34,10 @@ export interface DeclaredCapabilities {
   supportedEfforts?: Array<'low' | 'medium' | 'high'>;
   /** 自定义协议：接口地址原样使用，跳过 /chat/completions 归一化 */
   useRawUrl?: boolean;
+  /** Max input/context tokens for this endpoint; blank → provider default. */
+  maxInputTokens?: number;
+  /** Max output tokens (request max_tokens); blank → provider default. */
+  maxOutputTokens?: number;
 }
 
 /** Unified Provider instance (builtin and custom share the same structure) */

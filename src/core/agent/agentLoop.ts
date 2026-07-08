@@ -1192,7 +1192,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
       };
       const reasoningParams = computeReasoningParams(
         effectiveCaps,
-        freshSettings.maxOutputTokens ?? effectiveModelMaxOutput,
+        activeProvider?.declaredCapabilities?.maxOutputTokens ?? freshSettings.maxOutputTokens ?? effectiveModelMaxOutput,
       );
       let maxOutputTokens = reasoningParams.maxTokens;
       // Effective context window = min(model published cap, user setting, runtime-discovered).
@@ -1201,7 +1201,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
       // because the project default settingsStore.contextWindowSize is 200k.
       const contextWindowSize = resolveEffectiveContextWindow(
         effectiveModelId,
-        freshSettings.contextWindowSize,
+        activeProvider?.declaredCapabilities?.maxInputTokens ?? freshSettings.contextWindowSize,
         discoveredCaps?.contextWindow,
       );
 

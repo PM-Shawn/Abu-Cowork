@@ -677,6 +677,9 @@ export interface TranslationDict {
     effortLow: string;
     effortMedium: string;
     effortHigh: string;
+    capMaxInput: string;
+    capMaxOutput: string;
+    capTokenDefault: string;
   };
 
   // Sandbox recovery

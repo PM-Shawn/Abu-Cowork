@@ -671,6 +671,9 @@ const enUS: TranslationDict = {
     effortLow: 'Low',
     effortMedium: 'Medium',
     effortHigh: 'High',
+    capMaxInput: 'Max Input Tokens',
+    capMaxOutput: 'Max Output Tokens',
+    capTokenDefault: 'Use provider default',
   },
 
   sandbox: {

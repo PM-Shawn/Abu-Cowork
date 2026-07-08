@@ -27,6 +27,9 @@ import PermissionDialog from '@/components/common/PermissionDialog';
 import FolderSelector from '@/components/common/FolderSelector';
 import PromoteToProjectHint from '@/components/chat/PromoteToProjectHint';
 import PermissionModeChip from '@/components/chat/PermissionModeChip';
+import { serializeReferences } from '@/utils/referenceSerializer';
+import { highlightRegistry } from '@/features/reference/highlightRegistry';
+import type { ChatReference } from '@/types/chatReference';
 
 interface ChatInputProps {
   variant: 'welcome' | 'chat';
@@ -95,6 +98,7 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
   const [text, setText] = useState('');
   const [images, setImages] = useState<ImageAttachment[]>([]);
   const [files, setFiles] = useState<FileAttachmentItem[]>([]);
+  const [references, setReferences] = useState<ChatReference[]>([]);
   const [selectedSkill, setSelectedSkill] = useState<SuggestionItem | null>(null);
   const [selectedAgent, setSelectedAgent] = useState<SuggestionItem | null>(null);
   const [suggestionsDismissed, setSuggestionsDismissed] = useState(false);
@@ -107,6 +111,7 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
     text: string;
     images: ImageAttachment[];
     files: FileAttachmentItem[];
+    references: ChatReference[];
     selectedSkill: SuggestionItem | null;
     selectedAgent: SuggestionItem | null;
   }
@@ -131,6 +136,8 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
   const cancelStreaming = useChatStore((s) => s.cancelStreaming);
   const pendingInput = useChatStore((s) => s.pendingInput);
   const setPendingInput = useChatStore((s) => s.setPendingInput);
+  const pendingReferences = useChatStore((s) => s.pendingReferences);
+  const clearPendingReferences = useChatStore((s) => s.clearPendingReferences);
   const activeConv = useActiveConversation();
   const skills = useDiscoveryStore((s) => s.skills);
   const agents = useDiscoveryStore((s) => s.agents);
@@ -280,18 +287,21 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
       // We need to read latest state — use the setter callback trick to peek
       let curImages: ImageAttachment[] = [];
       let curFiles: FileAttachmentItem[] = [];
+      let curRefs: ChatReference[] = [];
       let curSkill: SuggestionItem | null = null;
       let curAgent: SuggestionItem | null = null;
       setImages((prev) => { curImages = prev; return prev; });
       setFiles((prev) => { curFiles = prev; return prev; });
+      setReferences((prev) => { curRefs = prev; return prev; });
       setSelectedSkill((prev) => { curSkill = prev; return prev; });
       setSelectedAgent((prev) => { curAgent = prev; return prev; });
 
-      if (currentText || curImages.length > 0 || curFiles.length > 0 || curSkill || curAgent) {
+      if (currentText || curImages.length > 0 || curFiles.length > 0 || curRefs.length > 0 || curSkill || curAgent) {
         draftsRef.current.set(prevId, {
           text: currentText,
           images: curImages,
           files: curFiles,
+          references: curRefs,
           selectedSkill: curSkill,
           selectedAgent: curAgent,
         });
@@ -306,12 +316,14 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
       setText(draft.text);
       setImages(draft.images);
       setFiles(draft.files);
+      setReferences(draft.references ?? []);
       setSelectedSkill(draft.selectedSkill);
       setSelectedAgent(draft.selectedAgent);
     } else {
       setText('');
       setImages([]);
       setFiles([]);
+      setReferences([]);
       setSelectedSkill(null);
       setSelectedAgent(null);
     }
@@ -329,6 +341,23 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
       textareaRef.current?.focus();
     }
   }, [pendingInput, setPendingInput]);
+
+  // Drain references injected by the doc preview selection toolbar into local
+  // state, then clear the store buffer (mirrors pendingInput consumption).
+  useEffect(() => {
+    if (pendingReferences.length === 0) return;
+    setReferences((prev) => {
+      const MAX = 20;
+      const seen = new Set(prev.map((r) => `${r.source.path}|${r.selection.text}|${r.comment ?? ''}`));
+      const merged = [...prev];
+      for (const r of pendingReferences) {
+        const key = `${r.source.path}|${r.selection.text}|${r.comment ?? ''}`;
+        if (!seen.has(key) && merged.length < MAX) { seen.add(key); merged.push(r); }
+      }
+      return merged;
+    });
+    clearPendingReferences();
+  }, [pendingReferences, clearPendingReferences]);
 
   const handleStop = () => {
     if (activeConv?.id) {
@@ -495,6 +524,8 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
     setText('');
     setImages([]);
     setFiles([]);
+    setReferences([]);
+    highlightRegistry.clear();
     // Intentionally KEEP selectedSkill / selectedAgent — the chip is sticky
     // across messages in the same conversation, so users don't have to re-
     // pick the expert (or /skill) on every turn. They can clear explicitly
@@ -507,15 +538,17 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
 
   const handleSend = () => {
     const trimmed = text.trim();
-    if ((!trimmed && !selectedSkill && !selectedAgent && images.length === 0 && files.length === 0) || disabled) return;
+    if ((!trimmed && !selectedSkill && !selectedAgent && images.length === 0 && files.length === 0 && references.length === 0) || disabled) return;
 
     // Build file context prefix
     const fileContext = files.length > 0
       ? files.map((f) => `[Attachment: \`${f.path}\`]`).join('\n')
       : '';
 
+    const referenceContext = serializeReferences(references);
+
     // Compose parts, then join with newline
-    const bodyParts = [fileContext, trimmed].filter(Boolean).join('\n');
+    const bodyParts = [fileContext, referenceContext, trimmed].filter(Boolean).join('\n\n');
 
     let message: string;
     if (selectedAgent) {
@@ -612,7 +645,7 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
     }
   };
 
-  const hasAttachments = images.length > 0 || files.length > 0;
+  const hasAttachments = images.length > 0 || files.length > 0 || references.length > 0;
   const hasContent = text.trim().length > 0 || selectedSkill !== null || selectedAgent !== null || hasAttachments;
 
   // Determine placeholder based on selected command or scenario
@@ -716,6 +749,25 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
                   <span className="text-[12px] text-[var(--abu-text-primary)] max-w-[160px] truncate">{f.name}</span>
                   <button
                     onClick={() => removeFile(f.id)}
+                    className="p-0.5 rounded hover:bg-[var(--abu-bg-hover)] text-[var(--abu-text-tertiary)] hover:text-[var(--abu-text-primary)] transition-colors"
+                  >
+                    <X className="h-3 w-3" />
+                  </button>
+                </div>
+              ))}
+              {references.map((r) => (
+                <div
+                  key={r.id}
+                  className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-[var(--abu-bg-muted)] border border-[var(--abu-border-subtle)] shrink-0"
+                  title={r.selection.text.slice(0, 80)}
+                >
+                  <FileText className="h-3.5 w-3.5 text-[var(--abu-text-tertiary)] shrink-0" />
+                  <span className="text-[12px] text-[var(--abu-text-primary)] max-w-[160px] truncate">
+                    {r.source.name}
+                    <span className="text-[var(--abu-text-tertiary)]"> · {r.comment ?? t.reference.quoteChipFallback}</span>
+                  </span>
+                  <button
+                    onClick={() => { setReferences((prev) => prev.filter((x) => x.id !== r.id)); highlightRegistry.remove(r.id); }}
                     className="p-0.5 rounded hover:bg-[var(--abu-bg-hover)] text-[var(--abu-text-tertiary)] hover:text-[var(--abu-text-primary)] transition-colors"
                   >
                     <X className="h-3 w-3" />

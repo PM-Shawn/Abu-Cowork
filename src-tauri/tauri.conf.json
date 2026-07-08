@@ -31,7 +31,7 @@
     ],
     "security": {
       "csp": "default-src 'self'; script-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com https://cdn.jsdelivr.net https://unpkg.com https://esm.sh https://cdn.tailwindcss.com; connect-src 'self' https: http: http://127.0.0.1:* http://localhost:*; style-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com https://cdn.jsdelivr.net https://unpkg.com https://esm.sh https://cdn.tailwindcss.com https://fonts.googleapis.com; font-src 'self' data: https://cdnjs.cloudflare.com https://cdn.jsdelivr.net https://unpkg.com https://esm.sh https://cdn.tailwindcss.com https://fonts.gstatic.com; img-src 'self' data: blob: asset: https://asset.localhost http://asset.localhost; frame-src 'self' http://127.0.0.1:* http://localhost:*",
-      "dangerousDisableAssetCspModification": ["script-src"],
+      "dangerousDisableAssetCspModification": ["script-src", "style-src"],
       "assetProtocol": {
         "scope": ["**"]
       }

@@ -9,7 +9,7 @@ import { useI18n } from '@/i18n';
 import { cn } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import { Toggle } from '@/components/ui/toggle';
+import { Checkbox } from '@/components/ui/checkbox';
 import { checkProviderHealth } from '@/core/llm/healthCheck';
 import { buildFullChatUrl } from '@/core/llm/urlUtils';
 import { useSettingsStore, PROVIDER_CONFIGS } from '@/stores/settingsStore';
@@ -861,22 +861,22 @@ export default function AddProviderModal({ open: isOpen, onClose }: AddProviderM
               <div className="space-y-2">
                   <div className="grid grid-cols-2 gap-2">
                     <label className="flex items-center gap-2">
-                      <Toggle size="sm" checked={!!declared.supportsTools}
+                      <Checkbox checked={!!declared.supportsTools}
                         onChange={() => setDeclared(d => ({ ...d, supportsTools: !d.supportsTools }))} />
                       <span className="text-sm text-[var(--abu-text-primary)]">{t.settings.capTools}</span>
                     </label>
                     <label className="flex items-center gap-2">
-                      <Toggle size="sm" checked={!!declared.supportsImages}
+                      <Checkbox checked={!!declared.supportsImages}
                         onChange={() => setDeclared(d => ({ ...d, supportsImages: !d.supportsImages }))} />
                       <span className="text-sm text-[var(--abu-text-primary)]">{t.settings.capImages}</span>
                     </label>
                     <label className="flex items-center gap-2">
-                      <Toggle size="sm" checked={!!declared.supportsReasoning}
+                      <Checkbox checked={!!declared.supportsReasoning}
                         onChange={() => setDeclared(d => ({ ...d, supportsReasoning: !d.supportsReasoning }))} />
                       <span className="text-sm text-[var(--abu-text-primary)]">{t.settings.capReasoning}</span>
                     </label>
                     <label className="flex items-center gap-2" title={t.settings.capRawUrlHint}>
-                      <Toggle size="sm" checked={!!declared.useRawUrl}
+                      <Checkbox checked={!!declared.useRawUrl}
                         onChange={() => setDeclared(d => ({ ...d, useRawUrl: !d.useRawUrl }))} />
                       <span className="text-sm text-[var(--abu-text-primary)]">{t.settings.capRawUrl}</span>
                     </label>
@@ -887,7 +887,7 @@ export default function AddProviderModal({ open: isOpen, onClose }: AddProviderM
                         <span className="text-sm text-[var(--abu-text-secondary)]">{t.settings.capEffort}</span>
                         {(['low', 'medium', 'high'] as const).map(e => (
                           <label key={e} className="flex items-center gap-1">
-                            <Toggle size="sm" checked={!!declared.supportedEfforts?.includes(e)}
+                            <Checkbox checked={!!declared.supportedEfforts?.includes(e)}
                               onChange={() => setDeclared(d => ({ ...d, supportedEfforts: toggleEffort(d.supportedEfforts, e) }))} />
                             <span className="text-xs text-[var(--abu-text-secondary)]">
                               {{ low: t.settings.effortLow, medium: t.settings.effortMedium, high: t.settings.effortHigh }[e]}

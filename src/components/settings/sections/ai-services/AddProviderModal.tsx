@@ -163,6 +163,7 @@ export default function AddProviderModal({ open: isOpen, onClose }: AddProviderM
 
   // ── Advanced capabilities (custom/local providers only) ──
   const [declared, setDeclared] = useState<DeclaredCapabilities>({});
+  const [advancedOpen, setAdvancedOpen] = useState(false);
 
   // ── Validate state ──
   const [validating, setValidating] = useState(false);
@@ -235,6 +236,7 @@ export default function AddProviderModal({ open: isOpen, onClose }: AddProviderM
       const existingP = providers.find(p => p.id === option.provider);
       const willShowAdvanced = computeShowAdvanced(isCustomId(option.id), option.provider, option.format);
       setDeclared(existingP?.declaredCapabilities ?? (willShowAdvanced ? defaultDeclaredCapabilities() : {}));
+      setAdvancedOpen(!!existingP?.declaredCapabilities && Object.keys(existingP.declaredCapabilities).length > 0);
 
       // Reset Ollama state
       setOllamaStatus('idle');
@@ -463,6 +465,7 @@ export default function AddProviderModal({ open: isOpen, onClose }: AddProviderM
     setFetchedModels([]);
     setFetchModelsError('');
     setDeclared({});
+    setAdvancedOpen(false);
     onClose();
   }, [onClose]);
 
@@ -501,19 +504,20 @@ export default function AddProviderModal({ open: isOpen, onClose }: AddProviderM
         <div className="shrink-0 px-6 pt-5 pb-3 space-y-5">
           {/* 1. Service Name */}
           <div className="space-y-1.5">
-            <label className="text-sm font-medium text-[var(--abu-text-primary)]">
+            <label className="text-xs font-medium text-[var(--abu-text-primary)]">
               {t.settings.serviceName}
             </label>
             <Input
               value={serviceName}
               onChange={handleNameChange}
               placeholder={t.settings.serviceNameAuto}
+              className="h-8"
             />
           </div>
 
           {/* 2. Provider Dropdown */}
           <div className="space-y-1.5">
-            <label className="text-sm font-medium text-[var(--abu-text-primary)]">
+            <label className="text-xs font-medium text-[var(--abu-text-primary)]">
               {t.settings.selectProviderType}
             </label>
             <div className="relative" ref={dropdownRef}>
@@ -588,7 +592,7 @@ export default function AddProviderModal({ open: isOpen, onClose }: AddProviderM
         </div>
 
         {/* Scrollable content area: guide, API key, models, etc. */}
-        <div className="flex-1 overflow-y-auto px-6 pb-5 space-y-4">
+        <div className="flex-1 overflow-y-auto px-6 pb-5 space-y-3">
           {/* 3. Usage Guide Card */}
           {guide && (
             <p className="text-xs text-[var(--abu-text-muted)]">
@@ -608,7 +612,7 @@ export default function AddProviderModal({ open: isOpen, onClose }: AddProviderM
           {selectedId && !isOllama && !isLMStudio && (
             <div className="space-y-1.5">
               <div className="flex items-center gap-2">
-                <label className="text-sm font-medium text-[var(--abu-text-primary)]">
+                <label className="text-xs font-medium text-[var(--abu-text-primary)]">
                   {t.settings.apiKey}
                 </label>
                 <span className="text-xs text-[var(--abu-text-tertiary)]">
@@ -621,7 +625,7 @@ export default function AddProviderModal({ open: isOpen, onClose }: AddProviderM
                   value={apiKey}
                   onChange={(e) => setApiKey(e.target.value)}
                   placeholder="sk-..."
-                  className="pr-9"
+                  className="pr-9 h-8"
                 />
                 <button
                   type="button"
@@ -656,7 +660,7 @@ export default function AddProviderModal({ open: isOpen, onClose }: AddProviderM
           {/* 5. API Address */}
           {selectedId && (
             <div className="space-y-1.5">
-              <label className="text-sm font-medium text-[var(--abu-text-primary)]">
+              <label className="text-xs font-medium text-[var(--abu-text-primary)]">
                 {isOllama ? t.settings.ollamaUrlLabel : isLMStudio ? t.settings.lmstudioUrlLabel : t.settings.apiUrl}
               </label>
               <Input
@@ -664,6 +668,7 @@ export default function AddProviderModal({ open: isOpen, onClose }: AddProviderM
                 onChange={(e) => setBaseUrl(e.target.value)}
                 placeholder={isOllama ? 'http://127.0.0.1:11434' : isLMStudio ? 'http://127.0.0.1:1234/v1' : 'https://...'}
                 onBlur={isOllama ? handleCheckOllama : isLMStudio ? handleFetchModels : undefined}
+                className="h-8"
               />
               <p className="text-xs text-[var(--abu-text-tertiary)]">
                 {isOllama ? t.settings.ollamaUrlHint : isLMStudio ? t.settings.lmstudioUrlHint : t.settings.apiUrlNoChange}
@@ -711,7 +716,7 @@ export default function AddProviderModal({ open: isOpen, onClose }: AddProviderM
           {selectedId && (
             <div className="space-y-2">
               <div className="flex items-center justify-between">
-                <label className="text-sm font-medium text-[var(--abu-text-primary)]">
+                <label className="text-xs font-medium text-[var(--abu-text-primary)]">
                   {t.settings.models}
                 </label>
                 {/* Fetch/refresh models button — only when baseUrl is filled */}
@@ -849,7 +854,7 @@ export default function AddProviderModal({ open: isOpen, onClose }: AddProviderM
                     value={manualModelInput}
                     onChange={(e) => setManualModelInput(e.target.value)}
                     placeholder={t.settings.addModelPlaceholder}
-                    className="flex-1"
+                    className="flex-1 h-8"
                     onKeyDown={(e) => { if (e.key === 'Enter') handleAddManualModel(); }}
                   />
                   <Button
@@ -868,81 +873,97 @@ export default function AddProviderModal({ open: isOpen, onClose }: AddProviderM
           {/* 7. Advanced capabilities (custom/local providers only) */}
           {showAdvanced && (
             <div className="space-y-2">
-              <div className="text-sm font-medium text-[var(--abu-text-primary)]">
-                {t.settings.advancedConfig}
-              </div>
-              <div className="grid grid-cols-2 gap-2">
-                <label className="flex items-center gap-2">
-                  <Toggle size="sm" checked={!!declared.supportsTools}
-                    onChange={() => setDeclared(d => ({ ...d, supportsTools: !d.supportsTools }))} />
-                  <span className="text-sm text-[var(--abu-text-primary)]">{t.settings.capTools}</span>
-                </label>
-                <label className="flex items-center gap-2">
-                  <Toggle size="sm" checked={!!declared.supportsImages}
-                    onChange={() => setDeclared(d => ({ ...d, supportsImages: !d.supportsImages }))} />
-                  <span className="text-sm text-[var(--abu-text-primary)]">{t.settings.capImages}</span>
-                </label>
-                <label className="flex items-center gap-2">
-                  <Toggle size="sm" checked={!!declared.supportsReasoning}
-                    onChange={() => setDeclared(d => ({ ...d, supportsReasoning: !d.supportsReasoning }))} />
-                  <span className="text-sm text-[var(--abu-text-primary)]">{t.settings.capReasoning}</span>
-                </label>
-                <label className="flex items-center gap-2" title={t.settings.capRawUrlHint}>
-                  <Toggle size="sm" checked={!!declared.useRawUrl}
-                    onChange={() => setDeclared(d => ({ ...d, useRawUrl: !d.useRawUrl }))} />
-                  <span className="text-sm text-[var(--abu-text-primary)]">{t.settings.capRawUrl}</span>
-                </label>
-              </div>
-              {declared.supportsReasoning && (
-                <div className="pl-3 space-y-2 border-l border-black/10">
-                  <div className="flex items-center gap-2">
-                    <span className="text-sm text-[var(--abu-text-secondary)]">{t.settings.capEffort}</span>
-                    {(['low', 'medium', 'high'] as const).map(e => (
-                      <label key={e} className="flex items-center gap-1">
-                        <Toggle size="sm" checked={!!declared.supportedEfforts?.includes(e)}
-                          onChange={() => setDeclared(d => ({ ...d, supportedEfforts: toggleEffort(d.supportedEfforts, e) }))} />
-                        <span className="text-xs text-[var(--abu-text-secondary)]">
-                          {{ low: t.settings.effortLow, medium: t.settings.effortMedium, high: t.settings.effortHigh }[e]}
-                        </span>
-                      </label>
-                    ))}
+              <button
+                type="button"
+                onClick={() => setAdvancedOpen(!advancedOpen)}
+                className="w-full flex items-center gap-1.5 text-left"
+              >
+                <ChevronDown className={cn(
+                  'h-3.5 w-3.5 text-[var(--abu-text-secondary)] transition-transform shrink-0',
+                  !advancedOpen && '-rotate-90',
+                )} />
+                <span className="text-xs font-medium text-[var(--abu-text-primary)]">
+                  {t.settings.advancedConfig}
+                </span>
+              </button>
+              {advancedOpen && (
+                <div className="space-y-2">
+                  <div className="grid grid-cols-2 gap-2">
+                    <label className="flex items-center gap-2">
+                      <Toggle size="sm" checked={!!declared.supportsTools}
+                        onChange={() => setDeclared(d => ({ ...d, supportsTools: !d.supportsTools }))} />
+                      <span className="text-sm text-[var(--abu-text-primary)]">{t.settings.capTools}</span>
+                    </label>
+                    <label className="flex items-center gap-2">
+                      <Toggle size="sm" checked={!!declared.supportsImages}
+                        onChange={() => setDeclared(d => ({ ...d, supportsImages: !d.supportsImages }))} />
+                      <span className="text-sm text-[var(--abu-text-primary)]">{t.settings.capImages}</span>
+                    </label>
+                    <label className="flex items-center gap-2">
+                      <Toggle size="sm" checked={!!declared.supportsReasoning}
+                        onChange={() => setDeclared(d => ({ ...d, supportsReasoning: !d.supportsReasoning }))} />
+                      <span className="text-sm text-[var(--abu-text-primary)]">{t.settings.capReasoning}</span>
+                    </label>
+                    <label className="flex items-center gap-2" title={t.settings.capRawUrlHint}>
+                      <Toggle size="sm" checked={!!declared.useRawUrl}
+                        onChange={() => setDeclared(d => ({ ...d, useRawUrl: !d.useRawUrl }))} />
+                      <span className="text-sm text-[var(--abu-text-primary)]">{t.settings.capRawUrl}</span>
+                    </label>
+                  </div>
+                  {declared.supportsReasoning && (
+                    <div className="pl-3 space-y-2 border-l border-black/10">
+                      <div className="flex items-center gap-2">
+                        <span className="text-sm text-[var(--abu-text-secondary)]">{t.settings.capEffort}</span>
+                        {(['low', 'medium', 'high'] as const).map(e => (
+                          <label key={e} className="flex items-center gap-1">
+                            <Toggle size="sm" checked={!!declared.supportedEfforts?.includes(e)}
+                              onChange={() => setDeclared(d => ({ ...d, supportedEfforts: toggleEffort(d.supportedEfforts, e) }))} />
+                            <span className="text-xs text-[var(--abu-text-secondary)]">
+                              {{ low: t.settings.effortLow, medium: t.settings.effortMedium, high: t.settings.effortHigh }[e]}
+                            </span>
+                          </label>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                  <div className="grid grid-cols-2 gap-2">
+                    <div className="space-y-1">
+                      <div className="text-sm text-[var(--abu-text-primary)]">{t.settings.capMaxInput}</div>
+                      <Input
+                        type="text"
+                        inputMode="numeric"
+                        placeholder={t.settings.capTokenDefault}
+                        value={declared.maxInputTokens ?? ''}
+                        className="h-8"
+                        onChange={e => { const raw = e.target.value.replace(/[^0-9]/g, ''); setDeclared(d => ({ ...d, maxInputTokens: raw === '' ? undefined : Number(raw) })); }}
+                      />
+                      <div className="flex gap-1 flex-wrap">
+                        {[32768, 65536, 131072, 262144].map(v => (
+                          <Button key={v} variant="ghost" size="xs" type="button"
+                            onClick={() => setDeclared(d => ({ ...d, maxInputTokens: v }))}>{v / 1024}K</Button>
+                        ))}
+                      </div>
+                    </div>
+                    <div className="space-y-1">
+                      <div className="text-sm text-[var(--abu-text-primary)]">{t.settings.capMaxOutput}</div>
+                      <Input
+                        type="text"
+                        inputMode="numeric"
+                        placeholder={t.settings.capTokenDefault}
+                        value={declared.maxOutputTokens ?? ''}
+                        className="h-8"
+                        onChange={e => { const raw = e.target.value.replace(/[^0-9]/g, ''); setDeclared(d => ({ ...d, maxOutputTokens: raw === '' ? undefined : Number(raw) })); }}
+                      />
+                      <div className="flex gap-1 flex-wrap">
+                        {[8192, 16384, 32768, 65536].map(v => (
+                          <Button key={v} variant="ghost" size="xs" type="button"
+                            onClick={() => setDeclared(d => ({ ...d, maxOutputTokens: v }))}>{v / 1024}K</Button>
+                        ))}
+                      </div>
+                    </div>
                   </div>
                 </div>
               )}
-              <div className="grid grid-cols-2 gap-2">
-                <div className="space-y-1">
-                  <div className="text-sm text-[var(--abu-text-primary)]">{t.settings.capMaxInput}</div>
-                  <Input
-                    type="text"
-                    inputMode="numeric"
-                    placeholder={t.settings.capTokenDefault}
-                    value={declared.maxInputTokens ?? ''}
-                    onChange={e => { const raw = e.target.value.replace(/[^0-9]/g, ''); setDeclared(d => ({ ...d, maxInputTokens: raw === '' ? undefined : Number(raw) })); }}
-                  />
-                  <div className="flex gap-1 flex-wrap">
-                    {[32768, 65536, 131072, 262144].map(v => (
-                      <Button key={v} variant="ghost" size="xs" type="button"
-                        onClick={() => setDeclared(d => ({ ...d, maxInputTokens: v }))}>{v / 1024}K</Button>
-                    ))}
-                  </div>
-                </div>
-                <div className="space-y-1">
-                  <div className="text-sm text-[var(--abu-text-primary)]">{t.settings.capMaxOutput}</div>
-                  <Input
-                    type="text"
-                    inputMode="numeric"
-                    placeholder={t.settings.capTokenDefault}
-                    value={declared.maxOutputTokens ?? ''}
-                    onChange={e => { const raw = e.target.value.replace(/[^0-9]/g, ''); setDeclared(d => ({ ...d, maxOutputTokens: raw === '' ? undefined : Number(raw) })); }}
-                  />
-                  <div className="flex gap-1 flex-wrap">
-                    {[8192, 16384, 32768, 65536].map(v => (
-                      <Button key={v} variant="ghost" size="xs" type="button"
-                        onClick={() => setDeclared(d => ({ ...d, maxOutputTokens: v }))}>{v / 1024}K</Button>
-                    ))}
-                  </div>
-                </div>
-              </div>
             </div>
           )}
         </div>

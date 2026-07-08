@@ -1,35 +1,43 @@
-# ABU 官网部署指南
+# Abu Website Deployment Guide
 
-## 目录结构
+**English** | [中文](README.zh-CN.md)
+
+## Directory Structure
 
 ```
 website/
-├── index.html          # 主页面
-├── docs.html           # 文档页面
-├── style.css           # 主样式
-├── docs.css            # 文档页样式
-├── docs/               # Markdown 文档
+├── index.html          # Main page
+├── index.zh-CN.html    # Main page (Chinese)
+├── docs.html           # Documentation page
+├── docs.zh-CN.html     # Documentation page (Chinese)
+├── one-screen.html     # Single-screen landing page
+├── one-screen.zh-CN.html # Single-screen landing page (Chinese)
+├── style.css           # Main stylesheet
+├── docs.css            # Documentation page stylesheet
+├── docs/               # Markdown documentation
 │   ├── User-Guide.md
+│   ├── User-Guide.zh-CN.md
 │   ├── Installation-Guide.md
+│   ├── Installation-Guide.zh-CN.md
 │   └── browser-bridge-vs-playwright.md
 └── assets/
-    ├── abu-avatar.png  # 吉祥物图片
-    ├── wechat-qr.png   # 微信二维码
-    └── screenshot-*.png # 产品截图
+    ├── abu-avatar.png  # Mascot image
+    ├── wechat-qr.png   # WeChat QR code
+    └── screenshot-*.png # Product screenshots
 ```
 
-## 部署到 GitHub Pages
+## Deploy to GitHub Pages
 
-### 方式一：从 main 分支 /website 目录部署
+### Option 1: Deploy from the /website directory on the main branch
 
-1. 将代码推送到 GitHub
-2. 进入仓库 Settings → Pages
-3. Source 选择 `main` 分支，目录选择 `/website`
-4. 保存后等待部署完成
+1. Push the code to GitHub.
+2. Go to the repository **Settings → Pages**.
+3. Set **Source** to the `main` branch and the directory to `/website`.
+4. Save and wait for the deployment to complete.
 
-### 方式二：创建 gh-pages 分支
+### Option 2: Create a gh-pages branch
 
-1. 创建 gh-pages 分支：
+1. Create the gh-pages branch:
    ```bash
    git checkout -b gh-pages
    cd website
@@ -38,18 +46,18 @@ website/
    git push origin gh-pages
    ```
 
-2. 进入仓库 Settings → Pages
-3. Source 选择 `gh-pages` 分支
-4. 保存后等待部署完成
+2. Go to the repository **Settings → Pages**.
+3. Set **Source** to the `gh-pages` branch.
+4. Save and wait for the deployment to complete.
 
-## 访问地址
+## URLs
 
-- 仓库：https://github.com/PM-Shawn/Abu-Cowork
-- 官网：部署完成后通过 `https://pm-shawn.github.io/Abu-Cowork/` 访问
+- Repository: https://github.com/PM-Shawn/Abu-Cowork
+- Website: Once deployed, accessible at `https://pm-shawn.github.io/Abu-Cowork/`
 
-## 本地预览
+## Local Preview
 
-直接用浏览器打开 `index.html` 即可本地预览：
+Open `index.html` directly in your browser for a local preview:
 
 ```bash
 open website/index.html

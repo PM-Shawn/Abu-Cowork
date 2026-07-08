@@ -1,10 +1,10 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="zh-CN">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Abu — Your AI Desktop Office Copilot</title>
-    <meta name="description" content="A local-first AI desktop assistant. You describe the task, Abu does the work — read files, run commands, write documents, build reports, all on your own machine.">
+    <title>Abu (阿布) - 你的 AI 桌面办公搭子</title>
+    <meta name="description" content="本地运行的 AI 桌面办公助手，你说需求，阿布干活。读文件、跑命令、写文档、做报表，全在本地完成。">
     <link rel="stylesheet" href="style.css">
     <link rel="icon" href="assets/abu-avatar.png" type="image/png">
 </head>
@@ -14,18 +14,18 @@
         <div class="container nav-container">
             <a href="#" class="nav-brand">
                 <img src="assets/abu-avatar.png" alt="Abu" class="nav-logo">
-                <span class="nav-title">Abu</span>
+                <span class="nav-title">Abu <span class="nav-title-cn">阿布</span></span>
             </a>
             <div class="nav-links" id="navLinks">
-                <a href="#features" class="nav-link">Features</a>
-                <a href="#screenshots" class="nav-link">Preview</a>
-                <a href="#use-cases" class="nav-link">Use Cases</a>
-                <a href="#tech" class="nav-link">Architecture</a>
-                <a href="docs.html" class="nav-link">Docs</a>
-                <a href="#social" class="nav-link">Community</a>
-                <a href="index.zh-CN.html" class="nav-lang" aria-label="切换到中文">
+                <a href="#features" class="nav-link">功能</a>
+                <a href="#screenshots" class="nav-link">预览</a>
+                <a href="#use-cases" class="nav-link">场景</a>
+                <a href="#tech" class="nav-link">架构</a>
+                <a href="docs.zh-CN.html" class="nav-link">文档</a>
+                <a href="#social" class="nav-link">社区</a>
+                <a href="index.html" class="nav-lang" aria-label="Switch to English">
                     <svg class="nav-lang-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
-                    中文
+                    English
                 </a>
                 <a href="https://github.com/PM-Shawn/Abu-Cowork" target="_blank" rel="noopener" class="nav-link nav-github">
                     <svg class="icon" viewBox="0 0 16 16" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
@@ -42,15 +42,15 @@
     <section class="hero">
         <div class="container">
             <div class="mascot-wrapper">
-                <img src="assets/abu-avatar.png" alt="Abu" class="mascot">
+                <img src="assets/abu-avatar.png" alt="Abu 阿布" class="mascot">
             </div>
-            <h1>Just leave it to Abu</h1>
-            <p class="tagline">A local-first AI desktop assistant<br>You describe the task, Abu does the work — read files, run commands, write docs, build reports</p>
+            <h1>交给阿布就行啦</h1>
+            <p class="tagline">本地运行的 AI 桌面办公助手<br>你说需求，阿布干活 — 读文件、跑命令、写文档、做报表</p>
             <div class="hero-buttons">
                 <div class="download-dropdown" id="downloadDropdown">
                     <button class="btn btn-primary dl-trigger" id="dlChevron" aria-expanded="false">
                         <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
-                        <span id="dlPrimaryLabel">Download latest</span>
+                        <span id="dlPrimaryLabel">下载最新版</span>
                         <svg class="dl-chevron-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
                     </button>
                     <div class="dl-menu" id="dlMenu" hidden>
@@ -58,7 +58,7 @@
                             <svg class="dl-menu-icon" viewBox="0 0 24 24" fill="currentColor"><path d="M18.71 19.5c-.83 1.24-1.71 2.45-3.05 2.47-1.34.03-1.77-.79-3.29-.79-1.53 0-2 .77-3.27.82-1.31.05-2.3-1.32-3.14-2.53C4.25 17 2.94 12.45 4.7 9.39c.87-1.52 2.43-2.48 4.12-2.51 1.28-.02 2.5.87 3.29.87.78 0 2.26-1.07 3.8-.91.65.03 2.47.26 3.64 1.98-.09.06-2.17 1.28-2.15 3.81.03 3.02 2.65 4.03 2.68 4.04-.03.07-.42 1.44-1.38 2.83M13 3.5c.73-.83 1.94-1.46 2.94-1.5.13 1.17-.34 2.35-1.04 3.19-.69.85-1.83 1.51-2.95 1.42-.15-1.15.41-2.35 1.05-3.11z"/></svg>
                             <div class="dl-menu-info">
                                 <span class="dl-menu-name">macOS Apple Silicon</span>
-                                <span class="dl-menu-sub">dmg · Apple M-series</span>
+                                <span class="dl-menu-sub">dmg · M 系列芯片</span>
                             </div>
                         </a>
                         <a href="https://github.com/PM-Shawn/Abu-Cowork/releases/latest" id="dlMacIntel" class="dl-menu-item" target="_blank" rel="noopener">
@@ -77,7 +77,7 @@
                         </a>
                         <div class="dl-menu-footer">
                             <span id="dlVersion"></span>
-                            <a href="https://github.com/PM-Shawn/Abu-Cowork/releases" target="_blank" rel="noopener">All releases</a>
+                            <a href="https://github.com/PM-Shawn/Abu-Cowork/releases" target="_blank" rel="noopener">所有版本</a>
                         </div>
                     </div>
                 </div>
@@ -93,11 +93,11 @@
                 </span>
                 <span class="meta-item">
                     <svg class="icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
-                    Local-first — your data stays on your device
+                    本地优先，数据不上传
                 </span>
                 <span class="meta-item">
                     <svg class="icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 19c-5 1.5-5-2.5-7-3m14 6v-3.87a3.37 3.37 0 0 0-.94-2.61c3.14-.35 6.44-1.54 6.44-7A5.44 5.44 0 0 0 20 4.77 5.07 5.07 0 0 0 19.91 1S18.73.65 16 2.48a13.38 13.38 0 0 0-7 0C6.27.65 5.09 1 5.09 1A5.07 5.07 0 0 0 5 4.77a5.44 5.44 0 0 0-1.5 3.78c0 5.42 3.3 6.61 6.44 7A3.37 3.37 0 0 0 9 18.13V22"/></svg>
-                    Free &amp; open source
+                    开源免费
                 </span>
             </div>
         </div>
@@ -106,86 +106,86 @@
     <!-- Features Section -->
     <section class="features" id="features">
         <div class="container">
-            <h2>Core Capabilities</h2>
-            <p class="section-desc">Not just chat — it plans autonomously, calls tools, and completes complex tasks</p>
+            <h2>核心能力</h2>
+            <p class="section-desc">不只是聊天，能自主规划、调用工具、完成复杂任务</p>
             <div class="feature-grid">
                 <div class="feature-card">
                     <div class="feature-icon">
                         <svg viewBox="0 0 24 24" fill="none" stroke="var(--color-primary)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/></svg>
                     </div>
-                    <h3>Self-Evolving</h3>
-                    <p>After running a complex workflow, Abu offers to "save it as a skill" — one click generates a draft; review, publish, and reuse it next time. Your workflows get more tailored to you the more you use it.</p>
+                    <h3>自进化</h3>
+                    <p>跑完复杂流程后，阿布主动提议「固化成技能」，一键生成草稿，审阅上架后下次直接调用。越用越专属于你的工作流。</p>
                 </div>
                 <div class="feature-card">
                     <div class="feature-icon">
                         <svg viewBox="0 0 24 24" fill="none" stroke="var(--color-primary)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
                     </div>
-                    <h3>Autonomous Agent Execution</h3>
-                    <p>Plans tasks, calls tools, reads and writes files, and runs commands — completing complex workflows on its own.</p>
+                    <h3>Agent 自主执行</h3>
+                    <p>自主规划任务、调用工具、读写文件、执行命令，完成复杂工作流。</p>
                 </div>
                 <div class="feature-card">
                     <div class="feature-icon">
                         <svg viewBox="0 0 24 24" fill="none" stroke="var(--color-primary)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><polygon points="12 2 2 7 12 12 22 7 12 2"/><polyline points="2 17 12 22 22 17"/><polyline points="2 12 12 17 22 12"/></svg>
                     </div>
-                    <h3>Skill System</h3>
-                    <p>28 built-in skills spanning Office documents, design, browser automation, and dev assistance — one-click install, fully extensible.</p>
+                    <h3>Skill 技能系统</h3>
+                    <p>内置 28 个技能，覆盖 Office 文档、设计创作、浏览器自动化、开发辅助等场景，一键安装，支持自定义扩展。</p>
                 </div>
                 <div class="feature-card">
                     <div class="feature-icon">
                         <svg viewBox="0 0 24 24" fill="none" stroke="var(--color-primary)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="2" width="20" height="8" rx="2" ry="2"/><rect x="2" y="14" width="20" height="8" rx="2" ry="2"/><line x1="6" y1="6" x2="6.01" y2="6"/><line x1="6" y1="18" x2="6.01" y2="18"/></svg>
                     </div>
-                    <h3>MCP Tool Protocol</h3>
-                    <p>Connect databases, search engines, GitHub, and other external services through the Model Context Protocol.</p>
+                    <h3>MCP 工具协议</h3>
+                    <p>通过 Model Context Protocol 连接数据库、搜索引擎、GitHub 等外部服务。</p>
                 </div>
                 <div class="feature-card">
                     <div class="feature-icon">
                         <svg viewBox="0 0 24 24" fill="none" stroke="var(--color-primary)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>
                     </div>
-                    <h3>Triggers &amp; On-Call</h3>
-                    <p>Auto-trigger on HTTP requests, file changes, Cron schedules, IM messages, and more — for 24/7 unattended operation.</p>
+                    <h3>触发器 / 值班</h3>
+                    <p>HTTP、文件变更、Cron、IM 消息等事件自动触发，实现 7×24 无人值守。</p>
                 </div>
                 <div class="feature-card">
                     <div class="feature-icon">
                         <svg viewBox="0 0 24 24" fill="none" stroke="var(--color-primary)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2"/><circle cx="12" cy="10" r="3"/><path d="M7 21l2-3h6l2 3"/></svg>
                     </div>
-                    <h3>Computer Control</h3>
-                    <p>Screen reading plus keyboard and mouse control let Abu operate desktop apps directly, completing tasks like a human.</p>
+                    <h3>电脑操控</h3>
+                    <p>截屏识别 + 键鼠控制，让阿布直接操作桌面应用，像真人一样完成任务。</p>
                 </div>
                 <div class="feature-card">
                     <div class="feature-icon">
                         <svg viewBox="0 0 24 24" fill="none" stroke="var(--color-primary)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M9 11l3 3L20 6"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>
                     </div>
-                    <h3>Plan Mode</h3>
-                    <p>For high-risk steps like delete, overwrite, send, or install, Abu first proposes a step-by-step plan and only acts once you click "Confirm" — running read-only operations while it waits.</p>
+                    <h3>计划模式</h3>
+                    <p>涉及删除、覆盖、发送、安装等高风险步骤时，阿布先出分步计划，你点「确认执行」才动手；待批期间只跑只读操作。</p>
                 </div>
                 <div class="feature-card">
                     <div class="feature-icon">
                         <svg viewBox="0 0 24 24" fill="none" stroke="var(--color-primary)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
                     </div>
-                    <h3>Interactive Questions</h3>
-                    <p>When it needs your call, Abu pops up an option card above the input box — single or multi-select, with a custom "Other" field — so you never have to hunt for the question in a wall of text.</p>
+                    <h3>交互式提问</h3>
+                    <p>需要你拍板时，阿布在输入框上方弹出选项卡片，单选 / 多选皆可，也能填「其他」自定义，不用在长文字里找问题。</p>
                 </div>
                 <div class="feature-card">
                     <div class="feature-icon">
                         <svg viewBox="0 0 24 24" fill="none" stroke="var(--color-primary)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
                     </div>
-                    <h3>Parallel Multi-Agent</h3>
-                    <p>Up to 5 background agents work at once, each running its own task with live progress — complex work advances in parallel.</p>
+                    <h3>多 Agent 并行</h3>
+                    <p>最多 5 个后台 Agent 同时干活，各自独立执行任务，进度实时可见，复杂工作并行推进。</p>
                 </div>
                 <div class="more-caps">
-                    <span class="more-caps-label">More Capabilities</span>
+                    <span class="more-caps-label">更多能力</span>
                     <div class="more-caps-list">
-                        <span class="more-cap">Theme switching</span>
-                        <span class="more-cap">Labs · Desktop Pet</span>
-                        <span class="more-cap">IM channel integration</span>
-                        <span class="more-cap">Multi-model support</span>
-                        <span class="more-cap">Projects management</span>
-                        <span class="more-cap">Conversation sharing</span>
-                        <span class="more-cap">Smart notifications</span>
-                        <span class="more-cap">Personality (Soul)</span>
-                        <span class="more-cap">Content safety scanning</span>
-                        <span class="more-cap">Diagnostics panel</span>
-                        <span class="more-cap">Sandbox security</span>
+                        <span class="more-cap">主题切换</span>
+                        <span class="more-cap">实验室 · 桌宠</span>
+                        <span class="more-cap">IM 频道集成</span>
+                        <span class="more-cap">多模型支持</span>
+                        <span class="more-cap">Projects 管理</span>
+                        <span class="more-cap">对话分享</span>
+                        <span class="more-cap">智能通知</span>
+                        <span class="more-cap">性格系统 Soul</span>
+                        <span class="more-cap">内容安全扫描</span>
+                        <span class="more-cap">诊断面板</span>
+                        <span class="more-cap">沙箱安全</span>
                     </div>
                 </div>
             </div>
@@ -195,70 +195,70 @@
     <!-- Screenshots Section -->
     <section class="screenshots" id="screenshots">
         <div class="container">
-            <h2>Product Preview</h2>
-            <p class="section-desc">A clean, intuitive interface with powerful, flexible capabilities</p>
+            <h2>产品预览</h2>
+            <p class="section-desc">简洁直观的界面，强大灵活的能力</p>
             <div class="screenshot-tabs">
-                <button class="screenshot-tab active" data-tab="execution">Smart Execution</button>
-                <button class="screenshot-tab" data-tab="extension">Connect &amp; Extend</button>
-                <button class="screenshot-tab" data-tab="automation">Autopilot</button>
-                <button class="screenshot-tab" data-tab="security">Security &amp; Config</button>
+                <button class="screenshot-tab active" data-tab="execution">智能执行</button>
+                <button class="screenshot-tab" data-tab="extension">连接 & 扩展</button>
+                <button class="screenshot-tab" data-tab="automation">自动驾驶</button>
+                <button class="screenshot-tab" data-tab="security">安全 & 配置</button>
             </div>
             <div class="screenshot-panels">
                 <div class="screenshot-panel active" data-panel="execution">
                     <div class="showcase">
                         <div class="showcase-list">
-                            <button class="showcase-item active" data-img="assets/screenshot-plan-mode.png" data-cap="High-risk tasks get a plan first — nothing runs until you confirm">Plan Mode</button>
-                            <button class="showcase-item" data-img="assets/screenshot-ask-question.png" data-cap="Option cards pop up when a decision is needed — single or multi-select">Interactive Questions</button>
-                            <button class="showcase-item" data-img="assets/screenshot-welcome.png" data-cap="Natural-language input — conversation is the command">Welcome</button>
-                            <button class="showcase-item" data-img="assets/screenshot-execution.png" data-cap="Plans steps autonomously and calls tools to finish complex tasks">Task Execution</button>
-                            <button class="showcase-item" data-img="assets/screenshot-permission.png" data-cap="File access requires your approval — secure and controlled">Permission Control</button>
+                            <button class="showcase-item active" data-img="assets/screenshot-plan-mode.png" data-cap="高风险任务先出计划，你点确认才动手">计划模式</button>
+                            <button class="showcase-item" data-img="assets/screenshot-ask-question.png" data-cap="需要你拍板时弹出选项卡片，单选 / 多选">交互式提问</button>
+                            <button class="showcase-item" data-img="assets/screenshot-welcome.png" data-cap="自然语言输入，对话即指令">欢迎页</button>
+                            <button class="showcase-item" data-img="assets/screenshot-execution.png" data-cap="自主规划步骤，调用工具完成复杂任务">任务执行</button>
+                            <button class="showcase-item" data-img="assets/screenshot-permission.png" data-cap="文件访问需用户授权，安全可控">权限控制</button>
                         </div>
                         <div class="showcase-view">
-                            <img class="showcase-img" src="assets/screenshot-plan-mode.png" alt="Plan Mode" loading="lazy">
-                            <p class="showcase-caption">Plan Mode · High-risk tasks get a plan first — nothing runs until you confirm</p>
+                            <img class="showcase-img" src="assets/screenshot-plan-mode.png" alt="计划模式" loading="lazy">
+                            <p class="showcase-caption">计划模式 · 高风险任务先出计划，你点确认才动手</p>
                         </div>
                     </div>
                 </div>
                 <div class="screenshot-panel" data-panel="extension">
                     <div class="showcase">
                         <div class="showcase-list">
-                            <button class="showcase-item active" data-img="assets/screenshot-im-chat.png" data-cap="Just @Abu in Feishu or DingTalk to interact">IM Channel Chat</button>
-                            <button class="showcase-item" data-img="assets/screenshot-skills.png" data-cap="28 built-in skills, fully extensible">Skills</button>
-                            <button class="showcase-item" data-img="assets/screenshot-mcp.png" data-cap="One-click access to Playwright, GitHub, and other external tools">MCP Connectors</button>
+                            <button class="showcase-item active" data-img="assets/screenshot-im-chat.png" data-cap="在飞书 / 钉钉中 @阿布 即可交互">IM 频道对话</button>
+                            <button class="showcase-item" data-img="assets/screenshot-skills.png" data-cap="内置 28 个技能，支持自定义扩展">Skill 技能</button>
+                            <button class="showcase-item" data-img="assets/screenshot-mcp.png" data-cap="一键接入 Playwright、GitHub 等外部工具">MCP 连接器</button>
                         </div>
                         <div class="showcase-view">
-                            <img class="showcase-img" src="assets/screenshot-im-chat.png" alt="IM Channel Chat" loading="lazy">
-                            <p class="showcase-caption">IM Channel Chat · Just @Abu in Feishu or DingTalk to interact</p>
+                            <img class="showcase-img" src="assets/screenshot-im-chat.png" alt="IM 频道对话" loading="lazy">
+                            <p class="showcase-caption">IM 频道对话 · 在飞书 / 钉钉中 @阿布 即可交互</p>
                         </div>
                     </div>
                 </div>
                 <div class="screenshot-panel" data-panel="automation">
                     <div class="showcase">
                         <div class="showcase-list">
-                            <button class="showcase-item active" data-img="assets/screenshot-multi-agent.png" data-cap="Up to 5 background agents work at once with live progress">Parallel Multi-Agent</button>
-                            <button class="showcase-item" data-img="assets/screenshot-schedule-create.png" data-cap="Cron scheduling puts Abu to work automatically every day">Scheduled Tasks</button>
-                            <button class="showcase-item" data-img="assets/screenshot-triggers.png" data-cap="Auto-trigger on HTTP, file changes, IM messages, and more">Triggers &amp; On-Call</button>
-                            <button class="showcase-item" data-img="assets/screenshot-memory.png" data-cap="Remembers your preferences and work habits">Personal Memory</button>
+                            <button class="showcase-item active" data-img="assets/screenshot-multi-agent.png" data-cap="最多 5 个后台 Agent 同时干活，进度实时可见">多 Agent 并行</button>
+                            <button class="showcase-item" data-img="assets/screenshot-schedule-create.png" data-cap="Cron 定时执行，让阿布每天自动工作">定时任务</button>
+                            <button class="showcase-item" data-img="assets/screenshot-triggers.png" data-cap="HTTP、文件变更、IM 消息等事件自动触发">触发器 / 值班</button>
+                            <button class="showcase-item" data-img="assets/screenshot-memory.png" data-cap="记住你的偏好和工作习惯">个人记忆</button>
                         </div>
                         <div class="showcase-view">
-                            <img class="showcase-img" src="assets/screenshot-multi-agent.png" alt="Parallel Multi-Agent" loading="lazy">
-                            <p class="showcase-caption">Parallel Multi-Agent · Up to 5 background agents work at once with live progress</p>
+                            <img class="showcase-img" src="assets/screenshot-multi-agent.png" alt="多 Agent 并行" loading="lazy">
+                            <p class="showcase-caption">多 Agent 并行 · 最多 5 个后台 Agent 同时干活，进度实时可见</p>
                         </div>
                     </div>
                 </div>
                 <div class="screenshot-panel" data-panel="security">
                     <div class="showcase">
                         <div class="showcase-list">
-                            <button class="showcase-item active" data-img="assets/screenshot-pet.png" data-cap="A floating desktop widget shows Abu's status in real time">Desktop Pet · Activity Bar</button>
-                            <button class="showcase-item" data-img="assets/screenshot-theme.png" data-cap="Light / dark / follow-system, switched in one click">Theme Switching</button>
-                            <button class="showcase-item" data-img="assets/screenshot-labs.png" data-cap="New features in the works, enable as needed (currently: Desktop Pet)">Labs</button>
-                            <button class="showcase-item" data-img="assets/screenshot-soul.png" data-cap="Three proactivity presets plus SOUL.md for custom tone and reply style">Personality (Soul)</button>
-                            <button class="showcase-item" data-img="assets/screenshot-diagnostic.png" data-cap="One-click self-check of AI service / MCP / skills / network, plus diagnostic bundle export">Diagnostics Panel</button>
-                            <button class="showcase-item" data-img="assets/screenshot-security-scan.png" data-cap="120+ risk categories blocked, with three permission modes to fit the context">Content Safety Scan</button>
+                            <button class="showcase-item active" data-img="assets/screenshot-pet.png" data-cap="桌面浮窗常驻，活动条实时显示阿布状态">桌宠 · 活动通知条</button>
+                            <button class="showcase-item" data-img="assets/screenshot-theme.png" data-cap="亮色 / 暗色 / 跟随系统一键切换">主题切换</button>
+                            <button class="showcase-item" data-img="assets/screenshot-labs.png" data-cap="打磨中的新功能，按需开启（当前：桌宠）">实验室（Labs）</button>
+                            <button class="showcase-item" data-img="assets/screenshot-soul.png" data-cap="三档主动度预设 + SOUL.md 自定义语气与回复风格">性格系统（Soul）</button>
+                            <button class="showcase-item" data-img="assets/screenshot-diagnostic.png" data-cap="AI 服务 / MCP / 技能 / 网络一键自检 + 诊断包导出">诊断面板</button>
+                            <button class="showcase-item" data-img="assets/screenshot-security-scan.png" data-cap="120+ 类风险拦截，三档权限模式按场景调节">内容安全扫描</button>
                         </div>
                         <div class="showcase-view">
-                            <img class="showcase-img" src="assets/screenshot-pet.png" alt="Desktop Pet · Activity Bar" loading="lazy">
-                            <p class="showcase-caption">Desktop Pet · Activity Bar · A floating desktop widget shows Abu's status in real time</p>
+                            <img class="showcase-img" src="assets/screenshot-pet.png" alt="桌宠 · 活动通知条" loading="lazy">
+                            <p class="showcase-caption">桌宠 · 活动通知条 · 桌面浮窗常驻，活动条实时显示阿布状态</p>
                         </div>
                     </div>
                 </div>
@@ -269,19 +269,19 @@
     <!-- Use Cases Section -->
     <section class="use-cases" id="use-cases">
         <div class="container">
-            <h2>Use Cases</h2>
-            <p class="section-desc">Whether you're a professional, a student, or a developer, Abu has your back</p>
+            <h2>使用场景</h2>
+            <p class="section-desc">无论你是职场人、学生还是开发者，阿布都能帮到你</p>
             <div class="use-case-grid">
                 <div class="use-case-card">
                     <div class="use-case-header">
                         <div class="use-case-icon">
                             <svg viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="7" width="20" height="14" rx="2" ry="2"/><polyline points="16 21 12 17 8 21"/></svg>
                         </div>
-                        <h3>Everyday Office</h3>
+                        <h3>通用办公</h3>
                     </div>
                     <div class="use-case-examples">
-                        <div class="example-item">"Organize my desktop, sorting files into folders by type"</div>
-                        <div class="example-item">"Find files larger than 100MB in my Downloads folder"</div>
+                        <div class="example-item">"帮我整理桌面，按文件类型分类到不同文件夹"</div>
+                        <div class="example-item">"找出下载文件夹里超过 100MB 的文件"</div>
                     </div>
                 </div>
                 <div class="use-case-card">
@@ -289,11 +289,11 @@
                         <div class="use-case-icon">
                             <svg viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>
                         </div>
-                        <h3>Data Processing</h3>
+                        <h3>数据处理</h3>
                     </div>
                     <div class="use-case-examples">
-                        <div class="example-item">"Merge these CSV files into a single Excel workbook"</div>
-                        <div class="example-item">"Count the rows and columns of every spreadsheet in this folder"</div>
+                        <div class="example-item">"把这几个 CSV 文件合并成一个 Excel"</div>
+                        <div class="example-item">"统计这个文件夹里所有表格的行数和列数"</div>
                     </div>
                 </div>
                 <div class="use-case-card">
@@ -301,11 +301,11 @@
                         <div class="use-case-icon">
                             <svg viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
                         </div>
-                        <h3>Content Creation</h3>
+                        <h3>内容创作</h3>
                     </div>
                     <div class="use-case-examples">
-                        <div class="example-item">"Write this week's project status report for me"</div>
-                        <div class="example-item">"Translate this article into English and save it"</div>
+                        <div class="example-item">"帮我写一份本周的项目周报"</div>
+                        <div class="example-item">"把这篇文章翻译成英文并保存"</div>
                     </div>
                 </div>
                 <div class="use-case-card">
@@ -313,11 +313,11 @@
                         <div class="use-case-icon">
                             <svg viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>
                         </div>
-                        <h3>Dev Assistance</h3>
+                        <h3>开发辅助</h3>
                     </div>
                     <div class="use-case-examples">
-                        <div class="example-item">"Review this PR's code and suggest improvements"</div>
-                        <div class="example-item">"Batch-rename the project's image files to kebab-case"</div>
+                        <div class="example-item">"审查这个 PR 的代码并给出改进建议"</div>
+                        <div class="example-item">"批量重命名项目里的图片文件为 kebab-case"</div>
                     </div>
                 </div>
             </div>
@@ -327,38 +327,38 @@
     <!-- Tech Architecture Section -->
     <section class="tech" id="tech">
         <div class="container">
-            <h2>Tech Stack</h2>
-            <p class="section-desc">A modern, secure, and reliable stack</p>
+            <h2>技术架构</h2>
+            <p class="section-desc">现代技术栈，安全可靠</p>
             <div class="tech-grid">
                 <div class="tech-card">
-                    <div class="tech-label">Desktop Framework</div>
+                    <div class="tech-label">桌面框架</div>
                     <div class="tech-value">Tauri 2.0</div>
-                    <div class="tech-detail">Rust backend, native performance, secure sandbox</div>
+                    <div class="tech-detail">Rust 后端，原生性能，安全沙箱</div>
                 </div>
                 <div class="tech-card">
-                    <div class="tech-label">Frontend</div>
+                    <div class="tech-label">前端</div>
                     <div class="tech-value">React + TypeScript</div>
-                    <div class="tech-detail">Built with Vite, TailwindCSS + shadcn/ui</div>
+                    <div class="tech-detail">Vite 构建，TailwindCSS + shadcn/ui</div>
                 </div>
                 <div class="tech-card">
-                    <div class="tech-label">AI Integration</div>
-                    <div class="tech-value">Multi-Model Agent</div>
-                    <div class="tech-detail">Tool Calling + MCP protocol + Skill system</div>
+                    <div class="tech-label">AI 集成</div>
+                    <div class="tech-value">多模型 Agent</div>
+                    <div class="tech-detail">Tool Calling + MCP 协议 + Skill 系统</div>
                 </div>
                 <div class="tech-card">
-                    <div class="tech-label">Security</div>
-                    <div class="tech-value">Sandbox Isolation</div>
-                    <div class="tech-detail">Seatbelt sandbox + path protection + command checks</div>
+                    <div class="tech-label">安全</div>
+                    <div class="tech-value">沙箱隔离</div>
+                    <div class="tech-detail">Seatbelt 沙箱 + 路径保护 + 命令检查</div>
                 </div>
                 <div class="tech-card">
-                    <div class="tech-label">Data</div>
-                    <div class="tech-value">Local-First</div>
-                    <div class="tech-detail">All data and API keys stored locally</div>
+                    <div class="tech-label">数据</div>
+                    <div class="tech-value">本地优先</div>
+                    <div class="tech-detail">所有数据和 API Key 存储在本地</div>
                 </div>
                 <div class="tech-card">
-                    <div class="tech-label">Extensibility</div>
-                    <div class="tech-value">Plugin Architecture</div>
-                    <div class="tech-detail">Skills + Subagents + MCP, extend on demand</div>
+                    <div class="tech-label">扩展</div>
+                    <div class="tech-value">插件化架构</div>
+                    <div class="tech-detail">Skills + Subagents + MCP 按需扩展</div>
                 </div>
             </div>
         </div>
@@ -367,23 +367,23 @@
     <!-- Community / Get Started Section -->
     <section class="community" id="community">
         <div class="container">
-            <h2>Get Started</h2>
-            <p class="section-desc">Up and running in three steps</p>
+            <h2>开始使用</h2>
+            <p class="section-desc">三步上手，开始体验 AI 办公助手</p>
             <div class="steps">
                 <div class="step">
                     <div class="step-number">1</div>
-                    <h3>Download &amp; Install</h3>
-                    <p>Grab the installer for your platform from GitHub Releases</p>
+                    <h3>下载安装</h3>
+                    <p>从 GitHub Releases 下载对应平台的安装包</p>
                 </div>
                 <div class="step">
                     <div class="step-number">2</div>
-                    <h3>Configure a Model</h3>
-                    <p>Open Settings, pick an API provider, and enter your API key</p>
+                    <h3>配置模型</h3>
+                    <p>进入设置，选择 API 厂商并填入 API Key</p>
                 </div>
                 <div class="step">
                     <div class="step-number">3</div>
-                    <h3>Start Chatting</h3>
-                    <p>Head back to the main screen and tell Abu what you need in plain language</p>
+                    <h3>开始对话</h3>
+                    <p>回到主界面，用自然语言告诉阿布你的需求</p>
                 </div>
             </div>
         </div>
@@ -392,17 +392,17 @@
     <!-- Social / Community Section -->
     <section class="social" id="social">
         <div class="container">
-            <h2>Join the Community</h2>
-            <p class="section-desc">Follow updates, swap tips, and help make Abu better</p>
+            <h2>加入社区</h2>
+            <p class="section-desc">关注动态、交流心得、一起让阿布变得更好</p>
             <div class="social-grid">
                 <div class="social-card social-card-wechat">
                     <div class="social-card-icon">
                         <svg viewBox="0 0 24 24" fill="currentColor"><path d="M8.691 2.188C3.891 2.188 0 5.476 0 9.53c0 2.212 1.17 4.203 3.002 5.55a.59.59 0 0 1 .213.665l-.39 1.48c-.019.07-.048.141-.048.213 0 .163.13.295.29.295a.326.326 0 0 0 .167-.054l1.903-1.114a.864.864 0 0 1 .717-.098 10.16 10.16 0 0 0 2.837.403c.276 0 .543-.027.811-.05-.857-2.578.157-4.972 1.932-6.446 1.703-1.415 3.882-1.98 5.853-1.838-.576-3.583-4.196-6.348-8.596-6.348zM5.785 5.991c.642 0 1.162.529 1.162 1.18a1.17 1.17 0 0 1-1.162 1.178A1.17 1.17 0 0 1 4.623 7.17c0-.651.52-1.18 1.162-1.18zm5.813 0c.642 0 1.162.529 1.162 1.18a1.17 1.17 0 0 1-1.162 1.178 1.17 1.17 0 0 1-1.162-1.178c0-.651.52-1.18 1.162-1.18zm5.34 2.867c-1.797-.052-3.746.512-5.28 1.786-1.72 1.428-2.687 3.72-1.78 6.22.942 2.453 3.666 4.229 6.884 4.229.826 0 1.622-.12 2.361-.336a.722.722 0 0 1 .598.082l1.584.926a.272.272 0 0 0 .14.045c.133 0 .241-.108.241-.241 0-.06-.024-.12-.04-.178l-.325-1.233a.492.492 0 0 1 .177-.554C23.016 18.514 24 16.807 24 14.896c0-3.344-3.174-5.99-7.062-6.038zm-2.534 3.21a.98.98 0 0 1 .968.983.98.98 0 0 1-.968.982.98.98 0 0 1-.969-.982.98.98 0 0 1 .969-.982zm4.857 0a.98.98 0 0 1 .969.983.98.98 0 0 1-.969.982.98.98 0 0 1-.968-.982.98.98 0 0 1 .968-.982z"/></svg>
                     </div>
-                    <h3>WeChat Group</h3>
-                    <p>Scan to add the author on WeChat — note "Abu" and you'll be added to the group</p>
+                    <h3>微信交流群</h3>
+                    <p>扫码添加作者微信，备注「Abu」拉你进群</p>
                     <div class="social-qr-wrapper">
-                        <img src="assets/wechat-qr.png" alt="WeChat QR code" class="social-qr">
+                        <img src="assets/wechat-qr.png" alt="微信二维码" class="social-qr">
                     </div>
                 </div>
                 <div class="social-card-links">
@@ -411,8 +411,8 @@
                             <svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 0C5.373 0 0 5.373 0 12s5.373 12 12 12 12-5.373 12-12S18.627 0 12 0zm3.636 7.2h-1.909c-.218 0-.436.218-.436.545v1.528h2.345l-.327 2.4h-2.018v6.327H10.91v-6.327H9.164v-2.4h1.745V7.527C10.91 5.891 12.109 4.8 13.636 4.8h2V7.2z"/></svg>
                         </div>
                         <div class="social-link-info">
-                            <span class="social-link-name">Xiaohongshu (RED)</span>
-                            <span class="social-link-desc">Follow for product updates and usage tips</span>
+                            <span class="social-link-name">小红书</span>
+                            <span class="social-link-desc">关注产品动态和使用技巧分享</span>
                         </div>
                         <svg class="social-link-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>
                     </a>
@@ -421,8 +421,8 @@
                             <svg viewBox="0 0 24 24" fill="currentColor"><path d="M4.9 11.3c0-.5.4-.9.9-.9s.9.4.9.9-.4.9-.9.9-.9-.4-.9-.9zm5.1-.9c-.5 0-.9.4-.9.9s.4.9.9.9.9-.4.9-.9-.4-.9-.9-.9zM12 2C6.48 2 2 6.48 2 12c0 1.82.49 3.53 1.34 5L2 22l5.16-1.26A9.93 9.93 0 0 0 12 22c5.52 0 10-4.48 10-10S17.52 2 12 2zm0 18c-1.62 0-3.13-.46-4.42-1.26l-.31-.19-3.22.79.82-3.13-.21-.33A7.95 7.95 0 0 1 4 12c0-4.41 3.59-8 8-8s8 3.59 8 8-3.59 8-8 8z"/></svg>
                         </div>
                         <div class="social-link-info">
-                            <span class="social-link-name">WeChat Official Account</span>
-                            <span class="social-link-desc">Open WeChat and search for "Shawn的产品笔记"</span>
+                            <span class="social-link-name">公众号</span>
+                            <span class="social-link-desc">打开微信搜索公众号「Shawn的产品笔记」</span>
                         </div>
                     </div>
                     <a href="https://x.com/pmshawn_x" target="_blank" rel="noopener" class="social-link-card">
@@ -431,7 +431,7 @@
                         </div>
                         <div class="social-link-info">
                             <span class="social-link-name">X (Twitter)</span>
-                            <span class="social-link-desc">Get the latest releases and dev updates</span>
+                            <span class="social-link-desc">获取最新发布和开发进展</span>
                         </div>
                         <svg class="social-link-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>
                     </a>
@@ -441,7 +441,7 @@
                         </div>
                         <div class="social-link-info">
                             <span class="social-link-name">GitHub</span>
-                            <span class="social-link-desc">Star, open issues, contribute code</span>
+                            <span class="social-link-desc">Star、Issue、贡献代码</span>
                         </div>
                         <svg class="social-link-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>
                     </a>
@@ -456,7 +456,7 @@
             <div class="footer-content">
                 <div class="footer-brand">
                     <img src="assets/abu-avatar.png" alt="Abu" class="footer-logo">
-                    <span>Abu</span>
+                    <span>Abu (阿布)</span>
                 </div>
                 <div class="footer-links">
                     <a href="https://github.com/PM-Shawn/Abu-Cowork" target="_blank" rel="noopener">GitHub</a>
@@ -464,7 +464,7 @@
                     <a href="https://github.com/PM-Shawn/Abu-Cowork/issues" target="_blank" rel="noopener">Issues</a>
                     <a href="https://github.com/PM-Shawn/Abu-Cowork/blob/main/LICENSE" target="_blank" rel="noopener">License</a>
                 </div>
-                <p class="footer-copy">&copy; 2026 Abu. Open source under the Abu License.</p>
+                <p class="footer-copy">&copy; 2026 Abu (阿布). Open source with Abu License.</p>
             </div>
         </div>
     </footer>

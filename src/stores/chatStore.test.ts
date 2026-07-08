@@ -3,6 +3,7 @@ import { exists, readTextFile } from '@tauri-apps/plugin-fs';
 import { invoke } from '@tauri-apps/api/core';
 import { useChatStore, flushTokenBuffer } from './chatStore';
 import type { Conversation } from '../types';
+import { createDocReference } from '@/types/chatReference';
 
 // Stable workspace store mock — Task #34 regression tests need to assert
 // that clearWorkspace is NOT called on start/switch flows, so the fn
@@ -1110,6 +1111,41 @@ describe('chatStore', () => {
       useChatStore.getState().setRetryInfo({ attempt: 1, maxAttempts: 5, delayMs: 2000 });
       useChatStore.getState().setAgentStatus('rate-limited', '2s');
       expect(useChatStore.getState().retryInfo).not.toBeNull();
+    });
+  });
+
+  describe('pendingReferences', () => {
+    beforeEach(() => {
+      useChatStore.setState({ pendingReferences: [] });
+    });
+
+    it('starts empty', () => {
+      expect(useChatStore.getState().pendingReferences).toEqual([]);
+    });
+
+    it('addPendingReference appends', () => {
+      const ref = createDocReference({ path: 'a.md', name: 'a.md', docType: 'markdown', text: 't' });
+      useChatStore.getState().addPendingReference(ref);
+      expect(useChatStore.getState().pendingReferences).toHaveLength(1);
+      expect(useChatStore.getState().pendingReferences[0].id).toBe(ref.id);
+    });
+
+    it('clearPendingReferences empties the buffer', () => {
+      useChatStore.getState().addPendingReference(
+        createDocReference({ path: 'a.md', name: 'a.md', docType: 'markdown', text: 't' }),
+      );
+      useChatStore.getState().clearPendingReferences();
+      expect(useChatStore.getState().pendingReferences).toEqual([]);
+    });
+
+    it('is NOT included in persisted partialize output', () => {
+      // partialize 只导出 conversationIndex —— 反向守卫，防止有人误加进持久化
+      useChatStore.getState().addPendingReference(
+        createDocReference({ path: 'a.md', name: 'a.md', docType: 'markdown', text: 't' }),
+      );
+      // @ts-expect-error 访问 persist 内部 options 仅用于测试
+      const persisted = useChatStore.persist.getOptions().partialize?.(useChatStore.getState());
+      expect(persisted && 'pendingReferences' in persisted).toBe(false);
     });
   });
 

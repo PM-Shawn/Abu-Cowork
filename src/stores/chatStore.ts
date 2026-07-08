@@ -14,6 +14,7 @@ import { setComputerUseActive } from '../core/agent/computerUseStatus';
 import type { ConversationMeta } from '../core/session/conversationStorage';
 import type { ShareBundle } from '../core/session/shareBundle';
 import type { PermissionMode } from '../core/permissions/permissionMode';
+import type { ChatReference } from '@/types/chatReference';
 
 function generateId(): string {
   return Date.now().toString(36) + Math.random().toString(36).substring(2, 8);
@@ -233,6 +234,10 @@ interface ChatState {
   // message is added. Ephemeral, not persisted. Stores the agent's registry
   // key (i.e. the same name used for @mention).
   pendingAgentName: string | null;
+  // Pending references injected from a doc preview selection toolbar. Ephemeral
+  // one-shot buffer (mirrors pendingInput): ChatInput drains it into local
+  // state then clears. NOT persisted.
+  pendingReferences: ChatReference[];
   // Thinking timer
   thinkingStartTime: number | null;
   // Track multiple concurrent active agents
@@ -309,6 +314,8 @@ interface ChatActions {
   removeActiveAgent: (agentName: string) => void;
   setCurrentUsage: (usage: TokenUsage | null) => void;
   setPendingInput: (text: string | null) => void;
+  addPendingReference: (ref: ChatReference) => void;
+  clearPendingReferences: () => void;
   setPendingAgent: (agentName: string | null) => void;
   setConversationStatus: (convId: string, status: ConversationStatus) => void;
   clearCompletedStatus: (convId: string) => void;
@@ -363,6 +370,7 @@ export const useChatStore = create<ChatStore>()(
       outputsRev: {} as Record<string, number>,
       pendingInput: null,
       pendingAgentName: null,
+      pendingReferences: [],
       pendingPermissionMode: undefined,
       thinkingStartTime: null,
       activeAgentNames: [],
@@ -1174,6 +1182,18 @@ export const useChatStore = create<ChatStore>()(
       setPendingInput: (text) => {
         set((state) => {
           state.pendingInput = text;
+        });
+      },
+
+      addPendingReference: (ref) => {
+        set((state) => {
+          state.pendingReferences.push(ref);
+        });
+      },
+
+      clearPendingReferences: () => {
+        set((state) => {
+          state.pendingReferences = [];
         });
       },
 

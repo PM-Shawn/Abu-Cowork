@@ -11,6 +11,7 @@ import { isWindows } from '../../utils/platform';
 import { mcpManager } from '../mcp/client';
 import { substituteVariables, executeInlineCommands } from '../skill/preprocessor';
 import { getSkillsGuidance } from './prompts/skillsGuidance';
+import { buildResponseLanguageSection } from './prompts/responseLanguage';
 import type { PromptSection } from '../llm/promptSections';
 import { sectionsToString } from '../llm/promptSections';
 
@@ -732,6 +733,11 @@ ${isWindows()
   } catch (err) {
     console.warn('Failed to load available agents for system prompt:', err);
   }
+
+  // Response-language instruction — ties reply language to the resolved UI
+  // locale (with a user-message override). Kept near the end for recency, but
+  // before the safety anchor so the safety rules stay last.
+  sections.push({ name: 'response-language', text: buildResponseLanguageSection(), cacheable: true });
 
   // Safety anchor at the end — leverages recency bias for stronger effect
   sections.push({ name: 'safety-anchor', text: `\n## 安全提醒（每轮检查）

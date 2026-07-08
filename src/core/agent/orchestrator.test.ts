@@ -194,12 +194,11 @@ describe('buildSystemPrompt - structure', () => {
   it('injects the response-language instruction driven by UI locale', async () => {
     const prompt = await buildSystemPrompt(generalRoute, basePrompt, 'test-conv');
     // Output language must be controlled explicitly, not left to the (Chinese)
-    // prompt language as an implicit anchor.
+    // prompt language as an implicit anchor. Wording is locale-specific
+    // (asymmetric), so only assert the header + a language marker here — the
+    // per-locale wording is covered by responseLanguage.test.ts.
     expect(prompt).toContain('## Response Language');
     expect(prompt).toMatch(/English|简体中文/);
-    // The user-message override + ignore-technical-content caveat must be present.
-    expect(prompt).toMatch(/message|消息/);
-    expect(prompt).toMatch(/code|paths?|logs?|代码|路径|日志/i);
   });
 
   it('keeps the safety anchor as the final section (after response-language)', async () => {

@@ -15,11 +15,15 @@
 import type { SupportedLocale } from '../../../i18n/types';
 import { getLocale } from '../../../i18n';
 
+// Deliberately asymmetric, matching WorkBuddy's proven behavior:
+//   - zh-CN: always Simplified Chinese, with NO "follow the message language"
+//     override — Chinese users routinely paste English content (logs, code,
+//     quotes) and still expect a Chinese answer, so an override would regress
+//     them. This also preserves the historical always-Chinese behavior.
+//   - en-US: English by default, but follow the user's message language when the
+//     message itself is written in another language, ignoring technical content.
 const RESPONSE_LANGUAGE_BY_LOCALE: Record<SupportedLocale, string> = {
-  'zh-CN':
-    '用户当前的界面语言是简体中文，默认使用简体中文回复。\n' +
-    '如果用户这条消息本身是用其他语言（如英文）写的，则改用该语言回复。\n' +
-    '重要：判断回复语言时只依据用户消息本身的自然语言，不要被代码、路径、日志等技术内容影响。',
+  'zh-CN': '用户当前的界面语言是简体中文，请始终使用简体中文回复。',
   'en-US':
     "The user's interface language is English, so respond in English by default.\n" +
     'If the user\'s message itself is written in another language (e.g. Chinese), respond in that language instead.\n' +

@@ -18,7 +18,14 @@ export function Checkbox({
       role="checkbox"
       aria-checked={checked}
       disabled={disabled}
-      onClick={onChange}
+      onClick={(e) => {
+        // Stop the click from reaching a surrounding clickable row/label.
+        // In WKWebView (macOS Tauri) a wrapping <label> re-dispatches its click
+        // to this button even when the button was the target, which toggled
+        // twice and cancelled out — the box appeared unclickable.
+        e.stopPropagation();
+        onChange();
+      }}
       className={cn(
         'inline-flex items-center justify-center h-4 w-4 rounded border transition-colors shrink-0',
         checked

@@ -3,6 +3,7 @@
 // ============================================================
 
 import type { TokenUsage } from './index';
+import type { DetailBlockLabelKey } from '@/utils/toolLabels';
 
 // --- Step Types ---
 
@@ -63,7 +64,17 @@ export interface DetailBlock {
 
   // Type and label
   type: DetailBlockType;
+  /**
+   * Fallback display label. Prefer `labelKey` for localized headers — this is
+   * kept for non-React consumers and blocks without a semantic label key.
+   */
   label: string;
+  /**
+   * Language-neutral key for the collapsible header. When present, the header
+   * is localized at render time (see DetailBlockView) so it follows the current
+   * UI locale instead of the language baked in at creation.
+   */
+  labelKey?: DetailBlockLabelKey;
 
   // Content
   content: string;

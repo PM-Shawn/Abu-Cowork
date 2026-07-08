@@ -2,6 +2,7 @@ import { useState, useMemo, useEffect } from 'react';
 import { ChevronDown, ChevronRight, ExternalLink, Maximize2 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useI18n } from '@/i18n';
+import { getDetailBlockLabel } from '@/utils/toolLabels';
 import type { DetailBlock } from '@/types/execution';
 
 interface DetailBlockViewProps {
@@ -31,6 +32,9 @@ export default function DetailBlockView({ block, onToggle, onLoadMore }: DetailB
     onToggle(); // Also try store update (may be no-op for persisted snapshots)
   };
   const isZh = locale.startsWith('zh');
+  // Localize the collapsible header at render time so it follows the current UI
+  // locale (block.labelKey is language-neutral). Falls back to the baked label.
+  const headerLabel = block.labelKey ? getDetailBlockLabel(block.labelKey, locale) : block.label;
 
   // Style based on block type
   const styles = useMemo(() => {
@@ -286,7 +290,7 @@ export default function DetailBlockView({ block, onToggle, onLoadMore }: DetailB
         ) : (
           <ChevronRight className="h-3 w-3" />
         )}
-        {block.label}
+        {headerLabel}
         {block.isTruncated && !localExpanded && (
           <span className="text-[10px] opacity-70">
             ({block.fullContentLength} {isZh ? '字符' : 'chars'})

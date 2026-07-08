@@ -27,6 +27,7 @@ import { TOOL_NAMES } from '@/core/tools/toolNames';
 import type { WorkflowStep, StepType } from '@/utils/workflowExtractor';
 import type { ExecutionStep, DetailBlock, StepType as ExecStepType } from '@/types/execution';
 import { generateCompletionMessage } from '@/utils/workflowExtractor';
+import { getToolLabel } from '@/utils/toolLabels';
 import { useTaskExecutionStore } from '@/stores/taskExecutionStore';
 import DetailBlockView from './DetailBlockView';
 
@@ -174,12 +175,25 @@ export function generateSummary(steps: UnifiedStep[], t: TranslationDict, locale
   return isActive ? t.task.processing : t.task.completed;
 }
 
+// Recompute the tool-call label against the current locale so it follows the
+// UI language (including reopened history), instead of the language baked in at
+// creation. Non-tool steps (no toolName) keep their original label.
+function resolveStepLabel(
+  toolName: string | undefined,
+  toolInput: Record<string, unknown> | undefined,
+  fallback: string,
+  locale: string
+): string {
+  if (!toolName) return fallback;
+  return getToolLabel(toolName, toolInput ?? {}, locale).label;
+}
+
 // Convert WorkflowStep to UnifiedStep
-function convertWorkflowStep(step: WorkflowStep): UnifiedStep {
+function convertWorkflowStep(step: WorkflowStep, locale: string): UnifiedStep {
   return {
     id: step.id,
     type: step.type,
-    label: step.label,
+    label: resolveStepLabel(step.toolName, step.toolInput, step.label, locale),
     detail: step.detail,
     status: step.status,
     duration: step.duration,
@@ -190,11 +204,11 @@ function convertWorkflowStep(step: WorkflowStep): UnifiedStep {
 }
 
 // Convert ExecutionStep to UnifiedStep (recursive for childSteps)
-function convertExecutionStep(step: ExecutionStep): UnifiedStep {
+function convertExecutionStep(step: ExecutionStep, locale: string): UnifiedStep {
   return {
     id: step.id,
     type: step.type,
-    label: step.label,
+    label: resolveStepLabel(step.toolName, step.toolInput, step.label, locale),
     detail: step.detail,
     status: step.status,
     duration: step.duration,
@@ -204,7 +218,7 @@ function convertExecutionStep(step: ExecutionStep): UnifiedStep {
     detailBlocks: step.detailBlocks,
     executionId: step.executionId,
     agentName: step.agentName,
-    childSteps: step.childSteps?.map(convertExecutionStep),
+    childSteps: step.childSteps?.map((child) => convertExecutionStep(child, locale)),
   };
 }
 
@@ -230,13 +244,13 @@ export default function TaskBlock({ steps, executionSteps, isActive, onRetry }: 
   // Convert to unified steps
   const unifiedSteps = useMemo(() => {
     if (executionSteps && executionSteps.length > 0) {
-      return executionSteps.map(convertExecutionStep);
+      return executionSteps.map((s) => convertExecutionStep(s, locale));
     }
     if (steps && steps.length > 0) {
-      return steps.map(convertWorkflowStep);
+      return steps.map((s) => convertWorkflowStep(s, locale));
     }
     return [];
-  }, [steps, executionSteps]);
+  }, [steps, executionSteps, locale]);
 
   // Lazy initializer: when the block mounts during a live execution, start in 'preview'
   // so the body (with running thinking content / inline tool steps) is visible without

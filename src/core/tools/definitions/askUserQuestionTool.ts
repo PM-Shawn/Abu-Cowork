@@ -9,6 +9,7 @@
 import type { ToolDefinition, UserQuestionPayload } from '../../../types';
 import { TOOL_NAMES } from '../toolNames';
 import { requestUserQuestion } from '../../agent/permissionBridge';
+import { getI18n, format } from '../../../i18n';
 
 export const askUserQuestionTool: ToolDefinition = {
   name: TOOL_NAMES.ASK_USER_QUESTION,
@@ -67,12 +68,15 @@ export const askUserQuestionTool: ToolDefinition = {
     required: ['questions'],
   },
   execute: async (input, context) => {
+    const t = getI18n().toolResult.askUserQuestion;
     const questions = input.questions as unknown[];
 
     // ── Validate input ──────────────────────────────────────────────────
     if (!Array.isArray(questions) || questions.length < 1 || questions.length > 4) {
       throw new Error(
-        `参数错误：questions 数组长度必须在 1-4 之间，收到 ${Array.isArray(questions) ? questions.length : typeof questions}。`,
+        format(t.errQuestionsLength, {
+          received: Array.isArray(questions) ? String(questions.length) : typeof questions,
+        }),
       );
     }
 
@@ -81,29 +85,38 @@ export const askUserQuestionTool: ToolDefinition = {
       const idx = i + 1;
 
       if (typeof q.header !== 'string' || q.header.trim() === '') {
-        throw new Error(`参数错误：第 ${idx} 题 header 不能为空字符串。`);
+        throw new Error(format(t.errHeaderEmpty, { idx: String(idx) }));
       }
       if (q.header.length > 12) {
         throw new Error(
-          `参数错误：第 ${idx} 题 header "${q.header}" 超过 12 字符（当前 ${q.header.length} 字符）。`,
+          format(t.errHeaderTooLong, {
+            idx: String(idx),
+            header: q.header,
+            len: String(q.header.length),
+          }),
         );
       }
       if (typeof q.question !== 'string' || q.question.trim() === '') {
-        throw new Error(`参数错误：第 ${idx} 题 question 不能为空字符串。`);
+        throw new Error(format(t.errQuestionEmpty, { idx: String(idx) }));
       }
       if (typeof q.multiSelect !== 'boolean') {
-        throw new Error(`参数错误：第 ${idx} 题 multiSelect 必须是 boolean，收到 ${typeof q.multiSelect}。`);
+        throw new Error(
+          format(t.errMultiSelectType, { idx: String(idx), received: typeof q.multiSelect }),
+        );
       }
       const opts = q.options as unknown[];
       if (!Array.isArray(opts) || opts.length < 2 || opts.length > 4) {
         throw new Error(
-          `参数错误：第 ${idx} 题 options 长度必须在 2-4 之间，收到 ${Array.isArray(opts) ? opts.length : typeof opts}。`,
+          format(t.errOptionsLength, {
+            idx: String(idx),
+            received: Array.isArray(opts) ? String(opts.length) : typeof opts,
+          }),
         );
       }
       for (let j = 0; j < opts.length; j++) {
         const opt = opts[j] as Record<string, unknown>;
         if (typeof opt.label !== 'string' || opt.label.trim() === '') {
-          throw new Error(`参数错误：第 ${idx} 题 options[${j}].label 不能为空。`);
+          throw new Error(format(t.errOptionLabelEmpty, { idx: String(idx), j: String(j) }));
         }
       }
     }
@@ -115,7 +128,7 @@ export const askUserQuestionTool: ToolDefinition = {
     if (!toolCallId) {
       // Defensive: toolExecutor always injects this. If absent, surface as
       // an error so the model is told why, rather than hanging forever.
-      throw new Error('内部错误：toolCallId 未注入，无法挂起等待用户作答。');
+      throw new Error(t.errNoToolCallId);
     }
 
     const payload: UserQuestionPayload = {
@@ -134,10 +147,10 @@ export const askUserQuestionTool: ToolDefinition = {
 
     // ── Format result ────────────────────────────────────────────────────
     if (result === null) {
-      return '用户未作答（已取消或超时）。请基于已知信息继续，或用更明确的方式再次询问。';
+      return t.cancelled;
     }
 
-    const lines: string[] = ['用户已作答：'];
+    const lines: string[] = [t.answersHeader];
     result.answers.forEach((ans, i) => {
       lines.push(`${i + 1}. [${ans.header}] ${ans.question}`);
       lines.push(`   → ${ans.selected.join('、')}`);

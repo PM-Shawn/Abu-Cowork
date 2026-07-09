@@ -2203,6 +2203,18 @@ const zhCN: TranslationDict = {
       schemaLabel: '参数 Schema:',
       resultsFound: '找到 {count} 个工具：\n\n{results}\n\n以上工具已加载，可以在后续回合中直接调用。',
     },
+    askUserQuestion: {
+      errQuestionsLength: '参数错误：questions 数组长度必须在 1-4 之间，收到 {received}。',
+      errHeaderEmpty: '参数错误：第 {idx} 题 header 不能为空字符串。',
+      errHeaderTooLong: '参数错误：第 {idx} 题 header "{header}" 超过 12 字符（当前 {len} 字符）。',
+      errQuestionEmpty: '参数错误：第 {idx} 题 question 不能为空字符串。',
+      errMultiSelectType: '参数错误：第 {idx} 题 multiSelect 必须是 boolean，收到 {received}。',
+      errOptionsLength: '参数错误：第 {idx} 题 options 长度必须在 2-4 之间，收到 {received}。',
+      errOptionLabelEmpty: '参数错误：第 {idx} 题 options[{j}].label 不能为空。',
+      errNoToolCallId: '内部错误：toolCallId 未注入，无法挂起等待用户作答。',
+      cancelled: '用户未作答（已取消或超时）。请基于已知信息继续，或用更明确的方式再次询问。',
+      answersHeader: '用户已作答：',
+    },
     updateSoul: {
       errContentEmpty: '错误：性格设定内容不能为空。',
       updated: '性格设定已更新，下次新对话生效。',

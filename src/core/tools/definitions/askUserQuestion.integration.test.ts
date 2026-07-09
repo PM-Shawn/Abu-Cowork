@@ -90,7 +90,7 @@ describe('ask_user_question — live e2e through executeAnyTool', () => {
     console.log(result);
     console.log('────────────────────────────────────────\n');
 
-    expect(result).toContain('用户已作答');
+    expect(result).toContain('User answered');
     expect(result).toContain('[格式] 你希望输出什么格式？');
     expect(result).toContain('→ 详细');
     expect(result).toContain('→ 引言、结论'); // multi-select joined
@@ -108,6 +108,6 @@ describe('ask_user_question — live e2e through executeAnyTool', () => {
     drainUserQuestions(); // simulate user hitting Stop / aborting the agent
     const result = (await toolPromise) as string;
     console.log('\n──────── 取消/abort 时回传给模型 ────────\n' + result + '\n');
-    expect(result).toContain('用户未作答');
+    expect(result).toContain('did not answer');
   });
 });

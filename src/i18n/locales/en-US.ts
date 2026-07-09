@@ -2202,6 +2202,18 @@ const enUS: TranslationDict = {
       schemaLabel: 'Parameter schema:',
       resultsFound: 'Found {count} tool(s):\n\n{results}\n\nThe above tools have been loaded and can be invoked directly in subsequent turns.',
     },
+    askUserQuestion: {
+      errQuestionsLength: 'Parameter error: questions array length must be between 1 and 4; received {received}.',
+      errHeaderEmpty: 'Parameter error: question {idx} header cannot be an empty string.',
+      errHeaderTooLong: 'Parameter error: question {idx} header "{header}" exceeds 12 characters (current: {len}).',
+      errQuestionEmpty: 'Parameter error: question {idx} question text cannot be an empty string.',
+      errMultiSelectType: 'Parameter error: question {idx} multiSelect must be a boolean; received {received}.',
+      errOptionsLength: 'Parameter error: question {idx} options length must be between 2 and 4; received {received}.',
+      errOptionLabelEmpty: 'Parameter error: question {idx} options[{j}].label cannot be empty.',
+      errNoToolCallId: 'Internal error: toolCallId was not injected; cannot suspend waiting for user answer.',
+      cancelled: 'The user did not answer (cancelled or timed out). Please continue based on available information, or ask again more explicitly.',
+      answersHeader: 'User answered:',
+    },
     updateSoul: {
       errContentEmpty: 'Error: personality configuration content cannot be empty.',
       updated: 'Personality configuration updated; takes effect in the next new conversation.',

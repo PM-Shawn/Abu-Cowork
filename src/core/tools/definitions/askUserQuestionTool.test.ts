@@ -36,7 +36,7 @@ describe('askUserQuestionTool', () => {
     it('throws on empty questions array', async () => {
       await expect(
         askUserQuestionTool.execute({ questions: [] }, VALID_CONTEXT),
-      ).rejects.toThrow(/questions 数组长度/);
+      ).rejects.toThrow(/questions array length/);
     });
 
     it('throws on more than 4 questions', async () => {
@@ -48,7 +48,7 @@ describe('askUserQuestionTool', () => {
       }));
       await expect(
         askUserQuestionTool.execute({ questions }, VALID_CONTEXT),
-      ).rejects.toThrow(/questions 数组长度/);
+      ).rejects.toThrow(/questions array length/);
     });
 
     it('throws when header exceeds 12 chars', async () => {
@@ -62,7 +62,7 @@ describe('askUserQuestionTool', () => {
       };
       await expect(
         askUserQuestionTool.execute(input, VALID_CONTEXT),
-      ).rejects.toThrow(/header.*超过 12 字符/);
+      ).rejects.toThrow(/header.*exceeds 12 characters/);
     });
 
     it('throws when header is empty', async () => {
@@ -76,7 +76,7 @@ describe('askUserQuestionTool', () => {
       };
       await expect(
         askUserQuestionTool.execute(input, VALID_CONTEXT),
-      ).rejects.toThrow(/header.*不能为空/);
+      ).rejects.toThrow(/header cannot be an empty string/);
     });
 
     it('throws when a question has fewer than 2 options', async () => {
@@ -90,7 +90,7 @@ describe('askUserQuestionTool', () => {
       };
       await expect(
         askUserQuestionTool.execute(input, VALID_CONTEXT),
-      ).rejects.toThrow(/options 长度/);
+      ).rejects.toThrow(/options length/);
     });
 
     it('throws when a question has more than 4 options', async () => {
@@ -106,7 +106,7 @@ describe('askUserQuestionTool', () => {
       };
       await expect(
         askUserQuestionTool.execute(input, VALID_CONTEXT),
-      ).rejects.toThrow(/options 长度/);
+      ).rejects.toThrow(/options length/);
     });
 
     it('throws when multiSelect is not a boolean', async () => {
@@ -120,13 +120,13 @@ describe('askUserQuestionTool', () => {
       };
       await expect(
         askUserQuestionTool.execute(input, VALID_CONTEXT),
-      ).rejects.toThrow(/multiSelect 必须是 boolean/);
+      ).rejects.toThrow(/multiSelect must be a boolean/);
     });
 
     it('throws when toolCallId is not injected', async () => {
       await expect(
         askUserQuestionTool.execute(VALID_INPUT, { conversationId: 'conv-x' }),
-      ).rejects.toThrow(/toolCallId 未注入/);
+      ).rejects.toThrow(/toolCallId was not injected/);
     });
   });
 
@@ -140,7 +140,7 @@ describe('askUserQuestionTool', () => {
 
       const result = await executePromise;
       expect(typeof result).toBe('string');
-      expect(result).toContain('用户已作答');
+      expect(result).toContain('User answered');
       expect(result).toContain('[格式]');
       expect(result).toContain('详细');
     });
@@ -153,7 +153,7 @@ describe('askUserQuestionTool', () => {
 
       const result = await executePromise;
       expect(typeof result).toBe('string');
-      expect(result).toContain('用户未作答');
+      expect(result).toContain('did not answer');
     });
   });
 

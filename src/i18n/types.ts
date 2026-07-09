@@ -2487,6 +2487,29 @@ export interface TranslationDict {
       /** Results header and footer. {count}, {results} */
       resultsFound: string;
     };
+    // ask_user_question — validation errors and result formatting
+    askUserQuestion: {
+      /** Error: questions array length must be 1–4. {received} */
+      errQuestionsLength: string;
+      /** Error: question {idx} header cannot be empty. */
+      errHeaderEmpty: string;
+      /** Error: question {idx} header "{header}" exceeds 12 chars (current: {len}). */
+      errHeaderTooLong: string;
+      /** Error: question {idx} question text cannot be empty. */
+      errQuestionEmpty: string;
+      /** Error: question {idx} multiSelect must be boolean. {received} */
+      errMultiSelectType: string;
+      /** Error: question {idx} options length must be 2–4. {received} */
+      errOptionsLength: string;
+      /** Error: question {idx} options[{j}].label cannot be empty. */
+      errOptionLabelEmpty: string;
+      /** Internal error: toolCallId not injected. */
+      errNoToolCallId: string;
+      /** User cancelled or timed out. */
+      cancelled: string;
+      /** Header line for the answers result. */
+      answersHeader: string;
+    };
     // update_soul
     updateSoul: {
       /** Error: content cannot be empty. */

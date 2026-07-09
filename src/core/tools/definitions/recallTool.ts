@@ -2,6 +2,7 @@ import type { ToolDefinition } from '../../../types';
 import { useChatStore } from '../../../stores/chatStore';
 import { useWorkspaceStore } from '../../../stores/workspaceStore';
 import { TOOL_NAMES } from '../toolNames';
+import { getI18n, format } from '../../../i18n';
 
 /**
  * Format a memory file's content for return. Strips frontmatter (already
@@ -22,12 +23,7 @@ function formatMemoryContent(
   const banner = `# [${type}]${isPrivate ? ' 🔒' : ''} ${name}\n\n`;
   const body = content.trim();
   if (!isPrivate) return banner + body;
-  return (
-    banner + body + '\n\n' +
-    '[这是用户的私密记忆。回复时**只引用回答当前问题所需的最少部分**，' +
-    '不要完整复述到对话历史中。例如用户问"我证件号是多少"可以直接答数字，' +
-    '但不要主动展开关联信息，也不要在后续无关消息里再次引用。]'
-  );
+  return banner + body + '\n\n' + getI18n().toolResult.recall.privateMemoryNote;
 }
 
 /**
@@ -87,6 +83,7 @@ Memories are snapshots from a point in the past and may be outdated. Before givi
 
     const workspacePath = context?.workspacePath ?? useWorkspaceStore.getState().currentPath;
     const sections: string[] = [];
+    const t = getI18n().toolResult.recall;
 
     // --- 1. Memdir memories (global + workspace) ---
     try {
@@ -123,7 +120,7 @@ Memories are snapshots from a point in the past and may be outdated. Before givi
           // tell the user to ask explicitly) but do NOT preview content.
           const lock = h.private ? ' 🔒' : '';
           if (h.private) {
-            lines.push(`- [${h.type}]${lock} ${h.name} (${formatTime(h.updated)}) — 私密记忆，需用户明确询问后调 read_memory 拉取`);
+            lines.push(`- [${h.type}]${lock} ${h.name} (${formatTime(h.updated)})${t.privateMemorySuffix}`);
             // Don't bump accessCount for private — surfacing in recall isn't a real read.
             continue;
           }
@@ -133,7 +130,7 @@ Memories are snapshots from a point in the past and may be outdated. Before givi
           // Touch accessed memories (fire-and-forget)
           touchMemory(h.filePath).catch(() => {});
         }
-        sections.push(`## 记忆 (${top.length}条)\n${lines.join('\n')}`);
+        sections.push(`${format(t.sectionMemories, { count: top.length })}\n${lines.join('\n')}`);
       }
     } catch {
       // Non-critical
@@ -154,7 +151,7 @@ Memories are snapshots from a point in the past and may be outdated. Before givi
         const lines = tasks.map(t =>
           `- [${t.category}] ${t.summary} ${t.success ? '✓' : '✗'} (${formatTime(t.timestamp)})`
         );
-        sections.push(`## 任务记录 (${tasks.length}条)\n${lines.join('\n')}`);
+        sections.push(`${format(t.sectionTasks, { count: tasks.length })}\n${lines.join('\n')}`);
       }
     } catch {
       // Non-critical
@@ -175,9 +172,9 @@ Memories are snapshots from a point in the past and may be outdated. Before givi
 
       if (matched.length > 0) {
         const lines = matched.map(c =>
-          `- "${c.title || '无标题'}" (${c.messageCount}条消息, ${formatTime(c.updatedAt)})`
+          format(t.convLine, { title: c.title || t.untitled, count: c.messageCount, time: formatTime(c.updatedAt) })
         );
-        sections.push(`## 历史会话 (${matched.length}条)\n${lines.join('\n')}`);
+        sections.push(`${format(t.sectionConversations, { count: matched.length })}\n${lines.join('\n')}`);
       }
     } catch {
       // Non-critical
@@ -185,8 +182,8 @@ Memories are snapshots from a point in the past and may be outdated. Before givi
 
     if (sections.length === 0) {
       return query
-        ? `没有找到与"${query}"相关的记忆、任务记录或历史会话。`
-        : '当前没有存储的记忆、任务记录或历史会话。';
+        ? format(t.noResultsQuery, { query })
+        : t.noResultsEmpty;
     }
 
     return sections.join('\n\n');
@@ -227,8 +224,9 @@ export const readMemoryTool: ToolDefinition = {
     required: ['filename'],
   },
   execute: async (input, context) => {
+    const t = getI18n().toolResult.recall;
     const filename = ((input.filename as string) || '').trim();
-    if (!filename) return 'Error: filename 不能为空';
+    if (!filename) return t.errFilenameEmpty;
 
     const requestedWs = (input.workspace as string | undefined)?.trim() || undefined;
     const currentWs = context?.workspacePath ?? useWorkspaceStore.getState().currentPath;
@@ -267,7 +265,7 @@ export const readMemoryTool: ToolDefinition = {
       }
     }
 
-    return `没有找到 filename="${filename}" 的记忆。请确认拼写（参考 <memory-index> 中的索引行），或先用 recall 工具按关键词搜索。`;
+    return format(t.notFound, { filename });
   },
   isConcurrencySafe: true,
 };

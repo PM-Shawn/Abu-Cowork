@@ -86,7 +86,7 @@ export default function DiagnosticSection() {
           onClick={() => setActiveSystemTab('feedback')}
           className="text-[12px] text-[var(--abu-text-muted)] hover:text-[var(--abu-clay)] transition-colors"
         >
-          有问题？在反馈页附上诊断包 →
+          {t.diagnostic.feedbackPageHint}
         </button>
       </div>
 

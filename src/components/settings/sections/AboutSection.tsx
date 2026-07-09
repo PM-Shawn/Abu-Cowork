@@ -85,7 +85,7 @@ export default function AboutSection() {
     <div className="space-y-6">
       {/* Logo & name */}
       <div className="flex flex-col items-center text-center space-y-3">
-        <img src={abuAvatar} alt="阿布" className="w-20 h-20 rounded-2xl" />
+        <img src={abuAvatar} alt="Abu" className="w-20 h-20 rounded-2xl" />
         <div>
           <h4 className="text-2xl font-bold text-[var(--abu-text-primary)]">{t.common.appName}</h4>
           <p className="text-sm text-[var(--abu-text-tertiary)]">{t.common.appSlogan}</p>

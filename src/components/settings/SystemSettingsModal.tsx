@@ -50,7 +50,7 @@ export default function SystemSettingsView() {
     // Enterprise mode is an enterprise-build-only entry — hidden in OSS builds
     // (the bind flow / business modules aren't part of the public product).
     ...(IS_ENTERPRISE_BUILD
-      ? [{ id: 'enterprise' as SystemSettingsTab, label: '企业模式', icon: Building2 }]
+      ? [{ id: 'enterprise' as SystemSettingsTab, label: t.settings.enterpriseMode, icon: Building2 }]
       : []),
   ];
 

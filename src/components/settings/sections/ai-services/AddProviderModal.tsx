@@ -298,12 +298,12 @@ export default function AddProviderModal({ open: isOpen, onClose }: AddProviderM
       setFetchModelsStatus('success');
     } else if (result.success) {
       setFetchModelsStatus('error');
-      setFetchModelsError('未获取到模型，请手动添加');
+      setFetchModelsError(t.settings.fetchModelsEmpty);
     } else {
       setFetchModelsStatus('error');
-      setFetchModelsError(result.error ?? '获取失败');
+      setFetchModelsError(result.error ?? t.settings.fetchModelsFailed);
     }
-  }, [baseUrl, apiKey, selectedOption?.format]);
+  }, [baseUrl, apiKey, selectedOption?.format, t]);
 
   // ── Ollama handlers ──
 

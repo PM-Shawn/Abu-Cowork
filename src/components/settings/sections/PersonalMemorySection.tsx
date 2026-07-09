@@ -86,16 +86,16 @@ function descriptionLooksRevealing(description: string): boolean {
  * The user sees this pre-filled in the rewrite input and only has
  * to click "save" — no need to think up a topic themselves.
  */
-function deriveTopicDescription(header: MemoryHeader): string {
+function deriveTopicDescription(header: MemoryHeader, t: ReturnType<typeof useI18n>['t']): string {
   const name = header.name.trim();
   if (name && !descriptionLooksRevealing(name)) {
     return name;
   }
   switch (header.type) {
-    case 'user': return '用户偏好';
-    case 'feedback': return '用户反馈';
-    case 'project': return '项目信息';
-    case 'reference': return '外部资源';
+    case 'user': return t.memory.topicUser;
+    case 'feedback': return t.memory.topicFeedback;
+    case 'project': return t.memory.topicProject;
+    case 'reference': return t.memory.topicReference;
   }
 }
 
@@ -299,7 +299,7 @@ export default function PersonalMemorySection() {
         setDescHint({
           key,
           pristineDescription: header.description,
-          draft: deriveTopicDescription(header),
+          draft: deriveTopicDescription(header, t),
         });
       } else if (descHint?.key === key) {
         setDescHint(null);

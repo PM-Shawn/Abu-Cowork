@@ -112,8 +112,8 @@ export default function ToolboxView() {
 
   const enterpriseNavItems: { id: ExtendedTab; label: string; icon: typeof Sparkles }[] = isEnterprise
     ? [
-        { id: 'enterprise-skills', label: '企业 Skill', icon: Building2 },
-        { id: 'enterprise-mcp', label: '企业 MCP', icon: Building2 },
+        { id: 'enterprise-skills', label: t.toolbox.enterpriseSkills, icon: Building2 },
+        { id: 'enterprise-mcp', label: t.toolbox.enterpriseMcp, icon: Building2 },
       ]
     : [];
 

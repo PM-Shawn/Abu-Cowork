@@ -99,6 +99,11 @@ export interface TranslationDict {
     bulkDelete: string;
     bulkConfirmTitle: string;
     bulkConfirmMessage: string;
+    // Fallback topic labels for deriveTopicDescription (PersonalMemorySection)
+    topicUser: string;
+    topicFeedback: string;
+    topicProject: string;
+    topicReference: string;
   };
 
   // Soul (personality)
@@ -747,6 +752,13 @@ export interface TranslationDict {
     capMaxInput: string;
     capMaxOutput: string;
     capTokenDefault: string;
+    // Model fetch status messages (ProviderCard + AddProviderModal)
+    fetchModelsEmpty: string;
+    fetchModelsFailed: string;
+    expandModels: string;
+    collapseModels: string;
+    // Enterprise tab label in SystemSettingsModal
+    enterpriseMode: string;
   };
 
   // Sandbox recovery
@@ -891,6 +903,8 @@ export interface TranslationDict {
     // Manifest modal
     manifestTitle: string;
     manifestClose: string;
+    // Feedback navigation prompt at bottom of DiagnosticSection
+    feedbackPageHint: string;
   };
 
   // Toolbox Modal
@@ -1240,6 +1254,9 @@ export interface TranslationDict {
     categoryBlocksUnblock: string;      // button label
     categoryBlocksUnblockError: string; // toast title on delete failure
     categoryBlocksHint: string;         // subtitle describing what these are
+    // Enterprise-only tabs (shown when enterprise mode is active)
+    enterpriseSkills: string;
+    enterpriseMcp: string;
   };
 
   // Permission Dialog
@@ -1983,6 +2000,24 @@ export interface TranslationDict {
     offlineBadge: string;
     policyConfirmTitle: string;
     allowOnce: string;
+    // EnterpriseSection settings panel
+    title: string;
+    description: string;
+    bindSectionTitle: string;
+    bindSectionDesc: string;
+    bindButton: string;
+    boundStatus: string;
+    instanceLabel: string;
+    loginIdentityLabel: string;
+    boundAtLabel: string;
+    myDataTitle: string;
+    collapseData: string;
+    viewMyData: string;
+    migrationTitle: string;
+    migrateButton: string;
+    migrateDescription: string;
+    unbindConfirm: string;
+    unbindButton: string;
   };
 
   // Computer-use runtime status bar + screen-border overlay windows

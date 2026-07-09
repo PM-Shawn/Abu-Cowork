@@ -76,6 +76,10 @@ const zhCN: TranslationDict = {
     bulkDelete: '删除选中',
     bulkConfirmTitle: '批量删除记忆',
     bulkConfirmMessage: '将永久删除 {count} 条记忆，此操作不可撤销',
+    topicUser: '用户偏好',
+    topicFeedback: '用户反馈',
+    topicProject: '项目信息',
+    topicReference: '外部资源',
   },
 
   soul: {
@@ -674,6 +678,11 @@ const zhCN: TranslationDict = {
     capMaxInput: '最大输入 Token',
     capMaxOutput: '最大输出 Token',
     capTokenDefault: '使用提供商默认值',
+    fetchModelsEmpty: '未获取到模型，请手动添加',
+    fetchModelsFailed: '获取失败',
+    expandModels: '+{hidden} 展开全部',
+    collapseModels: '收起',
+    enterpriseMode: '企业模式',
   },
 
   sandbox: {
@@ -794,6 +803,7 @@ const zhCN: TranslationDict = {
     pathCopied: '路径已复制',
     manifestTitle: '诊断包内容',
     manifestClose: '关闭',
+    feedbackPageHint: '有问题？在反馈页附上诊断包 →',
   },
 
   toolbox: {
@@ -1129,6 +1139,8 @@ const zhCN: TranslationDict = {
     categoryBlocksUnblock: '解除屏蔽',
     categoryBlocksUnblockError: '解除屏蔽失败',
     categoryBlocksHint: '你点过"这类别再提议"的技能。解除后阿布可以重新提议。',
+    enterpriseSkills: '企业 Skill',
+    enterpriseMcp: '企业 MCP',
   },
 
   permission: {
@@ -1846,6 +1858,23 @@ const zhCN: TranslationDict = {
     offlineBadge: '· 离线',
     policyConfirmTitle: '企业策略要求二次确认',
     allowOnce: '允许这次',
+    title: '企业模式',
+    description: '绑定到你公司的 Abu 企业实例，使用统一的 LLM 网关、Skill 和 MCP 资源。',
+    bindSectionTitle: '绑定企业实例',
+    bindSectionDesc: '绑定后将切换到企业模式，个人模式下的数据仍保留在本机，解绑后可恢复访问。',
+    bindButton: '切换到企业模式',
+    boundStatus: '已绑定到企业实例',
+    instanceLabel: '实例',
+    loginIdentityLabel: '登录身份',
+    boundAtLabel: '绑定时间',
+    myDataTitle: '我的数据',
+    collapseData: '收起',
+    viewMyData: '查看我的数据',
+    migrationTitle: '数据迁移',
+    migrateButton: '从个人版迁移数据',
+    migrateDescription: '将本地个人版的 Skills 和记忆上传到企业版，原数据保留不删除。',
+    unbindConfirm: '解绑后将回到个人模式，企业 Skill / 用量将不再可见。确定解绑？',
+    unbindButton: '解绑企业实例',
   },
 
   computerUse: {

@@ -76,6 +76,10 @@ const enUS: TranslationDict = {
     bulkDelete: 'Delete selected',
     bulkConfirmTitle: 'Bulk Delete Memories',
     bulkConfirmMessage: '{count} memories will be permanently deleted. This cannot be undone.',
+    topicUser: 'User preferences',
+    topicFeedback: 'User feedback',
+    topicProject: 'Project info',
+    topicReference: 'External resources',
   },
 
   soul: {
@@ -674,6 +678,11 @@ const enUS: TranslationDict = {
     capMaxInput: 'Max Input Tokens',
     capMaxOutput: 'Max Output Tokens',
     capTokenDefault: 'Use provider default',
+    fetchModelsEmpty: 'No models found, please add manually',
+    fetchModelsFailed: 'Fetch failed',
+    expandModels: '+{hidden} Show all',
+    collapseModels: 'Collapse',
+    enterpriseMode: 'Enterprise',
   },
 
   sandbox: {
@@ -794,6 +803,7 @@ const enUS: TranslationDict = {
     pathCopied: 'Path copied',
     manifestTitle: 'Bundle contents',
     manifestClose: 'Close',
+    feedbackPageHint: 'Having issues? Attach the diagnostic bundle on the feedback page →',
   },
 
   toolbox: {
@@ -1128,6 +1138,8 @@ const enUS: TranslationDict = {
     categoryBlocksUnblock: 'Unblock',
     categoryBlocksUnblockError: 'Unblock failed',
     categoryBlocksHint: 'Skills you marked "don\'t propose this kind". Unblock to let Abu suggest them again.',
+    enterpriseSkills: 'Enterprise Skills',
+    enterpriseMcp: 'Enterprise MCP',
   },
 
   permission: {
@@ -1845,6 +1857,23 @@ const enUS: TranslationDict = {
     offlineBadge: '· Offline',
     policyConfirmTitle: 'Enterprise policy requires confirmation',
     allowOnce: 'Allow once',
+    title: 'Enterprise',
+    description: 'Connect to your company\'s Abu enterprise instance with a unified LLM gateway, Skills, and MCP resources.',
+    bindSectionTitle: 'Connect to enterprise instance',
+    bindSectionDesc: 'After connecting, you will switch to enterprise mode. Data from personal mode stays on this device and is accessible after unbinding.',
+    bindButton: 'Switch to enterprise mode',
+    boundStatus: 'Connected to enterprise instance',
+    instanceLabel: 'Instance',
+    loginIdentityLabel: 'Signed in as',
+    boundAtLabel: 'Connected at',
+    myDataTitle: 'My Data',
+    collapseData: 'Collapse',
+    viewMyData: 'View my data',
+    migrationTitle: 'Data Migration',
+    migrateButton: 'Migrate from personal',
+    migrateDescription: 'Upload local personal Skills and memories to enterprise. Original data is kept and not deleted.',
+    unbindConfirm: 'After unbinding you will return to personal mode. Enterprise Skills and usage will no longer be visible. Confirm unbind?',
+    unbindButton: 'Unbind enterprise instance',
   },
 
   computerUse: {

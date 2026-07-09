@@ -7,12 +7,18 @@ import { toolRegistry, executeAnyTool } from '../core/tools/registry';
 import { authorizeWorkspace, revokeWorkspace } from '../core/tools/pathSafety';
 import { setPlatformForTest as _setPlatformForTest } from '../test/helpers';
 
-// Mock i18n
+// Mock i18n. commandSafety resolves reason/label strings via
+// getI18n().toolResult.commandSafety.<key> at analysis time; this test only
+// asserts on the commandConfirm strings, so a proxy that echoes the key name is
+// enough to keep command analysis from crashing on the missing namespace.
 vi.mock('../i18n', () => ({
   getI18n: () => ({
     commandConfirm: {
       blocked: '已阻止',
       userCancelled: '用户取消了操作',
+    },
+    toolResult: {
+      commandSafety: new Proxy({}, { get: (_t, key) => String(key) }),
     },
   }),
 }));

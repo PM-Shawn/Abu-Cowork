@@ -138,8 +138,8 @@ describe('System prompt key content', () => {
     const route = routeInput('你好');
     const prompt = await buildSystemPrompt(route, basePrompt, 'test-conv');
 
-    expect(prompt).toContain('执行规范');
-    expect(prompt).toContain('情况 A');
+    expect(prompt).toContain('Execution Rules');
+    expect(prompt).toContain('Situation A');
     expect(prompt).toContain('use_skill');
   });
 
@@ -147,7 +147,7 @@ describe('System prompt key content', () => {
     const route = routeInput('你好');
     const prompt = await buildSystemPrompt(route, basePrompt, 'test-conv');
 
-    expect(prompt).toContain('安全提醒');
+    expect(prompt).toContain('Safety Reminders');
   });
 
   it('contains workspace path', async () => {

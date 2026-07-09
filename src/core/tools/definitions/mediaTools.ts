@@ -14,6 +14,7 @@ import {
   type CommandOutput,
 } from '../helpers/toolHelpers';
 import { TOOL_NAMES } from '../toolNames';
+import { getI18n, format } from '../../../i18n';
 
 export const generateImageTool: ToolDefinition = {
   name: TOOL_NAMES.GENERATE_IMAGE,
@@ -98,7 +99,7 @@ export const generateImageTool: ToolDefinition = {
       } else {
         const imageUrl = result.data?.[0]?.url;
         if (!imageUrl) {
-          return 'Error: API 未返回图片数据';
+          return getI18n().toolResult.media.errNoImageData;
         }
         const imageResponse = await fetchFn(imageUrl);
         if (!imageResponse.ok) {
@@ -120,9 +121,10 @@ export const generateImageTool: ToolDefinition = {
       await writeBinFile(finalPath, bytes);
 
       const revisedPrompt = result.data?.[0]?.revised_prompt;
-      let msg = `图片已保存到: ${finalPath}`;
+      const tm = getI18n().toolResult.media;
+      let msg = format(tm.imageSaved, { path: finalPath });
       if (revisedPrompt) {
-        msg += `\n优化后的提示词: ${revisedPrompt}`;
+        msg += format(tm.revisedPrompt, { prompt: revisedPrompt });
       }
       return msg;
     } catch (err) {

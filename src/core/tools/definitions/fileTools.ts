@@ -17,6 +17,7 @@ import {
   type CommandOutput,
 } from '../helpers/toolHelpers';
 import { TOOL_NAMES } from '../toolNames';
+import { getI18n, format } from '../../../i18n';
 
 /**
  * Simple pessimistic file lock for concurrent agent safety.
@@ -86,7 +87,7 @@ export const readFileTool: ToolDefinition = {
         // GLM: "messages.content.type 取值范围 ['text']"). Skip the read and
         // return a text note so the model can inform the user gracefully.
         if (context?.supportsVision === false) {
-          return `[图片文件 ${filePath}（${mediaType}）：当前模型无视觉能力，未读取图像内容。如需分析图片，请切换到支持视觉的模型（如 Claude / GPT-4o）。]`;
+          return format(getI18n().toolResult.file.imageSkipNoVision, { path: filePath, mediaType });
         }
         const bytes = new Uint8Array(await readBinFile(filePath));
         const { data, resized } = await resizeImageIfNeeded(bytes, 1280);
@@ -208,7 +209,7 @@ export const writeFileTool: ToolDefinition = {
     // File lock: prevent concurrent writes from different agents
     const lockConflict = acquireFileLock(path, context?.loopId);
     if (lockConflict) {
-      return `Error: ${path} 正在被其他代理编辑，请稍后重试。`;
+      return format(getI18n().toolResult.file.errFileLocked, { path });
     }
 
     try {
@@ -249,7 +250,7 @@ export const editFileTool: ToolDefinition = {
     // File lock: prevent concurrent edits from different agents
     const lockConflict = acquireFileLock(path, context?.loopId);
     if (lockConflict) {
-      return `Error: ${path} 正在被其他代理编辑，请稍后重试。`;
+      return format(getI18n().toolResult.file.errFileLocked, { path });
     }
 
     try {

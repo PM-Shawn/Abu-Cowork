@@ -2,6 +2,7 @@ import type { ToolDefinition, ToolResult } from '../../../types';
 import { TOOL_NAMES } from '../toolNames';
 import { getAllTools } from '../registry';
 import { searchTools, promoteToolToSession } from '../toolSearch';
+import { getI18n, format } from '../../../i18n';
 
 /**
  * tool_search — lets the LLM discover and load deferred tools on demand.
@@ -29,6 +30,7 @@ export const toolSearchTool: ToolDefinition = {
   },
   isConcurrencySafe: true,
   async execute(input): Promise<ToolResult> {
+    const ts = getI18n().toolResult.toolSearch;
     const query = input.query as string;
     const maxResults = (input.max_results as number) ?? 5;
 
@@ -36,7 +38,7 @@ export const toolSearchTool: ToolDefinition = {
     const matched = searchTools(query, allTools, maxResults);
 
     if (matched.length === 0) {
-      return `未找到匹配 "${query}" 的工具。请尝试其他关键词。`;
+      return format(ts.noResults, { query });
     }
 
     // Promote matched tools to session core
@@ -47,9 +49,9 @@ export const toolSearchTool: ToolDefinition = {
     // Return full schema for each matched tool
     const results = matched.map(tool => {
       const schema = JSON.stringify(tool.inputSchema, null, 2);
-      return `### ${tool.name}\n${tool.description}\n\n参数 Schema:\n\`\`\`json\n${schema}\n\`\`\``;
+      return `### ${tool.name}\n${tool.description}\n\n${ts.schemaLabel}\n\`\`\`json\n${schema}\n\`\`\``;
     });
 
-    return `找到 ${matched.length} 个工具：\n\n${results.join('\n\n---\n\n')}\n\n以上工具已加载，可以在后续回合中直接调用。`;
+    return format(ts.resultsFound, { count: String(matched.length), results: results.join('\n\n---\n\n') });
   },
 };

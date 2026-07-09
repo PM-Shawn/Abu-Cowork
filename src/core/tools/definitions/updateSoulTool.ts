@@ -2,6 +2,7 @@ import type { ToolDefinition } from '../../../types';
 import { saveSoul } from '../../agent/soulConfig';
 import { useSettingsStore } from '../../../stores/settingsStore';
 import { TOOL_NAMES } from '../toolNames';
+import { getI18n, format } from '../../../i18n';
 
 export const updateSoulTool: ToolDefinition = {
   name: TOOL_NAMES.UPDATE_SOUL,
@@ -17,18 +18,19 @@ export const updateSoulTool: ToolDefinition = {
     required: ['content'],
   },
   execute: async (input) => {
+    const tu = getI18n().toolResult.updateSoul;
     const content = (input.content as string || '').trim();
     if (!content) {
-      return '错误：性格设定内容不能为空。';
+      return tu.errContentEmpty;
     }
 
     try {
       await saveSoul(content);
       // Mark soul as initialized (bootstrap won't trigger again)
       useSettingsStore.getState().setSoulInitialized(true);
-      return '性格设定已更新，下次新对话生效。';
+      return tu.updated;
     } catch (err) {
-      return `更新失败: ${err instanceof Error ? err.message : String(err)}`;
+      return format(tu.updateFailed, { error: err instanceof Error ? err.message : String(err) });
     }
   },
 };

@@ -1,6 +1,7 @@
 import type { ToolDefinition } from '../../../types';
 import { useInboxStore } from '../../../stores/inboxStore';
 import { TOOL_NAMES } from '../toolNames';
+import { getI18n, format } from '../../../i18n';
 
 export const createTodoTool: ToolDefinition = {
   name: TOOL_NAMES.CREATE_TODO,
@@ -21,8 +22,9 @@ export const createTodoTool: ToolDefinition = {
     required: ['title'],
   },
   execute: async (input, ctx) => {
+    const tt = getI18n().toolResult.todo;
     const title = String(input.title ?? '').trim();
-    if (!title) return '标题不能为空，未创建提议。';
+    if (!title) return tt.errTitleEmpty;
     const reasonRaw = input.reason;
     const reason = typeof reasonRaw === 'string' ? reasonRaw.trim() : '';
     const summary = reason ? `${title}（${reason}）` : title;
@@ -32,7 +34,7 @@ export const createTodoTool: ToolDefinition = {
       conversationId: ctx?.conversationId,
       payload: { draft: { title } },
     });
-    return `已把「${title}」放进用户的收件箱，等待确认。`;
+    return format(tt.proposalAdded, { title });
   },
   isConcurrencySafe: true,
 };

@@ -4,6 +4,7 @@ import type { ToolDefinition } from '../../../types';
 import { searchMCPRegistry, installMCPServer, getRegistryEntry, ensureMCPServer, addCustomMCPServer } from '../../agent/mcpDiscovery';
 import { getSystemInfoData } from '../helpers/toolHelpers';
 import { TOOL_NAMES } from '../toolNames';
+import { getI18n, format } from '../../../i18n';
 
 export const getSystemInfoTool: ToolDefinition = {
   name: TOOL_NAMES.GET_SYSTEM_INFO,
@@ -137,43 +138,44 @@ export const manageMCPServerTool: ToolDefinition = {
   },
   execute: async (input) => {
     const action = input.action as string;
+    const t = getI18n().toolResult.system;
 
     if (action === 'search') {
       const query = input.query as string;
-      if (!query) return 'Error: action=search 时必须提供 query 参数';
+      if (!query) return t.errSearchNeedsQuery;
       const results = searchMCPRegistry(query);
       if (results.length === 0) {
-        return `未找到匹配 "${query}" 的 MCP Server。你可以用 web_search 搜索 "${query} MCP server" 寻找社区方案。`;
+        return format(t.searchNoResults, { query });
       }
       const lines = results.map((r) => {
         const envNeeded = Object.keys(r.env).filter((k) => r.envHints?.[k]);
-        const envNote = envNeeded.length > 0 ? ` (需要: ${envNeeded.join(', ')})` : '';
+        const envNote = envNeeded.length > 0 ? format(t.searchEnvNote, { envList: envNeeded.join(', ') }) : '';
         return `- **${r.name}**: ${r.description}${envNote}`;
       });
-      return `找到 ${results.length} 个可用的 MCP Server:\n${lines.join('\n')}\n\n使用 manage_mcp_server(action: "install", name: "...") 安装。安装前请告知用户并获得确认。`;
+      return format(t.searchResults, { count: String(results.length), lines: lines.join('\n') });
     }
 
     if (action === 'install') {
       const name = input.name as string;
-      if (!name) return 'Error: action=install 时必须提供 name 参数';
+      if (!name) return t.errInstallNeedsName;
       const env = input.env as Record<string, string> | undefined;
 
       const entry = getRegistryEntry(name);
       if (!entry) {
-        return `未找到名为 "${name}" 的 MCP Server。请先用 manage_mcp_server(action: "search") 搜索。`;
+        return format(t.errInstallNotFound, { name });
       }
 
       try {
         const result = await installMCPServer(entry, env);
         return result.message;
       } catch (err) {
-        return `安装失败: ${err instanceof Error ? err.message : String(err)}`;
+        return format(t.installFailed, { error: err instanceof Error ? err.message : String(err) });
       }
     }
 
     if (action === 'ensure') {
       const name = input.name as string;
-      if (!name) return 'Error: action=ensure 时必须提供 name 参数';
+      if (!name) return t.errEnsureNeedsName;
 
       try {
         const result = await ensureMCPServer(name);
@@ -183,26 +185,26 @@ export const manageMCPServerTool: ToolDefinition = {
         }
         return parts.join('\n');
       } catch (err) {
-        return `确保 MCP 服务可用失败: ${err instanceof Error ? err.message : String(err)}`;
+        return format(t.ensureFailed, { error: err instanceof Error ? err.message : String(err) });
       }
     }
 
     if (action === 'add_custom') {
       const name = input.name as string;
       const url = input.url as string;
-      if (!name) return 'Error: action=add_custom 时必须提供 name 参数';
-      if (!url) return 'Error: action=add_custom 时必须提供 url 参数';
+      if (!name) return t.errAddCustomNeedsName;
+      if (!url) return t.errAddCustomNeedsUrl;
       const headers = input.headers as Record<string, string> | undefined;
 
       try {
         const result = await addCustomMCPServer(name, url, headers);
         return result.message;
       } catch (err) {
-        return `添加自定义 MCP 服务失败: ${err instanceof Error ? err.message : String(err)}`;
+        return format(t.addCustomFailed, { error: err instanceof Error ? err.message : String(err) });
       }
     }
 
-    return `Error: 未知操作 "${action}"。可用操作: search, install, ensure, add_custom`;
+    return format(t.errUnknownAction, { action });
   },
   isConcurrencySafe: false,
 };

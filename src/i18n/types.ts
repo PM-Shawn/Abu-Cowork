@@ -2384,5 +2384,88 @@ export interface TranslationDict {
       /** {name}, {path} */
       skillCreated: string;
     };
+    // manage_mcp_server
+    system: {
+      /** Error: action=search requires query. */
+      errSearchNeedsQuery: string;
+      /** No MCP server matched the query. {query} */
+      searchNoResults: string;
+      /** Env-var needed note fragment. {envList} */
+      searchEnvNote: string;
+      /** Search results header. {count}, {lines} */
+      searchResults: string;
+      /** Error: action=install requires name. */
+      errInstallNeedsName: string;
+      /** MCP server not found. {name} */
+      errInstallNotFound: string;
+      /** Install failed. {error} */
+      installFailed: string;
+      /** Error: action=ensure requires name. */
+      errEnsureNeedsName: string;
+      /** Ensure available failed. {error} */
+      ensureFailed: string;
+      /** Error: action=add_custom requires name. */
+      errAddCustomNeedsName: string;
+      /** Error: action=add_custom requires url. */
+      errAddCustomNeedsUrl: string;
+      /** Add custom MCP service failed. {error} */
+      addCustomFailed: string;
+      /** Unknown action. {action} */
+      errUnknownAction: string;
+    };
+    // web_search / http_fetch
+    web: {
+      /** No API key configured (non-SearXNG). */
+      errNoApiKey: string;
+      /** No SearXNG URL configured. */
+      errNoSearxngUrl: string;
+      /** No search results found. {query} */
+      noResults: string;
+      /** Search results header. {count}, {lines} */
+      searchResults: string;
+      /** Search error. {error} */
+      searchError: string;
+    };
+    // generate_image / process_image
+    media: {
+      /** API returned no image data. */
+      errNoImageData: string;
+      /** Image saved. {path} */
+      imageSaved: string;
+      /** Revised prompt suffix. {prompt} */
+      revisedPrompt: string;
+    };
+    // create_todo
+    todo: {
+      /** Error: title cannot be empty. */
+      errTitleEmpty: string;
+      /** Todo proposal placed in inbox. {title} */
+      proposalAdded: string;
+    };
+    // tool_search
+    toolSearch: {
+      /** No tool matched the query. {query} */
+      noResults: string;
+      /** Parameter schema label (used in result formatting). */
+      schemaLabel: string;
+      /** Results header and footer. {count}, {results} */
+      resultsFound: string;
+    };
+    // update_soul
+    updateSoul: {
+      /** Error: content cannot be empty. */
+      errContentEmpty: string;
+      /** Soul updated successfully. */
+      updated: string;
+      /** Update failed. {error} */
+      updateFailed: string;
+    };
+    // read_file / write_file / edit_file
+    file: {
+      /** Non-vision model image skip note. {path}, {mediaType} */
+      imageSkipNoVision: string;
+      /** File locked by another agent. {path} */
+      errFileLocked: string;
+    };
   };
 }

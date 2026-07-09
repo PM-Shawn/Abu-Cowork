@@ -2,6 +2,7 @@ import type { ToolDefinition } from '../../../types';
 import { getTauriFetch } from '../../llm/tauriFetch';
 import { useSettingsStore } from '../../../stores/settingsStore';
 import { TOOL_NAMES } from '../toolNames';
+import { getI18n, format } from '../../../i18n';
 
 /**
  * Extract article content from raw HTML using Mozilla Readability.
@@ -106,6 +107,7 @@ export const webSearchTool: ToolDefinition = {
     const freshness = input.freshness as string | undefined;
 
     try {
+      const tw = getI18n().toolResult.web;
 
       const state = useSettingsStore.getState();
 
@@ -115,10 +117,10 @@ export const webSearchTool: ToolDefinition = {
 
       // SearXNG doesn't need API key
       if (providerType !== 'searxng' && !apiKey) {
-        return '未配置搜索 API Key。请在设置 → 网络搜索中配置搜索引擎的 API Key。\n\nNo search API Key configured. Please go to Settings → Web Search to configure your search engine API Key.';
+        return tw.errNoApiKey;
       }
       if (providerType === 'searxng' && !baseUrl) {
-        return '未配置 SearXNG 服务地址。请在设置 → 网络搜索中配置 SearXNG 实例地址。\n\nNo SearXNG URL configured. Please go to Settings → Web Search to configure your SearXNG instance URL.';
+        return tw.errNoSearxngUrl;
       }
 
       const { createSearchProvider } = await import('../../search/providers');
@@ -126,7 +128,7 @@ export const webSearchTool: ToolDefinition = {
       const response = await provider.search(query, { count, market, freshness });
 
       if (response.results.length === 0) {
-        return `没有找到与 "${query}" 相关的搜索结果。`;
+        return format(tw.noResults, { query });
       }
 
       // Build output with hidden JSON marker for UI parsing + readable text for LLM
@@ -137,9 +139,9 @@ export const webSearchTool: ToolDefinition = {
         return `${i + 1}. **${r.title}** — ${domain}\n   ${r.snippet}\n   🔗 ${r.url}`;
       });
 
-      return `${jsonMarker}\n\n搜索结果 (共 ${response.results.length} 条):\n\n${lines.join('\n\n')}`;
+      return `${jsonMarker}\n\n${format(tw.searchResults, { count: String(response.results.length), lines: lines.join('\n\n') })}`;
     } catch (err) {
-      return `搜索出错: ${err instanceof Error ? err.message : String(err)}`;
+      return format(getI18n().toolResult.web.searchError, { error: err instanceof Error ? err.message : String(err) });
     }
   },
   isConcurrencySafe: true,

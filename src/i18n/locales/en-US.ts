@@ -2137,6 +2137,51 @@ const enUS: TranslationDict = {
       draftProposed: 'Draft "{name}" proposed. The user can accept or reject it directly in chat, or handle it in the drafts panel under Toolbox → Skills. Path: {path}.',
       skillCreated: 'Skill "{name}" created and is now active. Path: {path}',
     },
+    system: {
+      errSearchNeedsQuery: 'Error: action=search requires a query parameter',
+      searchNoResults: 'No MCP server matching "{query}" was found. You can use web_search to search for "{query} MCP server" to find community solutions.',
+      searchEnvNote: ' (requires: {envList})',
+      searchResults: 'Found {count} available MCP server(s):\n{lines}\n\nUse manage_mcp_server(action: "install", name: "...") to install. Inform the user and get confirmation before installing.',
+      errInstallNeedsName: 'Error: action=install requires a name parameter',
+      errInstallNotFound: 'No MCP server named "{name}" was found. Use manage_mcp_server(action: "search") to search first.',
+      installFailed: 'Install failed: {error}',
+      errEnsureNeedsName: 'Error: action=ensure requires a name parameter',
+      ensureFailed: 'Failed to ensure MCP service availability: {error}',
+      errAddCustomNeedsName: 'Error: action=add_custom requires a name parameter',
+      errAddCustomNeedsUrl: 'Error: action=add_custom requires a url parameter',
+      addCustomFailed: 'Failed to add custom MCP service: {error}',
+      errUnknownAction: 'Error: unknown action "{action}". Available actions: search, install, ensure, add_custom',
+    },
+    web: {
+      errNoApiKey: 'No search API Key configured. Please go to Settings → Web Search to configure your search engine API Key.',
+      errNoSearxngUrl: 'No SearXNG URL configured. Please go to Settings → Web Search to configure your SearXNG instance URL.',
+      noResults: 'No search results found for "{query}".',
+      searchResults: 'Search results ({count} total):\n\n{lines}',
+      searchError: 'Search error: {error}',
+    },
+    media: {
+      errNoImageData: 'Error: API returned no image data',
+      imageSaved: 'Image saved to: {path}',
+      revisedPrompt: '\nRevised prompt: {prompt}',
+    },
+    todo: {
+      errTitleEmpty: 'Title cannot be empty; proposal not created.',
+      proposalAdded: 'Added "{title}" to the user\'s inbox, awaiting confirmation.',
+    },
+    toolSearch: {
+      noResults: 'No tool matching "{query}" was found. Try different keywords.',
+      schemaLabel: 'Parameter schema:',
+      resultsFound: 'Found {count} tool(s):\n\n{results}\n\nThe above tools have been loaded and can be invoked directly in subsequent turns.',
+    },
+    updateSoul: {
+      errContentEmpty: 'Error: personality configuration content cannot be empty.',
+      updated: 'Personality configuration updated; takes effect in the next new conversation.',
+      updateFailed: 'Update failed: {error}',
+    },
+    file: {
+      imageSkipNoVision: '[Image file {path} ({mediaType}): the current model has no vision capability; image content was not read. To analyse images, switch to a vision-capable model (e.g. Claude / GPT-4o).]',
+      errFileLocked: 'Error: {path} is being edited by another agent — please retry later.',
+    },
   },
 };
 

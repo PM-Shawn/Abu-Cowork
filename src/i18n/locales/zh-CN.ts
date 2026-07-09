@@ -2138,6 +2138,51 @@ const zhCN: TranslationDict = {
       draftProposed: '草稿 "{name}" 已提议。用户可在聊天里直接采纳或拒绝；也可到「工具箱 → 技能」的草稿面板处理。路径：{path}。',
       skillCreated: '技能 "{name}" 已创建，立即生效。路径：{path}',
     },
+    system: {
+      errSearchNeedsQuery: 'Error: action=search 时必须提供 query 参数',
+      searchNoResults: '未找到匹配 "{query}" 的 MCP Server。你可以用 web_search 搜索 "{query} MCP server" 寻找社区方案。',
+      searchEnvNote: ' (需要: {envList})',
+      searchResults: '找到 {count} 个可用的 MCP Server:\n{lines}\n\n使用 manage_mcp_server(action: "install", name: "...") 安装。安装前请告知用户并获得确认。',
+      errInstallNeedsName: 'Error: action=install 时必须提供 name 参数',
+      errInstallNotFound: '未找到名为 "{name}" 的 MCP Server。请先用 manage_mcp_server(action: "search") 搜索。',
+      installFailed: '安装失败: {error}',
+      errEnsureNeedsName: 'Error: action=ensure 时必须提供 name 参数',
+      ensureFailed: '确保 MCP 服务可用失败: {error}',
+      errAddCustomNeedsName: 'Error: action=add_custom 时必须提供 name 参数',
+      errAddCustomNeedsUrl: 'Error: action=add_custom 时必须提供 url 参数',
+      addCustomFailed: '添加自定义 MCP 服务失败: {error}',
+      errUnknownAction: 'Error: 未知操作 "{action}"。可用操作: search, install, ensure, add_custom',
+    },
+    web: {
+      errNoApiKey: '未配置搜索 API Key。请在设置 → 网络搜索中配置搜索引擎的 API Key。',
+      errNoSearxngUrl: '未配置 SearXNG 服务地址。请在设置 → 网络搜索中配置 SearXNG 实例地址。',
+      noResults: '没有找到与 "{query}" 相关的搜索结果。',
+      searchResults: '搜索结果 (共 {count} 条):\n\n{lines}',
+      searchError: '搜索出错: {error}',
+    },
+    media: {
+      errNoImageData: 'Error: API 未返回图片数据',
+      imageSaved: '图片已保存到: {path}',
+      revisedPrompt: '\n优化后的提示词: {prompt}',
+    },
+    todo: {
+      errTitleEmpty: '标题不能为空，未创建提议。',
+      proposalAdded: '已把「{title}」放进用户的收件箱，等待确认。',
+    },
+    toolSearch: {
+      noResults: '未找到匹配 "{query}" 的工具。请尝试其他关键词。',
+      schemaLabel: '参数 Schema:',
+      resultsFound: '找到 {count} 个工具：\n\n{results}\n\n以上工具已加载，可以在后续回合中直接调用。',
+    },
+    updateSoul: {
+      errContentEmpty: '错误：性格设定内容不能为空。',
+      updated: '性格设定已更新，下次新对话生效。',
+      updateFailed: '更新失败: {error}',
+    },
+    file: {
+      imageSkipNoVision: '[图片文件 {path}（{mediaType}）：当前模型无视觉能力，未读取图像内容。如需分析图片，请切换到支持视觉的模型（如 Claude / GPT-4o）。]',
+      errFileLocked: 'Error: {path} 正在被其他代理编辑，请稍后重试。',
+    },
   },
 };
 

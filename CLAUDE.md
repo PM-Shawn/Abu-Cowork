@@ -187,14 +187,19 @@ Abu 是 Tauri 桌面端，每轮"改 → 重启 dev → 验证"的成本比 web 
   the user's message language). So an English prompt still yields Chinese replies for
   Chinese users. When adding/editing agent prompts or tool descriptions, write them in
   English.
-- **Transition status (prompt English-ization)**: Output-language mechanism (P0), tool
-  `description` fields (P1), and the UI-facing string i18n (P3 — tool result strings via
-  the `toolResult` namespace, and `commandSafety` reasons/labels) are done. Agent-picker
-  metadata was already bilingual (per-field `displayNames`/`descriptions`/`*I18n` maps).
-  Still Chinese and pending: core agent behavior prompts
-  (`orchestrator.ts`/`registry.ts` `systemPrompt`/`agentLoop.ts`/`skillsGuidance.ts`) — that
-  is **P2**, needs a behavioral eval pass. The one orchestrator canned reply (`orchestrator.ts`
-  IM "no workspace" line) is folded into P2, not P3.
+- **Transition status (prompt English-ization)**: P0 (output-language mechanism), P1 (tool
+  `description` fields), P3 (UI-facing string i18n — tool result strings via the `toolResult`
+  namespace, and `commandSafety` reasons/labels), and **P2 (core agent behavior prompts)** are
+  done. P2 covered `skillsGuidance.ts`, `agentLoop.ts` (default-soul + capability),
+  `orchestrator.ts` (all system-prompt sections), the built-in agent `systemPrompt`s in
+  `registry.ts`, the `PRESET_AGENTS` in `agentTools.ts`/`orchestrationTools.ts`, and the
+  subagent system prompt in `subagentLoop.ts`. The orchestrator IM canned replies were
+  rewritten as behavior instructions (the reply's language is handled by the response-language
+  section, not a fixed string). Agent-picker metadata was already bilingual (per-field
+  `displayNames`/`descriptions`/`*I18n` maps). Still Chinese and left for the i18n pass (NOT
+  P2 — these are user-visible result/status/template strings): `mcpDiscovery.ts` catalog
+  descriptions + result messages + env hints, `projectRules.ts` ABU.md template + result
+  messages, and scattered subagent result/status fallback strings.
 - **🔴 Exception — do NOT English-ify these (they are UI-facing, not LLM-facing)**: tool
   runtime result strings (`execute()` returns/success/error messages — rendered directly
   in `ToolCallsGroup.tsx`), `commandSafety` reason/label strings (command-confirmation

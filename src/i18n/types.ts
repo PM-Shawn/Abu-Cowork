@@ -2060,4 +2060,145 @@ export interface TranslationDict {
     /** Overlay stop-button label. */
     stopControl: string;
   };
+
+  // Tool runtime result strings (execute() returns/success/error messages).
+  // These are UI-facing: rendered in ToolCallsGroup and also fed back to the
+  // LLM, so they go through i18n (resolved at execution time by the current
+  // locale) rather than being hardcoded in either language. See CLAUDE.md §1.
+  toolResult: {
+    // Shared value fragments reused across tools.
+    valueNone: string;
+    valueNever: string;
+    statusActive: string;
+    statusPaused: string;
+    // manage_scheduled_task / manage_trigger / manage_file_watch
+    automation: {
+      // scheduled task
+      errMissingTaskName: string;
+      errMissingPrompt: string;
+      errMissingFrequency: string;
+      /** {name}, {id} */
+      errDuplicateTask: string;
+      errTimeHourRange: string;
+      errTimeMinuteRange: string;
+      errDayOfWeekRange: string;
+      /** {name}, {id}, {frequency}, {nextRun} */
+      taskCreated: string;
+      listEmptyAll: string;
+      /** {status} */
+      listEmptyFiltered: string;
+      /** {icon}, {name}, {id}, {frequency}, {nextRun}, {runs} */
+      listItem: string;
+      /** {count}, {lines} */
+      listHeader: string;
+      errMissingTaskId: string;
+      /** {id} */
+      errTaskNotFound: string;
+      /** {name}, {id} */
+      taskUpdated: string;
+      /** {name}, {id} */
+      taskDeleted: string;
+      /** {name} */
+      taskAlreadyPaused: string;
+      /** {name}, {id} */
+      taskPaused: string;
+      /** {name} */
+      taskAlreadyActive: string;
+      /** {name}, {id}, {nextRun} */
+      taskResumed: string;
+      /** {action} */
+      errUnknownAction: string;
+      // trigger
+      errMissingTriggerName: string;
+      /** {name}, {id} */
+      errDuplicateTrigger: string;
+      errFileNeedsPath: string;
+      errCronNeedsInterval: string;
+      /** {name} */
+      triggerCreatedHeader: string;
+      /** {type} */
+      triggerTypeLine: string;
+      sourceFile: string;
+      sourceCron: string;
+      /** {path} */
+      watchPathLine: string;
+      /** {events} */
+      watchEventsLine: string;
+      /** {pattern} */
+      fileFilterLine: string;
+      /** {seconds} */
+      pollIntervalLine: string;
+      /** {endpoint} */
+      httpEndpointLine: string;
+      externalTriggerCmd: string;
+      sampleMessage: string;
+      capReadTools: string;
+      capSafeTools: string;
+      capFull: string;
+      capCustom: string;
+      /** {label} */
+      capLevelLine: string;
+      /** {filter} */
+      filterLine: string;
+      /** {value} */
+      debounceLine: string;
+      /** {seconds} */
+      debounceSeconds: string;
+      debounceOff: string;
+      /** {list} */
+      allowCommandsLine: string;
+      /** {list} */
+      allowPathsLine: string;
+      /** {list} */
+      allowToolsLine: string;
+      triggerListEmptyAll: string;
+      /** {status} */
+      triggerListEmptyFiltered: string;
+      /** {path} */
+      triggerSourceFileLabel: string;
+      /** {seconds} */
+      triggerSourceCronLabel: string;
+      /** {endpoint} */
+      triggerSourceHttpLabel: string;
+      /** {icon}, {name}, {id}, {source}, {filterType}, {lastRun}, {runs} */
+      triggerListItem: string;
+      /** {count}, {lines} */
+      triggerListHeader: string;
+      errMissingTriggerId: string;
+      /** {id} */
+      errTriggerNotFound: string;
+      /** {name}, {id} */
+      triggerUpdated: string;
+      /** {name}, {id} */
+      triggerDeleted: string;
+      /** {name} */
+      triggerAlreadyPaused: string;
+      /** {name}, {id} */
+      triggerPaused: string;
+      /** {name} */
+      triggerAlreadyActive: string;
+      /** {name}, {id} */
+      triggerResumed: string;
+      // file watch
+      fwListEmpty: string;
+      fwStatusRunning: string;
+      fwStatusEnabled: string;
+      fwStatusDisabled: string;
+      /** {status}, {id}, {path}, {pattern}, {event}, {prompt} */
+      fwListItem: string;
+      /** {count}, {lines} */
+      fwListHeader: string;
+      fwErrAddNeeds: string;
+      /** {id}, {path} */
+      fwRuleCreated: string;
+      fwErrRemoveNeeds: string;
+      /** {id} */
+      fwRuleRemoved: string;
+      fwErrToggleNeeds: string;
+      /** {id} */
+      fwRuleToggled: string;
+      /** {action} */
+      fwUnknownAction: string;
+    };
+  };
 }

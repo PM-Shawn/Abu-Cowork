@@ -2413,6 +2413,39 @@ export interface TranslationDict {
       addCustomFailed: string;
       /** Unknown action. {action} */
       errUnknownAction: string;
+      // --- mcpDiscovery.ts: built-in MCP catalog + install/connect result messages ---
+      /** Built-in MCP catalog: server descriptions keyed by server name. */
+      mcpCatalog: Record<string, string>;
+      /** MCP env-var config hints keyed by env-var name. */
+      mcpEnvHints: Record<string, string>;
+      /** Generic unknown-error fallback for MCP connect failures. */
+      mcpUnknownError: string;
+      /** Server connected. {name}, {count} */
+      mcpConnected: string;
+      /** Server reconnected. {name}, {count} */
+      mcpReconnected: string;
+      /** Server connect failed. {name}, {error} */
+      mcpConnectFailed: string;
+      /** Install needs env vars. {name}, {hints} */
+      mcpNeedsEnvVars: string;
+      /** Installed and connected. {name}, {count} */
+      mcpInstalledConnected: string;
+      /** Installed but connect failed. {name}, {error} */
+      mcpInstallConnectFailed: string;
+      /** name and url are both required. */
+      mcpNameUrlRequired: string;
+      /** Invalid URL format. {url} */
+      mcpInvalidUrl: string;
+      /** Added-server tool-list fragment. {tools} */
+      mcpAddedToolList: string;
+      /** Added and connected. {name}, {count}, {toolList} */
+      mcpAddedConnected: string;
+      /** Added but connect failed. {name}, {error} */
+      mcpAddConnectFailed: string;
+      /** Not found in built-in registry. {name} */
+      mcpNotInRegistry: string;
+      /** Install needs config. {name}, {hints} */
+      mcpNeedsConfig: string;
     };
     // web_search / http_fetch
     web: {

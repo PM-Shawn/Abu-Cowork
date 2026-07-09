@@ -1,7 +1,7 @@
 import { readText as clipboardReadText, writeText as clipboardWriteText } from '@tauri-apps/plugin-clipboard-manager';
 import { sendNotification, isPermissionGranted, requestPermission } from '@tauri-apps/plugin-notification';
 import type { ToolDefinition } from '../../../types';
-import { searchMCPRegistry, installMCPServer, getRegistryEntry, ensureMCPServer, addCustomMCPServer } from '../../agent/mcpDiscovery';
+import { searchMCPRegistry, installMCPServer, getRegistryEntry, ensureMCPServer, addCustomMCPServer, getEntryDescription, getEnvHint } from '../../agent/mcpDiscovery';
 import { getSystemInfoData } from '../helpers/toolHelpers';
 import { TOOL_NAMES } from '../toolNames';
 import { getI18n, format } from '../../../i18n';
@@ -148,9 +148,9 @@ export const manageMCPServerTool: ToolDefinition = {
         return format(t.searchNoResults, { query });
       }
       const lines = results.map((r) => {
-        const envNeeded = Object.keys(r.env).filter((k) => r.envHints?.[k]);
+        const envNeeded = Object.keys(r.env).filter((k) => getEnvHint(k));
         const envNote = envNeeded.length > 0 ? format(t.searchEnvNote, { envList: envNeeded.join(', ') }) : '';
-        return `- **${r.name}**: ${r.description}${envNote}`;
+        return `- **${r.name}**: ${getEntryDescription(r.name)}${envNote}`;
       });
       return format(t.searchResults, { count: String(results.length), lines: lines.join('\n') });
     }

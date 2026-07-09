@@ -32,11 +32,22 @@ export function buildPlanApprovalPayload(steps: string[]): UserQuestionPayload {
   };
 }
 
-/** True only if the user explicitly selected the approve option. */
-export function interpretPlanApproval(result: UserQuestionResult | null): boolean {
+/**
+ * True only if the user explicitly selected the approve option.
+ *
+ * `approveLabel` must be the SAME label that was rendered in the card (i.e. the
+ * one baked into the payload at build time). The dock returns the payload's
+ * option label verbatim, so matching against a freshly re-resolved i18n label
+ * would break if the UI locale changed between building the card and reading
+ * the answer. Callers pass the payload's own approve label; the default is only
+ * a convenience for same-locale unit tests.
+ */
+export function interpretPlanApproval(
+  result: UserQuestionResult | null,
+  approveLabel: string = getI18n().toolResult.memory.planApproveLabel,
+): boolean {
   if (!result) return false;
-  const t = getI18n().toolResult.memory;
-  return result.answers[0]?.selected.includes(t.planApproveLabel) ?? false;
+  return result.answers[0]?.selected.includes(approveLabel) ?? false;
 }
 
 /**
@@ -156,8 +167,13 @@ export const reportPlanTool: ToolDefinition = {
     const needsApproval = hasSteps && (planHasRiskySteps(steps) || (convId ? getPlanMode(convId) === 'planning' : false));
     if (convId && context?.toolCallId && needsApproval) {
       setPlanMode(convId, 'planning');
-      const result = await requestUserQuestion(context.toolCallId, convId, buildPlanApprovalPayload(steps));
-      if (interpretPlanApproval(result)) {
+      const payload = buildPlanApprovalPayload(steps);
+      // Read the approve label off the payload we just built so the match is
+      // immune to a UI-locale switch during the await below (the dock echoes
+      // back the payload's own option label, not a freshly-resolved one).
+      const approveLabel = payload.questions[0].options[0].label;
+      const result = await requestUserQuestion(context.toolCallId, convId, payload);
+      if (interpretPlanApproval(result, approveLabel)) {
         setPlanMode(convId, 'approved');
         landPlannedSteps();
         return t.planApproved;

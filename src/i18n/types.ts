@@ -2071,6 +2071,8 @@ export interface TranslationDict {
     valueNever: string;
     statusActive: string;
     statusPaused: string;
+    /** Locale-appropriate separator for joining inline lists of items. */
+    listSeparator: string;
     // report_plan / update_memory / todo_write / log_task_completion
     memory: {
       // reportPlanTool

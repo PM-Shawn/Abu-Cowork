@@ -1966,6 +1966,7 @@ const zhCN: TranslationDict = {
     valueNever: '从未',
     statusActive: '活跃',
     statusPaused: '已暂停',
+    listSeparator: '、',
     memory: {
       planApproved: '用户已批准计划，现在可以开始执行。',
       planTimeout: '计划审批超时或已取消，处于计划模式（只读）。可修改后重新提交计划。',

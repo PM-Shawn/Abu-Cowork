@@ -276,6 +276,18 @@ describe('reportPlanTool — plan-mode approval (B1)', () => {
     it('returns false for empty answers', () => {
       expect(interpretPlanApproval({ answers: [] })).toBe(false);
     });
+    it('matches against the passed (build-time) label, not the current locale', () => {
+      // Regression: the card echoes back the payload's own option label. If the
+      // UI locale changes between building the card and reading the answer, a
+      // freshly re-resolved label would mismatch. Passing the build-time label
+      // (as reportPlanTool does from the payload) must still match.
+      const buildTimeLabel = '批准执行'; // e.g. card was built while locale was zh-CN
+      const result = { answers: [{ header: 'h', question: 'q', selected: [buildTimeLabel] }] };
+      // Test env resolves to en-US, so the default (current-locale) label differs...
+      expect(interpretPlanApproval(result)).toBe(false);
+      // ...but passing the actual displayed label matches correctly.
+      expect(interpretPlanApproval(result, buildTimeLabel)).toBe(true);
+    });
   });
 
   describe('planHasRiskySteps', () => {

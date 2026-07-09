@@ -407,7 +407,7 @@ async function installAction(input: Record<string, unknown>): Promise<ActionResu
   await useDiscoveryStore.getState().refresh().catch(() => { /* best-effort */ });
 
   const skippedNote = skipped.length > 0
-    ? format(t.skippedNote, { count: skipped.length, files: skipped.join('、') })
+    ? format(t.skippedNote, { count: skipped.length, files: skipped.join(getI18n().toolResult.listSeparator) })
     : '';
 
   return {

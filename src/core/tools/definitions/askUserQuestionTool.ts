@@ -150,10 +150,11 @@ export const askUserQuestionTool: ToolDefinition = {
       return t.cancelled;
     }
 
+    const sep = getI18n().toolResult.listSeparator;
     const lines: string[] = [t.answersHeader];
     result.answers.forEach((ans, i) => {
       lines.push(`${i + 1}. [${ans.header}] ${ans.question}`);
-      lines.push(`   → ${ans.selected.join('、')}`);
+      lines.push(`   → ${ans.selected.join(sep)}`);
     });
     return lines.join('\n');
   },

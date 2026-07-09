@@ -1965,6 +1965,7 @@ const enUS: TranslationDict = {
     valueNever: 'never',
     statusActive: 'active',
     statusPaused: 'paused',
+    listSeparator: ', ',
     memory: {
       planApproved: 'The user approved the plan. Execution may now begin.',
       planTimeout: 'Plan approval timed out or was cancelled. Currently in planning mode (read-only). You may revise the plan and resubmit.',

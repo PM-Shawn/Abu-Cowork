@@ -59,7 +59,7 @@ function SkillPatchSummaryRow({ skillName, calls }: { skillName: string; calls: 
         <span className="flex-1 text-left">
           {t.toolbox.skillPatchGroupLabel}{' '}
           <span className="font-medium text-[var(--abu-text-primary)]">{skillName}</span>
-          <span className="text-[var(--abu-text-muted)]">（{calls.length} 处）</span>
+          <span className="text-[var(--abu-text-muted)]">{format(t.toolbox.skillPatchGroupCount, { count: calls.length })}</span>
         </span>
         {expanded
           ? <ChevronDown className="h-3 w-3 flex-shrink-0" />

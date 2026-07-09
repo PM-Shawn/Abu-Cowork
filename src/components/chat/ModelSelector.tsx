@@ -306,17 +306,17 @@ export function ModelSelector({ open, onClose, anchorRef }: ModelSelectorProps) 
           <div className="p-1">
             {enterpriseModels === null ? (
               <div className="px-3 py-4 text-center text-xs text-[var(--abu-text-muted)]">
-                加载企业模型列表中...
+                {t.chat.enterpriseModelLoading}
               </div>
             ) : filtered.length === 0 ? (
               <div className="px-3 py-4 text-center text-xs text-[var(--abu-text-muted)]">
-                {lowerQuery ? '未找到匹配的模型' : '暂无可用模型'}
+                {lowerQuery ? t.chat.enterpriseModelNoMatch : t.chat.enterpriseModelEmpty}
               </div>
             ) : (
               <div className="mb-1">
                 <div className="px-3 py-1">
                   <span className="text-[10px] font-medium uppercase tracking-wider text-orange-400">
-                    企业网关
+                    {t.chat.enterpriseGatewayLabel}
                   </span>
                 </div>
                 {filtered.map(modelId => {

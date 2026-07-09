@@ -1,4 +1,4 @@
-import { useI18n } from '@/i18n';
+import { useI18n, getI18n } from '@/i18n';
 import RenderableCodeBlock, { type CodeBlockRendererConfig } from './RenderableCodeBlock';
 
 // ---------------------------------------------------------------------------
@@ -197,9 +197,10 @@ function sanitizeForStreaming(html: string): string {
   // Strip inline event handlers during preview
   safe = safe.replace(/\s(on\w+)="[^"]*"/gi, '');
   // Replace empty <canvas> with loading placeholder (charts need script to render)
+  const loadingText = getI18n().chat.htmlWidgetLoading;
   safe = safe.replace(
     /<canvas([^>]*)><\/canvas>/gi,
-    '<div$1 style="display:flex;align-items:center;justify-content:center;min-height:200px;background:var(--abu-bg-secondary);border-radius:8px;color:var(--abu-text-muted);font-size:13px;">图表加载中…</div>',
+    `<div$1 style="display:flex;align-items:center;justify-content:center;min-height:200px;background:var(--abu-bg-secondary);border-radius:8px;color:var(--abu-text-muted);font-size:13px;">${loadingText}</div>`,
   );
   return safe;
 }

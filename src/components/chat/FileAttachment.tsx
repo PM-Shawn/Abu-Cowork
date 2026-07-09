@@ -3,7 +3,7 @@ import { FileCode, FileText, FileImage, File, FileJson, ExternalLink, Globe, Squ
 import { usePreviewStore } from '@/stores/previewStore';
 import { useChatStore } from '@/stores/chatStore';
 import { useToastStore } from '@/stores/toastStore';
-import { useI18n } from '@/i18n';
+import { useI18n, format } from '@/i18n';
 import { cn } from '@/lib/utils';
 import { loadLocalImage, getBaseName, isLocalFilePath } from '@/utils/pathUtils';
 import { resolveFileSource, type ResolvedSource } from '@/core/session/outputSnapshots';
@@ -60,7 +60,7 @@ function getFileTypeInfo(filePath: string): { icon: typeof File; label: string; 
 }
 
 // Get open-with label and icon by file extension
-function getOpenWithInfo(filePath: string): { label: string; icon: typeof File } {
+function getOpenWithInfo(filePath: string, labels: { preview: string; browser: string }): { label: string; icon: typeof File } {
   const ext = filePath.split('.').pop()?.toLowerCase() || '';
   const map: Record<string, { label: string; icon: typeof File }> = {
     pptx: { label: 'PowerPoint', icon: Presentation },
@@ -70,9 +70,9 @@ function getOpenWithInfo(filePath: string): { label: string; icon: typeof File }
     csv: { label: 'Excel', icon: Sheet },
     docx: { label: 'Word', icon: FileType2 },
     doc: { label: 'Word', icon: FileType2 },
-    pdf: { label: '预览', icon: FileSearch },
-    html: { label: '浏览器', icon: Globe },
-    htm: { label: '浏览器', icon: Globe },
+    pdf: { label: labels.preview, icon: FileSearch },
+    html: { label: labels.browser, icon: Globe },
+    htm: { label: labels.browser, icon: Globe },
   };
   return map[ext] || { label: '', icon: SquareArrowOutUpRight };
 }
@@ -110,7 +110,7 @@ export default function FileAttachment({ filePath }: FileAttachmentProps) {
   const { icon: Icon, label, category } = getFileTypeInfo(filePath);
   const fileName = getBaseName(filePath);
   const showThumbnail = isImageFile(filePath);
-  const { label: openWithLabel, icon: OpenWithIcon } = getOpenWithInfo(filePath);
+  const { label: openWithLabel, icon: OpenWithIcon } = getOpenWithInfo(filePath, { preview: t.chat.openWithPreview, browser: t.chat.openWithBrowser });
   const [thumbUrl, setThumbUrl] = useState<string | null>(null);
   const [resolved, setResolved] = useState<ResolvedSource | null>(null);
 
@@ -238,7 +238,7 @@ export default function FileAttachment({ filePath }: FileAttachmentProps) {
           'bg-[var(--abu-bg-muted)] border border-[var(--abu-border)] hover:border-[var(--abu-clay-40)]',
           'max-w-[240px]'
         )}
-        title="点击预览图片"
+        title={t.chat.clickToPreviewImage}
       >
         <img
           src={thumbUrl}
@@ -295,11 +295,11 @@ export default function FileAttachment({ filePath }: FileAttachmentProps) {
           'flex items-center gap-1.5 px-3 py-2 shrink-0 cursor-pointer whitespace-nowrap',
           'rounded-lg border border-[var(--abu-border)] bg-[var(--abu-bg-base)] hover:bg-[var(--abu-bg-muted)] transition-colors',
         )}
-        title={openWithLabel ? `用 ${openWithLabel} 打开` : t.chat.openWithDefaultApp}
+        title={openWithLabel ? format(t.chat.openWith, { label: openWithLabel }) : t.chat.openWithDefaultApp}
       >
         <OpenWithIcon className="w-4 h-4 text-[var(--abu-text-muted)]" />
         <span className="text-[12.5px] text-[var(--abu-text-tertiary)]">
-          {openWithLabel ? `用 ${openWithLabel} 打开` : t.chat.openWithDefaultApp}
+          {openWithLabel ? format(t.chat.openWith, { label: openWithLabel }) : t.chat.openWithDefaultApp}
         </span>
       </button>
     </div>
@@ -309,6 +309,7 @@ export default function FileAttachment({ filePath }: FileAttachmentProps) {
 // Small square thumbnail for images referenced in markdown text
 export function ImageThumbnail({ src }: { src: string }) {
   const openPreview = usePreviewStore((s) => s.openPreview);
+  const { t } = useI18n();
   const isLocalPath = isLocalFilePath(src);
   const [imgUrl, setImgUrl] = useState<string | null>(() => isLocalPath ? null : src);
 
@@ -335,7 +336,7 @@ export function ImageThumbnail({ src }: { src: string }) {
         'hover:border-[var(--abu-clay-40)]',
         isLocalPath && 'cursor-pointer'
       )}
-      title={isLocalPath ? '点击预览大图' : src}
+      title={isLocalPath ? t.chat.clickToPreviewFull : src}
     >
       <img
         src={imgUrl}

@@ -273,7 +273,7 @@ export default function SkillEditor({ skill, onClose, onSave }: SkillEditorProps
                   type="text"
                   value={trigger}
                   onChange={(e) => setTrigger(e.target.value)}
-                  placeholder="用户要求深度调研某个主题"
+                  placeholder={t.toolbox.skillTriggerPlaceholder}
                   className="w-full px-3 py-1.5 rounded-lg border border-[var(--abu-border)] text-sm text-[var(--abu-text-primary)] bg-[var(--abu-bg-base)] focus:outline-none focus:ring-2 focus:ring-[var(--abu-clay-ring)] focus:border-[var(--abu-clay)] transition-all"
                 />
               </div>
@@ -285,7 +285,7 @@ export default function SkillEditor({ skill, onClose, onSave }: SkillEditorProps
                   type="text"
                   value={doNotTrigger}
                   onChange={(e) => setDoNotTrigger(e.target.value)}
-                  placeholder="用户只是问一个简单问题"
+                  placeholder={t.toolbox.skillDoNotTriggerPlaceholder}
                   className="w-full px-3 py-1.5 rounded-lg border border-[var(--abu-border)] text-sm text-[var(--abu-text-primary)] bg-[var(--abu-bg-base)] focus:outline-none focus:ring-2 focus:ring-[var(--abu-clay-ring)] focus:border-[var(--abu-clay)] transition-all"
                 />
               </div>

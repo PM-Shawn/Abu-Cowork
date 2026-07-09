@@ -249,6 +249,11 @@ export interface TranslationDict {
     openWithDefaultApp: string;
     openFailed: string;
     clickToPreview: string;
+    clickToPreviewImage: string;
+    clickToPreviewFull: string;
+    openWith: string;
+    openWithPreview: string;
+    openWithBrowser: string;
     fileMissing: string;
     fileOversized: string;
     fileBackupFailed: string;
@@ -281,6 +286,16 @@ export interface TranslationDict {
     htmlWidgetDownload: string;
     htmlWidgetViewCode: string;
     htmlWidgetViewPreview: string;
+    // Enterprise model selector
+    enterpriseModelLoading: string;
+    enterpriseModelNoMatch: string;
+    enterpriseModelEmpty: string;
+    enterpriseGatewayLabel: string;
+    // DetailBlockView
+    characters: string;
+    viewMore: string;
+    moreItems: string;
+    moreRows: string;
     setupRequired: string;
     setupRequiredDesc: string;
     setupButton: string;
@@ -1054,7 +1069,9 @@ export interface TranslationDict {
     // Skill detail & editor
     skillDetail: string;
     skillTrigger: string;
+    skillTriggerPlaceholder: string;
     skillDoNotTrigger: string;
+    skillDoNotTriggerPlaceholder: string;
     skillTags: string;
     skillAllowedTools: string;
     skillContext: string;
@@ -1231,6 +1248,7 @@ export interface TranslationDict {
     skillPatchedCardLabel: string;      // "Abu 修正了技能" / "Abu patched skill"
     // Grouped patch fold-row in MessageGroup
     skillPatchGroupLabel: string;       // "Abu 修改了技能" / "Abu modified skill"
+    skillPatchGroupCount: string;       // "（{count} 处）" / "({count} locations)"
     // Interactive notice card · skill deleted (Task #17 v2)
     skillDeletedCardLabel: string;      // "Abu 删除了技能"
     skillDeletedCardRescuable: string;  // "可在 7 天内恢复"

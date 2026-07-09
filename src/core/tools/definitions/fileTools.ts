@@ -183,6 +183,33 @@ export const readFileTool: ToolDefinition = {
   isConcurrencySafe: true,
 };
 
+/**
+ * Ensure an HTML document declares UTF-8 so browsers/webviews don't fall back to a
+ * locale-default encoding (e.g. GBK on Chinese systems) and mojibake CJK content.
+ * writeTextFile always writes UTF-8 bytes; this makes the file self-declare it, which
+ * also covers opening the file directly in an external browser (file://, where there
+ * is no HTTP charset header to rely on).
+ */
+function ensureHtmlCharset(content: string): string {
+  // Already declares an encoding (meta charset / http-equiv) or has a BOM — leave as-is.
+  if (/<meta[^>]*charset/i.test(content) || content.startsWith('\uFEFF')) {
+    return content;
+  }
+  const meta = '<meta charset="utf-8">';
+  const headMatch = content.match(/<head[^>]*>/i);
+  if (headMatch && headMatch.index !== undefined) {
+    const idx = headMatch.index + headMatch[0].length;
+    return content.slice(0, idx) + '\n    ' + meta + content.slice(idx);
+  }
+  const htmlMatch = content.match(/<html[^>]*>/i);
+  if (htmlMatch && htmlMatch.index !== undefined) {
+    const idx = htmlMatch.index + htmlMatch[0].length;
+    return content.slice(0, idx) + `\n<head>${meta}</head>` + content.slice(idx);
+  }
+  // Fragment / no document structure — a BOM guarantees UTF-8 decoding.
+  return '\uFEFF' + content;
+}
+
 export const writeFileTool: ToolDefinition = {
   name: TOOL_NAMES.WRITE_FILE,
   description: 'Write content to a file. Creates the file if it does not exist; overwrites if it does. Use only for creating new files — partial edits to existing files must use edit_file (full overwrite will lose sections not explicitly changed). Supports plain text only; cannot create binary files (.docx/.xlsx etc.).',
@@ -218,6 +245,8 @@ export const writeFileTool: ToolDefinition = {
       let finalContent = content;
       if (ext === '.csv' && !content.startsWith('\uFEFF')) {
         finalContent = '\uFEFF' + content;
+      } else if (ext === '.html' || ext === '.htm') {
+        finalContent = ensureHtmlCharset(content);
       }
       await writeTextFile(path, finalContent);
       return `Successfully wrote ${content.length} characters to ${path}`;

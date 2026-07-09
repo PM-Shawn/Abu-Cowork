@@ -2503,5 +2503,80 @@ export interface TranslationDict {
       /** File locked by another agent. {path} */
       errFileLocked: string;
     };
+    // computer (computerTools.ts) — AX/screenshot/input action results and errors
+    computer: {
+      /** formatAxElements: no interactive elements found. */
+      noInteractiveElements: string;
+      /** screenshot: current model has no vision capability (bilingual). zh half. */
+      errNoVision: string;
+      /** activate_app: missing app parameter. */
+      errActivateNeedsApp: string;
+      /** activate_app success. {name} */
+      activateSuccess: string;
+      /** activate_app failure. {msg} */
+      errActivateFailed: string;
+      /** get_app_state: AX tree truncated note. */
+      axTreeTruncated: string;
+      /** get_app_state: AX tree header. {app}, {count}, {visited}, {note}, {formatted} */
+      axTreeHeader: string;
+      /** get_app_state: AX tree fetch failed. {msg} */
+      axTreeFailed: string;
+      /** get_app_state: operation hint appended to AX tree (vision path). */
+      axSuffixVision: string;
+      /** get_app_state: screenshot section header (vision path). */
+      axScreenshotSeparator: string;
+      /** get_app_state: operation hint (non-vision path). */
+      axSuffixNoVision: string;
+      /** click: AXPress succeeded. {elemId} */
+      clickAxSuccess: string;
+      /** click: AXPress failed, fallback to element center. {msg}, {cx}, {cy} */
+      clickAxFallbackCenter: string;
+      /** click: AXPress failed, fallback to caller-supplied coords. {msg}, {x}, {y} */
+      clickAxFallbackCoords: string;
+      /** click: AXPress failed, no fallback coords available. {msg} */
+      errClickAxNoFallback: string;
+      /** click: element_id provided but no active AX session. */
+      errClickNoSession: string;
+      /** click: no element_id and no x,y coordinates. */
+      errClickNeedsCoords: string;
+      /** scroll: element in AX session, scrolled at element center. {dir}, {amt}, {elemId}, {cx}, {cy} */
+      scrollAtElement: string;
+      /** scroll: element_id not in current snapshot. {elemId} */
+      errScrollElemNotFound: string;
+      /** scroll: no element_id and no x,y coordinates. */
+      errScrollNeedsCoords: string;
+      /** type: AXSetValue succeeded. {elemId} */
+      typeAxSuccess: string;
+      /** type: AXSetValue failed, fallback to keyboard. {msg} */
+      typeAxFallback: string;
+      /** perform_action: missing action_name. */
+      errPerformNeedsActionName: string;
+      /** perform_action: no active AX session. */
+      errPerformNoSession: string;
+      /** perform_action: succeeded. {elemId}, {actionName} */
+      performSuccess: string;
+      /** perform_action: failed. {msg} */
+      errPerformFailed: string;
+      /** ax_click: no active AX session. */
+      errAxClickNoSession: string;
+      /** ax_click: AXPress succeeded. {elemId} */
+      axClickSuccess: string;
+      /** ax_click: AXPress failed, fallback to pixel click. {msg}, {x}, {y} */
+      axClickFallback: string;
+      /** ax_click: AXPress failed, no coords fallback. {msg} */
+      errAxClickFailed: string;
+      /** ax_type: no active AX session. */
+      errAxTypeNoSession: string;
+      /** ax_type: AXSetValue succeeded. {elemId} */
+      axTypeSuccess: string;
+      /** ax_type: AXSetValue failed, fallback to keyboard. {msg} */
+      axTypeFallback: string;
+      /** Screen recording permission denied (bilingual). zh half. */
+      errNoScreenRecording: string;
+      /** Windows: accessibility requires elevation (bilingual). zh half. */
+      errWindowsNeedsAdmin: string;
+      /** macOS: accessibility permission denied (bilingual). zh half. */
+      errMacOSNeedsAccessibility: string;
+    };
   };
 }

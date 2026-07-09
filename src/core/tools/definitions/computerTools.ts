@@ -11,6 +11,7 @@ import { isMacOS, isWindows } from '../../../utils/platform';
 import { TOOL_NAMES } from '../toolNames';
 import { updateLatestScreenshot, checkCUSessionLimits } from '../../agent/computerUseStatus';
 import { checkSensitiveApp, checkBlockedKeyCombo } from '../computerUseSafety';
+import { getI18n, format } from '../../../i18n';
 
 // Screenshot→global-point mapping. `lastScreenScaleFactor` is points-per-screenshot-pixel
 // and `lastScreenOrigin` is the captured display's top-left in global logical points.
@@ -91,7 +92,7 @@ async function closeCurrentAxSession(): Promise<void> {
 
 /** Format AX elements as a numbered list for the model (Set-of-Mark style). */
 function formatAxElements(elements: AxElement[]): string {
-  if (elements.length === 0) return '（没有找到可交互元素）';
+  if (elements.length === 0) return getI18n().toolResult.computer.noInteractiveElements;
   return elements
     .slice(0, 120) // cap at 120 to stay within token budget
     .map(e => {
@@ -406,6 +407,7 @@ All pixel coordinates use screenshot space (max width ${SCREENSHOT_MAX_WIDTH}px)
     }
 
     const action = input.action as string;
+    const t = getI18n().toolResult.computer;
 
     // Whether the active model can understand images. Non-vision models (many
     // Chinese / local models, e.g. GLM, Qwen, MiMo) reject image inputs — sending
@@ -448,7 +450,7 @@ All pixel coordinates use screenshot space (max width ${SCREENSHOT_MAX_WIDTH}px)
         // subsequent times it's a no-op). The dialog has an "Open System Settings" button.
         const granted = await invoke<boolean>('request_screen_recording');
         if (!granted) {
-          return 'Error: 没有录屏权限。请在弹出的系统对话框中点击「打开系统设置」，授权 Abu 后重启。\n\nNo Screen Recording permission. Please click "Open System Settings" in the dialog, grant Abu access, then restart Abu.';
+          return getI18n().toolResult.computer.errNoScreenRecording;
         }
       }
 
@@ -459,11 +461,11 @@ All pixel coordinates use screenshot space (max width ${SCREENSHOT_MAX_WIDTH}px)
           // On Windows accessibility=false means the process is not elevated
           // (check_macos_permissions maps it to admin rights). There is no
           // Settings panel to open and no system dialog will ever appear.
-          return 'Error: 操控其他应用窗口需要管理员权限。请完全退出 Abu，右键 Abu 图标选择「以管理员身份运行」后重试。\n\nControlling other app windows on Windows requires elevation. Please quit Abu and re-launch it via "Run as administrator", then retry.';
+          return getI18n().toolResult.computer.errWindowsNeedsAdmin;
         }
         // No system dialog for Accessibility — need to open Settings directly
         await openMacOSSettings('Accessibility');
-        return 'Error: 没有辅助功能权限。已自动打开系统设置，请在「辅助功能」中授权 Abu，然后重启 Abu。\n\nNo Accessibility permission. System Settings has been opened — please grant Abu access in Accessibility, then restart Abu.';
+        return getI18n().toolResult.computer.errMacOSNeedsAccessibility;
       }
     } catch {
       // Non-macOS or FFI unavailable — proceed
@@ -507,7 +509,7 @@ All pixel coordinates use screenshot space (max width ${SCREENSHOT_MAX_WIDTH}px)
       switch (action) {
         case 'screenshot':
           if (!modelSupportsVision) {
-            return '当前模型不支持图片识别，截图对它没有意义。请改用 get_app_state（可加 app 参数指定应用）读取 AX 元素，再用 click(element_id) / type(element_id, text) 操作。\n\nThe current model has no vision capability. Use get_app_state to read AX elements, then click(element_id) / type(element_id, text) to operate.';
+            return t.errNoVision;
           }
           return await executeScreenshot(input, context?.workspacePath);
 
@@ -515,13 +517,13 @@ All pixel coordinates use screenshot space (max width ${SCREENSHOT_MAX_WIDTH}px)
         case 'activate_app':
         case 'activate': {
           const targetApp = (input.app as string | undefined) ?? (input.app_name as string | undefined);
-          if (!targetApp) return 'Error: activate_app 需要 app 参数（应用名，如 "D-Chat"、"Notes"）。';
+          if (!targetApp) return t.errActivateNeedsApp;
           try {
             const name = await invoke<string>('activate_app', { appName: targetApp });
-            actionResult = `已将「${name}」切到前台。可继续 get_app_state 读取界面或操作。`;
+            actionResult = format(t.activateSuccess, { name });
           } catch (e) {
             const msg = e instanceof Error ? e.message : String(e);
-            return `Error: 激活应用失败：${msg}`;
+            return format(t.errActivateFailed, { msg });
           }
           break;
         }
@@ -549,13 +551,17 @@ All pixel coordinates use screenshot space (max width ${SCREENSHOT_MAX_WIDTH}px)
             currentAxSessionId = snap.session_id;
             currentAxElements = snap.elements;
             const formatted = formatAxElements(snap.elements);
-            const note = snap.truncated ? '\n⚠️ 元素列表已截断（树太大）。' : '';
-            axPart =
-              `AX 树（${snap.app ?? 'unknown'}）：${snap.elements.length} 个可交互元素，` +
-              `遍历 ${snap.total_visited} 个节点。${note}\n\n${formatted}`;
+            const note = snap.truncated ? t.axTreeTruncated : '';
+            axPart = format(t.axTreeHeader, {
+              app: snap.app ?? 'unknown',
+              count: snap.elements.length,
+              visited: snap.total_visited,
+              note,
+              formatted,
+            });
           } catch (e) {
             const msg = e instanceof Error ? e.message : String(e);
-            axPart = `AX 树获取失败：${msg}\n（可尝试 screenshot 查看当前界面）`;
+            axPart = format(t.axTreeFailed, { msg });
             currentAxElements = [];
           }
 
@@ -563,13 +569,12 @@ All pixel coordinates use screenshot space (max width ${SCREENSHOT_MAX_WIDTH}px)
           // Non-vision: AX tree only — still actionable via element_id.
           if (modelSupportsVision) {
             const screenshotContent = await takeAutoScreenshot();
-            const axSuffix = '\n\n操作：click(element_id=N)、type(element_id=N, text=...)、perform_action(element_id=N, action_name=...)。AX 路径不移动鼠标。';
             return [
-              { type: 'text', text: axPart + axSuffix + '\n\n--- 截图（优先用上方 element_id，坐标仅降级备用）---' },
+              { type: 'text', text: axPart + t.axSuffixVision + t.axScreenshotSeparator },
               ...screenshotContent,
             ];
           }
-          actionResult = axPart + '\n\n操作：click(element_id=N)、type(element_id=N, text=...)、perform_action(element_id=N, action_name=...)。';
+          actionResult = axPart + t.axSuffixNoVision;
           break;
         }
 
@@ -582,7 +587,7 @@ All pixel coordinates use screenshot space (max width ${SCREENSHOT_MAX_WIDTH}px)
             // AX path: try AXPress first (no cursor movement)
             try {
               await invoke('ax_press', { sessionId: currentAxSessionId, elementId: elemId });
-              actionResult = `click 成功：元素 [${elemId}] AXPress（光标未移动）`;
+              actionResult = format(t.clickAxSuccess, { elemId });
             } catch (e) {
               const msg = e instanceof Error ? e.message : String(e);
               // Fallback 1: pixel click at element center (AX bounds are screen points)
@@ -591,23 +596,23 @@ All pixel coordinates use screenshot space (max width ${SCREENSHOT_MAX_WIDTH}px)
                 const cx = Math.round(elem.bounds[0] + elem.bounds[2] / 2);
                 const cy = Math.round(elem.bounds[1] + elem.bounds[3] / 2);
                 await invoke<string>('mouse_click', { x: cx, y: cy, button: btn });
-                actionResult = `click: AXPress 失败（${msg}），降级像素点击元素中心 (${cx},${cy})`;
+                actionResult = format(t.clickAxFallbackCenter, { msg, cx, cy });
               } else if (input.x != null && input.y != null) {
                 // Fallback 2: caller-supplied screenshot-space coords
                 const sc = toScreenCoords(input.x as number, input.y as number);
                 await invoke<string>('mouse_click', { x: sc.x, y: sc.y, button: btn });
-                actionResult = `click: AXPress 失败（${msg}），降级像素点击 (${sc.x},${sc.y})`;
+                actionResult = format(t.clickAxFallbackCoords, { msg, x: sc.x, y: sc.y });
               } else {
-                return `Error: click 失败：${msg}。请提供 x,y 坐标或先调用 get_app_state。`;
+                return format(t.errClickAxNoFallback, { msg });
               }
             }
           } else if (elemId !== undefined) {
             // element_id provided but no active AX session — caller forgot get_app_state
-            return 'Error: click(element_id=N) 需要先调用 get_app_state 获取 UI 快照（当前无活动 session）。请先调用 get_app_state，再使用 click(element_id=N)。';
+            return t.errClickNoSession;
           } else {
             // Pixel-only path (no element_id)
             if (input.x == null || input.y == null) {
-              return 'Error: click 需要提供 element_id（来自 get_app_state）或 x,y 像素坐标。';
+              return t.errClickNeedsCoords;
             }
             const sc = toScreenCoords(input.x as number, input.y as number);
             actionResult = await invoke<string>('mouse_click', { x: sc.x, y: sc.y, button: btn });
@@ -633,17 +638,17 @@ All pixel coordinates use screenshot space (max width ${SCREENSHOT_MAX_WIDTH}px)
               // Scroll at element center (AX bounds → screen points, no scale needed)
               const cx = Math.round(elem.bounds[0] + elem.bounds[2] / 2);
               const cy = Math.round(elem.bounds[1] + elem.bounds[3] / 2);
-              actionResult = await invoke<string>('mouse_scroll', { x: cx, y: cy, direction: dir, amount: amt });
-              actionResult = `scroll ${dir}×${amt ?? 3} 在元素 [${elemId}] 中心 (${cx},${cy})`;
+              await invoke<string>('mouse_scroll', { x: cx, y: cy, direction: dir, amount: amt });
+              actionResult = format(t.scrollAtElement, { dir, amt: amt ?? 3, elemId, cx, cy });
             } else if (input.x != null && input.y != null) {
               const sc = toScreenCoords(input.x as number, input.y as number);
               actionResult = await invoke<string>('mouse_scroll', { x: sc.x, y: sc.y, direction: dir, amount: amt });
             } else {
-              return `Error: scroll: element_id ${elemId} 不在当前快照，请提供 x,y 坐标或先调用 get_app_state。`;
+              return format(t.errScrollElemNotFound, { elemId });
             }
           } else {
             if (input.x == null || input.y == null) {
-              return 'Error: scroll 需要提供 element_id（来自 get_app_state）或 x,y 像素坐标。';
+              return t.errScrollNeedsCoords;
             }
             const sc = toScreenCoords(input.x as number, input.y as number);
             actionResult = await invoke<string>('mouse_scroll', { x: sc.x, y: sc.y, direction: dir, amount: amt });
@@ -669,11 +674,11 @@ All pixel coordinates use screenshot space (max width ${SCREENSHOT_MAX_WIDTH}px)
           if (elemId !== undefined && currentAxSessionId != null) {
             try {
               await invoke('ax_set_value', { sessionId: currentAxSessionId, elementId: elemId, text });
-              actionResult = `type 成功：元素 [${elemId}] AXSetValue（无键盘事件）`;
+              actionResult = format(t.typeAxSuccess, { elemId });
             } catch (e) {
               const msg = e instanceof Error ? e.message : String(e);
-              actionResult = await typeViaKeyboard(text);
-              actionResult = `type: AXSetValue 失败（${msg}），降级键盘输入`;
+              await typeViaKeyboard(text);
+              actionResult = format(t.typeAxFallback, { msg });
             }
           } else {
             actionResult = await typeViaKeyboard(text);
@@ -692,9 +697,9 @@ All pixel coordinates use screenshot space (max width ${SCREENSHOT_MAX_WIDTH}px)
         case 'perform_action': {
           const elemId = input.element_id as number;
           const actionName = input.action_name as string;
-          if (!actionName) return 'Error: perform_action 需要 action_name 参数（如 "AXShowMenu"、"AXPick"、"AXIncrement"）。';
+          if (!actionName) return t.errPerformNeedsActionName;
           if (currentAxSessionId == null) {
-            return 'Error: 需要先调用 get_app_state 获取 UI 快照，再使用 perform_action。';
+            return t.errPerformNoSession;
           }
           try {
             await invoke('ax_perform_action', {
@@ -702,10 +707,10 @@ All pixel coordinates use screenshot space (max width ${SCREENSHOT_MAX_WIDTH}px)
               elementId: elemId,
               actionName,
             });
-            actionResult = `perform_action 成功：元素 [${elemId}] 执行了 ${actionName}`;
+            actionResult = format(t.performSuccess, { elemId, actionName });
           } catch (e) {
             const msg = e instanceof Error ? e.message : String(e);
-            return `Error: perform_action 失败：${msg}`;
+            return format(t.errPerformFailed, { msg });
           }
           break;
         }
@@ -714,19 +719,19 @@ All pixel coordinates use screenshot space (max width ${SCREENSHOT_MAX_WIDTH}px)
         case 'ax_click': {
           const elemId = input.element_id as number;
           if (currentAxSessionId == null) {
-            return 'Error: 需要先调用 get_app_state / get_ui 获取 UI 快照，再使用 ax_click。';
+            return t.errAxClickNoSession;
           }
           try {
             await invoke('ax_press', { sessionId: currentAxSessionId, elementId: elemId });
-            actionResult = `ax_click 成功：元素 [${elemId}] AXPress（光标未移动）`;
+            actionResult = format(t.axClickSuccess, { elemId });
           } catch (e) {
             const msg = e instanceof Error ? e.message : String(e);
             if (input.x != null && input.y != null) {
               const sc = toScreenCoords(input.x as number, input.y as number);
               await invoke<string>('mouse_click', { x: sc.x, y: sc.y, button: undefined });
-              actionResult = `ax_click 失败（${msg}），降级像素点击 (${sc.x},${sc.y})`;
+              actionResult = format(t.axClickFallback, { msg, x: sc.x, y: sc.y });
             } else {
-              return `Error: ax_click 失败：${msg}。请尝试 click(element_id) 或 screenshot 后 click(x,y)。`;
+              return format(t.errAxClickFailed, { msg });
             }
           }
           break;
@@ -736,15 +741,15 @@ All pixel coordinates use screenshot space (max width ${SCREENSHOT_MAX_WIDTH}px)
           const elemId = input.element_id as number;
           const text = input.text as string;
           if (currentAxSessionId == null) {
-            return 'Error: 需要先调用 get_app_state / get_ui 获取 UI 快照，再使用 ax_type。';
+            return t.errAxTypeNoSession;
           }
           try {
             await invoke('ax_set_value', { sessionId: currentAxSessionId, elementId: elemId, text });
-            actionResult = `ax_type 成功：元素 [${elemId}] AXSetValue（无键盘事件）`;
+            actionResult = format(t.axTypeSuccess, { elemId });
           } catch (e) {
             const msg = e instanceof Error ? e.message : String(e);
-            actionResult = await typeViaKeyboard(text);
-            actionResult = `ax_type 失败（${msg}），降级键盘输入`;
+            await typeViaKeyboard(text);
+            actionResult = format(t.axTypeFallback, { msg });
           }
           break;
         }

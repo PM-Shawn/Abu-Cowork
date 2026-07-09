@@ -48,11 +48,10 @@ describe('computerTool — accessibility permission branch', () => {
 
     expect(typeof result).toBe('string');
     const text = result as string;
-    expect(text).toContain('管理员');
     expect(text.toLowerCase()).toContain('administrator');
     // Must NOT claim a macOS Settings panel was opened
-    expect(text).not.toContain('辅助功能');
-    expect(text).not.toContain('系统设置');
+    expect(text).not.toContain('Accessibility');
+    expect(text).not.toContain('System Settings');
     // Must NOT attempt to open macOS System Settings
     expect(shellCommands().some((c) => c.includes('x-apple.systempreferences'))).toBe(false);
   });
@@ -64,7 +63,7 @@ describe('computerTool — accessibility permission branch', () => {
 
     const result = await computerTool.execute({ action: 'get_app_state', app: 'Chrome' }, undefined);
 
-    expect(result as string).toContain('辅助功能');
+    expect(result as string).toContain('Accessibility');
     expect(shellCommands().some((c) => c.includes('x-apple.systempreferences'))).toBe(true);
   });
 });

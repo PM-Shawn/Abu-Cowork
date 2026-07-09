@@ -2267,5 +2267,73 @@ export interface TranslationDict {
       /** {action} */
       fwUnknownAction: string;
     };
+    // use_skill / delegate_to_agent / save_agent / request_workspace
+    agent: {
+      // use_skill
+      /** Skill already active in this conversation. {skillName} */
+      skillAlreadyActive: string;
+      /** Skill loaded. {name}, {description} */
+      skillLoaded: string;
+      /** Context line appended after skillLoaded. {context} */
+      skillContextLine: string;
+      /** Line appended after skillLoaded (and optional context). */
+      skillInjected: string;
+      // delegate_to_agent
+      /** Error: agent not found. {agentName}, {available}, {presetList} */
+      errAgentNotFound: string;
+      /** Error: agent disabled. {agentName} */
+      errAgentDisabled: string;
+      /** Error: must specify agent_name or type. */
+      errMustSpecifyAgent: string;
+      // save_skill / save_agent (createSaveItemTool)
+      /** Word for "skill" used in labels/messages. */
+      labelSkill: string;
+      /** Word for "agent" used in labels/messages. */
+      labelAgent: string;
+      /** Error: invalid name. {label}, {name} */
+      errInvalidName: string;
+      /** Error: unsafe file path. {p} */
+      errUnsafeFilePath: string;
+      /** Attached-files section header + list. {list} */
+      savedFileList: string;
+      /** Success: skill saved. {label}, {name}, {filePath}, {fileList} */
+      skillSaved: string;
+      /** Success: agent saved. {label}, {name}, {filePath}, {fileList} */
+      agentSaved: string;
+      // request_workspace
+      /** Workspace selected by user. {result} */
+      workspaceSelected: string;
+      /** User cancelled workspace selection. */
+      workspaceCancelled: string;
+    };
+    // run_agent_batch pure helpers (aggregateBatchResults / runWithConcurrency / runWithTimeout)
+    orchestration: {
+      /** Error: tasks must be a non-empty array. */
+      errTasksRequired: string;
+      /** Error: tasks supports at most 16 items. */
+      errTasksTooMany: string;
+      /** Error: task description at index i cannot be empty. {i} */
+      errTaskEmpty: string;
+      /** Error: agent not found in batch task. {i}, {agentName}, {available}, {presetList} */
+      errBatchAgentNotFound: string;
+      /** Error: agent disabled in batch task. {i}, {agentName} */
+      errBatchAgentDisabled: string;
+      /** Activity label when a sub-agent calls a tool. {toolName} */
+      activityCalling: string;
+      /** Timeout error message for runWithTimeout. */
+      errTimeout: string;
+      /** Cancellation error message for runWithConcurrency cancelled slots. */
+      errCancelled: string;
+      /** aggregateBatchResults header. {total}, {successCount}, {failCount} */
+      batchHeader: string;
+      /** aggregateBatchResults section title. {n}, {label} */
+      batchSectionTitle: string;
+      /** aggregateBatchResults failure prefix. {text} */
+      batchFailPrefix: string;
+      /** Structured path: could not parse JSON. */
+      errJsonParseFailed: string;
+      /** Structured path: missing required fields. {fields} */
+      errMissingFields: string;
+    };
   };
 }

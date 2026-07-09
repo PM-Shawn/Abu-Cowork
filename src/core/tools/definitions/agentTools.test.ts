@@ -66,7 +66,7 @@ describe('save_agent multi-file support', () => {
         '/Users/testuser/.abu/agents/my-agent/scripts/helper.py',
         'print("hello")',
       );
-      expect(result).toContain('附属文件');
+      expect(result).toContain('Attached files');
       expect(result).toContain('scripts/helper.py');
     });
   });

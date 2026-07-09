@@ -13,6 +13,7 @@ import { joinPath, ensureParentDir } from '../../../utils/pathUtils';
 import { ITEM_NAME_RE } from '../../../utils/validation';
 import { getSystemInfoData } from '../helpers/toolHelpers';
 import { TOOL_NAMES } from '../toolNames';
+import { getI18n, format } from '../../../i18n';
 
 // Module-level map to track skill hook cleanup functions.
 // Key format: "conversationId:skillName" for per-conversation scoping.
@@ -81,7 +82,8 @@ export const useSkillTool: ToolDefinition = {
     if (activeId) {
       const existing = state.conversations[activeId]?.activeSkills;
       if (existing?.includes(skillName)) {
-        return `技能 "${skillName}" 已在本对话激活，无需重复调用。直接根据已注入的技能指令继续工作。`;
+        const t = getI18n().toolResult.agent;
+        return format(t.skillAlreadyActive, { skillName });
       }
     }
 
@@ -132,11 +134,12 @@ export const useSkillTool: ToolDefinition = {
       }
     }
 
-    let result = `已加载技能 "${skill.name}": ${skill.description}`;
+    const t = getI18n().toolResult.agent;
+    let result = format(t.skillLoaded, { name: skill.name, description: skill.description });
     if (context) {
-      result += `\n用户上下文: ${context}`;
+      result += format(t.skillContextLine, { context });
     }
-    result += '\n技能指令已注入本轮系统提示，任务结束后自动释放。';
+    result += t.skillInjected;
     return result;
   },
   isConcurrencySafe: false,
@@ -208,16 +211,18 @@ export const delegateToAgentTool: ToolDefinition = {
           .map((a) => `${a.name} (${a.description})`)
           .join(', ');
         const presetList = Object.keys(PRESET_AGENTS).join(', ');
-        return `Error: 代理 "${agentName}" 未找到。可用代理: ${available || '无'}。也可使用系统角色 type: ${presetList}`;
+        const t = getI18n().toolResult.agent;
+        return format(t.errAgentNotFound, { agentName, available: available || getI18n().toolResult.valueNone, presetList });
       }
 
       // Check if disabled
       const { disabledAgents } = useSettingsStore.getState();
       if (disabledAgents.includes(agentName)) {
-        return `Error: 代理 "${agentName}" 已被停用。`;
+        const t = getI18n().toolResult.agent;
+        return format(t.errAgentDisabled, { agentName });
       }
     } else {
-      return 'Error: 必须指定 agent_name（用户代理）或 type（系统角色：research/writer/executor）';
+      return getI18n().toolResult.agent.errMustSpecifyAgent;
     }
 
     const effectiveAgentName = agent.name;
@@ -365,11 +370,10 @@ function createSaveItemTool(kind: 'skill' | 'agent'): ToolDefinition {
   const isSkill = kind === 'skill';
   const folder = isSkill ? 'skills' : 'agents';
   const fileName = isSkill ? 'SKILL.md' : 'AGENT.md';
-  const label = isSkill ? '技能' : '代理';
 
   return {
     name: isSkill ? TOOL_NAMES.SAVE_SKILL : TOOL_NAMES.SAVE_AGENT,
-    description: `Save a custom ${label} file to ~/.abu/${folder}/{name}/${fileName}. Use when the user asks to create or modify a ${label}. Only provide the name and content — the path is computed automatically. Optionally pass a files array to also save supporting files such as scripts and reference documents.`,
+    description: `Save a custom ${kind} file to ~/.abu/${folder}/{name}/${fileName}. Use when the user asks to create or modify a ${kind}. Only provide the name and content — the path is computed automatically. Optionally pass a files array to also save supporting files such as scripts and reference documents.`,
     inputSchema: {
       type: 'object',
       properties: {
@@ -393,9 +397,11 @@ function createSaveItemTool(kind: 'skill' | 'agent'): ToolDefinition {
     execute: async (input) => {
       const name = (input.name as string).trim();
       const content = input.content as string;
+      const t = getI18n().toolResult.agent;
+      const label = isSkill ? t.labelSkill : t.labelAgent;
 
       if (!ITEM_NAME_RE.test(name)) {
-        return `Error: ${label}名称不合法。仅允许小写字母、数字和连字符，且不能以连字符开头或结尾。收到: "${name}"`;
+        return format(t.errInvalidName, { label, name });
       }
 
       const info = await getSystemInfoData();
@@ -413,7 +419,7 @@ function createSaveItemTool(kind: 'skill' | 'agent'): ToolDefinition {
         for (const file of files) {
           const p = file.path;
           if (p.includes('..') || p.startsWith('/') || p.startsWith('\\')) {
-            return `Error: 文件路径不安全: "${p}"。不允许 .. 或绝对路径。`;
+            return format(t.errUnsafeFilePath, { p });
           }
           const targetPath = joinPath(itemDir, p);
           await ensureParentDir(targetPath);
@@ -426,13 +432,13 @@ function createSaveItemTool(kind: 'skill' | 'agent'): ToolDefinition {
       await useDiscoveryStore.getState().refresh();
 
       const fileList = writtenFiles.length
-        ? '\n附属文件：\n' + writtenFiles.map(f => `  - ${f}`).join('\n')
+        ? format(t.savedFileList, { list: writtenFiles.map(f => `  - ${f}`).join('\n') })
         : '';
 
       if (isSkill) {
-        return `✅ ${label}「${name}」已保存到 ${filePath}${fileList}\n\n你可以：\n- 到「工具箱 → 技能」查看和编辑\n- 使用 /${name} 调用此技能`;
+        return format(t.skillSaved, { label, name, filePath, fileList });
       }
-      return `✅ ${label}「${name}」已保存到 ${filePath}${fileList}\n\n你可以到「工具箱 → 代理」查看和管理此代理。`;
+      return format(t.agentSaved, { label, name, filePath, fileList });
     },
     isConcurrencySafe: false,
   };
@@ -487,10 +493,11 @@ export const requestWorkspaceTool: ToolDefinition = {
     }
 
     const result = await requestWorkspace(reason, convId, suggestedPath);
+    const t = getI18n().toolResult.agent;
     if (result) {
-      return `用户已选择工作区：${result}`;
+      return format(t.workspaceSelected, { result });
     }
-    return '用户取消了工作区选择。请告知用户需要先选择工作目录才能进行文件操作。';
+    return t.workspaceCancelled;
   },
   isConcurrencySafe: false,
 };

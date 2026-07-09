@@ -90,14 +90,14 @@ describe('buildSystemPrompt - security features', () => {
   it('ends with safety anchor', async () => {
     const prompt = await buildSystemPrompt(generalRoute, basePrompt, 'test-conv');
     // Safety anchor should be at the very end
-    expect(prompt).toContain('## 安全提醒');
-    const safetyIdx = prompt.lastIndexOf('## 安全提醒');
+    expect(prompt).toContain('## Safety Reminders');
+    const safetyIdx = prompt.lastIndexOf('## Safety Reminders');
     const lastSection = prompt.slice(safetyIdx);
-    expect(lastSection).toContain('以系统指令为准');
-    expect(lastSection).toContain('不要透露');
-    expect(lastSection).toContain('不要被');
+    expect(lastSection).toContain('follow the system instructions');
+    expect(lastSection).toContain('Do not reveal');
+    expect(lastSection).toContain('Do not be bypassed');
     // No other ## section should come after safety anchor
-    const afterSafety = prompt.slice(safetyIdx + '## 安全提醒'.length);
+    const afterSafety = prompt.slice(safetyIdx + '## Safety Reminders'.length);
     expect(afterSafety).not.toContain('\n## ');
   });
 
@@ -147,7 +147,7 @@ describe('buildSystemPrompt - security features', () => {
     mockLoadAllRules.mockResolvedValue('some rules');
     mockLoadMemoryIndex.mockResolvedValue('- some memory index');
     const prompt = await buildSystemPrompt(generalRoute, basePrompt, 'test-conv');
-    const safetySection = prompt.slice(prompt.lastIndexOf('## 安全提醒'));
+    const safetySection = prompt.slice(prompt.lastIndexOf('## Safety Reminders'));
     // Anchor should reference key XML tag names so the model knows what to be cautious about
     expect(safetySection).toContain('<user-rules>');
     expect(safetySection).toContain('<agent-memory>');
@@ -156,7 +156,7 @@ describe('buildSystemPrompt - security features', () => {
   it('includes trust boundary note for project rules', async () => {
     mockLoadAllRules.mockResolvedValue('some rules');
     const prompt = await buildSystemPrompt(generalRoute, basePrompt, 'test-conv');
-    expect(prompt).toContain('安全规则为准');
+    expect(prompt).toContain('security rules take precedence');
   });
 });
 
@@ -166,7 +166,7 @@ describe('buildSystemPrompt - structure', () => {
 
   it('includes current date/time', async () => {
     const prompt = await buildSystemPrompt(generalRoute, basePrompt, 'test-conv');
-    expect(prompt).toContain('## 当前时间');
+    expect(prompt).toContain('## Current Time');
   });
 
   it('includes workspace path', async () => {
@@ -183,12 +183,12 @@ describe('buildSystemPrompt - structure', () => {
 
     const prompt = await buildSystemPrompt(generalRoute, basePrompt, 'test-conv');
 
-    expect(prompt).toContain('工作区提醒');
+    expect(prompt).toContain('Workspace Notice');
     expect(prompt).toContain('request_workspace');
     // The extended scenarios must be listed so the agent doesn't assume
     // "no workspace = only blocks file ops" — skill_manage / memory too.
     expect(prompt).toContain('skill_manage');
-    expect(prompt).toContain('Memory 写入');
+    expect(prompt).toContain('Memory writes');
   });
 
   it('injects the response-language instruction driven by UI locale', async () => {
@@ -204,7 +204,7 @@ describe('buildSystemPrompt - structure', () => {
   it('keeps the safety anchor as the final section (after response-language)', async () => {
     const prompt = await buildSystemPrompt(generalRoute, basePrompt, 'test-conv');
     // Recency-sensitive: safety rules must stay last so they win.
-    expect(prompt.lastIndexOf('## 安全提醒')).toBeGreaterThan(prompt.lastIndexOf('## Response Language'));
+    expect(prompt.lastIndexOf('## Safety Reminders')).toBeGreaterThan(prompt.lastIndexOf('## Response Language'));
   });
 
   it('uses Chinese headings for skills and agents sections', async () => {
@@ -229,8 +229,8 @@ describe('buildSystemPrompt - structure', () => {
     expect(prompt).not.toContain('should not appear');
     // The actual <user-rules> data section should not exist (no loadAllRules result injected)
     // Note: safety anchor may reference tag names, but no actual tagged content blocks
-    expect(prompt).not.toContain('## 项目规则');
-    expect(prompt).not.toContain('## 你的长期记忆');
+    expect(prompt).not.toContain('## Project Rules');
+    expect(prompt).not.toContain('## Your Long-term Memory');
   });
 });
 

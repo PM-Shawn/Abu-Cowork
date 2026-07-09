@@ -149,18 +149,18 @@ export const useSkillTool: ToolDefinition = {
 // These are internal roles, not visible to users in the toolbox
 const PRESET_AGENTS: Record<string, { description: string; systemPrompt: string; tools: string[] }> = {
   research: {
-    description: '信息搜索和调研',
-    systemPrompt: '你是一个专业的调研助手。专注于搜索、阅读和分析信息，输出结构化的调研结果。',
+    description: 'Information search and research',
+    systemPrompt: 'You are a professional research assistant. Focus on searching, reading, and analyzing information, and output structured research results.',
     tools: [TOOL_NAMES.READ_FILE, TOOL_NAMES.LIST_DIRECTORY, TOOL_NAMES.FIND_FILES, TOOL_NAMES.SEARCH_FILES, TOOL_NAMES.WEB_SEARCH, TOOL_NAMES.HTTP_FETCH],
   },
   writer: {
-    description: '内容创作和文档撰写',
-    systemPrompt: '你是一个专业的写作助手。擅长撰写文档、报告、邮件等各类文字内容。',
+    description: 'Content creation and document writing',
+    systemPrompt: 'You are a professional writing assistant. Skilled at writing documents, reports, emails, and other text content.',
     tools: [TOOL_NAMES.READ_FILE, TOOL_NAMES.WRITE_FILE, TOOL_NAMES.EDIT_FILE, TOOL_NAMES.LIST_DIRECTORY, TOOL_NAMES.FIND_FILES, TOOL_NAMES.SEARCH_FILES, TOOL_NAMES.WEB_SEARCH],
   },
   executor: {
-    description: '执行复杂操作任务',
-    systemPrompt: '你是一个高效的执行助手。能够使用各种工具完成文件操作、命令执行等任务。',
+    description: 'Executing complex operational tasks',
+    systemPrompt: 'You are an efficient execution assistant. Able to use various tools to complete file operations, command execution, and other tasks.',
     tools: [], // Empty = all tools allowed (except delegate_to_agent which is always blocked)
   },
 };

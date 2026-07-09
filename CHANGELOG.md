@@ -2,6 +2,19 @@
 
 All notable changes to Abu are documented here. Format based on [Keep a Changelog](https://keepachangelog.com/).
 
+## v0.28.0 · 2026-07-10
+
+### Added
+
+- **Doc comment-to-chat**: select any snippet in the markdown preview, attach a note, and send it back to the agent as a reference chip. Selections leave an in-place highlight trail (`CSS.highlights`), the selection toolbar positions itself edge-aware and dismisses on scroll, and the reference is serialized into your message on send.
+- **Full internationalization (P1–P4)**: the app now follows your UI locale everywhere, and a new locale-driven output-language mechanism controls the reply language independently of the prompt language (Chinese stays Chinese; English follows your message). LLM-facing prompts and tool descriptions were English-ized (P1–P2), and tool result strings, command-safety prompts, the built-in MCP catalog, project rules / `ABU.md` / `/init` output, and agent runtime status/errors were localized bilingually (P3–P4). UI strings across the model selector, file attachment, permission card, memory badges, marketplace catalog, computer-use overlay, and settings were localized as well.
+
+### Fixed
+
+- **CJK mojibake in HTML previews**: generated HTML now declares UTF-8, so Chinese/Japanese/Korean text no longer renders as garbled characters in the preview.
+- **Markdown tables collapsing to vertical CJK text**: table columns no longer shrink to one-character-per-line vertical stacks.
+- **User-message markdown invisible on the light theme**: headings, blockquotes, bold, and inline code in user messages were hard-coded to white (a leftover from the dark-bubble era) and disappeared on the light theme — now readable in both themes.
+
 ## v0.27.0 · 2026-07-09
 
 ### Added

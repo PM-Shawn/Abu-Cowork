@@ -2633,6 +2633,65 @@ export interface TranslationDict {
       warnPkill: string;
       warnSystemctlStop: string;
       warnLaunchctl: string;
+      // WIN_DANGEROUS_PATTERNS — block tier
+      winDelRecursiveDrive: string;
+      winFormatDisk: string;
+      winRegDeleteSystem: string;
+      winOverwritePhysicalDisk: string;
+      winDiskpart: string;
+      winBcdedit: string;
+      winCipherWipe: string;
+      winBlockPsProfile: string;
+      winRundll32: string;
+      winRegsvcs: string;
+      winRegasm: string;
+      winInstallUtil: string;
+      winMavinject: string;
+      winMshtaVbscript: string;
+      winMshtaJavascript: string;
+      winFodhelper: string;
+      winCertutilEncode: string;
+      // WIN_DANGEROUS_PATTERNS — danger tier
+      winDelRecursive: string;
+      winPsRemoveItemRecurse: string;
+      winPsRiRecurse: string;
+      winRegDelete: string;
+      winRegExport: string;
+      winRegSave: string;
+      winPsBypassPolicy: string;
+      winInvokeWebExec: string;
+      winInvokeExpression: string;
+      winCertutilDecode: string;
+      winCertutilUrlcache: string;
+      winBitsadmin: string;
+      winMshta: string;
+      winWmicProcessCreate: string;
+      winWmicOsDelete: string;
+      winCscriptExec: string;
+      winWscriptExec: string;
+      winTakeownRecurse: string;
+      winIcaclsGrantAll: string;
+      winNetshWlanKey: string;
+      winVssDeleteShadows: string;
+      // WIN_DANGEROUS_PATTERNS — warn tier
+      winDelFile: string;
+      winRmdirDir: string;
+      winPsRemoveItem: string;
+      winPsRi: string;
+      winPsErase: string;
+      winPsClearContent: string;
+      winPsClearRecycleBin: string;
+      winRunas: string;
+      winTaskkillForce: string;
+      winNetStop: string;
+      winScDelete: string;
+      winSchtasksDelete: string;
+      winTakeown: string;
+      winIcacls: string;
+      winRegAdd: string;
+      winWmic: string;
+      winNetshFirewall: string;
+      winNetshAdvFirewall: string;
     };
     // computer (computerTools.ts) — AX/screenshot/input action results and errors
     computer: {

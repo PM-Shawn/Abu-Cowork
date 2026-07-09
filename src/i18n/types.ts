@@ -2071,6 +2071,73 @@ export interface TranslationDict {
     valueNever: string;
     statusActive: string;
     statusPaused: string;
+    // report_plan / update_memory / todo_write / log_task_completion
+    memory: {
+      // reportPlanTool
+      /** User approved the plan. */
+      planApproved: string;
+      /** Plan approval timed out or was cancelled. */
+      planTimeout: string;
+      /** User rejected the plan. */
+      planRejected: string;
+      /** Plan recorded (no steps). */
+      planRecorded: string;
+      /** Plan recorded with N steps. {count} */
+      planRecordedSteps: string;
+      /** Plan-approval card header. */
+      planApprovalHeader: string;
+      /** Plan-approval card question (rendered after step list). */
+      planApprovalQuestion: string;
+      /** Approve option label. */
+      planApproveLabel: string;
+      /** Reject option label. */
+      planRejectLabel: string;
+      // updateMemoryTool
+      /** Memory cleared. {count} */
+      memoryClearedCount: string;
+      /** Error: delete requires filename. */
+      errDeleteNeedsFilename: string;
+      /** Memory deleted. {filename} */
+      memoryDeleted: string;
+      /** Error: edit requires filename. */
+      errEditNeedsFilename: string;
+      /** Error: edit requires content. */
+      errEditNeedsContent: string;
+      /** Error: filename not found. {filename} */
+      errFilenameNotFound: string;
+      /** Memory updated. {type}, {name}, {filename}, optional {lock} */
+      memoryUpdated: string;
+      /** Error: append content cannot be empty. */
+      errAppendContentEmpty: string;
+      /** Memory saved. {type}, {name}, {filename}, optional {lock} */
+      memorySaved: string;
+      // todoWriteTool
+      /** Error: no active session. */
+      errNoActiveSession: string;
+      /** Error: items list required. */
+      errItemsRequired: string;
+      /** Created N todo items. {n} */
+      todosCreated: string;
+      /** Error: content required. */
+      errContentRequired: string;
+      /** Todo item added. {content}, {id} */
+      todoAdded: string;
+      /** Error: todo_id required. */
+      errTodoIdRequired: string;
+      /** Error: todo item not found. {id} */
+      errTodoNotFound: string;
+      /** Todo item updated. {content}, {status} */
+      todoUpdated: string;
+      /** No tasks in the current plan. */
+      todosEmpty: string;
+      /** Details section header (includes IDs). */
+      todosDetailHeader: string;
+      /** Error: unknown action. {action} */
+      errUnknownAction: string;
+      // logTaskCompletionTool
+      /** Task logged. */
+      taskLogged: string;
+    };
     // manage_scheduled_task / manage_trigger / manage_file_watch
     automation: {
       // scheduled task

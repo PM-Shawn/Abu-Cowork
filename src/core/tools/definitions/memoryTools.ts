@@ -9,13 +9,13 @@ import { getTodos, addTodo, updateTodo, setTodos, formatTodosForPrompt } from '.
 import type { TodoStatus } from '../../agent/todoManager';
 import { TOOL_NAMES } from '../toolNames';
 import type { MemoryType } from '../../memdir/types';
+import { getI18n, format } from '../../../i18n';
 
 // ── Plan-mode approval (B1) ─────────────────────────────────────────────────
-export const PLAN_APPROVE_LABEL = '批准执行';
-export const PLAN_REJECT_LABEL = '拒绝，重新规划';
 
 /** Build a single approve/reject question presenting the plan steps for approval. */
 export function buildPlanApprovalPayload(steps: string[]): UserQuestionPayload {
+  const t = getI18n().toolResult.memory;
   const stepList = steps.map((s, i) => `${i + 1}. ${s}`).join('\n');
   return {
     // Destructive approval: require the explicit confirm button — a single
@@ -23,10 +23,10 @@ export function buildPlanApprovalPayload(steps: string[]): UserQuestionPayload {
     confirm: true,
     questions: [
       {
-        header: '计划审批',
-        question: `${stepList}\n\n是否批准执行此计划？`,
+        header: t.planApprovalHeader,
+        question: `${stepList}\n\n${t.planApprovalQuestion}`,
         multiSelect: false,
-        options: [{ label: PLAN_APPROVE_LABEL }, { label: PLAN_REJECT_LABEL }],
+        options: [{ label: t.planApproveLabel }, { label: t.planRejectLabel }],
       },
     ],
   };
@@ -35,7 +35,8 @@ export function buildPlanApprovalPayload(steps: string[]): UserQuestionPayload {
 /** True only if the user explicitly selected the approve option. */
 export function interpretPlanApproval(result: UserQuestionResult | null): boolean {
   if (!result) return false;
-  return result.answers[0]?.selected.includes(PLAN_APPROVE_LABEL) ?? false;
+  const t = getI18n().toolResult.memory;
+  return result.answers[0]?.selected.includes(t.planApproveLabel) ?? false;
 }
 
 /**
@@ -122,6 +123,7 @@ export const reportPlanTool: ToolDefinition = {
     required: ['steps'],
   },
   execute: async (input, context) => {
+    const t = getI18n().toolResult.memory;
     const steps = input.steps as string[];
     const hasSteps = Array.isArray(steps) && steps.length > 0;
 
@@ -158,22 +160,22 @@ export const reportPlanTool: ToolDefinition = {
       if (interpretPlanApproval(result)) {
         setPlanMode(convId, 'approved');
         landPlannedSteps();
-        return '用户已批准计划，现在可以开始执行。';
+        return t.planApproved;
       }
       if (result === null) {
-        return '计划审批超时或已取消，处于计划模式（只读）。可修改后重新提交计划。';
+        return t.planTimeout;
       }
       // A bare rejection carries no feedback — instructing the model to
       // "revise and resubmit" made it re-pop an identical approval card with
       // no words in between. Make it talk to the user first.
-      return '用户未批准当前计划。请先向用户询问顾虑和期望的调整，在得到明确反馈之前不要重新提交相同的计划。当前为计划模式（只读）。';
+      return t.planRejected;
     }
 
     if (!hasSteps) {
-      return '已记录执行计划';
+      return t.planRecorded;
     }
     landPlannedSteps();
-    return `已记录执行计划：${steps.length}个步骤`;
+    return format(t.planRecordedSteps, { count: steps.length });
   },
   isConcurrencySafe: false,
 };
@@ -246,6 +248,7 @@ Keep ordinary user preferences/work habits non-private; description can be more 
     required: ['action'],
   },
   execute: async (input, context) => {
+    const t = getI18n().toolResult.memory;
     const action = (input.action as string) || 'append';
 
     try {
@@ -254,22 +257,22 @@ Keep ordinary user preferences/work habits non-private; description can be more 
       if (action === 'clear') {
         const { clearAllMemories } = await import('../../memdir/write');
         const count = await clearAllMemories(workspacePath);
-        return `已清空记忆（${count} 条）。`;
+        return format(t.memoryClearedCount, { count });
       }
 
       if (action === 'delete') {
         const filename = (input.filename as string)?.trim();
-        if (!filename) return 'Error: action=delete 必须提供 filename';
+        if (!filename) return t.errDeleteNeedsFilename;
         const { deleteMemory } = await import('../../memdir/write');
         await deleteMemory(filename, workspacePath);
-        return `已删除记忆: ${filename}`;
+        return format(t.memoryDeleted, { filename });
       }
 
       if (action === 'edit') {
         const filename = (input.filename as string)?.trim();
-        if (!filename) return 'Error: action=edit 必须提供 filename';
+        if (!filename) return t.errEditNeedsFilename;
         const content = (input.content as string) || '';
-        if (!content) return 'Error: action=edit 必须提供 content';
+        if (!content) return t.errEditNeedsContent;
 
         // Edit: read existing header to preserve type/created if not overridden,
         // then writeMemory with override filename to overwrite the .md file.
@@ -284,7 +287,7 @@ Keep ordinary user preferences/work habits non-private; description can be more 
         ]);
         const existing = [...globalHeaders, ...wsHeaders].find((h) => h.filename === filename);
         if (!existing) {
-          return `Error: filename="${filename}" 不存在。请确认拼写（参考 <memory-index>），或改用 action=append 新写一条。`;
+          return format(t.errFilenameNotFound, { filename });
         }
         const existingFile = await readMemoryFile(existing.filePath);
 
@@ -307,7 +310,7 @@ Keep ordinary user preferences/work habits non-private; description can be more 
             filename, // override → overwrites the existing .md
             private: isPrivate,
           });
-          return `已更新记忆 [${type}]: ${name} (${filename})${isPrivate ? ' 🔒' : ''}`;
+          return format(t.memoryUpdated, { type, name, filename, lock: isPrivate ? ' 🔒' : '' });
         } catch (err) {
           if (err instanceof ContentSafetyError) {
             const patterns = err.scan.findings
@@ -331,7 +334,7 @@ Keep ordinary user preferences/work habits non-private; description can be more 
       const type = ((input.type as string) || 'project') as MemoryType;
       const isPrivate = (input.private as boolean) === true;
 
-      if (!content) return '错误：append 时 content 不能为空。';
+      if (!content) return t.errAppendContentEmpty;
 
       const { writeMemory } = await import('../../memdir/write');
       const { ContentSafetyError } = await import('../../safety/contentGuard');
@@ -345,7 +348,7 @@ Keep ordinary user preferences/work habits non-private; description can be more 
           workspacePath,
           private: isPrivate,
         });
-        return `已保存记忆 [${type}]: ${name} → ${filename}${isPrivate ? ' 🔒' : ''}`;
+        return format(t.memorySaved, { type, name, filename, lock: isPrivate ? ' 🔒' : '' });
       } catch (err) {
         if (err instanceof ContentSafetyError) {
           const patterns = err.scan.findings
@@ -390,53 +393,54 @@ export const todoWriteTool: ToolDefinition = {
     required: ['action'],
   },
   execute: async (input, context) => {
+    const t = getI18n().toolResult.memory;
     const action = input.action as string;
 
     // Prefer context (correct for scheduled/trigger tasks) over activeConversationId
     const conversationId = context?.conversationId ?? useChatStore.getState().activeConversationId;
     if (!conversationId) {
-      return 'Error: 没有活跃会话';
+      return t.errNoActiveSession;
     }
 
     switch (action) {
       case 'set': {
         const items = (input.items as Array<{ content: string; status?: string }>) ?? [];
-        if (items.length === 0) return 'Error: 需要提供计划项列表';
+        if (items.length === 0) return t.errItemsRequired;
         const result = setTodos(conversationId, items.map(i => ({
           content: i.content,
           status: (i.status as TodoStatus) ?? 'pending',
         })));
-        return `已创建 ${result.length} 个计划项。\n${formatTodosForPrompt(conversationId)}`;
+        return format(t.todosCreated, { n: result.length }) + formatTodosForPrompt(conversationId);
       }
       case 'add': {
         const content = (input.content as string) ?? (input.items as Array<{ content: string }>)?.[0]?.content;
-        if (!content) return 'Error: 需要提供内容';
+        if (!content) return t.errContentRequired;
         const item = addTodo(conversationId, content);
-        return `已添加计划项: ${item.content} (ID: ${item.id})`;
+        return format(t.todoAdded, { content: item.content, id: item.id });
       }
       case 'update': {
         const todoId = input.todo_id as string;
         const status = input.status as string | undefined;
         const content = input.content as string | undefined;
-        if (!todoId) return 'Error: 需要提供 todo_id';
+        if (!todoId) return t.errTodoIdRequired;
         const updated = updateTodo(conversationId, todoId, {
           status: status as TodoStatus | undefined,
           content,
         });
-        if (!updated) return `Error: 计划项 ${todoId} 不存在`;
-        return `已更新计划项: ${updated.content} → ${updated.status}`;
+        if (!updated) return format(t.errTodoNotFound, { id: todoId });
+        return format(t.todoUpdated, { content: updated.content, status: updated.status });
       }
       case 'read': {
         const todos = getTodos(conversationId);
         if (todos.length === 0) {
-          return '当前没有任务计划。使用 todo_write(action: "set") 创建计划。';
+          return t.todosEmpty;
         }
         const formatted = formatTodosForPrompt(conversationId);
-        const details = todos.map(t => `- ID: ${t.id} | ${t.status} | ${t.content}`).join('\n');
-        return `${formatted}\n\n详细信息（含 ID）:\n${details}`;
+        const details = todos.map(todo => `- ID: ${todo.id} | ${todo.status} | ${todo.content}`).join('\n');
+        return `${formatted}\n\n${t.todosDetailHeader}\n${details}`;
       }
       default:
-        return `Error: 未知操作 "${action}"。可用操作: set, add, update, read`;
+        return format(t.errUnknownAction, { action });
     }
   },
   isConcurrencySafe: false,
@@ -466,6 +470,7 @@ export const logTaskCompletionTool: ToolDefinition = {
     required: ['summary', 'category', 'success'],
   },
   execute: async (input) => {
+    const t = getI18n().toolResult.memory;
     try {
       const entry = {
         id: Date.now().toString(36) + Math.random().toString(36).substring(2, 8),
@@ -478,7 +483,7 @@ export const logTaskCompletionTool: ToolDefinition = {
         timestamp: Date.now(),
       };
       await appendTaskLog(entry);
-      return '任务已记录。';
+      return t.taskLogged;
     } catch (err) {
       return `Error logging task: ${err instanceof Error ? err.message : String(err)}`;
     }

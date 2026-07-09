@@ -80,6 +80,11 @@ const enUS: TranslationDict = {
     topicFeedback: 'User feedback',
     topicProject: 'Project info',
     topicReference: 'External resources',
+    // Relative time labels for formatAge (MemoryViewModal)
+    minutesAgo: '{n} min ago',
+    hoursAgo: '{n}h ago',
+    daysAgo: '{n}d ago',
+    monthsAgo: '{n}mo ago',
   },
 
   soul: {
@@ -1217,6 +1222,10 @@ const enUS: TranslationDict = {
     allowSessionButton: 'Allow for Session',
     allow24hButton: 'Allow for 24h',
     allowAlwaysButton: 'Always Allow',
+    // Compact inline permission labels (InlinePermissionRequest)
+    compactAccessLabel: 'Access',
+    compactShellLabel: 'Execute',
+    compactWriteLabel: 'Write',
   },
 
   panel: {
@@ -1295,6 +1304,8 @@ const enUS: TranslationDict = {
     // Preview: PPTX fallback
     pptxPreviewUnavailable: 'In-app preview does not support this PPT. Open in PowerPoint to view the full slides.',
     openWithPowerPoint: 'Open in PowerPoint',
+    // Preview: data-URL image (no file path)
+    imagePreview: 'Image Preview',
   },
 
   folder: {

@@ -80,6 +80,11 @@ const zhCN: TranslationDict = {
     topicFeedback: '用户反馈',
     topicProject: '项目信息',
     topicReference: '外部资源',
+    // Relative time labels for formatAge (MemoryViewModal)
+    minutesAgo: '{n}分钟前',
+    hoursAgo: '{n}小时前',
+    daysAgo: '{n}天前',
+    monthsAgo: '{n}个月前',
   },
 
   soul: {
@@ -1218,6 +1223,10 @@ const zhCN: TranslationDict = {
     allowSessionButton: '允许本次会话',
     allow24hButton: '允许24小时',
     allowAlwaysButton: '始终允许',
+    // Compact inline permission labels (InlinePermissionRequest)
+    compactAccessLabel: '访问',
+    compactShellLabel: '执行',
+    compactWriteLabel: '写入',
   },
 
   panel: {
@@ -1296,6 +1305,8 @@ const zhCN: TranslationDict = {
     // Preview: PPTX fallback
     pptxPreviewUnavailable: '内嵌预览暂不支持此 PPT，用 PowerPoint 打开查看完整效果',
     openWithPowerPoint: '用 PowerPoint 打开',
+    // Preview: data-URL image (no file path)
+    imagePreview: '图片预览',
   },
 
   folder: {

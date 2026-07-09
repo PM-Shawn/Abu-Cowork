@@ -1,11 +1,10 @@
 import { useState, useEffect } from 'react';
-import { useI18n } from '@/i18n';
+import { useI18n, format } from '@/i18n';
 import { scanMemoryFiles, readMemoryFile } from '@/core/memdir/scan';
 import { deleteMemory, clearAllMemories } from '@/core/memdir/write';
 import type { MemoryHeader, MemoryType } from '@/core/memdir/types';
 import ConfirmDialog from './ConfirmDialog';
 import { ChevronDown, ChevronUp, Trash2 } from 'lucide-react';
-import { format } from '@/i18n';
 
 interface ProjectMemoryProps {
   open: boolean;
@@ -30,22 +29,25 @@ const TYPE_COLORS: Record<MemoryType, string> = {
   reference: 'bg-blue-100 text-blue-700 dark:bg-blue-400/15 dark:text-blue-300',
 };
 
-const TYPE_LABELS: Record<MemoryType, string> = {
-  user: '偏好',
-  project: '项目',
-  feedback: '反馈',
-  reference: '参考',
-};
+function getTypeLabel(type: MemoryType, t: ReturnType<typeof useI18n>['t']): string {
+  const map: Record<MemoryType, string> = {
+    user: t.memory.categoryPreference,
+    project: t.memory.categoryProject,
+    feedback: t.memory.categoryFeedback,
+    reference: t.memory.categoryFact,
+  };
+  return map[type];
+}
 
-function formatAge(timestamp: number): string {
+function formatAge(timestamp: number, t: ReturnType<typeof useI18n>['t']): string {
   const diffMs = Date.now() - timestamp;
   const minutes = Math.floor(diffMs / 60000);
-  if (minutes < 60) return `${minutes}分钟前`;
+  if (minutes < 60) return format(t.memory.minutesAgo, { n: String(minutes) });
   const hours = Math.floor(minutes / 60);
-  if (hours < 24) return `${hours}小时前`;
+  if (hours < 24) return format(t.memory.hoursAgo, { n: String(hours) });
   const days = Math.floor(hours / 24);
-  if (days < 30) return `${days}天前`;
-  return `${Math.floor(days / 30)}个月前`;
+  if (days < 30) return format(t.memory.daysAgo, { n: String(days) });
+  return format(t.memory.monthsAgo, { n: String(Math.floor(days / 30)) });
 }
 
 export default function MemoryViewModal(props: MemoryViewModalProps) {
@@ -191,13 +193,13 @@ export default function MemoryViewModal(props: MemoryViewModalProps) {
                     onClick={() => handleExpand(header)}
                   >
                     <span className={`text-[10px] font-medium px-1.5 py-0.5 rounded shrink-0 ${TYPE_COLORS[header.type]}`}>
-                      {TYPE_LABELS[header.type]}
+                      {getTypeLabel(header.type, t)}
                     </span>
                     <span className="text-[12px] text-[var(--abu-text-primary)] flex-1 truncate">
                       {header.name}
                     </span>
                     <span className="text-[10px] text-[var(--abu-text-placeholder)] whitespace-nowrap shrink-0">
-                      {formatAge(header.updated)}
+                      {formatAge(header.updated, t)}
                     </span>
                     {expandedId === header.filename ? (
                       <ChevronUp className="h-3 w-3 text-[var(--abu-text-placeholder)] shrink-0" />

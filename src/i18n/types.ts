@@ -104,6 +104,11 @@ export interface TranslationDict {
     topicFeedback: string;
     topicProject: string;
     topicReference: string;
+    // Relative time labels for formatAge (MemoryViewModal)
+    minutesAgo: string;
+    hoursAgo: string;
+    daysAgo: string;
+    monthsAgo: string;
   };
 
   // Soul (personality)
@@ -1316,6 +1321,10 @@ export interface TranslationDict {
     allowSessionButton: string;
     allow24hButton: string;
     allowAlwaysButton: string;
+    // Compact inline permission labels (InlinePermissionRequest)
+    compactAccessLabel: string;
+    compactShellLabel: string;
+    compactWriteLabel: string;
   };
 
   // Panels
@@ -1395,6 +1404,8 @@ export interface TranslationDict {
     // Preview: PPTX fallback (lib renderer fails on some python-pptx output)
     pptxPreviewUnavailable: string;
     openWithPowerPoint: string;
+    // Preview: data-URL image (no file path)
+    imagePreview: string;
   };
 
   // Folder Selector

@@ -388,7 +388,7 @@ function buildMarkdownComponents(
     table({ children }: { children?: ReactNode }) {
       return (
         <div className="my-3 overflow-x-auto rounded-lg bg-[var(--abu-bg-muted)] border border-[var(--abu-border-subtle)]">
-          <table className="w-full text-sm">{children}</table>
+          <table className="min-w-full text-sm">{children}</table>
         </div>
       );
     },
@@ -396,10 +396,10 @@ function buildMarkdownComponents(
       return <thead className="bg-[var(--abu-bg-muted)]">{children}</thead>;
     },
     th({ children }: { children?: ReactNode }) {
-      return <th className="px-3 py-2 text-left font-medium text-[var(--abu-text-secondary)]">{children}</th>;
+      return <th className="px-3 py-2 min-w-[5rem] align-top text-left font-medium text-[var(--abu-text-secondary)]">{children}</th>;
     },
     td({ children }: { children?: ReactNode }) {
-      return <td className="px-3 py-2 text-[var(--abu-text-secondary)]">{children}</td>;
+      return <td className="px-3 py-2 min-w-[5rem] align-top text-[var(--abu-text-secondary)]">{children}</td>;
     },
     hr() {
       return <hr className="my-4 border-[var(--abu-border)]" />;

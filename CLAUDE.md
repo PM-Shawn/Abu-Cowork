@@ -187,16 +187,21 @@ Abu 是 Tauri 桌面端，每轮"改 → 重启 dev → 验证"的成本比 web 
   the user's message language). So an English prompt still yields Chinese replies for
   Chinese users. When adding/editing agent prompts or tool descriptions, write them in
   English.
-- **Transition status (prompt English-ization)**: The output-language mechanism (P0) and
-  tool `description` fields (P1) are done. Core agent prompts
-  (`orchestrator.ts`/`registry.ts`/`agentLoop.ts`/`skillsGuidance.ts`) are still Chinese
-  (P2, pending — needs a behavioral eval pass).
+- **Transition status (prompt English-ization)**: Output-language mechanism (P0), tool
+  `description` fields (P1), and the UI-facing string i18n (P3 — tool result strings via
+  the `toolResult` namespace, and `commandSafety` reasons/labels) are done. Agent-picker
+  metadata was already bilingual (per-field `displayNames`/`descriptions`/`*I18n` maps).
+  Still Chinese and pending: core agent behavior prompts
+  (`orchestrator.ts`/`registry.ts` `systemPrompt`/`agentLoop.ts`/`skillsGuidance.ts`) — that
+  is **P2**, needs a behavioral eval pass. The one orchestrator canned reply (`orchestrator.ts`
+  IM "no workspace" line) is folded into P2, not P3.
 - **🔴 Exception — do NOT English-ify these (they are UI-facing, not LLM-facing)**: tool
   runtime result strings (`execute()` returns/success/error messages — rendered directly
-  in `ToolCallsGroup.tsx`), agent picker metadata in `registry.ts` (`name`/`description`/
-  `intro`), and canned reply strings the prompt tells the agent to output verbatim. These
-  are shown to the user; translating them regresses Chinese users. They must go through
-  i18n, not become hardcoded English.
+  in `ToolCallsGroup.tsx`), `commandSafety` reason/label strings (command-confirmation
+  dialog), and agent-picker metadata. These must go through i18n (already done — via the
+  `toolResult` namespace resolved at execution time, and the registry per-field locale
+  maps), NOT become hardcoded English — translating to a single language regresses the
+  other locale's users.
 
 ### 2. TypeScript Strictness
 - All strict mode options enabled (`strict: true`, `noUnusedLocals`, `noUnusedParameters`, `noFallthroughCasesInSwitch`).

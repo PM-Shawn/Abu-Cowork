@@ -989,7 +989,7 @@ describe('skill_manage · install', () => {
     );
 
     expect(result.success).toBe(false);
-    expect(result.error).toMatch(/安装失败.*network timeout/);
+    expect(result.error).toMatch(/Install failed.*network timeout/);
   });
 
   it('calls discovery refresh on success so skill appears in 我的技能', async () => {

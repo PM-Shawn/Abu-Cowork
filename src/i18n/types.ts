@@ -2335,5 +2335,54 @@ export interface TranslationDict {
       /** Structured path: missing required fields. {fields} */
       errMissingFields: string;
     };
+    // recall / read_memory
+    recall: {
+      /** Restraint note appended to private memory content. */
+      privateMemoryNote: string;
+      /** Suffix on a private-memory recall line. */
+      privateMemorySuffix: string;
+      /** {count} */
+      sectionMemories: string;
+      /** {count} */
+      sectionTasks: string;
+      /** {title}, {count}, {time} */
+      convLine: string;
+      untitled: string;
+      /** {count} */
+      sectionConversations: string;
+      /** {query} */
+      noResultsQuery: string;
+      noResultsEmpty: string;
+      errFilenameEmpty: string;
+      /** {filename} */
+      notFound: string;
+    };
+    // test_skill_trigger / improve_skill_description (eval tools)
+    skillEval: {
+      errNoQueries: string;
+      /** {passed}, {total}, {rate} */
+      overviewLine: string;
+      errInvalidJson: string;
+      /** {description} */
+      allPassed: string;
+      /** {error} */
+      errLlmFailed: string;
+    };
+    // skill_manage (install / create)
+    skill: {
+      errInstallNeedsSource: string;
+      /** Suffix appended to an ALREADY_EXISTS installer message. */
+      overwriteHint: string;
+      /** {error} */
+      installFailed: string;
+      /** {count}, {files} */
+      skippedNote: string;
+      /** {name}, {count}, {skippedNote} */
+      installed: string;
+      /** {name}, {path} */
+      draftProposed: string;
+      /** {name}, {path} */
+      skillCreated: string;
+    };
   };
 }

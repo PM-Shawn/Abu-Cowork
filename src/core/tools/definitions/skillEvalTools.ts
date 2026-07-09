@@ -9,6 +9,7 @@ import type { ToolDefinition } from '../../../types';
 import { llmCall } from '../../llm/llmCall';
 import { skillLoader } from '../../skill/loader';
 import { TOOL_NAMES } from '../toolNames';
+import { getI18n, format } from '../../../i18n';
 
 // ─── test_skill_trigger ─────────────────────────────────────────────────────
 
@@ -84,8 +85,9 @@ export const testSkillTriggerTool: ToolDefinition = {
       should_trigger: q.should_trigger === true || q.should_trigger === 'true',
     }));
 
+    const t = getI18n().toolResult.skillEval;
     if (queries.length === 0) {
-      return 'Error: 至少需要一条测试查询。';
+      return t.errNoQueries;
     }
 
     const skillsList = buildSkillsList(skillName, skillDescription);
@@ -159,7 +161,7 @@ ${skillsList}
       description: skillDescription,
       summary: { total, passed, failed: total - passed, pass_rate: `${passRate}%` },
       results,
-    }, null, 2) + `\n\n概览: ${passed}/${total} 通过 (${passRate}%)\n\n${details}`;
+    }, null, 2) + `\n\n${format(t.overviewLine, { passed, total, rate: passRate })}\n\n${details}`;
   },
   isConcurrencySafe: false,
 };
@@ -185,11 +187,12 @@ export const improveSkillDescriptionTool: ToolDefinition = {
     const skillContent = (input.skill_content as string) || '';
     const evalResultsStr = input.eval_results as string;
 
+    const t = getI18n().toolResult.skillEval;
     let evalResults: { results?: TriggerResult[] };
     try {
       evalResults = JSON.parse(evalResultsStr);
     } catch {
-      return 'Error: eval_results 不是有效的 JSON。请传入 test_skill_trigger 的返回结果。';
+      return t.errInvalidJson;
     }
 
     const results = evalResults.results || [];
@@ -207,7 +210,7 @@ export const improveSkillDescriptionTool: ToolDefinition = {
     }
 
     if (!failureInfo) {
-      return `当前描述已经 100% 通过测试，无需优化。\n\n当前描述：${currentDescription}`;
+      return format(t.allPassed, { description: currentDescription });
     }
 
     const prompt = `你在优化一个技能（skill）的 description。这个 description 会出现在 AI 助手的可用技能列表中，AI 根据这个描述决定是否使用该技能。
@@ -245,7 +248,7 @@ ${skillContent ? `技能内容（供参考）：\n${skillContent.slice(0, 2000)}
         over_limit: newDescription.length > 1024,
       }, null, 2);
     } catch (err) {
-      return `Error: LLM 调用失败 — ${err instanceof Error ? err.message : String(err)}`;
+      return format(t.errLlmFailed, { error: err instanceof Error ? err.message : String(err) });
     }
   },
   isConcurrencySafe: false,

@@ -46,6 +46,7 @@ import { homeDir } from '@tauri-apps/api/path';
 
 import type { ToolDefinition, SkillMetadata, Skill, ToolExecutionContext, InteractiveNoticeCard } from '../../../types';
 import { TOOL_NAMES } from '../toolNames';
+import { getI18n, format } from '../../../i18n';
 import {
   atomicWrite,
   atomicWriteWithBackup,
@@ -358,8 +359,9 @@ async function scanOrRollback(
 // ── Action: install ─────────────────────────────────────────────────────
 
 async function installAction(input: Record<string, unknown>): Promise<ActionResult> {
+  const t = getI18n().toolResult.skill;
   const source = (input.source as string | undefined)?.trim();
-  if (!source) return { success: false, error: 'action=install 时必须提供 source 参数（npm 包名 / 本地路径 / URL / GitHub 链接）' };
+  if (!source) return { success: false, error: t.errInstallNeedsSource };
 
   const { detectSourceType, installSkillFromUrl } = await import('@/core/skill/urlInstaller');
   const { installSkillFromFolder } = await import('@/core/skill/installer');
@@ -380,7 +382,7 @@ async function installAction(input: Record<string, unknown>): Promise<ActionResu
       const r = await installSkillFromFolder(source, { overwrite });
       if (!r.ok) {
         if (r.code === 'ALREADY_EXISTS') {
-          return { success: false, error: `${r.message}。如需覆盖，请先与用户确认，再重新调用本工具并传 overwrite: true。` };
+          return { success: false, error: `${r.message}${t.overwriteHint}` };
         }
         return { success: false, error: r.message };
       }
@@ -397,27 +399,28 @@ async function installAction(input: Record<string, unknown>): Promise<ActionResu
       fileCount = r.files.length;
     }
   } catch (e) {
-    return { success: false, error: `安装失败: ${e instanceof Error ? e.message : String(e)}` };
+    return { success: false, error: format(t.installFailed, { error: e instanceof Error ? e.message : String(e) }) };
   }
 
-  // Refresh discovery so the skill appears immediately in "我的技能"
+  // Refresh discovery so the skill appears immediately in "My Skills"
   const { useDiscoveryStore } = await import('../../../stores/discoveryStore');
   await useDiscoveryStore.getState().refresh().catch(() => { /* best-effort */ });
 
   const skippedNote = skipped.length > 0
-    ? `（跳过 ${skipped.length} 个隐藏文件：${skipped.join('、')}，其中 .mcp.json 等可能含密钥，如技能需要请手动配置）`
+    ? format(t.skippedNote, { count: skipped.length, files: skipped.join('、') })
     : '';
 
   return {
     success: true,
     status: 'applied',
-    message: `技能 "${skillName}" 安装成功（${fileCount} 个文件）${skippedNote}，已出现在"我的技能"中。`,
+    message: format(t.installed, { name: skillName, count: fileCount, skippedNote }),
   };
 }
 
 // ── Action: create ──────────────────────────────────────────────────────
 
 async function createAction(input: Record<string, unknown>, context?: ToolExecutionContext): Promise<ActionResult> {
+  const t = getI18n().toolResult.skill;
   const name = input.name as string;
   const content = input.content as string;
 
@@ -580,8 +583,7 @@ async function createAction(input: Record<string, unknown>, context?: ToolExecut
     return {
       success: true,
       status: 'pending-user-approval',
-      message:
-        `草稿 "${name}" 已提议。用户可在聊天里直接采纳或拒绝；也可到「工具箱 → 技能」的草稿面板处理。路径：${record.skillMdPath}。`,
+      message: format(t.draftProposed, { name, path: record.skillMdPath }),
       path: record.skillMdPath,
       notice_card: noticeCard,
     };
@@ -625,7 +627,7 @@ async function createAction(input: Record<string, unknown>, context?: ToolExecut
   return {
     success: true,
     status: 'applied',
-    message: `技能 "${name}" 已创建，立即生效。路径：${directResult.skillMdPath}`,
+    message: format(t.skillCreated, { name, path: directResult.skillMdPath }),
     path: directResult.skillMdPath,
   };
 }

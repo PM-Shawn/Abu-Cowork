@@ -2536,6 +2536,53 @@ export interface TranslationDict {
       /** File locked by another agent. {path} */
       errFileLocked: string;
     };
+    // commandSafety — injection reason strings and danger-level labels
+    commandSafety: {
+      // hasCommandInjection — Unix/cross-platform injection reasons
+      injSemicolonRm: string;
+      injPipeRm: string;
+      injAmpRm: string;
+      injOrRm: string;
+      injSubstRm: string;
+      injBacktickRm: string;
+      injSemicolonSudo: string;
+      injPipeSudo: string;
+      injEvalArbitrary: string;
+      injExecReplace: string;
+      injDevTcpSource: string;
+      injProcessSubstitution: string;
+      injBashInteractive: string;
+      injNcReverseShell: string;
+      injPythonSocket: string;
+      injPythonOsSystem: string;
+      injPythonSubprocess: string;
+      injPerlSystem: string;
+      injRubySystem: string;
+      injIfsBypass: string;
+      injBraceExpand: string;
+      injNestedVarSubst: string;
+      injDevTcpRedirect: string;
+      injBase64Pipe: string;
+      injEchoPipeShell: string;
+      injPrintfPipeShell: string;
+      // hasCommandInjection — Windows-specific injection reasons
+      injWinPipeDel: string;
+      injWinPipeFormat: string;
+      injWinAmpFormat: string;
+      injWinSemicolonRemoveItem: string;
+      injWinSemicolonRi: string;
+      injWinSemicolonErase: string;
+      injWinPsEncodedCmd: string;
+      injWinPsEncodedCmdShort: string;
+      injWinPsHidden: string;
+      injWinPsNoProfile: string;
+      injWinCmdDel: string;
+      // getDangerLevelLabel — danger level display labels
+      levelBlock: string;
+      levelDanger: string;
+      levelWarn: string;
+      levelSafe: string;
+    };
     // computer (computerTools.ts) — AX/screenshot/input action results and errors
     computer: {
       /** formatAxElements: no interactive elements found. */

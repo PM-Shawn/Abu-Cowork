@@ -348,10 +348,10 @@ describe('commandSafety', () => {
   // ── getDangerLevelLabel ──
   describe('getDangerLevelLabel', () => {
     it('returns correct labels', () => {
-      expect(getDangerLevelLabel('block')).toBe('已阻止');
-      expect(getDangerLevelLabel('danger')).toBe('危险操作');
-      expect(getDangerLevelLabel('warn')).toBe('需要确认');
-      expect(getDangerLevelLabel('safe')).toBe('安全');
+      expect(getDangerLevelLabel('block')).toBe('Blocked');
+      expect(getDangerLevelLabel('danger')).toBe('Dangerous');
+      expect(getDangerLevelLabel('warn')).toBe('Needs Confirmation');
+      expect(getDangerLevelLabel('safe')).toBe('Safe');
     });
   });
 

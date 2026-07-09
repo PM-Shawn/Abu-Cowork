@@ -3,6 +3,7 @@
  * Analyzes shell commands for potential dangers and provides safety levels
  */
 
+import { getI18n } from '../../i18n';
 import { isWindows } from '../../utils/platform';
 import { isReadOnlyCommand } from './readOnlyDetector';
 
@@ -45,35 +46,36 @@ function normalizeCommand(command: string): string {
  * Check for command injection patterns
  */
 function hasCommandInjection(command: string): { injected: boolean; reason: string } {
+  const t = getI18n().toolResult.commandSafety;
   // Check for command chaining that might hide dangerous commands
   const injectionPatterns = [
-    { pattern: /;\s*rm\s/, reason: '检测到命令注入: 分号后跟 rm' },
-    { pattern: /\|\s*rm\s/, reason: '检测到命令注入: 管道后跟 rm' },
-    { pattern: /&&\s*rm\s/, reason: '检测到命令注入: && 后跟 rm' },
-    { pattern: /\|\|\s*rm\s/, reason: '检测到命令注入: || 后跟 rm' },
-    { pattern: /\$\(.*rm\s/, reason: '检测到命令替换中的 rm' },
-    { pattern: /`.*rm\s.*`/, reason: '检测到反引号中的 rm' },
+    { pattern: /;\s*rm\s/, reason: t.injSemicolonRm },
+    { pattern: /\|\s*rm\s/, reason: t.injPipeRm },
+    { pattern: /&&\s*rm\s/, reason: t.injAmpRm },
+    { pattern: /\|\|\s*rm\s/, reason: t.injOrRm },
+    { pattern: /\$\(.*rm\s/, reason: t.injSubstRm },
+    { pattern: /`.*rm\s.*`/, reason: t.injBacktickRm },
     // No blanket backtick rule: substitution alone isn't dangerous (e.g. files=`ls`); dangerous content is caught by the specific rules.
-    { pattern: /;\s*sudo\s/, reason: '检测到命令注入: 分号后跟 sudo' },
-    { pattern: /\|\s*sudo\s/, reason: '检测到命令注入: 管道后跟 sudo' },
-    { pattern: /eval\s/, reason: '检测到 eval 命令，可能执行任意代码' },
-    { pattern: /\bexec\s/, reason: '检测到 exec 命令，可能替换当前进程' },
-    { pattern: /source\s+\/dev\/tcp/, reason: '检测到网络反弹 shell' },
-    { pattern: /\bsource\s+<\(/, reason: '检测到 process substitution 注入' },
-    { pattern: /bash\s+-i/, reason: '检测到交互式 bash，可能是反弹 shell' },
-    { pattern: /nc\s+.*-e/, reason: '检测到 netcat 反弹 shell' },
-    { pattern: /python.*-c.*socket/, reason: '检测到 Python 反弹 shell' },
-    { pattern: /python.*-c.*os\.system/, reason: '检测到 Python 执行系统命令' },
-    { pattern: /python.*-c.*subprocess/, reason: '检测到 Python subprocess 调用' },
-    { pattern: /perl.*-e.*system/, reason: '检测到 Perl 执行系统命令' },
-    { pattern: /ruby.*-e.*system/, reason: '检测到 Ruby 执行系统命令' },
-    { pattern: /\$\{?IFS\}?/, reason: '检测到 $IFS 变量替换，可能用于绕过安全检查' },
-    { pattern: /\{[a-z]+,/, reason: '检测到 bash 花括号展开，可能用于绕过安全检查' },
-    { pattern: /\$\{[^}]*[`$]/, reason: '检测到嵌套变量替换，可能用于绕过安全检查' },
-    { pattern: />\s*\/dev\/tcp\//, reason: '检测到 /dev/tcp 网络重定向' },
-    { pattern: /\|\s*base64\s+-d\s*\|/, reason: '检测到 base64 解码管道执行' },
-    { pattern: /echo\s+.*\|\s*(ba)?sh/, reason: '检测到 echo 管道到 shell 执行' },
-    { pattern: /printf\s+.*\|\s*(ba)?sh/, reason: '检测到 printf 管道到 shell 执行' },
+    { pattern: /;\s*sudo\s/, reason: t.injSemicolonSudo },
+    { pattern: /\|\s*sudo\s/, reason: t.injPipeSudo },
+    { pattern: /eval\s/, reason: t.injEvalArbitrary },
+    { pattern: /\bexec\s/, reason: t.injExecReplace },
+    { pattern: /source\s+\/dev\/tcp/, reason: t.injDevTcpSource },
+    { pattern: /\bsource\s+<\(/, reason: t.injProcessSubstitution },
+    { pattern: /bash\s+-i/, reason: t.injBashInteractive },
+    { pattern: /nc\s+.*-e/, reason: t.injNcReverseShell },
+    { pattern: /python.*-c.*socket/, reason: t.injPythonSocket },
+    { pattern: /python.*-c.*os\.system/, reason: t.injPythonOsSystem },
+    { pattern: /python.*-c.*subprocess/, reason: t.injPythonSubprocess },
+    { pattern: /perl.*-e.*system/, reason: t.injPerlSystem },
+    { pattern: /ruby.*-e.*system/, reason: t.injRubySystem },
+    { pattern: /\$\{?IFS\}?/, reason: t.injIfsBypass },
+    { pattern: /\{[a-z]+,/, reason: t.injBraceExpand },
+    { pattern: /\$\{[^}]*[`$]/, reason: t.injNestedVarSubst },
+    { pattern: />\s*\/dev\/tcp\//, reason: t.injDevTcpRedirect },
+    { pattern: /\|\s*base64\s+-d\s*\|/, reason: t.injBase64Pipe },
+    { pattern: /echo\s+.*\|\s*(ba)?sh/, reason: t.injEchoPipeShell },
+    { pattern: /printf\s+.*\|\s*(ba)?sh/, reason: t.injPrintfPipeShell },
   ];
 
   for (const { pattern, reason } of injectionPatterns) {
@@ -85,18 +87,18 @@ function hasCommandInjection(command: string): { injected: boolean; reason: stri
   // Windows-specific injection patterns (only checked on Windows)
   if (isWindows()) {
     const winInjectionPatterns = [
-      { pattern: /[&|]\s*del\s/i, reason: '检测到命令注入: 管道/链接后跟 del' },
-      { pattern: /[&|]\s*format\s/i, reason: '检测到命令注入: 管道/链接后跟 format' },
-      { pattern: /&&\s*format\s/i, reason: '检测到命令注入: && 后跟 format' },
+      { pattern: /[&|]\s*del\s/i, reason: t.injWinPipeDel },
+      { pattern: /[&|]\s*format\s/i, reason: t.injWinPipeFormat },
+      { pattern: /&&\s*format\s/i, reason: t.injWinAmpFormat },
       // PowerShell semicolon-chained destructive commands (root cause of desktop deletion incident)
-      { pattern: /;\s*Remove-Item\b/i, reason: '检测到命令注入: 分号后跟 Remove-Item' },
-      { pattern: /;\s*ri\b/i, reason: '检测到命令注入: 分号后跟 ri (Remove-Item 别名)' },
-      { pattern: /;\s*erase\b/i, reason: '检测到命令注入: 分号后跟 erase (Remove-Item 别名)' },
-      { pattern: /powershell\s+.*-enc\b/i, reason: '检测到 PowerShell 编码命令，可能隐藏恶意操作' },
-      { pattern: /powershell\s+.*-encodedcommand\b/i, reason: '检测到 PowerShell 编码命令' },
-      { pattern: /powershell\s+.*-w\s+hidden/i, reason: '检测到 PowerShell 隐藏窗口执行' },
-      { pattern: /powershell\s+.*-nop\b/i, reason: '检测到 PowerShell NoProfile 模式，可能绕过安全策略' },
-      { pattern: /cmd\s+\/c\s+.*del\s/i, reason: '检测到 cmd /c 中的删除命令' },
+      { pattern: /;\s*Remove-Item\b/i, reason: t.injWinSemicolonRemoveItem },
+      { pattern: /;\s*ri\b/i, reason: t.injWinSemicolonRi },
+      { pattern: /;\s*erase\b/i, reason: t.injWinSemicolonErase },
+      { pattern: /powershell\s+.*-enc\b/i, reason: t.injWinPsEncodedCmd },
+      { pattern: /powershell\s+.*-encodedcommand\b/i, reason: t.injWinPsEncodedCmdShort },
+      { pattern: /powershell\s+.*-w\s+hidden/i, reason: t.injWinPsHidden },
+      { pattern: /powershell\s+.*-nop\b/i, reason: t.injWinPsNoProfile },
+      { pattern: /cmd\s+\/c\s+.*del\s/i, reason: t.injWinCmdDel },
     ];
     for (const { pattern, reason } of winInjectionPatterns) {
       if (pattern.test(command)) {
@@ -476,14 +478,15 @@ export function analyzeCommand(command: string): CommandAnalysis {
  * Get a human-readable description for a danger level
  */
 export function getDangerLevelLabel(level: DangerLevel): string {
+  const t = getI18n().toolResult.commandSafety;
   switch (level) {
     case 'block':
-      return '已阻止';
+      return t.levelBlock;
     case 'danger':
-      return '危险操作';
+      return t.levelDanger;
     case 'warn':
-      return '需要确认';
+      return t.levelWarn;
     case 'safe':
-      return '安全';
+      return t.levelSafe;
   }
 }

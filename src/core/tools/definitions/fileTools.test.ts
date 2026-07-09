@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { invoke } from '@tauri-apps/api/core';
-import { readFileTool } from './fileTools';
+import { writeTextFile } from '@tauri-apps/plugin-fs';
+import { readFileTool, writeFileTool } from './fileTools';
 
 // Regression coverage for the shell-injection fixes in the PDF branch of
 // readFileTool. These tests prove the *interface contract* — the migrated
@@ -141,5 +142,51 @@ describe('readFileTool — non-vision model image gating', () => {
     // did NOT take the non-vision shortcut.
     const result = await readFileTool.execute({ path: '/tmp/图片.png' });
     expect(String(result)).not.toContain('no vision capability');
+  });
+});
+
+// Regression coverage for the CJK-mojibake bug: AI-generated HTML files had no
+// charset declaration, so opening them in a browser (file://, no HTTP header to
+// rely on) or via the in-app preview server fell back to a locale default (GBK on
+// zh-CN Windows/macOS) and mangled Chinese content. write_file must inject
+// `<meta charset="utf-8">` for .html/.htm unless the document already declares one.
+describe('writeFileTool — HTML charset injection', () => {
+  beforeEach(() => {
+    vi.mocked(writeTextFile).mockClear();
+  });
+
+  it('injects <meta charset="utf-8"> right after <head> when missing', async () => {
+    const html = '<html><head><title>你好</title></head><body>世界</body></html>';
+    await writeFileTool.execute({ path: '/tmp/test.html', content: html });
+
+    expect(writeTextFile).toHaveBeenCalledTimes(1);
+    const [, writtenContent] = vi.mocked(writeTextFile).mock.calls[0];
+    expect(writtenContent).toContain('<meta charset="utf-8">');
+    // Must be inserted immediately after the <head> tag, before the rest of the head content.
+    const headIdx = (writtenContent as string).indexOf('<head>');
+    const metaIdx = (writtenContent as string).indexOf('<meta charset="utf-8">');
+    const titleIdx = (writtenContent as string).indexOf('<title>');
+    expect(headIdx).toBeGreaterThanOrEqual(0);
+    expect(metaIdx).toBeGreaterThan(headIdx);
+    expect(metaIdx).toBeLessThan(titleIdx);
+  });
+
+  it('does not double-inject when a charset meta tag is already present', async () => {
+    const html = '<html><head><meta charset="utf-8"><title>你好</title></head><body>世界</body></html>';
+    await writeFileTool.execute({ path: '/tmp/test.html', content: html });
+
+    const [, writtenContent] = vi.mocked(writeTextFile).mock.calls[0];
+    const occurrences = (writtenContent as string).match(/charset/gi) ?? [];
+    expect(occurrences.length).toBe(1);
+    expect(writtenContent).toBe(html);
+  });
+
+  it('prefixes a BOM for an HTML fragment with no <head>/<html> structure', async () => {
+    const fragment = '<div>你好世界</div>';
+    await writeFileTool.execute({ path: '/tmp/fragment.html', content: fragment });
+
+    const [, writtenContent] = vi.mocked(writeTextFile).mock.calls[0];
+    expect((writtenContent as string).startsWith('\uFEFF')).toBe(true);
+    expect(writtenContent).toBe('\uFEFF' + fragment);
   });
 });

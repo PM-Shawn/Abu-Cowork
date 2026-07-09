@@ -240,9 +240,14 @@ async fn serve_file(
     };
 
     // 6. Content-Type via mime_guess; nosniff guards against type confusion.
-    let mime = mime_guess::from_path(&target)
+    let mut mime = mime_guess::from_path(&target)
         .first_or_octet_stream()
         .to_string();
+    // Text responses must declare UTF-8, otherwise a webview/browser on a
+    // locale like zh-CN falls back to GBK and mojibakes CJK content.
+    if mime.starts_with("text/") && !mime.contains("charset") {
+        mime.push_str("; charset=utf-8");
+    }
     let len = metadata.len();
 
     let body = Body::from_stream(ReaderStream::new(file));

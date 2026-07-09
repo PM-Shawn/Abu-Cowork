@@ -112,76 +112,84 @@ function hasCommandInjection(command: string): { injected: boolean; reason: stri
 
 // ── Windows-specific dangerous command patterns ──
 
-const WIN_DANGEROUS_PATTERNS: Record<Exclude<DangerLevel, 'safe'>, Array<{ pattern: RegExp; reason: string }>> = {
-  block: [
-    { pattern: /del\s+\/s\s+\/q\s+[a-zA-Z]:\\/i, reason: '此命令会递归删除整个驱动器' },
-    { pattern: /format\s+[a-zA-Z]:/i, reason: '此命令会格式化磁盘' },
-    { pattern: /reg\s+delete\s+HKLM/i, reason: '此命令会删除系统注册表项' },
-    { pattern: />\s*\\\\\.\\PhysicalDrive/i, reason: '此命令会覆盖物理磁盘数据' },
-    { pattern: /diskpart/i, reason: '此命令可以修改磁盘分区' },
-    { pattern: /bcdedit/i, reason: '此命令会修改系统引导配置' },
-    { pattern: /cipher\s+\/w/i, reason: '此命令会安全擦除磁盘空闲空间' },
-    { pattern: />\s*.*\\Microsoft\.PowerShell_profile\.ps1/i, reason: '禁止写入 PowerShell 配置文件' },
-    { pattern: /rundll32\s+/i, reason: 'rundll32 可执行任意 DLL 代码' },
-    { pattern: /regsvcs\s+/i, reason: 'regsvcs 可能用于 UAC 绕过' },
-    { pattern: /regasm\s+/i, reason: 'regasm 可能用于代码执行绕过' },
-    { pattern: /InstallUtil\s+/i, reason: 'InstallUtil 可能用于代码执行' },
-    { pattern: /mavinject\s+/i, reason: 'mavinject 可进行 DLL 注入' },
-    { pattern: /mshta\s+vbscript:/i, reason: 'mshta 内联 VBScript 执行' },
-    { pattern: /mshta\s+javascript:/i, reason: 'mshta 内联 JavaScript 执行' },
-    { pattern: /fodhelper/i, reason: 'fodhelper 可用于 UAC 绕过' },
-    { pattern: /certutil\s+.*-encode/i, reason: 'certutil 编码可用于隐藏恶意文件' },
-  ],
-  danger: [
-    { pattern: /del\s+\/s\b/i, reason: '递归删除命令，可能导致数据丢失' },
-    { pattern: /rmdir\s+\/s\b/i, reason: '递归删除目录，可能导致数据丢失' },
-    // PowerShell Remove-Item with -Recurse (catches the exact bug: desktop files deleted en masse)
-    { pattern: /\bRemove-Item\b.*-Recurse\b/i, reason: 'PowerShell 递归删除，可能导致大量数据丢失' },
-    { pattern: /\bRemove-Item\b.*\s-[rR]\b/i, reason: 'PowerShell 递归删除，可能导致大量数据丢失' },
-    { pattern: /\bri\b.*-Recurse\b/i, reason: 'PowerShell 递归删除 (ri = Remove-Item 别名)' },
-    { pattern: /\bri\b.*\s-[rR]\b/i, reason: 'PowerShell 递归删除 (ri = Remove-Item 别名)' },
-    { pattern: /reg\s+delete\b/i, reason: '删除注册表项，可能影响系统稳定' },
-    { pattern: /reg\s+export\b/i, reason: '导出注册表可能泄露敏感信息' },
-    { pattern: /reg\s+save\b/i, reason: '保存注册表配置单元' },
-    { pattern: /powershell\s+.*-executionpolicy\s+bypass/i, reason: '绕过 PowerShell 执行策略' },
-    { pattern: /Invoke-WebRequest.*\|\s*iex/i, reason: '从网络下载并直接执行脚本' },
-    { pattern: /Invoke-Expression/i, reason: '动态执行代码，可能存在安全风险' },
-    { pattern: /IEX\s*\(/i, reason: '动态执行代码，可能存在安全风险' },
-    { pattern: /certutil\s+.*-decode/i, reason: '解码隐藏文件，可能用于恶意目的' },
-    { pattern: /certutil\s+.*-urlcache/i, reason: '通过 certutil 下载文件，可能绕过安全检测' },
-    { pattern: /bitsadmin\s+.*\/transfer/i, reason: '通过 BITS 下载文件，可能绕过安全检测' },
-    { pattern: /mshta\s+/i, reason: 'mshta 可执行远程脚本，存在安全风险' },
-    { pattern: /wmic\s+.*process\s+call\s+create/i, reason: '通过 WMI 创建进程，可能绕过安全监控' },
-    { pattern: /wmic\s+.*os\s+.*delete/i, reason: '通过 WMI 删除系统对象' },
-    { pattern: /cscript.*\/\/e:jscript/i, reason: '通过 cscript 执行脚本，可能存在安全风险' },
-    { pattern: /wscript.*\/\/e:jscript/i, reason: '通过 wscript 执行脚本，可能存在安全风险' },
-    { pattern: /takeown\s+.*\/r/i, reason: '递归获取文件所有权，可能修改系统文件权限' },
-    { pattern: /icacls\s+.*\/grant.*Everyone/i, reason: '授予所有人完全权限，存在安全风险' },
-    { pattern: /netsh\s+.*wlan\s+.*key/i, reason: '可能导出 WiFi 密码' },
-    { pattern: /vssadmin\s+delete\s+shadows/i, reason: '删除卷影副本' },
-  ],
-  warn: [
-    { pattern: /del\s+/i, reason: '删除文件操作' },
-    { pattern: /rmdir\s+/i, reason: '删除目录操作' },
-    // PowerShell file deletion cmdlets and common aliases (bare, without -Recurse)
-    { pattern: /\bRemove-Item\b/i, reason: 'PowerShell 删除文件/目录操作' },
-    { pattern: /\bri\b\s/i, reason: 'PowerShell 删除操作 (ri = Remove-Item 别名)' },
-    { pattern: /\berase\b/i, reason: 'PowerShell 删除操作 (erase = Remove-Item 别名)' },
-    { pattern: /\bClear-Content\b/i, reason: 'PowerShell 清空文件内容操作' },
-    { pattern: /\bClear-RecycleBin\b/i, reason: 'PowerShell 清空回收站操作' },
-    { pattern: /\brunas\s+/i, reason: '以其他用户身份运行' },
-    { pattern: /\btaskkill\s+\/f/i, reason: '强制杀死进程' },
-    { pattern: /\bnet\s+stop\b/i, reason: '停止系统服务' },
-    { pattern: /\bsc\s+delete\b/i, reason: '删除系统服务' },
-    { pattern: /\bschtasks\s+\/delete/i, reason: '删除计划任务' },
-    { pattern: /\btakeown\s+/i, reason: '获取文件所有权' },
-    { pattern: /\bicacls\s+/i, reason: '修改文件权限' },
-    { pattern: /\breg\s+add\b/i, reason: '添加注册表项' },
-    { pattern: /\bwmic\s+/i, reason: 'WMI 操作，请确认安全性' },
-    { pattern: /\bnetsh\s+.*firewall/i, reason: '修改防火墙规则' },
-    { pattern: /\bnetsh\s+.*advfirewall/i, reason: '修改高级防火墙规则' },
-  ],
-};
+/**
+ * Windows-specific dangerous command patterns organized by severity level.
+ * Returns a new object each call so that reasons are resolved at call time
+ * via getI18n() (must NOT run at module load).
+ */
+function getWinDangerousPatterns(): Record<Exclude<DangerLevel, 'safe'>, Array<{ pattern: RegExp; reason: string }>> {
+  const t = getI18n().toolResult.commandSafety;
+  return {
+    block: [
+      { pattern: /del\s+\/s\s+\/q\s+[a-zA-Z]:\\/i, reason: t.winDelRecursiveDrive },
+      { pattern: /format\s+[a-zA-Z]:/i, reason: t.winFormatDisk },
+      { pattern: /reg\s+delete\s+HKLM/i, reason: t.winRegDeleteSystem },
+      { pattern: />\s*\\\\\.\\PhysicalDrive/i, reason: t.winOverwritePhysicalDisk },
+      { pattern: /diskpart/i, reason: t.winDiskpart },
+      { pattern: /bcdedit/i, reason: t.winBcdedit },
+      { pattern: /cipher\s+\/w/i, reason: t.winCipherWipe },
+      { pattern: />\s*.*\\Microsoft\.PowerShell_profile\.ps1/i, reason: t.winBlockPsProfile },
+      { pattern: /rundll32\s+/i, reason: t.winRundll32 },
+      { pattern: /regsvcs\s+/i, reason: t.winRegsvcs },
+      { pattern: /regasm\s+/i, reason: t.winRegasm },
+      { pattern: /InstallUtil\s+/i, reason: t.winInstallUtil },
+      { pattern: /mavinject\s+/i, reason: t.winMavinject },
+      { pattern: /mshta\s+vbscript:/i, reason: t.winMshtaVbscript },
+      { pattern: /mshta\s+javascript:/i, reason: t.winMshtaJavascript },
+      { pattern: /fodhelper/i, reason: t.winFodhelper },
+      { pattern: /certutil\s+.*-encode/i, reason: t.winCertutilEncode },
+    ],
+    danger: [
+      { pattern: /del\s+\/s\b/i, reason: t.winDelRecursive },
+      { pattern: /rmdir\s+\/s\b/i, reason: t.winDelRecursive },
+      // PowerShell Remove-Item with -Recurse (catches the exact bug: desktop files deleted en masse)
+      { pattern: /\bRemove-Item\b.*-Recurse\b/i, reason: t.winPsRemoveItemRecurse },
+      { pattern: /\bRemove-Item\b.*\s-[rR]\b/i, reason: t.winPsRemoveItemRecurse },
+      { pattern: /\bri\b.*-Recurse\b/i, reason: t.winPsRiRecurse },
+      { pattern: /\bri\b.*\s-[rR]\b/i, reason: t.winPsRiRecurse },
+      { pattern: /reg\s+delete\b/i, reason: t.winRegDelete },
+      { pattern: /reg\s+export\b/i, reason: t.winRegExport },
+      { pattern: /reg\s+save\b/i, reason: t.winRegSave },
+      { pattern: /powershell\s+.*-executionpolicy\s+bypass/i, reason: t.winPsBypassPolicy },
+      { pattern: /Invoke-WebRequest.*\|\s*iex/i, reason: t.winInvokeWebExec },
+      { pattern: /Invoke-Expression/i, reason: t.winInvokeExpression },
+      { pattern: /IEX\s*\(/i, reason: t.winInvokeExpression },
+      { pattern: /certutil\s+.*-decode/i, reason: t.winCertutilDecode },
+      { pattern: /certutil\s+.*-urlcache/i, reason: t.winCertutilUrlcache },
+      { pattern: /bitsadmin\s+.*\/transfer/i, reason: t.winBitsadmin },
+      { pattern: /mshta\s+/i, reason: t.winMshta },
+      { pattern: /wmic\s+.*process\s+call\s+create/i, reason: t.winWmicProcessCreate },
+      { pattern: /wmic\s+.*os\s+.*delete/i, reason: t.winWmicOsDelete },
+      { pattern: /cscript.*\/\/e:jscript/i, reason: t.winCscriptExec },
+      { pattern: /wscript.*\/\/e:jscript/i, reason: t.winWscriptExec },
+      { pattern: /takeown\s+.*\/r/i, reason: t.winTakeownRecurse },
+      { pattern: /icacls\s+.*\/grant.*Everyone/i, reason: t.winIcaclsGrantAll },
+      { pattern: /netsh\s+.*wlan\s+.*key/i, reason: t.winNetshWlanKey },
+      { pattern: /vssadmin\s+delete\s+shadows/i, reason: t.winVssDeleteShadows },
+    ],
+    warn: [
+      { pattern: /del\s+/i, reason: t.winDelFile },
+      { pattern: /rmdir\s+/i, reason: t.winRmdirDir },
+      // PowerShell file deletion cmdlets and common aliases (bare, without -Recurse)
+      { pattern: /\bRemove-Item\b/i, reason: t.winPsRemoveItem },
+      { pattern: /\bri\b\s/i, reason: t.winPsRi },
+      { pattern: /\berase\b/i, reason: t.winPsErase },
+      { pattern: /\bClear-Content\b/i, reason: t.winPsClearContent },
+      { pattern: /\bClear-RecycleBin\b/i, reason: t.winPsClearRecycleBin },
+      { pattern: /\brunas\s+/i, reason: t.winRunas },
+      { pattern: /\btaskkill\s+\/f/i, reason: t.winTaskkillForce },
+      { pattern: /\bnet\s+stop\b/i, reason: t.winNetStop },
+      { pattern: /\bsc\s+delete\b/i, reason: t.winScDelete },
+      { pattern: /\bschtasks\s+\/delete/i, reason: t.winSchtasksDelete },
+      { pattern: /\btakeown\s+/i, reason: t.winTakeown },
+      { pattern: /\bicacls\s+/i, reason: t.winIcacls },
+      { pattern: /\breg\s+add\b/i, reason: t.winRegAdd },
+      { pattern: /\bwmic\s+/i, reason: t.winWmic },
+      { pattern: /\bnetsh\s+.*firewall/i, reason: t.winNetshFirewall },
+      { pattern: /\bnetsh\s+.*advfirewall/i, reason: t.winNetshAdvFirewall },
+    ],
+  };
+}
 
 /**
  * Severity order for comparing DangerLevels.
@@ -426,7 +434,7 @@ function analyzeSegment(segment: string): CommandAnalysis {
   const levels: Array<Exclude<DangerLevel, 'safe'>> = ['block', 'danger', 'warn'];
   for (const level of levels) {
     const patterns = isWindows()
-      ? [...getDangerousPatterns()[level], ...WIN_DANGEROUS_PATTERNS[level]]
+      ? [...getDangerousPatterns()[level], ...getWinDangerousPatterns()[level]]
       : getDangerousPatterns()[level];
     for (const { pattern, reason } of patterns) {
       if (pattern.test(trimmed) || pattern.test(normalized)) {

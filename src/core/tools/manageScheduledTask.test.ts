@@ -50,7 +50,7 @@ describe('manage_scheduled_task tool', () => {
         frequency: 'daily',
       });
 
-      expect(result).toContain('成功创建');
+      expect(result).toContain('Created scheduled task');
       expect(result).toContain('每日新闻');
       expect(result).toContain('daily');
 
@@ -75,7 +75,7 @@ describe('manage_scheduled_task tool', () => {
         day_of_week: 5, // Friday
       });
 
-      expect(result).toContain('成功创建');
+      expect(result).toContain('Created scheduled task');
 
       const tasks = Object.values(useScheduleStore.getState().tasks);
       expect(tasks[0].schedule.frequency).toBe('weekly');
@@ -93,7 +93,7 @@ describe('manage_scheduled_task tool', () => {
         time_minute: 15,
       });
 
-      expect(result).toContain('成功创建');
+      expect(result).toContain('Created scheduled task');
 
       const tasks = Object.values(useScheduleStore.getState().tasks);
       expect(tasks[0].schedule.time?.minute).toBe(15);
@@ -110,7 +110,7 @@ describe('manage_scheduled_task tool', () => {
         workspace_path: '/Users/test/project',
       });
 
-      expect(result).toContain('成功创建');
+      expect(result).toContain('Created scheduled task');
 
       const tasks = Object.values(useScheduleStore.getState().tasks);
       expect(tasks[0].description).toBe('这是一个测试');
@@ -157,7 +157,7 @@ describe('manage_scheduled_task tool', () => {
         time_hour: 25,
       });
       expect(result).toContain('Error');
-      expect(result).toContain('0-23');
+      expect(result).toContain('time_hour');
     });
 
     it('validates time_minute range', async () => {
@@ -169,7 +169,7 @@ describe('manage_scheduled_task tool', () => {
         time_minute: 60,
       });
       expect(result).toContain('Error');
-      expect(result).toContain('0-59');
+      expect(result).toContain('time_minute');
     });
 
     it('validates day_of_week range', async () => {
@@ -181,7 +181,7 @@ describe('manage_scheduled_task tool', () => {
         day_of_week: 7,
       });
       expect(result).toContain('Error');
-      expect(result).toContain('0-6');
+      expect(result).toContain('day_of_week');
     });
   });
 
@@ -189,7 +189,7 @@ describe('manage_scheduled_task tool', () => {
   describe('list', () => {
     it('returns empty message when no tasks', async () => {
       const result = await callTool({ action: 'list' });
-      expect(result).toContain('没有');
+      expect(result).toContain('No scheduled tasks');
     });
 
     it('lists all tasks', async () => {
@@ -203,7 +203,7 @@ describe('manage_scheduled_task tool', () => {
       const result = await callTool({ action: 'list' });
       expect(result).toContain('任务A');
       expect(result).toContain('任务B');
-      expect(result).toContain('2 个');
+      expect(result).toContain('Scheduled tasks (2)');
     });
 
     it('filters by active status', async () => {
@@ -254,7 +254,7 @@ describe('manage_scheduled_task tool', () => {
         prompt: '新指令',
       });
 
-      expect(result).toContain('成功更新');
+      expect(result).toContain('Updated scheduled task');
       expect(result).toContain('新名称');
 
       const task = useScheduleStore.getState().tasks[taskId];
@@ -289,7 +289,7 @@ describe('manage_scheduled_task tool', () => {
     it('returns error when task does not exist', async () => {
       const result = await callTool({ action: 'update', task_id: 'nonexistent' });
       expect(result).toContain('Error');
-      expect(result).toContain('找不到');
+      expect(result).toContain('task not found');
     });
   });
 
@@ -303,7 +303,7 @@ describe('manage_scheduled_task tool', () => {
       const taskId = idMatch![1];
 
       const result = await callTool({ action: 'delete', task_id: taskId });
-      expect(result).toContain('成功删除');
+      expect(result).toContain('Deleted scheduled task');
       expect(result).toContain('待删除');
       expect(useScheduleStore.getState().tasks[taskId]).toBeUndefined();
     });
@@ -316,7 +316,7 @@ describe('manage_scheduled_task tool', () => {
     it('returns error when task does not exist', async () => {
       const result = await callTool({ action: 'delete', task_id: 'nonexistent' });
       expect(result).toContain('Error');
-      expect(result).toContain('找不到');
+      expect(result).toContain('task not found');
     });
   });
 
@@ -330,7 +330,7 @@ describe('manage_scheduled_task tool', () => {
       const taskId = idMatch![1];
 
       const result = await callTool({ action: 'pause', task_id: taskId });
-      expect(result).toContain('已暂停');
+      expect(result).toContain('Paused scheduled task');
 
       const task = useScheduleStore.getState().tasks[taskId];
       expect(task.status).toBe('paused');
@@ -345,7 +345,7 @@ describe('manage_scheduled_task tool', () => {
 
       await callTool({ action: 'pause', task_id: taskId });
       const result = await callTool({ action: 'pause', task_id: taskId });
-      expect(result).toContain('已经处于暂停状态');
+      expect(result).toContain('is already paused');
     });
   });
 
@@ -361,8 +361,8 @@ describe('manage_scheduled_task tool', () => {
       await callTool({ action: 'pause', task_id: taskId });
       const result = await callTool({ action: 'resume', task_id: taskId });
 
-      expect(result).toContain('已恢复');
-      expect(result).toContain('下次执行');
+      expect(result).toContain('Resumed scheduled task');
+      expect(result).toContain('Next run');
 
       const task = useScheduleStore.getState().tasks[taskId];
       expect(task.status).toBe('active');
@@ -377,7 +377,7 @@ describe('manage_scheduled_task tool', () => {
       const taskId = idMatch![1];
 
       const result = await callTool({ action: 'resume', task_id: taskId });
-      expect(result).toContain('已经处于活跃状态');
+      expect(result).toContain('is already active');
     });
   });
 
@@ -386,7 +386,7 @@ describe('manage_scheduled_task tool', () => {
     it('returns error for unknown action', async () => {
       const result = await callTool({ action: 'invalid' });
       expect(result).toContain('Error');
-      expect(result).toContain('未知操作');
+      expect(result).toContain('unknown action');
     });
   });
 });

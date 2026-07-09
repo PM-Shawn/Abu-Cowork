@@ -55,7 +55,6 @@ describe('web_search tool', () => {
       const tool = getWebSearchTool();
 
       const result = await tool.execute({ query: 'test' });
-      expect(result).toContain('未配置搜索 API Key');
       expect(result).toContain('No search API Key configured');
     });
 
@@ -64,7 +63,7 @@ describe('web_search tool', () => {
       const tool = getWebSearchTool();
 
       const result = await tool.execute({ query: 'test' });
-      expect(result).toContain('未配置搜索 API Key');
+      expect(result).toContain('No search API Key configured');
     });
 
     it('should return error when SearXNG base URL is missing', async () => {
@@ -72,7 +71,6 @@ describe('web_search tool', () => {
       const tool = getWebSearchTool();
 
       const result = await tool.execute({ query: 'test' });
-      expect(result).toContain('未配置 SearXNG');
       expect(result).toContain('No SearXNG URL configured');
     });
 
@@ -87,8 +85,9 @@ describe('web_search tool', () => {
       const tool = getWebSearchTool();
       const result = await tool.execute({ query: 'test' });
 
-      expect(result).not.toContain('未配置');
-      expect(result).toContain('搜索结果');
+      expect(result).not.toContain('No search API Key configured');
+      expect(result).not.toContain('No SearXNG URL configured');
+      expect(result).toContain('Search results');
     });
   });
 
@@ -110,7 +109,7 @@ describe('web_search tool', () => {
       expect(result).toContain('-->');
 
       // Should contain readable output
-      expect(result).toContain('搜索结果 (共 2 条)');
+      expect(result).toContain('Search results (2 total)');
       expect(result).toContain('**AI Progress**');
       expect(result).toContain('**ML Update**');
       expect(result).toContain('ai.com');
@@ -139,7 +138,7 @@ describe('web_search tool', () => {
       const tool = getWebSearchTool();
       const result = await tool.execute({ query: 'obscure query' });
 
-      expect(result).toContain('没有找到');
+      expect(result).toContain('No search results found');
       expect(result).toContain('obscure query');
       expect(result).not.toContain('SEARCH_JSON');
     });
@@ -201,7 +200,7 @@ describe('web_search tool', () => {
       const tool = getWebSearchTool();
 
       const result = await tool.execute({ query: 'test' });
-      expect(result).toContain('搜索出错');
+      expect(result).toContain('Search error');
       expect(result).toContain('Network timeout');
     });
 
@@ -210,7 +209,7 @@ describe('web_search tool', () => {
       const tool = getWebSearchTool();
 
       const result = await tool.execute({ query: 'test' });
-      expect(result).toContain('搜索出错');
+      expect(result).toContain('Search error');
       expect(result).toContain('unexpected string error');
     });
   });

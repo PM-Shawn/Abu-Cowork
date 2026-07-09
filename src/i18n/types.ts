@@ -2608,6 +2608,7 @@ export interface TranslationDict {
       winCertutilEncode: string;
       // WIN_DANGEROUS_PATTERNS — danger tier
       winDelRecursive: string;
+      winRmdirRecursive: string;
       winPsRemoveItemRecurse: string;
       winPsRiRecurse: string;
       winRegDelete: string;

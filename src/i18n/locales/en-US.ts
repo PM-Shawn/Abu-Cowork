@@ -2345,6 +2345,7 @@ const enUS: TranslationDict = {
       winCertutilEncode: 'certutil encoding can be used to conceal malicious files',
       // WIN_DANGEROUS_PATTERNS — danger tier
       winDelRecursive: 'Recursive delete command — may cause data loss',
+      winRmdirRecursive: 'Recursive delete of a directory — may cause data loss',
       winPsRemoveItemRecurse: 'PowerShell recursive delete — may cause large-scale data loss',
       winPsRiRecurse: 'PowerShell recursive delete (ri = Remove-Item alias)',
       winRegDelete: 'Deleting a registry key may affect system stability',

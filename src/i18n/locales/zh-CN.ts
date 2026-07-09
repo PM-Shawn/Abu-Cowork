@@ -2346,6 +2346,7 @@ const zhCN: TranslationDict = {
       winCertutilEncode: 'certutil 编码可用于隐藏恶意文件',
       // WIN_DANGEROUS_PATTERNS — danger tier
       winDelRecursive: '递归删除命令，可能导致数据丢失',
+      winRmdirRecursive: '递归删除目录，可能导致数据丢失',
       winPsRemoveItemRecurse: 'PowerShell 递归删除，可能导致大量数据丢失',
       winPsRiRecurse: 'PowerShell 递归删除 (ri = Remove-Item 别名)',
       winRegDelete: '删除注册表项，可能影响系统稳定',

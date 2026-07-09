@@ -141,7 +141,7 @@ function getWinDangerousPatterns(): Record<Exclude<DangerLevel, 'safe'>, Array<{
     ],
     danger: [
       { pattern: /del\s+\/s\b/i, reason: t.winDelRecursive },
-      { pattern: /rmdir\s+\/s\b/i, reason: t.winDelRecursive },
+      { pattern: /rmdir\s+\/s\b/i, reason: t.winRmdirRecursive },
       // PowerShell Remove-Item with -Recurse (catches the exact bug: desktop files deleted en masse)
       { pattern: /\bRemove-Item\b.*-Recurse\b/i, reason: t.winPsRemoveItemRecurse },
       { pattern: /\bRemove-Item\b.*\s-[rR]\b/i, reason: t.winPsRemoveItemRecurse },
@@ -430,12 +430,17 @@ function analyzeSegment(segment: string): CommandAnalysis {
     }
   }
 
-  // Check dangerous patterns in descending severity order
+  // Check dangerous patterns in descending severity order. Resolve the tiered
+  // dictionaries once per segment (they rebuild their regex arrays + re-read
+  // i18n on each call), not once per severity level.
+  const win = isWindows();
+  const dangerousPatterns = getDangerousPatterns();
+  const winDangerousPatterns = win ? getWinDangerousPatterns() : null;
   const levels: Array<Exclude<DangerLevel, 'safe'>> = ['block', 'danger', 'warn'];
   for (const level of levels) {
-    const patterns = isWindows()
-      ? [...getDangerousPatterns()[level], ...getWinDangerousPatterns()[level]]
-      : getDangerousPatterns()[level];
+    const patterns = winDangerousPatterns
+      ? [...dangerousPatterns[level], ...winDangerousPatterns[level]]
+      : dangerousPatterns[level];
     for (const { pattern, reason } of patterns) {
       if (pattern.test(trimmed) || pattern.test(normalized)) {
         return { level, reason, matchedPattern: pattern.source, readOnly: false };

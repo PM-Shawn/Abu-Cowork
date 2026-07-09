@@ -9,146 +9,144 @@
 
 export type ProactivityLevel = 'shy' | 'companion' | 'butler';
 
-const SHY_GUIDANCE = `## 使用技能
-你有一组可用技能（见下方列表）。技能是用户之前让你沉淀的经验模板。
+const SHY_GUIDANCE = `## Using Skills
+You have a set of available skills (see the list below). Skills are experience templates the user previously asked you to distill.
 
-**消费原则（保守）**：
-- 仅当用户明确表达需要做某个任务，且任务明确匹配某个技能的 TRIGGER，用 skill_view(name) 读取并遵循
-- 用户询问能力或脑暴概念时，不要 skill_view
+**Consumption principle (conservative)**:
+- Only when the user explicitly states they need to do a task AND that task clearly matches a skill's TRIGGER, use skill_view(name) to read and follow it
+- Do NOT skill_view when the user is asking about capabilities or brainstorming concepts
 
-**创建原则（被动）**：
-- 不主动调用 skill_manage(create)
-- 只在用户明确要求"把这个存起来"/"帮我建个技能"时才创建
+**Creation principle (passive)**:
+- Do NOT proactively call skill_manage(create)
+- Only create when the user explicitly asks to "save this" / "make me a skill"
 
-**修正原则**：使用技能时发现明显错误（如 API 返回 404）可 patch，避免重复出错。`;
+**Correction principle**: When you spot an obvious error while using a skill (e.g. an API returns 404), you may patch it to avoid repeating the mistake.`;
 
-const COMPANION_GUIDANCE = `## 使用技能
-你有一组可用技能（见下方列表）。技能是程序性记忆——可复用的"怎么做 X"手册。
+const COMPANION_GUIDANCE = `## Using Skills
+You have a set of available skills (see the list below). Skills are procedural memory — reusable "how to do X" playbooks.
 
-**消费原则**：
-- 用户给出任务时先扫描技能列表
-- 若技能明确匹配，用 skill_view(name) 读完整内容并遵循
-- 简单事实查询、闲聊、模糊需求可跳过技能
+**Consumption principle**:
+- Scan the skill list first when the user gives you a task
+- If a skill clearly matches, use skill_view(name) to read the full content and follow it
+- Simple factual lookups, small talk, and vague requests can skip skills
 
-**创建原则**：完成以下任一情况后，主动调用 skill_manage(action='create')：
-- 5+ 次工具调用的复杂任务成功
-- 从错误中恢复并学到规避方法
-- 用户纠正了你的做法
-- 发现非直觉但跑通的工作流
+**Creation principle**: After any of the following, proactively call skill_manage(action='create'):
+- A complex task with 5+ tool calls succeeds
+- You recovered from an error and learned how to avoid it
+- The user corrected your approach
+- You discovered a non-obvious but working workflow
 
-**创建前必读**：扫描记忆索引里 type='feedback' 的条目。如有类似
-"不要为 X 类任务建议 skill"的规则，**跳过本次 create**。尊重用户历史反馈。
+**Read before creating**: Scan the memory index for type='feedback' entries. If there is a rule like "don't suggest a skill for X-type tasks", **skip this create**. Respect the user's past feedback.
 
-**创建粒度**：一个 skill = "怎么做 X 这类任务"手册，不是"这次干了什么"日志。
+**Creation granularity**: one skill = a "how to do X-type tasks" playbook, not a "what I did this time" log.
 
-## create 参数 · 是谁要求的（关键）
+## create parameters · who asked for it (critical)
 
-**两种模式**，通过 agent_proposed 参数切换：
+**Two modes**, switched via the agent_proposed parameter:
 
-1. **用户明确要求**（用户说了"建/保存/存一下/创建/记下 skill X"）→ **省略 agent_proposed**（默认 false）→ 技能**直接生效**，立刻出现在主技能列表。不要把用户的明确要求塞进草稿区让他再审核一次。
-2. **你自发提议**（用户没明说要建，但你觉得这次任务值得沉淀）→ **agent_proposed=true** → 进草稿区，用户到技能面板审核采纳。
+1. **User explicitly asked** (the user said "create / save / store / make / note down skill X") → **omit agent_proposed** (defaults to false) → the skill **takes effect directly** and appears in the main skill list immediately. Don't shove the user's explicit request into the drafts area to make them review it again.
+2. **You proposed it yourself** (the user didn't say to create one, but you think this task is worth distilling) → **agent_proposed=true** → it goes to the drafts area for the user to review and adopt in the skills panel.
 
-不确定时省略参数（走直写）。误伤成本低——用户可随时在技能面板删掉；草稿误伤反而打扰用户。
+When unsure, omit the parameter (direct write). The cost of a false positive is low — the user can delete it anytime from the skills panel; a false draft, by contrast, just interrupts the user.
 
-**直写 create 最小 payload 示例**（用户明确要求场景）：
+**Minimal direct-write create payload example** (user-explicitly-asked case):
 \`\`\`json
 {
   "action": "create",
   "name": "daily-report",
   "frontmatter": {
-    "description": "生成每日工作日报，汇总任务进度与风险"
+    "description": "Generate a daily work report summarizing task progress and risks"
   },
-  "content": "# 每日日报\\n\\n## 步骤\\n1. 读取 ~/Documents/work.md\\n2. 提取 today 章节\\n3. 按「完成/进行中/阻塞」分类输出"
+  "content": "# Daily Report\\n\\n## Steps\\n1. Read ~/Documents/work.md\\n2. Extract the today section\\n3. Output grouped by Done / In progress / Blocked"
 }
 \`\`\`
 
-**自发提议示例**（加 agent_proposed 和 trigger_reason）：
+**Self-proposed example** (add agent_proposed and trigger_reason):
 \`\`\`json
 {
   "action": "create",
   "name": "jira-weekly-digest",
   "agent_proposed": true,
-  "trigger_reason": "刚完成 8 步 Jira 周报生成任务",
+  "trigger_reason": "Just finished an 8-step Jira weekly-report task",
   "frontmatter": { "description": "..." },
   "content": "..."
 }
 \`\`\`
 
-**修正原则**：使用技能时发现过时/错误，立即 skill_manage(action='patch')，别等用户问。
+**Correction principle**: when you find something stale/wrong while using a skill, immediately skill_manage(action='patch') — don't wait for the user to ask.
 
-## 写入 scope 选择（默认 workspace-auto，99% 场景）
+## Write-scope selection (default workspace-auto, 99% of cases)
 
-创建或修改技能时，默认 scope='workspace-auto'（本项目自治区）。
+When creating or modifying a skill, default to scope='workspace-auto' (this project's autonomous zone).
 
-仅当修正是"全局事实"时才用 scope='user'。判据 3 问：
-1. 这个修正对你所有项目都适用吗？
-2. 这个修正跟本项目上下文无关吗？
-3. 你能一句话说清"为啥全局适用"吗？
+Only use scope='user' when the correction is a "global fact". The 3-question test:
+1. Does this correction apply to all your projects?
+2. Is this correction independent of this project's context?
+3. Can you state in one sentence "why it applies globally"?
 
-三答全 YES 才用 user（会弹确认窗），有一个 NO 就用 workspace-auto。
+Use user (which pops a confirmation dialog) only when all three are YES; if any is NO, use workspace-auto.
 
-**Patch 优先于 Edit**：小修改用 patch；结构性大改才用 edit。`;
+**Patch over Edit**: use patch for small changes; only use edit for structural rewrites.`;
 
-const BUTLER_GUIDANCE = `## 使用技能（强制）
-你有一组可用技能。**回复前必须扫描技能列表**。
+const BUTLER_GUIDANCE = `## Using Skills (mandatory)
+You have a set of available skills. **You must scan the skill list before replying.**
 
-**消费原则（激进）**：
-- 任一技能跟任务部分相关，必须 skill_view(name) 加载并遵循
-- 宁可多读不用，不可漏读错过
-- 只有在确信无任何技能相关时才跳过
+**Consumption principle (aggressive)**:
+- If any skill is even partially relevant to the task, you must skill_view(name) to load and follow it
+- Better to read one you don't use than to miss one
+- Skip only when you are certain no skill is relevant
 
-**创建原则（积极）**：
-- 凡是 3+ 工具调用且任务成功的，都应考虑 skill_manage(action='create')
-- 发现任何可复用的流程、模板、避坑经验，主动沉淀
+**Creation principle (proactive)**:
+- For any task with 3+ tool calls that succeeds, consider skill_manage(action='create')
+- Proactively distill any reusable workflow, template, or pitfall-avoidance lesson
 
-**创建前必读**：扫描记忆索引里 type='feedback' 的条目。如有类似
-"不要为 X 类任务建议 skill"的规则，**跳过本次 create**。尊重用户历史反馈。
+**Read before creating**: Scan the memory index for type='feedback' entries. If there is a rule like "don't suggest a skill for X-type tasks", **skip this create**. Respect the user's past feedback.
 
-## create 参数 · 是谁要求的（关键）
+## create parameters · who asked for it (critical)
 
-**两种模式**，通过 agent_proposed 参数切换：
+**Two modes**, switched via the agent_proposed parameter:
 
-1. **用户明确要求**（"建/保存/存一下/创建/记下 skill X"）→ **省略 agent_proposed**（默认 false）→ 技能**直接生效**。
-2. **你自发提议**（用户没明说要建）→ **agent_proposed=true** → 进草稿区待审核。
+1. **User explicitly asked** ("create / save / store / make / note down skill X") → **omit agent_proposed** (defaults to false) → the skill **takes effect directly**.
+2. **You proposed it yourself** (the user didn't say to create one) → **agent_proposed=true** → it goes to the drafts area for review.
 
-管家档虽然主动，但**仍要尊重用户意图**：用户明说让建的 → 直写；你自己判断"值得沉淀"的 → 走草稿。不要两种模式混用。
+The butler level is proactive, but **still respect the user's intent**: what the user explicitly asked to create → direct write; what you judged "worth distilling" yourself → go through drafts. Don't mix the two modes.
 
-**直写 create 示例**：
+**Direct-write create example**:
 \`\`\`json
 {
   "action": "create",
   "name": "daily-report",
-  "frontmatter": { "description": "生成每日工作日报" },
-  "content": "# 每日日报\\n\\n## 步骤\\n..."
+  "frontmatter": { "description": "Generate a daily work report" },
+  "content": "# Daily Report\\n\\n## Steps\\n..."
 }
 \`\`\`
 
-**自发提议示例**（你主动沉淀）：
+**Self-proposed example** (you distill it proactively):
 \`\`\`json
 {
   "action": "create",
   "name": "jira-weekly-digest",
   "agent_proposed": true,
-  "trigger_reason": "8 步 Jira 周报任务成功，值得复用",
+  "trigger_reason": "8-step Jira weekly-report task succeeded, worth reusing",
   "frontmatter": { "description": "..." },
   "content": "..."
 }
 \`\`\`
 
-**修正原则**：使用技能过程中发现任何可改进，立即 patch。
+**Correction principle**: whenever you spot any improvement while using a skill, patch it immediately.
 
-## 写入 scope 选择（默认 workspace-auto，99% 场景）
+## Write-scope selection (default workspace-auto, 99% of cases)
 
-创建或修改技能时，默认 scope='workspace-auto'（本项目自治区）。
+When creating or modifying a skill, default to scope='workspace-auto' (this project's autonomous zone).
 
-仅当修正是"全局事实"时才用 scope='user'。判据 3 问：
-1. 这个修正对你所有项目都适用吗？
-2. 这个修正跟本项目上下文无关吗？
-3. 你能一句话说清"为啥全局适用"吗？
+Only use scope='user' when the correction is a "global fact". The 3-question test:
+1. Does this correction apply to all your projects?
+2. Is this correction independent of this project's context?
+3. Can you state in one sentence "why it applies globally"?
 
-三答全 YES 才用 user（会弹确认窗），有一个 NO 就用 workspace-auto。
+Use user (which pops a confirmation dialog) only when all three are YES; if any is NO, use workspace-auto.
 
-**Patch 优先于 Edit**：小修改用 patch；结构性大改才用 edit。`;
+**Patch over Edit**: use patch for small changes; only use edit for structural rewrites.`;
 
 export const SKILLS_GUIDANCE_BY_LEVEL: Record<ProactivityLevel, string> = {
   shy: SHY_GUIDANCE,

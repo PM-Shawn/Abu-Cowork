@@ -772,12 +772,12 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
                 <div
                   key={r.id}
                   className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-[var(--abu-bg-muted)] border border-[var(--abu-border-subtle)] shrink-0"
-                  title={r.selection.text.slice(0, 80)}
+                  title={`${r.source.name}\n${r.selection.text}${r.comment ? `\n${r.comment}` : ''}`}
                 >
                   <FileText className="h-3.5 w-3.5 text-[var(--abu-text-tertiary)] shrink-0" />
-                  <span className="text-[12px] text-[var(--abu-text-primary)] max-w-[160px] truncate">
-                    {r.source.name}
-                    <span className="text-[var(--abu-text-tertiary)]"> · {r.comment ?? t.reference.quoteChipFallback}</span>
+                  <span className="text-[12px] text-[var(--abu-text-primary)] max-w-[200px] truncate">
+                    {r.selection.text}
+                    {r.comment && <span className="text-[var(--abu-text-tertiary)]"> · {r.comment}</span>}
                   </span>
                   <button
                     onClick={() => { setReferences((prev) => prev.filter((x) => x.id !== r.id)); highlightRegistry.remove(r.id); }}

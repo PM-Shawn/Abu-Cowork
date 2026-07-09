@@ -40,9 +40,14 @@
   -webkit-user-select: text !important;
 }
 
-/* Doc reference highlight (CSS Custom Highlight API) */
+/* Doc reference留痕 + native selection share the same soft clay fill so
+   dragging-to-select and the committed reference look identical. */
 ::highlight(abu-reference) {
-  background-color: color-mix(in srgb, var(--abu-clay) 22%, transparent);
+  background-color: rgba(217, 119, 87, 0.13);
+  border-radius: 2px;
+}
+[data-doc-selection-layer] ::selection {
+  background-color: rgba(217, 119, 87, 0.13);
 }
 
 /* Scrollbar - default subtle style */

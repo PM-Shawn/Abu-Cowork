@@ -9,7 +9,9 @@ export function CommentEditor({ onSubmit, onCancel }: { onSubmit: (v: string) =>
   const { t } = useI18n();
   const [value, setValue] = useState('');
   const ref = useRef<HTMLTextAreaElement>(null);
-  useEffect(() => { ref.current?.focus(); }, []);
+  // preventScroll: focusing must not scroll the doc — a scroll would trigger the
+  // host's dismiss-on-scroll and close this editor the instant it opens.
+  useEffect(() => { ref.current?.focus({ preventScroll: true }); }, []);
 
   const submit = useCallback(() => {
     const v = value.trim();
@@ -23,7 +25,7 @@ export function CommentEditor({ onSubmit, onCancel }: { onSubmit: (v: string) =>
 
   const over = value.length > MAX;
   return (
-    <div className="w-72 rounded-xl border border-[var(--abu-border-subtle)] bg-[var(--abu-bg-elevated)] p-2 shadow-lg">
+    <div className="w-72 rounded-xl border border-[var(--abu-border-subtle)] bg-[var(--abu-bg-base)] p-2 shadow-lg">
       <Textarea
         ref={ref}
         value={value}

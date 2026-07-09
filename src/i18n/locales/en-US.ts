@@ -1695,7 +1695,6 @@ const enUS: TranslationDict = {
     commentToChat: 'Comment to Chat',
     addToChat: 'Add to Chat',
     commentPlaceholder: 'Enter your comment…',
-    quoteChipFallback: 'Quote',
     maxReached: 'Up to {max} references',
   },
 

@@ -1,5 +1,5 @@
 // src/features/reference/SelectionToolbar.tsx
-import { useState, useEffect, useCallback } from 'react';
+import { useEffect, useCallback } from 'react';
 import { MessageSquarePlus, MessageSquare } from 'lucide-react';
 import { useI18n } from '@/i18n';
 import { isMacOS } from '@/utils/platform';
@@ -8,18 +8,17 @@ import { computeToolbarPosition } from './toolbarPosition';
 
 interface Props {
   rect: DOMRect;
+  /** Controlled: whether the comment editor is open. Owned by the host so it can
+   *  pause selection tracking synchronously before the editor steals focus. */
+  editing: boolean;
+  onEditingChange: (editing: boolean) => void;
   onAdd: () => void;
   onComment: (comment: string) => void;
   onDismiss: () => void;
-  /** Notifies the host when the comment editor opens/closes (to pause dismiss-on-scroll). */
-  onEditingChange?: (editing: boolean) => void;
 }
 
-export function SelectionToolbar({ rect, onAdd, onComment, onDismiss, onEditingChange }: Props) {
+export function SelectionToolbar({ rect, editing, onEditingChange, onAdd, onComment, onDismiss }: Props) {
   const { t } = useI18n();
-  const [editing, setEditing] = useState(false);
-
-  useEffect(() => { onEditingChange?.(editing); }, [editing, onEditingChange]);
 
   // Keyboard: ⌘/Ctrl+J → open comment editor; Enter → add (only when not in editor)
   useEffect(() => {
@@ -27,7 +26,7 @@ export function SelectionToolbar({ rect, onAdd, onComment, onDismiss, onEditingC
     const onKey = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && (e.key === 'j' || e.key === 'J')) {
         e.preventDefault();
-        setEditing(true);
+        onEditingChange(true);
       } else if (e.key === 'Enter' && !e.shiftKey && !e.metaKey && !e.ctrlKey) {
         e.preventDefault();
         onAdd();
@@ -35,7 +34,7 @@ export function SelectionToolbar({ rect, onAdd, onComment, onDismiss, onEditingC
     };
     document.addEventListener('keydown', onKey);
     return () => document.removeEventListener('keydown', onKey);
-  }, [editing, onAdd]);
+  }, [editing, onAdd, onEditingChange]);
 
   // Estimated size of the toolbar buttons row; used for edge-clamping without
   // a ResizeObserver (acceptable V1 approximation — real size is within ~10 px).
@@ -57,14 +56,14 @@ export function SelectionToolbar({ rect, onAdd, onComment, onDismiss, onEditingC
   const handleComment = useCallback((v: string) => { onComment(v); }, [onComment]);
 
   return (
-    <div style={style} role="toolbar" aria-label={t.reference.addToChat} onMouseDown={(e) => e.preventDefault()}>
+    <div style={style} role="toolbar" data-selection-toolbar aria-label={t.reference.addToChat} onMouseDown={(e) => e.preventDefault()}>
       {editing ? (
-        <CommentEditor onSubmit={handleComment} onCancel={() => { setEditing(false); onDismiss(); }} />
+        <CommentEditor onSubmit={handleComment} onCancel={() => { onEditingChange(false); onDismiss(); }} />
       ) : (
-        <div className="flex items-center gap-0.5 rounded-xl border border-[var(--abu-border-subtle)] bg-[var(--abu-bg-elevated)] p-0.5 shadow-lg">
+        <div className="flex items-center gap-0.5 rounded-xl border border-[var(--abu-border-subtle)] bg-[var(--abu-bg-base)] p-0.5 shadow-lg">
           <button
             type="button"
-            onClick={() => setEditing(true)}
+            onClick={() => onEditingChange(true)}
             className="flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-[13px] text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-hover)]"
           >
             <MessageSquarePlus className="h-3.5 w-3.5" />

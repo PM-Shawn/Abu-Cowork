@@ -8,6 +8,29 @@ import { extractFromRange } from './markdownSelectionSource';
 import { highlightRegistry } from './highlightRegistry';
 import { getBaseName } from '@/utils/pathUtils';
 
+/** Shrink a range past leading/trailing whitespace/newlines so the highlight
+ *  paints only the actual text — a trailing "\n" in the selection would
+ *  otherwise render a phantom highlighted strip on the next line. */
+function trimRange(range: Range): Range {
+  const r = range.cloneRange();
+  const ws = (s: string | null | undefined, i: number) => !!s && /\s/.test(s[i]);
+  while (
+    r.startContainer.nodeType === Node.TEXT_NODE &&
+    r.startOffset < (r.startContainer.textContent?.length ?? 0) &&
+    ws(r.startContainer.textContent, r.startOffset)
+  ) {
+    r.setStart(r.startContainer, r.startOffset + 1);
+  }
+  while (
+    r.endContainer.nodeType === Node.TEXT_NODE &&
+    r.endOffset > 0 &&
+    ws(r.endContainer.textContent, r.endOffset - 1)
+  ) {
+    r.setEnd(r.endContainer, r.endOffset - 1);
+  }
+  return r;
+}
+
 /** 包裹文档预览内容：选区 → 工具条 → 生成引用 → 注入 chatStore + 高亮留痕。 */
 export function DocSelectionLayer({ filePath, children }: { filePath: string; children: React.ReactNode }) {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -16,11 +39,28 @@ export function DocSelectionLayer({ filePath, children }: { filePath: string; ch
   const addPendingReference = useChatStore((s) => s.addPendingReference);
   const { t } = useI18n();
 
-  const onSelect = useCallback((r: TextSelectionResult | null) => setSel(r), []);
-  useTextSelection({ containerRef, onSelect });
+  const onSelect = useCallback((r: TextSelectionResult | null) => {
+    setSel(r);
+    if (r) setEditing(false); // a fresh doc selection cancels any open comment editor (switch to new sentence)
+  }, []);
+  // `enabled` only pauses the selectionchange-collapse dismissal (which would
+  // otherwise fire when the comment textarea steals focus). A fresh mouseup in
+  // the document still switches the selection, so the user can move to another
+  // sentence while an editor is open.
+  useTextSelection({ containerRef, onSelect, enabled: !editing });
 
   // Reset editing when the selection clears (toolbar unmounts).
   useEffect(() => { if (!sel) setEditing(false); }, [sel]);
+
+  // Only while the comment editor is open: focusing its textarea collapses the
+  // native selection, so paint a standing highlight (same clay fill as ::selection)
+  // on the target sentence. Before editing, the native ::selection already shows
+  // it — painting then would just double the fill and darken it.
+  useEffect(() => {
+    if (!sel || !editing) return;
+    highlightRegistry.add('__active__', trimRange(sel.range));
+    return () => highlightRegistry.remove('__active__');
+  }, [sel, editing]);
 
   // Clear reference highlights when the previewed file changes / on unmount:
   // cloned ranges point into this file's DOM and would dangle otherwise.
@@ -56,7 +96,7 @@ export function DocSelectionLayer({ filePath, children }: { filePath: string; ch
     if (ref) {
       if (comment) ref.comment = comment;
       addPendingReference(ref);
-      highlightRegistry.add(ref.id, sel.range.cloneRange());
+      highlightRegistry.add(ref.id, trimRange(sel.range));
     }
     window.getSelection()?.removeAllRanges();
     setSel(null);
@@ -68,10 +108,11 @@ export function DocSelectionLayer({ filePath, children }: { filePath: string; ch
       {sel && (
         <SelectionToolbar
           rect={sel.rect}
+          editing={editing}
+          onEditingChange={setEditing}
           onAdd={() => commit()}
           onComment={(c) => commit(c)}
           onDismiss={() => setSel(null)}
-          onEditingChange={setEditing}
         />
       )}
     </div>

@@ -12,7 +12,7 @@ describe('skillsGuidance', () => {
     const texts = levels.map((l) => SKILLS_GUIDANCE_BY_LEVEL[l]);
     for (const text of texts) {
       expect(text.length).toBeGreaterThan(100);
-      expect(text).toContain('使用技能');
+      expect(text).toContain('Using Skills');
     }
     // All three must differ — this is the whole point of the preset.
     expect(new Set(texts).size).toBe(3);
@@ -35,9 +35,9 @@ describe('skillsGuidance', () => {
   it('shy prompt is conservative: no proactive create language', () => {
     const shy = SKILLS_GUIDANCE_BY_LEVEL.shy;
     // Shy must tell the agent NOT to auto-create.
-    expect(shy).toMatch(/不主动调用 skill_manage|不主动.*create|被动/);
-    // Shy must not sell the "积极沉淀" butler framing.
-    expect(shy).not.toContain('积极沉淀');
+    expect(shy).toMatch(/Do NOT proactively call skill_manage|passive/i);
+    // Shy must not sell the "proactively distill" butler framing.
+    expect(shy).not.toContain('Proactively distill');
   });
 
   it('companion prompt covers create triggers and scope 3-question guide', () => {
@@ -47,7 +47,7 @@ describe('skillsGuidance', () => {
     expect(companion).toContain('scope');
     expect(companion).toContain('workspace-auto');
     // 3-question scope guide anchors the user/workspace-auto decision.
-    expect(companion).toMatch(/判据 3 问|3 问/);
+    expect(companion).toMatch(/3-question test|3 question/i);
     // Must tell agent to respect past feedback before creating.
     expect(companion).toContain('feedback');
   });
@@ -74,8 +74,8 @@ describe('skillsGuidance', () => {
       const prompt = SKILLS_GUIDANCE_BY_LEVEL[level];
       expect(prompt).toContain('agent_proposed');
       // Must explicitly distinguish the user-asked case from the auto case.
-      expect(prompt).toMatch(/用户明确要求/);
-      expect(prompt).toMatch(/自发/);
+      expect(prompt).toMatch(/User explicitly asked/i);
+      expect(prompt).toMatch(/proposed it yourself|Self-proposed/i);
       // And a concrete payload example showing the flag on.
       expect(prompt).toMatch(/"agent_proposed":\s*true/);
     }
@@ -83,7 +83,7 @@ describe('skillsGuidance', () => {
 
   it('butler prompt is most aggressive about consumption', () => {
     const butler = SKILLS_GUIDANCE_BY_LEVEL.butler;
-    expect(butler).toMatch(/必须|强制|激进/);
+    expect(butler).toMatch(/mandatory|must|aggressive/i);
     // Butler inherits the same scope + feedback rules as companion.
     expect(butler).toContain('workspace-auto');
     expect(butler).toContain('feedback');

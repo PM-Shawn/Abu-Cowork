@@ -42,11 +42,11 @@ export default function InlinePermissionRequest({
   const getTitle = () => {
     switch (type) {
       case 'workspace':
-        return t.permission.workspace?.title || '访问工作区';
+        return t.permission.workspace.title;
       case 'shell':
-        return t.permission.shell?.title || '执行命令';
+        return t.permission.shell.title;
       case 'file-write':
-        return t.permission.fileWrite?.title || '写入文件';
+        return t.permission.fileWrite.title;
     }
   };
 
@@ -54,11 +54,11 @@ export default function InlinePermissionRequest({
   const getDescription = () => {
     switch (type) {
       case 'workspace':
-        return '阿布需要访问这个文件夹';
+        return t.permission.workspace.description;
       case 'shell':
-        return '阿布需要执行命令';
+        return t.permission.shell.description;
       case 'file-write':
-        return '阿布需要修改文件';
+        return t.permission.fileWrite.description;
     }
   };
 
@@ -104,7 +104,7 @@ export default function InlinePermissionRequest({
           className="h-8 px-4 text-[13px] bg-[var(--abu-text-primary)] hover:bg-[var(--abu-text-secondary)] text-white"
         >
           <Check className="h-3.5 w-3.5 mr-1.5" />
-          允许
+          {t.permission.allowOnce}
         </Button>
         <Button
           size="sm"
@@ -113,10 +113,10 @@ export default function InlinePermissionRequest({
           className="h-8 px-4 text-[13px] border-[var(--abu-border-hover)] hover:bg-[var(--abu-bg-hover)]"
         >
           <X className="h-3.5 w-3.5 mr-1.5" />
-          拒绝
+          {t.permission.deny}
         </Button>
         <span className="text-[11px] text-[var(--abu-text-muted)] ml-2">
-          仅本次
+          {t.permission.durationOnce}
         </span>
       </div>
     </div>
@@ -132,17 +132,18 @@ export function CompactPermissionRequest({
   onAllow,
   onDeny,
 }: Omit<InlinePermissionProps, 'details'>) {
+  const { t } = useI18n();
   const Icon = iconMap[type];
   const colors = colorMap[type];
 
   const getLabel = () => {
     switch (type) {
       case 'workspace':
-        return '访问';
+        return t.permission.compactAccessLabel;
       case 'shell':
-        return '执行';
+        return t.permission.compactShellLabel;
       case 'file-write':
-        return '写入';
+        return t.permission.compactWriteLabel;
     }
   };
 
@@ -168,14 +169,14 @@ export function CompactPermissionRequest({
         <button
           onClick={onAllow}
           className="p-1 rounded hover:bg-[var(--abu-bg-hover)] text-green-600 transition-colors"
-          title="允许"
+          title={t.permission.allowOnce}
         >
           <Check className="h-4 w-4" />
         </button>
         <button
           onClick={onDeny}
           className="p-1 rounded hover:bg-[var(--abu-bg-hover)] text-red-500 transition-colors"
-          title="拒绝"
+          title={t.permission.deny}
         >
           <X className="h-4 w-4" />
         </button>

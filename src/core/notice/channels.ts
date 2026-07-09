@@ -20,6 +20,7 @@ import { getCurrentWindow } from '@tauri-apps/api/window';
 import { isMacOS } from '@/utils/platform';
 import { registerChannel } from './pipeline';
 import type { Notice } from './types';
+import { getI18n } from '@/i18n';
 
 // ── State ──────────────────────────────────────────────────────────────
 
@@ -33,20 +34,20 @@ export function setNotificationPermission(granted: boolean): void {
 
 // ── Helpers ────────────────────────────────────────────────────────────
 
-const noticeTitle: Record<string, string> = {
-  task_complete: '阿布完成啦！',
-  agent_error: '哎呀出错了',
-  schedule_fired: '定时任务触发',
-  permission_request: '需要你的确认',
-  user_input_needed: '需要你的输入',
-  meeting_prep: '会议准备就绪',
-  skill_proposal_offer: '阿布想存一个技能',
-  skill_draft_ready: '技能草稿就绪',
-  im_inbound: '收到新消息',
-  update_available: '有新版本可用',
-};
-
 function getTitle(notice: Notice): string {
+  const n = getI18n().noticeTitle;
+  const noticeTitle: Record<string, string> = {
+    task_complete: n.taskComplete,
+    agent_error: n.agentError,
+    schedule_fired: n.scheduleFired,
+    permission_request: n.permissionRequest,
+    user_input_needed: n.userInputNeeded,
+    meeting_prep: n.meetingPrep,
+    skill_proposal_offer: n.skillProposalOffer,
+    skill_draft_ready: n.skillDraftReady,
+    im_inbound: n.imInbound,
+    update_available: n.updateAvailable,
+  };
   return noticeTitle[notice.type] ?? 'Abu';
 }
 

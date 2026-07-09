@@ -2,6 +2,7 @@ import type { ToolDefinition } from '../../../types';
 import { useChatStore } from '../../../stores/chatStore';
 import { useWorkspaceStore } from '../../../stores/workspaceStore';
 import { TOOL_NAMES } from '../toolNames';
+import { getI18n, format } from '../../../i18n';
 
 /**
  * Format a memory file's content for return. Strips frontmatter (already
@@ -22,12 +23,7 @@ function formatMemoryContent(
   const banner = `# [${type}]${isPrivate ? ' 🔒' : ''} ${name}\n\n`;
   const body = content.trim();
   if (!isPrivate) return banner + body;
-  return (
-    banner + body + '\n\n' +
-    '[这是用户的私密记忆。回复时**只引用回答当前问题所需的最少部分**，' +
-    '不要完整复述到对话历史中。例如用户问"我证件号是多少"可以直接答数字，' +
-    '但不要主动展开关联信息，也不要在后续无关消息里再次引用。]'
-  );
+  return banner + body + '\n\n' + getI18n().toolResult.recall.privateMemoryNote;
 }
 
 /**
@@ -52,30 +48,30 @@ function matchesQuery(text: string, queryTokens: string[]): boolean {
 
 export const recallTool: ToolDefinition = {
   name: TOOL_NAMES.RECALL,
-  description: `回忆过去的记忆、任务记录和历史会话。当用户问到"之前"、"上次"、"最近做了什么"、"你记得吗"、"我们聊过什么"等需要回溯历史的问题时使用。
+  description: `Recall past memories, task records, and conversation history. Use when the user asks questions that require looking back at history, such as "previously", "last time", "what have we done recently", "do you remember", or "what have we talked about".
 
-## 优先级（按顺序）
-1. **先看 <relevant-memories>**（system prompt 后段）：每轮已自动注入相关非私密记忆完整内容，能从这里答就直接答，不用调任何工具。
-2. **recall（关键词搜）**：<relevant-memories> 没覆盖，或不确定有没有相关记忆时用。
-3. **read_memory（按 filename 精确拉）**：在 <memory-index> 看到具体的 filename 且 description 显示相关时（包括 🔒 私密记忆且用户明确问起的场景），直接 read_memory(filename) — 比 recall 准确，token 也省。
+## Priority (in order)
+1. **Check <relevant-memories> first** (at the end of the system prompt): relevant non-private memories are auto-injected in full each turn — answer from there directly without calling any tool if possible.
+2. **recall (keyword search)**: use when <relevant-memories> does not cover the topic, or when you are unsure whether a relevant memory exists.
+3. **read_memory (precise pull by filename)**: when you see a specific filename in <memory-index> and its description looks relevant (including 🔒 private memories the user explicitly asks about), call read_memory(filename) directly — more accurate than recall and uses fewer tokens.
 
-## 用记忆时的 sanity-check
-记忆是过去某时刻的快照，可能已过时。基于记忆给建议前：
-- 提到具体文件路径 → 先确认文件还在
-- 提到具体函数/工具名 → 先 grep 确认
-- 用户即将据此行动 → 先验证现状再说
+## Sanity-check when using memories
+Memories are snapshots from a point in the past and may be outdated. Before giving advice based on memory:
+- Mentions a specific file path → confirm the file still exists first
+- Mentions a specific function/tool name → grep to confirm first
+- User is about to act on it → verify the current state before commenting
 
-"记忆说 X 存在" ≠ "X 现在还存在"。发现记忆与现状冲突，相信现状，并更新或删除过时的记忆。`,
+"Memory says X exists" ≠ "X still exists now". When memory conflicts with the current state, trust the current state and update or delete the outdated memory.`,
   inputSchema: {
     type: 'object',
     properties: {
       query: {
         type: 'string',
-        description: '搜索关键词（匹配记忆内容、任务摘要、对话标题）',
+        description: 'Search keywords (matched against memory content, task summaries, and conversation titles)',
       },
       limit: {
         type: 'number',
-        description: '每类数据源最多返回条数，默认 10',
+        description: 'Maximum number of results to return per data source, default 10',
       },
     },
     required: [],
@@ -87,6 +83,7 @@ export const recallTool: ToolDefinition = {
 
     const workspacePath = context?.workspacePath ?? useWorkspaceStore.getState().currentPath;
     const sections: string[] = [];
+    const t = getI18n().toolResult.recall;
 
     // --- 1. Memdir memories (global + workspace) ---
     try {
@@ -123,7 +120,7 @@ export const recallTool: ToolDefinition = {
           // tell the user to ask explicitly) but do NOT preview content.
           const lock = h.private ? ' 🔒' : '';
           if (h.private) {
-            lines.push(`- [${h.type}]${lock} ${h.name} (${formatTime(h.updated)}) — 私密记忆，需用户明确询问后调 read_memory 拉取`);
+            lines.push(`- [${h.type}]${lock} ${h.name} (${formatTime(h.updated)})${t.privateMemorySuffix}`);
             // Don't bump accessCount for private — surfacing in recall isn't a real read.
             continue;
           }
@@ -133,7 +130,7 @@ export const recallTool: ToolDefinition = {
           // Touch accessed memories (fire-and-forget)
           touchMemory(h.filePath).catch(() => {});
         }
-        sections.push(`## 记忆 (${top.length}条)\n${lines.join('\n')}`);
+        sections.push(`${format(t.sectionMemories, { count: top.length })}\n${lines.join('\n')}`);
       }
     } catch {
       // Non-critical
@@ -154,7 +151,7 @@ export const recallTool: ToolDefinition = {
         const lines = tasks.map(t =>
           `- [${t.category}] ${t.summary} ${t.success ? '✓' : '✗'} (${formatTime(t.timestamp)})`
         );
-        sections.push(`## 任务记录 (${tasks.length}条)\n${lines.join('\n')}`);
+        sections.push(`${format(t.sectionTasks, { count: tasks.length })}\n${lines.join('\n')}`);
       }
     } catch {
       // Non-critical
@@ -175,9 +172,9 @@ export const recallTool: ToolDefinition = {
 
       if (matched.length > 0) {
         const lines = matched.map(c =>
-          `- "${c.title || '无标题'}" (${c.messageCount}条消息, ${formatTime(c.updatedAt)})`
+          format(t.convLine, { title: c.title || t.untitled, count: c.messageCount, time: formatTime(c.updatedAt) })
         );
-        sections.push(`## 历史会话 (${matched.length}条)\n${lines.join('\n')}`);
+        sections.push(`${format(t.sectionConversations, { count: matched.length })}\n${lines.join('\n')}`);
       }
     } catch {
       // Non-critical
@@ -185,8 +182,8 @@ export const recallTool: ToolDefinition = {
 
     if (sections.length === 0) {
       return query
-        ? `没有找到与"${query}"相关的记忆、任务记录或历史会话。`
-        : '当前没有存储的记忆、任务记录或历史会话。';
+        ? format(t.noResultsQuery, { query })
+        : t.noResultsEmpty;
     }
 
     return sections.join('\n\n');
@@ -211,24 +208,25 @@ export const recallTool: ToolDefinition = {
  */
 export const readMemoryTool: ToolDefinition = {
   name: TOOL_NAMES.READ_MEMORY,
-  description: '按 filename 精确读取一条记忆的完整内容。当 <memory-index> 索引行的 description 不足以判断时使用。索引行格式 `- [filename](filename) — description`，传入 filename 即可。先在当前工作区查，再退到全局。',
+  description: 'Read the full content of a single memory file by exact filename. Use when the description in a <memory-index> index line is not enough to make a decision. Index line format: `- [filename](filename) — description` — just pass the filename. Searches the current workspace first, then falls back to global.',
   inputSchema: {
     type: 'object',
     properties: {
       filename: {
         type: 'string',
-        description: '记忆文件名（如 user_data_team.md），来自 <memory-index> 索引行',
+        description: 'Memory filename (e.g. user_data_team.md), as found in a <memory-index> index line',
       },
       workspace: {
         type: 'string',
-        description: '可选 workspace 路径。不传时按"当前工作区 → 全局"顺序查找',
+        description: 'Optional workspace path. When omitted, searches in order: current workspace → global',
       },
     },
     required: ['filename'],
   },
   execute: async (input, context) => {
+    const t = getI18n().toolResult.recall;
     const filename = ((input.filename as string) || '').trim();
-    if (!filename) return 'Error: filename 不能为空';
+    if (!filename) return t.errFilenameEmpty;
 
     const requestedWs = (input.workspace as string | undefined)?.trim() || undefined;
     const currentWs = context?.workspacePath ?? useWorkspaceStore.getState().currentPath;
@@ -267,7 +265,7 @@ export const readMemoryTool: ToolDefinition = {
       }
     }
 
-    return `没有找到 filename="${filename}" 的记忆。请确认拼写（参考 <memory-index> 中的索引行），或先用 recall 工具按关键词搜索。`;
+    return format(t.notFound, { filename });
   },
   isConcurrencySafe: true,
 };

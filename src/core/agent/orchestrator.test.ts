@@ -191,6 +191,22 @@ describe('buildSystemPrompt - structure', () => {
     expect(prompt).toContain('Memory 写入');
   });
 
+  it('injects the response-language instruction driven by UI locale', async () => {
+    const prompt = await buildSystemPrompt(generalRoute, basePrompt, 'test-conv');
+    // Output language must be controlled explicitly, not left to the (Chinese)
+    // prompt language as an implicit anchor. Wording is locale-specific
+    // (asymmetric), so only assert the header + a language marker here — the
+    // per-locale wording is covered by responseLanguage.test.ts.
+    expect(prompt).toContain('## Response Language');
+    expect(prompt).toMatch(/English|简体中文/);
+  });
+
+  it('keeps the safety anchor as the final section (after response-language)', async () => {
+    const prompt = await buildSystemPrompt(generalRoute, basePrompt, 'test-conv');
+    // Recency-sensitive: safety rules must stay last so they win.
+    expect(prompt.lastIndexOf('## 安全提醒')).toBeGreaterThan(prompt.lastIndexOf('## Response Language'));
+  });
+
   it('uses Chinese headings for skills and agents sections', async () => {
     const prompt = await buildSystemPrompt(generalRoute, basePrompt, 'test-conv');
     // Should NOT contain English headings

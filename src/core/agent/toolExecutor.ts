@@ -17,6 +17,7 @@ import { emitHook } from './lifecycleHooks';
 import type { PreToolCallEvent } from './lifecycleHooks';
 import { setComputerUseBatchMode, setSkipAutoScreenshot } from '../tools/builtins';
 import { setComputerUseActive, incrementComputerUseStep, setCurrentAction, isSessionWindowHidden, setSessionWindowHidden, pauseComputerUseStatus } from './computerUseStatus';
+import { getI18n } from '../../i18n';
 import { TOOL_NAMES } from '../tools/toolNames';
 import { invoke } from '@tauri-apps/api/core';
 import { useChatStore } from '../../stores/chatStore';
@@ -290,7 +291,7 @@ export async function executeToolBatch(params: ToolBatchParams): Promise<ToolBat
     // Session-level window management: only hide on first interactive batch.
     // Subsequent batches in the same agent loop skip hide/show to avoid flickering.
     if (hasInteractiveAction && !isSessionWindowHidden()) {
-      try { await invoke('show_screen_border'); } catch { /* ignore */ }
+      try { await invoke('show_screen_border', { stopLabel: getI18n().computerUse.stopControl }); } catch { /* ignore */ }
       // Remember the foreground app before hiding Abu
       let targetAppName: string | null = null;
       try {

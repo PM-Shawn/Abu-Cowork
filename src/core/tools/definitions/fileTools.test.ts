@@ -127,7 +127,7 @@ describe('readFileTool — non-vision model image gating', () => {
     const result = await readFileTool.execute({ path: '/tmp/图片.png' }, { supportsVision: false });
     expect(typeof result).toBe('string');
     expect(result as string).toContain('/tmp/图片.png');
-    expect(result as string).toContain('无视觉能力');
+    expect(result as string).toContain('no vision capability');
     // Must NOT have produced an image content block (which would require
     // reading the bytes — plugin-fs.readFile isn't even mocked, so hitting
     // that path would throw and fail this test).
@@ -140,6 +140,6 @@ describe('readFileTool — non-vision model image gating', () => {
     // surfaces as an error string rather than the skip note — the point is it
     // did NOT take the non-vision shortcut.
     const result = await readFileTool.execute({ path: '/tmp/图片.png' });
-    expect(String(result)).not.toContain('无视觉能力');
+    expect(String(result)).not.toContain('no vision capability');
   });
 });

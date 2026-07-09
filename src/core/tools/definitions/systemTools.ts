@@ -4,10 +4,11 @@ import type { ToolDefinition } from '../../../types';
 import { searchMCPRegistry, installMCPServer, getRegistryEntry, ensureMCPServer, addCustomMCPServer } from '../../agent/mcpDiscovery';
 import { getSystemInfoData } from '../helpers/toolHelpers';
 import { TOOL_NAMES } from '../toolNames';
+import { getI18n, format } from '../../../i18n';
 
 export const getSystemInfoTool: ToolDefinition = {
   name: TOOL_NAMES.GET_SYSTEM_INFO,
-  description: '获取系统环境信息（主目录、桌面、文档、下载等路径）。首次需要定位文件时使用。返回平台类型和常用目录的绝对路径。',
+  description: 'Get system environment information (home directory, desktop, documents, downloads, and other paths). Use when you first need to locate files. Returns the platform type and absolute paths to common directories.',
   inputSchema: {
     type: 'object',
     properties: {},
@@ -36,7 +37,7 @@ export const getSystemInfoTool: ToolDefinition = {
 
 export const clipboardReadTool: ToolDefinition = {
   name: TOOL_NAMES.CLIPBOARD_READ,
-  description: '读取系统剪贴板中的文本内容。当用户提到"剪贴板"、"粘贴板"、"我复制的内容"时使用。返回剪贴板文本或空提示。',
+  description: 'Read the text content from the system clipboard. Use when the user mentions "clipboard", "what I copied", or similar. Returns the clipboard text or an empty indicator.',
   inputSchema: {
     type: 'object',
     properties: {},
@@ -54,7 +55,7 @@ export const clipboardReadTool: ToolDefinition = {
 
 export const clipboardWriteTool: ToolDefinition = {
   name: TOOL_NAMES.CLIPBOARD_WRITE,
-  description: '将文本内容写入系统剪贴板。',
+  description: 'Write text content to the system clipboard.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -79,7 +80,7 @@ export const clipboardWriteTool: ToolDefinition = {
 
 export const systemNotifyTool: ToolDefinition = {
   name: TOOL_NAMES.SYSTEM_NOTIFY,
-  description: '发送系统桌面通知。当用户要求"完成后通知我"或需要重要提醒时使用。',
+  description: 'Send a system desktop notification. Use when the user asks to "notify me when done" or when an important reminder is needed.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -112,68 +113,69 @@ export const systemNotifyTool: ToolDefinition = {
  */
 export const manageMCPServerTool: ToolDefinition = {
   name: TOOL_NAMES.MANAGE_MCP_SERVER,
-  description: '搜索、安装或确保 MCP 工具服务可用；也可通过 URL 直接添加私有/内网 MCP 服务。当执行任务时发现缺少某种工具能力（如操作 GitHub、Slack、数据库、浏览器等）时使用。注意：这不是通用软件安装工具，不要用于安装普通软件。',
+  description: 'Search for, install, or ensure an MCP tool server is available; can also add a private/internal MCP service directly by URL. Use when a task requires a tool capability that is missing (e.g. operating GitHub, Slack, databases, browsers, etc.). Note: this is not a general-purpose software installer — do not use it to install ordinary software.',
   inputSchema: {
     type: 'object',
     properties: {
       action: {
         type: 'string',
         enum: ['search', 'install', 'ensure', 'add_custom'],
-        description: '操作类型：search（搜索可用服务）、install（安装服务，需用户确认）、ensure（确保服务可用，自动安装无需确认）、add_custom（通过 URL 添加自定义服务，无需注册表）',
+        description: 'Operation type: search (search available servers), install (install a server, requires user confirmation), ensure (ensure a server is available, installs automatically without confirmation), add_custom (add a custom server by URL, no registry needed)',
       },
-      query: { type: 'string', description: '搜索关键词（action=search 时必填），如 "github"、"slack"、"database"' },
-      name: { type: 'string', description: 'MCP Server 名称（action=install/ensure/add_custom 时必填）' },
+      query: { type: 'string', description: 'Search keywords (required when action=search), e.g. "github", "slack", "database"' },
+      name: { type: 'string', description: 'MCP server name (required when action=install/ensure/add_custom)' },
       env: {
         type: 'object',
-        description: '环境变量键值对（action=install 时可选，如 API Key 等）',
+        description: 'Environment variable key-value pairs (optional when action=install, e.g. API keys)',
       },
-      url: { type: 'string', description: 'MCP 服务 URL（action=add_custom 时必填），如 "http://10.0.0.1:8080/mcp"' },
+      url: { type: 'string', description: 'MCP service URL (required when action=add_custom), e.g. "http://10.0.0.1:8080/mcp"' },
       headers: {
         type: 'object',
-        description: 'HTTP 请求头（action=add_custom 时可选），如 {"Authorization": "Bearer token"}',
+        description: 'HTTP request headers (optional when action=add_custom), e.g. {"Authorization": "Bearer token"}',
       },
     },
     required: ['action'],
   },
   execute: async (input) => {
     const action = input.action as string;
+    const t = getI18n().toolResult.system;
 
     if (action === 'search') {
       const query = input.query as string;
-      if (!query) return 'Error: action=search 时必须提供 query 参数';
+      if (!query) return t.errSearchNeedsQuery;
       const results = searchMCPRegistry(query);
       if (results.length === 0) {
-        return `未找到匹配 "${query}" 的 MCP Server。你可以用 web_search 搜索 "${query} MCP server" 寻找社区方案。`;
+        return format(t.searchNoResults, { query });
       }
       const lines = results.map((r) => {
         const envNeeded = Object.keys(r.env).filter((k) => r.envHints?.[k]);
-        const envNote = envNeeded.length > 0 ? ` (需要: ${envNeeded.join(', ')})` : '';
+        const envNote = envNeeded.length > 0 ? format(t.searchEnvNote, { envList: envNeeded.join(', ') }) : '';
         return `- **${r.name}**: ${r.description}${envNote}`;
       });
-      return `找到 ${results.length} 个可用的 MCP Server:\n${lines.join('\n')}\n\n使用 manage_mcp_server(action: "install", name: "...") 安装。安装前请告知用户并获得确认。`;
+      return format(t.searchResults, { count: String(results.length), lines: lines.join('\n') });
     }
 
     if (action === 'install') {
       const name = input.name as string;
-      if (!name) return 'Error: action=install 时必须提供 name 参数';
+      if (!name) return t.errInstallNeedsName;
       const env = input.env as Record<string, string> | undefined;
 
       const entry = getRegistryEntry(name);
       if (!entry) {
-        return `未找到名为 "${name}" 的 MCP Server。请先用 manage_mcp_server(action: "search") 搜索。`;
+        return format(t.errInstallNotFound, { name });
       }
 
       try {
         const result = await installMCPServer(entry, env);
         return result.message;
       } catch (err) {
-        return `安装失败: ${err instanceof Error ? err.message : String(err)}`;
+        return format(t.installFailed, { error: err instanceof Error ? err.message : String(err) });
       }
     }
 
     if (action === 'ensure') {
       const name = input.name as string;
-      if (!name) return 'Error: action=ensure 时必须提供 name 参数';
+      if (!name) return t.errEnsureNeedsName;
 
       try {
         const result = await ensureMCPServer(name);
@@ -183,26 +185,26 @@ export const manageMCPServerTool: ToolDefinition = {
         }
         return parts.join('\n');
       } catch (err) {
-        return `确保 MCP 服务可用失败: ${err instanceof Error ? err.message : String(err)}`;
+        return format(t.ensureFailed, { error: err instanceof Error ? err.message : String(err) });
       }
     }
 
     if (action === 'add_custom') {
       const name = input.name as string;
       const url = input.url as string;
-      if (!name) return 'Error: action=add_custom 时必须提供 name 参数';
-      if (!url) return 'Error: action=add_custom 时必须提供 url 参数';
+      if (!name) return t.errAddCustomNeedsName;
+      if (!url) return t.errAddCustomNeedsUrl;
       const headers = input.headers as Record<string, string> | undefined;
 
       try {
         const result = await addCustomMCPServer(name, url, headers);
         return result.message;
       } catch (err) {
-        return `添加自定义 MCP 服务失败: ${err instanceof Error ? err.message : String(err)}`;
+        return format(t.addCustomFailed, { error: err instanceof Error ? err.message : String(err) });
       }
     }
 
-    return `Error: 未知操作 "${action}"。可用操作: search, install, ensure, add_custom`;
+    return format(t.errUnknownAction, { action });
   },
   isConcurrencySafe: false,
 };

@@ -132,7 +132,7 @@ function isCustomId(id: string): boolean {
 // ── Component ────────────────────────────────────────────────────
 
 export default function AddProviderModal({ open: isOpen, onClose }: AddProviderModalProps) {
-  const { t } = useI18n();
+  const { t, locale } = useI18n();
   const providers = useSettingsStore((s) => s.providers);
   const addProvider = useSettingsStore((s) => s.addProvider);
   const updateProvider = useSettingsStore((s) => s.updateProvider);
@@ -298,12 +298,12 @@ export default function AddProviderModal({ open: isOpen, onClose }: AddProviderM
       setFetchModelsStatus('success');
     } else if (result.success) {
       setFetchModelsStatus('error');
-      setFetchModelsError('未获取到模型，请手动添加');
+      setFetchModelsError(t.settings.fetchModelsEmpty);
     } else {
       setFetchModelsStatus('error');
-      setFetchModelsError(result.error ?? '获取失败');
+      setFetchModelsError(result.error ?? t.settings.fetchModelsFailed);
     }
-  }, [baseUrl, apiKey, selectedOption?.format]);
+  }, [baseUrl, apiKey, selectedOption?.format, t]);
 
   // ── Ollama handlers ──
 
@@ -593,13 +593,13 @@ export default function AddProviderModal({ open: isOpen, onClose }: AddProviderM
           {/* 3. Usage Guide Card */}
           {guide && (
             <p className="text-xs text-[var(--abu-text-muted)]">
-              {guide.hint}
+              {locale.startsWith('zh') ? guide.hint : guide.hintEn}
               <button
                 type="button"
                 onClick={() => open(guide.url)}
                 className="inline-flex items-center gap-1 ml-1.5 text-[var(--abu-clay)] hover:underline"
               >
-                {guide.urlLabel}
+                {locale.startsWith('zh') ? guide.urlLabel : (guide.urlLabelEn ?? guide.urlLabel)}
                 <ExternalLink className="h-3 w-3" />
               </button>
             </p>

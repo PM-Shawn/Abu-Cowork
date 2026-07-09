@@ -1,8 +1,10 @@
 // src/components/enterprise/EnterpriseStatusBadge.tsx
 import { useEnterpriseStore } from '@/stores/enterpriseStore'
 import { MountPoint } from '@/core/enterprise/mounts'
+import { useI18n } from '@/i18n'
 
 export default function EnterpriseStatusBadge() {
+  const { t } = useI18n()
   const mode = useEnterpriseStore(s => s.mode)
   if (mode.kind === 'personal') return null
   const binding = mode.kind === 'enterprise' || mode.kind === 'offline' ? mode.binding : null
@@ -13,7 +15,7 @@ export default function EnterpriseStatusBadge() {
       mode.kind === 'offline' ? 'bg-amber-500/20 text-amber-300' : 'bg-orange-500/15 text-orange-400',
     ].join(' ')}>
       <MountPoint slot="brandSlot" binding={binding} config={config} size="sm" />
-      {mode.kind === 'offline' && <span>· 离线</span>}
+      {mode.kind === 'offline' && <span>{t.enterprise.offlineBadge}</span>}
     </div>
   )
 }

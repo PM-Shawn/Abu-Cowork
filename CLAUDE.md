@@ -180,7 +180,23 @@ Abu 是 Tauri 桌面端，每轮"改 → 重启 dev → 验证"的成本比 web 
 ### 1. Language Convention
 - **UI text**: Chinese (zh-CN). All user-facing strings go through i18n system.
 - **Code**: English only — variable names, function names, comments, commit messages.
-- **LLM system prompts**: Chinese.
+- **LLM system prompts**: **English** (in transition — see below). The reply language
+  is NOT set by the prompt language; it is controlled explicitly by the
+  `response-language` section (`src/core/agent/prompts/responseLanguage.ts`), which is
+  driven by the resolved UI locale (zh-CN → always Chinese; en-US → English, following
+  the user's message language). So an English prompt still yields Chinese replies for
+  Chinese users. When adding/editing agent prompts or tool descriptions, write them in
+  English.
+- **Transition status (prompt English-ization)**: The output-language mechanism (P0) and
+  tool `description` fields (P1) are done. Core agent prompts
+  (`orchestrator.ts`/`registry.ts`/`agentLoop.ts`/`skillsGuidance.ts`) are still Chinese
+  (P2, pending — needs a behavioral eval pass).
+- **🔴 Exception — do NOT English-ify these (they are UI-facing, not LLM-facing)**: tool
+  runtime result strings (`execute()` returns/success/error messages — rendered directly
+  in `ToolCallsGroup.tsx`), agent picker metadata in `registry.ts` (`name`/`description`/
+  `intro`), and canned reply strings the prompt tells the agent to output verbatim. These
+  are shown to the user; translating them regresses Chinese users. They must go through
+  i18n, not become hardcoded English.
 
 ### 2. TypeScript Strictness
 - All strict mode options enabled (`strict: true`, `noUnusedLocals`, `noUnusedParameters`, `noFallthroughCasesInSwitch`).

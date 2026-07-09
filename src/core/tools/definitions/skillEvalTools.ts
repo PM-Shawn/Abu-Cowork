@@ -9,6 +9,7 @@ import type { ToolDefinition } from '../../../types';
 import { llmCall } from '../../llm/llmCall';
 import { skillLoader } from '../../skill/loader';
 import { TOOL_NAMES } from '../toolNames';
+import { getI18n, format } from '../../../i18n';
 
 // ─── test_skill_trigger ─────────────────────────────────────────────────────
 
@@ -53,7 +54,7 @@ function buildSkillsList(
 
 export const testSkillTriggerTool: ToolDefinition = {
   name: TOOL_NAMES.TEST_SKILL_TRIGGER,
-  description: '测试一个技能的 description 是否能被特定查询正确触发。输入技能名称、描述和测试查询，返回每条查询的触发结果和总体通过率。等同于 Claude Code 的 run_eval.py。',
+  description: 'Test whether a skill\'s description is correctly triggered by specific queries. Provide the skill name, description, and test queries; returns the trigger result for each query and an overall pass rate. Equivalent to Claude Code\'s run_eval.py.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -84,8 +85,9 @@ export const testSkillTriggerTool: ToolDefinition = {
       should_trigger: q.should_trigger === true || q.should_trigger === 'true',
     }));
 
+    const t = getI18n().toolResult.skillEval;
     if (queries.length === 0) {
-      return 'Error: 至少需要一条测试查询。';
+      return t.errNoQueries;
     }
 
     const skillsList = buildSkillsList(skillName, skillDescription);
@@ -101,7 +103,7 @@ ${skillsList}
 
     const useSkillToolDef: ToolDefinition = {
       name: 'use_skill',
-      description: '激活一个技能',
+      description: 'Activate a skill',
       inputSchema: {
         type: 'object',
         properties: {
@@ -159,7 +161,7 @@ ${skillsList}
       description: skillDescription,
       summary: { total, passed, failed: total - passed, pass_rate: `${passRate}%` },
       results,
-    }, null, 2) + `\n\n概览: ${passed}/${total} 通过 (${passRate}%)\n\n${details}`;
+    }, null, 2) + `\n\n${format(t.overviewLine, { passed, total, rate: passRate })}\n\n${details}`;
   },
   isConcurrencySafe: false,
 };
@@ -168,7 +170,7 @@ ${skillsList}
 
 export const improveSkillDescriptionTool: ToolDefinition = {
   name: TOOL_NAMES.IMPROVE_SKILL_DESCRIPTION,
-  description: '根据触发测试结果，使用 LLM 优化技能的 description 以提升触发准确率。传入当前描述、测试结果、技能内容，返回改进版描述。等同于 Claude Code 的 improve_description.py。',
+  description: 'Use an LLM to improve a skill\'s description based on trigger test results to raise trigger accuracy. Provide the current description, test results, and skill content; returns an improved description. Equivalent to Claude Code\'s improve_description.py.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -185,11 +187,12 @@ export const improveSkillDescriptionTool: ToolDefinition = {
     const skillContent = (input.skill_content as string) || '';
     const evalResultsStr = input.eval_results as string;
 
+    const t = getI18n().toolResult.skillEval;
     let evalResults: { results?: TriggerResult[] };
     try {
       evalResults = JSON.parse(evalResultsStr);
     } catch {
-      return 'Error: eval_results 不是有效的 JSON。请传入 test_skill_trigger 的返回结果。';
+      return t.errInvalidJson;
     }
 
     const results = evalResults.results || [];
@@ -207,7 +210,7 @@ export const improveSkillDescriptionTool: ToolDefinition = {
     }
 
     if (!failureInfo) {
-      return `当前描述已经 100% 通过测试，无需优化。\n\n当前描述：${currentDescription}`;
+      return format(t.allPassed, { description: currentDescription });
     }
 
     const prompt = `你在优化一个技能（skill）的 description。这个 description 会出现在 AI 助手的可用技能列表中，AI 根据这个描述决定是否使用该技能。
@@ -245,7 +248,7 @@ ${skillContent ? `技能内容（供参考）：\n${skillContent.slice(0, 2000)}
         over_limit: newDescription.length > 1024,
       }, null, 2);
     } catch (err) {
-      return `Error: LLM 调用失败 — ${err instanceof Error ? err.message : String(err)}`;
+      return format(t.errLlmFailed, { error: err instanceof Error ? err.message : String(err) });
     }
   },
   isConcurrencySafe: false,

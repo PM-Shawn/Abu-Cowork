@@ -15,6 +15,7 @@ import type { ConversationMeta } from '../core/session/conversationStorage';
 import type { ShareBundle } from '../core/session/shareBundle';
 import type { PermissionMode } from '../core/permissions/permissionMode';
 import type { ChatReference } from '@/types/chatReference';
+import { getI18n } from '../i18n';
 
 function generateId(): string {
   return Date.now().toString(36) + Math.random().toString(36).substring(2, 8);
@@ -83,8 +84,10 @@ function buildImportedFromShareBundle(bundle: ShareBundle): { conv: Conversation
 }
 
 
-/** Default title for new conversations — used for auto-title detection */
-export const DEFAULT_CONV_TITLE = '新任务';
+/** Default title for new conversations — resolved from i18n at creation time. */
+export function getDefaultConvTitle(): string {
+  return getI18n().chatDefaults.newConversationTitle;
+}
 
 /**
  * Pick the next active conversation when the currently-active one is being
@@ -389,7 +392,7 @@ export const useChatStore = create<ChatStore>()(
         }
         const meta: ConversationMeta = {
           id,
-          title: DEFAULT_CONV_TITLE,
+          title: getDefaultConvTitle(),
           createdAt: now,
           updatedAt: now,
           messageCount: 0,
@@ -670,7 +673,7 @@ export const useChatStore = create<ChatStore>()(
             conv.messages.push(message);
             conv.updatedAt = Date.now();
             // Auto-title from first user message
-            if (conv.title === DEFAULT_CONV_TITLE && message.role === 'user') {
+            if (conv.title === getDefaultConvTitle() && message.role === 'user') {
               let content = typeof message.content === 'string'
                 ? message.content
                 : message.content.find(c => c.type === 'text')?.text || '';
@@ -1105,7 +1108,7 @@ export const useChatStore = create<ChatStore>()(
               lastMsg.toolCalls.forEach((tc) => {
                 if (tc.isExecuting) {
                   tc.isExecuting = false;
-                  tc.result = '[已取消]';
+                  tc.result = getI18n().task.cancelled;
                   mutated = true;
                 }
               });

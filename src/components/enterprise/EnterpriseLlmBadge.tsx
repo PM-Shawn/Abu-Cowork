@@ -1,7 +1,9 @@
 // src/components/enterprise/EnterpriseLlmBadge.tsx
 import { useEnterpriseStore } from '@/stores/enterpriseStore'
+import { useI18n } from '@/i18n'
 
 export default function EnterpriseLlmBadge() {
+  const { t } = useI18n()
   const mode = useEnterpriseStore(s => s.mode)
   if (mode.kind === 'personal') return null
   const b = (mode.kind === 'enterprise' || mode.kind === 'offline') ? mode.binding : null
@@ -9,23 +11,23 @@ export default function EnterpriseLlmBadge() {
 
   return (
     <div className="p-4 rounded-lg bg-orange-500/10 border border-orange-500/30 text-sm space-y-2">
-      <div className="font-medium text-orange-400">使用企业 AI 网关</div>
+      <div className="font-medium text-orange-400">{t.enterprise.usingGateway}</div>
       <p className="text-xs text-neutral-300">
-        所有 LLM 调用通过企业网关，无需在此配置 API key。模型可用性由企业管理员决定。
+        {t.enterprise.gatewayDesc}
       </p>
       <dl className="text-xs text-neutral-400 space-y-1">
         <div className="flex justify-between">
-          <dt>组织</dt>
+          <dt>{t.enterprise.organization}</dt>
           <dd>{b.orgName}</dd>
         </div>
         <div className="flex justify-between">
-          <dt>网关</dt>
+          <dt>{t.enterprise.gateway}</dt>
           <dd className="font-mono truncate max-w-[200px]">{b.llmEndpoint ?? '—'}</dd>
         </div>
         {mode.kind === 'offline' && (
           <div className="flex justify-between text-amber-400">
-            <dt>状态</dt>
-            <dd>离线</dd>
+            <dt>{t.enterprise.status}</dt>
+            <dd>{t.enterprise.offline}</dd>
           </div>
         )}
       </dl>

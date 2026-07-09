@@ -7,6 +7,8 @@
  * Not a Zustand store because it bridges core/ and components/ without persistence.
  */
 
+import { getI18n, format } from '@/i18n';
+
 export type CUSessionStatus = 'idle' | 'active' | 'paused';
 
 /** Max steps per CU session before auto-stop */
@@ -90,8 +92,11 @@ export function incrementComputerUseStep(action?: string) {
 
 /** Emit current step/action to the overlay window for display. */
 function emitStatusToOverlay(step: number, action: string | null) {
+  // Resolve the localized step label here (frontend has the UI locale) and push
+  // it to the overlay HTML, which is a dumb view outside the React i18n tree.
+  const stepLabel = format(getI18n().computerUse.overlayStep, { step });
   import('@tauri-apps/api/event').then(({ emit }) => {
-    emit('computer-use-status', { step, action }).catch(() => {});
+    emit('computer-use-status', { step, action, stepLabel }).catch(() => {});
   }).catch(() => {});
 }
 

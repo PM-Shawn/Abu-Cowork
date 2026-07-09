@@ -28,6 +28,7 @@ import {
 } from '../../stores/scratchpadStore';
 import { parseSearchResults } from '../../utils/searchParser';
 import { isToolResultError } from '../../utils/workflowExtractor';
+import { getToolLabel } from '../../utils/toolLabels';
 import { TOOL_NAMES } from '../tools/toolNames';
 
 // --- Helper Functions ---
@@ -98,158 +99,6 @@ function inferStepType(toolName: string): StepType {
   return 'tool';
 }
 
-// --- Label Generation ---
-
-function getFileName(path: string): string {
-  const segments = path.split(/[/\\]/);
-  return segments[segments.length - 1] || path;
-}
-
-function generateStepLabel(
-  toolName: string,
-  toolInput: Record<string, unknown>,
-  locale: string = 'zh'
-): { label: string; detail?: string } {
-  const isZh = locale.startsWith('zh');
-  const path = (toolInput.path || toolInput.file_path || toolInput.filePath) as string | undefined;
-  const fileName = path ? getFileName(path) : undefined;
-
-  // Handle MCP tools
-  const mcpParts = parseMCPToolName(toolName);
-  if (mcpParts) {
-    const { serverName, actualToolName } = mcpParts;
-    return {
-      label: isZh ? `[${serverName}] ${actualToolName}` : `[${serverName}] ${actualToolName}`,
-      detail: JSON.stringify(toolInput),
-    };
-  }
-
-  switch (toolName) {
-    case TOOL_NAMES.READ_FILE:
-    case 'read':
-    case 'get_file_contents':
-      return {
-        label: isZh ? (fileName ? `读取 ${fileName}` : '读取文件') : (fileName ? `Read ${fileName}` : 'Read file'),
-        detail: path,
-      };
-
-    case TOOL_NAMES.WRITE_FILE:
-    case 'write':
-      return {
-        label: isZh ? (fileName ? `写入 ${fileName}` : '写入文件') : (fileName ? `Write ${fileName}` : 'Write file'),
-        detail: path,
-      };
-
-    case TOOL_NAMES.EDIT_FILE:
-    case 'edit':
-      return {
-        label: isZh ? (fileName ? `修改 ${fileName}` : '修改文件') : (fileName ? `Edit ${fileName}` : 'Edit file'),
-        detail: path,
-      };
-
-    case 'create_file':
-    case 'create':
-      return {
-        label: isZh ? (fileName ? `创建 ${fileName}` : '创建文件') : (fileName ? `Create ${fileName}` : 'Create file'),
-        detail: path,
-      };
-
-    case 'bash':
-    case TOOL_NAMES.RUN_COMMAND:
-    case 'execute':
-    case 'shell': {
-      const cmd = (toolInput.command || toolInput.cmd) as string | undefined;
-      const shortCmd = cmd ? (cmd.length > 20 ? cmd.slice(0, 20) + '...' : cmd) : undefined;
-      return {
-        label: isZh ? (shortCmd ? `执行 ${shortCmd}` : '执行命令') : (shortCmd ? `Run ${shortCmd}` : 'Run command'),
-        detail: cmd,
-      };
-    }
-
-    case 'search':
-    case 'grep':
-    case 'find':
-    case TOOL_NAMES.SEARCH_FILES: {
-      const query = (toolInput.query || toolInput.pattern) as string | undefined;
-      const shortQuery = query ? (query.length > 15 ? query.slice(0, 15) + '...' : query) : undefined;
-      return {
-        label: isZh ? (shortQuery ? `搜索 "${shortQuery}"` : '搜索') : (shortQuery ? `Search "${shortQuery}"` : 'Search'),
-        detail: query,
-      };
-    }
-
-    case TOOL_NAMES.FIND_FILES: {
-      const filePattern = toolInput.pattern as string | undefined;
-      const shortPattern = filePattern ? (filePattern.length > 15 ? filePattern.slice(0, 15) + '...' : filePattern) : undefined;
-      return {
-        label: isZh ? (shortPattern ? `查找 ${shortPattern}` : '查找文件') : (shortPattern ? `Find ${shortPattern}` : 'Find files'),
-        detail: filePattern,
-      };
-    }
-
-    case TOOL_NAMES.WEB_SEARCH: {
-      const query = toolInput.query as string | undefined;
-      const shortQuery = query ? (query.length > 15 ? query.slice(0, 15) + '...' : query) : undefined;
-      return {
-        label: isZh ? (shortQuery ? `网页搜索 "${shortQuery}"` : '网页搜索') : (shortQuery ? `Web search "${shortQuery}"` : 'Web search'),
-        detail: query,
-      };
-    }
-
-    case TOOL_NAMES.USE_SKILL: {
-      const skillName = (toolInput.skill_name as string | undefined)?.replace(/^\/+/, '');
-      return {
-        label: isZh ? (skillName ? `使用 /${skillName} 技能` : '使用技能') : (skillName ? `Use /${skillName} skill` : 'Use skill'),
-        detail: toolInput.context as string | undefined,
-      };
-    }
-
-    case TOOL_NAMES.DELEGATE_TO_AGENT: {
-      const agentName = toolInput.agent_name as string | undefined;
-      return {
-        label: isZh
-          ? (agentName ? `委派给 ${agentName}` : '委派任务')
-          : (agentName ? `Delegate to ${agentName}` : 'Delegate task'),
-        detail: toolInput.task as string | undefined,
-      };
-    }
-
-    case TOOL_NAMES.MANAGE_SCHEDULED_TASK: {
-      const action = toolInput.action as string | undefined;
-      const taskName = toolInput.name as string | undefined;
-      const labels: Record<string, string> = {
-        create: isZh ? '创建定时任务' : 'Create scheduled task',
-        list: isZh ? '查看定时任务' : 'List scheduled tasks',
-        update: isZh ? '更新定时任务' : 'Update scheduled task',
-        delete: isZh ? '删除定时任务' : 'Delete scheduled task',
-        pause: isZh ? '暂停定时任务' : 'Pause scheduled task',
-        resume: isZh ? '恢复定时任务' : 'Resume scheduled task',
-      };
-      const label = (action && labels[action]) || (isZh ? '管理定时任务' : 'Manage scheduled task');
-      return { label: taskName ? `${label}「${taskName}」` : label };
-    }
-
-    case TOOL_NAMES.GET_SYSTEM_INFO:
-      return {
-        label: isZh ? '获取系统信息' : 'Get system info',
-      };
-
-    case TOOL_NAMES.LIST_DIRECTORY: {
-      const dirPath = path || (toolInput.directory as string);
-      const dirName = dirPath ? getFileName(dirPath) : undefined;
-      return {
-        label: isZh ? (dirName ? `列出 ${dirName}` : '列出目录') : (dirName ? `List ${dirName}` : 'List directory'),
-        detail: dirPath,
-      };
-    }
-
-    default:
-      return {
-        label: isZh ? `调用 ${toolName}` : `Call ${toolName}`,
-      };
-  }
-}
-
 // --- Detail Block Creation ---
 
 function createScriptBlock(stepId: string, toolName: string, toolInput: Record<string, unknown>, locale: string = 'zh'): DetailBlock | null {
@@ -265,6 +114,7 @@ function createScriptBlock(stepId: string, toolName: string, toolInput: Record<s
       stepId,
       type: 'script',
       label: isZh ? '脚本' : 'Script',
+      labelKey: 'script',
       content: command,
       language: 'bash',
       isTruncated: false,
@@ -300,6 +150,7 @@ function createScriptBlock(stepId: string, toolName: string, toolInput: Record<s
         stepId,
         type: 'script',
         label: isZh ? '内容' : 'Content',
+        labelKey: 'content',
         content: content.length > 1000 ? content.slice(0, 1000) : content,
         language: ext ? languageMap[ext] : undefined,
         isTruncated: content.length > 1000,
@@ -358,6 +209,7 @@ function createResultBlock(stepId: string, result: string, toolName: string, loc
     stepId,
     type: blockType,
     label: isError ? (isZh ? '错误' : 'Error') : (isZh ? '结果' : 'Result'),
+    labelKey: isError ? 'error' : 'result',
     content: isTruncated ? result.slice(0, maxLength) : result,
     language,
     parsedItems,
@@ -478,7 +330,7 @@ export class EventRouter {
     if (!execution) return;
 
     const stepId = generateId();
-    const { label, detail } = generateStepLabel(step.toolName, step.toolInput, this.locale);
+    const { label, detail } = getToolLabel(step.toolName, step.toolInput, this.locale);
 
     const newStep: ExecutionStep = {
       id: stepId,
@@ -534,6 +386,7 @@ export class EventRouter {
         stepId,
         type: isError ? 'error' : 'result',
         label: isError ? (isZh ? '错误' : 'Error') : (isZh ? '执行摘要' : 'Result Summary'),
+        labelKey: isError ? 'error' : 'summary',
         content: summary,
         isTruncated: result.length > maxSummaryLen,
         isExpanded: isError,
@@ -550,6 +403,7 @@ export class EventRouter {
             stepId,
             type: 'image',
             label: isZh ? '图片' : 'Image',
+            labelKey: 'image',
             content: result,
             imageData: { mediaType: imageBlock.source.media_type, base64: imageBlock.source.data },
             isTruncated: false,
@@ -607,6 +461,7 @@ export class EventRouter {
       stepId,
       type: 'error',
       label: isZh ? '错误' : 'Error',
+      labelKey: 'error',
       content: error,
       isTruncated: false,
       isExpanded: true,  // Errors are expanded by default
@@ -666,7 +521,7 @@ export class EventRouter {
     if (!execution) return null;
 
     const childId = generateId();
-    const { label, detail } = generateStepLabel(payload.toolName, payload.toolInput, this.locale);
+    const { label, detail } = getToolLabel(payload.toolName, payload.toolInput, this.locale);
 
     const childStep: ExecutionStep = {
       id: childId,
@@ -703,7 +558,7 @@ export class EventRouter {
     if (!execution) return null;
 
     const stepId = generateId();
-    const { label, detail } = generateStepLabel(payload.toolName, payload.toolInput, this.locale);
+    const { label, detail } = getToolLabel(payload.toolName, payload.toolInput, this.locale);
 
     // Auto-detect source from tool name if not provided
     const source = payload.source || inferStepSource(payload.toolName);

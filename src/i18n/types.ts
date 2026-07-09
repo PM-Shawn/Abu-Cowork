@@ -99,6 +99,16 @@ export interface TranslationDict {
     bulkDelete: string;
     bulkConfirmTitle: string;
     bulkConfirmMessage: string;
+    // Fallback topic labels for deriveTopicDescription (PersonalMemorySection)
+    topicUser: string;
+    topicFeedback: string;
+    topicProject: string;
+    topicReference: string;
+    // Relative time labels for formatAge (MemoryViewModal)
+    minutesAgo: string;
+    hoursAgo: string;
+    daysAgo: string;
+    monthsAgo: string;
   };
 
   // Soul (personality)
@@ -239,6 +249,11 @@ export interface TranslationDict {
     openWithDefaultApp: string;
     openFailed: string;
     clickToPreview: string;
+    clickToPreviewImage: string;
+    clickToPreviewFull: string;
+    openWith: string;
+    openWithPreview: string;
+    openWithBrowser: string;
     fileMissing: string;
     fileOversized: string;
     fileBackupFailed: string;
@@ -271,6 +286,16 @@ export interface TranslationDict {
     htmlWidgetDownload: string;
     htmlWidgetViewCode: string;
     htmlWidgetViewPreview: string;
+    // Enterprise model selector
+    enterpriseModelLoading: string;
+    enterpriseModelNoMatch: string;
+    enterpriseModelEmpty: string;
+    enterpriseGatewayLabel: string;
+    // DetailBlockView
+    characters: string;
+    viewMore: string;
+    moreItems: string;
+    moreRows: string;
     setupRequired: string;
     setupRequiredDesc: string;
     setupButton: string;
@@ -402,6 +427,74 @@ export interface TranslationDict {
     running: string;
     showMore: string;
     collapse: string;
+    /** Shown in tool-call detail when the task was aborted mid-execution */
+    cancelled: string;
+  };
+
+  // Notice menubar summaries (noticeMenubarStore.ts)
+  noticeMenubar: {
+    meetingPrep: string;
+    permissionRequest: string;
+    userInputNeeded: string;
+    agentError: string;
+    scheduleFired: string;
+    taskComplete: string;
+    skillProposalOffer: string;
+    skillDraftReady: string;
+    skillPatch: string;
+    stuckDetection: string;
+    imInbound: string;
+    contextResume: string;
+    deepFocusEnter: string;
+    deepFocusExit: string;
+  };
+
+  // OS / in-app notification titles (channels.ts)
+  noticeTitle: {
+    taskComplete: string;
+    agentError: string;
+    scheduleFired: string;
+    permissionRequest: string;
+    userInputNeeded: string;
+    meetingPrep: string;
+    skillProposalOffer: string;
+    skillDraftReady: string;
+    imInbound: string;
+    updateAvailable: string;
+  };
+
+  // Scratchpad entry titles (scratchpadStore.ts)
+  scratchpad: {
+    /** "Content extraction" (no file) */
+    extractionTitle: string;
+    /** "{file} - Content extraction" — use format() with {file} */
+    extractionTitleFile: string;
+    /** "Analysis" (no file) */
+    analysisTitle: string;
+    /** "{file} - Analysis" */
+    analysisTitleFile: string;
+    /** "Search: {query}" — use format() with {query} */
+    searchTitle: string;
+    /** "Search results" (no query) */
+    searchResultsTitle: string;
+    /** "Summary" (no file) */
+    summaryTitle: string;
+    /** "{file} - Summary" */
+    summaryTitleFile: string;
+    /** "Preview" (no file) */
+    previewTitle: string;
+    /** "{file} - Preview" */
+    previewTitleFile: string;
+    /** "Result" (fallback) */
+    resultTitle: string;
+  };
+
+  // Chat/conversation defaults (chatStore.ts, fileWatcher.ts)
+  chatDefaults: {
+    /** Default title for a new conversation shown in the sidebar */
+    newConversationTitle: string;
+    /** File-watcher conversation title: "[Watching] {file} - {time}" */
+    watcherConversationTitle: string;
   };
 
   // Batch Progress (run_agent_batch live UI)
@@ -679,6 +772,13 @@ export interface TranslationDict {
     capMaxInput: string;
     capMaxOutput: string;
     capTokenDefault: string;
+    // Model fetch status messages (ProviderCard + AddProviderModal)
+    fetchModelsEmpty: string;
+    fetchModelsFailed: string;
+    expandModels: string;
+    collapseModels: string;
+    // Enterprise tab label in SystemSettingsModal
+    enterpriseMode: string;
   };
 
   // Sandbox recovery
@@ -823,6 +923,8 @@ export interface TranslationDict {
     // Manifest modal
     manifestTitle: string;
     manifestClose: string;
+    // Feedback navigation prompt at bottom of DiagnosticSection
+    feedbackPageHint: string;
   };
 
   // Toolbox Modal
@@ -967,7 +1069,9 @@ export interface TranslationDict {
     // Skill detail & editor
     skillDetail: string;
     skillTrigger: string;
+    skillTriggerPlaceholder: string;
     skillDoNotTrigger: string;
+    skillDoNotTriggerPlaceholder: string;
     skillTags: string;
     skillAllowedTools: string;
     skillContext: string;
@@ -1144,6 +1248,7 @@ export interface TranslationDict {
     skillPatchedCardLabel: string;      // "Abu 修正了技能" / "Abu patched skill"
     // Grouped patch fold-row in MessageGroup
     skillPatchGroupLabel: string;       // "Abu 修改了技能" / "Abu modified skill"
+    skillPatchGroupCount: string;       // "（{count} 处）" / "({count} locations)"
     // Interactive notice card · skill deleted (Task #17 v2)
     skillDeletedCardLabel: string;      // "Abu 删除了技能"
     skillDeletedCardRescuable: string;  // "可在 7 天内恢复"
@@ -1172,6 +1277,9 @@ export interface TranslationDict {
     categoryBlocksUnblock: string;      // button label
     categoryBlocksUnblockError: string; // toast title on delete failure
     categoryBlocksHint: string;         // subtitle describing what these are
+    // Enterprise-only tabs (shown when enterprise mode is active)
+    enterpriseSkills: string;
+    enterpriseMcp: string;
   };
 
   // Permission Dialog
@@ -1231,6 +1339,10 @@ export interface TranslationDict {
     allowSessionButton: string;
     allow24hButton: string;
     allowAlwaysButton: string;
+    // Compact inline permission labels (InlinePermissionRequest)
+    compactAccessLabel: string;
+    compactShellLabel: string;
+    compactWriteLabel: string;
   };
 
   // Panels
@@ -1310,6 +1422,8 @@ export interface TranslationDict {
     // Preview: PPTX fallback (lib renderer fails on some python-pptx output)
     pptxPreviewUnavailable: string;
     openWithPowerPoint: string;
+    // Preview: data-URL image (no file path)
+    imagePreview: string;
   };
 
   // Folder Selector
@@ -1611,6 +1725,7 @@ export interface TranslationDict {
     infoBarCapability: string;
     infoBarStarted: string;
     infoBarRounds: string;
+    infoBarGroup: string;
     infoBarEndSession: string;
     infoBarEndConfirm: string;
     sessionResetConfirm: string;
@@ -1676,6 +1791,8 @@ export interface TranslationDict {
     deviceIdHint: string;
     copied: string;
     disclaimerLink: string;
+    /** Suffix appended after the disclaimer link label, e.g. " (Full)". */
+    disclaimerFullSuffix: string;
     licenseLinkLabel: string;
     disclaimerTitle: string;
     disclaimerClose: string;
@@ -1942,5 +2059,557 @@ export interface TranslationDict {
     /** Malformed request (developer-facing but shown as generic client error). */
     errInvalidRequest: string;
     processing: string;
+  };
+
+  // Enterprise runtime UI (gateway badge, policy confirm, status badge)
+  enterprise: {
+    usingGateway: string;
+    gatewayDesc: string;
+    organization: string;
+    gateway: string;
+    status: string;
+    offline: string;
+    /** Compact offline suffix shown in the status badge, e.g. "· Offline". */
+    offlineBadge: string;
+    policyConfirmTitle: string;
+    allowOnce: string;
+    // EnterpriseSection settings panel
+    title: string;
+    description: string;
+    bindSectionTitle: string;
+    bindSectionDesc: string;
+    bindButton: string;
+    boundStatus: string;
+    instanceLabel: string;
+    loginIdentityLabel: string;
+    boundAtLabel: string;
+    myDataTitle: string;
+    collapseData: string;
+    viewMyData: string;
+    migrationTitle: string;
+    migrateButton: string;
+    migrateDescription: string;
+    unbindConfirm: string;
+    unbindButton: string;
+  };
+
+  // Computer-use runtime status bar + screen-border overlay windows
+  computerUse: {
+    controlling: string;
+    /** Interpolates {step}, e.g. "· Step {step}". */
+    step: string;
+    stop: string;
+    /** Overlay status-bar step label, interpolates {step}, e.g. "Step {step}". */
+    overlayStep: string;
+    /** Overlay stop-button label. */
+    stopControl: string;
+  };
+
+  // Tool runtime result strings (execute() returns/success/error messages).
+  // These are UI-facing: rendered in ToolCallsGroup and also fed back to the
+  // LLM, so they go through i18n (resolved at execution time by the current
+  // locale) rather than being hardcoded in either language. See CLAUDE.md §1.
+  toolResult: {
+    // Shared value fragments reused across tools.
+    valueNone: string;
+    valueNever: string;
+    statusActive: string;
+    statusPaused: string;
+    /** Locale-appropriate separator for joining inline lists of items. */
+    listSeparator: string;
+    // report_plan / update_memory / todo_write / log_task_completion
+    memory: {
+      // reportPlanTool
+      /** User approved the plan. */
+      planApproved: string;
+      /** Plan approval timed out or was cancelled. */
+      planTimeout: string;
+      /** User rejected the plan. */
+      planRejected: string;
+      /** Plan recorded (no steps). */
+      planRecorded: string;
+      /** Plan recorded with N steps. {count} */
+      planRecordedSteps: string;
+      /** Plan-approval card header. */
+      planApprovalHeader: string;
+      /** Plan-approval card question (rendered after step list). */
+      planApprovalQuestion: string;
+      /** Approve option label. */
+      planApproveLabel: string;
+      /** Reject option label. */
+      planRejectLabel: string;
+      // updateMemoryTool
+      /** Memory cleared. {count} */
+      memoryClearedCount: string;
+      /** Error: delete requires filename. */
+      errDeleteNeedsFilename: string;
+      /** Memory deleted. {filename} */
+      memoryDeleted: string;
+      /** Error: edit requires filename. */
+      errEditNeedsFilename: string;
+      /** Error: edit requires content. */
+      errEditNeedsContent: string;
+      /** Error: filename not found. {filename} */
+      errFilenameNotFound: string;
+      /** Memory updated. {type}, {name}, {filename}, optional {lock} */
+      memoryUpdated: string;
+      /** Error: append content cannot be empty. */
+      errAppendContentEmpty: string;
+      /** Memory saved. {type}, {name}, {filename}, optional {lock} */
+      memorySaved: string;
+      // todoWriteTool
+      /** Error: no active session. */
+      errNoActiveSession: string;
+      /** Error: items list required. */
+      errItemsRequired: string;
+      /** Created N todo items. {n} */
+      todosCreated: string;
+      /** Error: content required. */
+      errContentRequired: string;
+      /** Todo item added. {content}, {id} */
+      todoAdded: string;
+      /** Error: todo_id required. */
+      errTodoIdRequired: string;
+      /** Error: todo item not found. {id} */
+      errTodoNotFound: string;
+      /** Todo item updated. {content}, {status} */
+      todoUpdated: string;
+      /** No tasks in the current plan. */
+      todosEmpty: string;
+      /** Details section header (includes IDs). */
+      todosDetailHeader: string;
+      /** Error: unknown action. {action} */
+      errUnknownAction: string;
+      // logTaskCompletionTool
+      /** Task logged. */
+      taskLogged: string;
+    };
+    // manage_scheduled_task / manage_trigger / manage_file_watch
+    automation: {
+      // scheduled task
+      errMissingTaskName: string;
+      errMissingPrompt: string;
+      errMissingFrequency: string;
+      /** {name}, {id} */
+      errDuplicateTask: string;
+      errTimeHourRange: string;
+      errTimeMinuteRange: string;
+      errDayOfWeekRange: string;
+      /** {name}, {id}, {frequency}, {nextRun} */
+      taskCreated: string;
+      listEmptyAll: string;
+      /** {status} */
+      listEmptyFiltered: string;
+      /** {icon}, {name}, {id}, {frequency}, {nextRun}, {runs} */
+      listItem: string;
+      /** {count}, {lines} */
+      listHeader: string;
+      errMissingTaskId: string;
+      /** {id} */
+      errTaskNotFound: string;
+      /** {name}, {id} */
+      taskUpdated: string;
+      /** {name}, {id} */
+      taskDeleted: string;
+      /** {name} */
+      taskAlreadyPaused: string;
+      /** {name}, {id} */
+      taskPaused: string;
+      /** {name} */
+      taskAlreadyActive: string;
+      /** {name}, {id}, {nextRun} */
+      taskResumed: string;
+      /** {action} */
+      errUnknownAction: string;
+      // trigger
+      errMissingTriggerName: string;
+      /** {name}, {id} */
+      errDuplicateTrigger: string;
+      errFileNeedsPath: string;
+      errCronNeedsInterval: string;
+      /** {name} */
+      triggerCreatedHeader: string;
+      /** {type} */
+      triggerTypeLine: string;
+      sourceFile: string;
+      sourceCron: string;
+      /** {path} */
+      watchPathLine: string;
+      /** {events} */
+      watchEventsLine: string;
+      /** {pattern} */
+      fileFilterLine: string;
+      /** {seconds} */
+      pollIntervalLine: string;
+      /** {endpoint} */
+      httpEndpointLine: string;
+      externalTriggerCmd: string;
+      sampleMessage: string;
+      capReadTools: string;
+      capSafeTools: string;
+      capFull: string;
+      capCustom: string;
+      /** {label} */
+      capLevelLine: string;
+      /** {filter} */
+      filterLine: string;
+      /** {value} */
+      debounceLine: string;
+      /** {seconds} */
+      debounceSeconds: string;
+      debounceOff: string;
+      /** {list} */
+      allowCommandsLine: string;
+      /** {list} */
+      allowPathsLine: string;
+      /** {list} */
+      allowToolsLine: string;
+      triggerListEmptyAll: string;
+      /** {status} */
+      triggerListEmptyFiltered: string;
+      /** {path} */
+      triggerSourceFileLabel: string;
+      /** {seconds} */
+      triggerSourceCronLabel: string;
+      /** {endpoint} */
+      triggerSourceHttpLabel: string;
+      /** {icon}, {name}, {id}, {source}, {filterType}, {lastRun}, {runs} */
+      triggerListItem: string;
+      /** {count}, {lines} */
+      triggerListHeader: string;
+      errMissingTriggerId: string;
+      /** {id} */
+      errTriggerNotFound: string;
+      /** {name}, {id} */
+      triggerUpdated: string;
+      /** {name}, {id} */
+      triggerDeleted: string;
+      /** {name} */
+      triggerAlreadyPaused: string;
+      /** {name}, {id} */
+      triggerPaused: string;
+      /** {name} */
+      triggerAlreadyActive: string;
+      /** {name}, {id} */
+      triggerResumed: string;
+      // file watch
+      fwListEmpty: string;
+      fwStatusRunning: string;
+      fwStatusEnabled: string;
+      fwStatusDisabled: string;
+      /** {status}, {id}, {path}, {pattern}, {event}, {prompt} */
+      fwListItem: string;
+      /** {count}, {lines} */
+      fwListHeader: string;
+      fwErrAddNeeds: string;
+      /** {id}, {path} */
+      fwRuleCreated: string;
+      fwErrRemoveNeeds: string;
+      /** {id} */
+      fwRuleRemoved: string;
+      fwErrToggleNeeds: string;
+      /** {id} */
+      fwRuleToggled: string;
+      /** {action} */
+      fwUnknownAction: string;
+    };
+    // use_skill / delegate_to_agent / save_agent / request_workspace
+    agent: {
+      // use_skill
+      /** Skill already active in this conversation. {skillName} */
+      skillAlreadyActive: string;
+      /** Skill loaded. {name}, {description} */
+      skillLoaded: string;
+      /** Context line appended after skillLoaded. {context} */
+      skillContextLine: string;
+      /** Line appended after skillLoaded (and optional context). */
+      skillInjected: string;
+      // delegate_to_agent
+      /** Error: agent not found. {agentName}, {available}, {presetList} */
+      errAgentNotFound: string;
+      /** Error: agent disabled. {agentName} */
+      errAgentDisabled: string;
+      /** Error: must specify agent_name or type. */
+      errMustSpecifyAgent: string;
+      // save_skill / save_agent (createSaveItemTool)
+      /** Word for "skill" used in labels/messages. */
+      labelSkill: string;
+      /** Word for "agent" used in labels/messages. */
+      labelAgent: string;
+      /** Error: invalid name. {label}, {name} */
+      errInvalidName: string;
+      /** Error: unsafe file path. {p} */
+      errUnsafeFilePath: string;
+      /** Attached-files section header + list. {list} */
+      savedFileList: string;
+      /** Success: skill saved. {label}, {name}, {filePath}, {fileList} */
+      skillSaved: string;
+      /** Success: agent saved. {label}, {name}, {filePath}, {fileList} */
+      agentSaved: string;
+      // request_workspace
+      /** Workspace selected by user. {result} */
+      workspaceSelected: string;
+      /** User cancelled workspace selection. */
+      workspaceCancelled: string;
+    };
+    // run_agent_batch pure helpers (aggregateBatchResults / runWithConcurrency / runWithTimeout)
+    orchestration: {
+      /** Error: tasks must be a non-empty array. */
+      errTasksRequired: string;
+      /** Error: tasks supports at most 16 items. */
+      errTasksTooMany: string;
+      /** Error: task description at index i cannot be empty. {i} */
+      errTaskEmpty: string;
+      /** Error: agent not found in batch task. {i}, {agentName}, {available}, {presetList} */
+      errBatchAgentNotFound: string;
+      /** Error: agent disabled in batch task. {i}, {agentName} */
+      errBatchAgentDisabled: string;
+      /** Activity label when a sub-agent calls a tool. {toolName} */
+      activityCalling: string;
+      /** Timeout error message for runWithTimeout. */
+      errTimeout: string;
+      /** Cancellation error message for runWithConcurrency cancelled slots. */
+      errCancelled: string;
+      /** aggregateBatchResults header. {total}, {successCount}, {failCount} */
+      batchHeader: string;
+      /** aggregateBatchResults section title. {n}, {label} */
+      batchSectionTitle: string;
+      /** aggregateBatchResults failure prefix. {text} */
+      batchFailPrefix: string;
+      /** Structured path: could not parse JSON. */
+      errJsonParseFailed: string;
+      /** Structured path: missing required fields. {fields} */
+      errMissingFields: string;
+    };
+    // recall / read_memory
+    recall: {
+      /** Restraint note appended to private memory content. */
+      privateMemoryNote: string;
+      /** Suffix on a private-memory recall line. */
+      privateMemorySuffix: string;
+      /** {count} */
+      sectionMemories: string;
+      /** {count} */
+      sectionTasks: string;
+      /** {title}, {count}, {time} */
+      convLine: string;
+      untitled: string;
+      /** {count} */
+      sectionConversations: string;
+      /** {query} */
+      noResultsQuery: string;
+      noResultsEmpty: string;
+      errFilenameEmpty: string;
+      /** {filename} */
+      notFound: string;
+    };
+    // test_skill_trigger / improve_skill_description (eval tools)
+    skillEval: {
+      errNoQueries: string;
+      /** {passed}, {total}, {rate} */
+      overviewLine: string;
+      errInvalidJson: string;
+      /** {description} */
+      allPassed: string;
+      /** {error} */
+      errLlmFailed: string;
+    };
+    // skill_manage (install / create)
+    skill: {
+      errInstallNeedsSource: string;
+      /** Suffix appended to an ALREADY_EXISTS installer message. */
+      overwriteHint: string;
+      /** {error} */
+      installFailed: string;
+      /** {count}, {files} */
+      skippedNote: string;
+      /** {name}, {count}, {skippedNote} */
+      installed: string;
+      /** {name}, {path} */
+      draftProposed: string;
+      /** {name}, {path} */
+      skillCreated: string;
+    };
+    // manage_mcp_server
+    system: {
+      /** Error: action=search requires query. */
+      errSearchNeedsQuery: string;
+      /** No MCP server matched the query. {query} */
+      searchNoResults: string;
+      /** Env-var needed note fragment. {envList} */
+      searchEnvNote: string;
+      /** Search results header. {count}, {lines} */
+      searchResults: string;
+      /** Error: action=install requires name. */
+      errInstallNeedsName: string;
+      /** MCP server not found. {name} */
+      errInstallNotFound: string;
+      /** Install failed. {error} */
+      installFailed: string;
+      /** Error: action=ensure requires name. */
+      errEnsureNeedsName: string;
+      /** Ensure available failed. {error} */
+      ensureFailed: string;
+      /** Error: action=add_custom requires name. */
+      errAddCustomNeedsName: string;
+      /** Error: action=add_custom requires url. */
+      errAddCustomNeedsUrl: string;
+      /** Add custom MCP service failed. {error} */
+      addCustomFailed: string;
+      /** Unknown action. {action} */
+      errUnknownAction: string;
+    };
+    // web_search / http_fetch
+    web: {
+      /** No API key configured (non-SearXNG). */
+      errNoApiKey: string;
+      /** No SearXNG URL configured. */
+      errNoSearxngUrl: string;
+      /** No search results found. {query} */
+      noResults: string;
+      /** Search results header. {count}, {lines} */
+      searchResults: string;
+      /** Search error. {error} */
+      searchError: string;
+    };
+    // generate_image / process_image
+    media: {
+      /** API returned no image data. */
+      errNoImageData: string;
+      /** Image saved. {path} */
+      imageSaved: string;
+      /** Revised prompt suffix. {prompt} */
+      revisedPrompt: string;
+    };
+    // create_todo
+    todo: {
+      /** Error: title cannot be empty. */
+      errTitleEmpty: string;
+      /** Todo proposal placed in inbox. {title} */
+      proposalAdded: string;
+    };
+    // tool_search
+    toolSearch: {
+      /** No tool matched the query. {query} */
+      noResults: string;
+      /** Parameter schema label (used in result formatting). */
+      schemaLabel: string;
+      /** Results header and footer. {count}, {results} */
+      resultsFound: string;
+    };
+    // ask_user_question — validation errors and result formatting
+    askUserQuestion: {
+      /** Error: questions array length must be 1–4. {received} */
+      errQuestionsLength: string;
+      /** Error: question {idx} header cannot be empty. */
+      errHeaderEmpty: string;
+      /** Error: question {idx} header "{header}" exceeds 12 chars (current: {len}). */
+      errHeaderTooLong: string;
+      /** Error: question {idx} question text cannot be empty. */
+      errQuestionEmpty: string;
+      /** Error: question {idx} multiSelect must be boolean. {received} */
+      errMultiSelectType: string;
+      /** Error: question {idx} options length must be 2–4. {received} */
+      errOptionsLength: string;
+      /** Error: question {idx} options[{j}].label cannot be empty. */
+      errOptionLabelEmpty: string;
+      /** Internal error: toolCallId not injected. */
+      errNoToolCallId: string;
+      /** User cancelled or timed out. */
+      cancelled: string;
+      /** Header line for the answers result. */
+      answersHeader: string;
+    };
+    // update_soul
+    updateSoul: {
+      /** Error: content cannot be empty. */
+      errContentEmpty: string;
+      /** Soul updated successfully. */
+      updated: string;
+      /** Update failed. {error} */
+      updateFailed: string;
+    };
+    // read_file / write_file / edit_file
+    file: {
+      /** Non-vision model image skip note. {path}, {mediaType} */
+      imageSkipNoVision: string;
+      /** File locked by another agent. {path} */
+      errFileLocked: string;
+    };
+    // computer (computerTools.ts) — AX/screenshot/input action results and errors
+    computer: {
+      /** formatAxElements: no interactive elements found. */
+      noInteractiveElements: string;
+      /** screenshot: current model has no vision capability (bilingual). zh half. */
+      errNoVision: string;
+      /** activate_app: missing app parameter. */
+      errActivateNeedsApp: string;
+      /** activate_app success. {name} */
+      activateSuccess: string;
+      /** activate_app failure. {msg} */
+      errActivateFailed: string;
+      /** get_app_state: AX tree truncated note. */
+      axTreeTruncated: string;
+      /** get_app_state: AX tree header. {app}, {count}, {visited}, {note}, {formatted} */
+      axTreeHeader: string;
+      /** get_app_state: AX tree fetch failed. {msg} */
+      axTreeFailed: string;
+      /** get_app_state: operation hint appended to AX tree (vision path). */
+      axSuffixVision: string;
+      /** get_app_state: screenshot section header (vision path). */
+      axScreenshotSeparator: string;
+      /** get_app_state: operation hint (non-vision path). */
+      axSuffixNoVision: string;
+      /** click: AXPress succeeded. {elemId} */
+      clickAxSuccess: string;
+      /** click: AXPress failed, fallback to element center. {msg}, {cx}, {cy} */
+      clickAxFallbackCenter: string;
+      /** click: AXPress failed, fallback to caller-supplied coords. {msg}, {x}, {y} */
+      clickAxFallbackCoords: string;
+      /** click: AXPress failed, no fallback coords available. {msg} */
+      errClickAxNoFallback: string;
+      /** click: element_id provided but no active AX session. */
+      errClickNoSession: string;
+      /** click: no element_id and no x,y coordinates. */
+      errClickNeedsCoords: string;
+      /** scroll: element in AX session, scrolled at element center. {dir}, {amt}, {elemId}, {cx}, {cy} */
+      scrollAtElement: string;
+      /** scroll: element_id not in current snapshot. {elemId} */
+      errScrollElemNotFound: string;
+      /** scroll: no element_id and no x,y coordinates. */
+      errScrollNeedsCoords: string;
+      /** type: AXSetValue succeeded. {elemId} */
+      typeAxSuccess: string;
+      /** type: AXSetValue failed, fallback to keyboard. {msg} */
+      typeAxFallback: string;
+      /** perform_action: missing action_name. */
+      errPerformNeedsActionName: string;
+      /** perform_action: no active AX session. */
+      errPerformNoSession: string;
+      /** perform_action: succeeded. {elemId}, {actionName} */
+      performSuccess: string;
+      /** perform_action: failed. {msg} */
+      errPerformFailed: string;
+      /** ax_click: no active AX session. */
+      errAxClickNoSession: string;
+      /** ax_click: AXPress succeeded. {elemId} */
+      axClickSuccess: string;
+      /** ax_click: AXPress failed, fallback to pixel click. {msg}, {x}, {y} */
+      axClickFallback: string;
+      /** ax_click: AXPress failed, no coords fallback. {msg} */
+      errAxClickFailed: string;
+      /** ax_type: no active AX session. */
+      errAxTypeNoSession: string;
+      /** ax_type: AXSetValue succeeded. {elemId} */
+      axTypeSuccess: string;
+      /** ax_type: AXSetValue failed, fallback to keyboard. {msg} */
+      axTypeFallback: string;
+      /** Screen recording permission denied (bilingual). zh half. */
+      errNoScreenRecording: string;
+      /** Windows: accessibility requires elevation (bilingual). zh half. */
+      errWindowsNeedsAdmin: string;
+      /** macOS: accessibility permission denied (bilingual). zh half. */
+      errMacOSNeedsAccessibility: string;
+    };
   };
 }

@@ -81,17 +81,40 @@
     </script>
   </head>
   <body style="margin:0">
+    <script>
+      // Runtime language detection for pre-React static strings.
+      // Mirrors the logic in src/i18n/index.ts detectSystemLocale().
+      (function() {
+        var zh = (navigator.language || '').toLowerCase().startsWith('zh');
+        var errEl = document.getElementById('app-error');
+        var loadEl = document.getElementById('app-loading');
+        if (errEl) {
+          errEl.querySelector('h2').textContent = zh ? 'Abu 启动失败' : 'Abu failed to start';
+          var ps = errEl.querySelectorAll('p');
+          if (ps[0]) ps[0].textContent = zh
+            ? '应用加载时遇到了问题，请尝试重启 Abu。'
+            : 'An error occurred while loading the app. Please try restarting Abu.';
+          if (ps[1]) ps[1].innerHTML = zh
+            ? '如果问题持续出现，请前往 <a href="https://github.com/PM-Shawn/Abu/issues" target="_blank">GitHub Issues</a> 反馈，并附上以下技术信息（截图即可）：'
+            : 'If the problem persists, please report it on <a href="https://github.com/PM-Shawn/Abu/issues" target="_blank">GitHub Issues</a> and include the details below (a screenshot is fine):';
+          errEl.querySelector('pre').textContent = zh ? '（正在获取错误详情…）' : '(Loading error details…)';
+        }
+        if (loadEl) {
+          loadEl.textContent = zh ? 'Abu 正在启动…' : 'Abu is starting…';
+        }
+      })();
+    </script>
     <div id="app-error">
-      <h2>Abu 启动失败</h2>
-      <p>应用加载时遇到了问题，请尝试重启 Abu。</p>
-      <p>如果问题持续出现，请前往
+      <h2>Abu failed to start</h2>
+      <p>An error occurred while loading the app. Please try restarting Abu.</p>
+      <p>If the problem persists, please report it on
         <a href="https://github.com/PM-Shawn/Abu/issues" target="_blank">GitHub Issues</a>
-        反馈，并附上以下技术信息（截图即可）：
+        and include the details below (a screenshot is fine):
       </p>
-      <pre>（正在获取错误详情…）</pre>
+      <pre>(Loading error details…)</pre>
     </div>
     <div id="root">
-      <div id="app-loading">Abu 正在启动…</div>
+      <div id="app-loading">Abu is starting…</div>
     </div>
     <script type="module" src="/src/main.tsx"></script>
   </body>

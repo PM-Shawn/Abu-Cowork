@@ -9,7 +9,9 @@ export interface MarketplaceItem {
   id: string;
   name: string;
   description: string;
+  descriptionEn?: string;
   author: string;
+  authorEn?: string;
   category: string;
   isBuiltin?: boolean;
   content?: string; // SKILL.md or AGENT.md content
@@ -21,7 +23,9 @@ export interface MarketplaceItem {
 export interface MCPTemplate {
   id: string;
   name: string;
+  nameEn?: string;
   description: string;
+  descriptionEn?: string;
   /** Transport type: 'stdio' (default) or 'http' */
   transport?: 'stdio' | 'http';
   /** Command for stdio transport */
@@ -32,18 +36,24 @@ export interface MCPTemplate {
   url?: string;
   /** Setup instructions shown to user (e.g. for HTTP servers that need manual startup) */
   setupHint?: string;
+  setupHintEn?: string;
   /** Configurable args that user can customize during installation */
   configurableArgs?: {
     index: number;
     label: string;
+    labelEn?: string;
     placeholder: string;
+    placeholderEn?: string;
   }[];
   /** Required environment variables (e.g. API keys) prompted during installation */
   requiredEnvVars?: {
     name: string;
     label: string;
+    labelEn?: string;
     placeholder: string;
+    placeholderEn?: string;
     description?: string;
+    descriptionEn?: string;
   }[];
   /** Default timeout for tool calls in ms (default: 30000) */
   defaultTimeout?: number;
@@ -53,11 +63,13 @@ export interface MCPTemplate {
 export interface ModelPreset {
   id: string;
   name: string;
+  nameEn?: string;
   provider: LLMProvider;
   apiFormat: ApiFormat;
   model: string;
   baseUrl?: string;
   description: string;
+  descriptionEn?: string;
 }
 
 /** Installation source for installed items */

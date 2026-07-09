@@ -11,7 +11,7 @@ import { homeDir } from '@tauri-apps/api/path';
 import { ensureParentDir, joinPath, getBaseName } from '../../utils/pathUtils';
 import { runAgentLoop } from './agentLoop';
 import { useChatStore } from '../../stores/chatStore';
-import { format } from '../../i18n';
+import { format, getI18n } from '../../i18n';
 
 export interface FileWatchRule {
   id: string;
@@ -87,8 +87,11 @@ async function handleWatchTrigger(rule: FileWatchRule, filePath: string) {
   const chatStore = useChatStore.getState();
   const conversationId = chatStore.createConversation(null, { skipActivate: true });
 
-  const timeStr = new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
-  chatStore.renameConversation(conversationId, `[监听] ${fileName} - ${timeStr}`);
+  const timeStr = new Date().toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
+  chatStore.renameConversation(
+    conversationId,
+    format(getI18n().chatDefaults.watcherConversationTitle, { file: fileName, time: timeStr }),
+  );
 
   try {
     await runAgentLoop(conversationId, prompt, {

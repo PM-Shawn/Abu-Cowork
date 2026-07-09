@@ -1,8 +1,10 @@
 import { useSyncExternalStore } from 'react';
 import { Monitor, Square } from 'lucide-react';
 import { subscribeCUStatus, getCUStatusSnapshot } from '@/core/agent/computerUseStatus';
+import { useI18n, format } from '@/i18n';
 
 export default function ComputerUseStatusBar({ onStop }: { onStop?: () => void }) {
+  const { t } = useI18n();
   const status = useSyncExternalStore(subscribeCUStatus, getCUStatusSnapshot);
 
   if (status.status !== 'active') return null;
@@ -12,8 +14,8 @@ export default function ComputerUseStatusBar({ onStop }: { onStop?: () => void }
       <div className="flex items-center gap-2 text-blue-400">
         <Monitor className="h-4 w-4 animate-pulse" />
         <span>
-          正在操控电脑
-          {status.stepCount > 0 && ` · 第 ${status.stepCount} 步`}
+          {t.computerUse.controlling}
+          {status.stepCount > 0 && ` ${format(t.computerUse.step, { step: status.stepCount })}`}
         </span>
       </div>
       {onStop && (
@@ -22,7 +24,7 @@ export default function ComputerUseStatusBar({ onStop }: { onStop?: () => void }
           className="flex items-center gap-1 px-2 py-1 text-xs text-red-400 hover:text-red-300 hover:bg-red-500/10 rounded transition-colors"
         >
           <Square className="h-3 w-3" />
-          停止
+          {t.computerUse.stop}
         </button>
       )}
     </div>

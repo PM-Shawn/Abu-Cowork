@@ -18,6 +18,7 @@ import { extractParentConversationSummary } from '../../agent/subagentLoop';
 import { useChatStore } from '../../../stores/chatStore';
 import { buildSchemaInstruction, extractJsonObject, validateStructured } from '../../agent/structuredOutput';
 import { useBatchProgressStore } from '../../../stores/batchProgressStore';
+import { getI18n, format } from '../../../i18n';
 
 // ─── Preset agents (mirrored from agentTools.ts) ──────────────────────────
 // Kept local so orchestrationTools has no runtime dependency on agentTools.ts.
@@ -100,7 +101,7 @@ export function runWithTimeout<T>(
   return new Promise<T>((resolve, reject) => {
     timeoutHandle = setTimeout(() => {
       controller.abort();
-      reject(new Error('子代理执行超时（已中止）'));
+      reject(new Error(getI18n().toolResult.orchestration.errTimeout));
     }, timeoutMs);
     // Attach to factory; once the outer promise settles, subsequent
     // resolve/reject calls are no-ops (Promise semantics).
@@ -157,7 +158,7 @@ export async function runWithConcurrency<T, R>(
     if (results[i] === undefined) {
       (results as Array<PromiseSettledResult<R> | undefined>)[i] = {
         status: 'rejected',
-        reason: new Error('已取消'),
+        reason: new Error(getI18n().toolResult.orchestration.errCancelled),
       };
     }
   }
@@ -178,14 +179,15 @@ export function aggregateBatchResults(
   const total = entries.length;
   const successCount = entries.filter((e) => e.status === 'ok').length;
   const failCount = total - successCount;
+  const t = getI18n().toolResult.orchestration;
 
-  const header = `共 ${total} 个子任务，成功 ${successCount}，失败 ${failCount}`;
+  const header = format(t.batchHeader, { total, successCount, failCount });
 
   if (total === 0) return header;
 
   const sections = entries.map((entry, i) => {
-    const title = `### 子任务 ${i + 1}: ${entry.label}`;
-    const body = entry.status === 'ok' ? entry.text : `[失败] ${entry.text}`;
+    const title = format(t.batchSectionTitle, { n: i + 1, label: entry.label });
+    const body = entry.status === 'ok' ? entry.text : format(t.batchFailPrefix, { text: entry.text });
     return `${title}\n${body}`;
   });
 
@@ -223,17 +225,17 @@ interface BatchTaskItem {
 export const runAgentBatchTool: ToolDefinition = {
   name: TOOL_NAMES.RUN_AGENT_BATCH,
   description:
-    '并行运行多个子代理任务，所有任务完成后一次性返回聚合报告。' +
-    '每个任务可指定 type（系统内置角色：research/writer/executor）或 agent_name（用户自定义代理）；' +
-    '两者均未指定时默认使用 research 调研角色。' +
-    '适用于需要同时调研多个独立话题、并行处理多个文件、或将大任务拆分为独立子任务并行执行的场景。' +
-    '注意：所有子任务均完成后结果才会一起回传，期间会阻塞当前对话。',
+    'Run multiple sub-agent tasks in parallel and return an aggregated report once all tasks complete.' +
+    ' Each task can specify type (built-in role: research/writer/executor) or agent_name (user-defined agent);' +
+    ' defaults to the research role when neither is specified.' +
+    ' Suitable for simultaneously researching multiple independent topics, processing multiple files in parallel, or splitting a large task into independent sub-tasks for parallel execution.' +
+    ' Note: results are returned together only after all sub-tasks complete; the current conversation is blocked during this time.',
   inputSchema: {
     type: 'object',
     properties: {
       tasks: {
         type: 'array',
-        description: '子任务列表，1-16 个，每个任务独立并行执行',
+        description: 'List of sub-tasks, 1–16 items, each executed independently in parallel',
         minItems: 1,
         maxItems: 16,
         items: {
@@ -241,20 +243,20 @@ export const runAgentBatchTool: ToolDefinition = {
           properties: {
             type: {
               type: 'string',
-              description: '系统内置角色：research（只读调研）、writer（读写创作）、executor（全能执行）。与 agent_name 二选一；两者均不填时默认 research',
+              description: 'Built-in role: research (read-only research), writer (read/write content creation), executor (all-purpose execution). Mutually exclusive with agent_name; defaults to research when neither is provided',
               enum: ['research', 'writer', 'executor'],
             },
             agent_name: {
               type: 'string',
-              description: '用户自定义代理名称。与 type 二选一',
+              description: 'User-defined agent name. Mutually exclusive with type',
             },
             task: {
               type: 'string',
-              description: '该子任务的任务描述（必填）',
+              description: 'Task description for this sub-task (required)',
             },
             context: {
               type: 'string',
-              description: '附加上下文（可选）',
+              description: 'Additional context (optional)',
             },
           },
           required: ['task'],
@@ -262,12 +264,12 @@ export const runAgentBatchTool: ToolDefinition = {
       },
       concurrency: {
         type: 'number',
-        description: '最大并发子代理数，默认 4，范围 1-8',
+        description: 'Maximum number of concurrent sub-agents, default 4, range 1–8',
       },
       schema: {
         type: 'object',
         description:
-          '可选。提供 JSON Schema 时，每个子任务返回匹配该结构的 JSON 对象，聚合成 JSON 数组返回（适合批量提取结构化数据）。',
+          'Optional. When a JSON Schema is provided, each sub-task returns a JSON object matching that structure, aggregated into a JSON array (suitable for batch structured data extraction).',
       },
     },
     required: ['tasks'],
@@ -276,17 +278,18 @@ export const runAgentBatchTool: ToolDefinition = {
   execute: async (input: Record<string, unknown>, toolExecContext?: ToolExecutionContext): Promise<string> => {
     // ── 1. Parse + validate ────────────────────────────────────────────────
     const rawTasks = input.tasks as BatchTaskItem[] | undefined;
+    const ot = getI18n().toolResult.orchestration;
     if (!Array.isArray(rawTasks) || rawTasks.length === 0) {
-      return 'Error: tasks 必须是非空数组';
+      return ot.errTasksRequired;
     }
     if (rawTasks.length > 16) {
-      return 'Error: tasks 最多支持 16 个子任务';
+      return ot.errTasksTooMany;
     }
 
     for (let i = 0; i < rawTasks.length; i++) {
-      const t = rawTasks[i];
-      if (!t.task || typeof t.task !== 'string' || t.task.trim() === '') {
-        return `Error: tasks[${i}].task 不能为空`;
+      const taskItem = rawTasks[i];
+      if (!taskItem.task || typeof taskItem.task !== 'string' || taskItem.task.trim() === '') {
+        return format(ot.errTaskEmpty, { i });
       }
     }
 
@@ -339,11 +342,11 @@ export const runAgentBatchTool: ToolDefinition = {
             .map((a) => `${a.name}`)
             .join(', ');
           const presetList = Object.keys(PRESET_AGENTS).join(', ');
-          return `Error: tasks[${i}] 代理 "${agentName}" 未找到。可用代理: ${available || '无'}。系统角色 type: ${presetList}`;
+          return format(ot.errBatchAgentNotFound, { i, agentName, available: available || getI18n().toolResult.valueNone, presetList });
         }
         const { disabledAgents } = useSettingsStore.getState();
         if (disabledAgents.includes(agentName)) {
-          return `Error: tasks[${i}] 代理 "${agentName}" 已被停用`;
+          return format(ot.errBatchAgentDisabled, { i, agentName });
         }
       } else {
         // Default to research when neither type nor agent_name provided
@@ -373,7 +376,7 @@ export const runAgentBatchTool: ToolDefinition = {
       async (resolved, idx) => {
         // Belt-and-suspenders: if we raced the abort check in the worker loop,
         // bail before starting a fresh sub-agent run.
-        if (loopCtx?.signal?.aborted) throw new Error('已取消');
+        if (loopCtx?.signal?.aborted) throw new Error(getI18n().toolResult.orchestration.errCancelled);
         const effectiveTask =
           schema !== undefined
             ? resolved.task + buildSchemaInstruction(schema)
@@ -395,7 +398,7 @@ export const runAgentBatchTool: ToolDefinition = {
                   if (store.batches[batchId]?.tasks[idx]?.status === 'queued') {
                     store.setTaskRunning(batchId, idx);
                   }
-                  store.setTaskActivity(batchId, idx, `调用 ${event.toolName}`, currentTurn);
+                  store.setTaskActivity(batchId, idx, format(getI18n().toolResult.orchestration.activityCalling, { toolName: event.toolName }), currentTurn);
                 } else if (event.type === 'turn-complete') {
                   currentTurn = event.turn;
                   store.setTaskActivity(batchId, idx, '', currentTurn);
@@ -436,14 +439,14 @@ export const runAgentBatchTool: ToolDefinition = {
         }
         const extracted = extractJsonObject(result.value.text);
         if (extracted === null) {
-          return { task, ok: false, error: '未能解析出匹配的 JSON' };
+          return { task, ok: false, error: getI18n().toolResult.orchestration.errJsonParseFailed };
         }
         const validation = validateStructured(extracted, schema);
         if (!validation.ok) {
           return {
             task,
             ok: false,
-            error: `缺少必填字段: ${validation.missing.join(', ')}`,
+            error: format(getI18n().toolResult.orchestration.errMissingFields, { fields: validation.missing.join(', ') }),
           };
         }
         return { task, ok: true, data: extracted };

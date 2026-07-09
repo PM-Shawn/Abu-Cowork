@@ -12,6 +12,7 @@ import { create } from 'zustand';
 import { invoke } from '@tauri-apps/api/core';
 import { registerChannel } from '@/core/notice/pipeline';
 import type { Notice } from '@/core/notice/types';
+import { getI18n } from '@/i18n';
 
 interface MenubarNotice {
   id: string;
@@ -35,21 +36,22 @@ interface NoticeMenubarActions {
 type NoticeMenubarStore = NoticeMenubarState & NoticeMenubarActions;
 
 function summarize(notice: Notice): string {
+  const m = getI18n().noticeMenubar;
   const typeLabels: Record<string, string> = {
-    meeting_prep: '会议准备',
-    permission_request: '权限请求',
-    user_input_needed: '需要输入',
-    agent_error: 'Agent 错误',
-    schedule_fired: '定时任务触发',
-    task_complete: '任务完成',
-    skill_proposal_offer: '技能建议',
-    skill_draft_ready: '技能草稿就绪',
-    skill_patch: '技能更新',
-    stuck_detection: '任务卡住',
-    im_inbound: '收到消息',
-    context_resume: '上下文恢复',
-    deep_focus_enter: '进入深度专注',
-    deep_focus_exit: '退出深度专注',
+    meeting_prep: m.meetingPrep,
+    permission_request: m.permissionRequest,
+    user_input_needed: m.userInputNeeded,
+    agent_error: m.agentError,
+    schedule_fired: m.scheduleFired,
+    task_complete: m.taskComplete,
+    skill_proposal_offer: m.skillProposalOffer,
+    skill_draft_ready: m.skillDraftReady,
+    skill_patch: m.skillPatch,
+    stuck_detection: m.stuckDetection,
+    im_inbound: m.imInbound,
+    context_resume: m.contextResume,
+    deep_focus_enter: m.deepFocusEnter,
+    deep_focus_exit: m.deepFocusExit,
   };
   return typeLabels[notice.type] ?? notice.type;
 }

@@ -1,6 +1,6 @@
 import { useState, useCallback } from 'react';
 import { Check, X, AlertTriangle, Loader2, Eye, EyeOff, Pencil, RefreshCw, Trash2, Plus, CircleCheck, CircleX } from 'lucide-react';
-import { useI18n } from '@/i18n';
+import { useI18n, format } from '@/i18n';
 import { cn } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -181,11 +181,11 @@ export default function ProviderCard({ provider, isActive }: ProviderCardProps) 
         const preserved = customModels.filter((m) => !fetchedIds.has(m.id));
         return [...result.models, ...preserved];
       });
-      setFetchModelsMsg({ ok: true, text: `获取到 ${result.models.length} 个模型` });
+      setFetchModelsMsg({ ok: true, text: format(t.settings.fetchModelsSuccess, { count: result.models.length }) });
     } else {
-      setFetchModelsMsg({ ok: false, text: result.error ?? '获取失败，请手动添加' });
+      setFetchModelsMsg({ ok: false, text: result.error ?? t.settings.fetchModelsError });
     }
-  }, [formBaseUrl, formApiKey, provider.apiFormat]);
+  }, [formBaseUrl, formApiKey, provider.apiFormat, t]);
 
 
   // Build compact model summary: "Model1, Model2 +3"
@@ -315,7 +315,7 @@ export default function ProviderCard({ provider, isActive }: ProviderCardProps) 
                     onClick={() => setModelsExpanded(true)}
                     className="px-2 py-0.5 rounded text-[11px] text-[var(--abu-clay)] border border-dashed border-[var(--abu-clay)]/50 hover:border-[var(--abu-clay)] transition-colors"
                   >
-                    +{hidden} 展开全部
+                    {format(t.settings.expandModels, { hidden })}
                   </button>
                 )}
                 {modelsExpanded && formModels.length > MODELS_COLLAPSED_COUNT && (
@@ -324,7 +324,7 @@ export default function ProviderCard({ provider, isActive }: ProviderCardProps) 
                     onClick={() => setModelsExpanded(false)}
                     className="px-2 py-0.5 rounded text-[11px] text-[var(--abu-clay)] border border-dashed border-[var(--abu-clay)]/50 hover:border-[var(--abu-clay)] transition-colors"
                   >
-                    收起
+                    {t.settings.collapseModels}
                   </button>
                 )}
               </div>

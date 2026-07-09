@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { useNoticeMenubarStore } from './noticeMenubarStore';
 import type { Notice } from '@/core/notice/types';
+import { getI18n } from '@/i18n';
 
 function makeNotice(overrides: Partial<Notice> = {}): Notice {
   return {
@@ -32,9 +33,9 @@ describe('noticeMenubarStore', () => {
     expect(ids).toEqual(['ntc_2', 'ntc_1']);
   });
 
-  it('addNotice maps type to Chinese summary', () => {
+  it('addNotice maps type to localized summary', () => {
     useNoticeMenubarStore.getState().addNotice(makeNotice({ type: 'task_complete' }));
-    expect(useNoticeMenubarStore.getState().notices[0].summary).toBe('任务完成');
+    expect(useNoticeMenubarStore.getState().notices[0].summary).toBe(getI18n().noticeMenubar.taskComplete);
   });
 
   it('caps at 50 entries', () => {

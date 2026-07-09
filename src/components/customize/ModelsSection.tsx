@@ -30,7 +30,8 @@ export default function ModelsSection() {
     selectModel,
     openSystemSettings,
   } = useSettingsStore();
-  const { t } = useI18n();
+  const { t, locale } = useI18n();
+  const pick = (zh: string, en?: string) => (locale.startsWith('zh') ? zh : (en ?? zh));
 
   const effectiveModel = getEffectiveModel(useSettingsStore.getState());
   const activeProvider = getActiveProvider(useSettingsStore.getState());
@@ -142,14 +143,14 @@ export default function ModelsSection() {
                       >
                         <div className="flex-1 min-w-0">
                           <div className="flex items-center gap-2">
-                            <span className="font-medium text-sm text-[var(--abu-text-primary)]">{preset.name}</span>
+                            <span className="font-medium text-sm text-[var(--abu-text-primary)]">{pick(preset.name, preset.nameEn)}</span>
                             {isActive && (
                               <span className="text-[10px] px-1.5 py-0.5 bg-[var(--abu-clay-20)] text-[var(--abu-clay)] rounded">
                                 {t.toolbox.current}
                               </span>
                             )}
                           </div>
-                          <p className="text-xs text-[var(--abu-text-tertiary)] mt-0.5">{preset.description}</p>
+                          <p className="text-xs text-[var(--abu-text-tertiary)] mt-0.5">{pick(preset.description, preset.descriptionEn)}</p>
                         </div>
                         {isActive && <Check className="h-4 w-4 text-[var(--abu-clay)] shrink-0" />}
                       </button>

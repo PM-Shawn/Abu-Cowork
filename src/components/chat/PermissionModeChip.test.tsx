@@ -19,6 +19,12 @@ vi.mock('@/i18n', () => ({
       },
     },
   }),
+  getI18n: () => ({
+    chatDefaults: { newConversationTitle: '新任务', watcherConversationTitle: '[监听] {file} - {time}' },
+    task: { cancelled: '[已取消]' },
+  }),
+  format: (s: string, v: Record<string, unknown>) =>
+    s.replace(/\{(\w+)\}/g, (_: string, k: string) => String(v[k] ?? `{${k}}`)),
 }));
 
 describe('PermissionModeChip', () => {

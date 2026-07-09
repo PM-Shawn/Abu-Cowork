@@ -1,7 +1,8 @@
 import { useState, useMemo, useEffect } from 'react';
 import { ChevronDown, ChevronRight, ExternalLink, Maximize2 } from 'lucide-react';
 import { cn } from '@/lib/utils';
-import { useI18n } from '@/i18n';
+import { useI18n, format } from '@/i18n';
+import { getDetailBlockLabel } from '@/utils/toolLabels';
 import type { DetailBlock } from '@/types/execution';
 
 interface DetailBlockViewProps {
@@ -16,7 +17,7 @@ interface DetailBlockViewProps {
  * Uses local state for toggle with optional store sync via onToggle.
  */
 export default function DetailBlockView({ block, onToggle, onLoadMore }: DetailBlockViewProps) {
-  const { locale } = useI18n();
+  const { locale, t } = useI18n();
   // Local expanded state — syncs with block.isExpanded from store when available
   const [localExpanded, setLocalExpanded] = useState(block.isExpanded);
   const [imageFullscreen, setImageFullscreen] = useState(false);
@@ -30,7 +31,9 @@ export default function DetailBlockView({ block, onToggle, onLoadMore }: DetailB
     setLocalExpanded((prev) => !prev);
     onToggle(); // Also try store update (may be no-op for persisted snapshots)
   };
-  const isZh = locale.startsWith('zh');
+  // Localize the collapsible header at render time so it follows the current UI
+  // locale (block.labelKey is language-neutral). Falls back to the baked label.
+  const headerLabel = block.labelKey ? getDetailBlockLabel(block.labelKey, locale) : block.label;
 
   // Style based on block type
   const styles = useMemo(() => {
@@ -121,7 +124,7 @@ export default function DetailBlockView({ block, onToggle, onLoadMore }: DetailB
             onClick={onLoadMore}
             className="text-[11px] text-[var(--abu-clay)] hover:underline"
           >
-            {isZh ? '查看更多' : 'Show more'} ({(block.fullContentLength || 0) - block.content.length} {isZh ? '字符' : 'chars'})
+            {t.chat.viewMore} ({(block.fullContentLength || 0) - block.content.length} {t.chat.characters})
           </button>
         </div>
       )}
@@ -203,7 +206,7 @@ export default function DetailBlockView({ block, onToggle, onLoadMore }: DetailB
         ))}
         {block.parsedItems.length > 5 && (
           <div className="px-3 py-2 text-[11px] text-[var(--abu-text-muted)]">
-            {isZh ? `还有 ${block.parsedItems.length - 5} 项...` : `${block.parsedItems.length - 5} more items...`}
+            {format(t.chat.moreItems, { count: block.parsedItems.length - 5 })}
           </div>
         )}
       </div>
@@ -261,7 +264,7 @@ export default function DetailBlockView({ block, onToggle, onLoadMore }: DetailB
         </table>
         {rows.length > 10 && (
           <div className="px-3 py-2 text-[11px] text-[var(--abu-text-muted)] border-t border-[var(--abu-bg-hover)]">
-            {isZh ? `还有 ${rows.length - 10} 行...` : `${rows.length - 10} more rows...`}
+            {format(t.chat.moreRows, { count: rows.length - 10 })}
           </div>
         )}
       </div>
@@ -286,10 +289,10 @@ export default function DetailBlockView({ block, onToggle, onLoadMore }: DetailB
         ) : (
           <ChevronRight className="h-3 w-3" />
         )}
-        {block.label}
+        {headerLabel}
         {block.isTruncated && !localExpanded && (
           <span className="text-[10px] opacity-70">
-            ({block.fullContentLength} {isZh ? '字符' : 'chars'})
+            ({block.fullContentLength} {t.chat.characters})
           </span>
         )}
         {block.type === 'list' && block.parsedItems && (

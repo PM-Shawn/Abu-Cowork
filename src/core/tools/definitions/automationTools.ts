@@ -6,36 +6,40 @@ import { triggerEngine } from '../../trigger/triggerEngine';
 import type { TriggerFilter, TriggerAction, DebounceConfig } from '../../../types/trigger';
 import { addWatchRule, removeWatchRule, toggleWatchRule, listWatchRules, type FileWatchRule } from '../../agent/fileWatcher';
 import { TOOL_NAMES } from '../toolNames';
+import { getI18n, getLocale, format } from '../../../i18n';
+
+/** Locale tag for Date#toLocaleString, following the resolved UI locale. */
+const dateLocale = (): string => (getLocale() === 'zh-CN' ? 'zh-CN' : 'en-US');
 
 export const manageScheduledTaskTool: ToolDefinition = {
   name: TOOL_NAMES.MANAGE_SCHEDULED_TASK,
-  description: '创建、查看、更新、删除、暂停或恢复定时任务。当用户需要定期/定时自动执行某操作时使用。',
+  description: 'Create, list, update, delete, pause, or resume scheduled tasks. Use when the user needs an operation to run automatically on a recurring or timed schedule.',
   inputSchema: {
     type: 'object',
     properties: {
       action: {
         type: 'string',
         enum: ['create', 'list', 'update', 'delete', 'pause', 'resume'],
-        description: '操作类型',
+        description: 'Operation type',
       },
-      name: { type: 'string', description: '任务名称（create/update 时使用）' },
-      description: { type: 'string', description: '任务描述（可选）' },
-      prompt: { type: 'string', description: '每次执行时的指令内容（create/update 时使用）' },
+      name: { type: 'string', description: 'Task name (used for create/update)' },
+      description: { type: 'string', description: 'Task description (optional)' },
+      prompt: { type: 'string', description: 'Instruction to execute each time the task runs (used for create/update)' },
       frequency: {
         type: 'string',
         enum: ['hourly', 'daily', 'weekly', 'weekdays', 'manual'],
-        description: '执行频率',
+        description: 'Execution frequency',
       },
-      time_hour: { type: 'number', description: '小时 0-23' },
-      time_minute: { type: 'number', description: '分钟 0-59' },
-      day_of_week: { type: 'number', description: '星期几 0=周日..6=周六（weekly 时使用）' },
-      skill_name: { type: 'string', description: '绑定技能名称（可选）' },
-      workspace_path: { type: 'string', description: '工作区路径（可选）' },
-      task_id: { type: 'string', description: '任务 ID（update/delete/pause/resume 时必填）' },
+      time_hour: { type: 'number', description: 'Hour 0-23' },
+      time_minute: { type: 'number', description: 'Minute 0-59' },
+      day_of_week: { type: 'number', description: 'Day of week: 0=Sunday … 6=Saturday (used when frequency=weekly)' },
+      skill_name: { type: 'string', description: 'Skill name to bind (optional)' },
+      workspace_path: { type: 'string', description: 'Workspace path (optional)' },
+      task_id: { type: 'string', description: 'Task ID (required for update/delete/pause/resume)' },
       status_filter: {
         type: 'string',
         enum: ['active', 'paused', 'all'],
-        description: '列表过滤条件（list 时使用，默认 all）',
+        description: 'List filter (used with list action, default: all)',
       },
     },
     required: ['action'],
@@ -43,6 +47,8 @@ export const manageScheduledTaskTool: ToolDefinition = {
   execute: async (input) => {
     const action = input.action as string;
     const store = useScheduleStore.getState();
+    const tr = getI18n().toolResult;
+    const t = tr.automation;
 
     switch (action) {
       case 'create': {
@@ -50,17 +56,17 @@ export const manageScheduledTaskTool: ToolDefinition = {
         const prompt = input.prompt as string | undefined;
         const frequency = input.frequency as ScheduleFrequency | undefined;
 
-        if (!name) return 'Error: 缺少任务名称 (name)';
-        if (!prompt) return 'Error: 缺少执行指令 (prompt)';
-        if (!frequency) return 'Error: 缺少执行频率 (frequency)';
+        if (!name) return t.errMissingTaskName;
+        if (!prompt) return t.errMissingPrompt;
+        if (!frequency) return t.errMissingFrequency;
 
         // Duplicate name check — prevent LLM from creating redundant tasks
         const existingTasks = Object.values(store.tasks);
         const duplicate = existingTasks.find(
-          (t) => t.name === name && t.status === 'active'
+          (task) => task.name === name && task.status === 'active'
         );
         if (duplicate) {
-          return `Error: 已存在同名活跃任务「${name}」(ID: ${duplicate.id})，请勿重复创建。如需修改请使用 update 操作。`;
+          return format(t.errDuplicateTask, { name, id: duplicate.id });
         }
 
         // Build time config with defaults
@@ -70,13 +76,13 @@ export const manageScheduledTaskTool: ToolDefinition = {
 
         // Validate ranges
         if (timeHour !== undefined && (timeHour < 0 || timeHour > 23)) {
-          return 'Error: time_hour 必须在 0-23 之间';
+          return t.errTimeHourRange;
         }
         if (timeMinute !== undefined && (timeMinute < 0 || timeMinute > 59)) {
-          return 'Error: time_minute 必须在 0-59 之间';
+          return t.errTimeMinuteRange;
         }
         if (dayOfWeek !== undefined && (dayOfWeek < 0 || dayOfWeek > 6)) {
-          return 'Error: day_of_week 必须在 0-6 之间 (0=周日)';
+          return t.errDayOfWeekRange;
         }
 
         // Default time: 9:00 for daily/weekly/weekdays, 0 minute for hourly
@@ -101,10 +107,10 @@ export const manageScheduledTaskTool: ToolDefinition = {
 
         const task = useScheduleStore.getState().tasks[taskId];
         const nextRun = task?.nextRunAt
-          ? new Date(task.nextRunAt).toLocaleString('zh-CN')
-          : '无';
+          ? new Date(task.nextRunAt).toLocaleString(dateLocale())
+          : tr.valueNone;
 
-        return `成功创建定时任务「${name}」\nID: ${taskId}\n频率: ${frequency}\n下次执行: ${nextRun}`;
+        return format(t.taskCreated, { name, id: taskId, frequency, nextRun });
       }
 
       case 'list': {
@@ -113,30 +119,37 @@ export const manageScheduledTaskTool: ToolDefinition = {
 
         const filtered = filter === 'all'
           ? allTasks
-          : allTasks.filter((t) => t.status === filter);
+          : allTasks.filter((task) => task.status === filter);
 
         if (filtered.length === 0) {
           return filter === 'all'
-            ? '当前没有定时任务。'
-            : `没有${filter === 'active' ? '活跃' : '已暂停'}的定时任务。`;
+            ? t.listEmptyAll
+            : format(t.listEmptyFiltered, { status: filter === 'active' ? tr.statusActive : tr.statusPaused });
         }
 
-        const lines = filtered.map((t) => {
-          const nextRun = t.nextRunAt
-            ? new Date(t.nextRunAt).toLocaleString('zh-CN')
-            : '无';
-          return `- [${t.status === 'active' ? '✅' : '⏸️'}] ${t.name} (ID: ${t.id})\n  频率: ${t.schedule.frequency} | 下次执行: ${nextRun} | 已执行: ${t.totalRuns} 次`;
+        const lines = filtered.map((task) => {
+          const nextRun = task.nextRunAt
+            ? new Date(task.nextRunAt).toLocaleString(dateLocale())
+            : tr.valueNone;
+          return format(t.listItem, {
+            icon: task.status === 'active' ? '✅' : '⏸️',
+            name: task.name,
+            id: task.id,
+            frequency: task.schedule.frequency,
+            nextRun,
+            runs: task.totalRuns,
+          });
         });
 
-        return `定时任务列表 (${filtered.length} 个):\n\n${lines.join('\n')}`;
+        return format(t.listHeader, { count: filtered.length, lines: lines.join('\n') });
       }
 
       case 'update': {
         const taskId = input.task_id as string | undefined;
-        if (!taskId) return 'Error: 缺少 task_id';
+        if (!taskId) return t.errMissingTaskId;
 
         const existing = store.tasks[taskId];
-        if (!existing) return `Error: 找不到任务 (ID: ${taskId})`;
+        if (!existing) return format(t.errTaskNotFound, { id: taskId });
 
         const updateData: Record<string, unknown> = {};
         if (input.name !== undefined) updateData.name = input.name;
@@ -167,51 +180,51 @@ export const manageScheduledTaskTool: ToolDefinition = {
 
         store.updateTask(taskId, updateData as Parameters<typeof store.updateTask>[1]);
 
-        return `成功更新定时任务「${input.name || existing.name}」(ID: ${taskId})`;
+        return format(t.taskUpdated, { name: (input.name as string) || existing.name, id: taskId });
       }
 
       case 'delete': {
         const taskId = input.task_id as string | undefined;
-        if (!taskId) return 'Error: 缺少 task_id';
+        if (!taskId) return t.errMissingTaskId;
 
         const existing = store.tasks[taskId];
-        if (!existing) return `Error: 找不到任务 (ID: ${taskId})`;
+        if (!existing) return format(t.errTaskNotFound, { id: taskId });
 
         const taskName = existing.name;
         store.deleteTask(taskId);
-        return `成功删除定时任务「${taskName}」(ID: ${taskId})`;
+        return format(t.taskDeleted, { name: taskName, id: taskId });
       }
 
       case 'pause': {
         const taskId = input.task_id as string | undefined;
-        if (!taskId) return 'Error: 缺少 task_id';
+        if (!taskId) return t.errMissingTaskId;
 
         const existing = store.tasks[taskId];
-        if (!existing) return `Error: 找不到任务 (ID: ${taskId})`;
-        if (existing.status === 'paused') return `任务「${existing.name}」已经处于暂停状态。`;
+        if (!existing) return format(t.errTaskNotFound, { id: taskId });
+        if (existing.status === 'paused') return format(t.taskAlreadyPaused, { name: existing.name });
 
         store.pauseTask(taskId);
-        return `已暂停定时任务「${existing.name}」(ID: ${taskId})`;
+        return format(t.taskPaused, { name: existing.name, id: taskId });
       }
 
       case 'resume': {
         const taskId = input.task_id as string | undefined;
-        if (!taskId) return 'Error: 缺少 task_id';
+        if (!taskId) return t.errMissingTaskId;
 
         const existing = store.tasks[taskId];
-        if (!existing) return `Error: 找不到任务 (ID: ${taskId})`;
-        if (existing.status === 'active') return `任务「${existing.name}」已经处于活跃状态。`;
+        if (!existing) return format(t.errTaskNotFound, { id: taskId });
+        if (existing.status === 'active') return format(t.taskAlreadyActive, { name: existing.name });
 
         store.resumeTask(taskId);
         const updated = useScheduleStore.getState().tasks[taskId];
         const nextRun = updated?.nextRunAt
-          ? new Date(updated.nextRunAt).toLocaleString('zh-CN')
-          : '无';
-        return `已恢复定时任务「${existing.name}」(ID: ${taskId})\n下次执行: ${nextRun}`;
+          ? new Date(updated.nextRunAt).toLocaleString(dateLocale())
+          : tr.valueNone;
+        return format(t.taskResumed, { name: existing.name, id: taskId, nextRun });
       }
 
       default:
-        return `Error: 未知操作 "${action}"。可用操作: create, list, update, delete, pause, resume`;
+        return format(t.errUnknownAction, { action });
     }
   },
   isConcurrencySafe: false,
@@ -219,72 +232,72 @@ export const manageScheduledTaskTool: ToolDefinition = {
 
 export const manageTriggerTool: ToolDefinition = {
   name: TOOL_NAMES.MANAGE_TRIGGER,
-  description: '创建、查看、更新、删除、暂停或恢复触发器（事件驱动的自动化任务）。当用户需要监听外部事件并自动响应时使用。',
+  description: 'Create, list, update, delete, pause, or resume triggers (event-driven automation tasks). Use when the user needs to listen for external events and respond automatically.',
   inputSchema: {
     type: 'object',
     properties: {
       action: {
         type: 'string',
         enum: ['create', 'list', 'update', 'delete', 'pause', 'resume'],
-        description: '操作类型',
+        description: 'Operation type',
       },
-      name: { type: 'string', description: '触发器名称（create/update 时使用）' },
-      description: { type: 'string', description: '触发器描述（可选）' },
-      prompt: { type: 'string', description: '触发时执行的指令。用 $EVENT_DATA 引用事件数据（create/update 时使用）' },
-      skill_name: { type: 'string', description: '绑定技能名称（可选，如 alert-sop）' },
-      workspace_path: { type: 'string', description: '工作区路径（可选）' },
+      name: { type: 'string', description: 'Trigger name (used for create/update)' },
+      description: { type: 'string', description: 'Trigger description (optional)' },
+      prompt: { type: 'string', description: 'Instruction to execute on trigger. Use $EVENT_DATA to reference event data (used for create/update)' },
+      skill_name: { type: 'string', description: 'Skill name to bind (optional, e.g. alert-sop)' },
+      workspace_path: { type: 'string', description: 'Workspace path (optional)' },
       filter_type: {
         type: 'string',
         enum: ['always', 'keyword', 'regex'],
-        description: '过滤方式（默认 always）',
+        description: 'Filter mode (default: always)',
       },
       filter_keywords: {
         type: 'array',
         items: { type: 'string' },
-        description: '关键词列表（filter_type=keyword 时）',
+        description: 'Keyword list (used when filter_type=keyword)',
       },
-      filter_pattern: { type: 'string', description: '正则表达式（filter_type=regex 时）' },
-      filter_field: { type: 'string', description: '在事件数据的哪个字段上匹配（可选，默认整个 JSON）' },
+      filter_pattern: { type: 'string', description: 'Regular expression (used when filter_type=regex)' },
+      filter_field: { type: 'string', description: 'Which field in the event data to match against (optional, defaults to the entire JSON)' },
       source_type: {
         type: 'string',
         enum: ['http', 'file', 'cron'],
-        description: '触发源类型（默认 http）。file=文件监听，cron=定时轮询',
+        description: 'Trigger source type (default: http). file=file watcher, cron=polling',
       },
-      source_path: { type: 'string', description: '监听的文件或目录路径（source_type=file 时必填）' },
+      source_path: { type: 'string', description: 'File or directory path to watch (required when source_type=file)' },
       source_events: {
         type: 'array',
         items: { type: 'string', enum: ['create', 'modify', 'delete'] },
-        description: '监听的文件事件类型（source_type=file 时使用，默认 ["create"]）',
+        description: 'File event types to listen for (used when source_type=file, default: ["create"])',
       },
-      source_pattern: { type: 'string', description: '文件名 glob 过滤（source_type=file 时可选，如 "*.pdf"）' },
-      source_interval: { type: 'number', description: '轮询间隔秒数（source_type=cron 时必填，最小 10）' },
-      debounce_enabled: { type: 'boolean', description: '是否启用防抖（默认 true）' },
-      debounce_seconds: { type: 'number', description: '防抖时间窗口秒数（默认 300）' },
+      source_pattern: { type: 'string', description: 'Filename glob filter (optional when source_type=file, e.g. "*.pdf")' },
+      source_interval: { type: 'number', description: 'Polling interval in seconds (required when source_type=cron, minimum 10)' },
+      debounce_enabled: { type: 'boolean', description: 'Whether to enable debounce (default: true)' },
+      debounce_seconds: { type: 'number', description: 'Debounce time window in seconds (default: 300)' },
       capability: {
         type: 'string',
         enum: ['read_tools', 'safe_tools', 'full', 'custom'],
-        description: '能力等级（默认 read_tools）。read_tools=只读分析；safe_tools=可读写工作区+安全命令；full=几乎所有操作；custom=自定义白名单',
+        description: 'Capability level (default: read_tools). read_tools=read-only analysis; safe_tools=read/write workspace + safe commands; full=almost all operations; custom=custom allowlist',
       },
       allowed_commands: {
         type: 'array',
         items: { type: 'string' },
-        description: '命令白名单，glob 模式（capability=custom 时使用，如 ["npm run *", "git pull"]）',
+        description: 'Command allowlist, glob patterns (used when capability=custom, e.g. ["npm run *", "git pull"])',
       },
       allowed_paths: {
         type: 'array',
         items: { type: 'string' },
-        description: '路径白名单，运行时自动授权（capability=custom 时使用）',
+        description: 'Path allowlist, auto-authorized at runtime (used when capability=custom)',
       },
       allowed_tools: {
         type: 'array',
         items: { type: 'string' },
-        description: '工具白名单（capability=custom 时使用，如 ["read_file", "http_fetch"]）',
+        description: 'Tool allowlist (used when capability=custom, e.g. ["read_file", "http_fetch"])',
       },
-      trigger_id: { type: 'string', description: '触发器 ID（update/delete/pause/resume 时必填）' },
+      trigger_id: { type: 'string', description: 'Trigger ID (required for update/delete/pause/resume)' },
       status_filter: {
         type: 'string',
         enum: ['active', 'paused', 'all'],
-        description: '列表过滤条件（list 时使用，默认 all）',
+        description: 'List filter (used with list action, default: all)',
       },
     },
     required: ['action'],
@@ -293,22 +306,24 @@ export const manageTriggerTool: ToolDefinition = {
     const action = input.action as string;
     const store = useTriggerStore.getState();
     const serverPort = triggerEngine.getServerPort() ?? 18080;
+    const tr = getI18n().toolResult;
+    const t = tr.automation;
 
     switch (action) {
       case 'create': {
         const name = input.name as string | undefined;
         const prompt = input.prompt as string | undefined;
 
-        if (!name) return 'Error: 缺少触发器名称 (name)';
-        if (!prompt) return 'Error: 缺少执行指令 (prompt)';
+        if (!name) return t.errMissingTriggerName;
+        if (!prompt) return t.errMissingPrompt;
 
         // Duplicate name check
         const existingTriggers = Object.values(store.triggers);
         const duplicate = existingTriggers.find(
-          (t) => t.name === name && t.status === 'active'
+          (trig) => trig.name === name && trig.status === 'active'
         );
         if (duplicate) {
-          return `Error: 已存在同名活跃触发器「${name}」(ID: ${duplicate.id})，请勿重复创建。如需修改请使用 update 操作。`;
+          return format(t.errDuplicateTrigger, { name, id: duplicate.id });
         }
 
         // Build filter
@@ -346,7 +361,7 @@ export const manageTriggerTool: ToolDefinition = {
 
         if (sourceType === 'file') {
           const sourcePath = input.source_path as string | undefined;
-          if (!sourcePath) return 'Error: source_type=file 时必须提供 source_path（监听路径）';
+          if (!sourcePath) return t.errFileNeedsPath;
           const sourceEvents = (input.source_events as string[] | undefined) ?? ['create'];
           source = {
             type: 'file',
@@ -356,7 +371,7 @@ export const manageTriggerTool: ToolDefinition = {
           };
         } else if (sourceType === 'cron') {
           const interval = input.source_interval as number | undefined;
-          if (!interval || interval < 10) return 'Error: source_type=cron 时必须提供 source_interval（最小 10 秒）';
+          if (!interval || interval < 10) return t.errCronNeedsInterval;
           source = { type: 'cron', intervalSeconds: interval };
         } else {
           source = { type: 'http' };
@@ -372,50 +387,51 @@ export const manageTriggerTool: ToolDefinition = {
         });
 
         // Build response based on source type
+        const typeLabel = sourceType === 'file' ? t.sourceFile : sourceType === 'cron' ? t.sourceCron : 'HTTP';
         const resultLines = [
-          `成功创建触发器「${name}」`,
+          format(t.triggerCreatedHeader, { name }),
           `ID: ${triggerId}`,
-          `类型: ${sourceType === 'file' ? '文件监听' : sourceType === 'cron' ? '定时轮询' : 'HTTP'}`,
+          format(t.triggerTypeLine, { type: typeLabel }),
         ];
 
         if (sourceType === 'file' && source.type === 'file') {
           resultLines.push(
-            `监听路径: ${source.path}`,
-            `监听事件: ${source.events.join(', ')}`,
-            source.pattern ? `文件过滤: ${source.pattern}` : '',
+            format(t.watchPathLine, { path: source.path }),
+            format(t.watchEventsLine, { events: source.events.join(', ') }),
+            source.pattern ? format(t.fileFilterLine, { pattern: source.pattern }) : '',
           );
         } else if (sourceType === 'cron' && source.type === 'cron') {
-          resultLines.push(`轮询间隔: ${source.intervalSeconds} 秒`);
+          resultLines.push(format(t.pollIntervalLine, { seconds: source.intervalSeconds }));
         } else {
           const endpoint = `http://localhost:${serverPort}/trigger/${triggerId}`;
           resultLines.push(
-            `HTTP 端点: POST ${endpoint}`,
+            format(t.httpEndpointLine, { endpoint }),
             '',
-            '外部触发命令:',
+            t.externalTriggerCmd,
             `curl -X POST ${endpoint} \\`,
             `  -H "Content-Type: application/json" \\`,
-            `  -d '{"data": {"content": "测试消息"}}'`,
+            `  -d '{"data": {"content": "${t.sampleMessage}"}}'`,
           );
         }
 
         const capLabel = {
-          read_tools: '只读分析',
-          safe_tools: '读写+安全命令',
-          full: '完全自主',
-          custom: '自定义白名单',
-        }[triggerAction.capability ?? 'read_tools'] ?? '只读分析';
+          read_tools: t.capReadTools,
+          safe_tools: t.capSafeTools,
+          full: t.capFull,
+          custom: t.capCustom,
+        }[triggerAction.capability ?? 'read_tools'] ?? t.capReadTools;
 
         resultLines.push(
-          `能力等级: ${capLabel}`,
-          `过滤: ${filterType}${filter.keywords ? ` [${filter.keywords.join(', ')}]` : ''}`,
-          `防抖: ${debounce.enabled ? `${debounce.windowSeconds}秒` : '关闭'}`,
+          format(t.capLevelLine, { label: capLabel }),
+          format(t.filterLine, { filter: `${filterType}${filter.keywords ? ` [${filter.keywords.join(', ')}]` : ''}` }),
+          format(t.debounceLine, { value: debounce.enabled ? format(t.debounceSeconds, { seconds: debounce.windowSeconds }) : t.debounceOff }),
         );
 
         if (triggerAction.capability === 'custom' && triggerAction.permissions) {
           const p = triggerAction.permissions;
-          if (p.allowedCommands?.length) resultLines.push(`允许命令: ${p.allowedCommands.join(', ')}`);
-          if (p.allowedPaths?.length) resultLines.push(`允许路径: ${p.allowedPaths.join(', ')}`);
-          if (p.allowedTools?.length) resultLines.push(`允许工具: ${p.allowedTools.join(', ')}`);
+          if (p.allowedCommands?.length) resultLines.push(format(t.allowCommandsLine, { list: p.allowedCommands.join(', ') }));
+          if (p.allowedPaths?.length) resultLines.push(format(t.allowPathsLine, { list: p.allowedPaths.join(', ') }));
+          if (p.allowedTools?.length) resultLines.push(format(t.allowToolsLine, { list: p.allowedTools.join(', ') }));
         }
 
         return resultLines.filter(Boolean).join('\n');
@@ -427,34 +443,42 @@ export const manageTriggerTool: ToolDefinition = {
 
         const filtered = filter === 'all'
           ? allTriggers
-          : allTriggers.filter((t) => t.status === filter);
+          : allTriggers.filter((trig) => trig.status === filter);
 
         if (filtered.length === 0) {
           return filter === 'all'
-            ? '当前没有触发器。'
-            : `没有${filter === 'active' ? '活跃' : '已暂停'}的触发器。`;
+            ? t.triggerListEmptyAll
+            : format(t.triggerListEmptyFiltered, { status: filter === 'active' ? tr.statusActive : tr.statusPaused });
         }
 
-        const lines = filtered.map((t) => {
-          const lastRun = t.lastTriggeredAt
-            ? new Date(t.lastTriggeredAt).toLocaleString('zh-CN')
-            : '从未';
+        const lines = filtered.map((trig) => {
+          const lastRun = trig.lastTriggeredAt
+            ? new Date(trig.lastTriggeredAt).toLocaleString(dateLocale())
+            : tr.valueNever;
           const sourceLabel =
-            t.source.type === 'file' ? `文件监听: ${t.source.path}` :
-            t.source.type === 'cron' ? `定时轮询: ${t.source.intervalSeconds}秒` :
-            `HTTP 端点: POST http://localhost:${serverPort}/trigger/${t.id}`;
-          return `- [${t.status === 'active' ? '✅' : '⏸️'}] ${t.name} (ID: ${t.id})\n  ${sourceLabel}\n  过滤: ${t.filter.type} | 最近触发: ${lastRun} | 已执行: ${t.totalRuns} 次`;
+            trig.source.type === 'file' ? format(t.triggerSourceFileLabel, { path: trig.source.path }) :
+            trig.source.type === 'cron' ? format(t.triggerSourceCronLabel, { seconds: trig.source.intervalSeconds }) :
+            format(t.triggerSourceHttpLabel, { endpoint: `http://localhost:${serverPort}/trigger/${trig.id}` });
+          return format(t.triggerListItem, {
+            icon: trig.status === 'active' ? '✅' : '⏸️',
+            name: trig.name,
+            id: trig.id,
+            source: sourceLabel,
+            filterType: trig.filter.type,
+            lastRun,
+            runs: trig.totalRuns,
+          });
         });
 
-        return `触发器列表 (${filtered.length} 个):\n\n${lines.join('\n')}`;
+        return format(t.triggerListHeader, { count: filtered.length, lines: lines.join('\n') });
       }
 
       case 'update': {
         const triggerId = input.trigger_id as string | undefined;
-        if (!triggerId) return 'Error: 缺少 trigger_id';
+        if (!triggerId) return t.errMissingTriggerId;
 
         const existing = store.triggers[triggerId];
-        if (!existing) return `Error: 找不到触发器 (ID: ${triggerId})`;
+        if (!existing) return format(t.errTriggerNotFound, { id: triggerId });
 
         const updateData: Record<string, unknown> = {};
         if (input.name !== undefined) updateData.name = input.name;
@@ -491,47 +515,47 @@ export const manageTriggerTool: ToolDefinition = {
         }
 
         store.updateTrigger(triggerId, updateData as Parameters<typeof store.updateTrigger>[1]);
-        return `成功更新触发器「${input.name || existing.name}」(ID: ${triggerId})`;
+        return format(t.triggerUpdated, { name: (input.name as string) || existing.name, id: triggerId });
       }
 
       case 'delete': {
         const triggerId = input.trigger_id as string | undefined;
-        if (!triggerId) return 'Error: 缺少 trigger_id';
+        if (!triggerId) return t.errMissingTriggerId;
 
         const existing = store.triggers[triggerId];
-        if (!existing) return `Error: 找不到触发器 (ID: ${triggerId})`;
+        if (!existing) return format(t.errTriggerNotFound, { id: triggerId });
 
         const triggerName = existing.name;
         store.deleteTrigger(triggerId);
-        return `成功删除触发器「${triggerName}」(ID: ${triggerId})`;
+        return format(t.triggerDeleted, { name: triggerName, id: triggerId });
       }
 
       case 'pause': {
         const triggerId = input.trigger_id as string | undefined;
-        if (!triggerId) return 'Error: 缺少 trigger_id';
+        if (!triggerId) return t.errMissingTriggerId;
 
         const existing = store.triggers[triggerId];
-        if (!existing) return `Error: 找不到触发器 (ID: ${triggerId})`;
-        if (existing.status === 'paused') return `触发器「${existing.name}」已经处于暂停状态。`;
+        if (!existing) return format(t.errTriggerNotFound, { id: triggerId });
+        if (existing.status === 'paused') return format(t.triggerAlreadyPaused, { name: existing.name });
 
         store.setTriggerStatus(triggerId, 'paused');
-        return `已暂停触发器「${existing.name}」(ID: ${triggerId})`;
+        return format(t.triggerPaused, { name: existing.name, id: triggerId });
       }
 
       case 'resume': {
         const triggerId = input.trigger_id as string | undefined;
-        if (!triggerId) return 'Error: 缺少 trigger_id';
+        if (!triggerId) return t.errMissingTriggerId;
 
         const existing = store.triggers[triggerId];
-        if (!existing) return `Error: 找不到触发器 (ID: ${triggerId})`;
-        if (existing.status === 'active') return `触发器「${existing.name}」已经处于活跃状态。`;
+        if (!existing) return format(t.errTriggerNotFound, { id: triggerId });
+        if (existing.status === 'active') return format(t.triggerAlreadyActive, { name: existing.name });
 
         store.setTriggerStatus(triggerId, 'active');
-        return `已恢复触发器「${existing.name}」(ID: ${triggerId})`;
+        return format(t.triggerResumed, { name: existing.name, id: triggerId });
       }
 
       default:
-        return `Error: 未知操作 "${action}"。可用操作: create, list, update, delete, pause, resume`;
+        return format(t.errUnknownAction, { action });
     }
   },
   isConcurrencySafe: false,
@@ -539,45 +563,53 @@ export const manageTriggerTool: ToolDefinition = {
 
 export const manageFileWatchTool: ToolDefinition = {
   name: TOOL_NAMES.MANAGE_FILE_WATCH,
-  description: '管理文件监听规则。当检测到目录中的文件变化时，自动触发后台任务。',
+  description: 'Manage file watch rules. Automatically triggers background tasks when file changes are detected in a directory.',
   inputSchema: {
     type: 'object',
     properties: {
       action: {
         type: 'string',
-        description: '操作类型',
+        description: 'Operation type',
         enum: ['add', 'remove', 'toggle', 'list'],
       },
       // For 'add'
-      path: { type: 'string', description: '监听的目录路径（add 时必填）' },
-      pattern: { type: 'string', description: '文件名过滤，如 "*.pdf"、"*.xlsx"（可选）' },
-      event: { type: 'string', description: '监听事件类型: create / modify / any（默认 any）', enum: ['create', 'modify', 'any'] },
-      prompt: { type: 'string', description: '触发时的提示词，支持 {filePath} 和 {fileName} 占位符（add 时必填）' },
-      skill_name: { type: 'string', description: '触发时使用的技能名称（可选）' },
+      path: { type: 'string', description: 'Directory path to watch (required for add)' },
+      pattern: { type: 'string', description: 'Filename filter, e.g. "*.pdf", "*.xlsx" (optional)' },
+      event: { type: 'string', description: 'Event type to listen for: create / modify / any (default: any)', enum: ['create', 'modify', 'any'] },
+      prompt: { type: 'string', description: 'Prompt to run on trigger. Supports {filePath} and {fileName} placeholders (required for add)' },
+      skill_name: { type: 'string', description: 'Skill name to use when triggered (optional)' },
       // For 'remove' / 'toggle'
-      rule_id: { type: 'string', description: '规则 ID（remove/toggle 时必填）' },
+      rule_id: { type: 'string', description: 'Rule ID (required for remove/toggle)' },
     },
     required: ['action'],
   },
   execute: async (input) => {
     const action = input.action as string;
+    const t = getI18n().toolResult.automation;
 
     try {
       switch (action) {
         case 'list': {
           const rules = await listWatchRules();
-          if (rules.length === 0) return '当前没有文件监听规则。';
+          if (rules.length === 0) return t.fwListEmpty;
           const lines = rules.map((r) => {
-            const status = r.enabled ? (r.active ? '运行中' : '已启用') : '已禁用';
+            const status = r.enabled ? (r.active ? t.fwStatusRunning : t.fwStatusEnabled) : t.fwStatusDisabled;
             const patternStr = r.pattern ? ` (${r.pattern})` : '';
-            return `- [${status}] ${r.id}: ${r.path}${patternStr} → ${r.event} → "${r.prompt}"`;
+            return format(t.fwListItem, {
+              status,
+              id: r.id,
+              path: r.path,
+              pattern: patternStr,
+              event: r.event,
+              prompt: r.prompt,
+            });
           });
-          return `文件监听规则 (${rules.length}):\n${lines.join('\n')}`;
+          return format(t.fwListHeader, { count: rules.length, lines: lines.join('\n') });
         }
         case 'add': {
           const path = input.path as string;
           const prompt = input.prompt as string;
-          if (!path || !prompt) return '错误：add 操作需要 path 和 prompt。';
+          if (!path || !prompt) return t.fwErrAddNeeds;
           const rule: FileWatchRule = {
             id: Date.now().toString(36) + Math.random().toString(36).substring(2, 8),
             path,
@@ -588,22 +620,22 @@ export const manageFileWatchTool: ToolDefinition = {
             enabled: true,
           };
           await addWatchRule(rule);
-          return `已创建文件监听规则 ${rule.id}，监听 ${path}。`;
+          return format(t.fwRuleCreated, { id: rule.id, path });
         }
         case 'remove': {
           const ruleId = input.rule_id as string;
-          if (!ruleId) return '错误：remove 操作需要 rule_id。';
+          if (!ruleId) return t.fwErrRemoveNeeds;
           await removeWatchRule(ruleId);
-          return `已删除规则 ${ruleId}。`;
+          return format(t.fwRuleRemoved, { id: ruleId });
         }
         case 'toggle': {
           const ruleId = input.rule_id as string;
-          if (!ruleId) return '错误：toggle 操作需要 rule_id。';
+          if (!ruleId) return t.fwErrToggleNeeds;
           await toggleWatchRule(ruleId);
-          return `已切换规则 ${ruleId} 的启用状态。`;
+          return format(t.fwRuleToggled, { id: ruleId });
         }
         default:
-          return `未知操作: ${action}`;
+          return format(t.fwUnknownAction, { action });
       }
     } catch (err) {
       return `Error: ${err instanceof Error ? err.message : String(err)}`;

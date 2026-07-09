@@ -1,5 +1,6 @@
 // src/components/settings/sections/EnterpriseSection.tsx
 import { useState } from 'react'
+import { useI18n } from '@/i18n'
 import { useEnterpriseStore } from '@/stores/enterpriseStore'
 import { MountPoint } from '@/core/enterprise/mounts'
 import { getEnterpriseMount } from '@/core/enterprise/mounts-registry'
@@ -11,6 +12,7 @@ import BindToEnterpriseFlow from '@/components/enterprise/BindToEnterpriseFlow'
 // this file never imports enterprise UI directly.
 
 export default function EnterpriseSection() {
+  const { t } = useI18n()
   const mode = useEnterpriseStore(s => s.mode)
   const unbind = useEnterpriseStore(s => s.unbind)
   const [showBind, setShowBind] = useState(false)
@@ -21,17 +23,17 @@ export default function EnterpriseSection() {
     return (
       <div className="space-y-4">
         <div>
-          <h2 className="text-base font-semibold text-[var(--abu-text-primary)] mb-1">企业模式</h2>
+          <h2 className="text-base font-semibold text-[var(--abu-text-primary)] mb-1">{t.enterprise.title}</h2>
           <p className="text-sm text-[var(--abu-text-tertiary)]">
-            绑定到你公司的 Abu 企业实例，使用统一的 LLM 网关、Skill 和 MCP 资源。
+            {t.enterprise.description}
           </p>
         </div>
         <section className="space-y-3 rounded-xl border border-[var(--abu-border)] p-4">
-          <h3 className="text-sm font-medium text-[var(--abu-text-primary)]">绑定企业实例</h3>
+          <h3 className="text-sm font-medium text-[var(--abu-text-primary)]">{t.enterprise.bindSectionTitle}</h3>
           <p className="text-xs text-[var(--abu-text-tertiary)]">
-            绑定后将切换到企业模式，个人模式下的数据仍保留在本机，解绑后可恢复访问。
+            {t.enterprise.bindSectionDesc}
           </p>
-          <Button size="sm" onClick={() => setShowBind(true)}>切换到企业模式</Button>
+          <Button size="sm" onClick={() => setShowBind(true)}>{t.enterprise.bindButton}</Button>
         </section>
         {showBind && (
           <BindToEnterpriseFlow
@@ -53,27 +55,27 @@ export default function EnterpriseSection() {
     <div className="space-y-4">
       <div>
         <h2 className="text-base font-semibold text-[var(--abu-text-primary)] mb-1">
-          企业模式
+          {t.enterprise.title}
           {mode.kind === 'offline' && (
-            <span className="ml-2 text-xs text-amber-400 font-normal">· 离线</span>
+            <span className="ml-2 text-xs text-amber-400 font-normal">{t.enterprise.offlineBadge}</span>
           )}
         </h2>
-        <p className="text-sm text-[var(--abu-text-tertiary)]">已绑定到企业实例</p>
+        <p className="text-sm text-[var(--abu-text-tertiary)]">{t.enterprise.boundStatus}</p>
       </div>
 
       <section className="space-y-3 rounded-xl border border-[var(--abu-border)] p-4">
         <MountPoint slot="brandSlot" binding={binding} config={config} size="md" />
         <dl className="mt-3 space-y-2 text-sm">
           <div className="flex justify-between">
-            <dt className="text-[var(--abu-text-tertiary)]">实例</dt>
+            <dt className="text-[var(--abu-text-tertiary)]">{t.enterprise.instanceLabel}</dt>
             <dd className="text-[var(--abu-text-primary)] font-mono text-xs">{binding?.serverUrl}</dd>
           </div>
           <div className="flex justify-between">
-            <dt className="text-[var(--abu-text-tertiary)]">登录身份</dt>
+            <dt className="text-[var(--abu-text-tertiary)]">{t.enterprise.loginIdentityLabel}</dt>
             <dd className="text-[var(--abu-text-primary)]">{binding?.userEmail}</dd>
           </div>
           <div className="flex justify-between">
-            <dt className="text-[var(--abu-text-tertiary)]">绑定时间</dt>
+            <dt className="text-[var(--abu-text-tertiary)]">{t.enterprise.boundAtLabel}</dt>
             <dd className="text-[var(--abu-text-primary)]">{binding?.boundAt?.slice(0, 10)}</dd>
           </div>
           {config?.licenseStatus && (
@@ -90,9 +92,9 @@ export default function EnterpriseSection() {
       {/* /me transparency panel */}
       <section className="space-y-2">
         <div className="flex items-center justify-between">
-          <h3 className="text-sm font-medium text-[var(--abu-text-primary)]">我的数据</h3>
+          <h3 className="text-sm font-medium text-[var(--abu-text-primary)]">{t.enterprise.myDataTitle}</h3>
           <Button variant="ghost" size="sm" onClick={() => setShowMe(v => !v)}>
-            {showMe ? '收起' : '查看我的数据'}
+            {showMe ? t.enterprise.collapseData : t.enterprise.viewMyData}
           </Button>
         </div>
         {showMe && binding && (
@@ -103,13 +105,13 @@ export default function EnterpriseSection() {
       {/* Personal-to-enterprise migration */}
       <section className="space-y-2">
         <div className="flex items-center justify-between">
-          <h3 className="text-sm font-medium text-[var(--abu-text-primary)]">数据迁移</h3>
+          <h3 className="text-sm font-medium text-[var(--abu-text-primary)]">{t.enterprise.migrationTitle}</h3>
           <Button variant="ghost" size="sm" onClick={() => setShowMigration(true)}>
-            从个人版迁移数据
+            {t.enterprise.migrateButton}
           </Button>
         </div>
         <p className="text-xs text-[var(--abu-text-tertiary)]">
-          将本地个人版的 Skills 和记忆上传到企业版，原数据保留不删除。
+          {t.enterprise.migrateDescription}
         </p>
       </section>
 
@@ -117,12 +119,12 @@ export default function EnterpriseSection() {
         variant="destructive"
         size="sm"
         onClick={() => {
-          if (confirm('解绑后将回到个人模式，企业 Skill / 用量将不再可见。确定解绑？')) {
+          if (confirm(t.enterprise.unbindConfirm)) {
             void unbind()
           }
         }}
       >
-        解绑企业实例
+        {t.enterprise.unbindButton}
       </Button>
 
       {showMigration && <MigrationWizard onClose={() => setShowMigration(false)} />}

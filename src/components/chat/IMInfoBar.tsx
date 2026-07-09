@@ -125,7 +125,7 @@ export default function IMInfoBar({ conversation }: IMInfoBarProps) {
             {chatName && (
               <div className="flex items-center gap-2 px-3 py-1.5 text-[12px]">
                 <Hash className="h-3.5 w-3.5 text-[var(--abu-text-muted)] shrink-0" />
-                <span className="text-[var(--abu-text-muted)] shrink-0">群组</span>
+                <span className="text-[var(--abu-text-muted)] shrink-0">{t.imChannel.infoBarGroup}</span>
                 <span className="text-[var(--abu-text-primary)] ml-auto truncate max-w-[120px]">{chatName}</span>
               </div>
             )}

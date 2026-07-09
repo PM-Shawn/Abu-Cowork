@@ -10,6 +10,7 @@ exports[`System prompt section structure > general mode section names match snap
   "memory-mgmt",
   "browser-guide",
   "agent-role",
+  "response-language",
   "safety-anchor",
 ]
 `;

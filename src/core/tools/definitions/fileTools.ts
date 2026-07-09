@@ -17,6 +17,7 @@ import {
   type CommandOutput,
 } from '../helpers/toolHelpers';
 import { TOOL_NAMES } from '../toolNames';
+import { getI18n, format } from '../../../i18n';
 
 /**
  * Simple pessimistic file lock for concurrent agent safety.
@@ -61,7 +62,7 @@ function formatSize(bytes: number): string {
 
 export const readFileTool: ToolDefinition = {
   name: TOOL_NAMES.READ_FILE,
-  description: '读取文件内容。支持文本文件、图片（png/jpg/gif/webp，返回视觉内容）、PDF（提取文字）、Office 文档（.docx/.xlsx/.pptx，提取文字）和压缩包（.zip/.tar.gz，列出内容）。文本文件支持 offset（起始行号）和 limit（读取行数）参数进行分段读取。',
+  description: 'Read file contents. Supports text files, images (png/jpg/gif/webp — returns visual content), PDFs (text extraction), Office documents (.docx/.xlsx/.pptx — text extraction), and archives (.zip/.tar.gz — lists contents). Text files support offset (start line) and limit (line count) parameters for paginated reading.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -86,7 +87,7 @@ export const readFileTool: ToolDefinition = {
         // GLM: "messages.content.type 取值范围 ['text']"). Skip the read and
         // return a text note so the model can inform the user gracefully.
         if (context?.supportsVision === false) {
-          return `[图片文件 ${filePath}（${mediaType}）：当前模型无视觉能力，未读取图像内容。如需分析图片，请切换到支持视觉的模型（如 Claude / GPT-4o）。]`;
+          return format(getI18n().toolResult.file.imageSkipNoVision, { path: filePath, mediaType });
         }
         const bytes = new Uint8Array(await readBinFile(filePath));
         const { data, resized } = await resizeImageIfNeeded(bytes, 1280);
@@ -184,7 +185,7 @@ export const readFileTool: ToolDefinition = {
 
 export const writeFileTool: ToolDefinition = {
   name: TOOL_NAMES.WRITE_FILE,
-  description: '将内容写入文件。文件不存在则创建，已存在则覆盖。仅用于创建新文件；已存在文件的局部修改必须用 edit_file（整覆盖会丢失未明确修改的 section）。仅支持纯文本，不能创建二进制文件（.docx/.xlsx 等）。',
+  description: 'Write content to a file. Creates the file if it does not exist; overwrites if it does. Use only for creating new files — partial edits to existing files must use edit_file (full overwrite will lose sections not explicitly changed). Supports plain text only; cannot create binary files (.docx/.xlsx etc.).',
   inputSchema: {
     type: 'object',
     properties: {
@@ -208,7 +209,7 @@ export const writeFileTool: ToolDefinition = {
     // File lock: prevent concurrent writes from different agents
     const lockConflict = acquireFileLock(path, context?.loopId);
     if (lockConflict) {
-      return `Error: ${path} 正在被其他代理编辑，请稍后重试。`;
+      return format(getI18n().toolResult.file.errFileLocked, { path });
     }
 
     try {
@@ -231,7 +232,7 @@ export const writeFileTool: ToolDefinition = {
 
 export const editFileTool: ToolDefinition = {
   name: TOOL_NAMES.EDIT_FILE,
-  description: '通过精确匹配替换来编辑文件。局部修改文件时使用，比 write_file 更安全。old_content 必须与文件中的文本完全匹配（包括空白和缩进）。',
+  description: 'Edit a file via exact-match replacement. Use for partial file edits; safer than write_file. old_content must exactly match the text in the file, including whitespace and indentation.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -249,7 +250,7 @@ export const editFileTool: ToolDefinition = {
     // File lock: prevent concurrent edits from different agents
     const lockConflict = acquireFileLock(path, context?.loopId);
     if (lockConflict) {
-      return `Error: ${path} 正在被其他代理编辑，请稍后重试。`;
+      return format(getI18n().toolResult.file.errFileLocked, { path });
     }
 
     try {
@@ -310,7 +311,7 @@ export const editFileTool: ToolDefinition = {
 
 export const listDirectoryTool: ToolDefinition = {
   name: TOOL_NAMES.LIST_DIRECTORY,
-  description: '列出目录内容。返回文件和子目录名称及类型，按字母排序。',
+  description: 'List directory contents. Returns file and subdirectory names with their types, sorted alphabetically.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -344,7 +345,7 @@ export const listDirectoryTool: ToolDefinition = {
 
 export const searchFilesTool: ToolDefinition = {
   name: TOOL_NAMES.SEARCH_FILES,
-  description: '在目录中搜索文件内容（类似 grep）。搜索文件内容用这个，搜索文件名用 find_files。返回匹配行及其文件路径和行号。',
+  description: 'Search file contents in a directory (similar to grep). Use this to search file contents; use find_files to search by file name. Returns matching lines with their file paths and line numbers.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -415,7 +416,7 @@ export const searchFilesTool: ToolDefinition = {
 
 export const findFilesTool: ToolDefinition = {
   name: TOOL_NAMES.FIND_FILES,
-  description: '按文件名模式查找文件（类似 find 命令）。搜索文件名用这个，搜索文件内容用 search_files。返回匹配的文件路径列表。',
+  description: 'Find files by name pattern (similar to the find command). Use this to search by file name; use search_files to search file contents. Returns a list of matching file paths.',
   inputSchema: {
     type: 'object',
     properties: {

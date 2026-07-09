@@ -13,10 +13,14 @@ const STOP_BTN_WIDTH: f64 = 160.0;
 const STOP_BTN_HEIGHT: f64 = 40.0;
 
 /// Show the screen border overlay + stop button. Creates windows if they don't exist.
+///
+/// `stop_label` is the already-localized stop-button caption, resolved by the
+/// frontend (which owns the UI locale) and injected into the standalone overlay
+/// HTML — which lives outside the React i18n tree — as `window.__CU_I18N__`.
 #[tauri::command]
-pub fn show_screen_border(app: AppHandle) -> Result<(), String> {
+pub fn show_screen_border(app: AppHandle, stop_label: String) -> Result<(), String> {
     show_overlay(&app)?;
-    show_stop_button(&app)?;
+    show_stop_button(&app, &stop_label)?;
     Ok(())
 }
 
@@ -130,11 +134,17 @@ fn show_overlay(app: &AppHandle) -> Result<(), String> {
 
 // ─── Internal: stop button window ───
 
-fn show_stop_button(app: &AppHandle) -> Result<(), String> {
+fn show_stop_button(app: &AppHandle, stop_label: &str) -> Result<(), String> {
     if let Some(window) = app.get_webview_window(STOP_BTN_LABEL) {
         let _ = window.show();
         return Ok(());
     }
+
+    // Inject the localized caption before the page loads so the dumb HTML can
+    // display it without any i18n logic of its own. serde_json produces a safely
+    // escaped JS string literal.
+    let stop_label_json = serde_json::to_string(stop_label).unwrap_or_else(|_| "\"\"".to_string());
+    let init_script = format!("window.__CU_I18N__ = {{ stopControl: {} }};", stop_label_json);
 
     let monitor = app
         .primary_monitor()
@@ -155,6 +165,7 @@ fn show_stop_button(app: &AppHandle) -> Result<(), String> {
         WebviewUrl::App("stop-button.html".into()),
     )
     .title("")
+    .initialization_script(&init_script)
     .inner_size(STOP_BTN_WIDTH, STOP_BTN_HEIGHT)
     .position(btn_x, btn_y)
     .decorations(false)

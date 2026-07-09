@@ -194,10 +194,10 @@ describe('runWithConcurrency', () => {
     expect(results[1].status).toBe('rejected');
     expect(results[2].status).toBe('rejected');
     if (results[1].status === 'rejected') {
-      expect((results[1].reason as Error).message).toBe('已取消');
+      expect((results[1].reason as Error).message).toBe('Cancelled');
     }
     if (results[2].status === 'rejected') {
-      expect((results[2].reason as Error).message).toBe('已取消');
+      expect((results[2].reason as Error).message).toBe('Cancelled');
     }
   });
 });
@@ -207,29 +207,29 @@ describe('runWithConcurrency', () => {
 describe('aggregateBatchResults', () => {
   it('handles empty array', () => {
     const result = aggregateBatchResults([]);
-    expect(result).toBe('共 0 个子任务，成功 0，失败 0');
+    expect(result).toBe('0 sub-tasks total: 0 succeeded, 0 failed');
   });
 
-  it('ok-only: header shows all success, sections have no [失败] prefix', () => {
+  it('ok-only: header shows all success, sections have no [Failed] prefix', () => {
     const result = aggregateBatchResults([
-      { label: '调研主题A', status: 'ok', text: '结果A' },
-      { label: '调研主题B', status: 'ok', text: '结果B' },
+      { label: 'Topic A', status: 'ok', text: 'Result A' },
+      { label: 'Topic B', status: 'ok', text: 'Result B' },
     ]);
-    expect(result).toContain('共 2 个子任务，成功 2，失败 0');
-    expect(result).toContain('### 子任务 1: 调研主题A');
-    expect(result).toContain('结果A');
-    expect(result).toContain('### 子任务 2: 调研主题B');
-    expect(result).toContain('结果B');
-    expect(result).not.toContain('[失败]');
+    expect(result).toContain('2 sub-tasks total: 2 succeeded, 0 failed');
+    expect(result).toContain('### Sub-task 1: Topic A');
+    expect(result).toContain('Result A');
+    expect(result).toContain('### Sub-task 2: Topic B');
+    expect(result).toContain('Result B');
+    expect(result).not.toContain('[Failed]');
   });
 
-  it('error-only: header shows all failures, sections have [失败] prefix', () => {
+  it('error-only: header shows all failures, sections have [Failed] prefix', () => {
     const result = aggregateBatchResults([
-      { label: '任务X', status: 'error', text: 'timeout' },
+      { label: 'Task X', status: 'error', text: 'timeout' },
     ]);
-    expect(result).toContain('共 1 个子任务，成功 0，失败 1');
-    expect(result).toContain('### 子任务 1: 任务X');
-    expect(result).toContain('[失败] timeout');
+    expect(result).toContain('1 sub-tasks total: 0 succeeded, 1 failed');
+    expect(result).toContain('### Sub-task 1: Task X');
+    expect(result).toContain('[Failed] timeout');
   });
 
   it('mixed: correct success/failure counts in header', () => {
@@ -238,12 +238,12 @@ describe('aggregateBatchResults', () => {
       { label: 'bad-task', status: 'error', text: 'crashed' },
       { label: 'ok-task2', status: 'ok', text: 'also done' },
     ]);
-    expect(result).toContain('共 3 个子任务，成功 2，失败 1');
-    expect(result).toContain('### 子任务 1: ok-task');
+    expect(result).toContain('3 sub-tasks total: 2 succeeded, 1 failed');
+    expect(result).toContain('### Sub-task 1: ok-task');
     expect(result).toContain('done');
-    expect(result).toContain('### 子任务 2: bad-task');
-    expect(result).toContain('[失败] crashed');
-    expect(result).toContain('### 子任务 3: ok-task2');
+    expect(result).toContain('### Sub-task 2: bad-task');
+    expect(result).toContain('[Failed] crashed');
+    expect(result).toContain('### Sub-task 3: ok-task2');
     expect(result).toContain('also done');
   });
 
@@ -258,7 +258,7 @@ describe('aggregateBatchResults', () => {
 
   it('header is the first line of output', () => {
     const result = aggregateBatchResults([{ label: 'X', status: 'ok', text: 'out' }]);
-    expect(result.startsWith('共 1 个子任务')).toBe(true);
+    expect(result.startsWith('1 sub-tasks total')).toBe(true);
   });
 });
 
@@ -351,19 +351,19 @@ describe('runWithTimeout', () => {
     // Pre-attach the rejection handler BEFORE advancing the timer so the
     // promise is always "handled" when the timeout fires. Advancing the timer
     // AFTER attaching avoids Vitest / Node unhandledRejection events.
-    const assertion = expect(racePromise).rejects.toThrow('超时');
+    const assertion = expect(racePromise).rejects.toThrow('timed out');
     await vi.advanceTimersByTimeAsync(5000);
     await assertion;
     expect(capturedSignal?.aborted).toBe(true);
   });
 
-  it('(b) error message contains the full Chinese timeout string', async () => {
+  it('(b) error message contains the full timeout string', async () => {
     const racePromise = runWithTimeout(
       () => new Promise<never>(() => {}),
       3000,
     );
     // Pre-attach before advancing timer.
-    const assertion = expect(racePromise).rejects.toThrow('子代理执行超时（已中止）');
+    const assertion = expect(racePromise).rejects.toThrow('Sub-agent execution timed out (aborted)');
     await vi.advanceTimersByTimeAsync(3000);
     await assertion;
   });

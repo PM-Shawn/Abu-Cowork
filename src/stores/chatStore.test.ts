@@ -4,6 +4,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { useChatStore, flushTokenBuffer } from './chatStore';
 import type { Conversation } from '../types';
 import { createDocReference } from '@/types/chatReference';
+import { getI18n } from '../i18n';
 
 // Stable workspace store mock — Task #34 regression tests need to assert
 // that clearWorkspace is NOT called on start/switch flows, so the fn
@@ -58,7 +59,7 @@ describe('chatStore', () => {
       const id = useChatStore.getState().createConversation();
       const state = useChatStore.getState();
       expect(state.conversations[id]).toBeDefined();
-      expect(state.conversations[id].title).toBe('新任务');
+      expect(state.conversations[id].title).toBe(getI18n().chatDefaults.newConversationTitle);
       expect(state.activeConversationId).toBe(id);
     });
 

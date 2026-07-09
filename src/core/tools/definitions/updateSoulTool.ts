@@ -2,33 +2,35 @@ import type { ToolDefinition } from '../../../types';
 import { saveSoul } from '../../agent/soulConfig';
 import { useSettingsStore } from '../../../stores/settingsStore';
 import { TOOL_NAMES } from '../toolNames';
+import { getI18n, format } from '../../../i18n';
 
 export const updateSoulTool: ToolDefinition = {
   name: TOOL_NAMES.UPDATE_SOUL,
-  description: '更新你的性格设定。当用户要求你调整性格或沟通风格时调用此工具。写入完整内容（不是增量），会替换现有设定。',
+  description: 'Update your personality configuration. Call this tool when the user asks you to adjust your personality or communication style. Writes the full content (not a delta) — replaces the existing configuration.',
   inputSchema: {
     type: 'object',
     properties: {
       content: {
         type: 'string',
-        description: '完整的性格设定内容（markdown 格式）',
+        description: 'Complete personality configuration content (markdown format)',
       },
     },
     required: ['content'],
   },
   execute: async (input) => {
+    const tu = getI18n().toolResult.updateSoul;
     const content = (input.content as string || '').trim();
     if (!content) {
-      return '错误：性格设定内容不能为空。';
+      return tu.errContentEmpty;
     }
 
     try {
       await saveSoul(content);
       // Mark soul as initialized (bootstrap won't trigger again)
       useSettingsStore.getState().setSoulInitialized(true);
-      return '性格设定已更新，下次新对话生效。';
+      return tu.updated;
     } catch (err) {
-      return `更新失败: ${err instanceof Error ? err.message : String(err)}`;
+      return format(tu.updateFailed, { error: err instanceof Error ? err.message : String(err) });
     }
   },
 };

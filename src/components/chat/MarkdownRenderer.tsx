@@ -13,7 +13,6 @@ import { useState, memo, useMemo, useCallback, Suspense, type ReactNode } from '
 import { Copy, Check, Download, ChevronDown, ChevronUp } from 'lucide-react';
 import { useI18n, format } from '@/i18n';
 import { useSettingsStore } from '@/stores/settingsStore';
-import { cn } from '@/lib/utils';
 import type { SearchResult } from '@/types';
 
 import { getCodeBlockRenderer } from './codeBlockRenderers';
@@ -309,7 +308,7 @@ function buildMarkdownComponents(
         return (
           <code
             className={isUser
-              ? 'px-1 py-0.5 rounded bg-white/15 text-white text-[0.9em]'
+              ? 'px-1 py-0.5 rounded bg-[var(--abu-bg-pressed)] text-[var(--abu-text-primary)] text-[0.9em]'
               : 'px-1 py-0.5 rounded bg-[var(--abu-bg-active)] text-[var(--abu-text-secondary)] text-[0.9em]'
             }
             {...props}
@@ -350,13 +349,13 @@ function buildMarkdownComponents(
       return <p className={isUser ? 'my-1 leading-relaxed text-[14.5px]' : 'my-2 leading-7 text-[15px] text-[var(--abu-text-secondary)]'}>{processChildren(children, sr, onCitationClick)}</p>;
     },
     h1({ children }: { children?: ReactNode }) {
-      return <h1 className={cn('text-xl font-semibold mt-5 mb-2', isUser ? 'text-white' : 'text-[var(--abu-text-primary)]')}>{children}</h1>;
+      return <h1 className="text-xl font-semibold mt-5 mb-2 text-[var(--abu-text-primary)]">{children}</h1>;
     },
     h2({ children }: { children?: ReactNode }) {
-      return <h2 className={cn('text-lg font-semibold mt-4 mb-2', isUser ? 'text-white' : 'text-[var(--abu-text-primary)]')}>{children}</h2>;
+      return <h2 className="text-lg font-semibold mt-4 mb-2 text-[var(--abu-text-primary)]">{children}</h2>;
     },
     h3({ children }: { children?: ReactNode }) {
-      return <h3 className={cn('text-base font-semibold mt-3 mb-1', isUser ? 'text-white' : 'text-[var(--abu-text-primary)]')}>{children}</h3>;
+      return <h3 className="text-base font-semibold mt-3 mb-1 text-[var(--abu-text-primary)]">{children}</h3>;
     },
     ul({ children }: { children?: ReactNode }) {
       return <ul className="my-2 pl-6 list-outside list-disc space-y-1">{children}</ul>;
@@ -369,7 +368,7 @@ function buildMarkdownComponents(
     },
     blockquote({ children }: { children?: ReactNode }) {
       return (
-        <blockquote className={cn('my-3 pl-3 border-l-2 italic', isUser ? 'border-white/40 text-white/80' : 'border-orange-300 text-[var(--abu-text-tertiary)]')}>
+        <blockquote className="my-3 pl-3 border-l-2 italic border-orange-300 text-[var(--abu-text-tertiary)]">
           {children}
         </blockquote>
       );
@@ -384,7 +383,7 @@ function buildMarkdownComponents(
       );
     },
     strong({ children }: { children?: ReactNode }) {
-      return <strong className={cn('font-semibold', isUser ? 'text-white' : 'text-[var(--abu-text-primary)]')}>{children}</strong>;
+      return <strong className="font-semibold text-[var(--abu-text-primary)]">{children}</strong>;
     },
     table({ children }: { children?: ReactNode }) {
       return (
@@ -403,7 +402,7 @@ function buildMarkdownComponents(
       return <td className="px-3 py-2 text-[var(--abu-text-secondary)]">{children}</td>;
     },
     hr() {
-      return <hr className={cn('my-4', isUser ? 'border-white/30' : 'border-[var(--abu-border)]')} />;
+      return <hr className="my-4 border-[var(--abu-border)]" />;
     },
   };
 }

@@ -25,7 +25,8 @@ export default function MarketplaceCard({
   onToggleEnabled,
   onClick,
 }: MarketplaceCardProps) {
-  const { t } = useI18n();
+  const { t, locale } = useI18n();
+  const pick = (zh: string, en?: string) => (locale.startsWith('zh') ? zh : (en ?? zh));
 
   return (
     <div
@@ -45,11 +46,11 @@ export default function MarketplaceCard({
             {item.category}
           </span>
         </div>
-        <p className="text-xs text-[var(--abu-text-tertiary)] mt-1 line-clamp-2">{item.description}</p>
+        <p className="text-xs text-[var(--abu-text-tertiary)] mt-1 line-clamp-2">{pick(item.description, item.descriptionEn)}</p>
       </div>
       <div className="flex items-center justify-between mt-2">
         <div className="flex items-center gap-2">
-          <p className="text-[10px] text-[var(--abu-text-muted)]">by {item.author}</p>
+          <p className="text-[10px] text-[var(--abu-text-muted)]">by {pick(item.author, item.authorEn)}</p>
           {isInstalled && onToggleEnabled && (
             <Toggle checked={isEnabled} onChange={onToggleEnabled} />
           )}

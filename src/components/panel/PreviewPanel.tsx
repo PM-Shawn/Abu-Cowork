@@ -87,7 +87,7 @@ export default function PreviewPanel() {
   const [htmlViewMode, setHtmlViewMode] = useState<'preview' | 'source'>('preview');
 
   const rendererType = previewFilePath ? getRendererType(previewFilePath) : 'unsupported';
-  const fileName = previewFilePath && isDataUrl(previewFilePath) ? '图片预览' : (previewFilePath ? getBaseName(previewFilePath) : '');
+  const fileName = previewFilePath && isDataUrl(previewFilePath) ? t.panel.imagePreview : (previewFilePath ? getBaseName(previewFilePath) : '');
   const Icon = previewFilePath ? (isDataUrl(previewFilePath) ? FileImage : getFileIcon(previewFilePath)) : File;
 
   useEffect(() => {

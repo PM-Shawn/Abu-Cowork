@@ -8,6 +8,7 @@ import { immer } from 'zustand/middleware/immer';
 import { persist } from 'zustand/middleware';
 import { useShallow } from 'zustand/react/shallow';
 import { TOOL_NAMES } from '@/core/tools/toolNames';
+import { getI18n, format } from '@/i18n';
 
 export type ScratchpadEntryType = 'extraction' | 'analysis' | 'search' | 'summary' | 'preview';
 
@@ -195,19 +196,25 @@ export function generateScratchpadTitle(
   const fileName = path ? path.split(/[/\\]/).pop() : undefined;
   const query = (toolInput.query || toolInput.pattern) as string | undefined;
 
+  const s = getI18n().scratchpad;
   switch (type) {
     case 'extraction':
-      return fileName ? `${fileName} - 内容提取` : '内容提取';
+      return fileName ? format(s.extractionTitleFile, { file: fileName }) : s.extractionTitle;
     case 'analysis':
-      return fileName ? `${fileName} - 分析结果` : '分析结果';
-    case 'search':
-      return query ? `搜索: ${query.slice(0, 30)}${query.length > 30 ? '...' : ''}` : '搜索结果';
+      return fileName ? format(s.analysisTitleFile, { file: fileName }) : s.analysisTitle;
+    case 'search': {
+      if (query) {
+        const truncated = query.slice(0, 30) + (query.length > 30 ? '...' : '');
+        return format(s.searchTitle, { query: truncated });
+      }
+      return s.searchResultsTitle;
+    }
     case 'summary':
-      return fileName ? `${fileName} - 摘要` : '摘要';
+      return fileName ? format(s.summaryTitleFile, { file: fileName }) : s.summaryTitle;
     case 'preview':
-      return fileName ? `${fileName} - 预览` : '预览';
+      return fileName ? format(s.previewTitleFile, { file: fileName }) : s.previewTitle;
     default:
-      return '结果';
+      return s.resultTitle;
   }
 }
 

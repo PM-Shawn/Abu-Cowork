@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { updateMemoryTool, reportPlanTool, buildPlanApprovalPayload, interpretPlanApproval, planHasRiskySteps, PLAN_APPROVE_LABEL, PLAN_REJECT_LABEL } from './memoryTools';
+import { updateMemoryTool, reportPlanTool, buildPlanApprovalPayload, interpretPlanApproval, planHasRiskySteps } from './memoryTools';
 import { useTaskExecutionStore } from '../../../stores/taskExecutionStore';
+import { getI18n } from '../../../i18n';
 
 // ──────────────────────────────────────────────────────────────────────────
 // Mocks: lazy-imported in updateMemoryTool.execute, so vi.mock the real paths
@@ -78,7 +79,7 @@ describe('updateMemoryTool — append (default)', () => {
     expect(call.type).toBe('user');
     expect(call.source).toBe('agent_explicit');
     expect(call).not.toHaveProperty('filename'); // append doesn't override
-    expect(result).toContain('已保存记忆');
+    expect(result).toContain('Memory saved');
   });
 
   it('rejects empty content in append mode', async () => {
@@ -87,7 +88,7 @@ describe('updateMemoryTool — append (default)', () => {
       name: 'oops',
       content: '',
     });
-    expect(result).toContain('content 不能为空');
+    expect(result).toContain('content cannot be empty');
     expect(mockWriteMemory).not.toHaveBeenCalled();
   });
 });
@@ -100,7 +101,7 @@ describe('updateMemoryTool — delete', () => {
     });
 
     expect(mockDeleteMemory).toHaveBeenCalledWith('user_obsolete.md', '/test/workspace');
-    expect(result).toContain('已删除记忆');
+    expect(result).toContain('Memory deleted');
     expect(result).toContain('user_obsolete.md');
   });
 
@@ -158,7 +159,7 @@ describe('updateMemoryTool — edit', () => {
     expect(call.type).toBe('user');             // preserved
     expect(call.source).toBe('agent_explicit'); // preserved
     expect(call.workspacePath).toBe('/test/workspace'); // workspace-scoped, not relocated
-    expect(result).toContain('已更新记忆');
+    expect(result).toContain('Memory updated');
   });
 
   it('returns directive error when filename does not exist', async () => {
@@ -171,7 +172,7 @@ describe('updateMemoryTool — edit', () => {
     });
 
     expect(result).toContain('user_ghost.md');
-    expect(result).toContain('不存在');
+    expect(result).toContain('does not exist');
     expect(result).toContain('append'); // hint to switch action
     expect(mockWriteMemory).not.toHaveBeenCalled();
   });
@@ -239,7 +240,7 @@ describe('updateMemoryTool — clear', () => {
     mockClearAllMemories.mockResolvedValue(7);
     const result = await updateMemoryTool.execute({ action: 'clear' });
     expect(mockClearAllMemories).toHaveBeenCalledWith('/test/workspace');
-    expect(result).toContain('已清空');
+    expect(result).toContain('Cleared');
     expect(result).toContain('7');
   });
 });
@@ -247,15 +248,16 @@ describe('updateMemoryTool — clear', () => {
 describe('reportPlanTool — plan-mode approval (B1)', () => {
   describe('buildPlanApprovalPayload', () => {
     it('builds a single approve/reject question listing the steps', () => {
+      const t = getI18n().toolResult.memory;
       const payload = buildPlanApprovalPayload(['扫描文件', '移动发票']);
       expect(payload.questions).toHaveLength(1);
       const q = payload.questions[0];
-      expect(q.header).toBe('计划审批');
+      expect(q.header).toBe(t.planApprovalHeader);
       expect(q.multiSelect).toBe(false);
-      expect(q.options.map((o) => o.label)).toEqual([PLAN_APPROVE_LABEL, PLAN_REJECT_LABEL]);
+      expect(q.options.map((o) => o.label)).toEqual([t.planApproveLabel, t.planRejectLabel]);
       expect(q.question).toContain('扫描文件');
       expect(q.question).toContain('移动发票');
-      expect(q.question).toContain('是否批准');
+      expect(q.question).toContain(t.planApprovalQuestion);
     });
   });
 
@@ -264,13 +266,27 @@ describe('reportPlanTool — plan-mode approval (B1)', () => {
       expect(interpretPlanApproval(null)).toBe(false);
     });
     it('returns true when the approve option is selected', () => {
-      expect(interpretPlanApproval({ answers: [{ header: '计划审批', question: 'q', selected: [PLAN_APPROVE_LABEL] }] })).toBe(true);
+      const t = getI18n().toolResult.memory;
+      expect(interpretPlanApproval({ answers: [{ header: t.planApprovalHeader, question: 'q', selected: [t.planApproveLabel] }] })).toBe(true);
     });
     it('returns false when the reject option is selected', () => {
-      expect(interpretPlanApproval({ answers: [{ header: '计划审批', question: 'q', selected: [PLAN_REJECT_LABEL] }] })).toBe(false);
+      const t = getI18n().toolResult.memory;
+      expect(interpretPlanApproval({ answers: [{ header: t.planApprovalHeader, question: 'q', selected: [t.planRejectLabel] }] })).toBe(false);
     });
     it('returns false for empty answers', () => {
       expect(interpretPlanApproval({ answers: [] })).toBe(false);
+    });
+    it('matches against the passed (build-time) label, not the current locale', () => {
+      // Regression: the card echoes back the payload's own option label. If the
+      // UI locale changes between building the card and reading the answer, a
+      // freshly re-resolved label would mismatch. Passing the build-time label
+      // (as reportPlanTool does from the payload) must still match.
+      const buildTimeLabel = '批准执行'; // e.g. card was built while locale was zh-CN
+      const result = { answers: [{ header: 'h', question: 'q', selected: [buildTimeLabel] }] };
+      // Test env resolves to en-US, so the default (current-locale) label differs...
+      expect(interpretPlanApproval(result)).toBe(false);
+      // ...but passing the actual displayed label matches correctly.
+      expect(interpretPlanApproval(result, buildTimeLabel)).toBe(true);
     });
   });
 
@@ -335,60 +351,66 @@ describe('reportPlanTool — plan-mode approval (B1)', () => {
       const result = await reportPlanTool.execute(input, ctx);
       expect(mockRequestUserQuestion).not.toHaveBeenCalled();
       expect(mockSetPlanMode).not.toHaveBeenCalled();
-      expect(result).toContain('已记录执行计划');
+      expect(result).toContain('Execution plan recorded');
     });
 
     it('auto-triggers approval for a RISKY plan even when mode is off', async () => {
+      const t = getI18n().toolResult.memory;
       mockGetPlanMode.mockReturnValue('off');
-      mockRequestUserQuestion.mockResolvedValue({ answers: [{ header: '计划审批', question: 'q', selected: [PLAN_APPROVE_LABEL] }] });
+      mockRequestUserQuestion.mockResolvedValue({ answers: [{ header: t.planApprovalHeader, question: 'q', selected: [t.planApproveLabel] }] });
       const result = await reportPlanTool.execute({ steps: ['扫描桌面文件', '删除重复文件'] }, ctx);
       expect(mockSetPlanMode).toHaveBeenCalledWith('c1', 'planning');
       expect(mockRequestUserQuestion).toHaveBeenCalledOnce();
       expect(mockSetPlanMode).toHaveBeenCalledWith('c1', 'approved');
-      expect(result).toContain('已批准');
+      expect(result).toContain('approved');
     });
 
     it('approves: sets mode to approved and reports approval', async () => {
+      const t = getI18n().toolResult.memory;
       mockGetPlanMode.mockReturnValue('planning');
-      mockRequestUserQuestion.mockResolvedValue({ answers: [{ header: '计划审批', question: 'q', selected: [PLAN_APPROVE_LABEL] }] });
+      mockRequestUserQuestion.mockResolvedValue({ answers: [{ header: t.planApprovalHeader, question: 'q', selected: [t.planApproveLabel] }] });
       const result = await reportPlanTool.execute(input, ctx);
       expect(mockRequestUserQuestion).toHaveBeenCalledWith('t1', 'c1', expect.objectContaining({ questions: expect.any(Array) }));
       expect(mockSetPlanMode).toHaveBeenCalledWith('c1', 'approved');
-      expect(result).toContain('已批准');
+      expect(result).toContain('approved');
     });
 
     it('rejects: stays in planning, does not approve', async () => {
+      const t = getI18n().toolResult.memory;
       mockGetPlanMode.mockReturnValue('planning');
-      mockRequestUserQuestion.mockResolvedValue({ answers: [{ header: '计划审批', question: 'q', selected: [PLAN_REJECT_LABEL] }] });
+      mockRequestUserQuestion.mockResolvedValue({ answers: [{ header: t.planApprovalHeader, question: 'q', selected: [t.planRejectLabel] }] });
       const result = await reportPlanTool.execute(input, ctx);
       expect(mockSetPlanMode).not.toHaveBeenCalledWith('c1', 'approved');
-      expect(result).toContain('未批准');
+      expect(result).toContain('not approve');
     });
 
     it('rejection tells the model to ASK the user before resubmitting (no silent re-prompt loop)', async () => {
       // Regression: the old text said "请根据反馈修改后重新调用 report_plan" —
       // but a rejection carries no feedback, so the model instantly re-submitted
       // an identical plan and the approval card re-popped with no words between.
+      const t = getI18n().toolResult.memory;
       mockGetPlanMode.mockReturnValue('planning');
-      mockRequestUserQuestion.mockResolvedValue({ answers: [{ header: '计划审批', question: 'q', selected: [PLAN_REJECT_LABEL] }] });
+      mockRequestUserQuestion.mockResolvedValue({ answers: [{ header: t.planApprovalHeader, question: 'q', selected: [t.planRejectLabel] }] });
       const result = await reportPlanTool.execute(input, ctx);
-      expect(result).toContain('询问');
-      expect(result).toContain('不要');
+      expect(result).toContain('ask');
+      expect(result).toContain('do not');
     });
 
     it('approved plan lands plannedSteps on the loop execution (panel shows it)', async () => {
+      const t = getI18n().toolResult.memory;
       seedExecution();
       mockGetPlanMode.mockReturnValue('planning');
-      mockRequestUserQuestion.mockResolvedValue({ answers: [{ header: '计划审批', question: 'q', selected: [PLAN_APPROVE_LABEL] }] });
+      mockRequestUserQuestion.mockResolvedValue({ answers: [{ header: t.planApprovalHeader, question: 'q', selected: [t.planApproveLabel] }] });
       await reportPlanTool.execute(input, ctx);
       const exec = useTaskExecutionStore.getState().executions['exec-1'];
       expect(exec.plannedSteps.map((s) => s.description)).toEqual(['步骤一', '步骤二']);
     });
 
     it('rejected plan does NOT land plannedSteps (panel must not show a rejected plan)', async () => {
+      const t = getI18n().toolResult.memory;
       seedExecution();
       mockGetPlanMode.mockReturnValue('planning');
-      mockRequestUserQuestion.mockResolvedValue({ answers: [{ header: '计划审批', question: 'q', selected: [PLAN_REJECT_LABEL] }] });
+      mockRequestUserQuestion.mockResolvedValue({ answers: [{ header: t.planApprovalHeader, question: 'q', selected: [t.planRejectLabel] }] });
       await reportPlanTool.execute(input, ctx);
       const exec = useTaskExecutionStore.getState().executions['exec-1'];
       expect(exec.plannedSteps).toHaveLength(0);
@@ -407,14 +429,14 @@ describe('reportPlanTool — plan-mode approval (B1)', () => {
       mockRequestUserQuestion.mockResolvedValue(null);
       const result = await reportPlanTool.execute(input, ctx);
       expect(mockSetPlanMode).not.toHaveBeenCalledWith('c1', 'approved');
-      expect(result).toContain('超时');
+      expect(result).toContain('timed out');
     });
 
     it('skips approval when toolCallId is absent', async () => {
       mockGetPlanMode.mockReturnValue('planning');
       const result = await reportPlanTool.execute(input, { conversationId: 'c1' });
       expect(mockRequestUserQuestion).not.toHaveBeenCalled();
-      expect(result).toContain('已记录执行计划');
+      expect(result).toContain('Execution plan recorded');
     });
   });
 });

@@ -32,20 +32,20 @@ import { TOOL_NAMES } from '../toolNames';
 export const skillViewTool: ToolDefinition = {
   name: TOOL_NAMES.SKILL_VIEW,
   description:
-    '查看一个技能的完整 SKILL.md 内容（不激活 routing）。' +
-    '可选传 file_path 读取该技能目录下的支撑文件（references / templates / scripts / assets）。' +
-    '用途：仅凭 description 无法判断是否匹配时先 view 再决定要不要 use_skill；或查看支撑文件里的参考材料、模板。',
+    'View the full SKILL.md content of a skill without activating routing.' +
+    ' Optionally pass file_path to read a supporting file in that skill\'s directory (references / templates / scripts / assets).' +
+    ' Use case: when the description alone is not enough to judge relevance, view the skill first and then decide whether to use_skill; or to inspect reference materials or templates in supporting files.',
   inputSchema: {
     type: 'object',
     properties: {
       name: {
         type: 'string',
-        description: '要查看的技能名。',
+        description: 'Name of the skill to view.',
       },
       file_path: {
         type: 'string',
         description:
-          '可选：支撑文件在技能目录下的相对路径，如 "references/api.md"。不传则返回 SKILL.md 完整内容 + 支撑文件列表。',
+          'Optional: relative path of a supporting file within the skill directory, e.g. "references/api.md". When omitted, returns the full SKILL.md content plus a list of supporting files.',
       },
     },
     required: ['name'],

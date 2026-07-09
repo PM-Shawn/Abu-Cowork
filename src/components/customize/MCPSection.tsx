@@ -877,7 +877,8 @@ function TemplateDetail({
   installingTemplate: string | null;
   onInstall: () => void;
 }) {
-  const { t } = useI18n();
+  const { t, locale } = useI18n();
+  const pick = (zh: string, en?: string) => (locale.startsWith('zh') ? zh : (en ?? zh));
   const isInstalling = installingTemplate === template.id;
   const isHttp = template.transport === 'http';
   const hasConfigurableArgs = template.configurableArgs && template.configurableArgs.length > 0;
@@ -890,7 +891,7 @@ function TemplateDetail({
       <div className="flex items-center justify-between mb-5">
         <div className="flex items-center gap-3">
           <Server className="h-5 w-5 text-[var(--abu-text-placeholder)]" />
-          <h2 className="text-xl font-semibold text-[var(--abu-text-primary)]">{template.name}</h2>
+          <h2 className="text-xl font-semibold text-[var(--abu-text-primary)]">{pick(template.name, template.nameEn)}</h2>
           {isHttp && <span className="px-1.5 py-0.5 rounded text-[10px] font-medium bg-blue-50 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400">HTTP</span>}
         </div>
         <button onClick={onInstall} disabled={isInstalling}
@@ -903,14 +904,14 @@ function TemplateDetail({
       {/* Description */}
       <div className="mb-5">
         <span className="text-xs text-[var(--abu-text-muted)]">Description</span>
-        <p className="text-sm text-[var(--abu-text-primary)] mt-1">{template.description}</p>
+        <p className="text-sm text-[var(--abu-text-primary)] mt-1">{pick(template.description, template.descriptionEn)}</p>
       </div>
 
       {/* Setup hint */}
       {hasSetupHint && (
         <div className="mb-5 p-3 rounded-lg bg-amber-50 border border-amber-200/60">
           <p className="text-xs text-amber-700 leading-relaxed whitespace-pre-wrap break-words">
-            {renderSetupHint(template.setupHint!)}
+            {renderSetupHint(pick(template.setupHint!, template.setupHintEn))}
           </p>
         </div>
       )}
@@ -920,19 +921,19 @@ function TemplateDetail({
         <div className="space-y-3">
           <span className="text-xs text-[var(--abu-text-muted)]">{t.toolbox.serverArgs}</span>
           {template.configurableArgs?.map((arg) => (
-            <input key={arg.index} type="text" placeholder={arg.placeholder}
+            <input key={arg.index} type="text" placeholder={pick(arg.placeholder, arg.placeholderEn)}
               value={templateArgs[`${template.id}-${arg.index}`] || ''}
               onChange={(e) => setTemplateArgs((prev) => ({ ...prev, [`${template.id}-${arg.index}`]: e.target.value }))}
               className="w-full px-3 py-1.5 rounded-lg border border-[var(--abu-border)] text-sm text-[var(--abu-text-primary)] bg-[var(--abu-bg-base)] focus:outline-none focus:ring-2 focus:ring-[var(--abu-clay-ring)] focus:border-[var(--abu-clay)] transition-all" />
           ))}
           {template.requiredEnvVars?.map((envVar) => (
             <div key={envVar.name}>
-              <label className="block text-xs text-[var(--abu-text-tertiary)] mb-1">{envVar.label}</label>
-              <input type="password" placeholder={envVar.placeholder}
+              <label className="block text-xs text-[var(--abu-text-tertiary)] mb-1">{pick(envVar.label, envVar.labelEn)}</label>
+              <input type="password" placeholder={pick(envVar.placeholder, envVar.placeholderEn)}
                 value={templateArgs[`${template.id}-env-${envVar.name}`] || ''}
                 onChange={(e) => setTemplateArgs((prev) => ({ ...prev, [`${template.id}-env-${envVar.name}`]: e.target.value }))}
                 className="w-full px-3 py-1.5 rounded-lg border border-[var(--abu-border)] text-sm text-[var(--abu-text-primary)] bg-[var(--abu-bg-base)] focus:outline-none focus:ring-2 focus:ring-[var(--abu-clay-ring)] focus:border-[var(--abu-clay)] transition-all font-mono" />
-              {envVar.description && <p className="text-[11px] text-[var(--abu-text-muted)] mt-0.5">{envVar.description}</p>}
+              {envVar.description && <p className="text-[11px] text-[var(--abu-text-muted)] mt-0.5">{pick(envVar.description, envVar.descriptionEn)}</p>}
             </div>
           ))}
         </div>

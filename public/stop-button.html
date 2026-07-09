@@ -52,10 +52,16 @@
 <body>
   <button class="stop-btn" id="stopBtn">
     <span class="stop-icon"></span>
-    停止操控
+    <span id="stopLabel">Stop control</span>
     <span class="shortcut">⌘.</span>
   </button>
   <script>
+    // Caption is pre-localized by the native side (window.__CU_I18N__, injected
+    // via initialization_script) — this HTML lives outside the React i18n tree.
+    if (window.__CU_I18N__ && window.__CU_I18N__.stopControl) {
+      document.getElementById('stopLabel').textContent = window.__CU_I18N__.stopControl;
+    }
+
     // Use Tauri global API (withGlobalTauri: true) to emit abort event
     document.getElementById('stopBtn').addEventListener('click', async () => {
       try {

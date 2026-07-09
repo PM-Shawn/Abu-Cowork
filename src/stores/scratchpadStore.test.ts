@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { useScratchpadStore, generateScratchpadTitle, inferScratchpadType, shouldCaptureScratchpad, truncateScratchpadContent } from './scratchpadStore';
+import { getI18n } from '@/i18n';
 
 describe('scratchpadStore', () => {
   beforeEach(() => {
@@ -146,7 +147,10 @@ describe('scratchpadStore', () => {
 
     it('generates search title with query', () => {
       const title = generateScratchpadTitle('search', { query: 'long query text for testing' }, 'search');
-      expect(title).toContain('搜索');
+      // The search title template contains the query; verify structure via i18n key
+      const template = getI18n().scratchpad.searchTitle;
+      const prefix = template.split('{query}')[0];
+      expect(title).toContain(prefix);
     });
 
     it('truncates long queries', () => {

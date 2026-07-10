@@ -14,6 +14,7 @@ import { buildFullChatUrl } from '@/core/llm/urlUtils';
 import { useSettingsStore, PROVIDER_CONFIGS } from '@/stores/settingsStore';
 import { PROVIDER_GUIDES } from './providerGuides';
 import { computeShowAdvanced, defaultDeclaredCapabilities } from './providerCapabilities';
+import { toModelInfo } from './modelInfoUtil';
 import AdvancedCapabilitiesFields from './AdvancedCapabilitiesFields';
 import type { LLMProvider, ApiFormat } from '@/types';
 import type { ModelInfo, ProviderSource, DeclaredCapabilities } from '@/types/provider';
@@ -382,8 +383,7 @@ export default function AddProviderModal({ open: isOpen, onClose }: AddProviderM
 
     const modelInfos: ModelInfo[] = Array.from(selectedModels).map((id) => {
       const ollamaModel = ollamaModels.find((m) => m.id === id);
-      if (ollamaModel) return { id, label: ollamaModel.label };
-      return { id, label: id };
+      return toModelInfo(id, ollamaModel ? { label: ollamaModel.label } : undefined);
     });
 
     const apiFormat: ApiFormat = selectedOption

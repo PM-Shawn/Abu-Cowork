@@ -11,6 +11,7 @@ import { buildFullChatUrl } from '@/core/llm/urlUtils';
 import { fetchProviderModels } from '@/core/llm/modelFetcher';
 import ConfirmDialog from '@/components/common/ConfirmDialog';
 import { computeShowAdvanced } from './providerCapabilities';
+import { toModelInfo } from './modelInfoUtil';
 import AdvancedCapabilitiesFields from './AdvancedCapabilitiesFields';
 import type { LLMProvider } from '@/types';
 import type { ProviderInstance, ModelInfo, DeclaredCapabilities } from '@/types/provider';
@@ -164,7 +165,7 @@ export default function ProviderCard({ provider, isActive }: ProviderCardProps) 
   const handleAddModel = useCallback(() => {
     const trimmed = newModelId.trim();
     if (!trimmed || formModels.some((m) => m.id === trimmed)) return;
-    setFormModels((prev) => [...prev, { id: trimmed, label: trimmed, isCustom: true }]);
+    setFormModels((prev) => [...prev, toModelInfo(trimmed, { isCustom: true })]);
     setNewModelId('');
   }, [newModelId, formModels]);
 

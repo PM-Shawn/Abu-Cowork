@@ -328,7 +328,7 @@ export default function ProviderCard({ provider, isActive }: ProviderCardProps) 
           {/* Model list: row layout w/ per-model expand when advanced config applies,
               otherwise the original collapsed chip layout. */}
           {formModels.length > 0 && (showAdvanced ? (
-            <div className="space-y-1 rounded-lg border border-[var(--abu-border)] p-2">
+            <div className="space-y-1 max-h-64 overflow-y-auto rounded-lg border border-[var(--abu-border)] p-2">
               {formModels.map((model) => {
                 const isExpanded = expandedModelIds.has(model.id);
                 return (

@@ -725,8 +725,6 @@ const enUS: TranslationDict = {
     capPerModelHint: 'Applies to this model only',
     fetchModelsEmpty: 'No models found, please add manually',
     fetchModelsFailed: 'Fetch failed',
-    expandModels: '+{hidden} Show all',
-    collapseModels: 'Collapse',
     enterpriseMode: 'Enterprise',
   },
 

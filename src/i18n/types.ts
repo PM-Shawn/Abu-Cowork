@@ -817,8 +817,6 @@ export interface TranslationDict {
     // Model fetch status messages (ProviderCard + AddProviderModal)
     fetchModelsEmpty: string;
     fetchModelsFailed: string;
-    expandModels: string;
-    collapseModels: string;
     // Enterprise tab label in SystemSettingsModal
     enterpriseMode: string;
   };

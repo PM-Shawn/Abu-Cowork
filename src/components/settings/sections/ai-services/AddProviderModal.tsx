@@ -1,4 +1,4 @@
-import { useState, useCallback, useRef, useMemo } from 'react';
+import { useState, useCallback, useRef, useMemo, type SetStateAction } from 'react';
 import { createPortal } from 'react-dom';
 import {
   X, Search, ExternalLink, Eye, EyeOff, Check, Plus, Loader2,
@@ -164,7 +164,11 @@ export default function AddProviderModal({ open: isOpen, onClose }: AddProviderM
   const [fetchModelsError, setFetchModelsError] = useState('');
 
   // ── Advanced capabilities (custom/local providers only) ──
-  const [modelCaps, setModelCaps] = useState<ModelDeclaredCapabilities>({});
+  // Keyed by model id — populated as models are selected/added, independent of
+  // which of the three model sources (ollamaModels / fetchedModels / raw
+  // selectedModels) the id came from.
+  const [perModelDeclared, setPerModelDeclared] = useState<Record<string, ModelDeclaredCapabilities>>({});
+  const [expandedModelIds, setExpandedModelIds] = useState<Set<string>>(new Set());
   const [useRawUrl, setUseRawUrl] = useState(false);
 
   // ── Validate state ──
@@ -233,11 +237,13 @@ export default function AddProviderModal({ open: isOpen, onClose }: AddProviderM
         setSelectedModels(new Set());
       }
 
-      // Reset declared capabilities; load from existing store entry if already configured.
-      // New custom/local providers get explicit defaults so toggles are not misleading tri-state.
+      // Reset per-model declared capabilities. Models aren't pre-selected for an
+      // existing builtin provider either (see setSelectedModels above), so there's
+      // nothing to preload per-model here — only the endpoint-level useRawUrl flag
+      // is worth restoring from the existing store entry.
       const existingP = providers.find(p => p.id === option.provider);
-      const willShowAdvanced = computeShowAdvanced(isCustomId(option.id), option.provider, option.format);
-      setModelCaps(existingP?.declaredCapabilities ?? (willShowAdvanced ? defaultModelDeclaredCapabilities() : {}));
+      setPerModelDeclared({});
+      setExpandedModelIds(new Set());
       setUseRawUrl(existingP?.declaredCapabilities?.useRawUrl ?? false);
 
       // Reset Ollama state
@@ -279,8 +285,28 @@ export default function AddProviderModal({ open: isOpen, onClose }: AddProviderM
     const id = manualModelInput.trim();
     if (!id) return;
     setSelectedModels((prev) => new Set(prev).add(id));
+    if (showAdvanced) {
+      setPerModelDeclared(prev => (prev[id] ? prev : { ...prev, [id]: defaultModelDeclaredCapabilities() }));
+    }
     setManualModelInput('');
-  }, [manualModelInput]);
+  }, [manualModelInput, showAdvanced]);
+
+  const updateModelDeclared = useCallback((id: string, updater: SetStateAction<ModelDeclaredCapabilities>) => {
+    setPerModelDeclared(prev => ({
+      ...prev,
+      [id]: typeof updater === 'function'
+        ? (updater as (p: ModelDeclaredCapabilities) => ModelDeclaredCapabilities)(prev[id] ?? {})
+        : updater,
+    }));
+  }, []);
+
+  const toggleModelExpand = useCallback((id: string) => {
+    setExpandedModelIds(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  }, []);
 
   // ── Fetch models handler (cloud providers) ──
 
@@ -386,7 +412,10 @@ export default function AddProviderModal({ open: isOpen, onClose }: AddProviderM
 
     const modelInfos: ModelInfo[] = Array.from(selectedModels).map((id) => {
       const ollamaModel = ollamaModels.find((m) => m.id === id);
-      return toModelInfo(id, ollamaModel ? { label: ollamaModel.label } : undefined);
+      return toModelInfo(id, {
+        label: ollamaModel?.label,
+        declaredCapabilities: showAdvanced ? perModelDeclared[id] : undefined,
+      });
     });
 
     const apiFormat: ApiFormat = selectedOption
@@ -399,7 +428,7 @@ export default function AddProviderModal({ open: isOpen, onClose }: AddProviderM
     const capabilities = selectedOption && !isCustom
       ? PROVIDER_CONFIGS[selectedOption.provider].capabilities
       : undefined;
-    const declaredCapabilities = showAdvanced ? { ...modelCaps, useRawUrl } : undefined;
+    const declaredCapabilities = showAdvanced ? { useRawUrl } : undefined;
 
     // For builtin providers: update the existing entry instead of creating a duplicate
     const existingBuiltin = !isCustom && selectedOption
@@ -443,7 +472,7 @@ export default function AddProviderModal({ open: isOpen, onClose }: AddProviderM
     onClose();
   }, [
     serviceName, selectedModels, ollamaModels, selectedOption,
-    isCustom, showAdvanced, modelCaps, useRawUrl, baseUrl, apiKey, providers,
+    isCustom, showAdvanced, perModelDeclared, useRawUrl, baseUrl, apiKey, providers,
     addProvider, updateProvider, selectModel, onClose,
   ]);
 
@@ -465,7 +494,8 @@ export default function AddProviderModal({ open: isOpen, onClose }: AddProviderM
     setFetchModelsStatus('idle');
     setFetchedModels([]);
     setFetchModelsError('');
-    setModelCaps({});
+    setPerModelDeclared({});
+    setExpandedModelIds(new Set());
     setUseRawUrl(false);
     onClose();
   }, [onClose]);
@@ -766,23 +796,47 @@ export default function AddProviderModal({ open: isOpen, onClose }: AddProviderM
                 ];
                 return (
                   <div className="space-y-1 max-h-48 overflow-y-auto rounded-lg border border-[var(--abu-border)] p-2">
-                    {displayList.map((model) => (
-                      <label
-                        key={model.id}
-                        className="flex items-center gap-2.5 px-2 py-1.5 rounded-md hover:bg-[var(--abu-bg-hover)] cursor-pointer"
-                        onClick={() => handleToggleModel(model.id)}
-                      >
-                        <div className={cn(
-                          'flex items-center justify-center h-4 w-4 rounded border transition-colors shrink-0',
-                          selectedModels.has(model.id)
-                            ? 'bg-[var(--abu-clay)] border-[var(--abu-clay)]'
-                            : 'border-[var(--abu-border)]',
-                        )}>
-                          {selectedModels.has(model.id) && <Check className="h-3 w-3 text-white" />}
+                    {displayList.map((model) => {
+                      const isSelected = selectedModels.has(model.id);
+                      const isExpanded = expandedModelIds.has(model.id);
+                      return (
+                        <div key={model.id} className="space-y-0">
+                          <div
+                            className="flex items-center gap-2.5 px-2 py-1.5 rounded-md hover:bg-[var(--abu-bg-hover)] cursor-pointer"
+                            onClick={() => handleToggleModel(model.id)}
+                          >
+                            {showAdvanced && isSelected && (
+                              <button
+                                type="button"
+                                onClick={(e) => { e.stopPropagation(); toggleModelExpand(model.id); }}
+                                className="text-[var(--abu-text-muted)] hover:text-[var(--abu-text-primary)] shrink-0"
+                              >
+                                <ChevronDown className={cn('h-3.5 w-3.5 transition-transform', isExpanded && 'rotate-180')} />
+                              </button>
+                            )}
+                            <div className={cn(
+                              'flex items-center justify-center h-4 w-4 rounded border transition-colors shrink-0',
+                              isSelected
+                                ? 'bg-[var(--abu-clay)] border-[var(--abu-clay)]'
+                                : 'border-[var(--abu-border)]',
+                            )}>
+                              {isSelected && <Check className="h-3 w-3 text-white" />}
+                            </div>
+                            <span className="text-sm text-[var(--abu-text-primary)] flex-1 truncate">{model.label}</span>
+                          </div>
+                          {showAdvanced && isSelected && isExpanded && (
+                            <div className="pl-2 pt-2 pb-1 border-l-2 border-[var(--abu-border)] ml-1 space-y-1.5">
+                              <p className="text-[11px] text-[var(--abu-text-tertiary)]">{t.settings.capPerModelHint}</p>
+                              <AdvancedCapabilitiesFields
+                                declared={perModelDeclared[model.id] ?? {}}
+                                setDeclared={(u) => updateModelDeclared(model.id, u)}
+                                apiFormat={selectedOption?.format ?? 'openai-compatible'}
+                              />
+                            </div>
+                          )}
                         </div>
-                        <span className="text-sm text-[var(--abu-text-primary)] flex-1 truncate">{model.label}</span>
-                      </label>
-                    ))}
+                      );
+                    })}
                   </div>
                 );
               })()}
@@ -790,24 +844,45 @@ export default function AddProviderModal({ open: isOpen, onClose }: AddProviderM
               {/* No fetch yet — show manually selected models with remove buttons */}
               {!isOllama && fetchedModels.length === 0 && selectedModels.size > 0 && (
                 <div className="space-y-1 max-h-48 overflow-y-auto rounded-lg border border-[var(--abu-border)] p-2">
-                  {[...selectedModels].map((modelId) => (
-                    <div
-                      key={modelId}
-                      className="flex items-center gap-2.5 px-2 py-1.5 rounded-md hover:bg-[var(--abu-bg-hover)]"
-                    >
-                      <div className="flex items-center justify-center h-4 w-4 rounded border bg-[var(--abu-clay)] border-[var(--abu-clay)] shrink-0">
-                        <Check className="h-3 w-3 text-white" />
+                  {[...selectedModels].map((modelId) => {
+                    const isExpanded = expandedModelIds.has(modelId);
+                    return (
+                      <div key={modelId} className="space-y-0">
+                        <div className="flex items-center gap-2.5 px-2 py-1.5 rounded-md hover:bg-[var(--abu-bg-hover)]">
+                          {showAdvanced && (
+                            <button
+                              type="button"
+                              onClick={(e) => { e.stopPropagation(); toggleModelExpand(modelId); }}
+                              className="text-[var(--abu-text-muted)] hover:text-[var(--abu-text-primary)] shrink-0"
+                            >
+                              <ChevronDown className={cn('h-3.5 w-3.5 transition-transform', isExpanded && 'rotate-180')} />
+                            </button>
+                          )}
+                          <div className="flex items-center justify-center h-4 w-4 rounded border bg-[var(--abu-clay)] border-[var(--abu-clay)] shrink-0">
+                            <Check className="h-3 w-3 text-white" />
+                          </div>
+                          <span className="text-sm text-[var(--abu-text-primary)] flex-1 truncate">{modelId}</span>
+                          <button
+                            type="button"
+                            onClick={() => handleToggleModel(modelId)}
+                            className="text-[var(--abu-text-muted)] hover:text-red-400 shrink-0"
+                          >
+                            <X className="h-3 w-3" />
+                          </button>
+                        </div>
+                        {showAdvanced && isExpanded && (
+                          <div className="pl-2 pt-2 pb-1 border-l-2 border-[var(--abu-border)] ml-1 space-y-1.5">
+                            <p className="text-[11px] text-[var(--abu-text-tertiary)]">{t.settings.capPerModelHint}</p>
+                            <AdvancedCapabilitiesFields
+                              declared={perModelDeclared[modelId] ?? {}}
+                              setDeclared={(u) => updateModelDeclared(modelId, u)}
+                              apiFormat={selectedOption?.format ?? 'openai-compatible'}
+                            />
+                          </div>
+                        )}
                       </div>
-                      <span className="text-sm text-[var(--abu-text-primary)] flex-1 truncate">{modelId}</span>
-                      <button
-                        type="button"
-                        onClick={() => handleToggleModel(modelId)}
-                        className="text-[var(--abu-text-muted)] hover:text-red-400 shrink-0"
-                      >
-                        <X className="h-3 w-3" />
-                      </button>
-                    </div>
-                  ))}
+                    );
+                  })}
                 </div>
               )}
 
@@ -864,14 +939,6 @@ export default function AddProviderModal({ open: isOpen, onClose }: AddProviderM
             </div>
           )}
 
-          {/* 7. Advanced capabilities (custom/local providers only) */}
-          {showAdvanced && (
-            <AdvancedCapabilitiesFields
-              declared={modelCaps}
-              setDeclared={setModelCaps}
-              apiFormat={selectedOption?.format ?? 'openai-compatible'}
-            />
-          )}
         </div>
 
         {/* Footer */}

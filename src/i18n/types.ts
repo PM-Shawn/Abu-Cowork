@@ -592,6 +592,10 @@ export interface TranslationDict {
     baseUrl: string;
     baseUrlPlaceholder: string;
     apiFormat: string;
+    billingPaygo: string;
+    billingCoding: string;
+    billingAgent: string;
+    configPlan: string;
     selectModel: string;
     customModel: string;
     // Custom services

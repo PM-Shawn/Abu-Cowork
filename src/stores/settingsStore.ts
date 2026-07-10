@@ -48,35 +48,58 @@ let persistApiKeyPlaintextFallback = true;
 // Static Provider Registry (used for defaults, guides, initialization)
 // ============================================================
 
+type ProviderPlan = {
+  id: 'paygo' | 'coding' | 'agent';
+  baseUrl: string;
+  format: ApiFormat;
+  models?: { id: string; label: string }[];
+  capabilities?: ProviderCapabilities;
+};
+
 type ProviderConfig = {
   name: string;
   baseUrl: string;
   format: ApiFormat;
   models: { id: string; label: string }[];
   capabilities?: ProviderCapabilities;
+  plans?: ProviderPlan[];
 };
 
 export const PROVIDER_CONFIGS = {
   volcengine: {
     name: '火山引擎 (Volcengine)',
-    // Coding Plan aggregator endpoint — multi-vendor, strict OpenAI tool schema only.
-    // No private extensions like Ark's `web_search`, so no webSearch capability here.
-    baseUrl: 'https://ark.cn-beijing.volces.com/api/coding/v3',
-    format: 'openai-compatible',
+    // Default = Agent Plan (Anthropic). Multi-config family — see plans[].
+    baseUrl: 'https://ark.cn-beijing.volces.com/api/plan',
+    format: 'anthropic',
     models: [
-      { id: 'doubao-seed-2.0-code', label: 'Doubao Seed 2.0 Code' },
       { id: 'doubao-seed-2.0-pro', label: 'Doubao Seed 2.0 Pro' },
       { id: 'doubao-seed-2.0-lite', label: 'Doubao Seed 2.0 Lite' },
-      { id: 'doubao-seed-code', label: 'Doubao Seed Code' },
-      { id: 'minimax-m2.5', label: 'MiniMax M2.5' },
-      { id: 'glm-4.7', label: 'GLM-4.7' },
-      { id: 'deepseek-v3.2', label: 'DeepSeek V3.2' },
-      { id: 'kimi-k2.5', label: 'Kimi K2.5' },
+    ],
+    plans: [
+      { id: 'paygo', baseUrl: 'https://ark.cn-beijing.volces.com/api/v3', format: 'openai-compatible',
+        models: [
+          { id: 'doubao-seed-2.0-pro', label: 'Doubao Seed 2.0 Pro' },
+          { id: 'doubao-seed-2.0-lite', label: 'Doubao Seed 2.0 Lite' },
+          { id: 'doubao-seed-2.0-code', label: 'Doubao Seed 2.0 Code' },
+        ] },
+      { id: 'coding', baseUrl: 'https://ark.cn-beijing.volces.com/api/coding/v3', format: 'openai-compatible',
+        models: [
+          { id: 'doubao-seed-2.0-code', label: 'Doubao Seed 2.0 Code' },
+          { id: 'doubao-seed-code', label: 'Doubao Seed Code' },
+          { id: 'glm-4.7', label: 'GLM-4.7' },
+          { id: 'deepseek-v3.2', label: 'DeepSeek V3.2' },
+          { id: 'kimi-k2.5', label: 'Kimi K2.5' },
+        ] },
+      { id: 'agent', baseUrl: 'https://ark.cn-beijing.volces.com/api/plan', format: 'anthropic',
+        models: [
+          { id: 'doubao-seed-2.0-pro', label: 'Doubao Seed 2.0 Pro' },
+          { id: 'doubao-seed-2.0-lite', label: 'Doubao Seed 2.0 Lite' },
+        ] },
     ],
   },
   bailian: {
     name: '阿里百炼 (Bailian)',
-    baseUrl: 'https://coding.dashscope.aliyuncs.com/v1',
+    baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
     format: 'openai-compatible',
     models: [
       { id: 'qwen3.5-plus', label: 'Qwen3.5 Plus' },
@@ -96,6 +119,11 @@ export const PROVIDER_CONFIGS = {
       webSearch: { type: 'parameter', paramName: 'enable_search', paramValue: true },
       imageGen: true,
     },
+    plans: [
+      { id: 'paygo', baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1', format: 'openai-compatible',
+        capabilities: { webSearch: { type: 'parameter', paramName: 'enable_search', paramValue: true }, imageGen: true } },
+      { id: 'coding', baseUrl: 'https://coding.dashscope.aliyuncs.com/apps/anthropic', format: 'anthropic' },
+    ],
   },
   anthropic: {
     name: 'Anthropic',
@@ -160,6 +188,11 @@ export const PROVIDER_CONFIGS = {
       webSearch: { type: 'tool', toolSpec: { type: 'web_search', web_search: { enable: true, search_engine: 'search_pro' } } },
       imageGen: true,
     },
+    plans: [
+      { id: 'paygo', baseUrl: 'https://open.bigmodel.cn/api/paas/v4', format: 'openai-compatible',
+        capabilities: { webSearch: { type: 'tool', toolSpec: { type: 'web_search', web_search: { enable: true, search_engine: 'search_pro' } } }, imageGen: true } },
+      { id: 'coding', baseUrl: 'https://open.bigmodel.cn/api/anthropic', format: 'anthropic' },
+    ],
   },
   minimax: {
     name: 'MiniMax',

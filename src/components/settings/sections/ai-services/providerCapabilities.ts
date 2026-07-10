@@ -1,5 +1,5 @@
 import type { LLMProvider, ApiFormat } from '@/types';
-import type { DeclaredCapabilities, ModelDeclaredCapabilities } from '@/types/provider';
+import type { ModelDeclaredCapabilities } from '@/types/provider';
 
 /** Whether the "advanced config" (declared capabilities) section should show.
  *  Any custom provider (openai-compatible OR anthropic format), or local
@@ -17,12 +17,6 @@ export function computeShowAdvanced(
     || provider === 'ollama' || provider === 'lmstudio';
 }
 
-/** Defaults for a newly added custom/local provider so capability toggles are explicit
- *  (not misleading undefined tri-state). Tools on, images/reasoning off — user adjusts. */
-export function defaultDeclaredCapabilities(): DeclaredCapabilities {
-  return { supportsTools: true, supportsImages: false, supportsReasoning: false };
-}
-
 /** Toggle one effort level in the supportedEfforts array (order-preserving add/remove). */
 export function toggleEffort(
   current: Array<'low' | 'medium' | 'high'> | undefined,
@@ -33,7 +27,9 @@ export function toggleEffort(
   return [...set];
 }
 
-/** Defaults for a newly added custom model (per-model). Tools on, images/reasoning off. */
+/** Defaults for a newly added custom model (per-model). Tools on, images/reasoning off.
+ *  Intentionally omits `useRawUrl` — that's an endpoint-level setting, tracked in a
+ *  sibling `useRawUrl` state, not part of per-model declared capabilities. */
 export function defaultModelDeclaredCapabilities(): ModelDeclaredCapabilities {
   return { supportsTools: true, supportsImages: false, supportsReasoning: false };
 }

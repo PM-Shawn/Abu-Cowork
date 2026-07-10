@@ -14,6 +14,20 @@ export type ProviderStatus = 'unchecked' | 'checking' | 'verified' | 'failed';
 /** Model capability tags */
 export type ModelCapability = 'vision' | 'tool_use' | 'web_search' | 'image_gen' | 'thinking' | 'long_context';
 
+/**
+ * Per-model subset of DeclaredCapabilities — the fields that genuinely vary per model
+ * on the same endpoint. Endpoint/protocol-level fields (useRawUrl / thinkingFormat /
+ * maxTokensField / requiresToolResultName) stay on ProviderInstance.declaredCapabilities.
+ */
+export interface ModelDeclaredCapabilities {
+  supportsTools?: boolean;
+  supportsImages?: boolean;
+  supportsReasoning?: boolean;
+  supportedEfforts?: Array<'low' | 'medium' | 'high'>;
+  maxInputTokens?: number;
+  maxOutputTokens?: number;
+}
+
 /** Unified model definition */
 export interface ModelInfo {
   id: string;
@@ -21,6 +35,7 @@ export interface ModelInfo {
   capabilities?: ModelCapability[];
   contextWindow?: number;
   isCustom?: boolean;
+  declaredCapabilities?: ModelDeclaredCapabilities;
 }
 
 /**

@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect, useMemo, useCallback } from 'react';
 import { Plus, ArrowUp, Square, X, ChevronDown, FileText } from 'lucide-react';
-import { ModelSelector, CapabilityBadge } from '@/components/chat/ModelSelector';
+import { ModelSelector } from '@/components/chat/ModelSelector';
 // AgentSelector hidden from UI; import kept for easy restore
 // import AgentSelector from '@/components/chat/AgentSelector';
 import { open } from '@tauri-apps/plugin-dialog';
@@ -169,7 +169,6 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
   const modelDisplay = !hasActiveProvider
     ? t.chat.noModelConfigured
     : (activeModelInfo?.label ?? (currentModel ? currentModel.split('/').pop()?.split('-').slice(0, 2).join(' ') : 'Claude'));
-  const modelCaps = activeModelInfo?.capabilities ?? [];
   const [showModelPicker, setShowModelPicker] = useState(false);
   const modelPickerRef = useRef<HTMLDivElement>(null);
 
@@ -885,11 +884,6 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
                   )}
                 >
                   <span className="truncate">{modelDisplay}</span>
-                  {hasActiveProvider && modelCaps.length > 0 && (
-                    <span className="flex items-center gap-0.5 ml-0.5 shrink-0">
-                      {modelCaps.map((cap) => <CapabilityBadge key={cap} cap={cap} size="xs" />)}
-                    </span>
-                  )}
                   <ChevronDown className={cn('h-3 w-3 transition-transform shrink-0', showModelPicker && 'rotate-180')} />
                 </button>
                 <ModelSelector
@@ -953,11 +947,6 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
                     )}
                   >
                     <span className="truncate">{modelDisplay}</span>
-                    {hasActiveProvider && modelCaps.length > 0 && (
-                      <span className="flex items-center gap-0.5 ml-0.5 shrink-0">
-                        {modelCaps.map((cap) => <CapabilityBadge key={cap} cap={cap} size="xs" />)}
-                      </span>
-                    )}
                     <ChevronDown className={cn('h-3 w-3 transition-transform shrink-0', showModelPicker && 'rotate-180')} />
                   </button>
                   <ModelSelector

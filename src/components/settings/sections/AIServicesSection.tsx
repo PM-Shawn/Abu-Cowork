@@ -54,7 +54,7 @@ export default function AIServicesSection() {
     .filter(p => p.userAdded || p.enabled || p.apiKey.trim().length > 0)
     .sort((a, b) => {
       if (a.enabled !== b.enabled) return a.enabled ? -1 : 1;
-      return a.sortOrder - b.sortOrder;
+      return b.sortOrder - a.sortOrder;
     });
 
   return (
@@ -78,7 +78,7 @@ export default function AIServicesSection() {
           className="gap-1.5"
         >
           <Plus className="h-3.5 w-3.5" />
-          {t.settings.addService}
+          {t.settings.add}
         </Button>
       </div>
 

@@ -4,7 +4,6 @@ import { useI18n, format } from '@/i18n';
 import { cn } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import { Checkbox } from '@/components/ui/checkbox';
 import { Toggle } from '@/components/ui/toggle';
 import { useSettingsStore } from '@/stores/settingsStore';
 import { checkProviderHealth } from '@/core/llm/healthCheck';
@@ -286,20 +285,21 @@ export default function ProviderCard({ provider, isActive }: ProviderCardProps) 
 
         {/* Edit: Base URL — read-only for builtin providers */}
         <div className="space-y-1">
-          <label className="text-xs font-medium text-[var(--abu-text-tertiary)]">{t.settings.apiUrl}</label>
+          <div className="flex items-center justify-between">
+            <label className="text-xs font-medium text-[var(--abu-text-tertiary)]">{t.settings.apiUrl}</label>
+            {showAdvanced && provider.apiFormat !== 'anthropic' && (
+              <div className="flex items-center gap-2" title={t.settings.capRawUrlHint}>
+                <span className="text-xs text-[var(--abu-text-secondary)]">{t.settings.capRawUrl}</span>
+                <Toggle checked={useRawUrl} onChange={() => setUseRawUrl(v => !v)} size="sm" />
+              </div>
+            )}
+          </div>
           {isBuiltin ? (
             <p className="text-xs text-[var(--abu-text-secondary)] font-mono bg-[var(--abu-bg-hover)] rounded-lg px-3 py-2 break-all select-all">
               {formBaseUrl}
             </p>
           ) : (
             <Input value={formBaseUrl} onChange={(e) => setFormBaseUrl(e.target.value)} />
-          )}
-          {showAdvanced && provider.apiFormat !== 'anthropic' && (
-            <div className="flex items-center gap-2 cursor-pointer select-none pt-1" title={t.settings.capRawUrlHint}
-              onClick={() => setUseRawUrl(v => !v)}>
-              <Checkbox checked={useRawUrl} onChange={() => setUseRawUrl(v => !v)} />
-              <span className="text-xs text-[var(--abu-text-primary)]">{t.settings.capRawUrl}</span>
-            </div>
           )}
           {!isOllama && formBaseUrl.trim() && (
             <p className="text-[11px] font-mono text-[var(--abu-text-muted)] break-all">

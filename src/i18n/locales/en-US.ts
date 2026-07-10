@@ -657,6 +657,7 @@ const enUS: TranslationDict = {
     lmstudioOffline: 'Not connected, make sure LM Studio local server is running',
 
     // Provider Management V2
+    add: 'Add',
     addService: 'Add AI Service',
     serviceName: 'Service Name',
     serviceNameAuto: 'Auto-follows provider name, customizable',

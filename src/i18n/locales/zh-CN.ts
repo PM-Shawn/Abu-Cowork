@@ -657,6 +657,7 @@ const zhCN: TranslationDict = {
     lmstudioOffline: '未连接，请确认 LM Studio 已启动本地服务',
 
     // Provider Management V2
+    add: '添加',
     addService: '添加 AI 服务',
     serviceName: '服务名称',
     serviceNameAuto: '自动跟随供应商名称，可自定义',

@@ -747,6 +747,7 @@ export interface TranslationDict {
     lmstudioOffline: string;
 
     // Provider Management V2
+    add: string;
     addService: string;
     serviceName: string;
     serviceNameAuto: string;

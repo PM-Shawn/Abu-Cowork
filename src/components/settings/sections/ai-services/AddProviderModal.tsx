@@ -9,7 +9,7 @@ import { useI18n } from '@/i18n';
 import { cn } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import { Checkbox } from '@/components/ui/checkbox';
+import { Toggle } from '@/components/ui/toggle';
 import { checkProviderHealth } from '@/core/llm/healthCheck';
 import { buildFullChatUrl } from '@/core/llm/urlUtils';
 import { useSettingsStore, PROVIDER_CONFIGS } from '@/stores/settingsStore';
@@ -747,9 +747,17 @@ export default function AddProviderModal({ open: isOpen, onClose }: AddProviderM
           {/* 5. API Address */}
           {selectedId && (
             <div className="space-y-1">
-              <label className="text-xs font-medium text-[var(--abu-text-primary)]">
-                {isOllama ? t.settings.ollamaUrlLabel : isLMStudio ? t.settings.lmstudioUrlLabel : t.settings.apiUrl}
-              </label>
+              <div className="flex items-center justify-between">
+                <label className="text-xs font-medium text-[var(--abu-text-primary)]">
+                  {isOllama ? t.settings.ollamaUrlLabel : isLMStudio ? t.settings.lmstudioUrlLabel : t.settings.apiUrl}
+                </label>
+                {showAdvanced && selectedOption?.format !== 'anthropic' && (
+                  <div className="flex items-center gap-2" title={t.settings.capRawUrlHint}>
+                    <span className="text-xs text-[var(--abu-text-secondary)]">{t.settings.capRawUrl}</span>
+                    <Toggle checked={useRawUrl} onChange={() => setUseRawUrl(v => !v)} size="sm" />
+                  </div>
+                )}
+              </div>
               <Input
                 value={baseUrl}
                 onChange={(e) => setBaseUrl(e.target.value)}
@@ -761,14 +769,6 @@ export default function AddProviderModal({ open: isOpen, onClose }: AddProviderM
                 <p className="text-xs text-[var(--abu-text-tertiary)]">
                   {isOllama ? t.settings.ollamaUrlHint : t.settings.lmstudioUrlHint}
                 </p>
-              )}
-
-              {showAdvanced && selectedOption?.format !== 'anthropic' && (
-                <div className="flex items-center gap-2 cursor-pointer select-none pt-1" title={t.settings.capRawUrlHint}
-                  onClick={() => setUseRawUrl(v => !v)}>
-                  <Checkbox checked={useRawUrl} onChange={() => setUseRawUrl(v => !v)} />
-                  <span className="text-xs text-[var(--abu-text-primary)]">{t.settings.capRawUrl}</span>
-                </div>
               )}
 
               {/* Final request URL preview — hidden for local providers which have their own status UI */}

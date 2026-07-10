@@ -43,6 +43,7 @@ import { isWindows } from '../../utils/platform';
 import { getBuiltinSearchConfig } from '../capabilities';
 import { resolveCapabilities, resolveEffectiveContextWindow, computeReasoningParams, type ModelCapabilities } from '../llm/modelCapabilities';
 import { applyDeclaredCapabilities } from '../llm/applyDeclaredCapabilities';
+import { rehydrateForSend, type ImageBase64Cache } from '../llm/imageRehydration';
 import { TOOL_NAMES } from '../tools/toolNames';
 import { prefetchTools } from '../tools/toolPrefetch';
 import { classifyTools, buildDeferredToolsSummary } from '../tools/toolSearch';
@@ -951,6 +952,10 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
   let continueLoop = true;
   let exitReason: AgentLoopExitReason = 'completed';
   let exitError: string | undefined;
+  // Cache of filePath → base64 for image rehydration, shared across every turn
+  // of this request's tool-use loop so a stripped image is read from disk once,
+  // not re-read + re-encoded on every iteration (source.data stays stripped).
+  const imageBase64Cache: ImageBase64Cache = new Map();
   // maxTurns priority: skill > agent definition > global setting > sane default
   // (never unlimited — see resolveMaxTurns). Headless runs get a tighter cap.
   const globalMaxTurns = useSettingsStore.getState().agentMaxTurns;
@@ -1367,6 +1372,19 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
         toolTokens
       );
 
+      // Step 4: Rehydrate stripped image base64 from disk before sending.
+      // Persisted images keep only `filePath` (base64 cleared to save disk); the
+      // send path used the empty data directly, emitting `data:<mime>;base64,`
+      // (empty) → provider "Invalid base64 image_url", bricking every later turn.
+      // rehydrateForSend gates on vision + is the single shared send-prep seam
+      // (see also the recovery retry below — both must use it).
+      preparedMessages = await rehydrateForSend(preparedMessages, {
+        vision: modelCaps.vision,
+        conversationId,
+        workspacePath: useChatStore.getState().conversations[conversationId]?.workspacePath ?? null,
+        cache: imageBase64Cache,
+      });
+
       // Resolve apiKey + baseUrl — enterprise gateway overrides personal creds.
       // Throws EnterpriseLlmUnavailableError if enforced but gateway unreachable.
       const effectiveCreds = resolveEffectiveLlmCreds(
@@ -1684,7 +1702,16 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
             recovered = true;
           }
 
-          // Retry with recovered messages
+          // Retry with recovered messages. These were rebuilt from the stripped
+          // store copies (compression / round-slicing above), so re-run the same
+          // send-prep seam the primary path uses — otherwise a vision model would
+          // get empty-base64 images silently dropped on this path.
+          preparedMessages = await rehydrateForSend(preparedMessages, {
+            vision: modelCaps.vision,
+            conversationId,
+            workspacePath: useChatStore.getState().conversations[conversationId]?.workspacePath ?? null,
+            cache: imageBase64Cache,
+          });
           try {
             await adapter.chat(preparedMessages, chatOptions, eventHandler);
           } catch (retryErr2) {

@@ -91,10 +91,10 @@ vi.mock('../core/skill/loader', () => ({
 
 // Mock context modules
 vi.mock('../core/context/contextManager', () => ({
-  prepareContextMessages: vi.fn().mockImplementation((msgs) => ({
-    messages: msgs,
-    compressed: false,
-  })),
+  // Real prepareContextMessages returns Message[] — mirror that. (Previously
+  // returned an object, which was silently tolerated until the send path
+  // started calling array methods on the result via rehydrateImageData.)
+  prepareContextMessages: vi.fn().mockImplementation((msgs) => msgs),
   trimOldScreenshots: vi.fn().mockImplementation((msgs) => msgs),
 }));
 

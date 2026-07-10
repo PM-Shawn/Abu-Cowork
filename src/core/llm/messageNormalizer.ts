@@ -98,7 +98,9 @@ function extractImages(resultContent: ToolResultContent[] | undefined): Prepared
   if (!resultContent || !Array.isArray(resultContent)) return [];
   const images: PreparedImage[] = [];
   for (const b of resultContent) {
-    if (b.type === 'image') {
+    // Skip images whose base64 was stripped and not rehydrated — emitting an
+    // empty `data:<mime>;base64,` makes providers reject the whole request.
+    if (b.type === 'image' && b.source.data) {
       images.push({ mediaType: b.source.media_type as PreparedImage['mediaType'], data: b.source.data });
     }
   }
@@ -121,10 +123,17 @@ function convertUserContent(
     if (c.type === 'text') {
       blocks.push({ type: 'text', text: c.text });
     } else if (c.type === 'image') {
-      if (supportsVision) {
+      if (!supportsVision) {
+        imageCount++;
+      } else if (c.source.data) {
         blocks.push({ type: 'image', mediaType: c.source.media_type, data: c.source.data });
       } else {
-        imageCount++;
+        // Vision model, but the base64 was stripped and rehydration couldn't
+        // refill it (no filePath to recover from). Never emit an empty
+        // image_url — providers reject the whole request. Emit a placeholder so
+        // the model still knows an image was attached rather than silently
+        // seeing nothing and hallucinating a description. LLM-facing → English.
+        blocks.push({ type: 'text', text: '[An image was attached but could not be loaded.]' });
       }
     } else if (c.type === 'document') {
       blocks.push({ type: 'document', mediaType: c.source.media_type, data: c.source.data });

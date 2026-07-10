@@ -55,3 +55,32 @@ describe('OpenAICompatibleAdapter — non-vision model must not receive image_ur
     expect(wire).not.toContain('BASE64PNG');
   });
 });
+
+describe('OpenAICompatibleAdapter — stripped image (empty base64) must not reach a vision model', () => {
+  beforeEach(() => mockFetch.mockReset());
+
+  // A persisted user-uploaded image whose base64 was stripped on disk (only
+  // filePath survived) and was NOT rehydrated. Safety net: the serializer must
+  // never emit `data:<mime>;base64,` with empty payload — that bricks the turn.
+  const strippedMessages: Message[] = [
+    {
+      id: 'u1', role: 'user', timestamp: 1,
+      content: [
+        { type: 'image', source: { type: 'base64', media_type: 'image/png', data: '' }, filePath: 'D:/abu/shot.png' },
+        { type: 'text', text: '看看这张图' },
+      ],
+    } as unknown as Message,
+  ];
+
+  it('drops the empty image instead of sending invalid base64 (vision model)', async () => {
+    mockFetch.mockResolvedValueOnce(makeSSEResponse([{ choices: [{ delta: { content: 'ok' }, finish_reason: 'stop' }] }]));
+    await new OpenAICompatibleAdapter().chat(strippedMessages, opts({ supportsVision: true }), () => {});
+
+    const body = JSON.parse(mockFetch.mock.calls[0][1].body as string);
+    const wire = JSON.stringify(body.messages);
+    expect(wire).not.toContain('base64,"'); // no empty-payload data URI
+    expect(wire).not.toContain('image_url');
+    expect(wire).toContain('看看这张图'); // text still delivered
+    expect(wire).toContain('could not be loaded'); // placeholder, not silent drop
+  });
+});

@@ -766,6 +766,7 @@ export interface TranslationDict {
     fetchModelsError: string;
     fetchModelsSuccess: string;
     addModelManually: string;
+    addModel: string;
     addModelPlaceholder: string;
     save: string;
     saveAnyway: string;

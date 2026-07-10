@@ -1,4 +1,4 @@
-import { useState, useCallback, type SetStateAction } from 'react';
+import { useState, useCallback, useEffect, useRef, type SetStateAction } from 'react';
 import { Check, X, AlertTriangle, Loader2, Eye, EyeOff, Pencil, RefreshCw, Trash2, Plus, CircleCheck, CircleX, ChevronDown } from 'lucide-react';
 import { useI18n, format } from '@/i18n';
 import { cn } from '@/lib/utils';
@@ -85,8 +85,9 @@ export default function ProviderCard({ provider, isActive }: ProviderCardProps) 
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [fetchingModels, setFetchingModels] = useState(false);
   const [fetchModelsMsg, setFetchModelsMsg] = useState<{ ok: boolean; text: string } | null>(null);
-  const [modelsExpanded, setModelsExpanded] = useState(false);
   const [expandedModelIds, setExpandedModelIds] = useState<Set<string>>(new Set());
+  const [showAddModelInput, setShowAddModelInput] = useState(false);
+  const addModelInputRef = useRef<HTMLInputElement>(null);
   const isOllama = isOllamaProvider(provider);
   const isLMStudio = isLMStudioProvider(provider);
   const isBuiltin = provider.source === 'builtin';
@@ -94,8 +95,6 @@ export default function ProviderCard({ provider, isActive }: ProviderCardProps) 
   // edit forms never drift. providerKind pins ollama/lmstudio for the predicate.
   const providerKind: LLMProvider | undefined = isOllama ? 'ollama' : isLMStudio ? 'lmstudio' : undefined;
   const showAdvanced = computeShowAdvanced(provider.source === 'custom', providerKind, provider.apiFormat);
-
-  const MODELS_COLLAPSED_COUNT = 5;
 
   const handleEditStart = useCallback(() => {
     setFormName(provider.name);
@@ -105,11 +104,22 @@ export default function ProviderCard({ provider, isActive }: ProviderCardProps) 
     setUseRawUrl(provider.declaredCapabilities?.useRawUrl ?? false);
     setNewModelId('');
     setShowApiKey(false);
-    setModelsExpanded(false);
+    setShowAddModelInput(false);
     setExpandedModelIds(new Set());
     setFetchModelsMsg(null);
     setEditing(true);
   }, [provider]);
+
+  // Keep the inline add-model input focused whenever it is revealed, so the
+  // user can type immediately without an extra click.
+  useEffect(() => {
+    if (showAddModelInput) addModelInputRef.current?.focus();
+  }, [showAddModelInput]);
+
+  const toggleAddModelInput = useCallback(() => {
+    setShowAddModelInput((v) => !v);
+    setNewModelId('');
+  }, []);
 
   const updateModelDeclared = useCallback((modelId: string, updater: SetStateAction<ModelDeclaredCapabilities>) => {
     setFormModels(prev => prev.map(m => m.id === modelId
@@ -302,19 +312,29 @@ export default function ProviderCard({ provider, isActive }: ProviderCardProps) 
         <div className="space-y-1.5">
           <div className="flex items-center justify-between">
             <label className="text-xs font-medium text-[var(--abu-text-tertiary)]">{t.settings.models}</label>
-            {!isOllama && provider.apiFormat !== 'anthropic' && formBaseUrl.trim() && (
+            <div className="flex items-center gap-3">
+              {!isOllama && provider.apiFormat !== 'anthropic' && formBaseUrl.trim() && (
+                <button
+                  type="button"
+                  onClick={handleFetchModels}
+                  disabled={fetchingModels}
+                  className="flex items-center gap-1 text-[11px] text-[var(--abu-clay)] hover:underline disabled:opacity-40 disabled:no-underline"
+                >
+                  {fetchingModels
+                    ? <Loader2 className="h-3 w-3 animate-spin" />
+                    : <RefreshCw className="h-3 w-3" />}
+                  {fetchingModels ? t.settings.fetchingModels : t.settings.fetchModels}
+                </button>
+              )}
               <button
                 type="button"
-                onClick={handleFetchModels}
-                disabled={fetchingModels}
-                className="flex items-center gap-1 text-[11px] text-[var(--abu-clay)] hover:underline disabled:opacity-40 disabled:no-underline"
+                onClick={toggleAddModelInput}
+                className="flex items-center gap-1 text-[11px] text-[var(--abu-clay)] hover:underline"
               >
-                {fetchingModels
-                  ? <Loader2 className="h-3 w-3 animate-spin" />
-                  : <RefreshCw className="h-3 w-3" />}
-                {fetchingModels ? t.settings.fetchingModels : t.settings.fetchModels}
+                <Plus className="h-3 w-3" />
+                {t.settings.addModel}
               </button>
-            )}
+            </div>
           </div>
           {/* Fetch status */}
           {fetchModelsMsg && (
@@ -325,22 +345,48 @@ export default function ProviderCard({ provider, isActive }: ProviderCardProps) 
               {fetchModelsMsg.text}
             </p>
           )}
-          {/* Model list: row layout w/ per-model expand when advanced config applies,
-              otherwise the original collapsed chip layout. */}
-          {formModels.length > 0 && (showAdvanced ? (
-            <div className="space-y-1 max-h-64 overflow-y-auto rounded-lg border border-[var(--abu-border)] p-2">
+          {/* Inline add-model input, revealed at the top of the model list */}
+          {showAddModelInput && (
+            <div className="flex items-center gap-1.5">
+              <Input
+                ref={addModelInputRef}
+                value={newModelId}
+                onChange={(e) => setNewModelId(e.target.value)}
+                placeholder={t.settings.addModelPlaceholder}
+                className="h-7 px-2 text-xs flex-1"
+                onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); handleAddModel(); } }}
+              />
+              <Button
+                type="button"
+                size="icon-xs"
+                variant="outline"
+                onClick={() => { handleAddModel(); addModelInputRef.current?.focus(); }}
+                disabled={!newModelId.trim()}
+              >
+                <Plus className="h-3 w-3" />
+              </Button>
+              <Button type="button" size="icon-xs" variant="ghost" onClick={toggleAddModelInput}>
+                <X className="h-3 w-3" />
+              </Button>
+            </div>
+          )}
+          {/* Model list: one card per model */}
+          {formModels.length > 0 && (
+            <div className="max-h-64 overflow-y-auto space-y-2">
               {formModels.map((model) => {
-                const isExpanded = expandedModelIds.has(model.id);
+                const isExpanded = showAdvanced && expandedModelIds.has(model.id);
                 return (
-                  <div key={model.id} className="space-y-0">
-                    <div className="flex items-center gap-1.5 px-1 py-1 rounded-md hover:bg-[var(--abu-bg-hover)]">
-                      <button
-                        type="button"
-                        onClick={() => toggleModelExpand(model.id)}
-                        className="text-[var(--abu-text-muted)] hover:text-[var(--abu-text-primary)] shrink-0"
-                      >
-                        <ChevronDown className={cn('h-3.5 w-3.5 transition-transform', isExpanded && 'rotate-180')} />
-                      </button>
+                  <div key={model.id} className="rounded-lg border border-[var(--abu-border)] p-2">
+                    <div className="flex items-center gap-1.5">
+                      {showAdvanced && (
+                        <button
+                          type="button"
+                          onClick={() => toggleModelExpand(model.id)}
+                          className="text-[var(--abu-text-muted)] hover:text-[var(--abu-text-primary)] shrink-0"
+                        >
+                          <ChevronDown className={cn('h-3.5 w-3.5 transition-transform', isExpanded && 'rotate-180')} />
+                        </button>
+                      )}
                       <span className="text-xs text-[var(--abu-text-primary)] flex-1 truncate">
                         {model.label || model.id}
                       </span>
@@ -353,7 +399,7 @@ export default function ProviderCard({ provider, isActive }: ProviderCardProps) 
                       </button>
                     </div>
                     {isExpanded && (
-                      <div className="pl-2 pt-2 pb-1 border-l-2 border-[var(--abu-border)] ml-1 space-y-1.5">
+                      <div className="pl-2 pt-2 pb-1 border-l-2 border-[var(--abu-border)] ml-1 space-y-1.5 mt-1">
                         <p className="text-[11px] text-[var(--abu-text-tertiary)]">{t.settings.capPerModelHint}</p>
                         <AdvancedCapabilitiesFields
                           declared={model.declaredCapabilities ?? {}}
@@ -366,67 +412,7 @@ export default function ProviderCard({ provider, isActive }: ProviderCardProps) 
                 );
               })}
             </div>
-          ) : (() => {
-            const visible = modelsExpanded ? formModels : formModels.slice(0, MODELS_COLLAPSED_COUNT);
-            const hidden = formModels.length - MODELS_COLLAPSED_COUNT;
-            return (
-              <div className="flex flex-wrap items-center gap-1.5">
-                {visible.map((model) => (
-                  <span
-                    key={model.id}
-                    className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] bg-[var(--abu-bg-muted)] text-[var(--abu-text-secondary)] border border-[var(--abu-border)]"
-                  >
-                    {model.label || model.id}
-                    <button
-                      type="button"
-                      onClick={() => setFormModels(prev => prev.filter(m => m.id !== model.id))}
-                      className="text-[var(--abu-text-muted)] hover:text-red-400"
-                    >
-                      <X className="h-2.5 w-2.5" />
-                    </button>
-                  </span>
-                ))}
-                {/* Collapse / expand toggle */}
-                {!modelsExpanded && hidden > 0 && (
-                  <button
-                    type="button"
-                    onClick={() => setModelsExpanded(true)}
-                    className="px-2 py-0.5 rounded text-[11px] text-[var(--abu-clay)] border border-dashed border-[var(--abu-clay)]/50 hover:border-[var(--abu-clay)] transition-colors"
-                  >
-                    {format(t.settings.expandModels, { hidden })}
-                  </button>
-                )}
-                {modelsExpanded && formModels.length > MODELS_COLLAPSED_COUNT && (
-                  <button
-                    type="button"
-                    onClick={() => setModelsExpanded(false)}
-                    className="px-2 py-0.5 rounded text-[11px] text-[var(--abu-clay)] border border-dashed border-[var(--abu-clay)]/50 hover:border-[var(--abu-clay)] transition-colors"
-                  >
-                    {t.settings.collapseModels}
-                  </button>
-                )}
-              </div>
-            );
-          })())}
-          {/* Inline add input */}
-          <div className="inline-flex items-center gap-1">
-            <input
-              type="text"
-              value={newModelId}
-              onChange={(e) => setNewModelId(e.target.value)}
-              placeholder={t.settings.addModelPlaceholder}
-              className="h-6 w-28 px-2 text-[11px] rounded border border-[var(--abu-border)] bg-transparent text-[var(--abu-text-primary)] placeholder:text-[var(--abu-text-placeholder)] outline-none focus:border-[var(--abu-clay)]"
-              onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); handleAddModel(); } }}
-            />
-            <button
-              type="button"
-              onClick={handleAddModel}
-              disabled={!newModelId.trim()}
-              className="h-6 w-6 flex items-center justify-center rounded border border-[var(--abu-border)] text-[var(--abu-text-muted)] hover:border-[var(--abu-clay)] hover:text-[var(--abu-clay)] disabled:opacity-30 transition-colors"
-            >
-              <Plus className="h-3 w-3" />
-            </button>
-          </div>
+          )}
         </div>
 
         {/* Edit: Actions */}

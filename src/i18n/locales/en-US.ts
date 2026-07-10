@@ -721,6 +721,7 @@ const enUS: TranslationDict = {
     capMaxInput: 'Max Input Tokens',
     capMaxOutput: 'Max Output Tokens',
     capTokenDefault: 'Use provider default',
+    capPerModelHint: 'Applies to this model only',
     fetchModelsEmpty: 'No models found, please add manually',
     fetchModelsFailed: 'Fetch failed',
     expandModels: '+{hidden} Show all',

@@ -721,6 +721,7 @@ const zhCN: TranslationDict = {
     capMaxInput: '最大输入 Token',
     capMaxOutput: '最大输出 Token',
     capTokenDefault: '使用提供商默认值',
+    capPerModelHint: '能力仅作用于本模型',
     fetchModelsEmpty: '未获取到模型，请手动添加',
     fetchModelsFailed: '获取失败',
     expandModels: '+{hidden} 展开全部',

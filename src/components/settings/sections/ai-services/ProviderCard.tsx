@@ -1,5 +1,5 @@
-import { useState, useCallback } from 'react';
-import { Check, X, AlertTriangle, Loader2, Eye, EyeOff, Pencil, RefreshCw, Trash2, Plus, CircleCheck, CircleX } from 'lucide-react';
+import { useState, useCallback, type SetStateAction } from 'react';
+import { Check, X, AlertTriangle, Loader2, Eye, EyeOff, Pencil, RefreshCw, Trash2, Plus, CircleCheck, CircleX, ChevronDown } from 'lucide-react';
 import { useI18n, format } from '@/i18n';
 import { cn } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
@@ -79,7 +79,6 @@ export default function ProviderCard({ provider, isActive }: ProviderCardProps) 
   const [formApiKey, setFormApiKey] = useState(provider.apiKey);
   const [formBaseUrl, setFormBaseUrl] = useState(provider.baseUrl);
   const [formModels, setFormModels] = useState<ModelInfo[]>(provider.models);
-  const [modelCaps, setModelCaps] = useState<ModelDeclaredCapabilities>(provider.declaredCapabilities ?? {});
   const [useRawUrl, setUseRawUrl] = useState(provider.declaredCapabilities?.useRawUrl ?? false);
   const [newModelId, setNewModelId] = useState('');
   const [showStatus, setShowStatus] = useState(false);
@@ -87,6 +86,7 @@ export default function ProviderCard({ provider, isActive }: ProviderCardProps) 
   const [fetchingModels, setFetchingModels] = useState(false);
   const [fetchModelsMsg, setFetchModelsMsg] = useState<{ ok: boolean; text: string } | null>(null);
   const [modelsExpanded, setModelsExpanded] = useState(false);
+  const [expandedModelIds, setExpandedModelIds] = useState<Set<string>>(new Set());
   const isOllama = isOllamaProvider(provider);
   const isLMStudio = isLMStudioProvider(provider);
   const isBuiltin = provider.source === 'builtin';
@@ -102,14 +102,33 @@ export default function ProviderCard({ provider, isActive }: ProviderCardProps) 
     setFormApiKey(provider.apiKey);
     setFormBaseUrl(provider.baseUrl);
     setFormModels([...provider.models]);
-    setModelCaps(provider.declaredCapabilities ?? {});
     setUseRawUrl(provider.declaredCapabilities?.useRawUrl ?? false);
     setNewModelId('');
     setShowApiKey(false);
     setModelsExpanded(false);
+    setExpandedModelIds(new Set());
     setFetchModelsMsg(null);
     setEditing(true);
   }, [provider]);
+
+  const updateModelDeclared = useCallback((modelId: string, updater: SetStateAction<ModelDeclaredCapabilities>) => {
+    setFormModels(prev => prev.map(m => m.id === modelId
+      ? {
+          ...m,
+          declaredCapabilities: typeof updater === 'function'
+            ? (updater as (p: ModelDeclaredCapabilities) => ModelDeclaredCapabilities)(m.declaredCapabilities ?? {})
+            : updater,
+        }
+      : m));
+  }, []);
+
+  const toggleModelExpand = useCallback((id: string) => {
+    setExpandedModelIds(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  }, []);
 
   const handleSave = useCallback(() => {
     const patch: Partial<ProviderInstance> = {
@@ -120,10 +139,13 @@ export default function ProviderCard({ provider, isActive }: ProviderCardProps) 
     };
     // Only touch declaredCapabilities when the advanced section is actually shown;
     // otherwise a hidden section must not clobber a provider's existing caps.
-    if (showAdvanced) patch.declaredCapabilities = { ...modelCaps, useRawUrl };
+    // Per-model capabilities live on each formModels[i].declaredCapabilities (already
+    // included via `models: formModels` above); here we only preserve the provider's
+    // existing endpoint fields and overlay the live useRawUrl toggle.
+    if (showAdvanced) patch.declaredCapabilities = { ...provider.declaredCapabilities, useRawUrl };
     updateProvider(provider.id, patch);
     setEditing(false);
-  }, [provider.id, formName, formApiKey, formBaseUrl, formModels, showAdvanced, modelCaps, useRawUrl, updateProvider]);
+  }, [provider.id, provider.declaredCapabilities, formName, formApiKey, formBaseUrl, formModels, showAdvanced, useRawUrl, updateProvider]);
 
   const selectModel = useSettingsStore((s) => s.selectModel);
 
@@ -180,10 +202,15 @@ export default function ProviderCard({ provider, isActive }: ProviderCardProps) 
     setFetchingModels(false);
     if (result.success && result.models.length > 0) {
       setFormModels((prev) => {
+        const byId = new Map(prev.map(m => [m.id, m]));
         const customModels = prev.filter((m) => m.isCustom);
         const fetchedIds = new Set(result.models.map((m) => m.id));
         const preserved = customModels.filter((m) => !fetchedIds.has(m.id));
-        return [...result.models, ...preserved];
+        const merged = result.models.map((fm) => {
+          const old = byId.get(fm.id);
+          return old?.declaredCapabilities ? { ...fm, declaredCapabilities: old.declaredCapabilities } : fm;
+        });
+        return [...merged, ...preserved];
       });
       setFetchModelsMsg({ ok: true, text: format(t.settings.fetchModelsSuccess, { count: result.models.length }) });
     } else {
@@ -298,8 +325,48 @@ export default function ProviderCard({ provider, isActive }: ProviderCardProps) 
               {fetchModelsMsg.text}
             </p>
           )}
-          {/* Model chips — collapsed by default, expand to see all */}
-          {formModels.length > 0 && (() => {
+          {/* Model list: row layout w/ per-model expand when advanced config applies,
+              otherwise the original collapsed chip layout. */}
+          {formModels.length > 0 && (showAdvanced ? (
+            <div className="space-y-1 rounded-lg border border-[var(--abu-border)] p-2">
+              {formModels.map((model) => {
+                const isExpanded = expandedModelIds.has(model.id);
+                return (
+                  <div key={model.id} className="space-y-0">
+                    <div className="flex items-center gap-1.5 px-1 py-1 rounded-md hover:bg-[var(--abu-bg-hover)]">
+                      <button
+                        type="button"
+                        onClick={() => toggleModelExpand(model.id)}
+                        className="text-[var(--abu-text-muted)] hover:text-[var(--abu-text-primary)] shrink-0"
+                      >
+                        <ChevronDown className={cn('h-3.5 w-3.5 transition-transform', isExpanded && 'rotate-180')} />
+                      </button>
+                      <span className="text-xs text-[var(--abu-text-primary)] flex-1 truncate">
+                        {model.label || model.id}
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => setFormModels(prev => prev.filter(m => m.id !== model.id))}
+                        className="text-[var(--abu-text-muted)] hover:text-red-400 shrink-0"
+                      >
+                        <X className="h-3 w-3" />
+                      </button>
+                    </div>
+                    {isExpanded && (
+                      <div className="pl-2 pt-2 pb-1 border-l-2 border-[var(--abu-border)] ml-1 space-y-1.5">
+                        <p className="text-[11px] text-[var(--abu-text-tertiary)]">{t.settings.capPerModelHint}</p>
+                        <AdvancedCapabilitiesFields
+                          declared={model.declaredCapabilities ?? {}}
+                          setDeclared={(u) => updateModelDeclared(model.id, u)}
+                          apiFormat={provider.apiFormat}
+                        />
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          ) : (() => {
             const visible = modelsExpanded ? formModels : formModels.slice(0, MODELS_COLLAPSED_COUNT);
             const hidden = formModels.length - MODELS_COLLAPSED_COUNT;
             return (
@@ -340,7 +407,7 @@ export default function ProviderCard({ provider, isActive }: ProviderCardProps) 
                 )}
               </div>
             );
-          })()}
+          })())}
           {/* Inline add input */}
           <div className="inline-flex items-center gap-1">
             <input
@@ -361,11 +428,6 @@ export default function ProviderCard({ provider, isActive }: ProviderCardProps) 
             </button>
           </div>
         </div>
-
-        {/* Edit: Advanced capabilities (custom / local providers only) */}
-        {showAdvanced && (
-          <AdvancedCapabilitiesFields declared={modelCaps} setDeclared={setModelCaps} apiFormat={provider.apiFormat} />
-        )}
 
         {/* Edit: Actions */}
         <div className="flex justify-end gap-2 pt-2 border-t border-[var(--abu-border)]">

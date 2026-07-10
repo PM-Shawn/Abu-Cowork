@@ -812,6 +812,7 @@ export interface TranslationDict {
     capMaxInput: string;
     capMaxOutput: string;
     capTokenDefault: string;
+    capPerModelHint: string;
     // Model fetch status messages (ProviderCard + AddProviderModal)
     fetchModelsEmpty: string;
     fetchModelsFailed: string;

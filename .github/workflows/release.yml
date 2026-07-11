@@ -55,6 +55,14 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
           RAW_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           VITE_CONSOLE_URL: ${{ secrets.VITE_CONSOLE_URL }}
+          # Apple Developer ID code signing + notarization. Used only on the
+          # macOS targets; on Windows these are simply ignored.
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
         shell: bash
         run: |
           # Write signing key to file. GitHub Secrets injection or shell expansion
@@ -74,8 +82,77 @@ jobs:
           echo "Last 16 bytes (hex):"
           tail -c 16 "$RUNNER_TEMP/tauri-signing-key.txt" | od -c | head -2
           export TAURI_SIGNING_PRIVATE_KEY="$RUNNER_TEMP/tauri-signing-key.txt"
+
+          # ── macOS: Developer ID signing of embedded binaries + notarization ──
+          # Notarization rejects any unsigned Mach-O inside the .app. Abu bundles a
+          # standalone Python runtime (interpreter + dylibs + compiled .so), so we
+          # import the Developer ID cert into a throwaway keychain and deep-sign
+          # every embedded Mach-O with the hardened runtime BEFORE Tauri bundles
+          # and signs the outer .app. Tauri then notarizes + staples using the
+          # App Store Connect API key.
+          if [[ "${{ matrix.target }}" == *apple* ]]; then
+            KEYCHAIN="$RUNNER_TEMP/app-signing.keychain-db"
+            KEYCHAIN_PWD="$(openssl rand -base64 24)"
+            security create-keychain -p "$KEYCHAIN_PWD" "$KEYCHAIN"
+            security set-keychain-settings -lut 21600 "$KEYCHAIN"
+            security unlock-keychain -p "$KEYCHAIN_PWD" "$KEYCHAIN"
+
+            echo "$APPLE_CERTIFICATE" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+            security import "$RUNNER_TEMP/cert.p12" -k "$KEYCHAIN" \
+              -P "$APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+            rm -f "$RUNNER_TEMP/cert.p12"
+            # Allow codesign to use the key without an interactive prompt.
+            security set-key-partition-list -S apple-tool:,apple:,codesign: \
+              -s -k "$KEYCHAIN_PWD" "$KEYCHAIN" >/dev/null
+            # Put our keychain on the search list so codesign/Tauri can find the identity.
+            EXISTING_KC="$(security list-keychains -d user | sed 's/[[:space:]"]//g' | tr '\n' ' ')"
+            security list-keychains -d user -s "$KEYCHAIN" $EXISTING_KC
+
+            ENTITLEMENTS="$PWD/src-tauri/entitlements.plist"
+            echo "== Deep-signing embedded Mach-O binaries in python-runtime =="
+            SIGN_COUNT=0
+            while IFS= read -r -d '' f; do
+              if file -b "$f" | grep -q 'Mach-O'; then
+                codesign --force --timestamp --options runtime \
+                  --entitlements "$ENTITLEMENTS" \
+                  --sign "$APPLE_SIGNING_IDENTITY" "$f"
+                SIGN_COUNT=$((SIGN_COUNT + 1))
+              fi
+            done < <(find src-tauri/python-runtime -type f -print0)
+            echo "Signed $SIGN_COUNT embedded Mach-O files."
+
+            # Write the notary API key to disk for Tauri's notarytool invocation.
+            mkdir -p "$RUNNER_TEMP/private_keys"
+            APPLE_API_KEY_PATH="$RUNNER_TEMP/private_keys/AuthKey_${APPLE_API_KEY}.p8"
+            printf '%s' "$APPLE_API_KEY_P8" > "$APPLE_API_KEY_PATH"
+            export APPLE_API_KEY_PATH
+
+            # The identity is already in our keychain; unset the cert env so Tauri
+            # reuses it (a second import would make `--sign <name>` ambiguous).
+            unset APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD
+          fi
+
           npx tauri build --target ${{ matrix.target }}
-          rm -f "$RUNNER_TEMP/tauri-signing-key.txt"
+          rm -f "$RUNNER_TEMP/tauri-signing-key.txt" "${APPLE_API_KEY_PATH:-/nonexistent}"
+
+      - name: Verify macOS notarization
+        if: contains(matrix.target, 'apple')
+        shell: bash
+        run: |
+          # Fail loudly here if signing/notarization silently didn't happen, so a
+          # broken build never ships to users as "damaged / unidentified developer".
+          TARGET="${{ matrix.target }}"
+          BUNDLE="src-tauri/target/${TARGET}/release/bundle"
+          APP="$(ls -d "$BUNDLE"/macos/*.app | head -1)"
+          echo "== stapler validate (app) =="
+          xcrun stapler validate "$APP"
+          echo "== spctl assess (app) =="
+          spctl -a -vvv --type execute "$APP"
+          DMG="$(ls "$BUNDLE"/dmg/*.dmg 2>/dev/null | head -1 || true)"
+          if [[ -n "$DMG" ]]; then
+            echo "== stapler validate (dmg) =="
+            xcrun stapler validate "$DMG" || echo "note: dmg not stapled (app inside is; acceptable)"
+          fi
 
       - name: Create GitHub Release (idempotent)
         env:

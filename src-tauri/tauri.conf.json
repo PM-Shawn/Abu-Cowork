@@ -73,7 +73,8 @@
     "category": "Productivity",
     "shortDescription": "AI-powered desktop office assistant",
     "macOS": {
-      "infoPlist": "Info.plist"
+      "infoPlist": "Info.plist",
+      "entitlements": "entitlements.plist"
     },
     "windows": {
       "nsis": {

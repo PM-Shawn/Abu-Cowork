@@ -13,10 +13,12 @@ import { Select } from '@/components/ui/select';
 import { Toggle } from '@/components/ui/toggle';
 import { checkProviderHealth } from '@/core/llm/healthCheck';
 import { buildFullChatUrl } from '@/core/llm/urlUtils';
+import { isKnownModel } from '@/core/llm/modelCapabilities';
 import { useSettingsStore, PROVIDER_CONFIGS } from '@/stores/settingsStore';
 import { PROVIDER_GUIDES } from './providerGuides';
 import { computeShowAdvanced, defaultModelDeclaredCapabilities } from './providerCapabilities';
 import { toModelInfo } from './modelInfoUtil';
+import { sortKnownFirst, computeFetchPreselection, SMALL_LIST_MAX } from './fetchModelUtils';
 import AdvancedCapabilitiesFields from './AdvancedCapabilitiesFields';
 import type { LLMProvider, ApiFormat } from '@/types';
 import type { ModelInfo, ProviderSource, ModelDeclaredCapabilities } from '@/types/provider';
@@ -166,6 +168,9 @@ export default function AddProviderModal({ open: isOpen, onClose }: AddProviderM
   const [fetchModelsStatus, setFetchModelsStatus] = useState<FetchModelsStatus>('idle');
   const [fetchedModels, setFetchedModels] = useState<ModelInfo[]>([]);
   const [fetchModelsError, setFetchModelsError] = useState('');
+  // Scoped search over the fetched-models checklist below — distinct from
+  // `searchQuery` above, which filters the provider-type dropdown.
+  const [modelListFilter, setModelListFilter] = useState('');
 
   // ── Advanced capabilities (custom/local providers only) ──
   // Keyed by model id — populated as models are selected/added, independent of
@@ -283,6 +288,7 @@ export default function AddProviderModal({ open: isOpen, onClose }: AddProviderM
       setFetchModelsStatus('idle');
       setFetchedModels([]);
       setFetchModelsError('');
+      setModelListFilter('');
       setApiKey('');
       setShowApiKey(false);
       // (fetch removed)
@@ -312,6 +318,7 @@ export default function AddProviderModal({ open: isOpen, onClose }: AddProviderM
     setFetchModelsStatus('idle');
     setFetchedModels([]);
     setFetchModelsError('');
+    setModelListFilter('');
   }, [providerPlans]);
 
   const handleNameChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
@@ -428,6 +435,7 @@ export default function AddProviderModal({ open: isOpen, onClose }: AddProviderM
     setFetchModelsStatus('fetching');
     setFetchedModels([]);
     setFetchModelsError('');
+    setModelListFilter('');
 
     const result = await fetchProviderModels(
       baseUrl,
@@ -436,10 +444,16 @@ export default function AddProviderModal({ open: isOpen, onClose }: AddProviderM
     );
 
     if (result.success && result.models.length > 0) {
-      setFetchedModels(result.models);
-      setSelectedModels(new Set(result.models.map((m) => m.id)));
+      // Known-first ordering + convergence: for a large (aggregator-style)
+      // result, pre-check only ids the local capability table recognizes,
+      // union'd with whatever was already selected (e.g. a plan's curated
+      // preset) so Fetch never silently wipes it. Small direct-provider
+      // results still pre-check everything (see fetchModelUtils.ts).
+      const sorted = sortKnownFirst(result.models, isKnownModel);
+      setFetchedModels(sorted);
+      setSelectedModels((prev) => computeFetchPreselection(sorted, isKnownModel, prev));
       if (showAdvanced) {
-        seedDeclaredDefaults(result.models.map((m) => m.id));
+        seedDeclaredDefaults(sorted.map((m) => m.id));
       }
       setFetchModelsStatus('success');
     } else if (result.success) {
@@ -476,8 +490,11 @@ export default function AddProviderModal({ open: isOpen, onClose }: AddProviderM
       }));
       setOllamaModels(modelInfos);
 
-      // Auto-select all fetched models
-      setSelectedModels(new Set(modelInfos.map((m) => m.id)));
+      // Auto-select fetched models — Ollama catalogs are local pulls, always
+      // well under SMALL_LIST_MAX, so this stays "select everything" in
+      // practice; still union'd with whatever was already selected (e.g. a
+      // manually-added id) so re-checking Ollama can't silently drop it.
+      setSelectedModels((prev) => computeFetchPreselection(modelInfos, isKnownModel, prev));
       if (showAdvanced) {
         seedDeclaredDefaults(modelInfos.map((m) => m.id));
       }
@@ -622,6 +639,7 @@ export default function AddProviderModal({ open: isOpen, onClose }: AddProviderM
     setFetchModelsStatus('idle');
     setFetchedModels([]);
     setFetchModelsError('');
+    setModelListFilter('');
     setPerModelDeclared({});
     setExpandedModelIds(new Set());
     setUseRawUrl(false);
@@ -956,8 +974,28 @@ export default function AddProviderModal({ open: isOpen, onClose }: AddProviderM
 
                 if (!showAddModelInput && displayList.length === 0) return null;
 
+                // Only surface the scoped search once the checklist is large enough
+                // that scrolling through it to find one model is actually annoying
+                // (aggregator/gateway fetches) — a handful of models doesn't need it.
+                const showModelListFilter = displayList.length > SMALL_LIST_MAX;
+                const filteredList = showModelListFilter && modelListFilter.trim()
+                  ? displayList.filter((m) => m.id.toLowerCase().includes(modelListFilter.trim().toLowerCase()))
+                  : displayList;
+
                 return (
-                  <div className="max-h-48 overflow-y-auto space-y-2">
+                  <div className="space-y-2">
+                    {showModelListFilter && (
+                      <div className="relative">
+                        <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-[var(--abu-text-placeholder)]" />
+                        <Input
+                          value={modelListFilter}
+                          onChange={(e) => setModelListFilter(e.target.value)}
+                          placeholder={t.settings.filterModelsPlaceholder}
+                          className="pl-8 h-7 text-xs"
+                        />
+                      </div>
+                    )}
+                    <div className="max-h-48 overflow-y-auto space-y-2">
                     {/* Inline add-model input, revealed at the top of the model list */}
                     {showAddModelInput && (
                       <div className="flex items-center gap-1.5">
@@ -984,7 +1022,12 @@ export default function AddProviderModal({ open: isOpen, onClose }: AddProviderM
                       </div>
                     )}
 
-                    {displayList.map((model) => {
+                    {showModelListFilter && filteredList.length === 0 && (
+                      <p className="text-xs text-[var(--abu-text-tertiary)] px-1 py-2">
+                        {t.settings.filterModelsNoResults}
+                      </p>
+                    )}
+                    {filteredList.map((model) => {
                       const isSelected = hasFetched ? selectedModels.has(model.id) : true;
                       return (
                         <div key={model.id} className="rounded-lg border border-[var(--abu-border)] p-2">
@@ -1016,6 +1059,7 @@ export default function AddProviderModal({ open: isOpen, onClose }: AddProviderM
                         </div>
                       );
                     })}
+                    </div>
                   </div>
                 );
               })()}

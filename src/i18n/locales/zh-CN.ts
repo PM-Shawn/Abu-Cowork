@@ -730,6 +730,8 @@ const zhCN: TranslationDict = {
     capPerModelHint: '能力仅作用于本模型',
     fetchModelsEmpty: '未获取到模型，请手动添加',
     fetchModelsFailed: '获取失败',
+    filterModelsPlaceholder: '搜索模型…',
+    filterModelsNoResults: '没有匹配的模型',
     enterpriseMode: '企业模式',
   },
 

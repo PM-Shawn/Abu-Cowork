@@ -822,6 +822,9 @@ export interface TranslationDict {
     // Model fetch status messages (ProviderCard + AddProviderModal)
     fetchModelsEmpty: string;
     fetchModelsFailed: string;
+    // Scoped search over a large fetched-models checklist (aggregator/gateway convergence)
+    filterModelsPlaceholder: string;
+    filterModelsNoResults: string;
     // Enterprise tab label in SystemSettingsModal
     enterpriseMode: string;
   };

@@ -5,6 +5,7 @@ import {
   computeReasoningParams,
   isReasoningStarvation,
   deriveDeclaredDefaults,
+  isKnownModel,
   CONTENT_FLOOR_TOKENS,
 } from './modelCapabilities';
 import { classifyThinking } from './model-data/classify';
@@ -219,6 +220,16 @@ describe('modelCapabilities', () => {
       expect(deriveDeclaredDefaults('gpt-4o').supportsTools).toBe(true);
       expect(deriveDeclaredDefaults('deepseek-chat').supportsTools).toBe(true);
       expect(deriveDeclaredDefaults('totally-unknown-proxy-model-xyz').supportsTools).toBe(true);
+    });
+  });
+
+  describe('isKnownModel', () => {
+    it('returns true for a KNOWN_MODELS-table id', () => {
+      expect(isKnownModel('gpt-4o')).toBe(true);
+    });
+
+    it('returns false for an unrecognized id that falls through to FALLBACK_DEFAULT', () => {
+      expect(isKnownModel('totally-unknown-xyz')).toBe(false);
     });
   });
 });

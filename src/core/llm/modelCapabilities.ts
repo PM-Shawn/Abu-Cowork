@@ -273,3 +273,14 @@ export function deriveDeclaredDefaults(modelId: string): import('@/types/provide
     supportsReasoning: caps.thinking !== false,
   };
 }
+
+/**
+ * True if the id resolves to real capabilities (KNOWN_MODELS exact/family-prefix
+ * match, or a family regex pattern), false if it falls through to the generic
+ * FALLBACK_DEFAULT (unrecognized id). Reuses the same identity check as
+ * `deriveDeclaredDefaults` above — every recognized branch returns a fresh
+ * object literal, so `=== FALLBACK_DEFAULT` only matches the pure-fallback path.
+ */
+export function isKnownModel(modelId: string): boolean {
+  return resolveCapabilities(modelId) !== FALLBACK_DEFAULT;
+}

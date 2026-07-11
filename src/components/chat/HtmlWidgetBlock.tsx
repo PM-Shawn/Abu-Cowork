@@ -1,5 +1,12 @@
 import { useI18n, getI18n } from '@/i18n';
 import RenderableCodeBlock, { type CodeBlockRendererConfig } from './RenderableCodeBlock';
+import {
+  buildPreviewNeutralizeCss,
+  ensureDoctype,
+  isFullDocument,
+  WIDGET_PREVIEW_PHASE_CLASS,
+} from './widgetNormalize';
+import { WIDGET_RECEIVER_DOM_JS } from './widgetReceiverDom';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -46,10 +53,15 @@ input[type="range"] { accent-color: var(--abu-primary); }
 // Receiver page loaded once into iframe.srcdoc — all updates come via postMessage.
 const RECEIVER_HTML = `<!DOCTYPE html><html><head>
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline' ${CDN_ALLOWLIST}; style-src 'unsafe-inline' ${CDN_ALLOWLIST}; img-src data: blob: ${CDN_ALLOWLIST}; media-src data: blob: ${CDN_ALLOWLIST}; connect-src ${CDN_ALLOWLIST}; font-src data: ${CDN_ALLOWLIST};">
-<style>${BASE_STYLES}</style>
+<style>${BASE_STYLES}
+${buildPreviewNeutralizeCss()}
+</style>
 </head><body>
 <script>
 (function(){
+  // Shared DOM logic (DOMParser injection, morph, blank fallback) — sourced
+  // from widgetReceiverDom.ts so vitest can exercise the exact same code.
+${WIDGET_RECEIVER_DOM_JS}
   var lastH=0, first=true;
   function reportHeight(){
     var h=document.documentElement.scrollHeight;
@@ -72,7 +84,16 @@ const RECEIVER_HTML = `<!DOCTYPE html><html><head>
   window.addEventListener('message',function(e){
     if(!e.data)return;
     if(e.data.type==='widget:update'){
-      document.body.innerHTML=e.data.html;
+      // Platform parser handles fragments AND full documents (missing <body>,
+      // '</body>' inside script strings, '<html' in comments, ...) uniformly.
+      var udoc=abuParseHtml(e.data.html);
+      // Drop any script that slipped through (host strips them for preview;
+      // this is defense in depth — preview must never execute author JS).
+      abuCollectScripts(udoc);
+      abuInjectHeadAssets(udoc);
+      abuApplyBodyAttributes(udoc);
+      document.body.classList.add('${WIDGET_PREVIEW_PHASE_CLASS}');
+      abuMorphChildren(document.body,udoc.body);
       // Prefetch external scripts during preview so they're cached by finalize.
       // Uses <link rel="prefetch"> — downloads without executing.
       if(e.data.scripts){
@@ -87,35 +108,54 @@ const RECEIVER_HTML = `<!DOCTYPE html><html><head>
       reportHeight();
     }
     if(e.data.type==='widget:finalize'){
-      var tmp=document.createElement('div');
-      tmp.innerHTML=e.data.html;
-      var scripts=[];
-      tmp.querySelectorAll('script').forEach(function(s){
-        scripts.push({src:s.src,text:s.textContent,type:s.type});s.remove();
-      });
+      // NOTE: the preview neutralizer class stays ON through the whole
+      // script chain — content must remain visible while (possibly slow)
+      // CDN scripts load, and IntersectionObservers attach while everything
+      // is visible so in-view items get their reveal class before the
+      // neutralizer lifts. Failure direction flips from "blank" to
+      // "no animation".
+      // Finalize receives the RAW author code — head scripts (e.g. a CDN
+      // <script src>) arrive here for the first time and must run before
+      // body scripts, in document order.
+      var fdoc=abuParseHtml(e.data.html);
+      var scripts=abuCollectScripts(fdoc);
+      abuInjectHeadAssets(fdoc);
+      abuApplyBodyAttributes(fdoc);
       var cur=document.createElement('div');
       cur.innerHTML=document.body.innerHTML;
       cur.querySelectorAll('script').forEach(function(s){s.remove();});
-      if(tmp.innerHTML!==cur.innerHTML){document.body.innerHTML=tmp.innerHTML;}
+      if(fdoc.body.innerHTML!==cur.innerHTML){document.body.innerHTML=fdoc.body.innerHTML;}
       // Chain script execution: external scripts must finish loading
       // before inline scripts run (e.g. Chart.js CDN → new Chart())
       function runNext(i){
         if(i>=scripts.length){
-          // Re-fire load event so window.onload handlers set by inline
-          // scripts actually execute (iframe's real load already fired earlier)
+          // Re-fire lifecycle events so author handlers actually execute:
+          // the receiver's readyState is already 'complete', so author
+          // DOMContentLoaded/onload reveal handlers would never fire on
+          // their own. bubbles:true so window-level DOMContentLoaded
+          // listeners fire too (the native event bubbles to window).
+          document.dispatchEvent(new Event('DOMContentLoaded',{bubbles:true}));
           window.dispatchEvent(new Event('load'));
+          document.body.classList.remove('${WIDGET_PREVIEW_PHASE_CLASS}');
           setTimeout(reportHeight,100);
+          // Whole-widget blank fallback (see widgetReceiverDom.ts): if
+          // lifting the neutralizer leaves EVERY body child invisible,
+          // re-add the class. rAF + delay lets author reveal effects settle.
+          requestAnimationFrame(function(){
+            setTimeout(function(){
+              if(abuApplyBlankFallback()){reportHeight();}
+            },150);
+          });
           return;
         }
-        var s=scripts[i];var el=document.createElement('script');
-        if(s.type) el.type=s.type;
+        // abuCreateScriptElement copies ALL original attributes (id/type/
+        // data-* — e.g. application/json data blocks read via getElementById).
+        var s=scripts[i];var el=abuCreateScriptElement(s);
         if(s.src){
-          el.src=s.src;
           el.onload=function(){reportHeight();runNext(i+1);};
           el.onerror=function(){runNext(i+1);};
           document.body.appendChild(el);
         }else{
-          el.textContent=s.text;
           document.body.appendChild(el);
           reportHeight();
           runNext(i+1);
@@ -152,7 +192,14 @@ const RECEIVER_HTML = `<!DOCTYPE html><html><head>
 
 const iframeMap = new WeakMap<HTMLDivElement, HTMLIFrameElement>();
 const readyMap = new WeakMap<HTMLIFrameElement, boolean>();
-const bufferMap = new WeakMap<HTMLIFrameElement, { type: string; html: string }>();
+/** Message queued for an iframe that hasn't finished loading its srcdoc yet. */
+type PendingWidgetMessage = Record<string, unknown> & { type: string; html: string };
+// Two slots — update and finalize buffered separately. On the history-reload
+// path both arrive before the iframe is ready; a single slot would let the
+// debounced finalize overwrite the buffered update, so the preview phase
+// class (applied by widget:update) would never be set before the script
+// chain runs.
+const bufferMap = new WeakMap<HTMLIFrameElement, { update?: PendingWidgetMessage; finalize?: PendingWidgetMessage }>();
 const listenerMap = new WeakMap<HTMLDivElement, (e: MessageEvent) => void>();
 
 /** Height cache — survives component remount, prevents 0→actual height jump. */
@@ -258,7 +305,11 @@ function getOrCreateIframe(container: HTMLDivElement, code: string): HTMLIFrameE
     readyMap.set(iframe, true);
     const buf = bufferMap.get(iframe);
     if (buf) {
-      iframe.contentWindow?.postMessage(buf, '*');
+      // Flush update first so the preview phase class is applied before
+      // finalize's script chain (preserves the neutralizer-on-through-
+      // script-chain guarantee for reopened conversations).
+      if (buf.update) iframe.contentWindow?.postMessage(buf.update, '*');
+      if (buf.finalize) iframe.contentWindow?.postMessage(buf.finalize, '*');
       bufferMap.delete(iframe);
     }
   };
@@ -283,11 +334,14 @@ function sendToIframe(
   html: string,
   extra?: Record<string, unknown>,
 ) {
-  const msg = { type, html, ...extra };
+  const msg: PendingWidgetMessage = { type, html, ...extra };
   if (readyMap.get(iframe)) {
     iframe.contentWindow?.postMessage(msg, '*');
   } else {
-    bufferMap.set(iframe, msg);
+    const buf = bufferMap.get(iframe) ?? {};
+    if (type === 'widget:update') buf.update = msg;
+    else buf.finalize = msg;
+    bufferMap.set(iframe, buf);
   }
 }
 
@@ -331,6 +385,8 @@ function previewHtmlWidget(code: string, container: HTMLDivElement): boolean {
 
 async function renderHtmlWidget(code: string, container: HTMLDivElement): Promise<string> {
   const iframe = getOrCreateIframe(container, code);
+  // Raw code — the receiver parses it with DOMParser (fragment or full
+  // document alike) and needs the head scripts/styles intact.
   sendToIframe(iframe, 'widget:finalize', code);
   // Return empty string to skip RenderableCodeBlock's innerHTML cache
   // (iframe state can't be restored from cached HTML string)
@@ -381,6 +437,12 @@ function captureHtmlWidgetImage(_code: string, container: HTMLDivElement): Promi
 // ---------------------------------------------------------------------------
 
 function buildFullHtml(widgetCode: string): string {
+  // Fullscreen is a REAL viewport — the author's fixed/vh choices are correct
+  // there, so no neutralization. Full documents render verbatim (wrapping
+  // them in another document would nest <html> inside <body>), with a
+  // doctype guaranteed so they don't fall into quirks mode; fragments get
+  // the base-style wrap.
+  if (isFullDocument(widgetCode)) return ensureDoctype(widgetCode);
   return `<!DOCTYPE html><html><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <style>${BASE_STYLES} body { overflow: auto; }</style>

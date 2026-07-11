@@ -1,0 +1,388 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Shawn · Data Product Manager</title>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&display=swap');
+*{margin:0;padding:0;box-sizing:border-box}
+:root{
+  --primary:#5B5FEF;--primary-light:#8184F2;--primary-dark:#3A3DCB;
+  --accent:#FF6B6B;--accent2:#4ECDC4;--bg:#FAFBFF;--card:#FFFFFF;
+  --text:#1A1A2E;--text-secondary:#6B7280;--border:#E5E7EB;
+  --gradient:linear-gradient(135deg,#5B5FEF 0%,#7C3AED 50%,#EC4899 100%);
+  --shadow:0 4px 24px rgba(91,95,239,0.10);--shadow-lg:0 12px 40px rgba(91,95,239,0.15);
+}
+html{scroll-behavior:smooth}
+body{font-family:'Inter',-apple-system,sans-serif;background:var(--bg);color:var(--text);line-height:1.6;overflow-x:hidden}
+
+/* === NAV === */
+nav{position:fixed;top:0;width:100%;background:rgba(250,251,255,0.85);backdrop-filter:blur(20px);z-index:100;border-bottom:1px solid var(--border);transition:all .3s}
+.nav-inner{max-width:1100px;margin:0 auto;display:flex;justify-content:space-between;align-items:center;padding:16px 40px}
+.logo{font-weight:800;font-size:1.3rem;background:var(--gradient);-webkit-background-clip:text;-webkit-text-fill-color:transparent;letter-spacing:-0.5px}
+.nav-links{display:flex;gap:32px}
+.nav-links a{text-decoration:none;color:var(--text-secondary);font-size:.9rem;font-weight:500;transition:color .2s}
+.nav-links a:hover{color:var(--primary)}
+
+/* === HERO === */
+.hero{min-height:100vh;display:flex;align-items:center;justify-content:center;text-align:center;padding:80px 40px 40px;position:relative;overflow:hidden}
+.hero-blob{position:absolute;border-radius:50%;filter:blur(80px);opacity:.35;animation:float 8s ease-in-out infinite}
+.hero-blob.b1{width:400px;height:400px;background:#5B5FEF;top:-80px;left:-80px}
+.hero-blob.b2{width:350px;height:350px;background:#EC4899;bottom:-60px;right:-60px;animation-delay:-3s}
+.hero-blob.b3{width:300px;height:300px;background:#4ECDC4;top:40%;right:20%;animation-delay:-5s;opacity:.2}
+@keyframes float{0%,100%{transform:translate(0,0)}50%{transform:translate(30px,-30px)}}
+.hero-content{position:relative;z-index:2;max-width:780px}
+.badge{display:inline-flex;align-items:center;gap:8px;background:rgba(91,95,239,0.08);color:var(--primary);padding:8px 18px;border-radius:50px;font-size:.82rem;font-weight:600;margin-bottom:28px;border:1px solid rgba(91,95,239,0.15)}
+.badge::before{content:'';width:8px;height:8px;background:#22C55E;border-radius:50%;animation:pulse 2s infinite}
+@keyframes pulse{0%{box-shadow:0 0 0 0 rgba(34,197,94,.5)}70%{box-shadow:0 0 0 8px rgba(34,197,94,0)}100%{box-shadow:0 0 0 0 rgba(34,197,94,0)}}
+.hero h1{font-size:clamp(2.5rem,6vw,4.5rem);font-weight:900;letter-spacing:-2px;line-height:1.05;margin-bottom:16px}
+.hero h1 .grad{background:var(--gradient);-webkit-background-clip:text;-webkit-text-fill-color:transparent}
+.hero .subtitle{font-size:clamp(1.1rem,2vw,1.45rem);color:var(--text-secondary);font-weight:400;margin-bottom:14px}
+.hero .tagline{font-size:1rem;color:var(--text-secondary);max-width:580px;margin:0 auto 36px;line-height:1.7}
+.hero-cta{display:flex;gap:16px;justify-content:center;flex-wrap:wrap}
+.btn{display:inline-flex;align-items:center;gap:8px;padding:14px 30px;border-radius:12px;font-size:.95rem;font-weight:600;text-decoration:none;transition:all .3s;cursor:pointer;border:none}
+.btn-primary{background:var(--primary);color:#fff;box-shadow:var(--shadow)}
+.btn-primary:hover{transform:translateY(-2px);box-shadow:var(--shadow-lg);background:var(--primary-dark)}
+.btn-ghost{background:var(--card);color:var(--text);border:1.5px solid var(--border)}
+.btn-ghost:hover{border-color:var(--primary);color:var(--primary);transform:translateY(-2px)}
+
+.hero-stats{display:flex;justify-content:center;gap:48px;margin-top:56px;flex-wrap:wrap}
+.stat{text-align:center}
+.stat .num{font-size:2.2rem;font-weight:800;background:var(--gradient);-webkit-background-clip:text;-webkit-text-fill-color:transparent}
+.stat .label{font-size:.8rem;color:var(--text-secondary);font-weight:500;margin-top:2px}
+
+.scroll-indicator{position:absolute;bottom:30px;left:50%;transform:translateX(-50%);font-size:1.5rem;color:var(--text-secondary);animation:bounce 2s infinite}
+@keyframes bounce{0%,100%{transform:translateX(-50%) translateY(0)}50%{transform:translateX(-50%) translateY(8px)}}
+
+/* === SECTION === */
+section{padding:100px 40px;max-width:1100px;margin:0 auto}
+.section-label{display:inline-block;font-size:.8rem;font-weight:700;text-transform:uppercase;letter-spacing:2px;color:var(--primary);margin-bottom:12px}
+.section-title{font-size:clamp(1.8rem,4vw,2.6rem);font-weight:800;letter-spacing:-1px;margin-bottom:14px}
+.section-desc{color:var(--text-secondary);font-size:1.05rem;max-width:600px;margin-bottom:48px}
+
+/* === ABOUT === */
+.about-grid{display:grid;grid-template-columns:1fr 1.4fr;gap:48px;align-items:center}
+.avatar-wrap{display:flex;justify-content:center}
+.avatar{width:240px;height:240px;border-radius:28px;background:var(--gradient);display:flex;align-items:center;justify-content:center;font-size:5rem;font-weight:800;color:#fff;box-shadow:var(--shadow-lg);position:relative}
+.avatar::after{content:'';position:absolute;inset:-8px;border-radius:32px;border:2px dashed rgba(91,95,239,.3);animation:spin 20s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+.about-text p{color:var(--text-secondary);margin-bottom:16px;font-size:1.02rem;line-height:1.8}
+.about-tags{display:flex;flex-wrap:wrap;gap:10px;margin-top:20px}
+.about-tags span{background:rgba(91,95,239,0.06);color:var(--primary);padding:6px 14px;border-radius:8px;font-size:.82rem;font-weight:500;border:1px solid rgba(91,95,239,0.12)}
+
+/* === EXPERTISE === */
+.expertise-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:24px}
+.expertise-card{background:var(--card);border-radius:20px;padding:32px 28px;border:1px solid var(--border);transition:all .3s;position:relative;overflow:hidden}
+.expertise-card::before{content:'';position:absolute;top:0;left:0;right:0;height:4px;background:var(--gradient);transform:scaleX(0);transform-origin:left;transition:transform .3s}
+.expertise-card:hover{transform:translateY(-6px);box-shadow:var(--shadow-lg);border-color:transparent}
+.expertise-card:hover::before{transform:scaleX(1)}
+.expertise-icon{width:52px;height:52px;border-radius:14px;display:flex;align-items:center;justify-content:center;font-size:1.6rem;margin-bottom:20px;background:rgba(91,95,239,0.08)}
+.expertise-card h3{font-size:1.15rem;font-weight:700;margin-bottom:10px}
+.expertise-card p{color:var(--text-secondary);font-size:.9rem;line-height:1.65}
+
+/* === EXPERIENCE === */
+.timeline{position:relative;padding-left:36px}
+.timeline::before{content:'';position:absolute;left:12px;top:8px;bottom:8px;width:2px;background:linear-gradient(to bottom,var(--primary),var(--accent),var(--accent2))}
+.timeline-item{position:relative;margin-bottom:40px}
+.timeline-item:last-child{margin-bottom:0}
+.timeline-item::before{content:'';position:absolute;left:-30px;top:4px;width:24px;height:24px;border-radius:50%;background:#fff;border:3px solid var(--primary);box-shadow:0 0 0 4px rgba(91,95,239,.1)}
+.timeline-content{background:var(--card);border-radius:16px;padding:26px 28px;border:1px solid var(--border);transition:all .3s}
+.timeline-content:hover{box-shadow:var(--shadow);transform:translateX(4px)}
+.timeline-date{font-size:.78rem;font-weight:700;color:var(--primary);text-transform:uppercase;letter-spacing:.5px}
+.timeline-content h3{font-size:1.15rem;font-weight:700;margin:6px 0 2px}
+.timeline-content .company{color:var(--text-secondary);font-size:.95rem;margin-bottom:10px}
+.timeline-content ul{list-style:none;padding:0}
+.timeline-content li{color:var(--text-secondary);font-size:.9rem;padding-left:18px;position:relative;margin-bottom:6px}
+.timeline-content li::before{content:'▸';position:absolute;left:0;color:var(--accent2);font-size:.8rem}
+
+/* === PROJECTS === */
+.projects-grid{display:grid;grid-template-columns:1fr 1fr;gap:24px}
+.project-card{background:var(--card);border-radius:20px;overflow:hidden;border:1px solid var(--border);transition:all .3s;cursor:pointer}
+.project-card:hover{transform:translateY(-6px);box-shadow:var(--shadow-lg)}
+.project-banner{height:140px;display:flex;align-items:center;justify-content:center;font-size:3rem;position:relative;overflow:hidden}
+.project-banner.b1{background:linear-gradient(135deg,#5B5FEF,#7C3AED)}
+.project-banner.b2{background:linear-gradient(135deg,#EC4899,#F472B6)}
+.project-card .body{padding:24px 26px}
+.project-card .body h3{font-size:1.1rem;font-weight:700;margin-bottom:8px}
+.project-card .body p{color:var(--text-secondary);font-size:.88rem;margin-bottom:14px;line-height:1.6}
+.project-tags{display:flex;gap:8px;flex-wrap:wrap}
+.project-tags span{font-size:.75rem;padding:4px 10px;border-radius:6px;background:rgba(91,95,239,0.06);color:var(--primary);font-weight:500}
+
+/* === METRICS BAR === */
+.metrics-bar{display:grid;grid-template-columns:repeat(4,1fr);gap:20px;background:var(--card);border-radius:24px;padding:40px;border:1px solid var(--border);box-shadow:var(--shadow);margin-top:20px}
+.metric{text-align:center}
+.metric .icon{font-size:2rem;margin-bottom:10px}
+.metric .value{font-size:1.8rem;font-weight:800;background:var(--gradient);-webkit-background-clip:text;-webkit-text-fill-color:transparent}
+.metric .label{font-size:.82rem;color:var(--text-secondary);margin-top:4px}
+
+/* === CONTACT === */
+.contact{text-align:center;background:var(--card);border-radius:32px;padding:64px 40px;border:1px solid var(--border);box-shadow:var(--shadow);max-width:800px;margin:0 auto}
+.contact h2{font-size:clamp(1.6rem,4vw,2.2rem);font-weight:800;margin-bottom:14px}
+.contact p{color:var(--text-secondary);font-size:1.05rem;margin-bottom:32px}
+.contact-btns{display:flex;gap:16px;justify-content:center;flex-wrap:wrap}
+.contact-btns .btn{padding:14px 28px}
+footer{text-align:center;padding:40px;color:var(--text-secondary);font-size:.85rem;border-top:1px solid var(--border)}
+
+/* === ANIMATIONS === */
+.fade-up{opacity:0;transform:translateY(30px);transition:opacity .7s ease,transform .7s ease}
+.fade-up.visible{opacity:1;transform:translateY(0)}
+
+/* === RESPONSIVE === */
+@media(max-width:768px){
+  .nav-links{display:none}
+  .about-grid{grid-template-columns:1fr;text-align:center}
+  .expertise-grid{grid-template-columns:1fr}
+  .projects-grid{grid-template-columns:1fr}
+  .metrics-bar{grid-template-columns:1fr 1fr}
+  .hero-stats{gap:24px}
+  .stat .num{font-size:1.6rem}
+  section{padding:60px 24px}
+}
+</style>
+</head>
+<body>
+
+<!-- NAV -->
+<nav>
+  <div class="nav-inner">
+    <div class="logo">Shawn.</div>
+    <div class="nav-links">
+      <a href="#about">About</a>
+      <a href="#expertise">Expertise</a>
+      <a href="#experience">Experience</a>
+      <a href="#projects">Projects</a>
+      <a href="#contact">Contact</a>
+    </div>
+  </div>
+</nav>
+
+<!-- HERO -->
+<div class="hero">
+  <div class="hero-blob b1"></div>
+  <div class="hero-blob b2"></div>
+  <div class="hero-blob b3"></div>
+  <div class="hero-content">
+    <div class="badge">Available for collaboration</div>
+    <h1>Hi, I'm <span class="grad">Shawn</span></h1>
+    <p class="subtitle">Data Product Manager</p>
+    <p class="tagline">I turn raw data into decisions — building metrics systems, driving business analysis, and creating intelligent monitoring that helps teams act with confidence. Data validates value first; everything else follows.</p>
+    <div class="hero-cta">
+      <a href="#projects" class="btn btn-primary">View My Work →</a>
+      <a href="#contact" class="btn btn-ghost">Get in Touch</a>
+    </div>
+    <div class="hero-stats">
+      <div class="stat"><div class="num" data-target="50">0</div><div class="label">Metrics Defined</div></div>
+      <div class="stat"><div class="num" data-target="100">0</div><div class="label">Reports Automated</div></div>
+      <div class="stat"><div class="num" data-target="5">0</div><div class="label">Years Experience</div></div>
+      <div class="stat"><div class="num" data-target="10" data-suffix="+">0</div><div class="label">Teams Empowered</div></div>
+    </div>
+  </div>
+  <div class="scroll-indicator">⌄</div>
+</div>
+
+<!-- ABOUT -->
+<section id="about" class="fade-up">
+  <div class="section-label">About Me</div>
+  <h2 class="section-title">Bridging Data &amp; Business</h2>
+  <p class="section-desc">A product manager who speaks fluent SQL and business strategy.</p>
+  <div class="about-grid">
+    <div class="avatar-wrap">
+      <div class="avatar">S</div>
+    </div>
+    <div class="about-text">
+      <p>I'm a Data Product Manager at <strong>DiDi</strong>, where I lead offline data infrastructure, metrics systems, and business analytics. My north star is simple: <strong>validate value with data first</strong>, then build the analysis, attribution, and monitoring layers that turn insight into action.</p>
+      <p>From designing metric frameworks to deploying intelligent alert systems, I make sure every team can trust their numbers and move fast. I love the intersection where rigorous data engineering meets sharp product thinking.</p>
+      <div class="about-tags">
+        <span>📊 Metrics Systems</span>
+        <span>🔍 Business Analysis</span>
+        <span>📈 Data Visualization</span>
+        <span>🤖 AI Agents</span>
+        <span>📉 Attribution Modeling</span>
+        <span>🚨 Monitoring &amp; Alerting</span>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- EXPERTISE -->
+<section id="expertise" class="fade-up">
+  <div class="section-label">Core Expertise</div>
+  <h2 class="section-title">What I Do Best</h2>
+  <p class="section-desc">Specialized in the full data product lifecycle — from raw pipelines to boardroom-ready insights.</p>
+  <div class="expertise-grid">
+    <div class="expertise-card">
+      <div class="expertise-icon">📐</div>
+      <h3>Metrics System Design</h3>
+      <p>Architecting end-to-end metric frameworks — from atomic indicators to composite business KPIs — with clear definitions, ownership, and lineage tracking.</p>
+    </div>
+    <div class="expertise-card">
+      <div class="expertise-icon">📊</div>
+      <h3>Business Analysis</h3>
+      <p>Deep-dive analysis on growth, retention, and unit economics. Turning ambiguous business questions into structured, data-backed narratives.</p>
+    </div>
+    <div class="expertise-card">
+      <div class="expertise-icon">🤖</div>
+      <h3>Data AI Agents</h3>
+      <p>Building intelligent data assistants that let anyone query data in natural language — defining accuracy metrics, evaluation frameworks, and guardrails.</p>
+    </div>
+    <div class="expertise-card">
+      <div class="expertise-icon">📉</div>
+      <h3>Attribution &amp; Forecasting</h3>
+      <p>Multi-touch attribution models and trend forecasting that help teams understand what's driving results and where to invest next.</p>
+    </div>
+    <div class="expertise-card">
+      <div class="expertise-icon">🚨</div>
+      <h3>Monitoring &amp; Alerting</h3>
+      <p>Real-time anomaly detection and automated alert pipelines that surface problems before they become incidents.</p>
+    </div>
+    <div class="expertise-card">
+      <div class="expertise-icon">🔧</div>
+      <h3>Offline Data Platform</h3>
+      <p>Managing large-scale offline data pipelines, warehousing architecture, and self-service reporting platforms powering org-wide decisions.</p>
+    </div>
+  </div>
+</section>
+
+<!-- EXPERIENCE -->
+<section id="experience" class="fade-up">
+  <div class="section-label">Career Journey</div>
+  <h2 class="section-title">Professional Experience</h2>
+  <p class="section-desc">Years of building data products at scale.</p>
+  <div class="timeline">
+    <div class="timeline-item">
+      <div class="timeline-content">
+        <div class="timeline-date">2022 — Present</div>
+        <h3>Data Product Manager</h3>
+        <div class="company">DiDi · Beijing</div>
+        <ul>
+          <li>Leading the offline data platform and metrics system serving multiple business lines</li>
+          <li>Designed and launched the company-wide metric framework standardizing 50+ core KPIs</li>
+          <li>Built intelligent data query agent with measurable accuracy evaluation system</li>
+          <li>Drove business analysis initiatives that influenced key strategic decisions</li>
+        </ul>
+      </div>
+    </div>
+    <div class="timeline-item">
+      <div class="timeline-content">
+        <div class="timeline-date">2019 — 2022</div>
+        <h3>Senior Data Analyst</h3>
+        <div class="company">Tech Company · Beijing</div>
+        <ul>
+          <li>Owned reporting and dashboard infrastructure for growth and operations teams</li>
+          <li>Developed automated attribution models reducing manual analysis time by 70%</li>
+          <li>Collaborated cross-functionally to embed data-driven decision-making into daily workflows</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- PROJECTS -->
+<section id="projects" class="fade-up">
+  <div class="section-label">Featured Work</div>
+  <h2 class="section-title">Projects I'm Proud Of</h2>
+  <p class="section-desc">A selection of data products and platforms I've built and shipped.</p>
+  <div class="projects-grid">
+    <div class="project-card">
+      <div class="project-banner b1">🧠</div>
+      <div class="body">
+        <h3>Data Agent Accuracy Framework</h3>
+        <p>Designed a universal evaluation system for AI data agents — measuring answer accuracy, hallucination rate, and logical correctness across scenarios.</p>
+        <div class="project-tags"><span>AI Agents</span><span>Evaluation</span><span>LLM</span></div>
+      </div>
+    </div>
+    <div class="project-card">
+      <div class="project-banner b2">📐</div>
+      <div class="body">
+        <h3>Unified Metrics System</h3>
+        <p>Architected a company-wide metrics platform standardizing definitions, lineage, and ownership across all business lines.</p>
+        <div class="project-tags"><span>Metrics</span><span>Platform</span><span>Governance</span></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Metrics Bar -->
+  <div class="metrics-bar fade-up" style="margin-top:48px">
+    <div class="metric">
+      <div class="icon">⚡</div>
+      <div class="value" data-target="70" data-suffix="%">0</div>
+      <div class="label">Faster Reporting</div>
+    </div>
+    <div class="metric">
+      <div class="icon">🎯</div>
+      <div class="value" data-target="50" data-suffix="+">0</div>
+      <div class="label">Metrics Standardized</div>
+    </div>
+    <div class="metric">
+      <div class="icon">🔄</div>
+      <div class="value" data-target="100" data-suffix="%">0</div>
+      <div class="label">Pipeline Coverage</div>
+    </div>
+    <div class="metric">
+      <div class="icon">👥</div>
+      <div class="value" data-target="500" data-suffix="+">0</div>
+      <div class="label">Daily Active Users</div>
+    </div>
+  </div>
+</section>
+
+<!-- CONTACT -->
+<section id="contact" class="fade-up">
+  <div class="contact">
+    <h2>Let's Build Something <span style="background:var(--gradient);-webkit-background-clip:text;-webkit-text-fill-color:transparent">Data-Driven</span></h2>
+    <p>Whether it's metrics design, business analytics, or AI-powered data products — I'm always up for a good challenge.</p>
+    <div class="contact-btns">
+      <a href="mailto:shawn@example.com" class="btn btn-primary">✉️ Email Me</a>
+      <a href="#" class="btn btn-ghost">💼 LinkedIn</a>
+      <a href="#" class="btn btn-ghost">📝 Download CV</a>
+    </div>
+  </div>
+</section>
+
+<footer>
+  © 2026 Shawn · Data Product Manager · Crafted with ☕ and clean data
+</footer>
+
+<script>
+// Scroll reveal
+const observer = new IntersectionObserver((entries) => {
+  entries.forEach(e => {
+    if (e.isIntersecting) {
+      e.target.classList.add('visible');
+      // Animate counters inside this element
+      e.target.querySelectorAll('[data-target]').forEach(el => animateCount(el));
+    }
+  });
+}, { threshold: 0.15 });
+document.querySelectorAll('.fade-up').forEach(el => observer.observe(el));
+
+// Counter animation
+function animateCount(el) {
+  if (el.dataset.done) return;
+  el.dataset.done = '1';
+  const target = parseInt(el.dataset.target);
+  const suffix = el.dataset.suffix || '';
+  const duration = 1500;
+  const start = performance.now();
+  function tick(now) {
+    const p = Math.min((now - start) / duration, 1);
+    const eased = 1 - Math.pow(1 - p, 3);
+    el.textContent = Math.round(target * eased) + suffix;
+    if (p < 1) requestAnimationFrame(tick);
+  }
+  requestAnimationFrame(tick);
+}
+
+// Nav background on scroll
+const nav = document.querySelector('nav');
+window.addEventListener('scroll', () => {
+  if (window.scrollY > 50) {
+    nav.style.boxShadow = '0 2px 20px rgba(0,0,0,0.06)';
+  } else {
+    nav.style.boxShadow = 'none';
+  }
+});
+</script>
+</body>
+</html>

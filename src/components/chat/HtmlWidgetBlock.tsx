@@ -604,12 +604,16 @@ export function buildFullHtml(widgetCode: string): string {
   // Fragment wrap: mirror RECEIVER_HTML and ship the design system too, so a
   // widget styled with .w-*/--w-* inline renders identically fullscreen
   // (without it, those classes/vars would be undefined in this window).
+  // Center a short fragment in the fullscreen viewport instead of top-aligning
+  // it (which leaves a large void below). margin:auto on a single wrapper is
+  // scroll-safe for content taller than the viewport, unlike align-items.
   return `<!DOCTYPE html><html><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <style>${BASE_STYLES}
 ${buildWidgetDesignCss()}
-body { overflow: auto; }</style>
-</head><body>${widgetCode}</body></html>`;
+body { overflow: auto; min-height: 100vh; margin: 0; display: flex; box-sizing: border-box; }
+.abu-fs-center { margin: auto; max-width: 100%; }</style>
+</head><body><div class="abu-fs-center">${widgetCode}</div></body></html>`;
 }
 
 // ---------------------------------------------------------------------------

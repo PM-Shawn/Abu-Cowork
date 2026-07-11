@@ -14,6 +14,9 @@
           var theme = 'light'; // match settingsStore default
           if (stored) {
             var parsed = JSON.parse(stored);
+            // Cache the parsed blob so the boot language script below can reuse it
+            // instead of re-parsing this (potentially tens-of-KB) settings blob.
+            window.__abuSettings = parsed;
             if (parsed && parsed.state && parsed.state.theme) {
               theme = parsed.state.theme;
             }
@@ -81,11 +84,40 @@
     </script>
   </head>
   <body style="margin:0">
+    <div id="app-error">
+      <h2>Abu failed to start</h2>
+      <p>An error occurred while loading the app. Please try restarting Abu.</p>
+      <p>If the problem persists, please report it on
+        <a href="https://github.com/PM-Shawn/Abu/issues" target="_blank">GitHub Issues</a>
+        and include the details below (a screenshot is fine):
+      </p>
+      <pre>(Loading error details…)</pre>
+    </div>
+    <div id="root">
+      <div id="app-loading">Abu is starting…</div>
+    </div>
     <script>
       // Runtime language detection for pre-React static strings.
-      // Mirrors the logic in src/i18n/index.ts detectSystemLocale().
+      // Mirrors src/i18n getResolvedLocale(): honor the user's persisted
+      // language setting ('abu-settings'.state.language), and only fall back
+      // to navigator.language when it is 'system'.
+      // Must run AFTER #app-error / #app-loading exist in the DOM, otherwise
+      // getElementById returns null and the strings stay in the English fallback.
       (function() {
-        var zh = (navigator.language || '').toLowerCase().startsWith('zh');
+        var setting = 'system';
+        try {
+          var s = window.__abuSettings; // reuse the blob already parsed by the head theme script
+          if (!s) {
+            var stored = localStorage.getItem('abu-settings');
+            if (stored) s = JSON.parse(stored);
+          }
+          if (s && s.state && s.state.language) {
+            setting = s.state.language;
+          }
+        } catch(e) {}
+        // navigator.language || userLanguage || 'en' mirrors src/i18n detectSystemLocale().
+        var sysLang = (navigator.language || navigator.userLanguage || 'en').toLowerCase();
+        var zh = setting === 'zh-CN' || (setting === 'system' && sysLang.startsWith('zh'));
         var errEl = document.getElementById('app-error');
         var loadEl = document.getElementById('app-loading');
         if (errEl) {
@@ -104,18 +136,6 @@
         }
       })();
     </script>
-    <div id="app-error">
-      <h2>Abu failed to start</h2>
-      <p>An error occurred while loading the app. Please try restarting Abu.</p>
-      <p>If the problem persists, please report it on
-        <a href="https://github.com/PM-Shawn/Abu/issues" target="_blank">GitHub Issues</a>
-        and include the details below (a screenshot is fine):
-      </p>
-      <pre>(Loading error details…)</pre>
-    </div>
-    <div id="root">
-      <div id="app-loading">Abu is starting…</div>
-    </div>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

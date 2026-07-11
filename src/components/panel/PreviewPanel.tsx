@@ -1,15 +1,17 @@
-import { useState, useEffect, lazy, Suspense } from 'react';
+import { useState, useEffect, useRef, lazy, Suspense } from 'react';
 import { readTextFile, exists } from '@tauri-apps/plugin-fs';
 import { revealItemInDir } from '@tauri-apps/plugin-opener';
 import { getBaseName, loadLocalImage } from '@/utils/pathUtils';
 import { buildPreviewUrl } from '@/utils/previewUrl';
+import { atomicWrite } from '@/utils/atomicFs';
+import { reconcileEditorContent } from '@/utils/editorReconcile';
 import { usePreviewStore } from '@/stores/previewStore';
 import { usePreviewFileWatch } from '@/hooks/usePreviewFileWatch';
-import { useI18n } from '@/i18n';
+import { useToastStore } from '@/stores/toastStore';
+import { useI18n, getI18n } from '@/i18n';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import MarkdownRenderer from '@/components/chat/MarkdownRenderer';
-import { PrismLight as SyntaxHighlighter } from 'react-syntax-highlighter';
-import { oneDark } from 'react-syntax-highlighter/dist/esm/styles/prism';
+import CodeMirrorEditor from './CodeMirrorEditor';
 import { Loader2, X, FolderOpen, Code, Eye, Globe, FileCode, FileText, FileImage, FileSpreadsheet, FileType, File } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { DocSelectionLayer } from '@/features/reference/DocSelectionLayer';
@@ -24,6 +26,13 @@ type RendererType = 'markdown' | 'code' | 'image' | 'text' | 'html' | 'pdf' | 'd
 
 /** Binary types that handle their own file reading */
 const BINARY_TYPES = new Set<RendererType>(['pdf', 'docx', 'pptx', 'xlsx']);
+
+/**
+ * Types that get an editable CodeMirror buffer (P2). html/markdown toggle
+ * between a rendered preview and this editable source view; code/text have
+ * no rendered form at all, so they're always shown editable.
+ */
+const EDITABLE_TYPES = new Set<RendererType>(['code', 'text', 'html', 'markdown']);
 
 function isDataUrl(path: string): boolean {
   return path.startsWith('data:');
@@ -49,14 +58,9 @@ function getRendererType(filePath: string): RendererType {
   return 'unsupported';
 }
 
-function getLanguage(filePath: string): string {
-  const ext = filePath.split('.').pop()?.toLowerCase() || '';
-  const langMap: Record<string, string> = {
-    ts: 'typescript', tsx: 'tsx', js: 'javascript', jsx: 'jsx',
-    py: 'python', json: 'json', yaml: 'yaml', yml: 'yaml',
-    html: 'html', css: 'css', sh: 'bash', bash: 'bash',
-  };
-  return langMap[ext] || ext || 'text';
+/** File extension, lowercased — used to pick a CodeMirror language extension. */
+function getFileExtension(filePath: string): string {
+  return filePath.split('.').pop()?.toLowerCase() || '';
 }
 
 function getFileIcon(filePath: string) {
@@ -86,7 +90,34 @@ export default function PreviewPanel() {
   const [htmlPreviewUrl, setHtmlPreviewUrl] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [htmlViewMode, setHtmlViewMode] = useState<'preview' | 'source'>('preview');
+  // Preview/source toggle — applies to html (iframe vs editable source) and
+  // markdown (rendered vs editable source). code/text have no rendered form
+  // and are always shown via the editable source view regardless of this.
+  const [viewMode, setViewMode] = useState<'preview' | 'source'>('preview');
+
+  // Editable buffer for code/text/html/markdown (P2). `draft` is what
+  // CodeMirror shows and edits; it's debounce-autosaved to disk below.
+  const [draft, setDraft] = useState<string>('');
+  const draftRef = useRef<string>('');
+  useEffect(() => { draftRef.current = draft; }, [draft]);
+  // Content last known to be on disk (initial load, or our own last
+  // successful autosave) — used by editorReconcile to detect unsaved edits.
+  const lastSavedRef = useRef<string>('');
+  // Content of our own last in-flight/successful autosave write, so a
+  // reload triggered by that very write's fs-watch echo can be told apart
+  // from a genuine external change. Cleared on save failure.
+  const selfEchoRef = useRef<string | null>(null);
+  // The file path for which `lastSavedRef`/`draft` currently hold an
+  // established editable baseline. Reloads for this same path are treated
+  // as "quiet" (no loading spinner / no reset) so typing isn't interrupted
+  // by our own autosave's fs-watch echo.
+  const establishedEditablePathRef = useRef<string | null>(null);
+  const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Mirrors whatever autosave is currently scheduled (path + content). The
+  // debounce effect's cleanup below uses this to flush a still-pending save
+  // when its target stops being the current file (switched away, or closed)
+  // instead of silently dropping it — see that cleanup for details.
+  const pendingSaveRef = useRef<{ path: string; content: string } | null>(null);
 
   const rendererType = previewFilePath ? getRendererType(previewFilePath) : 'unsupported';
   const fileName = previewFilePath && isDataUrl(previewFilePath) ? t.panel.imagePreview : (previewFilePath ? getBaseName(previewFilePath) : '');
@@ -97,18 +128,34 @@ export default function PreviewPanel() {
       setContent(null);
       setImageUrl(null);
       setHtmlPreviewUrl(null);
+      setDraft('');
+      lastSavedRef.current = '';
+      selfEchoRef.current = null;
+      establishedEditablePathRef.current = null;
       return;
     }
 
     let cancelled = false;
     let blobUrl: string | null = null;
+    const isEditableType = EDITABLE_TYPES.has(rendererType);
+    // A reload (reloadNonce bump) of a file we've already established an
+    // editable baseline for — most commonly our own autosave's fs-watch
+    // echo. Skip the full loading/reset cycle so the editor never flashes
+    // a spinner or drops focus while the user is typing.
+    const isQuietReload = isEditableType && establishedEditablePathRef.current === previewFilePath;
 
     const loadFile = async () => {
-      setLoading(true);
-      setError(null);
-      setContent(null);
-      setImageUrl(null);
-      setHtmlPreviewUrl(null);
+      if (!isQuietReload) {
+        setLoading(true);
+        setError(null);
+        setContent(null);
+        setImageUrl(null);
+        setHtmlPreviewUrl(null);
+        setDraft('');
+        lastSavedRef.current = '';
+        selfEchoRef.current = null;
+        establishedEditablePathRef.current = null;
+      }
 
       try {
         // Binary types and unsupported types don't need text reading from parent
@@ -145,14 +192,49 @@ export default function PreviewPanel() {
           if (cancelled) return;
           setContent(text);
 
-          if (rendererType === 'html') {
+          if (rendererType === 'html' && !isQuietReload) {
             const url = await buildPreviewUrl(previewFilePath);
             if (cancelled) return;
             setHtmlPreviewUrl(url);
           }
+
+          if (isEditableType) {
+            if (!isQuietReload) {
+              // Fresh load of this file: disk content becomes both the
+              // editor buffer and the reconcile baseline.
+              lastSavedRef.current = text;
+              setDraft(text);
+              establishedEditablePathRef.current = previewFilePath;
+            } else {
+              // Reload of a file we're already editing — reconcile instead
+              // of blindly overwriting the user's in-progress draft.
+              const isSelfEcho = selfEchoRef.current !== null && text === selfEchoRef.current;
+              const result = reconcileEditorContent({
+                diskContent: text,
+                draft: draftRef.current,
+                lastSaved: lastSavedRef.current,
+                isSelfEcho,
+              });
+              if (result.nextDraft !== draftRef.current) setDraft(result.nextDraft);
+              // Self-echoes don't move the baseline forward — it was already
+              // set (to this same content) at save time.
+              if (!isSelfEcho) lastSavedRef.current = text;
+              if (result.conflict) {
+                useToastStore.getState().addToast({
+                  type: 'warning',
+                  title: t.panel.externalChangeTitle,
+                  message: t.panel.externalChangeMessage,
+                });
+              }
+            }
+          }
         }
       } catch (err) {
         if (cancelled) return;
+        // The read failed, so no editable baseline was established for this
+        // attempt — the next reload for this path should go through the
+        // full (non-quiet) reset rather than reconciling against stale refs.
+        establishedEditablePathRef.current = null;
         console.error('[PreviewPanel] Failed to read file:', previewFilePath, err);
         const message = err instanceof Error ? err.message : String(err);
         setError(message || t.panel.failedToReadFile);
@@ -167,6 +249,73 @@ export default function PreviewPanel() {
   // (and, for images, re-fetch the blob) when the file changes on disk.
   // eslint-disable-next-line react-hooks/exhaustive-deps -- t is stable from i18n singleton
   }, [previewFilePath, rendererType, reloadNonce]);
+
+  // Debounced autosave: write the editable buffer to disk 1s after the user
+  // stops typing. `selfEchoRef` is set right before the write so the fs-watch
+  // reload it triggers (handled above) can recognize its own echo instead of
+  // treating it as an external change and re-adopting/conflicting on it.
+  useEffect(() => {
+    if (!previewFilePath || !EDITABLE_TYPES.has(rendererType)) return;
+    if (draft === lastSavedRef.current) return;
+
+    const targetPath = previewFilePath;
+    const contentToSave = draft;
+    pendingSaveRef.current = { path: targetPath, content: contentToSave };
+
+    if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
+    saveTimerRef.current = setTimeout(() => {
+      saveTimerRef.current = null;
+      pendingSaveRef.current = null;
+      selfEchoRef.current = contentToSave;
+      atomicWrite(targetPath, contentToSave)
+        .then(() => {
+          lastSavedRef.current = contentToSave;
+        })
+        .catch((err) => {
+          console.error('[PreviewPanel] Failed to autosave:', targetPath, err);
+          // This write never landed — don't let a later disk read be
+          // mistaken for its echo.
+          if (selfEchoRef.current === contentToSave) selfEchoRef.current = null;
+          useToastStore.getState().addToast({
+            type: 'error',
+            title: t.panel.saveFailedTitle,
+            message: err instanceof Error ? err.message : String(err),
+          });
+        });
+    }, 1000);
+
+    return () => {
+      if (saveTimerRef.current) {
+        clearTimeout(saveTimerRef.current);
+        saveTimerRef.current = null;
+      }
+      // This cleanup also runs when `draft` changes again for the *same*
+      // file (every keystroke) — in that ordinary case we must NOT flush,
+      // or every keystroke would write to disk and defeat the debounce.
+      // It also fires when switching to a different file, or on true
+      // unmount (closing the preview) — in both of those the pending save's
+      // target no longer matches where we're headed, so flush it instead of
+      // silently dropping the edit. `usePreviewStore.getState()` (not the
+      // closed-over `previewFilePath`) is used because on unmount this
+      // component may never re-render with the new value before disappearing.
+      const pending = pendingSaveRef.current;
+      if (pending && pending.path !== usePreviewStore.getState().previewFilePath) {
+        pendingSaveRef.current = null;
+        atomicWrite(pending.path, pending.content).catch((err) => {
+          console.error('[PreviewPanel] Failed to flush pending autosave for previous file:', pending.path, err);
+          useToastStore.getState().addToast({
+            type: 'error',
+            title: getI18n().panel.saveFailedTitle,
+            message: err instanceof Error ? err.message : String(err),
+          });
+        });
+      }
+    };
+  // previewFilePath/rendererType/t are read at schedule time only; `draft`
+  // changing is the sole intended trigger (including path/type as deps would
+  // cause redundant reschedules on every file switch).
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [draft]);
 
   const handleOpenInFinder = async () => {
     if (previewFilePath) {
@@ -210,34 +359,34 @@ export default function PreviewPanel() {
         <span className="text-[13px] font-medium text-[var(--abu-text-primary)] truncate flex-1">
           {fileName}
         </span>
-        {rendererType === 'html' && (
-          <>
-            <div className="flex items-center bg-[var(--abu-bg-hover)] rounded p-0.5 mr-1">
-              <button
-                onClick={() => setHtmlViewMode('preview')}
-                className={`p-1 rounded text-[10px] ${htmlViewMode === 'preview' ? 'bg-white' : ''}`}
-                title={t.panel.previewMode}
-              >
-                <Eye className="w-3 h-3" />
-              </button>
-              <button
-                onClick={() => setHtmlViewMode('source')}
-                className={`p-1 rounded text-[10px] ${htmlViewMode === 'source' ? 'bg-white' : ''}`}
-                title={t.panel.sourceMode}
-              >
-                <Code className="w-3 h-3" />
-              </button>
-            </div>
-            <Button
-              variant="ghost"
-              size="icon"
-              onClick={handleOpenInBrowser}
-              className="h-6 w-6 text-[var(--abu-text-tertiary)] hover:text-[var(--abu-clay)]"
-              title={t.chat.openInBrowser}
+        {(rendererType === 'html' || rendererType === 'markdown') && (
+          <div className="flex items-center bg-[var(--abu-bg-hover)] rounded p-0.5 mr-1">
+            <button
+              onClick={() => setViewMode('preview')}
+              className={`p-1 rounded text-[10px] ${viewMode === 'preview' ? 'bg-white' : ''}`}
+              title={t.panel.previewMode}
             >
-              <Globe className="h-3.5 w-3.5" />
-            </Button>
-          </>
+              <Eye className="w-3 h-3" />
+            </button>
+            <button
+              onClick={() => setViewMode('source')}
+              className={`p-1 rounded text-[10px] ${viewMode === 'source' ? 'bg-white' : ''}`}
+              title={t.panel.sourceMode}
+            >
+              <Code className="w-3 h-3" />
+            </button>
+          </div>
+        )}
+        {rendererType === 'html' && (
+          <Button
+            variant="ghost"
+            size="icon"
+            onClick={handleOpenInBrowser}
+            className="h-6 w-6 text-[var(--abu-text-tertiary)] hover:text-[var(--abu-clay)]"
+            title={t.chat.openInBrowser}
+          >
+            <Globe className="h-3.5 w-3.5" />
+          </Button>
         )}
         <Button
           variant="ghost"
@@ -273,15 +422,19 @@ export default function PreviewPanel() {
             <img src={imageUrl} alt={fileName} className="max-w-full max-h-full object-contain" />
           </div>
         ) : rendererType === 'markdown' && content !== null ? (
-          <ScrollArea className="h-full">
-            <DocSelectionLayer filePath={previewFilePath}>
-              <div className="p-4">
-                <MarkdownRenderer content={content} />
-              </div>
-            </DocSelectionLayer>
-          </ScrollArea>
+          viewMode === 'preview' ? (
+            <ScrollArea className="h-full">
+              <DocSelectionLayer filePath={previewFilePath}>
+                <div className="p-4">
+                  <MarkdownRenderer content={content} />
+                </div>
+              </DocSelectionLayer>
+            </ScrollArea>
+          ) : (
+            <CodeMirrorEditor value={draft} language="md" onChange={setDraft} />
+          )
         ) : rendererType === 'html' ? (
-          htmlViewMode === 'preview' ? (
+          viewMode === 'preview' ? (
             htmlPreviewUrl ? (
               <iframe
                 // Query-string nonce (not a `key` remount) forces the iframe to
@@ -300,36 +453,14 @@ export default function PreviewPanel() {
               <LazyFallback />
             )
           ) : content !== null ? (
-            <ScrollArea className="h-full bg-[#1e1e1e]">
-              <SyntaxHighlighter
-                style={oneDark}
-                language="html"
-                customStyle={{ margin: 0, padding: '12px', fontSize: '11px', background: '#1e1e1e' }}
-              >
-                {content}
-              </SyntaxHighlighter>
-            </ScrollArea>
+            <CodeMirrorEditor value={draft} language="html" onChange={setDraft} />
           ) : (
             <LazyFallback />
           )
         ) : rendererType === 'code' && content !== null ? (
-          <ScrollArea className="h-full bg-[#1e1e1e]">
-            <SyntaxHighlighter
-              style={oneDark}
-              language={getLanguage(previewFilePath)}
-              showLineNumbers
-              customStyle={{ margin: 0, padding: '12px', fontSize: '11px', background: '#1e1e1e' }}
-              lineNumberStyle={{ minWidth: '2em', paddingRight: '0.5em', color: '#666' }}
-            >
-              {content}
-            </SyntaxHighlighter>
-          </ScrollArea>
+          <CodeMirrorEditor value={draft} language={getFileExtension(previewFilePath)} onChange={setDraft} />
         ) : rendererType === 'text' && content !== null ? (
-          <ScrollArea className="h-full">
-            <pre className="p-4 text-[12px] text-[var(--abu-text-primary)] font-mono whitespace-pre-wrap break-words">
-              {content}
-            </pre>
-          </ScrollArea>
+          <CodeMirrorEditor value={draft} language={getFileExtension(previewFilePath)} onChange={setDraft} />
         ) : (
           <div className="flex flex-col items-center justify-center h-full p-4 text-center">
             <p className="text-[13px] text-[var(--abu-text-tertiary)]">{t.panel.unsupportedFileType}</p>

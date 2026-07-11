@@ -1319,6 +1319,9 @@ const enUS: TranslationDict = {
     showInFinder: 'Show in File Manager',
     failedToReadFile: 'Failed to read file',
     fileNotFound: 'File not found',
+    saveFailedTitle: 'Save failed',
+    externalChangeTitle: 'File changed externally',
+    externalChangeMessage: 'The file on disk was updated; your unsaved edits were kept',
     // FilesSection
     operationRead: 'Read',
     operationModify: 'Modify',

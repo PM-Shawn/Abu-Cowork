@@ -1444,6 +1444,10 @@ export interface TranslationDict {
     showInFinder: string;
     failedToReadFile: string;
     fileNotFound: string;
+    // Editable preview (P2): autosave + external-change conflict notices
+    saveFailedTitle: string;
+    externalChangeTitle: string;
+    externalChangeMessage: string;
     // FilesSection
     operationRead: string;
     operationModify: string;

@@ -1320,6 +1320,9 @@ const zhCN: TranslationDict = {
     showInFinder: '在文件管理器中显示',
     failedToReadFile: '无法读取文件',
     fileNotFound: '文件不存在',
+    saveFailedTitle: '保存失败',
+    externalChangeTitle: '文件已被外部修改',
+    externalChangeMessage: '磁盘上的内容已更新，你的未保存修改已保留',
     // FilesSection
     operationRead: '读取',
     operationModify: '修改',

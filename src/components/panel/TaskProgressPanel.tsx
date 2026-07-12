@@ -4,7 +4,6 @@ import {
   Check,
   Loader2,
   Circle,
-  AlertCircle,
   ListChecks,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
@@ -140,16 +139,10 @@ function ProgressStepRow({ step }: ProgressStepRowProps) {
             <Check className="h-3 w-3 text-white" strokeWidth={3} />
           </div>
         );
-      case 'running':
+      case 'in_progress':
         return (
           <div className="w-5 h-5 rounded-full border-2 border-[var(--abu-clay)] flex items-center justify-center">
             <Loader2 className="h-3 w-3 text-[var(--abu-clay)] animate-spin" />
-          </div>
-        );
-      case 'error':
-        return (
-          <div className="w-5 h-5 rounded-full bg-red-500 flex items-center justify-center">
-            <AlertCircle className="h-3 w-3 text-white" />
           </div>
         );
       default:
@@ -168,9 +161,8 @@ function ProgressStepRow({ step }: ProgressStepRowProps) {
         className={cn(
           'text-[13px] leading-6',
           step.status === 'completed' && 'text-[var(--abu-text-tertiary)]',
-          step.status === 'running' && 'text-[var(--abu-text-primary)]',
-          step.status === 'pending' && 'text-[var(--abu-text-muted)]',
-          step.status === 'error' && 'text-red-600'
+          step.status === 'in_progress' && 'text-[var(--abu-text-primary)]',
+          step.status === 'pending' && 'text-[var(--abu-text-muted)]'
         )}
       >
         {step.description}

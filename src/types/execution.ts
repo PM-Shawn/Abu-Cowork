@@ -148,8 +148,7 @@ export type ExecutionStatus = 'running' | 'completed' | 'error' | 'cancelled';
 export interface PlannedStep {
   index: number;
   description: string;
-  status: 'pending' | 'running' | 'completed' | 'error';
-  linkedStepId?: string;  // Link to actual ExecutionStep when matched
+  status: 'pending' | 'in_progress' | 'completed';
 }
 
 /**

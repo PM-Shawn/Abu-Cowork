@@ -79,10 +79,6 @@ interface TaskExecutionActions {
 
   /** Set planned steps from parsed AI plan */
   setPlannedSteps: (execId: string, steps: PlannedStep[]) => void;
-  /** Update planned step status */
-  updatePlannedStepStatus: (execId: string, stepIndex: number, status: PlannedStep['status']) => void;
-  /** Link a planned step to an actual execution step */
-  linkPlannedStep: (execId: string, stepIndex: number, executionStepId: string) => void;
   /** Mark plan as parsed */
   markPlanParsed: (execId: string) => void;
 
@@ -152,12 +148,12 @@ export const useTaskExecutionStore = create<TaskExecutionStore>()(
         if (exec) {
           exec.status = 'completed';
           exec.endTime = Date.now();
-          // Only mark 'running' steps as completed (they were actively executing).
+          // Only mark 'in_progress' steps as completed (they were actively executing).
           // Mark 'pending' steps as completed only if the plan was partially executed
           // (i.e., some steps were already completed — the AI finished the task).
           const hasCompletedSteps = exec.plannedSteps.some(s => s.status === 'completed');
           for (const step of exec.plannedSteps) {
-            if (step.status === 'running') {
+            if (step.status === 'in_progress') {
               step.status = 'completed';
             } else if (step.status === 'pending' && hasCompletedSteps) {
               // The plan was in progress and the AI finished — treat remaining as done
@@ -365,27 +361,6 @@ export const useTaskExecutionStore = create<TaskExecutionStore>()(
           if (!hasProgress) {
             exec.plannedSteps = steps;
           }
-        }
-      });
-    },
-
-    updatePlannedStepStatus: (execId, stepIndex, status) => {
-      set((state) => {
-        const exec = state.executions[execId];
-        const plannedStep = exec?.plannedSteps.find((s) => s.index === stepIndex);
-        if (plannedStep) {
-          plannedStep.status = status;
-        }
-      });
-    },
-
-    linkPlannedStep: (execId, stepIndex, executionStepId) => {
-      set((state) => {
-        const exec = state.executions[execId];
-        const plannedStep = exec?.plannedSteps.find((s) => s.index === stepIndex);
-        if (plannedStep) {
-          plannedStep.linkedStepId = executionStepId;
-          plannedStep.status = 'running';
         }
       });
     },

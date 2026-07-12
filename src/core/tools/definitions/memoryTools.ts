@@ -163,7 +163,8 @@ export const reportPlanTool: ToolDefinition = {
       let changed = 0;
       steps.forEach((s, i) => {
         const status = (s.status as PlannedStep['status']) ?? 'pending';
-        if (priorByIndex.get(i + 1) !== status) changed++;
+        const prior = priorByIndex.get(i + 1);
+        if (prior !== undefined && prior !== status) changed++;
       });
       if (changed > 3) warnings.push('Warning: Updated many steps at once. Mark steps one at a time as you progress.');
       return warnings.length ? '\n\n' + warnings.join('\n') : '';
@@ -198,7 +199,11 @@ export const reportPlanTool: ToolDefinition = {
     // deal in step text, so they get `stepTexts` regardless of the declarative
     // per-step status carried alongside.
     const convId = context?.conversationId;
-    const needsApproval = hasSteps && (planHasRiskySteps(stepTexts) || (convId ? getPlanMode(convId) === 'planning' : false));
+    const planMode = convId ? getPlanMode(convId) : 'off';
+    // Once the user has approved this conversation's plan, subsequent report_plan
+    // calls (frequent status updates) must NOT re-trigger approval — otherwise a
+    // risky plan re-prompts and re-locks writes on every progress update.
+    const needsApproval = hasSteps && planMode !== 'approved' && (planHasRiskySteps(stepTexts) || planMode === 'planning');
     if (convId && context?.toolCallId && needsApproval) {
       setPlanMode(convId, 'planning');
       const payload = buildPlanApprovalPayload(stepTexts);

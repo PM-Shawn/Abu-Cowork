@@ -18,5 +18,5 @@ export function formatPlannedStepsForPrompt(conversationId: string): string {
 
   const lines = steps.map((s) => `${s.index}. ${STATUS_EMOJI[s.status]} [${s.status}] ${s.description}`);
   const completed = steps.filter((s) => s.status === 'completed').length;
-  return `## 当前任务计划 (${completed}/${steps.length} 已完成)\n${lines.join('\n')}`;
+  return `## Current task plan (${completed}/${steps.length} completed)\n${lines.join('\n')}`;
 }

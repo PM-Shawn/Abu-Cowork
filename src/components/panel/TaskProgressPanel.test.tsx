@@ -104,4 +104,42 @@ describe('TaskProgressPanel', () => {
     expect(screen.getByText('已持久化步骤A')).toBeInTheDocument();
     expect(screen.getByText('已持久化步骤B')).toBeInTheDocument();
   });
+
+  // Regression: plannedSteps snapshots are persisted onto chat messages, so a
+  // history conversation can carry a pre-narrowing status value ('running')
+  // that falls outside the current PlannedStep['status'] union. That used to
+  // fall through the icon switch's default branch and render as an empty
+  // "not started" circle — losing the fact the step was actually in-flight.
+  it('renders a legacy "running" status step as in-progress (spinner), not blank/pending', () => {
+    useTaskExecutionStore.setState({ executions: {} });
+    useChatStore.setState({
+      activeConversationId: 'conv-1',
+      conversations: {
+        'conv-1': {
+          id: 'conv-1',
+          title: '测试任务',
+          messages: [
+            {
+              id: 'm1',
+              role: 'assistant' as const,
+              content: '进行中',
+              timestamp: 100,
+              loopId: 'loop-1',
+              plannedSteps: [
+                // Cast past the narrowed union — this simulates a legacy
+                // snapshot value that predates the status narrowing.
+                { index: 1, description: '旧状态步骤', status: 'running' as unknown as 'in_progress' },
+              ],
+            },
+          ],
+          createdAt: 100,
+          updatedAt: 100,
+          status: 'completed' as const,
+        },
+      },
+    });
+    render(<TaskProgressPanel />);
+    const row = screen.getByText('旧状态步骤').closest('div.flex.items-start');
+    expect(row?.querySelector('.animate-spin')).toBeInTheDocument();
+  });
 });

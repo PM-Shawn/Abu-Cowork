@@ -24,4 +24,16 @@ describe('formatPlannedStepsForPrompt', () => {
     expect(out).toContain('🔄');
     expect(out).toContain('Scan');
   });
+
+  // LLM-facing system prompts must be English (CLAUDE.md language convention);
+  // response language is controlled separately by the response-language section.
+  it('uses an English header, not Chinese', () => {
+    const store = useTaskExecutionStore.getState();
+    const exec = store.createExecution('conv-1', 'loop-1');
+    store.setPlannedSteps(exec.id, [{ index: 1, description: 'Scan', status: 'completed' }]);
+    const out = formatPlannedStepsForPrompt('conv-1');
+    expect(out).toContain('Current task plan');
+    expect(out).toContain('1/1 completed');
+    expect(out).not.toContain('已完成');
+  });
 });

@@ -5,6 +5,7 @@ import {
   Loader2,
   Circle,
   ListChecks,
+  AlertCircle,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useTaskExecutionStore } from '@/stores/taskExecutionStore';
@@ -131,8 +132,18 @@ interface ProgressStepRowProps {
 }
 
 function ProgressStepRow({ step }: ProgressStepRowProps) {
+  // Defensive/display-only normalization: plannedSteps snapshots get
+  // persisted onto chat messages, so a history conversation can carry a
+  // pre-narrowing status value ('running'/'error') that falls outside the
+  // current PlannedStep['status'] union. Without this, those values hit the
+  // switch's default branch and silently render as an empty "not started"
+  // circle, losing whether the step was actually in-flight or failed. This
+  // does NOT change the type — only how legacy/out-of-union values render.
+  const rawStatus = step.status as string;
+  const status = rawStatus === 'running' ? 'in_progress' : rawStatus;
+
   const renderStatusIcon = () => {
-    switch (step.status) {
+    switch (status) {
       case 'completed':
         return (
           <div className="w-5 h-5 rounded-full bg-[var(--abu-clay)] flex items-center justify-center">
@@ -143,6 +154,14 @@ function ProgressStepRow({ step }: ProgressStepRowProps) {
         return (
           <div className="w-5 h-5 rounded-full border-2 border-[var(--abu-clay)] flex items-center justify-center">
             <Loader2 className="h-3 w-3 text-[var(--abu-clay)] animate-spin" />
+          </div>
+        );
+      case 'error':
+        // Legacy status, no longer produced going forward — kept only to
+        // render historical snapshots that predate the status narrowing.
+        return (
+          <div className="w-5 h-5 rounded-full border-2 border-red-500 flex items-center justify-center">
+            <AlertCircle className="h-3 w-3 text-red-500" />
           </div>
         );
       default:
@@ -160,9 +179,10 @@ function ProgressStepRow({ step }: ProgressStepRowProps) {
       <span
         className={cn(
           'text-[13px] leading-6',
-          step.status === 'completed' && 'text-[var(--abu-text-tertiary)]',
-          step.status === 'in_progress' && 'text-[var(--abu-text-primary)]',
-          step.status === 'pending' && 'text-[var(--abu-text-muted)]'
+          status === 'completed' && 'text-[var(--abu-text-tertiary)]',
+          status === 'in_progress' && 'text-[var(--abu-text-primary)]',
+          status === 'error' && 'text-red-500',
+          status === 'pending' && 'text-[var(--abu-text-muted)]'
         )}
       >
         {step.description}

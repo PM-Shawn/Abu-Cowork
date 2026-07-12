@@ -5,6 +5,7 @@ import {
   extractFileOutputs,
   extractStdout,
   extractFilePathsFromText,
+  parsePlanSteps,
 } from './workflowExtractor';
 import type { ToolCall } from '@/types';
 
@@ -998,6 +999,32 @@ describe('workflowExtractor', () => {
       expect(paths).toHaveLength(2);
       expect(paths).toContain('/tmp/a.docx');
       expect(paths).toContain('/tmp/b.pdf');
+    });
+  });
+
+  // ── parsePlanSteps ──
+  describe('parsePlanSteps', () => {
+    it('extracts content from declarative step objects', () => {
+      const call: ToolCall = {
+        id: 'tc1',
+        name: 'report_plan',
+        input: {
+          steps: [
+            { content: 'Scan', status: 'pending' },
+            { content: 'Build' },
+          ],
+        },
+      };
+      expect(parsePlanSteps(call)).toEqual(['Scan', 'Build']);
+    });
+
+    it('stays backward compatible with legacy plain string steps', () => {
+      const call: ToolCall = {
+        id: 'tc1',
+        name: 'report_plan',
+        input: { steps: ['a', 'b'] },
+      };
+      expect(parsePlanSteps(call)).toEqual(['a', 'b']);
     });
   });
 });

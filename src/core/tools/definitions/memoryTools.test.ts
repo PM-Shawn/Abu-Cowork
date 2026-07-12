@@ -438,6 +438,18 @@ describe('reportPlanTool — plan-mode approval (B1)', () => {
       expect(mockRequestUserQuestion).not.toHaveBeenCalled();
       expect(result).toContain('Execution plan recorded');
     });
+
+    it('does NOT re-trigger approval for a risky plan once the conversation is already approved', async () => {
+      // Regression: a plan with risky keywords re-triggered approval (and
+      // re-locked writes via setPlanMode('planning')) on EVERY subsequent
+      // report_plan status update, even after the user had already approved
+      // this conversation's plan once.
+      mockGetPlanMode.mockReturnValue('approved');
+      const result = await reportPlanTool.execute({ steps: [{ content: '删除旧备份文件' }] }, ctx);
+      expect(mockRequestUserQuestion).not.toHaveBeenCalled();
+      expect(mockSetPlanMode).not.toHaveBeenCalledWith('c1', 'planning');
+      expect(result).toContain('Execution plan recorded');
+    });
   });
 });
 
@@ -521,5 +533,19 @@ describe('reportPlanTool — write-side warnings', () => {
       { content: 'd', status: 'completed' },
     ] }, ctx)) as string;
     expect(out).toContain('Updated many steps');
+  });
+
+  it('does NOT warn "Updated many steps" on the very first report_plan call (no prior plan)', async () => {
+    // Regression: priorByIndex.get(i+1) is undefined for every step on the
+    // first call, and undefined !== 'pending' was true — so every step counted
+    // as "changed" and any 4+ step initial plan falsely tripped this warning.
+    useTaskExecutionStore.getState().createExecution('conv-1', 'loop-1');
+    const out = (await reportPlanTool.execute({ steps: [
+      { content: 'a', status: 'pending' },
+      { content: 'b', status: 'pending' },
+      { content: 'c', status: 'pending' },
+      { content: 'd', status: 'pending' },
+    ] }, ctx)) as string;
+    expect(out).not.toContain('Updated many steps');
   });
 });

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { classifyError, LLMError } from './adapter';
+import { classifyError, LLMError, formatLlmDisplayError } from './adapter';
 
 describe('adapter', () => {
   // ── LLMError class ──
@@ -141,6 +141,47 @@ describe('adapter', () => {
       const json = '{"error":{"message":"bad request"}}';
       const err = classifyError(400, json);
       expect(err.code).toBe('invalid_request');
+    });
+  });
+
+  // ── formatLlmDisplayError ──
+  describe('formatLlmDisplayError', () => {
+    const emptyBodyFallback = 'The request failed, but the service returned no error details.';
+
+    it('returns the fallback message as-is when non-empty', () => {
+      const err = new LLMError('Boom', 'unknown', { statusCode: 500 });
+      const result = formatLlmDisplayError(err, 'Boom', emptyBodyFallback);
+      expect(result).toBe('Boom');
+    });
+
+    it('empty message + LLMError with statusCode/code → "HTTP {status} · {code}"', () => {
+      const err = new LLMError('', 'not_found', { statusCode: 404, rawBody: '' });
+      const result = formatLlmDisplayError(err, '', emptyBodyFallback);
+      expect(result).toBe('HTTP 404 · not_found');
+    });
+
+    it('does NOT append a rawBody snippet (classifyError already surfaces non-empty bodies as the message)', () => {
+      // A non-empty rawBody would already have become err.message via
+      // extractApiErrorMessage, so the fallback path only runs for empty bodies.
+      // We must never leak an opaque body (e.g. a WAF page) into the chat surface.
+      const err = new LLMError('', 'not_found', { statusCode: 404, rawBody: '<html>blocked by proxy</html>' });
+      const result = formatLlmDisplayError(err, '', emptyBodyFallback);
+      expect(result).toBe('HTTP 404 · not_found');
+      expect(result).not.toContain('html');
+    });
+
+    it('non-LLMError + empty message → emptyBodyFallback string', () => {
+      const result = formatLlmDisplayError(new Error(''), '', emptyBodyFallback);
+      expect(result).toBe(emptyBodyFallback);
+    });
+
+    it('LLMError with no statusCode and no rawBody → falls back to just the code', () => {
+      // `code` is a required, always-non-empty LLMError field, so the
+      // emptyBodyFallback string only surfaces for non-LLMError errors (see
+      // the non-LLMError case above) — an LLMError always has at least `code`.
+      const err = new LLMError('', 'unknown');
+      const result = formatLlmDisplayError(err, '', emptyBodyFallback);
+      expect(result).toBe('unknown');
     });
   });
 

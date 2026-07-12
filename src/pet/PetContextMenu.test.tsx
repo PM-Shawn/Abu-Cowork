@@ -1,9 +1,14 @@
-import { describe, it, expect, vi } from 'vitest'
+import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, fireEvent } from '@testing-library/react'
 import { PetContextMenu } from './PetContextMenu'
 import type { PetStatus } from '@/core/pet/petStatusBridge'
+import { setLanguage } from '@/i18n'
 
 describe('PetContextMenu', () => {
+  // Reset to zh-CN before every test so the i18n-driven labels resolve to the
+  // Chinese assertions below, and a locale-flipping test can't leak into others.
+  beforeEach(() => setLanguage('zh-CN'))
+
   function props(overrides: Partial<{
     status: PetStatus
     onOpenMain: () => void
@@ -23,6 +28,14 @@ describe('PetContextMenu', () => {
     render(<PetContextMenu {...props()} />)
     expect(screen.getByText('打开主窗口')).toBeInTheDocument()
     expect(screen.getByText('关闭桌宠')).toBeInTheDocument()
+  })
+
+  it('translates menu items when the locale is en-US (regression: pet strings were hardcoded zh)', () => {
+    setLanguage('en-US')
+    render(<PetContextMenu {...props({ status: 'running' })} />)
+    expect(screen.getByText('Open main window')).toBeInTheDocument()
+    expect(screen.getByText('Close pet')).toBeInTheDocument()
+    expect(screen.getByText('Working…')).toBeInTheDocument()
   })
 
   it('does not render the removed DND toggle', () => {

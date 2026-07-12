@@ -4,9 +4,17 @@
     "category": "file-ops",
     "input": "帮我看看 ~/Documents/report.md 的内容",
     "expected": {
-      "requiredTools": ["read_file"],
-      "forbiddenTools": ["run_command"],
-      "toolParams": { "read_file": { "path": "report.md" } }
+      "requiredTools": [
+        "read_file"
+      ],
+      "forbiddenTools": [
+        "run_command"
+      ],
+      "toolParams": {
+        "read_file": {
+          "path": "report.md"
+        }
+      }
     },
     "difficulty": "easy"
   },
@@ -15,8 +23,12 @@
     "category": "file-ops",
     "input": "创建一个 hello.txt，内容写 Hello World",
     "expected": {
-      "requiredTools": ["write_file"],
-      "forbiddenTools": ["run_command"]
+      "requiredTools": [
+        "write_file"
+      ],
+      "forbiddenTools": [
+        "run_command"
+      ]
     },
     "difficulty": "easy"
   },
@@ -25,9 +37,15 @@
     "category": "file-ops",
     "input": "把 src/config.ts 里的 API_URL 从 localhost 改成 production.api.com",
     "expected": {
-      "requiredTools": ["read_file"],
-      "optionalTools": ["edit_file"],
-      "forbiddenTools": ["write_file"]
+      "requiredTools": [
+        "read_file"
+      ],
+      "optionalTools": [
+        "edit_file"
+      ],
+      "forbiddenTools": [
+        "write_file"
+      ]
     },
     "difficulty": "medium"
   },
@@ -36,8 +54,12 @@
     "category": "file-ops",
     "input": "看看 src 目录下有什么文件",
     "expected": {
-      "requiredTools": ["list_directory"],
-      "forbiddenTools": ["run_command"]
+      "requiredTools": [
+        "list_directory"
+      ],
+      "forbiddenTools": [
+        "run_command"
+      ]
     },
     "difficulty": "easy"
   },
@@ -46,8 +68,12 @@
     "category": "search",
     "input": "项目里哪些文件用到了 useState",
     "expected": {
-      "requiredTools": ["search_files"],
-      "forbiddenTools": ["run_command"]
+      "requiredTools": [
+        "search_files"
+      ],
+      "forbiddenTools": [
+        "run_command"
+      ]
     },
     "difficulty": "easy"
   },
@@ -56,8 +82,12 @@
     "category": "search",
     "input": "找到所有 .test.ts 文件",
     "expected": {
-      "requiredTools": ["find_files"],
-      "forbiddenTools": ["run_command"]
+      "requiredTools": [
+        "find_files"
+      ],
+      "forbiddenTools": [
+        "run_command"
+      ]
     },
     "difficulty": "easy"
   },
@@ -66,8 +96,14 @@
     "category": "command",
     "input": "跑一下 npm test",
     "expected": {
-      "requiredTools": ["run_command"],
-      "toolParams": { "run_command": { "command": "npm test" } }
+      "requiredTools": [
+        "run_command"
+      ],
+      "toolParams": {
+        "run_command": {
+          "command": "npm test"
+        }
+      }
     },
     "difficulty": "easy"
   },
@@ -76,7 +112,9 @@
     "category": "command",
     "input": "看看当前 git 状态",
     "expected": {
-      "requiredTools": ["run_command"]
+      "requiredTools": [
+        "run_command"
+      ]
     },
     "difficulty": "easy"
   },
@@ -85,8 +123,12 @@
     "category": "multi-step",
     "input": "读取 package.json，把版本号改成 2.0.0",
     "expected": {
-      "requiredTools": ["read_file"],
-      "optionalTools": ["edit_file"]
+      "requiredTools": [
+        "read_file"
+      ],
+      "optionalTools": [
+        "edit_file"
+      ]
     },
     "difficulty": "medium"
   },
@@ -95,8 +137,12 @@
     "category": "multi-step",
     "input": "搜索项目里所有 TODO 注释，汇总到 todo-summary.md",
     "expected": {
-      "requiredTools": ["search_files"],
-      "optionalTools": ["write_file"]
+      "requiredTools": [
+        "search_files"
+      ],
+      "optionalTools": [
+        "write_file"
+      ]
     },
     "difficulty": "hard"
   },
@@ -105,8 +151,12 @@
     "category": "web",
     "input": "搜索一下 Tauri 2.0 的最新发布日期",
     "expected": {
-      "requiredTools": ["web_search"],
-      "forbiddenTools": ["run_command"]
+      "requiredTools": [
+        "web_search"
+      ],
+      "forbiddenTools": [
+        "run_command"
+      ]
     },
     "difficulty": "easy"
   },
@@ -115,7 +165,9 @@
     "category": "memory",
     "input": "记住我喜欢用 vim 编辑器",
     "expected": {
-      "requiredTools": ["update_memory"]
+      "requiredTools": [
+        "update_memory"
+      ]
     },
     "difficulty": "easy"
   },
@@ -124,7 +176,9 @@
     "category": "memory",
     "input": "我之前让你记住的编辑器偏好是什么",
     "expected": {
-      "requiredTools": ["recall"]
+      "requiredTools": [
+        "recall"
+      ]
     },
     "difficulty": "easy"
   },
@@ -134,7 +188,12 @@
     "input": "TypeScript 的 interface 和 type 有什么区别？",
     "expected": {
       "requiredTools": [],
-      "forbiddenTools": ["run_command", "read_file", "search_files", "web_search"]
+      "forbiddenTools": [
+        "run_command",
+        "read_file",
+        "search_files",
+        "web_search"
+      ]
     },
     "difficulty": "easy"
   },
@@ -143,8 +202,13 @@
     "category": "search",
     "input": "这个项目是干什么的？",
     "expected": {
-      "requiredTools": ["read_file"],
-      "optionalTools": ["list_directory", "search_files"]
+      "requiredTools": [
+        "read_file"
+      ],
+      "optionalTools": [
+        "list_directory",
+        "search_files"
+      ]
     },
     "difficulty": "medium"
   },
@@ -153,18 +217,21 @@
     "category": "delegate",
     "input": "让 coder agent 帮我写一个冒泡排序",
     "expected": {
-      "requiredTools": ["delegate_to_agent"]
+      "requiredTools": [
+        "delegate_to_agent"
+      ]
     },
     "difficulty": "medium"
   },
-
   {
     "id": "local-discovery-smartwork",
     "category": "search",
     "input": "我电脑上装了一个 SmartWork 应用，分析下底层是什么框架",
     "expected": {
       "requiredTools": [],
-      "forbiddenTools": ["web_search"]
+      "forbiddenTools": [
+        "web_search"
+      ]
     },
     "difficulty": "hard"
   },
@@ -174,7 +241,10 @@
     "input": "看看 /Applications 下有哪些含 Chrome 字样的应用",
     "expected": {
       "requiredTools": [],
-      "forbiddenTools": ["run_command", "web_search"]
+      "forbiddenTools": [
+        "run_command",
+        "web_search"
+      ]
     },
     "difficulty": "medium"
   },
@@ -183,8 +253,13 @@
     "category": "search",
     "input": "找一下 ~/Downloads 里所有 .pdf 文件",
     "expected": {
-      "requiredTools": ["find_files"],
-      "forbiddenTools": ["run_command", "web_search"]
+      "requiredTools": [
+        "find_files"
+      ],
+      "forbiddenTools": [
+        "run_command",
+        "web_search"
+      ]
     },
     "difficulty": "easy"
   },
@@ -194,7 +269,10 @@
     "input": "看下 /Applications 下都装了哪些应用",
     "expected": {
       "requiredTools": [],
-      "forbiddenTools": ["run_command", "web_search"]
+      "forbiddenTools": [
+        "run_command",
+        "web_search"
+      ]
     },
     "difficulty": "easy"
   },
@@ -204,7 +282,9 @@
     "input": "我装过一个叫 Cursor 的应用吗？",
     "expected": {
       "requiredTools": [],
-      "forbiddenTools": ["web_search"]
+      "forbiddenTools": [
+        "web_search"
+      ]
     },
     "difficulty": "medium"
   },
@@ -213,7 +293,9 @@
     "category": "command",
     "input": "看下 /Applications 里每个应用占多少磁盘空间",
     "expected": {
-      "requiredTools": ["run_command"]
+      "requiredTools": [
+        "run_command"
+      ]
     },
     "difficulty": "medium"
   },
@@ -222,8 +304,57 @@
     "category": "command",
     "input": "~/Downloads 里最近 7 天修改过的文件有哪些",
     "expected": {
-      "requiredTools": ["run_command"]
+      "requiredTools": [
+        "run_command"
+      ]
     },
     "difficulty": "medium"
+  },
+  {
+    "id": "skill-create-explicit-01",
+    "category": "skill",
+    "input": "把刚才这套整理周报的流程存成一个技能，方便以后复用",
+    "contextMessages": [
+      {
+        "role": "user",
+        "content": "帮我把本周的销售数据整理成周报"
+      },
+      {
+        "role": "assistant",
+        "content": "已完成：读取了 sales.csv，按区域汇总，生成了 weekly-report.md，包含 GMV、环比和 Top5 区域。"
+      }
+    ],
+    "expected": {
+      "requiredTools": [
+        "skill_manage"
+      ],
+      "forbiddenTools": [
+        "report_plan"
+      ]
+    },
+    "difficulty": "medium"
+  },
+  {
+    "id": "skill-create-named-01",
+    "category": "skill",
+    "input": "帮我建个技能，名字叫 weekly-report，专门用来生成销售周报",
+    "expected": {
+      "requiredTools": [
+        "skill_manage"
+      ]
+    },
+    "difficulty": "easy"
+  },
+  {
+    "id": "skill-negative-trivial-01",
+    "category": "skill",
+    "input": "帮我算一下 128 乘以 47 等于多少",
+    "expected": {
+      "requiredTools": [],
+      "forbiddenTools": [
+        "skill_manage"
+      ]
+    },
+    "difficulty": "easy"
   }
 ]

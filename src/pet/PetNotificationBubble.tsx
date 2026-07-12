@@ -3,6 +3,7 @@ import { ChevronDown, ChevronUp, Clock } from 'lucide-react'
 import type { PetStatus, WaitingKind } from '@/core/pet/petStatusBridge'
 import { STATUS_COLOR } from './petStatusMeta'
 import { Input } from '@/components/ui/input'
+import { useI18n } from '@/i18n'
 
 /** Non-waiting display modes, driven by PetApp (which owns the window frame). */
 export type NotifMode = 'collapsed' | 'expanded' | 'replying'
@@ -43,6 +44,7 @@ export function PetNotificationBubble({
   status, title, summary, mode, waitingKind, paused, onHoverChange,
   onOpenMain, onToggleExpand, onStartReply, onReply,
 }: PetNotificationBubbleProps) {
+  const { t } = useI18n()
   const inputRef = useRef<HTMLInputElement>(null)
 
   // A blocking approval dialog (file permission etc.): the pet only signals it
@@ -97,7 +99,7 @@ export function PetNotificationBubble({
           <button
             className="flex items-start gap-2 flex-1 min-w-0 text-left"
             onClick={onOpenMain}
-            aria-label="打开主窗口"
+            aria-label={t.pet.openMain}
           >
             {isApproval ? (
               <Clock
@@ -117,7 +119,7 @@ export function PetNotificationBubble({
               // long title never squeezes the hint into "需要…".
               <span className="flex-1 min-w-0 flex items-baseline gap-1.5 text-[11px] text-[var(--abu-text-primary)]">
                 {title && <b className="font-semibold truncate min-w-0">{title}</b>}
-                <span className="flex-shrink-0 font-medium" style={{ color: STATUS_COLOR.waiting }}>需要授权</span>
+                <span className="flex-shrink-0 font-medium" style={{ color: STATUS_COLOR.waiting }}>{t.pet.needAuth}</span>
               </span>
             ) : (
               <span
@@ -137,7 +139,7 @@ export function PetNotificationBubble({
               <button
                 className="w-5 h-5 flex items-center justify-center rounded-md text-[var(--abu-text-tertiary)] hover:bg-[var(--abu-bg-hover)] hover:text-[var(--abu-text-primary)]"
                 onClick={onToggleExpand}
-                aria-label={expanded ? '收起' : '展开'}
+                aria-label={expanded ? t.pet.collapse : t.pet.expand}
               >
                 <Chevron className="w-3.5 h-3.5" />
               </button>
@@ -150,7 +152,7 @@ export function PetNotificationBubble({
             <Input
               ref={inputRef}
               className="h-7 text-[11px] px-2"
-              placeholder="回复…"
+              placeholder={t.pet.replyPlaceholder}
               onKeyDown={handleReplyKey}
             />
           </div>
@@ -163,9 +165,9 @@ export function PetNotificationBubble({
               <button
                 className="text-[11px] leading-none px-2 py-1 rounded-md text-[var(--abu-text-secondary)] hover:bg-[var(--abu-bg-hover)] hover:text-[var(--abu-text-primary)]"
                 onClick={onStartReply}
-                aria-label="回复"
+                aria-label={t.pet.reply}
               >
-                回复
+                {t.pet.reply}
               </button>
             </div>
           )

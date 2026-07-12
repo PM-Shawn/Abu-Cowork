@@ -114,7 +114,12 @@ async function callLLM(
   userInput: string,
   tools: OpenAITool[],
 ): Promise<{ toolCalls: OpenAIToolCall[]; content: string; usage?: { prompt_tokens?: number; completion_tokens?: number }; raw?: unknown }> {
-  const url = `${baseUrl!.replace(/\/$/, '')}/v1/chat/completions`;
+  const trimmed = baseUrl!.replace(/\/$/, '');
+  const url = /\/chat\/completions$/.test(trimmed)
+    ? trimmed
+    : /\/(v\d+|api)(\/[^/]+)*$/.test(trimmed)
+      ? `${trimmed}/chat/completions`
+      : `${trimmed}/v1/chat/completions`;
   const body = {
     model,
     messages: [

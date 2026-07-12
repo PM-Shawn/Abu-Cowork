@@ -1,7 +1,6 @@
 import { getDeviceId } from './deviceId'
 import { APP_VERSION } from './version'
-
-const CONSOLE_URL = import.meta.env.VITE_CONSOLE_URL as string | undefined
+import { getTelemetryTarget } from './consoleTelemetryTarget'
 
 export function sendFeedback(
   rating: 'positive' | 'negative' | 'cancel',
@@ -9,9 +8,10 @@ export function sendFeedback(
   messageId?: string,
   skillName?: string | null,
 ): void {
-  if (!CONSOLE_URL) return
+  const { baseUrl, enabled } = getTelemetryTarget()
+  if (!enabled) return
 
-  fetch(`${CONSOLE_URL}/api/feedback`, {
+  fetch(`${baseUrl}/api/feedback`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({

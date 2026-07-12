@@ -12,10 +12,12 @@ import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import { parseInboundMessage } from './inboundRouter';
 import { triggerEngine } from '../trigger/triggerEngine';
 import { imChannelRouter } from './channelRouter';
+import { isTauriEnv } from '../../utils/tauriEnv';
 
 let unlistenIM: UnlistenFn | null = null;
 
 export async function startInboundDispatcher(): Promise<void> {
+  if (!isTauriEnv()) return; // web / E2E: no Tauri event bus
   unlistenIM = await listen<{ platform: string; payload: Record<string, unknown> }>(
     'im-inbound-event',
     (event) => {

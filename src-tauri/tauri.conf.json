@@ -1,6 +1,9 @@
 {
   "productName": "Abu",
-  "version": "0.28.2",
+
+
+  "version": "0.29.0",
+
   "identifier": "com.abu.app",
   "build": {
     "beforeDevCommand": "npm run copy-resources && npm run dev",
@@ -38,6 +41,11 @@
     "shell": {
       "open": true
     },
+    "deep-link": {
+      "desktop": {
+        "schemes": ["abu"]
+      }
+    },
     "updater": {
       "endpoints": [
         "https://abu-agent.oss-cn-beijing.aliyuncs.com/latest.json"
@@ -65,7 +73,8 @@
     "category": "Productivity",
     "shortDescription": "AI-powered desktop office assistant",
     "macOS": {
-      "infoPlist": "Info.plist"
+      "infoPlist": "Info.plist",
+      "entitlements": "entitlements.plist"
     },
     "windows": {
       "nsis": {

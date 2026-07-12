@@ -188,7 +188,7 @@ describe('buildSystemPrompt - structure', () => {
     // The extended scenarios must be listed so the agent doesn't assume
     // "no workspace = only blocks file ops" — skill_manage / memory too.
     expect(prompt).toContain('skill_manage');
-    expect(prompt).toContain('Memory writes');
+    expect(prompt).toContain('project-level memory');
   });
 
   it('injects the response-language instruction driven by UI locale', async () => {

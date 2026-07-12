@@ -5,21 +5,20 @@ import { Input } from '@/components/ui/input';
 import { Checkbox } from '@/components/ui/checkbox';
 import { toggleEffort } from './providerCapabilities';
 import type { ApiFormat } from '@/types';
-import type { DeclaredCapabilities } from '@/types/provider';
+import type { ModelDeclaredCapabilities } from '@/types/provider';
 
-/** Advanced capabilities editor (declared capabilities) shared by AddProviderModal
+/** Advanced capabilities editor (per-model declared capabilities) shared by AddProviderModal
  *  and ProviderCard so the add / edit forms never drift apart. The caller decides
  *  whether to render it (via computeShowAdvanced) and owns the `declared` state.
- *  For anthropic-format endpoints the useRawUrl toggle (no-op — the SDK always
- *  posts /v1/messages) and reasoning-effort levels (OpenAI reasoning_effort only;
+ *  For anthropic-format endpoints reasoning-effort levels (OpenAI reasoning_effort only;
  *  claude.ts uses native budget_tokens) are hidden as they have no effect. */
 export default function AdvancedCapabilitiesFields({
   declared,
   setDeclared,
   apiFormat,
 }: {
-  declared: DeclaredCapabilities;
-  setDeclared: Dispatch<SetStateAction<DeclaredCapabilities>>;
+  declared: ModelDeclaredCapabilities;
+  setDeclared: Dispatch<SetStateAction<ModelDeclaredCapabilities>>;
   apiFormat: ApiFormat;
 }) {
   const { t } = useI18n();
@@ -49,14 +48,6 @@ export default function AdvancedCapabilitiesFields({
               onChange={() => setDeclared(d => ({ ...d, supportsReasoning: !d.supportsReasoning }))} />
             <span className="text-sm text-[var(--abu-text-primary)]">{t.settings.capReasoning}</span>
           </div>
-          {!isAnthropic && (
-            <div className="flex items-center gap-2 cursor-pointer select-none" title={t.settings.capRawUrlHint}
-              onClick={() => setDeclared(d => ({ ...d, useRawUrl: !d.useRawUrl }))}>
-              <Checkbox checked={!!declared.useRawUrl}
-                onChange={() => setDeclared(d => ({ ...d, useRawUrl: !d.useRawUrl }))} />
-              <span className="text-sm text-[var(--abu-text-primary)]">{t.settings.capRawUrl}</span>
-            </div>
-          )}
         </div>
         {!isAnthropic && declared.supportsReasoning && (
           <div className="pl-3 space-y-2 border-l border-black/10">

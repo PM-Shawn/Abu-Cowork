@@ -181,6 +181,17 @@ describe('evaluatePlanGate', () => {
       expect(result.allow).toBe(true);
     });
 
+    it('allows SHOW_WIDGET and READ_ME (fallback allowlist — in-conversation rendering mutates nothing)', () => {
+      for (const toolName of [TOOL_NAMES.SHOW_WIDGET, TOOL_NAMES.READ_ME]) {
+        const result = evaluatePlanGate({
+          toolName,
+          toolReadOnly: undefined,
+          planMode: 'planning',
+        });
+        expect(result.allow).toBe(true);
+      }
+    });
+
     it('blocks WRITE_FILE with toolReadOnly undefined', () => {
       const result = evaluatePlanGate({
         toolName: TOOL_NAMES.WRITE_FILE,

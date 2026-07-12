@@ -150,9 +150,21 @@
     {
       "identifier": "fs:allow-remove",
       "allow": [
+        { "path": "$HOME/**" },
         { "path": "$HOME/.abu/**" },
         { "path": "$HOME/.abu/**/.trash/**" },
-        { "path": "$HOME/**/.abu/**" }
+        { "path": "$HOME/**/.abu/**" },
+        { "path": "/tmp/**" },
+        { "path": "/private/tmp/**" },
+        { "path": "/Volumes/**" },
+        { "path": "/Volumes/**/.abu/**" },
+        { "path": "/Volumes/**/.abu/**/.trash/**" },
+        { "path": "$TEMP/**" }
+      ],
+      "deny": [
+        { "path": "$HOME/.abu" },
+        { "path": "$HOME/**/.abu" },
+        { "path": "/Volumes/**/.abu" }
       ]
     },
     {
@@ -237,6 +249,7 @@
     "global-shortcut:allow-unregister",
     "global-shortcut:allow-is-registered",
     "updater:default",
-    "process:default"
+    "process:default",
+    "deep-link:default"
   ]
 }

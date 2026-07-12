@@ -28,6 +28,13 @@ export const CORE_TOOL_NAMES: ReadonlySet<string> = new Set([
   TOOL_NAMES.USE_SKILL,
   TOOL_NAMES.DELEGATE_TO_AGENT,
   TOOL_NAMES.TOOL_SEARCH,
+  // show_widget / read_me are core for the same reason as ask_user_question:
+  // visualization is now a primary capability (replacing the old ```html
+  // fence output). If they went through deferred tool_search discovery,
+  // weaker models would misjudge them as unavailable and regress to plain
+  // text / fence output.
+  TOOL_NAMES.SHOW_WIDGET,
+  TOOL_NAMES.READ_ME,
 ]);
 
 /** Keyword → tool mapping for demand-based loading */
@@ -135,10 +142,7 @@ export function prefetchTools(ctx: PrefetchContext): string[] {
     additionalTools.push(TOOL_NAMES.GET_SYSTEM_INFO);
   }
 
-  // Non-first turns: load task tracking + memory tools
-  if (ctx.turnCount > 0) {
-    additionalTools.push(TOOL_NAMES.TODO_WRITE);
-  }
+  // Non-first turns: load memory tools
   if (ctx.turnCount > 2) {
     additionalTools.push(TOOL_NAMES.LOG_TASK_COMPLETION);
     additionalTools.push(TOOL_NAMES.UPDATE_MEMORY);

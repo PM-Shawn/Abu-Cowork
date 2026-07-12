@@ -19,11 +19,14 @@ import { manageScheduledTaskTool, manageTriggerTool, manageFileWatchTool } from 
 // --- Media tools ---
 import { generateImageTool, processImageTool } from './definitions/mediaTools';
 
+// --- Widget tools (inline visualization) ---
+import { showWidgetTool, readMeTool } from './definitions/widgetTools';
+
 // --- Web tools ---
 import { webSearchTool, httpFetchTool } from './definitions/webTools';
 
 // --- Memory tools ---
-import { reportPlanTool, updateMemoryTool, todoWriteTool, logTaskCompletionTool } from './definitions/memoryTools';
+import { reportPlanTool, updateMemoryTool, logTaskCompletionTool } from './definitions/memoryTools';
 import { recallTool, readMemoryTool } from './definitions/recallTool';
 import { updateSoulTool } from './definitions/updateSoulTool';
 
@@ -63,6 +66,8 @@ export function registerBuiltinTools(): void {
   toolRegistry.register(reportPlanTool);
   toolRegistry.register(generateImageTool);
   toolRegistry.register(processImageTool);
+  toolRegistry.register(showWidgetTool);
+  toolRegistry.register(readMeTool);
   toolRegistry.register(httpFetchTool);
   toolRegistry.register(webSearchTool);
   toolRegistry.register(delegateToAgentTool);
@@ -70,7 +75,6 @@ export function registerBuiltinTools(): void {
   toolRegistry.register(updateSoulTool);
   toolRegistry.register(recallTool);
   toolRegistry.register(readMemoryTool);
-  toolRegistry.register(todoWriteTool);
   toolRegistry.register(manageScheduledTaskTool);
   toolRegistry.register(manageTriggerTool);
   toolRegistry.register(saveAgentTool);

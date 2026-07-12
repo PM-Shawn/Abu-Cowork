@@ -11,6 +11,7 @@ import AddProviderModal from './ai-services/AddProviderModal';
 import { WebSearchForm } from './WebSearchSection';
 import { ImageGenForm } from './ImageGenSection';
 import EnterpriseLlmBadge from '@/components/enterprise/EnterpriseLlmBadge';
+import type { ProviderInstance } from '@/types/provider';
 
 export default function AIServicesSection() {
   const { t } = useI18n();
@@ -19,6 +20,7 @@ export default function AIServicesSection() {
   const activeModel = useSettingsStore((s) => s.activeModel);
   const clearAllStoredKeys = useSettingsStore((s) => s.clearAllStoredKeys);
   const [showAddModal, setShowAddModal] = useState(false);
+  const [editingProvider, setEditingProvider] = useState<ProviderInstance | null>(null);
   const [showClearConfirm, setShowClearConfirm] = useState(false);
   const [searchExpanded, setSearchExpanded] = useState(false);
   const [imageGenExpanded, setImageGenExpanded] = useState(false);
@@ -54,7 +56,7 @@ export default function AIServicesSection() {
     .filter(p => p.userAdded || p.enabled || p.apiKey.trim().length > 0)
     .sort((a, b) => {
       if (a.enabled !== b.enabled) return a.enabled ? -1 : 1;
-      return a.sortOrder - b.sortOrder;
+      return b.sortOrder - a.sortOrder;
     });
 
   return (
@@ -78,7 +80,7 @@ export default function AIServicesSection() {
           className="gap-1.5"
         >
           <Plus className="h-3.5 w-3.5" />
-          {t.settings.addService}
+          {t.settings.add}
         </Button>
       </div>
 
@@ -104,6 +106,7 @@ export default function AIServicesSection() {
               key={provider.id}
               provider={provider}
               isActive={activeModel.providerId === provider.id}
+              onEdit={(p) => setEditingProvider(p)}
             />
           ))}
         </div>
@@ -221,10 +224,13 @@ export default function AIServicesSection() {
         </div>
       )}
 
-      {/* Add Provider Modal */}
+      {/* Add / Edit Provider Modal — unified: opens for either "add" (no
+          editProvider) or "edit" (editingProvider set from a card's pencil
+          button). Closing clears both so the next open always starts fresh. */}
       <AddProviderModal
-        open={showAddModal}
-        onClose={() => setShowAddModal(false)}
+        open={showAddModal || !!editingProvider}
+        editProvider={editingProvider ?? undefined}
+        onClose={() => { setShowAddModal(false); setEditingProvider(null); }}
       />
 
       <ConfirmDialog

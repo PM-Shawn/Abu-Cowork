@@ -943,7 +943,9 @@ export function extractFileOutputs(
 export function parsePlanSteps(call: ToolCall): string[] {
   const raw = call.input?.steps;
   if (!Array.isArray(raw)) return [];
-  return (raw as unknown[]).map(String).filter((s) => s.trim().length > 0);
+  return (raw as unknown[])
+    .map((s) => (typeof s === 'string' ? s : (s as { content?: unknown })?.content))
+    .filter((s): s is string => typeof s === 'string' && s.trim().length > 0);
 }
 
 /** Latest report_plan call WITH renderable steps across a group's assistant

@@ -4,8 +4,8 @@ import {
   Check,
   Loader2,
   Circle,
-  AlertCircle,
   ListChecks,
+  AlertCircle,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useTaskExecutionStore } from '@/stores/taskExecutionStore';
@@ -52,6 +52,13 @@ export default function TaskProgressPanel() {
   const inMemoryPlannedSteps = useTaskExecutionStore((s) =>
     latestExecId ? (s.executions[latestExecId]?.plannedSteps ?? EMPTY_STEPS) : EMPTY_STEPS
   );
+  // Status of the execution that owns those steps. On abort/cancel the loop
+  // returns BEFORE persistExecutionSnapshot evicts, so a stopped execution
+  // lingers in the store (status 'cancelled') — presence of plannedSteps alone
+  // is NOT enough to tell "still running". Gate the spinner on 'running'.
+  const activeStatus = useTaskExecutionStore((s) =>
+    latestExecId ? s.executions[latestExecId]?.status : undefined
+  );
   // Fallback: after a loop ends, persistExecutionSnapshot evicts the execution
   // and stores plannedSteps on the loop's last assistant message — scan the
   // active conversation from the end for the latest snapshot so the plan
@@ -68,6 +75,12 @@ export default function TaskProgressPanel() {
   });
   const plannedSteps = inMemoryPlannedSteps.length > 0 ? inMemoryPlannedSteps : messagePlannedSteps;
   const hasPlannedSteps = plannedSteps.length > 0;
+  // The plan is "live" only while the owning execution is actually running.
+  // A stopped/completed execution lingers in the store (not evicted on abort),
+  // so gate on status 'running' — not mere presence. When not live, an
+  // in_progress step renders as a static marker (no spinner) so a stopped
+  // mid-flight step reads as "in progress, paused" rather than spinning forever.
+  const isLive = inMemoryPlannedSteps.length > 0 && activeStatus === 'running';
   const { t } = useI18n();
 
   return (
@@ -101,7 +114,7 @@ export default function TaskProgressPanel() {
             // Steps list
             <div className="space-y-2">
               {plannedSteps.map((step) => (
-                <ProgressStepRow key={step.index} step={step} />
+                <ProgressStepRow key={step.index} step={step} isLive={isLive} />
               ))}
             </div>
           ) : (
@@ -129,27 +142,49 @@ export default function TaskProgressPanel() {
 
 interface ProgressStepRowProps {
   step: PlannedStep;
+  /** True only while a running execution still owns the plan. When false the
+   * loop has stopped, so an in_progress step is shown static (no spinner). */
+  isLive: boolean;
 }
 
-function ProgressStepRow({ step }: ProgressStepRowProps) {
+function ProgressStepRow({ step, isLive }: ProgressStepRowProps) {
+  // Defensive/display-only normalization: plannedSteps snapshots get
+  // persisted onto chat messages, so a history conversation can carry a
+  // pre-narrowing status value ('running'/'error') that falls outside the
+  // current PlannedStep['status'] union. Without this, those values hit the
+  // switch's default branch and silently render as an empty "not started"
+  // circle, losing whether the step was actually in-flight or failed. This
+  // does NOT change the type — only how legacy/out-of-union values render.
+  const rawStatus = step.status as string;
+  const status = rawStatus === 'running' ? 'in_progress' : rawStatus;
+
   const renderStatusIcon = () => {
-    switch (step.status) {
+    switch (status) {
       case 'completed':
         return (
           <div className="w-5 h-5 rounded-full bg-[var(--abu-clay)] flex items-center justify-center">
             <Check className="h-3 w-3 text-white" strokeWidth={3} />
           </div>
         );
-      case 'running':
+      case 'in_progress':
+        // Spinner only while the run is live (active feedback). Once stopped,
+        // a static clay dot — the step stays "in progress" but no longer implies
+        // motion (mirrors TRAE's static in-progress marker).
         return (
           <div className="w-5 h-5 rounded-full border-2 border-[var(--abu-clay)] flex items-center justify-center">
-            <Loader2 className="h-3 w-3 text-[var(--abu-clay)] animate-spin" />
+            {isLive ? (
+              <Loader2 className="h-3 w-3 text-[var(--abu-clay)] animate-spin" />
+            ) : (
+              <div className="h-2 w-2 rounded-full bg-[var(--abu-clay)]" />
+            )}
           </div>
         );
       case 'error':
+        // Legacy status, no longer produced going forward — kept only to
+        // render historical snapshots that predate the status narrowing.
         return (
-          <div className="w-5 h-5 rounded-full bg-red-500 flex items-center justify-center">
-            <AlertCircle className="h-3 w-3 text-white" />
+          <div className="w-5 h-5 rounded-full border-2 border-red-500 flex items-center justify-center">
+            <AlertCircle className="h-3 w-3 text-red-500" />
           </div>
         );
       default:
@@ -167,10 +202,10 @@ function ProgressStepRow({ step }: ProgressStepRowProps) {
       <span
         className={cn(
           'text-[13px] leading-6',
-          step.status === 'completed' && 'text-[var(--abu-text-tertiary)]',
-          step.status === 'running' && 'text-[var(--abu-text-primary)]',
-          step.status === 'pending' && 'text-[var(--abu-text-muted)]',
-          step.status === 'error' && 'text-red-600'
+          status === 'completed' && 'text-[var(--abu-text-tertiary)]',
+          status === 'in_progress' && 'text-[var(--abu-text-primary)]',
+          status === 'error' && 'text-red-500',
+          status === 'pending' && 'text-[var(--abu-text-muted)]'
         )}
       >
         {step.description}

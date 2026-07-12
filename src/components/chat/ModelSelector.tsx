@@ -1,11 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Check, Globe, Wrench, Brain, Eye, Image, Search, Star, Clock, BookOpen } from 'lucide-react';
+import { Check, Search, Star, Clock } from 'lucide-react';
 import { useSettingsStore } from '@/stores/settingsStore';
 import { useActiveConversation, useChatStore } from '@/stores/chatStore';
 import { useI18n } from '@/i18n';
 import { cn } from '@/lib/utils';
 import { Input } from '@/components/ui/input';
-import type { ModelCapability, ModelInfo, ProviderInstance } from '@/types';
+import type { ModelInfo, ProviderInstance } from '@/types';
 import { useEnterpriseModels } from '@/core/enterprise/useEnterpriseModels';
 import { useEnterpriseStore } from '@/stores/enterpriseStore';
 
@@ -15,40 +15,9 @@ interface ModelSelectorProps {
   anchorRef: React.RefObject<HTMLElement | null>;
 }
 
-/** Capability icon mapping */
-export function CapabilityBadge({ cap, size = 'sm' }: { cap: ModelCapability; size?: 'sm' | 'xs' }) {
-  const cls = size === 'xs' ? 'h-2.5 w-2.5' : 'h-3 w-3';
-  const muted = `${cls} text-[var(--abu-text-muted)] opacity-70`;
-  switch (cap) {
-    case 'thinking':
-      return <Brain className={muted} />;
-    case 'vision':
-      return <Eye className={muted} />;
-    case 'long_context':
-      return <BookOpen className={muted} />;
-    case 'web_search':
-      return <Globe className={muted} />;
-    case 'tool_use':
-      return <Wrench className={muted} />;
-    case 'image_gen':
-      return <Image className={muted} />;
-    default:
-      return null;
-  }
-}
-
-/** Collect effective capabilities for a model, merging provider-level caps */
-function getEffectiveCaps(model: ModelInfo, provider: ProviderInstance): ModelCapability[] {
-  const caps = new Set<ModelCapability>(model.capabilities ?? []);
-  if (provider.capabilities?.webSearch) caps.add('web_search');
-  if (provider.capabilities?.imageGen) caps.add('image_gen');
-  return Array.from(caps);
-}
-
 /** Single model row */
 function ModelRow({
   model,
-  provider,
   isActive,
   isFavorite,
   onSelect,
@@ -56,15 +25,12 @@ function ModelRow({
   dim = false,
 }: {
   model: ModelInfo;
-  provider: ProviderInstance;
   isActive: boolean;
   isFavorite: boolean;
   onSelect: () => void;
   onToggleFavorite: () => void;
   dim?: boolean;
 }) {
-  const caps = getEffectiveCaps(model, provider);
-
   return (
     <div
       role="button"
@@ -101,14 +67,6 @@ function ModelRow({
       >
         <Star className={cn('h-3 w-3', isFavorite && 'fill-current')} />
       </button>
-
-      {caps.length > 0 && (
-        <span className="flex items-center gap-0.5 shrink-0">
-          {caps.map((cap) => (
-            <CapabilityBadge key={cap} cap={cap} />
-          ))}
-        </span>
-      )}
     </div>
   );
 }
@@ -407,7 +365,6 @@ export function ModelSelector({ open, onClose, anchorRef }: ModelSelectorProps) 
                   <div key={`fav-${provider.id}-${model.id}`} className="group/row">
                     <ModelRow
                       model={model}
-                      provider={provider}
                       isActive={isModelActive(provider.id, model.id)}
                       isFavorite={true}
                       onSelect={() => handleSelect(provider.id, model.id)}
@@ -431,7 +388,6 @@ export function ModelSelector({ open, onClose, anchorRef }: ModelSelectorProps) 
                   <div key={`recent-${provider.id}-${model.id}`} className="group/row">
                     <ModelRow
                       model={model}
-                      provider={provider}
                       isActive={false}
                       isFavorite={isModelFavorite(provider.id, model.id)}
                       onSelect={() => handleSelect(provider.id, model.id)}
@@ -460,7 +416,6 @@ export function ModelSelector({ open, onClose, anchorRef }: ModelSelectorProps) 
                   <div key={`${provider.id}-${model.id}`} className="group/row">
                     <ModelRow
                       model={model}
-                      provider={provider}
                       isActive={isModelActive(provider.id, model.id)}
                       isFavorite={isModelFavorite(provider.id, model.id)}
                       onSelect={() => handleSelect(provider.id, model.id)}

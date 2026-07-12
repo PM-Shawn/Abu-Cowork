@@ -6,7 +6,6 @@ import type { ExecutionStepSnapshot, PlannedStep } from '../types/execution';
 import { useWorkspaceStore } from './workspaceStore';
 import { useProjectStore } from './projectStore';
 import { useTaskExecutionStore } from './taskExecutionStore';
-import { clearTodos } from '../core/agent/todoManager';
 import { clearInputQueue } from '../core/agent/userInputQueue';
 import { clearSkillHooksByConversation } from '../core/tools/builtins';
 import { clearPlanMode } from '../core/agent/planMode';
@@ -229,8 +228,13 @@ interface ChatState {
   retryInfo: RetryInfo | null;
   // Token usage tracking
   currentUsage: TokenUsage | null;
-  // Pending input for prefilling the chat input
+  // Pending input for prefilling the chat input (REPLACES the current draft)
   pendingInput: string | null;
+  // Pending input to APPEND to the current draft (does not clobber an
+  // in-progress composer draft). Ephemeral one-shot buffer drained by
+  // ChatInput. Used only by the inline-widget `window.sendPrompt` bridge —
+  // kept separate from pendingInput so other callers keep replace-semantics.
+  pendingInputAppend: string | null;
   // Pending agent name — set when starting a chat from an agent surface (toolbox
   // detail panel, agent selector, etc.) so the welcome screen can render an
   // agent-themed intro. Cleared on next startNewConversation or when a real
@@ -241,6 +245,11 @@ interface ChatState {
   // one-shot buffer (mirrors pendingInput): ChatInput drains it into local
   // state then clears. NOT persisted.
   pendingReferences: ChatReference[];
+  // Pending file paths injected from the workspace file tree's "Add to chat"
+  // context menu item. Ephemeral one-shot buffer (mirrors pendingReferences):
+  // ChatInput drains it into its local files/images attachment state via
+  // processFilePaths, then clears. NOT persisted.
+  pendingAttachmentPaths: string[];
   // Thinking timer
   thinkingStartTime: number | null;
   // Track multiple concurrent active agents
@@ -317,8 +326,11 @@ interface ChatActions {
   removeActiveAgent: (agentName: string) => void;
   setCurrentUsage: (usage: TokenUsage | null) => void;
   setPendingInput: (text: string | null) => void;
+  appendPendingInput: (text: string | null) => void;
   addPendingReference: (ref: ChatReference) => void;
   clearPendingReferences: () => void;
+  addPendingAttachment: (path: string) => void;
+  clearPendingAttachments: () => void;
   setPendingAgent: (agentName: string | null) => void;
   setConversationStatus: (convId: string, status: ConversationStatus) => void;
   clearCompletedStatus: (convId: string) => void;
@@ -372,8 +384,10 @@ export const useChatStore = create<ChatStore>()(
       currentUsage: null,
       outputsRev: {} as Record<string, number>,
       pendingInput: null,
+      pendingInputAppend: null,
       pendingAgentName: null,
       pendingReferences: [],
+      pendingAttachmentPaths: [],
       pendingPermissionMode: undefined,
       thinkingStartTime: null,
       activeAgentNames: [],
@@ -562,7 +576,6 @@ export const useChatStore = create<ChatStore>()(
           abortControllers.delete(id);
         }
         // Clean up per-conversation state in external modules
-        clearTodos(id);
         clearInputQueue(id);
         clearSkillHooksByConversation(id);
         useTaskExecutionStore.getState().clearConversation(id);
@@ -1188,6 +1201,12 @@ export const useChatStore = create<ChatStore>()(
         });
       },
 
+      appendPendingInput: (text) => {
+        set((state) => {
+          state.pendingInputAppend = text;
+        });
+      },
+
       addPendingReference: (ref) => {
         set((state) => {
           state.pendingReferences.push(ref);
@@ -1197,6 +1216,23 @@ export const useChatStore = create<ChatStore>()(
       clearPendingReferences: () => {
         set((state) => {
           state.pendingReferences = [];
+        });
+      },
+
+      addPendingAttachment: (path) => {
+        set((state) => {
+          // Dedup: "Add to chat" on the same file twice (before the drain runs)
+          // must not buffer it twice — images carry no path once decoded, so the
+          // ChatInput drain can't dedup them downstream.
+          if (!state.pendingAttachmentPaths.includes(path)) {
+            state.pendingAttachmentPaths.push(path);
+          }
+        });
+      },
+
+      clearPendingAttachments: () => {
+        set((state) => {
+          state.pendingAttachmentPaths = [];
         });
       },
 

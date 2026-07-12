@@ -10,7 +10,12 @@ export async function loadBinding(): Promise<EnterpriseBinding | null> {
   const raw = await readTextFile(PATH, { baseDir: BaseDirectory.AppData })
   try {
     const j = JSON.parse(raw) as EnterpriseBinding
+    // Minimum required fields — applies to both new (access+refresh pair) and
+    // legacy (90d single-token) formats.
     if (!j.serverUrl || !j.accessToken || !j.userId) return null
+    // Migration note: legacy bindings (no refreshToken / no accessExpiresAt) are
+    // loaded as-is.  Auto-refresh is silently disabled for them; they work until
+    // the long-lived token expires at which point the user must re-bind.
     return j
   } catch { return null }
 }

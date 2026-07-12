@@ -1,12 +1,10 @@
 import type { ToolDefinition, UserQuestionPayload, UserQuestionResult } from '../../../types';
+import type { PlannedStep } from '../../../types/execution';
 import { useTaskExecutionStore } from '../../../stores/taskExecutionStore';
 import { getPlanMode, setPlanMode } from '../../agent/planMode';
 import { requestUserQuestion } from '../../agent/permissionBridge';
-import { useChatStore } from '../../../stores/chatStore';
 import { useWorkspaceStore } from '../../../stores/workspaceStore';
 import { appendTaskLog, type TaskCategory } from '../../agent/taskLog';
-import { getTodos, addTodo, updateTodo, setTodos, formatTodosForPrompt } from '../../agent/todoManager';
-import type { TodoStatus } from '../../agent/todoManager';
 import { TOOL_NAMES } from '../toolNames';
 import type { MemoryType } from '../../memdir/types';
 import { getI18n, format } from '../../../i18n';
@@ -121,37 +119,72 @@ export function planHasRiskySteps(steps: string[]): boolean {
 
 export const reportPlanTool: ToolDefinition = {
   name: TOOL_NAMES.REPORT_PLAN,
-  description: 'Report the task execution plan. Must be called before starting any task to inform the user of the steps you are about to take. Describe steps in plain business language the user can understand — do not mention tool names.',
+  description: 'Report and maintain the task execution plan. Call this BEFORE starting a multi-step task, and update it frequently: mark a step in_progress right before you work on it, and completed immediately after you finish it (do not batch completions). Always send the COMPLETE list of steps every call (full replacement — partial updates are not supported). Skip this for single-step or purely conversational tasks. Describe steps in plain business language — do not mention tool names.',
   inputSchema: {
     type: 'object',
     properties: {
       steps: {
         type: 'array',
-        items: { type: 'string' },
-        description: 'Array of task steps described in user-understandable language. Example: ["Scan desktop files", "Identify invoices", "Create invoice folder", "Move invoices to folder"]'
+        description: 'Complete array of ALL plan steps (existing + new). Replaces the entire plan every call.',
+        items: {
+          type: 'object',
+          properties: {
+            content: { type: 'string', description: 'User-facing step description in plain business language (no tool names). Concise.' },
+            status: {
+              type: 'string',
+              enum: ['pending', 'in_progress', 'completed'],
+              description: 'pending: not started | in_progress: currently working (at most ONE step) | completed: finished',
+            },
+          },
+          required: ['content'],
+        },
       },
     },
     required: ['steps'],
   },
   execute: async (input, context) => {
     const t = getI18n().toolResult.memory;
-    const steps = input.steps as string[];
+    const steps = (input.steps as Array<{ content: string; status?: string }>) ?? [];
     const hasSteps = Array.isArray(steps) && steps.length > 0;
+    const stepTexts = steps.map((s) => s.content);
+
+    // Write-side discipline warnings: compare the incoming steps against the
+    // PRIOR landed plan and append English self-correction hints to the tool
+    // result the model reads. Must run BEFORE landPlannedSteps() overwrites
+    // the prior plan, or the "changed" diff below would always read 0.
+    const buildWarnings = (): string => {
+      if (!hasSteps) return '';
+      const loopId = context?.loopId;
+      const exec = loopId ? useTaskExecutionStore.getState().getExecutionByLoopId(loopId) : undefined;
+      const priorByIndex = new Map((exec?.plannedSteps ?? []).map((s) => [s.index, s.status]));
+      const warnings: string[] = [];
+      if (steps.length < 3) warnings.push('Warning: Small plan (<3 steps). This task might not need a plan.');
+      else if (steps.length > 10) warnings.push('Warning: Large plan (>10 steps). Keep the plan focused and actionable.');
+      let changed = 0;
+      steps.forEach((s, i) => {
+        const status = (s.status as PlannedStep['status']) ?? 'pending';
+        const prior = priorByIndex.get(i + 1);
+        if (prior !== undefined && prior !== status) changed++;
+      });
+      if (changed > 3) warnings.push('Warning: Updated many steps at once. Mark steps one at a time as you progress.');
+      return warnings.length ? '\n\n' + warnings.join('\n') : '';
+    };
 
     // Land the plan on the loop's execution so the progress panel shows it.
     // Called only for plans the user can act on — approved or approval-free.
     // A rejected/timed-out plan must NOT reach the panel (the user just said
-    // no to exactly these steps).
+    // no to exactly these steps). Full replace: the model owns per-step status
+    // declaratively, so every call overwrites the whole plan (no progress guard).
     const landPlannedSteps = () => {
       const loopId = context?.loopId;
       if (!loopId || !hasSteps) return;
       const store = useTaskExecutionStore.getState();
       const exec = store.getExecutionByLoopId(loopId);
       if (!exec) return;
-      store.setPlannedSteps(exec.id, steps.map((description, i) => ({
+      store.setPlannedSteps(exec.id, steps.map((s, i): PlannedStep => ({
         index: i + 1,
-        description,
-        status: 'pending' as const,
+        description: s.content,
+        status: (s.status as PlannedStep['status']) ?? 'pending',
       })));
     };
 
@@ -162,12 +195,18 @@ export const reportPlanTool: ToolDefinition = {
     // future manual toggle). On the gate: setPlanMode('planning') makes the tool
     // gate (toolExecutor) block writes until the user decides. Approve →
     // 'approved' (writes unlocked); reject/timeout → stay 'planning' (read-only)
-    // so the agent revises and re-submits report_plan.
+    // so the agent revises and re-submits report_plan. The approval helpers only
+    // deal in step text, so they get `stepTexts` regardless of the declarative
+    // per-step status carried alongside.
     const convId = context?.conversationId;
-    const needsApproval = hasSteps && (planHasRiskySteps(steps) || (convId ? getPlanMode(convId) === 'planning' : false));
+    const planMode = convId ? getPlanMode(convId) : 'off';
+    // Once the user has approved this conversation's plan, subsequent report_plan
+    // calls (frequent status updates) must NOT re-trigger approval — otherwise a
+    // risky plan re-prompts and re-locks writes on every progress update.
+    const needsApproval = hasSteps && planMode !== 'approved' && (planHasRiskySteps(stepTexts) || planMode === 'planning');
     if (convId && context?.toolCallId && needsApproval) {
       setPlanMode(convId, 'planning');
-      const payload = buildPlanApprovalPayload(steps);
+      const payload = buildPlanApprovalPayload(stepTexts);
       // Read the approve label off the payload we just built so the match is
       // immune to a UI-locale switch during the await below (the dock echoes
       // back the payload's own option label, not a freshly-resolved one).
@@ -175,8 +214,9 @@ export const reportPlanTool: ToolDefinition = {
       const result = await requestUserQuestion(context.toolCallId, convId, payload);
       if (interpretPlanApproval(result, approveLabel)) {
         setPlanMode(convId, 'approved');
+        const warnings = buildWarnings();
         landPlannedSteps();
-        return t.planApproved;
+        return t.planApproved + warnings;
       }
       if (result === null) {
         return t.planTimeout;
@@ -190,8 +230,9 @@ export const reportPlanTool: ToolDefinition = {
     if (!hasSteps) {
       return t.planRecorded;
     }
+    const warnings = buildWarnings();
     landPlannedSteps();
-    return format(t.planRecordedSteps, { count: steps.length });
+    return format(t.planRecordedSteps, { count: steps.length }) + warnings;
   },
   isConcurrencySafe: false,
 };
@@ -381,82 +422,6 @@ Keep ordinary user preferences/work habits non-private; description can be more 
       }
     } catch (err) {
       return `Error updating memory: ${err instanceof Error ? err.message : String(err)}`;
-    }
-  },
-  isConcurrencySafe: false,
-};
-
-export const todoWriteTool: ToolDefinition = {
-  name: TOOL_NAMES.TODO_WRITE,
-  description: 'Create or update a task plan. Can batch-set plan items or update the status of a single item. The plan is injected every turn so you always have visibility into current progress.',
-  inputSchema: {
-    type: 'object',
-    properties: {
-      action: {
-        type: 'string',
-        description: 'Operation type: set (batch-set plan items) / add (add single item) / update (update status) / read (read current plan)',
-        enum: ['set', 'add', 'update', 'read'],
-      },
-      items: {
-        type: 'array',
-        items: { type: 'object' },
-        description: 'List of plan items (used for set and add). Each item should contain content (string) and optional status (string: pending/in_progress/completed/cancelled)',
-      },
-      todo_id: { type: 'string', description: 'ID of the plan item to update (used for update)' },
-      status: { type: 'string', description: 'New status (used for update)' },
-      content: { type: 'string', description: 'New content (used for update or add)' },
-    },
-    required: ['action'],
-  },
-  execute: async (input, context) => {
-    const t = getI18n().toolResult.memory;
-    const action = input.action as string;
-
-    // Prefer context (correct for scheduled/trigger tasks) over activeConversationId
-    const conversationId = context?.conversationId ?? useChatStore.getState().activeConversationId;
-    if (!conversationId) {
-      return t.errNoActiveSession;
-    }
-
-    switch (action) {
-      case 'set': {
-        const items = (input.items as Array<{ content: string; status?: string }>) ?? [];
-        if (items.length === 0) return t.errItemsRequired;
-        const result = setTodos(conversationId, items.map(i => ({
-          content: i.content,
-          status: (i.status as TodoStatus) ?? 'pending',
-        })));
-        return format(t.todosCreated, { n: result.length }) + formatTodosForPrompt(conversationId);
-      }
-      case 'add': {
-        const content = (input.content as string) ?? (input.items as Array<{ content: string }>)?.[0]?.content;
-        if (!content) return t.errContentRequired;
-        const item = addTodo(conversationId, content);
-        return format(t.todoAdded, { content: item.content, id: item.id });
-      }
-      case 'update': {
-        const todoId = input.todo_id as string;
-        const status = input.status as string | undefined;
-        const content = input.content as string | undefined;
-        if (!todoId) return t.errTodoIdRequired;
-        const updated = updateTodo(conversationId, todoId, {
-          status: status as TodoStatus | undefined,
-          content,
-        });
-        if (!updated) return format(t.errTodoNotFound, { id: todoId });
-        return format(t.todoUpdated, { content: updated.content, status: updated.status });
-      }
-      case 'read': {
-        const todos = getTodos(conversationId);
-        if (todos.length === 0) {
-          return t.todosEmpty;
-        }
-        const formatted = formatTodosForPrompt(conversationId);
-        const details = todos.map(todo => `- ID: ${todo.id} | ${todo.status} | ${todo.content}`).join('\n');
-        return `${formatted}\n\n${t.todosDetailHeader}\n${details}`;
-      }
-      default:
-        return format(t.errUnknownAction, { action });
     }
   },
   isConcurrencySafe: false,

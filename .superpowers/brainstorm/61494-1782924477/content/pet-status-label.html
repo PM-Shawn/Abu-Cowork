@@ -1,0 +1,91 @@
+<h2>当前状态标签 — 样式预览</h2>
+<p class="subtitle">菜单顶部的只读状态区，跟随宠物实时状态变化。</p>
+
+<div class="cards">
+
+  <!-- idle -->
+  <div class="card" data-choice="style-a" onclick="toggleSelect(this)">
+    <div class="card-image" style="background:#111827;padding:24px;display:flex;flex-direction:column;gap:20px;align-items:center;min-height:200px;justify-content:center">
+      <!-- idle 菜单 -->
+      <div>
+        <div style="font-size:10px;color:#6b7280;text-align:center;margin-bottom:6px">空闲时</div>
+        <div style="width:170px;background:#1f2937;border-radius:10px;padding:6px 0;box-shadow:0 8px 24px rgba(0,0,0,0.5);border:1px solid rgba(255,255,255,0.06)">
+          <div style="padding:8px 14px;display:flex;align-items:center;gap:8px;border-bottom:1px solid #374151">
+            <div style="width:8px;height:8px;border-radius:50%;background:#6b7280;flex-shrink:0"></div>
+            <span style="font-size:11px;color:#9ca3af">空闲</span>
+          </div>
+          <div style="padding:8px 14px;font-size:12px;color:#e5e7eb;display:flex;align-items:center;gap:8px"><span>🔕</span><span>勿扰模式</span></div>
+          <div style="padding:8px 14px;font-size:12px;color:#e5e7eb;display:flex;align-items:center;gap:8px"><span>🪟</span><span>打开主窗口</span></div>
+          <div style="padding:8px 14px;font-size:12px;color:#9ca3af;display:flex;align-items:center;gap:8px"><span>👋</span><span>关闭桌宠</span></div>
+        </div>
+      </div>
+      <!-- running 菜单 -->
+      <div>
+        <div style="font-size:10px;color:#6b7280;text-align:center;margin-bottom:6px">处理中时</div>
+        <div style="width:170px;background:#1f2937;border-radius:10px;padding:6px 0;box-shadow:0 8px 24px rgba(0,0,0,0.5);border:1px solid rgba(255,255,255,0.06)">
+          <div style="padding:8px 14px;display:flex;align-items:center;gap:8px;border-bottom:1px solid #374151">
+            <div style="width:8px;height:8px;border-radius:50%;background:#3b82f6;flex-shrink:0;animation:pulse 1.5s infinite"></div>
+            <span style="font-size:11px;color:#93c5fd">处理中…</span>
+          </div>
+          <div style="padding:8px 14px;font-size:12px;color:#e5e7eb;display:flex;align-items:center;gap:8px"><span>🔕</span><span>勿扰模式</span></div>
+          <div style="padding:8px 14px;font-size:12px;color:#e5e7eb;display:flex;align-items:center;gap:8px"><span>🪟</span><span>打开主窗口</span></div>
+          <div style="padding:8px 14px;font-size:12px;color:#9ca3af;display:flex;align-items:center;gap:8px"><span>👋</span><span>关闭桌宠</span></div>
+        </div>
+      </div>
+    </div>
+    <div class="card-body">
+      <h3>A — 小圆点 + 文字</h3>
+      <p>与状态灯颜色一致的小点，旁边文字说明。极简，不抢眼。</p>
+    </div>
+  </div>
+
+  <!-- Style B: badge -->
+  <div class="card" data-choice="style-b" onclick="toggleSelect(this)">
+    <div class="card-image" style="background:#111827;padding:24px;display:flex;flex-direction:column;gap:20px;align-items:center;min-height:200px;justify-content:center">
+      <div>
+        <div style="font-size:10px;color:#6b7280;text-align:center;margin-bottom:6px">等待用户输入时</div>
+        <div style="width:170px;background:#1f2937;border-radius:10px;padding:6px 0;box-shadow:0 8px 24px rgba(0,0,0,0.5);border:1px solid rgba(255,255,255,0.06)">
+          <div style="padding:8px 14px;border-bottom:1px solid #374151">
+            <span style="font-size:11px;font-weight:600;color:#fb923c;background:rgba(251,146,60,0.12);padding:3px 10px;border-radius:20px;border:1px solid rgba(251,146,60,0.3)">⏳ 等待你的输入</span>
+          </div>
+          <div style="padding:8px 14px;font-size:12px;color:#e5e7eb;display:flex;align-items:center;gap:8px"><span>🔕</span><span>勿扰模式</span></div>
+          <div style="padding:8px 14px;font-size:12px;color:#e5e7eb;display:flex;align-items:center;gap:8px"><span>🪟</span><span>打开主窗口</span></div>
+          <div style="padding:8px 14px;font-size:12px;color:#9ca3af;display:flex;align-items:center;gap:8px"><span>👋</span><span>关闭桌宠</span></div>
+        </div>
+      </div>
+      <div>
+        <div style="font-size:10px;color:#6b7280;text-align:center;margin-bottom:6px">出错时</div>
+        <div style="width:170px;background:#1f2937;border-radius:10px;padding:6px 0;box-shadow:0 8px 24px rgba(0,0,0,0.5);border:1px solid rgba(255,255,255,0.06)">
+          <div style="padding:8px 14px;border-bottom:1px solid #374151">
+            <span style="font-size:11px;font-weight:600;color:#f87171;background:rgba(248,113,113,0.12);padding:3px 10px;border-radius:20px;border:1px solid rgba(248,113,113,0.3)">❌ 遇到了问题</span>
+          </div>
+          <div style="padding:8px 14px;font-size:12px;color:#e5e7eb;display:flex;align-items:center;gap:8px"><span>🔕</span><span>勿扰模式</span></div>
+          <div style="padding:8px 14px;font-size:12px;color:#e5e7eb;display:flex;align-items:center;gap:8px"><span>🪟</span><span>打开主窗口</span></div>
+          <div style="padding:8px 14px;font-size:12px;color:#9ca3af;display:flex;align-items:center;gap:8px"><span>👋</span><span>关闭桌宠</span></div>
+        </div>
+      </div>
+    </div>
+    <div class="card-body">
+      <h3>B — 彩色 badge</h3>
+      <p>用有色胶囊标签，颜色随状态变化。醒目，不同状态区分度高。</p>
+    </div>
+  </div>
+
+  <!-- Style C: 不要状态标签 -->
+  <div class="card" data-choice="none" onclick="toggleSelect(this)">
+    <div class="card-image" style="background:#111827;padding:24px;display:flex;align-items:center;justify-content:center;min-height:200px">
+      <div style="width:170px;background:#1f2937;border-radius:10px;padding:6px 0;box-shadow:0 8px 24px rgba(0,0,0,0.5);border:1px solid rgba(255,255,255,0.06)">
+        <div style="padding:8px 14px;font-size:12px;color:#e5e7eb;display:flex;align-items:center;gap:8px"><span>🔕</span><span>勿扰模式</span></div>
+        <div style="padding:8px 14px;font-size:12px;color:#e5e7eb;display:flex;align-items:center;gap:8px"><span>🪟</span><span>打开主窗口</span></div>
+        <div style="padding:8px 14px;font-size:12px;color:#9ca3af;display:flex;align-items:center;gap:8px"><span>👋</span><span>关闭桌宠</span></div>
+      </div>
+    </div>
+    <div class="card-body">
+      <h3>不要状态标签</h3>
+      <p>状态灯本身已经够了，菜单保持最简。</p>
+    </div>
+  </div>
+
+</div>
+
+<style>@keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.4} }</style>

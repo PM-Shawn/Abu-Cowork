@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, fireEvent, screen } from '@testing-library/react'
 import { PetNotificationBubble } from './PetNotificationBubble'
 import { STATUS_COLOR } from './petStatusMeta'
+import { setLanguage } from '@/i18n'
 
 const baseProps = {
   title: '整理桌面文件',
@@ -16,6 +17,8 @@ const baseProps = {
 
 describe('PetNotificationBubble', () => {
   beforeEach(() => {
+    // Reset to zh-CN so i18n-driven labels resolve to the Chinese assertions.
+    setLanguage('zh-CN')
     baseProps.onHoverChange.mockClear()
     baseProps.onOpenMain.mockClear()
     baseProps.onToggleExpand.mockClear()

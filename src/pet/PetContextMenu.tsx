@@ -1,6 +1,7 @@
 import { useEffect, useRef } from 'react'
 import type { PetStatus } from '@/core/pet/petStatusBridge'
-import { STATUS_COLOR, STATUS_LABEL } from './petStatusMeta'
+import { STATUS_COLOR } from './petStatusMeta'
+import { useI18n } from '@/i18n'
 
 interface PetContextMenuProps {
   status: PetStatus
@@ -12,6 +13,7 @@ interface PetContextMenuProps {
 export function PetContextMenu({
   status, onOpenMain, onClosePet, onDismiss,
 }: PetContextMenuProps) {
+  const { t } = useI18n()
   const menuRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
@@ -40,11 +42,11 @@ export function PetContextMenu({
           className="w-2 h-2 rounded-full flex-shrink-0"
           style={{ backgroundColor: STATUS_COLOR[status] }}
         />
-        <span className="flex-1 text-[11px] text-[var(--abu-text-tertiary)]">{STATUS_LABEL[status]}</span>
+        <span className="flex-1 text-[11px] text-[var(--abu-text-tertiary)]">{t.pet.status[status]}</span>
         <button
           className="w-4 h-4 flex items-center justify-center flex-shrink-0 text-[var(--abu-text-muted)] hover:text-[var(--abu-text-primary)]"
           onClick={onDismiss}
-          aria-label="关闭菜单"
+          aria-label={t.pet.closeMenu}
         >
           ×
         </button>
@@ -54,14 +56,14 @@ export function PetContextMenu({
         className="w-full px-3.5 py-2 text-[12px] text-[var(--abu-text-secondary)] text-left hover:bg-[var(--abu-bg-hover)]"
         onClick={onOpenMain}
       >
-        打开主窗口
+        {t.pet.openMain}
       </button>
 
       <button
         className="w-full px-3.5 py-2 text-[12px] text-[var(--abu-text-tertiary)] text-left hover:bg-[var(--abu-bg-hover)]"
         onClick={onClosePet}
       >
-        关闭桌宠
+        {t.pet.closePet}
       </button>
     </div>
   )

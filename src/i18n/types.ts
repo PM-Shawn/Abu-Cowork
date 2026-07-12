@@ -130,6 +130,8 @@ export interface TranslationDict {
   // Sidebar
   sidebar: {
     newTask: string;
+    projectFiles: string;
+    backToConversations: string;
     automation: string;
     scheduledTasks: string;
     triggers: string;
@@ -278,6 +280,10 @@ export interface TranslationDict {
     htmlWidgetLabel: string;
     htmlWidgetLoading: string;
     htmlWidgetRenderError: string;
+    /** P3 — one-line muted row shown beneath a widget after it reports a
+     *  runtime error (window.onerror / unhandledrejection), so a widget
+     *  that broke mid-script doesn't just look mysteriously blank. */
+    htmlWidgetErrorRow: string;
     htmlWidgetExpand: string;
     htmlWidgetCollapse: string;
     htmlWidgetFullscreen: string;
@@ -286,6 +292,9 @@ export interface TranslationDict {
     htmlWidgetDownload: string;
     htmlWidgetViewCode: string;
     htmlWidgetViewPreview: string;
+    // show_widget inline card status rows (invalid input / cancelled call)
+    widgetCardError: string;
+    widgetCardCancelled: string;
     // Enterprise model selector
     enterpriseModelLoading: string;
     enterpriseModelNoMatch: string;
@@ -391,6 +400,10 @@ export interface TranslationDict {
     usageChipCache: string;
     usageChipRequests: string;
     usageChipSubtitle: string;
+    /** Fallback when the API failed with an empty/opaque body (no error details). */
+    errorEmptyBody: string;
+    /** Hint appended to not_found errors: check endpoint URL / model capabilities. */
+    errorNotFoundHint: string;
   };
 
   // Share (conversation export / import)
@@ -592,6 +605,12 @@ export interface TranslationDict {
     baseUrl: string;
     baseUrlPlaceholder: string;
     apiFormat: string;
+    billingPaygo: string;
+    billingCoding: string;
+    billingTokenPlan: string;
+    billingAgent: string;
+    configPlan: string;
+    viewDocs: string;
     selectModel: string;
     customModel: string;
     // Custom services
@@ -747,15 +766,26 @@ export interface TranslationDict {
     lmstudioOffline: string;
 
     // Provider Management V2
+    add: string;
     addService: string;
+    editService: string;
+    deleteService: string;
     serviceName: string;
     serviceNameAuto: string;
     selectProviderType: string;
     searchProvider: string;
-    alreadyAdded: string;
+    selectProviderFirst: string;
+    localNoKeyNeeded: string;
+    singleAccess: string;
+    configMethodLocalPlaceholder: string;
     cloudProviders: string;
     localProviders: string;
     customProviders: string;
+    /** Localized display names for select builtin providers whose
+     *  PROVIDER_CONFIGS[id].name is not already brand/English (e.g. 火山引擎).
+     *  Partial — only providers needing localization have an entry; callers
+     *  fall back to PROVIDER_CONFIGS[id].name otherwise. */
+    providerNames: Partial<Record<string, string>>;
     guide: string;
     guideGoTo: string;
     apiKeyRequired: string;
@@ -766,7 +796,10 @@ export interface TranslationDict {
     fetchModelsError: string;
     fetchModelsSuccess: string;
     addModelManually: string;
+    addModel: string;
     addModelPlaceholder: string;
+    useOtherModel: string;
+    useOtherModelDesc: string;
     save: string;
     saveAnyway: string;
     goBackEdit: string;
@@ -793,6 +826,7 @@ export interface TranslationDict {
     providerDisabled: string;
     cancelEdit: string;
     saveChanges: string;
+    customApi: string;
     customApiOpenai: string;
     customApiAnthropic: string;
     models: string;
@@ -812,11 +846,13 @@ export interface TranslationDict {
     capMaxInput: string;
     capMaxOutput: string;
     capTokenDefault: string;
+    capPerModelHint: string;
     // Model fetch status messages (ProviderCard + AddProviderModal)
     fetchModelsEmpty: string;
     fetchModelsFailed: string;
-    expandModels: string;
-    collapseModels: string;
+    // Scoped search over a large fetched-models checklist (aggregator/gateway convergence)
+    filterModelsPlaceholder: string;
+    filterModelsNoResults: string;
     // Enterprise tab label in SystemSettingsModal
     enterpriseMode: string;
   };
@@ -877,6 +913,8 @@ export interface TranslationDict {
     aiServicesNoProvider: string;
     aiServicesNoProviderHint: string;
     aiServicesNoKey: string;
+    /** Probe passed but a recent real call failed — {detail} = error code. */
+    aiRecentFailure: string;
     // Permissions check
     permAppData: string;
     permWorkspace: string;
@@ -1421,6 +1459,17 @@ export interface TranslationDict {
     showInFinder: string;
     failedToReadFile: string;
     fileNotFound: string;
+    // Editable preview (P2): autosave + external-change conflict notices
+    saveFailedTitle: string;
+    externalChangeTitle: string;
+    externalChangeMessage: string;
+    // Version history (P4): per-file snapshot list + revert
+    versionHistory: string;
+    versionHistoryEmpty: string;
+    versionHistoryRevert: string;
+    versionHistoryReverted: string;
+    versionHistoryRevertFailedTitle: string;
+    versionHistoryLoadFailed: string;
     // FilesSection
     operationRead: string;
     operationModify: string;
@@ -1464,6 +1513,38 @@ export interface TranslationDict {
     openWithPowerPoint: string;
     // Preview: data-URL image (no file path)
     imagePreview: string;
+    // WorkspaceFileTree (lightweight lazy-loaded project file tree, code-canvas P0)
+    fileTree: {
+      title: string;
+      noWorkspace: string;
+      empty: string;
+      loadError: string;
+      loading: string;
+      moreActions: string;
+      newFolder: string;
+      addFile: string;
+      refresh: string;
+      newFolderPlaceholder: string;
+      newFolderFailed: string;
+      addFileFailed: string;
+      // Per-node context menu (code-canvas P1)
+      revealInFinder: string;
+      addToChat: string;
+      addedToChat: string;
+      copyPath: string;
+      copyPathDone: string;
+      rename: string;
+      renameFailed: string;
+      newFile: string;
+      newFilePlaceholder: string;
+      newFileFailed: string;
+      delete: string;
+      confirmDelete: string;
+      moveToTrash: string;
+      deleteFailed: string;
+      invalidName: string;
+      alreadyExists: string;
+    };
   };
 
   // Folder Selector
@@ -1800,6 +1881,25 @@ export interface TranslationDict {
     rememberChoice: string;
   };
 
+  // Desktop pet window (standalone Tauri window)
+  pet: {
+    openMain: string;
+    closePet: string;
+    closeMenu: string;
+    reply: string;
+    replyPlaceholder: string;
+    needAuth: string;
+    expand: string;
+    collapse: string;
+    status: {
+      idle: string;
+      running: string;
+      waiting: string;
+      error: string;
+      done: string;
+    };
+  };
+
   // Updates
   updates: {
     newVersionAvailable: string;
@@ -2054,6 +2154,51 @@ export interface TranslationDict {
     modularRules: string;
     rulesTruncated: string;
     rulesNotModifiable: string;
+  };
+
+  // Enterprise Login
+  enterpriseLogin: {
+    bindTitle: string;
+    bindDescription: string;
+    serverUrlLabel: string;
+    serverUrlPlaceholder: string;
+    continueButton: string;
+    cancelButton: string;
+    backButton: string;
+    tabPassword: string;
+    tabMagicLink: string;
+    tabSso: string;
+    emailLabel: string;
+    emailPlaceholder: string;
+    passwordLabel: string;
+    passwordPlaceholder: string;
+    signInButton: string;
+    magicSendCodeButton: string;
+    magicCodeLabel: string;
+    magicCodePlaceholder: string;
+    magicVerifyButton: string;
+    magicSentHint: string;
+    ssoCodeHint: string;
+    ssoWaiting: string;
+    errInvalidCredentials: string;
+    errAccountPending: string;
+    errAccountSuspended: string;
+    errGeneric: string;
+    /** Rate-limited; interpolates {seconds} when Retry-After is available. */
+    errSlowDown: string;
+    /** Rate-limited fallback when no Retry-After header is present. */
+    errSlowDownGeneric: string;
+    /** Magic-link code has expired. */
+    errExpiredToken: string;
+    /** The chosen login method is not enabled on this server. */
+    errMethodNotEnabled: string;
+    /** New registrations are closed. */
+    errRegistrationClosed: string;
+    /** Email domain not in the allowlist. */
+    errDomainNotAllowed: string;
+    /** Malformed request (developer-facing but shown as generic client error). */
+    errInvalidRequest: string;
+    processing: string;
   };
 
   // Enterprise runtime UI (gateway badge, policy confirm, status badge)
@@ -2588,6 +2733,29 @@ export interface TranslationDict {
       imageSkipNoVision: string;
       /** File locked by another agent. {path} */
       errFileLocked: string;
+    };
+    // show_widget / read_me — inline visualization tool
+    widget: {
+      /** Error: title cannot be empty. */
+      errTitleEmpty: string;
+      /** Error: widget_code cannot be empty. */
+      errWidgetCodeEmpty: string;
+      /** Error: loading_messages must have 1-4 entries. {received} */
+      errLoadingMessagesLength: string;
+      /** Error: loading_messages[{idx}] must be a non-empty string. */
+      errLoadingMessageEntry: string;
+      /** Error: widget_code exceeds the ~1MB size budget. */
+      errWidgetCodeTooLarge: string;
+      /** Error: widget_code contains a document wrapper tag (doctype/html/head/body). */
+      errFullDocument: string;
+      /** Error: widget_code references localStorage/sessionStorage (unavailable in the sandbox). */
+      errStorageApi: string;
+      /** Error: widget_code uses position:fixed (breaks auto-sizing). */
+      errPositionFixed: string;
+      /** Error: widget_code contains a <form> element. */
+      errFormElement: string;
+      /** Success: widget rendered. {title} */
+      rendered: string;
     };
     // commandSafety — injection reason strings and danger-level labels
     commandSafety: {

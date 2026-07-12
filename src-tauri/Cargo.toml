@@ -1,6 +1,6 @@
 [package]
 name = "abu"
-version = "0.28.2"
+version = "0.29.0"
 description = "ABU - AI Desktop Assistant"
 authors = ["you"]
 edition = "2021"
@@ -25,6 +25,7 @@ tauri-plugin-clipboard-manager = "2"
 tauri-plugin-global-shortcut = "2"
 tauri-plugin-updater = "2"
 tauri-plugin-process = "2"
+tauri-plugin-deep-link = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["net", "io-util", "rt", "sync", "macros", "time"] }
@@ -37,6 +38,10 @@ enigo = { version = "0.3", features = ["serde"] }
 base64 = "0.22"
 image = { version = "0.25", default-features = false, features = ["png"] }
 tempfile = "3"
+# Move files to the OS trash (macOS Finder Trash / Windows Recycle Bin / XDG)
+# instead of permanently deleting them — used by the workspace file tree so
+# deletes are recoverable. See trash.rs.
+trash = "5"
 rusqlite = { version = "0.31", features = ["bundled"] }
 # HTML preview HTTP server (loopback-only file server for sandboxed iframe).
 # WKWebView blocks asset:// sub-resources from sandboxed iframes, so HTML

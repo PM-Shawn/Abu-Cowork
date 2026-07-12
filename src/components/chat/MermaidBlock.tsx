@@ -70,9 +70,11 @@ function buildFullscreenHtml(code: string): string {
   return `<!DOCTYPE html><html><head>
 <meta charset="utf-8">
 <style>
-  body { display:flex; justify-content:center; align-items:flex-start;
+  /* margin:auto (not align-items) centers when the diagram fits and stays
+     scrollable-from-top when it's taller than the viewport. */
+  body { display:flex; min-height:100vh; box-sizing:border-box;
          padding:40px; background:#fff; margin:0; overflow:auto; }
-  svg { max-width:100%; height:auto; }
+  svg { margin:auto; max-width:100%; height:auto; }
 </style>
 </head><body>${svg}</body></html>`;
 }

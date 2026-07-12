@@ -20,8 +20,11 @@ Inspired by Claude Code's Cowork mode. Features multi-agent architecture with ex
 ## Git Workflow & Development Constraints
 
 ### Branches
-- **`main`**: Stable release branch. **禁止直接在 main 上开发或 push commit**，只接受从 `dev` 的 merge。
-- **`dev`**: 日常开发分支，所有工作在这里进行。
+- **`main`**: Stable release branch. **禁止直接在 main 上开发或 push commit**，只接受从 `dev` 的 **merge**（不是 cherry-pick，见下方红线）。
+- **`dev`**: 日常开发分支，所有工作在这里进行；**永远是唯一集成线**，其他开发者从 `dev` 拉、开 feature 分支、PR 回 `dev`。
+
+- 🔴 **发版只用 `git merge dev`，绝不 cherry-pick dev→main**。cherry-pick 会把同一改动复制成"内容一样、SHA 不同"的孪生 commit，两条分支历史发散 → 下次 merge 满屏假冲突 → 逼你继续 cherry-pick → **雪球债**（2026-07 已滚到 dev/main 分叉 223/124，靠一次收敛合并才解开）。main 内容始终是 dev 的子集，走 merge 永远干净。
+- 🔴 **`main` 没有"特殊内容"**：企业登录（`EnterpriseLoginPage`/bootstrap/discovery/auth）是 **OSS 合法**的（`ENTERPRISE-BUILD.md` 把 device-flow bind 列为 ✅ OSS；泄漏门禁 deny-list 也不含它），且深度运行时门控（只有用户主动绑企业服务器才出现），随 dev 进 main 无碍。真正的闭源模块早已构建隔离在私有仓（见「Enterprise 代码隔离」红线）。**不要**因为"怕泄企业代码"就把 main 拆成精选线搞 cherry-pick——那是历史误解。
 
 ### Before Starting Work (每次开始工作前必做)
 1. `git branch --show-current` — 确认当前分支。如果在 `main`，先 `git checkout dev`。
@@ -39,11 +42,13 @@ Inspired by Claude Code's Cowork mode. Features multi-agent architecture with ex
 
 ### Release Process (发版流程)
 1. 确保 `dev` 分支 CI 全绿（build + lint + test）。
-2. **三处版本号必须同步更新**：`package.json`、`src-tauri/tauri.conf.json`、`src-tauri/Cargo.toml`。
-3. `git checkout main && git merge dev` — 合并到 main。
+2. **版本号在 `dev` 上 bump，三处同步**：`package.json`、`src-tauri/tauri.conf.json`、`src-tauri/Cargo.toml`。CHANGELOG 也在 `dev` 上写好该版条目。（版本号跟着 dev 流到 main，不再出现 dev/main 版本错位。）
+3. `git checkout main && git merge dev` — **只 merge，绝不 cherry-pick**。正常情况是干净快进/合并；若有冲突且分支已对齐，多半是真冲突，逐个解。
 4. `git tag vX.Y.Z` — 打 tag，格式为 `v` + 语义化版本号。
 5. `git push origin main --tags` — 推送 main 和 tag。
 6. 在 GitHub 创建 Release，按 [`RELEASING.md`](./RELEASING.md) 的模板写 release notes（patch / minor / major 三档）。
+
+**热修（hotfix）也不许 cherry-pick**：要么在 `dev` 上修完走正常发版；要么从对应 tag 拉 `release/vX.Y` 分支修完打 tag，**再把该分支 merge 回 `dev`**（不留孤儿 commit）。目标永远是"任何进过 main 的东西，历史上都能从 dev 追溯到"。
 
 ### Release Notes Convention (核心要点)
 - **分档**：patch（vX.Y.Z++）用极简模板（根因 + 修复 2-3 行）；minor（vX.Y.0）用完整模板（Features / Fixes / English Summary）；major（vX.0.0）额外加 Migration Notes。
@@ -57,6 +62,7 @@ Inspired by Claude Code's Cowork mode. Features multi-agent architecture with ex
 
 ### Forbidden
 - ❌ 直接在 `main` 上 commit 或 push。
+- ❌ **cherry-pick `dev`→`main`**（发版/热修一律走 merge；热修用 `release/vX.Y` 分支再合回 dev，见 Release Process）。
 - ❌ `git push --force` 到 `main` 或 `dev`（除非用户明确要求）。
 - ❌ 提交未通过 build 的代码。
 - ❌ 跳过 pre-commit 检查（`--no-verify`）。
@@ -180,7 +186,39 @@ Abu 是 Tauri 桌面端，每轮"改 → 重启 dev → 验证"的成本比 web 
 ### 1. Language Convention
 - **UI text**: Chinese (zh-CN). All user-facing strings go through i18n system.
 - **Code**: English only — variable names, function names, comments, commit messages.
-- **LLM system prompts**: Chinese.
+- **LLM system prompts**: **English** (in transition — see below). The reply language
+  is NOT set by the prompt language; it is controlled explicitly by the
+  `response-language` section (`src/core/agent/prompts/responseLanguage.ts`), which is
+  driven by the resolved UI locale (zh-CN → always Chinese; en-US → English, following
+  the user's message language). So an English prompt still yields Chinese replies for
+  Chinese users. When adding/editing agent prompts or tool descriptions, write them in
+  English.
+- **Transition status (prompt English-ization)**: P0 (output-language mechanism), P1 (tool
+  `description` fields), P3 (UI-facing string i18n — tool result strings via the `toolResult`
+  namespace, and `commandSafety` reasons/labels), **P2 (core agent behavior prompts)**, and
+  **P4 (remaining user-visible result/status/template strings)** are all done. P2 covered
+  `skillsGuidance.ts`, `agentLoop.ts` (default-soul + capability), `orchestrator.ts` (all
+  system-prompt sections), the built-in agent `systemPrompt`s in `registry.ts`, the
+  `PRESET_AGENTS` in `agentTools.ts`/`orchestrationTools.ts`, and the subagent system prompt
+  in `subagentLoop.ts`. The orchestrator IM canned replies were rewritten as behavior
+  instructions (the reply's language is handled by the response-language section, not a fixed
+  string). Agent-picker metadata was already bilingual (per-field
+  `displayNames`/`descriptions`/`*I18n` maps). P4 i18n'd (NOT hardcoded English — these are
+  user-visible, so both locales stay correct): `mcpDiscovery.ts` catalog descriptions + env
+  hints + result messages (`toolResult.system.mcpCatalog`/`mcpEnvHints`/`mcp*`),
+  `projectRules.ts` rule-bundle headers + truncation markers + the per-locale ABU.md template
+  + `/init` results (`toolResult.projectRules`), and the `agentLoop.ts`/`subagentLoop.ts`
+  runtime status/error strings (`chat.*` + `chat.subagent.*`). The one P4 exception left in
+  English is the context-compression hint injected into the volatile *system prompt*
+  (`agentLoop.ts` `compression-hint`) — it is LLM-facing and never rendered, so it follows the
+  English-prompt rule, not i18n.
+- **🔴 Exception — do NOT English-ify these (they are UI-facing, not LLM-facing)**: tool
+  runtime result strings (`execute()` returns/success/error messages — rendered directly
+  in `ToolCallsGroup.tsx`), `commandSafety` reason/label strings (command-confirmation
+  dialog), and agent-picker metadata. These must go through i18n (already done — via the
+  `toolResult` namespace resolved at execution time, and the registry per-field locale
+  maps), NOT become hardcoded English — translating to a single language regresses the
+  other locale's users.
 
 ### 2. TypeScript Strictness
 - All strict mode options enabled (`strict: true`, `noUnusedLocals`, `noUnusedParameters`, `noFallthroughCasesInSwitch`).

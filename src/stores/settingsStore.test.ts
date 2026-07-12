@@ -546,4 +546,45 @@ describe('settingsStore labs flags', () => {
       expect(migrated.providers).toBeUndefined();
     });
   });
+
+  describe('v40 migration (sink declaredCapabilities to per-model)', () => {
+    const getMigrate = () =>
+      (useSettingsStore as unknown as {
+        persist: { getOptions: () => { migrate: (data: unknown, version: number) => Record<string, unknown> } };
+      }).persist.getOptions().migrate;
+
+    it('copies provider-level model-varying fields down onto each model', () => {
+      const migrate = getMigrate();
+      const result = migrate(
+        {
+          providers: [
+            {
+              id: 'p1', models: [{ id: 'a', label: 'a' }, { id: 'b', label: 'b' }],
+              declaredCapabilities: { supportsImages: true, maxInputTokens: 65536, useRawUrl: true },
+            },
+          ],
+        },
+        39,
+      ) as { providers: Array<{ declaredCapabilities?: Record<string, unknown>; models: Array<{ declaredCapabilities?: Record<string, unknown> }> }> };
+      for (const m of result.providers[0].models) {
+        expect(m.declaredCapabilities?.supportsImages).toBe(true);
+        expect(m.declaredCapabilities?.maxInputTokens).toBe(65536);
+        expect(m.declaredCapabilities?.useRawUrl).toBeUndefined(); // endpoint field NOT copied
+      }
+      expect(result.providers[0].declaredCapabilities?.useRawUrl).toBe(true); // provider-level intact
+    });
+    it('does not clobber a model that already has its own override', () => {
+      const migrate = getMigrate();
+      const result = migrate(
+        { providers: [{ id: 'p1', models: [{ id: 'a', label: 'a', declaredCapabilities: { supportsImages: false } }], declaredCapabilities: { supportsImages: true } }] },
+        39,
+      ) as { providers: Array<{ models: Array<{ declaredCapabilities?: Record<string, unknown> }> }> };
+      expect(result.providers[0].models[0].declaredCapabilities?.supportsImages).toBe(false);
+    });
+    it('handles providers/models without declared or without arrays gracefully', () => {
+      const migrate = getMigrate();
+      expect(() => migrate({ providers: [{ id: 'b', models: [] }] }, 39)).not.toThrow();
+      expect(() => migrate({}, 39)).not.toThrow();
+    });
+  });
 });

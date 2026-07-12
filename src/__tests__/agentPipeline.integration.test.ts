@@ -182,10 +182,6 @@ vi.mock('../core/agent/toolExecutor', () => ({
   executeToolBatch: vi.fn().mockResolvedValue([]),
 }));
 
-vi.mock('../core/agent/todoManager', () => ({
-  formatTodosForPrompt: vi.fn().mockReturnValue(''),
-}));
-
 vi.mock('../../utils/platform', () => ({
   isWindows: vi.fn().mockReturnValue(false),
 }));
@@ -221,7 +217,11 @@ vi.mock('../core/tools/toolNames', () => ({
   TOOL_NAMES: {
     WEB_SEARCH: 'web_search',
     DELEGATE_TO_AGENT: 'delegate_to_agent',
+    SHOW_WIDGET: 'show_widget',
   },
+  // agentLoop calls this on every tool_use event — the real function, not a
+  // stub, so hidden-marking semantics stay faithful in the pipeline test.
+  isDisplayHiddenStepBackedTool: (name?: string) => name === 'show_widget',
 }));
 
 vi.mock('../core/tools/toolPrefetch', () => ({

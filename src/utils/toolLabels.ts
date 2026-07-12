@@ -167,6 +167,20 @@ export function getToolLabel(
         label: isZh ? '获取系统信息' : 'Get system info',
       };
 
+    // show_widget is hidden from the chat's generic tool list (rendered as
+    // ShowWidgetCard instead — see MessageGroup.tsx), but its execution step
+    // still surfaces in the right-side progress panel, which uses this label.
+    case TOOL_NAMES.SHOW_WIDGET: {
+      const widgetTitle = typeof toolInput.title === 'string' ? toolInput.title : undefined;
+      const base = isZh ? '渲染可视化组件' : 'Render widget';
+      return { label: widgetTitle ? `${base}「${widgetTitle}」` : base };
+    }
+
+    case TOOL_NAMES.READ_ME:
+      return {
+        label: isZh ? '加载可视化设计指南' : 'Load widget guidelines',
+      };
+
     case TOOL_NAMES.LIST_DIRECTORY: {
       const dirPath = path || (toolInput.directory as string);
       const dirName = dirPath ? getFileName(dirPath) : undefined;

@@ -21,6 +21,10 @@ export const TOOL_NAMES = {
   GENERATE_IMAGE: 'generate_image',
   PROCESS_IMAGE: 'process_image',
 
+  // Inline visualization (generative UI widgets)
+  SHOW_WIDGET: 'show_widget',
+  READ_ME: 'read_me',
+
   // Agent & skill
   USE_SKILL: 'use_skill',
   READ_SKILL_FILE: 'read_skill_file',
@@ -42,7 +46,6 @@ export const TOOL_NAMES = {
   UPDATE_SOUL: 'update_soul',
   RECALL: 'recall',
   READ_MEMORY: 'read_memory',
-  TODO_WRITE: 'todo_write',
 
   // Automation
   MANAGE_SCHEDULED_TASK: 'manage_scheduled_task',
@@ -78,3 +81,19 @@ export const TOOL_NAMES = {
 } as const;
 
 export type ToolName = typeof TOOL_NAMES[keyof typeof TOOL_NAMES];
+
+/**
+ * Tools whose ToolCall is marked `hidden: true` for DISPLAY purposes only,
+ * while still being step-backed: agentLoop runs the full step bookkeeping
+ * for them (createStepForToolUse + planned-step auto-link/advance), unlike
+ * report_plan which breaks before step creation.
+ *
+ * Single source for that semantics — used by agentLoop (hidden-marking),
+ * MessageGroup (step slicing + timeline filtering + widget segments), and
+ * proposalSignal (these calls count as real work). Currently only
+ * show_widget, which renders as a dedicated inline card (ShowWidgetCard)
+ * instead of the generic tool list.
+ */
+export function isDisplayHiddenStepBackedTool(name: string | undefined): boolean {
+  return name === TOOL_NAMES.SHOW_WIDGET;
+}

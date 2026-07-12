@@ -53,10 +53,14 @@ export function Select({ value, onChange, options, placeholder, variant = 'defau
     const handleEscape = (e: KeyboardEvent) => {
       if (e.key === 'Escape') setOpen(false);
     };
-    document.addEventListener('mousedown', handleClickOutside);
+    // Capture phase: an ancestor may stopPropagation() on mousedown in the
+    // bubble phase (e.g. a modal backdrop that disables click-to-close), which
+    // would otherwise silently kill outside-click detection. Capture fires
+    // top-down before any such handler runs.
+    document.addEventListener('mousedown', handleClickOutside, true);
     document.addEventListener('keydown', handleEscape);
     return () => {
-      document.removeEventListener('mousedown', handleClickOutside);
+      document.removeEventListener('mousedown', handleClickOutside, true);
       document.removeEventListener('keydown', handleEscape);
     };
   }, [open]);

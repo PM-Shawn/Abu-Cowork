@@ -13,8 +13,8 @@ function makeCtx(overrides: Partial<PrefetchContext> = {}): PrefetchContext {
 
 describe('toolPrefetch', () => {
   describe('CORE_TOOL_NAMES', () => {
-    it('should contain 14 core tools', () => {
-      expect(CORE_TOOL_NAMES.size).toBe(14);
+    it('should contain 16 core tools', () => {
+      expect(CORE_TOOL_NAMES.size).toBe(16);
     });
 
     it('should include essential tools', () => {
@@ -25,6 +25,10 @@ describe('toolPrefetch', () => {
       // ask_user_question is core (always loaded), matching Claude — so the
       // model never has to tool_search before showing a choice card.
       expect(CORE_TOOL_NAMES.has('ask_user_question')).toBe(true);
+      // show_widget / read_me are core for the same reason — visualization
+      // is now a primary capability (P1 widget system), not a niche one.
+      expect(CORE_TOOL_NAMES.has('show_widget')).toBe(true);
+      expect(CORE_TOOL_NAMES.has('read_me')).toBe(true);
     });
 
     it('should not include conditional tools', () => {
@@ -41,9 +45,8 @@ describe('toolPrefetch', () => {
       expect(result).toContain('get_system_info');
     });
 
-    it('should return report_plan + todo_write on turn 1-3', () => {
+    it('should return report_plan on turn 1-3', () => {
       const result = prefetchTools(makeCtx({ userInput: '你好', turnCount: 1 }));
-      expect(result).toContain('todo_write');
       expect(result).toContain('report_plan');
       expect(result).not.toContain('get_system_info');
     });

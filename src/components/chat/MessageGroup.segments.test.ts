@@ -3,7 +3,7 @@
  * that interleaves text, tool-step, and mid-loop user-bubble segments.
  */
 import { describe, it, expect } from 'vitest';
-import { buildRenderSegments, computeWorkProcessFold } from './MessageGroup';
+import { buildRenderSegments, computeWorkProcessFold, streamingTurnHasRenderableContent } from './MessageGroup';
 import type { Message } from '@/types';
 import type { ExecutionStep } from '@/types/execution';
 
@@ -158,6 +158,81 @@ describe('buildRenderSegments', () => {
     expect(stepSegs[2].executionSteps.map((s) => s.id)).toEqual(['listdir']);
   });
 
+  it('show_widget becomes a dedicated widget segment at its real position (text → widget)', () => {
+    const msg: Message = {
+      id: 'a1',
+      role: 'assistant',
+      content: 'here is your chart',
+      timestamp: 0,
+      loopId: 'loop-1',
+      toolCalls: [{
+        id: 'tc-widget-1',
+        name: 'show_widget',
+        input: { title: 'Chart', widget_code: '<div>x</div>', loading_messages: ['loading'] },
+        hidden: true,
+        result: 'Widget rendered: Chart',
+      }],
+    };
+    const segs = buildRenderSegments([makeUser('u1', 'chart please'), msg], [], []);
+    expect(segs.map((s) => s.kind)).toEqual(['text', 'widget']);
+    const widgetSeg = segs[1] as Extract<ReturnType<typeof buildRenderSegments>[0], { kind: 'widget' }>;
+    expect(widgetSeg.toolCall.id).toBe('tc-widget-1');
+  });
+
+  it('multiple show_widget calls in one turn each get their own widget segment', () => {
+    const msg: Message = {
+      id: 'a1',
+      role: 'assistant',
+      content: 'two charts',
+      timestamp: 0,
+      loopId: 'loop-1',
+      toolCalls: [
+        { id: 'w1', name: 'show_widget', input: { widget_code: '<div>1</div>' }, hidden: true, result: 'ok' },
+        { id: 'w2', name: 'show_widget', input: { widget_code: '<div>2</div>' }, hidden: true, result: 'ok' },
+      ],
+    };
+    const segs = buildRenderSegments([makeUser('u1', 'go'), msg], [], []);
+    expect(segs.map((s) => s.kind)).toEqual(['text', 'widget', 'widget']);
+  });
+
+  it('show_widget steps are counted in slicing (step bookkeeping runs) but filtered from the timeline', () => {
+    // show_widget is hidden for DISPLAY only — agentLoop creates an execution
+    // step for it (so planned-step advance counts widget calls). Slicing must
+    // consume that step slot, filter it from the visible timeline, and keep
+    // later messages' steps correctly aligned.
+    const a1: Message = {
+      id: 'a1',
+      role: 'assistant',
+      content: '',
+      timestamp: 0,
+      loopId: 'loop-1',
+      toolCalls: [
+        { id: 'tc-read', name: 'read_file', input: {}, result: 'ok' },
+        { id: 'tc-w', name: 'show_widget', input: { widget_code: '<div>x</div>' }, hidden: true, result: 'ok' },
+      ],
+    };
+    const a2: Message = {
+      id: 'a2',
+      role: 'assistant',
+      content: 'done',
+      timestamp: 0,
+      loopId: 'loop-1',
+      toolCalls: [{ id: 'tc-list', name: 'list_directory', input: {}, result: 'ok' }],
+    };
+    const widgetStep: ExecutionStep = { ...makeExecStep('step-widget'), toolName: 'show_widget' };
+    const segs = buildRenderSegments(
+      [makeUser('u1', 'go'), a1, a2],
+      [makeExecStep('step-read'), widgetStep, makeExecStep('step-list')],
+      [],
+    );
+    // a1 → widget segment + steps(step-read, widget step filtered out);
+    // a2 → text + steps(step-list) — alignment preserved across the widget slot.
+    expect(segs.map((s) => s.kind)).toEqual(['widget', 'steps', 'text', 'steps']);
+    const stepSegs = segs.filter((s) => s.kind === 'steps') as Extract<ReturnType<typeof buildRenderSegments>[0], { kind: 'steps' }>[];
+    expect(stepSegs[0].executionSteps.map((s) => s.id)).toEqual(['step-read']);
+    expect(stepSegs[1].executionSteps.map((s) => s.id)).toEqual(['step-list']);
+  });
+
   it('a thinking-typed step in allExecSteps is discarded; msg thinking merges with the tool', () => {
     const msgs: Message[] = [makeUser('u1', 'x'), makeThinkingAssistant('a1', { thinking: 'from msg', thinkingDuration: 1, toolCount: 1 })];
     const thinkingExec: ExecutionStep = { ...makeExecStep('ghost'), type: 'thinking' };
@@ -192,5 +267,45 @@ describe('computeWorkProcessFold', () => {
   it('intermediate text folds in; only the last text stays outside', () => {
     // [thinking, text(mid), tool, text(final)] → foldEnd = 3
     expect(computeWorkProcessFold([seg('steps'), seg('text'), seg('steps'), seg('text')], true)).toBe(3);
+  });
+});
+
+describe('streamingTurnHasRenderableContent', () => {
+  it('is false for a fresh empty streaming placeholder (dots must show)', () => {
+    expect(streamingTurnHasRenderableContent(makeAssistant('m1', ''))).toBe(false);
+  });
+  it('is false when there is no streaming message', () => {
+    expect(streamingTurnHasRenderableContent(undefined)).toBe(false);
+  });
+  it('is true once text has streamed in', () => {
+    expect(streamingTurnHasRenderableContent(makeAssistant('m1', 'hello'))).toBe(true);
+  });
+  it('is true once thinking has streamed in', () => {
+    expect(streamingTurnHasRenderableContent(makeThinkingAssistant('m1', { thinking: 'hmm' }))).toBe(true);
+  });
+  it('is true once a real tool call has streamed in', () => {
+    expect(streamingTurnHasRenderableContent(makeAssistant('m1', '', 1))).toBe(true);
+  });
+  it('does not count a report_plan with empty steps as content', () => {
+    expect(streamingTurnHasRenderableContent(makeThinkingAssistant('m1', { plan: ['  ', ''] }))).toBe(false);
+  });
+  it('counts a report_plan with real steps as content', () => {
+    expect(streamingTurnHasRenderableContent(makeThinkingAssistant('m1', { plan: ['step one'] }))).toBe(true);
+  });
+
+  // The reported bug: an earlier turn rendered a (non-empty) plan card, then
+  // agentLoop spawned a fresh empty streaming turn to do the actual work. The
+  // group HAS content (the plan card is a segment), but the CURRENT streaming
+  // turn is empty — so the typing dots must still show. Gating on the group
+  // (old `segments.length > 0`) left dead space under the plan card.
+  it('regression: the empty streaming turn after a plan card reports no content', () => {
+    const planTurn = makeThinkingAssistant('m1', { thinking: 'planning', plan: ['创建 HTML 文件'] });
+    const emptyStreamingTurn: Message = { ...makeAssistant('m2', ''), isStreaming: true };
+    const group = [planTurn, emptyStreamingTurn];
+    // Group-wide view: has content (plan card renders a segment).
+    expect(buildRenderSegments(group, [], []).length).toBeGreaterThan(0);
+    // Per-turn view: the streaming turn is empty → dots correctly show.
+    const streamingMsg = group.find((m) => m.role === 'assistant' && m.isStreaming);
+    expect(streamingTurnHasRenderableContent(streamingMsg)).toBe(false);
   });
 });

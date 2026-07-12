@@ -9,9 +9,19 @@
 
 import { useSettingsStore } from '@/stores/settingsStore';
 import { checkProviderHealth, type HealthCheckResult } from '@/core/llm/healthCheck';
-import { getI18n } from '@/i18n';
+import { getProviderCallHealth } from '@/core/llm/providerCallHealth';
+import { getI18n, format } from '@/i18n';
 import { mapAIServiceError } from '../errorMap';
 import type { CheckResult } from '../types';
+
+/**
+ * Window used to look back for a recent real LLM-call failure. Keeps the
+ * "warning" surface focused on *current* trouble (e.g. this session), not
+ * ancient history from hours ago. A later success overwrites the recorded
+ * outcome (self-healing), so this is only a staleness cutoff for a failure
+ * that was never followed by a success.
+ */
+const RECENT_FAILURE_WINDOW_MS = 30 * 60 * 1000;
 
 /**
  * Per-provider timeout. `checkProviderHealth` for non-ollama providers calls
@@ -72,6 +82,29 @@ export async function runAIServicesChecks(): Promise<CheckResult[]> {
 
       const result = await withTimeout(checkProviderHealth(p), PROVIDER_TIMEOUT_MS);
       if (result.success) {
+        // The connectivity probe passed — but the probe is cheap (max_tokens=1)
+        // and can stay green while the user's real conversations are failing
+        // (e.g. a 404 on the actual chat model/params). Surface that as a
+        // warning instead of a false "passed".
+        const health = getProviderCallHealth(p.id);
+        const recentlyFailed = !!health && !health.ok && (Date.now() - health.at) <= RECENT_FAILURE_WINDOW_MS;
+        if (recentlyFailed) {
+          return {
+            id,
+            category: 'ai-services' as const,
+            name: p.name,
+            status: 'warning' as const,
+            metric: `${result.latencyMs}ms`,
+            errorMessage: format(t.diagnostic.aiRecentFailure, { detail: health!.code ?? 'error' }),
+            suggestedAction: {
+              type: 'open-settings' as const,
+              target: 'ai-services',
+              label: t.diagnostic.actionOpenAIServices,
+            },
+            checkedAt: Date.now(),
+            durationMs: Date.now() - start,
+          };
+        }
         return {
           id,
           category: 'ai-services' as const,

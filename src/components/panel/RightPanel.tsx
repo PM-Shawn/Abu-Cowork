@@ -146,7 +146,9 @@ export default function RightPanel() {
   useEffect(() => {
     if (!previewFilePath) return;
     if (collapsed) setRightPanelCollapsed(false);
-    if (!sidebarCollapsed) toggleSidebar();
+    // In file-tree mode the sidebar hosts the tree the user is browsing, so
+    // collapsing it on file-open would hide the tree — keep it open then.
+    if (!sidebarCollapsed && !usePreviewStore.getState().fileTreeMode) toggleSidebar();
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [previewFilePath]);
 

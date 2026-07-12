@@ -49,6 +49,7 @@ describe('chatStore', () => {
       currentTool: null,
       currentUsage: null,
       pendingInput: null,
+      pendingInputAppend: null,
       thinkingStartTime: null,
     });
   });
@@ -883,6 +884,18 @@ describe('chatStore', () => {
     });
   });
 
+  // ── appendPendingInput (inline-widget window.sendPrompt bridge) ──
+  describe('appendPendingInput', () => {
+    it('sets and clears the append buffer independently of pendingInput', () => {
+      useChatStore.getState().appendPendingInput('widget follow-up');
+      expect(useChatStore.getState().pendingInputAppend).toBe('widget follow-up');
+      // Does not touch the replace-semantics pendingInput buffer.
+      expect(useChatStore.getState().pendingInput).toBeNull();
+      useChatStore.getState().appendPendingInput(null);
+      expect(useChatStore.getState().pendingInputAppend).toBeNull();
+    });
+  });
+
   // ── updateToolCall · notice_card extraction ──
   // Integration seam: skillManageTool emits notice_card inside its JSON
   // result string; chatStore must lift it onto tc.noticeCard so
@@ -1147,6 +1160,35 @@ describe('chatStore', () => {
       // Reverse guard: partialize whitelist must exclude ephemeral pendingReferences
       const persisted = useChatStore.persist.getOptions().partialize?.(useChatStore.getState());
       expect(persisted && 'pendingReferences' in persisted).toBe(false);
+    });
+  });
+
+  describe('pendingAttachmentPaths', () => {
+    beforeEach(() => {
+      useChatStore.setState({ pendingAttachmentPaths: [] });
+    });
+
+    it('starts empty', () => {
+      expect(useChatStore.getState().pendingAttachmentPaths).toEqual([]);
+    });
+
+    it('addPendingAttachment appends', () => {
+      useChatStore.getState().addPendingAttachment('/proj/a.txt');
+      useChatStore.getState().addPendingAttachment('/proj/b.txt');
+      expect(useChatStore.getState().pendingAttachmentPaths).toEqual(['/proj/a.txt', '/proj/b.txt']);
+    });
+
+    it('clearPendingAttachments empties the buffer', () => {
+      useChatStore.getState().addPendingAttachment('/proj/a.txt');
+      useChatStore.getState().clearPendingAttachments();
+      expect(useChatStore.getState().pendingAttachmentPaths).toEqual([]);
+    });
+
+    it('is NOT included in persisted partialize output', () => {
+      // partialize 只导出 conversationIndex —— 反向守卫，防止有人误加进持久化
+      useChatStore.getState().addPendingAttachment('/proj/a.txt');
+      const persisted = useChatStore.persist.getOptions().partialize?.(useChatStore.getState());
+      expect(persisted && 'pendingAttachmentPaths' in persisted).toBe(false);
     });
   });
 

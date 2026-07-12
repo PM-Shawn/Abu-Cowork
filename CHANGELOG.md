@@ -2,6 +2,26 @@
 
 All notable changes to Abu are documented here. Format based on [Keep a Changelog](https://keepachangelog.com/).
 
+## v0.29.0 · 2026-07-12
+
+### Added
+
+- **Workspace file tree + code canvas**: a file tree in the left panel — click a file to preview it, right-click to create / rename / delete (delete goes to the system trash, recoverable from Finder). Source files are editable inline in a CodeMirror editor with debounced auto-save, the preview auto-refreshes when a file changes, and per-file version snapshots let you roll back.
+- **Declarative progress panel**: the model now declares its plan steps and each step's status directly (via `report_plan`) instead of the framework inferring progress from tool-call order. This is accurate for steps that use several tools or none, where the old positional inference drifted.
+- **Inline visualization widgets**: new `show_widget` / `read_me` tools render charts, HTML, and diagrams inline in the chat; static-structure diagrams route to Mermaid. Includes a modest design system and a host runtime (theme sync, `sendPrompt`, error/canvas handling).
+- **Multi-endpoint provider presets**: vendors with several access plans (Volcengine API / Coding / Agent, Bailian Token Plan / Coding, Zhipu, …) are now curated presets with per-plan base URLs, formats, and models. The add / edit AI-service dialog was unified into a single modal.
+- **Per-model capabilities**: tool-calling, vision, reasoning, and token limits are now declared per model rather than per provider, so one provider can mix vision and non-vision models without the capability of one bleeding onto another (store v40 migration).
+
+### Fixed
+
+- **Newly-added builtin preset providers now sort to the front** (newest-first), matching how custom providers already behaved — previously a preset stayed stuck at its catalog position.
+- **Diagnostics surface real failures**: empty error bodies fall back to a meaningful message (e.g. `HTTP 404 · not_found`), and a real per-provider call failure downgrades a misleading "passed" self-check to a warning.
+- **Inline HTML widget white-screen** rendering fixed.
+
+### Improved
+
+- **macOS release builds are Developer ID signed + notarized**.
+
 ## v0.28.2 · 2026-07-10
 
 ### Fixed

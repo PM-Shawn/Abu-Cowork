@@ -66,6 +66,10 @@ export const READONLY_FALLBACK_TOOLS: ReadonlySet<string> = new Set([
   TOOL_NAMES.TOOL_SEARCH,
   TOOL_NAMES.GET_SYSTEM_INFO,
   TOOL_NAMES.CLIPBOARD_READ,
+  // Inline visualization: read_me only returns static guidelines text;
+  // show_widget renders in-conversation and mutates nothing on disk.
+  TOOL_NAMES.SHOW_WIDGET,
+  TOOL_NAMES.READ_ME,
 ]);
 
 // ── Gate Decision ──

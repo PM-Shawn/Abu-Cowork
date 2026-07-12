@@ -17,7 +17,7 @@ vi.mock('../../../utils/atomicFs', () => ({
 // ── Stub the heavy modules that createAction dynamically-imports ───────────
 // createAction's write paths do `await import(...)` of discoveryStore (→
 // agentRegistry + yaml + 8 built-in agents), skillDraftsStore (→ chatStore →
-// builtins/todoManager/userInputQueue) and notifications (→ notice bus). Cold-
+// builtins/userInputQueue) and notifications (→ notice bus). Cold-
 // loading that chain takes ~2.4s alone and, under full-suite parallel load,
 // regularly blows the 5s test timeout for the FIRST test to hit a write path
 // (flaky 2–9 failures). None of the 36 tests assert on refresh()/notifications

@@ -1,0 +1,106 @@
+<h2>Phase C 设计确认</h2>
+<p class="subtitle">所有决策汇总，确认后进入实现规划。</p>
+
+<div style="display:grid;grid-template-columns:1fr 1fr;gap:20px">
+
+  <!-- 左：交互完整预览 -->
+  <div>
+    <div class="label" style="margin-bottom:12px">完整交互预览</div>
+    <div style="background:#0f172a;border-radius:14px;padding:28px;min-height:400px;display:flex;flex-direction:column;gap:24px;align-items:center;justify-content:center">
+
+      <!-- 单击展开 -->
+      <div style="text-align:center">
+        <div style="font-size:10px;color:#6b7280;margin-bottom:8px">单击 → 气泡输入框（自适应方向）</div>
+        <div style="display:flex;flex-direction:column;align-items:center;gap:0">
+          <!-- 气泡（上方，宠物在屏幕下半区时） -->
+          <div style="width:190px;background:#1e1e3f;border-radius:16px 16px 16px 4px;padding:9px 13px;border:1px solid #3730a3;position:relative;margin-bottom:4px">
+            <div style="display:flex;align-items:center;gap:8px">
+              <span style="font-size:11px;color:#a5b4fc;flex:1">说点什么…</span>
+              <div style="width:24px;height:24px;border-radius:50%;background:#4f46e5;display:flex;align-items:center;justify-content:center;flex-shrink:0">
+                <span style="color:#fff;font-size:10px">↑</span>
+              </div>
+            </div>
+            <div style="position:absolute;bottom:-7px;left:12px;width:12px;height:12px;background:#1e1e3f;border-right:1px solid #3730a3;border-bottom:1px solid #3730a3;transform:rotate(45deg)"></div>
+          </div>
+          <div style="width:60px;height:60px;border-radius:50%;background:linear-gradient(135deg,#6366f1,#8b5cf6);display:flex;align-items:center;justify-content:center;margin-top:8px">
+            <span style="font-size:26px">🐱</span>
+          </div>
+          <div style="font-size:10px;color:#6b7280;margin-top:4px">Enter 发送 · Esc 关闭</div>
+        </div>
+      </div>
+
+      <div style="width:100%;height:1px;background:#1e293b"></div>
+
+      <!-- 双击 -->
+      <div style="text-align:center">
+        <div style="font-size:10px;color:#6b7280;margin-bottom:6px">双击 → 聚焦主窗口</div>
+        <div style="display:inline-flex;align-items:center;gap:8px;background:#1e293b;padding:6px 14px;border-radius:8px">
+          <span style="font-size:14px">🐱</span>
+          <span style="font-size:11px;color:#94a3b8">→</span>
+          <span style="font-size:11px;color:#94a3b8">Abu 主窗口置顶</span>
+        </div>
+      </div>
+
+      <div style="width:100%;height:1px;background:#1e293b"></div>
+
+      <!-- 右键菜单 -->
+      <div style="text-align:center">
+        <div style="font-size:10px;color:#6b7280;margin-bottom:8px">右键 → 菜单（4 项）</div>
+        <div style="width:160px;background:#1f2937;border-radius:10px;padding:5px 0;box-shadow:0 8px 24px rgba(0,0,0,0.6);border:1px solid rgba(255,255,255,0.06);text-align:left;margin:0 auto">
+          <div style="padding:7px 13px;display:flex;align-items:center;gap:8px;border-bottom:1px solid #374151">
+            <div style="width:7px;height:7px;border-radius:50%;background:#6b7280;flex-shrink:0"></div>
+            <span style="font-size:11px;color:#9ca3af">空闲</span>
+          </div>
+          <div style="padding:7px 13px;font-size:11px;color:#e5e7eb;display:flex;align-items:center;gap:8px"><span>🔕</span><span>勿扰模式</span></div>
+          <div style="padding:7px 13px;font-size:11px;color:#e5e7eb;display:flex;align-items:center;gap:8px"><span>🪟</span><span>打开主窗口</span></div>
+          <div style="padding:7px 13px;font-size:11px;color:#9ca3af;display:flex;align-items:center;gap:8px"><span>👋</span><span>关闭桌宠</span></div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- 右：决策清单 -->
+  <div>
+    <div class="label" style="margin-bottom:12px">决策清单</div>
+    <div style="display:flex;flex-direction:column;gap:10px">
+
+      <div style="background:#1e293b;border-radius:10px;padding:14px 16px">
+        <div style="font-size:11px;color:#64748b;margin-bottom:4px">构建前置修复</div>
+        <div style="font-size:13px;color:#e2e8f0">恢复 pet.html 到根目录 + vite 加 pet 入口</div>
+      </div>
+
+      <div style="background:#1e293b;border-radius:10px;padding:14px 16px">
+        <div style="font-size:11px;color:#64748b;margin-bottom:4px">单击</div>
+        <div style="font-size:13px;color:#e2e8f0">气泡形输入框，自适应展开方向（检测屏幕上/下半区）</div>
+        <div style="font-size:11px;color:#64748b;margin-top:4px">Enter 发送到当前对话 · Esc / 点外部关闭</div>
+      </div>
+
+      <div style="background:#1e293b;border-radius:10px;padding:14px 16px">
+        <div style="font-size:11px;color:#64748b;margin-bottom:4px">双击</div>
+        <div style="font-size:13px;color:#e2e8f0">聚焦并置顶 Abu 主窗口</div>
+      </div>
+
+      <div style="background:#1e293b;border-radius:10px;padding:14px 16px">
+        <div style="font-size:11px;color:#64748b;margin-bottom:4px">右键菜单（4 项）</div>
+        <div style="font-size:13px;color:#e2e8f0">
+          状态标签（小圆点 + 文字）<br>
+          🔕 勿扰模式<br>
+          🪟 打开主窗口<br>
+          👋 关闭桌宠
+        </div>
+      </div>
+
+      <div style="background:#1e293b;border-radius:10px;padding:14px 16px">
+        <div style="font-size:11px;color:#64748b;margin-bottom:4px">Phase D（下一阶段）</div>
+        <div style="font-size:13px;color:#64748b">Notice System 接入 waiting 态 · 位置迁移到 settingsStore</div>
+      </div>
+
+    </div>
+  </div>
+
+</div>
+
+<div style="margin-top:20px;padding:14px 16px;background:#0f2027;border-radius:10px;border:1px solid #1e3a4a">
+  <p style="margin:0;font-size:12px;color:#38bdf8">实现路线：方案 B（宠物窗口 resize）— 单一窗口，避免 Tauri 多窗口焦点 bug</p>
+</div>

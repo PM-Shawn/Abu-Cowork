@@ -332,7 +332,7 @@ describe('reportPlanTool — plan-mode approval (B1)', () => {
 
   describe('execute gating', () => {
     const ctx = { conversationId: 'c1', toolCallId: 't1', loopId: 'loop-1' };
-    const input = { steps: ['步骤一', '步骤二'] };
+    const input = { steps: [{ content: '步骤一' }, { content: '步骤二' }] };
 
     function seedExecution() {
       useTaskExecutionStore.setState({
@@ -358,7 +358,7 @@ describe('reportPlanTool — plan-mode approval (B1)', () => {
       const t = getI18n().toolResult.memory;
       mockGetPlanMode.mockReturnValue('off');
       mockRequestUserQuestion.mockResolvedValue({ answers: [{ header: t.planApprovalHeader, question: 'q', selected: [t.planApproveLabel] }] });
-      const result = await reportPlanTool.execute({ steps: ['扫描桌面文件', '删除重复文件'] }, ctx);
+      const result = await reportPlanTool.execute({ steps: [{ content: '扫描桌面文件' }, { content: '删除重复文件' }] }, ctx);
       expect(mockSetPlanMode).toHaveBeenCalledWith('c1', 'planning');
       expect(mockRequestUserQuestion).toHaveBeenCalledOnce();
       expect(mockSetPlanMode).toHaveBeenCalledWith('c1', 'approved');
@@ -438,5 +438,114 @@ describe('reportPlanTool — plan-mode approval (B1)', () => {
       expect(mockRequestUserQuestion).not.toHaveBeenCalled();
       expect(result).toContain('Execution plan recorded');
     });
+
+    it('does NOT re-trigger approval for a risky plan once the conversation is already approved', async () => {
+      // Regression: a plan with risky keywords re-triggered approval (and
+      // re-locked writes via setPlanMode('planning')) on EVERY subsequent
+      // report_plan status update, even after the user had already approved
+      // this conversation's plan once.
+      mockGetPlanMode.mockReturnValue('approved');
+      const result = await reportPlanTool.execute({ steps: [{ content: '删除旧备份文件' }] }, ctx);
+      expect(mockRequestUserQuestion).not.toHaveBeenCalled();
+      expect(mockSetPlanMode).not.toHaveBeenCalledWith('c1', 'planning');
+      expect(result).toContain('Execution plan recorded');
+    });
+  });
+});
+
+describe('reportPlanTool — declarative full-replace', () => {
+  beforeEach(() => {
+    useTaskExecutionStore.setState({ executions: {}, activeExecutionId: null, loopIdIndex: {} });
+  });
+
+  it('lands steps with declared statuses (content → description)', async () => {
+    const store = useTaskExecutionStore.getState();
+    const exec = store.createExecution('conv-1', 'loop-1');
+    await reportPlanTool.execute(
+      { steps: [
+        { content: 'Scan files', status: 'completed' },
+        { content: 'Build list', status: 'in_progress' },
+        { content: 'Save output', status: 'pending' },
+      ] },
+      { conversationId: 'conv-1', loopId: 'loop-1', toolCallId: 'tc-1' } as never,
+    );
+    const landed = useTaskExecutionStore.getState().executions[exec.id].plannedSteps;
+    expect(landed.map((s) => s.status)).toEqual(['completed', 'in_progress', 'pending']);
+    expect(landed[0].description).toBe('Scan files');
+  });
+
+  it('full-replaces a plan that already has progress', async () => {
+    const store = useTaskExecutionStore.getState();
+    const exec = store.createExecution('conv-1', 'loop-1');
+    store.setPlannedSteps(exec.id, [{ index: 1, description: 'old', status: 'in_progress' }]);
+    await reportPlanTool.execute(
+      { steps: [{ content: 'a', status: 'completed' }, { content: 'b', status: 'in_progress' }, { content: 'c' }] },
+      { conversationId: 'conv-1', loopId: 'loop-1', toolCallId: 'tc-1' } as never,
+    );
+    const landed = useTaskExecutionStore.getState().executions[exec.id].plannedSteps;
+    expect(landed).toHaveLength(3);
+    expect(landed[0].description).toBe('a');
+  });
+
+  it('defaults a missing status to pending', async () => {
+    const store = useTaskExecutionStore.getState();
+    const exec = store.createExecution('conv-1', 'loop-1');
+    await reportPlanTool.execute(
+      { steps: [{ content: 'one' }, { content: 'two' }, { content: 'three' }] },
+      { conversationId: 'conv-1', loopId: 'loop-1', toolCallId: 'tc-1' } as never,
+    );
+    const landed = useTaskExecutionStore.getState().executions[exec.id].plannedSteps;
+    expect(landed.every((s) => s.status === 'pending')).toBe(true);
+  });
+});
+
+describe('reportPlanTool — write-side warnings', () => {
+  beforeEach(() => {
+    useTaskExecutionStore.setState({ executions: {}, activeExecutionId: null, loopIdIndex: {} });
+  });
+  const ctx = { conversationId: 'conv-1', loopId: 'loop-1', toolCallId: 'tc-1' } as never;
+
+  it('warns on a small plan (<3 steps)', async () => {
+    useTaskExecutionStore.getState().createExecution('conv-1', 'loop-1');
+    const out = (await reportPlanTool.execute({ steps: [{ content: 'a' }, { content: 'b' }] }, ctx)) as string;
+    expect(out).toContain('Small plan');
+  });
+
+  it('warns on a large plan (>10 steps)', async () => {
+    useTaskExecutionStore.getState().createExecution('conv-1', 'loop-1');
+    const steps = Array.from({ length: 11 }, (_, i) => ({ content: `s${i}` }));
+    const out = (await reportPlanTool.execute({ steps }, ctx)) as string;
+    expect(out).toContain('Large plan');
+  });
+
+  it('warns when more than 3 steps change at once', async () => {
+    const exec = useTaskExecutionStore.getState().createExecution('conv-1', 'loop-1');
+    useTaskExecutionStore.getState().setPlannedSteps(exec.id, [
+      { index: 1, description: 'a', status: 'pending' },
+      { index: 2, description: 'b', status: 'pending' },
+      { index: 3, description: 'c', status: 'pending' },
+      { index: 4, description: 'd', status: 'pending' },
+    ]);
+    const out = (await reportPlanTool.execute({ steps: [
+      { content: 'a', status: 'completed' },
+      { content: 'b', status: 'completed' },
+      { content: 'c', status: 'completed' },
+      { content: 'd', status: 'completed' },
+    ] }, ctx)) as string;
+    expect(out).toContain('Updated many steps');
+  });
+
+  it('does NOT warn "Updated many steps" on the very first report_plan call (no prior plan)', async () => {
+    // Regression: priorByIndex.get(i+1) is undefined for every step on the
+    // first call, and undefined !== 'pending' was true — so every step counted
+    // as "changed" and any 4+ step initial plan falsely tripped this warning.
+    useTaskExecutionStore.getState().createExecution('conv-1', 'loop-1');
+    const out = (await reportPlanTool.execute({ steps: [
+      { content: 'a', status: 'pending' },
+      { content: 'b', status: 'pending' },
+      { content: 'c', status: 'pending' },
+      { content: 'd', status: 'pending' },
+    ] }, ctx)) as string;
+    expect(out).not.toContain('Updated many steps');
   });
 });

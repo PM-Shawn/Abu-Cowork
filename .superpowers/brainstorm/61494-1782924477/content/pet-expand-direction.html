@@ -1,0 +1,79 @@
+<h2>桌宠点击展开方向</h2>
+<p class="subtitle">点击宠物后，迷你输入框从哪个方向展开？（宠物窗口原地 resize）</p>
+
+<div class="cards">
+
+  <!-- Option A: 向上展开 -->
+  <div class="card" data-choice="up" onclick="toggleSelect(this)">
+    <div class="card-image" style="background:#1a1a2e;padding:24px;display:flex;align-items:flex-end;justify-content:flex-end;min-height:260px;position:relative">
+      <!-- 屏幕边框暗示 -->
+      <div style="position:absolute;bottom:16px;right:16px;display:flex;flex-direction:column;align-items:center;gap:0">
+        <!-- 输入框（上方） -->
+        <div style="width:180px;background:#2a2a3e;border-radius:20px;padding:8px 14px;display:flex;align-items:center;gap:8px;margin-bottom:6px;border:1px solid #4a4a6a">
+          <span style="font-size:11px;color:#aaa;flex:1">发消息给阿布…</span>
+          <div style="width:22px;height:22px;border-radius:50%;background:#4f46e5;display:flex;align-items:center;justify-content:center">
+            <span style="color:#fff;font-size:10px">↑</span>
+          </div>
+        </div>
+        <!-- 宠物头像 -->
+        <div style="width:72px;height:72px;border-radius:50%;background:linear-gradient(135deg,#6366f1,#8b5cf6);display:flex;align-items:center;justify-content:center;box-shadow:0 4px 16px rgba(99,102,241,0.4)">
+          <span style="font-size:32px">🐱</span>
+        </div>
+        <!-- 状态灯 -->
+        <div style="width:10px;height:10px;border-radius:50%;background:#3b82f6;margin-top:4px;box-shadow:0 0 6px #3b82f6"></div>
+      </div>
+    </div>
+    <div class="card-body">
+      <h3>A — 向上展开</h3>
+      <p>输入框出现在头像上方。宠物贴底边时自然，但宠物在顶部时输入框可能超出屏幕。</p>
+    </div>
+  </div>
+
+  <!-- Option B: 向下展开 -->
+  <div class="card" data-choice="down" onclick="toggleSelect(this)">
+    <div class="card-image" style="background:#1a1a2e;padding:24px;display:flex;align-items:flex-start;justify-content:flex-end;min-height:260px;position:relative">
+      <div style="position:absolute;top:16px;right:16px;display:flex;flex-direction:column;align-items:center;gap:0">
+        <!-- 宠物头像 -->
+        <div style="width:72px;height:72px;border-radius:50%;background:linear-gradient(135deg,#6366f1,#8b5cf6);display:flex;align-items:center;justify-content:center;box-shadow:0 4px 16px rgba(99,102,241,0.4)">
+          <span style="font-size:32px">🐱</span>
+        </div>
+        <!-- 状态灯 -->
+        <div style="width:10px;height:10px;border-radius:50%;background:#3b82f6;margin-top:4px;box-shadow:0 0 6px #3b82f6"></div>
+        <!-- 输入框（下方） -->
+        <div style="width:180px;background:#2a2a3e;border-radius:20px;padding:8px 14px;display:flex;align-items:center;gap:8px;margin-top:6px;border:1px solid #4a4a6a">
+          <span style="font-size:11px;color:#aaa;flex:1">发消息给阿布…</span>
+          <div style="width:22px;height:22px;border-radius:50%;background:#4f46e5;display:flex;align-items:center;justify-content:center">
+            <span style="color:#fff;font-size:10px">↑</span>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="card-body">
+      <h3>B — 向下展开</h3>
+      <p>输入框出现在头像下方。宠物贴顶时自然，但宠物在底部时可能超出屏幕。</p>
+    </div>
+  </div>
+
+  <!-- Option C: 自适应方向 -->
+  <div class="card" data-choice="adaptive" onclick="toggleSelect(this)">
+    <div class="card-image" style="background:#1a1a2e;padding:24px;min-height:260px;display:flex;align-items:center;justify-content:center">
+      <div style="text-align:center">
+        <div style="display:flex;flex-direction:column;align-items:center;gap:4px;margin-bottom:20px">
+          <div style="font-size:10px;color:#6366f1;background:#1e1e3f;padding:2px 8px;border-radius:8px">屏幕上半区 → 向下</div>
+          <div style="width:1px;height:16px;background:#444"></div>
+          <div style="width:72px;height:72px;border-radius:50%;background:linear-gradient(135deg,#6366f1,#8b5cf6);display:flex;align-items:center;justify-content:center">
+            <span style="font-size:28px">🐱</span>
+          </div>
+          <div style="width:1px;height:16px;background:#444"></div>
+          <div style="font-size:10px;color:#6366f1;background:#1e1e3f;padding:2px 8px;border-radius:8px">屏幕下半区 → 向上</div>
+        </div>
+        <p style="font-size:11px;color:#888;max-width:160px">根据宠物位置自动判断展开方向</p>
+      </div>
+    </div>
+    <div class="card-body">
+      <h3>C — 自适应（推荐）</h3>
+      <p>检测宠物在屏幕上/下半区，自动选择向上或向下展开。两种边界情况都覆盖。</p>
+    </div>
+  </div>
+
+</div>

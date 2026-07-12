@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect, useMemo, useCallback } from 'react';
 import { Plus, ArrowUp, Square, X, ChevronDown, FileText } from 'lucide-react';
-import { ModelSelector, CapabilityBadge } from '@/components/chat/ModelSelector';
+import { ModelSelector } from '@/components/chat/ModelSelector';
 // AgentSelector hidden from UI; import kept for easy restore
 // import AgentSelector from '@/components/chat/AgentSelector';
 import { open } from '@tauri-apps/plugin-dialog';
@@ -34,6 +34,15 @@ import type { ChatReference } from '@/types/chatReference';
 
 /** Max reference chips per message — guards against prompt bloat. */
 const MAX_REFERENCES = 20;
+
+/** Merge a widget-provided follow-up (window.sendPrompt) into the current
+ *  composer draft: append with a newline separator when the draft is
+ *  non-empty, else use the addition verbatim. Pure so the append-vs-empty
+ *  behavior is unit-testable without rendering the component. */
+// eslint-disable-next-line react-refresh/only-export-components
+export function mergeComposerAppend(prev: string, addition: string): string {
+  return prev.trim().length > 0 ? `${prev}\n${addition}` : addition;
+}
 
 interface ChatInputProps {
   variant: 'welcome' | 'chat';
@@ -140,8 +149,12 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
   const cancelStreaming = useChatStore((s) => s.cancelStreaming);
   const pendingInput = useChatStore((s) => s.pendingInput);
   const setPendingInput = useChatStore((s) => s.setPendingInput);
+  const pendingInputAppend = useChatStore((s) => s.pendingInputAppend);
+  const appendPendingInput = useChatStore((s) => s.appendPendingInput);
   const pendingReferences = useChatStore((s) => s.pendingReferences);
   const clearPendingReferences = useChatStore((s) => s.clearPendingReferences);
+  const pendingAttachmentPaths = useChatStore((s) => s.pendingAttachmentPaths);
+  const clearPendingAttachments = useChatStore((s) => s.clearPendingAttachments);
   const activeConv = useActiveConversation();
   const skills = useDiscoveryStore((s) => s.skills);
   const agents = useDiscoveryStore((s) => s.agents);
@@ -169,7 +182,6 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
   const modelDisplay = !hasActiveProvider
     ? t.chat.noModelConfigured
     : (activeModelInfo?.label ?? (currentModel ? currentModel.split('/').pop()?.split('-').slice(0, 2).join(' ') : 'Claude'));
-  const modelCaps = activeModelInfo?.capabilities ?? [];
   const [showModelPicker, setShowModelPicker] = useState(false);
   const modelPickerRef = useRef<HTMLDivElement>(null);
 
@@ -346,6 +358,18 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
     }
   }, [pendingInput, setPendingInput]);
 
+  // Consume APPEND pending input (inline-widget window.sendPrompt bridge):
+  // append to the current draft with a newline separator instead of
+  // replacing it, so a widget follow-up never clobbers what the user was
+  // typing. Empty draft → no leading newline.
+  useEffect(() => {
+    if (pendingInputAppend) {
+      setText((prev) => mergeComposerAppend(prev, pendingInputAppend));
+      appendPendingInput(null);
+      textareaRef.current?.focus();
+    }
+  }, [pendingInputAppend, appendPendingInput]);
+
   // Drain references injected by the doc preview selection toolbar into local
   // state, then clear the store buffer (mirrors pendingInput consumption).
   useEffect(() => {
@@ -371,6 +395,26 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
     }
     clearPendingReferences();
   }, [pendingReferences, clearPendingReferences, t]);
+
+  // Drain file paths injected by the workspace file tree's "Add to chat"
+  // context menu into local attachment state, then clear the store buffer
+  // (mirrors pendingReferences consumption above). Reuses processFilePaths
+  // (image vs. file-badge routing) and the same path-based dedup used by
+  // the clipboard-paste path.
+  useEffect(() => {
+    if (pendingAttachmentPaths.length === 0) return;
+    const paths = pendingAttachmentPaths;
+    clearPendingAttachments();
+    void processFilePaths(
+      paths,
+      (imgs) => setImages((prev) => [...prev, ...imgs]),
+      (newFiles) => setFiles((prev) => {
+        const existing = new Set(prev.map((f) => f.path));
+        const deduped = newFiles.filter((f) => !existing.has(f.path));
+        return deduped.length > 0 ? [...prev, ...deduped] : prev;
+      }),
+    );
+  }, [pendingAttachmentPaths, clearPendingAttachments]);
 
   const handleStop = () => {
     if (activeConv?.id) {
@@ -885,11 +929,6 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
                   )}
                 >
                   <span className="truncate">{modelDisplay}</span>
-                  {hasActiveProvider && modelCaps.length > 0 && (
-                    <span className="flex items-center gap-0.5 ml-0.5 shrink-0">
-                      {modelCaps.map((cap) => <CapabilityBadge key={cap} cap={cap} size="xs" />)}
-                    </span>
-                  )}
                   <ChevronDown className={cn('h-3 w-3 transition-transform shrink-0', showModelPicker && 'rotate-180')} />
                 </button>
                 <ModelSelector
@@ -953,11 +992,6 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
                     )}
                   >
                     <span className="truncate">{modelDisplay}</span>
-                    {hasActiveProvider && modelCaps.length > 0 && (
-                      <span className="flex items-center gap-0.5 ml-0.5 shrink-0">
-                        {modelCaps.map((cap) => <CapabilityBadge key={cap} cap={cap} size="xs" />)}
-                      </span>
-                    )}
                     <ChevronDown className={cn('h-3 w-3 transition-transform shrink-0', showModelPicker && 'rotate-180')} />
                   </button>
                   <ModelSelector

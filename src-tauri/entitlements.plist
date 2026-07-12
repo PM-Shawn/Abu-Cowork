@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <!--
+    Entitlements for Developer ID signing + notarization.
+
+    Abu bundles a standalone Python runtime (src-tauri/python-runtime) whose
+    interpreter loads its own dylibs and third-party compiled extensions
+    (.so) at runtime. Under the hardened runtime these keys keep that from
+    being blocked after notarization:
+      - disable-library-validation: the interpreter dlopen()s .so files;
+        even though we re-sign them with the same Developer ID, some are
+        loaded from paths that would otherwise trip library validation.
+      - allow-unsigned-executable-memory / allow-jit: some C extensions and
+        the interpreter use executable memory pages.
+      - allow-dyld-environment-variables: the launcher sets DYLD_* to point
+        the interpreter at the embedded runtime.
+  -->
+  <key>com.apple.security.cs.disable-library-validation</key>
+  <true/>
+  <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+  <true/>
+  <key>com.apple.security.cs.allow-jit</key>
+  <true/>
+  <key>com.apple.security.cs.allow-dyld-environment-variables</key>
+  <true/>
+</dict>
+</plist>

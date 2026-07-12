@@ -4,6 +4,8 @@ import {
   resolveEffectiveContextWindow,
   computeReasoningParams,
   isReasoningStarvation,
+  deriveDeclaredDefaults,
+  isKnownModel,
   CONTENT_FLOOR_TOKENS,
 } from './modelCapabilities';
 import { classifyThinking } from './model-data/classify';
@@ -180,6 +182,54 @@ describe('modelCapabilities', () => {
     it('ignores invalid (zero / negative / undefined) candidates', () => {
       expect(resolveEffectiveContextWindow('claude-opus-4-6', 0)).toBe(200_000);
       expect(resolveEffectiveContextWindow('claude-opus-4-6', undefined, -5)).toBe(200_000);
+    });
+  });
+
+  describe('deriveDeclaredDefaults', () => {
+    it('declares supportsImages: true for a known vision model (regression guard — gpt-4o vision must not be silently disabled)', () => {
+      expect(deriveDeclaredDefaults('gpt-4o')).toEqual({
+        supportsTools: true,
+        supportsImages: true,
+        supportsReasoning: false,
+      });
+    });
+
+    it('declares supportsImages: false for a known non-vision family (deepseek-chat)', () => {
+      expect(deriveDeclaredDefaults('deepseek-chat')).toEqual({
+        supportsTools: true,
+        supportsImages: false,
+        supportsReasoning: false,
+      });
+    });
+
+    it('declares supportsReasoning: true for a claude reasoning id', () => {
+      const result = deriveDeclaredDefaults('claude-opus-4-8');
+      expect(result.supportsReasoning).toBe(true);
+      expect(result.supportsTools).toBe(true);
+    });
+
+    it('stays conservative (supportsImages: false) for an unrecognized proxy model id, even though the fallback default assumes vision — avoids re-introducing the 400-on-image-send bug for unknown models', () => {
+      expect(deriveDeclaredDefaults('totally-unknown-proxy-model-xyz')).toEqual({
+        supportsTools: true,
+        supportsImages: false,
+        supportsReasoning: false,
+      });
+    });
+
+    it('always declares supportsTools: true (no tools axis in ModelCapabilities)', () => {
+      expect(deriveDeclaredDefaults('gpt-4o').supportsTools).toBe(true);
+      expect(deriveDeclaredDefaults('deepseek-chat').supportsTools).toBe(true);
+      expect(deriveDeclaredDefaults('totally-unknown-proxy-model-xyz').supportsTools).toBe(true);
+    });
+  });
+
+  describe('isKnownModel', () => {
+    it('returns true for a KNOWN_MODELS-table id', () => {
+      expect(isKnownModel('gpt-4o')).toBe(true);
+    });
+
+    it('returns false for an unrecognized id that falls through to FALLBACK_DEFAULT', () => {
+      expect(isKnownModel('totally-unknown-xyz')).toBe(false);
     });
   });
 });

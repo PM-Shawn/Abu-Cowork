@@ -279,7 +279,7 @@ export async function langfuseSpike(): Promise<{ ok: true; traceUrl: string } | 
   }
 }
 
-if (import.meta.env.DEV) {
+if (import.meta.env?.DEV) {
   (globalThis as typeof globalThis & { __abuLangfuseSpike?: typeof langfuseSpike }).__abuLangfuseSpike =
     langfuseSpike;
 }

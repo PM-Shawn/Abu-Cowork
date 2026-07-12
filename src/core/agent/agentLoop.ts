@@ -1,6 +1,7 @@
-import type { StreamEvent, ToolCall, TokenUsage, ImageAttachment, MessageContent, ToolExecutionContext, LLMProvider } from '../../types';
+import type { StreamEvent, ToolCall, TokenUsage, ImageAttachment, MessageContent, ToolExecutionContext } from '../../types';
 import type { LLMAdapter } from '../llm/adapter';
-import { LLMError } from '../llm/adapter';
+import { LLMError, formatLlmDisplayError } from '../llm/adapter';
+import { recordProviderCallOutcome, isConfigFailureCode } from '../llm/providerCallHealth';
 import { ClaudeAdapter } from '../llm/claude';
 import { OpenAICompatibleAdapter } from '../llm/openai-compatible';
 import { getAllTools, type ConfirmationInfo, type FilePermissionCallback } from '../tools/registry';
@@ -38,13 +39,15 @@ import { clearAllSkillHooks } from '../tools/builtins';
 import { executeToolBatch } from './toolExecutor';
 import { startConversationTrace, endConversationTrace, startGeneration } from '../observability/langfuse';
 import { calculateTurnCost } from '../llm/costTracker';
-import { formatTodosForPrompt } from './todoManager';
+import { formatPlannedStepsForPrompt } from './plannedStepsPrompt';
 import { isWindows } from '../../utils/platform';
 import { getBuiltinSearchConfig } from '../capabilities';
 import { resolveCapabilities, resolveEffectiveContextWindow, computeReasoningParams, type ModelCapabilities } from '../llm/modelCapabilities';
 import { applyDeclaredCapabilities } from '../llm/applyDeclaredCapabilities';
+import { resolveModelDeclared } from '../llm/resolveModelDeclared';
 import { rehydrateForSend, type ImageBase64Cache } from '../llm/imageRehydration';
-import { TOOL_NAMES } from '../tools/toolNames';
+import { TOOL_NAMES, isDisplayHiddenStepBackedTool } from '../tools/toolNames';
+import { WIDGET_CDN_HOSTS, getWidgetHardBanBriefList } from '../widget/guidelines';
 import { prefetchTools } from '../tools/toolPrefetch';
 import { classifyTools, buildDeferredToolsSummary } from '../tools/toolSearch';
 import { hasQueuedInputs } from './userInputQueue';
@@ -76,6 +79,21 @@ function conversationHasImages(messages: import('../../types').Message[]): boole
 }
 
 /**
+ * Whether a request error is likely caused by sending image content to a model that
+ * does NOT support vision. Gated on the current model's vision capability so that
+ * unrelated 400s on a vision-capable model (bad tool schema, oversized payload, …) are
+ * NOT mislabeled as "vision unsupported".
+ */
+export function isVisionUnsupportedError(
+  errorCode: string | undefined,
+  statusCode: number | undefined,
+  hasImages: boolean,
+  modelSupportsVision: boolean,
+): boolean {
+  return errorCode === 'invalid_request' && statusCode === 400 && hasImages && !modelSupportsVision;
+}
+
+/**
  * Save user-pasted images to disk so they survive localStorage persistence.
  * Returns array of file paths (one per image). On failure, returns undefined for that slot.
  */
@@ -87,6 +105,7 @@ async function saveUserImagesToDisk(
     const { getSessionOutputDir } = await import('../session/sessionDir');
     const { writeFile, mkdir, exists } = await import('@tauri-apps/plugin-fs');
     const outputDir = await getSessionOutputDir(conversationId);
+    if (!outputDir) return images.map(() => undefined); // web / E2E: no disk storage
     const imagesDir = joinPath(outputDir, 'images');
     if (!(await exists(imagesDir))) {
       await mkdir(imagesDir, { recursive: true });
@@ -165,7 +184,10 @@ export function persistExecutionSnapshot(conversationId: string, loopId: string)
   if (exec.steps.length > 0) {
     useChatStore.getState().setExecutionStepsSnapshot(conversationId, loopId, snapshotExecutionSteps(exec.steps));
   }
-  // Persist planned steps so TaskProgressPanel survives loop eviction.
+  // Persist planned steps so TaskProgressPanel survives loop eviction. The
+  // panel renders an in_progress step statically (no spinner) once the live
+  // execution is gone, so a stopped mid-flight step reads as "in progress,
+  // paused" rather than a perpetual spinner — no status rewrite needed here.
   if (exec.plannedSteps.length > 0) {
     useChatStore.getState().setPlannedStepsSnapshot(conversationId, loopId, exec.plannedSteps);
   }
@@ -199,36 +221,110 @@ export function getDefaultSoul(): string {
 }
 
 /**
+ * The "Visual output" capability section — two variants, selected on the
+ * resolved model's tool support:
+ *
+ * - Tools supported (default): visualization goes through the explicit
+ *   show_widget tool (P1 widget system, aligned with WorkBuddy/ChatGPT/TRAE),
+ *   and a "save as a real webpage" intent escalates to write_file. A written
+ *   .html CAN open in the side preview panel — MessageGroup.tsx's openPreview
+ *   effect auto-opens the LAST non-image deliverable of the turn, so the
+ *   prompt is worded "can be opened" (not "always auto-opens"): if the model
+ *   writes another file after the page, that one wins the auto-open. No new
+ *   tool needed either way.
+ * - Tools NOT supported (`supportsTools === false`): the model gets tools=[]
+ *   (see the `noTools` gate in the turn loop) — no show_widget, no
+ *   write_file, nothing. These models keep the previous ```html-fence
+ *   instruction — the fence rendering path still works
+ *   (codeBlockRenderers.ts) and is the ONLY channel they have, so there is
+ *   no save-as-a-file escalation to offer them.
+ *
+ * Both variants share the same trigger tiers (when to make a visual at all)
+ * and the same hard-ban list (`getWidgetHardBanBriefList()`, single-sourced
+ * from guidelines.ts's `WIDGET_HARD_BAN_RULES` — read_me documents the same
+ * rules in full) — this is what stops the white-screen failure class at the
+ * prompt layer, before a single widget is ever rendered.
+ *
+ * Both variants also carve a STATIC structure diagram (flowchart, tree,
+ * sequence, state machine, org chart, node/edge graph, ER diagram, Gantt
+ * chart) out of the show_widget/```html default and route it to a
+ * ```mermaid fence instead — Abu bundles a real Mermaid engine
+ * (MermaidBlock.tsx, no CDN) registered for that fence in
+ * codeBlockRenderers.ts, so this carve-out routes static structure diagrams
+ * to the robust engine instead of fragile hand-drawn SVG. (ER diagram/Gantt
+ * chart were folded in from the now-non-auto-invoking mermaid-diagram
+ * builtin skill's type table — the two mermaid strengths svg-diagram can't
+ * match — see guidelines.ts's file-header note on the wider skill fold-in.)
+ * The carve-out must be worded as scoping DOWN the show_widget/html default,
+ * not replacing it, so the two rules don't read as contradictory. It
+ * distinguishes BY PURPOSE, not keyword: a project-scheduling Gantt (tasks
+ * with start/end dates) stays on Mermaid, but a reading-oriented timeline of
+ * milestones/history ("大事记", dated events for a reader) routes to
+ * show_widget's `poster` Timeline recipe (guidelines.ts) instead — otherwise
+ * the model over-generalizes "timeline" -> mermaid's own `timeline` diagram
+ * type, which is plain and underwhelming compared to the poster rendering.
+ * Qualifying Gantt this way also prevents the timeline exclusion from
+ * contradicting the retained "Gantt chart" entry in the same mermaid list.
+ */
+const VISUAL_TRIGGER_TIERS = `**When to make a visual** — explicit ask (show/visualize/diagram/chart/draw/graph/plot, "what does X look like"); proactively make a visual — don't answer in prose alone — for how-does-X-work / teaching / process / architecture / "compare A vs B" requests; or implied by the noun phrase ("comparison table of A vs B", "settings panel mockup", "state machine for …") — a markdown table is NOT a substitute when a visual is what's actually being asked for. (Mockups use plain inputs/buttons, never a real <form>.)`;
+
+// Shared blocks — identical in both variants, factored out so the ban list
+// and the CDN allowlist can't drift between the tool and fence prompts.
+const VISUAL_HARD_BANS_BLOCK = `**Hard bans** (cause a blank/broken render):
+${getWidgetHardBanBriefList()}`;
+
+const VISUAL_CDN_ALLOWED_LINE = `**Allowed**: CDN libraries (Chart.js, D3, etc.): ${WIDGET_CDN_HOSTS.join(' / ')}`;
+
+const VISUAL_OUTPUT_TOOL_VARIANT = `${VISUAL_TRIGGER_TIERS}
+
+**Routing — the deciding question is "is this a file the user wants to keep?"** Ephemeral, part of this reply → **call the show_widget tool**, right where you need it — this is the default (call read_me once before your first call each conversation, don't narrate it). A page the user wants to **save, export, download, or keep as a real file** → write_file a COMPLETE self-contained \`.html\` document (doctype + html/head/body; inline CSS/JS or the CDN allowlist below) — it can then be opened in the side preview panel. Only escalate to write_file on an explicit save/export intent.
+
+**Static structure diagrams — carve-out**: when labeled nodes and edges fully explain a STATIC structure — flowchart, tree, sequence diagram, state machine, org chart, node/edge graph, ER diagram, Gantt chart (project scheduling — tasks with start/end dates) — output a \`\`\`mermaid code block instead (rendered by the built-in Mermaid engine, no sandbox). A reading-oriented timeline of milestones/history ("大事记", dated events for a reader) is not a structure graph — use show_widget (poster-style timeline). (Project-scheduling Gantt charts still use Mermaid, above.) This narrows, not replaces, the show_widget default above: show_widget stays the default for everything dynamic, interactive, data-driven, or chart-like.
+
+${VISUAL_HARD_BANS_BLOCK}
+
+**Strictly forbidden**: generate_image for a chart/diagram (show_widget draws those) — just call show_widget.
+
+${VISUAL_CDN_ALLOWED_LINE}`;
+
+const VISUAL_OUTPUT_FENCE_VARIANT = `${VISUAL_TRIGGER_TIERS}
+
+**Rendering**: no tools here — every visual, including a "save"/"download" ask, goes through **a \`\`\`html code block in your reply**; there's no separate saved-file path, so say so if the user needs a real downloadable file.
+
+**Static structure diagrams — carve-out**: when labeled nodes and edges fully explain a STATIC structure — flowchart, tree, sequence diagram, state machine, org chart, node/edge graph, ER diagram, Gantt chart (project scheduling — tasks with start/end dates) — output a \`\`\`mermaid code block instead (rendered by the built-in Mermaid engine, no sandbox). A reading-oriented timeline of milestones/history ("大事记", dated events for a reader) is not a structure graph — use an \`\`\`html poster-style timeline. (Project-scheduling Gantt charts still use Mermaid, above.) Use an \`\`\`html fragment for everything dynamic, interactive, data-driven, or chart-like.
+
+${VISUAL_HARD_BANS_BLOCK}
+
+**Design system** (no design-guide tool in this mode — use these directly): utility classes \`.w-card\`/\`.w-stat\`/\`.w-grid\`/\`.w-row\`/\`.w-badge\`/\`.w-btn\` plus the \`--w-*\` theme vars.
+
+${VISUAL_CDN_ALLOWED_LINE}`;
+
+/**
  * Abu's capability prompt — always injected, cannot be overridden by SOUL.md.
  * Contains operational rules: visualization, work style, permissions, extensions.
+ *
+ * `supportsTools` (default true) selects the visual-output variant — see the
+ * variant constants above. All other sections are identical in both modes.
  */
-export function getCapabilityPrompt(): string {
+export function getCapabilityPrompt(opts?: { supportsTools?: boolean }): string {
   const win = isWindows();
   const dangerousCmd = win ? 'del /s /q' : 'rm -rf';
   const abuDir = win ? '%USERPROFILE%\\.abu\\' : '~/.abu/';
   const skillPathTmpl = win ? '%USERPROFILE%\\.abu\\skills\\{skill-name}\\' : '~/.abu/skills/{skill-name}/';
   const agentPathTmpl = win ? '%USERPROFILE%\\.abu\\agents\\{agent-name}\\' : '~/.abu/agents/{agent-name}/';
+  const visualOutput = opts?.supportsTools === false
+    ? VISUAL_OUTPUT_FENCE_VARIANT
+    : VISUAL_OUTPUT_TOOL_VARIANT;
 
   return `## Visual output — generative UI (important!)
-When the user needs a chart, visualization, interactive demo, animation, UI prototype, data display, process explanation, or other visual content,
-**you must output a \`\`\`html code block directly in your reply**. The frontend automatically renders it as an interactive inline component.
-
-**Strictly forbidden**:
-- ❌ Don't call the generate_image tool — an html code block can draw charts and visualizations
-- ❌ Don't call the write_file tool to write an HTML file — this is a temporary in-conversation visualization, not a file
-- ❌ Don't call the todo_write tool — just output the code block
-- ❌ Don't write DOCTYPE/html/head/body tags — write an HTML fragment only (style + HTML + script)
-
-**Allowed**:
-- ✅ Load external libraries from a CDN (Chart.js, D3, etc.): cdn.jsdelivr.net / cdnjs.cloudflare.com / unpkg.com
-- ✅ Call write_file only when the user explicitly asks to "save as a file" or "export"
+${visualOutput}
 
 **Editing an already-exported file**:
 - ⚠️ Once a file is written to disk, **partial edits must use edit_file** (provide old_content + new_content for an exact replacement)
 - ❌ Never use write_file to fully overwrite an existing multi-section document (report / long HTML / long code) — it loses content the user didn't ask to change
 - ✅ If you truly need to rebuild the whole file structure, first run_command to delete the original file, then write_file to create a new one
 
-**Style requirement**: use a light/white background, no dark/black background. Stay consistent with Abu's UI style.
+**Style requirement (exported/write_file documents only)**: use a light/white background, no dark/black background — a standalone file has no host theme to follow. (This is the opposite of the inline visual path above, which is theme-aware by design because it renders inside Abu's chat.)
 
 ## How you work — take initiative!
 You are a **proactive assistant**. When the user gives you a task:
@@ -712,16 +808,21 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
     }
   }
 
-  // Build static system prompt sections once (active skills are injected dynamically per-turn)
-  const systemPromptSections = await buildSystemPromptSections(route, getCapabilityPrompt(), conversationId, options?.imContext, 0);
-
   // Build tool execution context — provides resolved workspace for tools like update_memory.
   // Priority: IM-injected path > conversation's own stored path > global store fallback.
   // Using the conversation record rather than the global store prevents cross-conversation
   // workspace leakage when multiple conversations are open simultaneously.
   const _convForContext = useChatStore.getState().conversations[conversationId];
+  // Interactive-desktop conversations with no workspace get a managed default
+  // (~/Abu/<name>/) bound here so the agent saves files there instead of
+  // improvising (e.g. onto the Desktop). The folder is created lazily on the
+  // first write. Headless contexts (IM / scheduled / trigger) are excluded —
+  // they must not auto-create workspace directories.
   const toolContext: ToolExecutionContext = {
-    workspacePath: options?.imContext?.workspacePath ?? _convForContext?.workspacePath ?? useWorkspaceStore.getState().currentPath,
+    workspacePath:
+      options?.imContext?.workspacePath ??
+      _convForContext?.workspacePath ??
+      useWorkspaceStore.getState().currentPath,
     loopId,
     conversationId,
   };
@@ -737,10 +838,24 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
   // Tell tools whether this model can consume images. read_file uses it to
   // avoid emitting base64 image blocks to text-only models (which bloats
   // context and triggers a 400 on providers that only accept text content).
+  const entryModelDeclared = resolveModelDeclared(getActiveProvider(settingsForModel), effectiveModelId);
   toolContext.supportsVision = applyDeclaredCapabilities(
     resolveCapabilities(effectiveModelId),
-    getActiveProvider(settingsForModel)?.declaredCapabilities,
+    entryModelDeclared,
   ).vision;
+
+  // Build static system prompt sections once (active skills are injected
+  // dynamically per-turn). Built AFTER model resolution because the
+  // capability prompt's visual-output section branches on the model's tool
+  // support: no-tools models get the fence variant since tools=[] for them
+  // (the per-turn `noTools` gate resolves the same declared value).
+  const systemPromptSections = await buildSystemPromptSections(
+    route,
+    getCapabilityPrompt({ supportsTools: entryModelDeclared?.supportsTools !== false }),
+    conversationId,
+    options?.imContext,
+    0,
+  );
 
   // Pin the resolved model to the conversation on first run, so it survives
   // later global model switches (for display + future runs). Pins the
@@ -889,6 +1004,9 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
       persistExecutionSnapshot(conversationId, loopId);
       chatStore.setAgentStatus('idle');
       chatStore.setConversationStatus(conversationId, 'completed');
+      // Delegate run completed without an LLMError → provider is healthy; clears
+      // any stale config-failure recorded for it (mirrors the main-loop path).
+      recordProviderCallOutcome(getActiveProvider(settingsForModel)?.id, { ok: true, at: Date.now() });
 
       const convTitle = useChatStore.getState().conversationIndex[conversationId]?.title ?? getI18n().chat.notificationTaskFallback;
       notifyTaskCompleted(convTitle, conversationId);
@@ -910,9 +1028,15 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
         return { reason: 'aborted' };
       }
       const errorMessage = err instanceof Error ? err.message : String(err);
-      const delegateDisplayError = err instanceof EnterpriseLlmUnavailableError
+      if (err instanceof LLMError && isConfigFailureCode(err.code)) {
+        recordProviderCallOutcome(getActiveProvider(settingsForModel)?.id, { ok: false, code: err.code, at: Date.now() });
+      }
+      let delegateDisplayError = err instanceof EnterpriseLlmUnavailableError
         ? getI18n().chat.gatewayUnreachable
-        : errorMessage;
+        : formatLlmDisplayError(err, errorMessage, getI18n().chat.errorEmptyBody);
+      if (err instanceof LLMError && err.code === 'not_found') {
+        delegateDisplayError += `\n\n${getI18n().chat.errorNotFoundHint}`;
+      }
       const delegateErrorId = generateId();
       chatStore.addMessage(conversationId, {
         id: delegateErrorId,
@@ -1069,6 +1193,10 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
       eventRouter.route({ type: 'done', loopId, reason: 'max_turns' });
       persistExecutionSnapshot(conversationId, loopId);
       chatStore.setConversationStatus(conversationId, 'completed');
+      // Hitting the turn cap means every LLM call succeeded (a failed call throws
+      // to the catch) → provider is healthy; record it so a prior config-failure
+      // is cleared even when the run ends via the cap rather than end_turn.
+      recordProviderCallOutcome(getActiveProvider(settingsForModel)?.id, { ok: true, at: Date.now() });
       // C: report the cap to callers (scheduler/trigger) instead of 'completed'.
       exitReason = 'max_turns';
       // Same terminal cleanup as the normal end_turn path — now that the cap is
@@ -1108,6 +1236,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
     let finalUsage: TokenUsage | undefined;
     let thinkingEndTime: number | undefined;  // Track when thinking ends
     let lastStopReason = '';
+    let modelSupportsVision = false;
 
     try {
       // ── Per-turn: refresh tools and dynamic prompt sections ──
@@ -1122,14 +1251,15 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
       // for non-identity, mid-loop-tunable knobs (computerUse, maxOutputTokens,
       // contextWindowSize).
       const activeProvider = getActiveProvider(settingsForModel);
+      const modelDeclared = resolveModelDeclared(activeProvider, effectiveModelId);
       const builtinWebSearch = activeProvider
-        ? getBuiltinSearchConfig(activeProvider.id as LLMProvider, true)
+        ? getBuiltinSearchConfig(activeProvider.capabilities, true)
         : undefined;
       // When the provider explicitly declared supportsTools=false, suppress tool
       // resolution entirely so the model never sees tool definitions in the system
       // prompt and can't hallucinate tool calls. The adapter-level toolsGate rule
       // also strips tools from the request body as belt-and-suspenders.
-      const noTools = activeProvider?.declaredCapabilities?.supportsTools === false;
+      const noTools = modelDeclared?.supportsTools === false;
       // Build prefetch context for conditional tool loading
       const conv = useChatStore.getState().conversations[conversationId];
       const activeSkillObjects = (conv?.activeSkills ?? [])
@@ -1166,7 +1296,8 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
       let modelCaps = resolveCapabilities(effectiveModelId);
       // Override auto-detected caps with user-declared values (custom/local providers only).
       // No-op when activeProvider has no declaredCapabilities (builtin providers).
-      modelCaps = applyDeclaredCapabilities(modelCaps, activeProvider?.declaredCapabilities);
+      modelCaps = applyDeclaredCapabilities(modelCaps, modelDeclared);
+      modelSupportsVision = modelCaps.vision;
       const discoveredCaps = activeProvider
         ? useDiscoveredCapsStore.getState().get(activeProvider.id, effectiveModelId)
         : undefined;
@@ -1190,13 +1321,13 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
         // Exception: if the user explicitly declared supportsReasoning=false for this
         // provider, respect that declaration and never flip thinking back on.
         ...(discoveredCaps?.isReasoningModel && modelCaps.thinking === false
-            && activeProvider?.declaredCapabilities?.supportsReasoning !== false
+            && modelDeclared?.supportsReasoning !== false
           ? { thinking: 'uncontrollable' as const }
           : {}),
       };
       const reasoningParams = computeReasoningParams(
         effectiveCaps,
-        activeProvider?.declaredCapabilities?.maxOutputTokens ?? freshSettings.maxOutputTokens ?? effectiveModelMaxOutput,
+        modelDeclared?.maxOutputTokens ?? freshSettings.maxOutputTokens ?? effectiveModelMaxOutput,
       );
       let maxOutputTokens = reasoningParams.maxTokens;
       // Effective context window = min(model published cap, user setting, runtime-discovered).
@@ -1205,7 +1336,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
       // because the project default settingsStore.contextWindowSize is 200k.
       const contextWindowSize = resolveEffectiveContextWindow(
         effectiveModelId,
-        activeProvider?.declaredCapabilities?.maxInputTokens ?? freshSettings.contextWindowSize,
+        modelDeclared?.maxInputTokens ?? freshSettings.contextWindowSize,
         discoveredCaps?.contextWindow,
       );
 
@@ -1221,7 +1352,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
       }
 
       // Build effective system prompt: static cached sections + dynamic per-turn sections
-      const todoState = formatTodosForPrompt(conversationId);
+      const todoState = formatPlannedStepsForPrompt(conversationId);
       const dynamicSections: PromptSection[] = [];
       if (dynamicCapabilities) {
         dynamicSections.push({ name: 'mcp-capabilities', text: dynamicCapabilities, cacheable: false });
@@ -1405,7 +1536,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
         thinkingBudget: reasoningParams.thinkingBudget,
         reasoningEffort: reasoningParams.reasoningEffort,
         supportsVision: modelCaps.vision,
-        declaredCapabilities: activeProvider?.declaredCapabilities,
+        declaredCapabilities: modelDeclared,
         builtinWebSearch,
         // When the adapter's max_tokens auto-retry succeeds, persist the
         // discovered limit so the next request uses it pre-emptively.
@@ -1510,21 +1641,6 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
               // Store the mapping for later result update
               if (stepId) {
                 toolCallToStepId.set(event.id, stepId);
-
-                // Auto-link to next pending planned step
-                // Only advance when no planned step is currently running,
-                // so multiple tool calls in one turn don't consume all steps at once
-                const currentExec = useTaskExecutionStore.getState().executions[execution.id];
-                if (currentExec) {
-                  const hasRunning = currentExec.plannedSteps.some(s => s.status === 'running');
-                  if (!hasRunning) {
-                    const nextPending = currentExec.plannedSteps.find(s => s.status === 'pending');
-                    if (nextPending) {
-                      useTaskExecutionStore.getState().linkPlannedStep(execution.id, nextPending.index, stepId);
-                      useTaskExecutionStore.getState().updatePlannedStepStatus(execution.id, nextPending.index, 'running');
-                    }
-                  }
-                }
               }
 
               collectedToolCalls.push({
@@ -1533,6 +1649,13 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
                 input: event.input,
                 isExecuting: true,
                 startTime: Date.now(),
+                // Display-hidden but step-backed (show_widget): MessageGroup
+                // renders it as a dedicated inline ShowWidgetCard (reading
+                // title/widget_code/loading_messages off `input`) instead of
+                // the generic tool list. Unlike report_plan (which breaks
+                // early above), it goes through the full step bookkeeping so
+                // planned-step auto-link/advance still counts widget calls.
+                hidden: isDisplayHiddenStepBackedTool(event.name) || undefined,
               });
 
               break;
@@ -1845,7 +1968,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
       // Skip if the user explicitly declared supportsReasoning=false — their declaration
       // takes precedence over runtime observation.
       if (collectedThinking && modelCaps.thinking === false && activeProvider
-          && activeProvider.declaredCapabilities?.supportsReasoning !== false) {
+          && modelDeclared?.supportsReasoning !== false) {
         useDiscoveredCapsStore.getState().recordReasoningObserved(activeProvider.id, effectiveModelId);
       }
 
@@ -1944,6 +2067,9 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
           ? 'no_progress'
           : maxTokensRecoveryExhausted ? 'max_tokens_exhausted' : 'end_turn';
         logger.info('Agent loop ended', { conversationId, loopId, turnCount, reason: endReason });
+        // Reaching this point means no LLM call threw, so ok:true is correct
+        // regardless of endReason (no_progress / max_tokens_exhausted / end_turn).
+        recordProviderCallOutcome(getActiveProvider(settingsForModel)?.id, { ok: true, at: Date.now() });
         // Complete the TaskExecution
         eventRouter.route({ type: 'done', loopId, reason: endReason });
         persistExecutionSnapshot(conversationId, loopId);
@@ -2125,11 +2251,22 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
       clearLoopContext(loopId);
       const errorMessage = err instanceof Error ? err.message : String(err);
       const errorCode = err instanceof LLMError ? err.code : undefined;
-      logger.error('LLM call failed', { error: errorMessage, code: errorCode });
+      logger.error('LLM call failed', {
+        error: errorMessage,
+        code: errorCode,
+        model: effectiveModelId,
+        providerId: getActiveProvider(settingsForModel)?.id,
+      });
 
       // Fire-and-forget: report to console for quality monitoring
       if (err instanceof LLMError) {
         reportError('api_error', err.code, err.statusCode ?? undefined, effectiveModelId, errorMessage, err.rawBody);
+        // Only a persistent config-class provider failure (not a transient rate
+        // limit / 5xx / network blip, and not a non-LLM agent crash) should mark
+        // this provider unhealthy for the diagnostic.
+        if (isConfigFailureCode(err.code)) {
+          recordProviderCallOutcome(getActiveProvider(settingsForModel)?.id, { ok: false, code: err.code, at: Date.now() });
+        }
       } else {
         reportError('agent_crash', 'unknown', undefined, effectiveModelId, errorMessage);
       }
@@ -2137,20 +2274,26 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
 
       // Friendly message when a 400 error is likely caused by image content
       // sent to a model that doesn't support vision
-      const isLikelyVisionError = errorCode === 'invalid_request'
-        && err instanceof LLMError && err.statusCode === 400
-        && conversationHasImages(useChatStore.getState().conversations[conversationId]?.messages ?? []);
+      const isLikelyVisionError = isVisionUnsupportedError(
+        errorCode,
+        err instanceof LLMError ? err.statusCode : undefined,
+        conversationHasImages(useChatStore.getState().conversations[conversationId]?.messages ?? []),
+        modelSupportsVision,
+      );
       const isOllamaForbidden = errorCode === 'authentication'
         && err instanceof LLMError && err.statusCode === 403
         && /^forbidden\s*$/i.test(err.message.trim());
       const isEnterpriseGatewayUnavailable = err instanceof EnterpriseLlmUnavailableError;
-      const displayError = isEnterpriseGatewayUnavailable
+      let displayError = isEnterpriseGatewayUnavailable
         ? getI18n().chat.gatewayUnreachable
         : isLikelyVisionError
         ? getI18n().chat.visionUnsupported
         : isOllamaForbidden
         ? getI18n().chat.ollamaForbidden
-        : errorMessage;
+        : formatLlmDisplayError(err, errorMessage, getI18n().chat.errorEmptyBody);
+      if (errorCode === 'not_found') {
+        displayError += `\n\n${getI18n().chat.errorNotFoundHint}`;
+      }
 
       chatStore.appendToLastMessage(
         conversationId,

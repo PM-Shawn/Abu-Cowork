@@ -13,6 +13,12 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
+      # Fail fast if closed-source enterprise modules leaked into this public
+      # repo (open-core boundary). Runs before npm so a build/test pass can't
+      # mask it. See CLAUDE.md "Enterprise 代码隔离 — 防泄露红线（open-core）".
+      - name: Enterprise leak guard (open-core)
+        run: bash scripts/enterprise-leak-guard.sh
+
       - name: Setup Node.js
         uses: actions/setup-node@v6
         with:
@@ -20,20 +26,29 @@ jobs:
           cache: npm
 
       - name: Install dependencies
+        id: install
         run: npm ci
 
+      # Gate steps run independently of EACH OTHER (so one red stage doesn't mask
+      # another) but are skipped when install failed or the job was cancelled —
+      # otherwise they'd fire against an empty node_modules and bury the real
+      # cause under cascading "command not found" noise.
       - name: Lint
-        run: npx eslint src/ --max-warnings 0
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: npm run lint
 
       - name: Type check
-        run: npx tsc --noEmit
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: npm run typecheck
 
-      - name: Unit Tests
-        run: npm test
+      # gen:models:check is intentionally omitted as a standalone step:
+      # it runs automatically via the `pretest` npm hook before test:coverage,
+      # and again inside `npm run build`. Keeping it separate would be redundant
+      # and add unnecessary latency.
 
-      - name: Test Coverage
+      - name: Test with coverage
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         run: npm run test:coverage
-        continue-on-error: true
 
       - name: Build frontend
         run: npm run build

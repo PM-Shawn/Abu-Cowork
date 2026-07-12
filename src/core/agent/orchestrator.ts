@@ -7,6 +7,7 @@ import { getDefaultSoul } from './agentLoop';
 import { useWorkspaceStore } from '../../stores/workspaceStore';
 import { useSettingsStore } from '../../stores/settingsStore';
 import { getSessionOutputDir } from '../session/sessionDir';
+import { prepareSuggestedWorkspace } from './defaultWorkspace';
 import { isWindows } from '../../utils/platform';
 import { mcpManager } from '../mcp/client';
 import { substituteVariables, executeInlineCommands } from '../skill/preprocessor';
@@ -409,24 +410,26 @@ You are replying in an IM chat. Follow this style:
 Path: ${workspacePath}
 You can use file tools to read and write files in this directory. When the user mentions files or directories, operate under this workspace path by default.`, cacheable: true });
     } else {
-      // No workspace selected — instruct LLM to request workspace for file ops
-      const outputDir = await getSessionOutputDir(conversationId);
+      // No workspace bound. Only interactive-desktop conversations get the
+      // managed default (~/Abu/<name>/) suggestion — headless scheduled/trigger
+      // runs (which reach this else-branch because it's gated only on imContext)
+      // must NOT auto-create/bind a ~/Abu workspace, so they fall back to the
+      // hidden app-data session output dir just as before.
+      const { useChatStore: chatStoreForWs } = await import('../../stores/chatStore');
+      const convRecord = chatStoreForWs.getState().conversations[conversationId];
+      const headless = !!(convRecord?.scheduledTaskId || convRecord?.triggerId);
+      const suggested = headless ? null : await prepareSuggestedWorkspace(conversationId);
+      const defaultDir = suggested ?? (await getSessionOutputDir(conversationId));
       sections.push({ name: 'workspace-hint', text: `\n## Workspace Notice
-No workspace is currently set.
+No workspace folder is bound yet.${defaultDir ? `
 
-**Operations that require a workspace** (you must ask the user to select one before calling — do not call first and then check the error):
-- File / directory operations: organizing, copying, reading, viewing the desktop, etc.
-- Skill management: \`skill_manage\`'s create / patch / write_file (workspace-auto scope)
-- Memory writes: project-level memory written to \`~/.abu/projects/<key>/memory/\`
-- Any cross-scope skill modification triggered by Copy-on-Modify
+**When you need to create or save files** and the user has not specified a location, save them under this default project folder — write there directly, no need to ask first.${suggested ? ' It automatically becomes this task\'s workspace once you write to it:' : ''}
+Path: ${defaultDir}
+Always pass an absolute path under this folder to file tools (e.g. \`${defaultDir}/index.html\`).` : ''}
 
-When you encounter these scenarios, **call the request_workspace tool directly to let the user choose a working directory** — do not reply with text asking the user to go select one themselves, and do not call a tool that will fail just to see the error.
-If the user mentions a specific folder (e.g. "Downloads folder", "Desktop", "Documents"), pass the folder name in the folder_hint parameter.
+Only call the request_workspace tool when the user explicitly wants to pick a folder themselves, or wants to operate on an existing directory such as Downloads / Desktop / Documents (pass the named folder in folder_hint). For workspace-bound operations that need a *bound* workspace — \`skill_manage\` create / patch (workspace-auto scope) and project-level memory writes — you must call request_workspace first, since the default folder above is only authorized for file writes, not yet bound as a workspace.
 
-**Requests that do not require a workspace** (casual chat, knowledge Q&A, searching for information, writing, translation, calculation, global user-scope memory, etc.) can be answered directly.
-If the user declines to select a workspace, politely let them know that a working directory must be selected before the related operation can be performed.${outputDir ? `
-
-Generated files (when no path is specified by the user) will be saved to: ${outputDir}` : ''}`, cacheable: true });
+Requests that need no files (casual chat, knowledge Q&A, search, writing, translation, calculation, global user-scope memory, etc.) can be answered directly.`, cacheable: true });
     }
   }
 
@@ -514,7 +517,7 @@ ${indexContent.trim()}
 - Your long-term memory index is in the <memory-index> section above; full content of relevant memories auto-injected each turn is in <relevant-memories> (later in this prompt). If you can answer from those two sections, do so directly without calling any tools.
 - Index entries ending with 🔒 are private memories and will not be auto-injected. Fetch them with read_memory only when the user explicitly asks; only quote the necessary parts in your reply — do not repeat them in unrelated messages later.
 - If the user says "remember this", save it immediately; if they say "forget it / stop remembering", find the entry and delete it. For how to write memories, when to use recall vs read_memory, and how to handle conflicts → see each memory tool's description.
-- Use todo_write for progress within the current conversation — do not store it in memory. Project rules (.abu/ABU.md) are maintained by the user; do not modify them with update_memory.`, cacheable: true });
+- Use report_plan for progress within the current conversation — do not store it in memory. Project rules (.abu/ABU.md) are maintained by the user; do not modify them with update_memory.`, cacheable: true });
     } catch (err) {
       console.warn('Failed to load memories:', err);
     }

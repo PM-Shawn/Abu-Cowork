@@ -7,6 +7,7 @@ node_modules/
 # Build output
 dist/
 src-tauri/target/
+coverage/
 
 # Environment
 .env
@@ -50,6 +51,11 @@ src-tauri/python-runtime/
 
 # Claude Code local config
 .claude/
+
+# Playwright E2E
+test-results/
+playwright-report/
+/playwright/.cache/
 
 # Test files
 test-browser.html

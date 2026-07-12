@@ -205,3 +205,36 @@ function extractRetryAfter(message: string): number | undefined {
   return undefined;
 }
 
+/**
+ * Build a user-facing error string. When the API returned an empty/opaque body
+ * (e.g. a bare 404 from a proxy/plan endpoint), the thrown message is empty —
+ * fall back to the classified HTTP status + code so the user and diagnostics see
+ * something actionable instead of a blank line.
+ *
+ * `core/llm` stays i18n-free by convention (no other file in this directory
+ * imports the i18n module — localization happens at the call site), so the
+ * empty-body fallback string is a caller-supplied parameter rather than an
+ * internal `getI18n()` call. Callers should pass `getI18n().chat.errorEmptyBody`.
+ *
+ * Note: we deliberately do NOT append an `rawBody` snippet. `classifyError`
+ * already surfaces any non-empty body through `err.message` (via
+ * `extractApiErrorMessage`), so an empty `fallbackMessage` implies an empty body —
+ * a snippet would never add signal and would only risk leaking an opaque
+ * intercept page into the chat surface.
+ */
+export function formatLlmDisplayError(
+  err: unknown,
+  fallbackMessage: string,
+  emptyBodyFallback: string,
+): string {
+  const msg = fallbackMessage.trim();
+  if (msg) return msg;
+  if (err instanceof LLMError) {
+    const parts: string[] = [];
+    if (err.statusCode) parts.push(`HTTP ${err.statusCode}`);
+    if (err.code) parts.push(err.code);
+    return parts.join(' · ') || emptyBodyFallback;
+  }
+  return emptyBodyFallback;
+}
+

@@ -21,13 +21,23 @@ import { getI18n } from '../../i18n';
 import { TOOL_NAMES } from '../tools/toolNames';
 import { invoke } from '@tauri-apps/api/core';
 import { useChatStore } from '../../stores/chatStore';
-import { useTaskExecutionStore } from '../../stores/taskExecutionStore';
 import { setLoopContext, clearLoopContext } from './permissionBridge';
 import type { EventRouter } from './eventRouter';
 import { createLogger } from '../logging/logger';
 import { startToolSpan } from '../observability/langfuse';
 
 const logger = createLogger('toolExecutor');
+
+/**
+ * Result markers for tool calls that never actually executed. Written with
+ * error:false (they are not model mistakes), so consumers that need to
+ * distinguish "skipped" from "succeeded" must compare against these
+ * constants — e.g. ShowWidgetCard renders a muted "cancelled" row instead
+ * of mounting the widget. Pre-existing literal values kept verbatim (they
+ * are persisted in conversation history).
+ */
+export const TOOL_RESULT_CANCELLED_MARKER = '[已取消]';
+export const TOOL_RESULT_HOOK_BLOCKED_MARKER = '[被 hook 拦截]';
 
 /** Human-readable description of a computer use action for the status bar. */
 function actionToDescription(action: string, input: Record<string, unknown>): string {
@@ -96,7 +106,6 @@ export async function executeToolBatch(params: ToolBatchParams): Promise<ToolBat
     loopId,
     abortController,
     eventRouter,
-    executionId,
     inputValidators,
     confirmCb,
     filePermCb,
@@ -138,7 +147,7 @@ export async function executeToolBatch(params: ToolBatchParams): Promise<ToolBat
   const executeSingleTool = async (tc: typeof collectedToolCalls[number]): Promise<ToolExecResult> => {
     // Check if cancelled before executing
     if (abortController.signal.aborted) {
-      return { id: tc.id, result: '[已取消]', resultContent: undefined, error: false, duration: 0 };
+      return { id: tc.id, result: TOOL_RESULT_CANCELLED_MARKER, resultContent: undefined, error: false, duration: 0 };
     }
 
     // Emit preToolCall hook (can block or modify input)
@@ -157,7 +166,7 @@ export async function executeToolBatch(params: ToolBatchParams): Promise<ToolBat
       if (preEvent.blockReason) {
         return { id: tc.id, result: preEvent.blockReason, resultContent: undefined, error: true, duration: 0 };
       }
-      return { id: tc.id, result: '[被 hook 拦截]', resultContent: undefined, error: false, duration: 0 };
+      return { id: tc.id, result: TOOL_RESULT_HOOK_BLOCKED_MARKER, resultContent: undefined, error: false, duration: 0 };
     }
 
     // Plan mode gate: while a plan is pending approval ('planning'), block
@@ -424,33 +433,6 @@ export async function executeToolBatch(params: ToolBatchParams): Promise<ToolBat
         } else {
           eventRouter.route({ type: 'step-end', loopId, stepId, result: toolResult, resultContent });
         }
-
-        // Update linked planned step status and auto-advance to next
-        const execState = useTaskExecutionStore.getState().executions[executionId];
-        if (execState) {
-          const linkedPlanned = execState.plannedSteps.find(s => s.linkedStepId === stepId);
-          if (linkedPlanned) {
-            useTaskExecutionStore.getState().updatePlannedStepStatus(
-              executionId,
-              linkedPlanned.index,
-              error ? 'error' : 'completed'
-            );
-            // Auto-advance: link the next pending planned step to the next
-            // tool call's execution step (using collectedToolCalls index for reliability)
-            const nextPending = useTaskExecutionStore.getState().executions[executionId]
-              ?.plannedSteps.find(s => s.status === 'pending');
-            if (nextPending) {
-              for (let j = i + 1; j < collectedToolCalls.length; j++) {
-                const nextStepId = toolCallToStepId.get(collectedToolCalls[j].id);
-                if (nextStepId) {
-                  useTaskExecutionStore.getState().linkPlannedStep(executionId, nextPending.index, nextStepId);
-                  useTaskExecutionStore.getState().updatePlannedStepStatus(executionId, nextPending.index, 'running');
-                  break;
-                }
-              }
-            }
-          }
-        }
       }
     } else {
       // Use index to find the corresponding tool call
@@ -462,19 +444,6 @@ export async function executeToolBatch(params: ToolBatchParams): Promise<ToolBat
         const stepId = toolCallToStepId.get(tc.id);
         if (stepId) {
           eventRouter.route({ type: 'step-error', loopId, stepId, error: String(result.reason) });
-
-          // Update linked planned step status
-          const execState = useTaskExecutionStore.getState().executions[executionId];
-          if (execState) {
-            const linkedPlanned = execState.plannedSteps.find(s => s.linkedStepId === stepId);
-            if (linkedPlanned) {
-              useTaskExecutionStore.getState().updatePlannedStepStatus(
-                executionId,
-                linkedPlanned.index,
-                'error'
-              );
-            }
-          }
         }
       }
     }

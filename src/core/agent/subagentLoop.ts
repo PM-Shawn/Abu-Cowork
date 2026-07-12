@@ -9,12 +9,15 @@
 import type { StreamEvent, Message, SubagentDefinition, ToolExecutionContext } from '../../types';
 import type { IMContext } from './orchestrator';
 import type { LLMAdapter } from '../llm/adapter';
+import { LLMError, formatLlmDisplayError } from '../llm/adapter';
 import { ClaudeAdapter } from '../llm/claude';
 import { OpenAICompatibleAdapter } from '../llm/openai-compatible';
 import { getAllTools, executeAnyTool, toolResultToString, type ConfirmationInfo, type FilePermissionCallback } from '../tools/registry';
 import { TOOL_NAMES } from '../tools/toolNames';
 import { useSettingsStore, getActiveApiKey, getActiveProvider, resolveAgentModel } from '../../stores/settingsStore';
 import { resolveCapabilities, computeReasoningParams, isReasoningStarvation, type ModelCapabilities } from '../llm/modelCapabilities';
+import { applyDeclaredCapabilities } from '../llm/applyDeclaredCapabilities';
+import { resolveModelDeclared } from '../llm/resolveModelDeclared';
 import { useDiscoveredCapsStore } from '../../stores/discoveredCapabilitiesStore';
 import { useWorkspaceStore } from '../../stores/workspaceStore';
 import { prepareContextMessages } from '../context/contextManager';
@@ -358,10 +361,11 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
       // runtime-discovered limits/reasoning status, then reserve a content floor so
       // reasoning can't starve the answer (the cause of "代理未返回任何结果").
       const provider = getActiveProvider(settings);
+      const declared = resolveModelDeclared(provider, effectiveModelId);
       const discovered = provider
         ? useDiscoveredCapsStore.getState().get(provider.id, effectiveModelId)
         : undefined;
-      const baseCaps = resolveCapabilities(effectiveModelId);
+      const baseCaps = applyDeclaredCapabilities(resolveCapabilities(effectiveModelId), declared);
       const subagentCaps: ModelCapabilities = {
         ...baseCaps,
         ...(discovered?.maxOutputTokens ? { maxOutputTokens: discovered.maxOutputTokens } : {}),
@@ -441,6 +445,7 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
         reasoningEffort: reasoningParams.reasoningEffort,
         signal,
         supportsVision: false, // Subagents don't receive image inputs
+        declaredCapabilities: declared,
       };
 
       const eventHandler = (event: StreamEvent) => {
@@ -683,7 +688,7 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
   } catch (err) {
     const errMsg = err instanceof Error ? err.message : String(err);
     const errorResult = new SubagentResult({
-      text: `Error: ${errMsg}`,
+      text: `Error: ${err instanceof LLMError ? formatLlmDisplayError(err, errMsg, getI18n().chat.errorEmptyBody) : errMsg}`,
       toolCallCount: totalToolCalls,
       turnCount: 0,
       tokenUsage: { input: totalInputTokens, output: totalOutputTokens },

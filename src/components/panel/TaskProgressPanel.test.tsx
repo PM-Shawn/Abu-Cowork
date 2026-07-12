@@ -104,4 +104,92 @@ describe('TaskProgressPanel', () => {
     expect(screen.getByText('已持久化步骤A')).toBeInTheDocument();
     expect(screen.getByText('已持久化步骤B')).toBeInTheDocument();
   });
+
+  // An in_progress step spins ONLY while a running execution still owns the
+  // plan (active feedback). This is the "live" path.
+  it('spins an in_progress step while the execution is live', () => {
+    useTaskExecutionStore.setState({
+      executions: {
+        e1: {
+          id: 'e1',
+          conversationId: 'conv-1',
+          loopId: 'loop-e1',
+          status: 'running',
+          startTime: 100,
+          plannedSteps: [{ index: 1, description: '进行中步骤', status: 'in_progress' as const }],
+          planParsed: true,
+          steps: [],
+        } as TaskExecution,
+      },
+    });
+    render(<TaskProgressPanel />);
+    const row = screen.getByText('进行中步骤').closest('div.flex.items-start');
+    expect(row?.querySelector('.animate-spin')).toBeInTheDocument();
+  });
+
+  // Smoke-test bug: on abort the loop cancels the execution but RETURNS before
+  // persistExecutionSnapshot evicts it, so a cancelled execution lingers in the
+  // store with an in_progress step. Presence of plannedSteps is not enough to
+  // mean "live" — gate on status 'running'. A lingering cancelled step must
+  // render statically (no perpetual spinner).
+  it('does NOT spin an in_progress step of a stopped (lingering) execution', () => {
+    useTaskExecutionStore.setState({
+      executions: {
+        e1: {
+          id: 'e1',
+          conversationId: 'conv-1',
+          loopId: 'loop-e1',
+          status: 'cancelled',
+          startTime: 100,
+          endTime: 200,
+          plannedSteps: [{ index: 1, description: '被停止的步骤', status: 'in_progress' as const }],
+          planParsed: true,
+          steps: [],
+        } as TaskExecution,
+      },
+    });
+    render(<TaskProgressPanel />);
+    const row = screen.getByText('被停止的步骤').closest('div.flex.items-start');
+    expect(row).toBeInTheDocument();
+    expect(row?.querySelector('.animate-spin')).not.toBeInTheDocument();
+  });
+
+  // Regression (smoke-test finding): after a task is stopped, the live
+  // execution is evicted and the panel falls back to the persisted message
+  // snapshot. An in_progress step there must render STATICALLY — no perpetual
+  // spinner. Also covers a legacy 'running' snapshot value that predates the
+  // status narrowing (it normalizes to in_progress, still static when stopped).
+  it('renders a stopped/persisted in-progress step statically (no perpetual spinner)', () => {
+    useTaskExecutionStore.setState({ executions: {} });
+    useChatStore.setState({
+      activeConversationId: 'conv-1',
+      conversations: {
+        'conv-1': {
+          id: 'conv-1',
+          title: '测试任务',
+          messages: [
+            {
+              id: 'm1',
+              role: 'assistant' as const,
+              content: '进行中',
+              timestamp: 100,
+              loopId: 'loop-1',
+              plannedSteps: [
+                // Cast past the narrowed union — simulates a legacy snapshot
+                // value that predates the status narrowing.
+                { index: 1, description: '旧状态步骤', status: 'running' as unknown as 'in_progress' },
+              ],
+            },
+          ],
+          createdAt: 100,
+          updatedAt: 100,
+          status: 'completed' as const,
+        },
+      },
+    });
+    render(<TaskProgressPanel />);
+    const row = screen.getByText('旧状态步骤').closest('div.flex.items-start');
+    expect(row).toBeInTheDocument();
+    expect(row?.querySelector('.animate-spin')).not.toBeInTheDocument();
+  });
 });

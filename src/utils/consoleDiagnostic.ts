@@ -2,15 +2,15 @@ import { getDeviceId } from './deviceId'
 import { APP_VERSION } from './version'
 import { getPlatform } from './platform'
 import { useDiagnosticStore, getOverallStatus } from '@/stores/diagnosticStore'
-
-const CONSOLE_URL = import.meta.env.VITE_CONSOLE_URL as string | undefined
+import { getTelemetryTarget } from './consoleTelemetryTarget'
 
 export async function uploadDiagnosticBundle(
   bytes: Uint8Array,
   filename: string,
   description?: string,
 ): Promise<void> {
-  if (!CONSOLE_URL) throw new Error('no_console_url')
+  const { baseUrl, enabled } = getTelemetryTarget()
+  if (!enabled) throw new Error('no_console_url')
 
   const formData = new FormData()
   formData.append('file', new Blob([bytes.buffer as ArrayBuffer], { type: 'application/zip' }), filename)
@@ -26,7 +26,7 @@ export async function uploadDiagnosticBundle(
   const timer = setTimeout(() => controller.abort(), 30_000)
   let res: Response
   try {
-    res = await fetch(`${CONSOLE_URL}/api/diagnostics/upload`, {
+    res = await fetch(`${baseUrl}/api/diagnostics/upload`, {
       method: 'POST',
       body: formData,
       signal: controller.signal,
@@ -42,7 +42,8 @@ export async function uploadDiagnosticBundle(
 }
 
 export function pushDiagnosticSnapshot(): void {
-  if (!CONSOLE_URL) return
+  const { baseUrl, enabled } = getTelemetryTarget()
+  if (!enabled) return
 
   const state = useDiagnosticStore.getState()
   const results = Object.values(state.results)
@@ -52,7 +53,7 @@ export function pushDiagnosticSnapshot(): void {
   // Don't push while checks are still running
   if (overall === 'checking') return
 
-  fetch(`${CONSOLE_URL}/api/diagnostic`, {
+  fetch(`${baseUrl}/api/diagnostic`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({

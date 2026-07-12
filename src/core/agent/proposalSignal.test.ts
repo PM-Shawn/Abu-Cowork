@@ -85,6 +85,26 @@ describe('computeProposalSignal · guards', () => {
     expect(computeProposalSignal([msg({ toolCalls: tools })], 'companion')).toBeNull();
   });
 
+  it('counts display-hidden step-backed calls (show_widget) as real work', () => {
+    // show_widget is hidden for display only — a visualization-heavy loop
+    // must still cross the threshold and surface widget errors.
+    const tools = [
+      ...Array.from({ length: 4 }, () => tc('run_command')),
+      tc('show_widget', { hidden: true }),
+    ];
+    const signal = computeProposalSignal([msg({ toolCalls: tools })], 'companion');
+    expect(signal).not.toBeNull();
+    expect(signal!.toolCallCount).toBe(5);
+  });
+
+  it('a failed show_widget call suppresses the signal like any other error', () => {
+    const tools = [
+      ...Array.from({ length: 4 }, () => tc('run_command')),
+      tc('show_widget', { hidden: true, isError: true }),
+    ];
+    expect(computeProposalSignal([msg({ toolCalls: tools })], 'companion')).toBeNull();
+  });
+
   it('usedSkill is true when use_skill was called', () => {
     const tools = [
       tc('use_skill'),

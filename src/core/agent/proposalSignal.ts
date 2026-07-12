@@ -27,11 +27,13 @@
 
 import type { Message } from '../../types';
 import type { ProactivityLevel } from './prompts/skillsGuidance';
+import { isDisplayHiddenStepBackedTool } from '../tools/toolNames';
 
 export interface ProposalSignal {
   /** When the signal was computed (ms). */
   computedAt: number;
-  /** Total non-hidden tool calls in the loop. */
+  /** Total real tool calls in the loop (excludes report_plan; includes
+   *  display-hidden step-backed tools like show_widget). */
   toolCallCount: number;
   /** True if any tool call in the loop returned an error. */
   hadErrors: boolean;
@@ -65,10 +67,13 @@ export function computeProposalSignal(
 ): ProposalSignal | null {
   if (proactivity === 'shy') return null;
 
-  // Flatten all non-hidden tool calls across the loop.
+  // Flatten the loop's real tool work. `hidden` normally means "not real
+  // work shown to the user" (report_plan), but display-hidden step-backed
+  // tools (show_widget) ARE real work — a visualization-heavy loop must
+  // still count toward the threshold and surface its errors.
   const toolCalls = loopMessages
     .flatMap((m) => m.toolCalls ?? [])
-    .filter((tc) => !tc.hidden);
+    .filter((tc) => !tc.hidden || isDisplayHiddenStepBackedTool(tc.name));
 
   const toolCallCount = toolCalls.length;
   if (toolCallCount < MIN_TOOL_CALLS[proactivity]) return null;

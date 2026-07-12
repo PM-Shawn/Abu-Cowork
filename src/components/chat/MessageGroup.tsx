@@ -1,13 +1,14 @@
 import { useState, useMemo, useCallback, useRef, useEffect } from 'react';
 import { Sparkles, ChevronDown, ChevronRight } from 'lucide-react';
 import type { Message, MessageContent, ToolCall, ImageAttachment } from '@/types';
-import { TOOL_NAMES } from '@/core/tools/toolNames';
+import { TOOL_NAMES, isDisplayHiddenStepBackedTool } from '@/core/tools/toolNames';
 import type { ExecutionStep } from '@/types/execution';
 import type { WorkflowStep } from '@/utils/workflowExtractor';
 import MessageBubble from './MessageBubble';
 import SkillProposalCard from './SkillProposalCard';
 import UserQuestionCard from './UserQuestionCard';
 import PlanStepsCard from './PlanStepsCard';
+import ShowWidgetCard from './ShowWidgetCard';
 import TaskBlock from './TaskBlock';
 import BatchProgress from './BatchProgress';
 import MarkdownRenderer from './MarkdownRenderer';
@@ -138,6 +139,7 @@ type RenderSegment =
   | { kind: 'text'; text: string; message: Message; isLastTurn: boolean }
   | { kind: 'steps'; executionSteps: ExecutionStep[]; legacySteps: WorkflowStep[]; isLastGroup: boolean; stepsMsgs: Message[] }
   | { kind: 'plan'; toolCall: ToolCall }
+  | { kind: 'widget'; toolCall: ToolCall }
   | { kind: 'user'; message: Message };
 
 /**
@@ -211,12 +213,24 @@ export function buildRenderSegments(
       pendingExecSteps.push(buildThinkingStep(msg));
     }
 
-    // Slice this message's tool steps (hidden report_plan excluded — see plan segment).
-    const visibleToolCount = (msg.toolCalls || []).filter((tc) => !tc.hidden).length;
-    const turnExecSteps = toolExecSteps.slice(execOffset, execOffset + visibleToolCount);
-    execOffset += visibleToolCount;
-    const turnLegacySteps = toolLegacySteps.slice(legacyOffset, legacyOffset + visibleToolCount);
-    legacyOffset += visibleToolCount;
+    // Slice this message's tool steps. Counted by step-backed calls, not
+    // visible calls: report_plan is hidden AND creates no execution step
+    // (agentLoop breaks before createStepForToolUse — see plan segment),
+    // while display-hidden step-backed tools (show_widget) go through full
+    // step bookkeeping (so planned-step advance counts them) and their steps
+    // are filtered from the timeline below because they render as widget
+    // segments instead.
+    const stepBackedCount = (msg.toolCalls || []).filter(
+      (tc) => !tc.hidden || isDisplayHiddenStepBackedTool(tc.name),
+    ).length;
+    const turnExecSteps = toolExecSteps
+      .slice(execOffset, execOffset + stepBackedCount)
+      .filter((s) => !isDisplayHiddenStepBackedTool(s.toolName));
+    execOffset += stepBackedCount;
+    const turnLegacySteps = toolLegacySteps
+      .slice(legacyOffset, legacyOffset + stepBackedCount)
+      .filter((s) => !isDisplayHiddenStepBackedTool(s.toolName));
+    legacyOffset += stepBackedCount;
 
     // 2. Text — flush accumulated tool steps, then emit text.
     const text = getTextContent(msg.content);
@@ -234,10 +248,21 @@ export function buildRenderSegments(
       segments.push({ kind: 'plan', toolCall: planCall });
     }
 
+    // 3b. Widgets — each display-hidden step-backed call (show_widget)
+    // becomes a dedicated inline card at its real position (text → widget →
+    // text), same hidden-from-generic-list treatment as the plan card above.
+    // A single turn can call show_widget more than once (multiple visuals),
+    // so unlike planCall this iterates every match instead of taking the first.
+    const widgetCalls = (msg.toolCalls || []).filter((tc) => isDisplayHiddenStepBackedTool(tc.name));
+    for (const widgetCall of widgetCalls) {
+      flushSteps();
+      segments.push({ kind: 'widget', toolCall: widgetCall });
+    }
+
     // 4. Accumulate this message's tool steps (merges with adjacent tool-only turns).
     pendingExecSteps.push(...turnExecSteps);
     pendingLegacySteps.push(...turnLegacySteps);
-    if (visibleToolCount > 0) pendingStepsMsgs.push(msg);
+    if (stepBackedCount > 0) pendingStepsMsgs.push(msg);
   }
 
   flushSteps();
@@ -266,6 +291,26 @@ export function computeWorkProcessFold(segments: RenderSegment[], isDone: boolea
   }
   if (lastTextIdx <= 0) return null;
   return lastTextIdx;
+}
+
+/**
+ * Whether the still-streaming assistant message has emitted anything the
+ * timeline will render yet — text, thinking, or a step/plan/widget-backed tool
+ * call. Drives the "思考中…" typing dots, which must track the CURRENT turn, not
+ * the whole group: agentLoop spawns a fresh empty assistant placeholder per turn,
+ * so once a plan card (or any earlier segment) renders, a group-wide "has
+ * content" gate would silence the next turn's empty placeholder — leaving dead
+ * space under the plan card while the agent is actively generating the next tool
+ * call. A report_plan with empty steps renders nothing, so it does not count.
+ */
+// eslint-disable-next-line react-refresh/only-export-components
+export function streamingTurnHasRenderableContent(msg: Message | undefined): boolean {
+  if (!msg) return false;
+  if (getTextContent(msg.content).trim().length > 0) return true;
+  if (msg.thinking && msg.thinking.trim().length > 0) return true;
+  return (msg.toolCalls || []).some((tc) =>
+    tc.name === TOOL_NAMES.REPORT_PLAN ? parsePlanSteps(tc).length > 0 : true,
+  );
 }
 
 /**
@@ -494,8 +539,13 @@ export default function MessageGroup({ messages, isLastGroup: isLastGroupProp = 
     [messages, activeExecSteps, workflowSteps]
   );
 
-  // Check if we have any content (for thinking indicator fallback)
-  const hasAnyContent = segments.length > 0;
+  // Typing-dots gate: track the message that is actually streaming, NOT the
+  // whole group. agentLoop spawns a fresh empty assistant message per turn, so a
+  // finished plan card earlier in the group must not silence the next turn's
+  // empty placeholder (else: dead space under the plan card while the agent is
+  // actively generating). See streamingTurnHasRenderableContent.
+  const streamingMsg = assistantMsgs.find((m) => m.isStreaming);
+  const streamingHasContent = streamingTurnHasRenderableContent(streamingMsg);
 
   // Codex-style turn collapse: once a turn is done and has a final text answer,
   // fold all intermediate segments (thinking/plan/steps) behind a single row.
@@ -567,6 +617,14 @@ export default function MessageGroup({ messages, isLastGroup: isLastGroupProp = 
       return (
         <MessageErrorBoundary key={`plan-${seg.toolCall.id}`}>
           <PlanStepsCard toolCall={seg.toolCall} />
+        </MessageErrorBoundary>
+      );
+    }
+
+    if (seg.kind === 'widget') {
+      return (
+        <MessageErrorBoundary key={`widget-${seg.toolCall.id}`}>
+          <ShowWidgetCard toolCall={seg.toolCall} />
         </MessageErrorBoundary>
       );
     }
@@ -669,10 +727,11 @@ export default function MessageGroup({ messages, isLastGroup: isLastGroupProp = 
 
           {/* Content area */}
           <div className="flex-1 min-w-0 overflow-hidden">
-            {/* Typing dots — shown only before any thinking or text bytes have arrived.
-                Once thinking starts streaming, segments will be populated (thinking step
-                inside a TaskBlock) and hasAnyContent flips true, hiding these dots. */}
-            {isStreaming && !hasAnyContent && (
+            {/* Typing dots — shown while the current turn is streaming but has not
+                yet emitted any renderable content. Tracks the streaming message
+                itself, so a plan card from an earlier turn in the same group does
+                not suppress the dots for the fresh empty turn that follows. */}
+            {isStreaming && !streamingHasContent && (
               <div className="flex items-center gap-1.5 py-2">
                 <span className="text-[12px] text-[var(--abu-text-muted)]">{t.status.thinking}</span>
                 <span className="typing-dot w-1.5 h-1.5 rounded-full bg-[var(--abu-clay-60)]" />
@@ -700,7 +759,14 @@ export default function MessageGroup({ messages, isLastGroup: isLastGroupProp = 
                     className={cn('h-3.5 w-3.5 transition-transform', !workExpanded && '-rotate-90')}
                   />
                 </button>
-                {workExpanded && segments.slice(0, workFoldEnd).map((seg, i) => renderSegment(seg, i))}
+                {/* Widgets are content, not work-process auxiliary — they stay
+                    visible even when the fold is collapsed (unlike thinking/
+                    steps/plan, which the toggle is actually for). */}
+                {workExpanded
+                  ? segments.slice(0, workFoldEnd).map((seg, i) => renderSegment(seg, i))
+                  : segments.slice(0, workFoldEnd)
+                      .filter((seg) => seg.kind === 'widget')
+                      .map((seg, i) => renderSegment(seg, i))}
                 {segments.slice(workFoldEnd).map((seg, i) => renderSegment(seg, workFoldEnd + i))}
               </>
             )}

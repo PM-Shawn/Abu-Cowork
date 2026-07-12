@@ -11,6 +11,7 @@
  */
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import type { StreamEvent } from '../../types';
+import type { ProviderInstance } from '../../types/provider';
 
 vi.mock('../../stores/workspaceStore', () => ({
   useWorkspaceStore: { getState: () => ({ currentPath: '/tmp/project' }), subscribe: vi.fn() },
@@ -40,9 +41,17 @@ vi.mock('../context/contextCompressor', () => ({
 }));
 vi.mock('../observability/langfuse', () => ({ startSubagentSpan: vi.fn().mockReturnValue({ end: vi.fn() }) }));
 
+const mockGetActiveProvider = vi.fn(
+  (..._args: unknown[]): Partial<ProviderInstance> | undefined => ({
+    id: 'p1',
+    apiFormat: 'anthropic',
+    baseUrl: undefined,
+    models: [],
+  }),
+);
 vi.mock('../../stores/settingsStore', () => ({
   useSettingsStore: { getState: () => ({ agentMaxTurns: 200, maxOutputTokens: undefined, contextWindowSize: undefined }) },
-  getActiveProvider: () => ({ id: 'p1', apiFormat: 'anthropic', baseUrl: undefined }),
+  getActiveProvider: (...args: unknown[]) => mockGetActiveProvider(...args),
   getActiveApiKey: () => 'sk-test',
   resolveAgentModel: () => 'claude-opus-4-8',
 }));
@@ -71,6 +80,8 @@ describe('subagent max_tokens recovery (integration)', () => {
     mockClaudeChat.mockReset();
     mockExecuteAnyTool.mockReset();
     mockExecuteAnyTool.mockResolvedValue('tool output');
+    mockGetActiveProvider.mockReset();
+    mockGetActiveProvider.mockReturnValue({ id: 'p1', apiFormat: 'anthropic', baseUrl: undefined, models: [] });
   });
 
   it('recovers from an empty truncation without emitting consecutive user messages', async () => {
@@ -174,5 +185,42 @@ describe('subagent max_tokens recovery (integration)', () => {
     // 1 initial + 3 recovery attempts = 4 calls, then it stops (does not spin to maxTurns).
     expect(mockClaudeChat).toHaveBeenCalledTimes(4);
     expect(result.text).toContain('output token limit');
+  });
+
+  // Gap fix: subagentLoop previously never called applyDeclaredCapabilities/resolveModelDeclared,
+  // so a custom provider's declared capabilities had no effect on the subagent (only on the main
+  // agentLoop). Verifies the subagent now resolves per-model declared caps the same way, using
+  // 'claude-opus-4-8' (a known reasoning model, thinking='anthropic' by default) as the probe:
+  // declaring supportsReasoning:false must visibly gate enableThinking off.
+  it('applies provider-declared capabilities to the subagent (gates reasoning + reaches chatOptions)', async () => {
+    type Opts = { enableThinking?: boolean; declaredCapabilities?: { supportsReasoning?: boolean } };
+
+    // Baseline: no declared capabilities → the model's default reasoning behavior applies.
+    mockClaudeChat.mockImplementationOnce(emits([
+      { type: 'text', text: 'ok' } as StreamEvent,
+      { type: 'done', stopReason: 'end_turn' } as StreamEvent,
+    ]));
+    await runSubagentLoop({ agent, task: 'do the thing' });
+    const baselineOpts = mockClaudeChat.mock.calls[0][1] as Opts;
+    expect(baselineOpts.enableThinking).toBe(true);
+
+    // Provider declares supportsReasoning:false for this model → must gate thinking off,
+    // and declaredCapabilities itself must be threaded into chatOptions so the adapter's
+    // request processors (tools/reasoning gating) can see it too.
+    mockGetActiveProvider.mockReturnValue({
+      id: 'p1',
+      apiFormat: 'anthropic',
+      baseUrl: undefined,
+      models: [],
+      declaredCapabilities: { supportsReasoning: false },
+    });
+    mockClaudeChat.mockImplementationOnce(emits([
+      { type: 'text', text: 'ok' } as StreamEvent,
+      { type: 'done', stopReason: 'end_turn' } as StreamEvent,
+    ]));
+    await runSubagentLoop({ agent, task: 'do the thing' });
+    const declaredOpts = mockClaudeChat.mock.calls[1][1] as Opts;
+    expect(declaredOpts.declaredCapabilities?.supportsReasoning).toBe(false);
+    expect(declaredOpts.enableThinking).toBeUndefined();
   });
 });

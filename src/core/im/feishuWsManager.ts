@@ -12,6 +12,7 @@
 import { invoke } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import { useIMChannelStore } from '../../stores/imChannelStore';
+import { isTauriEnv } from '../../utils/tauriEnv';
 import type { IMChannelStatus } from '../../types/imChannel';
 
 interface WsStatus {
@@ -31,6 +32,7 @@ let starting = false;
  * auto-manage the connection based on channel store state.
  */
 export async function startFeishuWsManager(): Promise<void> {
+  if (!isTauriEnv()) return; // web / E2E: no Tauri event bus
   // Listen for status events from Rust
   statusUnlisten = await listen<WsStatus>('feishu-ws-status', (event) => {
     if (!currentChannelId) return;

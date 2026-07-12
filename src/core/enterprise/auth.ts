@@ -18,11 +18,21 @@ interface PollResp {
   scopes: string[]
   llm_virtual_key?: string | null
   llm_endpoint?: string | null
+  /** Opaque refresh token returned by bind/poll (server O4+). */
+  refresh_token?: string | null
+  /** ISO 8601 idle-expiry of the refresh token. */
+  refresh_idle_expires_at?: string | null
+  /** Token family identifier for rotation tracking. */
+  family_id?: string | null
 }
 
 export interface BindResult {
   serverUrl: string
   accessToken: string
+  /** ISO 8601 expiry of the access token (computed from expires_in). */
+  accessExpiresAt?: string
+  /** Opaque refresh token; present when server returns one. */
+  refreshToken?: string
   scopes: string[]
   llmEndpoint: string | null
   llmVirtualKey: string | null
@@ -62,6 +72,10 @@ export async function startBind(
         return {
           serverUrl: base,
           accessToken: r.access_token,
+          accessExpiresAt: r.expires_in > 0
+            ? new Date(Date.now() + r.expires_in * 1000).toISOString()
+            : undefined,
+          refreshToken: r.refresh_token ?? undefined,
           scopes: r.scopes,
           llmEndpoint: r.llm_endpoint ?? null,
           llmVirtualKey: r.llm_virtual_key ?? null,

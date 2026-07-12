@@ -3,6 +3,7 @@ import { getCurrentWindow } from '@tauri-apps/api/window';
 import { listen } from '@tauri-apps/api/event';
 
 import { invoke } from '@tauri-apps/api/core';
+import { isTauriEnv } from '@/utils/tauriEnv';
 import { ErrorBoundary } from '@/components/common/ErrorBoundary';
 import Sidebar from '@/components/sidebar/Sidebar';
 import ChatView from '@/components/chat/ChatView';
@@ -79,6 +80,8 @@ import { useEnterpriseStore } from '@/stores/enterpriseStore';
 // Side-effect import: registers policyEnforcer in the enterprise mounts registry
 import '@/core/enterprise/policy/enforcer';  // enforcer.ts — non-JSX, side-effect only
 import PolicyConfirmModal from '@/components/enterprise/PolicyConfirmModal';
+import BindToEnterpriseFlow from '@/components/enterprise/BindToEnterpriseFlow';
+import { useDeepLinkEnroll } from '@/core/enterprise/useDeepLinkEnroll';
 
 /**
  * Drain Notice inbox if we're in a state that can actually deliver.
@@ -155,6 +158,7 @@ function App() {
   const showRightPanelToggle = viewMode === 'chat' && (activeConv?.messages?.length ?? 0) > 0;
   const [showCloseDialog, setShowCloseDialog] = useState(false);
   const [pendingAnnouncements, setPendingAnnouncements] = useState<AnnouncementItem[]>([]);
+  const { pendingEnroll, dismissEnroll } = useDeepLinkEnroll();
   const hasRunningAgent = useChatStore((s) =>
     Object.values(s.conversations).some((c) => c.status === 'running')
   );
@@ -171,6 +175,7 @@ function App() {
 
   // Clear dock badge whenever the window regains focus
   useEffect(() => {
+    if (!isTauriEnv()) return; // web / E2E: no Tauri window API
     let unlistenFn: (() => void) | null = null;
     let cancelled = false;
     getCurrentWindow()
@@ -198,6 +203,7 @@ function App() {
 
   // Pet window asks for status resync when it (re)opens
   useEffect(() => {
+    if (!isTauriEnv()) return; // web / E2E: no Tauri IPC
     let unlistenFn: (() => void) | null = null;
     let cancelled = false;
     listen('pet-resync-request', () => {
@@ -259,6 +265,7 @@ function App() {
 
   // Listen for window close-requested event from Rust
   useEffect(() => {
+    if (!isTauriEnv()) return; // web / E2E: no Tauri IPC
     let unlistenFn: (() => void) | null = null;
     let cancelled = false;
     listen('close-requested', () => {
@@ -559,6 +566,7 @@ function App() {
   // Hide native title bar text on macOS (overlay mode — title shown in sidebar instead)
   // On Windows, show app name in native title bar
   useEffect(() => {
+    if (!isTauriEnv()) return; // web / E2E: no Tauri window API
     getCurrentWindow().setTitle(isMacOS() ? '' : 'Abu');
   }, []);
 
@@ -688,6 +696,17 @@ function App() {
               if (id != null) markSeen(id);
               setPendingAnnouncements((prev) => prev.slice(1));
             }}
+          />
+        )}
+
+        {/* Deep-link enrollment: show BindToEnterpriseFlow pre-seeded with serverUrl
+            when the app is opened via abu://enroll?server=<URL>&token=<token>.
+            Renders above all other overlays (z-50 inside BindToEnterpriseFlow). */}
+        {pendingEnroll && (
+          <BindToEnterpriseFlow
+            initialServerUrl={pendingEnroll.serverUrl}
+            onDone={dismissEnroll}
+            onCancel={dismissEnroll}
           />
         )}
       </div>

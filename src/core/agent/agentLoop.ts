@@ -1547,8 +1547,11 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
               signal: abortController.signal,
             });
           } catch (err) {
-            autoCompactTracker.recordFailure();
-            logger.warn('[persistentCompaction] summarize failed — skipping this turn', { error: String(err) });
+            // Defensive: summarizeConversation is contractually no-throw (it
+            // swallows timeout/error and returns ''), but keep this in case an
+            // unexpected error escapes. The empty-string path below is the real
+            // failure recorder.
+            logger.warn('[persistentCompaction] summarize threw unexpectedly', { error: String(err) });
           }
           if (summaryText.trim()) {
             // Append-only: create a marker and add it as the new last message. No
@@ -1564,12 +1567,25 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
               timestamp: Date.now(),
             });
             useChatStore.getState().addMessage(conversationId, marker);
+            // Clear the now-stale ephemeral 65% cache (a marker supersedes it),
+            // mirroring the manual /compact path so the two land paths stay
+            // symmetric.
+            useChatStore.getState().clearContextCache(conversationId);
             autoCompactTracker.recordSuccess();
             logger.info('[persistentCompaction] landed compact-boundary marker', {
               from: plan.summarizedFromId,
               to: plan.summarizedToId,
               summarizedCount: plan.middleMessages.length,
             });
+          } else {
+            // Empty return = timeout / error / empty summary. Record against the
+            // SHARED circuit breaker: when a marker is already active this Step
+            // 2.1 call is the ONLY compaction path (buildContextFromBoundary
+            // short-circuits the 65% path that otherwise records failures), so
+            // without this a provider that keeps timing out would re-issue a
+            // blocking summarize every turn with no breaker relief — the "死寂"
+            // stall class the breaker exists to prevent.
+            autoCompactTracker.recordFailure();
           }
         }
       }

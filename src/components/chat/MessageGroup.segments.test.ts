@@ -3,7 +3,7 @@
  * that interleaves text, tool-step, and mid-loop user-bubble segments.
  */
 import { describe, it, expect } from 'vitest';
-import { buildRenderSegments, computeWorkProcessFold } from './MessageGroup';
+import { buildRenderSegments, computeWorkProcessFold, streamingTurnHasRenderableContent } from './MessageGroup';
 import type { Message } from '@/types';
 import type { ExecutionStep } from '@/types/execution';
 
@@ -267,5 +267,45 @@ describe('computeWorkProcessFold', () => {
   it('intermediate text folds in; only the last text stays outside', () => {
     // [thinking, text(mid), tool, text(final)] → foldEnd = 3
     expect(computeWorkProcessFold([seg('steps'), seg('text'), seg('steps'), seg('text')], true)).toBe(3);
+  });
+});
+
+describe('streamingTurnHasRenderableContent', () => {
+  it('is false for a fresh empty streaming placeholder (dots must show)', () => {
+    expect(streamingTurnHasRenderableContent(makeAssistant('m1', ''))).toBe(false);
+  });
+  it('is false when there is no streaming message', () => {
+    expect(streamingTurnHasRenderableContent(undefined)).toBe(false);
+  });
+  it('is true once text has streamed in', () => {
+    expect(streamingTurnHasRenderableContent(makeAssistant('m1', 'hello'))).toBe(true);
+  });
+  it('is true once thinking has streamed in', () => {
+    expect(streamingTurnHasRenderableContent(makeThinkingAssistant('m1', { thinking: 'hmm' }))).toBe(true);
+  });
+  it('is true once a real tool call has streamed in', () => {
+    expect(streamingTurnHasRenderableContent(makeAssistant('m1', '', 1))).toBe(true);
+  });
+  it('does not count a report_plan with empty steps as content', () => {
+    expect(streamingTurnHasRenderableContent(makeThinkingAssistant('m1', { plan: ['  ', ''] }))).toBe(false);
+  });
+  it('counts a report_plan with real steps as content', () => {
+    expect(streamingTurnHasRenderableContent(makeThinkingAssistant('m1', { plan: ['step one'] }))).toBe(true);
+  });
+
+  // The reported bug: an earlier turn rendered a (non-empty) plan card, then
+  // agentLoop spawned a fresh empty streaming turn to do the actual work. The
+  // group HAS content (the plan card is a segment), but the CURRENT streaming
+  // turn is empty — so the typing dots must still show. Gating on the group
+  // (old `segments.length > 0`) left dead space under the plan card.
+  it('regression: the empty streaming turn after a plan card reports no content', () => {
+    const planTurn = makeThinkingAssistant('m1', { thinking: 'planning', plan: ['创建 HTML 文件'] });
+    const emptyStreamingTurn: Message = { ...makeAssistant('m2', ''), isStreaming: true };
+    const group = [planTurn, emptyStreamingTurn];
+    // Group-wide view: has content (plan card renders a segment).
+    expect(buildRenderSegments(group, [], []).length).toBeGreaterThan(0);
+    // Per-turn view: the streaming turn is empty → dots correctly show.
+    const streamingMsg = group.find((m) => m.role === 'assistant' && m.isStreaming);
+    expect(streamingTurnHasRenderableContent(streamingMsg)).toBe(false);
   });
 });

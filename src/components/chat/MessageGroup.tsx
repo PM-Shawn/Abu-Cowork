@@ -294,6 +294,26 @@ export function computeWorkProcessFold(segments: RenderSegment[], isDone: boolea
 }
 
 /**
+ * Whether the still-streaming assistant message has emitted anything the
+ * timeline will render yet — text, thinking, or a step/plan/widget-backed tool
+ * call. Drives the "思考中…" typing dots, which must track the CURRENT turn, not
+ * the whole group: agentLoop spawns a fresh empty assistant placeholder per turn,
+ * so once a plan card (or any earlier segment) renders, a group-wide "has
+ * content" gate would silence the next turn's empty placeholder — leaving dead
+ * space under the plan card while the agent is actively generating the next tool
+ * call. A report_plan with empty steps renders nothing, so it does not count.
+ */
+// eslint-disable-next-line react-refresh/only-export-components
+export function streamingTurnHasRenderableContent(msg: Message | undefined): boolean {
+  if (!msg) return false;
+  if (getTextContent(msg.content).trim().length > 0) return true;
+  if (msg.thinking && msg.thinking.trim().length > 0) return true;
+  return (msg.toolCalls || []).some((tc) =>
+    tc.name === TOOL_NAMES.REPORT_PLAN ? parsePlanSteps(tc).length > 0 : true,
+  );
+}
+
+/**
  * Groups multiple messages from the same agent loop into a single visual block.
  * User messages render standalone, assistant messages share one avatar.
  * Renders text → merged tool steps, with consecutive tool-only turns combined.
@@ -519,8 +539,13 @@ export default function MessageGroup({ messages, isLastGroup: isLastGroupProp = 
     [messages, activeExecSteps, workflowSteps]
   );
 
-  // Check if we have any content (for thinking indicator fallback)
-  const hasAnyContent = segments.length > 0;
+  // Typing-dots gate: track the message that is actually streaming, NOT the
+  // whole group. agentLoop spawns a fresh empty assistant message per turn, so a
+  // finished plan card earlier in the group must not silence the next turn's
+  // empty placeholder (else: dead space under the plan card while the agent is
+  // actively generating). See streamingTurnHasRenderableContent.
+  const streamingMsg = assistantMsgs.find((m) => m.isStreaming);
+  const streamingHasContent = streamingTurnHasRenderableContent(streamingMsg);
 
   // Codex-style turn collapse: once a turn is done and has a final text answer,
   // fold all intermediate segments (thinking/plan/steps) behind a single row.
@@ -702,10 +727,11 @@ export default function MessageGroup({ messages, isLastGroup: isLastGroupProp = 
 
           {/* Content area */}
           <div className="flex-1 min-w-0 overflow-hidden">
-            {/* Typing dots — shown only before any thinking or text bytes have arrived.
-                Once thinking starts streaming, segments will be populated (thinking step
-                inside a TaskBlock) and hasAnyContent flips true, hiding these dots. */}
-            {isStreaming && !hasAnyContent && (
+            {/* Typing dots — shown while the current turn is streaming but has not
+                yet emitted any renderable content. Tracks the streaming message
+                itself, so a plan card from an earlier turn in the same group does
+                not suppress the dots for the fresh empty turn that follows. */}
+            {isStreaming && !streamingHasContent && (
               <div className="flex items-center gap-1.5 py-2">
                 <span className="text-[12px] text-[var(--abu-text-muted)]">{t.status.thinking}</span>
                 <span className="typing-dot w-1.5 h-1.5 rounded-full bg-[var(--abu-clay-60)]" />

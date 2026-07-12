@@ -1,7 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { Clock } from 'lucide-react';
 import { listVersions, type VersionMeta } from '@/utils/canvasVersions';
-import { formatRelativeTime } from '@/utils/messageTime';
 import { useToastStore } from '@/stores/toastStore';
 import { useI18n } from '@/i18n';
 import { cn } from '@/lib/utils';
@@ -27,6 +26,23 @@ function formatBytes(n: number): string {
   if (n < 1024) return `${n} B`;
   if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
   return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+/**
+ * Absolute timestamp, precise to the second — relative labels ("just now")
+ * collapse rapid successive saves into indistinguishable rows, hiding their
+ * order. Time-only for today's versions; date-prefixed for older ones.
+ */
+function formatVersionTime(ts: number): string {
+  const d = new Date(ts);
+  const pad = (n: number) => String(n).padStart(2, '0');
+  const hms = `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+  const now = new Date();
+  const sameDay =
+    d.getFullYear() === now.getFullYear() &&
+    d.getMonth() === now.getMonth() &&
+    d.getDate() === now.getDate();
+  return sameDay ? hms : `${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${hms}`;
 }
 
 /**
@@ -172,7 +188,7 @@ export function VersionHistoryMenu({ filePath, open, onClose, anchorRef, onRever
               )}
             >
               <Clock className="h-3 w-3 shrink-0 text-[var(--abu-text-muted)]" />
-              <span className="flex-1 truncate">{formatRelativeTime(v.ts)}</span>
+              <span className="flex-1 truncate tabular-nums">{formatVersionTime(v.ts)}</span>
               <span className="text-[var(--abu-text-muted)] shrink-0">{formatBytes(v.byteSize)}</span>
             </button>
           ))

@@ -52,6 +52,13 @@ export default function TaskProgressPanel() {
   const inMemoryPlannedSteps = useTaskExecutionStore((s) =>
     latestExecId ? (s.executions[latestExecId]?.plannedSteps ?? EMPTY_STEPS) : EMPTY_STEPS
   );
+  // Status of the execution that owns those steps. On abort/cancel the loop
+  // returns BEFORE persistExecutionSnapshot evicts, so a stopped execution
+  // lingers in the store (status 'cancelled') — presence of plannedSteps alone
+  // is NOT enough to tell "still running". Gate the spinner on 'running'.
+  const activeStatus = useTaskExecutionStore((s) =>
+    latestExecId ? s.executions[latestExecId]?.status : undefined
+  );
   // Fallback: after a loop ends, persistExecutionSnapshot evicts the execution
   // and stores plannedSteps on the loop's last assistant message — scan the
   // active conversation from the end for the latest snapshot so the plan
@@ -68,12 +75,12 @@ export default function TaskProgressPanel() {
   });
   const plannedSteps = inMemoryPlannedSteps.length > 0 ? inMemoryPlannedSteps : messagePlannedSteps;
   const hasPlannedSteps = plannedSteps.length > 0;
-  // The plan is "live" only while a running execution still owns it. Once the
-  // loop ends (completed/stopped/errored) the execution is evicted and we fall
-  // back to the persisted message snapshot — at that point an in_progress step
-  // renders as a static marker instead of a spinner, so a stopped mid-flight
-  // step reads as "in progress, paused" rather than spinning forever.
-  const isLive = inMemoryPlannedSteps.length > 0;
+  // The plan is "live" only while the owning execution is actually running.
+  // A stopped/completed execution lingers in the store (not evicted on abort),
+  // so gate on status 'running' — not mere presence. When not live, an
+  // in_progress step renders as a static marker (no spinner) so a stopped
+  // mid-flight step reads as "in progress, paused" rather than spinning forever.
+  const isLive = inMemoryPlannedSteps.length > 0 && activeStatus === 'running';
   const { t } = useI18n();
 
   return (

@@ -127,6 +127,33 @@ describe('TaskProgressPanel', () => {
     expect(row?.querySelector('.animate-spin')).toBeInTheDocument();
   });
 
+  // Smoke-test bug: on abort the loop cancels the execution but RETURNS before
+  // persistExecutionSnapshot evicts it, so a cancelled execution lingers in the
+  // store with an in_progress step. Presence of plannedSteps is not enough to
+  // mean "live" — gate on status 'running'. A lingering cancelled step must
+  // render statically (no perpetual spinner).
+  it('does NOT spin an in_progress step of a stopped (lingering) execution', () => {
+    useTaskExecutionStore.setState({
+      executions: {
+        e1: {
+          id: 'e1',
+          conversationId: 'conv-1',
+          loopId: 'loop-e1',
+          status: 'cancelled',
+          startTime: 100,
+          endTime: 200,
+          plannedSteps: [{ index: 1, description: '被停止的步骤', status: 'in_progress' as const }],
+          planParsed: true,
+          steps: [],
+        } as TaskExecution,
+      },
+    });
+    render(<TaskProgressPanel />);
+    const row = screen.getByText('被停止的步骤').closest('div.flex.items-start');
+    expect(row).toBeInTheDocument();
+    expect(row?.querySelector('.animate-spin')).not.toBeInTheDocument();
+  });
+
   // Regression (smoke-test finding): after a task is stopped, the live
   // execution is evicted and the panel falls back to the persisted message
   // snapshot. An in_progress step there must render STATICALLY — no perpetual

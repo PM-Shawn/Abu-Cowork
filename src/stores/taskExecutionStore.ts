@@ -184,6 +184,11 @@ export const useTaskExecutionStore = create<TaskExecutionStore>()(
         if (exec) {
           exec.status = 'cancelled';
           exec.endTime = Date.now();
+          // No step is actively running once cancelled — revert any in_progress
+          // step to pending so the progress panel stops showing a perpetual spinner.
+          for (const step of exec.plannedSteps) {
+            if (step.status === 'in_progress') step.status = 'pending';
+          }
         }
         // Keep activeExecutionId so UI still shows cancelled steps
       });

@@ -32,6 +32,26 @@ describe('taskExecutionStore', () => {
     });
   });
 
+  // ── cancelExecution reverts an in-progress step so the panel stops spinning ──
+  describe('cancelExecution planned step cleanup', () => {
+    it('reverts in_progress planned steps to pending on cancel (no perpetual spinner)', () => {
+      const store = useTaskExecutionStore.getState();
+      const exec = store.createExecution('conv-1', 'loop-1');
+
+      store.setPlannedSteps(exec.id, [
+        { index: 1, description: '步骤1', status: 'in_progress' },
+        { index: 2, description: '步骤2', status: 'pending' },
+      ]);
+
+      store.cancelExecution(exec.id);
+
+      const final = useTaskExecutionStore.getState().executions[exec.id];
+      expect(final.status).toBe('cancelled');
+      expect(final.plannedSteps[0].status).toBe('pending');
+      expect(final.plannedSteps[1].status).toBe('pending');
+    });
+  });
+
   describe('getExecutionByConversationId', () => {
     it('returns the latest execution for a conversation', () => {
       const store = useTaskExecutionStore.getState();

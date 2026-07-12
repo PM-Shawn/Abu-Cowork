@@ -172,8 +172,8 @@ export default function WorkspaceFileTree() {
   } = useWorkspaceTree();
 
   return (
-    <div className="space-y-2 mt-3">
-      <div className="flex items-center justify-between">
+    <div className="flex flex-col h-full min-h-0 gap-2 mt-3">
+      <div className="flex items-center justify-between shrink-0">
         <h4 className="text-[11px] font-medium text-[var(--abu-text-muted)] uppercase tracking-wider">
           {t.panel.fileTree.title}
         </h4>
@@ -188,8 +188,8 @@ export default function WorkspaceFileTree() {
       ) : rootEntries.length === 0 ? (
         <p className="text-[12px] text-[var(--abu-text-muted)] py-1">{t.panel.fileTree.empty}</p>
       ) : (
-        <ScrollArea className="max-h-[240px]">
-          <div className="space-y-0.5 pr-2">
+        <ScrollArea className="flex-1 min-h-0">
+          <div className="space-y-0.5 pr-2 pb-2">
             {rootEntries.map((entry) => (
               <TreeRow
                 key={entry.path}

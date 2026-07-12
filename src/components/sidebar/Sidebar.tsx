@@ -17,6 +17,7 @@ import { getPlatformShortLabel } from '@/core/im/platformLabels';
 import type { ConversationStatus } from '@/types';
 import ProjectsSection from '@/components/sidebar/ProjectsSection';
 import WorkspaceFileTree from '@/components/panel/WorkspaceFileTree';
+import { usePreviewStore } from '@/stores/previewStore';
 import DefaultUserAvatar from '@/components/common/DefaultUserAvatar';
 import { open as openDialog } from '@tauri-apps/plugin-dialog';
 import { readTextFile } from '@tauri-apps/plugin-fs';
@@ -109,7 +110,8 @@ export default function Sidebar() {
   // PreviewPanel — which is a separate column, so the tree stays visible
   // (left tree + right editor), unlike when the tree lived in the swapping
   // right panel.
-  const [showFileTree, setShowFileTree] = useState(false);
+  const showFileTree = usePreviewStore((s) => s.fileTreeMode);
+  const setShowFileTree = usePreviewStore((s) => s.setFileTreeMode);
   const [searchQuery, setSearchQuery] = useState('');
   const [searchOpen, setSearchOpen] = useState(false);
   const searchInputRef = useRef<HTMLInputElement>(null);
@@ -355,7 +357,7 @@ export default function Sidebar() {
             <ArrowLeft className="h-3.5 w-3.5" strokeWidth={2} />
             <span>{t.sidebar.backToConversations}</span>
           </button>
-          <div className="flex-1 min-h-0">
+          <div className="flex-1 min-h-0 px-4">
             <WorkspaceFileTree />
           </div>
         </div>

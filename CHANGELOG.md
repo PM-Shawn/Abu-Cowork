@@ -2,6 +2,51 @@
 
 All notable changes to Abu are documented here. Format based on [Keep a Changelog](https://keepachangelog.com/).
 
+## v0.29.0 · 2026-07-12
+
+### Added
+
+- **Workspace file tree + code canvas**: a file tree in the left panel — click a file to preview it, right-click to create / rename / delete (delete goes to the system trash, recoverable from Finder). Source files are editable inline in a CodeMirror editor with debounced auto-save, the preview auto-refreshes when a file changes, and per-file version snapshots let you roll back.
+- **Declarative progress panel**: the model now declares its plan steps and each step's status directly (via `report_plan`) instead of the framework inferring progress from tool-call order. This is accurate for steps that use several tools or none, where the old positional inference drifted.
+- **Inline visualization widgets**: new `show_widget` / `read_me` tools render charts, HTML, and diagrams inline in the chat; static-structure diagrams route to Mermaid. Includes a modest design system and a host runtime (theme sync, `sendPrompt`, error/canvas handling).
+- **Multi-endpoint provider presets**: vendors with several access plans (Volcengine API / Coding / Agent, Bailian Token Plan / Coding, Zhipu, …) are now curated presets with per-plan base URLs, formats, and models. The add / edit AI-service dialog was unified into a single modal.
+- **Per-model capabilities**: tool-calling, vision, reasoning, and token limits are now declared per model rather than per provider, so one provider can mix vision and non-vision models without the capability of one bleeding onto another (store v40 migration).
+
+### Fixed
+
+- **Newly-added builtin preset providers now sort to the front** (newest-first), matching how custom providers already behaved — previously a preset stayed stuck at its catalog position.
+- **Diagnostics surface real failures**: empty error bodies fall back to a meaningful message (e.g. `HTTP 404 · not_found`), and a real per-provider call failure downgrades a misleading "passed" self-check to a warning.
+- **Inline HTML widget white-screen** rendering fixed.
+
+### Improved
+
+- **macOS release builds are Developer ID signed + notarized**.
+
+## v0.28.2 · 2026-07-10
+
+### Fixed
+
+- **Image conversations no longer brick after a restart**: uploaded images are persisted with their base64 stripped (only the file path is kept, to save disk), but the LLM send path used that empty data directly. After an app restart the reloaded history carried empty base64, so the provider rejected the whole request (`Invalid base64 image_url`) and the conversation froze on **every** following turn — plain text included — forcing a brand-new conversation. The base64 is now re-read from the image file (or its snapshot) before sending, and degrades to a text placeholder when the file is gone, so an empty image can never reach the model. Long-standing (image stripping exists since v0.10); an update surfaced it by forcing the restart that reloads the stripped copy.
+
+## v0.28.1 · 2026-07-10
+
+### Fixed
+
+- **File preview split no longer crushes the chat**: when a file preview is open, the chat column now keeps a stable width and the preview flex-fills the rest — so opening the sidebar shrinks the preview instead of squeezing the chat into vertical one-character-per-line text. The preview also stays the big "main stage" (~60% of the window). The composer's status line was tidied up too: the redundant request count was dropped and the line no longer wraps.
+
+## v0.28.0 · 2026-07-10
+
+### Added
+
+- **Doc comment-to-chat**: select any snippet in the markdown preview, attach a note, and send it back to the agent as a reference chip. Selections leave an in-place highlight trail (`CSS.highlights`), the selection toolbar positions itself edge-aware and dismisses on scroll, and the reference is serialized into your message on send.
+- **Full internationalization (P1–P4)**: the app now follows your UI locale everywhere, and a new locale-driven output-language mechanism controls the reply language independently of the prompt language (Chinese stays Chinese; English follows your message). LLM-facing prompts and tool descriptions were English-ized (P1–P2), and tool result strings, command-safety prompts, the built-in MCP catalog, project rules / `ABU.md` / `/init` output, and agent runtime status/errors were localized bilingually (P3–P4). UI strings across the model selector, file attachment, permission card, memory badges, marketplace catalog, computer-use overlay, and settings were localized as well.
+
+### Fixed
+
+- **CJK mojibake in HTML previews**: generated HTML now declares UTF-8, so Chinese/Japanese/Korean text no longer renders as garbled characters in the preview.
+- **Markdown tables collapsing to vertical CJK text**: table columns no longer shrink to one-character-per-line vertical stacks.
+- **User-message markdown invisible on the light theme**: headings, blockquotes, bold, and inline code in user messages were hard-coded to white (a leftover from the dark-bubble era) and disappeared on the light theme — now readable in both themes.
+
 ## v0.27.0 · 2026-07-09
 
 ### Added

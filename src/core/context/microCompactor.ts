@@ -23,7 +23,6 @@ const SKIP_COMPACT = new Set<string>([
   'clipboard_read',    // Clipboard — typically short
   'system_notify',     // Notification — very short
   'update_memory',     // Memory write result — very short
-  'todo_write',        // Todo result — very short
   'computer',          // Screenshot results — images, not compactable text
 ]);
 

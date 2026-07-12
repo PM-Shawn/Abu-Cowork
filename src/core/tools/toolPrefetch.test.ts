@@ -45,9 +45,8 @@ describe('toolPrefetch', () => {
       expect(result).toContain('get_system_info');
     });
 
-    it('should return report_plan + todo_write on turn 1-3', () => {
+    it('should return report_plan on turn 1-3', () => {
       const result = prefetchTools(makeCtx({ userInput: '你好', turnCount: 1 }));
-      expect(result).toContain('todo_write');
       expect(result).toContain('report_plan');
       expect(result).not.toContain('get_system_info');
     });

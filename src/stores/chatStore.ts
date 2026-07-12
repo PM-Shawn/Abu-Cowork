@@ -6,7 +6,6 @@ import type { ExecutionStepSnapshot, PlannedStep } from '../types/execution';
 import { useWorkspaceStore } from './workspaceStore';
 import { useProjectStore } from './projectStore';
 import { useTaskExecutionStore } from './taskExecutionStore';
-import { clearTodos } from '../core/agent/todoManager';
 import { clearInputQueue } from '../core/agent/userInputQueue';
 import { clearSkillHooksByConversation } from '../core/tools/builtins';
 import { clearPlanMode } from '../core/agent/planMode';
@@ -569,7 +568,6 @@ export const useChatStore = create<ChatStore>()(
           abortControllers.delete(id);
         }
         // Clean up per-conversation state in external modules
-        clearTodos(id);
         clearInputQueue(id);
         clearSkillHooksByConversation(id);
         useTaskExecutionStore.getState().clearConversation(id);

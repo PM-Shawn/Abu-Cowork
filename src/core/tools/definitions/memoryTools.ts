@@ -3,11 +3,8 @@ import type { PlannedStep } from '../../../types/execution';
 import { useTaskExecutionStore } from '../../../stores/taskExecutionStore';
 import { getPlanMode, setPlanMode } from '../../agent/planMode';
 import { requestUserQuestion } from '../../agent/permissionBridge';
-import { useChatStore } from '../../../stores/chatStore';
 import { useWorkspaceStore } from '../../../stores/workspaceStore';
 import { appendTaskLog, type TaskCategory } from '../../agent/taskLog';
-import { getTodos, addTodo, updateTodo, setTodos, formatTodosForPrompt } from '../../agent/todoManager';
-import type { TodoStatus } from '../../agent/todoManager';
 import { TOOL_NAMES } from '../toolNames';
 import type { MemoryType } from '../../memdir/types';
 import { getI18n, format } from '../../../i18n';
@@ -420,82 +417,6 @@ Keep ordinary user preferences/work habits non-private; description can be more 
       }
     } catch (err) {
       return `Error updating memory: ${err instanceof Error ? err.message : String(err)}`;
-    }
-  },
-  isConcurrencySafe: false,
-};
-
-export const todoWriteTool: ToolDefinition = {
-  name: TOOL_NAMES.TODO_WRITE,
-  description: 'Create or update a task plan. Can batch-set plan items or update the status of a single item. The plan is injected every turn so you always have visibility into current progress.',
-  inputSchema: {
-    type: 'object',
-    properties: {
-      action: {
-        type: 'string',
-        description: 'Operation type: set (batch-set plan items) / add (add single item) / update (update status) / read (read current plan)',
-        enum: ['set', 'add', 'update', 'read'],
-      },
-      items: {
-        type: 'array',
-        items: { type: 'object' },
-        description: 'List of plan items (used for set and add). Each item should contain content (string) and optional status (string: pending/in_progress/completed/cancelled)',
-      },
-      todo_id: { type: 'string', description: 'ID of the plan item to update (used for update)' },
-      status: { type: 'string', description: 'New status (used for update)' },
-      content: { type: 'string', description: 'New content (used for update or add)' },
-    },
-    required: ['action'],
-  },
-  execute: async (input, context) => {
-    const t = getI18n().toolResult.memory;
-    const action = input.action as string;
-
-    // Prefer context (correct for scheduled/trigger tasks) over activeConversationId
-    const conversationId = context?.conversationId ?? useChatStore.getState().activeConversationId;
-    if (!conversationId) {
-      return t.errNoActiveSession;
-    }
-
-    switch (action) {
-      case 'set': {
-        const items = (input.items as Array<{ content: string; status?: string }>) ?? [];
-        if (items.length === 0) return t.errItemsRequired;
-        const result = setTodos(conversationId, items.map(i => ({
-          content: i.content,
-          status: (i.status as TodoStatus) ?? 'pending',
-        })));
-        return format(t.todosCreated, { n: result.length }) + formatTodosForPrompt(conversationId);
-      }
-      case 'add': {
-        const content = (input.content as string) ?? (input.items as Array<{ content: string }>)?.[0]?.content;
-        if (!content) return t.errContentRequired;
-        const item = addTodo(conversationId, content);
-        return format(t.todoAdded, { content: item.content, id: item.id });
-      }
-      case 'update': {
-        const todoId = input.todo_id as string;
-        const status = input.status as string | undefined;
-        const content = input.content as string | undefined;
-        if (!todoId) return t.errTodoIdRequired;
-        const updated = updateTodo(conversationId, todoId, {
-          status: status as TodoStatus | undefined,
-          content,
-        });
-        if (!updated) return format(t.errTodoNotFound, { id: todoId });
-        return format(t.todoUpdated, { content: updated.content, status: updated.status });
-      }
-      case 'read': {
-        const todos = getTodos(conversationId);
-        if (todos.length === 0) {
-          return t.todosEmpty;
-        }
-        const formatted = formatTodosForPrompt(conversationId);
-        const details = todos.map(todo => `- ID: ${todo.id} | ${todo.status} | ${todo.content}`).join('\n');
-        return `${formatted}\n\n${t.todosDetailHeader}\n${details}`;
-      }
-      default:
-        return format(t.errUnknownAction, { action });
     }
   },
   isConcurrencySafe: false,

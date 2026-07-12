@@ -182,10 +182,6 @@ vi.mock('../core/agent/toolExecutor', () => ({
   executeToolBatch: vi.fn().mockResolvedValue([]),
 }));
 
-vi.mock('../core/agent/todoManager', () => ({
-  formatTodosForPrompt: vi.fn().mockReturnValue(''),
-}));
-
 vi.mock('../../utils/platform', () => ({
   isWindows: vi.fn().mockReturnValue(false),
 }));

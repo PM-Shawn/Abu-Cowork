@@ -142,10 +142,7 @@ export function prefetchTools(ctx: PrefetchContext): string[] {
     additionalTools.push(TOOL_NAMES.GET_SYSTEM_INFO);
   }
 
-  // Non-first turns: load task tracking + memory tools
-  if (ctx.turnCount > 0) {
-    additionalTools.push(TOOL_NAMES.TODO_WRITE);
-  }
+  // Non-first turns: load memory tools
   if (ctx.turnCount > 2) {
     additionalTools.push(TOOL_NAMES.LOG_TASK_COMPLETION);
     additionalTools.push(TOOL_NAMES.UPDATE_MEMORY);

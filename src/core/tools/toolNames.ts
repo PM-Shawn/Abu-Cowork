@@ -46,7 +46,6 @@ export const TOOL_NAMES = {
   UPDATE_SOUL: 'update_soul',
   RECALL: 'recall',
   READ_MEMORY: 'read_memory',
-  TODO_WRITE: 'todo_write',
 
   // Automation
   MANAGE_SCHEDULED_TASK: 'manage_scheduled_task',

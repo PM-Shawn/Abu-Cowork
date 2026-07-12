@@ -280,7 +280,7 @@ const VISUAL_OUTPUT_TOOL_VARIANT = `${VISUAL_TRIGGER_TIERS}
 
 ${VISUAL_HARD_BANS_BLOCK}
 
-**Strictly forbidden**: generate_image for a chart/diagram (show_widget draws those); todo_write before show_widget — just call show_widget.
+**Strictly forbidden**: generate_image for a chart/diagram (show_widget draws those) — just call show_widget.
 
 ${VISUAL_CDN_ALLOWED_LINE}`;
 

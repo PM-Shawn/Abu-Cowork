@@ -514,7 +514,7 @@ ${indexContent.trim()}
 - Your long-term memory index is in the <memory-index> section above; full content of relevant memories auto-injected each turn is in <relevant-memories> (later in this prompt). If you can answer from those two sections, do so directly without calling any tools.
 - Index entries ending with 🔒 are private memories and will not be auto-injected. Fetch them with read_memory only when the user explicitly asks; only quote the necessary parts in your reply — do not repeat them in unrelated messages later.
 - If the user says "remember this", save it immediately; if they say "forget it / stop remembering", find the entry and delete it. For how to write memories, when to use recall vs read_memory, and how to handle conflicts → see each memory tool's description.
-- Use todo_write for progress within the current conversation — do not store it in memory. Project rules (.abu/ABU.md) are maintained by the user; do not modify them with update_memory.`, cacheable: true });
+- Use report_plan for progress within the current conversation — do not store it in memory. Project rules (.abu/ABU.md) are maintained by the user; do not modify them with update_memory.`, cacheable: true });
     } catch (err) {
       console.warn('Failed to load memories:', err);
     }

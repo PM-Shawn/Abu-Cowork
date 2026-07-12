@@ -18,6 +18,7 @@ import {
 } from '../helpers/toolHelpers';
 import { TOOL_NAMES } from '../toolNames';
 import { getI18n, format } from '../../../i18n';
+import { bindWorkspaceFromWrite } from '../../agent/defaultWorkspace';
 
 /**
  * Simple pessimistic file lock for concurrent agent safety.
@@ -249,6 +250,9 @@ export const writeFileTool: ToolDefinition = {
         finalContent = ensureHtmlCharset(content);
       }
       await writeTextFile(path, finalContent);
+      // Lazily bind a managed default workspace on the first write under ~/Abu/
+      // (fire-and-forget — must never affect the write result).
+      void bindWorkspaceFromWrite(context?.conversationId, path);
       return `Successfully wrote ${content.length} characters to ${path}`;
     } catch (err) {
       return `Error writing file: ${err instanceof Error ? err.message : String(err)}`;

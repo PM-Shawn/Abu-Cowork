@@ -130,6 +130,8 @@ export interface TranslationDict {
   // Sidebar
   sidebar: {
     newTask: string;
+    projectFiles: string;
+    backToConversations: string;
     automation: string;
     scheduledTasks: string;
     triggers: string;
@@ -1457,6 +1459,17 @@ export interface TranslationDict {
     showInFinder: string;
     failedToReadFile: string;
     fileNotFound: string;
+    // Editable preview (P2): autosave + external-change conflict notices
+    saveFailedTitle: string;
+    externalChangeTitle: string;
+    externalChangeMessage: string;
+    // Version history (P4): per-file snapshot list + revert
+    versionHistory: string;
+    versionHistoryEmpty: string;
+    versionHistoryRevert: string;
+    versionHistoryReverted: string;
+    versionHistoryRevertFailedTitle: string;
+    versionHistoryLoadFailed: string;
     // FilesSection
     operationRead: string;
     operationModify: string;
@@ -1500,6 +1513,38 @@ export interface TranslationDict {
     openWithPowerPoint: string;
     // Preview: data-URL image (no file path)
     imagePreview: string;
+    // WorkspaceFileTree (lightweight lazy-loaded project file tree, code-canvas P0)
+    fileTree: {
+      title: string;
+      noWorkspace: string;
+      empty: string;
+      loadError: string;
+      loading: string;
+      moreActions: string;
+      newFolder: string;
+      addFile: string;
+      refresh: string;
+      newFolderPlaceholder: string;
+      newFolderFailed: string;
+      addFileFailed: string;
+      // Per-node context menu (code-canvas P1)
+      revealInFinder: string;
+      addToChat: string;
+      addedToChat: string;
+      copyPath: string;
+      copyPathDone: string;
+      rename: string;
+      renameFailed: string;
+      newFile: string;
+      newFilePlaceholder: string;
+      newFileFailed: string;
+      delete: string;
+      confirmDelete: string;
+      moveToTrash: string;
+      deleteFailed: string;
+      invalidName: string;
+      alreadyExists: string;
+    };
   };
 
   // Folder Selector

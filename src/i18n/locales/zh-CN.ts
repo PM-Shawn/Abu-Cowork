@@ -103,6 +103,8 @@ const zhCN: TranslationDict = {
 
   sidebar: {
     newTask: '新建任务',
+    projectFiles: '项目文件',
+    backToConversations: '返回会话',
     automation: '自动化',
     scheduledTasks: '定时任务',
     triggers: '监听事件',
@@ -1336,6 +1338,15 @@ const zhCN: TranslationDict = {
     showInFinder: '在文件管理器中显示',
     failedToReadFile: '无法读取文件',
     fileNotFound: '文件不存在',
+    saveFailedTitle: '保存失败',
+    externalChangeTitle: '文件已被外部修改',
+    externalChangeMessage: '磁盘上的内容已更新，你的未保存修改已保留',
+    versionHistory: '历史版本',
+    versionHistoryEmpty: '暂无历史版本',
+    versionHistoryRevert: '恢复到此版本',
+    versionHistoryReverted: '已恢复到该版本',
+    versionHistoryRevertFailedTitle: '恢复失败',
+    versionHistoryLoadFailed: '加载历史版本失败',
     // FilesSection
     operationRead: '读取',
     operationModify: '修改',
@@ -1379,6 +1390,38 @@ const zhCN: TranslationDict = {
     openWithPowerPoint: '用 PowerPoint 打开',
     // Preview: data-URL image (no file path)
     imagePreview: '图片预览',
+    // WorkspaceFileTree
+    fileTree: {
+      title: '项目文件',
+      noWorkspace: '未绑定工作区文件夹',
+      empty: '空文件夹',
+      loadError: '读取文件夹失败',
+      loading: '加载中...',
+      moreActions: '更多操作',
+      newFolder: '新建文件夹',
+      addFile: '添加文件',
+      refresh: '刷新',
+      newFolderPlaceholder: '文件夹名称',
+      newFolderFailed: '新建文件夹失败',
+      addFileFailed: '添加文件失败',
+      // Per-node context menu
+      revealInFinder: '在 Finder 中显示',
+      addToChat: '添加到对话',
+      addedToChat: '已添加到对话',
+      copyPath: '复制路径',
+      copyPathDone: '路径已复制',
+      rename: '重命名',
+      renameFailed: '重命名失败',
+      newFile: '新建文件',
+      newFilePlaceholder: '文件名称',
+      newFileFailed: '新建文件失败',
+      delete: '删除',
+      confirmDelete: '移动到废纸篓？可从废纸篓还原',
+      moveToTrash: '移动到废纸篓',
+      deleteFailed: '删除失败',
+      invalidName: '名称不能为空，且不能包含 /',
+      alreadyExists: '同名文件或文件夹已存在',
+    },
   },
 
   folder: {

@@ -813,8 +813,16 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
   // Using the conversation record rather than the global store prevents cross-conversation
   // workspace leakage when multiple conversations are open simultaneously.
   const _convForContext = useChatStore.getState().conversations[conversationId];
+  // Interactive-desktop conversations with no workspace get a managed default
+  // (~/Abu/<name>/) bound here so the agent saves files there instead of
+  // improvising (e.g. onto the Desktop). The folder is created lazily on the
+  // first write. Headless contexts (IM / scheduled / trigger) are excluded —
+  // they must not auto-create workspace directories.
   const toolContext: ToolExecutionContext = {
-    workspacePath: options?.imContext?.workspacePath ?? _convForContext?.workspacePath ?? useWorkspaceStore.getState().currentPath,
+    workspacePath:
+      options?.imContext?.workspacePath ??
+      _convForContext?.workspacePath ??
+      useWorkspaceStore.getState().currentPath,
     loopId,
     conversationId,
   };

@@ -7,7 +7,7 @@ import { useInboxStore } from '@/stores/inboxStore';
 import { useI18n } from '@/i18n';
 import { useLabsFlag } from '@/core/labs/resolve';
 import { LABS_TODOS_INBOX } from '@/core/labs/registry';
-import { Plus, Workflow, Wrench, Trash2, Settings, Download, Pencil, Undo2, HelpCircle, FolderInput, FolderClosed, ChevronRight, Minus, Search, X, CheckSquare, Inbox } from 'lucide-react';
+import { Plus, Workflow, Wrench, Trash2, Settings, Download, Pencil, Undo2, HelpCircle, FolderInput, FolderClosed, ChevronRight, Minus, Search, X, CheckSquare, Inbox, ListTree, ArrowLeft } from 'lucide-react';
 import GuideModal from '@/components/common/GuideModal';
 import ProfileEditModal from '@/components/common/ProfileEditModal';
 import { Button } from '@/components/ui/button';
@@ -16,6 +16,8 @@ import { cn } from '@/lib/utils';
 import { getPlatformShortLabel } from '@/core/im/platformLabels';
 import type { ConversationStatus } from '@/types';
 import ProjectsSection from '@/components/sidebar/ProjectsSection';
+import WorkspaceFileTree from '@/components/panel/WorkspaceFileTree';
+import { usePreviewStore } from '@/stores/previewStore';
 import DefaultUserAvatar from '@/components/common/DefaultUserAvatar';
 import { open as openDialog } from '@tauri-apps/plugin-dialog';
 import { readTextFile } from '@tauri-apps/plugin-fs';
@@ -102,6 +104,14 @@ export default function Sidebar() {
   const [moveSubmenuStyle, setMoveSubmenuStyle] = useState<React.CSSProperties>({});
   const projectsMap = useProjectStore((s) => s.projects);
   const [recentsCollapsed, setRecentsCollapsed] = useState(false);
+  // File-tree mode: the sidebar swaps its conversation list for the active
+  // conversation's project file tree (TRAE-style), entered from a per-row
+  // folder icon and exited via "back". Clicking a file opens it in the right
+  // PreviewPanel — which is a separate column, so the tree stays visible
+  // (left tree + right editor), unlike when the tree lived in the swapping
+  // right panel.
+  const showFileTree = usePreviewStore((s) => s.fileTreeMode);
+  const setShowFileTree = usePreviewStore((s) => s.setFileTreeMode);
   const [searchQuery, setSearchQuery] = useState('');
   const [searchOpen, setSearchOpen] = useState(false);
   const searchInputRef = useRef<HTMLInputElement>(null);
@@ -265,7 +275,7 @@ export default function Sidebar() {
       {/* Top Navigation */}
       <nav className="px-4 pb-2 space-y-0.5" aria-label="Main navigation">
         <button
-          onClick={() => { startNewConversation(); setViewMode('chat'); }}
+          onClick={() => { startNewConversation(); setViewMode('chat'); setShowFileTree(false); }}
           className={cn(
             'btn-ghost flex items-center gap-3 w-full px-3 py-2.5 text-[14px] font-medium rounded-lg',
             activeConversationId === null && viewMode === 'chat'
@@ -310,7 +320,7 @@ export default function Sidebar() {
           </>
         )}
         <button
-          onClick={() => openToolbox()}
+          onClick={() => { openToolbox(); setShowFileTree(false); }}
           className={cn(
             'btn-ghost flex items-center gap-3 w-full px-3 py-2.5 text-[14px] rounded-lg',
             viewMode === 'toolbox'
@@ -322,7 +332,7 @@ export default function Sidebar() {
           <span>{t.sidebar.toolbox}</span>
         </button>
         <button
-          onClick={() => openAutomation()}
+          onClick={() => { openAutomation(); setShowFileTree(false); }}
           className={cn(
             'btn-ghost flex items-center gap-3 w-full px-3 py-2.5 text-[14px] rounded-lg',
             viewMode === 'automation'
@@ -335,7 +345,24 @@ export default function Sidebar() {
         </button>
       </nav>
 
-      {/* Scrollable middle section: projects + scheduled + triggers + recents */}
+      {/* File-tree mode swaps the whole conversation list for the active
+          conversation's project file tree (TRAE-style). Files open in the
+          right PreviewPanel, so the tree (here in the sidebar) stays put. */}
+      {showFileTree ? (
+        <div className="flex-1 min-h-0 flex flex-col">
+          <button
+            onClick={() => setShowFileTree(false)}
+            className="flex items-center gap-1.5 px-4 py-2 text-[13px] font-medium text-[var(--abu-text-muted)] hover:text-[var(--abu-text-primary)] shrink-0"
+          >
+            <ArrowLeft className="h-3.5 w-3.5" strokeWidth={2} />
+            <span>{t.sidebar.backToConversations}</span>
+          </button>
+          <div className="flex-1 min-h-0 px-4">
+            <WorkspaceFileTree />
+          </div>
+        </div>
+      ) : (
+      /* Scrollable middle section: projects + scheduled + triggers + recents */
       <ScrollArea className="flex-1 min-h-0">
         {/* Projects Section */}
         <ProjectsSection />
@@ -466,10 +493,25 @@ export default function Sidebar() {
                 <Button
                   variant="ghost"
                   size="icon"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    switchConversation(conv.id);
+                    setViewMode('chat');
+                    clearBadge(conv.id);
+                    setShowFileTree(true);
+                  }}
+                  className="h-5 w-5 opacity-0 group-hover:opacity-100 text-[var(--abu-text-tertiary)] hover:text-[var(--abu-clay)] hover:bg-transparent shrink-0"
+                  title={t.sidebar.projectFiles}
+                >
+                  <ListTree className="h-3.5 w-3.5" strokeWidth={1.5} />
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="icon"
                   onClick={(e) => handleDeleteConversation(e, conv.id)}
                   className="h-5 w-5 opacity-0 group-hover:opacity-100 text-[var(--abu-text-tertiary)] hover:text-red-500 hover:bg-transparent shrink-0"
                 >
-                  <Trash2 className="h-3.5 w-3.5" />
+                  <Trash2 className="h-3.5 w-3.5" strokeWidth={1.5} />
                 </Button>
               </div>
               );
@@ -479,6 +521,7 @@ export default function Sidebar() {
         </div>
         )}
       </ScrollArea>
+      )}
 
       {/* Enterprise status badge — shown above user section when in enterprise mode */}
       <EnterpriseStatusBadge />

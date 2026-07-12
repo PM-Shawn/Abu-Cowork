@@ -38,6 +38,10 @@ enigo = { version = "0.3", features = ["serde"] }
 base64 = "0.22"
 image = { version = "0.25", default-features = false, features = ["png"] }
 tempfile = "3"
+# Move files to the OS trash (macOS Finder Trash / Windows Recycle Bin / XDG)
+# instead of permanently deleting them — used by the workspace file tree so
+# deletes are recoverable. See trash.rs.
+trash = "5"
 rusqlite = { version = "0.31", features = ["bundled"] }
 # HTML preview HTTP server (loopback-only file server for sandboxed iframe).
 # WKWebView blocks asset:// sub-resources from sandboxed iframes, so HTML

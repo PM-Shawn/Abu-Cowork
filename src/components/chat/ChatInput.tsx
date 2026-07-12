@@ -153,6 +153,8 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
   const appendPendingInput = useChatStore((s) => s.appendPendingInput);
   const pendingReferences = useChatStore((s) => s.pendingReferences);
   const clearPendingReferences = useChatStore((s) => s.clearPendingReferences);
+  const pendingAttachmentPaths = useChatStore((s) => s.pendingAttachmentPaths);
+  const clearPendingAttachments = useChatStore((s) => s.clearPendingAttachments);
   const activeConv = useActiveConversation();
   const skills = useDiscoveryStore((s) => s.skills);
   const agents = useDiscoveryStore((s) => s.agents);
@@ -393,6 +395,26 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
     }
     clearPendingReferences();
   }, [pendingReferences, clearPendingReferences, t]);
+
+  // Drain file paths injected by the workspace file tree's "Add to chat"
+  // context menu into local attachment state, then clear the store buffer
+  // (mirrors pendingReferences consumption above). Reuses processFilePaths
+  // (image vs. file-badge routing) and the same path-based dedup used by
+  // the clipboard-paste path.
+  useEffect(() => {
+    if (pendingAttachmentPaths.length === 0) return;
+    const paths = pendingAttachmentPaths;
+    clearPendingAttachments();
+    void processFilePaths(
+      paths,
+      (imgs) => setImages((prev) => [...prev, ...imgs]),
+      (newFiles) => setFiles((prev) => {
+        const existing = new Set(prev.map((f) => f.path));
+        const deduped = newFiles.filter((f) => !existing.has(f.path));
+        return deduped.length > 0 ? [...prev, ...deduped] : prev;
+      }),
+    );
+  }, [pendingAttachmentPaths, clearPendingAttachments]);
 
   const handleStop = () => {
     if (activeConv?.id) {

@@ -25,6 +25,7 @@ mod notice_db;
 mod sleep_prevention;
 mod clipboard_files;
 mod preview_server;
+mod trash;
 
 /// Maximum number of output lines to collect from a shell command.
 /// Prevents OOM when commands produce unbounded output.
@@ -1328,6 +1329,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             greet,
+            trash::move_to_trash,
             run_shell_command,
             run_shell_command_streaming,
             run_argv_command,

@@ -33,6 +33,7 @@ const CAPABILITIES_PATH = path.join(CAPABILITIES_DIR, 'default.json');
 interface PermissionObject {
   identifier?: string;
   allow?: Array<{ path?: string }>;
+  deny?: Array<{ path?: string }>;
 }
 
 type Permission = string | PermissionObject;
@@ -85,6 +86,22 @@ function permissionScopePaths(
     const allow = perm.allow;
     if (!Array.isArray(allow)) return [];
     return allow
+      .map((e) => (e && typeof e.path === 'string' ? e.path : ''))
+      .filter((p): p is string => Boolean(p));
+  }
+  return [];
+}
+
+function permissionDenyPaths(
+  permissions: Permission[],
+  identifier: string
+): string[] {
+  for (const perm of permissions) {
+    if (typeof perm !== 'object' || perm === null) continue;
+    if (perm.identifier !== identifier) continue;
+    const deny = perm.deny;
+    if (!Array.isArray(deny)) return [];
+    return deny
       .map((e) => (e && typeof e.path === 'string' ? e.path : ''))
       .filter((p): p is string => Boolean(p));
   }
@@ -150,11 +167,18 @@ describe('tauri capabilities — workspace .abu reachability under $HOME', () =>
     }
   );
 
-  it('fs:allow-remove declares $HOME/**/.abu/** (contents only — not the .abu dir itself)', () => {
-    const paths = permissionScopePaths(loadCapabilities().permissions, 'fs:allow-remove');
-    expect(paths).toContain('$HOME/**/.abu/**');
-    // Intentionally NOT $HOME/**/.abu — same convention as the existing
-    // $HOME/.abu/** entry: we allow deleting files inside but not the dir.
-    expect(paths).not.toContain('$HOME/**/.abu');
+  it('fs:allow-remove can delete .abu contents but never the .abu dir itself (deny-guarded)', () => {
+    const permissions = loadCapabilities().permissions;
+    const allow = permissionScopePaths(permissions, 'fs:allow-remove');
+    const deny = permissionDenyPaths(permissions, 'fs:allow-remove');
+    // Broad $HOME/** allow lets the file-tree delete workspace files anywhere
+    // under home (workspaces live there), and .abu *contents* are removable...
+    expect(allow).toContain('$HOME/**/.abu/**');
+    // ...but the .abu DIRECTORY itself must be protected — deleting it would
+    // wipe project memory/skills irrecoverably. With the broad allow, that
+    // guard now lives in `deny` rather than by omission from `allow`.
+    expect(allow).not.toContain('$HOME/**/.abu');
+    expect(deny).toContain('$HOME/.abu');
+    expect(deny).toContain('$HOME/**/.abu');
   });
 });

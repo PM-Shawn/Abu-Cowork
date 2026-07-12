@@ -103,6 +103,8 @@ const enUS: TranslationDict = {
 
   sidebar: {
     newTask: 'New Task',
+    projectFiles: 'Project Files',
+    backToConversations: 'Back to conversations',
     automation: 'Automation',
     scheduledTasks: 'Scheduled Tasks',
     triggers: 'Triggers',
@@ -1335,6 +1337,15 @@ const enUS: TranslationDict = {
     showInFinder: 'Show in File Manager',
     failedToReadFile: 'Failed to read file',
     fileNotFound: 'File not found',
+    saveFailedTitle: 'Save failed',
+    externalChangeTitle: 'File changed externally',
+    externalChangeMessage: 'The file on disk was updated; your unsaved edits were kept',
+    versionHistory: 'Version history',
+    versionHistoryEmpty: 'No versions yet',
+    versionHistoryRevert: 'Revert to this version',
+    versionHistoryReverted: 'Reverted to this version',
+    versionHistoryRevertFailedTitle: 'Revert failed',
+    versionHistoryLoadFailed: 'Failed to load version history',
     // FilesSection
     operationRead: 'Read',
     operationModify: 'Modify',
@@ -1378,6 +1389,38 @@ const enUS: TranslationDict = {
     openWithPowerPoint: 'Open in PowerPoint',
     // Preview: data-URL image (no file path)
     imagePreview: 'Image Preview',
+    // WorkspaceFileTree
+    fileTree: {
+      title: 'Project Files',
+      noWorkspace: 'No workspace folder bound',
+      empty: 'Empty folder',
+      loadError: 'Failed to read folder',
+      loading: 'Loading...',
+      moreActions: 'More actions',
+      newFolder: 'New folder',
+      addFile: 'Add file',
+      refresh: 'Refresh',
+      newFolderPlaceholder: 'Folder name',
+      newFolderFailed: 'Failed to create folder',
+      addFileFailed: 'Failed to add file',
+      // Per-node context menu
+      revealInFinder: 'Reveal in Finder',
+      addToChat: 'Add to chat',
+      addedToChat: 'Added to chat',
+      copyPath: 'Copy path',
+      copyPathDone: 'Path copied',
+      rename: 'Rename',
+      renameFailed: 'Rename failed',
+      newFile: 'New file',
+      newFilePlaceholder: 'File name',
+      newFileFailed: 'Failed to create file',
+      delete: 'Delete',
+      confirmDelete: 'Move to Trash? You can restore it from the Trash.',
+      moveToTrash: 'Move to Trash',
+      deleteFailed: 'Delete failed',
+      invalidName: 'Name cannot be empty or contain /',
+      alreadyExists: 'A file or folder with this name already exists',
+    },
   },
 
   folder: {

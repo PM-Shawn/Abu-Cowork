@@ -1,4 +1,5 @@
 import type { ToolDefinition, UserQuestionPayload, UserQuestionResult } from '../../../types';
+import type { PlannedStep } from '../../../types/execution';
 import { useTaskExecutionStore } from '../../../stores/taskExecutionStore';
 import { getPlanMode, setPlanMode } from '../../agent/planMode';
 import { requestUserQuestion } from '../../agent/permissionBridge';
@@ -121,37 +122,50 @@ export function planHasRiskySteps(steps: string[]): boolean {
 
 export const reportPlanTool: ToolDefinition = {
   name: TOOL_NAMES.REPORT_PLAN,
-  description: 'Report the task execution plan. Must be called before starting any task to inform the user of the steps you are about to take. Describe steps in plain business language the user can understand — do not mention tool names.',
+  description: 'Report and maintain the task execution plan. Call this BEFORE starting a multi-step task, and update it frequently: mark a step in_progress right before you work on it, and completed immediately after you finish it (do not batch completions). Always send the COMPLETE list of steps every call (full replacement — partial updates are not supported). Skip this for single-step or purely conversational tasks. Describe steps in plain business language — do not mention tool names.',
   inputSchema: {
     type: 'object',
     properties: {
       steps: {
         type: 'array',
-        items: { type: 'string' },
-        description: 'Array of task steps described in user-understandable language. Example: ["Scan desktop files", "Identify invoices", "Create invoice folder", "Move invoices to folder"]'
+        description: 'Complete array of ALL plan steps (existing + new). Replaces the entire plan every call.',
+        items: {
+          type: 'object',
+          properties: {
+            content: { type: 'string', description: 'User-facing step description in plain business language (no tool names). Concise.' },
+            status: {
+              type: 'string',
+              enum: ['pending', 'in_progress', 'completed'],
+              description: 'pending: not started | in_progress: currently working (at most ONE step) | completed: finished',
+            },
+          },
+          required: ['content'],
+        },
       },
     },
     required: ['steps'],
   },
   execute: async (input, context) => {
     const t = getI18n().toolResult.memory;
-    const steps = input.steps as string[];
+    const steps = (input.steps as Array<{ content: string; status?: string }>) ?? [];
     const hasSteps = Array.isArray(steps) && steps.length > 0;
+    const stepTexts = steps.map((s) => s.content);
 
     // Land the plan on the loop's execution so the progress panel shows it.
     // Called only for plans the user can act on — approved or approval-free.
     // A rejected/timed-out plan must NOT reach the panel (the user just said
-    // no to exactly these steps).
+    // no to exactly these steps). Full replace: the model owns per-step status
+    // declaratively, so every call overwrites the whole plan (no progress guard).
     const landPlannedSteps = () => {
       const loopId = context?.loopId;
       if (!loopId || !hasSteps) return;
       const store = useTaskExecutionStore.getState();
       const exec = store.getExecutionByLoopId(loopId);
       if (!exec) return;
-      store.setPlannedSteps(exec.id, steps.map((description, i) => ({
+      store.setPlannedSteps(exec.id, steps.map((s, i): PlannedStep => ({
         index: i + 1,
-        description,
-        status: 'pending' as const,
+        description: s.content,
+        status: (s.status as PlannedStep['status']) ?? 'pending',
       })));
     };
 
@@ -162,12 +176,14 @@ export const reportPlanTool: ToolDefinition = {
     // future manual toggle). On the gate: setPlanMode('planning') makes the tool
     // gate (toolExecutor) block writes until the user decides. Approve →
     // 'approved' (writes unlocked); reject/timeout → stay 'planning' (read-only)
-    // so the agent revises and re-submits report_plan.
+    // so the agent revises and re-submits report_plan. The approval helpers only
+    // deal in step text, so they get `stepTexts` regardless of the declarative
+    // per-step status carried alongside.
     const convId = context?.conversationId;
-    const needsApproval = hasSteps && (planHasRiskySteps(steps) || (convId ? getPlanMode(convId) === 'planning' : false));
+    const needsApproval = hasSteps && (planHasRiskySteps(stepTexts) || (convId ? getPlanMode(convId) === 'planning' : false));
     if (convId && context?.toolCallId && needsApproval) {
       setPlanMode(convId, 'planning');
-      const payload = buildPlanApprovalPayload(steps);
+      const payload = buildPlanApprovalPayload(stepTexts);
       // Read the approve label off the payload we just built so the match is
       // immune to a UI-locale switch during the await below (the dock echoes
       // back the payload's own option label, not a freshly-resolved one).

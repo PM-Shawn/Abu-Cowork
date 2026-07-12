@@ -353,14 +353,8 @@ export const useTaskExecutionStore = create<TaskExecutionStore>()(
       set((state) => {
         const exec = state.executions[execId];
         if (exec) {
-          // Don't overwrite a plan that already has progress (some steps running/completed).
-          // This prevents the LLM from resetting progress by calling report_plan again mid-execution.
-          // If all existing steps are still 'pending', allow replacement (e.g., plan refinement after search).
-          const hasProgress = exec.plannedSteps.length > 0 &&
-            exec.plannedSteps.some(s => s.status !== 'pending');
-          if (!hasProgress) {
-            exec.plannedSteps = steps;
-          }
+          // Model owns the plan now (declarative full-replace via report_plan).
+          exec.plannedSteps = steps;
         }
       });
     },

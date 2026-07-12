@@ -332,7 +332,7 @@ describe('reportPlanTool — plan-mode approval (B1)', () => {
 
   describe('execute gating', () => {
     const ctx = { conversationId: 'c1', toolCallId: 't1', loopId: 'loop-1' };
-    const input = { steps: ['步骤一', '步骤二'] };
+    const input = { steps: [{ content: '步骤一' }, { content: '步骤二' }] };
 
     function seedExecution() {
       useTaskExecutionStore.setState({
@@ -358,7 +358,7 @@ describe('reportPlanTool — plan-mode approval (B1)', () => {
       const t = getI18n().toolResult.memory;
       mockGetPlanMode.mockReturnValue('off');
       mockRequestUserQuestion.mockResolvedValue({ answers: [{ header: t.planApprovalHeader, question: 'q', selected: [t.planApproveLabel] }] });
-      const result = await reportPlanTool.execute({ steps: ['扫描桌面文件', '删除重复文件'] }, ctx);
+      const result = await reportPlanTool.execute({ steps: [{ content: '扫描桌面文件' }, { content: '删除重复文件' }] }, ctx);
       expect(mockSetPlanMode).toHaveBeenCalledWith('c1', 'planning');
       expect(mockRequestUserQuestion).toHaveBeenCalledOnce();
       expect(mockSetPlanMode).toHaveBeenCalledWith('c1', 'approved');
@@ -438,5 +438,51 @@ describe('reportPlanTool — plan-mode approval (B1)', () => {
       expect(mockRequestUserQuestion).not.toHaveBeenCalled();
       expect(result).toContain('Execution plan recorded');
     });
+  });
+});
+
+describe('reportPlanTool — declarative full-replace', () => {
+  beforeEach(() => {
+    useTaskExecutionStore.setState({ executions: {}, activeExecutionId: null, loopIdIndex: {} });
+  });
+
+  it('lands steps with declared statuses (content → description)', async () => {
+    const store = useTaskExecutionStore.getState();
+    const exec = store.createExecution('conv-1', 'loop-1');
+    await reportPlanTool.execute(
+      { steps: [
+        { content: 'Scan files', status: 'completed' },
+        { content: 'Build list', status: 'in_progress' },
+        { content: 'Save output', status: 'pending' },
+      ] },
+      { conversationId: 'conv-1', loopId: 'loop-1', toolCallId: 'tc-1' } as never,
+    );
+    const landed = useTaskExecutionStore.getState().executions[exec.id].plannedSteps;
+    expect(landed.map((s) => s.status)).toEqual(['completed', 'in_progress', 'pending']);
+    expect(landed[0].description).toBe('Scan files');
+  });
+
+  it('full-replaces a plan that already has progress', async () => {
+    const store = useTaskExecutionStore.getState();
+    const exec = store.createExecution('conv-1', 'loop-1');
+    store.setPlannedSteps(exec.id, [{ index: 1, description: 'old', status: 'in_progress' }]);
+    await reportPlanTool.execute(
+      { steps: [{ content: 'a', status: 'completed' }, { content: 'b', status: 'in_progress' }, { content: 'c' }] },
+      { conversationId: 'conv-1', loopId: 'loop-1', toolCallId: 'tc-1' } as never,
+    );
+    const landed = useTaskExecutionStore.getState().executions[exec.id].plannedSteps;
+    expect(landed).toHaveLength(3);
+    expect(landed[0].description).toBe('a');
+  });
+
+  it('defaults a missing status to pending', async () => {
+    const store = useTaskExecutionStore.getState();
+    const exec = store.createExecution('conv-1', 'loop-1');
+    await reportPlanTool.execute(
+      { steps: [{ content: 'one' }, { content: 'two' }, { content: 'three' }] },
+      { conversationId: 'conv-1', loopId: 'loop-1', toolCallId: 'tc-1' } as never,
+    );
+    const landed = useTaskExecutionStore.getState().executions[exec.id].plannedSteps;
+    expect(landed.every((s) => s.status === 'pending')).toBe(true);
   });
 });

@@ -10,6 +10,10 @@ import type { PermissionDuration } from '@/stores/permissionStore';
 import { open as openDialog } from '@tauri-apps/plugin-dialog';
 import { useI18n } from '@/i18n';
 import MessageGroup from './MessageGroup';
+import CompactDivider from './CompactDivider';
+import { isCompactBoundary } from '@/core/context/compactBoundary';
+import { compactConversationManually } from '@/core/context/compactionService';
+import { useToastStore } from '@/stores/toastStore';
 import ChatInput from './ChatInput';
 import UserQuestionDock from './UserQuestionDock';
 import AgentStatusStrip from './AgentStatusStrip';
@@ -197,6 +201,19 @@ export default function ChatView() {
     }
 
     let convId = activeConv?.id;
+
+    if (text.trim() === '/compact') {
+      const res = await compactConversationManually(convId ?? '');
+      useToastStore.getState().addToast(
+        res.compacted
+          ? { type: 'success', title: t.chat.compactCommand.done }
+          : res.reason === 'too-few'
+            ? { type: 'info', title: t.chat.compactCommand.tooFew }
+            : { type: 'error', title: t.chat.compactCommand.failed },
+      );
+      return;
+    }
+
     const isNewConversation = !convId;
     if (!convId) {
       convId = createConversation(workspacePath);
@@ -420,13 +437,17 @@ export default function ChatView() {
       <div className="relative flex-1 min-h-0 overflow-y-auto" ref={containerRef}>
         <div className="w-full max-w-4xl mx-auto px-6 md:px-10 pt-5 pb-16 overflow-hidden">
           <div className="space-y-5">
-            {messageGroups.map((group, idx) => (
-              <MessageGroup
-                key={group[0].id}
-                messages={group}
-                isLastGroup={idx === messageGroups.length - 1}
-              />
-            ))}
+            {messageGroups.map((group, idx) =>
+              group.length === 1 && isCompactBoundary(group[0]) ? (
+                <CompactDivider key={group[0].id} message={group[0]} />
+              ) : (
+                <MessageGroup
+                  key={group[0].id}
+                  messages={group}
+                  isLastGroup={idx === messageGroups.length - 1}
+                />
+              ),
+            )}
 
             {/* Typing indicator - brief flash before assistant message is created */}
             {activeConv?.status === 'running' && messages.every((m) => m.role === 'user') && (

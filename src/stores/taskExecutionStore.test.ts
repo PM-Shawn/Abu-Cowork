@@ -31,4 +31,18 @@ describe('taskExecutionStore', () => {
       expect(final.status).toBe('completed');
     });
   });
+
+  describe('getExecutionByConversationId', () => {
+    it('returns the latest execution for a conversation', () => {
+      const store = useTaskExecutionStore.getState();
+      store.createExecution('conv-1', 'loop-1');
+      const e2 = store.createExecution('conv-1', 'loop-2');
+      const found = useTaskExecutionStore.getState().getExecutionByConversationId('conv-1');
+      expect(found?.id).toBe(e2.id);
+    });
+
+    it('returns undefined when no execution matches', () => {
+      expect(useTaskExecutionStore.getState().getExecutionByConversationId('nope')).toBeUndefined();
+    });
+  });
 });

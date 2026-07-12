@@ -39,7 +39,7 @@ import { clearAllSkillHooks } from '../tools/builtins';
 import { executeToolBatch } from './toolExecutor';
 import { startConversationTrace, endConversationTrace, startGeneration } from '../observability/langfuse';
 import { calculateTurnCost } from '../llm/costTracker';
-import { formatTodosForPrompt } from './todoManager';
+import { formatPlannedStepsForPrompt } from './plannedStepsPrompt';
 import { isWindows } from '../../utils/platform';
 import { getBuiltinSearchConfig } from '../capabilities';
 import { resolveCapabilities, resolveEffectiveContextWindow, computeReasoningParams, type ModelCapabilities } from '../llm/modelCapabilities';
@@ -1341,7 +1341,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
       }
 
       // Build effective system prompt: static cached sections + dynamic per-turn sections
-      const todoState = formatTodosForPrompt(conversationId);
+      const todoState = formatPlannedStepsForPrompt(conversationId);
       const dynamicSections: PromptSection[] = [];
       if (dynamicCapabilities) {
         dynamicSections.push({ name: 'mcp-capabilities', text: dynamicCapabilities, cacheable: false });

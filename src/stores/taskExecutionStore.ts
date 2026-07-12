@@ -97,6 +97,8 @@ interface TaskExecutionActions {
   getActiveExecution: () => TaskExecution | null;
   /** Get executions by conversation ID */
   getExecutionsByConversation: (conversationId: string) => TaskExecution[];
+  /** Get the latest execution for a conversation ID */
+  getExecutionByConversationId: (conversationId: string) => TaskExecution | undefined;
   /** Find step by ID across all executions */
   findStep: (execId: string, stepId: string) => ExecutionStep | undefined;
 
@@ -401,6 +403,12 @@ export const useTaskExecutionStore = create<TaskExecutionStore>()(
       return Object.values(state.executions).filter(
         (exec) => exec.conversationId === conversationId
       );
+    },
+
+    getExecutionByConversationId: (conversationId) => {
+      const execs = Object.values(get().executions).filter((e) => e.conversationId === conversationId);
+      if (execs.length === 0) return undefined;
+      return execs.reduce((a, b) => (b.startTime >= a.startTime ? b : a));
     },
 
     findStep: (execId, stepId) => {

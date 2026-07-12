@@ -766,14 +766,24 @@ export interface TranslationDict {
     // Provider Management V2
     add: string;
     addService: string;
+    editService: string;
+    deleteService: string;
     serviceName: string;
     serviceNameAuto: string;
     selectProviderType: string;
     searchProvider: string;
-    alreadyAdded: string;
+    selectProviderFirst: string;
+    localNoKeyNeeded: string;
+    singleAccess: string;
+    configMethodLocalPlaceholder: string;
     cloudProviders: string;
     localProviders: string;
     customProviders: string;
+    /** Localized display names for select builtin providers whose
+     *  PROVIDER_CONFIGS[id].name is not already brand/English (e.g. 火山引擎).
+     *  Partial — only providers needing localization have an entry; callers
+     *  fall back to PROVIDER_CONFIGS[id].name otherwise. */
+    providerNames: Partial<Record<string, string>>;
     guide: string;
     guideGoTo: string;
     apiKeyRequired: string;
@@ -786,6 +796,8 @@ export interface TranslationDict {
     addModelManually: string;
     addModel: string;
     addModelPlaceholder: string;
+    useOtherModel: string;
+    useOtherModelDesc: string;
     save: string;
     saveAnyway: string;
     goBackEdit: string;
@@ -812,6 +824,7 @@ export interface TranslationDict {
     providerDisabled: string;
     cancelEdit: string;
     saveChanges: string;
+    customApi: string;
     customApiOpenai: string;
     customApiAnthropic: string;
     models: string;

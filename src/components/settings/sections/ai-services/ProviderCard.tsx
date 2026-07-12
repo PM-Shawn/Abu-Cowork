@@ -1,25 +1,22 @@
-import { useState, useCallback, useEffect, useRef, type SetStateAction } from 'react';
-import { Check, X, AlertTriangle, Loader2, Eye, EyeOff, Pencil, RefreshCw, Trash2, Plus, CircleCheck, CircleX, ChevronDown } from 'lucide-react';
-import { useI18n, format } from '@/i18n';
+import { useCallback, useState } from 'react';
+import { Check, X, AlertTriangle, Loader2, Pencil, RefreshCw, Trash2 } from 'lucide-react';
+import { useI18n } from '@/i18n';
 import { cn } from '@/lib/utils';
-import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
 import { Toggle } from '@/components/ui/toggle';
 import { useSettingsStore } from '@/stores/settingsStore';
 import { checkProviderHealth } from '@/core/llm/healthCheck';
-import { buildFullChatUrl } from '@/core/llm/urlUtils';
-import { fetchProviderModels } from '@/core/llm/modelFetcher';
 import ConfirmDialog from '@/components/common/ConfirmDialog';
-import { computeShowAdvanced } from './providerCapabilities';
-import { toModelInfo } from './modelInfoUtil';
-import AdvancedCapabilitiesFields from './AdvancedCapabilitiesFields';
-import type { LLMProvider } from '@/types';
-import type { ProviderInstance, ModelInfo, ModelDeclaredCapabilities } from '@/types/provider';
+import type { ProviderInstance } from '@/types/provider';
 import { SECRET_KEYS } from '@/utils/secretStore';
 
 interface ProviderCardProps {
   provider: ProviderInstance;
   isActive: boolean;
+  /** Bubbles up to AIServicesSection, which opens AddProviderModal in edit
+   *  mode for this provider. The card itself no longer owns an inline edit
+   *  form — editing is unified into the same modal used for "add" (see
+   *  docs/2026-07-11-modal-unify-design.md). */
+  onEdit: (provider: ProviderInstance) => void;
 }
 
 function StatusBadge({ provider, t }: { provider: ProviderInstance; t: ReturnType<typeof useI18n>['t'] }) {
@@ -55,106 +52,17 @@ function StatusBadge({ provider, t }: { provider: ProviderInstance; t: ReturnTyp
   }
 }
 
-const isOllamaProvider = (p: ProviderInstance): boolean =>
-  p.id === 'ollama' || p.baseUrl.includes('localhost:11434');
-
-const isLMStudioProvider = (p: ProviderInstance): boolean =>
-  p.id === 'lmstudio' || p.baseUrl.includes('localhost:1234');
-
-export default function ProviderCard({ provider, isActive }: ProviderCardProps) {
+export default function ProviderCard({ provider, isActive, onEdit }: ProviderCardProps) {
   const { t } = useI18n();
-  const { updateProvider, removeProvider, toggleProvider, setProviderStatus } = useSettingsStore();
+  const { removeProvider, updateProvider, toggleProvider, setProviderStatus } = useSettingsStore();
   // True when bootstrapSecrets detected a prior ciphertext for this
   // provider but couldn't decrypt it (typical cause: hardware/UUID change).
   const keyDecryptFailed = useSettingsStore((s) =>
     s.failedSecretKeys.includes(SECRET_KEYS.provider(provider.id)),
   );
 
-  const [editing, setEditing] = useState(false);
-  const [showApiKey, setShowApiKey] = useState(false);
-
-  // Local form state
-  const [formName, setFormName] = useState(provider.name);
-  const [formApiKey, setFormApiKey] = useState(provider.apiKey);
-  const [formBaseUrl, setFormBaseUrl] = useState(provider.baseUrl);
-  const [formModels, setFormModels] = useState<ModelInfo[]>(provider.models);
-  const [useRawUrl, setUseRawUrl] = useState(provider.declaredCapabilities?.useRawUrl ?? false);
-  const [newModelId, setNewModelId] = useState('');
   const [showStatus, setShowStatus] = useState(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
-  const [fetchingModels, setFetchingModels] = useState(false);
-  const [fetchModelsMsg, setFetchModelsMsg] = useState<{ ok: boolean; text: string } | null>(null);
-  const [expandedModelIds, setExpandedModelIds] = useState<Set<string>>(new Set());
-  const [showAddModelInput, setShowAddModelInput] = useState(false);
-  const addModelInputRef = useRef<HTMLInputElement>(null);
-  const isOllama = isOllamaProvider(provider);
-  const isLMStudio = isLMStudioProvider(provider);
-  const isBuiltin = provider.source === 'builtin';
-  // Advanced config visibility must match AddProviderModal exactly so the add /
-  // edit forms never drift. providerKind pins ollama/lmstudio for the predicate.
-  const providerKind: LLMProvider | undefined = isOllama ? 'ollama' : isLMStudio ? 'lmstudio' : undefined;
-  const showAdvanced = computeShowAdvanced(provider.source === 'custom', providerKind, provider.apiFormat);
-
-  const handleEditStart = useCallback(() => {
-    setFormName(provider.name);
-    setFormApiKey(provider.apiKey);
-    setFormBaseUrl(provider.baseUrl);
-    setFormModels([...provider.models]);
-    setUseRawUrl(provider.declaredCapabilities?.useRawUrl ?? false);
-    setNewModelId('');
-    setShowApiKey(false);
-    setShowAddModelInput(false);
-    setExpandedModelIds(new Set());
-    setFetchModelsMsg(null);
-    setEditing(true);
-  }, [provider]);
-
-  // Keep the inline add-model input focused whenever it is revealed, so the
-  // user can type immediately without an extra click.
-  useEffect(() => {
-    if (showAddModelInput) addModelInputRef.current?.focus();
-  }, [showAddModelInput]);
-
-  const toggleAddModelInput = useCallback(() => {
-    setShowAddModelInput((v) => !v);
-    setNewModelId('');
-  }, []);
-
-  const updateModelDeclared = useCallback((modelId: string, updater: SetStateAction<ModelDeclaredCapabilities>) => {
-    setFormModels(prev => prev.map(m => m.id === modelId
-      ? {
-          ...m,
-          declaredCapabilities: typeof updater === 'function'
-            ? (updater as (p: ModelDeclaredCapabilities) => ModelDeclaredCapabilities)(m.declaredCapabilities ?? {})
-            : updater,
-        }
-      : m));
-  }, []);
-
-  const toggleModelExpand = useCallback((id: string) => {
-    setExpandedModelIds(prev => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id); else next.add(id);
-      return next;
-    });
-  }, []);
-
-  const handleSave = useCallback(() => {
-    const patch: Partial<ProviderInstance> = {
-      name: formName,
-      apiKey: formApiKey,
-      baseUrl: formBaseUrl,
-      models: formModels,
-    };
-    // Only touch declaredCapabilities when the advanced section is actually shown;
-    // otherwise a hidden section must not clobber a provider's existing caps.
-    // Per-model capabilities live on each formModels[i].declaredCapabilities (already
-    // included via `models: formModels` above); here we only preserve the provider's
-    // existing endpoint fields and overlay the live useRawUrl toggle.
-    if (showAdvanced) patch.declaredCapabilities = { ...provider.declaredCapabilities, useRawUrl };
-    updateProvider(provider.id, patch);
-    setEditing(false);
-  }, [provider.id, provider.declaredCapabilities, formName, formApiKey, formBaseUrl, formModels, showAdvanced, useRawUrl, updateProvider]);
 
   const selectModel = useSettingsStore((s) => s.selectModel);
 
@@ -196,38 +104,6 @@ export default function ProviderCard({ provider, isActive }: ProviderCardProps) 
     setTimeout(() => setShowStatus(false), 5000);
   }, [provider, setProviderStatus]);
 
-  const handleAddModel = useCallback(() => {
-    const trimmed = newModelId.trim();
-    if (!trimmed || formModels.some((m) => m.id === trimmed)) return;
-    setFormModels((prev) => [...prev, toModelInfo(trimmed, { isCustom: true })]);
-    setNewModelId('');
-  }, [newModelId, formModels]);
-
-  const handleFetchModels = useCallback(async () => {
-    if (!formBaseUrl.trim()) return;
-    setFetchingModels(true);
-    setFetchModelsMsg(null);
-    const result = await fetchProviderModels(formBaseUrl, formApiKey, provider.apiFormat);
-    setFetchingModels(false);
-    if (result.success && result.models.length > 0) {
-      setFormModels((prev) => {
-        const byId = new Map(prev.map(m => [m.id, m]));
-        const customModels = prev.filter((m) => m.isCustom);
-        const fetchedIds = new Set(result.models.map((m) => m.id));
-        const preserved = customModels.filter((m) => !fetchedIds.has(m.id));
-        const merged = result.models.map((fm) => {
-          const old = byId.get(fm.id);
-          return old?.declaredCapabilities ? { ...fm, declaredCapabilities: old.declaredCapabilities } : fm;
-        });
-        return [...merged, ...preserved];
-      });
-      setFetchModelsMsg({ ok: true, text: format(t.settings.fetchModelsSuccess, { count: result.models.length }) });
-    } else {
-      setFetchModelsMsg({ ok: false, text: result.error ?? t.settings.fetchModelsError });
-    }
-  }, [formBaseUrl, formApiKey, provider.apiFormat, t]);
-
-
   // Build compact model summary: "Model1, Model2 +3"
   const modelsSummary = (() => {
     const models = provider.models;
@@ -241,188 +117,6 @@ export default function ProviderCard({ provider, isActive }: ProviderCardProps) 
   const caps: string[] = [];
   if (provider.capabilities?.webSearch) caps.push(t.settings.capabilityWebSearch);
   if (provider.capabilities?.imageGen) caps.push(t.settings.capabilityImageGen);
-
-  if (editing) {
-    return (
-      <div className={cn(
-        'rounded-xl border border-[var(--abu-border)] bg-[var(--abu-bg-muted)] p-4 space-y-3',
-        isActive && 'ring-2 ring-[var(--abu-clay-ring)]',
-      )}>
-        {keyDecryptFailed && (
-          <div className="flex items-start gap-2 rounded-md border border-red-300 bg-red-50 px-3 py-2 text-[11px] text-red-700">
-            <AlertTriangle className="h-3.5 w-3.5 shrink-0 mt-0.5" />
-            <span>{t.settings.apiKeyDecryptFailed}</span>
-          </div>
-        )}
-        {/* Edit: Name */}
-        <div className="space-y-1">
-          <label className="text-xs font-medium text-[var(--abu-text-tertiary)]">{t.settings.serviceName}</label>
-          <Input value={formName} onChange={(e) => setFormName(e.target.value)} />
-        </div>
-
-        {/* Edit: API Key */}
-        {!isOllama && !isLMStudio && (
-          <div className="space-y-1">
-            <label className="text-xs font-medium text-[var(--abu-text-tertiary)]">{t.settings.apiKey}</label>
-            <div className="relative">
-              <Input
-                type={showApiKey ? 'text' : 'password'}
-                value={formApiKey}
-                onChange={(e) => setFormApiKey(e.target.value)}
-                placeholder="sk-..."
-                className="pr-9"
-              />
-              <button
-                type="button"
-                onClick={() => setShowApiKey(!showApiKey)}
-                className="absolute right-2 top-1/2 -translate-y-1/2 text-[var(--abu-text-muted)] hover:text-[var(--abu-text-tertiary)]"
-              >
-                {showApiKey ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
-              </button>
-            </div>
-          </div>
-        )}
-
-        {/* Edit: Base URL — read-only for builtin providers */}
-        <div className="space-y-1">
-          <div className="flex items-center justify-between">
-            <label className="text-xs font-medium text-[var(--abu-text-tertiary)]">{t.settings.apiUrl}</label>
-            {showAdvanced && provider.apiFormat !== 'anthropic' && (
-              <div className="flex items-center gap-2" title={t.settings.capRawUrlHint}>
-                <span className="text-xs text-[var(--abu-text-secondary)]">{t.settings.capRawUrl}</span>
-                <Toggle checked={useRawUrl} onChange={() => setUseRawUrl(v => !v)} size="sm" />
-              </div>
-            )}
-          </div>
-          {isBuiltin ? (
-            <p className="text-xs text-[var(--abu-text-secondary)] font-mono bg-[var(--abu-bg-hover)] rounded-lg px-3 py-2 break-all select-all">
-              {formBaseUrl}
-            </p>
-          ) : (
-            <Input value={formBaseUrl} onChange={(e) => setFormBaseUrl(e.target.value)} />
-          )}
-          {!isOllama && formBaseUrl.trim() && (
-            <p className="text-[11px] font-mono text-[var(--abu-text-muted)] break-all">
-              ↳ POST {buildFullChatUrl(formBaseUrl, provider.apiFormat, { useRawUrl })}
-            </p>
-          )}
-        </div>
-
-        {/* Edit: Models */}
-        <div className="space-y-1.5">
-          <div className="flex items-center justify-between">
-            <label className="text-xs font-medium text-[var(--abu-text-tertiary)]">{t.settings.models}</label>
-            <div className="flex items-center gap-3">
-              {!isOllama && provider.apiFormat !== 'anthropic' && formBaseUrl.trim() && (
-                <button
-                  type="button"
-                  onClick={handleFetchModels}
-                  disabled={fetchingModels}
-                  className="flex items-center gap-1 text-[11px] text-[var(--abu-clay)] hover:underline disabled:opacity-40 disabled:no-underline"
-                >
-                  {fetchingModels
-                    ? <Loader2 className="h-3 w-3 animate-spin" />
-                    : <RefreshCw className="h-3 w-3" />}
-                  {fetchingModels ? t.settings.fetchingModels : t.settings.fetchModels}
-                </button>
-              )}
-              <button
-                type="button"
-                onClick={toggleAddModelInput}
-                className="flex items-center gap-1 text-[11px] text-[var(--abu-clay)] hover:underline"
-              >
-                <Plus className="h-3 w-3" />
-                {t.settings.addModel}
-              </button>
-            </div>
-          </div>
-          {/* Fetch status */}
-          {fetchModelsMsg && (
-            <p className={`flex items-center gap-1 text-[11px] ${fetchModelsMsg.ok ? 'text-green-600' : 'text-red-500'}`}>
-              {fetchModelsMsg.ok
-                ? <CircleCheck className="h-3 w-3 shrink-0" />
-                : <CircleX className="h-3 w-3 shrink-0" />}
-              {fetchModelsMsg.text}
-            </p>
-          )}
-          {/* Inline add-model input, revealed at the top of the model list */}
-          {showAddModelInput && (
-            <div className="flex items-center gap-1.5">
-              <Input
-                ref={addModelInputRef}
-                value={newModelId}
-                onChange={(e) => setNewModelId(e.target.value)}
-                placeholder={t.settings.addModelPlaceholder}
-                className="h-7 px-2 text-xs flex-1"
-                onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); handleAddModel(); } }}
-              />
-              <Button
-                type="button"
-                size="icon-xs"
-                variant="outline"
-                onClick={() => { handleAddModel(); addModelInputRef.current?.focus(); }}
-                disabled={!newModelId.trim()}
-              >
-                <Plus className="h-3 w-3" />
-              </Button>
-              <Button type="button" size="icon-xs" variant="ghost" onClick={toggleAddModelInput}>
-                <X className="h-3 w-3" />
-              </Button>
-            </div>
-          )}
-          {/* Model list: one card per model */}
-          {formModels.length > 0 && (
-            <div className="max-h-64 overflow-y-auto space-y-2">
-              {formModels.map((model) => {
-                const isExpanded = showAdvanced && expandedModelIds.has(model.id);
-                return (
-                  <div key={model.id} className="rounded-lg border border-[var(--abu-border)] p-2">
-                    <div className="flex items-center gap-1.5">
-                      {showAdvanced && (
-                        <button
-                          type="button"
-                          onClick={() => toggleModelExpand(model.id)}
-                          className="text-[var(--abu-text-muted)] hover:text-[var(--abu-text-primary)] shrink-0"
-                        >
-                          <ChevronDown className={cn('h-3.5 w-3.5 transition-transform', isExpanded && 'rotate-180')} />
-                        </button>
-                      )}
-                      <span className="text-xs text-[var(--abu-text-primary)] flex-1 truncate">
-                        {model.label || model.id}
-                      </span>
-                      <button
-                        type="button"
-                        onClick={() => setFormModels(prev => prev.filter(m => m.id !== model.id))}
-                        className="text-[var(--abu-text-muted)] hover:text-red-400 shrink-0"
-                      >
-                        <X className="h-3 w-3" />
-                      </button>
-                    </div>
-                    {isExpanded && (
-                      <div className="pl-2 pt-2 pb-1 border-l-2 border-[var(--abu-border)] ml-1 space-y-1.5 mt-1">
-                        <p className="text-[11px] text-[var(--abu-text-tertiary)]">{t.settings.capPerModelHint}</p>
-                        <AdvancedCapabilitiesFields
-                          declared={model.declaredCapabilities ?? {}}
-                          setDeclared={(u) => updateModelDeclared(model.id, u)}
-                          apiFormat={provider.apiFormat}
-                        />
-                      </div>
-                    )}
-                  </div>
-                );
-              })}
-            </div>
-          )}
-        </div>
-
-        {/* Edit: Actions */}
-        <div className="flex justify-end gap-2 pt-2 border-t border-[var(--abu-border)]">
-          <Button variant="ghost" size="sm" onClick={() => setEditing(false)}>{t.settings.cancelEdit}</Button>
-          <Button size="sm" onClick={handleSave}>{t.settings.saveChanges}</Button>
-        </div>
-      </div>
-    );
-  }
 
   // ─── Compact collapsed view ───
   return (
@@ -467,7 +161,7 @@ export default function ProviderCard({ provider, isActive }: ProviderCardProps) 
         {/* Actions (show on hover or always on mobile) */}
         <div className="flex items-center gap-0.5 shrink-0 opacity-0 group-hover:opacity-100 transition-opacity">
           <button
-            onClick={handleEditStart}
+            onClick={() => onEdit(provider)}
             className="p-1 rounded text-[var(--abu-text-muted)] hover:text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-hover)] transition-colors"
             title={t.settings.editProvider}
           >

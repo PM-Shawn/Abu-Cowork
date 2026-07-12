@@ -807,6 +807,11 @@ export default function AddProviderModal({ open: isOpen, onClose, editProvider }
       updateProvider(editProvider.id, editPatch);
       providerId = editProvider.id;
     } else if (existingBuiltin) {
+      // Adding a builtin preset "enables" a pre-seeded catalog entry whose
+      // sortOrder is its original catalog index. Bump it to the front so a
+      // just-added builtin shows newest-first, mirroring custom addProvider
+      // (which assigns the highest sortOrder). Without this, builtin presets
+      // (volcengine/bailian/...) stay stuck at their catalog position.
       updateProvider(existingBuiltin.id, {
         name: serviceName.trim(),
         enabled: true,
@@ -817,6 +822,7 @@ export default function AddProviderModal({ open: isOpen, onClose, editProvider }
         capabilities,
         userAdded: true,
         declaredCapabilities,
+        sortOrder: Math.max(0, ...providers.map(p => p.sortOrder)) + 1,
       });
       providerId = existingBuiltin.id;
     } else {

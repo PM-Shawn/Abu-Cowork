@@ -130,6 +130,8 @@ export interface TranslationDict {
   // Sidebar
   sidebar: {
     newTask: string;
+    projectFiles: string;
+    backToConversations: string;
     automation: string;
     scheduledTasks: string;
     triggers: string;

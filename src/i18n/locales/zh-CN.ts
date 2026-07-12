@@ -103,6 +103,8 @@ const zhCN: TranslationDict = {
 
   sidebar: {
     newTask: '新建任务',
+    projectFiles: '项目文件',
+    backToConversations: '返回会话',
     automation: '自动化',
     scheduledTasks: '定时任务',
     triggers: '监听事件',

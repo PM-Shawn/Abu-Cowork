@@ -103,6 +103,8 @@ const enUS: TranslationDict = {
 
   sidebar: {
     newTask: 'New Task',
+    projectFiles: 'Project Files',
+    backToConversations: 'Back to conversations',
     automation: 'Automation',
     scheduledTasks: 'Scheduled Tasks',
     triggers: 'Triggers',

@@ -7,7 +7,7 @@ import { useInboxStore } from '@/stores/inboxStore';
 import { useI18n } from '@/i18n';
 import { useLabsFlag } from '@/core/labs/resolve';
 import { LABS_TODOS_INBOX } from '@/core/labs/registry';
-import { Plus, Workflow, Wrench, Trash2, Settings, Download, Pencil, Undo2, HelpCircle, FolderInput, FolderClosed, ChevronRight, Minus, Search, X, CheckSquare, Inbox, FolderTree, ArrowLeft } from 'lucide-react';
+import { Plus, Workflow, Wrench, Trash2, Settings, Download, Pencil, Undo2, HelpCircle, FolderInput, FolderClosed, ChevronRight, Minus, Search, X, CheckSquare, Inbox, FolderOpen, ArrowLeft } from 'lucide-react';
 import GuideModal from '@/components/common/GuideModal';
 import ProfileEditModal from '@/components/common/ProfileEditModal';
 import { Button } from '@/components/ui/button';
@@ -503,7 +503,7 @@ export default function Sidebar() {
                   className="h-5 w-5 opacity-0 group-hover:opacity-100 text-[var(--abu-text-tertiary)] hover:text-[var(--abu-clay)] hover:bg-transparent shrink-0"
                   title={t.sidebar.projectFiles}
                 >
-                  <FolderTree className="h-3.5 w-3.5" />
+                  <FolderOpen className="h-3.5 w-3.5" strokeWidth={1.5} />
                 </Button>
                 <Button
                   variant="ghost"
@@ -511,7 +511,7 @@ export default function Sidebar() {
                   onClick={(e) => handleDeleteConversation(e, conv.id)}
                   className="h-5 w-5 opacity-0 group-hover:opacity-100 text-[var(--abu-text-tertiary)] hover:text-red-500 hover:bg-transparent shrink-0"
                 >
-                  <Trash2 className="h-3.5 w-3.5" />
+                  <Trash2 className="h-3.5 w-3.5" strokeWidth={1.5} />
                 </Button>
               </div>
               );

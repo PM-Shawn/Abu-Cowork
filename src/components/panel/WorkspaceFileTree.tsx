@@ -12,7 +12,6 @@ import {
   MoreHorizontal,
   FolderPlus,
   FilePlus,
-  RefreshCw,
   ExternalLink,
   Paperclip,
   Copy,
@@ -316,7 +315,6 @@ export default function WorkspaceFileTree() {
     return () => { clearTimeout(timer); document.removeEventListener('mousedown', onClick); };
   }, [menuOpen]);
 
-  const handleRefresh = () => { setMenuOpen(false); refresh(); };
 
   const handleNewFolder = () => {
     setMenuOpen(false);
@@ -594,9 +592,6 @@ export default function WorkspaceFileTree() {
                 </button>
                 <button onClick={handleAddFile} className="w-full flex items-center gap-2 px-3 py-1.5 text-[12px] text-[var(--abu-text-secondary)] hover:bg-[var(--abu-bg-hover)]">
                   <FilePlus className="h-3.5 w-3.5 shrink-0" /> {t.panel.fileTree.addFile}
-                </button>
-                <button onClick={handleRefresh} className="w-full flex items-center gap-2 px-3 py-1.5 text-[12px] text-[var(--abu-text-secondary)] hover:bg-[var(--abu-bg-hover)]">
-                  <RefreshCw className="h-3.5 w-3.5 shrink-0" /> {t.panel.fileTree.refresh}
                 </button>
               </div>
             )}

@@ -49,7 +49,11 @@ let persistApiKeyPlaintextFallback = true;
 // ============================================================
 
 type ProviderPlan = {
-  id: 'paygo' | 'coding' | 'agent' | 'tokenplan';
+  // 'openai' / 'anthropic' are custom's two "plans" — reusing this mechanism
+  // to let a single "Custom API" entry pick its wire format via the same
+  // 配置方式 dropdown as multi-endpoint builtins (design doc §7b), instead of
+  // two separate custom entries differing only by a hardcoded format.
+  id: 'paygo' | 'coding' | 'agent' | 'tokenplan' | 'openai' | 'anthropic';
   baseUrl: string;
   format: ApiFormat;
   models?: { id: string; label: string }[];
@@ -275,7 +279,19 @@ export const PROVIDER_CONFIGS = {
   ollama: { name: 'Ollama', baseUrl: 'http://127.0.0.1:11434', format: 'openai-compatible', models: [] },
   lmstudio: { name: 'LM Studio', baseUrl: 'http://127.0.0.1:1234/v1', format: 'openai-compatible', models: [] },
   local: { name: '本地模型', baseUrl: '', format: 'openai-compatible', models: [] },
-  custom: { name: '自定义 API', baseUrl: '', format: 'openai-compatible', models: [] },
+  custom: {
+    name: '自定义 API',
+    baseUrl: '',
+    format: 'openai-compatible',
+    models: [],
+    // Two "plans" that are really just a format switch (design doc §7b): the
+    // user always types their own baseUrl, so both plans leave it empty —
+    // picking one only changes which wire format the request is sent as.
+    plans: [
+      { id: 'openai', baseUrl: '', format: 'openai-compatible', models: [] },
+      { id: 'anthropic', baseUrl: '', format: 'anthropic', models: [] },
+    ],
+  },
 } as Record<LLMProvider, ProviderConfig>;
 
 /** Returns the list of builtin provider IDs */

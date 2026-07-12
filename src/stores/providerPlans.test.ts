@@ -12,13 +12,22 @@ describe('provider config plans (multi-endpoint)', () => {
       expect((plans as unknown[]).length).toBeGreaterThanOrEqual(2);
     }
   });
-  it('every plan has non-empty baseUrl and a valid format', () => {
-    for (const cfg of Object.values(PROVIDER_CONFIGS)) {
+  it('every plan has non-empty baseUrl and a valid format (except custom, whose plans are a pure format switch — the user always types their own baseUrl, see design doc §7b)', () => {
+    for (const [id, cfg] of Object.entries(PROVIDER_CONFIGS)) {
       for (const p of (cfg.plans ?? [])) {
-        expect(p.baseUrl.length).toBeGreaterThan(0);
+        if (id !== 'custom') expect(p.baseUrl.length).toBeGreaterThan(0);
         expect(FORMATS).toContain(p.format);
       }
     }
+  });
+  it("custom's plans are the openai/anthropic format switch, both with an empty (user-supplied) baseUrl", () => {
+    const plans = PROVIDER_CONFIGS.custom.plans!;
+    expect(plans.map(p => p.id)).toEqual(['openai', 'anthropic']);
+    for (const p of plans) {
+      expect(p.baseUrl).toBe('');
+    }
+    expect(plans.find(p => p.id === 'openai')!.format).toBe('openai-compatible');
+    expect(plans.find(p => p.id === 'anthropic')!.format).toBe('anthropic');
   });
   it('volcengine default (top-level) equals its Agent plan (OpenAI /api/plan/v3)', () => {
     const v = PROVIDER_CONFIGS.volcengine;

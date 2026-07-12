@@ -31,6 +31,7 @@ import { runSubagentLoop, extractParentConversationSummary } from './subagentLoo
 import type { SubagentProgressEvent } from './subagentLoop';
 import { createSubagentController } from './subagentAbort';
 import { allToolsUnparseable, MAX_NO_PROGRESS_TURNS, resolveMaxTurns } from './loopGuards';
+import { ensureDefaultWorkspace } from './defaultWorkspace';
 import { drainQueuedInputs, clearInputQueue, enqueueUserInput } from './userInputQueue';
 import { snapshotExecutionSteps } from './executionSnapshot';
 import { emitHook } from './lifecycleHooks';
@@ -810,8 +811,25 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
   // Using the conversation record rather than the global store prevents cross-conversation
   // workspace leakage when multiple conversations are open simultaneously.
   const _convForContext = useChatStore.getState().conversations[conversationId];
+  // Interactive-desktop conversations with no workspace get a managed default
+  // (~/Abu/<name>/) bound here so the agent saves files there instead of
+  // improvising (e.g. onto the Desktop). The folder is created lazily on the
+  // first write. Headless contexts (IM / scheduled / trigger) are excluded —
+  // they must not auto-create workspace directories.
+  let resolvedWorkspacePath =
+    options?.imContext?.workspacePath ??
+    _convForContext?.workspacePath ??
+    useWorkspaceStore.getState().currentPath;
+  if (
+    !options?.imContext?.workspacePath &&
+    !_convForContext?.workspacePath &&
+    isInteractiveDesktop(options, _convForContext)
+  ) {
+    const defaultWs = await ensureDefaultWorkspace(conversationId);
+    if (defaultWs) resolvedWorkspacePath = defaultWs;
+  }
   const toolContext: ToolExecutionContext = {
-    workspacePath: options?.imContext?.workspacePath ?? _convForContext?.workspacePath ?? useWorkspaceStore.getState().currentPath,
+    workspacePath: resolvedWorkspacePath,
     loopId,
     conversationId,
   };

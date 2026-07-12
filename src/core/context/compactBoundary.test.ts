@@ -622,3 +622,83 @@ describe('buildContextFromBoundary', () => {
     });
   });
 });
+
+// ---------------------------------------------------------------------------
+// End-to-end: computeCompactionPlan → createCompactBoundaryMarker →
+// buildContextFromBoundary. Closes the gap between the anchors the plan emits
+// and the send-side reconstruction — the exact chain agentLoop Step 2.1 runs.
+// Also pins the append-only invariant: appending the marker never mutates the
+// original messages.
+// ---------------------------------------------------------------------------
+describe('round-trip: plan → marker → build', () => {
+  beforeEach(resetSeq);
+
+  it('reconstructs a marker-free compact context whose anchors resolve', () => {
+    const messages = buildRounds(RECENT_ROUNDS_TO_KEEP + 5); // plenty of middle
+    const originalSnapshot = messages.map((m) => m.id);
+
+    const plan = computeCompactionPlan(messages);
+    expect(plan).not.toBeNull();
+
+    const marker = createCompactBoundaryMarker({
+      summaryText: 'SUMMARY-BODY',
+      summarizedFromId: plan!.summarizedFromId,
+      summarizedToId: plan!.summarizedToId,
+      source: 'auto',
+      timestamp: 999_000,
+    });
+    // Append-only: marker goes to the END, originals untouched.
+    const history = [...messages, marker];
+    expect(messages.map((m) => m.id)).toEqual(originalSnapshot);
+
+    const built = buildContextFromBoundary(history);
+
+    // 1. No marker leaks into the send set.
+    expect(built.some(isCompactBoundary)).toBe(false);
+    // 2. The summary synthetic message is present with the marker's body.
+    const summary = built.find((m) => m.id.startsWith('context-summary-'));
+    expect(summary).toBeDefined();
+    expect(typeof summary!.content === 'string' && summary!.content).toContain('SUMMARY-BODY');
+    // 3. Every summarized middle message is gone from the send set.
+    const summarizedIds = new Set(plan!.middleMessages.map((m) => m.id));
+    expect(built.some((m) => summarizedIds.has(m.id))).toBe(false);
+    // 4. The first message (task context) survives ahead of the summary.
+    expect(built[0].id).toBe(messages[0].id);
+    // 5. The last real message (recent) survives after the summary.
+    expect(built[built.length - 1].id).toBe(messages[messages.length - 1].id);
+  });
+
+  it('is idempotent-safe when a second marker lands on top of the first', () => {
+    resetSeq();
+    const messages = buildRounds(RECENT_ROUNDS_TO_KEEP + 5);
+    const plan1 = computeCompactionPlan(messages)!;
+    const marker1 = createCompactBoundaryMarker({
+      summaryText: 'FIRST',
+      summarizedFromId: plan1.summarizedFromId,
+      summarizedToId: plan1.summarizedToId,
+      source: 'auto',
+      timestamp: 100,
+    });
+    const history1 = [...messages, marker1];
+
+    // A few more rounds arrive, then a second compaction lands.
+    const more = buildRounds(3);
+    const history2mid = [...history1, ...more];
+    const plan2 = computeCompactionPlan(history2mid)!;
+    const marker2 = createCompactBoundaryMarker({
+      summaryText: 'SECOND',
+      summarizedFromId: plan2.summarizedFromId,
+      summarizedToId: plan2.summarizedToId,
+      source: 'auto',
+      timestamp: 200,
+    });
+    const history2 = [...history2mid, marker2];
+
+    const built = buildContextFromBoundary(history2);
+    // Only the LAST marker governs; no marker in the output.
+    expect(built.some(isCompactBoundary)).toBe(false);
+    const summaries = built.filter((m) => m.id.startsWith('context-summary-'));
+    expect(summaries).toHaveLength(1);
+    expect(typeof summaries[0].content === 'string' && summaries[0].content).toContain('SECOND');
+  });
+});

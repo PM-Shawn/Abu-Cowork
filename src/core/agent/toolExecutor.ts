@@ -21,7 +21,6 @@ import { getI18n } from '../../i18n';
 import { TOOL_NAMES } from '../tools/toolNames';
 import { invoke } from '@tauri-apps/api/core';
 import { useChatStore } from '../../stores/chatStore';
-import { useTaskExecutionStore } from '../../stores/taskExecutionStore';
 import { setLoopContext, clearLoopContext } from './permissionBridge';
 import type { EventRouter } from './eventRouter';
 import { createLogger } from '../logging/logger';
@@ -107,7 +106,6 @@ export async function executeToolBatch(params: ToolBatchParams): Promise<ToolBat
     loopId,
     abortController,
     eventRouter,
-    executionId,
     inputValidators,
     confirmCb,
     filePermCb,
@@ -435,33 +433,6 @@ export async function executeToolBatch(params: ToolBatchParams): Promise<ToolBat
         } else {
           eventRouter.route({ type: 'step-end', loopId, stepId, result: toolResult, resultContent });
         }
-
-        // Update linked planned step status and auto-advance to next
-        const execState = useTaskExecutionStore.getState().executions[executionId];
-        if (execState) {
-          const linkedPlanned = execState.plannedSteps.find(s => s.linkedStepId === stepId);
-          if (linkedPlanned) {
-            useTaskExecutionStore.getState().updatePlannedStepStatus(
-              executionId,
-              linkedPlanned.index,
-              error ? 'error' : 'completed'
-            );
-            // Auto-advance: link the next pending planned step to the next
-            // tool call's execution step (using collectedToolCalls index for reliability)
-            const nextPending = useTaskExecutionStore.getState().executions[executionId]
-              ?.plannedSteps.find(s => s.status === 'pending');
-            if (nextPending) {
-              for (let j = i + 1; j < collectedToolCalls.length; j++) {
-                const nextStepId = toolCallToStepId.get(collectedToolCalls[j].id);
-                if (nextStepId) {
-                  useTaskExecutionStore.getState().linkPlannedStep(executionId, nextPending.index, nextStepId);
-                  useTaskExecutionStore.getState().updatePlannedStepStatus(executionId, nextPending.index, 'running');
-                  break;
-                }
-              }
-            }
-          }
-        }
       }
     } else {
       // Use index to find the corresponding tool call
@@ -473,19 +444,6 @@ export async function executeToolBatch(params: ToolBatchParams): Promise<ToolBat
         const stepId = toolCallToStepId.get(tc.id);
         if (stepId) {
           eventRouter.route({ type: 'step-error', loopId, stepId, error: String(result.reason) });
-
-          // Update linked planned step status
-          const execState = useTaskExecutionStore.getState().executions[executionId];
-          if (execState) {
-            const linkedPlanned = execState.plannedSteps.find(s => s.linkedStepId === stepId);
-            if (linkedPlanned) {
-              useTaskExecutionStore.getState().updatePlannedStepStatus(
-                executionId,
-                linkedPlanned.index,
-                'error'
-              );
-            }
-          }
         }
       }
     }

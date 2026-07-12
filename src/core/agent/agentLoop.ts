@@ -1630,21 +1630,6 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
               // Store the mapping for later result update
               if (stepId) {
                 toolCallToStepId.set(event.id, stepId);
-
-                // Auto-link to next pending planned step
-                // Only advance when no planned step is currently running,
-                // so multiple tool calls in one turn don't consume all steps at once
-                const currentExec = useTaskExecutionStore.getState().executions[execution.id];
-                if (currentExec) {
-                  const hasRunning = currentExec.plannedSteps.some(s => s.status === 'running');
-                  if (!hasRunning) {
-                    const nextPending = currentExec.plannedSteps.find(s => s.status === 'pending');
-                    if (nextPending) {
-                      useTaskExecutionStore.getState().linkPlannedStep(execution.id, nextPending.index, stepId);
-                      useTaskExecutionStore.getState().updatePlannedStepStatus(execution.id, nextPending.index, 'running');
-                    }
-                  }
-                }
               }
 
               collectedToolCalls.push({

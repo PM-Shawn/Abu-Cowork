@@ -342,6 +342,36 @@ export const editFileTool: ToolDefinition = {
   isConcurrencySafe: false,
 };
 
+export const deleteFileTool: ToolDefinition = {
+  name: TOOL_NAMES.DELETE_FILE,
+  description:
+    'Move a file or directory to the operating-system Trash (recoverable) instead of ' +
+    'deleting it permanently. ALWAYS prefer this over running `rm` through run_command: ' +
+    '`rm` deletes permanently and cannot be undone, whereas delete_file lands the entry in ' +
+    "the user's Trash. Before calling, tell the user exactly what you are about to delete " +
+    'and get their confirmation.',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      path: { type: 'string', description: 'Absolute path to the file or directory to move to Trash' },
+    },
+    required: ['path'],
+  },
+  execute: async (input) => {
+    const path = input.path as string;
+    try {
+      await invoke('move_to_trash', { path });
+      return format(getI18n().toolResult.file.movedToTrash, { path });
+    } catch (err) {
+      // Fail-closed: never fall back to a permanent delete.
+      return format(getI18n().toolResult.file.trashFailed, {
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  },
+  isConcurrencySafe: false,
+};
+
 export const listDirectoryTool: ToolDefinition = {
   name: TOOL_NAMES.LIST_DIRECTORY,
   description: 'List directory contents. Returns file and subdirectory names with their types, sorted alphabetically.',

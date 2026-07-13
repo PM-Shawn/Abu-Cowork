@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { invoke } from '@tauri-apps/api/core';
 import { writeTextFile } from '@tauri-apps/plugin-fs';
-import { readFileTool, writeFileTool } from './fileTools';
+import { readFileTool, writeFileTool, deleteFileTool } from './fileTools';
 
 // Regression coverage for the shell-injection fixes in the PDF branch of
 // readFileTool. These tests prove the *interface contract* — the migrated
@@ -188,5 +188,38 @@ describe('writeFileTool — HTML charset injection', () => {
     const [, writtenContent] = vi.mocked(writeTextFile).mock.calls[0];
     expect((writtenContent as string).startsWith('\uFEFF')).toBe(true);
     expect(writtenContent).toBe('\uFEFF' + fragment);
+  });
+});
+
+describe('deleteFileTool \u2014 move to trash (safe delete)', () => {
+  beforeEach(() => {
+    vi.mocked(invoke).mockReset();
+  });
+
+  it('routes deletion through move_to_trash and reports the path', async () => {
+    vi.mocked(invoke).mockResolvedValueOnce(undefined);
+
+    const target = '/Users/x/Downloads/old-report.csv';
+    const result = await deleteFileTool.execute({ path: target }, {} as never);
+
+    expect(invoke).toHaveBeenCalledTimes(1);
+    const [cmd, payload] = vi.mocked(invoke).mock.calls[0] as unknown as [string, { path: string }];
+    expect(cmd).toBe('move_to_trash');
+    expect(payload.path).toBe(target);
+    // Locale-robust: the success message always interpolates {path}.
+    expect(result).toContain(target);
+  });
+
+  it('is fail-closed: on trash failure it reports an error and never shells out to rm', async () => {
+    vi.mocked(invoke).mockRejectedValueOnce(new Error('trash boom'));
+
+    const result = await deleteFileTool.execute({ path: '/Users/x/f.txt' }, {} as never);
+
+    // Only one invoke, and it was the trash command \u2014 no run_command / run_shell_command fallback.
+    expect(invoke).toHaveBeenCalledTimes(1);
+    const [cmd] = vi.mocked(invoke).mock.calls[0] as unknown as [string, unknown];
+    expect(cmd).toBe('move_to_trash');
+    // Locale-robust: the failure message always interpolates {error}.
+    expect(result).toContain('trash boom');
   });
 });

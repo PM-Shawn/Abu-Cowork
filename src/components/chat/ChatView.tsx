@@ -1,7 +1,8 @@
-import { useState, useCallback, useLayoutEffect, useSyncExternalStore } from 'react';
+import { useState, useCallback, useEffect, useLayoutEffect, useRef, useSyncExternalStore } from 'react';
 import { useChatStore, useActiveConversation } from '@/stores/chatStore';
 import type { Message, ImageAttachment } from '@/types';
 import { useAutoScroll } from '@/hooks/useAutoScroll';
+import { useRenderWindow } from '@/hooks/useRenderWindow';
 import { runAgentLoop } from '@/core/agent/agentLoop';
 import { getPendingCommandConfirmation, resolveCommandConfirmation, subscribeToCommandConfirmation, getPendingFilePermission, resolveFilePermission, subscribeToFilePermission, getPendingWorkspaceRequest, resolveWorkspaceRequest, subscribeToWorkspaceRequest, getPendingUserQuestions, subscribeUserQuestion, findQuestionOwningMessage } from '@/core/agent/permissionBridge';
 import { useSettingsStore, getActiveApiKey, providerRequiresApiKey } from '@/stores/settingsStore';
@@ -78,6 +79,14 @@ export default function ChatView() {
   const messages = activeConv?.messages ?? [];
   void messageCount; // used only to trigger re-render
   const { t, format, locale } = useI18n();
+
+  // Filter out system-injected messages (e.g. max_tokens recovery prompts) and
+  // group remaining messages by loopId for unified rendering. `conv.messages`
+  // itself stays fully in memory (compaction/editing/export all read the full
+  // array) — grouping is cheap; render windowing below only limits how many
+  // of these groups get mounted as DOM (long-conversation Part B3).
+  const visibleMessages = messages.filter(m => !m.isSystem);
+  const messageGroups = groupMessagesByLoop(visibleMessages);
 
   // Pending agent: set when user enters chat from any agent surface
   // (toolbox detail "Start Chat" button, etc.). Drives the welcome banner so
@@ -182,6 +191,75 @@ export default function ChatView() {
 
   const isFollowing = activeConv?.status === 'running';
   const { containerRef, isAtBottom, scrollToBottom, resetToBottom } = useAutoScroll({ following: isFollowing });
+
+  // Render windowing (long-conversation Part B3): only mount the most recent
+  // `renderLimit` message groups. `useAutoScroll`'s containerRef is a plain
+  // callback ref — mirror the node into our own ref too (merged below) so we
+  // can read scrollHeight/scrollTop for the IntersectionObserver root and
+  // the prepend scroll-anchor without touching useAutoScroll's internals.
+  const scrollNodeRef = useRef<HTMLDivElement | null>(null);
+  const mergedContainerRef = useCallback(
+    (node: HTMLDivElement | null) => {
+      scrollNodeRef.current = node;
+      containerRef(node);
+    },
+    [containerRef],
+  );
+  const { renderLimit, loadEarlier: growRenderWindow, showSentinel } = useRenderWindow(
+    messageGroups.length,
+    activeConvId,
+  );
+  const sentinelRef = useRef<HTMLDivElement | null>(null);
+  // Set right before growing the render window; consumed by the
+  // useLayoutEffect below to keep the scroll position visually anchored
+  // (prepending earlier groups adds height above the viewport, which would
+  // otherwise yank the view — see useAutoScroll.ts:145, MutationObserver
+  // auto-scroll is gated on `isAtBottomRef`, so it never fights this).
+  const pendingAnchorRef = useRef<{ prevScrollHeight: number; prevScrollTop: number } | null>(null);
+
+  const loadEarlier = useCallback(() => {
+    const container = scrollNodeRef.current;
+    if (container) {
+      pendingAnchorRef.current = {
+        prevScrollHeight: container.scrollHeight,
+        prevScrollTop: container.scrollTop,
+      };
+    }
+    growRenderWindow();
+  }, [growRenderWindow]);
+
+  // Runs synchronously after the DOM commits the newly-grown group set, but
+  // before paint — restores the scroll offset so the added height above the
+  // viewport doesn't visually shift the content the user was looking at.
+  useLayoutEffect(() => {
+    const anchor = pendingAnchorRef.current;
+    if (!anchor) return;
+    const container = scrollNodeRef.current;
+    if (container) {
+      container.scrollTop = anchor.prevScrollTop + (container.scrollHeight - anchor.prevScrollHeight);
+    }
+    pendingAnchorRef.current = null;
+  }, [renderLimit]);
+
+  // Observe the top sentinel; scrolling it into view loads another batch of
+  // earlier groups. Not present in happy-dom — guarded, and re-mocked per
+  // test. Real behavior needs a tauri:dev smoke check (see report).
+  useEffect(() => {
+    if (!showSentinel) return;
+    const sentinel = sentinelRef.current;
+    const root = scrollNodeRef.current;
+    if (!sentinel || !root || typeof IntersectionObserver === 'undefined') return;
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((entry) => entry.isIntersecting)) {
+          loadEarlier();
+        }
+      },
+      { root, threshold: 0 },
+    );
+    observer.observe(sentinel);
+    return () => observer.disconnect();
+  }, [showSentinel, loadEarlier]);
 
   // Scroll to bottom when switching conversations.
   // useLayoutEffect runs after DOM commit but before paint,
@@ -380,11 +458,11 @@ export default function ChatView() {
     );
   }
 
-  // Chat view with messages
-  // Filter out system-injected messages (e.g. max_tokens recovery prompts) and
-  // group remaining messages by loopId for unified rendering
-  const visibleMessages = messages.filter(m => !m.isSystem);
-  const messageGroups = groupMessagesByLoop(visibleMessages);
+  // Chat view with messages (visibleMessages/messageGroups computed above,
+  // before the early returns, so the render-window hook can see the count).
+  const renderedGroups = messageGroups.length > renderLimit
+    ? messageGroups.slice(-renderLimit)
+    : messageGroups;
 
   return (
     <div className="flex flex-col h-full min-h-0 min-w-0 bg-[var(--abu-bg-base)]">
@@ -434,17 +512,30 @@ export default function ChatView() {
       <ComputerUseStatusBar onStop={() => useChatStore.getState().cancelStreaming(activeConv.id)} />
 
       {/* Messages Area */}
-      <div className="relative flex-1 min-h-0 overflow-y-auto" ref={containerRef}>
+      <div className="relative flex-1 min-h-0 overflow-y-auto" ref={mergedContainerRef}>
         <div className="w-full max-w-4xl mx-auto px-6 md:px-10 pt-5 pb-16 overflow-hidden">
           <div className="space-y-5">
-            {messageGroups.map((group, idx) =>
+            {/* Top sentinel — only mounted while there are earlier groups
+                still outside the render window. Scrolling it into view
+                triggers loadEarlier() via IntersectionObserver. */}
+            {showSentinel && (
+              <div
+                ref={sentinelRef}
+                data-testid="render-window-sentinel"
+                className="py-2 text-center text-[12px] text-[var(--abu-text-tertiary)]"
+              >
+                {t.chat.loadingEarlier}
+              </div>
+            )}
+
+            {renderedGroups.map((group, idx) =>
               group.length === 1 && isCompactBoundary(group[0]) ? (
                 <CompactDivider key={group[0].id} message={group[0]} />
               ) : (
                 <MessageGroup
                   key={group[0].id}
                   messages={group}
-                  isLastGroup={idx === messageGroups.length - 1}
+                  isLastGroup={idx === renderedGroups.length - 1}
                 />
               ),
             )}

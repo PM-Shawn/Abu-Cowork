@@ -267,6 +267,10 @@ export interface TranslationDict {
     userMessageCollapse: string;
     noModelConfigured: string;
     scrollToBottom: string;
+    /** Shown above the message list while an earlier batch of messages is
+     *  being mounted after scrolling up (render windowing, long-conversation
+     *  Part B3). */
+    loadingEarlier: string;
     compressingContext: string;
     retrying: string;
     resuming: string;

@@ -236,6 +236,7 @@ const zhCN: TranslationDict = {
     userMessageCollapse: '收起',
     noModelConfigured: '请配置模型',
     scrollToBottom: '回到底部',
+    loadingEarlier: '正在加载更早的消息…',
     compressingContext: '正在压缩长对话上下文…',
     retrying: '模型响应慢，正在重试 {attempt}/{max}…',
     resuming: '已提交 ✓ 正在继续…',

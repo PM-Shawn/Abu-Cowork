@@ -236,6 +236,7 @@ const enUS: TranslationDict = {
     userMessageCollapse: 'Collapse',
     noModelConfigured: 'Set up a model',
     scrollToBottom: 'Scroll to bottom',
+    loadingEarlier: 'Loading earlier messages…',
     compressingContext: 'Compacting long conversation…',
     retrying: 'Model slow to respond — retrying {attempt}/{max}…',
     resuming: 'Submitted ✓ resuming…',

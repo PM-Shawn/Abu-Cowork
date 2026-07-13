@@ -1544,7 +1544,7 @@ export const useChatStore = create<ChatStore>()(
     })),
     {
       name: 'abu-chat',
-      version: 6,
+      version: 7,
       migrate: (persisted, version) => {
         const state = persisted as Record<string, unknown>;
         // v1 → v2: added executionSteps on Message (optional field, no-op migration)
@@ -1556,6 +1556,11 @@ export const useChatStore = create<ChatStore>()(
         // v5 → v6: added per-conversation `model` on ConversationMeta (optional field;
         // undefined = inherit global activeModel, pinned on first run, no-op migration)
         if (version < 6) { /* no transform needed */ }
+        // v6 → v7: added compact-boundary markers (long-conversation Part A).
+        // Markers are plain append-only Messages with an optional `compactBoundary`
+        // payload — persisted state (conversationIndex) is unchanged, so this is a
+        // no-op bump that just guards against older builds mis-reading the schema.
+        if (version < 7) { /* no transform needed */ }
         // v3 → v4: migrate conversations from localStorage to file system
         if (version < 4) {
           // Mark for async migration in onRehydrateStorage

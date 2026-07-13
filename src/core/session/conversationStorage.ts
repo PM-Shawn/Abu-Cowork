@@ -22,6 +22,7 @@
  */
 
 import { exists, readTextFile, mkdir, remove, readDir } from '@tauri-apps/plugin-fs';
+import { invoke } from '@tauri-apps/api/core';
 import { appDataDir } from '@tauri-apps/api/path';
 import { joinPath } from '@/utils/pathUtils';
 import { atomicWrite } from '@/utils/atomicFs';
@@ -185,17 +186,40 @@ async function drainAll(): Promise<void> {
 
 /**
  * Append data to a file. Creates parent directory on first write.
- * Tauri's plugin-fs writeTextFile doesn't support native append, so we
- * read + append + atomic-write. For typical conversation files (<1MB) this is fine.
  *
- * Atomic writes (tempfile + fsync + rename) prevent partial writes on
- * crash / kill / power loss — readers either see the pre-append content
- * or the fully-appended content, never a truncated middle state.
+ * Part B1: tries the native `append_file_text` Rust command first — it opens
+ * the file in OS append mode and writes only `data`, no read of existing
+ * content, so cost is O(len(data)) instead of O(file size). If that command
+ * is unavailable (older bundled binary mid-upgrade, unexpected Rust-side
+ * failure) or throws for any other reason, we fall back to the previous
+ * read + atomic-write path below, which is O(file size) but was already
+ * battle-tested.
+ *
+ * Atomicity trade-off: the fallback's atomic writes (tempfile + fsync +
+ * rename) guarantee a reader never observes a half-written file. Native
+ * append does NOT have that guarantee — a crash mid-`write_all` can leave a
+ * half-written last line. This is an accepted trade-off (see
+ * `src-tauri/src/append_file.rs` doc comment): `loadMessages` below already
+ * tolerates and skips corrupt JSONL lines, so the worst case of a crash
+ * during native append is losing the one message that was mid-flight, never
+ * the messages already durably on disk before the call started.
  *
  * Serialized against concurrent mutations on the same path via `withFileLock`.
  */
 async function appendToFile(filePath: string, data: string): Promise<void> {
   return withFileLock(filePath, async () => {
+    try {
+      // Native O(1) append (Part B1). Falls back to read+atomic-rewrite below
+      // if the command is unavailable or fails.
+      await invoke('append_file_text', { path: filePath, data });
+      return;
+    } catch {
+      // Fall through to the read + atomic-write path. NOTE: this fallback is not
+      // idempotent — if the native append durably wrote `data` but its promise
+      // still rejected (IPC teardown / shutdown race), we re-append the same
+      // line here, producing a DUPLICATE (not a corrupt line). loadMessages
+      // dedups by id on read, so the duplicate never surfaces.
+    }
     try {
       if (await exists(filePath)) {
         const current = await readTextFile(filePath);
@@ -491,8 +515,25 @@ export async function loadMessages(convId: string): Promise<Message[]> {
         `The affected messages are lost, but ${messages.length} intact message(s) recovered.`,
     );
   }
-  populateWrittenIds(messages);
-  return messages;
+  // Dedup by id, keeping the last occurrence. A duplicate line is not "corrupt"
+  // (so the skip-bad-lines net above can't catch it) but can arise from a
+  // non-idempotent append fallback: if the native O(1) append durably writes a
+  // line but its invoke promise still rejects (IPC teardown / shutdown race),
+  // appendToFile falls through to read+rewrite and appends the same line again.
+  // The last write reflects the most recent state; downstream consumers
+  // (chatStore, memdir extractor) don't dedup, so a duplicate would otherwise
+  // render — and be sent to the LLM — twice.
+  const deduped = dedupMessagesById(messages);
+  populateWrittenIds(deduped);
+  return deduped;
+}
+
+/** Keep the last occurrence of each message id, preserving order. */
+function dedupMessagesById(messages: Message[]): Message[] {
+  const lastIndex = new Map<string, number>();
+  messages.forEach((m, i) => lastIndex.set(m.id, i));
+  if (lastIndex.size === messages.length) return messages; // no dupes, fast path
+  return messages.filter((m, i) => lastIndex.get(m.id) === i);
 }
 
 /**

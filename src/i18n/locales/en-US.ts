@@ -393,6 +393,15 @@ const enUS: TranslationDict = {
     usageChipSubtitle: 'Cumulative API usage · Model-reported',
     errorEmptyBody: 'The request failed, but the service returned no error details.',
     errorNotFoundHint: 'The model or API endpoint was not found, or the endpoint does not support a parameter this request carried (e.g. thinking / tool calls). Check the service URL and this model’s capability settings under Settings → Models, or switch models.',
+    compactDivider: {
+      compacted: 'Context compacted',
+      compactedManual: 'Context compacted (manual)',
+    },
+    compactCommand: {
+      done: 'Context compacted',
+      tooFew: 'Conversation is short — no compaction needed',
+      failed: 'Compaction failed — please try again',
+    },
   },
 
   share: {

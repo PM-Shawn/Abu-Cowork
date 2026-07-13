@@ -16,6 +16,17 @@ import type { LLMAdapter } from '@/core/llm/adapter';
 
 export type CompactionReason = 'ok' | 'too-few' | 'summarize-failed' | 'no-conversation';
 
+// Manual /compact is aggressive, matching WorkBuddy / Claude Code: a user who
+// explicitly asks to compact wants it to act, so we summarize (nearly) the whole
+// conversation and keep only the single most recent round verbatim for the model
+// to continue from — no conservative "keep the last 4 rounds" reserve (that's an
+// auto-compaction concern) and no "too short" refusal beyond the genuine floor.
+// (WorkBuddy's compactAndSummarize summarizes conversation-so-far with the only
+// guard being "already compressing"; keeping 1 recent round is the closest
+// faithful mapping onto Abu's first-round + summary + recent marker model.)
+// Threshold drops to >=3 rounds (first round + last round + >=1 to summarize).
+const MANUAL_RECENT_ROUNDS_TO_KEEP = 1;
+
 export interface CompactionResult {
   compacted: boolean;
   reason: CompactionReason;
@@ -91,7 +102,9 @@ export async function compactConversationManually(
   if (!conv) return { compacted: false, reason: 'no-conversation' };
 
   const messages = conv.messages ?? [];
-  const plan = computeCompactionPlan(messages);
+  const plan = computeCompactionPlan(messages, {
+    recentRoundsToKeep: MANUAL_RECENT_ROUNDS_TO_KEEP,
+  });
   if (!plan) return { compacted: false, reason: 'too-few' };
 
   // Show the in-progress indicator (same purple spinner the auto 65% path uses)

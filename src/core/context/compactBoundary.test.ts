@@ -337,6 +337,26 @@ describe('computeCompactionPlan', () => {
     expect(plan!.middleMessages).toHaveLength(2);
   });
 
+  describe('recentRoundsToKeep override (manual /compact)', () => {
+    it('a 5-round conversation is "too short" at the default keep=4 but compacts at the manual keep=1', () => {
+      resetSeq();
+      const messages = buildRounds(5); // 5 rounds, the reported /compact case
+      // Default (auto) keeps 4 recent rounds → 5 <= 4+1 → nothing to compact.
+      expect(computeCompactionPlan(messages)).toBeNull();
+      // Manual keeps 1 (WorkBuddy-aligned aggressive) → 5 > 1+1 → summarizes the middle.
+      const plan = computeCompactionPlan(messages, { recentRoundsToKeep: 1 });
+      expect(plan).not.toBeNull();
+      expect(plan!.middleMessages.length).toBeGreaterThan(0);
+    });
+
+    it('3 rounds compacts at keep=1; 2 rounds is the genuine floor (nothing to summarize)', () => {
+      resetSeq();
+      expect(computeCompactionPlan(buildRounds(3), { recentRoundsToKeep: 1 })).not.toBeNull();
+      resetSeq();
+      expect(computeCompactionPlan(buildRounds(2), { recentRoundsToKeep: 1 })).toBeNull();
+    });
+  });
+
   describe('substantiveness + delta guard (opts.estimateTokens)', () => {
     // 100 tokens per message — deterministic estimator for the guard.
     const est = (msgs: { length: number }) => msgs.length * 100;

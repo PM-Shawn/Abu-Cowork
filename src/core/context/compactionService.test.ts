@@ -79,7 +79,8 @@ function makeMsg(role: 'user' | 'assistant'): Message {
   };
 }
 
-/** Build N user+assistant round pairs (2N messages). Need > 5 rounds for a non-null plan. */
+/** Build N user+assistant round pairs (2N messages). Manual /compact keeps 1 recent
+ *  round (WorkBuddy-aligned), so a non-null plan needs > 2 rounds (>=3); auto needs > 5. */
 function buildRounds(count: number): Message[] {
   const messages: Message[] = [];
   for (let i = 0; i < count; i++) {
@@ -129,6 +130,17 @@ describe('compactConversationManually', () => {
       mockConversations[CONV_ID] = { messages: [] };
       const result = await compactConversationManually(CONV_ID);
       expect(result).toEqual({ compacted: false, reason: 'too-few' });
+    });
+
+    it('compacts a 5-round conversation (manual keeps only 2 recent — the reported /compact case)', async () => {
+      // Regression: /compact on a 5-round conversation used to report "too short"
+      // because it inherited the auto path's keep=4 gate (needed >=6 rounds).
+      // Manual now keeps 2, so 5 rounds compacts.
+      mockConversations[CONV_ID] = { messages: buildRounds(5) };
+      mockSummarize.mockResolvedValueOnce('summary');
+      const result = await compactConversationManually(CONV_ID);
+      expect(result).toEqual({ compacted: true, reason: 'ok' });
+      expect(mockSummarize).toHaveBeenCalled();
     });
   });
 

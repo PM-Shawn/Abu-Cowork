@@ -98,22 +98,30 @@ export function computeCompactionPlan(
     estimateTokens?: (msgs: Message[]) => number;
     /** Minimum NEW (un-summarized) tokens required to justify a compaction. */
     minNewTokens?: number;
+    /**
+     * How many recent rounds to keep verbatim (not summarized). Defaults to
+     * RECENT_ROUNDS_TO_KEEP (the conservative auto value). The manual /compact
+     * path passes a smaller value so an explicit user request compacts on a
+     * shorter conversation instead of being told "too short".
+     */
+    recentRoundsToKeep?: number;
   },
 ): {
   middleMessages: Message[];
   summarizedFromId: string;
   summarizedToId: string;
 } | null {
+  const keep = opts?.recentRoundsToKeep ?? RECENT_ROUNDS_TO_KEEP;
   // Work on the clean logical view (no markers)
   const clean = historyMessages.filter((m) => !isCompactBoundary(m));
   const rounds = identifyRounds(clean);
 
-  if (rounds.length <= RECENT_ROUNDS_TO_KEEP + 1) {
+  if (rounds.length <= keep + 1) {
     return null;
   }
 
-  // firstRound = rounds[0]; recentRounds = last N; middleRounds = in between
-  const middleRounds = rounds.slice(1, rounds.length - RECENT_ROUNDS_TO_KEEP);
+  // firstRound = rounds[0]; recentRounds = last `keep`; middleRounds = in between
+  const middleRounds = rounds.slice(1, rounds.length - keep);
   const middleMessages = middleRounds.flat();
 
   if (middleMessages.length === 0) {

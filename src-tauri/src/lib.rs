@@ -20,6 +20,7 @@ mod overlay;
 mod pet;
 mod secrets;
 mod atomic_write;
+mod append_file;
 mod notice;
 mod notice_db;
 mod sleep_prevention;
@@ -1401,6 +1402,7 @@ pub fn run() {
             atomic_write::atomic_write_with_backup,
             atomic_write::restore_from_backup,
             atomic_write::cleanup_old_backups,
+            append_file::append_file_text,
             sleep_prevention::set_prevent_sleep,
             clipboard_files::read_clipboard_file_paths,
             preview_server::get_preview_server_info,

@@ -232,6 +232,25 @@ describe('conversationStorage', () => {
       expect(loaded).toEqual([]);
     });
 
+    it('dedups a duplicate line (non-idempotent native-append fallback)', async () => {
+      const line = JSON.stringify(makeMsg({ id: 'dup', content: 'once' }));
+      // Same line written twice — what a native append that durably wrote but
+      // whose invoke promise rejected leaves behind (fallback re-appends).
+      memFs.files.set(PATH, `${line}\n${line}\n`);
+      const loaded = await storage.loadMessages('corrupt-conv');
+      expect(loaded).toHaveLength(1);
+      expect(loaded[0].id).toBe('dup');
+    });
+
+    it('keeps the last occurrence when a duplicate id has newer content', async () => {
+      const older = JSON.stringify(makeMsg({ id: 'x', content: 'old' }));
+      const newer = JSON.stringify(makeMsg({ id: 'x', content: 'new' }));
+      memFs.files.set(PATH, `${older}\n${newer}\n`);
+      const loaded = await storage.loadMessages('corrupt-conv');
+      expect(loaded).toHaveLength(1);
+      expect(loaded[0].content).toBe('new');
+    });
+
     it('concurrent appendMessage + replaceMessageById do not race', async () => {
       // Seed: two messages on disk
       const seed1 = makeMsg({ id: 'seed-1', content: 'seed one' });

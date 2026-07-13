@@ -214,7 +214,11 @@ async function appendToFile(filePath: string, data: string): Promise<void> {
       await invoke('append_file_text', { path: filePath, data });
       return;
     } catch {
-      // fall through to the existing read + atomic-write path
+      // Fall through to the read + atomic-write path. NOTE: this fallback is not
+      // idempotent — if the native append durably wrote `data` but its promise
+      // still rejected (IPC teardown / shutdown race), we re-append the same
+      // line here, producing a DUPLICATE (not a corrupt line). loadMessages
+      // dedups by id on read, so the duplicate never surfaces.
     }
     try {
       if (await exists(filePath)) {
@@ -511,8 +515,25 @@ export async function loadMessages(convId: string): Promise<Message[]> {
         `The affected messages are lost, but ${messages.length} intact message(s) recovered.`,
     );
   }
-  populateWrittenIds(messages);
-  return messages;
+  // Dedup by id, keeping the last occurrence. A duplicate line is not "corrupt"
+  // (so the skip-bad-lines net above can't catch it) but can arise from a
+  // non-idempotent append fallback: if the native O(1) append durably writes a
+  // line but its invoke promise still rejects (IPC teardown / shutdown race),
+  // appendToFile falls through to read+rewrite and appends the same line again.
+  // The last write reflects the most recent state; downstream consumers
+  // (chatStore, memdir extractor) don't dedup, so a duplicate would otherwise
+  // render — and be sent to the LLM — twice.
+  const deduped = dedupMessagesById(messages);
+  populateWrittenIds(deduped);
+  return deduped;
+}
+
+/** Keep the last occurrence of each message id, preserving order. */
+function dedupMessagesById(messages: Message[]): Message[] {
+  const lastIndex = new Map<string, number>();
+  messages.forEach((m, i) => lastIndex.set(m.id, i));
+  if (lastIndex.size === messages.length) return messages; // no dupes, fast path
+  return messages.filter((m, i) => lastIndex.get(m.id) === i);
 }
 
 /**

@@ -23,6 +23,7 @@ mod atomic_write;
 mod append_file;
 mod notice;
 mod notice_db;
+mod catalog_db;
 mod sleep_prevention;
 mod clipboard_files;
 mod preview_server;
@@ -1278,6 +1279,23 @@ pub fn run() {
                 }
             }
 
+            // Initialize conversation catalog SQLite database (message-storage
+            // hybrid P0). A rebuildable projection of conversations/*/messages.jsonl
+            // — safe to fail open, `catalog_reconcile` rebuilds it from JSONL later.
+            let catalog_db_path = app
+                .path()
+                .app_data_dir()
+                .map(|dir| dir.join("catalog.sqlite"))
+                .unwrap_or_else(|_| std::path::PathBuf::from("catalog.sqlite"));
+            match catalog_db::CatalogDb::open(&catalog_db_path) {
+                Ok(db) => {
+                    app.manage(db);
+                }
+                Err(e) => {
+                    eprintln!("[catalog_db] Failed to init: {}. Conversation catalog will be unavailable.", e);
+                }
+            }
+
             // Start the HTML preview HTTP server (loopback). Bind is fast (<10ms);
             // failure here means previews degrade but app continues.
             match tauri::async_runtime::block_on(preview_server::start()) {
@@ -1391,6 +1409,15 @@ pub fn run() {
             notice_db::notice_inbox_pending,
             notice_db::notice_inbox_mark_delivered,
             notice_db::notice_inbox_cleanup,
+            catalog_db::catalog_upsert_conversation,
+            catalog_db::catalog_get_conversation,
+            catalog_db::catalog_list_conversations,
+            catalog_db::catalog_bump_count,
+            catalog_db::catalog_mark_missing,
+            catalog_db::catalog_get_sync_state,
+            catalog_db::catalog_set_initial_build_complete,
+            catalog_db::catalog_bump_observation_sequence,
+            catalog_db::catalog_reconcile,
             secret_get,
             secret_set,
             secret_delete,

@@ -402,7 +402,14 @@ function App() {
       // Migrate old memory systems (entries.json / memory.md) to memdir (.md files)
       import('@/core/memdir/migrate').then(m => m.migrateMemdirIfNeeded()).catch(() => {});
       // Initialize conversation file storage and check for crash recovery
-      import('@/core/session/conversationStorage').then(m => m.initConversationStorage()).catch(() => {});
+      import('@/core/session/conversationStorage').then(m => {
+        m.initConversationStorage().catch(() => {});
+        // Reconcile the SQLite conversation catalog against JSONL on disk
+        // (message-storage P0): first run does the full scan-build migration,
+        // later runs do incremental repair. Fire-and-forget — catalog is a
+        // rebuildable projection, JSONL stays the source of truth.
+        m.reconcileCatalog().catch(() => {});
+      }).catch(() => {});
       import('@/core/session/checkpoint').then(async ({ findOrphanedCheckpoints, clearCheckpoint }) => {
         const orphans = await findOrphanedCheckpoints();
         if (orphans.length === 0) return;

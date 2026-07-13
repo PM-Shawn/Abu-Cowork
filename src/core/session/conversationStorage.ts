@@ -367,6 +367,98 @@ export async function flushIndex(): Promise<void> {
 }
 
 // ════════════════════════════════════════════════════════════
+// SQLite conversation catalog — write-through (message-storage P0)
+// ════════════════════════════════════════════════════════════
+//
+// The catalog is a REBUILDABLE PROJECTION of the JSONL files (see
+// docs/2026-07-14-message-storage-sqlite-hybrid-*). JSONL is always the
+// source of truth. Every write-through call below is BEST-EFFORT: it must
+// never throw into the JSONL write path, and any failure is swallowed —
+// startup `catalog_reconcile()` is the safety net that repairs drift by
+// re-scanning JSONL. Never write user data only to the catalog.
+
+/** Absolute path to the conversations root dir. Set by ensureBase(). */
+function conversationsRoot(): string {
+  return basePath!;
+}
+
+/**
+ * Best-effort: bump the catalog's message_count for a conversation on append.
+ * Passes the conversations root so Rust can re-read the JSONL's byte/mtime
+ * watermark (keeping incremental reconcile from redundantly rescanning).
+ * Swallows all errors — the catalog is disposable.
+ */
+async function catalogBumpCount(
+  convId: string,
+  delta: number,
+  updatedAt: number,
+  lastMessageId: string | null,
+): Promise<void> {
+  try {
+    await invoke('catalog_bump_count', {
+      convId,
+      delta,
+      updatedAt,
+      lastMessageId,
+      conversationsRoot: conversationsRoot(),
+    });
+  } catch {
+    // Non-fatal: reconcile on next startup repairs the count from JSONL.
+  }
+}
+
+/**
+ * Best-effort: upsert a full catalog row for a conversation. Used on
+ * conversation create (and any full metadata sync). Serialized model pin is
+ * stored as JSON text so the catalog can surface it without a second lookup.
+ */
+export async function catalogUpsertConversation(meta: ConversationMeta): Promise<void> {
+  try {
+    await ensureBase();
+    await invoke('catalog_upsert_conversation', {
+      row: {
+        conv_id: meta.id,
+        title: meta.title ?? '',
+        created_at: meta.createdAt,
+        updated_at: meta.updatedAt,
+        message_count: meta.messageCount ?? 0,
+        last_message_id: null,
+        model: meta.model ? JSON.stringify(meta.model) : null,
+        source_bytes: 0,
+        source_mtime: null,
+        missing: false,
+      },
+    });
+  } catch {
+    // Non-fatal: reconcile on next startup repairs the row from JSONL.
+  }
+}
+
+/** Best-effort: mark a conversation's catalog row missing (soft-delete). */
+export async function catalogMarkMissing(convId: string): Promise<void> {
+  try {
+    await invoke('catalog_mark_missing', { convId });
+  } catch {
+    // Non-fatal.
+  }
+}
+
+/**
+ * Startup reconcile / migration. Safe to call unconditionally on every launch:
+ * first run does a full scan-build of the catalog from every JSONL file;
+ * later runs do incremental repair (rescan only changed conversations, mark
+ * missing ones). Never modifies JSONL. Fire-and-forget from the caller.
+ */
+export async function reconcileCatalog(): Promise<void> {
+  try {
+    await ensureBase();
+    await invoke('catalog_reconcile', { conversationsRoot: conversationsRoot() });
+  } catch {
+    // Non-fatal: the app still works off localStorage conversationIndex in P0.
+  }
+}
+
+// ════════════════════════════════════════════════════════════
 // Message CRUD
 // ════════════════════════════════════════════════════════════
 
@@ -384,6 +476,14 @@ export async function appendMessage(
   await ensureBase();
   const line = JSON.stringify(stripForDisk(message)) + '\n';
   await enqueueWrite(messagesPath(convId), line);
+
+  // Write-through the catalog AFTER the JSONL write is queued. Fire-and-
+  // forget (fix #9): the catalog bump is best-effort (IPC + SQLite +
+  // fs::metadata on every append) and already swallows its own errors, so
+  // there is nothing for a caller to await or react to. JSONL success above
+  // is the hard requirement; catalog drift is repaired by startup reconcile,
+  // which does not depend on append ordering.
+  void catalogBumpCount(convId, 1, message.timestamp ?? Date.now(), message.id);
 }
 
 /**

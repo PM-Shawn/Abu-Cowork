@@ -430,9 +430,11 @@ export const useChatStore = create<ChatStore>()(
           }
           state.pendingPermissionMode = undefined;
         });
-        // Sync index to disk (fire-and-forget)
-        import('../core/session/conversationStorage').then(({ updateIndexEntry }) => {
+        // Sync index to disk (fire-and-forget). Also write-through the SQLite
+        // catalog (message-storage P0) — best-effort, reconcile is the net.
+        import('../core/session/conversationStorage').then(({ updateIndexEntry, catalogUpsertConversation }) => {
           updateIndexEntry(meta).catch(() => {});
+          catalogUpsertConversation(meta).catch(() => {});
         });
         // Sync global workspace to match the new conversation.
         // Clear when no workspace so UI doesn't show a stale path from a previous conversation.
@@ -580,9 +582,13 @@ export const useChatStore = create<ChatStore>()(
         clearSkillHooksByConversation(id);
         useTaskExecutionStore.getState().clearConversation(id);
         // Clean up disk files (JSONL messages, tool results, outputs)
-        import('../core/session/conversationStorage').then(({ deleteConversationFiles, removeIndexEntry }) => {
+        import('../core/session/conversationStorage').then(({ deleteConversationFiles, removeIndexEntry, catalogMarkMissing }) => {
           deleteConversationFiles(id).catch(() => {});
           removeIndexEntry(id).catch(() => {});
+          // Write-through the SQLite catalog: soft-delete the row (message-
+          // storage P0). Best-effort; reconcile also marks it missing once the
+          // JSONL is gone.
+          catalogMarkMissing(id).catch(() => {});
         }).catch(() => {});
         // Legacy cleanup: session memory files (tool results offloaded to disk)
         import('../core/session/sessionMemory').then(({ cleanupConversationResults }) => {
@@ -697,7 +703,15 @@ export const useChatStore = create<ChatStore>()(
                 conv.title = newTitle;
               }
             }
-            // Sync index metadata
+            // Sync index metadata. messageCount is RE-DERIVED from
+            // conv.messages.length, not incremented (message-storage P0,
+            // code-review fix #1): in P0 there is no partial load, so
+            // conv.messages is always the full history. Re-derivation is
+            // both correct AND self-healing across deletes/edits/retries —
+            // deleteMessage/deleteMessagesFrom/deleteLoopMessages mutate
+            // conv.messages but never adjust conversationIndex.messageCount,
+            // so an increment-only counter drifts upward forever while
+            // re-derivation always reflects reality.
             if (state.conversationIndex[convId]) {
               state.conversationIndex[convId].messageCount = conv.messages.length;
               state.conversationIndex[convId].updatedAt = conv.updatedAt;

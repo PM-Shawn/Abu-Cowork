@@ -350,6 +350,39 @@ describe('chatStore', () => {
       const title = useChatStore.getState().conversations[id].title;
       expect(title.length).toBeLessThanOrEqual(34); // 30 + "..."
     });
+
+    it('re-derives conversationIndex.messageCount from conv.messages.length on each append', () => {
+      const id = useChatStore.getState().createConversation();
+      const store = useChatStore.getState();
+      expect(store.conversationIndex[id].messageCount).toBe(0);
+      store.addMessage(id, { id: 'm1', role: 'user', content: 'a', timestamp: 1 });
+      store.addMessage(id, { id: 'm2', role: 'assistant', content: 'b', timestamp: 2 });
+      store.addMessage(id, { id: 'm3', role: 'user', content: 'c', timestamp: 3 });
+      expect(useChatStore.getState().conversationIndex[id].messageCount).toBe(3);
+    });
+
+    // Regression (code-review fix #1, message-storage P0): messageCount must be
+    // RE-DERIVED from conv.messages.length, not incremented. deleteMessage /
+    // deleteMessagesFrom / deleteLoopMessages mutate conv.messages but never
+    // touch conversationIndex.messageCount, so an increment-only counter would
+    // drift upward forever across deletes/edits/retries. Re-derivation self-heals.
+    it('messageCount self-heals across deletes: add 4, delete 3, add 1 → 2 (not 6)', () => {
+      const id = useChatStore.getState().createConversation();
+      const store = useChatStore.getState();
+      store.addMessage(id, { id: 'm1', role: 'user', content: 'a', timestamp: 1 });
+      store.addMessage(id, { id: 'm2', role: 'assistant', content: 'b', timestamp: 2 });
+      store.addMessage(id, { id: 'm3', role: 'user', content: 'c', timestamp: 3 });
+      store.addMessage(id, { id: 'm4', role: 'assistant', content: 'd', timestamp: 4 });
+      expect(useChatStore.getState().conversationIndex[id].messageCount).toBe(4);
+
+      useChatStore.getState().deleteMessage(id, 'm1');
+      useChatStore.getState().deleteMessage(id, 'm2');
+      useChatStore.getState().deleteMessage(id, 'm3');
+
+      useChatStore.getState().addMessage(id, { id: 'm5', role: 'user', content: 'e', timestamp: 5 });
+      expect(useChatStore.getState().conversations[id].messages).toHaveLength(2);
+      expect(useChatStore.getState().conversationIndex[id].messageCount).toBe(2);
+    });
   });
 
   // ── appendToLastMessage ──

@@ -198,6 +198,112 @@ describe('conversationStorage', () => {
     });
   });
 
+  describe('SQLite catalog write-through (message-storage P0)', () => {
+    it('bumps the catalog count on each append, best-effort after the JSONL write', async () => {
+      const calls: Array<{ cmd: string; args?: Record<string, unknown> }> = [];
+      (invoke as ReturnType<typeof vi.fn>).mockImplementation(async (
+        cmd: string,
+        args?: Record<string, unknown>,
+      ) => {
+        calls.push({ cmd, args });
+        // append_file_text unavailable → exercises the atomic-write fallback,
+        // matching every other test in this file.
+        if (cmd === 'append_file_text') throw new Error('native append unavailable in test');
+        if (cmd === 'atomic_write_text' && (args as { path?: string })?.path !== undefined) {
+          return undefined;
+        }
+        return undefined;
+      });
+
+      await storage.appendMessage('conv-cat', makeMsg({ id: 'c1', timestamp: 111 }));
+      await storage.appendMessage('conv-cat', makeMsg({ id: 'c2', timestamp: 222 }));
+      await storage.flushWrites();
+
+      const bumps = calls.filter((c) => c.cmd === 'catalog_bump_count');
+      expect(bumps).toHaveLength(2);
+      expect(bumps[0].args).toMatchObject({ convId: 'conv-cat', delta: 1, updatedAt: 111, lastMessageId: 'c1' });
+      expect(bumps[1].args).toMatchObject({ convId: 'conv-cat', delta: 1, updatedAt: 222, lastMessageId: 'c2' });
+      expect(bumps[0].args?.conversationsRoot).toEqual(expect.stringContaining('conversations'));
+    });
+
+    it('a failing catalog_bump_count never breaks the JSONL append', async () => {
+      (invoke as ReturnType<typeof vi.fn>).mockImplementation(async (
+        cmd: string,
+        args?: { path?: string; content?: string },
+      ) => {
+        if (cmd === 'catalog_bump_count') throw new Error('catalog DB unavailable');
+        if (cmd === 'append_file_text') throw new Error('native append unavailable in test');
+        // atomic_write fallback routes to the memory fs via writeTextFile in the
+        // default mock; re-implement the minimal write here so loadMessages sees it.
+        if (cmd === 'atomic_write_text' && args?.path !== undefined) {
+          await (writeTextFile as ReturnType<typeof vi.fn>)(args.path, args.content ?? '');
+          return undefined;
+        }
+        return undefined;
+      });
+
+      await expect(
+        storage.appendMessage('conv-safe', makeMsg({ id: 's1', content: 'kept' })),
+      ).resolves.toBeUndefined();
+      await storage.flushWrites();
+
+      const loaded = await storage.loadMessages('conv-safe');
+      expect(loaded).toHaveLength(1);
+      expect(loaded[0].content).toBe('kept');
+    });
+
+    // Regression (code-review fix #9): appendMessage must NOT await the
+    // catalog bump — it is best-effort and already swallows its own errors,
+    // so there is nothing for the JSONL hot path to gain by waiting on it.
+    // Before the fix, `await catalogBumpCount(...)` inside appendMessage meant
+    // a never-settling (or merely slow) catalog_bump_count invoke would hang
+    // every message append behind it. This test proves the opposite: with a
+    // catalog_bump_count invoke that never resolves, appendMessage still
+    // resolves promptly.
+    it('does not await the catalog bump — appendMessage resolves even if catalog_bump_count never settles', async () => {
+      let bumpCalled = false;
+      let resolveBump: () => void = () => {};
+      const bumpPromise = new Promise<void>((resolve) => {
+        resolveBump = resolve;
+      });
+
+      (invoke as ReturnType<typeof vi.fn>).mockImplementation(async (
+        cmd: string,
+      ) => {
+        if (cmd === 'append_file_text') throw new Error('native append unavailable in test');
+        if (cmd === 'catalog_bump_count') {
+          bumpCalled = true;
+          await bumpPromise; // deliberately never resolves during this test
+          return undefined;
+        }
+        return undefined;
+      });
+
+      // If appendMessage awaited catalogBumpCount, this would hang until the
+      // test's timeout since bumpPromise never settles. Resolving here proves
+      // the catalog bump is fire-and-forget.
+      await storage.appendMessage('conv-fire-forget', makeMsg({ id: 'ff1' }));
+      expect(bumpCalled).toBe(true);
+
+      resolveBump(); // let the dangling promise settle so it doesn't leak into other tests
+    });
+
+    it('reconcileCatalog invokes catalog_reconcile with the conversations root', async () => {
+      const calls: Array<{ cmd: string; args?: Record<string, unknown> }> = [];
+      (invoke as ReturnType<typeof vi.fn>).mockImplementation(async (
+        cmd: string,
+        args?: Record<string, unknown>,
+      ) => {
+        calls.push({ cmd, args });
+        return undefined;
+      });
+      await storage.reconcileCatalog();
+      const reconcile = calls.filter((c) => c.cmd === 'catalog_reconcile');
+      expect(reconcile).toHaveLength(1);
+      expect(reconcile[0].args?.conversationsRoot).toEqual(expect.stringContaining('conversations'));
+    });
+  });
+
   describe('loadMessages · corruption resilience', () => {
     // Path shape matches ensureBase() + messagesPath() (see conversationStorage.ts).
     // appDataDir is mocked globally to '/Users/testuser/.abu'.

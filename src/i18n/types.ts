@@ -404,6 +404,17 @@ export interface TranslationDict {
     errorEmptyBody: string;
     /** Hint appended to not_found errors: check endpoint URL / model capabilities. */
     errorNotFoundHint: string;
+    // Compact boundary divider
+    compactDivider: {
+      compacted: string;
+      compactedManual: string;
+    };
+    // /compact slash command toasts
+    compactCommand: {
+      done: string;
+      tooFew: string;
+      failed: string;
+    };
   };
 
   // Share (conversation export / import)

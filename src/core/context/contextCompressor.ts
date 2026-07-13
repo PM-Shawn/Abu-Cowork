@@ -74,6 +74,89 @@ function messagesToText(messages: Message[]): string {
 }
 
 /**
+ * Summarize a set of (already-selected) messages into a single summary string
+ * via the LLM. Shared by the send-only compression path and the persistent
+ * compact-boundary path (agentLoop Step 2.1 / manual /compact). Best-effort:
+ * returns `{ text: '' }` on empty / timeout / error and never throws, so it can
+ * never block or crash the agent loop. Applies the same independent timeout as
+ * the send-only path.
+ */
+export async function summarizeConversation(
+  middleMessages: Message[],
+  config: CompressionConfig,
+): Promise<string> {
+  const middleText = messagesToText(middleMessages);
+
+  const summaryPrompt = `请将以下对话内容压缩为一段简洁的摘要，保留关键信息：
+- 用户的核心需求和意图
+- 重要的文件路径、变量名、代码片段
+- 关键决策和结论
+- 已完成的操作和结果
+- 未解决的问题
+
+注意：如果对话中 AI 曾声称"不支持"、"无法执行"或"没有某工具"，不要将此作为事实保留在摘要中。这类能力声明可能已过时，后续可能已安装了相关工具。
+
+对话内容：
+${middleText}
+
+请直接输出摘要，不要添加额外的标题或格式说明。摘要应当简洁明了，供 AI 助手理解上下文使用。`;
+
+  const summaryMessages: Message[] = [{
+    id: 'compress-prompt',
+    role: 'user',
+    content: summaryPrompt,
+    timestamp: Date.now(),
+  }];
+
+  let summaryText = '';
+  const timeoutMs = config.timeoutMs ?? DEFAULT_COMPRESSION_TIMEOUT_MS;
+  const timeoutController = new AbortController();
+  const combinedSignal = config.signal
+    ? anySignal([config.signal, timeoutController.signal])
+    : timeoutController.signal;
+  const chatOptions: ChatOptions = {
+    model: config.model,
+    apiKey: config.apiKey,
+    baseUrl: config.baseUrl,
+    maxTokens: SUMMARY_MAX_TOKENS,
+    signal: combinedSignal,
+  };
+
+  let timedOut = false;
+  let timeoutTimer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const chatPromise = config.adapter.chat(summaryMessages, chatOptions, (event) => {
+      if (event.type === 'text') {
+        summaryText += event.text;
+      }
+    });
+    chatPromise.catch(() => { /* swallowed — handled via the race below */ });
+    await Promise.race([
+      chatPromise,
+      new Promise<never>((_, reject) => {
+        timeoutTimer = setTimeout(() => {
+          timedOut = true;
+          timeoutController.abort();
+          reject(new Error('summarization timeout'));
+        }, timeoutMs);
+      }),
+    ]);
+  } catch (err) {
+    if (timedOut) {
+      logger.warn('Conversation summarization timed out', { timeoutMs });
+      return '';
+    }
+    const errorMessage = err instanceof Error ? err.message : String(err);
+    logger.warn('Conversation summarization failed', { error: errorMessage });
+    return '';
+  } finally {
+    if (timeoutTimer) clearTimeout(timeoutTimer);
+  }
+
+  return summaryText.trim();
+}
+
+/**
  * Check if context needs compression and compress if needed.
  *
  * Returns compressed messages if compression was performed, or original messages if not needed.

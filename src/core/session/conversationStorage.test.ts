@@ -49,11 +49,18 @@ function createMemoryFs() {
   // Route that command to the same in-memory fs so the tests see writes.
   (invoke as ReturnType<typeof vi.fn>).mockImplementation(async (
     cmd: string,
-    args?: { path?: string; content?: string },
+    args?: { path?: string; content?: string; data?: string },
   ) => {
     if (cmd === 'atomic_write_text' && args?.path !== undefined) {
       writeToMemory(args.path, args.content ?? '');
       return;
+    }
+    if (cmd === 'append_file_text') {
+      // Part B1: default to "native append unavailable" so every existing
+      // test (written against the read+atomic-write fallback) keeps
+      // exercising that path unchanged. Tests that specifically cover the
+      // native-append success path override this mock locally.
+      throw new Error('native append unavailable in test');
     }
     return undefined;
   });
@@ -136,6 +143,61 @@ describe('conversationStorage', () => {
     });
   });
 
+  describe('appendToFile · native append (Part B1)', () => {
+    it('uses the native append_file_text command and skips the atomic-write fallback when it succeeds', async () => {
+      const calls: Array<{ cmd: string; args?: Record<string, unknown> }> = [];
+      (invoke as ReturnType<typeof vi.fn>).mockImplementation(async (
+        cmd: string,
+        args?: Record<string, unknown>,
+      ) => {
+        calls.push({ cmd, args });
+        if (cmd === 'append_file_text') {
+          // Simulate a successful native append — no read/rewrite of the file.
+          return undefined;
+        }
+        if (cmd === 'atomic_write_text') {
+          throw new Error('should not fall back to atomic_write_text when native append succeeds');
+        }
+        return undefined;
+      });
+
+      const msg = makeMsg({ id: 'native-1', content: 'native hello' });
+      await storage.appendMessage('conv-native', msg);
+      await storage.flushWrites();
+
+      const appendCalls = calls.filter((c) => c.cmd === 'append_file_text');
+      expect(appendCalls).toHaveLength(1);
+      expect(appendCalls[0].args?.path).toEqual(expect.stringContaining('conv-native'));
+      expect(appendCalls[0].args?.data).toEqual(expect.stringContaining('native hello'));
+
+      // Fallback path (atomicWrite → invoke('atomic_write_text')) must never fire.
+      expect(calls.some((c) => c.cmd === 'atomic_write_text')).toBe(false);
+    });
+
+    it('falls back to read + atomic-write when native append fails, and no data is lost', async () => {
+      // memFs's default mock (set up in createMemoryFs) already rejects
+      // append_file_text, so appendToFile should transparently fall back.
+      const seed = makeMsg({ id: 'seed', content: 'seed message' });
+      await storage.appendMessage('conv-fallback', seed);
+      await storage.flushWrites();
+
+      const appended = makeMsg({ id: 'fallback-1', content: 'fallback hello' });
+      await storage.appendMessage('conv-fallback', appended);
+      await storage.flushWrites();
+
+      // atomic_write_text must have been used (the fallback path).
+      const atomicWriteCalls = (invoke as ReturnType<typeof vi.fn>).mock.calls.filter(
+        (call) => call[0] === 'atomic_write_text',
+      );
+      expect(atomicWriteCalls.length).toBeGreaterThan(0);
+
+      const loaded = await storage.loadMessages('conv-fallback');
+      expect(loaded).toHaveLength(2);
+      expect(loaded[0].content).toBe('seed message');
+      expect(loaded[1].content).toBe('fallback hello');
+    });
+  });
+
   describe('loadMessages · corruption resilience', () => {
     // Path shape matches ensureBase() + messagesPath() (see conversationStorage.ts).
     // appDataDir is mocked globally to '/Users/testuser/.abu'.
@@ -168,6 +230,25 @@ describe('conversationStorage', () => {
       memFs.files.set(PATH, 'garbage line 1\ngarbage line 2\n');
       const loaded = await storage.loadMessages('corrupt-conv');
       expect(loaded).toEqual([]);
+    });
+
+    it('dedups a duplicate line (non-idempotent native-append fallback)', async () => {
+      const line = JSON.stringify(makeMsg({ id: 'dup', content: 'once' }));
+      // Same line written twice — what a native append that durably wrote but
+      // whose invoke promise rejected leaves behind (fallback re-appends).
+      memFs.files.set(PATH, `${line}\n${line}\n`);
+      const loaded = await storage.loadMessages('corrupt-conv');
+      expect(loaded).toHaveLength(1);
+      expect(loaded[0].id).toBe('dup');
+    });
+
+    it('keeps the last occurrence when a duplicate id has newer content', async () => {
+      const older = JSON.stringify(makeMsg({ id: 'x', content: 'old' }));
+      const newer = JSON.stringify(makeMsg({ id: 'x', content: 'new' }));
+      memFs.files.set(PATH, `${older}\n${newer}\n`);
+      const loaded = await storage.loadMessages('corrupt-conv');
+      expect(loaded).toHaveLength(1);
+      expect(loaded[0].content).toBe('new');
     });
 
     it('concurrent appendMessage + replaceMessageById do not race', async () => {

@@ -25,6 +25,7 @@ vi.mock('@tauri-apps/plugin-fs', async () => {
 });
 
 import { buildShareBundle, SHARE_SCHEMA_VERSION } from './shareBundle';
+import { createCompactBoundaryMarker } from '@/core/context/compactBoundary';
 
 function makeConv(messages: Message[], overrides: Partial<Conversation> = {}): Conversation {
   return {
@@ -158,6 +159,25 @@ describe('buildShareBundle', () => {
     expect(bundle.messages).toHaveLength(2);
     expect(bundle.messages.map((m) => m.id)).toEqual(['real-1', 'real-2']);
     expect(JSON.stringify(bundle)).not.toContain('上次对话在第');
+  });
+
+  it('drops compact-boundary markers and never leaks their un-redacted summaryText', async () => {
+    const marker = createCompactBoundaryMarker({
+      summaryText: 'SENTINEL_SUMMARY_do_not_leak_this_verbatim',
+      summarizedFromId: 'real-1',
+      summarizedToId: 'real-1',
+      source: 'manual',
+      timestamp: 3,
+    });
+    const conv = makeConv([
+      { id: 'real-1', role: 'user', content: 'real question', timestamp: 1 },
+      marker,
+      { id: 'real-2', role: 'assistant', content: 'real answer', timestamp: 4 },
+    ]);
+    const bundle = await buildShareBundle(conv);
+    expect(bundle.messages).toHaveLength(2);
+    expect(bundle.messages.map((m) => m.id)).toEqual(['real-1', 'real-2']);
+    expect(JSON.stringify(bundle)).not.toContain('SENTINEL_SUMMARY_do_not_leak_this_verbatim');
   });
 
   it('does not mutate the source conversation object', async () => {

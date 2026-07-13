@@ -21,7 +21,12 @@ import { joinPath } from '../../utils/pathUtils';
 import { matchesToolName, parseToolPatterns } from '../skill/toolFilter';
 import { notifyTaskCompleted, notifyTaskError } from '../../utils/notifications';
 import { prepareContextMessages, trimOldScreenshots } from '../context/contextManager';
-import { compressContextIfNeeded } from '../context/contextCompressor';
+import { compressContextIfNeeded, summarizeConversation } from '../context/contextCompressor';
+import {
+  buildContextFromBoundary,
+  computeCompactionPlan,
+  createCompactBoundaryMarker,
+} from '../context/compactBoundary';
 import { applyMicroCompaction } from '../context/microCompactor';
 import { AutoCompactTracker, getUsagePercent } from '../context/autoCompact';
 import { estimateToolSchemaTokens, estimateTokens, estimateMessageTokens, calibrateFromUsage, setActiveModel } from '../context/tokenEstimator';
@@ -56,6 +61,14 @@ import { createLogger } from '../logging/logger';
 import { reportError } from '@/utils/consoleError';
 
 const logger = createLogger('agentLoop');
+
+// Persistent compaction (long-conversation Part A): when the post-compression
+// payload is still this fraction of the input budget, land an append-only
+// compact-boundary marker so future turns read a compact context from the
+// marker (survives restart) instead of re-running the ephemeral 65% pass every
+// turn. Higher than the 65% send-only trigger — the ephemeral pass fires first;
+// only when it can't bring the payload down does a durable marker land.
+const PERSISTENT_COMPACTION_THRESHOLD = 0.85;
 
 /** MIME type to file extension mapping */
 const MIME_TO_EXT: Record<string, string> = {
@@ -1379,7 +1392,17 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
       // Compression triggers when: enough turns AND (cached result available OR warning level triggers compaction)
       let messagesForContext = historyMessages;
       let compressionApplied = false;
-      if (turnCount >= 3) {
+      // Long-conversation Part A: honour a persistent compact-boundary marker if
+      // one exists. buildContextFromBoundary returns the compact view (firstRound
+      // + summary + recent, markers stripped) when the LAST marker is present,
+      // else the SAME array reference. A marker takes over → skip the ephemeral
+      // 65% cache path below; otherwise fall through to the existing send-only
+      // compression. The marker itself is NEVER sent to the LLM.
+      const boundaryView = buildContextFromBoundary(historyMessages);
+      if (boundaryView !== historyMessages) {
+        messagesForContext = boundaryView;
+        compressionApplied = true;
+      } else if (turnCount >= 3) {
         const convForCache = useChatStore.getState().conversations[conversationId];
         const cache = convForCache?.contextCache;
 
@@ -1492,6 +1515,81 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
         tokensMax: contextWindowSize,
         overhead: systemAndToolsOverhead,
       });
+
+      // Step 2.1: Persistent compaction (long-conversation Part A). When the
+      // payload is still critically large after the send-only pass, land an
+      // append-only compact-boundary marker so future turns read a compact
+      // context from the marker (survives restart; no re-summarizing every turn).
+      // Gating: computeCompactionPlan gets the token estimator so it only returns
+      // a plan when there is enough NEW content the LAST marker doesn't already
+      // cover (delta guard) — prevents divider-spam / a blocking summarize call
+      // every turn while the conversation stays large. autoCompactTracker (shared
+      // with the 65% path) is the failure circuit breaker. No per-turn latch: the
+      // marker lands immediately so the next iteration already sees it.
+      if (
+        turnCount >= 3 &&
+        postCompressionTokens >= maxInputTokens * PERSISTENT_COMPACTION_THRESHOLD &&
+        !autoCompactTracker.isDisabled()
+      ) {
+        const plan = computeCompactionPlan(historyMessages, { estimateTokens: estimateMessageTokens });
+        if (plan) {
+          const compactionCreds = resolveEffectiveLlmCreds(
+            getActiveApiKey(settingsForModel),
+            getActiveProvider(settingsForModel)?.baseUrl || undefined,
+          );
+          let summaryText = '';
+          try {
+            summaryText = await summarizeConversation(plan.middleMessages, {
+              adapter,
+              model: effectiveModelId,
+              apiKey: compactionCreds.apiKey,
+              baseUrl: compactionCreds.baseUrl,
+              signal: abortController.signal,
+            });
+          } catch (err) {
+            // Defensive: summarizeConversation is contractually no-throw (it
+            // swallows timeout/error and returns ''), but keep this in case an
+            // unexpected error escapes. The empty-string path below is the real
+            // failure recorder.
+            logger.warn('[persistentCompaction] summarize threw unexpectedly', { error: String(err) });
+          }
+          if (summaryText.trim()) {
+            // Append-only: create a marker and add it as the new last message. No
+            // existing message is mutated — the rewrite data-loss class cannot
+            // occur. buildContextFromBoundary picks it up next turn. (Known minor:
+            // when this fires mid tool-use loop the divider can visually split
+            // that loop's group — cosmetic.)
+            const marker = createCompactBoundaryMarker({
+              summaryText,
+              summarizedFromId: plan.summarizedFromId,
+              summarizedToId: plan.summarizedToId,
+              source: 'auto',
+              timestamp: Date.now(),
+            });
+            useChatStore.getState().addMessage(conversationId, marker);
+            // Clear the now-stale ephemeral 65% cache (a marker supersedes it),
+            // mirroring the manual /compact path so the two land paths stay
+            // symmetric.
+            useChatStore.getState().clearContextCache(conversationId);
+            autoCompactTracker.recordSuccess();
+            logger.info('[persistentCompaction] landed compact-boundary marker', {
+              from: plan.summarizedFromId,
+              to: plan.summarizedToId,
+              summarizedCount: plan.middleMessages.length,
+            });
+          } else {
+            // Empty return = timeout / error / empty summary. Record against the
+            // SHARED circuit breaker: when a marker is already active this Step
+            // 2.1 call is the ONLY compaction path (buildContextFromBoundary
+            // short-circuits the 65% path that otherwise records failures), so
+            // without this a provider that keeps timing out would re-issue a
+            // blocking summarize every turn with no breaker relief — the "死寂"
+            // stall class the breaker exists to prevent.
+            autoCompactTracker.recordFailure();
+          }
+        }
+      }
+
       const trimmedMessages = trimOldScreenshots(messagesForContext, usagePercent);
 
       // Step 3: Hard truncation as safety net
@@ -1779,8 +1877,12 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
                 getActiveApiKey(settingsForModel),
                 getActiveProvider(settingsForModel)?.baseUrl || undefined,
               )
+              // Use boundaryView (marker-free compact view if a marker exists,
+              // else raw history) so recovery never re-feeds a marker to the LLM
+              // and reuses the existing summary instead of re-summarizing full raw
+              // history.
               const compressionResult = await compressContextIfNeeded(
-                historyMessages,
+                boundaryView,
                 effectiveSystemPrompt,
                 contextWindowSize,
                 maxOutputTokens,
@@ -1813,7 +1915,9 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
           // Stage 2: Hard truncation as fallback
           if (!recovered) {
             logger.info('Attempting hard truncation recovery');
-            const emergencyRounds = identifyRounds(historyMessages);
+            // boundaryView is marker-free (compact view if a marker exists) so
+            // the truncated emergency payload never contains a boundary marker.
+            const emergencyRounds = identifyRounds(boundaryView);
             if (emergencyRounds.length > 3) {
               const firstRound = emergencyRounds[0];
               const lastTwoRounds = emergencyRounds.slice(-2);

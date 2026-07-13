@@ -23,6 +23,7 @@ import { uint8ArrayToBase64 } from '@/utils/base64';
 import { normalizeSeparators } from '@/utils/pathUtils';
 import { listSnapshots, readSnapshotBytes, type SnapshotEntry, type SnapshotSource } from './outputSnapshots';
 import { redactText, redactDeep, type RedactionSample } from './shareRedactor';
+import { isCompactBoundary } from '@/core/context/compactBoundary';
 
 export const SHARE_SCHEMA_VERSION = 1 as const;
 
@@ -93,7 +94,12 @@ export async function buildShareBundle(
   let redactionCount = 0;
 
   // Visible (non-system) messages only — matches ChatView's `!m.isSystem`.
-  const visible = conv.messages.filter((m) => !m.isSystem);
+  // Also drop compact-boundary markers: they render as an in-app divider (not
+  // a real message), carry empty content, and their compactBoundary.summaryText
+  // is a summary of the whole conversation that redactText would NOT scrub (it
+  // only scrubs `content`) — dropping them avoids leaking an un-redacted
+  // summary. The summarized messages themselves are still present and redacted.
+  const visible = conv.messages.filter((m) => !m.isSystem && !isCompactBoundary(m));
   const cleanedMessages: Message[] = [];
   let done = 0;
   for (const src of visible) {

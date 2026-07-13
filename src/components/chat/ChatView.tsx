@@ -251,9 +251,18 @@ export default function ChatView() {
     if (!sentinel || !root || typeof IntersectionObserver === 'undefined') return;
     const observer = new IntersectionObserver(
       (entries) => {
-        if (entries.some((entry) => entry.isIntersecting)) {
-          loadEarlier();
-        }
+        if (!entries.some((entry) => entry.isIntersecting)) return;
+        // Only load earlier when the user has genuinely scrolled UP. Without
+        // this, a window whose rendered groups don't fill the viewport (short
+        // content, or an inline widget still collapsed at its async load height)
+        // leaves the sentinel passively in view at the bottom — firing an
+        // immediate loadEarlier on open, which churns renderLimit + the scroll
+        // anchor while the widget iframe is still settling its height → flicker
+        // and a wrong final scroll position. Skip while at/near the bottom;
+        // a real scroll-up moves us away from the bottom and loads normally.
+        const c = scrollNodeRef.current;
+        if (c && c.scrollTop + c.clientHeight >= c.scrollHeight - 100) return;
+        loadEarlier();
       },
       { root, threshold: 0 },
     );

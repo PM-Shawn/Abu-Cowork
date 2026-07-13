@@ -91,6 +91,20 @@ function buildConversation(id: string, groupCount: number): Conversation {
   };
 }
 
+/** happy-dom has no layout, so scrollTop/clientHeight/scrollHeight are all 0 —
+ *  which the "only load when scrolled up" guard reads as "at the bottom" and
+ *  skips. Stamp geometry onto the scroll container to simulate the user having
+ *  scrolled UP (so the guard lets loadEarlier through). */
+function simulateScrolledUp() {
+  const c = document.querySelector('.overflow-y-auto') as HTMLElement | null;
+  if (!c) return;
+  // scrollTop must stay writable — the scroll-anchor useLayoutEffect assigns to
+  // it, which would throw on a read-only data property.
+  Object.defineProperty(c, 'scrollTop', { value: 0, configurable: true, writable: true });
+  Object.defineProperty(c, 'clientHeight', { value: 100, configurable: true });
+  Object.defineProperty(c, 'scrollHeight', { value: 1000, configurable: true });
+}
+
 function setActiveConversation(conv: Conversation) {
   useChatStore.setState({
     activeConversationId: conv.id,
@@ -149,6 +163,7 @@ describe('ChatView render windowing (Part B3)', () => {
     expect(MockIntersectionObserver.instances).toHaveLength(1);
 
     act(() => {
+      simulateScrolledUp();
       MockIntersectionObserver.instances[0].triggerIntersect();
     });
 
@@ -158,12 +173,31 @@ describe('ChatView render windowing (Part B3)', () => {
     expect(screen.queryByTestId('render-window-sentinel')).not.toBeInTheDocument();
   });
 
+  it('does NOT grow when the sentinel is passively in view at the bottom (guard)', () => {
+    // Regression: a sentinel in view while at/near the bottom (short content, or
+    // an inline widget still collapsed) must not eager-load — that churns the
+    // window + scroll anchor and made inline widgets flicker + land the scroll
+    // in the wrong place. happy-dom's 0/0/0 geometry reads as "at bottom".
+    setActiveConversation(buildConversation('conv-atbottom', 57));
+    render(<ChatView />);
+    expect(screen.getAllByTestId('message-group')).toHaveLength(40);
+
+    act(() => {
+      MockIntersectionObserver.instances[0].triggerIntersect();
+    });
+
+    // Still 40 — the guard skipped loadEarlier because we're at the bottom.
+    expect(screen.getAllByTestId('message-group')).toHaveLength(40);
+    expect(screen.getByTestId('render-window-sentinel')).toBeInTheDocument();
+  });
+
   it('resets the render window back to 40 when switching to a different conversation', () => {
     setActiveConversation(buildConversation('conv-a', 57));
     const { rerender } = render(<ChatView />);
     expect(screen.getAllByTestId('message-group')).toHaveLength(40);
 
     act(() => {
+      simulateScrolledUp();
       MockIntersectionObserver.instances[0]?.triggerIntersect();
     });
     expect(screen.getAllByTestId('message-group')).toHaveLength(57);

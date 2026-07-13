@@ -2,6 +2,9 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { invoke } from '@tauri-apps/api/core';
 import { writeTextFile } from '@tauri-apps/plugin-fs';
 import { readFileTool, writeFileTool, deleteFileTool } from './fileTools';
+import { registerBuiltinTools } from '../builtins';
+import { toolRegistry } from '../registry';
+import { TOOL_NAMES } from '../toolNames';
 
 // Regression coverage for the shell-injection fixes in the PDF branch of
 // readFileTool. These tests prove the *interface contract* — the migrated
@@ -221,5 +224,12 @@ describe('deleteFileTool \u2014 move to trash (safe delete)', () => {
     expect(cmd).toBe('move_to_trash');
     // Locale-robust: the failure message always interpolates {error}.
     expect(result).toContain('trash boom');
+  });
+});
+
+describe('delete_file registration', () => {
+  it('is registered as a builtin tool', () => {
+    registerBuiltinTools();
+    expect(toolRegistry.has(TOOL_NAMES.DELETE_FILE)).toBe(true);
   });
 });

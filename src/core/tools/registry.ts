@@ -236,6 +236,7 @@ const FILE_TOOL_PATH_MAP: Record<string, (input: Record<string, unknown>) => { p
   [TOOL_NAMES.LIST_DIRECTORY]: (i) => i.path ? { path: i.path as string, capability: 'read' } : null,
   [TOOL_NAMES.WRITE_FILE]:     (i) => i.path ? { path: i.path as string, capability: 'write' } : null,
   [TOOL_NAMES.EDIT_FILE]:      (i) => i.path ? { path: i.path as string, capability: 'write' } : null,
+  [TOOL_NAMES.DELETE_FILE]:    (i) => i.path ? { path: i.path as string, capability: 'write' } : null,
   [TOOL_NAMES.SEARCH_FILES]:   (i) => i.path ? { path: i.path as string, capability: 'read' } : null,
   [TOOL_NAMES.FIND_FILES]:     (i) => i.path ? { path: i.path as string, capability: 'read' } : null,
 };

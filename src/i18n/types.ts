@@ -2733,6 +2733,10 @@ export interface TranslationDict {
       imageSkipNoVision: string;
       /** File locked by another agent. {path} */
       errFileLocked: string;
+      /** delete_file succeeded — moved to OS Trash. {path} */
+      movedToTrash: string;
+      /** delete_file failed — fail-closed, nothing was deleted. {error} */
+      trashFailed: string;
     };
     // show_widget / read_me — inline visualization tool
     widget: {

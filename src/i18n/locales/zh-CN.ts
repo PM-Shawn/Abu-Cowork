@@ -2423,6 +2423,8 @@ const zhCN: TranslationDict = {
     file: {
       imageSkipNoVision: '[图片文件 {path}（{mediaType}）：当前模型无视觉能力，未读取图像内容。如需分析图片，请切换到支持视觉的模型（如 Claude / GPT-4o）。]',
       errFileLocked: 'Error: {path} 正在被其他代理编辑，请稍后重试。',
+      movedToTrash: '已移入废纸篓（一般可恢复）：{path}',
+      trashFailed: 'Error: 移入废纸篓失败：{error}（未删除，也未永久删除）',
     },
     widget: {
       errTitleEmpty: '参数错误：title 不能为空。',

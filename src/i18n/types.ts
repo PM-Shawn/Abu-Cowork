@@ -1014,6 +1014,25 @@ export interface TranslationDict {
     manifestClose: string;
     // Feedback navigation prompt at bottom of DiagnosticSection
     feedbackPageHint: string;
+    // Conversation picker (multi-select attach, in the feedback form)
+    conversationPickerTitle: string;
+    conversationPickerSearchPlaceholder: string;
+    conversationPickerLoadMore: string;
+    conversationPickerEmpty: string;
+    conversationPickerNoTitle: string;
+    conversationPickerCurrentBadge: string;
+    conversationPickerMessageCount: string; // {count}
+    conversationPickerSelectedCount: string; // {count}
+    conversationPickerPrivacyHint: string;
+    // Screenshot upload (feedback form)
+    screenshotTitle: string;
+    screenshotAddHint: string;
+    screenshotCount: string; // {n}
+    screenshotTooMany: string;
+    screenshotTooLarge: string;
+    screenshotRemoveAria: string;
+    // Auto-included-content hint shown above the submit button
+    uploadAutoIncludedHint: string;
   };
 
   // Toolbox Modal

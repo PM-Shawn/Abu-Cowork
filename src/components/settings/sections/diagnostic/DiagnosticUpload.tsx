@@ -1,14 +1,17 @@
 import { Package, ChevronRight, ChevronDown, Loader2, Upload, Check } from 'lucide-react';
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { cn } from '@/lib/utils';
 import { useI18n } from '@/i18n';
 import { useToastStore } from '@/stores/toastStore';
 import { useDiagnosticStore } from '@/stores/diagnosticStore';
+import { useChatStore } from '@/stores/chatStore';
 import { Toggle } from '@/components/ui/toggle';
 import { Textarea } from '@/components/ui/textarea';
 import { produceBundle, collectAndZip, type ProduceResult } from '@/core/diagnostic/bundle';
 import { mapPermissionsError } from '@/core/diagnostic/errorMap';
 import { uploadDiagnosticBundle } from '@/utils/consoleDiagnostic';
+import ConversationPicker from './ConversationPicker';
+import ScreenshotUpload, { type LocalShot } from './ScreenshotUpload';
 
 interface Props {
   onExportSuccess: (r: ProduceResult) => void;
@@ -19,8 +22,10 @@ interface Props {
 const BUNDLE_CONTENTS = [
   'meta.json',
   'diagnostic-snapshot.json',
-  'conversation/messages.jsonl',
-  'conversation/index-entry.json',
+  'feedback/description.txt',
+  'feedback/screenshots/<file>',
+  'conversations/<id>/messages.jsonl',
+  'conversations/<id>/index-entry.json',
   'settings/settings.json',
   'settings/providers.json',
   'skills/installed.json',
@@ -30,6 +35,13 @@ const BUNDLE_CONTENTS = [
   'README.txt',
 ];
 
+/** `01.png`, `02.jpg`, ... — extension follows the (possibly compressed) mediaType. */
+function screenshotFilename(index: number, mediaType: string): string {
+  const ext =
+    mediaType === 'image/jpeg' ? 'jpg' : mediaType === 'image/png' ? 'png' : mediaType === 'image/webp' ? 'webp' : mediaType === 'image/gif' ? 'gif' : 'png';
+  return `${String(index + 1).padStart(2, '0')}.${ext}`;
+}
+
 export default function DiagnosticUpload({ onExportSuccess, description, onDescriptionChange }: Props) {
   const { t } = useI18n();
   const includeRawText = useDiagnosticStore((s) => s.includeRawText);
@@ -38,6 +50,7 @@ export default function DiagnosticUpload({ onExportSuccess, description, onDescr
   const setExportInProgress = useDiagnosticStore((s) => s.setExportInProgress);
   const setLastExportPath = useDiagnosticStore((s) => s.setLastExportPath);
   const addToast = useToastStore((s) => s.addToast);
+  const activeConversationId = useChatStore((s) => s.activeConversationId);
 
   const [includedExpanded, setIncludedExpanded] = useState(false);
   const [privacyExpanded, setPrivacyExpanded] = useState(false);
@@ -47,6 +60,26 @@ export default function DiagnosticUpload({ onExportSuccess, description, onDescr
   // can't freeze the export (Bug 2). On: include the full history.
   const [includeAllMessages, setIncludeAllMessages] = useState(false);
   const messageCap = includeAllMessages ? ('all' as const) : undefined;
+  // Defaults to the active conversation only — attaching anything else is an
+  // explicit opt-in via ConversationPicker (no "select all", by design).
+  const [selectedConversationIds, setSelectedConversationIds] = useState<string[]>(() =>
+    activeConversationId ? [activeConversationId] : [],
+  );
+  // Tracks whether the user has manually touched the picker. Until they do,
+  // the selection keeps following the active conversation (the panel can
+  // stay mounted while the user switches conversations behind it); once
+  // they've made a conscious choice, we stop overwriting it.
+  const touchedSelectionRef = useRef(false);
+  useEffect(() => {
+    if (touchedSelectionRef.current) return;
+    setSelectedConversationIds(activeConversationId ? [activeConversationId] : []);
+  }, [activeConversationId]);
+  const handleSelectedConversationIdsChange = (ids: string[]) => {
+    touchedSelectionRef.current = true;
+    setSelectedConversationIds(ids);
+  };
+  const [screenshots, setScreenshots] = useState<LocalShot[]>([]);
+  const busy = uploadInProgress || exportInProgress;
 
   const onToggleRaw = (next: boolean) => {
     setIncludeRawText(next);
@@ -60,8 +93,15 @@ export default function DiagnosticUpload({ onExportSuccess, description, onDescr
     setUploadInProgress(true);
     setUploadDone(false);
     try {
-      const { bytes, filename } = await collectAndZip({ includeRawText, messageCap });
-      await uploadDiagnosticBundle(bytes, filename, description.trim() || undefined);
+      const trimmedDescription = description.trim() || undefined;
+      const { bytes, filename } = await collectAndZip({
+        includeRawText,
+        messageCap,
+        conversationIds: selectedConversationIds,
+        description: trimmedDescription,
+        screenshots: screenshots.map((s, i) => ({ name: screenshotFilename(i, s.mediaType), bytes: s.bytes })),
+      });
+      await uploadDiagnosticBundle(bytes, filename, trimmedDescription);
       setUploadDone(true);
       setTimeout(() => setUploadDone(false), 4000);
       addToast({ title: t.diagnostic.uploadSuccess, type: 'success', duration: 3000 });
@@ -77,7 +117,13 @@ export default function DiagnosticUpload({ onExportSuccess, description, onDescr
     if (exportInProgress) return;
     setExportInProgress(true);
     try {
-      const res = await produceBundle({ includeRawText, messageCap });
+      const res = await produceBundle({
+        includeRawText,
+        messageCap,
+        conversationIds: selectedConversationIds,
+        description: description.trim() || undefined,
+        screenshots: screenshots.map((s, i) => ({ name: screenshotFilename(i, s.mediaType), bytes: s.bytes })),
+      });
       setLastExportPath(res.path);
       onExportSuccess(res);
     } catch (e) {
@@ -154,8 +200,13 @@ export default function DiagnosticUpload({ onExportSuccess, description, onDescr
         />
       </div>
 
-      {/* Problem description textarea */}
+      {/* Conversation attach picker */}
       <div className="mt-3">
+        <ConversationPicker selectedIds={selectedConversationIds} onChange={handleSelectedConversationIdsChange} disabled={busy} />
+      </div>
+
+      {/* Problem description textarea */}
+      <div className="mt-1">
         <Textarea
           value={description}
           onChange={(e) => onDescriptionChange(e.target.value)}
@@ -164,6 +215,14 @@ export default function DiagnosticUpload({ onExportSuccess, description, onDescr
           disabled={uploadInProgress || exportInProgress}
         />
       </div>
+
+      {/* Screenshot attach panel */}
+      <div className="mt-3">
+        <ScreenshotUpload screenshots={screenshots} onChange={setScreenshots} disabled={busy} />
+      </div>
+
+      {/* Auto-included-content hint */}
+      <div className="mt-3 text-[11px] text-[var(--abu-text-muted)]">{t.diagnostic.uploadAutoIncludedHint}</div>
 
       {/* Primary: upload to console */}
       <button

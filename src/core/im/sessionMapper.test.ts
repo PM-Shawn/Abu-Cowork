@@ -38,10 +38,13 @@ vi.mock('../../stores/imChannelStore', () => {
   };
 });
 
+// Mutable so individual tests can seed conversation messages (e.g. the
+// getSessionContext "true first user message" test). Reset in beforeEach.
+const mockConversations: Record<string, { messages: unknown[] }> = { 'conv-new': { messages: [] } };
 vi.mock('../../stores/chatStore', () => ({
   useChatStore: {
     getState: () => ({
-      conversations: { 'conv-new': { messages: [] } },
+      conversations: mockConversations,
       conversationIndex: { 'conv-new': { id: 'conv-new', title: '', messageCount: 0, createdAt: 0, updatedAt: 0 } },
       createConversation: vi.fn(() => 'conv-new'),
       renameConversation: vi.fn(),
@@ -105,6 +108,9 @@ describe('SessionMapper', () => {
     for (const key of Object.keys(store.archivedSessions)) {
       delete store.archivedSessions[key];
     }
+    // Reset the mutable conversations mock to the shared default.
+    for (const key of Object.keys(mockConversations)) delete mockConversations[key];
+    mockConversations['conv-new'] = { messages: [] };
   });
 
   it('creates new session for first message', () => {
@@ -301,6 +307,46 @@ describe('SessionMapper', () => {
       );
       expect(recovered.isRecovered).toBeUndefined();
       vi.restoreAllMocks();
+    });
+  });
+
+  // message-storage P1 Step 7: getSessionContext must summarize from the TRUE
+  // first user message + last AI message. Today conv.messages is full so
+  // userMsgs[0] is the real first; this test pins that invariant so the
+  // step-9 windowing follow-up (read __pinnedFirstRound) preserves it.
+  describe('getSessionContext (P1 Step 7)', () => {
+    // getSessionContext is private; access via bracket notation for a focused
+    // unit test rather than routing through the recovery path.
+    const ctx = (m: SessionMapper, convId: string): string =>
+      (m as unknown as { getSessionContext: (id: string) => string }).getSessionContext(convId);
+
+    it('summarizes the true first user message and the last AI message', () => {
+      mockConversations['conv-ctx'] = {
+        messages: [
+          { id: 'u1', role: 'user', content: 'the very first question', timestamp: 1 },
+          { id: 'a1', role: 'assistant', content: 'first answer', timestamp: 2 },
+          { id: 'u2', role: 'user', content: 'a later follow-up', timestamp: 3 },
+          { id: 'a2', role: 'assistant', content: 'the most recent answer', timestamp: 4 },
+        ],
+      };
+
+      const summary = ctx(mapper, 'conv-ctx');
+
+      // First half = true first user message (NOT the later follow-up).
+      expect(summary).toContain('the very first question');
+      expect(summary).not.toContain('a later follow-up');
+      // Second half = last AI message (NOT the first answer).
+      expect(summary).toContain('the most recent answer');
+      expect(summary).not.toContain('first answer');
+      expect(summary).toContain('→');
+    });
+
+    it('returns the empty-context placeholder when the conversation has no messages', () => {
+      expect(ctx(mapper, 'conv-new')).toBe('(无上下文)');
+    });
+
+    it('returns empty string for an unknown conversation', () => {
+      expect(ctx(mapper, 'does-not-exist')).toBe('');
     });
   });
 });

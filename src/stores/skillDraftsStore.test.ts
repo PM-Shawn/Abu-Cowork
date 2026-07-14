@@ -324,6 +324,20 @@ describe('skillDraftsStore · card sync', () => {
     // Untouched — skill name mismatch.
     expect(getToolCall()?.noticeCardAction).toBeUndefined();
   });
+
+  it('force-loads full history (ensureFullyLoaded) before settling — scan-history semantics (P1 Step 7)', async () => {
+    // Settling is a scan-history op: it must find EVERY matching card, including
+    // ones a future recent-tail window (P1 steps 8-9) would drop from memory.
+    // So each loaded conversation is fully loaded before the scan.
+    seedCard('weekly-digest');
+    const spy = vi.spyOn(useChatStore.getState(), 'ensureFullyLoaded');
+
+    await useSkillDraftsStore.getState().acceptDraft('weekly-digest');
+
+    expect(spy).toHaveBeenCalledWith(CONV_ID);
+    expect(getToolCall()?.noticeCardAction).toBe('accepted');
+    spy.mockRestore();
+  });
 });
 
 describe('skillDraftsStore · cleanExpired / cleanTrash', () => {

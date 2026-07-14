@@ -55,6 +55,22 @@ export default function IMInfoBar({ conversation }: IMInfoBarProps) {
   };
 
   const capability = session?.capability ?? channel?.capability ?? 'safe_tools';
+  // "Rounds" = number of user turns in this IM session. The authoritative
+  // source is the persisted IM session's own round counter
+  // (incrementSessionRound); imChannelStore persists `sessions`, so a session
+  // is present for virtually every IM conversation, including after restart.
+  // The message-derived fallback below only fires in the rare no-session edge
+  // case (e.g. session expired/cleared while the conversation stays open).
+  //
+  // message-storage P1 note: this fallback counts user-role messages in the
+  // in-memory array, so once windowing (steps 8-9) lands it could under-count
+  // when the array is a recent-tail window. We deliberately do NOT swap in the
+  // catalog authoritative count here — catalogGetCount counts ALL messages
+  // (user + assistant + tool), which is the wrong unit for "rounds" (user
+  // turns only). Given the fallback is a rare-approximation path, the small
+  // possible under-count is accepted rather than introducing a wrong-unit
+  // over-count. If exactness ever matters here, the fix is to fully load
+  // (ensureFullyLoaded) then re-count user turns, not to read the catalog.
   const rounds = session?.messageCount ?? conversation.messages.filter((m) => m.role === 'user').length;
   const startTime = conversation.createdAt;
   const chatName = session?.chatName;

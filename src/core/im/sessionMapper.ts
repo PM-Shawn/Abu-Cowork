@@ -206,6 +206,19 @@ export class SessionMapper {
 
   /**
    * Extract a brief context summary from a conversation (first user message + last AI message).
+   *
+   * message-storage P1 windowing follow-up (steps 8-9): `firstUser` below is
+   * taken as `userMsgs[0]` from the in-memory array. That is correct TODAY
+   * because `conv.messages` is always the full history — but once conv.messages
+   * can be a recent-tail window, `userMsgs[0]` would be the first user message
+   * IN THE WINDOW, not the true first user message of the conversation. Step 9
+   * introduces a resident `__pinnedFirstRound` anchor (the true first round is
+   * always kept in memory) precisely so consumers like this can read the real
+   * first message without a full load. When that anchor lands, source
+   * `firstUser` from `conv.__pinnedAnchors?.firstRound` (falling back to
+   * `userMsgs[0]`). `lastAI` needs no change — the conversation tail is always
+   * resident in the window by construction, so ensureFullyLoaded is NOT needed
+   * here. Kept correct-for-today intentionally; do not "fix" prematurely.
    */
   private getSessionContext(conversationId: string): string {
     const conversations = useChatStore.getState().conversations;

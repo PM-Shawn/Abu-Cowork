@@ -42,13 +42,35 @@ import { useDiscoveryStore } from './discoveryStore';
  * settles cards that haven't been settled yet, so user trace (accepted
  * vs rejected-category clicks) isn't overwritten by a panel action.
  *
- * Cheap: chatStore holds only ~5 active conversations under LRU + each
- * has a bounded message count. Full scan is O(conversations × messages
- * × toolCalls) but realistically under a few hundred iterations.
+ * This is a SCAN-HISTORY operation, not a react-to-newest-message one: it
+ * must find and settle EVERY matching skill-proposal card, wherever it sits
+ * in the conversation. That distinction matters for message-storage P1
+ * windowing (steps 8-9): once conv.messages can be a recent-tail window, a
+ * card in an older message would be dropped from the in-memory array — and
+ * since the disk write-through only happens for cards found here (via
+ * setToolCallNoticeCardAction → replaceMessageById, which rewrites the row
+ * regardless of window), a missed card would keep its stale unsettled state
+ * on disk and reappear unsettled when the user scrolls it back into view.
+ * So we ensureFullyLoaded each loaded conversation before scanning.
+ *
+ * Cost: this force-loads full history for the ~5 loaded conversations. That
+ * is acceptable here because accept/reject is a rare, user-initiated action
+ * — not a hot path — and correctness (no stale cards) beats the one-time
+ * full read. Pre-windowing (today) conv.messages is already full, so
+ * ensureFullyLoaded is near-instant and this is latent/forward-compatible.
  */
-function settleCardsForSkill(skillName: string, action: NoticeCardAction): void {
+async function settleCardsForSkill(skillName: string, action: NoticeCardAction): Promise<void> {
   const chatStore = useChatStore.getState();
-  Object.entries(chatStore.conversations).forEach(([convId, conv]) => {
+  // Snapshot ids up front; ensureFullyLoaded awaits between iterations and the
+  // LRU could unload a conversation in that gap (ensureFullyLoaded then throws).
+  const convIds = Object.keys(chatStore.conversations);
+  for (const convId of convIds) {
+    let conv;
+    try {
+      conv = await chatStore.ensureFullyLoaded(convId);
+    } catch {
+      continue; // conversation unloaded mid-scan — nothing to settle
+    }
     conv.messages.forEach((msg) => {
       msg.toolCalls?.forEach((tc) => {
         // Flip cards that are either untouched OR deferred. A deferred
@@ -68,7 +90,7 @@ function settleCardsForSkill(skillName: string, action: NoticeCardAction): void 
         }
       });
     });
-  });
+  }
 }
 
 interface SkillDraftsState {
@@ -177,7 +199,7 @@ export const useSkillDraftsStore = create<SkillDraftsStore>()((set, get) => ({
       });
       await useDiscoveryStore.getState().refresh(wp);
       await get().refresh(wp);
-      settleCardsForSkill(name, 'accepted');
+      await settleCardsForSkill(name, 'accepted');
       return { ok: true };
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -203,7 +225,7 @@ export const useSkillDraftsStore = create<SkillDraftsStore>()((set, get) => ({
       // Same as acceptDraft — refresh explicitly against the target
       // workspace, never flip the user's global selection (Task #44).
       await get().refresh(wp);
-      settleCardsForSkill(name, opts.category ? 'rejected-category' : 'rejected');
+      await settleCardsForSkill(name, opts.category ? 'rejected-category' : 'rejected');
       return { ok: true };
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);

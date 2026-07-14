@@ -983,6 +983,85 @@ describe('chatStore', () => {
     });
   });
 
+  // ── ensureFullyLoaded (P1 plan Step 5) ──
+  describe('ensureFullyLoaded', () => {
+    afterEach(() => {
+      vi.mocked(exists).mockReset().mockResolvedValue(false);
+      vi.mocked(readTextFile).mockReset().mockResolvedValue('');
+    });
+
+    it('replaces a partial in-memory messages array with a fuller loadMessages result and flags __fullyLoaded', async () => {
+      const id = useChatStore.getState().createConversation();
+      // Simulate a "window" — only one message held in memory.
+      useChatStore.getState().addMessage(id, {
+        id: 'm1', role: 'user', content: 'only one in the window', timestamp: 1,
+      });
+
+      const full = [
+        { id: 'm1', role: 'user', content: 'only one in the window', timestamp: 1 },
+        { id: 'm2', role: 'assistant', content: 'the rest of history', timestamp: 2 },
+      ];
+      vi.mocked(exists).mockResolvedValueOnce(true);
+      vi.mocked(readTextFile).mockResolvedValueOnce(full.map((m) => JSON.stringify(m)).join('\n') + '\n');
+
+      const result = await useChatStore.getState().ensureFullyLoaded(id);
+
+      expect(result.messages).toHaveLength(2);
+      expect(result.messages[1].content).toBe('the rest of history');
+      expect(result.__fullyLoaded).toBe(true);
+      // The live store state reflects the same replacement.
+      expect(useChatStore.getState().conversations[id].messages).toHaveLength(2);
+      expect(useChatStore.getState().conversations[id].__fullyLoaded).toBe(true);
+    });
+
+    it('keeps the in-memory messages when the disk read comes back shorter (write race / no backing file), but still flags __fullyLoaded', async () => {
+      const id = useChatStore.getState().createConversation();
+      useChatStore.getState().addMessage(id, {
+        id: 'm1', role: 'user', content: 'hello', timestamp: 1,
+      });
+      useChatStore.getState().addMessage(id, {
+        id: 'm2', role: 'assistant', content: 'hi back', timestamp: 2,
+      });
+      // Global default mocks: exists() → false, so loadMessages returns [].
+
+      const result = await useChatStore.getState().ensureFullyLoaded(id);
+
+      expect(result.messages).toHaveLength(2);
+      expect(result.messages[0].content).toBe('hello');
+      expect(result.messages[1].content).toBe('hi back');
+      expect(result.__fullyLoaded).toBe(true);
+    });
+
+    it('throws for an unknown conversation id', async () => {
+      await expect(useChatStore.getState().ensureFullyLoaded('nonexistent')).rejects.toThrow();
+    });
+
+    it('exportConversationForShare uses ensureFullyLoaded (picks up the fuller disk copy, not just the in-memory window)', async () => {
+      const id = useChatStore.getState().createConversation();
+      useChatStore.getState().addMessage(id, {
+        id: 'm1', role: 'user', content: 'windowed view', timestamp: 1,
+      });
+
+      const full = [
+        { id: 'm1', role: 'user', content: 'windowed view', timestamp: 1 },
+        { id: 'm2', role: 'assistant', content: 'full history has more', timestamp: 2 },
+      ];
+      vi.mocked(exists).mockResolvedValueOnce(true);
+      vi.mocked(readTextFile).mockResolvedValueOnce(full.map((m) => JSON.stringify(m)).join('\n') + '\n');
+
+      const bundle = await useChatStore.getState().exportConversationForShare(id);
+
+      expect(bundle).not.toBeNull();
+      expect(bundle!.messages).toHaveLength(2);
+      expect(bundle!.messages[1].content).toBe('full history has more');
+    });
+
+    it('exportConversationForShare returns null for an unknown conversation', async () => {
+      const bundle = await useChatStore.getState().exportConversationForShare('nonexistent');
+      expect(bundle).toBeNull();
+    });
+  });
+
   // ── setPendingInput ──
   describe('setPendingInput', () => {
     it('sets and clears pending input', () => {

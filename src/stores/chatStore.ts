@@ -364,6 +364,17 @@ interface ChatActions {
 
   // Persistence — load conversation from disk on demand
   loadConversation: (convId: string) => Promise<void>;
+  /**
+   * Force-load the complete conversation history from disk, replacing
+   * `conv.messages` and marking `__fullyLoaded = true` (ephemeral, not
+   * persisted). Unlike `loadConversation` (which only "ensures displayed"
+   * and may be a window once P1 windowing — steps 8-9 — lands), this
+   * guarantees the full history for consumers that must not silently
+   * under-count: export/share, RightPanel stats (query-full policy),
+   * scan-history callers. See implementation JSDoc for write-race /
+   * delete-revival trade-offs. Throws if `convId` is unknown.
+   */
+  ensureFullyLoaded: (convId: string) => Promise<Conversation>;
   unloadOldConversations: () => void;
 }
 
@@ -1495,9 +1506,12 @@ export const useChatStore = create<ChatStore>()(
       // (preview dialog) is responsible for persisting the JSON after the
       // user confirms.
       exportConversationForShare: async (convId, opts = {}) => {
-        await get().loadConversation(convId);
-        const conv = get().conversations[convId];
-        if (!conv) return null;
+        let conv: Conversation;
+        try {
+          conv = await get().ensureFullyLoaded(convId);
+        } catch {
+          return null;
+        }
         const { buildShareBundle } = await import('../core/session/shareBundle');
         return buildShareBundle(conv, {
           tier: opts.tier ?? 'standard',
@@ -1507,6 +1521,58 @@ export const useChatStore = create<ChatStore>()(
       },
 
       // ── Persistence: load conversation from disk on demand ──
+
+      /**
+       * Force a full reload of the conversation's JSONL history (P1 plan
+       * Step 5). Today (pre-windowing) `conv.messages` is already the full
+       * history, so this is mostly latent/forward-compatible plumbing for
+       * P1 steps 8-9 — but it's real work now, not a no-op: it always hits
+       * disk, unlike `loadConversation`, which short-circuits once the
+       * conversation is already in memory.
+       *
+       * Two correctness guards baked in:
+       *
+       * 1. `flushWrites()` runs before the reload so anything still sitting
+       *    in the 100ms debounce write-batch (conversationStorage's
+       *    `enqueueWrite`/`scheduleDrain`) lands on disk first — otherwise a
+       *    message added just before this call could be silently dropped.
+       * 2. The freshly loaded array only replaces `conv.messages` when it is
+       *    at least as long as what's already in memory. This protects
+       *    conversations that were never persisted (ephemeral/test
+       *    fixtures) or a read that raced ahead of an unflushed write from
+       *    ever being truncated by a forced reload. Once real windowing
+       *    lands, this guard is a no-op in the common case — disk is always
+       *    >= the in-memory tail window by construction, so the fuller disk
+       *    copy wins as intended.
+       *
+       * NOTE (surfaced during implementation, not explicit in the P1 plan
+       * text): this guard does NOT address — and this function does not
+       * attempt to solve — the pre-existing "delete doesn't write through
+       * to JSONL" gap (P1 plan open question #1). Forcing a disk reload
+       * mid-session can resurface in-memory-deleted messages the same way a
+       * restart already does; `ensureFullyLoaded` is simply the first
+       * mid-session (non-restart) trigger point for that already-known,
+       * P1-deferred issue.
+       */
+      ensureFullyLoaded: async (convId: string): Promise<Conversation> => {
+        await get().loadConversation(convId);
+        const { loadMessages, flushWrites } = await import('../core/session/conversationStorage');
+        await flushWrites();
+        const loaded = sanitizeLoadedMessages(await loadMessages(convId));
+        set((state) => {
+          const conv = state.conversations[convId];
+          if (!conv) return;
+          if (loaded.length >= conv.messages.length) {
+            conv.messages = loaded;
+          }
+          conv.__fullyLoaded = true;
+        });
+        const result = get().conversations[convId];
+        if (!result) {
+          throw new Error(`ensureFullyLoaded: conversation ${convId} not found`);
+        }
+        return result;
+      },
 
       loadConversation: async (convId: string) => {
         // Already loaded

@@ -350,6 +350,16 @@ export interface Conversation {
     schemaVersion: number;
     importedAt: number;
   };
+  /**
+   * Ephemeral — NOT persisted (excluded by chatStore's `partialize`, which
+   * never persists the `conversations` map at all; only `conversationIndex`
+   * is). Set by `chatStore.ensureFullyLoaded()` once `conv.messages` is
+   * guaranteed to hold the complete on-disk history rather than a possible
+   * window (message-storage P1 Step 5/8-9). Consumers that must not
+   * silently under-count (export/share, RightPanel stats) check this flag
+   * before trusting `messages.length`.
+   */
+  __fullyLoaded?: boolean;
 }
 
 // --- Agent ---

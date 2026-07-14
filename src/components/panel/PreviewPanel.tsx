@@ -24,7 +24,7 @@ const XlsxPreview = lazy(() => import('@/components/preview/XlsxPreview'));
 const CsvPreview = lazy(() => import('@/components/preview/CsvPreview'));
 const PptxPreview = lazy(() => import('@/components/preview/PptxPreview'));
 
-type RendererType = 'markdown' | 'code' | 'image' | 'text' | 'html' | 'pdf' | 'docx' | 'pptx' | 'xlsx' | 'csv' | 'unsupported';
+export type RendererType = 'markdown' | 'code' | 'image' | 'text' | 'html' | 'pdf' | 'docx' | 'pptx' | 'xlsx' | 'csv' | 'unsupported';
 
 /** Binary types that handle their own file reading */
 const BINARY_TYPES = new Set<RendererType>(['pdf', 'docx', 'pptx', 'xlsx']);

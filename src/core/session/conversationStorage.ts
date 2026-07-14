@@ -408,6 +408,22 @@ async function catalogBumpCount(
 }
 
 /**
+ * Best-effort: read the catalog's authoritative `message_count` for a
+ * conversation. Returns null on any failure (missing row, IPC error, etc.) —
+ * callers must treat null as "unknown, fall back to whatever in-memory count
+ * they already have." The catalog is a disposable projection, never a hard
+ * dependency (see module doc above).
+ */
+export async function catalogGetCount(convId: string): Promise<number | null> {
+  try {
+    const row = await invoke<{ message_count: number } | null>('catalog_get_conversation', { convId });
+    return row?.message_count ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Best-effort: upsert a full catalog row for a conversation. Used on
  * conversation create (and any full metadata sync). Serialized model pin is
  * stored as JSON text so the catalog can surface it without a second lookup.

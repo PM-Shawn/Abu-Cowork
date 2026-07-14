@@ -302,6 +302,35 @@ describe('conversationStorage', () => {
       expect(reconcile).toHaveLength(1);
       expect(reconcile[0].args?.conversationsRoot).toEqual(expect.stringContaining('conversations'));
     });
+
+    describe('catalogGetCount', () => {
+      it('resolves the message_count from catalog_get_conversation', async () => {
+        (invoke as ReturnType<typeof vi.fn>).mockImplementation(async (
+          cmd: string,
+          args?: Record<string, unknown>,
+        ) => {
+          if (cmd === 'catalog_get_conversation') {
+            expect(args?.convId).toBe('conv-count');
+            return { conv_id: 'conv-count', message_count: 42 };
+          }
+          return undefined;
+        });
+
+        await expect(storage.catalogGetCount('conv-count')).resolves.toBe(42);
+      });
+
+      it('returns null when the row is missing', async () => {
+        (invoke as ReturnType<typeof vi.fn>).mockImplementation(async () => null);
+        await expect(storage.catalogGetCount('conv-missing')).resolves.toBeNull();
+      });
+
+      it('returns null when invoke throws', async () => {
+        (invoke as ReturnType<typeof vi.fn>).mockImplementation(async () => {
+          throw new Error('IPC failure');
+        });
+        await expect(storage.catalogGetCount('conv-error')).resolves.toBeNull();
+      });
+    });
   });
 
   describe('loadMessages · corruption resilience', () => {

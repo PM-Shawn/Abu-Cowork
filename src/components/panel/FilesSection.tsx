@@ -1,13 +1,14 @@
 import { useActiveConversation } from '@/stores/chatStore';
 import { usePreviewStore } from '@/stores/previewStore';
 import { useI18n, format as i18nFormat } from '@/i18n';
-import { File, FileCode, FileJson, FileText, FileImage, ExternalLink } from 'lucide-react';
+import { File, FileCode, FileJson, FileText, FileImage, ExternalLink, Loader2 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useEffect, useMemo, useState } from 'react';
 import { revealItemInDir } from '@tauri-apps/plugin-opener';
 import { getBaseName } from '@/utils/pathUtils';
 import { extractFileOutputs } from '@/utils/workflowExtractor';
 import { resolveFileSource, type ResolvedSource } from '@/core/session/outputSnapshots';
+import { useEnsureFullyLoaded } from '@/hooks/useEnsureFullyLoaded';
 
 // Extract file extension and return appropriate icon
 function getFileIcon(path: string) {
@@ -138,6 +139,12 @@ export default function FilesSection() {
   const conversation = useActiveConversation();
   const { t } = useI18n();
 
+  // "query-full" policy (P1 plan Step 6): once windowing lands (steps 8-9),
+  // conversation.messages may be a recent-tail window — force a full reload
+  // before trusting the derived file stats below so this panel never
+  // silently under-counts.
+  const isLoadingFull = useEnsureFullyLoaded(conversation);
+
   const operationLabels: Record<string, string> = {
     read: t.panel.operationRead,
     write: t.panel.operationModify,
@@ -172,8 +179,21 @@ export default function FilesSection() {
   const hiddenCount = trackedFiles.length - MAX_VISIBLE;
   const visibleFiles = expanded ? trackedFiles : trackedFiles.slice(0, MAX_VISIBLE);
 
-  // Don't render if no tracked files
-  if (trackedFiles.length === 0) return null;
+  // Don't render if no tracked files — unless a full reload is still in
+  // flight, in which case "0 files" might just be a stale window view, not
+  // the true empty state. Show a light loading row instead of a false "no
+  // files" flash.
+  if (trackedFiles.length === 0) {
+    if (isLoadingFull) {
+      return (
+        <div className="mt-3 flex items-center gap-1.5 text-[11px] text-[var(--abu-text-muted)]">
+          <Loader2 className="w-3 h-3 animate-spin" />
+          {t.panel.refreshing}
+        </div>
+      );
+    }
+    return null;
+  }
 
   return (
     <div className="space-y-2 mt-3">
@@ -181,8 +201,9 @@ export default function FilesSection() {
         <h4 className="text-[11px] font-medium text-[var(--abu-text-muted)] uppercase tracking-wider">
           {t.panel.files}
         </h4>
-        <span className="text-[10px] text-[var(--abu-text-muted)]">
+        <span className="flex items-center gap-1 text-[10px] text-[var(--abu-text-muted)]">
           {i18nFormat(t.panel.filesCount, { count: trackedFiles.length })}
+          {isLoadingFull && <Loader2 className="w-2.5 h-2.5 animate-spin" />}
         </span>
       </div>
 

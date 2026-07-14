@@ -17,6 +17,7 @@ import { useActiveConversation } from '@/stores/chatStore';
 import { useMCPStore, initMCPStoreSync, type MCPServerEntry } from '@/stores/mcpStore';
 import { useI18n, format } from '@/i18n';
 import { useShallow } from 'zustand/react/shallow';
+import { useEnsureFullyLoaded } from '@/hooks/useEnsureFullyLoaded';
 
 interface AccessedFile {
   path: string;
@@ -35,6 +36,12 @@ export default function ContextSection() {
   const mcpServers = useMCPStore(useShallow((s) => Object.values(s.servers)));
   const isLoadingMCP = useMCPStore((s) => s.isLoading);
   const { t } = useI18n();
+
+  // "query-full" policy (P1 plan Step 6): once windowing lands (steps 8-9),
+  // conversation.messages may be a recent-tail window — force a full reload
+  // before trusting the tool-call / accessed-file stats derived below so
+  // this panel never silently under-counts.
+  const isLoadingFull = useEnsureFullyLoaded(conversation);
 
   // Initialize MCP store sync on mount
   useEffect(() => {
@@ -138,6 +145,7 @@ export default function ContextSection() {
               {contextData.totalToolCalls} ops
             </span>
           )}
+          {isLoadingFull && <Loader2 className="h-3 w-3 animate-spin text-[var(--abu-text-muted)]" />}
         </div>
         <ChevronDown
           className={cn(

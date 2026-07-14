@@ -1483,6 +1483,10 @@ export interface TranslationDict {
     memoryClearConfirm: string;
     openInFinder: string;
     closePreview: string;
+    fullscreen: string;
+    exitFullscreen: string;
+    openInApp: string;
+    openInAppFailed: string;
     previewMode: string;
     sourceMode: string;
     unsupportedFileType: string;

@@ -614,6 +614,42 @@ describe('chatStore', () => {
       expect(useChatStore.getState().conversations[id].messages).toHaveLength(1);
       expect(useChatStore.getState().conversations[id].messages[0].id).toBe('msg2');
     });
+
+    // message-storage P1 step 2: delete paths bump the catalog count by the
+    // negative of the number of messages they removed. The store reaches
+    // catalogBumpCount via a dynamic import (module-level vi.mock can't
+    // intercept it), so we assert at the invoke('catalog_bump_count') layer.
+    it('bumps the catalog count by -1 for a single removed message', async () => {
+      const id = useChatStore.getState().createConversation();
+      useChatStore.getState().addMessage(id, { id: 'msg1', role: 'user', content: 'a', timestamp: 1 });
+      useChatStore.getState().addMessage(id, { id: 'msg2', role: 'assistant', content: 'b', timestamp: 2 });
+
+      // Let the addMessage-triggered append bumps (+1 each, fired via dynamic
+      // import) settle so they don't pollute the post-clear assertion window.
+      await new Promise((r) => setTimeout(r, 20));
+      vi.mocked(invoke).mockClear();
+      useChatStore.getState().deleteMessage(id, 'msg1');
+
+      await vi.waitFor(() => {
+        const bump = vi.mocked(invoke).mock.calls.find((c) => c[0] === 'catalog_bump_count');
+        expect(bump).toBeDefined();
+        expect((bump![1] as { convId: string; delta: number }).convId).toBe(id);
+        expect((bump![1] as { convId: string; delta: number }).delta).toBe(-1);
+      });
+    });
+
+    it('does not bump the catalog count when no message matched', async () => {
+      const id = useChatStore.getState().createConversation();
+      useChatStore.getState().addMessage(id, { id: 'msg1', role: 'user', content: 'a', timestamp: 1 });
+
+      await new Promise((r) => setTimeout(r, 20));
+      vi.mocked(invoke).mockClear();
+      useChatStore.getState().deleteMessage(id, 'nonexistent');
+
+      await new Promise((r) => setTimeout(r, 20));
+      const bump = vi.mocked(invoke).mock.calls.find((c) => c[0] === 'catalog_bump_count');
+      expect(bump).toBeUndefined();
+    });
   });
 
   // ── deleteMessagesFrom ──
@@ -625,6 +661,46 @@ describe('chatStore', () => {
       useChatStore.getState().addMessage(id, { id: 'msg3', role: 'user', content: 'c', timestamp: 3 });
       useChatStore.getState().deleteMessagesFrom(id, 'msg2');
       expect(useChatStore.getState().conversations[id].messages).toHaveLength(1);
+    });
+
+    it('bumps the catalog count by the negative of the tail length removed', async () => {
+      const id = useChatStore.getState().createConversation();
+      useChatStore.getState().addMessage(id, { id: 'msg1', role: 'user', content: 'a', timestamp: 1 });
+      useChatStore.getState().addMessage(id, { id: 'msg2', role: 'assistant', content: 'b', timestamp: 2 });
+      useChatStore.getState().addMessage(id, { id: 'msg3', role: 'user', content: 'c', timestamp: 3 });
+
+      await new Promise((r) => setTimeout(r, 20));
+      vi.mocked(invoke).mockClear();
+      // Removes msg2 + msg3 → delta -2.
+      useChatStore.getState().deleteMessagesFrom(id, 'msg2');
+
+      await vi.waitFor(() => {
+        const bump = vi.mocked(invoke).mock.calls.find((c) => c[0] === 'catalog_bump_count');
+        expect(bump).toBeDefined();
+        expect((bump![1] as { delta: number }).delta).toBe(-2);
+      });
+    });
+  });
+
+  // ── deleteLoopMessages ──
+  describe('deleteLoopMessages', () => {
+    it('removes all messages of a loop and bumps the catalog count negatively', async () => {
+      const id = useChatStore.getState().createConversation();
+      useChatStore.getState().addMessage(id, { id: 'm1', role: 'user', content: 'a', timestamp: 1, loopId: 'L1' });
+      useChatStore.getState().addMessage(id, { id: 'm2', role: 'assistant', content: 'b', timestamp: 2, loopId: 'L1' });
+      useChatStore.getState().addMessage(id, { id: 'm3', role: 'user', content: 'c', timestamp: 3, loopId: 'L2' });
+
+      await new Promise((r) => setTimeout(r, 20));
+      vi.mocked(invoke).mockClear();
+      // Removes the two L1 messages → delta -2, L2 message survives.
+      useChatStore.getState().deleteLoopMessages(id, 'L1');
+      expect(useChatStore.getState().conversations[id].messages).toHaveLength(1);
+
+      await vi.waitFor(() => {
+        const bump = vi.mocked(invoke).mock.calls.find((c) => c[0] === 'catalog_bump_count');
+        expect(bump).toBeDefined();
+        expect((bump![1] as { delta: number }).delta).toBe(-2);
+      });
     });
   });
 

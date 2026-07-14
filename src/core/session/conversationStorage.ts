@@ -383,12 +383,19 @@ function conversationsRoot(): string {
 }
 
 /**
- * Best-effort: bump the catalog's message_count for a conversation on append.
- * Passes the conversations root so Rust can re-read the JSONL's byte/mtime
- * watermark (keeping incremental reconcile from redundantly rescanning).
- * Swallows all errors — the catalog is disposable.
+ * Best-effort: bump the catalog's message_count for a conversation by
+ * `delta` (positive on append, negative on delete — the Rust side just adds
+ * whatever signed delta it's given). Passes the conversations root so Rust
+ * can re-read the JSONL's byte/mtime watermark (keeping incremental
+ * reconcile from redundantly rescanning). Swallows all errors — the catalog
+ * is disposable.
+ *
+ * Exported for chatStore's delete paths (deleteMessage/deleteMessagesFrom/
+ * deleteLoopMessages), which call this with a negative delta after mutating
+ * in-memory state — see call sites there for why that's a display-level
+ * adjustment, not a JSONL rewrite.
  */
-async function catalogBumpCount(
+export async function catalogBumpCount(
   convId: string,
   delta: number,
   updatedAt: number,

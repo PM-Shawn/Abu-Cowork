@@ -927,39 +927,77 @@ export const useChatStore = create<ChatStore>()(
       },
 
       deleteMessage: (convId, messageId) => {
+        let removedCount = 0;
         set((state) => {
           const conv = state.conversations[convId];
           if (conv) {
+            const before = conv.messages.length;
             conv.messages = conv.messages.filter((m) => m.id !== messageId);
+            removedCount = before - conv.messages.length;
             conv.updatedAt = Date.now();
             conv.contextCache = undefined;  // Invalidate compression cache
           }
         });
+        // Best-effort catalog count adjustment (message-storage P1 step 2).
+        // This is a DISPLAY-LEVEL / session-level count nudge, not a claim
+        // that the JSONL file itself shrank by `removedCount` — delete never
+        // rewrites messages.jsonl (see plan's open question #1), so the
+        // catalog's message_count would otherwise drift upward forever
+        // relative to what's actually rendered. A wrong/stale bump here is
+        // harmless and self-heals: `catalog_reconcile` re-derives the true
+        // count from JSONL on next startup (same accepted-drift posture as
+        // the P0 write-through comment above). Do NOT "fix" this into an
+        // exact JSONL-truth accounting — that's an intentional trade-off,
+        // not an oversight.
+        if (removedCount > 0) {
+          import('../core/session/conversationStorage').then(({ catalogBumpCount }) => {
+            catalogBumpCount(convId, -removedCount, Date.now(), null).catch(() => {});
+          });
+        }
       },
 
       deleteMessagesFrom: (convId, messageId) => {
+        let removedCount = 0;
         set((state) => {
           const conv = state.conversations[convId];
           if (conv) {
             const idx = conv.messages.findIndex((m) => m.id === messageId);
             if (idx !== -1) {
+              removedCount = conv.messages.length - idx;
               conv.messages = conv.messages.slice(0, idx);
               conv.updatedAt = Date.now();
               conv.contextCache = undefined;  // Invalidate compression cache
             }
           }
         });
+        // Display-level catalog count adjustment — see deleteMessage above
+        // for why this is intentionally approximate and self-healing.
+        if (removedCount > 0) {
+          import('../core/session/conversationStorage').then(({ catalogBumpCount }) => {
+            catalogBumpCount(convId, -removedCount, Date.now(), null).catch(() => {});
+          });
+        }
       },
 
       deleteLoopMessages: (convId, loopId) => {
+        let removedCount = 0;
         set((state) => {
           const conv = state.conversations[convId];
           if (conv) {
+            const before = conv.messages.length;
             conv.messages = conv.messages.filter((m) => m.loopId !== loopId);
+            removedCount = before - conv.messages.length;
             conv.updatedAt = Date.now();
             conv.contextCache = undefined;  // Invalidate compression cache
           }
         });
+        // Display-level catalog count adjustment — see deleteMessage above
+        // for why this is intentionally approximate and self-healing.
+        if (removedCount > 0) {
+          import('../core/session/conversationStorage').then(({ catalogBumpCount }) => {
+            catalogBumpCount(convId, -removedCount, Date.now(), null).catch(() => {});
+          });
+        }
       },
 
       updateMessageThinking: (convId, thinking, msgId) => {

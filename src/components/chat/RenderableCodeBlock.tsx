@@ -9,11 +9,12 @@
  * - cleanup(container): optional cleanup on unmount
  */
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { Copy, Check, ChevronDown, ChevronUp, Code, Eye, Maximize2, X, Download } from 'lucide-react';
+import { Copy, Check, ChevronDown, ChevronUp, Code, Eye, Maximize2, X, Download, ZoomIn, ZoomOut } from 'lucide-react';
 import { createPortal } from 'react-dom';
 import { cn } from '@/lib/utils';
 import { useI18n } from '@/i18n';
 import { CollapsibleCodeBlock } from './MarkdownRenderer';
+import { zoomIn as zoomInFn, zoomOut as zoomOutFn, zoomByWheel, formatZoomPercent, ZOOM_MIN, ZOOM_MAX } from '@/utils/zoom';
 
 
 type RenderState =
@@ -105,6 +106,7 @@ export default function RenderableCodeBlock({
   const [copied, setCopied] = useState(false);
   const [overflows, setOverflows] = useState(false);
   const [fullscreen, setFullscreen] = useState(false);
+  const [scale, setScale] = useState(1);
 
 
   const containerRef = useRef<HTMLDivElement>(null);
@@ -191,6 +193,11 @@ export default function RenderableCodeBlock({
     };
   }, [code, cache, debounceMs, errorSettleMs]);
 
+  // Reset zoom when the diagram changes (same mounted instance, new code)
+  useEffect(() => {
+    setScale(1);
+  }, [code]);
+
   // Cleanup on unmount
   useEffect(() => {
     return () => {
@@ -261,6 +268,15 @@ export default function RenderableCodeBlock({
     await handleDownloadSource();
   }, [handleDownloadSource]);
 
+  const handleZoomIn = useCallback(() => setScale(s => zoomInFn(s)), []);
+  const handleZoomOut = useCallback(() => setScale(s => zoomOutFn(s)), []);
+  const handleZoomReset = useCallback(() => setScale(1), []);
+  const handleZoomWheel = useCallback((e: React.WheelEvent) => {
+    if (showSource || !(e.ctrlKey || e.metaKey)) return; // source view / bare wheel stays scroll; Cmd/Ctrl(+触控板双指) zooms
+    e.preventDefault();
+    setScale(s => zoomByWheel(s, e.deltaY));
+  }, [showSource]);
+
   if (!code.trim()) return null;
 
   const isLoading = state.status === 'loading';
@@ -276,16 +292,26 @@ export default function RenderableCodeBlock({
   // --- Shared pieces ---
 
   const renderContainer = (
+    // OUTER = scroll viewport + collapse clipper. Owns overflow + maxHeight + padding.
     <div
-      ref={containerRef}
       className={cn(
-        'flex justify-center overflow-x-auto [&>svg]:max-w-full',
+        'overflow-auto',
         seamless ? 'p-0' : 'p-4',
         isCollapsed && 'overflow-hidden',
         isLoading && 'min-h-[100px] invisible',
       )}
       style={isCollapsed ? { maxHeight: `${maxHeight}px` } : undefined}
-    />
+    >
+      {/* INNER = the element render() injects into. Owns the scale transform. */}
+      <div
+        ref={containerRef}
+        className="flex justify-center [&>svg]:max-w-full"
+        style={{
+          transform: scale !== 1 ? `scale(${scale})` : undefined,
+          transformOrigin: 'top center',
+        }}
+      />
+    </div>
   );
 
   const shimmerOverlay = isPreviewing && (
@@ -341,6 +367,16 @@ export default function RenderableCodeBlock({
   const vizToolbar = !isLoading && !showSource && (
     <div className="absolute top-2 right-2 z-10 opacity-0 group-hover/widget:opacity-100 transition-opacity">
       <div className="flex items-center gap-0.5 bg-white/90 rounded-lg shadow-sm border border-[var(--abu-bg-pressed)] p-0.5 relative">
+        <button onClick={handleZoomOut} disabled={scale <= ZOOM_MIN} className={cn(btnClass, 'disabled:opacity-40 disabled:cursor-not-allowed')} title="Zoom out">
+          <ZoomOut className="h-3.5 w-3.5" />
+        </button>
+        <button onClick={handleZoomReset} className={cn(btnClass, 'text-[11px] tabular-nums w-10')} title="Reset zoom">
+          {formatZoomPercent(scale)}
+        </button>
+        <button onClick={handleZoomIn} disabled={scale >= ZOOM_MAX} className={cn(btnClass, 'disabled:opacity-40 disabled:cursor-not-allowed')} title="Zoom in">
+          <ZoomIn className="h-3.5 w-3.5" />
+        </button>
+        <div className="w-px h-4 bg-[var(--abu-bg-pressed)] mx-0.5" />
         <button onClick={handleCopy} className={btnClass} title={copied ? '✓' : 'Copy'}>
           {copied ? <Check className="h-3.5 w-3.5 text-green-600" /> : <Copy className="h-3.5 w-3.5" />}
         </button>
@@ -417,7 +453,7 @@ export default function RenderableCodeBlock({
       <div className="my-3 group/widget">
         {seamlessErrorFallback}
         <div className={cn('rounded-lg overflow-hidden', isError && !showSource && 'hidden')}>
-          <div className="relative">
+          <div className="relative" onWheel={handleZoomWheel}>
             {/* Source code view with "back to visual" button */}
             {showSource && (
               <div className="relative">
@@ -461,7 +497,7 @@ export default function RenderableCodeBlock({
     <div className="my-3 group/widget">
       {errorFallback}
       <div className={cn('rounded-lg overflow-hidden border border-[var(--abu-bg-pressed)]', isError && !showSource && 'hidden')}>
-        <div className="relative bg-white">
+        <div className="relative bg-white" onWheel={handleZoomWheel}>
           {/* Source code view with "back to visual" button */}
           {showSource && (
             <div className="relative">

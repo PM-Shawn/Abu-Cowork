@@ -1062,6 +1062,109 @@ describe('chatStore', () => {
     });
   });
 
+  // ── loadConversation / loadOlderMessages windowing (P1 plan Step 9) ──
+  describe('windowed loadConversation + loadOlderMessages', () => {
+    afterEach(() => {
+      vi.mocked(exists).mockReset().mockResolvedValue(false);
+      vi.mocked(readTextFile).mockReset().mockResolvedValue('');
+    });
+
+    /** Build `count` alternating user/assistant rounds (2*count messages). */
+    function makeRounds(count: number): Array<{ id: string; role: 'user' | 'assistant'; content: string; timestamp: number }> {
+      const out: Array<{ id: string; role: 'user' | 'assistant'; content: string; timestamp: number }> = [];
+      for (let i = 1; i <= count; i++) {
+        out.push({ id: `u${i}`, role: 'user', content: `question ${i}`, timestamp: i * 2 });
+        out.push({ id: `a${i}`, role: 'assistant', content: `answer ${i}`, timestamp: i * 2 + 1 });
+      }
+      return out;
+    }
+
+    it('loadConversation on a JSONL longer than INITIAL_WINDOW_SIZE loads only the tail window, flags __hasMoreOlder, and __pinnedAnchors.firstRound is the true first round', async () => {
+      const id = 'conv-long';
+      useChatStore.setState((state) => {
+        state.conversationIndex[id] = { id, title: 'Long', createdAt: 1, updatedAt: 2, messageCount: 120 };
+      });
+
+      const full = makeRounds(60); // 120 messages
+      vi.mocked(exists).mockResolvedValue(true);
+      vi.mocked(readTextFile).mockResolvedValue(full.map((m) => JSON.stringify(m)).join('\n') + '\n');
+
+      await useChatStore.getState().loadConversation(id);
+
+      const conv = useChatStore.getState().conversations[id];
+      expect(conv).toBeDefined();
+      expect(conv.messages).toHaveLength(100); // INITIAL_WINDOW_SIZE
+      expect(conv.messages[0].id).toBe(full[full.length - 100].id); // tail window boundary
+      expect(conv.__hasMoreOlder).toBe(true);
+      expect(conv.__pinnedAnchors?.firstRound.map((m) => m.id)).toEqual(['u1', 'a1']);
+      expect(conv.__pinnedAnchors?.markers).toEqual([]);
+    });
+
+    it('loadOlderMessages twice reconstructs the full sequence with no dup/gap, and __hasMoreOlder flips false once exhausted', async () => {
+      const id = 'conv-paginated';
+      useChatStore.setState((state) => {
+        state.conversationIndex[id] = { id, title: 'Paginated', createdAt: 1, updatedAt: 2, messageCount: 200 };
+      });
+
+      const full = makeRounds(100); // 200 messages; INITIAL_WINDOW_SIZE(100) + 2*PAGE_SIZE(50) = 200
+      vi.mocked(exists).mockResolvedValue(true);
+      vi.mocked(readTextFile).mockResolvedValue(full.map((m) => JSON.stringify(m)).join('\n') + '\n');
+
+      await useChatStore.getState().loadConversation(id);
+      expect(useChatStore.getState().conversations[id].messages).toHaveLength(100);
+      expect(useChatStore.getState().conversations[id].__hasMoreOlder).toBe(true);
+
+      await useChatStore.getState().loadOlderMessages(id);
+      let conv = useChatStore.getState().conversations[id];
+      expect(conv.messages).toHaveLength(150);
+      expect(conv.__hasMoreOlder).toBe(true);
+
+      await useChatStore.getState().loadOlderMessages(id);
+      conv = useChatStore.getState().conversations[id];
+      expect(conv.messages).toHaveLength(200);
+      expect(conv.__hasMoreOlder).toBe(false);
+
+      // No dup/gap: reconstructed sequence matches the on-disk order exactly.
+      expect(conv.messages.map((m) => m.id)).toEqual(full.map((m) => m.id));
+    });
+
+    it('loadOlderMessages is a no-op once __hasMoreOlder is false', async () => {
+      const id = 'conv-exhausted';
+      useChatStore.setState((state) => {
+        state.conversationIndex[id] = { id, title: 'Short', createdAt: 1, updatedAt: 2, messageCount: 4 };
+      });
+      const full = makeRounds(2); // 4 messages, fits well within INITIAL_WINDOW_SIZE
+      vi.mocked(exists).mockResolvedValue(true);
+      vi.mocked(readTextFile).mockResolvedValue(full.map((m) => JSON.stringify(m)).join('\n') + '\n');
+
+      await useChatStore.getState().loadConversation(id);
+      expect(useChatStore.getState().conversations[id].__hasMoreOlder).toBe(false);
+
+      await useChatStore.getState().loadOlderMessages(id);
+      expect(useChatStore.getState().conversations[id].messages).toHaveLength(4); // unchanged
+    });
+
+    it('ensureFullyLoaded overrides a partial window: messages become the full history and __hasMoreOlder resets to false', async () => {
+      const id = 'conv-window-then-full';
+      useChatStore.setState((state) => {
+        state.conversationIndex[id] = { id, title: 'T', createdAt: 1, updatedAt: 2, messageCount: 120 };
+      });
+      const full = makeRounds(60); // 120 messages
+      vi.mocked(exists).mockResolvedValue(true);
+      vi.mocked(readTextFile).mockResolvedValue(full.map((m) => JSON.stringify(m)).join('\n') + '\n');
+
+      await useChatStore.getState().loadConversation(id);
+      expect(useChatStore.getState().conversations[id].messages).toHaveLength(100);
+      expect(useChatStore.getState().conversations[id].__hasMoreOlder).toBe(true);
+
+      const result = await useChatStore.getState().ensureFullyLoaded(id);
+
+      expect(result.messages).toHaveLength(120);
+      expect(result.__fullyLoaded).toBe(true);
+      expect(result.__hasMoreOlder).toBe(false);
+    });
+  });
+
   // ── setPendingInput ──
   describe('setPendingInput', () => {
     it('sets and clears pending input', () => {

@@ -360,6 +360,24 @@ export interface Conversation {
    * before trusting `messages.length`.
    */
   __fullyLoaded?: boolean;
+  /**
+   * Ephemeral — NOT persisted (same rationale as `__fullyLoaded` above).
+   * Message-storage P1 Step 9: the "豁免窗口化" anchors from plan §0 Option
+   * B — the pinned first round (so `buildContextFromBoundary`/`sessionMapper`
+   * can find it even once the live window has scrolled far past it) and all
+   * compact-boundary markers, in file order. Populated by `loadConversation`
+   * from `loadMessages(convId, { includeAnchors: true })`. `undefined` before
+   * the conversation has been loaded, or if the file had no anchors to give.
+   */
+  __pinnedAnchors?: { firstRound: Message[]; markers: Message[] };
+  /**
+   * Ephemeral — NOT persisted (same rationale as `__fullyLoaded` above).
+   * Message-storage P1 Step 9: true when `conv.messages` is a windowed tail
+   * read and there are older on-disk messages not yet loaded into memory.
+   * Drives `loadOlderMessages()` / the render-layer "load more" trigger
+   * (Layer 2, out of P1 scope here). Always `false` once `__fullyLoaded`.
+   */
+  __hasMoreOlder?: boolean;
 }
 
 // --- Agent ---

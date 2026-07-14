@@ -20,6 +20,27 @@ function generateId(): string {
   return Date.now().toString(36) + Math.random().toString(36).substring(2, 8);
 }
 
+// ── Message-storage P1 Step 9: windowed conversation loading ──
+//
+// `loadConversation` no longer necessarily loads the complete on-disk
+// history into `conv.messages` — it loads a bounded tail window (see
+// docs/2026-07-14-message-storage-P1-plan.md §Step 9). `ensureFullyLoaded`
+// remains the "guaranteed complete" escape hatch for consumers that must not
+// silently under-count.
+
+/** Initial tail-window size for `loadConversation`. Conservative starting
+ * point (P1 plan open question #3 — tune against real conversation length
+ * distribution once shipped). */
+const INITIAL_WINDOW_SIZE = 100;
+
+/** Page size for `loadOlderMessages`' before-cursor pagination. */
+const PAGE_SIZE = 50;
+
+/** Per-conversation in-flight guard for `loadOlderMessages` — prevents two
+ * concurrent older-page loads (e.g. rapid scroll-triggered calls) for the
+ * same conversation from racing to prepend onto `conv.messages`. */
+const loadingOlderMessages = new Set<string>();
+
 /** Extra safety net for messages coming in via import — ensures no streaming
  * flag survives even if the source bundle was built by a broken exporter. */
 function sanitizeImportedMessage(msg: Message): Message {
@@ -375,6 +396,13 @@ interface ChatActions {
    * delete-revival trade-offs. Throws if `convId` is unknown.
    */
   ensureFullyLoaded: (convId: string) => Promise<Conversation>;
+  /**
+   * Load one older page (P1 plan Step 9) and PREPEND it to `conv.messages`.
+   * Uses `conv.messages[0].id` as the before-cursor. No-op if the
+   * conversation isn't loaded, has no older messages (`__hasMoreOlder` is
+   * falsy), or a load for this conversation is already in flight.
+   */
+  loadOlderMessages: (convId: string) => Promise<void>;
   unloadOldConversations: () => void;
 }
 
@@ -1566,6 +1594,9 @@ export const useChatStore = create<ChatStore>()(
             conv.messages = loaded;
           }
           conv.__fullyLoaded = true;
+          // Fully loaded ⇒ there is nothing older left to page in — keep the
+          // window-state fields consistent (P1 plan Step 9).
+          conv.__hasMoreOlder = false;
         });
         const result = get().conversations[convId];
         if (!result) {
@@ -1582,7 +1613,11 @@ export const useChatStore = create<ChatStore>()(
 
         try {
           const { loadMessages } = await import('../core/session/conversationStorage');
-          const messages = sanitizeLoadedMessages(await loadMessages(convId));
+          const result = await loadMessages(convId, {
+            limit: INITIAL_WINDOW_SIZE,
+            includeAnchors: true,
+          });
+          const messages = sanitizeLoadedMessages(result.messages);
           const meta = get().conversationIndex[convId];
           if (!meta) return;
 
@@ -1603,6 +1638,13 @@ export const useChatStore = create<ChatStore>()(
               projectId: meta.projectId,
               readOnly: meta.readOnly,
               importedFrom: meta.importedFrom,
+              __pinnedAnchors: result.anchors
+                ? {
+                    firstRound: sanitizeLoadedMessages(result.anchors.firstRound),
+                    markers: result.anchors.markers,
+                  }
+                : undefined,
+              __hasMoreOlder: result.hasMoreOlder,
             };
           });
         } catch {
@@ -1632,6 +1674,34 @@ export const useChatStore = create<ChatStore>()(
           }
         }
 
+      },
+
+      loadOlderMessages: async (convId: string): Promise<void> => {
+        const conv = get().conversations[convId];
+        if (!conv) return;
+        if (!conv.__hasMoreOlder) return;
+        if (conv.messages.length === 0) return; // no cursor to page before
+        if (loadingOlderMessages.has(convId)) return;
+
+        loadingOlderMessages.add(convId);
+        try {
+          const { loadMessages } = await import('../core/session/conversationStorage');
+          const cursor = conv.messages[0].id;
+          const result = await loadMessages(convId, { before: cursor, limit: PAGE_SIZE });
+          const older = sanitizeLoadedMessages(result.messages);
+
+          set((state) => {
+            const target = state.conversations[convId];
+            if (!target) return;
+            // Fully loaded meanwhile (e.g. ensureFullyLoaded raced ahead) —
+            // the full history already supersedes this page, don't prepend.
+            if (target.__fullyLoaded) return;
+            target.messages = [...older, ...target.messages];
+            target.__hasMoreOlder = result.hasMoreOlder;
+          });
+        } finally {
+          loadingOlderMessages.delete(convId);
+        }
       },
 
       unloadOldConversations: () => {

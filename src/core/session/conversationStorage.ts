@@ -26,6 +26,8 @@ import { invoke } from '@tauri-apps/api/core';
 import { appDataDir } from '@tauri-apps/api/path';
 import { joinPath } from '@/utils/pathUtils';
 import { atomicWrite } from '@/utils/atomicFs';
+import { identifyRounds } from '@/core/context/contextUtils';
+import { isCompactBoundary } from '@/core/context/compactBoundary';
 import type { Message, MessageContent } from '@/types';
 
 // ════════════════════════════════════════════════════════════
@@ -265,8 +267,17 @@ export async function flushWrites(): Promise<void> {
 const writtenIds = new Set<string>();
 
 /**
- * Clear the dedup cache. Call when loading messages from disk
- * to populate the set with already-persisted message IDs.
+ * Add the given messages' ids to the dedup cache. Call when loading messages
+ * from disk to populate the set with already-persisted message IDs.
+ *
+ * 🔴 ADD-ONLY BY DESIGN — never clears/replaces `writtenIds` (verified during
+ * P1 Step 8): a windowed `loadMessages(convId, {limit, before})` call only
+ * observes a slice of the file, so if this ever became "clear then add" it
+ * would evict ids known from a previously-loaded tail window, and a
+ * subsequent `appendMessage` for one of those (already-written) ids would
+ * wrongly think it's new and double-append. Add-only means calling this
+ * repeatedly with different windows of the same conversation only grows the
+ * known-id set, which is always safe.
  */
 function populateWrittenIds(messages: Message[]): void {
   for (const msg of messages) {
@@ -595,34 +606,35 @@ export async function updateLastMessage(
   }
 }
 
-/**
- * Load all messages from a conversation JSONL file.
- * Populates the dedup cache so subsequent writes skip already-persisted messages.
- */
-export async function loadMessages(convId: string): Promise<Message[]> {
-  await ensureBase();
-  const path = messagesPath(convId);
-  if (!(await exists(path))) return [];
+// ════════════════════════════════════════════════════════════
+// Windowed loadMessages (message-storage P1 Step 8)
+// ════════════════════════════════════════════════════════════
 
-  // File-level read failure → empty list (same contract as before).
-  let raw: string;
-  try {
-    raw = await readTextFile(path);
-  } catch (err) {
-    console.warn(
-      `[conversationStorage] loadMessages(${convId}) readTextFile failed:`,
-      err,
-    );
-    return [];
-  }
+export interface LoadMessagesOptions {
+  /** Tail-read: take at most this many of the most-recent (or most-recent-before-cursor) lines. */
+  limit?: number;
+  /** Pagination cursor: return lines strictly BEFORE the message with this id. */
+  before?: string;
+  /** When true, also compute+return `anchors` (pinnedFirstRound + compact-boundary markers). */
+  includeAnchors?: boolean;
+}
 
-  // Per-line parse failures are tolerated: skip the bad line, keep the rest.
-  // Previously we .map()'d + caught the whole block, which meant any single
-  // corrupt line nuked the entire conversation for the UI even though most
-  // lines were fine. This is pure damage reduction for a storage bug we
-  // eventually need to fix on the write side (see conversationStorage write
-  // race / TODO in Task #15 follow-up).
-  const lines = raw.trimEnd().split('\n').filter((l) => l.length > 0);
+export interface LoadMessagesAnchors {
+  /** All messages up to (not including) the 2nd role:'user' message — identifyRounds()[0]. */
+  firstRound: Message[];
+  /** All compact-boundary markers in the file, in file (insertion) order. */
+  markers: Message[];
+}
+
+export interface LoadMessagesResult {
+  messages: Message[];
+  anchors?: LoadMessagesAnchors;
+  /** True when there are older lines on disk than what `messages` contains. */
+  hasMoreOlder: boolean;
+}
+
+/** Parse a slice of raw JSONL lines, tolerating (and counting) corrupt lines. */
+function parseJsonlLines(lines: string[]): { messages: Message[]; corruptCount: number } {
   const messages: Message[] = [];
   let corruptCount = 0;
   for (const line of lines) {
@@ -632,23 +644,172 @@ export async function loadMessages(convId: string): Promise<Message[]> {
       corruptCount++;
     }
   }
+  return { messages, corruptCount };
+}
+
+/**
+ * Extract the "pinned first round" anchor: messages from the start of the
+ * file up to (not including) the 2nd role:'user' message, per
+ * `identifyRounds()` semantics (P1 plan §0 Option B — this round is exempt
+ * from windowing so `buildContextFromBoundary` always has firstRound
+ * available even when the live window has scrolled far past it).
+ *
+ * Bounded cost: parsing stops as soon as the 2nd user message is seen, so the
+ * cost is proportional to the (small) first round, not file size — UNLESS
+ * the whole file is a single round (≤1 user message), in which case this
+ * necessarily parses everything (rare, and such conversations are small).
+ */
+function extractPinnedFirstRound(lines: string[]): Message[] {
+  const parsed: Message[] = [];
+  let userCount = 0;
+  for (const line of lines) {
+    let msg: Message;
+    try {
+      msg = JSON.parse(line) as Message;
+    } catch {
+      continue;
+    }
+    parsed.push(msg);
+    if (msg.role === 'user') {
+      userCount++;
+      if (userCount >= 2) break;
+    }
+  }
+  const rounds = identifyRounds(parsed);
+  return rounds[0] ?? [];
+}
+
+/**
+ * Extract all compact-boundary markers from the file, in file order. Cheap
+ * pre-filter (`line.includes('"compactBoundary"')`) avoids parsing the vast
+ * majority of lines — only candidate lines are JSON.parse'd + verified via
+ * `isCompactBoundary`.
+ */
+function extractCompactBoundaryMarkers(lines: string[]): Message[] {
+  const markers: Message[] = [];
+  for (const line of lines) {
+    if (!line.includes('"compactBoundary"')) continue;
+    try {
+      const msg = JSON.parse(line) as Message;
+      if (isCompactBoundary(msg)) markers.push(msg);
+    } catch {
+      // Skip corrupt line — same tolerance as the main parse path.
+    }
+  }
+  return markers;
+}
+
+/**
+ * Load all messages from a conversation JSONL file (no-arg overload — used
+ * by every existing caller, behavior UNCHANGED from before windowing).
+ */
+export async function loadMessages(convId: string): Promise<Message[]>;
+/**
+ * Windowed read (P1 Step 8): read the file once, but only JSON.parse the
+ * needed line range — a tail `limit`, or the `limit` lines immediately
+ * before the `before` cursor. `includeAnchors` additionally computes
+ * `pinnedFirstRound` + all compact-boundary markers (see P1 plan §0 Option
+ * B) from a cheap scan of the full line array (JSON.parse only on hits /
+ * the small first round — never a full-file Message[] materialization).
+ */
+export async function loadMessages(
+  convId: string,
+  opts: LoadMessagesOptions,
+): Promise<LoadMessagesResult>;
+export async function loadMessages(
+  convId: string,
+  opts?: LoadMessagesOptions,
+): Promise<Message[] | LoadMessagesResult> {
+  await ensureBase();
+  const path = messagesPath(convId);
+  if (!(await exists(path))) {
+    return opts === undefined ? [] : { messages: [], hasMoreOlder: false };
+  }
+
+  // File-level read failure → empty result (same contract as before).
+  let raw: string;
+  try {
+    raw = await readTextFile(path);
+  } catch (err) {
+    console.warn(
+      `[conversationStorage] loadMessages(${convId}) readTextFile failed:`,
+      err,
+    );
+    return opts === undefined ? [] : { messages: [], hasMoreOlder: false };
+  }
+
+  // Per-line parse failures are tolerated: skip the bad line, keep the rest.
+  // Previously we .map()'d + caught the whole block, which meant any single
+  // corrupt line nuked the entire conversation for the UI even though most
+  // lines were fine. This is pure damage reduction for a storage bug we
+  // eventually need to fix on the write side (see conversationStorage write
+  // race / TODO in Task #15 follow-up).
+  const lines = raw.trimEnd().split('\n').filter((l) => l.length > 0);
+
+  if (opts === undefined) {
+    // ── Unchanged full-load path (byte-identical output to pre-windowing) ──
+    const { messages, corruptCount } = parseJsonlLines(lines);
+    if (corruptCount > 0) {
+      console.warn(
+        `[conversationStorage] loadMessages(${convId}): skipped ${corruptCount}/${lines.length} corrupt line(s). ` +
+          `The affected messages are lost, but ${messages.length} intact message(s) recovered.`,
+      );
+    }
+    // Dedup by id, keeping the last occurrence. A duplicate line is not "corrupt"
+    // (so the skip-bad-lines net above can't catch it) but can arise from a
+    // non-idempotent append fallback: if the native O(1) append durably writes a
+    // line but its invoke promise still rejects (IPC teardown / shutdown race),
+    // appendToFile falls through to read+rewrite and appends the same line again.
+    // The last write reflects the most recent state; downstream consumers
+    // (chatStore, memdir extractor) don't dedup, so a duplicate would otherwise
+    // render — and be sent to the LLM — twice.
+    const deduped = dedupMessagesById(messages);
+    populateWrittenIds(deduped); // add-only — see populateWrittenIds doc.
+    return deduped;
+  }
+
+  // ── Windowed path ──
+  let startIdx: number;
+  let endIdx: number; // exclusive
+  if (opts.before !== undefined) {
+    // Cheap string scan for the cursor line — no full parse (P1 plan Step 8).
+    const needle = `"id":"${opts.before}"`;
+    const cursorIdx = lines.findIndex((l) => l.includes(needle));
+    if (cursorIdx <= 0) {
+      // Cursor not found, or it's already the first line → nothing older.
+      endIdx = 0;
+      startIdx = 0;
+    } else {
+      endIdx = cursorIdx;
+      startIdx = opts.limit != null ? Math.max(0, endIdx - opts.limit) : 0;
+    }
+  } else {
+    endIdx = lines.length;
+    startIdx = opts.limit != null ? Math.max(0, endIdx - opts.limit) : 0;
+  }
+
+  const sliceLines = lines.slice(startIdx, endIdx);
+  const { messages, corruptCount } = parseJsonlLines(sliceLines);
   if (corruptCount > 0) {
     console.warn(
-      `[conversationStorage] loadMessages(${convId}): skipped ${corruptCount}/${lines.length} corrupt line(s). ` +
+      `[conversationStorage] loadMessages(${convId}) window: skipped ${corruptCount}/${sliceLines.length} corrupt line(s). ` +
         `The affected messages are lost, but ${messages.length} intact message(s) recovered.`,
     );
   }
-  // Dedup by id, keeping the last occurrence. A duplicate line is not "corrupt"
-  // (so the skip-bad-lines net above can't catch it) but can arise from a
-  // non-idempotent append fallback: if the native O(1) append durably writes a
-  // line but its invoke promise still rejects (IPC teardown / shutdown race),
-  // appendToFile falls through to read+rewrite and appends the same line again.
-  // The last write reflects the most recent state; downstream consumers
-  // (chatStore, memdir extractor) don't dedup, so a duplicate would otherwise
-  // render — and be sent to the LLM — twice.
   const deduped = dedupMessagesById(messages);
-  populateWrittenIds(deduped);
-  return deduped;
+  populateWrittenIds(deduped); // add-only — never evicts ids known from a prior window.
+
+  const result: LoadMessagesResult = {
+    messages: deduped,
+    hasMoreOlder: startIdx > 0,
+  };
+  if (opts.includeAnchors) {
+    result.anchors = {
+      firstRound: extractPinnedFirstRound(lines),
+      markers: extractCompactBoundaryMarkers(lines),
+    };
+  }
+  return result;
 }
 
 /** Keep the last occurrence of each message id, preserving order. */

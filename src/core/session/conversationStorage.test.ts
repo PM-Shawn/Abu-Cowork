@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { exists, readTextFile, writeTextFile, mkdir, remove, readDir } from '@tauri-apps/plugin-fs';
 import { invoke } from '@tauri-apps/api/core';
+import { createCompactBoundaryMarker } from '@/core/context/compactBoundary';
 import type { Message } from '@/types';
 
 // Must import AFTER vi.mock (global mock in setup.ts handles @tauri-apps/plugin-fs)
@@ -761,6 +762,160 @@ describe('conversationStorage', () => {
 
       const loaded = await storage.loadMessages('conv-1');
       expect(loaded[0].toolCalls![0].result).toBe(diskRef);
+    });
+  });
+
+  describe('windowed loadMessages (P1 Step 8)', () => {
+    // Path shape matches ensureBase() + messagesPath() (see conversationStorage.ts).
+    const PATH = '/Users/testuser/.abu/conversations/window-conv/messages.jsonl';
+
+    it('limit tail read returns only the last N lines; hasMoreOlder true when file is longer', async () => {
+      const ids = ['id-1', 'id-2', 'id-3', 'id-4', 'id-5'];
+      const lines = ids.map((id) => JSON.stringify(makeMsg({ id, content: `msg ${id}` })));
+      memFs.files.set(PATH, lines.join('\n') + '\n');
+
+      const tail = await storage.loadMessages('window-conv', { limit: 2 });
+      expect(tail.messages.map((m) => m.id)).toEqual(['id-4', 'id-5']);
+      expect(tail.hasMoreOlder).toBe(true);
+
+      // limit >= file length → everything comes back, hasMoreOlder false.
+      const all = await storage.loadMessages('window-conv', { limit: 100 });
+      expect(all.messages).toHaveLength(5);
+      expect(all.hasMoreOlder).toBe(false);
+    });
+
+    it('before-cursor pagination reconstructs the exact full sequence (no dup/gap); cursor at first line → hasMoreOlder false', async () => {
+      const ids = ['id-1', 'id-2', 'id-3', 'id-4', 'id-5', 'id-6'];
+      const lines = ids.map((id) => JSON.stringify(makeMsg({ id, content: `msg ${id}` })));
+      memFs.files.set(PATH, lines.join('\n') + '\n');
+
+      const page1 = await storage.loadMessages('window-conv', { limit: 2 }); // tail
+      expect(page1.messages.map((m) => m.id)).toEqual(['id-5', 'id-6']);
+      expect(page1.hasMoreOlder).toBe(true);
+
+      const page2 = await storage.loadMessages('window-conv', {
+        before: page1.messages[0].id,
+        limit: 2,
+      });
+      expect(page2.messages.map((m) => m.id)).toEqual(['id-3', 'id-4']);
+      expect(page2.hasMoreOlder).toBe(true);
+
+      const page3 = await storage.loadMessages('window-conv', {
+        before: page2.messages[0].id,
+        limit: 2,
+      });
+      expect(page3.messages.map((m) => m.id)).toEqual(['id-1', 'id-2']);
+      expect(page3.hasMoreOlder).toBe(false);
+
+      // Stitching the pages back together (oldest → newest) reconstructs the
+      // exact full sequence — no duplicate, no gap.
+      const reconstructed = [...page3.messages, ...page2.messages, ...page1.messages].map(
+        (m) => m.id,
+      );
+      expect(reconstructed).toEqual(ids);
+
+      // Cursor sitting at the very first line → nothing older.
+      const atStart = await storage.loadMessages('window-conv', { before: 'id-1' });
+      expect(atStart.messages).toEqual([]);
+      expect(atStart.hasMoreOlder).toBe(false);
+    });
+
+    it('pinnedFirstRound + markers: 0 markers', async () => {
+      const u1 = makeMsg({ id: 'u1', role: 'user', content: 'first question' });
+      const a1 = makeMsg({ id: 'a1', role: 'assistant', content: 'first answer' });
+      const u2 = makeMsg({ id: 'u2', role: 'user', content: 'second question' });
+      const a2 = makeMsg({ id: 'a2', role: 'assistant', content: 'second answer' });
+      memFs.files.set(PATH, [u1, a1, u2, a2].map((m) => JSON.stringify(m)).join('\n') + '\n');
+
+      const result = await storage.loadMessages('window-conv', { includeAnchors: true });
+      expect(result.anchors?.firstRound.map((m) => m.id)).toEqual(['u1', 'a1']);
+      expect(result.anchors?.markers).toEqual([]);
+    });
+
+    it('pinnedFirstRound + markers: 1 marker', async () => {
+      const u1 = makeMsg({ id: 'u1', role: 'user', content: 'q1' });
+      const a1 = makeMsg({ id: 'a1', role: 'assistant', content: 'a1' });
+      const marker = createCompactBoundaryMarker({
+        summaryText: 'summary',
+        summarizedFromId: 'u1',
+        summarizedToId: 'a1',
+        source: 'auto',
+        timestamp: 1000,
+      });
+      const u2 = makeMsg({ id: 'u2', role: 'user', content: 'q2' });
+      memFs.files.set(PATH, [u1, a1, marker, u2].map((m) => JSON.stringify(m)).join('\n') + '\n');
+
+      const result = await storage.loadMessages('window-conv', { includeAnchors: true });
+      // The marker sits before the 2nd user message in file order, so the raw
+      // scan includes it in firstRound — Step 10 (out of scope here) is
+      // responsible for de-duplicating pin+markers when assembling
+      // buildContextFromBoundary's logical view.
+      expect(result.anchors?.firstRound.map((m) => m.id)).toEqual(['u1', 'a1', marker.id]);
+      expect(result.anchors?.markers.map((m) => m.id)).toEqual([marker.id]);
+    });
+
+    it('pinnedFirstRound + markers: many markers, preserved in file insertion order', async () => {
+      const u1 = makeMsg({ id: 'u1', role: 'user', content: 'q1' });
+      const a1 = makeMsg({ id: 'a1', role: 'assistant', content: 'a1' });
+      const u2 = makeMsg({ id: 'u2', role: 'user', content: 'q2' });
+      const marker1 = createCompactBoundaryMarker({
+        summaryText: 's1', summarizedFromId: 'u1', summarizedToId: 'a1', source: 'auto', timestamp: 1000,
+      });
+      const marker2 = createCompactBoundaryMarker({
+        summaryText: 's2', summarizedFromId: 'u2', summarizedToId: 'u2', source: 'auto', timestamp: 2000,
+      });
+      const marker3 = createCompactBoundaryMarker({
+        summaryText: 's3', summarizedFromId: 'u2', summarizedToId: 'u2', source: 'manual', timestamp: 3000,
+      });
+      memFs.files.set(
+        PATH,
+        [u1, a1, u2, marker1, marker2, marker3].map((m) => JSON.stringify(m)).join('\n') + '\n',
+      );
+
+      const result = await storage.loadMessages('window-conv', { includeAnchors: true });
+      expect(result.anchors?.firstRound.map((m) => m.id)).toEqual(['u1', 'a1']);
+      expect(result.anchors?.markers.map((m) => m.id)).toEqual([marker1.id, marker2.id, marker3.id]);
+    });
+
+    it('populateWrittenIds is add-only across windowed loads (regression — P1 Step 8 finding)', async () => {
+      const ids = ['id-1', 'id-2', 'id-3', 'id-4', 'id-5'];
+      const lines = ids.map((id) => JSON.stringify(makeMsg({ id, content: `msg ${id}` })));
+      memFs.files.set(PATH, lines.join('\n') + '\n');
+
+      // Windowed tail load only observes id-4, id-5.
+      const tail = await storage.loadMessages('window-conv', { limit: 2 });
+      expect(tail.messages.map((m) => m.id)).toEqual(['id-4', 'id-5']);
+
+      // Windowed older-page load only observes id-1..id-3. If
+      // populateWrittenIds ever became "clear then add" (replace semantics)
+      // this call would evict id-4/id-5 from the known-id set.
+      const older = await storage.loadMessages('window-conv', { before: 'id-4' });
+      expect(older.messages.map((m) => m.id)).toEqual(['id-1', 'id-2', 'id-3']);
+
+      // Re-append a message whose id was known ONLY from the (now superseded)
+      // tail window. appendMessage dedups via the writtenIds set — if id-5
+      // had been evicted by the older-page load, this would append a SECOND
+      // physical line for id-5, corrupting the JSONL with a false-positive
+      // "not written yet" append.
+      await storage.appendMessage('window-conv', makeMsg({ id: 'id-5', content: 'replay-attempt' }));
+      await storage.flushWrites();
+
+      const rawAfter = memFs.files.get(PATH)!;
+      const id5LineCount = rawAfter
+        .trimEnd()
+        .split('\n')
+        .filter((l) => l.includes('"id":"id-5"')).length;
+      expect(id5LineCount).toBe(1); // still exactly one physical line for id-5
+    });
+
+    it('no-opts call is unaffected by the overload — still returns a plain Message[]', async () => {
+      const ids = ['id-1', 'id-2', 'id-3'];
+      const lines = ids.map((id) => JSON.stringify(makeMsg({ id, content: `msg ${id}` })));
+      memFs.files.set(PATH, lines.join('\n') + '\n');
+
+      const loaded = await storage.loadMessages('window-conv');
+      expect(Array.isArray(loaded)).toBe(true);
+      expect(loaded.map((m) => m.id)).toEqual(ids);
     });
   });
 });

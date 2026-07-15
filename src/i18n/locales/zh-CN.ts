@@ -556,8 +556,6 @@ const zhCN: TranslationDict = {
     languageDescription: '选择界面显示语言',
     followSystem: '跟随系统',
     // Image Generation — independent backend list (design doc §3.1, "C-a")
-    imageGen: '图片生成',
-    imageGenDescription: '配置图片生成后端（独立于对话模型），供 generate_image 工具调用',
     imageGenApiKey: 'API Key',
     imageGenApiKeyPlaceholder: '输入该后端的 API Key',
     imageGenBaseUrl: 'API 地址',

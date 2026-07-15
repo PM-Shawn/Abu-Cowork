@@ -2,7 +2,7 @@ import { useEffect, useLayoutEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { useSettingsStore } from '@/stores/settingsStore';
 import { useI18n } from '@/i18n';
-import { Eye, EyeOff, Plus, Pencil, Trash2, Star, X } from 'lucide-react';
+import { Eye, EyeOff, Pencil, Trash2, Star, X } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -267,29 +267,3 @@ export function ImageGenBackendsPanel({ onEdit }: { onEdit: (backend: ImageGenBa
   );
 }
 
-export default function ImageGenSection() {
-  const { t } = useI18n();
-  const [showAddModal, setShowAddModal] = useState(false);
-  const [editingBackend, setEditingBackend] = useState<ImageGenBackend | null>(null);
-
-  return (
-    <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <div>
-          <h3 className="text-base font-semibold text-[var(--abu-text-primary)]">{t.settings.imageGen}</h3>
-          <p className="text-sm text-[var(--abu-text-muted)] mt-1">{t.settings.imageGenDescription}</p>
-        </div>
-        <Button variant="outline" size="sm" onClick={() => setShowAddModal(true)} className="gap-1.5 shrink-0">
-          <Plus className="h-3.5 w-3.5" />
-          {t.settings.imageGenAddBackend}
-        </Button>
-      </div>
-      <ImageGenBackendsPanel onEdit={setEditingBackend} />
-      <ImageGenBackendModal
-        open={showAddModal || !!editingBackend}
-        editBackend={editingBackend ?? undefined}
-        onClose={() => { setShowAddModal(false); setEditingBackend(null); }}
-      />
-    </div>
-  );
-}

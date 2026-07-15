@@ -556,8 +556,6 @@ const enUS: TranslationDict = {
     languageDescription: 'Select display language',
     followSystem: 'Follow System',
     // Image Generation — independent backend list (design doc §3.1, "C-a")
-    imageGen: 'Image Generation',
-    imageGenDescription: 'Configure image-generation backends (independent from chat models) for the generate_image tool to call',
     imageGenApiKey: 'API Key',
     imageGenApiKeyPlaceholder: "Enter this backend's API key",
     imageGenBaseUrl: 'API Base URL',

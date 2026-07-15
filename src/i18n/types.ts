@@ -642,8 +642,6 @@ export interface TranslationDict {
     languageDescription: string;
     followSystem: string;
     // Image Generation — independent backend list (design doc §3.1, "C-a")
-    imageGen: string;
-    imageGenDescription: string;
     imageGenApiKey: string;
     imageGenApiKeyPlaceholder: string;
     imageGenBaseUrl: string;

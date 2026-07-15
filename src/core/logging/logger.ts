@@ -7,6 +7,8 @@
  * - Console passthrough for all levels
  */
 
+import { joinPath } from '@/utils/pathUtils';
+
 type LogLevel = 'debug' | 'info' | 'warn' | 'error';
 
 interface LogEntry {
@@ -71,7 +73,11 @@ async function getLogDir(): Promise<string> {
     const { appDataDir } = await import('@tauri-apps/api/path');
     const { mkdir, exists } = await import('@tauri-apps/plugin-fs');
     const base = await appDataDir();
-    logDirPath = `${base}logs`;
+    // Tauri's appDataDir() has no trailing separator, so string concat
+    // (`${base}logs`) would produce a SIBLING dir (com.abu.applogs) instead
+    // of app-data/logs. joinPath inserts the separator and normalizes to '/'
+    // (accepted by plugin-fs on both macOS and Windows).
+    logDirPath = joinPath(base, 'logs');
     if (!await exists(logDirPath)) {
       await mkdir(logDirPath, { recursive: true });
     }
@@ -103,7 +109,7 @@ async function flushToDisk(): Promise<void> {
     const dir = await getLogDir();
     if (!dir) return;
     const { writeTextFile } = await import('@tauri-apps/plugin-fs');
-    const filePath = `${dir}/${getTodayFileName()}`;
+    const filePath = joinPath(dir, getTodayFileName());
     await writeTextFile(filePath, lines, { append: true });
   } catch {
     // Disk write failed — silently drop (don't block the app)
@@ -137,7 +143,7 @@ async function cleanupOldLogs(): Promise<void> {
       if (!match) continue;
       const fileDate = new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3])).getTime();
       if (fileDate < cutoff) {
-        await remove(`${dir}/${entry.name}`).catch(() => {});
+        await remove(joinPath(dir, entry.name)).catch(() => {});
       }
     }
   } catch {

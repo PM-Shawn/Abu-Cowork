@@ -814,21 +814,59 @@ async fn mcp_spawn(
         cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
     }
 
-    // Inject enhanced PATH so commands like npx/node can be found
-    if !env.contains_key("PATH") {
-        #[cfg(not(target_os = "windows"))]
-        if let Some(path) = get_login_shell_path() {
-            cmd.env("PATH", &path);
-        }
-        #[cfg(target_os = "windows")]
-        if let Some(path) = get_enhanced_path_windows() {
-            cmd.env("PATH", &path);
-        }
-    }
-
-    // Merge environment variables
+    // Merge caller-provided environment variables first; PATH is (re)computed
+    // and set below so the bundled Node fallback is appended even when the MCP
+    // config supplies its own PATH.
     for (k, v) in &env {
         cmd.env(k, v);
+    }
+
+    // Build the child PATH and append the bundled Node.js runtime bin dir as a
+    // fallback. It goes at the END of PATH, so a user's own `node` (from an
+    // earlier entry — inherited or from the config's own PATH) always wins; the
+    // bundled runtime is used only when no system Node is on PATH. This lets
+    // npx-based MCP servers run without the user installing Node.js first.
+    {
+        #[cfg(not(target_os = "windows"))]
+        let resolved_path = get_login_shell_path();
+        #[cfg(target_os = "windows")]
+        let resolved_path = get_enhanced_path_windows();
+
+        // Base PATH: the config's own PATH if it set one, else the resolved
+        // login-shell / registry PATH, else the inherited PATH.
+        let base_path = env
+            .get("PATH")
+            .cloned()
+            .or(resolved_path)
+            .or_else(|| std::env::var("PATH").ok());
+
+        // Official Node dist keeps binaries in bin/ on unix, at the root on Windows.
+        #[cfg(not(target_os = "windows"))]
+        let node_bin_rel = "node-runtime/bin";
+        #[cfg(target_os = "windows")]
+        let node_bin_rel = "node-runtime";
+        let bundled_node_bin = app
+            .path()
+            .resolve(node_bin_rel, tauri::path::BaseDirectory::Resource)
+            .ok()
+            .filter(|p| p.exists())
+            .map(|p| p.to_string_lossy().to_string());
+
+        let mut path = base_path.unwrap_or_default();
+        if let Some(node_bin) = bundled_node_bin {
+            let sep = if cfg!(target_os = "windows") { ';' } else { ':' };
+            if !path.split(sep).any(|seg| seg == node_bin) {
+                if !path.is_empty() {
+                    path.push(sep);
+                }
+                path.push_str(&node_bin);
+            }
+        }
+        // Only override PATH when we have something, so we never clobber the
+        // child's inherited PATH with an empty string.
+        if !path.is_empty() {
+            cmd.env("PATH", &path);
+        }
     }
 
     let mut child = cmd.spawn().map_err(|e| {

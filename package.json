@@ -35,6 +35,7 @@
     "eval:report": "tsx src/eval/run.ts report",
     "copy-resources": "node scripts/copy-resources.js",
     "setup-python": "bash scripts/setup-python-runtime.sh",
+    "setup-node": "bash scripts/setup-node-runtime.sh",
     "prepare": "husky"
   },
   "dependencies": {

@@ -14,9 +14,12 @@ import { ScrollArea } from '@/components/ui/scroll-area';
 import MarkdownRenderer from '@/components/chat/MarkdownRenderer';
 import CodeMirrorEditor from './CodeMirrorEditor';
 import { VersionHistoryMenu } from './VersionHistoryMenu';
-import { Loader2, X, FolderOpen, Code, Eye, Globe, History, FileCode, FileText, FileImage, FileSpreadsheet, FileType, File } from 'lucide-react';
+import { Loader2, X, FolderOpen, Code, Eye, SquareArrowOutUpRight, History, FileCode, FileText, FileImage, FileSpreadsheet, FileType, File, Maximize2, Minimize2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { DocSelectionLayer } from '@/features/reference/DocSelectionLayer';
+import { cn } from '@/lib/utils';
+import { getToolbarButtons } from './previewToolbarConfig';
+import { openWithDefaultApp } from '@/utils/openWithDefaultApp';
 
 const PdfPreview = lazy(() => import('@/components/preview/PdfPreview'));
 const DocxPreview = lazy(() => import('@/components/preview/DocxPreview'));
@@ -24,7 +27,7 @@ const XlsxPreview = lazy(() => import('@/components/preview/XlsxPreview'));
 const CsvPreview = lazy(() => import('@/components/preview/CsvPreview'));
 const PptxPreview = lazy(() => import('@/components/preview/PptxPreview'));
 
-type RendererType = 'markdown' | 'code' | 'image' | 'text' | 'html' | 'pdf' | 'docx' | 'pptx' | 'xlsx' | 'csv' | 'unsupported';
+export type RendererType = 'markdown' | 'code' | 'image' | 'text' | 'html' | 'pdf' | 'docx' | 'pptx' | 'xlsx' | 'csv' | 'unsupported';
 
 /** Binary types that handle their own file reading */
 const BINARY_TYPES = new Set<RendererType>(['pdf', 'docx', 'pptx', 'xlsx']);
@@ -101,6 +104,9 @@ export default function PreviewPanel() {
   // same pattern).
   const [showVersionHistory, setShowVersionHistory] = useState(false);
   const versionHistoryRef = useRef<HTMLDivElement>(null);
+  // App-fullscreen toggle (Task 6) — expands the panel to a fixed overlay
+  // covering the whole window instead of just its column in RightPanel.
+  const [isFullscreen, setIsFullscreen] = useState(false);
 
   // Editable buffer for code/text/html/markdown (P2). `draft` is what
   // CodeMirror shows and edits; it's debounce-autosaved to disk below.
@@ -129,6 +135,7 @@ export default function PreviewPanel() {
   const rendererType = previewFilePath ? getRendererType(previewFilePath) : 'unsupported';
   const fileName = previewFilePath && isDataUrl(previewFilePath) ? t.panel.imagePreview : (previewFilePath ? getBaseName(previewFilePath) : '');
   const Icon = previewFilePath ? (isDataUrl(previewFilePath) ? FileImage : getFileIcon(previewFilePath)) : File;
+  const toolbarButtons = getToolbarButtons(rendererType);
 
   useEffect(() => {
     if (!previewFilePath) {
@@ -292,6 +299,14 @@ export default function PreviewPanel() {
   // whatever file was previously open, not the newly selected one.
   useEffect(() => { setShowVersionHistory(false); }, [previewFilePath]);
 
+  // Esc exits app-fullscreen — only listen while fullscreen is active.
+  useEffect(() => {
+    if (!isFullscreen) return;
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setIsFullscreen(false); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [isFullscreen]);
+
   // Debounced autosave: write the editable buffer to disk 1s after the user
   // stops typing. `selfEchoRef` is set right before the write so the fs-watch
   // reload it triggers (handled above) can recognize its own echo instead of
@@ -397,57 +412,52 @@ export default function PreviewPanel() {
     }
   };
 
-  const handleOpenInBrowser = async () => {
+  const handleOpenInApp = async () => {
     if (!previewFilePath) return;
     try {
-      const { invoke } = await import('@tauri-apps/api/core');
-      const platform = navigator.platform.toLowerCase();
-      const command = platform.includes('win')
-        ? `start "" "${previewFilePath}"`
-        : platform.includes('linux')
-          ? `xdg-open "${previewFilePath}"`
-          : `open "${previewFilePath}"`;
-      await invoke('run_shell_command', {
-        command,
-        cwd: null,
-        background: true,
-        timeout: 5,
-        sandboxEnabled: false,
-      });
+      await openWithDefaultApp(previewFilePath);
     } catch (err) {
-      console.error('[PreviewPanel] Failed to open in browser:', err);
+      console.error('[PreviewPanel] open in app failed:', err);
+      useToastStore.getState().addToast({
+        type: 'error',
+        title: t.chat.openFailed,
+        message: t.panel.openInAppFailed,
+      });
     }
   };
 
   if (!previewFilePath) return null;
 
   return (
-    <div className="flex flex-col h-full">
+    <div className={cn(
+      'flex flex-col',
+      isFullscreen ? 'fixed inset-0 z-50 bg-[var(--abu-bg-base)]' : 'h-full',
+    )}>
       {/* Header — mt-7 to clear the overlay title bar drag region */}
       <div className="shrink-0 px-3 py-2.5 mt-7 border-b border-[var(--abu-bg-pressed)] flex items-center gap-2">
         <Icon className="w-4 h-4 text-[var(--abu-text-tertiary)] shrink-0" />
         <span className="text-[13px] font-medium text-[var(--abu-text-primary)] truncate flex-1">
           {fileName}
         </span>
-        {(rendererType === 'html' || rendererType === 'markdown') && (
+        {toolbarButtons.viewToggle && (
           <div className="flex items-center bg-[var(--abu-bg-hover)] rounded p-0.5 mr-1">
-            <button
-              onClick={() => setViewMode('preview')}
-              className={`p-1 rounded text-[10px] ${viewMode === 'preview' ? 'bg-white' : ''}`}
-              title={t.panel.previewMode}
-            >
-              <Eye className="w-3 h-3" />
-            </button>
             <button
               onClick={() => setViewMode('source')}
               className={`p-1 rounded text-[10px] ${viewMode === 'source' ? 'bg-white' : ''}`}
               title={t.panel.sourceMode}
             >
-              <Code className="w-3 h-3" />
+              <Code className="w-3 h-3" strokeWidth={1.5} />
+            </button>
+            <button
+              onClick={() => setViewMode('preview')}
+              className={`p-1 rounded text-[10px] ${viewMode === 'preview' ? 'bg-white' : ''}`}
+              title={t.panel.previewMode}
+            >
+              <Eye className="w-3 h-3" strokeWidth={1.5} />
             </button>
           </div>
         )}
-        {EDITABLE_TYPES.has(rendererType) && (
+        {toolbarButtons.versionHistory && (
           <div className="relative" ref={versionHistoryRef}>
             <Button
               variant="ghost"
@@ -456,7 +466,7 @@ export default function PreviewPanel() {
               className="h-6 w-6 text-[var(--abu-text-tertiary)] hover:text-[var(--abu-clay)]"
               title={t.panel.versionHistory}
             >
-              <History className="h-3.5 w-3.5" />
+              <History className="h-3.5 w-3.5" strokeWidth={1.5} />
             </Button>
             <VersionHistoryMenu
               filePath={previewFilePath}
@@ -467,15 +477,26 @@ export default function PreviewPanel() {
             />
           </div>
         )}
-        {rendererType === 'html' && (
+        {toolbarButtons.openInApp && (
           <Button
             variant="ghost"
             size="icon"
-            onClick={handleOpenInBrowser}
+            onClick={handleOpenInApp}
             className="h-6 w-6 text-[var(--abu-text-tertiary)] hover:text-[var(--abu-clay)]"
-            title={t.chat.openInBrowser}
+            title={t.panel.openInApp}
           >
-            <Globe className="h-3.5 w-3.5" />
+            <SquareArrowOutUpRight className="h-3.5 w-3.5" strokeWidth={1.5} />
+          </Button>
+        )}
+        {toolbarButtons.fullscreen && (
+          <Button
+            variant="ghost"
+            size="icon"
+            onClick={() => setIsFullscreen((v) => !v)}
+            className="h-6 w-6 text-[var(--abu-text-tertiary)] hover:text-[var(--abu-clay)]"
+            title={isFullscreen ? t.panel.exitFullscreen : t.panel.fullscreen}
+          >
+            {isFullscreen ? <Minimize2 className="h-3.5 w-3.5" strokeWidth={1.5} /> : <Maximize2 className="h-3.5 w-3.5" strokeWidth={1.5} />}
           </Button>
         )}
         <Button
@@ -485,7 +506,7 @@ export default function PreviewPanel() {
           className="h-6 w-6 text-[var(--abu-text-tertiary)] hover:text-[var(--abu-text-primary)]"
           title={t.panel.closePreview}
         >
-          <X className="h-3.5 w-3.5" />
+          <X className="h-3.5 w-3.5" strokeWidth={1.5} />
         </Button>
       </div>
 

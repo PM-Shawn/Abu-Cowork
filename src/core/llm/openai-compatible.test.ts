@@ -86,6 +86,66 @@ async function runChat(chunks: unknown[]): Promise<StreamEvent[]> {
   return events;
 }
 
+// Regression for B6: PDF/document content blocks were silently dropped when
+// serializing for OpenAI-compatible providers (both the image-parts path and the
+// text-only path), with NO placeholder — so the model saw nothing and could claim
+// "no file was provided". A document must leave a text breadcrumb, mirroring the
+// vision-unsupported image hint.
+describe('OpenAICompatibleAdapter — document attachment placeholder (B6)', () => {
+  beforeEach(() => {
+    mockFetch.mockReset();
+  });
+
+  const pdfBlock = {
+    type: 'document' as const,
+    source: { type: 'base64' as const, media_type: 'application/pdf' as const, data: 'JVBERi0xLjQK' },
+  };
+
+  async function requestBodyFor(messages: Message[], overrides: Partial<ChatOptions> = {}) {
+    mockFetch.mockResolvedValueOnce(
+      makeSSEResponse([
+        { choices: [{ delta: { content: 'ok' } }] },
+        { choices: [{ delta: {}, finish_reason: 'stop' }] },
+      ]),
+    );
+    const adapter = new OpenAICompatibleAdapter();
+    await adapter.chat(messages, makeOptions(overrides), () => {});
+    return JSON.parse((mockFetch.mock.calls[0][1] as { body: string }).body) as {
+      messages: Array<{ role: string; content: unknown }>;
+    };
+  }
+
+  it('leaves a text breadcrumb for a document-only user message (text-join path)', async () => {
+    const body = await requestBodyFor([
+      { id: 'u1', role: 'user', content: [{ type: 'text', text: 'summarize this' }, pdfBlock], timestamp: Date.now() } as Message,
+    ]);
+    const user = body.messages.find((m) => m.role === 'user');
+    const asText = typeof user?.content === 'string' ? user.content : JSON.stringify(user?.content);
+    expect(asText.toLowerCase()).toContain('document');
+  });
+
+  it('leaves a text breadcrumb for a document alongside an image (content-parts path)', async () => {
+    const body = await requestBodyFor(
+      [
+        {
+          id: 'u1',
+          role: 'user',
+          content: [
+            { type: 'text', text: 'look' },
+            { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'iVBORw0KGgo=' } },
+            pdfBlock,
+          ],
+          timestamp: Date.now(),
+        } as Message,
+      ],
+      { supportsVision: true },
+    );
+    const user = body.messages.find((m) => m.role === 'user');
+    // content is an array of parts (an image is present) — a text part must mention the document.
+    expect(JSON.stringify(user?.content).toLowerCase()).toContain('document');
+  });
+});
+
 describe('OpenAICompatibleAdapter streaming finish_reason handling', () => {
   beforeEach(() => {
     mockFetch.mockReset();
@@ -159,6 +219,37 @@ describe('OpenAICompatibleAdapter streaming finish_reason handling', () => {
         expect('_parse_error' in tu.input).toBe(false);
       }
 
+      const done = events.find((e) => e.type === 'done');
+      expect(done?.type === 'done' && done.stopReason).toBe('tool_use');
+    });
+
+    it('emits a COMPLETE text-tag <tool_call> truncated by length instead of dropping it', async () => {
+      // A text-tag-convention model (no native tool_calls) emits one fully-closed
+      // <tool_call> block, then keeps generating and is cut off at max_tokens.
+      // The text parser only buffers closed tool calls, so this one is complete
+      // and must be executed — NOT dropped with a needless max_tokens retry.
+      // Regression for the length-branch asymmetry: every other terminal branch
+      // calls emitTextToolCalls(), but 'length' only inspected native buffers.
+      const events = await runChat([
+        {
+          choices: [{
+            delta: {
+              content:
+                '<tool_call>{"name":"read_file","arguments":{"path":"a.txt"}}</tool_call> now rambling on until we run ou',
+            },
+          }],
+        },
+        { choices: [{ delta: {}, finish_reason: 'length' }] },
+      ]);
+
+      const tu = events.find((e) => e.type === 'tool_use');
+      expect(tu).toBeDefined();
+      if (tu?.type === 'tool_use') {
+        expect(tu.name).toBe('read_file');
+        expect(tu.input).toEqual({ path: 'a.txt' });
+      }
+
+      // A decided, complete action ran → tool_use, not max_tokens escalation.
       const done = events.find((e) => e.type === 'done');
       expect(done?.type === 'done' && done.stopReason).toBe('tool_use');
     });
@@ -542,6 +633,38 @@ describe('OpenAICompatibleAdapter streaming finish_reason handling', () => {
         expect('_parse_error' in tu.input).toBe(true);
       }
     });
+
+    it('keeps the replayed _parse_error input bounded even for very long invalid args', async () => {
+      // The _parse_error blob is persisted in the tool_use input and re-sent to
+      // the model every turn until compaction, so it MUST stay small regardless
+      // of how long the model's malformed args were (full args go to the disk
+      // log instead — see PARSE_ERROR_INPUT_PREVIEW vs LOG_TOOL_ARG_PREVIEW).
+      // Marker sits at ~char 230, past the 200-char input cap.
+      const longInvalid = `{"path":"${'x'.repeat(220)}NEEDLE`; // unterminated string → invalid JSON
+      const events = await runChat([
+        {
+          choices: [{
+            delta: {
+              tool_calls: [{
+                index: 0,
+                id: 'tc_1',
+                function: { name: 'read_file', arguments: longInvalid },
+              }],
+            },
+          }],
+        },
+      ]);
+
+      const tu = events.find((e) => e.type === 'tool_use');
+      expect(tu?.type).toBe('tool_use');
+      if (tu?.type === 'tool_use') {
+        const preview = (tu.input as Record<string, unknown>)._parse_error as string;
+        // Bounded: prefix (~28 chars) + at most 200 chars of args.
+        expect(preview.length).toBeLessThanOrEqual(240);
+        // Content past the 200-char cap must NOT be replayed to the model.
+        expect(preview).not.toContain('NEEDLE');
+      }
+    });
   });
 });
 
@@ -611,6 +734,75 @@ describe('OpenAICompatibleAdapter hang timeouts (abort on no progress)', () => {
 
     await vi.advanceTimersByTimeAsync(2_000);
     await expect(chatPromise).rejects.toMatchObject({ code: 'network_error', retryable: true });
+  });
+
+  it('non-streaming (Ollama+tools) body read aborts on the hang ceiling (B3)', async () => {
+    // Ollama endpoint + tools forces the NON-streaming path (response.json()).
+    // Headers arrive, but the body never completes and only errors on abort. The
+    // body-download timeout must abort so response.json() rejects and chat()
+    // unwinds — previously response.json() had no timeout and hung forever.
+    mockFetch.mockImplementation((_url: string, init?: { signal?: AbortSignal }) => {
+      const signal = init?.signal;
+      const body = new ReadableStream<Uint8Array>({
+        start(controller) {
+          if (signal?.aborted) return controller.error(abortError());
+          signal?.addEventListener('abort', () => controller.error(abortError()), { once: true });
+        },
+      });
+      return Promise.resolve(new Response(body, { status: 200, headers: { 'Content-Type': 'application/json' } }));
+    });
+
+    const adapter = new OpenAICompatibleAdapter();
+    const events: StreamEvent[] = [];
+    const chatPromise = adapter.chat(
+      [userMessage],
+      makeOptions({ baseUrl: 'http://localhost:11434/v1' }),
+      (e) => events.push(e),
+    );
+    let settled = false;
+    chatPromise.then(() => { settled = true; }, () => { settled = true; });
+
+    await vi.advanceTimersByTimeAsync(179_000);
+    expect(settled).toBe(false);
+
+    await vi.advanceTimersByTimeAsync(2_000);
+    await expect(chatPromise).rejects.toMatchObject({ code: 'network_error', retryable: true });
+  });
+
+  it('max_tokens retry re-arms the connect timeout instead of hanging (B4)', async () => {
+    // First attempt → 400 "max_tokens too large" triggers a one-shot retry. The
+    // retry then stalls before returning headers; the first attempt's connect
+    // timer was already cleared, so the retry must arm its OWN timer and abort.
+    let call = 0;
+    mockFetch.mockImplementation((_url: string, init?: { signal?: AbortSignal }) => {
+      call++;
+      if (call === 1) {
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({ error: { param: 'max_tokens', message: 'max_tokens supports at most 4096' } }),
+            { status: 400, headers: { 'Content-Type': 'application/json' } },
+          ),
+        );
+      }
+      const signal = init?.signal;
+      return new Promise<Response>((_resolve, reject) => {
+        if (signal?.aborted) return reject(abortError());
+        signal?.addEventListener('abort', () => reject(abortError()), { once: true });
+      });
+    });
+
+    const adapter = new OpenAICompatibleAdapter();
+    const events: StreamEvent[] = [];
+    const chatPromise = adapter.chat([userMessage], makeOptions(), (e) => events.push(e));
+    let settled = false;
+    chatPromise.then(() => { settled = true; }, () => { settled = true; });
+
+    await vi.advanceTimersByTimeAsync(179_000);
+    expect(settled).toBe(false);
+
+    await vi.advanceTimersByTimeAsync(2_000);
+    await expect(chatPromise).rejects.toMatchObject({ code: 'network_error', retryable: true });
+    expect(call).toBe(2); // the retry actually fired
   });
 });
 

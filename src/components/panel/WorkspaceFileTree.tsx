@@ -291,6 +291,7 @@ export default function WorkspaceFileTree() {
     rootEntries,
     isRootLoading,
     rootError,
+    rootMissing,
     childrenByPath,
     expandedPaths,
     loadingPaths,
@@ -612,6 +613,8 @@ export default function WorkspaceFileTree() {
 
       {!rootPath ? (
         <p className="text-[12px] text-[var(--abu-text-muted)] py-1">{t.panel.fileTree.noWorkspace}</p>
+      ) : rootMissing ? (
+        <p className="text-[12px] text-[var(--abu-text-muted)] py-1">{t.panel.fileTree.folderDeleted}</p>
       ) : rootError ? (
         <p className="text-[12px] text-[var(--abu-text-muted)] py-1">{t.panel.fileTree.loadError}</p>
       ) : isRootLoading && rootEntries.length === 0 ? (

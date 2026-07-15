@@ -2,8 +2,10 @@ import { useState, useEffect, useRef } from 'react';
 import { useChatStore } from '@/stores/chatStore';
 import { useProjectStore } from '@/stores/projectStore';
 import { useSettingsStore } from '@/stores/settingsStore';
+import { usePreviewStore } from '@/stores/previewStore';
+import { useWorkspaceStore } from '@/stores/workspaceStore';
 import { useI18n } from '@/i18n';
-import { FolderClosed, FolderOpen, Plus, Pin, PinOff, Settings, Archive, Trash2, Pencil, Download, FolderMinus } from 'lucide-react';
+import { FolderClosed, FolderOpen, Plus, Pin, PinOff, Settings, Archive, Trash2, Pencil, Download, FolderMinus, ListTree } from 'lucide-react';
 import ShareExportDialog from '@/components/share/ShareExportDialog';
 import ImportedBadge from './ImportedBadge';
 import { cn } from '@/lib/utils';
@@ -44,6 +46,7 @@ export default function ProjectItem({ project, conversations, expanded, onNewTas
   const conversationIndex = useChatStore((s) => s.conversationIndex);
   const setViewMode = useSettingsStore((s) => s.setViewMode);
   const viewMode = useSettingsStore((s) => s.viewMode);
+  const setShowFileTree = usePreviewStore((s) => s.setFileTreeMode);
 
   const setConversationProject = useChatStore((s) => s.setConversationProject);
 
@@ -111,6 +114,18 @@ export default function ProjectItem({ project, conversations, expanded, onNewTas
           )}
         </button>
         <button
+          onClick={(e) => {
+            e.stopPropagation();
+            useWorkspaceStore.getState().setWorkspace(project.workspacePath);
+            setShowFileTree(true);
+            setViewMode('chat');
+          }}
+          className="p-0.5 text-[var(--abu-text-muted)] hover:text-[var(--abu-text-primary)] transition-colors opacity-0 group-hover:opacity-100 shrink-0"
+          title={t.sidebar.projectFiles}
+        >
+          <ListTree className="h-3 w-3" strokeWidth={1.5} />
+        </button>
+        <button
           onClick={(e) => { e.stopPropagation(); onNewTask(project.id); }}
           className="p-0.5 text-[var(--abu-text-muted)] hover:text-[var(--abu-text-primary)] transition-colors opacity-0 group-hover:opacity-100 shrink-0"
           title={t.project.newTask}
@@ -169,6 +184,20 @@ export default function ProjectItem({ project, conversations, expanded, onNewTas
                   </span>
                 )}
                 <ConvStatusDot status={loadedConversations[conv.id]?.status ?? 'idle'} />
+                {conv.workspacePath && (
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      switchConversation(conv.id);
+                      setViewMode('chat');
+                      setShowFileTree(true);
+                    }}
+                    className="h-4 w-4 flex items-center justify-center opacity-0 group-hover/conv:opacity-100 text-[var(--abu-text-tertiary)] hover:text-[var(--abu-clay)] shrink-0"
+                    title={t.sidebar.projectFiles}
+                  >
+                    <ListTree className="h-3 w-3" strokeWidth={1.5} />
+                  </button>
+                )}
                 <button
                   onClick={(e) => { e.stopPropagation(); deleteConversation(conv.id); }}
                   className="h-4 w-4 flex items-center justify-center opacity-0 group-hover/conv:opacity-100 text-[var(--abu-text-tertiary)] hover:text-red-500 shrink-0"

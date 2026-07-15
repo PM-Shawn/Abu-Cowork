@@ -6,6 +6,7 @@ import type { ToolDefinition, ToolParameter, ToolResult, ToolResultContent } fro
 import { invoke } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import { expandConfigEnvVars } from '@/utils/envExpansion';
+import { hasEmbeddedNode } from '@/utils/nodeRuntime';
 import { getTauriFetch } from '@/core/llm/tauriFetch';
 import { createLogger } from '@/core/logging/logger';
 
@@ -342,15 +343,20 @@ export class MCPClientManager {
         if (!expandedConfig.command) {
           throw new Error('Stdio transport requires a command');
         }
-        // Pre-check: if command is npx/node, verify Node.js is installed
+        // Pre-check: if command is npx/node, verify Node.js is available.
+        // Abu bundles a Node.js runtime (see nodeRuntime.ts / mcp_spawn PATH
+        // fallback), so a missing system Node is only fatal when the bundled
+        // runtime is also absent (e.g. a dev checkout without `npm run setup-node`).
         const cmd = expandedConfig.command;
         if (cmd === 'npx' || cmd === 'node' || cmd === 'npm') {
-          try {
-            await invoke('run_shell_command', { command: 'node --version', cwd: null, background: false, timeout: 5 });
-          } catch {
-            throw new Error(
-              `未检测到 Node.js 环境。${cmd} 命令需要先安装 Node.js。\n请访问 https://nodejs.org 下载安装后重试。`
-            );
+          if (!(await hasEmbeddedNode())) {
+            try {
+              await invoke('run_shell_command', { command: 'node --version', cwd: null, background: false, timeout: 5 });
+            } catch {
+              throw new Error(
+                `未检测到 Node.js 环境。${cmd} 命令需要先安装 Node.js。\n请访问 https://nodejs.org 下载安装后重试。`
+              );
+            }
           }
         }
         transport = new TauriStdioTransport({

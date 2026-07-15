@@ -988,6 +988,23 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
         parentConversationId: conversationId,
       });
 
+      // runSubagentLoop RETURNS a (partial/cancelled) SubagentResult on abort
+      // rather than throwing — deliberate for its structured-result contract, but
+      // it means the catch block's isUserAbort path never fires for a cancelled
+      // delegate run. Re-check the abort signal here so a user Stop during an
+      // @agent delegation is reported as {reason:'aborted'}, not a successful
+      // completion (schedulers/triggers/isIncompleteReason depend on this).
+      if (abortController.signal.aborted) {
+        subagentCleanup();
+        chatStore.removeActiveAgent(delegateAgent.name);
+        chatStore.setAgentStatus('idle');
+        chatStore.cancelStreaming(conversationId);
+        chatStore.clearAbortController(conversationId);
+        taskExecutionStore.cancelExecution(execution.id);
+        chatStore.setConversationStatus(conversationId, 'idle');
+        return { reason: 'aborted' };
+      }
+
       // Complete the delegate step
       subagentCleanup();
       chatStore.removeActiveAgent(delegateAgent.name);
@@ -2040,7 +2057,11 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
         // Handle MCP tool changes — inject notification into conversation
         if (batchResult.mcpChanged) {
           const toolNames = new Set(tools.map(t => t.name));
-          const { tools: freshRawTools } = resolveTools(route, !!builtinWebSearch, options?.blockedTools);
+          // Pass the SAME prefetchCtx the turn's own tool set was built with
+          // (line ~1304). Without it, freshTools is the full unfiltered catalog
+          // while `tools` is the prefetched subset, so every deferred tool shows
+          // up as falsely "added" in the injected tools-changed notification.
+          const { tools: freshRawTools } = resolveTools(route, !!builtinWebSearch, options?.blockedTools, prefetchCtx);
           const freshTools = noTools ? [] : freshRawTools;
           const freshNames = new Set(freshTools.map(t => t.name));
           const added = freshTools.filter(t => !toolNames.has(t.name));

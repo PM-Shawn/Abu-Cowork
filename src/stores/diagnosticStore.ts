@@ -52,7 +52,10 @@ export const useDiagnosticStore = create<DiagnosticStore>()(
       reRunning: {},
       exportInProgress: false,
       lastExportPath: null,
-      includeRawText: false,
+      // Default ON: attaching a conversation is only useful if its message text
+      // is actually included (secrets are still scrubbed either way). Users who
+      // don't want raw text can turn this off before submitting.
+      includeRawText: true,
 
       runAll: async () => {
         if (get().isChecking) return;
@@ -128,7 +131,15 @@ export const useDiagnosticStore = create<DiagnosticStore>()(
     }),
     {
       name: 'abu-diagnostic-store',
-      version: 1,
+      version: 2,
+      // v1→v2: `includeRawText` default flipped false→true. Reset any persisted
+      // v1 value to the new default (the toggle predates release, so a stored
+      // `false` is the old default rather than a deliberate opt-out).
+      migrate: (persisted, version) => {
+        const state = persisted as Partial<DiagnosticState> | undefined;
+        if (state && version < 2) state.includeRawText = true;
+        return state as DiagnosticState;
+      },
       partialize: (s) => ({
         results: s.results,
         lastCheckedAt: s.lastCheckedAt,

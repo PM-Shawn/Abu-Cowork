@@ -9,9 +9,9 @@ import ConfirmDialog from '@/components/common/ConfirmDialog';
 import ProviderCard from './ai-services/ProviderCard';
 import AddProviderModal from './ai-services/AddProviderModal';
 import { WebSearchForm } from './WebSearchSection';
-import { ImageGenForm } from './ImageGenSection';
+import { ImageGenBackendsPanel, ImageGenBackendModal } from './ImageGenSection';
 import EnterpriseLlmBadge from '@/components/enterprise/EnterpriseLlmBadge';
-import type { ProviderInstance } from '@/types/provider';
+import type { ProviderInstance, ImageGenBackend } from '@/types/provider';
 
 export default function AIServicesSection() {
   const { t } = useI18n();
@@ -19,11 +19,15 @@ export default function AIServicesSection() {
   const providers = useSettingsStore((s) => s.providers);
   const activeModel = useSettingsStore((s) => s.activeModel);
   const clearAllStoredKeys = useSettingsStore((s) => s.clearAllStoredKeys);
+  // Hooks must run unconditionally before the isEnterprise early return below.
+  const imageGenBackends = useSettingsStore((s) => s.imageGeneration.backends);
   const [showAddModal, setShowAddModal] = useState(false);
   const [editingProvider, setEditingProvider] = useState<ProviderInstance | null>(null);
   const [showClearConfirm, setShowClearConfirm] = useState(false);
   const [searchExpanded, setSearchExpanded] = useState(false);
   const [imageGenExpanded, setImageGenExpanded] = useState(false);
+  const [showAddImageGenModal, setShowAddImageGenModal] = useState(false);
+  const [editingImageGenBackend, setEditingImageGenBackend] = useState<ImageGenBackend | null>(null);
 
   // In enterprise mode, show the gateway badge and hide personal provider config.
   if (isEnterprise) {
@@ -40,9 +44,9 @@ export default function AIServicesSection() {
   // Check if any enabled provider has builtin capabilities
   const enabledProviders = providers.filter(p => p.enabled);
   const hasBuiltinSearch = enabledProviders.some(p => !!p.capabilities?.webSearch);
-  const hasBuiltinImageGen = enabledProviders.some(p => !!p.capabilities?.imageGen);
   const searchProviderName = enabledProviders.find(p => !!p.capabilities?.webSearch)?.name;
-  const imageGenProviderName = enabledProviders.find(p => !!p.capabilities?.imageGen)?.name;
+  // Image generation is an independent config (design doc §3.1, "C-a") — no
+  // longer derived from chat providers, so no "builtin via provider X" case.
 
   const enabledCount = enabledProviders.length;
 
@@ -165,43 +169,57 @@ export default function AIServicesSection() {
             )}
           </div>
 
-          {/* Image Generation */}
+          {/* Image Generation — independent config (design doc §3.1, "C-a"):
+              a user-managed list of backends, decoupled from chat providers.
+              The "add backend" trigger lives here (header row, right-aligned)
+              rather than inside the collapsible panel, mirroring the AI
+              Services section header's own add button above — see P2 design
+              note: it must stay visible even while the panel is collapsed. */}
           <div className="px-4 py-3">
-            <div className="flex items-center gap-3">
-              {hasBuiltinImageGen ? (
-                <CircleCheck className="h-4 w-4 text-green-600 shrink-0" />
-              ) : (
-                <CircleAlert className="h-4 w-4 text-amber-500 shrink-0" />
-              )}
-              <div className="flex items-center gap-2">
-                <ImageIcon className="h-3.5 w-3.5 text-[var(--abu-text-muted)]" />
-                <span className="text-sm text-[var(--abu-text-primary)]">{t.settings.auxiliaryImageGen}</span>
-              </div>
-              {hasBuiltinImageGen ? (
-                <span className="text-xs px-1.5 py-0.5 rounded bg-green-50 text-green-700">
-                  {t.settings.builtinVia.replace('{name}', imageGenProviderName ?? '')}
-                </span>
-              ) : (
+            <div className="flex items-center justify-between gap-3">
+              <div className="flex items-center gap-3 min-w-0">
+                {imageGenBackends.length > 0 ? (
+                  <CircleCheck className="h-4 w-4 text-green-600 shrink-0" />
+                ) : (
+                  <CircleAlert className="h-4 w-4 text-amber-500 shrink-0" />
+                )}
+                <div className="flex items-center gap-2">
+                  <ImageIcon className="h-3.5 w-3.5 text-[var(--abu-text-muted)]" />
+                  <span className="text-sm text-[var(--abu-text-primary)]">{t.settings.auxiliaryImageGen}</span>
+                </div>
                 <button
                   type="button"
                   onClick={() => setImageGenExpanded(!imageGenExpanded)}
                   className={cn(
                     'text-xs px-1.5 py-0.5 rounded cursor-pointer transition-colors',
-                    'bg-amber-50 dark:bg-amber-900/20 text-amber-700 dark:text-amber-400 hover:bg-amber-100 dark:hover:bg-amber-900/30'
+                    imageGenBackends.length > 0
+                      ? 'bg-green-50 text-green-700 hover:bg-green-100'
+                      : 'bg-amber-50 dark:bg-amber-900/20 text-amber-700 dark:text-amber-400 hover:bg-amber-100 dark:hover:bg-amber-900/30'
                   )}
                 >
                   <span className="flex items-center gap-1">
-                    {t.settings.builtinNotSupported}
+                    {imageGenBackends.length > 0
+                      ? t.settings.imageGenBackendsCount.replace('{count}', String(imageGenBackends.length))
+                      : t.settings.imageGenNotConfigured}
                     <ChevronDown className={cn('h-3 w-3 transition-transform', imageGenExpanded && 'rotate-180')} />
                   </span>
                 </button>
-              )}
+              </div>
+              <Button
+                variant="ghost"
+                size="xs"
+                onClick={() => setShowAddImageGenModal(true)}
+                className="gap-1 shrink-0 text-[var(--abu-text-secondary)]"
+              >
+                <Plus className="h-3 w-3" />
+                {t.settings.add}
+              </Button>
             </div>
 
-            {!hasBuiltinImageGen && imageGenExpanded && (
+            {imageGenExpanded && (
               <div className="ml-7 mt-2 rounded-lg border border-[var(--abu-border)] bg-[var(--abu-bg-muted)]">
                 <div className="p-3">
-                  <ImageGenForm />
+                  <ImageGenBackendsPanel onEdit={setEditingImageGenBackend} />
                 </div>
               </div>
             )}
@@ -231,6 +249,14 @@ export default function AIServicesSection() {
         open={showAddModal || !!editingProvider}
         editProvider={editingProvider ?? undefined}
         onClose={() => { setShowAddModal(false); setEditingProvider(null); }}
+      />
+
+      {/* Add / Edit Image-Gen Backend Modal — same "add"/"edit" unification
+          as AddProviderModal above. */}
+      <ImageGenBackendModal
+        open={showAddImageGenModal || !!editingImageGenBackend}
+        editBackend={editingImageGenBackend ?? undefined}
+        onClose={() => { setShowAddImageGenModal(false); setEditingImageGenBackend(null); }}
       />
 
       <ConfirmDialog

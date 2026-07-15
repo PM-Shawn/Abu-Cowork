@@ -7,6 +7,8 @@
  * Keys follow a colon-namespaced convention:
  *   - `provider:<providerId>` for {@link ProviderInstance.apiKey}
  *   - `aux:webSearch`, `aux:imageGen` for {@link AuxiliaryServices.*.apiKey}
+ *   - `imagegen:<backendId>` for {@link ImageGenBackend.apiKey} (independent
+ *     image-generation backends, see design doc §3.1 "C-a")
  *
  * All functions are best-effort: errors are returned to callers but never
  * thrown as unhandled rejections. Callers typically fire-and-forget writes
@@ -19,6 +21,7 @@ export const SECRET_KEYS = {
   provider: (id: string) => `provider:${id}`,
   auxWebSearch: 'aux:webSearch',
   auxImageGen: 'aux:imageGen',
+  imageGenBackend: (id: string) => `imagegen:${id}`,
 } as const;
 
 export async function getSecret(key: string): Promise<string | null> {

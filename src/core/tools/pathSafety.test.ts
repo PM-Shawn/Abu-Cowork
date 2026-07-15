@@ -6,6 +6,7 @@ import {
   authorizeWorkspace,
   revokeWorkspace,
   getPermissionDirectory,
+  isCatastrophicDeleteTarget,
 } from './pathSafety';
 import { setPlatformForTest } from '../../test/helpers';
 
@@ -216,6 +217,56 @@ describe('pathSafety', () => {
     it('returns path itself for non-home paths', () => {
       const result = getPermissionDirectory('/tmp/foo', '/Users/testuser');
       expect(result).toBe('/tmp/foo');
+    });
+  });
+
+  // ── isCatastrophicDeleteTarget ──
+  describe('isCatastrophicDeleteTarget', () => {
+    let cleanup: (() => void) | undefined;
+
+    afterEach(() => {
+      cleanup?.();
+      cleanup = undefined;
+    });
+
+    it('flags the POSIX filesystem root', async () => {
+      expect(await isCatastrophicDeleteTarget('/')).toBe(true);
+    });
+
+    it('flags the home directory itself', async () => {
+      expect(await isCatastrophicDeleteTarget('/Users/testuser')).toBe(true);
+    });
+
+    it('flags the home directory with a trailing slash', async () => {
+      expect(await isCatastrophicDeleteTarget('/Users/testuser/')).toBe(true);
+    });
+
+    it('does not flag a normal subdirectory of home', async () => {
+      expect(await isCatastrophicDeleteTarget('/Users/testuser/Projects/myapp')).toBe(false);
+    });
+
+    it('does not flag an unrelated absolute path', async () => {
+      expect(await isCatastrophicDeleteTarget('/tmp/foo')).toBe(false);
+    });
+
+    it('flags a Windows drive root (forward slash)', async () => {
+      cleanup = setPlatformForTest('windows');
+      expect(await isCatastrophicDeleteTarget('C:/')).toBe(true);
+    });
+
+    it('flags a Windows drive root (backslash)', async () => {
+      cleanup = setPlatformForTest('windows');
+      expect(await isCatastrophicDeleteTarget('C:\\')).toBe(true);
+    });
+
+    it('flags a lowercase Windows drive root', async () => {
+      cleanup = setPlatformForTest('windows');
+      expect(await isCatastrophicDeleteTarget('c:/')).toBe(true);
+    });
+
+    it('does not flag a normal Windows path', async () => {
+      cleanup = setPlatformForTest('windows');
+      expect(await isCatastrophicDeleteTarget('C:/Users/testuser/Projects/myapp')).toBe(false);
     });
   });
 

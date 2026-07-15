@@ -1,3 +1,4 @@
+import { useEffect, useState } from 'react';
 import CodeMirror from '@uiw/react-codemirror';
 import { langs } from '@uiw/codemirror-extensions-langs';
 import { oneDark } from '@codemirror/theme-one-dark';
@@ -29,10 +30,32 @@ function resolveLanguageExtensions(language: string): Extension[] {
 }
 
 /**
+ * Tracks the app's effective (resolved) theme by reading the `.dark` class
+ * App.tsx toggles on `<html>` (see `src/App.tsx` `root.classList.toggle('dark', dark)`,
+ * which already resolves the 'system' setting into that class). Subscribes via
+ * a MutationObserver so callers live-update if the user switches theme.
+ */
+function useEffectiveThemeIsDark(): boolean {
+  const [isDark, setIsDark] = useState(() => document.documentElement.classList.contains('dark'));
+
+  useEffect(() => {
+    const root = document.documentElement;
+    const observer = new MutationObserver(() => {
+      setIsDark(root.classList.contains('dark'));
+    });
+    observer.observe(root, { attributes: true, attributeFilter: ['class'] });
+    return () => observer.disconnect();
+  }, []);
+
+  return isDark;
+}
+
+/**
  * Inline editable source view used by PreviewPanel for html/markdown "source"
  * mode and for code/text files (which have no rendered preview at all).
- * Wraps `@uiw/react-codemirror` with the project's dark theme so it matches
- * the existing read-only `SyntaxHighlighter` (oneDark) look.
+ * Wraps `@uiw/react-codemirror` with a theme that follows the app's resolved
+ * theme: `oneDark` in dark mode (matching the existing read-only
+ * `SyntaxHighlighter` look), or CodeMirror's built-in light theme in light mode.
  */
 export default function CodeMirrorEditor({
   value,
@@ -45,11 +68,13 @@ export default function CodeMirrorEditor({
   onChange: (value: string) => void;
   readOnly?: boolean;
 }) {
+  const isDark = useEffectiveThemeIsDark();
+
   return (
     <CodeMirror
       value={value}
       onChange={onChange}
-      theme={oneDark}
+      theme={isDark ? oneDark : 'light'}
       extensions={resolveLanguageExtensions(language)}
       readOnly={readOnly}
       height="100%"

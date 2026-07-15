@@ -61,6 +61,7 @@
       "builtin-skills/",
       "builtin-agents/",
       "python-runtime/",
+      "node-runtime/",
       "browser-extension/"
     ],
     "icon": [

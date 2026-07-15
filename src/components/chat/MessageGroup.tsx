@@ -583,8 +583,19 @@ export default function MessageGroup({ messages, isLastGroup: isLastGroupProp = 
     }
 
     if (seg.kind === 'text') {
-      const mdImages = extractMarkdownImages(seg.text);
-      let cleanedText = mdImages.length > 0 ? stripMarkdownImages(seg.text) : seg.text;
+      const allMdImages = extractMarkdownImages(seg.text);
+      // Drop markdown images that point to a file this turn already renders as a
+      // file-output card (e.g. generate_image's saved PNG that the model also
+      // helpfully embedded as ![](path)) — otherwise the same image shows twice
+      // (thumbnail + ImagePreviewCard). Match by basename since generated files
+      // have unique timestamped names. Non-output images (web URLs, pre-existing
+      // files) still render as thumbnails.
+      const baseOf = (p: string) => (p.split(/[/\\]/).pop() || p).trim();
+      const outputBasenames = new Set(fileOutputs.map((f) => baseOf(f.path)));
+      const mdImages = allMdImages.filter((src) => !outputBasenames.has(baseOf(src)));
+      // Always strip ALL markdown images from the rendered text (MarkdownRenderer
+      // drops <img> anyway); the ones we keep are shown as ImageThumbnail below.
+      let cleanedText = allMdImages.length > 0 ? stripMarkdownImages(seg.text) : seg.text;
       if (searchResults.length > 0 && cleanedText) {
         cleanedText = stripSourcesBlock(cleanedText);
       }

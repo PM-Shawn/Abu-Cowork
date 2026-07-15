@@ -35,6 +35,27 @@ export function normalizeChatCompletionsUrl(raw: string | undefined | null): str
 }
 
 /**
+ * Idempotently ensure a URL ends in exactly one /images/generations,
+ * stripping any repeats and preserving ?query / #fragment suffixes.
+ *
+ * Image-gen backends are entered by hand in Settings → Image Generation, and
+ * vendor docs (e.g. Volcengine Ark) present the FULL endpoint
+ * `https://ark.cn-beijing.volces.com/api/v3/images/generations` as the thing to
+ * copy — so users paste the full path just as often as the bare base. Without
+ * this, `resolveOpenAIBaseUrl(base) + '/images/generations'` would turn a pasted
+ * full URL into `.../api/v3/images/generations/v1/images/generations` (404).
+ */
+export function normalizeImageGenerationsUrl(raw: string | undefined | null): string {
+  const s = (raw ?? '').trim();
+  const cut = s.search(/[?#]/);
+  const suffix = cut >= 0 ? s.slice(cut) : '';
+  let base = (cut >= 0 ? s.slice(0, cut) : s).replace(/\/+$/, '');
+  while (base.endsWith('/images/generations')) base = base.slice(0, -'/images/generations'.length);
+  base = resolveOpenAIBaseUrl(base);
+  return `${base}/images/generations${suffix}`;
+}
+
+/**
  * Build the full chat endpoint URL the app will hit for a given provider config.
  * Used by the adapter (to POST) and by the settings UI (to preview for the user).
  *

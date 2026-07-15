@@ -7,9 +7,10 @@ import { useInboxStore } from '@/stores/inboxStore';
 import { useI18n } from '@/i18n';
 import { useLabsFlag } from '@/core/labs/resolve';
 import { LABS_TODOS_INBOX } from '@/core/labs/registry';
-import { Plus, Workflow, Wrench, Trash2, Settings, Download, Pencil, Undo2, HelpCircle, FolderInput, FolderClosed, ChevronRight, Minus, Search, X, CheckSquare, Inbox, ListTree, ArrowLeft } from 'lucide-react';
+import { Plus, Workflow, Wrench, Trash2, Download, Pencil, Undo2, FolderInput, FolderClosed, ChevronRight, Minus, Search, X, CheckSquare, Inbox, ListTree, ArrowLeft } from 'lucide-react';
 import GuideModal from '@/components/common/GuideModal';
 import ProfileEditModal from '@/components/common/ProfileEditModal';
+import AccountMenu from '@/components/sidebar/AccountMenu';
 import { Button } from '@/components/ui/button';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { cn } from '@/lib/utils';
@@ -18,7 +19,6 @@ import type { ConversationStatus } from '@/types';
 import ProjectsSection from '@/components/sidebar/ProjectsSection';
 import WorkspaceFileTree from '@/components/panel/WorkspaceFileTree';
 import { usePreviewStore } from '@/stores/previewStore';
-import DefaultUserAvatar from '@/components/common/DefaultUserAvatar';
 import { open as openDialog } from '@tauri-apps/plugin-dialog';
 import { readTextFile } from '@tauri-apps/plugin-fs';
 import ShareExportDialog from '@/components/share/ShareExportDialog';
@@ -168,15 +168,17 @@ function ConversationRow({
           </span>
         )}
         <StatusIndicator status={status} onComplete={onStatusComplete} />
-        <Button
-          variant="ghost"
-          size="icon"
-          onClick={(e) => { e.stopPropagation(); onOpenFileTree(); }}
-          className="h-5 w-5 opacity-0 group-hover:opacity-100 text-[var(--abu-text-tertiary)] hover:text-[var(--abu-clay)] hover:bg-transparent shrink-0"
-          title={t.sidebar.projectFiles}
-        >
-          <ListTree className="h-3.5 w-3.5" strokeWidth={1.5} />
-        </Button>
+        {conv.workspacePath && (
+          <Button
+            variant="ghost"
+            size="icon"
+            onClick={(e) => { e.stopPropagation(); onOpenFileTree(); }}
+            className="h-5 w-5 opacity-0 group-hover:opacity-100 text-[var(--abu-text-tertiary)] hover:text-[var(--abu-clay)] hover:bg-transparent shrink-0"
+            title={t.sidebar.projectFiles}
+          >
+            <ListTree className="h-3.5 w-3.5" strokeWidth={1.5} />
+          </Button>
+        )}
         <Button
           variant="ghost"
           size="icon"
@@ -209,10 +211,8 @@ export default function Sidebar() {
   const loadConversation = useChatStore((s) => s.loadConversation);
   const openToolbox = useSettingsStore((s) => s.openToolbox);
   const openAutomation = useSettingsStore((s) => s.openAutomation);
-  const openSystemSettings = useSettingsStore((s) => s.openSystemSettings);
   const viewMode = useSettingsStore((s) => s.viewMode);
   const setViewMode = useSettingsStore((s) => s.setViewMode);
-  const updateInfo = useSettingsStore((s) => s.updateInfo);
   const clearBadge = useNoticeBadgeStore((s) => s.clear);
   // Badge shows items still requiring user decision (pending), not just unread.
   // Once a user accepts/ignores an item, the count drops even if other items
@@ -310,8 +310,6 @@ export default function Sidebar() {
 
   // Profile edit modal state
   const [profileOpen, setProfileOpen] = useState(false);
-  const userNickname = useSettingsStore((s) => s.userNickname);
-  const userAvatar = useSettingsStore((s) => s.userAvatar);
 
   // Close context menu when clicking outside
   useEffect(() => {
@@ -729,60 +727,9 @@ export default function Sidebar() {
       {/* Enterprise status badge — shown above user section when in enterprise mode */}
       <EnterpriseStatusBadge />
 
-      {/* User Section */}
-      <div className="px-5 py-4 shrink-0">
-        <div className="flex items-center gap-2.5">
-          {/* User avatar + nickname (clickable to edit) */}
-          <button
-            onClick={() => setProfileOpen(true)}
-            className="w-8 h-8 rounded-full overflow-hidden shrink-0 hover:ring-2 hover:ring-[var(--abu-clay-40)] transition-shadow"
-            title={t.sidebar.editProfile}
-          >
-            {userAvatar ? (
-              <img src={userAvatar} alt="Avatar" className="w-full h-full object-cover" />
-            ) : (
-              <DefaultUserAvatar />
-            )}
-          </button>
-          <button
-            onClick={() => setProfileOpen(true)}
-            className="flex-1 min-w-0 text-left"
-            title={t.sidebar.editProfile}
-          >
-            <div
-              className={cn(
-                'text-[13px] font-semibold truncate',
-                userNickname
-                  ? 'text-[var(--abu-text-primary)]'
-                  : 'text-[var(--abu-text-tertiary)]'
-              )}
-            >
-              {userNickname || t.sidebar.defaultNickname}
-            </div>
-          </button>
-          <button
-            onClick={() => openSystemSettings(updateInfo ? 'about' : undefined)}
-            aria-label={t.settings.title}
-            className={cn(
-              'btn-ghost p-1.5 rounded-md relative',
-              viewMode === 'settings'
-                ? 'text-[var(--abu-clay)] bg-[var(--abu-bg-active)]'
-                : 'text-[var(--abu-text-tertiary)] hover:text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-hover)]'
-            )}
-          >
-            <Settings className="h-3.5 w-3.5" />
-            {updateInfo && (
-              <span className="absolute -top-0.5 -right-0.5 w-2 h-2 rounded-full bg-red-500" />
-            )}
-          </button>
-          <button
-            onClick={() => openGuide()}
-            className="btn-ghost p-1.5 text-[var(--abu-text-tertiary)] hover:text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-hover)] rounded-md"
-            title={t.sidebar.help}
-          >
-            <HelpCircle className="h-3.5 w-3.5" />
-          </button>
-        </div>
+      {/* User Section — single avatar trigger opening the account popover */}
+      <div className="px-3 py-3 shrink-0">
+        <AccountMenu onEditProfile={() => setProfileOpen(true)} />
       </div>
 
       {/* Context menu */}

@@ -408,7 +408,12 @@ export function InlineToolResultImages({ toolCalls, conversationId }: { toolCall
 
   const images: string[] = [];
   for (const tc of toolCalls) {
-    if (tc.hidden || tc.name === TOOL_NAMES.COMPUTER) continue;
+    // generate_image is excluded here: its saved file already renders once as a
+    // rich ImagePreviewCard (from fileOutputs), so surfacing its resultContent
+    // image block here too would double the image. Old messages generated before
+    // generate_image stopped returning an image block still have one stored, so
+    // this guard (not just the tool's return change) is what dedupes them.
+    if (tc.hidden || tc.name === TOOL_NAMES.COMPUTER || tc.name === TOOL_NAMES.GENERATE_IMAGE) continue;
     if (!tc.resultContent?.some((b) => b.type === 'image')) continue;
     const path = typeof tc.input?.path === 'string' ? tc.input.path : '';
     const base = path ? getBaseName(path) : '';

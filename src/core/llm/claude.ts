@@ -1,11 +1,14 @@
 import Anthropic from '@anthropic-ai/sdk';
 import type { LLMAdapter, ChatOptions, ToolChoice } from './adapter';
-import { LLMError, classifyError } from './adapter';
+import { LLMError, classifyError, buildToolParseError } from './adapter';
 import type { Message, StreamEvent, ToolDefinition } from '../../types';
 import { getTauriFetch } from './tauriFetch';
 import { normalizeMessages } from './messageNormalizer';
 import type { PreparedTurn, PreparedToolCall } from './messageNormalizer';
 import { createHeartbeat, anySignal, DEFAULT_STREAM_HANG_TIMEOUT_MS as STREAM_HANG_TIMEOUT_MS } from './heartbeat';
+import { createLogger } from '../logging/logger';
+
+const logger = createLogger('claude');
 
 function convertTools(tools: ToolDefinition[]): Anthropic.Tool[] {
   return tools.map((t) => ({
@@ -328,9 +331,17 @@ export class ClaudeAdapter implements LLMAdapter {
             if (currentToolName) {
               let input: Record<string, unknown> = {};
               try {
-                input = JSON.parse(currentToolInput);
+                // A no-argument tool call streams no input_json_delta, leaving
+                // currentToolInput empty — treat as {} (mirrors the OpenAI path's
+                // safeParseToolArgs), don't let JSON.parse('') throw into a
+                // spurious _parse_error + disk log.
+                input = currentToolInput.trim() ? JSON.parse(currentToolInput) : {};
               } catch {
-                input = { _parse_error: `Failed to parse tool input: ${currentToolInput.slice(0, 200)}` };
+                input = buildToolParseError(
+                  currentToolInput,
+                  { source: 'claude/content_block_stop', tool: currentToolName },
+                  logger,
+                );
               }
               onEvent({
                 type: 'tool_use',

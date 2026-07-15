@@ -472,6 +472,41 @@ async function canRequestPermission(normalizedPath: string): Promise<string | nu
 }
 
 /**
+ * Check whether a path is a catastrophic delete target: the POSIX filesystem root
+ * ('/'), a Windows drive root (e.g. 'C:\' / 'C:/'), or the user's home directory
+ * itself (with or without a trailing slash).
+ *
+ * `checkWritePath` alone does NOT hard-block these — it returns
+ * `needsPermission: true`, which resolves to an automatic ALLOW under
+ * `permissionMode === 'autonomous'`. The old `rm`-based delete path was hard-blocked
+ * for exactly these targets by `commandSafety`'s `blockRmRoot`/`blockRmHome` patterns,
+ * enforced in ALL permission modes. This helper restores that parity for the
+ * `delete_file` tool, which routes through `move_to_trash` instead of `rm` and so
+ * never passes through `commandSafety` at all.
+ */
+export async function isCatastrophicDeleteTarget(path: string): Promise<boolean> {
+  // UNC paths are rejected separately by checkWritePath's isUNCPath check; they are
+  // never a root/home target.
+  if (isUNCPath(path)) return false;
+
+  const normalizedPath = normalizePath(path);
+
+  // POSIX filesystem root — normalizePath collapses '/' (and '//', '/.', etc.) to '/'.
+  if (normalizedPath === '/') return true;
+
+  // Windows drive root — normalizePath extracts the drive letter into a prefix and
+  // resolves the remainder to '/' when no subpath follows (e.g. 'C:\' / 'C:/' → 'C:/',
+  // lowercased to 'c:/' on Windows for case-insensitive comparison).
+  if (/^[a-zA-Z]:\/$/.test(normalizedPath)) return true;
+
+  // The home directory itself.
+  const home = await getHomeDir();
+  if (normalizedPath === normalizeForCompare(home)) return true;
+
+  return false;
+}
+
+/**
  * Check if a path is safe for reading
  */
 export async function checkReadPath(path: string): Promise<PathCheckResult> {

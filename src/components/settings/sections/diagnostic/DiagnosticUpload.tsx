@@ -1,14 +1,18 @@
-import { Package, ChevronRight, ChevronDown, Loader2, Upload, Check } from 'lucide-react';
-import { useState } from 'react';
+import { Package, Loader2, Upload, Check, Info } from 'lucide-react';
+import { useEffect, useRef, useState } from 'react';
 import { cn } from '@/lib/utils';
-import { useI18n } from '@/i18n';
+import { useI18n, format } from '@/i18n';
 import { useToastStore } from '@/stores/toastStore';
 import { useDiagnosticStore } from '@/stores/diagnosticStore';
+import { useChatStore } from '@/stores/chatStore';
+import { useFeedbackDraftStore } from '@/stores/feedbackDraftStore';
 import { Toggle } from '@/components/ui/toggle';
 import { Textarea } from '@/components/ui/textarea';
 import { produceBundle, collectAndZip, type ProduceResult } from '@/core/diagnostic/bundle';
 import { mapPermissionsError } from '@/core/diagnostic/errorMap';
 import { uploadDiagnosticBundle } from '@/utils/consoleDiagnostic';
+import ConversationPicker from './ConversationPicker';
+import ScreenshotUpload from './ScreenshotUpload';
 
 interface Props {
   onExportSuccess: (r: ProduceResult) => void;
@@ -16,55 +20,85 @@ interface Props {
   onDescriptionChange: (v: string) => void;
 }
 
-const BUNDLE_CONTENTS = [
-  'meta.json',
-  'diagnostic-snapshot.json',
-  'conversation/messages.jsonl',
-  'conversation/index-entry.json',
-  'settings/settings.json',
-  'settings/providers.json',
-  'skills/installed.json',
-  'mcp/servers.json',
-  'permissions/capabilities.json',
-  'permissions/grants.json',
-  'README.txt',
-];
+/** `01.png`, `02.jpg`, ... — extension follows the (possibly compressed) mediaType. */
+function screenshotFilename(index: number, mediaType: string): string {
+  const ext =
+    mediaType === 'image/jpeg' ? 'jpg' : mediaType === 'image/png' ? 'png' : mediaType === 'image/webp' ? 'webp' : mediaType === 'image/gif' ? 'gif' : 'png';
+  return `${String(index + 1).padStart(2, '0')}.${ext}`;
+}
 
 export default function DiagnosticUpload({ onExportSuccess, description, onDescriptionChange }: Props) {
   const { t } = useI18n();
-  const includeRawText = useDiagnosticStore((s) => s.includeRawText);
-  const setIncludeRawText = useDiagnosticStore((s) => s.setIncludeRawText);
   const exportInProgress = useDiagnosticStore((s) => s.exportInProgress);
   const setExportInProgress = useDiagnosticStore((s) => s.setExportInProgress);
   const setLastExportPath = useDiagnosticStore((s) => s.setLastExportPath);
+  const includeRawText = useDiagnosticStore((s) => s.includeRawText);
+  const setIncludeRawText = useDiagnosticStore((s) => s.setIncludeRawText);
   const addToast = useToastStore((s) => s.addToast);
+  const activeConversationId = useChatStore((s) => s.activeConversationId);
 
-  const [includedExpanded, setIncludedExpanded] = useState(false);
-  const [privacyExpanded, setPrivacyExpanded] = useState(false);
+  // Draft lives in a session store (not component state) so it survives leaving
+  // the settings view — e.g. going back to chat to grab a screenshot — which
+  // unmounts this component (App renders it behind `viewMode === 'settings'`).
+  const selectedConversationIds = useFeedbackDraftStore((s) => s.selectedConversationIds);
+  const setSelectedConversationIds = useFeedbackDraftStore((s) => s.setSelectedConversationIds);
+  const touchedSelection = useFeedbackDraftStore((s) => s.touchedSelection);
+  const screenshots = useFeedbackDraftStore((s) => s.screenshots);
+  const setScreenshots = useFeedbackDraftStore((s) => s.setScreenshots);
+  const clearDraft = useFeedbackDraftStore((s) => s.clearDraft);
+
   const [uploadInProgress, setUploadInProgress] = useState(false);
   const [uploadDone, setUploadDone] = useState(false);
-  // Off (default): embed only the most-recent messages so a huge conversation
-  // can't freeze the export (Bug 2). On: include the full history.
-  const [includeAllMessages, setIncludeAllMessages] = useState(false);
-  const messageCap = includeAllMessages ? ('all' as const) : undefined;
 
-  const onToggleRaw = (next: boolean) => {
-    setIncludeRawText(next);
-    if (next) {
-      addToast({ title: t.diagnostic.exportIncludeRawWarning, type: 'warning', duration: 4000 });
-    }
+  // Click-to-toggle info popover next to the "select conversations" label
+  // (a hover tooltip vanishes on mouse-out; users want it to stay open).
+  const [infoOpen, setInfoOpen] = useState(false);
+  const infoRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!infoOpen) return;
+    const onDown = (e: MouseEvent) => {
+      if (infoRef.current && !infoRef.current.contains(e.target as Node)) setInfoOpen(false);
+    };
+    const onEsc = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setInfoOpen(false);
+    };
+    document.addEventListener('mousedown', onDown, true);
+    document.addEventListener('keydown', onEsc);
+    return () => {
+      document.removeEventListener('mousedown', onDown, true);
+      document.removeEventListener('keydown', onEsc);
+    };
+  }, [infoOpen]);
+  // Until the user manually changes the selection, it follows the active
+  // conversation (defaults to attaching just the current one). Runs on mount
+  // too, so after clearDraft() the selection re-syncs to the active chat.
+  useEffect(() => {
+    if (touchedSelection) return;
+    setSelectedConversationIds(activeConversationId ? [activeConversationId] : [], { touched: false });
+  }, [activeConversationId, touchedSelection, setSelectedConversationIds]);
+  const handleSelectedConversationIdsChange = (ids: string[]) => {
+    setSelectedConversationIds(ids, { touched: true });
   };
+  const busy = uploadInProgress || exportInProgress;
 
   const onUpload = async () => {
     if (uploadInProgress || exportInProgress) return;
     setUploadInProgress(true);
     setUploadDone(false);
     try {
-      const { bytes, filename } = await collectAndZip({ includeRawText, messageCap });
-      await uploadDiagnosticBundle(bytes, filename, description.trim() || undefined);
+      const trimmedDescription = description.trim() || undefined;
+      const { bytes, filename } = await collectAndZip({
+        includeRawText,
+        conversationIds: selectedConversationIds,
+        description: trimmedDescription,
+        screenshots: screenshots.map((s, i) => ({ name: screenshotFilename(i, s.mediaType), bytes: s.bytes })),
+      });
+      await uploadDiagnosticBundle(bytes, filename, trimmedDescription);
       setUploadDone(true);
       setTimeout(() => setUploadDone(false), 4000);
       addToast({ title: t.diagnostic.uploadSuccess, type: 'success', duration: 3000 });
+      // Submitted — clear the whole draft (description, selection, screenshots).
+      clearDraft();
     } catch (e) {
       const raw = e instanceof Error ? e.message : String(e);
       addToast({ title: t.diagnostic.uploadFailed, message: raw, type: 'error', duration: 6000 });
@@ -77,7 +111,12 @@ export default function DiagnosticUpload({ onExportSuccess, description, onDescr
     if (exportInProgress) return;
     setExportInProgress(true);
     try {
-      const res = await produceBundle({ includeRawText, messageCap });
+      const res = await produceBundle({
+        includeRawText,
+        conversationIds: selectedConversationIds,
+        description: description.trim() || undefined,
+        screenshots: screenshots.map((s, i) => ({ name: screenshotFilename(i, s.mediaType), bytes: s.bytes })),
+      });
       setLastExportPath(res.path);
       onExportSuccess(res);
     } catch (e) {
@@ -95,125 +134,134 @@ export default function DiagnosticUpload({ onExportSuccess, description, onDescr
   };
 
   return (
-    <section>
-      {/* Disclosure 1: bundle contents */}
-      <button
-        type="button"
-        onClick={() => setIncludedExpanded((v) => !v)}
-        className="w-full flex items-center gap-2 py-1.5 text-[12px] text-[var(--abu-text-tertiary)] hover:text-[var(--abu-text-primary)] transition-colors"
-      >
-        {includedExpanded ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
-        <span>{t.diagnostic.exportIncluded}</span>
-      </button>
-      {includedExpanded && (
-        <div className="mb-2 pl-5 py-2 text-[11px] text-[var(--abu-text-tertiary)] bg-[var(--abu-bg-muted)] rounded-md">
-          <div className="mb-1 font-medium">{t.diagnostic.exportIncludedListTitle}</div>
-          <ul className="font-mono space-y-0.5">
-            {BUNDLE_CONTENTS.map((f) => <li key={f}>· {f}</li>)}
-          </ul>
+    <section className="space-y-4">
+      {/* Field 1 — problem description (the primary input). */}
+      <div>
+        <div className="mb-1.5 text-[13px] font-medium text-[var(--abu-text-secondary)]">
+          {t.diagnostic.descriptionLabel}
         </div>
-      )}
-
-      {/* Disclosure 2: privacy */}
-      <button
-        type="button"
-        onClick={() => setPrivacyExpanded((v) => !v)}
-        className="w-full flex items-center gap-2 py-1.5 text-[12px] text-[var(--abu-text-tertiary)] hover:text-[var(--abu-text-primary)] transition-colors"
-      >
-        {privacyExpanded ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
-        <span>{t.diagnostic.exportPrivacy}</span>
-      </button>
-      {privacyExpanded && (
-        <div className="mb-2 pl-5 py-2 text-[11px] text-[var(--abu-text-tertiary)] bg-[var(--abu-bg-muted)] rounded-md leading-relaxed">
-          {t.diagnostic.exportPrivacyText}
-        </div>
-      )}
-
-      {/* Raw text toggle */}
-      <div className="mt-3 flex items-center justify-between py-2">
-        <label htmlFor="diag-include-raw" className="text-[12px] text-[var(--abu-text-secondary)] flex-1">
-          {t.diagnostic.exportIncludeRaw}
-        </label>
-        <Toggle
-          checked={includeRawText}
-          onChange={() => onToggleRaw(!includeRawText)}
-          size="md"
-        />
-      </div>
-
-      {/* Include-all-messages toggle — off caps to the most-recent messages so a
-          huge conversation can't freeze the export. */}
-      <div className="flex items-center justify-between py-2">
-        <label className="text-[12px] text-[var(--abu-text-secondary)] flex-1">
-          {t.diagnostic.exportIncludeAll}
-        </label>
-        <Toggle
-          checked={includeAllMessages}
-          onChange={() => setIncludeAllMessages(!includeAllMessages)}
-          size="md"
-        />
-      </div>
-
-      {/* Problem description textarea */}
-      <div className="mt-3">
         <Textarea
           value={description}
           onChange={(e) => onDescriptionChange(e.target.value)}
           placeholder={t.diagnostic.uploadDescriptionPlaceholder}
-          className="min-h-[72px] text-[12px] resize-none"
-          disabled={uploadInProgress || exportInProgress}
+          className="min-h-[104px] text-[13px] resize-none"
+          disabled={busy}
         />
       </div>
 
-      {/* Primary: upload to console */}
-      <button
-        type="button"
-        onClick={onUpload}
-        disabled={uploadInProgress || exportInProgress}
-        className={cn(
-          'mt-4 w-full py-2.5 rounded-lg text-[14px] font-medium transition-colors flex items-center justify-center gap-2',
-          uploadDone
-            ? 'bg-green-600/15 text-green-500 cursor-default'
-            : 'bg-[var(--abu-clay)] text-white hover:bg-[var(--abu-clay-hover)] disabled:opacity-50 disabled:cursor-not-allowed'
-        )}
-      >
-        {uploadInProgress ? (
-          <>
-            <Loader2 className="h-4 w-4 animate-spin" />
-            {t.diagnostic.uploadInProgress}
-          </>
-        ) : uploadDone ? (
-          <>
-            <Check className="h-4 w-4" />
-            {t.diagnostic.uploadSuccess}
-          </>
-        ) : (
-          <>
-            <Upload className="h-4 w-4" />
-            {t.diagnostic.uploadButton}
-          </>
-        )}
-      </button>
+      {/* Field 2 — screenshots (label + right-aligned counter). */}
+      <div>
+        <div className="mb-1.5 flex items-center justify-between">
+          <span className="text-[13px] font-medium text-[var(--abu-text-secondary)]">
+            {t.diagnostic.screenshotTitle}
+          </span>
+          <span className="text-[11px] text-[var(--abu-text-muted)]">
+            {format(t.diagnostic.screenshotCount, { n: screenshots.length })}
+          </span>
+        </div>
+        <ScreenshotUpload screenshots={screenshots} onChange={setScreenshots} disabled={busy} />
+      </div>
 
-      {/* Secondary: export offline bundle */}
-      <button
-        type="button"
-        onClick={onExport}
-        disabled={exportInProgress || uploadInProgress}
-        className="mt-2 w-full py-2 flex items-center justify-center gap-1.5 text-[12px] text-[var(--abu-text-muted)] hover:text-[var(--abu-text-secondary)] transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-      >
-        {exportInProgress ? (
-          <>
-            <Loader2 className="h-3.5 w-3.5 animate-spin" />
-            {t.diagnostic.exportInProgress}
-          </>
-        ) : (
-          <>
-            <Package className="h-3.5 w-3.5" />
-            {t.diagnostic.exportButton}
-          </>
-        )}
-      </button>
+      {/* Field 3 — select conversations. The info icon carries the privacy +
+          limits copy so no toggles/extra lines are needed. */}
+      <div>
+        <div className="mb-1.5 flex items-center gap-1.5">
+          <span className="text-[13px] font-medium text-[var(--abu-text-secondary)]">
+            {t.diagnostic.conversationPickerTitle}
+          </span>
+          <div ref={infoRef} className="relative flex items-center">
+            <button
+              type="button"
+              aria-label={t.diagnostic.conversationPickerInfoTooltip}
+              onClick={() => setInfoOpen((o) => !o)}
+              className={cn(
+                'transition-colors',
+                infoOpen ? 'text-[var(--abu-clay)]' : 'text-[var(--abu-text-muted)] hover:text-[var(--abu-text-secondary)]',
+              )}
+            >
+              <Info className="h-3.5 w-3.5" />
+            </button>
+            {infoOpen && (
+              <div className="absolute z-50 left-0 top-full mt-1.5 w-[260px] p-2.5 rounded-lg bg-[var(--abu-bg-muted)] border border-[var(--abu-border)] shadow-md text-[11px] text-[var(--abu-text-secondary)] leading-relaxed">
+                {t.diagnostic.conversationPickerInfoTooltip}
+              </div>
+            )}
+          </div>
+        </div>
+        <ConversationPicker
+          selectedIds={selectedConversationIds}
+          onChange={handleSelectedConversationIdsChange}
+          disabled={busy}
+        />
+
+        {/* Raw-text toggle — ON by default (message text is included, secrets
+            still scrubbed). Off strips text down to a size placeholder. */}
+        <div className="mt-2 flex items-center justify-between py-1.5">
+          <label htmlFor="diag-include-raw" className="text-[12px] text-[var(--abu-text-secondary)] flex-1">
+            {t.diagnostic.exportIncludeRaw}
+          </label>
+          <Toggle checked={includeRawText} onChange={() => setIncludeRawText(!includeRawText)} size="md" />
+        </div>
+        <div className="-mt-0.5 text-[11px] text-[var(--abu-text-muted)] leading-relaxed">
+          {t.diagnostic.exportIncludeRawHint}
+        </div>
+      </div>
+
+      {/* ── Submit ────────────────────────────────────────────── */}
+      <div className="border-t border-[var(--abu-border)] pt-3 space-y-2">
+        {/* Auto-included-content hint */}
+        <div className="text-[11px] text-[var(--abu-text-muted)]">{t.diagnostic.uploadAutoIncludedHint}</div>
+
+        {/* Primary: upload to console */}
+        <button
+          type="button"
+          onClick={onUpload}
+          disabled={uploadInProgress || exportInProgress}
+          className={cn(
+            'mt-1 w-full py-2.5 rounded-lg text-[14px] font-medium transition-colors flex items-center justify-center gap-2',
+            uploadDone
+              ? 'bg-green-600/15 text-green-500 cursor-default'
+              : 'bg-[var(--abu-clay)] text-white hover:bg-[var(--abu-clay-hover)] disabled:opacity-50 disabled:cursor-not-allowed'
+          )}
+        >
+          {uploadInProgress ? (
+            <>
+              <Loader2 className="h-4 w-4 animate-spin" />
+              {t.diagnostic.uploadInProgress}
+            </>
+          ) : uploadDone ? (
+            <>
+              <Check className="h-4 w-4" />
+              {t.diagnostic.uploadSuccess}
+            </>
+          ) : (
+            <>
+              <Upload className="h-4 w-4" />
+              {t.diagnostic.uploadButton}
+            </>
+          )}
+        </button>
+
+        {/* Secondary: export offline bundle */}
+        <button
+          type="button"
+          onClick={onExport}
+          disabled={exportInProgress || uploadInProgress}
+          className="w-full py-2 flex items-center justify-center gap-1.5 text-[12px] text-[var(--abu-text-muted)] hover:text-[var(--abu-text-secondary)] transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+        >
+          {exportInProgress ? (
+            <>
+              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              {t.diagnostic.exportInProgress}
+            </>
+          ) : (
+            <>
+              <Package className="h-3.5 w-3.5" />
+              {t.diagnostic.exportButton}
+            </>
+          )}
+        </button>
+      </div>
     </section>
   );
 }

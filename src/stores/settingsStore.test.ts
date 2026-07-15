@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import { reconcileActiveProvider, useSettingsStore } from './settingsStore';
-import type { ProviderInstance, ActiveModel } from '@/types/provider';
+import { reconcileActiveProvider, useSettingsStore, getDefaultImageBackend } from './settingsStore';
+import type { ProviderInstance, ActiveModel, ImageGenBackend } from '@/types/provider';
 
 // ─── Test fixture helpers ─────────────────────────────────────
 
@@ -411,18 +411,6 @@ describe('settingsStore whitespace trim', () => {
     });
   });
 
-  describe('setAuxiliaryImageGen', () => {
-    it('trims whitespace from baseUrl and apiKey', () => {
-      useSettingsStore.getState().setAuxiliaryImageGen({
-        apiKey: ' imgkey ',
-        baseUrl: '  http://img.example.com/ ',
-        model: 'dall-e-3',
-      });
-      const cfg = useSettingsStore.getState().auxiliaryServices.imageGen;
-      expect(cfg?.apiKey).toBe('imgkey');
-      expect(cfg?.baseUrl).toBe('http://img.example.com/');
-    });
-  });
 });
 
 describe('settingsStore partialize', () => {
@@ -441,6 +429,21 @@ describe('settingsStore partialize', () => {
     expect(snapshot).toHaveProperty('dndMode');
     expect(snapshot).toHaveProperty('petOpen');
     expect(snapshot).toHaveProperty('defaultAgentAutonomy');
+  });
+
+  it('persists pendingImageGenSecretBridge so a failed first-launch secret bridge retries', () => {
+    // Regression: the marker used to be non-persisted, so if bootstrapSecrets
+    // crashed/failed on the first post-upgrade launch the migrated backend's key
+    // was orphaned forever (version already 41 → V41 never re-runs). It must
+    // survive a localStorage roundtrip so the bridge retries next launch.
+    const persistApi = (useSettingsStore as unknown as {
+      persist: { getOptions: () => { partialize?: (state: unknown) => Record<string, unknown> } };
+    }).persist;
+    const partialize = persistApi.getOptions().partialize!;
+    useSettingsStore.setState({ pendingImageGenSecretBridge: 'backend-123' });
+    const snapshot = partialize(useSettingsStore.getState());
+    expect(snapshot.pendingImageGenSecretBridge).toBe('backend-123');
+    useSettingsStore.setState({ pendingImageGenSecretBridge: undefined });
   });
 });
 
@@ -586,5 +589,208 @@ describe('settingsStore labs flags', () => {
       expect(() => migrate({ providers: [{ id: 'b', models: [] }] }, 39)).not.toThrow();
       expect(() => migrate({}, 39)).not.toThrow();
     });
+  });
+
+  describe('v41 migration (image generation becomes an independent config, "C-a")', () => {
+    const getMigrate = () =>
+      (useSettingsStore as unknown as {
+        persist: { getOptions: () => { migrate: (data: unknown, version: number) => Record<string, unknown> } };
+      }).persist.getOptions().migrate;
+
+    it('leaves providers/models untouched', () => {
+      const migrate = getMigrate();
+      const input = {
+        providers: [
+          { id: 'p1', models: [{ id: 'a', label: 'a' }], enabled: true },
+        ],
+      };
+      const migrated = migrate(input, 40);
+      expect(migrated.providers).toEqual(input.providers);
+    });
+
+    it('initializes an empty imageGeneration container when there is no legacy form', () => {
+      const migrate = getMigrate();
+      const migrated = migrate({ providers: [] }, 40) as { imageGeneration: { backends: unknown[]; defaultId?: string } };
+      expect(migrated.imageGeneration).toEqual({ backends: [], defaultId: undefined });
+    });
+
+    it('migrates a configured legacy auxiliaryServices.imageGen into a backend and sets it default', () => {
+      const migrate = getMigrate();
+      const input = {
+        providers: [],
+        auxiliaryServices: { imageGen: { apiKey: 'k', baseUrl: 'http://x', model: 'dall-e-3' } },
+      };
+      const migrated = migrate(input, 40) as {
+        imageGeneration: { backends: Array<Record<string, unknown>>; defaultId?: string };
+        auxiliaryServices: { imageGen?: unknown };
+        pendingImageGenSecretBridge?: string;
+      };
+      expect(migrated.imageGeneration.backends).toHaveLength(1);
+      const backend = migrated.imageGeneration.backends[0];
+      expect(backend.vendor).toBe('custom');
+      expect(backend.baseUrl).toBe('http://x');
+      expect(backend.model).toBe('dall-e-3');
+      expect(backend.apiKey).toBe('k');
+      expect(migrated.imageGeneration.defaultId).toBe(backend.id);
+      // Old field cleared — data moved, not duplicated.
+      expect(migrated.auxiliaryServices.imageGen).toBeUndefined();
+      // Marker for bootstrapSecrets to bridge the encrypted aux:imageGen
+      // secret onto the new backend's own secret-store key.
+      expect(migrated.pendingImageGenSecretBridge).toBe(backend.id);
+    });
+
+    it('does not create a backend when the legacy form was never actually configured (no baseUrl/model)', () => {
+      const migrate = getMigrate();
+      const input = {
+        providers: [],
+        auxiliaryServices: { imageGen: { apiKey: '', baseUrl: '', model: '' } },
+      };
+      const migrated = migrate(input, 40) as { imageGeneration: { backends: unknown[] } };
+      expect(migrated.imageGeneration.backends).toHaveLength(0);
+    });
+
+    it('handles missing providers/auxiliaryServices gracefully', () => {
+      const migrate = getMigrate();
+      expect(() => migrate({}, 40)).not.toThrow();
+    });
+
+    it('migrates legacy FLAT imageGen fields from a v13 blob across the full chain (V41 must run AFTER V14)', () => {
+      // Regression for the descending-order ordering bug: a user persisted at
+      // version 13 only has the pre-V14 flat fields (imageGenApiKey/...). V14
+      // builds auxiliaryServices.imageGen from them; V41 (now placed last) must
+      // see that and produce a backend. When V41 ran first, it read an undefined
+      // auxiliaryServices and silently dropped the config → empty backends.
+      const migrate = getMigrate();
+      const input = {
+        imageGenApiKey: 'sk-flat',
+        imageGenBaseUrl: 'https://api.openai.com',
+        imageGenModel: 'dall-e-3',
+      };
+      const migrated = migrate(input, 13) as {
+        imageGeneration: { backends: Array<Record<string, unknown>>; defaultId?: string };
+      };
+      expect(migrated.imageGeneration.backends).toHaveLength(1);
+      const backend = migrated.imageGeneration.backends[0];
+      expect(backend.baseUrl).toBe('https://api.openai.com');
+      expect(backend.model).toBe('dall-e-3');
+      expect(migrated.imageGeneration.defaultId).toBe(backend.id);
+    });
+  });
+});
+
+describe('imageGeneration backend actions', () => {
+  beforeEach(() => {
+    useSettingsStore.setState({ imageGeneration: { backends: [], defaultId: undefined } });
+  });
+
+  const draft = (overrides: Partial<Omit<ImageGenBackend, 'id'>> = {}) => ({
+    name: 'Volcengine Seedream',
+    vendor: 'volcengine' as const,
+    baseUrl: 'https://ark.cn-beijing.volces.com/api/v3',
+    apiKey: 'sk-test',
+    model: 'doubao-seedream-4-5',
+    ...overrides,
+  });
+
+  describe('addImageGenBackend', () => {
+    it('adds a backend and auto-selects it as default when it is the first one', () => {
+      const id = useSettingsStore.getState().addImageGenBackend(draft());
+      const { backends, defaultId } = useSettingsStore.getState().imageGeneration;
+      expect(backends).toHaveLength(1);
+      expect(backends[0].id).toBe(id);
+      expect(defaultId).toBe(id);
+    });
+
+    it('does not change the default when a second backend is added', () => {
+      const firstId = useSettingsStore.getState().addImageGenBackend(draft());
+      useSettingsStore.getState().addImageGenBackend(draft({ name: 'DALL-E', vendor: 'openai', baseUrl: 'https://api.openai.com', model: 'dall-e-3' }));
+      expect(useSettingsStore.getState().imageGeneration.defaultId).toBe(firstId);
+      expect(useSettingsStore.getState().imageGeneration.backends).toHaveLength(2);
+    });
+
+    it('trims whitespace from baseUrl and apiKey', () => {
+      useSettingsStore.getState().addImageGenBackend(draft({ baseUrl: '  https://x.example.com  ', apiKey: '  key  ' }));
+      const backend = useSettingsStore.getState().imageGeneration.backends[0];
+      expect(backend.baseUrl).toBe('https://x.example.com');
+      expect(backend.apiKey).toBe('key');
+    });
+  });
+
+  describe('updateImageGenBackend', () => {
+    it('patches an existing backend by id', () => {
+      const id = useSettingsStore.getState().addImageGenBackend(draft());
+      useSettingsStore.getState().updateImageGenBackend(id, { name: 'Renamed', model: 'doubao-seedream-4-0' });
+      const backend = useSettingsStore.getState().imageGeneration.backends[0];
+      expect(backend.name).toBe('Renamed');
+      expect(backend.model).toBe('doubao-seedream-4-0');
+      expect(backend.baseUrl).toBe(draft().baseUrl); // untouched fields preserved
+    });
+  });
+
+  describe('removeImageGenBackend', () => {
+    it('removes the backend and falls back the default to a remaining backend', () => {
+      const firstId = useSettingsStore.getState().addImageGenBackend(draft());
+      const secondId = useSettingsStore.getState().addImageGenBackend(draft({ name: 'Second' }));
+      useSettingsStore.getState().removeImageGenBackend(firstId);
+      const { backends, defaultId } = useSettingsStore.getState().imageGeneration;
+      expect(backends.map((b) => b.id)).toEqual([secondId]);
+      expect(defaultId).toBe(secondId);
+    });
+
+    it('clears defaultId when the last backend is removed', () => {
+      const id = useSettingsStore.getState().addImageGenBackend(draft());
+      useSettingsStore.getState().removeImageGenBackend(id);
+      const { backends, defaultId } = useSettingsStore.getState().imageGeneration;
+      expect(backends).toHaveLength(0);
+      expect(defaultId).toBeUndefined();
+    });
+
+    it('leaves the default alone when removing a non-default backend', () => {
+      const firstId = useSettingsStore.getState().addImageGenBackend(draft());
+      const secondId = useSettingsStore.getState().addImageGenBackend(draft({ name: 'Second' }));
+      useSettingsStore.getState().removeImageGenBackend(secondId);
+      expect(useSettingsStore.getState().imageGeneration.defaultId).toBe(firstId);
+    });
+  });
+
+  describe('setDefaultImageBackend', () => {
+    it('switches the default to a different configured backend', () => {
+      useSettingsStore.getState().addImageGenBackend(draft());
+      const secondId = useSettingsStore.getState().addImageGenBackend(draft({ name: 'Second' }));
+      useSettingsStore.getState().setDefaultImageBackend(secondId);
+      expect(useSettingsStore.getState().imageGeneration.defaultId).toBe(secondId);
+    });
+  });
+});
+
+describe('getDefaultImageBackend', () => {
+  function backend(id: string, overrides: Partial<ImageGenBackend> = {}): ImageGenBackend {
+    return { id, name: id, vendor: 'custom', baseUrl: 'https://x.example.com', apiKey: '', model: 'm', ...overrides };
+  }
+
+  it('returns null when no backends are configured', () => {
+    useSettingsStore.setState({ imageGeneration: { backends: [], defaultId: undefined } });
+    expect(getDefaultImageBackend(useSettingsStore.getState())).toBeNull();
+  });
+
+  it('returns the backend matching defaultId', () => {
+    useSettingsStore.setState({
+      imageGeneration: { backends: [backend('a'), backend('b')], defaultId: 'b' },
+    });
+    expect(getDefaultImageBackend(useSettingsStore.getState())?.id).toBe('b');
+  });
+
+  it('falls back to backends[0] when defaultId is unset', () => {
+    useSettingsStore.setState({
+      imageGeneration: { backends: [backend('a'), backend('b')], defaultId: undefined },
+    });
+    expect(getDefaultImageBackend(useSettingsStore.getState())?.id).toBe('a');
+  });
+
+  it('falls back to backends[0] when defaultId points at a removed backend', () => {
+    useSettingsStore.setState({
+      imageGeneration: { backends: [backend('a'), backend('b')], defaultId: 'nonexistent' },
+    });
+    expect(getDefaultImageBackend(useSettingsStore.getState())?.id).toBe('a');
   });
 });

@@ -6,6 +6,7 @@ import { isWindows } from '../../../utils/platform';
 import { joinPath, ensureParentDir, getParentDir } from '../../../utils/pathUtils';
 import { getTauriFetch } from '../../llm/tauriFetch';
 import { normalizeImageGenerationsUrl } from '../../llm/urlUtils';
+import { buildImageRequest, parseImageResponse, resolveImageVendor } from '../../llm/imageGen';
 import { isSandboxEnabled, isNetworkIsolationEnabled } from '../../sandbox/config';
 import { useSettingsStore, getDefaultImageBackend } from '../../../stores/settingsStore';
 import { useWorkspaceStore } from '../../../stores/workspaceStore';
@@ -61,31 +62,20 @@ export const generateImageTool: ToolDefinition = {
       // strips any trailing /images/generations before re-appending, and keeps a
       // version segment (/api/v3, /v1) intact — so both inputs resolve correctly
       // instead of doubling into .../images/generations/v1/images/generations.
-      // Default OpenAI-shape path regardless of backend.vendor — per-vendor
-      // request/response mappers are P3.
       const endpoint = normalizeImageGenerationsUrl(backend.baseUrl);
+
+      // Vendor is inferred from baseUrl host, not backend.vendor (still
+      // always 'custom' — the vendor picker was dropped from the add-backend
+      // UI in P2). See imageGen/vendorResolve.ts.
+      const vendor = resolveImageVendor(backend.baseUrl);
 
       // Call image generation API via Tauri fetch (bypasses CORS)
       const fetchFn = await getTauriFetch();
 
-      // Build request body — only include params the model supports
-      const reqBody: Record<string, unknown> = {
-        model: modelId,
-        prompt,
-        n: 1,
-        response_format: 'b64_json',
-      };
-      // Only forward size when the caller explicitly passed one — omitting it
-      // lets the backend apply its own default instead of a DALL-E-shaped
-      // 1024x1024 that some backends (e.g. Seedream, which requires
-      // >=3686400px) reject outright.
-      if (size) {
-        reqBody.size = size;
-      }
-      // DALL-E 3 supports style, other models may not
-      if (modelId.startsWith('dall-e-3')) {
-        reqBody.style = style;
-      }
+      // Build request body via the per-vendor mapper (field names, size
+      // normalization/snapping, and response_format quirks all differ by
+      // vendor — see src/core/llm/imageGen/).
+      const reqBody = buildImageRequest(vendor, { model: modelId, prompt, size, style });
 
       const response = await fetchFn(endpoint, {
         method: 'POST',
@@ -101,26 +91,25 @@ export const generateImageTool: ToolDefinition = {
         return `Error generating image: ${response.status} ${errorText}`;
       }
 
-      const result = await response.json() as {
-        data: Array<{ b64_json?: string; url?: string; revised_prompt?: string }>;
-      };
+      const result = await response.json();
+      // Normalize the response envelope via the per-vendor parser —
+      // SiliconFlow returns `images[]` instead of OpenAI/Volcengine/Zhipu's
+      // `data[]`, so this can't be a single fixed shape.
+      const parsed = parseImageResponse(vendor, result);
 
       // Decode image data — prefer b64_json, fallback to URL download
       let bytes: Uint8Array;
-      const b64Data = result.data?.[0]?.b64_json;
-      if (b64Data) {
-        const resp = await fetch(`data:image/png;base64,${b64Data}`);
+      if (parsed.b64) {
+        const resp = await fetch(`data:image/png;base64,${parsed.b64}`);
         bytes = new Uint8Array(await resp.arrayBuffer());
-      } else {
-        const imageUrl = result.data?.[0]?.url;
-        if (!imageUrl) {
-          return getI18n().toolResult.media.errNoImageData;
-        }
-        const imageResponse = await fetchFn(imageUrl);
+      } else if (parsed.url) {
+        const imageResponse = await fetchFn(parsed.url);
         if (!imageResponse.ok) {
           return `Error downloading image: ${imageResponse.status}`;
         }
         bytes = new Uint8Array(await imageResponse.arrayBuffer());
+      } else {
+        return getI18n().toolResult.media.errNoImageData;
       }
 
       // Determine save path: explicit > workspace > downloads
@@ -135,7 +124,7 @@ export const generateImageTool: ToolDefinition = {
       await ensureParentDir(finalPath);
       await writeBinFile(finalPath, bytes);
 
-      const revisedPrompt = result.data?.[0]?.revised_prompt;
+      const revisedPrompt = parsed.revisedPrompt;
       const tm = getI18n().toolResult.media;
       let msg = format(tm.imageSaved, { path: finalPath });
       if (revisedPrompt) {

@@ -392,44 +392,45 @@ export function ImagePreviewCard({ filePath }: { filePath: string }) {
     <div
       onClick={() => openPreview(filePath)}
       className={cn(
-        'group/card inline-block rounded-lg cursor-pointer transition-all overflow-hidden relative',
-        'bg-[var(--abu-bg-muted)] border border-[var(--abu-border)] hover:border-[var(--abu-clay-40)]',
-        'max-w-[240px]'
+        'group/card relative inline-block rounded-lg cursor-pointer overflow-hidden align-bottom',
+        'border border-[var(--abu-border)] bg-[var(--abu-bg-base)] transition-colors hover:border-[var(--abu-clay-40)]',
       )}
       title={t.chat.clickToPreview}
     >
-      {/* Thumbnail or fallback */}
-      <div className="p-1.5">
-        {imgUrl ? (
-          <img
-            src={imgUrl}
-            alt={fileName}
-            className="w-full h-auto max-h-[160px] object-contain rounded"
-            onLoad={handleImgLoad}
-            onError={() => { setImgUrl(null); setLoadFailed(true); }}
-          />
-        ) : (
-          <div className="w-full h-[80px] rounded bg-[var(--abu-bg-muted)] flex items-center justify-center">
-            <FileImage className={cn('w-8 h-8', loadFailed ? 'text-[var(--abu-text-placeholder)]' : 'text-[var(--abu-clay)] animate-pulse')} />
-          </div>
-        )}
-      </div>
-      {/* File info */}
-      <div className="px-2.5 pb-2 pt-0.5 flex items-center gap-1">
-        <div className="min-w-0 flex-1">
-          <div className="text-[12px] font-medium text-[var(--abu-text-primary)] truncate">{fileName}</div>
-          {dimensions && (
-            <div className="text-[10px] text-[var(--abu-text-placeholder)] mt-0.5">{dimensions.w} × {dimensions.h}</div>
-          )}
+      {/* Image-first: the thumbnail IS the card, no persistent filename/size
+          chrome. Metadata + actions live in a hover overlay so the default
+          look is just a clean rounded thumbnail. */}
+      {imgUrl ? (
+        <img
+          src={imgUrl}
+          alt={fileName}
+          className="block w-auto max-w-[200px] max-h-[200px] object-contain"
+          onLoad={handleImgLoad}
+          onError={() => { setImgUrl(null); setLoadFailed(true); }}
+        />
+      ) : (
+        <div className="w-[160px] h-[120px] flex items-center justify-center bg-[var(--abu-bg-muted)]">
+          <FileImage className={cn('w-8 h-8', loadFailed ? 'text-[var(--abu-text-placeholder)]' : 'text-[var(--abu-clay)] animate-pulse')} />
         </div>
-        <button
-          onClick={handleReveal}
-          className="p-1 rounded hover:bg-[var(--abu-bg-muted)] opacity-0 group-hover/card:opacity-100 transition-opacity shrink-0"
-          title={t.chat.openInFinder}
-        >
-          <ExternalLink className="w-3 h-3 text-[var(--abu-text-muted)]" />
-        </button>
-      </div>
+      )}
+      {/* Hover overlay: filename + dimensions + reveal-in-Finder */}
+      {imgUrl && (
+        <div className="absolute inset-x-0 bottom-0 flex items-center gap-1 px-2 py-1.5 bg-gradient-to-t from-black/60 via-black/25 to-transparent opacity-0 group-hover/card:opacity-100 transition-opacity">
+          <div className="min-w-0 flex-1">
+            <div className="text-[11px] font-medium text-white/95 truncate">{fileName}</div>
+          </div>
+          {dimensions && (
+            <span className="text-[10px] text-white/70 shrink-0">{dimensions.w}×{dimensions.h}</span>
+          )}
+          <button
+            onClick={handleReveal}
+            className="p-0.5 rounded hover:bg-white/20 shrink-0"
+            title={t.chat.openInFinder}
+          >
+            <ExternalLink className="w-3 h-3 text-white/90" />
+          </button>
+        </div>
+      )}
     </div>
   );
 }

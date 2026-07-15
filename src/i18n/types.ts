@@ -641,17 +641,25 @@ export interface TranslationDict {
     language: string;
     languageDescription: string;
     followSystem: string;
-    // Image Generation
-    imageGen: string;
-    imageGenDescription: string;
+    // Image Generation — independent backend list (design doc §3.1, "C-a")
     imageGenApiKey: string;
     imageGenApiKeyPlaceholder: string;
-    imageGenApiKeyDesc: string;
     imageGenBaseUrl: string;
     imageGenBaseUrlPlaceholder: string;
-    imageGenBaseUrlDesc: string;
     imageGenModel: string;
-    imageGenCustomModel: string;
+    imageGenModelPlaceholder: string;
+    imageGenBackendName: string;
+    imageGenBackendNamePlaceholder: string;
+    imageGenAddBackend: string;
+    imageGenEditBackend: string;
+    imageGenNoBackends: string;
+    imageGenNoBackendsHint: string;
+    imageGenSetDefault: string;
+    imageGenDefaultBadge: string;
+    imageGenDeleteConfirmTitle: string;
+    imageGenDeleteConfirmMessage: string;
+    imageGenBackendsCount: string;
+    imageGenNotConfigured: string;
     // Web Search
     webSearch: string;
     webSearchDescription: string;
@@ -2706,6 +2714,8 @@ export interface TranslationDict {
     };
     // generate_image / process_image
     media: {
+      /** No image-generation backend configured in Settings → Image Generation. */
+      errNoImageBackend: string;
       /** API returned no image data. */
       errNoImageData: string;
       /** Image saved. {path} */

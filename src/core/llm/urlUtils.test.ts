@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { normalizeBaseUrl, resolveOpenAIBaseUrl, buildFullChatUrl } from './urlUtils';
+import { normalizeBaseUrl, resolveOpenAIBaseUrl, buildFullChatUrl, normalizeImageGenerationsUrl } from './urlUtils';
 
 describe('urlUtils', () => {
   describe('normalizeBaseUrl', () => {
@@ -114,6 +114,37 @@ describe('urlUtils', () => {
       const url = buildFullChatUrl(input, 'openai-compatible');
       expect(() => new URL(url)).not.toThrow();
       expect(new URL(url).pathname).toBe('/v1/chat/completions');
+    });
+  });
+
+  describe('normalizeImageGenerationsUrl', () => {
+    it('appends /v1/images/generations to a bare OpenAI host', () => {
+      expect(normalizeImageGenerationsUrl('https://api.openai.com'))
+        .toBe('https://api.openai.com/v1/images/generations');
+    });
+    it('keeps an existing version segment (ark /api/v3) and appends once', () => {
+      expect(normalizeImageGenerationsUrl('https://ark.cn-beijing.volces.com/api/v3'))
+        .toBe('https://ark.cn-beijing.volces.com/api/v3/images/generations');
+    });
+    it('keeps Agent Plan /api/plan/v3 and appends once', () => {
+      expect(normalizeImageGenerationsUrl('https://ark.cn-beijing.volces.com/api/plan/v3'))
+        .toBe('https://ark.cn-beijing.volces.com/api/plan/v3/images/generations');
+    });
+    it('is idempotent when given the FULL endpoint (no path doubling)', () => {
+      expect(normalizeImageGenerationsUrl('https://ark.cn-beijing.volces.com/api/v3/images/generations'))
+        .toBe('https://ark.cn-beijing.volces.com/api/v3/images/generations');
+    });
+    it('strips repeated /images/generations and trailing slashes', () => {
+      expect(normalizeImageGenerationsUrl('https://x.com/api/v3/images/generations/images/generations/'))
+        .toBe('https://x.com/api/v3/images/generations');
+    });
+    it('keeps a gateway /v1 and appends once', () => {
+      expect(normalizeImageGenerationsUrl('https://oneapi.qunhequnhe.com/v1'))
+        .toBe('https://oneapi.qunhequnhe.com/v1/images/generations');
+    });
+    it('preserves a query suffix', () => {
+      expect(normalizeImageGenerationsUrl('https://x.com/api/v3/images/generations?k=1'))
+        .toBe('https://x.com/api/v3/images/generations?k=1');
     });
   });
 });

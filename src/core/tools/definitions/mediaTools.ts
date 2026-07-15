@@ -5,8 +5,10 @@ import type { ToolDefinition } from '../../../types';
 import { isWindows } from '../../../utils/platform';
 import { joinPath, ensureParentDir, getParentDir } from '../../../utils/pathUtils';
 import { getTauriFetch } from '../../llm/tauriFetch';
+import { normalizeImageGenerationsUrl } from '../../llm/urlUtils';
+import { buildImageRequest, parseImageResponse, resolveImageVendor } from '../../llm/imageGen';
 import { isSandboxEnabled, isNetworkIsolationEnabled } from '../../sandbox/config';
-import { useSettingsStore, getActiveApiKey, getActiveProvider } from '../../../stores/settingsStore';
+import { useSettingsStore, getDefaultImageBackend } from '../../../stores/settingsStore';
 import { useWorkspaceStore } from '../../../stores/workspaceStore';
 import {
   buildMacImageCommand,
@@ -18,12 +20,12 @@ import { getI18n, format } from '../../../i18n';
 
 export const generateImageTool: ToolDefinition = {
   name: TOOL_NAMES.GENERATE_IMAGE,
-  description: 'Generate an image from a text description (using DALL-E). Use when the user asks to generate photorealistic images, illustrations, logos, etc. For charts and data visualizations, output an HTML code block directly. Returns the saved image file path.',
+  description: 'Generate an image from a text description, using the default image-generation backend configured in Settings → Image Generation. Use when the user asks to generate photorealistic images, illustrations, logos, etc. For charts and data visualizations, output an HTML code block directly. Returns the saved image file path and displays the image inline.',
   inputSchema: {
     type: 'object',
     properties: {
       prompt: { type: 'string', description: 'Text description of the image to generate' },
-      size: { type: 'string', description: 'Image size: 1024x1024, 1792x1024, or 1024x1792 (default: 1024x1024)' },
+      size: { type: 'string', description: 'Optional image size — the accepted values depend on the backend (e.g. 1024x1024 or 2048x2048). Omit to use the backend\'s own default.' },
       style: { type: 'string', description: 'Image style: vivid or natural (default: vivid)' },
       save_path: { type: 'string', description: 'Optional absolute path to save the image. If not provided, saves to Downloads folder.' },
     },
@@ -31,48 +33,51 @@ export const generateImageTool: ToolDefinition = {
   },
   execute: async (input, context) => {
     const prompt = input.prompt as string;
-    const size = (input.size as string) || '1024x1024';
+    // No hardcoded default — an empty/omitted size lets the backend fall back
+    // to its own default dimensions. Some backends (e.g. Seedream) require a
+    // minimum pixel count (>=3686400px) well above the old 1024x1024 default
+    // and reject that value outright, so we must not force it.
+    const size = input.size as string | undefined;
     const style = (input.style as string) || 'vivid';
     const savePath = input.save_path as string | undefined;
 
     try {
-
       const state = useSettingsStore.getState();
 
-      // Resolve API key: auxiliaryServices.imageGen > active provider key (if OpenAI-compatible)
-      let apiKey = state.auxiliaryServices.imageGen?.apiKey ?? '';
-      if (!apiKey) {
-        const activeProvider = getActiveProvider(state);
-        if (activeProvider?.apiFormat === 'openai-compatible') {
-          apiKey = getActiveApiKey(state);
-        }
+      // Resolve the image-generation backend from the independent
+      // imageGeneration config (design doc §3.1, "C-a") — fully decoupled
+      // from chat providers/models, since a backend's endpoint may live on a
+      // different base path than any chat provider (e.g. Volcengine Agent
+      // Plan's /api/plan/v3 vs the chat endpoint /api/coding/v3).
+      const backend = getDefaultImageBackend(state);
+      if (!backend) {
+        return getI18n().toolResult.media.errNoImageBackend;
       }
-      if (!apiKey) {
-        return 'Error: No API key configured for image generation. Please set an OpenAI API key in Settings → Image Generation, or configure an OpenAI provider.';
-      }
+      const apiKey = backend.apiKey;
+      const modelId = backend.model;
 
-      const model = state.auxiliaryServices.imageGen?.model || 'dall-e-3';
+      // Build the endpoint idempotently: users paste EITHER the bare base
+      // (`.../api/v3`) OR the full endpoint (`.../api/v3/images/generations`,
+      // exactly as Volcengine's docs present it). normalizeImageGenerationsUrl
+      // strips any trailing /images/generations before re-appending, and keeps a
+      // version segment (/api/v3, /v1) intact — so both inputs resolve correctly
+      // instead of doubling into .../images/generations/v1/images/generations.
+      const endpoint = normalizeImageGenerationsUrl(backend.baseUrl);
 
-      // Resolve base URL: auxiliaryServices.imageGen.baseUrl > default OpenAI
-      const baseUrl = (state.auxiliaryServices.imageGen?.baseUrl || 'https://api.openai.com').replace(/\/+$/, '');
+      // Vendor is inferred from baseUrl host, not backend.vendor (still
+      // always 'custom' — the vendor picker was dropped from the add-backend
+      // UI in P2). See imageGen/vendorResolve.ts.
+      const vendor = resolveImageVendor(backend.baseUrl);
 
       // Call image generation API via Tauri fetch (bypasses CORS)
       const fetchFn = await getTauriFetch();
 
-      // Build request body — only include params the model supports
-      const reqBody: Record<string, unknown> = {
-        model,
-        prompt,
-        n: 1,
-        size,
-        response_format: 'b64_json',
-      };
-      // DALL-E 3 supports style, other models may not
-      if (model.startsWith('dall-e-3')) {
-        reqBody.style = style;
-      }
+      // Build request body via the per-vendor mapper (field names, size
+      // normalization/snapping, and response_format quirks all differ by
+      // vendor — see src/core/llm/imageGen/).
+      const reqBody = buildImageRequest(vendor, { model: modelId, prompt, size, style });
 
-      const response = await fetchFn(`${baseUrl}/v1/images/generations`, {
+      const response = await fetchFn(endpoint, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -86,26 +91,25 @@ export const generateImageTool: ToolDefinition = {
         return `Error generating image: ${response.status} ${errorText}`;
       }
 
-      const result = await response.json() as {
-        data: Array<{ b64_json?: string; url?: string; revised_prompt?: string }>;
-      };
+      const result = await response.json();
+      // Normalize the response envelope via the per-vendor parser —
+      // SiliconFlow returns `images[]` instead of OpenAI/Volcengine/Zhipu's
+      // `data[]`, so this can't be a single fixed shape.
+      const parsed = parseImageResponse(vendor, result);
 
       // Decode image data — prefer b64_json, fallback to URL download
       let bytes: Uint8Array;
-      const b64Data = result.data?.[0]?.b64_json;
-      if (b64Data) {
-        const resp = await fetch(`data:image/png;base64,${b64Data}`);
+      if (parsed.b64) {
+        const resp = await fetch(`data:image/png;base64,${parsed.b64}`);
         bytes = new Uint8Array(await resp.arrayBuffer());
-      } else {
-        const imageUrl = result.data?.[0]?.url;
-        if (!imageUrl) {
-          return getI18n().toolResult.media.errNoImageData;
-        }
-        const imageResponse = await fetchFn(imageUrl);
+      } else if (parsed.url) {
+        const imageResponse = await fetchFn(parsed.url);
         if (!imageResponse.ok) {
           return `Error downloading image: ${imageResponse.status}`;
         }
         bytes = new Uint8Array(await imageResponse.arrayBuffer());
+      } else {
+        return getI18n().toolResult.media.errNoImageData;
       }
 
       // Determine save path: explicit > workspace > downloads
@@ -120,12 +124,20 @@ export const generateImageTool: ToolDefinition = {
       await ensureParentDir(finalPath);
       await writeBinFile(finalPath, bytes);
 
-      const revisedPrompt = result.data?.[0]?.revised_prompt;
+      const revisedPrompt = parsed.revisedPrompt;
       const tm = getI18n().toolResult.media;
       let msg = format(tm.imageSaved, { path: finalPath });
       if (revisedPrompt) {
         msg += format(tm.revisedPrompt, { prompt: revisedPrompt });
       }
+
+      // Return just the text summary. The saved file already renders inline as
+      // a rich ImagePreviewCard (filename + real dimensions + preview + reveal),
+      // driven by workflowExtractor matching this "图片已保存到: <path>" text —
+      // a pre-existing path that covers both workspace and Downloads. Returning
+      // an extra base64 image block here would (a) double the image in the
+      // conversation and (b) push the full 2048×2048 base64 into the LLM
+      // context. So text only.
       return msg;
     } catch (err) {
       return `Error generating image: ${err instanceof Error ? err.message : String(err)}`;

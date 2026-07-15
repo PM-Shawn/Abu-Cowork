@@ -1,7 +1,7 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import type { LLMProvider, ApiFormat, ProviderCapabilities, CustomService } from '../types';
-import type { ProviderInstance, ActiveModel, AuxiliaryServices, ModelInfo } from '../types/provider';
+import type { ProviderInstance, ActiveModel, AuxiliaryServices, ModelInfo, ImageGenBackend, ImageGenerationSettings } from '../types/provider';
 import { deriveUiCaps } from '../core/llm/modelCapabilities';
 import type { PermissionMode } from '../core/permissions/permissionMode';
 import type { WebSearchProviderType } from '../core/search/providers';
@@ -349,6 +349,22 @@ interface SettingsState {
   recentModels: ActiveModel[];
   favoriteModels: ActiveModel[];
   auxiliaryServices: AuxiliaryServices;
+  /** Independent image-generation configuration (design doc §3.1, "C-a") —
+   *  a user-managed list of backends (own URL/key/model/vendor) that
+   *  `generate_image` picks from, decoupled from chat providers. */
+  imageGeneration: ImageGenerationSettings;
+  /**
+   * Marker set by the v41 migration when it creates a backend from the legacy
+   * `auxiliaryServices.imageGen` form: the id of the migrated backend, so
+   * `bootstrapSecrets` can bridge its apiKey from the old `aux:imageGen`
+   * encrypted secret (the plaintext in the persisted blob may already be
+   * stripped by the time migrate runs). PERSISTED (in partialize) and cleared
+   * only once the bridge's `setSecret` round-trips cleanly (`backfillOk`), so a
+   * first-launch crash / secret-IPC failure retries on the next launch instead
+   * of orphaning the key forever (the legacy `aux:imageGen` secret is left in
+   * place until the bridge succeeds, so the retry can still read it).
+   */
+  pendingImageGenSecretBridge?: string;
 
   // ── General settings (unchanged) ──
   theme: 'dark' | 'light' | 'system';
@@ -487,7 +503,14 @@ interface SettingsActions {
 
   // ── Auxiliary services ──
   setAuxiliaryWebSearch: (config: AuxiliaryServices['webSearch']) => void;
-  setAuxiliaryImageGen: (config: AuxiliaryServices['imageGen']) => void;
+
+  // ── Image-generation backends (V2, "C-a") ──
+  /** Adds a backend, auto-selecting it as default when it's the first one. Returns its id. */
+  addImageGenBackend: (config: Omit<ImageGenBackend, 'id'>) => string;
+  updateImageGenBackend: (id: string, patch: Partial<Omit<ImageGenBackend, 'id'>>) => void;
+  /** Removes a backend; if it was the default, falls back to the next remaining backend (if any). */
+  removeImageGenBackend: (id: string) => void;
+  setDefaultImageBackend: (id: string | undefined) => void;
 
   // ── General settings actions (unchanged) ──
   setTheme: (theme: 'dark' | 'light' | 'system') => void;
@@ -651,6 +674,20 @@ export function getActiveProviderAndModel(state: SettingsState): {
   return { provider: p, modelId: state.activeModel.modelId };
 }
 
+/**
+ * Resolve the backend that should service `generate_image` tool calls
+ * (design doc §3.1, "C-a"). Image generation is an independent configuration
+ * — its own URL/key/model/vendor — fully decoupled from chat providers, so
+ * (unlike the old provider-scanning approach) this just picks from
+ * `state.imageGeneration.backends`: the one matching `defaultId`, falling
+ * back to the first configured backend, or `null` when none are configured.
+ */
+export function getDefaultImageBackend(state: SettingsState): ImageGenBackend | null {
+  const { backends, defaultId } = state.imageGeneration;
+  if (backends.length === 0) return null;
+  return backends.find(b => b.id === defaultId) ?? backends[0] ?? null;
+}
+
 /** Returns the active API key for the current provider (backward-compatible) */
 export function getActiveApiKey(state: SettingsState): string {
   const p = state.providers.find(p => p.id === state.activeModel.providerId);
@@ -708,6 +745,8 @@ export const useSettingsStore = create<SettingsStore>()(
       recentModels: [],
       favoriteModels: [],
       auxiliaryServices: {},
+      imageGeneration: { backends: [] },
+      pendingImageGenSecretBridge: undefined,
 
       // ── General settings defaults ──
       theme: 'light',
@@ -937,19 +976,56 @@ export const useSettingsStore = create<SettingsStore>()(
         );
       },
 
-      setAuxiliaryImageGen: (config) => {
+      // ── Image-generation backends (V2, "C-a") ──
+
+      addImageGenBackend: (config) => {
+        const id = Date.now().toString(36) + Math.random().toString(36).substring(2, 8);
         // Trim whitespace at the store boundary (same rationale as addProvider).
-        const cleaned = config
-          ? { ...config, apiKey: config.apiKey?.trim() ?? '', baseUrl: config.baseUrl?.trim() ?? '' }
-          : config;
-        set((s) => ({
-          auxiliaryServices: { ...s.auxiliaryServices, imageGen: cleaned },
-        }));
-        fafSecret(
-          writeSecretOrDelete(SECRET_KEYS.auxImageGen, cleaned?.apiKey ?? ''),
-          'setAuxiliaryImageGen',
-        );
+        const cleanBaseUrl = (config.baseUrl ?? '').trim();
+        const cleanApiKey = (config.apiKey ?? '').trim();
+        set((s) => {
+          const backend: ImageGenBackend = { ...config, baseUrl: cleanBaseUrl, apiKey: cleanApiKey, id };
+          const backends = [...s.imageGeneration.backends, backend];
+          // First backend configured becomes the default automatically.
+          const defaultId = s.imageGeneration.defaultId ?? id;
+          return { imageGeneration: { backends, defaultId } };
+        });
+        fafSecret(writeSecretOrDelete(SECRET_KEYS.imageGenBackend(id), cleanApiKey), `addImageGenBackend(${id})`);
+        return id;
       },
+
+      updateImageGenBackend: (id, patch) => {
+        const cleanPatch: Partial<Omit<ImageGenBackend, 'id'>> = { ...patch };
+        if (patch.baseUrl !== undefined) cleanPatch.baseUrl = patch.baseUrl.trim();
+        if (patch.apiKey !== undefined) cleanPatch.apiKey = patch.apiKey.trim();
+        set((s) => ({
+          imageGeneration: {
+            ...s.imageGeneration,
+            backends: s.imageGeneration.backends.map(b => b.id === id ? { ...b, ...cleanPatch } : b),
+          },
+        }));
+        if (Object.prototype.hasOwnProperty.call(patch, 'apiKey')) {
+          fafSecret(
+            writeSecretOrDelete(SECRET_KEYS.imageGenBackend(id), cleanPatch.apiKey ?? ''),
+            `updateImageGenBackend(${id})`,
+          );
+        }
+      },
+
+      removeImageGenBackend: (id) => {
+        set((s) => {
+          const backends = s.imageGeneration.backends.filter(b => b.id !== id);
+          const defaultId = s.imageGeneration.defaultId === id
+            ? backends[0]?.id
+            : s.imageGeneration.defaultId;
+          return { imageGeneration: { backends, defaultId } };
+        });
+        fafSecret(deleteSecret(SECRET_KEYS.imageGenBackend(id)), `removeImageGenBackend(${id})`);
+      },
+
+      setDefaultImageBackend: (id) => set((s) => ({
+        imageGeneration: { ...s.imageGeneration, defaultId: id },
+      })),
 
       // ════════════════════════════════════════════════
       // General settings actions (unchanged)
@@ -1058,6 +1134,7 @@ export const useSettingsStore = create<SettingsStore>()(
           ...s.providers.map((p) => SECRET_KEYS.provider(p.id)),
           SECRET_KEYS.auxWebSearch,
           SECRET_KEYS.auxImageGen,
+          ...s.imageGeneration.backends.map((b) => SECRET_KEYS.imageGenBackend(b.id)),
         ];
         try {
           await clearAllSecrets(knownKeys);
@@ -1077,6 +1154,10 @@ export const useSettingsStore = create<SettingsStore>()(
               imageGen: { ...state.auxiliaryServices.imageGen, apiKey: '' },
             }),
           },
+          imageGeneration: {
+            ...state.imageGeneration,
+            backends: state.imageGeneration.backends.map((b) => ({ ...b, apiKey: '' })),
+          },
           failedSecretKeys: [],
         }));
       },
@@ -1086,9 +1167,17 @@ export const useSettingsStore = create<SettingsStore>()(
     }),
     {
       name: 'abu-settings',
-      version: 40,
+      version: 41,
       migrate: (persisted: unknown, version: number) => {
         const state = persisted as Record<string, unknown>;
+
+        // NOTE: the V41 "imageGeneration independent config (C-a)" step lives at
+        // the BOTTOM of this migrate() (just before `return state`), NOT here.
+        // It depends on `auxiliaryServices.imageGen` already existing, which the
+        // V14 branch materializes from the legacy flat fields further down — and
+        // migrate branches run top-to-bottom in DESCENDING version order, so V14
+        // runs after this point. Running V41 here would read an undefined
+        // `auxiliaryServices` for ≤13 users and silently drop their config.
 
         // ════════════════════════════════════════════════
         // V40: sink the model-varying subset of provider-level declaredCapabilities
@@ -1773,6 +1862,56 @@ export const useSettingsStore = create<SettingsStore>()(
           if (state.closeAction === undefined) state.closeAction = 'ask';
           if (state.lastUpdateCheck === undefined) state.lastUpdateCheck = 0;
         });
+
+        // ════════════════════════════════════════════════
+        // V41: image generation becomes an independent configuration
+        // (`imageGeneration.backends`), decoupled from chat providers/models
+        // (design doc §3.1, "C-a"). Placed LAST on purpose: it reads
+        // `auxiliaryServices.imageGen`, which the V14 branch above materializes
+        // from the legacy flat fields for ≤13 users — so this must run after V14
+        // (branches run in descending version order, V14 sits above this point).
+        // If the old isolated form was configured (has a baseUrl/model), migrate
+        // it into a single backend (vendor 'custom') and make it default, then
+        // clear the old field. Additive/lossless: never-configured users get an
+        // empty backends list. Inline try/catch (mirrors the `step()` helper).
+        // ════════════════════════════════════════════════
+        if (version < 41) {
+          try {
+            const existing = state.imageGeneration as { backends?: unknown; defaultId?: string } | undefined;
+            const imageGeneration: { backends: Array<Record<string, unknown>>; defaultId?: string } = {
+              backends: Array.isArray(existing?.backends) ? existing.backends as Array<Record<string, unknown>> : [],
+              defaultId: existing?.defaultId,
+            };
+
+            const aux = state.auxiliaryServices as Record<string, Record<string, unknown> | undefined> | undefined;
+            const legacy = aux?.imageGen;
+            const legacyBaseUrl = typeof legacy?.baseUrl === 'string' ? legacy.baseUrl.trim() : '';
+            const legacyModel = typeof legacy?.model === 'string' ? legacy.model.trim() : '';
+            if (legacy && (legacyBaseUrl || legacyModel)) {
+              const id = Date.now().toString(36) + Math.random().toString(36).substring(2, 8);
+              imageGeneration.backends.push({
+                id,
+                name: '图片生成（迁移）',
+                vendor: 'custom',
+                baseUrl: legacyBaseUrl,
+                apiKey: typeof legacy.apiKey === 'string' ? legacy.apiKey : '',
+                model: legacyModel,
+              });
+              imageGeneration.defaultId = id;
+              // The apiKey above may already be '' if it had been stripped to the
+              // encrypted secret store (post-V17 users) — bootstrapSecrets bridges
+              // the real value from the legacy `aux:imageGen` secret (self-healing
+              // across launches; this marker is just a fast-path hint).
+              state.pendingImageGenSecretBridge = id;
+              if (aux) delete aux.imageGen;
+            }
+
+            state.imageGeneration = imageGeneration;
+          } catch (err) {
+            console.error('[settingsStore] migration step "V41 imageGeneration independent config (C-a)" failed:', err);
+          }
+        }
+
         return state;
       },
       partialize: (state) => ({
@@ -1796,6 +1935,15 @@ export const useSettingsStore = create<SettingsStore>()(
                 imageGen: { ...state.auxiliaryServices.imageGen, apiKey: '' },
               }),
             },
+        imageGeneration: persistApiKeyPlaintextFallback
+          ? state.imageGeneration
+          : {
+              ...state.imageGeneration,
+              backends: state.imageGeneration.backends.map((b) => ({ ...b, apiKey: '' })),
+            },
+        // Persisted so a failed first-launch secret bridge retries next launch
+        // (cleared only once bootstrapSecrets confirms the setSecret succeeded).
+        pendingImageGenSecretBridge: state.pendingImageGenSecretBridge,
         // General settings
         theme: state.theme,
         language: state.language,
@@ -1884,7 +2032,8 @@ export async function bootstrapSecrets(): Promise<void> {
   type Fetch =
     | { kind: 'provider'; providerId: string; value: string | null }
     | { kind: 'webSearch'; value: string | null }
-    | { kind: 'imageGen'; value: string | null };
+    | { kind: 'imageGen'; value: string | null }
+    | { kind: 'imageGenBackend'; backendId: string; value: string | null };
 
   const tasks: Promise<Fetch>[] = [];
 
@@ -1905,6 +2054,13 @@ export async function bootstrapSecrets(): Promise<void> {
       (value) => ({ kind: 'imageGen', value } as Fetch),
     ),
   );
+  for (const b of state.imageGeneration.backends) {
+    tasks.push(
+      getSecret(SECRET_KEYS.imageGenBackend(b.id)).then(
+        (value) => ({ kind: 'imageGenBackend', backendId: b.id, value } as Fetch),
+      ),
+    );
+  }
 
   let results: Fetch[];
   try {
@@ -1915,12 +2071,14 @@ export async function bootstrapSecrets(): Promise<void> {
   }
 
   const providerUpdates = new Map<string, string>();
+  const imageGenBackendUpdates = new Map<string, string>();
   let webSearchSecret: string | null = null;
   let imageGenSecret: string | null = null;
   for (const r of results) {
     if (r.kind === 'provider' && r.value) providerUpdates.set(r.providerId, r.value);
     else if (r.kind === 'webSearch') webSearchSecret = r.value;
     else if (r.kind === 'imageGen') imageGenSecret = r.value;
+    else if (r.kind === 'imageGenBackend' && r.value) imageGenBackendUpdates.set(r.backendId, r.value);
   }
 
   // Backfill: state has plaintext key but encrypted store doesn't.
@@ -1940,6 +2098,24 @@ export async function bootstrapSecrets(): Promise<void> {
   if (!imageGenSecret) {
     const plain = state.auxiliaryServices.imageGen?.apiKey?.trim() ?? '';
     if (plain.length > 0) backfills.push(setSecret(SECRET_KEYS.auxImageGen, plain));
+  }
+  for (const b of state.imageGeneration.backends) {
+    const plain = b.apiKey?.trim() ?? '';
+    if (plain.length > 0 && !imageGenBackendUpdates.has(b.id)) {
+      backfills.push(setSecret(SECRET_KEYS.imageGenBackend(b.id), plain));
+    }
+  }
+
+  // One-shot bridge: the V41 migration may have just created a backend from
+  // the legacy `auxiliaryServices.imageGen` form, but its own apiKey field
+  // could already be '' if the plaintext had been stripped to the old
+  // `aux:imageGen` encrypted secret before migration ran. If so, and the
+  // backend has no secret of its own yet, carry the legacy secret over to
+  // the backend's new `imagegen:<id>` key so the key survives the upgrade.
+  const bridgeBackendId = state.pendingImageGenSecretBridge;
+  if (bridgeBackendId && imageGenSecret && !imageGenBackendUpdates.has(bridgeBackendId)) {
+    imageGenBackendUpdates.set(bridgeBackendId, imageGenSecret);
+    backfills.push(setSecret(SECRET_KEYS.imageGenBackend(bridgeBackendId), imageGenSecret));
   }
 
   let backfillOk = true;
@@ -1982,7 +2158,21 @@ export async function bootstrapSecrets(): Promise<void> {
       auxiliaryServices.imageGen = { ...auxiliaryServices.imageGen, apiKey: imageGenSecret };
     }
 
-    return { providers, auxiliaryServices, failedSecretKeys };
+    const backends = s.imageGeneration.backends.map((b) => {
+      const fetched = imageGenBackendUpdates.get(b.id);
+      return fetched ? { ...b, apiKey: fetched } : b;
+    });
+
+    return {
+      providers,
+      auxiliaryServices,
+      imageGeneration: { ...s.imageGeneration, backends },
+      failedSecretKeys,
+      // Clear the bridge marker only when the backfill (including the bridge's
+      // setSecret) round-tripped cleanly; otherwise keep it so the next launch
+      // retries instead of orphaning the migrated key.
+      pendingImageGenSecretBridge: backfillOk ? undefined : s.pendingImageGenSecretBridge,
+    };
   });
 
   // Flip the gate only if everything round-tripped cleanly. Subsequent

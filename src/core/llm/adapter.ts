@@ -1,5 +1,6 @@
 import type { StreamEvent, Message, ToolDefinition, BuiltinSearchMethod } from '../../types';
 import type { PromptSection } from './promptSections';
+import type { Logger } from '../logging/logger';
 
 /**
  * Chars of a failed tool call's raw `arguments` to keep in the on-disk
@@ -21,6 +22,26 @@ export const LOG_TOOL_ARG_PREVIEW = 2000;
  * live in the disk log (LOG_TOOL_ARG_PREVIEW), not here.
  */
 export const PARSE_ERROR_INPUT_PREVIEW = 200;
+
+/**
+ * Build the `_parse_error` sentinel for a tool call whose raw `arguments`
+ * string failed to JSON.parse, and record the full args to the disk log for
+ * diagnosis. Shared by both adapters (Claude + OpenAI-compatible) so the log
+ * shape and the (deliberately small) replayed sentinel stay in lockstep.
+ */
+export function buildToolParseError(
+  rawArgs: string,
+  ctx: { source: string; tool: string },
+  log: Logger,
+): { _parse_error: string } {
+  log.error('tool args JSON parse failed', {
+    source: ctx.source,
+    tool: ctx.tool,
+    argsLength: rawArgs.length,
+    argsPreview: rawArgs.slice(0, LOG_TOOL_ARG_PREVIEW),
+  });
+  return { _parse_error: `Failed to parse tool input: ${rawArgs.slice(0, PARSE_ERROR_INPUT_PREVIEW)}` };
+}
 
 // Tool choice configuration for API requests
 export type ToolChoice =

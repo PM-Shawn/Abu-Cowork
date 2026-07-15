@@ -1,6 +1,6 @@
 import Anthropic from '@anthropic-ai/sdk';
 import type { LLMAdapter, ChatOptions, ToolChoice } from './adapter';
-import { LLMError, classifyError, LOG_TOOL_ARG_PREVIEW, PARSE_ERROR_INPUT_PREVIEW } from './adapter';
+import { LLMError, classifyError, buildToolParseError } from './adapter';
 import type { Message, StreamEvent, ToolDefinition } from '../../types';
 import { getTauriFetch } from './tauriFetch';
 import { normalizeMessages } from './messageNormalizer';
@@ -331,17 +331,17 @@ export class ClaudeAdapter implements LLMAdapter {
             if (currentToolName) {
               let input: Record<string, unknown> = {};
               try {
-                input = JSON.parse(currentToolInput);
+                // A no-argument tool call streams no input_json_delta, leaving
+                // currentToolInput empty — treat as {} (mirrors the OpenAI path's
+                // safeParseToolArgs), don't let JSON.parse('') throw into a
+                // spurious _parse_error + disk log.
+                input = currentToolInput.trim() ? JSON.parse(currentToolInput) : {};
               } catch {
-                // Log the full preview to disk (no token cost) for diagnosis;
-                // keep the replayed _parse_error input small (see adapter.ts).
-                logger.error('tool args JSON parse failed', {
-                  source: 'claude/content_block_stop',
-                  tool: currentToolName,
-                  argsLength: currentToolInput.length,
-                  argsPreview: currentToolInput.slice(0, LOG_TOOL_ARG_PREVIEW),
-                });
-                input = { _parse_error: `Failed to parse tool input: ${currentToolInput.slice(0, PARSE_ERROR_INPUT_PREVIEW)}` };
+                input = buildToolParseError(
+                  currentToolInput,
+                  { source: 'claude/content_block_stop', tool: currentToolName },
+                  logger,
+                );
               }
               onEvent({
                 type: 'tool_use',

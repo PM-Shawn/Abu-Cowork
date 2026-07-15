@@ -93,4 +93,34 @@ describe('ClaudeAdapter', () => {
       await expect(chatPromise).rejects.toBeInstanceOf(LLMError);
     });
   });
+
+  describe('tool_use input parsing', () => {
+    it('emits input {} (not _parse_error) for a no-argument tool call', async () => {
+      // A tool with no parameters streams a tool_use block with no
+      // input_json_delta, so the accumulated input string is empty. That must
+      // become {} — not a _parse_error from JSON.parse('') that would stop the
+      // tool from executing and log a bogus disk error.
+      vi.useRealTimers();
+      mockCreate.mockResolvedValue({
+        async *[Symbol.asyncIterator]() {
+          yield { type: 'content_block_start', content_block: { type: 'tool_use', id: 'toolu_1', name: 'get_time' } };
+          yield { type: 'content_block_stop' };
+          yield { type: 'message_stop' };
+        },
+      });
+
+      const events: Array<{ type: string; input?: Record<string, unknown> }> = [];
+      const adapter = new ClaudeAdapter();
+      await adapter.chat(
+        [{ role: 'user', content: 'what time is it', id: '1', timestamp: Date.now() }],
+        { apiKey: 'test-key', model: 'claude-sonnet-4-6', maxTokens: 1024 },
+        (event) => events.push(event as { type: string; input?: Record<string, unknown> }),
+      );
+
+      const tu = events.find((e) => e.type === 'tool_use');
+      expect(tu).toBeDefined();
+      expect(tu?.input).toEqual({});
+      expect(tu?.input && '_parse_error' in tu.input).toBe(false);
+    });
+  });
 });

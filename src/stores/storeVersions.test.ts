@@ -14,7 +14,7 @@ const PERSISTED_STORES = [
   { key: 'abu-im-channel', minVersion: 2 },
   { key: 'abu-projects', minVersion: 1 },
   { key: 'abu-project-hint', minVersion: 1 },
-  { key: 'abu-diagnostic-store', minVersion: 1 },
+  { key: 'abu-diagnostic-store', minVersion: 2 },
   { key: 'abu-usage-stats', minVersion: 2 },
   { key: 'abu-discovered-caps', minVersion: 1 },
   { key: 'abu-todos', minVersion: 1 },

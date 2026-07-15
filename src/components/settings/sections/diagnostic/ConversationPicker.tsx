@@ -1,14 +1,13 @@
-import { useMemo, useState } from 'react';
-import { ChevronDown, ChevronRight } from 'lucide-react';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { ChevronDown } from 'lucide-react';
 import { useI18n, format } from '@/i18n';
 import { useChatStore } from '@/stores/chatStore';
+import { useToastStore } from '@/stores/toastStore';
 import { Input } from '@/components/ui/input';
-import { Button } from '@/components/ui/button';
 import { Checkbox } from '@/components/ui/checkbox';
 import { formatRelativeTime } from '@/utils/messageTime';
+import { MAX_ATTACH_CONVERSATIONS } from '@/core/diagnostic/collect';
 import { cn } from '@/lib/utils';
-
-const DEFAULT_VISIBLE = 20;
 
 interface Props {
   selectedIds: string[];
@@ -17,81 +16,135 @@ interface Props {
 }
 
 /**
- * Multi-select conversation attach list for the diagnostic feedback form.
- * Deliberately has NO "select all" affordance — attaching a conversation
- * embeds its full message content, so each inclusion should be a conscious
- * per-conversation choice (see conversationPickerPrivacyHint).
+ * Collapsed multi-select dropdown for attaching conversations to the diagnostic
+ * feedback bundle. Trigger shows a summary ("已选 N 个" / placeholder); opening
+ * reveals a search box + scrollable checkbox list. Deliberately has NO "select
+ * all": each inclusion embeds a conversation's full messages, so it stays a
+ * conscious per-conversation choice. Selecting a row keeps the dropdown open
+ * (multi-select), unlike a single-select which closes on pick.
  */
 export default function ConversationPicker({ selectedIds, onChange, disabled }: Props) {
   const { t } = useI18n();
   const conversationIndex = useChatStore((s) => s.conversationIndex);
   const activeConversationId = useChatStore((s) => s.activeConversationId);
+  const addToast = useToastStore((s) => s.addToast);
 
-  const [expanded, setExpanded] = useState(false);
+  const [open, setOpen] = useState(false);
   const [search, setSearch] = useState('');
-  const [showAll, setShowAll] = useState(false);
+  const containerRef = useRef<HTMLDivElement>(null);
+
+  // Close on outside-click / Escape while open. Capture phase mirrors ui/Select
+  // so an ancestor that stopPropagation()s on mousedown can't kill it.
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (e: MouseEvent) => {
+      if (containerRef.current && !containerRef.current.contains(e.target as Node)) setOpen(false);
+    };
+    const onEsc = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setOpen(false);
+    };
+    document.addEventListener('mousedown', onDown, true);
+    document.addEventListener('keydown', onEsc);
+    return () => {
+      document.removeEventListener('mousedown', onDown, true);
+      document.removeEventListener('keydown', onEsc);
+    };
+  }, [open]);
 
   const sorted = useMemo(
     () => Object.values(conversationIndex).sort((a, b) => b.updatedAt - a.updatedAt),
     [conversationIndex],
   );
-
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
     if (!q) return sorted;
     return sorted.filter((c) => (c.title || '').toLowerCase().includes(q));
   }, [sorted, search]);
 
-  const isFiltering = search.trim().length > 0;
-  const visible = isFiltering || showAll ? filtered : filtered.slice(0, DEFAULT_VISIBLE);
-  const hasMore = !isFiltering && !showAll && filtered.length > DEFAULT_VISIBLE;
-
   const selectedSet = useMemo(() => new Set(selectedIds), [selectedIds]);
-
   const toggle = (id: string) => {
     if (disabled) return;
-    onChange(selectedSet.has(id) ? selectedIds.filter((x) => x !== id) : [...selectedIds, id]);
+    if (selectedSet.has(id)) {
+      onChange(selectedIds.filter((x) => x !== id));
+      return;
+    }
+    if (selectedIds.length >= MAX_ATTACH_CONVERSATIONS) {
+      addToast({
+        title: format(t.diagnostic.conversationPickerTooMany, { max: MAX_ATTACH_CONVERSATIONS }),
+        type: 'warning',
+        duration: 3000,
+      });
+      return;
+    }
+    onChange([...selectedIds, id]);
   };
 
-  return (
-    <section>
-      <Button
-        type="button"
-        variant="ghost"
-        size="sm"
-        onClick={() => setExpanded((v) => !v)}
-        className="w-full h-auto justify-start gap-2 px-0 py-1.5 text-[12px] text-[var(--abu-text-tertiary)] hover:bg-transparent hover:text-[var(--abu-text-primary)]"
-      >
-        {expanded ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
-        <span>{t.diagnostic.conversationPickerTitle}</span>
-        {selectedIds.length > 0 && (
-          <span className="ml-auto text-[11px] text-[var(--abu-text-muted)]">
-            {format(t.diagnostic.conversationPickerSelectedCount, { count: selectedIds.length })}
-          </span>
-        )}
-      </Button>
+  const isEmpty = selectedIds.length === 0;
 
-      {expanded && (
-        <div className="mb-2 pl-5 pr-1 py-2 bg-[var(--abu-bg-muted)] rounded-md">
+  return (
+    <div ref={containerRef} className="relative">
+      {/* Trigger — looks like a select field, shows a selection summary. */}
+      <button
+        type="button"
+        disabled={disabled}
+        onClick={() => setOpen((o) => !o)}
+        className={cn(
+          'w-full h-9 px-3 flex items-center justify-between rounded-lg border text-sm transition-all',
+          'bg-[var(--abu-bg-muted)] border-[var(--abu-border)]',
+          'focus:outline-none focus:ring-2 focus:ring-[var(--abu-clay-ring)] focus:border-[var(--abu-clay)]',
+          open && 'ring-2 ring-[var(--abu-clay-ring)] border-[var(--abu-clay)]',
+          disabled && 'opacity-50 cursor-not-allowed',
+        )}
+      >
+        <span
+          className={cn(
+            'truncate',
+            isEmpty ? 'text-[var(--abu-text-placeholder)]' : 'text-[var(--abu-text-primary)]',
+          )}
+        >
+          {isEmpty
+            ? t.diagnostic.conversationPickerTriggerPlaceholder
+            : format(t.diagnostic.conversationPickerSelectedCount, { count: selectedIds.length })}
+        </span>
+        <ChevronDown
+          className={cn(
+            'h-3.5 w-3.5 text-[var(--abu-text-muted)] transition-transform shrink-0 ml-2',
+            open && 'rotate-180',
+          )}
+        />
+      </button>
+
+      {/* Dropdown — search + scrollable checkbox list. */}
+      {open && (
+        <div className="absolute z-50 top-full left-0 right-0 mt-1 p-2 bg-[var(--abu-bg-base)] border border-[var(--abu-border)] rounded-xl shadow-lg">
           <Input
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             placeholder={t.diagnostic.conversationPickerSearchPlaceholder}
             disabled={disabled}
-            className="h-7 text-[12px] mb-2"
+            autoFocus
+            className="h-8 text-[12px] mb-2"
           />
 
-          {visible.length === 0 ? (
+          {filtered.length === 0 ? (
             <div className="py-3 text-center text-[11px] text-[var(--abu-text-muted)]">
               {t.diagnostic.conversationPickerEmpty}
             </div>
           ) : (
-            <ul className="max-h-64 overflow-y-auto space-y-0.5">
-              {visible.map((c) => (
+            <ul className="max-h-60 overflow-y-auto space-y-0.5 pr-1">
+              {filtered.map((c) => (
                 <li key={c.id}>
-                  <label
+                  {/* Plain div + onClick, NOT a <label>: a <label> wrapping the
+                      Checkbox <button> re-dispatches its click back to the
+                      button in macOS WKWebView, double-toggling so the box could
+                      never be unchecked. A single handler here = one toggle.
+                      Keyboard access is via the inner Checkbox <button> (its own
+                      tab stop) — the row div is intentionally NOT focusable, so
+                      it can't double-fire a keydown alongside the button. */}
+                  <div
+                    onClick={() => toggle(c.id)}
                     className={cn(
-                      'flex items-center gap-2 py-1 px-1.5 rounded-md hover:bg-[var(--abu-bg-hover)] cursor-pointer',
+                      'flex items-center gap-2 py-1 px-1.5 rounded-md hover:bg-[var(--abu-bg-hover)] cursor-pointer select-none',
                       disabled && 'opacity-50 pointer-events-none',
                     )}
                   >
@@ -110,30 +163,13 @@ export default function ConversationPicker({ selectedIds, onChange, disabled }: 
                     <span className="shrink-0 text-[11px] text-[var(--abu-text-muted)] w-16 text-right">
                       {format(t.diagnostic.conversationPickerMessageCount, { count: c.messageCount })}
                     </span>
-                  </label>
+                  </div>
                 </li>
               ))}
             </ul>
           )}
-
-          {hasMore && (
-            <Button
-              type="button"
-              variant="link"
-              size="xs"
-              className="mt-1 px-1.5 h-auto"
-              onClick={() => setShowAll(true)}
-              disabled={disabled}
-            >
-              {t.diagnostic.conversationPickerLoadMore}
-            </Button>
-          )}
         </div>
       )}
-
-      <div className="pl-5 pb-1 text-[11px] text-[var(--abu-text-tertiary)] leading-relaxed">
-        {t.diagnostic.conversationPickerPrivacyHint}
-      </div>
-    </section>
+    </div>
   );
 }

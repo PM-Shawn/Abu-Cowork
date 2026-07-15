@@ -2,13 +2,17 @@ import { useState } from 'react';
 import wechatQr from '@/assets/wechat-qr.png';
 import { useI18n } from '@/i18n';
 import type { ProduceResult } from '@/core/diagnostic/bundle';
+import { useFeedbackDraftStore } from '@/stores/feedbackDraftStore';
 import DiagnosticUpload from './diagnostic/DiagnosticUpload';
 import ExportSuccessCard from './diagnostic/ExportSuccessCard';
 import SettingsSectionHeader from '@/components/settings/SettingsSectionHeader';
 
 export default function FeedbackSection() {
   const { t } = useI18n();
-  const [description, setDescription] = useState('');
+  // Description lives in the session draft store so it survives leaving the
+  // settings view and returning (e.g. to grab a screenshot).
+  const description = useFeedbackDraftStore((s) => s.description);
+  const setDescription = useFeedbackDraftStore((s) => s.setDescription);
   const [exportSuccess, setExportSuccess] = useState<ProduceResult | null>(null);
 
   return (

@@ -1,27 +1,19 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useRef, useState } from 'react';
 import { ImagePlus, X } from 'lucide-react';
-import { useI18n, format } from '@/i18n';
+import { useI18n } from '@/i18n';
 import { cn } from '@/lib/utils';
 import { compressImage } from '@/utils/imageCompress';
 import { generateAttachmentId } from '@/utils/imageUtils';
 import { useToastStore } from '@/stores/toastStore';
 import { Button } from '@/components/ui/button';
-
-export interface LocalShot {
-  id: string;
-  name: string;
-  bytes: Uint8Array;
-  mediaType: string;
-  /** `URL.createObjectURL` blob URL for the thumbnail — revoked on removal/unmount. */
-  previewUrl: string;
-}
+import type { ScreenshotDraft } from '@/stores/feedbackDraftStore';
 
 const MAX_SHOTS = 5;
 const MAX_TOTAL_BYTES = 5 * 1024 * 1024;
 
 interface Props {
-  screenshots: LocalShot[];
-  onChange: (screenshots: LocalShot[]) => void;
+  screenshots: ScreenshotDraft[];
+  onChange: (shots: ScreenshotDraft[] | ((prev: ScreenshotDraft[]) => ScreenshotDraft[])) => void;
   disabled?: boolean;
 }
 
@@ -30,6 +22,11 @@ interface Props {
  * (click-to-pick / drag&drop / paste), each funnelled through the same
  * compress-then-append pipeline. Enforces a 5-image / 5MB-total cap client
  * side — collect.ts does not re-validate this, so it must hold here.
+ *
+ * Blob-URL lifecycle is owned by the DRAFT (feedbackDraftStore), not this
+ * component: created on add, revoked on explicit removal here or clearDraft().
+ * We deliberately do NOT revoke on unmount — the draft (and its live URLs) must
+ * survive navigating away from settings and back.
  */
 export default function ScreenshotUpload({ screenshots, onChange, disabled }: Props) {
   const { t } = useI18n();
@@ -37,55 +34,27 @@ export default function ScreenshotUpload({ screenshots, onChange, disabled }: Pr
   const [dragOver, setDragOver] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // Dual-ref pattern: keep a ref mirror of the latest `screenshots` so the
-  // unmount cleanup below (empty deps, runs once) revokes whatever is
-  // actually present at unmount time, not a stale first-render snapshot.
-  const screenshotsRef = useRef(screenshots);
-  useEffect(() => {
-    screenshotsRef.current = screenshots;
-  }, [screenshots]);
-  useEffect(() => {
-    return () => {
-      screenshotsRef.current.forEach((s) => URL.revokeObjectURL(s.previewUrl));
-    };
-  }, []);
-
   const addFiles = useCallback(
     async (files: File[]) => {
       if (disabled) return;
       const imageFiles = files.filter((f) => f.type.startsWith('image/'));
       if (imageFiles.length === 0) return;
 
-      const remaining = MAX_SHOTS - screenshots.length;
-      if (remaining <= 0) {
-        addToast({ title: t.diagnostic.screenshotTooMany, type: 'warning', duration: 4000 });
-        return;
-      }
-
-      const toAdd = imageFiles.slice(0, remaining);
-      if (imageFiles.length > toAdd.length) {
-        addToast({ title: t.diagnostic.screenshotTooMany, type: 'warning', duration: 4000 });
-      }
-
-      let runningTotal = screenshots.reduce((sum, s) => sum + s.bytes.length, 0);
-      const newShots: LocalShot[] = [];
-      let hitCap = false;
-
-      for (const file of toAdd) {
+      // Compress every candidate up front (the slow async part). Cap
+      // enforcement + commit then happen atomically in a functional updater
+      // against the LATEST draft — so a drag firing mid-way through a paste's
+      // compress can't clobber it by merging from a stale snapshot.
+      const candidates: ScreenshotDraft[] = [];
+      for (const file of imageFiles) {
         const buf = new Uint8Array(await file.arrayBuffer());
         const compressed = await compressImage({ bytes: buf, mediaType: file.type || 'image/png' });
-        if (runningTotal + compressed.bytes.length > MAX_TOTAL_BYTES) {
-          hitCap = true;
-          break;
-        }
-        runningTotal += compressed.bytes.length;
-        // Zero-copy: `compressed.bytes` is already a Uint8Array. The `as`
-        // only narrows TS's generic `Uint8Array<ArrayBufferLike>` to the
-        // `Uint8Array<ArrayBuffer>` that `BlobPart` requires — no runtime
-        // copy — safe since these bytes always come from a plain
-        // (non-shared) ArrayBuffer (file reads / canvas encode).
+        // Zero-copy: `compressed.bytes` is already a Uint8Array. The `as` only
+        // narrows TS's generic `Uint8Array<ArrayBufferLike>` to the
+        // `Uint8Array<ArrayBuffer>` that `BlobPart` requires — no runtime copy
+        // — safe since these bytes always come from a plain (non-shared)
+        // ArrayBuffer (file reads / canvas encode).
         const blob = new Blob([compressed.bytes as Uint8Array<ArrayBuffer>], { type: compressed.mediaType });
-        newShots.push({
+        candidates.push({
           id: generateAttachmentId(),
           name: file.name,
           bytes: compressed.bytes,
@@ -94,21 +63,45 @@ export default function ScreenshotUpload({ screenshots, onChange, disabled }: Pr
         });
       }
 
-      if (hitCap) {
-        addToast({ title: t.diagnostic.screenshotTooLarge, type: 'warning', duration: 4000 });
-      }
-      if (newShots.length > 0) {
-        onChange([...screenshots, ...newShots]);
+      // Pure updater (StrictMode may run it twice — no side effects inside):
+      // appends candidates in order until a cap is hit. `accepted`/`tooMany`
+      // are deterministic functions of the inputs, so a double-run is safe.
+      let accepted = 0;
+      let tooMany = false;
+      onChange((prev) => {
+        const out = [...prev];
+        let runningTotal = prev.reduce((sum, s) => sum + s.bytes.length, 0);
+        for (const shot of candidates) {
+          if (out.length >= MAX_SHOTS) {
+            tooMany = true;
+            break;
+          }
+          if (runningTotal + shot.bytes.length > MAX_TOTAL_BYTES) break;
+          runningTotal += shot.bytes.length;
+          out.push(shot);
+        }
+        accepted = out.length - prev.length;
+        return out;
+      });
+
+      // Candidates are appended in order, so the rejected ones are the tail.
+      for (const shot of candidates.slice(accepted)) URL.revokeObjectURL(shot.previewUrl);
+      if (accepted < candidates.length) {
+        addToast({
+          title: tooMany ? t.diagnostic.screenshotTooMany : t.diagnostic.screenshotTooLarge,
+          type: 'warning',
+          duration: 4000,
+        });
       }
     },
-    [disabled, screenshots, onChange, addToast, t],
+    [disabled, onChange, addToast, t],
   );
 
   const removeShot = (id: string) => {
     if (disabled) return;
     const target = screenshots.find((s) => s.id === id);
     if (target) URL.revokeObjectURL(target.previewUrl);
-    onChange(screenshots.filter((s) => s.id !== id));
+    onChange((prev) => prev.filter((s) => s.id !== id));
   };
 
   const onPaste = useCallback(
@@ -129,13 +122,6 @@ export default function ScreenshotUpload({ screenshots, onChange, disabled }: Pr
 
   return (
     <section>
-      <div className="flex items-center justify-between py-1.5">
-        <span className="text-[12px] text-[var(--abu-text-tertiary)]">{t.diagnostic.screenshotTitle}</span>
-        <span className="text-[11px] text-[var(--abu-text-muted)]">
-          {format(t.diagnostic.screenshotCount, { n: screenshots.length })}
-        </span>
-      </div>
-
       <div
         tabIndex={0}
         onPaste={onPaste}
@@ -151,8 +137,10 @@ export default function ScreenshotUpload({ screenshots, onChange, disabled }: Pr
           void addFiles(Array.from(e.dataTransfer.files));
         }}
         className={cn(
-          'rounded-lg border border-dashed p-2 outline-none transition-colors',
-          dragOver ? 'border-[var(--abu-clay)] bg-[var(--abu-clay)]/5' : 'border-[var(--abu-border)]',
+          'rounded-lg border p-2 outline-none transition-colors',
+          dragOver
+            ? 'border-dashed border-[var(--abu-clay)] bg-[var(--abu-clay)]/5'
+            : 'border-[var(--abu-border)] bg-[var(--abu-bg-muted)]',
           disabled && 'opacity-50 pointer-events-none',
         )}
       >

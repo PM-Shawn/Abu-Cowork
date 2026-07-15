@@ -30,7 +30,10 @@ export function Checkbox({
         'inline-flex items-center justify-center h-4 w-4 rounded border transition-colors shrink-0',
         checked
           ? 'bg-[var(--abu-clay)] border-[var(--abu-clay)] text-white'
-          : 'bg-transparent border-[var(--abu-border)] hover:border-[var(--abu-clay)]',
+          // Solid surface fill (not transparent): --abu-border ≈ --abu-bg-hover,
+          // so a transparent box vanishes into a hovered row. A base-bg fill
+          // keeps the empty box visible on any surface.
+          : 'bg-[var(--abu-bg-base)] border-[var(--abu-border)] hover:border-[var(--abu-clay)]',
         disabled && 'opacity-50 cursor-not-allowed',
         className,
       )}

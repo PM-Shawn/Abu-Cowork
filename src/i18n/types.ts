@@ -988,13 +988,8 @@ export interface TranslationDict {
     exportButton: string;
     exportInProgress: string;
     exportFailed: string;
-    exportIncluded: string;
-    exportPrivacy: string;
     exportIncludeRaw: string;
-    exportIncludeAll: string;
-    exportIncludeRawWarning: string;
-    exportIncludedListTitle: string;
-    exportPrivacyText: string;
+    exportIncludeRawHint: string;
     // Upload to console
     uploadButton: string;
     uploadInProgress: string;
@@ -1016,14 +1011,17 @@ export interface TranslationDict {
     feedbackPageHint: string;
     // Conversation picker (multi-select attach, in the feedback form)
     conversationPickerTitle: string;
+    conversationPickerTriggerPlaceholder: string;
     conversationPickerSearchPlaceholder: string;
-    conversationPickerLoadMore: string;
     conversationPickerEmpty: string;
     conversationPickerNoTitle: string;
     conversationPickerCurrentBadge: string;
     conversationPickerMessageCount: string; // {count}
     conversationPickerSelectedCount: string; // {count}
-    conversationPickerPrivacyHint: string;
+    conversationPickerInfoTooltip: string;
+    conversationPickerTooMany: string; // {max}
+    // Feedback form field label
+    descriptionLabel: string;
     // Screenshot upload (feedback form)
     screenshotTitle: string;
     screenshotAddHint: string;
@@ -1553,6 +1551,8 @@ export interface TranslationDict {
       noWorkspace: string;
       empty: string;
       loadError: string;
+      folderDeleted: string;
+      retry: string;
       loading: string;
       moreActions: string;
       newFolder: string;

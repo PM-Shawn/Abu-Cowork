@@ -92,8 +92,8 @@ interface CollectOptions {
   screenshots?: { name: string; bytes: Uint8Array }[];
 }
 
-/** Default number of most-recent messages embedded in a diagnostic bundle. */
-export const DEFAULT_DIAGNOSTIC_MESSAGE_CAP = 200;
+/** Default number of most-recent messages embedded per conversation. */
+export const DEFAULT_DIAGNOSTIC_MESSAGE_CAP = 100;
 
 /**
  * Global ceiling on the TOTAL number of messages embedded across every
@@ -106,6 +106,9 @@ export const DEFAULT_DIAGNOSTIC_MESSAGE_CAP = 200;
  * per-conversation limit.
  */
 export const MAX_TOTAL_DIAGNOSTIC_MESSAGES = 1000;
+
+/** Max conversations a user can attach to a feedback bundle (UI-enforced). */
+export const MAX_ATTACH_CONVERSATIONS = 5;
 
 /**
  * Resolve which conversation ids a diagnostic bundle should embed content
@@ -321,8 +324,7 @@ export async function collectBundleFiles(opts: CollectOptions): Promise<CollectR
           `conversations was reached). Select fewer conversations, or export them ` +
           `separately, to include more history for this one.\n`
         : `Included the most recent ${capped.length} of ${total} messages ` +
-          `(capped to keep the export responsive). Re-export with the "all messages" ` +
-          `option to include the full history.\n`;
+          `(older messages were omitted to keep the export small).\n`;
     }
 
     const indexEntry = chat.conversationIndex[convId];

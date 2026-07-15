@@ -69,7 +69,7 @@ describe('capDiagnosticMessages (Bug 2: 导出诊断包冻死)', () => {
   });
 
   it('has a sane default cap', () => {
-    expect(DEFAULT_DIAGNOSTIC_MESSAGE_CAP).toBe(200);
+    expect(DEFAULT_DIAGNOSTIC_MESSAGE_CAP).toBe(100);
   });
 });
 
@@ -357,9 +357,9 @@ describe('collectBundleFiles — F1/F2/F3 review-flagged regressions', () => {
     expect(note3).toMatch(/budget/);
   });
 
-  it('F3: the global budget also binds under the default per-conversation cap when many conversations are selected', async () => {
-    // 6 conversations × 300 messages each; default per-conv cap is 200, so
-    // without a global budget the sum would be 6 × 200 = 1200 > 1000.
+  it('F3: the global budget binds across many conversations even when each per-conversation cap would fit', async () => {
+    // 6 conversations × 300 messages each, per-conv cap 300, so without a
+    // global budget the sum would be 6 × 300 = 1800 > 1000.
     // Ids are given distinct first-8-char prefixes (digit at index 5) so
     // each gets its own un-collided short id inside the bundle.
     const many = Array.from({ length: 6 }, (_, i) => makeConversation(`conv-${i}-mmmmmmmm`, 300));
@@ -374,7 +374,7 @@ describe('collectBundleFiles — F1/F2/F3 review-flagged regressions', () => {
     const { files } = await collectBundleFiles({
       includeRawText: true,
       conversationIds: many.map((c) => c.id),
-      // messageCap intentionally omitted — exercises DEFAULT_DIAGNOSTIC_MESSAGE_CAP.
+      messageCap: 300, // above the default; the global budget must still clamp the aggregate.
     });
 
     const totalLines = many.reduce((sum, c) => {

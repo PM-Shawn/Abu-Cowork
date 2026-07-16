@@ -162,8 +162,8 @@ export default function FileAttachment({ filePath }: FileAttachmentProps) {
       return;
     }
     try {
-      const { openPath } = await import('@tauri-apps/plugin-opener');
-      await openPath(effectivePath);
+      const { openWithDefaultApp } = await import('@/utils/openWithDefaultApp');
+      await openWithDefaultApp(effectivePath);
     } catch (err) {
       console.error('[FileAttachment] Failed to open with default app:', err);
       useToastStore.getState().addToast({

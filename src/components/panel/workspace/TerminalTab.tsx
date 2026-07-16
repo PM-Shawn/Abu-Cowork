@@ -98,6 +98,13 @@ export default function TerminalTab({ tabId }: { tabId: string }) {
           rows: term.rows,
           cwd: cwdRef.current,
         });
+        // If the tab was closed while pty_spawn was in flight, the cleanup's
+        // pty_kill already ran (before the session existed) — kill again now
+        // that the session is registered, so we don't orphan the shell.
+        if (disposed) {
+          void invoke('pty_kill', { id: tabId });
+          return;
+        }
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         terminalLogger.error('Failed to start terminal', { error: message });

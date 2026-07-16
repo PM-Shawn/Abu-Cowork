@@ -245,9 +245,19 @@ pub fn pty_resize(state: tauri::State<'_, PtyState>, id: String, cols: u16, rows
 /// removed it on EOF).
 #[tauri::command]
 pub fn pty_kill(state: tauri::State<'_, PtyState>, id: String) -> Result<(), String> {
-    let mut sessions = state.sessions.lock().map_err(|e| e.to_string())?;
-    if let Some(mut session) = sessions.remove(&id) {
+    // Take the session out of the map, then drop the lock BEFORE the
+    // (blocking) kill + reap so we never hold the mutex across a wait().
+    let removed = {
+        let mut sessions = state.sessions.lock().map_err(|e| e.to_string())?;
+        sessions.remove(&id)
+    };
+    if let Some(mut session) = removed {
         let _ = session.child.kill();
+        // Reap the killed child so it doesn't linger as a zombie until the
+        // app exits (SIGKILL'd children are reaped promptly). The reader
+        // thread's own reap path only runs when *it* removes the session on
+        // EOF, so on this explicit-close path we must reap here.
+        let _ = session.child.wait();
     }
     Ok(())
 }

@@ -2,6 +2,33 @@
 
 All notable changes to Abu are documented here. Format based on [Keep a Changelog](https://keepachangelog.com/).
 
+## v0.30.0 · 2026-07-16
+
+### Added
+
+- **会话全文搜索**：侧栏新增会话级全文搜索，基于 SQLite FTS5（trigram 分词，支持中文），可跨历史会话按内容检索，配套单字符即搜、整行点击、自然收起的搜索交互。Conversation-level full-text search over FTS5.
+- **AI 安全删除到废纸篓**：新增 `delete_file` 工具，AI 删除文件走系统废纸篓（可在访达/资源管理器恢复）而非永久删除，并加了删除礼仪提示与灾难性删除目标的硬拦截。Safe delete to trash instead of permanent removal.
+- **长会话 `/compact`**：手动 `/compact` 命令主动压缩上下文并保留最近一轮，配合持久化的 compact 边界标记与原生 O(1) 消息追加；分享时自动剔除边界标记保护隐私。Manual context compaction with persistent boundary markers.
+- **内置 Node.js 运行时**：打包内置 Node 22 LTS，npx 系 MCP 服务器无需用户预装 Node 即可运行（系统 Node 优先，内置兜底）。Bundled Node runtime so npx-based MCP servers run out of the box.
+- **图片生成收编进模型体系**：图片生成成为独立能力维度，拥有独立配置区、按厂商的适配层（火山 Seedream / 硅基流动 / 智谱等）与厂商选择器，不再靠手填端点。Image generation as a first-class, per-vendor capability.
+- **预览面板多格式升级**：缩放控件、应用内全屏（Esc 退出）、「在应用/浏览器中打开」统一、CodeMirror 编辑器跟随明暗主题、pptx 默认白底、mermaid 触控板捏合缩放、删除工作区文件夹后恢复自动重识别。Zoom, fullscreen, open-in-app, theme-aware editor, pinch-zoom.
+- **聊天消息列表虚拟化**：基于 react-virtuoso 虚拟化长会话消息列表，流式跟随到底与「回到最新」跳转，退役旧的 useAutoScroll。Virtualized chat list with stick-to-bottom + jump-to-latest.
+- **诊断反馈增强**：反馈打包支持多选会话、附加文字描述与截图，草稿跨页面持久化。Diagnostic feedback bundle with multi-select, description & screenshots.
+- **账户菜单 + 设置导航改版**：左下角三按钮收进头像 popover（内联切主题/语言、接真实检查更新流）；设置从 13 个 tab 重组为 5 个细线分簇。Account popover + regrouped settings navigation.
+
+### Fixed
+
+- **日志目录路径分隔符**：`appData` 路径拼接缺分隔符，日志曾被写进兄弟目录 `com.abu.app*logs`；现正确落在 app-data/logs。
+- **`_parse_error` 与日志预览解耦**：工具参数日志预览（2000 字）与回放的 `_parse_error` 截断（200 字）解耦；空的 Claude 工具 input 兜底为 `{}`，弱模型发送空/未转义参数不再崩。
+- **OpenAI 兼容适配层加固**：修复 tool-call、文档与超时相关的边界问题；`edit_file` 逐字替换 + 空路径边界校验；`@agent` 中止正确上报为 aborted，MCP tools-changed diff 修正。
+- **图片生成回退修复**（发版前 review）：恢复零配置文生图回退（未配置图片后端时走当前 OpenAI provider）；迁移的 API key 在瞬时解密失败时不再被永久孤立；补回默认 size；厂商经代理域名时尺寸策略仍生效。
+- **预览「在应用中打开」跨平台修复**：opener 白名单拒绝路径（Windows 非 $HOME 盘符、Linux /opt 等）时回退到 shell 打开，恢复旧行为。
+- **recall 计数 / FTS 搜索 / 计数一致性**：会话在内存时 recall 优先用准确的内存条数，编辑/重试截断后不再多报；FTS MATCH 路径对查询做 trim，前后空格不再影响结果；ghost 消息删除的 catalog 计数与落盘 +1 平衡。
+
+### English Summary
+
+v0.30.0 is a feature release. Highlights: conversation-level full-text search (FTS5), AI safe-delete to the system trash, a manual `/compact` command with persistent boundary markers, a bundled Node.js runtime so npx-based MCP servers work without a user-installed Node, image generation promoted to a first-class per-vendor capability, a multi-format preview upgrade (zoom / fullscreen / open-in-app / theme-aware editor), a virtualized chat list, a richer diagnostic feedback bundle, and an account-menu + settings-navigation redesign. It also folds in a pre-release code-review pass that restored the zero-config image path, fixed a migration that could orphan an image API key, restored cross-platform "open in app", and corrected conversation message-count reporting and FTS whitespace handling.
+
 ## v0.29.0 · 2026-07-12
 
 ### Added

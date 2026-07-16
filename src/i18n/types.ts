@@ -1607,11 +1607,18 @@ export interface TranslationDict {
     closeAllTabs: string;
     newTabPage: string;
     terminalTitle: string;
-    comingSoon: string;
-    browserComingSoonHint: string;
-    terminalComingSoonHint: string;
     terminalProcessExited: string;
     terminalStartFailed: string;
+    browser: {
+      back: string;
+      forward: string;
+      reload: string;
+      openExternal: string;
+      addressPlaceholder: string;
+      startPrompt: string;
+      framingHint: string;
+      dismissHint: string;
+    };
   };
 
   // Folder Selector

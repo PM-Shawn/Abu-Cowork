@@ -1476,11 +1476,18 @@ const enUS: TranslationDict = {
     closeAllTabs: 'Close all tabs',
     newTabPage: 'New Tab',
     terminalTitle: 'Terminal',
-    comingSoon: 'Coming soon',
-    browserComingSoonHint: 'Browser tabs are coming soon',
-    terminalComingSoonHint: 'Terminal tabs are coming soon',
     terminalProcessExited: '[process exited]',
     terminalStartFailed: 'Failed to start terminal: {error}',
+    browser: {
+      back: 'Back',
+      forward: 'Forward',
+      reload: 'Reload',
+      openExternal: 'Open in system browser',
+      addressPlaceholder: 'Enter a URL or search',
+      startPrompt: 'Enter a URL to start',
+      framingHint: 'Some sites refuse to embed — if blank, use ↗ to open in your system browser',
+      dismissHint: 'Dismiss hint',
+    },
   },
 
   folder: {

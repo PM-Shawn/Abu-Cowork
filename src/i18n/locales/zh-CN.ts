@@ -1477,11 +1477,18 @@ const zhCN: TranslationDict = {
     closeAllTabs: '关闭所有标签页',
     newTabPage: '新标签页',
     terminalTitle: '终端',
-    comingSoon: '即将推出',
-    browserComingSoonHint: '浏览器标签页即将推出',
-    terminalComingSoonHint: '终端标签页即将推出',
     terminalProcessExited: '[进程已退出]',
     terminalStartFailed: '终端启动失败：{error}',
+    browser: {
+      back: '后退',
+      forward: '前进',
+      reload: '刷新',
+      openExternal: '在系统浏览器中打开',
+      addressPlaceholder: '输入网址或搜索',
+      startPrompt: '输入网址开始浏览',
+      framingHint: '部分网站禁止内嵌，若空白请用 ↗ 在系统浏览器打开',
+      dismissHint: '关闭提示',
+    },
   },
 
   folder: {

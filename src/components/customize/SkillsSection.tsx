@@ -12,7 +12,7 @@ import SkillCategoryBlocksPanel from './SkillCategoryBlocksPanel';
 import SkillHistoryModal from './SkillHistoryModal';
 import SkillUploadModal from './SkillUploadModal';
 import { Toggle } from '@/components/ui/toggle';
-import { Trash2, FileText, Pencil, MoreHorizontal, Eye, Code, Info, MessageCircle, Search, Plus, X, Wand2, PenLine, Upload, Download, Clock } from 'lucide-react';
+import { Trash2, FileText, Pencil, MoreHorizontal, Eye, Code, Info, MessageCircle, Plus, Wand2, PenLine, Upload, Download, Clock, ChevronDown, ChevronRight, Folder } from 'lucide-react';
 import { remove } from '@tauri-apps/plugin-fs';
 import { save as saveDialog } from '@tauri-apps/plugin-dialog';
 import { writeFile } from '@tauri-apps/plugin-fs';
@@ -26,6 +26,7 @@ import { cn } from '@/lib/utils';
 import ToolCard from '@/components/toolbox/ToolCard';
 import ToolGrid from '@/components/toolbox/ToolGrid';
 import ToolDetailModal from '@/components/toolbox/ToolDetailModal';
+import ToolboxToolbar from '@/components/toolbox/ToolboxToolbar';
 
 // Build a set of system skill names from marketplace templates
 /**
@@ -61,6 +62,89 @@ function isSystemSkill(skill: Skill): boolean {
   return skill.filePath.includes('builtin-skills') || systemSkillNames.has(skill.name);
 }
 
+// ── Supporting-file tree (restored from the pre-modal list-panel version and
+// adapted to render inside the detail modal). ───────────────────────────────
+interface FileNode {
+  name: string;
+  path: string;
+  isDir: boolean;
+  children: FileNode[];
+}
+
+function buildFileTree(files: string[]): FileNode[] {
+  const root: FileNode[] = [];
+  for (const filePath of files) {
+    const parts = filePath.split('/');
+    let current = root;
+    let accPath = '';
+    for (let i = 0; i < parts.length; i++) {
+      const part = parts[i];
+      accPath = accPath ? `${accPath}/${part}` : part;
+      const isLast = i === parts.length - 1;
+      let existing = current.find((n) => n.name === part);
+      if (!existing) {
+        existing = { name: part, path: accPath, isDir: !isLast, children: [] };
+        current.push(existing);
+      }
+      current = existing.children;
+    }
+  }
+  const sortNodes = (nodes: FileNode[]) => {
+    nodes.sort((a, b) => {
+      if (a.isDir !== b.isDir) return a.isDir ? -1 : 1;
+      return a.name.localeCompare(b.name);
+    });
+    nodes.forEach((n) => { if (n.children.length) sortNodes(n.children); });
+  };
+  sortNodes(root);
+  return root;
+}
+
+/** Recursive file tree row — indent adapted for the modal (no list-panel base offset). */
+function FileTreeItem({
+  node, depth = 0, selectedFile, onFileClick,
+}: {
+  node: FileNode; depth?: number;
+  selectedFile?: string | null;
+  onFileClick?: (path: string) => void;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const ml = depth * 16;
+
+  if (node.isDir) {
+    return (
+      <div>
+        <div
+          className="flex items-center gap-2 py-1 px-2 rounded-md cursor-pointer hover:bg-[var(--abu-bg-active)]/60 text-[var(--abu-text-muted)] hover:text-[var(--abu-text-primary)] text-[13px] transition-colors"
+          style={{ marginLeft: ml }}
+          onClick={() => setExpanded(!expanded)}
+        >
+          {expanded ? <ChevronDown className="h-3 w-3 shrink-0" /> : <ChevronRight className="h-3 w-3 shrink-0" />}
+          <Folder className="h-3.5 w-3.5 shrink-0 text-[var(--abu-text-muted)]" />
+          <span className="truncate">{node.name}</span>
+        </div>
+        {expanded && node.children.map((child) => (
+          <FileTreeItem key={child.path} node={child} depth={depth + 1} selectedFile={selectedFile} onFileClick={onFileClick} />
+        ))}
+      </div>
+    );
+  }
+
+  const isActive = selectedFile === node.path;
+  return (
+    <div
+      className={`flex items-center gap-2 py-1 px-2 rounded-md cursor-pointer text-[13px] transition-colors ${
+        isActive ? 'bg-[var(--abu-bg-active)] text-[var(--abu-text-primary)]' : 'text-[var(--abu-text-muted)] hover:bg-[var(--abu-bg-active)]/60 hover:text-[var(--abu-text-primary)]'
+      }`}
+      style={{ marginLeft: ml }}
+      onClick={() => onFileClick?.(node.path)}
+    >
+      <FileText className="h-3.5 w-3.5 shrink-0" />
+      <span className="truncate">{node.name}</span>
+    </div>
+  );
+}
+
 interface SkillsSectionProps {
   manualCreateTrigger?: number;
   onAICreate?: () => void;
@@ -83,11 +167,15 @@ export default function SkillsSection({ manualCreateTrigger, onAICreate, onManua
   const [editorSkill, setEditorSkill] = useState<Skill | 'new' | null>(null);
   const [menuSkill, setMenuSkill] = useState<string | null>(null);
   const [historySkill, setHistorySkill] = useState<Skill | null>(null);
-  // Search & create UI state
-  const [showSearch, setShowSearch] = useState(false);
+  // Create-menu UI state (search UI state now lives in ToolboxToolbar)
   const [showCreateMenu, setShowCreateMenu] = useState(false);
   // Content view mode: preview (rendered) or source (raw)
   const [contentViewMode, setContentViewMode] = useState<'preview' | 'source'>('preview');
+  // Supporting-file browsing inside the detail modal. `activeFilePath` = 'SKILL.md'
+  // shows selected.content; any other path loads via skillLoader on demand.
+  const [modalFiles, setModalFiles] = useState<string[]>([]);
+  const [activeFilePath, setActiveFilePath] = useState<string>('SKILL.md');
+  const [activeFileContent, setActiveFileContent] = useState<string | null>(null);
   // Unified upload dialog (folder / .askill / .zip via click or drag-drop)
   const [showUploadModal, setShowUploadModal] = useState(false);
 
@@ -147,6 +235,29 @@ export default function SkillsSection({ manualCreateTrigger, onAICreate, onManua
   }, [filteredSkills]);
 
   const selected = installedSkills.find((s) => s.name === selectedSkill) ?? null;
+
+  // Load the open skill's supporting files; reset the viewer to SKILL.md.
+  useEffect(() => {
+    setActiveFilePath('SKILL.md');
+    setActiveFileContent(null);
+    if (!selectedSkill) { setModalFiles([]); return; }
+    let cancelled = false;
+    skillLoader.listSupportingFiles(selectedSkill)
+      .then((files) => { if (!cancelled) setModalFiles(files); })
+      .catch(() => { if (!cancelled) setModalFiles([]); });
+    return () => { cancelled = true; };
+  }, [selectedSkill]);
+
+  // Load a supporting file's content on demand (SKILL.md uses selected.content).
+  useEffect(() => {
+    if (!selectedSkill || activeFilePath === 'SKILL.md') { setActiveFileContent(null); return; }
+    let cancelled = false;
+    setActiveFileContent(null);
+    skillLoader.loadSupportingFile(selectedSkill, activeFilePath)
+      .then((content) => { if (!cancelled) setActiveFileContent(content ?? ''); })
+      .catch(() => { if (!cancelled) setActiveFileContent(''); });
+    return () => { cancelled = true; };
+  }, [selectedSkill, activeFilePath]);
 
   // Delete a user-installed skill. With the detail now a modal (not a
   // list panel), there's no natural "adjacent" item to select after
@@ -228,76 +339,46 @@ export default function SkillsSection({ manualCreateTrigger, onAICreate, onManua
   return (
     <div className="flex flex-col h-full overflow-hidden bg-[var(--abu-bg-base)]">
       {/* Toolbar: search + create */}
-      <div className="shrink-0 px-6 pt-4 pb-3 flex items-center justify-end gap-1">
-        {showSearch ? (
-          <div className="relative w-full max-w-xs">
-            <Search className="absolute left-2 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-[var(--abu-text-tertiary)]" />
-            <input
-              autoFocus
-              type="text"
-              placeholder={t.toolbox.searchPlaceholder}
-              value={toolboxSearchQuery}
-              onChange={(e) => setToolboxSearchQuery(e.target.value)}
-              onBlur={() => { if (!toolboxSearchQuery) setShowSearch(false); }}
-              onKeyDown={(e) => { if (e.key === 'Escape') { setToolboxSearchQuery(''); setShowSearch(false); } }}
-              className="w-full pl-7 pr-7 py-1 text-sm border border-[var(--abu-border)] rounded-md bg-[var(--abu-bg-base)] focus:outline-none focus:ring-1 focus:ring-[var(--abu-clay-ring)] text-[var(--abu-text-primary)]"
-            />
-            <button
-              onClick={() => { setToolboxSearchQuery(''); setShowSearch(false); }}
-              className="absolute right-2 top-1/2 -translate-y-1/2 text-[var(--abu-text-tertiary)] hover:text-[var(--abu-text-primary)]"
-            >
-              <X className="h-3.5 w-3.5" />
-            </button>
-          </div>
-        ) : (
-          <>
-            <button
-              onClick={() => setShowSearch(true)}
-              className="p-1 text-[var(--abu-text-muted)] hover:text-[var(--abu-text-primary)] transition-colors"
-            >
-              <Search className="h-3.5 w-3.5" />
-            </button>
-            <div className="relative">
-              <button
-                data-testid="skill-create-trigger"
-                onClick={(e) => { e.stopPropagation(); setShowCreateMenu(!showCreateMenu); }}
-                className="p-1 text-[var(--abu-text-muted)] hover:text-[var(--abu-text-primary)] transition-colors"
-              >
-                <Plus className="h-4 w-4" />
-              </button>
-              {showCreateMenu && (
-                <div data-testid="skill-create-menu" className="absolute z-50 top-full right-0 mt-1 w-44 bg-[var(--abu-bg-base)] rounded-lg shadow-lg border border-[var(--abu-border)] py-1">
-                  {onAICreate && (
-                    <button
-                      onClick={() => { setShowCreateMenu(false); onAICreate(); }}
-                      className="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-active)] transition-colors"
-                    >
-                      <Wand2 className="h-3.5 w-3.5 text-[var(--abu-clay)]" />
-                      <span>{t.toolbox.createWithAbu}</span>
-                    </button>
-                  )}
-                  {onManualCreate && (
-                    <button
-                      onClick={() => { setShowCreateMenu(false); onManualCreate(); }}
-                      className="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-active)] transition-colors"
-                    >
-                      <PenLine className="h-3.5 w-3.5 text-[var(--abu-text-muted)]" />
-                      <span>{t.toolbox.createManually}</span>
-                    </button>
-                  )}
-                  <button
-                    onClick={() => { setShowCreateMenu(false); setShowUploadModal(true); }}
-                    className="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-active)] transition-colors"
-                  >
-                    <Upload className="h-3.5 w-3.5 text-[var(--abu-text-muted)]" />
-                    <span>{t.toolbox.importEntry}</span>
-                  </button>
-                </div>
+      <ToolboxToolbar searchQuery={toolboxSearchQuery} onSearchChange={setToolboxSearchQuery}>
+        <div className="relative">
+          <button
+            data-testid="skill-create-trigger"
+            onClick={(e) => { e.stopPropagation(); setShowCreateMenu(!showCreateMenu); }}
+            className="p-1 text-[var(--abu-text-muted)] hover:text-[var(--abu-text-primary)] transition-colors"
+          >
+            <Plus className="h-4 w-4" />
+          </button>
+          {showCreateMenu && (
+            <div data-testid="skill-create-menu" className="absolute z-50 top-full right-0 mt-1 w-44 bg-[var(--abu-bg-base)] rounded-lg shadow-lg border border-[var(--abu-border)] py-1">
+              {onAICreate && (
+                <button
+                  onClick={() => { setShowCreateMenu(false); onAICreate(); }}
+                  className="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-active)] transition-colors"
+                >
+                  <Wand2 className="h-3.5 w-3.5 text-[var(--abu-clay)]" />
+                  <span>{t.toolbox.createWithAbu}</span>
+                </button>
               )}
+              {onManualCreate && (
+                <button
+                  onClick={() => { setShowCreateMenu(false); onManualCreate(); }}
+                  className="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-active)] transition-colors"
+                >
+                  <PenLine className="h-3.5 w-3.5 text-[var(--abu-text-muted)]" />
+                  <span>{t.toolbox.createManually}</span>
+                </button>
+              )}
+              <button
+                onClick={() => { setShowCreateMenu(false); setShowUploadModal(true); }}
+                className="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-active)] transition-colors"
+              >
+                <Upload className="h-3.5 w-3.5 text-[var(--abu-text-muted)]" />
+                <span>{t.toolbox.importEntry}</span>
+              </button>
             </div>
-          </>
-        )}
-      </div>
+          )}
+        </div>
+      </ToolboxToolbar>
 
       {/* Category blocks manager (Task #45 · reject-category undo) —
           hidden when the workspace has no blocks. Kept at the top
@@ -355,6 +436,7 @@ export default function SkillsSection({ manualCreateTrigger, onAICreate, onManua
       <ToolDetailModal
         open={!!selected}
         onClose={() => { setSelectedSkill(null); setMenuSkill(null); }}
+        disableEscape={!!historySkill}
         maxWidth="max-w-2xl"
         avatar={selected ? <FileText className="h-6 w-6 text-[var(--abu-text-muted)]" /> : undefined}
         title={selected?.name}
@@ -455,37 +537,63 @@ export default function SkillsSection({ manualCreateTrigger, onAICreate, onManua
               <p className="text-sm text-[var(--abu-text-primary)] leading-relaxed">{selected.description}</p>
             </div>
 
-            {/* TODO(P2): supporting file tree — dropped in the card-grid/modal
-                conversion (was list-panel drill-down via selectedFile state).
-                SKILL.md preview/source stays below as the V1 priority. */}
-
-            {/* Content area: SKILL.md with preview/source toggle */}
-            <div className="border border-[var(--abu-border)] rounded-lg overflow-hidden">
-              {/* Toggle bar */}
-              <div className="flex items-center justify-end gap-1.5 px-4 py-2.5 bg-[var(--abu-bg-base)] border-b border-[var(--abu-border)]">
-                <button
-                  onClick={() => setContentViewMode('preview')}
-                  className={`p-1.5 rounded transition-colors ${contentViewMode === 'preview' ? 'text-[var(--abu-text-primary)] bg-[var(--abu-bg-hover)]' : 'text-[var(--abu-text-muted)] hover:text-[var(--abu-text-primary)]'}`}
-                  title="Preview"
-                >
-                  <Eye className="h-4 w-4" />
-                </button>
-                <button
-                  onClick={() => setContentViewMode('source')}
-                  className={`p-1.5 rounded transition-colors ${contentViewMode === 'source' ? 'text-[var(--abu-text-primary)] bg-[var(--abu-bg-hover)]' : 'text-[var(--abu-text-muted)] hover:text-[var(--abu-text-primary)]'}`}
-                  title="Source"
-                >
-                  <Code className="h-4 w-4" />
-                </button>
-              </div>
-              <div className="px-4 py-4 bg-[var(--abu-bg-base)]">
-                {contentViewMode === 'preview' ? (
-                  <MarkdownRenderer content={selected.content} />
-                ) : (
-                  <pre className="text-xs text-[var(--abu-text-primary)] whitespace-pre-wrap break-words font-mono leading-relaxed">{selected.content}</pre>
-                )}
-              </div>
-            </div>
+            {/* Files: SKILL.md + supporting files, with an on-demand viewer */}
+            {(() => {
+              const isMd = activeFilePath.endsWith('.md');
+              const displayContent = activeFilePath === 'SKILL.md' ? selected.content : activeFileContent;
+              const fileTree = buildFileTree(modalFiles);
+              return (
+                <div className="border border-[var(--abu-border)] rounded-lg overflow-hidden">
+                  {/* File list — only when the skill ships supporting files */}
+                  {modalFiles.length > 0 && (
+                    <div className="max-h-40 overflow-y-auto overlay-scroll border-b border-[var(--abu-border)] p-1.5 space-y-0.5">
+                      <div
+                        className={`flex items-center gap-2 py-1 px-2 rounded-md cursor-pointer text-[13px] transition-colors ${
+                          activeFilePath === 'SKILL.md' ? 'bg-[var(--abu-bg-active)] text-[var(--abu-text-primary)]' : 'text-[var(--abu-text-muted)] hover:bg-[var(--abu-bg-active)]/60 hover:text-[var(--abu-text-primary)]'
+                        }`}
+                        onClick={() => setActiveFilePath('SKILL.md')}
+                      >
+                        <FileText className="h-3.5 w-3.5 shrink-0" />
+                        <span className="truncate">SKILL.md</span>
+                      </div>
+                      {fileTree.map((node) => (
+                        <FileTreeItem key={node.path} node={node} selectedFile={activeFilePath} onFileClick={setActiveFilePath} />
+                      ))}
+                    </div>
+                  )}
+                  {/* Viewer header: active filename + preview/source toggle */}
+                  <div className="flex items-center justify-between gap-2 px-4 py-2.5 bg-[var(--abu-bg-base)] border-b border-[var(--abu-border)]">
+                    <span className="text-xs font-medium text-[var(--abu-text-secondary)] truncate">{activeFilePath}</span>
+                    <div className="flex items-center gap-1.5 shrink-0">
+                      <button
+                        onClick={() => setContentViewMode('preview')}
+                        className={`p-1.5 rounded transition-colors ${contentViewMode === 'preview' ? 'text-[var(--abu-text-primary)] bg-[var(--abu-bg-hover)]' : 'text-[var(--abu-text-muted)] hover:text-[var(--abu-text-primary)]'}`}
+                        title="Preview"
+                      >
+                        <Eye className="h-4 w-4" />
+                      </button>
+                      <button
+                        onClick={() => setContentViewMode('source')}
+                        className={`p-1.5 rounded transition-colors ${contentViewMode === 'source' ? 'text-[var(--abu-text-primary)] bg-[var(--abu-bg-hover)]' : 'text-[var(--abu-text-muted)] hover:text-[var(--abu-text-primary)]'}`}
+                        title="Source"
+                      >
+                        <Code className="h-4 w-4" />
+                      </button>
+                    </div>
+                  </div>
+                  {/* Content */}
+                  <div className="px-4 py-4 bg-[var(--abu-bg-base)]">
+                    {displayContent === null ? (
+                      <div className="text-xs text-[var(--abu-text-muted)] py-6 text-center">…</div>
+                    ) : contentViewMode === 'preview' && isMd ? (
+                      <MarkdownRenderer content={displayContent} />
+                    ) : (
+                      <pre className="text-xs text-[var(--abu-text-primary)] whitespace-pre-wrap break-words font-mono leading-relaxed">{displayContent}</pre>
+                    )}
+                  </div>
+                </div>
+              );
+            })()}
           </div>
         )}
       </ToolDetailModal>

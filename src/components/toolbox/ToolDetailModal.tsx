@@ -22,6 +22,9 @@ export interface ToolDetailModalProps {
   children: ReactNode;
   /** Tailwind max-width class for the panel. */
   maxWidth?: string;
+  /** Suppress the Escape-to-close handler — e.g. while a nested modal (skill
+   *  history) is stacked on top and should own the Escape key. */
+  disableEscape?: boolean;
 }
 
 export default function ToolDetailModal({
@@ -34,14 +37,15 @@ export default function ToolDetailModal({
   footer,
   children,
   maxWidth = 'max-w-lg',
+  disableEscape = false,
 }: ToolDetailModalProps) {
-  // Escape to close
+  // Escape to close — suppressed when a nested modal owns Escape.
   useEffect(() => {
-    if (!open) return;
+    if (!open || disableEscape) return;
     const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [open, onClose]);
+  }, [open, disableEscape, onClose]);
 
   if (!open) return null;
 
@@ -55,7 +59,6 @@ export default function ToolDetailModal({
           'relative bg-[var(--abu-bg-base)] rounded-2xl shadow-2xl w-full max-h-[85vh] flex flex-col overflow-hidden border border-[var(--abu-border)]',
           maxWidth
         )}
-        onClick={(e) => e.stopPropagation()}
       >
         {/* Header: avatar + title/subtitle · actions + close */}
         <div className="shrink-0 flex items-start justify-between gap-3 px-6 pt-6 pb-4">

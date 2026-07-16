@@ -12,6 +12,51 @@ import { observeCompatEvent } from '../observability/compatEvents';
 
 const logger = createLogger('openai-compatible');
 
+// ── Hang-ceiling timeout helper (code-review fix #10) ──
+//
+// chat() arms this same pattern at three phases of a request that can each
+// hang unbounded if the server accepts the connection but never responds:
+// the initial connect/header wait, the max_tokens-retry connect/header wait,
+// and (non-streaming path) the body-download wait. All three previously
+// duplicated an identical `setTimeout(() => { <flag>=true; streamAbort.abort() },
+// STREAM_HANG_TIMEOUT_MS)` plus a catch that throws the same-shaped LLMError.
+// Consolidated here so the timeout semantics (retryable, retryAfterMs) live
+// in one place; only the per-phase message wording still varies by call site.
+
+/**
+ * Arm a hang-ceiling timer: aborts `streamAbort` after
+ * `STREAM_HANG_TIMEOUT_MS` and flips a flag the caller's catch block can
+ * check to distinguish "timed out" from any other abort/connection failure.
+ * Returns `timedOut()` (a function, since the flag flips asynchronously
+ * after `armHangTimer` returns) and `clear()` to cancel the timer once the
+ * awaited operation settles.
+ */
+function armHangTimer(streamAbort: AbortController): { timedOut: () => boolean; clear: () => void } {
+  let timedOut = false;
+  const timer = setTimeout(() => {
+    timedOut = true;
+    streamAbort.abort();
+  }, STREAM_HANG_TIMEOUT_MS);
+  return {
+    timedOut: () => timedOut,
+    clear: () => clearTimeout(timer),
+  };
+}
+
+/**
+ * Build the LLMError thrown when a hang-ceiling timer (see `armHangTimer`)
+ * fired before the awaited operation settled. `prefix`/`suffix` carry the
+ * per-site phase wording — e.g. `hangTimeoutError('连接超时', '未收到服务器响应头')`
+ * reproduces the connect-phase message exactly; `retryable`/`retryAfterMs`
+ * are identical across all three call sites.
+ */
+function hangTimeoutError(prefix: string, suffix: string): LLMError {
+  return new LLMError(`${prefix}：${STREAM_HANG_TIMEOUT_MS / 1000} 秒${suffix}`, 'network_error', {
+    retryable: true,
+    retryAfterMs: 2000,
+  });
+}
+
 /**
  * Normalise a provider's `usage` response object into Abu's TokenUsage
  * shape, including prompt-caching fields. Each vendor uses a different
@@ -390,11 +435,7 @@ export class OpenAICompatibleAdapter implements LLMAdapter {
     // Connect/header-phase timeout: the idle heartbeat only arms after the body
     // stream is obtained, so a server that accepts the connection but never
     // returns headers would hang here unbounded. Abort once the ceiling is hit.
-    let connectTimedOut = false;
-    const connectTimer = setTimeout(() => {
-      connectTimedOut = true;
-      streamAbort.abort();
-    }, STREAM_HANG_TIMEOUT_MS);
+    const connectHangTimer = armHangTimer(streamAbort);
     let response: Awaited<ReturnType<typeof fetchFn>>;
     try {
       response = await fetchFn(fullUrl, {
@@ -405,13 +446,13 @@ export class OpenAICompatibleAdapter implements LLMAdapter {
       });
     } catch (fetchErr) {
       // Connection-level failure (DNS, timeout, refused) — not an agent bug
-      if (connectTimedOut) {
-        throw new LLMError(`连接超时：${STREAM_HANG_TIMEOUT_MS / 1000} 秒未收到服务器响应头`, 'network_error', { retryable: true, retryAfterMs: 2000 });
+      if (connectHangTimer.timedOut()) {
+        throw hangTimeoutError('连接超时', '未收到服务器响应头');
       }
       const msg = fetchErr instanceof Error ? fetchErr.message : String(fetchErr);
       throw new LLMError(msg, 'network_error', { retryable: true, retryAfterMs: 2000 });
     } finally {
-      clearTimeout(connectTimer);
+      connectHangTimer.clear();
     }
 
     if (!response.ok) {
@@ -429,11 +470,7 @@ export class OpenAICompatibleAdapter implements LLMAdapter {
         // The first attempt's connect timer was already cleared, so arm a fresh
         // one — otherwise a server that stalls on this retry before returning
         // headers would wait unbounded (only a user abort could cancel it).
-        let retryConnectTimedOut = false;
-        const retryConnectTimer = setTimeout(() => {
-          retryConnectTimedOut = true;
-          streamAbort.abort();
-        }, STREAM_HANG_TIMEOUT_MS);
+        const retryConnectHangTimer = armHangTimer(streamAbort);
         try {
           response = await fetchFn(fullUrl, {
             method: 'POST',
@@ -442,14 +479,14 @@ export class OpenAICompatibleAdapter implements LLMAdapter {
             signal: effectiveSignal,
           });
         } catch (retryErr) {
-          if (retryConnectTimedOut) {
-            throw new LLMError(`连接超时：${STREAM_HANG_TIMEOUT_MS / 1000} 秒未收到服务器响应头`, 'network_error', { retryable: true, retryAfterMs: 2000 });
+          if (retryConnectHangTimer.timedOut()) {
+            throw hangTimeoutError('连接超时', '未收到服务器响应头');
           }
           throw retryErr instanceof LLMError
             ? retryErr
             : new LLMError(retryErr instanceof Error ? retryErr.message : String(retryErr), 'network_error', { retryable: true, retryAfterMs: 2000 });
         } finally {
-          clearTimeout(retryConnectTimer);
+          retryConnectHangTimer.clear();
         }
         if (!response.ok) {
           throw classifyError(response.status, await response.text());
@@ -468,21 +505,17 @@ export class OpenAICompatibleAdapter implements LLMAdapter {
       // and the streaming idle-heartbeat only arms for the reader path below — so a
       // server that returns headers then stalls mid-body would hang response.json()
       // unbounded. Arm a ceiling that aborts the request so response.json() rejects.
-      let bodyTimedOut = false;
-      const bodyTimer = setTimeout(() => {
-        bodyTimedOut = true;
-        streamAbort.abort();
-      }, STREAM_HANG_TIMEOUT_MS);
+      const bodyHangTimer = armHangTimer(streamAbort);
       let data: Record<string, unknown>;
       try {
         data = await response.json() as Record<string, unknown>;
       } catch (jsonErr) {
-        if (bodyTimedOut) {
-          throw new LLMError(`响应体读取超时：${STREAM_HANG_TIMEOUT_MS / 1000} 秒未完成`, 'network_error', { retryable: true, retryAfterMs: 2000 });
+        if (bodyHangTimer.timedOut()) {
+          throw hangTimeoutError('响应体读取超时', '未完成');
         }
         throw jsonErr;
       } finally {
-        clearTimeout(bodyTimer);
+        bodyHangTimer.clear();
       }
       const choices = data.choices as Array<Record<string, unknown>> | undefined;
       const choice = choices?.[0];

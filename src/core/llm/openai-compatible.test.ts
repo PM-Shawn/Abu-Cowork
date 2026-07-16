@@ -700,7 +700,15 @@ describe('OpenAICompatibleAdapter hang timeouts (abort on no progress)', () => {
     expect(settled).toBe(false);
 
     await vi.advanceTimersByTimeAsync(2_000);
-    await expect(chatPromise).rejects.toMatchObject({ code: 'network_error', retryable: true });
+    // code-review fix #10 regression: the connect-phase hang timer was
+    // consolidated into a shared armHangTimer/hangTimeoutError helper — lock
+    // down the exact message text and retryAfterMs it must still produce.
+    await expect(chatPromise).rejects.toMatchObject({
+      code: 'network_error',
+      retryable: true,
+      retryAfterMs: 2000,
+      message: '连接超时：180 秒未收到服务器响应头',
+    });
     await expect(chatPromise).rejects.toBeInstanceOf(LLMError);
   });
 
@@ -766,7 +774,14 @@ describe('OpenAICompatibleAdapter hang timeouts (abort on no progress)', () => {
     expect(settled).toBe(false);
 
     await vi.advanceTimersByTimeAsync(2_000);
-    await expect(chatPromise).rejects.toMatchObject({ code: 'network_error', retryable: true });
+    // code-review fix #10 regression: body-download hang timer now shares the
+    // same helper as the connect-phase timers but must keep its own message.
+    await expect(chatPromise).rejects.toMatchObject({
+      code: 'network_error',
+      retryable: true,
+      retryAfterMs: 2000,
+      message: '响应体读取超时：180 秒未完成',
+    });
   });
 
   it('max_tokens retry re-arms the connect timeout instead of hanging (B4)', async () => {
@@ -801,7 +816,14 @@ describe('OpenAICompatibleAdapter hang timeouts (abort on no progress)', () => {
     expect(settled).toBe(false);
 
     await vi.advanceTimersByTimeAsync(2_000);
-    await expect(chatPromise).rejects.toMatchObject({ code: 'network_error', retryable: true });
+    // code-review fix #10 regression: the retry-connect hang timer shares the
+    // same helper/message as the first-attempt connect timer.
+    await expect(chatPromise).rejects.toMatchObject({
+      code: 'network_error',
+      retryable: true,
+      retryAfterMs: 2000,
+      message: '连接超时：180 秒未收到服务器响应头',
+    });
     expect(call).toBe(2); // the retry actually fired
   });
 });

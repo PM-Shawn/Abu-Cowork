@@ -18,8 +18,8 @@
       {
         "label": "main",
         "title": "",
-        "width": 1440,
-        "height": 900,
+        "width": 1200,
+        "height": 800,
         "minWidth": 900,
         "minHeight": 600,
         "resizable": true,

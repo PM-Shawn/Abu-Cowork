@@ -199,7 +199,7 @@ export default function RightPanel() {
         // 8px gap all sides (matches TRAE); sits near the window top, its header
         // is flush at the card top. No h-full (flex stretch fills height minus margins).
         'bg-[var(--abu-bg-base)] flex overflow-hidden relative',
-        'mt-3 mb-2 mr-2 rounded-[var(--abu-radius-panel)] border border-[var(--abu-border)] shadow-[var(--abu-shadow-card)]',
+        'mt-2 mb-2 mr-2 rounded-[var(--abu-radius-panel)] border border-[var(--abu-border)] shadow-[var(--abu-shadow-card)]',
         // Sizing follows the ACTIVE tab: preview → flex-fill (chat owns a fixed width);
         // summary → fixed resizable details width. (Mount below still keys off showPreview
         // so the preview stays mounted/hidden across tab switches.)

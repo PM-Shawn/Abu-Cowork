@@ -585,6 +585,13 @@ function App() {
   // on the summary tab the chat flex-fills and the panel is a fixed details column.
   const previewSplit = viewMode === 'chat' && !!previewFilePath && activeRightTab === 'preview' && !rightPanelCollapsed;
   const previewChatWidth = resolveChatWidth(chatWidth, viewportWidth, !sidebarCollapsed);
+  // Whether the right panel actually sits BESIDE the chat (either tab) — mirrors
+  // RightPanel's own render gate. Drives the chat's right margin: a tight 4px
+  // gutter between the two cards, vs 8px to the window edge when chat is alone.
+  const rightPanelBeside =
+    viewMode === 'chat' &&
+    !rightPanelCollapsed &&
+    (((activeConv?.messages?.length ?? 0) > 0) || !!previewFilePath);
 
   return (
     <ErrorBoundary>
@@ -670,8 +677,10 @@ function App() {
         <main
           className={cn(
             'bg-[var(--abu-bg-base)]',
-            'mt-3 mb-2 ml-2 mr-2 rounded-[var(--abu-radius-panel)] border border-[var(--abu-border)] shadow-[var(--abu-shadow-card)] overflow-hidden',
+            'mt-2 mb-2 ml-2 rounded-[var(--abu-radius-panel)] border border-[var(--abu-border)] shadow-[var(--abu-shadow-card)] overflow-hidden',
             previewSplit ? 'shrink-0' : 'flex-1 min-w-0',
+            // Right panel beside chat (preview OR summary): tighter 4px gutter; otherwise 8px to the window edge.
+            rightPanelBeside ? 'mr-1' : 'mr-2',
           )}
           style={previewSplit ? { width: previewChatWidth } : undefined}
         >

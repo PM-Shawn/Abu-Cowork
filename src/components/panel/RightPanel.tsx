@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
 import { useSettingsStore } from '@/stores/settingsStore';
 import { usePreviewStore } from '@/stores/previewStore';
+import { getBaseName } from '@/utils/pathUtils';
+import RightPanelTabBar from './RightPanelTabBar';
 import { useActiveConversation } from '@/stores/chatStore';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { cn } from '@/lib/utils';
@@ -26,6 +28,9 @@ export default function RightPanel() {
   const setRightPanelCollapsed = useSettingsStore((s) => s.setRightPanelCollapsed);
   const viewMode = useSettingsStore((s) => s.viewMode);
   const previewFilePath = usePreviewStore((s) => s.previewFilePath);
+  const closePreview = usePreviewStore((s) => s.closePreview);
+  const activeRightTab = usePreviewStore((s) => s.activeRightTab);
+  const setActiveRightTab = usePreviewStore((s) => s.setActiveRightTab);
   const conversation = useActiveConversation();
   const prevHasMessagesRef = useRef(false);
   // Track whether auto-expand already fired for this conversation
@@ -62,7 +67,10 @@ export default function RightPanel() {
     if (upHandlerRef.current) document.removeEventListener('mouseup', upHandlerRef.current);
 
     const startX = e.clientX;
-    const isPreview = !!usePreviewStore.getState().previewFilePath;
+    // Drag resizes the CHAT column only when the preview is actually shown; on the
+    // summary tab the panel is a fixed-width details column, so drag resizes the PANEL.
+    const previewState = usePreviewStore.getState();
+    const isPreview = previewState.previewFilePath !== null && previewState.activeRightTab === 'preview';
     const sidebarOpen = !useSettingsStore.getState().sidebarCollapsed;
 
     setIsDragging(true);
@@ -159,6 +167,10 @@ export default function RightPanel() {
 
   // Reset drag width when preview mode changes
   const showPreview = !!previewFilePath;
+  // A preview TAB exists whenever a file is open; which tab is *shown* is activeRightTab.
+  // Guard against a stale 'preview' selection when no file is open.
+  const previewFileName = previewFilePath ? getBaseName(previewFilePath) : null;
+  const effectiveTab: 'summary' | 'preview' = previewFilePath ? activeRightTab : 'summary';
   useEffect(() => {
     setDragWidth(null);
   }, [showPreview]);
@@ -183,11 +195,18 @@ export default function RightPanel() {
   return (
     <div
       className={cn(
-        'bg-[var(--abu-bg-subtle)] h-full flex overflow-hidden relative',
-        showPreview ? 'flex-1 min-w-0' : 'shrink-0',
+        // Raised content card floating on the canvas — mirrors the center card.
+        // 8px gap all sides (matches TRAE); sits near the window top, its header
+        // is flush at the card top. No h-full (flex stretch fills height minus margins).
+        'bg-[var(--abu-bg-base)] flex overflow-hidden relative',
+        'mt-3 mb-2 mr-2 rounded-[var(--abu-radius-panel)] border border-[var(--abu-border)] shadow-[var(--abu-shadow-card)]',
+        // Sizing follows the ACTIVE tab: preview → flex-fill (chat owns a fixed width);
+        // summary → fixed resizable details width. (Mount below still keys off showPreview
+        // so the preview stays mounted/hidden across tab switches.)
+        effectiveTab === 'preview' ? 'flex-1 min-w-0' : 'shrink-0',
       )}
       style={
-        showPreview
+        effectiveTab === 'preview'
           ? { minWidth: PREVIEW_MIN_WIDTH }
           : { width: currentWidth, minWidth: currentWidth, maxWidth: currentWidth, transition: isDragging ? 'none' : 'width 200ms, min-width 200ms, max-width 200ms' }
       }
@@ -206,26 +225,36 @@ export default function RightPanel() {
         )}
       />
       {/* Panel content */}
-      <div className="flex-1 flex flex-col overflow-hidden border-l border-[var(--abu-border)]">
-      {showPreview ? (
-        // Preview mode - full panel is preview
-        <PreviewPanel />
-      ) : (
-        // Normal mode - show details sections
-        <>
-          {/* Scrollable content — pt-8 to clear overlay title bar area */}
-          <ScrollArea className="flex-1 min-h-0 pt-5">
+      <div className="flex-1 flex flex-col overflow-hidden">
+        {/* Tab bar — task summary (pinned) + preview tab when a file is open. */}
+        <RightPanelTabBar
+          activeTab={effectiveTab}
+          previewFileName={previewFileName}
+          onSelect={setActiveRightTab}
+          onClosePreview={closePreview}
+          onCollapse={() => setRightPanelCollapsed(true)}
+        />
+
+        {/* Task-summary content — kept mounted (hidden, not unmounted) when the preview
+            tab is active so its scroll position survives tab switches. */}
+        <div className={cn('flex-1 min-h-0 flex flex-col', effectiveTab !== 'summary' && 'hidden')}>
+          <ScrollArea className="flex-1 min-h-0">
             <div className="p-4 space-y-5">
-              {/* Progress - only show when has planned steps */}
               <TaskProgressPanel />
-              {/* Workspace with files inside */}
               <WorkspaceSection />
               <div className="border-t border-[var(--abu-border)]" />
               <ContextSection />
             </div>
           </ScrollArea>
-        </>
-      )}
+        </div>
+
+        {/* Preview content — mounted only while a file is open; hidden (state preserved)
+            when the summary tab is active. */}
+        {showPreview && (
+          <div className={cn('flex-1 min-h-0 flex flex-col', effectiveTab !== 'preview' && 'hidden')}>
+            <PreviewPanel />
+          </div>
+        )}
       </div>
     </div>
   );

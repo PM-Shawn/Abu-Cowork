@@ -17,6 +17,14 @@ interface PreviewState {
   // opens" behavior — otherwise clicking a file in the tree would collapse the
   // very sidebar that hosts the tree. Ephemeral (no persist).
   fileTreeMode: boolean;
+  // Which right-panel tab is active. 'summary' = the task-summary sections
+  // (progress/workspace/context); 'preview' = the file preview. previewFilePath
+  // only decides whether the preview TAB exists — this decides what's shown.
+  // Ephemeral UI state (no persist); resets to 'summary' on close.
+  activeRightTab: 'summary' | 'preview';
+  // Whether the preview is expanded to the app-fullscreen overlay. Lifted here
+  // (from PreviewPanel local state) so the tab bar's expand button can toggle it.
+  previewFullscreen: boolean;
   // Open file preview in right panel
   openPreview: (filePath: string) => void;
   // Close preview
@@ -28,6 +36,10 @@ interface PreviewState {
   refreshPreview: () => void;
   // Toggle the sidebar file-tree mode.
   setFileTreeMode: (on: boolean) => void;
+  // Select the active right-panel tab.
+  setActiveRightTab: (tab: 'summary' | 'preview') => void;
+  // Toggle/set the preview app-fullscreen overlay.
+  setPreviewFullscreen: (on: boolean) => void;
 }
 
 export const usePreviewStore = create<PreviewState>((set) => ({
@@ -35,17 +47,30 @@ export const usePreviewStore = create<PreviewState>((set) => ({
   chatWidth: null,
   reloadNonce: 0,
   fileTreeMode: false,
+  activeRightTab: 'summary',
+  previewFullscreen: false,
 
   openPreview: (filePath) => {
     // Switching to a different file already forces PreviewPanel's loadFile
     // effect to re-run (previewFilePath is a dep), so reloadNonce is left
     // untouched here. Re-opening the *same* path (no-op for React state)
     // relies on the caller invoking refreshPreview() explicitly.
-    set({ previewFilePath: filePath });
+    // Opening a file activates the preview tab and drops any lingering fullscreen
+    // from a previously-previewed file (the new file should open in the normal column).
+    set({ previewFilePath: filePath, activeRightTab: 'preview', previewFullscreen: false });
   },
 
   closePreview: () => {
-    set({ previewFilePath: null, chatWidth: null });
+    // Closing the preview tab falls back to the always-present summary tab.
+    set({ previewFilePath: null, chatWidth: null, activeRightTab: 'summary', previewFullscreen: false });
+  },
+
+  setActiveRightTab: (tab) => {
+    set({ activeRightTab: tab });
+  },
+
+  setPreviewFullscreen: (on) => {
+    set({ previewFullscreen: on });
   },
 
   setChatWidth: (width) => {

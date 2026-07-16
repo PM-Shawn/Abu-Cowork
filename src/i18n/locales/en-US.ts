@@ -111,6 +111,7 @@ const enUS: TranslationDict = {
     toolbox: 'Toolbox',
     recents: 'Recents',
     searchPlaceholder: 'Search chats...',
+    noSearchResults: 'No matching conversations',
     noSessionsYet: 'No sessions yet',
     hideSidebar: 'Hide sidebar',
     showSidebar: 'Show sidebar',
@@ -1394,6 +1395,7 @@ const enUS: TranslationDict = {
     details: 'Details',
     hidePanel: 'Hide panel',
     showPanel: 'Show panel',
+    taskSummary: 'Task summary',
     // TaskProgressPanel
     progress: 'Progress',
     progressEmptyHint: 'Task progress will appear here',

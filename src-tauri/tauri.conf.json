@@ -18,14 +18,14 @@
       {
         "label": "main",
         "title": "",
-        "width": 1200,
-        "height": 800,
+        "width": 1440,
+        "height": 900,
         "minWidth": 900,
         "minHeight": 600,
         "resizable": true,
         "center": true,
         "titleBarStyle": "Overlay",
-        "trafficLightPosition": { "x": 20, "y": 18 },
+        "trafficLightPosition": { "x": 20, "y": 31 },
         "acceptFirstMouse": true
       }
     ],

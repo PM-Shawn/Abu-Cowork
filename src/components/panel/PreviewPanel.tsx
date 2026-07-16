@@ -14,10 +14,11 @@ import { ScrollArea } from '@/components/ui/scroll-area';
 import MarkdownRenderer from '@/components/chat/MarkdownRenderer';
 import CodeMirrorEditor from './CodeMirrorEditor';
 import { VersionHistoryMenu } from './VersionHistoryMenu';
-import { Loader2, X, FolderOpen, Code, Eye, SquareArrowOutUpRight, History, FileCode, FileText, FileImage, FileSpreadsheet, FileType, File, Maximize2, Minimize2 } from 'lucide-react';
+import { Loader2, FolderOpen, Code, Eye, SquareArrowOutUpRight, History, FileCode, FileText, FileImage, FileSpreadsheet, FileType, File, Maximize2, Minimize2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { DocSelectionLayer } from '@/features/reference/DocSelectionLayer';
 import { cn } from '@/lib/utils';
+import { isMacOS } from '@/utils/platform';
 import { getToolbarButtons } from './previewToolbarConfig';
 import { openWithDefaultApp } from '@/utils/openWithDefaultApp';
 
@@ -87,7 +88,7 @@ function LazyFallback() {
 }
 
 export default function PreviewPanel() {
-  const { previewFilePath, closePreview, reloadNonce } = usePreviewStore();
+  const { previewFilePath, reloadNonce } = usePreviewStore();
   usePreviewFileWatch(previewFilePath);
   const { t } = useI18n();
   const [content, setContent] = useState<string | null>(null);
@@ -106,7 +107,9 @@ export default function PreviewPanel() {
   const versionHistoryRef = useRef<HTMLDivElement>(null);
   // App-fullscreen toggle (Task 6) — expands the panel to a fixed overlay
   // covering the whole window instead of just its column in RightPanel.
-  const [isFullscreen, setIsFullscreen] = useState(false);
+  // Fullscreen state lives in previewStore so the right-panel tab bar can toggle it.
+  const isFullscreen = usePreviewStore((s) => s.previewFullscreen);
+  const setPreviewFullscreen = usePreviewStore((s) => s.setPreviewFullscreen);
 
   // Editable buffer for code/text/html/markdown (P2). `draft` is what
   // CodeMirror shows and edits; it's debounce-autosaved to disk below.
@@ -302,10 +305,10 @@ export default function PreviewPanel() {
   // Esc exits app-fullscreen — only listen while fullscreen is active.
   useEffect(() => {
     if (!isFullscreen) return;
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setIsFullscreen(false); };
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setPreviewFullscreen(false); };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [isFullscreen]);
+  }, [isFullscreen, setPreviewFullscreen]);
 
   // Debounced autosave: write the editable buffer to disk 1s after the user
   // stops typing. `selfEchoRef` is set right before the write so the fs-watch
@@ -433,8 +436,13 @@ export default function PreviewPanel() {
       'flex flex-col',
       isFullscreen ? 'fixed inset-0 z-50 bg-[var(--abu-bg-base)]' : 'h-full',
     )}>
-      {/* Header — mt-7 to clear the overlay title bar drag region */}
-      <div className="shrink-0 px-3 py-2.5 mt-7 border-b border-[var(--abu-bg-pressed)] flex items-center gap-2">
+      {/* Header — flush at the card top (card's own top margin clears the title bar).
+          In fullscreen the overlay is inset-0, so the header collides with the macOS
+          traffic lights — pad it left to clear them. */}
+      <div className={cn(
+        'shrink-0 px-3 py-2.5 border-b border-[var(--abu-bg-pressed)] flex items-center gap-2',
+        isFullscreen && isMacOS() && 'pl-20',
+      )}>
         <Icon className="w-4 h-4 text-[var(--abu-text-tertiary)] shrink-0" />
         <span className="text-[13px] font-medium text-[var(--abu-text-primary)] truncate flex-1">
           {fileName}
@@ -488,26 +496,20 @@ export default function PreviewPanel() {
             <SquareArrowOutUpRight className="h-3.5 w-3.5" strokeWidth={1.5} />
           </Button>
         )}
+        {/* Fullscreen stays here (not in the tab bar): it's gated per renderer type and
+            must remain clickable inside the fullscreen overlay it toggles. Close (×) and
+            panel-collapse live in the tab bar. */}
         {toolbarButtons.fullscreen && (
           <Button
             variant="ghost"
             size="icon"
-            onClick={() => setIsFullscreen((v) => !v)}
+            onClick={() => setPreviewFullscreen(!isFullscreen)}
             className="h-6 w-6 text-[var(--abu-text-tertiary)] hover:text-[var(--abu-clay)]"
             title={isFullscreen ? t.panel.exitFullscreen : t.panel.fullscreen}
           >
             {isFullscreen ? <Minimize2 className="h-3.5 w-3.5" strokeWidth={1.5} /> : <Maximize2 className="h-3.5 w-3.5" strokeWidth={1.5} />}
           </Button>
         )}
-        <Button
-          variant="ghost"
-          size="icon"
-          onClick={closePreview}
-          className="h-6 w-6 text-[var(--abu-text-tertiary)] hover:text-[var(--abu-text-primary)]"
-          title={t.panel.closePreview}
-        >
-          <X className="h-3.5 w-3.5" strokeWidth={1.5} />
-        </Button>
       </div>
 
       {/* Content */}

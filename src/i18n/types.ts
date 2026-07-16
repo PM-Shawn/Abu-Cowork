@@ -138,6 +138,7 @@ export interface TranslationDict {
     toolbox: string;
     recents: string;
     searchPlaceholder: string;
+    noSearchResults: string;
     noSessionsYet: string;
     hideSidebar: string;
     showSidebar: string;
@@ -1524,6 +1525,7 @@ export interface TranslationDict {
     details: string;
     hidePanel: string;
     showPanel: string;
+    taskSummary: string;
     // TaskProgressPanel
     progress: string;
     progressEmptyHint: string;

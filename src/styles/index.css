@@ -198,8 +198,9 @@
   /* === Abu Design Tokens (aligned with Claude Desktop) === */
 
   /* Background hierarchy (warm neutral) */
-  --abu-bg-base:    #faf9f5;   /* main content area */
-  --abu-bg-subtle:  #f8f8f4;   /* sidebar, secondary surfaces */
+  --abu-bg-canvas:  #f2f0e9;   /* recessed "desk" — root bg, panel gaps, sidebar */
+  --abu-bg-base:    #fdfcf9;   /* raised content surface (chat + preview cards) */
+  --abu-bg-subtle:  #f8f8f4;   /* secondary surfaces */
   --abu-bg-muted:   #f5f3ee;   /* cards, input fields */
   --abu-bg-hover:   #e8e5de;   /* hover state */
   --abu-bg-active:  #f0eee6;   /* selected / active state */
@@ -216,6 +217,10 @@
   --abu-border:        #e8e4dd;
   --abu-border-hover:  #d0cdc6;
   --abu-border-subtle: rgba(112, 107, 87, 0.15);
+
+  /* Elevation — card-on-canvas panels */
+  --abu-radius-panel: 1rem;  /* 16px — panel cards (matches TRAE --solo-panel-border-radius) */
+  --abu-shadow-card:  0 1px 3px rgba(60, 56, 40, 0.04), 0 1px 2px rgba(60, 56, 40, 0.06);
 
   /* Brand / Accent — Clay */
   --abu-clay:       #d97757;
@@ -284,7 +289,8 @@
 
 .dark {
   /* === Abu Design Tokens — Dark overrides === */
-  --abu-bg-base:    #1a1917;
+  --abu-bg-canvas:  #121110;   /* recessed desk (darkest) */
+  --abu-bg-base:    #1f1d1b;   /* raised content surface (lighter = elevated) */
   --abu-bg-subtle:  #161513;
   --abu-bg-muted:   #211f1c;
   --abu-bg-hover:   #2c2a26;
@@ -300,6 +306,9 @@
   --abu-border:        #302e2b;
   --abu-border-hover:  #403d39;
   --abu-border-subtle: rgba(255, 250, 240, 0.08);
+
+  /* Elevation — dark: shadow deeper, --abu-radius-panel inherited from :root */
+  --abu-shadow-card:  0 1px 3px rgba(0, 0, 0, 0.4);
 
   --placeholder-foreground: #666666;
 

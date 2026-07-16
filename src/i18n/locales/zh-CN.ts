@@ -111,6 +111,7 @@ const zhCN: TranslationDict = {
     toolbox: '工具箱',
     recents: '最近',
     searchPlaceholder: '搜索对话...',
+    noSearchResults: '没有匹配的对话',
     noSessionsYet: '暂无会话',
     hideSidebar: '隐藏侧栏',
     showSidebar: '显示侧栏',
@@ -1395,6 +1396,7 @@ const zhCN: TranslationDict = {
     details: '详情',
     hidePanel: '隐藏面板',
     showPanel: '显示面板',
+    taskSummary: '任务摘要',
     // TaskProgressPanel
     progress: '进度',
     progressEmptyHint: '任务执行进度将显示在这里',

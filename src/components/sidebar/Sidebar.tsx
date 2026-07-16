@@ -7,7 +7,7 @@ import { useInboxStore } from '@/stores/inboxStore';
 import { useI18n } from '@/i18n';
 import { useLabsFlag } from '@/core/labs/resolve';
 import { LABS_TODOS_INBOX } from '@/core/labs/registry';
-import { Plus, Workflow, Wrench, Trash2, Download, Pencil, Undo2, FolderInput, FolderClosed, ChevronRight, Minus, Search, X, CheckSquare, Inbox, ListTree, ArrowLeft } from 'lucide-react';
+import { Plus, Workflow, Wrench, Trash2, Download, Pencil, Undo2, FolderInput, FolderClosed, ChevronRight, Minus, CheckSquare, Inbox, ListTree, ArrowLeft } from 'lucide-react';
 import GuideModal from '@/components/common/GuideModal';
 import ProfileEditModal from '@/components/common/ProfileEditModal';
 import AccountMenu from '@/components/sidebar/AccountMenu';
@@ -110,9 +110,6 @@ export default function Sidebar() {
   // right panel.
   const showFileTree = usePreviewStore((s) => s.fileTreeMode);
   const setShowFileTree = usePreviewStore((s) => s.setFileTreeMode);
-  const [searchQuery, setSearchQuery] = useState('');
-  const [searchOpen, setSearchOpen] = useState(false);
-  const searchInputRef = useRef<HTMLInputElement>(null);
 
   // Undo delete state
   const [pendingDelete, setPendingDelete] = useState<{ id: string; data: string } | null>(null);
@@ -199,7 +196,6 @@ export default function Sidebar() {
   // Use conversationIndex (lightweight metadata) instead of full conversations for listing
   const sortedConvs = Object.values(conversationIndex)
     .filter((c) => !c.scheduledTaskId && !c.triggerId && !c.projectId)
-    .filter((c) => !searchQuery || c.title.toLowerCase().includes(searchQuery.toLowerCase()))
     .sort((a, b) => b.createdAt - a.createdAt);
 
   const handleDeleteConversation = async (e: React.MouseEvent, convId: string) => {
@@ -262,11 +258,12 @@ export default function Sidebar() {
   };
 
   return (
-    <div className="flex flex-col h-full w-[260px] bg-[var(--abu-bg-subtle)] border-r border-[var(--abu-border)]">
-      {/* Drag region — covers the title bar area above sidebar content */}
+    <div className="flex flex-col h-full w-[260px] bg-[var(--abu-bg-canvas)]">
+      {/* Drag region — covers the title bar area above sidebar content. Taller than the
+          toolbar row so 新建任务 sits comfortably below the toggle/search icons. */}
       <div
         data-tauri-drag-region
-        className={isMacOS() ? 'h-11 shrink-0' : 'h-8 shrink-0'}
+        className={isMacOS() ? 'h-14 shrink-0' : 'h-8 shrink-0'}
       />
       {/* Top Navigation */}
       <nav className="px-4 pb-2 space-y-0.5" aria-label="Main navigation">
@@ -382,53 +379,10 @@ export default function Sidebar() {
                 >
                   <FolderInput className="h-3.5 w-3.5" strokeWidth={2} />
                 </button>
-                <button
-                  onClick={() => {
-                    const next = !searchOpen;
-                    setSearchOpen(next);
-                    if (!next) setSearchQuery('');
-                    else setTimeout(() => searchInputRef.current?.focus(), 0);
-                  }}
-                  className="p-1 rounded hover:bg-[var(--abu-bg-hover)] text-[var(--abu-text-muted)] hover:text-[var(--abu-text-primary)]"
-                  title={t.sidebar.searchPlaceholder}
-                >
-                  <Search className="h-3.5 w-3.5" strokeWidth={2} />
-                </button>
               </div>
             )}
           </div>
         </div>
-
-        {/* Search Box */}
-        {!recentsCollapsed && searchOpen && (
-          <div className="px-4 pt-1 pb-1">
-            <div className="relative">
-              <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-[var(--abu-text-muted)]" />
-              <input
-                ref={searchInputRef}
-                type="text"
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === 'Escape') {
-                    setSearchQuery('');
-                    setSearchOpen(false);
-                  }
-                }}
-                placeholder={t.sidebar.searchPlaceholder}
-                className="w-full h-7 pl-8 pr-7 rounded-md text-xs bg-[var(--abu-bg-muted)] border border-[var(--abu-border-subtle)] focus:border-[var(--abu-clay-40)] focus:outline-none text-[var(--abu-text-primary)] placeholder:text-[var(--abu-text-muted)]"
-              />
-              {searchQuery && (
-                <button
-                  onClick={() => setSearchQuery('')}
-                  className="absolute right-2 top-1/2 -translate-y-1/2 text-[var(--abu-text-muted)] hover:text-[var(--abu-text-primary)]"
-                >
-                  <X className="h-3 w-3" />
-                </button>
-              )}
-            </div>
-          </div>
-        )}
 
         {/* Conversation List */}
         {!recentsCollapsed && (

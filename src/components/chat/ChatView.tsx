@@ -28,6 +28,9 @@ import IMInfoBar from './IMInfoBar';
 import SourceInfoBar from './SourceInfoBar';
 import ComputerUseStatusBar from './ComputerUseStatusBar';
 import ConvIdBadge from './ConvIdBadge';
+import { cn } from '@/lib/utils';
+import { isMacOS } from '@/utils/platform';
+import { Input } from '@/components/ui/input';
 import UsageChip from './UsageChip';
 
 /**
@@ -67,6 +70,10 @@ function groupMessagesByLoop(messages: Message[]): Message[][] {
 export default function ChatView() {
   const activeConvId = useChatStore((s) => s.activeConversationId);
   const activeConv = useActiveConversation();
+  const sidebarCollapsed = useSettingsStore((s) => s.sidebarCollapsed);
+  const renameConversation = useChatStore((s) => s.renameConversation);
+  const [isRenamingTitle, setIsRenamingTitle] = useState(false);
+  const [titleDraft, setTitleDraft] = useState('');
   const createConversation = useChatStore((s) => s.createConversation);
   // Subscribe to messages count so ChatView re-renders when background processes
   // (IM agentLoop) add messages — even if the conversation object reference is stale
@@ -388,6 +395,41 @@ export default function ChatView() {
 
   return (
     <div className="flex flex-col h-full min-h-0 min-w-0 bg-[var(--abu-bg-base)]">
+      {/* Conversation title header — flush at card top (TRAE-style header row).
+          Extra left padding clears the traffic lights when the sidebar is collapsed on macOS. */}
+      <div className={cn(
+        'shrink-0 flex items-center h-11 px-4',
+        // When the sidebar is collapsed the title-bar toolbar (sidebar toggle + search +
+        // new task) floats over the top-left of this card — indent the title to clear them.
+        sidebarCollapsed && isMacOS() && 'pl-48',
+      )}>
+        {isRenamingTitle ? (
+          <Input
+            autoFocus
+            value={titleDraft}
+            onChange={(e) => setTitleDraft(e.target.value)}
+            onBlur={() => {
+              const next = titleDraft.trim();
+              if (next && next !== activeConv.title) renameConversation(activeConv.id, next);
+              setIsRenamingTitle(false);
+            }}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') e.currentTarget.blur();
+              else if (e.key === 'Escape') { setTitleDraft(activeConv.title); setIsRenamingTitle(false); }
+            }}
+            className="h-7 max-w-md text-[13px] font-medium"
+          />
+        ) : (
+          <span
+            className="text-[13px] font-medium text-[var(--abu-text-primary)] truncate cursor-default"
+            onDoubleClick={() => { setTitleDraft(activeConv.title); setIsRenamingTitle(true); }}
+            title={activeConv.title}
+          >
+            {activeConv.title}
+          </span>
+        )}
+      </div>
+
       {/* Command Confirmation Dialog — only show if it belongs to this conversation */}
       {commandConfirmRequest && commandConfirmRequest.conversationId === activeConvId && (
         <CommandConfirmDialog
@@ -434,7 +476,7 @@ export default function ChatView() {
       <ComputerUseStatusBar onStop={() => useChatStore.getState().cancelStreaming(activeConv.id)} />
 
       {/* Messages Area */}
-      <div className="relative flex-1 min-h-0 overflow-y-auto" ref={containerRef}>
+      <div className="relative flex-1 min-h-0 overflow-y-auto overlay-scroll" ref={containerRef}>
         <div className="w-full max-w-4xl mx-auto px-6 md:px-10 pt-5 pb-16 overflow-hidden">
           <div className="space-y-5">
             {messageGroups.map((group, idx) =>

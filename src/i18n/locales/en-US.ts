@@ -559,6 +559,12 @@ const enUS: TranslationDict = {
     languageDescription: 'Select display language',
     followSystem: 'Follow System',
     // Image Generation — independent backend list (design doc §3.1, "C-a")
+    imageGenVendor: 'Vendor',
+    imageGenVendorAuto: 'Auto-detect (default)',
+    imageGenVendorOpenAI: 'OpenAI (DALL·E)',
+    imageGenVendorVolcengine: 'Volcengine (Seedream)',
+    imageGenVendorSiliconFlow: 'SiliconFlow',
+    imageGenVendorZhipu: 'Zhipu (CogView)',
     imageGenApiKey: 'API Key',
     imageGenApiKeyPlaceholder: "Enter this backend's API key",
     imageGenBaseUrl: 'API Base URL',

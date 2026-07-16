@@ -645,6 +645,12 @@ export interface TranslationDict {
     languageDescription: string;
     followSystem: string;
     // Image Generation — independent backend list (design doc §3.1, "C-a")
+    imageGenVendor: string;
+    imageGenVendorAuto: string;
+    imageGenVendorOpenAI: string;
+    imageGenVendorVolcengine: string;
+    imageGenVendorSiliconFlow: string;
+    imageGenVendorZhipu: string;
     imageGenApiKey: string;
     imageGenApiKeyPlaceholder: string;
     imageGenBaseUrl: string;

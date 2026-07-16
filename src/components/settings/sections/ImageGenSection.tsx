@@ -6,15 +6,18 @@ import { Eye, EyeOff, Pencil, Trash2, Star, X } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import { Select, type SelectOption } from '@/components/ui/select';
 import ConfirmDialog from '@/components/common/ConfirmDialog';
-import type { ImageGenBackend } from '@/types/provider';
+import type { ImageGenBackend, ImageGenVendor } from '@/types/provider';
 
 type BackendDraft = Omit<ImageGenBackend, 'id'>;
 
 function emptyDraft(): BackendDraft {
-  // Vendor selection was removed from the UI (P2 — every backend is treated
-  // as a custom OpenAI-compatible endpoint); the field itself stays on the
-  // type/data for a future P3 that infers it from baseUrl.
+  // 'custom' here means "auto-detect from baseUrl" (see vendorResolve.ts) —
+  // the default until the user explicitly picks a real vendor below. This
+  // is NOT the same "always custom, no picker" default from P2: the picker
+  // came back in P3 (finding F5) so users on a proxy/gateway domain that
+  // doesn't match the baseUrl-host heuristics can force the right mapper.
   return { name: '', vendor: 'custom', baseUrl: '', apiKey: '', model: '' };
 }
 
@@ -26,9 +29,12 @@ function isDraftValid(draft: BackendDraft): boolean {
   return draft.name.trim().length > 0 && draft.baseUrl.trim().length > 0 && draft.model.trim().length > 0;
 }
 
-/** Add/edit form fields for a single backend (no vendor picker — P2 removed
- *  it, see emptyDraft). Uncontrolled from the outside beyond `draft`/`onChange`
- *  — the parent owns save/cancel. */
+/** Add/edit form fields for a single backend, including the vendor picker
+ *  (F5 — lets a user on a corporate proxy/gateway domain that doesn't match
+ *  the baseUrl-host heuristics in `vendorResolve.ts` force the right
+ *  request/response mapper instead of silently falling back to 'custom').
+ *  Uncontrolled from the outside beyond `draft`/`onChange` — the parent owns
+ *  save/cancel. */
 function BackendForm({
   draft,
   onChange,
@@ -39,6 +45,14 @@ function BackendForm({
   const { t } = useI18n();
   const [showKey, setShowKey] = useState(false);
 
+  const vendorOptions: SelectOption[] = [
+    { value: 'custom', label: t.settings.imageGenVendorAuto },
+    { value: 'openai', label: t.settings.imageGenVendorOpenAI },
+    { value: 'volcengine', label: t.settings.imageGenVendorVolcengine },
+    { value: 'siliconflow', label: t.settings.imageGenVendorSiliconFlow },
+    { value: 'zhipu', label: t.settings.imageGenVendorZhipu },
+  ];
+
   return (
     <div className="space-y-3">
       <div className="space-y-1">
@@ -47,6 +61,14 @@ function BackendForm({
           value={draft.name}
           onChange={(e) => onChange({ name: e.target.value })}
           placeholder={t.settings.imageGenBackendNamePlaceholder}
+        />
+      </div>
+      <div className="space-y-1">
+        <label className="text-xs font-medium text-[var(--abu-text-primary)]">{t.settings.imageGenVendor}</label>
+        <Select
+          value={draft.vendor}
+          options={vendorOptions}
+          onChange={(v) => onChange({ vendor: v as ImageGenVendor })}
         />
       </div>
       <div className="space-y-1">

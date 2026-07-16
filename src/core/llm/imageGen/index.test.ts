@@ -20,9 +20,9 @@ describe('buildImageRequest', () => {
       expect(body.size).toBe('1024x1024');
     });
 
-    it('omits size entirely when the caller does not pass one', () => {
+    it('defaults size to 1024x1024 when the caller does not pass one (F4 regression: custom/OpenAI-shape endpoints 400 without a size)', () => {
       const body = buildImageRequest('openai', { model: 'dall-e-3', prompt: 'x' });
-      expect(body).not.toHaveProperty('size');
+      expect(body.size).toBe('1024x1024');
     });
   });
 
@@ -69,6 +69,11 @@ describe('buildImageRequest', () => {
     it('falls back to the default OpenAI-shape builder', () => {
       const body = buildImageRequest('custom', { model: 'some-gateway-model', prompt: 'x' });
       expect(body).toMatchObject({ model: 'some-gateway-model', prompt: 'x', n: 1, response_format: 'b64_json' });
+    });
+
+    it('defaults size to 1024x1024 when the caller does not pass one (F4 regression)', () => {
+      const body = buildImageRequest('custom', { model: 'some-gateway-model', prompt: 'x' });
+      expect(body.size).toBe('1024x1024');
     });
   });
 });

@@ -173,14 +173,52 @@ describe('generateImageTool', () => {
     expect(genCall).toBeDefined();
   });
 
-  it('returns a guidance error string (not empty/silent) when no image-gen backend is configured', async () => {
-    useSettingsStore.setState({ imageGeneration: { backends: [], defaultId: undefined } });
+  it('returns a guidance error string (not empty/silent) when no image-gen backend is configured and no OpenAI-compatible provider is active', async () => {
+    useSettingsStore.setState({
+      imageGeneration: { backends: [], defaultId: undefined },
+      providers: [],
+      activeModel: { providerId: 'nonexistent', modelId: 'nonexistent' },
+    });
 
     const result = await generateImageTool.execute({ prompt: 'test' });
 
     expect(typeof result).toBe('string');
     expect(result as string).not.toBe('');
     expect(mockFetch).not.toHaveBeenCalled();
+  });
+
+  it('falls back to the active OpenAI-compatible provider (DALL-E 3, api.openai.com) when no image-gen backend is configured (F1 regression)', async () => {
+    // Regression: the refactor to independent imageGeneration.backends
+    // hard-required an explicit backend and dropped the pre-refactor
+    // zero-config fallback (v0.29.0 behavior) — a user who never touched
+    // Settings → Image Generation but has an OpenAI-compatible provider
+    // active used to be able to generate images for free.
+    useSettingsStore.setState({
+      imageGeneration: { backends: [], defaultId: undefined },
+      providers: [
+        {
+          id: 'openai', source: 'builtin', name: 'OpenAI', enabled: true,
+          apiFormat: 'openai-compatible', baseUrl: 'https://api.openai.com',
+          apiKey: 'sk-zero-config-key', models: [{ id: 'gpt-4o', label: 'GPT-4o' }],
+          status: 'unchecked', sortOrder: 0,
+        },
+      ],
+      activeModel: { providerId: 'openai', modelId: 'gpt-4o' },
+    });
+
+    const result = await generateImageTool.execute({ prompt: 'test', save_path: '/tmp/abu-test/out.png' });
+
+    expect(typeof result).toBe('string');
+    expect(result as string).not.toContain('Error');
+
+    const genCall = mockFetch.mock.calls.find(([u]) => String(u).includes('/images/generations'));
+    expect(genCall).toBeDefined();
+    expect(String(genCall![0])).toBe('https://api.openai.com/v1/images/generations');
+    const [, init] = genCall!;
+    const body = JSON.parse((init as RequestInit).body as string);
+    expect(body.model).toBe('dall-e-3');
+    const headers = (init as RequestInit).headers as Record<string, string>;
+    expect(headers.Authorization).toBe('Bearer sk-zero-config-key');
   });
 
   it('surfaces a non-ok API response as a text error, not a thrown exception', async () => {

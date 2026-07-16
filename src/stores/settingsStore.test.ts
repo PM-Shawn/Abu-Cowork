@@ -1,5 +1,6 @@
-import { describe, it, expect, beforeEach } from 'vitest';
-import { reconcileActiveProvider, useSettingsStore, getDefaultImageBackend } from './settingsStore';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { invoke } from '@tauri-apps/api/core';
+import { reconcileActiveProvider, useSettingsStore, getDefaultImageBackend, getUsableImageBackend, bootstrapSecrets } from './settingsStore';
 import type { ProviderInstance, ActiveModel, ImageGenBackend } from '@/types/provider';
 
 // ─── Test fixture helpers ─────────────────────────────────────
@@ -639,6 +640,35 @@ describe('settingsStore labs flags', () => {
       expect(migrated.pendingImageGenSecretBridge).toBe(backend.id);
     });
 
+    it('infers the vendor from a recognizable legacy baseUrl instead of hardcoding "custom" (F5 regression)', () => {
+      // Regression: the migration used to hardcode vendor:'custom' for every
+      // migrated backend, so a Volcengine Seedream legacy config lost its
+      // vendor-specific size floor (normalizeSeedreamSize) until the user
+      // manually re-saved the backend, causing a 400 on the very first
+      // post-upgrade generate_image call.
+      const migrate = getMigrate();
+      const input = {
+        providers: [],
+        auxiliaryServices: { imageGen: { apiKey: 'k', baseUrl: 'https://ark.cn-beijing.volces.com/api/v3', model: 'doubao-seedream-4-5' } },
+      };
+      const migrated = migrate(input, 40) as {
+        imageGeneration: { backends: Array<Record<string, unknown>> };
+      };
+      expect(migrated.imageGeneration.backends[0].vendor).toBe('volcengine');
+    });
+
+    it('falls back to "custom" when the legacy baseUrl does not match a known vendor host', () => {
+      const migrate = getMigrate();
+      const input = {
+        providers: [],
+        auxiliaryServices: { imageGen: { apiKey: 'k', baseUrl: 'https://gateway.internal.example.com/v1', model: 'some-model' } },
+      };
+      const migrated = migrate(input, 40) as {
+        imageGeneration: { backends: Array<Record<string, unknown>> };
+      };
+      expect(migrated.imageGeneration.backends[0].vendor).toBe('custom');
+    });
+
     it('does not create a backend when the legacy form was never actually configured (no baseUrl/model)', () => {
       const migrate = getMigrate();
       const input = {
@@ -792,5 +822,129 @@ describe('getDefaultImageBackend', () => {
       imageGeneration: { backends: [backend('a'), backend('b')], defaultId: 'nonexistent' },
     });
     expect(getDefaultImageBackend(useSettingsStore.getState())?.id).toBe('a');
+  });
+});
+
+describe('getUsableImageBackend (F1 regression — zero-config OpenAI fallback)', () => {
+  beforeEach(() => {
+    useSettingsStore.setState({ imageGeneration: { backends: [], defaultId: undefined } });
+  });
+
+  it('returns the explicit backend when one is configured, ignoring the active provider', () => {
+    const explicitBackend: ImageGenBackend = {
+      id: 'explicit', name: 'Custom', vendor: 'custom', baseUrl: 'https://gateway.example.com', apiKey: 'sk-explicit', model: 'my-model',
+    };
+    useSettingsStore.setState({
+      imageGeneration: { backends: [explicitBackend], defaultId: 'explicit' },
+      providers: [makeProvider({ id: 'p1', enabled: true, apiFormat: 'openai-compatible', apiKey: 'sk-provider' })],
+      activeModel: { providerId: 'p1', modelId: 'm1' },
+    });
+    const backend = getUsableImageBackend(useSettingsStore.getState());
+    expect(backend?.id).toBe('explicit');
+    expect(backend?.apiKey).toBe('sk-explicit');
+  });
+
+  it('synthesizes a DALL-E 3 backend from the active OpenAI-compatible provider when no backend is configured', () => {
+    // Regression: the refactor to independent imageGeneration.backends hard-required
+    // an explicit backend and dropped this zero-config fallback — a user who never
+    // touched Settings → Image Generation but has an OpenAI-compatible provider
+    // active used to be able to generate images for free (v0.29.0 behavior).
+    useSettingsStore.setState({
+      providers: [makeProvider({ id: 'openai', enabled: true, apiFormat: 'openai-compatible', apiKey: 'sk-live-key' })],
+      activeModel: { providerId: 'openai', modelId: 'gpt-4o' },
+    });
+    const backend = getUsableImageBackend(useSettingsStore.getState());
+    expect(backend).not.toBeNull();
+    expect(backend?.apiKey).toBe('sk-live-key');
+    expect(backend?.model).toBe('dall-e-3');
+    expect(backend?.baseUrl).toBe('https://api.openai.com');
+    expect(backend?.vendor).toBe('openai');
+  });
+
+  it('returns null when the active provider is not openai-compatible (e.g. native anthropic)', () => {
+    useSettingsStore.setState({
+      providers: [makeProvider({ id: 'anthropic', enabled: true, apiFormat: 'anthropic', apiKey: 'sk-ant' })],
+      activeModel: { providerId: 'anthropic', modelId: 'claude-x' },
+    });
+    expect(getUsableImageBackend(useSettingsStore.getState())).toBeNull();
+  });
+
+  it('returns null when the active openai-compatible provider has no API key', () => {
+    useSettingsStore.setState({
+      providers: [makeProvider({ id: 'openai', enabled: true, apiFormat: 'openai-compatible', apiKey: '' })],
+      activeModel: { providerId: 'openai', modelId: 'gpt-4o' },
+    });
+    expect(getUsableImageBackend(useSettingsStore.getState())).toBeNull();
+  });
+});
+
+describe('bootstrapSecrets — pendingImageGenSecretBridge marker (F2 regression)', () => {
+  const invokeMock = vi.mocked(invoke);
+
+  beforeEach(() => {
+    invokeMock.mockReset();
+    useSettingsStore.setState({
+      providers: [],
+      auxiliaryServices: {},
+      imageGeneration: {
+        backends: [{ id: 'bk1', name: 'Migrated', vendor: 'custom', baseUrl: 'https://api.openai.com', apiKey: '', model: 'dall-e-3' }],
+        defaultId: 'bk1',
+      },
+      pendingImageGenSecretBridge: 'bk1',
+    });
+  });
+
+  it('preserves the marker when the legacy aux:imageGen secret resolves to null (transient decrypt failure), even though unrelated backfills round-trip cleanly', async () => {
+    // Regression: `imageGenSecret` being null (not thrown) used to still let
+    // `backfillOk` stay true, which unconditionally cleared the marker even
+    // though the bridge itself never ran — orphaning the migrated backend's
+    // key forever (V41 never re-runs since the store version is already 41).
+    invokeMock.mockImplementation(async (cmd: unknown) => {
+      if (cmd === 'secret_get') return null;
+      if (cmd === 'secret_set') return undefined;
+      if (cmd === 'secret_failed_keys') return [];
+      return undefined;
+    });
+
+    await bootstrapSecrets();
+
+    expect(useSettingsStore.getState().pendingImageGenSecretBridge).toBe('bk1');
+    expect(useSettingsStore.getState().imageGeneration.backends[0].apiKey).toBe('');
+  });
+
+  it('clears the marker once the bridge actually runs and its write round-trips', async () => {
+    invokeMock.mockImplementation(async (cmd: unknown, args?: unknown) => {
+      if (cmd === 'secret_get') {
+        const key = (args as { key?: string } | undefined)?.key;
+        if (key === 'aux:imageGen') return 'sk-legacy-bridged';
+        return null;
+      }
+      if (cmd === 'secret_set') return undefined;
+      if (cmd === 'secret_failed_keys') return [];
+      return undefined;
+    });
+
+    await bootstrapSecrets();
+
+    expect(useSettingsStore.getState().pendingImageGenSecretBridge).toBeUndefined();
+    expect(useSettingsStore.getState().imageGeneration.backends[0].apiKey).toBe('sk-legacy-bridged');
+  });
+
+  it('clears the marker when the backend already has its own secret, even if the legacy secret never resolves', async () => {
+    invokeMock.mockImplementation(async (cmd: unknown, args?: unknown) => {
+      if (cmd === 'secret_get') {
+        const key = (args as { key?: string } | undefined)?.key;
+        if (key === 'imagegen:bk1') return 'sk-own-secret';
+        return null;
+      }
+      if (cmd === 'secret_set') return undefined;
+      if (cmd === 'secret_failed_keys') return [];
+      return undefined;
+    });
+
+    await bootstrapSecrets();
+
+    expect(useSettingsStore.getState().pendingImageGenSecretBridge).toBeUndefined();
+    expect(useSettingsStore.getState().imageGeneration.backends[0].apiKey).toBe('sk-own-secret');
   });
 });

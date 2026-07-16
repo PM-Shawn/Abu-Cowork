@@ -46,4 +46,21 @@ describe('resolveImageVendor', () => {
   it('handles a bare host with no scheme', () => {
     expect(resolveImageVendor('ark.cn-beijing.volces.com/api/v3')).toBe('volcengine');
   });
+
+  describe('stored vendor precedence (F5 regression)', () => {
+    it('trusts an explicitly-stored non-custom vendor over host inference, even when the host would resolve differently', () => {
+      // e.g. a Volcengine Seedream endpoint reached via a corporate proxy —
+      // the host has no 'volces'/'ark' in it, so host inference alone would
+      // silently resolve to 'custom' and skip Seedream's min-pixel floor.
+      expect(resolveImageVendor('https://gateway.internal.example.com/v1', 'volcengine')).toBe('volcengine');
+    });
+
+    it('does not let a stored "custom" vendor override host inference (custom is the default/unset value, not an authoritative choice)', () => {
+      expect(resolveImageVendor('https://ark.cn-beijing.volces.com/api/v3', 'custom')).toBe('volcengine');
+    });
+
+    it('falls back to host inference when no vendor is stored', () => {
+      expect(resolveImageVendor('https://ark.cn-beijing.volces.com/api/v3', undefined)).toBe('volcengine');
+    });
+  });
 });

@@ -8,7 +8,7 @@ import { getTauriFetch } from '../../llm/tauriFetch';
 import { normalizeImageGenerationsUrl } from '../../llm/urlUtils';
 import { buildImageRequest, parseImageResponse, resolveImageVendor } from '../../llm/imageGen';
 import { isSandboxEnabled, isNetworkIsolationEnabled } from '../../sandbox/config';
-import { useSettingsStore, getDefaultImageBackend } from '../../../stores/settingsStore';
+import { useSettingsStore, getUsableImageBackend } from '../../../stores/settingsStore';
 import { useWorkspaceStore } from '../../../stores/workspaceStore';
 import {
   buildMacImageCommand,
@@ -33,10 +33,13 @@ export const generateImageTool: ToolDefinition = {
   },
   execute: async (input, context) => {
     const prompt = input.prompt as string;
-    // No hardcoded default — an empty/omitted size lets the backend fall back
-    // to its own default dimensions. Some backends (e.g. Seedream) require a
-    // minimum pixel count (>=3686400px) well above the old 1024x1024 default
-    // and reject that value outright, so we must not force it.
+    // No hardcoded default here — an empty/omitted size lets the per-vendor
+    // request builder decide (see imageGen/vendors/openai.ts, which restores
+    // the pre-refactor 1024x1024 default for the openai/custom shape only).
+    // Some backends (e.g. Seedream) require a minimum pixel count
+    // (>=3686400px) well above 1024x1024 and reject that value outright, so
+    // volcengine's builder applies its own floor (normalizeSeedreamSize)
+    // instead of inheriting a size default meant for OpenAI-shape backends.
     const size = input.size as string | undefined;
     const style = (input.style as string) || 'vivid';
     const savePath = input.save_path as string | undefined;
@@ -49,7 +52,12 @@ export const generateImageTool: ToolDefinition = {
       // from chat providers/models, since a backend's endpoint may live on a
       // different base path than any chat provider (e.g. Volcengine Agent
       // Plan's /api/plan/v3 vs the chat endpoint /api/coding/v3).
-      const backend = getDefaultImageBackend(state);
+      // getUsableImageBackend adds a zero-config fallback on top of an
+      // explicitly-configured backend: if the user never added one in
+      // Settings → Image Generation but their active chat provider is
+      // OpenAI-compatible, it synthesizes a DALL-E 3 backend from that
+      // provider's API key (restores pre-refactor zero-config behavior).
+      const backend = getUsableImageBackend(state);
       if (!backend) {
         return getI18n().toolResult.media.errNoImageBackend;
       }
@@ -64,10 +72,10 @@ export const generateImageTool: ToolDefinition = {
       // instead of doubling into .../images/generations/v1/images/generations.
       const endpoint = normalizeImageGenerationsUrl(backend.baseUrl);
 
-      // Vendor is inferred from baseUrl host, not backend.vendor (still
-      // always 'custom' — the vendor picker was dropped from the add-backend
-      // UI in P2). See imageGen/vendorResolve.ts.
-      const vendor = resolveImageVendor(backend.baseUrl);
+      // Trust the backend's own stored vendor when the user (or a migration
+      // that could infer it) has set one; otherwise fall back to baseUrl-host
+      // inference. See imageGen/vendorResolve.ts.
+      const vendor = resolveImageVendor(backend.baseUrl, backend.vendor);
 
       // Call image generation API via Tauri fetch (bypasses CORS)
       const fetchFn = await getTauriFetch();

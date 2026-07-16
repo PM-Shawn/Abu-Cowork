@@ -1,6 +1,18 @@
 import type { ImageGenParsedResult, ImageGenRequestBody, ImageGenRequestParams } from '../types';
 import { normalizeOpenAiSize } from '../sizePolicy';
 
+// Pre-refactor default (finding F4): a caller that omits `size` entirely
+// used to get a hardcoded 1024x1024 request. That default was dropped
+// globally so Seedream (>=3,686,400px floor) wouldn't get forced down to a
+// value it rejects — but that concern only applies to the volcengine
+// builder, which has always had its own floor (normalizeSeedreamSize) and
+// never used this constant. For the openai/custom shape, an omitted size
+// must still default to *something*, or custom/OpenAI-shape endpoints that
+// require a `size` field 400 outright. Restoring the default here (scoped to
+// this builder, not globally in mediaTools.ts) keeps the
+// volcengine/siliconflow/zhipu builders' own size handling untouched.
+const DEFAULT_OPENAI_SHAPE_SIZE = '1024x1024';
+
 /**
  * Default OpenAI-shape request builder — also used as the fallback for the
  * 'custom' vendor (design doc §5: "custom/未知 → 默认 OpenAI-shape").
@@ -17,9 +29,7 @@ export function buildOpenAIRequest(params: ImageGenRequestParams): ImageGenReque
     body.response_format = 'b64_json';
   }
 
-  if (size) {
-    body.size = normalizeOpenAiSize(model, size);
-  }
+  body.size = normalizeOpenAiSize(model, size || DEFAULT_OPENAI_SHAPE_SIZE);
 
   // dall-e-3-only param; other models (gpt-image-1, custom-gateway models)
   // don't support/need it.

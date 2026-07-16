@@ -3,6 +3,7 @@ import { persist } from 'zustand/middleware';
 import type { LLMProvider, ApiFormat, ProviderCapabilities, CustomService } from '../types';
 import type { ProviderInstance, ActiveModel, AuxiliaryServices, ModelInfo, ImageGenBackend, ImageGenerationSettings } from '../types/provider';
 import { deriveUiCaps } from '../core/llm/modelCapabilities';
+import { resolveImageVendor } from '../core/llm/imageGen/vendorResolve';
 import type { PermissionMode } from '../core/permissions/permissionMode';
 import type { WebSearchProviderType } from '../core/search/providers';
 import { setLanguage, initLanguage, type LanguageSetting } from '@/i18n';
@@ -689,6 +690,41 @@ export function getDefaultImageBackend(state: SettingsState): ImageGenBackend | 
   const { backends, defaultId } = state.imageGeneration;
   if (backends.length === 0) return null;
   return backends.find(b => b.id === defaultId) ?? backends[0] ?? null;
+}
+
+/**
+ * Resolve the backend `generate_image` should actually use — adds a
+ * zero-config fallback on top of {@link getDefaultImageBackend} that
+ * restores pre-refactor behavior (finding F1): a user who never configured
+ * anything in Settings → Image Generation but has an OpenAI-compatible chat
+ * provider active could previously still generate images (DALL-E 3) using
+ * that provider's own API key. The refactor to independent
+ * `imageGeneration.backends` (design doc §3.1, "C-a") dropped that fallback
+ * and hard-required an explicit backend, breaking zero-config users.
+ *
+ * The synthesized backend mirrors the exact pre-refactor defaults: apiKey
+ * borrowed from the active provider, but baseUrl/model fixed to OpenAI's own
+ * endpoint (`https://api.openai.com`, `dall-e-3`) — NOT the active
+ * provider's own baseUrl, since a self-hosted OpenAI-compatible gateway may
+ * not proxy the Images API at all.
+ */
+export function getUsableImageBackend(state: SettingsState): ImageGenBackend | null {
+  const explicit = getDefaultImageBackend(state);
+  if (explicit) return explicit;
+
+  const activeProvider = getActiveProvider(state);
+  if (activeProvider?.apiFormat !== 'openai-compatible') return null;
+  const apiKey = getActiveApiKey(state);
+  if (!apiKey) return null;
+
+  return {
+    id: '__zero-config-openai-fallback__',
+    name: 'OpenAI (DALL-E 3, auto)',
+    vendor: 'openai',
+    baseUrl: 'https://api.openai.com',
+    apiKey,
+    model: 'dall-e-3',
+  };
 }
 
 /** Returns the active API key for the current provider (backward-compatible) */
@@ -1898,7 +1934,12 @@ export const useSettingsStore = create<SettingsStore>()(
               imageGeneration.backends.push({
                 id,
                 name: '图片生成（迁移）',
-                vendor: 'custom',
+                // Infer the vendor from the legacy baseUrl (finding F5) so a
+                // migrated Volcengine/SiliconFlow/Zhipu backend gets its
+                // vendor-specific size floor/mapper applied immediately,
+                // instead of silently falling back to the openai/custom
+                // shape until the user re-saves the backend.
+                vendor: resolveImageVendor(legacyBaseUrl),
                 baseUrl: legacyBaseUrl,
                 apiKey: typeof legacy.apiKey === 'string' ? legacy.apiKey : '',
                 model: legacyModel,
@@ -2119,7 +2160,19 @@ export async function bootstrapSecrets(): Promise<void> {
   // backend has no secret of its own yet, carry the legacy secret over to
   // the backend's new `imagegen:<id>` key so the key survives the upgrade.
   const bridgeBackendId = state.pendingImageGenSecretBridge;
-  if (bridgeBackendId && imageGenSecret && !imageGenBackendUpdates.has(bridgeBackendId)) {
+  // Whether the backend already had its own secret before we'd even attempt
+  // the bridge (either a fresh fetch above, or a plaintext backfill queued
+  // in the loop above) — if so the bridge is moot and the marker can clear
+  // regardless of whether `imageGenSecret` resolved this launch.
+  const bridgeBackendAlreadyHasOwnSecret = !!bridgeBackendId && imageGenBackendUpdates.has(bridgeBackendId);
+  // Finding F2: `imageGenSecret` can be `null` on a transient decrypt
+  // failure (not a thrown error), in which case the bridge condition below
+  // is false and the bridge never runs. Track that explicitly — the marker
+  // must only clear once the bridge has actually copied the key over (and
+  // that copy round-tripped), never just because *some* backfill succeeded.
+  let bridgeAttempted = false;
+  if (bridgeBackendId && imageGenSecret && !bridgeBackendAlreadyHasOwnSecret) {
+    bridgeAttempted = true;
     imageGenBackendUpdates.set(bridgeBackendId, imageGenSecret);
     backfills.push(setSecret(SECRET_KEYS.imageGenBackend(bridgeBackendId), imageGenSecret));
   }
@@ -2134,6 +2187,16 @@ export async function bootstrapSecrets(): Promise<void> {
       console.warn('[secrets] backfill failed, staying in plaintext-fallback mode:', err);
     }
   }
+
+  // Finding F2: the marker must survive whenever the bridge still has real
+  // work left to do — i.e. there's a pending backend that doesn't yet have
+  // its own secret AND the bridge either didn't get a chance to run this
+  // launch (`imageGenSecret` was null — a transient decrypt failure, not a
+  // thrown error) or it did run but its `setSecret` write failed
+  // (`!backfillOk`). Only clear it once the backend already has its own
+  // secret, or the bridge actually ran and round-tripped cleanly.
+  const bridgeSettled =
+    !bridgeBackendId || bridgeBackendAlreadyHasOwnSecret || (bridgeAttempted && backfillOk);
 
   // Query the set of keys the backend couldn't decrypt (macOS hardware
   // change scenario). Failure here is non-fatal; we just end up with an
@@ -2174,10 +2237,14 @@ export async function bootstrapSecrets(): Promise<void> {
       auxiliaryServices,
       imageGeneration: { ...s.imageGeneration, backends },
       failedSecretKeys,
-      // Clear the bridge marker only when the backfill (including the bridge's
-      // setSecret) round-tripped cleanly; otherwise keep it so the next launch
-      // retries instead of orphaning the migrated key.
-      pendingImageGenSecretBridge: backfillOk ? undefined : s.pendingImageGenSecretBridge,
+      // Clear the bridge marker only once it's actually settled (F2): the
+      // backend already had its own secret, or the bridge ran this launch
+      // and its `setSecret` round-tripped cleanly. A transient
+      // `imageGenSecret === null` decrypt failure (bridge never attempted)
+      // must NOT clear the marker just because unrelated backfills
+      // succeeded — otherwise the migrated backend's key is orphaned forever
+      // (version is already 41, so V41 never re-runs to reset the marker).
+      pendingImageGenSecretBridge: bridgeSettled ? undefined : s.pendingImageGenSecretBridge,
     };
   });
 

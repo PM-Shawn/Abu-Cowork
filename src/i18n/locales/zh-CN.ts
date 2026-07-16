@@ -559,6 +559,12 @@ const zhCN: TranslationDict = {
     languageDescription: '选择界面显示语言',
     followSystem: '跟随系统',
     // Image Generation — independent backend list (design doc §3.1, "C-a")
+    imageGenVendor: '供应商',
+    imageGenVendorAuto: '自动识别（默认）',
+    imageGenVendorOpenAI: 'OpenAI（DALL·E）',
+    imageGenVendorVolcengine: '火山引擎（Seedream）',
+    imageGenVendorSiliconFlow: 'SiliconFlow',
+    imageGenVendorZhipu: '智谱（CogView）',
     imageGenApiKey: 'API Key',
     imageGenApiKeyPlaceholder: '输入该后端的 API Key',
     imageGenBaseUrl: 'API 地址',

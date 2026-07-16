@@ -68,6 +68,15 @@ interface PreviewState {
   reorderTabs: (fromId: string, toId: string) => void;
   // Commit a new URL for a browser tab (address-bar navigation).
   updateBrowserUrl: (id: string, url: string) => void;
+  // Close every preview tab whose file is `path` or lives under it (folder
+  // delete) — iterates ALL preview tabs, not just the active one. No-op for
+  // browser/terminal tabs. Used when a previewed file/folder is trashed in the
+  // file tree (must NOT close unrelated tabs or kill terminals).
+  closePreviewTabsForPath: (path: string) => void;
+  // Re-point every preview tab whose file is `oldPath` (or lives under it, for
+  // a folder rename) to the corresponding path under `newPath`, in place (no
+  // new tab). Used when a previewed file/folder is renamed in the file tree.
+  retargetPreviewPath: (oldPath: string, newPath: string) => void;
   // Back-compat alias for closeAllTabs() — the conversation-change effect
   // used this name before tabs existed.
   closePreview: () => void;
@@ -171,6 +180,49 @@ export const usePreviewStore = create<PreviewState>((set, get) => ({
     const { tabs } = get();
     const nextTabs = tabs.map((t) => (t.id === id && t.kind === 'browser' ? { ...t, url } : t));
     set({ tabs: nextTabs });
+  },
+
+  closePreviewTabsForPath: (path) => {
+    const { tabs, activeTabId } = get();
+    const matches = (t: WorkspaceTab): boolean =>
+      t.kind === 'preview' && (t.filePath === path || t.filePath.startsWith(path + '/'));
+    if (!tabs.some(matches)) return;
+    const nextTabs = tabs.filter((t) => !matches(t));
+    let nextActiveId = activeTabId;
+    if (activeTabId && !nextTabs.some((t) => t.id === activeTabId)) {
+      // The active tab was among those closed — activate the nearest survivor
+      // (search forward from its old slot, then backward).
+      const oldIdx = tabs.findIndex((t) => t.id === activeTabId);
+      const survives = (t: WorkspaceTab) => nextTabs.some((n) => n.id === t.id);
+      const after = tabs.slice(oldIdx + 1).find(survives);
+      const before = tabs.slice(0, oldIdx).reverse().find(survives);
+      nextActiveId = (after ?? before)?.id ?? null;
+    }
+    set({
+      tabs: nextTabs,
+      activeTabId: nextActiveId,
+      previewFilePath: computePreviewFilePath(nextTabs, nextActiveId),
+      ...(nextTabs.length === 0 ? { chatWidth: null } : {}),
+    });
+  },
+
+  retargetPreviewPath: (oldPath, newPath) => {
+    const { tabs, activeTabId } = get();
+    let changed = false;
+    const nextTabs = tabs.map((t) => {
+      if (t.kind !== 'preview') return t;
+      if (t.filePath === oldPath) {
+        changed = true;
+        return { ...t, filePath: newPath };
+      }
+      if (t.filePath.startsWith(oldPath + '/')) {
+        changed = true;
+        return { ...t, filePath: newPath + t.filePath.slice(oldPath.length) };
+      }
+      return t;
+    });
+    if (!changed) return;
+    set({ tabs: nextTabs, previewFilePath: computePreviewFilePath(nextTabs, activeTabId) });
   },
 
   closePreview: () => {

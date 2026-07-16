@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { FileText, Globe, SquareTerminal, X, Plus } from 'lucide-react';
 import { usePreviewStore, type WorkspaceTab } from '@/stores/previewStore';
 import { getBaseName } from '@/utils/pathUtils';
@@ -70,6 +70,23 @@ export default function TabStrip() {
     setDragOverId(null);
     if (fromId && fromId !== id) reorderTabs(fromId, id);
   };
+
+  // Releasing a drag outside any tab (over the `+` button, the strip padding,
+  // or off-strip) never fires a tab's onPointerUp, which would otherwise leave
+  // draggingIdRef set — causing phantom hover-highlighting and an accidental
+  // reorder on the next release. A window-level reset covers those cases.
+  useEffect(() => {
+    const reset = () => {
+      draggingIdRef.current = null;
+      setDragOverId(null);
+    };
+    window.addEventListener('pointerup', reset);
+    window.addEventListener('pointercancel', reset);
+    return () => {
+      window.removeEventListener('pointerup', reset);
+      window.removeEventListener('pointercancel', reset);
+    };
+  }, []);
 
   return (
     <div className="relative shrink-0 mt-7 flex items-center border-b border-[var(--abu-bg-pressed)] bg-[var(--abu-bg-subtle)] pr-1 overflow-x-auto">

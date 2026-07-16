@@ -133,7 +133,7 @@ pub fn pty_spawn(
     // portable-pty example — the child has already inherited the fds it needs).
     drop(pair.slave);
 
-    let child = spawned.ok_or_else(|| {
+    let mut child = spawned.ok_or_else(|| {
         last_err.unwrap_or_else(|| "no shell could be spawned".to_string())
     })?;
 
@@ -149,7 +149,14 @@ pub fn pty_spawn(
     {
         let mut sessions = state.sessions.lock().map_err(|e| e.to_string())?;
         // Re-check under lock — spawning above was not atomic with this insert.
+        // Unreachable in practice (tab ids are unique), but if we ever lost the
+        // race we'd have a live shell in `child`; reap it rather than drop it
+        // unreaped (portable-pty's Child doesn't kill/wait on drop). kill()
+        // makes the subsequent wait() return promptly, so holding the lock here
+        // is bounded.
         if sessions.contains_key(&id) {
+            let _ = child.kill();
+            let _ = child.wait();
             return Err(format!("pty session '{}' already running", id));
         }
         sessions.insert(

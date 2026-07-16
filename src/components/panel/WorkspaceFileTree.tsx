@@ -472,16 +472,11 @@ export default function WorkspaceFileTree() {
     const newPath = joinPath(getParentDir(entry.path), name);
     try {
       await rename(entry.path, newPath);
-      // Follow the rename in the preview: if the open file *is* the renamed
-      // entry, re-point it to the new path; if it lives *under* a renamed
-      // folder, re-point by swapping the path prefix. Otherwise the preview
-      // stays pinned to a now-missing path and shows a broken/stale render.
-      const previewed = usePreviewStore.getState().previewFilePath;
-      if (previewed === entry.path) {
-        openPreview(newPath);
-      } else if (previewed && previewed.startsWith(entry.path + '/')) {
-        openPreview(newPath + previewed.slice(entry.path.length));
-      }
+      // Follow the rename across ALL open preview tabs: any tab showing the
+      // renamed entry (or a file under a renamed folder) is re-pointed in
+      // place. Otherwise a tab stays pinned to a now-missing path and shows a
+      // broken/stale render.
+      usePreviewStore.getState().retargetPreviewPath(entry.path, newPath);
       refresh();
     } catch (err) {
       useToastStore.getState().addToast({
@@ -554,13 +549,10 @@ export default function WorkspaceFileTree() {
       // deleting — recoverable, and it runs via our own Rust command so it
       // doesn't depend on the fs:remove capability scope. Directories go whole.
       await invoke('move_to_trash', { path: entry.path });
-      // Close the preview if it was showing the trashed file OR any file under a
-      // trashed folder — otherwise the preview panel keeps rendering a
-      // now-missing path.
-      const previewed = usePreviewStore.getState().previewFilePath;
-      if (previewed === entry.path || (previewed && previewed.startsWith(entry.path + '/'))) {
-        usePreviewStore.getState().closePreview();
-      }
+      // Close only the preview tab(s) showing the trashed file or files under a
+      // trashed folder — iterates all preview tabs and leaves unrelated tabs
+      // (other previews, browser, terminal) untouched.
+      usePreviewStore.getState().closePreviewTabsForPath(entry.path);
       refresh();
     } catch (err) {
       useToastStore.getState().addToast({

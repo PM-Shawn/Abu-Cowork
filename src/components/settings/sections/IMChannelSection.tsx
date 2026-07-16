@@ -213,7 +213,7 @@ export default function IMChannelSection() {
         action={!showAddForm ? (
           <Button variant="default" size="sm" onClick={() => setShowAddForm(true)} className="gap-1.5">
             <Plus className="h-3.5 w-3.5" />
-            {t.imChannel.addChannel}
+            {t.settings.add}
           </Button>
         ) : undefined}
       />

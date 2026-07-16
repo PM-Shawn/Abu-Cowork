@@ -32,26 +32,46 @@ export default function SystemSettingsView() {
     }
   }, [activeSystemTab, petUnlocked, setActiveSystemTab]);
 
-  const navItems: { id: SystemSettingsTab; label: string; icon: typeof Settings2 }[] = [
-    { id: 'usage', label: t.usage.title, icon: BarChart3 },
-    { id: 'ai-services', label: t.settings.aiServices, icon: Settings2 },
-    { id: 'im-channels', label: t.imChannel.title, icon: Radio },
-    ...(petUnlocked
-      ? [{ id: 'pet' as SystemSettingsTab, label: t.settings.petEnable, icon: PawPrint }]
-      : []),
-    { id: 'personal-memory', label: t.sidebar.personalMemory, icon: Brain },
-    { id: 'soul', label: t.soul.title, icon: Heart },
-    { id: 'sandbox', label: t.settings.sandbox, icon: Shield },
-    { id: 'general', label: t.settings.general, icon: SlidersHorizontal },
-    { id: 'labs', label: t.settings.labs, icon: FlaskConical },
-    { id: 'diagnostic', label: t.diagnostic.title, icon: Activity },
-    { id: 'feedback', label: t.about.feedback, icon: MessageCircle },
-    { id: 'about', label: t.common.version, icon: Info },
-    // Enterprise mode is an enterprise-build-only entry — hidden in OSS builds
-    // (the bind flow / business modules aren't part of the public product).
-    ...(IS_ENTERPRISE_BUILD
-      ? [{ id: 'enterprise' as SystemSettingsTab, label: t.settings.enterpriseMode, icon: Building2 }]
-      : []),
+  // Nav is chunked into intent-based clusters, separated by thin dividers with
+  // no group titles (mirrors TRAE / WorkBuddy settings). Order top→bottom:
+  // ① system/app config · ② models & usage · ③ personalization ·
+  // ④ channels · ⑤ support (about/feedback/diagnostic last, by convention).
+  // Theme & language also live in 通用 but are surfaced in the account popover.
+  type NavItem = { id: SystemSettingsTab; label: string; icon: typeof Settings2 };
+  const navGroups: NavItem[][] = [
+    // ① 系统 / 应用设置 — 沙盒 folded in here, not its own cluster
+    [
+      { id: 'general', label: t.settings.general, icon: SlidersHorizontal },
+      { id: 'sandbox', label: t.settings.sandbox, icon: Shield },
+      { id: 'labs', label: t.settings.labs, icon: FlaskConical },
+    ],
+    // ② 模型与用量
+    [
+      { id: 'ai-services', label: t.settings.aiServices, icon: Settings2 },
+      { id: 'usage', label: t.usage.title, icon: BarChart3 },
+    ],
+    // ③ 个性化 — 桌宠 sits with memory/soul (only when unlocked in Labs)
+    [
+      { id: 'personal-memory', label: t.sidebar.personalMemory, icon: Brain },
+      { id: 'soul', label: t.soul.title, icon: Heart },
+      ...(petUnlocked
+        ? [{ id: 'pet' as SystemSettingsTab, label: t.settings.petEnable, icon: PawPrint }]
+        : []),
+    ],
+    // ④ 接入 — IM channels stands on its own
+    [
+      { id: 'im-channels', label: t.imChannel.title, icon: Radio },
+    ],
+    // ⑤ 支持 — enterprise mode is an enterprise-build-only trailing entry,
+    // hidden in OSS builds (bind flow / business modules aren't public product).
+    [
+      { id: 'diagnostic', label: t.diagnostic.title, icon: Activity },
+      { id: 'feedback', label: t.about.feedback, icon: MessageCircle },
+      { id: 'about', label: t.common.version, icon: Info },
+      ...(IS_ENTERPRISE_BUILD
+        ? [{ id: 'enterprise' as SystemSettingsTab, label: t.settings.enterpriseMode, icon: Building2 }]
+        : []),
+    ],
   ];
 
   const renderContent = () => {
@@ -93,32 +113,39 @@ export default function SystemSettingsView() {
     <div className="h-full bg-[var(--abu-bg-base)] flex flex-col">
       {/* Body - Left/Right Layout */}
       <div className="flex-1 flex min-h-0">
-        {/* Left Navigation */}
-        <nav className="w-[224px] shrink-0 border-r border-[var(--abu-border)] py-4 px-3">
-          <div className="space-y-1">
-            {navItems.map((item) => {
-              const Icon = item.icon;
-              const isActive = activeSystemTab === item.id;
-              return (
-                <button
-                  key={item.id}
-                  onClick={() => setActiveSystemTab(item.id)}
-                  className={cn(
-                    'w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors text-left',
-                    isActive
-                      ? 'bg-[var(--abu-bg-active)] text-[var(--abu-text-primary)]'
-                      : 'text-[var(--abu-text-tertiary)] hover:text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-hover)]'
-                  )}
-                >
-                  <Icon className={cn(
-                    'h-4 w-4 shrink-0',
-                    isActive ? 'text-[var(--abu-clay)]' : 'text-[var(--abu-text-muted)]'
-                  )} />
-                  <span>{item.label}</span>
-                </button>
-              );
-            })}
-          </div>
+        {/* Left Navigation — clusters split by thin dividers, no group titles */}
+        <nav className="w-[224px] shrink-0 border-r border-[var(--abu-border)] py-4 px-3 overflow-y-auto">
+          {navGroups.map((group, groupIndex) => (
+            <div key={groupIndex}>
+              {groupIndex > 0 && (
+                <div className="mx-2 my-2 h-px bg-[var(--abu-border)]" />
+              )}
+              <div className="space-y-1">
+                {group.map((item) => {
+                  const Icon = item.icon;
+                  const isActive = activeSystemTab === item.id;
+                  return (
+                    <button
+                      key={item.id}
+                      onClick={() => setActiveSystemTab(item.id)}
+                      className={cn(
+                        'w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors text-left',
+                        isActive
+                          ? 'bg-[var(--abu-bg-active)] text-[var(--abu-text-primary)]'
+                          : 'text-[var(--abu-text-tertiary)] hover:text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-hover)]'
+                      )}
+                    >
+                      <Icon className={cn(
+                        'h-4 w-4 shrink-0',
+                        isActive ? 'text-[var(--abu-clay)]' : 'text-[var(--abu-text-muted)]'
+                      )} />
+                      <span>{item.label}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          ))}
         </nav>
 
         {/* Right Content */}

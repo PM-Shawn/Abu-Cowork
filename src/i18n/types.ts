@@ -156,6 +156,7 @@ export interface TranslationDict {
     archiveTriggerRun: string;
     help: string;
     editProfile: string;
+    localMode: string;
     nickname: string;
     nicknamePlaceholder: string;
     avatar: string;
@@ -177,6 +178,8 @@ export interface TranslationDict {
     memoryGuideTip: string;
     todos: string;
     inbox: string;
+    searchResults: string;
+    searchNoResults: string;
   };
 
   // Todos
@@ -404,6 +407,17 @@ export interface TranslationDict {
     errorEmptyBody: string;
     /** Hint appended to not_found errors: check endpoint URL / model capabilities. */
     errorNotFoundHint: string;
+    // Compact boundary divider
+    compactDivider: {
+      compacted: string;
+      compactedManual: string;
+    };
+    // /compact slash command toasts
+    compactCommand: {
+      done: string;
+      tooFew: string;
+      failed: string;
+    };
   };
 
   // Share (conversation export / import)
@@ -630,17 +644,31 @@ export interface TranslationDict {
     language: string;
     languageDescription: string;
     followSystem: string;
-    // Image Generation
-    imageGen: string;
-    imageGenDescription: string;
+    // Image Generation — independent backend list (design doc §3.1, "C-a")
+    imageGenVendor: string;
+    imageGenVendorAuto: string;
+    imageGenVendorOpenAI: string;
+    imageGenVendorVolcengine: string;
+    imageGenVendorSiliconFlow: string;
+    imageGenVendorZhipu: string;
     imageGenApiKey: string;
     imageGenApiKeyPlaceholder: string;
-    imageGenApiKeyDesc: string;
     imageGenBaseUrl: string;
     imageGenBaseUrlPlaceholder: string;
-    imageGenBaseUrlDesc: string;
     imageGenModel: string;
-    imageGenCustomModel: string;
+    imageGenModelPlaceholder: string;
+    imageGenBackendName: string;
+    imageGenBackendNamePlaceholder: string;
+    imageGenAddBackend: string;
+    imageGenEditBackend: string;
+    imageGenNoBackends: string;
+    imageGenNoBackendsHint: string;
+    imageGenSetDefault: string;
+    imageGenDefaultBadge: string;
+    imageGenDeleteConfirmTitle: string;
+    imageGenDeleteConfirmMessage: string;
+    imageGenBackendsCount: string;
+    imageGenNotConfigured: string;
     // Web Search
     webSearch: string;
     webSearchDescription: string;
@@ -977,13 +1005,8 @@ export interface TranslationDict {
     exportButton: string;
     exportInProgress: string;
     exportFailed: string;
-    exportIncluded: string;
-    exportPrivacy: string;
     exportIncludeRaw: string;
-    exportIncludeAll: string;
-    exportIncludeRawWarning: string;
-    exportIncludedListTitle: string;
-    exportPrivacyText: string;
+    exportIncludeRawHint: string;
     // Upload to console
     uploadButton: string;
     uploadInProgress: string;
@@ -1003,6 +1026,28 @@ export interface TranslationDict {
     manifestClose: string;
     // Feedback navigation prompt at bottom of DiagnosticSection
     feedbackPageHint: string;
+    // Conversation picker (multi-select attach, in the feedback form)
+    conversationPickerTitle: string;
+    conversationPickerTriggerPlaceholder: string;
+    conversationPickerSearchPlaceholder: string;
+    conversationPickerEmpty: string;
+    conversationPickerNoTitle: string;
+    conversationPickerCurrentBadge: string;
+    conversationPickerMessageCount: string; // {count}
+    conversationPickerSelectedCount: string; // {count}
+    conversationPickerInfoTooltip: string;
+    conversationPickerTooMany: string; // {max}
+    // Feedback form field label
+    descriptionLabel: string;
+    // Screenshot upload (feedback form)
+    screenshotTitle: string;
+    screenshotAddHint: string;
+    screenshotCount: string; // {n}
+    screenshotTooMany: string;
+    screenshotTooLarge: string;
+    screenshotRemoveAria: string;
+    // Auto-included-content hint shown above the submit button
+    uploadAutoIncludedHint: string;
   };
 
   // Toolbox Modal
@@ -1453,6 +1498,10 @@ export interface TranslationDict {
     memoryClearConfirm: string;
     openInFinder: string;
     closePreview: string;
+    fullscreen: string;
+    exitFullscreen: string;
+    openInApp: string;
+    openInAppFailed: string;
     previewMode: string;
     sourceMode: string;
     unsupportedFileType: string;
@@ -1519,6 +1568,7 @@ export interface TranslationDict {
       noWorkspace: string;
       empty: string;
       loadError: string;
+      folderDeleted: string;
       loading: string;
       moreActions: string;
       newFolder: string;
@@ -2672,6 +2722,8 @@ export interface TranslationDict {
     };
     // generate_image / process_image
     media: {
+      /** No image-generation backend configured in Settings → Image Generation. */
+      errNoImageBackend: string;
       /** API returned no image data. */
       errNoImageData: string;
       /** Image saved. {path} */
@@ -2733,6 +2785,12 @@ export interface TranslationDict {
       imageSkipNoVision: string;
       /** File locked by another agent. {path} */
       errFileLocked: string;
+      /** delete_file succeeded — moved to OS Trash. {path} */
+      movedToTrash: string;
+      /** delete_file failed — fail-closed, nothing was deleted. {error} */
+      trashFailed: string;
+      /** delete_file hard-refused a catastrophic target (filesystem root / home dir) — fail-closed, nothing was deleted. {path} */
+      deleteRefusedCatastrophic: string;
     };
     // show_widget / read_me — inline visualization tool
     widget: {

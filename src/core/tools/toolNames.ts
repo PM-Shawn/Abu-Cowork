@@ -12,6 +12,7 @@ export const TOOL_NAMES = {
   SEARCH_FILES: 'search_files',
   FIND_FILES: 'find_files',
   RUN_COMMAND: 'run_command',
+  DELETE_FILE: 'delete_file',
 
   // Web & network
   WEB_SEARCH: 'web_search',

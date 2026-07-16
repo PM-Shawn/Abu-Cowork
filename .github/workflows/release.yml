@@ -50,6 +50,10 @@ jobs:
         run: bash scripts/setup-python-runtime.sh
         shell: bash
 
+      - name: Setup embedded Node.js runtime
+        run: bash scripts/setup-node-runtime.sh
+        shell: bash
+
       - name: Build Tauri app
         env:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
@@ -85,8 +89,9 @@ jobs:
 
           # ── macOS: Developer ID signing of embedded binaries + notarization ──
           # Notarization rejects any unsigned Mach-O inside the .app. Abu bundles a
-          # standalone Python runtime (interpreter + dylibs + compiled .so), so we
-          # import the Developer ID cert into a throwaway keychain and deep-sign
+          # standalone Python runtime (interpreter + dylibs + compiled .so) and a
+          # standalone Node.js runtime (the node binary), so we import the Developer
+          # ID cert into a throwaway keychain and deep-sign
           # every embedded Mach-O with the hardened runtime BEFORE Tauri bundles
           # and signs the outer .app. Tauri then notarizes + staples using the
           # App Store Connect API key.
@@ -109,7 +114,7 @@ jobs:
             security list-keychains -d user -s "$KEYCHAIN" $EXISTING_KC
 
             ENTITLEMENTS="$PWD/src-tauri/entitlements.plist"
-            echo "== Deep-signing embedded Mach-O binaries in python-runtime =="
+            echo "== Deep-signing embedded Mach-O binaries in python-runtime + node-runtime =="
             SIGN_COUNT=0
             while IFS= read -r -d '' f; do
               if file -b "$f" | grep -q 'Mach-O'; then
@@ -118,7 +123,7 @@ jobs:
                   --sign "$APPLE_SIGNING_IDENTITY" "$f"
                 SIGN_COUNT=$((SIGN_COUNT + 1))
               fi
-            done < <(find src-tauri/python-runtime -type f -print0)
+            done < <(find src-tauri/python-runtime src-tauri/node-runtime -type f -print0)
             echo "Signed $SIGN_COUNT embedded Mach-O files."
 
             # Write the notary API key to disk for Tauri's notarytool invocation.

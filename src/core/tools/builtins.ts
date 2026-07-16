@@ -2,7 +2,7 @@
 import { toolRegistry } from './registry';
 
 // --- File tools ---
-import { readFileTool, writeFileTool, editFileTool, listDirectoryTool, searchFilesTool, findFilesTool } from './definitions/fileTools';
+import { readFileTool, writeFileTool, editFileTool, deleteFileTool, listDirectoryTool, searchFilesTool, findFilesTool } from './definitions/fileTools';
 
 // --- Command tools ---
 import { runCommandTool } from './definitions/commandTools';
@@ -57,6 +57,7 @@ export function registerBuiltinTools(): void {
   toolRegistry.register(readFileTool);
   toolRegistry.register(writeFileTool);
   toolRegistry.register(editFileTool);
+  toolRegistry.register(deleteFileTool);
   toolRegistry.register(listDirectoryTool);
   toolRegistry.register(runCommandTool);
   toolRegistry.register(searchFilesTool);

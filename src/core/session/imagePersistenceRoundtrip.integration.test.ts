@@ -40,8 +40,12 @@ vi.mock('@tauri-apps/plugin-fs', () => ({
 }));
 
 // conversationStorage writes via atomicWrite → invoke('atomic_write_text').
+// appendToFile (Part B1) tries native invoke('append_file_text') first; reject
+// it here so this test keeps exercising the read+atomic-write fallback path
+// its assertions were written against.
 vi.mock('@tauri-apps/api/core', () => ({
   invoke: vi.fn(async (cmd: string, args?: { path?: string; content?: string }) => {
+    if (cmd === 'append_file_text') throw new Error('native append unavailable in test');
     if (cmd === 'atomic_write_text' && args?.path) files.set(args.path, args.content ?? '');
     return undefined;
   }),

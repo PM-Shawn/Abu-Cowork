@@ -1,5 +1,5 @@
 import type { LLMAdapter, ChatOptions, ToolChoice } from './adapter';
-import { LLMError, classifyError } from './adapter';
+import { LLMError, classifyError, LOG_TOOL_ARG_PREVIEW, buildToolParseError } from './adapter';
 import type { Message, StreamEvent, ToolDefinition } from '../../types';
 import { getTauriFetch } from './tauriFetch';
 import { normalizeMessages } from './messageNormalizer';
@@ -11,6 +11,51 @@ import { applyModelRequestProcessors } from './modelRequestProcessors';
 import { observeCompatEvent } from '../observability/compatEvents';
 
 const logger = createLogger('openai-compatible');
+
+// ── Hang-ceiling timeout helper (code-review fix #10) ──
+//
+// chat() arms this same pattern at three phases of a request that can each
+// hang unbounded if the server accepts the connection but never responds:
+// the initial connect/header wait, the max_tokens-retry connect/header wait,
+// and (non-streaming path) the body-download wait. All three previously
+// duplicated an identical `setTimeout(() => { <flag>=true; streamAbort.abort() },
+// STREAM_HANG_TIMEOUT_MS)` plus a catch that throws the same-shaped LLMError.
+// Consolidated here so the timeout semantics (retryable, retryAfterMs) live
+// in one place; only the per-phase message wording still varies by call site.
+
+/**
+ * Arm a hang-ceiling timer: aborts `streamAbort` after
+ * `STREAM_HANG_TIMEOUT_MS` and flips a flag the caller's catch block can
+ * check to distinguish "timed out" from any other abort/connection failure.
+ * Returns `timedOut()` (a function, since the flag flips asynchronously
+ * after `armHangTimer` returns) and `clear()` to cancel the timer once the
+ * awaited operation settles.
+ */
+function armHangTimer(streamAbort: AbortController): { timedOut: () => boolean; clear: () => void } {
+  let timedOut = false;
+  const timer = setTimeout(() => {
+    timedOut = true;
+    streamAbort.abort();
+  }, STREAM_HANG_TIMEOUT_MS);
+  return {
+    timedOut: () => timedOut,
+    clear: () => clearTimeout(timer),
+  };
+}
+
+/**
+ * Build the LLMError thrown when a hang-ceiling timer (see `armHangTimer`)
+ * fired before the awaited operation settled. `prefix`/`suffix` carry the
+ * per-site phase wording — e.g. `hangTimeoutError('连接超时', '未收到服务器响应头')`
+ * reproduces the connect-phase message exactly; `retryable`/`retryAfterMs`
+ * are identical across all three call sites.
+ */
+function hangTimeoutError(prefix: string, suffix: string): LLMError {
+  return new LLMError(`${prefix}：${STREAM_HANG_TIMEOUT_MS / 1000} 秒${suffix}`, 'network_error', {
+    retryable: true,
+    retryAfterMs: 2000,
+  });
+}
 
 /**
  * Normalise a provider's `usage` response object into Abu's TokenUsage
@@ -95,13 +140,7 @@ function buildToolInput(
 ): Record<string, unknown> {
   const parsed = safeParseToolArgs(tc.args);
   if (parsed !== null) return parsed;
-  logger.error('tool args JSON parse failed', {
-    source,
-    tool: tc.name,
-    argsLength: tc.args.length,
-    argsPreview: tc.args.slice(0, 500),
-  });
-  return { _parse_error: `Failed to parse tool input: ${tc.args.slice(0, 200)}` };
+  return buildToolParseError(tc.args, { source, tool: tc.name }, logger);
 }
 
 /**
@@ -158,6 +197,14 @@ function convertTools(tools: ToolDefinition[]) {
   }));
 }
 
+// OpenAI-compatible chat has no document/file content type, so PDF attachments
+// can't be sent. Leave a text breadcrumb instead of dropping them silently —
+// otherwise the model sees nothing and may claim no file was provided.
+// LLM-facing → English.
+const DOCUMENT_UNSUPPORTED_NOTE =
+  '[A document was attached but the current model cannot receive file attachments. ' +
+  'Tell the user their model does not support documents, or ask them to paste the relevant text.]';
+
 /** Convert PreparedContentBlock[] to OpenAI content parts */
 function toOpenAIContentParts(blocks: PreparedContentBlock[]): OpenAIContentPart[] {
   const parts: OpenAIContentPart[] = [];
@@ -169,8 +216,10 @@ function toOpenAIContentParts(blocks: PreparedContentBlock[]): OpenAIContentPart
         type: 'image_url',
         image_url: { url: `data:${b.mediaType};base64,${b.data}` },
       });
+    } else if (b.type === 'document') {
+      // OpenAI format has no document part — leave a breadcrumb (see note above).
+      parts.push({ type: 'text', text: DOCUMENT_UNSUPPORTED_NOTE });
     }
-    // Documents are not supported in OpenAI format — skip silently
   }
   return parts;
 }
@@ -198,7 +247,9 @@ function serializeForOpenAI(turns: PreparedTurn[], systemPrompt?: string): OpenA
         }
         result.push({ role: 'user', content: parts });
       } else {
-        const text = turn.content.map((b) => b.type === 'text' ? b.text : '').join('');
+        const text = turn.content
+          .map((b) => (b.type === 'text' ? b.text : b.type === 'document' ? DOCUMENT_UNSUPPORTED_NOTE : ''))
+          .join('');
         result.push({ role: 'user', content: text });
       }
     } else {
@@ -384,11 +435,7 @@ export class OpenAICompatibleAdapter implements LLMAdapter {
     // Connect/header-phase timeout: the idle heartbeat only arms after the body
     // stream is obtained, so a server that accepts the connection but never
     // returns headers would hang here unbounded. Abort once the ceiling is hit.
-    let connectTimedOut = false;
-    const connectTimer = setTimeout(() => {
-      connectTimedOut = true;
-      streamAbort.abort();
-    }, STREAM_HANG_TIMEOUT_MS);
+    const connectHangTimer = armHangTimer(streamAbort);
     let response: Awaited<ReturnType<typeof fetchFn>>;
     try {
       response = await fetchFn(fullUrl, {
@@ -399,13 +446,13 @@ export class OpenAICompatibleAdapter implements LLMAdapter {
       });
     } catch (fetchErr) {
       // Connection-level failure (DNS, timeout, refused) — not an agent bug
-      if (connectTimedOut) {
-        throw new LLMError(`连接超时：${STREAM_HANG_TIMEOUT_MS / 1000} 秒未收到服务器响应头`, 'network_error', { retryable: true, retryAfterMs: 2000 });
+      if (connectHangTimer.timedOut()) {
+        throw hangTimeoutError('连接超时', '未收到服务器响应头');
       }
       const msg = fetchErr instanceof Error ? fetchErr.message : String(fetchErr);
       throw new LLMError(msg, 'network_error', { retryable: true, retryAfterMs: 2000 });
     } finally {
-      clearTimeout(connectTimer);
+      connectHangTimer.clear();
     }
 
     if (!response.ok) {
@@ -420,12 +467,27 @@ export class OpenAICompatibleAdapter implements LLMAdapter {
           limit: retryLimit,
         });
         body.max_tokens = retryLimit;
-        response = await fetchFn(fullUrl, {
-          method: 'POST',
-          headers: requestHeaders,
-          body: JSON.stringify(body),
-          signal: effectiveSignal,
-        });
+        // The first attempt's connect timer was already cleared, so arm a fresh
+        // one — otherwise a server that stalls on this retry before returning
+        // headers would wait unbounded (only a user abort could cancel it).
+        const retryConnectHangTimer = armHangTimer(streamAbort);
+        try {
+          response = await fetchFn(fullUrl, {
+            method: 'POST',
+            headers: requestHeaders,
+            body: JSON.stringify(body),
+            signal: effectiveSignal,
+          });
+        } catch (retryErr) {
+          if (retryConnectHangTimer.timedOut()) {
+            throw hangTimeoutError('连接超时', '未收到服务器响应头');
+          }
+          throw retryErr instanceof LLMError
+            ? retryErr
+            : new LLMError(retryErr instanceof Error ? retryErr.message : String(retryErr), 'network_error', { retryable: true, retryAfterMs: 2000 });
+        } finally {
+          retryConnectHangTimer.clear();
+        }
         if (!response.ok) {
           throw classifyError(response.status, await response.text());
         }
@@ -439,7 +501,22 @@ export class OpenAICompatibleAdapter implements LLMAdapter {
 
     // ── Non-streaming path (Ollama + tools) ──
     if (!useStreaming) {
-      const data = await response.json() as Record<string, unknown>;
+      // Body-download timeout: the connect timer was cleared once headers arrived,
+      // and the streaming idle-heartbeat only arms for the reader path below — so a
+      // server that returns headers then stalls mid-body would hang response.json()
+      // unbounded. Arm a ceiling that aborts the request so response.json() rejects.
+      const bodyHangTimer = armHangTimer(streamAbort);
+      let data: Record<string, unknown>;
+      try {
+        data = await response.json() as Record<string, unknown>;
+      } catch (jsonErr) {
+        if (bodyHangTimer.timedOut()) {
+          throw hangTimeoutError('响应体读取超时', '未完成');
+        }
+        throw jsonErr;
+      } finally {
+        bodyHangTimer.clear();
+      }
       const choices = data.choices as Array<Record<string, unknown>> | undefined;
       const choice = choices?.[0];
       const msg = choice?.message as Record<string, unknown> | undefined;
@@ -805,14 +882,18 @@ export class OpenAICompatibleAdapter implements LLMAdapter {
               }
               doneEmitted = true;
             } else if (choice.finish_reason === 'length') {
-              // Model output reached max_tokens. Three sub-cases:
-              //   (a) Tool args fully accumulated → emit tool_use, signal tool_use
-              //   (b) Tool args partial / unparseable → DROP broken tool calls and
-              //       signal max_tokens so agentLoop's escalateMaxOutputTokens can
-              //       double the limit and retry. Keeping the broken tool call would
-              //       set collectedToolCalls.length > 0 and bypass the escalation
-              //       trigger condition (agentLoop.ts L1284).
-              //   (c) No tool calls (text output truncated) → signal max_tokens
+              // Model output reached max_tokens. Tool calls arrive via two paths —
+              // native (toolCallBuffers) and text-tag <tool_call> blocks
+              // (textToolCalls). The text parser only buffers FULLY-CLOSED blocks,
+              // so any buffered text tool call is complete. Sub-cases:
+              //   (a) A complete tool call exists (native fully parsed, or text-tag)
+              //       → emit it and signal tool_use. A decided, complete action runs.
+              //   (b) A native tool call is present but partial / unparseable → DROP
+              //       the broken tool calls and signal max_tokens so agentLoop's
+              //       escalateMaxOutputTokens can double the limit and retry. Keeping
+              //       the broken tool call would set collectedToolCalls.length > 0 and
+              //       bypass the escalation trigger condition (agentLoop.ts L1284).
+              //   (c) No tool calls at all (plain text truncated) → signal max_tokens.
               const parsedAll: Array<{ id: string; name: string; input: Record<string, unknown> }> = [];
               let anyParseFailed = false;
               for (const [, tc] of toolCallBuffers) {
@@ -824,22 +905,31 @@ export class OpenAICompatibleAdapter implements LLMAdapter {
                 parsedAll.push({ id: tc.id, name: tc.name, input: parsed });
               }
               if (!anyParseFailed && parsedAll.length > 0) {
-                // Case (a): all tool args complete despite length truncation
+                // Case (a), native: all native tool args complete despite truncation.
                 for (const e of parsedAll) {
                   onEvent({ type: 'tool_use', id: e.id, name: e.name, input: e.input });
                 }
+                // Also flush any complete text-tag tool calls (same completeness invariant).
+                emitTextToolCalls();
                 onEvent({ type: 'done', stopReason: 'tool_use' });
-              } else {
-                // Case (b) or (c): drop broken tool calls, signal max_tokens
+              } else if (anyParseFailed) {
+                // Case (b): a native tool call is truncated — drop everything and escalate.
                 logger.warn('finish_reason=length, dropping tool calls for escalation', {
                   toolCallCount: toolCallBuffers.size,
                   partials: Array.from(toolCallBuffers.values()).map((t) => ({
                     name: t.name,
                     argsLength: t.args.length,
-                    argsPreview: t.args.slice(0, 200),
+                    argsPreview: t.args.slice(0, LOG_TOOL_ARG_PREVIEW),
                   })),
                 });
                 onEvent({ type: 'done', stopReason: 'max_tokens' });
+              } else {
+                // No native tool calls. Emit any COMPLETE text-tag tool call before
+                // escalating — dropping a fully-parsed <tool_call> here (case (a) for
+                // the text path) would lose a decided action and force a needless
+                // max_tokens retry. Only escalate when there is nothing executable.
+                const hasTextTC = emitTextToolCalls();
+                onEvent({ type: 'done', stopReason: hasTextTC ? 'tool_use' : 'max_tokens' });
               }
               doneEmitted = true;
             } else if (

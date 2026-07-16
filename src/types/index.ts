@@ -243,6 +243,33 @@ export interface Message {
   plannedSteps?: import('./execution').PlannedStep[];
   // System-injected messages (e.g. max_tokens recovery) — hidden from chat UI
   isSystem?: boolean;
+  // Compaction boundary marker payload (long-conversation Part A). Present only
+  // on marker messages (id prefix `compact-boundary-`). The message is appended
+  // to the log and never rewrites earlier entries; the send-side rebuilds a
+  // compact context from the LAST marker.
+  compactBoundary?: CompactBoundary;
+}
+
+/**
+ * Compaction boundary marker payload (long-conversation Part A).
+ *
+ * Persisted append-only as a Message (id prefix `compact-boundary-`). Original
+ * messages are NEVER rewritten or truncated — the send-side rebuilds a compact
+ * context on the fly by honouring the last marker. Range is expressed with
+ * message-id anchors (not array indices) so a deleted message invalidates the
+ * marker cleanly instead of silently shifting the summarized window.
+ */
+export interface CompactBoundary {
+  /** LLM-generated summary of the messages between the two anchors (inclusive). */
+  summaryText: string;
+  /** id of the first summarized message. */
+  summarizedFromId: string;
+  /** id of the last summarized message. */
+  summarizedToId: string;
+  /** Marker creation time (ms). */
+  createdAt: number;
+  /** Whether this boundary was created automatically or via manual /compact. */
+  source: 'auto' | 'manual';
 }
 
 // Simplified tool call info for LLM context building

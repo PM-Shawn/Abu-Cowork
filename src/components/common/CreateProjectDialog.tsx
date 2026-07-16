@@ -4,6 +4,7 @@ import { useProjectStore } from '@/stores/projectStore';
 import { useChatStore } from '@/stores/chatStore';
 import { useWorkspaceStore } from '@/stores/workspaceStore';
 import { useSettingsStore } from '@/stores/settingsStore';
+import { usePreviewStore } from '@/stores/previewStore';
 import { open as openDialog } from '@tauri-apps/plugin-dialog';
 import { exists, mkdir } from '@tauri-apps/plugin-fs';
 import { homeDir } from '@tauri-apps/api/path';
@@ -151,6 +152,7 @@ export default function CreateProjectDialog({
     useChatStore.getState().startNewConversation();
     useWorkspaceStore.getState().setWorkspace(finalFolder);
     useSettingsStore.getState().setViewMode('chat');
+    usePreviewStore.getState().setFileTreeMode(true);
     onClose();
   };
 

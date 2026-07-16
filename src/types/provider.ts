@@ -112,6 +112,37 @@ export interface AuxiliaryServices {
   };
 }
 
+/**
+ * Image-generation backend vendor — explicit selection (not baseUrl-host
+ * heuristics) drives per-vendor request/response mapper choice in P3.
+ */
+export type ImageGenVendor = 'openai' | 'volcengine' | 'siliconflow' | 'zhipu' | 'custom';
+
+/**
+ * A single configured image-generation backend: its own URL/key/model,
+ * fully decoupled from chat providers (design doc §3.1, "C-a"). A backend's
+ * endpoint may live on a different base path than any chat provider (e.g.
+ * Volcengine Agent Plan's `/api/plan/v3/images/generations` vs the chat
+ * endpoint `/api/coding/v3`), so it cannot be derived from provider config.
+ */
+export interface ImageGenBackend {
+  id: string;
+  name: string;
+  vendor: ImageGenVendor;
+  baseUrl: string;
+  apiKey: string;
+  model: string;
+}
+
+/** Independent image-generation configuration — replaces the single-form
+ *  `AuxiliaryServices.imageGen` with a list of user-managed backends. */
+export interface ImageGenerationSettings {
+  backends: ImageGenBackend[];
+  /** Which backend `generate_image` uses by default. Falls back to
+   *  `backends[0]` when unset or when it points at a removed backend. */
+  defaultId?: string;
+}
+
 /** Provider usage guide */
 export interface ProviderGuide {
   steps: string[];

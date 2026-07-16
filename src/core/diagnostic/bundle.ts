@@ -13,14 +13,21 @@ import { zipSync, strToU8 } from 'fflate';
 import { writeFile, mkdir, exists } from '@tauri-apps/plugin-fs';
 import { downloadDir } from '@tauri-apps/api/path';
 import { joinPath } from '@/utils/pathUtils';
-import { collectBundleFiles } from './collect';
+import { collectBundleFiles, resolveConversationIds } from './collect';
 import { useChatStore } from '@/stores/chatStore';
 
 interface ProduceOptions {
   includeRawText: boolean;
+  /** Legacy single-id form. Prefer `conversationIds`. See collect.ts. */
   conversationId?: string | null;
+  /** Conversation IDs to embed (multi-select). Takes priority over `conversationId`. */
+  conversationIds?: string[];
   /** Cap embedded messages to the most-recent N (or 'all'). See collect.ts. */
   messageCap?: number | 'all';
+  /** Free-text user description, written verbatim into the bundle. */
+  description?: string;
+  /** Screenshots to embed as binary entries under feedback/screenshots/. */
+  screenshots?: { name: string; bytes: Uint8Array }[];
 }
 
 export interface ProduceResult {
@@ -48,15 +55,23 @@ interface ZipResult {
 
 /** Collect, scrub, and compress — without writing to disk. */
 export async function collectAndZip(opts: ProduceOptions): Promise<ZipResult> {
-  const convId = opts.conversationId ?? useChatStore.getState().activeConversationId ?? 'global';
-  const shortId = convId.slice(0, 8);
+  // Determine the ids actually in play, purely to derive a readable filename
+  // — collect.ts (via the same resolveConversationIds) is still the source
+  // of truth for what actually gets embedded. Sharing the resolver (instead
+  // of re-deriving it here) keeps the filename's id set and the bundle's
+  // actual content in lockstep — a prior drift here meant a bundle could be
+  // named after the active conversation while containing none of it.
+  const ids = resolveConversationIds(opts, useChatStore.getState().activeConversationId);
+
+  const shortId =
+    ids.length === 0 ? 'global' : ids.length === 1 ? ids[0].slice(0, 8) : `multi-${ids.length}`;
   const filename = `abu-diagnostic-${shortId}-${fmtTimestampForFilename(new Date())}.zip`;
 
   const { files, scrubbedTextCount } = await collectBundleFiles(opts);
 
   const zipInput: Record<string, Uint8Array> = {};
   for (const [name, content] of Object.entries(files)) {
-    zipInput[name] = strToU8(content);
+    zipInput[name] = typeof content === 'string' ? strToU8(content) : content;
   }
 
   const bytes = zipSync(zipInput, { level: 6 });

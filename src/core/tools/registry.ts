@@ -231,13 +231,18 @@ export type FilePermissionCallback = (request: {
 /**
  * Map of file-related tools to their path extraction logic
  */
+// Use a definedness/type check, NOT a truthy check: an empty-string path is
+// "present but invalid" and must still flow THROUGH the boundary check (which
+// rejects it), not skip it. A truthy `i.path ?` treats '' as falsy → returns
+// null → the whole permission/boundary block is bypassed for path: ''.
 const FILE_TOOL_PATH_MAP: Record<string, (input: Record<string, unknown>) => { path: string; capability: 'read' | 'write' } | null> = {
-  [TOOL_NAMES.READ_FILE]:      (i) => i.path ? { path: i.path as string, capability: 'read' } : null,
-  [TOOL_NAMES.LIST_DIRECTORY]: (i) => i.path ? { path: i.path as string, capability: 'read' } : null,
-  [TOOL_NAMES.WRITE_FILE]:     (i) => i.path ? { path: i.path as string, capability: 'write' } : null,
-  [TOOL_NAMES.EDIT_FILE]:      (i) => i.path ? { path: i.path as string, capability: 'write' } : null,
-  [TOOL_NAMES.SEARCH_FILES]:   (i) => i.path ? { path: i.path as string, capability: 'read' } : null,
-  [TOOL_NAMES.FIND_FILES]:     (i) => i.path ? { path: i.path as string, capability: 'read' } : null,
+  [TOOL_NAMES.READ_FILE]:      (i) => typeof i.path === 'string' ? { path: i.path, capability: 'read' } : null,
+  [TOOL_NAMES.LIST_DIRECTORY]: (i) => typeof i.path === 'string' ? { path: i.path, capability: 'read' } : null,
+  [TOOL_NAMES.WRITE_FILE]:     (i) => typeof i.path === 'string' ? { path: i.path, capability: 'write' } : null,
+  [TOOL_NAMES.EDIT_FILE]:      (i) => typeof i.path === 'string' ? { path: i.path, capability: 'write' } : null,
+  [TOOL_NAMES.DELETE_FILE]:    (i) => typeof i.path === 'string' ? { path: i.path, capability: 'write' } : null,
+  [TOOL_NAMES.SEARCH_FILES]:   (i) => typeof i.path === 'string' ? { path: i.path, capability: 'read' } : null,
+  [TOOL_NAMES.FIND_FILES]:     (i) => typeof i.path === 'string' ? { path: i.path, capability: 'read' } : null,
 };
 
 /**

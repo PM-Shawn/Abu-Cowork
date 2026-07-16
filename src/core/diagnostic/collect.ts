@@ -20,6 +20,7 @@ import { useDiagnosticStore } from '@/stores/diagnosticStore';
 import { useScheduleStore } from '@/stores/scheduleStore';
 import { skillLoader } from '@/core/skill/loader';
 import { getRecentLogs, getLogDirPath } from '@/core/logging/logger';
+import { catalogGetCount } from '@/core/session/conversationStorage';
 import { APP_VERSION } from '@/utils/version';
 import { platform } from '@tauri-apps/plugin-os';
 import { scrubSecrets, scrubMessage } from './scrub';
@@ -56,31 +57,98 @@ function logFileNameForDaysBack(daysBack: number): string {
 
 interface CollectOptions {
   includeRawText: boolean;
-  /** Conversation ID to embed (defaults to active). May be null/undefined. */
+  /**
+   * Conversation ID to embed (defaults to active). May be null/undefined.
+   * Kept for backward compatibility — new call sites should prefer
+   * {@link conversationIds}. Ignored whenever `conversationIds` was passed
+   * at all (see below) — including as an empty array.
+   */
   conversationId?: string | null;
+  /**
+   * Conversation IDs to embed (multi-select). Once this key is present in
+   * `opts` at all, it fully determines the id set — including an explicit
+   * empty array, which means "no conversation content" (pure
+   * environment/feedback bundle). This is a legal, common case (the user
+   * unchecked every conversation), not an error, and it must NOT fall back
+   * to `conversationId` / the active conversation — doing so would silently
+   * re-attach a conversation the user explicitly excluded. Only omitting
+   * this key (`undefined`) falls back to `conversationId` / active. See
+   * {@link resolveConversationIds}.
+   */
+  conversationIds?: string[];
   /**
    * Cap on how many (most-recent) messages to embed. A large conversation
    * (1000s of messages) serialized whole freezes the main thread during zip
    * (Bug 2). Defaults to the last {@link DEFAULT_DIAGNOSTIC_MESSAGE_CAP};
-   * pass 'all' to include everything.
+   * pass 'all' to include everything. This is a per-conversation request —
+   * it is still clamped by the global {@link MAX_TOTAL_DIAGNOSTIC_MESSAGES}
+   * budget shared across every selected conversation (multi-select or
+   * 'all' can otherwise multiply N conversations × cap and freeze the main
+   * thread all over again).
    */
   messageCap?: number | 'all';
+  /** Free-text user description of the issue, written verbatim into the bundle. */
+  description?: string;
+  /** Screenshots to embed as binary entries under feedback/screenshots/. */
+  screenshots?: { name: string; bytes: Uint8Array }[];
 }
 
-/** Default number of most-recent messages embedded in a diagnostic bundle. */
-export const DEFAULT_DIAGNOSTIC_MESSAGE_CAP = 200;
+/** Default number of most-recent messages embedded per conversation. */
+export const DEFAULT_DIAGNOSTIC_MESSAGE_CAP = 100;
+
+/**
+ * Global ceiling on the TOTAL number of messages embedded across every
+ * selected conversation combined. `messageCap` (default or 'all') is applied
+ * per-conversation, so selecting many conversations — or toggling "include
+ * all messages" — can otherwise multiply N conversations × cap and freeze
+ * the main thread during scrub + zip all over again (Bug 2, at the
+ * multi-select aggregate level). This budget is shared across the whole
+ * export and is never lifted by `messageCap: 'all'`, which only removes the
+ * per-conversation limit.
+ */
+export const MAX_TOTAL_DIAGNOSTIC_MESSAGES = 1000;
+
+/** Max conversations a user can attach to a feedback bundle (UI-enforced). */
+export const MAX_ATTACH_CONVERSATIONS = 5;
+
+/**
+ * Resolve which conversation ids a diagnostic bundle should embed content
+ * for. Once the caller passes `conversationIds` at all — including an empty
+ * array — it is respected exactly as given; this is what lets a user
+ * uncheck every conversation and get a pure environment/feedback bundle.
+ * Falling back to `conversationId` / the active conversation only happens
+ * when `conversationIds` itself was never provided (`undefined`).
+ */
+export function resolveConversationIds(
+  opts: { conversationIds?: string[]; conversationId?: string | null },
+  activeConversationId: string | null,
+): string[] {
+  if (opts.conversationIds !== undefined) return Array.from(new Set(opts.conversationIds));
+  if (opts.conversationId) return [opts.conversationId];
+  if (activeConversationId) return [activeConversationId];
+  return [];
+}
 
 /**
  * Keep only the last `cap` messages (or all, when cap is 'all' or the
  * conversation is already under the cap). Pure — returns the original array
  * reference untouched when no capping is needed. Reports the true total so the
  * bundle can note that older messages were dropped (never a silent truncation).
+ *
+ * `authoritativeTotal` (message-storage P1 step 4): when the in-memory
+ * `messages` array is a partial window (Layer 1 windowing), `messages.length`
+ * understates the real history size. Callers can pass the catalog's
+ * authoritative message_count so the reported `total` (and the derived
+ * "included N of TOTAL" note) reflects the full conversation, not just the
+ * loaded window. Falls back to `messages.length` when omitted/undefined, so
+ * every existing caller keeps its exact prior behavior.
  */
 export function capDiagnosticMessages<T>(
   messages: T[],
   cap: number | 'all',
+  authoritativeTotal?: number,
 ): { messages: T[]; total: number; capped: boolean } {
-  const total = messages.length;
+  const total = authoritativeTotal ?? messages.length;
   if (cap === 'all') return { messages, total, capped: false };
   // cap <= 0 → embed no messages (diagnostic-only). Guard explicitly:
   // slice(-0) === slice(0) would otherwise return EVERYTHING.
@@ -90,8 +158,8 @@ export function capDiagnosticMessages<T>(
 }
 
 interface CollectResult {
-  /** Map of "path inside zip" → "string contents". */
-  files: Record<string, string>;
+  /** Map of "path inside zip" → contents. Screenshots are raw bytes; everything else is text. */
+  files: Record<string, string | Uint8Array>;
   /** Aggregate scrub stat — how many text fields were redacted/replaced. */
   scrubbedTextCount: number;
 }
@@ -141,6 +209,9 @@ function generateReadme(opts: CollectOptions, fileList: string[]): string {
     `消息原文 / Raw message text: ${opts.includeRawText ? '已包含 INCLUDED' : '已脱敏 SCRUBBED'}`,
     'API key / 凭据 / 密钥 / Token: 永远不会包含 NEVER INCLUDED',
     '其它对话 / Other conversations: 不包含 NOT INCLUDED',
+    '只有你勾选的对话会被包含；未勾选的对话、API Key、密钥永远不会被包含。',
+    'Only the conversations you selected are included; unselected conversations,',
+    'API keys, and secrets are never included.',
     '',
     '─── 包内文件 / Files ─────────────────────────────────',
     '',
@@ -154,7 +225,7 @@ function generateReadme(opts: CollectOptions, fileList: string[]): string {
 }
 
 export async function collectBundleFiles(opts: CollectOptions): Promise<CollectResult> {
-  const files: Record<string, string> = {};
+  const files: Record<string, string | Uint8Array> = {};
   let scrubCount = 0;
 
   // ── meta.json ────────────────────────────────────────────────────────
@@ -184,37 +255,120 @@ export async function collectBundleFiles(opts: CollectOptions): Promise<CollectR
   };
   files['diagnostic-snapshot.json'] = JSON.stringify(snapshot, null, 2);
 
-  // ── conversation/* ───────────────────────────────────────────────────
+  // ── conversations/<shortId>/* ────────────────────────────────────────
+  // Multi-select: opts.conversationIds takes priority over the legacy
+  // single-id opts.conversationId. An explicit empty conversationIds list is
+  // legal (pure environment/feedback bundle, no conversation content) and
+  // must NOT fall back to the active conversation — see resolveConversationIds.
   const chat = useChatStore.getState();
-  const convId = opts.conversationId ?? chat.activeConversationId;
-  if (convId) {
-    const conv = chat.conversations[convId];
-    if (conv) {
-      // Cap to the most-recent messages so a huge conversation can't freeze the
-      // main thread during scrub + zip (Bug 2). Older messages are dropped with
-      // an explicit note — never silently.
-      const { messages: capped, total, capped: wasCapped } = capDiagnosticMessages(
-        conv.messages,
-        opts.messageCap ?? DEFAULT_DIAGNOSTIC_MESSAGE_CAP,
-      );
-      const scrubbedMessages = capped.map((m) => {
-        const out = scrubMessage(m, { includeRawText: opts.includeRawText });
-        if (!opts.includeRawText) scrubCount++;
-        return out;
-      });
-      files['conversation/messages.jsonl'] = scrubbedMessages.map((m) => JSON.stringify(m)).join('\n');
-      if (wasCapped) {
-        files['conversation/_truncation-note.txt'] =
-          `Included the most recent ${capped.length} of ${total} messages ` +
-          `(capped to keep the export responsive). Re-export with the "all messages" ` +
-          `option to include the full history.\n`;
-      }
+  const ids = resolveConversationIds(opts, chat.activeConversationId);
 
-      const indexEntry = chat.conversationIndex[convId];
-      if (indexEntry) {
-        files['conversation/index-entry.json'] = JSON.stringify(scrubSecrets(indexEntry), null, 2);
-      }
+  // Disambiguate short (8-char) prefixes so two ids don't collide inside the zip.
+  const usedShortIds = new Set<string>();
+  function shortIdFor(id: string): string {
+    let candidate = id.slice(0, 8);
+    let len = 8;
+    while (usedShortIds.has(candidate) && len < id.length) {
+      len += 4;
+      candidate = id.slice(0, len);
     }
+    if (usedShortIds.has(candidate)) {
+      // Extremely unlikely (would require a shared full-length id) — append an index.
+      let i = 2;
+      while (usedShortIds.has(`${candidate}-${i}`)) i++;
+      candidate = `${candidate}-${i}`;
+    }
+    usedShortIds.add(candidate);
+    return candidate;
+  }
+
+  // Per-conversation request (default cap, or 'all' to lift it) — still
+  // clamped below by the shared global budget.
+  const requestedCap = opts.messageCap ?? DEFAULT_DIAGNOSTIC_MESSAGE_CAP;
+  const requestedCapNumeric = requestedCap === 'all' ? Number.POSITIVE_INFINITY : requestedCap;
+  // Running total across ALL selected conversations — see
+  // MAX_TOTAL_DIAGNOSTIC_MESSAGES for why this exists independently of the
+  // per-conversation cap.
+  let remainingMessageBudget = MAX_TOTAL_DIAGNOSTIC_MESSAGES;
+
+  for (const convId of ids) {
+    let conv = chat.conversations[convId];
+    if (!conv) {
+      // Selected but not currently held in memory (e.g. a conversation from
+      // an earlier session that was never opened this run) — load it before
+      // giving up, otherwise it's silently dropped from the bundle even
+      // though the user explicitly selected it.
+      await useChatStore.getState().loadConversation(convId);
+      // loadConversation replaces the store's state object, so `chat` (a
+      // stale snapshot from before this call) won't reflect it — re-fetch.
+      conv = useChatStore.getState().conversations[convId];
+    }
+    if (!conv) continue;
+
+    const shortId = shortIdFor(convId);
+    const dir = `conversations/${shortId}`;
+
+    // Cap to the most-recent messages so a huge conversation can't freeze the
+    // main thread during scrub + zip (Bug 2). Older messages are dropped with
+    // an explicit note — never silently. The effective cap is also clamped
+    // to whatever remains of the global multi-conversation budget.
+    const effectiveCap = Math.max(0, Math.min(requestedCapNumeric, remainingMessageBudget));
+    // Prefer the catalog's authoritative message_count for the reported total:
+    // conv.messages can be a partial window, so its length understates true
+    // history size. catalogGetCount returns null on any failure, in which case
+    // capDiagnosticMessages falls back to conv.messages.length (prior behavior).
+    const authoritativeTotal = (await catalogGetCount(convId)) ?? undefined;
+    const { messages: capped, total, capped: wasCapped } = capDiagnosticMessages(
+      conv.messages,
+      effectiveCap,
+      authoritativeTotal,
+    );
+    remainingMessageBudget = Math.max(0, remainingMessageBudget - capped.length);
+
+    const scrubbedMessages = capped.map((m) => {
+      const out = scrubMessage(m, { includeRawText: opts.includeRawText });
+      if (!opts.includeRawText) scrubCount++;
+      return out;
+    });
+    files[`${dir}/messages.jsonl`] = scrubbedMessages.map((m) => JSON.stringify(m)).join('\n');
+    if (wasCapped) {
+      const globalBudgetWasBinding = effectiveCap < requestedCapNumeric;
+      files[`${dir}/_truncation-note.txt`] = globalBudgetWasBinding
+        ? `Included the most recent ${capped.length} of ${total} messages ` +
+          `(truncated because the overall diagnostic export budget of ` +
+          `${MAX_TOTAL_DIAGNOSTIC_MESSAGES} total messages across all selected ` +
+          `conversations was reached). Select fewer conversations, or export them ` +
+          `separately, to include more history for this one.\n`
+        : `Included the most recent ${capped.length} of ${total} messages ` +
+          `(older messages were omitted to keep the export small).\n`;
+    }
+
+    const indexEntry = chat.conversationIndex[convId];
+    if (indexEntry) {
+      files[`${dir}/index-entry.json`] = JSON.stringify(scrubSecrets(indexEntry), null, 2);
+    }
+  }
+
+  // ── feedback/description.txt ─────────────────────────────────────────
+  if (opts.description && opts.description.trim()) {
+    files['feedback/description.txt'] = opts.description.trim();
+  }
+
+  // ── feedback/screenshots/* ───────────────────────────────────────────
+  // Binary entries — kept as raw Uint8Array so the bundler can zip them
+  // without a text round-trip. Guard against name collisions defensively;
+  // callers are expected to pass unique names (e.g. 01.png, 02.png).
+  const usedScreenshotNames = new Set<string>();
+  for (const s of opts.screenshots ?? []) {
+    let name = s.name;
+    let i = 2;
+    while (usedScreenshotNames.has(name)) {
+      const dot = s.name.lastIndexOf('.');
+      name = dot === -1 ? `${s.name}-${i}` : `${s.name.slice(0, dot)}-${i}${s.name.slice(dot)}`;
+      i++;
+    }
+    usedScreenshotNames.add(name);
+    files[`feedback/screenshots/${name}`] = s.bytes;
   }
 
   // ── settings/* ───────────────────────────────────────────────────────
@@ -381,7 +535,7 @@ export async function collectBundleFiles(opts: CollectOptions): Promise<CollectR
   }
   files['stores/versions.json'] = JSON.stringify(storeVersions, null, 2);
 
-  // ── conversation/index.json ──────────────────────────────────────────
+  // ── conversations/index.json ─────────────────────────────────────────
   // Metadata for ALL conversations (titles, counts, timestamps). No
   // message content. Helps diagnose "conversation disappeared / wrong
   // conversation loaded" type bugs.
@@ -398,9 +552,9 @@ export async function collectBundleFiles(opts: CollectOptions): Promise<CollectR
       totalCost: m.totalCost,
       readOnly: m.readOnly,
     }));
-    files['conversation/index.json'] = JSON.stringify(scrubSecrets(allMeta), null, 2);
+    files['conversations/index.json'] = JSON.stringify(scrubSecrets(allMeta), null, 2);
   } catch (e) {
-    files['conversation/index.json'] = JSON.stringify({ error: e instanceof Error ? e.message : String(e) }, null, 2);
+    files['conversations/index.json'] = JSON.stringify({ error: e instanceof Error ? e.message : String(e) }, null, 2);
   }
 
   // ── schedule/summary.json ────────────────────────────────────────────

@@ -160,6 +160,27 @@ function findTargetMessage(messages: Message[] | undefined, msgId: string): Mess
   return messages[messages.length - 1];
 }
 
+/**
+ * Best-effort catalog count adjustment after a message deletion
+ * (message-storage P1 step 2). Shared by deleteMessage / deleteMessagesFrom /
+ * deleteLoopMessages (code-review fix #9 — was three copies of this same
+ * block). This is a DISPLAY-LEVEL / session-level count nudge, not a claim
+ * that the JSONL file itself shrank by `removedCount` — delete never
+ * rewrites messages.jsonl, so the catalog's message_count would otherwise
+ * drift upward forever relative to what's actually rendered. A wrong/stale
+ * bump here is harmless and self-heals: `catalog_reconcile` re-derives the
+ * true count from JSONL on next startup (same accepted-drift posture as the
+ * P0 write-through comment elsewhere in this file). Do NOT "fix" this into
+ * an exact JSONL-truth accounting — that's an intentional trade-off, not an
+ * oversight.
+ */
+function bumpCatalogAfterDelete(convId: string, removedCount: number): void {
+  if (removedCount <= 0) return;
+  import('../core/session/conversationStorage').then(({ catalogBumpCount }) => {
+    catalogBumpCount(convId, -removedCount, Date.now(), null).catch(() => {});
+  });
+}
+
 let flushScheduled = false;
 
 function scheduleFlush() {
@@ -304,7 +325,7 @@ interface ChatActions {
 
   // New message operations
   editMessage: (convId: string, messageId: string, newContent: string) => void;
-  deleteMessage: (convId: string, messageId: string) => void;
+  deleteMessage: (convId: string, messageId: string, opts?: { skipCatalogBump?: boolean }) => void;
   deleteMessagesFrom: (convId: string, messageId: string) => void;
   deleteLoopMessages: (convId: string, loopId: string) => void;
   updateMessageThinking: (convId: string, thinking: string, msgId?: string) => void;
@@ -430,9 +451,11 @@ export const useChatStore = create<ChatStore>()(
           }
           state.pendingPermissionMode = undefined;
         });
-        // Sync index to disk (fire-and-forget)
-        import('../core/session/conversationStorage').then(({ updateIndexEntry }) => {
+        // Sync index to disk (fire-and-forget). Also write-through the SQLite
+        // catalog (message-storage P0) — best-effort, reconcile is the net.
+        import('../core/session/conversationStorage').then(({ updateIndexEntry, catalogUpsertConversation }) => {
           updateIndexEntry(meta).catch(() => {});
+          catalogUpsertConversation(meta).catch(() => {});
         });
         // Sync global workspace to match the new conversation.
         // Clear when no workspace so UI doesn't show a stale path from a previous conversation.
@@ -580,9 +603,13 @@ export const useChatStore = create<ChatStore>()(
         clearSkillHooksByConversation(id);
         useTaskExecutionStore.getState().clearConversation(id);
         // Clean up disk files (JSONL messages, tool results, outputs)
-        import('../core/session/conversationStorage').then(({ deleteConversationFiles, removeIndexEntry }) => {
+        import('../core/session/conversationStorage').then(({ deleteConversationFiles, removeIndexEntry, catalogMarkMissing }) => {
           deleteConversationFiles(id).catch(() => {});
           removeIndexEntry(id).catch(() => {});
+          // Write-through the SQLite catalog: soft-delete the row (message-
+          // storage P0). Best-effort; reconcile also marks it missing once the
+          // JSONL is gone.
+          catalogMarkMissing(id).catch(() => {});
         }).catch(() => {});
         // Legacy cleanup: session memory files (tool results offloaded to disk)
         import('../core/session/sessionMemory').then(({ cleanupConversationResults }) => {
@@ -669,9 +696,29 @@ export const useChatStore = create<ChatStore>()(
           }
         });
         // Persist to disk index
-        import('../core/session/conversationStorage').then(({ updateIndexEntry }) => {
+        import('../core/session/conversationStorage').then(({ updateIndexEntry, catalogReindexConversation }) => {
           const meta = get().conversationIndex[id];
-          if (meta) updateIndexEntry(meta).catch(() => {});
+          // Live-freshness write-through (message-storage hybrid P2): re-index
+          // this conversation's FTS title immediately so the new title is
+          // searchable without waiting for the next startup reconcile.
+          // Fire-and-forget — catalogReindexConversation already swallows its
+          // own errors.
+          //
+          // Chained AFTER updateIndexEntry resolves (fix #4): updateIndexEntry
+          // itself awaits loadIndex() before mutating indexCache, so firing
+          // catalogReindexConversation concurrently could let its own
+          // flushIndex() serialize indexCache to disk before updateIndexEntry
+          // has written the new title into it — the Rust-side reindex would
+          // then read the STALE on-disk title. Sequencing guarantees the new
+          // title is in indexCache before catalogReindexConversation's
+          // flushIndex runs.
+          if (meta) {
+            updateIndexEntry(meta)
+              .then(() => catalogReindexConversation(id))
+              .catch(() => {});
+          } else {
+            catalogReindexConversation(id).catch(() => {});
+          }
         });
       },
 
@@ -697,7 +744,15 @@ export const useChatStore = create<ChatStore>()(
                 conv.title = newTitle;
               }
             }
-            // Sync index metadata
+            // Sync index metadata. messageCount is RE-DERIVED from
+            // conv.messages.length, not incremented (message-storage P0,
+            // code-review fix #1): in P0 there is no partial load, so
+            // conv.messages is always the full history. Re-derivation is
+            // both correct AND self-healing across deletes/edits/retries —
+            // deleteMessage/deleteMessagesFrom/deleteLoopMessages mutate
+            // conv.messages but never adjust conversationIndex.messageCount,
+            // so an increment-only counter drifts upward forever while
+            // re-derivation always reflects reality.
             if (state.conversationIndex[convId]) {
               state.conversationIndex[convId].messageCount = conv.messages.length;
               state.conversationIndex[convId].updatedAt = conv.updatedAt;
@@ -912,40 +967,60 @@ export const useChatStore = create<ChatStore>()(
         });
       },
 
-      deleteMessage: (convId, messageId) => {
+      deleteMessage: (convId, messageId, opts) => {
+        let removedCount = 0;
         set((state) => {
           const conv = state.conversations[convId];
           if (conv) {
+            const before = conv.messages.length;
             conv.messages = conv.messages.filter((m) => m.id !== messageId);
+            removedCount = before - conv.messages.length;
             conv.updatedAt = Date.now();
             conv.contextCache = undefined;  // Invalidate compression cache
           }
         });
+        // See bumpCatalogAfterDelete's doc comment for why this is an
+        // intentionally approximate, self-healing display-level nudge.
+        // `skipCatalogBump` (code-review fix #8): the agentLoop ghost-message
+        // deletion path passes this when the placeholder was never durably
+        // appended to messages.jsonl — appendMessage's own catalog `+1` only
+        // fires once the disk-append path is actually taken (see
+        // `isMessageWrittenToDisk`), so a ghost that never reached disk has
+        // no `+1` to offset and an unconditional `-1` here would transiently
+        // undercount the catalog until the next turn-end reindex.
+        if (!opts?.skipCatalogBump) bumpCatalogAfterDelete(convId, removedCount);
       },
 
       deleteMessagesFrom: (convId, messageId) => {
+        let removedCount = 0;
         set((state) => {
           const conv = state.conversations[convId];
           if (conv) {
             const idx = conv.messages.findIndex((m) => m.id === messageId);
             if (idx !== -1) {
+              removedCount = conv.messages.length - idx;
               conv.messages = conv.messages.slice(0, idx);
               conv.updatedAt = Date.now();
               conv.contextCache = undefined;  // Invalidate compression cache
             }
           }
         });
+        bumpCatalogAfterDelete(convId, removedCount);
       },
 
       deleteLoopMessages: (convId, loopId) => {
+        let removedCount = 0;
         set((state) => {
           const conv = state.conversations[convId];
           if (conv) {
+            const before = conv.messages.length;
             conv.messages = conv.messages.filter((m) => m.loopId !== loopId);
+            removedCount = before - conv.messages.length;
             conv.updatedAt = Date.now();
             conv.contextCache = undefined;  // Invalidate compression cache
           }
         });
+        bumpCatalogAfterDelete(convId, removedCount);
       },
 
       updateMessageThinking: (convId, thinking, msgId) => {
@@ -1243,9 +1318,21 @@ export const useChatStore = create<ChatStore>()(
       },
 
       setConversationStatus: (convId, status) => {
+        let shouldReindex = false;
         set((state) => {
           const conv = state.conversations[convId];
           if (conv) {
+            const prevStatus = conv.status;
+            // Fix #2: 'error' is also a terminal state — the user message +
+            // partial assistant reply are already appended to messages.jsonl
+            // by the time a turn ends in error, but without this the
+            // conversation was never indexed until the next restart.
+            const isTerminal = status === 'completed' || status === 'error';
+            // Fix #5: only fire when the conversation actually exists AND is
+            // transitioning INTO a terminal state — not on a redundant
+            // re-set of a status it's already in (e.g. a duplicate
+            // 'completed' call), and never for a convId absent from state.
+            shouldReindex = isTerminal && prevStatus !== status;
             conv.status = status;
             if (status === 'completed') {
               conv.completedAt = Date.now();
@@ -1254,6 +1341,17 @@ export const useChatStore = create<ChatStore>()(
             }
           }
         });
+        // Live-freshness write-through (message-storage hybrid P2): turn-end
+        // is the moment a conversation's messages are settled for this round,
+        // so re-index its catalog row + FTS body now instead of waiting for
+        // the next startup reconcile. Fire-and-forget, matches the existing
+        // dynamic-import + .catch(()=>{}) pattern used elsewhere in this
+        // store — never await inside the reducer.
+        if (shouldReindex) {
+          import('../core/session/conversationStorage').then(({ catalogReindexConversation }) => {
+            catalogReindexConversation(convId).catch(() => {});
+          });
+        }
       },
 
       clearCompletedStatus: (convId) => {
@@ -1544,7 +1642,7 @@ export const useChatStore = create<ChatStore>()(
     })),
     {
       name: 'abu-chat',
-      version: 6,
+      version: 7,
       migrate: (persisted, version) => {
         const state = persisted as Record<string, unknown>;
         // v1 → v2: added executionSteps on Message (optional field, no-op migration)
@@ -1556,6 +1654,11 @@ export const useChatStore = create<ChatStore>()(
         // v5 → v6: added per-conversation `model` on ConversationMeta (optional field;
         // undefined = inherit global activeModel, pinned on first run, no-op migration)
         if (version < 6) { /* no transform needed */ }
+        // v6 → v7: added compact-boundary markers (long-conversation Part A).
+        // Markers are plain append-only Messages with an optional `compactBoundary`
+        // payload — persisted state (conversationIndex) is unchanged, so this is a
+        // no-op bump that just guards against older builds mis-reading the schema.
+        if (version < 7) { /* no transform needed */ }
         // v3 → v4: migrate conversations from localStorage to file system
         if (version < 4) {
           // Mark for async migration in onRehydrateStorage

@@ -2,7 +2,7 @@
   "name": "abu",
   "private": false,
   "license": "Apache-2.0",
-  "version": "0.29.0",
+  "version": "0.30.0",
   "description": "Abu - AI Desktop Office Assistant",
   "type": "module",
   "scripts": {
@@ -35,6 +35,7 @@
     "eval:report": "tsx src/eval/run.ts report",
     "copy-resources": "node scripts/copy-resources.js",
     "setup-python": "bash scripts/setup-python-runtime.sh",
+    "setup-node": "bash scripts/setup-node-runtime.sh",
     "prepare": "husky"
   },
   "dependencies": {
@@ -79,6 +80,7 @@
     "react-markdown": "^10.1.0",
     "react-pdf": "^10.4.1",
     "react-syntax-highlighter": "^16.1.1",
+    "react-virtuoso": "^4.18.10",
     "remark-breaks": "^4.0.0",
     "remark-gfm": "^4.0.1",
     "tailwind-merge": "^3.5.0",

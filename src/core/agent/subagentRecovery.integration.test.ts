@@ -64,7 +64,7 @@ vi.mock('../enterprise/llm-resolver', () => ({
   resolveEffectiveLlmCreds: () => ({ apiKey: 'sk-test', baseUrl: undefined }),
 }));
 
-import { runSubagentLoop } from './subagentLoop';
+import { runSubagentLoop, SubagentResult } from './subagentLoop';
 
 /** Build a fake adapter.chat that synchronously emits the given stream events. */
 function emits(events: StreamEvent[]) {
@@ -109,6 +109,33 @@ describe('subagent max_tokens recovery (integration)', () => {
 
     // The resumed answer is returned.
     expect(result.text).toContain('the final answer');
+  });
+
+  // Contract that agentLoop's @agent delegate branch depends on: when the user
+  // aborts MID-RUN, runSubagentLoop RETURNS a (partial/cancelled) SubagentResult
+  // — it does NOT throw. Therefore the delegate branch must re-check
+  // signal.aborted AFTER the await to report {reason:'aborted'}; a throw-based
+  // abort path would never fire. If anyone regresses this to throw on abort, the
+  // delegate abort fix silently breaks — this test guards the premise.
+  //
+  // Note: an already-aborted-at-entry signal is deliberately IGNORED (stale-abort
+  // guard in runSubagentLoop), so the real cancellation shape is a mid-run abort.
+  it('returns a SubagentResult (does not throw) when aborted mid-run', async () => {
+    const ac = new AbortController();
+    // Turn 0: the user hits Stop during the LLM call, then the model still emits a
+    // tool call so the loop would continue — the top-of-turn abort check on turn 1
+    // catches the cancellation and returns.
+    mockClaudeChat.mockImplementationOnce(async (_m: unknown, _o: unknown, onEvent: (e: StreamEvent) => void) => {
+      ac.abort();
+      onEvent({ type: 'tool_use', id: 't1', name: 'noop', input: {} } as StreamEvent);
+      onEvent({ type: 'done', stopReason: 'tool_use' } as StreamEvent);
+    });
+
+    const result = await runSubagentLoop({ agent, task: 'do the thing', signal: ac.signal });
+
+    // Returned (not thrown) as a SubagentResult, and did not start another turn.
+    expect(result).toBeInstanceOf(SubagentResult);
+    expect(mockClaudeChat).toHaveBeenCalledTimes(1);
   });
 
   it('escalates the output budget on the recovery turn', async () => {

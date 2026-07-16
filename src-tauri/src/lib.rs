@@ -20,8 +20,10 @@ mod overlay;
 mod pet;
 mod secrets;
 mod atomic_write;
+mod append_file;
 mod notice;
 mod notice_db;
+mod catalog_db;
 mod sleep_prevention;
 mod clipboard_files;
 mod preview_server;
@@ -812,21 +814,59 @@ async fn mcp_spawn(
         cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
     }
 
-    // Inject enhanced PATH so commands like npx/node can be found
-    if !env.contains_key("PATH") {
-        #[cfg(not(target_os = "windows"))]
-        if let Some(path) = get_login_shell_path() {
-            cmd.env("PATH", &path);
-        }
-        #[cfg(target_os = "windows")]
-        if let Some(path) = get_enhanced_path_windows() {
-            cmd.env("PATH", &path);
-        }
-    }
-
-    // Merge environment variables
+    // Merge caller-provided environment variables first; PATH is (re)computed
+    // and set below so the bundled Node fallback is appended even when the MCP
+    // config supplies its own PATH.
     for (k, v) in &env {
         cmd.env(k, v);
+    }
+
+    // Build the child PATH and append the bundled Node.js runtime bin dir as a
+    // fallback. It goes at the END of PATH, so a user's own `node` (from an
+    // earlier entry — inherited or from the config's own PATH) always wins; the
+    // bundled runtime is used only when no system Node is on PATH. This lets
+    // npx-based MCP servers run without the user installing Node.js first.
+    {
+        #[cfg(not(target_os = "windows"))]
+        let resolved_path = get_login_shell_path();
+        #[cfg(target_os = "windows")]
+        let resolved_path = get_enhanced_path_windows();
+
+        // Base PATH: the config's own PATH if it set one, else the resolved
+        // login-shell / registry PATH, else the inherited PATH.
+        let base_path = env
+            .get("PATH")
+            .cloned()
+            .or(resolved_path)
+            .or_else(|| std::env::var("PATH").ok());
+
+        // Official Node dist keeps binaries in bin/ on unix, at the root on Windows.
+        #[cfg(not(target_os = "windows"))]
+        let node_bin_rel = "node-runtime/bin";
+        #[cfg(target_os = "windows")]
+        let node_bin_rel = "node-runtime";
+        let bundled_node_bin = app
+            .path()
+            .resolve(node_bin_rel, tauri::path::BaseDirectory::Resource)
+            .ok()
+            .filter(|p| p.exists())
+            .map(|p| p.to_string_lossy().to_string());
+
+        let mut path = base_path.unwrap_or_default();
+        if let Some(node_bin) = bundled_node_bin {
+            let sep = if cfg!(target_os = "windows") { ';' } else { ':' };
+            if !path.split(sep).any(|seg| seg == node_bin) {
+                if !path.is_empty() {
+                    path.push(sep);
+                }
+                path.push_str(&node_bin);
+            }
+        }
+        // Only override PATH when we have something, so we never clobber the
+        // child's inherited PATH with an empty string.
+        if !path.is_empty() {
+            cmd.env("PATH", &path);
+        }
     }
 
     let mut child = cmd.spawn().map_err(|e| {
@@ -1277,6 +1317,23 @@ pub fn run() {
                 }
             }
 
+            // Initialize conversation catalog SQLite database (message-storage
+            // hybrid P0). A rebuildable projection of conversations/*/messages.jsonl
+            // — safe to fail open, `catalog_reconcile` rebuilds it from JSONL later.
+            let catalog_db_path = app
+                .path()
+                .app_data_dir()
+                .map(|dir| dir.join("catalog.sqlite"))
+                .unwrap_or_else(|_| std::path::PathBuf::from("catalog.sqlite"));
+            match catalog_db::CatalogDb::open(&catalog_db_path) {
+                Ok(db) => {
+                    app.manage(db);
+                }
+                Err(e) => {
+                    eprintln!("[catalog_db] Failed to init: {}. Conversation catalog will be unavailable.", e);
+                }
+            }
+
             // Start the HTML preview HTTP server (loopback). Bind is fast (<10ms);
             // failure here means previews degrade but app continues.
             match tauri::async_runtime::block_on(preview_server::start()) {
@@ -1390,6 +1447,17 @@ pub fn run() {
             notice_db::notice_inbox_pending,
             notice_db::notice_inbox_mark_delivered,
             notice_db::notice_inbox_cleanup,
+            catalog_db::catalog_upsert_conversation,
+            catalog_db::catalog_get_conversation,
+            catalog_db::catalog_list_conversations,
+            catalog_db::catalog_bump_count,
+            catalog_db::catalog_mark_missing,
+            catalog_db::catalog_get_sync_state,
+            catalog_db::catalog_set_initial_build_complete,
+            catalog_db::catalog_bump_observation_sequence,
+            catalog_db::catalog_reconcile,
+            catalog_db::catalog_search,
+            catalog_db::catalog_reindex_conversation,
             secret_get,
             secret_set,
             secret_delete,
@@ -1401,6 +1469,7 @@ pub fn run() {
             atomic_write::atomic_write_with_backup,
             atomic_write::restore_from_backup,
             atomic_write::cleanup_old_backups,
+            append_file::append_file_text,
             sleep_prevention::set_prevent_sleep,
             clipboard_files::read_clipboard_file_paths,
             preview_server::get_preview_server_info,

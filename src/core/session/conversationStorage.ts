@@ -22,6 +22,7 @@
  */
 
 import { exists, readTextFile, mkdir, remove, readDir } from '@tauri-apps/plugin-fs';
+import { invoke } from '@tauri-apps/api/core';
 import { appDataDir } from '@tauri-apps/api/path';
 import { joinPath } from '@/utils/pathUtils';
 import { atomicWrite } from '@/utils/atomicFs';
@@ -185,17 +186,40 @@ async function drainAll(): Promise<void> {
 
 /**
  * Append data to a file. Creates parent directory on first write.
- * Tauri's plugin-fs writeTextFile doesn't support native append, so we
- * read + append + atomic-write. For typical conversation files (<1MB) this is fine.
  *
- * Atomic writes (tempfile + fsync + rename) prevent partial writes on
- * crash / kill / power loss — readers either see the pre-append content
- * or the fully-appended content, never a truncated middle state.
+ * Part B1: tries the native `append_file_text` Rust command first — it opens
+ * the file in OS append mode and writes only `data`, no read of existing
+ * content, so cost is O(len(data)) instead of O(file size). If that command
+ * is unavailable (older bundled binary mid-upgrade, unexpected Rust-side
+ * failure) or throws for any other reason, we fall back to the previous
+ * read + atomic-write path below, which is O(file size) but was already
+ * battle-tested.
+ *
+ * Atomicity trade-off: the fallback's atomic writes (tempfile + fsync +
+ * rename) guarantee a reader never observes a half-written file. Native
+ * append does NOT have that guarantee — a crash mid-`write_all` can leave a
+ * half-written last line. This is an accepted trade-off (see
+ * `src-tauri/src/append_file.rs` doc comment): `loadMessages` below already
+ * tolerates and skips corrupt JSONL lines, so the worst case of a crash
+ * during native append is losing the one message that was mid-flight, never
+ * the messages already durably on disk before the call started.
  *
  * Serialized against concurrent mutations on the same path via `withFileLock`.
  */
 async function appendToFile(filePath: string, data: string): Promise<void> {
   return withFileLock(filePath, async () => {
+    try {
+      // Native O(1) append (Part B1). Falls back to read+atomic-rewrite below
+      // if the command is unavailable or fails.
+      await invoke('append_file_text', { path: filePath, data });
+      return;
+    } catch {
+      // Fall through to the read + atomic-write path. NOTE: this fallback is not
+      // idempotent — if the native append durably wrote `data` but its promise
+      // still rejected (IPC teardown / shutdown race), we re-append the same
+      // line here, producing a DUPLICATE (not a corrupt line). loadMessages
+      // dedups by id on read, so the duplicate never surfaces.
+    }
     try {
       if (await exists(filePath)) {
         const current = await readTextFile(filePath);
@@ -248,6 +272,21 @@ function populateWrittenIds(messages: Message[]): void {
   for (const msg of messages) {
     writtenIds.add(msg.id);
   }
+}
+
+/**
+ * Check whether a message id has already taken the disk-append path — i.e.
+ * mirrors the exact dedup condition `appendMessage` uses to decide whether to
+ * fire its `catalogBumpCount(+1)` (see `writtenIds.has` / `.add` above).
+ *
+ * Used by chatStore's ghost-message deletion path (agentLoop.ts) to avoid an
+ * unbalanced catalog `-1`: a streamed assistant placeholder that never
+ * durably reached messages.jsonl (aborted before `addMessage`'s
+ * fire-and-forget `appendMessage` call ran) never had a `+1` to offset, so
+ * deleting it must skip the catalog bump entirely (code-review fix #8).
+ */
+export function isMessageWrittenToDisk(id: string): boolean {
+  return writtenIds.has(id);
 }
 
 // ════════════════════════════════════════════════════════════
@@ -343,6 +382,209 @@ export async function flushIndex(): Promise<void> {
 }
 
 // ════════════════════════════════════════════════════════════
+// SQLite conversation catalog — write-through (message-storage P0)
+// ════════════════════════════════════════════════════════════
+//
+// The catalog is a REBUILDABLE PROJECTION of the JSONL files (see
+// docs/2026-07-14-message-storage-sqlite-hybrid-*). JSONL is always the
+// source of truth. Every write-through call below is BEST-EFFORT: it must
+// never throw into the JSONL write path, and any failure is swallowed —
+// startup `catalog_reconcile()` is the safety net that repairs drift by
+// re-scanning JSONL. Never write user data only to the catalog.
+
+/** Absolute path to the conversations root dir. Set by ensureBase(). */
+function conversationsRoot(): string {
+  return basePath!;
+}
+
+/**
+ * Best-effort: bump the catalog's message_count for a conversation by
+ * `delta` (positive on append, negative on delete — the Rust side just adds
+ * whatever signed delta it's given). Passes the conversations root so Rust
+ * can re-read the JSONL's byte/mtime watermark (keeping incremental
+ * reconcile from redundantly rescanning). Swallows all errors — the catalog
+ * is disposable.
+ *
+ * Exported for chatStore's delete paths (deleteMessage/deleteMessagesFrom/
+ * deleteLoopMessages), which call this with a negative delta after mutating
+ * in-memory state — see call sites there for why that's a display-level
+ * adjustment, not a JSONL rewrite.
+ */
+export async function catalogBumpCount(
+  convId: string,
+  delta: number,
+  updatedAt: number,
+  lastMessageId: string | null,
+): Promise<void> {
+  try {
+    await invoke('catalog_bump_count', {
+      convId,
+      delta,
+      updatedAt,
+      lastMessageId,
+      conversationsRoot: conversationsRoot(),
+    });
+  } catch {
+    // Non-fatal: reconcile on next startup repairs the count from JSONL.
+  }
+}
+
+/**
+ * Best-effort: read the catalog's authoritative `message_count` for a
+ * conversation. Returns null on any failure (missing row, IPC error, etc.) —
+ * callers must treat null as "unknown, fall back to whatever in-memory count
+ * they already have." The catalog is a disposable projection, never a hard
+ * dependency (see module doc above).
+ */
+export async function catalogGetCount(convId: string): Promise<number | null> {
+  try {
+    const row = await invoke<{ message_count: number } | null>('catalog_get_conversation', { convId });
+    return row?.message_count ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Best-effort: upsert a full catalog row for a conversation. Used on
+ * conversation create (and any full metadata sync). Serialized model pin is
+ * stored as JSON text so the catalog can surface it without a second lookup.
+ */
+export async function catalogUpsertConversation(meta: ConversationMeta): Promise<void> {
+  try {
+    await ensureBase();
+    await invoke('catalog_upsert_conversation', {
+      row: {
+        conv_id: meta.id,
+        title: meta.title ?? '',
+        created_at: meta.createdAt,
+        updated_at: meta.updatedAt,
+        message_count: meta.messageCount ?? 0,
+        last_message_id: null,
+        model: meta.model ? JSON.stringify(meta.model) : null,
+        source_bytes: 0,
+        source_mtime: null,
+        missing: false,
+      },
+    });
+  } catch {
+    // Non-fatal: reconcile on next startup repairs the row from JSONL.
+  }
+}
+
+/** Best-effort: mark a conversation's catalog row missing (soft-delete). */
+export async function catalogMarkMissing(convId: string): Promise<void> {
+  try {
+    await invoke('catalog_mark_missing', { convId });
+  } catch {
+    // Non-fatal.
+  }
+}
+
+/**
+ * Startup reconcile / migration. Safe to call unconditionally on every launch:
+ * first run does a full scan-build of the catalog from every JSONL file;
+ * later runs do incremental repair (rescan only changed conversations, mark
+ * missing ones). Never modifies JSONL. Fire-and-forget from the caller.
+ */
+export async function reconcileCatalog(): Promise<void> {
+  try {
+    await ensureBase();
+    await invoke('catalog_reconcile', { conversationsRoot: conversationsRoot() });
+  } catch {
+    // Non-fatal: the app still works off localStorage conversationIndex in P0.
+  }
+}
+
+// ════════════════════════════════════════════════════════════
+// SQLite FTS5 conversation search — write-through (message-storage P2)
+// ════════════════════════════════════════════════════════════
+//
+// Design doc: docs/2026-07-15-fts5-conversation-search-SPEC.md. `conversation_fts`
+// is a rebuildable projection, same invariant as the catalog above. Both
+// wrappers below are best-effort: search returns [] on any failure, and the
+// reindex write-through swallows errors — the next startup `reconcileCatalog()`
+// self-heals from JSONL regardless of whether any given reindex call landed.
+
+/** One conversation search hit. Field names match the Rust `SearchHit`
+ * struct's serde output verbatim (snake_case, no rename) — see
+ * `catalog_search`'s `SearchHit` in `src-tauri/src/catalog_db.rs`. Command
+ * *argument* names go through Tauri's camelCase<->snake_case bridging (as
+ * every other catalog invoke call in this file does), but *return* values are
+ * plain serde JSON with no such bridging — the same reason
+ * `catalogGetCount` above reads `row?.message_count`, not `row?.messageCount`.
+ */
+export interface SearchHit {
+  conv_id: string;
+  title: string;
+  snippet: string;
+  rank: number;
+}
+
+/**
+ * Best-effort conversation full-text search. Returns `[]` on any failure
+ * (IPC error, DB not initialized, etc.) — callers must treat that the same as
+ * "no results," never as a hard error. `limit` defaults to 50 on the Rust
+ * side when omitted. `search_core` picks the strategy by length: 1-2 char
+ * queries use a LIKE substring fallback (the trigram tokenizer can't match
+ * anything shorter), 3+ char queries use the ranked FTS5 trigram index.
+ */
+export async function catalogSearch(query: string, limit?: number): Promise<SearchHit[]> {
+  try {
+    const hits = await invoke<SearchHit[] | null>('catalog_search', { query, limit });
+    // Defensive `?? []`: the Rust command always resolves an array (empty on
+    // no match), but callers downstream (sidebar search results) will `.map()`
+    // this — never let a null/undefined IPC quirk propagate into that.
+    return hits ?? [];
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Best-effort: re-index ONE conversation's catalog row + FTS row straight
+ * from its JSONL + index.json — the same derivation `catalog_reconcile` uses
+ * per-conversation, just scoped to a single `convId`. Called write-through at
+ * turn-end and on rename (see chatStore's `setConversationStatus` /
+ * `renameConversation`) so a conversation is searchable immediately instead
+ * of only after the next startup reconcile. Fire-and-forget from the caller;
+ * swallows all errors — reconcile on next launch repairs any missed reindex.
+ */
+export async function catalogReindexConversation(convId: string): Promise<void> {
+  try {
+    await ensureBase();
+    // Drain the pending message-append write queue FIRST (fix #3).
+    // `appendMessage` enqueues each JSONL line onto the 100ms-debounced
+    // `enqueueWrite`/`drainAll` queue and returns without waiting for the
+    // drain; at turn-end `setConversationStatus` fires this reindex right
+    // after the final message is appended, so without draining here the
+    // Rust-side `reindex_one_core` can scan a `messages.jsonl` that's still
+    // missing the very message this reindex is supposed to index — newest
+    // text absent from FTS, `message_count` lagging by one turn.
+    // `flushWrites()` is a no-op if nothing is queued (idempotent, already
+    // used this way elsewhere — see `shutdownConversationStorage`).
+    await flushWrites();
+    // Flush the in-memory index to disk NEXT. The Rust side's
+    // `read_index_entries` reads `index.json` straight off disk, not TS's
+    // in-memory `indexCache` — and index writes are normally debounced up to
+    // `INDEX_FLUSH_INTERVAL_MS` (2s) by `scheduleIndexFlush()`. Both call
+    // sites (rename, turn-end) call `updateIndexEntry()` — which updates
+    // `indexCache` synchronously — immediately before this, so without an
+    // explicit flush here the Rust-side reindex would very likely read the
+    // STALE on-disk title/timestamps, defeating the entire point of a
+    // live-freshness reindex. `flushIndex()` is a no-op if there's nothing
+    // pending (idempotent, already used this way elsewhere in this module).
+    await flushIndex();
+    await invoke('catalog_reindex_conversation', {
+      convId,
+      conversationsRoot: conversationsRoot(),
+    });
+  } catch {
+    // Non-fatal: startup reconcile repairs the catalog/FTS row from JSONL.
+  }
+}
+
+// ════════════════════════════════════════════════════════════
 // Message CRUD
 // ════════════════════════════════════════════════════════════
 
@@ -360,6 +602,14 @@ export async function appendMessage(
   await ensureBase();
   const line = JSON.stringify(stripForDisk(message)) + '\n';
   await enqueueWrite(messagesPath(convId), line);
+
+  // Write-through the catalog AFTER the JSONL write is queued. Fire-and-
+  // forget (fix #9): the catalog bump is best-effort (IPC + SQLite +
+  // fs::metadata on every append) and already swallows its own errors, so
+  // there is nothing for a caller to await or react to. JSONL success above
+  // is the hard requirement; catalog drift is repaired by startup reconcile,
+  // which does not depend on append ordering.
+  void catalogBumpCount(convId, 1, message.timestamp ?? Date.now(), message.id);
 }
 
 /**
@@ -491,8 +741,25 @@ export async function loadMessages(convId: string): Promise<Message[]> {
         `The affected messages are lost, but ${messages.length} intact message(s) recovered.`,
     );
   }
-  populateWrittenIds(messages);
-  return messages;
+  // Dedup by id, keeping the last occurrence. A duplicate line is not "corrupt"
+  // (so the skip-bad-lines net above can't catch it) but can arise from a
+  // non-idempotent append fallback: if the native O(1) append durably writes a
+  // line but its invoke promise still rejects (IPC teardown / shutdown race),
+  // appendToFile falls through to read+rewrite and appends the same line again.
+  // The last write reflects the most recent state; downstream consumers
+  // (chatStore, memdir extractor) don't dedup, so a duplicate would otherwise
+  // render — and be sent to the LLM — twice.
+  const deduped = dedupMessagesById(messages);
+  populateWrittenIds(deduped);
+  return deduped;
+}
+
+/** Keep the last occurrence of each message id, preserving order. */
+function dedupMessagesById(messages: Message[]): Message[] {
+  const lastIndex = new Map<string, number>();
+  messages.forEach((m, i) => lastIndex.set(m.id, i));
+  if (lastIndex.size === messages.length) return messages; // no dupes, fast path
+  return messages.filter((m, i) => lastIndex.get(m.id) === i);
 }
 
 /**

@@ -319,6 +319,56 @@ describe('chatStore', () => {
       useChatStore.getState().renameConversation(id, '测试对话');
       expect(useChatStore.getState().conversations[id].title).toBe('测试对话');
     });
+
+    // message-storage hybrid P2 (live freshness): a rename must be searchable
+    // immediately, not only after the next startup reconcile. The store
+    // reaches catalogReindexConversation via a dynamic import (module-level
+    // vi.mock can't intercept it), so — same pattern as the catalog_bump_count
+    // assertions above — we assert at the invoke('catalog_reindex_conversation')
+    // layer.
+    it('fires a live-freshness catalog reindex after renaming', async () => {
+      const id = useChatStore.getState().createConversation();
+      await new Promise((r) => setTimeout(r, 20));
+      vi.mocked(invoke).mockClear();
+
+      useChatStore.getState().renameConversation(id, '新标题');
+
+      await vi.waitFor(() => {
+        const reindex = vi.mocked(invoke).mock.calls.find((c) => c[0] === 'catalog_reindex_conversation');
+        expect(reindex).toBeDefined();
+        expect((reindex![1] as { convId: string }).convId).toBe(id);
+      });
+    });
+
+    // Fix #4: catalogReindexConversation must fire AFTER updateIndexEntry's
+    // own index flush lands the new title on disk — not concurrently — so
+    // the Rust-side reindex never races updateIndexEntry's indexCache
+    // mutation and reads a stale title. Asserted the same way as the
+    // ordering check in conversationStorage.test.ts's catalogReindexConversation
+    // suite: the index.json write must precede the reindex invoke.
+    it('reindexes only after the renamed title has been flushed to index.json', async () => {
+      const id = useChatStore.getState().createConversation();
+      await new Promise((r) => setTimeout(r, 20));
+      vi.mocked(invoke).mockClear();
+
+      useChatStore.getState().renameConversation(id, '排序新标题');
+
+      await vi.waitFor(() => {
+        const reindex = vi.mocked(invoke).mock.calls.find((c) => c[0] === 'catalog_reindex_conversation');
+        expect(reindex).toBeDefined();
+      });
+
+      const calls = vi.mocked(invoke).mock.calls;
+      const indexWriteIdx = calls.findIndex(
+        (c) =>
+          c[0] === 'atomic_write_text' &&
+          typeof (c[1] as { path?: string } | undefined)?.path === 'string' &&
+          (c[1] as { path: string }).path.includes('index.json'),
+      );
+      const reindexIdx = calls.findIndex((c) => c[0] === 'catalog_reindex_conversation');
+      expect(indexWriteIdx).toBeGreaterThanOrEqual(0);
+      expect(indexWriteIdx).toBeLessThan(reindexIdx);
+    });
   });
 
   // ── addMessage ──
@@ -349,6 +399,39 @@ describe('chatStore', () => {
       });
       const title = useChatStore.getState().conversations[id].title;
       expect(title.length).toBeLessThanOrEqual(34); // 30 + "..."
+    });
+
+    it('re-derives conversationIndex.messageCount from conv.messages.length on each append', () => {
+      const id = useChatStore.getState().createConversation();
+      const store = useChatStore.getState();
+      expect(store.conversationIndex[id].messageCount).toBe(0);
+      store.addMessage(id, { id: 'm1', role: 'user', content: 'a', timestamp: 1 });
+      store.addMessage(id, { id: 'm2', role: 'assistant', content: 'b', timestamp: 2 });
+      store.addMessage(id, { id: 'm3', role: 'user', content: 'c', timestamp: 3 });
+      expect(useChatStore.getState().conversationIndex[id].messageCount).toBe(3);
+    });
+
+    // Regression (code-review fix #1, message-storage P0): messageCount must be
+    // RE-DERIVED from conv.messages.length, not incremented. deleteMessage /
+    // deleteMessagesFrom / deleteLoopMessages mutate conv.messages but never
+    // touch conversationIndex.messageCount, so an increment-only counter would
+    // drift upward forever across deletes/edits/retries. Re-derivation self-heals.
+    it('messageCount self-heals across deletes: add 4, delete 3, add 1 → 2 (not 6)', () => {
+      const id = useChatStore.getState().createConversation();
+      const store = useChatStore.getState();
+      store.addMessage(id, { id: 'm1', role: 'user', content: 'a', timestamp: 1 });
+      store.addMessage(id, { id: 'm2', role: 'assistant', content: 'b', timestamp: 2 });
+      store.addMessage(id, { id: 'm3', role: 'user', content: 'c', timestamp: 3 });
+      store.addMessage(id, { id: 'm4', role: 'assistant', content: 'd', timestamp: 4 });
+      expect(useChatStore.getState().conversationIndex[id].messageCount).toBe(4);
+
+      useChatStore.getState().deleteMessage(id, 'm1');
+      useChatStore.getState().deleteMessage(id, 'm2');
+      useChatStore.getState().deleteMessage(id, 'm3');
+
+      useChatStore.getState().addMessage(id, { id: 'm5', role: 'user', content: 'e', timestamp: 5 });
+      expect(useChatStore.getState().conversations[id].messages).toHaveLength(2);
+      expect(useChatStore.getState().conversationIndex[id].messageCount).toBe(2);
     });
   });
 
@@ -581,6 +664,60 @@ describe('chatStore', () => {
       expect(useChatStore.getState().conversations[id].messages).toHaveLength(1);
       expect(useChatStore.getState().conversations[id].messages[0].id).toBe('msg2');
     });
+
+    // message-storage P1 step 2: delete paths bump the catalog count by the
+    // negative of the number of messages they removed. The store reaches
+    // catalogBumpCount via a dynamic import (module-level vi.mock can't
+    // intercept it), so we assert at the invoke('catalog_bump_count') layer.
+    it('bumps the catalog count by -1 for a single removed message', async () => {
+      const id = useChatStore.getState().createConversation();
+      useChatStore.getState().addMessage(id, { id: 'msg1', role: 'user', content: 'a', timestamp: 1 });
+      useChatStore.getState().addMessage(id, { id: 'msg2', role: 'assistant', content: 'b', timestamp: 2 });
+
+      // Let the addMessage-triggered append bumps (+1 each, fired via dynamic
+      // import) settle so they don't pollute the post-clear assertion window.
+      await new Promise((r) => setTimeout(r, 20));
+      vi.mocked(invoke).mockClear();
+      useChatStore.getState().deleteMessage(id, 'msg1');
+
+      await vi.waitFor(() => {
+        const bump = vi.mocked(invoke).mock.calls.find((c) => c[0] === 'catalog_bump_count');
+        expect(bump).toBeDefined();
+        expect((bump![1] as { convId: string; delta: number }).convId).toBe(id);
+        expect((bump![1] as { convId: string; delta: number }).delta).toBe(-1);
+      });
+    });
+
+    it('does not bump the catalog count when no message matched', async () => {
+      const id = useChatStore.getState().createConversation();
+      useChatStore.getState().addMessage(id, { id: 'msg1', role: 'user', content: 'a', timestamp: 1 });
+
+      await new Promise((r) => setTimeout(r, 20));
+      vi.mocked(invoke).mockClear();
+      useChatStore.getState().deleteMessage(id, 'nonexistent');
+
+      await new Promise((r) => setTimeout(r, 20));
+      const bump = vi.mocked(invoke).mock.calls.find((c) => c[0] === 'catalog_bump_count');
+      expect(bump).toBeUndefined();
+    });
+
+    // Regression (code-review fix #8): agentLoop's ghost-message deletion
+    // path passes { skipCatalogBump: true } for a placeholder that never
+    // durably reached messages.jsonl, since there is no +1 for the -1 to
+    // balance. Still removes the message from memory either way.
+    it('removes the message but skips the catalog bump when skipCatalogBump is true', async () => {
+      const id = useChatStore.getState().createConversation();
+      useChatStore.getState().addMessage(id, { id: 'msg1', role: 'user', content: 'a', timestamp: 1 });
+
+      await new Promise((r) => setTimeout(r, 20));
+      vi.mocked(invoke).mockClear();
+      useChatStore.getState().deleteMessage(id, 'msg1', { skipCatalogBump: true });
+
+      expect(useChatStore.getState().conversations[id].messages).toHaveLength(0);
+      await new Promise((r) => setTimeout(r, 20));
+      const bump = vi.mocked(invoke).mock.calls.find((c) => c[0] === 'catalog_bump_count');
+      expect(bump).toBeUndefined();
+    });
   });
 
   // ── deleteMessagesFrom ──
@@ -592,6 +729,46 @@ describe('chatStore', () => {
       useChatStore.getState().addMessage(id, { id: 'msg3', role: 'user', content: 'c', timestamp: 3 });
       useChatStore.getState().deleteMessagesFrom(id, 'msg2');
       expect(useChatStore.getState().conversations[id].messages).toHaveLength(1);
+    });
+
+    it('bumps the catalog count by the negative of the tail length removed', async () => {
+      const id = useChatStore.getState().createConversation();
+      useChatStore.getState().addMessage(id, { id: 'msg1', role: 'user', content: 'a', timestamp: 1 });
+      useChatStore.getState().addMessage(id, { id: 'msg2', role: 'assistant', content: 'b', timestamp: 2 });
+      useChatStore.getState().addMessage(id, { id: 'msg3', role: 'user', content: 'c', timestamp: 3 });
+
+      await new Promise((r) => setTimeout(r, 20));
+      vi.mocked(invoke).mockClear();
+      // Removes msg2 + msg3 → delta -2.
+      useChatStore.getState().deleteMessagesFrom(id, 'msg2');
+
+      await vi.waitFor(() => {
+        const bump = vi.mocked(invoke).mock.calls.find((c) => c[0] === 'catalog_bump_count');
+        expect(bump).toBeDefined();
+        expect((bump![1] as { delta: number }).delta).toBe(-2);
+      });
+    });
+  });
+
+  // ── deleteLoopMessages ──
+  describe('deleteLoopMessages', () => {
+    it('removes all messages of a loop and bumps the catalog count negatively', async () => {
+      const id = useChatStore.getState().createConversation();
+      useChatStore.getState().addMessage(id, { id: 'm1', role: 'user', content: 'a', timestamp: 1, loopId: 'L1' });
+      useChatStore.getState().addMessage(id, { id: 'm2', role: 'assistant', content: 'b', timestamp: 2, loopId: 'L1' });
+      useChatStore.getState().addMessage(id, { id: 'm3', role: 'user', content: 'c', timestamp: 3, loopId: 'L2' });
+
+      await new Promise((r) => setTimeout(r, 20));
+      vi.mocked(invoke).mockClear();
+      // Removes the two L1 messages → delta -2, L2 message survives.
+      useChatStore.getState().deleteLoopMessages(id, 'L1');
+      expect(useChatStore.getState().conversations[id].messages).toHaveLength(1);
+
+      await vi.waitFor(() => {
+        const bump = vi.mocked(invoke).mock.calls.find((c) => c[0] === 'catalog_bump_count');
+        expect(bump).toBeDefined();
+        expect((bump![1] as { delta: number }).delta).toBe(-2);
+      });
     });
   });
 
@@ -633,6 +810,85 @@ describe('chatStore', () => {
       const conv = useChatStore.getState().conversations[id];
       expect(conv.status).toBe('idle');
       expect(conv.completedAt).toBeUndefined();
+    });
+
+    // message-storage hybrid P2 (live freshness): turn-end ('completed') is
+    // when a conversation's messages are settled for this round, so it must
+    // be re-indexed for search right away rather than waiting for the next
+    // startup reconcile. Asserted at the invoke() layer — same reasoning as
+    // the renameConversation reindex test above.
+    it('fires a live-freshness catalog reindex when status becomes completed', async () => {
+      const id = useChatStore.getState().createConversation();
+      await new Promise((r) => setTimeout(r, 20));
+      vi.mocked(invoke).mockClear();
+
+      useChatStore.getState().setConversationStatus(id, 'completed');
+
+      await vi.waitFor(() => {
+        const reindex = vi.mocked(invoke).mock.calls.find((c) => c[0] === 'catalog_reindex_conversation');
+        expect(reindex).toBeDefined();
+        expect((reindex![1] as { convId: string }).convId).toBe(id);
+      });
+    });
+
+    it('does not fire a catalog reindex for a non-terminal status', async () => {
+      const id = useChatStore.getState().createConversation();
+      await new Promise((r) => setTimeout(r, 20));
+      vi.mocked(invoke).mockClear();
+
+      useChatStore.getState().setConversationStatus(id, 'running');
+
+      await new Promise((r) => setTimeout(r, 20));
+      const reindex = vi.mocked(invoke).mock.calls.find((c) => c[0] === 'catalog_reindex_conversation');
+      expect(reindex).toBeUndefined();
+    });
+
+    // Fix #2: 'error' is also a terminal state — messages.jsonl already has
+    // the user message + partial assistant reply appended by the time a turn
+    // ends in error, so it must be indexed immediately too, not only on
+    // 'completed' (which previously left errored turns unsearchable until
+    // the next app restart).
+    it('fires a live-freshness catalog reindex when status becomes error', async () => {
+      const id = useChatStore.getState().createConversation();
+      await new Promise((r) => setTimeout(r, 20));
+      vi.mocked(invoke).mockClear();
+
+      useChatStore.getState().setConversationStatus(id, 'error');
+
+      await vi.waitFor(() => {
+        const reindex = vi.mocked(invoke).mock.calls.find((c) => c[0] === 'catalog_reindex_conversation');
+        expect(reindex).toBeDefined();
+        expect((reindex![1] as { convId: string }).convId).toBe(id);
+      });
+    });
+
+    // Fix #5: only fire the reindex when the conversation actually exists AND
+    // is transitioning INTO a terminal state — a redundant re-set of the same
+    // terminal status (e.g. a duplicate 'completed' call) must not re-fire it.
+    it('does not re-fire the catalog reindex for a redundant same-status re-set', async () => {
+      const id = useChatStore.getState().createConversation();
+      useChatStore.getState().setConversationStatus(id, 'completed');
+      await new Promise((r) => setTimeout(r, 20));
+      vi.mocked(invoke).mockClear();
+
+      // Re-set the SAME terminal status again — no real transition happened.
+      useChatStore.getState().setConversationStatus(id, 'completed');
+
+      await new Promise((r) => setTimeout(r, 20));
+      const reindex = vi.mocked(invoke).mock.calls.find((c) => c[0] === 'catalog_reindex_conversation');
+      expect(reindex).toBeUndefined();
+    });
+
+    // Fix #5: a convId absent from state (e.g. already deleted) must never
+    // trigger a reindex call.
+    it('does not fire a catalog reindex for a convId absent from state', async () => {
+      vi.mocked(invoke).mockClear();
+
+      useChatStore.getState().setConversationStatus('nonexistent-conv', 'completed');
+
+      await new Promise((r) => setTimeout(r, 20));
+      const reindex = vi.mocked(invoke).mock.calls.find((c) => c[0] === 'catalog_reindex_conversation');
+      expect(reindex).toBeUndefined();
     });
   });
 

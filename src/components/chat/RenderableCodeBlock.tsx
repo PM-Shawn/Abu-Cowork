@@ -9,11 +9,18 @@
  * - cleanup(container): optional cleanup on unmount
  */
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { Copy, Check, ChevronDown, ChevronUp, Code, Eye, Maximize2, X, Download } from 'lucide-react';
+import { Copy, Check, ChevronDown, ChevronUp, Code, Eye, Maximize2, X, Download, ZoomIn, ZoomOut } from 'lucide-react';
 import { createPortal } from 'react-dom';
 import { cn } from '@/lib/utils';
 import { useI18n } from '@/i18n';
 import { CollapsibleCodeBlock } from './MarkdownRenderer';
+import { zoomIn as zoomInFn, zoomOut as zoomOutFn, zoomByWheel, clampZoom, formatZoomPercent, ZOOM_MIN, ZOOM_MAX } from '@/utils/zoom';
+
+/** WebKit-only gesture events (macOS trackpad pinch on Safari/WKWebView).
+ *  Not in the DOM lib types — declare the minimal shape we use. */
+interface GestureEvent extends Event {
+  scale: number;
+}
 
 
 type RenderState =
@@ -105,6 +112,7 @@ export default function RenderableCodeBlock({
   const [copied, setCopied] = useState(false);
   const [overflows, setOverflows] = useState(false);
   const [fullscreen, setFullscreen] = useState(false);
+  const [scale, setScale] = useState(1);
 
 
   const containerRef = useRef<HTMLDivElement>(null);
@@ -113,8 +121,18 @@ export default function RenderableCodeBlock({
   const debounceRef = useRef<ReturnType<typeof setTimeout>>(undefined);
   const settleRef = useRef<ReturnType<typeof setTimeout>>(undefined);
 
+  // Zoom host: the `.relative` wrapper div (seamless or bordered — only one mounts).
+  // Native (non-React) listeners are attached here so we can preventDefault on
+  // wheel/gesture events, which React's passive onWheel cannot do.
+  const zoomHostRef = useRef<HTMLDivElement>(null);
+  const scaleRef = useRef(scale);
+  const showSourceRef = useRef(showSource);
+  const gestureBaseRef = useRef(1);
+
   codeRef.current = code;
   configRef.current = config;
+  scaleRef.current = scale;
+  showSourceRef.current = showSource;
 
   useEffect(() => {
     if (!code.trim()) {
@@ -191,6 +209,51 @@ export default function RenderableCodeBlock({
     };
   }, [code, cache, debounceMs, errorSettleMs]);
 
+  // Reset zoom when the diagram changes (same mounted instance, new code)
+  useEffect(() => {
+    setScale(1);
+  }, [code]);
+
+  // Native wheel + WebKit gesture listeners for zoom. Attached once (not on every
+  // scale/showSource change) to avoid thrashing; fresh state is read via refs.
+  // React's onWheel is passive so e.preventDefault() there is a no-op — hence native.
+  useEffect(() => {
+    const host = zoomHostRef.current;
+    if (!host) return;
+
+    const handleWheel = (e: WheelEvent) => {
+      if (showSourceRef.current || !(e.ctrlKey || e.metaKey)) return; // bare wheel / source view stays scroll
+      e.preventDefault();
+      setScale(s => zoomByWheel(s, e.deltaY));
+    };
+    const handleGestureStart = (e: Event) => {
+      if (showSourceRef.current) return;
+      e.preventDefault();
+      gestureBaseRef.current = scaleRef.current;
+    };
+    const handleGestureChange = (e: Event) => {
+      if (showSourceRef.current) return;
+      e.preventDefault();
+      const scaleFactor = (e as GestureEvent).scale;
+      setScale(clampZoom(gestureBaseRef.current * scaleFactor));
+    };
+    const handleGestureEnd = (e: Event) => {
+      e.preventDefault();
+    };
+
+    host.addEventListener('wheel', handleWheel, { passive: false });
+    host.addEventListener('gesturestart', handleGestureStart, { passive: false });
+    host.addEventListener('gesturechange', handleGestureChange, { passive: false });
+    host.addEventListener('gestureend', handleGestureEnd, { passive: false });
+
+    return () => {
+      host.removeEventListener('wheel', handleWheel);
+      host.removeEventListener('gesturestart', handleGestureStart);
+      host.removeEventListener('gesturechange', handleGestureChange);
+      host.removeEventListener('gestureend', handleGestureEnd);
+    };
+  }, []);
+
   // Cleanup on unmount
   useEffect(() => {
     return () => {
@@ -261,6 +324,10 @@ export default function RenderableCodeBlock({
     await handleDownloadSource();
   }, [handleDownloadSource]);
 
+  const handleZoomIn = useCallback(() => setScale(s => zoomInFn(s)), []);
+  const handleZoomOut = useCallback(() => setScale(s => zoomOutFn(s)), []);
+  const handleZoomReset = useCallback(() => setScale(1), []);
+
   if (!code.trim()) return null;
 
   const isLoading = state.status === 'loading';
@@ -276,16 +343,26 @@ export default function RenderableCodeBlock({
   // --- Shared pieces ---
 
   const renderContainer = (
+    // OUTER = scroll viewport + collapse clipper. Owns overflow + maxHeight + padding.
     <div
-      ref={containerRef}
       className={cn(
-        'flex justify-center overflow-x-auto [&>svg]:max-w-full',
+        'overflow-auto',
         seamless ? 'p-0' : 'p-4',
         isCollapsed && 'overflow-hidden',
         isLoading && 'min-h-[100px] invisible',
       )}
       style={isCollapsed ? { maxHeight: `${maxHeight}px` } : undefined}
-    />
+    >
+      {/* INNER = the element render() injects into. Owns the scale transform. */}
+      <div
+        ref={containerRef}
+        className="flex justify-center [&>svg]:max-w-full"
+        style={{
+          transform: scale !== 1 ? `scale(${scale})` : undefined,
+          transformOrigin: 'top center',
+        }}
+      />
+    </div>
   );
 
   const shimmerOverlay = isPreviewing && (
@@ -341,6 +418,16 @@ export default function RenderableCodeBlock({
   const vizToolbar = !isLoading && !showSource && (
     <div className="absolute top-2 right-2 z-10 opacity-0 group-hover/widget:opacity-100 transition-opacity">
       <div className="flex items-center gap-0.5 bg-white/90 rounded-lg shadow-sm border border-[var(--abu-bg-pressed)] p-0.5 relative">
+        <button onClick={handleZoomOut} disabled={scale <= ZOOM_MIN} className={cn(btnClass, 'disabled:opacity-40 disabled:cursor-not-allowed')} title="Zoom out">
+          <ZoomOut className="h-3.5 w-3.5" />
+        </button>
+        <button onClick={handleZoomReset} className={cn(btnClass, 'text-[11px] tabular-nums w-10')} title="Reset zoom">
+          {formatZoomPercent(scale)}
+        </button>
+        <button onClick={handleZoomIn} disabled={scale >= ZOOM_MAX} className={cn(btnClass, 'disabled:opacity-40 disabled:cursor-not-allowed')} title="Zoom in">
+          <ZoomIn className="h-3.5 w-3.5" />
+        </button>
+        <div className="w-px h-4 bg-[var(--abu-bg-pressed)] mx-0.5" />
         <button onClick={handleCopy} className={btnClass} title={copied ? '✓' : 'Copy'}>
           {copied ? <Check className="h-3.5 w-3.5 text-green-600" /> : <Copy className="h-3.5 w-3.5" />}
         </button>
@@ -417,7 +504,7 @@ export default function RenderableCodeBlock({
       <div className="my-3 group/widget">
         {seamlessErrorFallback}
         <div className={cn('rounded-lg overflow-hidden', isError && !showSource && 'hidden')}>
-          <div className="relative">
+          <div ref={zoomHostRef} className="relative">
             {/* Source code view with "back to visual" button */}
             {showSource && (
               <div className="relative">
@@ -461,7 +548,7 @@ export default function RenderableCodeBlock({
     <div className="my-3 group/widget">
       {errorFallback}
       <div className={cn('rounded-lg overflow-hidden border border-[var(--abu-bg-pressed)]', isError && !showSource && 'hidden')}>
-        <div className="relative bg-white">
+        <div ref={zoomHostRef} className="relative bg-white">
           {/* Source code view with "back to visual" button */}
           {showSource && (
             <div className="relative">

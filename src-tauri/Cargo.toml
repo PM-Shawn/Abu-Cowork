@@ -1,6 +1,6 @@
 [package]
 name = "abu"
-version = "0.29.0"
+version = "0.30.0"
 description = "ABU - AI Desktop Assistant"
 authors = ["you"]
 edition = "2021"
@@ -42,7 +42,14 @@ tempfile = "3"
 # instead of permanently deleting them — used by the workspace file tree so
 # deletes are recoverable. See trash.rs.
 trash = "5"
-rusqlite = { version = "0.31", features = ["bundled"] }
+# "hooks" enables Connection::commit_hook, used only by a catalog_db.rs test
+# to assert that catalog_reconcile batches every write of a pass into a
+# single transaction/commit (message-storage P0 code-review fix #8).
+# Note: no extra feature flag is needed for FTS5 (used by conversation_fts,
+# P2 conversation search — see docs/2026-07-15-fts5-conversation-search-SPEC.md).
+# libsqlite3-sys's "bundled" build.rs unconditionally compiles the vendored
+# SQLite amalgamation with -DSQLITE_ENABLE_FTS5 already baked in.
+rusqlite = { version = "0.31", features = ["bundled", "hooks"] }
 # HTML preview HTTP server (loopback-only file server for sandboxed iframe).
 # WKWebView blocks asset:// sub-resources from sandboxed iframes, so HTML
 # previews go through axum on 127.0.0.1:rand_port. See preview_server.rs.

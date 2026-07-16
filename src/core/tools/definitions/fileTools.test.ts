@@ -1,7 +1,10 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { invoke } from '@tauri-apps/api/core';
-import { writeTextFile } from '@tauri-apps/plugin-fs';
-import { readFileTool, writeFileTool } from './fileTools';
+import { writeTextFile, readTextFile, exists } from '@tauri-apps/plugin-fs';
+import { readFileTool, writeFileTool, deleteFileTool, editFileTool } from './fileTools';
+import { registerBuiltinTools } from '../builtins';
+import { toolRegistry } from '../registry';
+import { TOOL_NAMES } from '../toolNames';
 
 // Regression coverage for the shell-injection fixes in the PDF branch of
 // readFileTool. These tests prove the *interface contract* — the migrated
@@ -188,5 +191,157 @@ describe('writeFileTool — HTML charset injection', () => {
     const [, writtenContent] = vi.mocked(writeTextFile).mock.calls[0];
     expect((writtenContent as string).startsWith('\uFEFF')).toBe(true);
     expect(writtenContent).toBe('\uFEFF' + fragment);
+  });
+});
+
+describe('deleteFileTool \u2014 move to trash (safe delete)', () => {
+  beforeEach(() => {
+    vi.mocked(invoke).mockReset();
+  });
+
+  it('routes deletion through move_to_trash and reports the path', async () => {
+    vi.mocked(invoke).mockResolvedValueOnce(undefined);
+
+    const target = '/Users/x/Downloads/old-report.csv';
+    const result = await deleteFileTool.execute({ path: target }, {} as never);
+
+    expect(invoke).toHaveBeenCalledTimes(1);
+    const [cmd, payload] = vi.mocked(invoke).mock.calls[0] as unknown as [string, { path: string }];
+    expect(cmd).toBe('move_to_trash');
+    expect(payload.path).toBe(target);
+    // Locale-robust: the success message always interpolates {path}.
+    expect(result).toContain(target);
+  });
+
+  it('is fail-closed: on trash failure it reports an error and never shells out to rm', async () => {
+    vi.mocked(invoke).mockRejectedValueOnce(new Error('trash boom'));
+
+    const result = await deleteFileTool.execute({ path: '/Users/x/f.txt' }, {} as never);
+
+    // Only one invoke, and it was the trash command \u2014 no run_command / run_shell_command fallback.
+    expect(invoke).toHaveBeenCalledTimes(1);
+    const [cmd] = vi.mocked(invoke).mock.calls[0] as unknown as [string, unknown];
+    expect(cmd).toBe('move_to_trash');
+    // Locale-robust: the failure message always interpolates {error}.
+    expect(result).toContain('trash boom');
+  });
+});
+
+describe('deleteFileTool — catastrophic target hard block', () => {
+  beforeEach(() => {
+    vi.mocked(invoke).mockReset();
+  });
+
+  it('refuses to delete the filesystem root and never calls invoke', async () => {
+    const result = await deleteFileTool.execute({ path: '/' }, {} as never);
+
+    expect(invoke).not.toHaveBeenCalled();
+    expect(result).toContain('/');
+  });
+
+  it('refuses to delete the home directory and never calls invoke', async () => {
+    // Home is mocked to '/Users/testuser' in src/test/setup.ts.
+    const result = await deleteFileTool.execute({ path: '/Users/testuser' }, {} as never);
+
+    expect(invoke).not.toHaveBeenCalled();
+    expect(result).toContain('/Users/testuser');
+  });
+
+  it('refuses to delete the home directory with a trailing slash', async () => {
+    await deleteFileTool.execute({ path: '/Users/testuser/' }, {} as never);
+
+    expect(invoke).not.toHaveBeenCalled();
+  });
+
+  it('still moves a normal in-workspace path to Trash', async () => {
+    vi.mocked(invoke).mockResolvedValueOnce(undefined);
+
+    const target = '/Users/testuser/Projects/myapp/old-file.txt';
+    const result = await deleteFileTool.execute({ path: target }, {} as never);
+
+    expect(invoke).toHaveBeenCalledTimes(1);
+    const [cmd, payload] = vi.mocked(invoke).mock.calls[0] as unknown as [string, { path: string }];
+    expect(cmd).toBe('move_to_trash');
+    expect(payload.path).toBe(target);
+    expect(result).toContain(target);
+  });
+});
+
+describe('delete_file registration', () => {
+  it('is registered as a builtin tool', () => {
+    registerBuiltinTools();
+    expect(toolRegistry.has(TOOL_NAMES.DELETE_FILE)).toBe(true);
+  });
+});
+
+// Regression coverage for the String.replace($-substitution) corruption bug:
+// editFileTool did `content.replace(oldContent, newContent)` with a *string*
+// replacement, so JS honored the special patterns `$$`, `$&`, `` $` ``, `$'`
+// inside new_content (regardless of the search being a plain string). An LLM
+// editing a file to insert text containing a literal `$` (prices, shell vars,
+// regex/LaTeX snippets, git diffs) would silently write the WRONG bytes while
+// the tool still reported "Successfully edited". The fix uses a function
+// replacer so the replacement is inserted verbatim.
+describe('editFileTool — new_content is inserted verbatim (no $-substitution)', () => {
+  beforeEach(() => {
+    vi.mocked(exists).mockResolvedValue(true);
+    vi.mocked(writeTextFile).mockClear();
+    vi.mocked(writeTextFile).mockResolvedValue(undefined);
+  });
+
+  function writtenContent(): string {
+    return vi.mocked(writeTextFile).mock.calls[0][1] as string;
+  }
+
+  it('does not expand `$&` into the matched old_content', async () => {
+    vi.mocked(readTextFile).mockResolvedValueOnce('a\nPLACEHOLDER\nb');
+
+    const result = await editFileTool.execute({
+      path: '/tmp/edit-dollar.txt',
+      old_content: 'PLACEHOLDER',
+      new_content: 'see $& again',
+    });
+
+    expect(String(result)).toContain('Successfully edited');
+    // Buggy behavior would produce "see PLACEHOLDER again".
+    expect(writtenContent()).toBe('a\nsee $& again\nb');
+  });
+
+  it('does not collapse `$$` into a single `$`', async () => {
+    vi.mocked(readTextFile).mockResolvedValueOnce('cost: TOKEN');
+
+    await editFileTool.execute({
+      path: '/tmp/edit-price.txt',
+      old_content: 'TOKEN',
+      new_content: 'was $$29.99',
+    });
+
+    // Buggy behavior would produce "cost: was $29.99".
+    expect(writtenContent()).toBe('cost: was $$29.99');
+  });
+
+  it("does not expand `` $` `` or `$'` (pre/post-match insertion)", async () => {
+    vi.mocked(readTextFile).mockResolvedValueOnce('before[X]after');
+
+    await editFileTool.execute({
+      path: '/tmp/edit-prepost.txt',
+      old_content: '[X]',
+      new_content: "a$`b$'c",
+    });
+
+    // Buggy behavior would splice in "before" (for $`) and "after" (for $').
+    expect(writtenContent()).toBe("beforea$`b$'cafter");
+  });
+
+  it('still performs a normal edit with no `$` in the replacement', async () => {
+    vi.mocked(readTextFile).mockResolvedValueOnce('const a = 1;\nconst b = 2;');
+
+    await editFileTool.execute({
+      path: '/tmp/edit-plain.txt',
+      old_content: 'const b = 2;',
+      new_content: 'const b = 3;',
+    });
+
+    expect(writtenContent()).toBe('const a = 1;\nconst b = 3;');
   });
 });

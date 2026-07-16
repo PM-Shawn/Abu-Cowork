@@ -8,7 +8,7 @@ import { ErrorBoundary } from '@/components/common/ErrorBoundary';
 import Sidebar from '@/components/sidebar/Sidebar';
 import ChatView from '@/components/chat/ChatView';
 import AutomationView from '@/components/automation/AutomationView';
-import SystemSettingsView from '@/components/settings/SystemSettingsModal';
+import SystemSettingsDialog from '@/components/settings/SystemSettingsDialog';
 import ToolboxView from '@/components/settings/ToolboxModal';
 import TodoView from '@/components/todos/TodoView';
 import InboxView from '@/components/inbox/InboxView';
@@ -122,7 +122,6 @@ function App() {
   const chatWidth = usePreviewStore((s) => s.chatWidth);
   const viewportWidth = useViewportWidth();
   const showTodosInbox = useLabsFlag(LABS_TODOS_INBOX);
-  const closeSystemSettings = useSettingsStore((s) => s.closeSystemSettings);
   const closeAutomation = useSettingsStore((s) => s.closeAutomation);
   const closeToolbox = useSettingsStore((s) => s.closeToolbox);
   const activeConv = useActiveConversation();
@@ -402,7 +401,14 @@ function App() {
       // Migrate old memory systems (entries.json / memory.md) to memdir (.md files)
       import('@/core/memdir/migrate').then(m => m.migrateMemdirIfNeeded()).catch(() => {});
       // Initialize conversation file storage and check for crash recovery
-      import('@/core/session/conversationStorage').then(m => m.initConversationStorage()).catch(() => {});
+      import('@/core/session/conversationStorage').then(m => {
+        m.initConversationStorage().catch(() => {});
+        // Reconcile the SQLite conversation catalog against JSONL on disk
+        // (message-storage P0): first run does the full scan-build migration,
+        // later runs do incremental repair. Fire-and-forget — catalog is a
+        // rebuildable projection, JSONL stays the source of truth.
+        m.reconcileCatalog().catch(() => {});
+      }).catch(() => {});
       import('@/core/session/checkpoint').then(async ({ findOrphanedCheckpoints, clearCheckpoint }) => {
         const orphans = await findOrphanedCheckpoints();
         if (orphans.length === 0) return;
@@ -591,22 +597,14 @@ function App() {
 
       {/* Sidebar & panel toggle buttons — positioned in title bar area on macOS, top bar on Windows */}
       <div className={cn('fixed left-0 right-0 z-40 pointer-events-none', mac ? 'top-0 h-11' : 'top-0 h-8')}>
-        {viewMode === 'settings' || viewMode === 'automation' || viewMode === 'toolbox' ? (
+        {viewMode === 'automation' || viewMode === 'toolbox' ? (
           <button
-            onClick={
-              viewMode === 'settings' ? closeSystemSettings
-              : viewMode === 'automation' ? closeAutomation
-              : closeToolbox
-            }
+            onClick={viewMode === 'automation' ? closeAutomation : closeToolbox}
             className="absolute flex items-center gap-1.5 btn-ghost px-2 py-1 text-[var(--abu-text-tertiary)] hover:text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-hover)] rounded-md pointer-events-auto text-sm"
             style={{ top: mac ? 8 : 4, left: mac ? 80 : 8 }}
           >
             <ArrowLeft className="h-3.5 w-3.5" strokeWidth={1.5} />
-            <span>
-              {viewMode === 'settings' ? t.settings.title
-               : viewMode === 'automation' ? t.sidebar.automation
-               : t.sidebar.toolbox}
-            </span>
+            <span>{viewMode === 'automation' ? t.sidebar.automation : t.sidebar.toolbox}</span>
           </button>
         ) : (
           <button
@@ -636,7 +634,7 @@ function App() {
         <div
           className="shrink-0 overflow-hidden"
           style={{
-            width: (sidebarCollapsed || viewMode === 'settings' || viewMode === 'automation' || viewMode === 'toolbox') ? 0 : 260,
+            width: (sidebarCollapsed || viewMode === 'automation' || viewMode === 'toolbox') ? 0 : 260,
           }}
         >
           <Sidebar />
@@ -654,7 +652,6 @@ function App() {
         >
           {viewMode === 'automation' && <AutomationView />}
           {viewMode === 'toolbox' && <ToolboxView />}
-          {viewMode === 'settings' && <SystemSettingsView />}
           {viewMode === 'todos' && <TodoView />}
           {viewMode === 'inbox' && <InboxView />}
           {(viewMode === 'chat' || !viewMode) && <ChatView />}
@@ -664,6 +661,9 @@ function App() {
         <RightPanel />
 
         <ToastContainer />
+
+        {/* System settings — overlay dialog, self-gates on systemSettingsOpen */}
+        <SystemSettingsDialog />
 
         <CloseDialog
           open={showCloseDialog}

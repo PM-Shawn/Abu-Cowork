@@ -1,5 +1,47 @@
 import type { StreamEvent, Message, ToolDefinition, BuiltinSearchMethod } from '../../types';
 import type { PromptSection } from './promptSections';
+import type { Logger } from '../logging/logger';
+
+/**
+ * Chars of a failed tool call's raw `arguments` to keep in the on-disk
+ * diagnostic log. Generous because disk logs cost no tokens and are never sent
+ * to the model — this is where the full context for diagnosing a parse failure
+ * lives (the break point is often past the first ~200 chars in complex nested
+ * tool calls, e.g. ask_user_question with an unescaped quote deep inside).
+ */
+export const LOG_TOOL_ARG_PREVIEW = 2000;
+
+/**
+ * Chars of the raw `arguments` embedded in the `_parse_error` sentinel carried
+ * on the tool INPUT. Kept SMALL on purpose: this blob is persisted in the
+ * assistant tool_use and re-sent to the model on every subsequent turn until
+ * context compaction, so a large value would recurrently inflate token cost (and
+ * write more raw arg fragments into the conversation record). All consumers
+ * detect `_parse_error` by KEY only and the value is never used as model
+ * instructions, so the short preview loses no behavior — full args for diagnosis
+ * live in the disk log (LOG_TOOL_ARG_PREVIEW), not here.
+ */
+export const PARSE_ERROR_INPUT_PREVIEW = 200;
+
+/**
+ * Build the `_parse_error` sentinel for a tool call whose raw `arguments`
+ * string failed to JSON.parse, and record the full args to the disk log for
+ * diagnosis. Shared by both adapters (Claude + OpenAI-compatible) so the log
+ * shape and the (deliberately small) replayed sentinel stay in lockstep.
+ */
+export function buildToolParseError(
+  rawArgs: string,
+  ctx: { source: string; tool: string },
+  log: Logger,
+): { _parse_error: string } {
+  log.error('tool args JSON parse failed', {
+    source: ctx.source,
+    tool: ctx.tool,
+    argsLength: rawArgs.length,
+    argsPreview: rawArgs.slice(0, LOG_TOOL_ARG_PREVIEW),
+  });
+  return { _parse_error: `Failed to parse tool input: ${rawArgs.slice(0, PARSE_ERROR_INPUT_PREVIEW)}` };
+}
 
 // Tool choice configuration for API requests
 export type ToolChoice =

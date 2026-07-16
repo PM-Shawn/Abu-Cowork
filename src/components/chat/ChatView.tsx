@@ -1,7 +1,7 @@
-import { useState, useCallback, useLayoutEffect, useSyncExternalStore } from 'react';
+import { useState, useCallback, useLayoutEffect, useRef, useSyncExternalStore } from 'react';
+import { Virtuoso, type Components, type VirtuosoHandle } from 'react-virtuoso';
 import { useChatStore, useActiveConversation } from '@/stores/chatStore';
 import type { Message, ImageAttachment } from '@/types';
-import { useAutoScroll } from '@/hooks/useAutoScroll';
 import { runAgentLoop } from '@/core/agent/agentLoop';
 import { getPendingCommandConfirmation, resolveCommandConfirmation, subscribeToCommandConfirmation, getPendingFilePermission, resolveFilePermission, subscribeToFilePermission, getPendingWorkspaceRequest, resolveWorkspaceRequest, subscribeToWorkspaceRequest, getPendingUserQuestions, subscribeUserQuestion, findQuestionOwningMessage } from '@/core/agent/permissionBridge';
 import { useSettingsStore, getActiveApiKey, providerRequiresApiKey } from '@/stores/settingsStore';
@@ -10,6 +10,10 @@ import type { PermissionDuration } from '@/stores/permissionStore';
 import { open as openDialog } from '@tauri-apps/plugin-dialog';
 import { useI18n } from '@/i18n';
 import MessageGroup from './MessageGroup';
+import CompactDivider from './CompactDivider';
+import { isCompactBoundary } from '@/core/context/compactBoundary';
+import { compactConversationManually } from '@/core/context/compactionService';
+import { useToastStore } from '@/stores/toastStore';
 import ChatInput from './ChatInput';
 import UserQuestionDock from './UserQuestionDock';
 import AgentStatusStrip from './AgentStatusStrip';
@@ -59,6 +63,74 @@ function groupMessagesByLoop(messages: Message[]): Message[][] {
 
   return groups;
 }
+
+/**
+ * Context passed to the Virtuoso `Footer` component (the streaming typing
+ * indicator). Values that change every render (i18n strings, retry info) are
+ * threaded through `context` rather than closed over, because the `Item`/
+ * `Footer` component *references* passed to Virtuoso's `components` prop must
+ * stay referentially stable across renders — recreating them inline would
+ * force Virtuoso to remount its internals on every render, defeating
+ * virtualization.
+ */
+interface MessageListContext {
+  showTypingIndicator: boolean;
+  retryingLabel: string | null;
+  thinkingLabel: string;
+}
+
+// Row wrapper for each virtualized message group. Spacing between groups
+// MUST be padding, not margin (react-virtuoso guidance: margins on measured
+// rows break height measurement/collapse behavior), so this replaces the
+// previous `space-y-5` (margin) gap with a `pb-5` (padding-bottom) applied
+// to every row uniformly. This is deliberately unconditional (no "skip on
+// last item" special-casing): virtualized rows are NOT reliably
+// `:first-child`/`:last-child` in the DOM (whichever row is topmost/
+// bottommost in the overscan window varies as the user scrolls), so a CSS
+// positional selector would apply to the wrong row. Net effect: one extra
+// ~1.25rem gap appears after the final row (before the existing `pb-16`
+// wrapper padding) that wasn't there before — a minor, intentional cosmetic
+// trade-off for correctness. Note: `ItemProps` only exposes `children` +
+// `style` (no `className`) — see react-virtuoso's `ItemProps<Data>` type.
+const VirtuosoMessageItem: NonNullable<Components<Message[], MessageListContext>['Item']> = ({
+  children,
+  item: _item,
+  context: _context,
+  ...props
+}) => (
+  <div {...props} className="pb-5">
+    {children}
+  </div>
+);
+
+// Typing indicator, rendered after the last message group via Virtuoso's
+// `Footer` slot so it stays part of the scrollable/measured content (needed
+// for stick-to-bottom behavior).
+const VirtuosoTypingFooter: NonNullable<Components<Message[], MessageListContext>['Footer']> = ({
+  context,
+}) => {
+  if (!context?.showTypingIndicator) return null;
+  return (
+    <div className="flex items-center gap-3 pl-9 py-1">
+      <div className="flex items-center gap-1">
+        <span className="typing-dot w-1.5 h-1.5 rounded-full bg-[var(--abu-clay-60)]" />
+        <span className="typing-dot w-1.5 h-1.5 rounded-full bg-[var(--abu-clay-60)]" />
+        <span className="typing-dot w-1.5 h-1.5 rounded-full bg-[var(--abu-clay-60)]" />
+      </div>
+      <span className="text-[13px] text-[var(--abu-text-tertiary)]">
+        {context.retryingLabel ?? context.thinkingLabel}
+      </span>
+    </div>
+  );
+};
+
+// Declared at module scope (not inline in the component) — react-virtuoso
+// requires stable `components` object/function references, otherwise it
+// remounts its internal list machinery on every ChatView render.
+const virtuosoComponents: Components<Message[], MessageListContext> = {
+  Item: VirtuosoMessageItem,
+  Footer: VirtuosoTypingFooter,
+};
 
 export default function ChatView() {
   const activeConvId = useChatStore((s) => s.activeConversationId);
@@ -176,17 +248,30 @@ export default function ChatView() {
     resolveWorkspaceRequest(null);
   };
 
-  const isFollowing = activeConv?.status === 'running';
-  const { containerRef, isAtBottom, scrollToBottom, resetToBottom } = useAutoScroll({ following: isFollowing });
+  // Virtuoso needs the actual scrollable DOM node (via `customScrollParent`)
+  // to virtualize inside this container instead of creating its own nested
+  // scroller.
+  const [scrollParentEl, setScrollParentEl] = useState<HTMLDivElement | null>(null);
+  const virtuosoRef = useRef<VirtuosoHandle>(null);
+  // Mirrors Virtuoso's own atBottomStateChange callback — drives the
+  // "jump to latest" floating button. Starts true so the button doesn't
+  // flash on first mount before Virtuoso reports its initial state.
+  const [isAtBottom, setIsAtBottom] = useState(true);
+
+  const scrollToLatest = useCallback((behavior: 'smooth' | 'auto' = 'smooth') => {
+    virtuosoRef.current?.scrollToIndex({ index: 'LAST', align: 'end', behavior });
+    // Optimistic — atBottomStateChange will confirm once the scroll settles.
+    setIsAtBottom(true);
+  }, []);
 
   // Scroll to bottom when switching conversations.
   // useLayoutEffect runs after DOM commit but before paint,
   // so the user never sees the wrong scroll position.
   useLayoutEffect(() => {
     if (activeConvId) {
-      scrollToBottom();
+      scrollToLatest('auto');
     }
-  }, [activeConvId, scrollToBottom]);
+  }, [activeConvId, scrollToLatest]);
 
   const handleSend = async (text: string, images?: ImageAttachment[], workspacePath?: string | null) => {
     // Block sending if API key is not configured (Ollama doesn't need one)
@@ -197,6 +282,19 @@ export default function ChatView() {
     }
 
     let convId = activeConv?.id;
+
+    if (text.trim() === '/compact') {
+      const res = await compactConversationManually(convId ?? '');
+      useToastStore.getState().addToast(
+        res.compacted
+          ? { type: 'success', title: t.chat.compactCommand.done }
+          : res.reason === 'too-few'
+            ? { type: 'info', title: t.chat.compactCommand.tooFew }
+            : { type: 'error', title: t.chat.compactCommand.failed },
+      );
+      return;
+    }
+
     const isNewConversation = !convId;
     if (!convId) {
       convId = createConversation(workspacePath);
@@ -205,9 +303,10 @@ export default function ChatView() {
     if (isNewConversation && !useSettingsStore.getState().sidebarCollapsed) {
       useSettingsStore.getState().toggleSidebar();
     }
-    // Re-enable auto-scroll when user sends a message.
-    // Don't scroll immediately — let MutationObserver scroll after the new message renders.
-    resetToBottom();
+    // Re-enable follow + jump to the new message. Virtuoso measures the
+    // freshly-appended item on its own next render, so this doesn't need to
+    // wait for a DOM mutation callback the way the old MutationObserver did.
+    scrollToLatest('auto');
     await runAgentLoop(convId, text, { images });
   };
 
@@ -417,33 +516,46 @@ export default function ChatView() {
       <ComputerUseStatusBar onStop={() => useChatStore.getState().cancelStreaming(activeConv.id)} />
 
       {/* Messages Area */}
-      <div className="relative flex-1 min-h-0 overflow-y-auto" ref={containerRef}>
+      <div className="relative flex-1 min-h-0 overflow-y-auto" ref={setScrollParentEl}>
         <div className="w-full max-w-4xl mx-auto px-6 md:px-10 pt-5 pb-16 overflow-hidden">
-          <div className="space-y-5">
-            {messageGroups.map((group, idx) => (
-              <MessageGroup
-                key={group[0].id}
-                messages={group}
-                isLastGroup={idx === messageGroups.length - 1}
-              />
-            ))}
-
-            {/* Typing indicator - brief flash before assistant message is created */}
-            {activeConv?.status === 'running' && messages.every((m) => m.role === 'user') && (
-              <div className="flex items-center gap-3 pl-9 py-1">
-                <div className="flex items-center gap-1">
-                  <span className="typing-dot w-1.5 h-1.5 rounded-full bg-[var(--abu-clay-60)]" />
-                  <span className="typing-dot w-1.5 h-1.5 rounded-full bg-[var(--abu-clay-60)]" />
-                  <span className="typing-dot w-1.5 h-1.5 rounded-full bg-[var(--abu-clay-60)]" />
-                </div>
-                <span className="text-[13px] text-[var(--abu-text-tertiary)]">
-                  {retryInfo
-                    ? format(t.chat.retrying, { attempt: retryInfo.attempt, max: retryInfo.maxAttempts })
-                    : t.chat.thinking}
-                </span>
-              </div>
-            )}
-          </div>
+          <Virtuoso
+            ref={virtuosoRef}
+            data={messageGroups}
+            customScrollParent={scrollParentEl ?? undefined}
+            computeItemKey={(index, group) => group[0]?.id ?? index}
+            components={virtuosoComponents}
+            // Stick to bottom on new/growing content, but only while already
+            // at the bottom — Virtuoso pauses this itself once the user
+            // scrolls up. 'auto' (instant) rather than 'smooth': streamed
+            // text arrives in small, frequent chunks, so instant jumps read
+            // as continuous motion without fighting a CSS scroll animation
+            // that's still in flight when the next chunk lands.
+            followOutput="auto"
+            atBottomStateChange={setIsAtBottom}
+            atBottomThreshold={100}
+            // Keep ~one viewport of rows mounted above/below the visible window.
+            // Rows still virtualize (far-off messages stay unmounted), but this
+            // widens the live band so inline iframe widgets (HtmlWidgetBlock)
+            // survive the small scroll jitter of normal reading without the
+            // srcdoc reload + in-widget JS state reset that a bare unmount causes.
+            increaseViewportBy={{ top: 900, bottom: 900 }}
+            context={{
+              // Typing indicator - brief flash before assistant message is created
+              showTypingIndicator:
+                activeConv?.status === 'running' && messages.every((m) => m.role === 'user'),
+              retryingLabel: retryInfo
+                ? format(t.chat.retrying, { attempt: retryInfo.attempt, max: retryInfo.maxAttempts })
+                : null,
+              thinkingLabel: t.chat.thinking,
+            }}
+            itemContent={(index, group) =>
+              group.length === 1 && isCompactBoundary(group[0]) ? (
+                <CompactDivider message={group[0]} />
+              ) : (
+                <MessageGroup messages={group} isLastGroup={index === messageGroups.length - 1} />
+              )
+            }
+          />
 
           {/* Bottom sentinel — keeps a sliver of space after last message */}
           <div className="h-px w-full" />
@@ -452,7 +564,7 @@ export default function ChatView() {
         {/* Scroll-to-bottom button */}
         {!isAtBottom && (
           <button
-            onClick={scrollToBottom}
+            onClick={() => scrollToLatest('smooth')}
             className="sticky bottom-3 left-1/2 -translate-x-1/2 z-10 flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-[var(--abu-bg-base)]/90 border border-[var(--abu-border)] text-[13px] text-[var(--abu-text-tertiary)] hover:text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-base)] transition-all backdrop-blur-sm"
           >
             <ChevronDown className="h-3.5 w-3.5" />

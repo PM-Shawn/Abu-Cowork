@@ -4,6 +4,7 @@ import type { ToolDefinition, ToolResultContent } from '../../../types';
 import { isWindows } from '../../../utils/platform';
 import { ensureParentDir } from '../../../utils/pathUtils';
 import { isSandboxEnabled, isNetworkIsolationEnabled } from '../../sandbox/config';
+import { isCatastrophicDeleteTarget } from '../pathSafety';
 import {
   getFileExtension,
   IMAGE_EXTENSIONS,
@@ -326,8 +327,11 @@ export const editFileTool: ToolDefinition = {
         return `Error: old_content matches ${occurrences} locations. Please provide more surrounding context to make the match unique.`;
       }
 
-      // Perform replacement
-      const updated = content.replace(oldContent, newContent);
+      // Perform replacement. Use a function replacer so new_content is inserted
+      // verbatim — a string replacement would let JS interpret `$$`, `$&`,
+      // `` $` ``, `$'` in new_content as special patterns (even with a string
+      // search), silently corrupting any content containing a literal `$`.
+      const updated = content.replace(oldContent, () => newContent);
       await writeTextFile(path, updated);
 
       const oldLines = oldContent.split('\n').length;
@@ -337,6 +341,42 @@ export const editFileTool: ToolDefinition = {
       return `Error editing file: ${err instanceof Error ? err.message : String(err)}`;
     } finally {
       releaseFileLock(path);
+    }
+  },
+  isConcurrencySafe: false,
+};
+
+export const deleteFileTool: ToolDefinition = {
+  name: TOOL_NAMES.DELETE_FILE,
+  description:
+    'Move a file or directory to the operating-system Trash (recoverable) instead of ' +
+    'deleting it permanently. ALWAYS prefer this over running `rm` through run_command: ' +
+    '`rm` deletes permanently and cannot be undone, whereas delete_file lands the entry in ' +
+    "the user's Trash. Before calling, tell the user exactly what you are about to delete " +
+    'and get their confirmation.',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      path: { type: 'string', description: 'Absolute path to the file or directory to move to Trash' },
+    },
+    required: ['path'],
+  },
+  execute: async (input) => {
+    const path = input.path as string;
+    // Hard block — enforced regardless of permission mode. checkWritePath alone only
+    // returns needsPermission:true for the filesystem root / home dir, which resolves
+    // to an automatic ALLOW in autonomous mode. Fail-closed: never call move_to_trash.
+    if (await isCatastrophicDeleteTarget(path)) {
+      return format(getI18n().toolResult.file.deleteRefusedCatastrophic, { path });
+    }
+    try {
+      await invoke('move_to_trash', { path });
+      return format(getI18n().toolResult.file.movedToTrash, { path });
+    } catch (err) {
+      // Fail-closed: never fall back to a permanent delete.
+      return format(getI18n().toolResult.file.trashFailed, {
+        error: err instanceof Error ? err.message : String(err),
+      });
     }
   },
   isConcurrencySafe: false,

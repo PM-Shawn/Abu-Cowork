@@ -158,9 +158,9 @@ function App() {
 
   // Right panel toggle only when there's an active conversation with messages
   // The overlay panel toggle is now ONLY the "reopen panel" affordance: when the right
-  // panel is open it carries its own collapse button in the tab bar (RightPanelTabBar),
-  // so the overlay would just double it up. Show the overlay only while the panel is
-  // collapsed (and there's a conversation to show a panel for).
+  // panel is open it carries its own collapse button in the workspace tab strip, so the
+  // overlay would just double it up. Show the overlay only while the panel is collapsed
+  // (and there's a conversation to show a panel for).
   const showRightPanelToggle = viewMode === 'chat' && ((activeConv?.messages?.length ?? 0) > 0 || hasAnyTab) && rightPanelCollapsed;
   const [showCloseDialog, setShowCloseDialog] = useState(false);
   const [searchModalOpen, setSearchModalOpen] = useState(false);

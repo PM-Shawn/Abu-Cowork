@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { FileText, AppWindow, SquareTerminal, ListChecks, X, Plus } from 'lucide-react';
+import { FileText, AppWindow, SquareTerminal, ListChecks, X, Plus, PanelRight } from 'lucide-react';
 import { usePreviewStore, type WorkspaceTab } from '@/stores/previewStore';
+import { useSettingsStore } from '@/stores/settingsStore';
 import { getBaseName } from '@/utils/pathUtils';
 import { useI18n } from '@/i18n';
 import { Button } from '@/components/ui/button';
@@ -56,6 +57,7 @@ export default function TabStrip() {
   const openBrowser = usePreviewStore((s) => s.openBrowser);
   const openTerminal = usePreviewStore((s) => s.openTerminal);
   const setMenuOpen = usePreviewStore((s) => s.setMenuOpen);
+  const setRightPanelCollapsed = useSettingsStore((s) => s.setRightPanelCollapsed);
 
   // Popover state holds a viewport-fixed position (or null when closed).
   const [newTabMenuPos, setNewTabMenuPos] = useState<{ top: number; left: number } | null>(null);
@@ -210,6 +212,24 @@ export default function TabStrip() {
           </Button>
         </TooltipTrigger>
         <TooltipContent side="bottom">{t.workspace.newTab}</TooltipContent>
+      </Tooltip>
+
+      {/* Collapse the whole right panel — pinned to the far right. (dev's
+          RightPanelTabBar carried this button; our TabStrip replaced it, so the
+          affordance moved here. The app top-bar toggle only *reopens* a
+          collapsed panel.) */}
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <Button
+            variant="ghost"
+            size="icon-xs"
+            onClick={() => setRightPanelCollapsed(true)}
+            className="ml-auto shrink-0 text-[var(--abu-text-tertiary)] hover:text-[var(--abu-text-primary)]"
+          >
+            <PanelRight className="w-3.5 h-3.5" strokeWidth={1.5} />
+          </Button>
+        </TooltipTrigger>
+        <TooltipContent side="bottom">{t.panel.hidePanel}</TooltipContent>
       </Tooltip>
 
       {/* Portaled popovers — escape the strip's overflow clip. */}

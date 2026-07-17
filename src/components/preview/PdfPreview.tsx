@@ -10,7 +10,14 @@ import { Button } from '@/components/ui/button';
 import 'react-pdf/dist/Page/TextLayer.css';
 import 'react-pdf/dist/Page/AnnotationLayer.css';
 
-pdfjs.GlobalWorkerOptions.workerSrc = '/pdf.worker.min.mjs';
+// Resolve the pdf.js worker through the bundler (Vite `?url`) rather than a
+// bare `/public` path: a `/public` .mjs can't be loaded as an ESM module worker
+// in Vite dev (pdf.js then falls back to `import()`-ing it, which Vite blocks),
+// so PDF preview errored in dev. `?url` makes Vite serve/bundle it correctly in
+// both dev and production.
+import pdfWorkerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
+
+pdfjs.GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
 
 function LoadingIndicator({ label }: { label?: string }) {
   return (

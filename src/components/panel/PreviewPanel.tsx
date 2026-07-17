@@ -14,7 +14,7 @@ import { ScrollArea } from '@/components/ui/scroll-area';
 import MarkdownRenderer from '@/components/chat/MarkdownRenderer';
 import CodeMirrorEditor from './CodeMirrorEditor';
 import { VersionHistoryMenu } from './VersionHistoryMenu';
-import { Loader2, X, FolderOpen, Code, Eye, SquareArrowOutUpRight, History, FileCode, FileText, FileImage, FileSpreadsheet, FileType, File, Maximize2, Minimize2 } from 'lucide-react';
+import { Loader2, X, FolderOpen, Code, Eye, SquareArrowOutUpRight, History, FileCode, FileText, FileImage, FileSpreadsheet, FileType, File, Maximize2, Minimize2, RotateCw, Globe } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { DocSelectionLayer } from '@/features/reference/DocSelectionLayer';
 import { cn } from '@/lib/utils';
@@ -454,10 +454,20 @@ export default function PreviewPanel({
         'shrink-0 px-3 py-2.5 border-b border-[var(--abu-bg-pressed)] flex items-center gap-2',
         (!embedded || isFullscreen) && 'mt-7',
       )}>
-        <Icon className="w-4 h-4 text-[var(--abu-text-tertiary)] shrink-0" />
-        <span className="text-[13px] font-medium text-[var(--abu-text-primary)] truncate flex-1">
-          {fileName}
-        </span>
+        {/* Filename shown only when NOT embedded in a tab (the tab strip already
+            shows it — avoid a duplicate title), except in fullscreen where the
+            tab strip is covered so the title is needed again. Otherwise an empty
+            spacer keeps the toolbar right-aligned. */}
+        {!embedded || isFullscreen ? (
+          <>
+            <Icon className="w-4 h-4 text-[var(--abu-text-tertiary)] shrink-0" />
+            <span className="text-[13px] font-medium text-[var(--abu-text-primary)] truncate flex-1">
+              {fileName}
+            </span>
+          </>
+        ) : (
+          <div className="flex-1" />
+        )}
         {toolbarButtons.viewToggle && (
           <div className="flex items-center bg-[var(--abu-bg-hover)] rounded p-0.5 mr-1">
             <button
@@ -528,6 +538,29 @@ export default function PreviewPanel({
           <X className="h-3.5 w-3.5" strokeWidth={1.5} />
         </Button>
       </div>
+
+      {/* Browser-style address bar for HTML preview (TRAE-like): reload + the
+          file path, so an HTML file reads as "opened in a browser". Real
+          back/forward + a CDP console panel are Electron-only (the loopback
+          iframe is cross-origin, so its navigation history isn't observable) —
+          documented as out of scope; use the browser tab for free navigation. */}
+      {rendererType === 'html' && viewMode === 'preview' && (
+        <div className="shrink-0 flex items-center gap-1.5 px-2 py-1.5 border-b border-[var(--abu-bg-pressed)] bg-[var(--abu-bg-subtle)]">
+          <Button
+            variant="ghost"
+            size="icon-xs"
+            onClick={() => setReloadNonce((n) => n + 1)}
+            className="text-[var(--abu-text-tertiary)] hover:text-[var(--abu-clay)]"
+            title={t.panel.reloadPreview}
+          >
+            <RotateCw className="w-3.5 h-3.5" strokeWidth={1.5} />
+          </Button>
+          <div className="flex-1 min-w-0 flex items-center gap-1.5 h-6 px-2 rounded-md bg-[var(--abu-bg-base)] border border-[var(--abu-bg-pressed)]">
+            <Globe className="w-3 h-3 text-[var(--abu-text-tertiary)] shrink-0" strokeWidth={1.5} />
+            <span className="truncate text-[11px] text-[var(--abu-text-secondary)]">{previewFilePath}</span>
+          </div>
+        </div>
+      )}
 
       {/* Content */}
       <div className="flex-1 min-h-0 overflow-hidden">

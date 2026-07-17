@@ -1375,6 +1375,7 @@ const enUS: TranslationDict = {
     openInApp: 'Open in default app',
     openInAppFailed: 'Could not open this file in a local app',
     previewMode: 'Preview',
+    reloadPreview: 'Reload',
     sourceMode: 'Source',
     unsupportedFileType: 'This file type is not supported for preview',
     showInFinder: 'Show in File Manager',

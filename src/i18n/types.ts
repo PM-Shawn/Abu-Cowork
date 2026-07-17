@@ -1503,6 +1503,7 @@ export interface TranslationDict {
     openInApp: string;
     openInAppFailed: string;
     previewMode: string;
+    reloadPreview: string;
     sourceMode: string;
     unsupportedFileType: string;
     showInFinder: string;

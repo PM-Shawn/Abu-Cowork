@@ -204,8 +204,13 @@ export default function TabStrip() {
                 ? 'bg-[var(--abu-bg-base)] text-[var(--abu-text-primary)]'
                 : 'text-[var(--abu-text-tertiary)] hover:bg-[var(--abu-bg-hover)]',
               // The dragged tab lifts off the strip; a drop target gets highlighted.
-              draggingId === tab.id && 'relative z-20 shadow-lg opacity-90 rounded-md bg-[var(--abu-bg-base)]',
-              dragOverId === tab.id && 'bg-[var(--abu-clay-20)]',
+              // pointer-events-none lets elementFromPoint "see through" it to the
+              // tab underneath (the drop target) instead of hitting itself.
+              draggingId === tab.id && 'relative z-20 shadow-lg opacity-90 rounded-md bg-[var(--abu-bg-base)] pointer-events-none',
+              // Drop target: a neutral vertical insertion line on the left edge
+              // (an "insert here" caret) — NOT a filled accent/red fill, which
+              // reads as a "can't drop" state.
+              dragOverId === tab.id && 'shadow-[inset_2px_0_0_0_var(--abu-text-primary)]',
             )}
             style={draggingId === tab.id ? { transform: `translateX(${dragDx}px)` } : undefined}
           >

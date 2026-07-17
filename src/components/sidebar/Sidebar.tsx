@@ -7,7 +7,7 @@ import { useInboxStore } from '@/stores/inboxStore';
 import { useI18n } from '@/i18n';
 import { useLabsFlag } from '@/core/labs/resolve';
 import { LABS_TODOS_INBOX } from '@/core/labs/registry';
-import { Plus, Workflow, Wrench, Trash2, Download, Pencil, Undo2, FolderInput, FolderClosed, ChevronRight, Minus, Search, X, CheckSquare, Inbox, ListTree, ArrowLeft } from 'lucide-react';
+import { Plus, Workflow, Wrench, Trash2, Download, Pencil, Undo2, FolderInput, FolderClosed, ChevronRight, Minus, CheckSquare, Inbox, ListTree, ArrowLeft } from 'lucide-react';
 import GuideModal from '@/components/common/GuideModal';
 import ProfileEditModal from '@/components/common/ProfileEditModal';
 import AccountMenu from '@/components/sidebar/AccountMenu';
@@ -24,8 +24,6 @@ import { readTextFile } from '@tauri-apps/plugin-fs';
 import ShareExportDialog from '@/components/share/ShareExportDialog';
 import ImportedBadge from './ImportedBadge';
 import { isMacOS } from '@/utils/platform';
-import { catalogSearch, type SearchHit, type ConversationMeta } from '@/core/session/conversationStorage';
-import { renderMarkedText, highlightQuery } from '@/utils/searchHighlight';
 import EnterpriseStatusBadge from '@/components/enterprise/EnterpriseStatusBadge';
 // Side-effect import: registers BrandSlot in the enterprise mounts registry
 import '@/components/enterprise/BrandSlot';
@@ -71,132 +69,6 @@ function IMPlatformDot({ platform }: { platform: string }) {
   );
 }
 
-interface ConversationRowProps {
-  conv: ConversationMeta;
-  /** `conv.id === activeConversationId && viewMode === 'chat'` — computed by
-   * the caller since both `activeConversationId` and `viewMode` live outside
-   * this component. */
-  isActive: boolean;
-  isEditing: boolean;
-  status: ConversationStatus;
-  /** Set only in search-results mode: highlights matches in the title
-   * against this (trimmed) query. `undefined` in plain-recents mode, where
-   * the title renders as plain text — identical to pre-unification behavior. */
-  titleQuery?: string;
-  /** FTS/LIKE body-hit snippet (search-results mode only), rendered below
-   * the title. `undefined` for plain recents rows and for search rows that
-   * matched by title rather than body. */
-  snippet?: React.ReactNode;
-  onSelect: () => void;
-  onContextMenu: (e: React.MouseEvent) => void;
-  onOpenFileTree: () => void;
-  onDelete: (e: React.MouseEvent) => void;
-  onRenameCommit: (title: string) => void;
-  onRenameCancel: () => void;
-  onStatusComplete: () => void;
-}
-
-/**
- * Single conversation row shared by BOTH the plain recents list and the
- * search-results list. Before this was extracted, search-results rows were a
- * stripped-down duplicate (bare title[+snippet], no affordances) — so typing
- * a 1-2 char filter silently lost the context menu, inline rename, delete,
- * move-to-project (via context menu), file-tree shortcut, status dot, and
- * active-conversation highlight that recents rows have. Unifying on one
- * component means any query length keeps full conversation-management
- * affordances.
- */
-function ConversationRow({
-  conv,
-  isActive,
-  isEditing,
-  status,
-  titleQuery,
-  snippet,
-  onSelect,
-  onContextMenu,
-  onOpenFileTree,
-  onDelete,
-  onRenameCommit,
-  onRenameCancel,
-  onStatusComplete,
-}: ConversationRowProps) {
-  const { t } = useI18n();
-  const displayTitle = conv.title.replace(/\[Attachment:\s*`[^`]*`\]\s*/g, '').trim() || conv.title;
-  return (
-    <div
-      role="button"
-      tabIndex={0}
-      onClick={onSelect}
-      onContextMenu={onContextMenu}
-      aria-current={isActive ? 'true' : undefined}
-      className={cn(
-        'group flex flex-col gap-0.5 px-2 py-2 rounded-lg cursor-pointer transition-colors w-full text-left',
-        isActive
-          ? 'bg-[var(--abu-bg-active)] text-[var(--abu-text-primary)]'
-          : 'text-[var(--abu-text-secondary)] hover:bg-[var(--abu-bg-hover)]'
-      )}
-    >
-      <div className="flex items-center gap-2">
-        {conv.imPlatform && (
-          <IMPlatformDot platform={conv.imPlatform} />
-        )}
-        {conv.importedFrom && (
-          <ImportedBadge importedAt={conv.importedFrom.importedAt} />
-        )}
-        {isEditing ? (
-          <input
-            autoFocus
-            defaultValue={conv.title}
-            className="flex-1 text-[13px] bg-transparent border-b border-[var(--abu-clay)] outline-none min-w-0"
-            onClick={(e) => e.stopPropagation()}
-            onBlur={(e) => {
-              const val = e.target.value.trim();
-              if (val && val !== conv.title) onRenameCommit(val);
-              onRenameCancel();
-            }}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter') (e.target as HTMLInputElement).blur();
-              if (e.key === 'Escape') onRenameCancel();
-            }}
-          />
-        ) : (
-          <span className="flex-1 truncate text-[13px]">
-            {titleQuery !== undefined
-              ? highlightQuery(displayTitle, titleQuery, 'bg-[var(--abu-clay-bg-15)] text-[var(--abu-clay)] rounded-sm')
-              : displayTitle}
-          </span>
-        )}
-        <StatusIndicator status={status} onComplete={onStatusComplete} />
-        {conv.workspacePath && (
-          <Button
-            variant="ghost"
-            size="icon"
-            onClick={(e) => { e.stopPropagation(); onOpenFileTree(); }}
-            className="h-5 w-5 opacity-0 group-hover:opacity-100 text-[var(--abu-text-tertiary)] hover:text-[var(--abu-clay)] hover:bg-transparent shrink-0"
-            title={t.sidebar.projectFiles}
-          >
-            <ListTree className="h-3.5 w-3.5" strokeWidth={1.5} />
-          </Button>
-        )}
-        <Button
-          variant="ghost"
-          size="icon"
-          onClick={onDelete}
-          className="h-5 w-5 opacity-0 group-hover:opacity-100 text-[var(--abu-text-tertiary)] hover:text-red-500 hover:bg-transparent shrink-0"
-        >
-          <Trash2 className="h-3.5 w-3.5" strokeWidth={1.5} />
-        </Button>
-      </div>
-      {snippet && (
-        <span className="line-clamp-2 text-[12px] leading-snug text-[var(--abu-text-tertiary)]">
-          {snippet}
-        </span>
-      )}
-    </div>
-  );
-}
-
 export default function Sidebar() {
   const conversationIndex = useChatStore((s) => s.conversationIndex);
   const conversations = useChatStore((s) => s.conversations);
@@ -238,42 +110,6 @@ export default function Sidebar() {
   // right panel.
   const showFileTree = usePreviewStore((s) => s.fileTreeMode);
   const setShowFileTree = usePreviewStore((s) => s.setFileTreeMode);
-  const [searchQuery, setSearchQuery] = useState('');
-  const [searchOpen, setSearchOpen] = useState(false);
-  const searchInputRef = useRef<HTMLInputElement>(null);
-  // Backend search (catalogSearch) runs for ANY non-empty query — the
-  // backend picks trigram MATCH for ≥3-char queries and a LIKE-based
-  // fallback for 1-2 char queries (see search_core's jsdoc-equivalent
-  // comment in catalog_db.rs), so there's no length threshold to gate on
-  // here anymore.
-  const [searchHits, setSearchHits] = useState<SearchHit[]>([]);
-  const searchTokenRef = useRef(0);
-  const trimmedSearchQuery = searchQuery.trim();
-  const isFtsSearching = trimmedSearchQuery.length > 0;
-
-  useEffect(() => {
-    if (!isFtsSearching) {
-      // Bump the token here too: an in-flight request for an abandoned
-      // query would otherwise still pass the `searchTokenRef.current ===
-      // token` guard below and populate searchHits after the query has been
-      // cleared, flashing stale results when the user types a new query.
-      searchTokenRef.current++;
-      setSearchHits([]);
-      return;
-    }
-    // Bump the token before debouncing so a stale in-flight request (from a
-    // previous keystroke) can be told apart from the latest one once both
-    // resolve — guards against out-of-order responses overwriting results.
-    const token = ++searchTokenRef.current;
-    const timer = setTimeout(() => {
-      catalogSearch(trimmedSearchQuery).then((hits) => {
-        if (searchTokenRef.current === token) {
-          setSearchHits(hits);
-        }
-      });
-    }, 200);
-    return () => clearTimeout(timer);
-  }, [trimmedSearchQuery, isFtsSearching]);
 
   // Undo delete state
   const [pendingDelete, setPendingDelete] = useState<{ id: string; data: string } | null>(null);
@@ -360,28 +196,7 @@ export default function Sidebar() {
   // Use conversationIndex (lightweight metadata) instead of full conversations for listing
   const sortedConvs = Object.values(conversationIndex)
     .filter((c) => !c.scheduledTaskId && !c.triggerId && !c.projectId)
-    .filter((c) => !trimmedSearchQuery || c.title.toLowerCase().includes(trimmedSearchQuery.toLowerCase()))
     .sort((a, b) => b.createdAt - a.createdAt);
-
-  // FTS/LIKE body-hit results (any non-empty query), scoped and deduped
-  // against `sortedConvs`'s instant title matches:
-  //  - Title matches always come from `sortedConvs` (already scoped to
-  //    exclude project/scheduled/trigger convs), so they render reliably even
-  //    if the SQLite catalog is cold/uninitialized/failed — never "No
-  //    matches" for a plainly-existing title.
-  //  - `searchHits` (FTS body hits) are filtered to the same project/
-  //    scheduled/trigger exclusion so search never leaks a conversation that
-  //    the recents list deliberately hides, then deduped against the title
-  //    matches so nothing shows twice.
-  const titleMatchIds = new Set(sortedConvs.map((c) => c.id));
-  const scopedBodyHits = isFtsSearching
-    ? searchHits.filter((hit) => {
-        if (titleMatchIds.has(hit.conv_id)) return false;
-        const meta = conversationIndex[hit.conv_id];
-        if (meta?.projectId || meta?.scheduledTaskId || meta?.triggerId) return false;
-        return true;
-      })
-    : [];
 
   const handleDeleteConversation = async (e: React.MouseEvent, convId: string) => {
     e.stopPropagation();
@@ -443,11 +258,12 @@ export default function Sidebar() {
   };
 
   return (
-    <div className="flex flex-col h-full w-[260px] bg-[var(--abu-bg-subtle)] border-r border-[var(--abu-border)]">
-      {/* Drag region — covers the title bar area above sidebar content */}
+    <div className="flex flex-col h-full w-[260px] bg-[var(--abu-bg-canvas)]">
+      {/* Drag region — covers the title bar area above sidebar content. Taller than the
+          toolbar row so 新建任务 sits comfortably below the toggle/search icons. */}
       <div
         data-tauri-drag-region
-        className={isMacOS() ? 'h-11 shrink-0' : 'h-8 shrink-0'}
+        className={isMacOS() ? 'h-14 shrink-0' : 'h-8 shrink-0'}
       />
       {/* Top Navigation */}
       <nav className="px-4 pb-2 space-y-0.5" aria-label="Main navigation">
@@ -563,133 +379,13 @@ export default function Sidebar() {
                 >
                   <FolderInput className="h-3.5 w-3.5" strokeWidth={2} />
                 </button>
-                <button
-                  // preventDefault keeps the input from blurring first when the
-                  // toggle is clicked to close — otherwise the input's onBlur
-                  // (auto-close-when-empty) would fire and this onClick would
-                  // immediately re-open it.
-                  onMouseDown={(e) => e.preventDefault()}
-                  onClick={() => {
-                    const next = !searchOpen;
-                    setSearchOpen(next);
-                    if (!next) setSearchQuery('');
-                    else setTimeout(() => searchInputRef.current?.focus(), 0);
-                  }}
-                  className="p-1 rounded hover:bg-[var(--abu-bg-hover)] text-[var(--abu-text-muted)] hover:text-[var(--abu-text-primary)]"
-                  title={t.sidebar.searchPlaceholder}
-                >
-                  <Search className="h-3.5 w-3.5" strokeWidth={2} />
-                </button>
               </div>
             )}
           </div>
         </div>
 
-        {/* Search Box */}
-        {!recentsCollapsed && searchOpen && (
-          <div className="px-4 pt-1 pb-1">
-            <div className="relative">
-              <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-[var(--abu-text-muted)]" />
-              <input
-                ref={searchInputRef}
-                type="text"
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === 'Escape') {
-                    setSearchQuery('');
-                    setSearchOpen(false);
-                  }
-                }}
-                // Click away from an empty search box → collapse it (natural
-                // dismiss). Only when empty: with a query typed there are result
-                // rows whose click must land before the box unmounts, and the X
-                // button's mousedown-preventDefault keeps focus so clearing then
-                // clicking away still closes.
-                onBlur={() => {
-                  if (!searchQuery.trim()) setSearchOpen(false);
-                }}
-                placeholder={t.sidebar.searchPlaceholder}
-                className="w-full h-7 pl-8 pr-7 rounded-md text-xs bg-[var(--abu-bg-muted)] border border-[var(--abu-border-subtle)] focus:border-[var(--abu-clay-40)] focus:outline-none text-[var(--abu-text-primary)] placeholder:text-[var(--abu-text-muted)]"
-              />
-              {searchQuery && (
-                <button
-                  // Keep input focus so clearing doesn't blur-close, and so a
-                  // subsequent click-away still collapses the (now empty) box.
-                  onMouseDown={(e) => e.preventDefault()}
-                  onClick={() => setSearchQuery('')}
-                  className="absolute right-2 top-1/2 -translate-y-1/2 text-[var(--abu-text-muted)] hover:text-[var(--abu-text-primary)]"
-                >
-                  <X className="h-3 w-3" />
-                </button>
-              )}
-            </div>
-          </div>
-        )}
-
-        {/* Conversation List — replaced by a merged title-match + FTS5/LIKE
-            body-hit result list while any non-empty query is active (see
-            isFtsSearching effect above and the scopedBodyHits comment). */}
-        {!recentsCollapsed && isFtsSearching && (
-        <div className="px-4">
-          <div className="px-2 py-1.5 text-[13px] font-medium text-[var(--abu-text-muted)]">
-            {t.sidebar.searchResults}
-          </div>
-          {sortedConvs.length === 0 && scopedBodyHits.length === 0 ? (
-            <div className="px-2 py-3">
-              <p className="text-[13px] text-[var(--abu-text-tertiary)]">{t.sidebar.searchNoResults}</p>
-            </div>
-          ) : (
-            <div className="space-y-0.5">
-              {sortedConvs.map((conv) => {
-                const convStatus = conversations[conv.id]?.status ?? 'idle';
-                return (
-                  <ConversationRow
-                    key={conv.id}
-                    conv={conv}
-                    isActive={conv.id === activeConversationId && viewMode === 'chat'}
-                    isEditing={editingId === conv.id}
-                    status={convStatus}
-                    titleQuery={trimmedSearchQuery}
-                    onSelect={() => { switchConversation(conv.id); setViewMode('chat'); clearBadge(conv.id); if (convStatus === 'error') clearCompletedStatus(conv.id); }}
-                    onContextMenu={(e) => handleContextMenu(e, conv.id)}
-                    onOpenFileTree={() => { switchConversation(conv.id); setViewMode('chat'); clearBadge(conv.id); setShowFileTree(true); }}
-                    onDelete={(e) => handleDeleteConversation(e, conv.id)}
-                    onRenameCommit={(title) => renameConversation(conv.id, title)}
-                    onRenameCancel={() => setEditingId(null)}
-                    onStatusComplete={() => handleClearCompletedStatus(conv.id)}
-                  />
-                );
-              })}
-              {scopedBodyHits.map((hit) => {
-                const meta = conversationIndex[hit.conv_id];
-                if (!meta) return null;
-                const convStatus = conversations[hit.conv_id]?.status ?? 'idle';
-                return (
-                  <ConversationRow
-                    key={hit.conv_id}
-                    conv={meta}
-                    isActive={hit.conv_id === activeConversationId && viewMode === 'chat'}
-                    isEditing={editingId === hit.conv_id}
-                    status={convStatus}
-                    titleQuery={trimmedSearchQuery}
-                    snippet={renderMarkedText(hit.snippet, 'bg-[var(--abu-clay-bg-15)] text-[var(--abu-clay)] rounded-sm')}
-                    onSelect={() => { switchConversation(hit.conv_id); setViewMode('chat'); clearBadge(hit.conv_id); if (convStatus === 'error') clearCompletedStatus(hit.conv_id); }}
-                    onContextMenu={(e) => handleContextMenu(e, hit.conv_id)}
-                    onOpenFileTree={() => { switchConversation(hit.conv_id); setViewMode('chat'); clearBadge(hit.conv_id); setShowFileTree(true); }}
-                    onDelete={(e) => handleDeleteConversation(e, hit.conv_id)}
-                    onRenameCommit={(title) => renameConversation(hit.conv_id, title)}
-                    onRenameCancel={() => setEditingId(null)}
-                    onStatusComplete={() => handleClearCompletedStatus(hit.conv_id)}
-                  />
-                );
-              })}
-            </div>
-          )}
-        </div>
-        )}
-
-        {!recentsCollapsed && !isFtsSearching && (
+        {/* Conversation List */}
+        {!recentsCollapsed && (
         <div className="px-4">
         {sortedConvs.length === 0 ? (
           <div className="px-4 py-3">
@@ -701,20 +397,75 @@ export default function Sidebar() {
               // Look up runtime status from loaded conversations (ConversationMeta doesn't have status)
               const convStatus = conversations[conv.id]?.status ?? 'idle';
               return (
-                <ConversationRow
-                  key={conv.id}
-                  conv={conv}
-                  isActive={conv.id === activeConversationId && viewMode === 'chat'}
-                  isEditing={editingId === conv.id}
+              <div
+                key={conv.id}
+                role="button"
+                tabIndex={0}
+                onClick={() => { switchConversation(conv.id); setViewMode('chat'); clearBadge(conv.id); if (convStatus === 'error') clearCompletedStatus(conv.id); }}
+                onContextMenu={(e) => handleContextMenu(e, conv.id)}
+                aria-current={conv.id === activeConversationId && viewMode === 'chat' ? 'true' : undefined}
+                className={cn(
+                  'group flex items-center gap-2 px-2 py-2 rounded-lg cursor-pointer transition-colors w-full text-left',
+                  conv.id === activeConversationId && viewMode === 'chat'
+                    ? 'bg-[var(--abu-bg-active)] text-[var(--abu-text-primary)]'
+                    : 'text-[var(--abu-text-secondary)] hover:bg-[var(--abu-bg-hover)]'
+                )}
+              >
+                {conv.imPlatform && (
+                  <IMPlatformDot platform={conv.imPlatform} />
+                )}
+                {conv.importedFrom && (
+                  <ImportedBadge importedAt={conv.importedFrom.importedAt} />
+                )}
+                {editingId === conv.id ? (
+                  <input
+                    autoFocus
+                    defaultValue={conv.title}
+                    className="flex-1 text-[13px] bg-transparent border-b border-[var(--abu-clay)] outline-none min-w-0"
+                    onClick={(e) => e.stopPropagation()}
+                    onBlur={(e) => {
+                      const val = e.target.value.trim();
+                      if (val && val !== conv.title) renameConversation(conv.id, val);
+                      setEditingId(null);
+                    }}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') (e.target as HTMLInputElement).blur();
+                      if (e.key === 'Escape') setEditingId(null);
+                    }}
+                  />
+                ) : (
+                  <span className="flex-1 truncate text-[13px]">{conv.title.replace(/\[Attachment:\s*`[^`]*`\]\s*/g, '').trim() || conv.title}</span>
+                )}
+                <StatusIndicator
                   status={convStatus}
-                  onSelect={() => { switchConversation(conv.id); setViewMode('chat'); clearBadge(conv.id); if (convStatus === 'error') clearCompletedStatus(conv.id); }}
-                  onContextMenu={(e) => handleContextMenu(e, conv.id)}
-                  onOpenFileTree={() => { switchConversation(conv.id); setViewMode('chat'); clearBadge(conv.id); setShowFileTree(true); }}
-                  onDelete={(e) => handleDeleteConversation(e, conv.id)}
-                  onRenameCommit={(title) => renameConversation(conv.id, title)}
-                  onRenameCancel={() => setEditingId(null)}
-                  onStatusComplete={() => handleClearCompletedStatus(conv.id)}
+                  onComplete={() => handleClearCompletedStatus(conv.id)}
                 />
+                {conv.workspacePath && (
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      switchConversation(conv.id);
+                      setViewMode('chat');
+                      clearBadge(conv.id);
+                      setShowFileTree(true);
+                    }}
+                    className="h-5 w-5 opacity-0 group-hover:opacity-100 text-[var(--abu-text-tertiary)] hover:text-[var(--abu-clay)] hover:bg-transparent shrink-0"
+                    title={t.sidebar.projectFiles}
+                  >
+                    <ListTree className="h-3.5 w-3.5" strokeWidth={1.5} />
+                  </Button>
+                )}
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  onClick={(e) => handleDeleteConversation(e, conv.id)}
+                  className="h-5 w-5 opacity-0 group-hover:opacity-100 text-[var(--abu-text-tertiary)] hover:text-red-500 hover:bg-transparent shrink-0"
+                >
+                  <Trash2 className="h-3.5 w-3.5" strokeWidth={1.5} />
+                </Button>
+              </div>
               );
             })}
           </div>

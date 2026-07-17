@@ -51,42 +51,20 @@ export default function TriggerCard({ trigger }: Props) {
   return (
     <div
       onClick={handleCardClick}
-      className="bg-[var(--abu-bg-muted)] rounded-xl border border-[var(--abu-border)] px-4 py-3 cursor-pointer hover:border-[var(--abu-border-hover)] transition-all group"
+      className={cn(
+        'group flex flex-col gap-2 w-full h-[120px] overflow-hidden rounded-xl p-4 cursor-pointer',
+        'bg-[var(--abu-bg-subtle)] border border-[var(--abu-border)]',
+        'hover:border-[var(--abu-clay)] hover:shadow-sm transition-all duration-150'
+      )}
     >
-      <div className="flex items-center gap-3">
-        {/* Left: status dot + info */}
-        <div className="flex-1 min-w-0">
-          <div className="flex items-center gap-2 mb-1">
-            <span
-              className={cn(
-                'w-2 h-2 rounded-full shrink-0',
-                isPaused ? 'bg-neutral-300' : 'bg-green-500'
-              )}
-            />
-            <span className="text-[14px] font-medium text-[var(--abu-text-primary)] truncate">
-              {trigger.name}
-            </span>
-          </div>
-          <div className="flex items-center gap-3 text-[12px] text-[var(--abu-text-tertiary)] pl-4">
-            <span className="flex items-center gap-1">
-              <Zap className="h-3 w-3" />
-              {getFilterDescription(trigger, t.trigger)}
-            </span>
-            {trigger.output?.enabled && (
-              <span className="flex items-center gap-0.5 text-[var(--abu-clay)]">
-                <Send className="h-3 w-3" />
-                {t.trigger.outputEnabled}
-              </span>
-            )}
-            {trigger.lastTriggeredAt && (
-              <span>
-                {t.trigger.lastTriggered}: {formatTimeAgo(trigger.lastTriggeredAt, t.trigger)}
-              </span>
-            )}
-          </div>
+      {/* Row 1: event avatar + name + on/off toggle (mirrors the toolbox card shell) */}
+      <div className="flex items-center gap-3 w-full shrink-0">
+        <div className="flex items-center justify-center w-10 h-10 rounded-lg bg-[var(--abu-bg-active)] shrink-0">
+          <Zap className="h-5 w-5 text-[var(--abu-text-muted)]" />
         </div>
-
-        {/* Right: toggle switch */}
+        <span className="flex-1 min-w-0 text-sm font-semibold leading-snug truncate text-[var(--abu-text-primary)]">
+          {trigger.name}
+        </span>
         <button
           onClick={handleToggle}
           className={cn(
@@ -101,6 +79,24 @@ export default function TriggerCard({ trigger }: Props) {
             )}
           />
         </button>
+      </div>
+
+      {/* Row 2: filter + output + last-triggered meta */}
+      <div className="flex-1 min-h-0 flex flex-col gap-0.5 text-[12px] text-[var(--abu-text-tertiary)]">
+        <span className="truncate">{getFilterDescription(trigger, t.trigger)}</span>
+        <div className="flex items-center gap-3 min-w-0">
+          {trigger.output?.enabled && (
+            <span className="flex items-center gap-0.5 text-[var(--abu-clay)] shrink-0">
+              <Send className="h-3 w-3" />
+              {t.trigger.outputEnabled}
+            </span>
+          )}
+          {trigger.lastTriggeredAt && (
+            <span className="truncate">
+              {t.trigger.lastTriggered}: {formatTimeAgo(trigger.lastTriggeredAt, t.trigger)}
+            </span>
+          )}
+        </div>
       </div>
     </div>
   );

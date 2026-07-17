@@ -2,13 +2,9 @@ import { useEffect } from 'react';
 import { useCustomizeStore } from '@/stores/customizeStore';
 import { APP_VERSION } from '@/utils/version';
 import { useDiscoveryStore } from '@/stores/discoveryStore';
-import { useI18n, format } from '@/i18n';
+import { useI18n } from '@/i18n';
 import { X, Sparkles, Bot, Server, Cpu, Search } from 'lucide-react';
 import { cn } from '@/lib/utils';
-import { open as openDialog } from '@tauri-apps/plugin-dialog';
-import { installSkillFromFolder } from '@/core/skill/installer';
-import { installAgentFromFolder } from '@/core/agent/installer';
-import { useToastStore } from '@/stores/toastStore';
 import SkillsSection from './SkillsSection';
 import AgentsSection from './AgentsSection';
 import MCPSection from './MCPSection';
@@ -36,33 +32,6 @@ export default function CustomizePanel() {
     }
   }, [showCustomize, refresh]);
 
-  const handleUploadFolder = async (type: 'skills' | 'agents') => {
-    const addToast = useToastStore.getState().addToast;
-    try {
-      const folderPath = await openDialog({ directory: true, multiple: false });
-      if (!folderPath) return;
-
-      const result = type === 'agents'
-        ? await installAgentFromFolder(folderPath as string, { overwrite: true })
-        : await installSkillFromFolder(folderPath as string, { overwrite: true });
-
-      if (!result.ok) {
-        addToast({ type: 'error', title: t.toolbox.uploadFailed, message: result.message });
-        return;
-      }
-
-      await refresh();
-      addToast({
-        type: 'success',
-        title: t.toolbox.uploadSuccess,
-        message: format(t.toolbox.uploadSuccessDetail, { name: result.name, count: String(result.fileCount) }),
-      });
-    } catch (err) {
-      console.error('Upload folder failed:', err);
-      addToast({ type: 'error', title: t.toolbox.uploadFailed, message: String(err) });
-    }
-  };
-
   if (!showCustomize) return null;
 
   const renderContent = () => {
@@ -70,7 +39,7 @@ export default function CustomizePanel() {
       case 'skills':
         return <SkillsSection />;
       case 'agents':
-        return <AgentsSection onUploadFile={() => handleUploadFolder('agents')} />;
+        return <AgentsSection />;
       case 'mcp':
         return <MCPSection />;
       case 'models':

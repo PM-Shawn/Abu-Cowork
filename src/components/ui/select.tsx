@@ -30,8 +30,9 @@ export interface SelectProps {
   onChange: (value: string) => void;
   options: SelectOption[] | SelectOptionGroup[];
   placeholder?: string;
-  /** 'default' = full-width form field, 'inline' = compact for settings rows */
-  variant?: 'default' | 'inline';
+  /** 'default' = full-width form field, 'inline' = compact boxed settings row,
+   *  'ghost' = borderless value + small chevron (iOS-style quick-setting row) */
+  variant?: 'default' | 'inline' | 'ghost';
   className?: string;
 }
 
@@ -42,6 +43,7 @@ export function Select({ value, onChange, options, placeholder, variant = 'defau
   const allOptions = flattenOptions(options);
   const selectedOption = allOptions.find((opt) => opt.value === value);
   const isInline = variant === 'inline';
+  const isGhost = variant === 'ghost';
 
   React.useEffect(() => {
     if (!open) return;
@@ -95,22 +97,31 @@ export function Select({ value, onChange, options, placeholder, variant = 'defau
   );
 
   return (
-    <div ref={containerRef} className={cn('relative', !isInline && 'w-full', className)}>
+    <div ref={containerRef} className={cn('relative', !isInline && !isGhost && 'w-full', className)}>
       {/* Trigger */}
       <button
         type="button"
         onClick={() => setOpen(!open)}
         className={cn(
-          'flex items-center gap-2 rounded-lg border border-[var(--abu-border)] text-sm text-left transition-all',
-          'focus:outline-none focus:ring-2 focus:ring-[var(--abu-clay-ring)] focus:border-[var(--abu-clay)]',
-          'hover:border-[var(--abu-border-hover)]',
-          open && 'ring-2 ring-[var(--abu-clay-ring)] border-[var(--abu-clay)]',
-          isInline
-            ? 'px-3 py-1.5 bg-[var(--abu-bg-base)]'
-            : 'w-full h-9 px-3 justify-between bg-[var(--abu-bg-muted)]',
+          'flex items-center text-sm text-left transition-all',
+          isGhost
+            ? 'gap-1 text-[13px] focus:outline-none'
+            : cn(
+                'gap-2 rounded-lg border border-[var(--abu-border)]',
+                'focus:outline-none focus:ring-2 focus:ring-[var(--abu-clay-ring)] focus:border-[var(--abu-clay)]',
+                'hover:border-[var(--abu-border-hover)]',
+                open && 'ring-2 ring-[var(--abu-clay-ring)] border-[var(--abu-clay)]',
+                isInline
+                  ? 'px-3 py-1.5 bg-[var(--abu-bg-base)]'
+                  : 'w-full h-9 px-3 justify-between bg-[var(--abu-bg-muted)]',
+              ),
         )}
       >
-        <span className={cn(!selectedOption ? 'text-[var(--abu-text-placeholder)]' : 'text-[var(--abu-text-primary)]')}>
+        <span className={cn(
+          !selectedOption
+            ? 'text-[var(--abu-text-placeholder)]'
+            : isGhost ? 'text-[var(--abu-text-tertiary)]' : 'text-[var(--abu-text-primary)]'
+        )}>
           {selectedOption?.label ?? placeholder ?? '...'}
         </span>
         <ChevronDown
@@ -125,7 +136,7 @@ export function Select({ value, onChange, options, placeholder, variant = 'defau
       {open && (
         <div className={cn(
           'absolute z-50 top-full mt-1 py-1 bg-[var(--abu-bg-base)] border border-[var(--abu-border)] rounded-xl shadow-lg max-h-60 overflow-auto',
-          isInline ? 'right-0 min-w-[140px]' : 'left-0 right-0',
+          (isInline || isGhost) ? 'right-0 min-w-[140px]' : 'left-0 right-0',
         )}>
           {isGrouped(options) ? (
             options.map((group, gi) => (

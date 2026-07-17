@@ -1,26 +1,44 @@
 version: 2
 updates:
+  # ---- Rust (Cargo) -------------------------------------------------------
   - package-ecosystem: cargo
     directory: /src-tauri
     target-branch: dev
     schedule:
-      interval: weekly
-    open-pull-requests-limit: 5
+      interval: monthly
+    open-pull-requests-limit: 10
     commit-message:
       prefix: "chore(deps)"
+    # Batch routine bumps into at most two PRs per run to cut noise:
+    #   patch → auto-merged by dependabot-auto-merge.yml once CI is green
+    #   minor → one grouped PR for a quick manual review
+    # Major bumps are left ungrouped so each breaking change gets its own PR.
+    groups:
+      cargo-patch:
+        patterns: ["*"]
+        update-types: ["patch"]
+      cargo-minor:
+        patterns: ["*"]
+        update-types: ["minor"]
 
+  # ---- npm ---------------------------------------------------------------
   - package-ecosystem: npm
     directory: /
     target-branch: dev
     schedule:
-      interval: weekly
-    open-pull-requests-limit: 5
+      interval: monthly
+    open-pull-requests-limit: 10
     commit-message:
       prefix: "chore(deps)"
     groups:
-      dev-dependencies:
-        dependency-type: development
+      npm-patch:
+        patterns: ["*"]
+        update-types: ["patch"]
+      npm-minor:
+        patterns: ["*"]
+        update-types: ["minor"]
 
+  # ---- GitHub Actions ----------------------------------------------------
   - package-ecosystem: github-actions
     directory: /
     target-branch: dev
@@ -28,3 +46,7 @@ updates:
       interval: monthly
     commit-message:
       prefix: "chore(ci)"
+    # Action pin bumps are low blast radius — batch them all and auto-merge.
+    groups:
+      actions-all:
+        patterns: ["*"]

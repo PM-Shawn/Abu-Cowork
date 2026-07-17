@@ -25,7 +25,7 @@
         "resizable": true,
         "center": true,
         "titleBarStyle": "Overlay",
-        "trafficLightPosition": { "x": 20, "y": 18 },
+        "trafficLightPosition": { "x": 20, "y": 31 },
         "acceptFirstMouse": true
       }
     ],

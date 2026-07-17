@@ -1,6 +1,8 @@
 import { useState, useRef, useEffect } from 'react';
 import { useIMChannelStore } from '@/stores/imChannelStore';
 import { useI18n } from '@/i18n';
+import { Button } from '@/components/ui/button';
+import SettingsSectionHeader from '@/components/settings/SettingsSectionHeader';
 import { triggerEngine } from '@/core/trigger/triggerEngine';
 import { Plus, Trash2, ChevronDown, ChevronUp, Copy, Check, HelpCircle, RefreshCw } from 'lucide-react';
 import { Toggle } from '@/components/ui/toggle';
@@ -204,11 +206,17 @@ export default function IMChannelSection() {
 
   return (
     <div className="space-y-6">
-      {/* Header */}
-      <div>
-        <h3 className="text-base font-semibold text-[var(--abu-text-primary)]">{t.imChannel.title}</h3>
-        <p className="text-xs text-[var(--abu-text-muted)] mt-1">{t.imChannel.description}</p>
-      </div>
+      {/* Header — shared component; add button in the action slot (matches Models). */}
+      <SettingsSectionHeader
+        title={t.imChannel.title}
+        description={t.imChannel.description}
+        action={!showAddForm ? (
+          <Button variant="default" size="sm" onClick={() => setShowAddForm(true)} className="gap-1.5">
+            <Plus className="h-3.5 w-3.5" />
+            {t.settings.add}
+          </Button>
+        ) : undefined}
+      />
 
       {/* Channel List */}
       {channelList.length === 0 && !showAddForm && (
@@ -445,16 +453,6 @@ export default function IMChannelSection() {
         </div>
       )}
 
-      {/* Add button */}
-      {!showAddForm && (
-        <button
-          onClick={() => setShowAddForm(true)}
-          className="w-full flex items-center justify-center gap-2 px-4 py-3 text-sm text-[var(--abu-clay)] border border-dashed border-[var(--abu-clay-40)] rounded-xl hover:bg-[var(--abu-clay-5)] transition-colors"
-        >
-          <Plus className="h-4 w-4" />
-          {t.imChannel.addChannel}
-        </button>
-      )}
     </div>
   );
 }

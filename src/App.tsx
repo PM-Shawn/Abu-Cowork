@@ -39,7 +39,8 @@ initPlatform().then(() => {
 });
 import { useSettingsStore, bootstrapSecrets } from '@/stores/settingsStore';
 import { TooltipProvider } from '@/components/ui/tooltip';
-import { PanelLeft, PanelRight, ArrowLeft } from 'lucide-react';
+import { PanelLeft, PanelRight, Search, Plus } from 'lucide-react';
+import ConversationSearchModal from '@/components/sidebar/ConversationSearchModal';
 import { isMacOS } from '@/utils/platform';
 import { cn } from '@/lib/utils';
 import { initNotifications, clearDockBadge } from '@/utils/notifications';
@@ -116,15 +117,16 @@ function App() {
   const toggleRightPanel = useSettingsStore((s) => s.toggleRightPanel);
   const viewMode = useSettingsStore((s) => s.viewMode);
   const setViewMode = useSettingsStore((s) => s.setViewMode);
+  const startNewConversation = useChatStore((s) => s.startNewConversation);
+  const setFileTreeMode = usePreviewStore((s) => s.setFileTreeMode);
   // Preview split (TRAE-style): when the workspace panel has WIDE content
   // (preview/browser/terminal — not the narrow summary tab), the chat column
   // takes a stable, resizable width and the workspace flex-fills the rest.
-  const hasWorkspaceTabs = usePreviewStore((s) => s.tabs.some((t) => t.kind !== 'summary'));
+  const hasAnyTab = usePreviewStore((s) => s.tabs.length > 0);
+  const hasWideContent = usePreviewStore((s) => s.tabs.some((t) => t.kind !== 'summary'));
   const chatWidth = usePreviewStore((s) => s.chatWidth);
   const viewportWidth = useViewportWidth();
   const showTodosInbox = useLabsFlag(LABS_TODOS_INBOX);
-  const closeAutomation = useSettingsStore((s) => s.closeAutomation);
-  const closeToolbox = useSettingsStore((s) => s.closeToolbox);
   const activeConv = useActiveConversation();
   const { t } = useI18n();
 
@@ -155,8 +157,13 @@ function App() {
   }, [theme]);
 
   // Right panel toggle only when there's an active conversation with messages
-  const showRightPanelToggle = viewMode === 'chat' && (activeConv?.messages?.length ?? 0) > 0;
+  // The overlay panel toggle is now ONLY the "reopen panel" affordance: when the right
+  // panel is open it carries its own collapse button in the tab bar (RightPanelTabBar),
+  // so the overlay would just double it up. Show the overlay only while the panel is
+  // collapsed (and there's a conversation to show a panel for).
+  const showRightPanelToggle = viewMode === 'chat' && ((activeConv?.messages?.length ?? 0) > 0 || hasAnyTab) && rightPanelCollapsed;
   const [showCloseDialog, setShowCloseDialog] = useState(false);
+  const [searchModalOpen, setSearchModalOpen] = useState(false);
   const [pendingAnnouncements, setPendingAnnouncements] = useState<AnnouncementItem[]>([]);
   const { pendingEnroll, dismissEnroll } = useDeepLinkEnroll();
   const hasRunningAgent = useChatStore((s) =>
@@ -582,47 +589,74 @@ function App() {
 
   // Preview split is active only when a preview is open in the chat view AND the
   // right panel is showing — then the chat holds a stable width and preview flex-fills.
-  const previewSplit = viewMode === 'chat' && hasWorkspaceTabs && !rightPanelCollapsed;
+  // Chat takes a fixed width only when the preview is actually shown (preview tab active);
+  // on the summary tab the chat flex-fills and the panel is a fixed details column.
+  const previewSplit = viewMode === 'chat' && hasWideContent && !rightPanelCollapsed;
   const previewChatWidth = resolveChatWidth(chatWidth, viewportWidth, !sidebarCollapsed);
+  // Whether the right panel actually sits BESIDE the chat (either tab) — mirrors
+  // RightPanel's own render gate. Drives the chat's right margin: a tight 4px
+  // gutter between the two cards, vs 8px to the window edge when chat is alone.
+  const rightPanelBeside =
+    viewMode === 'chat' &&
+    !rightPanelCollapsed &&
+    (((activeConv?.messages?.length ?? 0) > 0) || hasAnyTab);
 
   return (
     <ErrorBoundary>
     <TooltipProvider delayDuration={200}>
-      {/* Title bar drag region — only needed on macOS where we use overlay title bar */}
+      {/* Title bar drag region — only the top canvas gutter (h-2). Kept thin so it does
+          NOT overlap the card headers below (which sit ~8px from the top now); a full-height
+          strip here would swallow clicks on the preview/title header buttons. Window can still
+          be dragged from this strip + the sidebar's own drag region + the traffic-light row. */}
       {mac && (
         <div
           data-tauri-drag-region
-          className="fixed top-0 left-0 right-0 h-11 z-40"
+          className="fixed top-0 left-0 right-0 h-2 z-40"
         />
       )}
 
       {/* Sidebar & panel toggle buttons — positioned in title bar area on macOS, top bar on Windows */}
       <div className={cn('fixed left-0 right-0 z-40 pointer-events-none', mac ? 'top-0 h-11' : 'top-0 h-8')}>
-        {viewMode === 'automation' || viewMode === 'toolbox' ? (
+        <button
+          onClick={toggleSidebar}
+          className="absolute btn-ghost p-1 text-[var(--abu-text-tertiary)] hover:text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-hover)] rounded-md transition-[left] duration-200 pointer-events-auto"
+          style={{ top: mac ? 23 : 6, left: sidebarCollapsed ? 96 : 200 }}
+          title={sidebarCollapsed ? t.sidebar.showSidebar : t.sidebar.hideSidebar}
+        >
+          <PanelLeft className="h-3.5 w-[18px]" strokeWidth={1.5} />
+        </button>
+
+        {/* Conversation search — sits just right of the sidebar toggle (WorkBuddy-style),
+            opens a centered search modal. */}
+        {viewMode !== 'settings' && (
           <button
-            onClick={viewMode === 'automation' ? closeAutomation : closeToolbox}
-            className="absolute flex items-center gap-1.5 btn-ghost px-2 py-1 text-[var(--abu-text-tertiary)] hover:text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-hover)] rounded-md pointer-events-auto text-sm"
-            style={{ top: mac ? 8 : 4, left: mac ? 80 : 8 }}
-          >
-            <ArrowLeft className="h-3.5 w-3.5" strokeWidth={1.5} />
-            <span>{viewMode === 'automation' ? t.sidebar.automation : t.sidebar.toolbox}</span>
-          </button>
-        ) : (
-          <button
-            onClick={toggleSidebar}
+            onClick={() => setSearchModalOpen(true)}
             className="absolute btn-ghost p-1 text-[var(--abu-text-tertiary)] hover:text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-hover)] rounded-md transition-[left] duration-200 pointer-events-auto"
-            style={{ top: mac ? 8 : 4, left: sidebarCollapsed ? 96 : 232 }}
-            title={sidebarCollapsed ? t.sidebar.showSidebar : t.sidebar.hideSidebar}
+            style={{ top: mac ? 23 : 6, left: sidebarCollapsed ? 126 : 230 }}
+            title={t.sidebar.searchPlaceholder}
           >
-            <PanelLeft className="h-3.5 w-[18px]" strokeWidth={1.5} />
+            <Search className="h-3.5 w-[18px]" strokeWidth={1.5} />
+          </button>
+        )}
+
+        {/* New task — only when the sidebar is collapsed (when expanded the sidebar hosts its
+            own 新建任务). Completes the [toggle][search][+new] top toolbar like TRAE/WorkBuddy. */}
+        {sidebarCollapsed && viewMode !== 'settings' && (
+          <button
+            onClick={() => { startNewConversation(); setViewMode('chat'); setFileTreeMode(false); }}
+            className="absolute btn-ghost p-1 text-[var(--abu-text-tertiary)] hover:text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-hover)] rounded-md pointer-events-auto"
+            style={{ top: mac ? 23 : 6, left: 156 }}
+            title={t.sidebar.newTask}
+          >
+            <Plus className="h-3.5 w-[18px]" strokeWidth={2} />
           </button>
         )}
 
         {showRightPanelToggle && (
           <button
             onClick={toggleRightPanel}
-            className="absolute right-2 btn-ghost p-1 text-[var(--abu-text-tertiary)] hover:text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-hover)] rounded-md pointer-events-auto"
-            style={{ top: mac ? 8 : 4 }}
+            className="absolute right-4 btn-ghost p-1 text-[var(--abu-text-tertiary)] hover:text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-hover)] rounded-md pointer-events-auto"
+            style={{ top: mac ? 23 : 6 }}
             title={rightPanelCollapsed ? t.panel.showPanel : t.panel.hidePanel}
           >
             <PanelRight className="h-3.5 w-[18px]" strokeWidth={1.5} />
@@ -630,24 +664,31 @@ function App() {
         )}
       </div>
 
-      <div className="flex h-full w-full">
+      <div className="flex h-full w-full overflow-hidden bg-[var(--abu-bg-canvas)]">
         {/* Sidebar - width changes are always instant (no slide animation) */}
         <div
           className="shrink-0 overflow-hidden"
           style={{
-            width: (sidebarCollapsed || viewMode === 'automation' || viewMode === 'toolbox') ? 0 : 260,
+            width: sidebarCollapsed ? 0 : 260,
           }}
         >
           <Sidebar />
         </div>
 
-        {/* Main — pt-7 on macOS to clear overlay title bar; no padding on Windows (native title bar).
+        {/* Main — content surface. All content modes (chat/todos/inbox/toolbox/automation)
+            render as a raised card floating on the canvas (rounded + border + shadow, top
+            margin clears the overlay title bar so it sits below it). 8px gap on all sides
+            (matches TRAE --solo-layout-padding); traffic-light clearance is handled by the
+            sidebar's own top strip, not by pushing the card down — so the card sits near the
+            window top, no empty band.
             In preview mode the chat takes a stable resizable width; otherwise it flex-fills. */}
         <main
           className={cn(
             'bg-[var(--abu-bg-base)]',
-            mac ? 'pt-11' : 'pt-8',
+            'mt-2 mb-2 ml-2 rounded-[var(--abu-radius-panel)] border border-[var(--abu-border)] shadow-[var(--abu-shadow-card)] overflow-hidden',
             previewSplit ? 'shrink-0' : 'flex-1 min-w-0',
+            // Right panel beside chat (preview OR summary): tighter 4px gutter; otherwise 8px to the window edge.
+            rightPanelBeside ? 'mr-1' : 'mr-2',
           )}
           style={previewSplit ? { width: previewChatWidth } : undefined}
         >
@@ -662,6 +703,8 @@ function App() {
         <RightPanel />
 
         <ToastContainer />
+
+        <ConversationSearchModal open={searchModalOpen} onClose={() => setSearchModalOpen(false)} />
 
         {/* System settings — overlay dialog, self-gates on systemSettingsOpen */}
         <SystemSettingsDialog />

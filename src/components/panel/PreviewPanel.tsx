@@ -18,6 +18,7 @@ import { Loader2, X, FolderOpen, Code, Eye, SquareArrowOutUpRight, History, File
 import { Button } from '@/components/ui/button';
 import { DocSelectionLayer } from '@/features/reference/DocSelectionLayer';
 import { cn } from '@/lib/utils';
+import { isMacOS } from '@/utils/platform';
 import { getToolbarButtons } from './previewToolbarConfig';
 import { openWithDefaultApp } from '@/utils/openWithDefaultApp';
 
@@ -446,13 +447,12 @@ export default function PreviewPanel({
       'flex flex-col',
       isFullscreen ? 'fixed inset-0 z-50 bg-[var(--abu-bg-base)]' : 'h-full',
     )}>
-      {/* Header — mt-7 clears the overlay title bar drag region. Skipped when
-          embedded (WorkspacePanel's TabStrip already provides that
-          clearance) unless fullscreen, since fullscreen overlays the whole
-          window regardless of embedding. */}
+      {/* Header — flush at the top (the floating card + tab strip clear the title
+          bar). In fullscreen the overlay is inset-0, so pad left to clear the
+          macOS traffic lights. */}
       <div className={cn(
         'shrink-0 px-3 py-2.5 border-b border-[var(--abu-bg-pressed)] flex items-center gap-2',
-        (!embedded || isFullscreen) && 'mt-7',
+        isFullscreen && isMacOS() && 'pl-20',
       )}>
         {/* Filename shown only when NOT embedded in a tab (the tab strip already
             shows it — avoid a duplicate title), except in fullscreen where the

@@ -1,0 +1,41 @@
+name: Dependabot auto-merge
+
+# Enable auto-merge on low-risk Dependabot PRs so routine bumps land without
+# manual clicks. Auto-merge only completes once every required status check
+# (the `check` job in ci.yml) passes — so this waits for green CI, it does not
+# merge blindly. Requires "Allow auto-merge" (Settings → General) and a branch
+# protection rule / ruleset on `dev` that marks `check` as required. See the
+# comment at the bottom for the full setup checklist.
+
+on: pull_request
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  auto-merge:
+    runs-on: ubuntu-latest
+    # Guard hard on the actor: never touch human-authored PRs.
+    if: github.actor == 'dependabot[bot]'
+    steps:
+      - name: Fetch Dependabot metadata
+        id: meta
+        uses: dependabot/fetch-metadata@v2
+        with:
+          github-token: "${{ secrets.GITHUB_TOKEN }}"
+
+      # Auto-merge only the low-risk classes:
+      #   - any patch-level bump (npm / cargo) — no API changes by semver
+      #   - all GitHub Actions pin bumps — low blast radius, CI-gated anyway
+      # For a grouped PR, fetch-metadata reports the HIGHEST semver bump in the
+      # group, so a mixed group that sneaks in a minor won't match and will fall
+      # through to manual review. Minor and major bumps are always left to a human.
+      - name: Enable auto-merge for low-risk updates
+        if: >-
+          steps.meta.outputs.update-type == 'version-update:semver-patch' ||
+          steps.meta.outputs.package-ecosystem == 'github_actions'
+        run: gh pr merge --auto --squash "$PR_URL"
+        env:
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

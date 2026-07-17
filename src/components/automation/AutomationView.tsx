@@ -1,9 +1,12 @@
 import { useSettingsStore, type AutomationTab } from '@/stores/settingsStore';
+import { useScheduleStore } from '@/stores/scheduleStore';
+import { useTriggerStore } from '@/stores/triggerStore';
 import { useI18n } from '@/i18n';
-import { Clock, Zap } from 'lucide-react';
-import { cn } from '@/lib/utils';
+import { navigateToChatWithInput } from '@/utils/navigation';
+import { Clock, Zap, Plus, Wand2 } from 'lucide-react';
 import ScheduleView from '@/components/schedule/ScheduleView';
 import TriggerView from '@/components/trigger/TriggerView';
+import TopTabNav from '@/components/toolbox/TopTabNav';
 
 export default function AutomationView() {
   const { activeAutomationTab, setActiveAutomationTab } = useSettingsStore();
@@ -14,37 +17,66 @@ export default function AutomationView() {
     { id: 'trigger', label: t.sidebar.triggers, icon: Zap },
   ];
 
-  return (
-    <div className="h-full bg-[var(--abu-bg-base)] flex">
-      {/* Left Navigation — sub-nav for automation types */}
-      <nav className="w-[224px] shrink-0 border-r border-[var(--abu-border)] flex flex-col pt-4">
-        <div className="px-3 space-y-0.5">
-          {navItems.map((item) => {
-            const Icon = item.icon;
-            const isActive = activeAutomationTab === item.id;
-            return (
-              <button
-                key={item.id}
-                onClick={() => setActiveAutomationTab(item.id)}
-                className={cn(
-                  'w-full flex items-center gap-3 px-4 py-3 rounded-lg text-sm font-medium transition-colors text-left',
-                  isActive
-                    ? 'bg-[var(--abu-bg-active)] text-[var(--abu-text-primary)]'
-                    : 'text-[var(--abu-text-tertiary)] hover:text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-hover)]'
-                )}
-              >
-                <Icon className={cn(
-                  'h-[18px] w-[18px] shrink-0',
-                  isActive ? 'text-[var(--abu-clay)]' : 'text-[var(--abu-text-muted)]'
-                )} />
-                <span>{item.label}</span>
-              </button>
-            );
-          })}
-        </div>
-      </nav>
+  // Header-right create actions — lifted here from ScheduleView/TriggerView so
+  // they live in the shared content-area header (matches ToolboxModal). Always
+  // shown, regardless of item count (unlike the old per-view action row that
+  // only appeared once the list was non-empty).
+  const renderActions = () => {
+    if (activeAutomationTab === 'schedule') {
+      return (
+        <>
+          <button
+            onClick={() => navigateToChatWithInput(t.schedule.askAbuCreatePrompt)}
+            className="flex items-center gap-1.5 h-8 px-3 rounded-lg text-[13px] font-medium bg-[var(--abu-bg-active)] text-[var(--abu-text-primary)] hover:bg-[var(--abu-border)] transition-colors shrink-0"
+          >
+            <Wand2 className="h-3.5 w-3.5 text-[var(--abu-clay)]" />
+            {t.schedule.askAbuToCreate}
+          </button>
+          <button
+            onClick={() => useScheduleStore.getState().openEditor()}
+            className="flex items-center gap-1.5 h-8 px-3 rounded-lg text-[13px] font-medium bg-[var(--abu-clay)] text-white hover:bg-[var(--abu-clay-hover)] transition-colors shrink-0"
+          >
+            <Plus className="h-3.5 w-3.5" />
+            {t.schedule.newTask}
+          </button>
+        </>
+      );
+    }
+    return (
+      <>
+        <button
+          onClick={() => navigateToChatWithInput(t.trigger.askAbuCreatePrompt)}
+          className="flex items-center gap-1.5 h-8 px-3 rounded-lg text-[13px] font-medium bg-[var(--abu-bg-active)] text-[var(--abu-text-primary)] hover:bg-[var(--abu-border)] transition-colors shrink-0"
+        >
+          <Wand2 className="h-3.5 w-3.5 text-[var(--abu-clay)]" />
+          {t.trigger.askAbuToCreate}
+        </button>
+        <button
+          onClick={() => useTriggerStore.getState().openEditor()}
+          className="flex items-center gap-1.5 h-8 px-3 rounded-lg text-[13px] font-medium bg-[var(--abu-clay)] text-white hover:bg-[var(--abu-clay-hover)] transition-colors shrink-0"
+        >
+          <Plus className="h-3.5 w-3.5" />
+          {t.trigger.newTrigger}
+        </button>
+      </>
+    );
+  };
 
-      {/* Right Content */}
+  return (
+    <div className="h-full bg-[var(--abu-bg-base)] flex flex-col">
+      {/* Content-area header row — tabs left, create actions right. Sits below
+          the window's floating title-bar controls, matching ToolboxModal's
+          `belowChrome` header (centered in a max-w-5xl container so it lines
+          up with the content below). */}
+      <TopTabNav
+        items={navItems}
+        activeId={activeAutomationTab}
+        onSelect={setActiveAutomationTab}
+        belowChrome
+        right={renderActions()}
+      />
+
+      {/* Content */}
       <div className="flex-1 overflow-hidden">
         {activeAutomationTab === 'schedule' && <ScheduleView />}
         {activeAutomationTab === 'trigger' && <TriggerView />}

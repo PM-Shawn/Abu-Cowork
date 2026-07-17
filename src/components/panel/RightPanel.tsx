@@ -200,7 +200,11 @@ export default function RightPanel() {
   return (
     <div
       className={cn(
-        'bg-[var(--abu-bg-subtle)] h-full flex overflow-hidden relative',
+        // Raised content card floating on the canvas (matches dev's panel redesign):
+        // margins on 3 sides + rounded/border/shadow. No h-full — flex fills height
+        // minus the margins.
+        'bg-[var(--abu-bg-base)] flex overflow-hidden relative',
+        'mt-2 mb-2 mr-2 rounded-[var(--abu-radius-panel)] border border-[var(--abu-border)] shadow-[var(--abu-shadow-card)]',
         hasWideContent ? 'flex-1 min-w-0' : 'shrink-0',
       )}
       style={
@@ -223,7 +227,7 @@ export default function RightPanel() {
         )}
       />
       {/* Panel content — always the tabbed workspace (summary is the default tab) */}
-      <div className="flex-1 flex flex-col overflow-hidden border-l border-[var(--abu-border)]">
+      <div className="flex-1 flex flex-col overflow-hidden">
         <WorkspacePanel />
       </div>
     </div>

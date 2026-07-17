@@ -74,6 +74,14 @@ export default function SkillHistoryModal({ skillDir, skillName, onClose }: Prop
     void loadEntries();
   }, [loadEntries]);
 
+  // Own the Escape key while stacked on top of the skill detail modal (which
+  // suppresses its own Escape via disableEscape when this modal is open).
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onClose]);
+
   const handleRevert = async (turnId: string) => {
     setRevertingTurnId(turnId);
     try {

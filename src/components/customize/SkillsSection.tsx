@@ -12,7 +12,7 @@ import SkillCategoryBlocksPanel from './SkillCategoryBlocksPanel';
 import SkillHistoryModal from './SkillHistoryModal';
 import SkillUploadModal from './SkillUploadModal';
 import { Toggle } from '@/components/ui/toggle';
-import { Trash2, FileText, Folder, ChevronDown, ChevronRight, Pencil, MoreHorizontal, Eye, Code, Info, MessageCircle, Search, Plus, X, Wand2, PenLine, Upload, Download, Clock } from 'lucide-react';
+import { Trash2, FileText, Pencil, MoreHorizontal, Eye, Code, Info, MessageCircle, Download, Clock, ChevronDown, ChevronRight, Folder } from 'lucide-react';
 import { remove } from '@tauri-apps/plugin-fs';
 import { save as saveDialog } from '@tauri-apps/plugin-dialog';
 import { writeFile } from '@tauri-apps/plugin-fs';
@@ -22,20 +22,23 @@ import { getParentDir } from '@/utils/pathUtils';
 import type { Skill, SkillUXCategory } from '@/types';
 import { sourceToUXCategory } from '@/core/skill/uxCategory';
 import MarkdownRenderer from '@/components/chat/MarkdownRenderer';
+import ToolCard from '@/components/toolbox/ToolCard';
+import ToolGrid from '@/components/toolbox/ToolGrid';
+import ToolDetailModal from '@/components/toolbox/ToolDetailModal';
 
 // Build a set of system skill names from marketplace templates
 /**
  * Map a skill source to its visual badge (Task #22). User-scope skills
  * get no badge — that's the "my skills" default and adding a pill there
  * would be pure noise. Only surface sources where the distinction matters:
- *   - builtin         → "内置" (comes with Abu)
  *   - workspace-auto  → "本项目自治" (agent-written, accepted via card)
  *   - project*        → "项目" (workspace's own .abu/skills git-tracked)
  *   - standard        → "标准" (~/.agents/skills cross-client)
+ * builtin gets NO badge — those cards already sit under the "市场" category
+ * group, so a per-card source pill there is redundant.
  */
-type SourceBadge = { labelKey: 'skillSourceBuiltin' | 'skillSourceWorkspaceAuto' | 'skillSourceProject' | 'skillSourceStandard'; tone: 'neutral' | 'clay' | 'blue' | 'slate' } | null;
+type SourceBadge = { labelKey: 'skillSourceWorkspaceAuto' | 'skillSourceProject' | 'skillSourceStandard'; tone: 'clay' | 'blue' | 'slate' } | null;
 function sourceBadge(skill: Skill): SourceBadge {
-  if (skill.source === 'builtin') return { labelKey: 'skillSourceBuiltin', tone: 'neutral' };
   if (skill.source === 'workspace-auto') return { labelKey: 'skillSourceWorkspaceAuto', tone: 'clay' };
   if (skill.source === 'project' || skill.source === 'project-standard') return { labelKey: 'skillSourceProject', tone: 'blue' };
   if (skill.source === 'standard') return { labelKey: 'skillSourceStandard', tone: 'slate' };
@@ -57,7 +60,8 @@ function isSystemSkill(skill: Skill): boolean {
   return skill.filePath.includes('builtin-skills') || systemSkillNames.has(skill.name);
 }
 
-/** Build a tree structure from flat file paths */
+// ── Supporting-file tree (restored from the pre-modal list-panel version and
+// adapted to render inside the detail modal). ───────────────────────────────
 interface FileNode {
   name: string;
   path: string;
@@ -67,17 +71,14 @@ interface FileNode {
 
 function buildFileTree(files: string[]): FileNode[] {
   const root: FileNode[] = [];
-
   for (const filePath of files) {
     const parts = filePath.split('/');
     let current = root;
     let accPath = '';
-
     for (let i = 0; i < parts.length; i++) {
       const part = parts[i];
       accPath = accPath ? `${accPath}/${part}` : part;
       const isLast = i === parts.length - 1;
-
       let existing = current.find((n) => n.name === part);
       if (!existing) {
         existing = { name: part, path: accPath, isDir: !isLast, children: [] };
@@ -86,8 +87,6 @@ function buildFileTree(files: string[]): FileNode[] {
       current = existing.children;
     }
   }
-
-  // Sort: directories first, then files, alphabetically within each group
   const sortNodes = (nodes: FileNode[]) => {
     nodes.sort((a, b) => {
       if (a.isDir !== b.isDir) return a.isDir ? -1 : 1;
@@ -96,11 +95,10 @@ function buildFileTree(files: string[]): FileNode[] {
     nodes.forEach((n) => { if (n.children.length) sortNodes(n.children); });
   };
   sortNodes(root);
-
   return root;
 }
 
-/** Recursive file tree item */
+/** Recursive file tree row — indent adapted for the modal (no list-panel base offset). */
 function FileTreeItem({
   node, depth = 0, selectedFile, onFileClick,
 }: {
@@ -109,13 +107,13 @@ function FileTreeItem({
   onFileClick?: (path: string) => void;
 }) {
   const [expanded, setExpanded] = useState(false);
-  const ml = 52 + depth * 16;
+  const ml = depth * 16;
 
   if (node.isDir) {
     return (
-      <div className="mb-0.5">
+      <div>
         <div
-          className="flex items-center gap-2 py-1.5 mx-2 px-3 rounded-md cursor-pointer hover:bg-[var(--abu-bg-active)]/60 text-[var(--abu-text-muted)] hover:text-[var(--abu-text-primary)] text-[13px] transition-colors"
+          className="flex items-center gap-2 py-1 px-2 rounded-md cursor-pointer hover:bg-[var(--abu-bg-active)]/60 text-[var(--abu-text-muted)] hover:text-[var(--abu-text-primary)] text-[13px] transition-colors"
           style={{ marginLeft: ml }}
           onClick={() => setExpanded(!expanded)}
         >
@@ -133,12 +131,13 @@ function FileTreeItem({
   const isActive = selectedFile === node.path;
   return (
     <div
-      className={`flex items-center gap-2 py-1.5 mx-2 px-3 mb-0.5 rounded-md cursor-pointer text-[13px] transition-colors ${
+      className={`flex items-center gap-2 py-1 px-2 rounded-md cursor-pointer text-[13px] transition-colors ${
         isActive ? 'bg-[var(--abu-bg-active)] text-[var(--abu-text-primary)]' : 'text-[var(--abu-text-muted)] hover:bg-[var(--abu-bg-active)]/60 hover:text-[var(--abu-text-primary)]'
       }`}
       style={{ marginLeft: ml }}
       onClick={() => onFileClick?.(node.path)}
     >
+      <FileText className="h-3.5 w-3.5 shrink-0" />
       <span className="truncate">{node.name}</span>
     </div>
   );
@@ -146,40 +145,43 @@ function FileTreeItem({
 
 interface SkillsSectionProps {
   manualCreateTrigger?: number;
-  onAICreate?: () => void;
-  onManualCreate?: () => void;
+  /** Unified upload dialog (folder / .askill / .zip) — opened from ToolboxModal's
+   *  header create-menu ("导入技能"). Controlled from outside like MCPSection's
+   *  showAddForm, with an internal fallback so the component still works standalone. */
+  showUploadModal?: boolean;
+  onUploadModalChange?: (open: boolean) => void;
 }
 
-export default function SkillsSection({ manualCreateTrigger, onAICreate, onManualCreate }: SkillsSectionProps) {
+export default function SkillsSection({ manualCreateTrigger, showUploadModal: externalShowUploadModal, onUploadModalChange }: SkillsSectionProps) {
   const { skills, refresh } = useDiscoveryStore();
   // We subscribe to drafts count here (not SkillDraftsPanel itself) so
   // the 阿布沉淀 category's visibility condition accounts for pending
   // drafts even when there are no workspace-auto skills yet.
   const draftsCount = useSkillDraftsStore((s) => s.drafts.length);
-  const { toolboxSearchQuery, setToolboxSearchQuery, disabledSkills, toggleSkillEnabled, closeToolbox } = useSettingsStore();
+  const { toolboxSearchQuery, disabledSkills, toggleSkillEnabled, closeToolbox } = useSettingsStore();
   const startNewConversation = useChatStore((s) => s.startNewConversation);
   const setPendingInput = useChatStore((s) => s.setPendingInput);
   const { t } = useI18n();
 
   const [installedSkills, setInstalledSkills] = useState<Skill[]>([]);
   const [selectedSkill, setSelectedSkill] = useState<string | null>(null);
-  const [expandedSkills, setExpandedSkills] = useState<Set<string>>(new Set());
-  const [supportingFiles, setSupportingFiles] = useState<Record<string, string[]>>({});
   const [editorSkill, setEditorSkill] = useState<Skill | 'new' | null>(null);
   const [menuSkill, setMenuSkill] = useState<string | null>(null);
   const [historySkill, setHistorySkill] = useState<Skill | null>(null);
-  // Selected file within skill tree: null = show skill detail, string = show file content
-  const [selectedFile, setSelectedFile] = useState<{ skillName: string; path: string } | null>(null);
-  const [fileContent, setFileContent] = useState<string | null>(null);
-  // Category collapse state
-  const [collapsedCategories, setCollapsedCategories] = useState<Set<string>>(new Set());
-  // Search & create UI state
-  const [showSearch, setShowSearch] = useState(false);
-  const [showCreateMenu, setShowCreateMenu] = useState(false);
   // Content view mode: preview (rendered) or source (raw)
   const [contentViewMode, setContentViewMode] = useState<'preview' | 'source'>('preview');
+  // Supporting-file browsing inside the detail modal. `activeFilePath` = 'SKILL.md'
+  // shows selected.content; any other path loads via skillLoader on demand.
+  const [modalFiles, setModalFiles] = useState<string[]>([]);
+  const [activeFilePath, setActiveFilePath] = useState<string>('SKILL.md');
+  const [activeFileContent, setActiveFileContent] = useState<string | null>(null);
   // Unified upload dialog (folder / .askill / .zip via click or drag-drop)
-  const [showUploadModal, setShowUploadModal] = useState(false);
+  const [internalShowUploadModal, setInternalShowUploadModal] = useState(false);
+  const showUploadModal = externalShowUploadModal ?? internalShowUploadModal;
+  const setShowUploadModal = (open: boolean) => {
+    onUploadModalChange?.(open);
+    setInternalShowUploadModal(open);
+  };
 
   // Open blank editor when manual create is triggered from parent
   useEffect(() => {
@@ -188,7 +190,8 @@ export default function SkillsSection({ manualCreateTrigger, onAICreate, onManua
     }
   }, [manualCreateTrigger]);
 
-  // Load full skill details
+  // Load full skill details. No auto-selection: the detail is a modal now,
+  // so it stays closed until the user clicks a card.
   useEffect(() => {
     const loadSkillDetails = async () => {
       const fullSkills: Skill[] = [];
@@ -197,13 +200,8 @@ export default function SkillsSection({ manualCreateTrigger, onAICreate, onManua
         if (full) fullSkills.push(full);
       }
       setInstalledSkills(fullSkills);
-      // Auto-select first skill if none selected
-      if (!selectedSkill && fullSkills.length > 0) {
-        setSelectedSkill(fullSkills[0].name);
-      }
     };
     loadSkillDetails();
-  // eslint-disable-next-line react-hooks/exhaustive-deps -- selectedSkill omitted: adding it would reload all skill details on every selection change
   }, [skills]);
 
   const disabledSet = useMemo(() => new Set(disabledSkills), [disabledSkills]);
@@ -240,28 +238,40 @@ export default function SkillsSection({ manualCreateTrigger, onAICreate, onManua
     return groups;
   }, [filteredSkills]);
 
-  const toggleCategory = (cat: string) => {
-    setCollapsedCategories((prev) => {
-      const next = new Set(prev);
-      if (next.has(cat)) next.delete(cat); else next.add(cat);
-      return next;
-    });
-  };
-
   const selected = installedSkills.find((s) => s.name === selectedSkill) ?? null;
 
-  // Delete a user-installed skill
+  // Load the open skill's supporting files; reset the viewer to SKILL.md.
+  useEffect(() => {
+    setActiveFilePath('SKILL.md');
+    setActiveFileContent(null);
+    if (!selectedSkill) { setModalFiles([]); return; }
+    let cancelled = false;
+    skillLoader.listSupportingFiles(selectedSkill)
+      .then((files) => { if (!cancelled) setModalFiles(files); })
+      .catch(() => { if (!cancelled) setModalFiles([]); });
+    return () => { cancelled = true; };
+  }, [selectedSkill]);
+
+  // Load a supporting file's content on demand (SKILL.md uses selected.content).
+  useEffect(() => {
+    if (!selectedSkill || activeFilePath === 'SKILL.md') { setActiveFileContent(null); return; }
+    let cancelled = false;
+    setActiveFileContent(null);
+    skillLoader.loadSupportingFile(selectedSkill, activeFilePath)
+      .then((content) => { if (!cancelled) setActiveFileContent(content ?? ''); })
+      .catch(() => { if (!cancelled) setActiveFileContent(''); });
+    return () => { cancelled = true; };
+  }, [selectedSkill, activeFilePath]);
+
+  // Delete a user-installed skill. With the detail now a modal (not a
+  // list panel), there's no natural "adjacent" item to select after
+  // deletion — mirror AgentsSection and just close the modal.
   const handleDelete = async (skill: Skill) => {
     if (skill.filePath.includes('builtin-skills')) return;
     try {
       const skillDir = getParentDir(skill.filePath);
       await remove(skillDir, { recursive: true });
-      // Select adjacent item so the user stays in context after deletion
-      if (selectedSkill === skill.name) {
-        const names = filteredSkills.map((s) => s.name);
-        const idx = names.indexOf(skill.name);
-        setSelectedSkill(names[idx - 1] ?? names[idx + 1] ?? null);
-      }
+      if (selectedSkill === skill.name) setSelectedSkill(null);
       await refresh();
     } catch (err) {
       console.error('Failed to delete skill:', err);
@@ -287,114 +297,38 @@ export default function SkillsSection({ manualCreateTrigger, onAICreate, onManua
     }
   };
 
-  // Handle file click in tree: load content
-  const handleFileClick = async (skillName: string, filePath: string) => {
-    // If it's SKILL.md, just show the skill detail
-    if (filePath === 'SKILL.md') {
-      setSelectedFile(null);
-      setFileContent(null);
-      setSelectedSkill(skillName);
-      return;
-    }
-    setSelectedSkill(skillName);
-    setSelectedFile({ skillName, path: filePath });
-    const content = await skillLoader.loadSupportingFile(skillName, filePath);
-    setFileContent(content);
-  };
-
-  // Select skill, toggle its expand, and collapse all others
-  const handleSkillClick = (skillName: string) => {
-    setSelectedSkill(skillName);
-    setSelectedFile(null);
-    setFileContent(null);
-    setExpandedSkills((prev) => {
-      // If already expanded, collapse it; otherwise expand it and collapse others
-      if (prev.has(skillName)) {
-        return new Set<string>();
-      }
-      // Load supporting files if needed
-      if (!supportingFiles[skillName]) {
-        skillLoader.listSupportingFiles(skillName).then((files) => {
-          setSupportingFiles((p) => ({ ...p, [skillName]: files }));
-        });
-      }
-      return new Set([skillName]);
-    });
-  };
-
-  // Close menus when clicking outside
+  // Close the "..." menu when clicking outside
   useEffect(() => {
-    if (!menuSkill && !showCreateMenu) return;
-    const handleClick = () => { setMenuSkill(null); setShowCreateMenu(false); };
+    if (!menuSkill) return;
+    const handleClick = () => setMenuSkill(null);
     document.addEventListener('click', handleClick);
     return () => document.removeEventListener('click', handleClick);
-  }, [menuSkill, showCreateMenu]);
+  }, [menuSkill]);
 
-  const renderSkillRow = (skill: Skill) => {
-    const isSelected = selectedSkill === skill.name;
-    const isExpanded = expandedSkills.has(skill.name);
-    const files = supportingFiles[skill.name] ?? [];
-    const fileTree = isExpanded ? buildFileTree(files) : [];
+  const renderSkillCard = (skill: Skill) => {
     const isEnabled = !disabledSet.has(skill.name);
-    // Skill row only highlights when selected AND not drilling into child files
-    const isRowActive = isSelected && !selectedFile && !isExpanded;
-
+    const badge = sourceBadge(skill);
     return (
-      <div key={skill.name} className="mb-0.5">
-        <div
-          className={`flex items-center gap-3 mx-2 pl-7 pr-3 py-2.5 rounded-lg cursor-pointer transition-colors ${
-            isRowActive ? 'bg-[var(--abu-bg-active)]' : 'hover:bg-[var(--abu-bg-active)]/60'
-          }`}
-          onClick={() => handleSkillClick(skill.name)}
-        >
-          <FileText className={`h-4 w-4 shrink-0 ${!isEnabled ? 'text-[var(--abu-text-placeholder)]' : 'text-[var(--abu-text-muted)]'}`} />
-          <span className={`text-sm flex-1 truncate ${
-            !isEnabled ? 'text-[var(--abu-text-placeholder)]' : isSelected ? 'text-[var(--abu-text-primary)] font-medium' : 'text-[var(--abu-text-tertiary)]'
-          }`}>
-            {skill.name}
-          </span>
-          {(() => {
-            const badge = sourceBadge(skill);
-            if (!badge) return null;
-            return (
-              <span
-                className={`shrink-0 px-1.5 py-0.5 rounded text-[10px] font-medium ${SOURCE_BADGE_TONE[badge.tone]}`}
-              >
-                {t.toolbox[badge.labelKey]}
-              </span>
-            );
-          })()}
-          <div className="p-0.5 text-[var(--abu-text-muted)]">
-            {isExpanded
-              ? <ChevronDown className="h-3.5 w-3.5" />
-              : <ChevronRight className="h-3.5 w-3.5" />
-            }
-          </div>
-        </div>
-        {isExpanded && (
-          <div className="py-0.5">
-            <div
-              className={`flex items-center gap-2 py-1.5 mx-2 px-3 mb-0.5 rounded-md cursor-pointer text-[13px] transition-colors ${
-                selectedSkill === skill.name && !selectedFile
-                  ? 'bg-[var(--abu-bg-active)] text-[var(--abu-text-primary)]'
-                  : 'text-[var(--abu-text-muted)] hover:bg-[var(--abu-bg-active)]/60 hover:text-[var(--abu-text-primary)]'
-              }`}
-              style={{ marginLeft: 52 }}
-              onClick={() => handleFileClick(skill.name, 'SKILL.md')}
-            >
-              <span>SKILL.md</span>
-            </div>
-            {fileTree.map((node) => (
-              <FileTreeItem
-                key={node.path}
-                node={node}
-                selectedFile={selectedFile?.skillName === skill.name ? selectedFile.path : null}
-                onFileClick={(path) => handleFileClick(skill.name, path)}
-              />
-            ))}
-          </div>
-        )}
-      </div>
+      <ToolCard
+        key={skill.name}
+        item={{
+          id: skill.name,
+          name: skill.name,
+          description: skill.description,
+          avatar: <FileText className="h-6 w-6 text-[var(--abu-text-muted)]" />,
+          badge: badge ? (
+            <span className={`shrink-0 px-1.5 py-0.5 rounded text-[10px] font-medium ${SOURCE_BADGE_TONE[badge.tone]}`}>
+              {t.toolbox[badge.labelKey]}
+            </span>
+          ) : undefined,
+          toggle: (
+            <span onClick={(e) => e.stopPropagation()}>
+              <Toggle checked={isEnabled} onChange={() => toggleSkillEnabled(skill.name)} size="sm" tone="green" />
+            </span>
+          ),
+        }}
+        onClick={() => setSelectedSkill(skill.name)}
+      />
     );
   };
 
@@ -410,321 +344,226 @@ export default function SkillsSection({ manualCreateTrigger, onAICreate, onManua
   }
 
   return (
-    <div className="flex h-full overflow-hidden">
-      {/* Left: Skill list with file trees */}
-      <div className="w-[340px] shrink-0 border-r border-[var(--abu-border)] flex flex-col overflow-hidden bg-[var(--abu-bg-base)]">
-        {/* Header: Title + Search + Create */}
-        <div className="shrink-0 px-4 pt-4 pb-3 border-b border-[var(--abu-border)]">
-          {showSearch ? (
-            <div className="relative">
-              <Search className="absolute left-2 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-[var(--abu-text-tertiary)]" />
-              <input
-                autoFocus
-                type="text"
-                placeholder={t.toolbox.searchPlaceholder}
-                value={toolboxSearchQuery}
-                onChange={(e) => setToolboxSearchQuery(e.target.value)}
-                onBlur={() => { if (!toolboxSearchQuery) setShowSearch(false); }}
-                onKeyDown={(e) => { if (e.key === 'Escape') { setToolboxSearchQuery(''); setShowSearch(false); } }}
-                className="w-full pl-7 pr-7 py-1 text-sm border border-[var(--abu-border)] rounded-md bg-[var(--abu-bg-base)] focus:outline-none focus:ring-1 focus:ring-[var(--abu-clay-ring)] text-[var(--abu-text-primary)]"
-              />
-              <button
-                onClick={() => { setToolboxSearchQuery(''); setShowSearch(false); }}
-                className="absolute right-2 top-1/2 -translate-y-1/2 text-[var(--abu-text-tertiary)] hover:text-[var(--abu-text-primary)]"
-              >
-                <X className="h-3.5 w-3.5" />
-              </button>
-            </div>
-          ) : (
-            <div className="flex items-center justify-between">
-              <span className="text-base font-semibold text-[var(--abu-text-primary)]">{t.toolbox.skills}</span>
-              <div className="flex items-center gap-1">
-                <button
-                  onClick={() => setShowSearch(true)}
-                  className="p-1 text-[var(--abu-text-muted)] hover:text-[var(--abu-text-primary)] transition-colors"
-                >
-                  <Search className="h-3.5 w-3.5" />
-                </button>
-                <div className="relative">
-                  <button
-                    data-testid="skill-create-trigger"
-                    onClick={(e) => { e.stopPropagation(); setShowCreateMenu(!showCreateMenu); }}
-                    className="p-1 text-[var(--abu-text-muted)] hover:text-[var(--abu-text-primary)] transition-colors"
-                  >
-                    <Plus className="h-4 w-4" />
-                  </button>
-                  {showCreateMenu && (
-                    <div data-testid="skill-create-menu" className="absolute z-50 top-full right-0 mt-1 w-44 bg-[var(--abu-bg-base)] rounded-lg shadow-lg border border-[var(--abu-border)] py-1">
-                      {onAICreate && (
-                        <button
-                          onClick={() => { setShowCreateMenu(false); onAICreate(); }}
-                          className="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-hover)] transition-colors"
-                        >
-                          <Wand2 className="h-3.5 w-3.5 text-[var(--abu-clay)]" />
-                          <span>{t.toolbox.createWithAbu}</span>
-                        </button>
-                      )}
-                      {onManualCreate && (
-                        <button
-                          onClick={() => { setShowCreateMenu(false); onManualCreate(); }}
-                          className="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-hover)] transition-colors"
-                        >
-                          <PenLine className="h-3.5 w-3.5 text-[var(--abu-text-muted)]" />
-                          <span>{t.toolbox.createManually}</span>
-                        </button>
-                      )}
-                      <button
-                        onClick={() => { setShowCreateMenu(false); setShowUploadModal(true); }}
-                        className="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-hover)] transition-colors"
-                      >
-                        <Upload className="h-3.5 w-3.5 text-[var(--abu-text-muted)]" />
-                        <span>{t.toolbox.importEntry}</span>
-                      </button>
-                    </div>
-                  )}
-                </div>
+    <div className="flex flex-col h-full overflow-hidden bg-[var(--abu-bg-base)]">
+      {/* Category blocks manager (Task #45 · reject-category undo) —
+          hidden when the workspace has no blocks. Kept at the top
+          because it's a global "management" surface (not tied to any
+          one skill), and doesn't belong inside the 阿布沉淀 category. */}
+      <SkillCategoryBlocksPanel />
+
+      {/* Card grid — horizontally inset to match the header row above (ToolboxModal's
+          TopTabNav), with a centered max-width so cards don't stretch edge-to-edge. */}
+      <div className="flex-1 overflow-y-scroll overlay-scroll px-8 pb-6">
+        {filteredSkills.length === 0 ? (
+          <div className="text-sm text-[var(--abu-text-muted)] py-16 text-center">{t.toolbox.noSkillsFound}</div>
+        ) : (
+          <div className="max-w-5xl mx-auto space-y-6">
+            {/* Category · Mine — user's own or team-shipped skills.
+                Groups user/standard/project/project-standard into one
+                bucket matching the user's mental model ("I or my
+                team put this on disk"), instead of splitting by the
+                implementation-level SkillSource enum. */}
+            {skillGroups.mine.length > 0 && (
+              <div>
+                <div className="mb-3 text-[13px] font-medium text-[var(--abu-text-muted)]">{t.toolbox.categoryMine}</div>
+                <ToolGrid>{skillGroups.mine.map((skill) => renderSkillCard(skill))}</ToolGrid>
               </div>
-            </div>
-          )}
-        </div>
-        {/* Category blocks manager (Task #45 · reject-category undo) —
-            hidden when the workspace has no blocks. Kept at the top
-            because it's a global "management" surface (not tied to any
-            one skill), and doesn't belong inside the 阿布沉淀 category. */}
-        <SkillCategoryBlocksPanel />
-        <div className="flex-1 overflow-y-auto overlay-scroll py-2">
-          {filteredSkills.length === 0 ? (
-            <div className="text-xs text-[var(--abu-text-muted)] py-8 text-center">{t.toolbox.noSkillsFound}</div>
-          ) : (
-            <>
-              {/* Category · Mine — user's own or team-shipped skills.
-                  Groups user/standard/project/project-standard into one
-                  bucket matching the user's mental model ("I or my
-                  team put this on disk"), instead of splitting by the
-                  implementation-level SkillSource enum. */}
-              {skillGroups.mine.length > 0 && (
-                <div>
-                  <div
-                    className="flex items-center gap-1.5 px-5 py-2.5 cursor-pointer text-[var(--abu-text-muted)] hover:text-[var(--abu-text-primary)]"
-                    onClick={() => toggleCategory('mine')}
-                  >
-                    {collapsedCategories.has('mine')
-                      ? <ChevronRight className="h-3 w-3" />
-                      : <ChevronDown className="h-3 w-3" />
-                    }
-                    <span className="text-[13px] font-medium">{t.toolbox.categoryMine}</span>
-                    <span className="text-[11px] text-[var(--abu-text-placeholder)] ml-1">{skillGroups.mine.length}</span>
-                  </div>
-                  {!collapsedCategories.has('mine') && skillGroups.mine.map((skill) => renderSkillRow(skill))}
-                </div>
-              )}
+            )}
 
-              {/* Category · Agent-evolved — pending drafts awaiting
-                  user review. workspace-auto skills (accepted) now
-                  live in "mine" with a per-row "自进化" badge.
-                  Section only appears when there are active drafts. */}
-              {draftsCount > 0 && (
-                <div>
-                  <div
-                    className="flex items-center gap-1.5 px-5 py-2.5 cursor-pointer text-[var(--abu-text-muted)] hover:text-[var(--abu-text-primary)]"
-                    onClick={() => toggleCategory('agent-evolved')}
-                  >
-                    {collapsedCategories.has('agent-evolved')
-                      ? <ChevronRight className="h-3 w-3" />
-                      : <ChevronDown className="h-3 w-3" />
-                    }
-                    <span className="text-[13px] font-medium">{t.toolbox.categoryAgentEvolved}</span>
-                    <span className="ml-1.5 px-1.5 py-0.5 text-[10px] rounded bg-purple-100 text-purple-700">{t.toolbox.categoryAgentEvolvedBadge}</span>
-                    <span className="text-[11px] text-[var(--abu-text-placeholder)] ml-1">{draftsCount}</span>
-                  </div>
-                  {!collapsedCategories.has('agent-evolved') && <SkillDraftsPanel />}
+            {/* Category · Agent-evolved — pending drafts awaiting
+                user review. workspace-auto skills (accepted) now
+                live in "mine" with a per-card "自进化" badge.
+                Section only appears when there are active drafts.
+                SkillDraftsPanel is its own list UI (not a card grid) —
+                kept as-is rather than reshaped into ToolCards. */}
+            {draftsCount > 0 && (
+              <div>
+                <div className="mb-3 flex items-center gap-1.5 text-[13px] font-medium text-[var(--abu-text-muted)]">
+                  <span>{t.toolbox.categoryAgentEvolved}</span>
+                  <span className="px-1.5 py-0.5 text-[10px] rounded bg-purple-100 text-purple-700">{t.toolbox.categoryAgentEvolvedBadge}</span>
+                  <span className="text-[11px] text-[var(--abu-text-placeholder)]">{draftsCount}</span>
                 </div>
-              )}
+                <SkillDraftsPanel />
+              </div>
+            )}
 
-              {/* Category · Built-in — bundled with Abu. Read-only. */}
-              {skillGroups.builtin.length > 0 && (
-                <div>
-                  <div
-                    className="flex items-center gap-1.5 px-5 py-2.5 cursor-pointer text-[var(--abu-text-muted)] hover:text-[var(--abu-text-primary)]"
-                    onClick={() => toggleCategory('builtin')}
-                  >
-                    {collapsedCategories.has('builtin')
-                      ? <ChevronRight className="h-3 w-3" />
-                      : <ChevronDown className="h-3 w-3" />
-                    }
-                    <span className="text-[13px] font-medium">{t.toolbox.categoryBuiltin}</span>
-                  </div>
-                  {!collapsedCategories.has('builtin') && skillGroups.builtin.map((skill) => renderSkillRow(skill))}
-                </div>
-              )}
-            </>
-          )}
-        </div>
+            {/* Category · Built-in — bundled with Abu. Read-only. */}
+            {skillGroups.builtin.length > 0 && (
+              <div>
+                <div className="mb-3 text-[13px] font-medium text-[var(--abu-text-muted)]">{t.toolbox.categoryBuiltin}</div>
+                <ToolGrid>{skillGroups.builtin.map((skill) => renderSkillCard(skill))}</ToolGrid>
+              </div>
+            )}
+          </div>
+        )}
       </div>
 
-      {/* Right: Skill detail or file content */}
-      <div className="flex-1 overflow-y-auto overlay-scroll bg-[var(--abu-bg-base)]">
-        {selected ? (
-          selectedFile ? (
-            /* Show selected file content */
-            <div className="px-6 py-6">
-              <div className="flex items-center gap-2 mb-4">
-                <button
-                  className="text-xs text-[var(--abu-text-muted)] hover:text-[var(--abu-text-primary)] transition-colors"
-                  onClick={() => { setSelectedFile(null); setFileContent(null); }}
-                >
-                  {selected.name}
-                </button>
-                <span className="text-xs text-[var(--abu-text-muted)]">/</span>
-                <span className="text-sm font-medium text-[var(--abu-text-primary)]">{selectedFile.path}</span>
-              </div>
-              <div className="border border-[var(--abu-border)] rounded-lg overflow-hidden">
-                <div className="px-5 py-4 bg-[var(--abu-bg-base)]">
-                  {fileContent !== null ? (
-                    selectedFile.path.endsWith('.md') ? (
-                      <MarkdownRenderer content={fileContent} />
-                    ) : (
-                      <pre className="text-xs text-[var(--abu-text-primary)] whitespace-pre-wrap break-all font-mono leading-relaxed">{fileContent}</pre>
-                    )
-                  ) : (
-                    <div className="text-sm text-[var(--abu-text-muted)]">Loading...</div>
+      {/* Detail modal */}
+      <ToolDetailModal
+        open={!!selected}
+        onClose={() => { setSelectedSkill(null); setMenuSkill(null); }}
+        disableEscape={!!historySkill}
+        maxWidth="max-w-2xl"
+        avatar={selected ? <FileText className="h-6 w-6 text-[var(--abu-text-muted)]" /> : undefined}
+        title={selected?.name}
+        headerActions={selected ? (
+          <>
+            <Toggle
+              checked={!disabledSet.has(selected.name)}
+              onChange={() => toggleSkillEnabled(selected.name)}
+              tone="green"
+            />
+            {/* "..." menu: export always available; user skills also have edit/delete */}
+            <div className="relative">
+              <button
+                onClick={(e) => { e.stopPropagation(); setMenuSkill(menuSkill === selected.name ? null : selected.name); }}
+                className="p-1.5 rounded-lg text-[var(--abu-text-tertiary)] hover:text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-muted)] transition-colors"
+              >
+                <MoreHorizontal className="h-4 w-4" />
+              </button>
+              {menuSkill === selected.name && (
+                <div className="absolute right-0 top-8 z-10 bg-[var(--abu-bg-base)] border border-[var(--abu-border)] rounded-lg shadow-lg py-1 min-w-[140px]">
+                  {/* Try in chat - only when enabled */}
+                  {!disabledSet.has(selected.name) && (
+                    <button
+                      className="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-muted)] transition-colors"
+                      onClick={() => {
+                        setMenuSkill(null);
+                        startNewConversation();
+                        setPendingInput(`/${selected.name} `);
+                        closeToolbox();
+                      }}
+                    >
+                      <MessageCircle className="h-3 w-3" />
+                      {t.toolbox.skillTryInChat}
+                    </button>
+                  )}
+                  {/* Export - available for all skills */}
+                  <button
+                    className="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-muted)] transition-colors"
+                    onClick={() => { handleExport(selected); setMenuSkill(null); }}
+                  >
+                    <Download className="h-3 w-3" />
+                    {t.toolbox.exportSkill}
+                  </button>
+                  {/* History (Task #24) — available for all skills;
+                      builtin skills typically have no history, so
+                      the modal's empty state explains this. */}
+                  <button
+                    className="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-muted)] transition-colors"
+                    onClick={() => { setHistorySkill(selected); setMenuSkill(null); }}
+                  >
+                    <Clock className="h-3 w-3" />
+                    {t.toolbox.historyMenuLabel}
+                  </button>
+                  {/* Edit & Delete - available for non-builtin skills */}
+                  {selected.source !== 'builtin' && !isSystemSkill(selected) && (
+                    <>
+                      <button
+                        className="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-muted)] transition-colors"
+                        onClick={() => { setEditorSkill(selected); setMenuSkill(null); setSelectedSkill(null); }}
+                      >
+                        <Pencil className="h-3 w-3" />
+                        {t.toolbox.skillEdit}
+                      </button>
+                      <button
+                        className="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors"
+                        onClick={() => { handleDelete(selected); setMenuSkill(null); }}
+                      >
+                        <Trash2 className="h-3 w-3" />
+                        {t.toolbox.uninstall}
+                      </button>
+                    </>
                   )}
                 </div>
-              </div>
+              )}
             </div>
-          ) : (
-            /* Show skill detail */
-            <div className="px-6 py-6">
-              {/* Row 1: Name + Toggle + Menu */}
-              <div className="flex items-center justify-between gap-3 mb-4">
-                <h2 className="text-xl font-semibold text-[var(--abu-text-primary)] truncate min-w-0" title={selected.name}>{selected.name}</h2>
-                <div className="flex items-center gap-2 shrink-0">
-                  <Toggle
-                    checked={!disabledSet.has(selected.name)}
-                    onChange={() => toggleSkillEnabled(selected.name)}
-                  />
-                  {/* "..." menu: export always available; user skills also have edit/delete */}
-                  <div className="relative">
-                      <button
-                        onClick={(e) => { e.stopPropagation(); setMenuSkill(menuSkill === selected.name ? null : selected.name); }}
-                        className="p-1.5 rounded-lg text-[var(--abu-text-tertiary)] hover:text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-muted)] transition-colors"
-                      >
-                        <MoreHorizontal className="h-4 w-4" />
-                      </button>
-                      {menuSkill === selected.name && (
-                        <div className="absolute right-0 top-8 z-10 bg-[var(--abu-bg-base)] border border-[var(--abu-border)] rounded-lg shadow-lg py-1 min-w-[140px]">
-                          {/* Try in chat - only when enabled */}
-                          {!disabledSet.has(selected.name) && (
-                            <button
-                              className="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-muted)] transition-colors"
-                              onClick={() => {
-                                setMenuSkill(null);
-                                startNewConversation();
-                                setPendingInput(`/${selected.name} `);
-                                closeToolbox();
-                              }}
-                            >
-                              <MessageCircle className="h-3 w-3" />
-                              {t.toolbox.skillTryInChat}
-                            </button>
-                          )}
-                          {/* Export - available for all skills */}
-                          <button
-                            className="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-muted)] transition-colors"
-                            onClick={() => { handleExport(selected); setMenuSkill(null); }}
-                          >
-                            <Download className="h-3 w-3" />
-                            {t.toolbox.exportSkill}
-                          </button>
-                          {/* History (Task #24) — available for all skills;
-                              builtin skills typically have no history, so
-                              the modal's empty state explains this. */}
-                          <button
-                            className="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-muted)] transition-colors"
-                            onClick={() => { setHistorySkill(selected); setMenuSkill(null); }}
-                          >
-                            <Clock className="h-3 w-3" />
-                            {t.toolbox.historyMenuLabel}
-                          </button>
-                          {/* Edit & Delete - available for non-builtin skills */}
-                          {selected.source !== 'builtin' && !isSystemSkill(selected) && (
-                            <>
-                              <button
-                                className="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-muted)] transition-colors"
-                                onClick={() => { setEditorSkill(selected); setMenuSkill(null); }}
-                              >
-                                <Pencil className="h-3 w-3" />
-                                {t.toolbox.skillEdit}
-                              </button>
-                              <button
-                                className="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors"
-                                onClick={() => { handleDelete(selected); setMenuSkill(null); }}
-                              >
-                                <Trash2 className="h-3 w-3" />
-                                {t.toolbox.uninstall}
-                              </button>
-                            </>
-                          )}
-                        </div>
-                      )}
-                    </div>
-                </div>
-              </div>
+          </>
+        ) : undefined}
+      >
+        {selected && (
+          <div className="space-y-5">
+            {/* Added by */}
+            <div>
+              <div className="text-xs text-[var(--abu-text-muted)] mb-0.5">{t.toolbox.skillAddedBy}</div>
+              <div className="text-sm font-medium text-[var(--abu-text-primary)]">{
+                selected.source === 'builtin' ? t.toolbox.skillSourceBuiltin :
+                selected.source === 'user' ? t.toolbox.skillSourceUser :
+                selected.source === 'standard' ? t.toolbox.skillSourceStandard :
+                (selected.source === 'project' || selected.source === 'project-standard') ? t.toolbox.skillSourceProject :
+                (isSystemSkill(selected) ? t.toolbox.skillSourceBuiltin : t.toolbox.skillSourceUser)
+              }</div>
+            </div>
 
-              {/* Row 2: Source */}
-              <div className="mb-5">
-                <div className="text-xs text-[var(--abu-text-muted)] mb-0.5">{t.toolbox.skillAddedBy}</div>
-                <div className="text-sm font-medium text-[var(--abu-text-primary)]">{
-                  selected.source === 'builtin' ? t.toolbox.skillSourceBuiltin :
-                  selected.source === 'user' ? t.toolbox.skillSourceUser :
-                  selected.source === 'standard' ? t.toolbox.skillSourceStandard :
-                  (selected.source === 'project' || selected.source === 'project-standard') ? t.toolbox.skillSourceProject :
-                  (isSystemSkill(selected) ? t.toolbox.skillSourceBuiltin : t.toolbox.skillSourceUser)
-                }</div>
-              </div>
-
-              {/* Description */}
+            {/* Description */}
+            <div>
               <div className="flex items-center gap-1 mb-1.5">
                 <span className="text-xs text-[var(--abu-text-muted)]">Description</span>
                 <Info className="h-3 w-3 text-[var(--abu-text-muted)]" />
               </div>
-              <p className="text-sm text-[var(--abu-text-primary)] leading-relaxed mb-7">{selected.description}</p>
-
-              {/* Content area: License + SKILL.md with preview/source toggle */}
-              <div className="border border-[var(--abu-border)] rounded-lg overflow-hidden">
-                {/* Toggle bar */}
-                <div className="flex items-center justify-end gap-1.5 px-4 py-2.5 bg-[var(--abu-bg-base)] border-b border-[var(--abu-border)]">
-                  <button
-                    onClick={() => setContentViewMode('preview')}
-                    className={`p-1.5 rounded transition-colors ${contentViewMode === 'preview' ? 'text-[var(--abu-text-primary)] bg-[var(--abu-bg-hover)]' : 'text-[var(--abu-text-muted)] hover:text-[var(--abu-text-primary)]'}`}
-                    title="Preview"
-                  >
-                    <Eye className="h-4 w-4" />
-                  </button>
-                  <button
-                    onClick={() => setContentViewMode('source')}
-                    className={`p-1.5 rounded transition-colors ${contentViewMode === 'source' ? 'text-[var(--abu-text-primary)] bg-[var(--abu-bg-hover)]' : 'text-[var(--abu-text-muted)] hover:text-[var(--abu-text-primary)]'}`}
-                    title="Source"
-                  >
-                    <Code className="h-4 w-4" />
-                  </button>
-                </div>
-                <div className="px-6 py-5 bg-[var(--abu-bg-base)]">
-                  {contentViewMode === 'preview' ? (
-                    <MarkdownRenderer content={selected.content} />
-                  ) : (
-                    <pre className="text-xs text-[var(--abu-text-primary)] whitespace-pre-wrap break-words font-mono leading-relaxed">{selected.content}</pre>
-                  )}
-                </div>
-              </div>
+              <p className="text-sm text-[var(--abu-text-primary)] leading-relaxed">{selected.description}</p>
             </div>
-          )
-        ) : (
-          <div className="flex items-center justify-center h-full text-sm text-[var(--abu-text-muted)]">
-            {t.toolbox.noSkillsFound}
+
+            {/* Files: SKILL.md + supporting files, with an on-demand viewer */}
+            {(() => {
+              const isMd = activeFilePath.endsWith('.md');
+              const displayContent = activeFilePath === 'SKILL.md' ? selected.content : activeFileContent;
+              const fileTree = buildFileTree(modalFiles);
+              return (
+                <div className="border border-[var(--abu-border)] rounded-lg overflow-hidden">
+                  {/* File list — only when the skill ships supporting files */}
+                  {modalFiles.length > 0 && (
+                    <div className="max-h-40 overflow-y-auto overlay-scroll border-b border-[var(--abu-border)] p-1.5 space-y-0.5">
+                      <div
+                        className={`flex items-center gap-2 py-1 px-2 rounded-md cursor-pointer text-[13px] transition-colors ${
+                          activeFilePath === 'SKILL.md' ? 'bg-[var(--abu-bg-active)] text-[var(--abu-text-primary)]' : 'text-[var(--abu-text-muted)] hover:bg-[var(--abu-bg-active)]/60 hover:text-[var(--abu-text-primary)]'
+                        }`}
+                        onClick={() => setActiveFilePath('SKILL.md')}
+                      >
+                        <FileText className="h-3.5 w-3.5 shrink-0" />
+                        <span className="truncate">SKILL.md</span>
+                      </div>
+                      {fileTree.map((node) => (
+                        <FileTreeItem key={node.path} node={node} selectedFile={activeFilePath} onFileClick={setActiveFilePath} />
+                      ))}
+                    </div>
+                  )}
+                  {/* Viewer header: active filename + preview/source toggle */}
+                  <div className="flex items-center justify-between gap-2 px-4 py-2.5 bg-[var(--abu-bg-base)] border-b border-[var(--abu-border)]">
+                    <span className="text-xs font-medium text-[var(--abu-text-secondary)] truncate">{activeFilePath}</span>
+                    <div className="flex items-center gap-1.5 shrink-0">
+                      <button
+                        onClick={() => setContentViewMode('preview')}
+                        className={`p-1.5 rounded transition-colors ${contentViewMode === 'preview' ? 'text-[var(--abu-text-primary)] bg-[var(--abu-bg-hover)]' : 'text-[var(--abu-text-muted)] hover:text-[var(--abu-text-primary)]'}`}
+                        title="Preview"
+                      >
+                        <Eye className="h-4 w-4" />
+                      </button>
+                      <button
+                        onClick={() => setContentViewMode('source')}
+                        className={`p-1.5 rounded transition-colors ${contentViewMode === 'source' ? 'text-[var(--abu-text-primary)] bg-[var(--abu-bg-hover)]' : 'text-[var(--abu-text-muted)] hover:text-[var(--abu-text-primary)]'}`}
+                        title="Source"
+                      >
+                        <Code className="h-4 w-4" />
+                      </button>
+                    </div>
+                  </div>
+                  {/* Content */}
+                  <div className="px-4 py-4 bg-[var(--abu-bg-base)]">
+                    {displayContent === null ? (
+                      <div className="text-xs text-[var(--abu-text-muted)] py-6 text-center">…</div>
+                    ) : contentViewMode === 'preview' && isMd ? (
+                      <MarkdownRenderer content={displayContent} />
+                    ) : (
+                      <pre className="text-xs text-[var(--abu-text-primary)] whitespace-pre-wrap break-words font-mono leading-relaxed">{displayContent}</pre>
+                    )}
+                  </div>
+                </div>
+              );
+            })()}
           </div>
         )}
-      </div>
+      </ToolDetailModal>
 
       {/* Unified upload modal — conditionally mounted so useFileDragDrop's
           window-level Tauri listener only runs while the modal is open. */}

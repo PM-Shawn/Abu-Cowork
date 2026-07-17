@@ -5,9 +5,6 @@ import {
   Settings,
   Globe,
   Palette,
-  Sun,
-  Monitor,
-  Moon,
   HelpCircle,
   MessageCircle,
   RefreshCw,
@@ -113,9 +110,9 @@ export default function AccountMenu({ onEditProfile }: { onEditProfile: () => vo
   ];
 
   const themeOptions = [
-    { value: 'light', icon: Sun, label: t.settings.appearanceLight },
-    { value: 'system', icon: Monitor, label: t.settings.appearanceSystem },
-    { value: 'dark', icon: Moon, label: t.settings.appearanceDark },
+    { value: 'light', label: t.settings.appearanceLight },
+    { value: 'system', label: t.settings.appearanceSystem },
+    { value: 'dark', label: t.settings.appearanceDark },
   ] as const;
 
   const progressPercent =
@@ -152,7 +149,7 @@ export default function AccountMenu({ onEditProfile }: { onEditProfile: () => vo
             ? { icon: RefreshCw, label: t.updates.upToDate, onClick: handleCheck }
             : {
                 icon: RefreshCw,
-                label: t.updates.checkForUpdates,
+                label: t.updates.update,
                 onClick: handleCheck,
                 trailing: <span className="text-[12px] text-[var(--abu-text-muted)]">v{APP_VERSION}</span>,
               };
@@ -226,42 +223,28 @@ export default function AccountMenu({ onEditProfile }: { onEditProfile: () => vo
           {/* Settings */}
           <MenuRow icon={Settings} label={t.settings.title} onClick={() => run(() => openSystemSettings())} />
 
-          {/* Language — inline switch (keeps popover open). Override the shared
-              Select's trigger to match the appearance control: same height,
-              muted bg, and 13px text so both rows read as one family. */}
+          {/* Language — borderless ghost select (value + small chevron, iOS-style) */}
           <div className="flex items-center gap-3 px-2.5 py-1.5 rounded-xl">
             <Globe className="h-[17px] w-[17px] shrink-0 text-[var(--abu-text-tertiary)]" strokeWidth={1.6} />
             <span className="flex-1 text-[13px] text-[var(--abu-text-secondary)]">{t.settings.language}</span>
             <Select
-              variant="inline"
+              variant="ghost"
               value={language}
               options={languageOptions}
               onChange={(v) => setLanguage(v as LanguageSetting)}
-              className="[&>button]:h-8 [&>button]:text-[13px] [&>button]:bg-[var(--abu-bg-muted)]"
             />
           </div>
 
-          {/* Appearance — inline theme segmented (toggles in place) */}
+          {/* Appearance — borderless ghost select (matches the Language row) */}
           <div className="flex items-center gap-3 px-2.5 py-1.5 rounded-xl">
             <Palette className="h-[17px] w-[17px] shrink-0 text-[var(--abu-text-tertiary)]" strokeWidth={1.6} />
             <span className="flex-1 text-[13px] text-[var(--abu-text-secondary)]">{t.settings.appearance}</span>
-            <div className="flex items-center h-8 gap-0.5 px-1 rounded-lg bg-[var(--abu-bg-muted)] border border-[var(--abu-border)]">
-              {themeOptions.map(({ value, icon: Icon, label }) => (
-                <button
-                  key={value}
-                  onClick={() => setTheme(value)}
-                  title={label}
-                  className={cn(
-                    'flex items-center justify-center w-7 h-6 rounded-md transition-colors',
-                    theme === value
-                      ? 'bg-[var(--abu-bg-base)] text-[var(--abu-clay)] shadow-sm'
-                      : 'text-[var(--abu-text-tertiary)] hover:text-[var(--abu-text-primary)]'
-                  )}
-                >
-                  <Icon className="h-3.5 w-3.5" />
-                </button>
-              ))}
-            </div>
+            <Select
+              variant="ghost"
+              value={theme}
+              options={themeOptions.map(({ value, label }) => ({ value, label }))}
+              onChange={(v) => setTheme(v as typeof theme)}
+            />
           </div>
 
           <div className="mx-1.5 my-1 h-px bg-[var(--abu-border)]" />

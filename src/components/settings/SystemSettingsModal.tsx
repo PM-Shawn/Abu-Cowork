@@ -113,8 +113,8 @@ export default function SystemSettingsView() {
     <div className="h-full bg-[var(--abu-bg-base)] flex flex-col">
       {/* Body - Left/Right Layout */}
       <div className="flex-1 flex min-h-0">
-        {/* Left Navigation — clusters split by thin dividers, no group titles */}
-        <nav className="w-[224px] shrink-0 border-r border-[var(--abu-border)] py-4 px-3 overflow-y-auto">
+        {/* Left Navigation — recessed canvas bg to match the main-window sidebar */}
+        <nav className="w-[224px] shrink-0 border-r border-[var(--abu-border)] bg-[var(--abu-bg-canvas)] py-4 px-3 overflow-y-auto overlay-scroll">
           {navGroups.map((group, groupIndex) => (
             <div key={groupIndex}>
               {groupIndex > 0 && (
@@ -149,7 +149,7 @@ export default function SystemSettingsView() {
         </nav>
 
         {/* Right Content */}
-        <div className="flex-1 overflow-y-auto p-6">
+        <div className="flex-1 overflow-y-auto overflow-x-hidden overlay-scroll p-6">
           {renderContent()}
         </div>
       </div>

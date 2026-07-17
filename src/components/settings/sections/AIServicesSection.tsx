@@ -5,6 +5,7 @@ import { useI18n } from '@/i18n';
 import { Plus, CircleCheck, CircleAlert, ChevronDown, Globe, ImageIcon, Trash2 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
+import SettingsSectionHeader from '@/components/settings/SettingsSectionHeader';
 import ConfirmDialog from '@/components/common/ConfirmDialog';
 import ProviderCard from './ai-services/ProviderCard';
 import AddProviderModal from './ai-services/AddProviderModal';
@@ -65,28 +66,22 @@ export default function AIServicesSection() {
 
   return (
     <div className="space-y-6">
-      {/* Header */}
-      <div className="flex items-center justify-between">
-        <div>
-          <h3 className="text-base font-semibold text-[var(--abu-text-primary)]">
-            {t.settings.aiServices}
-          </h3>
-          {enabledCount > 0 && (
-            <p className="text-xs text-[var(--abu-text-muted)] mt-0.5">
-              {t.settings.enabledCount.replace('{count}', String(enabledCount))}
-            </p>
-          )}
-        </div>
-        <Button
-          variant="default"
-          size="sm"
-          onClick={() => setShowAddModal(true)}
-          className="gap-1.5"
-        >
-          <Plus className="h-3.5 w-3.5" />
-          {t.settings.add}
-        </Button>
-      </div>
+      {/* Header — shared component; add button in the action slot (clears the modal X). */}
+      <SettingsSectionHeader
+        title={t.settings.aiServices}
+        description={enabledCount > 0 ? t.settings.enabledCount.replace('{count}', String(enabledCount)) : undefined}
+        action={(
+          <Button
+            variant="default"
+            size="sm"
+            onClick={() => setShowAddModal(true)}
+            className="gap-1.5"
+          >
+            <Plus className="h-3.5 w-3.5" />
+            {t.settings.add}
+          </Button>
+        )}
+      />
 
       {/* Provider List */}
       {visibleProviders.length === 0 ? (

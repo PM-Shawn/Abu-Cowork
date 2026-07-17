@@ -4,6 +4,9 @@ interface ToggleProps {
   checked: boolean;
   onChange: () => void;
   size?: 'sm' | 'md' | 'lg';
+  /** On-state color. 'clay' (brand accent) for preference switches; 'green'
+   *  for enable/disable (active-status) switches like the toolbox cards. */
+  tone?: 'clay' | 'green';
   disabled?: boolean;
   className?: string;
 }
@@ -14,8 +17,9 @@ const sizeConfig = {
   lg:  { track: 'h-6 w-10', thumb: 'h-5 w-5',     on: 'translate-x-4',   off: 'translate-x-0.5' },
 };
 
-export function Toggle({ checked, onChange, size = 'sm', disabled, className }: ToggleProps) {
+export function Toggle({ checked, onChange, size = 'sm', tone = 'clay', disabled, className }: ToggleProps) {
   const s = sizeConfig[size];
+  const onColor = tone === 'green' ? 'bg-green-500' : 'bg-[var(--abu-clay)]';
 
   return (
     <button
@@ -27,7 +31,7 @@ export function Toggle({ checked, onChange, size = 'sm', disabled, className }: 
       className={cn(
         'relative inline-flex items-center rounded-full transition-colors shrink-0',
         s.track,
-        checked ? 'bg-[var(--abu-clay)]' : 'bg-[var(--abu-bg-pressed)]',
+        checked ? onColor : 'bg-[var(--abu-bg-pressed)]',
         disabled && 'opacity-50 cursor-not-allowed',
         className
       )}

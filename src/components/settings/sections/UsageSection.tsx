@@ -196,7 +196,7 @@ function UsageHeatmap({ dateTokenMap }: { dateTokenMap: Map<string, number> }) {
           <span className="text-[9px] text-[var(--abu-text-muted)]">{t.usage.heatmapLegendMore}</span>
         </div>
       </div>
-      <div className="flex gap-1">
+      <div className="flex gap-1 overflow-x-auto overlay-scroll">
         {/* Weekday labels — same height as cells so they align */}
         <div className="flex flex-col shrink-0" style={{ gap: '2px' }}>
           {weekdays.map((wd, i) => (
@@ -339,7 +339,7 @@ export default function UsageSection() {
   const maxModelTokens = data.byModel[0]?.tokens ?? 0;
 
   return (
-    <div className="px-6 py-5 space-y-5 overflow-y-auto h-full">
+    <div className="space-y-5">
       <SettingsSectionHeader title={t.usage.title} />
 
       {/* Period switcher */}

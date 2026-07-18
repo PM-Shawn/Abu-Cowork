@@ -15,6 +15,7 @@ import { getWorkspaceReader } from './ports/workspaceReader';
 import { getCapsPort } from './ports/capsPort';
 import { getExecutionPort } from './ports/executionPort';
 import { useTaskExecutionStore } from '../../stores/taskExecutionStore';
+import { useScratchpadStore } from '../../stores/scratchpadStore';
 import { createEventRouter } from './eventRouter';
 import { routeInput, buildSystemPromptSections, type RouteResult, type IMContext } from './orchestrator';
 import type { PromptSection } from '../llm/promptSections';
@@ -784,6 +785,9 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
     executionStore: taskExecutionStore,
     appendToolCallContext: (loopId, context) => {
       chatDelta.appendToolCallContext(conversationId, loopId, context);
+    },
+    addScratchpadEntry: (entry) => {
+      useScratchpadStore.getState().addEntry(entry);
     },
   });
 

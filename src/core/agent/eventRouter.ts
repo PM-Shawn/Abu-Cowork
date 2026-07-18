@@ -19,8 +19,8 @@ import type {
   ToolCallContext,
 } from '../../types/execution';
 import type { TaskExecutionStore } from '../../stores/taskExecutionStore';
+import type { ScratchpadEntry } from '../../stores/scratchpadStore';
 import {
-  useScratchpadStore,
   shouldCaptureScratchpad,
   inferScratchpadType,
   generateScratchpadTitle,
@@ -225,6 +225,12 @@ export interface EventRouterDeps {
   executionStore: TaskExecutionStore;
   /** Callback to append tool call context to ChatStore */
   appendToolCallContext?: (loopId: string, context: ToolCallContext) => void;
+  /** Callback to capture an intermediate result to ScratchpadStore (DI seam —
+   *  mirrors `appendToolCallContext` above so EventRouter has zero direct
+   *  store imports; see agentLoop.ts's `createEventRouter` call site for the
+   *  in-process wiring). Signature mirrors `ScratchpadStore.addEntry`'s
+   *  actual parameter shape. */
+  addScratchpadEntry?: (entry: Omit<ScratchpadEntry, 'id' | 'timestamp' | 'isViewed'>) => void;
 }
 
 export class EventRouter {
@@ -421,7 +427,7 @@ export class EventRouter {
       const entryType = inferScratchpadType(step.toolName);
       if (entryType) {
         const path = (step.toolInput.path || step.toolInput.file_path || step.toolInput.filePath) as string | undefined;
-        useScratchpadStore.getState().addEntry({
+        this.deps.addScratchpadEntry?.({
           conversationId: execution.conversationId,
           title: generateScratchpadTitle(step.toolName, step.toolInput, entryType),
           type: entryType,

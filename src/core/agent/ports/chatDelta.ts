@@ -1,4 +1,18 @@
 import { useChatStore, flushTokenBuffer } from '@/stores/chatStore';
+import type {
+  Message,
+  ToolCall,
+  ToolResultContent,
+  TokenUsage,
+  ToolCallForContext,
+  ConversationStatus,
+  AgentStatus,
+  RetryInfo,
+  ContextCache,
+  Conversation,
+} from '@/types';
+import type { ExecutionStepSnapshot, PlannedStep } from '@/types/execution';
+import type { ProposalSignal } from '../proposalSignal';
 
 /**
  * Port abstracting agentLoop's WRITES to chatStore's streaming family, plus
@@ -22,6 +36,18 @@ import { useChatStore, flushTokenBuffer } from '@/stores/chatStore';
  * `flushTokenBuffer()` function. Frame-based batching for a real
  * out-of-process channel is a separate, later concern (see
  * CHAT-PROBE-REPORT.md §7 for the extrapolation).
+ *
+ * ── Discrete family (below) ──────────────────────────────────────────────
+ * Unlike the streaming family, these are low-frequency, one-shot writes (one
+ * call per tool result / status change / turn boundary, not per-token). The
+ * CHAT-PROBE-REPORT.md §3 lesson was that renaming the streaming family cost
+ * real per-call-site translation effort during conversion; for this batch of
+ * infrequent, one-off calls that translation cost isn't worth paying, so
+ * these methods deliberately MIRROR their chatStore action names 1:1 instead
+ * of inventing new vocabulary. This is a judgment call, not an oversight: if
+ * a future out-of-process contract needs these to mean something different
+ * cross-process (e.g. batching several into one frame), rename then — don't
+ * pre-rename speculatively now.
  */
 export interface ChatDelta {
   // ── Streaming family (hot path — the future cross-process batching seam) ──
@@ -40,11 +66,59 @@ export interface ChatDelta {
   /** Mirrors chatStore's `cancelStreaming`. */
   cancelStreaming(convId: string): void;
 
-  // ── Reclaimed named actions (formerly raw setState escapes in agentLoop.ts) ──
+  // ── Reclaimed named actions (formerly raw setState escapes) ──
   /** Mirrors chatStore's `deactivateConversationSkills`. */
   deactivateSkills(convId: string): void;
   /** Mirrors chatStore's `setMessageStreamingFlag`. */
   setMessageStreamingFlag(convId: string, messageId: string, streaming: boolean): void;
+  /** Mirrors chatStore's `setMessageToolCalls`. */
+  setMessageToolCalls(convId: string, messageId: string, toolCalls: ToolCall[]): void;
+
+  // ── Discrete family (one-shot writes — turn/message/status boundaries) ──
+  /** Mirrors chatStore's `addMessage`. */
+  addMessage(convId: string, message: Message): void;
+  /** Mirrors chatStore's `deleteMessage`. */
+  deleteMessage(convId: string, messageId: string, opts?: { skipCatalogBump?: boolean }): void;
+  /** Mirrors chatStore's `updateToolCall`. */
+  updateToolCall(
+    convId: string,
+    messageId: string,
+    toolCallId: string,
+    result: string,
+    resultContent?: ToolResultContent[],
+    isError?: boolean,
+    hideScreenshot?: boolean,
+  ): void;
+  /** Mirrors chatStore's `appendToolCallContext`. */
+  appendToolCallContext(convId: string, loopId: string, context: ToolCallForContext): void;
+  /** Mirrors chatStore's `updateMessageUsage`. */
+  updateMessageUsage(convId: string, usage: TokenUsage, msgId?: string): void;
+  /** Mirrors chatStore's `setExecutionStepsSnapshot`. */
+  setExecutionStepsSnapshot(convId: string, loopId: string, steps: ExecutionStepSnapshot[]): void;
+  /** Mirrors chatStore's `setPlannedStepsSnapshot`. */
+  setPlannedStepsSnapshot(convId: string, loopId: string, steps: PlannedStep[]): void;
+  /** Mirrors chatStore's `setConversationStatus`. */
+  setConversationStatus(convId: string, status: ConversationStatus): void;
+  /** Mirrors chatStore's `setAgentStatus`. */
+  setAgentStatus(status: AgentStatus, tool?: string, agentName?: string): void;
+  /** Mirrors chatStore's `setCurrentUsage`. */
+  setCurrentUsage(usage: TokenUsage | null): void;
+  /** Mirrors chatStore's `setRetryInfo`. */
+  setRetryInfo(info: RetryInfo | null): void;
+  /** Mirrors chatStore's `setContextUsage`. */
+  setContextUsage(convId: string, usage: NonNullable<Conversation['contextUsage']> | undefined): void;
+  /** Mirrors chatStore's `setContextCache`. */
+  setContextCache(convId: string, cache: ContextCache): void;
+  /** Mirrors chatStore's `clearContextCache`. */
+  clearContextCache(convId: string): void;
+  /** Mirrors chatStore's `setIsCompressing`. */
+  setIsCompressing(convId: string, value: boolean): void;
+  /** Mirrors chatStore's `setConversationModel`. */
+  setConversationModel(convId: string, model: { providerId: string; modelId: string } | undefined): void;
+  /** Mirrors chatStore's `setPendingProposalSignal`. */
+  setPendingProposalSignal(convId: string, signal: ProposalSignal | undefined): void;
+  /** Mirrors chatStore's `removeActiveAgent`. */
+  removeActiveAgent(agentName: string): void;
 }
 
 /** Default in-process implementation over the Zustand store. This is the
@@ -74,6 +148,34 @@ export function createInProcessChatDelta(): ChatDelta {
     deactivateSkills: (convId) => useChatStore.getState().deactivateConversationSkills(convId),
     setMessageStreamingFlag: (convId, messageId, streaming) =>
       useChatStore.getState().setMessageStreamingFlag(convId, messageId, streaming),
+    setMessageToolCalls: (convId, messageId, toolCalls) =>
+      useChatStore.getState().setMessageToolCalls(convId, messageId, toolCalls),
+
+    addMessage: (convId, message) => useChatStore.getState().addMessage(convId, message),
+    deleteMessage: (convId, messageId, opts) =>
+      useChatStore.getState().deleteMessage(convId, messageId, opts),
+    updateToolCall: (convId, messageId, toolCallId, result, resultContent, isError, hideScreenshot) =>
+      useChatStore.getState().updateToolCall(convId, messageId, toolCallId, result, resultContent, isError, hideScreenshot),
+    appendToolCallContext: (convId, loopId, context) =>
+      useChatStore.getState().appendToolCallContext(convId, loopId, context),
+    updateMessageUsage: (convId, usage, msgId) =>
+      useChatStore.getState().updateMessageUsage(convId, usage, msgId),
+    setExecutionStepsSnapshot: (convId, loopId, steps) =>
+      useChatStore.getState().setExecutionStepsSnapshot(convId, loopId, steps),
+    setPlannedStepsSnapshot: (convId, loopId, steps) =>
+      useChatStore.getState().setPlannedStepsSnapshot(convId, loopId, steps),
+    setConversationStatus: (convId, status) => useChatStore.getState().setConversationStatus(convId, status),
+    setAgentStatus: (status, tool, agentName) => useChatStore.getState().setAgentStatus(status, tool, agentName),
+    setCurrentUsage: (usage) => useChatStore.getState().setCurrentUsage(usage),
+    setRetryInfo: (info) => useChatStore.getState().setRetryInfo(info),
+    setContextUsage: (convId, usage) => useChatStore.getState().setContextUsage(convId, usage),
+    setContextCache: (convId, cache) => useChatStore.getState().setContextCache(convId, cache),
+    clearContextCache: (convId) => useChatStore.getState().clearContextCache(convId),
+    setIsCompressing: (convId, value) => useChatStore.getState().setIsCompressing(convId, value),
+    setConversationModel: (convId, model) => useChatStore.getState().setConversationModel(convId, model),
+    setPendingProposalSignal: (convId, signal) =>
+      useChatStore.getState().setPendingProposalSignal(convId, signal),
+    removeActiveAgent: (agentName) => useChatStore.getState().removeActiveAgent(agentName),
   };
 }
 

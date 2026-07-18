@@ -180,20 +180,20 @@ export default function DetailBlockView({ block, onToggle, onLoadMore }: DetailB
         {block.parsedItems.slice(0, 5).map((item, index) => (
           <div key={index} className="px-3 py-2 hover:bg-[var(--abu-bg-hover)] transition-colors">
             <div className="flex items-start gap-2">
-              {item.icon && <span className="text-body">{item.icon}</span>}
+              {item.icon && <span className="text-minor">{item.icon}</span>}
               <div className="flex-1 min-w-0">
                 {item.url ? (
                   <a
                     href={item.url}
                     target="_blank"
                     rel="noopener noreferrer"
-                    className="text-body text-[var(--abu-text-tertiary)] hover:text-[var(--abu-clay)] font-medium flex items-center gap-1"
+                    className="text-minor text-[var(--abu-text-tertiary)] hover:text-[var(--abu-clay)] font-medium flex items-center gap-1"
                   >
                     {item.title}
                     <ExternalLink className="h-3 w-3 opacity-50" />
                   </a>
                 ) : (
-                  <div className="text-body text-[var(--abu-text-tertiary)] font-medium">{item.title}</div>
+                  <div className="text-minor text-[var(--abu-text-tertiary)] font-medium">{item.title}</div>
                 )}
                 {item.description && (
                   <div className="text-caption text-[var(--abu-text-muted)] mt-0.5 line-clamp-2">

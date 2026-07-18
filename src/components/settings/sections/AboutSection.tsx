@@ -170,8 +170,12 @@ export default function AboutSection() {
                 <span>{progressPercent}%</span>
               </div>
               <div className="w-full h-2 rounded-full bg-[var(--abu-bg-active)] overflow-hidden">
+                {/* No width transition: real download progress fires many high-frequency
+                    events; a CSS ease-transition lags far behind and the bar looks stuck
+                    at ~0 while the % text jumps ahead, then unmounts on Finished. Snap
+                    the fill to the true percent each update instead. */}
                 <div
-                  className="h-full rounded-full bg-[var(--abu-clay)] transition-all duration-300"
+                  className="h-full rounded-full bg-[var(--abu-clay)]"
                   style={{ width: `${progressPercent}%` }}
                 />
               </div>

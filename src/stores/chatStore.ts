@@ -346,6 +346,17 @@ interface ChatActions {
    * disk-persistence / agentStatus/retryInfo side effects `finishStreaming` has.
    */
   setMessageStreamingFlag: (convId: string, messageId: string, streaming: boolean) => void;
+  /**
+   * Atomically attach the finalized tool calls to an assistant message and
+   * mark it done streaming, in one mutation. Extracted from a toolExecutor.ts
+   * raw `useChatStore.setState` escape hatch (exact `messageId` lookup, no
+   * FALLBACK_LAST fanout — same shape as `setMessageStreamingFlag`). The two
+   * fields are set together because they represent a single transition (the
+   * assistant's streamed response has finished and its tool calls are now
+   * known) — splitting them into two calls would let a re-render observe an
+   * inconsistent in-between state.
+   */
+  setMessageToolCalls: (convId: string, messageId: string, toolCalls: ToolCall[]) => void;
   appendToolCallContext: (convId: string, loopId: string, context: ToolCallForContext) => void;
   setExecutionStepsSnapshot: (convId: string, loopId: string, steps: ExecutionStepSnapshot[]) => void;
   setPlannedStepsSnapshot: (convId: string, loopId: string, steps: PlannedStep[]) => void;
@@ -1072,6 +1083,16 @@ export const useChatStore = create<ChatStore>()(
         set((state) => {
           const msg = state.conversations[convId]?.messages.find((m) => m.id === messageId);
           if (msg) msg.isStreaming = streaming;
+        });
+      },
+
+      setMessageToolCalls: (convId, messageId, toolCalls) => {
+        set((state) => {
+          const msg = state.conversations[convId]?.messages.find((m) => m.id === messageId);
+          if (msg) {
+            msg.toolCalls = toolCalls;
+            msg.isStreaming = false;
+          }
         });
       },
 

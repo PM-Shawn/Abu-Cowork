@@ -659,6 +659,40 @@ describe('chatStore', () => {
     });
   });
 
+  // ── setMessageToolCalls ──
+  // Extracted from a toolExecutor.ts `useChatStore.setState` escape hatch
+  // (the "assistant message finished streaming, tool calls are now known"
+  // update) as part of the chatStore write-side B1 batch. Exact `messageId`
+  // lookup (no FALLBACK_LAST), and sets `toolCalls` + `isStreaming: false`
+  // atomically — mirrors the original inline setState body verbatim.
+  describe('setMessageToolCalls', () => {
+    const toolCalls = [
+      { id: 't1', name: 'read_file', input: { path: 'a.txt' } },
+    ];
+
+    it('attaches toolCalls and flips isStreaming to false on the exact message id', () => {
+      const id = useChatStore.getState().createConversation();
+      useChatStore.getState().addMessage(id, {
+        id: 'a1', role: 'assistant', content: '', timestamp: Date.now(), isStreaming: true,
+      });
+      useChatStore.getState().setMessageToolCalls(id, 'a1', toolCalls);
+      const msg = useChatStore.getState().conversations[id].messages[0];
+      expect(msg.toolCalls).toEqual(toolCalls);
+      expect(msg.isStreaming).toBe(false);
+    });
+
+    it('is a no-op when messageId does not match any message (no FALLBACK_LAST)', () => {
+      const id = useChatStore.getState().createConversation();
+      useChatStore.getState().addMessage(id, {
+        id: 'a1', role: 'assistant', content: '', timestamp: Date.now(), isStreaming: true,
+      });
+      useChatStore.getState().setMessageToolCalls(id, 'does-not-exist', toolCalls);
+      const msg = useChatStore.getState().conversations[id].messages[0];
+      expect(msg.toolCalls).toBeUndefined();
+      expect(msg.isStreaming).toBe(true);
+    });
+  });
+
   // ── deactivateConversationSkills ──
   // Extracted from an agentLoop.ts `useChatStore.setState` escape hatch inside
   // deactivateAllSkills() as part of the chatStore write-side probe. Only the

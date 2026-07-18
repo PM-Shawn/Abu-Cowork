@@ -117,15 +117,7 @@ export async function executeToolBatch(params: ToolBatchParams): Promise<ToolBat
   const chatStore = useChatStore.getState();
 
   // Update the assistant message with tool calls
-  useChatStore.setState((state) => {
-    const msg = state.conversations[conversationId]?.messages.find(
-      (m) => m.id === assistantMsgId
-    );
-    if (msg) {
-      msg.toolCalls = collectedToolCalls;
-      msg.isStreaming = false;
-    }
-  });
+  chatStore.setMessageToolCalls(conversationId, assistantMsgId, collectedToolCalls);
 
   // Execute tools in parallel using Promise.allSettled
   chatStore.setAgentStatus('tool-calling', `${collectedToolCalls.length} tools`);

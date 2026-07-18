@@ -14,7 +14,8 @@ import { ClaudeAdapter } from '../llm/claude';
 import { OpenAICompatibleAdapter } from '../llm/openai-compatible';
 import { getAllTools, executeAnyTool, toolResultToString, type ConfirmationInfo, type FilePermissionCallback } from '../tools/registry';
 import { TOOL_NAMES } from '../tools/toolNames';
-import { useSettingsStore, getActiveApiKey, getActiveProvider, resolveAgentModel } from '../../stores/settingsStore';
+import { getActiveApiKey, getActiveProvider, resolveAgentModel } from '../../stores/settingsStore';
+import { getSettingsReader } from './ports/settingsReader';
 import { resolveCapabilities, computeReasoningParams, isReasoningStarvation, type ModelCapabilities } from '../llm/modelCapabilities';
 import { applyDeclaredCapabilities } from '../llm/applyDeclaredCapabilities';
 import { resolveModelDeclared } from '../llm/resolveModelDeclared';
@@ -206,7 +207,7 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
   const subagentSpan = startSubagentSpan(options.parentConversationId ?? null, { agentName: agent.name, task });
 
   try {
-    const settings = useSettingsStore.getState();
+    const settings = getSettingsReader().getSnapshot();
 
     // 1. Build system prompt
     const workspacePath = options.imContext?.workspacePath ?? useWorkspaceStore.getState().currentPath;
@@ -313,7 +314,7 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
     // maxTurns priority: agent definition > global setting > DEFAULT_MAX_TURNS
     // (200, matching Claude Code's fork subagent). Shared with agentLoop via
     // resolveMaxTurns so the cap chain + unlimited escape hatch can't drift.
-    const globalMaxTurns = useSettingsStore.getState().agentMaxTurns;
+    const globalMaxTurns = getSettingsReader().getSnapshot().agentMaxTurns;
     const maxTurns = resolveMaxTurns({ definitionMaxTurns: agent.maxTurns, globalMaxTurns });
     let resultBuffer = '';
 

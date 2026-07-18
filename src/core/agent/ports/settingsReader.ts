@@ -45,3 +45,22 @@ export function createInProcessSettingsReader(): SettingsReader {
     },
   };
 }
+
+let current: SettingsReader = createInProcessSettingsReader();
+
+/** Module-level accessor for the app-wide default SettingsReader. All core/
+ *  callers that don't receive an explicit reader via options should go
+ *  through this instead of constructing their own in-process reader, so
+ *  there's a single seam to flip when the headless Node runtime starts up
+ *  (see `setSettingsReader`). */
+export function getSettingsReader(): SettingsReader {
+  return current;
+}
+
+/** One-time swap hook for a future out-of-process (IPC/RPC-backed) reader,
+ *  to be called once at Node runtime startup. Not used anywhere yet — the
+ *  in-process default remains active until a real out-of-process
+ *  implementation exists. */
+export function setSettingsReader(reader: SettingsReader): void {
+  current = reader;
+}

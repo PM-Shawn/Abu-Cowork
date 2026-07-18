@@ -8,7 +8,7 @@ import { getAllTools, type ConfirmationInfo, type FilePermissionCallback } from 
 import type { ToolDefinition } from '../../types';
 import { useChatStore, flushTokenBuffer } from '../../stores/chatStore';
 import { getEffectiveModel, getActiveApiKey, getActiveProvider, resolveAgentModel, providerRequiresApiKey } from '../../stores/settingsStore';
-import { createInProcessSettingsReader, type SettingsReader } from './ports/settingsReader';
+import { getSettingsReader, type SettingsReader } from './ports/settingsReader';
 import { useDiscoveredCapsStore } from '../../stores/discoveredCapabilitiesStore';
 import { useWorkspaceStore } from '../../stores/workspaceStore';
 import { useTaskExecutionStore } from '../../stores/taskExecutionStore';
@@ -710,7 +710,7 @@ export function shouldContinueTruncatedToolCalls(
 
 
 export async function runAgentLoop(conversationId: string, userMessage: string, options?: AgentLoopOptions): Promise<AgentLoopResult> {
-  const settingsReader = options?.settingsReader ?? createInProcessSettingsReader();
+  const settingsReader = options?.settingsReader ?? getSettingsReader();
 
   // ── Concurrency guard: one live loop per conversation ────────────────────
   // The entry sequence below (clearAbortController → getAbortController)

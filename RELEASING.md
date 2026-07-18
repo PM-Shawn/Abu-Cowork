@@ -1,6 +1,6 @@
 # Release Notes Convention
 
-Release notes writing convention for Abu. Use alongside the Release Process section in `CLAUDE.md`.
+Release notes writing convention for Abu. Use alongside the Release Process section in `CLAUDE.md`. For the step-by-step release flow, follow the one-page [`RELEASE-CHECKLIST.md`](./RELEASE-CHECKLIST.md); this doc covers how to *write* the notes.
 
 > **Core principle — two files, dual-maintained by language**: Each release gets its entry written in **both** changelogs, never mixed in one file:
 > - **`CHANGELOG.md` (English, canonical)** → the GitHub Release + `latest.json.notes` (English default for the Tauri updater and international users).

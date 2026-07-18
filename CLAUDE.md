@@ -41,6 +41,9 @@ Inspired by Claude Code's Cowork mode. Features multi-agent architecture with ex
 3. 如果改动涉及核心逻辑，跑 `npm test` 确认测试通过。
 
 ### Release Process (发版流程)
+
+> 📋 **照着发版用一页清单** [`RELEASE-CHECKLIST.md`](./RELEASE-CHECKLIST.md)（从上跑到下）。下面是同一流程的细节与理由。
+
 1. 确保 `dev` 分支 CI 全绿（build + lint + test）。
 2. **版本号在 `dev` 上 bump，三处同步**：`package.json`、`src-tauri/tauri.conf.json`、`src-tauri/Cargo.toml`（顺带 `src-tauri/Cargo.lock` 里 `name = "abu"` 那条）。（版本号跟着 dev 流到 main，不再出现 dev/main 版本错位。）
    - 🌐 **更新日志双语双维护（语言分流）** —— 每次发版在 `dev` 上把该版条目**两份都写好**，语言不混：

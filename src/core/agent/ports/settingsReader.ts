@@ -14,15 +14,34 @@ import { useSettingsStore, type SettingsState } from '@/stores/settingsStore';
  * bleed into an in-flight conversation on a different model).
  */
 export interface SettingsReader {
-  getSnapshot(): SettingsState;
+  getSnapshot(): Readonly<SettingsState>;
 }
 
-/** Default in-process implementation — thin wrapper over the Zustand store's
- *  synchronous getState(). This is the seam a future out-of-process agent
- *  runtime (headless Node sidecar) would replace with an IPC/RPC-backed
- *  implementation. */
+/** Default in-process implementation over the Zustand store's synchronous
+ *  getState(). This is the seam a future out-of-process agent runtime
+ *  (headless Node sidecar) would replace with an IPC/RPC-backed
+ *  implementation.
+ *
+ *  The snapshot is a shallow copy with all function-valued properties
+ *  (store actions) stripped. `getState()` actually returns the full
+ *  `SettingsStore` (state + actions); returning it as-is would smuggle
+ *  invisible bound methods past the `SettingsState` label — harmless
+ *  in-process, but methods cannot cross a process boundary, so an
+ *  IPC-backed reader would return a structurally different object. Strip
+ *  here so both readers return the same data-only shape from day one.
+ *  Shallow copy keeps nested references (e.g. `activeModel`) identical
+ *  across snapshots, so reference comparisons against store-derived
+ *  values keep working. SettingsState has no function-valued data fields
+ *  (verified), so the typeof filter cannot drop real data. */
 export function createInProcessSettingsReader(): SettingsReader {
   return {
-    getSnapshot: () => useSettingsStore.getState(),
+    getSnapshot: () => {
+      const full = useSettingsStore.getState() as unknown as Record<string, unknown>;
+      const snapshot: Record<string, unknown> = {};
+      for (const key of Object.keys(full)) {
+        if (typeof full[key] !== 'function') snapshot[key] = full[key];
+      }
+      return snapshot as Readonly<SettingsState>;
+    },
   };
 }

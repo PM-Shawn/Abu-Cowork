@@ -117,6 +117,17 @@
         </div>
     </section>
 
+    <!-- What's new (populated from latest.json; hidden until notes load) -->
+    <section class="whatsnew" id="whatsnew" hidden>
+        <div class="container">
+            <details>
+                <summary>What's new<span class="wn-ver" id="wnVersion"></span></summary>
+                <div class="wn-body" id="wnBody"></div>
+                <a class="wn-more" href="https://github.com/PM-Shawn/Abu-Cowork/releases" target="_blank" rel="noopener">All releases →</a>
+            </details>
+        </div>
+    </section>
+
     <!-- Features Section -->
     <section class="features" id="features">
         <div class="container">
@@ -546,10 +557,53 @@
                 });
             }
 
+            // ── Localized release notes (What's new), rendered from latest.json ──
+            function escapeHtml(s) {
+                return s.replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+            }
+            function mdInline(s) {
+                return escapeHtml(s)
+                    .replace(/`([^`]+)`/g, '<code>$1</code>')
+                    .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+                    .replace(/\[([^\]]+)\]\((https?:\/\/[^)]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>')
+                    .replace(/(^|[^"=])(https?:\/\/[^\s<]+)/g, '$1<a href="$2" target="_blank" rel="noopener">$2</a>');
+            }
+            function renderMarkdown(md) {
+                let html = '', inList = false;
+                for (const raw of md.split('\n')) {
+                    const line = raw.trim();
+                    const h = line.match(/^#{2,4}\s+(.*)/);
+                    if (h) { if (inList) { html += '</ul>'; inList = false; } html += '<h4>' + mdInline(h[1]) + '</h4>'; continue; }
+                    const li = line.match(/^[-*]\s+(.*)/);
+                    if (li) { if (!inList) { html += '<ul>'; inList = true; } html += '<li>' + mdInline(li[1]) + '</li>'; continue; }
+                    if (!line) { if (inList) { html += '</ul>'; inList = false; } continue; }
+                    if (inList) { html += '</ul>'; inList = false; }
+                    html += '<p>' + mdInline(line) + '</p>';
+                }
+                if (inList) html += '</ul>';
+                return html;
+            }
+            function renderNotes(data) {
+                try {
+                    const raw = (document.documentElement.lang || 'en').toLowerCase();
+                    const key = raw.indexOf('zh') === 0 ? 'zh-CN' : 'en-US';
+                    const i18n = data.notes_i18n || {};
+                    const notes = (i18n[key] || i18n['en-US'] || data.notes || '').trim();
+                    const sec = document.getElementById('whatsnew');
+                    const body = document.getElementById('wnBody');
+                    const ver = document.getElementById('wnVersion');
+                    // Skip the "See {github-url}" fallback stub — nothing useful to render.
+                    if (!sec || !body || !notes || /^see\s+https?:\/\//i.test(notes)) return;
+                    body.innerHTML = renderMarkdown(notes);
+                    if (ver && data.version) ver.textContent = data.version;
+                    sec.hidden = false;
+                } catch (e) { /* leave the section hidden on any error */ }
+            }
+
             // Try OSS first, fall back to GitHub API
             fetch(OSS_LATEST, { cache: 'no-cache' })
                 .then(r => { if (!r.ok) throw new Error(); return r.json(); })
-                .then(d => applyFromOSS(d.version))
+                .then(d => { applyFromOSS(d.version); renderNotes(d); })
                 .catch(() =>
                     fetch(GH_API)
                         .then(r => { if (!r.ok) throw new Error(); return r.json(); })

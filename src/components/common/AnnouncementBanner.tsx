@@ -78,7 +78,7 @@ export default function AnnouncementBanner({
             [&_ol]:list-decimal [&_ol]:pl-4
             [&_strong]:font-semibold [&_strong]:text-[var(--abu-text-primary)]
             [&_p]:leading-relaxed">
-            <ReactMarkdown remarkPlugins={[remarkGfm]}>
+            <ReactMarkdown remarkPlugins={[[remarkGfm, { singleTilde: false }]]}>
               {item.body}
             </ReactMarkdown>
           </div>

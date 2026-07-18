@@ -130,7 +130,7 @@ export default function AboutSection() {
                   [&_strong]:font-semibold [&_strong]:text-[var(--abu-text-primary)]
                   [&_p]:leading-relaxed">
                   <ReactMarkdown
-                    remarkPlugins={[remarkGfm]}
+                    remarkPlugins={[[remarkGfm, { singleTilde: false }]]}
                     components={{
                       a: ({ href, children }) => (
                         <a

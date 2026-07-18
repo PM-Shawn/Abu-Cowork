@@ -1,4 +1,5 @@
 import ReactMarkdown from 'react-markdown';
+import type { PluggableList } from 'unified';
 import remarkGfm from 'remark-gfm';
 import remarkBreaks from 'remark-breaks';
 import { PrismLight as SyntaxHighlighter } from 'react-syntax-highlighter';
@@ -281,8 +282,13 @@ export function CollapsibleCodeBlock({ codeString, language }: { codeString: str
 // closeOpenFences moved to ./markdownUtils.ts so non-component utilities can
 // be imported and unit-tested without tripping react-refresh/only-export-components.
 
-// Stable references — avoid recreating on every render
-const remarkPluginsStable = [remarkGfm, remarkBreaks];
+// Stable references — avoid recreating on every render.
+// `singleTilde: false` — a lone `~` must NOT become strikethrough. Chinese
+// chat text uses `~` as a casual tone softener ("好的~", "操作了~"), and
+// remark-gfm's default (`singleTilde: true`) turns any two of them in one
+// message into a <del> span over the text between them. Require `~~` for
+// strikethrough instead.
+const remarkPluginsStable: PluggableList = [[remarkGfm, { singleTilde: false }], remarkBreaks];
 const SAFE_URL_PATTERN = /^(https?:\/\/|mailto:|tel:|#)/i;
 
 type MarkdownVariant = 'assistant' | 'user';

@@ -623,6 +623,66 @@ describe('chatStore', () => {
     });
   });
 
+  // ── setMessageStreamingFlag ──
+  // Extracted from an agentLoop.ts `useChatStore.setState` escape hatch (the
+  // "user enqueued input while the turn ended without tool calls" rescue path)
+  // as part of the chatStore write-side probe. Unlike finishStreaming, this
+  // looks a message up by EXACT id (no FALLBACK_LAST) and has zero side effects
+  // beyond the flag flip — no disk persistence, no agentStatus/retryInfo reset.
+  describe('setMessageStreamingFlag', () => {
+    it('flips isStreaming on the exact message id', () => {
+      const id = useChatStore.getState().createConversation();
+      useChatStore.getState().addMessage(id, {
+        id: 'a1', role: 'assistant', content: 'partial', timestamp: Date.now(), isStreaming: true,
+      });
+      useChatStore.getState().setMessageStreamingFlag(id, 'a1', false);
+      expect(useChatStore.getState().conversations[id].messages[0].isStreaming).toBe(false);
+    });
+
+    it('does not touch agentStatus/retryInfo (unlike finishStreaming)', () => {
+      const id = useChatStore.getState().createConversation();
+      useChatStore.getState().addMessage(id, {
+        id: 'a1', role: 'assistant', content: 'partial', timestamp: Date.now(), isStreaming: true,
+      });
+      useChatStore.getState().setAgentStatus('streaming');
+      useChatStore.getState().setMessageStreamingFlag(id, 'a1', false);
+      expect(useChatStore.getState().agentStatus).toBe('streaming');
+    });
+
+    it('is a no-op when messageId does not match any message (no FALLBACK_LAST)', () => {
+      const id = useChatStore.getState().createConversation();
+      useChatStore.getState().addMessage(id, {
+        id: 'a1', role: 'assistant', content: 'partial', timestamp: Date.now(), isStreaming: true,
+      });
+      useChatStore.getState().setMessageStreamingFlag(id, 'does-not-exist', false);
+      expect(useChatStore.getState().conversations[id].messages[0].isStreaming).toBe(true);
+    });
+  });
+
+  // ── deactivateConversationSkills ──
+  // Extracted from an agentLoop.ts `useChatStore.setState` escape hatch inside
+  // deactivateAllSkills() as part of the chatStore write-side probe. Only the
+  // store mutation moved here — the caller still owns the "skip if nothing
+  // active" guard and the clearAllSkillHooks() side effect.
+  describe('deactivateConversationSkills', () => {
+    it('clears activeSkills and activeSkillArgs', () => {
+      const id = useChatStore.getState().createConversation();
+      useChatStore.setState((state) => {
+        state.conversations[id].activeSkills = ['writer', 'reviewer'];
+        state.conversations[id].activeSkillArgs = { writer: 'arg1' };
+      });
+      useChatStore.getState().deactivateConversationSkills(id);
+      const conv = useChatStore.getState().conversations[id];
+      expect(conv.activeSkills).toEqual([]);
+      expect(conv.activeSkillArgs).toEqual({});
+    });
+
+    it('is a no-op for a nonexistent conversation id', () => {
+      // Should not throw even though the conversation doesn't exist.
+      expect(() => useChatStore.getState().deactivateConversationSkills('nope')).not.toThrow();
+    });
+  });
+
   // ── editMessage ──
   describe('editMessage', () => {
     it('edits string content', () => {

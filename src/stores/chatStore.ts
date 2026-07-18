@@ -336,6 +336,16 @@ interface ChatActions {
   updateMessageThinking: (convId: string, thinking: string, msgId?: string) => void;
   updateMessageThinkingDuration: (convId: string, duration: number, msgId?: string) => void;
   updateMessageUsage: (convId: string, usage: TokenUsage, msgId?: string) => void;
+  /**
+   * Force a specific message's `isStreaming` flag directly (looked up by exact
+   * `messageId`, no FALLBACK_LAST fanout like `finishStreaming`/`appendToLastMessage`).
+   * Extracted from an agentLoop.ts `useChatStore.setState` escape hatch (the
+   * "user enqueued more input while the turn ended without tool calls" rescue
+   * path) — kept as a narrow, purpose-specific action rather than generalizing
+   * `finishStreaming` because callers here intentionally do NOT want the
+   * disk-persistence / agentStatus/retryInfo side effects `finishStreaming` has.
+   */
+  setMessageStreamingFlag: (convId: string, messageId: string, streaming: boolean) => void;
   appendToolCallContext: (convId: string, loopId: string, context: ToolCallForContext) => void;
   setExecutionStepsSnapshot: (convId: string, loopId: string, steps: ExecutionStepSnapshot[]) => void;
   setPlannedStepsSnapshot: (convId: string, loopId: string, steps: PlannedStep[]) => void;
@@ -346,6 +356,14 @@ interface ChatActions {
   hasAbortController: (convId: string) => boolean;
   cancelStreaming: (convId: string) => void;
   clearAbortController: (convId: string) => void;
+  /**
+   * Clear a conversation's single-turn-lifecycle skill activation state
+   * (`activeSkills`/`activeSkillArgs`). Extracted from an agentLoop.ts
+   * `useChatStore.setState` escape hatch inside `deactivateAllSkills()` — the
+   * caller still owns the "only mutate if something is active" guard and the
+   * `clearAllSkillHooks()` side effect; this action is only the store mutation.
+   */
+  deactivateConversationSkills: (convId: string) => void;
 
   setAgentStatus: (status: AgentStatus, tool?: string, agentName?: string) => void;
   setRetryInfo: (info: RetryInfo | null) => void;
@@ -1050,6 +1068,13 @@ export const useChatStore = create<ChatStore>()(
         });
       },
 
+      setMessageStreamingFlag: (convId, messageId, streaming) => {
+        set((state) => {
+          const msg = state.conversations[convId]?.messages.find((m) => m.id === messageId);
+          if (msg) msg.isStreaming = streaming;
+        });
+      },
+
       updateMessageUsage: (convId, usage, msgId) => {
         set((state) => {
           const target = findTargetMessage(
@@ -1232,6 +1257,16 @@ export const useChatStore = create<ChatStore>()(
 
       clearAbortController: (convId) => {
         abortControllers.delete(convId);
+      },
+
+      deactivateConversationSkills: (convId) => {
+        set((state) => {
+          const conv = state.conversations[convId];
+          if (conv) {
+            conv.activeSkills = [];
+            conv.activeSkillArgs = {};
+          }
+        });
       },
 
       setRetryInfo: (info) => {

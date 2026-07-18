@@ -32,18 +32,24 @@ test.describe('Settings', () => {
     expect(anthropic?.enabled).toBe(true);
   });
 
-  test('settings panel opens via gear button into the settings view', async ({ page }) => {
-    // The gear button now has aria-label="系统设置" (added in Sidebar.tsx).
-    // We click it by accessible name rather than a brittle positional selector.
-    const gearBtn = page.getByRole('button', { name: '系统设置' }).first();
-    await expect(gearBtn).toBeVisible();
-    await gearBtn.click();
+  test('settings panel opens from the account menu into the settings view', async ({ page }) => {
+    // The settings entry moved out of a standalone gear button and into the
+    // account popover (AccountMenu): the sidebar-bottom avatar trigger opens a
+    // menu, and a "设置" (t.settings.title) menuitem opens settings — which now
+    // renders as an overlay dialog (SystemSettingsDialog), not a view swap.
+    // In E2E, setupAbuSettings sets no nickname, so the trigger's accessible
+    // name is the default nickname "我" (t.sidebar.defaultNickname).
+    const accountTrigger = page.getByRole('button', { name: '我', exact: true });
+    await expect(accountTrigger).toBeVisible();
+    await accountTrigger.click();
 
-    // Assert on an element UNIQUE to the settings view, not the same-named
-    // gear/back button (which would stay visible even if navigation no-oped —
-    // a false green). SystemSettingsModal renders a left-nav whose '偏好'
-    // (t.settings.general) item exists ONLY inside the settings view, so its
-    // visibility proves we actually transitioned into viewMode='settings'.
+    const settingsItem = page.getByRole('menuitem', { name: '设置' });
+    await expect(settingsItem).toBeVisible();
+    await settingsItem.click();
+
+    // Assert on an element UNIQUE to the settings view. SystemSettingsModal
+    // renders a left-nav whose '偏好' (t.settings.general) item exists ONLY
+    // inside settings, so its visibility proves we actually opened it.
     await expect(
       page.getByRole('button', { name: '偏好' }).first(),
     ).toBeVisible({ timeout: 5000 });

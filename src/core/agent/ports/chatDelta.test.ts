@@ -50,6 +50,7 @@ describe('createInProcessChatDelta', () => {
       id: 'a1', role: 'assistant', content: '', timestamp: Date.now(), isStreaming: true,
     });
     delta.appendThinking(id, 'pondering...', 'a1');
+    delta.flushTokens(id, 'a1'); // thinking is RAF-buffered same as text tokens — force immediate flush
     expect(useChatStore.getState().conversations[id].messages[0].thinking).toBe('pondering...');
   });
 
@@ -115,8 +116,10 @@ describe('createInProcessChatDelta', () => {
       id: 'a1', role: 'assistant', content: '', timestamp: Date.now(), isStreaming: true,
     });
     delta.appendThinking(id, 'first', 'a1');
+    delta.flushTokens(id, 'a1'); // thinking is RAF-buffered same as text tokens — force immediate flush
     expect(useChatStore.getState().conversations[id].messages[0].thinking).toBe('first');
     delta.appendThinking(id, 'second', 'a1');
+    delta.flushTokens(id, 'a1');
     expect(useChatStore.getState().conversations[id].messages[0].thinking).toBe('second');
   });
 

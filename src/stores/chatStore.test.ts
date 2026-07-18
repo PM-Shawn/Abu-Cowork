@@ -492,6 +492,126 @@ describe('chatStore', () => {
     });
   });
 
+  // ── updateMessageThinking / updateMessageThinkingDuration (F: thinking RAF batching) ──
+  describe('updateMessageThinking (RAF-batched, REPLACE semantics)', () => {
+    it('does not apply synchronously — stays buffered until flushed', () => {
+      const id = useChatStore.getState().createConversation();
+      useChatStore.getState().addMessage(id, {
+        id: 'a1', role: 'assistant', content: '', timestamp: Date.now(), isStreaming: true,
+      });
+      useChatStore.getState().updateMessageThinking(id, 'pondering', 'a1');
+      // Not yet applied — still sitting in the RAF buffer.
+      expect(useChatStore.getState().conversations[id].messages[0].thinking).toBeUndefined();
+      flushTokenBuffer(id, 'a1');
+      expect(useChatStore.getState().conversations[id].messages[0].thinking).toBe('pondering');
+    });
+
+    it('REPLACEs rather than concatenates on repeated calls before a flush', () => {
+      // agentLoop passes the full accumulated `collectedThinking` string on
+      // every call (both the Claude single-shot-per-block path and the
+      // OpenAI-compatible per-SSE-chunk reasoning_content path resolve to
+      // this), so only the latest value in a batching window should survive.
+      const id = useChatStore.getState().createConversation();
+      useChatStore.getState().addMessage(id, {
+        id: 'a1', role: 'assistant', content: '', timestamp: Date.now(), isStreaming: true,
+      });
+      const store = useChatStore.getState();
+      store.updateMessageThinking(id, 'p', 'a1');
+      store.updateMessageThinking(id, 'po', 'a1');
+      store.updateMessageThinking(id, 'pon', 'a1');
+      flushTokenBuffer(id, 'a1');
+      const msg = useChatStore.getState().conversations[id].messages[0];
+      expect(msg.thinking).toBe('pon');
+      // Byte-for-byte identical to what unbatched sequential sets would have
+      // left behind (each call would overwrite the previous one) — batching
+      // only changes the *timing* of the write, not its final content.
+    });
+
+    it('routes by msgId like the token buffer (mid-stream user message safety)', () => {
+      const id = useChatStore.getState().createConversation();
+      const store = useChatStore.getState();
+      store.addMessage(id, {
+        id: 'assistant-1', role: 'assistant', content: '', timestamp: Date.now(), isStreaming: true,
+      });
+      store.addMessage(id, {
+        id: 'user-2', role: 'user', content: 'interrupt', timestamp: Date.now(),
+      });
+      store.updateMessageThinking(id, 'still pondering', 'assistant-1');
+      flushTokenBuffer(id, 'assistant-1');
+      const msgs = useChatStore.getState().conversations[id].messages;
+      expect(msgs.find((m) => m.id === 'assistant-1')?.thinking).toBe('still pondering');
+      expect(msgs.find((m) => m.id === 'user-2')?.thinking).toBeUndefined();
+    });
+
+    it('flushTokenBuffer() drains BOTH the token buffer and the thinking buffer in one call', () => {
+      // Red-line coverage: every existing flushTokenBuffer call site (tool-call
+      // batching, retry, abort, finishStreaming, cancelStreaming) must land
+      // buffered thinking too, without adding a second flush call anywhere.
+      const id = useChatStore.getState().createConversation();
+      const store = useChatStore.getState();
+      store.addMessage(id, {
+        id: 'a1', role: 'assistant', content: 'hello', timestamp: Date.now(), isStreaming: true,
+      });
+      store.appendToLastMessage(id, ' world', 'a1');
+      store.updateMessageThinking(id, 'thinking about it', 'a1');
+      flushTokenBuffer(id, 'a1');
+      const msg = useChatStore.getState().conversations[id].messages[0];
+      expect(msg.content).toBe('hello world');
+      expect(msg.thinking).toBe('thinking about it');
+    });
+
+    it('finishStreaming() flushes buffered thinking before finalizing the message', () => {
+      const id = useChatStore.getState().createConversation();
+      useChatStore.getState().addMessage(id, {
+        id: 'a1', role: 'assistant', content: '', timestamp: Date.now(), isStreaming: true,
+      });
+      useChatStore.getState().updateMessageThinking(id, 'buffered thought', 'a1');
+      useChatStore.getState().finishStreaming(id, 'a1');
+      const msg = useChatStore.getState().conversations[id].messages[0];
+      expect(msg.thinking).toBe('buffered thought');
+      expect(msg.isStreaming).toBe(false);
+    });
+
+    it('cancelStreaming() (abort path) flushes buffered thinking — no lost content', () => {
+      const id = useChatStore.getState().createConversation();
+      useChatStore.getState().addMessage(id, {
+        id: 'a1', role: 'assistant', content: '', timestamp: Date.now(), isStreaming: true,
+      });
+      useChatStore.getState().updateMessageThinking(id, 'mid-thought when aborted', 'a1');
+      useChatStore.getState().cancelStreaming(id);
+      const msg = useChatStore.getState().conversations[id].messages[0];
+      expect(msg.thinking).toBe('mid-thought when aborted');
+    });
+  });
+
+  describe('updateMessageThinkingDuration', () => {
+    it('flushes any buffered thinking text before writing the duration', () => {
+      // Regression guard: duration must not "freeze" the thinking step as
+      // complete while a still-buffered thinking tail hasn't landed yet.
+      const id = useChatStore.getState().createConversation();
+      useChatStore.getState().addMessage(id, {
+        id: 'a1', role: 'assistant', content: '', timestamp: Date.now(), isStreaming: true,
+      });
+      useChatStore.getState().updateMessageThinking(id, 'final thought', 'a1');
+      // Duration write happens WITHOUT an explicit prior flush call — the
+      // action itself must flush internally.
+      useChatStore.getState().updateMessageThinkingDuration(id, 4, 'a1');
+      const msg = useChatStore.getState().conversations[id].messages[0];
+      expect(msg.thinking).toBe('final thought');
+      expect(msg.thinkingDuration).toBe(4);
+    });
+
+    it('sets the duration synchronously (not itself batched)', () => {
+      const id = useChatStore.getState().createConversation();
+      useChatStore.getState().addMessage(id, {
+        id: 'a1', role: 'assistant', content: '', timestamp: Date.now(), isStreaming: true,
+      });
+      useChatStore.getState().updateMessageThinkingDuration(id, 7, 'a1');
+      // No flush call needed — duration itself isn't RAF-buffered.
+      expect(useChatStore.getState().conversations[id].messages[0].thinkingDuration).toBe(7);
+    });
+  });
+
   // ── finishStreaming ──
   describe('finishStreaming', () => {
     it('sets isStreaming to false and resets agent status', () => {

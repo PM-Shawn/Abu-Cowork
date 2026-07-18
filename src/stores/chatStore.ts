@@ -142,6 +142,15 @@ const abortControllers: Map<string, AbortController> = new Map();
 // being appended to the new user bubble.
 type BufferKey = string;
 const tokenBuffer: Map<BufferKey, string> = new Map();
+// Thinking buffer — same RAF cadence as tokenBuffer, but REPLACE semantics
+// instead of concatenation: every `updateMessageThinking` call already
+// carries the FULL accumulated thinking text for the block (agentLoop keeps
+// its own `collectedThinking` accumulator and passes that whole string on
+// every call — true for both the Claude adapter, which emits one `thinking`
+// event per block, and the OpenAI-compatible adapter's DeepSeek-R1-style
+// per-SSE-chunk `reasoning_content` path). So batching only needs to keep
+// the latest value per key, not append fragments.
+const thinkingBuffer: Map<BufferKey, string> = new Map();
 const FALLBACK_LAST = '__last__';
 function bufferKey(convId: string, msgId?: string): BufferKey {
   return `${convId}::${msgId ?? FALLBACK_LAST}`;
@@ -149,6 +158,25 @@ function bufferKey(convId: string, msgId?: string): BufferKey {
 function parseBufferKey(key: BufferKey): { convId: string; msgId: string } {
   const idx = key.indexOf('::');
   return { convId: key.slice(0, idx), msgId: key.slice(idx + 2) };
+}
+
+/** Collect the buffer keys matching an optional (convId, msgId) filter —
+ *  shared selection logic between `flushTokenBuffer`'s two buffers. No
+ *  filter (convId omitted) matches everything, mirroring the pre-existing
+ *  tokenBuffer behavior. */
+function matchingBufferKeys(buf: Map<BufferKey, string>, convId?: string, msgId?: string): BufferKey[] {
+  const keys: BufferKey[] = [];
+  for (const key of buf.keys()) {
+    if (!convId) {
+      keys.push(key);
+      continue;
+    }
+    const parsed = parseBufferKey(key);
+    if (parsed.convId !== convId) continue;
+    if (msgId && parsed.msgId !== msgId && parsed.msgId !== FALLBACK_LAST) continue;
+    keys.push(key);
+  }
+  return keys;
 }
 
 /** Find target message: by id if provided, else last message. */
@@ -188,45 +216,54 @@ function scheduleFlush() {
   flushScheduled = true;
   requestAnimationFrame(() => {
     flushScheduled = false;
-    if (tokenBuffer.size === 0) return;
-    const entries = Array.from(tokenBuffer.entries());
+    if (tokenBuffer.size === 0 && thinkingBuffer.size === 0) return;
+    const tokenEntries = Array.from(tokenBuffer.entries());
     tokenBuffer.clear();
-    // Single Zustand set() call to batch all buffered tokens
+    const thinkingEntries = Array.from(thinkingBuffer.entries());
+    thinkingBuffer.clear();
+    // Single Zustand set() call to batch all buffered tokens + thinking text
     useChatStore.setState((state) => {
-      for (const [key, buffered] of entries) {
+      for (const [key, buffered] of tokenEntries) {
         const { convId, msgId } = parseBufferKey(key);
         const target = findTargetMessage(state.conversations[convId]?.messages, msgId);
         if (target && typeof target.content === 'string') {
           target.content += buffered;
         }
       }
+      for (const [key, thinking] of thinkingEntries) {
+        const { convId, msgId } = parseBufferKey(key);
+        const target = findTargetMessage(state.conversations[convId]?.messages, msgId);
+        if (target) target.thinking = thinking;
+      }
     });
   });
 }
 
-/** Flush any pending buffered tokens immediately (call before finishStreaming) */
+/** Flush any pending buffered tokens AND buffered thinking text immediately
+ *  (call before finishStreaming / retry / abort / tool-call batching).
+ *  Deliberately covers both buffers in one call — they share the same RAF
+ *  cadence and every call site that needs "land buffered stream state now"
+ *  needs both, so a single flush covers both without new call sites. */
 export function flushTokenBuffer(convId?: string, msgId?: string) {
-  const matchingKeys: BufferKey[] = [];
-  for (const key of tokenBuffer.keys()) {
-    if (!convId) {
-      matchingKeys.push(key);
-    } else {
-      const parsed = parseBufferKey(key);
-      if (parsed.convId !== convId) continue;
-      if (msgId && parsed.msgId !== msgId && parsed.msgId !== FALLBACK_LAST) continue;
-      matchingKeys.push(key);
-    }
-  }
-  if (matchingKeys.length === 0) return;
-  const entries = matchingKeys.map((k) => [k, tokenBuffer.get(k)!] as const);
-  for (const k of matchingKeys) tokenBuffer.delete(k);
+  const matchingTokenKeys = matchingBufferKeys(tokenBuffer, convId, msgId);
+  const matchingThinkingKeys = matchingBufferKeys(thinkingBuffer, convId, msgId);
+  if (matchingTokenKeys.length === 0 && matchingThinkingKeys.length === 0) return;
+  const tokenEntries = matchingTokenKeys.map((k) => [k, tokenBuffer.get(k)!] as const);
+  for (const k of matchingTokenKeys) tokenBuffer.delete(k);
+  const thinkingEntries = matchingThinkingKeys.map((k) => [k, thinkingBuffer.get(k)!] as const);
+  for (const k of matchingThinkingKeys) thinkingBuffer.delete(k);
   useChatStore.setState((state) => {
-    for (const [key, buffered] of entries) {
+    for (const [key, buffered] of tokenEntries) {
       const { convId: cId, msgId: mId } = parseBufferKey(key);
       const target = findTargetMessage(state.conversations[cId]?.messages, mId);
       if (target && typeof target.content === 'string') {
         target.content += buffered;
       }
+    }
+    for (const [key, thinking] of thinkingEntries) {
+      const { convId: cId, msgId: mId } = parseBufferKey(key);
+      const target = findTargetMessage(state.conversations[cId]?.messages, mId);
+      if (target) target.thinking = thinking;
     }
   });
 }
@@ -1060,16 +1097,25 @@ export const useChatStore = create<ChatStore>()(
       },
 
       updateMessageThinking: (convId, thinking, msgId) => {
-        set((state) => {
-          const target = findTargetMessage(
-            state.conversations[convId]?.messages,
-            msgId ?? FALLBACK_LAST,
-          );
-          if (target) target.thinking = thinking;
-        });
+        // Buffer and flush once per animation frame, mirroring
+        // appendToLastMessage's tokenBuffer — the OpenAI-compatible adapter's
+        // reasoning models (DeepSeek-R1 style) emit one `thinking` event per
+        // SSE chunk, which without batching means one React re-render per
+        // chunk. REPLACE (not append) semantics: `thinking` here is already
+        // the full accumulated text for this call (see thinkingBuffer's
+        // doc comment above), so the buffer just remembers the latest value.
+        const key = bufferKey(convId, msgId);
+        thinkingBuffer.set(key, thinking);
+        scheduleFlush();
       },
 
       updateMessageThinkingDuration: (convId, duration, msgId) => {
+        // Flush first: thinkingDuration marks the thinking step "done" in the
+        // UI, so any still-buffered thinking text must land before the
+        // duration freezes — otherwise the step reads as complete while its
+        // final text tail hasn't rendered yet. flushTokenBuffer covers the
+        // thinking buffer as well as the token buffer (see its doc comment).
+        flushTokenBuffer(convId, msgId);
         set((state) => {
           const target = findTargetMessage(
             state.conversations[convId]?.messages,

@@ -69,6 +69,13 @@ const BLOCKED_FILE_PREFIXES: &[&str] = &[
 
 const BLOCKED_FILE_EXTS: &[&str] = &["pem", "key", "p12", "pfx"];
 
+/// The preview-tab element picker runtime, injected inline into every
+/// `.html`/`.htm` response — see `inject_picker_script`. Sibling of
+/// `abu-inspect.js` (the browser-tab picker); forked because the transport
+/// differs (postMessage vs. Tauri `initialization_script` + invoke). See
+/// `docs/2026-07-19-preview-element-select-design.md`.
+const ABU_PREVIEW_INSPECT_JS: &str = include_str!("../inspect/abu-preview-inspect.js");
+
 // ─── State ───────────────────────────────────────────────────────────────
 
 #[derive(Clone)]
@@ -197,6 +204,60 @@ async fn host_guard(req: Request, next: Next) -> Response {
     next.run(req).await
 }
 
+// ─── HTML picker script injection ───────────────────────────────────────
+
+/// Case-insensitive byte-window scan for an ASCII `needle` in `haystack`,
+/// returning the byte index of the LAST occurrence (or `None`).
+///
+/// UTF-8 safe without decoding: ASCII bytes are always `< 0x80`, while every
+/// byte of a multibyte UTF-8 sequence (lead or continuation) is `>= 0x80`.
+/// An ASCII needle can therefore never partially match inside a multibyte
+/// codepoint, so a plain byte-window comparison is correct — no risk of
+/// slicing a CJK character in half or producing a spurious match.
+fn find_ci(haystack: &str, needle: &str) -> Option<usize> {
+    let hay = haystack.as_bytes();
+    let pat = needle.as_bytes();
+    let nlen = pat.len();
+    if nlen == 0 || hay.len() < nlen {
+        return None;
+    }
+    let mut found = None;
+    let mut i = 0;
+    while i + nlen <= hay.len() {
+        if hay[i..i + nlen].eq_ignore_ascii_case(pat) {
+            found = Some(i);
+        }
+        i += 1;
+    }
+    found
+}
+
+/// Wrap `ABU_PREVIEW_INSPECT_JS` in a `<script>` tag and splice it into
+/// `html`: immediately before the last `</body>` (case-insensitive); if
+/// absent, before the last `</html>`; if neither is present, appended at
+/// the end. Byte-slicing on `find_ci`'s index is safe per its doc comment.
+fn inject_picker_script(html: &str) -> String {
+    let script_tag = format!("<script>{}</script>", ABU_PREVIEW_INSPECT_JS);
+
+    let insert_at = find_ci(html, "</body>").or_else(|| find_ci(html, "</html>"));
+
+    match insert_at {
+        Some(idx) => {
+            let mut out = String::with_capacity(html.len() + script_tag.len());
+            out.push_str(&html[..idx]);
+            out.push_str(&script_tag);
+            out.push_str(&html[idx..]);
+            out
+        }
+        None => {
+            let mut out = String::with_capacity(html.len() + script_tag.len());
+            out.push_str(html);
+            out.push_str(&script_tag);
+            out
+        }
+    }
+}
+
 // ─── File handler ────────────────────────────────────────────────────────
 
 async fn serve_file(
@@ -225,7 +286,7 @@ async fn serve_file(
         return StatusCode::FORBIDDEN.into_response();
     }
 
-    // 5. Stat + open. We refuse directories — preview is file-only.
+    // 5. Stat. We refuse directories — preview is file-only.
     let metadata = match tokio::fs::metadata(&target).await {
         Ok(m) => m,
         Err(_) => return StatusCode::NOT_FOUND.into_response(),
@@ -233,11 +294,6 @@ async fn serve_file(
     if !metadata.is_file() {
         return StatusCode::NOT_FOUND.into_response();
     }
-
-    let file = match tokio::fs::File::open(&target).await {
-        Ok(f) => f,
-        Err(_) => return StatusCode::NOT_FOUND.into_response(),
-    };
 
     // 6. Content-Type via mime_guess; nosniff guards against type confusion.
     let mut mime = mime_guess::from_path(&target)
@@ -248,9 +304,39 @@ async fn serve_file(
     if mime.starts_with("text/") && !mime.contains("charset") {
         mime.push_str("; charset=utf-8");
     }
-    let len = metadata.len();
 
-    let body = Body::from_stream(ReaderStream::new(file));
+    let is_html = target
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.eq_ignore_ascii_case("html") || e.eq_ignore_ascii_case("htm"))
+        .unwrap_or(false);
+
+    // 7. Body. HTML gets buffered + the picker script spliced in — this
+    // can't stream, since injection changes the byte length. Every other
+    // file type keeps the original zero-copy streaming path (file handle
+    // only opened here, not in the HTML branch).
+    let (body, len) = if is_html {
+        let bytes = match tokio::fs::read(&target).await {
+            Ok(b) => b,
+            Err(_) => return StatusCode::NOT_FOUND.into_response(),
+        };
+        let html_str = String::from_utf8_lossy(&bytes);
+        let injected = inject_picker_script(&html_str);
+        // Content-Length MUST be recomputed from the injected bytes, not
+        // the on-disk metadata length — otherwise the response is
+        // truncated at the original file size and the tail (our injected
+        // script, or the closing tags) never reaches the client. This is
+        // exactly the class of bug the charset=utf-8 fix above guards
+        // against in spirit: silent, locale/content-dependent corruption.
+        let len = injected.len() as u64;
+        (Body::from(injected), len)
+    } else {
+        let file = match tokio::fs::File::open(&target).await {
+            Ok(f) => f,
+            Err(_) => return StatusCode::NOT_FOUND.into_response(),
+        };
+        (Body::from_stream(ReaderStream::new(file)), metadata.len())
+    };
 
     let mut response = Response::new(body);
     let headers = response.headers_mut();
@@ -650,5 +736,91 @@ mod tests {
         let id = h.register_root(dir.path().to_path_buf()).unwrap();
         assert!(h.unregister_root(&id));
         assert!(!h.unregister_root(&id));
+    }
+
+    // ─── HTML picker script injection ────────────────────────────────────
+
+    #[test]
+    fn find_ci_basic_and_case_insensitive() {
+        assert_eq!(find_ci("<html><BODY>x</BODY></html>", "</body>"), Some(13));
+        assert_eq!(find_ci("no closing tag here", "</body>"), None);
+        assert_eq!(find_ci("", "</body>"), None);
+    }
+
+    #[test]
+    fn find_ci_returns_last_occurrence() {
+        // Two literal "</body>" substrings — the real closing tag is the
+        // second one; find_ci must not stop at the first (which could be
+        // inside quoted text/JS, not an actual tag).
+        let html = "<html><body>text with literal \"</body>\" inside</body></html>";
+        let first = html.find("</body>").unwrap();
+        let last = html.rfind("</body>").unwrap();
+        assert_ne!(first, last);
+        assert_eq!(find_ci(html, "</body>"), Some(last));
+    }
+
+    #[test]
+    fn inject_before_body_close() {
+        let html = "<html><body><p>hi</p></body></html>";
+        let out = inject_picker_script(html);
+        let script_tag = format!("<script>{}</script>", ABU_PREVIEW_INSPECT_JS);
+        let expected = format!("<html><body><p>hi</p>{}</body></html>", script_tag);
+        assert_eq!(out, expected);
+    }
+
+    #[test]
+    fn inject_case_insensitive_body_close() {
+        let html = "<HTML><BODY><p>hi</p></BODY></HTML>";
+        let out = inject_picker_script(html);
+        let script_tag = format!("<script>{}</script>", ABU_PREVIEW_INSPECT_JS);
+        let expected = format!("<HTML><BODY><p>hi</p>{}</BODY></HTML>", script_tag);
+        assert_eq!(out, expected);
+    }
+
+    #[test]
+    fn inject_before_html_close_when_no_body() {
+        let html = "<html><p>hi, no body tag</p></html>";
+        let out = inject_picker_script(html);
+        let script_tag = format!("<script>{}</script>", ABU_PREVIEW_INSPECT_JS);
+        let expected = format!("<html><p>hi, no body tag</p>{}</html>", script_tag);
+        assert_eq!(out, expected);
+    }
+
+    #[test]
+    fn inject_appends_when_neither_tag_present() {
+        let html = "<p>fragment, no html/body wrapper</p>";
+        let out = inject_picker_script(html);
+        let script_tag = format!("<script>{}</script>", ABU_PREVIEW_INSPECT_JS);
+        let expected = format!("<p>fragment, no html/body wrapper</p>{}", script_tag);
+        assert_eq!(out, expected);
+    }
+
+    #[test]
+    fn inject_lands_before_body_close_not_after() {
+        let html = "<html><body><p>hi</p></body></html>";
+        let out = inject_picker_script(html);
+        let script_idx = out.find("<script>").unwrap();
+        let body_close_idx = out.rfind("</body>").unwrap();
+        assert!(script_idx < body_close_idx);
+    }
+
+    #[test]
+    fn inject_cjk_content_byte_exact_around_injection() {
+        // Regression guard for the charset=utf-8 fix (module doc comment,
+        // lines ~246-250): injection must not corrupt or reflow CJK bytes,
+        // and must still land immediately before the real </body>.
+        let html = "<html><head><meta charset=\"utf-8\"></head><body><h1>你好世界</h1><p>中文内容测试，包含标点符号。</p></body></html>";
+        let out = inject_picker_script(html);
+
+        let idx = find_ci(html, "</body>").unwrap();
+        // Everything before the injection point is byte-for-byte untouched.
+        assert_eq!(&out[..idx], &html[..idx]);
+        // Everything from the injection point onward, in the original, is
+        // preserved verbatim at the tail of the output.
+        assert!(out.ends_with(&html[idx..]));
+        // And the injected script sits between those two halves.
+        let script_tag = format!("<script>{}</script>", ABU_PREVIEW_INSPECT_JS);
+        let expected = format!("{}{}{}", &html[..idx], script_tag, &html[idx..]);
+        assert_eq!(out, expected);
     }
 }

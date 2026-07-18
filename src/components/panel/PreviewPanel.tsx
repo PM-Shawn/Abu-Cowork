@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, lazy, Suspense } from 'react';
+import { useState, useEffect, useRef, useCallback, lazy, Suspense } from 'react';
 import { readTextFile, exists } from '@tauri-apps/plugin-fs';
 import { revealItemInDir } from '@tauri-apps/plugin-opener';
 import { getBaseName, loadLocalImage } from '@/utils/pathUtils';
@@ -9,18 +9,21 @@ import { snapshotVersion, revertToVersion } from '@/utils/canvasVersions';
 import { usePreviewStore } from '@/stores/previewStore';
 import { usePreviewFileWatch } from '@/hooks/usePreviewFileWatch';
 import { useToastStore } from '@/stores/toastStore';
+import { useChatStore } from '@/stores/chatStore';
 import { useI18n, getI18n } from '@/i18n';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import MarkdownRenderer from '@/components/chat/MarkdownRenderer';
 import CodeMirrorEditor from './CodeMirrorEditor';
 import { VersionHistoryMenu } from './VersionHistoryMenu';
-import { Loader2, X, FolderOpen, Code, Eye, SquareArrowOutUpRight, History, FileCode, FileText, FileImage, FileSpreadsheet, FileType, File, Maximize2, Minimize2, RotateCw, Globe } from 'lucide-react';
+import { Loader2, X, FolderOpen, Code, Eye, SquareArrowOutUpRight, History, FileCode, FileText, FileImage, FileSpreadsheet, FileType, File, Maximize2, Minimize2, RotateCw, Globe, SquareDashedMousePointer } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { DocSelectionLayer } from '@/features/reference/DocSelectionLayer';
 import { cn } from '@/lib/utils';
 import { isMacOS } from '@/utils/platform';
 import { getToolbarButtons } from './previewToolbarConfig';
 import { openWithDefaultApp } from '@/utils/openWithDefaultApp';
+import { createDomElementReference, type BrowserElementPayload } from '@/types/chatReference';
+import { isValidInspectSelection } from '@/utils/inspectMessage';
 
 const PdfPreview = lazy(() => import('@/components/preview/PdfPreview'));
 const DocxPreview = lazy(() => import('@/components/preview/DocxPreview'));
@@ -79,6 +82,29 @@ function getFileIcon(filePath: string) {
   return File;
 }
 
+/**
+ * CSS custom-property values the injected preview-page inspect script needs
+ * to replicate `SelectionToolbar`/`CommentEditor` styling. The injected
+ * script runs inside the loopback iframe with no access to Abu's Tailwind
+ * config or `:root` tokens, so the host resolves them here (same pattern as
+ * TRAE's `getThemeColors` bridge, and identical to `BrowserTab.tsx`'s
+ * `resolveInspectTheme` — ported inline here since that component isn't in
+ * `dev` yet) and passes them down alongside `labels`. The picker script
+ * falls back to its own light-theme literals if this is ever absent/malformed.
+ */
+function resolveInspectTheme() {
+  const cs = getComputedStyle(document.documentElement);
+  const read = (name: string) => cs.getPropertyValue(name).trim();
+  return {
+    bgBase: read('--abu-bg-base'),
+    bgHover: read('--abu-bg-hover'),
+    borderSubtle: read('--abu-border-subtle'),
+    textPrimary: read('--abu-text-primary'),
+    textTertiary: read('--abu-text-tertiary'),
+    danger: read('--abu-danger'),
+  };
+}
+
 function LazyFallback() {
   return (
     <div className="flex items-center justify-center h-full">
@@ -97,6 +123,10 @@ export default function PreviewPanel({
   const storePreviewFilePath = usePreviewStore((s) => s.previewFilePath);
   const closePreview = usePreviewStore((s) => s.closePreview);
   const closeTab = usePreviewStore((s) => s.closeTab);
+  // "Select element" inspect mode (multi-tab keep-alive, see workspace tabs
+  // design) needs to know which tab is actually visible right now — a
+  // hidden background tab must never stay armed.
+  const activeTabId = usePreviewStore((s) => s.activeTabId);
   const previewFilePath = filePathProp ?? storePreviewFilePath;
   // Each instance owns its own reload nonce (keep-alive multi-tab preview —
   // see docs/2026-07-17-workspace-tabs-design.md) instead of reading a
@@ -121,6 +151,19 @@ export default function PreviewPanel({
   // App-fullscreen toggle (Task 6) — expands the panel to a fixed overlay
   // covering the whole window instead of just its column in RightPanel.
   const [isFullscreen, setIsFullscreen] = useState(false);
+
+  // "Select element" inspect mode (see docs/2026-07-19-preview-element-select-design.md).
+  // The iframe is cross-origin (loopback http://127.0.0.1 vs the app shell),
+  // so a ref is needed to reach its contentWindow for postMessage.
+  const iframeRef = useRef<HTMLIFrameElement>(null);
+  const [inspecting, setInspecting] = useState(false);
+  // Nonce minted each time inspect mode is armed — anti-replay/anti-cross-talk
+  // for the postMessage channel, not a secret (any script sharing the iframe's
+  // window can read it). Cleared to null on disarm.
+  const inspectNonceRef = useRef<string | null>(null);
+  // Gates the toggle button until the iframe has actually navigated once —
+  // toggling before `onLoad` would postMessage into a still-blank/previous doc.
+  const [iframeLoaded, setIframeLoaded] = useState(false);
 
   // Editable buffer for code/text/html/markdown (P2). `draft` is what
   // CodeMirror shows and edits; it's debounce-autosaved to disk below.
@@ -320,6 +363,113 @@ export default function PreviewPanel({
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
   }, [isFullscreen]);
+
+  // Disarm inspect mode: tell the page-side picker to go idle and clear the
+  // nonce. Safe to call when already disarmed (no-op postMessage) — every
+  // call site below (toggle-off, resets, successful pick) just calls this
+  // rather than tracking whether it's already off.
+  const disableInspect = useCallback(() => {
+    setInspecting(false);
+    inspectNonceRef.current = null;
+    if (!htmlPreviewUrl) return;
+    try {
+      const targetOrigin = new URL(htmlPreviewUrl).origin;
+      iframeRef.current?.contentWindow?.postMessage(
+        { type: 'abu-preview-inspect:set-enabled', enabled: false, nonce: null, labels: null },
+        targetOrigin,
+      );
+    } catch (err) {
+      console.warn('[PreviewPanel] Failed to disarm inspect mode:', err);
+    }
+  }, [htmlPreviewUrl]);
+
+  // Arm/disarm inspect mode. Mints a fresh nonce on arm (anti-replay/anti-
+  // cross-talk — see disableInspect's comment) and ships the labels/theme
+  // the page-side picker needs since it has no i18n or CSS token access of
+  // its own (same bridge pattern as the browser tab's picker).
+  const toggleInspect = useCallback(() => {
+    if (!iframeRef.current || !htmlPreviewUrl) return;
+    if (inspecting) {
+      disableInspect();
+      return;
+    }
+    const nonce = Date.now().toString(36) + Math.random().toString(36).substring(2, 8);
+    try {
+      const targetOrigin = new URL(htmlPreviewUrl).origin;
+      inspectNonceRef.current = nonce;
+      setInspecting(true);
+      iframeRef.current.contentWindow?.postMessage(
+        {
+          type: 'abu-preview-inspect:set-enabled',
+          enabled: true,
+          nonce,
+          labels: {
+            addToChat: t.reference.addToChat,
+            commentToChat: t.reference.commentToChat,
+            commentPlaceholder: t.reference.commentPlaceholder,
+            cancel: t.common.cancel,
+            shortcutModifier: isMacOS() ? '⌘' : 'Ctrl',
+            theme: resolveInspectTheme(),
+          },
+        },
+        targetOrigin,
+      );
+    } catch (err) {
+      console.warn('[PreviewPanel] Failed to arm inspect mode:', err);
+      setInspecting(false);
+      inspectNonceRef.current = null;
+    }
+  }, [inspecting, htmlPreviewUrl, disableInspect, t]);
+
+  // Listen for the picker's pick reply. Every gate (source/origin/type/nonce/
+  // size) is centralized in isValidInspectSelection so it's unit-testable
+  // without a real iframe — see src/utils/inspectMessage.ts.
+  useEffect(() => {
+    if (!htmlPreviewUrl) return;
+    let expectedOrigin: string;
+    try {
+      expectedOrigin = new URL(htmlPreviewUrl).origin;
+    } catch {
+      return;
+    }
+    const handleMessage = (e: MessageEvent) => {
+      const valid = isValidInspectSelection({
+        source: e.source,
+        origin: e.origin,
+        data: e.data,
+        expectedOrigin,
+        expectedSource: iframeRef.current?.contentWindow ?? null,
+        expectedNonce: inspectNonceRef.current,
+      });
+      if (!valid) return;
+      const payload = (e.data as { payload: BrowserElementPayload }).payload;
+      useChatStore.getState().addPendingReference(createDomElementReference(payload));
+      // Single-select: exit inspect mode after one pick.
+      disableInspect();
+    };
+    window.addEventListener('message', handleMessage);
+    return () => window.removeEventListener('message', handleMessage);
+  }, [htmlPreviewUrl, disableInspect]);
+
+  // Disarm on file switch / manual reload — a fresh document has a fresh
+  // (idle-by-default) picker instance, so any previously-armed state is stale.
+  useEffect(() => {
+    setIframeLoaded(false);
+    disableInspect();
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- disableInspect intentionally omitted: it depends on htmlPreviewUrl, which changes as a *result* of a file switch (after the async load completes), not the trigger; keying on it here would double-fire
+  }, [previewFilePath, reloadNonce]);
+
+  // Disarm when the surface backing inspect mode stops being visible: leaving
+  // preview for source view (no rendered DOM to pick from), or — for
+  // keep-alive multi-tab preview — this instance's tab is no longer the
+  // active one (a hidden background tab must never stay armed).
+  useEffect(() => {
+    if (!inspecting) return;
+    if (viewMode === 'source' || (embedded && tabId !== undefined && activeTabId !== tabId)) {
+      disableInspect();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- disableInspect intentionally omitted (see above)
+  }, [inspecting, viewMode, activeTabId, embedded, tabId]);
 
   // Debounced autosave: write the editable buffer to disk 1s after the user
   // stops typing. `selfEchoRef` is set right before the write so the fs-watch
@@ -559,6 +709,16 @@ export default function PreviewPanel({
             <Globe className="w-3 h-3 text-[var(--abu-text-tertiary)] shrink-0" strokeWidth={1.5} />
             <span className="truncate text-caption text-[var(--abu-text-secondary)]">{previewFilePath}</span>
           </div>
+          <Button
+            variant="ghost"
+            size="icon-xs"
+            disabled={!iframeLoaded}
+            onClick={toggleInspect}
+            className={cn(inspecting ? 'text-[var(--abu-clay)] bg-[var(--abu-clay-bg)]' : 'text-[var(--abu-text-tertiary)] hover:text-[var(--abu-clay)]')}
+            title={t.panel.selectElement}
+          >
+            <SquareDashedMousePointer className="w-3.5 h-3.5" strokeWidth={1.5} />
+          </Button>
         </div>
       )}
 
@@ -604,6 +764,7 @@ export default function PreviewPanel({
           viewMode === 'preview' ? (
             htmlPreviewUrl ? (
               <iframe
+                ref={iframeRef}
                 // Query-string nonce (not a `key` remount) forces the iframe to
                 // re-navigate on refresh: axum's Path extractor only matches the
                 // path portion of the URL (see src-tauri/src/preview_server.rs
@@ -615,6 +776,7 @@ export default function PreviewPanel({
                 title={fileName}
                 sandbox="allow-scripts allow-same-origin allow-forms allow-popups"
                 className="w-full h-full border-0 bg-white"
+                onLoad={() => setIframeLoaded(true)}
               />
             ) : (
               <LazyFallback />

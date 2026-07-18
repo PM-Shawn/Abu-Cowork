@@ -1378,6 +1378,7 @@ const zhCN: TranslationDict = {
     openInAppFailed: '无法用本地应用打开该文件',
     previewMode: '预览',
     reloadPreview: '刷新',
+    selectElement: '选择元素',
     sourceMode: '源码',
     unsupportedFileType: '此文件类型暂不支持预览',
     showInFinder: '在文件管理器中显示',

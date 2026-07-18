@@ -305,6 +305,28 @@ All form controls **MUST** use components from `src/components/ui/`. **Do NOT** 
 - Custom colors use hex literals in class strings (`bg-[#faf9f5]`, `text-[#29261b]`).
 - Custom CSS classes (`btn-ghost`, `btn-claude-primary`, `streaming-cursor`) defined in global CSS files.
 
+### 6.1 Font sizes — 8-token scale (MANDATORY)
+All font sizes go through the `--text-*` token scale defined in `src/styles/index.css`
+(`@theme` block). Each token binds font-size + line-height + font-weight (TRAE-style).
+**Never** hand-roll a size with `text-[Npx]`, and **do not** use Tailwind's default named
+sizes (`text-xs/sm/base/lg/xl/2xl/3xl`) — both are banned by ESLint (`no-restricted-syntax`).
+
+| Token | px / line-height / weight | Use |
+|---|---|---|
+| `text-caption` | 11 / 16 / 400 | badges, timestamps, minimal captions |
+| `text-minor` | 12 / 18 / 400 | secondary labels, helper text |
+| `text-body` | 13 / 20 / 400 | **reading default** — body, lists, most text (emphasis = add `font-medium`) |
+| `text-h-xs` | 13 / 20 / 600 | inline small headings, group headers |
+| `text-h-sm` | 16 / 24 / 600 | card / small modal titles |
+| `text-h-md` | 20 / 28 / 600 | page / modal titles |
+| `text-h-lg` | 22 / 30 / 600 | empty-state big titles |
+| `text-h-xl` | 24 / 32 / 600 | welcome / hero |
+
+Heading weight caps at **600** (`font-semibold`) — never `font-bold`/`font-[700]` on a
+heading. Colors are a separate concern: keep using `text-[var(--abu-text-*)]` for neutral
+text (`--abu-text-muted` is AA-compliant as of 2026-07). Link/status colors are still raw
+Tailwind (`text-blue/red/green/amber-*`) pending tokenization — leave them until that pass.
+
 ### 7. Core Module Patterns
 - **Interface-first design**: Define interfaces before implementations (e.g. `LLMAdapter` interface → `ClaudeAdapter` / `OpenAICompatibleAdapter`).
 - **Custom error classes** with classification (`LLMError` with `code`, `retryable`, `retryAfterMs`).

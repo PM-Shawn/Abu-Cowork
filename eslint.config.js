@@ -39,6 +39,30 @@ export default defineConfig([
       'react-hooks/set-state-in-effect': 'off',
       'react-hooks/purity': 'off',
       'react-hooks/static-components': 'off',
+      // Typography guardrail — enforce the 8-token font-size scale (index.css
+      // `--text-*`). Ban arbitrary `text-[Npx]` and Tailwind default named
+      // sizes so the whole app stays on one scale. Both are at zero after the
+      // 2026-07 migration; this keeps them there. Use text-caption/minor/body
+      // /h-xs/h-sm/h-md/h-lg/h-xl. (Colors are intentionally NOT covered yet —
+      // link/status colors are still raw Tailwind, a separate follow-up.)
+      'no-restricted-syntax': ['error',
+        {
+          selector: 'Literal[value=/text-\\[[0-9.]+px\\]/]',
+          message: 'Use a font-size token (text-caption/minor/body/h-xs..h-xl) instead of an arbitrary text-[Npx] class.',
+        },
+        {
+          selector: 'TemplateElement[value.raw=/text-\\[[0-9.]+px\\]/]',
+          message: 'Use a font-size token instead of an arbitrary text-[Npx] class (template literal).',
+        },
+        {
+          selector: 'Literal[value=/\\btext-(xs|sm|base|lg|xl|2xl|3xl)\\b/]',
+          message: 'Use a font-size token (text-minor/body/h-*) instead of Tailwind named sizes. One scale only.',
+        },
+        {
+          selector: 'TemplateElement[value.raw=/\\btext-(xs|sm|base|lg|xl|2xl|3xl)\\b/]',
+          message: 'Use a font-size token instead of Tailwind named sizes (template literal).',
+        },
+      ],
     },
   },
 ])

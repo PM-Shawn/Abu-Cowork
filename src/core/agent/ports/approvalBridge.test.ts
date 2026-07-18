@@ -43,7 +43,7 @@ afterEach(() => {
 });
 
 const COMMAND_PAYLOAD: ApprovalPayloadMap['command'] = {
-  info: { command: 'rm -rf /tmp/x', cwd: '/tmp', reason: 'test' } as ApprovalPayloadMap['command']['info'],
+  info: { command: 'rm -rf /tmp/x', level: 'warn', reason: 'test' },
 };
 
 const FILE_PAYLOAD = (path: string): ApprovalPayloadMap['file-permission'] => ({

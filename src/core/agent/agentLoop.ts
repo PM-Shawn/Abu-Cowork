@@ -6,9 +6,10 @@ import { ClaudeAdapter } from '../llm/claude';
 import { OpenAICompatibleAdapter } from '../llm/openai-compatible';
 import { getAllTools, type ConfirmationInfo, type FilePermissionCallback } from '../tools/registry';
 import type { ToolDefinition } from '../../types';
-import { useChatStore, flushTokenBuffer } from '../../stores/chatStore';
+import { useChatStore } from '../../stores/chatStore';
 import { getEffectiveModel, getActiveApiKey, getActiveProvider, resolveAgentModel, providerRequiresApiKey } from '../../stores/settingsStore';
 import { getSettingsReader, type SettingsReader } from './ports/settingsReader';
+import { getChatDelta } from './ports/chatDelta';
 import { useDiscoveredCapsStore } from '../../stores/discoveredCapabilitiesStore';
 import { useWorkspaceStore } from '../../stores/workspaceStore';
 import { useTaskExecutionStore } from '../../stores/taskExecutionStore';
@@ -554,13 +555,7 @@ function deactivateAllSkills(conversationId: string): void {
   const conv = useChatStore.getState().conversations[conversationId];
   if (!conv?.activeSkills || conv.activeSkills.length === 0) return;
 
-  useChatStore.setState((draft: { conversations: Record<string, import('@/types').Conversation> }) => {
-    const c = draft.conversations[conversationId];
-    if (c) {
-      c.activeSkills = [];
-      c.activeSkillArgs = {};
-    }
-  });
+  getChatDelta().deactivateSkills(conversationId);
 
   // Clean up skill-scoped hooks
   clearAllSkillHooks();
@@ -744,6 +739,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
   clearPlanMode(conversationId);
 
   const chatStore = useChatStore.getState();
+  const chatDelta = getChatDelta();
   const settings = settingsReader.getSnapshot();
   const taskExecutionStore = useTaskExecutionStore.getState();
 
@@ -1004,7 +1000,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
         subagentCleanup();
         chatStore.removeActiveAgent(delegateAgent.name);
         chatStore.setAgentStatus('idle');
-        chatStore.cancelStreaming(conversationId);
+        chatDelta.cancelStreaming(conversationId);
         chatStore.clearAbortController(conversationId);
         taskExecutionStore.cancelExecution(execution.id);
         chatStore.setConversationStatus(conversationId, 'idle');
@@ -1034,7 +1030,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
       // either clobber the user message (when the file already has user line)
       // or duplicate the assistant message (when the user line was still in
       // the queue) — leaving the user bubble missing after reload.
-      chatStore.finishStreaming(conversationId, delegateAssistantId);
+      chatDelta.finishStreaming(conversationId, delegateAssistantId);
       chatStore.clearAbortController(conversationId);
       eventRouter.route({ type: 'done', loopId, reason: 'delegate_complete' });
       persistExecutionSnapshot(conversationId, loopId);
@@ -1057,7 +1053,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
           || abortController.signal.aborted
           || (err instanceof LLMError && err.code === 'cancelled'));
       if (isUserAbort) {
-        chatStore.cancelStreaming(conversationId);
+        chatDelta.cancelStreaming(conversationId);
         chatStore.clearAbortController(conversationId);
         taskExecutionStore.cancelExecution(execution.id);
         chatStore.setConversationStatus(conversationId, 'idle');
@@ -1081,7 +1077,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
         timestamp: Date.now(),
         loopId,
       });
-      chatStore.finishStreaming(conversationId, delegateErrorId);
+      chatDelta.finishStreaming(conversationId, delegateErrorId);
       chatStore.clearAbortController(conversationId);
       eventRouter.route({ type: 'error', loopId, error: errorMessage });
       persistExecutionSnapshot(conversationId, loopId);
@@ -1160,7 +1156,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
   while (continueLoop) {
     // Check if cancelled before starting new turn
     if (abortController.signal.aborted) {
-      chatStore.cancelStreaming(conversationId);
+      chatDelta.cancelStreaming(conversationId);
       chatStore.clearAbortController(conversationId);
       taskExecutionStore.cancelExecution(execution.id);
       deactivateAllSkills(conversationId);
@@ -1224,7 +1220,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
         timestamp: Date.now(),
         loopId,
       });
-      chatStore.finishStreaming(conversationId, maxTurnsMsgId);
+      chatDelta.finishStreaming(conversationId, maxTurnsMsgId);
       chatStore.clearAbortController(conversationId);
       eventRouter.route({ type: 'done', loopId, reason: 'max_turns' });
       persistExecutionSnapshot(conversationId, loopId);
@@ -1695,11 +1691,11 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
                 const thinkingStartTime = useChatStore.getState().thinkingStartTime;
                 if (thinkingStartTime) {
                   const thinkingDuration = Math.max(1, Math.round((thinkingEndTime - thinkingStartTime) / 1000));
-                  useChatStore.getState().updateMessageThinkingDuration(conversationId, thinkingDuration, assistantMsgId);
+                  chatDelta.setThinkingDuration(conversationId, thinkingDuration, assistantMsgId);
                 }
               }
               chatStore.setAgentStatus('streaming');
-              chatStore.appendToLastMessage(conversationId, event.text, assistantMsgId);
+              chatDelta.appendText(conversationId, event.text, assistantMsgId);
               // Periodic disk flush for crash safety — must look up by id, not "last",
               // because the user may have sent another message mid-stream.
               if (Date.now() - lastStreamFlushTime > STREAM_FLUSH_INTERVAL) {
@@ -1716,12 +1712,12 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
 
             case 'thinking':
               collectedThinking += event.thinking;
-              useChatStore.getState().updateMessageThinking(conversationId, collectedThinking, assistantMsgId);
+              chatDelta.appendThinking(conversationId, collectedThinking, assistantMsgId);
               break;
 
             case 'tool_use': {
               // Flush any buffered streaming tokens before processing tool calls
-              flushTokenBuffer(conversationId);
+              chatDelta.flushTokens(conversationId);
               // Record thinking end time when we transition from thinking to tool-calling
               // and immediately push thinkingDuration so the UI's thinking step flips to
               // completed (same reason as the 'text' branch above).
@@ -1730,7 +1726,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
                 const thinkingStartTime = useChatStore.getState().thinkingStartTime;
                 if (thinkingStartTime) {
                   const thinkingDuration = Math.max(1, Math.round((thinkingEndTime - thinkingStartTime) / 1000));
-                  useChatStore.getState().updateMessageThinkingDuration(conversationId, thinkingDuration, assistantMsgId);
+                  chatDelta.setThinkingDuration(conversationId, thinkingDuration, assistantMsgId);
                 }
               }
 
@@ -1802,7 +1798,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
                 const thinkingStartTime = useChatStore.getState().thinkingStartTime;
                 if (thinkingStartTime) {
                   const thinkingDuration = Math.round((thinkingEndTime - thinkingStartTime) / 1000);
-                  useChatStore.getState().updateMessageThinkingDuration(conversationId, thinkingDuration, assistantMsgId);
+                  chatDelta.setThinkingDuration(conversationId, thinkingDuration, assistantMsgId);
                 }
               }
               // Track stop reason for max_tokens recovery
@@ -1831,7 +1827,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
               break;
 
             case 'error':
-              chatStore.appendToLastMessage(conversationId, `\n\n**Error:** ${event.error}`, assistantMsgId);
+              chatDelta.appendText(conversationId, `\n\n**Error:** ${event.error}`, assistantMsgId);
               break;
           }
         };
@@ -1857,8 +1853,8 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
             // Clear any partial content written before the stream failed so
             // the retry starts with a clean message instead of appending to
             // a truncated or corrupted response.
-            flushTokenBuffer(conversationId, assistantMsgId);
-            chatStore.setLastMessageContent(conversationId, '', assistantMsgId);
+            chatDelta.flushTokens(conversationId, assistantMsgId);
+            chatDelta.setLastMessageContent(conversationId, '', assistantMsgId);
           }
         );
       } catch (retryErr) {
@@ -1885,7 +1881,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
             }
           }
 
-          chatStore.appendToLastMessage(
+          chatDelta.appendText(
             conversationId,
             getI18n().chat.compactingInlineNotice,
             assistantMsgId
@@ -2133,7 +2129,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
             attempts: MAX_OUTPUT_TOKENS_RECOVERY_LIMIT,
             finalMaxTokens: maxOutputTokens,
           });
-          chatStore.appendToLastMessage(
+          chatDelta.appendText(
             conversationId,
             format(getI18n().chat.outputLimitError, { limit: MAX_OUTPUT_TOKENS_RECOVERY_LIMIT }),
             assistantMsgId
@@ -2167,13 +2163,8 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
         // Flush any buffered tokens and finalize the previous assistant message
         // (toolExecutor normally does this between tool_use turns; we have to do it
         // ourselves on the no-tool path).
-        flushTokenBuffer(conversationId, assistantMsgId);
-        useChatStore.setState((state) => {
-          const msg = state.conversations[conversationId]?.messages.find(
-            (m) => m.id === assistantMsgId
-          );
-          if (msg) msg.isStreaming = false;
-        });
+        chatDelta.flushTokens(conversationId, assistantMsgId);
+        chatDelta.setMessageStreamingFlag(conversationId, assistantMsgId, false);
         continueLoop = true;
         // A new user directive is a fresh start: restore the full no-progress
         // tolerance budget so the rescue actually buys the intended retries, not
@@ -2186,13 +2177,13 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
         // doesn't mistake a degenerate stop for a finished answer (mirrors the
         // max_tokens-exhausted marker above).
         if (noProgressAborted) {
-          chatStore.appendToLastMessage(
+          chatDelta.appendText(
             conversationId,
             `\n\n${getI18n().chat.noProgressStopped}`,
             assistantMsgId,
           );
         }
-        chatStore.finishStreaming(conversationId, assistantMsgId);
+        chatDelta.finishStreaming(conversationId, assistantMsgId);
         chatStore.clearAbortController(conversationId);
         const endReason = noProgressAborted
           ? 'no_progress'
@@ -2299,7 +2290,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
 
         // Flush partial streamed text into the message first — on this path the
         // RAF-batched token buffer may still hold everything streamed so far.
-        flushTokenBuffer(conversationId, assistantMsgId);
+        chatDelta.flushTokens(conversationId, assistantMsgId);
 
         // Backfill missing tool results for interrupted tool calls.
         // Without this, orphaned tool_use blocks cause API 400 errors on the next turn.
@@ -2368,7 +2359,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
           }
         }
 
-        chatStore.cancelStreaming(conversationId);
+        chatDelta.cancelStreaming(conversationId);
         chatStore.clearAbortController(conversationId);
         // Cancel the TaskExecution
         taskExecutionStore.cancelExecution(execution.id);
@@ -2436,12 +2427,12 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
         displayError += `\n\n${getI18n().chat.errorNotFoundHint}`;
       }
 
-      chatStore.appendToLastMessage(
+      chatDelta.appendText(
         conversationId,
         `\n\n**Error:** ${displayError}`,
         assistantMsgId
       );
-      chatStore.finishStreaming(conversationId, assistantMsgId);
+      chatDelta.finishStreaming(conversationId, assistantMsgId);
       chatStore.clearAbortController(conversationId);
       // Error the TaskExecution
       eventRouter.route({ type: 'error', loopId, error: errorMessage });

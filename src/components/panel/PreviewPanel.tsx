@@ -570,7 +570,7 @@ export default function PreviewPanel({
           </div>
         ) : error ? (
           <div className="flex flex-col items-center justify-center h-full p-4 text-center">
-            <p className="text-body text-red-500">{error}</p>
+            <p className="text-body text-[var(--abu-danger)]">{error}</p>
           </div>
         ) : rendererType === 'pdf' || rendererType === 'docx' || rendererType === 'pptx' || rendererType === 'xlsx' || (rendererType === 'csv' && content !== null) ? (
           <Suspense fallback={<LazyFallback />}>

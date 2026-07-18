@@ -236,7 +236,7 @@ export function ImageGenBackendsPanel({ onEdit }: { onEdit: (backend: ImageGenBa
                   title={t.settings.imageGenSetDefault}
                   className={cn(
                     'shrink-0 p-0.5 rounded transition-colors',
-                    isDefault ? 'text-amber-500' : 'text-[var(--abu-text-muted)] hover:text-amber-500',
+                    isDefault ? 'text-[var(--abu-warning)]' : 'text-[var(--abu-text-muted)] hover:text-[var(--abu-warning)]',
                   )}
                 >
                   <Star className={cn('h-4 w-4', isDefault && 'fill-current')} />
@@ -245,7 +245,7 @@ export function ImageGenBackendsPanel({ onEdit }: { onEdit: (backend: ImageGenBa
                   <div className="flex items-center gap-2">
                     <span className="text-body text-[var(--abu-text-primary)] truncate">{backend.name}</span>
                     {isDefault && (
-                      <span className="shrink-0 text-caption px-1.5 py-0.5 rounded bg-amber-50 dark:bg-amber-900/20 text-amber-700 dark:text-amber-400">
+                      <span className="shrink-0 text-caption px-1.5 py-0.5 rounded bg-[var(--abu-warning-bg)] text-[var(--abu-warning)]">
                         {t.settings.imageGenDefaultBadge}
                       </span>
                     )}
@@ -261,7 +261,7 @@ export function ImageGenBackendsPanel({ onEdit }: { onEdit: (backend: ImageGenBa
                   variant="ghost"
                   size="icon-xs"
                   onClick={() => setDeleteTarget(backend)}
-                  className="text-red-600 hover:text-red-700 hover:bg-red-50"
+                  className="text-[var(--abu-danger)] hover:text-[var(--abu-danger)] hover:bg-[var(--abu-danger-bg)]"
                   title={t.common.delete}
                 >
                   <Trash2 className="h-3.5 w-3.5" />

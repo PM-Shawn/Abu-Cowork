@@ -23,10 +23,10 @@ interface PersonalMemoryProps {
 type MemoryViewModalProps = ProjectMemoryProps | PersonalMemoryProps;
 
 const TYPE_COLORS: Record<MemoryType, string> = {
-  user: 'bg-orange-100 text-orange-700 dark:bg-orange-400/15 dark:text-orange-300',
+  user: 'bg-[var(--abu-clay-bg)] text-[var(--abu-clay)]',
   project: 'bg-purple-100 text-purple-700 dark:bg-purple-400/15 dark:text-purple-300',
   feedback: 'bg-teal-100 text-teal-700 dark:bg-teal-400/15 dark:text-teal-300',
-  reference: 'bg-blue-100 text-blue-700 dark:bg-blue-400/15 dark:text-blue-300',
+  reference: 'bg-[var(--abu-info-bg)] text-[var(--abu-info)]',
 };
 
 function getTypeLabel(type: MemoryType, t: ReturnType<typeof useI18n>['t']): string {
@@ -216,7 +216,7 @@ export default function MemoryViewModal(props: MemoryViewModalProps) {
                       <div className="flex justify-end mt-2">
                         <button
                           onClick={(e) => { e.stopPropagation(); setDeleteTarget(header); }}
-                          className="p-1 rounded text-[var(--abu-text-placeholder)] hover:text-red-500 hover:bg-red-50 transition-colors"
+                          className="p-1 rounded text-[var(--abu-text-placeholder)] hover:text-[var(--abu-danger)] hover:bg-[var(--abu-danger-bg)] transition-colors"
                         >
                           <Trash2 className="h-3.5 w-3.5" />
                         </button>
@@ -238,7 +238,7 @@ export default function MemoryViewModal(props: MemoryViewModalProps) {
             {headers.length > 0 && (
               <button
                 onClick={() => setShowClearConfirm(true)}
-                className="px-4 py-2.5 rounded-lg text-body font-medium text-red-500 hover:bg-red-50 transition-colors"
+                className="px-4 py-2.5 rounded-lg text-body font-medium text-[var(--abu-danger)] hover:bg-[var(--abu-danger-bg)] transition-colors"
               >
                 {t.panel.memoryClear}
               </button>

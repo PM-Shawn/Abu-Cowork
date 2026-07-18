@@ -653,7 +653,7 @@ export default function WorkspaceFileTree() {
               <div className="flex items-center gap-2">
                 <button
                   onClick={() => handleDeleteConfirmed(contextMenu.entry)}
-                  className="px-2.5 py-1 rounded text-minor font-medium bg-red-500/10 text-red-500 hover:bg-red-500/20"
+                  className="px-2.5 py-1 rounded text-minor font-medium bg-[var(--abu-danger-bg)] text-[var(--abu-danger)] hover:bg-[var(--abu-danger-bg)]"
                 >
                   {t.panel.fileTree.moveToTrash}
                 </button>
@@ -712,7 +712,7 @@ export default function WorkspaceFileTree() {
               <div className="my-1 border-t border-[var(--abu-border)]" />
               <button
                 onClick={(e) => { e.stopPropagation(); setConfirmingDelete(true); }}
-                className="w-full flex items-center gap-2 px-3 py-1.5 text-minor text-red-500 hover:bg-[var(--abu-bg-hover)]"
+                className="w-full flex items-center gap-2 px-3 py-1.5 text-minor text-[var(--abu-danger)] hover:bg-[var(--abu-bg-hover)]"
               >
                 <Trash2 className="h-3.5 w-3.5 shrink-0" /> {t.panel.fileTree.delete}
               </button>

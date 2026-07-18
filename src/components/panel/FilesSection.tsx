@@ -84,8 +84,8 @@ function FileCard({ file, conversationId, operationLabels, previewTitle, finderT
       tabIndex={0}
       className={cn(
         'group flex items-center gap-2 px-2 py-1.5 rounded-md bg-[var(--abu-bg-base)] hover:bg-[var(--abu-bg-muted)] transition-colors cursor-pointer',
-        file.operation === 'write' && 'ring-1 ring-amber-500/30',
-        file.operation === 'create' && 'ring-1 ring-green-500/30',
+        file.operation === 'write' && 'ring-1 ring-[var(--abu-warning-bg)]',
+        file.operation === 'create' && 'ring-1 ring-[var(--abu-success-bg)]',
         isUnavailable && 'opacity-60'
       )}
       title={isUnavailable ? `${fileMissingTitle}: ${file.path}` : `${previewTitle}: ${file.path}`}
@@ -104,9 +104,9 @@ function FileCard({ file, conversationId, operationLabels, previewTitle, finderT
       <span
         className={cn(
           'text-caption px-1 py-0.5 rounded font-medium',
-          file.operation === 'read' && 'bg-blue-500/15 text-blue-600',
-          file.operation === 'write' && 'bg-amber-500/15 text-amber-600',
-          file.operation === 'create' && 'bg-green-500/15 text-green-600'
+          file.operation === 'read' && 'bg-[var(--abu-info-bg)] text-[var(--abu-info)]',
+          file.operation === 'write' && 'bg-[var(--abu-warning-bg)] text-[var(--abu-warning)]',
+          file.operation === 'create' && 'bg-[var(--abu-success-bg)] text-[var(--abu-success)]'
         )}
       >
         {operationLabels[file.operation]}

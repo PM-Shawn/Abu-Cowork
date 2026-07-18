@@ -22,7 +22,7 @@ function renderSetupHint(text: string) {
       <a
         key={i}
         onClick={(e) => { e.preventDefault(); open(part); }}
-        className="underline text-amber-800 hover:text-amber-900 cursor-pointer break-all"
+        className="underline text-[var(--abu-warning)] hover:text-[var(--abu-warning)] cursor-pointer break-all"
       >
         {part}
       </a>
@@ -419,10 +419,10 @@ export default function MCPSection({ showAddForm: externalShowAddForm, onAddForm
   const statusDotClass = (entry: MCPServerEntry) => {
     const { status } = entry;
     const isConn = connectingServer === entry.config.name;
-    if (status === 'reconnecting') return 'bg-orange-400 animate-pulse';
-    if (isConn || status === 'connecting') return 'bg-amber-400 animate-pulse';
-    if (status === 'connected') return 'bg-green-500';
-    if (status === 'error') return 'bg-red-400';
+    if (status === 'reconnecting') return 'bg-[var(--abu-warning-solid)] animate-pulse';
+    if (isConn || status === 'connecting') return 'bg-[var(--abu-warning-solid)] animate-pulse';
+    if (status === 'connected') return 'bg-[var(--abu-success-solid)]';
+    if (status === 'error') return 'bg-[var(--abu-danger-solid)]';
     return 'bg-[var(--abu-text-placeholder)]';
   };
 
@@ -512,7 +512,7 @@ export default function MCPSection({ showAddForm: externalShowAddForm, onAddForm
               <span className="inline-flex items-center gap-2">
                 {pickLocale(locale, selectedTemplate.name, selectedTemplate.nameEn)}
                 {selectedTemplate.transport === 'http' && (
-                  <span className="px-1.5 py-0.5 rounded text-caption font-medium bg-blue-50 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400">HTTP</span>
+                  <span className="px-1.5 py-0.5 rounded text-caption font-medium bg-[var(--abu-info-bg)] text-[var(--abu-info)]">HTTP</span>
                 )}
               </span>
             )
@@ -603,7 +603,7 @@ export default function MCPSection({ showAddForm: externalShowAddForm, onAddForm
                     className="w-full px-3 py-2 rounded-lg border border-[var(--abu-border)] text-minor text-[var(--abu-text-primary)] bg-[var(--abu-bg-base)] focus:outline-none focus:ring-2 focus:ring-[var(--abu-clay-ring)] focus:border-[var(--abu-clay)] transition-all font-mono resize-none"
                   />
                   <p className="text-caption text-[var(--abu-text-muted)] mt-1.5">{t.toolbox.jsonConfigHint}</p>
-                  {jsonError && <p className="text-minor text-red-500 mt-1">{jsonError}</p>}
+                  {jsonError && <p className="text-minor text-[var(--abu-danger)] mt-1">{jsonError}</p>}
                 </div>
               </div>
             ) : (
@@ -701,10 +701,10 @@ function serverStatusMeta(
     : isConnected ? t.toolbox.connected
     : status === 'error' ? 'Error'
     : t.toolbox.disconnected;
-  const statusColor = isReconnecting ? 'text-orange-500'
-    : isConnecting ? 'text-amber-500'
-    : isConnected ? 'text-green-600'
-    : status === 'error' ? 'text-red-500'
+  const statusColor = isReconnecting ? 'text-[var(--abu-warning)]'
+    : isConnecting ? 'text-[var(--abu-warning)]'
+    : isConnected ? 'text-[var(--abu-success)]'
+    : status === 'error' ? 'text-[var(--abu-danger)]'
     : 'text-[var(--abu-text-muted)]';
   return { isConnected, isConnecting, isTesting, statusLabel, statusColor };
 }
@@ -734,16 +734,16 @@ function ServerHeaderActions({
         <Pencil className="h-4 w-4" />
       </button>
       <button onClick={onTestConnection} disabled={isTesting || isConnecting}
-        className="p-1.5 rounded-lg text-[var(--abu-text-muted)] hover:text-blue-600 hover:bg-blue-50 transition-colors disabled:opacity-50" title={t.toolbox.testConnection}>
+        className="p-1.5 rounded-lg text-[var(--abu-text-muted)] hover:text-[var(--abu-info)] hover:bg-[var(--abu-info-bg)] transition-colors disabled:opacity-50" title={t.toolbox.testConnection}>
         {isTesting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Zap className="h-4 w-4" />}
       </button>
       <button onClick={onToggleConnection} disabled={isConnecting}
         className={cn('p-1.5 rounded-lg transition-colors',
-          isConnecting ? 'text-amber-500 cursor-wait' : isConnected ? 'text-green-600 hover:text-green-700 hover:bg-green-50' : 'text-[var(--abu-text-muted)] hover:text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-muted)]'
+          isConnecting ? 'text-[var(--abu-warning)] cursor-wait' : isConnected ? 'text-[var(--abu-success)] hover:text-[var(--abu-success)] hover:bg-[var(--abu-success-bg)]' : 'text-[var(--abu-text-muted)] hover:text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-muted)]'
         )} title={isConnecting ? t.toolbox.connecting : isConnected ? t.toolbox.disconnect : t.toolbox.connect}>
         {isConnecting ? <Loader2 className="h-4 w-4 animate-spin" /> : isConnected ? <PlugZap className="h-4 w-4" /> : <Plug className="h-4 w-4" />}
       </button>
-      <button onClick={onRemove} className="p-1.5 rounded-lg text-[var(--abu-text-muted)] hover:text-red-500 hover:bg-red-50 transition-colors">
+      <button onClick={onRemove} className="p-1.5 rounded-lg text-[var(--abu-text-muted)] hover:text-[var(--abu-danger)] hover:bg-[var(--abu-danger-bg)] transition-colors">
         <Trash2 className="h-4 w-4" />
       </button>
     </>
@@ -774,16 +774,16 @@ function ServerDetail({
     <>
       {/* Error */}
       {error && (
-        <div className="mb-4 p-3 rounded-lg bg-red-50 border border-red-200 flex items-start gap-2">
-          <AlertCircle className="h-4 w-4 text-red-500 shrink-0 mt-0.5" />
-          <p className="text-minor text-red-600 break-words">{error}</p>
+        <div className="mb-4 p-3 rounded-lg bg-[var(--abu-danger-bg)] border border-[var(--abu-danger)] flex items-start gap-2">
+          <AlertCircle className="h-4 w-4 text-[var(--abu-danger)] shrink-0 mt-0.5" />
+          <p className="text-minor text-[var(--abu-danger)] break-words">{error}</p>
         </div>
       )}
 
       {/* Test result */}
       {testResult && (
         <div className={cn('mb-4 px-3 py-2 text-minor rounded-lg flex items-center gap-1.5',
-          testResult.success ? 'bg-green-50 text-green-700 border border-green-200' : 'bg-red-50 text-red-600 border border-red-200'
+          testResult.success ? 'bg-[var(--abu-success-bg)] text-[var(--abu-success)] border border-[var(--abu-success)]' : 'bg-[var(--abu-danger-bg)] text-[var(--abu-danger)] border border-[var(--abu-danger)]'
         )}>
           {testResult.success ? <Check className="h-3.5 w-3.5" /> : <AlertCircle className="h-3.5 w-3.5" />}
           {testResult.message}
@@ -852,8 +852,8 @@ function TemplateDetail({
 
       {/* Setup hint */}
       {hasSetupHint && (
-        <div className="mb-5 p-3 rounded-lg bg-amber-50 border border-amber-200/60">
-          <p className="text-minor text-amber-700 leading-relaxed whitespace-pre-wrap break-words">
+        <div className="mb-5 p-3 rounded-lg bg-[var(--abu-warning-bg)] border border-[var(--abu-warning)]">
+          <p className="text-minor text-[var(--abu-warning)] leading-relaxed whitespace-pre-wrap break-words">
             {renderSetupHint(pickLocale(locale, template.setupHint!, template.setupHintEn))}
           </p>
         </div>
@@ -914,8 +914,8 @@ function ServerLogsPanel({ serverName }: { serverName: string }) {
             {new Date(log.timestamp).toLocaleTimeString()}
           </span>
           <span className={cn(
-            log.level === 'error' ? 'text-red-400' :
-            log.level === 'warn' ? 'text-amber-400' : 'text-neutral-300'
+            log.level === 'error' ? 'text-[var(--abu-danger-solid)]' :
+            log.level === 'warn' ? 'text-[var(--abu-warning-solid)]' : 'text-neutral-300'
           )}>
             {log.message}
           </span>

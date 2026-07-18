@@ -49,9 +49,9 @@ export default function TodoItem({ todo, onToggle, onDelete, onClick }: TodoItem
       {priorityLabel && (
         <span className={cn(
           'shrink-0 text-caption px-1.5 py-0.5 rounded',
-          todo.priority === 'high' ? 'bg-red-100 dark:bg-red-900/30 text-red-700 dark:text-red-400'
+          todo.priority === 'high' ? 'bg-[var(--abu-danger-bg)] text-[var(--abu-danger)]'
             : todo.priority === 'low' ? 'bg-gray-100 dark:bg-[var(--abu-bg-muted)] text-gray-600 dark:text-[var(--abu-text-secondary)]'
-            : 'bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-400',
+            : 'bg-[var(--abu-warning-bg)] text-[var(--abu-warning)]',
         )}>
           {priorityLabel}
         </span>
@@ -63,7 +63,7 @@ export default function TodoItem({ todo, onToggle, onDelete, onClick }: TodoItem
       )}
       <button
         onClick={(e) => { e.stopPropagation(); onDelete(); }}
-        className="opacity-0 group-hover:opacity-100 p-1 text-[var(--abu-text-tertiary)] hover:text-red-500 shrink-0"
+        className="opacity-0 group-hover:opacity-100 p-1 text-[var(--abu-text-tertiary)] hover:text-[var(--abu-danger)] shrink-0"
         aria-label="delete"
       >
         <Trash2 className="h-3.5 w-3.5" />

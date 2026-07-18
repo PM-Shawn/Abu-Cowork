@@ -12,7 +12,7 @@ export default function EnterpriseStatusBadge() {
   return (
     <div className={[
       'inline-flex items-center gap-2 px-2 py-1 rounded text-caption',
-      mode.kind === 'offline' ? 'bg-amber-500/20 text-amber-300' : 'bg-orange-500/15 text-orange-400',
+      mode.kind === 'offline' ? 'bg-[var(--abu-warning-bg)] text-[var(--abu-warning)]' : 'bg-[var(--abu-clay-bg-15)] text-[var(--abu-clay)]',
     ].join(' ')}>
       <MountPoint slot="brandSlot" binding={binding} config={config} size="sm" />
       {mode.kind === 'offline' && <span>{t.enterprise.offlineBadge}</span>}

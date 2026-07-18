@@ -764,7 +764,7 @@ export default function ChatView() {
               a real status, so it never stacks with AgentStatusStrip. */}
           {resuming && agentStatus === 'idle' && (
             <div className="flex items-center gap-2 px-3 py-1.5 text-minor text-[var(--abu-text-tertiary)]">
-              <Check className="h-3.5 w-3.5 shrink-0 text-emerald-500" />
+              <Check className="h-3.5 w-3.5 shrink-0 text-[var(--abu-success)]" />
               <span className="truncate">{t.chat.resuming}</span>
             </div>
           )}

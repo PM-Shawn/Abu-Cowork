@@ -236,7 +236,7 @@ export default function EnterpriseLoginPage({ serverUrl, bootstrap, onSuccess, o
               className={cn(
                 'px-3 py-1.5 text-minor rounded-t transition-colors',
                 activeMethod === method
-                  ? 'text-white border-b-2 border-blue-500 -mb-px'
+                  ? 'text-white border-b-2 border-[var(--abu-info)] -mb-px'
                   : 'text-neutral-400 hover:text-neutral-200',
               )}
             >

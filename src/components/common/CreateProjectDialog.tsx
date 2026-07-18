@@ -308,7 +308,7 @@ export default function CreateProjectDialog({
                     </div>
                   )}
                   {conflictProject && (
-                    <div className="px-3 py-2 rounded-lg bg-red-50 text-body text-red-600">
+                    <div className="px-3 py-2 rounded-lg bg-[var(--abu-danger-bg)] text-body text-[var(--abu-danger)]">
                       ✗ {t.project.folderConflict.replace('{name}', conflictProject)}
                     </div>
                   )}

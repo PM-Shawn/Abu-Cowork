@@ -10,18 +10,18 @@ import type { AnnouncementItem } from '@/utils/consoleAnnouncement'
 const TYPE_STYLE: Record<string, { label: (t: ReturnType<typeof useI18n>['t']) => string; accent: string; border: string }> = {
   version_update: {
     label: (t) => t.announcement.typeVersionUpdate,
-    accent: 'text-blue-400',
-    border: 'border-blue-500/30',
+    accent: 'text-[var(--abu-info)]',
+    border: 'border-[var(--abu-info)]',
   },
   feature: {
     label: (t) => t.announcement.typeFeature,
-    accent: 'text-emerald-400',
-    border: 'border-emerald-500/30',
+    accent: 'text-[var(--abu-success)]',
+    border: 'border-[var(--abu-success)]',
   },
   breaking: {
     label: (t) => t.announcement.typeBreaking,
-    accent: 'text-red-400',
-    border: 'border-red-500/30',
+    accent: 'text-[var(--abu-danger)]',
+    border: 'border-[var(--abu-danger)]',
   },
   general: {
     label: (t) => t.announcement.typeGeneral,

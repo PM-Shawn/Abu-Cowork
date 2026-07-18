@@ -40,10 +40,10 @@ export default function DetailBlockView({ block, onToggle, onLoadMore }: DetailB
     switch (block.type) {
       case 'error':
         return {
-          labelBg: 'bg-red-100',
-          labelText: 'text-red-600',
-          contentBg: 'bg-red-50',
-          borderColor: 'border-red-200',
+          labelBg: 'bg-[var(--abu-danger-bg)]',
+          labelText: 'text-[var(--abu-danger)]',
+          contentBg: 'bg-[var(--abu-danger-bg)]',
+          borderColor: 'border-[var(--abu-danger)]',
         };
       case 'script':
         return {
@@ -54,10 +54,10 @@ export default function DetailBlockView({ block, onToggle, onLoadMore }: DetailB
         };
       case 'list':
         return {
-          labelBg: 'bg-blue-50',
-          labelText: 'text-blue-600',
-          contentBg: 'bg-blue-50/50',
-          borderColor: 'border-blue-100',
+          labelBg: 'bg-[var(--abu-info-bg)]',
+          labelText: 'text-[var(--abu-info)]',
+          contentBg: 'bg-[var(--abu-info-bg)]',
+          borderColor: 'border-[var(--abu-info)]',
         };
       case 'json':
         return {
@@ -68,10 +68,10 @@ export default function DetailBlockView({ block, onToggle, onLoadMore }: DetailB
         };
       case 'image':
         return {
-          labelBg: 'bg-emerald-50',
-          labelText: 'text-emerald-600',
+          labelBg: 'bg-[var(--abu-success-bg)]',
+          labelText: 'text-[var(--abu-success)]',
           contentBg: 'bg-[var(--abu-bg-base)]',
-          borderColor: 'border-emerald-100',
+          borderColor: 'border-[var(--abu-success)]',
         };
       default:
         return {
@@ -112,7 +112,7 @@ export default function DetailBlockView({ block, onToggle, onLoadMore }: DetailB
       {/* Content area */}
       <pre className={cn(
         'px-3 py-2 text-minor font-mono whitespace-pre-wrap break-all overflow-x-auto max-h-[300px] overflow-y-auto',
-        block.type === 'error' ? 'text-red-600' : 'text-[var(--abu-text-tertiary)]'
+        block.type === 'error' ? 'text-[var(--abu-danger)]' : 'text-[var(--abu-text-tertiary)]'
       )}>
         {block.content}
       </pre>

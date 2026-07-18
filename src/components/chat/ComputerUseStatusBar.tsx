@@ -10,8 +10,8 @@ export default function ComputerUseStatusBar({ onStop }: { onStop?: () => void }
   if (status.status !== 'active') return null;
 
   return (
-    <div className="flex items-center justify-between px-4 py-2 bg-blue-500/10 border-b border-blue-500/20 text-body">
-      <div className="flex items-center gap-2 text-blue-400">
+    <div className="flex items-center justify-between px-4 py-2 bg-[var(--abu-info-bg)] border-b border-[var(--abu-info)] text-body">
+      <div className="flex items-center gap-2 text-[var(--abu-info)]">
         <Monitor className="h-4 w-4 animate-pulse" />
         <span>
           {t.computerUse.controlling}
@@ -21,7 +21,7 @@ export default function ComputerUseStatusBar({ onStop }: { onStop?: () => void }
       {onStop && (
         <button
           onClick={onStop}
-          className="flex items-center gap-1 px-2 py-1 text-minor text-red-400 hover:text-red-300 hover:bg-red-500/10 rounded transition-colors"
+          className="flex items-center gap-1 px-2 py-1 text-minor text-[var(--abu-danger)] hover:text-[var(--abu-danger)] hover:bg-[var(--abu-danger-bg)] rounded transition-colors"
         >
           <Square className="h-3 w-3" />
           {t.computerUse.stop}

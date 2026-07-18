@@ -18,7 +18,7 @@ const MAX_VISIBLE_CONVERSATIONS = 5;
 
 function ConvStatusDot({ status }: { status: ConversationStatus }) {
   if (status === 'running') {
-    return <span className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse shrink-0" />;
+    return <span className="w-1.5 h-1.5 rounded-full bg-[var(--abu-warning-solid)] animate-pulse shrink-0" />;
   }
   return null;
 }
@@ -200,7 +200,7 @@ export default function ProjectItem({ project, conversations, expanded, onNewTas
                 )}
                 <button
                   onClick={(e) => { e.stopPropagation(); deleteConversation(conv.id); }}
-                  className="h-4 w-4 flex items-center justify-center opacity-0 group-hover/conv:opacity-100 text-[var(--abu-text-tertiary)] hover:text-red-500 shrink-0"
+                  className="h-4 w-4 flex items-center justify-center opacity-0 group-hover/conv:opacity-100 text-[var(--abu-text-tertiary)] hover:text-[var(--abu-danger)] shrink-0"
                 >
                   <Trash2 className="h-3 w-3" />
                 </button>
@@ -266,7 +266,7 @@ export default function ProjectItem({ project, conversations, expanded, onNewTas
           </button>
           <button
             onClick={() => { setContextMenu(null); setShowDeleteConfirm(true); }}
-            className="flex items-center gap-2 w-full px-3 py-1.5 text-body text-red-500 hover:bg-[var(--abu-bg-active)]"
+            className="flex items-center gap-2 w-full px-3 py-1.5 text-body text-[var(--abu-danger)] hover:bg-[var(--abu-bg-active)]"
           >
             <Trash2 className="h-3.5 w-3.5" />
             {t.project.delete}
@@ -322,7 +322,7 @@ export default function ProjectItem({ project, conversations, expanded, onNewTas
               deleteConversation(convMenu.convId);
               setConvMenu(null);
             }}
-            className="flex items-center gap-2 w-full px-3 py-1.5 text-body text-red-500 hover:bg-[var(--abu-bg-active)]"
+            className="flex items-center gap-2 w-full px-3 py-1.5 text-body text-[var(--abu-danger)] hover:bg-[var(--abu-bg-active)]"
           >
             <Trash2 className="h-3.5 w-3.5" />
             {t.sidebar.deleteConversation}
@@ -364,7 +364,7 @@ export default function ProjectItem({ project, conversations, expanded, onNewTas
                   archiveProject(project.id);
                   setShowArchiveConfirm(false);
                 }}
-                className="px-4 py-2 rounded-lg text-body font-medium text-white bg-red-500 hover:bg-red-600 transition-colors"
+                className="px-4 py-2 rounded-lg text-body font-medium text-white bg-[var(--abu-danger-solid)] hover:opacity-90 transition-colors"
               >
                 {t.project.archive}
               </button>
@@ -402,7 +402,7 @@ export default function ProjectItem({ project, conversations, expanded, onNewTas
                   deleteProject(project.id);
                   setShowDeleteConfirm(false);
                 }}
-                className="px-4 py-2 rounded-lg text-body font-medium text-white bg-red-500 hover:bg-red-600 transition-colors"
+                className="px-4 py-2 rounded-lg text-body font-medium text-white bg-[var(--abu-danger-solid)] hover:opacity-90 transition-colors"
               >
                 {t.project.delete}
               </button>

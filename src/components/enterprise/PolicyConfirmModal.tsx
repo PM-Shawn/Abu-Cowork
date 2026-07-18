@@ -32,7 +32,7 @@ export default function PolicyConfirmModal() {
   return (
     <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-[60]">
       <div className="bg-neutral-900 border border-neutral-700 rounded-lg p-6 w-[420px]">
-        <div className="text-body font-medium text-amber-400 mb-2">{t.enterprise.policyConfirmTitle}</div>
+        <div className="text-body font-medium text-[var(--abu-warning)] mb-2">{t.enterprise.policyConfirmTitle}</div>
         <p className="text-minor text-neutral-300 mb-4">{active.message}</p>
         <div className="flex justify-end gap-2">
           <button
@@ -43,7 +43,7 @@ export default function PolicyConfirmModal() {
           </button>
           <button
             onClick={() => decide(true)}
-            className="px-3 py-1.5 text-minor rounded bg-orange-500 text-black font-medium hover:bg-orange-400"
+            className="px-3 py-1.5 text-minor rounded bg-[var(--abu-clay)] text-black font-medium hover:bg-[var(--abu-clay-hover)]"
           >
             {t.enterprise.allowOnce}
           </button>

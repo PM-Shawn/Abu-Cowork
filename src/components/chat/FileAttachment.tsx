@@ -211,7 +211,7 @@ export default function FileAttachment({ filePath }: FileAttachmentProps) {
     return (
       <div className="flex items-center gap-3 w-full rounded-lg border border-[var(--abu-border)] bg-[var(--abu-bg-muted)] px-4 py-3 opacity-70">
         <div className="w-10 h-10 rounded-lg flex items-center justify-center shrink-0 bg-[var(--abu-bg-muted)]">
-          <FileWarning className="w-5 h-5 text-amber-500/80" />
+          <FileWarning className="w-5 h-5 text-[var(--abu-warning)]" />
         </div>
         <div className="flex flex-col min-w-0">
           <span className="text-body font-medium text-[var(--abu-text-primary)] truncate">

@@ -31,10 +31,10 @@ const iconMap = {
 };
 
 const colorMap = {
-  workspace: { color: 'text-amber-500', bgColor: 'bg-amber-500/10' },
-  shell: { color: 'text-orange-500', bgColor: 'bg-orange-500/10' },
-  'file-write': { color: 'text-blue-500', bgColor: 'bg-blue-500/10' },
-  'file-read': { color: 'text-emerald-500', bgColor: 'bg-emerald-500/10' },
+  workspace: { color: 'text-[var(--abu-warning)]', bgColor: 'bg-[var(--abu-warning-bg)]' },
+  shell: { color: 'text-[var(--abu-warning)]', bgColor: 'bg-[var(--abu-warning-bg)]' },
+  'file-write': { color: 'text-[var(--abu-info)]', bgColor: 'bg-[var(--abu-info-bg)]' },
+  'file-read': { color: 'text-[var(--abu-success)]', bgColor: 'bg-[var(--abu-success-bg)]' },
   'folder-select': { color: 'text-[var(--abu-clay)]', bgColor: 'bg-[var(--abu-clay-bg)]' },
 };
 
@@ -101,7 +101,7 @@ export default function PermissionDialog({ request, onAllow, onDeny, onChooseFol
               <ul className="space-y-1.5">
                 {(folderSelectT?.authorizeCapabilities ?? []).map((cap, i) => (
                   <li key={i} className="flex items-center gap-2 text-body text-[var(--abu-text-secondary)]">
-                    <Shield className="h-3.5 w-3.5 text-green-500 shrink-0" />
+                    <Shield className="h-3.5 w-3.5 text-[var(--abu-success)] shrink-0" />
                     {cap}
                   </li>
                 ))}
@@ -109,10 +109,10 @@ export default function PermissionDialog({ request, onAllow, onDeny, onChooseFol
             </div>
 
             {/* Warning */}
-            <div className="mx-6 mb-4 p-3 bg-amber-50 border border-amber-200 rounded-lg">
+            <div className="mx-6 mb-4 p-3 bg-[var(--abu-warning-bg)] border border-[var(--abu-warning)] rounded-lg">
               <div className="flex gap-2">
-                <AlertTriangle className="h-4 w-4 text-amber-500 shrink-0 mt-0.5" />
-                <p className="text-minor text-amber-700 leading-relaxed">{folderSelectT?.authorizeWarning ?? ''}</p>
+                <AlertTriangle className="h-4 w-4 text-[var(--abu-warning)] shrink-0 mt-0.5" />
+                <p className="text-minor text-[var(--abu-warning)] leading-relaxed">{folderSelectT?.authorizeWarning ?? ''}</p>
               </div>
             </div>
 
@@ -272,7 +272,7 @@ export default function PermissionDialog({ request, onAllow, onDeny, onChooseFol
           <ul className="space-y-1.5">
             {config.capabilities.map((cap, i) => (
               <li key={i} className="flex items-center gap-2 text-body text-[var(--abu-text-secondary)]">
-                <Shield className="h-3.5 w-3.5 text-green-500 shrink-0" />
+                <Shield className="h-3.5 w-3.5 text-[var(--abu-success)] shrink-0" />
                 {cap}
               </li>
             ))}
@@ -280,10 +280,10 @@ export default function PermissionDialog({ request, onAllow, onDeny, onChooseFol
         </div>
 
         {/* Warning */}
-        <div className="mx-6 mb-4 p-3 bg-amber-50 border border-amber-200 rounded-lg">
+        <div className="mx-6 mb-4 p-3 bg-[var(--abu-warning-bg)] border border-[var(--abu-warning)] rounded-lg">
           <div className="flex gap-2">
-            <AlertTriangle className="h-4 w-4 text-amber-500 shrink-0 mt-0.5" />
-            <p className="text-minor text-amber-700 leading-relaxed">{config.warning}</p>
+            <AlertTriangle className="h-4 w-4 text-[var(--abu-warning)] shrink-0 mt-0.5" />
+            <p className="text-minor text-[var(--abu-warning)] leading-relaxed">{config.warning}</p>
           </div>
         </div>
 
@@ -310,10 +310,10 @@ export default function PermissionDialog({ request, onAllow, onDeny, onChooseFol
 
         {/* Always-confirm inline warning */}
         {showAlwaysConfirm && (
-          <div className="mx-6 mb-4 p-3 bg-red-50 border border-red-200 rounded-lg">
+          <div className="mx-6 mb-4 p-3 bg-[var(--abu-danger-bg)] border border-[var(--abu-danger)] rounded-lg">
             <div className="flex gap-2">
-              <AlertTriangle className="h-4 w-4 text-red-500 shrink-0 mt-0.5" />
-              <p className="text-minor text-red-700 leading-relaxed">{t.permission.durationAlwaysConfirm}</p>
+              <AlertTriangle className="h-4 w-4 text-[var(--abu-danger)] shrink-0 mt-0.5" />
+              <p className="text-minor text-[var(--abu-danger)] leading-relaxed">{t.permission.durationAlwaysConfirm}</p>
             </div>
           </div>
         )}
@@ -338,7 +338,7 @@ export default function PermissionDialog({ request, onAllow, onDeny, onChooseFol
             className={cn(
               'flex-1 h-10 text-body text-white',
               showAlwaysConfirm
-                ? 'bg-red-500 hover:bg-red-600'
+                ? 'bg-[var(--abu-danger-solid)] hover:opacity-90'
                 : 'bg-[var(--abu-text-primary)] hover:bg-[var(--abu-text-secondary)]'
             )}
           >

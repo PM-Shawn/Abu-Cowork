@@ -130,7 +130,7 @@ export default function ShareExportDialog({ convId, defaultFilename, onClose }: 
             </div>
           )}
           {state.phase === 'error' && (
-            <div className="text-body text-red-600 py-8 text-center">
+            <div className="text-body text-[var(--abu-danger)] py-8 text-center">
               {format(t.share.exportError, { error: state.message })}
             </div>
           )}
@@ -178,7 +178,7 @@ function BundlePreview({ bundle }: { bundle: ShareBundle }) {
       <section className="grid grid-cols-2 gap-3">
         <div className="rounded-lg border border-[var(--abu-border)] p-3">
           <div className="flex items-center gap-1.5 mb-2 text-body font-medium text-[var(--abu-text-primary)]">
-            <Eye className="h-3.5 w-3.5 text-emerald-600" />
+            <Eye className="h-3.5 w-3.5 text-[var(--abu-success)]" />
             {t.share.visibleToOthers}
           </div>
           <ul className="space-y-1 text-minor text-[var(--abu-text-secondary)]">
@@ -202,7 +202,7 @@ function BundlePreview({ bundle }: { bundle: ShareBundle }) {
       {/* Redaction summary */}
       <section className="rounded-lg border border-[var(--abu-border)] p-3">
         <div className="flex items-center gap-1.5 mb-2 text-body font-medium text-[var(--abu-text-primary)]">
-          <ShieldAlert className="h-3.5 w-3.5 text-amber-600" />
+          <ShieldAlert className="h-3.5 w-3.5 text-[var(--abu-warning)]" />
           {t.share.redactionTitle}
           {bundle.stats.redactionCount > 0 && (
             <span className="text-minor text-[var(--abu-text-tertiary)] ml-1">

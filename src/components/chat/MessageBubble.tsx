@@ -257,7 +257,7 @@ function MessageActions({ message, onEdit, onDelete, onRegenerate, isUser, conve
         className="btn-ghost p-1.5 rounded-md text-[var(--abu-text-tertiary)] hover:text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-hover)]"
         title={t.chat.copy}
       >
-        {copied ? <Check className="h-3.5 w-3.5 text-emerald-500" /> : <Copy className="h-3.5 w-3.5" />}
+        {copied ? <Check className="h-3.5 w-3.5 text-[var(--abu-success)]" /> : <Copy className="h-3.5 w-3.5" />}
       </button>
 
       {/* Edit button - only for user messages */}
@@ -294,7 +294,7 @@ function MessageActions({ message, onEdit, onDelete, onRegenerate, isUser, conve
             className={cn(
               'btn-ghost p-1.5 rounded-md transition-colors',
               feedbackRating === 'positive'
-                ? 'text-emerald-500 bg-[var(--abu-bg-hover)]'
+                ? 'text-[var(--abu-success)] bg-[var(--abu-bg-hover)]'
                 : 'text-[var(--abu-text-tertiary)] hover:text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-hover)]'
             )}
             title={t.chat.feedbackPositive}
@@ -310,7 +310,7 @@ function MessageActions({ message, onEdit, onDelete, onRegenerate, isUser, conve
             className={cn(
               'btn-ghost p-1.5 rounded-md transition-colors',
               feedbackRating === 'negative'
-                ? 'text-red-500 bg-[var(--abu-bg-hover)]'
+                ? 'text-[var(--abu-danger)] bg-[var(--abu-bg-hover)]'
                 : 'text-[var(--abu-text-tertiary)] hover:text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-hover)]'
             )}
             title={t.chat.feedbackNegative}
@@ -337,7 +337,7 @@ function MessageActions({ message, onEdit, onDelete, onRegenerate, isUser, conve
           className={cn(
             'btn-ghost p-1.5 rounded-md transition-colors',
             addedToTodos
-              ? 'text-emerald-500 bg-[var(--abu-bg-hover)]'
+              ? 'text-[var(--abu-success)] bg-[var(--abu-bg-hover)]'
               : 'text-[var(--abu-text-tertiary)] hover:text-[var(--abu-clay)] hover:bg-[var(--abu-bg-hover)]',
           )}
           title={addedToTodos ? t.todos.addedToTodos : t.todos.addToTodos}
@@ -349,7 +349,7 @@ function MessageActions({ message, onEdit, onDelete, onRegenerate, isUser, conve
       {/* Delete button */}
       <button
         onClick={onDelete}
-        className="btn-ghost p-1.5 rounded-md text-[var(--abu-text-tertiary)] hover:text-red-500 hover:bg-red-50"
+        className="btn-ghost p-1.5 rounded-md text-[var(--abu-text-tertiary)] hover:text-[var(--abu-danger)] hover:bg-[var(--abu-danger-bg)]"
         title={t.common.delete}
       >
         <Trash2 className="h-3.5 w-3.5" />
@@ -375,7 +375,7 @@ function EditInput({
   const [text, setText] = useState(initialContent);
   const { t } = useI18n();
   const routingChip = delegateAgentName
-    ? { label: `@${delegateAgentName}`, color: 'text-blue-600 bg-blue-50' }
+    ? { label: `@${delegateAgentName}`, color: 'text-[var(--abu-info)] bg-[var(--abu-info-bg)]' }
     : skillName
       ? { label: `/${skillName}`, color: 'text-purple-600 bg-purple-50' }
       : null;

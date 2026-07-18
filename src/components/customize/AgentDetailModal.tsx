@@ -100,7 +100,7 @@ export default function AgentDetailModal({
             {avatar ? (
               <span className="text-h-md">{avatar}</span>
             ) : (
-              <Bot className="h-5 w-5 text-blue-500" />
+              <Bot className="h-5 w-5 text-[var(--abu-info)]" />
             )}
             <h2 className="text-h-sm font-semibold text-[var(--abu-text-primary)]">{name}</h2>
           </div>
@@ -141,7 +141,7 @@ export default function AgentDetailModal({
               </div>
               <div className="flex flex-wrap gap-1 pl-5">
                 {tools.map((tool) => (
-                  <span key={tool} className="px-2 py-0.5 rounded bg-blue-50 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400 text-caption font-mono">
+                  <span key={tool} className="px-2 py-0.5 rounded bg-[var(--abu-info-bg)] text-[var(--abu-info)] text-caption font-mono">
                     {tool}
                   </span>
                 ))}
@@ -152,13 +152,13 @@ export default function AgentDetailModal({
           {/* Disallowed Tools */}
           {disallowedTools && disallowedTools.length > 0 && (
             <div className="space-y-1">
-              <div className="flex items-center gap-1.5 text-minor font-medium text-red-500">
+              <div className="flex items-center gap-1.5 text-minor font-medium text-[var(--abu-danger)]">
                 <ShieldOff className="h-3.5 w-3.5" />
                 {t.toolbox.agentDisallowedTools}
               </div>
               <div className="flex flex-wrap gap-1 pl-5">
                 {disallowedTools.map((tool) => (
-                  <span key={tool} className="px-2 py-0.5 rounded bg-red-50 text-red-600 text-caption font-mono">
+                  <span key={tool} className="px-2 py-0.5 rounded bg-[var(--abu-danger-bg)] text-[var(--abu-danger)] text-caption font-mono">
                     {tool}
                   </span>
                 ))}

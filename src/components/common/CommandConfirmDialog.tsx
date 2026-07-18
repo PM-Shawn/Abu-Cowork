@@ -19,33 +19,33 @@ interface CommandConfirmDialogProps {
 const levelConfig = {
   warn: {
     icon: AlertTriangle,
-    iconColor: 'text-amber-500',
-    bgColor: 'bg-amber-500/10',
-    borderColor: 'border-amber-200',
+    iconColor: 'text-[var(--abu-warning)]',
+    bgColor: 'bg-[var(--abu-warning-bg)]',
+    borderColor: 'border-[var(--abu-warning)]',
     titleKey: 'title' as const,
     descKey: 'description' as const,
   },
   danger: {
     icon: ShieldAlert,
-    iconColor: 'text-red-500',
-    bgColor: 'bg-red-500/10',
-    borderColor: 'border-red-200',
+    iconColor: 'text-[var(--abu-danger)]',
+    bgColor: 'bg-[var(--abu-danger-bg)]',
+    borderColor: 'border-[var(--abu-danger)]',
     titleKey: 'titleDanger' as const,
     descKey: 'descriptionDanger' as const,
   },
   block: {
     icon: ShieldX,
-    iconColor: 'text-red-600',
-    bgColor: 'bg-red-600/10',
-    borderColor: 'border-red-300',
+    iconColor: 'text-[var(--abu-danger)]',
+    bgColor: 'bg-[var(--abu-danger-bg)]',
+    borderColor: 'border-[var(--abu-danger)]',
     titleKey: 'titleBlock' as const,
     descKey: 'descriptionBlock' as const,
   },
   safe: {
     icon: AlertTriangle,
-    iconColor: 'text-green-500',
-    bgColor: 'bg-green-500/10',
-    borderColor: 'border-green-200',
+    iconColor: 'text-[var(--abu-success)]',
+    bgColor: 'bg-[var(--abu-success-bg)]',
+    borderColor: 'border-[var(--abu-success)]',
     titleKey: 'title' as const,
     descKey: 'description' as const,
   },
@@ -136,7 +136,7 @@ export default function CommandConfirmDialog({
               onClick={onConfirm}
               className={`flex-1 h-10 text-body ${
                 request.level === 'danger'
-                  ? 'bg-red-600 hover:bg-red-700'
+                  ? 'bg-[var(--abu-danger-solid)] hover:opacity-90'
                   : 'bg-[var(--abu-text-primary)] hover:bg-[var(--abu-text-secondary)]'
               } text-white`}
             >

@@ -134,12 +134,12 @@ export default function ScheduleTaskDetail() {
                 <span
                   className={cn(
                     'w-2 h-2 rounded-full',
-                    isPaused ? 'bg-neutral-300' : 'bg-green-500'
+                    isPaused ? 'bg-neutral-300' : 'bg-[var(--abu-success-solid)]'
                   )}
                 />
                 <span className={cn(
                   'text-body font-medium',
-                  isPaused ? 'text-[var(--abu-text-tertiary)]' : 'text-green-600'
+                  isPaused ? 'text-[var(--abu-text-tertiary)]' : 'text-[var(--abu-success)]'
                 )}>
                   {isPaused ? t.schedule.statusPaused : t.schedule.statusActive}
                 </span>
@@ -190,7 +190,7 @@ export default function ScheduleTaskDetail() {
               className={cn(
                 'flex items-center gap-1.5 px-4 py-2 rounded-lg text-body font-medium transition-colors',
                 isRunning
-                  ? 'bg-amber-50 text-amber-600 cursor-not-allowed'
+                  ? 'bg-[var(--abu-warning-bg)] text-[var(--abu-warning)] cursor-not-allowed'
                   : 'bg-[var(--abu-clay)] text-white hover:bg-[var(--abu-clay-hover)]'
               )}
             >
@@ -214,7 +214,7 @@ export default function ScheduleTaskDetail() {
 
             <button
               onClick={handleDelete}
-              className="flex items-center gap-1.5 px-4 py-2 rounded-lg text-body font-medium text-red-500 hover:bg-red-50 transition-colors"
+              className="flex items-center gap-1.5 px-4 py-2 rounded-lg text-body font-medium text-[var(--abu-danger)] hover:bg-[var(--abu-danger-bg)] transition-colors"
             >
               <Trash2 className="h-3.5 w-3.5" />
               {t.schedule.delete}

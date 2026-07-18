@@ -131,7 +131,7 @@ export default function SoulSection() {
                 {statusLabel}
               </span>
             )}
-            <span className={content.length > 2000 ? 'text-red-500' : 'text-[var(--abu-text-placeholder)]'}>
+            <span className={content.length > 2000 ? 'text-[var(--abu-danger)]' : 'text-[var(--abu-text-placeholder)]'}>
               {content.length} / 2000
             </span>
           </div>

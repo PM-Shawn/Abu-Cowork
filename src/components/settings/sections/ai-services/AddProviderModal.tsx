@@ -1029,7 +1029,7 @@ export default function AddProviderModal({ open: isOpen, onClose, editProvider }
             which are structural (not fields). */}
         <div className="flex-1 overflow-y-auto px-6 pt-4 pb-5 space-y-2.5">
           {keyDecryptFailed && (
-            <div className="flex items-start gap-2 rounded-md border border-red-300 bg-red-50 px-3 py-2 text-caption text-red-700">
+            <div className="flex items-start gap-2 rounded-md border border-[var(--abu-danger)] bg-[var(--abu-danger-bg)] px-3 py-2 text-caption text-[var(--abu-danger)]">
               <AlertTriangle className="h-3.5 w-3.5 shrink-0 mt-0.5" />
               <span>{t.settings.apiKeyDecryptFailed}</span>
             </div>
@@ -1275,14 +1275,14 @@ export default function AddProviderModal({ open: isOpen, onClose, editProvider }
               <div className="mt-1 space-y-0.5">
                 <div className={cn(
                   'flex items-center gap-1.5 text-minor',
-                  ollamaStatus === 'online' ? 'text-green-500' : 'text-red-400',
+                  ollamaStatus === 'online' ? 'text-[var(--abu-success)]' : 'text-[var(--abu-danger)]',
                 )}>
                   {ollamaStatus === 'online'
                     ? <><CircleCheck className="h-3.5 w-3.5" /> {t.settings.ollamaOnline}</>
                     : <><CircleX className="h-3.5 w-3.5" /> {t.settings.ollamaOffline}</>}
                 </div>
                 {ollamaStatus === 'offline' && ollamaError && (
-                  <p className="text-caption font-mono text-red-400/70 break-all pl-5">{ollamaError}</p>
+                  <p className="text-caption font-mono text-[var(--abu-danger)] break-all pl-5">{ollamaError}</p>
                 )}
               </div>
             )}
@@ -1291,7 +1291,7 @@ export default function AddProviderModal({ open: isOpen, onClose, editProvider }
             {isLMStudio && fetchModelsStatus !== 'idle' && fetchModelsStatus !== 'fetching' && (
               <div className={cn(
                 'flex items-center gap-1.5 text-minor mt-1',
-                fetchModelsStatus === 'success' ? 'text-green-500' : 'text-red-400',
+                fetchModelsStatus === 'success' ? 'text-[var(--abu-success)]' : 'text-[var(--abu-danger)]',
               )}>
                 {fetchModelsStatus === 'success'
                   ? <><CircleCheck className="h-3.5 w-3.5" /> {t.settings.lmstudioOnline}</>
@@ -1358,12 +1358,12 @@ export default function AddProviderModal({ open: isOpen, onClose, editProvider }
               <>
                 {/* Fetch status messages */}
                 {fetchModelsStatus === 'success' && (
-                  <p className="text-minor text-green-600">
+                  <p className="text-minor text-[var(--abu-success)]">
                     {t.settings.fetchModelsSuccess.replace('{count}', String(fetchedModels.length))}
                   </p>
                 )}
                 {fetchModelsStatus === 'error' && (
-                  <p className="text-minor text-red-500">
+                  <p className="text-minor text-[var(--abu-danger)]">
                     {fetchModelsError || t.settings.fetchModelsError}
                   </p>
                 )}
@@ -1563,7 +1563,7 @@ export default function AddProviderModal({ open: isOpen, onClose, editProvider }
                                 <button
                                   type="button"
                                   onClick={() => handleToggleModel(model.id)}
-                                  className="text-[var(--abu-text-muted)] hover:text-red-400 shrink-0"
+                                  className="text-[var(--abu-text-muted)] hover:text-[var(--abu-danger)] shrink-0"
                                 >
                                   <X className="h-3 w-3" />
                                 </button>
@@ -1625,7 +1625,7 @@ export default function AddProviderModal({ open: isOpen, onClose, editProvider }
               <button
                 type="button"
                 onClick={() => setShowDeleteConfirm(true)}
-                className="shrink-0 flex items-center gap-1 text-minor text-red-500 hover:text-red-600 hover:underline"
+                className="shrink-0 flex items-center gap-1 text-minor text-[var(--abu-danger)] hover:text-[var(--abu-danger)] hover:underline"
               >
                 <Trash2 className="h-3 w-3" />
                 {t.settings.deleteService}
@@ -1646,9 +1646,9 @@ export default function AddProviderModal({ open: isOpen, onClose, editProvider }
               {validateResult && (
                 <div className="flex items-center gap-1 min-w-0">
                   {validateResult.success
-                    ? <CircleCheck className="h-3.5 w-3.5 text-green-600 shrink-0" />
-                    : <CircleX className="h-3.5 w-3.5 text-red-500 shrink-0" />}
-                  <span className={cn('text-minor truncate max-w-[280px]', validateResult.success ? 'text-green-600' : 'text-red-500')}>
+                    ? <CircleCheck className="h-3.5 w-3.5 text-[var(--abu-success)] shrink-0" />
+                    : <CircleX className="h-3.5 w-3.5 text-[var(--abu-danger)] shrink-0" />}
+                  <span className={cn('text-minor truncate max-w-[280px]', validateResult.success ? 'text-[var(--abu-success)]' : 'text-[var(--abu-danger)]')}>
                     {validateResult.message}
                   </span>
                 </div>

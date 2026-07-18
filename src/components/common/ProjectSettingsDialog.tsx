@@ -352,14 +352,14 @@ export default function ProjectSettingsDialog({ open, onClose, projectId }: Proj
 
               {/* === Danger Zone === */}
               <div className="space-y-3 pt-1">
-                <h3 className="text-minor font-semibold text-red-400 uppercase tracking-wider">
+                <h3 className="text-minor font-semibold text-[var(--abu-danger)] uppercase tracking-wider">
                   {t.project.dangerZone}
                 </h3>
                 <Button
                   variant="outline"
                   size="sm"
                   onClick={() => setShowArchiveConfirm(true)}
-                  className="text-red-500 border-red-200 hover:bg-red-50"
+                  className="text-[var(--abu-danger)] border-[var(--abu-danger)] hover:bg-[var(--abu-danger-bg)]"
                 >
                   <Archive className="h-3.5 w-3.5 mr-1.5" />
                   {t.project.archiveProject}
@@ -406,7 +406,7 @@ export default function ProjectSettingsDialog({ open, onClose, projectId }: Proj
                   setShowArchiveConfirm(false);
                   onClose();
                 }}
-                className="px-4 py-2 rounded-lg text-body font-medium text-white bg-red-500 hover:bg-red-600 transition-colors"
+                className="px-4 py-2 rounded-lg text-body font-medium text-white bg-[var(--abu-danger-solid)] hover:opacity-90 transition-colors"
               >
                 {t.project.archive}
               </button>

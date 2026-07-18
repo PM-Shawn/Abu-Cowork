@@ -107,7 +107,7 @@ export default function AboutSection() {
             title={deviceId}
           >
             <span>{deviceId.slice(0, 8)}</span>
-            {idCopied ? <Check className="h-3.5 w-3.5 text-green-500" /> : <Copy className="h-3.5 w-3.5" />}
+            {idCopied ? <Check className="h-3.5 w-3.5 text-[var(--abu-success)]" /> : <Copy className="h-3.5 w-3.5" />}
           </button>
         </div>
       </div>
@@ -180,7 +180,7 @@ export default function AboutSection() {
 
           {/* Download error */}
           {downloadError && (
-            <div className="flex items-center gap-2 text-body text-red-500">
+            <div className="flex items-center gap-2 text-body text-[var(--abu-danger)]">
               <CircleAlert className="h-4 w-4 shrink-0" />
               <span className="flex-1">{t.updates.downloadFailed}</span>
               <button
@@ -196,7 +196,7 @@ export default function AboutSection() {
           {updateInstalling ? (
             <button
               onClick={handleRestart}
-              className="flex items-center gap-2 w-full justify-center py-2 px-4 rounded-lg bg-green-600 text-white text-body font-medium hover:bg-green-700 transition-colors"
+              className="flex items-center gap-2 w-full justify-center py-2 px-4 rounded-lg bg-[var(--abu-success-solid)] text-white text-body font-medium hover:opacity-90 transition-colors"
             >
               <RotateCcw className="h-4 w-4" />
               {t.updates.restartToInstall}
@@ -234,7 +234,7 @@ export default function AboutSection() {
           <div
             className={cn(
               'flex items-center justify-center gap-1.5 text-minor transition-all duration-300',
-              checkResult === 'error' ? 'text-red-500' : 'text-[var(--abu-text-muted)]'
+              checkResult === 'error' ? 'text-[var(--abu-danger)]' : 'text-[var(--abu-text-muted)]'
             )}
           >
             {checkResult === 'error' ? (
@@ -244,7 +244,7 @@ export default function AboutSection() {
               </>
             ) : (
               <>
-                <CheckCircle className="h-3.5 w-3.5 text-green-500" />
+                <CheckCircle className="h-3.5 w-3.5 text-[var(--abu-success)]" />
                 <span>{t.updates.upToDate}</span>
                 {checkResult === 'just-checked' && (
                   <span className="text-[var(--abu-text-muted)]">· {t.updates.justChecked}</span>

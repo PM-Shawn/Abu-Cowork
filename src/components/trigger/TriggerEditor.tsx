@@ -334,11 +334,11 @@ export default function TriggerEditor() {
               placeholder={t.trigger.triggerNamePlaceholder}
               className={cn(
                 'w-full h-10 px-3 bg-[var(--abu-bg-base)] border rounded-lg text-body text-[var(--abu-text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--abu-clay-ring)] focus:border-[var(--abu-clay)]',
-                isDuplicateName ? 'border-red-400' : 'border-[var(--abu-border)]'
+                isDuplicateName ? 'border-[var(--abu-danger)]' : 'border-[var(--abu-border)]'
               )}
             />
             {isDuplicateName && (
-              <p className="text-caption text-red-500 mt-1">{t.trigger.duplicateName}</p>
+              <p className="text-caption text-[var(--abu-danger)] mt-1">{t.trigger.duplicateName}</p>
             )}
           </div>
 
@@ -846,10 +846,10 @@ export default function TriggerEditor() {
                     </button>
                   </div>
                   {testPushStatus === 'success' && (
-                    <p className="text-caption text-green-600 mt-1">{t.trigger.testPushSuccess}</p>
+                    <p className="text-caption text-[var(--abu-success)] mt-1">{t.trigger.testPushSuccess}</p>
                   )}
                   {testPushStatus === 'error' && (
-                    <p className="text-caption text-red-500 mt-1">{t.trigger.testPushFailed}: {testPushError}</p>
+                    <p className="text-caption text-[var(--abu-danger)] mt-1">{t.trigger.testPushFailed}: {testPushError}</p>
                   )}
                 </div>
 

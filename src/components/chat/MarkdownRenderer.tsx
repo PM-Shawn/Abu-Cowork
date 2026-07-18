@@ -368,7 +368,7 @@ function buildMarkdownComponents(
     },
     blockquote({ children }: { children?: ReactNode }) {
       return (
-        <blockquote className="my-3 pl-3 border-l-2 italic border-orange-300 text-[var(--abu-text-tertiary)]">
+        <blockquote className="my-3 pl-3 border-l-2 italic border-[var(--abu-clay)] text-[var(--abu-text-tertiary)]">
           {children}
         </blockquote>
       );

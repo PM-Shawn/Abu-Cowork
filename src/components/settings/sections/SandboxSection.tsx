@@ -12,9 +12,9 @@ import SettingsSectionHeader from '@/components/settings/SettingsSectionHeader';
 import { syncNetworkWhitelist } from '@/core/sandbox/config';
 
 const PERMISSION_MODES: { value: PermissionMode; icon: typeof Shield; color: string }[] = [
-  { value: 'standard', icon: ShieldCheck, color: 'text-blue-500' },
+  { value: 'standard', icon: ShieldCheck, color: 'text-[var(--abu-info)]' },
   { value: 'smart', icon: Bot, color: 'text-violet-500' },
-  { value: 'autonomous', icon: Rocket, color: 'text-amber-500' },
+  { value: 'autonomous', icon: Rocket, color: 'text-[var(--abu-warning)]' },
 ];
 
 export default function SandboxSection() {
@@ -77,15 +77,15 @@ export default function SandboxSection() {
             className={cn(
               'w-full flex items-center justify-between p-4 rounded-xl border transition-all text-left',
               sandboxEnabled
-                ? 'border-emerald-500/50 dark:border-emerald-600/40 bg-emerald-50 dark:bg-emerald-900/20'
+                ? 'border-[var(--abu-success)] bg-[var(--abu-success-bg)]'
                 : 'border-[var(--abu-border)] bg-[var(--abu-bg-muted)]'
             )}
           >
             <div className="flex items-center gap-3">
-              <Shield className={cn('h-5 w-5', sandboxEnabled ? 'text-emerald-600 dark:text-emerald-400' : 'text-[var(--abu-text-muted)]')} />
+              <Shield className={cn('h-5 w-5', sandboxEnabled ? 'text-[var(--abu-success)]' : 'text-[var(--abu-text-muted)]')} />
               <div>
                 <div className="flex items-center gap-1.5">
-                  <p className={cn('text-body font-medium', sandboxEnabled ? 'text-emerald-700 dark:text-emerald-300' : 'text-[var(--abu-text-tertiary)]')}>
+                  <p className={cn('text-body font-medium', sandboxEnabled ? 'text-[var(--abu-success)]' : 'text-[var(--abu-text-tertiary)]')}>
                     {t.settings.sandboxProtection}
                   </p>
                   <div
@@ -93,7 +93,7 @@ export default function SandboxSection() {
                     onMouseEnter={() => setShowDetails(true)}
                     onMouseLeave={() => setShowDetails(false)}
                   >
-                    <Info className={cn('h-3.5 w-3.5 cursor-help', sandboxEnabled ? 'text-emerald-400' : 'text-[var(--abu-text-placeholder)]')} />
+                    <Info className={cn('h-3.5 w-3.5 cursor-help', sandboxEnabled ? 'text-[var(--abu-success)]' : 'text-[var(--abu-text-placeholder)]')} />
                     {showDetails && (
                       <div className="absolute left-1/2 -translate-x-1/2 top-6 z-50 w-72 p-3 rounded-lg border border-[var(--abu-border)] bg-[var(--abu-bg-muted)] shadow-lg text-left pointer-events-none">
                         <p className="text-caption text-[var(--abu-text-tertiary)] leading-relaxed">
@@ -127,14 +127,14 @@ export default function SandboxSection() {
                 className={cn(
                   'w-full flex items-center justify-between p-4 rounded-xl border transition-all text-left',
                   networkIsolationEnabled
-                    ? 'border-blue-500/50 dark:border-blue-600/40 bg-blue-50 dark:bg-blue-900/20'
+                    ? 'border-[var(--abu-info)] bg-[var(--abu-info-bg)]'
                     : 'border-[var(--abu-border)] bg-[var(--abu-bg-muted)]'
                 )}
               >
                 <div className="flex items-center gap-3">
-                  <Globe className={cn('h-5 w-5', networkIsolationEnabled ? 'text-blue-600' : 'text-[var(--abu-text-muted)]')} />
+                  <Globe className={cn('h-5 w-5', networkIsolationEnabled ? 'text-[var(--abu-info)]' : 'text-[var(--abu-text-muted)]')} />
                   <div>
-                    <p className={cn('text-body font-medium', networkIsolationEnabled ? 'text-blue-700' : 'text-[var(--abu-text-tertiary)]')}>
+                    <p className={cn('text-body font-medium', networkIsolationEnabled ? 'text-[var(--abu-info)]' : 'text-[var(--abu-text-tertiary)]')}>
                       {t.settings.networkIsolation}
                     </p>
                     <p className="text-minor text-[var(--abu-text-muted)] mt-0.5">
@@ -187,9 +187,9 @@ export default function SandboxSection() {
                             <span className="text-minor text-[var(--abu-text-primary)] font-mono">{domain}</span>
                             <button
                               onClick={() => handleRemoveDomain(domain)}
-                              className="opacity-0 group-hover:opacity-100 transition-opacity p-0.5 rounded hover:bg-red-100"
+                              className="opacity-0 group-hover:opacity-100 transition-opacity p-0.5 rounded hover:bg-[var(--abu-danger-bg)]"
                             >
-                              <X className="h-3 w-3 text-red-500" />
+                              <X className="h-3 w-3 text-[var(--abu-danger)]" />
                             </button>
                           </div>
                         ))}
@@ -204,12 +204,12 @@ export default function SandboxSection() {
                         onChange={e => setNewDomain(e.target.value)}
                         onKeyDown={e => e.key === 'Enter' && handleAddDomain()}
                         placeholder="*.company.com / 10.0.0.0/8"
-                        className="flex-1 text-minor px-3 py-1.5 rounded-lg border border-[var(--abu-border)] bg-[var(--abu-bg-base)] text-[var(--abu-text-primary)] placeholder:text-[var(--abu-text-placeholder)] focus:outline-none focus:border-blue-400"
+                        className="flex-1 text-minor px-3 py-1.5 rounded-lg border border-[var(--abu-border)] bg-[var(--abu-bg-base)] text-[var(--abu-text-primary)] placeholder:text-[var(--abu-text-placeholder)] focus:outline-none focus:border-[var(--abu-info)]"
                       />
                       <button
                         onClick={handleAddDomain}
                         disabled={!newDomain.trim()}
-                        className="px-2 py-1.5 rounded-lg bg-blue-500 text-white text-minor hover:bg-blue-600 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                        className="px-2 py-1.5 rounded-lg bg-[var(--abu-info-solid)] text-white text-minor hover:opacity-90 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
                       >
                         <Plus className="h-3.5 w-3.5" />
                       </button>
@@ -237,16 +237,16 @@ export default function SandboxSection() {
         </>
       ) : (
         <div className="space-y-3">
-          <div className="flex items-center gap-3 p-4 rounded-xl border border-amber-500/50 dark:border-amber-600/40 bg-amber-50 dark:bg-amber-900/20">
-            <ShieldAlert className="h-5 w-5 text-amber-600 dark:text-amber-400 shrink-0" />
-            <p className="text-body text-amber-700 dark:text-amber-300 font-medium">
+          <div className="flex items-center gap-3 p-4 rounded-xl border border-[var(--abu-warning)] bg-[var(--abu-warning-bg)]">
+            <ShieldAlert className="h-5 w-5 text-[var(--abu-warning)] shrink-0" />
+            <p className="text-body text-[var(--abu-warning)] font-medium">
               {t.settings.sandboxMacOSOnly}
             </p>
           </div>
-          <div className="p-4 rounded-xl border border-emerald-500/30 dark:border-emerald-600/30 bg-emerald-50 dark:bg-emerald-900/20">
+          <div className="p-4 rounded-xl border border-[var(--abu-success)] bg-[var(--abu-success-bg)]">
             <div className="flex items-center gap-2 mb-2">
-              <Shield className="h-4 w-4 text-emerald-600 dark:text-emerald-400 shrink-0" />
-              <p className="text-minor text-emerald-700 dark:text-emerald-300 font-medium">
+              <Shield className="h-4 w-4 text-[var(--abu-success)] shrink-0" />
+              <p className="text-minor text-[var(--abu-success)] font-medium">
                 {t.settings.sandboxAppLayerProtection}
               </p>
             </div>
@@ -303,14 +303,14 @@ function ContentGuardToggle() {
         className={cn(
           'w-full flex items-center justify-between p-4 rounded-xl border transition-all text-left',
           enabled
-            ? 'border-emerald-500/50 dark:border-emerald-600/40 bg-emerald-50 dark:bg-emerald-900/20'
-            : 'border-amber-500/50 dark:border-amber-600/40 bg-amber-50 dark:bg-amber-900/20',
+            ? 'border-[var(--abu-success)] bg-[var(--abu-success-bg)]'
+            : 'border-[var(--abu-warning)] bg-[var(--abu-warning-bg)]',
         )}
       >
         <div className="flex items-center gap-3">
-          <ShieldCheck className={cn('h-5 w-5', enabled ? 'text-emerald-600 dark:text-emerald-400' : 'text-amber-600 dark:text-amber-400')} />
+          <ShieldCheck className={cn('h-5 w-5', enabled ? 'text-[var(--abu-success)]' : 'text-[var(--abu-warning)]')} />
           <div>
-            <p className={cn('text-body font-medium', enabled ? 'text-emerald-700 dark:text-emerald-300' : 'text-amber-700 dark:text-amber-300')}>
+            <p className={cn('text-body font-medium', enabled ? 'text-[var(--abu-success)]' : 'text-[var(--abu-warning)]')}>
               {t.settings.contentGuardTitle}
             </p>
             <p className="text-minor text-[var(--abu-text-muted)] mt-0.5">
@@ -382,7 +382,7 @@ function AuthorizedPathsList() {
               revokeWorkspace(path);
               notifyPathsChanged();
             }}
-            className="p-1 rounded hover:bg-red-100 text-[var(--abu-text-muted)] hover:text-red-500 transition-colors shrink-0"
+            className="p-1 rounded hover:bg-[var(--abu-danger-bg)] text-[var(--abu-text-muted)] hover:text-[var(--abu-danger)] transition-colors shrink-0"
             title={t.sandbox.revoke}
           >
             <Trash2 className="h-3 w-3" />

@@ -6,19 +6,19 @@ import { formatRelativeTime } from '@/utils/messageTime';
 
 const STYLES = {
   'all-passed': {
-    bg: 'bg-emerald-50 dark:bg-emerald-900/20 border-emerald-200 dark:border-emerald-700/40 text-emerald-900 dark:text-emerald-300',
+    bg: 'bg-[var(--abu-success-bg)] border-[var(--abu-success)] text-[var(--abu-success)]',
     icon: CheckCircle2,
-    iconColor: 'text-emerald-600',
+    iconColor: 'text-[var(--abu-success)]',
   },
   'has-warnings': {
-    bg: 'bg-amber-50 dark:bg-amber-900/20 border-amber-200 dark:border-amber-700/40 text-amber-900 dark:text-amber-300',
+    bg: 'bg-[var(--abu-warning-bg)] border-[var(--abu-warning)] text-[var(--abu-warning)]',
     icon: AlertTriangle,
-    iconColor: 'text-amber-600',
+    iconColor: 'text-[var(--abu-warning)]',
   },
   'has-failures': {
-    bg: 'bg-red-50 dark:bg-red-900/20 border-red-200 dark:border-red-700/40 text-red-900 dark:text-red-300',
+    bg: 'bg-[var(--abu-danger-bg)] border-[var(--abu-danger)] text-[var(--abu-danger)]',
     icon: XCircle,
-    iconColor: 'text-red-600',
+    iconColor: 'text-[var(--abu-danger)]',
   },
   'checking': {
     bg: 'bg-[var(--abu-clay-bg)] border-[var(--abu-clay-bg-15)] text-[var(--abu-text-primary)]',

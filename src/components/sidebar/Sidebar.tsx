@@ -47,13 +47,13 @@ function StatusIndicator({ status, onComplete }: StatusIndicatorProps) {
   }, [status, onComplete]);
 
   if (status === 'running') {
-    return <span className="w-2 h-2 rounded-full bg-amber-400 animate-pulse shrink-0" />;
+    return <span className="w-2 h-2 rounded-full bg-[var(--abu-warning-solid)] animate-pulse shrink-0" />;
   }
   if (status === 'completed') {
-    return <span className="w-2 h-2 rounded-full bg-green-500 shrink-0" />;
+    return <span className="w-2 h-2 rounded-full bg-[var(--abu-success-solid)] shrink-0" />;
   }
   if (status === 'error') {
-    return <span className="w-2 h-2 rounded-full bg-red-500 shrink-0" />;
+    return <span className="w-2 h-2 rounded-full bg-[var(--abu-danger-solid)] shrink-0" />;
   }
   return null;
 }
@@ -305,7 +305,7 @@ export default function Sidebar() {
               <Inbox className={cn('h-[18px] w-[18px]', viewMode === 'inbox' ? 'text-[var(--abu-clay)]' : 'text-[var(--abu-text-tertiary)]')} strokeWidth={1.75} />
               <span className="flex-1 text-left">{t.sidebar.inbox}</span>
               {pendingInboxCount > 0 && (
-                <span className="min-w-[18px] h-[18px] px-1.5 rounded-full bg-red-500 text-white text-caption font-medium leading-[18px] text-center">
+                <span className="min-w-[18px] h-[18px] px-1.5 rounded-full bg-[var(--abu-danger-solid)] text-white text-caption font-medium leading-[18px] text-center">
                   {pendingInboxCount > 99 ? '99+' : pendingInboxCount}
                 </span>
               )}
@@ -461,7 +461,7 @@ export default function Sidebar() {
                   variant="ghost"
                   size="icon"
                   onClick={(e) => handleDeleteConversation(e, conv.id)}
-                  className="h-5 w-5 opacity-0 group-hover:opacity-100 text-[var(--abu-text-tertiary)] hover:text-red-500 hover:bg-transparent shrink-0"
+                  className="h-5 w-5 opacity-0 group-hover:opacity-100 text-[var(--abu-text-tertiary)] hover:text-[var(--abu-danger)] hover:bg-transparent shrink-0"
                 >
                   <Trash2 className="h-3.5 w-3.5" strokeWidth={1.5} />
                 </Button>
@@ -571,7 +571,7 @@ export default function Sidebar() {
               handleDeleteConversation(e, contextMenu.convId);
               setContextMenu(null);
             }}
-            className="flex items-center gap-2 w-full px-3 py-1.5 text-body text-red-500 hover:bg-[var(--abu-bg-active)]"
+            className="flex items-center gap-2 w-full px-3 py-1.5 text-body text-[var(--abu-danger)] hover:bg-[var(--abu-bg-active)]"
           >
             <Trash2 className="h-3.5 w-3.5" />
             {t.sidebar.deleteConversation}

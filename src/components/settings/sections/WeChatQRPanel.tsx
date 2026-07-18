@@ -174,7 +174,7 @@ export default function WeChatQRPanel({ onBound, compact = false }: WeChatQRPane
           <QRImage payload={payload} dimmed={isScanned} />
           {isScanned && (
             <div className="absolute inset-0 flex items-center justify-center">
-              <CheckCircle className="h-12 w-12 text-green-500" />
+              <CheckCircle className="h-12 w-12 text-[var(--abu-success)]" />
             </div>
           )}
         </div>
@@ -197,8 +197,8 @@ export default function WeChatQRPanel({ onBound, compact = false }: WeChatQRPane
   if (phase.id === 'confirmed') {
     return (
       <div className={`${wrapCls} flex flex-col items-center gap-2`}>
-        <CheckCircle className="h-8 w-8 text-green-500" />
-        <p className="text-body font-medium text-green-600">{t.imChannel.wechatSuccess}</p>
+        <CheckCircle className="h-8 w-8 text-[var(--abu-success)]" />
+        <p className="text-body font-medium text-[var(--abu-success)]">{t.imChannel.wechatSuccess}</p>
       </div>
     );
   }
@@ -222,8 +222,8 @@ export default function WeChatQRPanel({ onBound, compact = false }: WeChatQRPane
   if (phase.id === 'error') {
     return (
       <div className={`${wrapCls} flex flex-col items-center gap-3 text-center`}>
-        <AlertCircle className="h-7 w-7 text-red-400" />
-        <p className="text-minor text-red-500 max-w-[280px]">{phase.message}</p>
+        <AlertCircle className="h-7 w-7 text-[var(--abu-danger)]" />
+        <p className="text-minor text-[var(--abu-danger)] max-w-[280px]">{phase.message}</p>
         <button
           onClick={fetchQR}
           className="inline-flex items-center gap-1.5 px-4 py-2 text-body text-[var(--abu-clay)] border border-[var(--abu-clay-40)] rounded-lg hover:bg-[var(--abu-clay-5)] transition-colors"

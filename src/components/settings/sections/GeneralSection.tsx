@@ -163,7 +163,7 @@ export default function GeneralSection() {
                 title: t.settings.behaviorSensorCleared,
               });
             }}
-            className="flex items-center gap-2 px-3 py-2 text-minor text-red-600 hover:bg-red-50 rounded-lg transition-colors"
+            className="flex items-center gap-2 px-3 py-2 text-minor text-[var(--abu-danger)] hover:bg-[var(--abu-danger-bg)] rounded-lg transition-colors"
           >
             <Trash2 className="h-3.5 w-3.5" />
             {t.settings.behaviorSensorClearData}

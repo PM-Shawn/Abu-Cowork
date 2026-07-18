@@ -58,7 +58,7 @@ function ModelRow({
         className={cn(
           'p-0.5 rounded shrink-0 mr-1 transition-colors',
           'hover:bg-[var(--abu-bg-muted)]',
-          isFavorite ? 'text-amber-500' : 'text-[var(--abu-text-muted)] opacity-0 group-hover/row:opacity-100'
+          isFavorite ? 'text-[var(--abu-warning)]' : 'text-[var(--abu-text-muted)] opacity-0 group-hover/row:opacity-100'
         )}
         onClick={(e) => {
           e.stopPropagation();
@@ -273,7 +273,7 @@ export function ModelSelector({ open, onClose, anchorRef }: ModelSelectorProps) 
             ) : (
               <div className="mb-1">
                 <div className="px-3 py-1">
-                  <span className="text-caption font-medium uppercase tracking-wider text-orange-400">
+                  <span className="text-caption font-medium uppercase tracking-wider text-[var(--abu-clay)]">
                     {t.chat.enterpriseGatewayLabel}
                   </span>
                 </div>
@@ -356,7 +356,7 @@ export function ModelSelector({ open, onClose, anchorRef }: ModelSelectorProps) 
             {resolvedFavorites.length > 0 && (
               <div className="mb-1">
                 <div className="flex items-center gap-1.5 px-3 py-1">
-                  <Star className="h-3 w-3 text-amber-500 fill-amber-500" />
+                  <Star className="h-3 w-3 text-[var(--abu-warning)] fill-[var(--abu-warning-solid)]" />
                   <span className="text-caption font-medium uppercase tracking-wider text-[var(--abu-text-muted)]">
                     Favorites
                   </span>

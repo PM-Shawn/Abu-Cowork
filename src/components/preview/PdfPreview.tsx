@@ -79,7 +79,7 @@ export default function PdfPreview({ filePath }: { filePath: string }) {
   if (error) {
     return (
       <div className="flex items-center justify-center h-full p-4">
-        <p className="text-body text-red-500">{error}</p>
+        <p className="text-body text-[var(--abu-danger)]">{error}</p>
       </div>
     );
   }

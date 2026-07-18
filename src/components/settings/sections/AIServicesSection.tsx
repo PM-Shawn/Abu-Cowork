@@ -125,16 +125,16 @@ export default function AIServicesSection() {
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-3">
                 {hasBuiltinSearch ? (
-                  <CircleCheck className="h-4 w-4 text-green-600 shrink-0" />
+                  <CircleCheck className="h-4 w-4 text-[var(--abu-success)] shrink-0" />
                 ) : (
-                  <CircleAlert className="h-4 w-4 text-amber-500 shrink-0" />
+                  <CircleAlert className="h-4 w-4 text-[var(--abu-warning)] shrink-0" />
                 )}
                 <div className="flex items-center gap-2">
                   <Globe className="h-3.5 w-3.5 text-[var(--abu-text-muted)]" />
                   <span className="text-body text-[var(--abu-text-primary)]">{t.settings.auxiliarySearch}</span>
                 </div>
                 {hasBuiltinSearch ? (
-                  <span className="text-minor px-1.5 py-0.5 rounded bg-green-50 text-green-700">
+                  <span className="text-minor px-1.5 py-0.5 rounded bg-[var(--abu-success-bg)] text-[var(--abu-success)]">
                     {t.settings.builtinVia.replace('{name}', searchProviderName ?? '')}
                   </span>
                 ) : (
@@ -143,7 +143,7 @@ export default function AIServicesSection() {
                     onClick={() => setSearchExpanded(!searchExpanded)}
                     className={cn(
                       'text-minor px-1.5 py-0.5 rounded cursor-pointer transition-colors',
-                      'bg-amber-50 dark:bg-amber-900/20 text-amber-700 dark:text-amber-400 hover:bg-amber-100 dark:hover:bg-amber-900/30'
+                      'bg-[var(--abu-warning-bg)] text-[var(--abu-warning)] hover:bg-[var(--abu-warning-bg)]'
                     )}
                   >
                     <span className="flex items-center gap-1">
@@ -174,9 +174,9 @@ export default function AIServicesSection() {
             <div className="flex items-center justify-between gap-3">
               <div className="flex items-center gap-3 min-w-0">
                 {imageGenBackends.length > 0 ? (
-                  <CircleCheck className="h-4 w-4 text-green-600 shrink-0" />
+                  <CircleCheck className="h-4 w-4 text-[var(--abu-success)] shrink-0" />
                 ) : (
-                  <CircleAlert className="h-4 w-4 text-amber-500 shrink-0" />
+                  <CircleAlert className="h-4 w-4 text-[var(--abu-warning)] shrink-0" />
                 )}
                 <div className="flex items-center gap-2">
                   <ImageIcon className="h-3.5 w-3.5 text-[var(--abu-text-muted)]" />
@@ -188,8 +188,8 @@ export default function AIServicesSection() {
                   className={cn(
                     'text-minor px-1.5 py-0.5 rounded cursor-pointer transition-colors',
                     imageGenBackends.length > 0
-                      ? 'bg-green-50 text-green-700 hover:bg-green-100'
-                      : 'bg-amber-50 dark:bg-amber-900/20 text-amber-700 dark:text-amber-400 hover:bg-amber-100 dark:hover:bg-amber-900/30'
+                      ? 'bg-[var(--abu-success-bg)] text-[var(--abu-success)] hover:bg-[var(--abu-success-bg)]'
+                      : 'bg-[var(--abu-warning-bg)] text-[var(--abu-warning)] hover:bg-[var(--abu-warning-bg)]'
                   )}
                 >
                   <span className="flex items-center gap-1">
@@ -229,7 +229,7 @@ export default function AIServicesSection() {
             variant="ghost"
             size="sm"
             onClick={() => setShowClearConfirm(true)}
-            className="gap-1.5 text-red-600 hover:text-red-700 hover:bg-red-50"
+            className="gap-1.5 text-[var(--abu-danger)] hover:text-[var(--abu-danger)] hover:bg-[var(--abu-danger-bg)]"
           >
             <Trash2 className="h-3.5 w-3.5" />
             {t.settings.clearAllKeys}

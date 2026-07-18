@@ -5,7 +5,7 @@ import { checkReadPath, checkWritePath, checkListPath, authorizeWorkspace } from
 import { isWindows } from '../../utils/platform';
 import { getI18n } from '../../i18n';
 import { truncateToolResult } from '../context/truncation';
-import { useSettingsStore } from '../../stores/settingsStore';
+import { getSettingsReader } from '../agent/ports/settingsReader';
 import { useChatStore } from '../../stores/chatStore';
 import { getPermissionStrategy } from '../permissions/permissionMode';
 import { analyzeCommandBoundary, type CmdBoundary } from '../permissions/commandBoundary';
@@ -263,7 +263,7 @@ export async function executeAnyTool(
   const convPermissionMode = toolContext?.conversationId
     ? useChatStore.getState().conversations[toolContext.conversationId]?.permissionMode
     : undefined;
-  const permissionMode = convPermissionMode ?? useSettingsStore.getState().permissionMode;
+  const permissionMode = convPermissionMode ?? getSettingsReader().getSnapshot().permissionMode;
   const strategy = getPermissionStrategy(permissionMode);
 
   // Safety check for run_command tool

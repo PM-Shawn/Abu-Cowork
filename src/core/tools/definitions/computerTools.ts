@@ -4,6 +4,7 @@ import { writeText as clipboardWriteText, readText as clipboardReadText } from '
 import { invoke } from '@tauri-apps/api/core';
 import type { ToolDefinition, ToolResult, ToolResultContent } from '../../../types';
 import { useSettingsStore } from '../../../stores/settingsStore';
+import { getSettingsReader } from '../../agent/ports/settingsReader';
 import { useWorkspaceStore } from '../../../stores/workspaceStore';
 import { resolveCapabilities } from '../../llm/modelCapabilities';
 import { joinPath } from '../../../utils/pathUtils';
@@ -402,7 +403,7 @@ All pixel coordinates use screenshot space (max width ${SCREENSHOT_MAX_WIDTH}px)
   },
   execute: async (input, context): Promise<ToolResult> => {
     // Auto-enable Computer Use on first call — no need for user to find the toggle
-    if (!useSettingsStore.getState().computerUseEnabled) {
+    if (!getSettingsReader().getSnapshot().computerUseEnabled) {
       useSettingsStore.getState().setComputerUseEnabled(true);
     }
 
@@ -415,7 +416,7 @@ All pixel coordinates use screenshot space (max width ${SCREENSHOT_MAX_WIDTH}px)
     // that support image input"), crashing the agent turn. For those models the
     // pixel/screenshot path is useless; we steer to the AX path instead.
     const modelSupportsVision = resolveCapabilities(
-      useSettingsStore.getState().activeModel.modelId,
+      getSettingsReader().getSnapshot().activeModel.modelId,
     ).vision;
 
     // Check session limits (max steps / timeout)

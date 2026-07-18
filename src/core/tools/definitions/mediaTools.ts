@@ -8,7 +8,8 @@ import { getTauriFetch } from '../../llm/tauriFetch';
 import { normalizeImageGenerationsUrl } from '../../llm/urlUtils';
 import { buildImageRequest, parseImageResponse, resolveImageVendor } from '../../llm/imageGen';
 import { isSandboxEnabled, isNetworkIsolationEnabled } from '../../sandbox/config';
-import { useSettingsStore, getUsableImageBackend } from '../../../stores/settingsStore';
+import { getUsableImageBackend } from '../../../stores/settingsStore';
+import { getSettingsReader } from '../../agent/ports/settingsReader';
 import { useWorkspaceStore } from '../../../stores/workspaceStore';
 import {
   buildMacImageCommand,
@@ -45,7 +46,7 @@ export const generateImageTool: ToolDefinition = {
     const savePath = input.save_path as string | undefined;
 
     try {
-      const state = useSettingsStore.getState();
+      const state = getSettingsReader().getSnapshot();
 
       // Resolve the image-generation backend from the independent
       // imageGeneration config (design doc §3.1, "C-a") — fully decoupled

@@ -11,7 +11,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       # Fail fast if closed-source enterprise modules leaked into this public
       # repo (open-core boundary). Runs before npm so a build/test pass can't
@@ -20,7 +20,7 @@ jobs:
         run: bash scripts/enterprise-leak-guard.sh
 
       - name: Setup Node.js
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@v7
         with:
           node-version: 20
           cache: npm

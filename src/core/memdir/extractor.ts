@@ -10,7 +10,8 @@
  */
 
 import { useChatStore } from '../../stores/chatStore';
-import { useSettingsStore, getActiveApiKey, getActiveProvider, getEffectiveModel } from '../../stores/settingsStore';
+import { getActiveApiKey, getActiveProvider, getEffectiveModel } from '../../stores/settingsStore';
+import { getSettingsReader } from '../agent/ports/settingsReader';
 import { ClaudeAdapter } from '../llm/claude';
 import { OpenAICompatibleAdapter } from '../llm/openai-compatible';
 import type { LLMAdapter } from '../llm/adapter';
@@ -176,7 +177,7 @@ export async function extractMemoriesFromConversation(
     if (transcript.length < 50) return; // too little content
 
     // Create adapter
-    const settings = useSettingsStore.getState();
+    const settings = getSettingsReader().getSnapshot();
     const activeApiKey = getActiveApiKey(settings);
     if (!activeApiKey) {
       console.warn('[Memory] Auto-extraction skipped: no API key configured');

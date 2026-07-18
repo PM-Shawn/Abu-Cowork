@@ -2,6 +2,34 @@
 
 All notable changes to Abu are documented here. Format based on [Keep a Changelog](https://keepachangelog.com/).
 
+## v0.31.0 · 2026-07-18
+
+### Added
+
+- **右栏多页签工作区**：右栏文件预览升级为多页签工作区 —— 多文件预览并存（keep-alive 隐藏不卸载）、真 PTY 终端（portable-pty 后端 + xterm.js 前端）、原生 webview 浏览器页签（任意站点，不受 iframe 的 X-Frame-Options 限制），并以「任务摘要」作为默认页签。Multi-tab workspace: multi-file preview + real PTY terminal + native-webview browser.
+- **主窗口卡片化改版**：卡片化视觉层次（card-on-canvas）、顶栏与 macOS 红绿灯对齐、工具箱与自动化收进主布局的卡片网格（固定尺寸横卡 + 自适应铺满 + 统一启用开关）。Panel visual-hierarchy redesign with an in-layout toolbox/automation card grid.
+- **会话全文搜索接入 FTS5**：侧栏会话搜索弹窗接入 SQLite FTS5，可按标题 + 正文跨历史会话检索。Conversation search modal wired to FTS5 (title + body).
+- **账户菜单 + 设置导航整理**：左下角三个按钮收进头像 popover（内联切主题/语言、接真实检查更新流），设置分组重组。Account-menu popover + regrouped settings navigation.
+
+### Changed
+
+- **字号排版体系（8-token）**：全部字号迁移到 8 档 `--text-*` token（font-size + line-height + font-weight 三绑定），清零 px 硬编码与命名字号；阅读正文号定为 14px（对齐主流聊天客户端），标题字重封顶 600。Migrated all font sizes to an 8-token typography scale.
+- **语义色 + 链接色 tokenization**：链接与状态色收敛为 `--abu-{danger/warning/success/info}`（fg/solid/bg 三角色）+ 专用 `--abu-link`（品牌橙不复用 accent）；765 处裸 Tailwind 色阶转 token 并达 WCAG AA，`--abu-text-muted` 也提到 AA。Link + status colors tokenized to a semantic scale, all AA.
+
+### Fixed
+
+- **消息列表底部锁定 + 搜索跳转**：虚拟化消息列表在打开/切换会话时正确锁定到底部；搜索命中跳转配淡出高亮。Virtualized list bottom-lock on open/switch + search-hit jump.
+- **`cn()` 吞字号 token**：修复 tailwind-merge 把 `text-[var(--)]` 误判为 font-size 从而吞掉字号 token 的问题（extendTailwindMerge 根治，app 级）。Stop tailwind-merge from silently dropping font-size tokens in `cn()`.
+- **工作区页签交互**：页签拖拽真正重排 + 中性插入线、关闭（×）不再误触发拖拽、PDF worker 经 Vite `?url` 加载并 memoize file 对象（修「object can not be cloned」）、恢复面板收起按钮。Workspace tab drag / close / PDF-preview fixes.
+- **PTY 子进程回收**：终端被杀后回收子进程，spawn 竞态下清理孤儿进程。Reap killed pty child + orphan on spawn race.
+- **macOS 顶栏可点性**：页签条上方的 + 按钮曾落在 macOS 拖拽区导致不可点，已修。Tab-strip + button no longer sits under the macOS drag region.
+
+### English Summary
+
+v0.31.0 is a UI-focused feature release. Highlights: a multi-tab right-panel workspace (multi-file preview + a real PTY terminal via portable-pty/xterm.js + a native-webview browser tab that loads any site without iframe X-Frame limits, task-summary as the default tab); a card-on-canvas panel redesign folding the toolbox and automation into an in-layout card grid; conversation search wired to SQLite FTS5; and an account-menu popover with regrouped settings. It also lands two systemic design-token migrations — an 8-token typography scale (reading body set to 14px, heading weight capped at 600) and a semantic color/link tokenization covering 765 raw Tailwind color usages, all brought to WCAG AA — plus fixes to message-list bottom-lock, a tailwind-merge bug that dropped font-size tokens, workspace tab drag/close and PDF preview, PTY child-process cleanup, and a macOS drag-region click issue.
+
+**Full Changelog**: https://github.com/PM-Shawn/Abu-Cowork/compare/v0.30.0...v0.31.0
+
 ## v0.30.0 · 2026-07-16
 
 ### Added

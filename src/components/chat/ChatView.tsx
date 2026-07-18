@@ -656,8 +656,13 @@ export default function ChatView() {
       {/* Computer Use Status Bar — visible during screen control */}
       <ComputerUseStatusBar onStop={() => useChatStore.getState().cancelStreaming(activeConv.id)} />
 
-      {/* Messages Area */}
-      <div className="relative flex-1 min-h-0 overflow-y-auto" ref={setScrollParentEl}>
+      {/* Messages Area — overlay-scroll hides the native scrollbar (thumb shows
+          only while scrolling, via the global is-scrolling toggle in main.tsx);
+          overflow-y-scroll (not auto) keeps the transparent gutter always
+          reserved so opening the preview panel doesn't flash a scrollbar and
+          shift the content. Both were lost in the Virtuoso-list merge — do not
+          drop them again. */}
+      <div className="relative flex-1 min-h-0 overflow-y-scroll overlay-scroll" ref={setScrollParentEl}>
         <div className="w-full max-w-4xl mx-auto px-6 md:px-10 pt-5 pb-16 overflow-hidden">
           <Virtuoso
             // Remount per conversation so `initialTopMostItemIndex` re-applies

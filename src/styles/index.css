@@ -61,12 +61,22 @@
 }
 
 ::-webkit-scrollbar-thumb {
-  background: rgba(0, 0, 0, 0.08);
+  background: transparent;       /* hidden by default — overlay behavior app-wide */
   border-radius: 10px;
 }
 
-::-webkit-scrollbar-thumb:hover {
-  background: rgba(0, 0, 0, 0.16);
+/* Show the thumb only while the element is actively scrolling. `is-scrolling` is
+   toggled on ANY scrolled element by the global listener in main.tsx, then
+   removed ~1s after scrolling stops. This makes every native scroll surface
+   behave the same (macOS-style overlay) instead of some showing a persistent
+   light scrollbar and others not. Radix ScrollArea hides the native bar itself;
+   `.overlay-scroll` / `.dark-scrollbar` rules below still layer on top. */
+.is-scrolling::-webkit-scrollbar-thumb {
+  background: rgba(0, 0, 0, 0.12);
+}
+
+.is-scrolling::-webkit-scrollbar-thumb:hover {
+  background: rgba(0, 0, 0, 0.22);
 }
 
 /* Overlay scroll - hidden by default, visible only when scrolling */

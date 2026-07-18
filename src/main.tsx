@@ -6,12 +6,17 @@ import App from './App.tsx'
 // Dev-only: registers window.__abuLangfuseSpike() for the Phase A transport test.
 if (import.meta.env.DEV) void import('./core/observability/langfuse')
 
-// Overlay scrollbar: show only while scrolling, then fade out
+// Overlay scrollbar: show the thumb only while an element is actively scrolling,
+// then fade out. Applies to EVERY scrollable element (not just those tagged
+// .overlay-scroll) so no native scroll surface shows a persistent scrollbar —
+// the thumb is transparent by default and revealed via the .is-scrolling class
+// (see the ::-webkit-scrollbar rules in styles/index.css).
 ;(() => {
   const timers = new WeakMap<HTMLElement, number>();
   document.addEventListener('scroll', (e) => {
     const el = e.target as HTMLElement;
-    if (!el?.classList?.contains('overlay-scroll')) return;
+    // e.target is `document` for top-level scrolls — skip non-elements.
+    if (!(el instanceof HTMLElement)) return;
     el.classList.add('is-scrolling');
     const prev = timers.get(el);
     if (prev) clearTimeout(prev);

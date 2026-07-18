@@ -12,7 +12,8 @@ import type { StreamEvent, Message, ToolDefinition } from '../../types';
 import type { LLMAdapter } from './adapter';
 import { ClaudeAdapter } from './claude';
 import { OpenAICompatibleAdapter } from './openai-compatible';
-import { useSettingsStore, getActiveApiKey, getActiveProvider, getEffectiveModel } from '../../stores/settingsStore';
+import { getActiveApiKey, getActiveProvider, getEffectiveModel } from '../../stores/settingsStore';
+import { getSettingsReader } from '../agent/ports/settingsReader';
 import { resolveEffectiveLlmCreds } from '../enterprise/llm-resolver';
 
 export interface LLMCallOptions {
@@ -47,7 +48,7 @@ export interface LLMCallResult {
  * that any tool or script can use without going through the agent loop.
  */
 export async function llmCall(options: LLMCallOptions): Promise<LLMCallResult> {
-  const settings = useSettingsStore.getState();
+  const settings = getSettingsReader().getSnapshot();
 
   // Resolve apiKey + baseUrl — enterprise gateway overrides personal creds.
   // Throws EnterpriseLlmUnavailableError if enforced but gateway unreachable.

@@ -4,11 +4,11 @@ import type { CompressionConfig } from './contextCompressor';
 import type { Message } from '@/types';
 import { useChatStore } from '@/stores/chatStore';
 import {
-  useSettingsStore,
   getEffectiveModel,
   getActiveProvider,
   getActiveApiKey,
 } from '@/stores/settingsStore';
+import { getSettingsReader } from '@/core/agent/ports/settingsReader';
 import { resolveEffectiveLlmCreds } from '@/core/enterprise/llm-resolver';
 import { ClaudeAdapter } from '@/core/llm/claude';
 import { OpenAICompatibleAdapter } from '@/core/llm/openai-compatible';
@@ -73,7 +73,7 @@ export function landCompactBoundaryMarker(
  * term would pick the Claude adapter under an enforced gateway and fail the call.
  */
 function resolveSummarizeConfig(): CompressionConfig {
-  const settings = useSettingsStore.getState();
+  const settings = getSettingsReader().getSnapshot();
   const provider = getActiveProvider(settings);
   const creds = resolveEffectiveLlmCreds(getActiveApiKey(settings), provider?.baseUrl || undefined);
   const adapter: LLMAdapter =

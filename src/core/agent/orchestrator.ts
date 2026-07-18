@@ -6,6 +6,7 @@ import { loadSoul } from './soulConfig';
 import { getDefaultSoul } from './agentLoop';
 import { useWorkspaceStore } from '../../stores/workspaceStore';
 import { useSettingsStore } from '../../stores/settingsStore';
+import { getSettingsReader } from './ports/settingsReader';
 import { getSessionOutputDir } from '../session/sessionDir';
 import { prepareSuggestedWorkspace } from './defaultWorkspace';
 import { isWindows } from '../../utils/platform';
@@ -151,7 +152,7 @@ export function routeInput(input: string): RouteResult {
       }
       if (agent && agent.name !== 'abu') {
         // Check if disabled
-        const disabledAgents = useSettingsStore.getState().disabledAgents ?? [];
+        const disabledAgents = getSettingsReader().getSnapshot().disabledAgents ?? [];
         if (!disabledAgents.includes(agent.name)) {
           return {
             type: 'delegate',
@@ -271,7 +272,7 @@ export async function buildSystemPromptSections(
   // Preprocess skill content if available
   let processedSkillContent = route.skillContent ?? '';
   if (isSkillMode && route.skill) {
-    const settings = useSettingsStore.getState();
+    const settings = getSettingsReader().getSnapshot();
     processedSkillContent = substituteVariables(
       processedSkillContent,
       route.args ?? '',
@@ -338,7 +339,7 @@ export async function buildSystemPromptSections(
 
   // Soul bootstrap: one-time personality introduction prompt
   // Triggers after user has had at least one deep conversation (≥3 user messages)
-  const settings = useSettingsStore.getState();
+  const settings = getSettingsReader().getSnapshot();
   if (!settings.soulInitialized && !isForkContext && !isSkillMode) {
     const chatMod = await import('../../stores/chatStore');
     const conversations = Object.values(chatMod.useChatStore.getState().conversations);
@@ -459,7 +460,7 @@ Use the python3 command — the system will automatically use the built-in Pytho
 - Common command equivalents: ls→Get-ChildItem, cat→Get-Content, rm→Remove-Item, cp→Copy-Item, mv→Move-Item, grep→Select-String, open→Start-Process`, cacheable: true });
   }
 
-  const settingsState = useSettingsStore.getState();
+  const settingsState = getSettingsReader().getSnapshot();
 
   // Inject project rules (user-maintained, high priority)
   if (!isForkContext) {

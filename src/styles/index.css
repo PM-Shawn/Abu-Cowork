@@ -252,7 +252,7 @@
   --abu-text-primary:     #141413;   /* headings, emphasis (Claude text-000) */
   --abu-text-secondary:   #3d3929;   /* body text (Claude text-200) */
   --abu-text-tertiary:    #656358;   /* captions, labels (Claude text-400) */
-  --abu-text-muted:       #9a9689;   /* disabled, hints */
+  --abu-text-muted:       #726f65;   /* subtle hints/secondary — AA ≥4.5:1 (was #9a9689, failed AA) */
   --abu-text-placeholder: #b8b5ab;   /* placeholder */
 
   /* Border */
@@ -342,7 +342,7 @@
   --abu-text-primary:     #f0ede8;
   --abu-text-secondary:   #c5c0b7;
   --abu-text-tertiary:    #8a8479;
-  --abu-text-muted:       #5e5a54;
+  --abu-text-muted:       #8d877e;   /* subtle hints/secondary — AA ≥4.5:1 (was #5e5a54, failed AA) */
   --abu-text-placeholder: #706c66;
 
   --abu-border:        #302e2b;

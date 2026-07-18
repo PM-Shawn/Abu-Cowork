@@ -10,6 +10,7 @@ import { useChatStore } from '../../stores/chatStore';
 import { getEffectiveModel, getActiveApiKey, getActiveProvider, resolveAgentModel, providerRequiresApiKey } from '../../stores/settingsStore';
 import { getSettingsReader, type SettingsReader } from './ports/settingsReader';
 import { getChatDelta } from './ports/chatDelta';
+import { getConversationReader } from './ports/conversationReader';
 import { useDiscoveredCapsStore } from '../../stores/discoveredCapabilitiesStore';
 import { useWorkspaceStore } from '../../stores/workspaceStore';
 import { useTaskExecutionStore } from '../../stores/taskExecutionStore';
@@ -556,7 +557,7 @@ async function loadActiveSkillContent(
  * Called when the agent loop ends (complete, abort, or error).
  */
 function deactivateAllSkills(conversationId: string): void {
-  const conv = useChatStore.getState().conversations[conversationId];
+  const conv = getConversationReader().getConversation(conversationId);
   if (!conv?.activeSkills || conv.activeSkills.length === 0) return;
 
   getChatDelta().deactivateSkills(conversationId);
@@ -723,7 +724,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
   // silently losing an image is worse than the rare double-loop race, so
   // image/empty sends fall through to a normal loop start.
   {
-    const runningConv = useChatStore.getState().conversations[conversationId];
+    const runningConv = getConversationReader().getConversation(conversationId);
     if (
       runningConv?.status === 'running'
       && useChatStore.getState().hasAbortController(conversationId)
@@ -742,6 +743,10 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
   // New turn starts clean: drop any stale plan-mode lock from a prior/abandoned plan (see planMode.ts).
   clearPlanMode(conversationId);
 
+  // NOTE: only the AbortController trio (control channel, deliberately excluded
+  // from both ChatDelta and ConversationReader — see B1-REPORT.md / this batch's
+  // report) still reads through this cached local. All conversation-data reads
+  // below go through fresh `getConversationReader()` calls instead.
   const chatStore = useChatStore.getState();
   const chatDelta = getChatDelta();
   const settings = settingsReader.getSnapshot();
@@ -755,10 +760,10 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
   // model switch made for another conversation never bleeds into this in-flight
   // one. Pinned onto the conversation on first run (below) so it also survives
   // later global switches for display + future runs.
-  const pinnedConv = chatStore.conversations[conversationId];
+  const pinnedConv = getConversationReader().getConversation(conversationId);
   const baseModel =
     pinnedConv?.model ??
-    chatStore.conversationIndex[conversationId]?.model ??
+    getConversationReader().getIndexEntry(conversationId)?.model ??
     settings.activeModel;
   const settingsForModel: typeof settings =
     baseModel === settings.activeModel ? settings : { ...settings, activeModel: baseModel };
@@ -831,7 +836,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
   // Priority: IM-injected path > conversation's own stored path > global store fallback.
   // Using the conversation record rather than the global store prevents cross-conversation
   // workspace leakage when multiple conversations are open simultaneously.
-  const _convForContext = useChatStore.getState().conversations[conversationId];
+  const _convForContext = getConversationReader().getConversation(conversationId);
   // Interactive-desktop conversations with no workspace get a managed default
   // (~/Abu/<name>/) bound here so the agent saves files there instead of
   // improvising (e.g. onto the Desktop). The folder is created lazily on the
@@ -972,7 +977,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
     const filePermCb = options?.filePermissionCallback ?? requestFilePermission;
 
     // Extract parent conversation context for the subagent
-    const existingMessages = useChatStore.getState().conversations[conversationId]?.messages ?? [];
+    const existingMessages = getConversationReader().getConversation(conversationId)?.messages ?? [];
     const parentConversationSummary = extractParentConversationSummary(existingMessages);
 
     // Create per-subagent AbortController (linked to parent)
@@ -1044,7 +1049,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
       // any stale config-failure recorded for it (mirrors the main-loop path).
       recordProviderCallOutcome(getActiveProvider(settingsForModel)?.id, { ok: true, at: Date.now() });
 
-      const convTitle = useChatStore.getState().conversationIndex[conversationId]?.title ?? getI18n().chat.notificationTaskFallback;
+      const convTitle = getConversationReader().getIndexEntry(conversationId)?.title ?? getI18n().chat.notificationTaskFallback;
       notifyTaskCompleted(convTitle, conversationId);
     } catch (err) {
       subagentCleanup();
@@ -1086,7 +1091,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
       eventRouter.route({ type: 'error', loopId, error: errorMessage });
       persistExecutionSnapshot(conversationId, loopId);
       chatDelta.setConversationStatus(conversationId, 'error');
-      const convTitle = useChatStore.getState().conversationIndex[conversationId]?.title ?? getI18n().chat.notificationTaskFallback;
+      const convTitle = getConversationReader().getIndexEntry(conversationId)?.title ?? getI18n().chat.notificationTaskFallback;
       notifyTaskError(convTitle, conversationId);
       return { reason: 'error', error: errorMessage };
     }
@@ -1184,7 +1189,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
         conversationId,
         loopId,
         turnCount,
-        lastMessageId: useChatStore.getState().conversations[conversationId]?.messages.slice(-1)[0]?.id ?? '',
+        lastMessageId: getConversationReader().getConversation(conversationId)?.messages.slice(-1)[0]?.id ?? '',
         status: 'llm_calling',
         timestamp: Date.now(),
       });
@@ -1297,7 +1302,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
       // also strips tools from the request body as belt-and-suspenders.
       const noTools = modelDeclared?.supportsTools === false;
       // Build prefetch context for conditional tool loading
-      const conv = useChatStore.getState().conversations[conversationId];
+      const conv = getConversationReader().getConversation(conversationId);
       const activeSkillObjects = (conv?.activeSkills ?? [])
         .map(name => skillLoader.getSkill(name))
         .filter((s): s is NonNullable<typeof s> => s !== undefined);
@@ -1320,7 +1325,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
       );
 
       // Get current messages for this conversation
-      const messages = useChatStore.getState().conversations[conversationId]?.messages ?? [];
+      const messages = getConversationReader().getConversation(conversationId)?.messages ?? [];
       // Exclude the last empty assistant message we just added
       const historyMessages = messages.slice(0, -1);
 
@@ -1426,7 +1431,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
         messagesForContext = boundaryView;
         compressionApplied = true;
       } else if (turnCount >= 3) {
-        const convForCache = useChatStore.getState().conversations[conversationId];
+        const convForCache = getConversationReader().getConversation(conversationId);
         const cache = convForCache?.contextCache;
 
         if (cache && cache.messageCountAtCompression <= historyMessages.length) {
@@ -1633,7 +1638,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
       preparedMessages = await rehydrateForSend(preparedMessages, {
         vision: modelCaps.vision,
         conversationId,
-        workspacePath: useChatStore.getState().conversations[conversationId]?.workspacePath ?? null,
+        workspacePath: getConversationReader().getConversation(conversationId)?.workspacePath ?? null,
         cache: imageBase64Cache,
       });
 
@@ -1692,7 +1697,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
               // while the body text is already streaming, which looks broken.
               if (!thinkingEndTime && collectedThinking) {
                 thinkingEndTime = Date.now();
-                const thinkingStartTime = useChatStore.getState().thinkingStartTime;
+                const thinkingStartTime = getConversationReader().getThinkingStartTime();
                 if (thinkingStartTime) {
                   const thinkingDuration = Math.max(1, Math.round((thinkingEndTime - thinkingStartTime) / 1000));
                   chatDelta.setThinkingDuration(conversationId, thinkingDuration, assistantMsgId);
@@ -1704,7 +1709,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
               // because the user may have sent another message mid-stream.
               if (Date.now() - lastStreamFlushTime > STREAM_FLUSH_INTERVAL) {
                 lastStreamFlushTime = Date.now();
-                const currentMsg = useChatStore.getState().conversations[conversationId]
+                const currentMsg = getConversationReader().getConversation(conversationId)
                   ?.messages.find((m) => m.id === assistantMsgId);
                 if (currentMsg) {
                   import('../session/conversationStorage').then(({ replaceMessageById }) => {
@@ -1727,7 +1732,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
               // completed (same reason as the 'text' branch above).
               if (!thinkingEndTime && collectedThinking) {
                 thinkingEndTime = Date.now();
-                const thinkingStartTime = useChatStore.getState().thinkingStartTime;
+                const thinkingStartTime = getConversationReader().getThinkingStartTime();
                 if (thinkingStartTime) {
                   const thinkingDuration = Math.max(1, Math.round((thinkingEndTime - thinkingStartTime) / 1000));
                   chatDelta.setThinkingDuration(conversationId, thinkingDuration, assistantMsgId);
@@ -1799,7 +1804,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
               }
               // Calculate and save thinking duration
               if (collectedThinking && thinkingEndTime) {
-                const thinkingStartTime = useChatStore.getState().thinkingStartTime;
+                const thinkingStartTime = getConversationReader().getThinkingStartTime();
                 if (thinkingStartTime) {
                   const thinkingDuration = Math.round((thinkingEndTime - thinkingStartTime) / 1000);
                   chatDelta.setThinkingDuration(conversationId, thinkingDuration, assistantMsgId);
@@ -1959,7 +1964,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
           preparedMessages = await rehydrateForSend(preparedMessages, {
             vision: modelCaps.vision,
             conversationId,
-            workspacePath: useChatStore.getState().conversations[conversationId]?.workspacePath ?? null,
+            workspacePath: getConversationReader().getConversation(conversationId)?.workspacePath ?? null,
             cache: imageBase64Cache,
           });
           try {
@@ -1979,7 +1984,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
 
       // Observability: record this turn's LLM call as a generation (no-op when disabled)
       {
-        const turnMsg = useChatStore.getState().conversations[conversationId]?.messages.find(m => m.id === assistantMsgId);
+        const turnMsg = getConversationReader().getConversation(conversationId)?.messages.find(m => m.id === assistantMsgId);
         startGeneration(conversationId, {
           name: `turn-${turnCount}`,
           model: effectiveModelId,
@@ -2009,7 +2014,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
             effectiveModelId,
             route.type === 'skill'
               ? (route.skill?.name ?? null)
-              : (useChatStore.getState().conversations[conversationId]?.activeSkills?.[0] ?? null),
+              : (getConversationReader().getConversation(conversationId)?.activeSkills?.[0] ?? null),
             {
               inputTokens: usageSnapshot.inputTokens,
               outputTokens: usageSnapshot.outputTokens,
@@ -2049,7 +2054,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
         // updateLastMessage would either clobber the new placeholder or update the
         // wrong line. Awaiting here adds a few ms of latency but guarantees disk
         // state matches in-memory state before the loop continues.
-        const turnMsg = useChatStore.getState().conversations[conversationId]
+        const turnMsg = getConversationReader().getConversation(conversationId)
           ?.messages.find((m) => m.id === assistantMsgId);
         if (turnMsg) {
           try {
@@ -2239,7 +2244,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
         // pollute the workspace. Both memory extraction AND self-evolution
         // proposals share this gate (they're two sides of the same
         // "agent writes stuff only when user can review" invariant).
-        const convRecord = chatStore.conversations[conversationId];
+        const convRecord = getConversationReader().getConversation(conversationId);
         const interactiveDesktop = isInteractiveDesktop(options, convRecord);
 
         // Auto-extract memories from desktop conversations (non-blocking).
@@ -2278,7 +2283,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
             logger.warn('[proposalSignal] compute failed', { err: err instanceof Error ? err.message : String(err) });
           }
         }
-        const convTitle = useChatStore.getState().conversationIndex[conversationId]?.title ?? getI18n().chat.notificationTaskFallback;
+        const convTitle = getConversationReader().getIndexEntry(conversationId)?.title ?? getI18n().chat.notificationTaskFallback;
         notifyTaskCompleted(convTitle, conversationId);
       }
     } catch (err) {
@@ -2299,7 +2304,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
         // Backfill missing tool results for interrupted tool calls.
         // Without this, orphaned tool_use blocks cause API 400 errors on the next turn.
         for (const tc of collectedToolCalls) {
-          const existing = useChatStore.getState().conversations[conversationId]
+          const existing = getConversationReader().getConversation(conversationId)
             ?.messages.find((m) => m.id === assistantMsgId)
             ?.toolCalls?.find((t) => t.id === tc.id);
           if (existing && existing.result === undefined) {
@@ -2338,7 +2343,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
         // arrived before any text/thinking/tool call would otherwise persist as
         // a blank assistant bubble (live now, and after reload via the JSONL
         // copy written at creation — sanitizeLoadedMessages drops that one).
-        const placeholder = useChatStore.getState().conversations[conversationId]
+        const placeholder = getConversationReader().getConversation(conversationId)
           ?.messages.find((m) => m.id === assistantMsgId);
         if (placeholder) {
           const placeholderText = typeof placeholder.content === 'string'
@@ -2413,7 +2418,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
       const isLikelyVisionError = isVisionUnsupportedError(
         errorCode,
         err instanceof LLMError ? err.statusCode : undefined,
-        conversationHasImages(useChatStore.getState().conversations[conversationId]?.messages ?? []),
+        conversationHasImages(getConversationReader().getConversation(conversationId)?.messages ?? []),
         modelSupportsVision,
       );
       const isOllamaForbidden = errorCode === 'authentication'
@@ -2458,7 +2463,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
       // Mark conversation as error and send notification
       chatDelta.setConversationStatus(conversationId, 'error');
 
-      const convTitle = useChatStore.getState().conversationIndex[conversationId]?.title ?? getI18n().chat.notificationTaskFallback;
+      const convTitle = getConversationReader().getIndexEntry(conversationId)?.title ?? getI18n().chat.notificationTaskFallback;
       notifyTaskError(convTitle, conversationId);
       exitReason = 'error';
       exitError = errorMessage;

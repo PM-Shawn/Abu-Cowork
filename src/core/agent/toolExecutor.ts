@@ -20,8 +20,8 @@ import { setComputerUseActive, incrementComputerUseStep, setCurrentAction, isSes
 import { getI18n } from '../../i18n';
 import { TOOL_NAMES } from '../tools/toolNames';
 import { invoke } from '@tauri-apps/api/core';
-import { useChatStore } from '../../stores/chatStore';
 import { getChatDelta } from './ports/chatDelta';
+import { getConversationReader } from './ports/conversationReader';
 import { setLoopContext, clearLoopContext } from './permissionBridge';
 import type { EventRouter } from './eventRouter';
 import { createLogger } from '../logging/logger';
@@ -405,7 +405,7 @@ export async function executeToolBatch(params: ToolBatchParams): Promise<ToolBat
       // Fire-and-forget: snapshot failures must never block the agent loop.
       // Uses the un-offloaded toolResult so extractFileOutputs can still parse stdout.
       if (!error && matchedTc) {
-        const workspacePath = useChatStore.getState().conversations[conversationId]?.workspacePath ?? null;
+        const workspacePath = getConversationReader().getConversation(conversationId)?.workspacePath ?? null;
         import('../session/outputSnapshots').then(({ snapshotToolOutputs }) => {
           snapshotToolOutputs(conversationId, {
             id,

@@ -9,7 +9,24 @@ permissions:
   contents: write
 
 jobs:
+  # Gate the whole release: version must agree across the four manifests and,
+  # for non-pre-release tags, both CHANGELOG.md (English) and CHANGELOG.zh-CN.md
+  # (Chinese) must have this version's section in the right language. Fails the
+  # release before any build/sign/notarize runs, so a misprepared release can't
+  # ship (e.g. shipping English to zh users because the Chinese entry was
+  # forgotten). See scripts/release-preflight.mjs and RELEASING.md.
+  preflight:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 20
+      - name: Validate release consistency
+        run: node scripts/release-preflight.mjs --tag "${{ github.ref_name }}"
+
   build:
+    needs: preflight
     strategy:
       fail-fast: false
       matrix:

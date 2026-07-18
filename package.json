@@ -21,6 +21,7 @@
     "gen:models": "tsx scripts/gen-model-data.ts",
     "gen:models:check": "tsx scripts/gen-model-data.ts --check",
     "typecheck": "tsc -b --noEmit",
+    "release:check": "node scripts/release-preflight.mjs",
     "pretest": "npm run gen:models:check",
     "test": "vitest run",
     "test:watch": "vitest",

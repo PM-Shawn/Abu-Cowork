@@ -48,10 +48,11 @@ Inspired by Claude Code's Cowork mode. Features multi-agent architecture with ex
      - **`CHANGELOG.zh-CN.md`（中文）** → 驱动 latest.json 的 `notes_i18n["zh-CN"]`。
      - CI publish job 把两份各抽该版段写进 `latest.json.notes_i18n`；**客户端 `checker.ts` 按 UI locale（`getLocale()`）选对应语言**推给更新弹窗，官网按页面语言取。
      - ⚠️ 两份同版号、结构对应，但**语言不混**：CHANGELOG.md 全英文、CHANGELOG.zh-CN.md 全中文。v0.31.0 之前的历史仅英文版有，不用回填。
+   - ✅ **发版前跑 `npm run release:check`**（`scripts/release-preflight.mjs`）：校验四处版本号一致 + 两份 CHANGELOG 该版段都在且语言正确（英文版无 CJK、中文版有中文）。CI 也把它挂成 `release.yml` 的 `preflight` job（tag 一推先跑，**任一项不对就整个发版红、包都不出**）；本地先跑省一次 CI 往返。
 3. `git checkout main && git merge dev` — **只 merge，绝不 cherry-pick**。正常情况是干净快进/合并；若有冲突且分支已对齐，多半是真冲突，逐个解。
 4. `git tag vX.Y.Z` — 打 tag，格式为 `v` + 语义化版本号。
-5. `git push origin main --tags` — 推送 main 和 tag。
-6. 在 GitHub 创建 Release，按 [`RELEASING.md`](./RELEASING.md) 的模板写 release notes（patch / minor / major 三档）。
+5. `git push origin main` 然后**单独推这一个 tag**：`git push origin vX.Y.Z`。⚠️ **别用 `git push origin main --tags`** —— 一次推 >3 个 tag 会触发 GitHub「不为这些 tag 生成 push 事件」的限制，`Release` workflow 就不触发了（本会话踩过：害得删 tag 重推）。单独推这一个 tag 就没这问题。
+6. `Release` workflow 自动构建三平台 + 签名公证 + 建 GitHub Release（英文，从 CHANGELOG.md）+ 生成 `latest.json`（`notes` + `notes_i18n`）传 OSS。如需给 Release 标题加副标题，等 CI 建出后 `gh release edit`（CI 只给裸 tag 标题）。
 
 **热修（hotfix）也不许 cherry-pick**：要么在 `dev` 上修完走正常发版；要么从对应 tag 拉 `release/vX.Y` 分支修完打 tag，**再把该分支 merge 回 `dev`**（不留孤儿 commit）。目标永远是"任何进过 main 的东西，历史上都能从 dev 追溯到"。
 

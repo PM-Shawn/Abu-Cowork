@@ -162,6 +162,9 @@ Consistent with the house voice style — use numbers when you have them:
 
 ## Checklist (run through before creating a release)
 
+- [ ] **Both changelogs written for this version**: `CHANGELOG.md` (English) and `CHANGELOG.zh-CN.md` (Chinese)?
+- [ ] **`npm run release:check` passes** (version consistency + both changelog sections in the right language)? CI also gates this in the `preflight` job, but run it locally first.
+- [ ] Tag pushed **on its own** (`git push origin vX.Y.Z`), not with `--tags`?
 - [ ] Does the title have a descriptive subtitle?
 - [ ] Does every bullet clearly state the user-facing impact?
 - [ ] Is there at least one specific number?
@@ -184,8 +187,11 @@ Correct order:
 # 1. Write release notes to a file (avoids shell escaping issues)
 vim /tmp/release-notes.md
 
-# 2. Push the tag (triggers CI to auto-create the empty release + run the build)
-git push origin main --tags
+# 2. Push main, then the tag ON ITS OWN (triggers CI: preflight → build → release)
+#    Do NOT use `git push origin main --tags`: pushing >3 tags at once makes
+#    GitHub skip the tag push events, so the Release workflow never fires.
+git push origin main
+git push origin vX.Y.Z
 
 # 3. Wait for CI to create the release (visible in release list is enough — no need to wait for assets)
 gh release list --limit 3

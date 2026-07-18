@@ -21,6 +21,7 @@ import { getI18n } from '../../i18n';
 import { TOOL_NAMES } from '../tools/toolNames';
 import { invoke } from '@tauri-apps/api/core';
 import { useChatStore } from '../../stores/chatStore';
+import { getChatDelta } from './ports/chatDelta';
 import { setLoopContext, clearLoopContext } from './permissionBridge';
 import type { EventRouter } from './eventRouter';
 import { createLogger } from '../logging/logger';
@@ -114,13 +115,13 @@ export async function executeToolBatch(params: ToolBatchParams): Promise<ToolBat
     contextUsagePercent,
   } = params;
 
-  const chatStore = useChatStore.getState();
+  const chatDelta = getChatDelta();
 
   // Update the assistant message with tool calls
-  chatStore.setMessageToolCalls(conversationId, assistantMsgId, collectedToolCalls);
+  chatDelta.setMessageToolCalls(conversationId, assistantMsgId, collectedToolCalls);
 
   // Execute tools in parallel using Promise.allSettled
-  chatStore.setAgentStatus('tool-calling', `${collectedToolCalls.length} tools`);
+  chatDelta.setAgentStatus('tool-calling', `${collectedToolCalls.length} tools`);
 
   // Expose loop context for delegate_to_agent tool (per-loop, supports concurrent agents)
   setLoopContext(loopId, {
@@ -221,7 +222,7 @@ export async function executeToolBatch(params: ToolBatchParams): Promise<ToolBat
       const durationMs = Date.now() - startTime;
       completedCount++;
       if (totalCount > 1) {
-        chatStore.setAgentStatus('tool-calling', `${completedCount}/${totalCount}: ${tc.name}`);
+        chatDelta.setAgentStatus('tool-calling', `${completedCount}/${totalCount}: ${tc.name}`);
       }
       // Extract string for display/hooks; keep rich content for LLM
       const resultStr = toolResultToString(rawResult);
@@ -250,7 +251,7 @@ export async function executeToolBatch(params: ToolBatchParams): Promise<ToolBat
       const durationMs = Date.now() - startTime;
       completedCount++;
       if (totalCount > 1) {
-        chatStore.setAgentStatus('tool-calling', `${completedCount}/${totalCount}: ${tc.name}`);
+        chatDelta.setAgentStatus('tool-calling', `${completedCount}/${totalCount}: ${tc.name}`);
       }
       const errorMsg = err instanceof Error ? err.message : String(err);
       // Emit postToolCall hook for errors too
@@ -415,7 +416,7 @@ export async function executeToolBatch(params: ToolBatchParams): Promise<ToolBat
         }).catch(() => {});
       }
 
-      chatStore.updateToolCall(conversationId, assistantMsgId, id, storedResult, resultContent, error, hideScreenshot);
+      chatDelta.updateToolCall(conversationId, assistantMsgId, id, storedResult, resultContent, error, hideScreenshot);
 
       // Update TaskExecutionStore via EventRouter
       const stepId = toolCallToStepId.get(id);
@@ -430,7 +431,7 @@ export async function executeToolBatch(params: ToolBatchParams): Promise<ToolBat
       // Use index to find the corresponding tool call
       const tc = collectedToolCalls[i];
       if (tc) {
-        chatStore.updateToolCall(conversationId, assistantMsgId, tc.id, `Error: ${result.reason}`, undefined, true);
+        chatDelta.updateToolCall(conversationId, assistantMsgId, tc.id, `Error: ${result.reason}`, undefined, true);
 
         // Update TaskExecutionStore via EventRouter
         const stepId = toolCallToStepId.get(tc.id);

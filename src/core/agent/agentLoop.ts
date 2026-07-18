@@ -11,8 +11,9 @@ import { getEffectiveModel, getActiveApiKey, getActiveProvider, resolveAgentMode
 import { getSettingsReader, type SettingsReader } from './ports/settingsReader';
 import { getChatDelta } from './ports/chatDelta';
 import { getConversationReader } from './ports/conversationReader';
-import { useDiscoveredCapsStore } from '../../stores/discoveredCapabilitiesStore';
-import { useWorkspaceStore } from '../../stores/workspaceStore';
+import { getWorkspaceReader } from './ports/workspaceReader';
+import { getCapsPort } from './ports/capsPort';
+import { getExecutionPort } from './ports/executionPort';
 import { useTaskExecutionStore } from '../../stores/taskExecutionStore';
 import { createEventRouter } from './eventRouter';
 import { routeInput, buildSystemPromptSections, type RouteResult, type IMContext } from './orchestrator';
@@ -191,16 +192,15 @@ import { clearPlanMode } from './planMode';
 
 /** Persist execution steps onto the last assistant message for the given loop, then evict from memory */
 export function persistExecutionSnapshot(conversationId: string, loopId: string): void {
-  const store = useTaskExecutionStore.getState();
-  const exec = store.getExecutionByLoopId(loopId);
+  // NOTE: persistExecutionSnapshot is a standalone top-level function (not
+  // nested in runAgentLoop), so it has no access to any cached local —
+  // fetches getExecutionPort()/getChatDelta() fresh at each call, same
+  // pattern as deactivateAllSkills() (see CHAT-PROBE-REPORT.md §2c).
+  const exec = getExecutionPort().getExecutionByLoopId(loopId);
   // Return early only when there is truly nothing to persist.
   if (!exec || (exec.steps.length === 0 && exec.plannedSteps.length === 0)) return;
 
   // Persist execution steps snapshot if any.
-  // NOTE: persistExecutionSnapshot is a standalone top-level function (not
-  // nested in runAgentLoop), so it has no access to the cached `chatDelta`
-  // local — fetches getChatDelta() fresh, same pattern as
-  // deactivateAllSkills() (see CHAT-PROBE-REPORT.md §2c).
   if (exec.steps.length > 0) {
     getChatDelta().setExecutionStepsSnapshot(conversationId, loopId, snapshotExecutionSteps(exec.steps));
   }
@@ -211,7 +211,7 @@ export function persistExecutionSnapshot(conversationId: string, loopId: string)
   if (exec.plannedSteps.length > 0) {
     getChatDelta().setPlannedStepsSnapshot(conversationId, loopId, exec.plannedSteps);
   }
-  store.evictExecution(exec.id);
+  getExecutionPort().evictExecution(exec.id);
 }
 
 /**
@@ -750,7 +750,15 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
   const chatStore = useChatStore.getState();
   const chatDelta = getChatDelta();
   const settings = settingsReader.getSnapshot();
+  // NOTE: `taskExecutionStore` here stays a direct `useTaskExecutionStore.getState()`
+  // capture (not routed through ExecutionPort) — it's threaded as-is into
+  // `createEventRouter`'s `deps.executionStore` below, a distinct injection
+  // seam for event-routing step mutations that's out of scope for this batch
+  // (see executionPort.ts's "Scope note" and C-REPORT.md). The lifecycle
+  // calls (createExecution/cancelExecution) go through `executionPort`
+  // instead, right below.
   const taskExecutionStore = useTaskExecutionStore.getState();
+  const executionPort = getExecutionPort();
 
   // ── Per-conversation model pin ──────────────────────────────────────────
   // A conversation runs on its own pinned model (conv.model); a new or legacy
@@ -808,7 +816,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
   }
 
   // Create TaskExecution for this agent loop (after apiKey check to avoid leaking executions)
-  const execution = taskExecutionStore.createExecution(conversationId, loopId);
+  const execution = executionPort.createExecution(conversationId, loopId);
 
   logger.info('Agent loop started', { conversationId, loopId });
 
@@ -846,7 +854,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
     workspacePath:
       options?.imContext?.workspacePath ??
       _convForContext?.workspacePath ??
-      useWorkspaceStore.getState().currentPath,
+      getWorkspaceReader().getCurrentPath(),
     loopId,
     conversationId,
   };
@@ -932,7 +940,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
         loopId,
       });
       chatDelta.setConversationStatus(conversationId, 'idle');
-      taskExecutionStore.cancelExecution(execution.id);
+      executionPort.cancelExecution(execution.id);
       return { reason: 'error', error: `Missing required tools: ${missing.join(', ')}` };
     }
   }
@@ -1011,7 +1019,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
         chatDelta.setAgentStatus('idle');
         chatDelta.cancelStreaming(conversationId);
         chatStore.clearAbortController(conversationId);
-        taskExecutionStore.cancelExecution(execution.id);
+        executionPort.cancelExecution(execution.id);
         chatDelta.setConversationStatus(conversationId, 'idle');
         return { reason: 'aborted' };
       }
@@ -1064,7 +1072,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
       if (isUserAbort) {
         chatDelta.cancelStreaming(conversationId);
         chatStore.clearAbortController(conversationId);
-        taskExecutionStore.cancelExecution(execution.id);
+        executionPort.cancelExecution(execution.id);
         chatDelta.setConversationStatus(conversationId, 'idle');
         return { reason: 'aborted' };
       }
@@ -1167,7 +1175,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
     if (abortController.signal.aborted) {
       chatDelta.cancelStreaming(conversationId);
       chatStore.clearAbortController(conversationId);
-      taskExecutionStore.cancelExecution(execution.id);
+      executionPort.cancelExecution(execution.id);
       deactivateAllSkills(conversationId);
       chatDelta.setConversationStatus(conversationId, 'idle');
       // Report the cancellation to callers — without this an abort between turns
@@ -1340,7 +1348,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
       modelCaps = applyDeclaredCapabilities(modelCaps, modelDeclared);
       modelSupportsVision = modelCaps.vision;
       const discoveredCaps = activeProvider
-        ? useDiscoveredCapsStore.getState().get(activeProvider.id, effectiveModelId)
+        ? getCapsPort().get(activeProvider.id, effectiveModelId)
         : undefined;
       const effectiveModelMaxOutput = discoveredCaps?.maxOutputTokens ?? modelCaps.maxOutputTokens;
       const effectiveModelContext = discoveredCaps?.contextWindow ?? modelCaps.contextWindow;
@@ -1668,9 +1676,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
         // discovered limit so the next request uses it pre-emptively.
         onMaxTokensLimitDiscovered: activeProvider
           ? (limit: number) => {
-              useDiscoveredCapsStore
-                .getState()
-                .recordMaxOutputTokens(activeProvider.id, effectiveModelId, limit);
+              getCapsPort().recordMaxOutputTokens(activeProvider.id, effectiveModelId, limit);
               logger.info('Persisted discovered max_tokens limit', {
                 providerId: activeProvider.id,
                 modelId: effectiveModelId,
@@ -1879,9 +1885,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
           if (ctxMatch && activeProvider) {
             const discoveredWindow = parseInt(ctxMatch[1], 10);
             if (Number.isFinite(discoveredWindow) && discoveredWindow > 0) {
-              useDiscoveredCapsStore
-                .getState()
-                .recordContextWindow(activeProvider.id, effectiveModelId, discoveredWindow);
+              getCapsPort().recordContextWindow(activeProvider.id, effectiveModelId, discoveredWindow);
               logger.info('Persisted discovered context window', {
                 providerId: activeProvider.id,
                 modelId: effectiveModelId,
@@ -2105,7 +2109,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
       // takes precedence over runtime observation.
       if (collectedThinking && modelCaps.thinking === false && activeProvider
           && modelDeclared?.supportsReasoning !== false) {
-        useDiscoveredCapsStore.getState().recordReasoningObserved(activeProvider.id, effectiveModelId);
+        getCapsPort().recordReasoningObserved(activeProvider.id, effectiveModelId);
       }
 
       // Max Output Tokens recovery: if LLM output was truncated (not tool_use),
@@ -2250,7 +2254,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
         // Auto-extract memories from desktop conversations (non-blocking).
         // IM conversations have their own extraction in channelRouter.ts.
         if (interactiveDesktop) {
-          const wsPath = convRecord?.workspacePath ?? useWorkspaceStore.getState().currentPath;
+          const wsPath = convRecord?.workspacePath ?? getWorkspaceReader().getCurrentPath();
           import('../memdir/extractor').then(({ extractMemoriesFromConversation }) =>
             extractMemoriesFromConversation(conversationId, wsPath)
           ).catch(() => {});
@@ -2265,7 +2269,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
         // The gate logic (interactiveDesktop + workspace bound) lives
         // in `shouldComputeProposalSignal` so it's unit-testable. Full
         // rationale in that function's docstring (Task #49 + #51).
-        const wsPath = convRecord?.workspacePath ?? useWorkspaceStore.getState().currentPath;
+        const wsPath = convRecord?.workspacePath ?? getWorkspaceReader().getCurrentPath();
         if (
           exitReason === 'completed' &&
           shouldComputeProposalSignal(options, convRecord, wsPath)
@@ -2371,7 +2375,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
         chatDelta.cancelStreaming(conversationId);
         chatStore.clearAbortController(conversationId);
         // Cancel the TaskExecution
-        taskExecutionStore.cancelExecution(execution.id);
+        executionPort.cancelExecution(execution.id);
         // Auto-deactivate skills on abort
         deactivateAllSkills(conversationId);
         // Clear crash recovery checkpoint — loop aborted by user

@@ -88,12 +88,12 @@ export default function ModelsSection() {
                 <span className="text-minor text-[var(--abu-text-tertiary)]">{t.settings.apiKey}</span>
                 <span className="text-body text-[var(--abu-text-secondary)]">
                   {hasApiKey ? (
-                    <span className="flex items-center gap-1 text-green-600">
+                    <span className="flex items-center gap-1 text-[var(--abu-success)]">
                       <Check className="h-3.5 w-3.5" />
                       {t.toolbox.configured}
                     </span>
                   ) : (
-                    <span className="text-amber-600">{t.toolbox.notConfigured}</span>
+                    <span className="text-[var(--abu-warning)]">{t.toolbox.notConfigured}</span>
                   )}
                 </span>
               </div>

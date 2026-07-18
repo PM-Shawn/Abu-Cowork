@@ -16,9 +16,9 @@ const STATUS_ICON = {
 } as const;
 
 const STATUS_COLOR = {
-  passed: 'text-emerald-500',
-  failed: 'text-red-500',
-  warning: 'text-amber-500',
+  passed: 'text-[var(--abu-success)]',
+  failed: 'text-[var(--abu-danger)]',
+  warning: 'text-[var(--abu-warning)]',
   skipped: 'text-[var(--abu-text-muted)]',
   checking: 'text-[var(--abu-clay)]',
 } as const;
@@ -73,7 +73,7 @@ function ItemActions({ result }: { result: CheckResult }) {
         className="p-1 rounded-md text-[var(--abu-text-tertiary)] hover:text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-hover)] transition-colors"
         title={t.diagnostic.actionCopyError}
       >
-        {copied ? <Check className="h-3 w-3 text-emerald-500" /> : <Copy className="h-3 w-3" />}
+        {copied ? <Check className="h-3 w-3 text-[var(--abu-success)]" /> : <Copy className="h-3 w-3" />}
       </button>
     </div>
   );
@@ -108,7 +108,7 @@ export default function DiagnosticItem({ result }: { result: CheckResult }) {
           {(status === 'failed' || status === 'warning') && result.errorMessage && (
             <span className={cn(
               'text-minor break-words',
-              status === 'failed' ? 'text-red-600/90' : 'text-amber-600/90'
+              status === 'failed' ? 'text-[var(--abu-danger)]' : 'text-[var(--abu-warning)]'
             )}>
               {result.errorMessage}
             </span>

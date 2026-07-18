@@ -69,7 +69,7 @@ export default function TriggerCard({ trigger }: Props) {
           onClick={handleToggle}
           className={cn(
             'relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors',
-            isPaused ? 'bg-neutral-200' : 'bg-green-500'
+            isPaused ? 'bg-neutral-200' : 'bg-[var(--abu-success-solid)]'
           )}
         >
           <span

@@ -103,10 +103,10 @@ export default function InstructionsEditModal({ open, onClose, workspacePath }: 
         {error && (
           <div
             role="alert"
-            className="mt-3 px-3 py-2 rounded-lg bg-red-50 border border-red-200 text-minor text-red-700 leading-relaxed break-words"
+            className="mt-3 px-3 py-2 rounded-lg bg-[var(--abu-danger-bg)] border border-[var(--abu-danger)] text-minor text-[var(--abu-danger)] leading-relaxed break-words"
           >
             <div className="font-medium mb-0.5">{t.panel.instructionsSaveFailed}</div>
-            <div className="text-red-600/90">{error}</div>
+            <div className="text-[var(--abu-danger)]">{error}</div>
           </div>
         )}
 

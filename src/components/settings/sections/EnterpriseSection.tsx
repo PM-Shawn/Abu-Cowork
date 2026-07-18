@@ -57,7 +57,7 @@ export default function EnterpriseSection() {
         <h2 className="text-h-sm font-semibold text-[var(--abu-text-primary)] mb-1">
           {t.enterprise.title}
           {mode.kind === 'offline' && (
-            <span className="ml-2 text-minor text-amber-400 font-normal">{t.enterprise.offlineBadge}</span>
+            <span className="ml-2 text-minor text-[var(--abu-warning)] font-normal">{t.enterprise.offlineBadge}</span>
           )}
         </h2>
         <p className="text-body text-[var(--abu-text-tertiary)]">{t.enterprise.boundStatus}</p>
@@ -81,7 +81,7 @@ export default function EnterpriseSection() {
           {config?.licenseStatus && (
             <div className="flex justify-between">
               <dt className="text-[var(--abu-text-tertiary)]">License</dt>
-              <dd className={config.licenseStatus === 'valid' ? 'text-emerald-400' : 'text-amber-400'}>
+              <dd className={config.licenseStatus === 'valid' ? 'text-[var(--abu-success)]' : 'text-[var(--abu-warning)]'}>
                 {config.licenseStatus}
               </dd>
             </div>

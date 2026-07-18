@@ -259,7 +259,7 @@ export default function AgentsSection({ manualCreateTrigger }: AgentsSectionProp
                       {t.toolbox.agentEdit}
                     </button>
                     <button
-                      className="w-full flex items-center gap-2 px-3 py-1.5 text-minor text-red-600 hover:bg-red-50 transition-colors"
+                      className="w-full flex items-center gap-2 px-3 py-1.5 text-minor text-[var(--abu-danger)] hover:bg-[var(--abu-danger-bg)] transition-colors"
                       onClick={() => { handleDelete(selected); setMenuAgent(null); }}
                     >
                       <Trash2 className="h-3 w-3" />

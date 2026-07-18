@@ -118,8 +118,8 @@ export default function TriggerDetail() {
             <div className="flex items-center justify-between">
               <span className="text-body text-[var(--abu-text-tertiary)]">{t.trigger.status}</span>
               <span className="flex items-center gap-1.5">
-                <span className={cn('w-2 h-2 rounded-full', isPaused ? 'bg-neutral-300' : 'bg-green-500')} />
-                <span className={cn('text-body font-medium', isPaused ? 'text-[var(--abu-text-tertiary)]' : 'text-green-600')}>
+                <span className={cn('w-2 h-2 rounded-full', isPaused ? 'bg-neutral-300' : 'bg-[var(--abu-success-solid)]')} />
+                <span className={cn('text-body font-medium', isPaused ? 'text-[var(--abu-text-tertiary)]' : 'text-[var(--abu-success)]')}>
                   {isPaused ? t.trigger.statusPaused : t.trigger.statusActive}
                 </span>
               </span>
@@ -183,11 +183,11 @@ export default function TriggerDetail() {
                   <div className="text-caption text-[var(--abu-text-tertiary)] mt-0.5">{t.trigger.statsSuccessRate}</div>
                 </div>
                 <div className="bg-[var(--abu-bg-muted)] rounded-xl border border-[var(--abu-border)] p-3 text-center">
-                  <div className="text-h-md text-green-600">{completed}</div>
+                  <div className="text-h-md text-[var(--abu-success)]">{completed}</div>
                   <div className="text-caption text-[var(--abu-text-tertiary)] mt-0.5">{t.trigger.statsCompleted}</div>
                 </div>
                 <div className="bg-[var(--abu-bg-muted)] rounded-xl border border-[var(--abu-border)] p-3 text-center">
-                  <div className="text-h-md text-red-500">{errors}</div>
+                  <div className="text-h-md text-[var(--abu-danger)]">{errors}</div>
                   <div className="text-caption text-[var(--abu-text-tertiary)] mt-0.5">{t.trigger.statsErrors}</div>
                 </div>
                 <div className="bg-[var(--abu-bg-muted)] rounded-xl border border-[var(--abu-border)] p-3 text-center">
@@ -210,7 +210,7 @@ export default function TriggerDetail() {
                 className="p-2 rounded-lg text-[var(--abu-text-tertiary)] hover:bg-[var(--abu-bg-muted)] hover:text-[var(--abu-text-primary)] transition-colors shrink-0"
                 title={t.trigger.copyEndpoint}
               >
-                {copied ? <Check className="h-3.5 w-3.5 text-green-500" /> : <Copy className="h-3.5 w-3.5" />}
+                {copied ? <Check className="h-3.5 w-3.5 text-[var(--abu-success)]" /> : <Copy className="h-3.5 w-3.5" />}
               </button>
             </div>
             <div className="text-minor text-[var(--abu-text-tertiary)] mb-1">{t.trigger.curlExample}</div>
@@ -264,7 +264,7 @@ export default function TriggerDetail() {
 
             <button
               onClick={() => setShowDeleteConfirm(true)}
-              className="flex items-center gap-1.5 px-4 py-2 rounded-lg text-body font-medium text-red-500 hover:bg-red-50 transition-colors"
+              className="flex items-center gap-1.5 px-4 py-2 rounded-lg text-body font-medium text-[var(--abu-danger)] hover:bg-[var(--abu-danger-bg)] transition-colors"
             >
               <Trash2 className="h-3.5 w-3.5" />
               {t.trigger.delete}

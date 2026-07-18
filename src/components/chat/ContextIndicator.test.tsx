@@ -48,7 +48,7 @@ describe('ContextIndicator', () => {
     render(<ContextIndicator conversationId="c1" />);
     const progress = screen.getByTestId('context-indicator').querySelectorAll('circle')[1];
     const className = progress.getAttribute('class') || '';
-    expect(className).toContain('text-red-500');
+    expect(className).toContain('text-[var(--abu-danger)]');
     expect(className).toContain('animate-pulse');
   });
 

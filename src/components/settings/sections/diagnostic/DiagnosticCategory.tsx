@@ -69,8 +69,8 @@ export default function DiagnosticCategory({ category, label, icon: Icon, result
           <h3 className="text-body font-medium text-[var(--abu-text-primary)]">{label}</h3>
           <span className={cn(
             'text-caption tabular-nums',
-            summary.fail > 0 ? 'text-red-600' :
-            summary.warn > 0 ? 'text-amber-600' :
+            summary.fail > 0 ? 'text-[var(--abu-danger)]' :
+            summary.warn > 0 ? 'text-[var(--abu-warning)]' :
             'text-[var(--abu-text-muted)]'
           )}>
             · {summaryText}

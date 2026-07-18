@@ -215,7 +215,7 @@ export function CollapsibleCodeBlock({ codeString, language }: { codeString: str
             customStyle={{
               margin: 0,
               borderRadius: 0,
-              fontSize: '13px',
+              fontSize: 'var(--text-minor)', /* token-driven — aligns code blocks with the 12px content tier */
               padding: '12px 16px',
               overflowX: 'auto',
               maxWidth: '100%',
@@ -368,7 +368,7 @@ function buildMarkdownComponents(
     },
     blockquote({ children }: { children?: ReactNode }) {
       return (
-        <blockquote className="my-3 pl-3 border-l-2 italic border-orange-300 text-[var(--abu-text-tertiary)]">
+        <blockquote className="my-3 pl-3 border-l-2 italic border-[var(--abu-clay)] text-[var(--abu-text-tertiary)]">
           {children}
         </blockquote>
       );

@@ -23,14 +23,14 @@ function StatusBadge({ provider, t }: { provider: ProviderInstance; t: ReturnTyp
   switch (provider.status) {
     case 'verified':
       return (
-        <span className="inline-flex items-center gap-1 text-caption text-green-600">
+        <span className="inline-flex items-center gap-1 text-caption text-[var(--abu-success)]">
           <Check className="h-3 w-3" />
           {provider.statusLatency ? `${provider.statusLatency}ms` : t.settings.statusConnected}
         </span>
       );
     case 'failed':
       return (
-        <span className="inline-flex items-center gap-1 text-caption text-red-500 max-w-[200px] truncate" title={provider.statusMessage}>
+        <span className="inline-flex items-center gap-1 text-caption text-[var(--abu-danger)] max-w-[200px] truncate" title={provider.statusMessage}>
           <X className="h-3 w-3 shrink-0" />
           {t.settings.statusFailed}
         </span>
@@ -44,7 +44,7 @@ function StatusBadge({ provider, t }: { provider: ProviderInstance; t: ReturnTyp
       );
     default:
       return (
-        <span className="inline-flex items-center gap-1 text-caption text-amber-500">
+        <span className="inline-flex items-center gap-1 text-caption text-[var(--abu-warning)]">
           <AlertTriangle className="h-3 w-3" />
           {t.settings.statusUnchecked}
         </span>
@@ -124,14 +124,14 @@ export default function ProviderCard({ provider, isActive, onEdit }: ProviderCar
       className={cn(
         'group rounded-xl border px-4 py-2.5 transition-colors',
         keyDecryptFailed
-          ? 'border-red-300 bg-red-50/30'
+          ? 'border-[var(--abu-danger)] bg-[var(--abu-danger-bg)]'
           : 'border-[var(--abu-border)] hover:border-[var(--abu-clay-ring)]',
         isActive && 'ring-1 ring-[var(--abu-clay-ring)]',
         !provider.enabled && !keyDecryptFailed && 'opacity-50',
       )}
     >
       {keyDecryptFailed && (
-        <div className="flex items-start gap-1.5 text-caption text-red-700 mb-1.5">
+        <div className="flex items-start gap-1.5 text-caption text-[var(--abu-danger)] mb-1.5">
           <AlertTriangle className="h-3 w-3 shrink-0 mt-0.5" />
           <span>{t.settings.apiKeyDecryptFailed}</span>
         </div>
@@ -177,7 +177,7 @@ export default function ProviderCard({ provider, isActive, onEdit }: ProviderCar
           </button>
           <button
             onClick={() => setShowDeleteConfirm(true)}
-            className="p-1 rounded text-[var(--abu-text-muted)] hover:text-red-500 hover:bg-red-50 transition-colors"
+            className="p-1 rounded text-[var(--abu-text-muted)] hover:text-[var(--abu-danger)] hover:bg-[var(--abu-danger-bg)] transition-colors"
             title={t.settings.deleteProvider}
           >
             <Trash2 className="h-3.5 w-3.5" />

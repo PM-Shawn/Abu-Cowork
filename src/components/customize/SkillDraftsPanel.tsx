@@ -259,7 +259,7 @@ function DraftCard({
           <div className="flex items-center gap-1.5 mt-1 text-caption text-[var(--abu-text-muted)]">
             <span>{format(t.toolbox.draftsCreatedAgo, { when: createdWhen })}</span>
             <span>·</span>
-            <span className={cn(isExpired && 'text-red-500 font-medium')}>
+            <span className={cn(isExpired && 'text-[var(--abu-danger)] font-medium')}>
               {isExpired ? t.toolbox.draftsExpired : format(t.toolbox.draftsExpiresIn, { when: expiresWhen })}
             </span>
           </div>
@@ -275,7 +275,7 @@ function DraftCard({
           <button
             onClick={() => onReject(draft.skillName)}
             title={t.toolbox.draftsReject}
-            className="p-1 rounded hover:bg-red-50 text-[var(--abu-text-muted)] hover:text-red-500 transition-colors"
+            className="p-1 rounded hover:bg-[var(--abu-danger-bg)] text-[var(--abu-text-muted)] hover:text-[var(--abu-danger)] transition-colors"
           >
             {isExpired ? <Trash2 className="h-3.5 w-3.5" /> : <X className="h-3.5 w-3.5" />}
           </button>

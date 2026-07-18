@@ -429,7 +429,7 @@ export default function RenderableCodeBlock({
         </button>
         <div className="w-px h-4 bg-[var(--abu-bg-pressed)] mx-0.5" />
         <button onClick={handleCopy} className={btnClass} title={copied ? '✓' : 'Copy'}>
-          {copied ? <Check className="h-3.5 w-3.5 text-green-600" /> : <Copy className="h-3.5 w-3.5" />}
+          {copied ? <Check className="h-3.5 w-3.5 text-[var(--abu-success)]" /> : <Copy className="h-3.5 w-3.5" />}
         </button>
         <button onClick={handleDownload} className={btnClass} title="Download">
           <Download className="h-3.5 w-3.5" />
@@ -493,7 +493,7 @@ export default function RenderableCodeBlock({
     // Error-only fallback for seamless mode
     const seamlessErrorFallback = isError && !showSource && (
       <div>
-        <div className="rounded-t-lg bg-red-50 border border-red-200 border-b-0 px-3 py-2 text-minor text-red-600">
+        <div className="rounded-t-lg bg-[var(--abu-danger-bg)] border border-[var(--abu-danger)] border-b-0 px-3 py-2 text-minor text-[var(--abu-danger)]">
           {config.i18n.renderError}
         </div>
         <CollapsibleCodeBlock codeString={code} language={config.fallbackLanguage} />
@@ -537,7 +537,7 @@ export default function RenderableCodeBlock({
   // Error-only fallback (showSource is handled inside the bordered container)
   const errorFallback = isError && !showSource && (
     <div>
-      <div className="rounded-t-lg bg-red-50 border border-red-200 border-b-0 px-3 py-2 text-minor text-red-600">
+      <div className="rounded-t-lg bg-[var(--abu-danger-bg)] border border-[var(--abu-danger)] border-b-0 px-3 py-2 text-minor text-[var(--abu-danger)]">
         {config.i18n.renderError}
       </div>
       <CollapsibleCodeBlock codeString={code} language={config.fallbackLanguage} />

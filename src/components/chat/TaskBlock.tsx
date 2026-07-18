@@ -405,11 +405,11 @@ export default function TaskBlock({ steps, executionSteps, isActive, onRetry }: 
           {hasError && !isActive && (displayMode === 'expanded' || !needsTruncation) && (
             <div className="flex items-start gap-3">
               <div className="w-3.5 h-3.5 mt-0.5 flex items-center justify-center shrink-0">
-                <AlertCircle className="h-3.5 w-3.5 text-red-400" />
+                <AlertCircle className="h-3.5 w-3.5 text-[var(--abu-danger)]" />
               </div>
               <div className="flex-1 min-w-0 pb-2">
                 <div className="flex items-center gap-2">
-                  <span className="text-body leading-5 text-red-500">
+                  <span className="text-body leading-5 text-[var(--abu-danger)]">
                     {t.task.errorOccurred}
                   </span>
                   {onRetry && (
@@ -633,7 +633,7 @@ function TaskStepItem({ step, showConnector, hasLaterToolStep, locale, t }: {
           ) : isRunning ? (
             <Loader2 className="h-3.5 w-3.5 text-[var(--abu-clay)] animate-spin" />
           ) : isError ? (
-            <AlertCircle className="h-3.5 w-3.5 text-red-400" />
+            <AlertCircle className="h-3.5 w-3.5 text-[var(--abu-danger)]" />
           ) : (
             <Icon className="h-3.5 w-3.5 text-[var(--abu-text-muted)]" />
           )}
@@ -649,13 +649,13 @@ function TaskStepItem({ step, showConnector, hasLaterToolStep, locale, t }: {
         <div
           className={cn(
             'text-body leading-5',
-            isRunning ? 'text-[var(--abu-text-tertiary)]' : isError ? 'text-red-500' : 'text-[var(--abu-text-muted)]'
+            isRunning ? 'text-[var(--abu-text-tertiary)]' : isError ? 'text-[var(--abu-danger)]' : 'text-[var(--abu-text-muted)]'
           )}
         >
           {stepLabel}
           {/* Token warning for large tool outputs */}
           {isCompleted && step.toolResult && step.toolResult.length > 10000 && (
-            <span className="ml-1.5 inline-flex items-center gap-0.5 px-1.5 py-0 rounded bg-amber-50 text-amber-600 text-caption" title={`${Math.round(step.toolResult.length / 1000)}K chars`}>
+            <span className="ml-1.5 inline-flex items-center gap-0.5 px-1.5 py-0 rounded bg-[var(--abu-warning-bg)] text-[var(--abu-warning)] text-caption" title={`${Math.round(step.toolResult.length / 1000)}K chars`}>
               <AlertCircle className="h-3 w-3" />
               {Math.round(step.toolResult.length / 1000)}K
             </span>

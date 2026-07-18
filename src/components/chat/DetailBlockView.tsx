@@ -40,10 +40,10 @@ export default function DetailBlockView({ block, onToggle, onLoadMore }: DetailB
     switch (block.type) {
       case 'error':
         return {
-          labelBg: 'bg-red-100',
-          labelText: 'text-red-600',
-          contentBg: 'bg-red-50',
-          borderColor: 'border-red-200',
+          labelBg: 'bg-[var(--abu-danger-bg)]',
+          labelText: 'text-[var(--abu-danger)]',
+          contentBg: 'bg-[var(--abu-danger-bg)]',
+          borderColor: 'border-[var(--abu-danger)]',
         };
       case 'script':
         return {
@@ -54,10 +54,10 @@ export default function DetailBlockView({ block, onToggle, onLoadMore }: DetailB
         };
       case 'list':
         return {
-          labelBg: 'bg-blue-50',
-          labelText: 'text-blue-600',
-          contentBg: 'bg-blue-50/50',
-          borderColor: 'border-blue-100',
+          labelBg: 'bg-[var(--abu-info-bg)]',
+          labelText: 'text-[var(--abu-info)]',
+          contentBg: 'bg-[var(--abu-info-bg)]',
+          borderColor: 'border-[var(--abu-info)]',
         };
       case 'json':
         return {
@@ -68,10 +68,10 @@ export default function DetailBlockView({ block, onToggle, onLoadMore }: DetailB
         };
       case 'image':
         return {
-          labelBg: 'bg-emerald-50',
-          labelText: 'text-emerald-600',
+          labelBg: 'bg-[var(--abu-success-bg)]',
+          labelText: 'text-[var(--abu-success)]',
           contentBg: 'bg-[var(--abu-bg-base)]',
-          borderColor: 'border-emerald-100',
+          borderColor: 'border-[var(--abu-success)]',
         };
       default:
         return {
@@ -112,7 +112,7 @@ export default function DetailBlockView({ block, onToggle, onLoadMore }: DetailB
       {/* Content area */}
       <pre className={cn(
         'px-3 py-2 text-minor font-mono whitespace-pre-wrap break-all overflow-x-auto max-h-[300px] overflow-y-auto',
-        block.type === 'error' ? 'text-red-600' : 'text-[var(--abu-text-tertiary)]'
+        block.type === 'error' ? 'text-[var(--abu-danger)]' : 'text-[var(--abu-text-tertiary)]'
       )}>
         {block.content}
       </pre>
@@ -180,20 +180,20 @@ export default function DetailBlockView({ block, onToggle, onLoadMore }: DetailB
         {block.parsedItems.slice(0, 5).map((item, index) => (
           <div key={index} className="px-3 py-2 hover:bg-[var(--abu-bg-hover)] transition-colors">
             <div className="flex items-start gap-2">
-              {item.icon && <span className="text-body">{item.icon}</span>}
+              {item.icon && <span className="text-minor">{item.icon}</span>}
               <div className="flex-1 min-w-0">
                 {item.url ? (
                   <a
                     href={item.url}
                     target="_blank"
                     rel="noopener noreferrer"
-                    className="text-body text-[var(--abu-text-tertiary)] hover:text-[var(--abu-clay)] font-medium flex items-center gap-1"
+                    className="text-minor text-[var(--abu-text-tertiary)] hover:text-[var(--abu-clay)] font-medium flex items-center gap-1"
                   >
                     {item.title}
                     <ExternalLink className="h-3 w-3 opacity-50" />
                   </a>
                 ) : (
-                  <div className="text-body text-[var(--abu-text-tertiary)] font-medium">{item.title}</div>
+                  <div className="text-minor text-[var(--abu-text-tertiary)] font-medium">{item.title}</div>
                 )}
                 {item.description && (
                   <div className="text-caption text-[var(--abu-text-muted)] mt-0.5 line-clamp-2">

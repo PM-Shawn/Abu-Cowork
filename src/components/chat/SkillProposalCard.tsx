@@ -381,7 +381,7 @@ export default function SkillProposalCard({
         <button
           onClick={handleRejectCategory}
           disabled={processing}
-          className="px-3 py-1 rounded-md text-minor text-[var(--abu-text-muted)] hover:text-red-500 hover:bg-red-50 transition-colors flex items-center gap-1 disabled:opacity-60"
+          className="px-3 py-1 rounded-md text-minor text-[var(--abu-text-muted)] hover:text-[var(--abu-danger)] hover:bg-[var(--abu-danger-bg)] transition-colors flex items-center gap-1 disabled:opacity-60"
           title={t.toolbox.skillProposalCardRejectCategory}
         >
           <Ban className="h-3 w-3" />

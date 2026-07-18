@@ -48,7 +48,7 @@ function sourceBadge(skill: Skill): SourceBadge {
 const SOURCE_BADGE_TONE: Record<'neutral' | 'clay' | 'blue' | 'slate', string> = {
   neutral: 'bg-[var(--abu-bg-muted)] text-[var(--abu-text-muted)]',
   clay: 'bg-[var(--abu-clay-tint)] text-[var(--abu-clay)]',
-  blue: 'bg-blue-50 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400',
+  blue: 'bg-[var(--abu-info-bg)] text-[var(--abu-info)]',
   slate: 'bg-slate-100 dark:bg-[var(--abu-bg-muted)] text-slate-600 dark:text-[var(--abu-text-secondary)]',
 };
 
@@ -467,7 +467,7 @@ export default function SkillsSection({ manualCreateTrigger, showUploadModal: ex
                         {t.toolbox.skillEdit}
                       </button>
                       <button
-                        className="w-full flex items-center gap-2 px-3 py-1.5 text-minor text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors"
+                        className="w-full flex items-center gap-2 px-3 py-1.5 text-minor text-[var(--abu-danger)] hover:bg-[var(--abu-danger-bg)] transition-colors"
                         onClick={() => { handleDelete(selected); setMenuSkill(null); }}
                       >
                         <Trash2 className="h-3 w-3" />

@@ -62,7 +62,7 @@ export default function MarketplaceCard({
             className={cn(
               'flex items-center justify-center gap-1.5 w-[68px] py-1 rounded-md text-minor font-medium transition-colors',
               isInstalled
-                ? 'bg-green-50 text-green-600 cursor-default'
+                ? 'bg-[var(--abu-success-bg)] text-[var(--abu-success)] cursor-default'
                 : isInstalling
                   ? 'bg-[var(--abu-bg-active)] text-[var(--abu-text-muted)] cursor-wait'
                   : 'bg-[var(--abu-clay)] text-white hover:bg-[var(--abu-clay-hover)]'
@@ -88,7 +88,7 @@ export default function MarketplaceCard({
           {isInstalled && onUninstall && (
             <button
               onClick={(e) => { e.stopPropagation(); onUninstall(); }}
-              className="absolute right-1 bottom-1 p-1 text-[var(--abu-text-muted)] hover:text-red-500 hover:bg-red-50 rounded transition-colors opacity-0 group-hover:opacity-100"
+              className="absolute right-1 bottom-1 p-1 text-[var(--abu-text-muted)] hover:text-[var(--abu-danger)] hover:bg-[var(--abu-danger-bg)] rounded transition-colors opacity-0 group-hover:opacity-100"
             >
               <Trash2 className="h-3.5 w-3.5" />
             </button>

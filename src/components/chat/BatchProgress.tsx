@@ -64,7 +64,7 @@ export default function BatchProgress({ toolCallId }: BatchProgressProps) {
             size="xs"
             variant="ghost"
             onClick={handleStop}
-            className="h-5 px-2 text-caption text-[var(--abu-text-muted)] hover:text-red-400 shrink-0"
+            className="h-5 px-2 text-caption text-[var(--abu-text-muted)] hover:text-[var(--abu-danger)] shrink-0"
           >
             {t.batch.stopButton}
           </Button>
@@ -79,8 +79,8 @@ export default function BatchProgress({ toolCallId }: BatchProgressProps) {
             <div className="mt-0.5 shrink-0">
               {task.status === 'queued' && <Clock className="h-3 w-3 text-[var(--abu-text-muted)]" />}
               {task.status === 'running' && <Loader2 className="h-3 w-3 text-[var(--abu-clay)] animate-spin" />}
-              {task.status === 'done' && <Check className="h-3 w-3 text-emerald-500" />}
-              {task.status === 'error' && <X className="h-3 w-3 text-red-400" />}
+              {task.status === 'done' && <Check className="h-3 w-3 text-[var(--abu-success)]" />}
+              {task.status === 'error' && <X className="h-3 w-3 text-[var(--abu-danger)]" />}
             </div>
 
             {/* Label + activity */}
@@ -89,7 +89,7 @@ export default function BatchProgress({ toolCallId }: BatchProgressProps) {
                 'text-caption truncate block',
                 task.status === 'running' ? 'text-[var(--abu-text-primary)]' : 'text-[var(--abu-text-muted)]',
                 task.status === 'done' && 'line-through opacity-60',
-                task.status === 'error' && 'text-red-400',
+                task.status === 'error' && 'text-[var(--abu-danger)]',
               )}>
                 {task.label}
               </span>

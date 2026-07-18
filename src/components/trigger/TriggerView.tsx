@@ -21,7 +21,7 @@ interface TriggerTemplate {
 
 const TEMPLATES: TriggerTemplate[] = [
   {
-    icon: <AlertTriangle className="h-4 w-4 text-amber-500" />,
+    icon: <AlertTriangle className="h-4 w-4 text-[var(--abu-warning)]" />,
     nameKey: 'templateAlertSOP',
     descKey: 'templateAlertSOPDesc',
     promptKey: 'templateAlertSOPPrompt',
@@ -30,7 +30,7 @@ const TEMPLATES: TriggerTemplate[] = [
     filterType: 'keyword',
   },
   {
-    icon: <FileText className="h-4 w-4 text-blue-500" />,
+    icon: <FileText className="h-4 w-4 text-[var(--abu-info)]" />,
     nameKey: 'templateLogWatch',
     descKey: 'templateLogWatchDesc',
     promptKey: 'templateLogWatchPrompt',
@@ -38,7 +38,7 @@ const TEMPLATES: TriggerTemplate[] = [
     filterType: 'always',
   },
   {
-    icon: <Timer className="h-4 w-4 text-green-500" />,
+    icon: <Timer className="h-4 w-4 text-[var(--abu-success)]" />,
     nameKey: 'templatePeriodicCheck',
     descKey: 'templatePeriodicCheckDesc',
     promptKey: 'templatePeriodicCheckPrompt',

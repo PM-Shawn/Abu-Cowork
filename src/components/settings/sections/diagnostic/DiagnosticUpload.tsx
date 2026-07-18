@@ -220,7 +220,7 @@ export default function DiagnosticUpload({ onExportSuccess, description, onDescr
           className={cn(
             'mt-1 w-full py-2.5 rounded-lg text-body font-medium transition-colors flex items-center justify-center gap-2',
             uploadDone
-              ? 'bg-green-600/15 text-green-500 cursor-default'
+              ? 'bg-[var(--abu-success-bg)] text-[var(--abu-success)] cursor-default'
               : 'bg-[var(--abu-clay)] text-white hover:bg-[var(--abu-clay-hover)] disabled:opacity-50 disabled:cursor-not-allowed'
           )}
         >

@@ -121,7 +121,7 @@ export default function SkillDetailModal({
           {/* Trigger */}
           {trigger && (
             <div className="space-y-1">
-              <div className="flex items-center gap-1.5 text-minor font-medium text-green-700">
+              <div className="flex items-center gap-1.5 text-minor font-medium text-[var(--abu-success)]">
                 <Zap className="h-3.5 w-3.5" />
                 {t.toolbox.skillTrigger}
               </div>
@@ -132,7 +132,7 @@ export default function SkillDetailModal({
           {/* Do Not Trigger */}
           {doNotTrigger && (
             <div className="space-y-1">
-              <div className="flex items-center gap-1.5 text-minor font-medium text-red-600">
+              <div className="flex items-center gap-1.5 text-minor font-medium text-[var(--abu-danger)]">
                 <ZapOff className="h-3.5 w-3.5" />
                 {t.toolbox.skillDoNotTrigger}
               </div>
@@ -166,7 +166,7 @@ export default function SkillDetailModal({
               </div>
               <div className="flex flex-wrap gap-1 pl-5">
                 {allowedTools.map((tool) => (
-                  <span key={tool} className="px-2 py-0.5 rounded bg-blue-50 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400 text-caption font-mono">
+                  <span key={tool} className="px-2 py-0.5 rounded bg-[var(--abu-info-bg)] text-[var(--abu-info)] text-caption font-mono">
                     {tool}
                   </span>
                 ))}

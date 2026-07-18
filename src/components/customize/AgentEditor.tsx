@@ -158,11 +158,11 @@ export default function AgentEditor({ agent, onClose, onSave }: AgentEditorProps
                 placeholder="my-agent"
                 className={cn(
                   'w-full px-3 py-1.5 rounded-lg border text-body text-[var(--abu-text-primary)] bg-[var(--abu-bg-base)] focus:outline-none focus:ring-2 focus:ring-[var(--abu-clay-ring)] focus:border-[var(--abu-clay)] transition-all',
-                  name.trim() && !nameValid ? 'border-red-300' : 'border-[var(--abu-border)]',
+                  name.trim() && !nameValid ? 'border-[var(--abu-danger)]' : 'border-[var(--abu-border)]',
                 )}
               />
               {name.trim() && !nameValid && (
-                <p className="text-caption text-red-500 mt-1">{t.toolbox.nameFormatHint}</p>
+                <p className="text-caption text-[var(--abu-danger)] mt-1">{t.toolbox.nameFormatHint}</p>
               )}
             </div>
             <div className="w-20">

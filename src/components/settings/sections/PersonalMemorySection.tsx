@@ -23,8 +23,8 @@ const ABU_BTN_GHOST =
   'hover:bg-[var(--abu-bg-active)] hover:text-[var(--abu-text-primary)]';
 
 const ABU_BTN_DESTRUCTIVE =
-  'border border-red-200 bg-red-50 text-red-600 ' +
-  'hover:bg-red-100 hover:border-red-300 hover:text-red-700 ' +
+  'border border-[var(--abu-danger)] bg-[var(--abu-danger-bg)] text-[var(--abu-danger)] ' +
+  'hover:bg-[var(--abu-danger-bg)] hover:border-[var(--abu-danger)] hover:text-[var(--abu-danger)] ' +
   'active:scale-[0.98]';
 
 function getTypeLabel(type: MemoryType, t: ReturnType<typeof useI18n>['t']): string {
@@ -37,12 +37,17 @@ function getTypeLabel(type: MemoryType, t: ReturnType<typeof useI18n>['t']): str
   return map[type];
 }
 
+/* eslint-disable no-restricted-syntax -- categorical memory-type tag palette
+   (4 arbitrary distinct hues for user/project/feedback/reference), NOT semantic
+   status colors. Deliberately raw so the categories stay visually distinct;
+   purple/teal have no token equivalent. See CLAUDE.md §6.2. */
 const TYPE_COLORS: Record<MemoryType, string> = {
   user: 'bg-orange-100 text-orange-700 dark:bg-orange-400/15 dark:text-orange-300',
   project: 'bg-purple-100 text-purple-700 dark:bg-purple-400/15 dark:text-purple-300',
   feedback: 'bg-teal-100 text-teal-700 dark:bg-teal-400/15 dark:text-teal-300',
   reference: 'bg-blue-100 text-blue-700 dark:bg-blue-400/15 dark:text-blue-300',
 };
+/* eslint-enable no-restricted-syntax */
 
 /**
  * Stale memory: 60+ days untouched. Replaces the old `isUnused` (accessCount-based)
@@ -479,7 +484,7 @@ export default function PersonalMemorySection() {
                       key={key}
                       className={`border rounded-lg overflow-hidden transition-colors ${
                         bulkMode && isSelected
-                          ? 'border-[var(--abu-clay)] bg-orange-50/50'
+                          ? 'border-[var(--abu-clay)] bg-[var(--abu-clay-bg)]'
                           : 'border-[var(--abu-border)] bg-[var(--abu-bg-muted)]'
                       }`}
                     >
@@ -505,7 +510,7 @@ export default function PersonalMemorySection() {
                           {header.name}
                           {header.private && (
                             <span title={t.memory.privateTooltip} className="shrink-0">
-                              <Lock className="h-3 w-3 text-amber-600" />
+                              <Lock className="h-3 w-3 text-[var(--abu-warning)]" />
                             </span>
                           )}
                         </span>
@@ -514,7 +519,7 @@ export default function PersonalMemorySection() {
                         </span>
                         {isStale(header.updated) && (
                           <span
-                            className="text-caption text-amber-700 bg-amber-50 px-1.5 py-0.5 rounded whitespace-nowrap"
+                            className="text-caption text-[var(--abu-warning)] bg-[var(--abu-warning-bg)] px-1.5 py-0.5 rounded whitespace-nowrap"
                             title={t.memory.staleTooltip}
                           >
                             {t.memory.staleBadge}
@@ -543,7 +548,7 @@ export default function PersonalMemorySection() {
                                 {header.source === 'auto_flush' ? t.memory.sourceAutoFlush : header.source === 'agent_explicit' ? t.memory.sourceAgentExplicit : t.memory.sourceUserManual}
                               </div>
                               <div className="flex items-center gap-2 mt-1.5">
-                                <Lock className="h-3 w-3 text-amber-600 shrink-0" />
+                                <Lock className="h-3 w-3 text-[var(--abu-warning)] shrink-0" />
                                 <span className="text-caption text-[var(--abu-text-secondary)]">
                                   {t.memory.privateLabel}
                                 </span>
@@ -563,14 +568,14 @@ export default function PersonalMemorySection() {
                                   Closing requires explicit user action — no
                                   outside-click dismiss. */}
                               {descHint?.key === key && (
-                                <div className="mt-2 p-2.5 border border-amber-200 bg-amber-50/60 rounded-md">
+                                <div className="mt-2 p-2.5 border border-[var(--abu-warning)] bg-[var(--abu-warning-bg)] rounded-md">
                                   <div className="flex items-start gap-1.5">
-                                    <AlertTriangle className="h-3.5 w-3.5 text-amber-600 shrink-0 mt-0.5" />
+                                    <AlertTriangle className="h-3.5 w-3.5 text-[var(--abu-warning)] shrink-0 mt-0.5" />
                                     <div className="flex-1 min-w-0">
-                                      <div className="text-caption font-medium text-amber-900">
+                                      <div className="text-caption font-medium text-[var(--abu-warning)]">
                                         {t.memory.privateDescHintTitle}
                                       </div>
-                                      <p className="text-caption text-amber-800 leading-snug mt-0.5">
+                                      <p className="text-caption text-[var(--abu-warning)] leading-snug mt-0.5">
                                         {t.memory.privateDescHintBody}
                                       </p>
                                       <div className="mt-2">
@@ -621,7 +626,7 @@ export default function PersonalMemorySection() {
                             </div>
                             <button
                               onClick={(e) => { e.stopPropagation(); setDeleteTarget({ header, workspacePath: group.workspacePath }); }}
-                              className="p-1 rounded text-[var(--abu-text-placeholder)] hover:text-red-500 hover:bg-red-50 transition-colors shrink-0"
+                              className="p-1 rounded text-[var(--abu-text-placeholder)] hover:text-[var(--abu-danger)] hover:bg-[var(--abu-danger-bg)] transition-colors shrink-0"
                             >
                               <Trash2 className="h-3.5 w-3.5" />
                             </button>

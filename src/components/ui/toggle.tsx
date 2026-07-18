@@ -19,7 +19,7 @@ const sizeConfig = {
 
 export function Toggle({ checked, onChange, size = 'sm', tone = 'clay', disabled, className }: ToggleProps) {
   const s = sizeConfig[size];
-  const onColor = tone === 'green' ? 'bg-green-500' : 'bg-[var(--abu-clay)]';
+  const onColor = tone === 'green' ? 'bg-[var(--abu-success-solid)]' : 'bg-[var(--abu-clay)]';
 
   return (
     <button

@@ -352,7 +352,7 @@ export default function IMChannelSection() {
 
                 {/* Error display */}
                 {channel.lastError && (
-                  <div className="text-minor text-red-500 bg-red-50 rounded-lg px-3 py-2">
+                  <div className="text-minor text-[var(--abu-danger)] bg-[var(--abu-danger-bg)] rounded-lg px-3 py-2">
                     {channel.lastError}
                   </div>
                 )}
@@ -361,7 +361,7 @@ export default function IMChannelSection() {
                 <div className="pt-1 border-t border-[var(--abu-bg-active)]">
                   <button
                     onClick={() => handleDelete(channel.id)}
-                    className="flex items-center gap-2 text-minor text-red-400 hover:text-red-500 hover:bg-red-50 px-3 py-2 rounded-lg transition-colors"
+                    className="flex items-center gap-2 text-minor text-[var(--abu-danger)] hover:text-[var(--abu-danger)] hover:bg-[var(--abu-danger-bg)] px-3 py-2 rounded-lg transition-colors"
                   >
                     <Trash2 className="h-3.5 w-3.5" />
                     {t.common.delete}
@@ -468,7 +468,7 @@ function PlatformBadge({ platform }: { platform: IMPlatform }) {
 }
 
 function StatusDot({ status }: { status: string }) {
-  const color = status === 'connected' ? 'bg-green-400' : status === 'error' ? 'bg-red-400' : 'bg-[var(--abu-text-placeholder)]';
+  const color = status === 'connected' ? 'bg-[var(--abu-success-solid)]' : status === 'error' ? 'bg-[var(--abu-danger-solid)]' : 'bg-[var(--abu-text-placeholder)]';
   return <span className={`inline-block h-1.5 w-1.5 rounded-full ${color}`} />;
 }
 
@@ -490,7 +490,7 @@ function WebhookUrlField({ url, hint, label }: { url: string; hint: string; labe
           className="absolute right-1.5 top-1/2 -translate-y-1/2 p-1 rounded hover:bg-[var(--abu-bg-hover)] transition-colors"
           title="Copy"
         >
-          {copied ? <Check className="h-3.5 w-3.5 text-green-500" /> : <Copy className="h-3.5 w-3.5 text-[var(--abu-text-muted)]" />}
+          {copied ? <Check className="h-3.5 w-3.5 text-[var(--abu-success)]" /> : <Copy className="h-3.5 w-3.5 text-[var(--abu-text-muted)]" />}
         </button>
       </div>
     </FormRow>
@@ -531,7 +531,7 @@ function TagInput({
             className="inline-flex items-center gap-1 px-2 py-0.5 text-minor bg-[var(--abu-clay-bg)] text-[var(--abu-clay)] rounded-md"
           >
             {v}
-            <button onClick={() => removeTag(v)} className="hover:text-red-500">×</button>
+            <button onClick={() => removeTag(v)} className="hover:text-[var(--abu-danger)]">×</button>
           </span>
         ))}
         <input
@@ -576,8 +576,8 @@ function WeChatConnectionRows({
 
       {/* Re-bind trigger — shown when session expired */}
       {isExpired && !showRebind && (
-        <div className="flex items-center justify-between rounded-lg border border-red-200 bg-red-50 px-3 py-2.5">
-          <p className="text-minor text-red-600">{t.imChannel.wechatSessionExpired}</p>
+        <div className="flex items-center justify-between rounded-lg border border-[var(--abu-danger)] bg-[var(--abu-danger-bg)] px-3 py-2.5">
+          <p className="text-minor text-[var(--abu-danger)]">{t.imChannel.wechatSessionExpired}</p>
           <button
             onClick={() => setShowRebind(true)}
             className="inline-flex items-center gap-1 text-minor font-medium text-[var(--abu-clay)] hover:text-[var(--abu-clay-hover)] transition-colors shrink-0 ml-3"

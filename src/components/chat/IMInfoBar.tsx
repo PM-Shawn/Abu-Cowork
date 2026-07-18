@@ -136,7 +136,7 @@ export default function IMInfoBar({ conversation }: IMInfoBarProps) {
                 <div className="my-1 border-t border-[var(--abu-border)]" />
                 <button
                   onClick={handleEndSession}
-                  className="w-full flex items-center gap-2 px-3 py-1.5 text-minor text-red-500 hover:bg-red-50 transition-colors"
+                  className="w-full flex items-center gap-2 px-3 py-1.5 text-minor text-[var(--abu-danger)] hover:bg-[var(--abu-danger-bg)] transition-colors"
                 >
                   <XCircle className="h-3.5 w-3.5 shrink-0" />
                   {t.imChannel.infoBarEndSession}

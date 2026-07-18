@@ -12,7 +12,7 @@ function BrandSlot({ binding, config, size = 'sm' }: BrandSlotProps) {
     <div className="flex items-center gap-2 text-neutral-200">
       {logo
         ? <img src={logo} alt="" className={`${px} rounded`} />
-        : <span className={`${px} grid place-items-center rounded bg-orange-500/20 text-orange-400`}>🏢</span>}
+        : <span className={`${px} grid place-items-center rounded bg-[var(--abu-clay-20)] text-[var(--abu-clay)]`}>🏢</span>}
       <span className="font-medium truncate">{name}</span>
     </div>
   )

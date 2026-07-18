@@ -147,7 +147,7 @@ export default function SensitiveAuditDialog() {
       <div className="bg-[var(--abu-bg-base)] rounded-2xl shadow-xl w-[480px] max-h-[80vh] flex flex-col overflow-hidden animate-in zoom-in-95 duration-150">
         <div className="px-6 pt-6 pb-3 border-b border-[var(--abu-bg-muted)]">
           <div className="flex items-center gap-2 mb-2">
-            <ShieldAlert className="h-5 w-5 text-amber-600" />
+            <ShieldAlert className="h-5 w-5 text-[var(--abu-warning)]" />
             <h3 className="text-h-sm font-semibold text-[var(--abu-text-primary)]">
               {t.memory.auditTitle}
             </h3>
@@ -169,7 +169,7 @@ export default function SensitiveAuditDialog() {
                   key={key}
                   className={`flex items-start gap-3 p-3 rounded-lg border cursor-pointer transition-colors ${
                     entry.selected
-                      ? 'border-[var(--abu-clay)] bg-orange-50/40'
+                      ? 'border-[var(--abu-clay)] bg-[var(--abu-clay-bg)]'
                       : 'border-[var(--abu-border)] bg-[var(--abu-bg-muted)]'
                   }`}
                 >
@@ -190,7 +190,7 @@ export default function SensitiveAuditDialog() {
                       {entry.result.matches.map((m) => (
                         <span
                           key={m.patternId}
-                          className="text-caption bg-amber-100 dark:bg-amber-900/30 text-amber-800 dark:text-amber-400 px-1.5 py-0.5 rounded"
+                          className="text-caption bg-[var(--abu-warning-bg)] text-[var(--abu-warning)] px-1.5 py-0.5 rounded"
                         >
                           {patternLabel(m.patternId, t)}
                         </span>

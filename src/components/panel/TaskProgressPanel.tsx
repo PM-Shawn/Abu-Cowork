@@ -183,8 +183,8 @@ function ProgressStepRow({ step, isLive }: ProgressStepRowProps) {
         // Legacy status, no longer produced going forward — kept only to
         // render historical snapshots that predate the status narrowing.
         return (
-          <div className="w-5 h-5 rounded-full border-2 border-red-500 flex items-center justify-center">
-            <AlertCircle className="h-3 w-3 text-red-500" />
+          <div className="w-5 h-5 rounded-full border-2 border-[var(--abu-danger)] flex items-center justify-center">
+            <AlertCircle className="h-3 w-3 text-[var(--abu-danger)]" />
           </div>
         );
       default:
@@ -204,7 +204,7 @@ function ProgressStepRow({ step, isLive }: ProgressStepRowProps) {
           'text-body leading-6',
           status === 'completed' && 'text-[var(--abu-text-tertiary)]',
           status === 'in_progress' && 'text-[var(--abu-text-primary)]',
-          status === 'error' && 'text-red-500',
+          status === 'error' && 'text-[var(--abu-danger)]',
           status === 'pending' && 'text-[var(--abu-text-muted)]'
         )}
       >

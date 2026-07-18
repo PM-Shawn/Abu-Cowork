@@ -47,9 +47,9 @@ export default function ScheduleRunHistory({ runs }: Props) {
           <span
             className={cn(
               'w-1.5 h-1.5 rounded-full shrink-0',
-              run.status === 'running' && 'bg-amber-400 animate-pulse',
-              run.status === 'completed' && 'bg-green-500',
-              run.status === 'error' && 'bg-red-500'
+              run.status === 'running' && 'bg-[var(--abu-warning-solid)] animate-pulse',
+              run.status === 'completed' && 'bg-[var(--abu-success-solid)]',
+              run.status === 'error' && 'bg-[var(--abu-danger-solid)]'
             )}
           />
 
@@ -62,9 +62,9 @@ export default function ScheduleRunHistory({ runs }: Props) {
               <span
                 className={cn(
                   'text-caption',
-                  run.status === 'running' && 'text-amber-600',
-                  run.status === 'completed' && 'text-green-600',
-                  run.status === 'error' && 'text-red-500'
+                  run.status === 'running' && 'text-[var(--abu-warning)]',
+                  run.status === 'completed' && 'text-[var(--abu-success)]',
+                  run.status === 'error' && 'text-[var(--abu-danger)]'
                 )}
               >
                 {run.status === 'running' && t.schedule.runStatusRunning}

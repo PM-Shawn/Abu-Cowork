@@ -162,7 +162,7 @@ export default function ProjectsSection() {
                         for (const c of convs) setProj(c.id, undefined);
                         deleteProject(p.id);
                       }}
-                      className="shrink-0 text-red-400 hover:text-red-500 hover:underline"
+                      className="shrink-0 text-[var(--abu-danger)] hover:text-[var(--abu-danger)] hover:underline"
                     >
                       {t.project.delete}
                     </button>

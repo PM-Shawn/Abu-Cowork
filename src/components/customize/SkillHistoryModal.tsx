@@ -304,16 +304,16 @@ function FileDiffBlock({ skillDir, change }: { skillDir: string; change: History
       <div className="px-3 py-1.5 bg-[var(--abu-bg-muted)] flex items-center gap-2 text-caption">
         <span className={cn(
           'px-1.5 py-0.5 rounded font-medium',
-          change.action === 'modified' && 'bg-blue-50 dark:bg-blue-900/30 text-blue-700 dark:text-blue-400',
-          change.action === 'created' && 'bg-green-50 dark:bg-green-900/30 text-green-700 dark:text-green-400',
-          change.action === 'removed' && 'bg-red-50 dark:bg-red-900/30 text-red-700 dark:text-red-400',
+          change.action === 'modified' && 'bg-[var(--abu-info-bg)] text-[var(--abu-info)]',
+          change.action === 'created' && 'bg-[var(--abu-success-bg)] text-[var(--abu-success)]',
+          change.action === 'removed' && 'bg-[var(--abu-danger-bg)] text-[var(--abu-danger)]',
         )}>
           {t.toolbox[historyActionLabelKey(change.action)]}
         </span>
         <span className="text-[var(--abu-text-primary)] font-mono">{change.relPath}</span>
       </div>
       {error ? (
-        <div className="px-3 py-2 text-minor text-red-600">{error}</div>
+        <div className="px-3 py-2 text-minor text-[var(--abu-danger)]">{error}</div>
       ) : diffText === null ? (
         <div className="px-3 py-2 text-minor text-[var(--abu-text-muted)]">…</div>
       ) : (
@@ -338,8 +338,8 @@ function DiffView({ text }: { text: string }) {
 function diffLineClass(line: string): string {
   if (line.startsWith('+++') || line.startsWith('---')) return 'px-3 text-[var(--abu-text-muted)]';
   if (line.startsWith('@@')) return 'px-3 bg-[var(--abu-bg-muted)] text-[var(--abu-text-tertiary)]';
-  if (line.startsWith('+')) return 'px-3 bg-green-50 dark:bg-green-900/20 text-green-800 dark:text-green-400';
-  if (line.startsWith('-')) return 'px-3 bg-red-50 dark:bg-red-900/20 text-red-800 dark:text-red-400';
+  if (line.startsWith('+')) return 'px-3 bg-[var(--abu-success-bg)] text-[var(--abu-success)]';
+  if (line.startsWith('-')) return 'px-3 bg-[var(--abu-danger-bg)] text-[var(--abu-danger)]';
   return 'px-3 text-[var(--abu-text-secondary)]';
 }
 

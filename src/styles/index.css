@@ -276,10 +276,25 @@
   --abu-clay-50:    rgba(217, 119, 87, 0.5);  /* medium emphasis */
   --abu-clay-60:    rgba(217, 119, 87, 0.6);  /* borders, stronger emphasis */
 
-  /* Semantic status */
-  --abu-success: #22c55e;
-  --abu-warning: #f59e0b;
-  --abu-danger:  #ef4444;
+  /* Semantic status + link (light) — foreground is AA-safe (≥4.5:1) for
+     text/icon/border; -bg is a soft translucent tint of the vivid hue for
+     badges/callout backgrounds. Reverse-engineered from TRAE/WorkBuddy/Claude/
+     ChatGPT color systems (2026-07). Abu's brand is clay/orange, so links get
+     their own blue token (not the accent) — mirrors WorkBuddy (teal brand). */
+  --abu-danger:      #b42318;   /* fg: text/icon/border, AA-safe */
+  --abu-danger-solid:#dc2626;   /* solid fill: dots, filled buttons (white text ~4.5:1) */
+  --abu-danger-bg:   color-mix(in srgb, #ef4444 12%, transparent); /* soft tint */
+  --abu-warning:     #b45309;
+  --abu-warning-solid:#d97706;
+  --abu-warning-bg:  color-mix(in srgb, #f59e0b 14%, transparent);
+  --abu-success:     #15803d;
+  --abu-success-solid:#16a34a;
+  --abu-success-bg:  color-mix(in srgb, #22c55e 14%, transparent);
+  --abu-info:        #0e63c4;
+  --abu-info-solid:  #2563eb;
+  --abu-info-bg:     color-mix(in srgb, #3b82f6 12%, transparent);
+  --abu-link:        #2563eb;
+  --abu-link-hover:  #1d4ed8;
 
   /* Legacy aliases (shadcn compat — will phase out) */
   --claude-bg: var(--abu-bg-base);
@@ -344,6 +359,23 @@
   --abu-text-tertiary:    #8a8479;
   --abu-text-muted:       #8d877e;   /* subtle hints/secondary — AA ≥4.5:1 (was #5e5a54, failed AA) */
   --abu-text-placeholder: #706c66;
+
+  /* Semantic status + link (dark) — lighter shades read AA on the dark page;
+     -bg is a stronger translucent tint (dark needs more alpha). */
+  --abu-danger:      #f87171;
+  --abu-danger-solid:#ef4444;
+  --abu-danger-bg:   color-mix(in srgb, #f87171 18%, transparent);
+  --abu-warning:     #fbbf24;
+  --abu-warning-solid:#f59e0b;
+  --abu-warning-bg:  color-mix(in srgb, #fbbf24 16%, transparent);
+  --abu-success:     #4ade80;
+  --abu-success-solid:#22c55e;
+  --abu-success-bg:  color-mix(in srgb, #4ade80 16%, transparent);
+  --abu-info:        #60a5fa;
+  --abu-info-solid:  #3b82f6;
+  --abu-info-bg:     color-mix(in srgb, #60a5fa 16%, transparent);
+  --abu-link:        #60a5fa;
+  --abu-link-hover:  #93c5fd;
 
   --abu-border:        #302e2b;
   --abu-border-hover:  #403d39;

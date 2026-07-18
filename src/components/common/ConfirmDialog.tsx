@@ -67,7 +67,7 @@ export default function ConfirmDialog({
             className={cn(
               'px-4 py-2 rounded-lg text-body font-medium text-white transition-colors',
               variant === 'danger'
-                ? 'bg-red-500 hover:bg-red-600'
+                ? 'bg-[var(--abu-danger-solid)] hover:opacity-90'
                 : 'bg-[var(--abu-clay)] hover:bg-[var(--abu-clay-hover)]'
             )}
           >

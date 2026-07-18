@@ -62,6 +62,19 @@ export default defineConfig([
           selector: 'TemplateElement[value.raw=/\\btext-(xs|sm|base|lg|xl|2xl|3xl)\\b/]',
           message: 'Use a font-size token instead of Tailwind named sizes (template literal).',
         },
+        // Semantic-color guardrail — enforce the --abu-{danger,warning,success,
+        // info,link} token scale (index.css). Ban raw Tailwind status/link hues
+        // in text/bg/border/ring/fill so link + status colors stay tokenized and
+        // theme-aware. Neutral grays and categorical hues (purple/teal) are NOT
+        // covered. See CLAUDE.md §6.2.
+        {
+          selector: 'Literal[value=/\\b(text|bg|border|ring|fill)-(red|green|emerald|lime|amber|yellow|blue|sky|indigo|orange)-[0-9]/]',
+          message: 'Use a semantic color token (e.g. text-[var(--abu-danger)], bg-[var(--abu-success-bg)]) instead of raw Tailwind status/link colors. See CLAUDE.md §6.2.',
+        },
+        {
+          selector: 'TemplateElement[value.raw=/\\b(text|bg|border|ring|fill)-(red|green|emerald|lime|amber|yellow|blue|sky|indigo|orange)-[0-9]/]',
+          message: 'Use a semantic color token instead of raw Tailwind status/link colors (template literal). See CLAUDE.md §6.2.',
+        },
       ],
     },
   },

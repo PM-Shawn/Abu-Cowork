@@ -18,9 +18,9 @@ const iconMap = {
 };
 
 const colorMap = {
-  workspace: { border: 'border-amber-200', bg: 'bg-amber-50', icon: 'text-amber-500' },
-  shell: { border: 'border-orange-200', bg: 'bg-orange-50', icon: 'text-orange-500' },
-  'file-write': { border: 'border-blue-200', bg: 'bg-blue-50', icon: 'text-blue-500' },
+  workspace: { border: 'border-[var(--abu-warning)]', bg: 'bg-[var(--abu-warning-bg)]', icon: 'text-[var(--abu-warning)]' },
+  shell: { border: 'border-[var(--abu-warning)]', bg: 'bg-[var(--abu-warning-bg)]', icon: 'text-[var(--abu-warning)]' },
+  'file-write': { border: 'border-[var(--abu-info)]', bg: 'bg-[var(--abu-info-bg)]', icon: 'text-[var(--abu-info)]' },
 };
 
 /**
@@ -91,7 +91,7 @@ export default function InlinePermissionRequest({
       {/* Details */}
       {details && (
         <div className="mt-2 flex items-start gap-2 px-1">
-          <AlertTriangle className="h-3.5 w-3.5 text-amber-500 shrink-0 mt-0.5" />
+          <AlertTriangle className="h-3.5 w-3.5 text-[var(--abu-warning)] shrink-0 mt-0.5" />
           <p className="text-minor text-[var(--abu-text-tertiary)] leading-relaxed">{details}</p>
         </div>
       )}
@@ -168,14 +168,14 @@ export function CompactPermissionRequest({
       <div className="flex items-center gap-1 ml-2">
         <button
           onClick={onAllow}
-          className="p-1 rounded hover:bg-[var(--abu-bg-hover)] text-green-600 transition-colors"
+          className="p-1 rounded hover:bg-[var(--abu-bg-hover)] text-[var(--abu-success)] transition-colors"
           title={t.permission.allowOnce}
         >
           <Check className="h-4 w-4" />
         </button>
         <button
           onClick={onDeny}
-          className="p-1 rounded hover:bg-[var(--abu-bg-hover)] text-red-500 transition-colors"
+          className="p-1 rounded hover:bg-[var(--abu-bg-hover)] text-[var(--abu-danger)] transition-colors"
           title={t.permission.deny}
         >
           <X className="h-4 w-4" />

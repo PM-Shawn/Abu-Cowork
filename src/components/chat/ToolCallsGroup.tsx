@@ -75,7 +75,7 @@ export default function ToolCallsGroup({ toolCalls }: ToolCallsGroupProps) {
         <div className="relative shrink-0">
           <Wrench className={cn(
             "h-3.5 w-3.5",
-            isAnyExecuting ? "text-[var(--abu-clay)]" : allCompleted ? "text-emerald-600" : "text-[var(--abu-text-tertiary)]"
+            isAnyExecuting ? "text-[var(--abu-clay)]" : allCompleted ? "text-[var(--abu-success)]" : "text-[var(--abu-text-tertiary)]"
           )} />
         </div>
 
@@ -127,7 +127,7 @@ export default function ToolCallsGroup({ toolCalls }: ToolCallsGroupProps) {
               {completedCount}/{totalCount}
             </span>
           ) : allCompleted ? (
-            <span className="flex items-center gap-1 text-caption text-emerald-600">
+            <span className="flex items-center gap-1 text-caption text-[var(--abu-success)]">
               <CheckCircle2 className="h-3 w-3" />
               Done
             </span>
@@ -173,11 +173,11 @@ function ToolCallItem({ toolCall, isLast }: { toolCall: ToolCall; isLast: boolea
         {/* Status indicator */}
         <div className={cn(
           "w-4 h-4 rounded-full flex items-center justify-center shrink-0",
-          isCompleted && "bg-emerald-500/15",
+          isCompleted && "bg-[var(--abu-success-bg)]",
           (isExecuting || awaitingUser) && "bg-[var(--abu-clay-bg-15)]",
           !isCompleted && !isExecuting && !awaitingUser && "bg-[var(--abu-bg-hover)]"
         )}>
-          {isCompleted && <CheckCircle2 className="h-2.5 w-2.5 text-emerald-600" />}
+          {isCompleted && <CheckCircle2 className="h-2.5 w-2.5 text-[var(--abu-success)]" />}
           {awaitingUser && <MessageSquare className="h-2.5 w-2.5 text-[var(--abu-clay)]" />}
           {isExecuting && <Loader2 className="h-2.5 w-2.5 text-[var(--abu-clay)] animate-spin" />}
           {!isCompleted && !isExecuting && !awaitingUser && <Circle className="h-1.5 w-1.5 text-[var(--abu-text-muted)] fill-current" />}
@@ -257,8 +257,8 @@ function ToolCallItem({ toolCall, isLast }: { toolCall: ToolCall; isLast: boolea
                   )}
                   {toolCall.result.includes('[sandbox-blocked]') ? (
                     <div className="space-y-1.5">
-                      <div className="px-2 py-1.5 rounded bg-red-500/20 border border-red-500/30">
-                        <p className="text-caption font-mono text-red-300 leading-relaxed">
+                      <div className="px-2 py-1.5 rounded bg-[var(--abu-danger-bg)] border border-[var(--abu-danger)]">
+                        <p className="text-caption font-mono text-[var(--abu-danger)] leading-relaxed">
                           {toolCall.result.split('\n')[0].replace('[sandbox-blocked] ', '')}
                         </p>
                       </div>

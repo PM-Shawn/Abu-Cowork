@@ -64,9 +64,9 @@ export default function CloseDialog({
           {t.windowClose.message}
         </p>
         {hasRunningAgent && (
-          <div className="flex items-start gap-2 mb-4 px-3 py-2 rounded-lg bg-amber-500/10 border border-amber-500/20">
-            <AlertTriangle className="h-3.5 w-3.5 text-amber-500 mt-0.5 shrink-0" />
-            <p className="text-minor text-amber-600 dark:text-amber-400 leading-snug">
+          <div className="flex items-start gap-2 mb-4 px-3 py-2 rounded-lg bg-[var(--abu-warning-bg)] border border-[var(--abu-warning)]">
+            <AlertTriangle className="h-3.5 w-3.5 text-[var(--abu-warning)] mt-0.5 shrink-0" />
+            <p className="text-minor text-[var(--abu-warning)] leading-snug">
               {t.windowClose.agentRunningWarning}
             </p>
           </div>

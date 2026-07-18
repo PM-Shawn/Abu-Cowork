@@ -10,8 +10,8 @@ export default function EnterpriseLlmBadge() {
   if (!b) return null
 
   return (
-    <div className="p-4 rounded-lg bg-orange-500/10 border border-orange-500/30 text-body space-y-2">
-      <div className="font-medium text-orange-400">{t.enterprise.usingGateway}</div>
+    <div className="p-4 rounded-lg bg-[var(--abu-clay-bg)] border border-[var(--abu-clay)] text-body space-y-2">
+      <div className="font-medium text-[var(--abu-clay)]">{t.enterprise.usingGateway}</div>
       <p className="text-minor text-neutral-300">
         {t.enterprise.gatewayDesc}
       </p>
@@ -25,7 +25,7 @@ export default function EnterpriseLlmBadge() {
           <dd className="font-mono truncate max-w-[200px]">{b.llmEndpoint ?? '—'}</dd>
         </div>
         {mode.kind === 'offline' && (
-          <div className="flex justify-between text-amber-400">
+          <div className="flex justify-between text-[var(--abu-warning)]">
             <dt>{t.enterprise.status}</dt>
             <dd>{t.enterprise.offline}</dd>
           </div>

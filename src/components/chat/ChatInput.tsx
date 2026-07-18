@@ -745,7 +745,7 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
                 <div className="flex items-center gap-3">
                   <span className={cn(
                     'w-5 text-center font-mono text-minor shrink-0',
-                    suggestionType === 'agent' ? 'text-blue-500' : 'text-[var(--abu-text-tertiary)]'
+                    suggestionType === 'agent' ? 'text-[var(--abu-info)]' : 'text-[var(--abu-text-tertiary)]'
                   )}>
                     {suggestionType === 'agent' ? '@' : '/'}
                   </span>
@@ -773,7 +773,7 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
         >
           {/* Chat-only: Drag overlay */}
           {!isWelcome && isDragging && (
-            <div className="absolute inset-0 flex items-center justify-center rounded-2xl bg-orange-50/90 z-10">
+            <div className="absolute inset-0 flex items-center justify-center rounded-2xl bg-[var(--abu-clay-bg)] z-10">
               <span className="text-body text-[var(--abu-clay)] font-medium">{t.chat.dropFilesHere}</span>
             </div>
           )}
@@ -845,7 +845,7 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
             {selectedAgent && (
               <button
                 onClick={removeAgent}
-                className="shrink-0 mt-[3px] mr-1.5 text-body font-medium text-blue-600 hover:text-blue-800 hover:line-through transition-colors cursor-pointer"
+                className="shrink-0 mt-[3px] mr-1.5 text-body font-medium text-[var(--abu-link)] hover:text-[var(--abu-link-hover)] hover:line-through transition-colors cursor-pointer"
                 title={t.common.close}
               >
                 @{selectedAgent.name}

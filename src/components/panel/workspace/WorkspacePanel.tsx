@@ -1,4 +1,4 @@
-import { ListChecks, AppWindow, SquareTerminal } from 'lucide-react';
+import { ListChecks, SquareTerminal } from 'lucide-react';
 import { usePreviewStore } from '@/stores/previewStore';
 import { useI18n } from '@/i18n';
 import TabStrip from './TabStrip';
@@ -14,12 +14,15 @@ import BrowserTab from './BrowserTab';
 function WorkspaceEmptyState() {
   const { t } = useI18n();
   const openSummary = usePreviewStore((s) => s.openSummary);
-  const openBrowser = usePreviewStore((s) => s.openBrowser);
   const openTerminal = usePreviewStore((s) => s.openTerminal);
 
+  // The browser tab is dormant for now (entry points hidden) — its only real
+  // future is as an agent-driven browsing surface, not a manual "open a
+  // website" tab. Local HTML files are viewed in the preview tab (loopback +
+  // charset). `openBrowser`/`BrowserTab`/`browser.rs` stay in place so an
+  // already-open or programmatically-opened browser tab still renders.
   const rows = [
     { key: 'summary', Icon: ListChecks, label: t.workspace.summaryTitle, desc: t.workspace.summaryDesc, onClick: () => openSummary() },
-    { key: 'browser', Icon: AppWindow, label: t.workspace.browserTitle, desc: t.workspace.browserDesc, onClick: () => openBrowser() },
     { key: 'terminal', Icon: SquareTerminal, label: t.workspace.terminalTitle, desc: t.workspace.terminalDesc, onClick: () => openTerminal() },
   ];
 

@@ -1209,9 +1209,25 @@ export const useSettingsStore = create<SettingsStore>()(
     }),
     {
       name: 'abu-settings',
-      version: 41,
+      version: 42,
       migrate: (persisted: unknown, version: number) => {
         const state = persisted as Record<string, unknown>;
+
+        // ════════════════════════════════════════════════
+        // V42: One-time theme reset to 'light'. Before 2026-07-04 (commit
+        // a8988b9) the store default was 'dark'. Because `theme` is persisted
+        // (it's in the partialize whitelist), every pre-fix user had 'dark'
+        // written to their local `abu-settings` even if they never opened the
+        // theme setting — so changing the default to 'light' only ever reached
+        // users with empty storage, and upgraders stayed dark. This resets the
+        // persisted value to 'light' exactly once.
+        // Trade-off (product-accepted): a user who *deliberately* chose dark is
+        // also reset and must re-toggle — after which it sticks, since this
+        // branch is guarded by `version < 42` and runs only on the upgrade past 41.
+        // ════════════════════════════════════════════════
+        if (version < 42) {
+          state.theme = 'light';
+        }
 
         // NOTE: the V41 "imageGeneration independent config (C-a)" step lives at
         // the BOTTOM of this migrate() (just before `return state`), NOT here.

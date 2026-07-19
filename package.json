@@ -2,7 +2,7 @@
   "name": "abu",
   "private": false,
   "license": "Apache-2.0",
-  "version": "0.31.0",
+  "version": "0.32.0",
   "description": "Abu - AI Desktop Office Assistant",
   "type": "module",
   "scripts": {
@@ -21,6 +21,7 @@
     "gen:models": "tsx scripts/gen-model-data.ts",
     "gen:models:check": "tsx scripts/gen-model-data.ts --check",
     "typecheck": "tsc -b --noEmit",
+    "release:check": "node scripts/release-preflight.mjs",
     "pretest": "npm run gen:models:check",
     "test": "vitest run",
     "test:watch": "vitest",

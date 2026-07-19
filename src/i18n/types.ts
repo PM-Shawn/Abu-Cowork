@@ -1505,6 +1505,7 @@ export interface TranslationDict {
     openInAppFailed: string;
     previewMode: string;
     reloadPreview: string;
+    selectElement: string;
     sourceMode: string;
     unsupportedFileType: string;
     showInFinder: string;
@@ -1521,6 +1522,8 @@ export interface TranslationDict {
     versionHistoryReverted: string;
     versionHistoryRevertFailedTitle: string;
     versionHistoryLoadFailed: string;
+    versionSourceAi: string;
+    versionRevertPoint: string;
     // FilesSection
     operationRead: string;
     operationModify: string;

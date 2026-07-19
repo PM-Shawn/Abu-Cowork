@@ -519,6 +519,35 @@ describe('settingsStore labs flags', () => {
     });
   });
 
+  describe('v42 migration (one-time theme reset to light)', () => {
+    const getMigrate = () =>
+      (useSettingsStore as unknown as {
+        persist: { getOptions: () => { migrate: (data: unknown, version: number) => Record<string, unknown> } };
+      }).persist.getOptions().migrate;
+
+    it('resets a persisted dark theme to light on upgrade from v41', () => {
+      // Pre-fix users had 'dark' persisted from the old default, even if they
+      // never opened theme settings — the whole point of this migration.
+      const migrated = getMigrate()({ theme: 'dark' }, 41);
+      expect(migrated.theme).toBe('light');
+    });
+
+    it('also resets an explicit system choice to light (accepted trade-off)', () => {
+      const migrated = getMigrate()({ theme: 'system' }, 41);
+      expect(migrated.theme).toBe('light');
+    });
+
+    it('materializes theme to light even when the field was absent', () => {
+      const migrated = getMigrate()({}, 41);
+      expect(migrated.theme).toBe('light');
+    });
+
+    it('does NOT re-run for users already at v42 (dark re-choice sticks)', () => {
+      const migrated = getMigrate()({ theme: 'dark' }, 42);
+      expect(migrated.theme).toBe('dark');
+    });
+  });
+
   describe('v39 migration', () => {
     const getMigrate = () =>
       (useSettingsStore as unknown as {

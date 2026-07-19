@@ -26,11 +26,28 @@ import { atomicWrite } from '@/utils/atomicFs';
 /** Max snapshots retained per file — oldest are evicted beyond this. */
 const MAX_VERSIONS_PER_FILE = 30;
 
+/** Max bytes for a single snapshot's content — guards disk usage & memory;
+ *  oversize content is skipped, not truncated. Centralized here (rather than
+ *  only in the AI pre-edit path) so every write path into version history —
+ *  manual autosave, AI pre-edit, and the pre-revert safety snapshot — is
+ *  covered by the same cap. */
+const MAX_SNAPSHOT_BYTES = 5 * 1024 * 1024;
+
 export interface VersionMeta {
   id: string;
   ts: number;
   byteSize: number;
+  /** Who produced the state captured by this snapshot. Absent = 'manual'
+   *  (entries written before this field existed). */
+  source?: 'ai' | 'manual';
+  /** Optional human label — the user message that triggered an AI edit, or
+   *  the REVERT_LABEL sentinel for automatic pre-revert snapshots. */
+  label?: string;
 }
+
+/** Sentinel label for the automatic pre-revert safety snapshot — the UI
+ *  renders it via i18n instead of showing the raw sentinel. */
+export const REVERT_LABEL = '__revert_point__';
 
 interface VersionIndex {
   path: string;
@@ -47,8 +64,12 @@ async function getHomeDir(): Promise<string> {
   return cachedHomeDir;
 }
 
-/** Normalize a path to canonical form (forward slashes, no trailing slash). */
-function normalizePath(p: string): string {
+/** Normalize a path to canonical form (forward slashes, no trailing slash).
+ *  This is the shared canonical form used to key a file's history directory —
+ *  other modules that need to key/compare paths the same way (e.g.
+ *  aiEditSnapshots.ts's per-loop touched-path tracking) should import this
+ *  rather than keep their own private copy of the same logic. */
+export function normalizePath(p: string): string {
   return normalizeSeparators(p).replace(/\/+$/, '');
 }
 
@@ -115,6 +136,18 @@ async function readSnapshotContent(dir: string, id: string): Promise<string | nu
   }
 }
 
+/** True when `content` byte-for-byte matches any existing snapshot of the file.
+ *  Cheap size prefilter first; only size-matching snapshots are read back. */
+async function contentExistsInHistory(dir: string, index: VersionIndex, content: string): Promise<boolean> {
+  const byteSize = new TextEncoder().encode(content).length;
+  for (const v of index.versions) {
+    if (v.byteSize !== byteSize) continue;
+    const snap = await readSnapshotContent(dir, v.id);
+    if (snap !== null && snap === content) return true;
+  }
+  return false;
+}
+
 // Per-history-dir lock so a baseline snapshot (on file load) and an autosave
 // snapshot firing in close succession can't race on the index.json
 // read-modify-write cycle (mirrors outputSnapshots.ts's withConvLock).
@@ -142,7 +175,11 @@ async function withDirLock<T>(dir: string, fn: () => Promise<T>): Promise<T> {
  * When the per-file cap (`MAX_VERSIONS_PER_FILE`) is exceeded, the oldest
  * snapshot file + index entry are evicted.
  */
-export async function snapshotVersion(filePath: string, content: string): Promise<void> {
+export async function snapshotVersion(
+  filePath: string,
+  content: string,
+  meta?: Pick<VersionMeta, 'source' | 'label'>
+): Promise<void> {
   const dir = await getHistoryDir(filePath);
 
   await withDirLock(dir, async () => {
@@ -152,13 +189,31 @@ export async function snapshotVersion(filePath: string, content: string): Promis
     const latest = index.versions[index.versions.length - 1];
     const byteSize = new TextEncoder().encode(content).length;
 
+    if (byteSize > MAX_SNAPSHOT_BYTES) {
+      console.warn('[canvasVersions] skip oversize snapshot', filePath, byteSize);
+      return;
+    }
+
     // Dedupe against the most recent snapshot. Compare the cheap byteSize
     // first (already tracked in the index) and only read the full previous
     // .snap back from disk when the sizes actually match — avoids a full-file
     // read on every autosave of changed content.
     if (latest && latest.byteSize === byteSize) {
       const latestContent = await readSnapshotContent(dir, latest.id);
-      if (latestContent !== null && latestContent === content) return;
+      if (latestContent !== null && latestContent === content) {
+        // Dedupe hit: the state is already captured by `latest`. If the caller
+        // brought meta (e.g. the pre-revert REVERT_LABEL) and the existing
+        // entry is unlabeled, backfill it so the label isn't silently lost —
+        // this is the common autosave-then-revert path where disk content
+        // always equals the latest snapshot. An entry that already carries a
+        // label keeps it (never overwrite existing semantics).
+        if (meta && !latest.label && (meta.source || meta.label)) {
+          if (meta.source) latest.source = meta.source;
+          if (meta.label) latest.label = meta.label;
+          await saveIndex(dir, index);
+        }
+        return;
+      }
     }
 
     const ts = Date.now();
@@ -171,10 +226,23 @@ export async function snapshotVersion(filePath: string, content: string): Promis
 
     index.seq = seq + 1;
     index.path = filePath;
-    index.versions.push({ id, ts, byteSize });
+    index.versions.push({
+      id,
+      ts,
+      byteSize,
+      ...(meta?.source ? { source: meta.source } : {}),
+      ...(meta?.label ? { label: meta.label } : {}),
+    });
 
-    while (index.versions.length > MAX_VERSIONS_PER_FILE) {
-      const oldest = index.versions.shift();
+    // Eviction: keep at most MAX_VERSIONS_PER_FILE rolling versions, but the
+    // original baseline (seq 0 — the file's state before any tracked change)
+    // is exempt and always survives (mirrors Claude Code's v1 GC exemption),
+    // so effective capacity is 30 + baseline.
+    const hasBaseline =
+      index.versions.length > 0 && Number(index.versions[0].id.split('-').pop()) === 0;
+    const cap = MAX_VERSIONS_PER_FILE + (hasBaseline ? 1 : 0);
+    while (index.versions.length > cap) {
+      const oldest = index.versions.splice(hasBaseline ? 1 : 0, 1)[0];
       if (oldest) {
         try {
           await remove(joinPath(dir, snapFileName(oldest.id)));
@@ -215,6 +283,28 @@ export async function readVersion(filePath: string, id: string): Promise<string>
  */
 export async function revertToVersion(filePath: string, id: string): Promise<string> {
   const content = await readVersion(filePath, id);
+  // Safety snapshot of the current on-disk state before overwriting, so a
+  // revert is itself revertable (undo-the-undo without a redo stack).
+  // Best-effort: a failure here must not block the revert the user asked for.
+  try {
+    if (await exists(filePath)) {
+      const current = await readTextFile(filePath);
+      const dir = await getHistoryDir(filePath);
+      const index = await loadIndex(dir, filePath);
+      // Dedupe against the *entire* history, not just the revert target —
+      // the current disk content may already match some other (e.g. older
+      // baseline) entry, in which case it's already recoverable and doesn't
+      // need a fresh pre-revert copy. Deliberately does not backfill
+      // REVERT_LABEL onto the matched entry: that entry has its own meaning
+      // (e.g. the baseline) and shouldn't be relabeled as a revert point.
+      const alreadyRecoverable = await contentExistsInHistory(dir, index, current);
+      if (!alreadyRecoverable) {
+        await snapshotVersion(filePath, current, { source: 'manual', label: REVERT_LABEL });
+      }
+    }
+  } catch (err) {
+    console.warn('[canvasVersions] pre-revert snapshot failed (continuing with revert)', filePath, err);
+  }
   await atomicWrite(filePath, content);
   return content;
 }
@@ -224,4 +314,5 @@ export const __testing = {
   sha256Hex16,
   normalizePath,
   MAX_VERSIONS_PER_FILE,
+  MAX_SNAPSHOT_BYTES,
 };

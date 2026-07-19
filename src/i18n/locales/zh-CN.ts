@@ -1378,6 +1378,7 @@ const zhCN: TranslationDict = {
     openInAppFailed: '无法用本地应用打开该文件',
     previewMode: '预览',
     reloadPreview: '刷新',
+    selectElement: '选择元素',
     sourceMode: '源码',
     unsupportedFileType: '此文件类型暂不支持预览',
     showInFinder: '在文件管理器中显示',
@@ -1392,6 +1393,8 @@ const zhCN: TranslationDict = {
     versionHistoryReverted: '已恢复到该版本',
     versionHistoryRevertFailedTitle: '恢复失败',
     versionHistoryLoadFailed: '加载历史版本失败',
+    versionSourceAi: 'AI 修改前',
+    versionRevertPoint: '回退前备份',
     // FilesSection
     operationRead: '读取',
     operationModify: '修改',

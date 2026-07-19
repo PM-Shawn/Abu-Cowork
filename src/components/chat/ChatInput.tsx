@@ -44,6 +44,23 @@ export function mergeComposerAppend(prev: string, addition: string): string {
   return prev.trim().length > 0 ? `${prev}\n${addition}` : addition;
 }
 
+/** Dedup key for the pendingReferences drain (see the effect below). Pure so
+ *  the "dom-element dedupes by id, doc-selection by content" split is
+ *  unit-testable without rendering the component. */
+// eslint-disable-next-line react-refresh/only-export-components
+export function referenceDedupeKey(r: ChatReference): string {
+  return r.kind === 'dom-element' ? `dom|${r.id}` : `${r.source.path}|${r.selection.text}|${r.comment ?? ''}`;
+}
+
+/** Visible label for a reference chip: dom-element shows the readable name
+ *  (`source.name`, e.g. "div#hero.card") computed by createDomElementReference
+ *  instead of raw outerHTML tag soup; doc-selection keeps showing the quoted
+ *  selected text. Pure so it's unit-testable without rendering. */
+// eslint-disable-next-line react-refresh/only-export-components
+export function referenceChipLabel(r: ChatReference): string {
+  return r.kind === 'dom-element' ? r.source.name : r.selection.text;
+}
+
 interface ChatInputProps {
   variant: 'welcome' | 'chat';
   onSend: (message: string, images?: ImageAttachment[], workspacePath?: string | null) => void;
@@ -376,10 +393,17 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
     if (pendingReferences.length === 0) return;
     let cappedOut = false;
     setReferences((prev) => {
-      const seen = new Set(prev.map((r) => `${r.source.path}|${r.selection.text}|${r.comment ?? ''}`));
+      // dom-element references dedupe by their own unique `id`, not by
+      // content — two structurally-identical elements (same outerHTML, same
+      // page) are deliberate repeat picks and must both be kept. The
+      // once-drain double-add guard still holds: `prev` already contains a
+      // reference's id after its first drain, so a genuine re-delivery of
+      // the same reference object is still caught. doc-selection references
+      // keep the original content-based key (path+text+comment) unchanged.
+      const seen = new Set(prev.map(referenceDedupeKey));
       const merged = [...prev];
       for (const r of pendingReferences) {
-        const key = `${r.source.path}|${r.selection.text}|${r.comment ?? ''}`;
+        const key = referenceDedupeKey(r);
         if (seen.has(key)) continue; // duplicate — skip silently
         if (merged.length >= MAX_REFERENCES) { cappedOut = true; continue; }
         seen.add(key);
@@ -820,7 +844,13 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
                 >
                   <FileText className="h-3.5 w-3.5 text-[var(--abu-text-tertiary)] shrink-0" />
                   <span className="text-minor text-[var(--abu-text-primary)] max-w-[200px] truncate">
-                    {r.selection.text}
+                    {/* dom-element: r.selection.text is the raw outerHTML (tag
+                        soup) — show the readable label createDomElementReference
+                        already computed into source.name instead (e.g.
+                        "div#hero.card"). doc-selection keeps showing the quoted
+                        selected text. The title tooltip below still shows the
+                        fuller detail on hover. */}
+                    {referenceChipLabel(r)}
                     {r.comment && <span className="text-[var(--abu-text-tertiary)]"> · {r.comment}</span>}
                   </span>
                   <button

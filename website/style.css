@@ -1291,3 +1291,74 @@ section h2 {
         gap: 16px;
     }
 }
+
+/* What's new — release notes pulled from latest.json, localized by page lang */
+.whatsnew {
+    padding: 0 0 56px;
+}
+.whatsnew .container {
+    max-width: 760px;
+}
+.whatsnew details {
+    background: var(--color-bg-white);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-md);
+    box-shadow: var(--shadow-sm);
+    padding: 2px 24px;
+}
+.whatsnew summary {
+    list-style: none;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 18px 0;
+    font-weight: 600;
+    color: var(--color-text);
+}
+.whatsnew summary::-webkit-details-marker {
+    display: none;
+}
+.whatsnew summary .wn-ver {
+    margin-left: auto;
+    font-weight: 500;
+    font-size: 0.82em;
+    color: var(--color-primary);
+    background: rgba(217, 119, 87, 0.08);
+    padding: 3px 11px;
+    border-radius: var(--radius-full);
+}
+.whatsnew .wn-body {
+    padding: 2px 0 16px;
+    color: var(--color-text-secondary);
+    line-height: 1.7;
+    font-size: 0.95rem;
+}
+.whatsnew .wn-body h4 {
+    margin: 16px 0 6px;
+    font-size: 0.95rem;
+    color: var(--color-text);
+}
+.whatsnew .wn-body ul {
+    margin: 0 0 10px;
+    padding-left: 20px;
+}
+.whatsnew .wn-body li {
+    margin: 5px 0;
+}
+.whatsnew .wn-body code {
+    background: var(--color-bg-alt);
+    padding: 1px 5px;
+    border-radius: 4px;
+    font-size: 0.88em;
+}
+.whatsnew .wn-body a,
+.whatsnew .wn-more {
+    color: var(--color-primary);
+}
+.whatsnew .wn-more {
+    display: inline-block;
+    margin-top: 4px;
+    font-size: 0.9rem;
+    font-weight: 500;
+}

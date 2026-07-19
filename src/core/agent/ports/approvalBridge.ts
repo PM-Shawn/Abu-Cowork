@@ -389,8 +389,14 @@ export function resolveActive<K extends SingleActiveKind>(kind: K, result: Appro
 
 /** Resolves a specific entry by id. Used by 'user-question' (id = toolCallId,
  *  supplied by the caller); also valid for the single-active kinds if a
- *  caller happens to know the id, though none of today's wrappers do. */
-export function resolve<K extends ApprovalKind>(kind: K, id: string, result: ApprovalResultMap[K] | null): void {
+ *  caller happens to know the id, though none of today's wrappers do.
+ *
+ *  `result`'s type is exactly `ApprovalResultMap[K]` — no blanket `| null`
+ *  tacked on. 'user-question' and 'workspace' already fold `null` into their
+ *  own result type (`UserQuestionResult | null` / `string | null`); adding
+ *  it here too would let a caller pass `null` for the boolean kinds
+ *  (command/file-permission), which isn't a value their real domain has. */
+export function resolve<K extends ApprovalKind>(kind: K, id: string, result: ApprovalResultMap[K]): void {
   settle(kind, id, result);
 }
 

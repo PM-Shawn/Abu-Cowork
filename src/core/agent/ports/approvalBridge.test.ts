@@ -13,7 +13,6 @@ import {
   resolveActive,
   drainAll,
   drainByConversationId,
-  drainByLoopId,
   subscribe,
   getSnapshot,
   setDequeueShortCircuit,
@@ -357,23 +356,6 @@ describe('approvalBridge — drainByConversationId()', () => {
 
     resolve('user-question', 'tc-b', null);
     await pB;
-  });
-});
-
-describe('approvalBridge — drainByLoopId() (forward-looking; not wired to any wrapper today)', () => {
-  it('drains only entries tagged with the given loopId, across single-active and multi kinds', async () => {
-    const pCmdA = request('command', { conversationId: 'c1', loopId: 'loop-a', payload: COMMAND_PAYLOAD });
-    const pQA = request('user-question', { id: 'tc-a', conversationId: 'c1', loopId: 'loop-a', payload: { payload: { questions: [] } } });
-    const pQB = request('user-question', { id: 'tc-b', conversationId: 'c2', loopId: 'loop-b', payload: { payload: { questions: [] } } });
-
-    drainByLoopId('loop-a');
-    expect(await pCmdA).toBe(false);
-    expect(await pQA).toBeNull();
-    expect(getSnapshot('user-question')).toHaveLength(1);
-    expect(getSnapshot('user-question')[0].id).toBe('tc-b');
-
-    resolve('user-question', 'tc-b', null);
-    await pQB;
   });
 });
 

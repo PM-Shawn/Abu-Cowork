@@ -55,8 +55,6 @@
 
 export type ApprovalKind = 'command' | 'file-permission' | 'workspace' | 'user-question';
 
-const ALL_KINDS: readonly ApprovalKind[] = ['command', 'file-permission', 'workspace', 'user-question'];
-
 // ---------------------------------------------------------------------------
 // Per-kind payload / result shapes — extracted verbatim from the four
 // pre-existing singletons' request/pending object fields.
@@ -128,8 +126,6 @@ export interface ApprovalRequestInput<K extends ApprovalKind> {
   loopId?: string;
   conversationId: string;
   payload: ApprovalPayloadMap[K];
-  /** Overrides the kind's configured default timeout (see `KIND_CONFIGS`). */
-  timeoutMs?: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -285,7 +281,7 @@ export function request<K extends ApprovalKind>(
       publicSnapshot: { id, conversationId: input.conversationId, ...(input.payload as object) },
     };
 
-    const timeoutMs = input.timeoutMs ?? config.timeoutMs;
+    const timeoutMs = config.timeoutMs;
     if (timeoutMs !== undefined) {
       entry.timer = setTimeout(() => {
         if (!isLive(kind, id)) return; // already resolved, or (workspace) overwritten — no-op, replicating the original's identity-check no-op
@@ -439,96 +435,41 @@ export function drainAll(kind: ApprovalKind): void {
   }
 }
 
-/** Drains only entries belonging to one conversation. Mirrors
- *  `drainUserQuestionsForConversation` (the only pre-existing caller of
- *  conversation-scoped drain); implemented symmetrically for the other
- *  three kinds too, though nothing calls it for them today. */
-export function drainByConversationId(kind: ApprovalKind, conversationId: string): void {
+/**
+ * Drains only 'user-question' entries belonging to one conversation. Backs
+ * `drainUserQuestionsForConversation` (conversation delete) — its only real
+ * caller. A prior version implemented this symmetrically for the three
+ * single-active kinds (command/file-permission/workspace) too, but nothing
+ * ever called it for those, so that branch was cut in the F3 API sweep;
+ * re-add if a future caller needs conversation-scoped draining for a
+ * single-active kind.
+ */
+export function drainByConversationId(kind: 'user-question', conversationId: string): void {
   const config = KIND_CONFIGS[kind];
   const state = kindStates[kind];
 
-  if (config.mode === 'multi') {
-    const keep: InternalEntry[] = [];
-    const drain: InternalEntry[] = [];
-    for (const e of state.activeMulti) (e.conversationId === conversationId ? drain : keep).push(e);
-    if (drain.length === 0) return;
-    setMultiEntries(state, keep);
-    for (const entry of drain) {
-      if (entry.timer) clearTimeout(entry.timer);
-      entry.resolveFn(config.cancelledResult);
-    }
-    notify(kind);
-    return;
-  }
-
-  let changed = false;
-  state.queue = state.queue.filter((e) => {
-    if (e.conversationId !== conversationId) return true;
-    if (e.timer) clearTimeout(e.timer);
-    e.resolveFn(config.cancelledResult);
-    changed = true;
-    return false;
-  });
-  if (state.active?.conversationId === conversationId) {
-    const entry = state.active;
-    state.active = null;
+  const keep: InternalEntry[] = [];
+  const drain: InternalEntry[] = [];
+  for (const e of state.activeMulti) (e.conversationId === conversationId ? drain : keep).push(e);
+  if (drain.length === 0) return;
+  setMultiEntries(state, keep);
+  for (const entry of drain) {
     if (entry.timer) clearTimeout(entry.timer);
     entry.resolveFn(config.cancelledResult);
-    changed = true;
   }
-  if (changed) notify(kind);
+  notify(kind);
 }
 
-/**
- * Drains every entry (across all four kinds) belonging to one loopId.
- * Forward-looking primitive matching the design doc's `drainByLoopId`
- * (§3.3) for a future out-of-process runtime, where "abort this loop"
- * must not nuke other concurrent loops' pending approvals. NOT wired to
- * any call site today — the current `drainConfirmationQueue()` /
- * `drainFilePermissionQueue()` / `drainWorkspaceRequest()` /
- * `drainUserQuestions()` wrappers all call `drainAll()` (global, no loop
- * scoping), because that is the pre-existing behavior at every real call
- * site (agentLoop.ts's abort handler calls them with zero arguments). See
- * E-REPORT.md for the out-of-process note.
- */
-export function drainByLoopId(loopId: string): void {
-  for (const kind of ALL_KINDS) {
-    const config = KIND_CONFIGS[kind];
-    const state = kindStates[kind];
-
-    if (config.mode === 'multi') {
-      const keep: InternalEntry[] = [];
-      const drain: InternalEntry[] = [];
-      for (const e of state.activeMulti) (e.loopId === loopId ? drain : keep).push(e);
-      if (drain.length > 0) {
-        setMultiEntries(state, keep);
-        for (const entry of drain) {
-          if (entry.timer) clearTimeout(entry.timer);
-          entry.resolveFn(config.cancelledResult);
-        }
-        notify(kind);
-      }
-      continue;
-    }
-
-    let changed = false;
-    state.queue = state.queue.filter((e) => {
-      if (e.loopId !== loopId) return true;
-      if (e.timer) clearTimeout(e.timer);
-      e.resolveFn(config.cancelledResult);
-      changed = true;
-      return false;
-    });
-    if (state.active?.loopId === loopId) {
-      const entry = state.active;
-      state.active = null;
-      if (entry.timer) clearTimeout(entry.timer);
-      entry.resolveFn(config.cancelledResult);
-      changed = true;
-    }
-    if (changed) notify(kind);
-  }
-}
+// `drainByLoopId` (drain every kind's entries for one loopId — the design
+// doc's §3.3 sketch for a future out-of-process runtime's abort handling)
+// was cut in the F3 API sweep: it had zero call sites across all four
+// kinds. The current `drainConfirmationQueue()` / `drainFilePermissionQueue()`
+// / `drainWorkspaceRequest()` / `drainUserQuestions()` wrappers all call
+// `drainAll()` (global, no loop scoping) instead, matching every real call
+// site (agentLoop.ts's abort handler calls them with zero arguments). Each
+// `InternalEntry` still carries `loopId` (see `ApprovalRequestInput`), so
+// this can be re-added cheaply once an out-of-process runtime phase
+// actually needs per-loop-scoped draining — see E-REPORT.md.
 
 // ---------------------------------------------------------------------------
 // subscribe() / getSnapshot()

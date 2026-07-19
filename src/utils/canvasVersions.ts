@@ -30,7 +30,17 @@ export interface VersionMeta {
   id: string;
   ts: number;
   byteSize: number;
+  /** Who produced the state captured by this snapshot. Absent = 'manual'
+   *  (entries written before this field existed). */
+  source?: 'ai' | 'manual';
+  /** Optional human label — the user message that triggered an AI edit, or
+   *  the REVERT_LABEL sentinel for automatic pre-revert snapshots. */
+  label?: string;
 }
+
+/** Sentinel label for the automatic pre-revert safety snapshot — the UI
+ *  renders it via i18n instead of showing the raw sentinel. */
+export const REVERT_LABEL = '__revert_point__';
 
 interface VersionIndex {
   path: string;
@@ -142,7 +152,11 @@ async function withDirLock<T>(dir: string, fn: () => Promise<T>): Promise<T> {
  * When the per-file cap (`MAX_VERSIONS_PER_FILE`) is exceeded, the oldest
  * snapshot file + index entry are evicted.
  */
-export async function snapshotVersion(filePath: string, content: string): Promise<void> {
+export async function snapshotVersion(
+  filePath: string,
+  content: string,
+  meta?: { source?: 'ai' | 'manual'; label?: string }
+): Promise<void> {
   const dir = await getHistoryDir(filePath);
 
   await withDirLock(dir, async () => {
@@ -171,7 +185,13 @@ export async function snapshotVersion(filePath: string, content: string): Promis
 
     index.seq = seq + 1;
     index.path = filePath;
-    index.versions.push({ id, ts, byteSize });
+    index.versions.push({
+      id,
+      ts,
+      byteSize,
+      ...(meta?.source ? { source: meta.source } : {}),
+      ...(meta?.label ? { label: meta.label } : {}),
+    });
 
     while (index.versions.length > MAX_VERSIONS_PER_FILE) {
       const oldest = index.versions.shift();

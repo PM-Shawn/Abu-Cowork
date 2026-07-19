@@ -139,6 +139,31 @@ describe('canvasVersions', () => {
       const remainingSnapFiles = [...fs.files.keys()].filter((k) => k.endsWith('.snap'));
       expect(remainingSnapFiles).toHaveLength(30);
     });
+
+    it('persists source/label meta when provided and omits them when absent', async () => {
+      await mod.snapshotVersion(filePath, 'manual content');
+      await mod.snapshotVersion(filePath, 'ai content', { source: 'ai', label: '把标题改成蓝色' });
+
+      const versions = await mod.listVersions(filePath); // most recent first
+      expect(versions[0].source).toBe('ai');
+      expect(versions[0].label).toBe('把标题改成蓝色');
+      expect(versions[1].source).toBeUndefined();
+      expect(versions[1].label).toBeUndefined();
+    });
+
+    it('parses legacy index.json entries without source/label', async () => {
+      await mod.snapshotVersion(filePath, 'old');
+      // Simulate a legacy index written before the meta fields existed.
+      const indexPath = indexPathFor();
+      const index = JSON.parse(fs.files.get(indexPath)!);
+      delete index.versions[0].source;
+      delete index.versions[0].label;
+      fs.files.set(indexPath, JSON.stringify(index));
+
+      const versions = await mod.listVersions(filePath);
+      expect(versions).toHaveLength(1);
+      expect(versions[0].source).toBeUndefined();
+    });
   });
 
   describe('listVersions', () => {

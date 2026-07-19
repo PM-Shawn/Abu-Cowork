@@ -11,8 +11,7 @@
  */
 
 import { exists, readTextFile, stat } from '@tauri-apps/plugin-fs';
-import { snapshotVersion } from '@/utils/canvasVersions';
-import { normalizeSeparators } from '@/utils/pathUtils';
+import { normalizePath, snapshotVersion } from '@/utils/canvasVersions';
 import { getMessageText } from '@/core/context/contextUtils';
 import { useChatStore } from '@/stores/chatStore';
 
@@ -25,26 +24,41 @@ import { useChatStore } from '@/stores/chatStore';
 const MAX_SNAPSHOT_BYTES = 5 * 1024 * 1024;
 /** Max label length persisted into the version index. */
 const MAX_LABEL_CHARS = 60;
-/** Bounded number of loops tracked for first-touch dedup (FIFO beyond this). */
+/** Bounded number of loops tracked for first-touch dedup (LRU-evicted beyond this). */
 const MAX_TRACKED_LOOPS = 8;
 
-// loopId -> normalized paths already snapshotted this turn. Eviction is FIFO
-// by loop-creation order (re-touching does not refresh position) — an evicted
-// loop's next touch just re-snapshots, which the store's dedupe absorbs.
+// loopId -> normalized paths already snapshotted this turn. Eviction is true
+// LRU by touch recency, not loop-creation order: every markTouched() call
+// (including a dedupe hit on an already-tracked path) bumps that loop to the
+// most-recently-used end, so an actively-editing loop is never pushed out by
+// merely having been created earlier. Without this, a session running more
+// than MAX_TRACKED_LOOPS concurrent loops could evict a loop that is still
+// mid-edit; its subsequent "first touch" would re-snapshot mid-turn content
+// as if it were the turn's true "before" state, polluting history with an
+// intermediate state instead of the original — the store's content dedupe
+// does NOT reliably absorb this, since the intermediate content differs from
+// both the true original and the final state.
 const touchedByLoop = new Map<string, Set<string>>();
 
 /** Returns true when this is the first touch of `path` within `loopId`. */
 function markTouched(loopId: string, path: string): boolean {
-  let set = touchedByLoop.get(loopId);
-  if (!set) {
-    set = new Set();
-    touchedByLoop.set(loopId, set);
+  const existing = touchedByLoop.get(loopId);
+  const set = existing ?? new Set<string>();
+
+  // Recency bump: re-inserting moves this loopId to the end of the Map's
+  // iteration order (Map preserves insertion order), so the eviction below
+  // always removes the least-recently-touched loop.
+  touchedByLoop.delete(loopId);
+  touchedByLoop.set(loopId, set);
+
+  if (!existing) {
     while (touchedByLoop.size > MAX_TRACKED_LOOPS) {
       const oldest = touchedByLoop.keys().next().value;
       if (oldest === undefined) break;
       touchedByLoop.delete(oldest);
     }
   }
+
   if (set.has(path)) return false;
   set.add(path);
   return true;
@@ -79,12 +93,17 @@ export async function snapshotBeforeAiEdit(
   path: string,
   opts: { loopId?: string; conversationId?: string; knownContent?: string }
 ): Promise<void> {
+  const key = normalizePath(path);
   try {
-    const key = normalizeSeparators(path).replace(/\/+$/, '');
     // Missing loopId (not expected in practice) degrades to attempting every
     // time — the store's content dedupe keeps history from growing.
     if (opts.loopId && !markTouched(opts.loopId, key)) return;
-    if (!(await exists(path))) return; // new file — no "before" to capture
+
+    // When the caller already has the content (edit_file just read the file
+    // to compute its diff), skip the existence check entirely — it would
+    // just be a second IPC round trip to confirm something the caller has
+    // already proven by having the content in hand.
+    if (opts.knownContent === undefined && !(await exists(path))) return; // new file — no "before" to capture
 
     let content = opts.knownContent;
     if (content === undefined) {
@@ -106,6 +125,13 @@ export async function snapshotBeforeAiEdit(
       label: latestUserMessageLabel(opts.conversationId),
     });
   } catch (err) {
+    // Unmark so the next tool call touching this path in this loop retries —
+    // a transient failure (stat/readTextFile/snapshotVersion all throw here)
+    // must not permanently block history for the rest of the turn just
+    // because the first attempt hit a hiccup. Intentional skips (missing
+    // file, oversize file) return above before ever reaching this catch, so
+    // they correctly stay marked (same-turn semantics unchanged for those).
+    if (opts.loopId) touchedByLoop.get(opts.loopId)?.delete(key);
     console.warn('[aiEditSnapshots] snapshot failed (non-blocking)', path, err);
   }
 }

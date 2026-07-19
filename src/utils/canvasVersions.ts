@@ -64,8 +64,12 @@ async function getHomeDir(): Promise<string> {
   return cachedHomeDir;
 }
 
-/** Normalize a path to canonical form (forward slashes, no trailing slash). */
-function normalizePath(p: string): string {
+/** Normalize a path to canonical form (forward slashes, no trailing slash).
+ *  This is the shared canonical form used to key a file's history directory —
+ *  other modules that need to key/compare paths the same way (e.g.
+ *  aiEditSnapshots.ts's per-loop touched-path tracking) should import this
+ *  rather than keep their own private copy of the same logic. */
+export function normalizePath(p: string): string {
   return normalizeSeparators(p).replace(/\/+$/, '');
 }
 

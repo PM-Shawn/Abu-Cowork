@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { Clock } from 'lucide-react';
-import { listVersions, type VersionMeta } from '@/utils/canvasVersions';
+import { listVersions, REVERT_LABEL, type VersionMeta } from '@/utils/canvasVersions';
 import { useToastStore } from '@/stores/toastStore';
 import { useI18n } from '@/i18n';
 import { cn } from '@/lib/utils';
@@ -172,27 +172,52 @@ export function VersionHistoryMenu({ filePath, open, onClose, anchorRef, onRever
             {t.panel.versionHistoryEmpty}
           </div>
         ) : (
-          versions.map((v) => (
-            <button
-              key={v.id}
-              type="button"
-              disabled={revertingId !== null}
-              onClick={() => handleRevert(v.id)}
-              title={t.panel.versionHistoryRevert}
-              className={cn(
-                'w-full flex items-center gap-2 px-3 py-1.5 rounded-md text-left',
-                'text-minor transition-colors',
-                'text-[var(--abu-text-secondary)] hover:bg-[var(--abu-bg-hover)]',
-                'disabled:opacity-60 disabled:cursor-not-allowed',
-                revertingId === v.id && 'opacity-60'
-              )}
-            >
-              <Clock className="h-3 w-3 shrink-0 text-[var(--abu-text-muted)]" />
-              <span className="flex-1 truncate tabular-nums">{formatVersionTime(v.ts)}</span>
-              <span className="text-[var(--abu-text-muted)] shrink-0">{formatBytes(v.byteSize)}</span>
-            </button>
-          ))
+          versions.map((v) => {
+            const label =
+              v.label === REVERT_LABEL ? t.panel.versionRevertPoint : v.label;
+            const isAi = v.source === 'ai';
+            return (
+              <button
+                key={v.id}
+                type="button"
+                disabled={revertingId !== null}
+                onClick={() => handleRevert(v.id)}
+                title={t.panel.versionHistoryRevert}
+                className={cn(
+                  'w-full flex items-start gap-2 px-3 py-1.5 rounded-md text-left',
+                  'text-minor transition-colors',
+                  'text-[var(--abu-text-secondary)] hover:bg-[var(--abu-bg-hover)]',
+                  'disabled:opacity-60 disabled:cursor-not-allowed',
+                  revertingId === v.id && 'opacity-60'
+                )}
+              >
+                <Clock className="h-3 w-3 shrink-0 mt-0.5 text-[var(--abu-text-muted)]" />
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-1.5">
+                    <span className="truncate tabular-nums">{formatVersionTime(v.ts)}</span>
+                    <span
+                      className={cn(
+                        'shrink-0 px-1 rounded text-caption',
+                        isAi
+                          ? 'bg-[var(--abu-info-bg)] text-[var(--abu-info)]'
+                          : 'bg-[var(--abu-bg-hover)] text-[var(--abu-text-muted)]'
+                      )}
+                    >
+                      {isAi ? t.panel.versionSourceAi : t.panel.versionSourceManual}
+                    </span>
+                  </div>
+                  {label && (
+                    <div className="truncate text-caption text-[var(--abu-text-muted)]">{label}</div>
+                  )}
+                </div>
+                <span className="text-[var(--abu-text-muted)] shrink-0">{formatBytes(v.byteSize)}</span>
+              </button>
+            );
+          })
         )}
+      </div>
+      <div className="px-3 py-2 border-t border-[var(--abu-bg-pressed)] text-caption text-[var(--abu-text-muted)] shrink-0">
+        {t.panel.versionHistoryBoundaryNote}
       </div>
     </div>
   );

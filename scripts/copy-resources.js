@@ -14,14 +14,14 @@ const root = resolve(__dirname, '..');
 const dest = resolve(root, 'src-tauri');
 
 // Clean previous copies
-for (const name of ['builtin-skills', 'builtin-agents']) {
+for (const name of ['builtin-skills', 'builtin-agents', 'sidecar']) {
   const target = resolve(dest, name);
   if (existsSync(target)) {
     rmSync(target, { recursive: true });
   }
 }
 
-const resources = ['builtin-skills', 'builtin-agents'];
+const resources = ['builtin-skills', 'builtin-agents', 'sidecar'];
 
 for (const name of resources) {
   const src = resolve(root, name);

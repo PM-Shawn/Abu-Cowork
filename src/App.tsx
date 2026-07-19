@@ -26,6 +26,7 @@ import { initPlatform } from '@/utils/platform';
 import { useDiscoveryStore } from '@/stores/discoveryStore';
 import { useChatStore, useActiveConversation } from '@/stores/chatStore';
 import { initNetworkProxy } from '@/core/sandbox/config';
+import { startSidecar } from '@/core/sidecar/sidecarManager';
 
 // Initialize platform detection at module load time (before any component renders)
 // so that isWindows()/isMacOS() return correct values immediately
@@ -33,6 +34,13 @@ initPlatform().then(() => {
   // Start network proxy after platform is detected (needs isMacOS())
   initNetworkProxy().catch((err) => {
     console.warn('[App] Network proxy init error:', err);
+  });
+  // P1-0 sidecar skeleton: fire-and-forget, fail-soft. startSidecar() never
+  // throws on its own (see src/core/sidecar/sidecarManager.ts), the .catch
+  // here is defense-in-depth so a future change there can't ever surface as
+  // an app-startup failure.
+  startSidecar().catch((err) => {
+    console.warn('[App] Sidecar init error:', err);
   });
 }).catch((err) => {
   console.warn('[App] Platform detection init error:', err);

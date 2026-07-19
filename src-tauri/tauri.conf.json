@@ -62,7 +62,8 @@
       "builtin-agents/",
       "python-runtime/",
       "node-runtime/",
-      "browser-extension/"
+      "browser-extension/",
+      "sidecar/"
     ],
     "icon": [
       "icons/32x32.png",

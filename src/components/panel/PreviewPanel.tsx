@@ -563,12 +563,19 @@ export default function PreviewPanel({
   // write's own fs-watch echo recognizable as self, not an external change.
   const handleRevertVersion = async (id: string) => {
     if (!previewFilePath) return;
-    const content = await revertToVersion(previewFilePath, id);
+    // Cancel the pending debounced autosave BEFORE awaiting revertToVersion,
+    // not after. revertToVersion does its own read + pre-revert safety
+    // snapshot + write, which stretches the await window; if the timer were
+    // still armed during that window it could fire and write stale draft
+    // content to disk right after the revert's write lands, silently undoing
+    // the revert on disk (the in-memory draft below would still show the
+    // reverted content, masking the problem until the next reload).
     if (saveTimerRef.current) {
       clearTimeout(saveTimerRef.current);
       saveTimerRef.current = null;
     }
     pendingSaveRef.current = null;
+    const content = await revertToVersion(previewFilePath, id);
     selfEchoRef.current = content;
     lastSavedRef.current = content;
     setDraft(content);

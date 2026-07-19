@@ -41,6 +41,7 @@ vi.mock('@tauri-apps/plugin-fs', () => ({
   writeFile: vi.fn().mockResolvedValue(undefined),
   readDir: vi.fn().mockResolvedValue([]),
   exists: vi.fn().mockResolvedValue(false),
+  stat: vi.fn().mockResolvedValue({ size: 0 }),
   mkdir: vi.fn().mockResolvedValue(undefined),
   remove: vi.fn().mockResolvedValue(undefined),
   watch: vi.fn().mockResolvedValue(() => {}),

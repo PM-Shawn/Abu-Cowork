@@ -6,6 +6,11 @@ import { registerBuiltinTools } from '../builtins';
 import { toolRegistry } from '../registry';
 import { TOOL_NAMES } from '../toolNames';
 
+const snapshotBeforeAiEditMock = vi.fn().mockResolvedValue(undefined);
+vi.mock('@/utils/aiEditSnapshots', () => ({
+  snapshotBeforeAiEdit: (...args: unknown[]) => snapshotBeforeAiEditMock(...args),
+}));
+
 // Regression coverage for the shell-injection fixes in the PDF branch of
 // readFileTool. These tests prove the *interface contract* — the migrated
 // call sites must dispatch to `run_argv_command` with the raw filePath as
@@ -343,5 +348,69 @@ describe('editFileTool — new_content is inserted verbatim (no $-substitution)'
     });
 
     expect(writtenContent()).toBe('const a = 1;\nconst b = 3;');
+  });
+});
+
+describe('AI edit pre-snapshot hook', () => {
+  beforeEach(() => {
+    vi.mocked(writeTextFile).mockClear();
+    vi.mocked(readTextFile).mockClear();
+    vi.mocked(exists).mockClear();
+    snapshotBeforeAiEditMock.mockClear();
+    snapshotBeforeAiEditMock.mockResolvedValue(undefined);
+  });
+
+  it('write_file snapshots before writing, passing loopId/conversationId', async () => {
+    vi.mocked(writeTextFile).mockResolvedValue(undefined);
+    const result = await writeFileTool.execute(
+      { path: '/w/a.txt', content: 'new' },
+      { loopId: 'loop1', conversationId: 'conv1' }
+    );
+    expect(result).toContain('Successfully wrote');
+    expect(snapshotBeforeAiEditMock).toHaveBeenCalledWith('/w/a.txt', {
+      loopId: 'loop1',
+      conversationId: 'conv1',
+    });
+    // Snapshot must happen before the write.
+    expect(snapshotBeforeAiEditMock.mock.invocationCallOrder[0]).toBeLessThan(
+      vi.mocked(writeTextFile).mock.invocationCallOrder[0]
+    );
+  });
+
+  it('edit_file passes the already-read content as knownContent', async () => {
+    vi.mocked(exists).mockResolvedValue(true);
+    vi.mocked(readTextFile).mockResolvedValue('hello old world');
+    vi.mocked(writeTextFile).mockResolvedValue(undefined);
+    const result = await editFileTool.execute(
+      { path: '/w/a.txt', old_content: 'old', new_content: 'new' },
+      { loopId: 'loop1', conversationId: 'conv1' }
+    );
+    expect(result).toContain('Successfully edited');
+    expect(snapshotBeforeAiEditMock).toHaveBeenCalledWith('/w/a.txt', {
+      loopId: 'loop1',
+      conversationId: 'conv1',
+      knownContent: 'hello old world',
+    });
+  });
+
+  it('edit_file does not snapshot when validation fails (old_content not found)', async () => {
+    vi.mocked(exists).mockResolvedValue(true);
+    vi.mocked(readTextFile).mockResolvedValue('nothing matches');
+    const result = await editFileTool.execute(
+      { path: '/w/a.txt', old_content: 'absent', new_content: 'new' },
+      { loopId: 'loop1' }
+    );
+    expect(result).toContain('Error: old_content not found');
+    expect(snapshotBeforeAiEditMock).not.toHaveBeenCalled();
+  });
+
+  it('edit_file does not snapshot when the file does not exist', async () => {
+    vi.mocked(exists).mockResolvedValue(false);
+    const result = await editFileTool.execute(
+      { path: '/w/missing.txt', old_content: 'a', new_content: 'b' },
+      { loopId: 'loop1' }
+    );
+    expect(result).toContain('Error: File not found');
+    expect(snapshotBeforeAiEditMock).not.toHaveBeenCalled();
   });
 });

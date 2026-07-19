@@ -1394,7 +1394,6 @@ const enUS: TranslationDict = {
     versionHistoryLoadFailed: 'Failed to load version history',
     versionSourceAi: 'Before AI edit',
     versionRevertPoint: 'Backup before revert',
-    versionHistoryBoundaryNote: 'Only edits made in the editor or by AI tools are recorded; changes from shell commands or scripts are not captured.',
     // FilesSection
     operationRead: 'Read',
     operationModify: 'Modify',

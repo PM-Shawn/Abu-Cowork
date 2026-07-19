@@ -211,9 +211,6 @@ export function VersionHistoryMenu({ filePath, open, onClose, anchorRef, onRever
           })
         )}
       </div>
-      <div className="px-3 py-2 border-t border-[var(--abu-bg-pressed)] text-caption text-[var(--abu-text-muted)] shrink-0">
-        {t.panel.versionHistoryBoundaryNote}
-      </div>
     </div>
   );
 }

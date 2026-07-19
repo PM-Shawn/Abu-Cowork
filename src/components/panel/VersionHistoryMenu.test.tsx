@@ -58,12 +58,4 @@ describe('VersionHistoryMenu', () => {
     expect(screen.queryByText('自动')).toBeNull();
     expect(screen.queryByText('手动')).toBeNull();
   });
-
-  it('always shows the boundary note footer', async () => {
-    listVersionsMock.mockResolvedValue([]);
-    renderMenu();
-    await waitFor(() =>
-      expect(screen.getByText(/命令行\/脚本产生的改动不会进入版本历史/)).toBeTruthy()
-    );
-  });
 });

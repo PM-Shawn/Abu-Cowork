@@ -1,4 +1,4 @@
-import { readTextFile, readFile as readBinFile, writeTextFile, readDir, exists, stat } from '@tauri-apps/plugin-fs';
+import { readTextFile, readFile as readBinFile, writeTextFile, readDir, exists, stat } from '../fsBridge';
 import { invoke } from '@tauri-apps/api/core';
 import type { ToolDefinition, ToolResultContent } from '../../../types';
 import { isWindows } from '../../../utils/platform';

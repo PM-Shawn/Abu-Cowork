@@ -23,6 +23,9 @@
  *   - `llm.chat` → runs one streaming LLM call to completion; see llmHost.ts.
  *     The response settles only once the stream ends (or errors) — progress
  *     comes via `llm.event` / `llm.chatMeta` notifications in the meantime.
+ *   - `fs.readTextFile` / `fs.readFile` / `fs.writeTextFile` / `fs.readDir` /
+ *     `fs.exists` / `fs.stat` → P1-2a fs bridge for the agent's file tools;
+ *     see fsHost.ts for implementation and the plugin-fs semantic mapping.
  * Notifications (no `id`):
  *   - `shutdown` → abort all active llm.chat calls, flush stdout, exit(0)
  *   - `llm.abort` → abort one in-flight `llm.chat` call by callId (idempotent,
@@ -36,9 +39,12 @@
  *   - Malformed JSON on a line → { code: -32700 } (Parse error), id: null
  *   - Non-object / array message → { code: -32600 } (Invalid Request)
  *   - Unknown method (on a request, i.e. has an id) → { code: -32601 }
- *   - Invalid `llm.chat`/`llm.abort` params → { code: -32602 }
+ *   - Invalid `llm.chat`/`llm.abort`/`fs.*` params → { code: -32602 }
  *   - `llm.chat` adapter threw → { code: -32000 }, `data` carries the
  *     reconstructable LLMError shape (see llmHost.ts errorDataFor)
+ *   - `fs.*` handler hit a real fs errno error (ENOENT, EACCES, ...) →
+ *     { code: -32001 }, `data` carries `{ code, message, path }` (see
+ *     fsHost.ts rethrowFsError)
  *
  * No npm dependencies at the SOURCE level beyond what bundles in (this file
  * imports the real `@anthropic-ai/sdk`-backed adapters) — the build output
@@ -50,6 +56,7 @@
 
 import { createInterface } from 'node:readline';
 import { createLlmHost } from './llmHost';
+import { fsReadTextFile, fsReadFile, fsWriteTextFile, fsReadDir, fsExists, fsStat } from './fsHost';
 import {
   writeLine,
   makeError,
@@ -70,6 +77,41 @@ function log(...args: unknown[]): void {
 const llmHost = createLlmHost({
   notify: (method, params) => writeLine(makeNotification(method, params)),
 });
+
+/**
+ * In-flight async request counter — drives the bounded drain in the stdin
+ * `close` handler below. Without it, `rl.on('close')` would `flushAndExit`
+ * while fs/llm handlers are still mid-await, cutting off their work (a
+ * `fs.writeTextFile` in flight at app quit could leave a truncated file)
+ * and dropping their responses (which is also what used to make piped CLI
+ * sanity runs against this file silently produce no output).
+ */
+let inFlightRequests = 0;
+
+/** Run one async request handler without blocking the readline loop; the response is written when it settles. */
+function runAsyncRequest(id: string | number | null, fn: () => Promise<unknown>): void {
+  inFlightRequests += 1;
+  void (async () => {
+    try {
+      const result = await fn();
+      writeLine(makeResult(id, result));
+    } catch (err) {
+      writeLine(errorFromCaught(id, err));
+    } finally {
+      inFlightRequests -= 1;
+    }
+  })();
+}
+
+/** P1-2a fs bridge — method -> handler, all request/response (no notifications). See fsHost.ts. */
+const fsHandlers: Record<string, (params: unknown) => Promise<unknown>> = {
+  'fs.readTextFile': fsReadTextFile,
+  'fs.readFile': fsReadFile,
+  'fs.writeTextFile': fsWriteTextFile,
+  'fs.readDir': fsReadDir,
+  'fs.exists': fsExists,
+  'fs.stat': fsStat,
+};
 
 function handleMessage(raw: string): void {
   let msg: unknown;
@@ -133,17 +175,17 @@ function handleMessage(raw: string): void {
 
   if (method === 'llm.chat') {
     if (isNotification) return; // must be a request — a notification has no id to respond to
-    // Fire-and-forget from the readline loop's perspective: chat() can run
-    // for minutes, and we must keep processing incoming lines (heartbeat
+    // Async from the readline loop's perspective: chat() can run for
+    // minutes, and we must keep processing incoming lines (heartbeat
     // pings, llm.abort for THIS or other calls) while it's in flight.
-    void (async () => {
-      try {
-        const result = await llmHost.handleChat(params);
-        writeLine(makeResult(id, result));
-      } catch (err) {
-        writeLine(errorFromCaught(id, err));
-      }
-    })();
+    runAsyncRequest(id, () => llmHost.handleChat(params));
+    return;
+  }
+
+  const fsHandler = fsHandlers[method];
+  if (fsHandler) {
+    if (isNotification) return; // must be a request — a notification has no id to respond to
+    runAsyncRequest(id, () => fsHandler(params));
     return;
   }
 
@@ -173,9 +215,23 @@ rl.on('line', (line) => {
 });
 
 rl.on('close', () => {
-  // stdin closed (parent went away, or piped input ended) — exit cleanly.
+  // stdin closed (parent went away, or piped input ended). Abort streaming
+  // LLM calls immediately (they can run for minutes — no reason to finish
+  // them for a departed parent; the abort makes their handlers settle fast),
+  // then give the remaining short-lived in-flight requests (fs ops) a
+  // bounded window to finish so their work isn't cut off mid-write and
+  // their responses still reach the pipe, then exit.
   llmHost.shutdownAll();
-  flushAndExit(0);
+  const DRAIN_CAP_MS = 3_000;
+  const deadline = Date.now() + DRAIN_CAP_MS;
+  const tick = (): void => {
+    if (inFlightRequests === 0 || Date.now() >= deadline) {
+      flushAndExit(0);
+      return;
+    }
+    setTimeout(tick, 10);
+  };
+  tick();
 });
 
 process.stdin.on('error', (err) => {

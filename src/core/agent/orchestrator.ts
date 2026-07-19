@@ -4,9 +4,9 @@ import { skillLoader } from '../skill/loader';
 import { loadAllRules } from './projectRules';
 import { loadSoul } from './soulConfig';
 import { getDefaultSoul } from './agentLoop';
-import { useWorkspaceStore } from '../../stores/workspaceStore';
 import { useSettingsStore } from '../../stores/settingsStore';
 import { getSettingsReader } from './ports/settingsReader';
+import { getWorkspaceReader } from './ports/workspaceReader';
 import { getSessionOutputDir } from '../session/sessionDir';
 import { prepareSuggestedWorkspace } from './defaultWorkspace';
 import { isWindows } from '../../utils/platform';
@@ -404,7 +404,7 @@ You are replying in an IM chat. Follow this style:
 - Keep the tone natural — like a colleague conversation, not a customer service document.`, cacheable: true });
   } else {
     // Interactive desktop mode
-    workspacePath = useWorkspaceStore.getState().currentPath;
+    workspacePath = getWorkspaceReader().getCurrentPath();
 
     if (workspacePath) {
       sections.push({ name: 'workspace', text: `\n## Current Workspace

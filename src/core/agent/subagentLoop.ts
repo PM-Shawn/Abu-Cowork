@@ -19,8 +19,8 @@ import { getSettingsReader } from './ports/settingsReader';
 import { resolveCapabilities, computeReasoningParams, isReasoningStarvation, type ModelCapabilities } from '../llm/modelCapabilities';
 import { applyDeclaredCapabilities } from '../llm/applyDeclaredCapabilities';
 import { resolveModelDeclared } from '../llm/resolveModelDeclared';
-import { useDiscoveredCapsStore } from '../../stores/discoveredCapabilitiesStore';
-import { useWorkspaceStore } from '../../stores/workspaceStore';
+import { getCapsPort } from './ports/capsPort';
+import { getWorkspaceReader } from './ports/workspaceReader';
 import { prepareContextMessages } from '../context/contextManager';
 import { compressContextIfNeeded } from '../context/contextCompressor';
 import { getMessageText } from '../context/contextUtils';
@@ -210,7 +210,7 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
     const settings = getSettingsReader().getSnapshot();
 
     // 1. Build system prompt
-    const workspacePath = options.imContext?.workspacePath ?? useWorkspaceStore.getState().currentPath;
+    const workspacePath = options.imContext?.workspacePath ?? getWorkspaceReader().getCurrentPath();
     const now = new Date();
     const dateStr = now.toLocaleDateString('zh-CN', {
       year: 'numeric', month: 'long', day: 'numeric', weekday: 'long',
@@ -364,7 +364,7 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
       const provider = getActiveProvider(settings);
       const declared = resolveModelDeclared(provider, effectiveModelId);
       const discovered = provider
-        ? useDiscoveredCapsStore.getState().get(provider.id, effectiveModelId)
+        ? getCapsPort().get(provider.id, effectiveModelId)
         : undefined;
       const baseCaps = applyDeclaredCapabilities(resolveCapabilities(effectiveModelId), declared);
       const subagentCaps: ModelCapabilities = {
@@ -503,7 +503,7 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
       // L4: learn that a statically-non-reasoning model actually reasons, so future
       // runs bound it (treated as 'uncontrollable' → full budget + reactive net).
       if (sawThinking && baseCaps.thinking === false && provider) {
-        useDiscoveredCapsStore.getState().recordReasoningObserved(provider.id, effectiveModelId);
+        getCapsPort().recordReasoningObserved(provider.id, effectiveModelId);
       }
 
       // Accumulate text (append, not overwrite — preserve results from all turns).

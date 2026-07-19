@@ -142,17 +142,28 @@ function App() {
   const theme = useSettingsStore((s) => s.theme);
   useEffect(() => {
     const root = document.documentElement;
+    // Also drive the NATIVE window theme. On Windows/Linux the OS paints a real
+    // title bar whose color follows the window theme (Windows uses DWM immersive
+    // dark mode); without this the Windows title bar stays white even when the
+    // app is in dark mode. macOS uses an overlay title bar, so this is a harmless
+    // no-op there. 'system' → null lets the OS decide.
+    const syncNativeTheme = (t: 'light' | 'dark' | null) => {
+      if (!isTauriEnv()) return; // web / E2E: no Tauri window API
+      getCurrentWindow().setTheme(t).catch(() => {}); // best-effort; never block render
+    };
     const apply = (dark: boolean) => {
       root.classList.toggle('dark', dark);
     };
     if (theme === 'system') {
       const mq = window.matchMedia('(prefers-color-scheme: dark)');
       apply(mq.matches);
+      syncNativeTheme(null);
       const handler = (e: MediaQueryListEvent) => apply(e.matches);
       mq.addEventListener('change', handler);
       return () => mq.removeEventListener('change', handler);
     } else {
       apply(theme === 'dark');
+      syncNativeTheme(theme === 'dark' ? 'dark' : 'light');
     }
   }, [theme]);
 

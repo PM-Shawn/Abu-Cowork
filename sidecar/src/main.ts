@@ -17,6 +17,14 @@
  *             logs or anything else to stdout; the parent treats every stdout
  *             line as a protocol message. All diagnostics go to stderr.
  *
+ * P1-3a adds the `subagent.run` / `subagent.abort` protocol extension (see
+ * subagentHost.ts) so a subagent's whole mini-loop runs in THIS process
+ * instead of the webview — including a REVERSE channel (`tool.invoke` /
+ * `hook.emit`, sidecar→shell requests) so tool execution and lifecycle
+ * hooks still happen shell-side, unmoved (registry.ts's pathSafety /
+ * permissions / approvals). See rpcClient.ts for the reverse-RPC transport
+ * and subagentRunner.ts (shell side) for the full wire-protocol doc.
+ *
  * Methods:
  *   - `ping` → { pong: true, pid, uptimeMs }
  *   - `echo` → returns `params` verbatim as `result`
@@ -26,20 +34,46 @@
  *   - `fs.readTextFile` / `fs.readFile` / `fs.writeTextFile` / `fs.readDir` /
  *     `fs.exists` / `fs.stat` → P1-2a fs bridge for the agent's file tools;
  *     see fsHost.ts for implementation and the plugin-fs semantic mapping.
+ *   - `subagent.run` → runs one subagent mini-loop to completion; see
+ *     subagentHost.ts. The response settles only once the whole run
+ *     finishes (or errors) — no progress notifications this phase (mirrors
+ *     `llm.chat`'s "response settles at the end" shape, not its per-event
+ *     streaming).
  * Notifications (no `id`):
- *   - `shutdown` → abort all active llm.chat calls, flush stdout, exit(0)
+ *   - `shutdown` → abort all active llm.chat calls AND subagent.run calls,
+ *     reject all pending outbound (reverse-RPC) requests, flush stdout,
+ *     exit(0)
  *   - `llm.abort` → abort one in-flight `llm.chat` call by callId (idempotent,
  *     unknown callId is a silent no-op)
+ *   - `subagent.abort` → abort one in-flight `subagent.run` call by runId
+ *     (idempotent, unknown runId is a silent no-op — same discipline as
+ *     `llm.abort`)
  * Notifications sidecar→shell:
  *   - `llm.event` → `{ callId, seq, event }` — one StreamEvent, coalesced
  *     (see eventCoalescer.ts)
  *   - `llm.chatMeta` → `{ callId, kind: 'maxTokensLimitDiscovered', limit }`
+ * Reverse requests sidecar→shell (see rpcClient.ts, subagentRunner.ts):
+ *   - `tool.invoke` → `{ runId, toolName, input, context }`, response = the
+ *     tool's `ToolResult`
+ *   - `hook.emit` → `{ runId, event }` (only `preToolCall`, whose return
+ *     value the loop consumes), response = the (possibly mutated) event
+ * Reverse notifications sidecar→shell:
+ *   - `hook.notify` → `{ runId, event }` (`subagentStart`/`subagentEnd`/
+ *     `postToolCall` — fire-and-forget, return value never consumed)
+ *   - `subagent.progress` → `{ runId, event }` (tool-start/tool-end/
+ *     turn-complete — fire-and-forget, feeds the shell's execution-panel
+ *     child-step visualization; see subagentHost.ts's `onProgress` wiring).
+ *     Progress notifications and the `subagent.run` REQUEST's final
+ *     response travel the same single ordered NDJSON stdout stream, so for
+ *     a given run every progress notification is guaranteed to arrive
+ *     before that run's final response.
  *
  * Errors (JSON-RPC 2.0 standard codes):
  *   - Malformed JSON on a line → { code: -32700 } (Parse error), id: null
  *   - Non-object / array message → { code: -32600 } (Invalid Request)
  *   - Unknown method (on a request, i.e. has an id) → { code: -32601 }
- *   - Invalid `llm.chat`/`llm.abort`/`fs.*` params → { code: -32602 }
+ *   - Invalid `llm.chat`/`llm.abort`/`fs.*`/`subagent.run`/`subagent.abort`
+ *     params → { code: -32602 }
  *   - `llm.chat` adapter threw → { code: -32000 }, `data` carries the
  *     reconstructable LLMError shape (see llmHost.ts errorDataFor)
  *   - `fs.*` handler hit a real fs errno error (ENOENT, EACCES, ...) →
@@ -57,6 +91,8 @@
 import { createInterface } from 'node:readline';
 import { createLlmHost } from './llmHost';
 import { fsReadTextFile, fsReadFile, fsWriteTextFile, fsReadDir, fsExists, fsStat } from './fsHost';
+import { handleSubagentRun, handleSubagentAbort, shutdownAllSubagentRuns } from './subagentHost';
+import { resolvePendingResponse, rejectAllPendingRequests } from './rpcClient';
 import {
   writeLine,
   makeError,
@@ -129,7 +165,24 @@ function handleMessage(raw: string): void {
     return;
   }
 
-  const { id, method, params } = msg as JsonRpcRequest;
+  const { id, method, params } = msg as JsonRpcRequest & {
+    result?: unknown;
+    error?: { code: number; message: string; data?: unknown };
+  };
+
+  // Response to one of OUR OWN outbound requests (tool.invoke / hook.emit —
+  // see rpcClient.ts). No `method`, and `id` is a STRING (our mint scheme:
+  // 'sq-N', deliberately disjoint from the shell's own numeric outbound-
+  // request ids — see sidecarManager.ts's mirrored comment on the other
+  // side of this same collision-freedom argument). Must be checked BEFORE
+  // the notification/request dispatch below, since this kind of message has
+  // no `method` at all.
+  if (typeof method !== 'string' && typeof id === 'string') {
+    const { result, error } = msg as { result?: unknown; error?: { code: number; message: string; data?: unknown } };
+    resolvePendingResponse(id, result, error);
+    return;
+  }
+
   // JSON-RPC 2.0: a member absent means notification; `id: null` is still a
   // (discouraged but valid) request and gets a response.
   const isNotification = id === undefined;
@@ -142,6 +195,8 @@ function handleMessage(raw: string): void {
   if (method === 'shutdown') {
     log('shutdown requested, exiting');
     llmHost.shutdownAll();
+    shutdownAllSubagentRuns();
+    rejectAllPendingRequests(new Error('Sidecar shutting down'));
     flushAndExit(0);
     return;
   }
@@ -179,6 +234,28 @@ function handleMessage(raw: string): void {
     // minutes, and we must keep processing incoming lines (heartbeat
     // pings, llm.abort for THIS or other calls) while it's in flight.
     runAsyncRequest(id, () => llmHost.handleChat(params));
+    return;
+  }
+
+  if (method === 'subagent.abort') {
+    // Notification only — fire-and-forget, same discipline as llm.abort
+    // (the shell has its own 5s defensive grace timer independent of this).
+    try {
+      handleSubagentAbort(params);
+    } catch (err) {
+      log('subagent.abort handler threw (ignored — notifications get no response)', err);
+    }
+    return;
+  }
+
+  if (method === 'subagent.run') {
+    if (isNotification) return; // must be a request — a notification has no id to respond to
+    // Async, same reasoning as llm.chat above: a subagent run can take
+    // minutes and itself sends/awaits reverse-RPC requests (tool.invoke,
+    // hook.emit) while in flight — the readline loop must keep processing
+    // incoming lines (including THIS run's own tool.invoke responses,
+    // and subagent.abort for this or other runs) the whole time.
+    runAsyncRequest(id, () => handleSubagentRun(params));
     return;
   }
 
@@ -222,6 +299,8 @@ rl.on('close', () => {
   // bounded window to finish so their work isn't cut off mid-write and
   // their responses still reach the pipe, then exit.
   llmHost.shutdownAll();
+  shutdownAllSubagentRuns();
+  rejectAllPendingRequests(new Error('Sidecar process closing (stdin closed)'));
   const DRAIN_CAP_MS = 3_000;
   const deadline = Date.now() + DRAIN_CAP_MS;
   const tick = (): void => {

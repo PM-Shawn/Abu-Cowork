@@ -36,7 +36,8 @@ import { AutoCompactTracker, getUsagePercent } from '../context/autoCompact';
 import { estimateToolSchemaTokens, estimateTokens, estimateMessageTokens, calibrateFromUsage, setActiveModel } from '../context/tokenEstimator';
 import { identifyRounds, RECENT_ROUNDS_TO_KEEP } from '../context/contextUtils';
 import { withRetry } from './retry';
-import { runSubagentLoop, extractParentConversationSummary } from './subagentLoop';
+import { extractParentConversationSummary } from './subagentLoop';
+import { runSubagent } from './subagentRunner';
 import type { SubagentProgressEvent } from './subagentLoop';
 import { createSubagentController } from './subagentAbort';
 import { allToolsUnparseable, MAX_NO_PROGRESS_TURNS, resolveMaxTurns, escalateMaxOutputTokens, shouldContinueTruncatedToolCalls } from './loopGuards';
@@ -948,7 +949,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
     );
 
     try {
-      const result = await runSubagentLoop({
+      const result = await runSubagent({
         agent: delegateAgent,
         task: taskText,
         parentConversationSummary: parentConversationSummary || undefined,

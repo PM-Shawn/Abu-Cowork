@@ -18,6 +18,8 @@ import {
   request,
   notifySidecar,
   onSidecarNotification,
+  onSidecarRequest,
+  SidecarRequestError,
   __resetForTests,
 } from './sidecarManager';
 
@@ -319,6 +321,181 @@ describe('sidecarManager', () => {
 
       await expect(pending).resolves.toEqual({ a: 1 });
       expect(received).toEqual([]); // the notification handler was never invoked
+    });
+  });
+
+  describe('onSidecarRequest (P1-3a symmetric RPC — incoming requests from the sidecar)', () => {
+    /** Scope write-call lookups to calls made AFTER startSidecar()'s own internal self-test 'echo' request. */
+    function writesAfter(callsBefore: number): unknown[] {
+      return invoke.mock.calls.slice(callsBefore).filter((c) => c[0] === 'mcp_write');
+    }
+
+    it('dispatches an incoming request (method + STRING id) to the registered handler and writes back the result', async () => {
+      mockHappyPath();
+      await startSidecar();
+      const callsBefore = invoke.mock.calls.length;
+
+      const handler = vi.fn().mockResolvedValue({ ok: true, toolResult: 'done' });
+      onSidecarRequest('tool.invoke', handler);
+
+      emitMsg({ jsonrpc: '2.0', id: 'sq-1', method: 'tool.invoke', params: { toolName: 'read_file' } });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(writesAfter(callsBefore).length).toBeGreaterThan(0);
+
+      expect(handler).toHaveBeenCalledWith({ toolName: 'read_file' });
+      const writeCall = writesAfter(callsBefore)[0];
+      const sent = JSON.parse((writeCall as [string, { message: string }])[1].message) as {
+        jsonrpc: string;
+        id: string;
+        result: unknown;
+      };
+      expect(sent.jsonrpc).toBe('2.0');
+      expect(sent.id).toBe('sq-1');
+      expect(sent.result).toEqual({ ok: true, toolResult: 'done' });
+    });
+
+    it('dispatches an incoming request with a NUMERIC id too (method presence — not id type — decides "incoming request")', async () => {
+      mockHappyPath();
+      await startSidecar();
+      const callsBefore = invoke.mock.calls.length;
+
+      const handler = vi.fn().mockResolvedValue('numeric-id-result');
+      onSidecarRequest('some.method', handler);
+
+      emitMsg({ jsonrpc: '2.0', id: 42, method: 'some.method', params: {} });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(writesAfter(callsBefore).length).toBeGreaterThan(0);
+
+      expect(handler).toHaveBeenCalledTimes(1);
+      const sent = JSON.parse(
+        (writesAfter(callsBefore)[0] as [string, { message: string }])[1].message,
+      ) as { id: number; result: unknown };
+      expect(sent.id).toBe(42);
+      expect(sent.result).toBe('numeric-id-result');
+    });
+
+    it('unknown method → -32601 error response', async () => {
+      mockHappyPath();
+      await startSidecar();
+      const callsBefore = invoke.mock.calls.length;
+
+      emitMsg({ jsonrpc: '2.0', id: 'sq-2', method: 'no.such.method', params: {} });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(writesAfter(callsBefore).length).toBeGreaterThan(0);
+
+      const sent = JSON.parse(
+        (writesAfter(callsBefore)[0] as [string, { message: string }])[1].message,
+      ) as { id: string; error: { code: number; message: string } };
+      expect(sent.id).toBe('sq-2');
+      expect(sent.error.code).toBe(-32601);
+      expect(sent.error.message).toContain('no.such.method');
+    });
+
+    it('handler throwing a plain Error → -32000 with just a message (no data)', async () => {
+      mockHappyPath();
+      await startSidecar();
+      const callsBefore = invoke.mock.calls.length;
+
+      onSidecarRequest('boom', async () => { throw new Error('handler bug'); });
+      emitMsg({ jsonrpc: '2.0', id: 'sq-3', method: 'boom', params: {} });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(writesAfter(callsBefore).length).toBeGreaterThan(0);
+
+      const sent = JSON.parse(
+        (writesAfter(callsBefore)[0] as [string, { message: string }])[1].message,
+      ) as { id: string; error: { code: number; message: string; data?: unknown } };
+      expect(sent.error.code).toBe(-32000);
+      expect(sent.error.message).toBe('handler bug');
+      expect(sent.error.data).toBeUndefined();
+    });
+
+    it('handler throwing a SidecarRequestError → carries the custom code + data through', async () => {
+      mockHappyPath();
+      await startSidecar();
+      const callsBefore = invoke.mock.calls.length;
+
+      onSidecarRequest('picky', async () => {
+        throw new SidecarRequestError(-32001, 'bad input', { field: 'toolName' });
+      });
+      emitMsg({ jsonrpc: '2.0', id: 'sq-4', method: 'picky', params: {} });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(writesAfter(callsBefore).length).toBeGreaterThan(0);
+
+      const sent = JSON.parse(
+        (writesAfter(callsBefore)[0] as [string, { message: string }])[1].message,
+      ) as { id: string; error: { code: number; message: string; data?: unknown } };
+      expect(sent.error.code).toBe(-32001);
+      expect(sent.error.message).toBe('bad input');
+      expect(sent.error.data).toEqual({ field: 'toolName' });
+    });
+
+    it('unsubscribe removes the handler — a subsequent call for that method becomes "method not found"', async () => {
+      mockHappyPath();
+      await startSidecar();
+
+      const handler = vi.fn().mockResolvedValue('ok');
+      const unsubscribe = onSidecarRequest('tool.invoke', handler);
+      unsubscribe();
+
+      const callsBefore = invoke.mock.calls.length;
+      emitMsg({ jsonrpc: '2.0', id: 'sq-5', method: 'tool.invoke', params: {} });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(writesAfter(callsBefore).length).toBeGreaterThan(0);
+
+      expect(handler).not.toHaveBeenCalled();
+      const sent = JSON.parse(
+        (writesAfter(callsBefore)[0] as [string, { message: string }])[1].message,
+      ) as { error: { code: number } };
+      expect(sent.error.code).toBe(-32601);
+    });
+
+    it('a stale unsubscribe (after a second registration replaced the handler) does not remove the NEW handler', async () => {
+      mockHappyPath();
+      await startSidecar();
+
+      const first = vi.fn().mockResolvedValue('first');
+      const second = vi.fn().mockResolvedValue('second');
+      const unsubscribeFirst = onSidecarRequest('tool.invoke', first);
+      onSidecarRequest('tool.invoke', second); // replaces `first` as the registered handler
+      unsubscribeFirst(); // must be a no-op — `first` is no longer the current handler
+
+      const callsBefore = invoke.mock.calls.length;
+      emitMsg({ jsonrpc: '2.0', id: 'sq-6', method: 'tool.invoke', params: {} });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(writesAfter(callsBefore).length).toBeGreaterThan(0);
+
+      expect(first).not.toHaveBeenCalled();
+      expect(second).toHaveBeenCalledTimes(1);
+      const sent = JSON.parse(
+        (writesAfter(callsBefore)[0] as [string, { message: string }])[1].message,
+      ) as { result: unknown };
+      expect(sent.result).toBe('second');
+    });
+
+    it('string-id incoming requests never collide with numeric-id responses to our own outbound requests (disjoint id spaces)', async () => {
+      mockHappyPath();
+      await startSidecar();
+
+      const requestHandler = vi.fn().mockResolvedValue('handled');
+      onSidecarRequest('tool.invoke', requestHandler);
+
+      const callsBefore = invoke.mock.calls.length;
+      // Our own outbound request mints a NUMERIC id.
+      const pending = request('echo', { x: 1 }, 2000);
+      const sent = JSON.parse(
+        (writesAfter(callsBefore)[0] as [string, { message: string }])[1].message,
+      ) as { id: number };
+      expect(typeof sent.id).toBe('number');
+
+      // A sidecar-initiated incoming request uses a STRING id ('sq-N' scheme) —
+      // simulate one arriving interleaved with our still-pending outbound request.
+      emitMsg({ jsonrpc: '2.0', id: 'sq-7', method: 'tool.invoke', params: {} });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(requestHandler).toHaveBeenCalledTimes(1);
+
+      // Our outbound request is still pending, unaffected by the incoming one.
+      emitMsg({ jsonrpc: '2.0', id: sent.id, result: { x: 1 } });
+      await expect(pending).resolves.toEqual({ x: 1 });
     });
   });
 

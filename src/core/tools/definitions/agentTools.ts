@@ -3,7 +3,8 @@ import type { ToolDefinition, Conversation, SubagentDefinition } from '../../../
 import { skillLoader } from '../../skill/loader';
 import { agentRegistry } from '../../agent/registry';
 import { getCurrentLoopContext, getLoopContext, requestWorkspace } from '../../agent/permissionBridge';
-import { runSubagentLoop, extractParentConversationSummary } from '../../agent/subagentLoop';
+import { extractParentConversationSummary } from '../../agent/subagentLoop';
+import { runSubagent } from '../../agent/subagentRunner';
 import type { SubagentProgressEvent } from '../../agent/subagentLoop';
 import { createSubagentController } from '../../agent/subagentAbort';
 import { useChatStore } from '../../../stores/chatStore';
@@ -303,7 +304,7 @@ export const delegateToAgentTool: ToolDefinition = {
 
     // 8. Sync mode: blocking await
     try {
-      const result = await runSubagentLoop({
+      const result = await runSubagent({
         agent,
         task,
         context,

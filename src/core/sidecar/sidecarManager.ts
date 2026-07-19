@@ -110,6 +110,34 @@ interface PendingRequest {
 export type SidecarNotificationHandler = (params: unknown) => void;
 
 /**
+ * Handler for a sidecar→shell JSON-RPC REQUEST (message with `method` AND
+ * `id`) — the reverse direction of `request()`. Return the result (sent back
+ * as `{ result }`); throw to send back `{ error }` (see `handleIncomingRequest`
+ * for the throw→error-code mapping). Registered once per method via
+ * `onSidecarRequest()` — P1-3a's `tool.invoke` / `hook.emit` reverse channel
+ * (subagentRunner.ts) is the first consumer.
+ */
+export type SidecarRequestHandler = (params: unknown) => Promise<unknown>;
+
+/**
+ * Error type a `SidecarRequestHandler` can throw to control the JSON-RPC
+ * error code/data sent back to the sidecar (mirrors `RpcError` on the
+ * sidecar's own side — see sidecar/src/protocol.ts). Anything else thrown
+ * collapses to the generic -32000 with just a message.
+ */
+export class SidecarRequestError extends Error {
+  code: number;
+  data?: unknown;
+
+  constructor(code: number, message: string, data?: unknown) {
+    super(message);
+    this.name = 'SidecarRequestError';
+    this.code = code;
+    this.data = data;
+  }
+}
+
+/**
  * Rejection error for a request() call whose response carried a JSON-RPC
  * `error` member. Carries the raw `code`/`data` through (unlike a plain
  * Error, which would lose them) so callers — notably
@@ -141,6 +169,9 @@ const pendingRequests = new Map<number, PendingRequest>();
 
 /** method -> handlers, for sidecar→shell notifications (llm.event, llm.chatMeta, ...). See onSidecarNotification(). */
 const notificationHandlers = new Map<string, Set<SidecarNotificationHandler>>();
+
+/** method -> handler, for sidecar→shell REQUESTS (tool.invoke, hook.emit, ...). See onSidecarRequest(). Single handler per method (unlike notifications' Set) — a request needs exactly one response. */
+const requestHandlers = new Map<string, SidecarRequestHandler>();
 
 let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
 let heartbeatFailures = 0;
@@ -287,6 +318,26 @@ export function onSidecarNotification(method: string, handler: SidecarNotificati
   };
 }
 
+/**
+ * Register the (single) handler for a sidecar→shell JSON-RPC REQUEST method
+ * — the reverse direction of `request()`. Only one handler per method (a
+ * request needs exactly one response; unlike notifications there is no
+ * fan-out). Registering a second handler for the same method replaces the
+ * first — callers that need "register once at module init" discipline
+ * (subagentRunner.ts) are responsible for that themselves (idempotent guard).
+ * Returns an unsubscribe function that removes the handler IF it is still
+ * the currently-registered one (a stale unsubscribe after a replacement
+ * won't clobber the new handler).
+ */
+export function onSidecarRequest(method: string, handler: SidecarRequestHandler): () => void {
+  requestHandlers.set(method, handler);
+  return () => {
+    if (requestHandlers.get(method) === handler) {
+      requestHandlers.delete(method);
+    }
+  };
+}
+
 /** Reset all module state for test isolation. Not used by production code. */
 export function __resetForTests(): void {
   status = 'stopped';
@@ -300,6 +351,7 @@ export function __resetForTests(): void {
   }
   pendingRequests.clear();
   notificationHandlers.clear();
+  requestHandlers.clear();
   if (heartbeatTimer) {
     clearInterval(heartbeatTimer);
     heartbeatTimer = null;
@@ -470,6 +522,20 @@ function handleMessage(raw: string): void {
     return;
   }
 
+  // Incoming REQUEST *from* the sidecar (has `method` AND `id`) — the
+  // reverse direction of request()/onSidecarRequest(). Discriminated BEFORE
+  // the notification check below so it takes priority when both `method`
+  // and `id` are present. Sidecar-minted ids are STRINGS ('sq-N' —
+  // sidecar/src/protocol.ts's outbound-request id scheme); our own outbound
+  // request ids (nextRequestId, below) are NUMBERS — the two id spaces are
+  // disjoint by construction, so a string id here can never collide with a
+  // response to a request we sent (the response-correlation branch further
+  // below only matches `typeof msg.id === 'number'`).
+  if (typeof msg.method === 'string' && msg.id !== undefined) {
+    void handleIncomingRequest(msg.method, msg.id, msg.params);
+    return;
+  }
+
   // Notification (has `method`, no `id`) — e.g. llm.event / llm.chatMeta.
   // Dispatch to subscribers registered via onSidecarNotification(); drop
   // silently if nobody is listening for this method.
@@ -502,6 +568,51 @@ function handleMessage(raw: string): void {
     entry.reject(new SidecarRpcError(msg.error.code, msg.error.message, msg.error.data));
   } else {
     entry.resolve(msg.result);
+  }
+}
+
+/**
+ * Dispatch one incoming request from the sidecar to its registered handler
+ * and write the JSON-RPC response back over the same `mcp_write` pipe.
+ * Unknown method → -32601 (mirrors sidecar/src/main.ts's own unknown-method
+ * handling for symmetry). Handler throw → -32000, carrying `.data` through
+ * if the thrown error has one (mirrors sidecar/src/protocol.ts's `RpcError`
+ * / `errorFromCaught` convention on the other side of the pipe).
+ */
+async function handleIncomingRequest(
+  method: string,
+  id: string | number | null,
+  params: unknown,
+): Promise<void> {
+  const handler = requestHandlers.get(method);
+  if (!handler) {
+    await writeRpcMessage({ jsonrpc: '2.0', id, error: { code: -32601, message: `Method not found: ${method}` } });
+    return;
+  }
+
+  try {
+    const result = await handler(params);
+    await writeRpcMessage({ jsonrpc: '2.0', id, result });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    const data = err instanceof SidecarRequestError ? err.data : undefined;
+    const code = err instanceof SidecarRequestError ? err.code : -32000;
+    await writeRpcMessage({
+      jsonrpc: '2.0',
+      id,
+      error: data !== undefined ? { code, message, data } : { code, message },
+    });
+  }
+}
+
+/** Write one JSON-RPC message (a response to an incoming sidecar request) back over the pipe. Fail-soft — logs, never throws. */
+async function writeRpcMessage(payload: unknown): Promise<void> {
+  try {
+    await invoke('mcp_write', { id: SIDECAR_ID, message: JSON.stringify(payload) });
+  } catch (err) {
+    logger.warn('Failed to write response to an incoming sidecar request', {
+      error: err instanceof Error ? err.message : String(err),
+    });
   }
 }
 

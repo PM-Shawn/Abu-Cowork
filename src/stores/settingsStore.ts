@@ -17,6 +17,11 @@ import {
   listFailedSecrets,
   clearAllSecrets,
 } from '@/utils/secretStore';
+// Relocated to a pure module so the sidecar bundle (and anything else that
+// needs zero store-graph coupling) can import them directly — see
+// settingsSelectors.ts's module doc. Re-exported below unchanged.
+import { getActiveProvider, getActiveApiKey, resolveAgentModel } from '../utils/settingsSelectors';
+export { getActiveProvider, getActiveApiKey, resolveAgentModel };
 
 /**
  * Fire-and-forget helper for secret-store side effects. Swallowing failures
@@ -594,11 +599,6 @@ interface SettingsActions {
 // Helper functions (backward-compatible signatures, V2 internals)
 // ============================================================
 
-/** Get the active provider instance */
-export function getActiveProvider(state: SettingsState): ProviderInstance | undefined {
-  return state.providers.find(p => p.id === state.activeModel.providerId);
-}
-
 /**
  * Reconcile activeModel after rehydration so that downstream code
  * (getActiveProvider, ChatInput, agentLoop) always sees a consistent state.
@@ -727,12 +727,6 @@ export function getUsableImageBackend(state: SettingsState): ImageGenBackend | n
   };
 }
 
-/** Returns the active API key for the current provider (backward-compatible) */
-export function getActiveApiKey(state: SettingsState): string {
-  const p = state.providers.find(p => p.id === state.activeModel.providerId);
-  return p?.apiKey ?? '';
-}
-
 /** Whether the current provider requires an API key (backward-compatible) */
 export function providerRequiresApiKey(state: SettingsState): boolean {
   const id = state.activeModel.providerId;
@@ -742,18 +736,6 @@ export function providerRequiresApiKey(state: SettingsState): boolean {
 /** Returns the effective model ID (backward-compatible) */
 export function getEffectiveModel(state: SettingsState): string {
   return state.activeModel.modelId;
-}
-
-/** Resolve an agent's model field into the actual model ID */
-export function resolveAgentModel(agentModel: string | undefined, state: SettingsState): string {
-  const globalModel = state.activeModel.modelId;
-  if (!agentModel || agentModel === 'inherit') return globalModel;
-  // Search across enabled providers
-  for (const p of state.providers) {
-    if (p.enabled && p.models.some(m => m.id === agentModel)) return agentModel;
-  }
-  // Incompatible → fall back to global
-  return globalModel;
 }
 
 /** Get all models from all enabled providers (for model selector) */

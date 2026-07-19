@@ -34,14 +34,30 @@ export interface SettingsReader {
  *  values keep working. SettingsState has no function-valued data fields
  *  (verified), so the typeof filter cannot drop real data. */
 export function createInProcessSettingsReader(): SettingsReader {
+  // Single-slot memo keyed on the store's state reference. Zustand's `set()`
+  // always produces a brand-new state object (even for a no-op update it
+  // replaces the reference), so `state === lastState` is a safe freshness
+  // check — no need to re-walk/re-copy `Object.keys()` on every call when
+  // nothing has changed since the last one.
+  let lastState: ReturnType<typeof useSettingsStore.getState> | undefined;
+  let lastSnapshot: Readonly<SettingsState> | undefined;
+
   return {
     getSnapshot: () => {
-      const full = useSettingsStore.getState() as unknown as Record<string, unknown>;
+      const state = useSettingsStore.getState();
+      if (state === lastState && lastSnapshot !== undefined) {
+        return lastSnapshot;
+      }
+
+      const full = state as unknown as Record<string, unknown>;
       const snapshot: Record<string, unknown> = {};
       for (const key of Object.keys(full)) {
         if (typeof full[key] !== 'function') snapshot[key] = full[key];
       }
-      return snapshot as Readonly<SettingsState>;
+
+      lastState = state;
+      lastSnapshot = snapshot as Readonly<SettingsState>;
+      return lastSnapshot;
     },
   };
 }

@@ -33,6 +33,36 @@ describe('createInProcessSettingsReader', () => {
     // restore
     useSettingsStore.setState({ agentMaxTurns: before });
   });
+
+  describe('memoization (F2)', () => {
+    it('returns the same snapshot reference across calls when the store state has not changed', () => {
+      const reader = createInProcessSettingsReader();
+      const first = reader.getSnapshot();
+      const second = reader.getSnapshot();
+      expect(second).toBe(first); // no full Object.keys copy on the second call
+    });
+
+    it('returns a fresh snapshot reference after the store state changes', () => {
+      const reader = createInProcessSettingsReader();
+      const before = reader.getSnapshot().agentMaxTurns;
+      const first = reader.getSnapshot();
+
+      useSettingsStore.setState({ agentMaxTurns: before + 1 });
+      const second = reader.getSnapshot();
+
+      expect(second).not.toBe(first);
+      expect(second.agentMaxTurns).toBe(before + 1);
+
+      // restore
+      useSettingsStore.setState({ agentMaxTurns: before });
+    });
+
+    it('does not leak a memo across independently-constructed readers', () => {
+      const readerA = createInProcessSettingsReader();
+      const readerB = createInProcessSettingsReader();
+      expect(readerA.getSnapshot()).not.toBe(readerB.getSnapshot()); // distinct closures, distinct snapshot objects
+    });
+  });
 });
 
 describe('getSettingsReader / setSettingsReader', () => {

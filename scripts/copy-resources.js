@@ -21,7 +21,7 @@ for (const name of ['builtin-skills', 'builtin-agents', 'sidecar']) {
   }
 }
 
-const resources = ['builtin-skills', 'builtin-agents', 'sidecar'];
+const resources = ['builtin-skills', 'builtin-agents'];
 
 for (const name of resources) {
   const src = resolve(root, name);
@@ -31,6 +31,22 @@ for (const name of resources) {
   }
   cpSync(src, resolve(dest, name), { recursive: true });
   console.log(`[copy-resources] Copied ${name}/ → src-tauri/${name}/`);
+}
+
+// Sidecar: copy ONLY the built bundle (sidecar/index.mjs, produced by
+// `npm run build:sidecar` from sidecar/src/**), not the whole sidecar/
+// directory — the source .ts files (and their .test.ts files) have no
+// business being inside the packaged app's resources.
+{
+  const sidecarBundle = resolve(root, 'sidecar', 'index.mjs');
+  if (!existsSync(sidecarBundle)) {
+    console.warn('[copy-resources] Warning: sidecar/index.mjs not found — run `npm run build:sidecar` first, skipping');
+  } else {
+    const sidecarDestDir = resolve(dest, 'sidecar');
+    mkdirSync(sidecarDestDir, { recursive: true });
+    cpSync(sidecarBundle, resolve(sidecarDestDir, 'index.mjs'));
+    console.log('[copy-resources] Copied sidecar/index.mjs → src-tauri/sidecar/index.mjs');
+  }
 }
 
 // Copy Chrome extension build output for bundling with the app

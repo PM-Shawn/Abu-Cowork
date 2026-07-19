@@ -10,8 +10,7 @@ import type { StreamEvent, Message, SubagentDefinition, ToolExecutionContext } f
 import type { IMContext } from './orchestrator';
 import type { LLMAdapter } from '../llm/adapter';
 import { LLMError, formatLlmDisplayError } from '../llm/adapter';
-import { ClaudeAdapter } from '../llm/claude';
-import { OpenAICompatibleAdapter } from '../llm/openai-compatible';
+import { selectChatAdapter } from '../llm/selectChatAdapter';
 import { getAllTools, executeAnyTool, toolResultToString, type ConfirmationInfo, type FilePermissionCallback } from '../tools/registry';
 import { TOOL_NAMES } from '../tools/toolNames';
 import { getActiveApiKey, getActiveProvider, resolveAgentModel } from '../../stores/settingsStore';
@@ -294,10 +293,15 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
 
     // 4. Create LLM adapter
     // Enterprise mode always uses OpenAI-compatible adapter (LiteLLM exposes that interface).
+    // selectChatAdapter routes through the sidecar transport when it's healthy
+    // ('running'), else falls back to the local in-process adapter — the
+    // kind-choosing condition itself is unchanged (P1-1).
     const _enterpriseCreds = (() => { try { return resolveEffectiveLlmCreds(getActiveApiKey(settings), undefined) } catch { return null } })()
-    const adapter: LLMAdapter = (_enterpriseCreds?.forceOpenAiCompatible || getActiveProvider(settings)?.apiFormat === 'openai-compatible')
-      ? new OpenAICompatibleAdapter()
-      : new ClaudeAdapter();
+    const adapter: LLMAdapter = selectChatAdapter(
+      _enterpriseCreds?.forceOpenAiCompatible || getActiveProvider(settings)?.apiFormat === 'openai-compatible'
+        ? 'openai-compatible'
+        : 'claude',
+    );
 
     // 5. Initialize local messages
     const userContent = context ? `${task}\n\n${context}` : task;

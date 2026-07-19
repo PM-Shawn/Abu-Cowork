@@ -34,6 +34,7 @@
     "eval:tool-selection": "tsx src/eval/run.ts tool-selection",
     "eval:report": "tsx src/eval/run.ts report",
     "copy-resources": "node scripts/copy-resources.js",
+    "build:sidecar": "node scripts/build-sidecar.mjs",
     "setup-python": "bash scripts/setup-python-runtime.sh",
     "setup-node": "bash scripts/setup-node-runtime.sh",
     "prepare": "husky"

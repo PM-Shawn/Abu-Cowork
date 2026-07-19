@@ -6,9 +6,9 @@
 
   "identifier": "com.abu.app",
   "build": {
-    "beforeDevCommand": "npm run copy-resources && npm run dev",
+    "beforeDevCommand": "npm run build:sidecar && npm run copy-resources && npm run dev",
     "devUrl": "http://localhost:5173",
-    "beforeBuildCommand": "npm run build && npm run copy-resources",
+    "beforeBuildCommand": "npm run build && npm run build:sidecar && npm run copy-resources",
     "frontendDist": "../dist"
   },
   "app": {

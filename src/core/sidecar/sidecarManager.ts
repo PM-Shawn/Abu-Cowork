@@ -93,6 +93,8 @@ export type SidecarStatus = 'stopped' | 'starting' | 'running' | 'restarting' | 
 interface JSONRPCResponse {
   jsonrpc?: '2.0';
   id?: string | number | null;
+  method?: string;
+  params?: unknown;
   result?: unknown;
   error?: { code: number; message: string; data?: unknown };
 }
@@ -100,7 +102,31 @@ interface JSONRPCResponse {
 interface PendingRequest {
   resolve: (value: unknown) => void;
   reject: (err: Error) => void;
-  timer: ReturnType<typeof setTimeout>;
+  /** null when the request was sent with timeoutMs: 0 ("no timeout" — see request() JSDoc). */
+  timer: ReturnType<typeof setTimeout> | null;
+}
+
+/** Handler for a sidecar→shell JSON-RPC notification (message with `method`, no `id`). */
+export type SidecarNotificationHandler = (params: unknown) => void;
+
+/**
+ * Rejection error for a request() call whose response carried a JSON-RPC
+ * `error` member. Carries the raw `code`/`data` through (unlike a plain
+ * Error, which would lose them) so callers — notably
+ * `src/core/llm/sidecarAdapter.ts` — can reconstruct a faithful `LLMError`
+ * from `sidecar/src/llmHost.ts`'s `errorDataFor()` payload instead of only
+ * seeing a flattened message string.
+ */
+export class SidecarRpcError extends Error {
+  code: number;
+  data?: unknown;
+
+  constructor(code: number, message: string, data?: unknown) {
+    super(`Sidecar error ${code}: ${message}`);
+    this.name = 'SidecarRpcError';
+    this.code = code;
+    this.data = data;
+  }
 }
 
 // ── Module state (module-scope singleton — one sidecar per app instance) ──
@@ -112,6 +138,9 @@ let deliberatelyStopped = true;
 let startPromise: Promise<void> | null = null;
 let nextRequestId = 1;
 const pendingRequests = new Map<number, PendingRequest>();
+
+/** method -> handlers, for sidecar→shell notifications (llm.event, llm.chatMeta, ...). See onSidecarNotification(). */
+const notificationHandlers = new Map<string, Set<SidecarNotificationHandler>>();
 
 let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
 let heartbeatFailures = 0;
@@ -183,8 +212,16 @@ export async function stopSidecar(): Promise<void> {
  * Send a JSON-RPC request over the bridge and resolve/reject on the
  * correlated response (matched by numeric id) or timeout. Used internally
  * for the heartbeat ping and the post-spawn self-test echo; exported so
- * tests can exercise request/response correlation directly, and for future
- * phases that will route real sidecar calls through this transport.
+ * tests can exercise request/response correlation directly, and for real
+ * sidecar calls (e.g. `llm.chat`) routed through this transport.
+ *
+ * `timeoutMs: 0` means NO timeout — used by `llm.chat`, whose response only
+ * settles once an entire (potentially multi-minute) streaming call
+ * completes; hang protection for that case lives in the adapters' own
+ * heartbeat/idle-timeout machinery (see src/core/llm/heartbeat.ts), not
+ * here. Pending requests sent with timeoutMs: 0 still reject like any other
+ * pending request when the sidecar process closes (rejectAllPending, called
+ * from handleClose()) — they are not immune to that.
  */
 export function request(
   method: string,
@@ -195,22 +232,59 @@ export function request(
   const payload = JSON.stringify({ jsonrpc: '2.0', id, method, params });
 
   return new Promise<unknown>((resolve, reject) => {
-    const timer = setTimeout(() => {
-      pendingRequests.delete(id);
-      reject(new Error(`Sidecar request "${method}" timed out after ${timeoutMs}ms`));
-    }, timeoutMs);
+    const timer = timeoutMs > 0
+      ? setTimeout(() => {
+          pendingRequests.delete(id);
+          reject(new Error(`Sidecar request "${method}" timed out after ${timeoutMs}ms`));
+        }, timeoutMs)
+      : null;
 
     pendingRequests.set(id, { resolve, reject, timer });
 
     invoke('mcp_write', { id: SIDECAR_ID, message: payload }).catch((err: unknown) => {
       const entry = pendingRequests.get(id);
       if (entry) {
-        clearTimeout(entry.timer);
+        if (entry.timer) clearTimeout(entry.timer);
         pendingRequests.delete(id);
       }
       reject(err instanceof Error ? err : new Error(String(err)));
     });
   });
+}
+
+/**
+ * Send a JSON-RPC notification (no `id`, no response expected) to the
+ * sidecar — e.g. `llm.abort`. Fire-and-forget: failures are logged, not
+ * thrown, matching the rest of this module's fail-soft contract.
+ */
+export function notifySidecar(method: string, params: unknown): void {
+  const payload = JSON.stringify({ jsonrpc: '2.0', method, params });
+  invoke('mcp_write', { id: SIDECAR_ID, message: payload }).catch((err: unknown) => {
+    logger.warn('Sidecar notify failed', {
+      method,
+      error: err instanceof Error ? err.message : String(err),
+    });
+  });
+}
+
+/**
+ * Subscribe to a sidecar→shell JSON-RPC notification (`llm.event`,
+ * `llm.chatMeta`, ...) — messages with a `method` and no `id`. Returns an
+ * unsubscribe function. Multiple handlers per method are supported (Set).
+ */
+export function onSidecarNotification(method: string, handler: SidecarNotificationHandler): () => void {
+  let handlers = notificationHandlers.get(method);
+  if (!handlers) {
+    handlers = new Set();
+    notificationHandlers.set(method, handlers);
+  }
+  handlers.add(handler);
+  return () => {
+    const current = notificationHandlers.get(method);
+    if (!current) return;
+    current.delete(handler);
+    if (current.size === 0) notificationHandlers.delete(method);
+  };
 }
 
 /** Reset all module state for test isolation. Not used by production code. */
@@ -222,9 +296,10 @@ export function __resetForTests(): void {
   startPromise = null;
   nextRequestId = 1;
   for (const entry of pendingRequests.values()) {
-    clearTimeout(entry.timer);
+    if (entry.timer) clearTimeout(entry.timer);
   }
   pendingRequests.clear();
+  notificationHandlers.clear();
   if (heartbeatTimer) {
     clearInterval(heartbeatTimer);
     heartbeatTimer = null;
@@ -395,16 +470,36 @@ function handleMessage(raw: string): void {
     return;
   }
 
+  // Notification (has `method`, no `id`) — e.g. llm.event / llm.chatMeta.
+  // Dispatch to subscribers registered via onSidecarNotification(); drop
+  // silently if nobody is listening for this method.
+  if (typeof msg.method === 'string' && msg.id === undefined) {
+    const handlers = notificationHandlers.get(msg.method);
+    if (handlers) {
+      for (const handler of handlers) {
+        try {
+          handler(msg.params);
+        } catch (err) {
+          logger.warn('Sidecar notification handler threw', {
+            method: msg.method,
+            error: err instanceof Error ? err.message : String(err),
+          });
+        }
+      }
+    }
+    return;
+  }
+
   if (typeof msg.id !== 'number') return; // not a response to a request we sent
 
   const entry = pendingRequests.get(msg.id);
   if (!entry) return; // no matching pending request (late/duplicate) — ignore
 
-  clearTimeout(entry.timer);
+  if (entry.timer) clearTimeout(entry.timer);
   pendingRequests.delete(msg.id);
 
   if (msg.error) {
-    entry.reject(new Error(`Sidecar error ${msg.error.code}: ${msg.error.message}`));
+    entry.reject(new SidecarRpcError(msg.error.code, msg.error.message, msg.error.data));
   } else {
     entry.resolve(msg.result);
   }
@@ -432,7 +527,7 @@ function handleClose(): void {
 
 function rejectAllPending(err: Error): void {
   for (const entry of pendingRequests.values()) {
-    clearTimeout(entry.timer);
+    if (entry.timer) clearTimeout(entry.timer);
     entry.reject(err);
   }
   pendingRequests.clear();

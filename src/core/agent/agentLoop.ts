@@ -2,8 +2,7 @@ import type { StreamEvent, ToolCall, TokenUsage, ImageAttachment, MessageContent
 import type { LLMAdapter } from '../llm/adapter';
 import { LLMError, formatLlmDisplayError } from '../llm/adapter';
 import { recordProviderCallOutcome, isConfigFailureCode } from '../llm/providerCallHealth';
-import { ClaudeAdapter } from '../llm/claude';
-import { OpenAICompatibleAdapter } from '../llm/openai-compatible';
+import { selectChatAdapter } from '../llm/selectChatAdapter';
 import { getAllTools, type ConfirmationInfo, type FilePermissionCallback } from '../tools/registry';
 import type { ToolDefinition } from '../../types';
 import { useChatStore } from '../../stores/chatStore';
@@ -926,9 +925,14 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
   });
 
   // Enterprise mode always uses OpenAI-compatible adapter (LiteLLM exposes that interface).
-  const adapter: LLMAdapter = (isEnterpriseGatewayMode || getActiveProvider(settingsForModel)?.apiFormat === 'openai-compatible')
-    ? new OpenAICompatibleAdapter()
-    : new ClaudeAdapter();
+  // selectChatAdapter routes through the sidecar transport when it's healthy
+  // ('running'), else falls back to the local in-process adapter — the
+  // kind-choosing condition itself is unchanged (P1-1).
+  const adapter: LLMAdapter = selectChatAdapter(
+    isEnterpriseGatewayMode || getActiveProvider(settingsForModel)?.apiFormat === 'openai-compatible'
+      ? 'openai-compatible'
+      : 'claude',
+  );
 
   // Validate required tools are available (blocking check — one-time at start)
   if (route.type === 'skill' && route.skill?.requiredTools) {

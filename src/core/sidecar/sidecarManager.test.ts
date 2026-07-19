@@ -16,6 +16,8 @@ import {
   stopSidecar,
   getSidecarStatus,
   request,
+  notifySidecar,
+  onSidecarNotification,
   __resetForTests,
 } from './sidecarManager';
 
@@ -181,6 +183,142 @@ describe('sidecarManager', () => {
       const assertion = expect(pending).rejects.toThrow(/timed out/);
       await vi.advanceTimersByTimeAsync(1000);
       await assertion;
+    });
+
+    it('timeoutMs: 0 means no timeout — the request stays pending indefinitely until a response arrives', async () => {
+      mockHappyPath();
+      await startSidecar();
+
+      const callsBefore = invoke.mock.calls.length;
+      const pending = request('llm.chat', { callId: 'c1' }, 0);
+      let settled = false;
+      pending.then(() => { settled = true; }, () => { settled = true; });
+
+      // Advance far past any normal timeout (default is 5s) — still pending.
+      await vi.advanceTimersByTimeAsync(10 * 60 * 1000);
+      expect(settled).toBe(false);
+
+      const writeCall = invoke.mock.calls.slice(callsBefore).find((c) => c[0] === 'mcp_write');
+      const sent = JSON.parse((writeCall as [string, { message: string }])[1].message) as { id: number };
+      emitMsg({ jsonrpc: '2.0', id: sent.id, result: { ok: true } });
+      await expect(pending).resolves.toEqual({ ok: true });
+    });
+
+    it('timeoutMs: 0 requests still reject when the sidecar process closes mid-request', async () => {
+      mockHappyPath();
+      await startSidecar();
+
+      const pending = request('llm.chat', { callId: 'c1' }, 0);
+      const assertion = expect(pending).rejects.toThrow(/closed/);
+      emitClose();
+      await assertion;
+    });
+  });
+
+  describe('notifySidecar', () => {
+    it('sends a JSON-RPC notification (no id) via mcp_write', async () => {
+      mockHappyPath();
+      await startSidecar();
+      const callsBefore = invoke.mock.calls.length;
+
+      notifySidecar('llm.abort', { callId: 'c1' });
+      await Promise.resolve();
+
+      const writeCall = invoke.mock.calls.slice(callsBefore).find((c) => c[0] === 'mcp_write');
+      expect(writeCall).toBeDefined();
+      const sent = JSON.parse((writeCall as [string, { message: string }])[1].message) as {
+        id?: number;
+        method: string;
+        params: unknown;
+      };
+      expect(sent.id).toBeUndefined();
+      expect(sent.method).toBe('llm.abort');
+      expect(sent.params).toEqual({ callId: 'c1' });
+    });
+  });
+
+  describe('onSidecarNotification', () => {
+    it('dispatches an incoming notification (method + no id) to a registered handler', async () => {
+      mockHappyPath();
+      await startSidecar();
+
+      const received: unknown[] = [];
+      onSidecarNotification('llm.event', (params) => received.push(params));
+
+      emitMsg({ jsonrpc: '2.0', method: 'llm.event', params: { callId: 'c1', seq: 0 } });
+
+      expect(received).toEqual([{ callId: 'c1', seq: 0 }]);
+    });
+
+    it('supports multiple handlers for the same method', async () => {
+      mockHappyPath();
+      await startSidecar();
+
+      const a: unknown[] = [];
+      const b: unknown[] = [];
+      onSidecarNotification('llm.event', (p) => a.push(p));
+      onSidecarNotification('llm.event', (p) => b.push(p));
+
+      emitMsg({ jsonrpc: '2.0', method: 'llm.event', params: { x: 1 } });
+
+      expect(a).toEqual([{ x: 1 }]);
+      expect(b).toEqual([{ x: 1 }]);
+    });
+
+    it('unsubscribe stops further dispatch to that handler', async () => {
+      mockHappyPath();
+      await startSidecar();
+
+      const received: unknown[] = [];
+      const unsubscribe = onSidecarNotification('llm.event', (p) => received.push(p));
+
+      emitMsg({ jsonrpc: '2.0', method: 'llm.event', params: { n: 1 } });
+      unsubscribe();
+      emitMsg({ jsonrpc: '2.0', method: 'llm.event', params: { n: 2 } });
+
+      expect(received).toEqual([{ n: 1 }]);
+    });
+
+    it('a notification for a method with no registered handler is silently dropped', async () => {
+      mockHappyPath();
+      await startSidecar();
+
+      expect(() => emitMsg({ jsonrpc: '2.0', method: 'llm.chatMeta', params: {} })).not.toThrow();
+    });
+
+    it('a handler that throws does not prevent other handlers for the same notification from running', async () => {
+      mockHappyPath();
+      await startSidecar();
+
+      const received: unknown[] = [];
+      onSidecarNotification('llm.event', () => { throw new Error('handler bug'); });
+      onSidecarNotification('llm.event', (p) => received.push(p));
+
+      expect(() => emitMsg({ jsonrpc: '2.0', method: 'llm.event', params: { ok: true } })).not.toThrow();
+      expect(received).toEqual([{ ok: true }]);
+    });
+
+    it('does NOT dispatch a message that has both a method and a numeric id (a request/response, not a notification)', async () => {
+      mockHappyPath();
+      await startSidecar();
+
+      const received: unknown[] = [];
+      onSidecarNotification('echo', (p) => received.push(p));
+
+      // A response carries `result`, not `method` — this asserts the inverse:
+      // response handling (matched by pendingRequests id) still works
+      // unaffected by the new notification-dispatch branch added above it.
+      // startSidecar() already fired its own internal self-test 'echo'
+      // request during startup, so scope the write-call lookup to calls
+      // made AFTER this specific request() to avoid matching that one.
+      const callsBefore = invoke.mock.calls.length;
+      const pending = request('echo', { a: 1 }, 2000);
+      const writeCall = invoke.mock.calls.slice(callsBefore).find((c) => c[0] === 'mcp_write');
+      const sent = JSON.parse((writeCall as [string, { message: string }])[1].message) as { id: number };
+      emitMsg({ jsonrpc: '2.0', id: sent.id, result: { a: 1 } });
+
+      await expect(pending).resolves.toEqual({ a: 1 });
+      expect(received).toEqual([]); // the notification handler was never invoked
     });
   });
 

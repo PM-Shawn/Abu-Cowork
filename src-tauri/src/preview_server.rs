@@ -251,12 +251,47 @@ fn find_ci(haystack: &str, needle: &str) -> Option<usize> {
     found
 }
 
+/// Neutralize any `</script` sequence inside JS destined for an inline
+/// `<script>` element by rewriting it to `<\/script`. The HTML parser stops a
+/// script element at the first `</script` (case-insensitive) regardless of JS
+/// context, so an un-escaped occurrence in a comment/string would terminate the
+/// tag early and dump the remainder as page text. Case-insensitive scan since
+/// std has no case-insensitive `replace`.
+fn escape_script_close(js: &str) -> String {
+    const NEEDLE: &[u8] = b"</script";
+    let bytes = js.as_bytes();
+    let mut out = String::with_capacity(js.len() + 8);
+    let mut i = 0;
+    while i < bytes.len() {
+        if i + NEEDLE.len() <= bytes.len()
+            && bytes[i..i + NEEDLE.len()].eq_ignore_ascii_case(NEEDLE)
+        {
+            out.push_str("<\\/script");
+            i += NEEDLE.len();
+        } else {
+            // Advance one full UTF-8 char (needle is ASCII, so a match can only
+            // start on an ASCII byte — pushing char-by-char stays UTF-8 safe).
+            let ch_len = js[i..].chars().next().map(|c| c.len_utf8()).unwrap_or(1);
+            out.push_str(&js[i..i + ch_len]);
+            i += ch_len;
+        }
+    }
+    out
+}
+
 /// Wrap `ABU_PREVIEW_INSPECT_JS` in a `<script>` tag and splice it into
 /// `html`: immediately before the last `</body>` (case-insensitive); if
 /// absent, before the last `</html>`; if neither is present, appended at
 /// the end. Byte-slicing on `find_ci`'s index is safe per its doc comment.
 fn inject_picker_script(html: &str) -> String {
-    let script_tag = format!("<script>{}</script>", ABU_PREVIEW_INSPECT_JS);
+    // Escape any `</script` inside the JS (e.g. a literal `</script>` in a doc
+    // comment or string) — otherwise the HTML parser closes the injected
+    // `<script>` element at that point and renders the rest of the picker as
+    // visible page text. `<\/script` is the standard, semantics-preserving
+    // escape (the `\` is inert in comments and a valid escape in JS strings/
+    // regex). Case-insensitive so `</SCRIPT` etc. are covered too.
+    let safe_js = escape_script_close(ABU_PREVIEW_INSPECT_JS);
+    let script_tag = format!("<script>{}</script>", safe_js);
 
     let insert_at = find_ci(html, "</body>").or_else(|| find_ci(html, "</html>"));
 
@@ -808,10 +843,41 @@ mod tests {
     }
 
     #[test]
+    fn escape_script_close_neutralizes_all_forms() {
+        assert_eq!(escape_script_close("a</script>b"), "a<\\/script>b");
+        // case-insensitive
+        assert_eq!(escape_script_close("x</SCRIPT>y"), "x<\\/script>y");
+        // no `>` needed to match — the HTML parser breaks on `</script` alone
+        assert_eq!(escape_script_close("q</script foo"), "q<\\/script foo");
+        // multiple occurrences + UTF-8 (CJK) content around them stays intact
+        assert_eq!(
+            escape_script_close("中文</script>更多</script>结尾"),
+            "中文<\\/script>更多<\\/script>结尾"
+        );
+        // nothing to escape → unchanged
+        assert_eq!(escape_script_close("var x = 1; // safe"), "var x = 1; // safe");
+    }
+
+    #[test]
+    fn injected_output_has_no_unescaped_script_close_from_js_body() {
+        // The real bundled picker JS contains a literal `</script>` in its doc
+        // comment; without escaping, the browser would close the injected
+        // <script> element there and render the rest as page text (the bug this
+        // guards against). After injection the ONLY `</script>` must be the
+        // wrapper's own closing tag at the very end.
+        let out = inject_picker_script("<html><body></body></html>");
+        let closes: Vec<_> = out.match_indices("</script>").collect();
+        // Exactly one `</script>` — the wrapper's. Any second one would mean a
+        // `</script` from the JS body leaked through un-escaped and would have
+        // closed the element early (the original render-as-text bug).
+        assert_eq!(closes.len(), 1, "exactly one (wrapper) </script> expected");
+    }
+
+    #[test]
     fn inject_before_body_close() {
         let html = "<html><body><p>hi</p></body></html>";
         let out = inject_picker_script(html);
-        let script_tag = format!("<script>{}</script>", ABU_PREVIEW_INSPECT_JS);
+        let script_tag = format!("<script>{}</script>", escape_script_close(ABU_PREVIEW_INSPECT_JS));
         let expected = format!("<html><body><p>hi</p>{}</body></html>", script_tag);
         assert_eq!(out, expected);
     }
@@ -820,7 +886,7 @@ mod tests {
     fn inject_case_insensitive_body_close() {
         let html = "<HTML><BODY><p>hi</p></BODY></HTML>";
         let out = inject_picker_script(html);
-        let script_tag = format!("<script>{}</script>", ABU_PREVIEW_INSPECT_JS);
+        let script_tag = format!("<script>{}</script>", escape_script_close(ABU_PREVIEW_INSPECT_JS));
         let expected = format!("<HTML><BODY><p>hi</p>{}</BODY></HTML>", script_tag);
         assert_eq!(out, expected);
     }
@@ -829,7 +895,7 @@ mod tests {
     fn inject_before_html_close_when_no_body() {
         let html = "<html><p>hi, no body tag</p></html>";
         let out = inject_picker_script(html);
-        let script_tag = format!("<script>{}</script>", ABU_PREVIEW_INSPECT_JS);
+        let script_tag = format!("<script>{}</script>", escape_script_close(ABU_PREVIEW_INSPECT_JS));
         let expected = format!("<html><p>hi, no body tag</p>{}</html>", script_tag);
         assert_eq!(out, expected);
     }
@@ -838,7 +904,7 @@ mod tests {
     fn inject_appends_when_neither_tag_present() {
         let html = "<p>fragment, no html/body wrapper</p>";
         let out = inject_picker_script(html);
-        let script_tag = format!("<script>{}</script>", ABU_PREVIEW_INSPECT_JS);
+        let script_tag = format!("<script>{}</script>", escape_script_close(ABU_PREVIEW_INSPECT_JS));
         let expected = format!("<p>fragment, no html/body wrapper</p>{}", script_tag);
         assert_eq!(out, expected);
     }
@@ -867,7 +933,7 @@ mod tests {
         // preserved verbatim at the tail of the output.
         assert!(out.ends_with(&html[idx..]));
         // And the injected script sits between those two halves.
-        let script_tag = format!("<script>{}</script>", ABU_PREVIEW_INSPECT_JS);
+        let script_tag = format!("<script>{}</script>", escape_script_close(ABU_PREVIEW_INSPECT_JS));
         let expected = format!("{}{}{}", &html[..idx], script_tag, &html[idx..]);
         assert_eq!(out, expected);
     }

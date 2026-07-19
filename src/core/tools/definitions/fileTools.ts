@@ -20,6 +20,7 @@ import {
 import { TOOL_NAMES } from '../toolNames';
 import { getI18n, format } from '../../../i18n';
 import { bindWorkspaceFromWrite } from '../../agent/defaultWorkspace';
+import { snapshotBeforeAiEdit } from '@/utils/aiEditSnapshots';
 
 /**
  * Simple pessimistic file lock for concurrent agent safety.
@@ -250,6 +251,13 @@ export const writeFileTool: ToolDefinition = {
       } else if (ext === '.html' || ext === '.htm') {
         finalContent = ensureHtmlCharset(content);
       }
+      // Pre-edit snapshot: capture the on-disk "before" state so this AI turn
+      // shows up in the preview panel's version history. Fail-open — the
+      // helper never throws and must not delay-fail the write.
+      await snapshotBeforeAiEdit(path, {
+        loopId: context?.loopId,
+        conversationId: context?.conversationId,
+      });
       await writeTextFile(path, finalContent);
       // Lazily bind a managed default workspace on the first write under ~/Abu/
       // (fire-and-forget — must never affect the write result).
@@ -326,6 +334,14 @@ export const editFileTool: ToolDefinition = {
       if (occurrences > 1) {
         return `Error: old_content matches ${occurrences} locations. Please provide more surrounding context to make the match unique.`;
       }
+
+      // Pre-edit snapshot (validation passed — we are definitely writing).
+      // Reuses the already-read `content`, so no extra disk read.
+      await snapshotBeforeAiEdit(path, {
+        loopId: context?.loopId,
+        conversationId: context?.conversationId,
+        knownContent: content,
+      });
 
       // Perform replacement. Use a function replacer so new_content is inserted
       // verbatim — a string replacement would let JS interpret `$$`, `$&`,

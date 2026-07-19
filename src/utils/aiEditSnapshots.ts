@@ -21,11 +21,12 @@ import { useChatStore } from '@/stores/chatStore';
 const MAX_SNAPSHOT_BYTES = 5 * 1024 * 1024;
 /** Max label length persisted into the version index. */
 const MAX_LABEL_CHARS = 60;
-/** Bounded number of loops tracked for first-touch dedup (LRU beyond this). */
+/** Bounded number of loops tracked for first-touch dedup (FIFO beyond this). */
 const MAX_TRACKED_LOOPS = 8;
 
-// loopId -> normalized paths already snapshotted this turn. Map insertion
-// order doubles as LRU order; entries are only ever appended per loop.
+// loopId -> normalized paths already snapshotted this turn. Eviction is FIFO
+// by loop-creation order (re-touching does not refresh position) — an evicted
+// loop's next touch just re-snapshots, which the store's dedupe absorbs.
 const touchedByLoop = new Map<string, Set<string>>();
 
 /** Returns true when this is the first touch of `path` within `loopId`. */
@@ -89,8 +90,7 @@ export async function snapshotBeforeAiEdit(
         return;
       }
       content = await readTextFile(path);
-    } else if (content.length > MAX_SNAPSHOT_BYTES) {
-      // length is a cheap lower bound of byte size — good enough for a guard.
+    } else if (new TextEncoder().encode(content).length > MAX_SNAPSHOT_BYTES) {
       console.warn('[aiEditSnapshots] skip oversize content', path);
       return;
     }

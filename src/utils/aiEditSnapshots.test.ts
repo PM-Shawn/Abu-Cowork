@@ -71,6 +71,13 @@ describe('snapshotBeforeAiEdit', () => {
     expect(snapshotVersionMock).toHaveBeenCalledWith('/w/a.html', 'pre-read', expect.anything());
   });
 
+  it('skips oversize knownContent measured in real UTF-8 bytes (CJK undercount guard)', async () => {
+    // 2M CJK chars ≈ 6MB UTF-8 (> 5MB cap) but .length is only 2M (< cap).
+    const cjk = '中'.repeat(2 * 1024 * 1024);
+    await mod.snapshotBeforeAiEdit('/w/cjk.html', { loopId: 'loop1', knownContent: cjk });
+    expect(snapshotVersionMock).not.toHaveBeenCalled();
+  });
+
   it('labels the snapshot with the latest non-system user message, truncated to 60 chars', async () => {
     getStateMock.mockReturnValue({
       conversations: {

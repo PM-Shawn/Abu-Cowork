@@ -109,7 +109,7 @@ describe('approvalBridge — command: single active + FIFO queue, no timeout', (
     expect(listener).toHaveBeenCalledTimes(1); // queued silently — no notify
     expect(getSnapshot('command')?.conversationId).toBe('c1'); // still the first
 
-    resolveActive('command', true); // clears c1, promotes c2 — exactly ONE notify (see module doc)
+    resolveActive('command', true); // clears c1, promotes c2 — exactly ONE notify per settle() (see module doc)
     expect(listener).toHaveBeenCalledTimes(2);
     expect(await p1).toBe(true);
     expect(getSnapshot('command')?.conversationId).toBe('c2');
@@ -165,15 +165,15 @@ describe('approvalBridge — file-permission: single active + FIFO queue + deque
     unsub();
   });
 
-  it('notifies TWICE when a queued request is promoted (clear + activate) — differs from command', async () => {
+  it('notifies exactly ONCE when a queued request is promoted — same as command; notify count is an implementation detail, only the snapshot value is the contract', async () => {
     const listener = vi.fn();
     const unsub = subscribe('file-permission', listener);
     const p1 = request('file-permission', { conversationId: 'c1', payload: FILE_PAYLOAD('/a') });
     const p2 = request('file-permission', { conversationId: 'c2', payload: FILE_PAYLOAD('/b') });
     listener.mockClear();
 
-    resolveActive('file-permission', true); // clears c1 (notify #1) then promotes c2 (notify #2)
-    expect(listener).toHaveBeenCalledTimes(2);
+    resolveActive('file-permission', true); // clears c1 and promotes c2 in one settle() — one notify
+    expect(listener).toHaveBeenCalledTimes(1);
     expect(getSnapshot('file-permission')?.conversationId).toBe('c2');
 
     resolveActive('file-permission', true);

@@ -178,12 +178,6 @@ interface KindConfig {
   timeoutMs?: number;
   /** Value entries auto-resolve to on timeout or drain. */
   cancelledResult: unknown;
-  /** 'queue' mode only. file-permission notifies once when the active slot
-   *  clears AND again if a queued candidate gets promoted (2 notifies in
-   *  the promoted case); command notifies only once, at the end, whichever
-   *  branch is taken. This is a genuine (if subtle) pre-existing difference
-   *  between the two — preserved, not normalized. */
-  notifyOnClear?: boolean;
   /** 'queue' mode only. Called for each candidate about to be promoted off
    *  the queue; a non-undefined return short-circuits activation and
    *  resolves the candidate immediately without ever surfacing a dialog
@@ -203,12 +197,10 @@ const KIND_CONFIGS: Record<ApprovalKind, KindConfig> = {
   command: {
     mode: 'queue',
     cancelledResult: false,
-    notifyOnClear: false,
   },
   'file-permission': {
     mode: 'queue',
     cancelledResult: false,
-    notifyOnClear: true,
     // dequeueShortCircuit is set by permissionBridge.ts at module load via
     // setDequeueShortCircuit('file-permission', ...).
   },
@@ -353,8 +345,9 @@ function settle(kind: ApprovalKind, id: string, result: unknown): void {
     return;
   }
 
-  // 'queue' mode
-  if (config.notifyOnClear) notify(kind);
+  // 'queue' mode — promoteNext() below owns the notify for this settle()
+  // call, whether it ends up promoting a candidate or draining the queue
+  // empty (see its trailing comment for why this is unconditional now).
   promoteNext(kind);
 }
 
@@ -373,8 +366,15 @@ function promoteNext(kind: ApprovalKind): void {
     notify(kind);
     return;
   }
-  // Queue drained without activating anything.
-  if (!config.notifyOnClear) notify(kind); // command's ONLY notify call lives here, unconditionally; file-permission already notified on clear, so skip
+  // Queue drained without activating anything — exactly one notify per
+  // settle() call either way (promoted above, or drained here). Previously
+  // file-permission notified twice (once in settle() on clear, again here
+  // on promotion) while command notified once; review confirmed that
+  // difference is not observable to useSyncExternalStore subscribers — both
+  // land on the same final publicSnapshot, and React dedupes re-renders
+  // that don't change the snapshot reference — so the notifyOnClear knob was
+  // removed and both kinds now share this single unconditional notify.
+  notify(kind);
 }
 
 /** Resolves whichever request is currently active for a single-active kind.

@@ -1,6 +1,7 @@
 import { useChatStore } from '@/stores/chatStore';
 import type { Conversation } from '@/types';
 import type { ConversationMeta } from '../../session/conversationStorage';
+import { createPortSlot } from './portSlot';
 
 /**
  * Port abstracting agentLoop's (and toolExecutor's) READS of chatStore's
@@ -82,21 +83,20 @@ export function createInProcessConversationReader(): ConversationReader {
   };
 }
 
-let current: ConversationReader = createInProcessConversationReader();
+/** Module-level slot for the app-wide default ConversationReader — see
+ *  `portSlot.ts` for the shared get/set/swap-hook contract every port in
+ *  this directory follows. All core/ callers that don't receive an
+ *  explicit reader via options should go through `getConversationReader()`
+ *  instead of constructing their own in-process reader, so there's a
+ *  single seam to flip when the headless Node runtime starts up (see
+ *  `setConversationReader` — a future out-of-process, Node-authoritative
+ *  implementation, per this file's top-level JSDoc). */
+const slot = createPortSlot<ConversationReader>(createInProcessConversationReader);
 
-/** Module-level accessor for the app-wide default ConversationReader. All
- *  core/ callers that don't receive an explicit reader via options should
- *  go through this instead of constructing their own in-process reader, so
- *  there's a single seam to flip when the headless Node runtime starts up
- *  (see `setConversationReader`). */
 export function getConversationReader(): ConversationReader {
-  return current;
+  return slot.get();
 }
 
-/** One-time swap hook for a future out-of-process (Node-authoritative)
- *  reader, to be called once at Node runtime startup. Not used anywhere yet
- *  — the in-process default remains active until a real out-of-process
- *  implementation exists. */
 export function setConversationReader(reader: ConversationReader): void {
-  current = reader;
+  slot.set(reader);
 }

@@ -1,4 +1,5 @@
 import { useWorkspaceStore } from '@/stores/workspaceStore';
+import { createPortSlot } from './portSlot';
 
 /**
  * Port abstracting agentLoop's reads of workspaceStore's `currentPath` — the
@@ -27,21 +28,19 @@ export function createInProcessWorkspaceReader(): WorkspaceReader {
   };
 }
 
-let current: WorkspaceReader = createInProcessWorkspaceReader();
+/** Module-level slot for the app-wide default WorkspaceReader — see
+ *  `portSlot.ts` for the shared get/set/swap-hook contract every port in
+ *  this directory follows. All core/ callers that don't receive an
+ *  explicit reader via options should go through `getWorkspaceReader()`
+ *  instead of constructing their own in-process reader, so there's a
+ *  single seam to flip when the headless Node runtime starts up (see
+ *  `setWorkspaceReader`). */
+const slot = createPortSlot<WorkspaceReader>(createInProcessWorkspaceReader);
 
-/** Module-level accessor for the app-wide default WorkspaceReader. All core/
- *  callers that don't receive an explicit reader via options should go
- *  through this instead of constructing their own in-process reader, so
- *  there's a single seam to flip when the headless Node runtime starts up
- *  (see `setWorkspaceReader`). */
 export function getWorkspaceReader(): WorkspaceReader {
-  return current;
+  return slot.get();
 }
 
-/** One-time swap hook for a future out-of-process (IPC/RPC-backed) reader,
- *  to be called once at Node runtime startup. Not used anywhere yet — the
- *  in-process default remains active until a real out-of-process
- *  implementation exists. */
 export function setWorkspaceReader(reader: WorkspaceReader): void {
-  current = reader;
+  slot.set(reader);
 }

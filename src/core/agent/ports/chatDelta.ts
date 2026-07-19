@@ -13,6 +13,7 @@ import type {
 } from '@/types';
 import type { ExecutionStepSnapshot, PlannedStep } from '@/types/execution';
 import type { ProposalSignal } from '../proposalSignal';
+import { createPortSlot } from './portSlot';
 
 /**
  * Port abstracting agentLoop's WRITES to chatStore's streaming family, plus
@@ -179,21 +180,18 @@ export function createInProcessChatDelta(): ChatDelta {
   };
 }
 
-let current: ChatDelta = createInProcessChatDelta();
+/** Module-level slot for the app-wide default ChatDelta — see `portSlot.ts`
+ *  for the shared get/set/swap-hook contract every port in this directory
+ *  follows. All core/ callers that don't receive an explicit delta via
+ *  options should go through `getChatDelta()` instead of constructing
+ *  their own in-process delta, so there's a single seam to flip when the
+ *  headless Node runtime starts up (see `setChatDelta`). */
+const slot = createPortSlot<ChatDelta>(createInProcessChatDelta);
 
-/** Module-level accessor for the app-wide default ChatDelta. All core/
- *  callers that don't receive an explicit delta via options should go
- *  through this instead of constructing their own in-process delta, so
- *  there's a single seam to flip when the headless Node runtime starts up
- *  (see `setChatDelta`). */
 export function getChatDelta(): ChatDelta {
-  return current;
+  return slot.get();
 }
 
-/** One-time swap hook for a future out-of-process (IPC/RPC-backed) delta
- *  channel, to be called once at Node runtime startup. Not used anywhere
- *  yet — the in-process default remains active until a real out-of-process
- *  implementation exists. */
 export function setChatDelta(delta: ChatDelta): void {
-  current = delta;
+  slot.set(delta);
 }

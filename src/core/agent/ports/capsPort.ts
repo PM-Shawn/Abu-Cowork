@@ -1,4 +1,5 @@
 import { useDiscoveredCapsStore, type DiscoveredCaps } from '@/stores/discoveredCapabilitiesStore';
+import { createPortSlot } from './portSlot';
 
 /**
  * Port abstracting agentLoop's reads AND writes of discoveredCapabilitiesStore
@@ -59,22 +60,19 @@ export function createInProcessCapsPort(): CapsPort {
   };
 }
 
-let current: CapsPort = createInProcessCapsPort();
+/** Module-level slot for the app-wide default CapsPort — see `portSlot.ts`
+ *  for the shared get/set/swap-hook contract every port in this directory
+ *  follows. All core/ callers that don't receive an explicit port via
+ *  options should go through `getCapsPort()` instead of constructing their
+ *  own in-process port, so there's a single seam to flip when the headless
+ *  Node runtime starts up (see `setCapsPort`, which must honor the
+ *  ack/mirror requirement documented above). */
+const slot = createPortSlot<CapsPort>(createInProcessCapsPort);
 
-/** Module-level accessor for the app-wide default CapsPort. All core/
- *  callers that don't receive an explicit port via options should go
- *  through this instead of constructing their own in-process port, so
- *  there's a single seam to flip when the headless Node runtime starts up
- *  (see `setCapsPort`). */
 export function getCapsPort(): CapsPort {
-  return current;
+  return slot.get();
 }
 
-/** One-time swap hook for a future out-of-process (IPC/RPC-backed) port, to
- *  be called once at Node runtime startup. Not used anywhere yet — the
- *  in-process default remains active until a real out-of-process
- *  implementation exists (which must honor the ack/mirror requirement
- *  documented above). */
 export function setCapsPort(port: CapsPort): void {
-  current = port;
+  slot.set(port);
 }

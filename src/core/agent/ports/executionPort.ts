@@ -1,5 +1,6 @@
 import { useTaskExecutionStore } from '@/stores/taskExecutionStore';
 import type { TaskExecution } from '@/types/execution';
+import { createPortSlot } from './portSlot';
 
 /**
  * Port abstracting agentLoop's directly-invoked execution *lifecycle* calls
@@ -48,21 +49,19 @@ export function createInProcessExecutionPort(): ExecutionPort {
   };
 }
 
-let current: ExecutionPort = createInProcessExecutionPort();
+/** Module-level slot for the app-wide default ExecutionPort — see
+ *  `portSlot.ts` for the shared get/set/swap-hook contract every port in
+ *  this directory follows. All core/ callers that don't receive an
+ *  explicit port via options should go through `getExecutionPort()`
+ *  instead of constructing their own in-process port, so there's a single
+ *  seam to flip when the headless Node runtime starts up (see
+ *  `setExecutionPort`). */
+const slot = createPortSlot<ExecutionPort>(createInProcessExecutionPort);
 
-/** Module-level accessor for the app-wide default ExecutionPort. All core/
- *  callers that don't receive an explicit port via options should go
- *  through this instead of constructing their own in-process port, so
- *  there's a single seam to flip when the headless Node runtime starts up
- *  (see `setExecutionPort`). */
 export function getExecutionPort(): ExecutionPort {
-  return current;
+  return slot.get();
 }
 
-/** One-time swap hook for a future out-of-process (IPC/RPC-backed) port, to
- *  be called once at Node runtime startup. Not used anywhere yet — the
- *  in-process default remains active until a real out-of-process
- *  implementation exists. */
 export function setExecutionPort(port: ExecutionPort): void {
-  current = port;
+  slot.set(port);
 }

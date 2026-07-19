@@ -73,7 +73,7 @@ core-foundation = "0.10"
 core-foundation-sys = "0.8"
 # Secrets: hardware-bound AES-256-GCM (keyring avoided to sidestep
 # ad-hoc-signed ACL re-prompts on every auto-update).
-aes-gcm = "0.10"
+aes-gcm = "0.11"
 hkdf = "0.13"
 sha2 = "0.11"
 rand = "0.8"

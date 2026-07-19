@@ -105,11 +105,20 @@ export const generateImageTool: ToolDefinition = {
       // `data[]`, so this can't be a single fixed shape.
       const parsed = parseImageResponse(vendor, result);
 
-      // Decode image data — prefer b64_json, fallback to URL download
+      // Decode image data — prefer b64_json, fallback to URL download.
+      // Decode base64 with atob() rather than fetch(`data:...`): the app's CSP
+      // lists `data:` under img-src/font-src but NOT connect-src, and a fetch()
+      // of a data: URL is governed by connect-src — so in the packaged WKWebView
+      // build it is blocked and rejects with `TypeError: Load failed` (verified
+      // in WebKit). atob() is a pure-JS decode that touches no network stack, so
+      // it is unaffected by CSP (and faster). This is the whole reason b64_json
+      // backends — Volcengine Seedream (always b64) and OpenAI gpt-image-1 —
+      // failed to generate while URL-returning backends worked.
       let bytes: Uint8Array;
       if (parsed.b64) {
-        const resp = await fetch(`data:image/png;base64,${parsed.b64}`);
-        bytes = new Uint8Array(await resp.arrayBuffer());
+        const bin = atob(parsed.b64);
+        bytes = new Uint8Array(bin.length);
+        for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
       } else if (parsed.url) {
         const imageResponse = await fetchFn(parsed.url);
         if (!imageResponse.ok) {

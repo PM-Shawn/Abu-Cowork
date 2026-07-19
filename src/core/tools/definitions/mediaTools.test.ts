@@ -233,4 +233,32 @@ describe('generateImageTool', () => {
     expect(typeof result).toBe('string');
     expect(result as string).toContain('429');
   });
+
+  it('decodes a b64_json response WITHOUT fetching a data: URL (CSP-blocked in the packaged WKWebView build)', async () => {
+    // Regression for the "Load failed" image-gen bug: the app CSP allows `data:`
+    // under img-src/font-src but NOT connect-src, so `fetch("data:...")` is
+    // blocked in the real build and rejects with `TypeError: Load failed`.
+    // Decoding must therefore use atob(), never fetch(). We simulate the CSP
+    // block by throwing on any data: fetch (as WebKit does) and assert the tool
+    // still succeeds — and that it never attempts a data: fetch at all.
+    mockFetch.mockImplementation(async (input: RequestInfo | URL) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (url.startsWith('data:')) throw new TypeError('Load failed');
+      return jsonResponse({ data: [{ b64_json: FAKE_B64 }] });
+    });
+
+    const result = await generateImageTool.execute({ prompt: 'test', save_path: '/tmp/abu-test/out.png' });
+
+    expect(typeof result).toBe('string');
+    expect(result as string).not.toContain('Load failed');
+    expect(result as string).not.toContain('Error generating image');
+    expect(result as string).toContain('/tmp/abu-test/out.png');
+
+    // Prove the decode path is network-free: no fetch was made to a data: URL.
+    const dataUrlCalls = mockFetch.mock.calls.filter(([input]) => {
+      const url = typeof input === 'string' ? input : String(input);
+      return url.startsWith('data:');
+    });
+    expect(dataUrlCalls).toHaveLength(0);
+  });
 });

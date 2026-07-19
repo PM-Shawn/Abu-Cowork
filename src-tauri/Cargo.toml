@@ -53,7 +53,7 @@ rusqlite = { version = "0.31", features = ["bundled", "hooks"] }
 # HTML preview HTTP server (loopback-only file server for sandboxed iframe).
 # WKWebView blocks asset:// sub-resources from sandboxed iframes, so HTML
 # previews go through axum on 127.0.0.1:rand_port. See preview_server.rs.
-axum = { version = "0.7", default-features = false, features = ["http1", "tokio"] }
+axum = { version = "0.8", default-features = false, features = ["http1", "tokio"] }
 tower = "0.5"
 mime_guess = "2"
 uuid = { version = "1", features = ["v4"] }

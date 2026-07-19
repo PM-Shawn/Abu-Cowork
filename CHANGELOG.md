@@ -7,6 +7,24 @@ All notable changes to Abu are documented here. Format based on [Keep a Changelo
 > [`CHANGELOG.zh-CN.md`](./CHANGELOG.zh-CN.md); keep both in sync per release (see
 > `RELEASING.md`). Entries before v0.31.0 predate this split and remain bilingual.
 
+## v0.32.0 · 2026-07-19
+
+### Added
+
+- **Select an element in the HTML preview → add to chat** — In the HTML preview panel, toggle "select element", hover to highlight any element on the page, and click to send it to the composer as a reference (with an optional comment as an instruction). The picker is injected server-side into the loopback-served preview and returns selections over an `origin`- and nonce-checked `postMessage` channel, so it runs only on your own local files. Hover badges, click-to-reselect, and the comment shortcut (⌘/Ctrl+J) match the document-selection toolbar.
+- **Localized update notes** — The in-app update dialog and the website's "What's new" now show release notes in your language (English or Chinese), driven from a single structured source per release.
+
+### Changed
+
+- **Local HTML opens in the preview panel** — The manually-opened browser tab's entry points are hidden; local HTML files are viewed — and now inspected — in the preview panel, where UTF-8 charset and the source toggle already live. The browser tab stays available programmatically for a future agent-browsing surface.
+
+### Fixed
+
+- **Markdown**: a single tilde `~` no longer renders as strikethrough — only `~~x~~` does.
+- **UI**: selected/active items are now visible on the recessed canvas; scrollbars stay hidden app-wide until you scroll; the update-download progress bar no longer animates its width oddly.
+
+**Full Changelog**: https://github.com/PM-Shawn/Abu-Cowork/compare/v0.31.0...v0.32.0
+
 ## v0.31.0 · 2026-07-18
 
 ### Added

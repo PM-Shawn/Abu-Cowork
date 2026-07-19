@@ -49,7 +49,7 @@ trash = "5"
 # P2 conversation search — see docs/2026-07-15-fts5-conversation-search-SPEC.md).
 # libsqlite3-sys's "bundled" build.rs unconditionally compiles the vendored
 # SQLite amalgamation with -DSQLITE_ENABLE_FTS5 already baked in.
-rusqlite = { version = "0.31", features = ["bundled", "hooks"] }
+rusqlite = { version = "0.40", features = ["bundled", "hooks"] }
 # HTML preview HTTP server (loopback-only file server for sandboxed iframe).
 # WKWebView blocks asset:// sub-resources from sandboxed iframes, so HTML
 # previews go through axum on 127.0.0.1:rand_port. See preview_server.rs.

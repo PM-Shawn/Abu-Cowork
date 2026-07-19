@@ -56,6 +56,15 @@ describe('VersionHistoryMenu', () => {
     expect(screen.queryByText(REVERT_LABEL)).toBeNull();
   });
 
+  it('labels the pre-revert snapshot entry as Auto, not Manual', async () => {
+    listVersionsMock.mockResolvedValue([
+      { id: '2-1', ts: 2, byteSize: 10, source: 'manual', label: REVERT_LABEL },
+    ]);
+    renderMenu();
+    await waitFor(() => expect(screen.getByText('自动')).toBeTruthy());
+    expect(screen.queryByText('手动')).toBeNull();
+  });
+
   it('always shows the boundary note footer', async () => {
     listVersionsMock.mockResolvedValue([]);
     renderMenu();

@@ -1524,6 +1524,7 @@ export interface TranslationDict {
     versionHistoryLoadFailed: string;
     versionSourceAi: string;
     versionSourceManual: string;
+    versionSourceAuto: string;
     versionRevertPoint: string;
     versionHistoryBoundaryNote: string;
     // FilesSection

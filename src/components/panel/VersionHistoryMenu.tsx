@@ -203,7 +203,11 @@ export function VersionHistoryMenu({ filePath, open, onClose, anchorRef, onRever
                           : 'bg-[var(--abu-bg-hover)] text-[var(--abu-text-muted)]'
                       )}
                     >
-                      {isAi ? t.panel.versionSourceAi : t.panel.versionSourceManual}
+                      {v.label === REVERT_LABEL
+                        ? t.panel.versionSourceAuto
+                        : isAi
+                          ? t.panel.versionSourceAi
+                          : t.panel.versionSourceManual}
                     </span>
                   </div>
                   {label && (

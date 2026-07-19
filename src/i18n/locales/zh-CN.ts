@@ -1395,6 +1395,7 @@ const zhCN: TranslationDict = {
     versionHistoryLoadFailed: '加载历史版本失败',
     versionSourceAi: 'AI 修改前',
     versionSourceManual: '手动',
+    versionSourceAuto: '自动',
     versionRevertPoint: '回退前',
     versionHistoryBoundaryNote: '仅记录编辑器与 AI 工具中的修改；命令行/脚本产生的改动不会进入版本历史。',
     // FilesSection

@@ -117,27 +117,32 @@ describe('canvasVersions', () => {
       expect(versions).toHaveLength(2);
     });
 
-    it('caps at 30 versions per file, evicting the oldest', async () => {
+    it('caps at 30 versions per file (+ exempt baseline), evicting the oldest non-baseline', async () => {
       for (let i = 0; i < 35; i++) {
         await mod.snapshotVersion(filePath, `content-${i}`);
       }
 
+      // seq 0 (content-0, the baseline) is exempt from eviction, so the
+      // effective cap here is 30 rolling + 1 baseline = 31.
       const versions = await mod.listVersions(filePath);
-      expect(versions).toHaveLength(30);
+      expect(versions).toHaveLength(31);
 
-      // Oldest surviving version should be content-5 (0..4 evicted), newest content-34.
+      // Oldest surviving version should be the baseline content-0, then
+      // content-5 (1..4 evicted), newest content-34.
       const sorted = [...versions].sort((a, b) => {
         if (a.ts !== b.ts) return a.ts - b.ts;
         return Number(a.id.split('-').pop()) - Number(b.id.split('-').pop());
       });
-      const oldestContent = await mod.readVersion(filePath, sorted[0].id);
+      const baselineContent = await mod.readVersion(filePath, sorted[0].id);
+      const oldestRollingContent = await mod.readVersion(filePath, sorted[1].id);
       const newestContent = await mod.readVersion(filePath, sorted[sorted.length - 1].id);
-      expect(oldestContent).toBe('content-5');
+      expect(baselineContent).toBe('content-0');
+      expect(oldestRollingContent).toBe('content-5');
       expect(newestContent).toBe('content-34');
 
       // Evicted snapshot files should actually be gone from disk.
       const remainingSnapFiles = [...fs.files.keys()].filter((k) => k.endsWith('.snap'));
-      expect(remainingSnapFiles).toHaveLength(30);
+      expect(remainingSnapFiles).toHaveLength(31);
     });
 
     it('persists source/label meta when provided and omits them when absent', async () => {
@@ -163,6 +168,19 @@ describe('canvasVersions', () => {
       const versions = await mod.listVersions(filePath);
       expect(versions).toHaveLength(1);
       expect(versions[0].source).toBeUndefined();
+    });
+
+    it('never evicts the original baseline (seq 0) — cap becomes 30 + baseline', async () => {
+      await mod.snapshotVersion(filePath, 'baseline'); // seq 0
+      for (let i = 1; i <= 35; i++) {
+        await mod.snapshotVersion(filePath, `content-${i}`);
+      }
+
+      const versions = await mod.listVersions(filePath); // most recent first
+      expect(versions).toHaveLength(31); // 30 rolling + 1 exempt baseline
+      const oldest = versions[versions.length - 1];
+      expect(Number(oldest.id.split('-').pop())).toBe(0);
+      await expect(mod.readVersion(filePath, oldest.id)).resolves.toBe('baseline');
     });
   });
 

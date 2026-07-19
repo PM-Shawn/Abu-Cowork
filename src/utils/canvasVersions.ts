@@ -193,8 +193,15 @@ export async function snapshotVersion(
       ...(meta?.label ? { label: meta.label } : {}),
     });
 
-    while (index.versions.length > MAX_VERSIONS_PER_FILE) {
-      const oldest = index.versions.shift();
+    // Eviction: keep at most MAX_VERSIONS_PER_FILE rolling versions, but the
+    // original baseline (seq 0 — the file's state before any tracked change)
+    // is exempt and always survives (mirrors Claude Code's v1 GC exemption),
+    // so effective capacity is 30 + baseline.
+    const hasBaseline =
+      index.versions.length > 0 && Number(index.versions[0].id.split('-').pop()) === 0;
+    const cap = MAX_VERSIONS_PER_FILE + (hasBaseline ? 1 : 0);
+    while (index.versions.length > cap) {
+      const oldest = index.versions.splice(hasBaseline ? 1 : 0, 1)[0];
       if (oldest) {
         try {
           await remove(joinPath(dir, snapFileName(oldest.id)));

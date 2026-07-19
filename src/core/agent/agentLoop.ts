@@ -39,7 +39,7 @@ import { withRetry } from './retry';
 import { runSubagentLoop, extractParentConversationSummary } from './subagentLoop';
 import type { SubagentProgressEvent } from './subagentLoop';
 import { createSubagentController } from './subagentAbort';
-import { allToolsUnparseable, MAX_NO_PROGRESS_TURNS, resolveMaxTurns } from './loopGuards';
+import { allToolsUnparseable, MAX_NO_PROGRESS_TURNS, resolveMaxTurns, escalateMaxOutputTokens, shouldContinueTruncatedToolCalls } from './loopGuards';
 import { drainQueuedInputs, clearInputQueue, enqueueUserInput } from './userInputQueue';
 import { snapshotExecutionSteps } from './executionSnapshot';
 import { emitHook } from './lifecycleHooks';
@@ -653,61 +653,6 @@ export function shouldComputeProposalSignal(
 ): boolean {
   return isInteractiveDesktop(options, conversation) && !!workspacePath;
 }
-
-/**
- * Calculate the escalated maxOutputTokens for a max_tokens recovery turn.
- *
- * A fixed 2× that PERSISTS for every recovery (recoveryCount >= 1), so the budget
- * sequence is base → 2× → 2× → 2×, clamped to contextWindowSize - 1000. Callers
- * recompute `currentMax` from base each turn, so the escalation must be a pure
- * function of `recoveryCount`. The old one-shot `alreadyEscalated` latch made the
- * budget fall back to base on later recoveries (base → 2× → base → base) — bug #5.
- *
- * The multiplier is deliberately NOT progressive (e.g. 2^recoveryCount): the
- * recovery prompt tells the model to break remaining work into smaller pieces, so
- * a single doubling suffices, and an ever-growing budget would compound the input
- * squeeze below. Note the unavoidable tradeoff: escalation raises maxOutputTokens,
- * which lowers maxInputTokens (= contextWindowSize - maxOutputTokens) for the whole
- * recovery sequence. On large windows this is negligible; on small windows it is
- * inherent to escalating output at all (the "break into smaller pieces" prompt, not
- * a bigger budget, is the real lever there). The clamp keeps ≥1000 input tokens.
- * Pure function, exported for testing.
- */
-export function escalateMaxOutputTokens(
-  currentMax: number,
-  contextWindowSize: number,
-  recoveryCount: number,
-): { maxOutputTokens: number; changed: boolean } {
-  if (recoveryCount <= 0) {
-    return { maxOutputTokens: currentMax, changed: false };
-  }
-  const escalated = Math.min(currentMax * 2, contextWindowSize - 1000);
-  if (escalated > currentMax) {
-    return { maxOutputTokens: escalated, changed: true };
-  }
-  return { maxOutputTokens: currentMax, changed: false };
-}
-
-/**
- * Decide whether to continue the loop when a turn was cut off by max_tokens but
- * still carried complete tool calls. The Claude adapter only emits a tool_use
- * event on content_block_stop, so a call truncated mid-JSON is dropped — any
- * collected calls are complete; sending their results back lets the model resume
- * instead of the turn being discarded (legacy behavior excluded these entirely).
- *
- * We require at least one WELL-FORMED tool call (input without `_parse_error`). An
- * all-malformed batch is not real progress: continuing on it would re-prompt a
- * broken model indefinitely — agentLoop has no no-progress guard and maxTurns
- * defaults to unlimited. This mirrors the subagent's `allToolsUnparseable` guard
- * (see isNoProgressTurn). Pure, exported for testing.
- */
-export function shouldContinueTruncatedToolCalls(
-  stopReason: string,
-  toolCalls: Array<{ input: Record<string, unknown> }>,
-): boolean {
-  return stopReason === 'max_tokens' && toolCalls.some((tc) => !('_parse_error' in tc.input));
-}
-
 
 export async function runAgentLoop(conversationId: string, userMessage: string, options?: AgentLoopOptions): Promise<AgentLoopResult> {
   const settingsReader = options?.settingsReader ?? getSettingsReader();

@@ -288,7 +288,8 @@ vi.mock('../../utils/platform', () => ({
 }));
 
 // Now import the module under test
-import { runAgentLoop, escalateMaxOutputTokens, persistExecutionSnapshot } from '../core/agent/agentLoop';
+import { runAgentLoop, persistExecutionSnapshot } from '../core/agent/agentLoop';
+import { escalateMaxOutputTokens } from '../core/agent/loopGuards';
 import type { StreamEvent, Message } from '../types';
 // Mocked module reference — used to override token estimator per-test
 import * as tokenEstimatorModule from '../core/context/tokenEstimator';

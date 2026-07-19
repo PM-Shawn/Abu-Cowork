@@ -11,7 +11,8 @@ import type { IMContext } from './orchestrator';
 import type { LLMAdapter } from '../llm/adapter';
 import { LLMError, formatLlmDisplayError } from '../llm/adapter';
 import { selectChatAdapter } from '../llm/selectChatAdapter';
-import { getAllTools, executeAnyTool, toolResultToString, type ConfirmationInfo, type FilePermissionCallback } from '../tools/registry';
+import { getToolInvoker, type FilePermissionCallback } from './ports/toolInvoker';
+import type { ConfirmationInfo } from '../tools/commandSafety';
 import { TOOL_NAMES } from '../tools/toolNames';
 import { getActiveApiKey, getActiveProvider, resolveAgentModel } from '../../stores/settingsStore';
 import { getSettingsReader } from './ports/settingsReader';
@@ -24,13 +25,18 @@ import { prepareContextMessages } from '../context/contextManager';
 import { compressContextIfNeeded } from '../context/contextCompressor';
 import { getMessageText } from '../context/contextUtils';
 import { withRetry } from './retry';
-import { allToolsUnparseable, MAX_NO_PROGRESS_TURNS, resolveMaxTurns } from './loopGuards';
+import {
+  allToolsUnparseable,
+  MAX_NO_PROGRESS_TURNS,
+  resolveMaxTurns,
+  escalateMaxOutputTokens,
+  shouldContinueTruncatedToolCalls,
+} from './loopGuards';
 import { resolveEffectiveLlmCreds } from '../enterprise/llm-resolver';
 import { emitHook } from './lifecycleHooks';
 import type { SubagentStartEvent, SubagentEndEvent, PreToolCallEvent } from './lifecycleHooks';
 import { startSubagentSpan } from '../observability/langfuse';
 import { getI18n } from '../../i18n';
-import { escalateMaxOutputTokens, shouldContinueTruncatedToolCalls } from './agentLoop';
 
 /** Max times a subagent re-prompts after a max_tokens truncation. Mirrors the
  *  same-named limit in agentLoop (kept in sync deliberately). */
@@ -263,7 +269,7 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
     const effectiveModelId = resolveAgentModel(agent.model, settings);
 
     // 3. Get + filter tools
-    let tools = getAllTools();
+    let tools = getToolInvoker().getAllTools();
     if (agent.tools && agent.tools.length > 0) {
       const available = new Set(tools.map((t) => t.name));
       const unknown = agent.tools.filter((name) => !available.has(name));
@@ -616,14 +622,15 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
           const toolStart = Date.now();
           try {
             const subagentToolContext: ToolExecutionContext = { workspacePath };
-            const rawResult = await executeAnyTool(
+            const invoker = getToolInvoker();
+            const rawResult = await invoker.executeAnyTool(
               tc.name,
               effectiveInput,
               commandConfirmCallback,
               filePermissionCallback,
               subagentToolContext,
             );
-            const result = toolResultToString(rawResult);
+            const result = invoker.toolResultToString(rawResult);
             const durationMs = Date.now() - toolStart;
             await emitHook({
               type: 'postToolCall' as const,

@@ -179,6 +179,12 @@ export function getPendingFilePermission(): FilePermissionRequest | null {
 
 /**
  * Resolve the pending file permission request
+ *
+ * Guarded on there actually being a pending request (matches the pre-E-block
+ * singleton's `if (pendingFilePermission) { ... }` wrapper) — without this,
+ * a stray/duplicate call (e.g. a double-click that fires the resolve handler
+ * twice) would still persist a grant into permissionStore even though there
+ * was nothing left to resolve.
  */
 export function resolveFilePermission(
   granted: boolean,
@@ -186,7 +192,8 @@ export function resolveFilePermission(
   capabilities?: ('read' | 'write' | 'execute')[],
   duration?: PermissionDuration
 ) {
-  if (granted && path && capabilities && duration) {
+  const hasPending = approvalBridge.getSnapshot('file-permission') !== null;
+  if (hasPending && granted && path && capabilities && duration) {
     // Grant permission via permissionStore (which syncs to pathSafety)
     usePermissionStore.getState().grantPermission(path, capabilities, duration);
   }

@@ -24,6 +24,26 @@ vi.mock('./rpcClient', () => ({
   setPreRequestFlush: (...a: unknown[]) => setPreRequestFlushMock(...a),
 }));
 
+// P1-3d-1 — mock the local tool registry so this file's dispatch tests
+// (see "local tool dispatch (P1-3d-1)" below) exercise ONLY
+// createReverseToolInvoker.executeAnyTool's branch/fallback wiring, not any
+// real tool's execute() body. `localTools/index.test.ts` covers the real
+// registry (hasLocalTool/isLocalToolReadOnly/executeLocalTool contract)
+// against the actual show_widget/read_me/http_fetch/web_search
+// implementations — no existing test in THIS file exercises a Tier A tool
+// name via toolInvoker.executeAnyTool, so this mock has zero blast radius
+// on the rest of the suite.
+const { hasLocalToolMock, isLocalToolReadOnlyMock, executeLocalToolMock } = vi.hoisted(() => ({
+  hasLocalToolMock: vi.fn(),
+  isLocalToolReadOnlyMock: vi.fn(),
+  executeLocalToolMock: vi.fn(),
+}));
+vi.mock('./localTools', () => ({
+  hasLocalTool: (...a: unknown[]) => hasLocalToolMock(...a),
+  isLocalToolReadOnly: (...a: unknown[]) => isLocalToolReadOnlyMock(...a),
+  executeLocalTool: (...a: unknown[]) => executeLocalToolMock(...a),
+}));
+
 import {
   handleAgentRun,
   handleAgentAbort,
@@ -76,6 +96,10 @@ describe('agentLoopHost', () => {
     sendRequestMock.mockReset();
     sendRequestMock.mockResolvedValue('tool output');
     sendNotificationMock.mockReset();
+    hasLocalToolMock.mockReset();
+    hasLocalToolMock.mockReturnValue(false);
+    isLocalToolReadOnlyMock.mockReset();
+    executeLocalToolMock.mockReset();
   });
 
   describe('param validation', () => {
@@ -406,6 +430,76 @@ describe('agentLoopHost', () => {
       const lastBatch = deltaCalls[deltaCalls.length - 1][1] as { runId: string; frames: unknown[] };
       expect(lastBatch.runId).toBe('flush-me');
       expect(lastBatch.frames.length).toBeGreaterThan(0);
+    });
+  });
+
+  describe('local tool dispatch (P1-3d-1)', () => {
+    /** Runs `fn(toolInvoker)` inside the run's real agentRunContext scope (via runAgentLoopMock), returning fn's result. */
+    async function withToolInvoker<T>(fn: (toolInvoker: ReturnType<typeof getCurrentAgentRunContext>['toolInvoker']) => Promise<T>): Promise<T> {
+      let captured!: T;
+      runAgentLoopMock.mockImplementationOnce(async () => {
+        captured = await fn(getCurrentAgentRunContext().toolInvoker);
+        return { reason: 'completed' };
+      });
+      await handleAgentRun(baseParams());
+      return captured;
+    }
+
+    it('local registry hit runs locally and never calls tool.invoke', async () => {
+      hasLocalToolMock.mockReturnValue(true);
+      executeLocalToolMock.mockResolvedValue('local result');
+
+      const result = await withToolInvoker((toolInvoker) =>
+        toolInvoker.executeAnyTool('show_widget', { title: 't' }),
+      );
+
+      expect(result).toBe('local result');
+      expect(executeLocalToolMock).toHaveBeenCalledWith('show_widget', { title: 't' }, undefined, undefined);
+      expect(sendRequestMock).not.toHaveBeenCalledWith('tool.invoke', expect.anything());
+    });
+
+    it('local registry miss falls through to reverse tool.invoke, unchanged', async () => {
+      hasLocalToolMock.mockReturnValue(false);
+
+      const result = await withToolInvoker((toolInvoker) =>
+        toolInvoker.executeAnyTool('read_file', { path: '/tmp/x' }),
+      );
+
+      expect(result).toBe('tool output');
+      expect(executeLocalToolMock).not.toHaveBeenCalled();
+      expect(sendRequestMock).toHaveBeenCalledWith(
+        'tool.invoke',
+        expect.objectContaining({ toolName: 'read_file', input: { path: '/tmp/x' } }),
+      );
+    });
+
+    it('a read-only local tool that fails falls back to reverse tool.invoke (safe idempotent retry)', async () => {
+      hasLocalToolMock.mockReturnValue(true);
+      isLocalToolReadOnlyMock.mockReturnValue(true);
+      executeLocalToolMock.mockRejectedValue(new Error('local dispatch bug'));
+      sendRequestMock.mockResolvedValue('shell fallback result');
+
+      const result = await withToolInvoker((toolInvoker) => toolInvoker.executeAnyTool('http_fetch', { url: 'https://x' }));
+
+      expect(result).toBe('shell fallback result');
+      expect(sendRequestMock).toHaveBeenCalledWith(
+        'tool.invoke',
+        expect.objectContaining({ toolName: 'http_fetch' }),
+      );
+    });
+
+    it('a NON-read-only local tool that fails rethrows — no reverse fallback (no double execution)', async () => {
+      hasLocalToolMock.mockReturnValue(true);
+      isLocalToolReadOnlyMock.mockReturnValue(false);
+      executeLocalToolMock.mockRejectedValue(new Error('side-effect already committed'));
+
+      await expect(
+        withToolInvoker((toolInvoker) => toolInvoker.executeAnyTool('hypothetical_write_tool', {})),
+      ).rejects.toThrow('side-effect already committed');
+      expect(sendRequestMock).not.toHaveBeenCalledWith(
+        'tool.invoke',
+        expect.objectContaining({ toolName: 'hypothetical_write_tool' }),
+      );
     });
   });
 

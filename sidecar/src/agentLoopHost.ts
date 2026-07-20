@@ -48,6 +48,7 @@ import { enqueueUserInputWithId } from '@/core/agent/userInputQueue';
 import { applyPlanModeState } from '@/core/agent/planMode';
 import { TOOL_NAMES } from '@/core/tools/toolNames';
 import { toolResultToString } from '@/core/tools/toolResultToString';
+import { setSettingsReader } from '@/core/agent/ports/settingsReader';
 import { RpcError } from './protocol';
 import { sendRequest, sendNotification, setPreRequestFlush } from './rpcClient';
 import { agentRunContext, type AgentRunContext } from './agentRunContext';
@@ -55,6 +56,7 @@ import { createPortFrameCoalescer, type PortFrame } from './portFrameCoalescer';
 import { createFrameChatDelta, createFrameExecutionPort, createFrameScratchpadPort } from './portFrameSenders';
 import { createConversationRunMirror, type ConversationPatch } from './conversationRunMirror';
 import { seedSettingsMirrorIfEmpty, getSettingsMirrorReader, applySettingsSnapshot } from './settingsMirror';
+import { hasLocalTool, isLocalToolReadOnly, executeLocalTool } from './localTools';
 
 /** Sidecar-local declaration — never imported from shell-side code (same "src/ never runtime-imports sidecar/, and vice versa across this boundary" discipline `frameApplier.ts`/`subagentHost.ts` already document). */
 interface SerializableToolDefinition {
@@ -191,7 +193,32 @@ function createReverseToolInvoker(runId: string, initialTools: SerializableToolD
 
   return {
     getAllTools: () => toFullTools(cache),
-    executeAnyTool: async (name, input, _onConfirm, _onFilePerm, context) => {
+    executeAnyTool: async (name, input, _onConfirm, _onFilePerm, context, contextUsagePercent) => {
+      // P1-3d-1 (docs/2026-07-21-phase1-p3d-tool-migration-design.md §1) —
+      // local dispatch: a hit in the sidecar's local tool registry runs
+      // execute() in-process, skipping the tool.invoke round-trip entirely.
+      // See localTools/index.ts's module doc for exactly which tools are
+      // registered, why each is bundle-safe, and the readOnly/fallback
+      // discipline this branch relies on.
+      if (hasLocalTool(name)) {
+        try {
+          return await executeLocalTool(name, input, context as ToolExecutionContext | undefined, contextUsagePercent);
+        } catch (err) {
+          // A throw here means executeLocalTool's OWN dispatch layer failed
+          // (NOT a normal tool-level error — those are already caught
+          // inside executeLocalTool and returned as an error-string
+          // ToolResult, matching registry.ts's ToolRegistry.execute
+          // contract exactly). Every tool in the local registry today is
+          // Tier A / read-only (isLocalToolReadOnly(name) === true), so
+          // falling through to the reverse tool.invoke path below is a
+          // safe, idempotent retry — NOT a double-execution risk. A future
+          // side-effecting local tool MUST be registered with
+          // readOnly:false so this rethrows instead (see
+          // localTools/index.ts's module doc) — "committed once started",
+          // same discipline as agentLoopRunner.ts's RunSession.committed.
+          if (!isLocalToolReadOnly(name)) throw err;
+        }
+      }
       const result = (await sendRequest('tool.invoke', {
         runId,
         toolName: name,
@@ -238,6 +265,14 @@ export async function handleAgentRun(rawParams: unknown): Promise<unknown> {
   }
 
   seedSettingsMirrorIfEmpty(params.settingsSnapshot);
+  // P1-3d-1 — wire the bare settingsReader port getter (used directly by
+  // locally-executed Tier A tools, e.g. web_search — see
+  // localTools/index.ts's module doc) to the SAME live settings mirror
+  // agentLoop.ts's own injected settingsReader reads through. Idempotent
+  // and cheap to call every run; before this, nothing in the sidecar ever
+  // called setSettingsReader(), so that bare getter's default
+  // (shims/settingsReaderRun.ts) always threw.
+  setSettingsReader(getSettingsMirrorReader());
 
   const coalescer = createPortFrameCoalescer((frames) => {
     sendNotification('agent.delta', { runId, frames });

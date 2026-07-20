@@ -6,7 +6,8 @@ import { selectChatAdapter } from '../llm/selectChatAdapter';
 import { getToolInvoker, type ToolInvoker, type FilePermissionCallback } from './ports/toolInvoker';
 import type { ConfirmationInfo } from '../tools/commandSafety';
 import type { ToolDefinition } from '../../types';
-import { getEffectiveModel, getActiveApiKey, getActiveProvider, resolveAgentModel, providerRequiresApiKey } from '../../utils/settingsSelectors';
+import { getActiveApiKey, getActiveProvider, providerRequiresApiKey } from '../../utils/settingsSelectors';
+import { resolveEntryModel } from './resolveEntryModel';
 import { getSettingsReader, type SettingsReader } from './ports/settingsReader';
 import { getChatDelta } from './ports/chatDelta';
 import { getConversationReader } from './ports/conversationReader';
@@ -392,6 +393,20 @@ export interface AgentLoopOptions {
    *  the out-of-process runtime: the shell dispatch layer computes these (orchestrator stays
    *  shell-side) and injects; when absent, the loop computes them in-process exactly as before. */
   orchestration?: { route: RouteResult; systemPromptSections: PromptSection[] };
+  /**
+   * Override the loop's internally-generated `loopId` (normally
+   * `generateId()`, see the "Generate a unique loopId" block below).
+   * Injection point for the out-of-process runtime (P1-3B-3B): the shell
+   * dispatcher mints ONE id, uses it as both the wire `runId` AND this
+   * `loopId` (same "keyed by a shell-known id" trick `createExecutionWithId`
+   * uses for TaskExecution — see P1-3B-2-REPORT.md §2b) — so the shell's
+   * `RunSession.loopId` (used to key `setLoopContext`/`getLoopContext` for
+   * `delegate_to_agent`'s parent-step lookup) is known and registered
+   * BEFORE the sidecar's loop ever emits a `tool.invoke` carrying this same
+   * loopId in its context. Absent in-process (unchanged: a fresh
+   * `generateId()` every run).
+   */
+  loopId?: string;
 }
 
 /** Exit reason returned by runAgentLoop so callers (scheduler, trigger) can
@@ -534,8 +549,10 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
   const settingsForModel: typeof settings =
     baseModel === settings.activeModel ? settings : { ...settings, activeModel: baseModel };
 
-  // Generate a unique loopId for this agent loop - all messages in this loop share it
-  const loopId = generateId();
+  // Generate a unique loopId for this agent loop - all messages in this loop share it.
+  // Shell dispatch (P1-3B-3B) can override via options.loopId — see that
+  // field's doc comment above.
+  const loopId = options?.loopId ?? generateId();
 
   // Create EventRouter for this execution
   const eventRouter = createEventRouter({
@@ -623,18 +640,18 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
     conversationId,
   };
 
-  // Determine effective model — agent can override (with provider compatibility check)
-  let effectiveModelId = getEffectiveModel(settingsForModel);
-  if (route.type === 'agent' && route.definition?.model) {
-    effectiveModelId = resolveAgentModel(route.definition.model, settings);
-  }
+  // Determine effective model — agent can override (with provider compatibility check).
+  // P1-3B-3B: the pure formula moved to resolveEntryModel.ts (shared with
+  // entryOrchestration.ts's precomputeOrchestration and the shell
+  // dispatcher's buildAgentRunParams — single source, see that module's
+  // doc); setActiveModel's side effect stays uniquely here.
+  const { effectiveModelId, entryModelDeclared } = resolveEntryModel(route, settings, settingsForModel);
   // Set active model for per-model token calibration
   setActiveModel(effectiveModelId);
 
   // Tell tools whether this model can consume images. read_file uses it to
   // avoid emitting base64 image blocks to text-only models (which bloats
   // context and triggers a 400 on providers that only accept text content).
-  const entryModelDeclared = resolveModelDeclared(getActiveProvider(settingsForModel), effectiveModelId);
   toolContext.supportsVision = applyDeclaredCapabilities(
     resolveCapabilities(effectiveModelId),
     entryModelDeclared,
@@ -2129,9 +2146,18 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
             // fire-and-forget disk-append ran, there was never a `+1` to
             // offset, so skip the bump — otherwise the catalog would
             // transiently undercount until the next turn-end reindex.
+            // P1-3B-3B fix: in-process this call is synchronous, but the
+            // sidecar-run path shims it to an async reverse RPC
+            // (session.isMessageWrittenToDisk — see
+            // sidecar/src/shims/conversationStorageRun.ts). An un-awaited
+            // call there always resolved a truthy Promise, so
+            // skipCatalogBump was always `false` on the sidecar path
+            // regardless of the real answer. `await`ing a synchronous
+            // boolean is harmless (Promise.resolve(value) semantics), so
+            // this is safe for both paths.
             const { isMessageWrittenToDisk } = await import('../session/conversationStorage');
             chatDelta.deleteMessage(conversationId, assistantMsgId, {
-              skipCatalogBump: !isMessageWrittenToDisk(assistantMsgId),
+              skipCatalogBump: !(await isMessageWrittenToDisk(assistantMsgId)),
             });
           }
         }

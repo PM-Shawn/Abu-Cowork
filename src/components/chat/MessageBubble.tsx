@@ -10,7 +10,7 @@ import { usePreviewStore } from '@/stores/previewStore';
 import { useTodosStore } from '@/stores/todosStore';
 import { useLabsFlag } from '@/core/labs/resolve';
 import { LABS_TODOS_INBOX } from '@/core/labs/registry';
-import { runAgentLoop } from '@/core/agent/agentLoop';
+import { runAgentLoopDispatched } from '@/core/agent/agentLoopRunner';
 import { useI18n } from '@/i18n';
 import { getBaseName, loadLocalImage } from '@/utils/pathUtils';
 import { formatRelativeTime } from '@/utils/messageTime';
@@ -443,7 +443,7 @@ export default function MessageBubble({
     // Preserve image blocks from original message content
     const originalImages = getImageBlocks(message.content);
     setIsEditing(false);
-    // Delete this message and all subsequent messages, then runAgentLoop creates a fresh one
+    // Delete this message and all subsequent messages, then runAgentLoopDispatched creates a fresh one
     useChatStore.getState().deleteMessagesFrom(convId, message.id);
     // Re-attach the original routing prefix (@expert or /skill) so the
     // edited resend stays on the same agent / skill — otherwise the message
@@ -455,7 +455,7 @@ export default function MessageBubble({
       data: img.source.data,
       mediaType: img.source.media_type,
     }));
-    await runAgentLoop(convId, routedContent, imageAttachments.length > 0 ? { images: imageAttachments } : undefined);
+    await runAgentLoopDispatched(convId, routedContent, imageAttachments.length > 0 ? { images: imageAttachments } : undefined);
   };
 
   const handleDelete = () => {
@@ -519,7 +519,7 @@ export default function MessageBubble({
         data: img.source.data,
         mediaType: img.source.media_type,
       }));
-      await runAgentLoop(convId, routedContent, imageAttachments.length > 0 ? { images: imageAttachments } : undefined);
+      await runAgentLoopDispatched(convId, routedContent, imageAttachments.length > 0 ? { images: imageAttachments } : undefined);
     }
   };
 

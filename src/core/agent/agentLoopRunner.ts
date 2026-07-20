@@ -1,37 +1,49 @@
 /**
  * Shell-side channel handler module for the main agent loop's sidecar run —
- * the main-loop twin of `subagentRunner.ts` (P1-3a). This batch (P1-3b-2,
- * design doc §5 "3b-2 信道件") is CHANNEL PLUMBING ONLY: run-session
- * registry, reverse-channel handlers, shell→sidecar push emitters, and the
- * shell-side LoopContext/EventRouter construction seam. NO `agent.run`
- * dispatch, no selector, no caller changes — that's 3b-3 (design doc §5
- * "3b-3 入驻"). Every export here is DORMANT: nothing calls
- * `ensureHandlersRegistered()` yet (no production code path constructs a
- * `RunSession` this batch), so this module has zero effect on any existing
- * run until 3b-3 wires it up.
+ * the main-loop twin of `subagentRunner.ts` (P1-3a). Built up in two
+ * batches: P1-3b-2 (design doc §5 "3b-2 信道件") landed the channel
+ * plumbing — run-session registry, reverse-channel handlers, shell→sidecar
+ * push emitters, and the shell-side LoopContext/EventRouter construction
+ * seam, all dormant until wired to a dispatch path. P1-3B-3B (this batch,
+ * design doc §5 "3b-3B") adds the LIVE dispatch entrypoint
+ * (`runAgentLoopDispatched`, a drop-in `runAgentLoop` replacement — see its
+ * own doc for the concurrency-guard/fallback discipline), `buildAgentRunParams`,
+ * the main-loop `tool.invoke` handler (routed through `toolInvokeRouter.ts`
+ * to avoid colliding with subagentRunner.ts's own `tool.invoke` handler),
+ * the `state.execPatch`/`skillHooks.clearAll` emitters/handlers that close
+ * two P1-3B-3A escalations, and the 9-call-site caller switch. Every export
+ * here is now LIVE once the sidecar is `'running'`.
  *
  * See docs/2026-07-20-phase1-p3b-loop-entry-design.md §4 for the wire
  * protocol this implements (the sidecar→shell half — `agent.delta` /
  * `approval.drain` / `plan.clear` / `caps.record` / `shell.notifyTask` /
- * `cu.setState` / `native.invoke` / `tool.list` /
- * `session.isMessageWrittenToDisk`) and the shell→sidecar push half
- * (`state.settings` / `state.convPatch` / `state.planMode`).
+ * `cu.setState` / `native.invoke` / `tool.list` / `tool.invoke` /
+ * `session.isMessageWrittenToDisk` / `skillHooks.clearAll`) and the
+ * shell→sidecar push half (`agent.run` / `agent.abort` / `agent.enqueueInput`
+ * / `state.settings` / `state.convPatch` / `state.execPatch` /
+ * `state.planMode`).
  */
 import type { ConfirmationInfo, FilePermissionCallback } from '../tools/registry';
+import type { ImageAttachment, ToolExecutionContext, Conversation } from '../../types';
 import {
   onSidecarNotification,
   onSidecarRequest,
   notifySidecar,
+  getSidecarStatus,
+  request as sidecarRequest,
   SidecarRequestError,
 } from '../sidecar/sidecarManager';
 import { applyDeltaFrames, type PortFrame } from './frameApplier';
 import { getExecutionPort } from './ports/executionPort';
 import { getChatDelta } from './ports/chatDelta';
+import { getConversationReader } from './ports/conversationReader';
 import { getScratchpadPort } from './ports/scratchpadPort';
 import { getCapsPort } from './ports/capsPort';
+import { getAbortRegistry } from './ports/abortRegistry';
 import { getToolInvoker } from './ports/toolInvoker';
 import { getSettingsReader } from './ports/settingsReader';
 import { toSerializableTool } from './subagentRunner';
+import { registerToolInvokeSource, ensureToolInvokeRouterRegistered } from './toolInvokeRouter';
 import { createEventRouter, type EventRouter } from './eventRouter';
 import {
   requestCommandConfirmation,
@@ -43,7 +55,7 @@ import {
   drainWorkspaceRequest,
   drainUserQuestions,
 } from './permissionBridge';
-import { clearPlanMode, onPlanModeChange } from './planMode';
+import { clearPlanMode, onPlanModeChange, getPlanMode } from './planMode';
 import {
   setComputerUseActive,
   setCurrentAction,
@@ -51,12 +63,28 @@ import {
   pauseComputerUseStatus,
   setSessionWindowHidden,
 } from './computerUseStatus';
-import { setComputerUseBatchMode, setSkipAutoScreenshot } from '../tools/builtins';
+import { setComputerUseBatchMode, setSkipAutoScreenshot, clearAllSkillHooks } from '../tools/builtins';
 import { notifyTaskCompleted, notifyTaskError } from '../../utils/notifications';
-import { useSettingsStore } from '../../stores/settingsStore';
+import { useSettingsStore, type SettingsState } from '../../stores/settingsStore';
 import { useChatStore } from '../../stores/chatStore';
+import { useTaskExecutionStore } from '../../stores/taskExecutionStore';
+import type { PlannedStep } from '../../types/execution';
 import { getLocale } from '../../i18n';
 import { createLogger } from '../logging/logger';
+import {
+  runAgentLoop,
+  isInteractiveDesktop,
+  type AgentLoopOptions,
+  type AgentLoopResult,
+} from './agentLoop';
+import { precomputeOrchestration } from './entryOrchestration';
+import type { RouteResult, IMContext } from './orchestrator';
+import type { PromptSection } from '../llm/promptSections';
+import type { ConversationMeta } from '../session/conversationStorage';
+import { resolveEntryModel } from './resolveEntryModel';
+import { getActiveApiKey, getActiveProvider } from '../../utils/settingsSelectors';
+import { resolveEffectiveLlmCreds } from '../enterprise/llm-resolver';
+import { enqueueUserInput } from './userInputQueue';
 
 const logger = createLogger('agent-loop-runner');
 
@@ -83,14 +111,50 @@ export interface RunSession {
   toolCallToStepId: Map<string, string>;
   /** Lazily constructed by createShellEventRouterForRun/installShellLoopContext — cached so a run's EventRouter identity is stable across calls. */
   eventRouter?: EventRouter;
+  /**
+   * Populated by `registerRunSession` (the map key, mirrored onto the
+   * session object itself) — P1-3B-3B's concurrency guard and dispatch
+   * fallback discipline need to go from "a session for conversationId X" to
+   * "its runId" without a second registry. Optional so pre-3B-3B test
+   * fixtures that build a `RunSession` literal without this field keep
+   * compiling — `registerRunSession` always sets it regardless of what the
+   * caller passed.
+   */
+  runId?: string;
+  /**
+   * Flips `true` the instant EITHER the first `tool.invoke` for this run
+   * arrives OR the first `agent.delta` frame is applied — P1-3B-3B's
+   * fallback discipline (mirrors subagentRunner.ts's
+   * `firstToolInvokeArrived`, widened to cover the delta-frame trigger too,
+   * since a main-loop run can stream text/thinking frames well before its
+   * first tool call — those are ALSO observable side effects already
+   * committed to the shell's real stores, so a transport failure after
+   * either must surface as an error, never re-run).
+   */
+  committed?: boolean;
+  /** Populated once at run start by `installShellLoopContext` — the exact
+   *  same `shellAbortController` also registered into the real
+   *  `AbortRegistry` for this conversationId (§ concurrency-guard/abort
+   *  wiring in `runAgentLoopDispatched`), so removing this listener on
+   *  settle avoids leaking a dangling `abort` handler. */
+  onShellAbort?: () => void;
 }
 
 const sessions = new Map<string, RunSession>();
 
 /** Register a run session — exported for 3b-3 (the `agent.run` dispatch path) and this batch's own tests. Idempotent overwrite (a second register for the same runId replaces the first). Installs the push emitters on the FIRST registration. */
 export function registerRunSession(runId: string, session: RunSession): void {
+  session.runId = runId;
   sessions.set(runId, session);
   installPushEmitters();
+}
+
+/** The live session for a conversationId, or undefined — P1-3B-3B's concurrency guard (`runAgentLoopDispatched`) and the `state.execPatch` emitter both need this conversationId→runId lookup. Linear scan — the sessions map is bounded by concurrently-running conversations (small in practice, same discipline as `pushConvPatchesForActiveSessions` below). */
+export function findRunSessionForConversation(conversationId: string): RunSession | undefined {
+  for (const session of sessions.values()) {
+    if (session.conversationId === conversationId) return session;
+  }
+  return undefined;
 }
 
 /** Unregister a run session. Uninstalls the push emitters once the LAST session is gone. */
@@ -122,6 +186,10 @@ function handleAgentDelta(rawParams: unknown): void {
   if (!params || typeof params.runId !== 'string' || !Array.isArray(params.frames)) return;
   const session = sessions.get(params.runId);
   if (!session) return; // unknown/already-finished runId — silent drop
+  // P1-3B-3B fallback discipline: the first frame observed for this run is
+  // an already-committed, observable side effect (text/thinking streamed to
+  // the real chatStore) — see RunSession.committed's doc.
+  if (params.frames.length > 0) session.committed = true;
   void applyDeltaFrames(params.frames as PortFrame[]).catch((err: unknown) => {
     logger.warn('applyDeltaFrames threw', { runId: params.runId, error: err instanceof Error ? err.message : String(err) });
   });
@@ -269,6 +337,80 @@ async function handleIsMessageWrittenToDisk(rawParams: unknown): Promise<unknown
   return isMessageWrittenToDisk(params.messageId);
 }
 
+/**
+ * `tool.invoke` (REQUEST) for a MAIN-LOOP run — the main-loop twin of
+ * subagentRunner.ts's `handleToolInvoke`. Registered as a named source with
+ * `toolInvokeRouter.ts`'s shared registrar (NEVER directly via
+ * `onSidecarRequest` — `onSidecarRequest` allows exactly one handler per
+ * method, and subagentRunner.ts also needs `tool.invoke` for SUBAGENT runs;
+ * see toolInvokeRouter.ts's doc for the full "why" and the collision this
+ * avoids). Executes via the REAL in-process `ToolInvoker` (registry.ts,
+ * unmoved — pathSafety/permissions/approvals all run here exactly as they
+ * do for an in-process main-loop run), threading the session's confirm/
+ * file-permission callbacks (same default-fallback resolution
+ * `installShellLoopContext` uses, kept in sync deliberately).
+ *
+ * `toolCallToStepId` is deliberately NOT populated from the wire here — the
+ * sidecar's `tool.invoke` request carries no explicit toolCallId→stepId
+ * mapping (traced: the `addStep` frame carries the step's own id but not
+ * the originating toolCallId; `context.toolCallId` travels but has no
+ * matching stepId to pair it with). The primary consumer
+ * (`delegate_to_agent`, agentTools.ts) already has a fallback for exactly
+ * this case — `eventRouter.getCurrentStepId(loopId)`, which reads the REAL
+ * shell-side ExecutionPort. By the time this handler runs, the current
+ * tool's `addStep` frame has ALREADY been applied (frames flush-before-
+ * request — design doc §3's chatDelta/executionPort row), so the fallback
+ * resolves correctly without an explicit wire field. See
+ * P1-3B-3B-REPORT.md's "toolCallToStepId threading" section for the full
+ * trace.
+ */
+async function handleMainLoopToolInvoke(rawParams: unknown): Promise<unknown> {
+  const params = rawParams as {
+    runId?: unknown;
+    toolName?: unknown;
+    input?: unknown;
+    context?: unknown;
+  } | null;
+
+  if (!params || typeof params.runId !== 'string' || typeof params.toolName !== 'string') {
+    throw new SidecarRequestError(-32602, 'Invalid tool.invoke params: runId and toolName must be strings');
+  }
+
+  const session = sessions.get(params.runId);
+  if (!session) {
+    throw new SidecarRequestError(-32000, `Unknown agent-loop runId: ${params.runId}`);
+  }
+  // P1-3B-3B fallback discipline — see RunSession.committed's doc.
+  session.committed = true;
+
+  const invoker = getToolInvoker(); // shell-side in-process default — registry-backed, same as any in-process main-loop run.
+  return await invoker.executeAnyTool(
+    params.toolName,
+    (params.input as Record<string, unknown>) ?? {},
+    session.options.requestCommandConfirmation ?? requestCommandConfirmation,
+    session.options.requestFilePermission ?? requestFilePermission,
+    params.context as ToolExecutionContext | undefined,
+  );
+}
+
+/**
+ * `skillHooks.clearAll` (NOTIFICATION) → {runId} → the real
+ * `clearAllSkillHooks()`. Closes a P1-3B-3A escalation
+ * (`sidecar/src/shims/builtinsRun.ts`'s doc comment / P1-3B-3A-REPORT.md
+ * escalation #4): `builtinsRun.ts` already sends this notification on every
+ * sidecar-run loop end, but no shell-side handler existed to receive it —
+ * skill-scoped PreToolUse/PostToolUse hooks activated during a sidecar-run
+ * main loop (via `use_skill`, which — like every tool — always executes
+ * shell-side) leaked across turns until this. `runId` is informational only
+ * (`skillHookCleanups` is a single GLOBAL map, not per-run — same
+ * discipline as `plan.clear`/`approval.drain`).
+ */
+function handleSkillHooksClearAll(rawParams: unknown): void {
+  const params = rawParams as { runId?: unknown } | null;
+  if (!params || typeof params.runId !== 'string') return;
+  clearAllSkillHooks();
+}
+
 let handlersRegistered = false;
 
 /** Idempotent — registers every reverse-channel handler exactly once, no matter how many times it's called. Mirrors subagentRunner.ts's ensureHandlersRegistered() shape. */
@@ -276,12 +418,16 @@ export function ensureHandlersRegistered(): void {
   if (handlersRegistered) return;
   handlersRegistered = true;
 
+  registerToolInvokeSource('agentLoop', { has: (runId) => sessions.has(runId), handle: handleMainLoopToolInvoke });
+  ensureToolInvokeRouterRegistered();
+
   onSidecarNotification('agent.delta', handleAgentDelta);
   onSidecarNotification('approval.drain', handleApprovalDrain);
   onSidecarNotification('plan.clear', handlePlanClear);
   onSidecarNotification('caps.record', handleCapsRecord);
   onSidecarNotification('shell.notifyTask', handleShellNotifyTask);
   onSidecarNotification('cu.setState', handleCuSetState);
+  onSidecarNotification('skillHooks.clearAll', handleSkillHooksClearAll);
 
   onSidecarRequest('native.invoke', handleNativeInvoke);
   onSidecarRequest('tool.list', handleToolList);
@@ -379,11 +525,54 @@ function pushConvPatchesForActiveSessions(): void {
     if (!patch) continue;
 
     lastPushedConvSnapshot.set(session.conversationId, next);
-    notifySidecar('state.convPatch', { conversationId: session.conversationId, patch });
+    // P1-3B-3B bug fix: agentLoopHost.ts's handleStateConvPatch (P1-3B-3A)
+    // keys its lookup by `runId` (`activeRuns.get(rawParams.runId)`), NOT
+    // `conversationId` — this emitter (built P1-3b-2, before any dispatch
+    // path existed to catch the mismatch in a real run) was sending
+    // `{conversationId, patch}`, which `handleStateConvPatch`'s own
+    // `typeof rawParams.runId !== 'string'` guard would silently drop on
+    // EVERY push. `session.runId` (populated by registerRunSession) is the
+    // correct key.
+    notifySidecar('state.convPatch', { runId: session.runId, patch });
   }
 }
 
 let planModeUnsub: (() => void) | undefined;
+
+/**
+ * `state.execPatch` emitter — P1-3B-3A §6 / P1-3B-2-REPORT.md §2b's
+ * escalation #1 (the sidecar's local execution mirror can never observe
+ * `report_plan`'s `plannedSteps` write, since `memoryTools.ts` calls
+ * `useTaskExecutionStore.getState().setPlannedSteps(exec.id, ...)` DIRECTLY
+ * on the real store — bypassing `ExecutionPort`, hence bypassing every
+ * frame — entirely shell-side). Watches `taskExecutionStore` for
+ * `plannedSteps` changes on any ACTIVE session's conversation, diffed by
+ * reference (the store replaces the array on write, never mutates it in
+ * place — verified against `taskExecutionStore.ts`'s `setPlannedSteps`
+ * action) so this only fires on an actual change, not every unrelated store
+ * update. Keyed by `runId` (not `conversationId` alone) since the sidecar's
+ * `activeRuns` map — `handleStateExecPatch`'s lookup target — is keyed by
+ * `runId`.
+ */
+let execUnsub: (() => void) | undefined;
+const lastPushedPlannedSteps = new Map<string, PlannedStep[]>();
+
+function pushExecPatchesForActiveSessions(): void {
+  const seenConversationIds = new Set<string>();
+  for (const session of sessions.values()) {
+    if (seenConversationIds.has(session.conversationId)) continue;
+    seenConversationIds.add(session.conversationId);
+    if (!session.runId) continue;
+
+    const exec = useTaskExecutionStore.getState().getExecutionByConversationId(session.conversationId);
+    if (!exec) continue;
+    const plannedSteps = exec.plannedSteps;
+    if (lastPushedPlannedSteps.get(session.conversationId) === plannedSteps) continue; // unchanged (reference-equal)
+
+    lastPushedPlannedSteps.set(session.conversationId, plannedSteps);
+    notifySidecar('state.execPatch', { runId: session.runId, plannedSteps });
+  }
+}
 
 let emittersInstalled = false;
 
@@ -397,6 +586,9 @@ export function installPushEmitters(): void {
   });
   chatUnsub = useChatStore.subscribe(() => {
     pushConvPatchesForActiveSessions();
+  });
+  execUnsub = useTaskExecutionStore.subscribe(() => {
+    pushExecPatchesForActiveSessions();
   });
   planModeUnsub = onPlanModeChange((conversationId, mode) => {
     notifySidecar('state.planMode', { conversationId, mode });
@@ -415,6 +607,9 @@ export function uninstallPushEmitters(): void {
   chatUnsub?.();
   chatUnsub = undefined;
   lastPushedConvSnapshot.clear();
+  execUnsub?.();
+  execUnsub = undefined;
+  lastPushedPlannedSteps.clear();
   planModeUnsub?.();
   planModeUnsub = undefined;
 }
@@ -480,4 +675,316 @@ export function removeShellLoopContext(runId: string): void {
   const session = sessions.get(runId);
   if (!session) return;
   clearLoopContext(session.loopId);
+}
+
+// ── Dispatch entrypoint (P1-3B-3B) ───────────────────────────────────────
+
+/**
+ * Wire params for `agent.run` — mirrors `sidecar/src/agentLoopHost.ts`'s
+ * `AgentRunParams` field-for-field. NEVER imported from there — `src/` must
+ * never import from `sidecar/` (same discipline `frameApplier.ts`'s
+ * independently-declared `PortFrame` type documents, P1-3b-2). Kept in sync
+ * by hand; `handleAgentRun`'s own `parseAgentRunParams` validates the wire
+ * shape defensively regardless of what this side sends.
+ */
+interface AgentRunParams {
+  runId: string;
+  conversationId: string;
+  userMessage: string;
+  options: { images?: ImageAttachment[]; blockedTools?: string[]; imContext?: IMContext };
+  orchestration: { route: RouteResult; systemPromptSections: PromptSection[] };
+  conversationSnapshot: Conversation;
+  indexEntrySnapshot?: ConversationMeta;
+  settingsSnapshot: SettingsState;
+  capsSnapshot?: { providerId: string; modelId: string; maxOutputTokens?: number; contextWindow?: number; isReasoningModel?: boolean };
+  resolvedCreds: { apiKey: string; baseUrl: string | undefined; forceOpenAiCompatible: boolean };
+  toolList: ReturnType<typeof toSerializableTool>[];
+  planMode?: 'off' | 'planning' | 'approved';
+  locale: string;
+}
+
+/** Defensive validation of the `agent.run` response before trusting it as an `AgentLoopResult` — same discipline as subagentRunner.ts's `isSerializableSubagentResult`. A malformed response is treated identically to any other transport failure by the caller (same committed-flag fallback decision). */
+function isAgentLoopResult(v: unknown): v is AgentLoopResult {
+  return typeof v === 'object' && v !== null && typeof (v as Record<string, unknown>).reason === 'string';
+}
+
+let runIdCounter = 0;
+function generateRunId(): string {
+  runIdCounter += 1;
+  return `agl-${Date.now().toString(36)}-${runIdCounter.toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+/**
+ * Replicates `runAgentLoop`'s own entry-sequence `settings`/
+ * `settingsForModel` derivation EXACTLY (agentLoop.ts: `settings =
+ * settingsReader.getSnapshot()`; `settingsForModel` = the per-conversation
+ * model-pin overlay: `pinnedConv?.model ?? indexEntry?.model ??
+ * settings.activeModel`) — read side by side with agentLoop.ts, not
+ * guessed. Needed shell-side because `resolveEntryModel`/`resolveEffective
+ * LlmCreds`/`precomputeOrchestration` all take this pinned-model-aware
+ * snapshot, not the raw global settings.
+ */
+function resolveEntrySettings(conversationId: string): { settings: SettingsState; settingsForModel: SettingsState } {
+  const settings = getSettingsReader().getSnapshot();
+  const pinnedConv = getConversationReader().getConversation(conversationId);
+  const baseModel =
+    pinnedConv?.model ??
+    getConversationReader().getIndexEntry(conversationId)?.model ??
+    settings.activeModel;
+  const settingsForModel: SettingsState =
+    baseModel === settings.activeModel ? settings : { ...settings, activeModel: baseModel };
+  return { settings, settingsForModel };
+}
+
+/**
+ * Build the `agent.run` wire params — the shell-side "frozen snapshot"
+ * projection of everything `runAgentLoop` would otherwise resolve
+ * in-process (design doc §4's `AgentRunParams` contract,
+ * P1-3B-3A-REPORT.md §4). Every field is resolved ONCE here, at dispatch
+ * time (anti-bleed discipline — same principle as subagentRunner.ts's
+ * `buildSubagentRunParams`) — frozen for the whole run.
+ *
+ * Throws if `resolveEffectiveLlmCreds` throws (enterprise gateway
+ * unavailable — `EnterpriseLlmUnavailableError`) or if the conversation
+ * record is missing — the caller (`runAgentLoopDispatched`) treats either
+ * as a pre-dispatch failure and falls back to `runAgentLoop` in-process,
+ * which hits the identical real error path itself rather than this
+ * function duplicating its error-shaping logic (same discipline as
+ * subagentRunner.ts's `buildSubagentRunParams`).
+ *
+ * Deliberately does NOT replicate the loop's OWN "no API key configured"
+ * early-return gate (`providerRequiresApiKey(settingsForModel) &&
+ * !getActiveApiKey(settingsForModel)`, agentLoop.ts's entry) — that gate
+ * has no THROWING failure mode (`resolveEffectiveLlmCreds` returns an
+ * empty-string `apiKey` unchanged in personal mode; it only throws for the
+ * enterprise-gateway-unavailable case). Dispatching normally and letting
+ * the SIDECAR's own unchanged `runAgentLoop` hit that exact gate (writing
+ * the identical "configure an API key" conversation turn, via the SAME
+ * settings mirror this function's `settingsSnapshot` seeds) is correct and
+ * avoids a third hand-copy of that specific check.
+ */
+async function buildAgentRunParams(
+  runId: string,
+  conversationId: string,
+  userMessage: string,
+  options: AgentLoopOptions | undefined,
+): Promise<AgentRunParams> {
+  const conversationSnapshot = getConversationReader().getConversation(conversationId);
+  if (!conversationSnapshot) {
+    throw new Error(`buildAgentRunParams: no conversation record for "${conversationId}"`);
+  }
+  const indexEntrySnapshot = getConversationReader().getIndexEntry(conversationId);
+
+  const { settings, settingsForModel } = resolveEntrySettings(conversationId);
+
+  // Single source with runAgentLoop's own entry derivation AND
+  // entryOrchestration.ts's precomputeOrchestration — see
+  // resolveEntryModel.ts's doc for why this is the third (not a fourth,
+  // hand-copied) caller of the same pure formula.
+  const orchestration = await precomputeOrchestration(conversationId, userMessage, options?.imContext, { settings, settingsForModel });
+  const { effectiveModelId, provider } = resolveEntryModel(orchestration.route, settings, settingsForModel);
+
+  // May throw (EnterpriseLlmUnavailableError) — propagates to the caller,
+  // see this function's doc.
+  const resolvedCreds = resolveEffectiveLlmCreds(
+    getActiveApiKey(settingsForModel),
+    getActiveProvider(settingsForModel)?.baseUrl || undefined,
+  );
+
+  let capsSnapshot: AgentRunParams['capsSnapshot'];
+  if (provider) {
+    const discovered = getCapsPort().get(provider.id, effectiveModelId);
+    if (discovered) {
+      capsSnapshot = {
+        providerId: provider.id,
+        modelId: effectiveModelId,
+        maxOutputTokens: discovered.maxOutputTokens,
+        contextWindow: discovered.contextWindow,
+        isReasoningModel: discovered.isReasoningModel,
+      };
+    }
+  }
+
+  const toolList = getToolInvoker().getAllTools().map(toSerializableTool);
+
+  return {
+    runId,
+    conversationId,
+    userMessage,
+    options: { images: options?.images, blockedTools: options?.blockedTools, imContext: options?.imContext },
+    orchestration,
+    conversationSnapshot: conversationSnapshot as Conversation,
+    indexEntrySnapshot: indexEntrySnapshot as ConversationMeta | undefined,
+    settingsSnapshot: settings,
+    capsSnapshot,
+    resolvedCreds,
+    toolList,
+    planMode: getPlanMode(conversationId),
+    locale: getLocale(),
+  };
+}
+
+/**
+ * `runAgentLoopDispatched` — the drop-in dispatch entrypoint. IDENTICAL
+ * signature to `runAgentLoop` (design doc §4: "selectAgentLoopRunner only
+ * `'running'` walks sidecar... 8 caller-side call sites all switch line" —
+ * the 4th reuse of the `selectChatAdapter`/`runSubagent` zero-risk-switch
+ * shape). Every existing caller of `runAgentLoop` switches to this.
+ *
+ * - sidecar NOT `'running'` → `runAgentLoop` in-process, unchanged.
+ * - sidecar `'running'` → concurrency guard (see below), then dispatch
+ *   `agent.run`, then the fallback/re-run discipline (see below).
+ *
+ * ## Concurrency guard
+ *
+ * `runAgentLoop`'s own in-process guard (`hasAbortController(conversationId)`
+ * + `enqueueUserInput`) lives INSIDE `agentLoop.ts`, which for a
+ * sidecar-dispatched run executes sidecar-side — but the sidecar's
+ * `agentLoopHost.ts` gives each `agent.run` REQUEST its OWN fresh
+ * `abortRegistry` (a `Map` scoped to that ONE `handleAgentRun` call, not the
+ * conversation), so a SECOND `agent.run` dispatch for the same
+ * conversationId would never trip that guard — it would just start a
+ * second, fully independent sidecar-side loop racing the first. This
+ * function replicates the guard SHELL-SIDE across BOTH venues a "loop is
+ * already live for this conversation" can mean:
+ *   1. An existing sidecar RunSession (this module's own `sessions`
+ *      registry) → stage the message into that run via the NEW
+ *      `agent.enqueueInput` notification (sidecar applies it to its own
+ *      `userInputQueue.ts`, unchanged/sidecar-resident — see
+ *      `agentLoopHost.ts`'s `handleAgentEnqueueInput`).
+ *   2. An existing IN-PROCESS run for this conversationId (the real
+ *      `AbortRegistry`, e.g. the sidecar came up mid-run, or a narrow race
+ *      between the two paths) → stage directly via the real
+ *      `enqueueUserInput` (same call the in-process guard itself makes).
+ * Same staging preconditions as the in-process guard: interactive-desktop
+ * only, non-empty trimmed text, no images (an image/empty send falls
+ * through to a normal dispatch — "silently losing an image is worse than
+ * the rare double-loop race", same acceptance the in-process guard's own
+ * comment documents).
+ *
+ * ## Fallback / re-run discipline
+ *
+ * A `agent.run` dispatch can fail two structurally different ways (mirrors
+ * subagentRunner.ts's `runSubagent` exactly):
+ *   1. Before the run is "committed" (`RunSession.committed` — flipped on
+ *      the first `tool.invoke` OR the first `agent.delta` frame applied) →
+ *      nothing observable has happened yet → safe to retry the WHOLE run
+ *      in-process via `runAgentLoop`.
+ *   2. After the run is committed → real side effects (a tool ran, or text
+ *      already streamed into the visible transcript) may have occurred →
+ *      surfaces as `{reason:'error', error:...}` instead. NO rerun (would
+ *      double-execute tool side effects / duplicate streamed text).
+ * `buildAgentRunParams` itself failing (thrown before ANY dispatch — e.g.
+ * `EnterpriseLlmUnavailableError`, or a missing conversation record) is
+ * ALSO pre-commit by construction — same in-process fallback.
+ */
+export async function runAgentLoopDispatched(
+  conversationId: string,
+  userMessage: string,
+  options?: AgentLoopOptions,
+): Promise<AgentLoopResult> {
+  if (getSidecarStatus() !== 'running') {
+    return runAgentLoop(conversationId, userMessage, options);
+  }
+
+  ensureHandlersRegistered();
+
+  // ── Concurrency guard — see doc above for the two-venue rationale.
+  {
+    const runningConv = getConversationReader().getConversation(conversationId);
+    const interactive = isInteractiveDesktop(options, runningConv);
+    const stageable = userMessage.trim().length > 0 && !(options?.images?.length);
+    if (interactive && stageable) {
+      const runningSession = findRunSessionForConversation(conversationId);
+      if (runningSession?.runId) {
+        notifySidecar('agent.enqueueInput', { runId: runningSession.runId, userMessage });
+        return { reason: 'enqueued' };
+      }
+      if (runningConv?.status === 'running' && getAbortRegistry().hasAbortController(conversationId)) {
+        // A live IN-PROCESS run for this conversation — stage into ITS
+        // queue via the same real function the in-process guard itself
+        // calls (userInputQueue.ts, unchanged).
+        enqueueUserInput(conversationId, userMessage);
+        return { reason: 'enqueued' };
+      }
+    }
+  }
+
+  const runId = generateRunId();
+  logger.debug('agent-loop path selected', { path: 'sidecar', runId, conversationId });
+
+  let params: AgentRunParams;
+  try {
+    params = await buildAgentRunParams(runId, conversationId, userMessage, options);
+  } catch (err) {
+    // Failed before any dispatch — pre-commit by construction (see doc).
+    logger.warn('agent-loop dispatch params build failed — running in-process', {
+      runId,
+      conversationId,
+      error: err instanceof Error ? err.message : String(err),
+    });
+    return runAgentLoop(conversationId, userMessage, options);
+  }
+
+  // ── Shell-side session + abort wiring ────────────────────────────────
+  // clearAbortController first (mirrors agentLoop.ts's own entry: "Force-
+  // clear any stale controller first to avoid inheriting aborted state from
+  // a previous run"), then get-or-create — this is the SAME controller the
+  // UI's existing Stop button already targets via the real AbortRegistry
+  // (chatStore.ts's `abortControllers` map), so the Stop button needs ZERO
+  // changes (design doc §3's abortRegistry row) — its `.abort()` call fires
+  // the listener below, which forwards to the sidecar.
+  const abortRegistry = getAbortRegistry();
+  abortRegistry.clearAbortController(conversationId);
+  const shellAbortController = abortRegistry.getAbortController(conversationId);
+
+  const session: RunSession = {
+    conversationId,
+    loopId: runId, // same id as runId by convention — see agentLoop.ts's AgentLoopOptions.loopId doc.
+    options: {
+      requestCommandConfirmation: options?.commandConfirmCallback,
+      requestFilePermission: options?.filePermissionCallback,
+    },
+    shellAbortController,
+    toolCallToStepId: new Map(),
+    committed: false,
+  };
+
+  const onShellAbort = (): void => {
+    notifySidecar('agent.abort', { runId });
+  };
+  session.onShellAbort = onShellAbort;
+  shellAbortController.signal.addEventListener('abort', onShellAbort, { once: true });
+
+  registerRunSession(runId, session);
+  installShellLoopContext(runId, session);
+
+  try {
+    const raw = await sidecarRequest('agent.run', params, 0);
+    if (!isAgentLoopResult(raw)) {
+      throw new Error('agent.run response did not match the expected AgentLoopResult shape');
+    }
+    return raw;
+  } catch (err) {
+    if (!session.committed) {
+      logger.warn('agent-loop transport failed before commit — retrying in-process', {
+        runId,
+        conversationId,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      return runAgentLoop(conversationId, userMessage, options);
+    }
+    logger.warn('agent-loop transport failed after commit — surfacing error, no rerun', {
+      runId,
+      conversationId,
+      error: err instanceof Error ? err.message : String(err),
+    });
+    const message = err instanceof Error ? err.message : String(err);
+    return { reason: 'error', error: message };
+  } finally {
+    removeShellLoopContext(runId);
+    unregisterRunSession(runId);
+    shellAbortController.signal.removeEventListener('abort', onShellAbort);
+    abortRegistry.clearAbortController(conversationId);
+  }
 }

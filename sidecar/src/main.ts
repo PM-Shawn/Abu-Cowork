@@ -55,6 +55,11 @@
  *     `llm.abort`)
  *   - `agent.abort` → P1-3B-3A: abort one in-flight `agent.run` call by
  *     runId (idempotent, unknown runId silent no-op, same discipline)
+ *   - `agent.enqueueInput` → P1-3B-3B: `{runId, userMessage}` — cross-process
+ *     concurrency guard: the shell dispatcher detected a second dispatch for
+ *     an already-running conversation and stages the message into THAT
+ *     run's userInputQueue instead of starting a second agent.run. Unknown
+ *     runId silent drop.
  *   - `state.convPatch` → P1-3B-3A: `{runId, patch}` — scalar-field patch
  *     (workspacePath/title/activeSkills/model) applied to that run's
  *     conversation read-mirror. Unknown runId silent drop.
@@ -113,6 +118,7 @@ import { handleSubagentRun, handleSubagentAbort, shutdownAllSubagentRuns } from 
 import {
   handleAgentRun,
   handleAgentAbort,
+  handleAgentEnqueueInput,
   handleStateConvPatch,
   handleStateExecPatch,
   handleStateSettings,
@@ -306,6 +312,18 @@ function handleMessage(raw: string): void {
     // flight, plus receives state.* push notifications for this or other
     // runs the whole time.
     runAsyncRequest(id, () => handleAgentRun(params));
+    return;
+  }
+
+  if (method === 'agent.enqueueInput') {
+    // Notification only — P1-3B-3B's cross-process concurrency guard: stage
+    // a message into an ALREADY-RUNNING run's userInputQueue instead of the
+    // shell dispatching a second agent.run for the same conversationId.
+    try {
+      handleAgentEnqueueInput(params);
+    } catch (err) {
+      log('agent.enqueueInput handler threw (ignored — notifications get no response)', err);
+    }
     return;
   }
 

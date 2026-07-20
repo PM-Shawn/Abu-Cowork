@@ -244,7 +244,7 @@ describe('subagentRunner', () => {
 
       const toolInvokeHandler = onSidecarRequest.mock.calls.find((c) => c[0] === 'tool.invoke')![1] as (p: unknown) => Promise<unknown>;
 
-      await expect(toolInvokeHandler({ runId: 'not-a-real-run', toolName: 'read_file', input: {} })).rejects.toThrow(/Unknown subagent runId/);
+      await expect(toolInvokeHandler({ runId: 'not-a-real-run', toolName: 'read_file', input: {} })).rejects.toThrow(/unknown runId/);
       expect(executeAnyToolMock).not.toHaveBeenCalled();
     });
 
@@ -257,7 +257,7 @@ describe('subagentRunner', () => {
       const runId = (sidecarRequestMock.mock.calls[0][1] as { runId: string }).runId;
       const toolInvokeHandler = onSidecarRequest.mock.calls.find((c) => c[0] === 'tool.invoke')![1] as (p: unknown) => Promise<unknown>;
 
-      await expect(toolInvokeHandler({ runId, toolName: 'read_file', input: {} })).rejects.toThrow(/Unknown subagent runId/);
+      await expect(toolInvokeHandler({ runId, toolName: 'read_file', input: {} })).rejects.toThrow(/unknown runId/);
     });
   });
 

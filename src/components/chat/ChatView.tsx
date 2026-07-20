@@ -2,7 +2,7 @@ import { useState, useCallback, useEffect, useLayoutEffect, useRef, useSyncExter
 import { Virtuoso, type Components, type VirtuosoHandle } from 'react-virtuoso';
 import { useChatStore, useActiveConversation } from '@/stores/chatStore';
 import type { Message, ImageAttachment } from '@/types';
-import { runAgentLoop } from '@/core/agent/agentLoop';
+import { runAgentLoopDispatched } from '@/core/agent/agentLoopRunner';
 import { getPendingCommandConfirmation, resolveCommandConfirmation, subscribeToCommandConfirmation, getPendingFilePermission, resolveFilePermission, subscribeToFilePermission, getPendingWorkspaceRequest, resolveWorkspaceRequest, subscribeToWorkspaceRequest, getPendingUserQuestions, subscribeUserQuestion, findQuestionOwningMessage } from '@/core/agent/permissionBridge';
 import { useSettingsStore, getActiveApiKey, providerRequiresApiKey } from '@/stores/settingsStore';
 import { useWorkspaceStore } from '@/stores/workspaceStore';
@@ -413,7 +413,7 @@ export default function ChatView() {
     // freshly-appended item on its own next render, so this doesn't need to
     // wait for a DOM mutation callback the way the old MutationObserver did.
     scrollToLatest('auto');
-    await runAgentLoop(convId, text, { images });
+    await runAgentLoopDispatched(convId, text, { images });
   };
 
 

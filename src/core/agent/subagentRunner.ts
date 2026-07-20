@@ -74,6 +74,7 @@ import {
   SidecarRequestError,
 } from '../sidecar/sidecarManager';
 import { runSubagentLoop, SubagentResult, type SubagentLoopOptions, type SubagentProgressEvent } from './subagentLoop';
+import { registerToolInvokeSource, ensureToolInvokeRouterRegistered } from './toolInvokeRouter';
 import { createLogger } from '../logging/logger';
 
 const logger = createLogger('subagent-transport');
@@ -253,11 +254,18 @@ function handleSubagentProgress(rawParams: unknown): void {
 
 let handlersRegistered = false;
 
-/** Idempotent — registers the tool.invoke/hook.emit/hook.notify/subagent.progress handlers exactly once, no matter how many times runSubagent() is called. */
+/** Idempotent — registers the tool.invoke/hook.emit/hook.notify/subagent.progress handlers exactly once, no matter how many times runSubagent() is called.
+ *
+ * `tool.invoke` itself is NOT registered directly via `onSidecarRequest`
+ * here — `onSidecarRequest` allows exactly one handler per method, and
+ * `agentLoopRunner.ts` (P1-3B-3B) also needs to answer `tool.invoke` for
+ * MAIN-loop runs. Both sides register a named source with the shared
+ * `toolInvokeRouter.ts` instead — see that module's doc for why. */
 function ensureHandlersRegistered(): void {
   if (handlersRegistered) return;
   handlersRegistered = true;
-  onSidecarRequest('tool.invoke', handleToolInvoke);
+  registerToolInvokeSource('subagent', { has: (runId) => sessions.has(runId), handle: handleToolInvoke });
+  ensureToolInvokeRouterRegistered();
   onSidecarRequest('hook.emit', handleHookEmit);
   // hook.notify / subagent.progress are fire-and-forget from the sidecar's
   // side — no request/response, so they're registered via

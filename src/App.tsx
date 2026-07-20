@@ -74,7 +74,7 @@ import { initFileWatchers, stopAllWatchers } from '@/core/agent/fileWatcher';
 import { startRegistryWatcher, stopRegistryWatcher } from '@/core/skill/registryWatcher';
 import { getPendingWorkspaceRequest, resolveWorkspaceRequest, subscribeToWorkspaceRequest } from '@/core/agent/permissionBridge';
 import { startBehaviorSensor, stopBehaviorSensor } from '@/core/agent/behaviorSensor';
-import { runAgentLoop } from '@/core/agent/agentLoop';
+import { runAgentLoopDispatched } from '@/core/agent/agentLoopRunner';
 import { useI18n } from '@/i18n';
 import CloseDialog from '@/components/common/CloseDialog';
 import SensitiveAuditDialog from '@/components/settings/SensitiveAuditDialog';
@@ -257,8 +257,8 @@ function App() {
         (conversationId && store.conversations[conversationId] ? conversationId : null) ??
         store.activeConversationId ??
         store.createConversation(null);
-      runAgentLoop(convId, text).catch((err) => {
-        console.warn('[pet-send-message] runAgentLoop error:', err);
+      runAgentLoopDispatched(convId, text).catch((err) => {
+        console.warn('[pet-send-message] runAgentLoopDispatched error:', err);
       });
     }).then((fn) => {
       if (cancelled) fn();

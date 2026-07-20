@@ -44,6 +44,7 @@ import type { ToolInvoker } from '@/core/agent/ports/toolInvoker';
 import type { CapsPort } from '@/core/agent/ports/capsPort';
 import type { PlanModeState } from '@/core/agent/planMode';
 import { runAgentLoop, type AgentLoopOptions, type AgentLoopResult } from '@/core/agent/agentLoop';
+import { enqueueUserInput } from '@/core/agent/userInputQueue';
 import { applyPlanModeState } from '@/core/agent/planMode';
 import { TOOL_NAMES } from '@/core/tools/toolNames';
 import { toolResultToString } from '@/core/tools/toolResultToString';
@@ -348,6 +349,15 @@ export async function handleAgentRun(rawParams: unknown): Promise<unknown> {
       imContext: params.options.imContext,
       settingsReader: getSettingsMirrorReader(),
       orchestration: params.orchestration,
+      // P1-3B-3B: use the shell-known runId as the loop's internal loopId
+      // (same "keyed by a shell-known id" trick as createExecutionWithId's
+      // id===loopId convention, P1-3B-2-REPORT.md §2b) — the shell's
+      // RunSession/LoopContext are registered under `runId` BEFORE this
+      // `agent.run` is even sent, so `delegate_to_agent`'s shell-side
+      // `getLoopContext(toolExecContext.loopId)` lookup (toolExecContext
+      // travels over the wire via tool.invoke's `context` field) resolves
+      // correctly without threading a second id back across the wire.
+      loopId: runId,
     };
     const result: AgentLoopResult = await agentRunContext.run(runCtx, () =>
       runAgentLoop(conversationId, params.userMessage, options),
@@ -357,6 +367,30 @@ export async function handleAgentRun(rawParams: unknown): Promise<unknown> {
     coalescer.flush();
     activeRuns.delete(runId);
   }
+}
+
+/**
+ * `{ runId, userMessage }` — P1-3B-3B: the sidecar-side half of the
+ * cross-process concurrency guard. `runAgentLoop`'s own in-process
+ * concurrency guard (agentLoop.ts's entry `hasAbortController`/
+ * `enqueueUserInput` block) can't protect a SECOND `agent.run` dispatch for
+ * the same conversationId — this handler's `activeRuns` is keyed by `runId`,
+ * a NEW random id per dispatch, so a second dispatch never collides with the
+ * first at that check. The shell dispatcher (`agentLoopRunner.ts`'s
+ * `runAgentLoopDispatched`) instead detects "a RunSession for this
+ * conversationId already exists" itself and, instead of sending a SECOND
+ * `agent.run`, sends this notification to the EXISTING run's `runId` —
+ * staged into the SAME `userInputQueue.ts` module `agentLoop.ts` already
+ * drains each turn (unchanged, sidecar-resident since P1-3b-1/3B-3A —
+ * keyed by conversationId, no per-run isolation needed). Unknown runId
+ * (run already finished, or a stray/duplicate message) → silent drop, same
+ * discipline as `agent.abort`/`agent.delta`.
+ */
+export function handleAgentEnqueueInput(rawParams: unknown): void {
+  if (!isRecord(rawParams) || typeof rawParams.runId !== 'string' || typeof rawParams.userMessage !== 'string') return;
+  const run = activeRuns.get(rawParams.runId);
+  if (!run) return;
+  enqueueUserInput(run.conversationId, rawParams.userMessage);
 }
 
 /** `{ runId }` — abort THIS run's conversation-scoped AbortController. Idempotent, unknown runId silent no-op (3a discipline). */

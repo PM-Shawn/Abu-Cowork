@@ -22,7 +22,7 @@ import { useTaskExecutionStore } from '@/stores/taskExecutionStore';
 import { extractWorkflowSteps, extractFileOutputs, extractFilePathsFromText, parsePlanSteps } from '@/utils/workflowExtractor';
 import { parseSearchResults, stripSourcesBlock, parseSourcesFromText } from '@/utils/searchParser';
 import { snapshotToExecutionSteps } from '@/core/agent/executionSnapshot';
-import { runAgentLoop } from '@/core/agent/agentLoop';
+import { runAgentLoopDispatched } from '@/core/agent/agentLoopRunner';
 import { allWorkingDirectories } from '@/core/permissions/workingDirs';
 import { homeDir } from '@tauri-apps/api/path';
 import abuAvatar from '@/assets/abu-avatar.png';
@@ -525,7 +525,7 @@ export default function MessageGroup({ messages, isLastGroup: isLastGroupProp = 
       useChatStore.getState().deleteMessagesFrom(convId, firstAssistantInLoop.id);
     }
 
-    await runAgentLoop(convId, userContent, { images: retryImages });
+    await runAgentLoopDispatched(convId, userContent, { images: retryImages });
   };
 
   // Tool execution steps for this loop. Thinking is rebuilt per-message inside

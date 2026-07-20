@@ -26,10 +26,14 @@ class MockSidecarRequestError extends Error {
     this.data = data;
   }
 }
+const getSidecarStatusMock = vi.fn().mockReturnValue('running');
+const sidecarRequestMock = vi.fn();
 vi.mock('../sidecar/sidecarManager', () => ({
   onSidecarNotification: (...a: unknown[]) => onSidecarNotification(...a),
   onSidecarRequest: (...a: unknown[]) => onSidecarRequest(...a),
   notifySidecar: (...a: unknown[]) => notifySidecar(...a),
+  getSidecarStatus: (...a: unknown[]) => getSidecarStatusMock(...a),
+  request: (...a: unknown[]) => sidecarRequestMock(...a),
   SidecarRequestError: MockSidecarRequestError,
 }));
 
@@ -55,8 +59,10 @@ vi.mock('./ports/scratchpadPort', () => ({
 const recordMaxOutputTokensMock = vi.fn();
 const recordContextWindowMock = vi.fn();
 const recordReasoningObservedMock = vi.fn();
+const capsGetMock = vi.fn().mockReturnValue(undefined);
 vi.mock('./ports/capsPort', () => ({
   getCapsPort: () => ({
+    get: (...a: unknown[]) => capsGetMock(...a),
     recordMaxOutputTokens: (...a: unknown[]) => recordMaxOutputTokensMock(...a),
     recordContextWindow: (...a: unknown[]) => recordContextWindowMock(...a),
     recordReasoningObserved: (...a: unknown[]) => recordReasoningObservedMock(...a),
@@ -66,13 +72,72 @@ vi.mock('./ports/capsPort', () => ({
 const getAllToolsMock = vi.fn().mockReturnValue([
   { name: 'read_file', description: 'reads a file', inputSchema: { type: 'object', properties: {} }, execute: async () => 'x' },
 ]);
+const executeAnyToolMock = vi.fn().mockResolvedValue('tool result');
 vi.mock('./ports/toolInvoker', () => ({
-  getToolInvoker: () => ({ getAllTools: (...a: unknown[]) => getAllToolsMock(...a) }),
+  getToolInvoker: () => ({
+    getAllTools: (...a: unknown[]) => getAllToolsMock(...a),
+    executeAnyTool: (...a: unknown[]) => executeAnyToolMock(...a),
+  }),
 }));
 
+/** Fuller settings snapshot — only used by runAgentLoopDispatched tests (resolveEntryModel/creds resolution need `providers`/`activeModel`); every OTHER pre-existing test relies on the plain `{agentMaxTurns:200}` default below and asserts against it exactly. */
+function dispatchSettingsSnapshot() {
+  return {
+    agentMaxTurns: 200,
+    activeModel: { providerId: 'p1', modelId: 'model-a' },
+    providers: [
+      { id: 'p1', name: 'P1', apiFormat: 'anthropic', enabled: true, apiKey: 'sk-1', baseUrl: undefined, models: [{ id: 'model-a', name: 'Model A' }] },
+    ],
+  };
+}
 const getSettingsSnapshotMock = vi.fn().mockReturnValue({ agentMaxTurns: 200 });
 vi.mock('./ports/settingsReader', () => ({
   getSettingsReader: () => ({ getSnapshot: () => getSettingsSnapshotMock() }),
+}));
+
+const getConversationMock = vi.fn();
+const getIndexEntryMock = vi.fn();
+vi.mock('./ports/conversationReader', () => ({
+  getConversationReader: () => ({
+    getConversation: (...a: unknown[]) => getConversationMock(...a),
+    getIndexEntry: (...a: unknown[]) => getIndexEntryMock(...a),
+  }),
+}));
+
+const hasAbortControllerMock = vi.fn().mockReturnValue(false);
+const getAbortControllerMock = vi.fn(() => new AbortController());
+const clearAbortControllerMock = vi.fn();
+vi.mock('./ports/abortRegistry', () => ({
+  getAbortRegistry: () => ({
+    hasAbortController: (...a: unknown[]) => hasAbortControllerMock(...a),
+    getAbortController: (...a: unknown[]) => getAbortControllerMock(...a),
+    clearAbortController: (...a: unknown[]) => clearAbortControllerMock(...a),
+  }),
+}));
+
+const runAgentLoopMock = vi.fn().mockResolvedValue({ reason: 'completed' });
+const isInteractiveDesktopMock = vi.fn().mockReturnValue(true);
+vi.mock('./agentLoop', () => ({
+  runAgentLoop: (...a: unknown[]) => runAgentLoopMock(...a),
+  isInteractiveDesktop: (...a: unknown[]) => isInteractiveDesktopMock(...a),
+}));
+
+const precomputeOrchestrationMock = vi.fn().mockResolvedValue({
+  route: { type: 'general', name: 'general', cleanInput: 'hi' },
+  systemPromptSections: [],
+});
+vi.mock('./entryOrchestration', () => ({
+  precomputeOrchestration: (...a: unknown[]) => precomputeOrchestrationMock(...a),
+}));
+
+const resolveEffectiveLlmCredsMock = vi.fn().mockReturnValue({ apiKey: 'sk-1', baseUrl: undefined, forceOpenAiCompatible: false });
+vi.mock('../enterprise/llm-resolver', () => ({
+  resolveEffectiveLlmCreds: (...a: unknown[]) => resolveEffectiveLlmCredsMock(...a),
+}));
+
+const enqueueUserInputMock = vi.fn();
+vi.mock('./userInputQueue', () => ({
+  enqueueUserInput: (...a: unknown[]) => enqueueUserInputMock(...a),
 }));
 
 vi.mock('./subagentRunner', () => ({
@@ -117,9 +182,11 @@ const onPlanModeChangeMock = vi.fn((cb: (conversationId: string, mode: string | 
   capturedPlanModeCb = cb;
   return () => { capturedPlanModeCb = undefined; };
 });
+const getPlanModeMock = vi.fn().mockReturnValue('off');
 vi.mock('./planMode', () => ({
   clearPlanMode: (...a: unknown[]) => clearPlanModeMock(...a),
   onPlanModeChange: (...a: [(conversationId: string, mode: string | null) => void]) => onPlanModeChangeMock(...a),
+  getPlanMode: (...a: unknown[]) => getPlanModeMock(...a),
 }));
 
 const setComputerUseActiveMock = vi.fn();
@@ -137,9 +204,11 @@ vi.mock('./computerUseStatus', () => ({
 
 const setComputerUseBatchModeMock = vi.fn();
 const setSkipAutoScreenshotMock = vi.fn();
+const clearAllSkillHooksMock = vi.fn();
 vi.mock('../tools/builtins', () => ({
   setComputerUseBatchMode: (...a: unknown[]) => setComputerUseBatchModeMock(...a),
   setSkipAutoScreenshot: (...a: unknown[]) => setSkipAutoScreenshotMock(...a),
+  clearAllSkillHooks: (...a: unknown[]) => clearAllSkillHooksMock(...a),
 }));
 
 const notifyTaskCompletedMock = vi.fn().mockResolvedValue(undefined);
@@ -174,6 +243,23 @@ vi.mock('../../stores/chatStore', () => ({
   useChatStore: {
     subscribe: (...a: [() => void]) => chatSubscribeMock(...a),
     getState: () => chatState,
+  },
+}));
+
+interface TaskExecStateStub {
+  getExecutionByConversationId: (conversationId: string) => { plannedSteps: unknown[] } | undefined;
+}
+let taskExecState: TaskExecStateStub = { getExecutionByConversationId: () => undefined };
+let capturedExecCb: (() => void) | undefined;
+const execUnsubMock = vi.fn();
+const execSubscribeMock = vi.fn((cb: () => void) => {
+  capturedExecCb = cb;
+  return execUnsubMock;
+});
+vi.mock('../../stores/taskExecutionStore', () => ({
+  useTaskExecutionStore: {
+    subscribe: (...a: [() => void]) => execSubscribeMock(...a),
+    getState: () => taskExecState,
   },
 }));
 
@@ -257,6 +343,41 @@ describe('agentLoopRunner', () => {
     chatState = { conversations: {}, conversationIndex: {} };
     isMessageWrittenToDiskMock.mockClear();
     tauriInvokeMock.mockClear();
+    execSubscribeMock.mockClear();
+    execUnsubMock.mockReset();
+    capturedExecCb = undefined;
+    taskExecState = { getExecutionByConversationId: () => undefined };
+    clearAllSkillHooksMock.mockReset();
+    executeAnyToolMock.mockReset();
+    executeAnyToolMock.mockResolvedValue('tool result');
+    capsGetMock.mockReset();
+    capsGetMock.mockReturnValue(undefined);
+    getConversationMock.mockReset();
+    getIndexEntryMock.mockReset();
+    hasAbortControllerMock.mockReset();
+    hasAbortControllerMock.mockReturnValue(false);
+    getAbortControllerMock.mockReset();
+    getAbortControllerMock.mockImplementation(() => new AbortController());
+    clearAbortControllerMock.mockReset();
+    runAgentLoopMock.mockReset();
+    runAgentLoopMock.mockResolvedValue({ reason: 'completed' });
+    isInteractiveDesktopMock.mockReset();
+    isInteractiveDesktopMock.mockReturnValue(true);
+    precomputeOrchestrationMock.mockReset();
+    precomputeOrchestrationMock.mockResolvedValue({
+      route: { type: 'general', name: 'general', cleanInput: 'hi' },
+      systemPromptSections: [],
+    });
+    resolveEffectiveLlmCredsMock.mockReset();
+    resolveEffectiveLlmCredsMock.mockReturnValue({ apiKey: 'sk-1', baseUrl: undefined, forceOpenAiCompatible: false });
+    enqueueUserInputMock.mockReset();
+    getSidecarStatusMock.mockReset();
+    getSidecarStatusMock.mockReturnValue('running');
+    sidecarRequestMock.mockReset();
+    getSettingsSnapshotMock.mockReset();
+    getSettingsSnapshotMock.mockReturnValue({ agentMaxTurns: 200 });
+    getPlanModeMock.mockReset();
+    getPlanModeMock.mockReturnValue('off');
   });
 
   afterEach(() => {
@@ -272,16 +393,16 @@ describe('agentLoopRunner', () => {
       ensureHandlersRegistered();
       ensureHandlersRegistered();
 
-      expect(onSidecarNotification).toHaveBeenCalledTimes(6);
-      expect(onSidecarRequest).toHaveBeenCalledTimes(3);
+      expect(onSidecarNotification).toHaveBeenCalledTimes(7);
+      expect(onSidecarRequest).toHaveBeenCalledTimes(4);
 
       const notifiedMethods = onSidecarNotification.mock.calls.map((c) => c[0]);
       expect(notifiedMethods).toEqual(
-        expect.arrayContaining(['agent.delta', 'approval.drain', 'plan.clear', 'caps.record', 'shell.notifyTask', 'cu.setState']),
+        expect.arrayContaining(['agent.delta', 'approval.drain', 'plan.clear', 'caps.record', 'shell.notifyTask', 'cu.setState', 'skillHooks.clearAll']),
       );
       const requestedMethods = onSidecarRequest.mock.calls.map((c) => c[0]);
       expect(requestedMethods).toEqual(
-        expect.arrayContaining(['native.invoke', 'tool.list', 'session.isMessageWrittenToDisk']),
+        expect.arrayContaining(['native.invoke', 'tool.list', 'session.isMessageWrittenToDisk', 'tool.invoke']),
       );
     });
   });
@@ -627,7 +748,7 @@ describe('agentLoopRunner', () => {
       capturedChatCb?.();
 
       expect(notifySidecar).toHaveBeenCalledWith('state.convPatch', {
-        conversationId: 'conv-1',
+        runId: 'run-1',
         patch: { workspacePath: '/a', title: 'T1', activeSkills: ['s1'], model: { providerId: 'p', modelId: 'm' } },
       });
     });
@@ -651,7 +772,7 @@ describe('agentLoopRunner', () => {
       capturedChatCb?.();
 
       expect(notifySidecar).toHaveBeenCalledWith('state.convPatch', {
-        conversationId: 'conv-1',
+        runId: 'run-1',
         patch: { title: 'T2' },
       });
     });
@@ -768,6 +889,339 @@ describe('agentLoopRunner', () => {
       const { removeShellLoopContext } = await importFresh();
       expect(() => removeShellLoopContext('no-such-run')).not.toThrow();
       expect(clearLoopContextMock).not.toHaveBeenCalled();
+    });
+  });
+
+  // ── state.execPatch push emitter (P1-3B-3B) ─────────────────────────────
+
+  describe('execPatch push emitter (plannedSteps)', () => {
+    it('pushes state.execPatch when plannedSteps changes for an active session', async () => {
+      const { registerRunSession } = await importFresh();
+      registerRunSession('run-1', makeSession({ conversationId: 'conv-1' }));
+
+      const steps1 = [{ id: 's1' }];
+      taskExecState = { getExecutionByConversationId: () => ({ plannedSteps: steps1 }) };
+      capturedExecCb?.();
+
+      expect(notifySidecar).toHaveBeenCalledWith('state.execPatch', { runId: 'run-1', plannedSteps: steps1 });
+    });
+
+    it('does not push again when the plannedSteps reference is unchanged', async () => {
+      const { registerRunSession } = await importFresh();
+      registerRunSession('run-1', makeSession({ conversationId: 'conv-1' }));
+      const steps1 = [{ id: 's1' }];
+      taskExecState = { getExecutionByConversationId: () => ({ plannedSteps: steps1 }) };
+      capturedExecCb?.();
+      notifySidecar.mockClear();
+
+      capturedExecCb?.(); // same reference again (an unrelated store write, e.g. addStep)
+      expect(notifySidecar).not.toHaveBeenCalledWith('state.execPatch', expect.anything());
+    });
+
+    it('pushes again when the plannedSteps reference changes (report_plan replaces the array)', async () => {
+      const { registerRunSession } = await importFresh();
+      registerRunSession('run-1', makeSession({ conversationId: 'conv-1' }));
+      const steps1 = [{ id: 's1' }];
+      taskExecState = { getExecutionByConversationId: () => ({ plannedSteps: steps1 }) };
+      capturedExecCb?.();
+      notifySidecar.mockClear();
+
+      const steps2 = [{ id: 's1' }, { id: 's2' }];
+      taskExecState = { getExecutionByConversationId: () => ({ plannedSteps: steps2 }) };
+      capturedExecCb?.();
+
+      expect(notifySidecar).toHaveBeenCalledWith('state.execPatch', { runId: 'run-1', plannedSteps: steps2 });
+    });
+
+    it('skips a session with no execution yet, without throwing', async () => {
+      const { registerRunSession } = await importFresh();
+      registerRunSession('run-1', makeSession({ conversationId: 'conv-missing' }));
+      taskExecState = { getExecutionByConversationId: () => undefined };
+      expect(() => capturedExecCb?.()).not.toThrow();
+      expect(notifySidecar).not.toHaveBeenCalledWith('state.execPatch', expect.anything());
+    });
+  });
+
+  // ── skillHooks.clearAll handler (closes a P1-3B-3A escalation) ─────────
+
+  describe('skillHooks.clearAll handler', () => {
+    it('calls the real clearAllSkillHooks', async () => {
+      const { ensureHandlersRegistered } = await importFresh();
+      ensureHandlersRegistered();
+      const handler = handlerFor(onSidecarNotification, 'skillHooks.clearAll');
+      handler({ runId: 'run-1' });
+      expect(clearAllSkillHooksMock).toHaveBeenCalledTimes(1);
+    });
+
+    it('drops malformed params without throwing or calling through', async () => {
+      const { ensureHandlersRegistered } = await importFresh();
+      ensureHandlersRegistered();
+      const handler = handlerFor(onSidecarNotification, 'skillHooks.clearAll');
+      expect(() => handler(null)).not.toThrow();
+      expect(() => handler({})).not.toThrow();
+      expect(() => handler({ runId: 123 })).not.toThrow();
+      expect(clearAllSkillHooksMock).not.toHaveBeenCalled();
+    });
+  });
+
+  // ── tool.invoke (main-loop) handler ─────────────────────────────────────
+
+  describe('tool.invoke (main-loop) handler', () => {
+    it('executes via getToolInvoker().executeAnyTool, threading the session callbacks', async () => {
+      const { ensureHandlersRegistered, registerRunSession } = await importFresh();
+      ensureHandlersRegistered();
+      const confirmCb = vi.fn().mockResolvedValue(true);
+      const filePermCb = vi.fn().mockResolvedValue(true);
+      const session = makeSession({ conversationId: 'conv-1', loopId: 'run-1' });
+      session.options = { requestCommandConfirmation: confirmCb, requestFilePermission: filePermCb };
+      registerRunSession('run-1', session);
+
+      const handler = handlerFor(onSidecarRequest, 'tool.invoke');
+      const context = { conversationId: 'conv-1', loopId: 'run-1', toolCallId: 'tc-1' };
+      const result = await handler({ runId: 'run-1', toolName: 'read_file', input: { path: 'x' }, context });
+
+      expect(result).toBe('tool result');
+      expect(executeAnyToolMock).toHaveBeenCalledWith('read_file', { path: 'x' }, confirmCb, filePermCb, context);
+    });
+
+    it('falls back to the real permissionBridge default callbacks when session.options omits them', async () => {
+      const { ensureHandlersRegistered, registerRunSession } = await importFresh();
+      ensureHandlersRegistered();
+      registerRunSession('run-1', makeSession());
+
+      const handler = handlerFor(onSidecarRequest, 'tool.invoke');
+      await handler({ runId: 'run-1', toolName: 'read_file', input: {} });
+
+      expect(executeAnyToolMock).toHaveBeenCalledWith('read_file', {}, requestCommandConfirmationMock, requestFilePermissionMock, undefined);
+    });
+
+    it('marks the session committed on the first tool.invoke', async () => {
+      const { ensureHandlersRegistered, registerRunSession, getRunSession } = await importFresh();
+      ensureHandlersRegistered();
+      registerRunSession('run-1', makeSession());
+      expect(getRunSession('run-1')?.committed).not.toBe(true);
+
+      const handler = handlerFor(onSidecarRequest, 'tool.invoke');
+      await handler({ runId: 'run-1', toolName: 'read_file', input: {} });
+
+      expect(getRunSession('run-1')?.committed).toBe(true);
+    });
+
+    it('throws for an unknown runId instead of silently executing', async () => {
+      const { ensureHandlersRegistered } = await importFresh();
+      ensureHandlersRegistered();
+      const handler = handlerFor(onSidecarRequest, 'tool.invoke');
+
+      await expect(handler({ runId: 'no-such-run', toolName: 'read_file', input: {} })).rejects.toThrow();
+      expect(executeAnyToolMock).not.toHaveBeenCalled();
+    });
+
+    it('rejects malformed params (missing runId/toolName)', async () => {
+      const { ensureHandlersRegistered } = await importFresh();
+      ensureHandlersRegistered();
+      const handler = handlerFor(onSidecarRequest, 'tool.invoke');
+
+      await expect(handler(null)).rejects.toThrow();
+      await expect(handler({ runId: 'run-1' })).rejects.toThrow();
+      expect(executeAnyToolMock).not.toHaveBeenCalled();
+    });
+  });
+
+  // ── runAgentLoopDispatched (the dispatch entrypoint) ────────────────────
+
+  describe('runAgentLoopDispatched', () => {
+    /** Deferred promise helper — lets a test control exactly when sidecarRequest() settles (mirrors subagentRunner.test.ts's own helper). */
+    function deferred<T>(): { promise: Promise<T>; resolve: (v: T) => void; reject: (e: unknown) => void } {
+      let resolve!: (v: T) => void;
+      let reject!: (e: unknown) => void;
+      const promise = new Promise<T>((res, rej) => { resolve = res; reject = rej; });
+      return { promise, resolve, reject };
+    }
+
+    /** Advances microtasks until the given mock has been called (or gives up after `times` ticks) — dispatch does async work (buildAgentRunParams awaits precomputeOrchestration) before it reaches sidecarRequest. */
+    async function waitForCall(mock: ReturnType<typeof vi.fn>, times = 30): Promise<void> {
+      for (let i = 0; i < times; i++) {
+        if (mock.mock.calls.length > 0) return;
+        await Promise.resolve();
+      }
+    }
+
+    beforeEach(() => {
+      getConversationMock.mockReturnValue({ id: 'conv-1', title: 't', messages: [], status: 'idle' });
+      getIndexEntryMock.mockReturnValue(undefined);
+      getSettingsSnapshotMock.mockReturnValue(dispatchSettingsSnapshot());
+    });
+
+    it('runs in-process (runAgentLoop) when the sidecar is not running', async () => {
+      const { runAgentLoopDispatched } = await importFresh();
+      getSidecarStatusMock.mockReturnValue('stopped');
+
+      const result = await runAgentLoopDispatched('conv-1', 'hello');
+
+      expect(runAgentLoopMock).toHaveBeenCalledTimes(1);
+      expect(runAgentLoopMock).toHaveBeenCalledWith('conv-1', 'hello', undefined);
+      expect(sidecarRequestMock).not.toHaveBeenCalled();
+      expect(result).toEqual({ reason: 'completed' });
+    });
+
+    it('dispatches agent.run when the sidecar is running and returns the sidecar result', async () => {
+      const { runAgentLoopDispatched } = await importFresh();
+      sidecarRequestMock.mockResolvedValue({ reason: 'completed' });
+
+      const result = await runAgentLoopDispatched('conv-1', 'hello');
+
+      expect(runAgentLoopMock).not.toHaveBeenCalled();
+      expect(sidecarRequestMock).toHaveBeenCalledTimes(1);
+      const [method, params, timeoutMs] = sidecarRequestMock.mock.calls[0];
+      expect(method).toBe('agent.run');
+      expect(timeoutMs).toBe(0);
+      const p = params as { runId: string; conversationId: string; userMessage: string; resolvedCreds: unknown; toolList: unknown[] };
+      expect(typeof p.runId).toBe('string');
+      expect(p.conversationId).toBe('conv-1');
+      expect(p.userMessage).toBe('hello');
+      expect(p.resolvedCreds).toEqual({ apiKey: 'sk-1', baseUrl: undefined, forceOpenAiCompatible: false });
+      expect(p.toolList).toEqual([{ name: 'read_file', description: 'reads a file', inputSchema: { type: 'object', properties: {} } }]);
+      expect(result).toEqual({ reason: 'completed' });
+    });
+
+    it('registers and then unregisters the RunSession across a successful dispatch', async () => {
+      const { runAgentLoopDispatched, getRunSession, __getActiveRunSessionCount } = await importFresh();
+      const d = deferred<unknown>();
+      sidecarRequestMock.mockReturnValue(d.promise);
+
+      const p = runAgentLoopDispatched('conv-1', 'hello');
+      await waitForCall(sidecarRequestMock);
+      const runId = (sidecarRequestMock.mock.calls[0][1] as { runId: string }).runId;
+      expect(getRunSession(runId)).toBeDefined();
+      expect(setLoopContextMock).toHaveBeenCalledTimes(1);
+
+      d.resolve({ reason: 'completed' });
+      await p;
+      expect(getRunSession(runId)).toBeUndefined();
+      expect(__getActiveRunSessionCount()).toBe(0);
+      expect(clearLoopContextMock).toHaveBeenCalledTimes(1);
+      expect(clearAbortControllerMock).toHaveBeenCalledWith('conv-1');
+    });
+
+    it('a transport failure BEFORE the run is committed falls back to runAgentLoop in-process', async () => {
+      const { runAgentLoopDispatched } = await importFresh();
+      sidecarRequestMock.mockRejectedValue(new Error('sidecar process closed'));
+
+      const result = await runAgentLoopDispatched('conv-1', 'hello');
+
+      expect(runAgentLoopMock).toHaveBeenCalledTimes(1);
+      expect(runAgentLoopMock).toHaveBeenCalledWith('conv-1', 'hello', undefined);
+      expect(result).toEqual({ reason: 'completed' });
+    });
+
+    it('a transport failure AFTER the run is committed (≥1 tool.invoke arrived) surfaces an error — NO rerun', async () => {
+      const { runAgentLoopDispatched } = await importFresh();
+      const d = deferred<unknown>();
+      sidecarRequestMock.mockReturnValue(d.promise);
+
+      const p = runAgentLoopDispatched('conv-1', 'hello');
+      await waitForCall(sidecarRequestMock);
+      const runId = (sidecarRequestMock.mock.calls[0][1] as { runId: string }).runId;
+
+      const toolInvokeHandler = handlerFor(onSidecarRequest, 'tool.invoke');
+      await toolInvokeHandler({ runId, toolName: 'read_file', input: {} }); // marks committed
+
+      d.reject(new Error('sidecar crashed mid-run'));
+      const result = await p;
+
+      expect(runAgentLoopMock).not.toHaveBeenCalled();
+      expect(result.reason).toBe('error');
+      expect(result.error).toContain('sidecar crashed mid-run');
+    });
+
+    it('a transport failure AFTER the run is committed via an agent.delta frame (no tool call yet) ALSO surfaces an error — NO rerun', async () => {
+      const { runAgentLoopDispatched } = await importFresh();
+      const d = deferred<unknown>();
+      sidecarRequestMock.mockReturnValue(d.promise);
+
+      const p = runAgentLoopDispatched('conv-1', 'hello');
+      await waitForCall(sidecarRequestMock);
+      const runId = (sidecarRequestMock.mock.calls[0][1] as { runId: string }).runId;
+
+      const deltaHandler = handlerFor(onSidecarNotification, 'agent.delta');
+      deltaHandler({ runId, frames: [{ p: 'chat', m: 'appendText', a: ['conv-1', 'hi'] }] }); // marks committed
+
+      d.reject(new Error('sidecar crashed mid-stream'));
+      const result = await p;
+
+      expect(runAgentLoopMock).not.toHaveBeenCalled();
+      expect(result.reason).toBe('error');
+    });
+
+    it('buildAgentRunParams failing (e.g. resolveEffectiveLlmCreds throws) falls back to runAgentLoop in-process — never dispatches', async () => {
+      const { runAgentLoopDispatched } = await importFresh();
+      resolveEffectiveLlmCredsMock.mockImplementation(() => { throw new Error('EnterpriseLlmUnavailableError'); });
+
+      const result = await runAgentLoopDispatched('conv-1', 'hello');
+
+      expect(sidecarRequestMock).not.toHaveBeenCalled();
+      expect(runAgentLoopMock).toHaveBeenCalledTimes(1);
+      expect(result).toEqual({ reason: 'completed' });
+    });
+
+    it('a malformed agent.run response is treated as a failure (pre-commit → falls back in-process)', async () => {
+      const { runAgentLoopDispatched } = await importFresh();
+      sidecarRequestMock.mockResolvedValue({ notReason: 'oops' });
+
+      const result = await runAgentLoopDispatched('conv-1', 'hello');
+
+      expect(runAgentLoopMock).toHaveBeenCalledTimes(1);
+      expect(result).toEqual({ reason: 'completed' });
+    });
+
+    describe('concurrency guard', () => {
+      it('stages the message into an existing sidecar RunSession via agent.enqueueInput instead of dispatching a second agent.run', async () => {
+        const { runAgentLoopDispatched, registerRunSession } = await importFresh();
+        registerRunSession('run-existing', makeSession({ conversationId: 'conv-1' }));
+
+        const result = await runAgentLoopDispatched('conv-1', 'more instructions');
+
+        expect(result).toEqual({ reason: 'enqueued' });
+        expect(notifySidecar).toHaveBeenCalledWith('agent.enqueueInput', { runId: 'run-existing', userMessage: 'more instructions' });
+        expect(sidecarRequestMock).not.toHaveBeenCalled();
+      });
+
+      it('stages into the real in-process queue when a live IN-PROCESS run (not a sidecar RunSession) is detected for the conversation', async () => {
+        const { runAgentLoopDispatched } = await importFresh();
+        getConversationMock.mockReturnValue({ id: 'conv-1', title: 't', messages: [], status: 'running' });
+        hasAbortControllerMock.mockReturnValue(true);
+
+        const result = await runAgentLoopDispatched('conv-1', 'more instructions');
+
+        expect(result).toEqual({ reason: 'enqueued' });
+        expect(enqueueUserInputMock).toHaveBeenCalledWith('conv-1', 'more instructions');
+        expect(sidecarRequestMock).not.toHaveBeenCalled();
+        expect(notifySidecar).not.toHaveBeenCalledWith('agent.enqueueInput', expect.anything());
+      });
+
+      it('does NOT enqueue for an image send even when a run is already active (falls through to a normal dispatch, same as the in-process guard)', async () => {
+        const { runAgentLoopDispatched, registerRunSession } = await importFresh();
+        registerRunSession('run-existing', makeSession({ conversationId: 'conv-1' }));
+        sidecarRequestMock.mockResolvedValue({ reason: 'completed' });
+
+        const result = await runAgentLoopDispatched('conv-1', 'look at this', { images: [{ id: 'i1', data: 'x', mediaType: 'image/png' }] });
+
+        expect(notifySidecar).not.toHaveBeenCalledWith('agent.enqueueInput', expect.anything());
+        expect(sidecarRequestMock).toHaveBeenCalledTimes(1);
+        expect(result).toEqual({ reason: 'completed' });
+      });
+
+      it('does NOT enqueue for a headless (non-interactive-desktop) caller — dispatches normally even with an existing session', async () => {
+        const { runAgentLoopDispatched, registerRunSession } = await importFresh();
+        isInteractiveDesktopMock.mockReturnValue(false);
+        registerRunSession('run-existing', makeSession({ conversationId: 'conv-1' }));
+        sidecarRequestMock.mockResolvedValue({ reason: 'completed' });
+
+        await runAgentLoopDispatched('conv-1', 'scheduled prompt');
+
+        expect(notifySidecar).not.toHaveBeenCalledWith('agent.enqueueInput', expect.anything());
+        expect(sidecarRequestMock).toHaveBeenCalledTimes(1);
+      });
     });
   });
 });

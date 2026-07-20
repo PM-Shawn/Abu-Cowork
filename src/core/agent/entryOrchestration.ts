@@ -67,8 +67,7 @@ import type { RouteResult, IMContext } from './orchestrator';
 import { routeInput, buildSystemPromptSections } from './orchestrator';
 import type { PromptSection } from '../llm/promptSections';
 import { skillLoader } from '../skill/loader';
-import { getEffectiveModel, getActiveProvider, resolveAgentModel } from '../../utils/settingsSelectors';
-import { resolveModelDeclared } from '../llm/resolveModelDeclared';
+import { resolveEntryModel } from './resolveEntryModel';
 import { getCapabilityPrompt } from './prompts/capabilityPrompt';
 import type { SettingsState } from '@/stores/settingsStore';
 
@@ -110,12 +109,12 @@ export async function precomputeOrchestration(
   // Pure duplicate of the loop's own effectiveModelId/entryModelDeclared
   // derivation — see this module's "Reordering note" above for why this
   // duplication is deliberate and bounded (setActiveModel itself is never
-  // called here).
-  let effectiveModelId = getEffectiveModel(entry.settingsForModel);
-  if (route.type === 'agent' && route.definition?.model) {
-    effectiveModelId = resolveAgentModel(route.definition.model, entry.settings);
-  }
-  const entryModelDeclared = resolveModelDeclared(getActiveProvider(entry.settingsForModel), effectiveModelId);
+  // called here). P1-3B-3B: both this call site and the loop's own now go
+  // through the SAME `resolveEntryModel` pure helper (single source for the
+  // formula itself — only the `setActiveModel` side effect stays
+  // uniquely in the loop), and the shell dispatcher's `buildAgentRunParams`
+  // is a third caller of the same helper — see resolveEntryModel.ts's doc.
+  const { entryModelDeclared } = resolveEntryModel(route, entry.settings, entry.settingsForModel);
 
   const systemPromptSections = await buildSystemPromptSections(
     route,

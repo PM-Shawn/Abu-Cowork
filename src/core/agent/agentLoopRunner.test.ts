@@ -393,16 +393,19 @@ describe('agentLoopRunner', () => {
       ensureHandlersRegistered();
       ensureHandlersRegistered();
 
-      expect(onSidecarNotification).toHaveBeenCalledTimes(7);
-      expect(onSidecarRequest).toHaveBeenCalledTimes(4);
+      // 8 notifications (7 own + hook.notify via the shared hookBridge) and
+      // 5 requests (native.invoke/tool.list/session.isMessageWrittenToDisk/
+      // tool.invoke via the router + hook.emit via the shared hookBridge).
+      expect(onSidecarNotification).toHaveBeenCalledTimes(8);
+      expect(onSidecarRequest).toHaveBeenCalledTimes(5);
 
       const notifiedMethods = onSidecarNotification.mock.calls.map((c) => c[0]);
       expect(notifiedMethods).toEqual(
-        expect.arrayContaining(['agent.delta', 'approval.drain', 'plan.clear', 'caps.record', 'shell.notifyTask', 'cu.setState', 'skillHooks.clearAll']),
+        expect.arrayContaining(['agent.delta', 'approval.drain', 'plan.clear', 'caps.record', 'shell.notifyTask', 'cu.setState', 'skillHooks.clearAll', 'hook.notify']),
       );
       const requestedMethods = onSidecarRequest.mock.calls.map((c) => c[0]);
       expect(requestedMethods).toEqual(
-        expect.arrayContaining(['native.invoke', 'tool.list', 'session.isMessageWrittenToDisk', 'tool.invoke']),
+        expect.arrayContaining(['native.invoke', 'tool.list', 'session.isMessageWrittenToDisk', 'tool.invoke', 'hook.emit']),
       );
     });
   });

@@ -44,6 +44,7 @@ import { getToolInvoker } from './ports/toolInvoker';
 import { getSettingsReader } from './ports/settingsReader';
 import { toSerializableTool } from './subagentRunner';
 import { registerToolInvokeSource, ensureToolInvokeRouterRegistered } from './toolInvokeRouter';
+import { ensureHookBridgeRegistered } from './hookBridge';
 import { createEventRouter, type EventRouter } from './eventRouter';
 import {
   requestCommandConfirmation,
@@ -420,6 +421,12 @@ export function ensureHandlersRegistered(): void {
 
   registerToolInvokeSource('agentLoop', { has: (runId) => sessions.has(runId), handle: handleMainLoopToolInvoke });
   ensureToolInvokeRouterRegistered();
+  // hook.emit / hook.notify — shared with the subagent path via the neutral
+  // hookBridge (see hookBridge.ts's doc). Without this, a session that runs
+  // ONLY a main loop (no subagent) had no hook.emit handler at all, so the
+  // first tool call's preToolCall hook failed with "-32601 Method not found:
+  // hook.emit" (the bug the real-machine smoke surfaced).
+  ensureHookBridgeRegistered();
 
   onSidecarNotification('agent.delta', handleAgentDelta);
   onSidecarNotification('approval.drain', handleApprovalDrain);

@@ -69,12 +69,12 @@ import {
   getSidecarStatus,
   request as sidecarRequest,
   notifySidecar,
-  onSidecarRequest,
   onSidecarNotification,
   SidecarRequestError,
 } from '../sidecar/sidecarManager';
 import { runSubagentLoop, SubagentResult, type SubagentLoopOptions, type SubagentProgressEvent } from './subagentLoop';
 import { registerToolInvokeSource, ensureToolInvokeRouterRegistered } from './toolInvokeRouter';
+import { ensureHookBridgeRegistered } from './hookBridge';
 import { createLogger } from '../logging/logger';
 
 const logger = createLogger('subagent-transport');
@@ -83,8 +83,6 @@ import { getSettingsReader } from './ports/settingsReader';
 import { getWorkspaceReader } from './ports/workspaceReader';
 import { getActiveApiKey, getActiveProvider } from '../../utils/settingsSelectors';
 import { resolveEffectiveLlmCreds } from '../enterprise/llm-resolver';
-import { emitHook } from './lifecycleHooks';
-import type { HookEvent } from './lifecycleHooks';
 import { getI18n, getLocale } from '../../i18n';
 import { buildSubagentUiStrings } from './subagentUiStrings';
 
@@ -205,36 +203,6 @@ async function handleToolInvoke(rawParams: unknown): Promise<unknown> {
 }
 
 /**
- * Hooks verdict (per docs/2026-07-19-phase1-p3-loop-migration-staging.md §2
- * item 5 — "follow the evidence, document"): read `lifecycleHooks.ts` and
- * `subagentLoop.ts`'s call sites. Only `preToolCall` has its RETURN VALUE
- * consumed by the caller (`preEvent.blocked` / `preEvent.modifiedInput` at
- * `subagentLoop.ts:~637`) — `subagentStart`/`subagentEnd`/`postToolCall` are
- * `await`ed but their resolved value is discarded. So:
- *   - `preToolCall` → REQUEST (`hook.emit`) — the sidecar needs the
- *     (possibly mutated) event back before it can proceed.
- *   - everything else → NOTIFICATION (`hook.notify`) — fire-and-forget,
- *     cheaper (no round-trip wait) and still reaches the REAL webview-side
- *     hook registry (notifications/todo-panel listeners etc.), fixing the
- *     gap the P1-3a-pre inventory flagged (a sidecar-resident `emitHook`
- *     would otherwise only reach sidecar-local listeners — see
- *     P1-3a-pre-REPORT.md §3's `lifecycleHooks` row).
- */
-async function handleHookEmit(rawParams: unknown): Promise<unknown> {
-  const params = rawParams as { event?: HookEvent } | null;
-  if (!params?.event) {
-    throw new SidecarRequestError(-32602, 'Invalid hook.emit params: event is required');
-  }
-  return await emitHook(params.event);
-}
-
-function handleHookNotify(rawParams: unknown): void {
-  const params = rawParams as { event?: HookEvent } | null;
-  if (!params?.event) return;
-  void emitHook(params.event);
-}
-
-/**
  * `subagent.progress` shell handler — forwards a tool-start/tool-end/
  * turn-complete event to the ORIGINAL session's `onProgress` callback (the
  * one the caller passed into `runSubagent()`, e.g. `agentTools.ts`'s
@@ -266,11 +234,13 @@ function ensureHandlersRegistered(): void {
   handlersRegistered = true;
   registerToolInvokeSource('subagent', { has: (runId) => sessions.has(runId), handle: handleToolInvoke });
   ensureToolInvokeRouterRegistered();
-  onSidecarRequest('hook.emit', handleHookEmit);
-  // hook.notify / subagent.progress are fire-and-forget from the sidecar's
-  // side — no request/response, so they're registered via
-  // onSidecarNotification instead of onSidecarRequest.
-  onSidecarNotification('hook.notify', (params: unknown) => handleHookNotify(params));
+  // hook.emit / hook.notify are shared with the main-loop path (both run in
+  // the sidecar and forward hooks to the real webview registry) — registered
+  // via the neutral hookBridge so neither path clobbers the other and a
+  // main-loop-only session still has them (see hookBridge.ts's doc).
+  ensureHookBridgeRegistered();
+  // subagent.progress is fire-and-forget AND session-bound (routes to the
+  // originating runSubagent() caller's onProgress by runId), so it stays here.
   onSidecarNotification('subagent.progress', (params: unknown) => handleSubagentProgress(params));
 }
 

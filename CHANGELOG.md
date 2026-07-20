@@ -7,6 +7,18 @@ All notable changes to Abu are documented here. Format based on [Keep a Changelo
 > [`CHANGELOG.zh-CN.md`](./CHANGELOG.zh-CN.md); keep both in sync per release (see
 > `RELEASING.md`). Entries before v0.31.0 predate this split and remain bilingual.
 
+## v0.33.0 · 2026-07-19
+
+### Added
+
+- **AI edits are now recorded in the preview's version history** — Previously the version history only tracked your own manual saves; edits the AI made to a file left no restore point (the mirror-opposite of what you'd expect). Now every AI write/edit snapshots the file's prior state — once per turn, before the first change — so you can review and revert an AI change just like one of your own. Each is marked with a "Before AI edit" badge. Reverting also auto-snapshots the current state first, so a revert itself can be undone. Snapshots are capped at 5MB each, and the seq-0 baseline is never evicted.
+
+### Fixed
+
+- **Generated images no longer fail to load in the packaged app** — Images returned as base64 (e.g. Volcengine Seedream, gpt-image-1) showed "Load failed" in the installed build only: the packaged app's stricter CSP blocked the `data:`-URL decode path that dev builds allow. They now decode via `atob()`, which the CSP permits. Backends that return an image URL were never affected — which is why dev smoke tests didn't catch it.
+
+**Full Changelog**: https://github.com/PM-Shawn/Abu-Cowork/compare/v0.32.0...v0.33.0
+
 ## v0.32.0 · 2026-07-19
 
 ### Added

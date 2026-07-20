@@ -59,18 +59,24 @@
  * module shared with the shell-side call path, not pure glue. Left for a
  * follow-up batch rather than done as a side effect of this one.
  *
- * ── Known gap (flagged, not silently swallowed) ──────────────────────────
+ * ── P1-3d-1 gap CLOSED by P1-3d-3 ────────────────────────────────────────
  * `registry.ts`'s `executeAnyTool` runs an enterprise-policy pre-check
  * (`getCurrentPolicy()`/`checkTool()`, `registry.ts:389-405`) against EVERY
  * tool, including read-only ones, before invoking `execute()`.
  * `getCurrentPolicy()` reads `useEnterpriseStore` (`@/stores/enterpriseStore`),
  * which `bundleGraphGuardPlugin` permanently forbids from the sidecar
- * bundle. Locally-executed tools below therefore SKIP that policy
- * pre-check — a real behavior difference from the reverse path. This is
- * in scope for the design doc's §3 `approval.check` reverse channel
- * (3d-3+), not this batch: 3d-1 is explicitly scoped to the zero-approval
- * Tier A slice (design doc §2), so this gap applies to exactly the tools
- * registered here and no wider.
+ * bundle — so a tool executed here can never run that pre-check itself.
+ * P1-3d-1 shipped with this gap flagged (locally-executed tools skipped the
+ * policy pre-check entirely — a real behavior difference from the reverse
+ * path). P1-3d-3 (docs/2026-07-21-phase1-p3d-tool-migration-design.md §3)
+ * closes it: `agentLoopHost.ts`'s `executeAnyTool` now calls
+ * `checkLocalToolApproval` — an `approval.check` reverse RPC to the shell,
+ * answered by `checkToolApproval` (registry.ts, the SAME chain the reverse
+ * `tool.invoke` path runs) — BEFORE every local dispatch below, and only
+ * proceeds to `executeLocalTool` on an explicit `{decision:'allow'}`. Every
+ * tool registered here is Tier A (zero command/path approval surface), so in
+ * practice this adds exactly the policy pre-check and nothing else; a future
+ * non-Tier-A local tool gets the full chain for free via the same gate.
  */
 import type { ToolDefinition, ToolResult, ToolExecutionContext } from '@/types';
 import { showWidgetTool, readMeTool } from '@/core/tools/definitions/widgetTools';

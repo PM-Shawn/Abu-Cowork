@@ -243,19 +243,47 @@ const FILE_TOOL_PATH_MAP: Record<string, (input: Record<string, unknown>) => { p
 };
 
 /**
- * Execute a tool by name, checking both builtin and MCP tools
- * With optional dangerous command confirmation and file permission callbacks.
- * Respects the current permission mode (default/auto/strict).
+ * Result of {@link checkToolApproval} — the single source of truth for
+ * "is this tool call allowed to execute". `reason` on a `'deny'` decision is
+ * the EXACT `ToolResult` error string `executeAnyTool` used to return
+ * directly before this function was extracted (P1-3d-3) — callers that
+ * short-circuit on `'deny'` return `reason` verbatim to preserve behavior.
  */
-export async function executeAnyTool(
+export interface ToolApprovalDecision {
+  decision: 'allow' | 'deny';
+  reason?: string;
+}
+
+/**
+ * The full tool-call approval chain (P1-3d-3,
+ * docs/2026-07-21-phase1-p3d-tool-migration-design.md §3): command safety
+ * analysis (+ optional AI review + user confirmation), file-path permission
+ * checks (`FILE_TOOL_PATH_MAP` → pathSafety, + optional AI review + user
+ * permission prompt), and the enterprise policy pre-check — in that exact
+ * order. This is a SURGICAL EXTRACTION of what used to be the first half of
+ * `executeAnyTool`'s body (behavior-preserving refactor, no logic changed —
+ * see `toolRegistry.integration.test.ts` for the regression coverage this
+ * relies on). `executeAnyTool` calls this first and only proceeds to
+ * `execute()` on `'allow'`.
+ *
+ * This is also the SINGLE SOURCE OF TRUTH the sidecar's `approval.check`
+ * reverse-RPC handler (`agentLoopRunner.ts`'s `handleApprovalCheck`) calls
+ * for tools the sidecar wants to run locally — never duplicate this chain,
+ * always call through here (fail-closed: an approval decision made anywhere
+ * else risks drifting from this one and silently reopening the exact policy
+ * gap P1-3d-1 flagged).
+ *
+ * Every UI-facing callback (`onRequireConfirmation`/`onRequireFilePermission`)
+ * and every side-effecting call (`authorizeWorkspace`, `showPolicyConfirm`)
+ * stays exactly as it was — this function still runs shell-side only.
+ */
+export async function checkToolApproval(
   name: string,
   input: Record<string, unknown>,
+  toolContext?: ToolExecutionContext,
   onRequireConfirmation?: CommandConfirmCallback,
   onRequireFilePermission?: FilePermissionCallback,
-  toolContext?: ToolExecutionContext,
-  /** Current context window usage (0-100). Scales truncation limits under pressure. */
-  contextUsagePercent?: number
-): Promise<ToolResult> {
+): Promise<ToolApprovalDecision> {
   const t = getI18n();
   const convPermissionMode = toolContext?.conversationId
     ? useChatStore.getState().conversations[toolContext.conversationId]?.permissionMode
@@ -271,7 +299,7 @@ export async function executeAnyTool(
 
       // Block dangerous commands — always enforced regardless of permission mode
       if (analysis.level === 'block') {
-        return `Error: ${t.commandConfirm.blocked}: ${analysis.reason}`;
+        return { decision: 'deny', reason: `Error: ${t.commandConfirm.blocked}: ${analysis.reason}` };
       }
 
       // Best-effort boundary check: only matters for safe, non-read-only commands
@@ -302,7 +330,7 @@ export async function executeAnyTool(
           toolContext?.loopId ? getLoopContext(toolContext.loopId)?.signal : undefined,
         );
         if (verdict.decision === 'deny') {
-          return `${t.commandConfirm.aiDenied}: ${verdict.reason}`;
+          return { decision: 'deny', reason: `${t.commandConfirm.aiDenied}: ${verdict.reason}` };
         }
         outcome = verdict.decision === 'allow' ? 'allow' : 'confirm';
         // Surface the reviewer's reasoning so an escalated confirm explains itself.
@@ -315,7 +343,7 @@ export async function executeAnyTool(
           reason: reviewReason || analysis.reason,
         });
         if (!confirmed) {
-          return t.commandConfirm.userCancelled;
+          return { decision: 'deny', reason: t.commandConfirm.userCancelled };
         }
       }
     }
@@ -350,7 +378,7 @@ export async function executeAnyTool(
               toolContext?.loopId ? getLoopContext(toolContext.loopId)?.signal : undefined,
             );
             if (verdict.decision === 'deny') {
-              return `${t.commandConfirm.aiDenied}: ${verdict.reason}`;
+              return { decision: 'deny', reason: `${t.commandConfirm.aiDenied}: ${verdict.reason}` };
             }
             fileDecision = verdict.decision === 'allow' ? 'allow' : 'confirm';
           }
@@ -363,16 +391,16 @@ export async function executeAnyTool(
                 toolName: name,
               });
               if (!granted) {
-                return `[${t.toolErrors.userDeniedAccess} ${pathCheck.permissionPath}]`;
+                return { decision: 'deny', reason: `[${t.toolErrors.userDeniedAccess} ${pathCheck.permissionPath}]` };
               }
               // Permission granted — re-check (should now pass since authorizeWorkspace was called)
               const recheck = await checkFn(pathInfo.path);
               if (!recheck.allowed) {
-                return `Error: ${recheck.reason || t.toolErrors.pathAccessDenied}`;
+                return { decision: 'deny', reason: `Error: ${recheck.reason || t.toolErrors.pathAccessDenied}` };
               }
             } else {
               // No callback available (shouldn't happen in normal flow)
-              return `Error: ${t.toolErrors.needsAuthorization} ${pathCheck.permissionPath}`;
+              return { decision: 'deny', reason: `Error: ${t.toolErrors.needsAuthorization} ${pathCheck.permissionPath}` };
             }
           } else {
             // allow → auto-authorize the workspace for this path
@@ -380,7 +408,7 @@ export async function executeAnyTool(
           }
         } else {
           // Hard blocked — always enforced regardless of permission mode
-          return `Error: ${pathCheck.reason}`;
+          return { decision: 'deny', reason: `Error: ${pathCheck.reason}` };
         }
       }
     }
@@ -394,14 +422,38 @@ export async function executeAnyTool(
       : String(input).slice(0, 200)
     const policyCheck = checkTool(policy, name, summary)
     if (policyCheck.decision === 'deny') {
-      return `Error: [policy] ${policyCheck.reason}`
+      return { decision: 'deny', reason: `Error: [policy] ${policyCheck.reason}` }
     }
     if (policyCheck.decision === 'confirm') {
       const allowed = await showPolicyConfirm(policyCheck.reason ?? '此操作需要企业策略二次确认')
       if (!allowed) {
-        return `Error: [policy] user declined confirmation`
+        return { decision: 'deny', reason: `Error: [policy] user declined confirmation` }
       }
     }
+  }
+
+  return { decision: 'allow' };
+}
+
+/**
+ * Execute a tool by name, checking both builtin and MCP tools
+ * With optional dangerous command confirmation and file permission callbacks.
+ * Respects the current permission mode (default/auto/strict).
+ */
+export async function executeAnyTool(
+  name: string,
+  input: Record<string, unknown>,
+  onRequireConfirmation?: CommandConfirmCallback,
+  onRequireFilePermission?: FilePermissionCallback,
+  toolContext?: ToolExecutionContext,
+  /** Current context window usage (0-100). Scales truncation limits under pressure. */
+  contextUsagePercent?: number
+): Promise<ToolResult> {
+  // P1-3d-3: approval chain extracted to checkToolApproval — see its doc.
+  // Behavior-preserving: same deny-reason strings, same order, same callbacks.
+  const approval = await checkToolApproval(name, input, toolContext, onRequireConfirmation, onRequireFilePermission);
+  if (approval.decision === 'deny') {
+    return approval.reason ?? `Error: tool "${name}" was denied`;
   }
 
   // First check builtin tools. A Labs-gated-off tool stays in the registry but

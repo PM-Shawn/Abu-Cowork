@@ -89,12 +89,29 @@ function baseParams(overrides: Record<string, unknown> = {}) {
   };
 }
 
+/**
+ * P1-3d-3 — `sendRequestMock` now fields TWO reverse-RPC methods
+ * (`approval.check` and `tool.invoke`), so a blanket `.mockResolvedValue`
+ * would answer both identically and silently mask the approval-gate branch
+ * (an `approval.check` response resolving to a bare string, not
+ * `{decision:'allow'}`, is exactly the fail-closed "deny" case — see
+ * `checkLocalToolApproval`). This helper keeps the two methods
+ * independently configurable so each test's mock setup means what it says.
+ */
+function mockSendRequest(overrides: { approvalDecision?: 'allow' | 'deny'; toolInvokeResult?: unknown } = {}) {
+  const { approvalDecision = 'allow', toolInvokeResult = 'tool output' } = overrides;
+  sendRequestMock.mockImplementation((method: unknown) => {
+    if (method === 'approval.check') return Promise.resolve({ decision: approvalDecision });
+    return Promise.resolve(toolInvokeResult);
+  });
+}
+
 describe('agentLoopHost', () => {
   beforeEach(() => {
     runAgentLoopMock.mockReset();
     applyPlanModeStateMock.mockReset();
     sendRequestMock.mockReset();
-    sendRequestMock.mockResolvedValue('tool output');
+    mockSendRequest();
     sendNotificationMock.mockReset();
     hasLocalToolMock.mockReset();
     hasLocalToolMock.mockReturnValue(false);
@@ -433,7 +450,7 @@ describe('agentLoopHost', () => {
     });
   });
 
-  describe('local tool dispatch (P1-3d-1)', () => {
+  describe('local tool dispatch (P1-3d-1 / P1-3d-3 approval gate)', () => {
     /** Runs `fn(toolInvoker)` inside the run's real agentRunContext scope (via runAgentLoopMock), returning fn's result. */
     async function withToolInvoker<T>(fn: (toolInvoker: ReturnType<typeof getCurrentAgentRunContext>['toolInvoker']) => Promise<T>): Promise<T> {
       let captured!: T;
@@ -445,20 +462,25 @@ describe('agentLoopHost', () => {
       return captured;
     }
 
-    it('local registry hit runs locally and never calls tool.invoke', async () => {
+    it('local registry hit + approval.check allow runs locally and never calls tool.invoke', async () => {
       hasLocalToolMock.mockReturnValue(true);
       executeLocalToolMock.mockResolvedValue('local result');
+      // beforeEach's mockSendRequest() default already answers approval.check with {decision:'allow'}.
 
       const result = await withToolInvoker((toolInvoker) =>
         toolInvoker.executeAnyTool('show_widget', { title: 't' }),
       );
 
       expect(result).toBe('local result');
+      expect(sendRequestMock).toHaveBeenCalledWith(
+        'approval.check',
+        expect.objectContaining({ toolName: 'show_widget', input: { title: 't' } }),
+      );
       expect(executeLocalToolMock).toHaveBeenCalledWith('show_widget', { title: 't' }, undefined, undefined);
       expect(sendRequestMock).not.toHaveBeenCalledWith('tool.invoke', expect.anything());
     });
 
-    it('local registry miss falls through to reverse tool.invoke, unchanged', async () => {
+    it('local registry miss falls through to reverse tool.invoke, unchanged (no approval.check for a non-local tool)', async () => {
       hasLocalToolMock.mockReturnValue(false);
 
       const result = await withToolInvoker((toolInvoker) =>
@@ -467,20 +489,71 @@ describe('agentLoopHost', () => {
 
       expect(result).toBe('tool output');
       expect(executeLocalToolMock).not.toHaveBeenCalled();
+      expect(sendRequestMock).not.toHaveBeenCalledWith('approval.check', expect.anything());
       expect(sendRequestMock).toHaveBeenCalledWith(
         'tool.invoke',
         expect.objectContaining({ toolName: 'read_file', input: { path: '/tmp/x' } }),
       );
     });
 
+    // ── P1-3d-3 SAFETY-CRITICAL: approval.check deny / transport failure ──
+
+    it('SECURITY: approval.check deny never executes the local tool — falls back to reverse tool.invoke', async () => {
+      hasLocalToolMock.mockReturnValue(true);
+      mockSendRequest({ approvalDecision: 'deny', toolInvokeResult: 'shell denied it too' });
+
+      const result = await withToolInvoker((toolInvoker) =>
+        toolInvoker.executeAnyTool('show_widget', { title: 't' }),
+      );
+
+      // Local execute() must NEVER be reached on a deny.
+      expect(executeLocalToolMock).not.toHaveBeenCalled();
+      expect(sendRequestMock).toHaveBeenCalledWith('approval.check', expect.objectContaining({ toolName: 'show_widget' }));
+      expect(sendRequestMock).toHaveBeenCalledWith('tool.invoke', expect.objectContaining({ toolName: 'show_widget' }));
+      expect(result).toBe('shell denied it too');
+    });
+
+    it('SECURITY: approval.check transport failure fails CLOSED — never executes locally, falls back to reverse tool.invoke (never defaults to allow)', async () => {
+      hasLocalToolMock.mockReturnValue(true);
+      sendRequestMock.mockImplementation((method: unknown) => {
+        if (method === 'approval.check') return Promise.reject(new Error('sidecar<->shell pipe broke'));
+        return Promise.resolve('shell fallback after transport failure');
+      });
+
+      const result = await withToolInvoker((toolInvoker) =>
+        toolInvoker.executeAnyTool('show_widget', { title: 't' }),
+      );
+
+      // A rejected approval.check request must NOT be treated as an allow.
+      expect(executeLocalToolMock).not.toHaveBeenCalled();
+      expect(result).toBe('shell fallback after transport failure');
+      expect(sendRequestMock).toHaveBeenCalledWith('tool.invoke', expect.objectContaining({ toolName: 'show_widget' }));
+    });
+
+    it('SECURITY: a malformed approval.check response (not {decision:"allow"}) fails CLOSED, same as a deny', async () => {
+      hasLocalToolMock.mockReturnValue(true);
+      sendRequestMock.mockImplementation((method: unknown) => {
+        if (method === 'approval.check') return Promise.resolve('not-an-object'); // malformed shape
+        return Promise.resolve('shell fallback');
+      });
+
+      const result = await withToolInvoker((toolInvoker) =>
+        toolInvoker.executeAnyTool('show_widget', { title: 't' }),
+      );
+
+      expect(executeLocalToolMock).not.toHaveBeenCalled();
+      expect(result).toBe('shell fallback');
+    });
+
     it('a read-only local tool that fails falls back to reverse tool.invoke (safe idempotent retry)', async () => {
       hasLocalToolMock.mockReturnValue(true);
       isLocalToolReadOnlyMock.mockReturnValue(true);
       executeLocalToolMock.mockRejectedValue(new Error('local dispatch bug'));
-      sendRequestMock.mockResolvedValue('shell fallback result');
+      mockSendRequest({ toolInvokeResult: 'shell fallback result' }); // approval still allows — local dispatch itself is what fails
 
       const result = await withToolInvoker((toolInvoker) => toolInvoker.executeAnyTool('http_fetch', { url: 'https://x' }));
 
+      expect(executeLocalToolMock).toHaveBeenCalled(); // proves local execution was actually attempted (approved) before failing
       expect(result).toBe('shell fallback result');
       expect(sendRequestMock).toHaveBeenCalledWith(
         'tool.invoke',
@@ -492,6 +565,7 @@ describe('agentLoopHost', () => {
       hasLocalToolMock.mockReturnValue(true);
       isLocalToolReadOnlyMock.mockReturnValue(false);
       executeLocalToolMock.mockRejectedValue(new Error('side-effect already committed'));
+      // beforeEach's mockSendRequest() default approves — local execution is actually attempted, then fails.
 
       await expect(
         withToolInvoker((toolInvoker) => toolInvoker.executeAnyTool('hypothetical_write_tool', {})),

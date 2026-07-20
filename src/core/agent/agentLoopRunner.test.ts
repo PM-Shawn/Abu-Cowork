@@ -90,6 +90,18 @@ vi.mock('./ports/toolInvoker', () => ({
   }),
 }));
 
+// P1-3d-3 — `checkToolApproval` (registry.ts) is the SINGLE SOURCE OF TRUTH
+// the shell-side `approval.check` handler (`handleApprovalCheck`) calls
+// directly (not through the `ToolInvoker` port, unlike `tool.invoke`) — see
+// that handler's doc. Mocked here so this file's approval.check tests
+// control allow/deny deterministically without exercising the REAL command/
+// path/policy chain (that chain has its own dedicated coverage in
+// `toolRegistry.integration.test.ts`).
+const checkToolApprovalMock = vi.fn().mockResolvedValue({ decision: 'allow' });
+vi.mock('../tools/registry', () => ({
+  checkToolApproval: (...a: unknown[]) => checkToolApprovalMock(...a),
+}));
+
 /** Fuller settings snapshot — only used by runAgentLoopDispatched tests (resolveEntryModel/creds resolution need `providers`/`activeModel`); every OTHER pre-existing test relies on the plain `{agentMaxTurns:200}` default below and asserts against it exactly. */
 function dispatchSettingsSnapshot() {
   return {
@@ -414,6 +426,8 @@ describe('agentLoopRunner', () => {
     getSettingsSnapshotMock.mockReturnValue({ agentMaxTurns: 200 });
     getPlanModeMock.mockReset();
     getPlanModeMock.mockReturnValue('off');
+    checkToolApprovalMock.mockReset();
+    checkToolApprovalMock.mockResolvedValue({ decision: 'allow' });
   });
 
   afterEach(() => {
@@ -430,11 +444,12 @@ describe('agentLoopRunner', () => {
       ensureHandlersRegistered();
 
       // 9 notifications (8 own — the 9th being P1-3B-4's input.consumed —
-      // + hook.notify via the shared hookBridge) and 5 requests
+      // + hook.notify via the shared hookBridge) and 6 requests
       // (native.invoke/tool.list/session.isMessageWrittenToDisk/
-      // tool.invoke via the router + hook.emit via the shared hookBridge).
+      // approval.check — P1-3d-3 — /tool.invoke via the router / hook.emit
+      // via the shared hookBridge).
       expect(onSidecarNotification).toHaveBeenCalledTimes(9);
-      expect(onSidecarRequest).toHaveBeenCalledTimes(5);
+      expect(onSidecarRequest).toHaveBeenCalledTimes(6);
 
       const notifiedMethods = onSidecarNotification.mock.calls.map((c) => c[0]);
       expect(notifiedMethods).toEqual(
@@ -442,7 +457,7 @@ describe('agentLoopRunner', () => {
       );
       const requestedMethods = onSidecarRequest.mock.calls.map((c) => c[0]);
       expect(requestedMethods).toEqual(
-        expect.arrayContaining(['native.invoke', 'tool.list', 'session.isMessageWrittenToDisk', 'tool.invoke', 'hook.emit']),
+        expect.arrayContaining(['native.invoke', 'tool.list', 'session.isMessageWrittenToDisk', 'approval.check', 'tool.invoke', 'hook.emit']),
       );
     });
   });
@@ -1217,6 +1232,90 @@ describe('agentLoopRunner', () => {
       await expect(handler(null)).rejects.toThrow();
       await expect(handler({ runId: 'run-1' })).rejects.toThrow();
       expect(executeAnyToolMock).not.toHaveBeenCalled();
+    });
+  });
+
+  // ── approval.check handler (P1-3d-3) ────────────────────────────────────
+  //
+  // Symmetric twin of the `tool.invoke` handler tests above, but for the
+  // sidecar's "would this local tool call be approved?" reverse request
+  // (see `handleApprovalCheck`'s doc). SAFETY-CRITICAL: this is the shell
+  // half of the fail-closed contract — the sidecar-side half
+  // (`checkLocalToolApproval` in `sidecar/src/agentLoopHost.ts`) is covered
+  // by `agentLoopHost.test.ts`'s "local tool dispatch" describe block.
+
+  describe('approval.check handler', () => {
+    it('returns {decision:"allow"} from checkToolApproval, threading the session callbacks', async () => {
+      const { ensureHandlersRegistered, registerRunSession } = await importFresh();
+      ensureHandlersRegistered();
+      const confirmCb = vi.fn().mockResolvedValue(true);
+      const filePermCb = vi.fn().mockResolvedValue(true);
+      const session = makeSession({ conversationId: 'conv-1', loopId: 'run-1' });
+      session.options = { requestCommandConfirmation: confirmCb, requestFilePermission: filePermCb };
+      registerRunSession('run-1', session);
+      checkToolApprovalMock.mockResolvedValue({ decision: 'allow' });
+
+      const handler = handlerFor(onSidecarRequest, 'approval.check');
+      const context = { conversationId: 'conv-1', loopId: 'run-1' };
+      const result = await handler({ runId: 'run-1', toolName: 'show_widget', input: { title: 't' }, context });
+
+      expect(result).toEqual({ decision: 'allow' });
+      expect(checkToolApprovalMock).toHaveBeenCalledWith('show_widget', { title: 't' }, context, confirmCb, filePermCb);
+    });
+
+    it('returns {decision:"deny", reason} verbatim from checkToolApproval — never executes anything itself', async () => {
+      const { ensureHandlersRegistered, registerRunSession } = await importFresh();
+      ensureHandlersRegistered();
+      registerRunSession('run-1', makeSession());
+      checkToolApprovalMock.mockResolvedValue({ decision: 'deny', reason: 'Error: [policy] blocked by enterprise policy' });
+
+      const handler = handlerFor(onSidecarRequest, 'approval.check');
+      const result = await handler({ runId: 'run-1', toolName: 'show_widget', input: {} });
+
+      expect(result).toEqual({ decision: 'deny', reason: 'Error: [policy] blocked by enterprise policy' });
+      expect(executeAnyToolMock).not.toHaveBeenCalled(); // approval.check must never itself execute the tool
+    });
+
+    it('falls back to the real permissionBridge default callbacks when session.options omits them', async () => {
+      const { ensureHandlersRegistered, registerRunSession } = await importFresh();
+      ensureHandlersRegistered();
+      registerRunSession('run-1', makeSession());
+
+      const handler = handlerFor(onSidecarRequest, 'approval.check');
+      await handler({ runId: 'run-1', toolName: 'show_widget', input: {} });
+
+      expect(checkToolApprovalMock).toHaveBeenCalledWith('show_widget', {}, undefined, requestCommandConfirmationMock, requestFilePermissionMock);
+    });
+
+    it('throws for an unknown runId instead of silently answering', async () => {
+      const { ensureHandlersRegistered } = await importFresh();
+      ensureHandlersRegistered();
+      const handler = handlerFor(onSidecarRequest, 'approval.check');
+
+      await expect(handler({ runId: 'no-such-run', toolName: 'show_widget', input: {} })).rejects.toThrow();
+      expect(checkToolApprovalMock).not.toHaveBeenCalled();
+    });
+
+    it('refuses to answer when the run\'s conversation has been deleted (known runId, no conversation record) — same fail-closed discipline as tool.invoke', async () => {
+      const { ensureHandlersRegistered, registerRunSession } = await importFresh();
+      ensureHandlersRegistered();
+      registerRunSession('run-1', makeSession({ conversationId: 'conv-1' }));
+      chatState = { conversations: {}, conversationIndex: {} };
+
+      const handler = handlerFor(onSidecarRequest, 'approval.check');
+
+      await expect(handler({ runId: 'run-1', toolName: 'show_widget', input: {} })).rejects.toThrow();
+      expect(checkToolApprovalMock).not.toHaveBeenCalled();
+    });
+
+    it('rejects malformed params (missing runId/toolName)', async () => {
+      const { ensureHandlersRegistered } = await importFresh();
+      ensureHandlersRegistered();
+      const handler = handlerFor(onSidecarRequest, 'approval.check');
+
+      await expect(handler(null)).rejects.toThrow();
+      await expect(handler({ runId: 'run-1' })).rejects.toThrow();
+      expect(checkToolApprovalMock).not.toHaveBeenCalled();
     });
   });
 

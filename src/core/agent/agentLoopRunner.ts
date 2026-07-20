@@ -24,6 +24,7 @@
  * `state.planMode`).
  */
 import type { ConfirmationInfo, FilePermissionCallback } from '../tools/registry';
+import { checkToolApproval, type ToolApprovalDecision } from '../tools/registry';
 import type { ImageAttachment, ToolExecutionContext, Conversation } from '../../types';
 import {
   onSidecarNotification,
@@ -455,6 +456,60 @@ async function handleMainLoopToolInvoke(rawParams: unknown): Promise<unknown> {
 }
 
 /**
+ * `approval.check` (REQUEST) — P1-3d-3
+ * (docs/2026-07-21-phase1-p3d-tool-migration-design.md §3). Symmetric twin of
+ * `handleMainLoopToolInvoke` above, but for a tool the SIDECAR intends to run
+ * LOCALLY (see `sidecar/src/localTools/index.ts`) — asks the shell "would
+ * this call be allowed?" WITHOUT executing it. Calls the exact same
+ * `checkToolApproval` (registry.ts, P1-3d-3) that `handleMainLoopToolInvoke`
+ * reaches transitively via `invoker.executeAnyTool` — same session
+ * confirm/file-permission callback resolution, same conversation-existence
+ * refusal (see that handler's doc for the deleted-conversation race this
+ * guards), so approval decisions are IDENTICAL regardless of which path a
+ * given tool call takes. Single source of truth: this handler must never
+ * reimplement or duplicate the approval chain — see checkToolApproval's own
+ * doc for why that matters (policy-gap regression risk).
+ *
+ * 🔴 Fail-closed contract with the caller (sidecar's `createReverseToolInvoker`,
+ * `agentLoopHost.ts`): the RESULT of this RPC is advisory-only from the
+ * transport's point of view — the sidecar treats anything other than a
+ * clean `{decision:'allow'}` response (including a thrown/rejected RPC) as
+ * "do not run this tool locally", falling back to the always-safe reverse
+ * `tool.invoke` path instead of ever defaulting to allow. This handler's job
+ * is only to answer honestly; it does not itself need retry/timeout logic —
+ * an unhandled throw here becomes an RPC error response, which the sidecar's
+ * fail-closed catch already treats as "not approved".
+ */
+async function handleApprovalCheck(rawParams: unknown): Promise<ToolApprovalDecision> {
+  const params = rawParams as {
+    runId?: unknown;
+    toolName?: unknown;
+    input?: unknown;
+    context?: unknown;
+  } | null;
+
+  if (!params || typeof params.runId !== 'string' || typeof params.toolName !== 'string') {
+    throw new SidecarRequestError(-32602, 'Invalid approval.check params: runId and toolName must be strings');
+  }
+
+  const session = sessions.get(params.runId);
+  if (!session) {
+    throw new SidecarRequestError(-32000, `Unknown agent-loop runId: ${params.runId}`);
+  }
+  if (!useChatStore.getState().conversations[session.conversationId]) {
+    throw new SidecarRequestError(-32000, `Conversation no longer exists for agent-loop runId: ${params.runId}`);
+  }
+
+  return await checkToolApproval(
+    params.toolName,
+    (params.input as Record<string, unknown>) ?? {},
+    params.context as ToolExecutionContext | undefined,
+    session.options.requestCommandConfirmation ?? requestCommandConfirmation,
+    session.options.requestFilePermission ?? requestFilePermission,
+  );
+}
+
+/**
  * `skillHooks.clearAll` (NOTIFICATION) → {runId} → the real
  * `clearAllSkillHooks()`. Closes a P1-3B-3A escalation
  * (`sidecar/src/shims/builtinsRun.ts`'s doc comment / P1-3B-3A-REPORT.md
@@ -524,6 +579,7 @@ export function ensureHandlersRegistered(): void {
   onSidecarRequest('native.invoke', handleNativeInvoke);
   onSidecarRequest('tool.list', handleToolList);
   onSidecarRequest('session.isMessageWrittenToDisk', handleIsMessageWrittenToDisk);
+  onSidecarRequest('approval.check', handleApprovalCheck);
 }
 
 /** Test-only — lets tests re-register handlers against fresh mocks. Not used by production code. */

@@ -163,6 +163,43 @@ function parseAbortParams(params: unknown): { runId: string } {
  * mcpChanged mid-run refresh path has a narrow eventually-consistent window
  * (one extra turn, typically) instead of being synchronously guaranteed.
  */
+/**
+ * P1-3d-3 (docs/2026-07-21-phase1-p3d-tool-migration-design.md §3) — asks
+ * the shell "would this local tool call be approved?" via the `approval.check`
+ * reverse RPC (shell handler: `agentLoopRunner.ts`'s `handleApprovalCheck`,
+ * which calls the SAME `checkToolApproval` — registry.ts — the reverse
+ * `tool.invoke` path runs transitively; single source of truth, see that
+ * function's doc). This closes the P1-3d-1 "Known gap" flagged in
+ * `localTools/index.ts`'s module doc: locally-executed tools now go through
+ * the shell's enterprise-policy pre-check (and command/path checks, for any
+ * future non-Tier-A local tool) exactly like the reverse path does.
+ *
+ * 🔴 SECURITY-CRITICAL fail-closed contract: returns `true` ONLY when the
+ * shell responds with a clean `{decision:'allow'}`. Anything else — an
+ * explicit `{decision:'deny'}`, a malformed/unexpected response shape, a
+ * thrown RPC error, a transport failure, a timeout-via-rejection — returns
+ * `false`. The caller (`createReverseToolInvoker`'s `executeAnyTool`) NEVER
+ * runs `executeLocalTool` on `false`; it falls through to the reverse
+ * `tool.invoke` path instead, which carries its own complete, independent
+ * approval chain. "Can't determine the answer" must never be treated as
+ * "yes" — see the design doc §3's safety-smoke rule this implements.
+ */
+async function checkLocalToolApproval(
+  runId: string,
+  toolName: string,
+  input: Record<string, unknown>,
+  context: ToolExecutionContext | undefined,
+): Promise<boolean> {
+  try {
+    const result = await sendRequest('approval.check', { runId, toolName, input, context });
+    return isRecord(result) && result.decision === 'allow';
+  } catch {
+    // Transport error, timeout-via-rejection, or an RPC error response —
+    // fail-closed: treat exactly like a deny, never like an allow.
+    return false;
+  }
+}
+
 function createReverseToolInvoker(runId: string, initialTools: SerializableToolDefinition[]): ToolInvoker {
   let cache: SerializableToolDefinition[] = initialTools;
 
@@ -200,24 +237,38 @@ function createReverseToolInvoker(runId: string, initialTools: SerializableToolD
       // See localTools/index.ts's module doc for exactly which tools are
       // registered, why each is bundle-safe, and the readOnly/fallback
       // discipline this branch relies on.
+      //
+      // P1-3d-3: before running it locally, ask the shell via `approval.check`
+      // — this is what closes the P1-3d-1 enterprise-policy gap (see
+      // checkLocalToolApproval's doc). Only a clean `true` proceeds to local
+      // execution; anything else (deny, malformed response, transport
+      // failure) falls through to the reverse `tool.invoke` path below,
+      // which re-derives its own approval decision independently — local
+      // execute() is NEVER reached without an explicit shell allow.
       if (hasLocalTool(name)) {
-        try {
-          return await executeLocalTool(name, input, context as ToolExecutionContext | undefined, contextUsagePercent);
-        } catch (err) {
-          // A throw here means executeLocalTool's OWN dispatch layer failed
-          // (NOT a normal tool-level error — those are already caught
-          // inside executeLocalTool and returned as an error-string
-          // ToolResult, matching registry.ts's ToolRegistry.execute
-          // contract exactly). Every tool in the local registry today is
-          // Tier A / read-only (isLocalToolReadOnly(name) === true), so
-          // falling through to the reverse tool.invoke path below is a
-          // safe, idempotent retry — NOT a double-execution risk. A future
-          // side-effecting local tool MUST be registered with
-          // readOnly:false so this rethrows instead (see
-          // localTools/index.ts's module doc) — "committed once started",
-          // same discipline as agentLoopRunner.ts's RunSession.committed.
-          if (!isLocalToolReadOnly(name)) throw err;
+        const approved = await checkLocalToolApproval(runId, name, input, context as ToolExecutionContext | undefined);
+        if (approved) {
+          try {
+            return await executeLocalTool(name, input, context as ToolExecutionContext | undefined, contextUsagePercent);
+          } catch (err) {
+            // A throw here means executeLocalTool's OWN dispatch layer failed
+            // (NOT a normal tool-level error — those are already caught
+            // inside executeLocalTool and returned as an error-string
+            // ToolResult, matching registry.ts's ToolRegistry.execute
+            // contract exactly). Every tool in the local registry today is
+            // Tier A / read-only (isLocalToolReadOnly(name) === true), so
+            // falling through to the reverse tool.invoke path below is a
+            // safe, idempotent retry — NOT a double-execution risk. A future
+            // side-effecting local tool MUST be registered with
+            // readOnly:false so this rethrows instead (see
+            // localTools/index.ts's module doc) — "committed once started",
+            // same discipline as agentLoopRunner.ts's RunSession.committed.
+            if (!isLocalToolReadOnly(name)) throw err;
+          }
         }
+        // Not approved (denied, or approval.check itself failed) — local
+        // execute() was NEVER invoked, so falling through to the reverse
+        // tool.invoke path below is always safe (nothing to double-execute).
       }
       const result = (await sendRequest('tool.invoke', {
         runId,

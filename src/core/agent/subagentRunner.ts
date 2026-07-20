@@ -74,6 +74,9 @@ import {
   SidecarRequestError,
 } from '../sidecar/sidecarManager';
 import { runSubagentLoop, SubagentResult, type SubagentLoopOptions, type SubagentProgressEvent } from './subagentLoop';
+import { createLogger } from '../logging/logger';
+
+const logger = createLogger('subagent-transport');
 import { getToolInvoker } from './ports/toolInvoker';
 import { getSettingsReader } from './ports/settingsReader';
 import { getWorkspaceReader } from './ports/workspaceReader';
@@ -325,20 +328,26 @@ function reconstructSubagentResult(raw: unknown): SubagentResult {
  */
 export async function runSubagent(options: SubagentLoopOptions): Promise<SubagentResult> {
   if (getSidecarStatus() !== 'running') {
+    logger.debug('subagent path selected', { path: 'local', sidecarStatus: getSidecarStatus() });
     return runSubagentLoop(options);
   }
 
   ensureHandlersRegistered();
 
   const runId = generateRunId();
+  logger.debug('subagent path selected', { path: 'sidecar', runId, agent: options.agent?.name });
 
   let params: SubagentRunParams;
   try {
     params = buildSubagentRunParams(runId, options);
-  } catch {
+  } catch (err) {
     // Failed before any dispatch — no tool has executed. Fall back to the
     // in-process engine, which hits the identical real error path (e.g.
     // EnterpriseLlmUnavailableError) itself. See buildSubagentRunParams's doc.
+    logger.warn('subagent params build failed — running in-process', {
+      runId,
+      error: err instanceof Error ? err.message : String(err),
+    });
     return runSubagentLoop(options);
   }
 
@@ -373,8 +382,16 @@ export async function runSubagent(options: SubagentLoopOptions): Promise<Subagen
   } catch (err) {
     if (!session.firstToolInvokeArrived) {
       // Nothing executed yet — safe to retry the whole run in-process.
+      logger.warn('subagent transport failed before first tool — retrying in-process', {
+        runId,
+        error: err instanceof Error ? err.message : String(err),
+      });
       return runSubagentLoop(options);
     }
+    logger.warn('subagent transport failed after tool execution — surfacing error, no rerun', {
+      runId,
+      error: err instanceof Error ? err.message : String(err),
+    });
     // At least one tool already ran with (possibly real) side effects —
     // surface as a failed result, matching the shape runSubagentLoop's own
     // outer catch produces today. NO rerun.

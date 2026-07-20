@@ -53,6 +53,9 @@ export interface ExecutionPort {
   cancelExecution(execId: string): void;
   /** Mirrors taskExecutionStore's `getExecutionByLoopId`. */
   getExecutionByLoopId(loopId: string): TaskExecution | undefined;
+  /** Mirrors taskExecutionStore's `getExecutionByConversationId` (added
+   *  P1-3b-1 — plannedStepsPrompt.ts's DI seam, see that module). */
+  getExecutionByConversationId(conversationId: string): TaskExecution | undefined;
   /** Mirrors taskExecutionStore's `evictExecution`. */
   evictExecution(execId: string): void;
 
@@ -91,6 +94,7 @@ export function createInProcessExecutionPort(): ExecutionPort {
       useTaskExecutionStore.getState().createExecution(conversationId, loopId),
     cancelExecution: (execId) => useTaskExecutionStore.getState().cancelExecution(execId),
     getExecutionByLoopId: (loopId) => useTaskExecutionStore.getState().getExecutionByLoopId(loopId),
+    getExecutionByConversationId: (conversationId) => useTaskExecutionStore.getState().getExecutionByConversationId(conversationId),
     evictExecution: (execId) => useTaskExecutionStore.getState().evictExecution(execId),
 
     completeExecution: (execId) => useTaskExecutionStore.getState().completeExecution(execId),

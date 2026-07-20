@@ -3,7 +3,7 @@ import { agentRegistry } from './registry';
 import { skillLoader } from '../skill/loader';
 import { loadAllRules } from './projectRules';
 import { loadSoul } from './soulConfig';
-import { getDefaultSoul } from './agentLoop';
+import { getDefaultSoul } from './prompts/defaultSoul';
 import { useSettingsStore } from '../../stores/settingsStore';
 import { getSettingsReader } from './ports/settingsReader';
 import { getWorkspaceReader } from './ports/workspaceReader';

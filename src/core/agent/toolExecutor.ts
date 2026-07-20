@@ -9,8 +9,8 @@
  */
 
 import type { ToolCall, ToolResultContent, ToolExecutionContext, ToolResult } from '../../types';
-import type { ConfirmationInfo, FilePermissionCallback } from '../tools/registry';
-import { executeAnyTool, toolResultToString } from '../tools/registry';
+import type { ConfirmationInfo } from '../tools/commandSafety';
+import type { FilePermissionCallback, ToolInvoker } from './ports/toolInvoker';
 import { processToolResult } from '../session/sessionMemory';
 import { evaluatePlanGate, getPlanMode } from './planMode';
 import { emitHook } from './lifecycleHooks';
@@ -68,6 +68,9 @@ export interface ToolBatchParams {
   confirmCb: (info: ConfirmationInfo) => Promise<boolean>;
   filePermCb: FilePermissionCallback;
   toolContext: ToolExecutionContext;
+  /** ToolInvoker port instance, resolved once by the caller (agentLoop.ts)
+   *  and threaded in — same discipline as the other resolve-once locals. */
+  toolInvoker: ToolInvoker;
   /** Whether the loop will continue (tool_use stop reason) */
   continueLoop: boolean;
   /** Current context window usage (0-100). Scales tool result truncation under pressure. */
@@ -113,6 +116,7 @@ export async function executeToolBatch(params: ToolBatchParams): Promise<ToolBat
     toolContext,
     continueLoop,
     contextUsagePercent,
+    toolInvoker,
   } = params;
 
   const chatDelta = getChatDelta();
@@ -203,7 +207,7 @@ export async function executeToolBatch(params: ToolBatchParams): Promise<ToolBat
           }
         };
         abortController.signal.addEventListener('abort', onAbort, { once: true });
-        executeAnyTool(tc.name, effectiveInput, confirmCb, filePermCb, { ...toolContext, toolCallId: tc.id }, contextUsagePercent)
+        toolInvoker.executeAnyTool(tc.name, effectiveInput, confirmCb, filePermCb, { ...toolContext, toolCallId: tc.id }, contextUsagePercent)
           .then((result) => {
             if (!settled) {
               settled = true;
@@ -225,7 +229,7 @@ export async function executeToolBatch(params: ToolBatchParams): Promise<ToolBat
         chatDelta.setAgentStatus('tool-calling', `${completedCount}/${totalCount}: ${tc.name}`);
       }
       // Extract string for display/hooks; keep rich content for LLM
-      const resultStr = toolResultToString(rawResult);
+      const resultStr = toolInvoker.toolResultToString(rawResult);
       const resultContent: ToolResultContent[] | undefined =
         typeof rawResult !== 'string' ? rawResult : undefined;
       // Emit postToolCall hook

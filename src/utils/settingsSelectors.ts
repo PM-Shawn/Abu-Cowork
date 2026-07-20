@@ -25,8 +25,13 @@
  * `loopGuards.ts`'s `escalateMaxOutputTokens`/`shouldContinueTruncatedToolCalls`
  * move (see P1-3a-pre-REPORT.md §1).
  *
- * `settingsStore.ts` re-exports all three unchanged so no existing importer
- * needs to change; this file is the source of truth going forward.
+ * `settingsStore.ts` re-exports all five (see below) unchanged so no
+ * existing importer needs to change; this file is the source of truth going
+ * forward.
+ *
+ * `getEffectiveModel`/`providerRequiresApiKey` (P1-3b-1, added alongside the
+ * original three — same purity verification, same relocation pattern) were
+ * previously at settingsStore.ts:492-500 (pre-relocation line numbers).
  */
 import type { SettingsState } from '../stores/settingsStore';
 import type { ProviderInstance } from '../types/provider';
@@ -52,4 +57,15 @@ export function resolveAgentModel(agentModel: string | undefined, state: Setting
   }
   // Incompatible → fall back to global
   return globalModel;
+}
+
+/** Whether the current provider requires an API key (backward-compatible) */
+export function providerRequiresApiKey(state: SettingsState): boolean {
+  const id = state.activeModel.providerId;
+  return id !== 'ollama' && id !== 'lmstudio';
+}
+
+/** Returns the effective model ID (backward-compatible) */
+export function getEffectiveModel(state: SettingsState): string {
+  return state.activeModel.modelId;
 }

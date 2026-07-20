@@ -7,8 +7,21 @@ import { create } from 'zustand';
 import { immer } from 'zustand/middleware/immer';
 import { persist } from 'zustand/middleware';
 import { useShallow } from 'zustand/react/shallow';
-import { TOOL_NAMES } from '@/core/tools/toolNames';
-import { getI18n, format } from '@/i18n';
+// Relocated to a pure module so eventRouter.ts (and anything else that needs
+// zero store-graph coupling) can import them directly — see
+// scratchpadClassify.ts's module doc. Re-exported below unchanged.
+import {
+  generateScratchpadTitle,
+  inferScratchpadType,
+  shouldCaptureScratchpad,
+  truncateScratchpadContent,
+} from '../core/agent/scratchpadClassify';
+export {
+  generateScratchpadTitle,
+  inferScratchpadType,
+  shouldCaptureScratchpad,
+  truncateScratchpadContent,
+};
 
 export type ScratchpadEntryType = 'extraction' | 'analysis' | 'search' | 'summary' | 'preview';
 
@@ -183,87 +196,6 @@ export function useUnviewedScratchpadCount(conversationId: string | undefined) {
 }
 
 // --- Helper Functions for EventRouter Integration ---
-
-/**
- * Generate scratchpad entry title from tool call
- */
-export function generateScratchpadTitle(
-  _toolName: string,
-  toolInput: Record<string, unknown>,
-  type: ScratchpadEntryType
-): string {
-  const path = (toolInput.path || toolInput.file_path || toolInput.filePath) as string | undefined;
-  const fileName = path ? path.split(/[/\\]/).pop() : undefined;
-  const query = (toolInput.query || toolInput.pattern) as string | undefined;
-
-  const s = getI18n().scratchpad;
-  switch (type) {
-    case 'extraction':
-      return fileName ? format(s.extractionTitleFile, { file: fileName }) : s.extractionTitle;
-    case 'analysis':
-      return fileName ? format(s.analysisTitleFile, { file: fileName }) : s.analysisTitle;
-    case 'search': {
-      if (query) {
-        const truncated = query.slice(0, 30) + (query.length > 30 ? '...' : '');
-        return format(s.searchTitle, { query: truncated });
-      }
-      return s.searchResultsTitle;
-    }
-    case 'summary':
-      return fileName ? format(s.summaryTitleFile, { file: fileName }) : s.summaryTitle;
-    case 'preview':
-      return fileName ? format(s.previewTitleFile, { file: fileName }) : s.previewTitle;
-    default:
-      return s.resultTitle;
-  }
-}
-
-/**
- * Determine scratchpad entry type from tool name
- */
-export function inferScratchpadType(toolName: string): ScratchpadEntryType | null {
-  // File read tools → extraction
-  if ([TOOL_NAMES.READ_FILE, 'read', 'get_file_contents'].includes(toolName)) {
-    return 'extraction';
-  }
-
-  // Search tools → search
-  if ([TOOL_NAMES.WEB_SEARCH, 'search', 'grep', 'find'].includes(toolName)) {
-    return 'search';
-  }
-
-  // List directory → preview
-  if (toolName === TOOL_NAMES.LIST_DIRECTORY) {
-    return 'preview';
-  }
-
-  return null;
-}
-
-/**
- * Should this tool result be captured in scratchpad?
- */
-export function shouldCaptureScratchpad(
-  toolName: string,
-  result: string
-): boolean {
-  const type = inferScratchpadType(toolName);
-  if (!type) return false;
-
-  // Only capture if result is substantial (not just a status message)
-  const minLength = 100;
-  if (result.length < minLength) return false;
-
-  // Don't capture error results
-  if (result.toLowerCase().startsWith('error:')) return false;
-
-  return true;
-}
-
-/**
- * Truncate content for scratchpad preview
- */
-export function truncateScratchpadContent(content: string, maxLength: number = 2000): string {
-  if (content.length <= maxLength) return content;
-  return content.slice(0, maxLength) + `\n\n... (${content.length - maxLength} more characters)`;
-}
+// generateScratchpadTitle / inferScratchpadType / shouldCaptureScratchpad /
+// truncateScratchpadContent now live in ../core/agent/scratchpadClassify.ts
+// (see import + re-export above).

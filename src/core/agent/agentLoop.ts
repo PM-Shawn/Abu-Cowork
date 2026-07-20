@@ -3,9 +3,10 @@ import type { LLMAdapter } from '../llm/adapter';
 import { LLMError, formatLlmDisplayError } from '../llm/adapter';
 import { recordProviderCallOutcome, isConfigFailureCode } from '../llm/providerCallHealth';
 import { selectChatAdapter } from '../llm/selectChatAdapter';
-import { getAllTools, type ConfirmationInfo, type FilePermissionCallback } from '../tools/registry';
+import { getToolInvoker, type ToolInvoker, type FilePermissionCallback } from './ports/toolInvoker';
+import type { ConfirmationInfo } from '../tools/commandSafety';
 import type { ToolDefinition } from '../../types';
-import { getEffectiveModel, getActiveApiKey, getActiveProvider, resolveAgentModel, providerRequiresApiKey } from '../../stores/settingsStore';
+import { getEffectiveModel, getActiveApiKey, getActiveProvider, resolveAgentModel, providerRequiresApiKey } from '../../utils/settingsSelectors';
 import { getSettingsReader, type SettingsReader } from './ports/settingsReader';
 import { getChatDelta } from './ports/chatDelta';
 import { getConversationReader } from './ports/conversationReader';
@@ -215,30 +216,12 @@ export function persistExecutionSnapshot(conversationId: string, loopId: string)
 }
 
 /**
- * Abu's default soul — factory personality.
- * Used when ~/.abu/SOUL.md is empty or doesn't exist.
- * Exported so orchestrator can use it as fallback.
+ * Abu's default soul — factory personality. Relocated to
+ * `./prompts/defaultSoul` to break the agentLoop.ts ↔ orchestrator.ts import
+ * cycle (see that module's doc comment). Re-exported here so any existing
+ * external callers of `getDefaultSoul` from `agentLoop.ts` keep working.
  */
-export function getDefaultSoul(): string {
-  return `You are Abu (阿布), a professional, reliable, easy-to-talk-to desktop AI assistant. Your job is to help the user get all kinds of work done efficiently — file management, finding information, content creation, everyday office tasks — you can lend a hand with anything.
-
-## Core principles
-- Natural, conversational tone, like a reliable friend helping out: not stuffy, but not cutesy either
-- Positive and pragmatic: when something breaks, offer a fix; when a task is done, give a brief report — no excessive reassurance or praise
-- Refer to yourself as "Abu" (阿布) or "I"; do not use kaomoji or emoji
-- Keep replies concise, clear, and focused: neither aloof nor long-winded
-
-## Reply style — concise and direct
-- **Focus on the result, not the process**: the tool-call process is already shown in the UI; don't restate it in text
-- **No technical jargon**: don't mention the OS type, programming languages, the command line, API names, or tool names
-- **No implementation details**: don't say "I'll use Python to...", "let me get the system info first...", or "on the xxx system..."
-- **Short reply examples**:
-  - Opened a website → "Opened Xiaohongshu for you"
-  - Finished → "Done"
-  - Read a file → "Took a look — this file is..."
-  - Something failed → "Didn't work: [brief reason]. Want me to try again?"
-- **Exceptions** (detail is fine): the user explicitly asks "how did you do it", a task failed and needs an explanation, or a complex task needs step-by-step confirmation`;
-}
+export { getDefaultSoul } from './prompts/defaultSoul';
 
 /**
  * The "Visual output" capability section — two variants, selected on the
@@ -434,12 +417,13 @@ function generateId(): string {
  * Returns { tools, inputValidators } where inputValidators are used at execution time.
  */
 function resolveTools(
+  toolInvoker: ToolInvoker,
   route: RouteResult,
   hasBuiltinWebSearch: boolean,
   blockedTools?: string[],
   prefetchContext?: { userInput: string; computerUseEnabled: boolean; activeSkills: import('../../types').Skill[]; turnCount: number },
 ): { tools: ToolDefinition[]; deferredTools: ToolDefinition[]; inputValidators: Map<string, (input: Record<string, unknown>) => boolean> } {
-  let tools = getAllTools();
+  let tools = toolInvoker.getAllTools();
   let inputValidators = new Map<string, (input: Record<string, unknown>) => boolean>();
   let deferredTools: ToolDefinition[] = [];
 
@@ -580,6 +564,10 @@ export interface AgentLoopOptions {
   /** Settings port — defaults to the in-process Zustand-backed reader. Injection point for
    *  a future out-of-process agent runtime (see SettingsReader docstring). */
   settingsReader?: SettingsReader;
+  /** Pre-computed orchestration inputs (route + system prompt sections). Injection point for
+   *  the out-of-process runtime: the shell dispatch layer computes these (orchestrator stays
+   *  shell-side) and injects; when absent, the loop computes them in-process exactly as before. */
+  orchestration?: { route: RouteResult; systemPromptSections: PromptSection[] };
 }
 
 /** Exit reason returned by runAgentLoop so callers (scheduler, trigger) can
@@ -696,6 +684,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
   // calls, same as before.
   const abortRegistry = getAbortRegistry();
   const chatDelta = getChatDelta();
+  const toolInvoker = getToolInvoker();
   const settings = settingsReader.getSnapshot();
   // `executionPort` now covers BOTH the lifecycle calls (createExecution/
   // cancelExecution below) AND the step-mutation family threaded into
@@ -776,8 +765,11 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
   // Set conversation status to running
   chatDelta.setConversationStatus(conversationId, 'running');
 
-  // Route the input through the orchestrator
-  const route = routeInput(userMessage);
+  // Route the input through the orchestrator — unless the shell dispatch layer
+  // already pre-computed it (out-of-process runtime injection seam, see
+  // AgentLoopOptions.orchestration's doc comment). Zero behavior change when
+  // not injected: same routeInput call as before.
+  const route = options?.orchestration?.route ?? routeInput(userMessage);
 
   // Refresh skill content from disk to ensure latest version
   if (route.type === 'skill' && route.skill?.filePath) {
@@ -829,7 +821,9 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
   // capability prompt's visual-output section branches on the model's tool
   // support: no-tools models get the fence variant since tools=[] for them
   // (the per-turn `noTools` gate resolves the same declared value).
-  const systemPromptSections = await buildSystemPromptSections(
+  // Same injection seam as `route` above — only await the computed path when
+  // the shell hasn't already supplied pre-computed sections.
+  const systemPromptSections = options?.orchestration?.systemPromptSections ?? await buildSystemPromptSections(
     route,
     getCapabilityPrompt({ supportsTools: entryModelDeclared?.supportsTools !== false }),
     conversationId,
@@ -881,7 +875,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
 
   // Validate required tools are available (blocking check — one-time at start)
   if (route.type === 'skill' && route.skill?.requiredTools) {
-    const initialTools = getAllTools();
+    const initialTools = toolInvoker.getAllTools();
     const availableNames = new Set(initialTools.map(t => t.name));
     const missing = route.skill.requiredTools.filter(t => !availableNames.has(t));
     if (missing.length > 0) {
@@ -1273,7 +1267,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
         activeSkills: activeSkillObjects,
         turnCount,
       };
-      const { tools: rawTools, deferredTools: rawDeferredTools, inputValidators } = resolveTools(route, !!builtinWebSearch, options?.blockedTools, prefetchCtx);
+      const { tools: rawTools, deferredTools: rawDeferredTools, inputValidators } = resolveTools(toolInvoker, route, !!builtinWebSearch, options?.blockedTools, prefetchCtx);
       const tools = noTools ? [] : rawTools;
       const deferredTools = noTools ? [] : rawDeferredTools;
       const toolTokens = estimateToolSchemaTokens(tools);
@@ -2002,6 +1996,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
           toolContext,
           continueLoop,
           contextUsagePercent: usagePercent,
+          toolInvoker,
         });
 
         // ★ Persist this turn's full message state (including completed tool calls)
@@ -2029,7 +2024,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
           // (line ~1304). Without it, freshTools is the full unfiltered catalog
           // while `tools` is the prefetched subset, so every deferred tool shows
           // up as falsely "added" in the injected tools-changed notification.
-          const { tools: freshRawTools } = resolveTools(route, !!builtinWebSearch, options?.blockedTools, prefetchCtx);
+          const { tools: freshRawTools } = resolveTools(toolInvoker, route, !!builtinWebSearch, options?.blockedTools, prefetchCtx);
           const freshTools = noTools ? [] : freshRawTools;
           const freshNames = new Set(freshTools.map(t => t.name));
           const added = freshTools.filter(t => !toolNames.has(t.name));

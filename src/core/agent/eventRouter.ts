@@ -25,7 +25,7 @@ import {
   inferScratchpadType,
   generateScratchpadTitle,
   truncateScratchpadContent,
-} from '../../stores/scratchpadStore';
+} from './scratchpadClassify';
 import { parseSearchResults } from '../../utils/searchParser';
 import { isToolResultError } from '../../utils/workflowExtractor';
 import { getToolLabel } from '../../utils/toolLabels';

@@ -67,6 +67,17 @@ describe('createInProcessExecutionPort', () => {
     expect(port.getExecutionByLoopId('does-not-exist')).toBeUndefined();
   });
 
+  it('getExecutionByConversationId() finds the execution created for that conversationId', () => {
+    const port = createInProcessExecutionPort();
+    const exec = port.createExecution('conv-99', 'loop-1');
+    expect(port.getExecutionByConversationId('conv-99')?.id).toBe(exec.id);
+  });
+
+  it('getExecutionByConversationId() returns undefined for an unknown conversationId', () => {
+    const port = createInProcessExecutionPort();
+    expect(port.getExecutionByConversationId('does-not-exist')).toBeUndefined();
+  });
+
   it('evictExecution() removes a non-running execution from the store', () => {
     const port = createInProcessExecutionPort();
     const exec = port.createExecution('conv-1', 'loop-1');
@@ -206,6 +217,7 @@ describe('getExecutionPort / setExecutionPort', () => {
       }),
       cancelExecution: () => {},
       getExecutionByLoopId: () => undefined,
+      getExecutionByConversationId: () => undefined,
       evictExecution: () => {},
       completeExecution: () => {},
       errorExecution: () => {},

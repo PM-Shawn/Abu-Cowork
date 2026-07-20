@@ -1,24 +1,46 @@
 import { useTaskExecutionStore } from '@/stores/taskExecutionStore';
-import type { TaskExecution } from '@/types/execution';
+import type { TaskExecution, ExecutionStep, DetailBlock } from '@/types/execution';
+import type { TokenUsage } from '@/types';
 import { createPortSlot } from './portSlot';
 
 /**
- * Port abstracting agentLoop's directly-invoked execution *lifecycle* calls
- * on taskExecutionStore: creating a TaskExecution at loop start, cancelling
- * it at each early-exit point, and — from the standalone module-level
- * `persistExecutionSnapshot` function — looking one up by loopId and
- * evicting it from memory once its steps have been persisted onto the
- * conversation.
+ * Port abstracting agentLoop's directly-invoked execution calls on
+ * taskExecutionStore — both the *lifecycle* calls (creating a TaskExecution
+ * at loop start, cancelling it at each early-exit point, and — from the
+ * standalone module-level `persistExecutionSnapshot` function — looking one
+ * up by loopId and evicting it from memory once its steps have been
+ * persisted onto the conversation) AND, as of P1-3b-pre, the *step-mutation*
+ * family `eventRouter.ts` calls on the `executionStore` it's constructed
+ * with.
  *
  * Scope note (see C-REPORT.md for the full agentLoop store-coupling
- * inventory): this port does NOT cover —
- *  - the step-level snapshot writes (`setExecutionStepsSnapshot` /
- *    `setPlannedStepsSnapshot`) — those already went through `ChatDelta` in
- *    an earlier batch (see chatDelta.ts's "Discrete family").
+ * inventory, and P1-3b-pre-REPORT.md for why the step-mutation family was
+ * folded in here rather than left as a raw store capture):
+ *  - the step-level *snapshot* writes (`setExecutionStepsSnapshot` /
+ *    `setPlannedStepsSnapshot`) already go through `ChatDelta` (see
+ *    chatDelta.ts's "Discrete family") — those are a different concern
+ *    (persisting a finished execution's steps onto a chat message), not
+ *    the live per-event step mutations below.
  *  - the `executionStore` reference threaded into `createEventRouter`'s
- *    `deps` in agentLoop.ts — that's a distinct dependency-injection seam
- *    for event-routing step mutations (addStep/updateStepStatus/etc.),
- *    intentionally left alone for a later batch.
+ *    `deps` in agentLoop.ts used to be a raw `useTaskExecutionStore.getState()`
+ *    capture, deliberately left alone by the C batch ("那是 D 块的事" — see
+ *    C-REPORT.md §"Deliberately NOT touched"). P1-3b-pre is that later batch:
+ *    `EventRouterDeps.executionStore` is now typed as this same `ExecutionPort`
+ *    (see eventRouter.ts), and agentLoop.ts passes its `executionPort` local
+ *    straight through — no more separate `taskExecutionStore` local, no more
+ *    dual-use split.
+ *  - `eventRouter.ts` does NOT need every `TaskExecutionStore` method — only
+ *    the 13 it actually calls (verified by grep, not assumed:
+ *    `createExecution`/`getExecutionByLoopId` already existed here;
+ *    `appendThinking`/`setThinkingDuration`/`addStep`/`setStepResult`/
+ *    `setStepError`/`addDetailBlock`/`setUsage`/`completeExecution`/
+ *    `errorExecution`/`addChildStep`/`updateChildStep` are the 11 new ones
+ *    below). `updateStepStatus`/`updateStepProgress`/`toggleDetailExpanded`/
+ *    `updateDetailBlockContent`/`setThinking`/`setPlannedSteps`/
+ *    `markPlanParsed`/the query family beyond `getExecutionByLoopId`/
+ *    `clearConversation`/`clearAll` are NOT used by either agentLoop.ts or
+ *    eventRouter.ts and are deliberately NOT added — this port stays a
+ *    precise mirror of consumed surface, not the full store shape.
  *
  * Same call-time-not-cached discipline as the other ports in this
  * directory: every method re-fetches `useTaskExecutionStore.getState()` at
@@ -33,6 +55,30 @@ export interface ExecutionPort {
   getExecutionByLoopId(loopId: string): TaskExecution | undefined;
   /** Mirrors taskExecutionStore's `evictExecution`. */
   evictExecution(execId: string): void;
+
+  // ── Step-mutation family (added P1-3b-pre — eventRouter.ts's DI seam) ──
+  /** Mirrors taskExecutionStore's `completeExecution`. */
+  completeExecution(execId: string): void;
+  /** Mirrors taskExecutionStore's `errorExecution`. */
+  errorExecution(execId: string, error: string): void;
+  /** Mirrors taskExecutionStore's `addStep`. */
+  addStep(execId: string, step: ExecutionStep): void;
+  /** Mirrors taskExecutionStore's `setStepResult`. */
+  setStepResult(execId: string, stepId: string, result: string): void;
+  /** Mirrors taskExecutionStore's `setStepError`. */
+  setStepError(execId: string, stepId: string, error: string): void;
+  /** Mirrors taskExecutionStore's `addChildStep`. */
+  addChildStep(execId: string, parentStepId: string, childStep: ExecutionStep): void;
+  /** Mirrors taskExecutionStore's `updateChildStep`. */
+  updateChildStep(execId: string, parentStepId: string, childStepId: string, result: string, error?: boolean): void;
+  /** Mirrors taskExecutionStore's `addDetailBlock`. */
+  addDetailBlock(execId: string, stepId: string, block: DetailBlock): void;
+  /** Mirrors taskExecutionStore's `appendThinking`. */
+  appendThinking(execId: string, content: string): void;
+  /** Mirrors taskExecutionStore's `setThinkingDuration`. */
+  setThinkingDuration(execId: string, duration: number): void;
+  /** Mirrors taskExecutionStore's `setUsage`. */
+  setUsage(execId: string, usage: TokenUsage): void;
 }
 
 /** Default in-process implementation over the Zustand store's synchronous
@@ -46,6 +92,20 @@ export function createInProcessExecutionPort(): ExecutionPort {
     cancelExecution: (execId) => useTaskExecutionStore.getState().cancelExecution(execId),
     getExecutionByLoopId: (loopId) => useTaskExecutionStore.getState().getExecutionByLoopId(loopId),
     evictExecution: (execId) => useTaskExecutionStore.getState().evictExecution(execId),
+
+    completeExecution: (execId) => useTaskExecutionStore.getState().completeExecution(execId),
+    errorExecution: (execId, error) => useTaskExecutionStore.getState().errorExecution(execId, error),
+    addStep: (execId, step) => useTaskExecutionStore.getState().addStep(execId, step),
+    setStepResult: (execId, stepId, result) => useTaskExecutionStore.getState().setStepResult(execId, stepId, result),
+    setStepError: (execId, stepId, error) => useTaskExecutionStore.getState().setStepError(execId, stepId, error),
+    addChildStep: (execId, parentStepId, childStep) =>
+      useTaskExecutionStore.getState().addChildStep(execId, parentStepId, childStep),
+    updateChildStep: (execId, parentStepId, childStepId, result, error) =>
+      useTaskExecutionStore.getState().updateChildStep(execId, parentStepId, childStepId, result, error),
+    addDetailBlock: (execId, stepId, block) => useTaskExecutionStore.getState().addDetailBlock(execId, stepId, block),
+    appendThinking: (execId, content) => useTaskExecutionStore.getState().appendThinking(execId, content),
+    setThinkingDuration: (execId, duration) => useTaskExecutionStore.getState().setThinkingDuration(execId, duration),
+    setUsage: (execId, usage) => useTaskExecutionStore.getState().setUsage(execId, usage),
   };
 }
 

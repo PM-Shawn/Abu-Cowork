@@ -5,7 +5,6 @@ import { recordProviderCallOutcome, isConfigFailureCode } from '../llm/providerC
 import { selectChatAdapter } from '../llm/selectChatAdapter';
 import { getAllTools, type ConfirmationInfo, type FilePermissionCallback } from '../tools/registry';
 import type { ToolDefinition } from '../../types';
-import { useChatStore } from '../../stores/chatStore';
 import { getEffectiveModel, getActiveApiKey, getActiveProvider, resolveAgentModel, providerRequiresApiKey } from '../../stores/settingsStore';
 import { getSettingsReader, type SettingsReader } from './ports/settingsReader';
 import { getChatDelta } from './ports/chatDelta';
@@ -13,8 +12,8 @@ import { getConversationReader } from './ports/conversationReader';
 import { getWorkspaceReader } from './ports/workspaceReader';
 import { getCapsPort } from './ports/capsPort';
 import { getExecutionPort } from './ports/executionPort';
-import { useTaskExecutionStore } from '../../stores/taskExecutionStore';
-import { useScratchpadStore } from '../../stores/scratchpadStore';
+import { getAbortRegistry } from './ports/abortRegistry';
+import { getScratchpadPort } from './ports/scratchpadPort';
 import { createEventRouter } from './eventRouter';
 import { routeInput, buildSystemPromptSections, type RouteResult, type IMContext } from './orchestrator';
 import type { PromptSection } from '../llm/promptSections';
@@ -673,7 +672,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
     const runningConv = getConversationReader().getConversation(conversationId);
     if (
       runningConv?.status === 'running'
-      && useChatStore.getState().hasAbortController(conversationId)
+      && getAbortRegistry().hasAbortController(conversationId)
       && isInteractiveDesktop(options, runningConv)
       && userMessage.trim().length > 0
       && !(options?.images?.length)
@@ -689,21 +688,21 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
   // New turn starts clean: drop any stale plan-mode lock from a prior/abandoned plan (see planMode.ts).
   clearPlanMode(conversationId);
 
-  // NOTE: only the AbortController trio (control channel, deliberately excluded
-  // from both ChatDelta and ConversationReader — see B1-REPORT.md / this batch's
-  // report) still reads through this cached local. All conversation-data reads
-  // below go through fresh `getConversationReader()` calls instead.
-  const chatStore = useChatStore.getState();
+  // NOTE: the AbortController trio (control channel, deliberately excluded
+  // from both ChatDelta and ConversationReader — see B1-REPORT.md) now goes
+  // through the AbortRegistry port (P1-3b-pre) instead of a cached
+  // `useChatStore.getState()` local — see ports/abortRegistry.ts. All
+  // conversation-data reads below go through fresh `getConversationReader()`
+  // calls, same as before.
+  const abortRegistry = getAbortRegistry();
   const chatDelta = getChatDelta();
   const settings = settingsReader.getSnapshot();
-  // NOTE: `taskExecutionStore` here stays a direct `useTaskExecutionStore.getState()`
-  // capture (not routed through ExecutionPort) — it's threaded as-is into
-  // `createEventRouter`'s `deps.executionStore` below, a distinct injection
-  // seam for event-routing step mutations that's out of scope for this batch
-  // (see executionPort.ts's "Scope note" and C-REPORT.md). The lifecycle
-  // calls (createExecution/cancelExecution) go through `executionPort`
-  // instead, right below.
-  const taskExecutionStore = useTaskExecutionStore.getState();
+  // `executionPort` now covers BOTH the lifecycle calls (createExecution/
+  // cancelExecution below) AND the step-mutation family threaded into
+  // `createEventRouter`'s `deps.executionStore` (P1-3b-pre widened
+  // ExecutionPort to cover eventRouter.ts's full call surface — see
+  // executionPort.ts's "Scope note"). No more separate `taskExecutionStore`
+  // local / dual-use split.
   const executionPort = getExecutionPort();
 
   // ── Per-conversation model pin ──────────────────────────────────────────
@@ -727,12 +726,12 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
 
   // Create EventRouter for this execution
   const eventRouter = createEventRouter({
-    executionStore: taskExecutionStore,
+    executionStore: executionPort,
     appendToolCallContext: (loopId, context) => {
       chatDelta.appendToolCallContext(conversationId, loopId, context);
     },
     addScratchpadEntry: (entry) => {
-      useScratchpadStore.getState().addEntry(entry);
+      getScratchpadPort().addEntry(entry);
     },
   });
 
@@ -771,8 +770,8 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
 
   // Get abort controller for this conversation.
   // Force-clear any stale controller first to avoid inheriting aborted state from a previous run.
-  chatStore.clearAbortController(conversationId);
-  const abortController = chatStore.getAbortController(conversationId);
+  abortRegistry.clearAbortController(conversationId);
+  const abortController = abortRegistry.getAbortController(conversationId);
 
   // Set conversation status to running
   chatDelta.setConversationStatus(conversationId, 'running');
@@ -972,7 +971,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
         chatDelta.removeActiveAgent(delegateAgent.name);
         chatDelta.setAgentStatus('idle');
         chatDelta.cancelStreaming(conversationId);
-        chatStore.clearAbortController(conversationId);
+        abortRegistry.clearAbortController(conversationId);
         executionPort.cancelExecution(execution.id);
         chatDelta.setConversationStatus(conversationId, 'idle');
         return { reason: 'aborted' };
@@ -1002,7 +1001,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
       // or duplicate the assistant message (when the user line was still in
       // the queue) — leaving the user bubble missing after reload.
       chatDelta.finishStreaming(conversationId, delegateAssistantId);
-      chatStore.clearAbortController(conversationId);
+      abortRegistry.clearAbortController(conversationId);
       eventRouter.route({ type: 'done', loopId, reason: 'delegate_complete' });
       persistExecutionSnapshot(conversationId, loopId);
       chatDelta.setAgentStatus('idle');
@@ -1025,7 +1024,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
           || (err instanceof LLMError && err.code === 'cancelled'));
       if (isUserAbort) {
         chatDelta.cancelStreaming(conversationId);
-        chatStore.clearAbortController(conversationId);
+        abortRegistry.clearAbortController(conversationId);
         executionPort.cancelExecution(execution.id);
         chatDelta.setConversationStatus(conversationId, 'idle');
         return { reason: 'aborted' };
@@ -1049,7 +1048,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
         loopId,
       });
       chatDelta.finishStreaming(conversationId, delegateErrorId);
-      chatStore.clearAbortController(conversationId);
+      abortRegistry.clearAbortController(conversationId);
       eventRouter.route({ type: 'error', loopId, error: errorMessage });
       persistExecutionSnapshot(conversationId, loopId);
       chatDelta.setConversationStatus(conversationId, 'error');
@@ -1128,7 +1127,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
     // Check if cancelled before starting new turn
     if (abortController.signal.aborted) {
       chatDelta.cancelStreaming(conversationId);
-      chatStore.clearAbortController(conversationId);
+      abortRegistry.clearAbortController(conversationId);
       executionPort.cancelExecution(execution.id);
       deactivateAllSkills(conversationId);
       chatDelta.setConversationStatus(conversationId, 'idle');
@@ -1192,7 +1191,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
         loopId,
       });
       chatDelta.finishStreaming(conversationId, maxTurnsMsgId);
-      chatStore.clearAbortController(conversationId);
+      abortRegistry.clearAbortController(conversationId);
       eventRouter.route({ type: 'done', loopId, reason: 'max_turns' });
       persistExecutionSnapshot(conversationId, loopId);
       chatDelta.setConversationStatus(conversationId, 'completed');
@@ -2151,7 +2150,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
           );
         }
         chatDelta.finishStreaming(conversationId, assistantMsgId);
-        chatStore.clearAbortController(conversationId);
+        abortRegistry.clearAbortController(conversationId);
         const endReason = noProgressAborted
           ? 'no_progress'
           : maxTokensRecoveryExhausted ? 'max_tokens_exhausted' : 'end_turn';
@@ -2327,7 +2326,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
         }
 
         chatDelta.cancelStreaming(conversationId);
-        chatStore.clearAbortController(conversationId);
+        abortRegistry.clearAbortController(conversationId);
         // Cancel the TaskExecution
         executionPort.cancelExecution(execution.id);
         // Auto-deactivate skills on abort
@@ -2400,7 +2399,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
         assistantMsgId
       );
       chatDelta.finishStreaming(conversationId, assistantMsgId);
-      chatStore.clearAbortController(conversationId);
+      abortRegistry.clearAbortController(conversationId);
       // Error the TaskExecution
       eventRouter.route({ type: 'error', loopId, error: errorMessage });
       persistExecutionSnapshot(conversationId, loopId);

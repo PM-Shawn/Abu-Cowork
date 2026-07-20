@@ -10,6 +10,7 @@ import { clearInputQueue } from '../core/agent/userInputQueue';
 import { clearSkillHooksByConversation } from '../core/tools/builtins';
 import { clearPlanMode } from '../core/agent/planMode';
 import { setComputerUseActive } from '../core/agent/computerUseStatus';
+import { isConversationRunningInSidecar } from '../core/agent/sidecarRunPredicate';
 import type { ConversationMeta } from '../core/session/conversationStorage';
 import type { ShareBundle } from '../core/session/shareBundle';
 import type { PermissionMode } from '../core/permissions/permissionMode';
@@ -402,7 +403,13 @@ interface ChatActions {
   getAbortController: (convId: string) => AbortController;
   /** True when a live agent loop holds a controller for this conversation. */
   hasAbortController: (convId: string) => boolean;
-  cancelStreaming: (convId: string) => void;
+  /**
+   * `opts.fromSidecarFrame` is set ONLY by frameApplier.ts's special-cased
+   * dispatch of the sidecar's own authoritative "stopped" decoration frame
+   * (P1-3c-1) — never by a direct caller (Stop button et al). See this
+   * action's own doc for the full branching rationale.
+   */
+  cancelStreaming: (convId: string, opts?: { fromSidecarFrame?: boolean }) => void;
   clearAbortController: (convId: string) => void;
   /**
    * Clear a conversation's single-turn-lifecycle skill activation state
@@ -1239,7 +1246,45 @@ export const useChatStore = create<ChatStore>()(
 
       hasAbortController: (convId) => abortControllers.has(convId),
 
-      cancelStreaming: (convId) => {
+      cancelStreaming: (convId, opts) => {
+        // P1-3c-1 (design doc §3, "conversation-authority"): while a
+        // sidecar-hosted run owns this conversation, the SIDECAR is the
+        // run's single writer for the "stopped" decoration (marker /
+        // thinkingDuration / tool-cancel + the persist below) — it sends its
+        // own `cancelStreaming` frame from agentLoop.ts's abort catch, which
+        // frameApplier.ts re-applies onto THIS SAME action with
+        // `opts.fromSidecarFrame: true` (see that file's special case for
+        // 'cancelStreaming'). That frame is guaranteed to land after any of
+        // the run's own in-flight streamed text/tool-call frames (same
+        // coalescer FIFO), so its decoration can't race trailing content the
+        // way an immediate local mutate would.
+        //
+        // `opts.fromSidecarFrame` always takes the full path below
+        // unconditionally — that call IS the authoritative decoration, not a
+        // second guess of it, so no registry re-check is needed (and would
+        // be wrong: by the time the frame applies, the RunSession this
+        // predicate reads is typically STILL registered — unregistration
+        // only happens after the `agent.run` RPC resolves, which is later).
+        //
+        // A direct call (Stop button or any other in-process caller;
+        // `opts` undefined) checks `isConversationRunningInSidecar` — if a
+        // sidecar run is live, it must NOT also mutate/persist here (that
+        // would race the sidecar's own trailing frames); it only signals
+        // abort + clears its own UI-only overlay state, and returns.
+        if (!opts?.fromSidecarFrame && isConversationRunningInSidecar(convId)) {
+          const controller = abortControllers.get(convId);
+          if (controller) {
+            controller.abort();
+            abortControllers.delete(convId);
+          }
+          setComputerUseActive(false);
+          import('@tauri-apps/api/core').then(({ invoke }) => {
+            invoke('hide_screen_border').catch(() => {});
+            invoke('window_show').catch(() => {});
+          }).catch(() => {});
+          return;
+        }
+
         // Land any RAF-buffered stream tokens first, so the stop marker below
         // is appended AFTER the streamed text (and both get persisted). The
         // stop button reaches here before the aborted loop's own flush runs.

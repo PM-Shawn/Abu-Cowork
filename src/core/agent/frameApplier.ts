@@ -111,6 +111,22 @@ async function applyChatFrame(m: string, a: unknown[]): Promise<void> {
     return;
   }
   const delta = getChatDelta() as unknown as Record<string, (...args: unknown[]) => void>;
+  if (m === 'cancelStreaming') {
+    // P1-3c-1 special case (same discipline as createExecution/addEntry
+    // above — a known method, but NOT generic reflection): this frame is
+    // the sidecar's own authoritative "stopped" decoration (agentLoop.ts's
+    // abort catch → chatDelta.cancelStreaming), always applied in full.
+    // `fromSidecarFrame: true` bypasses chatStore.cancelStreaming's own
+    // "is a sidecar run still active" gate — this call IS that decoration,
+    // not a second guess of it (by the time this frame applies, the
+    // RunSession the gate reads is typically STILL registered, since
+    // unregistration only happens after the `agent.run` RPC resolves,
+    // later than this frame's delivery — see chatStore.ts's `cancelStreaming`
+    // doc and docs/2026-07-21-phase1-p3c-conversation-authority-design.md §3).
+    const [convId] = a as [string];
+    delta.cancelStreaming(convId, { fromSidecarFrame: true });
+    return;
+  }
   delta[m](...a);
 }
 

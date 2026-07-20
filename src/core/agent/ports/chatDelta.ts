@@ -64,8 +64,14 @@ export interface ChatDelta {
   flushTokens(convId?: string, msgId?: string): void;
   /** Mirrors chatStore's `finishStreaming`. */
   finishStreaming(convId: string, msgId?: string): void;
-  /** Mirrors chatStore's `cancelStreaming`. */
-  cancelStreaming(convId: string): void;
+  /**
+   * Mirrors chatStore's `cancelStreaming`. `opts.fromSidecarFrame` is set
+   * ONLY by frameApplier.ts's special-cased dispatch of the sidecar's own
+   * authoritative "stopped" decoration frame (P1-3c-1) — see chatStore.ts's
+   * `cancelStreaming` doc and
+   * docs/2026-07-21-phase1-p3c-conversation-authority-design.md §3.
+   */
+  cancelStreaming(convId: string, opts?: { fromSidecarFrame?: boolean }): void;
 
   // ── Reclaimed named actions (formerly raw setState escapes) ──
   /** Mirrors chatStore's `deactivateConversationSkills`. */
@@ -145,7 +151,7 @@ export function createInProcessChatDelta(): ChatDelta {
       useChatStore.getState().updateMessageThinkingDuration(convId, duration, msgId),
     flushTokens: (convId, msgId) => flushTokenBuffer(convId, msgId),
     finishStreaming: (convId, msgId) => useChatStore.getState().finishStreaming(convId, msgId),
-    cancelStreaming: (convId) => useChatStore.getState().cancelStreaming(convId),
+    cancelStreaming: (convId, opts) => useChatStore.getState().cancelStreaming(convId, opts),
     deactivateSkills: (convId) => useChatStore.getState().deactivateConversationSkills(convId),
     setMessageStreamingFlag: (convId, messageId, streaming) =>
       useChatStore.getState().setMessageStreamingFlag(convId, messageId, streaming),

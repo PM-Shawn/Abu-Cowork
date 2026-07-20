@@ -18,6 +18,19 @@ vi.mock('../session/conversationStorage', async (importOriginal) => {
   };
 });
 
+// P1-3c-1 — forced "true" so the cancelStreaming-frame test below proves the
+// frame path bypasses chatStore.cancelStreaming's own sidecar-run gate (see
+// that action's doc): a real sidecar's cancelStreaming frame typically
+// arrives while its RunSession still reads as active, so the special case in
+// applyChatFrame below must apply the decoration regardless.
+vi.mock('./sidecarRunPredicate', () => ({
+  isConversationRunningInSidecar: () => true,
+  // agentLoopRunner.ts self-registers into this module at import time (it's
+  // pulled in transitively by other core modules in this test's import
+  // graph) — stub it out so that side effect no-ops against this mock.
+  registerSidecarRunPredicate: () => {},
+}));
+
 import { applyDeltaFrames, type PortFrame } from './frameApplier';
 
 describe('applyDeltaFrames', () => {
@@ -61,6 +74,24 @@ describe('applyDeltaFrames', () => {
         { p: 'chat', m: 'flushTokens', a: [convId, 'a1'] },
       ]);
       expect(useChatStore.getState().conversations[convId].messages[0].content).toBe('hello');
+    });
+
+    it('cancelStreaming frame applies the full "stopped" decoration even though isConversationRunningInSidecar reads true (P1-3c-1)', async () => {
+      // This module's top-of-file mock forces isConversationRunningInSidecar
+      // to always return true — the real-world state while this frame is
+      // being applied (see chatStore.ts's cancelStreaming doc). A naive
+      // generic dispatch (chatStore.cancelStreaming(convId) with no opts)
+      // would see "sidecar run active" and skip the decoration entirely;
+      // applyChatFrame's special case must pass fromSidecarFrame: true to
+      // bypass that gate, so the marker still lands.
+      const convId = useChatStore.getState().createConversation();
+      useChatStore.getState().addMessage(convId, {
+        id: 'a1', role: 'assistant', content: '部分输出', timestamp: Date.now(), isStreaming: true,
+      });
+      await applyDeltaFrames([{ p: 'chat', m: 'cancelStreaming', a: [convId] }]);
+      const msg = useChatStore.getState().conversations[convId].messages[0];
+      expect(msg.content).toBe('部分输出\n\n*[已停止]*');
+      expect(msg.isStreaming).toBe(false);
     });
   });
 

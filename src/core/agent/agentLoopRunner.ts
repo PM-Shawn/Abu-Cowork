@@ -86,6 +86,7 @@ import { resolveEntryModel } from './resolveEntryModel';
 import { getActiveApiKey, getActiveProvider } from '../../utils/settingsSelectors';
 import { resolveEffectiveLlmCreds } from '../enterprise/llm-resolver';
 import { enqueueUserInput, getQueuedInputs, subscribeToInputQueue, removeQueuedInput } from './userInputQueue';
+import { registerSidecarRunPredicate } from './sidecarRunPredicate';
 
 const logger = createLogger('agent-loop-runner');
 
@@ -173,6 +174,26 @@ export function findRunSessionForConversation(conversationId: string): RunSessio
   }
   return undefined;
 }
+
+/**
+ * Cheap, synchronous predicate — true iff `conversationId` has an active
+ * sidecar-hosted `RunSession` registered right now. P1-3c-1 (design doc §3):
+ * `chatStore.ts`'s `cancelStreaming` uses this (via `sidecarRunPredicate.ts`'s
+ * cycle-breaking indirection — chatStore.ts can't import THIS module
+ * directly, see that file's doc) to decide whether it owns the "stopped"
+ * decoration itself or defers to the sidecar's own `cancelStreaming` frame.
+ * An in-process run never registers a `RunSession` here (see
+ * `findRunSessionForConversation`'s doc), so this is always `false` while no
+ * sidecar run is live for the conversation.
+ */
+export function isConversationRunningInSidecar(conversationId: string): boolean {
+  return findRunSessionForConversation(conversationId) !== undefined;
+}
+
+// Self-register into the cycle-breaking slot at module load — see
+// sidecarRunPredicate.ts's doc for why chatStore.ts reads through that file
+// instead of importing this one.
+registerSidecarRunPredicate(isConversationRunningInSidecar);
 
 /** Unregister a run session. Uninstalls the push emitters once the LAST session is gone. */
 export function unregisterRunSession(runId: string): void {

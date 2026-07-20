@@ -31,12 +31,30 @@ vi.mock('./projectStore', () => ({
   },
 }));
 
+// P1-3c-1 — cancelStreaming's sidecar-run gate reads this predicate (see
+// sidecarRunPredicate.ts's cycle-breaking doc for why chatStore.ts imports
+// it instead of agentLoopRunner.ts directly). Defaults to false (no active
+// sidecar run) so every PRE-EXISTING cancelStreaming test below — none of
+// which know about sidecar runs — keeps exercising the original direct
+// path unchanged; only the new 'sidecar run authority' describe block below
+// flips it true.
+const mockIsConversationRunningInSidecar = vi.fn<(convId: string) => boolean>();
+vi.mock('../core/agent/sidecarRunPredicate', () => ({
+  isConversationRunningInSidecar: (convId: string) => mockIsConversationRunningInSidecar(convId),
+  // agentLoopRunner.ts self-registers into this module at import time (it's
+  // pulled in transitively by other core modules in this test's import
+  // graph) — stub it out so that side effect no-ops against this mock.
+  registerSidecarRunPredicate: () => {},
+}));
+
 describe('chatStore', () => {
   beforeEach(() => {
     mockSetWorkspace.mockClear();
     mockClearWorkspace.mockClear();
     mockGetProjectByWorkspace.mockReset();
     mockGetProjectByWorkspace.mockReturnValue(undefined);
+    mockIsConversationRunningInSidecar.mockReset();
+    mockIsConversationRunningInSidecar.mockReturnValue(false);
     useChatStore.setState({
       conversations: {},
       // conversationIndex must reset alongside conversations: deleteConversation
@@ -740,6 +758,78 @@ describe('chatStore', () => {
       expect(live.isStreaming).toBe(false);
       await new Promise((r) => setTimeout(r, 30));
       expect(written.some((c) => c.includes('已停止'))).toBe(false);
+    });
+  });
+
+  // ── cancelStreaming — sidecar run authority (P1-3c-1) ──
+  // docs/2026-07-21-phase1-p3c-conversation-authority-design.md §3: while a
+  // sidecar-hosted run owns a conversation, the sidecar is the run's SINGLE
+  // writer for the "stopped" decoration — the shell's own Stop click must
+  // only abort, never mutate/persist (that would race the sidecar's own
+  // still-in-flight frames). The sidecar's own cancelStreaming frame
+  // (relayed back through frameApplier.ts with `fromSidecarFrame: true`,
+  // see frameApplier.test.ts) is what actually applies the decoration.
+  describe('cancelStreaming — sidecar run authority (P1-3c-1)', () => {
+    it('direct call with an active sidecar run: only aborts + clears the controller, does NOT mutate the message or reset agentStatus', () => {
+      mockIsConversationRunningInSidecar.mockReturnValue(true);
+
+      const id = useChatStore.getState().createConversation();
+      useChatStore.getState().addMessage(id, {
+        id: 'a1', role: 'assistant', content: '部分输出', timestamp: Date.now(), isStreaming: true,
+      });
+      useChatStore.setState({ agentStatus: 'thinking' });
+      const controller = useChatStore.getState().getAbortController(id);
+
+      useChatStore.getState().cancelStreaming(id);
+
+      expect(mockIsConversationRunningInSidecar).toHaveBeenCalledWith(id);
+      // Abort still fires — the shell's "喊停" signal reaches the sidecar.
+      expect(controller.signal.aborted).toBe(true);
+      expect(useChatStore.getState().hasAbortController(id)).toBe(false);
+      // But the message/agentStatus decoration is untouched — deferred to
+      // the sidecar's own cancelStreaming frame.
+      const live = useChatStore.getState().conversations[id].messages[0];
+      expect(live.content).toBe('部分输出');
+      expect(live.isStreaming).toBe(true);
+      expect(useChatStore.getState().agentStatus).toBe('thinking');
+    });
+
+    it('frame-driven call (fromSidecarFrame: true) applies the FULL decoration even though a sidecar run still reads as active', () => {
+      // Regression for the exact race this branch exists to avoid: at the
+      // moment the sidecar's own cancelStreaming frame is applied, its
+      // RunSession is typically STILL registered (unregistration happens
+      // only after the agent.run RPC resolves, later) — so the predicate
+      // below deliberately still says "active". fromSidecarFrame must
+      // bypass the gate regardless, or the decoration would never apply.
+      mockIsConversationRunningInSidecar.mockReturnValue(true);
+
+      const id = useChatStore.getState().createConversation();
+      useChatStore.getState().addMessage(id, {
+        id: 'a1', role: 'assistant', content: '部分输出', timestamp: Date.now(), isStreaming: true,
+      });
+
+      useChatStore.getState().cancelStreaming(id, { fromSidecarFrame: true });
+
+      const live = useChatStore.getState().conversations[id].messages[0];
+      expect(live.content).toBe('部分输出\n\n*[已停止]*');
+      expect(live.isStreaming).toBe(false);
+      expect(useChatStore.getState().agentStatus).toBe('idle');
+    });
+
+    it('direct call with NO active sidecar run: unchanged original full-decoration path', () => {
+      mockIsConversationRunningInSidecar.mockReturnValue(false);
+
+      const id = useChatStore.getState().createConversation();
+      useChatStore.getState().addMessage(id, {
+        id: 'a1', role: 'assistant', content: '部分输出', timestamp: Date.now(), isStreaming: true,
+      });
+
+      useChatStore.getState().cancelStreaming(id);
+
+      const live = useChatStore.getState().conversations[id].messages[0];
+      expect(live.content).toBe('部分输出\n\n*[已停止]*');
+      expect(live.isStreaming).toBe(false);
+      expect(useChatStore.getState().agentStatus).toBe('idle');
     });
   });
 

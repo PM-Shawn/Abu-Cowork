@@ -68,6 +68,21 @@ export async function withRetry<T>(
         throw err;
       }
 
+      // Don't retry when the operation was aborted mid-flight. A fetch/stream
+      // aborted by the user surfaces as a RETRYABLE error (e.g. a mid-stream
+      // close → network_error), NOT code='cancelled', so it slips past the
+      // guard above. Without this check, an abort observed only after `fn()`
+      // already threw would still fire `onRetry` — whose agentLoop.ts callback
+      // clears partial streamed content via setLastMessageContent('') to start
+      // a clean retry — wiping the very text the Stop button's "[已停止]"
+      // decoration needs (P1-3c: the shell defers that decoration to the
+      // sidecar's cancelStreaming frame, which now lands AFTER this wipe). It
+      // also flashes a spurious "正在重试" and sleeps pointlessly. Treat an
+      // aborted-then-failed call as the cancellation it is.
+      if (signal?.aborted) {
+        throw new LLMError('Request cancelled', 'cancelled', { retryable: false });
+      }
+
       // Dynamically adjust max retries based on error type
       effectiveMaxRetries = getMaxRetriesForError(err, maxRetries);
 

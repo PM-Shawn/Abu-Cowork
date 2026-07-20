@@ -27,6 +27,7 @@ vi.mock('./rpcClient', () => ({
 import {
   handleAgentRun,
   handleAgentAbort,
+  handleAgentEnqueueInput,
   handleStateConvPatch,
   handleStateExecPatch,
   handleStateSettings,
@@ -35,6 +36,10 @@ import {
   __getActiveAgentRunCount,
 } from './agentLoopHost';
 import { getCurrentAgentRunContext } from './agentRunContext';
+// Real (unmocked) module — this file doesn't mock '@/core/agent/userInputQueue',
+// same discipline the rest of agentLoopHost.test.ts already relies on for
+// other bare-getter ports it doesn't need to isolate.
+import { getQueuedInputs, clearInputQueue } from '@/core/agent/userInputQueue';
 
 let runIdCounter = 0;
 function nextRunId(): string {
@@ -213,6 +218,123 @@ describe('agentLoopHost', () => {
       releaseLoop?.();
       const result = await runPromise;
       expect(result).toEqual({ reason: 'aborted' });
+    });
+  });
+
+  describe('handleAgentEnqueueInput (P1-3B-4)', () => {
+    it('is idempotent and silent for an unknown runId', () => {
+      expect(() => handleAgentEnqueueInput({ runId: 'never-existed', message: 'x' })).not.toThrow();
+    });
+
+    it('id-preserving path (queueId present) stages the message into the sidecar\'s userInputQueue under that exact id', async () => {
+      const conversationId = 'conv-enqueue-1';
+      clearInputQueue(conversationId);
+      let releaseLoop: (() => void) | undefined;
+      const started = new Promise<void>((resolveStarted) => {
+        runAgentLoopMock.mockImplementationOnce(async () => {
+          resolveStarted();
+          await new Promise<void>((r) => { releaseLoop = r; });
+          return { reason: 'completed' };
+        });
+      });
+      const runPromise = handleAgentRun(baseParams({ runId: 'enqueue-run-1', conversationId }));
+      await started;
+
+      handleAgentEnqueueInput({ runId: 'enqueue-run-1', message: 'more instructions', queueId: 'shell-id-1' });
+
+      expect(getQueuedInputs(conversationId).map((qi) => ({ id: qi.id, text: qi.text }))).toEqual([
+        { id: 'shell-id-1', text: 'more instructions' },
+      ]);
+
+      releaseLoop?.();
+      await runPromise;
+    });
+
+    it('backward-compat path (no queueId, userMessage field) still stages the message, under a locally-minted id', async () => {
+      const conversationId = 'conv-enqueue-2';
+      clearInputQueue(conversationId);
+      let releaseLoop: (() => void) | undefined;
+      const started = new Promise<void>((resolveStarted) => {
+        runAgentLoopMock.mockImplementationOnce(async () => {
+          resolveStarted();
+          await new Promise<void>((r) => { releaseLoop = r; });
+          return { reason: 'completed' };
+        });
+      });
+      const runPromise = handleAgentRun(baseParams({ runId: 'enqueue-run-2', conversationId }));
+      await started;
+
+      handleAgentEnqueueInput({ runId: 'enqueue-run-2', userMessage: 'legacy shape' });
+
+      const queued = getQueuedInputs(conversationId);
+      expect(queued.map((qi) => qi.text)).toEqual(['legacy shape']);
+      expect(typeof queued[0].id).toBe('string');
+      expect(queued[0].id.length).toBeGreaterThan(0);
+
+      releaseLoop?.();
+      await runPromise;
+    });
+
+    it('threads isSystem through', async () => {
+      const conversationId = 'conv-enqueue-3';
+      clearInputQueue(conversationId);
+      let releaseLoop: (() => void) | undefined;
+      const started = new Promise<void>((resolveStarted) => {
+        runAgentLoopMock.mockImplementationOnce(async () => {
+          resolveStarted();
+          await new Promise<void>((r) => { releaseLoop = r; });
+          return { reason: 'completed' };
+        });
+      });
+      const runPromise = handleAgentRun(baseParams({ runId: 'enqueue-run-3', conversationId }));
+      await started;
+
+      handleAgentEnqueueInput({ runId: 'enqueue-run-3', message: 'sys', queueId: 'sys-id', isSystem: true });
+
+      expect(getQueuedInputs(conversationId)[0].isSystem).toBe(true);
+
+      releaseLoop?.();
+      await runPromise;
+    });
+
+    it('drops params with neither message nor userMessage', () => {
+      expect(() => handleAgentEnqueueInput({ runId: 'whatever' })).not.toThrow();
+      expect(() => handleAgentEnqueueInput(null)).not.toThrow();
+    });
+  });
+
+  describe('handleAgentRun — queuedInputs seeding (P1-3B-4)', () => {
+    it('seeds the sidecar\'s userInputQueue from params.queuedInputs, id-preserved, before the loop starts', async () => {
+      const conversationId = 'conv-seed-1';
+      clearInputQueue(conversationId);
+      let seenAtLoopStart: { id: string; text: string; isSystem?: boolean }[] = [];
+      runAgentLoopMock.mockImplementationOnce(async () => {
+        seenAtLoopStart = getQueuedInputs(conversationId).map((qi) => ({ id: qi.id, text: qi.text, isSystem: qi.isSystem }));
+        return { reason: 'completed' };
+      });
+
+      const params = baseParams({
+        runId: 'seed-run-1',
+        conversationId,
+        queuedInputs: [
+          { id: 'leftover-1', text: 'leftover one' },
+          { id: 'leftover-2', text: 'leftover two', isSystem: true },
+        ],
+      });
+      await handleAgentRun(params);
+
+      expect(seenAtLoopStart).toEqual([
+        { id: 'leftover-1', text: 'leftover one', isSystem: undefined },
+        { id: 'leftover-2', text: 'leftover two', isSystem: true },
+      ]);
+    });
+
+    it('is a no-op when queuedInputs is absent', async () => {
+      const conversationId = 'conv-seed-2';
+      clearInputQueue(conversationId);
+      runAgentLoopMock.mockResolvedValueOnce({ reason: 'completed' });
+      await handleAgentRun(baseParams({ runId: 'seed-run-2', conversationId }));
+      expect(getQueuedInputs(conversationId)).toHaveLength(0);
     });
   });
 

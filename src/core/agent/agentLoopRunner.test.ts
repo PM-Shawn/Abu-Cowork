@@ -136,8 +136,19 @@ vi.mock('../enterprise/llm-resolver', () => ({
 }));
 
 const enqueueUserInputMock = vi.fn();
+const getQueuedInputsMock = vi.fn().mockReturnValue([]);
+const removeQueuedInputMock = vi.fn();
+let capturedQueueCb: (() => void) | undefined;
+const queueUnsubMock = vi.fn();
+const subscribeToInputQueueMock = vi.fn((cb: () => void) => {
+  capturedQueueCb = cb;
+  return queueUnsubMock;
+});
 vi.mock('./userInputQueue', () => ({
   enqueueUserInput: (...a: unknown[]) => enqueueUserInputMock(...a),
+  getQueuedInputs: (...a: unknown[]) => getQueuedInputsMock(...a),
+  removeQueuedInput: (...a: unknown[]) => removeQueuedInputMock(...a),
+  subscribeToInputQueue: (...a: [() => void]) => subscribeToInputQueueMock(...a),
 }));
 
 vi.mock('./subagentRunner', () => ({
@@ -371,6 +382,12 @@ describe('agentLoopRunner', () => {
     resolveEffectiveLlmCredsMock.mockReset();
     resolveEffectiveLlmCredsMock.mockReturnValue({ apiKey: 'sk-1', baseUrl: undefined, forceOpenAiCompatible: false });
     enqueueUserInputMock.mockReset();
+    getQueuedInputsMock.mockReset();
+    getQueuedInputsMock.mockReturnValue([]);
+    removeQueuedInputMock.mockReset();
+    subscribeToInputQueueMock.mockClear();
+    queueUnsubMock.mockReset();
+    capturedQueueCb = undefined;
     getSidecarStatusMock.mockReset();
     getSidecarStatusMock.mockReturnValue('running');
     sidecarRequestMock.mockReset();
@@ -393,15 +410,16 @@ describe('agentLoopRunner', () => {
       ensureHandlersRegistered();
       ensureHandlersRegistered();
 
-      // 8 notifications (7 own + hook.notify via the shared hookBridge) and
-      // 5 requests (native.invoke/tool.list/session.isMessageWrittenToDisk/
+      // 9 notifications (8 own — the 9th being P1-3B-4's input.consumed —
+      // + hook.notify via the shared hookBridge) and 5 requests
+      // (native.invoke/tool.list/session.isMessageWrittenToDisk/
       // tool.invoke via the router + hook.emit via the shared hookBridge).
-      expect(onSidecarNotification).toHaveBeenCalledTimes(8);
+      expect(onSidecarNotification).toHaveBeenCalledTimes(9);
       expect(onSidecarRequest).toHaveBeenCalledTimes(5);
 
       const notifiedMethods = onSidecarNotification.mock.calls.map((c) => c[0]);
       expect(notifiedMethods).toEqual(
-        expect.arrayContaining(['agent.delta', 'approval.drain', 'plan.clear', 'caps.record', 'shell.notifyTask', 'cu.setState', 'skillHooks.clearAll', 'hook.notify']),
+        expect.arrayContaining(['agent.delta', 'approval.drain', 'plan.clear', 'caps.record', 'shell.notifyTask', 'cu.setState', 'skillHooks.clearAll', 'input.consumed', 'hook.notify']),
       );
       const requestedMethods = onSidecarRequest.mock.calls.map((c) => c[0]);
       expect(requestedMethods).toEqual(
@@ -817,6 +835,125 @@ describe('agentLoopRunner', () => {
     });
   });
 
+  // ── Queued-input forwarder + input.consumed handler (P1-3B-4) ──────────
+
+  describe('queued-input forwarder', () => {
+    it('forwards a new shell-queue entry to the matching active sidecar RunSession via agent.enqueueInput, id-preserved', async () => {
+      const { registerRunSession } = await importFresh();
+      registerRunSession('run-1', makeSession({ conversationId: 'conv-1' }));
+      notifySidecar.mockClear();
+
+      getQueuedInputsMock.mockReturnValue([{ id: 'q1', text: 'more', timestamp: 1 }]);
+      capturedQueueCb?.();
+
+      expect(notifySidecar).toHaveBeenCalledWith('agent.enqueueInput', { runId: 'run-1', message: 'more', queueId: 'q1' });
+    });
+
+    it('threads the isSystem flag through when forwarding', async () => {
+      const { registerRunSession } = await importFresh();
+      registerRunSession('run-1', makeSession({ conversationId: 'conv-1' }));
+
+      getQueuedInputsMock.mockReturnValue([{ id: 'q1', text: 'sys', timestamp: 1, isSystem: true }]);
+      capturedQueueCb?.();
+
+      expect(notifySidecar).toHaveBeenCalledWith('agent.enqueueInput', { runId: 'run-1', message: 'sys', queueId: 'q1', isSystem: true });
+    });
+
+    it('forwards each entry exactly once — repeated queue-change notifications do not re-send an already-forwarded id', async () => {
+      const { registerRunSession } = await importFresh();
+      registerRunSession('run-1', makeSession({ conversationId: 'conv-1' }));
+
+      getQueuedInputsMock.mockReturnValue([{ id: 'q1', text: 'more', timestamp: 1 }]);
+      capturedQueueCb?.();
+      capturedQueueCb?.(); // entry still sitting in the (unmutated — chip lingers) shell queue
+
+      const calls = notifySidecar.mock.calls.filter((c) => c[0] === 'agent.enqueueInput');
+      expect(calls).toHaveLength(1);
+    });
+
+    it('does not forward for a conversation with no active sidecar RunSession — in-process runs are unaffected', async () => {
+      const { registerRunSession } = await importFresh();
+      // A session exists (so the forwarder subscription IS installed and running), but for a DIFFERENT conversation.
+      registerRunSession('run-other', makeSession({ conversationId: 'conv-other' }));
+      getQueuedInputsMock.mockImplementation((convId: string) => (convId === 'conv-1' ? [{ id: 'q1', text: 'more', timestamp: 1 }] : []));
+
+      capturedQueueCb?.();
+
+      expect(notifySidecar).not.toHaveBeenCalledWith('agent.enqueueInput', expect.anything());
+    });
+
+    it('does not remove anything from the shell queue itself — the chip lingers until input.consumed', async () => {
+      const { registerRunSession } = await importFresh();
+      registerRunSession('run-1', makeSession({ conversationId: 'conv-1' }));
+
+      getQueuedInputsMock.mockReturnValue([{ id: 'q1', text: 'more', timestamp: 1 }]);
+      capturedQueueCb?.();
+
+      expect(removeQueuedInputMock).not.toHaveBeenCalled();
+    });
+
+    it('a session pre-seeded with forwardedQueueIds (dispatch-time leftovers) does not re-forward those ids', async () => {
+      const { registerRunSession } = await importFresh();
+      const session = { ...makeSession({ conversationId: 'conv-1' }), forwardedQueueIds: new Set(['leftover-1']) };
+      registerRunSession('run-1', session);
+
+      getQueuedInputsMock.mockReturnValue([{ id: 'leftover-1', text: 'already seeded', timestamp: 1 }]);
+      capturedQueueCb?.();
+
+      expect(notifySidecar).not.toHaveBeenCalledWith('agent.enqueueInput', expect.anything());
+    });
+  });
+
+  describe('input.consumed handler', () => {
+    it('removes exactly the consumed ids from the shell userInputQueue', async () => {
+      const { ensureHandlersRegistered, registerRunSession } = await importFresh();
+      ensureHandlersRegistered();
+      registerRunSession('run-1', makeSession({ conversationId: 'conv-1' }));
+      const handler = handlerFor(onSidecarNotification, 'input.consumed');
+
+      handler({ runId: 'run-1', queueIds: ['q1', 'q2'] });
+
+      expect(removeQueuedInputMock).toHaveBeenCalledWith('conv-1', 'q1');
+      expect(removeQueuedInputMock).toHaveBeenCalledWith('conv-1', 'q2');
+      expect(removeQueuedInputMock).toHaveBeenCalledTimes(2);
+    });
+
+    it('drops the consumed ids from the session forwardedQueueIds set (housekeeping)', async () => {
+      const { ensureHandlersRegistered, registerRunSession, getRunSession } = await importFresh();
+      ensureHandlersRegistered();
+      const session = { ...makeSession({ conversationId: 'conv-1' }), forwardedQueueIds: new Set(['q1', 'q2']) };
+      registerRunSession('run-1', session);
+
+      const handler = handlerFor(onSidecarNotification, 'input.consumed');
+      handler({ runId: 'run-1', queueIds: ['q1'] });
+
+      expect(getRunSession('run-1')?.forwardedQueueIds?.has('q1')).toBe(false);
+      expect(getRunSession('run-1')?.forwardedQueueIds?.has('q2')).toBe(true);
+    });
+
+    it('unknown runId is silently dropped — no throw, removeQueuedInput not called', async () => {
+      const { ensureHandlersRegistered } = await importFresh();
+      ensureHandlersRegistered();
+      const handler = handlerFor(onSidecarNotification, 'input.consumed');
+
+      expect(() => handler({ runId: 'no-such-run', queueIds: ['q1'] })).not.toThrow();
+      expect(removeQueuedInputMock).not.toHaveBeenCalled();
+    });
+
+    it('drops malformed params without throwing or calling through', async () => {
+      const { ensureHandlersRegistered, registerRunSession } = await importFresh();
+      ensureHandlersRegistered();
+      registerRunSession('run-1', makeSession({ conversationId: 'conv-1' }));
+      const handler = handlerFor(onSidecarNotification, 'input.consumed');
+
+      expect(() => handler(null)).not.toThrow();
+      expect(() => handler({})).not.toThrow();
+      expect(() => handler({ runId: 'run-1' })).not.toThrow();
+      expect(() => handler({ runId: 'run-1', queueIds: 'nope' })).not.toThrow();
+      expect(removeQueuedInputMock).not.toHaveBeenCalled();
+    });
+  });
+
   // ── Shell EventRouter / LoopContext-lite ───────────────────────────────
 
   describe('createShellEventRouterForRun', () => {
@@ -1085,6 +1222,54 @@ describe('agentLoopRunner', () => {
       expect(p.resolvedCreds).toEqual({ apiKey: 'sk-1', baseUrl: undefined, forceOpenAiCompatible: false });
       expect(p.toolList).toEqual([{ name: 'read_file', description: 'reads a file', inputSchema: { type: 'object', properties: {} } }]);
       expect(result).toEqual({ reason: 'completed' });
+    });
+
+    it('buildAgentRunParams includes a queuedInputs snapshot of the shell queue at dispatch time (P1-3B-4, wire-safe shape)', async () => {
+      const { runAgentLoopDispatched } = await importFresh();
+      getQueuedInputsMock.mockReturnValue([
+        { id: 'q1', text: 'leftover 1', timestamp: 111 },
+        { id: 'q2', text: 'leftover 2', timestamp: 222, isSystem: true },
+      ]);
+      sidecarRequestMock.mockResolvedValue({ reason: 'completed' });
+
+      await runAgentLoopDispatched('conv-1', 'hello');
+
+      const params = sidecarRequestMock.mock.calls[0][1] as { queuedInputs: unknown };
+      // Projected to id/text/isSystem — the shell-local `timestamp` is dropped (see AgentRunParams.queuedInputs's doc).
+      expect(params.queuedInputs).toEqual([
+        { id: 'q1', text: 'leftover 1' },
+        { id: 'q2', text: 'leftover 2', isSystem: true },
+      ]);
+    });
+
+    it('queuedInputs is an empty array when the shell queue has nothing staged', async () => {
+      const { runAgentLoopDispatched } = await importFresh();
+      getQueuedInputsMock.mockReturnValue([]);
+      sidecarRequestMock.mockResolvedValue({ reason: 'completed' });
+
+      await runAgentLoopDispatched('conv-1', 'hello');
+
+      const params = sidecarRequestMock.mock.calls[0][1] as { queuedInputs: unknown };
+      expect(params.queuedInputs).toEqual([]);
+    });
+
+    it('pre-seeds the new RunSession.forwardedQueueIds from the queuedInputs snapshot, so the live forwarder never re-sends a dispatch-time leftover', async () => {
+      const { runAgentLoopDispatched, getRunSession } = await importFresh();
+      getQueuedInputsMock.mockReturnValue([{ id: 'leftover-1', text: 'already seeded', timestamp: 1 }]);
+      const d = deferred<unknown>();
+      sidecarRequestMock.mockReturnValue(d.promise);
+
+      const p = runAgentLoopDispatched('conv-1', 'hello');
+      await waitForCall(sidecarRequestMock);
+      const runId = (sidecarRequestMock.mock.calls[0][1] as { runId: string }).runId;
+      expect(getRunSession(runId)?.forwardedQueueIds?.has('leftover-1')).toBe(true);
+
+      // The live forwarder must not re-forward it even if the (unrelated) queue-change listener fires.
+      capturedQueueCb?.();
+      expect(notifySidecar).not.toHaveBeenCalledWith('agent.enqueueInput', expect.anything());
+
+      d.resolve({ reason: 'completed' });
+      await p;
     });
 
     it('registers and then unregisters the RunSession across a successful dispatch', async () => {

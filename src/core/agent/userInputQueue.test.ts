@@ -6,6 +6,7 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import {
   enqueueUserInput,
+  enqueueUserInputWithId,
   drainQueuedInputs,
   clearInputQueue,
   getQueuedInputs,
@@ -44,5 +45,41 @@ describe('userInputQueue staging', () => {
     removeQueuedInput(CONV, target.id);
     expect(getQueuedInputs(CONV).map((i) => i.text)).toEqual(['keep']);
     expect(drainQueuedInputs(CONV).map((i) => i.text)).toEqual(['keep']);
+  });
+
+  describe('enqueueUserInputWithId (P1-3B-4)', () => {
+    it('preserves the caller-supplied id instead of generating one', () => {
+      enqueueUserInputWithId(CONV, 'caller-id-1', 'hello');
+      const items = getQueuedInputs(CONV);
+      expect(items).toHaveLength(1);
+      expect(items[0].id).toBe('caller-id-1');
+      expect(items[0].text).toBe('hello');
+    });
+
+    it('appends after existing entries, preserving insertion order (mixed with enqueueUserInput)', () => {
+      enqueueUserInput(CONV, 'first');
+      enqueueUserInputWithId(CONV, 'caller-id-2', 'second');
+      enqueueUserInput(CONV, 'third');
+      const items = getQueuedInputs(CONV);
+      expect(items.map((i) => i.text)).toEqual(['first', 'second', 'third']);
+      expect(items[1].id).toBe('caller-id-2');
+    });
+
+    it('threads the isSystem flag through', () => {
+      enqueueUserInputWithId(CONV, 'sys-1', 'background result', true);
+      expect(getQueuedInputs(CONV)[0].isSystem).toBe(true);
+    });
+
+    it('drops an empty/whitespace-only message, same guard as enqueueUserInput', () => {
+      enqueueUserInputWithId(CONV, 'caller-id-3', '   ');
+      expect(getQueuedInputs(CONV)).toHaveLength(0);
+    });
+
+    it('is drained by drainQueuedInputs like any other entry, id intact', () => {
+      enqueueUserInputWithId(CONV, 'caller-id-4', 'drain me');
+      const drained = drainQueuedInputs(CONV);
+      expect(drained.map((i) => ({ id: i.id, text: i.text }))).toEqual([{ id: 'caller-id-4', text: 'drain me' }]);
+      expect(getQueuedInputs(CONV)).toHaveLength(0);
+    });
   });
 });

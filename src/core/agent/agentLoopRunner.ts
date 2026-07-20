@@ -85,7 +85,7 @@ import type { ConversationMeta } from '../session/conversationStorage';
 import { resolveEntryModel } from './resolveEntryModel';
 import { getActiveApiKey, getActiveProvider } from '../../utils/settingsSelectors';
 import { resolveEffectiveLlmCreds } from '../enterprise/llm-resolver';
-import { enqueueUserInput } from './userInputQueue';
+import { enqueueUserInput, getQueuedInputs, subscribeToInputQueue, removeQueuedInput } from './userInputQueue';
 
 const logger = createLogger('agent-loop-runner');
 
@@ -139,6 +139,22 @@ export interface RunSession {
    *  wiring in `runAgentLoopDispatched`), so removing this listener on
    *  settle avoids leaking a dangling `abort` handler. */
   onShellAbort?: () => void;
+  /**
+   * P1-3B-4 — ids of shell `userInputQueue` entries already forwarded to
+   * this run's sidecar-side queue (via `agent.enqueueInput`), so
+   * `forwardQueuedInputsForActiveSessions` (below) forwards each entry
+   * EXACTLY ONCE per run — otherwise every `subscribeToInputQueue` change
+   * notification would re-scan the whole (unmutated, still-lingering-for-
+   * the-chip) shell queue and re-send entries already in flight/consumed.
+   * Pre-seeded by `runAgentLoopDispatched` with the ids from
+   * `buildAgentRunParams`'s `queuedInputs` snapshot (those were already
+   * seeded into the sidecar's OWN queue at dispatch time — see
+   * `agentLoopHost.ts`'s `handleAgentRun` — so the live forwarder must not
+   * re-send them). Lazily initialized (`??=`) by the forwarder/consumed
+   * handler for sessions built via `makeSession`-style test fixtures that
+   * don't set it upfront.
+   */
+  forwardedQueueIds?: Set<string>;
 }
 
 const sessions = new Map<string, RunSession>();
@@ -412,6 +428,30 @@ function handleSkillHooksClearAll(rawParams: unknown): void {
   clearAllSkillHooks();
 }
 
+/**
+ * `input.consumed` (NOTIFICATION) → {runId, queueIds} — P1-3B-4: the
+ * sidecar's `userInputQueue` shim sends this after `agentLoop.ts` drains or
+ * clears queued inputs for a sidecar-run loop, naming exactly the ids it
+ * consumed. Removes the SAME ids from the shell's `userInputQueue` — this
+ * is what actually clears the `QueuedMessagesStrip` chip (which reads the
+ * shell queue via `subscribeToInputQueue`/`getQueuedInputs`, unchanged) at
+ * the moment of consumption, not before. Also drops each id from the
+ * session's `forwardedQueueIds` (housekeeping — a finished/re-forwarded id
+ * has nothing left to dedup against). Unknown runId → silent drop (3a
+ * discipline, matches every other reverse-channel handler in this module).
+ */
+function handleInputConsumed(rawParams: unknown): void {
+  const params = rawParams as { runId?: unknown; queueIds?: unknown } | null;
+  if (!params || typeof params.runId !== 'string' || !Array.isArray(params.queueIds)) return;
+  const session = sessions.get(params.runId);
+  if (!session) return; // unknown/already-finished runId — silent drop
+  for (const id of params.queueIds) {
+    if (typeof id !== 'string') continue;
+    removeQueuedInput(session.conversationId, id);
+    session.forwardedQueueIds?.delete(id);
+  }
+}
+
 let handlersRegistered = false;
 
 /** Idempotent — registers every reverse-channel handler exactly once, no matter how many times it's called. Mirrors subagentRunner.ts's ensureHandlersRegistered() shape. */
@@ -435,6 +475,7 @@ export function ensureHandlersRegistered(): void {
   onSidecarNotification('shell.notifyTask', handleShellNotifyTask);
   onSidecarNotification('cu.setState', handleCuSetState);
   onSidecarNotification('skillHooks.clearAll', handleSkillHooksClearAll);
+  onSidecarNotification('input.consumed', handleInputConsumed);
 
   onSidecarRequest('native.invoke', handleNativeInvoke);
   onSidecarRequest('tool.list', handleToolList);
@@ -581,6 +622,56 @@ function pushExecPatchesForActiveSessions(): void {
   }
 }
 
+/**
+ * Queued-input forwarder — P1-3B-4, closes the mid-task-queue sidecar gap
+ * (see this module's header comment / P1-3B-4-QUEUEINPUT-FIX-REPORT.md).
+ * The shell's `userInputQueue` stays the single UI source of truth (the
+ * `QueuedMessagesStrip` chip) — this forwarder relays each NEW entry to the
+ * matching active sidecar `RunSession`'s `userInputQueue` instance (via
+ * `agent.enqueueInput`, id-preserved) so the loop actually sees it. Fires on
+ * EVERY `userInputQueue` mutation, for EVERY active session, so it must
+ * dedup per-session via `RunSession.forwardedQueueIds` — otherwise a second,
+ * unrelated queue mutation (e.g. a different conversation's chip) would
+ * re-scan this conversation's still-lingering (not-yet-consumed) entries and
+ * re-send them.
+ *
+ * Deliberately does NOT touch the shell queue itself (no `removeQueuedInput`
+ * here) — the chip must linger until the sidecar loop actually CONSUMES the
+ * entry (`input.consumed`, handled by `handleInputConsumed` above), not the
+ * instant it's forwarded. This is what gives sidecar runs the same "chip
+ * lingers until consumed" behavior the in-process path already has (same
+ * queue, same drain call, no separate forward step).
+ *
+ * In-process runs are unaffected: `findRunSessionForConversation`-style
+ * iteration here only ever matches conversations with a registered sidecar
+ * `RunSession` — an in-process run never registers one.
+ */
+function forwardQueuedInputsForActiveSessions(): void {
+  const seenConversationIds = new Set<string>();
+  for (const session of sessions.values()) {
+    if (!session.runId) continue;
+    if (seenConversationIds.has(session.conversationId)) continue;
+    seenConversationIds.add(session.conversationId);
+
+    const queued = getQueuedInputs(session.conversationId);
+    if (queued.length === 0) continue;
+
+    session.forwardedQueueIds ??= new Set();
+    for (const qi of queued) {
+      if (session.forwardedQueueIds.has(qi.id)) continue;
+      session.forwardedQueueIds.add(qi.id);
+      notifySidecar('agent.enqueueInput', {
+        runId: session.runId,
+        message: qi.text,
+        queueId: qi.id,
+        ...(qi.isSystem ? { isSystem: qi.isSystem } : {}),
+      });
+    }
+  }
+}
+
+let queueForwardUnsub: (() => void) | undefined;
+
 let emittersInstalled = false;
 
 /** Exported for tests — install() is normally driven by registerRunSession(). */
@@ -599,6 +690,9 @@ export function installPushEmitters(): void {
   });
   planModeUnsub = onPlanModeChange((conversationId, mode) => {
     notifySidecar('state.planMode', { conversationId, mode });
+  });
+  queueForwardUnsub = subscribeToInputQueue(() => {
+    forwardQueuedInputsForActiveSessions();
   });
 }
 
@@ -619,6 +713,8 @@ export function uninstallPushEmitters(): void {
   lastPushedPlannedSteps.clear();
   planModeUnsub?.();
   planModeUnsub = undefined;
+  queueForwardUnsub?.();
+  queueForwardUnsub = undefined;
 }
 
 // ── Shell EventRouter / LoopContext-lite construction ───────────────────
@@ -708,6 +804,17 @@ interface AgentRunParams {
   toolList: ReturnType<typeof toSerializableTool>[];
   planMode?: 'off' | 'planning' | 'approved';
   locale: string;
+  /**
+   * P1-3B-4 — a snapshot of the shell's `userInputQueue` for this
+   * conversation, taken at dispatch time (see `buildAgentRunParams` below).
+   * `agentLoopHost.ts`'s `handleAgentRun` seeds its own (real, but
+   * previously-disconnected) `userInputQueue` instance from this,
+   * id-preserved, so a message already staged in the shell queue BEFORE
+   * this run was dispatched is picked up by `agentLoop.ts`'s turn-1
+   * `drainQueuedInputs` — the "leftover flushes on the next run" parity the
+   * in-process path already has.
+   */
+  queuedInputs?: { id: string; text: string; isSystem?: boolean }[];
 }
 
 /** Defensive validation of the `agent.run` response before trusting it as an `AgentLoopResult` — same discipline as subagentRunner.ts's `isSerializableSubagentResult`. A malformed response is treated identically to any other transport failure by the caller (same committed-flag fallback decision). */
@@ -814,6 +921,16 @@ async function buildAgentRunParams(
 
   const toolList = getToolInvoker().getAllTools().map(toSerializableTool);
 
+  // P1-3B-4 — snapshot the shell's userInputQueue for this conversation at
+  // dispatch time (projected to the wire-safe shape — id/text/isSystem,
+  // dropping the shell-local `timestamp`). See AgentRunParams.queuedInputs's
+  // doc above for why this exists.
+  const queuedInputs = getQueuedInputs(conversationId).map((qi) => ({
+    id: qi.id,
+    text: qi.text,
+    ...(qi.isSystem ? { isSystem: qi.isSystem } : {}),
+  }));
+
   return {
     runId,
     conversationId,
@@ -828,6 +945,7 @@ async function buildAgentRunParams(
     toolList,
     planMode: getPlanMode(conversationId),
     locale: getLocale(),
+    queuedInputs,
   };
 }
 
@@ -918,7 +1036,10 @@ export async function runAgentLoopDispatched(
   }
 
   const runId = generateRunId();
-  logger.debug('agent-loop path selected', { path: 'sidecar', runId, conversationId });
+  // ACCEPTANCE-ONLY INSTRUMENTATION (P1-3b-4, REVERT after real-machine smoke):
+  // debug→warn so the path decision persists to the on-disk log (DISK_LOG_LEVELS
+  // = warn/error). Restore to logger.debug once acceptance is confirmed.
+  logger.warn('agent-loop path selected', { path: 'sidecar', runId, conversationId });
 
   let params: AgentRunParams;
   try {
@@ -955,6 +1076,13 @@ export async function runAgentLoopDispatched(
     shellAbortController,
     toolCallToStepId: new Map(),
     committed: false,
+    // P1-3B-4 — the entries in `params.queuedInputs` were already seeded
+    // into the sidecar's OWN queue at dispatch time (agentLoopHost.ts's
+    // handleAgentRun), so pre-mark them forwarded BEFORE registerRunSession
+    // installs the live forwarder — otherwise the forwarder would re-send
+    // these same still-lingering (not-yet-consumed) shell-queue entries the
+    // next time ANY queue mutation fires.
+    forwardedQueueIds: new Set(params.queuedInputs?.map((qi) => qi.id)),
   };
 
   const onShellAbort = (): void => {

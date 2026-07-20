@@ -50,6 +50,31 @@ export function enqueueUserInput(conversationId: string, text: string, isSystem?
 }
 
 /**
+ * Same as `enqueueUserInput`, but uses a caller-supplied id instead of
+ * generating one — P1-3B-4: the sidecar-run bridge needs the SHELL's
+ * `QueuedInput.id` to survive across the process boundary (into the
+ * sidecar's own bundled instance of this module) so `input.consumed` can
+ * clear the exact shell-side entries (hence chips) that a sidecar-run loop
+ * actually drained. Purely additive — `enqueueUserInput` itself is
+ * untouched (same discipline as `scratchpadStore.ts`'s `addEntryWithId`).
+ */
+export function enqueueUserInputWithId(conversationId: string, id: string, text: string, isSystem?: boolean): void {
+  if (!text.trim()) return;
+
+  const queue = inputQueues.get(conversationId) ?? [];
+  inputQueues.set(conversationId, [
+    ...queue,
+    {
+      id,
+      text: text.trim(),
+      timestamp: Date.now(),
+      isSystem,
+    },
+  ]);
+  notifyListeners();
+}
+
+/**
  * Snapshot of the staged inputs for a conversation (for useSyncExternalStore).
  * Referentially stable between mutations; a shared empty array when none.
  */

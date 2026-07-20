@@ -165,6 +165,10 @@ const SHIM_TARGETS = [
   // saveUserImagesToDisk() for every sidecar-run main loop even though its
   // underlying fs/path calls work fine. See sessionDirRun.ts.
   { real: path.resolve(srcDir, 'core/session/sessionDir.ts'), shim: path.resolve(__dirname, '../sidecar/src/shims/sessionDirRun.ts') },
+  // P1-3B-4 fix — real forwarding shim (drainQueuedInputs/clearInputQueue →
+  // input.consumed notify, everything else pass-through) so mid-task queued
+  // input works for a sidecar-run main loop — see userInputQueueRun.ts.
+  { real: path.resolve(srcDir, 'core/agent/userInputQueue.ts'), shim: path.resolve(__dirname, '../sidecar/src/shims/userInputQueueRun.ts') },
 ];
 
 /**

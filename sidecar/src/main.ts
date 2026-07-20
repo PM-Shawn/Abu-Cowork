@@ -55,11 +55,16 @@
  *     `llm.abort`)
  *   - `agent.abort` → P1-3B-3A: abort one in-flight `agent.run` call by
  *     runId (idempotent, unknown runId silent no-op, same discipline)
- *   - `agent.enqueueInput` → P1-3B-3B: `{runId, userMessage}` — cross-process
- *     concurrency guard: the shell dispatcher detected a second dispatch for
- *     an already-running conversation and stages the message into THAT
- *     run's userInputQueue instead of starting a second agent.run. Unknown
- *     runId silent drop.
+ *   - `agent.enqueueInput` → P1-3B-3B, extended by P1-3B-4: `{runId, message
+ *     | userMessage, queueId?, isSystem?}` — either (a) the shell
+ *     dispatcher's concurrency guard staging a message into an
+ *     already-running conversation's run instead of starting a second
+ *     agent.run (`userMessage`, no `queueId` — no shell-queue chip to
+ *     correlate), or (b) the shell's queued-input forwarder relaying a NEW
+ *     entry added to the shell's `userInputQueue` (chip strip) for a
+ *     conversation with an active sidecar run (`message` + `queueId`,
+ *     id-preserved so `input.consumed` can clear the exact chip once this
+ *     run's loop consumes it). Unknown runId silent drop.
  *   - `state.convPatch` → P1-3B-3A: `{runId, patch}` — scalar-field patch
  *     (workspacePath/title/activeSkills/model) applied to that run's
  *     conversation read-mirror. Unknown runId silent drop.
@@ -75,6 +80,13 @@
  *   - `llm.event` → `{ callId, seq, event }` — one StreamEvent, coalesced
  *     (see eventCoalescer.ts)
  *   - `llm.chatMeta` → `{ callId, kind: 'maxTokensLimitDiscovered', limit }`
+ *   - `input.consumed` → P1-3B-4: `{ runId, queueIds }` — the sidecar's
+ *     `userInputQueue` shim (see shims/userInputQueueRun.ts) sends this
+ *     after `agentLoop.ts` drains or clears queued inputs, naming exactly
+ *     the ids it consumed. `agentLoopRunner.ts`'s handler removes the same
+ *     ids from the shell's `userInputQueue` — clearing the `QueuedMessages
+ *     Strip` chip only once the loop actually consumed the message (not a
+ *     flash-then-clear). Unknown runId silent drop.
  * Reverse requests sidecar→shell (see rpcClient.ts, subagentRunner.ts):
  *   - `tool.invoke` → `{ runId, toolName, input, context }`, response = the
  *     tool's `ToolResult`

@@ -44,7 +44,7 @@ import type { ToolInvoker } from '@/core/agent/ports/toolInvoker';
 import type { CapsPort } from '@/core/agent/ports/capsPort';
 import type { PlanModeState } from '@/core/agent/planMode';
 import { runAgentLoop, type AgentLoopOptions, type AgentLoopResult } from '@/core/agent/agentLoop';
-import { enqueueUserInput } from '@/core/agent/userInputQueue';
+import { enqueueUserInputWithId } from '@/core/agent/userInputQueue';
 import { applyPlanModeState } from '@/core/agent/planMode';
 import { TOOL_NAMES } from '@/core/tools/toolNames';
 import { toolResultToString } from '@/core/tools/toolResultToString';
@@ -89,6 +89,18 @@ export interface AgentRunParams {
   toolList: SerializableToolDefinition[];
   planMode?: PlanModeState;
   locale: string;
+  /**
+   * P1-3B-4 — a snapshot of the shell's `userInputQueue` for this
+   * conversation, taken at dispatch time (`agentLoopRunner.ts`'s
+   * `buildAgentRunParams`). Seeded into the sidecar's OWN (real, but
+   * previously-disconnected) `userInputQueue` instance at `agent.run` start
+   * (below), id-preserved via `enqueueUserInputWithId`, so a message already
+   * staged in the shell queue BEFORE this run was dispatched is picked up by
+   * `agentLoop.ts`'s turn-1 `drainQueuedInputs` (agentLoop.ts:990) — the
+   * same "leftover flushes on the next run" semantics the in-process path
+   * already has, just bridged across the process boundary.
+   */
+  queuedInputs?: { id: string; text: string; isSystem?: boolean }[];
 }
 
 function isRecord(v: unknown): v is Record<string, unknown> {
@@ -334,6 +346,19 @@ export async function handleAgentRun(rawParams: unknown): Promise<unknown> {
 
   if (params.planMode) applyPlanModeState(conversationId, params.planMode);
 
+  // P1-3B-4 — seed the sidecar's OWN userInputQueue instance from the
+  // shell's dispatch-time snapshot (id-preserved) BEFORE the loop starts, so
+  // a message already staged in the shell queue at dispatch time is picked
+  // up by agentLoop.ts's turn-1 drainQueuedInputs. See AgentRunParams.
+  // queuedInputs's doc above.
+  if (Array.isArray(params.queuedInputs)) {
+    for (const qi of params.queuedInputs) {
+      if (qi && typeof qi.id === 'string' && typeof qi.text === 'string') {
+        enqueueUserInputWithId(conversationId, qi.id, qi.text, qi.isSystem);
+      }
+    }
+  }
+
   activeRuns.set(runId, {
     conversationId,
     controllers,
@@ -370,27 +395,63 @@ export async function handleAgentRun(rawParams: unknown): Promise<unknown> {
 }
 
 /**
- * `{ runId, userMessage }` — P1-3B-3B: the sidecar-side half of the
- * cross-process concurrency guard. `runAgentLoop`'s own in-process
- * concurrency guard (agentLoop.ts's entry `hasAbortController`/
+ * `{ runId, message | userMessage, queueId?, isSystem? }` — P1-3B-3B: the
+ * sidecar-side half of the cross-process concurrency guard, EXTENDED by
+ * P1-3B-4 to id-preserve mid-run adds forwarded from the shell's
+ * `userInputQueue` (the chip strip's source of truth). `runAgentLoop`'s own
+ * in-process concurrency guard (agentLoop.ts's entry `hasAbortController`/
  * `enqueueUserInput` block) can't protect a SECOND `agent.run` dispatch for
  * the same conversationId — this handler's `activeRuns` is keyed by `runId`,
  * a NEW random id per dispatch, so a second dispatch never collides with the
- * first at that check. The shell dispatcher (`agentLoopRunner.ts`'s
- * `runAgentLoopDispatched`) instead detects "a RunSession for this
- * conversationId already exists" itself and, instead of sending a SECOND
- * `agent.run`, sends this notification to the EXISTING run's `runId` —
- * staged into the SAME `userInputQueue.ts` module `agentLoop.ts` already
- * drains each turn (unchanged, sidecar-resident since P1-3b-1/3B-3A —
- * keyed by conversationId, no per-run isolation needed). Unknown runId
- * (run already finished, or a stray/duplicate message) → silent drop, same
- * discipline as `agent.abort`/`agent.delta`.
+ * first at that check. Two distinct shell-side callers reach this
+ * notification, in two distinct shapes:
+ *
+ *   1. `runAgentLoopDispatched`'s own concurrency guard (a non-ChatInput
+ *      caller re-dispatching into an already-running conversation) — sends
+ *      the ORIGINAL `{ runId, userMessage }` shape, no `queueId` (this
+ *      message never touched the shell's `userInputQueue`, so there's no
+ *      chip/id to preserve — deliberately left unchanged from P1-3B-3B, see
+ *      P1-3B-4-QUEUEINPUT-FIX-REPORT.md for why: an existing test pins this
+ *      exact call shape). Falls back to a locally-minted id below.
+ *   2. `agentLoopRunner.ts`'s NEW queued-input forwarder (the ChatInput
+ *      chip-strip bridge this batch fixes) — sends `{ runId, message,
+ *      queueId, isSystem? }`, id-preserved so the shell's `input.consumed`
+ *      handler can `removeQueuedInput` the EXACT shell-queue entry (hence
+ *      chip) once this run's loop actually consumes it.
+ *
+ * Either way, staged into the SAME `userInputQueue.ts` module `agentLoop.ts`
+ * already drains each turn (real module, sidecar-resident, now id-preserving
+ * — see `enqueueUserInputWithId`). Unknown runId (run already finished, or a
+ * stray/duplicate message) → silent drop, same discipline as
+ * `agent.abort`/`agent.delta`.
  */
+let fallbackQueueIdCounter = 0;
+function generateFallbackQueueId(): string {
+  fallbackQueueIdCounter += 1;
+  return `sc-eq-${Date.now().toString(36)}-${fallbackQueueIdCounter.toString(36)}`;
+}
+
 export function handleAgentEnqueueInput(rawParams: unknown): void {
-  if (!isRecord(rawParams) || typeof rawParams.runId !== 'string' || typeof rawParams.userMessage !== 'string') return;
+  if (!isRecord(rawParams) || typeof rawParams.runId !== 'string') return;
+  const message =
+    typeof rawParams.message === 'string'
+      ? rawParams.message
+      : typeof rawParams.userMessage === 'string'
+        ? rawParams.userMessage
+        : undefined;
+  if (message === undefined) return;
   const run = activeRuns.get(rawParams.runId);
   if (!run) return;
-  enqueueUserInput(run.conversationId, rawParams.userMessage);
+  const isSystem = typeof rawParams.isSystem === 'boolean' ? rawParams.isSystem : undefined;
+  if (typeof rawParams.queueId === 'string') {
+    enqueueUserInputWithId(run.conversationId, rawParams.queueId, message, isSystem);
+  } else {
+    // Backward-compat path (caller 1 above) — no shell-side chip to
+    // correlate, so an auto-generated id is fine; enqueueUserInput would
+    // also mint its own, but using enqueueUserInputWithId + a locally-minted
+    // id keeps this one code path for both branches.
+    enqueueUserInputWithId(run.conversationId, generateFallbackQueueId(), message, isSystem);
+  }
 }
 
 /** `{ runId }` — abort THIS run's conversation-scoped AbortController. Idempotent, unknown runId silent no-op (3a discipline). */

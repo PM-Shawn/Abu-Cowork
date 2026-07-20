@@ -1,35 +1,25 @@
 /**
  * Sidecar-local replacement for `src/core/agent/ports/capsPort.ts`.
  *
- * Same bundle-graph reasoning as `settingsReaderRun.ts`/`toolInvokerRun.ts`
- * — the REAL module's default factory imports `useDiscoveredCapsStore`
- * from `src/stores/discoveredCapabilitiesStore.ts`. `subagentHost.ts`
- * always injects a per-run `capsPort` (see that file), so this default is
- * provably unreached; throws if it ever is (wiring-bug signal, not a
- * legitimate empty-state case).
+ * P1-3B-3A REWORK (same reasoning as `toolInvokerRun.ts` — see that file):
+ * `agentLoop.ts` has no `capsPort` option field; its bare
+ * `getCapsPort().get(...)`/`.record*(...)` calls are always reached on the
+ * main-loop path. Resolves the current run's `CapsPort` (per-run snapshot +
+ * `caps.record` notification forwarder, constructed by `agentLoopHost.ts` —
+ * see design doc §3 "capsPort" row: "入口快照 + caps.record 通知 + 本地回声")
+ * from the ambient `agentRunContext`. Subagent code still resolves its own
+ * `SubagentLoopOptions.capsPort` first (unchanged, P1-3a), so it never
+ * reaches this bare getter.
  */
 import type { CapsPort } from '@/core/agent/ports/capsPort';
-
-function throwingDefault(): CapsPort {
-  const throwFn = (): never => {
-    throw new Error(
-      '[sidecar] getCapsPort() fallback reached inside the sidecar bundle — subagentHost.ts should always inject an explicit capsPort. This indicates a wiring bug.',
-    );
-  };
-  return {
-    get: throwFn,
-    recordMaxOutputTokens: throwFn,
-    recordContextWindow: throwFn,
-    recordReasoningObserved: throwFn,
-  };
-}
-
-let current: CapsPort = throwingDefault();
+import { getCurrentAgentRunContext } from '../agentRunContext';
 
 export function getCapsPort(): CapsPort {
-  return current;
+  return getCurrentAgentRunContext().capsPort;
 }
 
-export function setCapsPort(port: CapsPort): void {
-  current = port;
+export function setCapsPort(_port: CapsPort): void {
+  throw new Error(
+    '[sidecar] setCapsPort() called inside the sidecar bundle — capsPort is injected per-run via agentRunContext.run(), never slot-swapped. This indicates a wiring bug.',
+  );
 }

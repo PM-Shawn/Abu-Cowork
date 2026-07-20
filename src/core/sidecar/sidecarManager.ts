@@ -70,7 +70,7 @@
 
 import { invoke } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
-import { resolveResource } from '@tauri-apps/api/path';
+import { resolveResource, appDataDir, resourceDir } from '@tauri-apps/api/path';
 import { isTauriEnv } from '@/utils/tauriEnv';
 import { createLogger } from '@/core/logging/logger';
 
@@ -399,8 +399,34 @@ async function attemptSpawn(kind: 'initial' | 'restart'): Promise<void> {
     return;
   }
 
+  // Bootstrap env vars for sidecar/src/bootstrap.ts — the two Tauri-only
+  // directories a plain Node process can't derive itself (appDataDir depends
+  // on the app's bundle identifier; resourceDir depends on Tauri's
+  // dev-vs-packaged resource resolution). Passed as spawn-time env vars
+  // (available synchronously via process.env from the sidecar's very first
+  // line — no post-spawn race) rather than a notification; see
+  // bootstrap.ts's module doc for the full rationale. Best-effort per this
+  // module's own "every failure path MUST be fail-soft" rule: a resolution
+  // failure here is logged and the var is simply omitted, never fails the
+  // spawn — nothing in the sidecar's CURRENT role depends on these yet.
+  const spawnEnv: Record<string, string> = {};
   try {
-    await invoke('mcp_spawn', { id: SIDECAR_ID, command: 'node', args: [entryPath], env: {} });
+    spawnEnv.ABU_APP_DATA_DIR = await appDataDir();
+  } catch (err) {
+    logger.warn('Failed to resolve appDataDir for sidecar bootstrap', {
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+  try {
+    spawnEnv.ABU_RESOURCE_DIR = await resourceDir();
+  } catch (err) {
+    logger.warn('Failed to resolve resourceDir for sidecar bootstrap', {
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+
+  try {
+    await invoke('mcp_spawn', { id: SIDECAR_ID, command: 'node', args: [entryPath], env: spawnEnv });
   } catch (err) {
     handleSpawnFailure(err, 'spawn-failed');
     return;

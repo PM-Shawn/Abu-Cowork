@@ -1,4 +1,4 @@
-import type { ToolDefinition, ToolResult, ToolResultContent, ToolExecutionContext } from '../../types';
+import type { ToolDefinition, ToolResult, ToolExecutionContext } from '../../types';
 import { mcpManager } from '../mcp/client';
 import { analyzeCommand, type ConfirmationInfo, type DangerLevel } from './commandSafety';
 import { checkReadPath, checkWritePath, checkListPath, authorizeWorkspace } from './pathSafety';
@@ -43,16 +43,13 @@ async function getCachedHomeDir(): Promise<string> {
 }
 
 /**
- * Extract text-only representation from a ToolResult.
- * For string results, returns as-is. For rich content arrays, extracts text blocks.
+ * Extract text-only representation from a ToolResult. Relocated to
+ * `./toolResultToString` (P1-3B-3A item 2, a zero-import leaf module so the
+ * sidecar's `ToolInvoker` shims can use the REAL implementation without
+ * dragging this whole file's store/mcp/enterprise graph); re-exported here
+ * for existing callers.
  */
-export function toolResultToString(result: ToolResult): string {
-  if (typeof result === 'string') return result;
-  return result
-    .filter((c): c is Extract<ToolResultContent, { type: 'text' }> => c.type === 'text')
-    .map((c) => c.text)
-    .join('\n') || '[image]';
-}
+export { toolResultToString } from './toolResultToString';
 
 /**
  * Check if a ToolResult contains image content.

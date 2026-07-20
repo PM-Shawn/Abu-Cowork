@@ -5,16 +5,28 @@
  * `import('../memdir/scan')` inside `subagentLoop.ts`'s memory-injection
  * step, not caught by the P1-3a-pre static-import inventory).
  *
- * Only `scanMemoryFiles` and `loadMemoryIndex` are implemented — the only
- * two names `subagentLoop.ts` actually destructures from the dynamic
- * import (`const { scanMemoryFiles, loadMemoryIndex } = await
- * import('../memdir/scan')`). `scanMemoryFilesCached` /
- * `invalidateScanCache` / `readMemoryFile` / `formatMemoryManifest` /
- * `_resetScanCache` are NOT reachable from that call site and are
- * intentionally omitted rather than speculatively duplicated — this shim
- * only needs to satisfy what's actually imported at runtime (esbuild
- * doesn't structurally type-check a shim redirect against the real
- * module's full export surface).
+ * `scanMemoryFiles` and `loadMemoryIndex` (subagent path) plus
+ * `scanMemoryFilesCached`/`readMemoryFile` (P1-3B-3B addition below) are
+ * implemented — the complete set of names any sidecar-reachable caller
+ * destructures from the real module across BOTH the subagent and main-loop
+ * paths (verified by grep, not assumed): `subagentLoop.ts`'s dynamic
+ * `import('../memdir/scan')` destructures `scanMemoryFiles`/
+ * `loadMemoryIndex`; `agentLoop.ts`'s own dynamic `await
+ * import('../memdir/relevance')` (a NEW finding beyond P1-3a-pre's
+ * inventory, this batch — `memdir/relevance.ts` is itself clean/pure
+ * except for its OWN static import of `scanMemoryFilesCached`/
+ * `readMemoryFile` from `./scan`) reaches `relevance.ts`, whose top-of-file
+ * `import { scanMemoryFilesCached, readMemoryFile } from './scan'`
+ * resolves through this SAME shim redirect (the `src/core/memdir/scan.ts`
+ * → `memdirScan.ts` `SHIM_TARGETS` entry applies to EVERY importer, not
+ * just `subagentLoop.ts`'s dynamic one). Ported verbatim from the real
+ * `scan.ts` (same TTL-cache logic, same frontmatter-parsing helpers already
+ * duplicated below). `invalidateScanCache`/`formatMemoryManifest`/
+ * `_resetScanCache` are NOT reachable from either path (verified: neither
+ * `relevance.ts` nor `subagentLoop.ts`/`agentLoop.ts` imports them) and
+ * remain intentionally omitted — esbuild doesn't structurally type-check a
+ * shim redirect against the real module's full export surface, so this
+ * shim only needs to satisfy what's actually imported at runtime.
  *
  * `@tauri-apps/plugin-fs`'s `readDir`/`readTextFile`/`stat` are replaced
  * with `node:fs/promises` equivalents — same semantic mapping already
@@ -128,5 +140,67 @@ export async function loadMemoryIndex(workspacePath?: string | null): Promise<st
     return await fs.readFile(indexPath, 'utf-8');
   } catch {
     return '';
+  }
+}
+
+// ── Added for P1-3B-3B's memdir/relevance.ts consumer (see module doc) ──
+
+const SCAN_TTL_MS = 5 * 60 * 1000;
+const scanCache = new Map<string, { headers: MemoryHeader[]; expiresAt: number }>();
+
+function cacheKey(workspacePath: string | null | undefined): string {
+  return workspacePath ?? '__global__';
+}
+
+/** Verbatim-ported cached variant of scanMemoryFiles — same TTL-cache logic as the real scan.ts. */
+export async function scanMemoryFilesCached(workspacePath?: string | null): Promise<MemoryHeader[]> {
+  const key = cacheKey(workspacePath);
+  const cached = scanCache.get(key);
+  if (cached && cached.expiresAt > Date.now()) {
+    return cached.headers;
+  }
+  const headers = await scanMemoryFiles(workspacePath);
+  scanCache.set(key, { headers, expiresAt: Date.now() + SCAN_TTL_MS });
+  return headers;
+}
+
+/** Verbatim-ported readMemoryFile — reads a single memory file's header + body. */
+export async function readMemoryFile(filePath: string): Promise<{ header: MemoryHeader; content: string } | null> {
+  try {
+    const raw = await fs.readFile(filePath, 'utf-8');
+    const fm = parseFrontmatter(raw);
+    if (!fm.name) return null;
+
+    const lines = raw.split('\n');
+    let bodyStart = 0;
+    if (lines[0]?.trim() === '---') {
+      for (let i = 1; i < lines.length; i++) {
+        if (lines[i].trim() === '---') {
+          bodyStart = i + 1;
+          break;
+        }
+      }
+    }
+    const content = lines.slice(bodyStart).join('\n').trim();
+
+    const filename = filePath.split('/').pop() || '';
+
+    return {
+      header: {
+        filename,
+        filePath,
+        name: fm.name,
+        description: fm.description || fm.name,
+        type: VALID_TYPES.has(fm.type) ? (fm.type as MemoryType) : 'project',
+        source: VALID_SOURCES.has(fm.source) ? (fm.source as MemorySource) : 'user_manual',
+        created: Number(fm.created) || Date.now(),
+        updated: Number(fm.updated) || Date.now(),
+        accessCount: Number(fm.accessCount) || 0,
+        private: parseBoolField(fm.private),
+      },
+      content,
+    };
+  } catch {
+    return null;
   }
 }

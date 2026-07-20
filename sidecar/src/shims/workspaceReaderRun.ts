@@ -1,31 +1,25 @@
 /**
  * Sidecar-local replacement for `src/core/agent/ports/workspaceReader.ts`.
  *
- * Same bundle-graph reasoning as the other port shims in this directory —
- * the REAL module's default factory imports `useWorkspaceStore` from
- * `src/stores/workspaceStore.ts`. `subagentHost.ts` always injects a
- * per-run `workspaceReader` (backed by the shell-pushed
- * `workspacePathSnapshot` — see `subagentRunner.ts`'s wire params), so this
- * default is provably unreached; throws if it ever is.
+ * P1-3B-3A REWORK (same reasoning as `toolInvokerRun.ts` — see that file):
+ * `agentLoop.ts` has no `workspaceReader` option field; its bare
+ * `getWorkspaceReader().getCurrentPath()` calls are always reached on the
+ * main-loop path (entry fallback + `mcpChanged` re-derivation, see design
+ * doc §1 fact 5). Resolves the current run's `WorkspaceReader` (entry
+ * snapshot, updated by `state.convPatch`'s `workspacePath` field — see
+ * `conversationRunMirror.ts`) from the ambient `agentRunContext`. Subagent
+ * code still resolves its own `SubagentLoopOptions.workspaceReader` first
+ * (unchanged, P1-3a), so it never reaches this bare getter.
  */
 import type { WorkspaceReader } from '@/core/agent/ports/workspaceReader';
-
-function throwingDefault(): WorkspaceReader {
-  return {
-    getCurrentPath: () => {
-      throw new Error(
-        '[sidecar] getWorkspaceReader() fallback reached inside the sidecar bundle — subagentHost.ts should always inject an explicit workspaceReader. This indicates a wiring bug.',
-      );
-    },
-  };
-}
-
-let current: WorkspaceReader = throwingDefault();
+import { getCurrentAgentRunContext } from '../agentRunContext';
 
 export function getWorkspaceReader(): WorkspaceReader {
-  return current;
+  return getCurrentAgentRunContext().workspaceReader;
 }
 
-export function setWorkspaceReader(reader: WorkspaceReader): void {
-  current = reader;
+export function setWorkspaceReader(_reader: WorkspaceReader): void {
+  throw new Error(
+    '[sidecar] setWorkspaceReader() called inside the sidecar bundle — workspaceReader is injected per-run via agentRunContext.run(), never slot-swapped. This indicates a wiring bug.',
+  );
 }

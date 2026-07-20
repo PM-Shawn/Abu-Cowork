@@ -10,7 +10,12 @@ export default defineConfig([
   // repo. Each carries its own tsconfig, which makes typescript-eslint find
   // multiple candidate TSConfig roots and fail to parse EVERY file. Ignore them
   // so local `eslint .` matches a clean CI checkout (which has no worktrees).
-  globalIgnores(['dist', 'src-tauri', 'coverage', '.wt-*/']),
+  // sidecar/index.mjs is esbuild's generated bundle output (scripts/build-sidecar.mjs)
+  // — vendored dependency code inlined into it can contain eslint-disable comments
+  // referencing rules this config doesn't define for non-ts/tsx files, which ESLint
+  // flags as "rule not found" rather than silently ignoring. It's a build artifact,
+  // never hand-edited — same treatment as `dist`.
+  globalIgnores(['dist', 'src-tauri', 'coverage', '.wt-*/', 'sidecar/index.mjs']),
   {
     files: ['**/*.{ts,tsx}'],
     extends: [

@@ -41,13 +41,28 @@
  */
 
 import { build } from 'esbuild';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(__dirname, '..');
 const srcDir = path.resolve(root, 'src');
+
+/**
+ * `vite.config.ts` substitutes `__APP_VERSION__`/`__ENTERPRISE_BUILD__` as
+ * build-time `define`s for the webview bundle — esbuild's sidecar bundle
+ * doesn't share that config, so without an equivalent `define` here these
+ * two globals are left as bare undefined references, which THROW at sidecar
+ * process startup (found via the standalone `node sidecar/index.mjs`
+ * protocol sanity check, P1-3B-3A item 7 — `src/utils/version.ts`, now
+ * reachable via `agentLoop.ts`'s `consoleError.ts`/`reportError` chain,
+ * reads `__APP_VERSION__` at module top level). `__ENTERPRISE_BUILD__` is
+ * reachable via `src/config/featureGates.ts` — defined defensively even if
+ * not currently on a live sidecar-reachable path, since a false `undefined`
+ * reference would be the same class of startup crash.
+ */
+const packageJson = JSON.parse(readFileSync(path.resolve(root, 'package.json'), 'utf-8'));
 
 /**
  * Shim map: resolved absolute path of the REAL module -> resolved absolute
@@ -88,7 +103,91 @@ const SHIM_TARGETS = [
   { real: path.resolve(srcDir, 'core/agent/ports/toolInvoker.ts'), shim: path.resolve(__dirname, '../sidecar/src/shims/toolInvokerRun.ts') },
   { real: path.resolve(srcDir, 'core/agent/ports/capsPort.ts'), shim: path.resolve(__dirname, '../sidecar/src/shims/capsPortRun.ts') },
   { real: path.resolve(srcDir, 'core/agent/ports/workspaceReader.ts'), shim: path.resolve(__dirname, '../sidecar/src/shims/workspaceReaderRun.ts') },
+  // P1-3B-3A additions (docs/2026-07-20-phase1-p3b-loop-entry-design.md —
+  // moving the MAIN agent loop, runAgentLoop, into the sidecar). New
+  // ALS-backed REAL port shims (agentLoop.ts reads these 5 via bare module
+  // getters with no AgentLoopOptions injection field, unlike the 4 above —
+  // see agentRunContext.ts's module doc + P1-3B-3A-REPORT.md's inventory):
+  { real: path.resolve(srcDir, 'core/agent/ports/chatDelta.ts'), shim: path.resolve(__dirname, '../sidecar/src/shims/chatDeltaRun.ts') },
+  { real: path.resolve(srcDir, 'core/agent/ports/conversationReader.ts'), shim: path.resolve(__dirname, '../sidecar/src/shims/conversationReaderRun.ts') },
+  { real: path.resolve(srcDir, 'core/agent/ports/executionPort.ts'), shim: path.resolve(__dirname, '../sidecar/src/shims/executionPortRun.ts') },
+  { real: path.resolve(srcDir, 'core/agent/ports/abortRegistry.ts'), shim: path.resolve(__dirname, '../sidecar/src/shims/abortRegistryRun.ts') },
+  { real: path.resolve(srcDir, 'core/agent/ports/scratchpadPort.ts'), shim: path.resolve(__dirname, '../sidecar/src/shims/scratchpadPortRun.ts') },
+  // Throwing bundle-graph-only shims — orchestrator.ts/entryOrchestration.ts
+  // only ever run shell-side; agentLoop.ts's dynamic-import fallback branch
+  // is provably dead once agentLoopHost.ts always injects
+  // options.orchestration (see entryOrchestration.ts's + these shims' doc
+  // comments for the full "雷 1" reasoning).
+  { real: path.resolve(srcDir, 'core/agent/orchestrator.ts'), shim: path.resolve(__dirname, '../sidecar/src/shims/orchestratorRun.ts') },
+  { real: path.resolve(srcDir, 'core/agent/entryOrchestration.ts'), shim: path.resolve(__dirname, '../sidecar/src/shims/entryOrchestrationRun.ts') },
+  // Real shim — node:os.platform() mapping, see platformRun.ts.
+  { real: path.resolve(srcDir, 'utils/platform.ts'), shim: path.resolve(__dirname, '../sidecar/src/shims/platformRun.ts') },
+  // Real forwarding shim — OS notifications via shell.notifyTask.
+  { real: path.resolve(srcDir, 'utils/notifications.ts'), shim: path.resolve(__dirname, '../sidecar/src/shims/notificationsRun.ts') },
+  // Mixed shim (drain*/setLoopContext real, requestCommandConfirmation/requestFilePermission throwing-dead) — see permissionBridgeRun.ts.
+  { real: path.resolve(srcDir, 'core/agent/permissionBridge.ts'), shim: path.resolve(__dirname, '../sidecar/src/shims/permissionBridgeRun.ts') },
+  // Real forwarding shim (cu.setState) + sidecar-local isSessionWindowHidden mirror — see computerUseStatusRun.ts (documented drift finding).
+  { real: path.resolve(srcDir, 'core/agent/computerUseStatus.ts'), shim: path.resolve(__dirname, '../sidecar/src/shims/computerUseStatusRun.ts') },
+  // Whole-module barrel redirect — builtins.ts drags all ~19 tool-definition files + registry.ts; only clearAllSkillHooks/setComputerUseBatchMode/setSkipAutoScreenshot are consumed sidecar-side — see builtinsRun.ts.
+  { real: path.resolve(srcDir, 'core/tools/builtins.ts'), shim: path.resolve(__dirname, '../sidecar/src/shims/builtinsRun.ts') },
+  // Real forwarding shim (replaceMessageById via pushFrame, isMessageWrittenToDisk via REQUEST) — see conversationStorageRun.ts.
+  { real: path.resolve(srcDir, 'core/session/conversationStorage.ts'), shim: path.resolve(__dirname, '../sidecar/src/shims/conversationStorageRun.ts') },
+  // In-sidecar direct call shim (nested nested subagent shares the parent main-loop run's ports) — see subagentRunnerRun.ts.
+  { real: path.resolve(srcDir, 'core/agent/subagentRunner.ts'), shim: path.resolve(__dirname, '../sidecar/src/shims/subagentRunnerRun.ts') },
+  // Throwing bundle-graph-only shims for agentLoop.ts's fire-and-forget
+  // dynamic-import().catch(() => {}) call sites — each already tolerates a
+  // rejected import at its sole call site, so throwing is a safe, documented
+  // feature gap, not a crash. See each shim's own doc for the specific
+  // reasoning (memdir/extractor.ts is a design doc §6 explicit exclusion;
+  // usageTracker.ts and computerTools.ts's closeAxSession are new findings,
+  // flagged in the report).
+  { real: path.resolve(srcDir, 'core/memdir/extractor.ts'), shim: path.resolve(__dirname, '../sidecar/src/shims/memdirExtractorRun.ts') },
+  // P1-3B-3A finding: P1-3a's assumption ("nothing imports memdir/paths.ts
+  // directly once memdir/scan.ts is redirected — memdirScan.ts uses its own
+  // sibling memdirPaths.ts helper instead") no longer holds now that
+  // agentLoop.ts's real graph includes `skill/loader.ts`, which imports
+  // `sanitizePath` from `core/memdir/paths.ts` DIRECTLY (bypassing scan.ts
+  // entirely). Reuses the EXISTING `memdirPaths.ts` sidecar-local helper
+  // (already real, fs-backed, byte-identical `sanitizePath` logic — see its
+  // own doc) as a first-class shim target, not just scan.ts's private
+  // sibling. `getMemoryEntrypoint`/`isMemoryPath`/`_resetCachedHome` are NOT
+  // covered (not consumed by skill/loader.ts or any other sidecar-reachable
+  // caller, verified by grep) — real module's export surface is a superset,
+  // this shim intentionally covers only what's used.
+  { real: path.resolve(srcDir, 'core/memdir/paths.ts'), shim: path.resolve(__dirname, '../sidecar/src/shims/memdirPaths.ts') },
+  { real: path.resolve(srcDir, 'core/llm/usageTracker.ts'), shim: path.resolve(__dirname, '../sidecar/src/shims/usageTrackerRun.ts') },
+  { real: path.resolve(srcDir, 'core/tools/definitions/computerTools.ts'), shim: path.resolve(__dirname, '../sidecar/src/shims/computerToolsAxRun.ts') },
+  // Legitimate no-op — enterprise error telemetry, same class as langfuseRun.ts. Reached via agentLoop.ts's reportError -> consoleError.ts -> getTelemetryTarget() -> useEnterpriseStore.
+  { real: path.resolve(srcDir, 'utils/consoleTelemetryTarget.ts'), shim: path.resolve(__dirname, '../sidecar/src/shims/consoleTelemetryTargetRun.ts') },
+  // Real BEHAVIOR fix, not an import-purity issue — the real module's
+  // getSessionOutputDir() unconditionally returns null under isTauriEnv()'s
+  // always-false-in-Node check, which would silently disable
+  // saveUserImagesToDisk() for every sidecar-run main loop even though its
+  // underlying fs/path calls work fine. See sessionDirRun.ts.
+  { real: path.resolve(srcDir, 'core/session/sessionDir.ts'), shim: path.resolve(__dirname, '../sidecar/src/shims/sessionDirRun.ts') },
 ];
+
+/**
+ * Bare node_modules package specifiers — not `src/`-relative files, so they
+ * can't go through the generic `SHIM_TARGETS`/`shimMap` mechanism above
+ * (which resolves the REAL side via `path.resolve(srcDir, ...)`). Redirected
+ * directly by bare specifier instead, registered in `shimPlugin` below
+ * BEFORE `bundleGraphGuardPlugin`'s blanket `@tauri-apps/*` rejection ever
+ * sees them:
+ *   - `@tauri-apps/api/core`'s `invoke` → `native.invoke` reverse REQUEST,
+ *     see `tauriCoreInvokeRun.ts`.
+ *   - `@tauri-apps/plugin-fs` → direct `node:fs/promises` calls (same
+ *     machine, no wire round-trip), see `pluginFsRun.ts`.
+ *   - `@tauri-apps/api/path` → `node:path`/`node:os` + spawn-time bootstrap
+ *     env vars for the two Tauri-only directories, see `tauriPathRun.ts` and
+ *     `bootstrap.ts`.
+ */
+const TAURI_CORE_SHIM = path.resolve(__dirname, '../sidecar/src/shims/tauriCoreInvokeRun.ts');
+const TAURI_PLUGIN_FS_SHIM = path.resolve(__dirname, '../sidecar/src/shims/pluginFsRun.ts');
+const TAURI_API_PATH_SHIM = path.resolve(__dirname, '../sidecar/src/shims/tauriPathRun.ts');
+for (const shimPath of [TAURI_CORE_SHIM, TAURI_PLUGIN_FS_SHIM, TAURI_API_PATH_SHIM]) {
+  if (!existsSync(shimPath)) throw new Error(`[build-sidecar] missing shim file: ${shimPath}`);
+}
 
 for (const { real, shim } of SHIM_TARGETS) {
   if (!existsSync(real)) throw new Error(`[build-sidecar] shim target source moved or renamed: ${real}`);
@@ -98,26 +197,66 @@ for (const { real, shim } of SHIM_TARGETS) {
 const shimMap = new Map(SHIM_TARGETS.map(({ real, shim }) => [real, shim]));
 
 /**
- * Redirects the 3 shimmed modules to their sidecar-local replacement,
- * matching on the fully-RESOLVED absolute path rather than the import
- * specifier string (a relative import and a `@/`-aliased import can both
- * reach the same file). Narrowly filtered (by a keyword substring of the
- * specifier) purely to avoid re-resolving every single import in the bundle
- * — the actual redirect decision below still only fires on an exact
- * resolved-path match against `shimMap`, so a false-positive filter match
- * (e.g. an unrelated file that happens to contain "logger" in its path)
- * would just pass through unchanged, never get mis-redirected.
+ * Redirects the shimmed modules to their sidecar-local replacement, matching
+ * on the fully-RESOLVED absolute path rather than the import specifier
+ * string (a relative import and a `@/`-aliased import can both reach the
+ * same file).
+ *
+ * P1-3B-3A FIX: this used to be narrowly filtered by a keyword substring of
+ * the specifier (`/logger|compatEvents|.../i`), on the theory that a
+ * false-positive filter match is harmless (it just falls through to default
+ * resolution when `shimMap` has no entry for the resolved path). That
+ * reasoning covers false POSITIVES but missed the false NEGATIVE case:
+ * a bare same-directory relative import — e.g. `core/memdir/relevance.ts`'s
+ * `import { scanMemoryFilesCached } from './scan'`, or `memdir/scan.ts`'s
+ * OWN `import { getMemoryDir } from './paths'` — contains no keyword at all
+ * (no "memdir" substring in `'./scan'`/`'./paths'`), so the filter never
+ * even INVOKED this handler for that edge, and esbuild's DEFAULT resolution
+ * loaded the REAL file, completely bypassing the redirect that worked fine
+ * for OTHER edges reaching the exact same resolved path via a keyword-laden
+ * specifier (e.g. `subagentLoop.ts`'s `import('../memdir/scan')`). Found via
+ * `ABU_SHIM_DEBUG=1 node scripts/build-sidecar.mjs` tracing every resolution
+ * of a specifier containing "memdir" — the redirect that DID succeed masked
+ * the one that silently didn't, since esbuild treats each distinct
+ * (specifier, resolveDir) pair as its own resolution, loading BOTH the
+ * shimmed AND the real content as separate bundled modules when only one
+ * edge is caught.
+ *
+ * Fixed by resolving EVERY import (no specifier filter) and checking
+ * `shimMap` unconditionally — correctness over the now-irrelevant
+ * micro-optimization (this is a one-off build script, not a hot path).
  */
 const shimPlugin = {
   name: 'abu-sidecar-shims',
   setup(pluginBuild) {
-    pluginBuild.onResolve({ filter: /logger|compatEvents|tauriFetch|i18n|llm-resolver|selectChatAdapter|lifecycleHooks|langfuse|memdir|settingsReader|toolInvoker|capsPort|workspaceReader/i }, async (args) => {
+    // Bare node_modules package specifier — @tauri-apps/api/core's `invoke`.
+    // Matched BEFORE the generic handler below (registration order =
+    // evaluation order for esbuild onResolve within one plugin) and BEFORE
+    // bundleGraphGuardPlugin's blanket `@tauri-apps/*` rejection (plugin
+    // order: shimPlugin runs first) — see TAURI_CORE_SHIM's doc.
+    pluginBuild.onResolve({ filter: /^@tauri-apps\/api\/core$/ }, () => {
+      return { path: TAURI_CORE_SHIM };
+    });
+    pluginBuild.onResolve({ filter: /^@tauri-apps\/plugin-fs$/ }, () => {
+      return { path: TAURI_PLUGIN_FS_SHIM };
+    });
+    pluginBuild.onResolve({ filter: /^@tauri-apps\/api\/path$/ }, () => {
+      return { path: TAURI_API_PATH_SHIM };
+    });
+
+    pluginBuild.onResolve({ filter: /.*/ }, async (args) => {
       // Recursion guard: this handler calls build.resolve() below to find out
       // where the specifier ACTUALLY lands, which re-enters esbuild's
       // resolution pipeline (and this same onResolve callback, since the
-      // filter still matches the same specifier). Bail out to default
-      // resolution on the re-entrant call instead of looping forever.
+      // filter now matches everything). Bail out to default resolution on
+      // the re-entrant call instead of looping forever.
       if (args.pluginData?.abuShimResolving) return null;
+      // Skip bare node_modules packages other than the one handled above —
+      // resolving them through this path is unnecessary work and
+      // `bundleGraphGuardPlugin` already has its own dedicated check for
+      // `@tauri-apps/*`; non-relative, non-aliased specifiers can never
+      // resolve to a `src/`-relative shimMap entry anyway.
+      if (!args.path.startsWith('.') && !args.path.startsWith('@/')) return null;
 
       const resolved = await pluginBuild.resolve(args.path, {
         resolveDir: args.resolveDir,
@@ -128,6 +267,9 @@ const shimPlugin = {
       if (resolved.errors.length > 0) return { errors: resolved.errors };
 
       const shimPath = shimMap.get(resolved.path);
+      if (process.env.ABU_SHIM_DEBUG && shimPath) {
+        console.error('[shim-debug]', args.path, '->', resolved.path, '-> SHIMMED', shimPath);
+      }
       if (shimPath) return { path: shimPath };
       return null; // no match — let esbuild's default resolution proceed normally
     });
@@ -197,6 +339,10 @@ async function main() {
     // INTO the output — nothing marked external. The packaged app ships
     // sidecar/index.mjs standalone, with no node_modules alongside it.
     alias: { '@': srcDir },
+    define: {
+      __APP_VERSION__: JSON.stringify(packageJson.version),
+      __ENTERPRISE_BUILD__: JSON.stringify(false),
+    },
     plugins: [shimPlugin, bundleGraphGuardPlugin],
     banner: {
       // Bundled ESM output has no CommonJS __dirname/__filename or `require`

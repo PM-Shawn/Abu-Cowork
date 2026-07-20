@@ -19,7 +19,7 @@
  * `createReverseToolInvoker` doc comment for why: correctness over latency,
  * per the design doc's explicit instruction).
  */
-import type { SubagentDefinition, ToolDefinition, ToolExecutionContext, ToolResult, ToolResultContent } from '@/types';
+import type { SubagentDefinition, ToolDefinition, ToolExecutionContext, ToolResult } from '@/types';
 import type { IMContext } from '@/core/agent/orchestrator';
 import type { SettingsReader } from '@/core/agent/ports/settingsReader';
 import type { ToolInvoker } from '@/core/agent/ports/toolInvoker';
@@ -28,6 +28,7 @@ import type { WorkspaceReader } from '@/core/agent/ports/workspaceReader';
 import type { SettingsState } from '@/stores/settingsStore';
 import type { SubagentUiStrings } from '@/core/agent/subagentUiStrings';
 import { runSubagentLoop, type SubagentLoopOptions, type SubagentProgressEvent } from '@/core/agent/subagentLoop';
+import { toolResultToString } from '@/core/tools/toolResultToString';
 import { RpcError } from './protocol';
 import { sendRequest, sendNotification } from './rpcClient';
 import { subagentRunContext, type SubagentRunContext } from './subagentRunContext';
@@ -134,17 +135,6 @@ function parseAbortParams(params: unknown): { runId: string } {
     throw new RpcError(-32602, 'Invalid params: runId must be a string');
   }
   return { runId: params.runId };
-}
-
-/** Mirrors src/core/tools/registry.ts's toolResultToString exactly (same filter/join/fallback). */
-function toolResultToString(result: ToolResult): string {
-  if (typeof result === 'string') return result;
-  return (
-    result
-      .filter((c): c is Extract<ToolResultContent, { type: 'text' }> => c.type === 'text')
-      .map((c) => c.text)
-      .join('\n') || '[image]'
-  );
 }
 
 /**

@@ -39,15 +39,33 @@
  *     finishes (or errors) — no progress notifications this phase (mirrors
  *     `llm.chat`'s "response settles at the end" shape, not its per-event
  *     streaming).
+ *   - `agent.run` → P1-3B-3A: runs one MAIN agent-loop (`runAgentLoop`) to
+ *     completion; see agentLoopHost.ts. Settles only once the whole run
+ *     finishes — progress streams via `agent.delta` notifications
+ *     (coalesced port-write frames, see portFrameCoalescer.ts) in the
+ *     meantime, same shape discipline as `llm.chat`/`subagent.run`.
  * Notifications (no `id`):
- *   - `shutdown` → abort all active llm.chat calls AND subagent.run calls,
- *     reject all pending outbound (reverse-RPC) requests, flush stdout,
- *     exit(0)
+ *   - `shutdown` → abort all active llm.chat calls, subagent.run calls, AND
+ *     agent.run calls, reject all pending outbound (reverse-RPC) requests,
+ *     flush stdout, exit(0)
  *   - `llm.abort` → abort one in-flight `llm.chat` call by callId (idempotent,
  *     unknown callId is a silent no-op)
  *   - `subagent.abort` → abort one in-flight `subagent.run` call by runId
  *     (idempotent, unknown runId is a silent no-op — same discipline as
  *     `llm.abort`)
+ *   - `agent.abort` → P1-3B-3A: abort one in-flight `agent.run` call by
+ *     runId (idempotent, unknown runId silent no-op, same discipline)
+ *   - `state.convPatch` → P1-3B-3A: `{runId, patch}` — scalar-field patch
+ *     (workspacePath/title/activeSkills/model) applied to that run's
+ *     conversation read-mirror. Unknown runId silent drop.
+ *   - `state.execPatch` → P1-3B-3A item 6: `{runId, plannedSteps}` —
+ *     applies `report_plan`'s planned-steps write (which bypasses
+ *     ExecutionPort shell-side) to that run's execution mirror. Unknown
+ *     runId silent drop.
+ *   - `state.settings` → P1-3B-3A: `{settings}` — sidecar-GLOBAL settings
+ *     mirror push (see settingsMirror.ts), NOT per-run/routed by runId.
+ *   - `state.planMode` → P1-3B-3A: `{conversationId, mode}` — mirror-apply
+ *     via planMode.ts's applyPlanModeState (does not re-notify the shell).
  * Notifications sidecar→shell:
  *   - `llm.event` → `{ callId, seq, event }` — one StreamEvent, coalesced
  *     (see eventCoalescer.ts)
@@ -92,6 +110,15 @@ import { createInterface } from 'node:readline';
 import { createLlmHost } from './llmHost';
 import { fsReadTextFile, fsReadFile, fsWriteTextFile, fsReadDir, fsExists, fsStat } from './fsHost';
 import { handleSubagentRun, handleSubagentAbort, shutdownAllSubagentRuns } from './subagentHost';
+import {
+  handleAgentRun,
+  handleAgentAbort,
+  handleStateConvPatch,
+  handleStateExecPatch,
+  handleStateSettings,
+  handleStatePlanMode,
+  shutdownAllAgentRuns,
+} from './agentLoopHost';
 import { resolvePendingResponse, rejectAllPendingRequests } from './rpcClient';
 import {
   writeLine,
@@ -196,6 +223,7 @@ function handleMessage(raw: string): void {
     log('shutdown requested, exiting');
     llmHost.shutdownAll();
     shutdownAllSubagentRuns();
+    shutdownAllAgentRuns();
     rejectAllPendingRequests(new Error('Sidecar shutting down'));
     flushAndExit(0);
     return;
@@ -259,6 +287,73 @@ function handleMessage(raw: string): void {
     return;
   }
 
+  if (method === 'agent.abort') {
+    // Notification only — fire-and-forget, same discipline as
+    // llm.abort/subagent.abort.
+    try {
+      handleAgentAbort(params);
+    } catch (err) {
+      log('agent.abort handler threw (ignored — notifications get no response)', err);
+    }
+    return;
+  }
+
+  if (method === 'agent.run') {
+    if (isNotification) return; // must be a request — a notification has no id to respond to
+    // Async, same reasoning as subagent.run above — a main-loop run can
+    // stream for minutes and itself sends/awaits reverse-RPC requests
+    // (tool.invoke, hook.emit, native.invoke, tool.list, ...) while in
+    // flight, plus receives state.* push notifications for this or other
+    // runs the whole time.
+    runAsyncRequest(id, () => handleAgentRun(params));
+    return;
+  }
+
+  if (method === 'state.convPatch') {
+    // Notification only — fire-and-forget scalar-field patch to a run's
+    // conversation mirror (workspacePath/title/activeSkills/model).
+    try {
+      handleStateConvPatch(params);
+    } catch (err) {
+      log('state.convPatch handler threw (ignored — notifications get no response)', err);
+    }
+    return;
+  }
+
+  if (method === 'state.execPatch') {
+    // Notification only — plannedSteps patch (P1-3B-3A item 6: report_plan
+    // writes directly to the shell's taskExecutionStore, bypassing
+    // ExecutionPort; this is the sidecar-side read-path fix).
+    try {
+      handleStateExecPatch(params);
+    } catch (err) {
+      log('state.execPatch handler threw (ignored — notifications get no response)', err);
+    }
+    return;
+  }
+
+  if (method === 'state.settings') {
+    // Notification only — sidecar-GLOBAL settings mirror push (see
+    // settingsMirror.ts), not per-run.
+    try {
+      handleStateSettings(params);
+    } catch (err) {
+      log('state.settings handler threw (ignored — notifications get no response)', err);
+    }
+    return;
+  }
+
+  if (method === 'state.planMode') {
+    // Notification only — mirror-apply (does not re-notify the shell back,
+    // see planMode.ts's applyPlanModeState).
+    try {
+      handleStatePlanMode(params);
+    } catch (err) {
+      log('state.planMode handler threw (ignored — notifications get no response)', err);
+    }
+    return;
+  }
+
   const fsHandler = fsHandlers[method];
   if (fsHandler) {
     if (isNotification) return; // must be a request — a notification has no id to respond to
@@ -300,6 +395,7 @@ rl.on('close', () => {
   // their responses still reach the pipe, then exit.
   llmHost.shutdownAll();
   shutdownAllSubagentRuns();
+  shutdownAllAgentRuns();
   rejectAllPendingRequests(new Error('Sidecar process closing (stdin closed)'));
   const DRAIN_CAP_MS = 3_000;
   const deadline = Date.now() + DRAIN_CAP_MS;

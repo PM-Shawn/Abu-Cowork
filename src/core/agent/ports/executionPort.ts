@@ -129,3 +129,17 @@ export function getExecutionPort(): ExecutionPort {
 export function setExecutionPort(port: ExecutionPort): void {
   slot.set(port);
 }
+
+/**
+ * Narrow id-preserving apply seam for P1-3b-2's shell-side frame applier
+ * (`src/core/agent/frameApplier.ts`) — applies a `createExecution` frame
+ * built by a sidecar-run agent loop's local execution mirror
+ * (`sidecar/src/portFrameSenders.ts`), which derives the execution's id
+ * from `loopId` (both sides use `id === loopId` by convention — see
+ * `taskExecutionStore.ts`'s `createExecutionWithId` doc comment). Bypasses
+ * `getExecutionPort()` deliberately — this always targets the REAL
+ * in-process store. Not part of the `ExecutionPort` interface
+ * (id-preserving writes aren't a loop-facing concern). */
+export function applyExecutionWithId(conversationId: string, loopId: string, id: string): TaskExecution {
+  return useTaskExecutionStore.getState().createExecutionWithId(conversationId, loopId, id);
+}

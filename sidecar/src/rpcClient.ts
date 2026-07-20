@@ -32,8 +32,35 @@ function mintRequestId(): string {
   return `sq-${counter}`;
 }
 
+/**
+ * P1-3b-2 flush-before-request hook (design doc §3's "flush-before-request
+ * discipline"): an optional callback invoked at the START of every
+ * `sendRequest()` call, BEFORE the request line is written. 3b-3 wires this
+ * to the port-frame-coalescer's `flush()` so no buffered `agent.delta` frame
+ * can ever be overtaken on the wire by a subsequent REQUEST (e.g.
+ * `tool.invoke`/`hook.emit`) — the shell must see every delta frame the
+ * causal chain up to that point implies (e.g. `setMessageToolCalls`) before
+ * it sees the approval dialog the request triggers.
+ *
+ * Zero behavior when unset (the default) — every existing `sendRequest`
+ * caller (subagentHost.ts's reverse ToolInvoker, hook.emit) is unaffected
+ * until 3b-3 calls `setPreRequestFlush`.
+ *
+ * Deliberately NOT invoked from `sendNotification()` — notifications (the
+ * delta frames themselves, `hook.notify`, `subagent.progress`, ...) don't
+ * need the causal barrier; only REQUESTS (which the shell might act on
+ * before later notifications arrive) do.
+ */
+let preRequestFlush: (() => void) | undefined;
+
+/** Register (or clear, passing `undefined`) the pre-request flush hook — see `preRequestFlush`'s doc comment above. */
+export function setPreRequestFlush(fn: (() => void) | undefined): void {
+  preRequestFlush = fn;
+}
+
 /** Send a request to the shell and await its response. No timeout here — callers (subagentHost.ts's ToolInvoker) rely on the shell's own tool-execution semantics for bounding, and the whole subagent.run request itself has no timeout either (mirrors llm.chat's unbounded-stream discipline). */
 export function sendRequest(method: string, params: unknown): Promise<unknown> {
+  preRequestFlush?.();
   const id = mintRequestId();
   return new Promise<unknown>((resolve, reject) => {
     pending.set(id, { resolve, reject });

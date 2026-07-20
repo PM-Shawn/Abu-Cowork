@@ -48,6 +48,20 @@ interface ScratchpadState {
 interface ScratchpadActions {
   /** Add a new entry */
   addEntry: (entry: Omit<ScratchpadEntry, 'id' | 'timestamp' | 'isViewed'>) => string;
+  /**
+   * Add a new entry with a CALLER-SUPPLIED id, instead of generating one.
+   *
+   * Narrow id-preserving apply seam for P1-3b-2's sidecar port-frame applier
+   * (`src/core/agent/frameApplier.ts`, via `ports/scratchpadPort.ts`'s
+   * `applyScratchpadEntryWithId`): a sidecar-run agent loop's local
+   * scratchpad mirror (`sidecar/src/portFrameSenders.ts`) generates the new
+   * entry's id ITSELF (so `ScratchpadPort.addEntry`'s synchronous `string`
+   * return value is available to the loop immediately, before any
+   * round-trip to the shell) — the shell-side apply must then use that SAME
+   * id, not a freshly generated one, or the sidecar's local mirror and the
+   * shell's real store would disagree on this entry's id for the rest of
+   * the run. `addEntry` itself is untouched — this is purely additive. */
+  addEntryWithId: (id: string, entry: Omit<ScratchpadEntry, 'id' | 'timestamp' | 'isViewed'>) => void;
   /** Mark entry as viewed */
   markViewed: (entryId: string) => void;
   /** Mark all entries for a conversation as viewed */
@@ -91,6 +105,20 @@ export const useScratchpadStore = create<ScratchpadStore>()(
         });
 
         return id;
+      },
+
+      addEntryWithId: (id, entry) => {
+        const fullEntry: ScratchpadEntry = {
+          ...entry,
+          id,
+          timestamp: Date.now(),
+          isViewed: false,
+        };
+
+        set((state) => {
+          state.entries[id] = fullEntry;
+          state.order.unshift(id); // Add to front (newest first) — same ordering as addEntry
+        });
       },
 
       markViewed: (entryId) => {

@@ -97,7 +97,8 @@ export interface SerializableToolDefinition {
   inputSchema: ToolDefinition['inputSchema'];
 }
 
-function toSerializableTool(t: ToolDefinition): SerializableToolDefinition {
+/** Exported for reuse by agentLoopRunner.ts's `tool.list` REQUEST handler (P1-3b-2 item 5) — same wire-safe tool projection, no need for a second copy. */
+export function toSerializableTool(t: ToolDefinition): SerializableToolDefinition {
   return { name: t.name, description: t.description, inputSchema: t.inputSchema };
 }
 

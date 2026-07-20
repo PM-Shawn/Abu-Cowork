@@ -56,3 +56,22 @@ export function getScratchpadPort(): ScratchpadPort {
 export function setScratchpadPort(port: ScratchpadPort): void {
   slot.set(port);
 }
+
+/**
+ * Narrow id-preserving apply seam for P1-3b-2's shell-side frame applier
+ * (`src/core/agent/frameApplier.ts`) — applies a scratchpad entry frame
+ * built by a sidecar-run agent loop's local mirror
+ * (`sidecar/src/portFrameSenders.ts`), which generated the entry's id
+ * itself so `ScratchpadPort.addEntry`'s synchronous `string` return value
+ * is available to loop code immediately, without a round trip. Bypasses
+ * `getScratchpadPort()` deliberately — this always targets the REAL
+ * in-process store (the shell is always the single writer of record),
+ * never a swapped-in port. See `scratchpadStore.ts`'s `addEntryWithId`
+ * doc comment for the full rationale. Not part of the `ScratchpadPort`
+ * interface (id-preserving writes aren't a loop-facing concern). */
+export function applyScratchpadEntryWithId(
+  id: string,
+  entry: Omit<ScratchpadEntry, 'id' | 'timestamp' | 'isViewed'>,
+): void {
+  useScratchpadStore.getState().addEntryWithId(id, entry);
+}

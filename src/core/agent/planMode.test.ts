@@ -8,6 +8,8 @@ import {
   clearPlanMode,
   evaluatePlanGate,
   READONLY_FALLBACK_TOOLS,
+  onPlanModeChange,
+  applyPlanModeState,
   type PlanModeState,
 } from './planMode';
 import { TOOL_NAMES } from '@/core/tools/toolNames';
@@ -242,6 +244,75 @@ describe('evaluatePlanGate', () => {
       expect(typeof result.reason).toBe('string');
       expect((result.reason as string).length).toBeGreaterThan(0);
     });
+  });
+});
+
+// ── P1-3b-2 mirror seams ──
+
+describe('onPlanModeChange / applyPlanModeState', () => {
+  beforeEach(() => {
+    clearPlanMode('conv-mirror');
+  });
+
+  it('setPlanMode notifies subscribers with (conversationId, mode)', () => {
+    const calls: Array<[string, PlanModeState | null]> = [];
+    const unsubscribe = onPlanModeChange((convId, mode) => calls.push([convId, mode]));
+    setPlanMode('conv-mirror', 'planning');
+    expect(calls).toEqual([['conv-mirror', 'planning']]);
+    unsubscribe();
+  });
+
+  it('clearPlanMode notifies subscribers with (conversationId, null)', () => {
+    const calls: Array<[string, PlanModeState | null]> = [];
+    setPlanMode('conv-mirror', 'planning');
+    const unsubscribe = onPlanModeChange((convId, mode) => calls.push([convId, mode]));
+    clearPlanMode('conv-mirror');
+    expect(calls).toEqual([['conv-mirror', null]]);
+    unsubscribe();
+  });
+
+  it('multiple subscribers all get notified', () => {
+    const a: Array<[string, PlanModeState | null]> = [];
+    const b: Array<[string, PlanModeState | null]> = [];
+    const unsubA = onPlanModeChange((convId, mode) => a.push([convId, mode]));
+    const unsubB = onPlanModeChange((convId, mode) => b.push([convId, mode]));
+    setPlanMode('conv-mirror', 'approved');
+    expect(a).toEqual([['conv-mirror', 'approved']]);
+    expect(b).toEqual([['conv-mirror', 'approved']]);
+    unsubA();
+    unsubB();
+  });
+
+  it('unsubscribe stops further notifications', () => {
+    const calls: Array<[string, PlanModeState | null]> = [];
+    const unsubscribe = onPlanModeChange((convId, mode) => calls.push([convId, mode]));
+    unsubscribe();
+    setPlanMode('conv-mirror', 'planning');
+    expect(calls).toEqual([]);
+  });
+
+  it('zero behavior when no subscriber is registered (no throw)', () => {
+    expect(() => setPlanMode('conv-mirror', 'planning')).not.toThrow();
+    expect(() => clearPlanMode('conv-mirror')).not.toThrow();
+  });
+
+  it('applyPlanModeState sets the map entry like setPlanMode, WITHOUT notifying subscribers', () => {
+    const calls: Array<[string, PlanModeState | null]> = [];
+    const unsubscribe = onPlanModeChange((convId, mode) => calls.push([convId, mode]));
+    applyPlanModeState('conv-mirror', 'planning');
+    expect(getPlanMode('conv-mirror')).toBe('planning');
+    expect(calls).toEqual([]); // no echo
+    unsubscribe();
+  });
+
+  it('applyPlanModeState with null clears the map entry like clearPlanMode, WITHOUT notifying subscribers', () => {
+    const calls: Array<[string, PlanModeState | null]> = [];
+    setPlanMode('conv-mirror', 'approved');
+    const unsubscribe = onPlanModeChange((convId, mode) => calls.push([convId, mode]));
+    applyPlanModeState('conv-mirror', null);
+    expect(getPlanMode('conv-mirror')).toBe('off');
+    expect(calls).toEqual([]); // no echo
+    unsubscribe();
   });
 });
 

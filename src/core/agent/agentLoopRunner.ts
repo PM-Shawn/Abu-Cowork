@@ -401,6 +401,18 @@ async function handleIsMessageWrittenToDisk(rawParams: unknown): Promise<unknown
  * resolves correctly without an explicit wire field. See
  * P1-3B-3B-REPORT.md's "toolCallToStepId threading" section for the full
  * trace.
+ *
+ * P1-3c-2 (design doc §3 change 3 / P1-3C-SCOUT-REPORT.md §5 "secondary
+ * finding"): also refuses to execute when the run's `conversationId` no
+ * longer has a record in `useChatStore` — i.e. the user deleted the
+ * conversation. `deleteConversation` (chatStore.ts) aborts the shared
+ * controller BEFORE erasing the record, but that abort is a fire-and-forget
+ * cross-process notification (`agent.abort`) — there's a real window where
+ * the sidecar dispatches (or already dispatched) another `tool.invoke` for
+ * a conversation the shell has since deleted, before the abort lands there.
+ * This is the shell-side backstop for that window: even if a real-effect
+ * tool call (e.g. `write_file`) arrives after deletion, it's refused here
+ * rather than executed against a conversation nobody can see anymore.
  */
 async function handleMainLoopToolInvoke(rawParams: unknown): Promise<unknown> {
   const params = rawParams as {
@@ -417,6 +429,9 @@ async function handleMainLoopToolInvoke(rawParams: unknown): Promise<unknown> {
   const session = sessions.get(params.runId);
   if (!session) {
     throw new SidecarRequestError(-32000, `Unknown agent-loop runId: ${params.runId}`);
+  }
+  if (!useChatStore.getState().conversations[session.conversationId]) {
+    throw new SidecarRequestError(-32000, `Conversation no longer exists for agent-loop runId: ${params.runId}`);
   }
   // P1-3B-3B fallback discipline — see RunSession.committed's doc.
   session.committed = true;

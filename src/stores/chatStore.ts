@@ -672,6 +672,23 @@ export const useChatStore = create<ChatStore>()(
       },
 
       deleteConversation: (id) => {
+        // P1-3c-2 (design doc §3 change 3 / P1-3C-SCOUT-REPORT.md §5
+        // "secondary finding"): this abort MUST run before the `conversations`/
+        // `conversationIndex` deletion below — verified still true, not just
+        // assumed. `controller` here is the SAME AbortController instance
+        // `agentLoopRunner.ts`'s `runAgentLoopDispatched` registers into via
+        // `getAbortRegistry().getAbortController(conversationId)` (both read
+        // through this module's `abortControllers` Map), so `.abort()` fires
+        // that file's `onShellAbort` listener → `notifySidecar('agent.abort',
+        // { runId })`, the exact same signal the Stop button (`cancelStreaming`)
+        // sends. That notification is fire-and-forget — the sidecar can still
+        // be mid-flight on a `tool.invoke` for this conversation when it
+        // arrives. `handleMainLoopToolInvoke` (agentLoopRunner.ts) closes that
+        // residual window by refusing to execute a tool once the conversation
+        // record here is gone, so the ordering below (abort, THEN erase) is
+        // sufficient — no need to await a sidecar ack (would require making
+        // this action async, breaking its synchronous call contract).
+        //
         // Cancel any ongoing streaming for this conversation
         const controller = abortControllers.get(id);
         if (controller) {

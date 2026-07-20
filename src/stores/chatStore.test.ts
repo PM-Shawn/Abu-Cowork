@@ -330,6 +330,50 @@ describe('chatStore', () => {
     });
   });
 
+  // ── deleteConversation — ordered abort for live sidecar runs (P1-3c-2) ──
+  // Design doc §3 change 3 / P1-3C-SCOUT-REPORT.md §5 "secondary finding":
+  // deleteConversation must fire the abort (which reaches a live sidecar run
+  // via the SAME AbortController agentLoopRunner.ts wires into onShellAbort)
+  // BEFORE erasing conversations[id]/conversationIndex[id], so the sidecar
+  // gets the stop signal as early as possible. Verified this ordering
+  // already existed pre-3c-2 (no reorder was needed) — these tests lock it
+  // in as a regression guard.
+  describe('deleteConversation — ordered abort (P1-3c-2)', () => {
+    it('aborts the active controller BEFORE the conversation record is erased', () => {
+      const id = useChatStore.getState().createConversation();
+      // getAbortController lazily creates-and-registers a controller in the
+      // SAME module-level Map deleteConversation reads from — this is what
+      // "a live sidecar run" looks like from chatStore's perspective (see
+      // agentLoopRunner.ts's runAgentLoopDispatched, which registers into
+      // this exact map via getAbortRegistry().getAbortController()).
+      const controller = useChatStore.getState().getAbortController(id);
+      let conversationPresentDuringAbort: boolean | undefined;
+      const abortSpy = vi.spyOn(controller, 'abort').mockImplementation(() => {
+        conversationPresentDuringAbort = id in useChatStore.getState().conversations;
+      });
+
+      useChatStore.getState().deleteConversation(id);
+
+      expect(abortSpy).toHaveBeenCalledTimes(1);
+      // The conversation record must still exist AT THE MOMENT abort() runs
+      // — proves abort fires before the delete, not after/racing it.
+      expect(conversationPresentDuringAbort).toBe(true);
+      expect(useChatStore.getState().conversations[id]).toBeUndefined();
+      expect(useChatStore.getState().conversationIndex[id]).toBeUndefined();
+      expect(useChatStore.getState().hasAbortController(id)).toBe(false);
+    });
+
+    it('no active controller: deletes cleanly, behavior unchanged', () => {
+      const id = useChatStore.getState().createConversation();
+      expect(useChatStore.getState().hasAbortController(id)).toBe(false);
+
+      expect(() => useChatStore.getState().deleteConversation(id)).not.toThrow();
+
+      expect(useChatStore.getState().conversations[id]).toBeUndefined();
+      expect(useChatStore.getState().hasAbortController(id)).toBe(false);
+    });
+  });
+
   // ── renameConversation ──
   describe('renameConversation', () => {
     it('renames a conversation', () => {

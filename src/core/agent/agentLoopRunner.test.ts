@@ -361,7 +361,16 @@ describe('agentLoopRunner', () => {
     chatSubscribeMock.mockClear();
     chatUnsubMock.mockReset();
     capturedChatCb = undefined;
-    chatState = { conversations: {}, conversationIndex: {} };
+    // P1-3c-2: handleMainLoopToolInvoke now refuses to execute when
+    // conversations[session.conversationId] is absent (conversation
+    // deleted) — 'conv-1' is the ubiquitous default conversationId across
+    // this whole suite (see makeSession()'s default), so it must exist by
+    // default here or every unrelated test that happens to invoke the
+    // tool.invoke handler for 'conv-1' would spuriously start throwing.
+    // Tests that specifically exercise the "conversation deleted" refusal
+    // (or the convPatch emitter's "no data yet" case) override chatState
+    // themselves before asserting.
+    chatState = { conversations: { 'conv-1': {} }, conversationIndex: {} };
     isMessageWrittenToDiskMock.mockClear();
     tauriInvokeMock.mockClear();
     execSubscribeMock.mockClear();
@@ -1164,6 +1173,40 @@ describe('agentLoopRunner', () => {
 
       await expect(handler({ runId: 'no-such-run', toolName: 'read_file', input: {} })).rejects.toThrow();
       expect(executeAnyToolMock).not.toHaveBeenCalled();
+    });
+
+    // P1-3c-2 (design doc §3 change 3 / P1-3C-SCOUT-REPORT.md §5 "secondary
+    // finding") — the residual window `deleteConversation`'s fire-and-forget
+    // abort can't close by itself: a `tool.invoke` for a KNOWN, still-
+    // registered runId can still arrive after the shell has erased the
+    // conversation record (deletion doesn't unregister the run session —
+    // that only happens when the `agent.run` RPC resolves, later).
+    it('refuses to execute when the run\'s conversation has been deleted (known runId, no conversation record)', async () => {
+      const { ensureHandlersRegistered, registerRunSession } = await importFresh();
+      ensureHandlersRegistered();
+      registerRunSession('run-1', makeSession({ conversationId: 'conv-1' }));
+      // Simulate deleteConversation having already erased the record while
+      // the run session itself is still registered.
+      chatState = { conversations: {}, conversationIndex: {} };
+
+      const handler = handlerFor(onSidecarRequest, 'tool.invoke');
+
+      await expect(handler({ runId: 'run-1', toolName: 'write_file', input: { path: 'x', content: 'y' } }))
+        .rejects.toThrow();
+      expect(executeAnyToolMock).not.toHaveBeenCalled();
+    });
+
+    it('still executes when the run\'s conversation record exists', async () => {
+      const { ensureHandlersRegistered, registerRunSession } = await importFresh();
+      ensureHandlersRegistered();
+      registerRunSession('run-1', makeSession({ conversationId: 'conv-1' }));
+      chatState = { conversations: { 'conv-1': {} }, conversationIndex: {} };
+
+      const handler = handlerFor(onSidecarRequest, 'tool.invoke');
+      const result = await handler({ runId: 'run-1', toolName: 'read_file', input: {} });
+
+      expect(result).toBe('tool result');
+      expect(executeAnyToolMock).toHaveBeenCalled();
     });
 
     it('rejects malformed params (missing runId/toolName)', async () => {

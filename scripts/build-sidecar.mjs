@@ -169,6 +169,21 @@ const SHIM_TARGETS = [
   // input.consumed notify, everything else pass-through) so mid-task queued
   // input works for a sidecar-run main loop — see userInputQueueRun.ts.
   { real: path.resolve(srcDir, 'core/agent/userInputQueue.ts'), shim: path.resolve(__dirname, '../sidecar/src/shims/userInputQueueRun.ts') },
+  // P1-3d-4 additions (docs/2026-07-21-phase1-p3d-tool-migration-design.md
+  // §5 row "3d-4") — migrating the read-path file tools
+  // (read_file/list_directory/search_files/find_files) into
+  // `localTools/index.ts` requires `core/tools/definitions/fileTools.ts` to
+  // be bundle-safe as a WHOLE MODULE (ES module semantics: importing any one
+  // named export evaluates every top-level import in the file, including
+  // ones only used by the write/edit tools this batch does NOT migrate).
+  // Real forwarding shim (in-process calls to fsHost.ts, no RPC needed since
+  // we ARE the sidecar now) — see fsBridgeRun.ts's module doc.
+  { real: path.resolve(srcDir, 'core/tools/fsBridge.ts'), shim: path.resolve(__dirname, '../sidecar/src/shims/fsBridgeRun.ts') },
+  // Throwing bundle-graph-only shims — both are dragged in ONLY via
+  // fileTools.ts's write_file/edit_file (never locally-executed, see each
+  // shim's own doc for why reaching them here would be a wiring bug).
+  { real: path.resolve(srcDir, 'core/agent/defaultWorkspace.ts'), shim: path.resolve(__dirname, '../sidecar/src/shims/defaultWorkspaceRun.ts') },
+  { real: path.resolve(srcDir, 'utils/aiEditSnapshots.ts'), shim: path.resolve(__dirname, '../sidecar/src/shims/aiEditSnapshotsRun.ts') },
 ];
 
 /**
@@ -185,11 +200,17 @@ const SHIM_TARGETS = [
  *   - `@tauri-apps/api/path` → `node:path`/`node:os` + spawn-time bootstrap
  *     env vars for the two Tauri-only directories, see `tauriPathRun.ts` and
  *     `bootstrap.ts`.
+ *   - `@tauri-apps/plugin-os` → `node:os.platform()` mapping (P1-3d-4 —
+ *     `core/tools/helpers/toolHelpers.ts`'s unconditional top-level import,
+ *     dragged in by the read-path file tools this batch migrates even
+ *     though its only consumer, `getSystemInfoData()`, is never called
+ *     locally), see `pluginOsRun.ts`.
  */
 const TAURI_CORE_SHIM = path.resolve(__dirname, '../sidecar/src/shims/tauriCoreInvokeRun.ts');
 const TAURI_PLUGIN_FS_SHIM = path.resolve(__dirname, '../sidecar/src/shims/pluginFsRun.ts');
 const TAURI_API_PATH_SHIM = path.resolve(__dirname, '../sidecar/src/shims/tauriPathRun.ts');
-for (const shimPath of [TAURI_CORE_SHIM, TAURI_PLUGIN_FS_SHIM, TAURI_API_PATH_SHIM]) {
+const TAURI_PLUGIN_OS_SHIM = path.resolve(__dirname, '../sidecar/src/shims/pluginOsRun.ts');
+for (const shimPath of [TAURI_CORE_SHIM, TAURI_PLUGIN_FS_SHIM, TAURI_API_PATH_SHIM, TAURI_PLUGIN_OS_SHIM]) {
   if (!existsSync(shimPath)) throw new Error(`[build-sidecar] missing shim file: ${shimPath}`);
 }
 
@@ -246,6 +267,9 @@ const shimPlugin = {
     });
     pluginBuild.onResolve({ filter: /^@tauri-apps\/api\/path$/ }, () => {
       return { path: TAURI_API_PATH_SHIM };
+    });
+    pluginBuild.onResolve({ filter: /^@tauri-apps\/plugin-os$/ }, () => {
+      return { path: TAURI_PLUGIN_OS_SHIM };
     });
 
     pluginBuild.onResolve({ filter: /.*/ }, async (args) => {

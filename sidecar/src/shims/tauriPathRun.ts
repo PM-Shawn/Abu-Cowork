@@ -31,16 +31,30 @@
  *   - `resolve` (skill/loader.ts, ONLY inside its dev-mode fallback branch,
  *     wrapped in try/catch — resolves a relative path against the current
  *     working directory) — `node:path.resolve(...)`, direct equivalent.
+ *   - `desktopDir`/`documentDir`/`downloadDir`/`tempDir` (P1-3d-4 —
+ *     `core/tools/helpers/toolHelpers.ts`'s `getSystemInfoData()`, dragged
+ *     in unconditionally by the read-path file tools this batch migrates —
+ *     see `pluginOsRun.ts`'s doc for the same "whole-module import" reason;
+ *     `getSystemInfoData()` itself is not called by any locally-executed
+ *     tool today). `desktopDir`/`documentDir`/`downloadDir` use the standard
+ *     `~/Desktop`/`~/Documents`/`~/Downloads` convention (same convention
+ *     Tauri's `dirs`-crate-backed implementation resolves to on both macOS
+ *     and Windows for a default, non-redirected user profile — this shim
+ *     doesn't attempt to read Windows "known folder" registry redirects,
+ *     matching the level of fidelity every OTHER function in this file
+ *     already has: same-machine-same-user approximation, not a byte-exact
+ *     Tauri reimplementation). `tempDir` is `node:os.tmpdir()`, the direct
+ *     Node equivalent of Tauri's own OS-temp-dir resolution.
  *
  * Not exported (no reachable importer references them):
- * `appConfigDir`/`appLocalDataDir`/`cacheDir`/`configDir`/`documentDir`/
- * `join`/`normalize`/`dirname`/etc. — all the OTHER ~25 exports of the real
+ * `appConfigDir`/`appLocalDataDir`/`cacheDir`/`configDir`/
+ * `join`/`normalize`/`dirname`/etc. — all the OTHER ~20 exports of the real
  * module. Adding them speculatively would be unverifiable dead code; a
  * future reachable import of one will fail loudly at `npm run build:sidecar`
  * time (missing export from this redirect target) rather than silently
  * resolving to `undefined`.
  */
-import { homedir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import { resolve as nodeResolve, join as nodeJoin } from 'node:path';
 import { getBootstrap } from '../bootstrap';
 
@@ -58,4 +72,20 @@ export async function resolveResource(resourcePath: string): Promise<string> {
 
 export async function resolve(...paths: string[]): Promise<string> {
   return nodeResolve(...paths);
+}
+
+export async function desktopDir(): Promise<string> {
+  return nodeJoin(homedir(), 'Desktop');
+}
+
+export async function documentDir(): Promise<string> {
+  return nodeJoin(homedir(), 'Documents');
+}
+
+export async function downloadDir(): Promise<string> {
+  return nodeJoin(homedir(), 'Downloads');
+}
+
+export async function tempDir(): Promise<string> {
+  return tmpdir();
 }

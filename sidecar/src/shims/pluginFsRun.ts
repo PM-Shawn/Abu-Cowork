@@ -58,9 +58,14 @@
  * `agentLoop.ts`'s import graph, static or dynamic — see this batch's
  * report for the full per-file trace): `exists`, `mkdir`, `readTextFile`,
  * `writeTextFile`, `remove`, `stat`, `copyFile`, `rename`, `readFile`,
- * `writeFile`, `readDir` — exactly these 11, nothing else (`open`/`create`/
- * `watch`/`truncate`/`size`/`lstat`/... are never imported by any reachable
- * file, correctly omitted).
+ * `writeFile`, `readDir` — plus, added by P1-3d-4, `lstat`
+ * (`core/tools/pathSafety.ts`'s `isCatastrophicDeleteTarget`/`checkWritePath`
+ * use it to detect symlinks WITHOUT following them — dragged in as a
+ * whole-module import via `fileTools.ts`'s `deleteFileTool`, even though
+ * none of the four read-path tools this batch migrates call it; same
+ * "whole-module import" reason as `pluginOsRun.ts`'s doc). `open`/`create`/
+ * `watch`/`truncate`/`size`/... are never imported by any reachable file,
+ * correctly omitted.
  *
  * ── Options handling ──────────────────────────────────────────────────────
  * All real `@tauri-apps/plugin-fs` functions accept an options object whose
@@ -116,6 +121,27 @@ export async function stat(path: string): Promise<FsFileInfo> {
     isFile: s.isFile(),
     isDirectory: s.isDirectory(),
     isSymlink: false,
+    size: s.size,
+    mtime: Number.isFinite(s.mtimeMs) ? s.mtime : null,
+    atime: Number.isFinite(s.atimeMs) ? s.atime : null,
+    birthtime: Number.isFinite(s.birthtimeMs) ? s.birthtime : null,
+    readonly: (s.mode & 0o200) === 0,
+  };
+}
+
+/**
+ * P1-3d-4 — does NOT follow symlinks (`fs.lstat`, not `fs.stat`), matching
+ * plugin-fs's `lstat()` exactly: `isSymlink` reflects the path ITSELF, so a
+ * symlink reports `isSymlink: true` (and `isFile`/`isDirectory` both
+ * `false`, `Dirent`-style) rather than resolving through to its target —
+ * the opposite of this file's own `stat()` above.
+ */
+export async function lstat(path: string): Promise<FsFileInfo> {
+  const s = await fs.lstat(path);
+  return {
+    isFile: s.isFile(),
+    isDirectory: s.isDirectory(),
+    isSymlink: s.isSymbolicLink(),
     size: s.size,
     mtime: Number.isFinite(s.mtimeMs) ? s.mtime : null,
     atime: Number.isFinite(s.atimeMs) ? s.atime : null,

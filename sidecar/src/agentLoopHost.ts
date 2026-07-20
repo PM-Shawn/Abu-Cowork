@@ -164,6 +164,35 @@ function parseAbortParams(params: unknown): { runId: string } {
  * (one extra turn, typically) instead of being synchronously guaranteed.
  */
 /**
+ * Result of {@link checkLocalToolApproval} — deliberately a 3-way outcome,
+ * NOT a 2-way allow/deny bool (that was P1-3d-1/early-3d-3's shape and is
+ * what caused the double-popup bug this type fixes — see P1-3d-4's report).
+ * The two "not allow" cases are NOT interchangeable:
+ *
+ *   - `'deny'` — the shell gave a CLEAR, explicit answer: no. Its approval
+ *     chain (`checkToolApproval`, registry.ts) already ran to completion —
+ *     including any confirm/file-permission UI callback, which the user
+ *     already answered. Falling back to the reverse `tool.invoke` path here
+ *     would re-run that SAME chain a second time, popping the SAME
+ *     confirmation dialog again for a call the user (or a hard block) just
+ *     rejected. So a `'deny'` is terminal: return `reason` as the
+ *     `ToolResult` directly, exactly like the reverse path's own
+ *     `executeAnyTool` does on a deny (registry.ts) — never execute, never
+ *     retry.
+ *   - `'unavailable'` — the shell did NOT give a clear answer: a transport
+ *     failure (rejected/thrown RPC) or a response that isn't a recognizable
+ *     `{decision:'allow'|'deny'}` shape. This is "couldn't determine the
+ *     answer", which must never be conflated with "the answer is no" — an
+ *     `'unavailable'` result has NOT consumed any confirm/permission UI (the
+ *     shell-side chain never got far enough to know), so falling back to the
+ *     reverse `tool.invoke` path (which independently re-derives its own
+ *     approval decision, including any UI) is the correct, safe, exactly-
+ *     once-UI behavior — same fail-closed discipline as before, just no
+ *     longer bucketed together with an explicit deny.
+ */
+type LocalApprovalOutcome = { decision: 'allow' } | { decision: 'deny'; reason: string } | { decision: 'unavailable' };
+
+/**
  * P1-3d-3 (docs/2026-07-21-phase1-p3d-tool-migration-design.md §3) — asks
  * the shell "would this local tool call be approved?" via the `approval.check`
  * reverse RPC (shell handler: `agentLoopRunner.ts`'s `handleApprovalCheck`,
@@ -174,30 +203,47 @@ function parseAbortParams(params: unknown): { runId: string } {
  * the shell's enterprise-policy pre-check (and command/path checks, for any
  * future non-Tier-A local tool) exactly like the reverse path does.
  *
- * 🔴 SECURITY-CRITICAL fail-closed contract: returns `true` ONLY when the
- * shell responds with a clean `{decision:'allow'}`. Anything else — an
- * explicit `{decision:'deny'}`, a malformed/unexpected response shape, a
- * thrown RPC error, a transport failure, a timeout-via-rejection — returns
- * `false`. The caller (`createReverseToolInvoker`'s `executeAnyTool`) NEVER
- * runs `executeLocalTool` on `false`; it falls through to the reverse
- * `tool.invoke` path instead, which carries its own complete, independent
- * approval chain. "Can't determine the answer" must never be treated as
- * "yes" — see the design doc §3's safety-smoke rule this implements.
+ * 🔴 SECURITY-CRITICAL fail-closed contract: returns `{decision:'allow'}`
+ * ONLY when the shell responds with a clean `{decision:'allow'}`. An
+ * explicit `{decision:'deny', reason}` returns that exact shape (see
+ * {@link LocalApprovalOutcome}'s doc for why the caller must treat it as
+ * terminal, not retry it). EVERYTHING else — a malformed/unexpected
+ * response shape, a thrown RPC error, a transport failure, a
+ * timeout-via-rejection — returns `{decision:'unavailable'}`, never
+ * `'allow'`. The caller (`createReverseToolInvoker`'s `executeAnyTool`)
+ * NEVER runs `executeLocalTool` on anything but a clean `'allow'`. "Can't
+ * determine the answer" must never be treated as "yes" — see the design
+ * doc §3's safety-smoke rule this implements.
  */
 async function checkLocalToolApproval(
   runId: string,
   toolName: string,
   input: Record<string, unknown>,
   context: ToolExecutionContext | undefined,
-): Promise<boolean> {
+): Promise<LocalApprovalOutcome> {
+  let result: unknown;
   try {
-    const result = await sendRequest('approval.check', { runId, toolName, input, context });
-    return isRecord(result) && result.decision === 'allow';
+    result = await sendRequest('approval.check', { runId, toolName, input, context });
   } catch {
     // Transport error, timeout-via-rejection, or an RPC error response —
-    // fail-closed: treat exactly like a deny, never like an allow.
-    return false;
+    // fail-closed: the shell never answered, treat as unavailable (fall
+    // back to the reverse path's own independent approval chain below),
+    // never as an allow.
+    return { decision: 'unavailable' };
   }
+  if (isRecord(result) && result.decision === 'allow') return { decision: 'allow' };
+  if (isRecord(result) && result.decision === 'deny') {
+    // Mirror registry.ts's executeAnyTool default exactly (`approval.reason
+    // ?? \`Error: tool "${name}" was denied\``) so a deny surfaces the same
+    // ToolResult text regardless of which path (local or reverse) hit it.
+    const reason = typeof result.reason === 'string' ? result.reason : `Error: tool "${toolName}" was denied`;
+    return { decision: 'deny', reason };
+  }
+  // Anything else — result isn't a record, or `decision` isn't a recognized
+  // 'allow'/'deny' value — is a malformed response, NOT an explicit deny.
+  // The shell answered SOMETHING, but not in a shape we can act on; treat it
+  // the same as "no answer" (unavailable), never default to allow.
+  return { decision: 'unavailable' };
 }
 
 function createReverseToolInvoker(runId: string, initialTools: SerializableToolDefinition[]): ToolInvoker {
@@ -238,16 +284,32 @@ function createReverseToolInvoker(runId: string, initialTools: SerializableToolD
       // registered, why each is bundle-safe, and the readOnly/fallback
       // discipline this branch relies on.
       //
-      // P1-3d-3: before running it locally, ask the shell via `approval.check`
-      // — this is what closes the P1-3d-1 enterprise-policy gap (see
-      // checkLocalToolApproval's doc). Only a clean `true` proceeds to local
-      // execution; anything else (deny, malformed response, transport
-      // failure) falls through to the reverse `tool.invoke` path below,
-      // which re-derives its own approval decision independently — local
-      // execute() is NEVER reached without an explicit shell allow.
+      // P1-3d-3/3d-4: before running it locally, ask the shell via
+      // `approval.check` — this is what closes the P1-3d-1 enterprise-policy
+      // gap (see checkLocalToolApproval's doc). Only a clean `'allow'`
+      // proceeds to local execution.
+      //
+      // 🔴 P1-3d-4 fix — a plain `deny` MUST NOT fall back to `tool.invoke`.
+      // The shell's `approval.check` already ran the FULL approval chain
+      // (`checkToolApproval`, registry.ts) to a conclusion, including any
+      // confirm/file-permission UI callback the user already answered.
+      // Falling back to `tool.invoke` here would re-run that SAME chain a
+      // second time — popping the SAME confirmation dialog twice for one
+      // tool call (the P1-3d-3 double-popup bug this fixes). So a `'deny'`
+      // is terminal: return its `reason` directly as the `ToolResult`,
+      // exactly like the reverse path's own `executeAnyTool` does on a deny
+      // (registry.ts: `return approval.reason ?? ...`) — never execute,
+      // never retry. Only `'unavailable'` (transport failure, or a
+      // malformed/unrecognized response — see `LocalApprovalOutcome`'s doc
+      // for why that's NOT the same as an explicit deny) falls through to
+      // the reverse `tool.invoke` path, which re-derives its own approval
+      // decision (and any UI) independently and exactly once.
       if (hasLocalTool(name)) {
-        const approved = await checkLocalToolApproval(runId, name, input, context as ToolExecutionContext | undefined);
-        if (approved) {
+        const approval = await checkLocalToolApproval(runId, name, input, context as ToolExecutionContext | undefined);
+        if (approval.decision === 'deny') {
+          return approval.reason;
+        }
+        if (approval.decision === 'allow') {
           try {
             return await executeLocalTool(name, input, context as ToolExecutionContext | undefined, contextUsagePercent);
           } catch (err) {
@@ -255,20 +317,22 @@ function createReverseToolInvoker(runId: string, initialTools: SerializableToolD
             // (NOT a normal tool-level error — those are already caught
             // inside executeLocalTool and returned as an error-string
             // ToolResult, matching registry.ts's ToolRegistry.execute
-            // contract exactly). Every tool in the local registry today is
-            // Tier A / read-only (isLocalToolReadOnly(name) === true), so
-            // falling through to the reverse tool.invoke path below is a
-            // safe, idempotent retry — NOT a double-execution risk. A future
-            // side-effecting local tool MUST be registered with
-            // readOnly:false so this rethrows instead (see
-            // localTools/index.ts's module doc) — "committed once started",
-            // same discipline as agentLoopRunner.ts's RunSession.committed.
+            // contract exactly). Only fall through to the reverse
+            // tool.invoke path below when this tool is registered
+            // readOnly:true (isLocalToolReadOnly(name)) — a safe, idempotent
+            // retry, NOT a double-execution risk. A side-effecting local
+            // tool MUST be registered with readOnly:false so this rethrows
+            // instead (see localTools/index.ts's module doc) —
+            // "committed once started", same discipline as
+            // agentLoopRunner.ts's RunSession.committed.
             if (!isLocalToolReadOnly(name)) throw err;
           }
         }
-        // Not approved (denied, or approval.check itself failed) — local
-        // execute() was NEVER invoked, so falling through to the reverse
-        // tool.invoke path below is always safe (nothing to double-execute).
+        // approval.decision === 'unavailable' (transport failure or a
+        // malformed/unrecognized approval.check response) — local execute()
+        // was NEVER invoked, so falling through to the reverse tool.invoke
+        // path below is always safe (nothing to double-execute, and no UI
+        // has fired yet for this call).
       }
       const result = (await sendRequest('tool.invoke', {
         runId,

@@ -90,18 +90,27 @@ function baseParams(overrides: Record<string, unknown> = {}) {
 }
 
 /**
- * P1-3d-3 — `sendRequestMock` now fields TWO reverse-RPC methods
+ * P1-3d-3/3d-4 — `sendRequestMock` now fields TWO reverse-RPC methods
  * (`approval.check` and `tool.invoke`), so a blanket `.mockResolvedValue`
  * would answer both identically and silently mask the approval-gate branch
  * (an `approval.check` response resolving to a bare string, not
- * `{decision:'allow'}`, is exactly the fail-closed "deny" case — see
+ * `{decision:'allow'}`, is exactly the fail-closed "unavailable" case — see
  * `checkLocalToolApproval`). This helper keeps the two methods
  * independently configurable so each test's mock setup means what it says.
+ * `approvalReason` only matters when `approvalDecision: 'deny'` — P1-3d-4
+ * made a deny TERMINAL (its `reason` becomes the `ToolResult` directly, no
+ * `tool.invoke` fallback — see the "SECURITY: approval.check deny" test).
  */
-function mockSendRequest(overrides: { approvalDecision?: 'allow' | 'deny'; toolInvokeResult?: unknown } = {}) {
-  const { approvalDecision = 'allow', toolInvokeResult = 'tool output' } = overrides;
+function mockSendRequest(
+  overrides: { approvalDecision?: 'allow' | 'deny'; approvalReason?: string; toolInvokeResult?: unknown } = {},
+) {
+  const { approvalDecision = 'allow', approvalReason = 'Error: denied by shell policy', toolInvokeResult = 'tool output' } = overrides;
   sendRequestMock.mockImplementation((method: unknown) => {
-    if (method === 'approval.check') return Promise.resolve({ decision: approvalDecision });
+    if (method === 'approval.check') {
+      return Promise.resolve(
+        approvalDecision === 'deny' ? { decision: 'deny', reason: approvalReason } : { decision: 'allow' },
+      );
+    }
     return Promise.resolve(toolInvokeResult);
   });
 }
@@ -496,11 +505,12 @@ describe('agentLoopHost', () => {
       );
     });
 
-    // ── P1-3d-3 SAFETY-CRITICAL: approval.check deny / transport failure ──
+    // ── P1-3d-3/3d-4 SAFETY-CRITICAL: approval.check deny (terminal, no
+    // fallback) vs. transport failure / malformed response (fall back) ──
 
-    it('SECURITY: approval.check deny never executes the local tool — falls back to reverse tool.invoke', async () => {
+    it('SECURITY: approval.check deny is TERMINAL — returns the shell\'s reason directly, never executes locally, never falls back to tool.invoke (no double approval/confirm pass)', async () => {
       hasLocalToolMock.mockReturnValue(true);
-      mockSendRequest({ approvalDecision: 'deny', toolInvokeResult: 'shell denied it too' });
+      mockSendRequest({ approvalDecision: 'deny', approvalReason: 'Error: user denied access to /etc' });
 
       const result = await withToolInvoker((toolInvoker) =>
         toolInvoker.executeAnyTool('show_widget', { title: 't' }),
@@ -509,11 +519,30 @@ describe('agentLoopHost', () => {
       // Local execute() must NEVER be reached on a deny.
       expect(executeLocalToolMock).not.toHaveBeenCalled();
       expect(sendRequestMock).toHaveBeenCalledWith('approval.check', expect.objectContaining({ toolName: 'show_widget' }));
-      expect(sendRequestMock).toHaveBeenCalledWith('tool.invoke', expect.objectContaining({ toolName: 'show_widget' }));
-      expect(result).toBe('shell denied it too');
+      // A deny is terminal — falling back to tool.invoke would re-run the
+      // shell's FULL approval chain a second time, double-firing any
+      // confirm/permission UI the user already answered once.
+      expect(sendRequestMock).not.toHaveBeenCalledWith('tool.invoke', expect.anything());
+      expect(result).toBe('Error: user denied access to /etc');
     });
 
-    it('SECURITY: approval.check transport failure fails CLOSED — never executes locally, falls back to reverse tool.invoke (never defaults to allow)', async () => {
+    it('SECURITY: approval.check deny with no `reason` field falls back to the same default ToolResult text the reverse path uses', async () => {
+      hasLocalToolMock.mockReturnValue(true);
+      sendRequestMock.mockImplementation((method: unknown) => {
+        if (method === 'approval.check') return Promise.resolve({ decision: 'deny' }); // no reason field
+        return Promise.resolve('should never be reached');
+      });
+
+      const result = await withToolInvoker((toolInvoker) =>
+        toolInvoker.executeAnyTool('show_widget', { title: 't' }),
+      );
+
+      expect(executeLocalToolMock).not.toHaveBeenCalled();
+      expect(sendRequestMock).not.toHaveBeenCalledWith('tool.invoke', expect.anything());
+      expect(result).toBe('Error: tool "show_widget" was denied');
+    });
+
+    it('SECURITY: approval.check transport failure fails CLOSED as UNAVAILABLE (not a deny) — never executes locally, falls back to reverse tool.invoke (never defaults to allow)', async () => {
       hasLocalToolMock.mockReturnValue(true);
       sendRequestMock.mockImplementation((method: unknown) => {
         if (method === 'approval.check') return Promise.reject(new Error('sidecar<->shell pipe broke'));
@@ -524,13 +553,17 @@ describe('agentLoopHost', () => {
         toolInvoker.executeAnyTool('show_widget', { title: 't' }),
       );
 
-      // A rejected approval.check request must NOT be treated as an allow.
+      // A rejected approval.check request must NOT be treated as an allow —
+      // and, per P1-3d-4, must NOT be treated as an explicit deny either
+      // (the shell never answered, so nothing terminal happened): it falls
+      // through to the reverse path, which independently re-derives its own
+      // approval decision (and any UI) exactly once.
       expect(executeLocalToolMock).not.toHaveBeenCalled();
       expect(result).toBe('shell fallback after transport failure');
       expect(sendRequestMock).toHaveBeenCalledWith('tool.invoke', expect.objectContaining({ toolName: 'show_widget' }));
     });
 
-    it('SECURITY: a malformed approval.check response (not {decision:"allow"}) fails CLOSED, same as a deny', async () => {
+    it('SECURITY: a malformed approval.check response (not {decision:"allow"|"deny"}) fails CLOSED as UNAVAILABLE (not a deny) — falls back to reverse tool.invoke, same as a transport failure', async () => {
       hasLocalToolMock.mockReturnValue(true);
       sendRequestMock.mockImplementation((method: unknown) => {
         if (method === 'approval.check') return Promise.resolve('not-an-object'); // malformed shape
@@ -541,8 +574,27 @@ describe('agentLoopHost', () => {
         toolInvoker.executeAnyTool('show_widget', { title: 't' }),
       );
 
+      // Malformed is "couldn't determine the answer", NOT "the answer is
+      // no" — must fall back (unlike an explicit deny, which is terminal).
       expect(executeLocalToolMock).not.toHaveBeenCalled();
+      expect(sendRequestMock).toHaveBeenCalledWith('tool.invoke', expect.objectContaining({ toolName: 'show_widget' }));
       expect(result).toBe('shell fallback');
+    });
+
+    it('SECURITY: an approval.check response with an unrecognized `decision` value (neither "allow" nor "deny") fails CLOSED as UNAVAILABLE, not treated as a deny', async () => {
+      hasLocalToolMock.mockReturnValue(true);
+      sendRequestMock.mockImplementation((method: unknown) => {
+        if (method === 'approval.check') return Promise.resolve({ decision: 'maybe' }); // unrecognized value
+        return Promise.resolve('shell fallback for unrecognized decision');
+      });
+
+      const result = await withToolInvoker((toolInvoker) =>
+        toolInvoker.executeAnyTool('show_widget', { title: 't' }),
+      );
+
+      expect(executeLocalToolMock).not.toHaveBeenCalled();
+      expect(sendRequestMock).toHaveBeenCalledWith('tool.invoke', expect.objectContaining({ toolName: 'show_widget' }));
+      expect(result).toBe('shell fallback for unrecognized decision');
     });
 
     it('a read-only local tool that fails falls back to reverse tool.invoke (safe idempotent retry)', async () => {

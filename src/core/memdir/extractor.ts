@@ -9,11 +9,19 @@
  * extraction prompt instead of a full agent turn (cheaper and more controlled).
  */
 
-import { useChatStore } from '../../stores/chatStore';
-import { getActiveApiKey, getActiveProvider, getEffectiveModel } from '../../stores/settingsStore';
+// P1-3d-2: read settings selectors from the pure `utils/settingsSelectors.ts`
+// module (byte-identical to the functions `stores/settingsStore.ts` re-exports
+// from it — see that file's own `export { ... } from '../utils/settingsSelectors'`)
+// rather than the Zustand store module directly. `stores/**` is forbidden from
+// the sidecar bundle graph (`bundleGraphGuardPlugin` in build-sidecar.mjs), and
+// this is the same substitution `agentLoop.ts` already made for the same reason.
+import { getActiveApiKey, getActiveProvider, getEffectiveModel } from '../../utils/settingsSelectors';
 import { getSettingsReader } from '../agent/ports/settingsReader';
-import { ClaudeAdapter } from '../llm/claude';
-import { OpenAICompatibleAdapter } from '../llm/openai-compatible';
+// P1-3d-2: route the LLM call through `selectChatAdapter` (already sidecar-ized,
+// P1-1 — has its own sidecar-local shim `selectChatAdapterRun.ts`) instead of
+// constructing `ClaudeAdapter`/`OpenAICompatibleAdapter` directly. Matches the
+// call convention `agentLoop.ts`/`subagentLoop.ts` already use.
+import { selectChatAdapter } from '../llm/selectChatAdapter';
 import type { LLMAdapter } from '../llm/adapter';
 import type { StreamEvent } from '../../types';
 import type { Message } from '../../types';
@@ -149,11 +157,16 @@ export async function extractMemoriesFromConversation(
   workspacePath?: string | null,
 ): Promise<void> {
   try {
-    const conv = useChatStore.getState().conversations[conversationId];
-    const messages = conv?.messages ?? await (async () => {
-      const { loadMessages } = await import('../session/conversationStorage');
-      return loadMessages(conversationId);
-    })();
+    // P1-3d-2: always read via the persisted-storage port (`loadMessages`,
+    // already sidecar-shimmed as `conversationStorageRun.ts`) rather than the
+    // in-memory `useChatStore` — that store is a webview-only module (forbidden
+    // from the sidecar bundle graph). This isn't a freshness downgrade: both
+    // call sites (agentLoop.ts, after `setConversationStatus(..., 'completed')`;
+    // channelRouter.ts, on an already-archived session) fire only after the
+    // turn has fully finished, by which point messages are guaranteed flushed
+    // to disk — the in-memory read was never buying anything here.
+    const { loadMessages } = await import('../session/conversationStorage');
+    const messages = await loadMessages(conversationId);
     if (messages.length < 4) return; // too short to extract
 
     // Build transcript from recent messages (last 20)
@@ -184,9 +197,9 @@ export async function extractMemoriesFromConversation(
       return;
     }
 
-    const adapter: LLMAdapter = getActiveProvider(settings)?.apiFormat === 'openai-compatible'
-      ? new OpenAICompatibleAdapter()
-      : new ClaudeAdapter();
+    const adapter: LLMAdapter = selectChatAdapter(
+      getActiveProvider(settings)?.apiFormat === 'openai-compatible' ? 'openai-compatible' : 'claude',
+    );
 
     // Inject existing memory manifest so the extractor can deduplicate against
     // what's already stored. Best-effort: failures fall through to extraction

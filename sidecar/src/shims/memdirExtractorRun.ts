@@ -1,39 +1,53 @@
 /**
  * Sidecar-local replacement for `src/core/memdir/extractor.ts`.
  *
- * THROWING bundle-graph-only shim, DELIBERATE per design doc §6 "本期明确不做"
- * ("压缩·extractor·标题 llmCall 旁路（维持 P1-1 本地路径）") — memory
- * extraction is explicitly out of scope for the whole 3b initiative, not a
- * gap discovered and silently patched over here.
+ * P1-3d-2: real forwarding shim, superseding the P1-3b THROW stub this file
+ * used to be (memory extraction was explicitly out of scope for that batch —
+ * design doc §6 "本期明确不做"). The three blockers that made the real module
+ * unsafe to bundle are now individually fixed (P1-3D design doc §4 / scout
+ * report §3):
+ *   1. `extractor.ts`'s LLM call now goes through `selectChatAdapter` (already
+ *      sidecar-ized, P1-1) instead of constructing `ClaudeAdapter`/
+ *      `OpenAICompatibleAdapter` directly.
+ *   2. `extractor.ts`'s settings reads now go through the pure
+ *      `utils/settingsSelectors.ts` module instead of the forbidden
+ *      `stores/settingsStore.ts`, and its message read now always goes
+ *      through `loadMessages` (already shimmed as `conversationStorageRun.ts`,
+ *      which this batch extended with a real `loadMessages` — see that file)
+ *      instead of the forbidden `stores/chatStore.ts`.
+ *   3. `memdir/write.ts` (the `writeMemory`/`deleteMemory` implementation
+ *      `extractor.ts` dynamically imports) turned out to need NO new dedicated
+ *      shim: its three `@tauri-apps/plugin-fs` calls (readTextFile/remove/
+ *      exists) are already covered by the EXISTING global bare-specifier
+ *      redirect (`TAURI_PLUGIN_FS_SHIM` → `pluginFsRun.ts`, matched on the
+ *      specifier string regardless of importer) — build-sidecar.mjs's
+ *      `bundleGraphGuardPlugin` never even sees the real `@tauri-apps/*`
+ *      import because `shimPlugin` (registered first) already redirected it.
+ *      What DID need fixing (found empirically, not anticipated by the design
+ *      doc's 3-item list — see P1-3D-2-REPORT for the full trace):
+ *        - `write.ts`'s `atomicWrite()` calls go through `@tauri-apps/api/core`
+ *          `invoke('atomic_write_text', ...)` (a DIFFERENT mechanism than
+ *          plugin-fs — a reverse `native.invoke` RPC to the shell, allowlisted
+ *          server-side). `atomic_write_text` has been added to
+ *          `NATIVE_INVOKE_ALLOWLIST` in `agentLoopRunner.ts` so the round trip
+ *          actually succeeds instead of failing closed with "not
+ *          allowlisted".
+ *        - `write.ts` imports `invalidateScanCache`/`_resetScanCache` from
+ *          `./scan`, which resolves (via the existing `core/memdir/scan.ts` →
+ *          `memdirScan.ts` SHIM_TARGETS entry) to THIS batch's `memdirScan.ts`
+ *          shim — which only had `scanMemoryFiles`/`loadMemoryIndex`/
+ *          `scanMemoryFilesCached`/`readMemoryFile` before. Both are now
+ *          added there, operating on the same in-shim `scanCache` Map.
  *
- * Reachability: ONLY via `agentLoop.ts`'s single dynamic-import call site
- * (`import('../memdir/extractor').then(({ extractMemoriesFromConversation })
- * => extractMemoriesFromConversation(conversationId, wsPath)).catch(() =>
- * {})`) — verified by grep, one call site, always inside the
- * `interactiveDesktop` gate. The real module reaches directly into
- * `useChatStore`/`settingsStore` (bare Zustand imports, NOT the relocated
- * `settingsSelectors.ts`) AND constructs `ClaudeAdapter`/
- * `OpenAICompatibleAdapter` directly — a self-contained mini-LLM-call module
- * that bypasses every port this batch built, exactly the class of thing §6
- * excludes.
+ * `getMemoryDir` (via `memdir/paths.ts` → the existing `memdirPaths.ts` shim)
+ * already resolves the IDENTICAL directory the shell would — same
+ * `homedir()`-rooted `~/.abu/memory` / `~/.abu/projects/<key>/memory` logic,
+ * byte-for-byte ported — so sidecar writes and shell reads (and vice versa)
+ * land in the same place.
  *
- * SAFE degradation, not silent: the ONLY call site already wraps the whole
- * chain in `.catch(() => {})` — a rejected import (this shim throwing)
- * resolves to a caught, swallowed rejection, same as any other extraction
- * failure the real module could itself produce (network error, LLM call
- * failure, etc. — extraction failure is ALREADY a tolerated, non-fatal
- * outcome in the real code path, not a new failure mode this shim invents).
- * Net effect: memory auto-extraction silently does not happen for
- * sidecar-run main-loop turns this batch — a real, documented feature
- * regression (not a correctness bug), to be revisited when compression/
- * extractor/title generation get their own sidecar treatment (see design
- * doc §6).
+ * Reachability unchanged from the stub's own doc: ONLY via `agentLoop.ts`'s
+ * and `channelRouter.ts`'s dynamic `import('../memdir/extractor').then(...).
+ * catch(() => {})` call sites, both firing only after the source turn/session
+ * has fully completed (messages already flushed to disk by then).
  */
-export async function extractMemoriesFromConversation(
-  _conversationId: string,
-  _workspacePath: string | null,
-): Promise<void> {
-  throw new Error(
-    '[sidecar] memdir/extractor.ts reached inside the sidecar bundle — memory extraction is explicitly out of scope for this batch (design doc §6). The sole call site already wraps this in .catch(() => {}), so this is a safe, documented feature gap, not a crash.',
-  );
-}
+export { extractMemoriesFromConversation } from '@/core/memdir/extractor';

@@ -39,6 +39,18 @@
  * `VALID_SOURCES`) is copied verbatim from the real `scan.ts` — pure string
  * logic, zero fs dependency, so there was never a reason to reimplement it
  * differently.
+ *
+ * P1-3d-2 addition: `invalidateScanCache`/`_resetScanCache`. `memdir/write.ts`
+ * (reached once `memdirExtractorRun.ts` stopped stubbing out `extractor.ts`)
+ * imports both from `./scan`, which resolves through this SAME shim redirect
+ * (the `core/memdir/scan.ts` → `memdirScan.ts` `SHIM_TARGETS` entry applies to
+ * every importer, not just `subagentLoop.ts`'s). Without these two exports
+ * esbuild fails the build outright (named import with no matching export in
+ * the shim target) the moment `write.ts` becomes reachable — this isn't a
+ * runtime-only gap like the P1-3B-3B additions above, it's a hard build
+ * break. Implemented against the SAME module-level `scanCache` Map
+ * `scanMemoryFilesCached` already uses below (not a second, drifting cache),
+ * verbatim logic ported from the real `scan.ts`.
  */
 import * as fs from 'node:fs/promises';
 import type { MemoryHeader, MemoryType, MemorySource } from '@/core/memdir/types';
@@ -162,6 +174,20 @@ export async function scanMemoryFilesCached(workspacePath?: string | null): Prom
   const headers = await scanMemoryFiles(workspacePath);
   scanCache.set(key, { headers, expiresAt: Date.now() + SCAN_TTL_MS });
   return headers;
+}
+
+/**
+ * Drop the cached headers for a workspace (or global). Verbatim port of the
+ * real `scan.ts`'s `invalidateScanCache` — called by `write.ts` after every
+ * write/delete so the next `scanMemoryFilesCached` read sees fresh state.
+ */
+export function invalidateScanCache(workspacePath?: string | null): void {
+  scanCache.delete(cacheKey(workspacePath));
+}
+
+/** Test-only: clear the entire cache. Verbatim port of the real `scan.ts`. */
+export function _resetScanCache(): void {
+  scanCache.clear();
 }
 
 /** Verbatim-ported readMemoryFile — reads a single memory file's header + body. */

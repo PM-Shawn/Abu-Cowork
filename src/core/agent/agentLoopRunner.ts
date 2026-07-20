@@ -337,8 +337,15 @@ function handleCuSetState(rawParams: unknown): void {
  * (`toolExecutor.ts:300/304/310/316`) + `run_shell_command`
  * (`src/core/skill/preprocessor.ts`'s inline-command execution — the ONE
  * `invoke` call that file makes, verified by reading it; see
- * P1-3B-2-REPORT.md's inventory). Not listed → fail-closed
- * `SidecarRequestError`, never silently forwarded.
+ * P1-3B-2-REPORT.md's inventory) + `atomic_write_text` (P1-3d-2 — `utils/
+ * atomicFs.ts`'s `atomicWrite()`, the write primitive `memdir/write.ts`
+ * uses for every memory file/index write, reached once `memdirExtractorRun.ts`
+ * stopped stubbing out `extractor.ts`; routes through this SAME
+ * `@tauri-apps/api/core` `invoke` bare-specifier shim as the other 5 commands
+ * — reusing the shell's real Rust `atomic_write_text` command, rather than
+ * reimplementing tempfile+fsync+rename in Node, keeps atomicity semantics
+ * identical regardless of which process performs the write). Not listed →
+ * fail-closed `SidecarRequestError`, never silently forwarded.
  */
 const NATIVE_INVOKE_ALLOWLIST: ReadonlySet<string> = new Set([
   'show_screen_border',
@@ -346,6 +353,7 @@ const NATIVE_INVOKE_ALLOWLIST: ReadonlySet<string> = new Set([
   'window_hide',
   'activate_app',
   'run_shell_command',
+  'atomic_write_text',
 ]);
 
 async function handleNativeInvoke(rawParams: unknown): Promise<unknown> {

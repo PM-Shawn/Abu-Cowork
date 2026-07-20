@@ -1036,10 +1036,7 @@ export async function runAgentLoopDispatched(
   }
 
   const runId = generateRunId();
-  // ACCEPTANCE-ONLY INSTRUMENTATION (P1-3b-4, REVERT after real-machine smoke):
-  // debug→warn so the path decision persists to the on-disk log (DISK_LOG_LEVELS
-  // = warn/error). Restore to logger.debug once acceptance is confirmed.
-  logger.warn('agent-loop path selected', { path: 'sidecar', runId, conversationId });
+  logger.debug('agent-loop path selected', { path: 'sidecar', runId, conversationId });
 
   let params: AgentRunParams;
   try {
@@ -1109,13 +1106,47 @@ export async function runAgentLoopDispatched(
       });
       return runAgentLoop(conversationId, userMessage, options);
     }
+    // Surface the REAL sidecar-side cause: a thrown handler comes back as a
+    // generic `-32603 Internal error`, but `errorFromCaught` (sidecar
+    // protocol.ts) carries the real message/stack in the error's `data`.
+    // Logging only `err.message` (the generic wrapper) threw that away — pull
+    // `data` out so the on-disk log names the actual failure.
+    const errData = (err as { data?: unknown } | null)?.data;
+    const realMessage =
+      errData && typeof errData === 'object' && 'message' in errData
+        ? String((errData as { message: unknown }).message)
+        : err instanceof Error ? err.message : String(err);
     logger.warn('agent-loop transport failed after commit — surfacing error, no rerun', {
       runId,
       conversationId,
       error: err instanceof Error ? err.message : String(err),
+      sidecarCause: realMessage,
+      sidecarStack:
+        errData && typeof errData === 'object' && 'stack' in errData
+          ? String((errData as { stack: unknown }).stack)
+          : undefined,
     });
-    const message = err instanceof Error ? err.message : String(err);
-    return { reason: 'error', error: message };
+    // The sidecar loop threw uncaught, so its OWN terminal UI-finalization
+    // frames (finishStreaming / setConversationStatus) never arrived — the
+    // conversation is left mid-stream and hangs on "thinking". Finalize it
+    // here, mirroring the in-process error path (agentLoop.ts:2238/2258), so
+    // the UI always leaves the thinking state. Best-effort; all in-flight
+    // delta frames were already flushed (sidecar handleAgentRun's finally
+    // runs coalescer.flush() before the error propagates), so this runs after
+    // them, not racing.
+    try {
+      const chatDelta = getChatDelta();
+      chatDelta.appendText(conversationId, `\n\n**Error:** ${realMessage}`);
+      chatDelta.finishStreaming(conversationId);
+      chatDelta.setAgentStatus('idle');
+      chatDelta.setConversationStatus(conversationId, 'error');
+    } catch (cleanupErr) {
+      logger.warn('post-commit UI finalization failed', {
+        conversationId,
+        error: cleanupErr instanceof Error ? cleanupErr.message : String(cleanupErr),
+      });
+    }
+    return { reason: 'error', error: realMessage };
   } finally {
     removeShellLoopContext(runId);
     unregisterRunSession(runId);

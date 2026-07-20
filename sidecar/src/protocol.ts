@@ -97,7 +97,8 @@ export function errorFromCaught(id: string | number | null, err: unknown): JsonR
     return makeError(id, err.code, err.message, err.data);
   }
   const message = err instanceof Error ? err.message : String(err);
-  return makeError(id, -32603, 'Internal error', { message });
+  const stack = err instanceof Error ? err.stack : undefined;
+  return makeError(id, -32603, 'Internal error', { message, stack });
 }
 
 /** Exit only after any queued stdout writes have been flushed to the pipe. */

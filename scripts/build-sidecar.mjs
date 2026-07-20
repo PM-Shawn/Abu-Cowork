@@ -274,6 +274,18 @@ const shimPlugin = {
       if (process.env.ABU_SHIM_DEBUG && shimPath) {
         console.error('[shim-debug]', args.path, '->', resolved.path, '-> SHIMMED', shimPath);
       }
+      // Self-import exception (P1-3b-4): a "wrap the REAL module + add a side
+      // effect" shim (e.g. userInputQueueRun.ts, which forwards to the real
+      // queue and additionally emits `input.consumed` on drain/clear) imports
+      // its OWN target to reach the real implementation. If the importer IS
+      // that target's shim, do NOT redirect — otherwise the shim's
+      // `import ... from '<target>'` resolves back to itself → infinite
+      // recursion (RangeError: Maximum call stack size exceeded, seen at
+      // runtime as a sidecar -32603 on the very first drainQueuedInputs).
+      // The real module still loads (as a separate bundled module); it must be
+      // bundle-safe on its own (userInputQueue.ts is a pure in-memory Map, no
+      // store/Tauri draggers — the guard below still enforces this).
+      if (shimPath && args.importer === shimPath) return null;
       if (shimPath) return { path: shimPath };
       return null; // no match — let esbuild's default resolution proceed normally
     });

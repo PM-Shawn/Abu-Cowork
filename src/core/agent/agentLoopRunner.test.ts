@@ -47,8 +47,18 @@ vi.mock('./ports/executionPort', () => ({
 }));
 
 const appendToolCallContextMock = vi.fn();
+const chatDeltaAppendTextMock = vi.fn();
+const chatDeltaFinishStreamingMock = vi.fn();
+const chatDeltaSetAgentStatusMock = vi.fn();
+const chatDeltaSetConversationStatusMock = vi.fn();
 vi.mock('./ports/chatDelta', () => ({
-  getChatDelta: () => ({ appendToolCallContext: (...a: unknown[]) => appendToolCallContextMock(...a) }),
+  getChatDelta: () => ({
+    appendToolCallContext: (...a: unknown[]) => appendToolCallContextMock(...a),
+    appendText: (...a: unknown[]) => chatDeltaAppendTextMock(...a),
+    finishStreaming: (...a: unknown[]) => chatDeltaFinishStreamingMock(...a),
+    setAgentStatus: (...a: unknown[]) => chatDeltaSetAgentStatusMock(...a),
+    setConversationStatus: (...a: unknown[]) => chatDeltaSetConversationStatusMock(...a),
+  }),
 }));
 
 const scratchpadAddEntryMock = vi.fn();
@@ -1320,6 +1330,52 @@ describe('agentLoopRunner', () => {
       expect(runAgentLoopMock).not.toHaveBeenCalled();
       expect(result.reason).toBe('error');
       expect(result.error).toContain('sidecar crashed mid-run');
+    });
+
+    it('a post-commit failure finalizes the conversation UI so it never hangs on "thinking"', async () => {
+      const { runAgentLoopDispatched } = await importFresh();
+      const d = deferred<unknown>();
+      sidecarRequestMock.mockReturnValue(d.promise);
+
+      const p = runAgentLoopDispatched('conv-1', 'hello');
+      await waitForCall(sidecarRequestMock);
+      const runId = (sidecarRequestMock.mock.calls[0][1] as { runId: string }).runId;
+
+      const deltaHandler = handlerFor(onSidecarNotification, 'agent.delta');
+      deltaHandler({ runId, frames: [{ p: 'chat', m: 'appendText', a: ['conv-1', 'thinking…'] }] }); // marks committed → "thinking" shown
+
+      d.reject(new Error('sidecar crashed mid-run'));
+      await p;
+
+      // The sidecar's own terminal frames never arrived — the shell must
+      // finalize the UI itself (mirrors the in-process error path), else the
+      // conversation hangs streaming forever.
+      expect(chatDeltaFinishStreamingMock).toHaveBeenCalledWith('conv-1');
+      expect(chatDeltaSetConversationStatusMock).toHaveBeenCalledWith('conv-1', 'error');
+      expect(chatDeltaSetAgentStatusMock).toHaveBeenCalledWith('idle');
+    });
+
+    it('a post-commit failure surfaces the REAL sidecar cause from the error data, not the generic wrapper', async () => {
+      const { runAgentLoopDispatched } = await importFresh();
+      const d = deferred<unknown>();
+      sidecarRequestMock.mockReturnValue(d.promise);
+
+      const p = runAgentLoopDispatched('conv-1', 'hello');
+      await waitForCall(sidecarRequestMock);
+      const runId = (sidecarRequestMock.mock.calls[0][1] as { runId: string }).runId;
+      const deltaHandler = handlerFor(onSidecarNotification, 'agent.delta');
+      deltaHandler({ runId, frames: [{ p: 'chat', m: 'appendText', a: ['conv-1', 'x'] }] });
+
+      // A -32603 wrapper whose real cause lives in `.data.message` (mirrors
+      // sidecar protocol.ts errorFromCaught).
+      const rpcErr = Object.assign(new Error('Sidecar error -32603: Internal error'), {
+        data: { message: 'Maximum call stack size exceeded' },
+      });
+      d.reject(rpcErr);
+      const result = await p;
+
+      expect(result.error).toBe('Maximum call stack size exceeded');
+      expect(chatDeltaAppendTextMock).toHaveBeenCalledWith('conv-1', expect.stringContaining('Maximum call stack size exceeded'));
     });
 
     it('a transport failure AFTER the run is committed via an agent.delta frame (no tool call yet) ALSO surfaces an error — NO rerun', async () => {

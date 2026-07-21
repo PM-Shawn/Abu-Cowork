@@ -179,9 +179,15 @@ const SHIM_TARGETS = [
   // Real forwarding shim (in-process calls to fsHost.ts, no RPC needed since
   // we ARE the sidecar now) — see fsBridgeRun.ts's module doc.
   { real: path.resolve(srcDir, 'core/tools/fsBridge.ts'), shim: path.resolve(__dirname, '../sidecar/src/shims/fsBridgeRun.ts') },
-  // Throwing bundle-graph-only shims — both are dragged in ONLY via
-  // fileTools.ts's write_file/edit_file (never locally-executed, see each
-  // shim's own doc for why reaching them here would be a wiring bug).
+  // Dragged in ONLY via fileTools.ts's write_file/edit_file. P1-3d-4 shipped
+  // both as THROWING bundle-graph-only shims (write_file/edit_file weren't
+  // locally-executed yet). P1-3d A-write registers write_file/edit_file in
+  // localTools/index.ts, so both are now REAL forwarding shims — a
+  // fire-and-forget NOTIFICATION (defaultWorkspaceRun.ts's
+  // `workspace.bindFromWrite`) and an awaited REQUEST
+  // (aiEditSnapshotsRun.ts's `snapshot.beforeAiEdit`) back to the shell,
+  // where the real bindWorkspaceFromWrite/snapshotBeforeAiEdit (with their
+  // real store writes) run — see each shim's own doc.
   { real: path.resolve(srcDir, 'core/agent/defaultWorkspace.ts'), shim: path.resolve(__dirname, '../sidecar/src/shims/defaultWorkspaceRun.ts') },
   { real: path.resolve(srcDir, 'utils/aiEditSnapshots.ts'), shim: path.resolve(__dirname, '../sidecar/src/shims/aiEditSnapshotsRun.ts') },
 ];

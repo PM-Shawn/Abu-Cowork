@@ -102,6 +102,21 @@ vi.mock('../tools/registry', () => ({
   checkToolApproval: (...a: unknown[]) => checkToolApprovalMock(...a),
 }));
 
+// P1-3d A-write — the two reverse-mechanism targets `handleWorkspaceBindFromWrite`/
+// `handleSnapshotBeforeAiEdit` call. Mocked so this file's tests control their
+// resolution deterministically without exercising the real store writes / version
+// history (those have their own dedicated coverage — `defaultWorkspace.test.ts` /
+// `aiEditSnapshots.test.ts`).
+const bindWorkspaceFromWriteMock = vi.fn().mockResolvedValue(undefined);
+vi.mock('./defaultWorkspace', () => ({
+  bindWorkspaceFromWrite: (...a: unknown[]) => bindWorkspaceFromWriteMock(...a),
+}));
+
+const snapshotBeforeAiEditMock = vi.fn().mockResolvedValue(undefined);
+vi.mock('../../utils/aiEditSnapshots', () => ({
+  snapshotBeforeAiEdit: (...a: unknown[]) => snapshotBeforeAiEditMock(...a),
+}));
+
 /** Fuller settings snapshot — only used by runAgentLoopDispatched tests (resolveEntryModel/creds resolution need `providers`/`activeModel`); every OTHER pre-existing test relies on the plain `{agentMaxTurns:200}` default below and asserts against it exactly. */
 function dispatchSettingsSnapshot() {
   return {
@@ -428,6 +443,10 @@ describe('agentLoopRunner', () => {
     getPlanModeMock.mockReturnValue('off');
     checkToolApprovalMock.mockReset();
     checkToolApprovalMock.mockResolvedValue({ decision: 'allow' });
+    bindWorkspaceFromWriteMock.mockReset();
+    bindWorkspaceFromWriteMock.mockResolvedValue(undefined);
+    snapshotBeforeAiEditMock.mockReset();
+    snapshotBeforeAiEditMock.mockResolvedValue(undefined);
   });
 
   afterEach(() => {
@@ -443,21 +462,22 @@ describe('agentLoopRunner', () => {
       ensureHandlersRegistered();
       ensureHandlersRegistered();
 
-      // 9 notifications (8 own — the 9th being P1-3B-4's input.consumed —
-      // + hook.notify via the shared hookBridge) and 6 requests
-      // (native.invoke/tool.list/session.isMessageWrittenToDisk/
-      // approval.check — P1-3d-3 — /tool.invoke via the router / hook.emit
-      // via the shared hookBridge).
-      expect(onSidecarNotification).toHaveBeenCalledTimes(9);
-      expect(onSidecarRequest).toHaveBeenCalledTimes(6);
+      // 10 notifications (9 own — the 9th being P1-3B-4's input.consumed,
+      // the 10th being P1-3d A-write's workspace.bindFromWrite — + hook.notify
+      // via the shared hookBridge) and 7 requests (native.invoke/tool.list/
+      // session.isMessageWrittenToDisk/approval.check — P1-3d-3 — /
+      // snapshot.beforeAiEdit — P1-3d A-write — /tool.invoke via the router /
+      // hook.emit via the shared hookBridge).
+      expect(onSidecarNotification).toHaveBeenCalledTimes(10);
+      expect(onSidecarRequest).toHaveBeenCalledTimes(7);
 
       const notifiedMethods = onSidecarNotification.mock.calls.map((c) => c[0]);
       expect(notifiedMethods).toEqual(
-        expect.arrayContaining(['agent.delta', 'approval.drain', 'plan.clear', 'caps.record', 'shell.notifyTask', 'cu.setState', 'skillHooks.clearAll', 'input.consumed', 'hook.notify']),
+        expect.arrayContaining(['agent.delta', 'approval.drain', 'plan.clear', 'caps.record', 'shell.notifyTask', 'cu.setState', 'skillHooks.clearAll', 'input.consumed', 'workspace.bindFromWrite', 'hook.notify']),
       );
       const requestedMethods = onSidecarRequest.mock.calls.map((c) => c[0]);
       expect(requestedMethods).toEqual(
-        expect.arrayContaining(['native.invoke', 'tool.list', 'session.isMessageWrittenToDisk', 'approval.check', 'tool.invoke', 'hook.emit']),
+        expect.arrayContaining(['native.invoke', 'tool.list', 'session.isMessageWrittenToDisk', 'approval.check', 'snapshot.beforeAiEdit', 'tool.invoke', 'hook.emit']),
       );
     });
   });
@@ -1316,6 +1336,141 @@ describe('agentLoopRunner', () => {
       await expect(handler(null)).rejects.toThrow();
       await expect(handler({ runId: 'run-1' })).rejects.toThrow();
       expect(checkToolApprovalMock).not.toHaveBeenCalled();
+    });
+  });
+
+  // ── workspace.bindFromWrite (P1-3d A-write) ─────────────────────────────
+  //
+  // Shell-side twin of `sidecar/src/shims/defaultWorkspaceRun.ts`'s
+  // `bindWorkspaceFromWrite` — a fire-and-forget NOTIFICATION forwarded when
+  // a locally-executed `write_file` calls it. See `handleWorkspaceBindFromWrite`'s
+  // own doc.
+
+  describe('workspace.bindFromWrite handler', () => {
+    it('calls the real bindWorkspaceFromWrite with conversationId and path, for a known runId', async () => {
+      const { ensureHandlersRegistered, registerRunSession } = await importFresh();
+      ensureHandlersRegistered();
+      registerRunSession('run-1', makeSession({ conversationId: 'conv-1' }));
+
+      const handler = handlerFor(onSidecarNotification, 'workspace.bindFromWrite');
+      handler({ runId: 'run-1', conversationId: 'conv-1', path: '/Users/x/Abu/report/out.html' });
+      await Promise.resolve();
+
+      expect(bindWorkspaceFromWriteMock).toHaveBeenCalledWith('conv-1', '/Users/x/Abu/report/out.html');
+    });
+
+    it('silently drops for an unknown/already-finished runId (3a discipline — same as agent.delta)', async () => {
+      const { ensureHandlersRegistered } = await importFresh();
+      ensureHandlersRegistered();
+
+      const handler = handlerFor(onSidecarNotification, 'workspace.bindFromWrite');
+      expect(() => handler({ runId: 'no-such-run', conversationId: 'conv-1', path: '/tmp/x' })).not.toThrow();
+      await Promise.resolve();
+
+      expect(bindWorkspaceFromWriteMock).not.toHaveBeenCalled();
+    });
+
+    it('silently drops malformed params (missing runId/path)', async () => {
+      const { ensureHandlersRegistered, registerRunSession } = await importFresh();
+      ensureHandlersRegistered();
+      registerRunSession('run-1', makeSession({ conversationId: 'conv-1' }));
+
+      const handler = handlerFor(onSidecarNotification, 'workspace.bindFromWrite');
+      expect(() => handler(null)).not.toThrow();
+      expect(() => handler({ runId: 'run-1' })).not.toThrow();
+      await Promise.resolve();
+
+      expect(bindWorkspaceFromWriteMock).not.toHaveBeenCalled();
+    });
+
+    it('never throws even if the real bindWorkspaceFromWrite rejects (fire-and-forget — logged, not propagated)', async () => {
+      const { ensureHandlersRegistered, registerRunSession } = await importFresh();
+      ensureHandlersRegistered();
+      registerRunSession('run-1', makeSession({ conversationId: 'conv-1' }));
+      bindWorkspaceFromWriteMock.mockRejectedValueOnce(new Error('store write failed'));
+
+      const handler = handlerFor(onSidecarNotification, 'workspace.bindFromWrite');
+      expect(() => handler({ runId: 'run-1', conversationId: 'conv-1', path: '/tmp/x' })).not.toThrow();
+      await Promise.resolve();
+      await Promise.resolve(); // flush the rejected promise's .catch()
+    });
+  });
+
+  // ── snapshot.beforeAiEdit (P1-3d A-write) ───────────────────────────────
+  //
+  // Shell-side twin of `sidecar/src/shims/aiEditSnapshotsRun.ts`'s
+  // `snapshotBeforeAiEdit` — an AWAITED REQUEST forwarded when a
+  // locally-executed `write_file`/`edit_file` calls it. Symmetric to
+  // `approval.check`'s tests above (same session-lookup/fail-closed
+  // discipline), but a throw here is swallowed by the sidecar shim's
+  // fail-open catch, never surfaced to the user as a denial — see
+  // `handleSnapshotBeforeAiEdit`'s own doc.
+
+  describe('snapshot.beforeAiEdit handler', () => {
+    it('calls the real snapshotBeforeAiEdit with path + opts, for a known runId with an existing conversation', async () => {
+      const { ensureHandlersRegistered, registerRunSession } = await importFresh();
+      ensureHandlersRegistered();
+      registerRunSession('run-1', makeSession({ conversationId: 'conv-1' }));
+
+      const handler = handlerFor(onSidecarRequest, 'snapshot.beforeAiEdit');
+      const result = await handler({
+        runId: 'run-1',
+        path: '/tmp/x.txt',
+        opts: { loopId: 'loop-1', conversationId: 'conv-1', knownContent: 'hello' },
+      });
+
+      expect(result).toBeNull();
+      expect(snapshotBeforeAiEditMock).toHaveBeenCalledWith('/tmp/x.txt', {
+        loopId: 'loop-1',
+        conversationId: 'conv-1',
+        knownContent: 'hello',
+      });
+    });
+
+    it('tolerates a missing/empty opts object (defaults every field to undefined)', async () => {
+      const { ensureHandlersRegistered, registerRunSession } = await importFresh();
+      ensureHandlersRegistered();
+      registerRunSession('run-1', makeSession({ conversationId: 'conv-1' }));
+
+      const handler = handlerFor(onSidecarRequest, 'snapshot.beforeAiEdit');
+      await handler({ runId: 'run-1', path: '/tmp/x.txt' });
+
+      expect(snapshotBeforeAiEditMock).toHaveBeenCalledWith('/tmp/x.txt', {
+        loopId: undefined,
+        conversationId: undefined,
+        knownContent: undefined,
+      });
+    });
+
+    it('throws for an unknown runId instead of silently answering', async () => {
+      const { ensureHandlersRegistered } = await importFresh();
+      ensureHandlersRegistered();
+      const handler = handlerFor(onSidecarRequest, 'snapshot.beforeAiEdit');
+
+      await expect(handler({ runId: 'no-such-run', path: '/tmp/x.txt' })).rejects.toThrow();
+      expect(snapshotBeforeAiEditMock).not.toHaveBeenCalled();
+    });
+
+    it('refuses to answer when the run\'s conversation has been deleted (known runId, no conversation record) — same fail-closed discipline as approval.check/tool.invoke', async () => {
+      const { ensureHandlersRegistered, registerRunSession } = await importFresh();
+      ensureHandlersRegistered();
+      registerRunSession('run-1', makeSession({ conversationId: 'conv-1' }));
+      chatState = { conversations: {}, conversationIndex: {} };
+
+      const handler = handlerFor(onSidecarRequest, 'snapshot.beforeAiEdit');
+
+      await expect(handler({ runId: 'run-1', path: '/tmp/x.txt' })).rejects.toThrow();
+      expect(snapshotBeforeAiEditMock).not.toHaveBeenCalled();
+    });
+
+    it('rejects malformed params (missing runId/path)', async () => {
+      const { ensureHandlersRegistered } = await importFresh();
+      ensureHandlersRegistered();
+      const handler = handlerFor(onSidecarRequest, 'snapshot.beforeAiEdit');
+
+      await expect(handler(null)).rejects.toThrow();
+      await expect(handler({ runId: 'run-1' })).rejects.toThrow();
+      expect(snapshotBeforeAiEditMock).not.toHaveBeenCalled();
     });
   });
 

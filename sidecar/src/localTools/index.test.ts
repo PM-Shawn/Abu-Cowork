@@ -1,24 +1,43 @@
 /**
  * Tests for the sidecar local tool registry (P1-3d-1, extended P1-3d-4 for
- * the read-path file tools). Runs against the REAL show_widget/read_me/
- * http_fetch/web_search/read_file/list_directory/search_files/find_files
- * implementations (not mocked) — this is the contract `agentLoopHost.test.ts`'s
- * "local tool dispatch" describe block assumes when it mocks THIS module to
- * test only the dispatcher's branch/fallback wiring in isolation.
+ * the read-path file tools, extended P1-3d A-write for write_file/edit_file).
+ * Runs against the REAL show_widget/read_me/http_fetch/web_search/read_file/
+ * list_directory/search_files/find_files/write_file/edit_file implementations
+ * (not mocked) — this is the contract `agentLoopHost.test.ts`'s "local tool
+ * dispatch" describe block assumes when it mocks THIS module to test only
+ * the dispatcher's branch/fallback wiring in isolation.
  *
- * The four P1-3d-4 tools go through `fsBridge.ts` (readTextFile/readDir/
- * exists/stat) and `@tauri-apps/api/core`'s `invoke` (search_files/find_files'
- * `run_shell_command`) — both globally mocked by `src/test/setup.ts` (sidecar
- * status defaults to not-running, so `fsBridge.ts` falls through to the
- * mocked `@tauri-apps/plugin-fs` functions directly — same mocking seam
+ * The four P1-3d-4 read tools (plus write_file/edit_file, P1-3d A-write) go
+ * through `fsBridge.ts` (readTextFile/readDir/writeTextFile/exists/stat) and
+ * `@tauri-apps/api/core`'s `invoke` (search_files/find_files' `run_shell_command`)
+ * — both globally mocked by `src/test/setup.ts` (sidecar status defaults to
+ * not-running, so `fsBridge.ts` falls through to the mocked
+ * `@tauri-apps/plugin-fs` functions directly — same mocking seam
  * `fileTools.test.ts` itself relies on).
+ *
+ * `@/utils/aiEditSnapshots` is mocked wholesale (same as `fileTools.test.ts`)
+ * — this file's `write_file`/`edit_file` tests exercise the REAL tool's
+ * local-write behavior, not the P1-3d A-write reverse-RPC snapshot shim
+ * (that's `sidecar/src/shims/aiEditSnapshotsRun.test.ts`'s job, in isolation
+ * — see that file's doc for why: outside `npm run build:sidecar`'s esbuild
+ * module-redirect, `fileTools.ts`'s static import of `snapshotBeforeAiEdit`
+ * resolves to the REAL shell-side module under vitest, never the shim).
+ * `bindWorkspaceFromWrite` (`@/core/agent/defaultWorkspace`) is left
+ * UNMOCKED, same as `fileTools.test.ts` — its real implementation no-ops
+ * immediately when `context.conversationId` is undefined (the shape these
+ * tests use), so no store mocking is needed.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { readDir, readTextFile, stat } from '@tauri-apps/plugin-fs';
+import { readDir, readTextFile, writeTextFile, exists, stat } from '@tauri-apps/plugin-fs';
 import { invoke } from '@tauri-apps/api/core';
 import { hasLocalTool, isLocalToolReadOnly, executeLocalTool } from './index';
 
-const REGISTERED_TOOL_NAMES = [
+const snapshotBeforeAiEditMock = vi.fn().mockResolvedValue(undefined);
+vi.mock('@/utils/aiEditSnapshots', () => ({
+  snapshotBeforeAiEdit: (...args: unknown[]) => snapshotBeforeAiEditMock(...args),
+}));
+
+const READ_ONLY_TOOL_NAMES = [
   'show_widget',
   'read_me',
   'http_fetch',
@@ -29,18 +48,34 @@ const REGISTERED_TOOL_NAMES = [
   'find_files',
 ];
 
+const WRITE_TOOL_NAMES = ['write_file', 'edit_file'];
+
 describe('localTools registry membership', () => {
-  it.each(REGISTERED_TOOL_NAMES)('hasLocalTool("%s") is true', (name) => {
+  it.each(READ_ONLY_TOOL_NAMES)('hasLocalTool("%s") is true', (name) => {
+    expect(hasLocalTool(name)).toBe(true);
+  });
+
+  it.each(WRITE_TOOL_NAMES)('hasLocalTool("%s") is true (P1-3d A-write)', (name) => {
     expect(hasLocalTool(name)).toBe(true);
   });
 
   it('hasLocalTool is false for an unregistered/unknown name', () => {
-    expect(hasLocalTool('write_file')).toBe(false);
+    expect(hasLocalTool('delete_file')).toBe(false);
     expect(hasLocalTool('nonexistent_tool')).toBe(false);
   });
 
-  it.each(REGISTERED_TOOL_NAMES)('isLocalToolReadOnly("%s") is true (Tier A — safe to fall back on failure)', (name) => {
+  it.each(READ_ONLY_TOOL_NAMES)('isLocalToolReadOnly("%s") is true (Tier A — safe to fall back on failure)', (name) => {
     expect(isLocalToolReadOnly(name)).toBe(true);
+  });
+
+  // 🔴 SECURITY-RELEVANT: write_file/edit_file are the first side-effecting
+  // tools in this registry — readOnly:false means `agentLoopHost.ts`'s
+  // caller RE-THROWS a local dispatch-layer failure instead of falling back
+  // to the reverse tool.invoke path (no double-write risk). See
+  // `LocalToolEntry.readOnly`'s doc and this module's "P1-3d A-write" doc
+  // section.
+  it.each(WRITE_TOOL_NAMES)('isLocalToolReadOnly("%s") is FALSE (side-effecting — never safe to retry after a local dispatch failure)', (name) => {
+    expect(isLocalToolReadOnly(name)).toBe(false);
   });
 
   it('isLocalToolReadOnly is false (fail-closed) for an unregistered name', () => {
@@ -200,5 +235,91 @@ describe('executeLocalTool — search_files / find_files', () => {
     const result = await executeLocalTool('find_files', { pattern: '*.ts', path: '/tmp/x' }, undefined, undefined);
     expect(result as string).toContain('a.ts');
     expect(invoke).toHaveBeenCalledWith('run_shell_command', expect.objectContaining({ command: expect.stringContaining('find') }));
+  });
+});
+
+// ── P1-3d A-write: write-path file tools ────────────────────────────────────
+
+describe('executeLocalTool — write_file (P1-3d A-write)', () => {
+  beforeEach(() => {
+    vi.mocked(writeTextFile).mockReset().mockResolvedValue(undefined);
+    snapshotBeforeAiEditMock.mockClear();
+  });
+
+  it('runs locally: writes via the mocked fsBridge->plugin-fs fallback and returns the success marker', async () => {
+    const result = await executeLocalTool('write_file', { path: '/tmp/x/out.txt', content: 'hello world' }, undefined, undefined);
+    expect(result).toBe('Successfully wrote 11 characters to /tmp/x/out.txt');
+    expect(writeTextFile).toHaveBeenCalledWith('/tmp/x/out.txt', 'hello world');
+  });
+
+  it('calls the REAL snapshotBeforeAiEdit (mocked here) before writing — pre-edit snapshot semantics unchanged locally', async () => {
+    await executeLocalTool('write_file', { path: '/tmp/x/out.txt', content: 'hi' }, { conversationId: 'conv-1', loopId: 'loop-1' }, undefined);
+    expect(snapshotBeforeAiEditMock).toHaveBeenCalledWith('/tmp/x/out.txt', { loopId: 'loop-1', conversationId: 'conv-1' });
+    // snapshot happens BEFORE the write — assert call order via mock invocation timestamps is
+    // brittle, so instead assert both were called (temporal order is exercised end-to-end by
+    // fileTools.test.ts's own write_file suite; this test's job is just "still wired through
+    // the local dispatch path", not re-proving fileTools.ts's own internal ordering).
+    expect(writeTextFile).toHaveBeenCalled();
+  });
+
+  it('catches a real fs error and returns it as an error STRING (never throws) — matches the readOnly:false dispatch-layer/tool-level distinction', async () => {
+    vi.mocked(writeTextFile).mockRejectedValueOnce(new Error('EACCES: permission denied'));
+    const result = await executeLocalTool('write_file', { path: '/tmp/x/out.txt', content: 'hi' }, undefined, undefined);
+    expect(result as string).toContain('Error writing file');
+    expect(result as string).toContain('EACCES');
+  });
+
+  it('rejects a binary extension locally with the same guard the reverse path uses (no fsBridge call at all)', async () => {
+    const result = await executeLocalTool('write_file', { path: '/tmp/x/out.docx', content: 'hi' }, undefined, undefined);
+    expect(result as string).toContain('write_file only writes plain text');
+    expect(writeTextFile).not.toHaveBeenCalled();
+  });
+
+  it('rejects a call missing required fields BEFORE ever invoking execute() (pre-flight validation)', async () => {
+    const result = await executeLocalTool('write_file', { path: '/tmp/x/out.txt' }, undefined, undefined);
+    expect(result as string).toContain('missing required parameter');
+    expect(result as string).toContain('content');
+    expect(writeTextFile).not.toHaveBeenCalled();
+  });
+});
+
+describe('executeLocalTool — edit_file (P1-3d A-write)', () => {
+  beforeEach(() => {
+    vi.mocked(exists).mockReset().mockResolvedValue(true);
+    vi.mocked(readTextFile).mockReset();
+    vi.mocked(writeTextFile).mockReset().mockResolvedValue(undefined);
+    snapshotBeforeAiEditMock.mockClear();
+  });
+
+  it('runs locally: reads, replaces, writes via the mocked fsBridge->plugin-fs fallback', async () => {
+    vi.mocked(readTextFile).mockResolvedValueOnce('const x = 1;\nconst y = 2;\n');
+    const result = await executeLocalTool(
+      'edit_file',
+      { path: '/tmp/x/a.ts', old_content: 'const x = 1;', new_content: 'const x = 100;' },
+      undefined,
+      undefined,
+    );
+    expect(result as string).toContain('Successfully edited');
+    expect(writeTextFile).toHaveBeenCalledWith('/tmp/x/a.ts', 'const x = 100;\nconst y = 2;\n');
+  });
+
+  it('returns an error STRING (never throws) when the file does not exist', async () => {
+    vi.mocked(exists).mockResolvedValueOnce(false);
+    const result = await executeLocalTool('edit_file', { path: '/tmp/x/missing.ts', old_content: 'a', new_content: 'b' }, undefined, undefined);
+    expect(result as string).toContain('File not found');
+    expect(writeTextFile).not.toHaveBeenCalled();
+  });
+
+  it('returns an error STRING (never throws) when old_content does not match uniquely', async () => {
+    vi.mocked(readTextFile).mockResolvedValueOnce('no match here');
+    const result = await executeLocalTool('edit_file', { path: '/tmp/x/a.ts', old_content: 'nope', new_content: 'b' }, undefined, undefined);
+    expect(result as string).toContain('old_content not found');
+    expect(writeTextFile).not.toHaveBeenCalled();
+  });
+
+  it('rejects a call missing required fields BEFORE ever invoking execute() (pre-flight validation)', async () => {
+    const result = await executeLocalTool('edit_file', { path: '/tmp/x/a.ts' }, undefined, undefined);
+    expect(result as string).toContain('missing required parameter');
+    expect(exists).not.toHaveBeenCalled();
   });
 });

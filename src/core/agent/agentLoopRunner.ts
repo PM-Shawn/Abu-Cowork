@@ -18,10 +18,12 @@
  * protocol this implements (the sidecar→shell half — `agent.delta` /
  * `approval.drain` / `plan.clear` / `caps.record` / `shell.notifyTask` /
  * `cu.setState` / `native.invoke` / `tool.list` / `tool.invoke` /
- * `session.isMessageWrittenToDisk` / `skillHooks.clearAll`) and the
- * shell→sidecar push half (`agent.run` / `agent.abort` / `agent.enqueueInput`
- * / `state.settings` / `state.convPatch` / `state.execPatch` /
- * `state.planMode`).
+ * `session.isMessageWrittenToDisk` / `skillHooks.clearAll` /
+ * `approval.check` — P1-3d-3 — / `workspace.bindFromWrite` /
+ * `snapshot.beforeAiEdit` — both P1-3d A-write, see those handlers' own docs)
+ * and the shell→sidecar push half (`agent.run` / `agent.abort` /
+ * `agent.enqueueInput` / `state.settings` / `state.convPatch` /
+ * `state.execPatch` / `state.planMode`).
  */
 import type { ConfirmationInfo, FilePermissionCallback } from '../tools/registry';
 import { checkToolApproval, type ToolApprovalDecision } from '../tools/registry';
@@ -88,6 +90,8 @@ import { getActiveApiKey, getActiveProvider } from '../../utils/settingsSelector
 import { resolveEffectiveLlmCreds } from '../enterprise/llm-resolver';
 import { enqueueUserInput, getQueuedInputs, subscribeToInputQueue, removeQueuedInput } from './userInputQueue';
 import { registerSidecarRunPredicate } from './sidecarRunPredicate';
+import { bindWorkspaceFromWrite } from './defaultWorkspace';
+import { snapshotBeforeAiEdit } from '../../utils/aiEditSnapshots';
 
 const logger = createLogger('agent-loop-runner');
 
@@ -510,6 +514,88 @@ async function handleApprovalCheck(rawParams: unknown): Promise<ToolApprovalDeci
 }
 
 /**
+ * `workspace.bindFromWrite` (NOTIFICATION) — P1-3d A-write
+ * (docs/2026-07-21-phase1-p3d-tool-migration-design.md "A-write" task).
+ * Sidecar-side twin: `sidecar/src/shims/defaultWorkspaceRun.ts`'s
+ * `bindWorkspaceFromWrite`, reached when `write_file` executes LOCALLY
+ * (`sidecar/src/localTools/index.ts`) and calls the real tool's
+ * `fileTools.ts:264` call site (`void bindWorkspaceFromWrite(...)` —
+ * fire-and-forget, matching this being a NOTIFICATION rather than a
+ * REQUEST: no response is awaited on either side).
+ *
+ * Calls the REAL `bindWorkspaceFromWrite` (`defaultWorkspace.ts`, unmoved —
+ * the exact same function a shell-executed `write_file`, via the reverse
+ * `tool.invoke` path, would call directly) — so a locally-executed write
+ * under `~/Abu/` binds/authorizes the default workspace identically
+ * regardless of which path ran the write.
+ *
+ * Session lookup mirrors `handleAgentDelta`'s "unknown/already-finished
+ * runId → silent drop" discipline (3a), NOT `handleMainLoopToolInvoke`'s
+ * hard-refuse-with-throw (there is no RPC response to fail here — silent
+ * drop is the only sensible behavior for a fire-and-forget notification).
+ * The real function is itself idempotent/self-guarding on a missing or
+ * already-bound conversation (`defaultWorkspace.ts:119-122`), so this
+ * lookup is a defense-in-depth consistency check, not the only thing
+ * preventing a stale/deleted-conversation write from taking effect.
+ */
+function handleWorkspaceBindFromWrite(rawParams: unknown): void {
+  const params = rawParams as { runId?: unknown; conversationId?: unknown; path?: unknown } | null;
+  if (!params || typeof params.runId !== 'string' || typeof params.path !== 'string') return;
+  const session = sessions.get(params.runId);
+  if (!session) return; // unknown/already-finished runId — silent drop
+  const conversationId = typeof params.conversationId === 'string' ? params.conversationId : undefined;
+  void bindWorkspaceFromWrite(conversationId, params.path).catch((err: unknown) => {
+    logger.warn('bindWorkspaceFromWrite threw', { error: err instanceof Error ? err.message : String(err) });
+  });
+}
+
+/**
+ * `snapshot.beforeAiEdit` (REQUEST) — P1-3d A-write. Sidecar-side twin:
+ * `sidecar/src/shims/aiEditSnapshotsRun.ts`'s `snapshotBeforeAiEdit`,
+ * reached when `write_file`/`edit_file` execute LOCALLY and `await` the
+ * real tool's `snapshotBeforeAiEdit(...)` call (`fileTools.ts:257`/`:340`)
+ * BEFORE writing to disk — a REQUEST (not a notification, unlike
+ * `workspace.bindFromWrite` above) because the caller needs the round trip
+ * to settle first, matching the real function's own "capture the 'before'
+ * state before the write lands" contract.
+ *
+ * Calls the REAL `snapshotBeforeAiEdit` (`utils/aiEditSnapshots.ts`,
+ * unmoved) — the exact same function a shell-executed write/edit would call
+ * directly — so a locally-executed write/edit leaves the identical
+ * revertable "before" state in `canvasVersions` version history.
+ *
+ * Session lookup mirrors `handleApprovalCheck`'s discipline (unknown runId
+ * or a since-deleted conversation → throw, refusing to answer) — but unlike
+ * that handler, a throw HERE is not user-visible as a denial: the sidecar
+ * shim's fail-open catch (see `aiEditSnapshotsRun.ts`'s doc) swallows any
+ * rejection and simply skips the snapshot for this turn, exactly mirroring
+ * the real function's own "never blocks the edit" contract for a
+ * legitimate shell-side call.
+ */
+async function handleSnapshotBeforeAiEdit(rawParams: unknown): Promise<null> {
+  const params = rawParams as { runId?: unknown; path?: unknown; opts?: unknown } | null;
+  if (!params || typeof params.runId !== 'string' || typeof params.path !== 'string') {
+    throw new SidecarRequestError(-32602, 'Invalid snapshot.beforeAiEdit params: runId and path must be strings');
+  }
+
+  const session = sessions.get(params.runId);
+  if (!session) {
+    throw new SidecarRequestError(-32000, `Unknown agent-loop runId: ${params.runId}`);
+  }
+  if (!useChatStore.getState().conversations[session.conversationId]) {
+    throw new SidecarRequestError(-32000, `Conversation no longer exists for agent-loop runId: ${params.runId}`);
+  }
+
+  const rawOpts = (params.opts && typeof params.opts === 'object' ? params.opts : {}) as Record<string, unknown>;
+  await snapshotBeforeAiEdit(params.path, {
+    loopId: typeof rawOpts.loopId === 'string' ? rawOpts.loopId : undefined,
+    conversationId: typeof rawOpts.conversationId === 'string' ? rawOpts.conversationId : undefined,
+    knownContent: typeof rawOpts.knownContent === 'string' ? rawOpts.knownContent : undefined,
+  });
+  return null;
+}
+
+/**
  * `skillHooks.clearAll` (NOTIFICATION) → {runId} → the real
  * `clearAllSkillHooks()`. Closes a P1-3B-3A escalation
  * (`sidecar/src/shims/builtinsRun.ts`'s doc comment / P1-3B-3A-REPORT.md
@@ -575,11 +661,13 @@ export function ensureHandlersRegistered(): void {
   onSidecarNotification('cu.setState', handleCuSetState);
   onSidecarNotification('skillHooks.clearAll', handleSkillHooksClearAll);
   onSidecarNotification('input.consumed', handleInputConsumed);
+  onSidecarNotification('workspace.bindFromWrite', handleWorkspaceBindFromWrite);
 
   onSidecarRequest('native.invoke', handleNativeInvoke);
   onSidecarRequest('tool.list', handleToolList);
   onSidecarRequest('session.isMessageWrittenToDisk', handleIsMessageWrittenToDisk);
   onSidecarRequest('approval.check', handleApprovalCheck);
+  onSidecarRequest('snapshot.beforeAiEdit', handleSnapshotBeforeAiEdit);
 }
 
 /** Test-only — lets tests re-register handlers against fresh mocks. Not used by production code. */

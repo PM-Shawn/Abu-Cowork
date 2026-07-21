@@ -27,12 +27,18 @@
  *     surface), dynamic `import('../../search/providers')` (verified: only
  *     imports `../llm/tauriFetch`, no other Tauri/store reach).
  *   - `fileTools.ts` (`read_file`/`list_directory`/`search_files`/
- *     `find_files` — P1-3d-4): see that section's own doc block below for
- *     the FULL bundle-feasibility trace (it needed THREE new shims this
- *     batch adds, not zero — `fsBridge.ts`/`defaultWorkspace.ts`/
- *     `aiEditSnapshots.ts`, plus two bare-package additions,
- *     `@tauri-apps/plugin-os` and `@tauri-apps/plugin-fs`'s `lstat` — this
- *     summary line is not the full story, read the block below it).
+ *     `find_files` — P1-3d-4; `write_file`/`edit_file` — P1-3d A-write): see
+ *     that section's own doc block below for the FULL bundle-feasibility
+ *     trace (P1-3d-4 needed THREE new shims, not zero —
+ *     `fsBridge.ts`/`defaultWorkspace.ts`/`aiEditSnapshots.ts`, plus two
+ *     bare-package additions, `@tauri-apps/plugin-os` and
+ *     `@tauri-apps/plugin-fs`'s `lstat` — this summary line is not the full
+ *     story, read the block below it). P1-3d A-write RESOLVES the last two
+ *     of those three shims from throwing stubs into real forwarding shims
+ *     (see the "P1-3d A-write" section below) — no NEW bundle-graph work was
+ *     needed, since `write_file`/`edit_file`'s whole dependency graph was
+ *     already dragged in and made bundle-safe by P1-3d-4 (it just wasn't
+ *     REACHED yet, because neither tool was registered here).
  *
  * `createReverseToolInvoker.executeAnyTool` (`agentLoopHost.ts`) checks
  * this registry FIRST: a hit runs locally (no RPC round-trip); a miss falls
@@ -95,14 +101,15 @@
  * file-tool-specific needed on that front; see this module's "P1-3d-1 gap
  * CLOSED by P1-3d-3" section above, which applies identically here.
  *
- * `fileTools.ts` exports SEVEN tools from one file; only FOUR are registered
- * below (read/list/search/find — NOT write/edit/delete, per this batch's
- * scope). Because ES module semantics evaluate every top-level import in a
- * file regardless of which exports are actually used, importing ANY of
- * `fileTools.ts`'s exports drags in ALL of its top-level imports — including
- * ones only `writeFileTool`/`editFileTool`/`deleteFileTool` need. Verified
- * empirically (`npm run build:sidecar` against a probe import), not assumed:
- * this required THREE new bundle-graph fixes beyond what P1-3d-1 needed —
+ * `fileTools.ts` exports SEVEN tools from one file; SIX are registered below
+ * as of P1-3d A-write (read/list/search/find — P1-3d-4 — plus write/edit —
+ * P1-3d A-write; NOT delete, still out of scope). Because ES module
+ * semantics evaluate every top-level import in a file regardless of which
+ * exports are actually used, importing ANY of `fileTools.ts`'s exports drags
+ * in ALL of its top-level imports — including ones only
+ * `writeFileTool`/`editFileTool`/`deleteFileTool` need. Verified empirically
+ * (`npm run build:sidecar` against a probe import), not assumed: this
+ * required THREE new bundle-graph fixes beyond what P1-3d-1 needed —
  *
  *   1. `core/tools/fsBridge.ts` — the SHELL-side fs bridge (P1-2a): it calls
  *      OUT to the sidecar over `sidecarManager.ts`'s RPC client, with a
@@ -114,11 +121,20 @@
  *   2. `core/agent/defaultWorkspace.ts` — imported by `fileTools.ts` ONLY for
  *      `writeFileTool`'s `bindWorkspaceFromWrite` (not used by the four read
  *      tools), but pulls `useChatStore`/`useWorkspaceStore`/`usePermissionStore`
- *      directly — forbidden. New THROWING shim `shims/defaultWorkspaceRun.ts`
- *      (write_file is not locally-executed, so this is provably dead here).
+ *      directly — forbidden. P1-3d-4 shipped `shims/defaultWorkspaceRun.ts`
+ *      as a THROWING stub (write_file wasn't locally-executed yet, so it was
+ *      provably dead at the time). P1-3d A-write RESOLVES that stub into a
+ *      real forwarding shim (fire-and-forget NOTIFICATION,
+ *      `workspace.bindFromWrite` — see that shim's own doc), now that
+ *      `write_file` IS registered below.
  *   3. `utils/aiEditSnapshots.ts` — same shape, imported ONLY for
  *      `writeFileTool`/`editFileTool`'s `snapshotBeforeAiEdit`, pulls
- *      `useChatStore`. New THROWING shim `shims/aiEditSnapshotsRun.ts`.
+ *      `useChatStore`. Same P1-3d-4-throws→P1-3d-A-write-resolves history —
+ *      `shims/aiEditSnapshotsRun.ts` now forwards as an AWAITED REQUEST
+ *      (`snapshot.beforeAiEdit` — the real call sites `await` this BEFORE
+ *      writing to disk, so unlike `bindWorkspaceFromWrite` it can't be
+ *      fire-and-forget; see that shim's own doc for the fail-open contract
+ *      it preserves at the RPC boundary).
  *
  * Plus two bare-package additions surfaced by the SAME whole-module-import
  * effect, both via `core/tools/helpers/toolHelpers.ts` (used by `read_file`'s
@@ -161,6 +177,57 @@
  * existing `readOnly`-fallback path (`agentLoopHost.ts`) takes over and
  * retries via the reverse `tool.invoke` path, where the real
  * `run_argv_command` invoke runs in the shell and actually works.
+ *
+ * ── P1-3d A-write: write-path file tools (write_file/edit_file) ─────────────
+ * 🔴 SECURITY-RELEVANT — this is the first WRITE-capable pair registered
+ * here (every P1-3d-1/3d-4 entry above is read-only or zero-IO). Both are
+ * registered with `readOnly: false` — see `LocalToolEntry.readOnly`'s doc: a
+ * local DISPATCH-LAYER failure (as opposed to a normal tool-level error,
+ * which `executeLocalTool` already catches and returns as an error-string
+ * `ToolResult`, same as every other tool) is RE-THROWN by
+ * `agentLoopHost.ts`'s caller instead of falling back to the reverse
+ * `tool.invoke` path — "once local execution starts, it's committed", no
+ * double-write risk. This is the SAME generic mechanism P1-3d-1 already
+ * built and tested (`agentLoopHost.test.ts`'s "local tool dispatch" describe
+ * block already covers the readOnly:false rethrow branch generically, tool-
+ * name-agnostic) — nothing new needed there.
+ *
+ * Write-path approval (`FILE_TOOL_PATH_MAP`'s `write_file`/`edit_file` →
+ * `checkWritePath`, registry.ts) goes through the EXACT SAME `approval.check`
+ * gate every entry in this file already goes through (P1-3d-3's
+ * `checkLocalToolApproval`, called unconditionally before ANY local dispatch
+ * in `agentLoopHost.ts` — see the "P1-3d-1 gap CLOSED by P1-3d-3" section
+ * above). `checkToolApproval` (registry.ts) is name-agnostic — it doesn't
+ * know or care whether the caller intends to execute the tool locally or
+ * reverse it to the shell, so an out-of-workspace write triggers the SAME
+ * user-facing authorization prompt (`onRequireFilePermission`, resolved
+ * shell-side by the session's real callback) regardless of which path
+ * dispatches it. Nothing file-tool-specific was needed for this batch on the
+ * approval front — the existing gate already covers `write`-capability path
+ * checks identically to `read`.
+ *
+ * Neither tool needs a `LocalToolUnsupportedError`-style pre-check wrapper
+ * (unlike `readFileLocalTool` above) — `write_file`/`edit_file` have no
+ * PDF/Office/archive branch; every code path they can take
+ * (`fsBridge.ts`'s `writeTextFile`/`readTextFile`/`exists`, `pathUtils.ts`'s
+ * `ensureParentDir` → `@tauri-apps/plugin-fs`'s `mkdir`, both already
+ * bundle-safe via `fsBridgeRun.ts`/`pluginFsRun.ts`) runs correctly locally.
+ *
+ * ── Known, pre-existing, NON-security gap (inherited from P1-3d-4, now also
+ * applies to write/edit) ───────────────────────────────────────────────────
+ * `executeAnyTool` (registry.ts, the REVERSE path) wraps an OS-permission-
+ * shaped error string (`EACCES`/`EPERM`/"operation not permitted"/"access is
+ * denied") in a friendly macOS/Windows permission-grant hint
+ * (`formatOSPermissionGuide`) for every `FILE_TOOL_PATH_MAP` tool —
+ * `executeLocalTool` (this file) does NOT apply that same formatting, since
+ * it isn't part of the `entry.tool.execute()` contract itself. A locally-
+ * executed write/edit that fails with a real OS permission error (e.g. a
+ * macOS TCC-protected folder) returns the RAW error string instead of the
+ * guided one — a UX/messaging difference, not a safety one (the write still
+ * correctly fails either way, nothing is silently allowed through). Not
+ * fixed here (out of this batch's surgical scope — the gap already existed
+ * for read_file/list_directory/search_files/find_files since P1-3d-4 and
+ * wasn't treated as blocking there either); flagged for a future batch.
  */
 import type { ToolDefinition, ToolResult, ToolExecutionContext } from '@/types';
 import { showWidgetTool, readMeTool } from '@/core/tools/definitions/widgetTools';
@@ -170,6 +237,8 @@ import {
   listDirectoryTool,
   searchFilesTool,
   findFilesTool,
+  writeFileTool,
+  editFileTool,
 } from '@/core/tools/definitions/fileTools';
 import { getFileExtension, ARCHIVE_EXTENSIONS } from '@/core/tools/helpers/toolHelpers';
 import { isWindows } from '@/utils/platform';
@@ -256,20 +325,30 @@ interface LocalToolEntry {
   readOnly: boolean;
 }
 
-const LOCAL_TOOLS = new Map<string, LocalToolEntry>(
-  (
-    [
-      showWidgetTool,
-      readMeTool,
-      httpFetchTool,
-      webSearchTool,
-      readFileLocalTool,
-      listDirectoryTool,
-      searchFilesTool,
-      findFilesTool,
-    ] as ToolDefinition[]
-  ).map((tool) => [tool.name, { tool, readOnly: true }]),
-);
+// Read-only / zero-side-effect tools (P1-3d-1 Tier A + P1-3d-4 read-path
+// file tools) — safe to fall back to the reverse tool.invoke path on a
+// local dispatch-layer failure. See LocalToolEntry.readOnly's doc.
+const READ_ONLY_LOCAL_TOOLS: ToolDefinition[] = [
+  showWidgetTool,
+  readMeTool,
+  httpFetchTool,
+  webSearchTool,
+  readFileLocalTool,
+  listDirectoryTool,
+  searchFilesTool,
+  findFilesTool,
+];
+
+// Side-effecting tools (P1-3d A-write) — `readOnly: false` below: once local
+// execution starts, it's committed. A local dispatch-layer failure re-throws
+// instead of retrying via the reverse tool.invoke path (no double-write
+// risk). See this module's "P1-3d A-write" doc section above.
+const WRITE_LOCAL_TOOLS: ToolDefinition[] = [writeFileTool, editFileTool];
+
+const LOCAL_TOOLS = new Map<string, LocalToolEntry>([
+  ...READ_ONLY_LOCAL_TOOLS.map((tool): [string, LocalToolEntry] => [tool.name, { tool, readOnly: true }]),
+  ...WRITE_LOCAL_TOOLS.map((tool): [string, LocalToolEntry] => [tool.name, { tool, readOnly: false }]),
+]);
 
 export function hasLocalTool(name: string): boolean {
   return LOCAL_TOOLS.has(name);

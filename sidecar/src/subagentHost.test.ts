@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { RpcError } from './protocol';
 import { getCurrentSubagentRunContext } from './subagentRunContext';
+import type { SubagentProgressEvent } from '@/core/agent/subagentLoop';
 
 // ── Mocked dependencies ─────────────────────────────────────────────────
 
@@ -54,6 +55,16 @@ function baseParams(overrides: Record<string, unknown> = {}) {
 function resultShape(text: string) {
   return { text, toolCallCount: 0, turnCount: 1, tokenUsage: { input: 0, output: 0 }, duration: 0 };
 }
+
+// handleSubagentRun's return type is deliberately `Promise<unknown>` at the
+// RPC boundary (subagentHost.ts:185 — it crosses a JSON-RPC wire in
+// production, so the signature intentionally doesn't leak SubagentResult's
+// shape). In these tests it resolves to the plain object literal
+// subagentHost.ts builds at its `return { text, toolCallCount, ... }`
+// (subagentHost.ts:266-272), which is exactly `resultShape`'s shape — so
+// tests narrow the awaited value to this type rather than changing the
+// production return type.
+type SubagentRunResult = ReturnType<typeof resultShape>;
 
 describe('subagentHost', () => {
   beforeEach(() => {
@@ -113,14 +124,14 @@ describe('subagentHost', () => {
       await Promise.resolve();
 
       const runB = handleSubagentRun(baseParams({ runId: 'run-B', resolvedCreds: { apiKey: 'B-key', baseUrl: undefined, forceOpenAiCompatible: false } }));
-      const resultB = await runB; // B fully completes WHILE A is still paused
+      const resultB = (await runB) as SubagentRunResult; // B fully completes WHILE A is still paused
 
       expect((seen['run-A'] as { resolvedCreds: { apiKey: string } }).resolvedCreds.apiKey).toBe('A-key');
       expect((seen['run-B'] as { resolvedCreds: { apiKey: string } }).resolvedCreds.apiKey).toBe('B-key');
       expect(resultB.text).toBe('run-B:tool output');
 
       releaseA();
-      const resultA = await runA;
+      const resultA = (await runA) as SubagentRunResult;
       expect(resultA.text).toBe('run-A:tool output');
     });
 
@@ -131,7 +142,7 @@ describe('subagentHost', () => {
       });
       sendRequestMock.mockResolvedValue('file contents');
 
-      const result = await handleSubagentRun(baseParams({ runId: 'run-correlate' }));
+      const result = (await handleSubagentRun(baseParams({ runId: 'run-correlate' }))) as SubagentRunResult;
 
       expect(sendRequestMock).toHaveBeenCalledWith('tool.invoke', {
         runId: 'run-correlate',
@@ -158,7 +169,7 @@ describe('subagentHost', () => {
 
   describe('subagent.progress forwarding (follow-up: closes P1-3a-REPORT.md §10 concern #1)', () => {
     it('emits a subagent.progress notification tagged with this run\'s runId for every onProgress call', async () => {
-      const events: Array<{ type: string }> = [
+      const events: SubagentProgressEvent[] = [
         { type: 'tool-start', id: 't1', toolName: 'read_file', toolInput: { path: 'x.txt' } },
         { type: 'tool-end', id: 't1', toolName: 'read_file', result: 'file contents', error: false },
         { type: 'turn-complete', turn: 1, totalTurns: 200 },
@@ -255,7 +266,7 @@ describe('subagentHost', () => {
 
       resolveA();
       resolveB();
-      const [resultA, resultB] = await Promise.all([runA, runB]);
+      const [resultA, resultB] = (await Promise.all([runA, runB])) as [SubagentRunResult, SubagentRunResult];
       expect(resultA.text).toBe('aborted');
       expect(resultB.text).toBe('completed');
     });

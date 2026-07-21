@@ -371,7 +371,21 @@ async function ensureListeners(): Promise<void> {
     handleMessage(event.payload);
   });
   const unlistenErr = await listen<string>(`mcp-err-${SIDECAR_ID}`, (event) => {
-    logger.debug('Sidecar stderr', { line: event.payload });
+    // B1 (P1-3d follow-up): sidecar stderr used to be logged at `debug`, i.e.
+    // invisible in dev — so EVERY sidecar-internal diagnostic (the memory
+    // extractor's `[Memory] …`, any uncaught runtime error, a stray
+    // console.log the stdout-guard redirects here) silently vanished. That's
+    // the observability gap that made 3d-2's runtime verification impossible.
+    // The sidecar logger shim tags each line `[sidecar:mod] [level] …`; route
+    // to the matching shell level so real sidecar warn/error surface. An
+    // UNTAGGED line (redirected console.log, or a raw thrown error with no
+    // level) is surfaced at `warn` — better loud than lost.
+    const line = event.payload;
+    const level = /\]\s*\[(debug|info|warn|error)\]/.exec(line)?.[1];
+    if (level === 'debug') logger.debug('Sidecar stderr', { line });
+    else if (level === 'info') logger.info('Sidecar stderr', { line });
+    else if (level === 'error') logger.error('Sidecar stderr', { line });
+    else logger.warn('Sidecar stderr', { line });
   });
   const unlistenClose = await listen<string>(`mcp-close-${SIDECAR_ID}`, () => {
     handleClose();

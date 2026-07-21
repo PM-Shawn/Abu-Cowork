@@ -213,21 +213,22 @@
  * `ensureParentDir` → `@tauri-apps/plugin-fs`'s `mkdir`, both already
  * bundle-safe via `fsBridgeRun.ts`/`pluginFsRun.ts`) runs correctly locally.
  *
- * ── Known, pre-existing, NON-security gap (inherited from P1-3d-4, now also
- * applies to write/edit) ───────────────────────────────────────────────────
+ * ── OS-permission-guide parity (was a known gap through P1-3d, now closed) ──
  * `executeAnyTool` (registry.ts, the REVERSE path) wraps an OS-permission-
  * shaped error string (`EACCES`/`EPERM`/"operation not permitted"/"access is
  * denied") in a friendly macOS/Windows permission-grant hint
- * (`formatOSPermissionGuide`) for every `FILE_TOOL_PATH_MAP` tool —
- * `executeLocalTool` (this file) does NOT apply that same formatting, since
- * it isn't part of the `entry.tool.execute()` contract itself. A locally-
- * executed write/edit that fails with a real OS permission error (e.g. a
- * macOS TCC-protected folder) returns the RAW error string instead of the
- * guided one — a UX/messaging difference, not a safety one (the write still
- * correctly fails either way, nothing is silently allowed through). Not
- * fixed here (out of this batch's surgical scope — the gap already existed
- * for read_file/list_directory/search_files/find_files since P1-3d-4 and
- * wasn't treated as blocking there either); flagged for a future batch.
+ * (`formatOSPermissionGuide`) for every `FILE_TOOL_PATH_MAP` tool. For a while
+ * `executeLocalTool` (this file) did NOT apply that formatting, so a locally-
+ * executed read/write/edit that failed with a real OS permission error (e.g. a
+ * macOS TCC-protected folder) returned the RAW error string instead of the
+ * guided one — a UX/messaging difference, never a safety one (the op still
+ * correctly fails either way, nothing is silently allowed through). Now closed:
+ * `executeLocalTool`'s string-result branch runs the SAME
+ * `applyOSPermissionGuideIfNeeded` helper (the pure `osPermissionGuide` module,
+ * shared with registry.ts's reverse path — importing it from registry.ts itself
+ * would drag chatStore into the sidecar bundle, which the build guard forbids),
+ * so both paths emit the identical guided message. Not
+ * truncated when guided (the raw error is short), matching the reverse path.
  */
 import type { ToolDefinition, ToolResult, ToolExecutionContext } from '@/types';
 import { showWidgetTool, readMeTool } from '@/core/tools/definitions/widgetTools';
@@ -243,6 +244,7 @@ import {
 import { getFileExtension, ARCHIVE_EXTENSIONS } from '@/core/tools/helpers/toolHelpers';
 import { isWindows } from '@/utils/platform';
 import { truncateToolResult } from '@/core/context/truncation';
+import { applyOSPermissionGuideIfNeeded } from '@/core/tools/osPermissionGuide';
 
 /**
  * Thrown by a locally-registered tool's execute() WRAPPER (never by a real
@@ -445,10 +447,25 @@ export async function executeLocalTool(
     result = await entry.tool.execute(input, context);
   } catch (err) {
     if (err instanceof LocalToolUnsupportedError) throw err;
-    return `Error executing tool "${name}": ${err instanceof Error ? err.message : String(err)}`;
+    // Parity with the reverse path: there, a thrown error is stringified by
+    // toolRegistry.execute and THEN guided by executeAnyTool. Today's file
+    // tools catch internally and return an error string (guided below), so
+    // this branch is only hit by an unexpected throw — but guide it too so an
+    // OS-permission error surfaces identically whether thrown or returned.
+    return applyOSPermissionGuideIfNeeded(
+      name,
+      `Error executing tool "${name}": ${err instanceof Error ? err.message : String(err)}`,
+    );
   }
 
   if (typeof result === 'string') {
+    // Parity with executeAnyTool (registry.ts): a locally-executed file tool
+    // that fails with an OS-permission error gets the same friendly grant-guide
+    // instead of a raw EACCES string. Closes the OS-permission-guide gap
+    // documented in this module's header. Not truncated when guided (the raw
+    // error is short) — matches the reverse path exactly.
+    const guided = applyOSPermissionGuideIfNeeded(name, result);
+    if (guided !== result) return guided;
     return truncateToolResult(name, result, contextUsagePercent);
   }
   return result;

@@ -267,6 +267,11 @@ describe('executeLocalTool — write_file (P1-3d A-write)', () => {
     const result = await executeLocalTool('write_file', { path: '/tmp/x/out.txt', content: 'hi' }, undefined, undefined);
     expect(result as string).toContain('Error writing file');
     expect(result as string).toContain('EACCES');
+    // Parity with the reverse executeAnyTool path: an OS-permission error on a
+    // locally-executed file tool is wrapped with the same friendly grant-guide
+    // (applyOSPermissionGuideIfNeeded), not returned as a raw EACCES string.
+    // '系统未授权阿布访问此位置' is stable across the macOS/Windows guide branches.
+    expect(result as string).toContain('系统未授权阿布访问此位置');
   });
 
   it('rejects a binary extension locally with the same guard the reverse path uses (no fsBridge call at all)', async () => {

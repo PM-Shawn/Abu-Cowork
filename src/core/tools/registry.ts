@@ -2,7 +2,6 @@ import type { ToolDefinition, ToolResult, ToolExecutionContext } from '../../typ
 import { mcpManager } from '../mcp/client';
 import { analyzeCommand, type ConfirmationInfo, type DangerLevel } from './commandSafety';
 import { checkReadPath, checkWritePath, checkListPath, authorizeWorkspace } from './pathSafety';
-import { isWindows } from '../../utils/platform';
 import { getI18n } from '../../i18n';
 import { truncateToolResult } from '../context/truncation';
 import { getSettingsReader } from '../agent/ports/settingsReader';
@@ -13,6 +12,7 @@ import { reviewAction } from '../safety/reviewer';
 import { getLoopContext } from '../agent/permissionBridge';
 import { homeDir } from '@tauri-apps/api/path';
 import { TOOL_NAMES } from './toolNames';
+import { applyOSPermissionGuideIfNeeded } from './osPermissionGuide';
 import { isLabsFlagOn } from '../labs/resolve';
 import { LABS_TODOS_INBOX } from '../labs/registry';
 
@@ -232,7 +232,7 @@ export type FilePermissionCallback = (request: {
 // "present but invalid" and must still flow THROUGH the boundary check (which
 // rejects it), not skip it. A truthy `i.path ?` treats '' as falsy → returns
 // null → the whole permission/boundary block is bypassed for path: ''.
-const FILE_TOOL_PATH_MAP: Record<string, (input: Record<string, unknown>) => { path: string; capability: 'read' | 'write' } | null> = {
+export const FILE_TOOL_PATH_MAP: Record<string, (input: Record<string, unknown>) => { path: string; capability: 'read' | 'write' } | null> = {
   [TOOL_NAMES.READ_FILE]:      (i) => typeof i.path === 'string' ? { path: i.path, capability: 'read' } : null,
   [TOOL_NAMES.LIST_DIRECTORY]: (i) => typeof i.path === 'string' ? { path: i.path, capability: 'read' } : null,
   [TOOL_NAMES.WRITE_FILE]:     (i) => typeof i.path === 'string' ? { path: i.path, capability: 'write' } : null,
@@ -463,10 +463,10 @@ export async function executeAnyTool(
     const result = await toolRegistry.execute(name, input, toolContext);
     // Only truncate string results; rich content (images) passes through
     if (typeof result === 'string') {
-      // Detect OS-level permission errors for file tools and add guidance
-      if (isFileToolName(name) && isOSPermissionError(result)) {
-        return formatOSPermissionGuide(result);
-      }
+      // File-tool OS-permission errors get a friendly grant-guide (not
+      // truncated — the raw error is short). See applyOSPermissionGuideIfNeeded.
+      const guided = applyOSPermissionGuideIfNeeded(name, result);
+      if (guided !== result) return guided;
       return truncateToolResult(name, result, contextUsagePercent);
     }
     return result;
@@ -489,21 +489,12 @@ export async function executeAnyTool(
 }
 
 // ── OS Permission Error Detection ──
-
-function isFileToolName(name: string): boolean {
-  return name in FILE_TOOL_PATH_MAP;
-}
-
-function isOSPermissionError(result: string): boolean {
-  return /operation not permitted|EACCES|EPERM|access is denied/i.test(result);
-}
-
-function formatOSPermissionGuide(originalError: string): string {
-  if (isWindows()) {
-    return `${originalError}\n\n系统未授权阿布访问此位置。请以管理员身份运行 Abu，或检查文件夹权限设置。`;
-  }
-  return `${originalError}\n\nmacOS 系统未授权阿布访问此位置。请前往「系统设置 → 隐私与安全性 → 文件和文件夹」中授权 Abu，然后重启 Abu。`;
-}
+// The detection + guide logic lives in the pure, store-free `osPermissionGuide`
+// module (re-exported here for existing importers) so the sidecar's local
+// path can share it without dragging registry.ts → chatStore — see that
+// module's doc. `FILE_TOOL_NAMES` there mirrors FILE_TOOL_PATH_MAP's keys; a
+// registry.test.ts case asserts the two stay in sync.
+export { applyOSPermissionGuideIfNeeded, FILE_TOOL_NAMES } from './osPermissionGuide';
 
 // Re-export types for convenience
 export type { ConfirmationInfo, DangerLevel };

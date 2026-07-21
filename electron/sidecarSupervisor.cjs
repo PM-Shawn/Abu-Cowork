@@ -95,7 +95,7 @@ class SidecarSupervisor {
     this.crashLoopWarned = false;
     this.deliberatelyStopped = true;
     this.exitGuardsInstalled = false;
-    this._boundKillChild = () => this._killChild();
+    this.restartTimer = null;
   }
 
   getStatus() {
@@ -104,7 +104,9 @@ class SidecarSupervisor {
 
   /** pid of the current sidecar child, or null. Used by the acceptance harness. */
   getSidecarPid() {
-    return this.child && !this.child.killed ? this.child.pid : null;
+    // Liveness is tracked by nulling this.child on close/stop — child.killed is
+    // NOT set by an external SIGKILL, so a live child ⇒ a live pid.
+    return this.child ? this.child.pid : null;
   }
 
   /**
@@ -125,6 +127,10 @@ class SidecarSupervisor {
   /** Deliberate stop: clear timers, reject pending, kill child, status 'stopped'. */
   async stop() {
     this.deliberatelyStopped = true;
+    if (this.restartTimer) {
+      clearTimeout(this.restartTimer);
+      this.restartTimer = null;
+    }
     this._stopHeartbeat();
     this._rejectAllPending(new Error('Sidecar stopped'));
     this.restartTimestamps = [];
@@ -188,6 +194,11 @@ class SidecarSupervisor {
   // ── Spawn / restart machinery ──
 
   _attemptSpawn(kind) {
+    // A deliberate stop() during the restart backoff must not spawn again.
+    if (this.deliberatelyStopped) {
+      this.status = 'stopped';
+      return;
+    }
     this.status = kind === 'initial' ? 'starting' : 'restarting';
 
     let child;
@@ -204,12 +215,25 @@ class SidecarSupervisor {
     this.child = child;
     this.stdoutBuf = '';
 
+    // Decode stdout/stderr as UTF-8 at the stream level: the stream's internal
+    // StringDecoder holds an incomplete multibyte sequence across chunk
+    // boundaries, so a CJK char split between two 'data' chunks is NOT
+    // corrupted into U+FFFD (the Tauri reference never hit this — it received
+    // already-decoded string payloads).
+    child.stdout.setEncoding('utf8');
+    child.stderr.setEncoding('utf8');
+
     child.on('error', (err) => {
       // e.g. ENOENT / EACCES on the executable itself.
       this._handleSpawnFailure(err, 'spawn-error-event');
     });
 
-    child.stdout.on('data', (chunk) => this._onStdout(chunk));
+    // Ignore data from any child that is no longer the current one, so a late
+    // chunk from a previous generation can't land in the new generation's
+    // shared line buffer and mis-frame it.
+    child.stdout.on('data', (chunk) => {
+      if (child === this.child) this._onStdout(chunk);
+    });
     child.stderr.on('data', (chunk) => {
       // Surface sidecar stderr at the matching level, like sidecarManager's
       // B1 fix (untagged lines default to warn — better loud than lost).
@@ -219,10 +243,13 @@ class SidecarSupervisor {
       this.log(level, 'sidecar stderr', { line });
     });
 
-    child.on('exit', (code, signal) => this._handleExit(code, signal));
+    // 'close' (not 'exit') so all buffered stdout drains before we reject
+    // pending requests — matches the reference's handleClose drain-before-reject
+    // ordering. Passing `child` lets _handleExit ignore a stale generation.
+    child.on('close', (code, signal) => this._handleExit(child, code, signal));
 
     // spawn() is synchronous in giving us a child+pid; consider it running.
-    // Any immediate failure surfaces via the 'error'/'exit' events above.
+    // Any immediate failure surfaces via the 'error'/'close' events above.
     this.status = 'running';
     this._startHeartbeat();
     void this._selfTestEcho();
@@ -257,7 +284,10 @@ class SidecarSupervisor {
 
     this.status = 'restarting';
     this.log('warn', 'Sidecar restarting', { reason, attempt: this.restartTimestamps.length });
-    setTimeout(() => this._attemptSpawn('restart'), RESTART_BACKOFF_MS);
+    this.restartTimer = setTimeout(() => {
+      this.restartTimer = null;
+      this._attemptSpawn('restart');
+    }, RESTART_BACKOFF_MS);
   }
 
   async _selfTestEcho() {
@@ -333,8 +363,11 @@ class SidecarSupervisor {
       return;
     }
 
-    // Incoming REQUEST from the sidecar (method AND id) — reverse channel.
-    if (typeof msg.method === 'string' && msg.id !== undefined && msg.id !== null) {
+    // Incoming REQUEST from the sidecar (method AND id, INCLUDING id:null) —
+    // reverse channel. Matches the reference: any method-bearing message with
+    // an id gets a response; excluding id:null would drop it through to the
+    // response branch and hang the sidecar waiting for a reply.
+    if (typeof msg.method === 'string' && msg.id !== undefined) {
       void this._handleIncomingRequest(msg.method, msg.id, msg.params);
       return;
     }
@@ -385,7 +418,15 @@ class SidecarSupervisor {
 
   // ── exit / cleanup ──
 
-  _handleExit(code, signal) {
+  _handleExit(child, code, signal) {
+    // Ignore a 'close' from a previous generation: a slow-dying old child must
+    // not restart a healthy new one (the reference couldn't guard this — it had
+    // one shared Rust event name; the port has a distinct child per spawn).
+    // A deliberate kill (_killChild) has already nulled this.child, so its
+    // close also lands here and early-returns.
+    if (child !== this.child) return;
+    this.child = null; // liveness: getSidecarPid() now reports null
+
     this._stopHeartbeat();
     this._rejectAllPending(new Error(`Sidecar process closed (code=${code} signal=${signal})`));
 
@@ -394,11 +435,11 @@ class SidecarSupervisor {
       return;
     }
     if (this.status === 'starting' || this.status === 'restarting' || this.status === 'failed') {
-      // Echo of a kill we just issued ourselves (heartbeat-hang forced kill),
-      // or we've already given up — don't double-count as a new failure.
+      // We've already given up, or a kill is mid-flight — don't double-count
+      // as a new failure.
       return;
     }
-    this._scheduleRestartOrGiveUp('exit');
+    this._scheduleRestartOrGiveUp('close');
   }
 
   _rejectAllPending(err) {
@@ -455,6 +496,7 @@ class SidecarSupervisor {
   _installExitGuards() {
     if (this.exitGuardsInstalled) return;
     this.exitGuardsInstalled = true;
+    // Synchronous no-orphan net on ANY normal exit / process.exit().
     process.on('exit', () => {
       const child = this.child;
       if (child && !child.killed) {
@@ -465,9 +507,28 @@ class SidecarSupervisor {
         }
       }
     });
-    for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
-      process.on(sig, this._boundKillChild);
-    }
+    // A termination signal does NOT run 'exit' handlers, and merely registering
+    // a handler suppresses Node's default terminate — so reproduce termination
+    // ourselves: stop resurrection, kill the child, then actually exit (the
+    // 'exit' net above is the backstop). Without this the shell became
+    // un-terminable and the restart policy resurrected the sidecar.
+    const onSignal = () => {
+      this.deliberatelyStopped = true;
+      if (this.restartTimer) {
+        clearTimeout(this.restartTimer);
+        this.restartTimer = null;
+      }
+      const child = this.child;
+      if (child && !child.killed) {
+        try {
+          child.kill('SIGKILL');
+        } catch {
+          /* already dead */
+        }
+      }
+      process.exit(0);
+    };
+    for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP']) process.once(sig, onSignal);
   }
 }
 

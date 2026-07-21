@@ -121,6 +121,25 @@ async function run() {
     out.checks.fs = { ok: false, error: String(err) };
   }
 
+  // Regression for the stdout chunk-boundary UTF-8 bug: a large multibyte
+  // payload spans many stdout chunks, so a CJK/emoji char is very likely to
+  // land on a chunk boundary. Without stream setEncoding('utf8') the round-trip
+  // comes back with U+FFFD replacement chars and the exact-match fails.
+  try {
+    const probe = path.join(os.tmpdir(), `abu-electron-p2-utf8-${process.pid}.txt`);
+    const content = '中文内容测试🚀'.repeat(20000); // ~440KB of multibyte text
+    fs.writeFileSync(probe, content);
+    const readBack = await sup.request('fs.readTextFile', { path: probe });
+    out.checks.fsUnicode = {
+      ok: readBack === content,
+      len: typeof readBack === 'string' ? readBack.length : -1,
+      expectedLen: content.length,
+    };
+    fs.rmSync(probe, { force: true });
+  } catch (err) {
+    out.checks.fsUnicode = { ok: false, error: String(err) };
+  }
+
   // 3. kill -9 the sidecar ⇒ supervisor auto-revives
   try {
     process.kill(pid1, 'SIGKILL');

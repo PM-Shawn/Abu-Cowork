@@ -11,7 +11,7 @@
  *
  * Exit 0 iff the inner run passed AND no sidecar pid survived.
  */
-import { spawn } from 'node:child_process';
+import { spawn, execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { readFileSync, existsSync, rmSync } from 'node:fs';
 import path from 'node:path';
@@ -26,12 +26,20 @@ const resultFile = path.join(repoRoot, 'electron-results', 'acceptance.json');
 const nodeRequire = createRequire(import.meta.url);
 const electronBin = nodeRequire('electron');
 
-function pidAlive(pid) {
+// Identity-aware liveness: a bare pid existence check (process.kill(pid, 0))
+// would false-positive on pid reuse — the OS can reassign a killed sidecar's
+// pid to an unrelated process — causing a spurious orphan FAIL and, worse,
+// SIGKILLing that innocent process in the reap loop below. Confirm the pid is
+// actually our sidecar by matching its command line. (macOS/Linux `ps`;
+// Windows handled in a later slice.)
+function sidecarAlive(pid) {
   try {
-    process.kill(pid, 0); // signal 0 = existence check
-    return true;
-  } catch (err) {
-    return err.code === 'EPERM'; // exists but not ours (shouldn't happen here)
+    const cmd = execFileSync('ps', ['-p', String(pid), '-o', 'command='], {
+      encoding: 'utf8',
+    }).trim();
+    return cmd.includes('index.mjs');
+  } catch {
+    return false; // ps exits non-zero when the pid no longer exists
   }
 }
 
@@ -60,7 +68,7 @@ async function main() {
   // Independent no-orphan check: give the OS a beat to reap, then confirm every
   // sidecar pid is gone now that Electron has exited.
   await new Promise((r) => setTimeout(r, 500));
-  const survivors = (result.pids || []).filter(pidAlive);
+  const survivors = (result.pids || []).filter(sidecarAlive);
   const noOrphan = survivors.length === 0;
 
   const innerOk = result.ok === true && code === 0;

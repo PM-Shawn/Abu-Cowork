@@ -44,14 +44,16 @@ describe('portFrameCoalescer', () => {
       expect(send).toHaveBeenCalledWith([appendText('conv-1', 'Hello', 'msg-1')]);
     });
 
-    it('merges three-plus consecutive appendThinking frames', () => {
+    it('coalesces consecutive appendThinking frames by KEEP-LATEST, not concat (REPLACE semantics — each frame is the full accumulated thinking; concatenating produced the ever-growing duplicated-thinking bug)', () => {
       const send = vi.fn();
       const c = createPortFrameCoalescer(send);
-      c.push(appendThinking('conv-1', 'a', 'msg-1'));
-      c.push(appendThinking('conv-1', 'b', 'msg-1'));
-      c.push(appendThinking('conv-1', 'c', 'msg-1'));
+      // Real thinking streams the full accumulated text each frame:
+      c.push(appendThinking('conv-1', 'A', 'msg-1'));
+      c.push(appendThinking('conv-1', 'A B', 'msg-1'));
+      c.push(appendThinking('conv-1', 'A B C', 'msg-1'));
       c.flush();
-      expect(send).toHaveBeenCalledWith([appendThinking('conv-1', 'abc', 'msg-1')]);
+      // The latest full value wins — NOT 'A' + 'A B' + 'A B C'.
+      expect(send).toHaveBeenCalledWith([appendThinking('conv-1', 'A B C', 'msg-1')]);
     });
 
     it('merges consecutive appendText frames that both omit msgId (undefined target is still "same target")', () => {
@@ -211,15 +213,15 @@ describe('portFrameCoalescer', () => {
       c.push(addStep('exec-1', { id: 's1' })); // discrete — flushes a1+a2 merged, then itself
       c.push(addEntry({ title: 't' })); // discrete — no pending, sends alone
       c.push(appendThinking('conv-1', 't1', 'msg-1'));
-      c.push(appendThinking('conv-1', 't2', 'msg-1')); // merges with t1
-      c.flush(); // flushes t1+t2 merged
+      c.push(appendThinking('conv-1', 't2', 'msg-1')); // REPLACES t1 (keep-latest)
+      c.flush(); // flushes the latest thinking value
 
       const flat = batches.flat();
       expect(flat).toEqual([
         appendText('conv-1', 'a1a2', 'msg-1'),
         addStep('exec-1', { id: 's1' }),
         addEntry({ title: 't' }),
-        appendThinking('conv-1', 't1t2', 'msg-1'),
+        appendThinking('conv-1', 't2', 'msg-1'),
       ]);
     });
   });

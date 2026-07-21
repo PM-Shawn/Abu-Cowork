@@ -55,11 +55,25 @@ export interface PortFrame {
   a: unknown[];
 }
 
-/** The two append-token methods eligible for string-concat merging — see module doc. */
-const MERGEABLE_CHAT_METHODS = new Set(['appendText', 'appendThinking']);
+/**
+ * `appendText` streams INCREMENTAL tokens — consecutive frames' `a[1]`
+ * strings are CONCATENATED.
+ */
+const APPEND_MERGE_METHODS = new Set(['appendText']);
+/**
+ * `appendThinking` maps to `updateMessageThinking`, whose semantics are
+ * REPLACE, not append: each `a[1]` is already the FULL accumulated thinking
+ * text for the call (see `chatStore.ts`'s `updateMessageThinking` doc —
+ * "REPLACE (not append) semantics … the buffer just remembers the latest
+ * value"). Concatenating consecutive frames would duplicate the whole
+ * accumulated text over and over ("A"→"AB"→"ABC" merged as "A"+"AB"+"ABC")
+ * — the garbled, ever-growing repeated thinking bug real-machine smoke
+ * caught. A coalesced run of these keeps ONLY THE LATEST frame's value.
+ */
+const REPLACE_MERGE_METHODS = new Set(['appendThinking']);
 
 function isMergeable(frame: PortFrame): boolean {
-  return frame.p === 'chat' && MERGEABLE_CHAT_METHODS.has(frame.m);
+  return frame.p === 'chat' && (APPEND_MERGE_METHODS.has(frame.m) || REPLACE_MERGE_METHODS.has(frame.m));
 }
 
 /** Same convId (a[0]) AND same msgId (a[2], including both-undefined) — see module doc's "same target" bullet. */
@@ -86,7 +100,10 @@ function mergeInto(pending: PortFrame, next: PortFrame): PortFrame {
     // function should fail loudly rather than silently corrupt content.
     throw new Error(`portFrameCoalescer: mergeInto called on non-string a[1] for ${pending.p}/${pending.m}`);
   }
-  return { p: pending.p, m: pending.m, a: [pending.a[0], pendingToken + nextToken, pending.a[2]] };
+  // appendText → concatenate the incremental tokens; appendThinking (REPLACE
+  // semantics) → keep ONLY the latest full value, never concatenate.
+  const merged = APPEND_MERGE_METHODS.has(pending.m) ? pendingToken + nextToken : nextToken;
+  return { p: pending.p, m: pending.m, a: [pending.a[0], merged, pending.a[2]] };
 }
 
 const DEFAULT_WINDOW_MS = 16;

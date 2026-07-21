@@ -86,11 +86,13 @@ describe('conversationRunMirror', () => {
       expect(mirror.reader.getConversation('conv-1')?.messages[0].content).toBe('new');
     });
 
-    it('appendThinking accumulates into message.thinking', () => {
+    it('appendThinking REPLACES message.thinking with the full accumulated value (not append — each frame is the full text; appending duplicated it)', () => {
       const conv = makeConversation({ messages: [makeMessage({ id: 'm1' })] });
       const mirror = createConversationRunMirror('conv-1', { conversation: conv });
+      // Real thinking streams the full accumulated text each call:
       mirror.applyChatDeltaWrite('appendThinking', ['conv-1', 'step 1', 'm1']);
-      mirror.applyChatDeltaWrite('appendThinking', ['conv-1', ' step 2', 'm1']);
+      mirror.applyChatDeltaWrite('appendThinking', ['conv-1', 'step 1 step 2', 'm1']);
+      // Latest full value wins — NOT 'step 1' + 'step 1 step 2'.
       expect(mirror.reader.getConversation('conv-1')?.messages[0].thinking).toBe('step 1 step 2');
     });
 

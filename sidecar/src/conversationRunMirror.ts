@@ -125,9 +125,14 @@ export function createConversationRunMirror(
         break;
       }
       case 'appendThinking': {
+        // REPLACE, not append: `thinking` is already the full accumulated
+        // text for the call (mirrors chatStore's updateMessageThinking's
+        // documented REPLACE semantics). Concatenating duplicated the whole
+        // thinking over and over — same root cause as the coalescer's
+        // MERGEABLE bug fixed in portFrameCoalescer.ts.
         const [, thinking, msgId] = args as [string, string, string | undefined];
         const target = findTarget(msgId);
-        if (target) target.thinking = (target.thinking ?? '') + thinking;
+        if (target) target.thinking = thinking;
         break;
       }
       case 'setThinkingDuration': {

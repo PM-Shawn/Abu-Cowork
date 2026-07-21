@@ -93,3 +93,6 @@ AX_*.md
 
 # Nested git worktrees (feature branches checked out inside the repo)
 .wt-*/
+
+# Electron shell acceptance harness output (Phase 2)
+electron-results/

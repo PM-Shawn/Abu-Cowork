@@ -37,6 +37,8 @@
     "eval:report": "tsx src/eval/run.ts report",
     "copy-resources": "node scripts/copy-resources.js",
     "build:sidecar": "node scripts/build-sidecar.mjs",
+    "electron:dev": "electron electron/main.cjs",
+    "electron:test": "npm run build:sidecar && node scripts/electron-acceptance.mjs",
     "setup-python": "bash scripts/setup-python-runtime.sh",
     "setup-node": "bash scripts/setup-node-runtime.sh",
     "prepare": "husky"
@@ -110,6 +112,7 @@
     "@types/react-syntax-highlighter": "^15.5.13",
     "@vitejs/plugin-react": "^6.0.3",
     "@vitest/coverage-v8": "^4.1.10",
+    "electron": "^43.1.1",
     "eslint": "^10.3.0",
     "eslint-plugin-react-hooks": "^7.1.1",
     "eslint-plugin-react-refresh": "^0.5.3",

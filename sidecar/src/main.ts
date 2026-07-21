@@ -155,6 +155,18 @@ function log(...args: unknown[]): void {
   console.error('[sidecar]', ...args);
 }
 
+// P1-3d-2 follow-up — enforce the "stdout is protocol-only" invariant against
+// BUNDLED src/ modules that call console.log directly. `memdir/extractor.ts`
+// (`[Memory] …` lines) became reachable in-sidecar once 3d-2 un-stubbed it, and
+// a stray console.log there writes to stdout — which the parent parses as an
+// NDJSON JSON-RPC message, corrupting the stream. Redirect log/info/debug to
+// stderr process-wide; the protocol itself writes via `writeLine` (direct
+// process.stdout.write), never console, so this cannot affect real messages.
+// This is defense-in-depth for the whole class, not just today's one offender.
+console.log = console.error;
+console.info = console.error;
+console.debug = console.error;
+
 const llmHost = createLlmHost({
   notify: (method, params) => writeLine(makeNotification(method, params)),
 });

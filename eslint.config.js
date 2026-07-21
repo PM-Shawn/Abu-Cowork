@@ -83,4 +83,32 @@ export default defineConfig([
       ],
     },
   },
+  // sidecar/src runs in a plain Node process — no DOM, no webview. But
+  // `tsconfig.sidecar.json` deliberately includes the DOM lib (so type-imports
+  // of DOM-dependent src/** modules resolve — see B2 / that file's comment),
+  // which means `tsc` alone CANNOT catch sidecar code that misuses a browser
+  // global: `window.foo` type-checks fine, then throws `window is not defined`
+  // at runtime. This override closes that masking gap — forbid the browser
+  // globals here, and provide Node globals so `process`/`Buffer`/`__dirname`/
+  // etc. are recognized (no false no-undef). Applies ON TOP of the block above.
+  {
+    files: ['sidecar/src/**/*.ts'],
+    languageOptions: {
+      globals: { ...globals.node },
+    },
+    rules: {
+      'no-restricted-globals': ['error',
+        { name: 'window', message: 'sidecar runs in Node — no DOM. `window` is undefined at runtime (tsconfig.sidecar\'s DOM lib masks this; see eslint.config.js).' },
+        { name: 'document', message: 'sidecar runs in Node — no DOM. `document` is undefined at runtime.' },
+        { name: 'navigator', message: 'sidecar runs in Node — no DOM. `navigator` is undefined at runtime.' },
+        { name: 'localStorage', message: 'sidecar runs in Node — no DOM. `localStorage` is undefined at runtime.' },
+        { name: 'sessionStorage', message: 'sidecar runs in Node — no DOM. `sessionStorage` is undefined at runtime.' },
+        { name: 'requestAnimationFrame', message: 'sidecar runs in Node — no requestAnimationFrame. Use a timer.' },
+        { name: 'cancelAnimationFrame', message: 'sidecar runs in Node — no cancelAnimationFrame.' },
+        { name: 'alert', message: 'sidecar runs in Node — no DOM.' },
+        { name: 'confirm', message: 'sidecar runs in Node — no DOM.' },
+        { name: 'prompt', message: 'sidecar runs in Node — no DOM.' },
+      ],
+    },
+  },
 ])

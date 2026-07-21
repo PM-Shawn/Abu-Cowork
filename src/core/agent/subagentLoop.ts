@@ -272,7 +272,13 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
         wsPath ? scanMemoryFiles(wsPath) : Promise.resolve([]),
         loadMemoryIndex(null),
       ]);
-      const allHeaders = [...globalHeaders, ...wsHeaders];
+      // G5 fix: EXCLUDE private memories from auto-injection — same rule the
+      // main loop enforces (memdir/relevance.ts:172's `.filter(h => !h.private)`
+      // and orchestrator's documented "🔒 private memories will not be
+      // auto-injected; fetch with read_memory only when explicitly asked").
+      // Without this, a subagent leaked private memory names + descriptions
+      // straight into its system prompt.
+      const allHeaders = [...globalHeaders, ...wsHeaders].filter(h => !h.private);
 
       if (allHeaders.length > 0) {
         const top = allHeaders

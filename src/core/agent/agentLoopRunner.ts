@@ -20,7 +20,10 @@
  * `cu.setState` / `native.invoke` / `tool.list` / `tool.invoke` /
  * `session.isMessageWrittenToDisk` / `skillHooks.clearAll` /
  * `approval.check` — P1-3d-3 — / `workspace.bindFromWrite` /
- * `snapshot.beforeAiEdit` — both P1-3d A-write, see those handlers' own docs)
+ * `snapshot.beforeAiEdit` — both P1-3d A-write, see those handlers' own docs /
+ * `workspace.authorizedWritablePaths` / `shell.sandboxBlocked` — both P1-3d-5
+ * slice 2a, `commandTools.ts` plumbing landed ahead of `run_command` itself
+ * running locally — see those handlers' own docs)
  * and the shell→sidecar push half (`agent.run` / `agent.abort` /
  * `agent.enqueueInput` / `state.settings` / `state.convPatch` /
  * `state.execPatch` / `state.planMode`).
@@ -92,6 +95,8 @@ import { enqueueUserInput, getQueuedInputs, subscribeToInputQueue, removeQueuedI
 import { registerSidecarRunPredicate } from './sidecarRunPredicate';
 import { bindWorkspaceFromWrite } from './defaultWorkspace';
 import { snapshotBeforeAiEdit } from '../../utils/aiEditSnapshots';
+import { getAuthorizedWritablePaths } from '../tools/pathSafety';
+import { showSandboxBlockedToast } from '../sandbox/recovery';
 
 const logger = createLogger('agent-loop-runner');
 
@@ -312,6 +317,27 @@ function handleShellNotifyTask(rawParams: unknown): void {
   }
 }
 
+/**
+ * `shell.sandboxBlocked` (NOTIFICATION) — P1-3d-5 slice 2a. Sidecar-side
+ * twin: `sidecar/src/shims/sandboxRecoveryRun.ts`'s `showSandboxBlockedToast`,
+ * called by a locally-executed `run_command` (once slice 2b registers it in
+ * `localTools/index.ts` — this batch only lands the plumbing) when its
+ * stderr contains `[sandbox-blocked]`, mirroring the real
+ * `commandTools.ts`'s own guard exactly.
+ *
+ * Calls the REAL `showSandboxBlockedToast` (`core/sandbox/recovery.ts`,
+ * unmoved) — the exact same function a shell-executed `run_command` calls
+ * directly — so a locally-executed sandboxed command shows the identical
+ * "authorize this directory" recovery toast regardless of which path ran it.
+ * Fire-and-forget, matching `handleShellNotifyTask` above: no response is
+ * awaited on either side.
+ */
+function handleShellSandboxBlocked(rawParams: unknown): void {
+  const params = rawParams as { command?: unknown } | null;
+  if (!params || typeof params.command !== 'string') return;
+  showSandboxBlockedToast(params.command);
+}
+
 /** The 7 computerUseStatus/builtins actions `cu.setState` may address — explicit allowlist so a malformed/hostile frame can't call arbitrary functions. `isSessionWindowHidden` (a READ) is deliberately NOT here — see P1-3B-2-REPORT.md's escalation on this. */
 const CU_SET_STATE_ACTIONS: Record<string, (...args: unknown[]) => void> = {
   setComputerUseBatchMode: (...args) => setComputerUseBatchMode(args[0] as boolean),
@@ -359,6 +385,12 @@ const NATIVE_INVOKE_ALLOWLIST: ReadonlySet<string> = new Set([
   'activate_app',
   'run_shell_command',
   'atomic_write_text',
+  // P1-3d-5 slice 3: delete_file runs locally in the sidecar and reverses its
+  // OS-Trash move here. Safe to allowlist — move_to_trash is recoverable (lands
+  // in Finder Trash, never a permanent delete), delete_file's write-path approval
+  // still runs shell-side via approval.check, and its catastrophic-target
+  // hard-block (root/home) runs in the tool's own execute() before this call.
+  'move_to_trash',
 ]);
 
 async function handleNativeInvoke(rawParams: unknown): Promise<unknown> {
@@ -376,6 +408,23 @@ async function handleNativeInvoke(rawParams: unknown): Promise<unknown> {
 /** `tool.list` (REQUEST) → the same wire-safe tool projection P1-3a's subagent.run params use, reused via subagentRunner.ts's exported `toSerializableTool`. Unlike 3a's static per-run snapshot, this is a LIVE request — the design doc's §1 finding 7 (mcpChanged mid-loop tool-table refresh) means the sidecar must re-request rather than cache. */
 async function handleToolList(): Promise<unknown> {
   return getToolInvoker().getAllTools().map(toSerializableTool);
+}
+
+/**
+ * `workspace.authorizedWritablePaths` (REQUEST) — P1-3d-5 slice 2a. Sidecar-
+ * side twin: `sidecar/src/shims/authorizedPathsReaderRun.ts`. Answers "what
+ * paths has the user authorized for write access?" for a locally-executed
+ * `run_command` (once slice 2b registers it in `localTools/index.ts`) —
+ * `pathSafety.ts`'s `authorizedWorkspaces` map is shell-only state (populated
+ * by `authorizeWorkspace()`, `registry.ts`/`triggerPermission.ts`), so this
+ * is the same real `getAuthorizedWritablePaths()` the in-process
+ * `AuthorizedPathsReader` default wraps — single source of truth, no
+ * duplicated logic. Stateless (no runId/session lookup, mirroring
+ * `handleToolList` above) since the authorized-paths set is global, not
+ * per-run.
+ */
+async function handleWorkspaceAuthorizedPaths(): Promise<unknown> {
+  return getAuthorizedWritablePaths();
 }
 
 /** `session.isMessageWrittenToDisk` (REQUEST) → {conversationId, messageId} → conversationStorage.isMessageWrittenToDisk(messageId), dynamically imported (same discipline as agentLoop.ts's own call site — avoid a static Tauri-fs dependency on any path that never needs it). */
@@ -662,12 +711,14 @@ export function ensureHandlersRegistered(): void {
   onSidecarNotification('skillHooks.clearAll', handleSkillHooksClearAll);
   onSidecarNotification('input.consumed', handleInputConsumed);
   onSidecarNotification('workspace.bindFromWrite', handleWorkspaceBindFromWrite);
+  onSidecarNotification('shell.sandboxBlocked', handleShellSandboxBlocked);
 
   onSidecarRequest('native.invoke', handleNativeInvoke);
   onSidecarRequest('tool.list', handleToolList);
   onSidecarRequest('session.isMessageWrittenToDisk', handleIsMessageWrittenToDisk);
   onSidecarRequest('approval.check', handleApprovalCheck);
   onSidecarRequest('snapshot.beforeAiEdit', handleSnapshotBeforeAiEdit);
+  onSidecarRequest('workspace.authorizedWritablePaths', handleWorkspaceAuthorizedPaths);
 }
 
 /** Test-only — lets tests re-register handlers against fresh mocks. Not used by production code. */

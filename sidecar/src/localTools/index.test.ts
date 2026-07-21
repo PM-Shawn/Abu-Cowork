@@ -1,11 +1,14 @@
 /**
  * Tests for the sidecar local tool registry (P1-3d-1, extended P1-3d-4 for
- * the read-path file tools, extended P1-3d A-write for write_file/edit_file).
+ * the read-path file tools, extended P1-3d A-write for write_file/edit_file,
+ * extended P1-3d-5 slice 1 for process_image, extended P1-3d-5 slice 2b for
+ * run_command).
  * Runs against the REAL show_widget/read_me/http_fetch/web_search/read_file/
- * list_directory/search_files/find_files/write_file/edit_file implementations
- * (not mocked) — this is the contract `agentLoopHost.test.ts`'s "local tool
- * dispatch" describe block assumes when it mocks THIS module to test only
- * the dispatcher's branch/fallback wiring in isolation.
+ * list_directory/search_files/find_files/write_file/edit_file/process_image/
+ * run_command implementations (not mocked) — this is the contract
+ * `agentLoopHost.test.ts`'s "local tool dispatch" describe block assumes when
+ * it mocks THIS module to test only the dispatcher's branch/fallback wiring
+ * in isolation.
  *
  * The four P1-3d-4 read tools (plus write_file/edit_file, P1-3d A-write) go
  * through `fsBridge.ts` (readTextFile/readDir/writeTextFile/exists/stat) and
@@ -48,7 +51,28 @@ const READ_ONLY_TOOL_NAMES = [
   'find_files',
 ];
 
-const WRITE_TOOL_NAMES = ['write_file', 'edit_file'];
+const WRITE_TOOL_NAMES = ['write_file', 'edit_file', 'delete_file'];
+
+// process_image (P1-3d-5 slice 1): side-effecting (writes output_path via a
+// shell command), same readOnly:false discipline as WRITE_TOOL_NAMES, but no
+// FILE_TOOL_PATH_MAP approval gate in the reverse path (see index.ts's
+// "P1-3d-5 slice 1: process_image" doc section).
+//
+// run_command (TOOL_NAMES.RUN_COMMAND, P1-3d-5 slice 2b): side-effecting
+// (spawns an arbitrary shell command), same readOnly:false discipline. Unlike
+// process_image, it DOES have a tool-specific approval gate in the reverse
+// path — the commandSafety check (`registry.ts:295`'s `name ===
+// TOOL_NAMES.RUN_COMMAND` branch) — but that gate is applied entirely via the
+// generic `approval.check` reverse RPC every local dispatch goes through
+// BEFORE `agentLoopHost.ts` ever calls `executeLocalTool` (P1-3d-3's
+// `checkLocalToolApproval` — tool-name-agnostic, already covered by
+// `agentLoopHost.test.ts`'s "local tool dispatch (P1-3d-1 / P1-3d-3 approval
+// gate)" describe block, which exercises that gate against ANY registered
+// local tool, run_command included now that it's registered). THIS file
+// tests only the registration/membership + the real local execute() below —
+// see index.ts's "P1-3d-5 slice 2b: run_command" doc section for the full
+// approval-parity trace.
+const SIDE_EFFECTING_TOOL_NAMES = ['process_image', 'run_command'];
 
 describe('localTools registry membership', () => {
   it.each(READ_ONLY_TOOL_NAMES)('hasLocalTool("%s") is true', (name) => {
@@ -59,8 +83,11 @@ describe('localTools registry membership', () => {
     expect(hasLocalTool(name)).toBe(true);
   });
 
+  it.each(SIDE_EFFECTING_TOOL_NAMES)('hasLocalTool("%s") is true (P1-3d-5 slice 1)', (name) => {
+    expect(hasLocalTool(name)).toBe(true);
+  });
+
   it('hasLocalTool is false for an unregistered/unknown name', () => {
-    expect(hasLocalTool('delete_file')).toBe(false);
     expect(hasLocalTool('nonexistent_tool')).toBe(false);
   });
 
@@ -75,6 +102,10 @@ describe('localTools registry membership', () => {
   // `LocalToolEntry.readOnly`'s doc and this module's "P1-3d A-write" doc
   // section.
   it.each(WRITE_TOOL_NAMES)('isLocalToolReadOnly("%s") is FALSE (side-effecting — never safe to retry after a local dispatch failure)', (name) => {
+    expect(isLocalToolReadOnly(name)).toBe(false);
+  });
+
+  it.each(SIDE_EFFECTING_TOOL_NAMES)('isLocalToolReadOnly("%s") is FALSE (P1-3d-5 slice 1 — writes output_path, same discipline as write_file/edit_file)', (name) => {
     expect(isLocalToolReadOnly(name)).toBe(false);
   });
 
@@ -288,6 +319,91 @@ describe('executeLocalTool — write_file (P1-3d A-write)', () => {
   });
 });
 
+// ── P1-3d-5 slice 1: process_image ───────────────────────────────────────────
+
+describe('executeLocalTool — process_image (P1-3d-5 slice 1)', () => {
+  beforeEach(() => {
+    vi.mocked(invoke).mockReset();
+  });
+
+  it('runs locally via the mocked native invoke("run_shell_command") and returns the success marker', async () => {
+    vi.mocked(invoke).mockResolvedValueOnce({ code: 0, stdout: '', stderr: '' });
+    const result = await executeLocalTool(
+      'process_image',
+      { input_path: '/tmp/in.png', output_path: '/tmp/out.png', action: 'resize', width: 100, height: 100 },
+      undefined,
+      undefined,
+    );
+    expect(result).toBe('Image processed successfully: /tmp/out.png');
+    expect(invoke).toHaveBeenCalledWith('run_shell_command', expect.objectContaining({ command: expect.stringContaining('sips') }));
+  });
+
+  it('catches a non-zero exit code and returns it as an error STRING (never throws)', async () => {
+    vi.mocked(invoke).mockResolvedValueOnce({ code: 1, stdout: '', stderr: 'sips: bad format' });
+    const result = await executeLocalTool(
+      'process_image',
+      { input_path: '/tmp/in.png', output_path: '/tmp/out.png', action: 'convert', format: 'png' },
+      undefined,
+      undefined,
+    );
+    expect(result as string).toContain('Error processing image');
+  });
+
+  it('rejects a call missing required fields BEFORE ever invoking execute() (pre-flight validation)', async () => {
+    const result = await executeLocalTool('process_image', { input_path: '/tmp/in.png' }, undefined, undefined);
+    expect(result as string).toContain('missing required parameter');
+    expect(invoke).not.toHaveBeenCalled();
+  });
+});
+
+// ── P1-3d-5 slice 2b: run_command ────────────────────────────────────────────
+//
+// 🔴 SECURITY-RELEVANT dispatch path (see index.ts's "P1-3d-5 slice 2b:
+// run_command" doc section): the tests below run the REAL `runCommandTool`
+// (same discipline as every other tool in this file — not mocked) through
+// `executeLocalTool`, i.e. exactly the local-dispatch call
+// `agentLoopHost.ts`'s `executeAnyTool` makes AFTER `approval.check` already
+// returned `{decision:'allow'}` — that upstream gate itself (commandSafety,
+// `registry.ts:295`, reached via the shell's `approval.check` handler) is
+// tool-name-agnostic and already covered generically by
+// `agentLoopHost.test.ts`'s "local tool dispatch (P1-3d-1 / P1-3d-3 approval
+// gate)" describe block (it mocks THIS module and exercises the gate against
+// any registered local tool — run_command included now that it's
+// registered, no run_command-specific wiring needed there). This describe
+// block's job is narrower: prove run_command is actually reachable and
+// functional through the SAME dispatch function every other local tool here
+// goes through, i.e. that it truly "dispatches through the approval gate"
+// rather than silently bypassing local registration.
+describe('executeLocalTool — run_command (P1-3d-5 slice 2b)', () => {
+  beforeEach(() => {
+    vi.mocked(invoke).mockReset();
+  });
+
+  it('runs locally via the mocked native invoke("run_shell_command") and returns the formatted output', async () => {
+    vi.mocked(invoke).mockResolvedValueOnce({ code: 0, stdout: 'hello', stderr: '' });
+
+    const result = await executeLocalTool('run_command', { command: 'echo hello' }, undefined, undefined);
+
+    expect(result as string).toContain('stdout:\nhello');
+    expect(result as string).toContain('exit code: 0');
+    expect(invoke).toHaveBeenCalledWith('run_shell_command', expect.objectContaining({ command: 'echo hello' }));
+  });
+
+  it('rejects a call missing required fields BEFORE ever invoking execute() (pre-flight validation)', async () => {
+    const result = await executeLocalTool('run_command', {}, undefined, undefined);
+    expect(result as string).toContain('missing required parameter');
+    expect(invoke).not.toHaveBeenCalled();
+  });
+
+  it('catches an invoke rejection and returns it as an error STRING (never throws) — same dispatch-layer contract as every other local tool in this file', async () => {
+    vi.mocked(invoke).mockRejectedValueOnce(new Error('spawn failed'));
+
+    const result = await executeLocalTool('run_command', { command: 'ls' }, undefined, undefined);
+
+    expect(result as string).toContain('Error executing command');
+  });
+});
+
 describe('executeLocalTool — edit_file (P1-3d A-write)', () => {
   beforeEach(() => {
     vi.mocked(exists).mockReset().mockResolvedValue(true);
@@ -326,5 +442,42 @@ describe('executeLocalTool — edit_file (P1-3d A-write)', () => {
     const result = await executeLocalTool('edit_file', { path: '/tmp/x/a.ts' }, undefined, undefined);
     expect(result as string).toContain('missing required parameter');
     expect(exists).not.toHaveBeenCalled();
+  });
+});
+
+// ── P1-3d-5 slice 3: delete_file ─────────────────────────────────────────────
+//
+// 🔴 SECURITY-RELEVANT: delete_file is the most destructive local tool. Two
+// invariants must survive the local-dispatch path: (1) it reverses
+// `move_to_trash` (recoverable OS-Trash move, newly allowlisted in
+// agentLoopRunner.ts) — NEVER a permanent delete; (2) its catastrophic-target
+// hard-block (filesystem root / home dir) runs INSIDE the real execute() —
+// which runs here in the sidecar — and refuses BEFORE any `move_to_trash`
+// call (fail-closed regardless of permission mode). The tool-level hard-block
+// is also covered by fileTools.test.ts; this block proves it survives the
+// `executeLocalTool` dispatch path specifically (no wrapper/validation strips
+// it). Its write-path approval (checkWritePath) is applied upstream via the
+// same tool-name-agnostic `approval.check` gate every local tool goes through.
+describe('executeLocalTool — delete_file (P1-3d-5 slice 3)', () => {
+  beforeEach(() => {
+    vi.mocked(invoke).mockReset().mockResolvedValue(undefined);
+  });
+
+  it('reverses move_to_trash (recoverable) for a normal path', async () => {
+    const result = await executeLocalTool('delete_file', { path: '/tmp/x/f.txt' }, undefined, undefined);
+    expect(typeof result).toBe('string');
+    expect(invoke).toHaveBeenCalledWith('move_to_trash', { path: '/tmp/x/f.txt' });
+  });
+
+  it('🔴 refuses a catastrophic target (filesystem root) via local dispatch and NEVER calls move_to_trash', async () => {
+    const result = await executeLocalTool('delete_file', { path: '/' }, undefined, undefined);
+    expect(typeof result).toBe('string');
+    expect(invoke).not.toHaveBeenCalledWith('move_to_trash', expect.anything());
+  });
+
+  it('rejects a call missing required fields BEFORE ever invoking execute() (pre-flight validation)', async () => {
+    const result = await executeLocalTool('delete_file', {}, undefined, undefined);
+    expect(result as string).toContain('missing required parameter');
+    expect(invoke).not.toHaveBeenCalled();
   });
 });

@@ -266,6 +266,19 @@ vi.mock('../../utils/notifications', () => ({
   notifyTaskError: (...a: unknown[]) => notifyTaskErrorMock(...a),
 }));
 
+// P1-3d-5 slice 2a — `workspace.authorizedWritablePaths`/`shell.sandboxBlocked`
+// handlers call these two REAL functions directly (not through a port), same
+// single-source-of-truth discipline as `checkToolApproval` above.
+const getAuthorizedWritablePathsMock = vi.fn().mockReturnValue([]);
+vi.mock('../tools/pathSafety', () => ({
+  getAuthorizedWritablePaths: (...a: unknown[]) => getAuthorizedWritablePathsMock(...a),
+}));
+
+const showSandboxBlockedToastMock = vi.fn();
+vi.mock('../sandbox/recovery', () => ({
+  showSandboxBlockedToast: (...a: unknown[]) => showSandboxBlockedToastMock(...a),
+}));
+
 let capturedSettingsCb: (() => void) | undefined;
 const settingsUnsubMock = vi.fn();
 const settingsSubscribeMock = vi.fn((cb: () => void) => {
@@ -447,6 +460,9 @@ describe('agentLoopRunner', () => {
     bindWorkspaceFromWriteMock.mockResolvedValue(undefined);
     snapshotBeforeAiEditMock.mockReset();
     snapshotBeforeAiEditMock.mockResolvedValue(undefined);
+    getAuthorizedWritablePathsMock.mockReset();
+    getAuthorizedWritablePathsMock.mockReturnValue([]);
+    showSandboxBlockedToastMock.mockReset();
   });
 
   afterEach(() => {
@@ -462,22 +478,24 @@ describe('agentLoopRunner', () => {
       ensureHandlersRegistered();
       ensureHandlersRegistered();
 
-      // 10 notifications (9 own — the 9th being P1-3B-4's input.consumed,
-      // the 10th being P1-3d A-write's workspace.bindFromWrite — + hook.notify
-      // via the shared hookBridge) and 7 requests (native.invoke/tool.list/
+      // 11 notifications (9 own — the 9th being P1-3B-4's input.consumed,
+      // the 10th being P1-3d A-write's workspace.bindFromWrite, the 11th
+      // being P1-3d-5 slice 2a's shell.sandboxBlocked — + hook.notify via the
+      // shared hookBridge) and 8 requests (native.invoke/tool.list/
       // session.isMessageWrittenToDisk/approval.check — P1-3d-3 — /
-      // snapshot.beforeAiEdit — P1-3d A-write — /tool.invoke via the router /
-      // hook.emit via the shared hookBridge).
-      expect(onSidecarNotification).toHaveBeenCalledTimes(10);
-      expect(onSidecarRequest).toHaveBeenCalledTimes(7);
+      // snapshot.beforeAiEdit — P1-3d A-write — /
+      // workspace.authorizedWritablePaths — P1-3d-5 slice 2a — /
+      // tool.invoke via the router / hook.emit via the shared hookBridge).
+      expect(onSidecarNotification).toHaveBeenCalledTimes(11);
+      expect(onSidecarRequest).toHaveBeenCalledTimes(8);
 
       const notifiedMethods = onSidecarNotification.mock.calls.map((c) => c[0]);
       expect(notifiedMethods).toEqual(
-        expect.arrayContaining(['agent.delta', 'approval.drain', 'plan.clear', 'caps.record', 'shell.notifyTask', 'cu.setState', 'skillHooks.clearAll', 'input.consumed', 'workspace.bindFromWrite', 'hook.notify']),
+        expect.arrayContaining(['agent.delta', 'approval.drain', 'plan.clear', 'caps.record', 'shell.notifyTask', 'cu.setState', 'skillHooks.clearAll', 'input.consumed', 'workspace.bindFromWrite', 'shell.sandboxBlocked', 'hook.notify']),
       );
       const requestedMethods = onSidecarRequest.mock.calls.map((c) => c[0]);
       expect(requestedMethods).toEqual(
-        expect.arrayContaining(['native.invoke', 'tool.list', 'session.isMessageWrittenToDisk', 'approval.check', 'snapshot.beforeAiEdit', 'tool.invoke', 'hook.emit']),
+        expect.arrayContaining(['native.invoke', 'tool.list', 'session.isMessageWrittenToDisk', 'approval.check', 'snapshot.beforeAiEdit', 'workspace.authorizedWritablePaths', 'tool.invoke', 'hook.emit']),
       );
     });
   });
@@ -645,6 +663,26 @@ describe('agentLoopRunner', () => {
     });
   });
 
+  // ── shell.sandboxBlocked (P1-3d-5 slice 2a) ───────────────────────────
+
+  describe('shell.sandboxBlocked handler', () => {
+    it('forwards command to the real showSandboxBlockedToast', async () => {
+      const { ensureHandlersRegistered } = await importFresh();
+      ensureHandlersRegistered();
+      const handler = handlerFor(onSidecarNotification, 'shell.sandboxBlocked');
+      handler({ command: 'cp foo /blocked/dir' });
+      expect(showSandboxBlockedToastMock).toHaveBeenCalledWith('cp foo /blocked/dir');
+    });
+
+    it('malformed params (missing command) drop silently, no call', async () => {
+      const { ensureHandlersRegistered } = await importFresh();
+      ensureHandlersRegistered();
+      const handler = handlerFor(onSidecarNotification, 'shell.sandboxBlocked');
+      handler({});
+      expect(showSandboxBlockedToastMock).not.toHaveBeenCalled();
+    });
+  });
+
   // ── cu.setState ────────────────────────────────────────────────────────
 
   describe('cu.setState handler (allowlist)', () => {
@@ -735,6 +773,28 @@ describe('agentLoopRunner', () => {
       ensureHandlersRegistered();
       const handler = handlerFor(onSidecarRequest, 'session.isMessageWrittenToDisk') as (p: unknown) => Promise<unknown>;
       await expect(handler({ conversationId: 'c1' })).rejects.toThrow(MockSidecarRequestError);
+    });
+  });
+
+  // ── workspace.authorizedWritablePaths (P1-3d-5 slice 2a) ──────────────
+
+  describe('workspace.authorizedWritablePaths handler', () => {
+    it('returns the real getAuthorizedWritablePaths() result', async () => {
+      const { ensureHandlersRegistered } = await importFresh();
+      ensureHandlersRegistered();
+      getAuthorizedWritablePathsMock.mockReturnValue(['/tmp/authorized-a', '/tmp/authorized-b']);
+      const handler = handlerFor(onSidecarRequest, 'workspace.authorizedWritablePaths') as (p: unknown) => Promise<unknown>;
+      const result = await handler(undefined);
+      expect(result).toEqual(['/tmp/authorized-a', '/tmp/authorized-b']);
+    });
+
+    it('returns an empty array when nothing is authorized', async () => {
+      const { ensureHandlersRegistered } = await importFresh();
+      ensureHandlersRegistered();
+      getAuthorizedWritablePathsMock.mockReturnValue([]);
+      const handler = handlerFor(onSidecarRequest, 'workspace.authorizedWritablePaths') as (p: unknown) => Promise<unknown>;
+      const result = await handler(undefined);
+      expect(result).toEqual([]);
     });
   });
 

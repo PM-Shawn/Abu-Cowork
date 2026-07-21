@@ -8,6 +8,13 @@
  * equivalent — no async init needed at all. Mapping: `win32` → `windows`,
  * `darwin` → `macos`, everything else → `linux` (matches the real module's
  * three-way `Platform` union).
+ *
+ * `getShell()` added for P1-3d-5 slice 2b (`commandTools.ts`'s `run_command`,
+ * for its description-string interpolation only — never used for actual
+ * shell selection, the real spawn happens shell-side via
+ * `invoke('run_shell_command')`): pure lookup on the already-resolved
+ * `current` platform, same mapping as the real module's `getShell()`
+ * (`windows` → `'PowerShell'`, everything else → `'zsh/bash'`).
  */
 import { platform } from 'node:os';
 
@@ -41,4 +48,9 @@ export function isMacOS(): boolean {
 
 export function isLinux(): boolean {
   return current === 'linux';
+}
+
+export function getShell(): string {
+  if (current === 'windows') return 'PowerShell';
+  return 'zsh/bash';
 }

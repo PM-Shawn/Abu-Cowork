@@ -3,8 +3,8 @@ import type { ToolDefinition } from '../../../types';
 import { getPlatform, getShell, isWindows } from '../../../utils/platform';
 import { resolveCommandPython } from '../../../utils/pythonRuntime';
 import { isSandboxEnabled, isNetworkIsolationEnabled } from '../../sandbox/config';
-import { useWorkspaceStore } from '../../../stores/workspaceStore';
-import { getAuthorizedWritablePaths } from '../pathSafety';
+import { getWorkspaceReader } from '../../agent/ports/workspaceReader';
+import { getAuthorizedPathsReader } from '../../agent/ports/authorizedPathsReader';
 import { showSandboxBlockedToast } from '../../sandbox/recovery';
 import type { CommandOutput } from '../helpers/toolHelpers';
 import { isReadOnlyCommand } from '../readOnlyDetector';
@@ -57,8 +57,8 @@ This tool is suitable for: moving/copying/renaming files (mv/cp), package manage
 
       // Use conversation-scoped workspace from context; fall back to global store
       // only if context is absent (e.g. direct invocation outside agent loop).
-      const workspacePath = context?.workspacePath ?? useWorkspaceStore.getState().currentPath;
-      const authorizedPaths = sandbox ? getAuthorizedWritablePaths() : [];
+      const workspacePath = context?.workspacePath ?? getWorkspaceReader().getCurrentPath();
+      const authorizedPaths = sandbox ? await getAuthorizedPathsReader().getAuthorizedWritablePaths() : [];
       const extraWritablePaths = [
         ...(workspacePath ? [workspacePath] : []),
         ...authorizedPaths,

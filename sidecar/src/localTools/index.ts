@@ -39,6 +39,38 @@
  *     needed, since `write_file`/`edit_file`'s whole dependency graph was
  *     already dragged in and made bundle-safe by P1-3d-4 (it just wasn't
  *     REACHED yet, because neither tool was registered here).
+ *   - `processImageTool.ts` (`process_image` — P1-3d-5 slice 1, extracted
+ *     from `mediaTools.ts` to shed `generateImageTool`'s store imports):
+ *     `../../../types`/`../toolNames` (pure, same as above), `utils/platform`
+ *     + `utils/pathUtils` (pure), `../helpers/toolHelpers`'s command builders
+ *     (pure string builders — the whole FILE is already bundle-safe via
+ *     `fileTools.ts`'s read-path tools above, see this file's own doc block
+ *     below), `../../sandbox/config` (already dragged in by
+ *     `search_files`/`find_files`), `@tauri-apps/api/core`'s `invoke` (real
+ *     shim, `shims/tauriCoreInvokeRun.ts`, same as the file tools' shell-out
+ *     calls). See the "P1-3d-5 slice 1: process_image" section below for the
+ *     full approval-parity and `readOnly` trace.
+ *   - `commandTools.ts` (`run_command` — P1-3d-5 slice 2b): `utils/platform`
+ *     (pure, already imported by THIS file itself for `isWindows()`),
+ *     `utils/pythonRuntime`'s `resolveCommandPython` (its own deps —
+ *     `@tauri-apps/api/path`'s `resolveResource` and `@tauri-apps/plugin-fs`'s
+ *     `exists` — are both bare-package shims already registered for the file
+ *     tools above, `shims/tauriPathRun.ts`/`shims/pluginFsRun.ts`),
+ *     `../../sandbox/config` (already dragged in by `search_files`/
+ *     `find_files`; its own `getSettingsReader()`/`invoke()` resolve to the
+ *     same `shims/settingsReaderRun.ts`/`shims/tauriCoreInvokeRun.ts` shims
+ *     `web_search`/every local tool here already relies on),
+ *     `../../agent/ports/workspaceReader` (already shimmed,
+ *     `shims/workspaceReaderRun.ts`), `../../agent/ports/authorizedPathsReader`
+ *     and `../../sandbox/recovery` (P1-3d-5 slice 2a's two REAL forwarding
+ *     shims, `shims/authorizedPathsReaderRun.ts`/`shims/sandboxRecoveryRun.ts`
+ *     — registered in `SHIM_TARGETS` ahead of this flip but not REACHED by
+ *     the bundle graph until this registration), the pure `../toolNames` and
+ *     `../readOnlyDetector`'s `isReadOnlyCommand` (only depends on
+ *     `utils/platform`'s `isWindows`), and `../helpers/toolHelpers`'s
+ *     `CommandOutput` (an `import type` — erased at compile time, zero
+ *     runtime footprint). See the "P1-3d-5 slice 2b: run_command" section
+ *     below for the full approval-parity/readOnly/auth-paths-failure trace.
  *
  * `createReverseToolInvoker.executeAnyTool` (`agentLoopHost.ts`) checks
  * this registry FIRST: a hit runs locally (no RPC round-trip); a miss falls
@@ -213,6 +245,102 @@
  * `ensureParentDir` → `@tauri-apps/plugin-fs`'s `mkdir`, both already
  * bundle-safe via `fsBridgeRun.ts`/`pluginFsRun.ts`) runs correctly locally.
  *
+ * ── P1-3d-5 slice 1: process_image ──────────────────────────────────────────
+ * `processImageTool` was extracted from `mediaTools.ts` into its own file
+ * (`definitions/processImageTool.ts`) specifically so it could be imported
+ * here WITHOUT dragging in `generateImageTool`'s store imports
+ * (`getUsableImageBackend` from `stores/settingsStore`, `useWorkspaceStore`)
+ * — both forbidden by `bundleGraphGuardPlugin`. `process_image.execute()`
+ * itself uses no store and no toast; every dependency (`pathUtils`,
+ * `utils/platform`, `toolHelpers`'s pure command builders, `sandbox/config`)
+ * is either pure or already bundle-safe — `sandbox/config`'s
+ * `isSandboxEnabled`/`isNetworkIsolationEnabled` and `toolHelpers.ts` as a
+ * whole module are BOTH already dragged in by the file tools above
+ * (`search_files`/`find_files` use the former; `read_file`'s office/archive
+ * branches use the latter), so this adds zero new bundle-graph surface.
+ *
+ * Approval parity (verified against `registry.ts`'s `checkToolApproval`):
+ * `process_image` is NOT in `FILE_TOOL_PATH_MAP` (only
+ * `read_file`/`list_directory`/`write_file`/`edit_file`/`delete_file`/
+ * `search_files`/`find_files` are) and the command-safety branch only
+ * triggers `name === TOOL_NAMES.RUN_COMMAND` — `process_image` calls
+ * `invoke('run_shell_command', ...)` directly, bypassing the `run_command`
+ * tool entirely, so `analyzeCommand` never runs for it either. So in the
+ * reverse path `process_image` gets NO tool-specific approval gate — only
+ * the universal enterprise-policy pre-check, which every local dispatch
+ * already goes through via P1-3d-3's `checkLocalToolApproval` regardless of
+ * which tool. Registering it here adds no gate it lacks and drops none it
+ * has.
+ *
+ * `readOnly: false` (unlike the Tier-A read-only tools above) — despite
+ * having no tool-specific approval gate, `process_image` is NOT zero-IO: it
+ * writes/overwrites a real file at `output_path` via a shell command, the
+ * same side-effect shape as `write_file`/`edit_file` above (P1-3d A-write).
+ * `LocalToolEntry.readOnly`'s doc is explicit: "A future tool with side
+ * effects registered here MUST set this to false" — so the caller
+ * (`agentLoopHost.ts`) re-throws a local dispatch-layer failure instead of
+ * retrying via the reverse `tool.invoke` path, avoiding a double-run of the
+ * image-processing shell command.
+ *
+ * ── P1-3d-5 slice 2b: run_command ────────────────────────────────────────────
+ * The flip: `run_command`'s bundle-graph plumbing (the `WorkspaceReader`/
+ * `AuthorizedPathsReader` ports plus the two real forwarding shims for
+ * authorized-paths and sandbox-recovery) landed in slice 2a but wasn't
+ * REACHED by the sidecar's actual bundle graph until THIS registration — see
+ * this module doc's `commandTools.ts` import-trace bullet above for the full
+ * per-dependency verification (each dep is either pure or already shimmed;
+ * nothing new needed here).
+ *
+ * Approval parity (verified against `registry.ts`'s `checkToolApproval`):
+ * `run_command` is NOT in `FILE_TOOL_PATH_MAP`, but IS the one tool the
+ * command-safety branch targets — `name === TOOL_NAMES.RUN_COMMAND`
+ * (registry.ts:295) runs `analyzeCommand` (:298) + `analyzeCommandBoundary`
+ * (:311) against the real `input.command`. That check runs SHELL-side,
+ * reached via the exact same `approval.check` reverse RPC every local
+ * dispatch in this file already goes through UNCONDITIONALLY before any local
+ * execution (P1-3d-3's `checkLocalToolApproval` — see the "P1-3d-1 gap
+ * CLOSED by P1-3d-3" section above). So registering `run_command` here does
+ * not bypass commandSafety, does not duplicate it locally, and does not
+ * weaken it: the allow/deny decision still runs against the shell-authoritative
+ * command-safety rules, and local execution only starts on an explicit
+ * `{decision:'allow'}` — this is a plumbing/registration change, not a new
+ * approval implementation.
+ *
+ * `readOnly: false` (SIDE_EFFECTING_LOCAL_TOOLS, same array as
+ * `process_image`) — `run_command` spawns an arbitrary shell command via
+ * `invoke('run_shell_command')`; once that spawn starts there is no safe way
+ * to "retry" it via the reverse `tool.invoke` path without risking a
+ * double-run of a possibly-destructive command (rm, git push, ...) — same
+ * "once local execution starts, it's committed" discipline as
+ * `write_file`/`edit_file`/`process_image` above.
+ *
+ * ── Auth-paths RPC failure — accepted fail-closed behavior (code-review
+ * finding; decision already made, not re-litigated here) ────────────────────
+ * `commandTools.ts`'s `execute()` calls
+ * `getAuthorizedPathsReader().getAuthorizedWritablePaths()` (only when
+ * sandboxed) BEFORE spawning the command. In the sidecar this resolves to
+ * `shims/authorizedPathsReaderRun.ts`'s reverse `workspace.authorizedWritablePaths`
+ * REQUEST. If that RPC round-trip rejects (dead/slow transport, a throwing
+ * shell-side handler, ...), `execute()`'s existing outer `try/catch` catches
+ * it and returns a plain `Error executing command: ...` string — the
+ * function returns BEFORE ever reaching `invoke('run_shell_command', ...)`,
+ * so NO command spawns; no side effect. No reverse-fallback complexity was
+ * added for this failure mode: the same shell↔sidecar transport that the
+ * authorized-paths RPC uses is the SAME one `run_command` itself needs a
+ * moment later to actually spawn the command (`invoke('run_shell_command')`
+ * is ALSO a reverse call over that transport, per this module's own doc on
+ * `native.invoke`) — so a transport broken enough to fail the authorized-paths
+ * query dooms local `run_command` regardless of what this function does in
+ * response. Erroring early on that failure is an honest fail-closed signal
+ * (the model sees a clear error and can retry/report), never a silent
+ * under-authorization — the alternative (swallowing the RPC failure and
+ * proceeding with an empty authorized-paths list) would UNDER-authorize the
+ * OS-level sandbox for that run, a strictly worse outcome than failing
+ * loudly. See `commandTools.test.ts`'s auth-paths-rejection regression test:
+ * mocks a rejecting `getAuthorizedWritablePaths`, asserts the returned
+ * string contains "Error executing command" AND that `invoke` was never
+ * called with `'run_shell_command'`.
+ *
  * ── OS-permission-guide parity (was a known gap through P1-3d, now closed) ──
  * `executeAnyTool` (registry.ts, the REVERSE path) wraps an OS-permission-
  * shaped error string (`EACCES`/`EPERM`/"operation not permitted"/"access is
@@ -240,7 +368,10 @@ import {
   findFilesTool,
   writeFileTool,
   editFileTool,
+  deleteFileTool,
 } from '@/core/tools/definitions/fileTools';
+import { processImageTool } from '@/core/tools/definitions/processImageTool';
+import { runCommandTool } from '@/core/tools/definitions/commandTools';
 import { getFileExtension, ARCHIVE_EXTENSIONS } from '@/core/tools/helpers/toolHelpers';
 import { isWindows } from '@/utils/platform';
 import { truncateToolResult } from '@/core/context/truncation';
@@ -341,15 +472,35 @@ const READ_ONLY_LOCAL_TOOLS: ToolDefinition[] = [
   findFilesTool,
 ];
 
-// Side-effecting tools (P1-3d A-write) — `readOnly: false` below: once local
-// execution starts, it's committed. A local dispatch-layer failure re-throws
-// instead of retrying via the reverse tool.invoke path (no double-write
-// risk). See this module's "P1-3d A-write" doc section above.
-const WRITE_LOCAL_TOOLS: ToolDefinition[] = [writeFileTool, editFileTool];
+// Side-effecting FILE_TOOL_PATH_MAP tools (P1-3d A-write + P1-3d-5 slice 3) —
+// `readOnly: false` below: once local execution starts, it's committed. A local
+// dispatch-layer failure re-throws instead of retrying via the reverse
+// tool.invoke path (no double-write / double-delete risk). All three are
+// path-gated: their write-path approval (checkWritePath) runs shell-side via the
+// approval.check gate every entry here goes through. `deleteFileTool` (P1-3d-5
+// slice 3) additionally reverses `invoke('move_to_trash')` (newly allowlisted in
+// agentLoopRunner.ts's NATIVE_INVOKE_ALLOWLIST) and enforces its catastrophic-
+// target hard-block (root / home dir) inside its own execute() — which runs here
+// in the sidecar, keeping that fail-closed guard intact (pathSafety's
+// `isCatastrophicDeleteTarget` is pure/bundle-safe; tested in fileTools.test.ts).
+const WRITE_LOCAL_TOOLS: ToolDefinition[] = [writeFileTool, editFileTool, deleteFileTool];
+
+// Side-effecting, non-FILE_TOOL_PATH_MAP tools (P1-3d-5 slices 1 and 2b) —
+// same `readOnly: false` discipline as WRITE_LOCAL_TOOLS above (each commits
+// a real side effect once local execution starts: process_image writes
+// output_path via a shell command, run_command spawns an arbitrary shell
+// command), but kept in their own array since neither is a file-write tool
+// in registry.ts's FILE_TOOL_PATH_MAP sense. run_command's approval is the
+// commandSafety check (applied via the same approval.check gate every entry
+// in this file goes through — registry.ts:295, NOT duplicated here). See
+// this module's "P1-3d-5 slice 1: process_image" and "P1-3d-5 slice 2b:
+// run_command" doc sections above.
+const SIDE_EFFECTING_LOCAL_TOOLS: ToolDefinition[] = [processImageTool, runCommandTool];
 
 const LOCAL_TOOLS = new Map<string, LocalToolEntry>([
   ...READ_ONLY_LOCAL_TOOLS.map((tool): [string, LocalToolEntry] => [tool.name, { tool, readOnly: true }]),
   ...WRITE_LOCAL_TOOLS.map((tool): [string, LocalToolEntry] => [tool.name, { tool, readOnly: false }]),
+  ...SIDE_EFFECTING_LOCAL_TOOLS.map((tool): [string, LocalToolEntry] => [tool.name, { tool, readOnly: false }]),
 ]);
 
 export function hasLocalTool(name: string): boolean {

@@ -38,8 +38,12 @@
  * src-tauri/src/{append_file,atomic_write}.rs exactly (append mode; tempfile +
  * fsync + rename; `.{name}.backup.{unix_ms}` backups; EXDEV-fallback restore).
  *
- * Deferred: `plugin:fs|watch` (channel-streamed) and the FileHandle/rid ops
- * (open/create/read/write/seek/stat/lstat/read_text_file_lines).
+ * `plugin:fs|watch`/`plugin:fs|unwatch` (channel-streamed) are handled by the
+ * sibling module electron/fsWatchHost.cjs (Phase 2 slice F4), which reuses
+ * `assertAllowed` (exported below) for the same capability-scope guard.
+ *
+ * Deferred: the FileHandle/rid ops (open/create/read/write/seek/stat/lstat/
+ * read_text_file_lines).
  */
 'use strict';
 
@@ -360,4 +364,4 @@ function fsDispatch(app, cmd, payload) {
   }
 }
 
-module.exports = { fsDispatch, FS_MISS };
+module.exports = { fsDispatch, FS_MISS, assertAllowed };

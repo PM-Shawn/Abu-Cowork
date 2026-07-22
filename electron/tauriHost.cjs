@@ -36,6 +36,7 @@ const fs = require('node:fs');
 const { abuAppDataDir, REPO_ROOT } = require('./appEnv.cjs');
 const { initSecretStore, secretDispatch } = require('./secretStore.cjs');
 const { fsDispatch, FS_MISS } = require('./fsHost.cjs');
+const { fsWatchDispatch, FS_WATCH_MISS } = require('./fsWatchHost.cjs');
 const { mcpDispatch } = require('./mcpBridge.cjs');
 const { desktopDispatch, DESKTOP_MISS } = require('./desktopHost.cjs');
 
@@ -467,6 +468,13 @@ function registerTauriHost(app) {
       // fsDispatch gets the whole payload. FS_MISS = not an fs command.
       const fsResult = fsDispatch(app, cmd, { args: a, body, headers });
       if (fsResult !== FS_MISS) return fsResult;
+      // fs watch family (slice F4) — plugin:fs|watch (+ the real unwatch path,
+      // plugin:resources|close) backed by real Node fs.watch. Needs `e.sender`
+      // to route debounced change events back to the subscribing renderer's
+      // Channel callback, so it's dispatched here (has `e` in scope) rather
+      // than folded into fsDispatch (which only receives `app`).
+      const fsWatchResult = fsWatchDispatch(app, cmd, { args: a, event: e });
+      if (fsWatchResult !== FS_WATCH_MISS) return fsWatchResult;
       // mcp bridge (mcp 收敛) — generic stdio process bridge (mcp_spawn/write/
       // kill) the frontend uses to drive MCP servers AND the agent sidecar;
       // stdout/stderr/close re-emitted as mcp-msg/err/close-{id} events.

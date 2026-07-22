@@ -32,6 +32,62 @@ function safeArgs(args) {
   }
 }
 
+// Tauri's real invoke serializer replaces any arg value exposing a
+// [SERIALIZE_TO_IPC_FN] method (e.g. a `Channel` from @tauri-apps/api/core,
+// which @tauri-apps/plugin-fs's watch()/watchImmediate() pass as `onEvent`)
+// with the string it returns ("__CHANNEL__:<id>") BEFORE the value crosses
+// the IPC boundary. Electron's ipcRenderer.invoke (structured-clone) does NOT
+// call toJSON/SERIALIZE_TO_IPC_FN on its own — a Channel's real state lives in
+// WeakMap-backed private fields (not own-enumerable properties), so an
+// unconverted Channel would structured-clone into a near-empty object,
+// losing the callback id the main process needs to route messages back.
+// Verified against node_modules/@tauri-apps/api/core.js: `SERIALIZE_TO_IPC_FN
+// = '__TAURI_TO_IPC_KEY__'`; `Channel[SERIALIZE_TO_IPC_FN]()` (and its
+// `toJSON()`, which just calls the former) both return
+// `` `__CHANNEL__:${this.id}` ``.
+//
+// ⚠️ There's an EARLIER clone boundary this same reasoning applies to, that
+// bites BEFORE this function ever runs: `invoke` itself is a contextBridge-
+// exposed function (see `contextBridge.exposeInMainWorld('__TAURI_INTERNALS__',
+// {invoke, ...})` below), and Electron's contextBridge clones its arguments
+// crossing from the page's main world into this isolated world too — and
+// (empirically verified with a throwaway probe script) it ONLY proxies
+// functions that are the argument itself or an OWN enumerable property; a
+// real `Channel` instance's `[SERIALIZE_TO_IPC_FN]` is a class (prototype)
+// method, so contextBridge silently drops it before `args` ever reaches this
+// file. All that survives is Channel's own property, `id` (set in its
+// constructor via `this.id = transformCallback(...)`) — so a genuine Channel
+// arrives here as a bare `{ id: <number> }`, never carrying the method at
+// all. The `typeof value[SERIALIZE_TO_IPC_FN] === 'function'` check below
+// covers a value that never crossed that boundary as a class instance (e.g.
+// a plain object literal built with the method as an own property — proxies
+// fine, verified with the same probe); the `{ id: <number> }` branch covers
+// the real-Channel case. `id` alone (no other keys) is a safe discriminator
+// here: transformCallback's ids are numeric, and the only other single-key
+// `{ id }` invoke payload in the vendored Tauri plugins
+// (`plugin:notification|delete_channel` from @tauri-apps/plugin-notification)
+// takes a STRING id, so `typeof value.id === 'number'` doesn't collide with it.
+//
+// Deep-walks objects/arrays only (Dates, typed arrays, etc. are left to
+// safeArgs's own JSON round-trip) and is non-mutating — it builds a fresh
+// tree rather than writing into the caller's args, so the frontend's own
+// Channel instance / args object is untouched after the call.
+const SERIALIZE_TO_IPC_FN = '__TAURI_TO_IPC_KEY__';
+function serializeChannels(value) {
+  if (value === null || typeof value !== 'object') return value;
+  const toIpc = value[SERIALIZE_TO_IPC_FN];
+  if (typeof toIpc === 'function') return toIpc.call(value);
+  if (typeof value.id === 'number' && Object.keys(value).length === 1) {
+    return `__CHANNEL__:${value.id}`;
+  }
+  if (Array.isArray(value)) return value.map(serializeChannels);
+  const out = {};
+  for (const key of Object.keys(value)) {
+    out[key] = serializeChannels(value[key]);
+  }
+  return out;
+}
+
 const invoke = (cmd, args, options) => {
   // Tauri "raw request" form (e.g. @tauri-apps/plugin-fs writeTextFile/writeFile):
   // the bytes to write are passed as `args` (a Uint8Array/ArrayBuffer) and the
@@ -45,11 +101,13 @@ const invoke = (cmd, args, options) => {
     return ipcRenderer.invoke('tauri:invoke', {
       cmd,
       body: isBinary ? args : undefined,
-      args: isBinary ? undefined : safeArgs(args),
+      // isBinary args skip serializeChannels/safeArgs entirely (body carries
+      // the raw bytes) — the existing raw-body detection path is untouched.
+      args: isBinary ? undefined : safeArgs(serializeChannels(args)),
       headers,
     });
   }
-  return ipcRenderer.invoke('tauri:invoke', { cmd, args: safeArgs(args) });
+  return ipcRenderer.invoke('tauri:invoke', { cmd, args: safeArgs(serializeChannels(args)) });
 };
 
 // Main delivers a callback invocation by id — see tauriHost.cjs `deliver()`.

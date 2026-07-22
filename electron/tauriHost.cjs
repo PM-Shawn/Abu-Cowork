@@ -41,6 +41,11 @@ const { mcpDispatch } = require('./mcpBridge.cjs');
 const { desktopDispatch, DESKTOP_MISS } = require('./desktopHost.cjs');
 const { nativeHelperDispatch, NATIVE_HELPER_MISS } = require('./nativeHelperManager.cjs');
 const { ptyDispatch, PTY_MISS } = require('./ptyHost.cjs');
+// browserHost.cjs requires THIS module back (for emitEvent/getMainWindow),
+// but only lazily (inside function bodies, called at dispatch-time, never
+// at module-load-time) — so requiring it eagerly here, same as the other
+// dispatch families, doesn't deadlock on the circular pair.
+const { browserDispatch, BROWSER_MISS, closeAllBrowserViews } = require('./browserHost.cjs');
 const { previewDispatch, PREVIEW_MISS } = require('./previewServer.cjs');
 const { catalogDispatch, CATALOG_MISS } = require('./catalogDb.cjs');
 const { noticeDispatch, NOTICE_MISS } = require('./noticeDb.cjs');
@@ -59,6 +64,17 @@ let quitting = false;
 /** @param {import('electron').BrowserWindow} win */
 function setMainWindow(win) {
   mainWindow = win;
+}
+
+/**
+ * @returns the tracked main window, or `null` if none is set / it has been
+ *   destroyed. Added for browserHost.cjs (Phase 2 slice — in-app browser
+ *   tab): `WebContentsView`s must be attached to a real window's
+ *   `contentView`, and browserHost has no other route to it (it isn't
+ *   passed `app`-adjacent window state the way windowDispatch is).
+ */
+function getMainWindow() {
+  return mainWindow && !mainWindow.isDestroyed() ? mainWindow : null;
 }
 
 function isQuitting() {
@@ -461,6 +477,10 @@ function registerTauriHost(app) {
   // with closeAction='minimize' would just hide the window and never quit.
   app.on('before-quit', () => {
     quitting = true;
+    // No orphans: tear down every live browser WebContentsView (same
+    // no-orphan intent as ptyHost's killAllPtys / mcpBridge's
+    // killAllChildren, ported to this Electron-native resource type).
+    closeAllBrowserViews();
   });
 
   ipcMain.handle('tauri:invoke', async (e, { cmd, args, body, headers } = {}) => {
@@ -550,6 +570,17 @@ function registerTauriHost(app) {
       // which this already-async handler awaits via the outer `await` below.
       const ptyResult = await ptyDispatch(app, cmd, a);
       if (ptyResult !== PTY_MISS) return ptyResult;
+      // Browser family (Phase 2 slice — in-app browser tab) —
+      // browser_create/set_bounds/navigate/back/forward/reload/hide/show/
+      // close, backed by a real `WebContentsView` per tab
+      // (electron/browserHost.cjs), porting src-tauri/src/browser.rs for the
+      // workspace browser tab. Placed after ptyDispatch and before
+      // windowDispatch — no ordering dependency on either; browserDispatch is
+      // synchronous today (WebContentsView setup/loadURL calls are all
+      // fire-and-forget); if it ever returns a Promise, returning it here still
+      // resolves through this async handler, so no await is needed.
+      const browserResult = browserDispatch(app, cmd, a);
+      if (browserResult !== BROWSER_MISS) return browserResult;
       // Window-family commands (slice D) — checked before the event-plugin
       // switch below so plugin:window|* and app_exit/window_hide/window_show
       // never fall through to the stub. windowDispatch returns a sentinel for
@@ -615,6 +646,7 @@ module.exports = {
   emitEvent,
   clearSubscriptionsForSender,
   setMainWindow,
+  getMainWindow,
   isQuitting,
   hasListeners,
   wireWindowEvents,

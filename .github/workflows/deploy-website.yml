@@ -38,5 +38,7 @@ jobs:
             --exclude '.DS_Store' \
             --exclude 'README.md' \
             --exclude 'README.zh-CN.md' \
+            --exclude '.user.ini' \
+            --exclude '.well-known' \
             website/ "${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }}:${{ secrets.DEPLOY_PATH }}/"
           echo "✅ Deployed website/ to ${{ secrets.DEPLOY_HOST }}:${{ secrets.DEPLOY_PATH }}"

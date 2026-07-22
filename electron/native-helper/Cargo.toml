@@ -1,0 +1,28 @@
+# Abu native-helper (Phase 2 F10) — standalone Rust binary that speaks NDJSON
+# JSON-RPC over stdio, spawned by Electron main. Hosts the computer-use / AX
+# family (input synthesis, screen capture, and — next step — the AX session
+# cache) by reusing the Tauri-free `*_impl` logic from src-tauri. TCC permissions
+# attribute to the responsible parent app (Abu), so the helper inherits the app's
+# Accessibility / Screen Recording grants (validated by the F10 spike probe).
+#
+# This minimal-loop version proves spawn → RPC → input-synth → capture end to end;
+# the AX session-cache commands land in the following step.
+[package]
+name = "native-helper"
+version = "0.0.1"
+edition = "2021"
+publish = false
+
+[[bin]]
+name = "native-helper"
+path = "src/main.rs"
+
+[dependencies]
+# Same versions as src-tauri/Cargo.toml so behavior matches the shipping code.
+enigo = { version = "0.3", features = ["serde"] }
+xcap = "0.9"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[profile.release]
+opt-level = 1

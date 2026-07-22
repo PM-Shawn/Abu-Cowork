@@ -37,6 +37,7 @@ const { abuAppDataDir, REPO_ROOT } = require('./appEnv.cjs');
 const { initSecretStore, secretDispatch } = require('./secretStore.cjs');
 const { fsDispatch, FS_MISS } = require('./fsHost.cjs');
 const { mcpDispatch } = require('./mcpBridge.cjs');
+const { desktopDispatch, DESKTOP_MISS } = require('./desktopHost.cjs');
 
 // Window-family state (Phase 2 slice D). `mainWindow` is set by main.cjs right
 // after createWindow() via setMainWindow(); `quitting` is the standard
@@ -472,6 +473,13 @@ function registerTauriHost(app) {
       // Returns undefined for non-mcp commands.
       const mcpResult = mcpDispatch(cmd, a);
       if (mcpResult !== undefined) return mcpResult;
+      // Desktop-misc family (F2) — LAN IP, fullscreen, sleep prevention, OS
+      // trash, clipboard, dialogs, opener, notification permission, process
+      // relaunch/exit, deep-link. desktopDispatch may return a Promise
+      // (trash/dialogs/opener are async) — fine, this handler is `async` and
+      // just returns the value, so it resolves before reaching the caller.
+      const desktopResult = desktopDispatch(app, cmd, { args: a, body, headers, event: e });
+      if (desktopResult !== DESKTOP_MISS) return desktopResult;
       // Window-family commands (slice D) — checked before the event-plugin
       // switch below so plugin:window|* and app_exit/window_hide/window_show
       // never fall through to the stub. windowDispatch returns a sentinel for

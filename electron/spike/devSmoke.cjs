@@ -39,6 +39,7 @@ app.whenReady().then(async () => {
   const win = new BrowserWindow({
     width: 1280,
     height: 860,
+    ...(process.platform==="darwin"?{titleBarStyle:"hidden",trafficLightPosition:{x:20,y:27}}:{}),
     backgroundColor: '#1a1a1a',
     webPreferences: {
       preload: path.join(__dirname, '..', 'preload.cjs'),
@@ -83,6 +84,7 @@ app.whenReady().then(async () => {
           buttons: document.querySelectorAll('button').length,
           textareas: document.querySelectorAll('textarea').length,
           visibleTextSample: txt,
+          topBarButtons: [...document.querySelectorAll("button")].map(e=>{const r=e.getBoundingClientRect();return {top:Math.round(r.top),h:Math.round(r.height),left:Math.round(r.left)};}).filter(r=>r.left<420&&r.top<90&&r.h>=18&&r.h<=44).sort((a,b)=>a.left-b.left),
         };
       })()
     `);

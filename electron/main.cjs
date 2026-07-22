@@ -43,16 +43,35 @@ function log(level, msg, extra) {
 }
 
 function createWindow() {
+  const isMac = process.platform === 'darwin';
   const win = new BrowserWindow({
-    width: 1100,
-    height: 720,
-    backgroundColor: '#1a1a1a',
+    width: 1200,
+    height: 800,
+    minWidth: 900,
+    backgroundColor: '#faf9f5',
+    // Match Tauri (tauri.conf.json: titleBarStyle "Overlay" + trafficLightPosition
+    // {x:20,y:31}): hide the native title bar and overlay the macOS traffic
+    // lights ON the content, so the frontend's own top bar isn't doubled by a
+    // separate native title-bar strip. The frontend already reserves the
+    // top-left space for the traffic lights (it was built for this layout).
+    ...(isMac ? { titleBarStyle: 'hidden', trafficLightPosition: { x: 20, y: 27 } } : {}),
     webPreferences: {
       preload: path.join(__dirname, 'preload.cjs'),
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
     },
+  });
+
+  // Tauri drag regions use the [data-tauri-drag] attribute; under Electron a
+  // window is dragged via CSS `-webkit-app-region`. Map them so the top bar
+  // moves the window (interactive children stay clickable via no-drag).
+  win.webContents.on('did-finish-load', () => {
+    void win.webContents.insertCSS(
+      '[data-tauri-drag]{-webkit-app-region:drag}' +
+        '[data-tauri-drag] button,[data-tauri-drag] input,[data-tauri-drag] a,' +
+        '[data-tauri-drag] [role="button"],[data-tauri-drag] [contenteditable]{-webkit-app-region:no-drag}'
+    );
   });
   const hasFrontend = fs.existsSync(FRONTEND_INDEX);
   if (!hasFrontend) {

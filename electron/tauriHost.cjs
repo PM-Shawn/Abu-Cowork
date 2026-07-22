@@ -43,6 +43,7 @@ const { previewDispatch, PREVIEW_MISS } = require('./previewServer.cjs');
 const { catalogDispatch, CATALOG_MISS } = require('./catalogDb.cjs');
 const { noticeDispatch, NOTICE_MISS } = require('./noticeDb.cjs');
 const { commandDispatch, COMMAND_MISS } = require('./commandHost.cjs');
+const { triggerDispatch, TRIGGER_MISS } = require('./triggerServer.cjs');
 
 // Window-family state (Phase 2 slice D). `mainWindow` is set by main.cjs right
 // after createWindow() via setMainWindow(); `quitting` is the standard
@@ -518,6 +519,12 @@ function registerTauriHost(app) {
       // is async (spawn+wait), which this handler already awaits.
       const commandResult = await commandDispatch(app, cmd, a);
       if (commandResult !== COMMAND_MISS) return commandResult;
+      // Trigger server (slice F9) — start_trigger_server/get_trigger_server_port,
+      // backed by a real loopback Node http server (electron/triggerServer.cjs),
+      // porting src-tauri/src/trigger_server.rs. Placed after commandDispatch
+      // and before windowDispatch — no ordering dependency on either.
+      const triggerResult = await triggerDispatch(app, cmd, a);
+      if (triggerResult !== TRIGGER_MISS) return triggerResult;
       // Window-family commands (slice D) — checked before the event-plugin
       // switch below so plugin:window|* and app_exit/window_hide/window_show
       // never fall through to the stub. windowDispatch returns a sentinel for

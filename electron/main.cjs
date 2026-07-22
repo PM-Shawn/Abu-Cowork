@@ -28,6 +28,7 @@ const { app, BrowserWindow } = require('electron');
 const path = require('node:path');
 const fs = require('node:fs');
 const { registerTauriHost, wireWindowEvents } = require('./tauriHost.cjs');
+const { sidecarBundleExists, SIDECAR_PATH } = require('./appEnv.cjs');
 
 const REPO_ROOT = path.resolve(__dirname, '..');
 const FRONTEND_INDEX = path.join(REPO_ROOT, 'dist-electron-spike', 'index.html');
@@ -71,6 +72,13 @@ function createWindow() {
 
 app.whenReady().then(() => {
   registerTauriHost(app);
+  // Preflight: the frontend spawns the sidecar via mcp_spawn, so a missing
+  // bundle would surface only as an opaque child ENOENT — warn clearly here.
+  if (!sidecarBundleExists()) {
+    log('warn', 'sidecar bundle missing — the frontend will fail to start it; run `npm run build:sidecar`', {
+      path: SIDECAR_PATH,
+    });
+  }
   createWindow();
   app.on('activate', () => {
     // window_hide (closeAction: 'minimize') hides rather than destroys the

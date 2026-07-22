@@ -10,40 +10,75 @@
  * (delivered via the slice-B event bridge to the frontend's
  * `listen('mcp-msg-{id}', …)`), exactly like the Rust bridge.
  *
- * This is what lets the frontend actually talk to a sidecar/MCP server under
- * Electron (previously mcp_* were benign stubs → the frontend's sidecar was
- * dead → LLM calls failed). It also resolves the "frontend spawns a second
- * sidecar" conflict: main no longer runs its own supervisor (see main.cjs);
- * the frontend drives the one sidecar via this bridge, matching how it worked
- * on Tauri.
- *
  * Protocol notes (matching Tauri):
- *  - stdout is line-framed: one `mcp-msg-{id}` event per '\n'-terminated line,
- *    trimmed (NDJSON JSON-RPC).
- *  - mcp_write appends '\n' to the message (the frontend sends a bare JSON line).
- *  - `command: 'node'` runs Electron's bundled Node via ELECTRON_RUN_AS_NODE
- *    (the Rust bridge used a bundled-node PATH fallback; same intent, no system
- *    Node dependency). Other commands (npx/python/…) spawn as-is.
+ *  - stdout AND stderr are line-framed (persistent per-stream buffer) — one
+ *    event per '\n' line, so a line split across chunks isn't fragmented.
+ *  - mcp_write appends '\n' (the frontend sends a bare JSON line).
+ *  - `command: 'node'` runs Electron's bundled Node via ELECTRON_RUN_AS_NODE.
+ *  - Other commands (npx/python/uvx/…) get a login-shell PATH so they resolve
+ *    even when the app is launched from Finder with a minimal PATH (Rust used
+ *    get_login_shell_path for the same reason).
+ *  - mcp_spawn REJECTS on spawn failure (ENOENT) and REJECTS if a live process
+ *    already holds the id (never tears down the existing one) — matching Rust.
+ *  - Exactly one `mcp-close-{id}` per process; none on a spawn-phase failure
+ *    (the rejected invoke is that signal).
+ *
+ * No-orphan: SIGINT/SIGTERM/SIGHUP + 'exit' guards kill every spawned child
+ * (main no longer runs the SidecarSupervisor, so this bridge owns the net).
  */
 'use strict';
 
-const { spawn } = require('node:child_process');
+const { spawn, execFileSync } = require('node:child_process');
 
 /** id -> ChildProcess */
 const children = new Map();
 
 const MCP_CMDS = new Set(['mcp_spawn', 'mcp_write', 'mcp_kill']);
 
-/** Lazy require of the event bridge (tauriHost requires nothing from here, but keep it lazy for symmetry/safety). */
+/** Cache the event-bridge emit after the first require (hot path: one call per stream line). */
+let _emitEvent = null;
 function emit(event, payload) {
-  const { emitEvent } = require('./tauriHost.cjs');
-  emitEvent(event, payload);
+  if (!_emitEvent) _emitEvent = require('./tauriHost.cjs').emitEvent;
+  _emitEvent(event, payload);
+}
+
+/**
+ * The user's real login-shell PATH — an Electron app launched from Finder gets
+ * a minimal PATH (/usr/bin:/bin:…, no Homebrew/nvm), so npx/python/uvx MCP
+ * servers ENOENT. Resolve it once via the login shell (Rust did the same).
+ */
+let _loginPath = null;
+function loginShellPath() {
+  if (_loginPath !== null) return _loginPath;
+  _loginPath = process.env.PATH || '';
+  if (process.platform !== 'win32') {
+    try {
+      const shell = process.env.SHELL || '/bin/zsh';
+      const out = execFileSync(shell, ['-ilc', 'echo -n "$PATH"'], { encoding: 'utf8', timeout: 4000 });
+      if (out && out.trim()) _loginPath = out.trim();
+    } catch {
+      /* fall back to the inherited PATH */
+    }
+  }
+  return _loginPath;
+}
+
+function killChild(id) {
+  const child = children.get(id);
+  if (child) {
+    try {
+      child.kill('SIGKILL');
+    } catch {
+      /* already dead */
+    }
+    children.delete(id);
+  }
 }
 
 /**
  * @param {string} cmd
  * @param {Record<string, unknown>} args
- * @returns the command result, or `undefined` if `cmd` isn't an mcp command.
+ * @returns command result (Promise for mcp_spawn), or `undefined` if not an mcp command.
  */
 function mcpDispatch(cmd, args) {
   if (!MCP_CMDS.has(cmd)) return undefined;
@@ -60,73 +95,94 @@ function mcpDispatch(cmd, args) {
   }
 }
 
-function killChild(id) {
-  const child = children.get(id);
-  if (child) {
-    try {
-      child.kill('SIGKILL');
-    } catch {
-      /* already dead */
-    }
-    children.delete(id);
-  }
-}
-
 function mcpSpawn({ id, command, args = [], env = {} }) {
-  // The frontend does a defensive pre-spawn kill of any stale entry with the
-  // same id; mirror the Rust bridge and clear ours too.
-  killChild(id);
+  const existing = children.get(id);
+  if (existing && !existing.killed) {
+    // Match Rust: refuse to replace a live process (the frontend does a
+    // defensive mcp_kill before a legitimate re-spawn, so a live id here means
+    // a real double-spawn) — tearing down the healthy one would be worse.
+    return Promise.reject(new Error(`mcp_spawn: a process is already running for id "${id}"`));
+  }
 
-  let file = command;
   const spawnEnv = { ...process.env, ...(env || {}) };
+  let file = command;
   if (command === 'node') {
-    // Electron's bundled Node — no system Node dependency (Rust used a bundled
-    // node PATH fallback; ELECTRON_RUN_AS_NODE is the Electron equivalent).
+    // Electron's bundled Node — no system Node dependency.
     file = process.execPath;
     spawnEnv.ELECTRON_RUN_AS_NODE = '1';
+  } else if (!(env && env.PATH)) {
+    // Non-node commands (npx/python/uvx/a bare `node` on PATH): give them the
+    // real login-shell PATH unless the caller pinned one.
+    spawnEnv.PATH = loginShellPath();
   }
 
   let child;
   try {
     child = spawn(file, args || [], { env: spawnEnv, stdio: ['pipe', 'pipe', 'pipe'] });
   } catch (err) {
-    throw new Error(`mcp_spawn failed for "${command}": ${err instanceof Error ? err.message : String(err)}`);
+    return Promise.reject(new Error(`mcp_spawn failed for "${command}": ${errMsg(err)}`));
   }
   children.set(id, child);
 
-  // Line-framed stdout → one mcp-msg event per line (trimmed), NDJSON.
-  let buf = '';
+  let spawned = false;
+  let emittedClose = false;
+  const emitCloseOnce = () => {
+    if (emittedClose) return;
+    emittedClose = true;
+    children.delete(id);
+    emit(`mcp-close-${id}`, '');
+  };
+
+  // Line-framed stdout — one mcp-msg per line (trimmed), NDJSON.
+  let outBuf = '';
   child.stdout.setEncoding('utf8');
   child.stdout.on('data', (chunk) => {
-    buf += chunk;
+    outBuf += chunk;
     let nl;
-    while ((nl = buf.indexOf('\n')) >= 0) {
-      const line = buf.slice(0, nl).trim();
-      buf = buf.slice(nl + 1);
+    while ((nl = outBuf.indexOf('\n')) >= 0) {
+      const line = outBuf.slice(0, nl).trim();
+      outBuf = outBuf.slice(nl + 1);
       if (line) emit(`mcp-msg-${id}`, line);
     }
   });
 
+  // Line-framed stderr (persistent buffer, so a log line split across chunks
+  // isn't fragmented — sidecarManager parses each line's `[level]` tag).
+  let errBuf = '';
   child.stderr.setEncoding('utf8');
   child.stderr.on('data', (chunk) => {
-    for (const raw of String(chunk).split('\n')) {
-      const line = raw.trimEnd();
+    errBuf += chunk;
+    let nl;
+    while ((nl = errBuf.indexOf('\n')) >= 0) {
+      const line = errBuf.slice(0, nl).trimEnd();
+      errBuf = errBuf.slice(nl + 1);
       if (line) emit(`mcp-err-${id}`, line);
     }
   });
 
   child.on('error', (err) => {
-    emit(`mcp-err-${id}`, `process error: ${err instanceof Error ? err.message : String(err)}`);
-    children.delete(id);
-    emit(`mcp-close-${id}`, '');
+    if (spawned) {
+      // Runtime error on a process that DID start — surface + close once.
+      emit(`mcp-err-${id}`, `process error: ${errMsg(err)}`);
+      emitCloseOnce();
+    } else {
+      // Spawn-phase failure — the rejected invoke below is the signal; no
+      // mcp-err/close events (Rust emits none on spawn failure).
+      children.delete(id);
+    }
   });
 
-  child.on('close', () => {
-    children.delete(id);
-    emit(`mcp-close-${id}`, '');
-  });
+  child.on('close', () => emitCloseOnce());
 
-  return null;
+  return new Promise((resolve, reject) => {
+    child.once('spawn', () => {
+      spawned = true;
+      resolve(null);
+    });
+    child.once('error', (err) => {
+      if (!spawned) reject(new Error(`mcp_spawn failed for "${command}": ${errMsg(err)}`));
+    });
+  });
 }
 
 function mcpWrite({ id, message }) {
@@ -143,18 +199,31 @@ function mcpKill({ id }) {
   return null;
 }
 
-// No orphans: kill every spawned child on shell exit (Node children aren't
-// auto-reaped). Synchronous best-effort, like sidecarSupervisor's exit guard.
-process.on('exit', () => {
+function errMsg(err) {
+  return err instanceof Error ? err.message : String(err);
+}
+
+// No orphans: kill every spawned child on shell exit AND on termination
+// signals. A signal doesn't run 'exit' handlers, and registering a handler
+// suppresses Node's default terminate — so reproduce it (kill children, then
+// exit). Main no longer runs the SidecarSupervisor, so this bridge owns the net.
+function killAllChildren() {
   for (const child of children.values()) {
     if (child && !child.killed) {
       try {
         child.kill('SIGKILL');
       } catch {
-        /* nothing we can do at exit */
+        /* nothing we can do */
       }
     }
   }
-});
+}
+process.on('exit', killAllChildren);
+for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
+  process.once(sig, () => {
+    killAllChildren();
+    process.exit(0);
+  });
+}
 
 module.exports = { mcpDispatch };

@@ -43,8 +43,7 @@ const {
   registerTauriHost,
   getStubbedCommands,
   emitEvent,
-  setMainWindow,
-  isQuitting,
+  wireWindowEvents,
 } = require('../tauriHost.cjs');
 
 const SETTLE_MS = 9000;
@@ -96,16 +95,11 @@ app.whenReady().then(async () => {
     consoleLines.push('RENDER-GONE ' + JSON.stringify(d));
   });
 
-  // Slice D: this harness owns its own window (it doesn't go through
-  // main.cjs's createWindow()), so it must wire the same setMainWindow() +
-  // preventable-close pattern main.cjs does for windowDispatch() (win-family
-  // commands) and the close-requested test below to exercise anything real.
-  setMainWindow(win);
-  win.on('close', (e) => {
-    if (isQuitting()) return;
-    e.preventDefault();
-    emitEvent('close-requested', null);
-  });
+  // Slice D: this harness owns its own window (it doesn't go through main.cjs's
+  // createWindow()), so wire it via the SAME shared helper main.cjs uses — so
+  // the close-prevention test below exercises the real production wiring
+  // (isQuitting + has-listener guards), not a copy that could drift.
+  wireWindowEvents(win);
 
   try {
     await win.loadFile(INDEX);

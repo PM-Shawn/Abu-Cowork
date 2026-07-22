@@ -20,13 +20,7 @@ const path = require('node:path');
 const fs = require('node:fs');
 const { SidecarSupervisor } = require('./sidecarSupervisor.cjs');
 const { resolveSidecarLaunch, sidecarBundleExists, SIDECAR_PATH } = require('./appEnv.cjs');
-const {
-  registerTauriHost,
-  emitEvent,
-  clearSubscriptionsForSender,
-  setMainWindow,
-  isQuitting,
-} = require('./tauriHost.cjs');
+const { registerTauriHost, wireWindowEvents } = require('./tauriHost.cjs');
 
 const REPO_ROOT = path.resolve(__dirname, '..');
 const FRONTEND_INDEX = path.join(REPO_ROOT, 'dist-electron-spike', 'index.html');
@@ -84,33 +78,10 @@ function createWindow() {
     });
   }
 
-  // Phase 2 slice B: Electron window lifecycle -> Tauri event names, so the
-  // frontend's existing `listen('tauri://focus'|'tauri://blur')` calls work
-  // unmodified under Electron.
-  win.on('focus', () => emitEvent('tauri://focus', null));
-  win.on('blur', () => emitEvent('tauri://blur', null));
-  // Phase 2 slice D: preventable close. Real Tauri calls api.prevent_close()
-  // then emits the app-custom 'close-requested' (NOT 'tauri://close-requested');
-  // the frontend (App.tsx ~line 297) routes on closeAction → app_exit /
-  // window_hide / a confirm dialog. Reproduce that here: prevent the default
-  // close and hand it to the renderer instead. The isQuitting() guard is
-  // required — app_exit's app.quit() re-triggers this same 'close' event for
-  // every open window, and without the guard preventDefault() would fire
-  // again forever (app.quit() never actually closing anything).
-  win.on('close', (e) => {
-    if (isQuitting()) return;
-    e.preventDefault();
-    emitEvent('close-requested', null);
-  });
-
-  // Slice B: purge this renderer's event subscriptions when it reloads
-  // (Cmd+R / HMR full reload / location.reload). A reload does NOT destroy the
-  // WebContents and does NOT fire unlisten, so without this the main-side
-  // subscription registry would keep stale entries whose callbackIds collide
-  // with the reloaded page's fresh ids (double-fire / cross-wire).
-  win.webContents.on('did-start-loading', () => clearSubscriptionsForSender(win.webContents));
-
-  setMainWindow(win);
+  // Wire window lifecycle → Tauri event/close contract (focus/blur, preventable
+  // close with the isQuitting + has-listener guards, reload subscription purge).
+  // Shared with the boot-verify harness so both exercise identical wiring.
+  wireWindowEvents(win);
 
   void win.loadFile(hasFrontend ? FRONTEND_INDEX : PLACEHOLDER_INDEX);
 }

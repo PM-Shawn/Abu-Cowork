@@ -29,7 +29,7 @@
  */
 'use strict';
 
-const { ipcMain, nativeTheme } = require('electron');
+const { ipcMain, nativeTheme, screen } = require('electron');
 const path = require('node:path');
 const os = require('node:os');
 const fs = require('node:fs');
@@ -51,6 +51,43 @@ function setMainWindow(win) {
 
 function isQuitting() {
   return quitting;
+}
+
+/** True iff any live subscription exists for `event`. */
+function hasListeners(event) {
+  for (const sub of subscriptions.values()) {
+    if (sub.event === event) return true;
+  }
+  return false;
+}
+
+/**
+ * Wire an Electron window's lifecycle to the Tauri event/close contract.
+ * Shared by main.cjs (production) and the boot-verify harness, so the harness
+ * exercises the REAL close-handling wiring rather than a stale copy.
+ * @param {import('electron').BrowserWindow} win
+ */
+function wireWindowEvents(win) {
+  setMainWindow(win);
+  win.on('focus', () => emitEvent('tauri://focus', null));
+  win.on('blur', () => emitEvent('tauri://blur', null));
+  // Preventable close (slice D), guarded twice:
+  //  - `quitting`: a REAL quit (OS Cmd+Q / menu Quit → before-quit, or app_exit)
+  //    must NOT be prevented, or the app becomes un-quittable.
+  //  - hasListeners('close-requested'): before the frontend registers its
+  //    close handler (early startup), don't preventDefault into a dead emit —
+  //    that swallows the close click (window neither closes nor prompts) until
+  //    the app finishes loading. No listener yet → let the close proceed.
+  win.on('close', (e) => {
+    if (quitting) return;
+    if (!hasListeners('close-requested')) return;
+    e.preventDefault();
+    emitEvent('close-requested', null);
+  });
+  // Purge this renderer's subscriptions on reload (WebContents survives, no
+  // unlisten fires, the preload callbackId counter resets → stale subs would
+  // cross-wire to the reloaded page's colliding ids).
+  win.webContents.on('did-start-loading', () => clearSubscriptionsForSender(win.webContents));
 }
 
 // Tauri BaseDirectory enum (numeric -> meaning). See @tauri-apps/api/path.
@@ -325,8 +362,13 @@ function windowDispatch(app, cmd, args) {
       return null;
     case 'plugin:window|outer_position': {
       if (!win) return { x: 0, y: 0 };
+      // Tauri's outerPosition() contract is PHYSICAL pixels; Electron's
+      // getPosition() is device-independent (DIP). Scale by the window's
+      // display factor so HiDPI consumers (pet placement, popover anchoring,
+      // window position persist/restore) aren't off by the scale factor.
       const [x, y] = win.getPosition();
-      return { x, y };
+      const sf = screen.getDisplayMatching(win.getBounds()).scaleFactor || 1;
+      return { x: Math.round(x * sf), y: Math.round(y * sf) };
     }
     case 'plugin:window|start_dragging':
       // Electron drags windows via CSS `-webkit-app-region: drag`, not an IPC
@@ -395,6 +437,14 @@ function registerTauriHost(app) {
   // safeStorage is only reliably usable once the app is ready — registerTauriHost
   // itself is only ever called from the app.whenReady() path, so this is safe here.
   initSecretStore(app);
+
+  // Any real quit (OS Cmd+Q / menu Quit / app_exit's app.quit()) flips the
+  // isQuitting guard BEFORE the window 'close' fires, so the preventable-close
+  // handler lets the quit through instead of cancelling it — otherwise Cmd+Q
+  // with closeAction='minimize' would just hide the window and never quit.
+  app.on('before-quit', () => {
+    quitting = true;
+  });
 
   ipcMain.handle('tauri:invoke', async (e, { cmd, args } = {}) => {
     try {
@@ -470,4 +520,6 @@ module.exports = {
   clearSubscriptionsForSender,
   setMainWindow,
   isQuitting,
+  hasListeners,
+  wireWindowEvents,
 };

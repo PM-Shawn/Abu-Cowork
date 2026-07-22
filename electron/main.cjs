@@ -6,9 +6,12 @@
  * build is absent) behind the production Tauri-IPC bridge (preload.cjs +
  * tauriHost.cjs) + the sidecar supervisor. Launch with `npm run electron:dev`.
  *
- * Security posture: contextIsolation on, nodeIntegration off. sandbox is off
- * so preload.cjs can require('electron') for ipcRenderer — the renderer
- * itself still gets no Node (contextBridge is the only surface exposed).
+ * Security posture: contextIsolation on, nodeIntegration off, sandbox ON.
+ * A sandboxed preload can still require('electron') for ipcRenderer/contextBridge
+ * (only Node built-ins like fs/path/os are withheld), and preload.cjs uses
+ * nothing else — so the OS renderer sandbox stays on. This matters: Abu renders
+ * AI-generated inline-HTML widgets and loaded web pages, so a renderer-side RCE
+ * must stay confined by the OS sandbox.
  */
 'use strict';
 
@@ -64,7 +67,7 @@ function createWindow() {
       preload: path.join(__dirname, 'preload.cjs'),
       contextIsolation: true,
       nodeIntegration: false,
-      sandbox: false,
+      sandbox: true,
     },
   });
   const hasFrontend = fs.existsSync(FRONTEND_INDEX);

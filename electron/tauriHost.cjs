@@ -67,6 +67,20 @@ function osInternals(app) {
   };
 }
 
+/** Dirs already mkdir'd this process — avoids a blocking mkdirSync per resolution. */
+const mkdirDone = new Set();
+
+/**
+ * OS cache root (evictable), matching Tauri's cacheDir. Electron's app.getPath
+ * has NO 'cache' key, and 'sessionData' is the PERSISTENT userData region — so
+ * cache files there would never be OS-evicted. Resolve the real per-OS cache dir.
+ */
+function osCacheDir() {
+  if (process.platform === 'darwin') return path.join(os.homedir(), 'Library', 'Caches');
+  if (process.platform === 'win32') return process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local');
+  return process.env.XDG_CACHE_HOME || path.join(os.homedir(), '.cache');
+}
+
 /**
  * BaseDirectory number -> absolute path.
  * @param {import('electron').App} app
@@ -102,7 +116,7 @@ function baseDir(app, n) {
       resolved = app.getPath('appData');
       break;
     case BaseDirectory.Cache:
-      resolved = app.getPath('sessionData');
+      resolved = osCacheDir();
       break;
     case BaseDirectory.Temp:
     case BaseDirectory.Runtime:
@@ -144,9 +158,10 @@ function baseDir(app, n) {
       break;
   }
 
-  if (appScopedDirs.includes(n)) {
+  if (appScopedDirs.includes(n) && !mkdirDone.has(resolved)) {
     try {
       fs.mkdirSync(resolved, { recursive: true });
+      mkdirDone.add(resolved);
     } catch {
       /* best-effort; downstream fs ops will surface a real error if this fails */
     }
@@ -168,14 +183,22 @@ let eventListenIdCounter = 1;
 const ARRAY_RESULT_CMDS = new Set(['plugin:fs|read_dir', 'notice_inbox_pending']);
 
 function defaultFor(cmd) {
-  if (cmd === 'plugin:event|listen') return eventListenIdCounter++;
-  if (ARRAY_RESULT_CMDS.has(cmd)) return [];
-  if (/(^|_)list$|failed_keys|_all$/i.test(cmd)) return [];
-  if (/_has$|_exists$|^is_|^check_/i.test(cmd)) return false;
+  // Log EVERY stubbed command once — including the []/false/listen shapes — so a
+  // not-yet-wired command is never silently indistinguishable from a real
+  // empty/false result (review slice-A [3]/[6]). These stubs are temporary
+  // scaffolding for the boot-clean milestone; slices B-E replace each with a
+  // real handler. NOTE: a stubbed *mutation* (fs write, secret_set, …) returning
+  // null still reads as success to its caller — tolerated only because this is a
+  // dev-integration harness with no real user data, and those write commands get
+  // real handlers in slices C-E.
   if (!seenUnknownCmds.has(cmd)) {
     seenUnknownCmds.add(cmd);
     console.log(`[tauriHost] stub: ${cmd}`);
   }
+  if (cmd === 'plugin:event|listen') return eventListenIdCounter++;
+  if (ARRAY_RESULT_CMDS.has(cmd)) return [];
+  if (/(^|_)list$|failed_keys|_all$/i.test(cmd)) return [];
+  if (/_has$|_exists$|^is_|^check_/i.test(cmd)) return false;
   return null;
 }
 

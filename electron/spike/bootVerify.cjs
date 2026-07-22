@@ -55,7 +55,7 @@ app.whenReady().then(async () => {
     webPreferences: {
       preload: PRELOAD,
       contextIsolation: true,
-      sandbox: false,
+      sandbox: true, // must match production main.cjs so the verify exercises the real posture
       nodeIntegration: false,
     },
   });

@@ -30,8 +30,15 @@ const invoke = (cmd, args) => ipcRenderer.invoke('tauri:invoke', { cmd, args: sa
 
 contextBridge.exposeInMainWorld('__TAURI_INTERNALS__', {
   invoke,
+  // NOTE (slice A scaffolding): transformCallback returns an id but DROPS the
+  // callback — real Tauri stores it so backend Channel/event messages can call
+  // it. Fine now (events/channels are stubbed, nothing calls back), but slice B
+  // (event bridge) MUST register the callback + wire main→renderer delivery, or
+  // streamed output (LLM tokens, log tail, fs.watch) will silently never appear.
   transformCallback: () => cbId++,
   unregisterCallback: () => {},
+  // Raw path (not an asset:// URL) — fine until file-backed asset loading (image
+  // previews) lands in a later slice; then this needs a custom protocol.
   convertFileSrc: (p) => p,
   metadata: {
     currentWindow: { label: 'main' },

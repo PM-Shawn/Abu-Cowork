@@ -40,6 +40,8 @@ const { fsWatchDispatch, FS_WATCH_MISS } = require('./fsWatchHost.cjs');
 const { mcpDispatch } = require('./mcpBridge.cjs');
 const { desktopDispatch, DESKTOP_MISS } = require('./desktopHost.cjs');
 const { previewDispatch, PREVIEW_MISS } = require('./previewServer.cjs');
+const { catalogDispatch, CATALOG_MISS } = require('./catalogDb.cjs');
+const { noticeDispatch, NOTICE_MISS } = require('./noticeDb.cjs');
 
 // Window-family state (Phase 2 slice D). `mainWindow` is set by main.cjs right
 // after createWindow() via setMainWindow(); `quitting` is the standard
@@ -498,6 +500,15 @@ function registerTauriHost(app) {
       // (server start is lazy); this handler is already `async` so awaiting is fine.
       const previewResult = await previewDispatch(app, cmd, { args: a });
       if (previewResult !== PREVIEW_MISS) return previewResult;
+      // Catalog DB (slice F1b) — conversation catalog + FTS5 search, backed
+      // by node:sqlite (electron/catalogDb.cjs). Synchronous under the hood;
+      // returning the value directly is fine since this handler is `async`.
+      const catalogResult = catalogDispatch(app, cmd, a);
+      if (catalogResult !== CATALOG_MISS) return catalogResult;
+      // Notice DB (slice F1b) — audit log + inbox queue, backed by
+      // node:sqlite (electron/noticeDb.cjs).
+      const noticeResult = noticeDispatch(app, cmd, a);
+      if (noticeResult !== NOTICE_MISS) return noticeResult;
       // Window-family commands (slice D) — checked before the event-plugin
       // switch below so plugin:window|* and app_exit/window_hide/window_show
       // never fall through to the stub. windowDispatch returns a sentinel for

@@ -39,6 +39,7 @@
     "build:sidecar": "node scripts/build-sidecar.mjs",
     "electron:dev": "electron electron/main.cjs",
     "electron:test": "npm run build:sidecar && node scripts/electron-acceptance.mjs",
+    "electron:boot-verify": "npx vite build --base=./ --outDir dist-electron-spike && npx electron electron/spike/bootVerify.cjs",
     "setup-python": "bash scripts/setup-python-runtime.sh",
     "setup-node": "bash scripts/setup-node-runtime.sh",
     "prepare": "husky"

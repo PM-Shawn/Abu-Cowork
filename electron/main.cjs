@@ -1,21 +1,27 @@
 /**
- * Electron main process — Phase 2 slice 1 dev shell.
+ * Electron main process — Phase 2 slice A dev shell.
  *
- * Minimal shell: one BrowserWindow loading a placeholder page (frontend
- * integration is a later slice) + the sidecar supervisor. Proves the Electron
- * shell can host the same sidecar bundle the Tauri shell runs. Launch with
- * `npm run electron:dev`.
+ * Loads the real Abu frontend (built with a relative base into
+ * dist-electron-spike/, falling back to the slice-1 placeholder if that
+ * build is absent) behind the production Tauri-IPC bridge (preload.cjs +
+ * tauriHost.cjs) + the sidecar supervisor. Launch with `npm run electron:dev`.
  *
- * Security posture even for the placeholder: contextIsolation on, nodeIntegration
- * off, sandbox on — the renderer gets no Node. (No preload/IPC yet — nothing to
- * bridge until the frontend lands.)
+ * Security posture: contextIsolation on, nodeIntegration off. sandbox is off
+ * so preload.cjs can require('electron') for ipcRenderer — the renderer
+ * itself still gets no Node (contextBridge is the only surface exposed).
  */
 'use strict';
 
 const { app, BrowserWindow } = require('electron');
 const path = require('node:path');
+const fs = require('node:fs');
 const { SidecarSupervisor } = require('./sidecarSupervisor.cjs');
 const { resolveSidecarLaunch, sidecarBundleExists, SIDECAR_PATH } = require('./appEnv.cjs');
+const { registerTauriHost } = require('./tauriHost.cjs');
+
+const REPO_ROOT = path.resolve(__dirname, '..');
+const FRONTEND_INDEX = path.join(REPO_ROOT, 'dist-electron-spike', 'index.html');
+const PLACEHOLDER_INDEX = path.join(__dirname, 'renderer', 'index.html');
 
 // Isolate this dev shell's user-data dir from any other Electron/Abu app.
 app.setName('abu-electron-dev');
@@ -55,15 +61,24 @@ function createWindow() {
     height: 720,
     backgroundColor: '#1a1a1a',
     webPreferences: {
+      preload: path.join(__dirname, 'preload.cjs'),
       contextIsolation: true,
       nodeIntegration: false,
-      sandbox: true,
+      sandbox: false,
     },
   });
-  void win.loadFile(path.join(__dirname, 'renderer', 'index.html'));
+  const hasFrontend = fs.existsSync(FRONTEND_INDEX);
+  if (!hasFrontend) {
+    log('warn', 'built frontend missing, loading placeholder', {
+      expected: FRONTEND_INDEX,
+      hint: 'npx vite build --base=./ --outDir dist-electron-spike',
+    });
+  }
+  void win.loadFile(hasFrontend ? FRONTEND_INDEX : PLACEHOLDER_INDEX);
 }
 
 app.whenReady().then(() => {
+  registerTauriHost(app);
   startSidecar();
   createWindow();
   app.on('activate', () => {

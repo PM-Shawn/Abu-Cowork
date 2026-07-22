@@ -24,12 +24,22 @@ const fs = require('node:fs');
 const REPO_ROOT = path.resolve(__dirname, '..');
 const SIDECAR_PATH = path.join(REPO_ROOT, 'sidecar', 'index.mjs');
 
+/**
+ * Canonical Electron-shell app-data dir, shared by the sidecar launch env
+ * (ABU_APP_DATA_DIR) and the renderer-facing Tauri path/fs handlers
+ * (tauriHost.cjs) so both sides agree on where app data lives. Kept DISTINCT
+ * from the Tauri dev app's `com.abu.app.dev`.
+ * @param {import('electron').App} app
+ */
+function abuAppDataDir(app) {
+  return path.join(app.getPath('appData'), 'com.abu.app.electron-dev');
+}
+
 /** @param {import('electron').App} app */
 function resolveSidecarLaunch(app) {
-  const appDataRoot = app.getPath('appData');
-  const abuAppDataDir = path.join(appDataRoot, 'com.abu.app.electron-dev');
+  const dir = abuAppDataDir(app);
   try {
-    fs.mkdirSync(abuAppDataDir, { recursive: true });
+    fs.mkdirSync(dir, { recursive: true });
   } catch {
     /* best-effort; sidecar bootstrap tolerates absence for slice-1 methods */
   }
@@ -37,7 +47,7 @@ function resolveSidecarLaunch(app) {
     sidecarPath: SIDECAR_PATH,
     electronPath: process.execPath,
     env: {
-      ABU_APP_DATA_DIR: abuAppDataDir,
+      ABU_APP_DATA_DIR: dir,
       ABU_RESOURCE_DIR: REPO_ROOT,
     },
   };
@@ -47,4 +57,4 @@ function sidecarBundleExists() {
   return fs.existsSync(SIDECAR_PATH);
 }
 
-module.exports = { resolveSidecarLaunch, sidecarBundleExists, SIDECAR_PATH, REPO_ROOT };
+module.exports = { resolveSidecarLaunch, sidecarBundleExists, abuAppDataDir, SIDECAR_PATH, REPO_ROOT };

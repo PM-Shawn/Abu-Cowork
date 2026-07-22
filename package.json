@@ -131,7 +131,7 @@
     ]
   },
   "overrides": {
-    "dompurify": "^3.4.11",
+    "dompurify": "^3.4.12",
     "qs": "^6.15.2",
     "ip-address": "^10.1.1",
     "uuid": "^11.1.1",

@@ -77,7 +77,17 @@ function serializeChannels(value) {
   if (value === null || typeof value !== 'object') return value;
   const toIpc = value[SERIALIZE_TO_IPC_FN];
   if (typeof toIpc === 'function') return toIpc.call(value);
-  if (typeof value.id === 'number' && Object.keys(value).length === 1) {
+  // A contextBridge-degraded real Channel arrives as bare `{ id: <number> }`,
+  // and — crucially — that id was registered in `callbacks` by the Channel's
+  // constructor calling transformCallback() BEFORE this invoke runs. Requiring
+  // `callbacks.has(id)` makes this a robust discriminator, not a shape guess: a
+  // legit data arg shaped `{ id: 5 }` won't have 5 as a live callback, so it's
+  // never corrupted into a channel string.
+  if (
+    typeof value.id === 'number' &&
+    Object.keys(value).length === 1 &&
+    callbacks.has(value.id)
+  ) {
     return `__CHANNEL__:${value.id}`;
   }
   if (Array.isArray(value)) return value.map(serializeChannels);

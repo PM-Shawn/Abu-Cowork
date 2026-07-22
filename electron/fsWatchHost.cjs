@@ -150,13 +150,19 @@ function scheduleFlush(rid) {
  * pending set for the next debounced flush.
  * @param {number} rid
  * @param {string} watchedPath absolute, already scope-checked
+ * @param {boolean} isDir whether watchedPath is a directory (vs a single file)
  * @param {'rename' | 'change'} eventType
  * @param {string | Buffer | null} filename
  */
-function onRawFsEvent(rid, watchedPath, eventType, filename) {
+function onRawFsEvent(rid, watchedPath, isDir, eventType, filename) {
   const entry = watchTable.get(rid);
   if (!entry) return;
-  const absPath = filename ? path.join(watchedPath, filename.toString()) : watchedPath;
+  // For a DIRECTORY watch, `filename` is the changed entry within the dir, so
+  // join it. For a single-FILE watch, Node's fs.watch fires `filename` = the
+  // watched file's OWN basename — joining would produce a bogus doubled path
+  // (/x/todo.md/todo.md); notify-rs (the Rust backend) reports the real path,
+  // so a file watch's event path is always the watched file itself.
+  const absPath = isDir && filename ? path.join(watchedPath, filename.toString()) : watchedPath;
   // 'rename' fires for both create AND delete in Node's fs.watch — an
   // existence check at event time disambiguates, matching what notify-rs's
   // debouncer resolves to on the Rust side.
@@ -222,8 +228,12 @@ function fsWatchDispatch(app, cmd, payload) {
       try {
         for (const p of paths) {
           const resolved = resolveWatchPath(app, p, options.baseDir);
+          // Distinguish a single-file target from a directory so onRawFsEvent
+          // reports the right event path (see its comment). statSync is safe:
+          // fs.watch below would itself throw if the path didn't exist.
+          const isDir = fs.statSync(resolved).isDirectory();
           const watcher = fs.watch(resolved, { recursive: !!options.recursive }, (eventType, filename) =>
-            onRawFsEvent(rid, resolved, eventType, filename)
+            onRawFsEvent(rid, resolved, isDir, eventType, filename)
           );
           // A watcher-level error (e.g. the watched path got removed) must
           // not crash the whole process — best-effort, matching Tauri's own

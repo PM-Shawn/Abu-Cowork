@@ -335,7 +335,12 @@ function fsDispatch(app, cmd, payload) {
       if (!fs.existsSync(dir) || !fs.statSync(dir).isDirectory()) {
         return 0; // dir may not exist yet on first run — silent success
       }
-      const ttlMs = (Number(a.ttl_hours) || 0) * 3600 * 1000;
+      // The frontend (atomicFs.ts:89) sends camelCase `ttlHours` — Tauri
+      // auto-cased it to the Rust `ttl_hours` param, but Electron's raw IPC does
+      // not, so read the wire key. (Reading `ttl_hours` gave undefined → NaN →
+      // 0 → every .*.backup.* deleted on each cleanup — the restore safety net.)
+      // Accept the snake_case form too for defensiveness.
+      const ttlMs = (Number(a.ttlHours ?? a.ttl_hours) || 0) * 3600 * 1000;
       const now = Date.now();
       let removed = 0;
       for (const name of fs.readdirSync(dir)) {

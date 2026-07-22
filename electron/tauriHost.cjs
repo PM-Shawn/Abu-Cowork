@@ -9,10 +9,12 @@
  * `plugin:event|*` family (listen/unlisten/emit/emit_to) with a real
  * subscription registry, so `listen()`/`emit()` route through main and main
  * can push events (window focus/blur/close-requested, future streamed data)
- * back to renderer-registered callbacks via `emitEvent()`. Everything else
- * falls back to a benign stub (mirrors electron/spike/tauriShimPreload.cjs's
- * defaultFor pattern) so the frontend can boot past this layer — later
- * slices (C-E) replace individual stubs with real handlers.
+ * back to renderer-registered callbacks via `emitEvent()`. Slice C adds the
+ * 7 `secret_*` commands, backed by electron/secretStore.cjs (safeStorage).
+ * Everything else falls back to a benign stub (mirrors
+ * electron/spike/tauriShimPreload.cjs's defaultFor pattern) so the frontend
+ * can boot past this layer — later slices (D-E) replace individual stubs
+ * with real handlers.
  *
  * Wired from electron/main.cjs via registerTauriHost(app) BEFORE the
  * BrowserWindow is created (the preload's synchronous os-internals fetch
@@ -25,6 +27,7 @@ const path = require('node:path');
 const os = require('node:os');
 const fs = require('node:fs');
 const { abuAppDataDir } = require('./appEnv.cjs');
+const { initSecretStore, secretDispatch } = require('./secretStore.cjs');
 
 // Tauri BaseDirectory enum (numeric -> meaning). See @tauri-apps/api/path.
 const BaseDirectory = Object.freeze({
@@ -303,6 +306,10 @@ function dispatch(app, cmd, args) {
 
 /** @param {import('electron').App} app */
 function registerTauriHost(app) {
+  // safeStorage is only reliably usable once the app is ready — registerTauriHost
+  // itself is only ever called from the app.whenReady() path, so this is safe here.
+  initSecretStore(app);
+
   ipcMain.handle('tauri:invoke', async (e, { cmd, args } = {}) => {
     try {
       const a = args || {};
@@ -333,10 +340,18 @@ function registerTauriHost(app) {
           deliver(a.event, a.payload);
           return null;
         case 'plugin:event|emit_to':
-          // TODO(slice C+): honor `a.target` (window/webview scoping) instead
+          // TODO(slice D+): honor `a.target` (window/webview scoping) instead
           // of broadcasting to every subscription — fine for now, single window.
           deliver(a.event, a.payload);
           return null;
+        case 'secret_get':
+        case 'secret_set':
+        case 'secret_delete':
+        case 'secret_has':
+        case 'secret_list':
+        case 'secret_failed_keys':
+        case 'secret_clear_all':
+          return secretDispatch(cmd, a);
         default:
           return await dispatch(app, cmd, args);
       }

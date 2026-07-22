@@ -1,9 +1,9 @@
 /**
  * Boot-verify harness — acceptance check for Phase 2 slice A ("startup
- * foundation") + slice B ("event bridge"). Same shape as
- * electron/spike/bootSpike.cjs, but exercises the PRODUCTION preload
- * (electron/preload.cjs) + registerTauriHost(app) instead of the throwaway
- * capture shim, to prove the real frontend now boots past the
+ * foundation") + slice B ("event bridge") + slice C ("secret store"). Same
+ * shape as electron/spike/bootSpike.cjs, but exercises the PRODUCTION
+ * preload (electron/preload.cjs) + registerTauriHost(app) instead of the
+ * throwaway capture shim, to prove the real frontend now boots past the
  * path-plugin/platform-detection cascade.
  *
  * Loads dist-electron-spike/index.html windowless (show:false), lets it
@@ -13,15 +13,21 @@
  * `listen()`-shaped callback via `transformCallback` + `plugin:event|listen`
  * in the page world, has main call `emitEvent()`, and asserts the callback
  * received the Tauri Event object — proving the callback survives the
- * contextBridge boundary and main→renderer delivery works. Writes
+ * contextBridge boundary and main→renderer delivery works. Then (slice C)
+ * drives a real secret_set/get/has/list/delete round-trip through
+ * window.__TAURI_INTERNALS__.invoke, asserting a non-ASCII value round-trips
+ * exactly. That round-trip is wrapped in a timeout because safeStorage can
+ * trigger an OS Keychain access prompt on first use on macOS, which would
+ * block this unattended run — see the secretRoundTrip block below. Writes
  * electron-results/boot-verify.json with
- * {pass, remainingErrors, stubCommands, eventRoundTrip}. PASS requires both
- * no cascade errors AND eventRoundTrip true. Run:
+ * {pass, remainingErrors, stubCommands, eventRoundTrip, secretRoundTrip,
+ * secretNote?}. PASS requires no cascade errors AND eventRoundTrip AND
+ * secretRoundTrip. Run:
  *   npm run electron:boot-verify
  */
 'use strict';
 
-const { app, BrowserWindow } = require('electron');
+const { app, BrowserWindow, safeStorage } = require('electron');
 const path = require('node:path');
 const fs = require('node:fs');
 const { registerTauriHost, getStubbedCommands, emitEvent } = require('../tauriHost.cjs');
@@ -109,20 +115,90 @@ app.whenReady().then(async () => {
     consoleLines.push('EVENT-ROUNDTRIP-ERROR ' + String(err));
   }
 
+  // Phase 2 slice C acceptance: real secret_set/get/has/list/delete round-trip
+  // through the production IPC surface, asserting a non-ASCII value survives
+  // exactly. RISK: safeStorage can trigger an OS Keychain access prompt on
+  // first use on macOS, which would block this unattended run — so the
+  // round-trip is raced against a timeout, and an unavailable/timed-out
+  // safeStorage is recorded as a clear note rather than treated as a silent
+  // crash (the harness still finishes and reports the other checks).
+  let secretRoundTrip = false;
+  let secretNote;
+  const SECRET_TIMEOUT_MS = 6000;
+  try {
+    let encryptionAvailable = false;
+    try {
+      encryptionAvailable = safeStorage.isEncryptionAvailable();
+    } catch (err) {
+      consoleLines.push('SECRET-ROUNDTRIP-AVAILABILITY-ERROR ' + String(err));
+    }
+
+    if (!encryptionAvailable) {
+      secretNote = 'safeStorage unavailable / possible Keychain prompt — needs attended verification';
+      consoleLines.push('SECRET-ROUNDTRIP-SKIPPED: safeStorage.isEncryptionAvailable() === false');
+    } else {
+      const attempt = win.webContents.executeJavaScript(`
+        (async () => {
+          const K = 'provider:__spikeC_test__';
+          const inv = (c,a)=>window.__TAURI_INTERNALS__.invoke(c,a);
+          await inv('secret_set', { key: K, value: 'sk-electron-C-秘密🔐' });
+          const got = await inv('secret_get', { key: K });
+          const has = await inv('secret_has', { key: K });
+          const list = await inv('secret_list', {});
+          await inv('secret_delete', { key: K });
+          const afterDel = await inv('secret_get', { key: K });
+          return { got, has, listHasK: Array.isArray(list) && list.includes(K), afterDel };
+        })()
+      `);
+      const timeout = new Promise((resolve) =>
+        setTimeout(() => resolve({ __timedOut: true }), SECRET_TIMEOUT_MS)
+      );
+      const result = await Promise.race([attempt, timeout]);
+
+      if (result && result.__timedOut) {
+        secretNote = 'safeStorage unavailable / possible Keychain prompt — needs attended verification';
+        consoleLines.push(`SECRET-ROUNDTRIP-TIMEOUT after ${SECRET_TIMEOUT_MS}ms`);
+      } else {
+        secretRoundTrip =
+          !!result &&
+          result.got === 'sk-electron-C-秘密🔐' &&
+          result.has === true &&
+          result.listHasK === true &&
+          result.afterDel === null;
+        if (!secretRoundTrip) {
+          consoleLines.push('SECRET-ROUNDTRIP-MISMATCH ' + JSON.stringify(result));
+        }
+      }
+    }
+  } catch (err) {
+    secretNote = 'safeStorage unavailable / possible Keychain prompt — needs attended verification';
+    consoleLines.push('SECRET-ROUNDTRIP-ERROR ' + String(err));
+  }
+
   const errorLines = consoleLines.filter((l) => /error|gone|LOAD-ERROR|Uncaught|TypeError/i.test(l));
   const remainingErrors = [...new Set(errorLines)];
   const goneOk = MUST_BE_GONE.every((needle) => !remainingErrors.some((l) => l.includes(needle)));
-  const pass = goneOk && eventRoundTrip;
+  const pass = goneOk && eventRoundTrip && secretRoundTrip;
 
   const stubCommands = getStubbedCommands();
 
-  const report = { pass, remainingErrors, stubCommands, eventRoundTrip };
+  const report = {
+    pass,
+    remainingErrors,
+    stubCommands,
+    eventRoundTrip,
+    secretRoundTrip,
+    ...(secretNote ? { secretNote } : {}),
+  };
   fs.mkdirSync(path.dirname(OUT), { recursive: true });
   fs.writeFileSync(OUT, JSON.stringify(report, null, 2));
 
   console.log(
-    `[boot-verify] ${pass ? 'PASS' : 'FAIL'} — ${remainingErrors.length} remaining console error line(s), eventRoundTrip=${eventRoundTrip} → ${OUT}`
+    `[boot-verify] ${pass ? 'PASS' : 'FAIL'} — ${remainingErrors.length} remaining console error line(s), eventRoundTrip=${eventRoundTrip}, secretRoundTrip=${secretRoundTrip} → ${OUT}`
   );
+  if (secretNote) {
+    console.log(`  ⚠ secretNote: ${secretNote}`);
+  }
   if (remainingErrors.length) {
     for (const l of remainingErrors) console.log('  •', l);
   }

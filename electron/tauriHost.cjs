@@ -39,6 +39,7 @@ const { fsDispatch, FS_MISS } = require('./fsHost.cjs');
 const { fsWatchDispatch, FS_WATCH_MISS } = require('./fsWatchHost.cjs');
 const { mcpDispatch } = require('./mcpBridge.cjs');
 const { desktopDispatch, DESKTOP_MISS } = require('./desktopHost.cjs');
+const { nativeHelperDispatch, NATIVE_HELPER_MISS } = require('./nativeHelperManager.cjs');
 const { previewDispatch, PREVIEW_MISS } = require('./previewServer.cjs');
 const { catalogDispatch, CATALOG_MISS } = require('./catalogDb.cjs');
 const { noticeDispatch, NOTICE_MISS } = require('./noticeDb.cjs');
@@ -534,6 +535,12 @@ function registerTauriHost(app) {
       // dependency on either.
       const networkProxyResult = await networkProxyDispatch(app, cmd, a);
       if (networkProxyResult !== NETWORK_PROXY_MISS) return networkProxyResult;
+      // Computer-use / AX family (F10) — routed to the native-helper process
+      // (input synthesis, screen capture, AXUIElement session cache) via
+      // nativeHelperManager. Returns a Promise (resolved by the outer await) or
+      // NATIVE_HELPER_MISS for anything it doesn't own.
+      const nativeHelperResult = nativeHelperDispatch(cmd, a);
+      if (nativeHelperResult !== NATIVE_HELPER_MISS) return nativeHelperResult;
       // Window-family commands (slice D) — checked before the event-plugin
       // switch below so plugin:window|* and app_exit/window_hide/window_show
       // never fall through to the stub. windowDispatch returns a sentinel for

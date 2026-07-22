@@ -24,6 +24,20 @@
  * A genuine fs error (ENOENT, EACCES, scope refusal) is left to THROW so the
  * invoke rejects — matching Tauri, which surfaces fs errors to the frontend.
  *
+ * ## Custom write commands (Phase 2 F1a — data-loss stop)
+ * Beyond plugin:fs|*, this module also backs the bare custom write commands that
+ * the frontend's persistence layer calls directly: `append_file_text` (O(1)
+ * message-JSONL append), `atomic_write_text`/`atomic_write_with_backup`/
+ * `restore_from_backup`/`cleanup_old_backups` (settings/index.json/memdir atomic
+ * writes + backup rotation). These were previously stubbed → returned null →
+ * read as SUCCESS by the caller → messages/settings silently never hit disk
+ * (empty conversation dirs after restart). They live here (not a separate
+ * module) because they are file writes in the same security domain — they MUST
+ * go through the same `assertAllowed` scope guard, or a compromised renderer
+ * could use atomic_write_text to escape the plugin:fs sandbox. Semantics mirror
+ * src-tauri/src/{append_file,atomic_write}.rs exactly (append mode; tempfile +
+ * fsync + rename; `.{name}.backup.{unix_ms}` backups; EXDEV-fallback restore).
+ *
  * Deferred: `plugin:fs|watch` (channel-streamed) and the FileHandle/rid ops
  * (open/create/read/write/seek/stat/lstat/read_text_file_lines).
  */
@@ -35,6 +49,58 @@ const os = require('node:os');
 
 /** Sentinel returned when `cmd` isn't an fs command, so tauriHost.cjs falls through. */
 const FS_MISS = Symbol('fs-dispatch-miss');
+
+/** Monotonic suffix so concurrent atomic writes in one dir get distinct temp names. */
+let tmpCounter = 0;
+
+/**
+ * Atomic write: tempfile (same dir) + fsync + rename. Mirrors
+ * atomic_write.rs::write_atomic — a reader sees either fully-old or fully-new
+ * content, never partial (rename is a single atomic syscall). Parent dirs are
+ * created as needed. On any failure the temp file is cleaned up and the target
+ * is left untouched.
+ * @param {string} target absolute, already scope-checked
+ * @param {Buffer | string} content
+ */
+function writeAtomic(target, content) {
+  const parent = path.dirname(target);
+  fs.mkdirSync(parent, { recursive: true });
+  // Temp in the SAME directory so the rename stays within one filesystem.
+  const tmp = path.join(parent, `.${path.basename(target)}.tmp.${process.pid}.${tmpCounter++}`);
+  let fd;
+  try {
+    fd = fs.openSync(tmp, 'w');
+    fs.writeSync(fd, content);
+    fs.fsyncSync(fd); // durable before the rename
+    fs.closeSync(fd);
+    fd = undefined;
+    fs.renameSync(tmp, target);
+  } catch (err) {
+    if (fd !== undefined) {
+      try {
+        fs.closeSync(fd);
+      } catch {
+        /* already closed */
+      }
+    }
+    try {
+      fs.rmSync(tmp, { force: true });
+    } catch {
+      /* temp may not exist */
+    }
+    throw err;
+  }
+}
+
+/**
+ * Backup path `/{dir}/.{filename}.backup.{unix_ms}` next to the target —
+ * byte-for-byte the format atomic_write.rs::backup_path_for produces (Date.now()
+ * is unix ms, matching Rust's duration_since(UNIX_EPOCH).as_millis()).
+ * @param {string} target
+ */
+function backupPathFor(target) {
+  return path.join(path.dirname(target), `.${path.basename(target)}.backup.${Date.now()}`);
+}
 
 /** Allowed root prefixes (macOS/Linux), mirroring capabilities/default.json. */
 function allowedRoots() {
@@ -188,6 +254,105 @@ function fsDispatch(app, cmd, payload) {
         fs.writeFileSync(resolved, buf);
       }
       return null;
+    }
+
+    // ── Custom write commands (F1a) — bare names, plain-JSON args, absolute
+    // paths (no baseDir). Same scope guard as plugin:fs above. ──
+
+    case 'append_file_text': {
+      // Native O(1) append: mkdir parent + open in append mode + write only
+      // `data`. Mirrors append_file.rs::append_sync. The message-JSONL hot path.
+      const resolved = resolveScoped(app, a.path, undefined);
+      fs.mkdirSync(path.dirname(resolved), { recursive: true });
+      fs.appendFileSync(resolved, String(a.data));
+      return null;
+    }
+
+    case 'atomic_write_text': {
+      writeAtomic(resolveScoped(app, a.path, undefined), String(a.content));
+      return null;
+    }
+
+    case 'atomic_write_with_backup': {
+      // Copy any existing target to a timestamped backup, THEN atomic-write. If
+      // the write fails the original is intact (we only copied) and we remove
+      // the now-orphaned backup. Returns snake_case {wrote, backup_path} to match
+      // the Rust struct the frontend's atomicFs.ts decodes.
+      const resolved = resolveScoped(app, a.path, undefined);
+      fs.mkdirSync(path.dirname(resolved), { recursive: true });
+      let backupPath = null;
+      if (fs.existsSync(resolved)) {
+        backupPath = backupPathFor(resolved);
+        fs.copyFileSync(resolved, backupPath);
+      }
+      try {
+        writeAtomic(resolved, String(a.content));
+      } catch (err) {
+        if (backupPath) {
+          try {
+            fs.rmSync(backupPath, { force: true });
+          } catch {
+            /* best-effort */
+          }
+        }
+        throw err;
+      }
+      return { wrote: true, backup_path: backupPath };
+    }
+
+    case 'restore_from_backup': {
+      // Restore target from a prior backup; the backup is consumed (renamed
+      // away). Cross-device rename falls back to copy + unlink. Mirrors
+      // atomic_write.rs::restore_from_backup.
+      const targetPath = resolveScoped(app, a.target, undefined);
+      const backupPath = resolveScoped(app, a.backup, undefined);
+      if (!fs.existsSync(backupPath)) {
+        throw new Error(`backup not found: ${a.backup}`);
+      }
+      try {
+        fs.renameSync(backupPath, targetPath);
+      } catch (err) {
+        if (err && err.code === 'EXDEV') {
+          fs.copyFileSync(backupPath, targetPath);
+          fs.rmSync(backupPath, { force: true });
+        } else {
+          throw err;
+        }
+      }
+      return null;
+    }
+
+    case 'cleanup_old_backups': {
+      // Remove `.*.backup.*` files in `dir` older than ttl_hours. Only touches
+      // files matching that pattern, so arbitrary user files are never removed.
+      // A per-file removal error is logged and skipped, not fatal. Returns the
+      // count removed. Mirrors atomic_write.rs::cleanup_old_backups.
+      const dir = resolveScoped(app, a.dir, undefined);
+      if (!fs.existsSync(dir) || !fs.statSync(dir).isDirectory()) {
+        return 0; // dir may not exist yet on first run — silent success
+      }
+      const ttlMs = (Number(a.ttl_hours) || 0) * 3600 * 1000;
+      const now = Date.now();
+      let removed = 0;
+      for (const name of fs.readdirSync(dir)) {
+        if (!name.startsWith('.') || !name.includes('.backup.')) continue;
+        const full = path.join(dir, name);
+        let mtimeMs;
+        try {
+          mtimeMs = fs.statSync(full).mtimeMs;
+        } catch {
+          continue;
+        }
+        if (now - mtimeMs > ttlMs) {
+          try {
+            fs.rmSync(full, { force: true });
+            removed++;
+          } catch (err) {
+            console.error(`[fsHost] backup cleanup skipped ${full}: ${err && err.message}`);
+          }
+        }
+      }
+      return removed;
     }
 
     default:

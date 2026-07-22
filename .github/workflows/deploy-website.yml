@@ -1,0 +1,42 @@
+name: Deploy Website
+
+# 官网静态站部署：main 分支上 website/ 有改动时，用 rsync 同步到服务器。
+# 服务器信息全部走 GitHub Secrets，不写死在本文件里（本文件在公开仓库可见）。
+# 也可在 Actions 页面手动点 "Run workflow" 触发。
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'website/**'
+      - '.github/workflows/deploy-website.yml'
+  workflow_dispatch:
+
+# 同一时间只跑一个部署，避免并发 rsync 打架
+concurrency:
+  group: deploy-website
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Prepare SSH key
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s\n' "${{ secrets.DEPLOY_SSH_KEY }}" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh-keyscan -p "${{ secrets.DEPLOY_PORT }}" "${{ secrets.DEPLOY_HOST }}" >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Deploy website via rsync
+        run: |
+          rsync -avz --delete \
+            -e "ssh -i ~/.ssh/deploy_key -p ${{ secrets.DEPLOY_PORT }} -o StrictHostKeyChecking=yes" \
+            --exclude '.DS_Store' \
+            --exclude 'README.md' \
+            --exclude 'README.zh-CN.md' \
+            website/ "${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }}:${{ secrets.DEPLOY_PATH }}/"
+          echo "✅ Deployed website/ to ${{ secrets.DEPLOY_HOST }}:${{ secrets.DEPLOY_PATH }}"

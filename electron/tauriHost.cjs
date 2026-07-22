@@ -40,6 +40,7 @@ const { fsWatchDispatch, FS_WATCH_MISS } = require('./fsWatchHost.cjs');
 const { mcpDispatch } = require('./mcpBridge.cjs');
 const { desktopDispatch, DESKTOP_MISS } = require('./desktopHost.cjs');
 const { nativeHelperDispatch, NATIVE_HELPER_MISS } = require('./nativeHelperManager.cjs');
+const { ptyDispatch, PTY_MISS } = require('./ptyHost.cjs');
 const { previewDispatch, PREVIEW_MISS } = require('./previewServer.cjs');
 const { catalogDispatch, CATALOG_MISS } = require('./catalogDb.cjs');
 const { noticeDispatch, NOTICE_MISS } = require('./noticeDb.cjs');
@@ -541,6 +542,14 @@ function registerTauriHost(app) {
       // NATIVE_HELPER_MISS for anything it doesn't own.
       const nativeHelperResult = nativeHelperDispatch(cmd, a);
       if (nativeHelperResult !== NATIVE_HELPER_MISS) return nativeHelperResult;
+      // Pty family (F6) — pty_spawn/pty_write/pty_resize/pty_kill, backed by
+      // a real node-pty child per session (electron/ptyHost.cjs), porting
+      // src-tauri/src/pty.rs for the workspace terminal tab. Placed after
+      // nativeHelperDispatch and before windowDispatch — no ordering
+      // dependency on either; ptyDispatch may return a Promise (pty_spawn),
+      // which this already-async handler awaits via the outer `await` below.
+      const ptyResult = await ptyDispatch(app, cmd, a);
+      if (ptyResult !== PTY_MISS) return ptyResult;
       // Window-family commands (slice D) — checked before the event-plugin
       // switch below so plugin:window|* and app_exit/window_hide/window_show
       // never fall through to the stub. windowDispatch returns a sentinel for

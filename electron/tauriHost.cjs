@@ -33,9 +33,10 @@ const { ipcMain, nativeTheme, screen } = require('electron');
 const path = require('node:path');
 const os = require('node:os');
 const fs = require('node:fs');
-const { abuAppDataDir } = require('./appEnv.cjs');
+const { abuAppDataDir, REPO_ROOT } = require('./appEnv.cjs');
 const { initSecretStore, secretDispatch } = require('./secretStore.cjs');
 const { fsDispatch, FS_MISS } = require('./fsHost.cjs');
+const { mcpDispatch } = require('./mcpBridge.cjs');
 
 // Window-family state (Phase 2 slice D). `mainWindow` is set by main.cjs right
 // after createWindow() via setMainWindow(); `quitting` is the standard
@@ -215,7 +216,12 @@ function baseDir(app, n) {
       resolved = app.getPath('home');
       break;
     case BaseDirectory.Resource:
-      resolved = process.resourcesPath;
+      // $RESOURCE = the dir that contains bundled resources (notably sidecar/).
+      // In dev that's the repo root (where resolveResource('sidecar/index.mjs')
+      // must land so the frontend's sidecarManager can spawn the sidecar);
+      // ABU_RESOURCE_DIR is set to the same. Packaged would use resourcesPath —
+      // a later packaging concern.
+      resolved = REPO_ROOT;
       break;
     case BaseDirectory.Executable:
       resolved = path.dirname(app.getPath('exe'));
@@ -460,6 +466,12 @@ function registerTauriHost(app) {
       // fsDispatch gets the whole payload. FS_MISS = not an fs command.
       const fsResult = fsDispatch(app, cmd, { args: a, body, headers });
       if (fsResult !== FS_MISS) return fsResult;
+      // mcp bridge (mcp 收敛) — generic stdio process bridge (mcp_spawn/write/
+      // kill) the frontend uses to drive MCP servers AND the agent sidecar;
+      // stdout/stderr/close re-emitted as mcp-msg/err/close-{id} events.
+      // Returns undefined for non-mcp commands.
+      const mcpResult = mcpDispatch(cmd, a);
+      if (mcpResult !== undefined) return mcpResult;
       // Window-family commands (slice D) — checked before the event-plugin
       // switch below so plugin:window|* and app_exit/window_hide/window_show
       // never fall through to the stub. windowDispatch returns a sentinel for

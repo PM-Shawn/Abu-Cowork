@@ -1,10 +1,19 @@
 /**
- * Electron main process — Phase 2 slice A dev shell.
+ * Electron main process — Phase 2 dev shell.
  *
  * Loads the real Abu frontend (built with a relative base into
- * dist-electron-spike/, falling back to the slice-1 placeholder if that
- * build is absent) behind the production Tauri-IPC bridge (preload.cjs +
- * tauriHost.cjs) + the sidecar supervisor. Launch with `npm run electron:dev`.
+ * dist-electron-spike/, falling back to the slice-1 placeholder if that build
+ * is absent) behind the production Tauri-IPC bridge (preload.cjs + tauriHost.cjs,
+ * which now includes the generic mcp_* process bridge). Launch with
+ * `npm run electron:dev`.
+ *
+ * Sidecar ownership (mcp 收敛): main does NOT spawn/supervise the agent sidecar
+ * itself — the FRONTEND's own sidecarManager drives it via mcp_spawn/mcp_write/
+ * mcp_kill (routed to electron/mcpBridge.cjs), exactly as it did on Tauri. This
+ * avoids two supervisors fighting over one sidecar. The standalone
+ * SidecarSupervisor (electron/sidecarSupervisor.cjs) + `npm run electron:test`
+ * remain as a tested component but are no longer auto-started here.
+ * No-orphan on quit is handled by mcpBridge's process 'exit' guard.
  *
  * Security posture: contextIsolation on, nodeIntegration off, sandbox ON.
  * A sandboxed preload can still require('electron') for ipcRenderer/contextBridge
@@ -18,8 +27,6 @@
 const { app, BrowserWindow } = require('electron');
 const path = require('node:path');
 const fs = require('node:fs');
-const { SidecarSupervisor } = require('./sidecarSupervisor.cjs');
-const { resolveSidecarLaunch, sidecarBundleExists, SIDECAR_PATH } = require('./appEnv.cjs');
 const { registerTauriHost, wireWindowEvents } = require('./tauriHost.cjs');
 
 const REPO_ROOT = path.resolve(__dirname, '..');
@@ -29,33 +36,9 @@ const PLACEHOLDER_INDEX = path.join(__dirname, 'renderer', 'index.html');
 // Isolate this dev shell's user-data dir from any other Electron/Abu app.
 app.setName('abu-electron-dev');
 
-/** @type {SidecarSupervisor | null} */
-let supervisor = null;
-
 function log(level, msg, extra) {
   const line = `[electron:${level}] ${msg}${extra ? ' ' + JSON.stringify(extra) : ''}`;
   (level === 'error' ? console.error : console.log)(line);
-}
-
-function startSidecar() {
-  if (!sidecarBundleExists()) {
-    log('error', 'sidecar bundle missing — run `npm run build:sidecar` first', { path: SIDECAR_PATH });
-    return;
-  }
-  const launch = resolveSidecarLaunch(app);
-  supervisor = new SidecarSupervisor({ ...launch, log });
-  supervisor.start();
-  log('info', 'sidecar supervisor started', { pid: supervisor.getSidecarPid(), status: supervisor.getStatus() });
-
-  // Quick liveness proof in the dev console (mirrors the acceptance round-trip).
-  void (async () => {
-    try {
-      const pong = await supervisor.request('ping');
-      log('info', 'sidecar ping ok', { pong });
-    } catch (err) {
-      log('warn', 'sidecar ping failed', { error: err instanceof Error ? err.message : String(err) });
-    }
-  })();
 }
 
 function createWindow() {
@@ -88,7 +71,6 @@ function createWindow() {
 
 app.whenReady().then(() => {
   registerTauriHost(app);
-  startSidecar();
   createWindow();
   app.on('activate', () => {
     // window_hide (closeAction: 'minimize') hides rather than destroys the
@@ -107,19 +89,8 @@ app.whenReady().then(() => {
   });
 });
 
-// No orphan: kill the sidecar before the shell exits.
-app.on('will-quit', (event) => {
-  if (supervisor && supervisor.getStatus() !== 'stopped') {
-    event.preventDefault();
-    void supervisor.stop().finally(() => {
-      supervisor = null;
-      app.quit();
-    });
-  }
-});
-
 app.on('window-all-closed', () => {
-  // macOS convention keeps the app alive; here we quit so the sidecar is torn
-  // down (dev ergonomics — closing the window ends the session).
+  // macOS convention keeps the app alive; here we quit so the frontend-driven
+  // sidecar (killed by mcpBridge's exit guard) is torn down — dev ergonomics.
   app.quit();
 });

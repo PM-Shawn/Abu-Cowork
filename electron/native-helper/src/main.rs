@@ -21,9 +21,116 @@ use enigo::{Coordinate, Enigo, Mouse, Settings};
 use serde_json::{json, Value};
 use xcap::Monitor;
 
+#[cfg(target_os = "macos")]
+mod ax;
+
+/// Read a required string param, e.g. `session_id`.
+fn require_str(params: &Value, key: &str) -> Result<String, String> {
+    params
+        .get(key)
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .ok_or_else(|| format!("missing required param '{key}'"))
+}
+
+/// Read a required u32 param, e.g. `element_id`.
+fn require_u32(params: &Value, key: &str) -> Result<u32, String> {
+    params
+        .get(key)
+        .and_then(Value::as_u64)
+        .map(|v| v as u32)
+        .ok_or_else(|| format!("missing required param '{key}'"))
+}
+
 fn handle(method: &str, params: &Value) -> Result<Value, String> {
     match method {
         "ping" => Ok(json!({ "pong": true })),
+
+        // ── Accessibility (AXUIElement) family — reuses src-tauri's
+        // Tauri-free `*_impl` code via `ax` module (see src/ax.rs). ──
+
+        "activate_app" => {
+            #[cfg(target_os = "macos")]
+            {
+                let name = require_str(params, "name")?;
+                let display = ax::activate_app_impl(name)?;
+                Ok(json!({ "activated": display }))
+            }
+            #[cfg(not(target_os = "macos"))]
+            {
+                Err("AX is macOS-only".to_string())
+            }
+        }
+
+        "ax_snapshot" => {
+            #[cfg(target_os = "macos")]
+            {
+                let app = params.get("app").and_then(Value::as_str).map(str::to_string);
+                let result = ax::ax_snapshot_impl(app)?;
+                serde_json::to_value(result).map_err(|e| format!("serialize failed: {e}"))
+            }
+            #[cfg(not(target_os = "macos"))]
+            {
+                Err("AX is macOS-only".to_string())
+            }
+        }
+
+        "ax_press" => {
+            #[cfg(target_os = "macos")]
+            {
+                let session_id = require_str(params, "session_id")?;
+                let element_id = require_u32(params, "element_id")?;
+                ax::ax_press_impl(session_id, element_id)?;
+                Ok(json!({ "ok": true }))
+            }
+            #[cfg(not(target_os = "macos"))]
+            {
+                Err("AX is macOS-only".to_string())
+            }
+        }
+
+        "ax_set_value" => {
+            #[cfg(target_os = "macos")]
+            {
+                let session_id = require_str(params, "session_id")?;
+                let element_id = require_u32(params, "element_id")?;
+                let text = require_str(params, "text")?;
+                ax::ax_set_value_impl(session_id, element_id, text)?;
+                Ok(json!({ "ok": true }))
+            }
+            #[cfg(not(target_os = "macos"))]
+            {
+                Err("AX is macOS-only".to_string())
+            }
+        }
+
+        "ax_perform_action" => {
+            #[cfg(target_os = "macos")]
+            {
+                let session_id = require_str(params, "session_id")?;
+                let element_id = require_u32(params, "element_id")?;
+                let action_name = require_str(params, "action_name")?;
+                ax::ax_perform_action_impl(session_id, element_id, action_name)?;
+                Ok(json!({ "ok": true }))
+            }
+            #[cfg(not(target_os = "macos"))]
+            {
+                Err("AX is macOS-only".to_string())
+            }
+        }
+
+        "ax_close_session" => {
+            #[cfg(target_os = "macos")]
+            {
+                let session_id = require_str(params, "session_id")?;
+                ax::ax_close_session_impl(session_id);
+                Ok(json!({ "ok": true }))
+            }
+            #[cfg(not(target_os = "macos"))]
+            {
+                Err("AX is macOS-only".to_string())
+            }
+        }
 
         "mouse_move" => {
             let mut enigo =

@@ -24,5 +24,19 @@ xcap = "0.9"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
+# Accessibility (AXUIElement) — re-hosts src-tauri's Tauri-free AX impl via
+# `include!` (see src/ax.rs). Versions + features copied verbatim from
+# src-tauri/Cargo.toml so the included code compiles unchanged.
+[target.'cfg(target_os = "macos")'.dependencies]
+core-foundation = "0.10"
+core-foundation-sys = "0.8"
+objc2 = "0.6"
+objc2-app-kit = { version = "0.3", features = ["NSWindow", "NSResponder", "NSWorkspace", "NSRunningApplication", "NSPasteboard", "NSPasteboardItem"] }
+# accessibility_macos.rs's diagnostic-only async fns (ax_diagnose_impl,
+# test_ax_snapshot_impl, ax_enable_electron_a11y_impl — not wired into the
+# helper's RPC dispatch, but included verbatim so they must still compile)
+# call tokio::time::sleep. "time" is enough; no runtime is started here.
+tokio = { version = "1", features = ["time"] }
+
 [profile.release]
 opt-level = 1

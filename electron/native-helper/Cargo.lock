@@ -1101,9 +1101,14 @@ dependencies = [
 name = "native-helper"
 version = "0.0.1"
 dependencies = [
+ "core-foundation",
+ "core-foundation-sys",
  "enigo",
+ "objc2 0.6.4",
+ "objc2-app-kit 0.3.2",
  "serde",
  "serde_json",
+ "tokio",
  "xcap",
 ]
 
@@ -1958,6 +1963,15 @@ checksum = "c8323304221c2a851516f22236c5722a72eaa19749016521d6dff0824447d96d"
 dependencies = [
  "displaydoc",
  "zerovec",
+]
+
+[[package]]
+name = "tokio"
+version = "1.53.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "202caea871b69668250d242070849eb495be178ed697a3e98aebce5bc81a0bed"
+dependencies = [
+ "pin-project-lite",
 ]
 
 [[package]]

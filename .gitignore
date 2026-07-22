@@ -96,3 +96,6 @@ AX_*.md
 
 # Electron shell acceptance harness output (Phase 2)
 electron-results/
+
+# Frontend boot-spike build output (Phase 2 recon, throwaway)
+dist-electron-spike/

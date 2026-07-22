@@ -29,7 +29,7 @@
  */
 'use strict';
 
-const { ipcMain, nativeTheme, screen } = require('electron');
+const { ipcMain, nativeTheme, screen, BrowserWindow } = require('electron');
 const path = require('node:path');
 const os = require('node:os');
 const fs = require('node:fs');
@@ -46,6 +46,10 @@ const { ptyDispatch, PTY_MISS } = require('./ptyHost.cjs');
 // at module-load-time) — so requiring it eagerly here, same as the other
 // dispatch families, doesn't deadlock on the circular pair.
 const { browserDispatch, BROWSER_MISS, closeAllBrowserViews } = require('./browserHost.cjs');
+// guiHost.cjs (GUI-families slice) — same lazy-back-require pattern as
+// browserHost.cjs: it needs emitEvent/getMainWindow/requestAppExit from this
+// module, required lazily inside its own function bodies.
+const { guiDispatch, GUI_MISS, initGuiHost, teardownGuiHost } = require('./guiHost.cjs');
 const { previewDispatch, PREVIEW_MISS } = require('./previewServer.cjs');
 const { catalogDispatch, CATALOG_MISS } = require('./catalogDb.cjs');
 const { noticeDispatch, NOTICE_MISS } = require('./noticeDb.cjs');
@@ -79,6 +83,19 @@ function getMainWindow() {
 
 function isQuitting() {
   return quitting;
+}
+
+/**
+ * Shared "real quit" path — flips the isQuitting guard BEFORE app.quit() so
+ * the preventable-close handler lets it through instead of re-preventing it
+ * (see wireWindowEvents' `win.on('close', ...)`). Used by windowDispatch's
+ * `app_exit` command AND guiHost.cjs's tray "Quit" menu item, so both quit
+ * paths share the exact same no-infinite-prevent-loop guard.
+ * @param {import('electron').App} app
+ */
+function requestAppExit(app) {
+  quitting = true;
+  app.quit();
 }
 
 /** True iff any live subscription exists for `event`. */
@@ -374,33 +391,49 @@ const WINDOW_DISPATCH_MISS = Symbol('window-dispatch-miss');
  * @param {import('electron').App} app
  * @param {string} cmd
  * @param {Record<string, unknown>} args
+ * @param {import('electron').BrowserWindow | null} [callerWin] The REAL
+ *   window that sent this invoke (resolved via
+ *   `BrowserWindow.fromWebContents(e.sender)` in the ipcMain handler below).
+ *   Used only for the read/per-window-state commands (set_title, is_focused,
+ *   outer_position) — see module header on why: `@tauri-apps/api`'s
+ *   `getCurrentWindow()` targets "whichever window is asking" (e.g. the pet
+ *   window reading its OWN position for placement math), but every window
+ *   shares the same preload.cjs, which hardcodes
+ *   `metadata.currentWindow.label = 'main'`, so those commands can't
+ *   disambiguate by label the way Tauri does — resolving the actual sender
+ *   window here is the fix. app_exit/window_hide/window_show/
+ *   plugin:window|close intentionally keep targeting the tracked
+ *   `mainWindow` regardless of `callerWin` — those are main-window-lifecycle
+ *   commands ("the app window"), not "whichever window called", and nothing
+ *   besides the main window invokes them today.
  */
-function windowDispatch(app, cmd, args) {
+function windowDispatch(app, cmd, args, callerWin) {
   const a = args || {};
   const win = mainWindow && !mainWindow.isDestroyed() ? mainWindow : null;
+  const queryWin = callerWin && !callerWin.isDestroyed() ? callerWin : win;
   switch (cmd) {
     case 'plugin:window|set_theme':
       // value is 'light'|'dark'|null/undefined (null/undefined = follow system).
       nativeTheme.themeSource = a.value === 'light' || a.value === 'dark' ? a.value : 'system';
       return null;
     case 'plugin:window|set_title':
-      if (win) win.setTitle(String(a.title ?? ''));
+      if (queryWin) queryWin.setTitle(String(a.title ?? ''));
       return null;
     case 'plugin:window|is_focused':
-      return win ? win.isFocused() : false;
+      return queryWin ? queryWin.isFocused() : false;
     case 'plugin:window|set_badge_count':
       // macOS dock badge only; Windows/Linux have no equivalent in Electron's
       // cross-platform API (Windows would need setOverlayIcon per-window).
       app.setBadgeCount(Number(a.count) || 0);
       return null;
     case 'plugin:window|outer_position': {
-      if (!win) return { x: 0, y: 0 };
+      if (!queryWin) return { x: 0, y: 0 };
       // Tauri's outerPosition() contract is PHYSICAL pixels; Electron's
       // getPosition() is device-independent (DIP). Scale by the window's
       // display factor so HiDPI consumers (pet placement, popover anchoring,
       // window position persist/restore) aren't off by the scale factor.
-      const [x, y] = win.getPosition();
-      const sf = screen.getDisplayMatching(win.getBounds()).scaleFactor || 1;
+      const [x, y] = queryWin.getPosition();
+      const sf = screen.getDisplayMatching(queryWin.getBounds()).scaleFactor || 1;
       return { x: Math.round(x * sf), y: Math.round(y * sf) };
     }
     case 'plugin:window|start_dragging':
@@ -411,11 +444,7 @@ function windowDispatch(app, cmd, args) {
       if (win) win.close(); // routes through the preventable-close handler in main.cjs
       return null;
     case 'app_exit':
-      // Standard isQuitting guard: flip BEFORE app.quit() so the close
-      // handler's `if (isQuitting()) return;` lets this quit proceed instead
-      // of preventing it again (which would otherwise infinite-loop).
-      quitting = true;
-      app.quit();
+      requestAppExit(app);
       return null;
     case 'window_hide':
       if (win) win.hide();
@@ -481,7 +510,17 @@ function registerTauriHost(app) {
     // no-orphan intent as ptyHost's killAllPtys / mcpBridge's
     // killAllChildren, ported to this Electron-native resource type).
     closeAllBrowserViews();
+    // Same no-orphan intent for the GUI-families windows (overlay/stop-button/
+    // pet) + the tray icon.
+    teardownGuiHost();
   });
+
+  // Tray boot (GUI-families slice) — mirrors src-tauri/src/lib.rs's
+  // `.setup(|app| {...})` tray build, which runs unconditionally at Tauri
+  // startup. Called here (registerTauriHost is invoked from main.cjs's
+  // app.whenReady().then(...) before createWindow()) so no main.cjs edit is
+  // needed for tray creation.
+  initGuiHost(app);
 
   ipcMain.handle('tauri:invoke', async (e, { cmd, args, body, headers } = {}) => {
     try {
@@ -581,11 +620,24 @@ function registerTauriHost(app) {
       // resolves through this async handler, so no await is needed.
       const browserResult = browserDispatch(app, cmd, a);
       if (browserResult !== BROWSER_MISS) return browserResult;
+      // GUI-families (tray/overlay/window_info/pet) — electron/guiHost.cjs,
+      // porting src-tauri/src/{lib.rs tray cmds, overlay.rs, window_info.rs,
+      // computer_use.rs's get_abu_window_id, pet.rs}. Placed after
+      // browserDispatch and before windowDispatch — no ordering dependency on
+      // either; get_active_window is the only async handler in this family,
+      // which this already-async ipcMain.handle callback awaits correctly.
+      const guiResult = await guiDispatch(app, cmd, a);
+      if (guiResult !== GUI_MISS) return guiResult;
       // Window-family commands (slice D) — checked before the event-plugin
       // switch below so plugin:window|* and app_exit/window_hide/window_show
       // never fall through to the stub. windowDispatch returns a sentinel for
       // anything it doesn't own, so non-window commands still reach dispatch().
-      const windowResult = windowDispatch(app, cmd, a);
+      // `callerWin` (the REAL sending window, not necessarily `mainWindow`)
+      // lets a handful of read/per-window commands act on whichever window
+      // asked (e.g. the pet window reading its own position) — see
+      // windowDispatch's JSDoc.
+      const callerWin = BrowserWindow.fromWebContents(e.sender);
+      const windowResult = windowDispatch(app, cmd, a, callerWin);
       if (windowResult !== WINDOW_DISPATCH_MISS) return windowResult;
       // Event-plugin commands need `e.sender` (the subscribing renderer's
       // WebContents) to route deliveries — handled inline rather than
@@ -650,4 +702,5 @@ module.exports = {
   isQuitting,
   hasListeners,
   wireWindowEvents,
+  requestAppExit,
 };

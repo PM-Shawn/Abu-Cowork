@@ -32,7 +32,25 @@ function safeArgs(args) {
   }
 }
 
-const invoke = (cmd, args) => ipcRenderer.invoke('tauri:invoke', { cmd, args: safeArgs(args) });
+const invoke = (cmd, args, options) => {
+  // Tauri "raw request" form (e.g. @tauri-apps/plugin-fs writeTextFile/writeFile):
+  // the bytes to write are passed as `args` (a Uint8Array/ArrayBuffer) and the
+  // path + fs options travel in `options.headers`. JSON-stringifying the body
+  // would corrupt it, and dropping the 3rd `options` arg loses the path — so
+  // preserve the binary body (Electron structured-clone carries typed arrays
+  // intact) and forward the headers.
+  const isBinary = args instanceof ArrayBuffer || ArrayBuffer.isView(args);
+  const headers = options && options.headers ? options.headers : undefined;
+  if (isBinary || headers) {
+    return ipcRenderer.invoke('tauri:invoke', {
+      cmd,
+      body: isBinary ? args : undefined,
+      args: isBinary ? undefined : safeArgs(args),
+      headers,
+    });
+  }
+  return ipcRenderer.invoke('tauri:invoke', { cmd, args: safeArgs(args) });
+};
 
 // Main delivers a callback invocation by id — see tauriHost.cjs `deliver()`.
 ipcRenderer.on('tauri:callback', (_e, { id, payload } = {}) => {

@@ -272,6 +272,39 @@ app.whenReady().then(async () => {
     consoleLines.push('CLOSE-ROUNDTRIP-ERROR ' + String(err));
   }
 
+  // Phase 2 slice E acceptance: real plugin:fs|* round-trip. Drives the raw
+  // invokes the way @tauri-apps/plugin-fs does — a RAW-BODY write (bytes as the
+  // invoke body, path+options in headers) then a byte-array read decoded back —
+  // proving the preload's raw-body/headers forwarding and the Node fs handlers
+  // work, and that a non-ASCII value survives exactly. baseDir 12 = Temp.
+  let fsRoundTrip = false;
+  try {
+    const result = await win.webContents.executeJavaScript(`
+      (async () => {
+        const inv = window.__TAURI_INTERNALS__.invoke;
+        const rel = 'abu-sliceE-test-秘密.txt';
+        const bytes = new TextEncoder().encode('fs slice E 内容🗂️');
+        await inv('plugin:fs|write_text_file', bytes, { headers: { path: encodeURIComponent(rel), options: JSON.stringify({ baseDir: 12 }) } });
+        const existsRes = await inv('plugin:fs|exists', { path: rel, options: { baseDir: 12 } });
+        const readBack = await inv('plugin:fs|read_text_file', { path: rel, options: { baseDir: 12 } });
+        const decoded = new TextDecoder().decode(new Uint8Array(readBack));
+        await inv('plugin:fs|remove', { path: rel, options: { baseDir: 12 } });
+        const afterRemove = await inv('plugin:fs|exists', { path: rel, options: { baseDir: 12 } });
+        return { existsRes, decoded, afterRemove };
+      })()
+    `);
+    fsRoundTrip =
+      !!result &&
+      result.existsRes === true &&
+      result.decoded === 'fs slice E 内容🗂️' &&
+      result.afterRemove === false;
+    if (!fsRoundTrip) {
+      consoleLines.push('FS-ROUNDTRIP-MISMATCH ' + JSON.stringify(result));
+    }
+  } catch (err) {
+    consoleLines.push('FS-ROUNDTRIP-ERROR ' + String(err));
+  }
+
   const errorLines = consoleLines.filter((l) => /error|gone|LOAD-ERROR|Uncaught|TypeError/i.test(l));
   const remainingErrors = [...new Set(errorLines)];
   const goneOk = MUST_BE_GONE.every((needle) => !remainingErrors.some((l) => l.includes(needle)));
@@ -279,7 +312,8 @@ app.whenReady().then(async () => {
   // it's unavailable / the round-trip timed out (secretNote set), that's an
   // attended-verification gap, not a slice-C failure — don't regress PASS on it.
   const secretOk = secretRoundTrip || !!secretNote;
-  const pass = goneOk && eventRoundTrip && secretOk && windowRoundTrip && closePrevented && closeRequestedDelivered;
+  const pass =
+    goneOk && eventRoundTrip && secretOk && windowRoundTrip && closePrevented && closeRequestedDelivered && fsRoundTrip;
 
   const stubCommands = getStubbedCommands();
 
@@ -293,12 +327,13 @@ app.whenReady().then(async () => {
     windowRoundTrip,
     closePrevented,
     closeRequestedDelivered,
+    fsRoundTrip,
   };
   fs.mkdirSync(path.dirname(OUT), { recursive: true });
   fs.writeFileSync(OUT, JSON.stringify(report, null, 2));
 
   console.log(
-    `[boot-verify] ${pass ? 'PASS' : 'FAIL'} — ${remainingErrors.length} remaining console error line(s), eventRoundTrip=${eventRoundTrip}, secretRoundTrip=${secretRoundTrip}, windowRoundTrip=${windowRoundTrip}, closePrevented=${closePrevented}, closeRequestedDelivered=${closeRequestedDelivered} → ${OUT}`
+    `[boot-verify] ${pass ? 'PASS' : 'FAIL'} — ${remainingErrors.length} remaining console error line(s), eventRoundTrip=${eventRoundTrip}, secretRoundTrip=${secretRoundTrip}, windowRoundTrip=${windowRoundTrip}, closePrevented=${closePrevented}, closeRequestedDelivered=${closeRequestedDelivered}, fsRoundTrip=${fsRoundTrip} → ${OUT}`
   );
   if (secretNote) {
     console.log(`  ⚠ secretNote: ${secretNote}`);

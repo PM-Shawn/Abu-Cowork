@@ -35,6 +35,7 @@ const os = require('node:os');
 const fs = require('node:fs');
 const { abuAppDataDir } = require('./appEnv.cjs');
 const { initSecretStore, secretDispatch } = require('./secretStore.cjs');
+const { fsDispatch, FS_MISS } = require('./fsHost.cjs');
 
 // Window-family state (Phase 2 slice D). `mainWindow` is set by main.cjs right
 // after createWindow() via setMainWindow(); `quitting` is the standard
@@ -446,7 +447,7 @@ function registerTauriHost(app) {
     quitting = true;
   });
 
-  ipcMain.handle('tauri:invoke', async (e, { cmd, args } = {}) => {
+  ipcMain.handle('tauri:invoke', async (e, { cmd, args, body, headers } = {}) => {
     try {
       const a = args || {};
       // Secret commands (slice C) — secretDispatch owns the 7-command list;
@@ -454,6 +455,11 @@ function registerTauriHost(app) {
       // fall through. (Avoids duplicating the command list here.)
       const secretResult = secretDispatch(cmd, a);
       if (secretResult !== undefined) return secretResult;
+      // fs commands (slice E) — plugin:fs|* backed by real Node fs. The raw-body
+      // writes carry their bytes in `body` and path/options in `headers`, so
+      // fsDispatch gets the whole payload. FS_MISS = not an fs command.
+      const fsResult = fsDispatch(app, cmd, { args: a, body, headers });
+      if (fsResult !== FS_MISS) return fsResult;
       // Window-family commands (slice D) — checked before the event-plugin
       // switch below so plugin:window|* and app_exit/window_hide/window_show
       // never fall through to the stub. windowDispatch returns a sentinel for

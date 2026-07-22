@@ -39,6 +39,7 @@ const { fsDispatch, FS_MISS } = require('./fsHost.cjs');
 const { fsWatchDispatch, FS_WATCH_MISS } = require('./fsWatchHost.cjs');
 const { mcpDispatch } = require('./mcpBridge.cjs');
 const { desktopDispatch, DESKTOP_MISS } = require('./desktopHost.cjs');
+const { previewDispatch, PREVIEW_MISS } = require('./previewServer.cjs');
 
 // Window-family state (Phase 2 slice D). `mainWindow` is set by main.cjs right
 // after createWindow() via setMainWindow(); `quitting` is the standard
@@ -488,6 +489,15 @@ function registerTauriHost(app) {
       // just returns the value, so it resolves before reaching the caller.
       const desktopResult = desktopDispatch(app, cmd, { args: a, body, headers, event: e });
       if (desktopResult !== DESKTOP_MISS) return desktopResult;
+      // Preview server (slice F13) — get_preview_server_info/register_preview_root/
+      // unregister_preview_root, backed by a real loopback Node http server
+      // (electron/previewServer.cjs) since the frontend hardcodes the `http://`
+      // scheme (src/utils/previewUrl.ts) — placed here (after desktop, before
+      // window) since it's neither a window-family nor an event-plugin command
+      // and has no ordering dependency on either. previewDispatch is async
+      // (server start is lazy); this handler is already `async` so awaiting is fine.
+      const previewResult = await previewDispatch(app, cmd, { args: a });
+      if (previewResult !== PREVIEW_MISS) return previewResult;
       // Window-family commands (slice D) — checked before the event-plugin
       // switch below so plugin:window|* and app_exit/window_hide/window_show
       // never fall through to the stub. windowDispatch returns a sentinel for

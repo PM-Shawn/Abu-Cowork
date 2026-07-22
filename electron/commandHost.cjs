@@ -292,16 +292,17 @@ function getEnhancedPath() {
 // ── Network proxy port threading (F14 not built yet) ──
 
 /**
- * Always undefined for now — the network-isolation proxy (F14,
- * start_network_proxy / update_network_whitelist in the Rust source) hasn't
- * been ported to the Electron shell. This matches Tauri's own behavior
- * before a proxy has been started (proxy::get_proxy_port() returns None),
- * so `networkIsolation: true` today has no effect on either side until F14
- * lands — network is unrestricted. Structured as its own function so a real
- * proxy port can be threaded in later without touching call sites.
+ * The running network-isolation proxy's port, or undefined if it hasn't been
+ * started (F14, electron/networkProxy.cjs — port of proxy.rs). Mirrors Tauri's
+ * proxy::get_proxy_port() returning None before start_network_proxy. When a
+ * command runs with networkIsolation AND the proxy is up, the sandbox denies
+ * all egress except localhost and points HTTP(S)_PROXY at this port, so the
+ * command can only reach whitelisted hosts. Lazy require avoids any load-order
+ * coupling (networkProxy.cjs depends on nothing here).
  */
 function getNetworkProxyPort() {
-  return undefined;
+  const port = require('./networkProxy.cjs').getProxyPort();
+  return port == null ? undefined : port;
 }
 
 // ── Foreground / background process execution ──

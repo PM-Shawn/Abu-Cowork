@@ -44,6 +44,7 @@ const { catalogDispatch, CATALOG_MISS } = require('./catalogDb.cjs');
 const { noticeDispatch, NOTICE_MISS } = require('./noticeDb.cjs');
 const { commandDispatch, COMMAND_MISS } = require('./commandHost.cjs');
 const { triggerDispatch, TRIGGER_MISS } = require('./triggerServer.cjs');
+const { networkProxyDispatch, NETWORK_PROXY_MISS } = require('./networkProxy.cjs');
 
 // Window-family state (Phase 2 slice D). `mainWindow` is set by main.cjs right
 // after createWindow() via setMainWindow(); `quitting` is the standard
@@ -525,6 +526,14 @@ function registerTauriHost(app) {
       // and before windowDispatch — no ordering dependency on either.
       const triggerResult = await triggerDispatch(app, cmd, a);
       if (triggerResult !== TRIGGER_MISS) return triggerResult;
+      // Network-isolation proxy (slice F14) — start_network_proxy/
+      // update_network_whitelist/get_network_proxy_port, backed by a real
+      // loopback Node http server with CONNECT tunneling
+      // (electron/networkProxy.cjs), porting src-tauri/src/proxy.rs. Placed
+      // after triggerDispatch and before windowDispatch — no ordering
+      // dependency on either.
+      const networkProxyResult = await networkProxyDispatch(app, cmd, a);
+      if (networkProxyResult !== NETWORK_PROXY_MISS) return networkProxyResult;
       // Window-family commands (slice D) — checked before the event-plugin
       // switch below so plugin:window|* and app_exit/window_hide/window_show
       // never fall through to the stub. windowDispatch returns a sentinel for

@@ -1,13 +1,18 @@
 /**
- * Electron main-side Tauri-IPC command router (Phase 2 slice A: production).
+ * Electron main-side Tauri-IPC command router (Phase 2 slice A: production;
+ * slice B: event bridge).
  *
  * Provides real handlers for the boot-blocking core surface the frontend
  * calls at startup: `@tauri-apps/plugin-os` internals (synchronous, must
  * exist before page scripts run) and `@tauri-apps/plugin-path` command
- * family (BaseDirectory resolution + path helpers). Everything else falls
- * back to a benign stub (mirrors electron/spike/tauriShimPreload.cjs's
+ * family (BaseDirectory resolution + path helpers). Slice B adds the
+ * `plugin:event|*` family (listen/unlisten/emit/emit_to) with a real
+ * subscription registry, so `listen()`/`emit()` route through main and main
+ * can push events (window focus/blur/close-requested, future streamed data)
+ * back to renderer-registered callbacks via `emitEvent()`. Everything else
+ * falls back to a benign stub (mirrors electron/spike/tauriShimPreload.cjs's
  * defaultFor pattern) so the frontend can boot past this layer — later
- * slices (B-E) replace individual stubs with real handlers.
+ * slices (C-E) replace individual stubs with real handlers.
  *
  * Wired from electron/main.cjs via registerTauriHost(app) BEFORE the
  * BrowserWindow is created (the preload's synchronous os-internals fetch
@@ -171,7 +176,44 @@ function baseDir(app, n) {
 }
 
 const seenUnknownCmds = new Set();
-let eventListenIdCounter = 1;
+
+// Event subscription registry (Phase 2 slice B). eventId -> {event, callbackId, sender}.
+// `sender` is the ipcMain event.sender (a WebContents) the subscribing renderer
+// lives on, so delivery can target the right window (multi-window aware even
+// though slice B only ever has one).
+let nextEventId = 1;
+const subscriptions = new Map();
+
+/**
+ * Deliver a `plugin:event|emit`-style event to every matching subscription's
+ * renderer. The callback (registered via preload's transformCallback) is
+ * invoked with a Tauri Event object: {event, id, payload}.
+ * @param {string} event
+ * @param {unknown} payload
+ */
+function deliver(event, payload) {
+  for (const [eventId, sub] of subscriptions) {
+    if (sub.event !== event) continue;
+    if (!sub.sender || sub.sender.isDestroyed()) {
+      subscriptions.delete(eventId);
+      continue;
+    }
+    sub.sender.send('tauri:callback', {
+      id: sub.callbackId,
+      payload: { event, id: eventId, payload },
+    });
+  }
+}
+
+/**
+ * Main-side helper for Electron-originated events (window focus/blur/close,
+ * future streamed data) to reach renderer-registered `listen()` callbacks.
+ * @param {string} event
+ * @param {unknown} payload
+ */
+function emitEvent(event, payload) {
+  deliver(event, payload);
+}
 
 // Commands whose real handler isn't wired yet (next-layer slices B-E) but
 // whose callers immediately array-iterate the result (`.filter`/`.length`)
@@ -183,11 +225,12 @@ let eventListenIdCounter = 1;
 const ARRAY_RESULT_CMDS = new Set(['plugin:fs|read_dir', 'notice_inbox_pending']);
 
 function defaultFor(cmd) {
-  // Log EVERY stubbed command once — including the []/false/listen shapes — so a
+  // Log EVERY stubbed command once — including the []/false shapes — so a
   // not-yet-wired command is never silently indistinguishable from a real
   // empty/false result (review slice-A [3]/[6]). These stubs are temporary
   // scaffolding for the boot-clean milestone; slices B-E replace each with a
-  // real handler. NOTE: a stubbed *mutation* (fs write, secret_set, …) returning
+  // real handler (plugin:event|* is now real — see registerTauriHost below).
+  // NOTE: a stubbed *mutation* (fs write, secret_set, …) returning
   // null still reads as success to its caller — tolerated only because this is a
   // dev-integration harness with no real user data, and those write commands get
   // real handlers in slices C-E.
@@ -195,7 +238,6 @@ function defaultFor(cmd) {
     seenUnknownCmds.add(cmd);
     console.log(`[tauriHost] stub: ${cmd}`);
   }
-  if (cmd === 'plugin:event|listen') return eventListenIdCounter++;
   if (ARRAY_RESULT_CMDS.has(cmd)) return [];
   if (/(^|_)list$|failed_keys|_all$/i.test(cmd)) return [];
   if (/_has$|_exists$|^is_|^check_/i.test(cmd)) return false;
@@ -238,9 +280,32 @@ function dispatch(app, cmd, args) {
 
 /** @param {import('electron').App} app */
 function registerTauriHost(app) {
-  ipcMain.handle('tauri:invoke', async (_e, { cmd, args } = {}) => {
+  ipcMain.handle('tauri:invoke', async (e, { cmd, args } = {}) => {
     try {
-      return await dispatch(app, cmd, args);
+      const a = args || {};
+      // Event-plugin commands need `e.sender` (the subscribing renderer's
+      // WebContents) to route deliveries — handled inline rather than
+      // threaded through dispatch(), which only needs `app`.
+      switch (cmd) {
+        case 'plugin:event|listen': {
+          const id = nextEventId++;
+          subscriptions.set(id, { event: a.event, callbackId: a.handler, sender: e.sender });
+          return id;
+        }
+        case 'plugin:event|unlisten':
+          subscriptions.delete(a.eventId);
+          return null;
+        case 'plugin:event|emit':
+          deliver(a.event, a.payload);
+          return null;
+        case 'plugin:event|emit_to':
+          // TODO(slice C+): honor `a.target` (window/webview scoping) instead
+          // of broadcasting to every subscription — fine for now, single window.
+          deliver(a.event, a.payload);
+          return null;
+        default:
+          return await dispatch(app, cmd, args);
+      }
     } catch (err) {
       throw new Error(err instanceof Error ? err.message : String(err));
     }
@@ -256,4 +321,4 @@ function getStubbedCommands() {
   return [...seenUnknownCmds];
 }
 
-module.exports = { registerTauriHost, osInternals, baseDir, dispatch, BaseDirectory, getStubbedCommands };
+module.exports = { registerTauriHost, osInternals, baseDir, dispatch, BaseDirectory, getStubbedCommands, emitEvent };

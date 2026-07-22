@@ -1,15 +1,22 @@
 /**
  * Boot-verify harness — acceptance check for Phase 2 slice A ("startup
- * foundation"). Same shape as electron/spike/bootSpike.cjs, but exercises the
- * PRODUCTION preload (electron/preload.cjs) + registerTauriHost(app) instead
- * of the throwaway capture shim, to prove the real frontend now boots past
- * the path-plugin/platform-detection cascade.
+ * foundation") + slice B ("event bridge"). Same shape as
+ * electron/spike/bootSpike.cjs, but exercises the PRODUCTION preload
+ * (electron/preload.cjs) + registerTauriHost(app) instead of the throwaway
+ * capture shim, to prove the real frontend now boots past the
+ * path-plugin/platform-detection cascade.
  *
  * Loads dist-electron-spike/index.html windowless (show:false), lets it
  * settle, then asserts NONE of the five known boot-cascade error substrings
  * (from the pre-slice-A boot spike) still appear in captured renderer
- * console output. Writes electron-results/boot-verify.json with
- * {pass, remainingErrors, stubCommands}. Run:
+ * console output. Then (slice B) drives a real event round-trip: registers a
+ * `listen()`-shaped callback via `transformCallback` + `plugin:event|listen`
+ * in the page world, has main call `emitEvent()`, and asserts the callback
+ * received the Tauri Event object — proving the callback survives the
+ * contextBridge boundary and main→renderer delivery works. Writes
+ * electron-results/boot-verify.json with
+ * {pass, remainingErrors, stubCommands, eventRoundTrip}. PASS requires both
+ * no cascade errors AND eventRoundTrip true. Run:
  *   npm run electron:boot-verify
  */
 'use strict';
@@ -17,7 +24,7 @@
 const { app, BrowserWindow } = require('electron');
 const path = require('node:path');
 const fs = require('node:fs');
-const { registerTauriHost, getStubbedCommands } = require('../tauriHost.cjs');
+const { registerTauriHost, getStubbedCommands, emitEvent } = require('../tauriHost.cjs');
 
 const SETTLE_MS = 9000;
 const REPO_ROOT = path.resolve(__dirname, '..', '..');
@@ -76,20 +83,49 @@ app.whenReady().then(async () => {
 
   await new Promise((r) => setTimeout(r, SETTLE_MS));
 
+  // Phase 2 slice B acceptance: prove the callback registered via
+  // transformCallback survives the contextBridge boundary and that main
+  // (emitEvent) can deliver an event back to it through the real
+  // plugin:event|listen subscription registry — not just that the invoke
+  // resolves.
+  let eventRoundTrip = false;
+  try {
+    await win.webContents.executeJavaScript(`
+      (async () => {
+        globalThis.__abuEvtTest = null;
+        const id = window.__TAURI_INTERNALS__.transformCallback((e) => { globalThis.__abuEvtTest = e; });
+        await window.__TAURI_INTERNALS__.invoke('plugin:event|listen', { event: 'abu-b-roundtrip', target: { kind: 'Any' }, handler: id });
+        return true;
+      })()
+    `);
+    emitEvent('abu-b-roundtrip', { hello: 'B' });
+    await new Promise((r) => setTimeout(r, 300));
+    const result = await win.webContents.executeJavaScript('globalThis.__abuEvtTest');
+    eventRoundTrip = !!result && result.event === 'abu-b-roundtrip' && typeof result.id === 'number' && result.payload && result.payload.hello === 'B';
+    if (!eventRoundTrip) {
+      consoleLines.push('EVENT-ROUNDTRIP-MISMATCH ' + JSON.stringify(result));
+    }
+  } catch (err) {
+    consoleLines.push('EVENT-ROUNDTRIP-ERROR ' + String(err));
+  }
+
   const errorLines = consoleLines.filter((l) => /error|gone|LOAD-ERROR|Uncaught|TypeError/i.test(l));
   const remainingErrors = [...new Set(errorLines)];
   const goneOk = MUST_BE_GONE.every((needle) => !remainingErrors.some((l) => l.includes(needle)));
+  const pass = goneOk && eventRoundTrip;
 
   const stubCommands = getStubbedCommands();
 
-  const report = { pass: goneOk, remainingErrors, stubCommands };
+  const report = { pass, remainingErrors, stubCommands, eventRoundTrip };
   fs.mkdirSync(path.dirname(OUT), { recursive: true });
   fs.writeFileSync(OUT, JSON.stringify(report, null, 2));
 
-  console.log(`[boot-verify] ${goneOk ? 'PASS' : 'FAIL'} — ${remainingErrors.length} remaining console error line(s) → ${OUT}`);
+  console.log(
+    `[boot-verify] ${pass ? 'PASS' : 'FAIL'} — ${remainingErrors.length} remaining console error line(s), eventRoundTrip=${eventRoundTrip} → ${OUT}`
+  );
   if (remainingErrors.length) {
     for (const l of remainingErrors) console.log('  •', l);
   }
 
-  app.exit(goneOk ? 0 : 1);
+  app.exit(pass ? 0 : 1);
 });

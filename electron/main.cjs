@@ -20,7 +20,7 @@ const path = require('node:path');
 const fs = require('node:fs');
 const { SidecarSupervisor } = require('./sidecarSupervisor.cjs');
 const { resolveSidecarLaunch, sidecarBundleExists, SIDECAR_PATH } = require('./appEnv.cjs');
-const { registerTauriHost } = require('./tauriHost.cjs');
+const { registerTauriHost, emitEvent } = require('./tauriHost.cjs');
 
 const REPO_ROOT = path.resolve(__dirname, '..');
 const FRONTEND_INDEX = path.join(REPO_ROOT, 'dist-electron-spike', 'index.html');
@@ -77,6 +77,18 @@ function createWindow() {
       hint: 'npx vite build --base=./ --outDir dist-electron-spike',
     });
   }
+
+  // Phase 2 slice B: Electron window lifecycle -> Tauri event names, so the
+  // frontend's existing `listen('tauri://focus'|'tauri://blur'|...)` calls
+  // work unmodified under Electron.
+  win.on('focus', () => emitEvent('tauri://focus', null));
+  win.on('blur', () => emitEvent('tauri://blur', null));
+  // Best-effort notify only — do NOT preventDefault here (that would block
+  // the window from closing) and do NOT interfere with the will-quit sidecar
+  // teardown below. Preventable-close semantics (frontend vetoing the close
+  // via this event) are a later refinement.
+  win.on('close', () => emitEvent('tauri://close-requested', null));
+
   void win.loadFile(hasFrontend ? FRONTEND_INDEX : PLACEHOLDER_INDEX);
 }
 

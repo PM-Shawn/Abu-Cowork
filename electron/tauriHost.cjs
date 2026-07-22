@@ -42,6 +42,7 @@ const { desktopDispatch, DESKTOP_MISS } = require('./desktopHost.cjs');
 const { previewDispatch, PREVIEW_MISS } = require('./previewServer.cjs');
 const { catalogDispatch, CATALOG_MISS } = require('./catalogDb.cjs');
 const { noticeDispatch, NOTICE_MISS } = require('./noticeDb.cjs');
+const { commandDispatch, COMMAND_MISS } = require('./commandHost.cjs');
 
 // Window-family state (Phase 2 slice D). `mainWindow` is set by main.cjs right
 // after createWindow() via setMainWindow(); `quitting` is the standard
@@ -509,6 +510,14 @@ function registerTauriHost(app) {
       // node:sqlite (electron/noticeDb.cjs).
       const noticeResult = noticeDispatch(app, cmd, a);
       if (noticeResult !== NOTICE_MISS) return noticeResult;
+      // Command execution (slice F3) — run_shell_command/run_argv_command
+      // (macOS-seatbelt-sandboxed child_process spawn, port of
+      // src-tauri/src/lib.rs + sandbox.rs) + get_env_vars (whitelist-filtered
+      // process.env). Placed after the sqlite dispatchers and before
+      // windowDispatch — no ordering dependency on either, and commandDispatch
+      // is async (spawn+wait), which this handler already awaits.
+      const commandResult = await commandDispatch(app, cmd, a);
+      if (commandResult !== COMMAND_MISS) return commandResult;
       // Window-family commands (slice D) — checked before the event-plugin
       // switch below so plugin:window|* and app_exit/window_hide/window_show
       // never fall through to the stub. windowDispatch returns a sentinel for

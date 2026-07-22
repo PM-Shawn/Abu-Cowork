@@ -11,9 +11,16 @@
  * can push events (window focus/blur/close-requested, future streamed data)
  * back to renderer-registered callbacks via `emitEvent()`. Slice C adds the
  * 7 `secret_*` commands, backed by electron/secretStore.cjs (safeStorage).
- * Everything else falls back to a benign stub (mirrors
+ * Slice D adds the window family (`plugin:window|set_theme|set_title|
+ * is_focused|set_badge_count|outer_position|start_dragging|close`) plus the
+ * app/window custom commands (`app_exit`/`window_hide`/`window_show`), and
+ * closes the loop on preventable-close: main.cjs's `win.on('close')` emits
+ * the app-custom `close-requested` event instead of letting Electron close
+ * the window outright, and the frontend's existing closeAction routing
+ * (App.tsx) decides whether that becomes a real `app_exit`, a `window_hide`,
+ * or a confirm dialog. Everything else falls back to a benign stub (mirrors
  * electron/spike/tauriShimPreload.cjs's defaultFor pattern) so the frontend
- * can boot past this layer — later slices (D-E) replace individual stubs
+ * can boot past this layer — later slices (E+) replace individual stubs
  * with real handlers.
  *
  * Wired from electron/main.cjs via registerTauriHost(app) BEFORE the
@@ -22,12 +29,29 @@
  */
 'use strict';
 
-const { ipcMain } = require('electron');
+const { ipcMain, nativeTheme } = require('electron');
 const path = require('node:path');
 const os = require('node:os');
 const fs = require('node:fs');
 const { abuAppDataDir } = require('./appEnv.cjs');
 const { initSecretStore, secretDispatch } = require('./secretStore.cjs');
+
+// Window-family state (Phase 2 slice D). `mainWindow` is set by main.cjs right
+// after createWindow() via setMainWindow(); `quitting` is the standard
+// isQuitting guard so app_exit's app.quit() doesn't re-trigger the
+// preventable-close handler (win.on('close') in main.cjs) into an infinite
+// prevent-loop.
+let mainWindow = null;
+let quitting = false;
+
+/** @param {import('electron').BrowserWindow} win */
+function setMainWindow(win) {
+  mainWindow = win;
+}
+
+function isQuitting() {
+  return quitting;
+}
 
 // Tauri BaseDirectory enum (numeric -> meaning). See @tauri-apps/api/path.
 const BaseDirectory = Object.freeze({
@@ -270,6 +294,68 @@ function defaultFor(cmd) {
   return null;
 }
 
+// Window-plugin + app/window commands handled against `mainWindow` (Phase 2
+// slice D). Returns a sentinel (WINDOW_DISPATCH_MISS) when `cmd` isn't one of
+// these, so the caller can fall through to dispatch()/stub without this
+// function needing to know the rest of the command surface.
+const WINDOW_DISPATCH_MISS = Symbol('window-dispatch-miss');
+
+/**
+ * @param {import('electron').App} app
+ * @param {string} cmd
+ * @param {Record<string, unknown>} args
+ */
+function windowDispatch(app, cmd, args) {
+  const a = args || {};
+  const win = mainWindow && !mainWindow.isDestroyed() ? mainWindow : null;
+  switch (cmd) {
+    case 'plugin:window|set_theme':
+      // value is 'light'|'dark'|null/undefined (null/undefined = follow system).
+      nativeTheme.themeSource = a.value === 'light' || a.value === 'dark' ? a.value : 'system';
+      return null;
+    case 'plugin:window|set_title':
+      if (win) win.setTitle(String(a.title ?? ''));
+      return null;
+    case 'plugin:window|is_focused':
+      return win ? win.isFocused() : false;
+    case 'plugin:window|set_badge_count':
+      // macOS dock badge only; Windows/Linux have no equivalent in Electron's
+      // cross-platform API (Windows would need setOverlayIcon per-window).
+      app.setBadgeCount(Number(a.count) || 0);
+      return null;
+    case 'plugin:window|outer_position': {
+      if (!win) return { x: 0, y: 0 };
+      const [x, y] = win.getPosition();
+      return { x, y };
+    }
+    case 'plugin:window|start_dragging':
+      // Electron drags windows via CSS `-webkit-app-region: drag`, not an IPC
+      // call — no-op here.
+      return null;
+    case 'plugin:window|close':
+      if (win) win.close(); // routes through the preventable-close handler in main.cjs
+      return null;
+    case 'app_exit':
+      // Standard isQuitting guard: flip BEFORE app.quit() so the close
+      // handler's `if (isQuitting()) return;` lets this quit proceed instead
+      // of preventing it again (which would otherwise infinite-loop).
+      quitting = true;
+      app.quit();
+      return null;
+    case 'window_hide':
+      if (win) win.hide();
+      return null;
+    case 'window_show':
+      if (win) {
+        win.show();
+        win.focus();
+      }
+      return null;
+    default:
+      return WINDOW_DISPATCH_MISS;
+  }
+}
+
 /**
  * @param {import('electron').App} app
  * @param {string} cmd
@@ -318,6 +404,12 @@ function registerTauriHost(app) {
       // fall through. (Avoids duplicating the command list here.)
       const secretResult = secretDispatch(cmd, a);
       if (secretResult !== undefined) return secretResult;
+      // Window-family commands (slice D) — checked before the event-plugin
+      // switch below so plugin:window|* and app_exit/window_hide/window_show
+      // never fall through to the stub. windowDispatch returns a sentinel for
+      // anything it doesn't own, so non-window commands still reach dispatch().
+      const windowResult = windowDispatch(app, cmd, a);
+      if (windowResult !== WINDOW_DISPATCH_MISS) return windowResult;
       // Event-plugin commands need `e.sender` (the subscribing renderer's
       // WebContents) to route deliveries — handled inline rather than
       // threaded through dispatch(), which only needs `app`.
@@ -367,4 +459,15 @@ function getStubbedCommands() {
   return [...seenUnknownCmds];
 }
 
-module.exports = { registerTauriHost, osInternals, baseDir, dispatch, BaseDirectory, getStubbedCommands, emitEvent, clearSubscriptionsForSender };
+module.exports = {
+  registerTauriHost,
+  osInternals,
+  baseDir,
+  dispatch,
+  BaseDirectory,
+  getStubbedCommands,
+  emitEvent,
+  clearSubscriptionsForSender,
+  setMainWindow,
+  isQuitting,
+};

@@ -20,7 +20,13 @@ const path = require('node:path');
 const fs = require('node:fs');
 const { SidecarSupervisor } = require('./sidecarSupervisor.cjs');
 const { resolveSidecarLaunch, sidecarBundleExists, SIDECAR_PATH } = require('./appEnv.cjs');
-const { registerTauriHost, emitEvent, clearSubscriptionsForSender } = require('./tauriHost.cjs');
+const {
+  registerTauriHost,
+  emitEvent,
+  clearSubscriptionsForSender,
+  setMainWindow,
+  isQuitting,
+} = require('./tauriHost.cjs');
 
 const REPO_ROOT = path.resolve(__dirname, '..');
 const FRONTEND_INDEX = path.join(REPO_ROOT, 'dist-electron-spike', 'index.html');
@@ -83,13 +89,19 @@ function createWindow() {
   // unmodified under Electron.
   win.on('focus', () => emitEvent('tauri://focus', null));
   win.on('blur', () => emitEvent('tauri://blur', null));
-  // NOTE: close is deliberately NOT wired here. The real Tauri flow is
-  // api.prevent_close() + emit the app-custom 'close-requested' (NOT
-  // 'tauri://close-requested'), which the frontend (App.tsx) routes on
-  // closeAction → app_exit / window_hide / confirm-dialog. That needs the
-  // window-family commands (app_exit, window_hide) AND a tray to restore a
-  // minimized window — so preventable close + closeAction lands as a unit in
-  // slices D/E. Until then closing the window quits (fine for the dev shell).
+  // Phase 2 slice D: preventable close. Real Tauri calls api.prevent_close()
+  // then emits the app-custom 'close-requested' (NOT 'tauri://close-requested');
+  // the frontend (App.tsx ~line 297) routes on closeAction → app_exit /
+  // window_hide / a confirm dialog. Reproduce that here: prevent the default
+  // close and hand it to the renderer instead. The isQuitting() guard is
+  // required — app_exit's app.quit() re-triggers this same 'close' event for
+  // every open window, and without the guard preventDefault() would fire
+  // again forever (app.quit() never actually closing anything).
+  win.on('close', (e) => {
+    if (isQuitting()) return;
+    e.preventDefault();
+    emitEvent('close-requested', null);
+  });
 
   // Slice B: purge this renderer's event subscriptions when it reloads
   // (Cmd+R / HMR full reload / location.reload). A reload does NOT destroy the
@@ -97,6 +109,8 @@ function createWindow() {
   // subscription registry would keep stale entries whose callbackIds collide
   // with the reloaded page's fresh ids (double-fire / cross-wire).
   win.webContents.on('did-start-loading', () => clearSubscriptionsForSender(win.webContents));
+
+  setMainWindow(win);
 
   void win.loadFile(hasFrontend ? FRONTEND_INDEX : PLACEHOLDER_INDEX);
 }
@@ -106,7 +120,19 @@ app.whenReady().then(() => {
   startSidecar();
   createWindow();
   app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) createWindow();
+    // window_hide (closeAction: 'minimize') hides rather than destroys the
+    // window, so on macOS dock-icon reactivation there IS an existing window
+    // — show it instead of spawning a second one. Only createWindow() when
+    // none exists at all (e.g. after a real quit that somehow re-activates).
+    const existing = BrowserWindow.getAllWindows()[0];
+    if (!existing) {
+      createWindow();
+    } else {
+      existing.show();
+      existing.focus();
+    }
+    // TODO(slice E): Windows/Linux minimize-to-tray restore needs a tray
+    // (no dock/activate equivalent there) — out of scope for slice D.
   });
 });
 

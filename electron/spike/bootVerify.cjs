@@ -1,9 +1,10 @@
 /**
  * Boot-verify harness — acceptance check for Phase 2 slice A ("startup
- * foundation") + slice B ("event bridge") + slice C ("secret store"). Same
- * shape as electron/spike/bootSpike.cjs, but exercises the PRODUCTION
- * preload (electron/preload.cjs) + registerTauriHost(app) instead of the
- * throwaway capture shim, to prove the real frontend now boots past the
+ * foundation") + slice B ("event bridge") + slice C ("secret store") + slice D
+ * ("window family + preventable close"). Same shape as
+ * electron/spike/bootSpike.cjs, but exercises the PRODUCTION preload
+ * (electron/preload.cjs) + registerTauriHost(app) instead of the throwaway
+ * capture shim, to prove the real frontend now boots past the
  * path-plugin/platform-detection cascade.
  *
  * Loads dist-electron-spike/index.html windowless (show:false), lets it
@@ -18,11 +19,19 @@
  * window.__TAURI_INTERNALS__.invoke, asserting a non-ASCII value round-trips
  * exactly. That round-trip is wrapped in a timeout because safeStorage can
  * trigger an OS Keychain access prompt on first use on macOS, which would
- * block this unattended run — see the secretRoundTrip block below. Writes
- * electron-results/boot-verify.json with
+ * block this unattended run — see the secretRoundTrip block below. Then
+ * (slice D) drives a real `plugin:window|*` round-trip (is_focused/set_title/
+ * set_theme/outer_position) AND proves preventable-close: this harness wires
+ * the same `win.on('close')` prevent-default + emitEvent('close-requested')
+ * pattern main.cjs uses (via setMainWindow/isQuitting from tauriHost.cjs),
+ * registers a page-side 'close-requested' listener the same way the
+ * eventRoundTrip block does, calls win.close() from main, and asserts both
+ * that the window survived (close was prevented) and that the renderer's
+ * listener actually fired. Writes electron-results/boot-verify.json with
  * {pass, remainingErrors, stubCommands, eventRoundTrip, secretRoundTrip,
- * secretNote?}. PASS requires no cascade errors AND eventRoundTrip AND
- * secretRoundTrip. Run:
+ * secretNote?, windowRoundTrip, closePrevented, closeRequestedDelivered}.
+ * PASS requires no cascade errors AND eventRoundTrip AND secretRoundTrip AND
+ * windowRoundTrip AND closePrevented AND closeRequestedDelivered. Run:
  *   npm run electron:boot-verify
  */
 'use strict';
@@ -30,7 +39,13 @@
 const { app, BrowserWindow, safeStorage } = require('electron');
 const path = require('node:path');
 const fs = require('node:fs');
-const { registerTauriHost, getStubbedCommands, emitEvent } = require('../tauriHost.cjs');
+const {
+  registerTauriHost,
+  getStubbedCommands,
+  emitEvent,
+  setMainWindow,
+  isQuitting,
+} = require('../tauriHost.cjs');
 
 const SETTLE_MS = 9000;
 const REPO_ROOT = path.resolve(__dirname, '..', '..');
@@ -79,6 +94,17 @@ app.whenReady().then(async () => {
   });
   win.webContents.on('render-process-gone', (_e, d) => {
     consoleLines.push('RENDER-GONE ' + JSON.stringify(d));
+  });
+
+  // Slice D: this harness owns its own window (it doesn't go through
+  // main.cjs's createWindow()), so it must wire the same setMainWindow() +
+  // preventable-close pattern main.cjs does for windowDispatch() (win-family
+  // commands) and the close-requested test below to exercise anything real.
+  setMainWindow(win);
+  win.on('close', (e) => {
+    if (isQuitting()) return;
+    e.preventDefault();
+    emitEvent('close-requested', null);
   });
 
   try {
@@ -189,6 +215,69 @@ app.whenReady().then(async () => {
     /* ignore */
   }
 
+  // Phase 2 slice D acceptance (1/2): real `plugin:window|*` round-trip
+  // through the production IPC surface — is_focused resolves a boolean,
+  // set_title/set_theme don't throw, outer_position returns numeric x/y.
+  let windowRoundTrip = false;
+  try {
+    const result = await win.webContents.executeJavaScript(`
+      (async () => {
+        const inv = (c, a) => window.__TAURI_INTERNALS__.invoke(c, a);
+        const focused = await inv('plugin:window|is_focused', {});
+        await inv('plugin:window|set_title', { title: 'abu-boot-verify-D' });
+        await inv('plugin:window|set_theme', { value: 'dark' });
+        const pos = await inv('plugin:window|outer_position', {});
+        return { focusedType: typeof focused, pos };
+      })()
+    `);
+    windowRoundTrip =
+      !!result &&
+      result.focusedType === 'boolean' &&
+      !!result.pos &&
+      typeof result.pos.x === 'number' &&
+      typeof result.pos.y === 'number';
+    if (!windowRoundTrip) {
+      consoleLines.push('WINDOW-ROUNDTRIP-MISMATCH ' + JSON.stringify(result));
+    }
+  } catch (err) {
+    consoleLines.push('WINDOW-ROUNDTRIP-ERROR ' + String(err));
+  }
+
+  // Phase 2 slice D acceptance (2/2): preventable close. Register a
+  // page-side 'close-requested' listener the same way eventRoundTrip does,
+  // then call win.close() from MAIN (not via the app_exit command — that
+  // would flip isQuitting() and let the close through, which is the OTHER
+  // path, not this one). Assert the window survived (preventDefault worked)
+  // AND the renderer actually received the event (emitEvent → deliver()
+  // reached the real plugin:event|listen subscription, not just that
+  // preventDefault ran).
+  let closePrevented = false;
+  let closeRequestedDelivered = false;
+  try {
+    await win.webContents.executeJavaScript(`
+      (async () => {
+        globalThis.__abuCloseTest = null;
+        const id = window.__TAURI_INTERNALS__.transformCallback((e) => { globalThis.__abuCloseTest = e; });
+        await window.__TAURI_INTERNALS__.invoke('plugin:event|listen', { event: 'close-requested', target: { kind: 'Any' }, handler: id });
+        return true;
+      })()
+    `);
+    win.close();
+    await new Promise((r) => setTimeout(r, 300));
+    closePrevented = !win.isDestroyed();
+    if (!closePrevented) {
+      consoleLines.push('CLOSE-NOT-PREVENTED: window was destroyed by win.close()');
+    } else {
+      const delivered = await win.webContents.executeJavaScript('globalThis.__abuCloseTest');
+      closeRequestedDelivered = !!delivered && delivered.event === 'close-requested';
+      if (!closeRequestedDelivered) {
+        consoleLines.push('CLOSE-REQUESTED-NOT-DELIVERED ' + JSON.stringify(delivered));
+      }
+    }
+  } catch (err) {
+    consoleLines.push('CLOSE-ROUNDTRIP-ERROR ' + String(err));
+  }
+
   const errorLines = consoleLines.filter((l) => /error|gone|LOAD-ERROR|Uncaught|TypeError/i.test(l));
   const remainingErrors = [...new Set(errorLines)];
   const goneOk = MUST_BE_GONE.every((needle) => !remainingErrors.some((l) => l.includes(needle)));
@@ -196,7 +285,7 @@ app.whenReady().then(async () => {
   // it's unavailable / the round-trip timed out (secretNote set), that's an
   // attended-verification gap, not a slice-C failure — don't regress PASS on it.
   const secretOk = secretRoundTrip || !!secretNote;
-  const pass = goneOk && eventRoundTrip && secretOk;
+  const pass = goneOk && eventRoundTrip && secretOk && windowRoundTrip && closePrevented && closeRequestedDelivered;
 
   const stubCommands = getStubbedCommands();
 
@@ -207,12 +296,15 @@ app.whenReady().then(async () => {
     eventRoundTrip,
     secretRoundTrip,
     ...(secretNote ? { secretNote } : {}),
+    windowRoundTrip,
+    closePrevented,
+    closeRequestedDelivered,
   };
   fs.mkdirSync(path.dirname(OUT), { recursive: true });
   fs.writeFileSync(OUT, JSON.stringify(report, null, 2));
 
   console.log(
-    `[boot-verify] ${pass ? 'PASS' : 'FAIL'} — ${remainingErrors.length} remaining console error line(s), eventRoundTrip=${eventRoundTrip}, secretRoundTrip=${secretRoundTrip} → ${OUT}`
+    `[boot-verify] ${pass ? 'PASS' : 'FAIL'} — ${remainingErrors.length} remaining console error line(s), eventRoundTrip=${eventRoundTrip}, secretRoundTrip=${secretRoundTrip}, windowRoundTrip=${windowRoundTrip}, closePrevented=${closePrevented}, closeRequestedDelivered=${closeRequestedDelivered} → ${OUT}`
   );
   if (secretNote) {
     console.log(`  ⚠ secretNote: ${secretNote}`);

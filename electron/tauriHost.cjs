@@ -313,6 +313,11 @@ function registerTauriHost(app) {
   ipcMain.handle('tauri:invoke', async (e, { cmd, args } = {}) => {
     try {
       const a = args || {};
+      // Secret commands (slice C) — secretDispatch owns the 7-command list;
+      // it returns `undefined` for anything that isn't a secret command, so we
+      // fall through. (Avoids duplicating the command list here.)
+      const secretResult = secretDispatch(cmd, a);
+      if (secretResult !== undefined) return secretResult;
       // Event-plugin commands need `e.sender` (the subscribing renderer's
       // WebContents) to route deliveries — handled inline rather than
       // threaded through dispatch(), which only needs `app`.
@@ -344,14 +349,6 @@ function registerTauriHost(app) {
           // of broadcasting to every subscription — fine for now, single window.
           deliver(a.event, a.payload);
           return null;
-        case 'secret_get':
-        case 'secret_set':
-        case 'secret_delete':
-        case 'secret_has':
-        case 'secret_list':
-        case 'secret_failed_keys':
-        case 'secret_clear_all':
-          return secretDispatch(cmd, a);
         default:
           return await dispatch(app, cmd, args);
       }

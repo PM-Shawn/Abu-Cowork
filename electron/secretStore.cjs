@@ -48,60 +48,78 @@ function errMsg(err) {
   return err instanceof Error ? err.message : String(err);
 }
 
-/** Read the on-disk JSON blob into `store`, then test-decrypt every entry. */
+/** Read the on-disk JSON blob into `store`. Decrypt is LAZY (see note). */
 function loadFromDisk() {
   store = new Map();
   failedKeys = new Set();
-  if (!filePath) return;
+  if (!filePath || !fs.existsSync(filePath)) return;
 
-  if (fs.existsSync(filePath)) {
-    try {
-      const raw = fs.readFileSync(filePath, 'utf8');
-      if (raw.trim().length > 0) {
-        const json = JSON.parse(raw);
-        for (const [key, b64] of Object.entries(json)) {
-          if (typeof b64 === 'string') store.set(key, b64);
-        }
-      }
-    } catch (err) {
-      // Corrupt/unreadable file: fail-soft to an empty store rather than
-      // crashing main — matches Tauri's posture of never locking a user out
-      // entirely because of one bad entry (here: the whole file).
-      warn('failed to read/parse secrets file, starting empty store', errMsg(err));
-      store = new Map();
-      return;
-    }
+  let raw;
+  try {
+    raw = fs.readFileSync(filePath, 'utf8');
+  } catch (err) {
+    warn('failed to read secrets file, starting empty store', errMsg(err));
+    return;
   }
+  if (raw.trim().length === 0) return;
 
-  if (!encryptionAvailable) {
-    // Can't verify anything without safeStorage — treat every existing
-    // entry as unreadable rather than pretending they're fine.
-    for (const key of store.keys()) failedKeys.add(key);
+  try {
+    const json = JSON.parse(raw);
+    for (const [key, b64] of Object.entries(json)) {
+      if (typeof b64 === 'string') store.set(key, b64);
+    }
+  } catch (err) {
+    // Corrupt/unparseable file: do NOT start empty and let the next write
+    // overwrite it — that would permanently discard recoverable ciphertext
+    // (silent total key loss). Preserve the file aside first, THEN continue
+    // empty so a fresh store can be built without destroying the old blobs.
+    const aside = `${filePath}.corrupt-${Date.now()}`;
+    try {
+      fs.renameSync(filePath, aside);
+      warn(`secrets file corrupt/unparseable — preserved as ${aside}, starting empty`, errMsg(err));
+    } catch (renameErr) {
+      warn('secrets file corrupt AND could not be preserved aside', errMsg(renameErr));
+    }
+    store = new Map();
     return;
   }
 
-  for (const [key, b64] of store) {
-    try {
-      safeStorage.decryptString(Buffer.from(b64, 'base64'));
-    } catch {
-      failedKeys.add(key);
-    }
+  // failedKeys is populated LAZILY by get() — the frontend reads every provider
+  // key at boot, so a failed decrypt is caught there. We deliberately do NOT
+  // eager-decrypt every entry here: that would run a synchronous decryptString
+  // over the whole store on the main thread before the window, and on a
+  // re-signed macOS build (dev rebuilds ad-hoc re-sign) the first Keychain
+  // access can raise a modal prompt that hangs launch. When safeStorage is
+  // unavailable we can't read anything at all, so mark all as failed up front
+  // (no decrypt call involved).
+  if (!encryptionAvailable) {
+    for (const key of store.keys()) failedKeys.add(key);
   }
 }
 
-/** Atomic write: temp file + rename, so a crash mid-write can't corrupt the store. */
+/**
+ * Atomic durable write: temp file + fsync + rename. THROWS on failure so the
+ * caller (secret_set/delete/clear_all) rejects the invoke — a swallowed write
+ * error would report a save as successful yet be gone after restart (matches
+ * the Tauri backend, whose persist() propagates its Err to the frontend).
+ */
 function persist() {
   if (!filePath) return;
+  const obj = {};
+  for (const [k, v] of store) obj[k] = v;
+  const json = JSON.stringify(obj, null, 2);
+  const tmp = `${filePath}.tmp`;
+  fs.writeFileSync(tmp, json, 'utf8');
+  // fsync the temp file's data blocks before the rename (Rust's sync_all), so a
+  // crash/power-loss right after the (journaled) rename can't expose a
+  // truncated/zero-length store — which would silently lose every key.
+  const fd = fs.openSync(tmp, 'r+');
   try {
-    const obj = {};
-    for (const [k, v] of store) obj[k] = v;
-    const json = JSON.stringify(obj, null, 2);
-    const tmp = `${filePath}.tmp`;
-    fs.writeFileSync(tmp, json, 'utf8');
-    fs.renameSync(tmp, filePath);
-  } catch (err) {
-    warn('failed to persist secrets file', errMsg(err));
+    fs.fsyncSync(fd);
+  } finally {
+    fs.closeSync(fd);
   }
+  fs.renameSync(tmp, filePath);
 }
 
 /**
@@ -168,44 +186,37 @@ function get(key) {
  */
 function set(key, value) {
   if (!encryptionAvailable) {
-    // Deliberate exception to fail-soft: a write silently dropped would look
-    // like a successful save to the user (their key just "didn't stick").
-    // Surface this to the renderer instead.
+    // A write silently dropped would look like a successful save (the key just
+    // "didn't stick"). Surface it to the renderer instead.
     const msg = 'safeStorage encryption unavailable — cannot store secret securely';
     warn(msg);
     throw new Error(msg);
   }
-  try {
-    const buf = safeStorage.encryptString(String(value));
-    store.set(key, buf.toString('base64'));
-    failedKeys.delete(key);
-    persist();
-  } catch (err) {
-    // Fail-soft here (unlike the degraded-mode case above): this is an
-    // unexpected encrypt/persist failure, not the known "no OS key store"
-    // condition, and callers already treat secret_set as void/best-effort.
-    warn(`encrypt/set failed for key "${key}"`, errMsg(err));
-  }
+  // No swallowing catch: an encrypt or persist (durability) failure must reject
+  // secret_set so the user learns the key wasn't saved, rather than seeing a
+  // fake success and finding it gone after restart (matches the Tauri backend).
+  const buf = safeStorage.encryptString(String(value));
+  store.set(key, buf.toString('base64'));
+  failedKeys.delete(key);
+  persist();
 }
 
 /** @param {string} key */
 function del(key) {
-  try {
-    store.delete(key);
-    failedKeys.delete(key);
-    persist();
-  } catch (err) {
-    warn(`delete failed for key "${key}"`, errMsg(err));
-  }
+  store.delete(key);
+  failedKeys.delete(key);
+  persist();
 }
 
 /** @param {string} key */
 function has(key) {
-  return store.has(key);
+  // Exclude undecryptable keys — matches Tauri macOS, where the in-memory index
+  // holds only decryptable secrets (failed keys live only in failed_keys()).
+  return store.has(key) && !failedKeys.has(key);
 }
 
 function list() {
-  return [...store.keys()];
+  return [...store.keys()].filter((k) => !failedKeys.has(k));
 }
 
 function getFailedKeys() {
@@ -214,13 +225,9 @@ function getFailedKeys() {
 
 /** Wipe everything. `knownKeys` is accepted (contract parity) but ignored — mirrors macOS Tauri behavior. */
 function clearAll() {
-  try {
-    store.clear();
-    failedKeys.clear();
-    persist();
-  } catch (err) {
-    warn('clearAll failed', errMsg(err));
-  }
+  store.clear();
+  failedKeys.clear();
+  persist();
 }
 
 const SECRET_CMDS = new Set([

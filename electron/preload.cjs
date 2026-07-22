@@ -45,6 +45,13 @@ ipcRenderer.on('tauri:callback', (_e, { id, payload } = {}) => {
   }
 });
 
+// Main prunes a callback on unlisten (it holds the callbackId; the api's own
+// synchronous unregisterListener only has the eventId). Without this the
+// callbacks Map would leak across a session's listen/unlisten churn.
+ipcRenderer.on('tauri:uncallback', (_e, { id } = {}) => {
+  callbacks.delete(id);
+});
+
 contextBridge.exposeInMainWorld('__TAURI_INTERNALS__', {
   invoke,
   transformCallback: (cb, once = false) => {

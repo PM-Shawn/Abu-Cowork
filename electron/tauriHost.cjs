@@ -208,11 +208,34 @@ function deliver(event, payload) {
 /**
  * Main-side helper for Electron-originated events (window focus/blur/close,
  * future streamed data) to reach renderer-registered `listen()` callbacks.
+ *
+ * NOTE on once(): this bridge is not once-aware — @tauri-apps/api's once()
+ * unlistens via an async `plugin:event|unlisten` IPC round-trip AFTER the first
+ * delivery (event.js fires `void _unlisten(...)` then the handler), so two
+ * emits of the same event in the same burst can both deliver before the
+ * unlisten is processed, double-firing a one-shot handler. This matches
+ * upstream Tauri's own fire-and-forget once() semantics (the JS wrapper, not
+ * the backend, drives the unlisten) — not a divergence introduced here.
  * @param {string} event
  * @param {unknown} payload
  */
 function emitEvent(event, payload) {
   deliver(event, payload);
+}
+
+/**
+ * Drop every subscription owned by a given WebContents. Called on renderer
+ * reload (main.cjs wires webContents 'did-start-loading'): a reload doesn't
+ * destroy the WebContents or fire unlisten, and the reloaded page's preload
+ * resets its callbackId counter — so stale subscriptions would cross-wire to
+ * the fresh page's colliding ids. The reloaded page is gone, so there's no
+ * preload callback to notify (unlike unlisten).
+ * @param {import('electron').WebContents} sender
+ */
+function clearSubscriptionsForSender(sender) {
+  for (const [eventId, sub] of subscriptions) {
+    if (sub.sender === sender) subscriptions.delete(eventId);
+  }
 }
 
 // Commands whose real handler isn't wired yet (next-layer slices B-E) but
@@ -292,9 +315,20 @@ function registerTauriHost(app) {
           subscriptions.set(id, { event: a.event, callbackId: a.handler, sender: e.sender });
           return id;
         }
-        case 'plugin:event|unlisten':
+        case 'plugin:event|unlisten': {
+          // Prune the preload's callback registry too — unlisten's synchronous
+          // __TAURI_EVENT_PLUGIN_INTERNALS__.unregisterListener is a no-op (it
+          // only has the eventId, not the callbackId), so without this the
+          // preload `callbacks` Map would grow unbounded over a session's
+          // listen/unlisten churn. Main knows the callbackId, so it tells the
+          // renderer to drop it.
+          const sub = subscriptions.get(a.eventId);
+          if (sub && sub.sender && !sub.sender.isDestroyed()) {
+            sub.sender.send('tauri:uncallback', { id: sub.callbackId });
+          }
           subscriptions.delete(a.eventId);
           return null;
+        }
         case 'plugin:event|emit':
           deliver(a.event, a.payload);
           return null;
@@ -321,4 +355,4 @@ function getStubbedCommands() {
   return [...seenUnknownCmds];
 }
 
-module.exports = { registerTauriHost, osInternals, baseDir, dispatch, BaseDirectory, getStubbedCommands, emitEvent };
+module.exports = { registerTauriHost, osInternals, baseDir, dispatch, BaseDirectory, getStubbedCommands, emitEvent, clearSubscriptionsForSender };

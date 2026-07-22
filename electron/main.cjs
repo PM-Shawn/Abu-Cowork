@@ -20,7 +20,7 @@ const path = require('node:path');
 const fs = require('node:fs');
 const { SidecarSupervisor } = require('./sidecarSupervisor.cjs');
 const { resolveSidecarLaunch, sidecarBundleExists, SIDECAR_PATH } = require('./appEnv.cjs');
-const { registerTauriHost, emitEvent } = require('./tauriHost.cjs');
+const { registerTauriHost, emitEvent, clearSubscriptionsForSender } = require('./tauriHost.cjs');
 
 const REPO_ROOT = path.resolve(__dirname, '..');
 const FRONTEND_INDEX = path.join(REPO_ROOT, 'dist-electron-spike', 'index.html');
@@ -79,15 +79,24 @@ function createWindow() {
   }
 
   // Phase 2 slice B: Electron window lifecycle -> Tauri event names, so the
-  // frontend's existing `listen('tauri://focus'|'tauri://blur'|...)` calls
-  // work unmodified under Electron.
+  // frontend's existing `listen('tauri://focus'|'tauri://blur')` calls work
+  // unmodified under Electron.
   win.on('focus', () => emitEvent('tauri://focus', null));
   win.on('blur', () => emitEvent('tauri://blur', null));
-  // Best-effort notify only — do NOT preventDefault here (that would block
-  // the window from closing) and do NOT interfere with the will-quit sidecar
-  // teardown below. Preventable-close semantics (frontend vetoing the close
-  // via this event) are a later refinement.
-  win.on('close', () => emitEvent('tauri://close-requested', null));
+  // NOTE: close is deliberately NOT wired here. The real Tauri flow is
+  // api.prevent_close() + emit the app-custom 'close-requested' (NOT
+  // 'tauri://close-requested'), which the frontend (App.tsx) routes on
+  // closeAction → app_exit / window_hide / confirm-dialog. That needs the
+  // window-family commands (app_exit, window_hide) AND a tray to restore a
+  // minimized window — so preventable close + closeAction lands as a unit in
+  // slices D/E. Until then closing the window quits (fine for the dev shell).
+
+  // Slice B: purge this renderer's event subscriptions when it reloads
+  // (Cmd+R / HMR full reload / location.reload). A reload does NOT destroy the
+  // WebContents and does NOT fire unlisten, so without this the main-side
+  // subscription registry would keep stale entries whose callbackIds collide
+  // with the reloaded page's fresh ids (double-fire / cross-wire).
+  win.webContents.on('did-start-loading', () => clearSubscriptionsForSender(win.webContents));
 
   void win.loadFile(hasFrontend ? FRONTEND_INDEX : PLACEHOLDER_INDEX);
 }

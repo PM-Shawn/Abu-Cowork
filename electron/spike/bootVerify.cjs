@@ -305,6 +305,24 @@ app.whenReady().then(async () => {
     consoleLines.push('FS-ROUNDTRIP-ERROR ' + String(err));
   }
 
+  // Slice-E review regression: the fs capability scope must be enforced — an
+  // out-of-scope absolute read (/etc/passwd) must be REFUSED, not served.
+  let fsScopeGuard = false;
+  try {
+    const result = await win.webContents.executeJavaScript(`
+      (async () => {
+        try {
+          await window.__TAURI_INTERNALS__.invoke('plugin:fs|read_text_file', { path: '/etc/passwd' });
+          return { denied: false };
+        } catch (e) { return { denied: true }; }
+      })()
+    `);
+    fsScopeGuard = !!result && result.denied === true;
+    if (!fsScopeGuard) consoleLines.push('FS-SCOPE-NOT-ENFORCED ' + JSON.stringify(result));
+  } catch (err) {
+    consoleLines.push('FS-SCOPE-ERROR ' + String(err));
+  }
+
   const errorLines = consoleLines.filter((l) => /error|gone|LOAD-ERROR|Uncaught|TypeError/i.test(l));
   const remainingErrors = [...new Set(errorLines)];
   const goneOk = MUST_BE_GONE.every((needle) => !remainingErrors.some((l) => l.includes(needle)));
@@ -313,7 +331,14 @@ app.whenReady().then(async () => {
   // attended-verification gap, not a slice-C failure — don't regress PASS on it.
   const secretOk = secretRoundTrip || !!secretNote;
   const pass =
-    goneOk && eventRoundTrip && secretOk && windowRoundTrip && closePrevented && closeRequestedDelivered && fsRoundTrip;
+    goneOk &&
+    eventRoundTrip &&
+    secretOk &&
+    windowRoundTrip &&
+    closePrevented &&
+    closeRequestedDelivered &&
+    fsRoundTrip &&
+    fsScopeGuard;
 
   const stubCommands = getStubbedCommands();
 
@@ -328,6 +353,7 @@ app.whenReady().then(async () => {
     closePrevented,
     closeRequestedDelivered,
     fsRoundTrip,
+    fsScopeGuard,
   };
   fs.mkdirSync(path.dirname(OUT), { recursive: true });
   fs.writeFileSync(OUT, JSON.stringify(report, null, 2));

@@ -152,6 +152,13 @@ function createTray() {
   if (tray) return tray;
   const iconPath = resolveTrayIconPath();
   let image = iconPath ? nativeImage.createFromPath(iconPath) : nativeImage.createEmpty();
+  // Diagnostic (WorkBuddy #32637 pattern): an empty image here means the icon
+  // path resolved but nativeImage couldn't decode it (or no candidate existed)
+  // — the tray would show blank. Log the path so a cold-launch "invisible tray"
+  // can be told apart from a draw-timing issue.
+  if (image.isEmpty()) {
+    console.warn('[guiHost] tray icon image is empty — tray may render blank', { iconPath });
+  }
   if (process.platform === 'darwin' && !image.isEmpty()) {
     image = image.resize({ width: 18, height: 18 }); // macOS menu-bar icon size
   }
@@ -224,6 +231,10 @@ function baseFloatingWindowOptions(extra) {
     transparent: true,
     hasShadow: false,
     resizable: false,
+    // NOT minimizable: overlay / stop-button are always-on-top "AI is operating
+    // the computer" indicators — the agent's own meta+m / minimize-all must not
+    // shrink them away (they were getting minimized along with the app windows).
+    minimizable: false,
     skipTaskbar: true,
     show: false,
     webPreferences: {
@@ -487,6 +498,7 @@ function petShow() {
     transparent: true,
     hasShadow: false,
     resizable: false,
+    minimizable: false, // desktop pet stays put — the agent's minimize-all must not shrink it away
     skipTaskbar: true,
     show: false,
     // Rust's `accept_first_mouse(true)`: the pet usually isn't the key window
@@ -605,10 +617,34 @@ function guiDispatch(app, cmd, args) {
   }
 }
 
-/** Create the tray at app startup — call once from registerTauriHost(app). Idempotent. */
+/**
+ * Schedule tray creation at app startup — call once from registerTauriHost(app).
+ *
+ * The tray is created AFTER the first window exists, matching WorkBuddy and
+ * Cursor (both `createWindow(); initializeTray()`). Reverse-engineering those
+ * apps showed none rely on a create-at-whenReady + retry-nudge scheme; they
+ * simply create the tray once a window is up. Creating the NSStatusItem earlier
+ * — as this module used to, since initGuiHost runs (via registerTauriHost)
+ * BEFORE main.cjs's createWindow() — intermittently failed to draw the macOS
+ * menu-bar icon until the app was first activated (dock click), which is the
+ * exact "托盘时有时无" symptom. Deferring to the first `browser-window-created`
+ * (the main window — pet/overlay windows are only created later, on demand)
+ * removes the pre-window window. Wrapped so a tray failure never aborts boot.
+ */
 function initGuiHost(app) {
-  void app;
-  createTray();
+  const make = () => {
+    try {
+      createTray();
+    } catch (err) {
+      console.error('[guiHost] createTray failed', err);
+    }
+  };
+  // Defensive: if a window already exists (re-init / verify harness), create now.
+  if (mainWin()) {
+    make();
+    return;
+  }
+  app.once('browser-window-created', () => make());
 }
 
 /** No orphans on quit: tear down every window/tray this module created. */

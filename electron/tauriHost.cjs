@@ -56,6 +56,7 @@ const { noticeDispatch, NOTICE_MISS } = require('./noticeDb.cjs');
 const { commandDispatch, COMMAND_MISS } = require('./commandHost.cjs');
 const { triggerDispatch, TRIGGER_MISS } = require('./triggerServer.cjs');
 const { networkProxyDispatch, NETWORK_PROXY_MISS } = require('./networkProxy.cjs');
+const { httpDispatch, HTTP_MISS } = require('./httpHost.cjs');
 
 // Window-family state (Phase 2 slice D). `mainWindow` is set by main.cjs right
 // after createWindow() via setMainWindow(); `quitting` is the standard
@@ -609,6 +610,11 @@ function registerTauriHost(app) {
       // dependency on either.
       const networkProxyResult = await networkProxyDispatch(app, cmd, a);
       if (networkProxyResult !== NETWORK_PROXY_MISS) return networkProxyResult;
+      // UI-side HTTP (plugin:http|fetch/…) — the frontend's tauriFetch routes
+      // connection-verify + web/media tool fetches through this to bypass the
+      // renderer CSP; returns a Promise for the http commands, HTTP_MISS else.
+      const httpResult = httpDispatch(cmd, a);
+      if (httpResult !== HTTP_MISS) return httpResult;
       // Computer-use / AX family (F10) — routed to the native-helper process
       // (input synthesis, screen capture, AXUIElement session cache) via
       // nativeHelperManager. Returns a Promise (resolved by the outer await) or

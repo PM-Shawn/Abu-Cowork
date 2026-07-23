@@ -531,8 +531,15 @@ function petSetFrame(args) {
   const anchorBottom = !!args.anchorBottom;
   const anchorRight = !!args.anchorRight;
   const cur = petWindow.getBounds();
-  const x = anchorRight ? cur.x + cur.width - width : cur.x;
-  const y = anchorBottom ? cur.y + cur.height - height : cur.y;
+  let x = anchorRight ? cur.x + cur.width - width : cur.x;
+  let y = anchorBottom ? cur.y + cur.height - height : cur.y;
+  // Clamp to the workArea so a frame change can't push the pet off-screen. The
+  // frontend's anchor choice differs between menu-open (top-fixed) and the
+  // collapse (mode-based, bottom-fixed when the pet sits in the lower half),
+  // which otherwise drove the window down past the bottom edge on menu close.
+  const wa = screen.getDisplayNearestPoint({ x: cur.x, y: cur.y }).workArea;
+  x = Math.max(wa.x, Math.min(x, wa.x + wa.width - width));
+  y = Math.max(wa.y, Math.min(y, wa.y + wa.height - height));
   petWindow.setBounds({ x, y, width, height });
   return null;
 }

@@ -538,7 +538,10 @@ function stopHeartbeat(): void {
 
 async function runHeartbeat(): Promise<void> {
   if (status !== 'running') return;
-  const start = Date.now();
+  // Monotonic clock — NOT Date.now(): a wall-clock forward step (NTP correction,
+  // sleep/wake) between capturing `start` and measuring `elapsed` must not
+  // inflate the reading and misclassify a real on-time failure as jank.
+  const start = performance.now();
   try {
     await request('ping', undefined, HEARTBEAT_TIMEOUT_MS);
     heartbeatFailures = 0;
@@ -551,8 +554,21 @@ async function runHeartbeat(): Promise<void> {
     // renderer force-kills a healthy sidecar and starts a restart storm. A real
     // hung sidecar rejects at ~HEARTBEAT_TIMEOUT_MS (loop healthy, timer on
     // time) and still counts; genuine process death is caught by handleClose().
-    const elapsed = Date.now() - start;
+    //
+    // Known limitation: if the sidecar is HUNG-BUT-ALIVE (deadlock, never emits
+    // 'close') AND the renderer is simultaneously stalled past the margin across
+    // successive ticks, this masks the hang and handleClose() (process-exit only)
+    // can't catch it — the app won't self-heal until the stall clears. The proper
+    // fix is to move liveness supervision to the MAIN process (WorkBuddy/Cursor
+    // both do this, never the renderer); see
+    // docs/2026-07-24-electron-finalization-autonomous-plan.md §2 follow-up.
+    const elapsed = performance.now() - start;
     if (elapsed > HEARTBEAT_TIMEOUT_MS + HEARTBEAT_JANK_MARGIN_MS) {
+      // Inconclusive tick — we could not get a verdict. RESET the consecutive-
+      // failure streak rather than leaving a stale count: a masked cycle must not
+      // combine with an earlier real failure and a later real failure to trip a
+      // spurious restart of a sidecar that may have recovered in between.
+      heartbeatFailures = 0;
       logger.warn('Sidecar heartbeat inconclusive — renderer event loop stalled, not counting as failure', {
         elapsedMs: elapsed,
         heartbeatTimeoutMs: HEARTBEAT_TIMEOUT_MS,

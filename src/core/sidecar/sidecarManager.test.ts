@@ -526,21 +526,26 @@ describe('sidecarManager', () => {
     const HEARTBEAT_INTERVAL = 10_000;
     const HEARTBEAT_TIMEOUT = 5_000;
     const HEARTBEAT_JANK_MARGIN = 5_000;
+    const RESTART_BACKOFF = 500;
 
     /**
-     * Spy on Date.now() so a test can inflate what runHeartbeat() observes
-     * between capturing `start` and computing `elapsed`, independent of the
-     * fake-timer clock that actually governs *when* the ping's internal
-     * setTimeout fires. This reproduces a stalled renderer event loop
-     * precisely: real wall-clock time (Date.now()) keeps advancing while the
-     * loop is stalled, but the timer schedule itself isn't otherwise
-     * touched. Must be restored after use (no global restoreMocks in this
-     * project's vitest config).
+     * Spy on performance.now() so a test can inflate what runHeartbeat()
+     * observes between capturing `start` and computing `elapsed` — production
+     * measures elapsed via the monotonic clock (performance.now()), NOT
+     * Date.now() (see runHeartbeat()'s JSDoc: a wall-clock forward step must
+     * not be misread as elapsed time). This is independent of the fake-timer
+     * clock that actually governs *when* the ping's internal setTimeout
+     * fires — that bookkeeping still uses Date.now()/the fake clock (via
+     * vi.advanceTimersByTimeAsync). Injecting the offset here reproduces a
+     * stalled renderer event loop precisely: real elapsed time
+     * (performance.now()) keeps advancing while the loop is stalled, but the
+     * timer schedule itself isn't otherwise touched. Must be restored after
+     * use (no global restoreMocks in this project's vitest config).
      */
-    function spyOnDateNowWithOffset(): { setOffset: (ms: number) => void; restore: () => void } {
-      const realNow = Date.now.bind(Date);
+    function spyOnPerfNowWithOffset(): { setOffset: (ms: number) => void; restore: () => void } {
+      const realNow = performance.now.bind(performance);
       let offset = 0;
-      const spy = vi.spyOn(Date, 'now').mockImplementation(() => realNow() + offset);
+      const spy = vi.spyOn(performance, 'now').mockImplementation(() => realNow() + offset);
       return {
         setOffset: (ms: number) => {
           offset = ms;
@@ -559,29 +564,29 @@ describe('sidecarManager', () => {
       const killsBefore = killCallCount();
 
       const baseNow = Date.now();
-      const dateNow = spyOnDateNowWithOffset();
+      const perfNow = spyOnPerfNowWithOffset();
       let nextIntervalAt = baseNow + HEARTBEAT_INTERVAL;
 
       try {
         for (let i = 0; i < 3; i++) {
-          dateNow.setOffset(0);
+          perfNow.setOffset(0);
           const now = Date.now();
           // Advance exactly to the next heartbeat interval firing — this is
-          // where runHeartbeat() captures `start` via Date.now() (offset 0,
-          // so it reads the real virtual clock).
+          // where runHeartbeat() captures `start` via performance.now()
+          // (offset 0, so it reads the real — effectively unmoving — clock).
           await vi.advanceTimersByTimeAsync(nextIntervalAt - now);
 
           // Before the ping's own HEARTBEAT_TIMEOUT-ms setTimeout fires,
-          // inflate Date.now() well past the jank margin — simulating the
-          // renderer stalling for that long before it can even process the
-          // timer callback that rejects the pending ping.
-          dateNow.setOffset(HEARTBEAT_TIMEOUT + HEARTBEAT_JANK_MARGIN + 1_000);
+          // inflate performance.now() well past the jank margin — simulating
+          // the renderer stalling for that long before it can even process
+          // the timer callback that rejects the pending ping.
+          perfNow.setOffset(HEARTBEAT_TIMEOUT + HEARTBEAT_JANK_MARGIN + 1_000);
           await vi.advanceTimersByTimeAsync(HEARTBEAT_TIMEOUT); // fires the ping's own (now "late") timeout
 
           nextIntervalAt += HEARTBEAT_INTERVAL;
         }
       } finally {
-        dateNow.restore();
+        perfNow.restore();
       }
 
       // None of the 3 cycles should have counted as a real heartbeat failure.
@@ -608,6 +613,71 @@ describe('sidecarManager', () => {
 
       expect(spawnCallCount()).toBe(spawnsBefore + 1);
       expect(killCallCount()).toBeGreaterThan(killsBefore);
+      expect(getSidecarStatus()).toBe('running');
+    });
+
+    it('an inconclusive/jank cycle resets the consecutive-failure streak — it cannot combine with an earlier real failure and a later real failure to trip a spurious restart', async () => {
+      mockHappyPath(); // pings never get a response -> each rejects via request()'s own internal timeout
+
+      await startSidecar();
+      expect(getSidecarStatus()).toBe('running');
+
+      const spawnsBefore = spawnCallCount();
+      const killsBefore = killCallCount();
+
+      const baseNow = Date.now();
+      const perfNow = spyOnPerfNowWithOffset();
+      let nextIntervalAt = baseNow + HEARTBEAT_INTERVAL;
+
+      // Cycle 1: on-time failure  -> heartbeatFailures: 0 -> 1
+      // Cycle 2: on-time failure  -> heartbeatFailures: 1 -> 2 (still below the
+      //          HEARTBEAT_FAILURE_THRESHOLD of 3 — no restart yet)
+      // Cycle 3: inconclusive/jank -> heartbeatFailures RESET to 0 (this is the
+      //          F3 fix under test: without the reset, this cycle used to be a
+      //          silent no-op that left the streak at 2)
+      // Cycle 4: on-time failure  -> heartbeatFailures: 0 -> 1 (NOT 3 — the jank
+      //          cycle broke the streak, so this can't combine with cycles 1-2
+      //          to trip a restart)
+      const cycles: Array<'on-time' | 'jank'> = ['on-time', 'on-time', 'jank', 'on-time'];
+
+      try {
+        for (const kind of cycles) {
+          perfNow.setOffset(0);
+          const now = Date.now();
+          // Advance exactly to the next heartbeat interval firing — this is
+          // where runHeartbeat() captures `start` via performance.now()
+          // (offset 0, so it reads the real — effectively unmoving — clock).
+          await vi.advanceTimersByTimeAsync(nextIntervalAt - now);
+
+          if (kind === 'jank') {
+            // Inflate performance.now() well past the jank margin before the
+            // ping's own timeout fires, simulating a stalled renderer event
+            // loop — this cycle is inconclusive, not a real failure.
+            perfNow.setOffset(HEARTBEAT_TIMEOUT + HEARTBEAT_JANK_MARGIN + 1_000);
+          } else {
+            perfNow.setOffset(0);
+          }
+          await vi.advanceTimersByTimeAsync(HEARTBEAT_TIMEOUT); // fires the ping's own timeout
+
+          nextIntervalAt += HEARTBEAT_INTERVAL;
+        }
+
+        // Drain any restart that WOULD have been scheduled (respawn fires
+        // RESTART_BACKOFF_MS after a forced kill) — without the F3 reset, cycle
+        // 4 above would have been the 3rd counted failure and tripped exactly
+        // this path. Draining it here makes the assertions below fail loudly
+        // (spawnCallCount/killCallCount both increment) against the old,
+        // un-reset behavior, rather than merely deferring the restart past the
+        // end of the test.
+        await vi.advanceTimersByTimeAsync(RESTART_BACKOFF + 1_000);
+      } finally {
+        perfNow.restore();
+      }
+
+      // 2 real failures + 1 reset + 1 real failure = a streak of 1, nowhere
+      // near the threshold of 3 — no restart should ever have been triggered.
+      expect(spawnCallCount()).toBe(spawnsBefore);
+      expect(killCallCount()).toBe(killsBefore);
       expect(getSidecarStatus()).toBe('running');
     });
   });

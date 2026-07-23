@@ -202,10 +202,13 @@ export default function Sidebar() {
     // list. Codex encodes the same rule structurally (a partial index
     // `WHERE preview <> ''`); this is the read-side equivalent. Only an
     // EXPLICIT messageCount===0 is hidden (undefined/legacy entries stay
-    // visible — never hide a real conversation), and the ACTIVE conversation is
-    // always kept so a just-created one doesn't flicker out while its first
-    // message is still in flight.
-    .filter((c) => c.messageCount !== 0 || c.id === activeConversationId)
+    // visible — never hide a real conversation). Always kept even at 0 messages:
+    // the ACTIVE conversation (so a just-created one doesn't flicker out while
+    // its first message is in flight) and any IM-channel-bound conversation
+    // (imChannelId — a real linked session, created eagerly by sessionMapper
+    // with skipActivate before its inbound message is appended; the earlier
+    // filter only excludes project/scheduled/trigger, not imChannelId).
+    .filter((c) => c.messageCount !== 0 || c.id === activeConversationId || !!c.imChannelId)
     .sort((a, b) => b.createdAt - a.createdAt);
 
   const handleDeleteConversation = async (e: React.MouseEvent, convId: string) => {

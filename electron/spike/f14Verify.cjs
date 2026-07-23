@@ -297,7 +297,20 @@ async function main() {
     const failures = [];
     for (const f of cjsFiles) {
       try {
-        execFileSync(process.execPath, ['--check', f], { stdio: 'pipe' });
+        // process.execPath here is the ELECTRON binary, not plain node — without
+        // ELECTRON_RUN_AS_NODE=1 it ignores `--check` as a no-op CLI switch and
+        // fully boots the Electron app framework (GPU/network-service helper
+        // processes) to run `f` as its main script instead of just syntax-
+        // checking it, which never returns for a script that never calls
+        // app.quit()/process.exit() — this is the actual cause of this harness
+        // hanging (confirmed empirically: killed after minutes stuck on the
+        // very first file). Setting ELECTRON_RUN_AS_NODE makes this child
+        // process behave exactly like plain node, so `--check` is fast and
+        // syntax-only, matching every other harness's node --check usage.
+        execFileSync(process.execPath, ['--check', f], {
+          stdio: 'pipe',
+          env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
+        });
       } catch (err) {
         allOk = false;
         failures.push({ file: f, err: String(err) });

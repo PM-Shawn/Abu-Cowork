@@ -270,7 +270,19 @@ function main() {
   // eslint-disable-next-line no-console
   results.forEach((line) => console.log(line));
   console.log(`[f1b-verify] PASSED = ${allPassed}`);
-  process.exitCode = allPassed ? 0 : 1;
+
+  // Force a clean process exit. catalogDb.cjs/noticeDb.cjs cache their
+  // node:sqlite DatabaseSync handles in module-level singletons for the
+  // process lifetime (by design — see catalogDb.cjs's module doc header) and
+  // expose no close()/dispose() export, so there is nothing to explicitly
+  // tear down here. Those open handles (plus WAL-mode journal files) keep
+  // the event loop alive indefinitely; `process.exitCode` alone only sets
+  // the code for a *natural* exit, which never arrives. `process.exit()`
+  // forces immediate termination regardless of open handles — the same
+  // fallback this project's own module doc already calls out as acceptable
+  // (see networkProxy.cjs's f14Verify.cjs sibling, and app.exit() in
+  // f9Verify.cjs for the BrowserWindow-based harnesses).
+  process.exit(allPassed ? 0 : 1);
 }
 
 main();

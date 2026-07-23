@@ -27,7 +27,7 @@
 const { app, BrowserWindow } = require('electron');
 const path = require('node:path');
 const fs = require('node:fs');
-const { registerTauriHost, wireWindowEvents } = require('./tauriHost.cjs');
+const { registerTauriHost, wireWindowEvents, getMainWindow } = require('./tauriHost.cjs');
 const { sidecarBundleExists, SIDECAR_PATH } = require('./appEnv.cjs');
 
 const REPO_ROOT = path.resolve(__dirname, '..');
@@ -121,16 +121,17 @@ if (!app.requestSingleInstanceLock()) {
   }
   createWindow();
   app.on('activate', () => {
-    // window_hide (closeAction: 'minimize') hides rather than destroys the
-    // window, so on macOS dock-icon reactivation there IS an existing window
-    // — show it instead of spawning a second one. Only createWindow() when
-    // none exists at all (e.g. after a real quit that somehow re-activates).
-    const existing = BrowserWindow.getAllWindows()[0];
-    if (!existing) {
-      createWindow();
+    // Dock-icon click / reactivation. Target the tracked MAIN window
+    // specifically — NOT BrowserWindow.getAllWindows()[0], which since the GUI
+    // families landed may be the pet / overlay (small, transparent) window, so
+    // showing that left the main UI hidden. window_hide (closeAction 'minimize')
+    // hides rather than destroys the main window, so it's still there to show.
+    const mainWin = getMainWindow();
+    if (mainWin) {
+      mainWin.show();
+      mainWin.focus();
     } else {
-      existing.show();
-      existing.focus();
+      createWindow();
     }
     // TODO(slice E): Windows/Linux minimize-to-tray restore needs a tray
     // (no dock/activate equivalent there) — out of scope for slice D.

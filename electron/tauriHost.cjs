@@ -408,6 +408,53 @@ const WINDOW_DISPATCH_MISS = Symbol('window-dispatch-miss');
  *   commands ("the app window"), not "whichever window called", and nothing
  *   besides the main window invokes them today.
  */
+/** Windows currently in a start_dragging cursor-follow loop (re-entry guard). */
+const draggingWindows = new WeakSet();
+
+/**
+ * Drag `win` by following the cursor until the mouse button is released — the
+ * Electron stand-in for Tauri's native start_dragging (used by the desktop pet).
+ * The cursor stays over the (small) pet window as it follows, so that window's
+ * webContents reliably receives the 'mouseUp' input-event that ends the loop; a
+ * 30s safety timeout covers the rare case where it doesn't. Cursor point and
+ * window position are both in DIP, so no scale conversion is needed.
+ * @param {import('electron').BrowserWindow} win
+ */
+function startWindowDrag(win) {
+  if (draggingWindows.has(win) || win.isDestroyed()) return;
+  draggingWindows.add(win);
+  const c0 = screen.getCursorScreenPoint();
+  const [wx, wy] = win.getPosition();
+  const dx = c0.x - wx;
+  const dy = c0.y - wy;
+  const timer = setInterval(() => {
+    if (win.isDestroyed()) return stop();
+    const c = screen.getCursorScreenPoint();
+    win.setPosition(Math.round(c.x - dx), Math.round(c.y - dy));
+  }, 16);
+  const onInput = (_e, input) => {
+    if (input && input.type === 'mouseUp') stop();
+  };
+  const safety = setTimeout(stop, 30000);
+  function stop() {
+    clearInterval(timer);
+    clearTimeout(safety);
+    draggingWindows.delete(win);
+    if (!win.isDestroyed()) {
+      try {
+        win.webContents.removeListener('input-event', onInput);
+      } catch {
+        /* webContents gone */
+      }
+    }
+  }
+  try {
+    win.webContents.on('input-event', onInput);
+  } catch {
+    stop();
+  }
+}
+
 function windowDispatch(app, cmd, args, callerWin) {
   const a = args || {};
   const win = mainWindow && !mainWindow.isDestroyed() ? mainWindow : null;
@@ -438,23 +485,39 @@ function windowDispatch(app, cmd, args, callerWin) {
       return { x: Math.round(x * sf), y: Math.round(y * sf) };
     }
     case 'plugin:window|primary_monitor': {
-      // Tauri's Monitor: size/position in PHYSICAL px + scaleFactor. Electron's
-      // Display gives size/bounds in DIP, so scale up. Pet placement
-      // (PetApp.tsx primaryMonitor()) reads mon.size.width / scaleFactor.
+      // Tauri's Monitor: size/position/workArea in PHYSICAL px + scaleFactor.
+      // Electron's Display gives them in DIP, so scale up. IMPORTANT: @tauri-apps/
+      // api's mapMonitor() reads m.workArea.position AND m.workArea.size — omitting
+      // workArea makes primaryMonitor() throw "Cannot read properties of undefined
+      // (reading 'position')", which rejected getPlacement() and broke the pet's
+      // notification bubble + right-click menu.
       const d = screen.getPrimaryDisplay();
       const sf = d.scaleFactor || 1;
+      const phys = (r) => ({
+        position: { x: Math.round(r.x * sf), y: Math.round(r.y * sf) },
+        size: { width: Math.round(r.width * sf), height: Math.round(r.height * sf) },
+      });
+      const b = phys(d.bounds);
+      const wa = phys(d.workArea);
       return {
         name: null,
-        size: { width: Math.round(d.size.width * sf), height: Math.round(d.size.height * sf) },
-        position: { x: Math.round(d.bounds.x * sf), y: Math.round(d.bounds.y * sf) },
+        size: b.size,
+        position: b.position,
+        workArea: wa,
         scaleFactor: sf,
       };
     }
-    case 'plugin:window|start_dragging':
-      // Electron drags windows via CSS `-webkit-app-region: drag`, not an IPC
-      // call — no-op here. (The desktop-pet window's startDragging()-based drag
-      // therefore doesn't move it yet — tracked as a known gap.)
+    case 'plugin:window|start_dragging': {
+      // Electron has no native "start a programmatic window drag" like Tauri's
+      // start_dragging — its built-in drag is CSS -webkit-app-region (used for the
+      // main window's [data-tauri-drag] top bar). The desktop pet (usePetDrag.ts)
+      // is the ONLY explicit caller (verified: no other src/ caller); it expects
+      // the native WM to take over the drag after a 10px threshold. Reproduce that
+      // with a cursor-follow loop on the CALLER window, ending on mouseUp.
+      const dragWin = callerWin || win;
+      if (dragWin) startWindowDrag(dragWin);
       return null;
+    }
     case 'plugin:window|close':
       if (win) win.close(); // routes through the preventable-close handler in main.cjs
       return null;

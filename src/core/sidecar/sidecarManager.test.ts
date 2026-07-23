@@ -518,6 +518,100 @@ describe('sidecarManager', () => {
     });
   });
 
+  describe('heartbeat renderer-jank guard (runHeartbeat() elapsed-time check)', () => {
+    // Mirror the constants in sidecarManager.ts (not exported, so duplicated
+    // here — see that file's HEARTBEAT_TIMEOUT_MS / HEARTBEAT_INTERVAL_MS /
+    // HEARTBEAT_JANK_MARGIN_MS and the runHeartbeat() JSDoc for the
+    // jank-margin rationale this describe block exercises).
+    const HEARTBEAT_INTERVAL = 10_000;
+    const HEARTBEAT_TIMEOUT = 5_000;
+    const HEARTBEAT_JANK_MARGIN = 5_000;
+
+    /**
+     * Spy on Date.now() so a test can inflate what runHeartbeat() observes
+     * between capturing `start` and computing `elapsed`, independent of the
+     * fake-timer clock that actually governs *when* the ping's internal
+     * setTimeout fires. This reproduces a stalled renderer event loop
+     * precisely: real wall-clock time (Date.now()) keeps advancing while the
+     * loop is stalled, but the timer schedule itself isn't otherwise
+     * touched. Must be restored after use (no global restoreMocks in this
+     * project's vitest config).
+     */
+    function spyOnDateNowWithOffset(): { setOffset: (ms: number) => void; restore: () => void } {
+      const realNow = Date.now.bind(Date);
+      let offset = 0;
+      const spy = vi.spyOn(Date, 'now').mockImplementation(() => realNow() + offset);
+      return {
+        setOffset: (ms: number) => {
+          offset = ms;
+        },
+        restore: () => spy.mockRestore(),
+      };
+    }
+
+    it('a late ping timeout caused by a stalled renderer event loop is inconclusive — not counted, no restart after 3 cycles', async () => {
+      mockHappyPath(); // pings never get a response -> each rejects via request()'s own internal timeout
+
+      await startSidecar();
+      expect(getSidecarStatus()).toBe('running');
+
+      const spawnsBefore = spawnCallCount();
+      const killsBefore = killCallCount();
+
+      const baseNow = Date.now();
+      const dateNow = spyOnDateNowWithOffset();
+      let nextIntervalAt = baseNow + HEARTBEAT_INTERVAL;
+
+      try {
+        for (let i = 0; i < 3; i++) {
+          dateNow.setOffset(0);
+          const now = Date.now();
+          // Advance exactly to the next heartbeat interval firing — this is
+          // where runHeartbeat() captures `start` via Date.now() (offset 0,
+          // so it reads the real virtual clock).
+          await vi.advanceTimersByTimeAsync(nextIntervalAt - now);
+
+          // Before the ping's own HEARTBEAT_TIMEOUT-ms setTimeout fires,
+          // inflate Date.now() well past the jank margin — simulating the
+          // renderer stalling for that long before it can even process the
+          // timer callback that rejects the pending ping.
+          dateNow.setOffset(HEARTBEAT_TIMEOUT + HEARTBEAT_JANK_MARGIN + 1_000);
+          await vi.advanceTimersByTimeAsync(HEARTBEAT_TIMEOUT); // fires the ping's own (now "late") timeout
+
+          nextIntervalAt += HEARTBEAT_INTERVAL;
+        }
+      } finally {
+        dateNow.restore();
+      }
+
+      // None of the 3 cycles should have counted as a real heartbeat failure.
+      expect(spawnCallCount()).toBe(spawnsBefore);
+      expect(killCallCount()).toBe(killsBefore);
+      expect(getSidecarStatus()).toBe('running');
+    });
+
+    it('an on-time ping timeout (healthy loop, timer on schedule) still counts as a real failure and forces a restart after 3 cycles', async () => {
+      mockHappyPath();
+
+      await startSidecar();
+      expect(getSidecarStatus()).toBe('running');
+
+      const spawnsBefore = spawnCallCount();
+      const killsBefore = killCallCount();
+
+      // 3 heartbeat cycles, each ping rejecting right at HEARTBEAT_TIMEOUT —
+      // no renderer stall injected, so elapsed ≈ HEARTBEAT_TIMEOUT, nowhere
+      // near HEARTBEAT_TIMEOUT + HEARTBEAT_JANK_MARGIN. Every cycle counts,
+      // and the resulting forced restart's respawn fires after the 500ms
+      // RESTART_BACKOFF_MS (the trailing +1_000 covers that).
+      await vi.advanceTimersByTimeAsync(3 * HEARTBEAT_INTERVAL + HEARTBEAT_TIMEOUT + 1_000);
+
+      expect(spawnCallCount()).toBe(spawnsBefore + 1);
+      expect(killCallCount()).toBeGreaterThan(killsBefore);
+      expect(getSidecarStatus()).toBe('running');
+    });
+  });
+
   describe('exit supervision', () => {
     it('auto-restarts on an unexpected close event', async () => {
       mockHappyPath();

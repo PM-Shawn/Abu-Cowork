@@ -82,6 +82,19 @@ const SIDECAR_ID = 'abu-sidecar';
 const HEARTBEAT_INTERVAL_MS = 10_000;
 const HEARTBEAT_TIMEOUT_MS = 5_000;
 const HEARTBEAT_FAILURE_THRESHOLD = 3;
+// The heartbeat runs on the renderer's event loop. If a heavy synchronous task
+// (e.g. rendering a large/animation-heavy preview page) stalls that loop, the
+// ping's reply can't be processed in time AND the timeout timer itself fires
+// late — so a ping "times out" even though the sidecar is perfectly healthy. A
+// genuinely silent sidecar rejects at ~HEARTBEAT_TIMEOUT_MS (the loop is
+// healthy, the timer is on time); a jank-induced timeout rejects much later
+// (the timer was delayed along with everything else). If the observed round
+// trip exceeds the timeout by more than this margin, the verdict is treated as
+// inconclusive (renderer stalled) rather than a real failure — otherwise a busy
+// renderer force-kills a healthy sidecar and starts a self-sustaining restart
+// storm (the respawn's echo/ping can't be processed either while the loop is
+// still stalled). Genuine process death is caught separately by handleClose().
+const HEARTBEAT_JANK_MARGIN_MS = 5_000;
 const REQUEST_DEFAULT_TIMEOUT_MS = 5_000;
 const CRASH_LOOP_WINDOW_MS = 60_000;
 const CRASH_LOOP_MAX_RESTARTS = 3;
@@ -525,10 +538,27 @@ function stopHeartbeat(): void {
 
 async function runHeartbeat(): Promise<void> {
   if (status !== 'running') return;
+  const start = Date.now();
   try {
     await request('ping', undefined, HEARTBEAT_TIMEOUT_MS);
     heartbeatFailures = 0;
   } catch (err) {
+    // Renderer-jank false-positive guard (see HEARTBEAT_JANK_MARGIN_MS): a
+    // timeout that took FAR longer than HEARTBEAT_TIMEOUT_MS to reject means the
+    // renderer event loop was stalled (the timer itself fired late), not that
+    // the sidecar is unresponsive — the reply may have arrived on stdout but
+    // couldn't be processed in time. Don't count it as a failure or the busy
+    // renderer force-kills a healthy sidecar and starts a restart storm. A real
+    // hung sidecar rejects at ~HEARTBEAT_TIMEOUT_MS (loop healthy, timer on
+    // time) and still counts; genuine process death is caught by handleClose().
+    const elapsed = Date.now() - start;
+    if (elapsed > HEARTBEAT_TIMEOUT_MS + HEARTBEAT_JANK_MARGIN_MS) {
+      logger.warn('Sidecar heartbeat inconclusive — renderer event loop stalled, not counting as failure', {
+        elapsedMs: elapsed,
+        heartbeatTimeoutMs: HEARTBEAT_TIMEOUT_MS,
+      });
+      return;
+    }
     heartbeatFailures += 1;
     if (heartbeatFailures < HEARTBEAT_FAILURE_THRESHOLD) {
       logger.warn('Sidecar heartbeat failed', {

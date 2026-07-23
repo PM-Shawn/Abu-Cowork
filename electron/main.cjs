@@ -67,10 +67,13 @@ function createWindow() {
   // window is dragged via CSS `-webkit-app-region`. Map them so the top bar
   // moves the window (interactive children stay clickable via no-drag).
   win.webContents.on('did-finish-load', () => {
+    // Only the drag region's OWN empty space moves the window; EVERY descendant
+    // is no-drag so it stays clickable. Tauri's data-tauri-drag-region behaves
+    // this way (interactive children keep working) — the previous version only
+    // excluded button/input/a, so the workspace TABS (plain divs) inherited the
+    // drag region and showed the window-move cursor / were hard to click.
     void win.webContents.insertCSS(
-      '[data-tauri-drag]{-webkit-app-region:drag}' +
-        '[data-tauri-drag] button,[data-tauri-drag] input,[data-tauri-drag] a,' +
-        '[data-tauri-drag] [role="button"],[data-tauri-drag] [contenteditable]{-webkit-app-region:no-drag}'
+      '[data-tauri-drag]{-webkit-app-region:drag}[data-tauri-drag] *{-webkit-app-region:no-drag}'
     );
   });
   const hasFrontend = fs.existsSync(FRONTEND_INDEX);
@@ -89,7 +92,25 @@ function createWindow() {
   void win.loadFile(hasFrontend ? FRONTEND_INDEX : PLACEHOLDER_INDEX);
 }
 
-app.whenReady().then(() => {
+// Single-instance lock (Tauri had tauri_plugin_single_instance; this is its
+// Electron equivalent). Without it, every launch — dock re-click, `open`,
+// deep-link, `npm run electron:dev` — spawns a SEPARATE app + sidecar, and N
+// instances then fight over the one data dir (dropped/swallowed messages, DB
+// contention). With it, a second launch just focuses the existing window and
+// exits, so there is always exactly one instance.
+if (!app.requestSingleInstanceLock()) {
+  app.quit();
+} else {
+  app.on('second-instance', () => {
+    const existing = BrowserWindow.getAllWindows()[0];
+    if (existing) {
+      if (existing.isMinimized()) existing.restore();
+      existing.show();
+      existing.focus();
+    }
+  });
+
+  app.whenReady().then(() => {
   registerTauriHost(app);
   // Preflight: the frontend spawns the sidecar via mcp_spawn, so a missing
   // bundle would surface only as an opaque child ENOENT — warn clearly here.
@@ -116,8 +137,9 @@ app.whenReady().then(() => {
   });
 });
 
-app.on('window-all-closed', () => {
-  // macOS convention keeps the app alive; here we quit so the frontend-driven
-  // sidecar (killed by mcpBridge's exit guard) is torn down — dev ergonomics.
-  app.quit();
-});
+  app.on('window-all-closed', () => {
+    // macOS convention keeps the app alive; here we quit so the frontend-driven
+    // sidecar (killed by mcpBridge's exit guard) is torn down — dev ergonomics.
+    app.quit();
+  });
+} // end single-instance-lock else

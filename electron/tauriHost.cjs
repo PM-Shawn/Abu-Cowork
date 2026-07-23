@@ -436,9 +436,23 @@ function windowDispatch(app, cmd, args, callerWin) {
       const sf = screen.getDisplayMatching(queryWin.getBounds()).scaleFactor || 1;
       return { x: Math.round(x * sf), y: Math.round(y * sf) };
     }
+    case 'plugin:window|primary_monitor': {
+      // Tauri's Monitor: size/position in PHYSICAL px + scaleFactor. Electron's
+      // Display gives size/bounds in DIP, so scale up. Pet placement
+      // (PetApp.tsx primaryMonitor()) reads mon.size.width / scaleFactor.
+      const d = screen.getPrimaryDisplay();
+      const sf = d.scaleFactor || 1;
+      return {
+        name: null,
+        size: { width: Math.round(d.size.width * sf), height: Math.round(d.size.height * sf) },
+        position: { x: Math.round(d.bounds.x * sf), y: Math.round(d.bounds.y * sf) },
+        scaleFactor: sf,
+      };
+    }
     case 'plugin:window|start_dragging':
       // Electron drags windows via CSS `-webkit-app-region: drag`, not an IPC
-      // call — no-op here.
+      // call — no-op here. (The desktop-pet window's startDragging()-based drag
+      // therefore doesn't move it yet — tracked as a known gap.)
       return null;
     case 'plugin:window|close':
       if (win) win.close(); // routes through the preventable-close handler in main.cjs

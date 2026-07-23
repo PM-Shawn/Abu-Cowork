@@ -41,6 +41,7 @@
     "electron:test": "npm run build:sidecar && node scripts/electron-acceptance.mjs",
     "electron:boot-verify": "npx vite build --base=./ --outDir dist-electron-spike && npx electron electron/spike/bootVerify.cjs",
     "electron:f1a-verify": "npx electron electron/spike/f1aE2E.cjs",
+    "test:e2e-report": "node scripts/e2e-report.mjs",
     "setup-python": "bash scripts/setup-python-runtime.sh",
     "setup-node": "bash scripts/setup-node-runtime.sh",
     "prepare": "husky"

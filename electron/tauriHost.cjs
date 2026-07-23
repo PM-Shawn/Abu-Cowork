@@ -430,19 +430,37 @@ function startWindowDrag(win) {
   const timer = setInterval(() => {
     if (win.isDestroyed()) return stop();
     const c = screen.getCursorScreenPoint();
+    // Follow the cursor FREELY (no per-tick clamp): this keeps the cursor at the
+    // fixed grab point over the moving window, so its mouseUp reliably ends the
+    // drag. Clamping here would peg the window at a screen edge while the cursor
+    // moved past it — the cursor leaves the window, the mouseUp is missed, and
+    // the drag lingers (later mouse moves then reposition the pet on any click).
+    // On-screen clamping happens once on release, in stop().
     win.setPosition(Math.round(c.x - dx), Math.round(c.y - dy));
   }, 16);
   const onInput = (_e, input) => {
     if (input && input.type === 'mouseUp') stop();
   };
-  const safety = setTimeout(stop, 30000);
+  // A drag that somehow never sees mouseUp self-heals quickly (was 30s — too long
+  // a window for the pet to be following the cursor if the release was missed).
+  const safety = setTimeout(stop, 5000);
+  // Also end if the window loses focus mid-drag (a defensive extra end signal).
+  win.once('blur', stop);
   function stop() {
     clearInterval(timer);
     clearTimeout(safety);
     draggingWindows.delete(win);
     if (!win.isDestroyed()) {
+      // Clamp back on-screen if the release left the window off the workArea, so
+      // a fast drag past an edge can't strand the pet off-screen.
+      const b = win.getBounds();
+      const wa = screen.getDisplayNearestPoint(screen.getCursorScreenPoint()).workArea;
+      const nx = Math.max(wa.x, Math.min(b.x, wa.x + wa.width - b.width));
+      const ny = Math.max(wa.y, Math.min(b.y, wa.y + wa.height - b.height));
+      if (nx !== b.x || ny !== b.y) win.setPosition(nx, ny);
       try {
         win.webContents.removeListener('input-event', onInput);
+        win.removeListener('blur', stop);
       } catch {
         /* webContents gone */
       }

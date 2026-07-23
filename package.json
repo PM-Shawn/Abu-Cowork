@@ -30,6 +30,7 @@
     "test:changed": "vitest run --changed HEAD~1",
     "test:quarantine": "vitest run --config vitest.quarantine.config.ts --passWithNoTests",
     "test:e2e": "playwright test",
+    "test:e2e:electron": "playwright test -c playwright.electron.config.ts",
     "verify:quick": "npm run lint && npm run typecheck && vitest run --changed",
     "verify:full": "npm run lint && npm run typecheck && npm run gen:models:check && npm run test:coverage",
     "verify": "npm run verify:full",

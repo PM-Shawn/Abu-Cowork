@@ -465,17 +465,14 @@ function processExit(app, a) {
 // ─────────────────────────────────────────────────────────────────────────
 
 /**
- * `get_current()` — the URL(s) that cold-launched the app. This dev shell
- * doesn't register a custom protocol handler yet (no `app.setAsDefaultProtocolClient`
- * wiring, no `open-url`/second-instance argv parsing), so there is never a
- * real cold-launch deep link to report. Returning `null` (not `[]`) matters:
- * useDeepLinkEnroll.ts does `if (cancelled || !urls) return;` — `null` is the
- * "nothing to check" signal the frontend already handles; an empty array
- * would also work here but `null` matches Tauri's actual "no deep link"
- * return more closely.
+ * `get_current()` — the URL(s) that cold-launched the app. Delegates to
+ * deepLinkHost, which owns the protocol registration + open-url/argv parsing
+ * (see electron/deepLinkHost.cjs). Returns the cold-start URLs as a string[],
+ * or null when there were none: useDeepLinkEnroll.ts does `if (!urls) return;`,
+ * matching the Tauri plugin's "no deep link" return.
  */
 function deepLinkGetCurrent() {
-  return null;
+  return require('./deepLinkHost.cjs').getCurrentDeepLinks();
 }
 
 // ─────────────────────────────────────────────────────────────────────────

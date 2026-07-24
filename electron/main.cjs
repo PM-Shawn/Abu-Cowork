@@ -27,8 +27,9 @@
 const { app, BrowserWindow } = require('electron');
 const path = require('node:path');
 const fs = require('node:fs');
-const { registerTauriHost, wireWindowEvents, getMainWindow } = require('./tauriHost.cjs');
+const { registerTauriHost, wireWindowEvents, getMainWindow, emitEvent } = require('./tauriHost.cjs');
 const { sidecarBundleExists, SIDECAR_PATH } = require('./appEnv.cjs');
+const { initDeepLink, handleSecondInstanceArgv } = require('./deepLinkHost.cjs');
 
 const REPO_ROOT = path.resolve(__dirname, '..');
 const FRONTEND_INDEX = path.join(REPO_ROOT, 'dist-electron-spike', 'index.html');
@@ -101,13 +102,22 @@ function createWindow() {
 if (!app.requestSingleInstanceLock()) {
   app.quit();
 } else {
-  app.on('second-instance', () => {
-    const existing = BrowserWindow.getAllWindows()[0];
+  // Deep-link wiring (abu://enroll → enterprise-bind pre-fill). MUST be set up
+  // before app 'ready' so the early open-url listener is in place when the OS
+  // delivers a launching URL, and the cold-start argv is parsed. See
+  // electron/deepLinkHost.cjs for the competitor-grounded design.
+  initDeepLink(app, { emitEvent, getMainWindow });
+
+  app.on('second-instance', (_event, commandLine) => {
+    const existing = getMainWindow() || BrowserWindow.getAllWindows()[0];
     if (existing) {
       if (existing.isMinimized()) existing.restore();
       existing.show();
       existing.focus();
     }
+    // Win/Linux running-app deep link: the OS launched a second instance whose
+    // argv carries the URL; forward it to the deep-link host to emit/queue.
+    handleSecondInstanceArgv(commandLine);
   });
 
   app.whenReady().then(() => {

@@ -308,6 +308,7 @@ const subscriptions = new Map();
  * @param {unknown} payload
  */
 function deliver(event, payload) {
+  let delivered = 0;
   for (const [eventId, sub] of subscriptions) {
     if (sub.event !== event) continue;
     if (!sub.sender || sub.sender.isDestroyed()) {
@@ -318,7 +319,9 @@ function deliver(event, payload) {
       id: sub.callbackId,
       payload: { event, id: eventId, payload },
     });
+    delivered++;
   }
+  return delivered;
 }
 
 /**
@@ -336,7 +339,7 @@ function deliver(event, payload) {
  * @param {unknown} payload
  */
 function emitEvent(event, payload) {
-  deliver(event, payload);
+  return deliver(event, payload);
 }
 
 /**
@@ -792,6 +795,19 @@ function registerTauriHost(app) {
         case 'plugin:event|listen': {
           const id = nextEventId++;
           subscriptions.set(id, { event: a.event, callbackId: a.handler, sender: e.sender });
+          // A renderer just subscribed. If it's the deep-link channel, drain any
+          // running-app deep links that arrived before the subscriber existed
+          // (the OS can deliver open-url / second-instance URLs before React
+          // mounts useDeepLinkEnroll). Precise flush-on-subscribe — matching how
+          // WorkBuddy/Codex queue then flush at a known-ready moment rather than
+          // blind-send. Lazy require avoids a load-order cycle with deepLinkHost.
+          if (a.event === 'deep-link://new-url') {
+            try {
+              require('./deepLinkHost.cjs').flushPendingDeepLinks();
+            } catch {
+              /* deepLinkHost not wired (e.g. a harness) — nothing to flush */
+            }
+          }
           return id;
         }
         case 'plugin:event|unlisten': {

@@ -19,6 +19,10 @@ directories:
   output: release-electron
   buildResources: build
 
+# Deep-sign extraResources Mach-Os (native-helper, future python/node
+# runtimes) before the outer app signature — no-op on unsigned builds.
+afterPack: scripts/electron-sign-nested.cjs
+
 # Tight whitelist: exclude everything, then re-include exactly what the packaged
 # app needs. The frontend (dist-electron-spike) and sidecar are self-contained
 # bundles (vite / esbuild), so almost no node_modules are needed at runtime —
@@ -88,7 +92,19 @@ mac:
   target:
     - zip
     - dmg
-  # First slice is UNSIGNED so it builds without a certificate. CI / the signed
+  # Signing plumbing (inert while identity stays null): hardened runtime +
+  # the same entitlement set the Tauri build notarizes with (see
+  # build/entitlements.mac.plist), plus an afterPack deep-sign of
+  # extraResources Mach-Os (scripts/electron-sign-nested.cjs) that
+  # electron-builder's own pass doesn't cover — notarization rejects any
+  # unsigned nested Mach-O. Local signed dry-run:
+  #   npx electron-builder --dir -c.mac.identity="Developer ID Application: ..."
+  # CI provides the identity via CSC_LINK/CSC_KEY_PASSWORD (p12 from the same
+  # secrets the Tauri release uses).
+  hardenedRuntime: true
+  entitlements: build/entitlements.mac.plist
+  entitlementsInherit: build/entitlements.mac.plist
+  # Default is UNSIGNED so dev builds need no certificate. CI / the signed
   # release build override this (identity from the keychain) — do NOT commit a
   # real identity here.
   identity: null

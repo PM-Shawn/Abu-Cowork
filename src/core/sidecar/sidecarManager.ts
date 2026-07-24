@@ -34,9 +34,10 @@
  * `mcp_kill` to clear any stale entry before calling `mcp_spawn`.
  *
  * ANY failure — the initial spawn's `invoke('mcp_spawn')` rejecting, an
- * unexpected `mcp-close-abu-sidecar` event, or 3 consecutive heartbeat ping
- * timeouts — is treated identically by `scheduleRestartOrGiveUp()`: it counts
- * as one entry in a rolling 60s window, and unless that window already holds
+ * unexpected `mcp-close-abu-sidecar` event, or a `mcp-hung-abu-sidecar` event
+ * (main-process liveness heartbeat — see below) — is treated identically by
+ * `scheduleRestartOrGiveUp()`: it counts as one entry in a rolling 60s
+ * window, and unless that window already holds
  * more than `CRASH_LOOP_MAX_RESTARTS` (3) entries, it schedules exactly one
  * respawn attempt (after a small fixed backoff, `RESTART_BACKOFF_MS`, to
  * avoid a tight spawn loop). Once the window exceeds the threshold, the
@@ -55,7 +56,7 @@
  *
  * Because `mcp-close-abu-sidecar` is a single shared event name reused
  * across every spawn generation, a close event from a process we just
- * force-killed ourselves (heartbeat-hang restart, or the defensive
+ * force-killed ourselves (main-heartbeat-hung restart, or the defensive
  * pre-spawn kill) *could* theoretically arrive at the JS side after we've
  * already respawned and observed `status === 'running'` again, and be
  * misread as a fresh unexpected close. This is mitigated by ignoring close
@@ -66,6 +67,22 @@
  * and the next heartbeat cycle re-validates real health). Exact
  * correlation would require tagging close events with a spawn generation on
  * the Rust side, which is out of scope for P1-0 (no Rust changes allowed).
+ *
+ * ## F1 — liveness heartbeat moved to the main process
+ *
+ * The ping/pong liveness check used to run on THIS module's own timer
+ * (`runHeartbeat`, on the renderer's event loop) — but a stalled renderer
+ * (heavy rendering, a big synchronous task) can make a perfectly healthy
+ * sidecar's ping "time out" purely because the renderer couldn't process the
+ * reply in time, triggering a false restart storm. Every competitor
+ * (WorkBuddy, Cursor, ChatGPT/Codex, TRAE) supervises liveness from the
+ * process that owns the child's stdio, never from a UI thread. So the ping
+ * loop now lives in `electron/mcpBridge.cjs` (opted in via `heartbeat: true`
+ * on the `mcp_spawn` call below); this module only subscribes to the
+ * `mcp-hung-abu-sidecar` event it emits on 3 consecutive missed pings, and
+ * runs `forceRestartOnHang()` — the same force-restart action `runHeartbeat`
+ * used to run inline. Death-on-crash detection (`mcp-close-abu-sidecar` →
+ * `handleClose()`) is unaffected by this move.
  */
 
 import { invoke } from '@tauri-apps/api/core';
@@ -79,22 +96,6 @@ const logger = createLogger('sidecar');
 /** Fixed id shared by every spawn attempt — see module JSDoc "Restart policy". */
 const SIDECAR_ID = 'abu-sidecar';
 
-const HEARTBEAT_INTERVAL_MS = 10_000;
-const HEARTBEAT_TIMEOUT_MS = 5_000;
-const HEARTBEAT_FAILURE_THRESHOLD = 3;
-// The heartbeat runs on the renderer's event loop. If a heavy synchronous task
-// (e.g. rendering a large/animation-heavy preview page) stalls that loop, the
-// ping's reply can't be processed in time AND the timeout timer itself fires
-// late — so a ping "times out" even though the sidecar is perfectly healthy. A
-// genuinely silent sidecar rejects at ~HEARTBEAT_TIMEOUT_MS (the loop is
-// healthy, the timer is on time); a jank-induced timeout rejects much later
-// (the timer was delayed along with everything else). If the observed round
-// trip exceeds the timeout by more than this margin, the verdict is treated as
-// inconclusive (renderer stalled) rather than a real failure — otherwise a busy
-// renderer force-kills a healthy sidecar and starts a self-sustaining restart
-// storm (the respawn's echo/ping can't be processed either while the loop is
-// still stalled). Genuine process death is caught separately by handleClose().
-const HEARTBEAT_JANK_MARGIN_MS = 5_000;
 const REQUEST_DEFAULT_TIMEOUT_MS = 5_000;
 const CRASH_LOOP_WINDOW_MS = 60_000;
 const CRASH_LOOP_MAX_RESTARTS = 3;
@@ -186,9 +187,6 @@ const notificationHandlers = new Map<string, Set<SidecarNotificationHandler>>();
 /** method -> handler, for sidecar→shell REQUESTS (tool.invoke, hook.emit, ...). See onSidecarRequest(). Single handler per method (unlike notifications' Set) — a request needs exactly one response. */
 const requestHandlers = new Map<string, SidecarRequestHandler>();
 
-let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
-let heartbeatFailures = 0;
-
 /** Rolling window of restart timestamps — see "Restart policy" in module JSDoc. */
 let restartTimestamps: number[] = [];
 let crashLoopWarned = false;
@@ -231,7 +229,6 @@ export async function startSidecar(): Promise<void> {
  */
 export async function stopSidecar(): Promise<void> {
   deliberatelyStopped = true;
-  stopHeartbeat();
   rejectAllPending(new Error('Sidecar stopped'));
   restartTimestamps = [];
   crashLoopWarned = false;
@@ -255,9 +252,10 @@ export async function stopSidecar(): Promise<void> {
 /**
  * Send a JSON-RPC request over the bridge and resolve/reject on the
  * correlated response (matched by numeric id) or timeout. Used internally
- * for the heartbeat ping and the post-spawn self-test echo; exported so
- * tests can exercise request/response correlation directly, and for real
- * sidecar calls (e.g. `llm.chat`) routed through this transport.
+ * for the post-spawn self-test echo (the liveness heartbeat ping itself now
+ * runs in electron/mcpBridge.cjs — see module JSDoc "F1"); exported so tests
+ * can exercise request/response correlation directly, and for real sidecar
+ * calls (e.g. `llm.chat`) routed through this transport.
  *
  * `timeoutMs: 0` means NO timeout — used by `llm.chat`, whose response only
  * settles once an entire (potentially multi-minute) streaming call
@@ -365,11 +363,6 @@ export function __resetForTests(): void {
   pendingRequests.clear();
   notificationHandlers.clear();
   requestHandlers.clear();
-  if (heartbeatTimer) {
-    clearInterval(heartbeatTimer);
-    heartbeatTimer = null;
-  }
-  heartbeatFailures = 0;
   restartTimestamps = [];
   crashLoopWarned = false;
 }
@@ -403,8 +396,13 @@ async function ensureListeners(): Promise<void> {
   const unlistenClose = await listen<string>(`mcp-close-${SIDECAR_ID}`, () => {
     handleClose();
   });
+  // F1 — main-process liveness heartbeat (electron/mcpBridge.cjs) signals a
+  // hung-but-alive sidecar here instead of the renderer detecting it itself.
+  const unlistenHung = await listen<string>(`mcp-hung-${SIDECAR_ID}`, () => {
+    void forceRestartOnHang();
+  });
 
-  unlisteners = [unlistenMsg, unlistenErr, unlistenClose];
+  unlisteners = [unlistenMsg, unlistenErr, unlistenClose, unlistenHung];
 }
 
 async function attemptSpawn(kind: 'initial' | 'restart'): Promise<void> {
@@ -453,14 +451,16 @@ async function attemptSpawn(kind: 'initial' | 'restart'): Promise<void> {
   }
 
   try {
-    await invoke('mcp_spawn', { id: SIDECAR_ID, command: 'node', args: [entryPath], env: spawnEnv });
+    // heartbeat: true opts this child into electron/mcpBridge.cjs's
+    // main-process liveness monitor (F1) — see module JSDoc "F1 — liveness
+    // heartbeat moved to the main process".
+    await invoke('mcp_spawn', { id: SIDECAR_ID, command: 'node', args: [entryPath], env: spawnEnv, heartbeat: true });
   } catch (err) {
     handleSpawnFailure(err, 'spawn-failed');
     return;
   }
 
   status = 'running';
-  startHeartbeat();
   void selfTestEcho();
 }
 
@@ -519,82 +519,24 @@ async function selfTestEcho(): Promise<void> {
   }
 }
 
-// ── Heartbeat ──
+// ── Heartbeat (F1: ping loop lives in electron/mcpBridge.cjs; this is just the reaction) ──
 
-function startHeartbeat(): void {
-  stopHeartbeat();
-  heartbeatFailures = 0;
-  heartbeatTimer = setInterval(() => {
-    void runHeartbeat();
-  }, HEARTBEAT_INTERVAL_MS);
-}
-
-function stopHeartbeat(): void {
-  if (heartbeatTimer) {
-    clearInterval(heartbeatTimer);
-    heartbeatTimer = null;
-  }
-}
-
-async function runHeartbeat(): Promise<void> {
+/**
+ * Reaction to a `mcp-hung-abu-sidecar` event from the main-process liveness
+ * monitor (see module JSDoc "F1"). Mirrors what `runHeartbeat`'s threshold
+ * branch used to do inline, now triggered by an event instead of a local
+ * timer. Guarded to `status === 'running'` so a hung event that arrives
+ * while a restart/stop is already in flight (or after one just completed)
+ * doesn't pile on a second, redundant restart.
+ */
+async function forceRestartOnHang(): Promise<void> {
   if (status !== 'running') return;
-  // Monotonic clock — NOT Date.now(): a wall-clock forward step (NTP correction,
-  // sleep/wake) between capturing `start` and measuring `elapsed` must not
-  // inflate the reading and misclassify a real on-time failure as jank.
-  const start = performance.now();
-  try {
-    await request('ping', undefined, HEARTBEAT_TIMEOUT_MS);
-    heartbeatFailures = 0;
-  } catch (err) {
-    // Renderer-jank false-positive guard (see HEARTBEAT_JANK_MARGIN_MS): a
-    // timeout that took FAR longer than HEARTBEAT_TIMEOUT_MS to reject means the
-    // renderer event loop was stalled (the timer itself fired late), not that
-    // the sidecar is unresponsive — the reply may have arrived on stdout but
-    // couldn't be processed in time. Don't count it as a failure or the busy
-    // renderer force-kills a healthy sidecar and starts a restart storm. A real
-    // hung sidecar rejects at ~HEARTBEAT_TIMEOUT_MS (loop healthy, timer on
-    // time) and still counts; genuine process death is caught by handleClose().
-    //
-    // Known limitation: if the sidecar is HUNG-BUT-ALIVE (deadlock, never emits
-    // 'close') AND the renderer is simultaneously stalled past the margin across
-    // successive ticks, this masks the hang and handleClose() (process-exit only)
-    // can't catch it — the app won't self-heal until the stall clears. The proper
-    // fix is to move liveness supervision to the MAIN process (WorkBuddy/Cursor
-    // both do this, never the renderer); see
-    // docs/2026-07-24-electron-finalization-autonomous-plan.md §2 follow-up.
-    const elapsed = performance.now() - start;
-    if (elapsed > HEARTBEAT_TIMEOUT_MS + HEARTBEAT_JANK_MARGIN_MS) {
-      // Inconclusive tick — we could not get a verdict. RESET the consecutive-
-      // failure streak rather than leaving a stale count: a masked cycle must not
-      // combine with an earlier real failure and a later real failure to trip a
-      // spurious restart of a sidecar that may have recovered in between.
-      heartbeatFailures = 0;
-      logger.warn('Sidecar heartbeat inconclusive — renderer event loop stalled, not counting as failure', {
-        elapsedMs: elapsed,
-        heartbeatTimeoutMs: HEARTBEAT_TIMEOUT_MS,
-      });
-      return;
-    }
-    heartbeatFailures += 1;
-    if (heartbeatFailures < HEARTBEAT_FAILURE_THRESHOLD) {
-      logger.warn('Sidecar heartbeat failed', {
-        failures: heartbeatFailures,
-        error: err instanceof Error ? err.message : String(err),
-      });
-      return;
-    }
-
-    logger.warn('Sidecar heartbeat threshold exceeded — forcing restart', {
-      failures: heartbeatFailures,
-    });
-    heartbeatFailures = 0;
-    stopHeartbeat();
-    // Flip to 'restarting' BEFORE killing, so the close event this kill
-    // triggers is recognized as self-initiated by handleClose() below.
-    status = 'restarting';
-    await invoke('mcp_kill', { id: SIDECAR_ID }).catch(() => {});
-    scheduleRestartOrGiveUp('heartbeat-hung');
-  }
+  logger.warn('Sidecar heartbeat hung (main-process monitor) — forcing restart');
+  // Flip to 'restarting' BEFORE killing, so the close event this kill
+  // triggers is recognized as self-initiated by handleClose() below.
+  status = 'restarting';
+  await invoke('mcp_kill', { id: SIDECAR_ID }).catch(() => {});
+  scheduleRestartOrGiveUp('main-heartbeat-hung');
 }
 
 // ── Event handlers ──
@@ -703,7 +645,6 @@ async function writeRpcMessage(payload: unknown): Promise<void> {
 }
 
 function handleClose(): void {
-  stopHeartbeat();
   rejectAllPending(new Error('Sidecar process closed'));
 
   if (deliberatelyStopped) {
@@ -712,8 +653,8 @@ function handleClose(): void {
   }
 
   if (status === 'starting' || status === 'restarting' || status === 'failed') {
-    // Echo of a kill we just issued ourselves (defensive pre-spawn kill or
-    // heartbeat-hang forced kill), or we've already given up — don't
+    // Echo of a kill we just issued ourselves (defensive pre-spawn kill or a
+    // main-heartbeat-hung forced kill), or we've already given up — don't
     // double-count this as a new failure. See "Known limitation" in the
     // module JSDoc for the residual race this doesn't fully close.
     return;

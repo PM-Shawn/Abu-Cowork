@@ -25,6 +25,31 @@
  *
  * No-orphan: SIGINT/SIGTERM/SIGHUP + 'exit' guards kill every spawned child
  * (main no longer runs the SidecarSupervisor, so this bridge owns the net).
+ *
+ * ## Main-process liveness heartbeat (F1, opt-in via `mcp_spawn({ heartbeat: true })`)
+ *
+ * This used to live on the RENDERER side (sidecarManager.ts's `runHeartbeat`)
+ * — but the renderer's event loop can stall under heavy rendering, which
+ * makes a perfectly healthy sidecar's ping "time out" and triggers a false
+ * restart storm. Every competitor (WorkBuddy, Cursor, ChatGPT/Codex, TRAE)
+ * supervises liveness from the process that owns the child's stdio, never
+ * from a UI thread — so this pings from HERE instead, where a busy renderer
+ * can't interfere. Passing `heartbeat: true` in `mcp_spawn`'s args opts a
+ * given child into this monitor; every other mcp_spawn caller (plain MCP
+ * stdio servers via src/core/mcp/client.ts) is completely unaffected.
+ *
+ * On 3 consecutive missed pings, main emits `mcp-hung-{id}` (a NEW event,
+ * parallel to `mcp-close-{id}`) — the renderer's sidecarManager.ts listens
+ * for it and runs its existing force-restart path. Genuine process death is
+ * still caught by `mcp-close-{id}` (unchanged); the heartbeat only detects
+ * "alive but unresponsive" (e.g. an event-loop deadlock in the child).
+ *
+ * The ping/ack travels over the SAME stdin/stdout pipe as real JSON-RPC
+ * traffic, tagged with a `__mcphb-{seq}` string id so it can never collide
+ * with a real request/response: real ids sent by this bridge's callers are
+ * always numeric (or string ids minted by the child itself, per its own
+ * protocol — see the interception guard in the stdout loop below for why
+ * that still can't collide).
  */
 'use strict';
 
@@ -34,6 +59,141 @@ const { spawn, execFileSync } = require('node:child_process');
 const children = new Map();
 
 const MCP_CMDS = new Set(['mcp_spawn', 'mcp_write', 'mcp_kill']);
+
+// Heartbeat constants — mirror sidecarManager.ts's former (now-removed)
+// HEARTBEAT_INTERVAL_MS/HEARTBEAT_TIMEOUT_MS/HEARTBEAT_FAILURE_THRESHOLD/
+// HEARTBEAT_JANK_MARGIN_MS, moved here verbatim (F1).
+const HEARTBEAT_INTERVAL_MS = 10_000;
+const HEARTBEAT_TIMEOUT_MS = 5_000;
+const HEARTBEAT_FAILURE_THRESHOLD = 3;
+// Belt-and-suspenders: main's own event loop can in theory stall too (a sync
+// fs call, a big GC pause). If a ping's timeout fires much later than
+// HEARTBEAT_TIMEOUT_MS after it was sent, that lateness itself means the
+// verdict is inconclusive (the timer was delayed, not necessarily the
+// child) — treat it as a no-op tick rather than a counted failure, so a
+// transient main-side stall can't force-kill a healthy child. See
+// sidecarManager.ts's former runHeartbeat() for the identical reasoning this
+// mirrors (now applied one level down, to main's own clock instead of the
+// renderer's).
+const HEARTBEAT_JANK_MARGIN_MS = 5_000;
+
+/**
+ * id -> heartbeat monitor state. Only populated for children spawned with
+ * `heartbeat: true`; absent for every other mcp_spawn caller (MCP stdio
+ * servers), which get zero heartbeat behavior — same as before this change.
+ * @type {Map<string, {
+ *   intervalTimer: ReturnType<typeof setInterval>,
+ *   timeoutTimer: ReturnType<typeof setTimeout> | null,
+ *   seq: number,
+ *   pendingId: string | null,
+ *   pendingStart: number,
+ *   failures: number,
+ * }>}
+ */
+const heartbeats = new Map();
+
+/** Start the per-child ping loop. No-op if one is already running for `id` (defensive). */
+function startHeartbeatMonitor(id) {
+  stopHeartbeatMonitor(id);
+  const state = {
+    intervalTimer: setInterval(() => sendHeartbeatPing(id), HEARTBEAT_INTERVAL_MS),
+    timeoutTimer: null,
+    seq: 0,
+    pendingId: null,
+    pendingStart: 0,
+    failures: 0,
+  };
+  heartbeats.set(id, state);
+}
+
+/** Clear the interval + any in-flight timeout and drop `id`'s heartbeat state. */
+function stopHeartbeatMonitor(id) {
+  const state = heartbeats.get(id);
+  if (!state) return;
+  clearInterval(state.intervalTimer);
+  if (state.timeoutTimer) clearTimeout(state.timeoutTimer);
+  heartbeats.delete(id);
+}
+
+/** One tick of the heartbeat loop: send a ping unless one is already outstanding. */
+function sendHeartbeatPing(id) {
+  const state = heartbeats.get(id);
+  const child = children.get(id);
+  if (!state || !child || !child.stdin || !child.stdin.writable) return;
+  if (state.pendingId !== null) return; // previous ping still outstanding — skip this tick
+
+  state.seq += 1;
+  const pingId = `__mcphb-${state.seq}`;
+  state.pendingId = pingId;
+  // Monotonic clock (see HEARTBEAT_JANK_MARGIN_MS comment) — a wall-clock
+  // step must not be misread as elapsed time.
+  state.pendingStart = performance.now();
+
+  try {
+    child.stdin.write(JSON.stringify({ jsonrpc: '2.0', id: pingId, method: 'ping' }) + '\n');
+  } catch {
+    // Write failure surfaces the same way silence does: the timeout below
+    // still fires and counts it as a missed ping.
+  }
+
+  state.timeoutTimer = setTimeout(() => onHeartbeatTimeout(id), HEARTBEAT_TIMEOUT_MS);
+}
+
+/**
+ * Fires when a ping's ack didn't arrive within HEARTBEAT_TIMEOUT_MS. Decides
+ * inconclusive-vs-real-failure (see HEARTBEAT_JANK_MARGIN_MS), and on
+ * HEARTBEAT_FAILURE_THRESHOLD consecutive real failures emits `mcp-hung-{id}`.
+ */
+function onHeartbeatTimeout(id) {
+  const state = heartbeats.get(id);
+  if (!state) return;
+  const elapsed = performance.now() - state.pendingStart;
+  state.pendingId = null;
+  state.timeoutTimer = null;
+
+  if (elapsed > HEARTBEAT_TIMEOUT_MS + HEARTBEAT_JANK_MARGIN_MS) {
+    // Inconclusive — main's own loop was stalled past the margin, so this
+    // tick can't tell us anything about the child. Reset rather than count,
+    // same rationale as the renderer-side guard this replaces.
+    state.failures = 0;
+    return;
+  }
+
+  state.failures += 1;
+  if (state.failures >= HEARTBEAT_FAILURE_THRESHOLD) {
+    state.failures = 0;
+    emit(`mcp-hung-${id}`, '');
+  }
+}
+
+/**
+ * Called from the stdout line loop BEFORE `emit('mcp-msg-{id}', line)`.
+ * Returns true iff `line` was this child's outstanding heartbeat ack (in
+ * which case the caller must NOT emit it as a regular message). Guarded:
+ * only lines that literally contain `__mcphb-` are even parsed, and any
+ * parse failure falls through to a normal emit — a real JSON-RPC response
+ * always carries a NUMERIC id (this bridge's own request ids) or a
+ * child-minted string id from ITS OWN protocol, neither of which is ever the
+ * literal string `__mcphb-{seq}`, so this can never swallow a real response.
+ */
+function consumeHeartbeatAck(id, line) {
+  const state = heartbeats.get(id);
+  if (!state || state.pendingId === null) return false;
+  let parsed;
+  try {
+    parsed = JSON.parse(line);
+  } catch {
+    return false;
+  }
+  if (parsed && parsed.id === state.pendingId) {
+    if (state.timeoutTimer) clearTimeout(state.timeoutTimer);
+    state.timeoutTimer = null;
+    state.pendingId = null;
+    state.failures = 0;
+    return true;
+  }
+  return false;
+}
 
 /** Cache the event-bridge emit after the first require (hot path: one call per stream line). */
 let _emitEvent = null;
@@ -95,7 +255,7 @@ function mcpDispatch(cmd, args) {
   }
 }
 
-function mcpSpawn({ id, command, args = [], env = {} }) {
+function mcpSpawn({ id, command, args = [], env = {}, heartbeat }) {
   const existing = children.get(id);
   if (existing && !existing.killed) {
     // Match Rust: refuse to replace a live process (the frontend does a
@@ -130,6 +290,7 @@ function mcpSpawn({ id, command, args = [], env = {} }) {
     if (emittedClose) return;
     emittedClose = true;
     children.delete(id);
+    stopHeartbeatMonitor(id);
     emit(`mcp-close-${id}`, '');
   };
 
@@ -142,7 +303,11 @@ function mcpSpawn({ id, command, args = [], env = {} }) {
     while ((nl = outBuf.indexOf('\n')) >= 0) {
       const line = outBuf.slice(0, nl).trim();
       outBuf = outBuf.slice(nl + 1);
-      if (line) emit(`mcp-msg-${id}`, line);
+      if (!line) continue;
+      // Heartbeat ack interception — see consumeHeartbeatAck()'s JSDoc for
+      // why this can never swallow a real RPC response.
+      if (line.includes('__mcphb-') && consumeHeartbeatAck(id, line)) continue;
+      emit(`mcp-msg-${id}`, line);
     }
   });
 
@@ -177,6 +342,7 @@ function mcpSpawn({ id, command, args = [], env = {} }) {
   return new Promise((resolve, reject) => {
     child.once('spawn', () => {
       spawned = true;
+      if (heartbeat) startHeartbeatMonitor(id);
       resolve(null);
     });
     child.once('error', (err) => {

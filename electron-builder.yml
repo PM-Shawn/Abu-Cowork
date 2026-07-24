@@ -76,8 +76,18 @@ publish:
 mac:
   category: public.app-category.productivity
   icon: src-tauri/icons/icon.icns
+  # `npm run pack:electron` (--dir) still produces just the unpacked .app for
+  # fast iteration + the packaged smoke. `npm run dist:electron` builds:
+  #  - zip: REQUIRED for mac auto-update (Squirrel.Mac consumes a zip; its
+  #    presence is also what makes electron-builder embed app-update.yml and
+  #    emit latest-mac.yml with the artifact's sha512 — the feed files the
+  #    updater slice consumes).
+  #  - dmg: the user-facing installer artifact.
+  # Both are UNSIGNED until the signing slice — fine for wiring verification,
+  # NOT distributable.
   target:
-    - dir            # unpacked .app — fast; dmg + signing come in a later slice
+    - zip
+    - dmg
   # First slice is UNSIGNED so it builds without a certificate. CI / the signed
   # release build override this (identity from the keychain) — do NOT commit a
   # real identity here.

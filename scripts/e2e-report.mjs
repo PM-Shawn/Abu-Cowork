@@ -44,6 +44,7 @@ const HARNESS_TIMEOUT_MS = 90_000;
 const HARNESSES_TO_RUN = [
   'f1aE2E.cjs',
   'f1HeartbeatE2E.cjs',
+  'shellGlobalShortcutVerify.cjs',
   'f2Verify.cjs',
   'f3Verify.cjs',
   'f4Verify.cjs',

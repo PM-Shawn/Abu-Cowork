@@ -57,6 +57,7 @@ const { commandDispatch, COMMAND_MISS } = require('./commandHost.cjs');
 const { triggerDispatch, TRIGGER_MISS } = require('./triggerServer.cjs');
 const { networkProxyDispatch, NETWORK_PROXY_MISS } = require('./networkProxy.cjs');
 const { httpDispatch, HTTP_MISS } = require('./httpHost.cjs');
+const { globalShortcutDispatch, GLOBAL_SHORTCUT_MISS, teardownGlobalShortcuts } = require('./globalShortcutHost.cjs');
 
 // Window-family state (Phase 2 slice D). `mainWindow` is set by main.cjs right
 // after createWindow() via setMainWindow(); `quitting` is the standard
@@ -609,6 +610,10 @@ function registerTauriHost(app) {
     // Same no-orphan intent for the GUI-families windows (overlay/stop-button/
     // pet) + the tray icon.
     teardownGuiHost();
+    // Same no-orphan intent for OS-level global-hotkey bindings — globalShortcut
+    // registrations are a process-wide OS resource that outlives a destroyed
+    // BrowserWindow, so they must be explicitly released on quit.
+    teardownGlobalShortcuts();
   });
 
   // Tray boot (GUI-families slice) — mirrors src-tauri/src/lib.rs's
@@ -729,6 +734,16 @@ function registerTauriHost(app) {
       // which this already-async ipcMain.handle callback awaits correctly.
       const guiResult = await guiDispatch(app, cmd, a);
       if (guiResult !== GUI_MISS) return guiResult;
+      // Global-shortcut plugin — plugin:global-shortcut|register/unregister/
+      // unregister_all/is_registered (the computer-use abort hotkey,
+      // src/core/agent/computerUseStatus.ts), backed by Electron's
+      // `globalShortcut` module (electron/globalShortcutHost.cjs). Needs `e`
+      // (to route delivery to the registering renderer's Channel callback —
+      // same reason fsWatchDispatch needs it), so it's dispatched here rather
+      // than folded into dispatch(). Placed after guiDispatch and before
+      // windowDispatch — no ordering dependency on either.
+      const globalShortcutResult = globalShortcutDispatch(cmd, { args: a, event: e });
+      if (globalShortcutResult !== GLOBAL_SHORTCUT_MISS) return globalShortcutResult;
       // Window-family commands (slice D) — checked before the event-plugin
       // switch below so plugin:window|* and app_exit/window_hide/window_show
       // never fall through to the stub. windowDispatch returns a sentinel for

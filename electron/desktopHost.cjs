@@ -26,6 +26,7 @@
  *  - `read_clipboard_file_paths`                      — src-tauri/src/clipboard_files.rs
  *  - `plugin:dialog|open`/`save`/`message`
  *  - `plugin:opener|open_path`/`open_url`/`reveal_item_in_dir`
+ *  - `plugin:shell|open`                              — @tauri-apps/plugin-shell
  *  - `plugin:notification|is_permission_granted`
  *  - `plugin:process|restart`/`exit`
  *  - `plugin:deep-link|get_current`
@@ -386,6 +387,48 @@ function openerRevealItemInDir(a) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────
+// shell plugin (`open()` only — see below)
+// ─────────────────────────────────────────────────────────────────────────
+
+/**
+ * Matches a URI scheme prefix (`scheme:...`) with a scheme at least 2 chars
+ * long, so it fires for `http:`, `https:`, `mailto:`, `tel:`, `file:`, etc.
+ * but NOT for a bare single-letter Windows drive prefix like `C:\Users\...`
+ * (which would otherwise false-positive as a "scheme" under a looser
+ * `[a-zA-Z][a-zA-Z0-9+.-]*:` pattern — a drive-letter path has zero chars
+ * between the letter and the colon).
+ */
+const URL_SCHEME_RE = /^[a-zA-Z][a-zA-Z0-9+.-]+:/;
+
+/**
+ * `plugin:shell|open` args: `{path, with}` (verified against
+ * node_modules/@tauri-apps/plugin-shell/dist-js/index.js's `open()`, the
+ * ONLY export of this plugin used in src/ — grep confirms every call site
+ * imports just `open`, never `Command`/`Child`, so `execute`/`spawn`/`kill`/
+ * `stdin_write` are intentionally NOT handled here; they fall through to the
+ * generic stub via `default: return DESKTOP_MISS` below). `with` (an
+ * explicit non-default app, e.g. `open(url, 'firefox')`) has no Electron
+ * `shell` module equivalent — same documented no-op gap as opener's
+ * `open_path`/`open_url` above; unused in src/ (every `open()` call site
+ * passes just the one path/URL arg).
+ *
+ * `shell.openPath` resolves with `''` on success or an error string on
+ * failure — thrown here so the invoke rejects, matching Tauri's
+ * `Result<(), String>` surfacing. `shell.openExternal` rejects natively on
+ * failure, so no manual throw is needed for the URL branch.
+ */
+async function shellOpen(a) {
+  const p = String((a && a.path) || '');
+  if (URL_SCHEME_RE.test(p)) {
+    await shell.openExternal(p);
+  } else {
+    const err = await shell.openPath(p);
+    if (err) throw new Error(err);
+  }
+  return null;
+}
+
+// ─────────────────────────────────────────────────────────────────────────
 // notification plugin (permission check only — see file header note)
 // ─────────────────────────────────────────────────────────────────────────
 
@@ -482,6 +525,9 @@ function desktopDispatch(app, cmd, payload) {
       return openerOpenUrl(a);
     case 'plugin:opener|reveal_item_in_dir':
       return openerRevealItemInDir(a);
+
+    case 'plugin:shell|open':
+      return shellOpen(a);
 
     case 'plugin:notification|is_permission_granted':
       return notificationIsPermissionGranted();

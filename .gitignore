@@ -103,3 +103,6 @@ dist-electron-spike/
 # Electron native-helper (F10) build output + spike probe
 electron/native-helper/target/
 electron/spike/native-helper-probe/target/
+
+# electron-builder packaged output
+release-electron/

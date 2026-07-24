@@ -15,7 +15,15 @@ export default defineConfig([
   // referencing rules this config doesn't define for non-ts/tsx files, which ESLint
   // flags as "rule not found" rather than silently ignoring. It's a build artifact,
   // never hand-edited — same treatment as `dist`.
-  globalIgnores(['dist', 'src-tauri', 'coverage', '.wt-*/', 'sidecar/index.mjs']),
+  globalIgnores([
+    'dist',
+    'dist-electron-spike', // vite build output for the Electron shell (bundled, never hand-edited)
+    'release-electron', // electron-builder packaged output
+    'src-tauri',
+    'coverage',
+    '.wt-*/',
+    'sidecar/index.mjs',
+  ]),
   {
     files: ['**/*.{ts,tsx}'],
     extends: [

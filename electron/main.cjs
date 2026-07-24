@@ -28,7 +28,7 @@ const { app, BrowserWindow } = require('electron');
 const path = require('node:path');
 const fs = require('node:fs');
 const { registerTauriHost, wireWindowEvents, getMainWindow, emitEvent } = require('./tauriHost.cjs');
-const { sidecarBundleExists, SIDECAR_PATH } = require('./appEnv.cjs');
+const { sidecarBundleExists, sidecarPathFor } = require('./appEnv.cjs');
 const { initDeepLink, handleSecondInstanceArgv } = require('./deepLinkHost.cjs');
 
 const REPO_ROOT = path.resolve(__dirname, '..');
@@ -124,9 +124,9 @@ if (!app.requestSingleInstanceLock()) {
   registerTauriHost(app);
   // Preflight: the frontend spawns the sidecar via mcp_spawn, so a missing
   // bundle would surface only as an opaque child ENOENT — warn clearly here.
-  if (!sidecarBundleExists()) {
+  if (!sidecarBundleExists(app)) {
     log('warn', 'sidecar bundle missing — the frontend will fail to start it; run `npm run build:sidecar`', {
-      path: SIDECAR_PATH,
+      path: sidecarPathFor(app),
     });
   }
   createWindow();

@@ -62,9 +62,22 @@ const HELPER_CMDS = new Set([
   'activate_app',
 ]);
 
-// Built (release) helper binary. Dev path; packaging will relocate it under
-// resources and this resolution updates then.
-const HELPER_PATH = path.join(__dirname, 'native-helper', 'target', 'release', 'native-helper');
+// Built (release) helper binary.
+//  - Packaged: electron-builder ships it via extraResources at
+//    <resources>/native-helper/native-helper (see electron-builder.yml).
+//  - Dev: the cargo build output under electron/native-helper/target/release/.
+function resolveHelperPath() {
+  let packaged = false;
+  try {
+    packaged = require('electron').app.isPackaged;
+  } catch {
+    /* plain-Node context (harness) — treat as dev */
+  }
+  return packaged
+    ? path.join(process.resourcesPath, 'native-helper', 'native-helper')
+    : path.join(__dirname, 'native-helper', 'target', 'release', 'native-helper');
+}
+const HELPER_PATH = resolveHelperPath();
 
 const CALL_TIMEOUT_MS = 30_000;
 

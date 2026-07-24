@@ -262,11 +262,12 @@ function baseDir(app, n) {
       break;
     case BaseDirectory.Resource:
       // $RESOURCE = the dir that contains bundled resources (notably sidecar/).
-      // In dev that's the repo root (where resolveResource('sidecar/index.mjs')
-      // must land so the frontend's sidecarManager can spawn the sidecar);
-      // ABU_RESOURCE_DIR is set to the same. Packaged would use resourcesPath —
-      // a later packaging concern.
-      resolved = REPO_ROOT;
+      // The frontend's resolveResource('sidecar/index.mjs') resolves against
+      // this, then passes the path to mcp_spawn — so it MUST point where the
+      // sidecar actually lives. Packaged: electron-builder puts extraResources
+      // under process.resourcesPath. Dev: the repo root. (Mirrors
+      // appEnv.cjs resourceRoot(app); ABU_RESOURCE_DIR is set to the same.)
+      resolved = app.isPackaged ? process.resourcesPath : REPO_ROOT;
       break;
     case BaseDirectory.Executable:
       resolved = path.dirname(app.getPath('exe'));

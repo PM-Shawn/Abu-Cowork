@@ -50,6 +50,7 @@
 'use strict';
 
 const { globalShortcut } = require('electron');
+const { parseChannelId, sendChannelMessage } = require('./channelBridge.cjs');
 
 /** Sentinel returned when `cmd` isn't a global-shortcut command. */
 const GLOBAL_SHORTCUT_MISS = Symbol('global-shortcut-dispatch-miss');
@@ -64,13 +65,6 @@ const GLOBAL_SHORTCUT_MISS = Symbol('global-shortcut-dispatch-miss');
 const registrations = new Map();
 let nextShortcutIndex = 0;
 
-/** Parse a Channel's wire form ("__CHANNEL__:<id>") into its numeric callback id. */
-function parseChannelId(handler) {
-  if (typeof handler !== 'string') return null;
-  const m = /^__CHANNEL__:(\d+)$/.exec(handler);
-  return m ? Number(m[1]) : null;
-}
-
 /** Normalize the JS plugin's shortcuts arg (always an array, but be defensive). */
 function toShortcutList(v) {
   if (Array.isArray(v)) return v.filter((s) => typeof s === 'string' && s.length > 0);
@@ -78,15 +72,14 @@ function toShortcutList(v) {
   return [];
 }
 
-/** Deliver one `ShortcutEvent` to `accel`'s registered Channel callback. */
+/** Deliver one `ShortcutEvent` to `accel`'s registered Channel callback (shared wire contract: channelBridge.cjs). */
 function deliverShortcutEvent(accel) {
   const reg = registrations.get(accel);
-  if (!reg || !reg.sender || reg.sender.isDestroyed()) return;
-  const rawMessage = {
-    index: reg.nextMessageIndex++,
-    message: { shortcut: accel, id: reg.shortcutIndex, state: 'Pressed' },
-  };
-  reg.sender.send('tauri:callback', { id: reg.callbackId, payload: rawMessage });
+  if (!reg) return;
+  const message = { shortcut: accel, id: reg.shortcutIndex, state: 'Pressed' };
+  if (sendChannelMessage(reg.sender, reg.callbackId, reg.nextMessageIndex, message)) {
+    reg.nextMessageIndex++;
+  }
 }
 
 /**

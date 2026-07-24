@@ -102,6 +102,21 @@ function requestAppExit(app) {
   app.quit();
 }
 
+/**
+ * Flip the isQuitting guard WITHOUT initiating the quit — for callers whose
+ * quit is driven elsewhere. Sole consumer today: updaterHost's
+ * quitAndInstallIfPending — the native Squirrel quitAndInstall closes all
+ * windows BEFORE any 'before-quit' fires, so the guard must already be set
+ * or the preventable-close handler would cancel the close and the update
+ * would silently never install. If that install then stalls (Squirrel fetch
+ * failed), the app is left in the quitting state: the next window close
+ * bypasses close-requested and really closes — an acceptable degraded mode,
+ * strictly better than an unquittable app.
+ */
+function markQuitting() {
+  quitting = true;
+}
+
 /** True iff any live subscription exists for `event`. */
 function hasListeners(event) {
   for (const sub of subscriptions.values()) {
@@ -907,6 +922,7 @@ module.exports = {
   setMainWindow,
   getMainWindow,
   isQuitting,
+  markQuitting,
   hasListeners,
   wireWindowEvents,
   requestAppExit,

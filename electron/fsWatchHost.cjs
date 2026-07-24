@@ -61,6 +61,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const { assertAllowed } = require('./fsHost.cjs');
+const { parseChannelId, sendChannelMessage } = require('./channelBridge.cjs');
 
 /** Sentinel returned when `cmd` isn't one of the fs-watch family. */
 const FS_WATCH_MISS = Symbol('fs-watch-dispatch-miss');
@@ -80,12 +81,6 @@ const FS_WATCH_MISS = Symbol('fs-watch-dispatch-miss');
 const watchTable = new Map();
 let nextRid = 1;
 
-/** Parse a Channel's wire form ("__CHANNEL__:<id>") into its numeric callback id. */
-function parseChannelId(onEvent) {
-  if (typeof onEvent !== 'string') return null;
-  const m = /^__CHANNEL__:(\d+)$/.exec(onEvent);
-  return m ? Number(m[1]) : null;
-}
 
 /**
  * Resolve a watch path against an optional Tauri BaseDirectory and enforce
@@ -107,11 +102,11 @@ function resolveWatchPath(app, p, baseDirNum) {
   return resolved;
 }
 
-/** Deliver one `{index, message}` rawMessage to a channel's registered callback. */
+/** Deliver one `{index, message}` rawMessage to a channel's registered callback (shared wire contract: channelBridge.cjs). */
 function deliver(entry, message) {
-  if (!entry.sender || entry.sender.isDestroyed()) return;
-  const rawMessage = { index: entry.nextIndex++, message };
-  entry.sender.send('tauri:callback', { id: entry.callbackId, payload: rawMessage });
+  if (sendChannelMessage(entry.sender, entry.callbackId, entry.nextIndex, message)) {
+    entry.nextIndex++;
+  }
 }
 
 /** @param {'create'|'modify'|'remove'} typeKey @param {string[]} paths */

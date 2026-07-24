@@ -55,6 +55,10 @@
 
 const os = require('node:os');
 const { shell, clipboard, dialog, powerSaveBlocker, BrowserWindow } = require('electron');
+// Top-level is safe: updaterHost's only load-time require is 'electron' (its
+// tauriHost back-reference is lazy inside quitAndInstallIfPending), so there
+// is no cycle through this module.
+const { quitAndInstallIfPending } = require('./updaterHost.cjs');
 
 /** Sentinel returned when `cmd` isn't a desktop-misc command. */
 const DESKTOP_MISS = Symbol('desktop-dispatch-miss');
@@ -452,16 +456,13 @@ function notificationIsPermissionGranted() {
 function processRestart(app) {
   // If a downloaded update is pending (updaterHost's download_and_install
   // completed), restart must apply it: quitAndInstall replaces the app and
-  // relaunches. Plain relaunch would boot the OLD version and rely on the
-  // next quit to install — the user clicked "restart to update", so install
-  // now. Lazy require avoids a circular import at module load
-  // (updaterHost ← tauriHost ← this module's caller).
-  const { consumePendingInstall } = require('./updaterHost.cjs');
-  const au = consumePendingInstall();
-  if (au) {
-    au.quitAndInstall();
-    return null;
-  }
+  // relaunches. Plain relaunch would boot the OLD version — and note the
+  // app.exit() below never fires 'before-quit', so the autoInstallOnAppQuit
+  // safety net does NOT run on this path. quitAndInstallIfPending owns the
+  // quitting-guard marking + error fallback (see its JSDoc); it returns
+  // false when nothing is pending or the install attempt failed, in which
+  // case an honest plain relaunch of the current version is correct.
+  if (quitAndInstallIfPending()) return null;
   app.relaunch();
   app.exit(0);
   return null;

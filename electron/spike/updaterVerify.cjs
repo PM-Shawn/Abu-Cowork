@@ -15,15 +15,17 @@
  *     stream: Started{contentLength=artifact size} first, ≥1 Progress whose
  *     chunkLengths sum to the size (guaranteed: ProgressCallbackTransform's
  *     _flush always emits a final event), Finished last; invoke resolves.
- *  4. consumePendingInstall() hands back the updater exactly once (restart →
- *     quitAndInstall wiring), then null.
+ *  4. A successful download leaves hasPendingInstall() true (the state that
+ *     routes restart through quitAndInstall).
  *  5. Corrupted feed (wrong sha512, bumped version) → check sees it but
- *     download_and_install REJECTS (integrity), and no pending install is
- *     left behind.
+ *     download_and_install REJECTS (integrity), and the new download attempt
+ *     cleared the earlier pending-install flag (no stale-install restart).
  *
  * NOT covered (needs a signed build + real OSS feed — F11 remainder):
- * quitAndInstall actually replacing the app, and the packaged app-update.yml
- * pickup (electron-builder embeds it from the yml `publish` block).
+ * quitAndInstallIfPending's actual quit/install (marks the quitting guard +
+ * native Squirrel replace — needs a signed .app), and the packaged
+ * app-update.yml pickup (electron-builder embeds it from the yml `publish`
+ * block only for dmg/zip targets).
  *
  * Run: npx electron electron/spike/updaterVerify.cjs
  */
@@ -167,12 +169,13 @@ app.whenReady().then(async () => {
     );
     check('stream ends with Finished', finished.length === 1 && dl[dl.length - 1].event === 'Finished', JSON.stringify(dl.map((e) => e.event)));
 
-    // ── 4) restart wiring: pending install is consumable exactly once ──
-    const { consumePendingInstall } = require('../updaterHost.cjs');
-    const first = consumePendingInstall();
-    const second = consumePendingInstall();
-    check('consumePendingInstall returns the updater after a download', first !== null);
-    check('consumePendingInstall is one-shot', second === null);
+    // ── 4) restart wiring: a successful download leaves an install pending ──
+    // (quitAndInstallIfPending itself is NOT driven here — it marks the
+    // quitting guard and calls the real quitAndInstall, which needs a signed
+    // build to complete; asserting the pending flag exercises the state
+    // machine that decides whether restart takes the install path.)
+    const { hasPendingInstall } = require('../updaterHost.cjs');
+    check('a successful download leaves an install pending', hasPendingInstall() === true);
 
     // ── 5) corrupted feed (wrong sha512) → download rejects ──
     feedVersion = '99.0.1';
@@ -190,13 +193,27 @@ app.whenReady().then(async () => {
       }
     })()`);
     check('download_and_install rejects on sha512 mismatch', rejected.rejected === true, JSON.stringify(rejected));
-    check('a failed download leaves no pending install', consumePendingInstall() === null);
+    // The stale flag from the SUCCESSFUL v-mock download above must have been
+    // cleared when the new (failed) download started — otherwise restart
+    // would quitAndInstall against torn-down squirrel state (review finding).
+    check('a failed download clears the earlier pending install', hasPendingInstall() === false);
   } catch (err) {
     check('harness threw', false, err && err.stack ? err.stack : String(err));
   } finally {
     if (server) server.close();
     fs.rmSync(tmpRoot, { recursive: true, force: true });
     fs.rmSync(scratchHtml, { force: true });
+    // electron-updater's download cache resolves from os.homedir() (AppAdapter
+    // getAppCacheDir), NOT app.getPath('appData') — the tmp redirect above
+    // doesn't cover it. Remove the dev-cache dir (name set by updaterHost's
+    // dev config) so harness runs don't pollute the real ~/Library/Caches.
+    const cacheBase =
+      process.platform === 'darwin'
+        ? path.join(os.homedir(), 'Library', 'Caches')
+        : process.platform === 'win32'
+          ? process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local')
+          : process.env.XDG_CACHE_HOME || path.join(os.homedir(), '.cache');
+    fs.rmSync(path.join(cacheBase, 'abu-updater-dev-cache'), { recursive: true, force: true });
   }
 
   let pass = 0;

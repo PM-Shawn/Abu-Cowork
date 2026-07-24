@@ -29,9 +29,11 @@
  * Tauri's downloadAndInstall installs in place and the app keeps running
  * until the user clicks "restart" (plugin:process|restart). electron-updater
  * separates download (here) from install (quitAndInstall). To preserve the
- * frontend flow, desktopHost's processRestart consults
- * `consumePendingInstall()` — when a downloaded update is pending, restart
- * becomes `autoUpdater.quitAndInstall()` instead of plain relaunch.
+ * frontend flow, desktopHost's processRestart calls
+ * `quitAndInstallIfPending()` — when a downloaded update is pending, restart
+ * becomes `autoUpdater.quitAndInstall()` instead of plain relaunch (with the
+ * quitting guard marked first so the preventable-close handler lets the
+ * native window-close through — see that function's JSDoc).
  * `autoInstallOnAppQuit` stays on as a safety net (normal quit also applies
  * the update).
  *
@@ -47,12 +49,14 @@
 'use strict';
 
 const { app } = require('electron');
+const { parseChannelId, sendChannelMessage } = require('./channelBridge.cjs');
 
 /** Sentinel returned when `cmd` isn't one of the updater family. */
 const UPDATER_MISS = Symbol('updater-dispatch-miss');
-
-/** Production feed — the bucket that already serves the Tauri latest.json. */
-const OSS_FEED_URL = 'https://abu-agent.oss-cn-beijing.aliyuncs.com/';
+// The production feed URL lives in ONE place: electron-builder.yml's
+// `publish` block (embedded into the packaged app as app-update.yml).
+// Deliberately not duplicated here as a constant — a second copy could
+// drift and would never be the one packaged builds actually read.
 
 /** @type {import('electron-updater').AppUpdater | null} */
 let updater = null;
@@ -75,7 +79,14 @@ function getUpdater() {
   if (configured) return updater;
   configured = true;
 
-  const feedOverride = process.env.ABU_UPDATER_FEED_URL;
+  // The env override is DEV/HARNESS ONLY. A packaged (production) build must
+  // never honor it: an attacker-controlled environment (wrapper script, shell
+  // profile) could otherwise silently repoint the update feed — packaged
+  // builds read exclusively the embedded app-update.yml.
+  const feedOverride = app.isPackaged ? undefined : process.env.ABU_UPDATER_FEED_URL;
+  if (app.isPackaged && process.env.ABU_UPDATER_FEED_URL) {
+    console.warn('[updaterHost] ABU_UPDATER_FEED_URL is ignored in packaged builds (embedded app-update.yml only)');
+  }
   if (!app.isPackaged && !feedOverride) {
     // Dev without an explicit feed: stay idle. electron-updater would refuse
     // anyway ("application is not packed"), just noisier.
@@ -108,6 +119,15 @@ function getUpdater() {
       `provider: generic\nurl: ${feedOverride}\nupdaterCacheDirName: abu-updater-dev-cache\n`,
       'utf8'
     );
+    // pid-suffixed (concurrent dev shell + harness must not race one file);
+    // remove it on quit so repeated runs don't accumulate in the OS tmp dir.
+    app.on('will-quit', () => {
+      try {
+        fs.rmSync(configPath, { force: true });
+      } catch {
+        /* best-effort */
+      }
+    });
     autoUpdater.forceDevUpdateConfig = true;
     autoUpdater.updateConfigPath = configPath;
     log(`feed override via ABU_UPDATER_FEED_URL: ${feedOverride} (config at ${configPath})`);
@@ -146,13 +166,6 @@ async function check() {
   };
 }
 
-/** Parse a Channel's wire form ("__CHANNEL__:<id>") into its numeric callback id (see fsWatchHost). */
-function parseChannelId(onEvent) {
-  if (typeof onEvent !== 'string') return null;
-  const m = /^__CHANNEL__:(\d+)$/.exec(onEvent);
-  return m ? Number(m[1]) : null;
-}
-
 /**
  * plugin:updater|download_and_install → download via electron-updater with
  * Tauri-shaped progress events; the actual install applies at restart/quit
@@ -169,9 +182,14 @@ async function downloadAndInstall(a, event) {
   const sender = event && event.sender;
   let index = 0;
   const send = (message) => {
-    if (callbackId === null || !sender || sender.isDestroyed()) return;
-    sender.send('tauri:callback', { id: callbackId, payload: { index: index++, message } });
+    if (callbackId === null) return;
+    if (sendChannelMessage(sender, callbackId, index, message)) index++;
   };
+
+  // A new download invalidates any previously downloaded update: if THIS
+  // download fails, a stale flag from an earlier success must not route
+  // restart through quitAndInstall against torn-down/replaced squirrel state.
+  pendingInstall = false;
 
   let started = false;
   const onProgress = (p) => {
@@ -193,14 +211,39 @@ async function downloadAndInstall(a, event) {
 }
 
 /**
- * Consumed by desktopHost's processRestart: when true, restart must go
- * through quitAndInstall so the downloaded update actually applies.
- * Returns the updater to call quitAndInstall on, or null.
+ * Called by desktopHost's processRestart. When a downloaded update is
+ * pending, takes over the restart: marks tauriHost's quitting guard (the
+ * native Squirrel quitAndInstall closes windows BEFORE any before-quit
+ * fires, so without the mark the preventable-close handler would
+ * preventDefault the close, emit 'close-requested' to the renderer, and the
+ * install would silently never happen) and calls quitAndInstall. Returns
+ * true when it took over (caller must NOT also relaunch), false when there
+ * is nothing pending or quitAndInstall threw (caller falls back to a plain
+ * relaunch into the current version).
+ *
+ * pendingInstall is deliberately NOT cleared on the happy path:
+ * MacUpdater.quitAndInstall can return without quitting (native Squirrel
+ * still fetching from the local proxy — it registers an update-downloaded
+ * listener and installs when ready). If that fetch has failed instead, the
+ * app keeps running; keeping the flag makes the Restart button retryable
+ * rather than silently booting the old version on the second click.
  */
-function consumePendingInstall() {
-  if (!pendingInstall || !updater) return null;
-  pendingInstall = false;
-  return updater;
+function quitAndInstallIfPending() {
+  if (!pendingInstall || !updater) return false;
+  // Lazy require: tauriHost requires this module at top level, so requiring
+  // it back at load time WOULD be a genuine cycle; at call time it's settled.
+  const { markQuitting } = require('./tauriHost.cjs');
+  try {
+    markQuitting();
+    updater.quitAndInstall();
+    return true;
+  } catch (err) {
+    pendingInstall = false;
+    console.warn(
+      `[updaterHost] quitAndInstall failed — falling back to plain relaunch: ${err instanceof Error ? err.message : String(err)}`
+    );
+    return false;
+  }
 }
 
 /**
@@ -229,4 +272,9 @@ function updaterDispatch(cmd, { args, event } = {}) {
   }
 }
 
-module.exports = { updaterDispatch, consumePendingInstall, UPDATER_MISS };
+/** Observability (harness assertions): whether a downloaded update awaits install. */
+function hasPendingInstall() {
+  return pendingInstall;
+}
+
+module.exports = { updaterDispatch, quitAndInstallIfPending, hasPendingInstall, UPDATER_MISS };

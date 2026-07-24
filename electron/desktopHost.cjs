@@ -450,6 +450,18 @@ function notificationIsPermissionGranted() {
 // ─────────────────────────────────────────────────────────────────────────
 
 function processRestart(app) {
+  // If a downloaded update is pending (updaterHost's download_and_install
+  // completed), restart must apply it: quitAndInstall replaces the app and
+  // relaunches. Plain relaunch would boot the OLD version and rely on the
+  // next quit to install — the user clicked "restart to update", so install
+  // now. Lazy require avoids a circular import at module load
+  // (updaterHost ← tauriHost ← this module's caller).
+  const { consumePendingInstall } = require('./updaterHost.cjs');
+  const au = consumePendingInstall();
+  if (au) {
+    au.quitAndInstall();
+    return null;
+  }
   app.relaunch();
   app.exit(0);
   return null;

@@ -36,6 +36,7 @@ const fs = require('node:fs');
 const { abuAppDataDir, REPO_ROOT } = require('./appEnv.cjs');
 const { initSecretStore, secretDispatch } = require('./secretStore.cjs');
 const { runTauriMigration, resolveTauriAppDataDir } = require('./tauriMigration.cjs');
+const { updaterDispatch, UPDATER_MISS } = require('./updaterHost.cjs');
 const { fsDispatch, FS_MISS } = require('./fsHost.cjs');
 const { fsWatchDispatch, FS_WATCH_MISS } = require('./fsWatchHost.cjs');
 const { mcpDispatch } = require('./mcpBridge.cjs');
@@ -375,7 +376,6 @@ const ARRAY_RESULT_CMDS = new Set(['plugin:fs|read_dir', 'notice_inbox_pending']
 // unexpected parity gap and gets shouted about below. Keep this list in sync
 // with scripts/parity-check.mjs's KNOWN_DEFERRED.
 const KNOWN_DEFERRED = [
-  /^plugin:updater\|/, // F11 — real auto-update needs a signed build + release feed
   'start_feishu_ws',
   'stop_feishu_ws',
   'get_feishu_ws_status', // F15 — feishu/IM line, deferred
@@ -716,6 +716,11 @@ function registerTauriHost(app) {
       // than folded into fsDispatch (which only receives `app`).
       const fsWatchResult = fsWatchDispatch(app, cmd, { args: a, event: e });
       if (fsWatchResult !== FS_WATCH_MISS) return fsWatchResult;
+      // Updater family (F-slice #2) — plugin:updater|check/download_and_install
+      // bridged onto electron-updater (generic provider → existing OSS bucket).
+      // Needs `e.sender` for the download-progress Channel, so dispatched here.
+      const updaterResult = updaterDispatch(cmd, { args: a, event: e });
+      if (updaterResult !== UPDATER_MISS) return updaterResult;
       // mcp bridge (mcp 收敛) — generic stdio process bridge (mcp_spawn/write/
       // kill) the frontend uses to drive MCP servers AND the agent sidecar;
       // stdout/stderr/close re-emitted as mcp-msg/err/close-{id} events.

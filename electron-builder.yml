@@ -57,6 +57,22 @@ extraResources:
   #   - abu-chrome-extension/dist → browser-extension  (run the extension build first)
   #   - src-tauri/python-runtime → python-runtime       (107M; python-backed MCP/doc gen)
 
+# Auto-update feed (F-slice #2): generic provider pointed at the existing
+# Aliyun OSS bucket that already serves the Tauri latest.json. When the dist
+# build gains a dmg/zip target (F11, with signing), this block (1) embeds
+# app-update.yml into the packaged app so electron-updater
+# (electron/updaterHost.cjs) knows its feed without runtime config, and
+# (2) generates latest-mac.yml with the artifact's sha512 (NEVER hand-write
+# that file — a wrong hash makes every update get rejected). NOTE: the
+# current `dir`-only target does NOT write app-update.yml (PublishManager
+# only does for dmg/zip on darwin) — a dir-build's updater check soft-fails
+# (rejected invoke → frontend catch), same non-fatal behavior as before this
+# slice. Publishing artifacts to OSS stays a CI step; nothing is uploaded
+# from dev machines.
+publish:
+  provider: generic
+  url: https://abu-agent.oss-cn-beijing.aliyuncs.com/
+
 mac:
   category: public.app-category.productivity
   icon: src-tauri/icons/icon.icns

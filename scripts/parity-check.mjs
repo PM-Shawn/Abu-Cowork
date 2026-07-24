@@ -55,7 +55,7 @@ const KNOWN_DEFERRED_CUSTOM = new Set([
 // are deliberately deferred — checked by NOT reporting a gap even if their
 // prefix is absent from the handlers.
 const KNOWN_DEFERRED_PLUGIN_FAMILIES = new Set([
-  'updater', // F11 — real auto-update needs a signed build + release feed
+  // (empty — 'updater' graduated to electron/updaterHost.cjs in F-slice #2)
 ]);
 
 // ---------------------------------------------------------------------------

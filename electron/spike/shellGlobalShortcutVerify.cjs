@@ -43,14 +43,28 @@ const { registerTauriHost } = require('../tauriHost.cjs');
 
 app.on('window-all-closed', () => app.quit());
 
-// ── console.log intercept: track every "[tauriHost] stub: <cmd>" line seen ──
+// ── intercept: track every command that fell through to the degrading stub ──
+// The hardened defaultFor() (tauriHost.cjs) logs an UNEXPECTED unhandled command
+// LOUDLY via console.ERROR in dev:
+//   "[tauriHost] ⚠️ UNHANDLED COMMAND — parity gap, silently degrading: <cmd>"
+// (older builds logged "[tauriHost] stub: <cmd>" via console.log). Watch both
+// channels and both signatures so this harness's stub-detection stays a real
+// assertion regardless of which stub log format the build uses.
 const stubbedCmdsSeen = new Set();
 const originalLog = console.log;
+const originalError = console.error;
+function watchForStub(line) {
+  let m = /UNHANDLED COMMAND.*?degrading: (.+)$/.exec(line);
+  if (!m) m = /^\[tauriHost\] stub: (.+)$/.exec(line);
+  if (m) stubbedCmdsSeen.add(m[1].trim());
+}
 console.log = (...cargs) => {
-  const line = cargs.map(String).join(' ');
-  const m = /^\[tauriHost\] stub: (.+)$/.exec(line);
-  if (m) stubbedCmdsSeen.add(m[1]);
+  watchForStub(cargs.map(String).join(' '));
   originalLog(...cargs);
+};
+console.error = (...cargs) => {
+  watchForStub(cargs.map(String).join(' '));
+  originalError(...cargs);
 };
 
 app.whenReady().then(async () => {

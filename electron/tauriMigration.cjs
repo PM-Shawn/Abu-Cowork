@@ -22,9 +22,15 @@
  *
  * Safety properties:
  *  - Idempotent: a sentinel file (`tauri-migration.json`) in the Electron
- *    app-data dir marks completion; later runs are no-ops.
+ *    app-data dir marks completion; later runs are no-ops. The sentinel is
+ *    only written when the run completed CLEANLY — a read error, safeStorage
+ *    store failure, or dir-copy error leaves it unwritten so the next boot
+ *    retries (undecryptable entries alone don't block it: a machine-UUID
+ *    change is permanent and retrying can't fix it).
  *  - Never clobbers: existing Electron-side secret keys and existing target
- *    dirs are skipped, never overwritten or merged.
+ *    dirs are skipped, never overwritten or merged. Dir copies are staged
+ *    (copy to `<dest>.migrating`, then rename) so a crash mid-copy can never
+ *    leave a half-populated dir that later runs mistake for real data.
  *  - Best-effort: one failed entry/dir is recorded and the rest proceeds
  *    (same partial-failure stance as the Tauri loader).
  *  - Dry-run: `dryRun: true` computes the full summary with zero writes
@@ -101,13 +107,13 @@ function runTauriMigration(opts) {
 
   const writeSentinel = () => {
     if (dryRun) return;
+    summary.sentinelWritten = true; // set BEFORE stringify so the persisted record agrees
     fs.mkdirSync(electronDir, { recursive: true });
     fs.writeFileSync(
       sentinelPath,
       JSON.stringify({ version: 1, migratedAt: new Date().toISOString(), summary }, null, 2),
       'utf8'
     );
-    summary.sentinelWritten = true;
   };
 
   if (!fs.existsSync(tauriDir)) {
@@ -120,10 +126,13 @@ function runTauriMigration(opts) {
   // ── 1. secrets ─────────────────────────────────────────────
   const secretsBin = path.join(tauriDir, 'secrets.bin');
   if (process.platform !== 'darwin') {
-    // Tauri used the OS keyring off-macOS; the credentials live in the OS
-    // store under the same service/key names, not in a file we could read.
-    summary.secrets.skippedReason = `non-darwin platform (${process.platform}): Tauri secrets live in the OS keyring, no file to migrate`;
-    say(summary.secrets.skippedReason);
+    // Tauri used the OS keyring off-macOS (keyring crate), and the Electron
+    // secretStore does NOT read the OS keyring — so those keys are NOT
+    // migrated and the user has to re-enter them. Doing better needs a native
+    // Credential Manager/secret-service reader (a future Windows-support
+    // slice); be honest about the gap instead of claiming nothing to migrate.
+    summary.secrets.skippedReason = `non-darwin platform (${process.platform}): Tauri keyring secrets are NOT migrated — user must re-enter API keys (future keyring-reader slice)`;
+    warn(summary.secrets.skippedReason);
   } else if (!fs.existsSync(secretsBin)) {
     summary.secrets.skippedReason = 'no secrets.bin at source';
     say(summary.secrets.skippedReason);
@@ -172,6 +181,12 @@ function runTauriMigration(opts) {
   for (const name of DATA_DIRS) {
     const src = path.join(tauriDir, name);
     const dest = path.join(electronDir, name);
+    // Staged copy: copy into a sibling temp dir, then rename into place. A
+    // crash / force-quit / ENOSPC mid-copy leaves only the staging dir behind
+    // (cleaned up on the next run), never a half-populated `dest` that the
+    // never-clobber guard below would wrongly treat as authoritative data.
+    const staging = `${dest}.migrating`;
+    if (!dryRun) fs.rmSync(staging, { recursive: true, force: true }); // leftover from a crashed run
     if (!fs.existsSync(src)) {
       summary.dirs[name] = 'absent';
       continue;
@@ -190,16 +205,34 @@ function runTauriMigration(opts) {
     }
     try {
       fs.mkdirSync(electronDir, { recursive: true });
-      fs.cpSync(src, dest, { recursive: true });
+      fs.cpSync(src, staging, { recursive: true });
+      fs.renameSync(staging, dest);
       summary.dirs[name] = 'copied';
       say(`dir ${name}: copied`);
     } catch (err) {
       summary.dirs[name] = `error: ${err instanceof Error ? err.message : String(err)}`;
       warn(`dir ${name}: copy failed — ${summary.dirs[name]}`);
+      fs.rmSync(staging, { recursive: true, force: true }); // best-effort; next run also cleans
     }
   }
 
-  writeSentinel();
+  // One-shot protection: only burn the sentinel when this run completed
+  // cleanly. readError (e.g. a transient ioreg failure), any setFailed
+  // (safeStorage momentarily unavailable) or a dir copy error may all be
+  // recoverable — leave the sentinel unwritten so the next boot retries
+  // (already-migrated secrets are skippedExisting, already-copied dirs are
+  // skipped-existing, so the retry is idempotent). decryptFailed alone does
+  // NOT block the sentinel: a machine-UUID change is permanent and retrying
+  // can never fix it (mirrors Tauri surfacing failed_keys instead of failing).
+  const clean =
+    !summary.secrets.readError &&
+    summary.secrets.setFailed.length === 0 &&
+    !Object.values(summary.dirs).some((v) => String(v).startsWith('error:'));
+  if (clean) {
+    writeSentinel();
+  } else if (!dryRun) {
+    warn('migration incomplete — sentinel NOT written; will retry on next launch');
+  }
   return summary;
 }
 

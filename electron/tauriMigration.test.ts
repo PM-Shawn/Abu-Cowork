@@ -15,6 +15,7 @@ import {
   runTauriMigration,
   SENTINEL_FILENAME,
 } from './tauriMigration.cjs';
+import { listFiles } from './spike/listFilesRecursive.cjs';
 
 const FIXED_KEY = Buffer.alloc(32, 7);
 const quietLog = { log: () => {}, warn: () => {} };
@@ -47,21 +48,6 @@ function runWith(store: ReturnType<typeof fakeSecretStore>, extra: Record<string
   });
 }
 
-/** Recursively list relative file paths under a dir (sorted). */
-function listFiles(dir: string): string[] {
-  if (!fs.existsSync(dir)) return [];
-  const out: string[] = [];
-  const walk = (d: string) => {
-    for (const e of fs.readdirSync(d, { withFileTypes: true })) {
-      const p = path.join(d, e.name);
-      if (e.isDirectory()) walk(p);
-      else out.push(path.relative(dir, p));
-    }
-  };
-  walk(dir);
-  return out.sort();
-}
-
 function seedTauriDir() {
   fs.mkdirSync(path.join(tauriDir, 'conversations', 'conv1'), { recursive: true });
   fs.writeFileSync(path.join(tauriDir, 'conversations', 'index.json'), '{"version":1}');
@@ -80,13 +66,21 @@ function seedTauriDir() {
   });
 }
 
+// The secrets branch is darwin-gated on the REAL process.platform (secrets.bin
+// only exists on macOS Tauri installs). Pin the platform to darwin so the
+// suite behaves identically on Windows dev machines (repo convention §13);
+// the dedicated non-darwin test overrides it to win32 itself.
+let platformDesc: PropertyDescriptor;
 beforeEach(() => {
+  platformDesc = Object.getOwnPropertyDescriptor(process, 'platform')!;
+  Object.defineProperty(process, 'platform', { value: 'darwin', configurable: true });
   root = fs.mkdtempSync(path.join(os.tmpdir(), 'tauri-migration-test-'));
   tauriDir = path.join(root, 'com.abu.app');
   electronDir = path.join(root, 'com.abu.app.electron');
   fs.mkdirSync(tauriDir, { recursive: true });
 });
 afterEach(() => {
+  Object.defineProperty(process, 'platform', platformDesc);
   fs.rmSync(root, { recursive: true, force: true });
 });
 
@@ -185,7 +179,7 @@ describe('runTauriMigration', () => {
     expect(store.secretSet).not.toHaveBeenCalled();
   });
 
-  it('a secretSet failure for one key does not abort the others', () => {
+  it('a secretSet failure keeps going but withholds the sentinel so the next boot retries', () => {
     seedTauriDir();
     const store = fakeSecretStore();
     store.secretSet.mockImplementation((key: string, value: string) => {
@@ -198,9 +192,25 @@ describe('runTauriMigration', () => {
     expect(summary.secrets.setFailed).toEqual(['provider:claude']);
     expect(summary.secrets.migrated).toEqual(['aux:webSearch']);
     expect(store.stored.get('aux:webSearch')).toBe('tvly-456');
+
+    // A store failure may be transient (e.g. safeStorage momentarily
+    // unavailable) — the one-shot must NOT be burned.
+    expect(summary.sentinelWritten).toBe(false);
+    expect(fs.existsSync(path.join(electronDir, SENTINEL_FILENAME))).toBe(false);
+
+    // Next boot retries: the failed key migrates, already-done work is skipped.
+    store.secretSet.mockImplementation((key: string, value: string) => {
+      store.stored.set(key, value);
+    });
+    const retry = runWith(store);
+    if ('skipped' in retry) throw new Error('retry unexpectedly skipped');
+    expect(retry.secrets.migrated).toEqual(['provider:claude']);
+    expect(retry.secrets.skippedExisting).toEqual(['aux:webSearch']);
+    expect(retry.dirs.conversations).toBe('skipped-existing');
+    expect(retry.sentinelWritten).toBe(true);
   });
 
-  it('an undecryptable entry is reported and the rest still migrate', () => {
+  it('an undecryptable entry is reported, the rest migrate, and the sentinel IS written (retry cannot fix a machine change)', () => {
     seedTauriDir();
     const entries = encryptTauriEntries(FIXED_KEY, { good: 'v1', bad: 'v2' });
     const tampered = Buffer.from(entries.bad, 'base64');
@@ -213,9 +223,10 @@ describe('runTauriMigration', () => {
     if ('skipped' in summary) throw new Error('unexpected skip');
     expect(summary.secrets.decryptFailed).toEqual(['bad']);
     expect(summary.secrets.migrated).toEqual(['good']);
+    expect(summary.sentinelWritten).toBe(true);
   });
 
-  it('an unreadable secrets file is recorded without blocking the data-dir copy', () => {
+  it('an unreadable secrets file still copies data dirs but withholds the sentinel', () => {
     seedTauriDir();
     fs.writeFileSync(path.join(tauriDir, 'secrets.bin'), JSON.stringify({ version: 99, entries: {} }));
 
@@ -225,6 +236,49 @@ describe('runTauriMigration', () => {
     expect(summary.secrets.readError).toMatch(/unsupported.*version 99/);
     expect(summary.secrets.migrated).toEqual([]);
     expect(summary.dirs.conversations).toBe('copied');
+    expect(summary.sentinelWritten).toBe(false);
+    expect(fs.existsSync(path.join(electronDir, SENTINEL_FILENAME))).toBe(false);
+  });
+
+  it('a dir-copy failure withholds the sentinel so the next boot retries', () => {
+    seedTauriDir();
+    // Make electronDir an unusable target: a FILE at that path makes mkdirSync
+    // throw inside every copy branch.
+    fs.writeFileSync(electronDir, 'not a dir');
+    const store = fakeSecretStore();
+
+    const summary = runWith(store);
+    if ('skipped' in summary) throw new Error('unexpected skip');
+    expect(String(summary.dirs.conversations)).toMatch(/^error:/);
+    expect(summary.sentinelWritten).toBe(false);
+
+    // Secrets still migrated (independent families) — retry skips them.
+    expect(summary.secrets.migrated.length).toBe(2);
+    fs.rmSync(electronDir); // unblock the target
+    const retry = runWith(store);
+    if ('skipped' in retry) throw new Error('retry unexpectedly skipped');
+    expect(retry.dirs.conversations).toBe('copied');
+    expect(retry.secrets.skippedExisting.length).toBe(2);
+    expect(retry.sentinelWritten).toBe(true);
+  });
+
+  it('cleans a leftover staging dir from a crashed run and completes the copy', () => {
+    seedTauriDir();
+    // Simulate a crash mid-copy from a previous run: staging exists, dest doesn't.
+    const staging = path.join(electronDir, 'conversations.migrating');
+    fs.mkdirSync(staging, { recursive: true });
+    fs.writeFileSync(path.join(staging, 'partial.jsonl'), 'truncated');
+
+    const store = fakeSecretStore();
+    const summary = runWith(store);
+    if ('skipped' in summary) throw new Error('unexpected skip');
+    expect(summary.dirs.conversations).toBe('copied');
+    expect(fs.existsSync(staging)).toBe(false);
+    // The completed copy is the real source tree, not the stale partial one.
+    expect(listFiles(path.join(electronDir, 'conversations'))).toEqual([
+      path.join('conv1', 'messages.jsonl'),
+      'index.json',
+    ]);
   });
 
   it('skips secrets with a reason on non-darwin platforms but still copies dirs', () => {

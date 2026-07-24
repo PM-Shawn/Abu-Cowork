@@ -30,28 +30,27 @@ const { app, safeStorage } = require('electron');
 const path = require('node:path');
 const fs = require('node:fs');
 const os = require('node:os');
+const { listFiles } = require('./listFilesRecursive.cjs');
 
 const results = [];
 function check(name, cond, detail) {
   results.push({ name, pass: !!cond, detail: detail ?? '' });
 }
 
-/** Recursively list relative file paths under a dir (sorted). */
-function listFiles(dir) {
-  if (!fs.existsSync(dir)) return [];
-  const out = [];
-  const walk = (d) => {
-    for (const e of fs.readdirSync(d, { withFileTypes: true })) {
-      const p = path.join(d, e.name);
-      if (e.isDirectory()) walk(p);
-      else out.push(path.relative(dir, p));
-    }
-  };
-  walk(dir);
-  return out.sort();
-}
-
 app.whenReady().then(async () => {
+  // NOTE (unattended-run hazard, accepted): this harness drives REAL
+  // safeStorage encrypt/decrypt. On a freshly ad-hoc re-signed Electron
+  // binary the first Keychain access can raise a blocking modal
+  // (secretStore.cjs documents the same hazard); if this harness ever shows
+  // up as a 90s TIMEOUT in e2e-report on a fresh machine/build, that modal
+  // is the likely cause — approve the Keychain prompt once and re-run.
+  if (!safeStorage.isEncryptionAvailable()) {
+    // Checked BEFORE creating any tmp dir: process.exit skips finally blocks,
+    // so exiting later would leak the tmp tree.
+    console.error('[migrationVerify] safeStorage unavailable on this system — cannot verify');
+    process.exit(1);
+  }
+
   const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'abu-migration-verify-'));
   try {
     // Redirect ALL appData under the temp root BEFORE the secret store binds
@@ -62,11 +61,6 @@ app.whenReady().then(async () => {
     const { runTauriMigration, SENTINEL_FILENAME } = require('../tauriMigration.cjs');
     const { initSecretStore, secretDispatch } = require('../secretStore.cjs');
     const { abuAppDataDir } = require('../appEnv.cjs');
-
-    if (!safeStorage.isEncryptionAvailable()) {
-      console.error('[migrationVerify] safeStorage unavailable on this system — cannot verify');
-      process.exit(1);
-    }
 
     initSecretStore(app);
     const electronDir = abuAppDataDir(app);

@@ -1,85 +1,85 @@
 # Electron E2E / Automated Test Report — 2026-07-24
 
-- **Branch**: `feat/electron-shell-p2-1` (`01b544f`)
-- **Generated**: 2026-07-24T11:18:32.117Z
+- **Branch**: `feat/electron-shell-p2-1` (`7a1b976`)
+- **Generated**: 2026-07-24T11:40:54.311Z
 - **Generator**: `scripts/e2e-report.mjs`
 
 ## Summary
 
 | Suite | Result | Passed/Failed | Duration |
 |---|---|---|---|
-| vitest (unit/integration) | PASS | 4491 passed / 0 failed / 0 skipped (of 4491) | 66.1s |
-| Electron headless harnesses (safe subset) | PASS | 16 passed / 0 failed-or-timeout (of 16) | 66.6s |
+| vitest (unit/integration) | PASS | 4493 passed / 0 failed / 0 skipped (of 4493) | 64.0s |
+| Electron headless harnesses (safe subset) | PASS | 16 passed / 0 failed-or-timeout (of 16) | 66.5s |
 | Skipped harnesses (GUI/TCC/heavy-boot) | SKIP | 0 run / 8 skipped | — |
 
 ## 1. Unit/integration suite (`npx vitest run`)
 
-Result: **PASS** (exit code 0, 66.1s)
+Result: **PASS** (exit code 0, 64.0s)
 
 - Test Files: 308 passed (308)
-- Tests: 4491 passed (4491)
+- Tests: 4493 passed (4493)
 
 <details><summary>vitest output tail</summary>
 
 ```
 (Use `node --trace-warnings ...` to show where the warning was created)
-(node:86638) Warning: `--localstorage-file` was provided without a valid path
+(node:92628) Warning: `--localstorage-file` was provided without a valid path
 (Use `node --trace-warnings ...` to show where the warning was created)
-(node:86639) Warning: `--localstorage-file` was provided without a valid path
+(node:92632) Warning: `--localstorage-file` was provided without a valid path
 (Use `node --trace-warnings ...` to show where the warning was created)
-(node:86641) Warning: `--localstorage-file` was provided without a valid path
+(node:92630) Warning: `--localstorage-file` was provided without a valid path
 (Use `node --trace-warnings ...` to show where the warning was created)
-(node:86642) Warning: `--localstorage-file` was provided without a valid path
+(node:92633) Warning: `--localstorage-file` was provided without a valid path
 (Use `node --trace-warnings ...` to show where the warning was created)
-(node:86643) Warning: `--localstorage-file` was provided without a valid path
+(node:92634) Warning: `--localstorage-file` was provided without a valid path
 (Use `node --trace-warnings ...` to show where the warning was created)
-(node:86645) Warning: `--localstorage-file` was provided without a valid path
+(node:92636) Warning: `--localstorage-file` was provided without a valid path
 (Use `node --trace-warnings ...` to show where the warning was created)
-(node:86646) Warning: `--localstorage-file` was provided without a valid path
+(node:92637) Warning: `--localstorage-file` was provided without a valid path
 (Use `node --trace-warnings ...` to show where the warning was created)
-(node:86647) Warning: `--localstorage-file` was provided without a valid path
+(node:92638) Warning: `--localstorage-file` was provided without a valid path
 (Use `node --trace-warnings ...` to show where the warning was created)
-(node:86648) Warning: `--localstorage-file` was provided without a valid path
+(node:92640) Warning: `--localstorage-file` was provided without a valid path
 (Use `node --trace-warnings ...` to show where the warning was created)
-(node:86649) Warning: `--localstorage-file` was provided without a valid path
+(node:92639) Warning: `--localstorage-file` was provided without a valid path
 (Use `node --trace-warnings ...` to show where the warning was created)
-(node:86650) Warning: `--localstorage-file` was provided without a valid path
+(node:92641) Warning: `--localstorage-file` was provided without a valid path
 (Use `node --trace-warnings ...` to show where the warning was created)
-(node:86652) Warning: `--localstorage-file` was provided without a valid path
+(node:92644) Warning: `--localstorage-file` was provided without a valid path
 (Use `node --trace-warnings ...` to show where the warning was created)
-(node:86654) Warning: `--localstorage-file` was provided without a valid path
+(node:92645) Warning: `--localstorage-file` was provided without a valid path
 (Use `node --trace-warnings ...` to show where the warning was created)
-(node:86655) Warning: `--localstorage-file` was provided without a valid path
+(node:92646) Warning: `--localstorage-file` was provided without a valid path
 (Use `node --trace-warnings ...` to show where the warning was created)
-(node:86656) Warning: `--localstorage-file` was provided without a valid path
+(node:92647) Warning: `--localstorage-file` was provided without a valid path
 (Use `node --trace-warnings ...` to show where the warning was created)
-(node:86659) Warning: `--localstorage-file` was provided without a valid path
+(node:92648) Warning: `--localstorage-file` was provided without a valid path
 (Use `node --trace-warnings ...` to show where the warning was created)
-(node:86658) Warning: `--localstorage-file` was provided without a valid path
+(node:92649) Warning: `--localstorage-file` was provided without a valid path
 (Use `node --trace-warnings ...` to show where the warning was created)
-(node:86660) Warning: `--localstorage-file` was provided without a valid path
+(node:92650) Warning: `--localstorage-file` was provided without a valid path
 (Use `node --trace-warnings ...` to show where the warning was created)
-(node:86661) Warning: `--localstorage-file` was provided without a valid path
+(node:92651) Warning: `--localstorage-file` was provided without a valid path
 (Use `node --trace-warnings ...` to show where the warning was created)
-(node:86662) Warning: `--localstorage-file` was provided without a valid path
+(node:92652) Warning: `--localstorage-file` was provided without a valid path
 (Use `node --trace-warnings ...` to show where the warning was created)
-(node:86665) Warning: `--localstorage-file` was provided without a valid path
+(node:92653) Warning: `--localstorage-file` was provided without a valid path
 (Use `node --trace-warnings ...` to show where the warning was created)
-(node:86666) Warning: `--localstorage-file` was provided without a valid path
+(node:92654) Warning: `--localstorage-file` was provided without a valid path
 (Use `node --trace-warnings ...` to show where the warning was created)
-(node:86667) Warning: `--localstorage-file` was provided without a valid path
+(node:92655) Warning: `--localstorage-file` was provided without a valid path
 (Use `node --trace-warnings ...` to show where the warning was created)
-(node:86668) Warning: `--localstorage-file` was provided without a valid path
+(node:92656) Warning: `--localstorage-file` was provided without a valid path
 (Use `node --trace-warnings ...` to show where the warning was created)
-(node:86669) Warning: `--localstorage-file` was provided without a valid path
+(node:92657) Warning: `--localstorage-file` was provided without a valid path
 (Use `node --trace-warnings ...` to show where the warning was created)
-(node:86670) Warning: `--localstorage-file` was provided without a valid path
+(node:92658) Warning: `--localstorage-file` was provided without a valid path
 (Use `node --trace-warnings ...` to show where the warning was created)
 
  Test Files  308 passed (308)
-      Tests  4491 passed (4491)
-   Start at  19:16:21
-   Duration  63.74s (transform 23.77s, setup 87.63s, import 63.57s, tests 24.14s, environment 175.52s)
+      Tests  4493 passed (4493)
+   Start at  19:38:45
+   Duration  61.83s (transform 19.68s, setup 84.03s, import 63.58s, tests 20.92s, environment 171.23s)
 
 
 ```
@@ -96,20 +96,20 @@ asserts internally, and exits non-zero on failure. Run sequentially with a
 |---|---|---|---|
 | `f1aE2E.cjs` | PASS | 0 | 1.2s |
 | `f1HeartbeatE2E.cjs` | PASS | 0 | 51.7s |
-| `shellGlobalShortcutVerify.cjs` | PASS | 0 | 543ms |
-| `deepLinkVerify.cjs` | PASS | 0 | 758ms |
-| `f2Verify.cjs` | PASS | 0 | 648ms |
+| `shellGlobalShortcutVerify.cjs` | PASS | 0 | 590ms |
+| `deepLinkVerify.cjs` | PASS | 0 | 751ms |
+| `f2Verify.cjs` | PASS | 0 | 657ms |
 | `f3Verify.cjs` | PASS | 0 | 1.4s |
 | `f4Verify.cjs` | PASS | 0 | 1.5s |
-| `f6Verify.cjs` | PASS | 0 | 734ms |
-| `f7Verify.cjs` | PASS | 0 | 762ms |
+| `f6Verify.cjs` | PASS | 0 | 747ms |
+| `f7Verify.cjs` | PASS | 0 | 775ms |
 | `f9Verify.cjs` | PASS | 0 | 1.1s |
-| `f13Verify.cjs` | PASS | 0 | 251ms |
-| `f1bVerify.cjs` | PASS | 0 | 158ms |
-| `f14Verify.cjs` | PASS | 0 | 4.2s |
-| `httpVerify.cjs` | PASS | 0 | 496ms |
-| `reviewFixVerify.cjs` | PASS | 0 | 874ms |
-| `migrationVerify.cjs` | PASS | 0 | 299ms |
+| `f13Verify.cjs` | PASS | 0 | 267ms |
+| `f1bVerify.cjs` | PASS | 0 | 155ms |
+| `f14Verify.cjs` | PASS | 0 | 4.0s |
+| `httpVerify.cjs` | PASS | 0 | 502ms |
+| `reviewFixVerify.cjs` | PASS | 0 | 860ms |
+| `migrationVerify.cjs` | PASS | 0 | 301ms |
 
 ## 3. Skipped (not run — need GUI / TCC-Screen-Recording / heavy boot)
 

@@ -633,13 +633,25 @@ function registerTauriHost(app) {
   initSecretStore(app);
 
   // One-time Tauri→Electron data migration (secrets + conversations/sessions/
-  // backups; sentinel-gated). Packaged builds run it automatically; in dev it
-  // only runs when explicitly requested (ABU_MIGRATE_FROM_TAURI=1, or =dry for
-  // a read-only dry-run) so the two dev shells stay isolated by default.
+  // backups; sentinel-gated). Auto-run is armed ONLY when the packaged app's
+  // data dir is the FINAL production identity (com.abu.app) — appEnv.cjs's
+  // documented invariant is that unsigned test builds (currently
+  // com.abu.app.electron) must not touch real user data, and reading the real
+  // Tauri prod dir's secrets/conversations is exactly that. When the final
+  // signed release switches abuAppDataDir to com.abu.app, migration arms
+  // automatically. Until then dev/test runs opt in explicitly with
+  // ABU_MIGRATE_FROM_TAURI=1 (or =dry for a read-only dry-run).
   // Runs AFTER initSecretStore (it stores decrypted keys through the secret
   // commands) and never throws — a migration failure must not block boot.
+  // KNOWN TRADEOFF: runs synchronously before the window exists, so a huge
+  // Tauri history makes the first boot slow. Deliberate: data must be in
+  // place before the frontend reads/writes conversation dirs (an async copy
+  // races the frontend creating those dirs, which would burn the never-
+  // clobber guard). A progress UI for first-boot migration is a future,
+  // user-facing slice.
   const migrateEnv = process.env.ABU_MIGRATE_FROM_TAURI;
-  if (app.isPackaged || migrateEnv === '1' || migrateEnv === 'dry') {
+  const migrationArmed = app.isPackaged && path.basename(abuAppDataDir(app)) === 'com.abu.app';
+  if (migrationArmed || migrateEnv === '1' || migrateEnv === 'dry') {
     try {
       const result = runTauriMigration({
         tauriDir: resolveTauriAppDataDir(app.getPath('appData'), app.isPackaged),

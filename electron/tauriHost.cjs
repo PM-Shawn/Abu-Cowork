@@ -35,6 +35,7 @@ const os = require('node:os');
 const fs = require('node:fs');
 const { abuAppDataDir, REPO_ROOT } = require('./appEnv.cjs');
 const { initSecretStore, secretDispatch } = require('./secretStore.cjs');
+const { runTauriMigration, resolveTauriAppDataDir } = require('./tauriMigration.cjs');
 const { fsDispatch, FS_MISS } = require('./fsHost.cjs');
 const { fsWatchDispatch, FS_WATCH_MISS } = require('./fsWatchHost.cjs');
 const { mcpDispatch } = require('./mcpBridge.cjs');
@@ -630,6 +631,32 @@ function registerTauriHost(app) {
   // safeStorage is only reliably usable once the app is ready — registerTauriHost
   // itself is only ever called from the app.whenReady() path, so this is safe here.
   initSecretStore(app);
+
+  // One-time Tauri→Electron data migration (secrets + conversations/sessions/
+  // backups; sentinel-gated). Packaged builds run it automatically; in dev it
+  // only runs when explicitly requested (ABU_MIGRATE_FROM_TAURI=1, or =dry for
+  // a read-only dry-run) so the two dev shells stay isolated by default.
+  // Runs AFTER initSecretStore (it stores decrypted keys through the secret
+  // commands) and never throws — a migration failure must not block boot.
+  const migrateEnv = process.env.ABU_MIGRATE_FROM_TAURI;
+  if (app.isPackaged || migrateEnv === '1' || migrateEnv === 'dry') {
+    try {
+      const result = runTauriMigration({
+        tauriDir: resolveTauriAppDataDir(app.getPath('appData'), app.isPackaged),
+        electronDir: abuAppDataDir(app),
+        secretSet: (key, value) => secretDispatch('secret_set', { key, value }),
+        secretHas: (key) => secretDispatch('secret_has', { key }) === true,
+        dryRun: migrateEnv === 'dry',
+      });
+      if ('skipped' in result) {
+        console.log(`[tauriMigration] skipped: ${result.skipped}`);
+      }
+    } catch (err) {
+      console.warn(
+        `[tauriMigration] migration failed (continuing boot): ${err instanceof Error ? err.message : String(err)}`
+      );
+    }
+  }
 
   // Any real quit (OS Cmd+Q / menu Quit / app_exit's app.quit()) flips the
   // isQuitting guard BEFORE the window 'close' fires, so the preventable-close

@@ -57,6 +57,7 @@ const HARNESSES_TO_RUN = [
   'f14Verify.cjs',
   'httpVerify.cjs',
   'reviewFixVerify.cjs',
+  'migrationVerify.cjs',
 ];
 
 // Explicitly NOT run — would need a display / TCC Screen-Recording grant

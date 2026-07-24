@@ -1,0 +1,134 @@
+# Electron shell build — sign + notarize + (optionally) publish the update
+# feed to OSS. Manual-trigger only: the Electron shell is not GA; this
+# pipeline exists to validate the packaging/signing/updater chain end-to-end
+# and to stage artifacts for real-machine verification.
+#
+# Secrets: reuses the EXACT set the Tauri Release workflow already has —
+# APPLE_CERTIFICATE (base64 p12), APPLE_CERTIFICATE_PASSWORD,
+# APPLE_API_KEY (the App Store Connect KEY ID), APPLE_API_ISSUER,
+# APPLE_API_KEY_P8 (key file content), ALIYUN_ACCESS_KEY_ID,
+# ALIYUN_ACCESS_KEY_SECRET, OSS_BUCKET, OSS_REGION. No new secrets needed.
+#
+# Signing: electron-builder's standard CSC_LINK/CSC_KEY_PASSWORD path (it
+# imports the p12 into its own throwaway keychain — no manual `security`
+# choreography needed, unlike the Tauri job). The yml's `identity: null` is
+# overridden per-invocation with -c.mac.identity read from the cert. Nested
+# extraResources Mach-Os are deep-signed by scripts/electron-sign-nested.cjs
+# (afterPack), verified locally against the same Developer ID.
+#
+# Notarization: electron-builder's built-in @electron/notarize integration —
+# activates automatically when APPLE_API_KEY/APPLE_API_KEY_ID/APPLE_API_ISSUER
+# env vars are present (app-builder-lib macOptions `notarize`). Runs on the
+# .app after signing, BEFORE dmg/zip are packed, so the artifacts contain the
+# notarized app. We staple the .app + dmg afterwards (zip contents can't be
+# stapled; Gatekeeper falls back to the online ticket check, same as VS Code's
+# zips).
+#
+# ⚠️ First run needs watching — this workflow has never executed (it can only
+# run after the electron branch lands on the default branch); treat the first
+# green run, not this file, as the verification.
+name: Electron Build
+
+on:
+  workflow_dispatch:
+    inputs:
+      publish_feed:
+        description: 'Upload zip/dmg/latest-mac.yml to OSS under /electron/ (leave false for a build-only validation run)'
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  build-mac:
+    runs-on: macos-latest # arm64; add an x64/universal leg when Windows/Intel support lands
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Gates (build + lint + parity)
+        run: |
+          npm run build
+          npm run lint
+          npm run parity:check
+
+      - name: Write App Store Connect API key
+        env:
+          APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
+          APPLE_API_KEY_ID_SECRET: ${{ secrets.APPLE_API_KEY }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/private_keys"
+          KEY_PATH="$RUNNER_TEMP/private_keys/AuthKey_${APPLE_API_KEY_ID_SECRET}.p8"
+          printf '%s' "$APPLE_API_KEY_P8" > "$KEY_PATH"
+          echo "APPLE_API_KEY=$KEY_PATH" >> "$GITHUB_ENV"
+          echo "APPLE_API_KEY_ID=$APPLE_API_KEY_ID_SECRET" >> "$GITHUB_ENV"
+
+      - name: Build, sign, notarize (zip + dmg + latest-mac.yml)
+        env:
+          # electron-builder signing: p12 via CSC_LINK (base64 accepted as-is).
+          CSC_LINK: ${{ secrets.APPLE_CERTIFICATE }}
+          CSC_KEY_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          # Notarization env (APPLE_API_KEY / APPLE_API_KEY_ID from GITHUB_ENV
+          # above) + issuer:
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+        run: npm run dist:electron
+
+      - name: Staple + verify
+        run: |
+          APP="release-electron/mac-arm64/Abu.app"
+          DMG="$(ls release-electron/*.dmg | head -1)"
+          xcrun stapler staple "$APP"
+          xcrun stapler staple "$DMG"
+          echo "== stapler validate (app) =="
+          xcrun stapler validate "$APP"
+          echo "== spctl assess (app) — fails the job if not notarized =="
+          spctl -a -vvv --type execute "$APP"
+          echo "== codesign deep verify =="
+          codesign --verify --deep --strict "$APP"
+
+      - name: Packaged smoke (6 checks) on the notarized build
+        run: npm run smoke:electron:packaged
+
+      - name: Upload artifacts (workflow run)
+        uses: actions/upload-artifact@v4
+        with:
+          name: electron-mac-arm64
+          path: |
+            release-electron/*.zip
+            release-electron/*.dmg
+            release-electron/*.blockmap
+            release-electron/latest-mac.yml
+          retention-days: 14
+
+      - name: Install + configure ossutil
+        if: ${{ inputs.publish_feed }}
+        run: |
+          curl -fsSL https://gosspublic.alicdn.com/ossutil/install.sh | sudo bash
+          ossutil config \
+            -e ${{ secrets.OSS_REGION }}.aliyuncs.com \
+            -i ${{ secrets.ALIYUN_ACCESS_KEY_ID }} \
+            -k ${{ secrets.ALIYUN_ACCESS_KEY_SECRET }}
+
+      - name: Publish feed to OSS (/electron/ prefix)
+        if: ${{ inputs.publish_feed }}
+        run: |
+          BUCKET="oss://${{ secrets.OSS_BUCKET }}"
+          # Artifacts + blockmaps are content-addressed by version — plain copy.
+          for f in release-electron/*.zip release-electron/*.dmg release-electron/*.blockmap; do
+            [ -f "$f" ] || continue
+            ossutil cp "$f" "${BUCKET}/electron/$(basename "$f")" -f
+          done
+          # The feed pointer must never be cached stale (mirrors the Tauri
+          # latest.json upload).
+          ossutil cp release-electron/latest-mac.yml "${BUCKET}/electron/latest-mac.yml" -f --meta "Cache-Control:no-cache"
+          echo "Done. Listing:"
+          ossutil ls "${BUCKET}/electron/"

@@ -73,9 +73,13 @@ extraResources:
 # (rejected invoke → frontend catch), same non-fatal behavior as before this
 # slice. Publishing artifacts to OSS stays a CI step; nothing is uploaded
 # from dev machines.
+# The electron feed lives under its own `/electron/` prefix so it can never
+# collide with the Tauri updater's `latest.json` at the bucket root — the two
+# update channels stay independent during the coexistence period (and after:
+# separate namespaces cost nothing).
 publish:
   provider: generic
-  url: https://abu-agent.oss-cn-beijing.aliyuncs.com/
+  url: https://abu-agent.oss-cn-beijing.aliyuncs.com/electron/
 
 mac:
   category: public.app-category.productivity

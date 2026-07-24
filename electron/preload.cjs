@@ -157,6 +157,14 @@ contextBridge.exposeInMainWorld('__TAURI_INTERNALS__', {
 
 contextBridge.exposeInMainWorld('__TAURI_OS_PLUGIN_INTERNALS__', ipcRenderer.sendSync('tauri:os-internals'));
 
+// F1 host gate (src/core/sidecar/sidecarManager.ts) — tells the renderer the
+// MAIN process already supervises sidecar liveness (electron/mcpBridge.cjs's
+// heartbeat + `mcp-hung-*` event), so sidecarManager.ts must NOT also start
+// its own renderer heartbeat. This global is exposed ONLY here (Electron) —
+// under Tauri it's simply absent, which is exactly what tells sidecarManager
+// to fall back to running its own renderer heartbeat.
+contextBridge.exposeInMainWorld('__ABU_SHELL__', { mainSupervisesSidecar: true });
+
 // unlisten() calls this SYNCHRONOUSLY before invoking `plugin:event|unlisten`
 // — must exist or unlisten throws before the real unlisten reaches main. No-op:
 // main is the authoritative registry (tauriHost.cjs `subscriptions`), removed

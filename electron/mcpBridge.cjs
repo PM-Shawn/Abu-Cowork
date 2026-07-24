@@ -178,21 +178,26 @@ function onHeartbeatTimeout(id) {
  */
 function consumeHeartbeatAck(id, line) {
   const state = heartbeats.get(id);
-  if (!state || state.pendingId === null) return false;
+  if (!state) return false;
   let parsed;
   try {
     parsed = JSON.parse(line);
   } catch {
     return false;
   }
-  if (parsed && parsed.id === state.pendingId) {
+  if (!parsed || typeof parsed.id !== 'string' || !parsed.id.startsWith('__mcphb-')) return false;
+
+  // Any heartbeat-shaped id must never reach the renderer, even if it's a
+  // stale/late ack (its ping already timed out and pendingId moved on, or was
+  // cleared to null) — swallow it, but only touch pending/failure bookkeeping
+  // when it's the CURRENT outstanding ping.
+  if (state.pendingId !== null && parsed.id === state.pendingId) {
     if (state.timeoutTimer) clearTimeout(state.timeoutTimer);
     state.timeoutTimer = null;
     state.pendingId = null;
     state.failures = 0;
-    return true;
   }
-  return false;
+  return true;
 }
 
 /** Cache the event-bridge emit after the first require (hot path: one call per stream line). */
@@ -233,6 +238,10 @@ function killChild(id) {
     }
     children.delete(id);
   }
+  // Stop the monitor even if `child` was already gone (defensive) — otherwise
+  // an already-scheduled heartbeat timeout timer can still fire after this
+  // kill and emit a spurious mcp-hung-{id} for a process we just tore down.
+  stopHeartbeatMonitor(id);
 }
 
 /**
@@ -289,9 +298,19 @@ function mcpSpawn({ id, command, args = [], env = {}, heartbeat }) {
   const emitCloseOnce = () => {
     if (emittedClose) return;
     emittedClose = true;
-    children.delete(id);
-    stopHeartbeatMonitor(id);
-    emit(`mcp-close-${id}`, '');
+    // Generation-safe teardown: `child` is THIS closure's own process,
+    // captured at mcpSpawn-time. If a NEW generation has since been spawned
+    // for the same `id` (old child killed via mcp_kill, which deletes it from
+    // `children` and lets a fresh mcp_spawn register under the same id), this
+    // old generation's late 'close' must be a no-op w.r.t. shared state — it
+    // must NOT delete the live new child, stop ITS heartbeat monitor, or
+    // emit a spurious mcp-close-{id} for it. Only tear down/emit when this
+    // closure's child is still the one actually registered.
+    if (children.get(id) === child) {
+      children.delete(id);
+      stopHeartbeatMonitor(id);
+      emit(`mcp-close-${id}`, '');
+    }
   };
 
   // Line-framed stdout — one mcp-msg per line (trimmed), NDJSON.

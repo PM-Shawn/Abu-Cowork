@@ -31,14 +31,19 @@ const electronBin = nodeRequire('electron');
 
 // Per-harness hard timeout. macOS ships no `timeout` binary — verified on
 // this machine — so a hung Electron process would stall the whole run
-// forever without our own kill switch.
-const HARNESS_TIMEOUT_MS = 60_000;
+// forever without our own kill switch. Raised from the original 60s to 90s
+// to cover f1HeartbeatE2E.cjs, which drives 3 consecutive missed heartbeat
+// pings (interval 10s + timeout 5s each, ~55s worst case) before its
+// mcp-hung-* assertion resolves — 60s was cutting that too close and could
+// false-TIMEOUT a passing run.
+const HARNESS_TIMEOUT_MS = 90_000;
 
 // SAFE subset: pure shell-contract logic, no Screen-Recording/TCC/display
 // dependency. Run sequentially (not parallel) to avoid Electron
 // single-instance / resource contention.
 const HARNESSES_TO_RUN = [
   'f1aE2E.cjs',
+  'f1HeartbeatE2E.cjs',
   'f2Verify.cjs',
   'f3Verify.cjs',
   'f4Verify.cjs',

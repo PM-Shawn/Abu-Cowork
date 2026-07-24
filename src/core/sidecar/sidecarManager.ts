@@ -34,8 +34,10 @@
  * `mcp_kill` to clear any stale entry before calling `mcp_spawn`.
  *
  * ANY failure — the initial spawn's `invoke('mcp_spawn')` rejecting, an
- * unexpected `mcp-close-abu-sidecar` event, or a `mcp-hung-abu-sidecar` event
- * (main-process liveness heartbeat — see below) — is treated identically by
+ * unexpected `mcp-close-abu-sidecar` event, a `mcp-hung-abu-sidecar` event
+ * (Electron's main-process heartbeat — see "F1" below), or 3 consecutive
+ * renderer-heartbeat ping timeouts (Tauri's own heartbeat — see "F1" below)
+ * — is treated identically by
  * `scheduleRestartOrGiveUp()`: it counts as one entry in a rolling 60s
  * window, and unless that window already holds
  * more than `CRASH_LOOP_MAX_RESTARTS` (3) entries, it schedules exactly one
@@ -56,7 +58,8 @@
  *
  * Because `mcp-close-abu-sidecar` is a single shared event name reused
  * across every spawn generation, a close event from a process we just
- * force-killed ourselves (main-heartbeat-hung restart, or the defensive
+ * force-killed ourselves (a `main-heartbeat-hung` or `heartbeat-hung`
+ * forced restart via `forceRestartOnHang()`, or the defensive
  * pre-spawn kill) *could* theoretically arrive at the JS side after we've
  * already respawned and observed `status === 'running'` again, and be
  * misread as a fresh unexpected close. This is mitigated by ignoring close
@@ -68,21 +71,47 @@
  * correlation would require tagging close events with a spawn generation on
  * the Rust side, which is out of scope for P1-0 (no Rust changes allowed).
  *
- * ## F1 — liveness heartbeat moved to the main process
+ * ## F1 — two-host heartbeat arrangement (gated by `window.__ABU_SHELL__`)
  *
- * The ping/pong liveness check used to run on THIS module's own timer
- * (`runHeartbeat`, on the renderer's event loop) — but a stalled renderer
- * (heavy rendering, a big synchronous task) can make a perfectly healthy
- * sidecar's ping "time out" purely because the renderer couldn't process the
- * reply in time, triggering a false restart storm. Every competitor
- * (WorkBuddy, Cursor, ChatGPT/Codex, TRAE) supervises liveness from the
- * process that owns the child's stdio, never from a UI thread. So the ping
- * loop now lives in `electron/mcpBridge.cjs` (opted in via `heartbeat: true`
- * on the `mcp_spawn` call below); this module only subscribes to the
- * `mcp-hung-abu-sidecar` event it emits on 3 consecutive missed pings, and
- * runs `forceRestartOnHang()` — the same force-restart action `runHeartbeat`
- * used to run inline. Death-on-crash detection (`mcp-close-abu-sidecar` →
- * `handleClose()`) is unaffected by this move.
+ * The ping/pong liveness check must run on the process that owns the
+ * sidecar's stdio, not a UI thread — a stalled renderer (heavy rendering, a
+ * big synchronous task) can make a perfectly healthy sidecar's ping
+ * "time out" purely because the renderer couldn't process the reply in
+ * time, triggering a false restart storm. Every competitor (WorkBuddy,
+ * Cursor, ChatGPT/Codex, TRAE) supervises liveness from the process that
+ * owns the child's stdio, never from a UI thread.
+ *
+ * This module is SHARED by two hosts with different capabilities:
+ *
+ *   - **Electron** (`electron/mcpBridge.cjs`) has a main process that already
+ *     owns the sidecar's stdio, so the ping loop runs THERE (opted in via
+ *     `heartbeat: true` on the `mcp_spawn` call below) and signals a hang via
+ *     the `mcp-hung-abu-sidecar` event.
+ *   - **Tauri** (`src-tauri/src/lib.rs` `mcp_spawn`) has NO such main-process
+ *     supervisor (verified — Rust's `mcp_spawn` ignores the unknown
+ *     `heartbeat` field entirely), so for Tauri this module runs its OWN
+ *     jank-tolerant renderer heartbeat (`startHeartbeat`/`runHeartbeat`,
+ *     below) exactly as it always has.
+ *
+ * The host gate is `window.__ABU_SHELL__.mainSupervisesSidecar` — a global
+ * `electron/preload.cjs` exposes via `contextBridge` (absent under Tauri).
+ * `attemptSpawn()` only calls `startHeartbeat()` when that flag is falsy
+ * (Tauri); Electron never starts the renderer heartbeat at all. The
+ * `mcp-hung-abu-sidecar` listener is registered UNCONDITIONALLY in
+ * `ensureListeners()` for both hosts — it's a harmless no-op under Tauri
+ * (electron/mcpBridge.cjs never runs there, so the event never fires).
+ * Death-on-crash detection (`mcp-close-abu-sidecar` → `handleClose()`) is
+ * independent of both heartbeat paths and unaffected by any of this.
+ *
+ * Both heartbeat paths — the renderer heartbeat's failure-threshold branch
+ * and the `mcp-hung-abu-sidecar` listener — funnel through the SAME
+ * `forceRestartOnHang()` action (guarded by `status === 'running'`), so
+ * there is exactly one restart action, never a double-restart from both
+ * paths firing at once.
+ *
+ * Net invariant: Tauri ⇒ renderer heartbeat active, `mcp-hung` never fires;
+ * Electron ⇒ renderer heartbeat never started, main heartbeat + `mcp-hung`
+ * active. Host-exclusive by the gate, plus the `status` guard as a backstop.
  */
 
 import { invoke } from '@tauri-apps/api/core';
@@ -96,6 +125,24 @@ const logger = createLogger('sidecar');
 /** Fixed id shared by every spawn attempt — see module JSDoc "Restart policy". */
 const SIDECAR_ID = 'abu-sidecar';
 
+const HEARTBEAT_INTERVAL_MS = 10_000;
+const HEARTBEAT_TIMEOUT_MS = 5_000;
+const HEARTBEAT_FAILURE_THRESHOLD = 3;
+// The renderer heartbeat (Tauri only — see module JSDoc "F1") runs on the
+// renderer's event loop. If a heavy synchronous task (e.g. rendering a
+// large/animation-heavy preview page) stalls that loop, the ping's reply
+// can't be processed in time AND the timeout timer itself fires late — so a
+// ping "times out" even though the sidecar is perfectly healthy. A genuinely
+// silent sidecar rejects at ~HEARTBEAT_TIMEOUT_MS (the loop is healthy, the
+// timer is on time); a jank-induced timeout rejects much later (the timer
+// was delayed along with everything else). If the observed round trip
+// exceeds the timeout by more than this margin, the verdict is treated as
+// inconclusive (renderer stalled) rather than a real failure — otherwise a
+// busy renderer force-kills a healthy sidecar and starts a self-sustaining
+// restart storm (the respawn's echo/ping can't be processed either while the
+// loop is still stalled). Genuine process death is caught separately by
+// handleClose().
+const HEARTBEAT_JANK_MARGIN_MS = 5_000;
 const REQUEST_DEFAULT_TIMEOUT_MS = 5_000;
 const CRASH_LOOP_WINDOW_MS = 60_000;
 const CRASH_LOOP_MAX_RESTARTS = 3;
@@ -187,6 +234,10 @@ const notificationHandlers = new Map<string, Set<SidecarNotificationHandler>>();
 /** method -> handler, for sidecar→shell REQUESTS (tool.invoke, hook.emit, ...). See onSidecarRequest(). Single handler per method (unlike notifications' Set) — a request needs exactly one response. */
 const requestHandlers = new Map<string, SidecarRequestHandler>();
 
+/** Renderer-heartbeat state (Tauri path only — see module JSDoc "F1"). */
+let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
+let heartbeatFailures = 0;
+
 /** Rolling window of restart timestamps — see "Restart policy" in module JSDoc. */
 let restartTimestamps: number[] = [];
 let crashLoopWarned = false;
@@ -229,6 +280,7 @@ export async function startSidecar(): Promise<void> {
  */
 export async function stopSidecar(): Promise<void> {
   deliberatelyStopped = true;
+  stopHeartbeat();
   rejectAllPending(new Error('Sidecar stopped'));
   restartTimestamps = [];
   crashLoopWarned = false;
@@ -252,10 +304,11 @@ export async function stopSidecar(): Promise<void> {
 /**
  * Send a JSON-RPC request over the bridge and resolve/reject on the
  * correlated response (matched by numeric id) or timeout. Used internally
- * for the post-spawn self-test echo (the liveness heartbeat ping itself now
- * runs in electron/mcpBridge.cjs — see module JSDoc "F1"); exported so tests
- * can exercise request/response correlation directly, and for real sidecar
- * calls (e.g. `llm.chat`) routed through this transport.
+ * for the post-spawn self-test echo and (Tauri only) the renderer heartbeat
+ * ping — see module JSDoc "F1" for why Electron's heartbeat ping instead
+ * runs in electron/mcpBridge.cjs; exported so tests can exercise
+ * request/response correlation directly, and for real sidecar calls (e.g.
+ * `llm.chat`) routed through this transport.
  *
  * `timeoutMs: 0` means NO timeout — used by `llm.chat`, whose response only
  * settles once an entire (potentially multi-minute) streaming call
@@ -363,6 +416,11 @@ export function __resetForTests(): void {
   pendingRequests.clear();
   notificationHandlers.clear();
   requestHandlers.clear();
+  if (heartbeatTimer) {
+    clearInterval(heartbeatTimer);
+    heartbeatTimer = null;
+  }
+  heartbeatFailures = 0;
   restartTimestamps = [];
   crashLoopWarned = false;
 }
@@ -396,10 +454,13 @@ async function ensureListeners(): Promise<void> {
   const unlistenClose = await listen<string>(`mcp-close-${SIDECAR_ID}`, () => {
     handleClose();
   });
-  // F1 — main-process liveness heartbeat (electron/mcpBridge.cjs) signals a
-  // hung-but-alive sidecar here instead of the renderer detecting it itself.
+  // F1 — Electron's main-process liveness heartbeat (electron/mcpBridge.cjs)
+  // signals a hung-but-alive sidecar here. Registered unconditionally (both
+  // hosts) — under Tauri this event is simply never emitted (no main-process
+  // heartbeat exists there; see module JSDoc "F1"), so this listener is a
+  // harmless no-op on that host.
   const unlistenHung = await listen<string>(`mcp-hung-${SIDECAR_ID}`, () => {
-    void forceRestartOnHang();
+    void forceRestartOnHang('main-heartbeat-hung');
   });
 
   unlisteners = [unlistenMsg, unlistenErr, unlistenClose, unlistenHung];
@@ -452,8 +513,9 @@ async function attemptSpawn(kind: 'initial' | 'restart'): Promise<void> {
 
   try {
     // heartbeat: true opts this child into electron/mcpBridge.cjs's
-    // main-process liveness monitor (F1) — see module JSDoc "F1 — liveness
-    // heartbeat moved to the main process".
+    // main-process liveness monitor (Electron only — Rust's mcp_spawn
+    // ignores this field) — see module JSDoc "F1 — two-host heartbeat
+    // arrangement".
     await invoke('mcp_spawn', { id: SIDECAR_ID, command: 'node', args: [entryPath], env: spawnEnv, heartbeat: true });
   } catch (err) {
     handleSpawnFailure(err, 'spawn-failed');
@@ -461,6 +523,12 @@ async function attemptSpawn(kind: 'initial' | 'restart'): Promise<void> {
   }
 
   status = 'running';
+  // Host gate (see module JSDoc "F1"): only Tauri (no main-process
+  // supervisor) runs the renderer heartbeat; Electron's main-process
+  // heartbeat + mcp-hung listener handle liveness there instead.
+  if (!mainSupervisesSidecar()) {
+    startHeartbeat();
+  }
   void selfTestEcho();
 }
 
@@ -519,24 +587,115 @@ async function selfTestEcho(): Promise<void> {
   }
 }
 
-// ── Heartbeat (F1: ping loop lives in electron/mcpBridge.cjs; this is just the reaction) ──
+// ── Heartbeat (two hosts, one restart path — see module JSDoc "F1") ──
 
 /**
- * Reaction to a `mcp-hung-abu-sidecar` event from the main-process liveness
- * monitor (see module JSDoc "F1"). Mirrors what `runHeartbeat`'s threshold
- * branch used to do inline, now triggered by an event instead of a local
- * timer. Guarded to `status === 'running'` so a hung event that arrives
- * while a restart/stop is already in flight (or after one just completed)
- * doesn't pile on a second, redundant restart.
+ * Host gate: true when the ELECTRON main process supervises sidecar
+ * liveness itself (electron/mcpBridge.cjs's heartbeat + the
+ * `mcp-hung-abu-sidecar` listener below) — in which case this module must
+ * NOT also run its own renderer heartbeat. `window.__ABU_SHELL__` is only
+ * ever exposed by `electron/preload.cjs`; under Tauri it's simply absent, so
+ * this reads `false` there and the renderer heartbeat (below) runs as usual.
+ * Read fresh on every call (not cached at module scope) so it reflects the
+ * actual current host — real production processes never change host
+ * mid-session, but tests toggle it per-case.
  */
-async function forceRestartOnHang(): Promise<void> {
+function mainSupervisesSidecar(): boolean {
+  return (
+    typeof window !== 'undefined' &&
+    !!(window as unknown as { __ABU_SHELL__?: { mainSupervisesSidecar?: boolean } }).__ABU_SHELL__
+      ?.mainSupervisesSidecar
+  );
+}
+
+function startHeartbeat(): void {
+  stopHeartbeat();
+  heartbeatFailures = 0;
+  heartbeatTimer = setInterval(() => {
+    void runHeartbeat();
+  }, HEARTBEAT_INTERVAL_MS);
+}
+
+function stopHeartbeat(): void {
+  if (heartbeatTimer) {
+    clearInterval(heartbeatTimer);
+    heartbeatTimer = null;
+  }
+}
+
+/**
+ * Tauri-only renderer heartbeat (see module JSDoc "F1" — Electron's
+ * equivalent liveness ping runs in electron/mcpBridge.cjs instead, and is
+ * never started here since `mainSupervisesSidecar()` gates `startHeartbeat()`
+ * out of `attemptSpawn()` on that host).
+ */
+async function runHeartbeat(): Promise<void> {
   if (status !== 'running') return;
-  logger.warn('Sidecar heartbeat hung (main-process monitor) — forcing restart');
+  // Monotonic clock — NOT Date.now(): a wall-clock forward step (NTP correction,
+  // sleep/wake) between capturing `start` and measuring `elapsed` must not
+  // inflate the reading and misclassify a real on-time failure as jank.
+  const start = performance.now();
+  try {
+    await request('ping', undefined, HEARTBEAT_TIMEOUT_MS);
+    heartbeatFailures = 0;
+  } catch (err) {
+    // Renderer-jank false-positive guard (see HEARTBEAT_JANK_MARGIN_MS): a
+    // timeout that took FAR longer than HEARTBEAT_TIMEOUT_MS to reject means the
+    // renderer event loop was stalled (the timer itself fired late), not that
+    // the sidecar is unresponsive — the reply may have arrived on stdout but
+    // couldn't be processed in time. Don't count it as a failure or the busy
+    // renderer force-kills a healthy sidecar and starts a restart storm. A real
+    // hung sidecar rejects at ~HEARTBEAT_TIMEOUT_MS (loop healthy, timer on
+    // time) and still counts; genuine process death is caught by handleClose().
+    const elapsed = performance.now() - start;
+    if (elapsed > HEARTBEAT_TIMEOUT_MS + HEARTBEAT_JANK_MARGIN_MS) {
+      // Inconclusive tick — we could not get a verdict. RESET the consecutive-
+      // failure streak rather than leaving a stale count: a masked cycle must not
+      // combine with an earlier real failure and a later real failure to trip a
+      // spurious restart of a sidecar that may have recovered in between.
+      heartbeatFailures = 0;
+      logger.warn('Sidecar heartbeat inconclusive — renderer event loop stalled, not counting as failure', {
+        elapsedMs: elapsed,
+        heartbeatTimeoutMs: HEARTBEAT_TIMEOUT_MS,
+      });
+      return;
+    }
+    heartbeatFailures += 1;
+    if (heartbeatFailures < HEARTBEAT_FAILURE_THRESHOLD) {
+      logger.warn('Sidecar heartbeat failed', {
+        failures: heartbeatFailures,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      return;
+    }
+
+    logger.warn('Sidecar heartbeat threshold exceeded — forcing restart', {
+      failures: heartbeatFailures,
+    });
+    heartbeatFailures = 0;
+    await forceRestartOnHang('heartbeat-hung');
+  }
+}
+
+/**
+ * Single shared restart action for BOTH heartbeat paths — the Tauri
+ * renderer heartbeat's threshold branch (`runHeartbeat` above) and the
+ * `mcp-hung-abu-sidecar` listener (Electron's main-process monitor,
+ * `ensureListeners()` below) — so there is exactly one restart action
+ * regardless of which host/path triggered it. Guarded to
+ * `status === 'running'` so a hang signal that arrives while a restart/stop
+ * is already in flight (or after one just completed) doesn't pile on a
+ * second, redundant restart.
+ */
+async function forceRestartOnHang(reason: string): Promise<void> {
+  if (status !== 'running') return;
+  logger.warn('Sidecar heartbeat hung — forcing restart', { reason });
+  stopHeartbeat();
   // Flip to 'restarting' BEFORE killing, so the close event this kill
   // triggers is recognized as self-initiated by handleClose() below.
   status = 'restarting';
   await invoke('mcp_kill', { id: SIDECAR_ID }).catch(() => {});
-  scheduleRestartOrGiveUp('main-heartbeat-hung');
+  scheduleRestartOrGiveUp(reason);
 }
 
 // ── Event handlers ──
@@ -645,6 +804,7 @@ async function writeRpcMessage(payload: unknown): Promise<void> {
 }
 
 function handleClose(): void {
+  stopHeartbeat();
   rejectAllPending(new Error('Sidecar process closed'));
 
   if (deliberatelyStopped) {
@@ -654,9 +814,10 @@ function handleClose(): void {
 
   if (status === 'starting' || status === 'restarting' || status === 'failed') {
     // Echo of a kill we just issued ourselves (defensive pre-spawn kill or a
-    // main-heartbeat-hung forced kill), or we've already given up — don't
-    // double-count this as a new failure. See "Known limitation" in the
-    // module JSDoc for the residual race this doesn't fully close.
+    // forceRestartOnHang()-forced kill, from either heartbeat path), or
+    // we've already given up — don't double-count this as a new failure. See
+    // "Known limitation" in the module JSDoc for the residual race this
+    // doesn't fully close.
     return;
   }
 

@@ -363,19 +363,49 @@ function clearSubscriptionsForSender(sender) {
 // these don't share that naming convention.
 const ARRAY_RESULT_CMDS = new Set(['plugin:fs|read_dir', 'notice_inbox_pending']);
 
+// Commands the Electron shell INTENTIONALLY does not implement (deliberate
+// deferrals, NOT parity gaps): the real handler needs conditions this build
+// doesn't have (a signed package, the IM line), so they degrade gracefully and
+// are EXPECTED to reach the stub. Anything NOT in here that hits the stub is an
+// unexpected parity gap and gets shouted about below. Keep this list in sync
+// with scripts/parity-check.mjs's KNOWN_DEFERRED.
+const KNOWN_DEFERRED = [
+  /^plugin:updater\|/, // F11 — real auto-update needs a signed build + release feed
+  'start_feishu_ws',
+  'stop_feishu_ws',
+  'get_feishu_ws_status', // F15 — feishu/IM line, deferred
+];
+function isKnownDeferred(cmd) {
+  return KNOWN_DEFERRED.some((p) => (typeof p === 'string' ? p === cmd : p.test(cmd)));
+}
+
 function defaultFor(cmd) {
-  // Log EVERY stubbed command once — including the []/false shapes — so a
-  // not-yet-wired command is never silently indistinguishable from a real
-  // empty/false result (review slice-A [3]/[6]). These stubs are temporary
-  // scaffolding for the boot-clean milestone; slices B-E replace each with a
-  // real handler (plugin:event|* is now real — see registerTauriHost below).
-  // NOTE: a stubbed *mutation* (fs write, secret_set, …) returning
-  // null still reads as success to its caller — tolerated only because this is a
-  // dev-integration harness with no real user data, and those write commands get
-  // real handlers in slices C-E.
-  if (!seenUnknownCmds.has(cmd)) {
-    seenUnknownCmds.add(cmd);
-    console.log(`[tauriHost] stub: ${cmd}`);
+  // A stubbed command returns a shape-compatible default (see below) so the app
+  // never crashes on a not-yet-wired command. The DANGER is that a genuinely
+  // missing handler then fails SILENTLY (a no-op that reads as success), which
+  // is exactly the hard-to-spot "点了没反应" bug. So distinguish the two:
+  //  - KNOWN_DEFERRED (updater/feishu): expected — log once, quietly.
+  //  - anything else: an UNEXPECTED parity gap. Be LOUD in dev (error EVERY time,
+  //    not deduped) so it cannot hide; a packaged build still degrades gracefully
+  //    (warn once, never throw) so a stray command can't crash a real user's app.
+  //    (We log loudly rather than throw: most invoke() call sites have a .catch()
+  //    that would swallow a throw, so an every-call console.error is the reliably
+  //    visible signal. The durable guard is the static scripts/parity-check.mjs,
+  //    which fails the build if the frontend calls a command with no handler.)
+  if (isKnownDeferred(cmd)) {
+    if (!seenUnknownCmds.has(cmd)) {
+      seenUnknownCmds.add(cmd);
+      console.log(`[tauriHost] deferred (not implemented in this build): ${cmd}`);
+    }
+  } else {
+    let isDev = true;
+    try { isDev = !require('electron').app.isPackaged; } catch { /* default to loud */ }
+    if (isDev) {
+      console.error(`[tauriHost] ⚠️ UNHANDLED COMMAND — parity gap, silently degrading: ${cmd}`);
+    } else if (!seenUnknownCmds.has(cmd)) {
+      seenUnknownCmds.add(cmd);
+      console.warn(`[tauriHost] unhandled command (degraded): ${cmd}`);
+    }
   }
   if (ARRAY_RESULT_CMDS.has(cmd)) return [];
   if (/(^|_)list$|failed_keys|_all$/i.test(cmd)) return [];

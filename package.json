@@ -23,6 +23,7 @@
     "typecheck": "tsc -b --noEmit && npm run typecheck:sidecar",
     "typecheck:sidecar": "tsc -p tsconfig.sidecar.json --noEmit",
     "release:check": "node scripts/release-preflight.mjs",
+    "parity:check": "node scripts/parity-check.mjs",
     "pretest": "npm run gen:models:check",
     "test": "vitest run",
     "test:watch": "vitest",

@@ -83,17 +83,34 @@ jobs:
         run: npm run dist:electron
 
       - name: Staple + verify
+        env:
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
         run: |
           APP="release-electron/mac-arm64/Abu.app"
           DMG="$(ls release-electron/*.dmg | head -1)"
           xcrun stapler staple "$APP"
+          # The dmg carries NO notarization ticket of its own — electron-builder
+          # notarizes the .app BEFORE the dmg is packed — so stapling it directly
+          # fails with Error 65 "Record not found" (hit on the real local run,
+          # 2026-07-26). Submit the dmg itself first, then staple.
+          xcrun notarytool submit "$DMG" \
+            --key "$APPLE_API_KEY" --key-id "$APPLE_API_KEY_ID" \
+            --issuer "$APPLE_API_ISSUER" --wait
           xcrun stapler staple "$DMG"
-          echo "== stapler validate (app) =="
+          echo "== stapler validate (app + dmg) =="
           xcrun stapler validate "$APP"
+          xcrun stapler validate "$DMG"
           echo "== spctl assess (app) — fails the job if not notarized =="
           spctl -a -vvv --type execute "$APP"
           echo "== codesign deep verify =="
           codesign --verify --deep --strict "$APP"
+
+      # Stapling rewrites the dmg bytes, so the sha512/size electron-builder
+      # recorded in latest-mac.yml (and the dmg blockmap) are stale by now.
+      # The zip is untouched (zips can't be stapled), so the updater's own
+      # entry stays valid — this refresh keeps the dmg row honest too.
+      - name: Refresh dmg hash in latest-mac.yml after stapling
+        run: node scripts/electron-refresh-dmg-hash.mjs
 
       - name: Packaged smoke (6 checks) on the notarized build
         run: npm run smoke:electron:packaged

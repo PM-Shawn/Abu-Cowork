@@ -6,9 +6,10 @@ reports and old agent instructions are useful evidence, not current status.
 
 ## Scope and Git Safety
 
-- The current integration branch is `refactor-dev`. Do Electron work here or
-  from a focused branch based on it. The older `feat/electron-shell-p2-1`
-  worktree has already been merged and is historical.
+- `refactor-dev` is the active `dev` mainline for the Electron refactor. Start
+  each refactor task from it, use a focused feature branch when appropriate,
+  and merge verified refactor work back into `refactor-dev`. The older
+  `feat/electron-shell-p2-1` worktree has already been merged and is historical.
 - Check `git status --short` and the current branch before making changes. This
   worktree currently contains user-owned uncommitted material; preserve it.
 - Do not commit or push unless the user explicitly asks. Do not force-push,

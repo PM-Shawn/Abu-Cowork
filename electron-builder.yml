@@ -43,6 +43,8 @@ files:
   - "!electron/native-helper/**"   # Rust source + target/ (huge) — binary ships via extraResources
   - "!electron/spike/**"           # dev-only E2E harnesses
   - "!electron/renderer/**"        # placeholder page — real frontend is dist-electron-spike
+  # previewServer.cjs reads this shared picker from app.asar at runtime.
+  - "src-tauri/inspect/abu-preview-inspect.js"
   - "dist-electron-spike/**/*"
   - "package.json"
   - "node_modules/node-pty/**/*"

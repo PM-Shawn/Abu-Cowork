@@ -16,6 +16,7 @@
  *      (BaseDirectory.Resource) / nativeHelperManager.cjs now look when packaged.
  *   4. The REAL frontend rendered (React mounted into #root), not the
  *      placeholder page — i.e. dist-electron-spike was bundled and loads.
+ *   5. A packaged HTML preview receives the shared element-picker script.
  *
  * Run: npm run smoke:electron:packaged   (after `npm run pack:electron`)
  *
@@ -25,6 +26,8 @@
  */
 import { _electron as electron } from '@playwright/test';
 import fs from 'node:fs';
+import http from 'node:http';
+import os from 'node:os';
 import path from 'node:path';
 
 const OUT = 'release-electron';
@@ -54,6 +57,23 @@ function findPackagedApp() {
   return null;
 }
 
+function requestPreview({ port, pathAndQuery }) {
+  return new Promise((resolve, reject) => {
+    const request = http.request(
+      { host: '127.0.0.1', port, method: 'GET', path: pathAndQuery },
+      (response) => {
+        const chunks = [];
+        response.on('data', (chunk) => chunks.push(chunk));
+        response.on('end', () => {
+          resolve({ status: response.statusCode, body: Buffer.concat(chunks).toString('utf8') });
+        });
+      }
+    );
+    request.on('error', reject);
+    request.end();
+  });
+}
+
 async function main() {
   const found = findPackagedApp();
   if (!found) {
@@ -66,6 +86,11 @@ async function main() {
 
   const checks = {};
   const errors = {};
+  const previewFixtureDir = fs.mkdtempSync(path.join(os.tmpdir(), 'abu-packaged-preview-'));
+  fs.writeFileSync(
+    path.join(previewFixtureDir, 'index.html'),
+    '<!doctype html><html><body><main>packaged preview smoke</main></body></html>'
+  );
 
   const app = await electron.launch({ executablePath: found.bin, args: [] });
   try {
@@ -100,10 +125,31 @@ async function main() {
       checks.realFrontendRendered = false;
       errors.frontend = String(err);
     }
+
+    // ── packaged preview assertion: the picker must be inside app.asar ──
+    try {
+      const preview = await window.evaluate(async (directory) => {
+        const info = await window.__TAURI_INTERNALS__.invoke('get_preview_server_info');
+        const rootId = await window.__TAURI_INTERNALS__.invoke('register_preview_root', { path: directory });
+        return { ...info, rootId };
+      }, previewFixtureDir);
+      const response = await requestPreview({
+        port: preview.port,
+        pathAndQuery: `/files/${preview.token}/${preview.rootId}/index.html`,
+      });
+      checks.previewPickerInjected =
+        response.status === 200 && response.body.includes('__ABU_PREVIEW_INSPECT__');
+
+      await window.evaluate((rootId) => window.__TAURI_INTERNALS__.invoke('unregister_preview_root', { rootId }), preview.rootId);
+    } catch (err) {
+      checks.previewPickerInjected = false;
+      errors.preview = String(err);
+    }
   } catch (err) {
     errors.launch = String(err);
   } finally {
     await app.close();
+    fs.rmSync(previewFixtureDir, { recursive: true, force: true });
   }
 
   const passed =

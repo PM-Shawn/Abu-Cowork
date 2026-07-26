@@ -10,6 +10,20 @@ import type { CommandOutput } from '../helpers/toolHelpers';
 import { isReadOnlyCommand } from '../readOnlyDetector';
 import { TOOL_NAMES } from '../toolNames';
 
+/**
+ * Global-workspace fallback for direct invocations that carry no context.
+ * Sidecar-safe: the bare `getWorkspaceReader()` getter throws outside a
+ * registered agent run (see `shims/workspaceReaderRun.ts`) — a throwing
+ * fallback must degrade to "no workspace", never fail the command itself.
+ */
+function safeGlobalWorkspacePath(): string | null {
+  try {
+    return getWorkspaceReader().getCurrentPath();
+  } catch {
+    return null;
+  }
+}
+
 export const runCommandTool: ToolDefinition = {
   name: TOOL_NAMES.RUN_COMMAND,
   get description() {
@@ -57,7 +71,11 @@ This tool is suitable for: moving/copying/renaming files (mv/cp), package manage
 
       // Use conversation-scoped workspace from context; fall back to global store
       // only if context is absent (e.g. direct invocation outside agent loop).
-      const workspacePath = context?.workspacePath ?? getWorkspaceReader().getCurrentPath();
+      // The fallback must not fail the command: in the sidecar the bare getter
+      // resolves an ambient-run mirror and THROWS outside a registered run —
+      // treat that as "no workspace" (cwd-less spawn), matching the shell's
+      // no-workspace behavior instead of erroring before the spawn.
+      const workspacePath = context?.workspacePath ?? safeGlobalWorkspacePath();
       const authorizedPaths = sandbox ? await getAuthorizedPathsReader().getAuthorizedWritablePaths() : [];
       const extraWritablePaths = [
         ...(workspacePath ? [workspacePath] : []),

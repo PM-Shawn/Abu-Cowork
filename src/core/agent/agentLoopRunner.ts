@@ -320,10 +320,9 @@ function handleShellNotifyTask(rawParams: unknown): void {
 /**
  * `shell.sandboxBlocked` (NOTIFICATION) — P1-3d-5 slice 2a. Sidecar-side
  * twin: `sidecar/src/shims/sandboxRecoveryRun.ts`'s `showSandboxBlockedToast`,
- * called by a locally-executed `run_command` (once slice 2b registers it in
- * `localTools/index.ts` — this batch only lands the plumbing) when its
- * stderr contains `[sandbox-blocked]`, mirroring the real
- * `commandTools.ts`'s own guard exactly.
+ * called by a locally-executed `run_command` (LIVE since slice 2b registered
+ * it in `localTools/index.ts`) when its stderr contains `[sandbox-blocked]`,
+ * mirroring the real `commandTools.ts`'s own guard exactly.
  *
  * Calls the REAL `showSandboxBlockedToast` (`core/sandbox/recovery.ts`,
  * unmoved) — the exact same function a shell-executed `run_command` calls

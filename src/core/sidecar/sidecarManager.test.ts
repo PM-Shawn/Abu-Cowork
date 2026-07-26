@@ -33,6 +33,11 @@ function emitClose(): void {
   listenCallbacks.get('mcp-close-abu-sidecar')?.({ payload: '' });
 }
 
+/** Simulate electron/mcpBridge.cjs's main-process heartbeat monitor emitting a hang signal (F1). */
+function emitHung(): void {
+  listenCallbacks.get('mcp-hung-abu-sidecar')?.({ payload: '' });
+}
+
 function emitMsg(payload: unknown): void {
   listenCallbacks.get('mcp-msg-abu-sidecar')?.({ payload: JSON.stringify(payload) });
 }
@@ -70,6 +75,11 @@ describe('sidecarManager', () => {
     // happy-dom has no __TAURI_INTERNALS__ by default, so the gated no-op
     // test below explicitly deletes it instead.
     (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = {};
+    // Default host gate state: __ABU_SHELL__ absent = Tauri path (renderer
+    // heartbeat runs) — matches production Tauri (electron/preload.cjs is
+    // the only place that ever sets this). The "host gate" describe block
+    // below explicitly sets it to simulate Electron.
+    delete (window as Window & { __ABU_SHELL__?: unknown }).__ABU_SHELL__;
   });
 
   afterEach(() => {
@@ -77,6 +87,7 @@ describe('sidecarManager', () => {
     vi.clearAllTimers();
     vi.useRealTimers();
     delete (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
+    delete (window as Window & { __ABU_SHELL__?: unknown }).__ABU_SHELL__;
   });
 
   describe('startSidecar', () => {
@@ -101,6 +112,7 @@ describe('sidecarManager', () => {
         command: 'node',
         args: ['/resources/sidecar/index.mjs'],
         env: {},
+        heartbeat: true,
       });
       expect(getSidecarStatus()).toBe('running');
 
@@ -499,7 +511,76 @@ describe('sidecarManager', () => {
     });
   });
 
-  describe('heartbeat', () => {
+  describe('main-process heartbeat hang signal (F1 — mcp-hung-abu-sidecar)', () => {
+    // The ping/pong liveness loop itself now runs in electron/mcpBridge.cjs
+    // (main process), not here — see sidecarManager.ts's module JSDoc "F1".
+    // This module's own responsibility is just: subscribe to the event, and
+    // react by force-restarting (mirroring the old runHeartbeat() threshold
+    // branch), guarded so it only acts while actually 'running'.
+
+    it('forces a restart when a mcp-hung event arrives while running', async () => {
+      mockHappyPath();
+      await startSidecar();
+      expect(getSidecarStatus()).toBe('running');
+
+      const spawnsBefore = spawnCallCount();
+      const killsBefore = killCallCount();
+
+      emitHung();
+      // forceRestartOnHang() awaits mcp_kill before scheduling the respawn —
+      // let that microtask chain (and the RESTART_BACKOFF_MS timer it sets up
+      // via scheduleRestartOrGiveUp) run to completion.
+      await vi.advanceTimersByTimeAsync(0);
+      expect(getSidecarStatus()).toBe('restarting');
+      expect(killCallCount()).toBeGreaterThan(killsBefore);
+
+      await vi.advanceTimersByTimeAsync(1000);
+
+      expect(spawnCallCount()).toBe(spawnsBefore + 1);
+      expect(getSidecarStatus()).toBe('running');
+    });
+
+    it('a hung event while NOT running (e.g. mid-restart already, or stopped) is ignored', async () => {
+      mockHappyPath();
+      await startSidecar();
+      await stopSidecar();
+      expect(getSidecarStatus()).toBe('stopped');
+
+      const spawnsBefore = spawnCallCount();
+      const killsBefore = killCallCount();
+
+      // A stray/late hung event after a deliberate stop must not resurrect
+      // the sidecar — forceRestartOnHang()'s `status !== 'running'` guard.
+      emitHung();
+      await vi.advanceTimersByTimeAsync(2000);
+
+      expect(getSidecarStatus()).toBe('stopped');
+      expect(spawnCallCount()).toBe(spawnsBefore);
+      expect(killCallCount()).toBe(killsBefore);
+    });
+
+    it('a second hung event that arrives while the first is still restarting does not pile on an extra restart', async () => {
+      mockHappyPath();
+      await startSidecar();
+      expect(getSidecarStatus()).toBe('running');
+
+      const spawnsBefore = spawnCallCount();
+
+      emitHung();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(getSidecarStatus()).toBe('restarting');
+
+      // Fires again before the first restart's respawn has landed — the
+      // status !== 'running' guard should make this a no-op.
+      emitHung();
+      await vi.advanceTimersByTimeAsync(1000);
+
+      expect(getSidecarStatus()).toBe('running');
+      expect(spawnCallCount()).toBe(spawnsBefore + 1); // exactly one respawn, not two
+    });
+  });
+
+  describe('heartbeat (Tauri path — window.__ABU_SHELL__ absent, gate off)', () => {
     it('forces a restart after 3 consecutive ping timeouts', async () => {
       mockHappyPath(); // mcp_write always "succeeds" but nothing ever responds -> pings time out
 
@@ -514,6 +595,213 @@ describe('sidecarManager', () => {
 
       expect(spawnCallCount()).toBe(spawnsBefore + 1);
       expect(killCallCount()).toBeGreaterThanOrEqual(2); // initial defensive kill + heartbeat-forced kill
+      expect(getSidecarStatus()).toBe('running');
+    });
+  });
+
+  describe('heartbeat renderer-jank guard (runHeartbeat() elapsed-time check)', () => {
+    // Mirror the constants in sidecarManager.ts (not exported, so duplicated
+    // here — see that file's HEARTBEAT_TIMEOUT_MS / HEARTBEAT_INTERVAL_MS /
+    // HEARTBEAT_JANK_MARGIN_MS and the runHeartbeat() JSDoc for the
+    // jank-margin rationale this describe block exercises).
+    const HEARTBEAT_INTERVAL = 10_000;
+    const HEARTBEAT_TIMEOUT = 5_000;
+    const HEARTBEAT_JANK_MARGIN = 5_000;
+    const RESTART_BACKOFF = 500;
+
+    /**
+     * Spy on performance.now() so a test can inflate what runHeartbeat()
+     * observes between capturing `start` and computing `elapsed` — production
+     * measures elapsed via the monotonic clock (performance.now()), NOT
+     * Date.now() (see runHeartbeat()'s JSDoc: a wall-clock forward step must
+     * not be misread as elapsed time). This is independent of the fake-timer
+     * clock that actually governs *when* the ping's internal setTimeout
+     * fires — that bookkeeping still uses Date.now()/the fake clock (via
+     * vi.advanceTimersByTimeAsync). Injecting the offset here reproduces a
+     * stalled renderer event loop precisely: real elapsed time
+     * (performance.now()) keeps advancing while the loop is stalled, but the
+     * timer schedule itself isn't otherwise touched. Must be restored after
+     * use (no global restoreMocks in this project's vitest config).
+     */
+    function spyOnPerfNowWithOffset(): { setOffset: (ms: number) => void; restore: () => void } {
+      const realNow = performance.now.bind(performance);
+      let offset = 0;
+      const spy = vi.spyOn(performance, 'now').mockImplementation(() => realNow() + offset);
+      return {
+        setOffset: (ms: number) => {
+          offset = ms;
+        },
+        restore: () => spy.mockRestore(),
+      };
+    }
+
+    it('a late ping timeout caused by a stalled renderer event loop is inconclusive — not counted, no restart after 3 cycles', async () => {
+      mockHappyPath(); // pings never get a response -> each rejects via request()'s own internal timeout
+
+      await startSidecar();
+      expect(getSidecarStatus()).toBe('running');
+
+      const spawnsBefore = spawnCallCount();
+      const killsBefore = killCallCount();
+
+      const baseNow = Date.now();
+      const perfNow = spyOnPerfNowWithOffset();
+      let nextIntervalAt = baseNow + HEARTBEAT_INTERVAL;
+
+      try {
+        for (let i = 0; i < 3; i++) {
+          perfNow.setOffset(0);
+          const now = Date.now();
+          // Advance exactly to the next heartbeat interval firing — this is
+          // where runHeartbeat() captures `start` via performance.now()
+          // (offset 0, so it reads the real — effectively unmoving — clock).
+          await vi.advanceTimersByTimeAsync(nextIntervalAt - now);
+
+          // Before the ping's own HEARTBEAT_TIMEOUT-ms setTimeout fires,
+          // inflate performance.now() well past the jank margin — simulating
+          // the renderer stalling for that long before it can even process
+          // the timer callback that rejects the pending ping.
+          perfNow.setOffset(HEARTBEAT_TIMEOUT + HEARTBEAT_JANK_MARGIN + 1_000);
+          await vi.advanceTimersByTimeAsync(HEARTBEAT_TIMEOUT); // fires the ping's own (now "late") timeout
+
+          nextIntervalAt += HEARTBEAT_INTERVAL;
+        }
+      } finally {
+        perfNow.restore();
+      }
+
+      // None of the 3 cycles should have counted as a real heartbeat failure.
+      expect(spawnCallCount()).toBe(spawnsBefore);
+      expect(killCallCount()).toBe(killsBefore);
+      expect(getSidecarStatus()).toBe('running');
+    });
+
+    it('an on-time ping timeout (healthy loop, timer on schedule) still counts as a real failure and forces a restart after 3 cycles', async () => {
+      mockHappyPath();
+
+      await startSidecar();
+      expect(getSidecarStatus()).toBe('running');
+
+      const spawnsBefore = spawnCallCount();
+      const killsBefore = killCallCount();
+
+      // 3 heartbeat cycles, each ping rejecting right at HEARTBEAT_TIMEOUT —
+      // no renderer stall injected, so elapsed ≈ HEARTBEAT_TIMEOUT, nowhere
+      // near HEARTBEAT_TIMEOUT + HEARTBEAT_JANK_MARGIN. Every cycle counts,
+      // and the resulting forced restart's respawn fires after the 500ms
+      // RESTART_BACKOFF_MS (the trailing +1_000 covers that).
+      await vi.advanceTimersByTimeAsync(3 * HEARTBEAT_INTERVAL + HEARTBEAT_TIMEOUT + 1_000);
+
+      expect(spawnCallCount()).toBe(spawnsBefore + 1);
+      expect(killCallCount()).toBeGreaterThan(killsBefore);
+      expect(getSidecarStatus()).toBe('running');
+    });
+
+    it('an inconclusive/jank cycle resets the consecutive-failure streak — it cannot combine with an earlier real failure and a later real failure to trip a spurious restart', async () => {
+      mockHappyPath(); // pings never get a response -> each rejects via request()'s own internal timeout
+
+      await startSidecar();
+      expect(getSidecarStatus()).toBe('running');
+
+      const spawnsBefore = spawnCallCount();
+      const killsBefore = killCallCount();
+
+      const baseNow = Date.now();
+      const perfNow = spyOnPerfNowWithOffset();
+      let nextIntervalAt = baseNow + HEARTBEAT_INTERVAL;
+
+      // Cycle 1: on-time failure  -> heartbeatFailures: 0 -> 1
+      // Cycle 2: on-time failure  -> heartbeatFailures: 1 -> 2 (still below the
+      //          HEARTBEAT_FAILURE_THRESHOLD of 3 — no restart yet)
+      // Cycle 3: inconclusive/jank -> heartbeatFailures RESET to 0 (this is the
+      //          F3 fix under test: without the reset, this cycle used to be a
+      //          silent no-op that left the streak at 2)
+      // Cycle 4: on-time failure  -> heartbeatFailures: 0 -> 1 (NOT 3 — the jank
+      //          cycle broke the streak, so this can't combine with cycles 1-2
+      //          to trip a restart)
+      const cycles: Array<'on-time' | 'jank'> = ['on-time', 'on-time', 'jank', 'on-time'];
+
+      try {
+        for (const kind of cycles) {
+          perfNow.setOffset(0);
+          const now = Date.now();
+          // Advance exactly to the next heartbeat interval firing — this is
+          // where runHeartbeat() captures `start` via performance.now()
+          // (offset 0, so it reads the real — effectively unmoving — clock).
+          await vi.advanceTimersByTimeAsync(nextIntervalAt - now);
+
+          if (kind === 'jank') {
+            // Inflate performance.now() well past the jank margin before the
+            // ping's own timeout fires, simulating a stalled renderer event
+            // loop — this cycle is inconclusive, not a real failure.
+            perfNow.setOffset(HEARTBEAT_TIMEOUT + HEARTBEAT_JANK_MARGIN + 1_000);
+          } else {
+            perfNow.setOffset(0);
+          }
+          await vi.advanceTimersByTimeAsync(HEARTBEAT_TIMEOUT); // fires the ping's own timeout
+
+          nextIntervalAt += HEARTBEAT_INTERVAL;
+        }
+
+        // Drain any restart that WOULD have been scheduled (respawn fires
+        // RESTART_BACKOFF_MS after a forced kill) — without the F3 reset, cycle
+        // 4 above would have been the 3rd counted failure and tripped exactly
+        // this path. Draining it here makes the assertions below fail loudly
+        // (spawnCallCount/killCallCount both increment) against the old,
+        // un-reset behavior, rather than merely deferring the restart past the
+        // end of the test.
+        await vi.advanceTimersByTimeAsync(RESTART_BACKOFF + 1_000);
+      } finally {
+        perfNow.restore();
+      }
+
+      // 2 real failures + 1 reset + 1 real failure = a streak of 1, nowhere
+      // near the threshold of 3 — no restart should ever have been triggered.
+      expect(spawnCallCount()).toBe(spawnsBefore);
+      expect(killCallCount()).toBe(killsBefore);
+      expect(getSidecarStatus()).toBe('running');
+    });
+  });
+
+  describe('host gate (window.__ABU_SHELL__.mainSupervisesSidecar)', () => {
+    it('when mainSupervisesSidecar is true, startSidecar() does NOT start a renderer heartbeat, but the mcp-hung listener still forces a restart', async () => {
+      (window as Window & { __ABU_SHELL__?: { mainSupervisesSidecar: boolean } }).__ABU_SHELL__ = {
+        mainSupervisesSidecar: true,
+      };
+      mockHappyPath(); // if a renderer heartbeat ping were sent, it would never get a response
+
+      await startSidecar();
+      expect(getSidecarStatus()).toBe('running');
+
+      const spawnsBefore = spawnCallCount();
+      const writeCallsBefore = invoke.mock.calls.filter((c) => c[0] === 'mcp_write').length;
+
+      // Advance well past 3 renderer-heartbeat cycles. If the gate failed to
+      // suppress startHeartbeat(), this would issue 'ping' writes and, after
+      // 3 consecutive timeouts, force a restart — neither should happen here.
+      await vi.advanceTimersByTimeAsync(3 * 10_000 + 5_000 + 1_000);
+
+      const pingWrites = invoke.mock.calls
+        .filter((c) => c[0] === 'mcp_write')
+        .slice(writeCallsBefore)
+        .filter((c) => {
+          try {
+            const msg = JSON.parse((c[1] as { message: string }).message) as { method?: string };
+            return msg.method === 'ping';
+          } catch {
+            return false;
+          }
+        });
+      expect(pingWrites.length).toBe(0); // no renderer heartbeat ping was ever sent
+      expect(spawnCallCount()).toBe(spawnsBefore); // no heartbeat-triggered restart
+      expect(getSidecarStatus()).toBe('running');
+
+      // The mcp-hung listener (Electron's main-process path) still works —
+      // registered unconditionally regardless of the gate.
+      emitHung();
+      await vi.advanceTimersByTimeAsync(1000);
+
+      expect(spawnCallCount()).toBe(spawnsBefore + 1);
       expect(getSidecarStatus()).toBe('running');
     });
   });

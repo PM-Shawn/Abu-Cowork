@@ -196,6 +196,19 @@ export default function Sidebar() {
   // Use conversationIndex (lightweight metadata) instead of full conversations for listing
   const sortedConvs = Object.values(conversationIndex)
     .filter((c) => !c.scheduledTaskId && !c.triggerId && !c.projectId)
+    // Hide empty (0-message) conversations from 最近. A first send eagerly
+    // persists the index entry (createConversation) BEFORE its message lands,
+    // so an interrupted/abandoned send leaves a blank "新任务" row littering the
+    // list. Codex encodes the same rule structurally (a partial index
+    // `WHERE preview <> ''`); this is the read-side equivalent. Only an
+    // EXPLICIT messageCount===0 is hidden (undefined/legacy entries stay
+    // visible — never hide a real conversation). Always kept even at 0 messages:
+    // the ACTIVE conversation (so a just-created one doesn't flicker out while
+    // its first message is in flight) and any IM-channel-bound conversation
+    // (imChannelId — a real linked session, created eagerly by sessionMapper
+    // with skipActivate before its inbound message is appended; the earlier
+    // filter only excludes project/scheduled/trigger, not imChannelId).
+    .filter((c) => c.messageCount !== 0 || c.id === activeConversationId || !!c.imChannelId)
     .sort((a, b) => b.createdAt - a.createdAt);
 
   const handleDeleteConversation = async (e: React.MouseEvent, convId: string) => {

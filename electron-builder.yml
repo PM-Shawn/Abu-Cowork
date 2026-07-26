@@ -1,0 +1,140 @@
+# electron-builder config for the Electron shell (Phase 2 / F12 packaging).
+#
+# This is the FIRST packaging slice: it produces an installable app bundle from
+# the real Abu frontend + the sidecar + native bits, UNSIGNED, so the packaging
+# wiring (paths, asar unpacking, resource layout) can be verified end-to-end
+# without an Apple cert. Signing / notarization / the electron-updater feed are
+# added on top later (they need the developer certificate + a real machine).
+#
+# Metadata mirrors src-tauri/tauri.conf.json (appId com.abu.app, productName
+# Abu, icons under src-tauri/icons). See memory
+# reference-electron-autoupdate-across-competitors for why updates will go
+# through electron-updater + a generic provider pointed at the existing Aliyun
+# OSS bucket (added in a later slice).
+appId: com.abu.app
+productName: Abu
+copyright: Copyright © 2026 Abu
+
+# Deep-link scheme registration (CFBundleURLTypes in Info.plist). macOS only
+# delivers open-url events to packaged apps whose bundle DECLARES the scheme —
+# app.setAsDefaultProtocolClient() alone is not enough (Electron docs: "you can
+# only register protocols that have been added to your app's info.plist").
+# electron/deepLinkHost.cjs uses `abu` when packaged (`abu-dev` is dev-only).
+protocols:
+  - name: Abu
+    schemes:
+      - abu
+
+directories:
+  output: release-electron
+  buildResources: build
+
+# Deep-sign extraResources Mach-Os (native-helper, future python/node
+# runtimes) before the outer app signature — no-op on unsigned builds.
+afterPack: scripts/electron-sign-nested.cjs
+
+# Tight whitelist: exclude everything, then re-include exactly what the packaged
+# app needs. The frontend (dist-electron-spike) and sidecar are self-contained
+# bundles (vite / esbuild), so almost no node_modules are needed at runtime —
+# only node-pty, which electron/ptyHost.cjs requires for real terminals.
+files:
+  - "!**/*"
+  - "electron/**/*"
+  - "!electron/native-helper/**"   # Rust source + target/ (huge) — binary ships via extraResources
+  - "!electron/spike/**"           # dev-only E2E harnesses
+  - "!electron/renderer/**"        # placeholder page — real frontend is dist-electron-spike
+  - "dist-electron-spike/**/*"
+  - "package.json"
+  - "node_modules/node-pty/**/*"
+
+# node-pty ships a native .node + spawn-helper binary; asar can't exec/inspect
+# a binary in place, so unpack it to app.asar.unpacked/.
+asarUnpack:
+  - "**/node_modules/node-pty/**"
+
+# Files that must live on the real filesystem (outside asar): the sidecar bundle
+# (spawned as a child via Electron-as-Node), builtin skills/agents, the browser
+# extension, and the native-helper binary (exec'd for computer-use). appEnv.cjs
+# / nativeHelperManager.cjs resolve these under process.resourcesPath when
+# packaged. python-runtime/node-runtime (107M) are intentionally deferred — not
+# needed to boot; added when the runtime-dependent features are packaged.
+extraResources:
+  - from: sidecar/index.mjs
+    to: sidecar/index.mjs
+  - from: builtin-skills
+    to: builtin-skills
+  - from: builtin-agents
+    to: builtin-agents
+  - from: electron/native-helper/target/release/native-helper
+    to: native-helper/native-helper
+  # Tray icon candidates (guiHost.cjs resolveTrayIconPath) — src-tauri/ isn't
+  # packed into asar, so the tray needs these under Resources/icons.
+  - from: src-tauri/icons/32x32.png
+    to: icons/32x32.png
+  - from: src-tauri/icons/128x128.png
+    to: icons/128x128.png
+  # Deferred (need a separate build step / are large; not needed to boot):
+  #   - abu-chrome-extension/dist → browser-extension  (run the extension build first)
+  #   - src-tauri/python-runtime → python-runtime       (107M; python-backed MCP/doc gen)
+
+# Auto-update feed (F-slice #2): generic provider pointed at the existing
+# Aliyun OSS bucket that already serves the Tauri latest.json. When the dist
+# build gains a dmg/zip target (F11, with signing), this block (1) embeds
+# app-update.yml into the packaged app so electron-updater
+# (electron/updaterHost.cjs) knows its feed without runtime config, and
+# (2) generates latest-mac.yml with the artifact's sha512 (NEVER hand-write
+# that file — a wrong hash makes every update get rejected). NOTE: the
+# current `dir`-only target does NOT write app-update.yml (PublishManager
+# only does for dmg/zip on darwin) — a dir-build's updater check soft-fails
+# (rejected invoke → frontend catch), same non-fatal behavior as before this
+# slice. Publishing artifacts to OSS stays a CI step; nothing is uploaded
+# from dev machines.
+# The electron feed lives under its own `/electron/` prefix so it can never
+# collide with the Tauri updater's `latest.json` at the bucket root — the two
+# update channels stay independent during the coexistence period (and after:
+# separate namespaces cost nothing).
+publish:
+  provider: generic
+  url: https://abu-agent.oss-cn-beijing.aliyuncs.com/electron/
+
+mac:
+  category: public.app-category.productivity
+  icon: src-tauri/icons/icon.icns
+  # `npm run pack:electron` (--dir) still produces just the unpacked .app for
+  # fast iteration + the packaged smoke. `npm run dist:electron` builds:
+  #  - zip: REQUIRED for mac auto-update (Squirrel.Mac consumes a zip; its
+  #    presence is also what makes electron-builder embed app-update.yml and
+  #    emit latest-mac.yml with the artifact's sha512 — the feed files the
+  #    updater slice consumes).
+  #  - dmg: the user-facing installer artifact.
+  # Both are UNSIGNED until the signing slice — fine for wiring verification,
+  # NOT distributable.
+  target:
+    - zip
+    - dmg
+  # Signing plumbing (inert while identity stays null): hardened runtime +
+  # the same entitlement set the Tauri build notarizes with (see
+  # build/entitlements.mac.plist), plus an afterPack deep-sign of
+  # extraResources Mach-Os (scripts/electron-sign-nested.cjs) that
+  # electron-builder's own pass doesn't cover — notarization rejects any
+  # unsigned nested Mach-O. Local signed dry-run:
+  #   npx electron-builder --dir -c.mac.identity="Developer ID Application: ..."
+  # CI provides the identity via CSC_LINK/CSC_KEY_PASSWORD (p12 from the same
+  # secrets the Tauri release uses).
+  hardenedRuntime: true
+  entitlements: build/entitlements.mac.plist
+  entitlementsInherit: build/entitlements.mac.plist
+  # Default is UNSIGNED so dev builds need no certificate. CI / the signed
+  # release build override this (identity from the keychain) — do NOT commit a
+  # real identity here.
+  identity: null
+
+win:
+  icon: src-tauri/icons/icon.ico
+  target:
+    - dir
+
+linux:
+  target:
+    - dir
+  category: Utility

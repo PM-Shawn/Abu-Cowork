@@ -1,0 +1,51 @@
+# Abu native-helper (Phase 2 F10) — standalone Rust binary that speaks NDJSON
+# JSON-RPC over stdio, spawned by Electron main. Hosts the computer-use / AX
+# family (input synthesis, screen capture, and — next step — the AX session
+# cache) by reusing the Tauri-free `*_impl` logic from src-tauri. TCC permissions
+# attribute to the responsible parent app (Abu), so the helper inherits the app's
+# Accessibility / Screen Recording grants (validated by the F10 spike probe).
+#
+# This minimal-loop version proves spawn → RPC → input-synth → capture end to end;
+# the AX session-cache commands land in the following step.
+[package]
+name = "native-helper"
+version = "0.0.1"
+edition = "2021"
+publish = false
+
+[[bin]]
+name = "native-helper"
+path = "src/main.rs"
+
+[dependencies]
+# Same versions as src-tauri/Cargo.toml so behavior matches the shipping code.
+enigo = { version = "0.3", features = ["serde"] }
+xcap = "0.9"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# Computer Use screen capture (base64 PNG encode) — re-hosts src-tauri's
+# Tauri-free `computer_use_impl.rs` via `include!` (see src/cu.rs). Same
+# versions as src-tauri/Cargo.toml.
+base64 = "0.22"
+image = { version = "0.25", default-features = false, features = ["png"] }
+
+# Accessibility (AXUIElement) — re-hosts src-tauri's Tauri-free AX impl via
+# `include!` (see src/ax.rs). Versions + features copied verbatim from
+# src-tauri/Cargo.toml so the included code compiles unchanged.
+[target.'cfg(target_os = "macos")'.dependencies]
+core-foundation = "0.10"
+core-foundation-sys = "0.8"
+objc2 = "0.6"
+objc2-app-kit = { version = "0.3", features = ["NSWindow", "NSResponder", "NSWorkspace", "NSRunningApplication", "NSPasteboard", "NSPasteboardItem"] }
+# Computer Use screenshot-exclusion (CGWindowListCreateImage) + TCC permission
+# checks (CGPreflightScreenCaptureAccess/AXIsProcessTrusted), re-hosted via
+# computer_use_impl.rs — see src/cu.rs.
+objc2-core-graphics = "0.3"
+# accessibility_macos.rs's diagnostic-only async fns (ax_diagnose_impl,
+# test_ax_snapshot_impl, ax_enable_electron_a11y_impl — not wired into the
+# helper's RPC dispatch, but included verbatim so they must still compile)
+# call tokio::time::sleep. "time" is enough; no runtime is started here.
+tokio = { version = "1", features = ["time"] }
+
+[profile.release]
+opt-level = 1

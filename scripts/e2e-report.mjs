@@ -87,7 +87,7 @@ function fmtMs(ms) {
 }
 
 function stripAnsi(s) {
-  // eslint-disable-next-line no-control-regex
+   
   return s.replace(/\x1b\[[0-9;]*m/g, '');
 }
 
@@ -376,7 +376,7 @@ async function main() {
       harnessResults.push({ name, status: 'FAIL', code: -1, duration: 0, tail: `harness file not found: ${entry}` });
       continue;
     }
-    // eslint-disable-next-line no-await-in-loop
+     
     const result = await runHarness(name);
     harnessResults.push(result);
   }

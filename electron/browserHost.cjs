@@ -115,7 +115,7 @@ const views = new Map();
  */
 function parseUrl(url) {
   try {
-    // eslint-disable-next-line no-new
+     
     new URL(url);
     return url;
   } catch (err) {

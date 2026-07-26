@@ -267,7 +267,7 @@ function main() {
     check('notice inbox block threw unexpectedly', false, err.stack || String(err));
   }
 
-  // eslint-disable-next-line no-console
+   
   results.forEach((line) => console.log(line));
   console.log(`[f1b-verify] PASSED = ${allPassed}`);
 

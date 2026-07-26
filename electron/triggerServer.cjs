@@ -179,7 +179,7 @@ function isShortPlatformPath(pathname) {
  * @param {unknown} payload
  */
 function emitToRenderer(event, payload) {
-  // eslint-disable-next-line global-require -- see doc comment above.
+   
   require('./tauriHost.cjs').emitEvent(event, payload);
 }
 

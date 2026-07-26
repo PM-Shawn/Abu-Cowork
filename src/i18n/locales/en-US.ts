@@ -2473,6 +2473,9 @@ const enUS: TranslationDict = {
       errNoImageData: 'Error: API returned no image data',
       imageSaved: 'Image saved to: {path}',
       revisedPrompt: '\nRevised prompt: {prompt}',
+      errUnsupportedAction: 'Error: Unsupported action "{action}". Use one of: {valid}',
+      errProcessImage: 'Error processing image: {error}',
+      imageProcessed: 'Image processed successfully: {path}',
     },
     todo: {
       errTitleEmpty: 'Title cannot be empty; proposal not created.',

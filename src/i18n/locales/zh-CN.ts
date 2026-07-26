@@ -2474,6 +2474,9 @@ const zhCN: TranslationDict = {
       errNoImageData: 'Error: API 未返回图片数据',
       imageSaved: '图片已保存到: {path}',
       revisedPrompt: '\n优化后的提示词: {prompt}',
+      errUnsupportedAction: 'Error: 不支持的操作 "{action}"，可用操作：{valid}',
+      errProcessImage: 'Error: 图片处理失败：{error}',
+      imageProcessed: '图片处理完成：{path}',
     },
     todo: {
       errTitleEmpty: '标题不能为空，未创建提议。',

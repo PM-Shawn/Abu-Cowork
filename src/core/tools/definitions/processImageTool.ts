@@ -1,5 +1,6 @@
 import { invoke } from '@tauri-apps/api/core';
 import type { ToolDefinition } from '../../../types';
+import { getI18n, format } from '../../../i18n';
 import { isWindows } from '../../../utils/platform';
 import { ensureParentDir, getParentDir } from '../../../utils/pathUtils';
 import { isSandboxEnabled, isNetworkIsolationEnabled } from '../../sandbox/config';
@@ -66,7 +67,10 @@ export const processImageTool: ToolDefinition = {
     try {
       const validActions = processImageTool.inputSchema.properties.action.enum!;
       if (!validActions.includes(action)) {
-        return `Error: Unsupported action "${action}". Use one of: ${validActions.join(', ')}`;
+        return format(getI18n().toolResult.media.errUnsupportedAction, {
+          action,
+          valid: validActions.join(', '),
+        });
       }
 
       await ensureParentDir(outputPath);
@@ -98,12 +102,16 @@ export const processImageTool: ToolDefinition = {
       console.log('[process_image] exit code:', output.code, 'stdout:', output.stdout, 'stderr:', output.stderr);
 
       if (output.code !== 0) {
-        return `Error processing image: ${output.stderr || output.stdout}`;
+        return format(getI18n().toolResult.media.errProcessImage, {
+          error: output.stderr || output.stdout,
+        });
       }
 
-      return `Image processed successfully: ${outputPath}`;
+      return format(getI18n().toolResult.media.imageProcessed, { path: outputPath });
     } catch (err) {
-      return `Error processing image: ${err instanceof Error ? err.message : String(err)}`;
+      return format(getI18n().toolResult.media.errProcessImage, {
+        error: err instanceof Error ? err.message : String(err),
+      });
     }
   },
   isConcurrencySafe: false,

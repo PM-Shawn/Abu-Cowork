@@ -15,6 +15,16 @@ appId: com.abu.app
 productName: Abu
 copyright: Copyright © 2026 Abu
 
+# Deep-link scheme registration (CFBundleURLTypes in Info.plist). macOS only
+# delivers open-url events to packaged apps whose bundle DECLARES the scheme —
+# app.setAsDefaultProtocolClient() alone is not enough (Electron docs: "you can
+# only register protocols that have been added to your app's info.plist").
+# electron/deepLinkHost.cjs uses `abu` when packaged (`abu-dev` is dev-only).
+protocols:
+  - name: Abu
+    schemes:
+      - abu
+
 directories:
   output: release-electron
   buildResources: build
@@ -57,6 +67,12 @@ extraResources:
     to: builtin-agents
   - from: electron/native-helper/target/release/native-helper
     to: native-helper/native-helper
+  # Tray icon candidates (guiHost.cjs resolveTrayIconPath) — src-tauri/ isn't
+  # packed into asar, so the tray needs these under Resources/icons.
+  - from: src-tauri/icons/32x32.png
+    to: icons/32x32.png
+  - from: src-tauri/icons/128x128.png
+    to: icons/128x128.png
   # Deferred (need a separate build step / are large; not needed to boot):
   #   - abu-chrome-extension/dist → browser-extension  (run the extension build first)
   #   - src-tauri/python-runtime → python-runtime       (107M; python-backed MCP/doc gen)

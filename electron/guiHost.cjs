@@ -103,9 +103,13 @@ let tray = null;
 
 /** Reuse the regular app icon, same as Tauri (`app.default_window_icon()`) — not a template/monochrome asset, just downscaled into the tray slot. */
 function resolveTrayIconPath() {
-  const candidates = ['32x32.png', '128x128.png', '512x512.png'].map((f) =>
-    path.join(REPO_ROOT, 'src-tauri', 'icons', f)
-  );
+  // Packaged: src-tauri/ is not packed into app.asar — the icons ship via
+  // extraResources to Resources/icons instead (same gated-on-isPackaged
+  // pattern as appEnv/nativeHelper resource paths).
+  const iconDir = electronApp.isPackaged
+    ? path.join(process.resourcesPath, 'icons')
+    : path.join(REPO_ROOT, 'src-tauri', 'icons');
+  const candidates = ['32x32.png', '128x128.png', '512x512.png'].map((f) => path.join(iconDir, f));
   return candidates.find((p) => fs.existsSync(p)) ?? null;
 }
 

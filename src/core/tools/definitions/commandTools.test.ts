@@ -109,6 +109,20 @@ describe('runCommandTool', () => {
     expect(p.extraWritablePaths).toEqual(['/reader/ws']);
   });
 
+  it('degrades to "no workspace" (cwd-less spawn) when the fallback reader throws — never fails the command (sidecar outside-run guard)', async () => {
+    vi.mocked(getWorkspaceReader).mockReturnValue({
+      getCurrentPath: () => {
+        throw new Error('[sidecar] resolved outside a registered agent run');
+      },
+    });
+
+    await runCommandTool.execute({ command: 'pwd' }, undefined);
+
+    const p = shellPayload();
+    expect(p.cwd).toBeNull();
+    expect(p.extraWritablePaths).toEqual([]);
+  });
+
   it('prefers an explicit input.cwd over the workspace path', async () => {
     await runCommandTool.execute({ command: 'pwd', cwd: '/explicit' }, { workspacePath: '/ws' });
     expect(shellPayload().cwd).toBe('/explicit');

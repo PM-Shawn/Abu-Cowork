@@ -190,14 +190,13 @@ const SHIM_TARGETS = [
   // real store writes) run — see each shim's own doc.
   { real: path.resolve(srcDir, 'core/agent/defaultWorkspace.ts'), shim: path.resolve(__dirname, '../sidecar/src/shims/defaultWorkspaceRun.ts') },
   { real: path.resolve(srcDir, 'utils/aiEditSnapshots.ts'), shim: path.resolve(__dirname, '../sidecar/src/shims/aiEditSnapshotsRun.ts') },
-  // P1-3d-5 slice 2a additions (docs/2026-07-21-phase1-p3d-tool-migration-design.md)
-  // — `commandTools.ts` (`run_command`) plumbing, landed AHEAD of `run_command`
-  // itself being registered in `localTools/index.ts` (that flip is slice 2b —
-  // see that module's doc). Not yet reached by the sidecar's actual bundle
-  // graph (verified: `commandTools.ts` is only imported by the REAL
-  // `builtins.ts`, itself wholly shimmed out by `builtinsRun.ts` above), but
-  // registered now so both real modules stay bundle-safe the moment 2b adds
-  // `run_command` to `localTools/index.ts`.
+  // P1-3d-5 slice 2a/2b (docs/2026-07-21-phase1-p3d-tool-migration-design.md)
+  // — `commandTools.ts` (`run_command`) shims. LIVE since slice 2b registered
+  // `run_command` in `localTools/index.ts` (`SIDE_EFFECTING_LOCAL_TOOLS`):
+  // a sidecar-run `run_command` executes locally and reaches both shims at
+  // runtime. Real-machine approval smoke passed 2026-07-26 (approve / deny /
+  // dir-memory / trash / safe-command baseline — see memory
+  // project-runtime-extraction-electron-shell).
   //
   // Real forwarding shim (`workspace.authorizedWritablePaths` REQUEST) — the
   // shell-only `authorizedWorkspaces` map has no sidecar-local equivalent, see

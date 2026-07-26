@@ -25,17 +25,29 @@ function createSidecarAuthorizedPathsReader(): AuthorizedPathsReader {
   return {
     getAuthorizedWritablePaths: async () => {
       const result = await sendRequest('workspace.authorizedWritablePaths', {});
-      return Array.isArray(result) ? (result as string[]) : [];
+      // Fail CLOSED on a malformed (resolved but non-array) result, same as a
+      // rejected RPC: coercing to [] would silently under-authorize the OS
+      // sandbox — exactly the outcome localTools/index.ts's fail-closed doc
+      // block rules out. commandTools' outer try/catch turns this throw into
+      // an error string BEFORE any command spawns.
+      if (!Array.isArray(result)) {
+        throw new Error(
+          `[sidecar] workspace.authorizedWritablePaths returned a non-array result (${typeof result}) — refusing to run with an under-authorized sandbox`,
+        );
+      }
+      return result as string[];
     },
   };
 }
 
-let current: AuthorizedPathsReader = createSidecarAuthorizedPathsReader();
+const current: AuthorizedPathsReader = createSidecarAuthorizedPathsReader();
 
 export function getAuthorizedPathsReader(): AuthorizedPathsReader {
   return current;
 }
 
-export function setAuthorizedPathsReader(reader: AuthorizedPathsReader): void {
-  current = reader;
+export function setAuthorizedPathsReader(_reader: AuthorizedPathsReader): void {
+  throw new Error(
+    '[sidecar] setAuthorizedPathsReader() called inside the sidecar bundle — the reverse-RPC reader is the only implementation here, never slot-swapped. This indicates a wiring bug.',
+  );
 }

@@ -11,10 +11,10 @@ import { useWorkspaceStore } from '../../../stores/workspaceStore';
 import { TOOL_NAMES } from '../toolNames';
 import { getI18n, format } from '../../../i18n';
 
-// `process_image` moved to its own file (P1-3d-5 slice 1) so the sidecar can
+// `process_image` lives in its own file (P1-3d-5 slice 1) so the sidecar can
 // register it locally without dragging in generateImageTool's store imports
-// (getUsableImageBackend/useWorkspaceStore, above) — see that file's doc.
-export { processImageTool } from './processImageTool';
+// (getUsableImageBackend/useWorkspaceStore, above) — import it from
+// `./processImageTool` directly.
 
 export const generateImageTool: ToolDefinition = {
   name: TOOL_NAMES.GENERATE_IMAGE,

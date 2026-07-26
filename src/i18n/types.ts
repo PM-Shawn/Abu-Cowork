@@ -2767,6 +2767,12 @@ export interface TranslationDict {
       imageSaved: string;
       /** Revised prompt suffix. {prompt} */
       revisedPrompt: string;
+      /** process_image: unknown action. {action} {valid} */
+      errUnsupportedAction: string;
+      /** process_image failed. {error} */
+      errProcessImage: string;
+      /** process_image succeeded. {path} */
+      imageProcessed: string;
     };
     // create_todo
     todo: {

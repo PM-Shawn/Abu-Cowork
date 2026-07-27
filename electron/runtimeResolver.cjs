@@ -7,6 +7,13 @@ const { REPO_ROOT } = require('./appEnv.cjs');
 
 const WINDOWS_EXTENSIONS = new Set(['.exe', '.cmd']);
 const BUNDLED_COMMANDS = new Set(['node', 'npm', 'npx', 'python', 'python3']);
+const UNSAFE_NODE_ENV_KEYS = new Set([
+  'node_channel_fd',
+  'node_extra_ca_certs',
+  'node_options',
+  'node_path',
+  'node_repl_history',
+]);
 
 function platformFor(options) {
   return options && options.platform ? options.platform : process.platform;
@@ -139,7 +146,12 @@ function resolveBundledProgram(app, program, args = [], options = {}) {
   }
 
   requireFile(layout.python.executable, 'Bundled Python executable');
-  return { file: layout.python.executable, args: originalArgs, bundled: true, runtime: 'python' };
+  return {
+    file: layout.python.executable,
+    args: ['-B', ...originalArgs],
+    bundled: true,
+    runtime: 'python',
+  };
 }
 
 function dedupePathEntries(entries, platform) {
@@ -163,6 +175,9 @@ function withBundledRuntimeEnv(app, baseEnv = process.env, options = {}) {
   requireFile(layout.python.executable, 'Bundled Python executable');
 
   const env = { ...baseEnv };
+  for (const key of Object.keys(env)) {
+    if (UNSAFE_NODE_ENV_KEYS.has(key.toLowerCase())) delete env[key];
+  }
   const delimiter = platform === 'win32' ? ';' : ':';
   const pathKeys = Object.keys(env).filter((candidate) =>
     platform === 'win32' ? candidate.toLowerCase() === 'path' : candidate === 'PATH'
@@ -177,6 +192,7 @@ function withBundledRuntimeEnv(app, baseEnv = process.env, options = {}) {
     platform,
   ).join(delimiter);
   env.PYTHONNOUSERSITE = '1';
+  env.PYTHONDONTWRITEBYTECODE = '1';
   env.PYTHONUTF8 = '1';
   env.PYTHONPATH = '';
   env.PYTHONHOME = '';

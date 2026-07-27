@@ -128,13 +128,13 @@ test('resolveBundledProgram maps macOS bare runtime commands', () => {
   });
   assert.deepEqual(resolveBundledProgram(app, 'python', ['-V'], options), {
     file: tree.python.executable,
-    args: ['-V'],
+    args: ['-B', '-V'],
     bundled: true,
     runtime: 'python',
   });
   assert.deepEqual(resolveBundledProgram(app, 'python3', ['script.py'], options), {
     file: tree.python.executable,
-    args: ['script.py'],
+    args: ['-B', 'script.py'],
     bundled: true,
     runtime: 'python',
   });
@@ -174,8 +174,18 @@ test('resolveBundledProgram maps Windows commands case-insensitively with exe an
     runtime: 'node',
     cli: tree.node.npxCli,
   });
-  assert.equal(resolveBundledProgram(app, 'PYTHON3.CMD', [], options).file, tree.python.executable);
-  assert.equal(resolveBundledProgram(app, 'python.exe', [], options).file, tree.python.executable);
+  assert.deepEqual(resolveBundledProgram(app, 'PYTHON3.CMD', [], options), {
+    file: tree.python.executable,
+    args: ['-B'],
+    bundled: true,
+    runtime: 'python',
+  });
+  assert.deepEqual(resolveBundledProgram(app, 'python.exe', [], options), {
+    file: tree.python.executable,
+    args: ['-B'],
+    bundled: true,
+    runtime: 'python',
+  });
   assert.deepEqual(resolveBundledProgram(app, 'C:\\Tools\\node.exe', [], options), {
     file: 'C:\\Tools\\node.exe',
     args: [],
@@ -213,13 +223,17 @@ test('resolveBundledProgram throws clear errors for missing runtime files', () =
   );
 });
 
-test('withBundledRuntimeEnv prepends runtimes, preserves env, and sanitizes Python on macOS', () => {
+test('withBundledRuntimeEnv prepends runtimes and sanitizes Node/Python injection on macOS', () => {
   const tree = makeTree('darwin', false);
   const nodeDir = path.dirname(tree.node.executable);
   const pythonDir = path.dirname(tree.python.executable);
   const baseEnv = {
     FOO: 'bar',
     PATH: ['/usr/bin', nodeDir, pythonDir, '/bin'].join(':'),
+    NODE_OPTIONS: '--require=/tmp/host-hook.cjs',
+    NODE_PATH: '/tmp/host-modules',
+    NODE_EXTRA_CA_CERTS: '/tmp/host-ca.pem',
+    NODE_CHANNEL_FD: '9',
     PYTHONPATH: '/tmp/user-site',
   };
   const env = withBundledRuntimeEnv(
@@ -231,9 +245,15 @@ test('withBundledRuntimeEnv prepends runtimes, preserves env, and sanitizes Pyth
   assert.equal(env.FOO, 'bar');
   assert.equal(env.PATH, [nodeDir, pythonDir, '/usr/bin', '/bin'].join(':'));
   assert.equal(env.PYTHONNOUSERSITE, '1');
+  assert.equal(env.PYTHONDONTWRITEBYTECODE, '1');
   assert.equal(env.PYTHONUTF8, '1');
   assert.equal(env.PYTHONPATH, '');
   assert.equal(env.PYTHONHOME, '');
+  assert.equal(Object.hasOwn(env, 'NODE_OPTIONS'), false);
+  assert.equal(Object.hasOwn(env, 'NODE_PATH'), false);
+  assert.equal(Object.hasOwn(env, 'NODE_EXTRA_CA_CERTS'), false);
+  assert.equal(Object.hasOwn(env, 'NODE_CHANNEL_FD'), false);
+  assert.equal(baseEnv.NODE_OPTIONS, '--require=/tmp/host-hook.cjs');
   assert.equal(baseEnv.PYTHONPATH, '/tmp/user-site');
 });
 
@@ -245,6 +265,8 @@ test('withBundledRuntimeEnv uses Windows delimiters and case-insensitive PATH de
     Path: 'C:\\ignored-system-path',
     PATH: [nodeDir.toUpperCase(), 'C:\\Windows\\System32', pythonDir.toUpperCase(), 'C:\\Tools'].join(';'),
     FOO: 'bar',
+    Node_Options: '--require=C:\\host-hook.cjs',
+    node_path: 'C:\\host-modules',
   };
   const env = withBundledRuntimeEnv(
     { isPackaged: true },
@@ -259,9 +281,12 @@ test('withBundledRuntimeEnv uses Windows delimiters and case-insensitive PATH de
   );
   assert.equal(Object.hasOwn(env, 'Path'), false);
   assert.equal(env.PYTHONNOUSERSITE, '1');
+  assert.equal(env.PYTHONDONTWRITEBYTECODE, '1');
   assert.equal(env.PYTHONUTF8, '1');
   assert.equal(env.PYTHONPATH, '');
   assert.equal(env.PYTHONHOME, '');
+  assert.equal(Object.keys(env).some((key) => key.toLowerCase() === 'node_options'), false);
+  assert.equal(Object.keys(env).some((key) => key.toLowerCase() === 'node_path'), false);
 });
 
 test('withBundledRuntimeEnv reports missing executable instead of adding broken PATH entries', () => {

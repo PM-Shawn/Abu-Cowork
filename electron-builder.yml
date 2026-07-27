@@ -18,6 +18,15 @@ copyright: Copyright © 2026 Abu
 # worktrees and CI download the same runtime.
 electronVersion: 43.1.1
 
+# Keep ELECTRON_RUN_AS_NODE until the sidecar moves to standalone Node, while
+# disabling user-controlled Node bootstrap and inspector entry points. Builder
+# applies these immediately before its signing phase on every platform.
+electronFuses:
+  resetAdHocDarwinSignature: true
+  runAsNode: true
+  enableNodeOptionsEnvironmentVariable: false
+  enableNodeCliInspectArguments: false
+
 # Deep-link scheme registration (CFBundleURLTypes in Info.plist). macOS only
 # delivers open-url events to packaged apps whose bundle DECLARES the scheme —
 # app.setAsDefaultProtocolClient() alone is not enough (Electron docs: "you can
@@ -32,8 +41,9 @@ directories:
   output: release-electron
   buildResources: build
 
-# Deep-sign extraResources Mach-Os (native-helper, future python/node
-# runtimes) before the outer app signature — no-op on unsigned builds.
+# Deep-sign extraResources Mach-Os before the outer app signature and retain a
+# pre-fuse automation clone for packaged acceptance. electronFuses above are
+# applied to the real output immediately after this hook.
 afterPack: scripts/electron-sign-nested.cjs
 
 # Tight whitelist: exclude everything, then re-include exactly what the packaged

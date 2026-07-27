@@ -19,6 +19,7 @@ export default defineConfig([
     'dist',
     'dist-electron-spike', // vite build output for the Electron shell (bundled, never hand-edited)
     'release-electron', // electron-builder packaged output
+    'release-electron-e2e', // pre-fuse packaged clone used only by local Playwright smoke tests
     'src-tauri',
     'coverage',
     '.wt-*/',

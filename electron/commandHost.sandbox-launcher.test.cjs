@@ -171,6 +171,7 @@ test('bare Python runs bundled Office and PDF dependencies in an isolated enviro
         '  "executable": sys.executable,',
         '  "pythonPath": os.environ.get("PYTHONPATH"),',
         '  "userSite": os.environ.get("PYTHONNOUSERSITE"),',
+        '  "writeBytecode": os.environ.get("PYTHONDONTWRITEBYTECODE"),',
         '}))',
       ].join('\n'),
     ],
@@ -189,6 +190,7 @@ test('bare Python runs bundled Office and PDF dependencies in an isolated enviro
   assert.equal(path.resolve(output.executable), path.resolve(expectedPython));
   assert.equal(output.pythonPath, '');
   assert.equal(output.userSite, '1');
+  assert.equal(output.writeBytecode, '1');
 });
 
 test('shell commands prefer the bundled Node directory on PATH', async () => {

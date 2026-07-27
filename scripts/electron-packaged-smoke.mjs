@@ -10,19 +10,20 @@
  *      loads under the packaged Electron ABI).
  *   2. It reports app.isPackaged === true (we're testing the real bundle, not
  *      a dev `electron .`).
- *   3. The bundled resources resolve under process.resourcesPath: sidecar
- *      bundle, builtin-skills, native-helper, and sandbox-launcher all exist
- *      there — i.e. extraResources landed where appEnv.cjs / tauriHost.cjs
- *      (BaseDirectory.Resource) / nativeHelperManager.cjs / commandHost.cjs
- *      now look when packaged. The packaged launcher is executed directly and
- *      through renderer → preload → IPC → commandHost, proving its host
- *      architecture, executable permissions, sandbox mode, and abort path.
+ *   3. The bundled resources resolve under process.resourcesPath: sidecar,
+ *      builtin-skills, native-helper, sandbox-launcher, Node, Python, and the
+ *      browser runtime all exist there. The app launches with a hostile,
+ *      host-runtime-free PATH and exercises each runtime through the production
+ *      renderer → preload → IPC path.
  *   4. The REAL frontend rendered (React mounted into #root), not the
  *      placeholder page — i.e. dist-electron-spike was bundled and loads.
  *   5. A packaged HTML preview receives the shared element-picker script.
- *   6. With fully isolated temporary app data, the packaged frontend reaches
+ *   6. The bundled browser MCP adopts a visible in-app tab and completes
+ *      navigate/snapshot/fill/click/extract/screenshot through Chromium.
+ *   7. With fully isolated temporary app data, the packaged frontend reaches
  *      the packaged sidecar, completes a loopback-only model request, persists
- *      the conversation, and restores it after a packaged-app restart.
+ *      the conversation, restores it after restart, and kills command/MCP
+ *      descendant trees on abort, timeout, stop, and hard crash.
  *
  * Run: npm run smoke:electron:packaged   (after `npm run pack:electron`)
  *
@@ -31,43 +32,556 @@
  */
 import { _electron as electron } from '@playwright/test';
 import { spawnSync } from 'node:child_process';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import http from 'node:http';
+import { createRequire } from 'node:module';
 import os from 'node:os';
 import path from 'node:path';
 
+const require = createRequire(import.meta.url);
+const { getCurrentFuseWire, FuseV1Options } = require('@electron/fuses');
+const FUSE_DISABLED = '0'.charCodeAt(0);
+const FUSE_ENABLED = '1'.charCodeAt(0);
 const OUT = 'release-electron';
+const E2E_OUT = 'release-electron-e2e';
 const READY_TIMEOUT = 45_000;
-const CHAT_PLACEHOLDER = '想让阿布帮你做点什么？';
+const CHAT_PLACEHOLDER = /想让阿布帮你做点什么？|What can Abu help you with\?/;
+const STOP_BUTTON_SELECTOR = 'button[aria-label="停止"], button[aria-label="Stop"]';
 const TEST_API_KEY = 'abu-packaged-e2e-key-not-a-real-secret';
 const TEST_MODEL_ID = 'abu-packaged-e2e-model';
 const E2E_APP_DATA_ROOT_ENV = 'ABU_E2E_APP_DATA_ROOT';
 const PACKAGED_E2E_ENV = 'ABU_PACKAGED_E2E';
+const SIGNATURE_VARIANT_RESOURCE_ROOTS = [
+  'native-helper',
+  'sandbox-launcher',
+  'node-runtime',
+  'python-runtime',
+  path.join('app.asar.unpacked', 'node_modules', 'node-pty'),
+];
 
 /** Locate the packaged binary + its Resources dir across mac/win/linux --dir outputs. */
-function findPackagedApp() {
+function findPackagedApp(outputRoot) {
   const macArches = ['mac-arm64', 'mac', 'mac-x64', 'mac-universal'];
   for (const a of macArches) {
-    const appDir = path.join(OUT, a, 'Abu.app');
+    const appDir = path.join(outputRoot, a, 'Abu.app');
     const bin = path.join(appDir, 'Contents', 'MacOS', 'Abu');
     if (fs.existsSync(bin)) {
-      return { bin, resources: path.join(appDir, 'Contents', 'Resources') };
+      return {
+        appPath: appDir,
+        bin,
+        packageRoot: appDir,
+        resources: path.join(appDir, 'Contents', 'Resources'),
+      };
     }
   }
   // linux --dir
   for (const name of ['abu', 'Abu']) {
-    const bin = path.join(OUT, 'linux-unpacked', name);
+    const bin = path.join(outputRoot, 'linux-unpacked', name);
     if (fs.existsSync(bin)) {
-      return { bin, resources: path.join(OUT, 'linux-unpacked', 'resources') };
+      const packageRoot = path.join(outputRoot, 'linux-unpacked');
+      return {
+        appPath: bin,
+        bin,
+        packageRoot,
+        resources: path.join(packageRoot, 'resources'),
+      };
     }
   }
   // win --dir
-  const winBin = path.join(OUT, 'win-unpacked', 'Abu.exe');
+  const winBin = path.join(outputRoot, 'win-unpacked', 'Abu.exe');
   if (fs.existsSync(winBin)) {
-    return { bin: winBin, resources: path.join(OUT, 'win-unpacked', 'resources') };
+    const packageRoot = path.join(outputRoot, 'win-unpacked');
+    return {
+      appPath: winBin,
+      bin: winBin,
+      packageRoot,
+      resources: path.join(packageRoot, 'resources'),
+    };
   }
   return null;
+}
+
+function hashFile(filePath) {
+  return createHash('sha256').update(fs.readFileSync(filePath)).digest('hex');
+}
+
+function readThinMachOSemantics(raw, label) {
+  if (raw.length < 32) return null;
+
+  const magic = raw.readUInt32BE(0);
+  let littleEndian;
+  let is64Bit;
+  if (magic === 0xcffaedfe) {
+    littleEndian = true;
+    is64Bit = true;
+  } else if (magic === 0xcefaedfe) {
+    littleEndian = true;
+    is64Bit = false;
+  } else if (magic === 0xfeedfacf) {
+    littleEndian = false;
+    is64Bit = true;
+  } else if (magic === 0xfeedface) {
+    littleEndian = false;
+    is64Bit = false;
+  } else {
+    // The caller unwraps fat Mach-O containers before reaching this parser.
+    return null;
+  }
+
+  const readUInt32 = (offset) => (
+    littleEndian ? raw.readUInt32LE(offset) : raw.readUInt32BE(offset)
+  );
+  const readUInt64 = (offset) => {
+    const value = littleEndian
+      ? raw.readBigUInt64LE(offset)
+      : raw.readBigUInt64BE(offset);
+    if (value > BigInt(Number.MAX_SAFE_INTEGER)) {
+      throw new Error(`oversized Mach-O value: ${label}`);
+    }
+    return Number(value);
+  };
+  const writeUnsigned = (buffer, offset, value, width) => {
+    if (width === 8) {
+      if (littleEndian) buffer.writeBigUInt64LE(BigInt(value), offset);
+      else buffer.writeBigUInt64BE(BigInt(value), offset);
+    } else if (littleEndian) {
+      buffer.writeUInt32LE(value, offset);
+    } else {
+      buffer.writeUInt32BE(value, offset);
+    }
+  };
+  const headerSize = is64Bit ? 32 : 28;
+  const cpuType = readUInt32(4);
+  const cpuSubtype = readUInt32(8);
+  const commandCount = readUInt32(16);
+  const commandBytes = readUInt32(20);
+  const header = Buffer.from(raw.subarray(0, headerSize));
+  // codesign may add LC_CODE_SIGNATURE, changing only these two header fields.
+  header.fill(0, 16, 24);
+
+  const semanticCommands = [];
+  let cursor = headerSize;
+  let firstSectionOffset = raw.length;
+  let signatureOffset = raw.length;
+  let signatureSize = 0;
+  let hasSignatureCommand = false;
+  let linkedit = null;
+
+  for (let index = 0; index < commandCount; index += 1) {
+    if (cursor + 8 > raw.length) {
+      throw new Error(`truncated Mach-O load command: ${label}`);
+    }
+    const command = readUInt32(cursor);
+    const size = readUInt32(cursor + 4);
+    if (size < 8 || cursor + size > raw.length) {
+      throw new Error(`invalid Mach-O load command: ${label}`);
+    }
+
+    // LC_CODE_SIGNATURE contains only signing metadata and is the sole load
+    // command codesign may add to an unsigned Mach-O.
+    if (command === 0x1d) {
+      if (hasSignatureCommand || size !== 16) {
+        throw new Error(`invalid Mach-O signature command: ${label}`);
+      }
+      hasSignatureCommand = true;
+      signatureOffset = readUInt32(cursor + 8);
+      signatureSize = readUInt32(cursor + 12);
+      cursor += size;
+      continue;
+    }
+
+    const normalizedCommand = Buffer.from(raw.subarray(cursor, cursor + size));
+    const segmentName = raw
+      .toString('ascii', cursor + 8, cursor + 24)
+      .replace(/\0.*$/, '');
+    if (command === 0x19) {
+      if (size < 72) {
+        throw new Error(`invalid 64-bit Mach-O segment: ${label}`);
+      }
+      const sectionCount = readUInt32(cursor + 64);
+      if (72 + sectionCount * 80 > size) {
+        throw new Error(`invalid 64-bit Mach-O sections: ${label}`);
+      }
+      if (segmentName === '__LINKEDIT') {
+        if (linkedit) throw new Error(`duplicate Mach-O __LINKEDIT: ${label}`);
+        linkedit = {
+          command: normalizedCommand,
+          fileOffset: readUInt64(cursor + 40),
+          fileSize: readUInt64(cursor + 48),
+          fileSizeOffset: 48,
+          valueWidth: 8,
+          vmSize: readUInt64(cursor + 32),
+          vmSizeOffset: 32,
+        };
+      }
+      for (let section = 0; section < sectionCount; section += 1) {
+        const offset = readUInt32(cursor + 72 + section * 80 + 48);
+        if (offset > 0) firstSectionOffset = Math.min(firstSectionOffset, offset);
+      }
+    } else if (command === 0x1) {
+      if (size < 56) {
+        throw new Error(`invalid 32-bit Mach-O segment: ${label}`);
+      }
+      const sectionCount = readUInt32(cursor + 48);
+      if (56 + sectionCount * 68 > size) {
+        throw new Error(`invalid 32-bit Mach-O sections: ${label}`);
+      }
+      if (segmentName === '__LINKEDIT') {
+        if (linkedit) throw new Error(`duplicate Mach-O __LINKEDIT: ${label}`);
+        linkedit = {
+          command: normalizedCommand,
+          fileOffset: readUInt32(cursor + 32),
+          fileSize: readUInt32(cursor + 36),
+          fileSizeOffset: 36,
+          valueWidth: 4,
+          vmSize: readUInt32(cursor + 28),
+          vmSizeOffset: 28,
+        };
+      }
+      for (let section = 0; section < sectionCount; section += 1) {
+        const offset = readUInt32(cursor + 56 + section * 68 + 40);
+        if (offset > 0) firstSectionOffset = Math.min(firstSectionOffset, offset);
+      }
+    }
+
+    semanticCommands.push(normalizedCommand);
+    cursor += size;
+  }
+
+  if (
+    cursor !== headerSize + commandBytes ||
+    !linkedit ||
+    linkedit.fileOffset + linkedit.fileSize !== raw.length ||
+    firstSectionOffset >= raw.length
+  ) {
+    throw new Error(`invalid Mach-O layout: ${label}`);
+  }
+  const vmSizeIsValid =
+    linkedit.vmSize === linkedit.fileSize ||
+    (
+      linkedit.vmSize >= linkedit.fileSize &&
+      linkedit.vmSize - linkedit.fileSize < 16_384 &&
+      linkedit.vmSize % 4_096 === 0
+    );
+  if (!vmSizeIsValid) {
+    throw new Error(`invalid Mach-O __LINKEDIT mapping: ${label}`);
+  }
+  if (
+    hasSignatureCommand &&
+    (
+      signatureOffset < linkedit.fileOffset ||
+      signatureSize <= 0 ||
+      signatureOffset + signatureSize !== raw.length
+    )
+  ) {
+    throw new Error(`invalid Mach-O signature extent: ${label}`);
+  }
+
+  // The bytes between load commands and the first section are alignment only.
+  // Reject hidden data there before omitting it from the semantic digest.
+  for (let offset = cursor; offset < firstSectionOffset; offset += 1) {
+    if (raw[offset] !== 0) {
+      throw new Error(`non-zero Mach-O header padding: ${label}`);
+    }
+  }
+
+  // codesign may add up to one 16-byte alignment unit before its signature.
+  let semanticEnd = signatureOffset;
+  while (semanticEnd > firstSectionOffset && raw[semanticEnd - 1] === 0) {
+    semanticEnd -= 1;
+  }
+  if (
+    semanticEnd < linkedit.fileOffset ||
+    signatureOffset - semanticEnd > 16
+  ) {
+    throw new Error(`invalid Mach-O signature padding: ${label}`);
+  }
+
+  // Normalize only the part of __LINKEDIT occupied by non-signature content.
+  // The raw values above were first required to cover the exact file extent.
+  const logicalLinkeditSize = semanticEnd - linkedit.fileOffset;
+  writeUnsigned(
+    linkedit.command,
+    linkedit.vmSizeOffset,
+    logicalLinkeditSize,
+    linkedit.valueWidth,
+  );
+  writeUnsigned(
+    linkedit.command,
+    linkedit.fileSizeOffset,
+    logicalLinkeditSize,
+    linkedit.valueWidth,
+  );
+
+  const digest = createHash('sha256');
+  digest.update(header);
+  for (const command of semanticCommands) digest.update(command);
+  digest.update(raw.subarray(firstSectionOffset, semanticEnd));
+  return {
+    architecture: `${cpuType}:${cpuSubtype}`,
+    commandBytes,
+    commandCount,
+    digest: digest.digest('hex'),
+    firstSectionOffset,
+    hasSignature: hasSignatureCommand,
+  };
+}
+
+function readMachOSemantics(filePath) {
+  const raw = fs.readFileSync(filePath);
+  if (raw.length < 8) return null;
+
+  const magic = raw.readUInt32BE(0);
+  let littleEndian;
+  let uses64BitEntries;
+  if (magic === 0xcafebabe) {
+    littleEndian = false;
+    uses64BitEntries = false;
+  } else if (magic === 0xbebafeca) {
+    littleEndian = true;
+    uses64BitEntries = false;
+  } else if (magic === 0xcafebabf) {
+    littleEndian = false;
+    uses64BitEntries = true;
+  } else if (magic === 0xbfbafeca) {
+    littleEndian = true;
+    uses64BitEntries = true;
+  } else {
+    const semantics = readThinMachOSemantics(raw, filePath);
+    return semantics ? [semantics] : null;
+  }
+
+  const readUInt32 = (offset) => (
+    littleEndian ? raw.readUInt32LE(offset) : raw.readUInt32BE(offset)
+  );
+  const readUInt64 = (offset) => {
+    const value = littleEndian
+      ? raw.readBigUInt64LE(offset)
+      : raw.readBigUInt64BE(offset);
+    if (value > BigInt(Number.MAX_SAFE_INTEGER)) {
+      throw new Error(`oversized fat Mach-O value: ${filePath}`);
+    }
+    return Number(value);
+  };
+  const sliceCount = readUInt32(4);
+  const entrySize = uses64BitEntries ? 32 : 20;
+  const headerEnd = 8 + sliceCount * entrySize;
+  if (sliceCount < 1 || sliceCount > 32 || headerEnd > raw.length) {
+    throw new Error(`invalid fat Mach-O header: ${filePath}`);
+  }
+
+  const slices = [];
+  let previousEnd = headerEnd;
+  for (let index = 0; index < sliceCount; index += 1) {
+    const entryOffset = 8 + index * entrySize;
+    const cpuType = readUInt32(entryOffset);
+    const cpuSubtype = readUInt32(entryOffset + 4);
+    const sliceOffset = uses64BitEntries
+      ? readUInt64(entryOffset + 8)
+      : readUInt32(entryOffset + 8);
+    const sliceSize = uses64BitEntries
+      ? readUInt64(entryOffset + 16)
+      : readUInt32(entryOffset + 12);
+    const alignment = readUInt32(entryOffset + (uses64BitEntries ? 24 : 16));
+    if (
+      sliceOffset < previousEnd ||
+      sliceOffset + sliceSize > raw.length ||
+      alignment > 30 ||
+      sliceOffset % (2 ** alignment) !== 0
+    ) {
+      throw new Error(`invalid fat Mach-O slice: ${filePath}`);
+    }
+    for (let offset = previousEnd; offset < sliceOffset; offset += 1) {
+      if (raw[offset] !== 0) {
+        throw new Error(`non-zero fat Mach-O padding: ${filePath}`);
+      }
+    }
+    const semantics = readThinMachOSemantics(
+      raw.subarray(sliceOffset, sliceOffset + sliceSize),
+      `${filePath}[${index}]`,
+    );
+    if (!semantics || semantics.architecture !== `${cpuType}:${cpuSubtype}`) {
+      throw new Error(`fat Mach-O architecture mismatch: ${filePath}`);
+    }
+    slices.push(semantics);
+    previousEnd = sliceOffset + sliceSize;
+  }
+  for (let offset = previousEnd; offset < raw.length; offset += 1) {
+    if (raw[offset] !== 0) {
+      throw new Error(`non-zero fat Mach-O trailer: ${filePath}`);
+    }
+  }
+  return slices;
+}
+
+function signatureVariantFilesMatch(leftPath, rightPath) {
+  const leftSlices = readMachOSemantics(leftPath);
+  const rightSlices = readMachOSemantics(rightPath);
+  if (!leftSlices || !rightSlices || leftSlices.length !== rightSlices.length) return false;
+
+  return leftSlices.every((left, index) => {
+    const right = rightSlices[index];
+    if (
+      left.architecture !== right.architecture ||
+      left.digest !== right.digest
+    ) {
+      return false;
+    }
+    if (left.hasSignature === right.hasSignature) {
+      return (
+        left.commandCount === right.commandCount &&
+        left.commandBytes === right.commandBytes
+      );
+    }
+    const signed = left.hasSignature ? left : right;
+    const unsigned = left.hasSignature ? right : left;
+    return (
+      signed.commandCount === unsigned.commandCount + 1 &&
+      signed.commandBytes === unsigned.commandBytes + 16
+    );
+  });
+}
+
+function isSignatureVariantResource(relativePath) {
+  return SIGNATURE_VARIANT_RESOURCE_ROOTS.some((root) => (
+    relativePath === root || relativePath.startsWith(`${root}${path.sep}`)
+  ));
+}
+
+function directoryTreesMatch(leftRoot, rightRoot) {
+  const visit = (leftDirectory, rightDirectory, relativeDirectory) => {
+    const leftEntries = fs.readdirSync(leftDirectory, { withFileTypes: true })
+      .sort((left, right) => left.name.localeCompare(right.name, 'en'));
+    const rightEntries = fs.readdirSync(rightDirectory, { withFileTypes: true })
+      .sort((left, right) => left.name.localeCompare(right.name, 'en'));
+    if (
+      leftEntries.length !== rightEntries.length ||
+      leftEntries.some((entry, index) => entry.name !== rightEntries[index].name)
+    ) {
+      return false;
+    }
+
+    for (let index = 0; index < leftEntries.length; index += 1) {
+      const leftEntry = leftEntries[index];
+      const rightEntry = rightEntries[index];
+      const leftPath = path.join(leftDirectory, leftEntry.name);
+      const rightPath = path.join(rightDirectory, rightEntry.name);
+      const relativePath = path.join(relativeDirectory, leftEntry.name);
+      const leftStat = fs.lstatSync(leftPath);
+      const rightStat = fs.lstatSync(rightPath);
+
+      if (leftEntry.isDirectory() && rightEntry.isDirectory()) {
+        if (
+          (leftStat.mode & 0o777) !== (rightStat.mode & 0o777) ||
+          !visit(leftPath, rightPath, relativePath)
+        ) {
+          return false;
+        }
+      } else if (leftEntry.isSymbolicLink() && rightEntry.isSymbolicLink()) {
+        // Symlink mode bits are not portable or operationally meaningful; the
+        // target entry's mode is compared separately.
+        if (fs.readlinkSync(leftPath) !== fs.readlinkSync(rightPath)) return false;
+      } else if (leftEntry.isFile() && rightEntry.isFile()) {
+        if ((leftStat.mode & 0o777) !== (rightStat.mode & 0o777)) return false;
+        if (leftStat.size === rightStat.size && hashFile(leftPath) === hashFile(rightPath)) {
+          continue;
+        }
+        if (
+          process.platform !== 'darwin' ||
+          !isSignatureVariantResource(relativePath) ||
+          !signatureVariantFilesMatch(leftPath, rightPath)
+        ) {
+          return false;
+        }
+      } else {
+        return false;
+      }
+    }
+    return true;
+  };
+
+  return visit(leftRoot, rightRoot, '');
+}
+
+function e2eCloneMatchesRelease(releasePackage, e2ePackage) {
+  return directoryTreesMatch(releasePackage.resources, e2ePackage.resources);
+}
+
+function findUniversalMachO(root) {
+  const entries = fs.readdirSync(root, { withFileTypes: true })
+    .sort((left, right) => left.name.localeCompare(right.name, 'en'));
+  for (const entry of entries) {
+    const entryPath = path.join(root, entry.name);
+    if (entry.isDirectory()) {
+      const nested = findUniversalMachO(entryPath);
+      if (nested) return nested;
+    } else if (entry.isFile()) {
+      const semantics = readMachOSemantics(entryPath);
+      if (semantics && semantics.length > 1) return entryPath;
+    }
+  }
+  return null;
+}
+
+function verifyDarwinSignatureComparator(resources, testRoot) {
+  if (process.platform !== 'darwin') return { passed: true };
+
+  const thinSource = path.join(
+    resources,
+    'app.asar.unpacked',
+    'node_modules',
+    'node-pty',
+    'prebuilds',
+    'darwin-x64',
+    'pty.node',
+  );
+  const universalSource = findUniversalMachO(path.join(resources, 'python-runtime'));
+  if (!universalSource) {
+    return { passed: false, error: 'no universal bundled Python Mach-O found' };
+  }
+
+  let signatureAccepted = true;
+  for (const [index, source] of [thinSource, universalSource].entries()) {
+    const signedCopy = path.join(testRoot, `signature-variant-${index}.bin`);
+    fs.copyFileSync(source, signedCopy);
+    const unsignedHash = hashFile(signedCopy);
+    const signResult = spawnSync(
+      '/usr/bin/codesign',
+      ['--force', '--sign', '-', signedCopy],
+      { encoding: 'utf8', timeout: 30_000 },
+    );
+    if (signResult.status !== 0) {
+      return {
+        passed: false,
+        error: [
+          `source=${source}`,
+          `status=${String(signResult.status)}`,
+          `stdout=${signResult.stdout || ''}`,
+          `stderr=${signResult.stderr || ''}`,
+          signResult.error ? `error=${String(signResult.error)}` : '',
+        ].filter(Boolean).join('\n'),
+      };
+    }
+    signatureAccepted &&=
+      unsignedHash !== hashFile(signedCopy) &&
+      signatureVariantFilesMatch(source, signedCopy);
+  }
+
+  const signedCopy = path.join(testRoot, 'signature-variant-0.bin');
+  const tamperedCopy = path.join(testRoot, 'tampered-pty.node');
+  fs.copyFileSync(signedCopy, tamperedCopy);
+  const tampered = fs.readFileSync(tamperedCopy);
+  const [semantics] = readMachOSemantics(tamperedCopy);
+  tampered[semantics.firstSectionOffset] ^= 0x01;
+  fs.writeFileSync(tamperedCopy, tampered);
+  const contentChangeRejected = !signatureVariantFilesMatch(thinSource, tamperedCopy);
+  return {
+    passed: signatureAccepted && contentChangeRejected,
+    error: signatureAccepted
+      ? 'signature comparator accepted a non-signature content mutation'
+      : 'signature comparator rejected a codesign-only mutation',
+  };
 }
 
 function requestPreview({ port, pathAndQuery }) {
@@ -105,11 +619,67 @@ function sseObject(value) {
   return `data: ${JSON.stringify(value)}\n\n`;
 }
 
+function completionObject(content) {
+  return {
+    id: 'chatcmpl-abu-packaged-e2e',
+    object: 'chat.completion',
+    created: 0,
+    model: TEST_MODEL_ID,
+    choices: [{
+      index: 0,
+      message: { role: 'assistant', content },
+      finish_reason: 'stop',
+    }],
+    usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+  };
+}
+
+function toolCallsForFixture(fixture) {
+  const definitions = typeof fixture === 'string'
+    ? [{
+      name: 'run_command',
+      input: {
+        command: fixture,
+        cwd: process.platform === 'win32' ? os.tmpdir() : '/tmp',
+        timeout: 120,
+      },
+    }]
+    : Array.isArray(fixture) ? fixture : [fixture];
+  return definitions.map((definition, index) => ({
+    index,
+    id: `call-${randomUUID()}`,
+    type: 'function',
+    function: {
+      name: definition.name,
+      arguments: JSON.stringify(definition.input),
+    },
+  }));
+}
+
 async function startOpenAiMock(responseText, toolTasks = new Map()) {
   const requests = [];
   const servedToolTasks = new Set();
   const server = http.createServer(async (request, response) => {
     const requestUrl = new URL(request.url ?? '/', 'http://127.0.0.1');
+    if (request.method === 'GET' && requestUrl.pathname === '/browser-fixture') {
+      response.writeHead(200, {
+        'cache-control': 'no-store',
+        'content-type': 'text/html; charset=utf-8',
+      });
+      response.end(`<!doctype html>
+        <html>
+          <head><title>Abu Packaged Browser E2E</title></head>
+          <body style="min-height:1800px;margin:0;background:rgb(18,172,104);font:32px sans-serif">
+            <section style="padding:48px">
+              <h1>Abu Packaged Browser E2E</h1>
+              <label>Query <input id="q" placeholder="Packaged query"></label>
+              <button id="go" onclick="document.querySelector('#result').textContent=document.querySelector('#q').value">Go</button>
+              <main id="result">Waiting</main>
+            </section>
+          </body>
+        </html>`);
+      return;
+    }
     let rawBody = '';
     for await (const chunk of request) rawBody += String(chunk);
 
@@ -132,32 +702,24 @@ async function startOpenAiMock(responseText, toolTasks = new Map()) {
       return;
     }
 
+    const streaming = body?.stream === true;
     response.writeHead(200, {
       'cache-control': 'no-cache',
       connection: 'keep-alive',
-      'content-type': 'text/event-stream; charset=utf-8',
+      'content-type': streaming
+        ? 'text/event-stream; charset=utf-8'
+        : 'application/json; charset=utf-8',
     });
     const serializedBody = JSON.stringify(body);
     const toolTask = Array.from(toolTasks.entries()).find(([taskPrompt]) =>
       !servedToolTasks.has(taskPrompt) && serializedBody.includes(taskPrompt)
     );
     if (toolTask) {
-      const [taskPrompt, command] = toolTask;
+      const [taskPrompt, fixture] = toolTask;
       servedToolTasks.add(taskPrompt);
-      console.log(`[packaged-smoke] serving run_command fixture for ${taskPrompt}`);
-      const toolCall = {
-        id: `call-${randomUUID()}`,
-        type: 'function',
-        function: {
-          name: 'run_command',
-          arguments: JSON.stringify({
-            command,
-            cwd: process.platform === 'win32' ? os.tmpdir() : '/tmp',
-            timeout: 120,
-          }),
-        },
-      };
-      if (body?.stream !== true) {
+      console.log(`[packaged-smoke] serving tool fixture for ${taskPrompt}`);
+      const toolCalls = toolCallsForFixture(fixture);
+      if (!streaming) {
         response.end(JSON.stringify({
           id: 'chatcmpl-abu-packaged-tool-e2e',
           object: 'chat.completion',
@@ -165,7 +727,15 @@ async function startOpenAiMock(responseText, toolTasks = new Map()) {
           model: TEST_MODEL_ID,
           choices: [{
             index: 0,
-            message: { role: 'assistant', content: null, tool_calls: [toolCall] },
+            message: {
+              role: 'assistant',
+              content: null,
+              tool_calls: toolCalls.map((call) => ({
+                id: call.id,
+                type: call.type,
+                function: call.function,
+              })),
+            },
             finish_reason: 'tool_calls',
           }],
           usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
@@ -180,10 +750,7 @@ async function startOpenAiMock(responseText, toolTasks = new Map()) {
         choices: [{
           index: 0,
           delta: {
-            tool_calls: [{
-              index: 0,
-              ...toolCall,
-            }],
+            tool_calls: toolCalls,
           },
           finish_reason: null,
         }],
@@ -196,6 +763,10 @@ async function startOpenAiMock(responseText, toolTasks = new Map()) {
         choices: [{ index: 0, delta: {}, finish_reason: 'tool_calls' }],
       }));
       response.end('data: [DONE]\n\n');
+      return;
+    }
+    if (!streaming) {
+      response.end(JSON.stringify(completionObject(responseText)));
       return;
     }
     const splitAt = Math.ceil(responseText.length / 2);
@@ -221,6 +792,7 @@ async function startOpenAiMock(responseText, toolTasks = new Map()) {
   }
   return {
     baseUrl: `http://127.0.0.1:${address.port}/v1`,
+    browserUrl: `http://127.0.0.1:${address.port}/browser-fixture?run=${randomUUID()}`,
     requests,
     close: () => new Promise((resolve, reject) => {
       server.closeAllConnections?.();
@@ -321,6 +893,32 @@ async function waitUntil(predicate, description, timeoutMs = READY_TIMEOUT) {
   throw new Error(`Timed out waiting for ${description}`);
 }
 
+async function waitForChatIdle(window) {
+  const stopButton = window.locator(STOP_BUTTON_SELECTOR).last();
+  await waitUntil(
+    async () => {
+      try {
+        return !(await stopButton.isVisible());
+      } catch {
+        return true;
+      }
+    },
+    'the packaged chat task to become idle',
+  );
+}
+
+function findToolFollowup(requests, startIndex, prompt, minimumToolMessages) {
+  return requests.slice(startIndex).find((candidate) => {
+    const serialized = JSON.stringify(candidate.body);
+    const messages = candidate.body?.messages;
+    return (
+      serialized.includes(prompt) &&
+      Array.isArray(messages) &&
+      messages.filter((message) => message?.role === 'tool').length >= minimumToolMessages
+    );
+  });
+}
+
 function diskContains(rootDir, expectedText, fileName = 'messages.jsonl') {
   let entries;
   try {
@@ -341,6 +939,7 @@ function diskContains(rootDir, expectedText, fileName = 'messages.jsonl') {
 }
 
 function pidAlive(pid) {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
   try {
     process.kill(pid, 0);
     return true;
@@ -361,33 +960,677 @@ function shellQuote(value) {
   return `'${text.replace(/'/g, `'\\''`)}'`;
 }
 
-function longRunningTreeCommand(nodePath, pidFile) {
+function pathIsWithin(candidate, root) {
+  if (!candidate) return false;
+  let resolvedCandidate = path.resolve(candidate);
+  let resolvedRoot = path.resolve(root);
+  if (process.platform === 'win32') {
+    resolvedCandidate = resolvedCandidate.toLowerCase();
+    resolvedRoot = resolvedRoot.toLowerCase();
+  }
+  return (
+    resolvedCandidate === resolvedRoot ||
+    resolvedCandidate.startsWith(resolvedRoot + path.sep)
+  );
+}
+
+function taggedTreeProbeScript(resultPath) {
+  return `
+    const cp = require('node:child_process');
+    const fs = require('node:fs');
+    const marker = process.argv[1];
+    const child = cp.spawn(
+      process.execPath,
+      ['-e', 'setInterval(() => {}, 1000)', marker],
+      { stdio: 'ignore' },
+    );
+    if (!Number.isInteger(child.pid)) throw new Error('command child did not start');
+    fs.writeFileSync(${JSON.stringify(resultPath)}, JSON.stringify({
+      pid: process.pid,
+      childPid: child.pid,
+      marker,
+    }));
+    setInterval(() => {}, 1000);
+  `;
+}
+
+function longRunningTreeCommand(nodePath, resultPath, marker) {
+  const script = taggedTreeProbeScript(resultPath);
+  const prefix = process.platform === 'win32' ? '& ' : '';
+  return [
+    prefix + shellQuote(nodePath),
+    '-e',
+    shellQuote(script),
+    shellQuote(marker),
+  ].join(' ');
+}
+
+function markerProcesses(marker) {
+  if (process.platform === 'win32') {
+    const powershell = path.join(
+      process.env.SystemRoot || 'C:\\Windows',
+      'System32',
+      'WindowsPowerShell',
+      'v1.0',
+      'powershell.exe',
+    );
+    const command = [
+      "$ErrorActionPreference = 'Stop'",
+      `$marker = ${shellQuote(marker)}`,
+      '$items = @(Get-CimInstance Win32_Process -ErrorAction Stop | Where-Object { $_.ProcessId -ne $PID -and $_.CommandLine -like ("*" + $marker + "*") } | Select-Object ProcessId, CommandLine)',
+      '$items | ConvertTo-Json -Compress',
+    ].join('; ');
+    const result = spawnSync(powershell, [
+      '-NoProfile',
+      '-NonInteractive',
+      '-Command',
+      command,
+    ], { encoding: 'utf8', timeout: 10_000 });
+    if (result.status !== 0) {
+      throw new Error(
+        `Windows marker process query failed (${String(result.status)}): ${result.stderr.trim()}`,
+      );
+    }
+    if (!result.stdout.trim()) return [];
+    const parsed = JSON.parse(result.stdout);
+    const rows = Array.isArray(parsed) ? parsed : [parsed];
+    return rows.map((row) => ({
+      pid: Number(row.ProcessId),
+      command: String(row.CommandLine || ''),
+    }));
+  }
+  const result = spawnSync('/bin/ps', ['-axo', 'pid=,command='], {
+    encoding: 'utf8',
+    timeout: 10_000,
+  });
+  if (result.status !== 0) return [];
+  return result.stdout.split('\n').flatMap((line) => {
+    const match = line.trim().match(/^(\d+)\s+(.*)$/s);
+    if (!match || !match[2].includes(marker)) return [];
+    return [{ pid: Number(match[1]), command: match[2] }];
+  });
+}
+
+function readLiveTaggedTree(resultPath, marker, description) {
+  const result = JSON.parse(fs.readFileSync(resultPath, 'utf8'));
+  if (result.marker !== marker) {
+    throw new Error(`${description} marker mismatch: ${JSON.stringify(result)}`);
+  }
+  assertLiveTaggedPid(result.pid, marker, `${description} parent`);
+  assertLiveTaggedPid(result.childPid, marker, `${description} child`);
+  const processes = markerProcesses(marker);
+  const pids = new Set(processes.map((entry) => entry.pid));
+  if (!pids.has(result.pid) || !pids.has(result.childPid)) {
+    throw new Error(`${description} marker tree was incomplete: ${JSON.stringify(processes)}`);
+  }
+  return { ...result, processes };
+}
+
+async function waitForMarkerGone(marker, description) {
+  await waitUntil(
+    () => markerProcesses(marker).length === 0,
+    `${description} to leave no marker processes`,
+    15_000,
+  );
+}
+
+async function cleanupMarkerProcesses(marker) {
+  const terminate = (signal) => {
+    for (const entry of markerProcesses(marker)) {
+      if (entry.pid === process.pid) continue;
+      try {
+        process.kill(entry.pid, signal);
+      } catch {
+        // The process may have exited between enumeration and termination.
+      }
+    }
+  };
+  terminate('SIGTERM');
+  try {
+    await waitForMarkerGone(marker, 'packaged smoke cleanup');
+  } catch {
+    terminate('SIGKILL');
+    await waitForMarkerGone(marker, 'forced packaged smoke cleanup');
+  }
+}
+
+function commandResultPaths(testRoot, name) {
+  const id = `${name}-${randomUUID()}`;
+  return {
+    resultPath: path.join(testRoot, `${id}.json`),
+    marker: `${id}-marker`,
+  };
+}
+
+function bareRuntimeProbeCommand(resultPath) {
   const script = `
     const cp = require('node:child_process');
     const fs = require('node:fs');
-    const child = cp.spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], {
-      stdio: 'ignore',
-    });
-    fs.writeFileSync(${JSON.stringify(pidFile)}, String(child.pid));
+    const path = require('node:path');
+    const envPath = process.env.PATH || process.env.Path || '';
+    const resolveCommand = (command) => {
+      const extensions = process.platform === 'win32'
+        ? ['', '.cmd', '.exe', '.bat']
+        : [''];
+      for (const directory of envPath.split(path.delimiter)) {
+        for (const extension of extensions) {
+          const candidate = path.join(directory, command + extension);
+          try {
+            if (fs.statSync(candidate).isFile()) return candidate;
+          } catch {
+            // Continue through the production runtime PATH.
+          }
+        }
+      }
+      return '';
+    };
+    const nodeRoot = process.platform === 'win32'
+      ? path.dirname(process.execPath)
+      : path.resolve(path.dirname(process.execPath), '..');
+    const npmCli = path.join(
+      nodeRoot,
+      process.platform === 'win32'
+        ? 'node_modules/npm/bin/npm-cli.js'
+        : 'lib/node_modules/npm/bin/npm-cli.js',
+    );
+    const npxCli = path.join(
+      nodeRoot,
+      process.platform === 'win32'
+        ? 'node_modules/npm/bin/npx-cli.js'
+        : 'lib/node_modules/npm/bin/npx-cli.js',
+    );
+    const runCli = (cli) => {
+      const result = cp.spawnSync(process.execPath, [cli, '--version'], {
+        encoding: 'utf8',
+        shell: false,
+      });
+      if (result.status !== 0) {
+        throw new Error(cli + ' failed: ' + (result.stderr || result.error || result.status));
+      }
+      return result.stdout.trim();
+    };
+    fs.writeFileSync(${JSON.stringify(resultPath)}, JSON.stringify({
+      executable: process.execPath,
+      nodeOptions: process.env.NODE_OPTIONS || null,
+      path: envPath,
+      npmWrapperPath: resolveCommand('npm'),
+      npxWrapperPath: resolveCommand('npx'),
+      npmPath: npmCli,
+      npxPath: npxCli,
+      npm: runCli(npmCli),
+      npx: runCli(npxCli),
+    }));
+  `;
+  return `node -e ${shellQuote(script)}`;
+}
+
+function pidCommandLine(pid) {
+  if (process.platform === 'win32') {
+    const powershell = path.join(
+      process.env.SystemRoot || 'C:\\Windows',
+      'System32',
+      'WindowsPowerShell',
+      'v1.0',
+      'powershell.exe',
+    );
+    const result = spawnSync(powershell, [
+      '-NoProfile',
+      '-NonInteractive',
+      '-Command',
+      `(Get-CimInstance Win32_Process -Filter "ProcessId = ${pid}").CommandLine`,
+    ], { encoding: 'utf8', timeout: 10_000 });
+    return result.status === 0 ? result.stdout.trim() : '';
+  }
+  const result = spawnSync('/bin/ps', ['-p', String(pid), '-o', 'command='], {
+    encoding: 'utf8',
+    timeout: 10_000,
+  });
+  return result.status === 0 ? result.stdout.trim() : '';
+}
+
+function assertLiveTaggedPid(pid, marker, description) {
+  if (!Number.isInteger(pid) || pid <= 0) {
+    throw new Error(`${description} returned invalid pid ${String(pid)}`);
+  }
+  if (!pidAlive(pid)) {
+    throw new Error(`${description} pid ${pid} was not alive before cleanup`);
+  }
+  const commandLine = pidCommandLine(pid);
+  if (!commandLine.includes(marker)) {
+    throw new Error(
+      `${description} pid ${pid} did not carry marker ${marker}: ${JSON.stringify(commandLine)}`,
+    );
+  }
+}
+
+function createHostRuntimeTrap(testRoot) {
+  const dir = path.join(testRoot, 'host-runtime-trap');
+  const marker = path.join(testRoot, 'HOST_RUNTIME_WAS_USED');
+  fs.mkdirSync(dir, { recursive: true });
+  for (const name of ['node', 'nodejs', 'npm', 'npx', 'python', 'python3', 'py']) {
+    if (process.platform === 'win32') {
+      fs.writeFileSync(
+        path.join(dir, `${name}.cmd`),
+        `@echo ${name}>>"${marker}"\r\n@exit /b 97\r\n`,
+      );
+    } else {
+      const executable = path.join(dir, name);
+      fs.writeFileSync(
+        executable,
+        `#!/bin/sh\nprintf '%s\\n' ${shellQuote(name)} >> ${shellQuote(marker)}\nexit 97\n`,
+      );
+      fs.chmodSync(executable, 0o755);
+    }
+  }
+  const systemRoot = process.env.SystemRoot || 'C:\\Windows';
+  const systemPaths = process.platform === 'win32'
+    ? [
+      path.join(systemRoot, 'System32', 'WindowsPowerShell', 'v1.0'),
+      path.join(systemRoot, 'System32'),
+      systemRoot,
+    ]
+    : ['/usr/bin', '/bin', '/usr/sbin', '/sbin'];
+  return {
+    dir,
+    marker,
+    cleanPath: [dir, ...systemPaths].join(path.delimiter),
+  };
+}
+
+function cleanPackagedEnvironment(runtimeTrap) {
+  const env = { ...process.env };
+  const removed = new Set([
+    'electron_run_as_node',
+    'node_channel_fd',
+    'node_extra_ca_certs',
+    'node_options',
+    'node_path',
+    'node_repl_history',
+    'npm_config_globalconfig',
+    'npm_config_prefix',
+    'npm_config_userconfig',
+    'npm_execpath',
+    'npm_node_execpath',
+    'nvm_bin',
+    'nvm_dir',
+    'pythonhome',
+    'pythoninspect',
+    'pythonpath',
+    'pythonstartup',
+    'pythonuserbase',
+    'pyenv_root',
+    'virtual_env',
+  ]);
+  for (const key of Object.keys(env)) {
+    const normalized = key.toLowerCase();
+    if (normalized === 'path' || removed.has(normalized)) delete env[key];
+  }
+  env[process.platform === 'win32' ? 'Path' : 'PATH'] = runtimeTrap.cleanPath;
+  return env;
+}
+
+async function spawnPackagedMcpTree(window, resultPath, runtimeTrap, idPrefix) {
+  const id = `${idPrefix}-${randomUUID()}`;
+  const marker = `${id}-marker`;
+  const probeScript = `
+    const cp = require('node:child_process');
+    const fs = require('node:fs');
+    const marker = process.argv[1];
+    const child = cp.spawn(
+      process.execPath,
+      ['-e', 'setInterval(() => {}, 1000)', marker],
+      { stdio: 'ignore' },
+    );
+    if (!Number.isInteger(child.pid)) throw new Error('MCP child did not start');
+    fs.writeFileSync(
+      ${JSON.stringify(resultPath)},
+      JSON.stringify({
+        executable: process.execPath,
+        pid: process.pid,
+        childPid: child.pid,
+        marker,
+      }),
+    );
     setInterval(() => {}, 1000);
   `;
-  const prefix = process.platform === 'win32' ? '& ' : '';
-  return `${prefix}${shellQuote(nodePath)} -e ${shellQuote(script)}`;
+  await window.evaluate(
+    ({ mcpId, script, processMarker, pathKey, cleanPath }) =>
+      window.__TAURI_INTERNALS__.invoke('mcp_spawn', {
+        id: mcpId,
+        command: 'node',
+        args: ['-e', script, processMarker],
+        env: { [pathKey]: cleanPath },
+      }),
+    {
+      mcpId: id,
+      script: probeScript,
+      processMarker: marker,
+      pathKey: process.platform === 'win32' ? 'Path' : 'PATH',
+      cleanPath: runtimeTrap.cleanPath,
+    },
+  );
+  await waitUntil(() => fs.existsSync(resultPath), `${idPrefix} MCP runtime probe`);
+  const result = JSON.parse(fs.readFileSync(resultPath, 'utf8'));
+  if (result.marker !== marker) {
+    throw new Error(`${idPrefix} MCP marker mismatch: ${JSON.stringify(result)}`);
+  }
+  assertLiveTaggedPid(result.pid, marker, `${idPrefix} MCP parent`);
+  assertLiveTaggedPid(result.childPid, marker, `${idPrefix} MCP child`);
+  return { id, ...result };
+}
+
+async function createRendererMcpClient(window, mcpId, env) {
+  const stashKey = `__abuPackagedMcp_${randomUUID().replaceAll('-', '')}`;
+  await window.evaluate(
+    async ({ eventName, key }) => {
+      globalThis[key] = [];
+      const callbackId = window.__TAURI_INTERNALS__.transformCallback((entry) => {
+        globalThis[key].push(entry.payload);
+      });
+      await window.__TAURI_INTERNALS__.invoke('plugin:event|listen', {
+        event: eventName,
+        target: { kind: 'Any' },
+        handler: callbackId,
+      });
+    },
+    { eventName: `mcp-msg-${mcpId}`, key: stashKey },
+  );
+  await window.evaluate(
+    ({ id, childEnv }) => window.__TAURI_INTERNALS__.invoke('mcp_spawn', {
+      id,
+      command: 'abu-browser-runtime',
+      args: [],
+      env: childEnv,
+    }),
+    { id: mcpId, childEnv: env },
+  );
+
+  let nextId = 1;
+  const write = (message) => window.evaluate(
+    ({ id, line }) => window.__TAURI_INTERNALS__.invoke('mcp_write', {
+      id,
+      message: JSON.stringify(line),
+    }),
+    { id: mcpId, line: message },
+  );
+  const request = async (method, params) => {
+    const id = nextId++;
+    await write({ jsonrpc: '2.0', id, method, params });
+    let matched;
+    await waitUntil(async () => {
+      const lines = await window.evaluate((key) => globalThis[key] || [], stashKey);
+      for (const line of lines) {
+        try {
+          const parsed = JSON.parse(line);
+          if (parsed.id === id) {
+            matched = parsed;
+            return true;
+          }
+        } catch {
+          // Ignore non-RPC diagnostics; the matching response remains required.
+        }
+      }
+      return false;
+    }, `packaged browser MCP response for ${method}`);
+    if (matched.error) {
+      throw new Error(`packaged browser MCP ${method} failed: ${JSON.stringify(matched.error)}`);
+    }
+    return matched.result;
+  };
+  return {
+    request,
+    notify: (method, params) => write({ jsonrpc: '2.0', method, params }),
+    write,
+    kill: () => window.evaluate(
+      (id) => window.__TAURI_INTERNALS__.invoke('mcp_kill', { id }),
+      mcpId,
+    ),
+  };
+}
+
+function mcpText(result) {
+  const entry = result?.content?.find?.((item) => item?.type === 'text');
+  if (!entry || typeof entry.text !== 'string' || entry.text.startsWith('Error:')) {
+    throw new Error(`unexpected MCP text result: ${JSON.stringify(result)}`);
+  }
+  return entry.text;
+}
+
+function isPngBase64(value) {
+  if (typeof value !== 'string' || value.length < 1000) return false;
+  const bytes = Buffer.from(value.replace(/^data:image\/png;base64,/, ''), 'base64');
+  return bytes.length > 8 &&
+    bytes.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]));
+}
+
+async function inspectPackagedBrowserView(app, tabId, screenshotData) {
+  return app.evaluate(
+    async ({ BrowserWindow, desktopCapturer, nativeImage }, { targetTabId, pngBase64 }) => {
+      const analyze = (image) => {
+        const size = image.getSize();
+        const bitmap = image.toBitmap();
+        let fixturePixels = 0;
+        for (let index = 0; index + 3 < bitmap.length; index += 4) {
+          const first = bitmap[index];
+          const green = bitmap[index + 1];
+          const third = bitmap[index + 2];
+          const colorMatches =
+            Math.abs(green - 172) <= 8 &&
+            (
+              (Math.abs(first - 104) <= 8 && Math.abs(third - 18) <= 8) ||
+              (Math.abs(first - 18) <= 8 && Math.abs(third - 104) <= 8)
+            );
+          if (colorMatches) fixturePixels += 1;
+        }
+        return { ...size, fixturePixels };
+      };
+      const windows = BrowserWindow.getAllWindows().filter((candidate) => !candidate.isDestroyed());
+      const mainWindow = windows.find((candidate) => candidate.isVisible()) ?? windows[0];
+      if (!mainWindow) throw new Error('packaged browser inspection found no BrowserWindow');
+
+      const findView = (view) => {
+        if (view?.webContents?.id === targetTabId) return view;
+        for (const child of view?.children ?? []) {
+          const match = findView(child);
+          if (match) return match;
+        }
+        return null;
+      };
+      const browserView = findView(mainWindow.contentView);
+      if (!browserView) {
+        throw new Error(`packaged browser inspection found no view for tab ${targetTabId}`);
+      }
+      const bounds = browserView.getBounds();
+      const contentBounds = mainWindow.getContentBounds();
+      const intersection = {
+        width: Math.max(
+          0,
+          Math.min(bounds.x + bounds.width, contentBounds.width) - Math.max(bounds.x, 0),
+        ),
+        height: Math.max(
+          0,
+          Math.min(bounds.y + bounds.height, contentBounds.height) - Math.max(bounds.y, 0),
+        ),
+      };
+
+      const screenshot = nativeImage.createFromBuffer(
+        Buffer.from(pngBase64.replace(/^data:image\/png;base64,/, ''), 'base64'),
+      );
+      let windowComposite = null;
+      let compositeError = '';
+      try {
+        const windowBounds = mainWindow.getBounds();
+        const mediaSourceId = mainWindow.getMediaSourceId();
+        const sources = await desktopCapturer.getSources({
+          types: ['window'],
+          thumbnailSize: {
+            width: Math.max(windowBounds.width * 2, 1),
+            height: Math.max(windowBounds.height * 2, 1),
+          },
+          fetchWindowIcons: false,
+        });
+        const compositeSource = sources.find((source) => source.id === mediaSourceId);
+        if (compositeSource) windowComposite = analyze(compositeSource.thumbnail);
+      } catch (error) {
+        // macOS denies desktopCapturer without Screen Recording/TCC. Exact View
+        // draw state remains mandatory; system composition is an additive check
+        // on machines where attended permission has already been granted.
+        compositeError = String(error);
+      }
+      return {
+        bounds,
+        contentSize: {
+          width: contentBounds.width,
+          height: contentBounds.height,
+        },
+        intersection,
+        drawn: browserView.getVisible(),
+        mcpScreenshot: analyze(screenshot),
+        windowComposite,
+        compositeError,
+      };
+    },
+    { targetTabId: tabId, pngBase64: screenshotData },
+  );
+}
+
+async function runPackagedBrowserFlow(app, window, browserUrl, runtimeTrap) {
+  const mcpId = `packaged-browser-${randomUUID()}`;
+  const client = await createRendererMcpClient(window, mcpId, {
+    [process.platform === 'win32' ? 'Path' : 'PATH']: runtimeTrap.cleanPath,
+  });
+  let killed = false;
+  try {
+    const initialized = await client.request('initialize', {
+      protocolVersion: '2024-11-05',
+      capabilities: {},
+      clientInfo: { name: 'abu-packaged-browser-e2e', version: '0.0.0' },
+    });
+    await client.notify('notifications/initialized', {});
+
+    const tabs = JSON.parse(mcpText(await client.request('tools/call', {
+      name: 'get_tabs',
+      arguments: {},
+    })));
+    const tabId = tabs?.summary?.currentTabId;
+    if (!Number.isInteger(tabId)) {
+      throw new Error(`packaged browser runtime did not return a tab id: ${JSON.stringify(tabs)}`);
+    }
+
+    await client.request('tools/call', {
+      name: 'navigate',
+      arguments: { tabId, url: browserUrl, action: 'goto' },
+    });
+    const address = window.getByPlaceholder(/输入网址或搜索|Enter a URL or search/);
+    await address.waitFor({ state: 'visible', timeout: READY_TIMEOUT });
+    await waitUntil(
+      async () => (await address.inputValue()) === browserUrl,
+      'the packaged browser tab to expose its navigated URL',
+    );
+
+    const snapshot = JSON.parse(mcpText(await client.request('tools/call', {
+      name: 'snapshot',
+      arguments: { tabId },
+    })));
+    const hasInput = snapshot?.elements?.some?.((element) => element.tag === 'input');
+    const hasButton = snapshot?.elements?.some?.((element) => element.tag === 'button');
+    if (!hasInput || !hasButton) {
+      throw new Error(`packaged browser snapshot lacked fixture controls: ${JSON.stringify(snapshot)}`);
+    }
+
+    const value = `packaged-browser-value-${randomUUID()}`;
+    await client.request('tools/call', {
+      name: 'fill',
+      arguments: { tabId, locator: JSON.stringify({ css: '#q' }), value },
+    });
+    await client.request('tools/call', {
+      name: 'click',
+      arguments: { tabId, locator: JSON.stringify({ css: '#go' }) },
+    });
+    const extracted = mcpText(await client.request('tools/call', {
+      name: 'extract_text',
+      arguments: { tabId, selector: '#result' },
+    }));
+    if (extracted !== value) {
+      throw new Error(`packaged browser DOM round trip returned ${JSON.stringify(extracted)}`);
+    }
+
+    const screenshot = await client.request('tools/call', {
+      name: 'screenshot',
+      arguments: { tabId },
+    });
+    const image = screenshot?.content?.find?.((entry) => entry?.type === 'image');
+    if (image?.mimeType !== 'image/png' || !isPngBase64(image.data)) {
+      throw new Error(`packaged browser screenshot was not PNG: ${JSON.stringify(screenshot)}`);
+    }
+    const view = await inspectPackagedBrowserView(app, tabId, image.data);
+    const viewPixelCount = view.mcpScreenshot.width * view.mcpScreenshot.height;
+    const viewArea = view.bounds.width * view.bounds.height;
+    const intersectionArea = view.intersection.width * view.intersection.height;
+    const visibleTabAdopted =
+      view.drawn === true &&
+      view.bounds.width >= 200 &&
+      view.bounds.height >= 200 &&
+      view.mcpScreenshot.width >= 200 &&
+      view.mcpScreenshot.height >= 200 &&
+      view.intersection.width >= 200 &&
+      view.intersection.height >= 200 &&
+      intersectionArea >= viewArea * 0.8 &&
+      view.mcpScreenshot.fixturePixels >= viewPixelCount * 0.2 &&
+      (view.windowComposite === null || view.windowComposite.fixturePixels >= 500);
+    if (!visibleTabAdopted) {
+      throw new Error(`packaged browser view was not visibly composed: ${JSON.stringify(view)}`);
+    }
+
+    await client.kill();
+    killed = true;
+    let rejectedAfterKill = false;
+    try {
+      await client.write({ jsonrpc: '2.0', id: 99_999, method: 'tools/list', params: {} });
+    } catch (error) {
+      rejectedAfterKill = /no live process/i.test(String(error));
+    }
+    if (!rejectedAfterKill) {
+      throw new Error('packaged browser MCP still accepted input after mcp_kill');
+    }
+
+    return {
+      initialized:
+        typeof initialized?.protocolVersion === 'string' &&
+        initialized?.serverInfo?.name === 'abu-electron-browser-runtime',
+      visibleTabAdopted,
+      domRoundTrip: true,
+      screenshot: true,
+      stopped: true,
+    };
+  } finally {
+    if (!killed) {
+      try {
+        await client.kill();
+      } catch {
+        // Best-effort cleanup; the caller records the original browser failure.
+      }
+    }
+  }
 }
 
 async function closePackagedApp(app) {
-  if (!app) return;
+  if (!app) return 'not-running';
   const child = app.process();
   try {
     await app.evaluate(({ app: electronApp }) => electronApp.quit());
   } catch {
     // Playwright commonly loses its transport before quit() returns.
   }
-  if (await waitForChildExit(child, 5_000)) return;
+  if (await waitForChildExit(child, 5_000)) {
+    return child.signalCode === null && child.exitCode === 0
+      ? 'quit'
+      : `unexpected-exit:${String(child.exitCode)}:${String(child.signalCode)}`;
+  }
   child.kill('SIGTERM');
-  if (await waitForChildExit(child, 3_000)) return;
+  if (await waitForChildExit(child, 3_000)) return 'sigterm';
   child.kill('SIGKILL');
-  await waitForChildExit(child, 2_000);
+  return await waitForChildExit(child, 2_000) ? 'sigkill' : 'stuck';
 }
 
 function waitForChildExit(child, timeoutMs) {
@@ -408,14 +1651,14 @@ function waitForChildExit(child, timeoutMs) {
   });
 }
 
-function launchPackagedApp(found, userDataDir, appDataDir) {
+function launchPackagedApp(found, userDataDir, appDataDir, runtimeTrap) {
   fs.mkdirSync(userDataDir, { recursive: true });
   fs.mkdirSync(appDataDir, { recursive: true });
   return electron.launch({
     executablePath: found.bin,
     args: [`--user-data-dir=${userDataDir}`],
     env: {
-      ...process.env,
+      ...cleanPackagedEnvironment(runtimeTrap),
       [E2E_APP_DATA_ROOT_ENV]: appDataDir,
       [PACKAGED_E2E_ENV]: '1',
     },
@@ -424,23 +1667,59 @@ function launchPackagedApp(found, userDataDir, appDataDir) {
 }
 
 async function main() {
-  const found = findPackagedApp();
-  if (!found) {
+  const releasePackage = findPackagedApp(OUT);
+  if (!releasePackage) {
     console.error(
       `[packaged-smoke] no packaged app found under ${OUT}/ — run \`npm run pack:electron\` first`
     );
     process.exit(1);
   }
-  console.log(`[packaged-smoke] launching ${found.bin}`);
+  const found = findPackagedApp(E2E_OUT);
+  if (!found) {
+    console.error(
+      `[packaged-smoke] no pre-fuse E2E clone found under ${E2E_OUT}/ — run \`npm run pack:electron\` first`
+    );
+    process.exit(1);
+  }
+  console.log(`[packaged-smoke] release package ${releasePackage.bin}`);
+  console.log(`[packaged-smoke] launching pre-fuse E2E clone ${found.bin}`);
 
   const checks = {};
   const errors = {};
   const testRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'abu-packaged-e2e-'));
+  try {
+    const signatureComparator = verifyDarwinSignatureComparator(
+      releasePackage.resources,
+      testRoot,
+    );
+    checks.packagedSignatureComparatorVerified = signatureComparator.passed;
+    if (!signatureComparator.passed) {
+      errors.packagedSignatureComparator = signatureComparator.error;
+    }
+  } catch (err) {
+    checks.packagedSignatureComparatorVerified = false;
+    errors.packagedSignatureComparator = String(err);
+  }
+  const releaseFuseWire = await getCurrentFuseWire(releasePackage.appPath);
+  const e2eFuseWire = await getCurrentFuseWire(found.appPath);
+  checks.packagedRunAsNodeFuseEnabled =
+    releaseFuseWire[FuseV1Options.RunAsNode] === FUSE_ENABLED &&
+    e2eFuseWire[FuseV1Options.RunAsNode] === FUSE_ENABLED;
+  checks.packagedNodeInjectionFusesDisabled =
+    releaseFuseWire[FuseV1Options.EnableNodeOptionsEnvironmentVariable] === FUSE_DISABLED &&
+    releaseFuseWire[FuseV1Options.EnableNodeCliInspectArguments] === FUSE_DISABLED;
+  checks.packagedE2ECloneMatchesRelease =
+    e2eFuseWire[FuseV1Options.EnableNodeOptionsEnvironmentVariable] === FUSE_ENABLED &&
+    e2eFuseWire[FuseV1Options.EnableNodeCliInspectArguments] === FUSE_ENABLED &&
+    e2eCloneMatchesRelease(releasePackage, found);
+  const runtimeTrap = createHostRuntimeTrap(testRoot);
   const previewFixtureDir = path.join(testRoot, 'preview');
   const userDataDir = path.join(testRoot, 'user-data');
   const appDataDir = path.join(testRoot, 'app-data');
   const runtimeArtifactsDir = path.join(testRoot, 'runtime artifacts');
   const mcpRuntimePath = path.join(testRoot, 'mcp-runtime.json');
+  const normalQuitMcpPath = path.join(testRoot, 'normal-quit-mcp-runtime.json');
+  const chatRuntimePath = path.join(testRoot, 'chat-runtime.json');
   fs.mkdirSync(previewFixtureDir, { recursive: true });
   fs.mkdirSync(runtimeArtifactsDir, { recursive: true });
   fs.writeFileSync(
@@ -451,18 +1730,46 @@ async function main() {
   const responseText = `abu-packaged-answer-${randomUUID()}`;
   const stopPrompt = `abu-packaged-stop-task-${randomUUID()}`;
   const crashPrompt = `abu-packaged-crash-task-${randomUUID()}`;
+  const runtimePrompt = `abu-packaged-bare-runtime-task-${randomUUID()}`;
+  const officeReadPrompt = `abu-packaged-office-read-task-${randomUUID()}`;
   const pidRoot = process.platform === 'win32' ? os.tmpdir() : '/tmp';
-  const stopPidFile = path.join(pidRoot, `abu-packaged-stop-${randomUUID()}.pid`);
-  const crashPidFile = path.join(pidRoot, `abu-packaged-crash-${randomUUID()}.pid`);
+  const abortTree = commandResultPaths(pidRoot, 'abu-packaged-abort');
+  const timeoutTree = commandResultPaths(pidRoot, 'abu-packaged-timeout');
+  const stopTree = commandResultPaths(pidRoot, 'abu-packaged-stop');
+  const crashTree = commandResultPaths(pidRoot, 'abu-packaged-crash');
+  const commandTrees = [abortTree, timeoutTree, stopTree, crashTree];
+  const bundledNodePath = path.resolve(
+    found.resources,
+    'node-runtime',
+    process.platform === 'win32' ? 'node.exe' : 'bin/node',
+  );
+  const officeArtifacts = [
+    { file: path.join(runtimeArtifactsDir, 'smoke.docx'), sentinel: 'Abu packaged DOCX sentinel' },
+    { file: path.join(runtimeArtifactsDir, 'smoke.xlsx'), sentinel: 'Abu packaged XLSX sentinel' },
+    { file: path.join(runtimeArtifactsDir, 'smoke.pptx'), sentinel: 'Abu packaged PPTX sentinel' },
+    { file: path.join(runtimeArtifactsDir, 'smoke.pdf'), sentinel: 'Abu packaged PDF sentinel' },
+  ];
+  const officeArtifactPaths = officeArtifacts.map((artifact) => artifact.file);
   const recentTitle = `${prompt.slice(0, 30)}...`;
   const mock = await startOpenAiMock(responseText, new Map([
-    [stopPrompt, longRunningTreeCommand(process.execPath, stopPidFile)],
-    [crashPrompt, longRunningTreeCommand(process.execPath, crashPidFile)],
+    [
+      stopPrompt,
+      longRunningTreeCommand(bundledNodePath, stopTree.resultPath, stopTree.marker),
+    ],
+    [
+      crashPrompt,
+      longRunningTreeCommand(bundledNodePath, crashTree.resultPath, crashTree.marker),
+    ],
+    [runtimePrompt, bareRuntimeProbeCommand(chatRuntimePath)],
+    [officeReadPrompt, officeArtifactPaths.map((file) => ({
+      name: 'read_file',
+      input: { path: file },
+    }))],
   ]));
 
   let app;
   try {
-    app = await launchPackagedApp(found, userDataDir, appDataDir);
+    app = await launchPackagedApp(found, userDataDir, appDataDir, runtimeTrap);
     let window = await app.firstWindow({ timeout: 30_000 });
     checks.windowOpened = !!window;
     await window.waitForLoadState('domcontentloaded', { timeout: 30_000 });
@@ -474,6 +1781,10 @@ async function main() {
     checks.isPackaged = isPackaged === true;
     const reportedAppData = await app.evaluate(({ app: a }) => a.getPath('appData'));
     checks.appDataIsolated = path.resolve(reportedAppData) === path.resolve(appDataDir);
+    const packagedPath = await app.evaluate(() => process.env.PATH || process.env.Path || '');
+    checks.hostRuntimePathSanitized =
+      packagedPath.split(path.delimiter)[0] === runtimeTrap.dir &&
+      !packagedPath.includes(path.dirname(process.execPath));
 
     // ── bundled resources landed under Contents/Resources ── (checked locally)
     checks.sidecarInResources = fs.existsSync(path.join(found.resources, 'sidecar', 'index.mjs'));
@@ -524,7 +1835,7 @@ async function main() {
       const marker = `abu-packaged-launcher-${randomUUID()}`;
       const launcherResult = spawnSync(launcherPath, [], {
         input: JSON.stringify({
-          file: process.execPath,
+          file: bundledNodePath,
           args: ['-e', `process.stdout.write(${JSON.stringify(marker)})`],
           sandboxEnabled: false,
         }),
@@ -578,22 +1889,34 @@ async function main() {
       );
 
       const abortCommandId = `packaged-abort-${randomUUID()}`;
+      const abortScript = taggedTreeProbeScript(abortTree.resultPath);
       const runningCommand = window.evaluate(
-        ({ id }) => window.__TAURI_INTERNALS__.invoke(
+        ({ id, script, marker: processMarker, writableRoot }) =>
+          window.__TAURI_INTERNALS__.invoke(
           'run_argv_command',
           {
             program: 'node',
-            args: ['-e', 'setInterval(() => {}, 1000)'],
-            cwd: null,
+            args: ['-e', script, processMarker],
+            cwd: writableRoot,
             timeout: 30,
             sandboxEnabled: true,
-            extraWritablePaths: [],
+            extraWritablePaths: [writableRoot],
             networkIsolation: false,
             commandId: id,
           },
         ),
-        { id: abortCommandId },
+        {
+          id: abortCommandId,
+          script: abortScript,
+          marker: abortTree.marker,
+          writableRoot: pidRoot,
+        },
       );
+      await waitUntil(
+        () => fs.existsSync(abortTree.resultPath),
+        'the explicitly aborted command tree to start',
+      );
+      readLiveTaggedTree(abortTree.resultPath, abortTree.marker, 'explicit abort');
       let abortAccepted = false;
       await waitUntil(async () => {
         abortAccepted = await window.evaluate(
@@ -603,8 +1926,38 @@ async function main() {
         return abortAccepted;
       }, 'the packaged command host to accept abort_command', 10_000);
       const abortedResult = await runningCommand;
+      await waitForMarkerGone(abortTree.marker, 'explicit abort');
       checks.packagedSandboxCommandAborts =
         abortAccepted === true && abortedResult.code !== 0;
+
+      const timeoutScript = taggedTreeProbeScript(timeoutTree.resultPath);
+      const timedCommand = window.evaluate(
+        ({ script, marker: processMarker, writableRoot, id }) =>
+          window.__TAURI_INTERNALS__.invoke('run_argv_command', {
+            program: 'node',
+            args: ['-e', script, processMarker],
+            cwd: writableRoot,
+            timeout: 3,
+            sandboxEnabled: true,
+            extraWritablePaths: [writableRoot],
+            networkIsolation: false,
+            commandId: id,
+          }),
+        {
+          script: timeoutScript,
+          marker: timeoutTree.marker,
+          writableRoot: pidRoot,
+          id: `packaged-timeout-${randomUUID()}`,
+        },
+      );
+      await waitUntil(
+        () => fs.existsSync(timeoutTree.resultPath),
+        'the timed-out command tree to start',
+      );
+      readLiveTaggedTree(timeoutTree.resultPath, timeoutTree.marker, 'command timeout');
+      const timeoutResult = await timedCommand;
+      await waitForMarkerGone(timeoutTree.marker, 'command timeout');
+      checks.packagedCommandTimeoutKillsTree = timeoutResult.code !== 0;
 
       const toolVersions = await window.evaluate(async () => {
         const invoke = window.__TAURI_INTERNALS__.invoke;
@@ -645,24 +1998,24 @@ pptx_path = root / "smoke.pptx"
 pdf_path = root / "smoke.pdf"
 
 document = Document()
-document.add_paragraph("Abu packaged runtime")
+document.add_paragraph("Abu packaged DOCX sentinel")
 document.save(docx_path)
-assert Document(docx_path).paragraphs[0].text == "Abu packaged runtime"
+assert Document(docx_path).paragraphs[0].text == "Abu packaged DOCX sentinel"
 
 workbook = Workbook()
-workbook.active["A1"] = "Abu packaged runtime"
+workbook.active["A1"] = "Abu packaged XLSX sentinel"
 workbook.save(xlsx_path)
-assert load_workbook(xlsx_path).active["A1"].value == "Abu packaged runtime"
+assert load_workbook(xlsx_path).active["A1"].value == "Abu packaged XLSX sentinel"
 
 presentation = Presentation()
 slide = presentation.slides.add_slide(presentation.slide_layouts[6])
 shape = slide.shapes.add_textbox(0, 0, 1000000, 1000000)
-shape.text = "Abu packaged runtime"
+shape.text = "Abu packaged PPTX sentinel"
 presentation.save(pptx_path)
 assert len(Presentation(pptx_path).slides) == 1
 
 pdf = canvas.Canvas(str(pdf_path))
-pdf.drawString(72, 720, "Abu packaged runtime")
+pdf.drawString(72, 720, "Abu packaged PDF sentinel")
 pdf.save()
 assert len(PdfReader(pdf_path).pages) == 1
 
@@ -690,28 +2043,21 @@ print(json.dumps({"executable": sys.executable, "files": [str(p) for p in [docx_
         pythonOutput.files.length === 4 &&
         pythonOutput.files.every((file) => fs.existsSync(file) && fs.statSync(file).size > 0);
 
-      const mcpId = `packaged-runtime-${randomUUID()}`;
-      await window.evaluate(
-        ({ id, resultPath }) => window.__TAURI_INTERNALS__.invoke('mcp_spawn', {
-          id,
-          command: 'node',
-          args: [
-            '-e',
-            `require('node:fs').writeFileSync(${JSON.stringify(resultPath)}, JSON.stringify({ executable: process.execPath })); setInterval(() => {}, 1000)`,
-          ],
-          env: {},
-        }),
-        { id: mcpId, resultPath: mcpRuntimePath },
+      const mcpRuntime = await spawnPackagedMcpTree(
+        window,
+        mcpRuntimePath,
+        runtimeTrap,
+        'packaged-runtime',
       );
-      await waitUntil(() => fs.existsSync(mcpRuntimePath), 'the packaged MCP runtime probe');
-      const mcpRuntime = JSON.parse(fs.readFileSync(mcpRuntimePath, 'utf8'));
       checks.packagedMcpUsesBundledNode = path.resolve(mcpRuntime.executable).startsWith(
         path.resolve(path.join(found.resources, 'node-runtime')) + path.sep,
       );
       await window.evaluate(
         (id) => window.__TAURI_INTERNALS__.invoke('mcp_kill', { id }),
-        mcpId,
+        mcpRuntime.id,
       );
+      await waitForMarkerGone(mcpRuntime.marker, 'mcp_kill');
+      checks.packagedMcpKillKillsTree = true;
 
       const updaterProbe = await window.evaluate(async () => {
         try {
@@ -730,12 +2076,14 @@ print(json.dumps({"executable": sys.executable, "files": [str(p) for p in [docx_
     } catch (err) {
       checks.packagedSandboxCommandRuns ??= false;
       checks.packagedSandboxCommandAborts ??= false;
+      checks.packagedCommandTimeoutKillsTree ??= false;
       checks.packagedCommandUsesBundledNode ??= false;
       checks.packagedNpmRuns ??= false;
       checks.packagedNpxRuns ??= false;
       checks.packagedPythonUsesBundledRuntime ??= false;
       checks.packagedOfficePdfRoundTrip ??= false;
       checks.packagedMcpUsesBundledNode ??= false;
+      checks.packagedMcpKillKillsTree ??= false;
       checks.packagedUpdaterDependenciesLoad ??= false;
       errors.packagedCommand = String(err);
     }
@@ -805,9 +2153,28 @@ print(json.dumps({"executable": sys.executable, "files": [str(p) for p in [docx_
       );
       checks.packagedTaskPersisted = true;
 
-      await closePackagedApp(app);
+      const browserResult = await runPackagedBrowserFlow(app, window, mock.browserUrl, runtimeTrap);
+      checks.packagedBrowserMcpInitializes = browserResult.initialized;
+      checks.packagedBrowserVisibleTabAdopted = browserResult.visibleTabAdopted;
+      checks.packagedBrowserDomRoundTrip = browserResult.domRoundTrip;
+      checks.packagedBrowserScreenshot = browserResult.screenshot;
+      checks.packagedBrowserMcpStops = browserResult.stopped;
+
+      const normalQuitMcp = await spawnPackagedMcpTree(
+        window,
+        normalQuitMcpPath,
+        runtimeTrap,
+        'packaged-normal-quit',
+      );
+      const closeMode = await closePackagedApp(app);
       app = undefined;
-      app = await launchPackagedApp(found, userDataDir, appDataDir);
+      if (closeMode !== 'quit') {
+        throw new Error(`packaged app did not exit normally before restart: ${closeMode}`);
+      }
+      await waitForMarkerGone(normalQuitMcp.marker, 'normal packaged app quit');
+      checks.packagedNormalQuitKillsMcpTree = true;
+
+      app = await launchPackagedApp(found, userDataDir, appDataDir, runtimeTrap);
       window = await app.firstWindow({ timeout: READY_TIMEOUT });
       await window.getByPlaceholder(CHAT_PLACEHOLDER).waitFor({
         state: 'visible',
@@ -828,22 +2195,92 @@ print(json.dumps({"executable": sys.executable, "files": [str(p) for p in [docx_
       checks.packagedConversationRestored = true;
       await enableMockProviderTools(window);
 
+      const restoredInput = window.getByPlaceholder(CHAT_PLACEHOLDER);
+      const runtimeRequestStart = mock.requests.length;
+      await restoredInput.fill(runtimePrompt);
+      await restoredInput.press('Enter');
+      await waitUntil(() => fs.existsSync(chatRuntimePath), 'the real Chat bare-runtime probe');
+      await waitUntil(
+        () => !!findToolFollowup(mock.requests, runtimeRequestStart, runtimePrompt, 1),
+        'the real Chat bare-runtime tool result to reach the model',
+      );
+      const chatRuntime = JSON.parse(fs.readFileSync(chatRuntimePath, 'utf8'));
+      const bundledNodeRoot = path.join(found.resources, 'node-runtime');
+      checks.packagedChatUsesBundledRuntimes =
+        pathIsWithin(chatRuntime.executable, bundledNodeRoot) &&
+        pathIsWithin(chatRuntime.path.split(path.delimiter)[0], bundledNodeRoot) &&
+        pathIsWithin(chatRuntime.npmWrapperPath, bundledNodeRoot) &&
+        pathIsWithin(chatRuntime.npxWrapperPath, bundledNodeRoot) &&
+        pathIsWithin(chatRuntime.npmPath, bundledNodeRoot) &&
+        pathIsWithin(chatRuntime.npxPath, bundledNodeRoot) &&
+        fs.existsSync(chatRuntime.npmWrapperPath) &&
+        fs.existsSync(chatRuntime.npxWrapperPath) &&
+        fs.existsSync(chatRuntime.npmPath) &&
+        fs.existsSync(chatRuntime.npxPath) &&
+        chatRuntime.nodeOptions === null &&
+        /^\d+\.\d+\.\d+/.test(chatRuntime.npm) &&
+        /^\d+\.\d+\.\d+/.test(chatRuntime.npx);
+      await waitForChatIdle(window);
+
+      const officeRequestStart = mock.requests.length;
+      await restoredInput.fill(officeReadPrompt);
+      await restoredInput.press('Enter');
+      let officeFollowup;
+      await waitUntil(() => {
+        officeFollowup = findToolFollowup(
+          mock.requests,
+          officeRequestStart,
+          officeReadPrompt,
+          officeArtifactPaths.length,
+        );
+        return !!officeFollowup;
+      }, 'the packaged Office/PDF read_file results to reach the model');
+      const officeMessages = officeFollowup.body.messages;
+      const officeToolCalls = officeMessages.flatMap((message) =>
+        message?.role === 'assistant' && Array.isArray(message.tool_calls)
+          ? message.tool_calls
+          : []
+      );
+      const officePathByCallId = new Map(officeToolCalls.flatMap((call) => {
+        try {
+          const args = JSON.parse(call?.function?.arguments ?? '{}');
+          return typeof call?.id === 'string' && typeof args.path === 'string'
+            ? [[call.id, path.resolve(args.path)]]
+            : [];
+        } catch {
+          return [];
+        }
+      }));
+      const officeResultByPath = new Map(
+        officeMessages
+          .filter((message) => message?.role === 'tool')
+          .flatMap((message) => {
+            const artifactPath = officePathByCallId.get(message.tool_call_id);
+            return artifactPath
+              ? [[artifactPath, JSON.stringify(message.content)]]
+              : [];
+          }),
+      );
+      checks.packagedOfficeToolsReadArtifacts =
+        officeResultByPath.size === officeArtifacts.length &&
+        officeArtifacts.every(({ file, sentinel }) =>
+          officeResultByPath.get(path.resolve(file))?.includes(sentinel)
+        );
+      await waitForChatIdle(window);
+
       // Real user stop path: ChatInput Stop → AbortRegistry → agent.abort →
       // sidecar tool signal → scoped abort_command → native launcher.
-      const restoredInput = window.getByPlaceholder(CHAT_PLACEHOLDER);
       await restoredInput.fill(stopPrompt);
       await restoredInput.press('Enter');
-      await waitUntil(() => fs.existsSync(stopPidFile), 'the task command descendant pid');
-      const stopPid = Number(fs.readFileSync(stopPidFile, 'utf8'));
-      if (!Number.isInteger(stopPid) || stopPid <= 0) {
-        throw new Error(`invalid packaged stop pid: ${String(stopPid)}`);
-      }
-      const stopButton = window.locator(
-        'button[aria-label="停止"], button[aria-label="Stop"]'
-      ).last();
+      await waitUntil(
+        () => fs.existsSync(stopTree.resultPath),
+        'the real Stop command tree to start',
+      );
+      readLiveTaggedTree(stopTree.resultPath, stopTree.marker, 'real Chat Stop');
+      const stopButton = window.locator(STOP_BUTTON_SELECTOR).last();
       await stopButton.waitFor({ state: 'visible', timeout: READY_TIMEOUT });
       await stopButton.click();
-      await waitForPidDead(stopPid, 'the real Stop path to kill the command descendant');
+      await waitForMarkerGone(stopTree.marker, 'the real Stop path');
       checks.packagedTaskStopKillsCommandTree = true;
 
       // SIGKILL bypasses JavaScript cleanup. The native liveness pipe remains
@@ -851,22 +2288,33 @@ print(json.dumps({"executable": sys.executable, "files": [str(p) for p in [docx_
       await restoredInput.waitFor({ state: 'visible', timeout: READY_TIMEOUT });
       await restoredInput.fill(crashPrompt);
       await restoredInput.press('Enter');
-      await waitUntil(() => fs.existsSync(crashPidFile), 'the crash-task command descendant pid');
-      const crashPid = Number(fs.readFileSync(crashPidFile, 'utf8'));
-      if (!Number.isInteger(crashPid) || crashPid <= 0) {
-        throw new Error(`invalid packaged crash pid: ${String(crashPid)}`);
-      }
+      await waitUntil(
+        () => fs.existsSync(crashTree.resultPath),
+        'the hard-crash command tree to start',
+      );
+      readLiveTaggedTree(crashTree.resultPath, crashTree.marker, 'hard Electron crash');
       const appProcess = app.process();
       appProcess.kill('SIGKILL');
-      await waitForChildExit(appProcess, 5_000);
+      const appExited = await waitForChildExit(appProcess, 5_000);
+      if (!appExited) {
+        throw new Error('packaged Electron process did not exit after SIGKILL');
+      }
       app = undefined;
-      await waitForPidDead(crashPid, 'the launcher cleanup after a hard Electron crash');
+      await waitForMarkerGone(crashTree.marker, 'the launcher cleanup after a hard Electron crash');
       checks.packagedHardCrashKillsCommandTree = true;
     } catch (err) {
       checks.packagedTaskReachedMock ??= false;
       checks.packagedTaskRendered ??= false;
       checks.packagedTaskPersisted ??= false;
+      checks.packagedBrowserMcpInitializes ??= false;
+      checks.packagedBrowserVisibleTabAdopted ??= false;
+      checks.packagedBrowserDomRoundTrip ??= false;
+      checks.packagedBrowserScreenshot ??= false;
+      checks.packagedBrowserMcpStops ??= false;
+      checks.packagedNormalQuitKillsMcpTree ??= false;
       checks.packagedConversationRestored ??= false;
+      checks.packagedChatUsesBundledRuntimes ??= false;
+      checks.packagedOfficeToolsReadArtifacts ??= false;
       checks.packagedTaskStopKillsCommandTree ??= false;
       checks.packagedHardCrashKillsCommandTree ??= false;
       const lastRequest = mock.requests.at(-1);
@@ -890,10 +2338,19 @@ print(json.dumps({"executable": sys.executable, "files": [str(p) for p in [docx_
   } catch (err) {
     errors.launch = String(err);
   } finally {
-    await closePackagedApp(app);
+    const cleanupMode = await closePackagedApp(app);
+    if (cleanupMode === 'stuck') {
+      errors.appCleanup = 'packaged Electron process remained alive after SIGKILL';
+    }
     await mock.close();
-    fs.rmSync(stopPidFile, { force: true });
-    fs.rmSync(crashPidFile, { force: true });
+    checks.hostRuntimeTrapUnused = !fs.existsSync(runtimeTrap.marker);
+    if (!checks.hostRuntimeTrapUnused) {
+      errors.hostRuntimeTrap = fs.readFileSync(runtimeTrap.marker, 'utf8').trim();
+    }
+    for (const commandTree of commandTrees) {
+      await cleanupMarkerProcesses(commandTree.marker);
+      fs.rmSync(commandTree.resultPath, { force: true });
+    }
     fs.rmSync(testRoot, { recursive: true, force: true });
   }
 

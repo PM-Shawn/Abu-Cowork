@@ -109,3 +109,4 @@ electron/browser-runtime/dist/
 
 # electron-builder packaged output
 release-electron/
+release-electron-e2e/

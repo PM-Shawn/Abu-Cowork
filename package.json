@@ -120,6 +120,7 @@
     "zustand": "^5.0.14"
   },
   "devDependencies": {
+    "@electron/fuses": "1.8.0",
     "@electron/rebuild": "^4.2.0",
     "@eslint/js": "^10.0.1",
     "@playwright/test": "^1.61.1",

@@ -204,6 +204,26 @@ function pythonBinary(runtimeRoot) {
   return path.join(runtimeRoot, process.platform === 'win32' ? 'python.exe' : 'bin/python3');
 }
 
+function removePythonBytecode(runtimeRoot) {
+  let removed = 0;
+  const visit = (directory) => {
+    for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+      const entryPath = path.join(directory, entry.name);
+      if (entry.isDirectory() && entry.name === '__pycache__') {
+        removed += fs.readdirSync(entryPath).length;
+        fs.rmSync(entryPath, { recursive: true, force: true });
+      } else if (entry.isDirectory()) {
+        visit(entryPath);
+      } else if (entry.isFile() && /\.(?:pyc|pyo)$/i.test(entry.name)) {
+        fs.rmSync(entryPath, { force: true });
+        removed++;
+      }
+    }
+  };
+  visit(runtimeRoot);
+  return removed;
+}
+
 function stripPythonRuntime(runtimeRoot, python) {
   const stdlib = run(
     python,
@@ -270,6 +290,10 @@ async function setupPython() {
   if (!archive) throw new Error(`Python runtime archive missing for ${key}`);
   const expectedMarker = markerFor('python', archive);
   if (currentMarker(PYTHON_TARGET, expectedMarker)) {
+    const removed = removePythonBytecode(PYTHON_TARGET);
+    if (removed > 0) {
+      console.log(`[runtime] removed ${removed} stale Python bytecode file(s)`);
+    }
     console.log(`[runtime] Python ${manifest.python.version} is current; skipping download`);
     return;
   }
@@ -309,6 +333,7 @@ async function setupPython() {
     run(python, ['-m', 'pip', 'uninstall', '-y', 'pip', 'setuptools', 'wheel']);
     stripPythonRuntime(prepared, python);
     writePythonNotices(python, prepared);
+    removePythonBytecode(prepared);
 
     const bundledLicense = path.join(prepared, 'PYTHON_LICENSE.txt');
     if (!fs.existsSync(bundledLicense) || fs.statSync(bundledLicense).size === 0) {

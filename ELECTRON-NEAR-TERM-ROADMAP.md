@@ -2,10 +2,11 @@
 
 Date: 2026-07-27
 
-Status: approved for staged development. Branches 1 through 4 are implemented,
-verified, and merged into `refactor-dev`. Branch 5, the final clean-environment
-packaged E2E, remains. Windows real-machine package/runtime verification is
-still required. This is not release approval.
+Status: roadmap implementation is complete. Branches 1 through 4 are merged
+into `refactor-dev`; branch 5 is implemented, verified, independently reviewed,
+and approved for the merge that carries this document. Windows real-machine
+package/runtime verification is still required before release. This is not
+release approval.
 
 Base branch: `refactor-dev`
 
@@ -181,7 +182,62 @@ Verified locally on macOS:
   re-reviews found and closed the remaining single-label-hostname case, ending
   with no P0, P1, or P2 findings.
 
-Not yet verified across the roadmap:
+`feat/electron-packaged-runtime-e2e` is implemented, verified, independently
+reviewed, and approved for merge into `refactor-dev`. It has:
+
+- a hostile clean-machine launch environment that removes host Node, npm, npx,
+  Python, virtual-environment, and package-path variables, with executable traps
+  at the front of `PATH` proving that the packaged app never falls through to a
+  host runtime;
+- direct and renderer-to-IPC checks that Node/npm/npx, Python, sandbox launcher,
+  native MCP, browser MCP, sidecar, built-in skills, browser extension,
+  runtime metadata, and updater dependencies all resolve from application
+  resources;
+- real DOCX, XLSX, PPTX, and PDF create/read round trips through the bundled
+  isolated Python and pinned office/PDF dependencies;
+- a production browser chain from packaged renderer events through MCP stdio,
+  random authenticated loopback, Electron Chromium, and the isolated DOM world:
+  a user-visible workspace tab is adopted, navigated, snapshotted, filled,
+  clicked, read back, screenshotted as PNG, and stopped;
+- command timeout, explicit abort, real Chat Stop, MCP kill, observed normal app
+  quit, and hard Electron `SIGKILL` coverage, with descendant PIDs independently
+  observed and required to terminate;
+- isolated app data, loopback-only model traffic, rendered responses, on-disk
+  conversation persistence, and restoration after a second packaged launch;
+- release fuses that retain Electron-as-Node for the current sidecar while
+  disabling `NODE_OPTIONS` and command-line inspector injection, plus production
+  environment sanitization for Node and Python;
+- a pre-fuse Playwright clone generated for both unpacked and distributable
+  builds. Its complete Resources tree must match the formal release byte for
+  byte, except for code-signature-only changes in five explicit native-runtime
+  roots. Thin and universal Mach-O files are compared per architecture with
+  strict load-command, `__LINKEDIT`, signature-extent, padding, and executable
+  content checks;
+- deterministic Python cleanup and `-B`/`PYTHONDONTWRITEBYTECODE=1` execution,
+  preventing package verification or normal use from mutating the signed app.
+
+Verified locally on macOS:
+
+- a fresh unsigned arm64 `.app` built by the canonical `npm run pack:electron`
+  flow with Node 24.18.0, npm/npx 11.16.0, Python 3.12.13, the local browser
+  runtime, native helper, and sandbox launcher; formal and automation bundles
+  contain no `.pyc` or `.pyo` files;
+- all 47 packaged assertions pass with host runtime traps untouched, including
+  the real app restart, Office/PDF, visible browser, updater load, Stop,
+  timeout, abort, normal quit, and hard-crash paths;
+- the signature comparator accepts fresh signatures for all 85 native files
+  across 101 Mach-O architecture slices, including universal Python
+  extensions, while an independent content-byte mutation is rejected;
+- `npm run parity:check`, `npm run typecheck`, `npm run lint`, all 4,551 Vitest
+  tests across 313 files, and `npm run electron:test`, including 32 security
+  tests, 34 runtime/command tests, the real browser chain, sidecar restart, and
+  no-orphan acceptance;
+- repeated independent read-only `gpt-5.6-sol` `ultra` reviews found and closed
+  test-integrity, Windows syntax, Node-injection, process-exit, package
+  immutability, fuse, and signed-build comparison gaps. The final review reports
+  no P0, P1, or P2 findings.
+
+Remaining release-platform verification:
 
 - Windows real-machine Restricted Token, Job Object, stdio, short executable
   name, and PowerShell compatibility;

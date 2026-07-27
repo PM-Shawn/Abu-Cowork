@@ -41,6 +41,7 @@ function run(file, args) {
   const result = spawnSync(file, args, { encoding: 'utf8', env: {
     ...process.env,
     PYTHONNOUSERSITE: '1',
+    PYTHONDONTWRITEBYTECODE: '1',
     PYTHONPATH: '',
     PYTHONHOME: '',
   } });
@@ -49,6 +50,23 @@ function run(file, args) {
     throw new Error(`${file} ${args.join(' ')} failed (${result.status}): ${result.stderr || result.stdout}`);
   }
   return String(result.stdout || '').trim();
+}
+
+function findPythonBytecode(root) {
+  const matches = [];
+  const visit = (directory) => {
+    for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+      const entryPath = path.join(directory, entry.name);
+      if (entry.isDirectory()) {
+        visit(entryPath);
+      } else if (entry.isFile() && /\.(?:pyc|pyo)$/i.test(entry.name)) {
+        matches.push(entryPath);
+      }
+      if (matches.length >= 10) return;
+    }
+  };
+  visit(root);
+  return matches;
 }
 
 function readMarker(kind, root) {
@@ -119,7 +137,7 @@ function verifyPython() {
   const python = path.join(pythonRoot, process.platform === 'win32' ? 'python.exe' : 'bin/python3');
   if (!fs.existsSync(python)) throw new Error(`Python executable missing: ${python}`);
   if (sha256File(python) !== marker.executableSha256) throw new Error('Python executable hash does not match its marker');
-  const version = run(python, ['--version']);
+  const version = run(python, ['-B', '--version']);
   if (!version.startsWith(`Python ${manifest.python.version}`)) throw new Error(`unexpected Python version ${version}`);
 
   const expected = Object.fromEntries(directPythonRequirements().map(({ name, version: packageVersion }) => [name, packageVersion]));
@@ -128,7 +146,7 @@ function verifyPython() {
     `names = ${JSON.stringify(Object.keys(expected))}`,
     'print(json.dumps({name: importlib.metadata.version(name) for name in names}, sort_keys=True))',
   ].join('\n');
-  const installed = JSON.parse(run(python, ['-I', '-c', script]));
+  const installed = JSON.parse(run(python, ['-B', '-I', '-c', script]));
   for (const [name, packageVersion] of Object.entries(expected)) {
     if (installed[name] !== packageVersion) {
       throw new Error(`Python package ${name} mismatch: expected ${packageVersion}, got ${installed[name]}`);
@@ -145,6 +163,10 @@ function verifyPython() {
   const bundledLicense = path.join(pythonRoot, 'PYTHON_LICENSE.txt');
   if (!fs.existsSync(bundledLicense) || fs.statSync(bundledLicense).size === 0) {
     throw new Error('Python runtime license material is missing');
+  }
+  const bytecode = findPythonBytecode(pythonRoot);
+  if (bytecode.length > 0) {
+    throw new Error(`Python runtime contains mutable precompiled bytecode: ${bytecode.join(', ')}`);
   }
   return { python: version, packages: installed };
 }

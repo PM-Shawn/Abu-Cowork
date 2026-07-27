@@ -1,7 +1,7 @@
 /**
  * electron-builder afterPack hook — deep-sign nested Mach-O binaries that
- * electron-builder's own signing pass does not cover: extraResources
- * (native-helper today; python/node runtimes when they're added).
+ * electron-builder's own signing pass does not cover, then retain a pre-fuse
+ * clone for packaged automation.
  *
  * Why: notarization rejects ANY unsigned Mach-O inside the .app, and
  * electron-builder only signs the app bundle + asarUnpacked binaries — files
@@ -14,14 +14,15 @@
  * signature — required, since signing a nested file after the outer seal
  * would invalidate it.
  *
- * No-op when the build is unsigned (identity: null / no signing info), so
- * `pack:electron` dev builds are unaffected.
+ * Nested signing is a no-op when the build is unsigned (identity: null / no
+ * signing info). The automation clone is created for every builder invocation:
+ * release CI runs the same smoke after `dist:electron`, not only after --dir.
  */
 'use strict';
 
 const path = require('node:path');
 const fs = require('node:fs');
-const { execFileSync } = require('node:child_process');
+const { execFileSync, spawnSync } = require('node:child_process');
 
 /** Dirs under Contents/Resources whose Mach-O contents we own and must sign. */
 const NESTED_BINARY_DIRS = ['native-helper', 'sandbox-launcher', 'python-runtime', 'node-runtime'];
@@ -60,8 +61,7 @@ function* walkFiles(dir) {
   }
 }
 
-/** @param {import('app-builder-lib').AfterPackContext} context */
-module.exports = async function afterPack(context) {
+function signNestedMacBinaries(context) {
   if (context.electronPlatformName !== 'darwin') return;
 
   // Resolve the signing identity the same way the main pass will. When the
@@ -101,4 +101,44 @@ module.exports = async function afterPack(context) {
     }
   }
   console.log(`[sign-nested] signed ${signed} nested Mach-O file(s) with "${identity}"`);
+}
+
+function copyDirectory(source, destination, platform) {
+  fs.rmSync(destination, { force: true, recursive: true });
+  let copied = false;
+  if (platform === 'darwin') {
+    copied = spawnSync('/bin/cp', ['-cR', source, destination], {
+      encoding: 'utf8',
+      timeout: 120_000,
+    }).status === 0;
+  } else if (platform === 'linux') {
+    copied = spawnSync('/bin/cp', ['-a', '--reflink=auto', source, destination], {
+      encoding: 'utf8',
+      timeout: 120_000,
+    }).status === 0;
+  }
+  if (!copied) {
+    fs.rmSync(destination, { force: true, recursive: true });
+    fs.cpSync(source, destination, {
+      dereference: false,
+      recursive: true,
+      verbatimSymlinks: true,
+    });
+  }
+}
+
+/** @param {import('app-builder-lib').AfterPackContext} context */
+module.exports = async function afterPack(context) {
+  signNestedMacBinaries(context);
+
+  // Playwright's Electron driver needs the Node inspector, which the release
+  // package deliberately disables. Retain the exact pre-fuse tree before
+  // electron-builder hardens the real output. This is generated for both
+  // `--dir` and distributable builds because release CI smokes the latter.
+  const outputRoot = path.dirname(context.appOutDir);
+  const e2eRoot = `${outputRoot}-e2e`;
+  const destination = path.join(e2eRoot, path.basename(context.appOutDir));
+  fs.mkdirSync(e2eRoot, { recursive: true });
+  copyDirectory(context.appOutDir, destination, context.electronPlatformName);
+  console.log(`[packaged-e2e-clone] copied pre-fuse package to ${destination}`);
 };

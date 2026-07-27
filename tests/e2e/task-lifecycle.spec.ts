@@ -14,6 +14,7 @@ import {
   createElectronDataRoot,
   launchAbuElectron,
   removeElectronDataRoot,
+  terminateAbuElectron,
   type ElectronDataRoot,
 } from './electronHelpers';
 
@@ -408,5 +409,74 @@ test.describe.serial('Electron product task lifecycle', () => {
       () => diskContainsExactAssistantMessage(dataRoot!.appDataDir, followUpResponse),
       { timeout: READY_TIMEOUT },
     ).toBe(true);
+  });
+
+  test('recovers a periodically persisted partial reply after an abrupt app termination', async () => {
+    const prompt = `abu-e2e-recovery-prompt-${randomUUID()}`;
+    const partial = `abu-e2e-recovery-partial-${randomUUID()}`;
+    const followUp = `abu-e2e-recovery-follow-up-${randomUUID()}`;
+    const followUpResponse = `abu-e2e-recovery-answer-${randomUUID()}`;
+    const recentTitle = `${prompt.slice(0, 30)}...`;
+    mock = await startOpenAiMock([
+      { kind: 'hold-open', partialText: partial },
+      { kind: 'complete', responseText: followUpResponse },
+    ]);
+
+    dataRoot = createElectronDataRoot();
+    const firstLaunch = await launchAbuElectron(dataRoot);
+    app = firstLaunch.app;
+    const firstPage = await app.firstWindow({ timeout: READY_TIMEOUT });
+    await waitForApp(firstPage);
+    await configureLocalMockProvider(firstPage, mock.baseUrl);
+
+    const input = firstPage.getByPlaceholder(CHAT_PLACEHOLDER);
+    await input.fill(prompt);
+    await input.press('Enter');
+
+    await expect.poll(() => mock!.requests.length, { timeout: READY_TIMEOUT }).toBe(1);
+    await expect(firstPage.getByText(partial, { exact: true })).toBeVisible({ timeout: READY_TIMEOUT });
+    await expect.poll(
+      () => diskContains(dataRoot!.appDataDir, '"status":"llm_calling"', 'checkpoint.json'),
+      { timeout: READY_TIMEOUT },
+    ).toBe(true);
+
+    // The stream intentionally sends no more chunks. Crash protection must be
+    // driven by elapsed time, not by waiting for another provider event.
+    await expect.poll(
+      () => diskContainsExactAssistantMessage(dataRoot!.appDataDir, partial),
+      { timeout: 15_000 },
+    ).toBe(true);
+
+    await terminateAbuElectron(app);
+    app = undefined;
+    await expect.poll(() => mock!.requests[0]?.responseAborted, { timeout: READY_TIMEOUT }).toBe(true);
+
+    const secondLaunch = await launchAbuElectron(dataRoot);
+    app = secondLaunch.app;
+    const secondPage = await app.firstWindow({ timeout: READY_TIMEOUT });
+    await waitForApp(secondPage);
+
+    await secondPage.getByTitle(/显示侧栏|Show sidebar/).click();
+    const recentConversation = secondPage.getByRole('button', { name: recentTitle }).first();
+    await expect(recentConversation).toBeVisible({ timeout: READY_TIMEOUT });
+    await recentConversation.click();
+    await expect(secondPage.getByText(prompt, { exact: true })).toBeVisible({ timeout: READY_TIMEOUT });
+    await expect(secondPage.getByText(partial, { exact: true })).toBeVisible({ timeout: READY_TIMEOUT });
+    await expect(secondPage.getByText(/上次对话.*等待模型响应时中断/)).toBeVisible({
+      timeout: READY_TIMEOUT,
+    });
+
+    const restoredInput = secondPage.getByPlaceholder(CHAT_PLACEHOLDER);
+    await expect(restoredInput).toBeEditable({ timeout: READY_TIMEOUT });
+    await restoredInput.fill(followUp);
+    await restoredInput.press('Enter');
+    await expect.poll(() => mock!.requests.length, { timeout: READY_TIMEOUT }).toBe(2);
+    const secondRequestBody = JSON.stringify(mock.requests[1]?.body);
+    expect(secondRequestBody).toContain(prompt);
+    expect(secondRequestBody).toContain(partial);
+    expect(secondRequestBody).toContain(followUp);
+    await expect(secondPage.getByText(followUpResponse, { exact: true })).toBeVisible({
+      timeout: READY_TIMEOUT,
+    });
   });
 });

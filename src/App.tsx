@@ -427,22 +427,36 @@ function App() {
       reconcileIMSessions();
       // Migrate old memory systems (entries.json / memory.md) to memdir (.md files)
       import('@/core/memdir/migrate').then(m => m.migrateMemdirIfNeeded()).catch(() => {});
-      // Initialize conversation file storage and check for crash recovery
-      import('@/core/session/conversationStorage').then(m => {
-        m.initConversationStorage().catch(() => {});
+      // Initialize conversation storage before checking crash checkpoints.
+      // Otherwise the checkpoint scan can beat the async Zustand index
+      // rehydrate, mistake a valid conversation for a missing one, and delete
+      // the only recovery hint.
+      const conversationStorage = await import('@/core/session/conversationStorage').catch(() => null);
+      if (conversationStorage) {
+        await conversationStorage.initConversationStorage().catch(() => {});
         // Reconcile the SQLite conversation catalog against JSONL on disk
         // (message-storage P0): first run does the full scan-build migration,
         // later runs do incremental repair. Fire-and-forget — catalog is a
         // rebuildable projection, JSONL stays the source of truth.
-        m.reconcileCatalog().catch(() => {});
-      }).catch(() => {});
+        conversationStorage.reconcileCatalog().catch(() => {});
+      }
       import('@/core/session/checkpoint').then(async ({ findOrphanedCheckpoints, clearCheckpoint }) => {
         const orphans = await findOrphanedCheckpoints();
         if (orphans.length === 0) return;
         const { useChatStore } = await import('@/stores/chatStore');
         for (const cp of orphans) {
-          const meta = useChatStore.getState().conversationIndex[cp.conversationId];
+          const storeState = useChatStore.getState();
+          const meta = storeState.conversationIndex[cp.conversationId]
+            ?? conversationStorage?.getIndexEntries()[cp.conversationId];
           if (!meta) { await clearCheckpoint(cp.conversationId); continue; }
+          if (!storeState.conversationIndex[cp.conversationId]) {
+            useChatStore.setState({
+              conversationIndex: {
+                ...storeState.conversationIndex,
+                [cp.conversationId]: meta,
+              },
+            });
+          }
           // Load conversation from disk so messages are available
           await useChatStore.getState().loadConversation(cp.conversationId);
           // Add a system message indicating the interruption
@@ -454,6 +468,7 @@ function App() {
             content: `⚠️ 上次对话在第 ${cp.turnCount} 轮${statusText}。你可以继续发送消息恢复工作。`,
             timestamp: Date.now(),
             isSystem: true,
+            isRecoveryNotice: true,
           });
           await clearCheckpoint(cp.conversationId);
           // Do NOT auto-navigate — app always starts on welcome screen.

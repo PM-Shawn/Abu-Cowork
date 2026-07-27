@@ -96,7 +96,46 @@ export async function launchAbuElectron(dataRoot = createElectronDataRoot()): Pr
  */
 export async function closeAbuElectron(app: ElectronApplication): Promise<void> {
   const child = app.process();
-  const waitForExit = (timeoutMs: number) => new Promise<boolean>((resolve) => {
+
+  // Ask Electron itself to quit so main.cjs's before-quit path tears down
+  // browser views, PTYs, helpers, and sidecars. ElectronApplication.close()
+  // can otherwise close the BrowserWindow first; Abu's preventable
+  // close-request handler may intentionally keep that window alive.
+  try {
+    await app.evaluate(({ app: electronApp }) => {
+      electronApp.quit();
+    });
+  } catch {
+    // The transport commonly closes before evaluate receives its result.
+  }
+  if (await waitForChildExit(child, 5_000)) return;
+
+  // Bounded fallback for a broken teardown. Signals target only Playwright's
+  // exact child process, never a name/pattern that could match a user app.
+  child.kill('SIGTERM');
+  if (await waitForChildExit(child, 3_000)) return;
+  child.kill('SIGKILL');
+  await waitForChildExit(child, 2_000);
+}
+
+/**
+ * Terminate the exact Electron process without running the renderer's graceful
+ * shutdown path. The main process still receives SIGTERM, so its no-orphan
+ * guards kill the sidecar and other child processes before exiting.
+ */
+export async function terminateAbuElectron(app: ElectronApplication): Promise<void> {
+  const child = app.process();
+  child.kill('SIGTERM');
+  if (await waitForChildExit(child, 5_000)) return;
+  child.kill('SIGKILL');
+  await waitForChildExit(child, 2_000);
+}
+
+function waitForChildExit(
+  child: ReturnType<ElectronApplication['process']>,
+  timeoutMs: number,
+): Promise<boolean> {
+  return new Promise<boolean>((resolve) => {
     if (child.exitCode !== null || child.signalCode !== null) {
       resolve(true);
       return;
@@ -111,24 +150,4 @@ export async function closeAbuElectron(app: ElectronApplication): Promise<void> 
     };
     child.once('exit', onExit);
   });
-
-  // Ask Electron itself to quit so main.cjs's before-quit path tears down
-  // browser views, PTYs, helpers, and sidecars. ElectronApplication.close()
-  // can otherwise close the BrowserWindow first; Abu's preventable
-  // close-request handler may intentionally keep that window alive.
-  try {
-    await app.evaluate(({ app: electronApp }) => {
-      electronApp.quit();
-    });
-  } catch {
-    // The transport commonly closes before evaluate receives its result.
-  }
-  if (await waitForExit(5_000)) return;
-
-  // Bounded fallback for a broken teardown. Signals target only Playwright's
-  // exact child process, never a name/pattern that could match a user app.
-  child.kill('SIGTERM');
-  if (await waitForExit(3_000)) return;
-  child.kill('SIGKILL');
-  await waitForExit(2_000);
 }

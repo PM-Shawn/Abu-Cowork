@@ -42,20 +42,102 @@
  * sibling module electron/fsWatchHost.cjs (Phase 2 slice F4), which reuses
  * `assertAllowed` (exported below) for the same capability-scope guard.
  *
- * Deferred: the FileHandle/rid ops (open/create/read/write/seek/stat/lstat/
- * read_text_file_lines).
+ * Deferred: the FileHandle/rid ops (open/create/read/write/seek/
+ * read_text_file_lines). `stat`/`lstat` are implemented here because callers
+ * use them for write-size guards and symlink-safe path inspection.
  */
 'use strict';
 
 const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
+const crypto = require('node:crypto');
 
 /** Sentinel returned when `cmd` isn't an fs command, so tauriHost.cjs falls through. */
 const FS_MISS = Symbol('fs-dispatch-miss');
 
-/** Monotonic suffix so concurrent atomic writes in one dir get distinct temp names. */
-let tmpCounter = 0;
+function noFollowFlag() {
+  return typeof fs.constants.O_NOFOLLOW === 'number' ? fs.constants.O_NOFOLLOW : 0;
+}
+
+function writeAll(fd, content) {
+  const bytes = Buffer.isBuffer(content) ? content : Buffer.from(String(content));
+  let offset = 0;
+  while (offset < bytes.length) {
+    const written = fs.writeSync(fd, bytes, offset, bytes.length - offset);
+    if (written <= 0) throw new Error('fs: write made no progress');
+    offset += written;
+  }
+}
+
+function openExclusiveSibling(parent, prefix) {
+  const flags =
+    fs.constants.O_WRONLY |
+    fs.constants.O_CREAT |
+    fs.constants.O_EXCL |
+    noFollowFlag();
+  for (let attempt = 0; attempt < 32; attempt++) {
+    const candidate = path.join(parent, `${prefix}.${crypto.randomBytes(16).toString('hex')}`);
+    try {
+      return { path: candidate, fd: fs.openSync(candidate, flags, 0o600) };
+    } catch (err) {
+      if (!err || err.code !== 'EEXIST') throw err;
+    }
+  }
+  throw new Error(`fs: could not create an exclusive temporary file in ${parent}`);
+}
+
+function copyToExclusiveSibling(source, parent, prefix) {
+  let sourceFd;
+  let output;
+  try {
+    sourceFd = fs.openSync(source, fs.constants.O_RDONLY | noFollowFlag());
+    if (!fs.fstatSync(sourceFd).isFile()) {
+      throw new Error(`fs: restore source must be a regular file: ${source}`);
+    }
+    output = openExclusiveSibling(parent, prefix);
+    const chunk = Buffer.allocUnsafe(64 * 1024);
+    for (;;) {
+      const read = fs.readSync(sourceFd, chunk, 0, chunk.length, null);
+      if (read === 0) break;
+      let offset = 0;
+      while (offset < read) {
+        const written = fs.writeSync(output.fd, chunk, offset, read - offset);
+        if (written <= 0) throw new Error('fs: copy made no progress');
+        offset += written;
+      }
+    }
+    fs.fsyncSync(output.fd);
+    fs.closeSync(output.fd);
+    output.fd = undefined;
+    fs.closeSync(sourceFd);
+    sourceFd = undefined;
+    return output.path;
+  } catch (err) {
+    if (output?.fd !== undefined) {
+      try {
+        fs.closeSync(output.fd);
+      } catch {
+        /* already closed */
+      }
+    }
+    if (sourceFd !== undefined) {
+      try {
+        fs.closeSync(sourceFd);
+      } catch {
+        /* already closed */
+      }
+    }
+    if (output?.path) {
+      try {
+        fs.rmSync(output.path, { force: true });
+      } catch {
+        /* best-effort */
+      }
+    }
+    throw err;
+  }
+}
 
 /**
  * Atomic write: tempfile (same dir) + fsync + rename. Mirrors
@@ -69,26 +151,24 @@ let tmpCounter = 0;
 function writeAtomic(target, content) {
   const parent = path.dirname(target);
   fs.mkdirSync(parent, { recursive: true });
-  // Temp in the SAME directory so the rename stays within one filesystem.
-  const tmp = path.join(parent, `.${path.basename(target)}.tmp.${process.pid}.${tmpCounter++}`);
-  let fd;
+  // Random + O_EXCL prevents a pre-seeded symlink from redirecting the write.
+  const tmp = openExclusiveSibling(parent, `.${path.basename(target)}.tmp.${process.pid}`);
   try {
-    fd = fs.openSync(tmp, 'w');
-    fs.writeSync(fd, content);
-    fs.fsyncSync(fd); // durable before the rename
-    fs.closeSync(fd);
-    fd = undefined;
-    fs.renameSync(tmp, target);
+    writeAll(tmp.fd, content);
+    fs.fsyncSync(tmp.fd); // durable before the rename
+    fs.closeSync(tmp.fd);
+    tmp.fd = undefined;
+    fs.renameSync(tmp.path, target);
   } catch (err) {
-    if (fd !== undefined) {
+    if (tmp.fd !== undefined) {
       try {
-        fs.closeSync(fd);
+        fs.closeSync(tmp.fd);
       } catch {
         /* already closed */
       }
     }
     try {
-      fs.rmSync(tmp, { force: true });
+      fs.rmSync(tmp.path, { force: true });
     } catch {
       /* temp may not exist */
     }
@@ -121,26 +201,108 @@ function allowedRoots() {
     .map((r) => path.resolve(r));
 }
 
+function isPathWithin(candidate, root) {
+  const rel = path.relative(root, candidate);
+  return rel === '' || (!rel.startsWith(`..${path.sep}`) && rel !== '..' && !path.isAbsolute(rel));
+}
+
 /**
- * Refuse a resolved path that escapes the capability scope. `..` is collapsed
- * by path.resolve first, so a baseDir-relative `../../etc/passwd` can't slip
- * through. No-op on Windows (Tauri capabilities there were `**`).
+ * Resolve every existing path component through the filesystem. For a
+ * non-existent write target, resolve the nearest existing ancestor and append
+ * only the still-missing lexical tail. A dangling symlink is rejected rather
+ * than treated as a missing path: writing through it could otherwise create a
+ * file outside the capability roots.
+ *
+ * `followFinalSymlink:false` is only for operations on the directory entry
+ * itself (`lstat`, remove, rename). Parent components are always resolved.
+ */
+function canonicalizeForScope(resolvedPath, followFinalSymlink = true) {
+  const norm = path.resolve(resolvedPath);
+  let cursor = norm;
+  const missingTail = [];
+
+  if (!followFinalSymlink) {
+    missingTail.unshift(path.basename(cursor));
+    cursor = path.dirname(cursor);
+  }
+
+  for (;;) {
+    let exists = false;
+    try {
+      fs.lstatSync(cursor);
+      exists = true;
+    } catch (err) {
+      if (!err || (err.code !== 'ENOENT' && err.code !== 'ENOTDIR')) throw err;
+    }
+
+    if (exists) {
+      let real;
+      try {
+        real = fs.realpathSync.native(cursor);
+      } catch (err) {
+        throw new Error(
+          `fs: cannot resolve path safely (dangling or inaccessible symlink): ${cursor}: ${
+            err instanceof Error ? err.message : String(err)
+          }`
+        );
+      }
+      return path.resolve(real, ...missingTail);
+    }
+
+    const parent = path.dirname(cursor);
+    if (parent === cursor) {
+      throw new Error(`fs: cannot resolve an existing ancestor for path: ${norm}`);
+    }
+    missingTail.unshift(path.basename(cursor));
+    cursor = parent;
+  }
+}
+
+/**
+ * Refuse a path that escapes the capability scope either lexically or after
+ * resolving symlinks. Checking only path.resolve() is insufficient: an allowed
+ * `$HOME/link` can point at `/etc`, and `$HOME/link/passwd` remains lexically
+ * under HOME while the actual file is not.
+ *
+ * No-op on Windows for scope parity with the existing Tauri
+ * windows-extras.json (`**`). Windows OS confinement is handled by the
+ * subsequent sandbox-launcher roadmap item.
  * @param {string} resolvedPath
- * @param {{ remove?: boolean }} [opts]
+ * @param {{ remove?: boolean; followFinalSymlink?: boolean }} [opts]
+ * @returns {string} normalized absolute path
  */
 function assertAllowed(resolvedPath, opts) {
-  if (process.platform === 'win32') return; // windows-extras.json = ** (allow-all)
+  if (typeof resolvedPath !== 'string' || resolvedPath.length === 0) {
+    throw new Error('fs: path must be a non-empty string');
+  }
+  if (resolvedPath.includes('\0')) throw new Error('fs: path must not contain NUL');
+  if (Buffer.byteLength(resolvedPath, 'utf8') > 32 * 1024) {
+    throw new Error('fs: path is too long');
+  }
   const norm = path.resolve(resolvedPath);
-  const underRoot = allowedRoots().some((root) => norm === root || norm.startsWith(root + path.sep));
-  if (!underRoot) {
+  if (process.platform === 'win32') return norm; // windows-extras.json = ** (allow-all)
+
+  const roots = allowedRoots();
+  if (!roots.some((root) => isPathWithin(norm, root))) {
     throw new Error(`fs: path is outside the allowed scope: ${norm}`);
   }
+
+  const canonical = canonicalizeForScope(norm, opts?.followFinalSymlink !== false);
+  const canonicalRoots = roots.map((root) => canonicalizeForScope(root, true));
+  if (!canonicalRoots.some((root) => isPathWithin(canonical, root))) {
+    throw new Error(`fs: path escapes the allowed scope through a symlink: ${norm}`);
+  }
+
   // remove had an explicit deny for the `.abu` data ROOT itself (its contents
   // are removable, the root dir is not) — protects all conversations/skills/
   // secrets from a single recursive wipe.
-  if (opts && opts.remove && path.basename(norm) === '.abu') {
+  if (opts?.remove && (path.basename(norm) === '.abu' || path.basename(canonical) === '.abu')) {
     throw new Error('fs: refusing to remove the .abu data root');
   }
+  // Use the same canonical operation path that passed the scope check. For
+  // entry operations this is canonical-parent + original basename; for all
+  // following operations it is the real target path.
+  return canonical;
 }
 
 /**
@@ -159,8 +321,36 @@ function resolveScoped(app, p, baseDirNum, opts) {
     const { baseDir } = require('./tauriHost.cjs');
     resolved = path.join(baseDir(app, baseDirNum), p);
   }
-  assertAllowed(resolved, opts);
-  return resolved;
+  return assertAllowed(resolved, opts);
+}
+
+function dateOrNull(value) {
+  return value instanceof Date && Number.isFinite(value.getTime()) ? value.toISOString() : null;
+}
+
+/** Convert Node's fs.Stats into @tauri-apps/plugin-fs FileInfo wire shape. */
+function toFileInfo(info) {
+  const unix = process.platform !== 'win32';
+  return {
+    isFile: info.isFile(),
+    isDirectory: info.isDirectory(),
+    isSymlink: info.isSymbolicLink(),
+    size: info.size,
+    mtime: dateOrNull(info.mtime),
+    atime: dateOrNull(info.atime),
+    birthtime: dateOrNull(info.birthtime),
+    readonly: unix ? (info.mode & 0o222) === 0 : false,
+    fileAttributes: null,
+    dev: unix ? info.dev : null,
+    ino: unix ? info.ino : null,
+    mode: unix ? info.mode : null,
+    nlink: unix ? info.nlink : null,
+    uid: unix ? info.uid : null,
+    gid: unix ? info.gid : null,
+    rdev: unix ? info.rdev : null,
+    blksize: unix ? info.blksize : null,
+    blocks: unix ? info.blocks : null,
+  };
 }
 
 /**
@@ -194,6 +384,16 @@ function fsDispatch(app, cmd, payload) {
       // it was missing before (image rehydration / skill unzip / share bundle).
       return fs.readFileSync(resolveScoped(app, a.path, baseOf(a.options)));
 
+    case 'plugin:fs|stat':
+      return toFileInfo(fs.statSync(resolveScoped(app, a.path, baseOf(a.options))));
+
+    case 'plugin:fs|lstat':
+      return toFileInfo(
+        fs.lstatSync(
+          resolveScoped(app, a.path, baseOf(a.options), { followFinalSymlink: false })
+        )
+      );
+
     case 'plugin:fs|read_dir':
       return fs
         .readdirSync(resolveScoped(app, a.path, baseOf(a.options)), { withFileTypes: true })
@@ -211,7 +411,10 @@ function fsDispatch(app, cmd, payload) {
       return null;
 
     case 'plugin:fs|remove':
-      fs.rmSync(resolveScoped(app, a.path, baseOf(a.options), { remove: true }), {
+      fs.rmSync(resolveScoped(app, a.path, baseOf(a.options), {
+        remove: true,
+        followFinalSymlink: false,
+      }), {
         recursive: !!(a.options && a.options.recursive),
         force: false,
       });
@@ -220,8 +423,9 @@ function fsDispatch(app, cmd, payload) {
     case 'plugin:fs|rename': {
       // RenameOptions carries oldPathBaseDir/newPathBaseDir — NOT baseDir.
       const o = a.options || {};
-      const oldResolved = resolveScoped(app, a.oldPath, o.oldPathBaseDir);
-      const newResolved = resolveScoped(app, a.newPath, o.newPathBaseDir);
+      const noFollow = { followFinalSymlink: false };
+      const oldResolved = resolveScoped(app, a.oldPath, o.oldPathBaseDir, noFollow);
+      const newResolved = resolveScoped(app, a.newPath, o.newPathBaseDir, noFollow);
       fs.renameSync(oldResolved, newResolved);
       return null;
     }
@@ -286,8 +490,8 @@ function fsDispatch(app, cmd, payload) {
       fs.mkdirSync(path.dirname(resolved), { recursive: true });
       let backupPath = null;
       if (fs.existsSync(resolved)) {
-        backupPath = backupPathFor(resolved);
-        fs.copyFileSync(resolved, backupPath);
+        const backupPrefix = path.basename(backupPathFor(resolved));
+        backupPath = copyToExclusiveSibling(resolved, path.dirname(resolved), backupPrefix);
       }
       try {
         writeAtomic(resolved, String(a.content));
@@ -308,17 +512,38 @@ function fsDispatch(app, cmd, payload) {
       // Restore target from a prior backup; the backup is consumed (renamed
       // away). Cross-device rename falls back to copy + unlink. Mirrors
       // atomic_write.rs::restore_from_backup.
-      const targetPath = resolveScoped(app, a.target, undefined);
-      const backupPath = resolveScoped(app, a.backup, undefined);
+      const noFollow = { followFinalSymlink: false };
+      const targetPath = resolveScoped(app, a.target, undefined, noFollow);
+      const backupPath = resolveScoped(app, a.backup, undefined, noFollow);
       if (!fs.existsSync(backupPath)) {
         throw new Error(`backup not found: ${a.backup}`);
+      }
+      const backupInfo = fs.lstatSync(backupPath);
+      if (backupInfo.isSymbolicLink() || !backupInfo.isFile()) {
+        throw new Error(`restore source must be a regular file: ${a.backup}`);
       }
       try {
         fs.renameSync(backupPath, targetPath);
       } catch (err) {
         if (err && err.code === 'EXDEV') {
-          fs.copyFileSync(backupPath, targetPath);
-          fs.rmSync(backupPath, { force: true });
+          const restoreTmp = copyToExclusiveSibling(
+            backupPath,
+            path.dirname(targetPath),
+            `.${path.basename(targetPath)}.restore.${process.pid}`
+          );
+          try {
+            // Rename replaces the target directory entry itself, so an existing
+            // target symlink is removed rather than followed.
+            fs.renameSync(restoreTmp, targetPath);
+            fs.rmSync(backupPath, { force: true });
+          } catch (copyErr) {
+            try {
+              fs.rmSync(restoreTmp, { force: true });
+            } catch {
+              /* best-effort */
+            }
+            throw copyErr;
+          }
         } else {
           throw err;
         }
@@ -340,7 +565,11 @@ function fsDispatch(app, cmd, payload) {
       // not, so read the wire key. (Reading `ttl_hours` gave undefined → NaN →
       // 0 → every .*.backup.* deleted on each cleanup — the restore safety net.)
       // Accept the snake_case form too for defensiveness.
-      const ttlMs = (Number(a.ttlHours ?? a.ttl_hours) || 0) * 3600 * 1000;
+      const ttlHours = Number(a.ttlHours ?? a.ttl_hours);
+      if (!Number.isFinite(ttlHours) || ttlHours < 0) {
+        throw new Error('cleanup_old_backups: ttlHours must be a non-negative finite number');
+      }
+      const ttlMs = ttlHours * 3600 * 1000;
       const now = Date.now();
       let removed = 0;
       for (const name of fs.readdirSync(dir)) {
@@ -369,4 +598,10 @@ function fsDispatch(app, cmd, payload) {
   }
 }
 
-module.exports = { fsDispatch, FS_MISS, assertAllowed };
+module.exports = {
+  fsDispatch,
+  FS_MISS,
+  assertAllowed,
+  canonicalizeForScope,
+  toFileInfo,
+};

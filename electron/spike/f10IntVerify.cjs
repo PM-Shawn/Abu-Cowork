@@ -16,6 +16,7 @@
 const { app, BrowserWindow } = require('electron');
 const path = require('node:path');
 const { registerTauriHost } = require('../tauriHost.cjs');
+const { registerPrivilegedWindow } = require('../securityBoundary.cjs');
 
 app.on('window-all-closed', () => app.quit());
 
@@ -30,7 +31,9 @@ app.whenReady().then(async () => {
       nodeIntegration: false,
     },
   });
-  await win.loadFile(path.join(__dirname, '..', 'renderer', 'index.html'));
+  const page = path.join(__dirname, '..', 'renderer', 'index.html');
+  registerPrivilegedWindow(win, page, { label: 'verify-f10-int' });
+  await win.loadFile(page);
 
   const out = await win.webContents.executeJavaScript(`(async () => {
     const invoke = window.__TAURI_INTERNALS__.invoke;

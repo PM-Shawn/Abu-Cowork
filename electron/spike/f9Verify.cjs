@@ -38,6 +38,7 @@ const fs = require('node:fs');
 const http = require('node:http');
 const { pathToFileURL } = require('node:url');
 const { registerTauriHost } = require('../tauriHost.cjs');
+const { registerPrivilegedWindow } = require('../securityBoundary.cjs');
 
 app.on('window-all-closed', () => app.quit());
 
@@ -101,6 +102,7 @@ async function main() {
   // with no CSP does not have this problem (same technique as f4Verify.cjs).
   const scratchHtml = path.join(__dirname, '__f9verify-scratch.html');
   fs.writeFileSync(scratchHtml, '<!doctype html><title>f9-verify</title>');
+  registerPrivilegedWindow(win, scratchHtml, { label: 'verify-f9' });
   await win.loadFile(scratchHtml);
 
   const invokeIn = async (cmd, args) =>

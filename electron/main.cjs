@@ -30,6 +30,7 @@ const fs = require('node:fs');
 const { registerTauriHost, wireWindowEvents, getMainWindow, emitEvent } = require('./tauriHost.cjs');
 const { sidecarBundleExists, sidecarPathFor } = require('./appEnv.cjs');
 const { initDeepLink, handleSecondInstanceArgv } = require('./deepLinkHost.cjs');
+const { registerPrivilegedWindow } = require('./securityBoundary.cjs');
 
 const REPO_ROOT = path.resolve(__dirname, '..');
 const FRONTEND_INDEX = path.join(REPO_ROOT, 'dist-electron-spike', 'index.html');
@@ -106,7 +107,9 @@ function createWindow() {
   // Shared with the boot-verify harness so both exercise identical wiring.
   wireWindowEvents(win);
 
-  void win.loadFile(hasFrontend ? FRONTEND_INDEX : PLACEHOLDER_INDEX);
+  const trustedPage = hasFrontend ? FRONTEND_INDEX : PLACEHOLDER_INDEX;
+  registerPrivilegedWindow(win, trustedPage, { label: 'main' });
+  void win.loadFile(trustedPage);
 }
 
 // Single-instance lock (Tauri had tauri_plugin_single_instance; this is its

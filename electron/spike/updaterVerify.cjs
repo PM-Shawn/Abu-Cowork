@@ -102,6 +102,7 @@ app.whenReady().then(async () => {
     process.env.ABU_UPDATER_FEED_URL = feedUrl;
 
     const { registerTauriHost } = require('../tauriHost.cjs');
+    const { registerPrivilegedWindow } = require('../securityBoundary.cjs');
     registerTauriHost(app);
 
     const win = new BrowserWindow({
@@ -114,6 +115,7 @@ app.whenReady().then(async () => {
       },
     });
     fs.writeFileSync(scratchHtml, '<!doctype html><title>updater-verify</title>');
+    registerPrivilegedWindow(win, scratchHtml, { label: 'verify-updater' });
     await win.loadFile(scratchHtml);
 
     const coreJsUrl = pathToFileURL(

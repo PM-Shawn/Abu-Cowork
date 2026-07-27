@@ -37,6 +37,7 @@ const path = require('node:path');
 const fs = require('node:fs');
 const { pathToFileURL } = require('node:url');
 const { registerTauriHost, emitEvent, getMainWindow } = require('../tauriHost.cjs');
+const { registerPrivilegedWindow } = require('../securityBoundary.cjs');
 const deepLinkHost = require('../deepLinkHost.cjs');
 const { initDeepLink, normalizeDeepLinkUrl, extractDeepLinkFromArgv } = deepLinkHost;
 
@@ -70,6 +71,7 @@ app.whenReady().then(async () => {
   });
   const scratchHtml = path.join(__dirname, '__deepLinkVerify-scratch.html');
   fs.writeFileSync(scratchHtml, '<!doctype html><title>deep-link-verify</title>');
+  registerPrivilegedWindow(win, scratchHtml, { label: 'verify-deep-link' });
   await win.loadFile(scratchHtml);
 
   const checks = {};

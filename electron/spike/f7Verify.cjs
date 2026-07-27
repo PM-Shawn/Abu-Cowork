@@ -34,6 +34,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const { pathToFileURL } = require('node:url');
 const { registerTauriHost, wireWindowEvents } = require('../tauriHost.cjs');
+const { registerPrivilegedWindow } = require('../securityBoundary.cjs');
 
 app.on('window-all-closed', () => app.quit());
 
@@ -63,6 +64,7 @@ app.whenReady().then(async () => {
   // getMainWindow() (browserHost.cjs's route to the main window) resolves a
   // real window exactly as it will at runtime.
   wireWindowEvents(win);
+  registerPrivilegedWindow(win, path.join(__dirname, '..', 'renderer', 'index.html'), { label: 'f7-verify' });
 
   await win.loadFile(path.join(__dirname, '..', 'renderer', 'index.html'));
 

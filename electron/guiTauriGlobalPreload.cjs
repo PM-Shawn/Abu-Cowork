@@ -62,7 +62,9 @@ async function listen(event, cb) {
 
 /** @param {string} event @param {unknown} [payload] */
 function emit(event, payload) {
-  return invoke('plugin:event|emit', { event, payload });
+  const args = { event };
+  if (payload !== undefined) args.payload = payload;
+  return invoke('plugin:event|emit', args);
 }
 
 contextBridge.exposeInMainWorld('__TAURI__', {

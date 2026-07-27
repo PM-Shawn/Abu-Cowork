@@ -16,6 +16,7 @@ const fs = require('node:fs');
 const { SidecarSupervisor } = require('../sidecarSupervisor.cjs');
 const { resolveSidecarLaunch, sidecarBundleExists } = require('../appEnv.cjs');
 const { registerTauriHost, wireWindowEvents } = require('../tauriHost.cjs');
+const { registerPrivilegedWindow } = require('../securityBoundary.cjs');
 
 const REPO_ROOT = path.resolve(__dirname, '..', '..');
 const INDEX = path.join(REPO_ROOT, 'dist-electron-spike', 'index.html');
@@ -55,6 +56,7 @@ app.whenReady().then(async () => {
   win.webContents.on('render-process-gone', (_e, d) => consoleLines.push('RENDER-GONE ' + JSON.stringify(d)));
 
   wireWindowEvents(win);
+  registerPrivilegedWindow(win, INDEX, { label: 'dev-smoke' });
 
   try {
     await win.loadFile(INDEX);

@@ -21,14 +21,23 @@ let cbId = 1;
 // events/channel messages back to the exact page-world function the frontend
 // registered (LLM streaming, event listeners, fs.watch, etc.).
 const callbacks = new Map();
+const MAX_ARGS_JSON_CHARS = 8 * 1024 * 1024;
+const MAX_RAW_BODY_BYTES = 128 * 1024 * 1024;
 
 // Guard against exotic/non-JSON-serializable args (functions, DOM nodes, etc.)
 // so the structured-clone IPC boundary doesn't throw before we even dispatch.
 function safeArgs(args) {
   try {
-    return JSON.parse(JSON.stringify(args ?? null));
-  } catch {
-    return null;
+    const json = JSON.stringify(args ?? null);
+    if (json === undefined) throw new Error('value is not JSON serializable');
+    if (json.length > MAX_ARGS_JSON_CHARS) throw new Error('serialized args are too large');
+    return JSON.parse(json);
+  } catch (err) {
+    throw new Error(
+      `Tauri invoke args are not JSON serializable: ${
+        err instanceof Error ? err.message : String(err)
+      }`
+    );
   }
 }
 
@@ -73,10 +82,16 @@ function safeArgs(args) {
 // tree rather than writing into the caller's args, so the frontend's own
 // Channel instance / args object is untouched after the call.
 const SERIALIZE_TO_IPC_FN = '__TAURI_TO_IPC_KEY__';
-function serializeChannels(value) {
+function serializeChannels(value, seen = new WeakSet(), depth = 0) {
   if (value === null || typeof value !== 'object') return value;
+  if (depth > 32) throw new Error('Tauri invoke args are too deeply nested');
+  if (seen.has(value)) throw new Error('Tauri invoke args must not be cyclic');
+  seen.add(value);
   const toIpc = value[SERIALIZE_TO_IPC_FN];
-  if (typeof toIpc === 'function') return toIpc.call(value);
+  if (typeof toIpc === 'function') {
+    seen.delete(value);
+    return toIpc.call(value);
+  }
   // A contextBridge-degraded real Channel arrives as bare `{ id: <number> }`,
   // and — crucially — that id was registered in `callbacks` by the Channel's
   // constructor calling transformCallback() BEFORE this invoke runs. Requiring
@@ -88,13 +103,19 @@ function serializeChannels(value) {
     Object.keys(value).length === 1 &&
     callbacks.has(value.id)
   ) {
+    seen.delete(value);
     return `__CHANNEL__:${value.id}`;
   }
-  if (Array.isArray(value)) return value.map(serializeChannels);
+  if (Array.isArray(value)) {
+    const out = value.map((item) => serializeChannels(item, seen, depth + 1));
+    seen.delete(value);
+    return out;
+  }
   const out = {};
   for (const key of Object.keys(value)) {
-    out[key] = serializeChannels(value[key]);
+    out[key] = serializeChannels(value[key], seen, depth + 1);
   }
+  seen.delete(value);
   return out;
 }
 
@@ -106,6 +127,9 @@ const invoke = (cmd, args, options) => {
   // preserve the binary body (Electron structured-clone carries typed arrays
   // intact) and forward the headers.
   const isBinary = args instanceof ArrayBuffer || ArrayBuffer.isView(args);
+  if (isBinary && args.byteLength > MAX_RAW_BODY_BYTES) {
+    throw new Error('Tauri invoke raw body is too large');
+  }
   const headers = options && options.headers ? options.headers : undefined;
   if (isBinary || headers) {
     return ipcRenderer.invoke('tauri:invoke', {

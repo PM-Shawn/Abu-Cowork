@@ -45,6 +45,7 @@ const {
   emitEvent,
   wireWindowEvents,
 } = require('../tauriHost.cjs');
+const { registerPrivilegedWindow } = require('../securityBoundary.cjs');
 
 const SETTLE_MS = 9000;
 const REPO_ROOT = path.resolve(__dirname, '..', '..');
@@ -100,6 +101,7 @@ app.whenReady().then(async () => {
   // the close-prevention test below exercises the real production wiring
   // (isQuitting + has-listener guards), not a copy that could drift.
   wireWindowEvents(win);
+  registerPrivilegedWindow(win, INDEX, { label: 'boot-verify' });
 
   try {
     await win.loadFile(INDEX);
@@ -278,7 +280,16 @@ app.whenReady().then(async () => {
   // proving the preload's raw-body/headers forwarding and the Node fs handlers
   // work, and that a non-ASCII value survives exactly. baseDir 12 = Temp.
   let fsRoundTrip = false;
+  const statTarget = path.join(app.getPath('temp'), `abu-stat-target-${process.pid}.txt`);
+  const statLink = path.join(app.getPath('temp'), `abu-stat-link-${process.pid}.txt`);
   try {
+    fs.writeFileSync(statTarget, 'stat-target');
+    try {
+      fs.rmSync(statLink, { force: true });
+    } catch {
+      /* absent */
+    }
+    fs.symlinkSync(statTarget, statLink);
     const result = await win.webContents.executeJavaScript(`
       (async () => {
         const inv = window.__TAURI_INTERNALS__.invoke;
@@ -288,21 +299,36 @@ app.whenReady().then(async () => {
         const existsRes = await inv('plugin:fs|exists', { path: rel, options: { baseDir: 12 } });
         const readBack = await inv('plugin:fs|read_text_file', { path: rel, options: { baseDir: 12 } });
         const decoded = new TextDecoder().decode(new Uint8Array(readBack));
+        const statTarget = await inv('plugin:fs|stat', { path: ${JSON.stringify(statTarget)} });
+        const statLink = await inv('plugin:fs|stat', { path: ${JSON.stringify(statLink)} });
+        const lstatLink = await inv('plugin:fs|lstat', { path: ${JSON.stringify(statLink)} });
         await inv('plugin:fs|remove', { path: rel, options: { baseDir: 12 } });
         const afterRemove = await inv('plugin:fs|exists', { path: rel, options: { baseDir: 12 } });
-        return { existsRes, decoded, afterRemove };
+        return { existsRes, decoded, statTarget, statLink, lstatLink, afterRemove };
       })()
     `);
     fsRoundTrip =
       !!result &&
       result.existsRes === true &&
       result.decoded === 'fs slice E 内容🗂️' &&
+      result.statTarget?.isFile === true &&
+      result.statTarget?.isSymlink === false &&
+      typeof result.statTarget?.mtime === 'string' &&
+      result.statLink?.isFile === true &&
+      result.lstatLink?.isSymlink === true &&
       result.afterRemove === false;
     if (!fsRoundTrip) {
       consoleLines.push('FS-ROUNDTRIP-MISMATCH ' + JSON.stringify(result));
     }
   } catch (err) {
     consoleLines.push('FS-ROUNDTRIP-ERROR ' + String(err));
+  } finally {
+    try {
+      fs.rmSync(statLink, { force: true });
+      fs.rmSync(statTarget, { force: true });
+    } catch {
+      /* best-effort */
+    }
   }
 
   // Slice-E review regression: the fs capability scope must be enforced — an
@@ -323,6 +349,83 @@ app.whenReady().then(async () => {
     consoleLines.push('FS-SCOPE-ERROR ' + String(err));
   }
 
+  // A renderer with the real privileged preload remains untrusted until its
+  // WebContents and exact local page are registered. Exercise Electron's real
+  // sender/senderFrame objects here, not only the plain-Node unit fakes.
+  let ipcSenderGuard = false;
+  let rogueWin;
+  try {
+    rogueWin = new BrowserWindow({
+      show: false,
+      webPreferences: {
+        preload: PRELOAD,
+        contextIsolation: true,
+        sandbox: true,
+        nodeIntegration: false,
+      },
+    });
+    await rogueWin.loadURL('data:text/html,<title>untrusted-ipc-sender</title>');
+    const result = await rogueWin.webContents.executeJavaScript(`
+      (async () => {
+        try {
+          await window.__TAURI_INTERNALS__.invoke('plugin:path|home_dir', {});
+          return { denied: false };
+        } catch (error) {
+          return { denied: true, message: String(error) };
+        }
+      })()
+    `);
+    ipcSenderGuard =
+      !!result &&
+      result.denied === true &&
+      result.message.includes('Blocked privileged IPC: unregistered IPC sender');
+    if (!ipcSenderGuard) {
+      consoleLines.push('IPC-SENDER-GUARD-NOT-ENFORCED ' + JSON.stringify(result));
+    }
+  } catch (err) {
+    consoleLines.push('IPC-SENDER-GUARD-ERROR ' + String(err));
+  } finally {
+    if (rogueWin && !rogueWin.isDestroyed()) rogueWin.destroy();
+  }
+
+  let navigationGuard = false;
+  let popupGuard = false;
+  try {
+    const trustedUrl = win.webContents.getURL();
+    await win.webContents.executeJavaScript(`
+      (() => {
+        const link = document.createElement('a');
+        link.href = 'data:text/html,<title>blocked-navigation</title>';
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+        return true;
+      })()
+    `);
+    await new Promise((r) => setTimeout(r, 200));
+    navigationGuard = win.webContents.getURL() === trustedUrl;
+    if (!navigationGuard) {
+      consoleLines.push('NAVIGATION-GUARD-NOT-ENFORCED ' + win.webContents.getURL());
+    }
+
+    const beforePopupCount = BrowserWindow.getAllWindows().length;
+    await win.webContents.executeJavaScript(`
+      (() => {
+        window.open('data:text/html,<title>blocked-popup</title>', '_blank');
+        return true;
+      })()
+    `);
+    await new Promise((r) => setTimeout(r, 200));
+    popupGuard = BrowserWindow.getAllWindows().length === beforePopupCount;
+    if (!popupGuard) {
+      consoleLines.push(
+        `POPUP-GUARD-NOT-ENFORCED before=${beforePopupCount} after=${BrowserWindow.getAllWindows().length}`
+      );
+    }
+  } catch (err) {
+    consoleLines.push('NAVIGATION-POPUP-GUARD-ERROR ' + String(err));
+  }
+
   const errorLines = consoleLines.filter((l) => /error|gone|LOAD-ERROR|Uncaught|TypeError/i.test(l));
   const remainingErrors = [...new Set(errorLines)];
   const goneOk = MUST_BE_GONE.every((needle) => !remainingErrors.some((l) => l.includes(needle)));
@@ -338,7 +441,10 @@ app.whenReady().then(async () => {
     closePrevented &&
     closeRequestedDelivered &&
     fsRoundTrip &&
-    fsScopeGuard;
+    fsScopeGuard &&
+    ipcSenderGuard &&
+    navigationGuard &&
+    popupGuard;
 
   const stubCommands = getStubbedCommands();
 
@@ -354,12 +460,15 @@ app.whenReady().then(async () => {
     closeRequestedDelivered,
     fsRoundTrip,
     fsScopeGuard,
+    ipcSenderGuard,
+    navigationGuard,
+    popupGuard,
   };
   fs.mkdirSync(path.dirname(OUT), { recursive: true });
   fs.writeFileSync(OUT, JSON.stringify(report, null, 2));
 
   console.log(
-    `[boot-verify] ${pass ? 'PASS' : 'FAIL'} — ${remainingErrors.length} remaining console error line(s), eventRoundTrip=${eventRoundTrip}, secretRoundTrip=${secretRoundTrip}, windowRoundTrip=${windowRoundTrip}, closePrevented=${closePrevented}, closeRequestedDelivered=${closeRequestedDelivered}, fsRoundTrip=${fsRoundTrip} → ${OUT}`
+    `[boot-verify] ${pass ? 'PASS' : 'FAIL'} — ${remainingErrors.length} remaining console error line(s), eventRoundTrip=${eventRoundTrip}, secretRoundTrip=${secretRoundTrip}, windowRoundTrip=${windowRoundTrip}, closePrevented=${closePrevented}, closeRequestedDelivered=${closeRequestedDelivered}, fsRoundTrip=${fsRoundTrip}, ipcSenderGuard=${ipcSenderGuard}, navigationGuard=${navigationGuard}, popupGuard=${popupGuard} → ${OUT}`
   );
   if (secretNote) {
     console.log(`  ⚠ secretNote: ${secretNote}`);

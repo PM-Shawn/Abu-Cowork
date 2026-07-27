@@ -39,7 +39,8 @@ const path = require('node:path');
 const fs = require('node:fs');
 const os = require('node:os');
 const { pathToFileURL } = require('node:url');
-const { registerTauriHost } = require('../tauriHost.cjs');
+const { registerTauriHost, wireWindowEvents } = require('../tauriHost.cjs');
+const { registerPrivilegedWindow } = require('../securityBoundary.cjs');
 
 app.on('window-all-closed', () => app.quit());
 
@@ -78,11 +79,13 @@ app.whenReady().then(async () => {
       nodeIntegration: false,
     },
   });
+  wireWindowEvents(win);
   // Same scratch-html-with-no-CSP approach as f4Verify.cjs, needed to
   // dynamic-import the REAL @tauri-apps/api Channel class for the
   // global-shortcut register() call.
   const scratchHtml = path.join(__dirname, '__shellGsVerify-scratch.html');
   fs.writeFileSync(scratchHtml, '<!doctype html><title>shell-gs-verify</title>');
+  registerPrivilegedWindow(win, scratchHtml, { label: 'verify-shell-global-shortcut' });
   await win.loadFile(scratchHtml);
 
   const invokeIn = async (cmd, args) =>
@@ -136,9 +139,32 @@ app.whenReady().then(async () => {
   checks.isRegisteredTrueAfterRegister = isRegisteredAfterRegister === true;
   checks.isRegisteredReachedRealHandler = !stubbedCmdsSeen.has('plugin:global-shortcut|is_registered');
 
-  await invokeIn('plugin:global-shortcut|unregister', { shortcuts: [ACCEL] });
-  const isRegisteredAfterUnregister = await invokeIn('plugin:global-shortcut|is_registered', { shortcut: ACCEL });
-  checks.isRegisteredFalseAfterUnregister = isRegisteredAfterUnregister === false;
+  const otherWin = new BrowserWindow({
+    show: false,
+    webPreferences: {
+      preload: path.join(__dirname, '..', 'preload.cjs'),
+      contextIsolation: true,
+      sandbox: true,
+      nodeIntegration: false,
+    },
+  });
+  registerPrivilegedWindow(otherWin, scratchHtml, { label: 'verify-shell-global-shortcut-other' });
+  await otherWin.loadFile(scratchHtml);
+  try {
+    await otherWin.webContents.executeJavaScript(
+      `window.__TAURI_INTERNALS__.invoke('plugin:global-shortcut|unregister', { shortcuts: [${JSON.stringify(ACCEL)}] })`
+    );
+    checks.crossSenderUnregisterRejected = false;
+  } catch (err) {
+    checks.crossSenderUnregisterRejected = /different IPC sender/.test(String(err));
+  }
+  checks.registrationSurvivedCrossSenderAttempt =
+    (await invokeIn('plugin:global-shortcut|is_registered', { shortcut: ACCEL })) === true;
+  otherWin.destroy();
+
+  await win.reload();
+  const isRegisteredAfterReload = await invokeIn('plugin:global-shortcut|is_registered', { shortcut: ACCEL });
+  checks.isRegisteredFalseAfterReload = isRegisteredAfterReload === false;
 
   fs.rmSync(scratchHtml, { force: true });
 

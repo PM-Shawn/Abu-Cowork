@@ -25,6 +25,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const { execFileSync } = require('node:child_process');
 const { registerTauriHost } = require('../tauriHost.cjs');
+const { registerPrivilegedWindow } = require('../securityBoundary.cjs');
 
 app.on('window-all-closed', () => app.quit());
 
@@ -45,7 +46,9 @@ app.whenReady().then(async () => {
       nodeIntegration: false,
     },
   });
-  await win.loadFile(path.join(__dirname, '..', 'renderer', 'index.html'));
+  const page = path.join(__dirname, '..', 'renderer', 'index.html');
+  registerPrivilegedWindow(win, page, { label: 'verify-f2' });
+  await win.loadFile(page);
 
   const invokeIn = async (cmd, args) =>
     win.webContents.executeJavaScript(

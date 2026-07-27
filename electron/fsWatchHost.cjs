@@ -62,6 +62,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { assertAllowed } = require('./fsHost.cjs');
 const { parseChannelId, sendChannelMessage } = require('./channelBridge.cjs');
+const { assertResourceOwner } = require('./securityBoundary.cjs');
 
 /** Sentinel returned when `cmd` isn't one of the fs-watch family. */
 const FS_WATCH_MISS = Symbol('fs-watch-dispatch-miss');
@@ -98,8 +99,7 @@ function resolveWatchPath(app, p, baseDirNum) {
     const { baseDir } = require('./tauriHost.cjs');
     resolved = path.join(baseDir(app, baseDirNum), p);
   }
-  assertAllowed(resolved);
-  return resolved;
+  return assertAllowed(resolved);
 }
 
 /** Deliver one `{index, message}` rawMessage to a channel's registered callback (shared wire contract: channelBridge.cjs). */
@@ -189,6 +189,12 @@ function cleanupRid(rid) {
   watchTable.delete(rid);
 }
 
+function cleanupFsWatchesForSender(sender) {
+  for (const [rid, entry] of watchTable) {
+    if (entry.sender === sender) cleanupRid(rid);
+  }
+}
+
 /**
  * @param {import('electron').App} app
  * @param {string} cmd
@@ -214,10 +220,13 @@ function fsWatchDispatch(app, cmd, payload) {
         nextIndex: 0,
         watchers: [],
         timer: null,
-        delayMs: options.delayMs == null ? 0 : Number(options.delayMs) || 0,
+        delayMs: options.delayMs == null ? 0 : Number(options.delayMs),
         pendingByType: new Map(),
         destroyedListener: null,
       };
+      if (!Number.isFinite(entry.delayMs) || entry.delayMs < 0) {
+        throw new Error('plugin:fs|watch: delayMs must be a non-negative finite number');
+      }
       watchTable.set(rid, entry);
 
       try {
@@ -251,6 +260,7 @@ function fsWatchDispatch(app, cmd, payload) {
 
     case 'plugin:resources|close':
     case 'plugin:fs|unwatch': {
+      assertResourceOwner(watchTable.get(a.rid), event && event.sender, 'fs watch');
       cleanupRid(a.rid);
       return null;
     }
@@ -260,4 +270,4 @@ function fsWatchDispatch(app, cmd, payload) {
   }
 }
 
-module.exports = { fsWatchDispatch, FS_WATCH_MISS };
+module.exports = { fsWatchDispatch, FS_WATCH_MISS, cleanupFsWatchesForSender };

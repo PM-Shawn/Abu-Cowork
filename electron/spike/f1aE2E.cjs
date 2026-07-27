@@ -14,6 +14,7 @@ const path = require('node:path');
 const fs = require('node:fs');
 const os = require('node:os');
 const { registerTauriHost } = require('../tauriHost.cjs');
+const { registerPrivilegedWindow } = require('../securityBoundary.cjs');
 
 app.on('window-all-closed', () => app.quit());
 
@@ -28,7 +29,9 @@ app.whenReady().then(async () => {
       nodeIntegration: false,
     },
   });
-  await win.loadFile(path.join(__dirname, '..', 'renderer', 'index.html'));
+  const page = path.join(__dirname, '..', 'renderer', 'index.html');
+  registerPrivilegedWindow(win, page, { label: 'verify-f1a-e2e' });
+  await win.loadFile(page);
 
   // A scratch target under $HOME (an allowed scope root), isolated from real data.
   const dir = fs.mkdtempSync(path.join(os.homedir(), '.f1a-e2e-'));

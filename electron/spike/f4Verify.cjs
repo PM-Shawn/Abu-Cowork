@@ -36,6 +36,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const { pathToFileURL } = require('node:url');
 const { registerTauriHost } = require('../tauriHost.cjs');
+const { registerPrivilegedWindow } = require('../securityBoundary.cjs');
 
 app.on('window-all-closed', () => app.quit());
 
@@ -63,6 +64,7 @@ app.whenReady().then(async () => {
   // hosting shell page differs from the other spikes.
   const scratchHtml = path.join(__dirname, '__f4verify-scratch.html');
   fs.writeFileSync(scratchHtml, '<!doctype html><title>f4-verify</title>');
+  registerPrivilegedWindow(win, scratchHtml, { label: 'verify-f4' });
   await win.loadFile(scratchHtml);
 
   const invokeIn = async (cmd, args) =>

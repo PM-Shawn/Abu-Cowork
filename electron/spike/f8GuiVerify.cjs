@@ -50,6 +50,7 @@ const { app, BrowserWindow } = require('electron');
 const path = require('node:path');
 const { registerTauriHost, wireWindowEvents } = require('../tauriHost.cjs');
 const { hasTray } = require('../guiHost.cjs');
+const { registerPrivilegedWindow } = require('../securityBoundary.cjs');
 
 app.on('window-all-closed', () => app.quit());
 
@@ -89,7 +90,9 @@ app.whenReady().then(async () => {
   // (main.cjs calls it for the real main window); without it here, "main
   // window not found" is a harness-setup gap, not a product bug.
   wireWindowEvents(win);
-  await win.loadFile(path.join(__dirname, '..', 'renderer', 'index.html'));
+  const indexPage = path.join(__dirname, '..', 'renderer', 'index.html');
+  registerPrivilegedWindow(win, indexPage, { label: 'f8-gui-verify' });
+  await win.loadFile(indexPage);
 
   const invokeIn = async (cmd, args) =>
     win.webContents.executeJavaScript(

@@ -25,6 +25,7 @@ const path = require('node:path');
 const fs = require('node:fs');
 const os = require('node:os');
 const { registerTauriHost } = require('../tauriHost.cjs');
+const { registerPrivilegedWindow } = require('../securityBoundary.cjs');
 const { SIDECAR_PATH, resolveSidecarLaunch } = require('../appEnv.cjs');
 
 app.on('window-all-closed', () => app.quit());
@@ -55,7 +56,9 @@ app.whenReady().then(async () => {
       nodeIntegration: false,
     },
   });
-  await win.loadFile(path.join(__dirname, '..', 'renderer', 'index.html'));
+  const page = path.join(__dirname, '..', 'renderer', 'index.html');
+  registerPrivilegedWindow(win, page, { label: 'verify-f1-heartbeat-e2e' });
+  await win.loadFile(page);
 
   const hungChildPath = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'f1-hb-')), 'hung-child.cjs');
   fs.writeFileSync(hungChildPath, HUNG_CHILD_SRC);

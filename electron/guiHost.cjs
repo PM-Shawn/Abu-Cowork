@@ -66,6 +66,7 @@ const path = require('node:path');
 const fs = require('node:fs');
 const { execFile } = require('node:child_process');
 const { REPO_ROOT } = require('./appEnv.cjs');
+const { registerPrivilegedWindow } = require('./securityBoundary.cjs');
 
 const GUI_MISS = Symbol('gui-dispatch-miss');
 
@@ -292,7 +293,9 @@ function showOverlay() {
   overlayWindow.setIgnoreMouseEvents(true);
   overlayWindow.setAlwaysOnTop(true, 'screen-saver');
   applyAllSpaces(overlayWindow);
-  void overlayWindow.loadFile(resolveHtml('overlay.html'));
+  const page = resolveHtml('overlay.html');
+  registerPrivilegedWindow(overlayWindow, page, { label: 'overlay' });
+  void overlayWindow.loadFile(page);
   showWhenReady(overlayWindow);
 }
 
@@ -327,7 +330,9 @@ function showStopButton(stopLabel) {
   // guiTauriGlobalPreload.cjs (which runs before ANY page script, same
   // timing guarantee as Tauri's `initialization_script`) and exposed as
   // `window.__CU_I18N__` via contextBridge before the page's own script runs.
-  void stopBtnWindow.loadFile(resolveHtml('stop-button.html'), { query: { stopLabel: stopLabel ?? '' } });
+  const page = resolveHtml('stop-button.html');
+  registerPrivilegedWindow(stopBtnWindow, page, { label: 'stop-button' });
+  void stopBtnWindow.loadFile(page, { query: { stopLabel: stopLabel ?? '' } });
   showWhenReady(stopBtnWindow);
 }
 
@@ -518,7 +523,9 @@ function petShow() {
   });
   petWindow.setAlwaysOnTop(true, 'floating');
   applyAllSpaces(petWindow);
-  void petWindow.loadFile(resolveHtml('pet.html'));
+  const page = resolveHtml('pet.html');
+  registerPrivilegedWindow(petWindow, page, { label: 'pet' });
+  void petWindow.loadFile(page);
   showWhenReady(petWindow);
   return null;
 }

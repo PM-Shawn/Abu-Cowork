@@ -38,7 +38,11 @@ const { initSecretStore, secretDispatch } = require('./secretStore.cjs');
 const { runTauriMigration, resolveTauriAppDataDir } = require('./tauriMigration.cjs');
 const { updaterDispatch, UPDATER_MISS } = require('./updaterHost.cjs');
 const { fsDispatch, FS_MISS } = require('./fsHost.cjs');
-const { fsWatchDispatch, FS_WATCH_MISS } = require('./fsWatchHost.cjs');
+const {
+  fsWatchDispatch,
+  FS_WATCH_MISS,
+  cleanupFsWatchesForSender,
+} = require('./fsWatchHost.cjs');
 const { mcpDispatch } = require('./mcpBridge.cjs');
 const { desktopDispatch, DESKTOP_MISS } = require('./desktopHost.cjs');
 const { nativeHelperDispatch, NATIVE_HELPER_MISS } = require('./nativeHelperManager.cjs');
@@ -59,7 +63,17 @@ const { commandDispatch, COMMAND_MISS } = require('./commandHost.cjs');
 const { triggerDispatch, TRIGGER_MISS } = require('./triggerServer.cjs');
 const { networkProxyDispatch, NETWORK_PROXY_MISS } = require('./networkProxy.cjs');
 const { httpDispatch, HTTP_MISS } = require('./httpHost.cjs');
-const { globalShortcutDispatch, GLOBAL_SHORTCUT_MISS, teardownGlobalShortcuts } = require('./globalShortcutHost.cjs');
+const {
+  globalShortcutDispatch,
+  GLOBAL_SHORTCUT_MISS,
+  teardownGlobalShortcuts,
+  cleanupGlobalShortcutsForSender,
+} = require('./globalShortcutHost.cjs');
+const {
+  assertTrustedIpcSender,
+  validateInvokePayload,
+  assertResourceOwner,
+} = require('./securityBoundary.cjs');
 
 // Window-family state (Phase 2 slice D). `mainWindow` is set by main.cjs right
 // after createWindow() via setMainWindow(); `quitting` is the standard
@@ -151,7 +165,11 @@ function wireWindowEvents(win) {
   // Purge this renderer's subscriptions on reload (WebContents survives, no
   // unlisten fires, the preload callbackId counter resets → stale subs would
   // cross-wire to the reloaded page's colliding ids).
-  win.webContents.on('did-start-loading', () => clearSubscriptionsForSender(win.webContents));
+  win.webContents.on('did-start-loading', () => {
+    clearSubscriptionsForSender(win.webContents);
+    cleanupFsWatchesForSender(win.webContents);
+    cleanupGlobalShortcutsForSender(win.webContents);
+  });
 }
 
 // Tauri BaseDirectory enum (numeric -> meaning). See @tauri-apps/api/path.
@@ -711,9 +729,11 @@ function registerTauriHost(app) {
   // needed for tray creation.
   initGuiHost(app);
 
-  ipcMain.handle('tauri:invoke', async (e, { cmd, args, body, headers } = {}) => {
+  ipcMain.handle('tauri:invoke', async (e, payload) => {
     try {
-      const a = args || {};
+      const senderRecord = assertTrustedIpcSender(e);
+      const { cmd, args, body, headers } = validateInvokePayload(senderRecord, payload);
+      const a = args;
       // Secret commands (slice C) — secretDispatch owns the 7-command list;
       // it returns `undefined` for anything that isn't a secret command, so we
       // fall through. (Avoids duplicating the command list here.)
@@ -878,6 +898,7 @@ function registerTauriHost(app) {
           // listen/unlisten churn. Main knows the callbackId, so it tells the
           // renderer to drop it.
           const sub = subscriptions.get(a.eventId);
+          assertResourceOwner(sub, e.sender, 'event subscription');
           if (sub && sub.sender && !sub.sender.isDestroyed()) {
             sub.sender.send('tauri:uncallback', { id: sub.callbackId });
           }
@@ -901,7 +922,12 @@ function registerTauriHost(app) {
   });
 
   ipcMain.on('tauri:os-internals', (e) => {
-    e.returnValue = osInternals(app);
+    try {
+      assertTrustedIpcSender(e);
+      e.returnValue = osInternals(app);
+    } catch {
+      e.returnValue = null;
+    }
   });
 }
 

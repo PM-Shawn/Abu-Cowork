@@ -23,17 +23,20 @@ Use the smallest model tier that can safely complete the current stage. The
 point is to spend advanced reasoning where judgment matters, not to make every
 small edit expensive.
 
-- **Advanced model (planner/reviewer):** use for architecture, Electron/Tauri
-  migration decisions, security or permission boundaries, data migration,
-  release/update design, ambiguous product requests, difficult regressions, and
-  final review of high-risk changes.
-- **Standard coding model (builder):** use for bounded implementation after the
-  goal, constraints, affected areas, and acceptance checks are clear. It owns
-  focused code changes, tests, and the relevant local verification.
-- **Lightweight model (scout):** use only for read-only inventory, locating code,
-  summarizing logs, formatting, or straightforward documentation extraction. It
-  must not make architecture, security, deletion, release, or public/private
-  boundary decisions.
+- **Planner/reviewer:** `gpt-5.6-sol` with `xhigh` reasoning. Use it for
+  architecture, Electron/Tauri migration decisions, security or permission
+  boundaries, data migration, release/update design, difficult regressions, and
+  final review of high-risk changes. Reserve `max` for measured exceptions.
+- **Complex builder:** `gpt-5.5` with `high` reasoning. Use it for cross-boundary
+  renderer/main/sidecar work, native process handling, concurrency, packaging,
+  and implementation of an already-approved security design.
+- **Routine builder:** `gpt-5.6-terra` with `medium` reasoning, raised to `high`
+  for broader debugging. Use it for bounded implementation, tests, config, and
+  documentation after acceptance checks are clear.
+- **Scout:** `gpt-5.6-luna` with `low` reasoning, or `gpt-5.4-mini` with `low`
+  when Luna is unavailable. It may only do read-only inventory, locating code,
+  summarizing logs, and simple classification. It must not make architecture,
+  security, deletion, release, or public/private boundary decisions.
 - Before handing implementation to a standard model, the advanced model should
   leave a short task brief: desired user outcome, non-goals, files/boundaries
   likely involved, safety constraints, and concrete acceptance checks.
@@ -48,6 +51,8 @@ small edit expensive.
   owner until its verification is complete.
 - For a small, well-understood fix, one standard model may both plan and build.
   Do not add a planning pass just for ceremony.
+- Explicitly record the model and reasoning effort when delegating. Never use
+  stale Claude aliases such as `opus`, `sonnet`, or `haiku` in Codex tasks.
 
 ## Public/Open-Core Boundary
 

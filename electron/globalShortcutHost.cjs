@@ -51,6 +51,7 @@
 
 const { globalShortcut } = require('electron');
 const { parseChannelId, sendChannelMessage } = require('./channelBridge.cjs');
+const { assertResourceOwner } = require('./securityBoundary.cjs');
 
 /** Sentinel returned when `cmd` isn't a global-shortcut command. */
 const GLOBAL_SHORTCUT_MISS = Symbol('global-shortcut-dispatch-miss');
@@ -63,7 +64,24 @@ const GLOBAL_SHORTCUT_MISS = Symbol('global-shortcut-dispatch-miss');
  * nothing in src/ reads it, but it's cheap to report faithfully).
  */
 const registrations = new Map();
+const cleanupInstalledForSender = new WeakSet();
 let nextShortcutIndex = 0;
+
+function unregisterOwnedBySender(sender) {
+  for (const [accel, reg] of registrations) {
+    if (reg.sender !== sender) continue;
+    try {
+      globalShortcut.unregister(accel);
+    } catch {
+      /* already unregistered */
+    }
+    registrations.delete(accel);
+  }
+}
+
+function cleanupGlobalShortcutsForSender(sender) {
+  unregisterOwnedBySender(sender);
+}
 
 /** Normalize the JS plugin's shortcuts arg (always an array, but be defensive). */
 function toShortcutList(v) {
@@ -98,11 +116,17 @@ function globalShortcutDispatch(cmd, payload) {
         throw new Error('plugin:global-shortcut|register: args.handler is not a serialized channel');
       }
       const sender = event && event.sender;
+      if (!sender) throw new Error('plugin:global-shortcut|register requires an IPC sender');
+      if (!cleanupInstalledForSender.has(sender) && typeof sender.once === 'function') {
+        cleanupInstalledForSender.add(sender);
+        sender.once('destroyed', () => unregisterOwnedBySender(sender));
+      }
       for (const accel of shortcuts) {
         // Re-registering an accelerator that's already bound (e.g. a second
         // setupAbortListener() call): drop the old binding first so a stale
         // registration entry can't linger pointing at a dead callback.
         if (registrations.has(accel)) {
+          assertResourceOwner(registrations.get(accel), sender, 'global shortcut');
           try {
             globalShortcut.unregister(accel);
           } catch {
@@ -129,7 +153,11 @@ function globalShortcutDispatch(cmd, payload) {
 
     case 'plugin:global-shortcut|unregister': {
       const shortcuts = toShortcutList(a.shortcuts);
+      const sender = event && event.sender;
       for (const accel of shortcuts) {
+        const registration = registrations.get(accel);
+        assertResourceOwner(registration, sender, 'global shortcut');
+        if (!registration) continue;
         try {
           globalShortcut.unregister(accel);
         } catch {
@@ -141,8 +169,7 @@ function globalShortcutDispatch(cmd, payload) {
     }
 
     case 'plugin:global-shortcut|unregister_all': {
-      globalShortcut.unregisterAll();
-      registrations.clear();
+      unregisterOwnedBySender(event && event.sender);
       return null;
     }
 
@@ -162,4 +189,9 @@ function teardownGlobalShortcuts() {
   registrations.clear();
 }
 
-module.exports = { globalShortcutDispatch, GLOBAL_SHORTCUT_MISS, teardownGlobalShortcuts };
+module.exports = {
+  globalShortcutDispatch,
+  GLOBAL_SHORTCUT_MISS,
+  teardownGlobalShortcuts,
+  cleanupGlobalShortcutsForSender,
+};

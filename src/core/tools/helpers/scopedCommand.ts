@@ -1,5 +1,8 @@
 import { invoke } from '@tauri-apps/api/core';
 import type { ToolExecutionContext } from '../../../types';
+import { hasElectronCommandHost } from '../../../utils/electronHost';
+
+export { hasElectronCommandHost } from '../../../utils/electronHost';
 
 export class TaskCommandAbortedError extends Error {
   constructor() {
@@ -17,22 +20,6 @@ function makeCommandId(prefix: string): string {
     ? crypto.randomUUID()
     : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
   return `${prefix}-${random}`;
-}
-
-/**
- * Electron exposes the renderer marker from preload; its sidecar runs through
- * Electron-as-Node. Tauri has neither signal, so its locked invoke argument
- * contract stays unchanged.
- */
-export function hasElectronCommandHost(): boolean {
-  const runtime = globalThis as typeof globalThis & {
-    __ABU_SHELL__?: { mainSupervisesSidecar?: boolean };
-    process?: { env?: Record<string, string | undefined> };
-  };
-  return (
-    runtime.__ABU_SHELL__?.mainSupervisesSidecar === true ||
-    runtime.process?.env?.ELECTRON_RUN_AS_NODE === '1'
-  );
 }
 
 export async function invokeTaskCommand<T>(

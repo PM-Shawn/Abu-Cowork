@@ -439,7 +439,10 @@ async function main() {
   const previewFixtureDir = path.join(testRoot, 'preview');
   const userDataDir = path.join(testRoot, 'user-data');
   const appDataDir = path.join(testRoot, 'app-data');
+  const runtimeArtifactsDir = path.join(testRoot, 'runtime artifacts');
+  const mcpRuntimePath = path.join(testRoot, 'mcp-runtime.json');
   fs.mkdirSync(previewFixtureDir, { recursive: true });
+  fs.mkdirSync(runtimeArtifactsDir, { recursive: true });
   fs.writeFileSync(
     path.join(previewFixtureDir, 'index.html'),
     '<!doctype html><html><body><main>packaged preview smoke</main></body></html>'
@@ -482,6 +485,33 @@ async function main() {
     const launcherName = process.platform === 'win32' ? 'sandbox-launcher.exe' : 'sandbox-launcher';
     const launcherPath = path.join(found.resources, 'sandbox-launcher', process.platform, launcherName);
     checks.sandboxLauncherInResources = fs.existsSync(launcherPath);
+    checks.nodeRuntimeInResources = fs.existsSync(path.join(
+      found.resources,
+      'node-runtime',
+      process.platform === 'win32' ? 'node.exe' : 'bin/node',
+    ));
+    checks.pythonRuntimeInResources = fs.existsSync(path.join(
+      found.resources,
+      'python-runtime',
+      process.platform === 'win32' ? 'python.exe' : 'bin/python3',
+    ));
+    checks.runtimeMetadataInResources = fs.existsSync(
+      path.join(found.resources, 'runtime-metadata', 'runtime-manifest.json'),
+    );
+    const runtimeVerification = spawnSync(
+      process.execPath,
+      ['scripts/verify-electron-runtimes.mjs', '--resource-root', found.resources],
+      { cwd: process.cwd(), encoding: 'utf8', timeout: 60_000 },
+    );
+    checks.packagedRuntimesVerify = runtimeVerification.status === 0;
+    if (!checks.packagedRuntimesVerify) {
+      errors.packagedRuntimeVerification = [
+        `status=${String(runtimeVerification.status)}`,
+        `stdout=${runtimeVerification.stdout || ''}`,
+        `stderr=${runtimeVerification.stderr || ''}`,
+        runtimeVerification.error ? `error=${String(runtimeVerification.error)}` : '',
+      ].filter(Boolean).join('\n');
+    }
     try {
       const marker = `abu-packaged-launcher-${randomUUID()}`;
       const launcherResult = spawnSync(launcherPath, [], {
@@ -514,11 +544,15 @@ async function main() {
       const marker = `abu-packaged-command-${randomUUID()}`;
       const commandId = `packaged-command-${randomUUID()}`;
       const commandResult = await window.evaluate(
-        ({ nodePath, expectedMarker, id }) => window.__TAURI_INTERNALS__.invoke(
+        ({ expectedMarker, id }) => window.__TAURI_INTERNALS__.invoke(
           'run_argv_command',
           {
-            program: nodePath,
-            args: ['-e', 'process.stdout.write(process.argv[1])', expectedMarker],
+            program: 'node',
+            args: [
+              '-e',
+              'process.stdout.write(JSON.stringify({ marker: process.argv[1], executable: process.execPath }))',
+              expectedMarker,
+            ],
             cwd: null,
             timeout: 10,
             sandboxEnabled: true,
@@ -527,17 +561,20 @@ async function main() {
             commandId: id,
           },
         ),
-        { nodePath: process.execPath, expectedMarker: marker, id: commandId },
+        { expectedMarker: marker, id: commandId },
       );
-      checks.packagedSandboxCommandRuns =
-        commandResult.code === 0 && commandResult.stdout === marker;
+      const commandOutput = JSON.parse(commandResult.stdout);
+      checks.packagedSandboxCommandRuns = commandResult.code === 0 && commandOutput.marker === marker;
+      checks.packagedCommandUsesBundledNode = path.resolve(commandOutput.executable).startsWith(
+        path.resolve(path.join(found.resources, 'node-runtime')) + path.sep,
+      );
 
       const abortCommandId = `packaged-abort-${randomUUID()}`;
       const runningCommand = window.evaluate(
-        ({ nodePath, id }) => window.__TAURI_INTERNALS__.invoke(
+        ({ id }) => window.__TAURI_INTERNALS__.invoke(
           'run_argv_command',
           {
-            program: nodePath,
+            program: 'node',
             args: ['-e', 'setInterval(() => {}, 1000)'],
             cwd: null,
             timeout: 30,
@@ -547,7 +584,7 @@ async function main() {
             commandId: id,
           },
         ),
-        { nodePath: process.execPath, id: abortCommandId },
+        { id: abortCommandId },
       );
       let abortAccepted = false;
       await waitUntil(async () => {
@@ -560,9 +597,138 @@ async function main() {
       const abortedResult = await runningCommand;
       checks.packagedSandboxCommandAborts =
         abortAccepted === true && abortedResult.code !== 0;
+
+      const toolVersions = await window.evaluate(async () => {
+        const invoke = window.__TAURI_INTERNALS__.invoke;
+        const run = (program) => invoke('run_argv_command', {
+          program,
+          args: ['--version'],
+          cwd: null,
+          timeout: 20,
+          sandboxEnabled: false,
+          extraWritablePaths: [],
+          networkIsolation: false,
+        });
+        return {
+          npm: await run('npm'),
+          npx: await run('npx'),
+        };
+      });
+      checks.packagedNpmRuns =
+        toolVersions.npm.code === 0 && /^\d+\.\d+\.\d+/.test(toolVersions.npm.stdout.trim());
+      checks.packagedNpxRuns =
+        toolVersions.npx.code === 0 && /^\d+\.\d+\.\d+/.test(toolVersions.npx.stdout.trim());
+
+      const pythonScript = `
+import json
+import pathlib
+import sys
+from docx import Document
+from openpyxl import Workbook, load_workbook
+from pptx import Presentation
+from pypdf import PdfReader
+from reportlab.pdfgen import canvas
+
+root = pathlib.Path(sys.argv[1])
+root.mkdir(parents=True, exist_ok=True)
+docx_path = root / "smoke.docx"
+xlsx_path = root / "smoke.xlsx"
+pptx_path = root / "smoke.pptx"
+pdf_path = root / "smoke.pdf"
+
+document = Document()
+document.add_paragraph("Abu packaged runtime")
+document.save(docx_path)
+assert Document(docx_path).paragraphs[0].text == "Abu packaged runtime"
+
+workbook = Workbook()
+workbook.active["A1"] = "Abu packaged runtime"
+workbook.save(xlsx_path)
+assert load_workbook(xlsx_path).active["A1"].value == "Abu packaged runtime"
+
+presentation = Presentation()
+slide = presentation.slides.add_slide(presentation.slide_layouts[6])
+shape = slide.shapes.add_textbox(0, 0, 1000000, 1000000)
+shape.text = "Abu packaged runtime"
+presentation.save(pptx_path)
+assert len(Presentation(pptx_path).slides) == 1
+
+pdf = canvas.Canvas(str(pdf_path))
+pdf.drawString(72, 720, "Abu packaged runtime")
+pdf.save()
+assert len(PdfReader(pdf_path).pages) == 1
+
+print(json.dumps({"executable": sys.executable, "files": [str(p) for p in [docx_path, xlsx_path, pptx_path, pdf_path]]}))
+`;
+      const pythonResult = await window.evaluate(
+        ({ script, outputDir }) => window.__TAURI_INTERNALS__.invoke('run_argv_command', {
+          program: 'python3',
+          args: ['-I', '-c', script, outputDir],
+          cwd: outputDir,
+          timeout: 60,
+          sandboxEnabled: true,
+          extraWritablePaths: [outputDir],
+          networkIsolation: false,
+        }),
+        { script: pythonScript, outputDir: runtimeArtifactsDir },
+      );
+      const pythonOutput = JSON.parse(pythonResult.stdout);
+      checks.packagedPythonUsesBundledRuntime =
+        pythonResult.code === 0 &&
+        path.resolve(pythonOutput.executable).startsWith(
+          path.resolve(path.join(found.resources, 'python-runtime')) + path.sep,
+        );
+      checks.packagedOfficePdfRoundTrip =
+        pythonOutput.files.length === 4 &&
+        pythonOutput.files.every((file) => fs.existsSync(file) && fs.statSync(file).size > 0);
+
+      const mcpId = `packaged-runtime-${randomUUID()}`;
+      await window.evaluate(
+        ({ id, resultPath }) => window.__TAURI_INTERNALS__.invoke('mcp_spawn', {
+          id,
+          command: 'node',
+          args: [
+            '-e',
+            `require('node:fs').writeFileSync(${JSON.stringify(resultPath)}, JSON.stringify({ executable: process.execPath })); setInterval(() => {}, 1000)`,
+          ],
+          env: {},
+        }),
+        { id: mcpId, resultPath: mcpRuntimePath },
+      );
+      await waitUntil(() => fs.existsSync(mcpRuntimePath), 'the packaged MCP runtime probe');
+      const mcpRuntime = JSON.parse(fs.readFileSync(mcpRuntimePath, 'utf8'));
+      checks.packagedMcpUsesBundledNode = path.resolve(mcpRuntime.executable).startsWith(
+        path.resolve(path.join(found.resources, 'node-runtime')) + path.sep,
+      );
+      await window.evaluate(
+        (id) => window.__TAURI_INTERNALS__.invoke('mcp_kill', { id }),
+        mcpId,
+      );
+
+      const updaterProbe = await window.evaluate(async () => {
+        try {
+          await window.__TAURI_INTERNALS__.invoke('plugin:updater|check', {});
+          return { loaded: true, error: '' };
+        } catch (error) {
+          const message = String(error);
+          return {
+            loaded: !/Cannot find module|MODULE_NOT_FOUND|ERR_MODULE_NOT_FOUND/i.test(message),
+            error: message,
+          };
+        }
+      });
+      checks.packagedUpdaterDependenciesLoad = updaterProbe.loaded;
+      if (!updaterProbe.loaded) errors.packagedUpdater = updaterProbe.error;
     } catch (err) {
       checks.packagedSandboxCommandRuns ??= false;
       checks.packagedSandboxCommandAborts ??= false;
+      checks.packagedCommandUsesBundledNode ??= false;
+      checks.packagedNpmRuns ??= false;
+      checks.packagedNpxRuns ??= false;
+      checks.packagedPythonUsesBundledRuntime ??= false;
+      checks.packagedOfficePdfRoundTrip ??= false;
+      checks.packagedMcpUsesBundledNode ??= false;
+      checks.packagedUpdaterDependenciesLoad ??= false;
       errors.packagedCommand = String(err);
     }
 

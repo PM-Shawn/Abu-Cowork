@@ -6,6 +6,7 @@
 
 import { resolveResource } from '@tauri-apps/api/path';
 import { exists } from '@tauri-apps/plugin-fs';
+import { hasElectronCommandHost } from './electronHost';
 import { isWindows } from './platform';
 
 let cachedPath: string | null | undefined = undefined; // undefined = not yet checked
@@ -31,11 +32,16 @@ export async function getEmbeddedPythonPath(): Promise<string | null> {
     // resolveResource may fail in dev mode
   }
 
-  // Try 2: Dev mode — check src-tauri/python-runtime/ (created by setup-python-runtime.sh)
-  const devCandidates = [
-    `../src-tauri/python-runtime/${bin}`,
-    `src-tauri/python-runtime/${bin}`,
-  ];
+  // Keep the Electron and legacy Tauri development runtimes isolated.
+  const devCandidates = hasElectronCommandHost()
+    ? [
+        `electron/.runtime/python-runtime/${bin}`,
+        `../electron/.runtime/python-runtime/${bin}`,
+      ]
+    : [
+        `../src-tauri/python-runtime/${bin}`,
+        `src-tauri/python-runtime/${bin}`,
+      ];
   for (const candidate of devCandidates) {
     try {
       const { resolve } = await import('@tauri-apps/api/path');
@@ -68,6 +74,11 @@ export async function hasEmbeddedPython(): Promise<boolean> {
  * Returns the original command unchanged if embedded Python is not available.
  */
 export async function resolveCommandPython(command: string): Promise<string> {
+  // Electron's main process owns runtime selection for both renderer and
+  // sidecar commands. Leaving the command bare also avoids PowerShell's
+  // special invocation syntax for quoted executable paths on Windows.
+  if (hasElectronCommandHost()) return command;
+
   const embeddedPath = await getEmbeddedPythonPath();
   if (!embeddedPath) return command;
 

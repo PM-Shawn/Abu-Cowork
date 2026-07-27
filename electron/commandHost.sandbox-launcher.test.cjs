@@ -125,6 +125,90 @@ test('run_argv_command preserves argv literally and does not pass through a shel
   assert.match(result.stdout, /argv;touch/);
 });
 
+test('bare Node, npm, and npx commands execute from the bundled runtime', async () => {
+  const expectedNode = path.join(
+    __dirname,
+    '.runtime',
+    'node-runtime',
+    process.platform === 'win32' ? 'node.exe' : 'bin/node',
+  );
+  const nodeResult = await commandDispatch(app, 'run_argv_command', {
+    program: 'node',
+    args: ['-e', 'process.stdout.write(process.execPath)'],
+    timeout: 10,
+    sandboxEnabled: false,
+  });
+  const npmResult = await commandDispatch(app, 'run_argv_command', {
+    program: 'npm',
+    args: ['--version'],
+    timeout: 10,
+    sandboxEnabled: false,
+  });
+  const npxResult = await commandDispatch(app, 'run_argv_command', {
+    program: 'npx',
+    args: ['--version'],
+    timeout: 10,
+    sandboxEnabled: false,
+  });
+
+  assert.equal(nodeResult.code, 0);
+  assert.equal(path.resolve(nodeResult.stdout), path.resolve(expectedNode));
+  assert.equal(npmResult.code, 0);
+  assert.match(npmResult.stdout.trim(), /^\d+\.\d+\.\d+$/);
+  assert.equal(npxResult.code, 0);
+  assert.match(npxResult.stdout.trim(), /^\d+\.\d+\.\d+$/);
+});
+
+test('bare Python runs bundled Office and PDF dependencies in an isolated environment', async () => {
+  const result = await commandDispatch(app, 'run_argv_command', {
+    program: 'python3',
+    args: [
+      '-c',
+      [
+        'import json, os, sys',
+        'import docx, openpyxl, pdfplumber, pptx, reportlab',
+        'print(json.dumps({',
+        '  "executable": sys.executable,',
+        '  "pythonPath": os.environ.get("PYTHONPATH"),',
+        '  "userSite": os.environ.get("PYTHONNOUSERSITE"),',
+        '}))',
+      ].join('\n'),
+    ],
+    timeout: 20,
+    sandboxEnabled: false,
+  });
+  const expectedPython = path.join(
+    __dirname,
+    '.runtime',
+    'python-runtime',
+    process.platform === 'win32' ? 'python.exe' : 'bin/python3',
+  );
+
+  assert.equal(result.code, 0, result.stderr);
+  const output = JSON.parse(result.stdout);
+  assert.equal(path.resolve(output.executable), path.resolve(expectedPython));
+  assert.equal(output.pythonPath, '');
+  assert.equal(output.userSite, '1');
+});
+
+test('shell commands prefer the bundled Node directory on PATH', async () => {
+  const result = await commandDispatch(app, 'run_shell_command', {
+    command: 'node -e "process.stdout.write(process.execPath)"',
+    background: false,
+    timeout: 10,
+    sandboxEnabled: false,
+  });
+  const expectedNode = path.join(
+    __dirname,
+    '.runtime',
+    'node-runtime',
+    process.platform === 'win32' ? 'node.exe' : 'bin/node',
+  );
+
+  assert.equal(result.code, 0, result.stderr);
+  assert.equal(path.resolve(result.stdout), path.resolve(expectedNode));
+});
+
 test('foreground timeout kills the descendant process tree', async () => {
   if (process.platform === 'win32') return;
   const dir = tmpDir();

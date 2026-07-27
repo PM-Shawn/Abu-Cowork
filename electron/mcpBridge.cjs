@@ -14,17 +14,17 @@
  *  - stdout AND stderr are line-framed (persistent per-stream buffer) — one
  *    event per '\n' line, so a line split across chunks isn't fragmented.
  *  - mcp_write appends '\n' (the frontend sends a bare JSON line).
- *  - `command: 'node'` runs Electron's bundled Node via ELECTRON_RUN_AS_NODE.
- *  - Other commands (npx/python/uvx/…) get a login-shell PATH so they resolve
- *    even when the app is launched from Finder with a minimal PATH (Rust used
- *    get_login_shell_path for the same reason).
+ *  - node/npm/npx/python/python3 resolve to Abu's pinned standalone runtimes.
+ *  - Other commands (uvx/…) get Abu's runtime dirs plus a login-shell PATH.
  *  - mcp_spawn REJECTS on spawn failure (ENOENT) and REJECTS if a live process
  *    already holds the id (never tears down the existing one) — matching Rust.
  *  - Exactly one `mcp-close-{id}` per process; none on a spawn-phase failure
  *    (the rejected invoke is that signal).
  *
- * No-orphan: SIGINT/SIGTERM/SIGHUP + 'exit' guards kill every spawned child
- * (main no longer runs the SidecarSupervisor, so this bridge owns the net).
+ * Every process runs through sandbox-launcher's stdio supervisor mode. Unix
+ * process groups / Windows Job Objects keep descendants owned even after npx
+ * or another bootstrap process exits; the native launcher monitors Electron's
+ * PID so SIGKILL/crashes are covered without JavaScript cleanup.
  *
  * ## Main-process liveness heartbeat (F1, opt-in via `mcp_spawn({ heartbeat: true })`)
  *
@@ -54,6 +54,11 @@
 'use strict';
 
 const { spawn, execFileSync } = require('node:child_process');
+const { resolveBundledProgram, withBundledRuntimeEnv } = require('./runtimeResolver.cjs');
+const {
+  sandboxLauncherPathFor,
+  unixDescendantPids,
+} = require('./commandHost.cjs');
 
 /** id -> ChildProcess */
 const children = new Map();
@@ -235,14 +240,44 @@ function loginShellPath() {
   return _loginPath;
 }
 
+function killProcessTree(child) {
+  if (!child || child.__abuTreeKillStarted) return;
+  child.__abuTreeKillStarted = true;
+
+  if (process.platform !== 'win32') {
+    for (const pid of unixDescendantPids(child.pid)) {
+      try {
+        process.kill(pid, 'SIGKILL');
+      } catch {
+        /* already dead */
+      }
+    }
+    if (Number.isInteger(child.__abuTargetPid) && child.__abuTargetPid > 0) {
+      try {
+        process.kill(-child.__abuTargetPid, 'SIGKILL');
+      } catch {
+        /* already dead */
+      }
+    }
+    try {
+      process.kill(-child.pid, 'SIGKILL');
+      return;
+    } catch {
+      /* fall through to direct launcher kill */
+    }
+  }
+
+  try {
+    child.kill('SIGKILL');
+  } catch {
+    /* already dead */
+  }
+}
+
 function killChild(id) {
   const child = children.get(id);
   if (child) {
-    try {
-      child.kill('SIGKILL');
-    } catch {
-      /* already dead */
-    }
+    killProcessTree(child);
     children.delete(id);
   }
   // Stop the monitor even if `child` was already gone (defensive) — otherwise
@@ -256,12 +291,15 @@ function killChild(id) {
  * @param {Record<string, unknown>} args
  * @returns command result (Promise for mcp_spawn), or `undefined` if not an mcp command.
  */
-function mcpDispatch(cmd, args) {
+function mcpDispatch(appOrCmd, cmdOrArgs, maybeArgs) {
+  const app = typeof appOrCmd === 'string' ? undefined : appOrCmd;
+  const cmd = typeof appOrCmd === 'string' ? appOrCmd : cmdOrArgs;
+  const args = typeof appOrCmd === 'string' ? cmdOrArgs : maybeArgs;
   if (!MCP_CMDS.has(cmd)) return undefined;
   const a = args || {};
   switch (cmd) {
     case 'mcp_spawn':
-      return mcpSpawn(a);
+      return mcpSpawn(app, a);
     case 'mcp_write':
       return mcpWrite(a);
     case 'mcp_kill':
@@ -271,7 +309,7 @@ function mcpDispatch(cmd, args) {
   }
 }
 
-function mcpSpawn({ id, command, args = [], env = {}, heartbeat }) {
+function mcpSpawn(app, { id, command, args = [], env = {}, heartbeat }) {
   const existing = children.get(id);
   if (existing && !existing.killed) {
     // Match Rust: refuse to replace a live process (the frontend does a
@@ -280,28 +318,45 @@ function mcpSpawn({ id, command, args = [], env = {}, heartbeat }) {
     return Promise.reject(new Error(`mcp_spawn: a process is already running for id "${id}"`));
   }
 
-  const spawnEnv = { ...process.env, ...(env || {}) };
-  let file = command;
-  if (command === 'node') {
-    // Electron's bundled Node — no system Node dependency.
-    file = process.execPath;
-    spawnEnv.ELECTRON_RUN_AS_NODE = '1';
-  } else if (!(env && env.PATH)) {
-    // Non-node commands (npx/python/uvx/a bare `node` on PATH): give them the
-    // real login-shell PATH unless the caller pinned one.
-    spawnEnv.PATH = loginShellPath();
+  const callerEnv = { ...process.env, ...(env || {}) };
+  const callerPinnedPath = env && Object.keys(env).some((key) => key.toLowerCase() === 'path');
+  if (!callerPinnedPath) {
+    callerEnv.PATH = loginShellPath();
   }
 
+  let resolved;
+  let spawnEnv;
+  try {
+    resolved = resolveBundledProgram(app, String(command || ''), args || []);
+    spawnEnv = withBundledRuntimeEnv(app, callerEnv);
+    if (heartbeat) spawnEnv.ABU_ELECTRON_COMMAND_HOST = '1';
+  } catch (err) {
+    return Promise.reject(new Error(`mcp_spawn failed for "${command}": ${errMsg(err)}`));
+  }
+
+  const launcherPath = sandboxLauncherPathFor(app);
   let child;
   try {
-    child = spawn(file, args || [], { env: spawnEnv, stdio: ['pipe', 'pipe', 'pipe'] });
+    child = spawn(launcherPath, [], {
+      env: spawnEnv,
+      stdio: ['pipe', 'pipe', 'pipe'],
+      windowsHide: true,
+      detached: process.platform !== 'win32',
+    });
   } catch (err) {
     return Promise.reject(new Error(`mcp_spawn failed for "${command}": ${errMsg(err)}`));
   }
   children.set(id, child);
 
-  let spawned = false;
+  let targetReady = false;
   let emittedClose = false;
+  let settleSpawn;
+  let rejectSpawn;
+  let launchError = '';
+  const spawnPromise = new Promise((resolve, reject) => {
+    settleSpawn = resolve;
+    rejectSpawn = reject;
+  });
   const emitCloseOnce = () => {
     if (emittedClose) return;
     emittedClose = true;
@@ -316,7 +371,7 @@ function mcpSpawn({ id, command, args = [], env = {}, heartbeat }) {
     if (children.get(id) === child) {
       children.delete(id);
       stopHeartbeatMonitor(id);
-      emit(`mcp-close-${id}`, '');
+      if (targetReady) emit(`mcp-close-${id}`, '');
     }
   };
 
@@ -328,12 +383,12 @@ function mcpSpawn({ id, command, args = [], env = {}, heartbeat }) {
   // renderer's existing mcp-close recovery path restart it.
   child.stdin.on('error', (err) => {
     if (children.get(id) !== child) return;
-    emit(`mcp-err-${id}`, `stdin error: ${errMsg(err)}`);
-    try {
-      child.kill('SIGKILL');
-    } catch {
-      /* already dead */
+    if (targetReady) {
+      emit(`mcp-err-${id}`, `stdin error: ${errMsg(err)}`);
+    } else {
+      rejectSpawn(new Error(`mcp_spawn failed for "${command}": stdin error: ${errMsg(err)}`));
     }
+    killProcessTree(child);
     emitCloseOnce();
   });
 
@@ -364,34 +419,66 @@ function mcpSpawn({ id, command, args = [], env = {}, heartbeat }) {
     while ((nl = errBuf.indexOf('\n')) >= 0) {
       const line = errBuf.slice(0, nl).trimEnd();
       errBuf = errBuf.slice(nl + 1);
-      if (line) emit(`mcp-err-${id}`, line);
+      const readyMatch = line.match(/^\[sandbox-launcher-ready\]\s+(\d+)$/);
+      if (readyMatch && !targetReady) {
+        if (children.get(id) !== child) {
+          killProcessTree(child);
+          continue;
+        }
+        targetReady = true;
+        child.__abuTargetPid = Number(readyMatch[1]);
+        if (heartbeat) startHeartbeatMonitor(id);
+        settleSpawn(null);
+        continue;
+      }
+      if (line) {
+        launchError = launchError ? `${launchError}\n${line}` : line;
+        if (targetReady) emit(`mcp-err-${id}`, line);
+      }
     }
   });
 
   child.on('error', (err) => {
-    if (spawned) {
+    if (targetReady) {
       // Runtime error on a process that DID start — surface + close once.
       emit(`mcp-err-${id}`, `process error: ${errMsg(err)}`);
       emitCloseOnce();
     } else {
-      // Spawn-phase failure — the rejected invoke below is the signal; no
+      // Spawn-phase failure — the rejected invoke is the signal; no
       // mcp-err/close events (Rust emits none on spawn failure).
-      children.delete(id);
+      if (children.get(id) === child) children.delete(id);
+      rejectSpawn(new Error(`mcp_spawn failed for "${command}": ${errMsg(err)}`));
     }
   });
 
-  child.on('close', () => emitCloseOnce());
-
-  return new Promise((resolve, reject) => {
-    child.once('spawn', () => {
-      spawned = true;
-      if (heartbeat) startHeartbeatMonitor(id);
-      resolve(null);
-    });
-    child.once('error', (err) => {
-      if (!spawned) reject(new Error(`mcp_spawn failed for "${command}": ${errMsg(err)}`));
-    });
+  child.on('close', (code) => {
+    if (!targetReady) {
+      if (children.get(id) === child) children.delete(id);
+      rejectSpawn(new Error(
+        `mcp_spawn failed for "${command}": launcher exited with ${String(code)}${launchError ? `: ${launchError}` : ''}`
+      ));
+      return;
+    }
+    emitCloseOnce();
   });
+
+  child.once('spawn', () => {
+    try {
+      child.stdin.write(`${JSON.stringify({
+        file: resolved.file,
+        args: resolved.args,
+        sandboxEnabled: false,
+        monitorParent: false,
+        stdioPassthrough: true,
+        parentPid: process.pid,
+      })}\n`);
+    } catch (err) {
+      rejectSpawn(new Error(`mcp_spawn failed for "${command}": ${errMsg(err)}`));
+      killProcessTree(child);
+    }
+  });
+
+  return spawnPromise;
 }
 
 function mcpWrite({ id, message }) {
@@ -434,15 +521,7 @@ function errMsg(err) {
 // suppresses Node's default terminate — so reproduce it (kill children, then
 // exit). Main no longer runs the SidecarSupervisor, so this bridge owns the net.
 function killAllChildren() {
-  for (const child of children.values()) {
-    if (child && !child.killed) {
-      try {
-        child.kill('SIGKILL');
-      } catch {
-        /* nothing we can do */
-      }
-    }
-  }
+  for (const id of Array.from(children.keys())) killChild(id);
 }
 process.on('exit', killAllChildren);
 for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP']) {

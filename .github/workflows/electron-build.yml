@@ -54,6 +54,11 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Setup and verify bundled Node/Python runtimes
+        run: |
+          npm run setup:electron-runtimes
+          npm run verify:electron-runtimes
+
       - name: Import Developer ID certificate
         env:
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
@@ -132,6 +137,21 @@ jobs:
           test -n "$APP_TEAM"
           test "$APP_TEAM" = "$LAUNCHER_TEAM"
           echo "nested launcher TeamIdentifier=$LAUNCHER_TEAM"
+          echo "== every nested Mach-O is signed by the app team =="
+          while IFS= read -r -d '' nested; do
+            if file "$nested" | grep -q 'Mach-O'; then
+              codesign --verify --strict "$nested"
+              NESTED_TEAM="$(codesign -dv --verbose=4 "$nested" 2>&1 | sed -n 's/^TeamIdentifier=//p' | head -1)"
+              test "$NESTED_TEAM" = "$APP_TEAM"
+            fi
+          done < <(find \
+            "$APP/Contents/Resources/native-helper" \
+            "$APP/Contents/Resources/sandbox-launcher" \
+            "$APP/Contents/Resources/node-runtime" \
+            "$APP/Contents/Resources/python-runtime" \
+            -type f -print0)
+          node scripts/verify-electron-runtimes.mjs \
+            --resource-root "$APP/Contents/Resources"
 
       # Stapling rewrites the dmg bytes, so the sha512/size electron-builder
       # recorded in latest-mac.yml (and the dmg blockmap) are stale by now.

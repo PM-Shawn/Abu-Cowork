@@ -763,7 +763,7 @@ function registerTauriHost(app) {
       // kill) the frontend uses to drive MCP servers AND the agent sidecar;
       // stdout/stderr/close re-emitted as mcp-msg/err/close-{id} events.
       // Returns undefined for non-mcp commands.
-      const mcpResult = mcpDispatch(cmd, a);
+      const mcpResult = mcpDispatch(app, cmd, a);
       if (mcpResult !== undefined) return mcpResult;
       // Desktop-misc family (F2) — LAN IP, fullscreen, sleep prevention, OS
       // trash, clipboard, dialogs, opener, notification permission, process

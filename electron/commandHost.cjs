@@ -35,6 +35,11 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { spawn, execFileSync } = require('node:child_process');
 const { resourceRoot, REPO_ROOT } = require('./appEnv.cjs');
+const {
+  resolveBundledProgram,
+  runtimeLayout,
+  withBundledRuntimeEnv,
+} = require('./runtimeResolver.cjs');
 
 // ── Seatbelt (SBPL) profile generation — line-for-line port of
 // src-tauri/src/sandbox.rs's generate_seatbelt_profile() ──
@@ -303,6 +308,28 @@ function getEnhancedPath() {
     _cachedEnhancedPath = process.env.PATH || '';
   }
   return _cachedEnhancedPath;
+}
+
+function bundledRuntimeEnv(app) {
+  const baseEnv = { ...process.env };
+  const enhancedPath = getEnhancedPath();
+  if (enhancedPath) baseEnv.PATH = enhancedPath;
+  return withBundledRuntimeEnv(app, baseEnv);
+}
+
+function quotePosixShell(value) {
+  return `'${String(value).replace(/'/g, `'\\''`)}'`;
+}
+
+function shellCommandWithBundledPath(app, command) {
+  if (process.platform === 'win32') return command;
+  const layout = runtimeLayout(app);
+  const prefix = [layout.node.binDir, layout.python.binDir]
+    .filter((entry, index, entries) => entries.indexOf(entry) === index)
+    .join(':');
+  // A login shell can replace inherited PATH from .zprofile/.profile. Apply
+  // Abu's prefix after shell startup so bare runtime commands stay deterministic.
+  return `export PATH=${quotePosixShell(prefix)}:"$PATH"; ${command}`;
 }
 
 // ── Network proxy port threading (F14 not built yet) ──
@@ -663,10 +690,15 @@ async function runShellCommand(app, args) {
   const networkIsolation = !!a.networkIsolation;
   const networkProxyPort = networkIsolation ? getNetworkProxyPort() : undefined;
 
-  const spec = buildSandboxedCommandSpec(command, cwd, extraWritablePaths, sandboxEnabled, networkProxyPort);
-  const envOverride = {};
-  const enhancedPath = getEnhancedPath();
-  if (enhancedPath) envOverride.PATH = enhancedPath;
+  const runtimeCommand = shellCommandWithBundledPath(app, command);
+  const spec = buildSandboxedCommandSpec(
+    runtimeCommand,
+    cwd,
+    extraWritablePaths,
+    sandboxEnabled,
+    networkProxyPort,
+  );
+  const envOverride = bundledRuntimeEnv(app);
 
   const result = isBackground
     ? await spawnBackground(app, spec, { cwd, envOverride, sandboxEnabled }, commandId)
@@ -693,10 +725,16 @@ async function runArgvCommand(app, args) {
   const networkIsolation = !!a.networkIsolation;
   const networkProxyPort = networkIsolation ? getNetworkProxyPort() : undefined;
 
-  const spec = buildSandboxedArgvCommandSpec(program, argv, cwd, extraWritablePaths, sandboxEnabled, networkProxyPort);
-  const envOverride = {};
-  const enhancedPath = getEnhancedPath();
-  if (enhancedPath) envOverride.PATH = enhancedPath;
+  const resolved = resolveBundledProgram(app, program, argv);
+  const spec = buildSandboxedArgvCommandSpec(
+    resolved.file,
+    resolved.args,
+    cwd,
+    extraWritablePaths,
+    sandboxEnabled,
+    networkProxyPort,
+  );
+  const envOverride = bundledRuntimeEnv(app);
 
   const result = await spawnForeground(
     app,
@@ -787,4 +825,5 @@ module.exports = {
   ENV_VAR_ALLOWED_PREFIXES,
   __resetCommandHostForTests,
   unixDescendantPids,
+  sandboxLauncherPathFor,
 };

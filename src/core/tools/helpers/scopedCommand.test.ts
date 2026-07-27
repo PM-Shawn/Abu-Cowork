@@ -15,10 +15,12 @@ function setElectronMarker(enabled: boolean): void {
 
 describe('invokeTaskCommand', () => {
   const oldElectronRunAsNode = process.env.ELECTRON_RUN_AS_NODE;
+  const oldElectronCommandHost = process.env.ABU_ELECTRON_COMMAND_HOST;
 
   beforeEach(() => {
     vi.mocked(invoke).mockReset();
     delete process.env.ELECTRON_RUN_AS_NODE;
+    delete process.env.ABU_ELECTRON_COMMAND_HOST;
     setElectronMarker(false);
   });
 
@@ -28,6 +30,11 @@ describe('invokeTaskCommand', () => {
       delete process.env.ELECTRON_RUN_AS_NODE;
     } else {
       process.env.ELECTRON_RUN_AS_NODE = oldElectronRunAsNode;
+    }
+    if (oldElectronCommandHost === undefined) {
+      delete process.env.ABU_ELECTRON_COMMAND_HOST;
+    } else {
+      process.env.ABU_ELECTRON_COMMAND_HOST = oldElectronCommandHost;
     }
     setElectronMarker(false);
   });
@@ -83,6 +90,25 @@ describe('invokeTaskCommand', () => {
     });
     resolveCommand({ code: -1, stdout: '', stderr: '[Command aborted]' });
     await running;
+  });
+
+  it('recognizes the standalone Electron sidecar command-host marker', async () => {
+    process.env.ABU_ELECTRON_COMMAND_HOST = '1';
+    vi.mocked(invoke).mockResolvedValueOnce({ code: 0, stdout: 'ok', stderr: '' });
+
+    await invokeTaskCommand(
+      'run_shell_command',
+      { command: 'echo ok' },
+      { workspacePath: '/ws' },
+    );
+
+    expect(invoke).toHaveBeenCalledWith(
+      'run_shell_command',
+      expect.objectContaining({
+        command: 'echo ok',
+        commandId: expect.stringMatching(/^task-command-/),
+      }),
+    );
   });
 
   it('does not invoke anything when the task signal is already aborted', async () => {

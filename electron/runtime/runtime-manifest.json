@@ -1,0 +1,43 @@
+{
+  "schemaVersion": 1,
+  "node": {
+    "version": "24.18.0",
+    "license": "MIT",
+    "source": "https://nodejs.org/dist/v24.18.0/",
+    "archives": {
+      "darwin-arm64": {
+        "file": "node-v24.18.0-darwin-arm64.tar.gz",
+        "sha256": "e1a97e14c99c803e96c7339403282ea05a499c32f8d83defe9ef5ec66f979ed1"
+      },
+      "darwin-x64": {
+        "file": "node-v24.18.0-darwin-x64.tar.gz",
+        "sha256": "dfd0dbd3e721503434df7b7205e719f61b3a3a31b2bcf9729b8b91fea240f080"
+      },
+      "win32-x64": {
+        "file": "node-v24.18.0-win-x64.zip",
+        "sha256": "0ae68406b42d7725661da979b1403ec9926da205c6770827f33aac9d8f26e821"
+      }
+    }
+  },
+  "python": {
+    "version": "3.12.13",
+    "build": "20260510",
+    "license": "Python-2.0",
+    "source": "https://github.com/astral-sh/python-build-standalone/releases/tag/20260510",
+    "requirements": "python-requirements.lock",
+    "archives": {
+      "darwin-arm64": {
+        "file": "cpython-3.12.13+20260510-aarch64-apple-darwin-install_only.tar.gz",
+        "sha256": "5a30271f8d345a5b02b0c9e4e31e0f1e1455a8e4a04fba95cd9762472abc3b17"
+      },
+      "darwin-x64": {
+        "file": "cpython-3.12.13+20260510-x86_64-apple-darwin-install_only.tar.gz",
+        "sha256": "cd369e76973c3179bc578230d8615ab621968ed758c5e32f636eecef4ad79894"
+      },
+      "win32-x64": {
+        "file": "cpython-3.12.13+20260510-x86_64-pc-windows-msvc-install_only.tar.gz",
+        "sha256": "346dfbcb95171dd6d1275e6f8cb2e656cc15cb054c399ae54db57bfad4b1a60f"
+      }
+    }
+  }
+}

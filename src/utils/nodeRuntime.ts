@@ -16,6 +16,7 @@
 
 import { resolveResource } from '@tauri-apps/api/path';
 import { exists } from '@tauri-apps/plugin-fs';
+import { hasElectronCommandHost } from './electronHost';
 import { isWindows } from './platform';
 
 let cachedPath: string | null | undefined = undefined; // undefined = not yet checked
@@ -42,11 +43,16 @@ export async function getEmbeddedNodePath(): Promise<string | null> {
     // resolveResource may fail in dev mode
   }
 
-  // Try 2: Dev mode — check src-tauri/node-runtime/ (created by setup-node-runtime.sh)
-  const devCandidates = [
-    `../src-tauri/node-runtime/${bin}`,
-    `src-tauri/node-runtime/${bin}`,
-  ];
+  // Keep the Electron and legacy Tauri development runtimes isolated.
+  const devCandidates = hasElectronCommandHost()
+    ? [
+        `electron/.runtime/node-runtime/${bin}`,
+        `../electron/.runtime/node-runtime/${bin}`,
+      ]
+    : [
+        `../src-tauri/node-runtime/${bin}`,
+        `src-tauri/node-runtime/${bin}`,
+      ];
   for (const candidate of devCandidates) {
     try {
       const { resolve } = await import('@tauri-apps/api/path');

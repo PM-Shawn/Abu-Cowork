@@ -14,6 +14,10 @@ struct LaunchConfig {
     sandbox_enabled: bool,
     #[serde(default, rename = "monitorParent")]
     monitor_parent: bool,
+    #[serde(default, rename = "stdioPassthrough")]
+    stdio_passthrough: bool,
+    #[serde(default, rename = "parentPid")]
+    parent_pid: Option<u32>,
 }
 
 fn read_config() -> Result<LaunchConfig, String> {
@@ -101,9 +105,13 @@ fn run(cfg: LaunchConfig) -> Result<i32, String> {
     let mut command = Command::new(&cfg.file);
     command
         .args(&cfg.args)
-        // stdin is reserved for the launcher liveness channel. Abu commands are
-        // non-interactive; an interactive terminal uses the separate PTY host.
-        .stdin(Stdio::null())
+        // Ordinary commands reserve stdin for the liveness channel. MCP uses
+        // stdio passthrough and monitors the Electron parent by PID instead.
+        .stdin(if cfg.stdio_passthrough {
+            Stdio::inherit()
+        } else {
+            Stdio::null()
+        })
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit());
     unsafe {
@@ -120,6 +128,10 @@ fn run(cfg: LaunchConfig) -> Result<i32, String> {
         .map_err(|err| format!("failed to spawn target: {err}"))?;
     let target_pgid = child.id() as i32;
     let parent_lost = Arc::new(AtomicBool::new(false));
+
+    if cfg.stdio_passthrough {
+        eprintln!("[sandbox-launcher-ready] {}", child.id());
+    }
 
     if cfg.monitor_parent {
         let parent_lost = Arc::clone(&parent_lost);
@@ -138,6 +150,23 @@ fn run(cfg: LaunchConfig) -> Result<i32, String> {
                     Ok(_) => {}
                 }
             }
+        });
+    }
+
+    if let Some(parent_pid) = cfg.parent_pid.filter(|pid| *pid > 0) {
+        let parent_lost = Arc::clone(&parent_lost);
+        thread::spawn(move || loop {
+            let still_parent = unsafe { libc::getppid() == parent_pid as i32 };
+            let parent_alive = unsafe { libc::kill(parent_pid as i32, 0) == 0 }
+                || io::Error::last_os_error().raw_os_error() == Some(libc::EPERM);
+            if !still_parent || !parent_alive {
+                parent_lost.store(true, Ordering::Release);
+                unsafe {
+                    let _ = libc::kill(-target_pgid, libc::SIGKILL);
+                }
+                break;
+            }
+            thread::sleep(Duration::from_millis(100));
         });
     }
 
@@ -200,9 +229,11 @@ mod windows {
     };
     use windows_sys::Win32::Storage::FileSystem::{
         CreateFileW, FILE_ATTRIBUTE_NORMAL, FILE_GENERIC_READ, FILE_SHARE_READ, FILE_SHARE_WRITE,
-        OPEN_EXISTING,
+        OPEN_EXISTING, SYNCHRONIZE,
     };
-    use windows_sys::Win32::System::Console::{GetStdHandle, STD_ERROR_HANDLE, STD_OUTPUT_HANDLE};
+    use windows_sys::Win32::System::Console::{
+        GetStdHandle, STD_ERROR_HANDLE, STD_INPUT_HANDLE, STD_OUTPUT_HANDLE,
+    };
     use windows_sys::Win32::System::JobObjects::{
         AssignProcessToJobObject, CreateJobObjectW, JobObjectBasicAccountingInformation,
         JobObjectExtendedLimitInformation, QueryInformationJobObject, SetInformationJobObject,
@@ -211,8 +242,8 @@ mod windows {
     };
     use windows_sys::Win32::System::Threading::{
         CreateProcessAsUserW, CreateProcessW, DeleteProcThreadAttributeList, GetCurrentProcess,
-        GetExitCodeProcess, InitializeProcThreadAttributeList, OpenProcessToken, ResumeThread,
-        UpdateProcThreadAttribute, WaitForSingleObject, CREATE_SUSPENDED,
+        GetExitCodeProcess, InitializeProcThreadAttributeList, OpenProcess, OpenProcessToken,
+        ResumeThread, UpdateProcThreadAttribute, WaitForSingleObject, CREATE_SUSPENDED,
         EXTENDED_STARTUPINFO_PRESENT, INFINITE, LPPROC_THREAD_ATTRIBUTE_LIST, PROCESS_INFORMATION,
         PROC_THREAD_ATTRIBUTE_HANDLE_LIST, STARTF_USESTDHANDLES, STARTUPINFOEXW,
     };
@@ -362,20 +393,27 @@ mod windows {
         Ok(duplicate)
     }
 
-    fn inherited_std_handles() -> Result<[OwnedHandle; 3], String> {
-        let null_name = wide_null(OsStr::new("NUL"));
-        let null_stdin = OwnedHandle::new(unsafe {
-            CreateFileW(
-                null_name.as_ptr(),
-                FILE_GENERIC_READ,
-                FILE_SHARE_READ | FILE_SHARE_WRITE,
-                null(),
-                OPEN_EXISTING,
-                FILE_ATTRIBUTE_NORMAL,
-                null_mut(),
-            )
-        })?;
-        let stdin = duplicate_inheritable_handle(null_stdin.raw(), "NUL standard input")?;
+    fn inherited_std_handles(stdio_passthrough: bool) -> Result<[OwnedHandle; 3], String> {
+        let stdin = if stdio_passthrough {
+            duplicate_inheritable_handle(
+                unsafe { GetStdHandle(STD_INPUT_HANDLE) },
+                "standard input",
+            )?
+        } else {
+            let null_name = wide_null(OsStr::new("NUL"));
+            let null_stdin = OwnedHandle::new(unsafe {
+                CreateFileW(
+                    null_name.as_ptr(),
+                    FILE_GENERIC_READ,
+                    FILE_SHARE_READ | FILE_SHARE_WRITE,
+                    null(),
+                    OPEN_EXISTING,
+                    FILE_ATTRIBUTE_NORMAL,
+                    null_mut(),
+                )
+            })?;
+            duplicate_inheritable_handle(null_stdin.raw(), "NUL standard input")?
+        };
         let stdout = duplicate_inheritable_handle(
             unsafe { GetStdHandle(STD_OUTPUT_HANDLE) },
             "standard output",
@@ -500,7 +538,7 @@ mod windows {
         let job = Arc::new(create_kill_on_close_job()?);
         let command_line_string = super::build_windows_command_line(&cfg);
         let mut command_line = wide_null(OsStr::new(&command_line_string));
-        let std_handles = inherited_std_handles()?;
+        let std_handles = inherited_std_handles(cfg.stdio_passthrough)?;
         let handle_values = [
             std_handles[0].raw(),
             std_handles[1].raw(),
@@ -594,6 +632,10 @@ mod windows {
             }));
         }
 
+        if cfg.stdio_passthrough {
+            eprintln!("[sandbox-launcher-ready] {}", process_info.dwProcessId);
+        }
+
         if cfg.monitor_parent {
             let parent_job = Arc::clone(&job);
             thread::spawn(move || {
@@ -608,6 +650,20 @@ mod windows {
                             break;
                         }
                         Ok(_) => {}
+                    }
+                }
+            });
+        }
+
+        if let Some(parent_pid) = cfg.parent_pid.filter(|pid| *pid > 0) {
+            let parent_handle =
+                OwnedHandle::new(unsafe { OpenProcess(SYNCHRONIZE, 0, parent_pid) })?;
+            let parent_job = Arc::clone(&job);
+            thread::spawn(move || {
+                let wait = unsafe { WaitForSingleObject(parent_handle.raw(), INFINITE) };
+                if wait != WAIT_FAILED {
+                    unsafe {
+                        let _ = TerminateJobObject(parent_job.raw(), 1);
                     }
                 }
             });
@@ -690,10 +746,22 @@ mod tests {
             args: vec!["--eval".to_string(), "console.log('ok')".to_string()],
             sandbox_enabled: false,
             monitor_parent: false,
+            stdio_passthrough: false,
+            parent_pid: None,
         };
         assert_eq!(
             build_windows_command_line(&cfg),
             r#""C:\Program Files\nodejs\node.exe" --eval console.log('ok')"#
         );
+    }
+
+    #[test]
+    fn parses_stdio_parent_monitoring_fields() {
+        let cfg: LaunchConfig =
+            serde_json::from_str(r#"{"file":"node","stdioPassthrough":true,"parentPid":1234}"#)
+                .expect("valid launch config");
+        assert!(cfg.stdio_passthrough);
+        assert_eq!(cfg.parent_pid, Some(1234));
+        assert!(!cfg.monitor_parent);
     }
 }

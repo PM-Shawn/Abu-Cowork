@@ -2,12 +2,12 @@
 
 Date: 2026-07-27
 
-Status: approved for staged development. Branch 1 is merged into
-`refactor-dev`. Branch 2 implementation, local macOS acceptance, Windows
-cross-compilation, and final independent re-review are complete in the current
-`feat/electron-sandbox-launcher` worktree; commit/merge remain. Windows
-real-machine package/runtime verification is still required. This is not
-release approval.
+Status: approved for staged development. Branches 1 and 2 are merged into
+`refactor-dev`. Branch 3 implementation, full local regression, and packaged
+macOS acceptance are complete in the current `feat/electron-bundled-runtime`
+worktree; independent review is complete, while commit and merge remain.
+Windows real-machine package/runtime verification is still required. This is
+not release approval.
 
 Base branch: `refactor-dev`
 
@@ -52,7 +52,7 @@ user authorized autonomous commits and merges for this roadmap on 2026-07-27.
 - 32 focused security tests, real Electron boot/HTTP/shortcut/E2E checks, the
   full 4518-test suite, and a packaged macOS smoke run.
 
-`feat/electron-sandbox-launcher` currently has:
+`feat/electron-sandbox-launcher` is merged into `refactor-dev` and has:
 
 - a Rust `sandbox-launcher` that reads one bounded newline-delimited JSON config
   from stdin, keeps that pipe as an OS-backed parent-liveness channel, spawns a
@@ -100,7 +100,52 @@ Verified locally on macOS:
   after independently rerunning command, Agent, Windows cross-compile, type,
   lint, and parity gates.
 
-Not yet verified:
+`feat/electron-bundled-runtime` currently has:
+
+- pinned, checksum-verified Node.js 24.18.0 LTS archives for macOS arm64/x64
+  and Windows x64, including npm/npx and the upstream license;
+- pinned Python 3.12.13 standalone archives for macOS arm64/x64 and Windows
+  x64, with a hash-locked universal dependency set for DOCX, XLSX, PPTX, PDF,
+  image, XML, and archive-backed tool flows;
+- atomic Electron-only setup and verification scripts rooted under
+  `electron/.runtime` so legacy Tauri runtimes are never overwritten, runtime
+  markers that bind archives, manifests, requirements, and executable hashes,
+  plus Python package/license notices;
+- an exact bare-command resolver for Node, npm, npx, Python, and Python 3 that
+  preserves explicit executable paths and refuses to fall back to an
+  unverified host runtime;
+- deterministic runtime PATH handling for argv commands, MCP servers, and
+  login shells, including Windows command forms and isolation from user Python
+  packages;
+- sandbox-launcher supervision for native MCP servers, with a readiness
+  handshake, inherited stdio, task-stop process-tree termination, and native
+  parent-PID monitoring for hard Electron crashes;
+- the complete packaged `electron-updater` production dependency closure, CI
+  runtime preparation, nested Mach-O signature/team checks, and packaged
+  runtime verification.
+
+Verified locally on macOS:
+
+- runtime setup and direct verification, including Node 24.18.0, npm/npx
+  11.16, Python 3.12.13, and every pinned Python package;
+- 31 focused Node tests for the resolver, command host, and native MCP
+  supervision; 88 related Vitest tests; five Rust launcher tests; and a Windows
+  MSVC target cross-check;
+- a 734 MB unsigned packaged `.app` containing 132 MB of Node and 254 MB of
+  Python source runtimes before package filesystem overhead;
+- `npm run typecheck`, `npm run lint`, `npm run parity:check`, the production
+  renderer build, all 4547 Vitest tests, and `npm run electron:test`;
+- the canonical `npm run pack:electron` flow followed by the real packaged
+  application with all 29 smoke assertions passing:
+  bundled Node/npm/npx, Python Office/PDF round trips, MCP runtime selection,
+  updater module loading, renderer/task persistence, UI Stop, and hard-crash
+  process-tree cleanup;
+- an independent read-only `gpt-5.5` `xhigh` review found one Windows
+  PowerShell-path P1 and one Electron/Tauri dev-runtime isolation P2. Both were
+  fixed, rerun through the full gates and packaged app, and a focused
+  `gpt-5.5` `high` re-review found no remaining P0, P1, or P2 findings.
+
+Not yet verified across the roadmap:
 
 - Windows real-machine Restricted Token, Job Object, stdio, short executable
   name, and PowerShell compatibility;

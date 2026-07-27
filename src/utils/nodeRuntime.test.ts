@@ -3,6 +3,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 // Mock the Tauri APIs before importing the module
 vi.mock('@tauri-apps/api/path', () => ({
   resolveResource: vi.fn(),
+  resolve: vi.fn(),
 }));
 vi.mock('@tauri-apps/plugin-fs', () => ({
   exists: vi.fn(),
@@ -12,6 +13,9 @@ describe('nodeRuntime', () => {
   beforeEach(() => {
     vi.resetModules();
     vi.restoreAllMocks();
+    delete (globalThis as typeof globalThis & { __ABU_SHELL__?: unknown }).__ABU_SHELL__;
+    delete process.env.ABU_ELECTRON_COMMAND_HOST;
+    delete process.env.ELECTRON_RUN_AS_NODE;
   });
 
   afterEach(() => {
@@ -79,6 +83,28 @@ describe('nodeRuntime', () => {
       const { getEmbeddedNodePath } = await import('./nodeRuntime');
       const path = await getEmbeddedNodePath();
       expect(path).toBeNull();
+    });
+
+    it('uses only the Electron development runtime when Electron hosts commands', async () => {
+      process.env.ABU_ELECTRON_COMMAND_HOST = '1';
+      vi.doMock('./platform', () => ({
+        isWindows: () => false,
+        isMacOS: () => true,
+        getPlatform: () => 'macos',
+      }));
+      const { resolveResource, resolve } = await import('@tauri-apps/api/path');
+      const { exists } = await import('@tauri-apps/plugin-fs');
+      vi.mocked(resolve).mockClear();
+      vi.mocked(resolveResource).mockResolvedValue('/repo/node-runtime/bin/node');
+      vi.mocked(resolve).mockImplementation(async (...paths: string[]) => `/repo/${paths.join('/')}`);
+      vi.mocked(exists).mockImplementation(async (candidate) =>
+        String(candidate).includes('/electron/.runtime/node-runtime/'),
+      );
+
+      const { getEmbeddedNodePath } = await import('./nodeRuntime');
+      const result = await getEmbeddedNodePath();
+      expect(result).toContain('/electron/.runtime/node-runtime/bin/node');
+      expect(resolve).not.toHaveBeenCalledWith(expect.stringContaining('src-tauri'));
     });
   });
 

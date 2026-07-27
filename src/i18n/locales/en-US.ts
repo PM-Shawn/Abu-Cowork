@@ -1499,6 +1499,7 @@ const enUS: TranslationDict = {
       startPrompt: 'Enter a URL to start',
       framingHint: 'Some sites refuse to embed — if blank, use ↗ to open in your system browser',
       dismissHint: 'Dismiss hint',
+      selectElement: 'Select element',
     },
   },
 

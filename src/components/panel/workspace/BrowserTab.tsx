@@ -1,18 +1,35 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
-import { ArrowLeft, ArrowRight, RotateCw, AppWindow, Compass } from 'lucide-react';
+import { ArrowLeft, ArrowRight, RotateCw, AppWindow, Compass, SquareDashedMousePointer } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import { openUrl } from '@tauri-apps/plugin-opener';
 import { usePreviewStore } from '@/stores/previewStore';
 import { useSettingsStore } from '@/stores/settingsStore';
+import { useChatStore } from '@/stores/chatStore';
 import { useI18n } from '@/i18n';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { createLogger } from '@/core/logging/logger';
 import { normalizeBrowserUrl } from '@/utils/browserUrl';
+import { cn } from '@/lib/utils';
+import { isMacOS } from '@/utils/platform';
+import { createDomElementReference, type BrowserElementPayload } from '@/types/chatReference';
 
 const browserLogger = createLogger('browser-tab');
+
+function resolveInspectTheme() {
+  const styles = getComputedStyle(document.documentElement);
+  const read = (name: string) => styles.getPropertyValue(name).trim();
+  return {
+    bgBase: read('--abu-bg-base'),
+    bgHover: read('--abu-bg-hover'),
+    borderSubtle: read('--abu-border-subtle'),
+    textPrimary: read('--abu-text-primary'),
+    textTertiary: read('--abu-text-tertiary'),
+    danger: read('--abu-danger'),
+  };
+}
 
 /**
  * In-app browser tab backed by a REAL native child webview (`browser.rs` /
@@ -40,6 +57,24 @@ export default function BrowserTab({ tabId, url }: { tabId: string; url: string 
 
   const [addressInput, setAddressInput] = useState(url);
   const [committedUrl, setCommittedUrl] = useState(url);
+  const [inspecting, setInspecting] = useState(false);
+
+  const inspectLabels = {
+    addToChat: t.reference.addToChat,
+    commentToChat: t.reference.commentToChat,
+    commentPlaceholder: t.reference.commentPlaceholder,
+    cancel: t.common.cancel,
+    shortcutModifier: isMacOS() ? '⌘' : 'Ctrl',
+    theme: resolveInspectTheme(),
+  };
+  const inspectLabelsRef = useRef(inspectLabels);
+  useEffect(() => {
+    inspectLabelsRef.current = inspectLabels;
+  });
+  const inspectingRef = useRef(inspecting);
+  useEffect(() => {
+    inspectingRef.current = inspecting;
+  }, [inspecting]);
 
   const containerRef = useRef<HTMLDivElement>(null);
   const addressInputRef = useRef<HTMLInputElement>(null);
@@ -119,23 +154,38 @@ export default function BrowserTab({ tabId, url }: { tabId: string; url: string 
   // (keep-alive — a background tab still loads). Listen for real navigations
   // (link clicks / redirects) to keep the address bar in sync.
   useEffect(() => {
-    let unlisten: UnlistenFn | undefined;
+    let navUnlisten: UnlistenFn | undefined;
+    let elementUnlisten: UnlistenFn | undefined;
     let disposed = false;
 
     (async () => {
-      const navUnlisten = await listen<string>(`browser://nav/${tabId}`, (e) => {
+      const unlisten = await listen<string>(`browser://nav/${tabId}`, (e) => {
         const u = e.payload;
         if (u && u !== 'about:blank') {
           setAddressInput(u);
           setCommittedUrl(u);
           updateBrowserUrl(tabId, u);
         }
+        if (inspectingRef.current) setInspecting(false);
       });
       if (disposed) {
-        navUnlisten();
+        unlisten();
         return;
       }
-      unlisten = navUnlisten;
+      navUnlisten = unlisten;
+    })();
+
+    (async () => {
+      const unlisten = await listen<BrowserElementPayload>(`browser://element/${tabId}`, (e) => {
+        useChatStore.getState().addPendingReference(createDomElementReference(e.payload));
+        setInspecting(false);
+        void invoke('browser_inspect_set', { id: tabId, enabled: false, labels: inspectLabelsRef.current }).catch(() => {});
+      });
+      if (disposed) {
+        unlisten();
+        return;
+      }
+      elementUnlisten = unlisten;
     })();
 
     if (committedUrlRef.current) {
@@ -146,7 +196,8 @@ export default function BrowserTab({ tabId, url }: { tabId: string; url: string 
 
     return () => {
       disposed = true;
-      unlisten?.();
+      navUnlisten?.();
+      elementUnlisten?.();
       void invoke('browser_close', { id: tabId }).catch(() => {});
       createdRef.current = false;
       shownRef.current = false;
@@ -170,6 +221,25 @@ export default function BrowserTab({ tabId, url }: { tabId: string; url: string 
       window.clearInterval(interval);
     };
   }, [syncBounds, systemSettingsOpen]);
+
+  useEffect(() => {
+    if (!inspecting || !(systemSettingsOpen || menuOpen)) return;
+    setInspecting(false);
+    void invoke('browser_inspect_set', { id: tabId, enabled: false, labels: inspectLabelsRef.current }).catch(() => {});
+  }, [inspecting, menuOpen, systemSettingsOpen, tabId]);
+
+  const toggleInspect = useCallback(async () => {
+    const next = !inspecting;
+    setInspecting(next);
+    try {
+      await invoke('browser_inspect_set', { id: tabId, enabled: next, labels: inspectLabelsRef.current });
+    } catch (err) {
+      setInspecting(!next);
+      browserLogger.error('Failed to toggle browser inspect mode', {
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }, [inspecting, tabId]);
 
   const commit = (raw: string) => {
     const trimmed = raw.trim();
@@ -238,6 +308,20 @@ export default function BrowserTab({ tabId, url }: { tabId: string; url: string 
             </Button>
           </TooltipTrigger>
           <TooltipContent side="bottom">{t.workspace.browser.openExternal}</TooltipContent>
+        </Tooltip>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <Button
+              variant="ghost"
+              size="icon-xs"
+              disabled={!committedUrl}
+              onClick={() => void toggleInspect()}
+              className={cn(inspecting ? 'text-[var(--abu-clay)] bg-[var(--abu-clay-bg)]' : 'text-[var(--abu-text-tertiary)]')}
+            >
+              <SquareDashedMousePointer className="w-3.5 h-3.5" strokeWidth={1.5} />
+            </Button>
+          </TooltipTrigger>
+          <TooltipContent side="bottom">{t.workspace.browser.selectElement}</TooltipContent>
         </Tooltip>
       </div>
 

@@ -28,7 +28,7 @@
  * Run: npx electron electron/spike/f7Verify.cjs   (self-exits, prints JSON)
  */
 'use strict';
-const { app, BrowserWindow } = require('electron');
+const { app, BrowserWindow, webContents } = require('electron');
 const path = require('node:path');
 const fs = require('node:fs');
 const os = require('node:os');
@@ -111,18 +111,23 @@ app.whenReady().then(async () => {
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'abu-f7-verify-'));
   const page1Path = path.join(tmpDir, 'page1.html');
   const page2Path = path.join(tmpDir, 'page2.html');
-  fs.writeFileSync(page1Path, '<!doctype html><html><body><h1>abu-f7-page1</h1></body></html>');
+  fs.writeFileSync(
+    page1Path,
+    '<!doctype html><html><body><h1>abu-f7-page1</h1><button id="abu-select-target">Pick me</button></body></html>'
+  );
   fs.writeFileSync(page2Path, '<!doctype html><html><body><h1>abu-f7-page2</h1></body></html>');
   const page1Url = pathToFileURL(page1Path).href;
   const page2Url = pathToFileURL(page2Path).href;
 
   const tabId = `f7-verify-${Date.now()}`;
   const navStashKey = 'abuF7Nav';
+  const elementStashKey = 'abuF7Elements';
 
   // Register the nav listener BEFORE browser_create, matching BrowserTab.tsx's
   // real ordering (listen() is awaited in the mount effect before
   // ensureWebview() creates the native view).
   await listenIn(`browser://nav/${tabId}`, navStashKey);
+  await listenIn(`browser://element/${tabId}`, elementStashKey);
 
   // ── 1. browser_create (file://page1) + nav event ──
   try {
@@ -142,6 +147,63 @@ app.whenReady().then(async () => {
   {
     const navs = await waitForStashNonEmpty(navStashKey, 8000);
     record('nav_event_on_create_page1', navs.includes(page1Url), { navs, expected: page1Url });
+  }
+
+  // ── browser element picker: isolated runtime -> guarded host event ──
+  const pageContents = webContents.getAllWebContents().find((contents) => contents.getURL() === page1Url);
+  record('browser_page_webcontents_found', Boolean(pageContents));
+  if (pageContents) {
+    try {
+      await invokeIn('browser_inspect_set', {
+        id: tabId,
+        enabled: true,
+        labels: {
+          addToChat: 'Add to chat',
+          commentToChat: 'Comment',
+          commentPlaceholder: 'Add a comment',
+          cancel: 'Cancel',
+          shortcutModifier: 'Ctrl',
+          theme: {},
+        },
+      });
+      record('browser_inspect_enable_no_throw', true);
+    } catch (err) {
+      record('browser_inspect_enable_no_throw', false, String(err));
+    }
+
+    const pageCannotReadInspectApi = await pageContents.executeJavaScript(
+      'typeof window.__ABU_BROWSER_INSPECT__ === "undefined"'
+    );
+    record('browser_page_cannot_read_inspect_api', pageCannotReadInspectApi === true);
+
+    try {
+      const clicked = await pageContents.executeJavaScript(`
+        (() => {
+          const target = document.querySelector('#abu-select-target');
+          const root = document.querySelector('[data-abu-inspect]');
+          const overlay = root && root.firstElementChild;
+          if (!target || !overlay) return false;
+          const rect = target.getBoundingClientRect();
+          const eventInit = { bubbles: true, clientX: rect.left + 2, clientY: rect.top + 2 };
+          overlay.dispatchEvent(new MouseEvent('mousemove', eventInit));
+          overlay.dispatchEvent(new MouseEvent('click', eventInit));
+          const buttons = root.querySelectorAll('button');
+          if (buttons.length < 2) return false;
+          buttons[1].click();
+          return true;
+        })()
+      `);
+      record('browser_inspect_selects_fixture_element', clicked === true);
+    } catch (err) {
+      record('browser_inspect_selects_fixture_element', false, String(err));
+    }
+
+    const selections = await waitForStashNonEmpty(elementStashKey, 8000);
+    record(
+      'browser_inspect_emits_selected_element',
+      selections.some((payload) => typeof payload?.outerHTML === 'string' && payload.outerHTML.includes('abu-select-target')),
+      { selections }
+    );
   }
 
   // ── 2. browser_navigate (file://page2) + second nav event ──

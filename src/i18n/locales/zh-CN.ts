@@ -1500,6 +1500,7 @@ const zhCN: TranslationDict = {
       startPrompt: '输入网址开始浏览',
       framingHint: '部分网站禁止内嵌，若空白请用 ↗ 在系统浏览器打开',
       dismissHint: '关闭提示',
+      selectElement: '选择元素',
     },
   },
 

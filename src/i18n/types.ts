@@ -1630,6 +1630,7 @@ export interface TranslationDict {
       startPrompt: string;
       framingHint: string;
       dismissHint: string;
+      selectElement: string;
     };
   };
 

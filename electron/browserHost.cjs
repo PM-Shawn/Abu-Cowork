@@ -70,6 +70,9 @@
 'use strict';
 
 const { WebContentsView } = require('electron');
+const crypto = require('node:crypto');
+const fs = require('node:fs');
+const path = require('node:path');
 
 // Lazy-required (not at top-level) to avoid a circular-require footgun:
 // tauriHost.cjs requires THIS module (to wire browserDispatch into its
@@ -99,11 +102,108 @@ const BROWSER_CMDS = new Set([
   'browser_hide',
   'browser_show',
   'browser_close',
+  'browser_inspect_set',
 ]);
 const BROWSER_MISS = Symbol('browser-dispatch-miss');
 
+const INSPECT_WORLD_ID = 1001;
+const INSPECT_POLL_MS = 150;
+const MAX_INSPECT_PAYLOAD_BYTES = 128 * 1024;
+const INSPECT_RUNTIME_PATH = path.join(__dirname, 'browserInspectRuntime.js');
+let inspectRuntime = null;
+try {
+  inspectRuntime = fs.readFileSync(INSPECT_RUNTIME_PATH, 'utf8');
+} catch (err) {
+  console.warn(
+    `[browserHost] inspect runtime not found at ${INSPECT_RUNTIME_PATH}; browser element selection is unavailable:`,
+    err instanceof Error ? err.message : String(err)
+  );
+}
+
 /** id -> WebContentsView, mirroring browser.rs's label->webview lookup. */
 const views = new Map();
+
+/** id -> current inspect session. A session is invalidated on navigation/close. */
+const inspectSessions = new Map();
+
+function isInspectPayload(value) {
+  if (!value || typeof value !== 'object' || typeof value.outerHTML !== 'string') return false;
+  try {
+    return Buffer.byteLength(JSON.stringify(value), 'utf8') <= MAX_INSPECT_PAYLOAD_BYTES;
+  } catch {
+    return false;
+  }
+}
+
+function inspectApiCode(method, args) {
+  return `(() => {
+    const api = window.__ABU_BROWSER_INSPECT__;
+    if (!api || typeof api[${JSON.stringify(method)}] !== 'function') {
+      throw new Error('browser inspect runtime unavailable');
+    }
+    return api[${JSON.stringify(method)}](...${JSON.stringify(args)});
+  })()`;
+}
+
+function runInspectCode(view, code) {
+  if (!view || view.webContents.isDestroyed()) {
+    return Promise.reject(new Error('browser webview not found'));
+  }
+  return view.webContents.executeJavaScriptInIsolatedWorld(INSPECT_WORLD_ID, [{ code }]);
+}
+
+function disarmInspect(id, updateRuntime) {
+  const session = inspectSessions.get(id);
+  if (!session) return;
+  inspectSessions.delete(id);
+  if (session.timer) clearTimeout(session.timer);
+  if (updateRuntime) {
+    void runInspectCode(session.view, inspectApiCode('setEnabled', [false, null, {}])).catch(() => {});
+  }
+}
+
+function scheduleInspectPoll(id, session) {
+  session.timer = setTimeout(async () => {
+    if (inspectSessions.get(id) !== session) return;
+    try {
+      const entries = await runInspectCode(session.view, inspectApiCode('drainSelections', []));
+      if (inspectSessions.get(id) !== session) return;
+      if (Array.isArray(entries)) {
+        for (const entry of entries) {
+          if (!entry || entry.nonce !== session.nonce || !isInspectPayload(entry.payload)) continue;
+          emit(`browser://element/${id}`, entry.payload);
+          // BrowserTab is single-select. Stop before emitting again so a burst
+          // cannot turn one user interaction into multiple chat references.
+          disarmInspect(id, true);
+          return;
+        }
+      }
+      scheduleInspectPoll(id, session);
+    } catch {
+      // A navigation/destroy can race the next timer. The next explicit toggle
+      // installs a fresh runtime, so stale sessions must simply disappear.
+      disarmInspect(id, false);
+    }
+  }, INSPECT_POLL_MS);
+}
+
+async function browserInspectSet({ id, enabled, labels }) {
+  const view = getView(id);
+  if (!view) throw new Error('browser webview not found');
+
+  disarmInspect(id, true);
+  if (!enabled) return null;
+  if (!inspectRuntime) throw new Error('browser inspect runtime is unavailable');
+
+  const nonce = crypto.randomBytes(32).toString('hex');
+  await runInspectCode(view, inspectRuntime);
+  await runInspectCode(view, inspectApiCode('setEnabled', [true, nonce, labels && typeof labels === 'object' ? labels : {}]));
+
+  const session = { view, nonce, timer: null };
+  inspectSessions.set(id, session);
+  scheduleInspectPoll(id, session);
+  return null;
+}
 
 /**
  * Validate-only URL parse — parity with browser.rs's `parse_url`, which
@@ -176,7 +276,10 @@ function browserCreate({ id, url, x, y, width, height }) {
     return { action: 'deny' };
   });
 
-  const onNav = (_e, navUrl) => emit(`browser://nav/${id}`, navUrl);
+  const onNav = (_e, navUrl) => {
+    disarmInspect(id, false);
+    emit(`browser://nav/${id}`, navUrl);
+  };
   view.webContents.on('did-navigate', onNav);
   view.webContents.on('did-navigate-in-page', onNav);
 
@@ -245,6 +348,7 @@ function browserShow({ id }) {
 }
 
 function closeView(id, view) {
+  disarmInspect(id, false);
   try {
     const win = mainWindow();
     if (win && !win.isDestroyed()) {
@@ -300,6 +404,8 @@ function browserDispatch(app, cmd, args) {
       return browserShow(a);
     case 'browser_close':
       return browserClose(a);
+    case 'browser_inspect_set':
+      return browserInspectSet(a);
     default:
       return BROWSER_MISS;
   }

@@ -1,0 +1,97 @@
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { invoke } from '@tauri-apps/api/core';
+import { invokeTaskCommand, TaskCommandAbortedError } from './scopedCommand';
+
+function setElectronMarker(enabled: boolean): void {
+  const runtime = globalThis as typeof globalThis & {
+    __ABU_SHELL__?: { mainSupervisesSidecar?: boolean };
+  };
+  if (enabled) {
+    runtime.__ABU_SHELL__ = { mainSupervisesSidecar: true };
+  } else {
+    delete runtime.__ABU_SHELL__;
+  }
+}
+
+describe('invokeTaskCommand', () => {
+  const oldElectronRunAsNode = process.env.ELECTRON_RUN_AS_NODE;
+
+  beforeEach(() => {
+    vi.mocked(invoke).mockReset();
+    delete process.env.ELECTRON_RUN_AS_NODE;
+    setElectronMarker(false);
+  });
+
+  afterEach(() => {
+    vi.mocked(invoke).mockReset();
+    if (oldElectronRunAsNode === undefined) {
+      delete process.env.ELECTRON_RUN_AS_NODE;
+    } else {
+      process.env.ELECTRON_RUN_AS_NODE = oldElectronRunAsNode;
+    }
+    setElectronMarker(false);
+  });
+
+  it('keeps the Tauri invoke payload unchanged when the Electron command host marker is absent', async () => {
+    vi.mocked(invoke).mockResolvedValueOnce({ code: 0, stdout: 'ok', stderr: '' });
+    const payload = {
+      program: 'pdftotext',
+      args: ['/tmp/a.pdf', '-'],
+      timeout: 30,
+    };
+
+    await invokeTaskCommand('run_argv_command', payload, { workspacePath: '/ws' });
+
+    expect(invoke).toHaveBeenCalledTimes(1);
+    expect(invoke).toHaveBeenCalledWith('run_argv_command', payload);
+  });
+
+  it('adds an Electron-only commandId and sends abort_command with the same id', async () => {
+    setElectronMarker(true);
+    const controller = new AbortController();
+    let resolveCommand!: (value: unknown) => void;
+    vi.mocked(invoke).mockImplementation(async (cmd) => {
+      if (cmd === 'run_shell_command') {
+        return await new Promise((resolve) => {
+          resolveCommand = resolve;
+        });
+      }
+      if (cmd === 'abort_command') return true;
+      return { code: 0, stdout: '', stderr: '' };
+    });
+
+    const running = invokeTaskCommand(
+      'run_shell_command',
+      { command: 'sleep 60', cwd: null, background: false, timeout: 30 },
+      { abortSignal: controller.signal },
+      { commandIdPrefix: 'test-command' },
+    );
+
+    await vi.waitFor(() => {
+      expect(invoke).toHaveBeenCalledWith(
+        'run_shell_command',
+        expect.objectContaining({ command: 'sleep 60', commandId: expect.stringMatching(/^test-command-/) }),
+      );
+    });
+    const shellCall = vi.mocked(invoke).mock.calls.find(([cmd]) => cmd === 'run_shell_command');
+    const commandId = (shellCall?.[1] as { commandId: string }).commandId;
+
+    controller.abort();
+
+    await vi.waitFor(() => {
+      expect(invoke).toHaveBeenCalledWith('abort_command', { commandId });
+    });
+    resolveCommand({ code: -1, stdout: '', stderr: '[Command aborted]' });
+    await running;
+  });
+
+  it('does not invoke anything when the task signal is already aborted', async () => {
+    const controller = new AbortController();
+    controller.abort();
+
+    await expect(invokeTaskCommand('run_shell_command', { command: 'sleep 60' }, { abortSignal: controller.signal }))
+      .rejects
+      .toThrow(TaskCommandAbortedError);
+    expect(invoke).not.toHaveBeenCalled();
+  });
+});

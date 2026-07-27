@@ -74,7 +74,7 @@ import {
 } from '../sidecar/sidecarManager';
 import { runSubagentLoop, SubagentResult, type SubagentLoopOptions, type SubagentProgressEvent } from './subagentLoop';
 import { registerToolInvokeSource, ensureToolInvokeRouterRegistered } from './toolInvokeRouter';
-import { ensureHookBridgeRegistered } from './hookBridge';
+import { ensureHookBridgeRegistered, registerHookSignalSource } from './hookBridge';
 import { createLogger } from '../logging/logger';
 
 const logger = createLogger('subagent-transport');
@@ -198,7 +198,10 @@ async function handleToolInvoke(rawParams: unknown): Promise<unknown> {
     (params.input as Record<string, unknown>) ?? {},
     session.options.commandConfirmCallback,
     session.options.filePermissionCallback,
-    params.context as ToolExecutionContext | undefined,
+    {
+      ...((params.context as ToolExecutionContext | undefined) ?? {}),
+      abortSignal: session.options.signal,
+    },
   );
 }
 
@@ -234,6 +237,9 @@ function ensureHandlersRegistered(): void {
   handlersRegistered = true;
   registerToolInvokeSource('subagent', { has: (runId) => sessions.has(runId), handle: handleToolInvoke });
   ensureToolInvokeRouterRegistered();
+  registerHookSignalSource('subagent', {
+    getAbortSignal: (runId) => sessions.get(runId)?.options.signal,
+  });
   // hook.emit / hook.notify are shared with the main-loop path (both run in
   // the sidecar and forward hooks to the real webview registry) — registered
   // via the neutral hookBridge so neither path clobbers the other and a
@@ -298,6 +304,16 @@ function reconstructSubagentResult(raw: unknown): SubagentResult {
   return new SubagentResult(raw);
 }
 
+function cancelledSubagentResult(): SubagentResult {
+  return new SubagentResult({
+    text: getI18n().chat.subagent.taskCancelled,
+    toolCallCount: 0,
+    turnCount: 0,
+    tokenUsage: { input: 0, output: 0 },
+    duration: 0,
+  });
+}
+
 // ── Public entry point ──────────────────────────────────────────────────
 
 /**
@@ -306,6 +322,10 @@ function reconstructSubagentResult(raw: unknown): SubagentResult {
  * protocol and fallback discipline.
  */
 export async function runSubagent(options: SubagentLoopOptions): Promise<SubagentResult> {
+  if (options.signal?.aborted) {
+    return cancelledSubagentResult();
+  }
+
   if (getSidecarStatus() !== 'running') {
     logger.debug('subagent path selected', { path: 'local', sidecarStatus: getSidecarStatus() });
     return runSubagentLoop(options);
@@ -359,6 +379,12 @@ export async function runSubagent(options: SubagentLoopOptions): Promise<Subagen
     const raw = signal ? await Promise.race([requestPromise, gracePromise]) : await requestPromise;
     return reconstructSubagentResult(raw);
   } catch (err) {
+    // User cancellation and transport failure are different outcomes. Even
+    // before the first tool call, a cancelled run must never be resurrected in
+    // the in-process engine after the sidecar abort grace period expires.
+    if (signal?.aborted) {
+      return cancelledSubagentResult();
+    }
     if (!session.firstToolInvokeArrived) {
       // Nothing executed yet — safe to retry the whole run in-process.
       logger.warn('subagent transport failed before first tool — retrying in-process', {

@@ -1,7 +1,7 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { invoke } from '@tauri-apps/api/core';
 import { writeTextFile, readTextFile, exists } from '@tauri-apps/plugin-fs';
-import { readFileTool, writeFileTool, deleteFileTool, editFileTool } from './fileTools';
+import { readFileTool, writeFileTool, deleteFileTool, editFileTool, searchFilesTool, findFilesTool } from './fileTools';
 import { registerBuiltinTools } from '../builtins';
 import { toolRegistry } from '../registry';
 import { TOOL_NAMES } from '../toolNames';
@@ -37,6 +37,12 @@ function nthCall(n: number) {
   return vi.mocked(invoke).mock.calls[n] as unknown as [string, InvokePayload];
 }
 
+afterEach(() => {
+  delete (globalThis as typeof globalThis & {
+    __ABU_SHELL__?: { mainSupervisesSidecar?: boolean };
+  }).__ABU_SHELL__;
+});
+
 describe('readFileTool — PDF shell injection regression', () => {
   beforeEach(() => {
     vi.mocked(invoke).mockReset();
@@ -59,6 +65,47 @@ describe('readFileTool — PDF shell injection regression', () => {
     expect(payload.program).toBe('pdftotext');
     // Critical: the evil path is the first argv element, unescaped, untouched.
     expect(payload.args).toEqual([EVIL_PDF_QUOTE, '-']);
+    expect(payload).not.toHaveProperty('commandId');
+  });
+
+  it('routes task aborts to abort_command for the active PDF extractor process in Electron', async () => {
+    const runtime = globalThis as typeof globalThis & {
+      __ABU_SHELL__?: { mainSupervisesSidecar?: boolean };
+    };
+    runtime.__ABU_SHELL__ = { mainSupervisesSidecar: true };
+    const controller = new AbortController();
+    let resolveCommand!: (value: unknown) => void;
+    vi.mocked(invoke).mockImplementation(async (cmd) => {
+      if (cmd === 'run_argv_command') {
+        return await new Promise((resolve) => {
+          resolveCommand = resolve;
+        });
+      }
+      if (cmd === 'abort_command') return true;
+      return { code: 0, stdout: '', stderr: '' };
+    });
+
+    const running = readFileTool.execute(
+      { path: EVIL_PDF_QUOTE },
+      { abortSignal: controller.signal },
+    );
+
+    await vi.waitFor(() => {
+      expect(invoke).toHaveBeenCalledWith(
+        'run_argv_command',
+        expect.objectContaining({ program: 'pdftotext', commandId: expect.stringMatching(/^read-pdf-/) }),
+      );
+    });
+    const [, payload] = firstCall() as unknown as [string, InvokePayload & { commandId: string }];
+
+    controller.abort();
+
+    await vi.waitFor(() => {
+      expect(invoke).toHaveBeenCalledWith('abort_command', { commandId: payload.commandId });
+    });
+    resolveCommand({ code: -1, stdout: '', stderr: '[Command aborted]' });
+    const result = await running;
+    expect(String(result)).toContain('PDF extraction was aborted');
   });
 
   it('falls back to pdfplumber when pdftotext fails — still argv, still verbatim', async () => {
@@ -150,6 +197,46 @@ describe('readFileTool — non-vision model image gating', () => {
     // did NOT take the non-vision shortcut.
     const result = await readFileTool.execute({ path: '/tmp/图片.png' });
     expect(String(result)).not.toContain('no vision capability');
+  });
+});
+
+describe('search/find file tools — task command scope', () => {
+  beforeEach(() => {
+    vi.mocked(invoke).mockReset();
+  });
+
+  it('adds an Electron commandId to search_files shell execution when context carries a task signal', async () => {
+    (globalThis as typeof globalThis & {
+      __ABU_SHELL__?: { mainSupervisesSidecar?: boolean };
+    }).__ABU_SHELL__ = { mainSupervisesSidecar: true };
+    vi.mocked(invoke).mockResolvedValueOnce({ code: 1, stdout: '', stderr: '' });
+
+    await searchFilesTool.execute(
+      { pattern: 'needle', path: '/tmp/project' },
+      { abortSignal: new AbortController().signal },
+    );
+
+    expect(invoke).toHaveBeenCalledWith(
+      'run_shell_command',
+      expect.objectContaining({ commandId: expect.stringMatching(/^search-files-/) }),
+    );
+  });
+
+  it('adds an Electron commandId to find_files shell execution when context carries a task signal', async () => {
+    (globalThis as typeof globalThis & {
+      __ABU_SHELL__?: { mainSupervisesSidecar?: boolean };
+    }).__ABU_SHELL__ = { mainSupervisesSidecar: true };
+    vi.mocked(invoke).mockResolvedValueOnce({ code: 0, stdout: '/tmp/project/a.ts\n', stderr: '' });
+
+    await findFilesTool.execute(
+      { pattern: '*.ts', path: '/tmp/project' },
+      { abortSignal: new AbortController().signal },
+    );
+
+    expect(invoke).toHaveBeenCalledWith(
+      'run_shell_command',
+      expect.objectContaining({ commandId: expect.stringMatching(/^find-files-/) }),
+    );
   });
 });
 

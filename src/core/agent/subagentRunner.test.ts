@@ -213,9 +213,11 @@ describe('subagentRunner', () => {
 
       const confirmCb = vi.fn().mockResolvedValue(true);
       const filePermCb = vi.fn().mockResolvedValue(true);
+      const controller = new AbortController();
       const runPromise = runSubagent({
         agent,
         task: 'do the thing',
+        signal: controller.signal,
         commandConfirmCallback: confirmCb,
         filePermissionCallback: filePermCb,
       });
@@ -230,7 +232,13 @@ describe('subagentRunner', () => {
       const toolResult = await toolInvokeHandler({ runId, toolName: 'read_file', input: { path: 'x.txt' }, context: { workspacePath: '/tmp' } });
 
       expect(toolResult).toBe('tool result');
-      expect(executeAnyToolMock).toHaveBeenCalledWith('read_file', { path: 'x.txt' }, confirmCb, filePermCb, { workspacePath: '/tmp' });
+      expect(executeAnyToolMock).toHaveBeenCalledWith(
+        'read_file',
+        { path: 'x.txt' },
+        confirmCb,
+        filePermCb,
+        expect.objectContaining({ workspacePath: '/tmp', abortSignal: controller.signal }),
+      );
 
       d.resolve({ text: 'done', toolCallCount: 1, turnCount: 1, tokenUsage: { input: 0, output: 0 }, duration: 1 });
       await runPromise;
@@ -368,16 +376,33 @@ describe('subagentRunner', () => {
         const runId = (sidecarRequestMock.mock.calls[0][1] as { runId: string }).runId;
         expect(notifySidecar).toHaveBeenCalledWith('subagent.abort', { runId });
 
-        // Grace period (5s) elapses with the sidecar never responding —
-        // falls back to runSubagentLoop since no tool.invoke ever arrived.
+        // Grace period (5s) elapses with the sidecar never responding. This is
+        // still a user cancellation, never a transport retry.
         await vi.advanceTimersByTimeAsync(5_000);
         const result = await runPromise;
 
-        expect(runSubagentLoopMock).toHaveBeenCalledTimes(1);
-        expect(result.text).toBe('in-process result');
+        expect(runSubagentLoopMock).not.toHaveBeenCalled();
+        expect(result.text).toContain('任务已取消');
       } finally {
         vi.useRealTimers();
       }
+    });
+
+    it('does not dispatch or fall back when the caller signal is already aborted', async () => {
+      getSidecarStatus.mockReturnValue('running');
+      const { runSubagent } = await importFresh();
+      const controller = new AbortController();
+      controller.abort();
+
+      const result = await runSubagent({
+        agent,
+        task: 'do not resurrect this task',
+        signal: controller.signal,
+      });
+
+      expect(sidecarRequestMock).not.toHaveBeenCalled();
+      expect(runSubagentLoopMock).not.toHaveBeenCalled();
+      expect(result.text).toContain('任务已取消');
     });
   });
 

@@ -8,7 +8,7 @@
  * success/error output formatting), mirroring `computerTools.test.ts`'s
  * pattern for mocking `../../../utils/platform`'s `isWindows()`.
  */
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { invoke } from '@tauri-apps/api/core';
 import { isWindows } from '../../../utils/platform';
 import { processImageTool } from './processImageTool';
@@ -31,6 +31,12 @@ describe('processImageTool', () => {
   beforeEach(() => {
     vi.mocked(invoke).mockReset();
     vi.mocked(isWindows).mockReturnValue(false);
+  });
+
+  afterEach(() => {
+    delete (globalThis as typeof globalThis & {
+      __ABU_SHELL__?: { mainSupervisesSidecar?: boolean };
+    }).__ABU_SHELL__;
   });
 
   it('rejects an invalid action before doing any work', async () => {
@@ -96,6 +102,46 @@ describe('processImageTool', () => {
         extraWritablePaths: ['/tmp/x'],
       }),
     );
+  });
+
+  it('routes task aborts to abort_command for the active image processor in Electron', async () => {
+    (globalThis as typeof globalThis & {
+      __ABU_SHELL__?: { mainSupervisesSidecar?: boolean };
+    }).__ABU_SHELL__ = { mainSupervisesSidecar: true };
+    const controller = new AbortController();
+    let resolveCommand!: (value: unknown) => void;
+    vi.mocked(invoke).mockImplementation(async (cmd) => {
+      if (cmd === 'run_shell_command') {
+        return await new Promise((resolve) => {
+          resolveCommand = resolve;
+        });
+      }
+      if (cmd === 'abort_command') return true;
+      return { code: 0, stdout: '', stderr: '' };
+    });
+
+    const running = processImageTool.execute(
+      { input_path: '/tmp/in.png', output_path: '/tmp/x/out.png', action: 'resize', width: 100, height: 200 },
+      { abortSignal: controller.signal },
+    );
+
+    await vi.waitFor(() => {
+      expect(invoke).toHaveBeenCalledWith(
+        'run_shell_command',
+        expect.objectContaining({ commandId: expect.stringMatching(/^process-image-/) }),
+      );
+    });
+    const shellCall = vi.mocked(invoke).mock.calls.find(([cmd]) => cmd === 'run_shell_command');
+    const commandId = (shellCall?.[1] as { commandId: string }).commandId;
+
+    controller.abort();
+
+    await vi.waitFor(() => {
+      expect(invoke).toHaveBeenCalledWith('abort_command', { commandId });
+    });
+    resolveCommand({ code: -1, stdout: '', stderr: '[Command aborted]' });
+    const result = await running;
+    expect(String(result)).toContain('Error processing image');
   });
 
   it('formats a success result with the output path on exit code 0', async () => {

@@ -407,6 +407,12 @@ export interface ToolExecutionContext {
    * providers. Undefined means "unknown / assume capable" (default behavior).
    */
   supportsVision?: boolean;
+  /**
+   * In-process cancellation signal. This is intentionally local-only: it must
+   * never be relied on across JSON/RPC serialization, where AbortSignal would
+   * lose its live behavior.
+   */
+  abortSignal?: AbortSignal;
 }
 
 export interface ToolDefinition {

@@ -59,7 +59,7 @@ const { guiDispatch, GUI_MISS, initGuiHost, teardownGuiHost } = require('./guiHo
 const { previewDispatch, PREVIEW_MISS } = require('./previewServer.cjs');
 const { catalogDispatch, CATALOG_MISS } = require('./catalogDb.cjs');
 const { noticeDispatch, NOTICE_MISS } = require('./noticeDb.cjs');
-const { commandDispatch, COMMAND_MISS } = require('./commandHost.cjs');
+const { commandDispatch, COMMAND_MISS, teardownCommandHost } = require('./commandHost.cjs');
 const { triggerDispatch, TRIGGER_MISS } = require('./triggerServer.cjs');
 const { networkProxyDispatch, NETWORK_PROXY_MISS } = require('./networkProxy.cjs');
 const { httpDispatch, HTTP_MISS } = require('./httpHost.cjs');
@@ -720,6 +720,9 @@ function registerTauriHost(app) {
     // registrations are a process-wide OS resource that outlives a destroyed
     // BrowserWindow, so they must be explicitly released on quit.
     teardownGlobalShortcuts();
+    // Same no-orphan intent for command trees. Background commands keep their
+    // 3s-return behavior, but the registry still owns them for app shutdown.
+    teardownCommandHost();
   });
 
   // Tray boot (GUI-families slice) — mirrors src-tauri/src/lib.rs's

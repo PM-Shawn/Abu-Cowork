@@ -1,4 +1,3 @@
-import { invoke } from '@tauri-apps/api/core';
 import type { ToolDefinition } from '../../../types';
 import { getPlatform, getShell, isWindows } from '../../../utils/platform';
 import { resolveCommandPython } from '../../../utils/pythonRuntime';
@@ -7,6 +6,7 @@ import { getWorkspaceReader } from '../../agent/ports/workspaceReader';
 import { getAuthorizedPathsReader } from '../../agent/ports/authorizedPathsReader';
 import { showSandboxBlockedToast } from '../../sandbox/recovery';
 import type { CommandOutput } from '../helpers/toolHelpers';
+import { invokeTaskCommand, isTaskCommandAbortedError } from '../helpers/scopedCommand';
 import { isReadOnlyCommand } from '../readOnlyDetector';
 import { TOOL_NAMES } from '../toolNames';
 
@@ -56,10 +56,17 @@ This tool is suitable for: moving/copying/renaming files (mv/cp), package manage
     const cwd = input.cwd as string | undefined;
     const background = input.background as boolean | undefined;
     const timeout = input.timeout as number | undefined;
+    const abortSignal = context?.abortSignal;
+    if (abortSignal?.aborted) {
+      return 'Error executing command: command was aborted before it started';
+    }
 
     try {
       // Use embedded Python runtime if command starts with python/python3
       const resolvedCommand = await resolveCommandPython(command);
+      if (abortSignal?.aborted) {
+        return 'Error executing command: command was aborted before it started';
+      }
 
       // Exempt app-launcher commands from sandbox
       // macOS: `open` uses LaunchServices via XPC, blocked by Seatbelt
@@ -83,7 +90,7 @@ This tool is suitable for: moving/copying/renaming files (mv/cp), package manage
       ];
 
       // Use custom Tauri command defined in Rust
-      const output = await invoke<CommandOutput>('run_shell_command', {
+      const output = await invokeTaskCommand<CommandOutput>('run_shell_command', {
         command: resolvedCommand,
         cwd: cwd || workspacePath || null,
         background: background || false,
@@ -91,6 +98,9 @@ This tool is suitable for: moving/copying/renaming files (mv/cp), package manage
         sandboxEnabled: sandbox,
         networkIsolation: isNetworkIsolationEnabled(),
         extraWritablePaths,
+      }, context, {
+        commandIdPrefix: 'run-command',
+        keepAbortListenerAfterResolve: (result) => background === true && result.code === 0,
       });
 
       // Detect sandbox-blocked errors and show recovery toast
@@ -109,6 +119,9 @@ This tool is suitable for: moving/copying/renaming files (mv/cp), package manage
 
       return parts.join('\n\n');
     } catch (err) {
+      if (isTaskCommandAbortedError(err)) {
+        return 'Error executing command: command was aborted before it started';
+      }
       return `Error executing command: ${err instanceof Error ? err.message : String(err)}`;
     }
   },

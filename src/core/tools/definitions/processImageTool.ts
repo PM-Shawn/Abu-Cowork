@@ -1,4 +1,3 @@
-import { invoke } from '@tauri-apps/api/core';
 import type { ToolDefinition } from '../../../types';
 import { getI18n, format } from '../../../i18n';
 import { isWindows } from '../../../utils/platform';
@@ -9,6 +8,7 @@ import {
   buildWindowsImageCommand,
   type CommandOutput,
 } from '../helpers/toolHelpers';
+import { invokeTaskCommand } from '../helpers/scopedCommand';
 import { TOOL_NAMES } from '../toolNames';
 
 /**
@@ -48,7 +48,7 @@ export const processImageTool: ToolDefinition = {
     },
     required: ['input_path', 'output_path', 'action'],
   },
-  execute: async (input) => {
+  execute: async (input, context) => {
     const inputPath = input.input_path as string;
     const outputPath = input.output_path as string;
     const action = input.action as string;
@@ -89,7 +89,7 @@ export const processImageTool: ToolDefinition = {
 
       // outputPath's parent directory needs write access in sandbox
       const outputDir = getParentDir(outputPath);
-      const output = await invoke<CommandOutput>('run_shell_command', {
+      const output = await invokeTaskCommand<CommandOutput>('run_shell_command', {
         command,
         cwd: null,
         background: false,
@@ -97,7 +97,7 @@ export const processImageTool: ToolDefinition = {
         sandboxEnabled: isSandboxEnabled(),
         networkIsolation: isNetworkIsolationEnabled(),
         extraWritablePaths: outputDir ? [outputDir] : [],
-      });
+      }, context, { commandIdPrefix: 'process-image' });
 
       console.log('[process_image] exit code:', output.code, 'stdout:', output.stdout, 'stderr:', output.stderr);
 

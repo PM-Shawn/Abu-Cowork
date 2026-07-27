@@ -132,6 +132,12 @@ function parseAgentRunParams(params: unknown): AgentRunParams {
   return params as unknown as AgentRunParams;
 }
 
+function toWireToolContext(context: ToolExecutionContext | undefined): ToolExecutionContext | undefined {
+  if (!context) return undefined;
+  const { abortSignal: _abortSignal, ...wireContext } = context;
+  return wireContext;
+}
+
 function parseAbortParams(params: unknown): { runId: string } {
   if (!isRecord(params) || typeof params.runId !== 'string') {
     throw new RpcError(-32602, 'Invalid params: runId must be a string');
@@ -305,7 +311,7 @@ function createReverseToolInvoker(runId: string, initialTools: SerializableToolD
       // the reverse `tool.invoke` path, which re-derives its own approval
       // decision (and any UI) independently and exactly once.
       if (hasLocalTool(name)) {
-        const approval = await checkLocalToolApproval(runId, name, input, context as ToolExecutionContext | undefined);
+        const approval = await checkLocalToolApproval(runId, name, input, toWireToolContext(context as ToolExecutionContext | undefined));
         if (approval.decision === 'deny') {
           return approval.reason;
         }
@@ -338,7 +344,7 @@ function createReverseToolInvoker(runId: string, initialTools: SerializableToolD
         runId,
         toolName: name,
         input,
-        context: context as ToolExecutionContext | undefined,
+        context: toWireToolContext(context as ToolExecutionContext | undefined),
       })) as ToolResult;
       if (name === TOOL_NAMES.MANAGE_MCP_SERVER) refreshInBackground();
       return result;

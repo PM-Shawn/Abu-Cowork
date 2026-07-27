@@ -373,6 +373,10 @@ describe('agentLoopRunner', () => {
     applyDeltaFramesMock.mockReset();
     applyDeltaFramesMock.mockResolvedValue(undefined);
     appendToolCallContextMock.mockReset();
+    chatDeltaAppendTextMock.mockReset();
+    chatDeltaFinishStreamingMock.mockReset();
+    chatDeltaSetAgentStatusMock.mockReset();
+    chatDeltaSetConversationStatusMock.mockReset();
     scratchpadAddEntryMock.mockReset();
     recordMaxOutputTokensMock.mockReset();
     recordContextWindowMock.mockReset();
@@ -720,7 +724,7 @@ describe('agentLoopRunner', () => {
   // ── native.invoke ──────────────────────────────────────────────────────
 
   describe('native.invoke handler (allowlist)', () => {
-    it.each(['show_screen_border', 'get_active_window', 'window_hide', 'activate_app', 'run_shell_command'])(
+    it.each(['show_screen_border', 'get_active_window', 'window_hide', 'activate_app', 'run_shell_command', 'abort_command'])(
       'allows %s and forwards to the real Tauri invoke',
       async (cmd) => {
         const { ensureHandlersRegistered } = await importFresh();
@@ -1240,7 +1244,13 @@ describe('agentLoopRunner', () => {
       const result = await handler({ runId: 'run-1', toolName: 'read_file', input: { path: 'x' }, context });
 
       expect(result).toBe('tool result');
-      expect(executeAnyToolMock).toHaveBeenCalledWith('read_file', { path: 'x' }, confirmCb, filePermCb, context);
+      expect(executeAnyToolMock).toHaveBeenCalledWith(
+        'read_file',
+        { path: 'x' },
+        confirmCb,
+        filePermCb,
+        expect.objectContaining({ ...context, abortSignal: session.shellAbortController.signal }),
+      );
     });
 
     it('falls back to the real permissionBridge default callbacks when session.options omits them', async () => {
@@ -1251,7 +1261,13 @@ describe('agentLoopRunner', () => {
       const handler = handlerFor(onSidecarRequest, 'tool.invoke');
       await handler({ runId: 'run-1', toolName: 'read_file', input: {} });
 
-      expect(executeAnyToolMock).toHaveBeenCalledWith('read_file', {}, requestCommandConfirmationMock, requestFilePermissionMock, undefined);
+      expect(executeAnyToolMock).toHaveBeenCalledWith(
+        'read_file',
+        {},
+        requestCommandConfirmationMock,
+        requestFilePermissionMock,
+        expect.objectContaining({ abortSignal: expect.any(AbortSignal) }),
+      );
     });
 
     it('marks the session committed on the first tool.invoke', async () => {
@@ -1596,6 +1612,34 @@ describe('agentLoopRunner', () => {
       expect(result).toEqual({ reason: 'completed' });
     });
 
+    it('creates the task controller before prompt preprocessing and stops without dispatching when it is aborted there', async () => {
+      const { runAgentLoopDispatched } = await importFresh();
+      const controller = new AbortController();
+      getAbortControllerMock.mockReturnValue(controller);
+      const orchestration = deferred<{
+        route: { type: 'general'; name: string; cleanInput: string };
+        systemPromptSections: never[];
+      }>();
+      precomputeOrchestrationMock.mockReturnValue(orchestration.promise);
+
+      const running = runAgentLoopDispatched('conv-1', 'hello');
+      await waitForCall(precomputeOrchestrationMock);
+      expect(precomputeOrchestrationMock.mock.calls[0][4]).toBe(controller.signal);
+      expect(chatDeltaSetConversationStatusMock).toHaveBeenCalledWith('conv-1', 'running');
+
+      controller.abort();
+      orchestration.resolve({
+        route: { type: 'general', name: 'general', cleanInput: 'hello' },
+        systemPromptSections: [],
+      });
+
+      await expect(running).resolves.toEqual({ reason: 'aborted' });
+      expect(sidecarRequestMock).not.toHaveBeenCalled();
+      expect(runAgentLoopMock).not.toHaveBeenCalled();
+      expect(clearAbortControllerMock).toHaveBeenLastCalledWith('conv-1');
+      expect(chatDeltaSetConversationStatusMock).toHaveBeenLastCalledWith('conv-1', 'idle');
+    });
+
     it('buildAgentRunParams includes a queuedInputs snapshot of the shell queue at dispatch time (P1-3B-4, wire-safe shape)', async () => {
       const { runAgentLoopDispatched } = await importFresh();
       getQueuedInputsMock.mockReturnValue([
@@ -1672,6 +1716,50 @@ describe('agentLoopRunner', () => {
       expect(runAgentLoopMock).toHaveBeenCalledTimes(1);
       expect(runAgentLoopMock).toHaveBeenCalledWith('conv-1', 'hello', undefined);
       expect(result).toEqual({ reason: 'completed' });
+    });
+
+    it('keeps the replacement local task controller after a pre-commit sidecar fallback', async () => {
+      const { runAgentLoopDispatched } = await importFresh();
+      let activeController: AbortController | undefined;
+      let localController: AbortController | undefined;
+      const localStarted = deferred<void>();
+      const localFinished = deferred<void>();
+
+      clearAbortControllerMock.mockImplementation(() => {
+        activeController = undefined;
+      });
+      getAbortControllerMock.mockImplementation(() => {
+        activeController ??= new AbortController();
+        return activeController;
+      });
+      sidecarRequestMock.mockRejectedValue(new Error('sidecar process closed'));
+      runAgentLoopMock.mockImplementation(async () => {
+        // Mirror runAgentLoop's synchronous ownership replacement before its
+        // first await. The dispatch wrapper's finally must not clear this new
+        // controller while the fallback task is still running.
+        clearAbortControllerMock('conv-1');
+        localController = getAbortControllerMock('conv-1');
+        localStarted.resolve();
+        try {
+          await localFinished.promise;
+          return { reason: 'completed' };
+        } finally {
+          if (activeController === localController) {
+            clearAbortControllerMock('conv-1');
+          }
+        }
+      });
+
+      const running = runAgentLoopDispatched('conv-1', 'hello');
+      await localStarted.promise;
+      await Promise.resolve();
+
+      expect(activeController).toBe(localController);
+      expect(activeController?.signal.aborted).toBe(false);
+
+      localFinished.resolve();
+      await expect(running).resolves.toEqual({ reason: 'completed' });
+      expect(activeController).toBeUndefined();
     });
 
     it('a transport failure AFTER the run is committed (≥1 tool.invoke arrived) surfaces an error — NO rerun', async () => {
@@ -1828,6 +1916,45 @@ describe('agentLoopRunner', () => {
         expect(enqueueUserInputMock).toHaveBeenCalledWith('conv-1', 'more instructions');
         expect(sidecarRequestMock).not.toHaveBeenCalled();
         expect(notifySidecar).not.toHaveBeenCalledWith('agent.enqueueInput', expect.anything());
+      });
+
+      it('claims the conversation before async prompt preprocessing so a rapid second send is queued', async () => {
+        const { runAgentLoopDispatched } = await importFresh();
+        const controller = new AbortController();
+        const orchestration = deferred<{
+          route: { type: 'general'; name: string; cleanInput: string };
+          systemPromptSections: never[];
+        }>();
+        let status: 'idle' | 'running' = 'idle';
+        getConversationMock.mockImplementation(() => ({
+          id: 'conv-1',
+          title: 't',
+          messages: [],
+          status,
+        }));
+        getAbortControllerMock.mockReturnValue(controller);
+        hasAbortControllerMock.mockReturnValue(true);
+        chatDeltaSetConversationStatusMock.mockImplementation((_id, next) => {
+          status = next as 'idle' | 'running';
+        });
+        precomputeOrchestrationMock.mockReturnValue(orchestration.promise);
+        sidecarRequestMock.mockResolvedValue({ reason: 'completed' });
+
+        const first = runAgentLoopDispatched('conv-1', 'first');
+        await waitForCall(precomputeOrchestrationMock);
+        expect(status).toBe('running');
+
+        const second = await runAgentLoopDispatched('conv-1', 'second');
+        expect(second).toEqual({ reason: 'enqueued' });
+        expect(enqueueUserInputMock).toHaveBeenCalledWith('conv-1', 'second');
+        expect(sidecarRequestMock).not.toHaveBeenCalled();
+
+        orchestration.resolve({
+          route: { type: 'general', name: 'general', cleanInput: 'first' },
+          systemPromptSections: [],
+        });
+        await expect(first).resolves.toEqual({ reason: 'completed' });
+        expect(sidecarRequestMock).toHaveBeenCalledTimes(1);
       });
 
       it('does NOT enqueue for an image send even when a run is already active (falls through to a normal dispatch, same as the in-process guard)', async () => {

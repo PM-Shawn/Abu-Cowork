@@ -63,6 +63,26 @@ describe('hookBridge', () => {
     expect(result).toMatchObject({ blocked: true, modifiedInput: { x: 1 } });
   });
 
+  it('reattaches the live run AbortSignal for shell hooks without returning it over JSON-RPC', async () => {
+    const { ensureHookBridgeRegistered, registerHookSignalSource } = await importFresh();
+    const controller = new AbortController();
+    registerHookSignalSource('test-runner', {
+      getAbortSignal: (runId) => runId === 'run-1' ? controller.signal : undefined,
+    });
+    ensureHookBridgeRegistered();
+    const handler = onSidecarRequest.mock.calls.find((c) => c[0] === 'hook.emit')![1] as (p: unknown) => Promise<unknown>;
+    const event = { type: 'preToolCall', toolName: 'write_file', toolInput: {} };
+    emitHookMock.mockImplementation(async (received) => received);
+
+    const result = await handler({ runId: 'run-1', event });
+
+    expect(emitHookMock).toHaveBeenCalledWith({
+      ...event,
+      abortSignal: controller.signal,
+    });
+    expect(result).toEqual(event);
+  });
+
   it('hook.emit handler throws -32602 when event is missing', async () => {
     const { ensureHookBridgeRegistered } = await importFresh();
     ensureHookBridgeRegistered();

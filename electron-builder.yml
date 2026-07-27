@@ -14,6 +14,9 @@
 appId: com.abu.app
 productName: Abu
 copyright: Copyright © 2026 Abu
+# Pin packaging to the Electron version resolved by package-lock.json so local
+# worktrees and CI download the same runtime.
+electronVersion: 43.1.1
 
 # Deep-link scheme registration (CFBundleURLTypes in Info.plist). macOS only
 # delivers open-url events to packaged apps whose bundle DECLARES the scheme —
@@ -42,6 +45,7 @@ files:
   - "electron/**/*"
   - "!electron/**/*.test.cjs"        # development-only security/unit tests
   - "!electron/native-helper/**"   # Rust source + target/ (huge) — binary ships via extraResources
+  - "!electron/sandbox-launcher/**" # Rust source + target/ (huge) — binary ships via extraResources
   - "!electron/spike/**"           # dev-only E2E harnesses
   - "!electron/renderer/**"        # placeholder page — real frontend is dist-electron-spike
   # previewServer.cjs reads this shared picker from app.asar at runtime.
@@ -70,12 +74,18 @@ extraResources:
     to: builtin-agents
   - from: electron/native-helper/target/release/native-helper
     to: native-helper/native-helper
+  - from: electron/sandbox-launcher/dist
+    to: sandbox-launcher
   # Tray icon candidates (guiHost.cjs resolveTrayIconPath) — src-tauri/ isn't
   # packed into asar, so the tray needs these under Resources/icons.
   - from: src-tauri/icons/32x32.png
     to: icons/32x32.png
   - from: src-tauri/icons/128x128.png
     to: icons/128x128.png
+  # Windows command isolation combines the sandbox-launcher's restricted
+  # primary token + Job Object process-tree ownership with PowerShell
+  # ConstrainedLanguage for shell commands. Real Windows package/runtime
+  # compatibility remains an attended acceptance gate.
   # Deferred (need a separate build step / are large; not needed to boot):
   #   - abu-chrome-extension/dist → browser-extension  (run the extension build first)
   #   - src-tauri/python-runtime → python-runtime       (107M; python-backed MCP/doc gen)
@@ -122,14 +132,15 @@ mac:
   # electron-builder's own pass doesn't cover — notarization rejects any
   # unsigned nested Mach-O. Local signed dry-run:
   #   npx electron-builder --dir -c.mac.identity="Developer ID Application: ..."
-  # CI provides the identity via CSC_LINK/CSC_KEY_PASSWORD (p12 from the same
-  # secrets the Tauri release uses).
+  # CI imports the p12 into an explicit CSC_KEYCHAIN before electron-builder
+  # starts and overrides this null with the generic "Developer ID Application"
+  # qualifier. Keeping null here guarantees local pack:electron remains
+  # unsigned even on a developer machine that has unrelated certs installed.
   hardenedRuntime: true
   entitlements: build/entitlements.mac.plist
   entitlementsInherit: build/entitlements.mac.plist
-  # Default is UNSIGNED so dev builds need no certificate. CI / the signed
-  # release build override this (identity from the keychain) — do NOT commit a
-  # real identity here.
+  # Default is UNSIGNED so dev builds need no certificate. The CI invocation
+  # overrides this and forceCodeSigning; do NOT commit a real identity here.
   identity: null
 
 win:

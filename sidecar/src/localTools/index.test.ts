@@ -30,7 +30,7 @@
  * immediately when `context.conversationId` is undefined (the shape these
  * tests use), so no store mocking is needed.
  */
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { readDir, readTextFile, writeTextFile, exists, stat } from '@tauri-apps/plugin-fs';
 import { invoke } from '@tauri-apps/api/core';
 import { hasLocalTool, isLocalToolReadOnly, executeLocalTool } from './index';
@@ -39,6 +39,12 @@ const snapshotBeforeAiEditMock = vi.fn().mockResolvedValue(undefined);
 vi.mock('@/utils/aiEditSnapshots', () => ({
   snapshotBeforeAiEdit: (...args: unknown[]) => snapshotBeforeAiEditMock(...args),
 }));
+
+afterEach(() => {
+  delete (globalThis as typeof globalThis & {
+    __ABU_SHELL__?: { mainSupervisesSidecar?: boolean };
+  }).__ABU_SHELL__;
+});
 
 const READ_ONLY_TOOL_NAMES = [
   'show_widget',
@@ -387,6 +393,48 @@ describe('executeLocalTool — run_command (P1-3d-5 slice 2b)', () => {
     expect(result as string).toContain('stdout:\nhello');
     expect(result as string).toContain('exit code: 0');
     expect(invoke).toHaveBeenCalledWith('run_shell_command', expect.objectContaining({ command: 'echo hello' }));
+  });
+
+  it('preserves ToolExecutionContext.abortSignal so local run_command can reverse abort_command on Stop', async () => {
+    (globalThis as typeof globalThis & {
+      __ABU_SHELL__?: { mainSupervisesSidecar?: boolean };
+    }).__ABU_SHELL__ = { mainSupervisesSidecar: true };
+    const controller = new AbortController();
+    let resolveShell!: (value: unknown) => void;
+    vi.mocked(invoke).mockImplementation(async (cmd) => {
+      if (cmd === 'run_shell_command') {
+        return await new Promise((resolve) => {
+          resolveShell = resolve;
+        });
+      }
+      if (cmd === 'abort_command') return true;
+      return { code: 0, stdout: '', stderr: '' };
+    });
+
+    const running = executeLocalTool(
+      'run_command',
+      { command: 'sleep 60' },
+      { abortSignal: controller.signal, workspacePath: '/ws' },
+      undefined,
+    );
+
+    await vi.waitFor(() => {
+      expect(invoke).toHaveBeenCalledWith(
+        'run_shell_command',
+        expect.objectContaining({ command: 'sleep 60', commandId: expect.stringMatching(/^run-command-/) }),
+      );
+    });
+    const shellCall = vi.mocked(invoke).mock.calls.find(([cmd]) => cmd === 'run_shell_command');
+    const commandId = (shellCall?.[1] as { commandId: string }).commandId;
+
+    controller.abort();
+
+    await vi.waitFor(() => {
+      expect(invoke).toHaveBeenCalledWith('abort_command', { commandId });
+    });
+    resolveShell({ code: -1, stdout: '', stderr: '[Command aborted]' });
+    const result = await running;
+    expect(String(result)).toContain('exit code: -1');
   });
 
   it('rejects a call missing required fields BEFORE ever invoking execute() (pre-flight validation)', async () => {

@@ -154,6 +154,7 @@ export async function executeToolBatch(params: ToolBatchParams): Promise<ToolBat
       conversationId,
       toolName: tc.name,
       toolInput: tc.input,
+      abortSignal: abortController.signal,
     } as PreToolCallEvent);
 
     if (preEvent.blocked) {
@@ -207,7 +208,11 @@ export async function executeToolBatch(params: ToolBatchParams): Promise<ToolBat
           }
         };
         abortController.signal.addEventListener('abort', onAbort, { once: true });
-        toolInvoker.executeAnyTool(tc.name, effectiveInput, confirmCb, filePermCb, { ...toolContext, toolCallId: tc.id }, contextUsagePercent)
+        toolInvoker.executeAnyTool(tc.name, effectiveInput, confirmCb, filePermCb, {
+          ...toolContext,
+          toolCallId: tc.id,
+          abortSignal: abortController.signal,
+        }, contextUsagePercent)
           .then((result) => {
             if (!settled) {
               settled = true;
@@ -239,6 +244,7 @@ export async function executeToolBatch(params: ToolBatchParams): Promise<ToolBat
         conversationId,
         toolName: tc.name,
         toolInput: effectiveInput,
+        abortSignal: abortController.signal,
         result: resultStr,
         error: false,
         durationMs,
@@ -265,6 +271,7 @@ export async function executeToolBatch(params: ToolBatchParams): Promise<ToolBat
         conversationId,
         toolName: tc.name,
         toolInput: effectiveInput,
+        abortSignal: abortController.signal,
         result: `Error: ${errorMsg}`,
         error: true,
         durationMs,

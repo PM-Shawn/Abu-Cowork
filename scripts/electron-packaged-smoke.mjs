@@ -11,9 +11,12 @@
  *   2. It reports app.isPackaged === true (we're testing the real bundle, not
  *      a dev `electron .`).
  *   3. The bundled resources resolve under process.resourcesPath: sidecar
- *      bundle, builtin-skills, and the native-helper binary all exist there —
- *      i.e. extraResources landed where appEnv.cjs / tauriHost.cjs
- *      (BaseDirectory.Resource) / nativeHelperManager.cjs now look when packaged.
+ *      bundle, builtin-skills, native-helper, and sandbox-launcher all exist
+ *      there — i.e. extraResources landed where appEnv.cjs / tauriHost.cjs
+ *      (BaseDirectory.Resource) / nativeHelperManager.cjs / commandHost.cjs
+ *      now look when packaged. The packaged launcher is executed directly and
+ *      through renderer → preload → IPC → commandHost, proving its host
+ *      architecture, executable permissions, sandbox mode, and abort path.
  *   4. The REAL frontend rendered (React mounted into #root), not the
  *      placeholder page — i.e. dist-electron-spike was bundled and loads.
  *   5. A packaged HTML preview receives the shared element-picker script.
@@ -27,6 +30,7 @@
  * behavior, auto-update, and cross-arch native rebuilds — later slices.
  */
 import { _electron as electron } from '@playwright/test';
+import { spawnSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import http from 'node:http';
@@ -97,8 +101,13 @@ function sseChunk(content, finishReason) {
   })}\n\n`;
 }
 
-async function startOpenAiMock(responseText) {
+function sseObject(value) {
+  return `data: ${JSON.stringify(value)}\n\n`;
+}
+
+async function startOpenAiMock(responseText, toolTasks = new Map()) {
   const requests = [];
+  const servedToolTasks = new Set();
   const server = http.createServer(async (request, response) => {
     const requestUrl = new URL(request.url ?? '/', 'http://127.0.0.1');
     let rawBody = '';
@@ -128,6 +137,67 @@ async function startOpenAiMock(responseText) {
       connection: 'keep-alive',
       'content-type': 'text/event-stream; charset=utf-8',
     });
+    const serializedBody = JSON.stringify(body);
+    const toolTask = Array.from(toolTasks.entries()).find(([taskPrompt]) =>
+      !servedToolTasks.has(taskPrompt) && serializedBody.includes(taskPrompt)
+    );
+    if (toolTask) {
+      const [taskPrompt, command] = toolTask;
+      servedToolTasks.add(taskPrompt);
+      console.log(`[packaged-smoke] serving run_command fixture for ${taskPrompt}`);
+      const toolCall = {
+        id: `call-${randomUUID()}`,
+        type: 'function',
+        function: {
+          name: 'run_command',
+          arguments: JSON.stringify({
+            command,
+            cwd: process.platform === 'win32' ? os.tmpdir() : '/tmp',
+            timeout: 120,
+          }),
+        },
+      };
+      if (body?.stream !== true) {
+        response.end(JSON.stringify({
+          id: 'chatcmpl-abu-packaged-tool-e2e',
+          object: 'chat.completion',
+          created: 0,
+          model: TEST_MODEL_ID,
+          choices: [{
+            index: 0,
+            message: { role: 'assistant', content: null, tool_calls: [toolCall] },
+            finish_reason: 'tool_calls',
+          }],
+          usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+        }));
+        return;
+      }
+      response.write(sseObject({
+        id: 'chatcmpl-abu-packaged-tool-e2e',
+        object: 'chat.completion.chunk',
+        created: 0,
+        model: TEST_MODEL_ID,
+        choices: [{
+          index: 0,
+          delta: {
+            tool_calls: [{
+              index: 0,
+              ...toolCall,
+            }],
+          },
+          finish_reason: null,
+        }],
+      }));
+      response.write(sseObject({
+        id: 'chatcmpl-abu-packaged-tool-e2e',
+        object: 'chat.completion.chunk',
+        created: 0,
+        model: TEST_MODEL_ID,
+        choices: [{ index: 0, delta: {}, finish_reason: 'tool_calls' }],
+      }));
+      response.end('data: [DONE]\n\n');
+      return;
+    }
     const splitAt = Math.ceil(responseText.length / 2);
     response.write(sseChunk(responseText.slice(0, splitAt), null));
     await new Promise((resolve) => setTimeout(resolve, 50));
@@ -195,6 +265,7 @@ async function configureLocalMockProvider(window, baseUrl) {
     };
     state.recentModels = [];
     state.favoriteModels = [];
+    state.permissionMode = 'autonomous';
     state.guideShown = true;
     state.guideOpen = false;
     state.hasAcknowledgedDisclaimer = true;
@@ -207,6 +278,32 @@ async function configureLocalMockProvider(window, baseUrl) {
     mockBaseUrl: baseUrl,
     testApiKey: TEST_API_KEY,
     testModelId: TEST_MODEL_ID,
+  });
+  await window.reload();
+  await window.getByPlaceholder(CHAT_PLACEHOLDER).waitFor({
+    state: 'visible',
+    timeout: READY_TIMEOUT,
+  });
+}
+
+async function enableMockProviderTools(window) {
+  await window.evaluate(() => {
+    const raw = window.localStorage.getItem('abu-settings');
+    if (!raw) throw new Error('abu-settings missing while enabling packaged tool fixture');
+    const persisted = JSON.parse(raw);
+    const state = persisted.state;
+    state.providers = state.providers.map((provider) => {
+      if (provider.id !== 'abu-packaged-e2e-provider') return provider;
+      return {
+        ...provider,
+        declaredCapabilities: { ...provider.declaredCapabilities, supportsTools: true },
+        models: provider.models.map((model) => ({
+          ...model,
+          declaredCapabilities: { ...model.declaredCapabilities, supportsTools: true },
+        })),
+      };
+    });
+    window.localStorage.setItem('abu-settings', JSON.stringify({ ...persisted, state }));
   });
   await window.reload();
   await window.getByPlaceholder(CHAT_PLACEHOLDER).waitFor({
@@ -241,6 +338,41 @@ function diskContains(rootDir, expectedText, fileName = 'messages.jsonl') {
       return false;
     }
   });
+}
+
+function pidAlive(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return error?.code === 'EPERM';
+  }
+}
+
+async function waitForPidDead(pid, description, timeoutMs = 15_000) {
+  await waitUntil(() => !pidAlive(pid), description, timeoutMs);
+}
+
+function shellQuote(value) {
+  const text = String(value);
+  if (process.platform === 'win32') {
+    return `'${text.replace(/'/g, "''")}'`;
+  }
+  return `'${text.replace(/'/g, `'\\''`)}'`;
+}
+
+function longRunningTreeCommand(nodePath, pidFile) {
+  const script = `
+    const cp = require('node:child_process');
+    const fs = require('node:fs');
+    const child = cp.spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], {
+      stdio: 'ignore',
+    });
+    fs.writeFileSync(${JSON.stringify(pidFile)}, String(child.pid));
+    setInterval(() => {}, 1000);
+  `;
+  const prefix = process.platform === 'win32' ? '& ' : '';
+  return `${prefix}${shellQuote(nodePath)} -e ${shellQuote(script)}`;
 }
 
 async function closePackagedApp(app) {
@@ -314,8 +446,16 @@ async function main() {
   );
   const prompt = `abu-packaged-prompt-${randomUUID()}`;
   const responseText = `abu-packaged-answer-${randomUUID()}`;
+  const stopPrompt = `abu-packaged-stop-task-${randomUUID()}`;
+  const crashPrompt = `abu-packaged-crash-task-${randomUUID()}`;
+  const pidRoot = process.platform === 'win32' ? os.tmpdir() : '/tmp';
+  const stopPidFile = path.join(pidRoot, `abu-packaged-stop-${randomUUID()}.pid`);
+  const crashPidFile = path.join(pidRoot, `abu-packaged-crash-${randomUUID()}.pid`);
   const recentTitle = `${prompt.slice(0, 30)}...`;
-  const mock = await startOpenAiMock(responseText);
+  const mock = await startOpenAiMock(responseText, new Map([
+    [stopPrompt, longRunningTreeCommand(process.execPath, stopPidFile)],
+    [crashPrompt, longRunningTreeCommand(process.execPath, crashPidFile)],
+  ]));
 
   let app;
   try {
@@ -339,6 +479,92 @@ async function main() {
     checks.helperInResources = fs.existsSync(
       path.join(found.resources, 'native-helper', helperName)
     );
+    const launcherName = process.platform === 'win32' ? 'sandbox-launcher.exe' : 'sandbox-launcher';
+    const launcherPath = path.join(found.resources, 'sandbox-launcher', process.platform, launcherName);
+    checks.sandboxLauncherInResources = fs.existsSync(launcherPath);
+    try {
+      const marker = `abu-packaged-launcher-${randomUUID()}`;
+      const launcherResult = spawnSync(launcherPath, [], {
+        input: JSON.stringify({
+          file: process.execPath,
+          args: ['-e', `process.stdout.write(${JSON.stringify(marker)})`],
+          sandboxEnabled: false,
+        }),
+        encoding: 'utf8',
+        timeout: 10_000,
+      });
+      checks.sandboxLauncherExecutes =
+        launcherResult.status === 0 && launcherResult.stdout === marker;
+      if (!checks.sandboxLauncherExecutes) {
+        errors.sandboxLauncher = [
+          `status=${String(launcherResult.status)}`,
+          `signal=${String(launcherResult.signal)}`,
+          `stdout=${JSON.stringify(launcherResult.stdout)}`,
+          `stderr=${JSON.stringify(launcherResult.stderr)}`,
+          launcherResult.error ? `error=${String(launcherResult.error)}` : '',
+        ].filter(Boolean).join(' ');
+      }
+    } catch (err) {
+      checks.sandboxLauncherExecutes = false;
+      errors.sandboxLauncher = String(err);
+    }
+
+    // ── real packaged command path: renderer → preload → IPC → commandHost ──
+    try {
+      const marker = `abu-packaged-command-${randomUUID()}`;
+      const commandId = `packaged-command-${randomUUID()}`;
+      const commandResult = await window.evaluate(
+        ({ nodePath, expectedMarker, id }) => window.__TAURI_INTERNALS__.invoke(
+          'run_argv_command',
+          {
+            program: nodePath,
+            args: ['-e', 'process.stdout.write(process.argv[1])', expectedMarker],
+            cwd: null,
+            timeout: 10,
+            sandboxEnabled: true,
+            extraWritablePaths: [],
+            networkIsolation: false,
+            commandId: id,
+          },
+        ),
+        { nodePath: process.execPath, expectedMarker: marker, id: commandId },
+      );
+      checks.packagedSandboxCommandRuns =
+        commandResult.code === 0 && commandResult.stdout === marker;
+
+      const abortCommandId = `packaged-abort-${randomUUID()}`;
+      const runningCommand = window.evaluate(
+        ({ nodePath, id }) => window.__TAURI_INTERNALS__.invoke(
+          'run_argv_command',
+          {
+            program: nodePath,
+            args: ['-e', 'setInterval(() => {}, 1000)'],
+            cwd: null,
+            timeout: 30,
+            sandboxEnabled: true,
+            extraWritablePaths: [],
+            networkIsolation: false,
+            commandId: id,
+          },
+        ),
+        { nodePath: process.execPath, id: abortCommandId },
+      );
+      let abortAccepted = false;
+      await waitUntil(async () => {
+        abortAccepted = await window.evaluate(
+          (id) => window.__TAURI_INTERNALS__.invoke('abort_command', { commandId: id }),
+          abortCommandId,
+        );
+        return abortAccepted;
+      }, 'the packaged command host to accept abort_command', 10_000);
+      const abortedResult = await runningCommand;
+      checks.packagedSandboxCommandAborts =
+        abortAccepted === true && abortedResult.code !== 0;
+    } catch (err) {
+      checks.packagedSandboxCommandRuns ??= false;
+      checks.packagedSandboxCommandAborts ??= false;
+      errors.packagedCommand = String(err);
+    }
 
     // ── renderer assertion: real frontend mounted (not the placeholder) ──
     try {
@@ -381,9 +607,15 @@ async function main() {
       const input = window.getByPlaceholder(CHAT_PLACEHOLDER);
       await input.fill(prompt);
       await input.press('Enter');
-      await waitUntil(() => mock.requests.length === 1, 'the packaged model request');
-      const request = mock.requests[0];
+      await waitUntil(
+        () => mock.requests.some((candidate) => JSON.stringify(candidate.body).includes(prompt)),
+        'the packaged model request',
+      );
+      const request = mock.requests.find((candidate) =>
+        JSON.stringify(candidate.body).includes(prompt)
+      );
       checks.packagedTaskReachedMock =
+        !!request &&
         request.method === 'POST' &&
         request.pathname === '/v1/chat/completions' &&
         request.authorization === `Bearer ${TEST_API_KEY}` &&
@@ -420,18 +652,74 @@ async function main() {
         timeout: READY_TIMEOUT,
       });
       checks.packagedConversationRestored = true;
+      await enableMockProviderTools(window);
+
+      // Real user stop path: ChatInput Stop → AbortRegistry → agent.abort →
+      // sidecar tool signal → scoped abort_command → native launcher.
+      const restoredInput = window.getByPlaceholder(CHAT_PLACEHOLDER);
+      await restoredInput.fill(stopPrompt);
+      await restoredInput.press('Enter');
+      await waitUntil(() => fs.existsSync(stopPidFile), 'the task command descendant pid');
+      const stopPid = Number(fs.readFileSync(stopPidFile, 'utf8'));
+      if (!Number.isInteger(stopPid) || stopPid <= 0) {
+        throw new Error(`invalid packaged stop pid: ${String(stopPid)}`);
+      }
+      const stopButton = window.locator(
+        'button[aria-label="停止"], button[aria-label="Stop"]'
+      ).last();
+      await stopButton.waitFor({ state: 'visible', timeout: READY_TIMEOUT });
+      await stopButton.click();
+      await waitForPidDead(stopPid, 'the real Stop path to kill the command descendant');
+      checks.packagedTaskStopKillsCommandTree = true;
+
+      // SIGKILL bypasses JavaScript cleanup. The native liveness pipe remains
+      // authoritative and must close the command tree on its own.
+      await restoredInput.waitFor({ state: 'visible', timeout: READY_TIMEOUT });
+      await restoredInput.fill(crashPrompt);
+      await restoredInput.press('Enter');
+      await waitUntil(() => fs.existsSync(crashPidFile), 'the crash-task command descendant pid');
+      const crashPid = Number(fs.readFileSync(crashPidFile, 'utf8'));
+      if (!Number.isInteger(crashPid) || crashPid <= 0) {
+        throw new Error(`invalid packaged crash pid: ${String(crashPid)}`);
+      }
+      const appProcess = app.process();
+      appProcess.kill('SIGKILL');
+      await waitForChildExit(appProcess, 5_000);
+      app = undefined;
+      await waitForPidDead(crashPid, 'the launcher cleanup after a hard Electron crash');
+      checks.packagedHardCrashKillsCommandTree = true;
     } catch (err) {
       checks.packagedTaskReachedMock ??= false;
       checks.packagedTaskRendered ??= false;
       checks.packagedTaskPersisted ??= false;
       checks.packagedConversationRestored ??= false;
-      errors.packagedTask = String(err);
+      checks.packagedTaskStopKillsCommandTree ??= false;
+      checks.packagedHardCrashKillsCommandTree ??= false;
+      const lastRequest = mock.requests.at(-1);
+      let visibleText = '';
+      try {
+        visibleText = (await window.locator('body').innerText()).slice(-2000);
+      } catch {
+        // App may already be gone in the intentional hard-crash step.
+      }
+      errors.packagedTask = [
+        String(err),
+        lastRequest ? `lastRequest=${JSON.stringify({
+          messageRoles: lastRequest.body?.messages?.map?.((message) => message?.role),
+          tools: lastRequest.body?.tools?.length ?? 0,
+          containsStopPrompt: JSON.stringify(lastRequest.body).includes(stopPrompt),
+          containsCrashPrompt: JSON.stringify(lastRequest.body).includes(crashPrompt),
+        })}` : 'lastRequest=none',
+        visibleText ? `visibleTextTail=${JSON.stringify(visibleText)}` : '',
+      ].filter(Boolean).join('\n');
     }
   } catch (err) {
     errors.launch = String(err);
   } finally {
     await closePackagedApp(app);
     await mock.close();
+    fs.rmSync(stopPidFile, { force: true });
+    fs.rmSync(crashPidFile, { force: true });
     fs.rmSync(testRoot, { recursive: true, force: true });
   }
 

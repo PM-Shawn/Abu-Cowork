@@ -39,6 +39,12 @@ interface SerializableToolDefinition {
   inputSchema: ToolDefinition['inputSchema'];
 }
 
+function toWireToolContext(context: ToolExecutionContext | undefined): ToolExecutionContext | undefined {
+  if (!context) return undefined;
+  const { abortSignal: _abortSignal, ...wireContext } = context;
+  return wireContext;
+}
+
 interface SubagentRunParams {
   runId: string;
   agent: SubagentDefinition;
@@ -173,7 +179,7 @@ function createReverseToolInvoker(runId: string, tools: SerializableToolDefiniti
         runId,
         toolName: name,
         input,
-        context: context as ToolExecutionContext | undefined,
+        context: toWireToolContext(context as ToolExecutionContext | undefined),
       })) as ToolResult;
     },
     toolResultToString,

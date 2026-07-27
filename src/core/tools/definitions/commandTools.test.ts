@@ -12,7 +12,7 @@
  * The port defaults return exactly what the direct reads returned, so shell
  * behavior is unchanged — these tests assert that contract via mocked ports.
  */
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { invoke } from '@tauri-apps/api/core';
 import { runCommandTool } from './commandTools';
 import { getWorkspaceReader } from '../../agent/ports/workspaceReader';
@@ -71,6 +71,9 @@ function mockAuthorized(paths: string[]): ReturnType<typeof vi.fn> {
 
 describe('runCommandTool', () => {
   beforeEach(() => {
+    (globalThis as typeof globalThis & {
+      __ABU_SHELL__?: { mainSupervisesSidecar?: boolean };
+    }).__ABU_SHELL__ = { mainSupervisesSidecar: true };
     vi.mocked(invoke).mockReset();
     vi.mocked(invoke).mockResolvedValue({ code: 0, stdout: '', stderr: '' });
     vi.mocked(isWindows).mockReturnValue(false);
@@ -79,6 +82,12 @@ describe('runCommandTool', () => {
     vi.mocked(showSandboxBlockedToast).mockClear();
     mockReader(null);
     mockAuthorized([]);
+  });
+
+  afterEach(() => {
+    delete (globalThis as typeof globalThis & {
+      __ABU_SHELL__?: { mainSupervisesSidecar?: boolean };
+    }).__ABU_SHELL__;
   });
 
   it('forwards the resolved command, clamps timeout, and merges workspace + authorized paths', async () => {
@@ -90,6 +99,8 @@ describe('runCommandTool', () => {
     );
 
     const p = shellPayload();
+    expect(typeof p.commandId).toBe('string');
+    expect(p.commandId).toMatch(/^run-command-/);
     expect(p.command).toBe('ls -la');
     expect(p.cwd).toBe('/ws'); // no input.cwd → falls back to workspacePath
     expect(p.timeout).toBe(300); // clamped from 500 to max 300
@@ -97,6 +108,22 @@ describe('runCommandTool', () => {
     expect(p.networkIsolation).toBe(false);
     // workspacePath first, then authorized paths.
     expect(p.extraWritablePaths).toEqual(['/ws', '/auth/one']);
+  });
+
+  it('does not add commandId to the locked Tauri run_shell_command payload when Electron markers are absent', async () => {
+    delete (globalThis as typeof globalThis & {
+      __ABU_SHELL__?: { mainSupervisesSidecar?: boolean };
+    }).__ABU_SHELL__;
+
+    await runCommandTool.execute(
+      { command: 'ls -la', timeout: 30 },
+      { workspacePath: '/ws' },
+    );
+
+    const p = shellPayload();
+    expect(p.command).toBe('ls -la');
+    expect(p.cwd).toBe('/ws');
+    expect(p).not.toHaveProperty('commandId');
   });
 
   it('falls back to getWorkspaceReader().getCurrentPath() when context has no workspacePath', async () => {
@@ -191,6 +218,72 @@ describe('runCommandTool', () => {
 
     expect(typeof result).toBe('string');
     expect(result as string).toContain('Error executing command: spawn failed');
+  });
+
+  it('does not spawn when the abort signal is already aborted', async () => {
+    const controller = new AbortController();
+    controller.abort();
+
+    const result = await runCommandTool.execute(
+      { command: 'sleep 60' },
+      { workspacePath: '/ws', abortSignal: controller.signal },
+    );
+
+    expect(result).toContain('aborted before it started');
+    expect(invoke).not.toHaveBeenCalled();
+  });
+
+  it('sends abort_command for the active command id when the tool aborts mid-run', async () => {
+    const controller = new AbortController();
+    let resolveShell!: (value: unknown) => void;
+    vi.mocked(invoke).mockImplementation(async (cmd, _args) => {
+      if (cmd === 'run_shell_command') {
+        return await new Promise((resolve) => {
+          resolveShell = resolve;
+        });
+      }
+      if (cmd === 'abort_command') return true;
+      return { code: 0, stdout: '', stderr: '' };
+    });
+
+    const running = runCommandTool.execute(
+      { command: 'sleep 60' },
+      { workspacePath: '/ws', abortSignal: controller.signal },
+    );
+
+    await vi.waitFor(() => {
+      expect(invoke).toHaveBeenCalledWith('run_shell_command', expect.objectContaining({ command: 'sleep 60' }));
+    });
+    const p = shellPayload();
+    controller.abort();
+    await vi.waitFor(() => {
+      expect(invoke).toHaveBeenCalledWith('abort_command', { commandId: p.commandId });
+    });
+    resolveShell({ code: -1, stdout: '', stderr: '[Command aborted]' });
+
+    const result = await running;
+    expect(result).toContain('exit code: -1');
+  });
+
+  it('keeps the abort listener after a successful background command returns', async () => {
+    const controller = new AbortController();
+    vi.mocked(invoke).mockImplementation(async (cmd) => {
+      if (cmd === 'run_shell_command') return { code: 0, stdout: '服务已在后台启动', stderr: '' };
+      if (cmd === 'abort_command') return true;
+      return { code: 0, stdout: '', stderr: '' };
+    });
+
+    await runCommandTool.execute(
+      { command: 'npm run dev', background: true },
+      { workspacePath: '/ws', abortSignal: controller.signal },
+    );
+    const p = shellPayload();
+
+    controller.abort();
+
+    await vi.waitFor(() => {
+      expect(invoke).toHaveBeenCalledWith('abort_command', { commandId: p.commandId });
+    });
   });
 
   // Regression test for a code-review finding (P1-3d-5 slice 2b): if the

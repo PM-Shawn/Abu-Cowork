@@ -2,8 +2,10 @@ import { readFile as readBinFile, writeFile as writeBinFile } from '@tauri-apps/
 import { homeDir, desktopDir, documentDir, downloadDir, tempDir } from '@tauri-apps/api/path';
 import { platform } from '@tauri-apps/plugin-os';
 import { invoke } from '@tauri-apps/api/core';
+import type { ToolExecutionContext } from '../../../types';
 import { initPlatform, isWindows } from '../../../utils/platform';
 import { extractUsername } from '../../../utils/pathUtils';
+import { invokeTaskCommand, isTaskCommandAbortedError } from './scopedCommand';
 
 export interface CommandOutput {
   stdout: string;
@@ -53,7 +55,7 @@ export const IMAGE_MAX_BYTES = 2 * 1024 * 1024;
  * Resize an image to fit within maxWidth using system tools.
  * Returns base64 string of the resized image, or null on failure.
  */
-export async function resizeImageIfNeeded(bytes: Uint8Array, maxWidth: number): Promise<{ data: string; resized: boolean }> {
+export async function resizeImageIfNeeded(bytes: Uint8Array, maxWidth: number, context?: ToolExecutionContext): Promise<{ data: string; resized: boolean }> {
   const base64 = uint8ArrayToBase64(bytes);
 
   if (bytes.length <= IMAGE_MAX_BYTES) {
@@ -68,17 +70,17 @@ export async function resizeImageIfNeeded(bytes: Uint8Array, maxWidth: number): 
     if (isWindows()) {
       // PowerShell + System.Drawing — sandboxEnabled: false because ConstrainedLanguage blocks Add-Type
       const psPath = tmpPath.replace(/\\/g, '/').replace(/'/g, "''");
-      await invoke<CommandOutput>('run_shell_command', {
+      await invokeTaskCommand<CommandOutput>('run_shell_command', {
         command: `Add-Type -AssemblyName System.Drawing; $img = [System.Drawing.Image]::FromFile('${psPath}'); $ratio = ${maxWidth} / $img.Width; $newH = [int]($img.Height * $ratio); $bmp = New-Object System.Drawing.Bitmap(${maxWidth}, $newH); $g = [System.Drawing.Graphics]::FromImage($bmp); $g.InterpolationMode = [System.Drawing.Drawing2D.InterpolationMode]::HighQualityBicubic; $g.DrawImage($img, 0, 0, ${maxWidth}, $newH); $img.Dispose(); $bmp.Save('${psPath}'); $g.Dispose(); $bmp.Dispose()`,
         cwd: null, background: false, timeout: 15,
         sandboxEnabled: false,
-      });
+      }, context, { commandIdPrefix: 'resize-image' });
     } else {
       // macOS: sips (works fine under Seatbelt sandbox — /tmp is writable)
-      await invoke<CommandOutput>('run_shell_command', {
+      await invokeTaskCommand<CommandOutput>('run_shell_command', {
         command: `sips --resampleWidth ${maxWidth} "${tmpPath}" --out "${tmpPath}"`,
         cwd: null, background: false, timeout: 15,
-      });
+      }, context, { commandIdPrefix: 'resize-image' });
     }
 
     const resized = await readBinFile(tmpPath);
@@ -88,7 +90,10 @@ export async function resizeImageIfNeeded(bytes: Uint8Array, maxWidth: number): 
       : `rm -f "${tmpPath}"`;
     invoke<CommandOutput>('run_shell_command', { command: rmCmd, cwd: null, background: false, timeout: 5 }).catch(() => {});
     return { data: uint8ArrayToBase64(new Uint8Array(resized)), resized: true };
-  } catch { /* fall through to original */ }
+  } catch (err) {
+    if (isTaskCommandAbortedError(err)) throw err;
+    /* fall through to original */
+  }
 
   return { data: base64, resized: false };
 }
@@ -118,7 +123,7 @@ export const ARCHIVE_EXTENSIONS = new Set(['.zip', '.tar', '.tar.gz', '.tgz', '.
  * - .docx: Extracts XML text from the docx zip structure (no Python needed)
  * - .pptx: Falls back to Python python-pptx
  */
-export async function extractOfficeText(filePath: string, ext: string): Promise<string> {
+export async function extractOfficeText(filePath: string, ext: string, context?: ToolExecutionContext): Promise<string> {
   if (ext === '.xlsx' || ext === '.xls') {
     return extractXlsxText(filePath);
   }
@@ -126,7 +131,7 @@ export async function extractOfficeText(filePath: string, ext: string): Promise<
     return extractDocxText(filePath);
   }
   if (ext === '.pptx') {
-    return extractPptxViaPython(filePath);
+    return extractPptxViaPython(filePath, context);
   }
   return `Error: Unsupported Office format: ${ext}`;
 }
@@ -212,15 +217,15 @@ for i, slide in enumerate(prs.slides, 1):
             print(shape.text)`;
 
 /** Extract PowerPoint text via Python (python-pptx) — no JS alternative */
-async function extractPptxViaPython(filePath: string): Promise<string> {
+async function extractPptxViaPython(filePath: string, context?: ToolExecutionContext): Promise<string> {
   const pyBin = isWindows() ? 'python' : 'python3';
 
   try {
-    const output = await invoke<CommandOutput>('run_argv_command', {
+    const output = await invokeTaskCommand<CommandOutput>('run_argv_command', {
       program: pyBin,
       args: ['-c', PPTX_SCRIPT, filePath],
       timeout: 30,
-    });
+    }, context, { commandIdPrefix: 'extract-pptx' });
     if (output.code === 0 && output.stdout.trim()) {
       return output.stdout;
     }
@@ -228,7 +233,8 @@ async function extractPptxViaPython(filePath: string): Promise<string> {
       return 'Error: Python module not installed. Run: pip3 install python-pptx';
     }
     return `Error extracting pptx: ${output.stderr?.slice(0, 500) || 'Unknown error'}`;
-  } catch {
+  } catch (err) {
+    if (isTaskCommandAbortedError(err)) return 'Error: PowerPoint extraction was aborted.';
     return `Error: Python3 not available. Install Python and python-pptx to read .pptx files.`;
   }
 }
@@ -236,7 +242,7 @@ async function extractPptxViaPython(filePath: string): Promise<string> {
 /**
  * List contents of an archive file using system commands.
  */
-export async function listArchiveContents(filePath: string, ext: string): Promise<string> {
+export async function listArchiveContents(filePath: string, ext: string, context?: ToolExecutionContext): Promise<string> {
   // Windows zip uses a complex inline .NET PowerShell pipeline; keep that
   // path on run_shell_command with the existing '' quoting until argv-based
   // PowerShell invocations are wired up. The Unix zip / tar / file paths
@@ -246,17 +252,18 @@ export async function listArchiveContents(filePath: string, ext: string): Promis
     const psPath = filePath.replace(/'/g, "''");
     const command = `powershell -NoProfile -Command "Add-Type -AssemblyName System.IO.Compression.FileSystem; [IO.Compression.ZipFile]::OpenRead('${psPath}').Entries | Select-Object FullName, Length | Format-Table -AutoSize"`;
     try {
-      const output = await invoke<CommandOutput>('run_shell_command', {
+      const output = await invokeTaskCommand<CommandOutput>('run_shell_command', {
         command,
         cwd: null,
         background: false,
         timeout: 15,
-      });
+      }, context, { commandIdPrefix: 'list-archive' });
       if (output.code === 0) {
         return output.stdout || 'Archive is empty.';
       }
       return `Error listing archive: ${output.stderr || 'Unknown error'}`;
-    } catch {
+    } catch (err) {
+      if (isTaskCommandAbortedError(err)) return 'Error: Archive listing was aborted.';
       return `Error: Could not list archive contents.`;
     }
   }
@@ -278,16 +285,17 @@ export async function listArchiveContents(filePath: string, ext: string): Promis
   }
 
   try {
-    const output = await invoke<CommandOutput>('run_argv_command', {
+    const output = await invokeTaskCommand<CommandOutput>('run_argv_command', {
       program,
       args,
       timeout: 15,
-    });
+    }, context, { commandIdPrefix: 'list-archive' });
     if (output.code === 0) {
       return output.stdout || 'Archive is empty.';
     }
     return `Error listing archive: ${output.stderr || 'Unknown error'}`;
-  } catch {
+  } catch (err) {
+    if (isTaskCommandAbortedError(err)) return 'Error: Archive listing was aborted.';
     return `Error: Could not list archive contents.`;
   }
 }

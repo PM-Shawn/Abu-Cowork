@@ -50,7 +50,7 @@ import { getToolInvoker } from './ports/toolInvoker';
 import { getSettingsReader } from './ports/settingsReader';
 import { toSerializableTool } from './subagentRunner';
 import { registerToolInvokeSource, ensureToolInvokeRouterRegistered } from './toolInvokeRouter';
-import { ensureHookBridgeRegistered } from './hookBridge';
+import { ensureHookBridgeRegistered, registerHookSignalSource } from './hookBridge';
 import { createEventRouter, type EventRouter } from './eventRouter';
 import {
   requestCommandConfirmation,
@@ -363,10 +363,11 @@ function handleCuSetState(rawParams: unknown): void {
 /**
  * `native.invoke` (REQUEST) → {cmd, args} → the real Tauri `invoke(cmd, args)`, ALLOWLISTED.
  *
- * Allowlist = the 4 Computer Use window-orchestration commands
+ * Allowlist = the Computer Use window-orchestration commands
  * (`toolExecutor.ts:300/304/310/316`) + `run_shell_command`
  * (`src/core/skill/preprocessor.ts`'s inline-command execution — the ONE
- * `invoke` call that file makes, verified by reading it; see
+ * `invoke` call that file makes, verified by reading it; `abort_command`
+ * (task-scoped cancellation for sidecar-local commands); see
  * P1-3B-2-REPORT.md's inventory) + `atomic_write_text` (P1-3d-2 — `utils/
  * atomicFs.ts`'s `atomicWrite()`, the write primitive `memdir/write.ts`
  * uses for every memory file/index write, reached once `memdirExtractorRun.ts`
@@ -383,6 +384,7 @@ const NATIVE_INVOKE_ALLOWLIST: ReadonlySet<string> = new Set([
   'window_hide',
   'activate_app',
   'run_shell_command',
+  'abort_command',
   'atomic_write_text',
   // P1-3d-5 slice 3: delete_file runs locally in the sidecar and reverses its
   // OS-Trash move here. Safe to allowlist — move_to_trash is recoverable (lands
@@ -503,7 +505,10 @@ async function handleMainLoopToolInvoke(rawParams: unknown): Promise<unknown> {
     (params.input as Record<string, unknown>) ?? {},
     session.options.requestCommandConfirmation ?? requestCommandConfirmation,
     session.options.requestFilePermission ?? requestFilePermission,
-    params.context as ToolExecutionContext | undefined,
+    {
+      ...((params.context as ToolExecutionContext | undefined) ?? {}),
+      abortSignal: session.shellAbortController.signal,
+    },
   );
 }
 
@@ -694,6 +699,9 @@ export function ensureHandlersRegistered(): void {
 
   registerToolInvokeSource('agentLoop', { has: (runId) => sessions.has(runId), handle: handleMainLoopToolInvoke });
   ensureToolInvokeRouterRegistered();
+  registerHookSignalSource('agentLoop', {
+    getAbortSignal: (runId) => sessions.get(runId)?.shellAbortController.signal,
+  });
   // hook.emit / hook.notify — shared with the subagent path via the neutral
   // hookBridge (see hookBridge.ts's doc). Without this, a session that runs
   // ONLY a main loop (no subagent) had no hook.emit handler at all, so the
@@ -1120,6 +1128,7 @@ async function buildAgentRunParams(
   conversationId: string,
   userMessage: string,
   options: AgentLoopOptions | undefined,
+  abortSignal?: AbortSignal,
 ): Promise<AgentRunParams> {
   const conversationSnapshot = getConversationReader().getConversation(conversationId);
   if (!conversationSnapshot) {
@@ -1133,7 +1142,13 @@ async function buildAgentRunParams(
   // entryOrchestration.ts's precomputeOrchestration — see
   // resolveEntryModel.ts's doc for why this is the third (not a fourth,
   // hand-copied) caller of the same pure formula.
-  const orchestration = await precomputeOrchestration(conversationId, userMessage, options?.imContext, { settings, settingsForModel });
+  const orchestration = await precomputeOrchestration(
+    conversationId,
+    userMessage,
+    options?.imContext,
+    { settings, settingsForModel },
+    abortSignal,
+  );
   const { effectiveModelId, provider } = resolveEntryModel(orchestration.route, settings, settingsForModel);
 
   // May throw (EnterpriseLlmUnavailableError) — propagates to the caller,
@@ -1276,10 +1291,30 @@ export async function runAgentLoopDispatched(
   const runId = generateRunId();
   logger.debug('agent-loop path selected', { path: 'sidecar', runId, conversationId });
 
+  // Skill inline commands execute while the system prompt is precomputed, so
+  // the task controller and visible conversation ownership must exist before
+  // buildAgentRunParams starts. This closes the rapid double-send window:
+  // ChatInput shows Stop, while another textual send is routed into the queue.
+  const abortRegistry = getAbortRegistry();
+  abortRegistry.clearAbortController(conversationId);
+  const shellAbortController = abortRegistry.getAbortController(conversationId);
+  const shellChatDelta = getChatDelta();
+  shellChatDelta.setConversationStatus(conversationId, 'running');
+
   let params: AgentRunParams;
   try {
-    params = await buildAgentRunParams(runId, conversationId, userMessage, options);
+    params = await buildAgentRunParams(
+      runId,
+      conversationId,
+      userMessage,
+      options,
+      shellAbortController.signal,
+    );
   } catch (err) {
+    const wasAborted = shellAbortController.signal.aborted;
+    abortRegistry.clearAbortController(conversationId);
+    shellChatDelta.setConversationStatus(conversationId, 'idle');
+    if (wasAborted) return { reason: 'aborted' };
     // Failed before any dispatch — pre-commit by construction (see doc).
     logger.warn('agent-loop dispatch params build failed — running in-process', {
       runId,
@@ -1288,19 +1323,18 @@ export async function runAgentLoopDispatched(
     });
     return runAgentLoop(conversationId, userMessage, options);
   }
+  if (shellAbortController.signal.aborted) {
+    abortRegistry.clearAbortController(conversationId);
+    shellChatDelta.setConversationStatus(conversationId, 'idle');
+    return { reason: 'aborted' };
+  }
 
   // ── Shell-side session + abort wiring ────────────────────────────────
-  // clearAbortController first (mirrors agentLoop.ts's own entry: "Force-
-  // clear any stale controller first to avoid inheriting aborted state from
-  // a previous run"), then get-or-create — this is the SAME controller the
-  // UI's existing Stop button already targets via the real AbortRegistry
+  // The controller above is the SAME controller the UI's existing Stop
+  // button already targets via the real AbortRegistry
   // (chatStore.ts's `abortControllers` map), so the Stop button needs ZERO
   // changes (design doc §3's abortRegistry row) — its `.abort()` call fires
   // the listener below, which forwards to the sidecar.
-  const abortRegistry = getAbortRegistry();
-  abortRegistry.clearAbortController(conversationId);
-  const shellAbortController = abortRegistry.getAbortController(conversationId);
-
   const session: RunSession = {
     conversationId,
     loopId: runId, // same id as runId by convention — see agentLoop.ts's AgentLoopOptions.loopId doc.
@@ -1328,6 +1362,7 @@ export async function runAgentLoopDispatched(
 
   registerRunSession(runId, session);
   installShellLoopContext(runId, session);
+  let handedOffToLocal = false;
 
   try {
     const raw = await sidecarRequest('agent.run', params, 0);
@@ -1336,12 +1371,27 @@ export async function runAgentLoopDispatched(
     }
     return raw;
   } catch (err) {
+    if (shellAbortController.signal.aborted) {
+      return { reason: 'aborted' };
+    }
     if (!session.committed) {
+      // Release the shell-side ownership before entering the in-process loop.
+      // Otherwise its concurrency guard sees this still-live controller/session
+      // and enqueues the original prompt instead of actually retrying it.
+      removeShellLoopContext(runId);
+      unregisterRunSession(runId);
+      shellAbortController.signal.removeEventListener('abort', onShellAbort);
+      abortRegistry.clearAbortController(conversationId);
+      shellChatDelta.setConversationStatus(conversationId, 'idle');
       logger.warn('agent-loop transport failed before commit — retrying in-process', {
         runId,
         conversationId,
         error: err instanceof Error ? err.message : String(err),
       });
+      // The local loop synchronously installs its own AbortController before its
+      // first await. Mark the ownership transfer so this dispatch wrapper's
+      // finally block cannot delete that replacement controller.
+      handedOffToLocal = true;
       return runAgentLoop(conversationId, userMessage, options);
     }
     // Surface the REAL sidecar-side cause: a thrown handler comes back as a
@@ -1393,6 +1443,8 @@ export async function runAgentLoopDispatched(
     removeShellLoopContext(runId);
     unregisterRunSession(runId);
     shellAbortController.signal.removeEventListener('abort', onShellAbort);
-    abortRegistry.clearAbortController(conversationId);
+    if (!handedOffToLocal) {
+      abortRegistry.clearAbortController(conversationId);
+    }
   }
 }

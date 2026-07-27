@@ -9,12 +9,11 @@
 # APPLE_API_KEY_P8 (key file content), ALIYUN_ACCESS_KEY_ID,
 # ALIYUN_ACCESS_KEY_SECRET, OSS_BUCKET, OSS_REGION. No new secrets needed.
 #
-# Signing: electron-builder's standard CSC_LINK/CSC_KEY_PASSWORD path (it
-# imports the p12 into its own throwaway keychain — no manual `security`
-# choreography needed, unlike the Tauri job). The yml's `identity: null` is
-# overridden per-invocation with -c.mac.identity read from the cert. Nested
-# extraResources Mach-Os are deep-signed by scripts/electron-sign-nested.cjs
-# (afterPack), verified locally against the same Developer ID.
+# Signing: import the p12 into one explicit throwaway keychain BEFORE
+# electron-builder starts. Its afterPack hook must sign nested extraResources
+# before the outer app signature, so relying on electron-builder's later
+# CSC_LINK import is too late. CSC_KEYCHAIN makes the nested and outer signing
+# passes use the same keychain and Developer ID identity.
 #
 # Notarization: electron-builder's built-in @electron/notarize integration —
 # activates automatically when APPLE_API_KEY/APPLE_API_KEY_ID/APPLE_API_ISSUER
@@ -55,6 +54,26 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Import Developer ID certificate
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+        run: |
+          KEYCHAIN="$RUNNER_TEMP/electron-signing.keychain-db"
+          KEYCHAIN_PWD="$(openssl rand -base64 24)"
+          security create-keychain -p "$KEYCHAIN_PWD" "$KEYCHAIN"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN"
+          security unlock-keychain -p "$KEYCHAIN_PWD" "$KEYCHAIN"
+          printf '%s' "$APPLE_CERTIFICATE" | base64 --decode > "$RUNNER_TEMP/electron-cert.p12"
+          security import "$RUNNER_TEMP/electron-cert.p12" -k "$KEYCHAIN" \
+            -P "$APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          rm -f "$RUNNER_TEMP/electron-cert.p12"
+          security set-key-partition-list -S apple-tool:,apple:,codesign: \
+            -s -k "$KEYCHAIN_PWD" "$KEYCHAIN" >/dev/null
+          EXISTING_KC="$(security list-keychains -d user | sed 's/[[:space:]"]//g' | tr '\n' ' ')"
+          security list-keychains -d user -s "$KEYCHAIN" $EXISTING_KC
+          echo "CSC_KEYCHAIN=$KEYCHAIN" >> "$GITHUB_ENV"
+
       - name: Gates (build + lint + parity)
         run: |
           npm run build
@@ -74,13 +93,13 @@ jobs:
 
       - name: Build, sign, notarize (zip + dmg + latest-mac.yml)
         env:
-          # electron-builder signing: p12 via CSC_LINK (base64 accepted as-is).
-          CSC_LINK: ${{ secrets.APPLE_CERTIFICATE }}
-          CSC_KEY_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
           # Notarization env (APPLE_API_KEY / APPLE_API_KEY_ID from GITHUB_ENV
           # above) + issuer:
           APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
-        run: npm run dist:electron
+        run: >-
+          npm run dist:electron --
+          --config.mac.identity="Developer ID Application"
+          --config.mac.forceCodeSigning=true
 
       - name: Staple + verify
         env:
@@ -104,6 +123,15 @@ jobs:
           spctl -a -vvv --type execute "$APP"
           echo "== codesign deep verify =="
           codesign --verify --deep --strict "$APP"
+          LAUNCHER="$APP/Contents/Resources/sandbox-launcher/darwin/sandbox-launcher"
+          test -x "$LAUNCHER"
+          echo "== nested sandbox-launcher signature =="
+          codesign --verify --strict "$LAUNCHER"
+          APP_TEAM="$(codesign -dv --verbose=4 "$APP" 2>&1 | sed -n 's/^TeamIdentifier=//p' | head -1)"
+          LAUNCHER_TEAM="$(codesign -dv --verbose=4 "$LAUNCHER" 2>&1 | sed -n 's/^TeamIdentifier=//p' | head -1)"
+          test -n "$APP_TEAM"
+          test "$APP_TEAM" = "$LAUNCHER_TEAM"
+          echo "nested launcher TeamIdentifier=$LAUNCHER_TEAM"
 
       # Stapling rewrites the dmg bytes, so the sha512/size electron-builder
       # recorded in latest-mac.yml (and the dmg blockmap) are stale by now.
@@ -112,7 +140,7 @@ jobs:
       - name: Refresh dmg hash in latest-mac.yml after stapling
         run: node scripts/electron-refresh-dmg-hash.mjs
 
-      - name: Packaged smoke (6 checks) on the notarized build
+      - name: Packaged smoke on the notarized build
         run: npm run smoke:electron:packaged
 
       - name: Upload artifacts (workflow run)
@@ -149,3 +177,10 @@ jobs:
           ossutil cp release-electron/latest-mac.yml "${BUCKET}/electron/latest-mac.yml" -f --meta "Cache-Control:no-cache"
           echo "Done. Listing:"
           ossutil ls "${BUCKET}/electron/"
+
+      - name: Remove signing keychain
+        if: ${{ always() }}
+        run: |
+          if [ -n "${CSC_KEYCHAIN:-}" ]; then
+            security delete-keychain "$CSC_KEYCHAIN" || true
+          fi

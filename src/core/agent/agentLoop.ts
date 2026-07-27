@@ -619,7 +619,13 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
   // reasoning and entryOrchestrationRun.ts's throwing shim.
   const { route, systemPromptSections } = options?.orchestration ?? await (
     await import('./entryOrchestration')
-  ).precomputeOrchestration(conversationId, userMessage, options?.imContext, { settings, settingsForModel });
+  ).precomputeOrchestration(
+    conversationId,
+    userMessage,
+    options?.imContext,
+    { settings, settingsForModel },
+    abortController.signal,
+  );
 
   // Build tool execution context — provides resolved workspace for tools like update_memory.
   // Priority: IM-injected path > conversation's own stored path > global store fallback.
@@ -638,6 +644,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
       getWorkspaceReader().getCurrentPath(),
     loopId,
     conversationId,
+    abortSignal: abortController.signal,
   };
 
   // Determine effective model — agent can override (with provider compatibility check).

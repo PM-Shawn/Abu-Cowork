@@ -64,6 +64,19 @@ describe('lifecycleHooksRun shim', () => {
       expect(spy).toHaveBeenCalledWith('hook.emit', { runId: 'main-run-1', event: preToolEvent });
       expect((result as HookEvent & { blocked?: boolean }).blocked).toBe(true);
     });
+
+    it('keeps AbortSignal local instead of serializing it into hook.emit', async () => {
+      const controller = new AbortController();
+      const event = { ...preToolEvent, abortSignal: controller.signal };
+      const spy = vi.spyOn(rpcClient, 'sendRequest').mockResolvedValue(preToolEvent);
+
+      await agentRunContext.run(makeAgentCtx(), () => emitHook(event));
+
+      expect(spy).toHaveBeenCalledWith('hook.emit', {
+        runId: 'main-run-1',
+        event: preToolEvent,
+      });
+    });
   });
 
   describe('subagent path (subagentRunContext fallback, unchanged from P1-3a)', () => {

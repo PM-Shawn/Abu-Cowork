@@ -220,9 +220,9 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
   let totalInputTokens = 0;
   let totalOutputTokens = 0;
 
-  // Guard: if signal is already aborted at entry, ignore it to avoid stale abort state from previous runs.
-  // A genuinely cancelled request will re-abort the fresh controller created by the caller.
-  const signal = options.signal?.aborted ? undefined : options.signal;
+  // The caller owns signal freshness. Treat an already-aborted signal as a
+  // real cancellation; silently replacing it can resurrect a stopped task.
+  const signal = options.signal;
 
   // Per-run injectable ports — same `options?.x ?? getX()` shape as
   // agentLoop.ts (agentLoop.ts:~717). Resolved once and reused for every
@@ -644,6 +644,7 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
             timestamp: Date.now(),
             toolName: tc.name,
             toolInput: tc.input,
+            abortSignal: signal,
           } as PreToolCallEvent);
           if (preEvent.blocked) {
             if (preEvent.blockReason) {
@@ -655,7 +656,7 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
 
           const toolStart = Date.now();
           try {
-            const subagentToolContext: ToolExecutionContext = { workspacePath };
+            const subagentToolContext: ToolExecutionContext = { workspacePath, abortSignal: signal };
             const rawResult = await toolInvoker.executeAnyTool(
               tc.name,
               effectiveInput,
@@ -670,6 +671,7 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
               timestamp: Date.now(),
               toolName: tc.name,
               toolInput: effectiveInput,
+              abortSignal: signal,
               result,
               error: false,
               durationMs,
@@ -684,6 +686,7 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
               timestamp: Date.now(),
               toolName: tc.name,
               toolInput: effectiveInput,
+              abortSignal: signal,
               result,
               error: true,
               durationMs,

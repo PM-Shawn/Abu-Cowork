@@ -62,11 +62,16 @@ function resolveRunId(): string {
 
 export function emitHook<T extends HookEvent>(event: T): T | Promise<T> {
   const runId = resolveRunId();
-
-  if (event.type === 'preToolCall') {
-    return sendRequest('hook.emit', { runId, event }) as Promise<T>;
+  let wireEvent: HookEvent = event;
+  if (event.type === 'preToolCall' || event.type === 'postToolCall') {
+    const { abortSignal: _abortSignal, ...withoutSignal } = event;
+    wireEvent = withoutSignal as unknown as HookEvent;
   }
 
-  sendNotification('hook.notify', { runId, event });
+  if (event.type === 'preToolCall') {
+    return sendRequest('hook.emit', { runId, event: wireEvent }) as Promise<T>;
+  }
+
+  sendNotification('hook.notify', { runId, event: wireEvent });
   return event;
 }

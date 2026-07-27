@@ -24,7 +24,7 @@ const fs = require('node:fs');
 const { execFileSync } = require('node:child_process');
 
 /** Dirs under Contents/Resources whose Mach-O contents we own and must sign. */
-const NESTED_BINARY_DIRS = ['native-helper', 'python-runtime', 'node-runtime'];
+const NESTED_BINARY_DIRS = ['native-helper', 'sandbox-launcher', 'python-runtime', 'node-runtime'];
 
 function isMachO(filePath) {
   // Mach-O magics: feedface/feedfacf (+ swapped) and cafebabe (fat).
@@ -76,6 +76,7 @@ module.exports = async function afterPack(context) {
   const appName = `${context.packager.appInfo.productFilename}.app`;
   const resourcesDir = path.join(context.appOutDir, appName, 'Contents', 'Resources');
   const entitlements = path.join(__dirname, '..', 'build', 'entitlements.mac.plist');
+  const keychain = process.env.CSC_KEYCHAIN || null;
 
   let signed = 0;
   for (const dirName of NESTED_BINARY_DIRS) {
@@ -83,7 +84,7 @@ module.exports = async function afterPack(context) {
     if (!fs.existsSync(dir)) continue;
     for (const f of walkFiles(dir)) {
       if (!isMachO(f)) continue;
-      execFileSync('codesign', [
+      const args = [
         '--force',
         '--timestamp',
         '--options',
@@ -92,8 +93,10 @@ module.exports = async function afterPack(context) {
         entitlements,
         '--sign',
         identity,
-        f,
-      ]);
+      ];
+      if (keychain) args.push('--keychain', keychain);
+      args.push(f);
+      execFileSync('codesign', args);
       signed++;
     }
   }

@@ -94,6 +94,7 @@ export async function precomputeOrchestration(
   userMessage: string,
   imContext: IMContext | undefined,
   entry: { settings: SettingsState; settingsForModel: SettingsState },
+  abortSignal?: AbortSignal,
 ): Promise<PrecomputedOrchestration> {
   const route = routeInput(userMessage);
 
@@ -122,6 +123,7 @@ export async function precomputeOrchestration(
     conversationId,
     imContext,
     0,
+    { abortSignal },
   );
 
   return { route, systemPromptSections };

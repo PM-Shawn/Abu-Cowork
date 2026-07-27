@@ -29,20 +29,54 @@
  */
 import { onSidecarRequest, onSidecarNotification, SidecarRequestError } from '../sidecar/sidecarManager';
 import { emitHook } from './lifecycleHooks';
-import type { HookEvent } from './lifecycleHooks';
+import type { HookEvent, PreToolCallEvent, PostToolCallEvent } from './lifecycleHooks';
+
+type ToolHookEvent = PreToolCallEvent | PostToolCallEvent;
+
+export interface HookSignalSource {
+  getAbortSignal(runId: string): AbortSignal | undefined;
+}
+
+const signalSources = new Map<string, HookSignalSource>();
+
+export function registerHookSignalSource(name: string, source: HookSignalSource): void {
+  signalSources.set(name, source);
+}
+
+function resolveAbortSignal(runId: unknown): AbortSignal | undefined {
+  if (typeof runId !== 'string') return undefined;
+  for (const source of signalSources.values()) {
+    const signal = source.getAbortSignal(runId);
+    if (signal) return signal;
+  }
+  return undefined;
+}
+
+function attachAbortSignal(event: HookEvent, runId: unknown): HookEvent {
+  if (event.type !== 'preToolCall' && event.type !== 'postToolCall') return event;
+  const abortSignal = resolveAbortSignal(runId);
+  return abortSignal ? { ...event, abortSignal } : event;
+}
+
+function withoutAbortSignal(event: HookEvent): HookEvent {
+  if (event.type !== 'preToolCall' && event.type !== 'postToolCall') return event;
+  const { abortSignal: _abortSignal, ...wireEvent } = event;
+  return wireEvent as ToolHookEvent;
+}
 
 async function handleHookEmit(rawParams: unknown): Promise<unknown> {
-  const params = rawParams as { event?: HookEvent } | null;
+  const params = rawParams as { runId?: unknown; event?: HookEvent } | null;
   if (!params?.event) {
     throw new SidecarRequestError(-32602, 'Invalid hook.emit params: event is required');
   }
-  return await emitHook(params.event);
+  const result = await emitHook(attachAbortSignal(params.event, params.runId));
+  return withoutAbortSignal(result);
 }
 
 function handleHookNotify(rawParams: unknown): void {
-  const params = rawParams as { event?: HookEvent } | null;
+  const params = rawParams as { runId?: unknown; event?: HookEvent } | null;
   if (!params?.event) return;
-  void emitHook(params.event);
+  void emitHook(attachAbortSignal(params.event, params.runId));
 }
 
 let registered = false;
@@ -63,4 +97,5 @@ export function ensureHookBridgeRegistered(): void {
  *  module-level singleton state). */
 export function __resetHookBridgeForTests(): void {
   registered = false;
+  signalSources.clear();
 }

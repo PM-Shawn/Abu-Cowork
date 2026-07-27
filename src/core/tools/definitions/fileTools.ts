@@ -17,6 +17,7 @@ import {
   similarityScore,
   type CommandOutput,
 } from '../helpers/toolHelpers';
+import { invokeTaskCommand, isTaskCommandAbortedError } from '../helpers/scopedCommand';
 import { TOOL_NAMES } from '../toolNames';
 import { getI18n, format } from '../../../i18n';
 import { bindWorkspaceFromWrite } from '../../agent/defaultWorkspace';
@@ -93,7 +94,7 @@ export const readFileTool: ToolDefinition = {
           return format(getI18n().toolResult.file.imageSkipNoVision, { path: filePath, mediaType });
         }
         const bytes = new Uint8Array(await readBinFile(filePath));
-        const { data, resized } = await resizeImageIfNeeded(bytes, 1280);
+        const { data, resized } = await resizeImageIfNeeded(bytes, 1280, context);
         const sizeKB = Math.round(bytes.length / 1024);
         const resizeNote = resized ? ' (auto-resized to 1280px width)' : '';
 
@@ -108,29 +109,35 @@ export const readFileTool: ToolDefinition = {
         // Strategy 1: pdftotext (macOS/Linux — fast, native)
         if (!isWindows()) {
           try {
-            const output = await invoke<CommandOutput>('run_argv_command', {
+            const output = await invokeTaskCommand<CommandOutput>('run_argv_command', {
               program: 'pdftotext',
               args: [filePath, '-'],
               timeout: 30,
-            });
+            }, context, { commandIdPrefix: 'read-pdf' });
             if (output.code === 0 && output.stdout.trim()) {
               return output.stdout;
             }
-          } catch { /* fall through to Python */ }
+          } catch (err) {
+            if (isTaskCommandAbortedError(err)) return 'Error reading file: PDF extraction was aborted.';
+            /* fall through to Python */
+          }
         }
 
         // Strategy 2: Python pdfplumber (cross-platform)
         try {
           const pyBin = isWindows() ? 'python' : 'python3';
-          const output = await invoke<CommandOutput>('run_argv_command', {
+          const output = await invokeTaskCommand<CommandOutput>('run_argv_command', {
             program: pyBin,
             args: ['-c', PDFPLUMBER_SCRIPT, filePath],
             timeout: 30,
-          });
+          }, context, { commandIdPrefix: 'read-pdf' });
           if (output.code === 0 && output.stdout.trim()) {
             return output.stdout;
           }
-        } catch { /* fall through to hint */ }
+        } catch (err) {
+          if (isTaskCommandAbortedError(err)) return 'Error reading file: PDF extraction was aborted.';
+          /* fall through to hint */
+        }
 
         // Strategy 3: User hint
         return isWindows()
@@ -140,13 +147,13 @@ export const readFileTool: ToolDefinition = {
 
       // --- Office documents: extract text via Python ---
       if (OFFICE_EXTENSIONS.has(ext)) {
-        return await extractOfficeText(filePath, ext);
+        return await extractOfficeText(filePath, ext, context);
       }
 
       // --- Archives: list contents ---
       if (ARCHIVE_EXTENSIONS.has(ext) || filePath.endsWith('.tar.gz')) {
         const archiveExt = filePath.endsWith('.tar.gz') ? '.tar.gz' : ext;
-        return await listArchiveContents(filePath, archiveExt);
+        return await listArchiveContents(filePath, archiveExt, context);
       }
 
       // --- Text files: read as UTF-8 with size gating and pagination ---
@@ -445,7 +452,7 @@ export const searchFilesTool: ToolDefinition = {
     },
     required: ['pattern', 'path'],
   },
-  execute: async (input) => {
+  execute: async (input, context) => {
     const pattern = input.pattern as string;
     const searchPath = input.path as string;
     const include = input.include as string | undefined;
@@ -474,7 +481,7 @@ export const searchFilesTool: ToolDefinition = {
     }
 
     try {
-      const output = await invoke<CommandOutput>('run_shell_command', {
+      const output = await invokeTaskCommand<CommandOutput>('run_shell_command', {
         command,
         cwd: null,
         background: false,
@@ -482,7 +489,7 @@ export const searchFilesTool: ToolDefinition = {
         sandboxEnabled: isSandboxEnabled(),
         networkIsolation: isNetworkIsolationEnabled(),
         extraWritablePaths: [],
-      });
+      }, context, { commandIdPrefix: 'search-files' });
 
       if (output.stdout.trim()) {
         const cleaned = output.stdout.replace(/\r\n/g, '\n').trim();
@@ -515,7 +522,7 @@ export const findFilesTool: ToolDefinition = {
     },
     required: ['pattern', 'path'],
   },
-  execute: async (input) => {
+  execute: async (input, context) => {
     const pattern = input.pattern as string;
     const searchPath = input.path as string;
     const safeMaxResults = Math.min(Math.max(1, Math.floor(Number(input.max_results) || 100)), 500);
@@ -535,7 +542,7 @@ export const findFilesTool: ToolDefinition = {
     }
 
     try {
-      const output = await invoke<CommandOutput>('run_shell_command', {
+      const output = await invokeTaskCommand<CommandOutput>('run_shell_command', {
         command,
         cwd: null,
         background: false,
@@ -543,7 +550,7 @@ export const findFilesTool: ToolDefinition = {
         sandboxEnabled: isSandboxEnabled(),
         networkIsolation: isNetworkIsolationEnabled(),
         extraWritablePaths: [],
-      });
+      }, context, { commandIdPrefix: 'find-files' });
 
       if (output.stdout.trim()) {
         const cleaned = output.stdout.replace(/\r\n/g, '\n').trim();

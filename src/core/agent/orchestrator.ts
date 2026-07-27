@@ -1,4 +1,4 @@
-import type { SubagentDefinition, Skill } from '../../types';
+import type { SubagentDefinition, Skill, ToolExecutionContext } from '../../types';
 import { agentRegistry } from './registry';
 import { skillLoader } from '../skill/loader';
 import { loadAllRules } from './projectRules';
@@ -244,8 +244,16 @@ export async function buildSystemPrompt(
   conversationId: string,
   imContext?: IMContext,
   turnCount?: number,
+  toolContext?: ToolExecutionContext,
 ): Promise<string> {
-  const sections = await buildSystemPromptSections(route, basePrompt, conversationId, imContext, turnCount);
+  const sections = await buildSystemPromptSections(
+    route,
+    basePrompt,
+    conversationId,
+    imContext,
+    turnCount,
+    toolContext,
+  );
   return sectionsToString(sections);
 }
 
@@ -264,6 +272,7 @@ export async function buildSystemPromptSections(
   conversationId: string,
   imContext?: IMContext,
   turnCount?: number,
+  toolContext?: ToolExecutionContext,
 ): Promise<PromptSection[]> {
   const sections: PromptSection[] = [];
   const isSkillMode = route.type === 'skill' && route.skillContent;
@@ -280,7 +289,11 @@ export async function buildSystemPromptSections(
       conversationId,
     );
     if (settings.allowSkillCommands) {
-      processedSkillContent = await executeInlineCommands(processedSkillContent, route.skill.skillDir);
+      processedSkillContent = await executeInlineCommands(
+        processedSkillContent,
+        route.skill.skillDir,
+        toolContext,
+      );
     }
   }
 

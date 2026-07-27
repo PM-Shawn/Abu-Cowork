@@ -31,7 +31,10 @@
 'use strict';
 
 const os = require('node:os');
+const fs = require('node:fs');
+const path = require('node:path');
 const { spawn, execFileSync } = require('node:child_process');
+const { resourceRoot, REPO_ROOT } = require('./appEnv.cjs');
 
 // ── Seatbelt (SBPL) profile generation — line-for-line port of
 // src-tauri/src/sandbox.rs's generate_seatbelt_profile() ──
@@ -179,22 +182,35 @@ function proxyEnvVars(networkProxyPort) {
  * (NOTE: no `--` separator here — matches the Rust source exactly; `--` is
  * only used by the argv variant below).
  *
- * DEVIATION from the Rust source: the Rust build_sandboxed_command ALSO
- * layers a weaker sandbox on Windows (PowerShell ConstrainedLanguage mode)
- * when sandbox_enabled is true. Per this port's explicit scope (macOS
- * seatbelt only), Windows/Linux always run unsandboxed here — see report.
+ * Windows parity: sandboxEnabled=true runs PowerShell in ConstrainedLanguage
+ * mode with ExecutionPolicy Restricted as defense in depth. The launcher also
+ * applies a restricted primary token and owns the tree through a Job Object.
  */
-function buildSandboxedCommandSpec(command, cwd, extraWritablePaths, sandboxEnabled, networkProxyPort) {
+function buildSandboxedCommandSpec(command, cwd, extraWritablePaths, sandboxEnabled, networkProxyPort, platform = process.platform) {
   const env = proxyEnvVars(networkProxyPort);
 
-  if (process.platform === 'darwin' && sandboxEnabled) {
+  if (platform === 'darwin' && sandboxEnabled) {
     const homeDir = os.homedir() || '/tmp';
     const profile = generateSeatbeltProfile(cwd, extraWritablePaths, homeDir, networkProxyPort);
     const shell = process.env.SHELL || '/bin/zsh';
     return { file: 'sandbox-exec', args: ['-p', profile, shell, '-lc', command], env };
   }
 
-  if (process.platform === 'win32') {
+  if (platform === 'win32') {
+    if (sandboxEnabled) {
+      return {
+        file: 'powershell',
+        args: [
+          '-NoProfile',
+          '-NonInteractive',
+          '-ExecutionPolicy',
+          'Restricted',
+          '-Command',
+          `$ExecutionContext.SessionState.LanguageMode = 'ConstrainedLanguage'; ${command}`,
+        ],
+        env,
+      };
+    }
     return { file: 'powershell', args: ['-NoProfile', '-NonInteractive', '-Command', command], env };
   }
 
@@ -211,10 +227,10 @@ function buildSandboxedCommandSpec(command, cwd, extraWritablePaths, sandboxEnab
  * (the `--` separates sandbox-exec's own flags from the target argv so a
  * program name starting with `-` cannot be misinterpreted — matches Rust).
  */
-function buildSandboxedArgvCommandSpec(program, args, cwd, extraWritablePaths, sandboxEnabled, networkProxyPort) {
+function buildSandboxedArgvCommandSpec(program, args, cwd, extraWritablePaths, sandboxEnabled, networkProxyPort, platform = process.platform) {
   const env = proxyEnvVars(networkProxyPort);
 
-  if (process.platform === 'darwin' && sandboxEnabled) {
+  if (platform === 'darwin' && sandboxEnabled) {
     const homeDir = os.homedir() || '/tmp';
     const profile = generateSeatbeltProfile(cwd, extraWritablePaths, homeDir, networkProxyPort);
     return { file: 'sandbox-exec', args: ['-p', profile, '--', program, ...args], env };
@@ -308,6 +324,10 @@ function getNetworkProxyPort() {
 // ── Foreground / background process execution ──
 
 const MAX_OUTPUT_BUF_CHARS = 2_000_000; // ~2M chars per stream; generous cap against runaway output
+const COMMAND_MISS = Symbol('command-dispatch-miss');
+const activeCommands = new Map();
+let commandSeq = 0;
+let lifecycleHooksRegistered = false;
 
 function makeCappedCollector() {
   const state = { buf: '', truncated: false };
@@ -327,44 +347,210 @@ function makeCappedCollector() {
 }
 
 /**
- * Spawn a prepared command spec in the foreground, honoring a timeout, and
- * resolve with {stdout, stderr, code}. Port of lib.rs's
- * execute_foreground_command (spawn + collect + timeout-kill).
+ * Resolve the one-shot launcher. Dev builds use the copied dist/<platform>
+ * binary from `npm run build:sandbox-launcher`; packaged builds use
+ * extraResources under process.resourcesPath.
  */
-function spawnForeground(spec, opts, timeoutSecs) {
+function sandboxLauncherPathFor(app) {
+  const exe = process.platform === 'win32' ? 'sandbox-launcher.exe' : 'sandbox-launcher';
+  const packaged = path.join(resourceRoot(app), 'sandbox-launcher', process.platform, exe);
+  if (app?.isPackaged || fs.existsSync(packaged)) return packaged;
+  const devDist = path.join(REPO_ROOT, 'electron', 'sandbox-launcher', 'dist', process.platform, exe);
+  if (fs.existsSync(devDist)) return devDist;
+  return path.join(REPO_ROOT, 'electron', 'sandbox-launcher', 'target', 'release', exe);
+}
+
+function makeLauncherConfig(spec, sandboxEnabled) {
+  return {
+    file: spec.file,
+    args: spec.args,
+    sandboxEnabled: sandboxEnabled === true,
+    // stdin remains open after this newline-delimited frame. If Electron is
+    // killed or crashes, the OS closes the pipe and the native launcher tears
+    // down its process group / Job Object without relying on JavaScript hooks.
+    monitorParent: true,
+  };
+}
+
+function makeCommandId(prefix = 'cmd') {
+  commandSeq += 1;
+  return `${prefix}-${Date.now().toString(36)}-${commandSeq.toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function addActiveCommand(entry) {
+  let set = activeCommands.get(entry.commandId);
+  if (!set) {
+    set = new Set();
+    activeCommands.set(entry.commandId, set);
+  }
+  set.add(entry);
+}
+
+function removeActiveCommand(entry) {
+  const set = activeCommands.get(entry.commandId);
+  if (!set) return;
+  set.delete(entry);
+  if (set.size === 0) activeCommands.delete(entry.commandId);
+}
+
+function unixDescendantPids(rootPid) {
+  if (process.platform === 'win32' || !Number.isInteger(rootPid) || rootPid <= 0) return [];
+  try {
+    const rows = execFileSync('/bin/ps', ['-A', '-o', 'pid=', '-o', 'ppid='], {
+      encoding: 'utf8',
+      timeout: 2000,
+    });
+    const childrenByParent = new Map();
+    for (const line of rows.split('\n')) {
+      const match = line.trim().match(/^(\d+)\s+(\d+)$/);
+      if (!match) continue;
+      const pid = Number(match[1]);
+      const ppid = Number(match[2]);
+      let children = childrenByParent.get(ppid);
+      if (!children) {
+        children = [];
+        childrenByParent.set(ppid, children);
+      }
+      children.push(pid);
+    }
+
+    const descendants = [];
+    const visit = (pid) => {
+      for (const childPid of childrenByParent.get(pid) || []) {
+        visit(childPid);
+        descendants.push(childPid);
+      }
+    };
+    visit(rootPid);
+    return descendants;
+  } catch {
+    return [];
+  }
+}
+
+function killProcessTree(entry, signal = 'SIGKILL') {
+  if (!entry || entry.killed || entry.completed) return;
+  entry.killed = true;
+  const child = entry.child;
+  // A descendant can create a new Unix session/process group while retaining
+  // this launcher as an ancestor. Kill those deepest-first before the normal
+  // process-group signal. Deliberate double-fork daemonization can re-parent
+  // before it is observed and remains unsupported.
+  for (const pid of unixDescendantPids(child.pid)) {
+    try {
+      process.kill(pid, signal);
+    } catch {
+      /* descendant may already have exited */
+    }
+  }
+
+  // Closing the launcher's stdin is the cross-platform lifecycle signal. The
+  // launcher owns the target process group / Job Object and performs the real
+  // tree termination. This also works automatically when Electron is SIGKILLed
+  // because the OS closes the same pipe.
+  try {
+    child.stdin?.destroy();
+  } catch {
+    /* best-effort */
+  }
+
+  // A broken native launcher must not remain forever. Give its liveness
+  // watcher time to close the owned tree, then force only the launcher group.
+  entry.forceKillTimer = setTimeout(() => {
+    try {
+      if (process.platform !== 'win32' && child.pid) {
+        process.kill(-child.pid, signal);
+        return;
+      }
+    } catch {
+      // Fall through to direct-child kill below.
+    }
+    try {
+      child.kill(signal);
+    } catch {
+      /* best-effort */
+    }
+  }, 2000);
+  entry.forceKillTimer.unref?.();
+}
+
+function abortCommand(commandId) {
+  if (typeof commandId !== 'string' || commandId.length === 0) return false;
+  const set = activeCommands.get(commandId);
+  if (!set || set.size === 0) return false;
+  for (const entry of Array.from(set)) killProcessTree(entry);
+  return true;
+}
+
+function teardownCommandHost() {
+  for (const set of Array.from(activeCommands.values())) {
+    for (const entry of Array.from(set)) killProcessTree(entry);
+  }
+}
+
+function ensureCommandHostLifecycleHooks(app) {
+  if (lifecycleHooksRegistered) return;
+  lifecycleHooksRegistered = true;
+  const cleanup = () => teardownCommandHost();
+  process.once('exit', cleanup);
+  app?.once?.('before-quit', cleanup);
+}
+
+function __resetCommandHostForTests() {
+  teardownCommandHost();
+  activeCommands.clear();
+}
+
+/**
+ * Spawn a prepared command spec through the sandbox-launcher, honoring a
+ * timeout, and resolve with {stdout, stderr, code}. The launcher is the
+ * process-tree root: Unix gets a detached process group, Windows gets a Job
+ * Object with KILL_ON_JOB_CLOSE inside the launcher.
+ */
+function spawnForeground(app, spec, opts, timeoutSecs, commandId) {
   return new Promise((resolve) => {
     const { file, args, env } = spec;
+    const launcherPath = sandboxLauncherPathFor(app);
     const spawnEnv = { ...process.env, ...(env || {}), ...(opts.envOverride || {}) };
 
     let child;
     try {
-      child = spawn(file, args, { cwd: opts.cwd || undefined, env: spawnEnv, windowsHide: true });
+      child = spawn(launcherPath, [], {
+        cwd: opts.cwd || undefined,
+        env: spawnEnv,
+        windowsHide: true,
+        detached: process.platform !== 'win32',
+      });
     } catch (e) {
       resolve({ stdout: '', stderr: `Failed to spawn command: ${e instanceof Error ? e.message : String(e)}`, code: -1 });
       return;
     }
 
+    const entry = { commandId, child, completed: false, killed: false, forceKillTimer: null };
+    addActiveCommand(entry);
+
     const stdoutC = makeCappedCollector();
     const stderrC = makeCappedCollector();
     child.stdout?.on('data', (chunk) => stdoutC.push(chunk.toString('utf8')));
     child.stderr?.on('data', (chunk) => stderrC.push(chunk.toString('utf8')));
+    child.stdin?.on('error', () => {});
+    child.stdin?.write(`${JSON.stringify(makeLauncherConfig({ file, args }, opts.sandboxEnabled))}\n`);
 
     let settled = false;
     let timedOut = false;
 
     const timer = setTimeout(() => {
       timedOut = true;
-      try {
-        child.kill('SIGKILL');
-      } catch {
-        /* best-effort */
-      }
+      killProcessTree(entry);
     }, timeoutSecs * 1000);
 
     const finish = (code) => {
       if (settled) return;
       settled = true;
+      entry.completed = true;
+      removeActiveCommand(entry);
       clearTimeout(timer);
+      if (entry.forceKillTimer) clearTimeout(entry.forceKillTimer);
       if (timedOut) {
         resolve({
           stdout: stdoutC.value,
@@ -379,7 +565,10 @@ function spawnForeground(spec, opts, timeoutSecs) {
     child.once('error', (e) => {
       if (settled) return;
       settled = true;
+      entry.completed = true;
+      removeActiveCommand(entry);
       clearTimeout(timer);
+      if (entry.forceKillTimer) clearTimeout(entry.forceKillTimer);
       resolve({ stdout: stdoutC.value, stderr: stderrC.value || String(e.message || e), code: -1 });
     });
     child.once('close', (code) => finish(code));
@@ -389,27 +578,37 @@ function spawnForeground(spec, opts, timeoutSecs) {
 /**
  * Spawn a prepared command spec in "background" mode: wait up to 3s
  * collecting initial output OR until the process exits early, then return —
- * leaving the process running untracked if it's still alive. Port of
- * lib.rs's run_shell_command background branch (identical 3s wait window +
- * identical placeholder string for empty output).
+ * keeping the process tracked for abort_command/app teardown if still alive.
+ * The 3s return semantics and placeholder string match Tauri.
  */
-function spawnBackground(spec, opts) {
+function spawnBackground(app, spec, opts, commandId) {
   return new Promise((resolve) => {
     const { file, args, env } = spec;
+    const launcherPath = sandboxLauncherPathFor(app);
     const spawnEnv = { ...process.env, ...(env || {}), ...(opts.envOverride || {}) };
 
     let child;
     try {
-      child = spawn(file, args, { cwd: opts.cwd || undefined, env: spawnEnv, windowsHide: true });
+      child = spawn(launcherPath, [], {
+        cwd: opts.cwd || undefined,
+        env: spawnEnv,
+        windowsHide: true,
+        detached: process.platform !== 'win32',
+      });
     } catch (e) {
       resolve({ stdout: '', stderr: `Failed to spawn command: ${e instanceof Error ? e.message : String(e)}`, code: -1 });
       return;
     }
 
+    const entry = { commandId, child, completed: false, killed: false, forceKillTimer: null };
+    addActiveCommand(entry);
+
     const stdoutC = makeCappedCollector();
     const stderrC = makeCappedCollector();
     child.stdout?.on('data', (chunk) => stdoutC.push(chunk.toString('utf8')));
     child.stderr?.on('data', (chunk) => stderrC.push(chunk.toString('utf8')));
+    child.stdin?.on('error', () => {});
+    child.stdin?.write(`${JSON.stringify(makeLauncherConfig({ file, args }, opts.sandboxEnabled))}\n`);
 
     let settled = false;
 
@@ -424,18 +623,23 @@ function spawnBackground(spec, opts) {
         code: 0, // process is still running; 0 = "started successfully" (matches Rust)
       });
       // Deliberately NOT killed — the process continues running in the
-      // background (matches Tauri semantics). Listeners stay attached via
-      // this closure so stdout/stderr keep draining and don't block the
-      // child on a full pipe buffer.
+      // background (matches Tauri semantics). It remains in activeCommands so
+      // abort_command/teardownCommandHost can terminate the whole tree.
     }, 3000);
 
     child.once('error', (e) => {
       if (settled) return;
       settled = true;
+      entry.completed = true;
+      removeActiveCommand(entry);
       clearTimeout(waitTimer);
+      if (entry.forceKillTimer) clearTimeout(entry.forceKillTimer);
       resolve({ stdout: stdoutC.value, stderr: stderrC.value || String(e.message || e), code: -1 });
     });
-    child.once('exit', (code) => {
+    child.once('close', (code) => {
+      entry.completed = true;
+      removeActiveCommand(entry);
+      if (entry.forceKillTimer) clearTimeout(entry.forceKillTimer);
       if (settled) return;
       settled = true;
       clearTimeout(waitTimer);
@@ -446,12 +650,14 @@ function spawnBackground(spec, opts) {
 
 // ── run_shell_command / run_argv_command ──
 
-async function runShellCommand(args) {
+async function runShellCommand(app, args) {
+  ensureCommandHostLifecycleHooks(app);
   const a = args || {};
   const command = String(a.command ?? '');
   const cwd = typeof a.cwd === 'string' && a.cwd ? a.cwd : undefined;
   const isBackground = !!a.background;
   const timeoutSecs = Math.min(Math.max(1, Number(a.timeout ?? 30) || 30), 300); // default 30s, max 300s
+  const commandId = typeof a.commandId === 'string' && a.commandId ? a.commandId : makeCommandId('shell');
   const sandboxEnabled = a.sandboxEnabled !== false; // unwrap_or(true)
   const extraWritablePaths = Array.isArray(a.extraWritablePaths) ? a.extraWritablePaths : [];
   const networkIsolation = !!a.networkIsolation;
@@ -463,8 +669,8 @@ async function runShellCommand(args) {
   if (enhancedPath) envOverride.PATH = enhancedPath;
 
   const result = isBackground
-    ? await spawnBackground(spec, { cwd, envOverride })
-    : await spawnForeground(spec, { cwd, envOverride }, timeoutSecs);
+    ? await spawnBackground(app, spec, { cwd, envOverride, sandboxEnabled }, commandId)
+    : await spawnForeground(app, spec, { cwd, envOverride, sandboxEnabled }, timeoutSecs, commandId);
 
   return {
     stdout: result.stdout,
@@ -474,12 +680,14 @@ async function runShellCommand(args) {
 }
 
 /** No background mode: argv tools are always foreground with a timeout (matches Rust). */
-async function runArgvCommand(args) {
+async function runArgvCommand(app, args) {
+  ensureCommandHostLifecycleHooks(app);
   const a = args || {};
   const program = String(a.program ?? '');
   const argv = Array.isArray(a.args) ? a.args.map(String) : [];
   const cwd = typeof a.cwd === 'string' && a.cwd ? a.cwd : undefined;
   const timeoutSecs = Math.min(Math.max(1, Number(a.timeout ?? 30) || 30), 300);
+  const commandId = typeof a.commandId === 'string' && a.commandId ? a.commandId : makeCommandId('argv');
   const sandboxEnabled = a.sandboxEnabled !== false;
   const extraWritablePaths = Array.isArray(a.extraWritablePaths) ? a.extraWritablePaths : [];
   const networkIsolation = !!a.networkIsolation;
@@ -490,7 +698,13 @@ async function runArgvCommand(args) {
   const enhancedPath = getEnhancedPath();
   if (enhancedPath) envOverride.PATH = enhancedPath;
 
-  const result = await spawnForeground(spec, { cwd, envOverride }, timeoutSecs);
+  const result = await spawnForeground(
+    app,
+    spec,
+    { cwd, envOverride, sandboxEnabled },
+    timeoutSecs,
+    commandId
+  );
 
   return {
     stdout: result.stdout,
@@ -537,22 +751,20 @@ function getEnvVars(args) {
 
 // ── Dispatch ──
 
-const COMMAND_MISS = Symbol('command-dispatch-miss');
-
 /**
- * @param {import('electron').App} app unused today — kept for signature
- *   parity with the other *Dispatch(app, cmd, args) functions and in case a
- *   future command in this family needs app-scoped state.
+ * @param {import('electron').App} app used to resolve packaged resources and
+ *   register command-tree cleanup on application quit.
  * @param {string} cmd
  * @param {Record<string, unknown>} args
  */
 async function commandDispatch(app, cmd, args) {
-  void app;
   switch (cmd) {
     case 'run_shell_command':
-      return runShellCommand(args);
+      return runShellCommand(app, args);
     case 'run_argv_command':
-      return runArgvCommand(args);
+      return runArgvCommand(app, args);
+    case 'abort_command':
+      return abortCommand((args || {}).commandId);
     case 'get_env_vars':
       return getEnvVars(args);
     default:
@@ -563,10 +775,16 @@ async function commandDispatch(app, cmd, args) {
 module.exports = {
   commandDispatch,
   COMMAND_MISS,
+  teardownCommandHost,
   // exported for the verify harness + potential reuse
   generateSeatbeltProfile,
+  buildSandboxedCommandSpec,
+  buildSandboxedArgvCommandSpec,
+  makeLauncherConfig,
   annotateSandboxViolations,
   isEnvVarAllowed,
   SENSITIVE_READ_PATHS,
   ENV_VAR_ALLOWED_PREFIXES,
+  __resetCommandHostForTests,
+  unixDescendantPids,
 };

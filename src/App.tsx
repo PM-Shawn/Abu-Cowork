@@ -244,6 +244,28 @@ function App() {
     };
   }, []);
 
+  // Electron's bundled browser runtime asks the renderer to adopt a new
+  // WebContentsView into the normal workspace. Keeping this in the existing
+  // BrowserTab UI gives users a visible address bar, history controls, and a
+  // close button while the agent operates the page.
+  useEffect(() => {
+    if (!isTauriEnv()) return;
+    let unlistenFn: (() => void) | null = null;
+    let cancelled = false;
+    listen<{ id: string; url: string }>('browser://automation-open', (event) => {
+      const { id, url } = event.payload ?? {};
+      if (typeof id !== 'string' || !id.startsWith('__abu-browser-automation__')) return;
+      usePreviewStore.getState().openBrowser(typeof url === 'string' ? url : 'about:blank', id);
+    }).then((fn) => {
+      if (cancelled) fn();
+      else unlistenFn = fn;
+    });
+    return () => {
+      cancelled = true;
+      unlistenFn?.();
+    };
+  }, []);
+
   // Pet window sends a message to the currently active conversation
   useEffect(() => {
     let unlistenFn: (() => void) | null = null;

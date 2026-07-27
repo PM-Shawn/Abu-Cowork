@@ -56,12 +56,17 @@
 const { spawn, execFileSync } = require('node:child_process');
 const { resolveBundledProgram, withBundledRuntimeEnv } = require('./runtimeResolver.cjs');
 const {
+  BROWSER_RUNTIME_COMMAND,
+  resolveBrowserRuntimeLaunch,
+} = require('./browserAutomationHost.cjs');
+const {
   sandboxLauncherPathFor,
   unixDescendantPids,
 } = require('./commandHost.cjs');
 
 /** id -> ChildProcess */
 const children = new Map();
+const pendingBrowserSpawns = new Map();
 
 const MCP_CMDS = new Set(['mcp_spawn', 'mcp_write', 'mcp_kill']);
 
@@ -309,7 +314,41 @@ function mcpDispatch(appOrCmd, cmdOrArgs, maybeArgs) {
   }
 }
 
-function mcpSpawn(app, { id, command, args = [], env = {}, heartbeat }) {
+function mcpSpawn(app, options) {
+  const id = options && options.id;
+  const command = options && options.command;
+  if (command !== BROWSER_RUNTIME_COMMAND) {
+    return mcpSpawnPrepared(app, options || {});
+  }
+
+  const existing = children.get(id);
+  if ((existing && !existing.killed) || pendingBrowserSpawns.has(id)) {
+    return Promise.reject(new Error(`mcp_spawn: a process is already running for id "${id}"`));
+  }
+
+  const pending = { cancelled: false };
+  pendingBrowserSpawns.set(id, pending);
+  return resolveBrowserRuntimeLaunch(app)
+    .then((launch) => {
+      if (pending.cancelled) {
+        throw new Error(`mcp_spawn: start was cancelled for id "${id}"`);
+      }
+      return mcpSpawnPrepared(app, {
+        ...options,
+        command: launch.command,
+        args: launch.args,
+        // Main-owned credentials always win over renderer-provided values.
+        env: { ...(options.env || {}), ...launch.env },
+      });
+    })
+    .finally(() => {
+      if (pendingBrowserSpawns.get(id) === pending) {
+        pendingBrowserSpawns.delete(id);
+      }
+    });
+}
+
+function mcpSpawnPrepared(app, { id, command, args = [], env = {}, heartbeat }) {
   const existing = children.get(id);
   if (existing && !existing.killed) {
     // Match Rust: refuse to replace a live process (the frontend does a
@@ -508,6 +547,11 @@ function mcpWrite({ id, message }) {
 }
 
 function mcpKill({ id }) {
+  const pending = pendingBrowserSpawns.get(id);
+  if (pending) {
+    pending.cancelled = true;
+    pendingBrowserSpawns.delete(id);
+  }
   killChild(id);
   return null;
 }

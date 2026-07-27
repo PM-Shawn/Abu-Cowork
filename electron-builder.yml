@@ -47,6 +47,7 @@ files:
   - "!electron/**/*.test.cjs"        # development-only security/unit tests
   - "!electron/native-helper/**"   # Rust source + target/ (huge) — binary ships via extraResources
   - "!electron/sandbox-launcher/**" # Rust source + target/ (huge) — binary ships via extraResources
+  - "!electron/browser-runtime/**" # bundled MCP server ships as a real-file extraResource
   - "!electron/spike/**"           # dev-only E2E harnesses
   - "!electron/renderer/**"        # placeholder page — real frontend is dist-electron-spike
   # previewServer.cjs reads this shared picker from app.asar at runtime.
@@ -99,6 +100,10 @@ extraResources:
     to: python-runtime
   - from: electron/runtime
     to: runtime-metadata
+  - from: electron/browser-runtime/dist
+    to: browser-runtime
+  - from: abu-chrome-extension/dist
+    to: browser-extension
   # Tray icon candidates (guiHost.cjs resolveTrayIconPath) — src-tauri/ isn't
   # packed into asar, so the tray needs these under Resources/icons.
   - from: src-tauri/icons/32x32.png
@@ -109,8 +114,6 @@ extraResources:
   # primary token + Job Object process-tree ownership with PowerShell
   # ConstrainedLanguage for shell commands. Real Windows package/runtime
   # compatibility remains an attended acceptance gate.
-  # Deferred (needs a separate build step):
-  #   - abu-chrome-extension/dist → browser-extension  (run the extension build first)
 
 # Auto-update feed (F-slice #2): generic provider pointed at the existing
 # Aliyun OSS bucket that already serves the Tauri latest.json. When the dist

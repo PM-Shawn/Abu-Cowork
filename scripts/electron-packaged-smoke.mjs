@@ -498,6 +498,14 @@ async function main() {
     checks.runtimeMetadataInResources = fs.existsSync(
       path.join(found.resources, 'runtime-metadata', 'runtime-manifest.json'),
     );
+    checks.browserRuntimeInResources = fs.existsSync(
+      path.join(found.resources, 'browser-runtime', 'server.mjs'),
+    );
+    checks.browserExtensionInResources = [
+      'manifest.json',
+      'background.js',
+      'content.js',
+    ].every((file) => fs.existsSync(path.join(found.resources, 'browser-extension', file)));
     const runtimeVerification = spawnSync(
       process.execPath,
       ['scripts/verify-electron-runtimes.mjs', '--resource-root', found.resources],

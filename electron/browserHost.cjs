@@ -69,7 +69,7 @@
  */
 'use strict';
 
-const { WebContentsView } = require('electron');
+const { WebContentsView, session } = require('electron');
 const crypto = require('node:crypto');
 const fs = require('node:fs');
 const path = require('node:path');
@@ -107,9 +107,12 @@ const BROWSER_CMDS = new Set([
 const BROWSER_MISS = Symbol('browser-dispatch-miss');
 
 const INSPECT_WORLD_ID = 1001;
+const AUTOMATION_WORLD_ID = 1002;
 const INSPECT_POLL_MS = 150;
 const MAX_INSPECT_PAYLOAD_BYTES = 128 * 1024;
 const INSPECT_RUNTIME_PATH = path.join(__dirname, 'browserInspectRuntime.js');
+const AUTOMATION_VIEW_PREFIX = '__abu-browser-automation__';
+const BROWSER_SESSION_PARTITION = 'persist:abu-browser';
 let inspectRuntime = null;
 try {
   inspectRuntime = fs.readFileSync(INSPECT_RUNTIME_PATH, 'utf8');
@@ -125,6 +128,16 @@ const views = new Map();
 
 /** id -> current inspect session. A session is invalidated on navigation/close. */
 const inspectSessions = new Map();
+
+/** WebContents whose current document has the DOM automation runtime installed. */
+const automationRuntimeReady = new WeakSet();
+
+/** Recent downloads from the isolated browser session, newest first. */
+const recentDownloads = [];
+
+let browserSession = null;
+let automationRuntime = null;
+let activeAutomationTabId = null;
 
 function isInspectPayload(value) {
   if (!value || typeof value !== 'object' || typeof value.outerHTML !== 'string') return false;
@@ -205,6 +218,376 @@ async function browserInspectSet({ id, enabled, labels }) {
   return null;
 }
 
+function browserSessionForViews() {
+  if (browserSession) return browserSession;
+  browserSession = session.fromPartition(BROWSER_SESSION_PARTITION, { cache: true });
+
+  // Arbitrary sites do not get ambient device/location/notification access.
+  // Future user-granted permissions must be added as an explicit product flow,
+  // never by relaxing this default.
+  browserSession.setPermissionCheckHandler(() => false);
+  browserSession.setPermissionRequestHandler((_webContents, _permission, callback) => callback(false));
+  if (typeof browserSession.setDevicePermissionHandler === 'function') {
+    browserSession.setDevicePermissionHandler(() => false);
+  }
+  if (typeof browserSession.setDisplayMediaRequestHandler === 'function') {
+    browserSession.setDisplayMediaRequestHandler((_request, callback) => callback({}));
+  }
+
+  browserSession.on('will-download', (_event, item) => {
+    const record = {
+      id: `${Date.now()}-${crypto.randomBytes(4).toString('hex')}`,
+      filename: item.getFilename(),
+      url: item.getURL(),
+      state: item.getState(),
+      time: Date.now(),
+    };
+    recentDownloads.unshift(record);
+    if (recentDownloads.length > 20) recentDownloads.length = 20;
+    item.on('updated', () => {
+      record.filename = item.getFilename();
+      record.state = item.getState();
+    });
+    item.once('done', (_doneEvent, state) => {
+      record.filename = item.getFilename();
+      record.state = state;
+    });
+  });
+
+  return browserSession;
+}
+
+function automationRuntimePath() {
+  const candidates = [
+    process.resourcesPath
+      ? path.join(process.resourcesPath, 'browser-extension', 'content.js')
+      : '',
+    path.join(__dirname, '..', 'abu-chrome-extension', 'dist', 'content.js'),
+    path.join(__dirname, '..', 'src-tauri', 'browser-extension', 'content.js'),
+  ].filter(Boolean);
+  return candidates.find((candidate) => fs.existsSync(candidate)) || candidates[0];
+}
+
+function loadAutomationRuntime() {
+  if (automationRuntime !== null) return automationRuntime;
+  const runtimePath = automationRuntimePath();
+  try {
+    automationRuntime = fs.readFileSync(runtimePath, 'utf8');
+    return automationRuntime;
+  } catch (error) {
+    throw new Error(
+      `browser automation runtime is unavailable at ${runtimePath}: ${
+        error instanceof Error ? error.message : String(error)
+      }`
+    );
+  }
+}
+
+function configureBrowserView(id, view) {
+  const contents = view.webContents;
+  const automationTabId = contents.id;
+  contents.setWindowOpenHandler(({ url: targetUrl }) => {
+    if (targetUrl) void contents.loadURL(targetUrl);
+    return { action: 'deny' };
+  });
+
+  const resetAutomationRuntime = () => {
+    automationRuntimeReady.delete(contents);
+  };
+  const onNav = (_event, navUrl) => {
+    disarmInspect(id, false);
+    emit(`browser://nav/${id}`, navUrl);
+  };
+  contents.on('did-start-navigation', (_event, _url, _isInPlace, isMainFrame) => {
+    if (isMainFrame) resetAutomationRuntime();
+  });
+  contents.on('focus', () => {
+    activeAutomationTabId = automationTabId;
+  });
+  contents.on('did-navigate', onNav);
+  contents.on('did-navigate-in-page', onNav);
+  contents.once('destroyed', () => {
+    automationRuntimeReady.delete(contents);
+    if (activeAutomationTabId === automationTabId) activeAutomationTabId = null;
+    if (views.get(id) === view) views.delete(id);
+  });
+}
+
+function findViewByTabId(tabId) {
+  const numeric = Number(tabId);
+  if (!Number.isInteger(numeric)) return null;
+  for (const [id, view] of views) {
+    const contents = view.webContents;
+    if (contents && !contents.isDestroyed() && contents.id === numeric) {
+      return { id, view };
+    }
+  }
+  return null;
+}
+
+async function createAutomationView() {
+  const win = mainWindow();
+  if (!win || win.isDestroyed()) throw new Error('main window not found');
+
+  const id = `${AUTOMATION_VIEW_PREFIX}-${crypto.randomBytes(8).toString('hex')}`;
+  emit('browser://automation-open', { id, url: 'about:blank' });
+
+  // The production renderer adopts agent-created tabs into its normal browser
+  // workspace so the user can watch and intervene. Headless harnesses have no
+  // App listener, so fall back to a hidden view after a short bounded wait.
+  const deadline = Date.now() + 2500;
+  while (Date.now() < deadline) {
+    const adopted = views.get(id);
+    if (adopted?.webContents && !adopted.webContents.isDestroyed()) {
+      activeAutomationTabId = adopted.webContents.id;
+      return adopted;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+
+  const view = new WebContentsView({
+    webPreferences: {
+      sandbox: true,
+      contextIsolation: true,
+      nodeIntegration: false,
+      session: browserSessionForViews(),
+    },
+  });
+  configureBrowserView(id, view);
+  win.contentView.addChildView(view);
+  view.setBounds({ x: 0, y: 0, width: 1024, height: 768 });
+  view.setVisible(false);
+  views.set(id, view);
+  activeAutomationTabId = view.webContents.id;
+  void view.webContents.loadURL('about:blank');
+  return view;
+}
+
+async function automationTabs() {
+  const tabs = [];
+  for (const [id, view] of views) {
+    const contents = view.webContents;
+    if (!contents || contents.isDestroyed()) continue;
+    if (!automationDocumentAllowed(contents.getURL())) continue;
+    tabs.push({
+      id,
+      view,
+      tabId: contents.id,
+      url: contents.getURL(),
+      title: contents.getTitle(),
+    });
+  }
+  if (tabs.length === 0) {
+    const view = await createAutomationView();
+    tabs.push({
+      id: Array.from(views.entries()).find(([, candidate]) => candidate === view)[0],
+      view,
+      tabId: view.webContents.id,
+      url: view.webContents.getURL(),
+      title: view.webContents.getTitle(),
+    });
+  }
+  if (!tabs.some((tab) => tab.tabId === activeAutomationTabId)) {
+    activeAutomationTabId = tabs[0].tabId;
+  }
+  return tabs;
+}
+
+function allowedAutomationUrl(value) {
+  let parsed;
+  try {
+    parsed = new URL(String(value || ''));
+  } catch {
+    throw new Error('Invalid URL. Only http: and https: URLs are allowed.');
+  }
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+    throw new Error('Invalid URL scheme. Only http: and https: URLs are allowed.');
+  }
+  return parsed.href;
+}
+
+function automationDocumentAllowed(currentUrl) {
+  if (!currentUrl || currentUrl === 'about:blank') return true;
+  try {
+    const parsed = new URL(currentUrl);
+    return parsed.protocol === 'http:' || parsed.protocol === 'https:';
+  } catch {
+    return false;
+  }
+}
+
+function assertAutomationDocumentAllowed(view) {
+  const currentUrl = view.webContents.getURL();
+  if (!automationDocumentAllowed(currentUrl)) {
+    throw new Error('Browser automation can only operate on http: and https: pages.');
+  }
+}
+
+async function installAutomationRuntime(view) {
+  const contents = view.webContents;
+  if (contents.isDestroyed()) throw new Error('browser tab is closed');
+  if (automationRuntimeReady.has(contents)) return;
+
+  await contents.executeJavaScriptInIsolatedWorld(AUTOMATION_WORLD_ID, [{
+    code: 'globalThis.__ABU_ELECTRON_BROWSER_RUNTIME__ = {};',
+  }]);
+  await contents.executeJavaScriptInIsolatedWorld(AUTOMATION_WORLD_ID, [{
+    code: loadAutomationRuntime(),
+  }]);
+  const ready = await contents.executeJavaScriptInIsolatedWorld(AUTOMATION_WORLD_ID, [{
+    code: 'typeof globalThis.__ABU_ELECTRON_BROWSER_RUNTIME__?.handleAction === "function"',
+  }]);
+  if (!ready) throw new Error('browser automation runtime failed to initialize');
+  automationRuntimeReady.add(contents);
+}
+
+async function runDomAutomation(view, action, payload) {
+  await installAutomationRuntime(view);
+  const code = `globalThis.__ABU_ELECTRON_BROWSER_RUNTIME__.handleAction(
+    ${JSON.stringify(action)},
+    ${JSON.stringify(payload || {})}
+  )`;
+  // Never auto-retry an action: a click/fill can take effect just before its
+  // execution context is replaced. Replaying it could submit or delete twice.
+  // The next explicit tool call installs into the new document as needed.
+  return view.webContents.executeJavaScriptInIsolatedWorld(
+    AUTOMATION_WORLD_ID,
+    [{ code }],
+  );
+}
+
+async function navigateAutomationTab(view, payload) {
+  const action = payload.action || 'goto';
+  if (action === 'goto') {
+    const url = allowedAutomationUrl(payload.url);
+    await view.webContents.loadURL(url);
+  } else if (action === 'reload') {
+    view.webContents.reload();
+  } else if (action === 'back') {
+    view.webContents.navigationHistory.goBack();
+  } else if (action === 'forward') {
+    view.webContents.navigationHistory.goForward();
+  } else {
+    throw new Error(`Unknown navigation action: ${action}`);
+  }
+  return `Navigation: ${action}`;
+}
+
+function keyboardAutomation(view, payload) {
+  const key = String(payload.key || '');
+  if (!key) throw new Error('Keyboard key is required');
+  const modifiers = Array.isArray(payload.modifiers)
+    ? payload.modifiers.map((value) => {
+      if (value === 'ctrl') return 'control';
+      return String(value);
+    })
+    : [];
+  view.webContents.focus();
+  view.webContents.sendInputEvent({ type: 'keyDown', keyCode: key, modifiers });
+  if (key.length === 1 && !modifiers.includes('control') && !modifiers.includes('meta')) {
+    view.webContents.sendInputEvent({ type: 'char', keyCode: key, modifiers });
+  }
+  view.webContents.sendInputEvent({ type: 'keyUp', keyCode: key, modifiers });
+  return {
+    success: true,
+    message: `Key press: ${modifiers.length ? `${modifiers.join('+')}+` : ''}${key}`,
+  };
+}
+
+async function screenshotAutomation(view, fullPage) {
+  const debug = view.webContents.debugger;
+  const alreadyAttached = debug.isAttached();
+  try {
+    if (!alreadyAttached) debug.attach('1.3');
+    if (!fullPage) {
+      const capture = await debug.sendCommand('Page.captureScreenshot', {
+        format: 'png',
+        fromSurface: true,
+        captureBeyondViewport: false,
+      });
+      return `data:image/png;base64,${capture.data}`;
+    }
+    const metrics = await debug.sendCommand('Page.getLayoutMetrics');
+    const size = metrics.cssContentSize || metrics.contentSize;
+    const capture = await debug.sendCommand('Page.captureScreenshot', {
+      format: 'png',
+      fromSurface: true,
+      captureBeyondViewport: true,
+      clip: {
+        x: 0,
+        y: 0,
+        width: Math.max(1, Math.ceil(size.width)),
+        height: Math.max(1, Math.ceil(size.height)),
+        scale: 1,
+      },
+    });
+    return `data:image/png;base64,${capture.data}`;
+  } finally {
+    if (!alreadyAttached && debug.isAttached()) debug.detach();
+  }
+}
+
+async function performBrowserAutomation(action, payload = {}) {
+  if (action === 'get_tabs') {
+    const tabs = await automationTabs();
+    const win = mainWindow();
+    const windowId = win && !win.isDestroyed() ? win.webContents.id : 1;
+    return {
+      summary: {
+        totalWindows: 1,
+        totalTabs: tabs.length,
+        currentWindowId: windowId,
+        currentTabId: activeAutomationTabId,
+        currentTabUrl: tabs.find((tab) => tab.tabId === activeAutomationTabId)?.url || '',
+        currentTabTitle: tabs.find((tab) => tab.tabId === activeAutomationTabId)?.title || '',
+        detectionStrategy: 'electron-in-app-browser',
+      },
+      windows: [{
+        windowId,
+        isCurrentWindow: true,
+        tabs: tabs.map((tab) => ({
+          tabId: tab.tabId,
+          url: tab.url,
+          title: tab.title,
+          active: tab.tabId === activeAutomationTabId,
+          isCurrentTab: tab.tabId === activeAutomationTabId,
+        })),
+      }],
+    };
+  }
+
+  if (action === 'get_downloads') return recentDownloads.map((item) => ({ ...item }));
+
+  const match = findViewByTabId(payload.tabId);
+  if (!match) throw new Error(`Browser tab not found: ${String(payload.tabId)}`);
+  const { view } = match;
+  activeAutomationTabId = view.webContents.id;
+
+  if (action === 'navigate') return navigateAutomationTab(view, payload);
+  assertAutomationDocumentAllowed(view);
+  if (action === 'execute_js') {
+    return view.webContents.executeJavaScript(String(payload.code || ''), true);
+  }
+  if (action === 'screenshot') return screenshotAutomation(view, false);
+  if (action === 'screenshot_full_page') return screenshotAutomation(view, true);
+  if (action === 'keyboard') return keyboardAutomation(view, payload);
+
+  const domActions = new Set([
+    'snapshot',
+    'click',
+    'fill',
+    'select',
+    'wait_for',
+    'extract_text',
+    'extract_table',
+    'scroll',
+    'start_recording',
+    'stop_recording',
+  ]);
+  if (domActions.has(action)) return runDomAutomation(view, action, payload);
+  throw new Error(`Unknown browser action: ${action}`);
+}
+
 /**
  * Validate-only URL parse — parity with browser.rs's `parse_url`, which
  * calls `url.parse::<tauri::Url>()` and just propagates the parse error; it
@@ -256,6 +639,7 @@ function browserCreate({ id, url, x, y, width, height }) {
       void existing.webContents.loadURL(parseUrl(url));
     }
     existing.setBounds(toRect(x, y, width, height));
+    existing.setVisible(true);
     return null;
   }
 
@@ -264,28 +648,18 @@ function browserCreate({ id, url, x, y, width, height }) {
       sandbox: true,
       contextIsolation: true,
       nodeIntegration: false,
+      session: browserSessionForViews(),
       // No `preload` — this webContents loads arbitrary untrusted sites and
       // must get zero privileged API surface (see module header).
     },
   });
 
-  // window.open()/target="_blank" ports of browser.rs's NEW_WINDOW_SHIM:
-  // redirect into this same view instead of opening a new native window.
-  view.webContents.setWindowOpenHandler(({ url: targetUrl }) => {
-    if (targetUrl) void view.webContents.loadURL(targetUrl);
-    return { action: 'deny' };
-  });
-
-  const onNav = (_e, navUrl) => {
-    disarmInspect(id, false);
-    emit(`browser://nav/${id}`, navUrl);
-  };
-  view.webContents.on('did-navigate', onNav);
-  view.webContents.on('did-navigate-in-page', onNav);
+  configureBrowserView(id, view);
 
   win.contentView.addChildView(view);
   view.setBounds(toRect(x, y, width, height));
   views.set(id, view);
+  activeAutomationTabId = view.webContents.id;
 
   const target = url || 'about:blank';
   void view.webContents.loadURL(parseUrl(target));
@@ -343,7 +717,10 @@ function browserHide({ id }) {
 
 function browserShow({ id }) {
   const view = getView(id);
-  if (view) view.setVisible(true);
+  if (view) {
+    view.setVisible(true);
+    if (view.webContents) activeAutomationTabId = view.webContents.id;
+  }
   return null;
 }
 
@@ -358,8 +735,9 @@ function closeView(id, view) {
     /* window may already be torn down (app quitting) — best-effort */
   }
   try {
-    if (!view.webContents.isDestroyed()) {
-      view.webContents.close();
+    const contents = view.webContents;
+    if (contents && !contents.isDestroyed()) {
+      contents.close();
     }
   } catch {
     /* already gone — best-effort */
@@ -416,6 +794,13 @@ function closeAllBrowserViews() {
   for (const [id, view] of views) {
     closeView(id, view);
   }
+  const { stopBrowserAutomationServer } = require('./browserAutomationHost.cjs');
+  stopBrowserAutomationServer();
 }
 
-module.exports = { browserDispatch, BROWSER_MISS, closeAllBrowserViews };
+module.exports = {
+  browserDispatch,
+  BROWSER_MISS,
+  closeAllBrowserViews,
+  performBrowserAutomation,
+};

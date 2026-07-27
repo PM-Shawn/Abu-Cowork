@@ -1,6 +1,6 @@
 ---
 name: Abu-Browser
-description: 操作用户真实的 Chrome 浏览器：点击、填写、截图、提取数据。当用户要求查看网页内容、抓取页面数据、填写表单、网页截图或浏览器自动化时使用此技能。
+description: 操作 Abu 内置浏览器，或用户主动配置的 Chrome 浏览器：点击、填写、截图、提取数据。当用户要求查看网页内容、抓取页面数据、填写表单、网页截图或浏览器自动化时使用此技能。
 trigger: 用户要求操作浏览器、查看或抓取网页内容、网页截图、填写网页表单、点击网页按钮、浏览器自动化、从浏览器中提取数据
 do-not-trigger: 用户要求用 Playwright 做自动化测试、讨论浏览器技术原理、只是提到"浏览器"一词但无实际操作需求
 user-invocable: true
@@ -15,24 +15,23 @@ tags:
 
 ## 环境自检（每次激活必做，按顺序执行）
 
-### 当前桥接状态
+### Step 1：确保浏览器服务运行
 
-!`curl -s --max-time 2 http://127.0.0.1:9875/status 2>/dev/null || echo '{"bridge":"offline"}'`
+调用 `manage_mcp_server(action: "ensure", name: "abu-browser-bridge")`：
 
-根据上面的返回结果判断当前状态，按以下逻辑执行：
+- 返回 `connected`、`reconnected` 或 `installed`：继续 Step 2
+- 返回 `needs_config`：告诉用户缺少配置
+- 返回 `failed`：告诉用户浏览器服务启动失败，并原样给出简短错误
 
-### Step 1：确保浏览器桥接服务运行
+Electron 客户端默认使用随应用安装的内置浏览器，无需联网下载组件，也无需安装扩展。已有的外部 Chrome 配置仍按原配置连接。
 
-- 如果返回中包含 `"bridge":"offline"` 或返回为空 → 调用 `manage_mcp_server(action: "ensure", name: "abu-browser-bridge")`
-  - 返回 `connected` 或 `reconnected`：继续 Step 2
-  - 返回 `needs_config`：告诉用户缺少配置（一般不会出现）
-  - 返回 `install_failed`：告诉用户安装失败，可能需要检查网络或 Node.js 环境
-- 如果返回中有 `wsPort` 字段 → 桥接服务已在运行，继续 Step 2
+### Step 2：确认可操作标签页
 
-### Step 2：检查 Chrome 扩展连接
+调用 `abu-browser-bridge__get_tabs`：
 
-- 如果 Step 1 的返回或 `!`command`` 输出中 `extensionConnected: true` → 环境就绪，跳到「执行用户任务」
-- 如果 `extensionConnected: false` → 执行扩展安装引导：
+- 正常返回标签页：环境就绪，立即执行用户的原始请求
+- 返回 Chrome Extension 未连接：当前使用的是可选 Chrome 模式，执行下面的扩展安装引导
+- 其他错误：简短说明错误，不要反复重试
 
 #### 扩展安装引导
 
@@ -58,7 +57,7 @@ Abu 安装目录中内置了 Chrome 扩展文件。严格按以下步骤执行�
 
 ### Step 3：确认就绪
 
-前两步都通过后，简短告诉用户"已连接到你的浏览器"，然后立即执行用户的原始请求。不要等用户再说一遍。
+前两步都通过后，简短告诉用户"已连接到浏览器"，然后立即执行用户的原始请求。不要等用户再说一遍。
 
 ---
 
@@ -110,5 +109,5 @@ Abu 安装目录中内置了 Chrome 扩展文件。严格按以下步骤执行�
 - 页面未加载 → `wait_for` 设置更长超时
 
 ### 工具选择
-- 优先使用 `abu-browser-bridge__` 开头的工具操作用户真实浏览器
+- 优先使用 `abu-browser-bridge__` 开头的工具操作 Abu 内置浏览器；用户已选择 Chrome 模式时操作其 Chrome 标签页
 - **不要**使用 `playwright__` 工具——那会启动一个全新的空白浏览器，不是用户正在用的

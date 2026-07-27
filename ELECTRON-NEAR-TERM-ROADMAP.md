@@ -2,12 +2,10 @@
 
 Date: 2026-07-27
 
-Status: approved for staged development. Branches 1 and 2 are merged into
-`refactor-dev`. Branch 3 implementation, full local regression, and packaged
-macOS acceptance are complete in the current `feat/electron-bundled-runtime`
-worktree; independent review is complete, while commit and merge remain.
-Windows real-machine package/runtime verification is still required. This is
-not release approval.
+Status: approved for staged development. Branches 1 through 4 are implemented,
+verified, and merged into `refactor-dev`. Branch 5, the final clean-environment
+packaged E2E, remains. Windows real-machine package/runtime verification is
+still required. This is not release approval.
 
 Base branch: `refactor-dev`
 
@@ -100,7 +98,7 @@ Verified locally on macOS:
   after independently rerunning command, Agent, Windows cross-compile, type,
   lint, and parity gates.
 
-`feat/electron-bundled-runtime` currently has:
+`feat/electron-bundled-runtime` is merged into `refactor-dev` and has:
 
 - pinned, checksum-verified Node.js 24.18.0 LTS archives for macOS arm64/x64
   and Windows x64, including npm/npx and the upstream license;
@@ -144,6 +142,44 @@ Verified locally on macOS:
   PowerShell-path P1 and one Electron/Tauri dev-runtime isolation P2. Both were
   fixed, rerun through the full gates and packaged app, and a focused
   `gpt-5.5` `high` re-review found no remaining P0, P1, or P2 findings.
+
+`feat/electron-browser-runtime` is merged into `refactor-dev` and has:
+
+- a zero-configuration browser built on Electron's existing Chromium, with a
+  persistent isolated `persist:abu-browser` session and default-deny site,
+  device, display-media, notification, and location permissions;
+- the audited Chrome-extension DOM runtime reused inside a dedicated Electron
+  isolated world, without exposing Node.js, preload APIs, or an automation
+  marker to arbitrary page JavaScript;
+- a pinned single-file MCP server shipped in application resources and launched
+  with bundled Node through the native sandbox supervisor. It talks only to a
+  random `127.0.0.1` main-process port using a 256-bit bearer token that is
+  never exposed to the renderer, with no fixed discovery port or CORS surface;
+- visible agent-created tabs adopted into the normal Browser workspace with an
+  exact main-owned ID, while a bounded hidden fallback keeps headless tests
+  deterministic. Existing user-configured Chrome-extension mode remains
+  available and legacy Tauri discovery behavior is unchanged;
+- tab discovery, semantic snapshots, click/fill/select/wait/extract/scroll,
+  keyboard input, navigation, page JavaScript, Chromium DevTools screenshots,
+  downloads, and interaction recording. Agent navigation is limited to
+  `http:`/`https:`, and automation cannot read user-opened `file:`/`data:`
+  documents;
+- focused transport, routing, store, URL, and authenticated-host tests; a real
+  Electron chain covering renderer events, the sandbox launcher, bundled Node,
+  MCP stdio, authenticated loopback, isolated WebContents, DOM actions,
+  screenshots, permission denial, and teardown; full type, lint, parity,
+  Vitest, and Electron acceptance gates;
+- a fresh unsigned macOS package built from worktree-local dependencies with
+  both browser resources present and all 31 existing packaged smoke assertions
+  passing. The first run deliberately exposed that cross-worktree
+  `node_modules` symlinks are not valid packaging inputs; a clean `npm ci`
+  removed that environmental false failure without changing source or lock
+  files;
+- an independent read-only `gpt-5.6-sol` `ultra` review found two P1 issues
+  (restricted-document metadata and a POSIX-only Windows build step) and one P2
+  address-normalization issue. All were fixed and retested; two focused
+  re-reviews found and closed the remaining single-label-hostname case, ending
+  with no P0, P1, or P2 findings.
 
 Not yet verified across the roadmap:
 

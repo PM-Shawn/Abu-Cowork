@@ -23,6 +23,7 @@ export default defineConfig([
     'coverage',
     '.wt-*/',
     'sidecar/index.mjs',
+    'electron/browser-runtime/dist',
   ]),
   {
     files: ['**/*.{ts,tsx}'],

@@ -10,6 +10,9 @@ import { resolveResource } from '@tauri-apps/api/path';
 import { exists } from '@tauri-apps/plugin-fs';
 import { useMCPStore } from '../../stores/mcpStore';
 import { getI18n, format } from '../../i18n';
+import { hasElectronCommandHost } from '../../utils/electronHost';
+
+const ELECTRON_BROWSER_RUNTIME_COMMAND = 'abu-browser-runtime';
 
 export interface MCPRegistryEntry {
   name: string;
@@ -125,6 +128,16 @@ const BUILTIN_REGISTRY: MCPRegistryEntry[] = [
   },
 ];
 
+function entryForCurrentHost(entry: MCPRegistryEntry): MCPRegistryEntry {
+  if (entry.name !== 'abu-browser-bridge' || !hasElectronCommandHost()) return entry;
+  return {
+    ...entry,
+    command: ELECTRON_BROWSER_RUNTIME_COMMAND,
+    args: [],
+    env: {},
+  };
+}
+
 /**
  * Localized, user-visible description for a registry server, resolved from the
  * current UI locale. Falls back to the server name if no catalog entry exists.
@@ -155,6 +168,7 @@ export function searchMCPRegistry(query: string): MCPRegistryEntry[] {
   );
 
   const scored = BUILTIN_REGISTRY
+    .map(entryForCurrentHost)
     .filter((entry) => !configuredNames.has(entry.name))
     .map((entry) => {
       let score = 0;
@@ -246,7 +260,8 @@ export async function installMCPServer(
  * Find a registry entry by exact name.
  */
 export function getRegistryEntry(name: string): MCPRegistryEntry | undefined {
-  return BUILTIN_REGISTRY.find((e) => e.name === name);
+  const entry = BUILTIN_REGISTRY.find((candidate) => candidate.name === name);
+  return entry ? entryForCurrentHost(entry) : undefined;
 }
 
 /**

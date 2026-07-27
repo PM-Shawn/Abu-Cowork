@@ -59,8 +59,9 @@ interface PreviewState {
   // Open (or activate an existing) preview tab for `filePath`. Call sites
   // (~11 across the app) are unchanged from the pre-tabs single-preview API.
   openPreview: (filePath: string) => void;
-  // Open (or activate an existing) browser tab for `url` (default '').
-  openBrowser: (url?: string) => void;
+  // Open (or activate an existing) browser tab for `url` (default ''). Main
+  // may supply an id when adopting an agent-created Electron browser view.
+  openBrowser: (url?: string, requestedId?: string) => string;
   // Open a new terminal tab (terminals are never deduped — each is its own session).
   openTerminal: () => void;
   // Make an existing tab the active one. No-op if the id doesn't exist.
@@ -135,16 +136,31 @@ export const usePreviewStore = create<PreviewState>((set, get) => ({
     set({ tabs: nextTabs, activeTabId: id, previewFilePath: filePath });
   },
 
-  openBrowser: (url = '') => {
+  openBrowser: (url = '', requestedId) => {
     const { tabs } = get();
+    if (requestedId) {
+      const requested = tabs.find((t) => t.id === requestedId);
+      if (requested) {
+        set({ activeTabId: requested.id, previewFilePath: null });
+        return requested.id;
+      }
+      const nextTabs: WorkspaceTab[] = [...tabs, {
+        id: requestedId,
+        kind: 'browser',
+        url,
+      }];
+      set({ tabs: nextTabs, activeTabId: requestedId, previewFilePath: null });
+      return requestedId;
+    }
     const existing = tabs.find((t) => t.kind === 'browser' && t.url === url);
     if (existing) {
       set({ activeTabId: existing.id, previewFilePath: null });
-      return;
+      return existing.id;
     }
     const id = genId();
     const nextTabs: WorkspaceTab[] = [...tabs, { id, kind: 'browser', url }];
     set({ tabs: nextTabs, activeTabId: id, previewFilePath: null });
+    return id;
   },
 
   openTerminal: () => {

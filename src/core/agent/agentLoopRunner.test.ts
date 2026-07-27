@@ -325,6 +325,11 @@ vi.mock('../../stores/taskExecutionStore', () => ({
 }));
 
 vi.mock('../../i18n', () => ({
+  getI18n: () => ({
+    chat: {
+      sidecarInterrupted: '后台服务意外中断，正在自动恢复。请稍后重新发送刚才的请求。',
+    },
+  }),
   getLocale: () => 'zh-CN',
 }));
 
@@ -1710,6 +1715,31 @@ describe('agentLoopRunner', () => {
       expect(chatDeltaFinishStreamingMock).toHaveBeenCalledWith('conv-1');
       expect(chatDeltaSetConversationStatusMock).toHaveBeenCalledWith('conv-1', 'error');
       expect(chatDeltaSetAgentStatusMock).toHaveBeenCalledWith('idle');
+    });
+
+    it('shows a localized recovery message when the sidecar process closes after commit', async () => {
+      const { runAgentLoopDispatched } = await importFresh();
+      const d = deferred<unknown>();
+      sidecarRequestMock.mockReturnValue(d.promise);
+
+      const p = runAgentLoopDispatched('conv-1', 'hello');
+      await waitForCall(sidecarRequestMock);
+      const runId = (sidecarRequestMock.mock.calls[0][1] as { runId: string }).runId;
+      const deltaHandler = handlerFor(onSidecarNotification, 'agent.delta');
+      deltaHandler({ runId, frames: [{ p: 'chat', m: 'appendText', a: ['conv-1', 'partial'] }] });
+
+      d.reject(new Error('Sidecar process closed'));
+      const result = await p;
+
+      expect(result).toEqual({ reason: 'error', error: 'Sidecar process closed' });
+      expect(chatDeltaAppendTextMock).toHaveBeenCalledWith(
+        'conv-1',
+        expect.stringContaining('后台服务意外中断，正在自动恢复'),
+      );
+      expect(chatDeltaAppendTextMock).not.toHaveBeenCalledWith(
+        'conv-1',
+        expect.stringContaining('Sidecar process closed'),
+      );
     });
 
     it('a post-commit failure surfaces the REAL sidecar cause from the error data, not the generic wrapper', async () => {

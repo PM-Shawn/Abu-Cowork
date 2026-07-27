@@ -366,6 +366,7 @@ const zhCN: TranslationDict = {
     configureApiKey: '请先在设置中配置你的 API Key。',
     skillMissingTools: '这个技能需要一些工具但当前不可用哦：{missing}。检查一下相关 MCP 服务器是否已连接～',
     gatewayUnreachable: '无法连接企业 AI 网关。请检查网络连接，或联系管理员。\n\n客户端不会回退到个人 API key（防止预算绕过）。',
+    sidecarInterrupted: '后台服务意外中断，正在自动恢复。请稍后重新发送刚才的请求。',
     visionUnsupported: '当前模型可能不支持图片/视觉输入，请尝试移除图片或切换到支持视觉的模型（如 Claude、GPT-4o）。',
     ollamaForbidden: 'Ollama 返回了 403 Forbidden（CORS 来源限制）。请设置环境变量 `OLLAMA_ORIGINS=*` 后重启 Ollama，例如：`OLLAMA_ORIGINS=* ollama serve`',
     compactingInlineNotice: '\n*上下文过长，正在优化上下文...*',

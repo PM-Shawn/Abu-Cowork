@@ -12,9 +12,11 @@ import type { ElectronApplication, Page } from 'playwright';
 import {
   closeAbuElectron,
   createElectronDataRoot,
+  killAbuSidecar,
   launchAbuElectron,
   removeElectronDataRoot,
   terminateAbuElectron,
+  waitForAbuSidecarPid,
   type ElectronDataRoot,
 } from './electronHelpers';
 
@@ -476,6 +478,57 @@ test.describe.serial('Electron product task lifecycle', () => {
     expect(secondRequestBody).toContain(partial);
     expect(secondRequestBody).toContain(followUp);
     await expect(secondPage.getByText(followUpResponse, { exact: true })).toBeVisible({
+      timeout: READY_TIMEOUT,
+    });
+  });
+
+  test('recovers after the active sidecar process crashes and continues on its replacement', async () => {
+    const prompt = `abu-e2e-sidecar-crash-prompt-${randomUUID()}`;
+    const partial = `abu-e2e-sidecar-crash-partial-${randomUUID()}`;
+    const followUp = `abu-e2e-sidecar-crash-follow-up-${randomUUID()}`;
+    const followUpResponse = `abu-e2e-sidecar-crash-answer-${randomUUID()}`;
+    mock = await startOpenAiMock([
+      { kind: 'hold-open', partialText: partial },
+      { kind: 'complete', responseText: followUpResponse },
+    ]);
+
+    dataRoot = createElectronDataRoot();
+    const launch = await launchAbuElectron(dataRoot);
+    app = launch.app;
+    const page = await app.firstWindow({ timeout: READY_TIMEOUT });
+    await waitForApp(page);
+    await configureLocalMockProvider(page, mock.baseUrl);
+
+    const originalSidecarPid = await waitForAbuSidecarPid(app);
+    const input = page.getByPlaceholder(CHAT_PLACEHOLDER);
+    await input.fill(prompt);
+    await input.press('Enter');
+    await expect.poll(() => mock!.requests.length, { timeout: READY_TIMEOUT }).toBe(1);
+    await expect(page.getByText(partial, { exact: true })).toBeVisible({ timeout: READY_TIMEOUT });
+
+    const killedPid = await killAbuSidecar(app);
+    expect(killedPid).toBe(originalSidecarPid);
+    await expect.poll(() => mock!.requests[0]?.responseAborted, { timeout: READY_TIMEOUT }).toBe(true);
+
+    await expect(page.getByText(/后台服务意外中断.*自动恢复/)).toBeVisible({ timeout: READY_TIMEOUT });
+    await expect(page.getByLabel(/^(停止|Stop)$/)).toBeHidden({ timeout: READY_TIMEOUT });
+    await expect(input).toBeEditable({ timeout: READY_TIMEOUT });
+    expect(app.process().exitCode).toBeNull();
+    expect(app.process().signalCode).toBeNull();
+
+    const replacementSidecarPid = await waitForAbuSidecarPid(app, killedPid, READY_TIMEOUT);
+    expect(replacementSidecarPid).not.toBe(killedPid);
+
+    await input.fill(followUp);
+    await input.press('Enter');
+    await expect.poll(() => mock!.requests.length, { timeout: READY_TIMEOUT }).toBe(2);
+    const secondRequestBody = JSON.stringify(mock.requests[1]?.body);
+    expect(secondRequestBody).toContain(prompt);
+    expect(secondRequestBody).toContain(partial);
+    expect(secondRequestBody).toContain('后台服务意外中断');
+    expect(secondRequestBody).not.toContain('Sidecar process closed');
+    expect(secondRequestBody).toContain(followUp);
+    await expect(page.getByText(followUpResponse, { exact: true })).toBeVisible({
       timeout: READY_TIMEOUT,
     });
   });

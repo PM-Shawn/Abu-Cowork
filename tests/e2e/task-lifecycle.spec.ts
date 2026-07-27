@@ -29,6 +29,7 @@ interface MockRequest {
   authorization: string | undefined;
   body: unknown;
   pathname: string;
+  purpose: 'memory' | 'task';
   responseAborted: boolean;
 }
 
@@ -58,6 +59,7 @@ function sseChunk(content: string, finishReason: string | null): string {
 
 async function startOpenAiMock(replyPlans: readonly MockReplyPlan[]): Promise<OpenAiMock> {
   const requests: MockRequest[] = [];
+  let taskRequestCount = 0;
   const activeResponses = new Set<ServerResponse>();
   const server = createServer(async (req, res) => {
     activeResponses.add(res);
@@ -73,10 +75,12 @@ async function startOpenAiMock(replyPlans: readonly MockReplyPlan[]): Promise<Op
     } catch {
       // Keep malformed input available in the assertion output if this ever regresses.
     }
+    const purpose = isMemoryExtractionRequest(body) ? 'memory' : 'task';
     const mockRequest: MockRequest = {
       authorization: req.headers.authorization,
       body,
       pathname: requestUrl.pathname,
+      purpose,
       responseAborted: false,
     };
     if (req.method !== 'POST' || requestUrl.pathname !== '/v1/chat/completions') {
@@ -86,7 +90,10 @@ async function startOpenAiMock(replyPlans: readonly MockReplyPlan[]): Promise<Op
     }
 
     requests.push(mockRequest);
-    const replyPlan = replyPlans[requests.length - 1];
+    const replyPlan =
+      purpose === 'memory'
+        ? { kind: 'complete' as const, responseText: '[]' }
+        : replyPlans[taskRequestCount++];
     if (!replyPlan) {
       res.writeHead(500, { 'content-type': 'application/json' });
       res.end(JSON.stringify({ error: 'unexpected extra local E2E mock request' }));
@@ -140,6 +147,22 @@ async function startOpenAiMock(replyPlans: readonly MockReplyPlan[]): Promise<Op
     close: () => closeServer(server, activeResponses),
     requests,
   };
+}
+
+function isMemoryExtractionRequest(body: unknown): boolean {
+  if (!body || typeof body !== 'object' || !('messages' in body)) return false;
+  const messages = (body as { messages?: unknown }).messages;
+  return Array.isArray(messages) && messages.some((message) => {
+    if (!message || typeof message !== 'object') return false;
+    const candidate = message as { content?: unknown; role?: unknown };
+    return candidate.role === 'system' &&
+      typeof candidate.content === 'string' &&
+      candidate.content.includes('你是一个记忆提取助手');
+  });
+}
+
+function taskRequests(mock: OpenAiMock): MockRequest[] {
+  return mock.requests.filter((request) => request.purpose === 'task');
 }
 
 function closeServer(server: Server, activeResponses: ReadonlySet<ServerResponse>): Promise<void> {
@@ -293,8 +316,8 @@ test.describe.serial('Electron product task lifecycle', () => {
     await input.fill(prompt);
     await input.press('Enter');
 
-    await expect.poll(() => mock!.requests.length, { timeout: READY_TIMEOUT }).toBe(1);
-    const request = mock.requests[0];
+    await expect.poll(() => taskRequests(mock!).length, { timeout: READY_TIMEOUT }).toBe(1);
+    const request = taskRequests(mock)[0];
     expect(request.pathname).toBe('/v1/chat/completions');
     expect(request.authorization).toBe(`Bearer ${TEST_API_KEY}`);
     expect(JSON.stringify(request.body)).toContain(prompt);
@@ -349,8 +372,8 @@ test.describe.serial('Electron product task lifecycle', () => {
     await input.fill(prompt);
     await input.press('Enter');
 
-    await expect.poll(() => mock!.requests.length, { timeout: READY_TIMEOUT }).toBe(1);
-    const firstRequest = mock.requests[0];
+    await expect.poll(() => taskRequests(mock!).length, { timeout: READY_TIMEOUT }).toBe(1);
+    const firstRequest = taskRequests(mock)[0];
     expect(firstRequest.pathname).toBe('/v1/chat/completions');
     expect(firstRequest.authorization).toBe(`Bearer ${TEST_API_KEY}`);
     expect(JSON.stringify(firstRequest.body)).toContain(prompt);
@@ -362,7 +385,7 @@ test.describe.serial('Electron product task lifecycle', () => {
 
     // The button transition alone is insufficient: the mock must observe the
     // renderer/sidecar aborting its real loopback HTTP response.
-    await expect.poll(() => mock!.requests[0]?.responseAborted, { timeout: READY_TIMEOUT }).toBe(true);
+    await expect.poll(() => taskRequests(mock!)[0]?.responseAborted, { timeout: READY_TIMEOUT }).toBe(true);
     await expect(stopButton).toBeHidden({ timeout: READY_TIMEOUT });
     await expect(input).toBeEditable({ timeout: READY_TIMEOUT });
     await expect(firstPage.getByText(partial, { exact: true })).toBeVisible({ timeout: READY_TIMEOUT });
@@ -397,8 +420,8 @@ test.describe.serial('Electron product task lifecycle', () => {
     const restoredInput = secondPage.getByPlaceholder(CHAT_PLACEHOLDER);
     await restoredInput.fill(followUp);
     await restoredInput.press('Enter');
-    await expect.poll(() => mock!.requests.length, { timeout: READY_TIMEOUT }).toBe(2);
-    const secondRequest = mock.requests[1];
+    await expect.poll(() => taskRequests(mock!).length, { timeout: READY_TIMEOUT }).toBe(2);
+    const secondRequest = taskRequests(mock)[1];
     expect(secondRequest.pathname).toBe('/v1/chat/completions');
     expect(secondRequest.authorization).toBe(`Bearer ${TEST_API_KEY}`);
     const secondRequestBody = JSON.stringify(secondRequest.body);
@@ -435,7 +458,7 @@ test.describe.serial('Electron product task lifecycle', () => {
     await input.fill(prompt);
     await input.press('Enter');
 
-    await expect.poll(() => mock!.requests.length, { timeout: READY_TIMEOUT }).toBe(1);
+    await expect.poll(() => taskRequests(mock!).length, { timeout: READY_TIMEOUT }).toBe(1);
     await expect(firstPage.getByText(partial, { exact: true })).toBeVisible({ timeout: READY_TIMEOUT });
     await expect.poll(
       () => diskContains(dataRoot!.appDataDir, '"status":"llm_calling"', 'checkpoint.json'),
@@ -451,7 +474,7 @@ test.describe.serial('Electron product task lifecycle', () => {
 
     await terminateAbuElectron(app);
     app = undefined;
-    await expect.poll(() => mock!.requests[0]?.responseAborted, { timeout: READY_TIMEOUT }).toBe(true);
+    await expect.poll(() => taskRequests(mock!)[0]?.responseAborted, { timeout: READY_TIMEOUT }).toBe(true);
 
     const secondLaunch = await launchAbuElectron(dataRoot);
     app = secondLaunch.app;
@@ -472,8 +495,8 @@ test.describe.serial('Electron product task lifecycle', () => {
     await expect(restoredInput).toBeEditable({ timeout: READY_TIMEOUT });
     await restoredInput.fill(followUp);
     await restoredInput.press('Enter');
-    await expect.poll(() => mock!.requests.length, { timeout: READY_TIMEOUT }).toBe(2);
-    const secondRequestBody = JSON.stringify(mock.requests[1]?.body);
+    await expect.poll(() => taskRequests(mock!).length, { timeout: READY_TIMEOUT }).toBe(2);
+    const secondRequestBody = JSON.stringify(taskRequests(mock)[1]?.body);
     expect(secondRequestBody).toContain(prompt);
     expect(secondRequestBody).toContain(partial);
     expect(secondRequestBody).toContain(followUp);
@@ -503,12 +526,12 @@ test.describe.serial('Electron product task lifecycle', () => {
     const input = page.getByPlaceholder(CHAT_PLACEHOLDER);
     await input.fill(prompt);
     await input.press('Enter');
-    await expect.poll(() => mock!.requests.length, { timeout: READY_TIMEOUT }).toBe(1);
+    await expect.poll(() => taskRequests(mock!).length, { timeout: READY_TIMEOUT }).toBe(1);
     await expect(page.getByText(partial, { exact: true })).toBeVisible({ timeout: READY_TIMEOUT });
 
     const killedPid = await killAbuSidecar(app);
     expect(killedPid).toBe(originalSidecarPid);
-    await expect.poll(() => mock!.requests[0]?.responseAborted, { timeout: READY_TIMEOUT }).toBe(true);
+    await expect.poll(() => taskRequests(mock!)[0]?.responseAborted, { timeout: READY_TIMEOUT }).toBe(true);
 
     await expect(page.getByText(/后台服务意外中断.*自动恢复/)).toBeVisible({ timeout: READY_TIMEOUT });
     await expect(page.getByLabel(/^(停止|Stop)$/)).toBeHidden({ timeout: READY_TIMEOUT });
@@ -521,8 +544,8 @@ test.describe.serial('Electron product task lifecycle', () => {
 
     await input.fill(followUp);
     await input.press('Enter');
-    await expect.poll(() => mock!.requests.length, { timeout: READY_TIMEOUT }).toBe(2);
-    const secondRequestBody = JSON.stringify(mock.requests[1]?.body);
+    await expect.poll(() => taskRequests(mock!).length, { timeout: READY_TIMEOUT }).toBe(2);
+    const secondRequestBody = JSON.stringify(taskRequests(mock)[1]?.body);
     expect(secondRequestBody).toContain(prompt);
     expect(secondRequestBody).toContain(partial);
     expect(secondRequestBody).toContain('后台服务意外中断');

@@ -35,12 +35,15 @@ const REPO_ROOT = path.resolve(__dirname, '..');
 const FRONTEND_INDEX = path.join(REPO_ROOT, 'dist-electron-spike', 'index.html');
 const PLACEHOLDER_INDEX = path.join(__dirname, 'renderer', 'index.html');
 
-// E2E launches can redirect the dev shell's app-data parent before Electron
-// initializes any path-backed service. This remains main-process-only: the
-// renderer receives no control over it, and packaged builds always use their
-// normal appData location.
+// E2E launches can redirect the app-data parent before Electron initializes
+// any path-backed service. Packaged builds require a second explicit flag so a
+// stray ABU_E2E_APP_DATA_ROOT in a user's environment cannot redirect normal
+// app data. Both controls remain main-process-only.
 const E2E_APP_DATA_ROOT_ENV = 'ABU_E2E_APP_DATA_ROOT';
-if (!app.isPackaged && Object.hasOwn(process.env, E2E_APP_DATA_ROOT_ENV)) {
+const PACKAGED_E2E_ENV = 'ABU_PACKAGED_E2E';
+const allowE2EAppDataRedirect =
+  !app.isPackaged || process.env[PACKAGED_E2E_ENV] === '1';
+if (allowE2EAppDataRedirect && Object.hasOwn(process.env, E2E_APP_DATA_ROOT_ENV)) {
   const appDataRoot = process.env[E2E_APP_DATA_ROOT_ENV];
   if (typeof appDataRoot !== 'string' || !path.isAbsolute(appDataRoot)) {
     throw new Error(`${E2E_APP_DATA_ROOT_ENV} must be an absolute path when set`);

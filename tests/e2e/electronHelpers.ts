@@ -18,47 +18,75 @@ import { _electron as electron, type ElectronApplication } from 'playwright';
  */
 export const REPO_ROOT = process.cwd();
 export const MAIN_ENTRY = path.join(REPO_ROOT, 'electron', 'main.cjs');
+const E2E_APP_DATA_ROOT_ENV = 'ABU_E2E_APP_DATA_ROOT';
 
-export interface LaunchedApp {
-  app: ElectronApplication;
+export interface ElectronDataRoot {
+  rootDir: string;
   userDataDir: string;
+  appDataDir: string;
+}
+
+export interface LaunchedApp extends ElectronDataRoot {
+  app: ElectronApplication;
 }
 
 /**
- * Launch electron/main.cjs with an ISOLATED --user-data-dir.
+ * Create a unique root that contains the Chromium profile and Electron appData
+ * parent separately. Keep this root alive until the test has finished every
+ * launch that needs it; a persistence test can pass it to launchAbuElectron()
+ * again after closing its first app instance.
+ */
+export function createElectronDataRoot(): ElectronDataRoot {
+  const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), `abu-e2e-${randomUUID().slice(0, 8)}-`));
+  return {
+    rootDir,
+    userDataDir: path.join(rootDir, 'user-data'),
+    appDataDir: path.join(rootDir, 'app-data'),
+  };
+}
+
+/** Best-effort cleanup after a test has completed all launches using this root. */
+export function removeElectronDataRoot(dataRoot: ElectronDataRoot): void {
+  try {
+    fs.rmSync(dataRoot.rootDir, { recursive: true, force: true });
+  } catch {
+    // best-effort cleanup only
+  }
+}
+
+/**
+ * Launch electron/main.cjs with fully isolated Chromium userData and appData.
  *
  * main.cjs calls `app.requestSingleInstanceLock()`; if a second instance's
  * lock loses the race against an already-running instance sharing the same
  * userData dir, it calls `app.quit()` and NO window is ever created. Chromium/
  * Electron honors `--user-data-dir` as a full override of the userData path
  * (independent of `app.setName('abu-electron-dev')`), so a fresh temp dir per
- * launch guarantees this test always wins the lock, and Chromium-profile-backed
+ * test data root guarantees this test always wins the lock, and Chromium-profile-backed
  * state (localStorage — the `abu-settings` store, onboarding/disclaimer flags)
  * starts fresh every run.
  *
- * NOTE — partial isolation only: the frontend's own app data (chat history,
- * catalog db) lives under `app.getPath('appData')` + a FIXED subfolder
- * (`com.abu.app.electron-dev`, set in electron/appEnv.cjs `abuAppDataDir`),
- * which is NOT affected by `--user-data-dir` — it is shared across every
- * electron-dev launch on the machine (same as `npm run electron:dev`). So the
- * welcome screen may show pre-existing conversations from earlier dev-shell
- * runs; this is expected and does not affect this suite's assertions (which
- * only check the always-present welcome UI, not conversation content). It is
- * still fully separate from the real Tauri prod (`com.abu.app`) and Tauri-dev
- * (`com.abu.app.dev`) data directories.
+ * main.cjs reads ABU_E2E_APP_DATA_ROOT before app readiness and uses it only
+ * for non-packaged builds, so the renderer-facing appData subfolder and any
+ * Electron service using app.getPath('appData') remain inside this same root.
  */
-export async function launchAbuElectron(): Promise<LaunchedApp> {
-  const userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), `abu-e2e-${randomUUID().slice(0, 8)}-`));
+export async function launchAbuElectron(dataRoot = createElectronDataRoot()): Promise<LaunchedApp> {
+  fs.mkdirSync(dataRoot.userDataDir, { recursive: true });
+  fs.mkdirSync(dataRoot.appDataDir, { recursive: true });
   const app = await electron.launch({
-    args: [MAIN_ENTRY, `--user-data-dir=${userDataDir}`],
+    args: [MAIN_ENTRY, `--user-data-dir=${dataRoot.userDataDir}`],
     cwd: REPO_ROOT,
+    env: {
+      ...process.env,
+      [E2E_APP_DATA_ROOT_ENV]: dataRoot.appDataDir,
+    },
     timeout: 60_000,
   });
-  return { app, userDataDir };
+  return { app, ...dataRoot };
 }
 
 /**
- * Close the app and best-effort clean up its temp userData dir.
+ * Close the app while preserving its data root for a possible relaunch.
  *
  * No orphan sidecar to chase down here: the frontend spawns the sidecar via
  * mcp_spawn, routed to electron/mcpBridge.cjs, whose own `process.on('exit', ...)`
@@ -66,17 +94,41 @@ export async function launchAbuElectron(): Promise<LaunchedApp> {
  * Electron process itself exits (see mcpBridge.cjs "No orphans" section) — so
  * closing the Electron app here is sufficient, nothing extra to kill.
  */
-export async function closeAbuElectron(app: ElectronApplication, userDataDir?: string): Promise<void> {
-  try {
-    await app.close();
-  } catch {
-    // already closed / crashed mid-test — nothing more to do
-  }
-  if (userDataDir) {
-    try {
-      fs.rmSync(userDataDir, { recursive: true, force: true });
-    } catch {
-      // best-effort cleanup only
+export async function closeAbuElectron(app: ElectronApplication): Promise<void> {
+  const child = app.process();
+  const waitForExit = (timeoutMs: number) => new Promise<boolean>((resolve) => {
+    if (child.exitCode !== null || child.signalCode !== null) {
+      resolve(true);
+      return;
     }
+    const timer = setTimeout(() => {
+      child.removeListener('exit', onExit);
+      resolve(false);
+    }, timeoutMs);
+    const onExit = () => {
+      clearTimeout(timer);
+      resolve(true);
+    };
+    child.once('exit', onExit);
+  });
+
+  // Ask Electron itself to quit so main.cjs's before-quit path tears down
+  // browser views, PTYs, helpers, and sidecars. ElectronApplication.close()
+  // can otherwise close the BrowserWindow first; Abu's preventable
+  // close-request handler may intentionally keep that window alive.
+  try {
+    await app.evaluate(({ app: electronApp }) => {
+      electronApp.quit();
+    });
+  } catch {
+    // The transport commonly closes before evaluate receives its result.
   }
+  if (await waitForExit(5_000)) return;
+
+  // Bounded fallback for a broken teardown. Signals target only Playwright's
+  // exact child process, never a name/pattern that could match a user app.
+  child.kill('SIGTERM');
+  if (await waitForExit(3_000)) return;
+  child.kill('SIGKILL');
+  await waitForExit(2_000);
 }

@@ -119,7 +119,14 @@ function stopHeartbeatMonitor(id) {
 function sendHeartbeatPing(id) {
   const state = heartbeats.get(id);
   const child = children.get(id);
-  if (!state || !child || !child.stdin || !child.stdin.writable) return;
+  if (
+    !state ||
+    !child ||
+    !child.stdin ||
+    !child.stdin.writable ||
+    child.stdin.destroyed ||
+    child.stdin.writableEnded
+  ) return;
   if (state.pendingId !== null) return; // previous ping still outstanding — skip this tick
 
   state.seq += 1;
@@ -313,6 +320,23 @@ function mcpSpawn({ id, command, args = [], env = {}, heartbeat }) {
     }
   };
 
+  // A pipe can close between a `.writable` check and `write()`. Node reports
+  // that race asynchronously on the stdin stream (typically EPIPE), so a
+  // try/catch around write cannot prevent an uncaught main-process exception.
+  // Keep a lifetime listener on every child stdin. A broken input pipe makes
+  // the process unusable for JSON-RPC; retire this exact generation and let the
+  // renderer's existing mcp-close recovery path restart it.
+  child.stdin.on('error', (err) => {
+    if (children.get(id) !== child) return;
+    emit(`mcp-err-${id}`, `stdin error: ${errMsg(err)}`);
+    try {
+      child.kill('SIGKILL');
+    } catch {
+      /* already dead */
+    }
+    emitCloseOnce();
+  });
+
   // Line-framed stdout — one mcp-msg per line (trimmed), NDJSON.
   let outBuf = '';
   child.stdout.setEncoding('utf8');
@@ -372,11 +396,28 @@ function mcpSpawn({ id, command, args = [], env = {}, heartbeat }) {
 
 function mcpWrite({ id, message }) {
   const child = children.get(id);
-  if (!child || !child.stdin || !child.stdin.writable) {
-    throw new Error(`mcp_write: no live process for id "${id}"`);
+  if (
+    !child ||
+    !child.stdin ||
+    !child.stdin.writable ||
+    child.stdin.destroyed ||
+    child.stdin.writableEnded
+  ) {
+    return Promise.reject(new Error(`mcp_write: no live process for id "${id}"`));
   }
-  child.stdin.write(String(message) + '\n');
-  return null;
+  return new Promise((resolve, reject) => {
+    try {
+      child.stdin.write(String(message) + '\n', (err) => {
+        if (err) {
+          reject(new Error(`mcp_write failed for id "${id}": ${errMsg(err)}`));
+        } else {
+          resolve(null);
+        }
+      });
+    } catch (err) {
+      reject(new Error(`mcp_write failed for id "${id}": ${errMsg(err)}`));
+    }
+  });
 }
 
 function mcpKill({ id }) {

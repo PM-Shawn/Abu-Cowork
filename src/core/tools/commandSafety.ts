@@ -43,6 +43,112 @@ function normalizeCommand(command: string): string {
 }
 
 /**
+ * Tokenize enough shell syntax to distinguish command arguments from quoted
+ * path content. Quotes and backslash escapes are removed like a shell would;
+ * command separators are retained as boundaries.
+ */
+function tokenizeShellWords(command: string): string[] {
+  const words: string[] = [];
+  let current = '';
+  let quote: "'" | '"' | null = null;
+  let escaped = false;
+
+  const pushCurrent = () => {
+    if (current) words.push(current);
+    current = '';
+  };
+
+  for (let index = 0; index < command.length; index++) {
+    const ch = command[index];
+
+    if (escaped) {
+      current += ch;
+      escaped = false;
+      continue;
+    }
+
+    if (quote) {
+      if (ch === quote) {
+        quote = null;
+      } else if (ch === '\\' && quote === '"') {
+        escaped = true;
+      } else {
+        current += ch;
+      }
+      continue;
+    }
+
+    if (ch === "'" || ch === '"') {
+      quote = ch;
+    } else if (ch === '\\') {
+      escaped = true;
+    } else if (/\s/.test(ch)) {
+      pushCurrent();
+    } else if (
+      ch === '&'
+      && (command[index + 1] === '>' || current.endsWith('>') || current.endsWith('<'))
+    ) {
+      current += ch;
+    } else if (ch === '|' || ch === ';' || ch === '&') {
+      pushCurrent();
+      words.push(ch);
+    } else {
+      current += ch;
+    }
+  }
+
+  if (escaped) current += '\\';
+  pushCurrent();
+  return words;
+}
+
+/**
+ * Detect recursive rm flags as shell argument tokens. A raw substring search
+ * is unsafe here: paths such as `/tmp/report-R-final` contain `-R` but are not
+ * recursive options, and everything after `--` is explicitly an operand.
+ */
+function hasRmRecursiveOption(command: string): boolean {
+  const words = tokenizeShellWords(command);
+  const commandBoundaries = new Set(['|', ';', '&']);
+
+  let segmentStart = 0;
+  while (segmentStart < words.length) {
+    let segmentEnd = segmentStart;
+    while (segmentEnd < words.length && !commandBoundaries.has(words[segmentEnd])) {
+      segmentEnd++;
+    }
+
+    let rmIndex = -1;
+    for (let index = segmentStart; index < segmentEnd; index++) {
+      const executable = words[index].split('/').pop();
+      if (executable === 'rm') {
+        rmIndex = index;
+        break;
+      }
+    }
+
+    if (rmIndex >= 0) {
+      for (let argIndex = rmIndex + 1; argIndex < segmentEnd; argIndex++) {
+        const argument = words[argIndex];
+        if (argument === '--') break;
+        const isLongRecursiveOption = (
+          argument.length > 2
+          && argument.startsWith('--')
+          && '--recursive'.startsWith(argument)
+        );
+        if (isLongRecursiveOption || /^-[^-]*[rR]/.test(argument)) {
+          return true;
+        }
+      }
+    }
+
+    segmentStart = segmentEnd + 1;
+  }
+
+  return false;
+}
+
+/**
  * Check for command injection patterns
  */
 function hasCommandInjection(command: string): { injected: boolean; reason: string } {
@@ -335,7 +441,6 @@ function getDangerousPatterns(): Record<Exclude<DangerLevel, 'safe'>, Array<{ pa
     ],
     danger: [
       // Destructive but may be intentional (with various flag combinations)
-      { pattern: /rm\s+.*(-r|-R|--recursive)/, reason: t.dangerRmRf },
       { pattern: /rm\s+.*\*/, reason: t.dangerRmWild },
       { pattern: /git\s+push\s+.*(-f|--force)/, reason: t.dangerGitPushForce },
       { pattern: /git\s+reset\s+--hard/, reason: t.dangerGitResetHard },
@@ -348,8 +453,8 @@ function getDangerousPatterns(): Record<Exclude<DangerLevel, 'safe'>, Array<{ pa
       { pattern: /curl.*\|\s*python/, reason: t.dangerCurlPipePython },
       { pattern: /pip\s+install.*--break-system-packages/, reason: t.dangerPipBreakSystem },
       { pattern: /npm\s+.*--force/, reason: t.dangerNpmForce },
-      { pattern: /bash\s+-c\s+["'].*rm\s/, reason: t.dangerBashCRm },
-      { pattern: /sh\s+-c\s+["'].*rm\s/, reason: t.dangerShCRm },
+      { pattern: /bash\s+-c\s+\$?["'].*rm\s/, reason: t.dangerBashCRm },
+      { pattern: /sh\s+-c\s+\$?["'].*rm\s/, reason: t.dangerShCRm },
       { pattern: /xargs\s+.*rm/, reason: t.dangerXargsRm },
       { pattern: /find\s+.*-delete/, reason: t.dangerFindDelete },
       { pattern: /find\s+.*-exec\s+rm/, reason: t.dangerFindExecRm },
@@ -438,6 +543,15 @@ function analyzeSegment(segment: string): CommandAnalysis {
   const winDangerousPatterns = win ? getWinDangerousPatterns() : null;
   const levels: Array<Exclude<DangerLevel, 'safe'>> = ['block', 'danger', 'warn'];
   for (const level of levels) {
+    if (level === 'danger' && hasRmRecursiveOption(trimmed)) {
+      return {
+        level,
+        reason: getI18n().toolResult.commandSafety.dangerRmRf,
+        matchedPattern: 'rm recursive option (-r/-R/--recursive)',
+        readOnly: false,
+      };
+    }
+
     const patterns = winDangerousPatterns
       ? [...dangerousPatterns[level], ...winDangerousPatterns[level]]
       : dangerousPatterns[level];

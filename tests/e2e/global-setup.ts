@@ -7,19 +7,18 @@
  *     leave a duplicate sidecar around. Scoped to processes whose command
  *     line contains this worktree's absolute path — never touches another
  *     worktree's or a different app's processes.
- *  2. Ensures dist-electron-spike/ exists (the built frontend main.cjs
- *     loads); builds it once if missing.
+ *  2. Rebuilds the sidecar from the current worktree sources so Electron
+ *     never exercises a stale ignored sidecar/index.mjs bundle.
+ *  3. Rebuilds dist-electron-spike/ from the current renderer sources so the
+ *     Electron shell and sidecar are always tested as one current-source unit.
  *
  * macOS has no `timeout` binary (see feedback-macos-no-timeout-binary in
  * project memory) — everything here is synchronous / self-terminating, no
  * reliance on a `timeout` wrapper.
  */
 import { execSync } from 'node:child_process';
-import fs from 'node:fs';
-import path from 'node:path';
 
 const REPO_ROOT = process.cwd();
-const FRONTEND_INDEX = path.join(REPO_ROOT, 'dist-electron-spike', 'index.html');
 
 /** Best-effort SIGKILL of any process whose full command line matches `pattern`. */
 function killStray(pattern: string): void {
@@ -50,11 +49,15 @@ export default async function globalSetup(): Promise<void> {
   killStray(`${REPO_ROOT}/electron/main.cjs`);
   killStray(`${REPO_ROOT}/sidecar/index.mjs`);
 
-  if (!fs.existsSync(FRONTEND_INDEX)) {
-    console.log('[e2e:global-setup] dist-electron-spike/ missing — building once…');
-    execSync('npx vite build --base=./ --outDir dist-electron-spike', {
-      cwd: REPO_ROOT,
-      stdio: 'inherit',
-    });
-  }
+  console.log('[e2e:global-setup] building sidecar from current sources…');
+  execSync('npm run build:sidecar', {
+    cwd: REPO_ROOT,
+    stdio: 'inherit',
+  });
+
+  console.log('[e2e:global-setup] building renderer from current sources…');
+  execSync('npx vite build --base=./ --outDir dist-electron-spike', {
+    cwd: REPO_ROOT,
+    stdio: 'inherit',
+  });
 }

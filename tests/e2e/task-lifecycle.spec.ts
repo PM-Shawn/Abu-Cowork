@@ -6,7 +6,7 @@
 import { expect, test } from '@playwright/test';
 import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
-import { createServer, type Server } from 'node:http';
+import { createServer, type Server, type ServerResponse } from 'node:http';
 import path from 'node:path';
 import type { ElectronApplication, Page } from 'playwright';
 import {
@@ -26,7 +26,12 @@ interface MockRequest {
   authorization: string | undefined;
   body: unknown;
   pathname: string;
+  responseAborted: boolean;
 }
+
+type MockReplyPlan =
+  | { kind: 'complete'; responseText: string }
+  | { kind: 'hold-open'; partialText: string };
 
 interface OpenAiMock {
   baseUrl: string;
@@ -48,9 +53,13 @@ function sseChunk(content: string, finishReason: string | null): string {
   })}\n\n`;
 }
 
-async function startOpenAiMock(responseText: string): Promise<OpenAiMock> {
+async function startOpenAiMock(replyPlans: readonly MockReplyPlan[]): Promise<OpenAiMock> {
   const requests: MockRequest[] = [];
+  const activeResponses = new Set<ServerResponse>();
   const server = createServer(async (req, res) => {
+    activeResponses.add(res);
+    res.once('close', () => activeResponses.delete(res));
+
     const requestUrl = new URL(req.url ?? '/', 'http://127.0.0.1');
     let rawBody = '';
     for await (const chunk of req) rawBody += String(chunk);
@@ -61,15 +70,23 @@ async function startOpenAiMock(responseText: string): Promise<OpenAiMock> {
     } catch {
       // Keep malformed input available in the assertion output if this ever regresses.
     }
-    requests.push({
+    const mockRequest: MockRequest = {
       authorization: req.headers.authorization,
       body,
       pathname: requestUrl.pathname,
-    });
-
+      responseAborted: false,
+    };
     if (req.method !== 'POST' || requestUrl.pathname !== '/v1/chat/completions') {
       res.writeHead(404, { 'content-type': 'application/json' });
       res.end(JSON.stringify({ error: 'unexpected local E2E mock route' }));
+      return;
+    }
+
+    requests.push(mockRequest);
+    const replyPlan = replyPlans[requests.length - 1];
+    if (!replyPlan) {
+      res.writeHead(500, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ error: 'unexpected extra local E2E mock request' }));
       return;
     }
 
@@ -78,6 +95,17 @@ async function startOpenAiMock(responseText: string): Promise<OpenAiMock> {
       connection: 'keep-alive',
       'content-type': 'text/event-stream; charset=utf-8',
     });
+    if (replyPlan.kind === 'hold-open') {
+      res.once('close', () => {
+        // A deliberate stop aborts the browser's response stream. This stays
+        // false for normal completed replies, which call res.end() below.
+        mockRequest.responseAborted = !res.writableEnded;
+      });
+      res.write(sseChunk(replyPlan.partialText, null));
+      return;
+    }
+
+    const { responseText } = replyPlan;
     const splitAt = Math.ceil(responseText.length / 2);
     res.write(sseChunk(responseText.slice(0, splitAt), null));
     // Normal streaming providers deliver several deltas before their terminal
@@ -100,20 +128,32 @@ async function startOpenAiMock(responseText: string): Promise<OpenAiMock> {
 
   const address = server.address();
   if (!address || typeof address === 'string') {
-    await closeServer(server);
+    await closeServer(server, activeResponses);
     throw new Error('The local OpenAI-compatible mock did not receive a TCP port');
   }
 
   return {
     baseUrl: `http://127.0.0.1:${address.port}/v1`,
-    close: () => closeServer(server),
+    close: () => closeServer(server, activeResponses),
     requests,
   };
 }
 
-function closeServer(server: Server): Promise<void> {
+function closeServer(server: Server, activeResponses: ReadonlySet<ServerResponse>): Promise<void> {
+  // A failed assertion can leave a hold-open SSE response active. Destroy it
+  // before close() so afterEach cannot wait forever on that client connection.
+  for (const response of activeResponses) response.destroy();
   return new Promise((resolve, reject) => {
-    server.close((error) => (error ? reject(error) : resolve()));
+    const timeout = setTimeout(() => {
+      server.closeAllConnections?.();
+      reject(new Error('Timed out closing local OpenAI E2E mock'));
+    }, 5_000);
+    server.close((error) => {
+      clearTimeout(timeout);
+      if (error) reject(error);
+      else resolve();
+    });
+    server.closeAllConnections?.();
   });
 }
 
@@ -131,6 +171,34 @@ function diskContains(rootDir: string, expectedText: string, fileName = 'message
       if (entry.name !== fileName) return false;
       try {
         return fs.readFileSync(entryPath, 'utf8').includes(expectedText);
+      } catch {
+        return false;
+      }
+    });
+  };
+  return visit(rootDir);
+}
+
+function diskContainsExactAssistantMessage(rootDir: string, expectedContent: string): boolean {
+  const visit = (dir: string): boolean => {
+    let entries: fs.Dirent[];
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return false;
+    }
+    return entries.some((entry) => {
+      const entryPath = path.join(dir, entry.name);
+      if (entry.isDirectory()) return visit(entryPath);
+      if (entry.name !== 'messages.jsonl') return false;
+      try {
+        return fs.readFileSync(entryPath, 'utf8')
+          .trimEnd()
+          .split('\n')
+          .some((line) => {
+            const message = JSON.parse(line) as { role?: unknown; content?: unknown };
+            return message.role === 'assistant' && message.content === expectedContent;
+          });
       } catch {
         return false;
       }
@@ -209,7 +277,7 @@ test.describe.serial('Electron product task lifecycle', () => {
     const prompt = `abu-e2e-task-prompt-${randomUUID()}`;
     const response = `abu-e2e-deterministic-answer-${randomUUID()}`;
     const recentTitle = `${prompt.slice(0, 30)}...`;
-    mock = await startOpenAiMock(response);
+    mock = await startOpenAiMock([{ kind: 'complete', responseText: response }]);
 
     dataRoot = createElectronDataRoot();
     const firstLaunch = await launchAbuElectron(dataRoot);
@@ -253,5 +321,92 @@ test.describe.serial('Electron product task lifecycle', () => {
     await recentConversation.click();
     await expect(secondPage.getByText(prompt, { exact: true })).toBeVisible({ timeout: READY_TIMEOUT });
     await expect(secondPage.getByText(response, { exact: true })).toBeVisible({ timeout: READY_TIMEOUT });
+  });
+
+  test('stops an open stream, persists its partial reply, and continues after restart', async () => {
+    const prompt = `abu-e2e-stop-prompt-${randomUUID()}`;
+    const partial = `abu-e2e-stop-partial-${randomUUID()}`;
+    const followUp = `abu-e2e-stop-follow-up-${randomUUID()}`;
+    const followUpResponse = `abu-e2e-stop-follow-up-answer-${randomUUID()}`;
+    const recentTitle = `${prompt.slice(0, 30)}...`;
+    const stoppedContent = `${partial}\n\n*[已停止]*`;
+    mock = await startOpenAiMock([
+      { kind: 'hold-open', partialText: partial },
+      { kind: 'complete', responseText: followUpResponse },
+    ]);
+
+    dataRoot = createElectronDataRoot();
+    const firstLaunch = await launchAbuElectron(dataRoot);
+    app = firstLaunch.app;
+    const firstPage = await app.firstWindow({ timeout: READY_TIMEOUT });
+    await waitForApp(firstPage);
+    await configureLocalMockProvider(firstPage, mock.baseUrl);
+
+    const input = firstPage.getByPlaceholder(CHAT_PLACEHOLDER);
+    await input.fill(prompt);
+    await input.press('Enter');
+
+    await expect.poll(() => mock!.requests.length, { timeout: READY_TIMEOUT }).toBe(1);
+    const firstRequest = mock.requests[0];
+    expect(firstRequest.pathname).toBe('/v1/chat/completions');
+    expect(firstRequest.authorization).toBe(`Bearer ${TEST_API_KEY}`);
+    expect(JSON.stringify(firstRequest.body)).toContain(prompt);
+    await expect(firstPage.getByText(partial, { exact: true })).toBeVisible({ timeout: READY_TIMEOUT });
+
+    const stopButton = firstPage.getByLabel(/^(停止|Stop)$/);
+    await expect(stopButton).toBeVisible({ timeout: READY_TIMEOUT });
+    await stopButton.click();
+
+    // The button transition alone is insufficient: the mock must observe the
+    // renderer/sidecar aborting its real loopback HTTP response.
+    await expect.poll(() => mock!.requests[0]?.responseAborted, { timeout: READY_TIMEOUT }).toBe(true);
+    await expect(stopButton).toBeHidden({ timeout: READY_TIMEOUT });
+    await expect(input).toBeEditable({ timeout: READY_TIMEOUT });
+    await expect(firstPage.getByText(partial, { exact: true })).toBeVisible({ timeout: READY_TIMEOUT });
+    await expect(firstPage.getByText('[已停止]', { exact: true })).toBeVisible({ timeout: READY_TIMEOUT });
+
+    // Exact persisted content proves both the partial token and the stop
+    // marker survived, with no later stream token appended after cancellation.
+    await expect.poll(
+      () => diskContainsExactAssistantMessage(dataRoot!.appDataDir, stoppedContent),
+      { timeout: READY_TIMEOUT },
+    ).toBe(true);
+    await expect.poll(
+      () => diskContains(dataRoot!.appDataDir, '"messageCount": 2', 'index.json'),
+      { timeout: READY_TIMEOUT },
+    ).toBe(true);
+
+    await closeAbuElectron(app);
+    app = undefined;
+
+    const secondLaunch = await launchAbuElectron(dataRoot);
+    app = secondLaunch.app;
+    const secondPage = await app.firstWindow({ timeout: READY_TIMEOUT });
+    await waitForApp(secondPage);
+
+    await secondPage.getByTitle(/显示侧栏|Show sidebar/).click();
+    const recentConversation = secondPage.getByRole('button', { name: recentTitle }).first();
+    await expect(recentConversation).toBeVisible({ timeout: READY_TIMEOUT });
+    await recentConversation.click();
+    await expect(secondPage.getByText(partial, { exact: true })).toBeVisible({ timeout: READY_TIMEOUT });
+    await expect(secondPage.getByText('[已停止]', { exact: true })).toBeVisible({ timeout: READY_TIMEOUT });
+
+    const restoredInput = secondPage.getByPlaceholder(CHAT_PLACEHOLDER);
+    await restoredInput.fill(followUp);
+    await restoredInput.press('Enter');
+    await expect.poll(() => mock!.requests.length, { timeout: READY_TIMEOUT }).toBe(2);
+    const secondRequest = mock.requests[1];
+    expect(secondRequest.pathname).toBe('/v1/chat/completions');
+    expect(secondRequest.authorization).toBe(`Bearer ${TEST_API_KEY}`);
+    const secondRequestBody = JSON.stringify(secondRequest.body);
+    expect(secondRequestBody).toContain(prompt);
+    expect(secondRequestBody).toContain(partial);
+    expect(secondRequestBody).toContain('[已停止]');
+    expect(secondRequestBody).toContain(followUp);
+    await expect(secondPage.getByText(followUpResponse, { exact: true })).toBeVisible({ timeout: READY_TIMEOUT });
+    await expect.poll(
+      () => diskContainsExactAssistantMessage(dataRoot!.appDataDir, followUpResponse),
+      { timeout: READY_TIMEOUT },
+    ).toBe(true);
   });
 });

@@ -243,6 +243,9 @@ export interface Message {
   plannedSteps?: import('./execution').PlannedStep[];
   // System-injected messages (e.g. max_tokens recovery) — hidden from chat UI
   isSystem?: boolean;
+  // Crash-recovery notices remain internal for context/export purposes, but
+  // must be visible so the user understands why an earlier task stopped.
+  isRecoveryNotice?: boolean;
   // Compaction boundary marker payload (long-conversation Part A). Present only
   // on marker messages (id prefix `compact-boundary-`). The message is appended
   // to the log and never rewrites earlier entries; the send-side rebuilds a

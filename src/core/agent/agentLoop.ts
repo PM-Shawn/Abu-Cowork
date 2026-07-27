@@ -1066,6 +1066,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
     let thinkingEndTime: number | undefined;  // Track when thinking ends
     let lastStopReason = '';
     let modelSupportsVision = false;
+    let streamFlushTimer: ReturnType<typeof setInterval> | null = null;
 
     try {
       // ── Per-turn: refresh tools and dynamic prompt sections ──
@@ -1468,10 +1469,33 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
 
       const chatFn = () => adapter.chat(preparedMessages, chatOptions, eventHandler);
 
-      // Periodic flush during streaming — write current assistant message to disk every 5s
-      // so crash during long streaming doesn't lose all content
-      let lastStreamFlushTime = Date.now();
+      // Drive crash-protection flushes from elapsed time, not provider events.
+      // A provider can emit one partial chunk and then stall indefinitely; the
+      // old event-driven timestamp check never persisted that visible content.
       const STREAM_FLUSH_INTERVAL = 5000;
+      let streamFlushInFlight = false;
+      const flushStreamingMessage = async () => {
+        if (streamFlushInFlight) return;
+        streamFlushInFlight = true;
+        try {
+          const { replaceMessageById } = await import('../session/conversationStorage');
+          const currentMsg = getConversationReader().getConversation(conversationId)
+            ?.messages.find((m) => m.id === assistantMsgId);
+          // Re-read after the async import. If the turn completed while this
+          // timer callback yielded, its final write is authoritative and this
+          // older periodic snapshot must not overwrite it.
+          if (!currentMsg?.isStreaming) return;
+          await replaceMessageById(conversationId, currentMsg);
+        } catch {
+          // Best-effort crash protection. Final turn persistence remains the
+          // authoritative write when the request completes normally.
+        } finally {
+          streamFlushInFlight = false;
+        }
+      };
+      streamFlushTimer = setInterval(() => {
+        void flushStreamingMessage();
+      }, STREAM_FLUSH_INTERVAL);
 
       const eventHandler = (event: StreamEvent) => {
           switch (event.type) {
@@ -1491,18 +1515,6 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
               }
               chatDelta.setAgentStatus('streaming');
               chatDelta.appendText(conversationId, event.text, assistantMsgId);
-              // Periodic disk flush for crash safety — must look up by id, not "last",
-              // because the user may have sent another message mid-stream.
-              if (Date.now() - lastStreamFlushTime > STREAM_FLUSH_INTERVAL) {
-                lastStreamFlushTime = Date.now();
-                const currentMsg = getConversationReader().getConversation(conversationId)
-                  ?.messages.find((m) => m.id === assistantMsgId);
-                if (currentMsg) {
-                  import('../session/conversationStorage').then(({ replaceMessageById }) => {
-                    replaceMessageById(conversationId, currentMsg).catch(() => {});
-                  }).catch(() => {});
-                }
-              }
               break;
 
             case 'thinking':
@@ -2262,6 +2274,8 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
       exitReason = 'error';
       exitError = errorMessage;
       continueLoop = false;
+    } finally {
+      if (streamFlushTimer) clearInterval(streamFlushTimer);
     }
   }
   endConversationTrace(conversationId, { output: { reason: exitReason }, error: exitError });

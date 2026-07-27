@@ -358,12 +358,15 @@ export default function ChatView() {
     if (!conv || conv.messages.length === 0) return; // not loaded yet — retry on next messageCount change
     const q = jump.query.trim().toLowerCase();
     const target = conv.messages.find(
-      (m) => !m.isSystem && getMessageText(m.content).toLowerCase().includes(q),
+      (m) => (!m.isSystem || m.isRecoveryNotice)
+        && getMessageText(m.content).toLowerCase().includes(q),
     );
     // Consume regardless of match so a missing target doesn't retry forever.
     useChatStore.getState().setPendingSearchJump(null);
     if (!target) return;
-    const groups = groupMessagesByLoop(conv.messages.filter((m) => !m.isSystem));
+    const groups = groupMessagesByLoop(
+      conv.messages.filter((m) => !m.isSystem || m.isRecoveryNotice),
+    );
     const index = groups.findIndex((g) => g.some((m) => m.id === target.id));
     if (index < 0) return;
     // Release the bottom lock so late height-measurements don't yank the view
@@ -569,9 +572,9 @@ export default function ChatView() {
   }
 
   // Chat view with messages
-  // Filter out system-injected messages (e.g. max_tokens recovery prompts) and
-  // group remaining messages by loopId for unified rendering
-  const visibleMessages = messages.filter(m => !m.isSystem);
+  // Filter out internal system prompts while retaining explicit crash
+  // recovery notices that explain an interrupted task to the user.
+  const visibleMessages = messages.filter(m => !m.isSystem || m.isRecoveryNotice);
   const messageGroups = groupMessagesByLoop(visibleMessages);
 
   return (
@@ -793,4 +796,3 @@ export default function ChatView() {
     </div>
   );
 }
-

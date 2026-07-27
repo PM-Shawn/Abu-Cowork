@@ -76,7 +76,7 @@ import { useSettingsStore, type SettingsState } from '../../stores/settingsStore
 import { useChatStore } from '../../stores/chatStore';
 import { useTaskExecutionStore } from '../../stores/taskExecutionStore';
 import type { PlannedStep } from '../../types/execution';
-import { getLocale } from '../../i18n';
+import { getI18n, getLocale } from '../../i18n';
 import { createLogger } from '../logging/logger';
 import {
   runAgentLoop,
@@ -1354,6 +1354,10 @@ export async function runAgentLoopDispatched(
       errData && typeof errData === 'object' && 'message' in errData
         ? String((errData as { message: unknown }).message)
         : err instanceof Error ? err.message : String(err);
+    const displayMessage =
+      realMessage === 'Sidecar process closed'
+        ? getI18n().chat.sidecarInterrupted
+        : realMessage;
     logger.warn('agent-loop transport failed after commit — surfacing error, no rerun', {
       runId,
       conversationId,
@@ -1374,7 +1378,7 @@ export async function runAgentLoopDispatched(
     // them, not racing.
     try {
       const chatDelta = getChatDelta();
-      chatDelta.appendText(conversationId, `\n\n**Error:** ${realMessage}`);
+      chatDelta.appendText(conversationId, `\n\n**Error:** ${displayMessage}`);
       chatDelta.finishStreaming(conversationId);
       chatDelta.setAgentStatus('idle');
       chatDelta.setConversationStatus(conversationId, 'error');

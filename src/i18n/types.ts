@@ -362,6 +362,8 @@ export interface TranslationDict {
     skillMissingTools: string;
     /** Enterprise AI gateway unreachable (shown as an error bubble). */
     gatewayUnreachable: string;
+    /** Sidecar process exited mid-task and automatic recovery has started. */
+    sidecarInterrupted: string;
     /** Model likely doesn't support image/vision input. */
     visionUnsupported: string;
     /** Ollama returned 403 Forbidden (CORS origin restriction). */

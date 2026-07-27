@@ -366,6 +366,7 @@ const enUS: TranslationDict = {
     configureApiKey: 'Please set up your API Key in Settings first.',
     skillMissingTools: 'This skill needs some tools that aren\'t available right now: {missing}. Check whether the related MCP servers are connected.',
     gatewayUnreachable: 'Cannot reach the enterprise AI gateway. Check your network connection, or contact your administrator.\n\nThe client will not fall back to a personal API key (to prevent budget bypass).',
+    sidecarInterrupted: 'The background service was interrupted and is recovering automatically. Please resend your request in a moment.',
     visionUnsupported: 'The current model may not support image/vision input. Try removing the image or switching to a vision-capable model (e.g. Claude, GPT-4o).',
     ollamaForbidden: 'Ollama returned 403 Forbidden (CORS origin restriction). Set the environment variable `OLLAMA_ORIGINS=*` and restart Ollama, e.g. `OLLAMA_ORIGINS=* ollama serve`',
     compactingInlineNotice: '\n*Context is getting long, optimizing context...*',

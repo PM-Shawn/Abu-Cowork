@@ -1,10 +1,13 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
+import { invoke } from '@tauri-apps/api/core';
 import type { LLMProvider, ApiFormat, CustomService } from '../types';
 import type { ProviderInstance, ActiveModel, AuxiliaryServices, ModelInfo, ImageGenBackend, ImageGenerationSettings } from '../types/provider';
 import { deriveUiCaps } from '../core/llm/modelCapabilities';
 import { resolveImageVendor } from '../core/llm/imageGen/vendorResolve';
 import type { PermissionMode } from '../core/permissions/permissionMode';
+import type { CapabilitySetupTarget } from '../core/capabilityPlugins/types';
+import { hasElectronCommandHost } from '../utils/electronHost';
 import type { WebSearchProviderType } from '../core/search/providers';
 import { setLanguage, initLanguage, type LanguageSetting } from '@/i18n';
 import type { UpdateInfo } from '@/core/updates/checker';
@@ -37,6 +40,13 @@ export { PROVIDER_CONFIGS };
 function fafSecret(promise: Promise<void>, label: string): void {
   promise.catch((err) => {
     console.warn(`[secrets] ${label} failed:`, err);
+  });
+}
+
+function syncComputerUseGate(enabled: boolean): void {
+  if (!hasElectronCommandHost()) return;
+  void invoke('computer_use_set_enabled', { enabled }).catch((err) => {
+    console.warn('[settingsStore] Failed to sync Computer Use gate:', err);
   });
 }
 
@@ -102,8 +112,9 @@ function createDefaultProviders(): ProviderInstance[] {
 
 export type ViewMode = 'chat' | 'automation' | 'toolbox' | 'settings' | 'todos' | 'inbox';
 export type AutomationTab = 'schedule' | 'trigger';
-export type SystemSettingsTab = 'general' | 'ai-services' | 'sandbox' | 'im-channels' | 'pet' | 'personal-memory' | 'soul' | 'diagnostic' | 'usage' | 'about' | 'feedback' | 'sponsor' | 'enterprise' | 'labs';
+export type SystemSettingsTab = 'general' | 'capabilities' | 'ai-services' | 'sandbox' | 'im-channels' | 'pet' | 'personal-memory' | 'soul' | 'diagnostic' | 'usage' | 'about' | 'feedback' | 'sponsor' | 'enterprise' | 'labs';
 export type ToolboxTab = 'skills' | 'agents' | 'mcp';
+export type { CapabilitySetupTarget } from '../core/capabilityPlugins/types';
 
 // ============================================================
 // State & Actions interfaces
@@ -154,6 +165,8 @@ export interface SettingsState {
   /** System settings render as an overlay dialog on top of the current view,
    *  decoupled from viewMode. Ephemeral — not persisted. */
   systemSettingsOpen: boolean;
+  /** Ephemeral deep link used when an in-flight task needs user setup. */
+  capabilitySetupTarget: CapabilitySetupTarget | null;
   disabledSkills: string[];
   disabledAgents: string[];
   sandboxEnabled: boolean;
@@ -293,6 +306,8 @@ interface SettingsActions {
   setContextWindowSize: (size: number) => void;
   setLanguage: (lang: LanguageSetting) => void;
   openSystemSettings: (tab?: SystemSettingsTab) => void;
+  requestCapabilitySetup: (target: CapabilitySetupTarget) => void;
+  clearCapabilitySetupTarget: () => void;
   closeSystemSettings: () => void;
   setActiveSystemTab: (tab: SystemSettingsTab) => void;
   /** Toggle a Labs (experimental features) flag. Takes effect immediately. */
@@ -535,6 +550,7 @@ export const useSettingsStore = create<SettingsStore>()(
       installingItem: null,
       viewMode: 'chat' as ViewMode,
       systemSettingsOpen: false,
+      capabilitySetupTarget: null,
       disabledSkills: [
         'alert-sop', 'algorithmic-art', 'brand-guidelines', 'canvas-design',
         'claude-api', 'create-agent', 'doc-coauthoring', 'docx',
@@ -821,10 +837,24 @@ export const useSettingsStore = create<SettingsStore>()(
         set((s) => ({
           systemSettingsOpen: true,
           activeSystemTab: tab ?? s.activeSystemTab,
+          ...(tab && tab !== 'capabilities'
+            ? { capabilitySetupTarget: null }
+            : {}),
         })),
+      requestCapabilitySetup: (target) =>
+        set({
+          systemSettingsOpen: true,
+          activeSystemTab: 'capabilities',
+          capabilitySetupTarget: target,
+        }),
+      clearCapabilitySetupTarget: () =>
+        set({ capabilitySetupTarget: null }),
       closeSystemSettings: () =>
-        set({ systemSettingsOpen: false }),
-      setActiveSystemTab: (tab) => set({ activeSystemTab: tab }),
+        set({ systemSettingsOpen: false, capabilitySetupTarget: null }),
+      setActiveSystemTab: (tab) => set({
+        activeSystemTab: tab,
+        ...(tab !== 'capabilities' ? { capabilitySetupTarget: null } : {}),
+      }),
       setLabsFlag: (id, enabled) =>
         set((s) => ({ labs: { ...s.labs, [id]: enabled } })),
       openAutomation: (tab) =>
@@ -886,7 +916,10 @@ export const useSettingsStore = create<SettingsStore>()(
       // Closing the guide also marks it as shown so first-launch auto-open never re-triggers.
       closeGuide: () => set({ guideOpen: false, guideShown: true }),
       setBehaviorSensorEnabled: (behaviorSensorEnabled) => set({ behaviorSensorEnabled }),
-      setComputerUseEnabled: (computerUseEnabled) => set({ computerUseEnabled }),
+      setComputerUseEnabled: (computerUseEnabled) => {
+        set({ computerUseEnabled });
+        syncComputerUseGate(computerUseEnabled);
+      },
       setPreventSleep: (preventSleep) => set({ preventSleep }),
       setSoulInitialized: (soulInitialized) => set({ soulInitialized }),
       setProactivity: (level) =>
@@ -1793,6 +1826,9 @@ export const useSettingsStore = create<SettingsStore>()(
         state.viewMode = 'chat';
         state.updateDownloadProgress = null;
         state.updateInstalling = false;
+        // Main owns the runtime gate. Restore it only from persisted user
+        // settings; Computer Use tools are never allowed to enable themselves.
+        syncComputerUseGate(state.computerUseEnabled);
       },
     }
   )

@@ -18,8 +18,9 @@
 //!   - capture_screen / capture_screen_excluding → base64 PNG capture
 //!     (ScreenshotResult: {base64, width, height, scale_factor, origin_x,
 //!     origin_y}), also reused from computer_use_impl.rs.
-//!   - check_macos_permissions / request_screen_recording → TCC checks,
-//!     reused from computer_use_impl.rs.
+//!   - check_macos_permissions → read-only TCC status checks reused from the
+//!     shared Computer Use implementation. GUI permission prompts remain in
+//!     Electron main so macOS attributes them to the Abu application.
 //!
 //! Also hosts the AX session-cache commands (ax_snapshot/press/set_value/
 //! close_session) by extracting src-tauri's Tauri-free `*_impl` code (see
@@ -93,12 +94,81 @@ fn opt_str_vec(params: &Value, key: &str) -> Option<Vec<String>> {
     })
 }
 
+/// Re-check the real foreground application immediately before global input.
+/// Main-process checks remain useful for policy/UI, but only this helper can
+/// close the final IPC scheduling window before Enigo injects an event.
+fn assert_expected_target(params: &Value) -> Result<(), String> {
+    let expected_bundle = require_str(params, "expected_bundle_id")?;
+    let expected_pid = params
+        .get("expected_process_id")
+        .and_then(Value::as_i64)
+        .map(|value| value as i32);
+
+    #[cfg(target_os = "macos")]
+    {
+        let actual = ax::frontmost_app_identity_impl()?;
+        if !actual.bundle_id.eq_ignore_ascii_case(&expected_bundle)
+            || expected_pid.is_some_and(|pid| pid != actual.process_id)
+        {
+            return Err(format!(
+                "Computer Use target changed before native input: expected {} ({:?}), got {} ({})",
+                expected_bundle, expected_pid, actual.bundle_id, actual.process_id
+            ));
+        }
+        Ok(())
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        use windows::Win32::UI::WindowsAndMessaging::{
+            GetForegroundWindow, GetWindowThreadProcessId,
+        };
+
+        let expected_pid = expected_pid
+            .ok_or_else(|| "Computer Use expected process identity is unavailable".to_string())?;
+        let hwnd = unsafe { GetForegroundWindow() };
+        if hwnd.0.is_null() {
+            return Err("Computer Use foreground window is unavailable".to_string());
+        }
+        let mut actual_pid = 0u32;
+        unsafe {
+            GetWindowThreadProcessId(hwnd, Some(&mut actual_pid));
+        }
+        if actual_pid as i32 != expected_pid {
+            return Err(format!(
+                "Computer Use target changed before native input: expected {} ({}), got process {}",
+                expected_bundle, expected_pid, actual_pid
+            ));
+        }
+        Ok(())
+    }
+
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    {
+        let _ = (expected_bundle, expected_pid);
+        Err("Computer Use native target validation is unsupported on this platform".to_string())
+    }
+}
+
 fn handle(method: &str, params: &Value) -> Result<Value, String> {
     match method {
         "ping" => Ok(json!({ "pong": true })),
 
         // ── Accessibility (AXUIElement) family — reuses src-tauri's
         // Tauri-free `*_impl` code via `ax` module (see src/ax.rs). ──
+
+        "resolve_app_identity" => {
+            #[cfg(target_os = "macos")]
+            {
+                let name = require_str(params, "app_name")?;
+                let identity = ax::resolve_app_identity_impl(name)?;
+                serde_json::to_value(identity).map_err(|e| format!("serialize failed: {e}"))
+            }
+            #[cfg(not(target_os = "macos"))]
+            {
+                Err("App identity resolution is macOS-only".to_string())
+            }
+        }
 
         "activate_app" => {
             #[cfg(target_os = "macos")]
@@ -188,6 +258,7 @@ fn handle(method: &str, params: &Value) -> Result<Value, String> {
         }
 
         "mouse_move" => {
+            assert_expected_target(params)?;
             let mut enigo =
                 Enigo::new(&Settings::default()).map_err(|e| format!("enigo init failed: {e}"))?;
             // Current position — also the default target, so an argument-less call
@@ -206,6 +277,9 @@ fn handle(method: &str, params: &Value) -> Result<Value, String> {
         // origin_x, origin_y} — NOT the old {width, height, path}-to-disk shape
         // this arm used to return before the cu module reuse). ──
         "capture_screen" => {
+            if params.get("expected_bundle_id").is_some() {
+                assert_expected_target(params)?;
+            }
             let x = opt_i32(params, "x");
             let y = opt_i32(params, "y");
             let width = opt_u32(params, "width");
@@ -216,6 +290,9 @@ fn handle(method: &str, params: &Value) -> Result<Value, String> {
         }
 
         "capture_screen_excluding" => {
+            if params.get("expected_bundle_id").is_some() {
+                assert_expected_target(params)?;
+            }
             let exclude_window_id = require_u32(params, "exclude_window_id")?;
             let x = opt_i32(params, "x");
             let y = opt_i32(params, "y");
@@ -253,16 +330,13 @@ fn handle(method: &str, params: &Value) -> Result<Value, String> {
             serde_json::to_value(perms).map_err(|e| format!("serialize failed: {e}"))
         }
 
-        "request_screen_recording" => {
-            let granted = cu::request_screen_recording_impl();
-            Ok(json!(granted))
-        }
-
         "mouse_click" => {
             let x = require_i32(params, "x")?;
             let y = require_i32(params, "y")?;
             let button = opt_str(params, "button");
-            let msg = cu::mouse_click_impl(x, y, button)?;
+            let msg = cu::mouse_click_guarded_impl(x, y, button, || {
+                assert_expected_target(params)
+            })?;
             Ok(json!(msg))
         }
 
@@ -271,7 +345,9 @@ fn handle(method: &str, params: &Value) -> Result<Value, String> {
             let y = require_i32(params, "y")?;
             let direction = require_str(params, "direction")?;
             let amount = opt_i32(params, "amount");
-            let msg = cu::mouse_scroll_impl(x, y, direction, amount)?;
+            let msg = cu::mouse_scroll_guarded_impl(x, y, direction, amount, || {
+                assert_expected_target(params)
+            })?;
             Ok(json!(msg))
         }
 
@@ -280,20 +356,24 @@ fn handle(method: &str, params: &Value) -> Result<Value, String> {
             let start_y = require_i32(params, "start_y")?;
             let end_x = require_i32(params, "end_x")?;
             let end_y = require_i32(params, "end_y")?;
-            let msg = cu::mouse_drag_impl(start_x, start_y, end_x, end_y)?;
+            let msg = cu::mouse_drag_guarded_impl(start_x, start_y, end_x, end_y, || {
+                assert_expected_target(params)
+            })?;
             Ok(json!(msg))
         }
 
         "keyboard_type" => {
             let text = require_str(params, "text")?;
-            let msg = cu::keyboard_type_impl(text)?;
+            let msg = cu::keyboard_type_guarded_impl(text, || assert_expected_target(params))?;
             Ok(json!(msg))
         }
 
         "keyboard_press" => {
             let key = require_str(params, "key")?;
             let modifiers = opt_str_vec(params, "modifiers");
-            let msg = cu::keyboard_press_impl(key, modifiers)?;
+            let msg = cu::keyboard_press_guarded_impl(key, modifiers, || {
+                assert_expected_target(params)
+            })?;
             Ok(json!(msg))
         }
 

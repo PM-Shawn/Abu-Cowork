@@ -2,6 +2,10 @@
 
 const path = require('node:path');
 const { fileURLToPath, pathToFileURL } = require('node:url');
+const {
+  COMPUTER_USE_TOKEN_ARG,
+  COMPUTER_USE_PRIVILEGED_COMMANDS,
+} = require('./computerUseCommands.cjs');
 
 const EXTERNAL_PROTOCOLS = new Set(['http:', 'https:', 'mailto:']);
 const RAW_BODY_COMMANDS = new Set([
@@ -375,6 +379,14 @@ function assertWindowEventAllowed(record, cmd, args) {
   }
 }
 
+function assertComputerUseEnvelope(cmd, args) {
+  if (!COMPUTER_USE_PRIVILEGED_COMMANDS.has(cmd)) return;
+  const token = args?.[COMPUTER_USE_TOKEN_ARG];
+  if (typeof token !== 'string' || token.length < 16 || token.length > 256) {
+    throw new Error(`Computer Use command ${cmd} requires an authorization token`);
+  }
+}
+
 function bodyByteLength(body) {
   if (body instanceof ArrayBuffer) return body.byteLength;
   if (ArrayBuffer.isView(body)) return body.byteLength;
@@ -405,6 +417,7 @@ function validateInvokePayload(record, payload) {
     assertJsonValue(args, jsonValidationState(cmd, args), 0, '');
   }
   assertWindowEventAllowed(record, cmd, args);
+  assertComputerUseEnvelope(cmd, args);
   if (
     cmd === 'plugin:path|resolve_directory' &&
     (!Number.isInteger(args?.directory) || !BASE_DIRECTORY_VALUES.has(args.directory))

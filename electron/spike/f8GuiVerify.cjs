@@ -49,7 +49,7 @@
 const { app, BrowserWindow } = require('electron');
 const path = require('node:path');
 const { registerTauriHost, wireWindowEvents } = require('../tauriHost.cjs');
-const { hasTray } = require('../guiHost.cjs');
+const { hasTray, showMainWindowFromTray } = require('../guiHost.cjs');
 const { registerPrivilegedWindow } = require('../securityBoundary.cjs');
 
 app.on('window-all-closed', () => app.quit());
@@ -119,6 +119,16 @@ app.whenReady().then(async () => {
     record('update_tray_menu', false, String(err));
   }
 
+  // A tray click must only restore the Abu window. It must not override the
+  // user's Dock visibility/activation state.
+  if (process.platform === 'darwin' && app.dock) {
+    await app.dock.hide();
+    showMainWindowFromTray();
+    await sleep(150);
+    record('tray restore does not force the Dock icon visible', !app.dock.isVisible());
+    await app.dock.show();
+  }
+
   // ── window_info: get_abu_window_id ─────────────────────────────────────
   try {
     const id = await invokeIn('get_abu_window_id');
@@ -145,12 +155,19 @@ app.whenReady().then(async () => {
   // ── Overlay: show_screen_border ─────────────────────────────────────────
   try {
     const before = BrowserWindow.getAllWindows().length;
+    const dockWasVisible = process.platform === 'darwin' && app.dock ? app.dock.isVisible() : null;
     await invokeIn('show_screen_border', { stopLabel: '停止' });
     const gotTwo = await waitUntil(() => BrowserWindow.getAllWindows().length >= before + 2);
     record('show_screen_border creates overlay+stop-button windows', gotTwo, {
       before,
       after: BrowserWindow.getAllWindows().length,
     });
+    if (dockWasVisible !== null) {
+      record('screen overlay preserves Dock visibility', app.dock.isVisible() === dockWasVisible, {
+        before: dockWasVisible,
+        after: app.dock.isVisible(),
+      });
+    }
 
     const overlayId = await invokeIn('get_overlay_window_id');
     record('get_overlay_window_id returns an id', typeof overlayId === 'number' && overlayId > 0, overlayId, true);
@@ -247,6 +264,7 @@ app.whenReady().then(async () => {
   let petWin = null;
   try {
     const before = BrowserWindow.getAllWindows();
+    const dockWasVisible = process.platform === 'darwin' && app.dock ? app.dock.isVisible() : null;
     await invokeIn('pet_show');
     const appeared = await waitUntil(() => BrowserWindow.getAllWindows().length > before.length);
     petWin = BrowserWindow.getAllWindows().find((w) => !before.includes(w)) || null;
@@ -254,6 +272,12 @@ app.whenReady().then(async () => {
       before: before.length,
       after: BrowserWindow.getAllWindows().length,
     });
+    if (dockWasVisible !== null) {
+      record('pet window preserves Dock visibility', app.dock.isVisible() === dockWasVisible, {
+        before: dockWasVisible,
+        after: app.dock.isVisible(),
+      });
+    }
   } catch (err) {
     record('pet_show', false, String(err));
   }

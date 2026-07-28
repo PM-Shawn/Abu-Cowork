@@ -1,0 +1,138 @@
+{
+  "macos": {
+    "hardDeny": [
+      "com.apple.keychainaccess",
+      "com.apple.systempreferences",
+      "com.apple.systemsettings",
+      "com.apple.ActivityMonitor",
+      "com.apple.DiskUtility",
+      "com.apple.Terminal",
+      "com.googlecode.iterm2",
+      "com.apple.dt.Xcode",
+      "com.microsoft.VSCode",
+      "com.microsoft.VSCodeInsiders",
+      "dev.warp.Warp",
+      "com.github.alacritty",
+      "com.1password.1password",
+      "com.bitwarden.desktop",
+      "com.lastpass.LastPass",
+      "com.dashlane.Dashlane"
+    ],
+    "approvalRequired": [
+      "com.apple.Safari",
+      "com.google.Chrome",
+      "com.google.Chrome.canary",
+      "com.microsoft.edgemac",
+      "company.thebrowser.Browser",
+      "com.brave.Browser",
+      "com.vivaldi.Vivaldi",
+      "com.operasoftware.Opera",
+      "com.tencent.xinWeChat",
+      "com.apple.MobileSMS",
+      "com.apple.mail",
+      "com.microsoft.Outlook",
+      "com.tinyspeck.slackmacgap",
+      "us.zoom.xos",
+      "com.hnc.Discord",
+      "com.electron.lark",
+      "com.alibaba.DingTalkMac",
+      "ru.keepcoder.Telegram"
+    ],
+    "ordinaryAllow": [
+      "com.apple.finder",
+      "com.apple.Notes",
+      "com.apple.TextEdit",
+      "com.apple.Preview",
+      "com.apple.calculator",
+      "com.apple.iWork.Pages",
+      "com.apple.iWork.Numbers",
+      "com.apple.iWork.Keynote",
+      "com.microsoft.Word",
+      "com.microsoft.Excel",
+      "com.microsoft.Powerpoint"
+    ]
+  },
+  "windows": {
+    "hardDeny": [
+      "cmd",
+      "cmd.exe",
+      "powershell",
+      "powershell.exe",
+      "windowsterminal",
+      "windowsterminal.exe",
+      "pwsh",
+      "pwsh.exe",
+      "regedit",
+      "regedit.exe",
+      "taskmgr",
+      "taskmgr.exe",
+      "mmc",
+      "mmc.exe",
+      "credentialmanager",
+      "code",
+      "code.exe",
+      "1password",
+      "1password.exe",
+      "bitwarden",
+      "bitwarden.exe"
+    ],
+    "approvalRequired": [
+      "chrome",
+      "chrome.exe",
+      "msedge",
+      "msedge.exe",
+      "firefox",
+      "firefox.exe",
+      "brave",
+      "brave.exe",
+      "opera",
+      "opera.exe",
+      "wechat",
+      "wechat.exe",
+      "outlook",
+      "outlook.exe",
+      "slack",
+      "slack.exe",
+      "lark",
+      "lark.exe",
+      "dingtalk",
+      "dingtalk.exe",
+      "telegram",
+      "telegram.exe",
+      "discord",
+      "discord.exe"
+    ],
+    "ordinaryAllow": [
+      "explorer",
+      "explorer.exe",
+      "calculator",
+      "calculator.exe",
+      "calculatorapp",
+      "calculatorapp.exe",
+      "notepad",
+      "notepad.exe",
+      "winword",
+      "winword.exe",
+      "excel",
+      "excel.exe",
+      "powerpnt",
+      "powerpnt.exe",
+      "mspaint",
+      "mspaint.exe"
+    ]
+  },
+  "modePolicy": {
+    "standard": {
+      "ordinary": "confirm",
+      "approval-required": "confirm"
+    },
+    "smart": {
+      "ordinary": "allow",
+      "approval-required": "confirm"
+    },
+    "autonomous": {
+      "ordinary": "allow",
+      "approval-required": "confirm"
+    }
+  }
+}

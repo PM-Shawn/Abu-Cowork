@@ -52,8 +52,9 @@ if (allowE2EAppDataRedirect && Object.hasOwn(process.env, E2E_APP_DATA_ROOT_ENV)
   app.setPath('appData', appDataRoot);
 }
 
-// Isolate this dev shell's user-data dir from any other Electron/Abu app.
-app.setName('abu-electron-dev');
+// Keep local Electron development isolated while giving packaged builds the
+// exact product identity used by Safe Storage and the user-data directory.
+app.setName(app.isPackaged ? 'Abu' : 'abu-electron-dev');
 
 function log(level, msg, extra) {
   const line = `[electron:${level}] ${msg}${extra ? ' ' + JSON.stringify(extra) : ''}`;

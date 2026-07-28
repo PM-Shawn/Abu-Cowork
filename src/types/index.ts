@@ -400,6 +400,13 @@ export interface ToolExecutionContext {
   /** Tool call ID — injected by toolExecutor; lets a tool locate itself and key per-call state (e.g. run_agent_batch progress) */
   toolCallId?: string;
   /**
+   * Whether this tool belongs to a user-visible desktop task. Background,
+   * scheduled, trigger and IM runs must never open local setup/approval UI.
+   */
+  interactionMode?: 'foreground' | 'background';
+  /** Effective three-tier permission mode for this conversation. */
+  permissionMode?: import('../core/permissions/permissionMode').PermissionMode;
+  /**
    * Whether the active model supports vision/image input, resolved from the
    * turn's model capabilities. When explicitly `false`, tools that would emit
    * image content (e.g. read_file on an image) must return a text note instead

@@ -204,6 +204,18 @@ pub fn mouse_click_impl(
     y: i32,
     button: Option<String>,
 ) -> Result<String, String> {
+    mouse_click_guarded_impl(x, y, button, || Ok(()))
+}
+
+pub fn mouse_click_guarded_impl<F>(
+    x: i32,
+    y: i32,
+    button: Option<String>,
+    mut verify_target: F,
+) -> Result<String, String>
+where
+    F: FnMut() -> Result<(), String>,
+{
     let mut enigo = Enigo::new(&Settings::default())
         .map_err(|e| format!("Enigo init failed: {}", e))?;
 
@@ -213,6 +225,7 @@ pub fn mouse_click_impl(
 
     // HID settle delay — let OS register the move before clicking
     std::thread::sleep(std::time::Duration::from_millis(100));
+    verify_target()?;
 
     let btn = match button.as_deref().unwrap_or("left") {
         "right" => EnigoButton::Right,
@@ -227,6 +240,7 @@ pub fn mouse_click_impl(
             .button(EnigoButton::Left, Direction::Click)
             .map_err(|e| format!("Click failed: {}", e))?;
         std::thread::sleep(std::time::Duration::from_millis(100));
+        verify_target()?;
         enigo
             .button(EnigoButton::Left, Direction::Click)
             .map_err(|e| format!("Click failed: {}", e))?;
@@ -242,9 +256,17 @@ pub fn mouse_click_impl(
 /// Type a text string via simulated keyboard input.
 /// Runs synchronously on the main thread — Enigo/TSM APIs require main dispatch queue on macOS.
 pub fn keyboard_type_impl(text: String) -> Result<String, String> {
+    keyboard_type_guarded_impl(text, || Ok(()))
+}
+
+pub fn keyboard_type_guarded_impl<F>(text: String, mut verify_target: F) -> Result<String, String>
+where
+    F: FnMut() -> Result<(), String>,
+{
     let mut enigo = Enigo::new(&Settings::default())
         .map_err(|e| format!("Enigo init failed: {}", e))?;
 
+    verify_target()?;
     enigo
         .text(&text)
         .map_err(|e| format!("Keyboard type failed: {}", e))?;
@@ -258,6 +280,17 @@ pub fn keyboard_press_impl(
     key: String,
     modifiers: Option<Vec<String>>,
 ) -> Result<String, String> {
+    keyboard_press_guarded_impl(key, modifiers, || Ok(()))
+}
+
+pub fn keyboard_press_guarded_impl<F>(
+    key: String,
+    modifiers: Option<Vec<String>>,
+    mut verify_target: F,
+) -> Result<String, String>
+where
+    F: FnMut() -> Result<(), String>,
+{
     let mut enigo = Enigo::new(&Settings::default())
         .map_err(|e| format!("Enigo init failed: {}", e))?;
 
@@ -267,6 +300,7 @@ pub fn keyboard_press_impl(
     let mut pressed_keys: Vec<Key> = Vec::new();
 
     let result = (|| -> Result<(), String> {
+        verify_target()?;
         // Press modifiers down
         for m in &mods {
             let k = parse_modifier(m)?;
@@ -277,6 +311,7 @@ pub fn keyboard_press_impl(
         }
 
         // Press and release the main key
+        verify_target()?;
         let main_key = parse_key(&key)?;
         enigo
             .key(main_key, Direction::Click)
@@ -309,6 +344,19 @@ pub fn mouse_scroll_impl(
     direction: String,
     amount: Option<i32>,
 ) -> Result<String, String> {
+    mouse_scroll_guarded_impl(x, y, direction, amount, || Ok(()))
+}
+
+pub fn mouse_scroll_guarded_impl<F>(
+    x: i32,
+    y: i32,
+    direction: String,
+    amount: Option<i32>,
+    mut verify_target: F,
+) -> Result<String, String>
+where
+    F: FnMut() -> Result<(), String>,
+{
     let mut enigo = Enigo::new(&Settings::default())
         .map_err(|e| format!("Enigo init failed: {}", e))?;
 
@@ -317,6 +365,7 @@ pub fn mouse_scroll_impl(
         .move_mouse(x, y, Coordinate::Abs)
         .map_err(|e| format!("Mouse move failed: {}", e))?;
     std::thread::sleep(std::time::Duration::from_millis(100));
+    verify_target()?;
 
     let ticks = amount.unwrap_or(3);
     let (axis, value) = match direction.as_str() {
@@ -342,6 +391,19 @@ pub fn mouse_drag_impl(
     end_x: i32,
     end_y: i32,
 ) -> Result<String, String> {
+    mouse_drag_guarded_impl(start_x, start_y, end_x, end_y, || Ok(()))
+}
+
+pub fn mouse_drag_guarded_impl<F>(
+    start_x: i32,
+    start_y: i32,
+    end_x: i32,
+    end_y: i32,
+    mut verify_target: F,
+) -> Result<String, String>
+where
+    F: FnMut() -> Result<(), String>,
+{
     use std::time::Duration;
 
     let mut enigo = Enigo::new(&Settings::default())
@@ -352,6 +414,7 @@ pub fn mouse_drag_impl(
         .move_mouse(start_x, start_y, Coordinate::Abs)
         .map_err(|e| format!("Mouse move failed: {}", e))?;
     std::thread::sleep(Duration::from_millis(100));
+    verify_target()?;
 
     // Press mouse button
     enigo

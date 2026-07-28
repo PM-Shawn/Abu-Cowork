@@ -47,5 +47,11 @@ objc2-core-graphics = "0.3"
 # call tokio::time::sleep. "time" is enough; no runtime is started here.
 tokio = { version = "1", features = ["time"] }
 
+[target.'cfg(target_os = "windows")'.dependencies]
+windows = { version = "0.58", features = [
+  "Win32_Foundation",
+  "Win32_UI_WindowsAndMessaging",
+] }
+
 [profile.release]
 opt-level = 1

@@ -17,13 +17,10 @@ tags:
 
 ## 连接
 
-1. 调用 `manage_mcp_server(action: "ensure", name: "abu-browser-bridge")`。
-2. 如果返回已连接，调用 `abu-browser-bridge__connection_status` 确认扩展就绪。
-3. 如果扩展未连接，使用返回的 `extensionPath` 打开扩展文件夹，并用非技术语言引导用户：
-   - 在 Chrome 地址栏打开 `chrome://extensions`
-   - 打开“开发者模式”
-   - 将扩展文件夹拖入该页面
-4. 用户确认后再次检查连接，然后继续原始任务。
+1. 先调用 `manage_mcp_server(action: "ensure", name: "abu-browser-bridge")`，让阿布检查内置连接组件。不要向用户解释 MCP、启动命令或安装包。
+2. 如果返回结果说明用户已关闭该能力或需要设置，立即调用 `manage_mcp_server(action: "open_setup", name: "abu-browser-bridge")`，暂停当前浏览器动作，并等待用户在引导页明确点击“连接 Chrome”。不要自行重新开启。
+3. 连接组件就绪后，调用 `abu-browser-bridge__connection_status` 确认 Chrome 扩展是否就绪；如果扩展未连接，同样打开“我的 Chrome”安装引导并暂停。
+4. 用户确认完成后再次检查连接；连接成功就从原任务中断处继续，不要让用户重新描述需求。
 
 ## 操作
 

@@ -3,16 +3,18 @@ import { desktopDir } from '@tauri-apps/api/path';
 import { writeText as clipboardWriteText, readText as clipboardReadText } from '@tauri-apps/plugin-clipboard-manager';
 import { invoke } from '@tauri-apps/api/core';
 import type { ToolDefinition, ToolResult, ToolResultContent } from '../../../types';
-import { useSettingsStore } from '../../../stores/settingsStore';
 import { getSettingsReader } from '../../agent/ports/settingsReader';
 import { useWorkspaceStore } from '../../../stores/workspaceStore';
+import { useChatStore } from '../../../stores/chatStore';
 import { resolveCapabilities } from '../../llm/modelCapabilities';
 import { joinPath } from '../../../utils/pathUtils';
 import { isMacOS, isWindows } from '../../../utils/platform';
 import { TOOL_NAMES } from '../toolNames';
 import { updateLatestScreenshot, checkCUSessionLimits } from '../../agent/computerUseStatus';
 import { checkSensitiveApp, checkBlockedKeyCombo } from '../computerUseSafety';
+import { requestCapabilitySetup } from '../../capabilityPlugins/setupBridge';
 import { getI18n, format } from '../../../i18n';
+import { hasElectronCommandHost } from '../../../utils/electronHost';
 
 // Screenshot→global-point mapping. `lastScreenScaleFactor` is points-per-screenshot-pixel
 // and `lastScreenOrigin` is the captured display's top-left in global logical points.
@@ -36,6 +38,51 @@ let skipAutoScreenshot = false;
 // multiple click/type/perform_action calls within the same turn.
 let currentAxSessionId: string | null = null;
 let currentAxElements: AxElement[] = [];
+let currentComputerUseToken: string | null = null;
+let currentComputerUseAbortSignal: AbortSignal | null = null;
+
+const COMPUTER_USE_TOKEN_ARG = '__abuComputerUseToken';
+
+function computerUseAbortError(): DOMException {
+  return new DOMException('Computer Use was stopped', 'AbortError');
+}
+
+function assertComputerUseNotAborted(signal = currentComputerUseAbortSignal): void {
+  if (signal?.aborted) throw computerUseAbortError();
+}
+
+async function abortableDelay(
+  ms: number,
+  signal = currentComputerUseAbortSignal,
+): Promise<void> {
+  assertComputerUseNotAborted(signal);
+  if (!signal) {
+    await new Promise((resolve) => setTimeout(resolve, ms));
+    return;
+  }
+  await new Promise<void>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      signal.removeEventListener('abort', onAbort);
+      resolve();
+    }, ms);
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(computerUseAbortError());
+    };
+    signal.addEventListener('abort', onAbort, { once: true });
+  });
+}
+
+interface ComputerUseSessionResult {
+  token: string;
+  target: {
+    app_name: string;
+    bundle_id: string;
+    process_id: number | null;
+  };
+  classification: 'ordinary' | 'approval-required' | 'hard-deny';
+  expires_at: number;
+}
 
 interface AxElement {
   id: number;
@@ -62,6 +109,89 @@ interface ScreenshotResult {
   scale_factor: number;
   origin_x?: number;
   origin_y?: number;
+}
+
+async function invokeComputerUse<T>(
+  command: string,
+  args: Record<string, unknown> = {},
+): Promise<T> {
+  if (!hasElectronCommandHost()) return invoke<T>(command, args);
+  if (!currentComputerUseToken) {
+    throw new Error('Computer Use session is not authorized');
+  }
+  assertComputerUseNotAborted();
+  return invoke<T>(command, {
+    ...args,
+    [COMPUTER_USE_TOKEN_ARG]: currentComputerUseToken,
+  });
+}
+
+function explicitTargetApp(input: Record<string, unknown>): string | null {
+  const target = (input.app as string | undefined)
+    ?? (input.app_name as string | undefined);
+  return target?.trim() || null;
+}
+
+async function beginComputerUseSession(
+  input: Record<string, unknown>,
+  context: Parameters<ToolDefinition['execute']>[1],
+  scope: 'screen-read' | 'ui-control',
+): Promise<void> {
+  if (!hasElectronCommandHost()) return;
+  if (!context?.conversationId || !context.toolCallId || context.interactionMode !== 'foreground') {
+    throw new Error('Computer Use is only available in a visible foreground task');
+  }
+  assertComputerUseNotAborted(context.abortSignal);
+  const currentConversationMode = context.conversationId
+    ? useChatStore.getState().conversations[context.conversationId]?.permissionMode
+    : undefined;
+  const session = await invoke<ComputerUseSessionResult>('computer_use_begin_session', {
+    conversationId: context.conversationId,
+    toolCallId: context.toolCallId,
+    loopId: context.loopId ?? null,
+    interactionMode: context.interactionMode,
+    scope,
+    targetApp: explicitTargetApp(input),
+    permissionMode: currentConversationMode
+      ?? context.permissionMode
+      ?? getSettingsReader().getSnapshot().permissionMode,
+  });
+  currentComputerUseToken = session.token;
+  currentComputerUseAbortSignal = context.abortSignal ?? null;
+  if (currentComputerUseAbortSignal?.aborted) {
+    currentComputerUseToken = null;
+    currentComputerUseAbortSignal = null;
+    try {
+      await invoke('computer_use_end_session', {
+        [COMPUTER_USE_TOKEN_ARG]: session.token,
+      });
+    } catch {
+      // The task-level abort cleanup remains authoritative.
+    }
+    throw computerUseAbortError();
+  }
+}
+
+async function endComputerUseSession(): Promise<void> {
+  if (!hasElectronCommandHost() || !currentComputerUseToken) return;
+  const token = currentComputerUseToken;
+  currentComputerUseToken = null;
+  currentComputerUseAbortSignal = null;
+  try {
+    await invoke('computer_use_end_session', {
+      [COMPUTER_USE_TOKEN_ARG]: token,
+    });
+  } catch {
+    // Main-process TTL and sender cleanup remain authoritative.
+  }
+}
+
+export async function endComputerUseTask(
+  conversationId: string,
+  loopId: string,
+): Promise<void> {
+  if (!hasElectronCommandHost()) return;
+  await invoke('computer_use_end_task', { conversationId, loopId });
 }
 
 /** Record the screenshot's scale + origin so toScreenCoords maps clicks correctly. */
@@ -122,10 +252,10 @@ async function typeViaKeyboard(text: string): Promise<string> {
     try { savedClipboard = await clipboardReadText(); } catch { /* empty clipboard */ }
     try {
       await clipboardWriteText(text);
-      await new Promise(r => setTimeout(r, 50));
+      await abortableDelay(50);
       const pasteModifier = isMacOS() ? 'meta' : 'ctrl';
-      await invoke<string>('keyboard_press', { key: 'v', modifiers: [pasteModifier] });
-      await new Promise(r => setTimeout(r, 150));
+      await invokeComputerUse<string>('keyboard_press', { key: 'v', modifiers: [pasteModifier] });
+      await abortableDelay(150);
     } finally {
       if (savedClipboard != null) {
         try { await clipboardWriteText(savedClipboard); } catch { /* ignore */ }
@@ -133,7 +263,7 @@ async function typeViaKeyboard(text: string): Promise<string> {
     }
     return `Typed (via paste): ${text} (${text.length} chars)`;
   } else {
-    await invoke<string>('keyboard_type', { text });
+    await invokeComputerUse<string>('keyboard_type', { text });
     return `Typed: ${text} (${text.length} chars)`;
   }
 }
@@ -156,7 +286,7 @@ function toScreenCoords(x: number, y: number): { x: number; y: number } {
  */
 async function takeAutoScreenshot(): Promise<ToolResultContent[]> {
   // Wait for UI to settle after the action (e.g. click animation, page load)
-  await new Promise(r => setTimeout(r, AUTO_SCREENSHOT_DELAY_MS));
+  await abortableDelay(AUTO_SCREENSHOT_DELAY_MS);
 
   try {
     const excludeId = await getExcludeWindowId();
@@ -165,7 +295,7 @@ async function takeAutoScreenshot(): Promise<ToolResultContent[]> {
 
     if (excludeId != null && !computerUseBatchMode) {
       // Exclusion mode: Abu is visible, exclude from screenshot (+ overlay if present)
-      result = await invoke('capture_screen_excluding', {
+      result = await invokeComputerUse<ScreenshotResult>('capture_screen_excluding', {
         excludeWindowId: excludeId,
         x: null, y: null, width: null, height: null,
         maxWidth: SCREENSHOT_MAX_WIDTH,
@@ -173,7 +303,7 @@ async function takeAutoScreenshot(): Promise<ToolResultContent[]> {
       });
     } else {
       // Batch mode: Abu window is already hidden by toolExecutor, use regular capture
-      result = await invoke('capture_screen', {
+      result = await invokeComputerUse<ScreenshotResult>('capture_screen', {
         x: null, y: null, width: null, height: null,
         maxWidth: SCREENSHOT_MAX_WIDTH,
       });
@@ -259,7 +389,7 @@ async function captureWithExclusion(abuWindowId: number, input: Record<string, u
   // Crop coords (input.x/y/...) are display-relative LOGICAL POINTS: screenshot-coord ×
   // points-per-pixel. Rust converts back to pixels via the display backing scale.
   const anchor = currentAxAnchor();
-  const result = await invoke<ScreenshotResult>('capture_screen_excluding', {
+  const result = await invokeComputerUse<ScreenshotResult>('capture_screen_excluding', {
     excludeWindowId: abuWindowId,
     x: input.x != null ? Math.round((input.x as number) * lastScreenScaleFactor) : null,
     y: input.y != null ? Math.round((input.y as number) * lastScreenScaleFactor) : null,
@@ -276,10 +406,10 @@ async function captureWithExclusion(abuWindowId: number, input: Record<string, u
 /** Fallback: hide Abu window → capture → show window. Used on Windows or when exclusion fails. */
 async function captureWithWindowHide(input: Record<string, unknown>, workspacePath: string | null | undefined): Promise<ToolResult> {
   try { await invoke('window_hide'); } catch { /* ignore */ }
-  await new Promise(r => setTimeout(r, 300));
+  await abortableDelay(300);
 
   try {
-    const result = await invoke<ScreenshotResult>('capture_screen', {
+    const result = await invokeComputerUse<ScreenshotResult>('capture_screen', {
       x: input.x != null ? Math.round((input.x as number) * lastScreenScaleFactor) : null,
       y: input.y != null ? Math.round((input.y as number) * lastScreenScaleFactor) : null,
       width: input.width != null ? Math.round((input.width as number) * lastScreenScaleFactor) : null,
@@ -402,13 +532,25 @@ All pixel coordinates use screenshot space (max width ${SCREENSHOT_MAX_WIDTH}px)
     required: ['action'],
   },
   execute: async (input, context): Promise<ToolResult> => {
-    // Auto-enable Computer Use on first call — no need for user to find the toggle
+    const t = getI18n().toolResult.computer;
+
+    if (context?.interactionMode === 'background') {
+      return t.errBackgroundUnavailable;
+    }
+
+    // The user-facing switch is a hard gate. An interactive request can open
+    // the setup surface, but neither the model nor a background task may grant
+    // itself Computer Use.
     if (!getSettingsReader().getSnapshot().computerUseEnabled) {
-      useSettingsStore.getState().setComputerUseEnabled(true);
+      const ready = context
+        ? await requestCapabilitySetup('computer', context)
+        : false;
+      if (!ready || !getSettingsReader().getSnapshot().computerUseEnabled) {
+        return t.errDisabled;
+      }
     }
 
     const action = input.action as string;
-    const t = getI18n().toolResult.computer;
 
     // Whether the active model can understand images. Non-vision models (many
     // Chinese / local models, e.g. GLM, Qwen, MiMo) reject image inputs — sending
@@ -426,7 +568,7 @@ All pixel coordinates use screenshot space (max width ${SCREENSHOT_MAX_WIDTH}px)
     // Wait action — no permission needed
     if (action === 'wait') {
       const ms = Math.min(Math.max((input.duration as number) || 1000, 100), 10000);
-      await new Promise(r => setTimeout(r, ms));
+      await abortableDelay(ms, context?.abortSignal ?? null);
       return `Waited ${ms}ms`;
     }
 
@@ -440,12 +582,30 @@ All pixel coordinates use screenshot space (max width ${SCREENSHOT_MAX_WIDTH}px)
 
     // Check system permissions (macOS) — auto-open Settings if missing
     try {
-      const perms = await invoke<{ screen_recording: boolean; accessibility: boolean }>('check_macos_permissions');
+      let perms = await invoke<{ screen_recording: boolean; accessibility: boolean }>('check_macos_permissions');
 
       // AX-only actions (get_app_state / get_ui / ax_click / ax_type / perform_action) operate
       // entirely through the Accessibility API — they never capture pixels and do NOT need
       // Screen Recording. click/type with element_id take the AX path first too.
       const needsScreenRecording = !isAxAction;
+      const needsAccessibility = isAxAction || action !== 'screenshot';
+      const missingRequiredPermission = (
+        (needsScreenRecording && !perms.screen_recording)
+        || (needsAccessibility && !perms.accessibility)
+      );
+
+      if (missingRequiredPermission && context?.conversationId && context.toolCallId) {
+        const ready = await requestCapabilitySetup('computer', context);
+        if (!ready) return t.errDisabled;
+        perms = await invoke<{ screen_recording: boolean; accessibility: boolean }>('check_macos_permissions');
+        if (
+          (needsScreenRecording && !perms.screen_recording)
+          || (needsAccessibility && !perms.accessibility)
+        ) {
+          return t.errDisabled;
+        }
+      }
+
       if (needsScreenRecording && !perms.screen_recording) {
         // Trigger the system permission dialog (first time shows the dialog,
         // subsequent times it's a no-op). The dialog has an "Open System Settings" button.
@@ -456,7 +616,6 @@ All pixel coordinates use screenshot space (max width ${SCREENSHOT_MAX_WIDTH}px)
       }
 
       // AX actions (and non-screenshot pixel actions) need Accessibility permission.
-      const needsAccessibility = isAxAction || action !== 'screenshot';
       if (needsAccessibility && !perms.accessibility) {
         if (isWindows()) {
           // On Windows accessibility=false means the process is not elevated
@@ -468,8 +627,15 @@ All pixel coordinates use screenshot space (max width ${SCREENSHOT_MAX_WIDTH}px)
         await openMacOSSettings('Accessibility');
         return getI18n().toolResult.computer.errMacOSNeedsAccessibility;
       }
-    } catch {
-      // Non-macOS or FFI unavailable — proceed
+    } catch (e) {
+      // The Electron main process treats the permission probe as part of the
+      // authorization boundary. A missing helper or failed probe must not turn
+      // into an implicit grant.
+      if (hasElectronCommandHost()) {
+        const msg = e instanceof Error ? e.message : String(e);
+        return format(t.errPermissionProbeFailed, { msg });
+      }
+      // Keep the historical Tauri fallback while Electron migration is active.
     }
 
     // Safety checks for interactive actions
@@ -477,9 +643,16 @@ All pixel coordinates use screenshot space (max width ${SCREENSHOT_MAX_WIDTH}px)
       // Check if foreground app is sensitive (with 100ms cache to avoid repeated osascript calls)
       try {
         const activeWin = await invoke<{ app_name: string; bundle_id: string | null }>('get_active_window');
-        const blocked = checkSensitiveApp(activeWin.bundle_id, activeWin.app_name);
+        const blocked = checkSensitiveApp(activeWin.bundle_id, activeWin.app_name, {
+          approvalHandledByHost: hasElectronCommandHost(),
+        });
         if (blocked) return `Error: ${blocked}`;
-      } catch { /* can't check, proceed */ }
+      } catch (e) {
+        if (hasElectronCommandHost()) {
+          const msg = e instanceof Error ? e.message : String(e);
+          return format(t.errTargetIdentityFailed, { msg });
+        }
+      }
 
       // Check for dangerous key combos
       if (action === 'key') {
@@ -488,24 +661,34 @@ All pixel coordinates use screenshot space (max width ${SCREENSHOT_MAX_WIDTH}px)
       }
     }
 
+    try {
+      await beginComputerUseSession(
+        input,
+        context,
+        action === 'screenshot' ? 'screen-read' : 'ui-control',
+      );
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      return format(t.errAuthorizationFailed, { msg });
+    }
+
     // AX actions drive controls directly — no cursor movement, no window hide needed.
     // For click/type with element_id we treat them as AX (no hide); the pixel fallback
     // inside those cases will move the cursor but does not need a separate hide/show
     // cycle because the AX element bounds are already in absolute screen coordinates.
     const needsHideWindow = !computerUseBatchMode && !isAxAction &&
       ['click', 'move', 'scroll', 'drag', 'type', 'key'].includes(action);
-    if (needsHideWindow) {
-      try { await invoke('window_hide'); } catch { /* ignore */ }
-      await new Promise(r => setTimeout(r, 100)); // Let window animate away
-    }
-
-    // Actions that should auto-screenshot after execution (vision models only).
-    // AX-only actions (ax_click / ax_type) excluded — model calls get_app_state to verify.
-    // perform_action included — may change UI state needing visual confirmation.
-    // click / type included regardless of AX/pixel path.
-    const autoScreenshotActions = ['click', 'type', 'key', 'scroll', 'drag', 'perform_action'];
-
     try {
+      if (needsHideWindow) {
+        try { await invoke('window_hide'); } catch { /* ignore */ }
+        await abortableDelay(100); // Let window animate away
+      }
+
+      // Actions that should auto-screenshot after execution (vision models only).
+      // AX-only actions (ax_click / ax_type) excluded — model calls get_app_state to verify.
+      // perform_action included — may change UI state needing visual confirmation.
+      // click / type included regardless of AX/pixel path.
+      const autoScreenshotActions = ['click', 'type', 'key', 'scroll', 'drag', 'perform_action'];
       let actionResult: string;
       switch (action) {
         case 'screenshot':
@@ -520,7 +703,7 @@ All pixel coordinates use screenshot space (max width ${SCREENSHOT_MAX_WIDTH}px)
           const targetApp = (input.app as string | undefined) ?? (input.app_name as string | undefined);
           if (!targetApp) return t.errActivateNeedsApp;
           try {
-            const name = await invoke<string>('activate_app', { appName: targetApp });
+            const name = await invokeComputerUse<string>('activate_app', { appName: targetApp });
             actionResult = format(t.activateSuccess, { name });
           } catch (e) {
             const msg = e instanceof Error ? e.message : String(e);
@@ -542,13 +725,13 @@ All pixel coordinates use screenshot space (max width ${SCREENSHOT_MAX_WIDTH}px)
           // activation — no Apple Events permission needed.
           if (targetApp) {
             try {
-              await invoke('activate_app', { appName: targetApp });
-              await new Promise(r => setTimeout(r, 250));
+              await invokeComputerUse('activate_app', { appName: targetApp });
+              await abortableDelay(250);
             } catch { /* app may not be running yet; ax_snapshot will report */ }
           }
           let axPart: string;
           try {
-            const snap = await invoke<AxSnapshotResult>('ax_snapshot', { appName: targetApp });
+            const snap = await invokeComputerUse<AxSnapshotResult>('ax_snapshot', { appName: targetApp });
             currentAxSessionId = snap.session_id;
             currentAxElements = snap.elements;
             const formatted = formatAxElements(snap.elements);
@@ -587,7 +770,7 @@ All pixel coordinates use screenshot space (max width ${SCREENSHOT_MAX_WIDTH}px)
           if (elemId !== undefined && currentAxSessionId != null) {
             // AX path: try AXPress first (no cursor movement)
             try {
-              await invoke('ax_press', { sessionId: currentAxSessionId, elementId: elemId });
+              await invokeComputerUse('ax_press', { sessionId: currentAxSessionId, elementId: elemId });
               actionResult = format(t.clickAxSuccess, { elemId });
             } catch (e) {
               const msg = e instanceof Error ? e.message : String(e);
@@ -596,12 +779,12 @@ All pixel coordinates use screenshot space (max width ${SCREENSHOT_MAX_WIDTH}px)
               if (elem) {
                 const cx = Math.round(elem.bounds[0] + elem.bounds[2] / 2);
                 const cy = Math.round(elem.bounds[1] + elem.bounds[3] / 2);
-                await invoke<string>('mouse_click', { x: cx, y: cy, button: btn });
+                await invokeComputerUse<string>('mouse_click', { x: cx, y: cy, button: btn });
                 actionResult = format(t.clickAxFallbackCenter, { msg, cx, cy });
               } else if (input.x != null && input.y != null) {
                 // Fallback 2: caller-supplied screenshot-space coords
                 const sc = toScreenCoords(input.x as number, input.y as number);
-                await invoke<string>('mouse_click', { x: sc.x, y: sc.y, button: btn });
+                await invokeComputerUse<string>('mouse_click', { x: sc.x, y: sc.y, button: btn });
                 actionResult = format(t.clickAxFallbackCoords, { msg, x: sc.x, y: sc.y });
               } else {
                 return format(t.errClickAxNoFallback, { msg });
@@ -616,14 +799,14 @@ All pixel coordinates use screenshot space (max width ${SCREENSHOT_MAX_WIDTH}px)
               return t.errClickNeedsCoords;
             }
             const sc = toScreenCoords(input.x as number, input.y as number);
-            actionResult = await invoke<string>('mouse_click', { x: sc.x, y: sc.y, button: btn });
+            actionResult = await invokeComputerUse<string>('mouse_click', { x: sc.x, y: sc.y, button: btn });
           }
           break;
         }
 
         case 'move': {
           const sc = toScreenCoords(input.x as number, input.y as number);
-          actionResult = await invoke<string>('mouse_move', { x: sc.x, y: sc.y });
+          actionResult = await invokeComputerUse<string>('mouse_move', { x: sc.x, y: sc.y });
           break;
         }
 
@@ -639,11 +822,11 @@ All pixel coordinates use screenshot space (max width ${SCREENSHOT_MAX_WIDTH}px)
               // Scroll at element center (AX bounds → screen points, no scale needed)
               const cx = Math.round(elem.bounds[0] + elem.bounds[2] / 2);
               const cy = Math.round(elem.bounds[1] + elem.bounds[3] / 2);
-              await invoke<string>('mouse_scroll', { x: cx, y: cy, direction: dir, amount: amt });
+              await invokeComputerUse<string>('mouse_scroll', { x: cx, y: cy, direction: dir, amount: amt });
               actionResult = format(t.scrollAtElement, { dir, amt: amt ?? 3, elemId, cx, cy });
             } else if (input.x != null && input.y != null) {
               const sc = toScreenCoords(input.x as number, input.y as number);
-              actionResult = await invoke<string>('mouse_scroll', { x: sc.x, y: sc.y, direction: dir, amount: amt });
+              actionResult = await invokeComputerUse<string>('mouse_scroll', { x: sc.x, y: sc.y, direction: dir, amount: amt });
             } else {
               return format(t.errScrollElemNotFound, { elemId });
             }
@@ -652,7 +835,7 @@ All pixel coordinates use screenshot space (max width ${SCREENSHOT_MAX_WIDTH}px)
               return t.errScrollNeedsCoords;
             }
             const sc = toScreenCoords(input.x as number, input.y as number);
-            actionResult = await invoke<string>('mouse_scroll', { x: sc.x, y: sc.y, direction: dir, amount: amt });
+            actionResult = await invokeComputerUse<string>('mouse_scroll', { x: sc.x, y: sc.y, direction: dir, amount: amt });
           }
           break;
         }
@@ -660,7 +843,7 @@ All pixel coordinates use screenshot space (max width ${SCREENSHOT_MAX_WIDTH}px)
         case 'drag': {
           const start = toScreenCoords(input.startX as number, input.startY as number);
           const end = toScreenCoords(input.endX as number, input.endY as number);
-          actionResult = await invoke<string>('mouse_drag', {
+          actionResult = await invokeComputerUse<string>('mouse_drag', {
             startX: start.x, startY: start.y,
             endX: end.x, endY: end.y,
           });
@@ -674,7 +857,7 @@ All pixel coordinates use screenshot space (max width ${SCREENSHOT_MAX_WIDTH}px)
 
           if (elemId !== undefined && currentAxSessionId != null) {
             try {
-              await invoke('ax_set_value', { sessionId: currentAxSessionId, elementId: elemId, text });
+              await invokeComputerUse('ax_set_value', { sessionId: currentAxSessionId, elementId: elemId, text });
               actionResult = format(t.typeAxSuccess, { elemId });
             } catch (e) {
               const msg = e instanceof Error ? e.message : String(e);
@@ -688,7 +871,7 @@ All pixel coordinates use screenshot space (max width ${SCREENSHOT_MAX_WIDTH}px)
         }
 
         case 'key':
-          actionResult = await invoke<string>('keyboard_press', {
+          actionResult = await invokeComputerUse<string>('keyboard_press', {
             key: input.key as string,
             modifiers: (input.modifiers as string[]) || undefined,
           });
@@ -703,7 +886,7 @@ All pixel coordinates use screenshot space (max width ${SCREENSHOT_MAX_WIDTH}px)
             return t.errPerformNoSession;
           }
           try {
-            await invoke('ax_perform_action', {
+            await invokeComputerUse('ax_perform_action', {
               sessionId: currentAxSessionId,
               elementId: elemId,
               actionName,
@@ -723,13 +906,13 @@ All pixel coordinates use screenshot space (max width ${SCREENSHOT_MAX_WIDTH}px)
             return t.errAxClickNoSession;
           }
           try {
-            await invoke('ax_press', { sessionId: currentAxSessionId, elementId: elemId });
+            await invokeComputerUse('ax_press', { sessionId: currentAxSessionId, elementId: elemId });
             actionResult = format(t.axClickSuccess, { elemId });
           } catch (e) {
             const msg = e instanceof Error ? e.message : String(e);
             if (input.x != null && input.y != null) {
               const sc = toScreenCoords(input.x as number, input.y as number);
-              await invoke<string>('mouse_click', { x: sc.x, y: sc.y, button: undefined });
+              await invokeComputerUse<string>('mouse_click', { x: sc.x, y: sc.y, button: undefined });
               actionResult = format(t.axClickFallback, { msg, x: sc.x, y: sc.y });
             } else {
               return format(t.errAxClickFailed, { msg });
@@ -745,7 +928,7 @@ All pixel coordinates use screenshot space (max width ${SCREENSHOT_MAX_WIDTH}px)
             return t.errAxTypeNoSession;
           }
           try {
-            await invoke('ax_set_value', { sessionId: currentAxSessionId, elementId: elemId, text });
+            await invokeComputerUse('ax_set_value', { sessionId: currentAxSessionId, elementId: elemId, text });
             actionResult = format(t.axTypeSuccess, { elemId });
           } catch (e) {
             const msg = e instanceof Error ? e.message : String(e);
@@ -774,6 +957,7 @@ All pixel coordinates use screenshot space (max width ${SCREENSHOT_MAX_WIDTH}px)
 
       return actionResult;
     } finally {
+      await endComputerUseSession();
       // Restore Abu window AFTER everything is done (including auto-screenshot)
       if (needsHideWindow) {
         try { await invoke('window_show'); } catch { /* ignore */ }

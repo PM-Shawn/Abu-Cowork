@@ -10,6 +10,9 @@ import { resolveResource } from '@tauri-apps/api/path';
 import { exists } from '@tauri-apps/plugin-fs';
 import { useMCPStore } from '../../stores/mcpStore';
 import { getI18n, format } from '../../i18n';
+import { hasElectronCommandHost } from '../../utils/electronHost';
+
+export const ELECTRON_CHROME_BRIDGE_COMMAND = 'abu-chrome-bridge-runtime';
 
 export interface MCPRegistryEntry {
   name: string;
@@ -168,7 +171,23 @@ export function searchMCPRegistry(query: string): MCPRegistryEntry[] {
     .filter(({ score }) => score > 0)
     .sort((a, b) => b.score - a.score);
 
-  return scored.map(({ entry }) => entry);
+  return scored.map(({ entry }) => resolveRegistryEntryForHost(entry));
+}
+
+function resolveRegistryEntryForHost(
+  entry: MCPRegistryEntry,
+): MCPRegistryEntry {
+  if (
+    entry.name === 'abu-browser-bridge'
+    && hasElectronCommandHost()
+  ) {
+    return {
+      ...entry,
+      command: ELECTRON_CHROME_BRIDGE_COMMAND,
+      args: [],
+    };
+  }
+  return entry;
 }
 
 /**
@@ -184,6 +203,12 @@ export async function installMCPServer(
   // Check if already configured
   if (store.servers[registryEntry.name]) {
     const entry = store.servers[registryEntry.name];
+    if (entry.config.enabled === false) {
+      return {
+        success: false,
+        message: format(t.mcpDisabled, { name: registryEntry.name }),
+      };
+    }
     if (entry.status === 'connected') {
       return { success: true, message: format(t.mcpConnected, { name: registryEntry.name, count: entry.tools.length }), toolCount: entry.tools.length };
     }
@@ -246,7 +271,44 @@ export async function installMCPServer(
  * Find a registry entry by exact name.
  */
 export function getRegistryEntry(name: string): MCPRegistryEntry | undefined {
-  return BUILTIN_REGISTRY.find((candidate) => candidate.name === name);
+  const entry = BUILTIN_REGISTRY.find((candidate) => candidate.name === name);
+  return entry ? resolveRegistryEntryForHost(entry) : undefined;
+}
+
+/**
+ * Prepare Abu's first-party Chrome bridge before the MCP store starts its
+ * normal auto-connect pass. Electron uses the bundled runtime command; the
+ * legacy Tauri host keeps its existing npx configuration untouched.
+ *
+ * A user's explicit disconnect is preserved (`enabled: false`). New Electron
+ * installs get the service enabled by default so the only remaining setup is
+ * Chrome's own extension confirmation.
+ */
+export function provisionFirstPartyMCPServers(): void {
+  if (!hasElectronCommandHost()) return;
+
+  const entry = getRegistryEntry('abu-browser-bridge');
+  if (!entry) return;
+  const store = useMCPStore.getState();
+  const existing = store.servers[entry.name];
+  if (!existing) {
+    store.addServer({
+      name: entry.name,
+      transport: 'stdio',
+      command: entry.command,
+      args: entry.args,
+      env: entry.env,
+      enabled: true,
+    });
+    return;
+  }
+
+  store.updateServer(entry.name, {
+    transport: 'stdio',
+    command: entry.command,
+    args: entry.args,
+    env: entry.env,
+  });
 }
 
 /**
@@ -334,15 +396,34 @@ async function resolveBundledResource(dirName: string): Promise<string | null> {
     if (resolved && await exists(resolved)) return resolved;
   } catch { /* dev mode fallback */ }
 
-  // Dev mode: try relative paths from Tauri CWD (src-tauri/)
+  // Dev mode: Electron resolves from the repository root, while Tauri resolves
+  // from src-tauri/. Prefer the extension's real build output, then retain the
+  // compatibility copy used by the legacy host.
   const { resolve } = await import('@tauri-apps/api/path');
-  for (const candidate of [`../${dirName}`, dirName]) {
+  const candidates = dirName === 'browser-extension'
+    ? [
+        'abu-chrome-extension/dist',
+        '../abu-chrome-extension/dist',
+        'src-tauri/browser-extension',
+        dirName,
+        `../${dirName}`,
+      ]
+    : [dirName, `../${dirName}`];
+  for (const candidate of candidates) {
     try {
       const p = await resolve(candidate);
       if (p && await exists(p)) return p;
     } catch { /* ignore */ }
   }
   return null;
+}
+
+/** Resolve a registry entry's bundled companion without installing it. */
+export async function resolveMCPCompanionResource(
+  name: string,
+): Promise<string | null> {
+  const dirName = getRegistryEntry(name)?.bundledResourceDir;
+  return dirName ? resolveBundledResource(dirName) : null;
 }
 
 export interface EnsureResult {
@@ -372,7 +453,31 @@ export async function ensureMCPServer(name: string): Promise<EnsureResult> {
 
   // Case 1: already configured
   if (store.servers[name]) {
-    const server = store.servers[name];
+    const configured = store.servers[name];
+    if (configured.config.enabled === false) {
+      return {
+        status: 'needs_config',
+        message: format(t.mcpDisabled, { name }),
+        extensionPath,
+      };
+    }
+    if (
+      entry
+      && entry.name === 'abu-browser-bridge'
+      && entry.command === ELECTRON_CHROME_BRIDGE_COMMAND
+      && (
+        configured.config.command !== entry.command
+        || JSON.stringify(configured.config.args ?? []) !== JSON.stringify(entry.args)
+      )
+    ) {
+      store.updateServer(name, {
+        transport: 'stdio',
+        command: entry.command,
+        args: entry.args,
+        env: entry.env,
+      });
+    }
+    const server = useMCPStore.getState().servers[name];
     if (server.status === 'connected') {
       return {
         status: 'connected',

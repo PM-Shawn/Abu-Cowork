@@ -7,7 +7,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { afterEach, test } = require('node:test');
 
-const { mcpDispatch } = require('./mcpBridge.cjs');
+const { isLegacyChromeBridgeLaunch, mcpDispatch } = require('./mcpBridge.cjs');
 const { REPO_ROOT } = require('./appEnv.cjs');
 
 const app = { isPackaged: false };
@@ -88,6 +88,23 @@ afterEach(() => {
   while (tempDirs.length) {
     fs.rmSync(tempDirs.pop(), { recursive: true, force: true });
   }
+});
+
+test('legacy Chrome bridge npx configs are claimed by the bundled runtime path', () => {
+  assert.equal(
+    isLegacyChromeBridgeLaunch('npx', ['-y', 'abu-browser-bridge@latest']),
+    true,
+  );
+  assert.equal(
+    isLegacyChromeBridgeLaunch('C:\\Program Files\\nodejs\\npx.cmd', [
+      '--package=abu-browser-bridge@0.2.0',
+    ]),
+    true,
+  );
+  assert.equal(
+    isLegacyChromeBridgeLaunch('npx', ['-y', '@playwright/mcp@latest']),
+    false,
+  );
 });
 
 test('MCP bare node runs the standalone bundled Node and stdio remains writable', async () => {

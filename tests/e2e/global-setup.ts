@@ -7,9 +7,11 @@
  *     leave a duplicate sidecar around. Scoped to processes whose command
  *     line contains this worktree's absolute path — never touches another
  *     worktree's or a different app's processes.
- *  2. Rebuilds the sidecar from the current worktree sources so Electron
+ *  2. Prepares the pinned Electron runtimes, built-in browser runtime, and
+ *     native helper used by capability, browser, and Computer Use checks.
+ *  3. Rebuilds the sidecar from the current worktree sources so Electron
  *     never exercises a stale ignored sidecar/index.mjs bundle.
- *  3. Rebuilds dist-electron-spike/ from the current renderer sources so the
+ *  4. Rebuilds dist-electron-spike/ from the current renderer sources so the
  *     Electron shell and sidecar are always tested as one current-source unit.
  *
  * macOS has no `timeout` binary (see feedback-macos-no-timeout-binary in
@@ -48,6 +50,15 @@ function killStray(pattern: string): void {
 export default async function globalSetup(): Promise<void> {
   killStray(`${REPO_ROOT}/electron/main.cjs`);
   killStray(`${REPO_ROOT}/sidecar/index.mjs`);
+
+  console.log('[e2e:global-setup] preparing Electron and browser runtimes...');
+  execSync(
+    'npm run setup:electron-runtimes && npm run verify:electron-runtimes && npm run build:electron-browser-runtime && npm run build:native-helper',
+    {
+      cwd: REPO_ROOT,
+      stdio: 'inherit',
+    },
+  );
 
   console.log('[e2e:global-setup] building sidecar from current sources…');
   execSync('npm run build:sidecar', {

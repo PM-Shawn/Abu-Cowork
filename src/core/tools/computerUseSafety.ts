@@ -7,62 +7,57 @@
  */
 
 import { isMacOS } from '../../utils/platform';
+import policy from './computerUsePolicy.json';
 
 // ─── Sensitive App Blocklist (by bundle ID) ───
 
-/** macOS apps that should not be operated via Computer Use */
-const SENSITIVE_BUNDLE_IDS_MACOS = new Set([
-  // Security & system
-  'com.apple.keychainaccess',          // Keychain Access
-  'com.apple.systempreferences',       // System Preferences (legacy)
-  'com.apple.systemsettings',          // System Settings (macOS 13+)
-  'com.apple.ActivityMonitor',         // Activity Monitor
-  'com.apple.DiskUtility',            // Disk Utility
+const HARD_DENY_MACOS = new Set(policy.macos.hardDeny);
+const APPROVAL_REQUIRED_MACOS = new Set(policy.macos.approvalRequired);
+const HARD_DENY_WINDOWS = new Set(policy.windows.hardDeny.map((value) => value.toLowerCase()));
+const APPROVAL_REQUIRED_WINDOWS = new Set(
+  policy.windows.approvalRequired.map((value) => value.toLowerCase()),
+);
 
-  // Terminals — commands should use run_command tool, not GUI terminal
-  'com.apple.Terminal',
-  'com.googlecode.iterm2',
-  'com.microsoft.VSCodeInsiders',      // VS Code terminal
-  'dev.warp.Warp',
-  'com.github.alacritty',
+export type ComputerUseAppClass = 'ordinary' | 'approval-required' | 'hard-deny' | 'unknown';
 
-  // Communication — risk of sending unintended messages
-  'com.tencent.xinWeChat',             // WeChat
-  'com.apple.MobileSMS',              // Messages
-  'com.apple.mail',                    // Mail
-  'com.microsoft.Outlook',
-  'com.tinyspeck.slackmacgap',        // Slack
-  'us.zoom.xos',                       // Zoom
-  'com.hnc.Discord',                   // Discord
-  'com.electron.lark',                 // Lark/飞书
-  'com.alibaba.DingTalkMac',          // DingTalk/钉钉
-  'ru.keepcoder.Telegram',            // Telegram
-]);
-
-/** Windows process names that should not be operated */
-const SENSITIVE_PROCESS_NAMES_WINDOWS = new Set([
-  // Case-insensitive matching applied in check function
-  'cmd', 'powershell', 'windowsterminal', 'pwsh',
-  'regedit', 'taskmgr', 'mmc',
-  'credentialmanager',
-]);
+export function classifyComputerUseApp(
+  bundleId: string | null | undefined,
+): ComputerUseAppClass {
+  if (!bundleId?.trim()) return 'unknown';
+  if (isMacOS()) {
+    if (HARD_DENY_MACOS.has(bundleId)) return 'hard-deny';
+    if (APPROVAL_REQUIRED_MACOS.has(bundleId)) return 'approval-required';
+    return 'ordinary';
+  }
+  const processName = bundleId.toLowerCase();
+  if (HARD_DENY_WINDOWS.has(processName)) return 'hard-deny';
+  if (APPROVAL_REQUIRED_WINDOWS.has(processName)) return 'approval-required';
+  return 'ordinary';
+}
 
 /**
  * Check if the foreground app is sensitive and should not be operated.
  * Returns error message if blocked, null if allowed.
  */
-export function checkSensitiveApp(bundleId: string | null | undefined, appName: string): string | null {
-  if (!bundleId) return null; // Can't check, allow
-
-  if (isMacOS()) {
-    if (SENSITIVE_BUNDLE_IDS_MACOS.has(bundleId)) {
-      return `安全限制：不允许操控「${appName}」。该应用属于敏感类型（安全/终端/通讯），请使用其他方式完成操作。`;
-    }
-  } else {
-    // Windows: match by process name (case-insensitive)
-    if (SENSITIVE_PROCESS_NAMES_WINDOWS.has(bundleId.toLowerCase())) {
-      return `安全限制：不允许操控「${appName}」。该应用属于敏感类型，请使用其他方式完成操作。`;
-    }
+export function checkSensitiveApp(
+  bundleId: string | null | undefined,
+  appName: string,
+  options?: { approvalHandledByHost?: boolean },
+): string | null {
+  const classification = classifyComputerUseApp(bundleId);
+  if (classification === 'unknown') {
+    // Electron has a main-process identity gate and must fail closed. Keep the
+    // legacy Tauri behavior on platforms where get_active_window historically
+    // returned no process identity, until that path gains an equivalent gate.
+    if (!options?.approvalHandledByHost) return null;
+    return `安全限制：无法确认「${appName || '当前应用'}」的稳定身份，已停止电脑操控。`;
+  }
+  if (classification === 'hard-deny') {
+    return `安全限制：不允许操控「${appName}」。该应用涉及凭据、系统设置或终端，任何权限模式都不能绕过。`;
+  }
+  if (classification === 'approval-required') {
+    if (options?.approvalHandledByHost) return null;
+    return `安全限制：「${appName}」需要单独的应用授权，当前尚未获得授权。`;
   }
 
   return null;

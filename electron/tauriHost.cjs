@@ -29,7 +29,7 @@
  */
 'use strict';
 
-const { ipcMain, nativeTheme, screen, BrowserWindow } = require('electron');
+const { ipcMain, nativeTheme, screen, BrowserWindow, dialog } = require('electron');
 const path = require('node:path');
 const os = require('node:os');
 const fs = require('node:fs');
@@ -45,13 +45,30 @@ const {
 } = require('./fsWatchHost.cjs');
 const { mcpDispatch } = require('./mcpBridge.cjs');
 const { desktopDispatch, DESKTOP_MISS } = require('./desktopHost.cjs');
-const { nativeHelperDispatch, NATIVE_HELPER_MISS } = require('./nativeHelperManager.cjs');
+const {
+  nativeHelperDispatch,
+  NATIVE_HELPER_MISS,
+  killNativeHelper,
+} = require('./nativeHelperManager.cjs');
+const {
+  createComputerUseGate,
+  COMPUTER_USE_GATE_MISS,
+} = require('./computerUseGate.cjs');
 const { ptyDispatch, PTY_MISS } = require('./ptyHost.cjs');
 // browserHost.cjs requires THIS module back (for emitEvent/getMainWindow),
 // but only lazily (inside function bodies, called at dispatch-time, never
 // at module-load-time) — so requiring it eagerly here, same as the other
 // dispatch families, doesn't deadlock on the circular pair.
 const { browserDispatch, BROWSER_MISS, closeAllBrowserViews } = require('./browserHost.cjs');
+const {
+  computerUsePermissionGuideDispatch,
+  COMPUTER_USE_PERMISSION_GUIDE_MISS,
+  teardownComputerUsePermissionGuide,
+} = require('./computerUsePermissionGuide.cjs');
+const {
+  computerUsePermissionHostDispatch,
+  COMPUTER_USE_PERMISSION_HOST_MISS,
+} = require('./computerUsePermissionHost.cjs');
 // guiHost.cjs (GUI-families slice) — same lazy-back-require pattern as
 // browserHost.cjs: it needs emitEvent/getMainWindow/requestAppExit from this
 // module, required lazily inside its own function bodies.
@@ -82,6 +99,7 @@ const {
 // prevent-loop.
 let mainWindow = null;
 let quitting = false;
+let computerUseGate = null;
 
 /** @param {import('electron').BrowserWindow} win */
 function setMainWindow(win) {
@@ -169,6 +187,7 @@ function wireWindowEvents(win) {
     clearSubscriptionsForSender(win.webContents);
     cleanupFsWatchesForSender(win.webContents);
     cleanupGlobalShortcutsForSender(win.webContents);
+    computerUseGate?.revokeSender(win.webContents);
   });
 }
 
@@ -664,6 +683,102 @@ function registerTauriHost(app) {
   // safeStorage is only reliably usable once the app is ready — registerTauriHost
   // itself is only ever called from the app.whenReady() path, so this is safe here.
   initSecretStore(app);
+  computerUseGate = createComputerUseGate({
+    nativeDispatch: async (cmd, args) => {
+      const permissionResult = await computerUsePermissionHostDispatch(cmd);
+      if (permissionResult !== COMPUTER_USE_PERMISSION_HOST_MISS) {
+        return permissionResult;
+      }
+      const result = nativeHelperDispatch(cmd, args);
+      if (result === NATIVE_HELPER_MISS) {
+        throw new Error(`native helper does not own Computer Use command ${cmd}`);
+      }
+      return await result;
+    },
+    getActiveWindow: async () => {
+      const result = await guiDispatch(app, 'get_active_window', {});
+      if (result === GUI_MISS) throw new Error('active-window provider unavailable');
+      return result;
+    },
+    killNativeHelper,
+    requestTaskApproval: async ({ target, mode }) => {
+      const isZh = app.getLocale().toLowerCase().startsWith('zh');
+      const modeLabel = mode === 'autonomous'
+        ? (isZh ? '完全自主' : 'Full Autonomy')
+        : (isZh ? '替我审批' : 'Smart Review');
+      const options = {
+        type: 'warning',
+        title: isZh ? '允许本任务使用电脑操控？' : 'Allow Computer Use for this task?',
+        message: isZh
+          ? `本任务将按「${modeLabel}」模式操作已识别的普通应用`
+          : `This task will use "${modeLabel}" for reviewed ordinary apps`,
+        detail: isZh
+          ? [
+              `当前目标应用：${target.app_name}`,
+              '授权仅对当前任务有效。浏览器、通讯和未知应用仍会单独询问；凭据、系统设置和终端等红线始终禁止。',
+            ].join('\n')
+          : [
+              `Current target: ${target.app_name}`,
+              'Approval applies only to this task. Browsers, communications, and unknown apps still ask separately; credential, system-settings, and terminal red lines remain blocked.',
+            ].join('\n'),
+        buttons: isZh ? ['允许本任务', '取消'] : ['Allow for this task', 'Cancel'],
+        defaultId: 0,
+        cancelId: 1,
+        noLink: true,
+      };
+      const win = getMainWindow();
+      const result = win
+        ? await dialog.showMessageBox(win, options)
+        : await dialog.showMessageBox(options);
+      return result.response === 0;
+    },
+    requestAppApproval: async ({ target, classification, scope, permissionMode }) => {
+      const isZh = app.getLocale().toLowerCase().startsWith('zh');
+      const canControl = scope === 'ui-control';
+      const title = isZh
+        ? (canControl
+          ? `允许 Abu 操作「${target.app_name}」？`
+          : '允许 Abu 查看当前屏幕？')
+        : (canControl
+          ? `Allow Abu to control "${target.app_name}"?`
+          : 'Allow Abu to view the current screen?');
+      const message = isZh
+        ? (canControl
+          ? 'Abu 请求查看并操作这个应用'
+          : 'Abu 请求读取当前屏幕内容')
+        : (canControl
+          ? 'Abu wants to view and control this app'
+          : 'Abu wants to view the current screen');
+      const detail = isZh
+        ? [
+            '授权仅对当前任务有效，任务结束或 Abu 重启后自动失效。',
+            classification === 'approval-required'
+              ? '该应用可能包含网页、通信或其他敏感内容，或尚未被 Abu 明确识别，因此所有权限模式都需要你确认。'
+              : `当前权限模式为「${permissionMode}」，首次操作此应用需要你确认。`,
+          ].join('\n')
+        : [
+            'This permission only applies to the current task and expires when the task ends or Abu restarts.',
+            classification === 'approval-required'
+              ? 'This app may contain web, communication, or other sensitive content, or is not yet explicitly recognized by Abu, so every permission mode requires confirmation.'
+              : `The current permission mode is "${permissionMode}", so first use of this app needs confirmation.`,
+          ].join('\n');
+      const options = {
+        type: 'warning',
+        title,
+        message,
+        detail,
+        buttons: isZh ? ['允许本任务', '取消'] : ['Allow for this task', 'Cancel'],
+        defaultId: 0,
+        cancelId: 1,
+        noLink: true,
+      };
+      const win = getMainWindow();
+      const result = win
+        ? await dialog.showMessageBox(win, options)
+        : await dialog.showMessageBox(options);
+      return result.response === 0;
+    },
+  });
 
   // One-time Tauri→Electron data migration (secrets + conversations/sessions/
   // backups; sentinel-gated). Auto-run is armed ONLY when the packaged app's
@@ -716,6 +831,9 @@ function registerTauriHost(app) {
     // Same no-orphan intent for the GUI-families windows (overlay/stop-button/
     // pet) + the tray icon.
     teardownGuiHost();
+    // The permission coach is a separate always-on-top utility window. Close
+    // and settle any pending setup request before the native helper is killed.
+    teardownComputerUsePermissionGuide();
     // Same no-orphan intent for OS-level global-hotkey bindings — globalShortcut
     // registrations are a process-wide OS resource that outlives a destroyed
     // BrowserWindow, so they must be explicitly released on quit.
@@ -723,6 +841,7 @@ function registerTauriHost(app) {
     // Same no-orphan intent for command trees. Background commands keep their
     // 3s-return behavior, but the registry still owns them for app shutdown.
     teardownCommandHost();
+    computerUseGate?.teardown();
   });
 
   // Tray boot (GUI-families slice) — mirrors src-tauri/src/lib.rs's
@@ -821,8 +940,17 @@ function registerTauriHost(app) {
       // (input synthesis, screen capture, AXUIElement session cache) via
       // nativeHelperManager. Returns a Promise (resolved by the outer await) or
       // NATIVE_HELPER_MISS for anything it doesn't own.
-      const nativeHelperResult = nativeHelperDispatch(cmd, a);
-      if (nativeHelperResult !== NATIVE_HELPER_MISS) return nativeHelperResult;
+      const computerUseResult = await computerUseGate.dispatch(senderRecord, e.sender, cmd, a);
+      if (computerUseResult !== COMPUTER_USE_GATE_MISS) return computerUseResult;
+      // Computer Use permission onboarding is a separate Electron-owned
+      // utility window. The show command intentionally remains pending until
+      // the user completes or cancels setup, while close can arrive through a
+      // concurrent renderer IPC call during task cancellation/unmount.
+      const permissionGuideResult =
+        await computerUsePermissionGuideDispatch(app, cmd, a);
+      if (permissionGuideResult !== COMPUTER_USE_PERMISSION_GUIDE_MISS) {
+        return permissionGuideResult;
+      }
       // Pty family (F6) — pty_spawn/pty_write/pty_resize/pty_kill, backed by
       // a real node-pty child per session (electron/ptyHost.cjs), porting
       // src-tauri/src/pty.rs for the workspace terminal tab. Placed after

@@ -60,15 +60,27 @@ const {
   resolveBrowserRuntimeLaunch,
 } = require('./browserAutomationHost.cjs');
 const {
+  CHROME_BRIDGE_RUNTIME_COMMAND,
+  resolveChromeBridgeRuntimeLaunch,
+} = require('./chromeBridgeHost.cjs');
+const {
   sandboxLauncherPathFor,
   unixDescendantPids,
 } = require('./commandHost.cjs');
 
 /** id -> ChildProcess */
 const children = new Map();
-const pendingBrowserSpawns = new Map();
+const pendingBundledRuntimeSpawns = new Map();
 
 const MCP_CMDS = new Set(['mcp_spawn', 'mcp_write', 'mcp_kill']);
+
+function isLegacyChromeBridgeLaunch(command, args) {
+  if (!/(?:^|[\\/])npx(?:\.cmd)?$/i.test(String(command || ''))) return false;
+  return Array.isArray(args) && args.some((arg) => {
+    const packageName = String(arg).replace(/^--package=/, '');
+    return /^abu-browser-bridge(?:@[^/\\]+)?$/i.test(packageName);
+  });
+}
 
 // Heartbeat constants — mirror sidecarManager.ts's former (now-removed)
 // HEARTBEAT_INTERVAL_MS/HEARTBEAT_TIMEOUT_MS/HEARTBEAT_FAILURE_THRESHOLD/
@@ -317,18 +329,26 @@ function mcpDispatch(appOrCmd, cmdOrArgs, maybeArgs) {
 function mcpSpawn(app, options) {
   const id = options && options.id;
   const command = options && options.command;
-  if (command !== BROWSER_RUNTIME_COMMAND) {
+  const resolveLaunch = command === BROWSER_RUNTIME_COMMAND
+    ? resolveBrowserRuntimeLaunch
+    : (
+        command === CHROME_BRIDGE_RUNTIME_COMMAND
+        || isLegacyChromeBridgeLaunch(command, options && options.args)
+      )
+      ? resolveChromeBridgeRuntimeLaunch
+      : null;
+  if (!resolveLaunch) {
     return mcpSpawnPrepared(app, options || {});
   }
 
   const existing = children.get(id);
-  if ((existing && !existing.killed) || pendingBrowserSpawns.has(id)) {
+  if ((existing && !existing.killed) || pendingBundledRuntimeSpawns.has(id)) {
     return Promise.reject(new Error(`mcp_spawn: a process is already running for id "${id}"`));
   }
 
   const pending = { cancelled: false };
-  pendingBrowserSpawns.set(id, pending);
-  return resolveBrowserRuntimeLaunch(app)
+  pendingBundledRuntimeSpawns.set(id, pending);
+  return resolveLaunch(app, options && options.args)
     .then((launch) => {
       if (pending.cancelled) {
         throw new Error(`mcp_spawn: start was cancelled for id "${id}"`);
@@ -342,8 +362,8 @@ function mcpSpawn(app, options) {
       });
     })
     .finally(() => {
-      if (pendingBrowserSpawns.get(id) === pending) {
-        pendingBrowserSpawns.delete(id);
+      if (pendingBundledRuntimeSpawns.get(id) === pending) {
+        pendingBundledRuntimeSpawns.delete(id);
       }
     });
 }
@@ -547,10 +567,10 @@ function mcpWrite({ id, message }) {
 }
 
 function mcpKill({ id }) {
-  const pending = pendingBrowserSpawns.get(id);
+  const pending = pendingBundledRuntimeSpawns.get(id);
   if (pending) {
     pending.cancelled = true;
-    pendingBrowserSpawns.delete(id);
+    pendingBundledRuntimeSpawns.delete(id);
   }
   killChild(id);
   return null;
@@ -575,4 +595,4 @@ for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
   });
 }
 
-module.exports = { mcpDispatch };
+module.exports = { isLegacyChromeBridgeLaunch, mcpDispatch };

@@ -9,6 +9,7 @@ import Sidebar from '@/components/sidebar/Sidebar';
 import ChatView from '@/components/chat/ChatView';
 import AutomationView from '@/components/automation/AutomationView';
 import SystemSettingsDialog from '@/components/settings/SystemSettingsDialog';
+import CapabilitySetupDialog from '@/components/settings/CapabilitySetupDialog';
 import ToolboxView from '@/components/settings/ToolboxModal';
 import TodoView from '@/components/todos/TodoView';
 import InboxView from '@/components/inbox/InboxView';
@@ -71,6 +72,7 @@ import { loadIMPlugins } from '@/core/im/pluginLoader';
 import { stopAllHeartbeats } from '@/core/im/pluginHeartbeat';
 import { reconcileIMSessions } from '@/core/im/sessionReconcile';
 import { initMCPStoreSync, cleanupMCPStoreSync } from '@/stores/mcpStore';
+import { provisionFirstPartyMCPServers } from '@/core/agent/mcpDiscovery';
 import {
   initBuiltinBrowserRuntime,
   cleanupBuiltinBrowserRuntime,
@@ -329,6 +331,7 @@ function App() {
     registerBuiltinTools();
     installLargeWriteGuard();
     refreshDiscovery();
+    provisionFirstPartyMCPServers();
     initMCPStoreSync();
     initBuiltinBrowserRuntime();
     sendConsolePing();
@@ -756,6 +759,9 @@ function App() {
 
         {/* System settings — overlay dialog, self-gates on systemSettingsOpen */}
         <SystemSettingsDialog />
+
+        {/* Task-local capability setup — suspends the exact requesting tool call. */}
+        <CapabilitySetupDialog />
 
         <CloseDialog
           open={showCloseDialog}

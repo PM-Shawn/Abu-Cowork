@@ -195,6 +195,7 @@ import {
   drainUserQuestions,
 } from './permissionBridge';
 import { clearPlanMode } from './planMode';
+import { drainCapabilitySetupRequests } from '../capabilityPlugins/setupBridge';
 
 /** Persist execution steps onto the last assistant message for the given loop, then evict from memory */
 export function persistExecutionSnapshot(conversationId: string, loopId: string): void {
@@ -644,8 +645,26 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
       getWorkspaceReader().getCurrentPath(),
     loopId,
     conversationId,
+    interactionMode: isInteractiveDesktop(options, _convForContext)
+      ? 'foreground'
+      : 'background',
+    permissionMode: _convForContext?.permissionMode
+      ?? getSettingsReader().getSnapshot().permissionMode,
     abortSignal: abortController.signal,
   };
+  let computerUseTaskEndPromise: Promise<void> | null = null;
+  const endComputerUseTaskLease = (): Promise<void> => {
+    if (!computerUseTaskEndPromise) {
+      computerUseTaskEndPromise = import('../tools/definitions/computerTools')
+        .then(({ endComputerUseTask }) => endComputerUseTask(conversationId, loopId))
+        .catch(() => {});
+    }
+    return computerUseTaskEndPromise;
+  };
+  const endComputerUseTaskOnAbort = () => {
+    void endComputerUseTaskLease();
+  };
+  abortController.signal.addEventListener('abort', endComputerUseTaskOnAbort, { once: true });
 
   // Determine effective model — agent can override (with provider compatibility check).
   // P1-3B-3B: the pure formula moved to resolveEntryModel.ts (shared with
@@ -2142,6 +2161,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
         drainFilePermissionQueue();
         drainWorkspaceRequest();
         drainUserQuestions();
+        drainCapabilitySetupRequests(loopId);
 
         // Drop the untouched placeholder BEFORE cancelStreaming: an abort that
         // arrived before any text/thinking/tool call would otherwise persist as
@@ -2199,6 +2219,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
         chatDelta.setConversationStatus(conversationId, 'idle');
 
         endConversationTrace(conversationId, { output: { reason: 'aborted' } });
+        await endComputerUseTaskLease();
         return { reason: 'aborted' as const };
       }
 
@@ -2285,6 +2306,8 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
       if (streamFlushTimer) clearInterval(streamFlushTimer);
     }
   }
+  abortController.signal.removeEventListener('abort', endComputerUseTaskOnAbort);
+  await endComputerUseTaskLease();
   endConversationTrace(conversationId, { output: { reason: exitReason }, error: exitError });
   return { reason: exitReason, error: exitError };
 }

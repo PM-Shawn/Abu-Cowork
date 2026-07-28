@@ -5,6 +5,8 @@ import { searchMCPRegistry, installMCPServer, getRegistryEntry, ensureMCPServer,
 import { getSystemInfoData } from '../helpers/toolHelpers';
 import { TOOL_NAMES } from '../toolNames';
 import { getI18n, format } from '../../../i18n';
+import { useSettingsStore } from '../../../stores/settingsStore';
+import { requestCapabilitySetup } from '../../capabilityPlugins/setupBridge';
 
 export const getSystemInfoTool: ToolDefinition = {
   name: TOOL_NAMES.GET_SYSTEM_INFO,
@@ -113,14 +115,14 @@ export const systemNotifyTool: ToolDefinition = {
  */
 export const manageMCPServerTool: ToolDefinition = {
   name: TOOL_NAMES.MANAGE_MCP_SERVER,
-  description: 'Search for, install, or ensure an MCP tool server is available; can also add a private/internal MCP service directly by URL. Use when a task requires a tool capability that is missing (e.g. operating GitHub, Slack, databases, browsers, etc.). Note: this is not a general-purpose software installer — do not use it to install ordinary software.',
+  description: 'Search for, install, or ensure an MCP tool server is available; can also open Abu setup for a first-party capability or add a private/internal MCP service directly by URL. Note: this is not a general-purpose software installer.',
   inputSchema: {
     type: 'object',
     properties: {
       action: {
         type: 'string',
-        enum: ['search', 'install', 'ensure', 'add_custom'],
-        description: 'Operation type: search (search available servers), install (install a server, requires user confirmation), ensure (ensure a server is available, installs automatically without confirmation), add_custom (add a custom server by URL, no registry needed)',
+        enum: ['search', 'install', 'ensure', 'open_setup', 'add_custom'],
+        description: 'Operation type: search, install, ensure, open_setup (open the matching Abu first-party setup guide), or add_custom',
       },
       query: { type: 'string', description: 'Search keywords (required when action=search), e.g. "github", "slack", "database"' },
       name: { type: 'string', description: 'MCP server name (required when action=install/ensure/add_custom)' },
@@ -136,7 +138,7 @@ export const manageMCPServerTool: ToolDefinition = {
     },
     required: ['action'],
   },
-  execute: async (input) => {
+  execute: async (input, context) => {
     const action = input.action as string;
     const t = getI18n().toolResult.system;
 
@@ -179,14 +181,25 @@ export const manageMCPServerTool: ToolDefinition = {
 
       try {
         const result = await ensureMCPServer(name);
-        const parts = [result.message];
-        if (result.extensionPath) {
-          parts.push(`extensionPath: ${result.extensionPath}`);
-        }
-        return parts.join('\n');
+        return result.message;
       } catch (err) {
         return format(t.ensureFailed, { error: err instanceof Error ? err.message : String(err) });
       }
+    }
+
+    if (action === 'open_setup') {
+      const name = input.name as string;
+      if (name !== 'abu-browser-bridge') {
+        return format(t.errSetupNotSupported, { name: name || '' });
+      }
+      if (context?.conversationId && context.toolCallId) {
+        const ready = await requestCapabilitySetup('chrome', context);
+        return ready
+          ? t.capabilitySetupReady
+          : t.capabilitySetupCancelled;
+      }
+      useSettingsStore.getState().requestCapabilitySetup('chrome');
+      return t.capabilitySetupOpened;
     }
 
     if (action === 'add_custom') {

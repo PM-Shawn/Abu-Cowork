@@ -99,7 +99,7 @@ function createWindow() {
   if (!hasFrontend) {
     log('warn', 'built frontend missing, loading placeholder', {
       expected: FRONTEND_INDEX,
-      hint: 'npx vite build --base=./ --outDir dist-electron-spike',
+      hint: 'npm run build:electron:renderer',
     });
   }
 

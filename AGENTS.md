@@ -123,11 +123,20 @@ For Electron-shell, packaging, or release changes, additionally use the
 relevant command:
 
 ```bash
+npm run setup:electron-dev # once per worktree, or after package-lock changes
 npm run electron:test
 npm run test:e2e:electron
 npm run pack:electron
 npm run smoke:electron:packaged
 ```
+
+`npm run setup:electron-dev` prepares the worktree-local dependencies, bundled
+runtimes, generated bridges, native helpers, and renderer once.
+`npm run electron:dev` then performs only a fast local preflight and never
+downloads a temporary Electron through `npx`. Keep each active worktree's
+`node_modules` local when installing: the setup command deliberately refuses
+to run through a symlink because `npm ci` could otherwise mutate another
+worktree's dependencies.
 
 Packaging, signing, updater, permissions, and cross-platform behavior require
 real application verification; a green unit-test suite alone is insufficient.

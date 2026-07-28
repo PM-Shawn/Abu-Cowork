@@ -51,12 +51,13 @@ import { PanelLeft, PanelRight, Search, Plus } from 'lucide-react';
 import ConversationSearchModal from '@/components/sidebar/ConversationSearchModal';
 import { isMacOS } from '@/utils/platform';
 import { cn } from '@/lib/utils';
-import { initNotifications, clearDockBadge } from '@/utils/notifications';
+import { initNotifications } from '@/utils/notifications';
 import { initSidebarBadgeChannel } from '@/stores/noticeBadgeStore';
-import { initMenubarChannel, useNoticeMenubarStore } from '@/stores/noticeMenubarStore';
+import { initMenubarChannel } from '@/stores/noticeMenubarStore';
 import { initNoticeChannelHandlers } from '@/core/notice/channels';
 import { setContextProvider } from '@/core/notice/pipeline';
-import { cachedContextProvider, primeContextCaches, assembleGateContext, setFocused } from '@/core/notice/contextProvider';
+import { cachedContextProvider, primeContextCaches, assembleGateContext } from '@/core/notice/contextProvider';
+import { installNoticeFocusSync } from '@/core/notice/focusSync';
 import { drainInbox } from '@/core/notice/inbox';
 import { startPetStatusBridge, resyncPetStatus } from '@/core/pet/petStatusBridge';
 import { schedulerEngine } from '@/core/scheduler/scheduler';
@@ -203,32 +204,17 @@ function App() {
     invoke('window_hide');
   }, []);
 
-  // Clear dock badge whenever the window regains focus
+  // Keep notification focus state aligned through both the native Tauri event
+  // and the renderer's own focus event. Electron can miss one during startup
+  // or reload; either path must still clear stale menubar attention.
   useEffect(() => {
     if (!isTauriEnv()) return; // web / E2E: no Tauri window API
-    let unlistenFn: (() => void) | null = null;
-    let cancelled = false;
-    getCurrentWindow()
-      .onFocusChanged(({ payload: focused }) => {
-        setFocused(focused);
-        if (focused) {
-          clearDockBadge();
-          useNoticeMenubarStore.getState().dismissAll();
-          // Re-deliver L2 notices Gate queued while we were
-          // fullscreen / unfocused. Phase-2 main-window-toast will
-          // aggregate these; for v0.13.0 they just flow back through
-          // sidebar_badge / menubar so the user isn't left unaware.
-          void drainPendingInbox(true);
-        }
-      })
-      .then((fn) => {
-        if (cancelled) fn();
-        else unlistenFn = fn;
-      });
-    return () => {
-      cancelled = true;
-      unlistenFn?.();
-    };
+    return installNoticeFocusSync(() => {
+      // Re-deliver L2 notices Gate queued while we were fullscreen or
+      // unfocused. This stays on the native-focus path to avoid draining the
+      // same SQLite row twice when native and DOM focus events arrive together.
+      void drainPendingInbox(true);
+    });
   }, []);
 
   // Pet window asks for status resync when it (re)opens

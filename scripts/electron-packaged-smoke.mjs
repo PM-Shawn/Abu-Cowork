@@ -1877,6 +1877,8 @@ async function main() {
     // do filesystem checks below from the test process instead.)
     const isPackaged = await app.evaluate(({ app: a }) => a.isPackaged);
     checks.isPackaged = isPackaged === true;
+    const packagedAppName = await app.evaluate(({ app: a }) => a.getName());
+    checks.packagedProductIdentity = packagedAppName === 'Abu';
     const reportedAppData = await app.evaluate(({ app: a }) => a.getPath('appData'));
     checks.appDataIsolated = path.resolve(reportedAppData) === path.resolve(appDataDir);
     const packagedPath = await app.evaluate(() => process.env.PATH || process.env.Path || '');

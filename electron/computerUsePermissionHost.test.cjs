@@ -17,9 +17,34 @@ test('permission host ignores commands outside its consent surface', async () =>
   });
 
   assert.equal(
-    await dispatch('check_macos_permissions'),
+    await dispatch('mouse_click'),
     COMPUTER_USE_PERMISSION_HOST_MISS,
   );
+});
+
+test('macOS permission status is read from the Electron application identity', async () => {
+  const accessibilityPrompts = [];
+  const dispatch = createComputerUsePermissionHost({
+    platform: 'darwin',
+    electronProvider: () => ({
+      systemPreferences: {
+        getMediaAccessStatus: (mediaType) => {
+          assert.equal(mediaType, 'screen');
+          return 'granted';
+        },
+        isTrustedAccessibilityClient: (prompt) => {
+          accessibilityPrompts.push(prompt);
+          return true;
+        },
+      },
+    }),
+  });
+
+  assert.deepEqual(await dispatch('check_macos_permissions'), {
+    screen_recording: true,
+    accessibility: true,
+  });
+  assert.deepEqual(accessibilityPrompts, [false]);
 });
 
 test('Accessibility consent is requested by Electron itself', async () => {
@@ -110,4 +135,8 @@ test('non-macOS requests preserve the existing no-op behavior', async () => {
 
   assert.equal(await dispatch('request_accessibility'), true);
   assert.equal(await dispatch('request_screen_recording'), true);
+  assert.equal(
+    await dispatch('check_macos_permissions'),
+    COMPUTER_USE_PERMISSION_HOST_MISS,
+  );
 });

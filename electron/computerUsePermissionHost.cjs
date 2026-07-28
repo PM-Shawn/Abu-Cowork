@@ -4,6 +4,7 @@ const COMPUTER_USE_PERMISSION_HOST_MISS =
   Symbol('computer-use-permission-host-miss');
 
 const PERMISSION_COMMANDS = new Set([
+  'check_macos_permissions',
   'request_screen_recording',
   'request_accessibility',
 ]);
@@ -19,9 +20,21 @@ function createComputerUsePermissionHost({
     if (!PERMISSION_COMMANDS.has(cmd)) {
       return COMPUTER_USE_PERMISSION_HOST_MISS;
     }
-    if (platform !== 'darwin') return true;
+    if (platform !== 'darwin') {
+      return cmd === 'check_macos_permissions'
+        ? COMPUTER_USE_PERMISSION_HOST_MISS
+        : true;
+    }
 
     const { desktopCapturer, shell, systemPreferences } = electronProvider();
+    if (cmd === 'check_macos_permissions') {
+      return {
+        screen_recording:
+          systemPreferences.getMediaAccessStatus('screen') === 'granted',
+        accessibility:
+          systemPreferences.isTrustedAccessibilityClient(false),
+      };
+    }
     if (cmd === 'request_accessibility') {
       return systemPreferences.isTrustedAccessibilityClient(true);
     }

@@ -152,9 +152,13 @@ function settleGuide(status, { focusMain = true, error = null } = {}) {
 
 async function readPermissions() {
   if (permissionCheck) return permissionCheck;
-  permissionCheck = Promise.resolve(
-    nativeHelperDispatch('check_macos_permissions', {}),
-  ).then((result) => {
+  permissionCheck = Promise.resolve().then(async () => {
+    let result = await computerUsePermissionHostDispatch(
+      'check_macos_permissions',
+    );
+    if (result === COMPUTER_USE_PERMISSION_HOST_MISS) {
+      result = await nativeHelperDispatch('check_macos_permissions', {});
+    }
     if (result === NATIVE_HELPER_MISS) {
       throw new Error('Computer Use permission service is unavailable');
     }

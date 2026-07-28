@@ -218,6 +218,8 @@ describe('getCapabilityPrompt — visual-output variant selection', () => {
     // not promise it ALWAYS auto-opens.
     expect(prompt).toContain('can then be opened in the side preview panel');
     expect(prompt).not.toContain('opens automatically');
+    expect(prompt).toContain("let Abu's side preview/file card handle it");
+    expect(prompt).toContain('do NOT run a system-shell `open`/`start` command');
   });
 
   it('C1: the fragment ban is scoped to the inline widget, and does NOT contradict the saved-page complete-document rule', () => {

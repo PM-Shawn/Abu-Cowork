@@ -152,8 +152,8 @@ class ToolRegistry {
 export const toolRegistry = new ToolRegistry();
 
 /**
- * Playwright browser tools that overlap with abu-browser-bridge.
- * When abu-browser-bridge is connected, these are filtered out to avoid
+ * Playwright browser tools that overlap with Abu's in-app browser or Chrome bridge.
+ * When either Abu browser runtime is connected, these are filtered out to avoid
  * the LLM accidentally launching a separate Chromium instance.
  */
 const PLAYWRIGHT_BROWSER_TOOLS = new Set([
@@ -179,15 +179,16 @@ const PLAYWRIGHT_BROWSER_TOOLS = new Set([
 /**
  * Get all available tools: builtin tools + MCP tools
  * Deduplicates by tool name — builtin tools take priority over MCP tools
- * Filters out conflicting playwright browser tools when abu-browser-bridge is connected
+ * Filters out conflicting playwright browser tools when an Abu browser is connected
  */
 export function getAllTools(): ToolDefinition[] {
   const builtinTools = toolRegistry.getAll();
   const mcpTools = mcpManager.listTools();
   const toolMap = new Map<string, ToolDefinition>();
 
-  // Check if abu-browser-bridge is connected — if so, filter out playwright browser tools
-  const hasBrowserBridge = mcpManager.isConnected('abu-browser-bridge');
+  const hasAbuBrowser =
+    mcpManager.isConnected('abu-browser') ||
+    mcpManager.isConnected('abu-browser-bridge');
 
   // Computer use tools are always registered — the tool itself handles
   // auto-enabling and permission checks when first called.
@@ -201,8 +202,8 @@ export function getAllTools(): ToolDefinition[] {
   // MCP tools — only add if no name conflict
   for (const tool of mcpTools) {
     if (!toolMap.has(tool.name)) {
-      // Skip playwright browser tools when abu-browser-bridge is active
-      if (hasBrowserBridge && PLAYWRIGHT_BROWSER_TOOLS.has(tool.name)) {
+      // Skip Playwright browser tools when an Abu-owned browser path is active.
+      if (hasAbuBrowser && PLAYWRIGHT_BROWSER_TOOLS.has(tool.name)) {
         continue;
       }
       toolMap.set(tool.name, tool);

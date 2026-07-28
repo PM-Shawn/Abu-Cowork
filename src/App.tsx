@@ -70,6 +70,10 @@ import { loadIMPlugins } from '@/core/im/pluginLoader';
 import { stopAllHeartbeats } from '@/core/im/pluginHeartbeat';
 import { reconcileIMSessions } from '@/core/im/sessionReconcile';
 import { initMCPStoreSync, cleanupMCPStoreSync } from '@/stores/mcpStore';
+import {
+  initBuiltinBrowserRuntime,
+  cleanupBuiltinBrowserRuntime,
+} from '@/core/browser/builtinBrowserRuntime';
 import { initFileWatchers, stopAllWatchers } from '@/core/agent/fileWatcher';
 import { startRegistryWatcher, stopRegistryWatcher } from '@/core/skill/registryWatcher';
 import { getPendingWorkspaceRequest, resolveWorkspaceRequest, subscribeToWorkspaceRequest } from '@/core/agent/permissionBridge';
@@ -340,6 +344,7 @@ function App() {
     installLargeWriteGuard();
     refreshDiscovery();
     initMCPStoreSync();
+    initBuiltinBrowserRuntime();
     sendConsolePing();
 
     // Hydrate API keys from the encrypted secret store. During Phase 2 the
@@ -429,6 +434,7 @@ function App() {
     });
 
     return () => {
+      void cleanupBuiltinBrowserRuntime();
       cleanupMCPStoreSync();
       stopAllWatchers();
       stopRegistryWatcher();

@@ -94,6 +94,14 @@ describe('toolPrefetch', () => {
       expect(result).toContain('manage_mcp_server');
     });
 
+    it('should load the in-app browser tools for ordinary web tasks', () => {
+      const result = prefetchTools(makeCtx({ userInput: '用内置浏览器打开百度并截图' }));
+      expect(result).toContain('abu-browser__get_tabs');
+      expect(result).toContain('abu-browser__navigate');
+      expect(result).toContain('abu-browser__screenshot');
+      expect(result).not.toContain('abu-browser-bridge__get_tabs');
+    });
+
     it('should match notify keywords', () => {
       const result = prefetchTools(makeCtx({ userInput: '完成后通知我' }));
       expect(result).toContain('system_notify');
@@ -119,6 +127,21 @@ describe('toolPrefetch', () => {
         activeSkills: [{ name: 'test', description: 'test', content: '' } as import('../../types').Skill],
       }));
       expect(result).toContain('read_skill_file');
+    });
+
+    it('should load only the runtime owned by the active browser skill', () => {
+      const builtin = prefetchTools(makeCtx({
+        activeSkills: [{ name: 'Abu-Browser', description: '', content: '' } as import('../../types').Skill],
+      }));
+      expect(builtin).toContain('abu-browser__get_tabs');
+      expect(builtin).not.toContain('abu-browser-bridge__get_tabs');
+
+      const chrome = prefetchTools(makeCtx({
+        activeSkills: [{ name: 'Abu-Chrome-Bridge', description: '', content: '' } as import('../../types').Skill],
+      }));
+      expect(chrome).toContain('manage_mcp_server');
+      expect(chrome).toContain('abu-browser-bridge__get_tabs');
+      expect(chrome).not.toContain('abu-browser__get_tabs');
     });
 
     it('should load log_task_completion after turn 2', () => {

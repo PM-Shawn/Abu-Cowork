@@ -97,6 +97,7 @@ import { bindWorkspaceFromWrite } from './defaultWorkspace';
 import { snapshotBeforeAiEdit } from '../../utils/aiEditSnapshots';
 import { getAuthorizedWritablePaths } from '../tools/pathSafety';
 import { showSandboxBlockedToast } from '../sandbox/recovery';
+import { ensureBuiltinBrowserRuntime } from '../browser/builtinBrowserRuntime';
 
 const logger = createLogger('agent-loop-runner');
 
@@ -1261,6 +1262,12 @@ export async function runAgentLoopDispatched(
   userMessage: string,
   options?: AgentLoopOptions,
 ): Promise<AgentLoopResult> {
+  // The bundled browser is a first-party Electron capability, not a Skill or
+  // user-configured MCP server. App startup normally connects it; this
+  // idempotent preflight closes the small startup/reload race before tools and
+  // the system prompt are snapshotted for either execution venue.
+  await ensureBuiltinBrowserRuntime();
+
   if (getSidecarStatus() !== 'running') {
     return runAgentLoop(conversationId, userMessage, options);
   }

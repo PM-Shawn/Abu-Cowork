@@ -1,31 +1,8 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
-
-vi.mock('../../utils/electronHost', () => ({
-  hasElectronCommandHost: vi.fn(),
-}));
-
-import { hasElectronCommandHost } from '../../utils/electronHost';
+import { describe, expect, it } from 'vitest';
 import { getRegistryEntry } from './mcpDiscovery';
 
-const mockedElectronHost = vi.mocked(hasElectronCommandHost);
-
-describe('browser MCP host routing', () => {
-  beforeEach(() => {
-    mockedElectronHost.mockReset();
-  });
-
-  it('uses the bundled local browser runtime under Electron', () => {
-    mockedElectronHost.mockReturnValue(true);
-    expect(getRegistryEntry('abu-browser-bridge')).toMatchObject({
-      command: 'abu-browser-runtime',
-      args: [],
-      env: {},
-      bundledResourceDir: 'browser-extension',
-    });
-  });
-
-  it('preserves the optional Chrome extension bridge under legacy Tauri', () => {
-    mockedElectronHost.mockReturnValue(false);
+describe('Chrome bridge MCP registry', () => {
+  it('always represents the optional external Chrome extension bridge', () => {
     expect(getRegistryEntry('abu-browser-bridge')).toMatchObject({
       command: 'npx',
       args: ['-y', 'abu-browser-bridge@latest'],

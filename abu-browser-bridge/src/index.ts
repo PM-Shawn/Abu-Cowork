@@ -7,9 +7,11 @@
  * and the Chrome Extension (via WebSocket).
  *
  * Startup strategy:
- * 1. Check if an old bridge is running via the discovery endpoint (port 9875)
- * 2. If found, kill it by PID so we can take over the ports
- * 3. Start discovery (9875) + WS (9876) on fixed ports — no fallback
+ * 1. Start discovery (9875) + WS (9876) on fixed loopback ports
+ * 2. Fail clearly if another process owns either port
+ *
+ * Electron owns this process tree and retires it on shutdown. The bridge must
+ * never kill an unrelated process merely because it happens to use a port.
  *
  * Usage:
  *   npx abu-browser-bridge [--port 9876]
@@ -22,88 +24,6 @@ import { registerTools } from './tools.js';
 import { PKG_VERSION } from './version.js';
 
 const DEFAULT_WS_PORT = 9876;
-const DISCOVERY_PORT = 9875;
-
-/**
- * Kill any stale abu-browser-bridge by querying the discovery endpoint.
- * If an old bridge is running, its /status returns { pid }, and we kill it.
- * Also kills any process on the WS port range as a fallback.
- */
-async function killStaleBridges(wsPort: number): Promise<void> {
-  const myPid = process.pid;
-
-  // Method 1: Query discovery endpoint for PID (most reliable)
-  try {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 2000);
-    const res = await fetch(`http://127.0.0.1:${DISCOVERY_PORT}/status`, {
-      signal: controller.signal,
-    });
-    clearTimeout(timeout);
-
-    if (res.ok) {
-      const data = await res.json() as { pid?: number };
-      if (data.pid && data.pid !== myPid) {
-        try {
-          process.kill(data.pid, 'SIGTERM');
-          console.error(`[abu-bridge] Killed old bridge (pid: ${data.pid}) via discovery`);
-          // Wait a bit for ports to be released
-          await new Promise(r => setTimeout(r, 500));
-        } catch {
-          // Already dead
-        }
-      }
-    }
-  } catch {
-    // Discovery not available — old bridge might not have it
-  }
-
-  // Method 2: Kill any process on our ports (fallback for old versions without discovery)
-  const portsToCheck = [DISCOVERY_PORT, wsPort];
-  const isWindows = process.platform === 'win32';
-
-  try {
-    if (isWindows) {
-      const { execSync } = await import('child_process');
-      const output = execSync('netstat -ano -p TCP', { encoding: 'utf-8', timeout: 5000 });
-      const pids = new Set<number>();
-      for (const port of portsToCheck) {
-        const regex = new RegExp(`127\\.0\\.0\\.1:${port}\\s+.*LISTENING\\s+(\\d+)`, 'g');
-        let match;
-        while ((match = regex.exec(output)) !== null) {
-          const pid = parseInt(match[1], 10);
-          if (pid && pid !== myPid) pids.add(pid);
-        }
-      }
-      for (const pid of pids) {
-        try {
-          process.kill(pid, 'SIGTERM');
-          console.error(`[abu-bridge] Killed stale process ${pid} (port scan)`);
-        } catch { /* already dead */ }
-      }
-    } else {
-      const { execSync } = await import('child_process');
-      const portFlags = portsToCheck.map(p => `-i:${p}`);
-      const output = execSync(`lsof -t ${portFlags.join(' ')}`, { encoding: 'utf-8', timeout: 5000 }).trim();
-      if (output) {
-        const pids = new Set(
-          output.split('\n').map(l => parseInt(l.trim(), 10)).filter(pid => pid && pid !== myPid)
-        );
-        for (const pid of pids) {
-          try {
-            process.kill(pid, 'SIGTERM');
-            console.error(`[abu-bridge] Killed stale process ${pid} (port scan)`);
-          } catch { /* already dead */ }
-        }
-      }
-    }
-  } catch {
-    // No processes found or command failed — that's fine
-  }
-
-  // Wait for ports to be released
-  await new Promise(r => setTimeout(r, 300));
-}
 
 async function main(): Promise<void> {
   const args = process.argv.slice(2);
@@ -117,9 +37,6 @@ async function main(): Promise<void> {
       process.exit(1);
     }
   }
-
-  // 0. Kill any stale bridge so we can take over the fixed ports
-  await killStaleBridges(wsPort);
 
   // 1. Start WebSocket + Discovery server on fixed ports (no fallback)
   try {

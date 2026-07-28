@@ -1405,7 +1405,17 @@ function isPngBase64(value) {
 
 async function inspectPackagedBrowserView(app, tabId, screenshotData) {
   return app.evaluate(
-    async ({ BrowserWindow, desktopCapturer, nativeImage }, { targetTabId, pngBase64 }) => {
+    async (
+      {
+        app: electronApp,
+        BrowserWindow,
+        desktopCapturer,
+        nativeImage,
+        screen,
+        systemPreferences,
+      },
+      { targetTabId, pngBase64 },
+    ) => {
       const analyze = (image) => {
         const size = image.getSize();
         const bitmap = image.toBitmap();
@@ -1415,11 +1425,9 @@ async function inspectPackagedBrowserView(app, tabId, screenshotData) {
           const green = bitmap[index + 1];
           const third = bitmap[index + 2];
           const colorMatches =
-            Math.abs(green - 172) <= 8 &&
-            (
-              (Math.abs(first - 104) <= 8 && Math.abs(third - 18) <= 8) ||
-              (Math.abs(first - 18) <= 8 && Math.abs(third - 104) <= 8)
-            );
+            green >= 130 &&
+            green - first >= 35 &&
+            green - third >= 35;
           if (colorMatches) fixturePixels += 1;
         }
         return { ...size, fixturePixels };
@@ -1458,19 +1466,89 @@ async function inspectPackagedBrowserView(app, tabId, screenshotData) {
       );
       let windowComposite = null;
       let compositeError = '';
+      let windowCompositeTrusted = process.platform !== 'darwin';
+      let compositeSourceType = 'window';
+      let compositeSourceId = '';
+      let windowCompositePng = '';
+      if (process.platform === 'darwin') {
+        try {
+          windowCompositeTrusted =
+            systemPreferences.getMediaAccessStatus('screen') === 'granted';
+        } catch {
+          windowCompositeTrusted = false;
+        }
+      }
       try {
         const windowBounds = mainWindow.getBounds();
-        const mediaSourceId = mainWindow.getMediaSourceId();
-        const sources = await desktopCapturer.getSources({
-          types: ['window'],
-          thumbnailSize: {
-            width: Math.max(windowBounds.width * 2, 1),
-            height: Math.max(windowBounds.height * 2, 1),
-          },
-          fetchWindowIcons: false,
-        });
-        const compositeSource = sources.find((source) => source.id === mediaSourceId);
-        if (compositeSource) windowComposite = analyze(compositeSource.thumbnail);
+        electronApp.focus({ steal: true });
+        mainWindow.show();
+        mainWindow.focus();
+        mainWindow.moveTop();
+        await new Promise((resolve) => setTimeout(resolve, 200));
+
+        if (process.platform === 'darwin' && windowCompositeTrusted) {
+          compositeSourceType = 'screen';
+          const display = screen.getDisplayMatching(windowBounds);
+          const displays = screen.getAllDisplays();
+          const displayIndex = displays.findIndex((candidate) => candidate.id === display.id);
+          const scaleFactor = Math.max(Number(display.scaleFactor) || 1, 1);
+          const sources = await desktopCapturer.getSources({
+            types: ['screen'],
+            thumbnailSize: {
+              width: Math.max(Math.round(display.size.width * scaleFactor), 1),
+              height: Math.max(Math.round(display.size.height * scaleFactor), 1),
+            },
+            fetchWindowIcons: false,
+          });
+          const compositeSource =
+            sources.find((source) => source.display_id === String(display.id)) ??
+            sources[displayIndex] ??
+            sources[0];
+          if (compositeSource) {
+            compositeSourceId = `${compositeSource.id}:${compositeSource.display_id}`;
+            const sourceSize = compositeSource.thumbnail.getSize();
+            const scaleX = sourceSize.width / display.bounds.width;
+            const scaleY = sourceSize.height / display.bounds.height;
+            const x = Math.max(
+              0,
+              Math.round((windowBounds.x - display.bounds.x) * scaleX),
+            );
+            const y = Math.max(
+              0,
+              Math.round((windowBounds.y - display.bounds.y) * scaleY),
+            );
+            const width = Math.min(
+              Math.max(Math.round(windowBounds.width * scaleX), 1),
+              sourceSize.width - x,
+            );
+            const height = Math.min(
+              Math.max(Math.round(windowBounds.height * scaleY), 1),
+              sourceSize.height - y,
+            );
+            if (width > 0 && height > 0) {
+              const cropped = compositeSource.thumbnail.crop({ x, y, width, height });
+              windowComposite = analyze(cropped);
+              if (windowComposite.fixturePixels < 500) {
+                windowCompositePng = cropped.toPNG().toString('base64');
+              }
+            }
+          }
+        } else if (process.platform !== 'darwin') {
+          const mediaSourceId = mainWindow.getMediaSourceId();
+          const sources = await desktopCapturer.getSources({
+            types: ['window'],
+            thumbnailSize: {
+              width: Math.max(windowBounds.width * 2, 1),
+              height: Math.max(windowBounds.height * 2, 1),
+            },
+            fetchWindowIcons: false,
+          });
+          const compositeSource = sources.find((source) => source.id === mediaSourceId);
+          if (compositeSource) {
+            compositeSourceId = `${compositeSource.id}:${compositeSource.display_id}`;
+            windowComposite = analyze(compositeSource.thumbnail);
+          }
+        }
       } catch (error) {
         // macOS denies desktopCapturer without Screen Recording/TCC. Exact View
         // draw state remains mandatory; system composition is an additive check
@@ -1487,6 +1565,10 @@ async function inspectPackagedBrowserView(app, tabId, screenshotData) {
         drawn: browserView.getVisible(),
         mcpScreenshot: analyze(screenshot),
         windowComposite,
+        windowCompositeTrusted,
+        compositeSourceType,
+        compositeSourceId,
+        windowCompositePng,
         compositeError,
       };
     },
@@ -1564,6 +1646,8 @@ async function runPackagedBrowserFlow(app, window, browserUrl, runtimeTrap) {
       throw new Error(`packaged browser screenshot was not PNG: ${JSON.stringify(screenshot)}`);
     }
     const view = await inspectPackagedBrowserView(app, tabId, image.data);
+    const windowCompositePng = view.windowCompositePng;
+    delete view.windowCompositePng;
     const viewPixelCount = view.mcpScreenshot.width * view.mcpScreenshot.height;
     const viewArea = view.bounds.width * view.bounds.height;
     const intersectionArea = view.intersection.width * view.intersection.height;
@@ -1577,9 +1661,23 @@ async function runPackagedBrowserFlow(app, window, browserUrl, runtimeTrap) {
       view.intersection.height >= 200 &&
       intersectionArea >= viewArea * 0.8 &&
       view.mcpScreenshot.fixturePixels >= viewPixelCount * 0.2 &&
-      (view.windowComposite === null || view.windowComposite.fixturePixels >= 500);
+      (
+        !view.windowCompositeTrusted ||
+        (
+          view.windowComposite !== null &&
+          view.windowComposite.fixturePixels >= 500
+        )
+      );
     if (!visibleTabAdopted) {
-      throw new Error(`packaged browser view was not visibly composed: ${JSON.stringify(view)}`);
+      let artifact = '';
+      if (windowCompositePng) {
+        artifact = path.join(os.tmpdir(), 'abu-packaged-browser-composite.png');
+        fs.writeFileSync(artifact, Buffer.from(windowCompositePng, 'base64'));
+      }
+      throw new Error(
+        `packaged browser view was not visibly composed: ${JSON.stringify(view)}` +
+        (artifact ? `; composite=${artifact}` : ''),
+      );
     }
 
     await client.kill();

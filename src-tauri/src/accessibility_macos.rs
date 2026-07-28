@@ -21,7 +21,10 @@
 //!       pub use macos::*;
 //!   }
 
-use super::{AxDiagReport, AxDiagSnapshot, AxQualityReport, AxTextNode, UiElement, UiSnapshot};
+use super::{
+    AppIdentity, AxDiagReport, AxDiagSnapshot, AxQualityReport, AxTextNode, UiElement,
+    UiSnapshot,
+};
 use core_foundation::base::TCFType;
 use core_foundation::boolean::CFBoolean;
 use core_foundation::dictionary::CFDictionary;
@@ -370,6 +373,7 @@ unsafe fn walk_and_cache(el: CFTypeRef, depth: u32, st: &mut WalkStateWithCache)
 }
 
 /// A running GUI app: pid + its localized name + bundle identifier.
+#[derive(Clone)]
 struct RunningApp {
     pid: i32,
     /// Localized display name, e.g. "备忘录" on a Chinese system.
@@ -406,6 +410,75 @@ fn running_apps() -> Vec<RunningApp> {
     out
 }
 
+fn find_regular_app(name: &str) -> Result<RunningApp, String> {
+    let needle = name.to_lowercase();
+    let apps: Vec<RunningApp> = running_apps()
+        .into_iter()
+        .filter(|app| app.is_regular)
+        .collect();
+    let name_lc = |app: &RunningApp| app.name.to_lowercase();
+    let bundle_lc = |app: &RunningApp| app.bundle_id.to_lowercase();
+    let matched = apps
+        .iter()
+        .find(|app| name_lc(app) == needle)
+        .or_else(|| {
+            apps.iter().find(|app| {
+                bundle_lc(app).rsplit('.').next() == Some(needle.as_str())
+            })
+        })
+        .or_else(|| apps.iter().find(|app| name_lc(app).contains(&needle)))
+        .or_else(|| apps.iter().find(|app| bundle_lc(app).contains(&needle)));
+
+    matched.cloned().ok_or_else(|| {
+        let available = apps
+            .iter()
+            .filter(|app| !app.name.is_empty())
+            .map(|app| app.name.as_str())
+            .collect::<Vec<_>>()
+            .join("、");
+        format!(
+            "未找到名为 '{}' 的运行中应用。当前运行的应用：{}",
+            name, available
+        )
+    })
+}
+
+/// Resolve a model/user supplied app name to the stable process identity used
+/// by the Electron main-process Computer Use authorization gate.
+pub fn resolve_app_identity_impl(name: String) -> Result<AppIdentity, String> {
+    let app = find_regular_app(&name)?;
+    if app.name.is_empty() || app.bundle_id.is_empty() {
+        return Err(format!("应用 '{}' 缺少稳定身份信息", name));
+    }
+    Ok(AppIdentity {
+        app_name: app.name,
+        bundle_id: app.bundle_id,
+        process_id: app.pid,
+    })
+}
+
+/// Resolve the application that is visually frontmost at the instant this
+/// function runs. The Electron native helper uses this immediately before
+/// global input synthesis so a focus switch cannot reuse another app's grant.
+pub fn frontmost_app_identity_impl() -> Result<AppIdentity, String> {
+    use objc2_app_kit::NSWorkspace;
+
+    let workspace = NSWorkspace::sharedWorkspace();
+    let app = workspace
+        .frontmostApplication()
+        .ok_or_else(|| "no frontmost application".to_string())?;
+    let app_name = app.localizedName().map(|s| s.to_string()).unwrap_or_default();
+    let bundle_id = app.bundleIdentifier().map(|s| s.to_string()).unwrap_or_default();
+    if app_name.is_empty() || bundle_id.is_empty() {
+        return Err("frontmost application identity is incomplete".to_string());
+    }
+    Ok(AppIdentity {
+        app_name,
+        bundle_id,
+        process_id: app.processIdentifier() as i32,
+    })
+}
+
 /// Get an AX element for a named application process.
 ///
 /// Only considers "regular" apps (Dock icon + windows) — this excludes widget/app
@@ -417,51 +490,17 @@ fn running_apps() -> Vec<RunningApp> {
 /// localizedName is "备忘录", but its bundle id "com.apple.Notes" still contains "notes",
 /// so the model's English `app_name: "Notes"` resolves correctly.
 fn get_app_element_by_name(name: &str) -> Result<(CFTypeRef, Option<String>), String> {
-    let needle = name.to_lowercase();
-    let all = running_apps();
-    // Only regular apps can be valid targets.
-    let apps: Vec<&RunningApp> = all.iter().filter(|a| a.is_regular).collect();
-
-    let name_lc = |a: &RunningApp| a.name.to_lowercase();
-    let bundle_lc = |a: &RunningApp| a.bundle_id.to_lowercase();
-
-    // Priority: exact name → exact bundle-leaf → name substring → bundle-id substring.
-    // Exact bundle-leaf ("com.apple.Notes" → "notes") beats a substring match so the
-    // canonical app wins over any sibling whose name merely contains the needle.
-    let matched = apps
-        .iter()
-        .find(|a| name_lc(a) == needle)
-        .or_else(|| {
-            apps.iter()
-                .find(|a| bundle_lc(a).rsplit('.').next() == Some(needle.as_str()))
-        })
-        .or_else(|| apps.iter().find(|a| name_lc(a).contains(&needle)))
-        .or_else(|| apps.iter().find(|a| bundle_lc(a).contains(&needle)));
-
-    match matched {
-        Some(found) => unsafe {
-            let app = AXUIElementCreateApplication(found.pid);
-            if app.is_null() {
-                return Err(format!(
-                    "AXUIElementCreateApplication({}) returned null for '{}'",
-                    found.pid, found.name
-                ));
-            }
-            let ax_title = attr_string(app, "AXTitle");
-            Ok((app, ax_title.or_else(|| Some(found.name.clone()))))
-        },
-        None => {
-            let available: Vec<&str> = apps
-                .iter()
-                .filter(|a| !a.name.is_empty())
-                .map(|a| a.name.as_str())
-                .collect();
-            Err(format!(
-                "未找到名为 '{}' 的运行中应用。当前运行的应用：{}",
-                name,
-                available.join("、")
-            ))
+    let found = find_regular_app(name)?;
+    unsafe {
+        let app = AXUIElementCreateApplication(found.pid);
+        if app.is_null() {
+            return Err(format!(
+                "AXUIElementCreateApplication({}) returned null for '{}'",
+                found.pid, found.name
+            ));
         }
+        let ax_title = attr_string(app, "AXTitle");
+        Ok((app, ax_title.or(Some(found.name))))
     }
 }
 

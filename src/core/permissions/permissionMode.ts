@@ -14,6 +14,7 @@
 
 import type { ConfirmationInfo } from '../tools/registry';
 import type { CmdBoundary } from './commandBoundary';
+import computerUsePolicy from '../tools/computerUsePolicy.json';
 
 /** Permission mode determines how much autonomy the agent has before asking. */
 export type PermissionMode = 'standard' | 'smart' | 'autonomous';
@@ -25,6 +26,22 @@ export type PermissionMode = 'standard' | 'smart' | 'autonomous';
  * - review:  route to the AI reviewer (Phase 2); degrades to 'confirm' until wired
  */
 export type PermissionDecision = 'allow' | 'confirm' | 'review';
+export type ComputerUseAppRisk = 'ordinary' | 'approval-required';
+export type ComputerUseAppDecision = 'allow' | 'confirm';
+
+/**
+ * App identity is an independent Computer Use boundary inside the global
+ * permission mode. High-consequence apps always require the user.
+ */
+export function decideComputerUseApp(
+  mode: PermissionMode,
+  risk: ComputerUseAppRisk,
+): ComputerUseAppDecision {
+  const safeMode: PermissionMode = mode === 'smart' || mode === 'autonomous'
+    ? mode
+    : 'standard';
+  return computerUsePolicy.modePolicy[safeMode][risk] as ComputerUseAppDecision;
+}
 
 /**
  * Strategy interface for permission decisions.

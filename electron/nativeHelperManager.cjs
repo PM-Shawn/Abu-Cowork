@@ -42,8 +42,10 @@ const NATIVE_HELPER_MISS = Symbol('native-helper-dispatch-miss');
 // Commands routed to the helper. Input synthesis + screen capture + TCC checks
 // + the AX session-cache family. (get_abu_window_id / overlay / get_active_window
 // stay in Electron main — they need the window handle / a GUI window / and are
-// handled elsewhere.)
+// handled elsewhere. Permission prompts also stay in Electron main so macOS
+// attributes them to the Abu application instead of this command-line child.)
 const HELPER_CMDS = new Set([
+  'resolve_app_identity',
   'mouse_click',
   'mouse_move',
   'mouse_scroll',
@@ -53,7 +55,6 @@ const HELPER_CMDS = new Set([
   'capture_screen',
   'capture_screen_excluding',
   'check_macos_permissions',
-  'request_screen_recording',
   'ax_snapshot',
   'ax_press',
   'ax_set_value',
@@ -64,18 +65,28 @@ const HELPER_CMDS = new Set([
 
 // Built (release) helper binary.
 //  - Packaged: electron-builder ships it via extraResources at
-//    <resources>/native-helper/native-helper (see electron-builder.yml).
+//    <resources>/native-helper/native-helper[.exe] (see electron-builder.yml).
 //  - Dev: the cargo build output under electron/native-helper/target/release/.
-function resolveHelperPath() {
-  let packaged = false;
-  try {
-    packaged = require('electron').app.isPackaged;
-  } catch {
-    /* plain-Node context (harness) — treat as dev */
+function nativeHelperExecutableName(platform = process.platform) {
+  return platform === 'win32' ? 'native-helper.exe' : 'native-helper';
+}
+
+function resolveHelperPath(options = {}) {
+  const platform = options.platform || process.platform;
+  let packaged = options.packaged;
+  if (typeof packaged !== 'boolean') {
+    packaged = false;
+    try {
+      packaged = require('electron').app.isPackaged;
+    } catch {
+      /* plain-Node context (harness) — treat as dev */
+    }
   }
+  const executable = nativeHelperExecutableName(platform);
+  const resourcesPath = options.resourcesPath || process.resourcesPath;
   return packaged
-    ? path.join(process.resourcesPath, 'native-helper', 'native-helper')
-    : path.join(__dirname, 'native-helper', 'target', 'release', 'native-helper');
+    ? path.join(resourcesPath, 'native-helper', executable)
+    : path.join(__dirname, 'native-helper', 'target', 'release', executable);
 }
 const HELPER_PATH = resolveHelperPath();
 
@@ -234,4 +245,12 @@ for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
   });
 }
 
-module.exports = { nativeHelperDispatch, NATIVE_HELPER_MISS, killNativeHelper, callHelper };
+module.exports = {
+  nativeHelperDispatch,
+  NATIVE_HELPER_MISS,
+  killNativeHelper,
+  callHelper,
+  HELPER_CMDS,
+  nativeHelperExecutableName,
+  resolveHelperPath,
+};

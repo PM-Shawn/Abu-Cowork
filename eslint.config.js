@@ -25,6 +25,7 @@ export default defineConfig([
     '.wt-*/',
     'sidecar/index.mjs',
     'electron/browser-runtime/dist',
+    'electron/chrome-bridge-runtime/dist',
   ]),
   {
     files: ['**/*.{ts,tsx}'],

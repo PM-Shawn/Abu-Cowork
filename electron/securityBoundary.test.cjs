@@ -283,6 +283,27 @@ test('pet, overlay, and stop-button windows only receive their required commands
   );
 });
 
+test('main renderer cannot invoke privileged Computer Use commands without a session token', () => {
+  const record = trustedRecord('main');
+  for (const cmd of ['mouse_click', 'ax_press', 'capture_screen']) {
+    assert.throws(
+      () => validateInvokePayload(record, { cmd, args: {} }),
+      /requires an authorization token/,
+      cmd
+    );
+  }
+  assert.doesNotThrow(() =>
+    validateInvokePayload(record, {
+      cmd: 'mouse_click',
+      args: {
+        x: 1,
+        y: 2,
+        __abuComputerUseToken: '0123456789abcdef0123456789abcdef',
+      },
+    })
+  );
+});
+
 test('invoke payload rejects malformed, oversized, and dangerous values', () => {
   const record = trustedRecord();
   assert.throws(() => validateInvokePayload(record, null), /plain object/);

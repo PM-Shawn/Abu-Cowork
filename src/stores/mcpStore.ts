@@ -89,6 +89,9 @@ export const useMCPStore = create<MCPStore>()(
       connectServer: async (name) => {
         const entry = get().servers[name];
         if (!entry) return;
+        if (entry.config.enabled === false) {
+          throw new Error(`MCP server "${name}" is disabled`);
+        }
 
         set((state) => {
           state.servers[name].status = 'connecting';

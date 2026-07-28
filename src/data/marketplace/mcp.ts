@@ -1,4 +1,5 @@
 import type { MCPTemplate, ModelPreset } from '@/types/marketplace';
+import { hasElectronCommandHost } from '@/utils/electronHost';
 
 /** MCP Server templates for quick installation */
 export const mcpTemplates: MCPTemplate[] = [
@@ -209,6 +210,11 @@ export const mcpTemplates: MCPTemplate[] = [
     defaultTimeout: 120000, // 120s — browser automation needs longer timeouts (e.g. waiting for popups)
   },
 ];
+
+export function getMCPTemplatesForHost(): MCPTemplate[] {
+  if (!hasElectronCommandHost()) return mcpTemplates;
+  return mcpTemplates.filter((template) => template.id !== 'abu-browser-bridge');
+}
 
 /** Model presets for quick switching */
 export const modelPresets: ModelPreset[] = [

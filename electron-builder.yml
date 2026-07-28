@@ -58,10 +58,13 @@ files:
   - "!electron/native-helper/**"   # Rust source + target/ (huge) — binary ships via extraResources
   - "!electron/sandbox-launcher/**" # Rust source + target/ (huge) — binary ships via extraResources
   - "!electron/browser-runtime/**" # bundled MCP server ships as a real-file extraResource
+  - "!electron/chrome-bridge-runtime/**" # Chrome bridge ships once as a real-file extraResource
   - "!electron/spike/**"           # dev-only E2E harnesses
   - "!electron/renderer/**"        # placeholder page — real frontend is dist-electron-spike
   # previewServer.cjs reads this shared picker from app.asar at runtime.
   - "src-tauri/inspect/abu-preview-inspect.js"
+  # computerUseGate.cjs loads the reviewed policy in Electron main.
+  - "src/core/tools/computerUsePolicy.json"
   - "dist-electron-spike/**/*"
   - "package.json"
   - "node_modules/node-pty/**/*"
@@ -100,8 +103,11 @@ extraResources:
     to: builtin-skills
   - from: builtin-agents
     to: builtin-agents
-  - from: electron/native-helper/target/release/native-helper
-    to: native-helper/native-helper
+  - from: electron/native-helper/target/release
+    to: native-helper
+    filter:
+      - native-helper
+      - native-helper.exe
   - from: electron/sandbox-launcher/dist
     to: sandbox-launcher
   - from: electron/.runtime/node-runtime
@@ -112,6 +118,8 @@ extraResources:
     to: runtime-metadata
   - from: electron/browser-runtime/dist
     to: browser-runtime
+  - from: electron/chrome-bridge-runtime/dist
+    to: chrome-bridge-runtime
   - from: abu-chrome-extension/dist
     to: browser-extension
   # Tray icon candidates (guiHost.cjs resolveTrayIconPath) — src-tauri/ isn't

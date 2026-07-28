@@ -49,7 +49,7 @@ function generateId(): string {
  * Start the HTTP discovery server on a fixed well-known port.
  * Chrome Extension queries this to find the actual WS port and auth token.
  *
- * GET /status → { wsPort, pid, extensionConnected, uptime, version, token }
+ * GET /status → { service, wsPort, pid, extensionConnected, uptime, version, token }
  *
  * CORS restricted to chrome-extension:// origins only.
  */
@@ -85,6 +85,7 @@ function startDiscoveryServer(): Promise<void> {
       if (req.url === '/status' || req.url === '/') {
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({
+          service: 'abu-browser-bridge',
           wsPort: activePort,
           pid: process.pid,
           extensionConnected: isExtensionConnected(),
@@ -101,9 +102,10 @@ function startDiscoveryServer(): Promise<void> {
 
     discoveryServer.on('error', (err: NodeJS.ErrnoException) => {
       if (err.code === 'EADDRINUSE') {
-        console.error(`[abu-bridge] Discovery port ${DISCOVERY_PORT} in use — old bridge still running?`);
-        // Not fatal — extension can still fall back to fixed port
-        resolve();
+        reject(new Error(
+          `Discovery port ${DISCOVERY_PORT} is already in use. ` +
+          'Close the other Abu instance and retry.',
+        ));
       } else {
         reject(err);
       }

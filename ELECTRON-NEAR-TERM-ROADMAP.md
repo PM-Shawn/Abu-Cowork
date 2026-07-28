@@ -1,10 +1,11 @@
 # Electron Near-Term Roadmap
 
-Date: 2026-07-27
+Date: 2026-07-28
 
-Status: roadmap implementation is complete. Branches 1 through 4 are merged
-into `refactor-dev`; branch 5 is implemented, verified, independently reviewed,
-and approved for the merge that carries this document. Windows real-machine
+Status: the original runtime roadmap is complete. Branches 1 through 5 are
+merged into `refactor-dev`. The follow-up capability-model branch is
+implemented, reviewed, and verified in a clean macOS package, but remains
+unmerged pending an explicit merge decision. Windows real-machine
 package/runtime verification is still required before release. This is not
 release approval.
 
@@ -30,10 +31,12 @@ part of this roadmap.
 | 3 | `feat/electron-bundled-runtime` | Users do not install Node.js or Python | pinned Node/npm/npx, Python office/PDF packages, runtime resolver, updater dependency closure, licenses and signing manifest | build: `gpt-5.5` `high`; bounded tests/docs: `gpt-5.6-terra` `medium` |
 | 4 | `feat/electron-browser-runtime` | Browser automation works after installation | built-in browser as default, isolated persistent session, pinned local browser bridge, optional Chrome extension mode | plan/review: `gpt-5.6-sol` `xhigh`; build: `gpt-5.5` `high` |
 | 5 | `feat/electron-packaged-runtime-e2e` | The real installer proves the above on a clean environment | no-host-runtime tests, office/PDF/browser flows, stop/timeout tree tests, updater load, macOS and Windows package checks | tests: `gpt-5.6-terra` `high`; review: `gpt-5.6-sol` `xhigh` |
+| 6 | `feat/electron-capability-plugins` | Users can see what Abu can do and complete missing setup without confusing the built-in browser with Chrome | static capability catalog, read-only status projection, Settings overview, browser/Computer Use naming and documentation | plan/review: `gpt-5.6-sol` `xhigh`; build: `gpt-5.5` `high` |
 
 Each branch starts from the then-current `refactor-dev`, stays in an isolated
 worktree, and is committed or merged only after its acceptance gates pass. The
-user authorized autonomous commits and merges for this roadmap on 2026-07-27.
+user authorized autonomous commits and merges for branches 1 through 5 on
+2026-07-27. Branch 6 remains subject to an explicit merge decision.
 
 ## Current Progress
 
@@ -237,6 +240,115 @@ Verified locally on macOS:
   immutability, fuse, and signed-build comparison gaps. The final review reports
   no P0, P1, or P2 findings.
 
+`feat/electron-capability-plugins` is implemented, reviewed, and has passed
+local and packaged macOS acceptance. It remains unmerged. It has:
+
+- a static bundled capability catalog with stable IDs, runtime ownership,
+  lifecycle, permissions, and data-scope metadata but no executable manifest
+  fields;
+- one Settings capability overview with guided My Chrome and Computer Use
+  setup, while keeping their Skill and MCP implementation details out of the
+  normal user journey and avoiding duplicate stores or lifecycle controls;
+- independent status projection for the built-in browser, Chrome bridge process,
+  Chrome extension connection, and Computer Use screen/accessibility
+  permissions;
+- a read-only Chrome extension probe through the existing MCP
+  `connection_status` tool, preventing the UI from treating a bridge process
+  with no attached extension as ready;
+- updated user and website documentation that distinguishes `Abu-Browser` from
+  `Abu-Chrome-Bridge` while preserving the old Tauri implementation;
+- blocking command, file, and workspace approvals temporarily hide the active
+  Electron native browser view so the renderer dialog cannot be obscured, then
+  restore it after the approval resolves; creation races and transient
+  hide/show IPC failures are covered by retrying regression tests;
+- the first-party Chrome bridge is bundled with Electron, provisioned at app
+  startup, and migrated away from the previous network-dependent `npx @latest`
+  command while preserving an explicit user disconnect;
+- guided Chrome setup opens the bundled extension folder and Chrome Extensions,
+  discloses all-sites and download access, and treats Developer mode plus
+  **Load unpacked** as the permanent production distribution flow rather than a
+  temporary path before a Chrome Web Store release;
+- task-triggered Chrome and Computer Use requests open a task-local setup
+  dialog above chat and native browser views. The exact tool call stays
+  suspended and bound to its conversation/tool-call ID, resumes once after
+  successful setup, and fails closed on cancel or task abort;
+- guided Computer Use setup treats Screen Recording and Accessibility as
+  separate permissions, opens the exact macOS System Settings pane, and
+  automatically rechecks when the user returns; the off switch is a hard gate
+  that neither permission polling, model tool calls, nor background tasks can
+  turn back on;
+- Electron macOS setup now adds a main-process-owned, always-on-top two-step
+  permission guide. It stays visible while System Settings is foreground,
+  requests native Screen Recording and Accessibility registration one step at
+  a time, polls without recreating the window, identifies the development
+  build as Electron, and returns to Abu or the suspended task after completion;
+- privileged Computer Use IPC now requires a short-lived, sender-bound,
+  task-bound, scope-bound, and application-identity-bound main-process token;
+  unknown targets, permission-probe failures, background tasks, token expiry,
+  and foreground-app changes fail closed;
+- the main process independently rechecks Screen Recording and Accessibility
+  readiness for privileged calls, allows only one foreground task to own
+  Computer Use at a time, and revokes its sessions, app grants, and native
+  helper work on Stop, task completion, renderer reload, or capability disable;
+- each task approval has a unique main-process authorization generation.
+  Approval results that return after Stop or renderer reload are discarded,
+  even if a new task immediately reuses the same conversation and loop IDs.
+  The generation is reserved before foreground-app and OS-permission probes, so
+  stopping during those asynchronous checks also invalidates the pending begin;
+- global input and application-bound UI captures carry the approved
+  bundle/package identity and process ID into the native helper. The helper
+  rechecks the foreground target immediately before click, keyboard, scroll,
+  drag, and UI capture side effects, closing the gap between a JavaScript-side
+  target check and native input dispatch. Whole-screen reads instead use an
+  explicit screen target so they cannot inherit an unrelated foreground-app
+  authorization;
+- per-application authorization extends the existing three permission modes:
+  Standard asks on first use per task, Smart Review and Full Autonomy allow
+  ordinary apps for that task, communication and collaboration apps always
+  require a user-owned native approval, and credential/system/terminal red
+  lines remain blocked in every mode;
+- Electron E2E preparation now compiles the native Computer Use helper, closing
+  the development-only gap that previously allowed an AppleScript fallback to
+  look like a successful native acceptance;
+- real Electron-shell E2E coverage that proves the bundled browser is ready on
+  a fresh profile while optional Chrome and Computer Use setup remain explicit,
+  and that a direct privileged Computer Use IPC call without a task token is
+  rejected;
+- `npm run typecheck`, `npm run lint`, `npm run parity:check`, the production
+  renderer build, all 4,640 Vitest tests across 328 files, and
+  `npm run electron:test`, including 60 security tests, 40 runtime/command
+  tests, 13 browser-runtime checks, sidecar restart, Stop, and no-orphan
+  acceptance; two real Electron Playwright capability/setup tests also pass;
+- the native Computer Use helper compiles on macOS and cross-checks for
+  `x86_64-pc-windows-msvc`; the unchanged Tauri application still passes
+  `cargo check` with its generated runtime resource directories supplied;
+- multi-angle product, compatibility, packaging, and supply-chain review found
+  and closed native-browser creation under an already-open dialog, whole-screen
+  authorization being incorrectly bound to the foreground app, legacy Tauri
+  calls with no stable app identity, the missing Windows helper `.exe` suffix,
+  loss of legacy Chrome bridge `--port` arguments, and duplicate Chrome runtime
+  files inside `app.asar`;
+- a fresh package built after an isolated `npm ci` includes the Chrome bridge,
+  browser runtime, native helper, sandbox launcher, updater dependency closure,
+  and `universalify` exactly where the production resolver expects them. All 47
+  packaged assertions pass without using host Node.js or Python;
+- packaged browser acceptance verifies DOM interaction, screenshots, native
+  view bounds, and actual on-screen composition when macOS Screen Recording is
+  granted. Its screen capture is display-aware and color-profile-tolerant; when
+  TCC is not granted, the unattended run does not misclassify that OS permission
+  absence as a browser regression;
+- an independent read-only `gpt-5.6-sol` `xhigh` review that found the initial
+  runtime refresh, reconnecting-state, and real-shell coverage gaps and
+  confirmed they are closed;
+- independent security reviews found and closed renderer-trusted task policy,
+  incomplete Stop/reload revocation, JavaScript-to-native target-check timing,
+  and late approval resurrection. The final focused review reports no remaining
+  P0, P1, or P2 findings.
+
+User-attended acceptance is still required for the real macOS Screen Recording
+and Accessibility prompts. Automated permission mocks and non-prompting probes
+must not be treated as proof of the operating-system prompt flow.
+
 Remaining release-platform verification:
 
 - Windows real-machine Restricted Token, Job Object, stdio, short executable
@@ -266,6 +378,110 @@ Chrome-extension control is optional for existing user tabs. The zero-setup
 default is Abu's isolated built-in browser. A second Playwright Chromium is
 deferred until a concrete unattended-browser requirement proves that Electron's
 bundled Chromium is insufficient.
+
+## Capability Model Follow-up
+
+The capability-model work keeps the user-facing product model separate from the
+runtime packaging mechanism:
+
+| User term | Meaning | V1 examples |
+|---|---|---|
+| Capability | What Abu can do | Browse the web, control the computer |
+| Skill | Instructions for completing a workflow | `Abu-Browser`, `Abu-Chrome-Bridge` |
+| Connector | A configured connection to another app or service | My Chrome, an MCP server |
+| Plugin | Internal packaging and lifecycle metadata | Developer-facing only |
+
+V1 exposes three stable capability IDs:
+
+| Capability | Technical ID | Runtime owner | Data boundary |
+|---|---|---|---|
+| Abu built-in browser | `abu-browser` | Existing Electron browser host and bundled MCP runtime | Isolated persistent browser session |
+| My Chrome | `abu-browser-bridge` | Existing MCP store, bridge process, and Chrome extension | Existing Chrome tabs, cookies, and sign-in state |
+| Computer Use | `abu-computer-use` | Existing setting, native helper, and safety checks | Screen content and accessibility input |
+
+The compatibility layer owns only static metadata, five durable status values
+(`ready`, `setup-required`, `permission-required`, `connection-lost`, and
+`unavailable`), read-only runtime probes, and navigation to existing management
+surfaces. It does not register tools, spawn processes, persist duplicate runtime
+state, manage browser sessions, synthesize computer input, or change Skill/MCP
+discovery.
+
+The static manifest deliberately excludes arbitrary commands, shell
+configuration, environment injection, preload scripts, and unrestricted IPC.
+Existing enforcement remains authoritative: renderer isolation and validated
+Electron commands, the MCP supervisor and sandbox launcher, the isolated browser
+session, the Chrome bridge lifecycle, and separate screen-recording and
+accessibility checks for Computer Use.
+
+Normal web requests use the built-in browser. My Chrome is selected only when
+the user explicitly asks for existing tabs, extensions, cookies, or signed-in
+state. The capability page must verify the extension connection separately from
+the MCP process connection, and Abu must not silently fall back between browser
+capabilities.
+
+V1 intentionally does not add a plugin marketplace, ZIP installer, third-party
+SDK, dynamic executable manifests, dependency resolver, or a second
+enable/disable store. A future third-party plugin format requires a separate
+security and compatibility review.
+
+## Computer Use Permission Integration
+
+Per-application Computer Use authorization must extend the existing permission
+system instead of creating a separate autonomy switch. The layers have distinct
+ownership and later layers may only tighten an earlier decision:
+
+1. **Capability opt-in and operating-system permission** answer whether Computer
+   Use can run at all. They remain explicit user actions under every permission
+   mode; the model, AI reviewer, and background tasks cannot enable them.
+2. **System red lines and enterprise policy** are authoritative deny/confirm
+   floors. Permission mode and saved app grants cannot bypass them.
+3. **Per-application authorization** answers which foreground application the
+   current Computer Use action may operate. It uses the current conversation's
+   permission mode but never creates a persistent grant automatically.
+4. **Action/plan approval** is the next independent control for consequential
+   operations such as send, publish, delete, overwrite, install, purchase, or
+   credential changes. The current app grant authorizes view/control scope for
+   the task; it must not be presented as approving every outcome inside the app.
+5. **Shell sandboxing and Content Guard remain separate controls.** The sandbox
+   constrains command/file access; Content Guard scans persisted Skills and
+   memories. Neither is presented as a Computer Use app permission.
+
+Implemented permission-mode behavior:
+
+| Mode | Ordinary app not previously granted | Sensitive or uncertain app | Persistent “always allow” |
+|---|---|---|---|
+| Request Approval | Ask once for this task | Ask or deny according to the system floor | Not supported yet |
+| Smart Review | Confirm Computer Use once, then allow reviewed ordinary apps for this task | Ask or deny; never silently persist | Not supported yet |
+| Full Autonomy | Confirm Computer Use once, then allow reviewed ordinary apps for this task | System/enterprise floor still asks or denies | Never created automatically |
+
+The Computer Use target policy is split into reviewed classes:
+
+- **hard deny:** credential/security settings and GUI terminals that would
+  bypass Abu's command controls;
+- **approval eligible but consequential or uncertain:** browsers,
+  communication/collaboration apps, and any identity not on the reviewed
+  ordinary allowlist; opening/reading may be granted, but consequential actions
+  still need a separate action approval;
+- **ordinary allowlist:** Finder, Calculator, Notes, office apps, and other
+  explicitly reviewed targets, subject to the selected permission mode.
+
+Product surfaces stay simple and non-duplicative:
+
+- **Settings → Capabilities** manages installation, enablement, connection, and
+  macOS/Windows system readiness;
+- **Settings → Security** explains how the selected mode affects Computer Use;
+- a main-process-owned **task-local native approval dialog** asks for the
+  current app and read/control scope when authorization is required.
+
+Persistent app grants are deliberately deferred. Current approvals are keyed by
+stable application identity and task, expire automatically, and cannot become
+“always allow” through a model action or a more autonomous permission mode.
+
+Saved grants must bind to stable application identity (bundle/package identity
+plus signing identity where available), not display name alone. Foreground-app
+identity must be rechecked immediately before each side effect so an app switch
+cannot reuse a decision made for another application. Unknown identity and
+inspection failures fail closed.
 
 ## Acceptance Gates
 

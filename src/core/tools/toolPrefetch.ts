@@ -168,7 +168,9 @@ export function prefetchTools(ctx: PrefetchContext): string[] {
     }
   }
 
-  // Computer use: load when enabled (auto-enabled on first call) OR via keyword prefetch
+  // Computer Use stays loaded while enabled. Keyword prefetch may expose the
+  // tool while disabled so it can return the hard-gate setup guidance, but the
+  // tool itself must never flip the setting.
   if (ctx.computerUseEnabled) {
     additionalTools.push(TOOL_NAMES.COMPUTER);
   }

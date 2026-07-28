@@ -30,8 +30,14 @@ interface MockRequest {
 }
 
 type MockReplyPlan =
-  | { kind: 'tool-call'; command: string; toolCallId: string }
-  | { kind: 'complete'; responseText: string };
+  | {
+      kind: 'tool-call';
+      arguments: Record<string, unknown>;
+      delayMs?: number;
+      toolCallId: string;
+      toolName: string;
+    }
+  | { kind: 'complete'; delayMs?: number; responseText: string };
 
 interface OpenAiMock {
   baseUrl: string;
@@ -68,7 +74,7 @@ function toolCallSse(plan: Extract<MockReplyPlan, { kind: 'tool-call' }>): strin
       index: 0,
       id: plan.toolCallId,
       type: 'function',
-      function: { name: 'run_command', arguments: JSON.stringify({ command: plan.command }) },
+      function: { name: plan.toolName, arguments: JSON.stringify(plan.arguments) },
     }],
   }, null) + sseChunk({}, 'tool_calls') + 'data: [DONE]\n\n';
 }
@@ -111,6 +117,9 @@ async function startOpenAiMock(replyPlans: readonly MockReplyPlan[]): Promise<Op
       res.writeHead(500, { 'content-type': 'application/json' });
       res.end(JSON.stringify({ error: 'unexpected extra local E2E mock request' }));
       return;
+    }
+    if (replyPlan.delayMs) {
+      await new Promise<void>((resolve) => setTimeout(resolve, replyPlan.delayMs));
     }
 
     res.writeHead(200, {
@@ -225,14 +234,43 @@ function cancelButton(page: Page) {
   return page.getByRole('button', { name: /^(取消|Cancel)$/ });
 }
 
+async function nativeBrowserViewStates(
+  electronApp: ElectronApplication,
+): Promise<Array<{ url: string; visible: boolean }>> {
+  return electronApp.evaluate(({ BrowserWindow }) => {
+    const window = BrowserWindow.getAllWindows()[0];
+    if (!window || window.isDestroyed()) return [];
+    return window.contentView.children.flatMap((child) => {
+      const candidate = child as unknown as {
+        getVisible?: () => boolean;
+        webContents?: {
+          getURL: () => string;
+          isDestroyed: () => boolean;
+        };
+      };
+      if (
+        typeof candidate.getVisible !== 'function'
+        || !candidate.webContents
+        || candidate.webContents.isDestroyed()
+      ) {
+        return [];
+      }
+      return [{
+        url: candidate.webContents.getURL(),
+        visible: candidate.getVisible(),
+      }];
+    });
+  });
+}
+
 function expectToolExchange(body: unknown, command: string, expectedResult: string): void {
   const messages = (body as { messages?: OpenAiRequestMessage[] } | null)?.messages;
   expect(Array.isArray(messages)).toBe(true);
 
-  const assistantMessage = messages?.find((message) =>
-    message.role === 'assistant' && Array.isArray(message.tool_calls) && message.tool_calls.length > 0
-  );
-  const toolCall = assistantMessage?.tool_calls?.find((call) => call.function?.name === 'run_command');
+  const toolCall = messages
+    ?.filter((message) => message.role === 'assistant' && Array.isArray(message.tool_calls))
+    .flatMap((message) => message.tool_calls ?? [])
+    .find((call) => call.function?.name === 'run_command');
   expect(toolCall).toBeDefined();
   expect(typeof toolCall?.id).toBe('string');
   expect(toolCall?.id).not.toBe('');
@@ -240,6 +278,25 @@ function expectToolExchange(body: unknown, command: string, expectedResult: stri
   const toolArguments = JSON.parse(String(toolCall?.function?.arguments ?? '')) as { command?: unknown };
   expect(toolArguments.command).toBe(command);
 
+  const toolResultMessage = messages?.find((message) =>
+    message.role === 'tool' && message.tool_call_id === toolCall?.id
+  );
+  expect(toolResultMessage).toBeDefined();
+  expect(String(toolResultMessage?.content ?? '')).toContain(expectedResult);
+}
+
+function expectNamedToolResult(
+  body: unknown,
+  toolName: string,
+  expectedResult: string,
+): void {
+  const messages = (body as { messages?: OpenAiRequestMessage[] } | null)?.messages;
+  expect(Array.isArray(messages)).toBe(true);
+  const toolCall = messages
+    ?.filter((message) => message.role === 'assistant' && Array.isArray(message.tool_calls))
+    .flatMap((message) => message.tool_calls ?? [])
+    .find((call) => call.function?.name === toolName);
+  expect(toolCall).toBeDefined();
   const toolResultMessage = messages?.find((message) =>
     message.role === 'tool' && message.tool_call_id === toolCall?.id
   );
@@ -275,7 +332,12 @@ test.describe.serial('Electron run_command approval E2E', () => {
     fs.writeFileSync(sentinel, 'delete only after the E2E confirmation');
     const command = `rm -- ${quoteShellArgument(sentinel)}`;
     mock = await startOpenAiMock([
-      { kind: 'tool-call', command, toolCallId },
+      {
+        kind: 'tool-call',
+        arguments: { command },
+        toolCallId,
+        toolName: 'run_command',
+      },
       { kind: 'complete', responseText: response },
     ]);
 
@@ -316,7 +378,12 @@ test.describe.serial('Electron run_command approval E2E', () => {
     fs.writeFileSync(sentinel, 'must remain after cancellation');
     const command = `rm -- ${quoteShellArgument(sentinel)}`;
     mock = await startOpenAiMock([
-      { kind: 'tool-call', command, toolCallId },
+      {
+        kind: 'tool-call',
+        arguments: { command },
+        toolCallId,
+        toolName: 'run_command',
+      },
       { kind: 'complete', responseText: response },
     ]);
 
@@ -346,5 +413,118 @@ test.describe.serial('Electron run_command approval E2E', () => {
     expect(fs.existsSync(sentinel)).toBe(true);
     expect(mock.requests).toHaveLength(2);
     await expect(dialogTitle(page)).toBeHidden();
+  });
+
+  test('hides a real native browser view during approval and restores it after cancellation', async () => {
+    const response = `abu-e2e-browser-approval-complete-${randomUUID()}`;
+    const browserToolCallId = `call-browser-tabs-${randomUUID()}`;
+    const commandToolCallId = `call-browser-approval-${randomUUID()}`;
+    dataRoot = createElectronDataRoot();
+    const sentinel = path.join(dataRoot.rootDir, `browser-approval-sentinel-${randomUUID()}.txt`);
+    fs.writeFileSync(sentinel, 'must remain after browser approval cancellation');
+    const command = `rm -- ${quoteShellArgument(sentinel)}`;
+    mock = await startOpenAiMock([
+      {
+        kind: 'tool-call',
+        arguments: {},
+        toolCallId: browserToolCallId,
+        toolName: 'abu-browser__get_tabs',
+      },
+      {
+        kind: 'tool-call',
+        arguments: { command },
+        delayMs: 1_500,
+        toolCallId: commandToolCallId,
+        toolName: 'run_command',
+      },
+      { kind: 'complete', delayMs: 1_500, responseText: response },
+    ]);
+
+    const launched = await launchAbuElectron(dataRoot);
+    app = launched.app;
+    const page = await app.firstWindow({ timeout: READY_TIMEOUT });
+    await waitForApp(page);
+    await configureLocalMockProvider(page, mock.baseUrl);
+
+    await page.getByPlaceholder(CHAT_PLACEHOLDER).fill(
+      `abu-e2e-native-browser-approval-${randomUUID()}`,
+    );
+    await page.getByPlaceholder(CHAT_PLACEHOLDER).press('Enter');
+
+    await expect.poll(() => mock!.requests.length, { timeout: READY_TIMEOUT }).toBe(2);
+    await expect.poll(async () => {
+      const states = await nativeBrowserViewStates(app!);
+      return states.some((state) => state.visible);
+    }, { timeout: READY_TIMEOUT }).toBe(true);
+
+    await expect(dialogTitle(page)).toBeVisible({ timeout: READY_TIMEOUT });
+    await expect.poll(async () => {
+      const states = await nativeBrowserViewStates(app!);
+      return states.length > 0 && states.every((state) => !state.visible);
+    }, { timeout: READY_TIMEOUT }).toBe(true);
+    expect(fs.existsSync(sentinel)).toBe(true);
+
+    await cancelButton(page).click();
+
+    await expect.poll(() => mock!.requests.length, { timeout: READY_TIMEOUT }).toBe(3);
+    expectToolExchange(mock.requests[2].body, command, '[用户取消了此操作]');
+    await expect(dialogTitle(page)).toBeHidden();
+    await expect.poll(async () => {
+      const states = await nativeBrowserViewStates(app!);
+      return states.some((state) => state.visible);
+    }, { timeout: READY_TIMEOUT }).toBe(true);
+    await expect(page.getByText(response, { exact: true })).toBeVisible({ timeout: READY_TIMEOUT });
+    expect(fs.existsSync(sentinel)).toBe(true);
+  });
+
+  test('opens task-local capability setup, waits, and returns cancellation to the same tool call', async () => {
+    const response = `abu-e2e-capability-setup-cancelled-${randomUUID()}`;
+    dataRoot = createElectronDataRoot();
+    mock = await startOpenAiMock([
+      {
+        kind: 'tool-call',
+        arguments: {
+          action: 'open_setup',
+          name: 'abu-browser-bridge',
+        },
+        toolCallId: `call-capability-setup-${randomUUID()}`,
+        toolName: 'manage_mcp_server',
+      },
+      { kind: 'complete', responseText: response },
+    ]);
+
+    const launched = await launchAbuElectron(dataRoot);
+    app = launched.app;
+    const page = await app.firstWindow({ timeout: READY_TIMEOUT });
+    await waitForApp(page);
+    await configureLocalMockProvider(page, mock.baseUrl);
+
+    await page.getByPlaceholder(CHAT_PLACEHOLDER).fill(
+      `abu-e2e-task-local-capability-${randomUUID()}`,
+    );
+    await page.getByPlaceholder(CHAT_PLACEHOLDER).press('Enter');
+
+    await expect.poll(() => mock!.requests.length, { timeout: READY_TIMEOUT }).toBe(1);
+    const setupDialog = page.getByRole('dialog');
+    await expect(setupDialog).toBeVisible({ timeout: READY_TIMEOUT });
+    await expect(
+      setupDialog.getByText(/^(连接我的 Chrome|Connect My Chrome)$/),
+    ).toBeVisible();
+
+    await setupDialog.getByRole('button', {
+      name: /^(取消|Cancel)$/,
+    }).click();
+
+    await expect.poll(() => mock!.requests.length, { timeout: READY_TIMEOUT }).toBe(2);
+    expectNamedToolResult(
+      mock.requests[1].body,
+      'manage_mcp_server',
+      '取消',
+    );
+    await expect(setupDialog).toBeHidden();
+    await expect(page.getByText(response, { exact: true })).toBeVisible({
+      timeout: READY_TIMEOUT,
+    });
+    expect(mock.requests).toHaveLength(2);
   });
 });

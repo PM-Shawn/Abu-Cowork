@@ -27,7 +27,7 @@
 | 自主规划并执行复杂任务 | :white_check_mark: | :x: | :x: |
 | 读写本地文件、执行命令 | :white_check_mark: | :x: | :white_check_mark: |
 | 自然语言交互 | :white_check_mark: | :white_check_mark: | :x: |
-| 28 个内置技能 + 自进化（阿布自己攒新技能） | :white_check_mark: | :x: | :x: |
+| 29 个内置技能 + 自进化（阿布自己攒新技能） | :white_check_mark: | :x: | :x: |
 | 多对话按项目聚合（Projects） | :white_check_mark: | :x: | :x: |
 | 定时任务 & 事件触发 | :white_check_mark: | :x: | :white_check_mark: |
 | IM 机器人（飞书/钉钉/企微/Slack） | :white_check_mark: | :x: | 部分 |
@@ -74,7 +74,7 @@
 <td align="center"><b>IM 频道对话</b><br/>在飞书/钉钉中 @阿布 即可交互<br/><br/><img src="website/assets/screenshot-im-chat.png" width="100%" /></td>
 </tr>
 <tr>
-<td align="center"><b>Skill 技能</b><br/>28 个内置技能，支持自定义扩展 + 自进化<br/><br/><img src="website/assets/screenshot-skills.png" width="100%" /></td>
+<td align="center"><b>Skill 技能</b><br/>29 个内置技能，支持自定义扩展 + 自进化<br/><br/><img src="website/assets/screenshot-skills.png" width="100%" /></td>
 <td align="center"><b>MCP 连接器</b><br/>一键接入 Playwright、GitHub 等外部工具<br/><br/><img src="website/assets/screenshot-mcp.png" width="100%" /></td>
 </tr>
 <tr>
@@ -115,9 +115,9 @@
 - **主题切换** — 亮色 / 暗色 / 跟随系统，设置 → 外观一键切换
 - **实验室（Labs）** — 打磨中的新功能默认关闭、按需开启，可能随时调整或移除（当前收录：桌宠）
 - **对话分享 / 导出** — 一键把对话导出成 JSON 分享给同事；自动脱敏 API Key 与本地路径
-- **28 个内置技能** — PDF/PPTX/DOCX/Excel 生成、前端设计、画布设计、算法艺术、Mermaid/SVG/信息图、Web Artifacts、Chrome 自动化（Abu-Browser）、深度研究、Agent 自我反思（reflect）、工作流自动化等，一键安装，支持自定义
+- **29 个内置技能** — PDF/PPTX/DOCX/Excel 生成、前端设计、画布设计、算法艺术、Mermaid/SVG/信息图、阿布内置浏览器、可选 Chrome 桥接、深度研究、Agent 自我反思（reflect）、工作流自动化等，一键安装，支持自定义
 - **MCP 工具协议** — 通过 Model Context Protocol 连接数据库、搜索引擎、GitHub 等外部服务
-- **浏览器自动化** — 内置 Browser Bridge + Chrome 扩展，实现网页元素操作、表单填写、截图、JS 执行
+- **浏览器自动化** — 普通网页任务使用零配置的内置浏览器；需要已有标签页和登录状态时，可选用 Chrome 扩展桥接
 - **电脑操控** — 通过截屏 + 键鼠控制完成桌面级任务，内置敏感应用拦截、危险按键拦截、5 分钟超时熔断等多重防护
 - **HTTP Fetch** — 内置安全网关：URL 长度校验、凭据嵌入拦截、云元数据端点拦截、10 MB 下载上限、60 秒超时，避免裸 curl 的盲区
 
@@ -242,13 +242,13 @@
 
 > 更多使用场景请查看 [使用指南](docs/User-Guide.zh-CN.md)
 
-## 内置技能一览（共 28 个）
+## 内置技能一览（共 29 个）
 
 | 类别 | 技能 |
 |------|------|
 | 文档生成 | PDF、PPTX、DOCX、XLSX |
 | 设计创作 | 前端设计 (frontend-design)、画布设计 (canvas-design)、算法艺术 (algorithmic-art)、SVG 图表 (svg-diagram)、Mermaid 图表 (mermaid-diagram)、信息图 (infographic)、Slack GIF (slack-gif-creator)、HTML 小组件 (html-widget) |
-| 浏览器自动化 | **Abu-Browser**（Chrome 桥接，自动安装扩展，操控真实浏览器） |
+| 浏览器自动化 | **Abu-Browser**（内置、独立会话）、**Abu-Chrome-Bridge**（可选 Chrome 扩展，复用已有标签页和登录状态） |
 | 开发工具 | Claude API、MCP Server 构建 (mcp-builder)、Web Artifacts (web-artifacts-builder)、Web 应用测试 (webapp-testing) |
 | 内容写作 | 文档协作 (doc-coauthoring)、品牌规范 (brand-guidelines)、内部通讯 (internal-comms) |
 | 自动化 | 定时任务 (schedule)、触发器 (trigger)、告警 SOP (alert-sop) |
@@ -353,10 +353,10 @@ src/
 ├── types/            # TypeScript 类型定义
 └── utils/            # 工具函数
 
-builtin-skills/       # 28 个内置技能（每个为独立目录）
+builtin-skills/       # 29 个内置技能（每个为独立目录）
 builtin-agents/       # 内置 Agent 定义（预留）
 abu-browser-bridge/   # 浏览器桥接 MCP Server
-abu-chrome-extension/ # Chrome 扩展（Abu-Browser 技能依赖）
+abu-chrome-extension/ # Chrome 扩展（Abu-Chrome-Bridge 技能依赖）
 src-tauri/
 ├── src/
 │   ├── computer_use.rs    # 截屏 + 键鼠控制 + 敏感应用拦截

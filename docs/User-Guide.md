@@ -357,7 +357,7 @@ Skills are pre-defined capability modules that make Abu more professional in spe
 3. Click **"Install"** to enable a skill
 4. Describe your need in conversation — Abu auto-selects the right skill
 
-### Built-in Skills (28 total)
+### Built-in Skills (29 total)
 
 > Skills live at `builtin-skills/<skill-name>/SKILL.md`. Each skill is its own directory and can be edited directly.
 
@@ -396,7 +396,8 @@ Skills are pre-defined capability modules that make Abu more professional in spe
 
 | Skill | ID | Description |
 |-------|------|-------------|
-| **Abu-Browser** | `Abu-Browser` | Drives a real browser via native Chrome bridge, **auto-installs the extension on first use**. Lighter than Playwright; great for daily web automation (clicks, forms, screenshots, scraping) |
+| **Abu-Browser** | `Abu-Browser` | Operates Abu's visible built-in browser without an extension; the default for everyday browsing, interaction, and screenshots |
+| **Abu-Chrome-Bridge** | `Abu-Chrome-Bridge` | Uses a Chrome extension to operate existing tabs, cookies, and signed-in state; selected only when the user explicitly requests Chrome |
 | **Webapp Testing** | `webapp-testing` | Use Playwright to test local web apps in an isolated environment |
 
 #### Developer Tools
@@ -803,35 +804,37 @@ Each channel shows a connection status indicator:
 
 ## Browser Automation
 
-Abu offers **two** browser automation paths — pick by use case:
+Abu provides two user-facing browser capabilities. It does not silently switch between them:
 
 | Path | Best for | Setup |
 |------|----------|-------|
-| **Abu-Browser** (recommended) | Daily web tasks (clicks/forms/screenshots/scraping) — lightweight, integrates with your everyday browser | Install the `Abu-Browser` skill; first use will guide you to **auto-install the Chrome extension** |
-| **Webapp Testing** | End-to-end testing of local web apps with an isolated environment | Install the `webapp-testing` skill, uses Playwright |
+| **Abu built-in browser** (default) | Everyday browsing, clicks, forms, screenshots, and content extraction | Bundled with the Electron client; no extension required |
+| **My Chrome** | Existing Chrome tabs, cookies, extensions, or signed-in state | Select **Connect Chrome** under **Settings → Capabilities → My Chrome** |
+| **Webapp Testing** | End-to-end testing of local web apps with an independent test environment | Install the `webapp-testing` skill; uses Playwright |
 
-### Using Abu-Browser (recommended)
+### Using the Abu built-in browser (default)
 
-1. Install the `Abu-Browser` skill from **Toolbox → Skills**
-2. The first time you give Abu a browser-related task, it will guide you to **auto-install the Chrome extension**
-3. After that, just describe what you want, e.g.:
+Describe an ordinary web task directly, for example:
    ```
    Open Wikipedia, search for "AI desktop assistants", and send me the first 5 result titles
    ```
 
-> Abu-Browser uses a native bridge to talk to the Chrome extension, so it **drives the browser you actually use every day** — no extra Playwright browser overhead.
+Abu opens a visible browser tab inside the workspace. This browser uses an isolated session and does not read Chrome cookies or signed-in state.
 
-### Manually installing the Chrome extension (optional)
+### Using My Chrome
 
-If you want to install from source manually:
+Abu selects `Abu-Chrome-Bridge` only when you explicitly say “use my current Chrome”, “operate an existing tab”, or “reuse my signed-in session”. If the extension is disconnected, the task stops with connection steps instead of switching to the built-in browser.
 
-1. **Install the Chrome Extension**
-   - Open Chrome → `chrome://extensions/`
-   - Enable "Developer mode"
-   - Click "Load unpacked" → select the `abu-chrome-extension` directory
+### Connecting Chrome
 
-2. **Bridge Service**
-   - Abu manages the Browser Bridge connection automatically
+1. Open **Settings → Capabilities → My Chrome**, then select **Connect Chrome**
+2. Select **Open install windows**; Abu prepares the local connection automatically and opens Chrome Extensions together with the extension folder bundled with Abu
+3. Enable **Developer mode**, select **Load unpacked**, and choose the open `browser-extension` folder
+4. Return to Abu; the page checks the connection automatically, or you can select **Check connection**
+
+The production release uses the local extension bundled with Abu and is not distributed through the Chrome Web Store. Chrome still requires you to complete **Developer mode**, **Load unpacked**, and folder selection yourself; Abu handles the remaining preparation and connection checks. The extension can read and interact with pages on all websites and manage downloads to complete browser tasks you explicitly give Abu. Install it only on a trusted device. When it is no longer needed, select **Disconnect My Chrome** in Abu and disable or remove the extension in Chrome.
+
+Normal users do not need to understand or configure Skills, MCP, or launch commands. If a task needs an existing Chrome session while this capability is disconnected, Abu pauses the exact browser action and opens the same connection guide. Abu does not reconnect it automatically: select **Connect Chrome** and finish setup. Once the extension is connected, Abu automatically resumes the paused action in the original task; you do not need to repeat the request or send **Continue**.
 
 ### Capabilities
 
@@ -863,9 +866,10 @@ Let Abu directly control your computer — screenshot, click, type, scroll — l
 
 ### Enabling Computer Use
 
-1. Open **Settings** → **Preferences**
-2. Find **"Computer Use"** and toggle it on
-3. On first enable, Abu will test screen recording permission
+1. Open **Settings** → **Capabilities**
+2. Find **Computer Use** and select **Enable**
+3. Follow the guide and select **Open System Settings** for both "View screen" and "Control interface"
+4. Return to Abu after granting access; the page rechecks automatically, and both permissions must be allowed before the capability is shown as Ready
 
 ### System Permissions (macOS)
 
@@ -876,7 +880,7 @@ macOS requires two permissions:
 | **Screen Recording** | Screenshot capability | System Settings → Privacy & Security → Screen Recording |
 | **Accessibility** | Mouse/keyboard control | System Settings → Privacy & Security → Accessibility |
 
-> Windows usually doesn't need extra permissions.
+> Windows screen capture usually needs no extra permission. Controlling elevated windows requires running Abu as administrator.
 
 ### Supported Operations
 
@@ -1422,7 +1426,7 @@ Say "Help me create a new skill" in conversation. Abu will guide you through the
 
 ### Q: How do I use browser automation?
 
-The easiest way is to install the **Abu-Browser** skill — on first use, Abu will guide you through auto-installing the Chrome extension. Then just describe what you want to do in the browser.
+For ordinary web tasks, just describe the task and Abu uses its built-in browser without an extension. Ask for **My Chrome** only when you need existing Chrome tabs, cookies, extensions, or signed-in state.
 
 ### Q: How can the trigger HTTP endpoint be reached from outside?
 
@@ -1437,7 +1441,7 @@ Trigger HTTP endpoints listen on `127.0.0.1` (localhost) by default. To reach th
 
 ### Q: Computer Use says insufficient permissions?
 
-On macOS, grant **Screen Recording** and **Accessibility** to Abu in **System Settings → Privacy & Security**, then restart Abu.
+Select **Continue setup** under **Settings → Capabilities → Computer Use**, then check "View screen" and "Control interface" separately. On macOS, Abu opens the matching **System Settings → Privacy & Security** page and rechecks when you return. Restart Abu only if a granted permission still appears unavailable.
 
 ### Q: Does Behavior Awareness leak my privacy?
 

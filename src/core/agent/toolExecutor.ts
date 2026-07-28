@@ -305,24 +305,9 @@ export async function executeToolBatch(params: ToolBatchParams): Promise<ToolBat
     // Subsequent batches in the same agent loop skip hide/show to avoid flickering.
     if (hasInteractiveAction && !isSessionWindowHidden()) {
       try { await invoke('show_screen_border', { stopLabel: getI18n().computerUse.stopControl }); } catch { /* ignore */ }
-      // Remember the foreground app before hiding Abu
-      let targetAppName: string | null = null;
-      try {
-        const activeWin = await invoke<{ app_name: string }>('get_active_window');
-        if (activeWin.app_name && activeWin.app_name !== 'Abu' && activeWin.app_name !== 'Abu Dev') {
-          targetAppName = activeWin.app_name;
-        }
-      } catch { /* ignore */ }
-
       try { await invoke('window_hide'); } catch { /* ignore */ }
       await new Promise(r => setTimeout(r, 200));
       setSessionWindowHidden(true);
-
-      // Re-activate the target app after Abu is hidden
-      if (targetAppName) {
-        try { await invoke('activate_app', { appName: targetAppName }); } catch { /* ignore */ }
-        await new Promise(r => setTimeout(r, 100));
-      }
     }
     setComputerUseActive(true, conversationId);
     setComputerUseBatchMode(true);

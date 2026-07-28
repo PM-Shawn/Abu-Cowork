@@ -398,13 +398,14 @@ const MACOS_ACTIVE_WINDOW_SCRIPT = `
             set frontApp to first application process whose frontmost is true
             set appName to name of frontApp
             set bundleId to bundle identifier of frontApp
+            set appPid to unix id of frontApp
             try
                 set winTitle to name of front window of frontApp
             on error
                 set winTitle to ""
             end try
         end tell
-        return appName & "|||" & winTitle & "|||" & bundleId
+        return appName & "|||" & winTitle & "|||" & bundleId & "|||" & appPid
     `;
 
 /** PowerShell script, verbatim port of window_info.rs's Windows branch. */
@@ -427,7 +428,7 @@ const WINDOWS_ACTIVE_WINDOW_SCRIPT = `
         [WinAPI]::GetWindowThreadProcessId($hwnd, [ref]$pid) | Out-Null
         $proc = Get-Process -Id $pid -ErrorAction SilentlyContinue
         $appName = if ($proc) { $proc.ProcessName } else { "" }
-        Write-Output "$appName|||$title"
+        Write-Output "$appName|||$title|||$appName|||$pid"
     `;
 
 function execFileP(file, args) {
@@ -449,6 +450,7 @@ async function getActiveWindow() {
       app_name: parts[0] ?? '',
       window_title: parts[1] ?? '',
       bundle_id: parts[2] ? parts[2] : null,
+      process_id: Number.isInteger(Number(parts[3])) ? Number(parts[3]) : null,
     };
   }
   if (process.platform === 'win32') {
@@ -459,7 +461,8 @@ async function getActiveWindow() {
     return {
       app_name: processName,
       window_title: parts[1] ?? '',
-      bundle_id: processName ? processName : null,
+      bundle_id: parts[2] ? parts[2] : (processName ? processName : null),
+      process_id: Number.isInteger(Number(parts[3])) ? Number(parts[3]) : null,
     };
   }
   throw new Error('Active window detection not supported on this platform');

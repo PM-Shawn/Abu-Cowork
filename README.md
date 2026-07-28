@@ -27,7 +27,7 @@ Tell Abu what you need — it reads files, runs commands, writes docs, and build
 | Autonomous planning & task execution | :white_check_mark: | :x: | :x: |
 | Read/write local files, run commands | :white_check_mark: | :x: | :white_check_mark: |
 | Natural language interaction | :white_check_mark: | :white_check_mark: | :x: |
-| 28 built-in skills + self-evolving (Abu grows its own) | :white_check_mark: | :x: | :x: |
+| 29 built-in skills + self-evolving (Abu grows its own) | :white_check_mark: | :x: | :x: |
 | Multi-conversation Project aggregation | :white_check_mark: | :x: | :x: |
 | Scheduled tasks & event triggers | :white_check_mark: | :x: | :white_check_mark: |
 | IM bot (Lark/DingTalk/WeCom/Slack) | :white_check_mark: | :x: | Partial |
@@ -78,7 +78,7 @@ Recent highlights: **Workspace file tree + code canvas** (browse / preview / edi
 <td align="center"><b>IM Channel Chat</b><br/>@Abu in Lark/DingTalk to interact<br/><br/><img src="website/assets/screenshot-im-chat.en.png" width="100%" /></td>
 </tr>
 <tr>
-<td align="center"><b>Skills</b><br/>28 built-in skills + self-evolving + custom<br/><br/><img src="website/assets/screenshot-skills.en.png" width="100%" /></td>
+<td align="center"><b>Skills</b><br/>29 built-in skills + self-evolving + custom<br/><br/><img src="website/assets/screenshot-skills.en.png" width="100%" /></td>
 <td align="center"><b>MCP Connectors</b><br/>One-click integration with Playwright, GitHub & more<br/><br/><img src="website/assets/screenshot-mcp.en.png" width="100%" /></td>
 </tr>
 <tr>
@@ -126,9 +126,9 @@ Recent highlights: **Workspace file tree + code canvas** (browse / preview / edi
 - **Theme switching** — Light / dark / system, via Settings → Appearance
 - **Labs** — In-progress features, off by default, opt-in, may change or be removed (currently hosting: Desktop Pet)
 - **Conversation Sharing** — Export any conversation to JSON in one click; API keys and local paths are auto-redacted before sharing
-- **28 Built-in Skills** — PDF/PPTX/DOCX/Excel generation, frontend design, canvas design, algorithmic art, Mermaid/SVG/infographics, Web Artifacts, Chrome automation (Abu-Browser), deep research, Agent self-reflection (reflect), workflow automation, and more — one-click install, fully customizable
+- **29 Built-in Skills** — PDF/PPTX/DOCX/Excel generation, frontend design, canvas design, algorithmic art, Mermaid/SVG/infographics, Abu's built-in browser, optional Chrome bridge, deep research, Agent self-reflection (reflect), workflow automation, and more — one-click install, fully customizable
 - **MCP Protocol** — Connect to databases, search engines, GitHub, and other external services via Model Context Protocol
-- **Browser Automation** — Built-in Browser Bridge + Chrome extension for web element interaction, form filling, screenshots, and JS execution
+- **Browser Automation** — Zero-setup built-in browser for ordinary web tasks, plus an optional Chrome extension bridge for existing tabs and signed-in sessions
 - **Computer Use** — Screenshot + mouse/keyboard control for desktop-level tasks, with sensitive app blocking, dangerous key interception, and a 5-minute session timeout
 - **HTTP Fetch** — Built-in safety gateway: URL length cap, embedded credential blocking, cloud metadata endpoint blocking, 10 MB download limit, 60-second timeout — no more raw `curl` blind spots
 
@@ -253,13 +253,13 @@ Create a weekly report PPT for this week
 
 > For more use cases, see the [User Guide](docs/User-Guide.md)
 
-## Built-in Skills (28 total)
+## Built-in Skills (29 total)
 
 | Category | Skills |
 |----------|--------|
 | Document Generation | PDF, PPTX, DOCX, XLSX |
 | Design & Creative | Frontend Design, Canvas Design, Algorithmic Art, SVG Diagram, Mermaid Diagram, Infographic, Slack GIF Creator, HTML Widget |
-| Browser Automation | **Abu-Browser** (Chrome bridge with auto extension setup, drives a real browser) |
+| Browser Automation | **Abu-Browser** (built-in, isolated session), **Abu-Chrome-Bridge** (optional Chrome extension for existing tabs and sign-in state) |
 | Developer Tools | Claude API, MCP Builder, Web Artifacts Builder, Webapp Testing (Playwright) |
 | Content Writing | Doc Co-authoring, Brand Guidelines, Internal Comms |
 | Automation | Schedule, Trigger, Alert SOP |
@@ -364,10 +364,10 @@ src/
 ├── types/            # TypeScript type definitions
 └── utils/            # Utility functions
 
-builtin-skills/       # 28 built-in skills (one directory each)
+builtin-skills/       # 29 built-in skills (one directory each)
 builtin-agents/       # Built-in agent definitions (placeholder)
 abu-browser-bridge/   # Browser bridge MCP Server
-abu-chrome-extension/ # Chrome extension (used by the Abu-Browser skill)
+abu-chrome-extension/ # Chrome extension (used by the Abu-Chrome-Bridge skill)
 src-tauri/
 ├── src/
 │   ├── computer_use.rs    # Screenshot + mouse/keyboard + sensitive app blocking

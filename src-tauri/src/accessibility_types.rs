@@ -79,6 +79,17 @@ pub struct AxSnapshotResult {
     pub elements: Vec<UiElement>,
 }
 
+/// Stable identity for one running desktop application.
+///
+/// Computer Use authorization binds to this identity rather than a model-
+/// supplied display name, which may be localized or ambiguous.
+#[derive(serde::Serialize)]
+pub struct AppIdentity {
+    pub app_name: String,
+    pub bundle_id: String,
+    pub process_id: i32,
+}
+
 /// Diagnostic: probe why an app's AX tree may be empty. Reports the app element's
 /// attributes BEFORE and AFTER activating (bringing it to front), so we can tell
 /// whether empty `AXChildren` is caused by the app not being active (→ activate fix)

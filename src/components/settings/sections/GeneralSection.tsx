@@ -4,7 +4,6 @@ import { useSettingsStore } from '@/stores/settingsStore';
 import { type LanguageSetting, useI18n } from '@/i18n';
 import { Trash2, Sun, Moon, Monitor } from 'lucide-react';
 import { clearBehaviorData, testWindowPermission } from '@/core/agent/behaviorSensor';
-import { testScreenshotPermission } from '@/core/agent/computerUsePermission';
 import { useToastStore } from '@/stores/toastStore';
 import { Select } from '@/components/ui/select';
 import { Toggle } from '@/components/ui/toggle';
@@ -17,12 +16,9 @@ export default function GeneralSection() {
   const { language, setLanguage } = useSettingsStore();
   const behaviorSensorEnabled = useSettingsStore(s => s.behaviorSensorEnabled);
   const setBehaviorSensorEnabled = useSettingsStore(s => s.setBehaviorSensorEnabled);
-  const computerUseEnabled = useSettingsStore(s => s.computerUseEnabled);
-  const setComputerUseEnabled = useSettingsStore(s => s.setComputerUseEnabled);
   const preventSleep = useSettingsStore(s => s.preventSleep);
   const setPreventSleep = useSettingsStore(s => s.setPreventSleep);
   const [sensorTesting, setSensorTesting] = useState(false);
-  const [computerUseTesting, setComputerUseTesting] = useState(false);
   const { t } = useI18n();
   const theme = useSettingsStore(s => s.theme);
   const setTheme = useSettingsStore(s => s.setTheme);
@@ -42,25 +38,6 @@ export default function GeneralSection() {
         type: 'error',
         title: t.settings.behaviorSensorPermissionDenied,
         message: t.settings.behaviorSensorPermissionGuide,
-      });
-    }
-  };
-
-  const handleToggleComputerUse = async () => {
-    if (computerUseEnabled) {
-      setComputerUseEnabled(false);
-      return;
-    }
-    setComputerUseTesting(true);
-    const hasPermission = await testScreenshotPermission();
-    setComputerUseTesting(false);
-    if (hasPermission) {
-      setComputerUseEnabled(true);
-    } else {
-      useToastStore.getState().addToast({
-        type: 'error',
-        title: t.settings.computerUsePermissionDenied,
-        message: t.settings.computerUsePermissionGuide,
       });
     }
   };
@@ -169,22 +146,6 @@ export default function GeneralSection() {
             {t.settings.behaviorSensorClearData}
           </button>
         )}
-      </div>
-
-      {/* Computer Use */}
-      <div className="space-y-3">
-        <div className="flex items-center justify-between p-4 rounded-xl border border-[var(--abu-border)] bg-[var(--abu-bg-muted)]">
-          <div className="flex-1 mr-4">
-            <p className="text-body text-[var(--abu-text-primary)]">{t.settings.computerUse}</p>
-            <p className="text-minor text-[var(--abu-text-muted)] mt-0.5">{t.settings.computerUseDesc}</p>
-          </div>
-          <Toggle
-            checked={computerUseEnabled}
-            onChange={handleToggleComputerUse}
-            size="lg"
-            disabled={computerUseTesting}
-          />
-        </div>
       </div>
 
       {/* Prevent sleep */}

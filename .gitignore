@@ -106,6 +106,7 @@ dist-electron-spike/
 electron/native-helper/target/
 electron/spike/native-helper-probe/target/
 electron/browser-runtime/dist/
+electron/chrome-bridge-runtime/dist/
 
 # electron-builder packaged output
 release-electron/

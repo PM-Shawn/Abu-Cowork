@@ -21,8 +21,10 @@
  * Rust side never grants this webview any `invoke` capability either).
  *
  * ## Command → API mapping (verified against browser.rs + BrowserTab.tsx)
- * - `browser_create {id,url,x,y,width,height}` → new WebContentsView,
+ * - `browser_create {id,url,x,y,width,height,visible?}` → new WebContentsView,
  *   `mainWin.contentView.addChildView(view)`, `setBounds`, `loadURL`.
+ *   Electron callers may pass `visible:false` so a view created under an
+ *   already-open renderer dialog never paints above it.
  *   Re-invoking with an id that already has a view reuses it (navigate +
  *   reposition) — mirrors browser.rs's StrictMode-double-mount tolerance.
  * - `browser_set_bounds {id,x,y,width,height}` → `view.setBounds(...)`;
@@ -625,7 +627,7 @@ function getView(id) {
   return views.get(id);
 }
 
-function browserCreate({ id, url, x, y, width, height }) {
+function browserCreate({ id, url, x, y, width, height, visible = true }) {
   const win = mainWindow();
   if (!win || win.isDestroyed()) {
     throw new Error('main window not found');
@@ -639,7 +641,7 @@ function browserCreate({ id, url, x, y, width, height }) {
       void existing.webContents.loadURL(parseUrl(url));
     }
     existing.setBounds(toRect(x, y, width, height));
-    existing.setVisible(true);
+    existing.setVisible(visible !== false);
     return null;
   }
 
@@ -656,8 +658,14 @@ function browserCreate({ id, url, x, y, width, height }) {
 
   configureBrowserView(id, view);
 
+  const shouldShow = visible !== false;
+  // Preserve Electron's proven add-then-bounds order. If a renderer dialog is
+  // already open, hide synchronously in the same main-process call before IPC
+  // returns; pre-hiding an unattached macOS WebContentsView can prevent it from
+  // entering window composition when it is shown later.
   win.contentView.addChildView(view);
   view.setBounds(toRect(x, y, width, height));
+  if (!shouldShow) view.setVisible(false);
   views.set(id, view);
   activeAutomationTabId = view.webContents.id;
 

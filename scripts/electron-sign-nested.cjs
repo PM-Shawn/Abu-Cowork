@@ -22,10 +22,15 @@
 
 const path = require('node:path');
 const fs = require('node:fs');
+const { createHash } = require('node:crypto');
 const { execFileSync, spawnSync } = require('node:child_process');
 
 /** Dirs under Contents/Resources whose Mach-O contents we own and must sign. */
 const NESTED_BINARY_DIRS = ['native-helper', 'sandbox-launcher', 'python-runtime', 'node-runtime'];
+const RUNTIME_MARKERS = [
+  { directory: 'node-runtime', executable: ['bin', 'node'], kind: 'node' },
+  { directory: 'python-runtime', executable: ['bin', 'python3'], kind: 'python' },
+];
 
 function isMachO(filePath) {
   // Mach-O magics: feedface/feedfacf (+ swapped) and cafebabe (fat).
@@ -59,6 +64,39 @@ function* walkFiles(dir) {
     if (e.isDirectory()) yield* walkFiles(p);
     else if (e.isFile()) yield p;
   }
+}
+
+function sha256File(filePath) {
+  const hash = createHash('sha256');
+  const fd = fs.openSync(filePath, 'r');
+  try {
+    const buffer = Buffer.allocUnsafe(1024 * 1024);
+    let read;
+    while ((read = fs.readSync(fd, buffer, 0, buffer.length, null)) > 0) {
+      hash.update(buffer.subarray(0, read));
+    }
+  } finally {
+    fs.closeSync(fd);
+  }
+  return hash.digest('hex');
+}
+
+function refreshRuntimeMarkers(resourcesDir) {
+  for (const runtime of RUNTIME_MARKERS) {
+    const root = path.join(resourcesDir, runtime.directory);
+    const markerPath = path.join(root, '.abu-runtime.json');
+    const executablePath = path.join(root, ...runtime.executable);
+    if (!fs.existsSync(markerPath) || !fs.existsSync(executablePath)) {
+      throw new Error(`signed ${runtime.kind} runtime is incomplete under ${root}`);
+    }
+    const marker = JSON.parse(fs.readFileSync(markerPath, 'utf8'));
+    if (marker.kind !== runtime.kind || typeof marker.executableSha256 !== 'string') {
+      throw new Error(`invalid ${runtime.kind} runtime marker at ${markerPath}`);
+    }
+    marker.executableSha256 = sha256File(executablePath);
+    fs.writeFileSync(markerPath, `${JSON.stringify(marker, null, 2)}\n`);
+  }
+  console.log('[sign-nested] refreshed signed Node/Python runtime hashes');
 }
 
 function signNestedMacBinaries(context) {
@@ -100,6 +138,7 @@ function signNestedMacBinaries(context) {
       signed++;
     }
   }
+  refreshRuntimeMarkers(resourcesDir);
   console.log(`[sign-nested] signed ${signed} nested Mach-O file(s) with "${identity}"`);
 }
 

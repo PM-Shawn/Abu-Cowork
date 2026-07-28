@@ -286,15 +286,15 @@ function readThinMachOSemantics(raw, label) {
     }
   }
 
-  // codesign may add up to one 16-byte alignment unit before its signature.
+  // Strip the zero suffix before the signature. Linkedit payloads such as the
+  // string table can legitimately end in NUL before codesign adds its own
+  // alignment, so the combined suffix is not bounded to one alignment unit.
+  // A non-zero mutation remains part of the semantic digest and is rejected.
   let semanticEnd = signatureOffset;
   while (semanticEnd > firstSectionOffset && raw[semanticEnd - 1] === 0) {
     semanticEnd -= 1;
   }
-  if (
-    semanticEnd < linkedit.fileOffset ||
-    signatureOffset - semanticEnd > 16
-  ) {
+  if (semanticEnd < linkedit.fileOffset) {
     throw new Error(`invalid Mach-O signature padding: ${label}`);
   }
 

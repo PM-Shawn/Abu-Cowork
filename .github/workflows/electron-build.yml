@@ -189,14 +189,31 @@ jobs:
           codesign --verify --deep --strict "$APP"
 
           FOUND_MACHO=0
+          MACHO_ERRORS=0
+          NODE_PTY_ARCH="${EXPECTED_ARCH/x86_64/x64}"
           while IFS= read -r -d '' nested; do
+            # node-pty intentionally ships fallback prebuilds for both macOS
+            # architectures. The current-arch prebuild is exercised by the
+            # packaged PTY smoke below; ignore only the inert sibling prebuild.
+            if [[ "$nested" == */node_modules/node-pty/prebuilds/darwin-*/* &&
+                  "$nested" != */node_modules/node-pty/prebuilds/darwin-"$NODE_PTY_ARCH"/* ]]; then
+              continue
+            fi
             if file "$nested" | grep -q 'Mach-O'; then
               FOUND_MACHO=1
-              lipo -archs "$nested" | tr ' ' '\n' | grep -Fx "$EXPECTED_ARCH"
-              codesign --verify --strict "$nested"
+              ARCHES="$(lipo -archs "$nested")"
+              if ! tr ' ' '\n' <<< "$ARCHES" | grep -Fxq "$EXPECTED_ARCH"; then
+                echo "::error file=$nested::Expected $EXPECTED_ARCH Mach-O, found: $ARCHES"
+                MACHO_ERRORS=1
+                continue
+              fi
+              if ! codesign --verify --strict "$nested"; then
+                MACHO_ERRORS=1
+              fi
             fi
           done < <(find "$APP" -type f -print0)
           test "$FOUND_MACHO" -eq 1
+          test "$MACHO_ERRORS" -eq 0
           node scripts/verify-electron-runtimes.mjs \
             --resource-root "$APP/Contents/Resources"
 
@@ -359,13 +376,12 @@ jobs:
         if: ${{ inputs.transition_release }}
         shell: pwsh
         run: |
-          $env:ELECTRON_RUN_AS_NODE = "1"
-          & "release-electron/win-unpacked/Abu.exe" -e @'
-          const fs = require("node:fs");
-          const manifest = JSON.parse(fs.readFileSync(
-            "release-electron/win-unpacked/resources/app.asar/package.json",
-            "utf8"
-          ));
+          node -e @'
+          const asar = require("@electron/asar");
+          const manifest = JSON.parse(asar.extractFile(
+            "release-electron/win-unpacked/resources/app.asar",
+            "package.json"
+          ).toString("utf8"));
           if (manifest?.abuRelease?.tauriMigration !== true) process.exit(1);
           if (manifest?.version !== process.env.ABU_ELECTRON_VERSION) process.exit(2);
           '@

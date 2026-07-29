@@ -5,6 +5,7 @@ const { test } = require('node:test');
 const {
   createComputerUseGate,
   COMPUTER_USE_GATE_MISS,
+  TASK_GRANT_TTL_MS,
 } = require('./computerUseGate.cjs');
 const { COMPUTER_USE_TOKEN_ARG } = require('./computerUseCommands.cjs');
 
@@ -17,6 +18,8 @@ function harness(overrides = {}) {
   const nativeCalls = [];
   const approvalRequests = [];
   const taskApprovalRequests = [];
+  const actionApprovalRequests = [];
+  let axElements = [];
   let helperKillCount = 0;
   let now = 10_000;
   const gate = createComputerUseGate({
@@ -50,7 +53,7 @@ function harness(overrides = {}) {
         return {
           session_id: 'ax-session-1',
           app: currentIdentity.app_name,
-          elements: [],
+          elements: axElements,
         };
       }
       return { ok: true };
@@ -61,6 +64,10 @@ function harness(overrides = {}) {
     },
     requestTaskApproval: async (request) => {
       taskApprovalRequests.push(request);
+      return true;
+    },
+    requestActionApproval: async (request) => {
+      actionApprovalRequests.push(request);
       return true;
     },
     killNativeHelper: () => {
@@ -75,11 +82,15 @@ function harness(overrides = {}) {
     nativeCalls,
     approvalRequests,
     taskApprovalRequests,
+    actionApprovalRequests,
     get helperKillCount() {
       return helperKillCount;
     },
     setIdentity(value) {
       currentIdentity = value;
+    },
+    setAxElements(value) {
+      axElements = value;
     },
     advance(ms) {
       now += ms;
@@ -96,6 +107,11 @@ async function begin(h, extra = {}) {
     interactionMode: 'foreground',
     scope: 'ui-control',
     permissionMode: 'standard',
+    actionIntent: {
+      action: 'click',
+      category: 'none',
+      summary: '',
+    },
     ...extra,
   });
 }
@@ -140,6 +156,201 @@ test('privileged commands require a live sender-bound session token', async () =
     }),
     /invalid or expired/
   );
+});
+
+test('UI-control sessions require a structured action intent', async () => {
+  const h = harness();
+  await h.gate.dispatch(h.record, h.sender, 'computer_use_set_enabled', { enabled: true });
+  await assert.rejects(
+    h.gate.dispatch(h.record, h.sender, 'computer_use_begin_session', {
+      conversationId: 'conversation-1',
+      toolCallId: 'tool-1',
+      loopId: 'loop-1',
+      interactionMode: 'foreground',
+      scope: 'ui-control',
+      permissionMode: 'standard',
+    }),
+    /action intent is required/,
+  );
+});
+
+test('consequential actions ask in every permission mode and only authorize one native attempt', async () => {
+  for (const permissionMode of ['standard', 'smart', 'autonomous']) {
+    const h = harness();
+    const session = await begin(h, {
+      permissionMode,
+      actionIntent: {
+        action: 'click',
+        category: 'send',
+        summary: 'Send the prepared test message',
+      },
+    });
+    await h.gate.dispatch(h.record, h.sender, 'mouse_click', {
+      x: 20,
+      y: 30,
+      [COMPUTER_USE_TOKEN_ARG]: session.token,
+    });
+    assert.equal(h.actionApprovalRequests.length, 1, permissionMode);
+    assert.deepEqual(h.actionApprovalRequests[0].consequence, {
+      category: 'send',
+      summary: 'Send the prepared test message',
+      source: 'declared-intent',
+    });
+    await assert.rejects(
+      h.gate.dispatch(h.record, h.sender, 'mouse_click', {
+        x: 40,
+        y: 50,
+        [COMPUTER_USE_TOKEN_ARG]: session.token,
+      }),
+      /authorization was already used/,
+    );
+    assert.equal(
+      h.nativeCalls.filter(({ cmd }) => cmd === 'mouse_click').length,
+      1,
+      permissionMode,
+    );
+  }
+});
+
+test('rejecting a consequential action never dispatches native input', async () => {
+  const h = harness({ requestActionApproval: async () => false });
+  const session = await begin(h, {
+    actionIntent: {
+      action: 'click',
+      category: 'delete',
+      summary: 'Delete the disposable test note',
+    },
+  });
+  await assert.rejects(
+    h.gate.dispatch(h.record, h.sender, 'mouse_click', {
+      x: 20,
+      y: 30,
+      [COMPUTER_USE_TOKEN_ARG]: session.token,
+    }),
+    /was not approved/,
+  );
+  assert.equal(h.nativeCalls.some(({ cmd }) => cmd === 'mouse_click'), false);
+});
+
+test('a risky native accessibility label cannot bypass approval by declaring none', async () => {
+  const h = harness();
+  h.setAxElements([
+    {
+      id: 9,
+      role: 'AXButton',
+      label: 'Delete message',
+      value: null,
+      actions: ['AXPress'],
+      bounds: [0, 0, 20, 20],
+      depth: 1,
+    },
+  ]);
+  const readSession = await begin(h, {
+    actionIntent: { action: 'get_app_state', category: 'none', summary: '' },
+  });
+  await h.gate.dispatch(h.record, h.sender, 'ax_snapshot', {
+    appName: 'Notes',
+    [COMPUTER_USE_TOKEN_ARG]: readSession.token,
+  });
+  await h.gate.dispatch(h.record, h.sender, 'computer_use_end_session', {
+    [COMPUTER_USE_TOKEN_ARG]: readSession.token,
+  });
+
+  const clickSession = await begin(h, {
+    toolCallId: 'tool-2',
+    actionIntent: { action: 'click', category: 'none', summary: '' },
+  });
+  await h.gate.dispatch(h.record, h.sender, 'ax_press', {
+    sessionId: 'ax-session-1',
+    elementId: 9,
+    [COMPUTER_USE_TOKEN_ARG]: clickSession.token,
+  });
+  assert.equal(h.actionApprovalRequests.length, 1);
+  assert.equal(h.actionApprovalRequests[0].consequence.category, 'delete');
+  assert.match(h.actionApprovalRequests[0].consequence.summary, /Delete message/);
+});
+
+test('Stop invalidates an action approval that returns late', async () => {
+  let resolveApproval;
+  const h = harness({
+    requestActionApproval: async () => new Promise((resolve) => {
+      resolveApproval = resolve;
+    }),
+  });
+  const session = await begin(h, {
+    actionIntent: {
+      action: 'click',
+      category: 'publish',
+      summary: 'Publish the disposable test post',
+    },
+  });
+  const staleAction = h.gate.dispatch(h.record, h.sender, 'mouse_click', {
+    x: 20,
+    y: 30,
+    [COMPUTER_USE_TOKEN_ARG]: session.token,
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  await h.gate.dispatch(h.record, h.sender, 'computer_use_end_task', {
+    conversationId: 'conversation-1',
+    loopId: 'loop-1',
+  });
+  resolveApproval(true);
+  await assert.rejects(staleAction, /authorization is no longer active/);
+  assert.equal(h.nativeCalls.some(({ cmd }) => cmd === 'mouse_click'), false);
+});
+
+test('target changes while action approval is open fail closed', async () => {
+  const h = harness({
+    requestActionApproval: async () => {
+      h.setIdentity({
+        app_name: 'Finder',
+        bundle_id: 'com.apple.finder',
+        process_id: 400,
+      });
+      return true;
+    },
+  });
+  const session = await begin(h, {
+    actionIntent: {
+      action: 'click',
+      category: 'delete',
+      summary: 'Delete the disposable test note',
+    },
+  });
+  await assert.rejects(
+    h.gate.dispatch(h.record, h.sender, 'mouse_click', {
+      x: 20,
+      y: 30,
+      [COMPUTER_USE_TOKEN_ARG]: session.token,
+    }),
+    /target changed/,
+  );
+  assert.equal(h.nativeCalls.some(({ cmd }) => cmd === 'mouse_click'), false);
+});
+
+test('renderer reload invalidates an action approval that returns late', async () => {
+  let resolveApproval;
+  const h = harness({
+    requestActionApproval: async () => new Promise((resolve) => {
+      resolveApproval = resolve;
+    }),
+  });
+  const session = await begin(h, {
+    actionIntent: {
+      action: 'key',
+      category: 'send',
+      summary: 'Send the disposable test message',
+    },
+  });
+  const staleAction = h.gate.dispatch(h.record, h.sender, 'keyboard_press', {
+    key: 'Return',
+    [COMPUTER_USE_TOKEN_ARG]: session.token,
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  h.gate.revokeSender(h.sender);
+  resolveApproval(true);
+  await assert.rejects(staleAction, /authorization is no longer active/);
+  assert.equal(h.nativeCalls.some(({ cmd }) => cmd === 'keyboard_press'), false);
 });
 
 test('disabled, background, expired, and target-changed sessions fail closed', async () => {
@@ -560,5 +771,29 @@ test('AX sessions stay bound to the authorized app and are cleaned explicitly', 
       [COMPUTER_USE_TOKEN_ARG]: session.token,
     }),
     /Accessibility session is invalid/
+  );
+});
+
+test('AX sessions from an expired task cannot be reused by a later task', async () => {
+  const h = harness();
+  const firstSession = await begin(h);
+  await h.gate.dispatch(h.record, h.sender, 'ax_snapshot', {
+    appName: 'Notes',
+    [COMPUTER_USE_TOKEN_ARG]: firstSession.token,
+  });
+
+  h.advance(TASK_GRANT_TTL_MS + 1);
+  const laterSession = await begin(h, {
+    loopId: 'loop-2',
+    toolCallId: 'tool-2',
+  });
+
+  await assert.rejects(
+    h.gate.dispatch(h.record, h.sender, 'ax_press', {
+      sessionId: 'ax-session-1',
+      elementId: 1,
+      [COMPUTER_USE_TOKEN_ARG]: laterSession.token,
+    }),
+    /belongs to a different task/,
   );
 });

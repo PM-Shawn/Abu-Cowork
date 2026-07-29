@@ -2636,6 +2636,8 @@ const enUS: TranslationDict = {
       errPermissionProbeFailed: 'Error: Abu could not verify the required system permissions, so the computer action was stopped: {msg}',
       errTargetIdentityFailed: 'Error: Abu could not verify which app would be controlled, so the computer action was stopped: {msg}',
       errAuthorizationFailed: 'Error: Computer Use authorization was not granted. No computer action was executed: {msg}',
+      errConsequenceRequired: 'Error: This computer action did not declare whether it has a consequential outcome, so it was stopped. Set consequence to match the actual result; use none for ordinary viewing, navigation, or draft input.',
+      errConsequenceDetailRequired: 'Error: A consequential action must use consequence_detail to say exactly what will be sent, deleted, purchased, or changed. Nothing was executed.',
       noInteractiveElements: '(No interactive elements found)',
       errNoVision: 'The current model has no vision capability. Use get_app_state to read AX elements, then click(element_id) / type(element_id, text) to operate.',
       errActivateNeedsApp: 'Error: activate_app requires the app parameter (app name, e.g. "D-Chat", "Notes").',

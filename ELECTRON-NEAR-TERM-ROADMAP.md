@@ -2,12 +2,11 @@
 
 Date: 2026-07-28
 
-Status: the original runtime roadmap is complete. Branches 1 through 5 are
-merged into `refactor-dev`. The follow-up capability-model branch is
-implemented, reviewed, and verified in a clean macOS package, but remains
-unmerged pending an explicit merge decision. Windows real-machine
-package/runtime verification is still required before release. This is not
-release approval.
+Status: the original runtime roadmap, capability-model follow-up, and
+consequential-action approval are merged into `refactor-dev`.
+Consequential-action approval passed its automated gates; broader attended
+acceptance and Windows real-machine package/runtime verification are still
+required before release. This is not release approval.
 
 Base branch: `refactor-dev`
 
@@ -32,11 +31,13 @@ part of this roadmap.
 | 4 | `feat/electron-browser-runtime` | Browser automation works after installation | built-in browser as default, isolated persistent session, pinned local browser bridge, optional Chrome extension mode | plan/review: `gpt-5.6-sol` `xhigh`; build: `gpt-5.5` `high` |
 | 5 | `feat/electron-packaged-runtime-e2e` | The real installer proves the above on a clean environment | no-host-runtime tests, office/PDF/browser flows, stop/timeout tree tests, updater load, macOS and Windows package checks | tests: `gpt-5.6-terra` `high`; review: `gpt-5.6-sol` `xhigh` |
 | 6 | `feat/electron-capability-plugins` | Users can see what Abu can do and complete missing setup without confusing the built-in browser with Chrome | static capability catalog, read-only status projection, Settings overview, browser/Computer Use naming and documentation | plan/review: `gpt-5.6-sol` `xhigh`; build: `gpt-5.5` `high` |
+| 7 | `feat/electron-consequential-action-approval` | App access never silently authorizes sending, publishing, deleting, purchasing, or changing security settings | structured action intent, native one-time confirmation, main-process label checks, Stop/reload/target-change revocation | plan/review: `gpt-5.6-sol` `xhigh`; build: `gpt-5.5` `high` |
 
 Each branch starts from the then-current `refactor-dev`, stays in an isolated
 worktree, and is committed or merged only after its acceptance gates pass. The
 user authorized autonomous commits and merges for branches 1 through 5 on
-2026-07-27. Branch 6 remains subject to an explicit merge decision.
+2026-07-27, explicitly merged branch 6 afterward, and explicitly authorized
+branch 7's commit and merge on 2026-07-29.
 
 ## Current Progress
 
@@ -240,8 +241,8 @@ Verified locally on macOS:
   immutability, fuse, and signed-build comparison gaps. The final review reports
   no P0, P1, or P2 findings.
 
-`feat/electron-capability-plugins` is implemented, reviewed, and has passed
-local and packaged macOS acceptance. It remains unmerged. It has:
+`feat/electron-capability-plugins` is merged into `refactor-dev`. Before merge,
+it was reviewed and passed local and packaged macOS acceptance. It has:
 
 - a static bundled capability catalog with stable IDs, runtime ownership,
   lifecycle, permissions, and data-scope metadata but no executable manifest
@@ -345,6 +346,27 @@ local and packaged macOS acceptance. It remains unmerged. It has:
   and late approval resurrection. The final focused review reports no remaining
   P0, P1, or P2 findings.
 
+`feat/electron-consequential-action-approval` is merged into `refactor-dev`. It
+has:
+
+- a required structured consequence declaration on every Computer Use tool
+  call, with an exact user-visible summary for consequential outcomes;
+- a main-process-owned native confirmation immediately before send, publish,
+  delete, overwrite, install, purchase, credential, or security changes;
+- Cancel as the default and one native attempt per approval, including Smart
+  Review and Full Autonomy;
+- independent main-process classification of reviewed Accessibility labels and
+  Finder/Explorer delete shortcuts, so known risky controls cannot bypass the
+  prompt by declaring an ordinary click;
+- task, operating-system permission, app identity, Accessibility snapshot, Stop,
+  expiry, and renderer-lifecycle rechecks around the dialog and native input;
+- focused policy and gate coverage plus the full automated acceptance gates.
+
+Coordinate-only controls on custom canvases have no trustworthy local semantic
+label in V1 and still depend on the required structured declaration. OCR or
+application-specific transaction adapters remain deferred until attended
+acceptance data justifies them.
+
 User-attended acceptance is still required for the real macOS Screen Recording
 and Accessibility prompts. Automated permission mocks and non-prompting probes
 must not be treated as proof of the operating-system prompt flow.
@@ -438,7 +460,7 @@ ownership and later layers may only tighten an earlier decision:
 3. **Per-application authorization** answers which foreground application the
    current Computer Use action may operate. It uses the current conversation's
    permission mode but never creates a persistent grant automatically.
-4. **Action/plan approval** is the next independent control for consequential
+4. **Action/plan approval** is an independent control for consequential
    operations such as send, publish, delete, overwrite, install, purchase, or
    credential changes. The current app grant authorizes view/control scope for
    the task; it must not be presented as approving every outcome inside the app.

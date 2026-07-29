@@ -2637,6 +2637,8 @@ const zhCN: TranslationDict = {
       errPermissionProbeFailed: 'Error: Abu 无法确认所需的系统权限，已停止本次电脑操作：{msg}',
       errTargetIdentityFailed: 'Error: Abu 无法确认将要操控的具体应用，已停止本次电脑操作：{msg}',
       errAuthorizationFailed: 'Error: 电脑操控授权未通过，本次没有执行任何电脑操作：{msg}',
+      errConsequenceRequired: 'Error: 本次电脑操作没有声明是否会产生关键后果，已停止执行。请根据实际结果设置 consequence；普通查看、导航或输入草稿使用 none。',
+      errConsequenceDetailRequired: 'Error: 关键操作必须用 consequence_detail 准确说明将发送、删除、购买或修改什么，本次没有执行。',
       noInteractiveElements: '（没有找到可交互元素）',
       errNoVision: '当前模型不支持图片识别，截图对它没有意义。请改用 get_app_state（可加 app 参数指定应用）读取 AX 元素，再用 click(element_id) / type(element_id, text) 操作。',
       errActivateNeedsApp: 'Error: activate_app 需要 app 参数（应用名，如 "D-Chat"、"Notes"）。',

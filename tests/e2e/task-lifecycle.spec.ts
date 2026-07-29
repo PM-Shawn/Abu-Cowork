@@ -11,12 +11,11 @@ import path from 'node:path';
 import type { ElectronApplication, Page } from 'playwright';
 import {
   closeAbuElectron,
+  crashAbuSidecarForE2E,
   createElectronDataRoot,
-  killAbuSidecar,
   launchAbuElectron,
   removeElectronDataRoot,
   terminateAbuElectron,
-  waitForAbuSidecarPid,
   type ElectronDataRoot,
 } from './electronHelpers';
 
@@ -522,15 +521,13 @@ test.describe.serial('Electron product task lifecycle', () => {
     await waitForApp(page);
     await configureLocalMockProvider(page, mock.baseUrl);
 
-    const originalSidecarPid = await waitForAbuSidecarPid(app);
     const input = page.getByPlaceholder(CHAT_PLACEHOLDER);
     await input.fill(prompt);
     await input.press('Enter');
     await expect.poll(() => taskRequests(mock!).length, { timeout: READY_TIMEOUT }).toBe(1);
     await expect(page.getByText(partial, { exact: true })).toBeVisible({ timeout: READY_TIMEOUT });
 
-    const killedPid = await killAbuSidecar(app);
-    expect(killedPid).toBe(originalSidecarPid);
+    await crashAbuSidecarForE2E(page, dataRoot.sidecarCrashToken);
     await expect.poll(() => taskRequests(mock!)[0]?.responseAborted, { timeout: READY_TIMEOUT }).toBe(true);
 
     await expect(page.getByText(/后台服务意外中断.*自动恢复/)).toBeVisible({ timeout: READY_TIMEOUT });
@@ -538,9 +535,6 @@ test.describe.serial('Electron product task lifecycle', () => {
     await expect(input).toBeEditable({ timeout: READY_TIMEOUT });
     expect(app.process().exitCode).toBeNull();
     expect(app.process().signalCode).toBeNull();
-
-    const replacementSidecarPid = await waitForAbuSidecarPid(app, killedPid, READY_TIMEOUT);
-    expect(replacementSidecarPid).not.toBe(killedPid);
 
     await input.fill(followUp);
     await input.press('Enter');

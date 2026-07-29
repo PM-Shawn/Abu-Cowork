@@ -138,6 +138,7 @@ import {
   shutdownAllAgentRuns,
 } from './agentLoopHost';
 import { resolvePendingResponse, rejectAllPendingRequests } from './rpcClient';
+import { isAuthorizedE2ECrash } from './e2eCrashGate';
 import {
   writeLine,
   makeError,
@@ -257,6 +258,15 @@ function handleMessage(raw: string): void {
     rejectAllPendingRequests(new Error('Sidecar shutting down'));
     flushAndExit(0);
     return;
+  }
+
+  if (method === 'e2e.crash') {
+    if (!isAuthorizedE2ECrash(params)) {
+      if (!isNotification) writeLine(makeError(id, -32601, 'Method not found'));
+      return;
+    }
+    log('authenticated E2E crash requested');
+    process.exit(86);
   }
 
   if (method === 'ping') {

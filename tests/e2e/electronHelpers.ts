@@ -6,12 +6,10 @@
  * headless IPC harness. See electron/main.cjs for the full launch story.
  */
 import { randomUUID } from 'node:crypto';
-import { execFile } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { promisify } from 'node:util';
-import { _electron as electron, type ElectronApplication } from 'playwright';
+import { _electron as electron, type ElectronApplication, type Page } from 'playwright';
 
 /**
  * Repo root. The npm script (`test:e2e:electron`) always invokes `playwright
@@ -21,12 +19,14 @@ import { _electron as electron, type ElectronApplication } from 'playwright';
 export const REPO_ROOT = process.cwd();
 export const MAIN_ENTRY = path.join(REPO_ROOT, 'electron', 'main.cjs');
 const E2E_APP_DATA_ROOT_ENV = 'ABU_E2E_APP_DATA_ROOT';
-const execFileAsync = promisify(execFile);
+const E2E_SIDECAR_CRASH_TOKEN_ENV = 'ABU_E2E_SIDECAR_CRASH_TOKEN';
+const SIDECAR_ID = 'abu-sidecar';
 
 export interface ElectronDataRoot {
   rootDir: string;
   userDataDir: string;
   appDataDir: string;
+  sidecarCrashToken: string;
 }
 
 export interface LaunchedApp extends ElectronDataRoot {
@@ -45,6 +45,7 @@ export function createElectronDataRoot(): ElectronDataRoot {
     rootDir,
     userDataDir: path.join(rootDir, 'user-data'),
     appDataDir: path.join(rootDir, 'app-data'),
+    sidecarCrashToken: randomUUID(),
   };
 }
 
@@ -82,6 +83,7 @@ export async function launchAbuElectron(dataRoot = createElectronDataRoot()): Pr
     env: {
       ...process.env,
       [E2E_APP_DATA_ROOT_ENV]: dataRoot.appDataDir,
+      [E2E_SIDECAR_CRASH_TOKEN_ENV]: dataRoot.sidecarCrashToken,
     },
     timeout: 60_000,
   });
@@ -135,91 +137,30 @@ export async function terminateAbuElectron(app: ElectronApplication): Promise<vo
 }
 
 /**
- * Resolve the one sidecar process spawned directly by this test's Electron
- * main process. The parent PID and absolute entry path jointly scope the
- * lookup, so another Abu/Codex/Electron process can never be selected.
+ * Ask the isolated E2E sidecar to terminate itself. The launch-specific token
+ * is available only to this test and the child process; production launches
+ * never enable the method. Self-termination avoids any external PID lookup or
+ * PID-reuse window that could target an unrelated process.
  */
-export async function waitForAbuSidecarPid(
-  app: ElectronApplication,
-  excludedPid?: number,
-  timeoutMs = 10_000,
-): Promise<number> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    const matches = (await listDirectSidecarPids(app)).filter((pid) => pid !== excludedPid);
-    if (matches.length === 1) return matches[0];
-    if (matches.length > 1) {
-      throw new Error(`Found multiple Abu sidecars for Electron PID ${app.process().pid}: ${matches.join(', ')}`);
-    }
-    await new Promise<void>((resolve) => setTimeout(resolve, 100));
-  }
-  throw new Error(`Timed out waiting for Abu sidecar under Electron PID ${app.process().pid}`);
-}
-
-/** Kill only the currently verified sidecar child belonging to this app. */
-export async function killAbuSidecar(app: ElectronApplication): Promise<number> {
-  const pid = await waitForAbuSidecarPid(app);
-  const verified = await listDirectSidecarPids(app);
-  if (verified.length !== 1 || verified[0] !== pid) {
-    throw new Error(`Abu sidecar changed before kill (expected ${pid}, found ${verified.join(', ') || 'none'})`);
-  }
-  process.kill(pid, 'SIGKILL');
-  return pid;
-}
-
-interface ProcessRow {
-  command: string;
-  pid: number;
-  ppid: number;
-}
-
-async function listDirectSidecarPids(app: ElectronApplication): Promise<number[]> {
-  const parentPid = app.process().pid;
-  const expectedEntry = path.join(REPO_ROOT, 'sidecar', 'index.mjs');
-  const rows = process.platform === 'win32'
-    ? await listWindowsProcesses(parentPid)
-    : await listPosixProcesses();
-  return rows
-    .filter((row) => row.ppid === parentPid && row.command.includes(expectedEntry))
-    .map((row) => row.pid);
-}
-
-async function listPosixProcesses(): Promise<ProcessRow[]> {
-  const { stdout } = await execFileAsync('ps', ['-axo', 'pid=,ppid=,command='], {
-    encoding: 'utf8',
-  });
-  const rows: ProcessRow[] = [];
-  for (const line of stdout.split('\n')) {
-    const match = /^\s*(\d+)\s+(\d+)\s+(.*)$/.exec(line);
-    if (!match) continue;
-    rows.push({ pid: Number(match[1]), ppid: Number(match[2]), command: match[3] });
-  }
-  return rows;
-}
-
-async function listWindowsProcesses(parentPid: number): Promise<ProcessRow[]> {
-  const script = [
-    `Get-CimInstance Win32_Process -Filter "ParentProcessId = ${parentPid}"`,
-    'Select-Object ProcessId, ParentProcessId, CommandLine',
-    'ConvertTo-Json -Compress',
-  ].join(' | ');
-  const { stdout } = await execFileAsync('powershell.exe', [
-    '-NoProfile',
-    '-NonInteractive',
-    '-Command',
-    script,
-  ], { encoding: 'utf8' });
-  if (!stdout.trim()) return [];
-  const parsed = JSON.parse(stdout) as
-    | { CommandLine?: unknown; ParentProcessId?: unknown; ProcessId?: unknown }
-    | Array<{ CommandLine?: unknown; ParentProcessId?: unknown; ProcessId?: unknown }>;
-  const records = Array.isArray(parsed) ? parsed : [parsed];
-  return records.flatMap((record) => {
-    const pid = Number(record.ProcessId);
-    const ppid = Number(record.ParentProcessId);
-    if (!Number.isInteger(pid) || !Number.isInteger(ppid)) return [];
-    return [{ pid, ppid, command: typeof record.CommandLine === 'string' ? record.CommandLine : '' }];
-  });
+export async function crashAbuSidecarForE2E(page: Page, sidecarCrashToken: string): Promise<void> {
+  await page.evaluate(async ({ id, token }) => {
+    const internals = (
+      window as Window & {
+        __TAURI_INTERNALS__?: {
+          invoke: (command: string, args?: unknown) => Promise<unknown>;
+        };
+      }
+    ).__TAURI_INTERNALS__;
+    if (!internals) throw new Error('Electron IPC bridge is unavailable');
+    await internals.invoke('mcp_write', {
+      id,
+      message: JSON.stringify({
+        jsonrpc: '2.0',
+        method: 'e2e.crash',
+        params: { token },
+      }),
+    });
+  }, { id: SIDECAR_ID, token: sidecarCrashToken });
 }
 
 function waitForChildExit(

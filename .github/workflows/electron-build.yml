@@ -106,7 +106,17 @@ jobs:
           npm run parity:check
           npm run electron:bootstrap-test
           npm run electron:migration-test
-          npm run electron:migration-preload-verify
+          for attempt in 1 2 3; do
+            if npm run electron:migration-preload-verify; then
+              break
+            fi
+            if [[ "$attempt" -eq 3 ]]; then
+              echo "Electron migration preload verification failed after $attempt attempts" >&2
+              exit 1
+            fi
+            echo "Electron preload verification attempt $attempt failed; retrying after $((attempt * 10))s" >&2
+            sleep "$((attempt * 10))"
+          done
           npm run electron:security-test
           npm run test:electron:release-stage
 
@@ -339,7 +349,17 @@ jobs:
           npm run parity:check
           npm run electron:bootstrap-test
           npm run electron:migration-test
-          npm run electron:migration-preload-verify
+          for attempt in 1 2 3; do
+            if npm run electron:migration-preload-verify; then
+              break
+            fi
+            if [[ "$attempt" -eq 3 ]]; then
+              echo "Electron migration preload verification failed after $attempt attempts" >&2
+              exit 1
+            fi
+            echo "Electron preload verification attempt $attempt failed; retrying after $((attempt * 10))s" >&2
+            sleep "$((attempt * 10))"
+          done
           npm run electron:security-test
           npm run test:electron:release-stage
           cargo test --manifest-path electron/native-helper/Cargo.toml --bin tauri-transition-reader

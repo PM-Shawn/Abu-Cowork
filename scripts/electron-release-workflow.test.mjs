@@ -46,6 +46,13 @@ test('Electron build uses native runners for all three release targets', () => {
   for (const job of [build.jobs['build-mac'], build.jobs['build-windows']]) {
     const setupNode = job.steps.find((step) => step.uses === 'actions/setup-node@v7');
     assert.equal(setupNode.with['node-version'], 24);
+    const gates = job.steps.find((step) =>
+      ['Gates', 'Windows gates'].includes(step.name)
+    );
+    assert.match(
+      gates.run,
+      /for attempt in 1 2 3; do[\s\S]*electron:migration-preload-verify[\s\S]*retrying after/
+    );
   }
   assert.match(
     JSON.stringify(build.jobs['build-windows']),

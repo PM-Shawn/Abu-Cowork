@@ -119,6 +119,12 @@ extraResources:
     to: sandbox-launcher
   - from: electron/.runtime/node-runtime
     to: node-runtime
+  # electron-builder intentionally filters a source-root node_modules folder.
+  # The official Windows Node archive stores npm/npx there (macOS uses
+  # lib/node_modules), so copy it from its own matcher root to retain the
+  # bundled CLIs in Windows packages.
+  - from: electron/.runtime/node-runtime/node_modules
+    to: node-runtime/node_modules
   - from: electron/.runtime/python-runtime
     to: python-runtime
   - from: electron/runtime

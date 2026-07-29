@@ -109,10 +109,20 @@ test('release publishes only after all Electron targets and switches root pointe
 });
 
 test('packaged feeds are architecture-isolated', () => {
-  const builder = fs.readFileSync(path.join(root, 'electron-builder.yml'), 'utf8');
+  const builderPath = path.join(root, 'electron-builder.yml');
+  const builder = fs.readFileSync(builderPath, 'utf8');
+  const builderConfig = YAML.parse(builder);
   const buildWorkflow = fs.readFileSync(
     path.join(root, '.github', 'workflows', 'electron-build.yml'),
     'utf8'
+  );
+  assert.ok(
+    builderConfig.extraResources.some(
+      (resource) =>
+        resource.from === 'electron/.runtime/node-runtime/node_modules' &&
+        resource.to === 'node-runtime/node_modules'
+    ),
+    'Windows packages must explicitly retain the root-level bundled npm/npx tree'
   );
   assert.match(builder, /electron\/mac-arm64\//);
   assert.match(buildWorkflow, /electron\/\$\{FEED_CHANNEL\}\//);

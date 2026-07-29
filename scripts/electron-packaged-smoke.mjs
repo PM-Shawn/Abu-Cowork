@@ -1466,7 +1466,7 @@ async function inspectPackagedBrowserView(app, tabId, screenshotData) {
       );
       let windowComposite = null;
       let compositeError = '';
-      let windowCompositeTrusted = process.platform !== 'darwin';
+      let windowCompositeTrusted = false;
       let compositeSourceType = 'window';
       let compositeSourceId = '';
       let windowCompositePng = '';
@@ -1545,14 +1545,19 @@ async function inspectPackagedBrowserView(app, tabId, screenshotData) {
           });
           const compositeSource = sources.find((source) => source.id === mediaSourceId);
           if (compositeSource) {
+            // GitHub's non-interactive Windows runner can expose no capturable
+            // top-level windows. Treat composition as authoritative only when
+            // Electron actually returned this window as a desktop source.
+            windowCompositeTrusted = true;
             compositeSourceId = `${compositeSource.id}:${compositeSource.display_id}`;
             windowComposite = analyze(compositeSource.thumbnail);
           }
         }
       } catch (error) {
-        // macOS denies desktopCapturer without Screen Recording/TCC. Exact View
-        // draw state remains mandatory; system composition is an additive check
-        // on machines where attended permission has already been granted.
+        // macOS denies desktopCapturer without Screen Recording/TCC, and
+        // service-hosted Windows runners may have no interactive desktop.
+        // Exact View draw state remains mandatory; system composition is an
+        // additive check only when the OS returned an authoritative source.
         compositeError = String(error);
       }
       return {

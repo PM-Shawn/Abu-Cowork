@@ -39,6 +39,8 @@ export interface LoopContext {
   loopId: string;
   conversationId: string;
   toolCallToStepId: Map<string, string>;
+  /** Execution denylist inherited by tools that may create nested work. */
+  blockedTools?: string[];
   /** Agent name for UI display (e.g. permission dialog badge) */
   agentName?: string;
 }

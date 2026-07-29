@@ -6,6 +6,7 @@ import type { ExecutionStep } from '@/types/execution';
 import type { WorkflowStep } from '@/utils/workflowExtractor';
 import MessageBubble from './MessageBubble';
 import SkillProposalCard from './SkillProposalCard';
+import SandboxRecoveryCard from './SandboxRecoveryCard';
 import UserQuestionCard from './UserQuestionCard';
 import PlanStepsCard from './PlanStepsCard';
 import ShowWidgetCard from './ShowWidgetCard';
@@ -815,6 +816,21 @@ export default function MessageGroup({ messages, isLastGroup: isLastGroupProp = 
                   toolCallId={tc.id}
                   card={tc.noticeCard!}
                   settledAction={tc.noticeCardAction}
+                />
+              );
+            })}
+
+            {activeConv?.id && allToolCalls.filter((tc) => tc.sandboxRecovery).map((tc) => {
+              const owningMsg = assistantMsgs.find((m) => m.toolCalls?.some((x) => x.id === tc.id));
+              if (!owningMsg) return null;
+              return (
+                <SandboxRecoveryCard
+                  key={`sandbox-recovery-${tc.id}`}
+                  conversationId={activeConv.id}
+                  messageId={owningMsg.id}
+                  toolCallId={tc.id}
+                  recovery={tc.sandboxRecovery!}
+                  settledAction={tc.sandboxRecoveryAction}
                 />
               );
             })}

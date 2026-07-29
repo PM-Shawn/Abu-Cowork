@@ -95,11 +95,20 @@ function generateSeatbeltProfile(cwd, extraWritablePaths, homeDir, networkProxyP
   // ── Process operations ──
   profile += ';; Process operations\n';
   profile += '(allow process*)\n';
+  // Shell sandbox protects file paths, but an Apple Event asks another
+  // unsandboxed app to perform the mutation. Deny the system AppleScript
+  // interpreter at the kernel policy boundary so shell wrappers, variables,
+  // eval, and nested interpreters cannot bypass the renderer preflight.
+  profile += '(deny process-exec (literal "/usr/bin/osascript"))\n';
   profile += '(allow signal)\n\n';
 
   // ── Mach IPC ──
   profile += ';; Mach IPC (required by most macOS programs)\n';
   profile += '(allow mach*)\n\n';
+  // Apple Events let a sandboxed command ask another application to mutate
+  // data on its behalf. Keep that channel closed even if an alternate script
+  // interpreter or a renamed executable avoids the path-specific deny above.
+  profile += '(deny appleevent-send)\n\n';
 
   // ── System info ──
   profile += ';; System info queries\n';
@@ -129,6 +138,9 @@ function generateSeatbeltProfile(cwd, extraWritablePaths, homeDir, networkProxyP
   // ── File reads: broadly allow, then deny sensitive paths ──
   profile += ';; File reads: allow most, deny sensitive paths\n';
   profile += '(allow file-read*)\n';
+  // Prevent copying the denied interpreter to a writable path and executing
+  // it under another name.
+  profile += '(deny file-read* (literal "/usr/bin/osascript"))\n';
   for (const sensitive of SENSITIVE_READ_PATHS) {
     const fullPath = `${homeDir}/${sensitive}`;
     const escaped = escapeSbplPath(fullPath);

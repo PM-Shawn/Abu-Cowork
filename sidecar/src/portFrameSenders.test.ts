@@ -48,7 +48,16 @@ describe('createFrameChatDelta', () => {
     delta.setMessageToolCalls('c1', 'm1', []);
     delta.addMessage('c1', { id: 'm1', role: 'user', content: 'hi', timestamp: 1 });
     delta.deleteMessage('c1', 'm1', { skipCatalogBump: true });
-    delta.updateToolCall('c1', 'm1', 'tc1', 'result', undefined, false, false);
+    delta.updateToolCall(
+      'c1',
+      'm1',
+      'tc1',
+      'result',
+      undefined,
+      false,
+      false,
+      { sandboxRecovery: { kind: 'app-automation', targetApp: 'Notes' } },
+    );
     delta.appendToolCallContext('c1', 'loop1', { toolCallId: 'tc1' } as never);
     delta.updateMessageUsage('c1', { inputTokens: 1, outputTokens: 2 }, 'm1');
     delta.setExecutionStepsSnapshot('c1', 'loop1', []);
@@ -72,6 +81,9 @@ describe('createFrameChatDelta', () => {
       expect(Array.isArray(f.a)).toBe(true);
     }
     expect(frames[0]).toEqual({ p: 'chat', m: 'appendText', a: ['c1', 'tok', 'm1'] });
+    expect(frames.find((frame) => frame.m === 'updateToolCall')?.a.at(-1)).toEqual({
+      sandboxRecovery: { kind: 'app-automation', targetApp: 'Notes' },
+    });
     expect(frames[frames.length - 1]).toEqual({ p: 'chat', m: 'removeActiveAgent', a: ['agent1'] });
   });
 

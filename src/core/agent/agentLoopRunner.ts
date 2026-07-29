@@ -113,6 +113,7 @@ const logger = createLogger('agent-loop-runner');
 export interface AgentLoopRunOptions {
   requestCommandConfirmation?: (info: ConfirmationInfo, loopId?: string) => Promise<boolean>;
   requestFilePermission?: FilePermissionCallback;
+  blockedTools?: string[];
 }
 
 export interface RunSession {
@@ -1017,6 +1018,7 @@ export function installShellLoopContext(runId: string, session: RunSession): voi
     loopId: session.loopId,
     conversationId: session.conversationId,
     toolCallToStepId: session.toolCallToStepId,
+    blockedTools: session.options.blockedTools,
   });
 }
 
@@ -1282,10 +1284,22 @@ export async function runAgentLoopDispatched(
     if (interactive && stageable) {
       const runningSession = findRunSessionForConversation(conversationId);
       if (runningSession?.runId) {
+        if (options?.requireNewRun) {
+          return {
+            reason: 'error',
+            error: 'A restricted recovery run cannot join an existing agent loop',
+          };
+        }
         notifySidecar('agent.enqueueInput', { runId: runningSession.runId, userMessage });
         return { reason: 'enqueued' };
       }
       if (runningConv?.status === 'running' && getAbortRegistry().hasAbortController(conversationId)) {
+        if (options?.requireNewRun) {
+          return {
+            reason: 'error',
+            error: 'A restricted recovery run cannot join an existing agent loop',
+          };
+        }
         // A live IN-PROCESS run for this conversation — stage into ITS
         // queue via the same real function the in-process guard itself
         // calls (userInputQueue.ts, unchanged).
@@ -1348,6 +1362,7 @@ export async function runAgentLoopDispatched(
     options: {
       requestCommandConfirmation: options?.commandConfirmCallback,
       requestFilePermission: options?.filePermissionCallback,
+      blockedTools: options?.blockedTools,
     },
     shellAbortController,
     toolCallToStepId: new Map(),

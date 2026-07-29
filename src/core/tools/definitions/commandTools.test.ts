@@ -173,6 +173,32 @@ describe('runCommandTool', () => {
     expect(p.extraWritablePaths).toEqual(['/ws']);
   });
 
+  it('keeps Electron compound launcher commands sandboxed so later commands cannot inherit the exemption', async () => {
+    await runCommandTool.execute(
+      {
+        command: `open -a "Notes" && touch /tmp/abu-launcher-regression`,
+      },
+      { workspacePath: '/ws' },
+    );
+
+    expect(shellPayload().sandboxEnabled).toBe(true);
+  });
+
+  it('preserves the legacy Tauri compound-launcher behavior while Electron migration is in progress', async () => {
+    delete (globalThis as typeof globalThis & {
+      __ABU_SHELL__?: { mainSupervisesSidecar?: boolean };
+    }).__ABU_SHELL__;
+
+    await runCommandTool.execute(
+      {
+        command: `open -a "Notes" && touch /tmp/abu-launcher-regression`,
+      },
+      { workspacePath: '/ws' },
+    );
+
+    expect(shellPayload().sandboxEnabled).toBe(false);
+  });
+
   it('exempts a Windows `start` launcher command from the sandbox', async () => {
     vi.mocked(isWindows).mockReturnValue(true);
 
@@ -201,6 +227,85 @@ describe('runCommandTool', () => {
     await runCommandTool.execute({ command: 'cp a.txt /etc/b.txt' }, undefined);
 
     expect(showSandboxBlockedToast).toHaveBeenCalledWith('cp a.txt /etc/b.txt');
+  });
+
+  it('returns task-local recovery metadata for blocked AppleScript instead of a path toast', async () => {
+    const reportMetadata = vi.fn();
+    const result = await runCommandTool.execute(
+      { command: `osascript -e 'tell application "Notes" to make new note'` },
+      { reportMetadata },
+    );
+
+    expect(result).toMatch(/^Error:/);
+    expect(result).not.toContain('[sandbox-app-automation]');
+    expect(result).toContain('Notes');
+    expect(showSandboxBlockedToast).not.toHaveBeenCalled();
+    expect(invoke).not.toHaveBeenCalled();
+    expect(reportMetadata).toHaveBeenCalledWith({
+      sandboxRecovery: {
+        kind: 'app-automation',
+        targetApp: 'Notes',
+      },
+    });
+  });
+
+  it('recovers from a kernel-level osascript denial when a wrapper bypassed preflight', async () => {
+    vi.mocked(invoke).mockResolvedValue({
+      code: 126,
+      stdout: '',
+      stderr: [
+        '[sandbox-blocked] file write or network access blocked by sandbox policy',
+        'zsh: operation not permitted: /usr/bin/osascript',
+      ].join('\n'),
+    });
+    const reportMetadata = vi.fn();
+
+    const result = await runCommandTool.execute(
+      { command: `tool=osascript; "$tool" -e 'return 1'` },
+      { reportMetadata },
+    );
+
+    expect(invoke).toHaveBeenCalledWith(
+      'run_shell_command',
+      expect.objectContaining({ command: expect.stringContaining('tool=osascript') }),
+    );
+    expect(result).toContain('Shell sandbox blocked');
+    expect(showSandboxBlockedToast).not.toHaveBeenCalled();
+    expect(reportMetadata).toHaveBeenCalledWith({
+      sandboxRecovery: {
+        kind: 'app-automation',
+        targetApp: undefined,
+      },
+    });
+  });
+
+  it('allows explicit AppleScript when the user has disabled Shell sandbox protection', async () => {
+    vi.mocked(isSandboxEnabled).mockReturnValue(false);
+
+    const result = await runCommandTool.execute(
+      { command: `osascript -e 'tell application "Notes" to count notes'` },
+      undefined,
+    );
+
+    expect(result).toContain('exit code: 0');
+    expect(shellPayload().sandboxEnabled).toBe(false);
+  });
+
+  it('preserves the legacy Tauri AppleScript execution path during coexistence', async () => {
+    delete (globalThis as typeof globalThis & {
+      __ABU_SHELL__?: { mainSupervisesSidecar?: boolean };
+    }).__ABU_SHELL__;
+
+    const result = await runCommandTool.execute(
+      { command: `osascript -e 'tell application "Notes" to count notes'` },
+      undefined,
+    );
+
+    expect(result).toContain('exit code: 0');
+    expect(invoke).toHaveBeenCalledWith(
+      'run_shell_command',
+      expect.objectContaining({ command: expect.stringContaining('osascript') }),
+    );
   });
 
   it('does not show the toast for a non-sandboxed (launcher) command even if stderr mentions sandbox', async () => {

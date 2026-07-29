@@ -116,6 +116,32 @@ describe('conversationRunMirror', () => {
       expect(tc?.isExecuting).toBe(false);
     });
 
+    it('accepts trusted recovery metadata only for run_command', () => {
+      const conv = makeConversation({
+        messages: [makeMessage({
+          id: 'm1',
+          toolCalls: [{ id: 'tc1', name: 'run_command', input: {}, isExecuting: true }],
+        })],
+      });
+      const mirror = createConversationRunMirror('conv-1', { conversation: conv });
+      mirror.applyChatDeltaWrite('updateToolCall', [
+        'conv-1',
+        'm1',
+        'tc1',
+        'blocked',
+        undefined,
+        false,
+        undefined,
+        { sandboxRecovery: { kind: 'app-automation', targetApp: 'Notes' } },
+      ]);
+      const tc = mirror.reader.getConversation('conv-1')?.messages[0].toolCalls?.[0];
+      expect(tc?.sandboxRecovery).toEqual({
+        kind: 'app-automation',
+        targetApp: 'Notes',
+      });
+      expect(tc?.isError).toBe(true);
+    });
+
     it('deleteMessage removes the message by id', () => {
       const conv = makeConversation({ messages: [makeMessage({ id: 'm1' }), makeMessage({ id: 'm2' })] });
       const mirror = createConversationRunMirror('conv-1', { conversation: conv });

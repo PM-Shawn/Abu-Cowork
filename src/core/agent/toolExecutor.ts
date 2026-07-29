@@ -8,7 +8,13 @@
  * - Process results: update chatStore, eventRouter, and planned step tracking
  */
 
-import type { ToolCall, ToolResultContent, ToolExecutionContext, ToolResult } from '../../types';
+import type {
+  ToolCall,
+  ToolResultContent,
+  ToolExecutionContext,
+  ToolExecutionMetadata,
+  ToolResult,
+} from '../../types';
 import type { ConfirmationInfo } from '../tools/commandSafety';
 import type { FilePermissionCallback, ToolInvoker } from './ports/toolInvoker';
 import { processToolResult } from '../session/sessionMemory';
@@ -65,6 +71,9 @@ export interface ToolBatchParams {
   eventRouter: EventRouter;
   executionId: string;
   inputValidators: Map<string, (input: Record<string, unknown>) => boolean>;
+  /** Per-run execution denylist. This is an enforcement boundary, not only a
+   * model-visible tool filter: hallucinated or malformed tool calls fail closed. */
+  blockedTools?: string[];
   confirmCb: (info: ConfirmationInfo) => Promise<boolean>;
   filePermCb: FilePermissionCallback;
   toolContext: ToolExecutionContext;
@@ -80,6 +89,8 @@ export interface ToolBatchParams {
 export interface ToolBatchResult {
   /** Whether MCP tools changed (server installed/uninstalled) */
   mcpChanged: boolean;
+  /** A trusted tool requested an explicit user recovery choice. */
+  requiresUserRecovery: boolean;
 }
 
 type ToolExecResult = {
@@ -88,6 +99,7 @@ type ToolExecResult = {
   resultContent: ToolResultContent[] | undefined;
   error: boolean;
   duration: number;
+  metadata?: ToolExecutionMetadata;
 };
 
 /**
@@ -120,6 +132,7 @@ export async function executeToolBatch(params: ToolBatchParams): Promise<ToolBat
   } = params;
 
   const chatDelta = getChatDelta();
+  const blockedTools = new Set(params.blockedTools ?? []);
 
   // Update the assistant message with tool calls
   chatDelta.setMessageToolCalls(conversationId, assistantMsgId, collectedToolCalls);
@@ -136,12 +149,23 @@ export async function executeToolBatch(params: ToolBatchParams): Promise<ToolBat
     loopId,
     conversationId,
     toolCallToStepId,
+    blockedTools: params.blockedTools,
   });
 
   let completedCount = 0;
   const totalCount = collectedToolCalls.length;
 
   const executeSingleTool = async (tc: typeof collectedToolCalls[number]): Promise<ToolExecResult> => {
+    if (blockedTools.has(tc.name)) {
+      return {
+        id: tc.id,
+        result: `Error: tool "${tc.name}" is blocked for this agent run`,
+        resultContent: undefined,
+        error: true,
+        duration: 0,
+      };
+    }
+
     // Check if cancelled before executing
     if (abortController.signal.aborted) {
       return { id: tc.id, result: TOOL_RESULT_CANCELLED_MARKER, resultContent: undefined, error: false, duration: 0 };
@@ -191,6 +215,7 @@ export async function executeToolBatch(params: ToolBatchParams): Promise<ToolBat
     }
 
     const startTime = Date.now();
+    let metadata: ToolExecutionMetadata | undefined;
     // Observability: record this tool execution as a span (no-op when disabled)
     const toolSpan = startToolSpan(conversationId, { name: tc.name, input: effectiveInput });
     try {
@@ -212,6 +237,12 @@ export async function executeToolBatch(params: ToolBatchParams): Promise<ToolBat
           ...toolContext,
           toolCallId: tc.id,
           abortSignal: abortController.signal,
+          reportMetadata: (next) => {
+            metadata = {
+              ...metadata,
+              ...next,
+            };
+          },
         }, contextUsagePercent)
           .then((result) => {
             if (!settled) {
@@ -237,6 +268,7 @@ export async function executeToolBatch(params: ToolBatchParams): Promise<ToolBat
       const resultStr = toolInvoker.toolResultToString(rawResult);
       const resultContent: ToolResultContent[] | undefined =
         typeof rawResult !== 'string' ? rawResult : undefined;
+      const requiresUserRecovery = Boolean(metadata?.sandboxRecovery);
       // Emit postToolCall hook
       await emitHook({
         type: 'postToolCall',
@@ -246,12 +278,19 @@ export async function executeToolBatch(params: ToolBatchParams): Promise<ToolBat
         toolInput: effectiveInput,
         abortSignal: abortController.signal,
         result: resultStr,
-        error: false,
+        error: requiresUserRecovery,
         durationMs,
       });
-      logger.info('Tool executed', { toolName: tc.name, durationMs, error: false });
+      logger.info('Tool executed', { toolName: tc.name, durationMs, error: requiresUserRecovery });
       toolSpan.end({ output: resultStr });
-      return { id: tc.id, result: resultStr, resultContent, error: false, duration: durationMs / 1000 };
+      return {
+        id: tc.id,
+        result: resultStr,
+        resultContent,
+        error: requiresUserRecovery,
+        duration: durationMs / 1000,
+        metadata,
+      };
     } catch (err) {
       // Re-throw AbortError so outer catch handles cancellation properly
       if (err instanceof Error && err.name === 'AbortError') {
@@ -371,7 +410,7 @@ export async function executeToolBatch(params: ToolBatchParams): Promise<ToolBat
   for (let i = 0; i < results.length; i++) {
     const result = results[i];
     if (result.status === 'fulfilled') {
-      const { id, result: toolResult, resultContent, error } = result.value;
+      const { id, result: toolResult, resultContent, error, metadata } = result.value;
       // Determine hideScreenshot for computer tool
       let hideScreenshot: boolean | undefined;
       const matchedTc = collectedToolCalls[i];
@@ -412,7 +451,16 @@ export async function executeToolBatch(params: ToolBatchParams): Promise<ToolBat
         }).catch(() => {});
       }
 
-      chatDelta.updateToolCall(conversationId, assistantMsgId, id, storedResult, resultContent, error, hideScreenshot);
+      chatDelta.updateToolCall(
+        conversationId,
+        assistantMsgId,
+        id,
+        storedResult,
+        resultContent,
+        error,
+        hideScreenshot,
+        metadata,
+      );
 
       // Update TaskExecutionStore via EventRouter
       const stepId = toolCallToStepId.get(id);
@@ -446,6 +494,9 @@ export async function executeToolBatch(params: ToolBatchParams): Promise<ToolBat
     tc.name === TOOL_NAMES.MANAGE_MCP_SERVER && (tc.input as Record<string, unknown>)?.action === 'install' ||
     tc.name === 'install_mcp_server' || tc.name === 'uninstall_mcp_server'
   );
+  const requiresUserRecovery = results.some(
+    (result) => result.status === 'fulfilled' && Boolean(result.value.metadata?.sandboxRecovery),
+  );
 
-  return { mcpChanged };
+  return { mcpChanged, requiresUserRecovery };
 }

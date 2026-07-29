@@ -1905,6 +1905,23 @@ describe('agentLoopRunner', () => {
         expect(sidecarRequestMock).not.toHaveBeenCalled();
       });
 
+      it('refuses to enqueue a restricted recovery into an existing sidecar run', async () => {
+        const { runAgentLoopDispatched, registerRunSession } = await importFresh();
+        registerRunSession('run-existing', makeSession({ conversationId: 'conv-1' }));
+
+        const result = await runAgentLoopDispatched('conv-1', 'continue with computer use', {
+          blockedTools: ['run_command'],
+          requireNewRun: true,
+        });
+
+        expect(result).toEqual({
+          reason: 'error',
+          error: 'A restricted recovery run cannot join an existing agent loop',
+        });
+        expect(notifySidecar).not.toHaveBeenCalledWith('agent.enqueueInput', expect.anything());
+        expect(sidecarRequestMock).not.toHaveBeenCalled();
+      });
+
       it('stages into the real in-process queue when a live IN-PROCESS run (not a sidecar RunSession) is detected for the conversation', async () => {
         const { runAgentLoopDispatched } = await importFresh();
         getConversationMock.mockReturnValue({ id: 'conv-1', title: 't', messages: [], status: 'running' });
@@ -1916,6 +1933,24 @@ describe('agentLoopRunner', () => {
         expect(enqueueUserInputMock).toHaveBeenCalledWith('conv-1', 'more instructions');
         expect(sidecarRequestMock).not.toHaveBeenCalled();
         expect(notifySidecar).not.toHaveBeenCalledWith('agent.enqueueInput', expect.anything());
+      });
+
+      it('refuses to enqueue a restricted recovery into an existing in-process run', async () => {
+        const { runAgentLoopDispatched } = await importFresh();
+        getConversationMock.mockReturnValue({ id: 'conv-1', title: 't', messages: [], status: 'running' });
+        hasAbortControllerMock.mockReturnValue(true);
+
+        const result = await runAgentLoopDispatched('conv-1', 'continue with computer use', {
+          blockedTools: ['run_command'],
+          requireNewRun: true,
+        });
+
+        expect(result).toEqual({
+          reason: 'error',
+          error: 'A restricted recovery run cannot join an existing agent loop',
+        });
+        expect(enqueueUserInputMock).not.toHaveBeenCalled();
+        expect(sidecarRequestMock).not.toHaveBeenCalled();
       });
 
       it('claims the conversation before async prompt preprocessing so a rapid second send is queued', async () => {

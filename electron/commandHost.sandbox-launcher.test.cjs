@@ -113,6 +113,65 @@ test('run_shell_command executes ordinary shell commands through launcher', asyn
   assert.equal(result.stdout, 'hello');
 });
 
+test('macOS sandbox hard-denies osascript through shell and interpreter wrappers', {
+  skip: process.platform !== 'darwin',
+}, async () => {
+  const commands = [
+    `tool=/usr/bin/osascript; "$tool" -e 'return 1'`,
+    `eval '/usr/bin/osascript -e "return 1"'`,
+    `python -c 'import subprocess; subprocess.run(["/usr/bin/osascript", "-e", "return 1"], check=True)'`,
+  ];
+
+  for (const command of commands) {
+    const result = await commandDispatch(app, 'run_shell_command', {
+      command,
+      background: false,
+      timeout: 5,
+      sandboxEnabled: true,
+    });
+    assert.notEqual(result.code, 0, command);
+    assert.match(result.stderr, /\[sandbox-blocked\]/i, command);
+    assert.match(result.stderr, /operation not permitted/i, command);
+  }
+});
+
+test('macOS sandbox prevents copying osascript to a writable alias', {
+  skip: process.platform !== 'darwin',
+}, async () => {
+  const dir = tmpDir();
+  const alias = path.join(dir, 'helper');
+  const result = await commandDispatch(app, 'run_shell_command', {
+    command: `cp /usr/bin/osascript ${shellQuote(alias)}`,
+    cwd: dir,
+    background: false,
+    timeout: 5,
+    sandboxEnabled: true,
+  });
+
+  assert.notEqual(result.code, 0);
+  assert.match(result.stderr, /\[sandbox-blocked\]/i);
+  assert.equal(fs.existsSync(alias), false);
+});
+
+test('macOS cannot execute an osascript alias copied before sandbox launch', {
+  skip: process.platform !== 'darwin',
+}, async () => {
+  const dir = tmpDir();
+  const alias = path.join(dir, 'helper');
+  fs.copyFileSync('/usr/bin/osascript', alias);
+  fs.chmodSync(alias, 0o755);
+
+  const result = await commandDispatch(app, 'run_shell_command', {
+    command: `${shellQuote(alias)} -e 'return 1'`,
+    cwd: dir,
+    background: false,
+    timeout: 5,
+    sandboxEnabled: true,
+  });
+
+  assert.notEqual(result.code, 0);
+});
+
 test('run_argv_command preserves argv literally and does not pass through a shell', async () => {
   const marker = 'argv;touch /tmp/abu-should-not-exist';
   const result = await commandDispatch(app, 'run_argv_command', {
@@ -462,6 +521,9 @@ test('command host leaves SIGINT and SIGTERM exit ownership to the main process'
 test('macOS Seatbelt profile still denies sensitive home paths', () => {
   const profile = generateSeatbeltProfile('/tmp/work', [], '/Users/tester', undefined);
   assert.match(profile, /\(deny default\)/);
+  assert.match(profile, /\(deny process-exec \(literal "\/usr\/bin\/osascript"\)\)/);
+  assert.match(profile, /\(deny file-read\* \(literal "\/usr\/bin\/osascript"\)\)/);
+  assert.match(profile, /\(deny appleevent-send\)/);
   assert.match(profile, /deny file-read\* \(subpath "\/Users\/tester\/\.ssh"\)/);
   assert.match(profile, /deny file-read\* \(subpath "\/Users\/tester\/\.aws\/credentials"\)/);
 });

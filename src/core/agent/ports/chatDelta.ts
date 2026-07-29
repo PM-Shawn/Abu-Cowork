@@ -10,6 +10,7 @@ import type {
   RetryInfo,
   ContextCache,
   Conversation,
+  ToolExecutionMetadata,
 } from '@/types';
 import type { ExecutionStepSnapshot, PlannedStep } from '@/types/execution';
 import type { ProposalSignal } from '../proposalSignal';
@@ -95,6 +96,7 @@ export interface ChatDelta {
     resultContent?: ToolResultContent[],
     isError?: boolean,
     hideScreenshot?: boolean,
+    metadata?: ToolExecutionMetadata,
   ): void;
   /** Mirrors chatStore's `appendToolCallContext`. */
   appendToolCallContext(convId: string, loopId: string, context: ToolCallForContext): void;
@@ -161,8 +163,17 @@ export function createInProcessChatDelta(): ChatDelta {
     addMessage: (convId, message) => useChatStore.getState().addMessage(convId, message),
     deleteMessage: (convId, messageId, opts) =>
       useChatStore.getState().deleteMessage(convId, messageId, opts),
-    updateToolCall: (convId, messageId, toolCallId, result, resultContent, isError, hideScreenshot) =>
-      useChatStore.getState().updateToolCall(convId, messageId, toolCallId, result, resultContent, isError, hideScreenshot),
+    updateToolCall: (convId, messageId, toolCallId, result, resultContent, isError, hideScreenshot, metadata) =>
+      useChatStore.getState().updateToolCall(
+        convId,
+        messageId,
+        toolCallId,
+        result,
+        resultContent,
+        isError,
+        hideScreenshot,
+        metadata,
+      ),
     appendToolCallContext: (convId, loopId, context) =>
       useChatStore.getState().appendToolCallContext(convId, loopId, context),
     updateMessageUsage: (convId, usage, msgId) =>

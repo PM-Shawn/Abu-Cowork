@@ -23,6 +23,29 @@
 // settleCardsForSkill's guard).
 export type NoticeCardAction = 'accepted' | 'rejected' | 'rejected-category' | 'deferred';
 
+export interface SandboxRecoveryPayload {
+  kind: 'app-automation';
+  targetApp?: string;
+}
+
+export type SandboxRecoveryAction =
+  | 'pending'
+  | 'started'
+  | 'enqueued'
+  | 'completed'
+  | 'failed'
+  | 'needs-review'
+  | 'stopped';
+
+/**
+ * Out-of-band metadata emitted by a trusted tool implementation. It travels
+ * through ToolExecutor/ChatDelta separately from stdout so imported messages
+ * and command output cannot manufacture privileged UI.
+ */
+export interface ToolExecutionMetadata {
+  sandboxRecovery?: SandboxRecoveryPayload;
+}
+
 /** Payload for a "save this as a skill?" proposal card. */
 export interface SkillProposalPayload {
   skillName: string;
@@ -158,6 +181,13 @@ export interface ToolCall {
    * cards until the user clicks a button.
    */
   noticeCardAction?: NoticeCardAction;
+  /**
+   * Structured recovery metadata for a Shell command that macOS blocked from
+   * controlling another app through AppleScript.
+   */
+  sandboxRecovery?: SandboxRecoveryPayload;
+  /** Persisted user choice for the recovery card. */
+  sandboxRecoveryAction?: SandboxRecoveryAction;
   /**
    * User's answers to an ask_user_question tool call. Set once the user
    * submits — drives settled read-only rendering. undefined = still
@@ -420,6 +450,12 @@ export interface ToolExecutionContext {
    * lose its live behavior.
    */
   abortSignal?: AbortSignal;
+  /**
+   * Local execution-only metadata channel. Functions are deliberately omitted
+   * from reverse-RPC serialization; Electron's sidecar-local run_command and
+   * the in-process fallback both report through this callback.
+   */
+  reportMetadata?: (metadata: ToolExecutionMetadata) => void;
 }
 
 export interface ToolDefinition {

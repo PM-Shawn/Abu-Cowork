@@ -242,7 +242,7 @@ function generateId(): string {
  * Supports advanced allowed-tools patterns (wildcards, constraints).
  * Returns { tools, inputValidators } where inputValidators are used at execution time.
  */
-function resolveTools(
+export function resolveTools(
   toolInvoker: ToolInvoker,
   route: RouteResult,
   hasBuiltinWebSearch: boolean,
@@ -385,6 +385,9 @@ export interface AgentLoopOptions {
   images?: ImageAttachment[];
   /** Tool names to block from this run (e.g. 'request_workspace' in headless/IM mode) */
   blockedTools?: string[];
+  /** Fail instead of staging into an already-running loop. Used by recovery
+   * flows whose tool restrictions must apply from the first turn. */
+  requireNewRun?: boolean;
   /** IM headless context — injected into system prompt to replace UI-dependent workspace logic */
   imContext?: IMContext;
   /** Settings port — defaults to the in-process Zustand-backed reader. Injection point for
@@ -422,6 +425,8 @@ export type AgentLoopExitReason =
   | 'error'
   | 'max_turns'
   | 'no_progress'
+  /** A trusted tool stopped the loop until the user chooses a recovery path. */
+  | 'awaiting_user'
   /** No loop ran: the conversation already had a live loop, so the message was
    *  queued into it (see the concurrency guard at the top of runAgentLoop). */
   | 'enqueued';
@@ -430,7 +435,7 @@ export type AgentLoopExitReason =
  *  be incomplete. Lets scheduler / trigger surface a meaningful status instead
  *  of treating these as either success or an opaque "Unknown error". */
 export function isIncompleteReason(reason: AgentLoopExitReason): boolean {
-  return reason === 'max_turns' || reason === 'no_progress';
+  return reason === 'max_turns' || reason === 'no_progress' || reason === 'awaiting_user';
 }
 
 export interface AgentLoopResult {
@@ -505,6 +510,12 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
       && userMessage.trim().length > 0
       && !(options?.images?.length)
     ) {
+      if (options?.requireNewRun) {
+        return {
+          reason: 'error',
+          error: 'A restricted recovery run cannot join an existing agent loop',
+        };
+      }
       // Codex-style staging: the message lives in the cancellable queue strip
       // above the composer and becomes a transcript bubble only when the
       // running loop drains it (see the drainQueuedInputs block below).
@@ -931,6 +942,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
   let continueLoop = true;
   let exitReason: AgentLoopExitReason = 'completed';
   let exitError: string | undefined;
+  let awaitingUserRecovery = false;
   // Cache of filePath → base64 for image rehydration, shared across every turn
   // of this request's tool-use loop so a stripped image is read from disk once,
   // not re-read + re-encoded on every iteration (source.data stays stripped).
@@ -1862,6 +1874,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
           eventRouter,
           executionId: execution.id,
           inputValidators,
+          blockedTools: options?.blockedTools,
           confirmCb,
           filePermCb,
           toolContext,
@@ -1869,6 +1882,10 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
           contextUsagePercent: usagePercent,
           toolInvoker,
         });
+        if (batchResult.requiresUserRecovery) {
+          awaitingUserRecovery = true;
+          continueLoop = false;
+        }
 
         // ★ Persist this turn's full message state (including completed tool calls)
         // to disk RIGHT NOW. We must use replaceMessageById (not updateLastMessage)
@@ -1991,7 +2008,12 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
       // with plain text rather than tool_use, run another turn so the LLM actually
       // responds to that follow-up. Without this, mid-stream user messages get added
       // to the conversation but never receive a reply.
-      if (!continueLoop && hasQueuedInputs(conversationId) && !abortController.signal.aborted) {
+      if (
+        !continueLoop
+        && !awaitingUserRecovery
+        && hasQueuedInputs(conversationId)
+        && !abortController.signal.aborted
+      ) {
         // Flush any buffered tokens and finalize the previous assistant message
         // (toolExecutor normally does this between tool_use turns; we have to do it
         // ourselves on the no-tool path).
@@ -2017,7 +2039,9 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
         }
         chatDelta.finishStreaming(conversationId, assistantMsgId);
         abortRegistry.clearAbortController(conversationId);
-        const endReason = noProgressAborted
+        const endReason = awaitingUserRecovery
+          ? 'awaiting_user'
+          : noProgressAborted
           ? 'no_progress'
           : maxTokensRecoveryExhausted ? 'max_tokens_exhausted' : 'end_turn';
         logger.info('Agent loop ended', { conversationId, loopId, turnCount, reason: endReason });
@@ -2052,13 +2076,18 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
         }).catch(() => {});
         // Mark conversation status — error if recovery exhausted, otherwise completed.
         // no_progress is a soft stop (visible marker, status completed) like maxTurns.
-        if (maxTokensRecoveryExhausted) {
+        if (awaitingUserRecovery) {
+          exitReason = 'awaiting_user';
+        } else if (maxTokensRecoveryExhausted) {
           exitReason = 'error';
           exitError = 'Max output tokens recovery exhausted';
         } else if (noProgressAborted) {
           exitReason = 'no_progress';
         }
-        chatDelta.setConversationStatus(conversationId, maxTokensRecoveryExhausted ? 'error' : 'completed');
+        chatDelta.setConversationStatus(
+          conversationId,
+          awaitingUserRecovery ? 'idle' : maxTokensRecoveryExhausted ? 'error' : 'completed',
+        );
   
         // Interactive-desktop gate: user-visible conversations only.
         // IM conversations, scheduled tasks, triggers run headless — the
@@ -2072,7 +2101,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
 
         // Auto-extract memories from desktop conversations (non-blocking).
         // IM conversations have their own extraction in channelRouter.ts.
-        if (interactiveDesktop) {
+        if (interactiveDesktop && !awaitingUserRecovery) {
           const wsPath = convRecord?.workspacePath ?? getWorkspaceReader().getCurrentPath();
           import('../memdir/extractor').then(({ extractMemoriesFromConversation }) =>
             extractMemoriesFromConversation(conversationId, wsPath)
@@ -2091,6 +2120,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
         const wsPath = convRecord?.workspacePath ?? getWorkspaceReader().getCurrentPath();
         if (
           exitReason === 'completed' &&
+          !awaitingUserRecovery &&
           shouldComputeProposalSignal(options, convRecord, wsPath)
         ) {
           try {
@@ -2106,8 +2136,10 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
             logger.warn('[proposalSignal] compute failed', { err: err instanceof Error ? err.message : String(err) });
           }
         }
-        const convTitle = getConversationReader().getIndexEntry(conversationId)?.title ?? getI18n().chat.notificationTaskFallback;
-        notifyTaskCompleted(convTitle, conversationId);
+        if (!awaitingUserRecovery) {
+          const convTitle = getConversationReader().getIndexEntry(conversationId)?.title ?? getI18n().chat.notificationTaskFallback;
+          notifyTaskCompleted(convTitle, conversationId);
+        }
       }
     } catch (err) {
       // Handle abort errors gracefully.

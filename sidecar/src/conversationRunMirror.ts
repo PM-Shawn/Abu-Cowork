@@ -174,10 +174,11 @@ export function createConversationRunMirror(
         break;
       }
       case 'updateToolCall': {
-        const [, messageId, toolCallId, result, resultContent, isError, hideScreenshot] = args as [
+        const [, messageId, toolCallId, result, resultContent, isError, hideScreenshot, metadata] = args as [
           string, string, string, string,
           ToolCall['resultContent'],
           boolean | undefined, boolean | undefined,
+          import('@/types').ToolExecutionMetadata | undefined,
         ];
         const msg = conversation.messages.find((m) => m.id === messageId);
         const tc = msg?.toolCalls?.find((t) => t.id === toolCallId);
@@ -186,6 +187,10 @@ export function createConversationRunMirror(
           if (resultContent) tc.resultContent = resultContent;
           if (isError) tc.isError = true;
           if (hideScreenshot != null) tc.hideScreenshot = hideScreenshot;
+          if (tc.name === 'run_command' && metadata?.sandboxRecovery) {
+            tc.sandboxRecovery = metadata.sandboxRecovery;
+            tc.isError = true;
+          }
           tc.isExecuting = false;
         }
         break;

@@ -5,10 +5,17 @@ import { isSandboxEnabled, isNetworkIsolationEnabled } from '../../sandbox/confi
 import { getWorkspaceReader } from '../../agent/ports/workspaceReader';
 import { getAuthorizedPathsReader } from '../../agent/ports/authorizedPathsReader';
 import { showSandboxBlockedToast } from '../../sandbox/recovery';
+import {
+  detectAppAutomationSandboxBlock,
+  getAppAutomationSandboxRecovery,
+  hasUnquotedShellControlSyntax,
+} from '../../sandbox/appAutomationRecovery';
 import type { CommandOutput } from '../helpers/toolHelpers';
 import { invokeTaskCommand, isTaskCommandAbortedError } from '../helpers/scopedCommand';
 import { isReadOnlyCommand } from '../readOnlyDetector';
 import { TOOL_NAMES } from '../toolNames';
+import { format, getI18n } from '../../../i18n';
+import { hasElectronCommandHost } from '../../../utils/electronHost';
 
 /**
  * Global-workspace fallback for direct invocations that carry no context.
@@ -22,6 +29,16 @@ function safeGlobalWorkspacePath(): string | null {
   } catch {
     return null;
   }
+}
+
+function formatAppAutomationRecovery(
+  recovery: NonNullable<ReturnType<typeof getAppAutomationSandboxRecovery>>,
+): string {
+  const app = recovery.targetApp
+    ?? getI18n().sandbox.appAutomationTargetFallback;
+  return [
+    format(getI18n().sandbox.appAutomationToolError, { app }),
+  ].join('\n\n');
 }
 
 export const runCommandTool: ToolDefinition = {
@@ -71,10 +88,29 @@ This tool is suitable for: moving/copying/renaming files (mv/cp), package manage
       // Exempt app-launcher commands from sandbox
       // macOS: `open` uses LaunchServices via XPC, blocked by Seatbelt
       // Windows: `start`/`Start-Process` exempted for consistency with ExecutionPolicy
-      const isLauncherCmd = isWindows()
+      const isLauncherCandidate = isWindows()
         ? /^\s*(start|Start-Process)\s/i.test(resolvedCommand)
         : /^\s*open\s/.test(resolvedCommand);
+      const isLauncherCmd = isLauncherCandidate
+        && (
+          !hasElectronCommandHost()
+          || !hasUnquotedShellControlSyntax(resolvedCommand)
+        );
       const sandbox = isLauncherCmd ? false : isSandboxEnabled();
+
+      // Seatbelt does not contain the target app process: Apple Events can ask
+      // that app to mutate data outside the shell profile. Electron therefore
+      // blocks explicit cross-app AppleScript before spawn while Shell sandbox
+      // protection is enabled. Tauri stays unchanged during coexistence.
+      const preflightAppAutomationRecovery = sandbox && hasElectronCommandHost()
+        ? getAppAutomationSandboxRecovery(resolvedCommand)
+        : null;
+      if (preflightAppAutomationRecovery) {
+        context?.reportMetadata?.({
+          sandboxRecovery: preflightAppAutomationRecovery,
+        });
+        return formatAppAutomationRecovery(preflightAppAutomationRecovery);
+      }
 
       // Use conversation-scoped workspace from context; fall back to global store
       // only if context is absent (e.g. direct invocation outside agent loop).
@@ -103,12 +139,26 @@ This tool is suitable for: moving/copying/renaming files (mv/cp), package manage
         keepAbortListenerAfterResolve: (result) => background === true && result.code === 0,
       });
 
-      // Detect sandbox-blocked errors and show recovery toast
-      if (sandbox && output.stderr.includes('[sandbox-blocked]')) {
+      const appAutomationRecovery = sandbox
+        ? detectAppAutomationSandboxBlock(resolvedCommand, output.stderr, output.code)
+        : null;
+      if (appAutomationRecovery) {
+        context?.reportMetadata?.({
+          sandboxRecovery: appAutomationRecovery,
+        });
+      }
+
+      // File/path blocks keep the existing toast. AppleScript cross-app
+      // blocks render a task-local recovery card instead of a misleading
+      // "authorize this directory" prompt.
+      if (!appAutomationRecovery && sandbox && output.stderr.includes('[sandbox-blocked]')) {
         showSandboxBlockedToast(resolvedCommand);
       }
 
       const parts: string[] = [];
+      if (appAutomationRecovery) {
+        parts.push(formatAppAutomationRecovery(appAutomationRecovery));
+      }
       if (output.stdout.trim()) {
         parts.push(`stdout:\n${output.stdout.trim()}`);
       }

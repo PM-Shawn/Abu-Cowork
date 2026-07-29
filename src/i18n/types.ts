@@ -1001,6 +1001,26 @@ export interface TranslationDict {
     authorizedPaths: string;
     authorizedPathsEmpty: string;
     revoke: string;
+    appAutomationTitle: string;
+    appAutomationDescription: string;
+    appAutomationConnectorPending: string;
+    appAutomationUseComputer: string;
+    appAutomationStop: string;
+    appAutomationAdvanced: string;
+    appAutomationAdvancedWarning: string;
+    appAutomationOpenSettings: string;
+    appAutomationPending: string;
+    appAutomationStarted: string;
+    appAutomationEnqueued: string;
+    appAutomationCompleted: string;
+    appAutomationFailed: string;
+    appAutomationNeedsReview: string;
+    appAutomationStopped: string;
+    appAutomationTargetFallback: string;
+    appAutomationToolError: string;
+    appAutomationContinuePrompt: string;
+    appAutomationContinueFailed: string;
+    appAutomationOutcomeUncertain: string;
   };
 
   // Diagnostic

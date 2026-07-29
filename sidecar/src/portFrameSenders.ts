@@ -67,8 +67,17 @@ export function createFrameChatDelta(push: Push, onLocalApply?: (m: string, a: u
     setMessageToolCalls: (convId, messageId, toolCalls) => send('setMessageToolCalls', [convId, messageId, toolCalls]),
     addMessage: (convId, message) => send('addMessage', [convId, message]),
     deleteMessage: (convId, messageId, opts) => send('deleteMessage', [convId, messageId, opts]),
-    updateToolCall: (convId, messageId, toolCallId, result, resultContent, isError, hideScreenshot) =>
-      send('updateToolCall', [convId, messageId, toolCallId, result, resultContent, isError, hideScreenshot]),
+    updateToolCall: (convId, messageId, toolCallId, result, resultContent, isError, hideScreenshot, metadata) =>
+      send('updateToolCall', [
+        convId,
+        messageId,
+        toolCallId,
+        result,
+        resultContent,
+        isError,
+        hideScreenshot,
+        metadata,
+      ]),
     appendToolCallContext: (convId, loopId, context) => send('appendToolCallContext', [convId, loopId, context]),
     updateMessageUsage: (convId, usage, msgId) => send('updateMessageUsage', [convId, usage, msgId]),
     setExecutionStepsSnapshot: (convId, loopId, steps) => send('setExecutionStepsSnapshot', [convId, loopId, steps]),

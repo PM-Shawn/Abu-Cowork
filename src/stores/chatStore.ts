@@ -1,7 +1,7 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import { immer } from 'zustand/middleware/immer';
-import type { Message, Conversation, AgentStatus, RetryInfo, TokenUsage, ConversationStatus, ToolCallForContext, ToolResultContent, ToolCall, NoticeCardAction, UserQuestionResult } from '../types';
+import type { Message, Conversation, AgentStatus, RetryInfo, TokenUsage, ConversationStatus, ToolCallForContext, ToolResultContent, ToolCall, NoticeCardAction, SandboxRecoveryAction, ToolExecutionMetadata, UserQuestionResult } from '../types';
 import type { ExecutionStepSnapshot, PlannedStep } from '../types/execution';
 import { useWorkspaceStore } from './workspaceStore';
 import { useProjectStore } from './projectStore';
@@ -16,6 +16,7 @@ import type { ShareBundle } from '../core/session/shareBundle';
 import type { PermissionMode } from '../core/permissions/permissionMode';
 import type { ChatReference } from '@/types/chatReference';
 import { getI18n } from '../i18n';
+import { TOOL_NAMES } from '../core/tools/toolNames';
 
 function generateId(): string {
   return Date.now().toString(36) + Math.random().toString(36).substring(2, 8);
@@ -23,20 +24,47 @@ function generateId(): string {
 
 /** Extra safety net for messages coming in via import — ensures no streaming
  * flag survives even if the source bundle was built by a broken exporter. */
-function sanitizeImportedMessage(msg: Message): Message {
+export function sanitizeImportedMessage(msg: Message): Message {
   return {
     ...msg,
     isStreaming: false,
-    toolCalls: msg.toolCalls?.map((tc) => ({ ...tc, isExecuting: false })),
+    toolCalls: msg.toolCalls?.map((tc) => {
+      const {
+        sandboxRecovery: _sandboxRecovery,
+        sandboxRecoveryAction: _sandboxRecoveryAction,
+        ...safeToolCall
+      } = tc;
+      return { ...safeToolCall, isExecuting: false };
+    }),
   };
 }
 
 /** Strip ghost assistant messages and clear stale isStreaming flags after loading from disk.
  * Ghost messages are empty assistant placeholders written before content arrived
  * (crash / network failure before streaming started). They must not reach the LLM. */
-function sanitizeLoadedMessages(messages: Message[]): Message[] {
+export function sanitizeLoadedMessages(messages: Message[]): Message[] {
   return messages
-    .map(msg => msg.isStreaming ? { ...msg, isStreaming: false } : msg)
+    .map((msg) => {
+      const toolCalls = msg.toolCalls?.map((tc) => {
+        const safeToRetryRecovery =
+          tc.sandboxRecoveryAction === 'pending'
+          || tc.sandboxRecoveryAction === 'enqueued';
+        return {
+          ...tc,
+          isExecuting: false,
+          sandboxRecoveryAction: tc.sandboxRecoveryAction === 'started'
+            ? 'needs-review' as const
+            : safeToRetryRecovery
+            ? 'failed' as const
+            : tc.sandboxRecoveryAction,
+        };
+      });
+      return {
+        ...msg,
+        isStreaming: false,
+        toolCalls,
+      };
+    })
     .filter(msg => {
       if (msg.role !== 'assistant') return true;
       const text = typeof msg.content === 'string'
@@ -350,7 +378,7 @@ interface ChatActions {
   appendToLastMessage: (convId: string, token: string, msgId?: string) => void;
   setLastMessageContent: (convId: string, content: string, msgId?: string) => void;
   finishStreaming: (convId: string, msgId?: string) => void;
-  updateToolCall: (convId: string, messageId: string, toolCallId: string, result: string, resultContent?: ToolResultContent[], isError?: boolean, hideScreenshot?: boolean) => void;
+  updateToolCall: (convId: string, messageId: string, toolCallId: string, result: string, resultContent?: ToolResultContent[], isError?: boolean, hideScreenshot?: boolean, metadata?: ToolExecutionMetadata) => void;
   /**
    * Persist the user's click on an interactive notice card attached to a
    * tool call (see `ToolCall.noticeCardAction`). Called from the card
@@ -358,6 +386,7 @@ interface ChatActions {
    * through to disk via replaceMessageById so reload keeps the state.
    */
   setToolCallNoticeCardAction: (convId: string, messageId: string, toolCallId: string, action: NoticeCardAction) => void;
+  setToolCallSandboxRecoveryAction: (convId: string, messageId: string, toolCallId: string, action: SandboxRecoveryAction) => Promise<void>;
   setToolCallUserQuestionAnswers: (convId: string, messageId: string, toolCallId: string, answers: UserQuestionResult) => void;
   /**
    * Stash a post-loop proposal signal on the conversation so the next
@@ -938,7 +967,7 @@ export const useChatStore = create<ChatStore>()(
         }
       },
 
-      updateToolCall: (convId, messageId, toolCallId, result, resultContent, isError, hideScreenshot) => {
+      updateToolCall: (convId, messageId, toolCallId, result, resultContent, isError, hideScreenshot, metadata) => {
         set((state) => {
           const msg = state.conversations[convId]?.messages.find((m) => m.id === messageId);
           if (msg?.toolCalls) {
@@ -961,6 +990,14 @@ export const useChatStore = create<ChatStore>()(
                 }
               } catch {
                 /* non-JSON result — skip card extraction */
+              }
+
+              if (
+                tc.name === TOOL_NAMES.RUN_COMMAND
+                && metadata?.sandboxRecovery
+              ) {
+                tc.sandboxRecovery = metadata.sandboxRecovery;
+                tc.isError = true;
               }
             }
           }
@@ -1023,6 +1060,37 @@ export const useChatStore = create<ChatStore>()(
           import('../core/session/conversationStorage').then(({ replaceMessageById }) => {
             replaceMessageById(convId, updatedMsg).catch(() => {});
           });
+        }
+      },
+
+      setToolCallSandboxRecoveryAction: async (convId, messageId, toolCallId, action) => {
+        const currentMsg = get().conversations[convId]?.messages.find((m) => m.id === messageId);
+        const currentToolCall = currentMsg?.toolCalls?.find((t) => t.id === toolCallId);
+        if (!currentMsg || !currentToolCall?.sandboxRecovery) {
+          throw new Error(`Sandbox recovery tool call "${toolCallId}" no longer exists`);
+        }
+        const persistedMsg: Message = {
+          ...currentMsg,
+          toolCalls: currentMsg.toolCalls?.map((toolCall) =>
+            toolCall.id === toolCallId
+              ? { ...toolCall, sandboxRecoveryAction: action }
+              : toolCall
+          ),
+        };
+        const { replaceMessageByIdStrict } = await import('../core/session/conversationStorage');
+        await replaceMessageByIdStrict(convId, persistedMsg);
+
+        let updated = false;
+        set((state) => {
+          const msg = state.conversations[convId]?.messages.find((m) => m.id === messageId);
+          const tc: ToolCall | undefined = msg?.toolCalls?.find((t) => t.id === toolCallId);
+          if (tc?.sandboxRecovery) {
+            tc.sandboxRecoveryAction = action;
+            updated = true;
+          }
+        });
+        if (!updated) {
+          throw new Error(`Sandbox recovery tool call "${toolCallId}" no longer exists`);
         }
       },
 
@@ -1663,17 +1731,8 @@ export const useChatStore = create<ChatStore>()(
             id: newId,
             status: 'idle',
             completedAt: undefined,
+            messages: conv.messages.map(sanitizeImportedMessage),
           };
-
-          // Clean up streaming states
-          for (const msg of imported.messages) {
-            msg.isStreaming = false;
-            if (msg.toolCalls) {
-              for (const tc of msg.toolCalls) {
-                tc.isExecuting = false;
-              }
-            }
-          }
 
           const meta: ConversationMeta = {
             id: newId,

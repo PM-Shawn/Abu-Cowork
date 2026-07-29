@@ -1,7 +1,11 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { exists, readTextFile } from '@tauri-apps/plugin-fs';
 import { invoke } from '@tauri-apps/api/core';
-import { useChatStore, flushTokenBuffer } from './chatStore';
+import {
+  useChatStore,
+  flushTokenBuffer,
+  sanitizeLoadedMessages,
+} from './chatStore';
 import type { Conversation } from '../types';
 import { createDocReference } from '@/types/chatReference';
 import { getI18n } from '../i18n';
@@ -1311,6 +1315,37 @@ describe('chatStore', () => {
       expect(restored.importedFrom).toBeUndefined();
     });
 
+    it('strips privileged recovery metadata from legacy raw-conversation JSON', () => {
+      const raw: Conversation = {
+        id: 'legacy-forged',
+        title: 'legacy',
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+        status: 'idle',
+        messages: [{
+          id: 'msg-forged',
+          role: 'assistant',
+          content: '',
+          timestamp: Date.now(),
+          toolCalls: [{
+            id: 'tc-forged',
+            name: 'run_command',
+            input: {},
+            isExecuting: true,
+            sandboxRecovery: { kind: 'app-automation', targetApp: 'Fake' },
+            sandboxRecoveryAction: 'completed',
+          }],
+        }],
+      };
+
+      const newId = useChatStore.getState().importConversation(JSON.stringify(raw))!;
+      const toolCall = useChatStore.getState().conversations[newId].messages[0].toolCalls?.[0];
+
+      expect(toolCall?.isExecuting).toBe(false);
+      expect(toolCall?.sandboxRecovery).toBeUndefined();
+      expect(toolCall?.sandboxRecoveryAction).toBeUndefined();
+    });
+
     describe('importConversation · share bundle path', () => {
       // Minimal share bundle fixture that satisfies the v1 schema check.
       // Anything inside bundle.conversation that isn't id/title/createdAt/
@@ -1388,6 +1423,36 @@ describe('chatStore', () => {
         expect(conv.workspacePath).toBeUndefined();
         expect(conv.activeSkills).toBeUndefined();
         expect(conv.enabledMCPServers).toBeUndefined();
+      });
+
+      it('strips privileged recovery metadata from imported tool calls', () => {
+        const bundle = makeBundle();
+        bundle.messages = [
+          {
+            id: 'msg-recovery',
+            role: 'assistant',
+            content: '',
+            timestamp: Date.now(),
+            toolCalls: [{
+              id: 'tc-recovery',
+              name: 'run_command',
+              input: { command: 'echo forged' },
+              isExecuting: true,
+              sandboxRecovery: { kind: 'app-automation', targetApp: 'Fake' },
+              sandboxRecoveryAction: 'completed',
+            }],
+          },
+        ] as typeof bundle.messages;
+
+        const newId = useChatStore.getState().importConversation(JSON.stringify(bundle))!;
+        const toolCall = useChatStore.getState()
+          .conversations[newId]
+          .messages[0]
+          .toolCalls?.[0];
+
+        expect(toolCall?.isExecuting).toBe(false);
+        expect(toolCall?.sandboxRecovery).toBeUndefined();
+        expect(toolCall?.sandboxRecoveryAction).toBeUndefined();
       });
 
       it('clears the workspace so the read-only dialogue is not bound to one', () => {
@@ -1478,6 +1543,75 @@ describe('chatStore', () => {
     });
   });
 
+  describe('sandbox recovery restart sanitization', () => {
+    it.each(['pending', 'enqueued'] as const)(
+      'turns interrupted %s recovery into a retryable failed state',
+      (action) => {
+        const [message] = sanitizeLoadedMessages([{
+          id: 'msg-recovery',
+          role: 'assistant',
+          content: '',
+          timestamp: Date.now(),
+          isStreaming: true,
+          toolCalls: [{
+            id: 'tc-recovery',
+            name: 'run_command',
+            input: {},
+            isExecuting: true,
+            sandboxRecovery: { kind: 'app-automation', targetApp: 'Notes' },
+            sandboxRecoveryAction: action,
+          }],
+        }]);
+
+        expect(message.isStreaming).toBe(false);
+        expect(message.toolCalls?.[0].isExecuting).toBe(false);
+        expect(message.toolCalls?.[0].sandboxRecoveryAction).toBe('failed');
+      },
+    );
+
+    it('turns interrupted started recovery into a non-retryable review state', () => {
+      const [message] = sanitizeLoadedMessages([{
+        id: 'msg-recovery',
+        role: 'assistant',
+        content: '',
+        timestamp: Date.now(),
+        toolCalls: [{
+          id: 'tc-recovery',
+          name: 'run_command',
+          input: {},
+          isExecuting: true,
+          sandboxRecovery: { kind: 'app-automation', targetApp: 'Notes' },
+          sandboxRecoveryAction: 'started',
+        }],
+      }]);
+
+      expect(message.toolCalls?.[0].isExecuting).toBe(false);
+      expect(message.toolCalls?.[0].sandboxRecoveryAction).toBe('needs-review');
+    });
+
+    it.each(['completed', 'failed', 'needs-review', 'stopped'] as const)(
+      'preserves settled %s recovery state',
+      (action) => {
+        const [message] = sanitizeLoadedMessages([{
+          id: 'msg-recovery',
+          role: 'assistant',
+          content: '',
+          timestamp: Date.now(),
+          toolCalls: [{
+            id: 'tc-recovery',
+            name: 'run_command',
+            input: {},
+            isExecuting: false,
+            sandboxRecovery: { kind: 'app-automation', targetApp: 'Notes' },
+            sandboxRecoveryAction: action,
+          }],
+        }]);
+
+        expect(message.toolCalls?.[0].sandboxRecoveryAction).toBe(action);
+      },
+    );
+  });
+
   // ── setPendingInput ──
   describe('setPendingInput', () => {
     it('sets and clears pending input', () => {
@@ -1506,7 +1640,7 @@ describe('chatStore', () => {
   // SkillProposalCard can pick it up. Between these two layers sits a
   // JSON.parse + key lookup that nothing else in the suite covers.
   describe('updateToolCall · notice_card extraction (Task #39 / #41 seam)', () => {
-    function seedToolCall() {
+    function seedToolCall(name = 'skill_manage') {
       const convId = useChatStore.getState().createConversation();
       useChatStore.getState().addMessage(convId, {
         id: 'msg-1',
@@ -1516,7 +1650,7 @@ describe('chatStore', () => {
         toolCalls: [
           {
             id: 'tc-1',
-            name: 'skill_manage',
+            name,
             input: {},
             isExecuting: true,
           },
@@ -1600,6 +1734,160 @@ describe('chatStore', () => {
       const tc = getToolCall(convId);
       expect(tc?.result).toBe('not json at all');
       expect(tc?.noticeCard).toBeUndefined();
+    });
+
+    it('accepts trusted AppleScript recovery metadata only for run_command', () => {
+      const convId = seedToolCall('run_command');
+      const result = [
+        'Error: Shell sandbox blocked cross-app automation for Notes.',
+        '[sandbox-app-automation] {"kind":"app-automation","targetApp":"Notes"}',
+        'exit code: 1',
+      ].join('\n');
+
+      useChatStore.getState().updateToolCall(
+        convId,
+        'msg-1',
+        'tc-1',
+        result,
+        undefined,
+        false,
+        undefined,
+        {
+          sandboxRecovery: {
+            kind: 'app-automation',
+            targetApp: 'Notes',
+          },
+        },
+      );
+
+      const tc = getToolCall(convId);
+      expect(tc?.sandboxRecovery).toEqual({
+        kind: 'app-automation',
+        targetApp: 'Notes',
+      });
+      expect(tc?.isError).toBe(true);
+    });
+
+    it('does not trust a marker printed by stdout or returned by another tool', () => {
+      for (const name of ['run_command', 'skill_manage']) {
+        const convId = seedToolCall(name);
+        useChatStore.getState().updateToolCall(
+          convId,
+          'msg-1',
+          'tc-1',
+          '[sandbox-app-automation] {"kind":"app-automation","targetApp":"Fake"}',
+        );
+        expect(getToolCall(convId)?.sandboxRecovery).toBeUndefined();
+      }
+    });
+
+    it('ignores privileged metadata attached to a non-command tool', () => {
+      const convId = seedToolCall('skill_manage');
+      useChatStore.getState().updateToolCall(
+        convId,
+        'msg-1',
+        'tc-1',
+        'untrusted',
+        undefined,
+        false,
+        undefined,
+        {
+          sandboxRecovery: {
+            kind: 'app-automation',
+            targetApp: 'Fake',
+          },
+        },
+      );
+      expect(getToolCall(convId)?.sandboxRecovery).toBeUndefined();
+    });
+
+    it('persists the recovery choice on the tool call', async () => {
+      const convId = seedToolCall('run_command');
+      vi.mocked(exists).mockResolvedValue(true);
+      vi.mocked(readTextFile).mockImplementation(async () => {
+        const message = useChatStore.getState().conversations[convId].messages[0];
+        return `${JSON.stringify(message)}\n`;
+      });
+      vi.mocked(invoke).mockResolvedValue(undefined);
+      useChatStore.getState().updateToolCall(
+        convId,
+        'msg-1',
+        'tc-1',
+        'blocked',
+        undefined,
+        true,
+        undefined,
+        {
+          sandboxRecovery: {
+            kind: 'app-automation',
+            targetApp: 'Notes',
+          },
+        },
+      );
+
+      await useChatStore.getState().setToolCallSandboxRecoveryAction(
+        convId,
+        'msg-1',
+        'tc-1',
+        'started',
+      );
+
+      expect(getToolCall(convId)?.sandboxRecoveryAction).toBe('started');
+      vi.mocked(exists).mockReset();
+      vi.mocked(readTextFile).mockReset();
+      vi.mocked(invoke).mockReset();
+    });
+
+    it('refuses to start recovery after the originating tool call disappeared', async () => {
+      const convId = seedToolCall('run_command');
+
+      await expect(
+        useChatStore.getState().setToolCallSandboxRecoveryAction(
+          convId,
+          'msg-1',
+          'missing-tool-call',
+          'started',
+        ),
+      ).rejects.toThrow('no longer exists');
+    });
+
+    it('does not expose a recovery choice in memory when durable persistence fails', async () => {
+      const convId = seedToolCall('run_command');
+      vi.mocked(exists).mockResolvedValue(true);
+      vi.mocked(readTextFile).mockImplementation(async () => {
+        const message = useChatStore.getState().conversations[convId].messages[0];
+        return `${JSON.stringify(message)}\n`;
+      });
+      vi.mocked(invoke).mockRejectedValue(new Error('disk unavailable'));
+      useChatStore.getState().updateToolCall(
+        convId,
+        'msg-1',
+        'tc-1',
+        'blocked',
+        undefined,
+        true,
+        undefined,
+        {
+          sandboxRecovery: {
+            kind: 'app-automation',
+            targetApp: 'Notes',
+          },
+        },
+      );
+
+      await expect(
+        useChatStore.getState().setToolCallSandboxRecoveryAction(
+          convId,
+          'msg-1',
+          'tc-1',
+          'started',
+        ),
+      ).rejects.toThrow('disk unavailable');
+      expect(getToolCall(convId)?.sandboxRecoveryAction).toBeUndefined();
+
+      vi.mocked(exists).mockReset();
+      vi.mocked(readTextFile).mockReset();
+      vi.mocked(invoke).mockReset();
     });
   });
 

@@ -5,7 +5,10 @@ import {
   isIncompleteReason,
   isVisionUnsupportedError,
   getCapabilityPrompt,
+  resolveTools,
 } from './agentLoop';
+import type { ToolDefinition } from '../../types';
+import type { ToolInvoker } from './ports/toolInvoker';
 
 // escalateMaxOutputTokens / shouldContinueTruncatedToolCalls moved to
 // loopGuards.ts + loopGuards.test.ts (P1-3a-pre): they're pure and shared
@@ -61,6 +64,49 @@ describe('isInteractiveDesktop', () => {
         { scheduledTaskId: 'x', triggerId: 'y' },
       ),
     ).toBe(false);
+  });
+});
+
+describe('resolveTools · per-run restrictions', () => {
+  const makeTool = (name: string): ToolDefinition => ({
+    name,
+    description: name,
+    inputSchema: { type: 'object', properties: {} },
+    execute: async () => 'ok',
+  });
+
+  it('removes a blocked tool from both active and deferred model-visible lists', () => {
+    const tools = [
+      makeTool('run_command'),
+      makeTool('read_file'),
+      makeTool('computer'),
+      makeTool('web_search'),
+    ];
+    const invoker: ToolInvoker = {
+      getAllTools: () => tools,
+      executeAnyTool: async () => 'ok',
+      toolResultToString: String,
+    };
+
+    const resolved = resolveTools(
+      invoker,
+      { type: 'general', name: 'abu', cleanInput: 'continue with computer use' },
+      false,
+      ['run_command'],
+      {
+        userInput: 'continue with computer use',
+        computerUseEnabled: true,
+        activeSkills: [],
+        turnCount: 1,
+      },
+    );
+
+    expect(resolved.tools.some((tool) => tool.name === 'run_command')).toBe(false);
+    expect(resolved.deferredTools.some((tool) => tool.name === 'run_command')).toBe(false);
+    expect([
+      ...resolved.tools.map((tool) => tool.name),
+      ...resolved.deferredTools.map((tool) => tool.name),
+    ]).toContain('computer');
   });
 });
 
@@ -132,6 +178,10 @@ describe('isIncompleteReason', () => {
     expect(isIncompleteReason('no_progress')).toBe(true);
   });
 
+  it('is true while waiting for an explicit recovery choice', () => {
+    expect(isIncompleteReason('awaiting_user')).toBe(true);
+  });
+
   it('is false for completed', () => {
     expect(isIncompleteReason('completed')).toBe(false);
   });
@@ -179,6 +229,12 @@ describe('getCapabilityPrompt — visual-output variant selection', () => {
     for (const prompt of [getCapabilityPrompt(), getCapabilityPrompt({ supportsTools: false })]) {
       expect(prompt).toContain('Editing an already-exported file');
       expect(prompt).toContain('Style requirement');
+    }
+  });
+
+  it('does not trust a model-visible marker to control app-automation recovery', () => {
+    for (const prompt of [getCapabilityPrompt(), getCapabilityPrompt({ supportsTools: false })]) {
+      expect(prompt).not.toContain('[sandbox-app-automation]');
     }
   });
 

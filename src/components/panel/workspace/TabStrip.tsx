@@ -67,9 +67,8 @@ export default function TabStrip() {
   const [draggingId, setDraggingId] = useState<string | null>(null);
   const [dragDx, setDragDx] = useState(0);
   const [dragOverId, setDragOverId] = useState<string | null>(null);
-  const dragStartXRef = useRef(0);
-  const dragOverIdRef = useRef<string | null>(null);
   const dragMovedRef = useRef(false);
+  const dragCleanupRef = useRef<(() => void) | null>(null);
 
   const closeMenus = () => {
     setNewTabMenuPos(null);
@@ -97,51 +96,66 @@ export default function TabStrip() {
 
   const handleTabPointerDown = (id: string) => (e: React.PointerEvent) => {
     if (e.button !== 0) return;
-    dragStartXRef.current = e.clientX;
-    dragMovedRef.current = false;
-    setDraggingId(id);
-    setDragDx(0);
-  };
 
-  // While dragging, the tab follows the cursor (translateX) and lifts (shadow);
-  // window listeners track movement and the drop target (via elementFromPoint),
-  // so a release anywhere resolves correctly. Reorder happens on release.
-  useEffect(() => {
-    if (!draggingId) return;
-    document.body.style.cursor = 'grabbing';
-    document.body.style.userSelect = 'none';
+    // Register global listeners synchronously. Starting the drag in an effect
+    // can miss a quick pointerup, leaving the tab permanently "grabbing".
+    dragCleanupRef.current?.();
+    const startX = e.clientX;
+    let moved = false;
+    let overId: string | null = null;
+    const previousCursor = document.body.style.cursor;
+    const previousUserSelect = document.body.style.userSelect;
+    dragMovedRef.current = false;
+
     const onMove = (e: PointerEvent) => {
-      const dx = e.clientX - dragStartXRef.current;
-      if (Math.abs(dx) > 3) dragMovedRef.current = true;
+      const dx = e.clientX - startX;
+      if (!moved) {
+        if (Math.abs(dx) <= 4) return;
+        moved = true;
+        dragMovedRef.current = true;
+        document.body.style.cursor = 'grabbing';
+        document.body.style.userSelect = 'none';
+        setDraggingId(id);
+      }
       setDragDx(dx);
       const overTab = (document.elementFromPoint(e.clientX, e.clientY) as HTMLElement | null)?.closest(
         '[data-tab-id]',
       ) as HTMLElement | null;
-      const overId = overTab?.dataset.tabId ?? null;
-      const next = overId && overId !== draggingId ? overId : null;
-      dragOverIdRef.current = next;
-      setDragOverId(next);
+      const next = overTab?.dataset.tabId;
+      overId = next && next !== id ? next : null;
+      setDragOverId(overId);
     };
+
+    const cleanupListeners = () => {
+      window.removeEventListener('pointermove', onMove);
+      window.removeEventListener('pointerup', onUp);
+      window.removeEventListener('pointercancel', onUp);
+      document.body.style.cursor = previousCursor;
+      document.body.style.userSelect = previousUserSelect;
+      if (dragCleanupRef.current === cleanupListeners) {
+        dragCleanupRef.current = null;
+      }
+    };
+
     const onUp = () => {
-      if (dragOverIdRef.current && dragOverIdRef.current !== draggingId) {
-        reorderTabs(draggingId, dragOverIdRef.current);
+      cleanupListeners();
+      if (moved && overId) {
+        reorderTabs(id, overId);
       }
       setDraggingId(null);
       setDragDx(0);
       setDragOverId(null);
-      dragOverIdRef.current = null;
     };
+
     window.addEventListener('pointermove', onMove);
     window.addEventListener('pointerup', onUp);
     window.addEventListener('pointercancel', onUp);
-    return () => {
-      window.removeEventListener('pointermove', onMove);
-      window.removeEventListener('pointerup', onUp);
-      window.removeEventListener('pointercancel', onUp);
-      document.body.style.cursor = '';
-      document.body.style.userSelect = '';
-    };
-  }, [draggingId, reorderTabs]);
+    dragCleanupRef.current = cleanupListeners;
+  };
+
+  useEffect(() => () => {
+    dragCleanupRef.current?.();
+  }, []);
 
   // Tell the store when a popover is open so a native browser webview (which
   // paints over React) hides instead of occluding the menu.
@@ -198,7 +212,7 @@ export default function TabStrip() {
             className={cn(
               'group flex items-center gap-1.5 h-8 px-2.5 max-w-[160px] shrink-0 select-none',
               'border-r border-[var(--abu-bg-pressed)] text-minor transition-shadow',
-              draggingId === tab.id ? 'cursor-grabbing' : 'cursor-grab',
+              draggingId === tab.id && 'cursor-grabbing',
               active
                 ? 'bg-[var(--abu-bg-base)] text-[var(--abu-text-primary)]'
                 : 'text-[var(--abu-text-tertiary)] hover:bg-[var(--abu-bg-hover)]',

@@ -72,7 +72,7 @@ describe('computerTool — accessibility permission branch', () => {
     useSettingsStore.setState({ computerUseEnabled: false });
 
     const resultPromise = computerTool.execute(
-      { action: 'wait', duration: 100 },
+      { action: 'wait', duration: 100, consequence: 'none' },
       {
         conversationId: 'active-conversation',
         loopId: 'loop-1',
@@ -103,7 +103,7 @@ describe('computerTool — accessibility permission branch', () => {
     useSettingsStore.setState({ computerUseEnabled: false });
 
     const resultPromise = computerTool.execute(
-      { action: 'screenshot' },
+      { action: 'screenshot', consequence: 'none' },
       {
         conversationId: 'background-conversation',
         toolCallId: 'background-tool',
@@ -121,12 +121,33 @@ describe('computerTool — accessibility permission branch', () => {
     expect(invoke).not.toHaveBeenCalled();
   });
 
+  it('rejects a consequential action without an exact user-visible detail', async () => {
+    const result = await computerTool.execute({
+      action: 'click',
+      x: 10,
+      y: 10,
+      consequence: 'delete',
+    }, {
+      conversationId: 'active-conversation',
+      loopId: 'loop-1',
+      toolCallId: 'tool-1',
+      interactionMode: 'foreground',
+    });
+
+    expect(result).toContain('consequence_detail');
+    expect(invoke).not.toHaveBeenCalled();
+  });
+
   it('Windows without elevation: returns a Windows-appropriate error, no macOS Settings call', async () => {
     vi.mocked(isWindows).mockReturnValue(true);
     vi.mocked(isMacOS).mockReturnValue(false);
     mockPermissions({ screen_recording: true, accessibility: false });
 
-    const result = await computerTool.execute({ action: 'get_app_state', app: 'Chrome' }, undefined);
+    const result = await computerTool.execute({
+      action: 'get_app_state',
+      app: 'Chrome',
+      consequence: 'none',
+    }, undefined);
 
     expect(typeof result).toBe('string');
     const text = result as string;
@@ -143,7 +164,11 @@ describe('computerTool — accessibility permission branch', () => {
     vi.mocked(isMacOS).mockReturnValue(true);
     mockPermissions({ screen_recording: true, accessibility: false });
 
-    const result = await computerTool.execute({ action: 'get_app_state', app: 'Chrome' }, undefined);
+    const result = await computerTool.execute({
+      action: 'get_app_state',
+      app: 'Chrome',
+      consequence: 'none',
+    }, undefined);
 
     expect(result as string).toContain('Accessibility');
     expect(shellCommands().some((c) => c.includes('x-apple.systempreferences'))).toBe(true);
@@ -182,7 +207,7 @@ describe('computerTool — accessibility permission branch', () => {
     });
 
     await computerTool.execute(
-      { action: 'screenshot' },
+      { action: 'screenshot', consequence: 'none' },
       {
         conversationId: 'active-conversation',
         loopId: 'loop-1',
@@ -195,6 +220,16 @@ describe('computerTool — accessibility permission branch', () => {
     expect(commands).toContain('computer_use_begin_session');
     expect(commands).toContain('computer_use_end_session');
     expect(commands).not.toContain('computer_use_set_enabled');
+    const beginCall = vi.mocked(invoke).mock.calls.find(([cmd]) => (
+      cmd === 'computer_use_begin_session'
+    ));
+    expect(beginCall?.[1]).toMatchObject({
+      actionIntent: {
+        action: 'screenshot',
+        category: 'none',
+        summary: '',
+      },
+    });
   });
 
   it('stops before native input when the task aborts during UI settling', async () => {
@@ -229,7 +264,7 @@ describe('computerTool — accessibility permission branch', () => {
     });
 
     await expect(computerTool.execute(
-      { action: 'click', x: 10, y: 10 },
+      { action: 'click', x: 10, y: 10, consequence: 'none' },
       {
         conversationId: 'active-conversation',
         loopId: 'loop-1',

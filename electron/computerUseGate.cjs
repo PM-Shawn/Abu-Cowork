@@ -11,6 +11,11 @@ const {
   COMPUTER_USE_PRIVILEGED_COMMANDS,
   COMPUTER_USE_HOST_COMMANDS,
 } = require('./computerUseCommands.cjs');
+const {
+  normalizeActionIntent,
+  resolveConsequence,
+  sanitizeAxElements,
+} = require('./computerUseActionPolicy.cjs');
 
 const COMPUTER_USE_GATE_MISS = Symbol('computer-use-gate-miss');
 const SESSION_TTL_MS = 2 * 60 * 1000;
@@ -88,6 +93,7 @@ function createComputerUseGate(options) {
     killNativeHelper = () => {},
     requestAppApproval = async () => false,
     requestTaskApproval = async () => false,
+    requestActionApproval = async () => false,
     platform = process.platform,
     now = () => Date.now(),
     tokenFactory = () => crypto.randomBytes(32).toString('base64url'),
@@ -428,6 +434,9 @@ function createComputerUseGate(options) {
       if (axSession.bundleId !== session.target.bundle_id) {
         throw new Error('Accessibility session belongs to a different app');
       }
+      if (axSession.taskKey !== session.taskKey) {
+        throw new Error('Accessibility session belongs to a different task');
+      }
       return;
     }
     const active = normalizeIdentity(await getActiveWindow());
@@ -468,6 +477,7 @@ function createComputerUseGate(options) {
       if (!VALID_SCOPES.has(args?.scope)) {
         throw new Error('Computer Use session scope is invalid');
       }
+      const actionIntent = normalizeActionIntent(args?.actionIntent, args.scope);
       const reservation = reserveTaskAuthorization(sender, args);
       const { authorization } = reservation;
       try {
@@ -512,6 +522,8 @@ function createComputerUseGate(options) {
           target,
           classification,
           permissionMode,
+          actionIntent,
+          consequenceAttempted: false,
           expiresAt,
         });
         return { token, target, classification, expires_at: expiresAt };
@@ -553,6 +565,34 @@ function createComputerUseGate(options) {
     assertScope(session, cmd);
     await assertOsPermissions(session.scope, cmd);
     await assertCommandTarget(session, cmd, args);
+    const axSession = typeof args?.sessionId === 'string'
+      ? axSessions.get(args.sessionId)
+      : null;
+    const consequence = resolveConsequence(session, cmd, args, axSession);
+    if (consequence) {
+      if (session.consequenceAttempted) {
+        throw new Error('Computer Use consequential action authorization was already used');
+      }
+      const approved = await requestActionApproval({
+        sender,
+        target: session.target,
+        action: session.actionIntent.action,
+        consequence,
+        permissionMode: session.permissionMode,
+        conversationId: session.conversationId,
+        loopId: session.loopId,
+        toolCallId: session.toolCallId,
+      });
+      if (!approved) {
+        throw new Error(`Computer Use consequential action was not approved for "${session.target.app_name}"`);
+      }
+      assertTaskAuthorizationLive(session.authorization);
+      await assertOsPermissions(session.scope, cmd);
+      await assertCommandTarget(session, cmd, args);
+      // Mark before dispatch. If native input reports an ambiguous failure, a
+      // renderer fallback must not repeat a potentially completed side effect.
+      session.consequenceAttempted = true;
+    }
     const nativeArgs = stripToken(args);
     if (
       cmd.startsWith('mouse_')
@@ -568,6 +608,7 @@ function createComputerUseGate(options) {
         sender,
         bundleId: session.target.bundle_id,
         taskKey: session.taskKey,
+        elements: sanitizeAxElements(result),
         createdAt: now(),
       });
     }

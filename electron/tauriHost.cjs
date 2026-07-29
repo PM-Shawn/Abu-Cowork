@@ -54,6 +54,9 @@ const {
   createComputerUseGate,
   COMPUTER_USE_GATE_MISS,
 } = require('./computerUseGate.cjs');
+const {
+  buildActionApprovalDialogOptions,
+} = require('./computerUseActionPolicy.cjs');
 const { ptyDispatch, PTY_MISS } = require('./ptyHost.cjs');
 // browserHost.cjs requires THIS module back (for emitEvent/getMainWindow),
 // but only lazily (inside function bodies, called at dispatch-time, never
@@ -772,6 +775,19 @@ function registerTauriHost(app) {
         cancelId: 1,
         noLink: true,
       };
+      const win = getMainWindow();
+      const result = win
+        ? await dialog.showMessageBox(win, options)
+        : await dialog.showMessageBox(options);
+      return result.response === 0;
+    },
+    requestActionApproval: async ({ target, consequence }) => {
+      const isZh = app.getLocale().toLowerCase().startsWith('zh');
+      const options = buildActionApprovalDialogOptions({
+        isZh,
+        target,
+        consequence,
+      });
       const win = getMainWindow();
       const result = win
         ? await dialog.showMessageBox(win, options)

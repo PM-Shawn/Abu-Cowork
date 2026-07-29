@@ -42,6 +42,17 @@ let currentComputerUseToken: string | null = null;
 let currentComputerUseAbortSignal: AbortSignal | null = null;
 
 const COMPUTER_USE_TOKEN_ARG = '__abuComputerUseToken';
+const CONSEQUENCE_CATEGORIES = new Set([
+  'none',
+  'send',
+  'publish',
+  'delete',
+  'overwrite',
+  'install',
+  'purchase',
+  'credential-change',
+  'security-change',
+]);
 
 function computerUseAbortError(): DOMException {
   return new DOMException('Computer Use was stopped', 'AbortError');
@@ -152,6 +163,11 @@ async function beginComputerUseSession(
     interactionMode: context.interactionMode,
     scope,
     targetApp: explicitTargetApp(input),
+    actionIntent: {
+      action: input.action,
+      category: input.consequence,
+      summary: input.consequence_detail ?? '',
+    },
     permissionMode: currentConversationMode
       ?? context.permissionMode
       ?? getSettingsReader().getSnapshot().permissionMode,
@@ -462,6 +478,13 @@ export const computerTool: ToolDefinition = {
 
 Only fall back to screenshot + click(x,y) when get_app_state cannot retrieve elements (canvas/custom-drawn apps).
 
+SAFETY CONTRACT: Every call must set consequence. Use "none" only when this
+specific action cannot itself send, publish, delete, overwrite, install,
+purchase, change credentials, or change security settings. Typing a draft is
+"none"; clicking Send is "send". For any non-none value, consequence_detail
+must state the exact outcome without including secrets. Abu asks the user
+immediately before that one action, even in Full Autonomy.
+
 ━━━ Action list ━━━
 
 🔍 Perception + switching (always call get_app_state before each operation turn)
@@ -528,8 +551,27 @@ All pixel coordinates use screenshot space (max width ${SCREENSHOT_MAX_WIDTH}px)
         type: 'boolean',
         description: 'Show screenshot to user in chat. Default true for screenshot/get_app_state, false for other actions.',
       },
+      consequence: {
+        type: 'string',
+        enum: [
+          'none',
+          'send',
+          'publish',
+          'delete',
+          'overwrite',
+          'install',
+          'purchase',
+          'credential-change',
+          'security-change',
+        ],
+        description: 'Required safety declaration for the direct outcome of THIS action. Use none for viewing, navigation, scrolling, selecting, or typing a draft that is not submitted. Use the exact category when this action itself sends, publishes, deletes, overwrites, installs, purchases, changes credentials, or changes security settings. Never label a consequential action as none.',
+      },
+      consequence_detail: {
+        type: 'string',
+        description: 'Required when consequence is not none. Concisely tell the user exactly what will be sent, published, deleted, overwritten, installed, purchased, or changed. Do not include passwords, tokens, or other secret values.',
+      },
     },
-    required: ['action'],
+    required: ['action', 'consequence'],
   },
   execute: async (input, context): Promise<ToolResult> => {
     const t = getI18n().toolResult.computer;
@@ -551,6 +593,22 @@ All pixel coordinates use screenshot space (max width ${SCREENSHOT_MAX_WIDTH}px)
     }
 
     const action = input.action as string;
+    const consequence = typeof input.consequence === 'string'
+      ? input.consequence
+      : '';
+    if (!CONSEQUENCE_CATEGORIES.has(consequence)) {
+      return t.errConsequenceRequired;
+    }
+    if (
+      consequence !== 'none'
+      && (
+        typeof input.consequence_detail !== 'string'
+        || !input.consequence_detail.trim()
+        || input.consequence_detail.trim().length > 400
+      )
+    ) {
+      return t.errConsequenceDetailRequired;
+    }
 
     // Whether the active model can understand images. Non-vision models (many
     // Chinese / local models, e.g. GLM, Qwen, MiMo) reject image inputs — sending

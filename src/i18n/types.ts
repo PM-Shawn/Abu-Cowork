@@ -3142,6 +3142,10 @@ export interface TranslationDict {
       errTargetIdentityFailed: string;
       /** Main-process Computer Use authorization failed. {msg} */
       errAuthorizationFailed: string;
+      /** Every computer action must declare whether it has a consequential outcome. */
+      errConsequenceRequired: string;
+      /** Consequential operations need a concise user-visible summary. */
+      errConsequenceDetailRequired: string;
       /** formatAxElements: no interactive elements found. */
       noInteractiveElements: string;
       /** screenshot: current model has no vision capability (bilingual). zh half. */

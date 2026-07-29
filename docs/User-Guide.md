@@ -126,6 +126,8 @@ When a task involves high-risk steps like **delete / move / overwrite / send / i
 
 While the plan is awaiting approval, Abu **can only perform read-only operations** (read files, search, fetch web content); writes and commands are locked until you approve. Auto-cancels after 10 minutes with no response.
 
+> Approving a plan only lets Abu begin working through that approach. It does not pre-approve final outcomes such as sending, publishing, deleting, or purchasing. Computer Use asks again immediately before such an outcome.
+
 ### Interactive Questions
 
 At decision forks (choosing an approach, providing a parameter, confirming a detail), Abu pops a **question card** above the composer instead of burying the question in a long paragraph:
@@ -898,18 +900,30 @@ macOS requires two permissions:
 
 ### Safety Guards (important)
 
-Abu's Computer Use is not a raw `enigo` call — it's wrapped in multiple guards in the Rust backend:
+Abu's Computer Use is not a raw input call. The Electron main process and native helper enforce multiple guards:
 
-#### 1. Sensitive App Blocking
+#### 1. Application Authorization and Sensitive App Blocking
 
-15+ apps are on a built-in blocklist. **When the active app is on the list, all mouse/keyboard operations are rejected**:
+Computer Use authorization is scoped to the current task and target app:
 
-- **System-level**: Keychain Access, System Settings, Activity Monitor, Terminal, iTerm 2, Warp, VS Code (to prevent accidental code edits)
-- **Communication/Meeting**: WeChat, Messages, Mail, Outlook, Slack, Lark, DingTalk, Discord, Zoom
+- **System red lines**: Keychain Access, System Settings, Activity Monitor, Terminal, iTerm 2, Warp, VS Code, and similar targets are denied in every permission mode
+- **Web and communication apps**: browsers, WeChat, Messages, Mail, Outlook, Slack, Lark, DingTalk, Discord, Zoom, and similar targets require explicit approval for each task
+- **Ordinary apps**: Finder, Notes, Calculator, and Office apps follow the current permission mode for first use
 
-> Want Abu to operate inside a blocked app? You'd need to manually allow it in settings (UI not yet exposed, planned).
+Approval expires on Stop, task completion, Abu restart, or a target-app change. V1 has no persistent "always allow" option.
 
-#### 2. Dangerous Key Interception
+#### 2. Consequential Action Confirmation
+
+Application permission lets Abu view or control an app; it does not approve every outcome inside it. Even after plan approval, and even in Smart Review or Full Autonomy, Abu shows a native confirmation immediately before:
+
+- sending, replying, forwarding, or publishing content;
+- deleting or overwriting existing content;
+- installing, uninstalling, purchasing, paying, or subscribing;
+- changing passwords, credentials, or security settings.
+
+The dialog shows the target app and exact outcome, with Cancel as the default. "Allow once" applies only to the next native input and cannot be reused. Abu also inspects native Accessibility control labels, so a known Send, Delete, or Pay control still asks even if the action was declared ordinary.
+
+#### 3. Dangerous Key Interception
 
 The following key combos are rejected outright to prevent Abu from accidentally logging out or locking the screen:
 
@@ -925,13 +939,13 @@ The following key combos are rejected outright to prevent Abu from accidentally 
 
 Modifier names are normalized (`cmd→meta`, `control→ctrl`, `option→alt`) so spelling differences can't bypass the blocklist.
 
-#### 3. Session-level Window Management
+#### 4. Session-level Window Management
 
 - When entering a Computer Use session, **the Abu main window and status overlay are hidden for the entire session** to avoid blocking the target UI
 - On macOS, screenshots use `CGWindowListCreateImage` to exclude Abu's window and overlay — they **don't appear in screenshots without actually hiding the window**
 - The session end automatically restores window visibility
 
-#### 4. Session Timeout & Step Limit
+#### 5. Session Timeout & Step Limit
 
 | Limit | Default |
 |-------|---------|
@@ -940,7 +954,7 @@ Modifier names are normalized (`cmd→meta`, `control→ctrl`, `option→alt`) s
 
 Exceeding either limit forces the session to end — prevents runaway loops or prolonged keyboard/mouse hijacking.
 
-#### 5. Status Overlay + Global Stop Shortcut
+#### 6. Status Overlay + Global Stop Shortcut
 
 - A semi-transparent **status overlay** at the screen edge shows the current step count and action in real time
 - A configurable global keyboard shortcut stops the session at any time

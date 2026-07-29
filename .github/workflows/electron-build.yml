@@ -164,7 +164,17 @@ jobs:
           if [[ "$TRANSITION_RELEASE" == "true" ]]; then
             BUILDER_ARGS+=("--config.extraMetadata.abuRelease.tauriMigration=true")
           fi
-          npm run dist:electron -- "${BUILDER_ARGS[@]}"
+          for attempt in 1 2 3; do
+            if npm run dist:electron -- "${BUILDER_ARGS[@]}"; then
+              break
+            fi
+            if [[ "$attempt" -eq 3 ]]; then
+              echo "Electron packaging failed after $attempt attempts" >&2
+              exit 1
+            fi
+            echo "Electron packaging attempt $attempt failed; retrying after $((attempt * 15))s" >&2
+            sleep "$((attempt * 15))"
+          done
 
       - name: Locate, staple, and verify the packaged app
         env:
@@ -372,7 +382,16 @@ jobs:
           if ($env:ABU_TRANSITION_RELEASE -eq "true") {
             $builderArgs += "--config.extraMetadata.abuRelease.tauriMigration=true"
           }
-          npm run dist:electron:windows -- @builderArgs
+          for ($attempt = 1; $attempt -le 3; $attempt++) {
+            npm run dist:electron:windows -- @builderArgs
+            if ($LASTEXITCODE -eq 0) { break }
+            if ($attempt -eq 3) {
+              throw "Electron packaging failed after $attempt attempts"
+            }
+            $delay = $attempt * 15
+            Write-Warning "Electron packaging attempt $attempt failed; retrying after ${delay}s"
+            Start-Sleep -Seconds $delay
+          }
 
       - name: Verify packaged transition marker
         if: ${{ inputs.transition_release }}

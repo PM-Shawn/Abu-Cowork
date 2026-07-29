@@ -51,6 +51,18 @@ test('Electron build uses native runners for all three release targets', () => {
     JSON.stringify(build.jobs['build-windows']),
     /electron-windows-x64/
   );
+  assert.match(
+    build.jobs['build-mac'].steps.find(
+      (step) => step.name === 'Build, sign, and notarize Electron'
+    ).run,
+    /for attempt in 1 2 3/
+  );
+  assert.match(
+    build.jobs['build-windows'].steps.find(
+      (step) => step.name === 'Build unsigned current-user NSIS and update metadata'
+    ).run,
+    /for \(\$attempt = 1; \$attempt -le 3; \$attempt\+\+\)/
+  );
 });
 
 test('release publishes only after all Electron targets and switches root pointer transactionally', () => {

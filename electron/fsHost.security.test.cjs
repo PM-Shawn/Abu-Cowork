@@ -18,12 +18,6 @@ function tempDir(t) {
   return dir;
 }
 
-function comparablePath(filePath) {
-  const resolved = path.resolve(filePath);
-  if (process.platform !== 'win32') return resolved;
-  return resolved.replace(/^\\\\\?\\/, '').toLowerCase();
-}
-
 test('normal files stay readable and stat returns the Tauri FileInfo shape', (t) => {
   const dir = tempDir(t);
   const file = path.join(dir, 'normal.txt');
@@ -214,14 +208,15 @@ test('EXDEV restore replaces a target symlink without writing through it', (t) =
   fs.symlinkSync(sentinel, target);
 
   const originalRenameSync = fs.renameSync;
-  const canonicalDir = fs.realpathSync.native(dir);
-  const canonicalBackup = path.join(canonicalDir, path.basename(backup));
-  const canonicalTarget = path.join(canonicalDir, path.basename(target));
+  // Windows may pass the same temp directory once as an 8.3 path and once as
+  // its long path. These entry names uniquely identify the restore rename.
+  const backupName = path.basename(backup).toLowerCase();
+  const targetName = path.basename(target).toLowerCase();
   let forcedExdev = false;
   fs.renameSync = (from, to) => {
     if (
-      comparablePath(from) === comparablePath(canonicalBackup) &&
-      comparablePath(to) === comparablePath(canonicalTarget)
+      path.basename(from).toLowerCase() === backupName &&
+      path.basename(to).toLowerCase() === targetName
     ) {
       forcedExdev = true;
       const err = new Error('forced cross-device restore');

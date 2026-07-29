@@ -300,11 +300,13 @@ const chatSubscribeMock = vi.fn((cb: () => void) => {
   capturedChatCb = cb;
   return chatUnsubMock;
 });
+const waitForConversationPersistenceMock = vi.fn().mockResolvedValue(undefined);
 vi.mock('../../stores/chatStore', () => ({
   useChatStore: {
     subscribe: (...a: [() => void]) => chatSubscribeMock(...a),
     getState: () => chatState,
   },
+  waitForConversationPersistence: (...a: unknown[]) => waitForConversationPersistenceMock(...a),
 }));
 
 interface TaskExecStateStub {
@@ -409,6 +411,8 @@ describe('agentLoopRunner', () => {
     capturedSettingsCb = undefined;
     chatSubscribeMock.mockClear();
     chatUnsubMock.mockReset();
+    waitForConversationPersistenceMock.mockReset();
+    waitForConversationPersistenceMock.mockResolvedValue(undefined);
     capturedChatCb = undefined;
     // P1-3c-2: handleMainLoopToolInvoke now refuses to execute when
     // conversations[session.conversationId] is absent (conversation
@@ -523,6 +527,36 @@ describe('agentLoopRunner', () => {
 
       await Promise.resolve();
       expect(applyDeltaFramesMock).toHaveBeenCalledWith(frames);
+    });
+
+    it('serializes separate frame batches for the same run', async () => {
+      const { ensureHandlersRegistered, registerRunSession } = await importFresh();
+      ensureHandlersRegistered();
+      registerRunSession('run-1', makeSession());
+
+      let releaseFirst!: () => void;
+      const firstPending = new Promise<void>((resolve) => {
+        releaseFirst = resolve;
+      });
+      applyDeltaFramesMock
+        .mockImplementationOnce(() => firstPending)
+        .mockResolvedValueOnce(undefined);
+
+      const handler = handlerFor(onSidecarNotification, 'agent.delta');
+      const first = [{ p: 'chat', m: 'addMessage', a: ['conv-1', { id: 'a' }] }];
+      const second = [{ p: 'session', m: 'replaceMessageById', a: ['conv-1', { id: 'a' }] }];
+      handler({ runId: 'run-1', frames: first });
+      handler({ runId: 'run-1', frames: second });
+
+      await Promise.resolve();
+      expect(applyDeltaFramesMock).toHaveBeenCalledTimes(1);
+      expect(applyDeltaFramesMock).toHaveBeenNthCalledWith(1, first);
+
+      releaseFirst();
+      await firstPending;
+      await vi.waitFor(() => {
+        expect(applyDeltaFramesMock).toHaveBeenNthCalledWith(2, second);
+      });
     });
 
     it('drops silently for an unknown runId (no throw, applyDeltaFrames not called)', async () => {
@@ -1705,6 +1739,47 @@ describe('agentLoopRunner', () => {
       expect(__getActiveRunSessionCount()).toBe(0);
       expect(clearLoopContextMock).toHaveBeenCalledTimes(1);
       expect(clearAbortControllerMock).toHaveBeenCalledWith('conv-1');
+    });
+
+    it('does not resolve or unregister until queued frames and chat persistence settle', async () => {
+      const { runAgentLoopDispatched, getRunSession } = await importFresh();
+      const rpc = deferred<unknown>();
+      const frame = deferred<void>();
+      const persistence = deferred<void>();
+      sidecarRequestMock.mockReturnValue(rpc.promise);
+      applyDeltaFramesMock.mockReturnValueOnce(frame.promise);
+      waitForConversationPersistenceMock.mockReturnValueOnce(persistence.promise);
+
+      const running = runAgentLoopDispatched('conv-1', 'hello');
+      await waitForCall(sidecarRequestMock);
+      const runId = (sidecarRequestMock.mock.calls[0][1] as { runId: string }).runId;
+      const deltaHandler = handlerFor(onSidecarNotification, 'agent.delta');
+      deltaHandler({
+        runId,
+        frames: [{ p: 'chat', m: 'finishStreaming', a: ['conv-1', 'assistant-1'] }],
+      });
+
+      rpc.resolve({ reason: 'completed' });
+      let settled = false;
+      void running.finally(() => {
+        settled = true;
+      });
+      await Promise.resolve();
+      expect(settled).toBe(false);
+      expect(getRunSession(runId)).toBeDefined();
+      expect(waitForConversationPersistenceMock).not.toHaveBeenCalled();
+
+      frame.resolve();
+      await frame.promise;
+      await vi.waitFor(() => {
+        expect(waitForConversationPersistenceMock).toHaveBeenCalledWith('conv-1');
+      });
+      expect(settled).toBe(false);
+      expect(getRunSession(runId)).toBeDefined();
+
+      persistence.resolve();
+      await expect(running).resolves.toEqual({ reason: 'completed' });
+      expect(getRunSession(runId)).toBeUndefined();
     });
 
     it('a transport failure BEFORE the run is committed falls back to runAgentLoop in-process', async () => {

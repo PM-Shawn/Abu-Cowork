@@ -5,6 +5,7 @@ import {
   useChatStore,
   flushTokenBuffer,
   sanitizeLoadedMessages,
+  waitForConversationPersistence,
 } from './chatStore';
 import type { Conversation } from '../types';
 import { createDocReference } from '@/types/chatReference';
@@ -447,6 +448,41 @@ describe('chatStore', () => {
       const conv = useChatStore.getState().conversations[id];
       expect(conv.messages).toHaveLength(1);
       expect(conv.messages[0].content).toBe('Hello');
+    });
+
+    it('exposes a durability barrier for the asynchronous JSONL append', async () => {
+      let releaseAppend!: () => void;
+      const appendPending = new Promise<void>((resolve) => {
+        releaseAppend = resolve;
+      });
+      vi.mocked(invoke).mockImplementation(async (cmd: string) => {
+        if (cmd === 'append_file_text') await appendPending;
+        return undefined;
+      });
+
+      try {
+        const id = useChatStore.getState().createConversation();
+        useChatStore.getState().addMessage(id, {
+          id: `barrier-${Date.now()}`,
+          role: 'assistant',
+          content: 'durable answer',
+          timestamp: Date.now(),
+        });
+
+        let settled = false;
+        const barrier = waitForConversationPersistence(id).finally(() => {
+          settled = true;
+        });
+        await Promise.resolve();
+        await Promise.resolve();
+        expect(settled).toBe(false);
+
+        releaseAppend();
+        await barrier;
+        expect(settled).toBe(true);
+      } finally {
+        vi.mocked(invoke).mockReset();
+      }
     });
 
     it('auto-titles from first user message', () => {

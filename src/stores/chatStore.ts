@@ -161,6 +161,43 @@ export function findNextActiveConversation(
 // Store abort controllers for each conversation
 const abortControllers: Map<string, AbortController> = new Map();
 
+// Persistence started by store actions intentionally stays off the render
+// path, but sidecar runs need a durability barrier before their RPC resolves:
+// otherwise the UI can show a completed assistant turn while its fire-and-
+// forget JSONL append/replace is still in flight. Keep the promises grouped
+// by conversation so the dispatch bridge can await only the run it owns.
+const pendingConversationPersistence = new Map<string, Set<Promise<void>>>();
+
+function trackConversationPersistence(
+  convId: string,
+  operation: Promise<unknown>,
+): void {
+  const tracked = operation.then(() => undefined).catch(() => undefined);
+  const pending = pendingConversationPersistence.get(convId) ?? new Set<Promise<void>>();
+  pending.add(tracked);
+  pendingConversationPersistence.set(convId, pending);
+  void tracked.finally(() => {
+    pending.delete(tracked);
+    if (pending.size === 0 && pendingConversationPersistence.get(convId) === pending) {
+      pendingConversationPersistence.delete(convId);
+    }
+  });
+}
+
+/**
+ * Wait until every message/index persistence operation already started for
+ * this conversation has settled. The loop handles operations added while it
+ * is awaiting an earlier snapshot, so an append that schedules its index
+ * update cannot escape the barrier.
+ */
+export async function waitForConversationPersistence(convId: string): Promise<void> {
+  while (true) {
+    const pending = pendingConversationPersistence.get(convId);
+    if (!pending?.size) return;
+    await Promise.allSettled([...pending]);
+  }
+}
+
 // ── Streaming token buffer (RAF-based debounce) ──
 // Tokens accumulate in the buffer and flush once per animation frame,
 // reducing React re-renders from 1000+/sec to ~60/sec during streaming.
@@ -886,13 +923,17 @@ export const useChatStore = create<ChatStore>()(
             }
           }
         });
-        // Async write to disk (non-blocking)
-        import('../core/session/conversationStorage').then(({ appendMessage: diskAppend, updateIndexEntry }) => {
-          diskAppend(convId, message).catch(() => {});
+        // Async write to disk (non-blocking for rendering, tracked so a
+        // sidecar run can establish a durability barrier before it settles).
+        trackConversationPersistence(convId, import('../core/session/conversationStorage').then(async ({
+          appendMessage: diskAppend,
+          updateIndexEntry,
+        }) => {
+          await diskAppend(convId, message);
           // Always persist updated index (messageCount, updatedAt, and title if changed)
           const meta = get().conversationIndex[convId];
-          if (meta) updateIndexEntry(meta).catch(() => {});
-        });
+          if (meta) await updateIndexEntry(meta);
+        }));
         // Snapshot any user-uploaded files (currently only images with filePath).
         // Fire-and-forget — must never block the UI flow.
         // ★ Architecture contract: when adding new content types with stripForDisk
@@ -956,13 +997,19 @@ export const useChatStore = create<ChatStore>()(
           : messages?.slice(-1)[0];
         if (finalMsg) {
           if (msgId) {
-            import('../core/session/conversationStorage').then(({ replaceMessageById }) => {
-              replaceMessageById(convId, finalMsg).catch(() => {});
-            });
+            trackConversationPersistence(
+              convId,
+              import('../core/session/conversationStorage').then(({ replaceMessageById }) =>
+                replaceMessageById(convId, finalMsg)
+              ),
+            );
           } else {
-            import('../core/session/conversationStorage').then(({ updateLastMessage }) => {
-              updateLastMessage(convId, finalMsg).catch(() => {});
-            });
+            trackConversationPersistence(
+              convId,
+              import('../core/session/conversationStorage').then(({ updateLastMessage }) =>
+                updateLastMessage(convId, finalMsg)
+              ),
+            );
           }
         }
       },

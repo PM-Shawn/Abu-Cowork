@@ -73,7 +73,7 @@ import {
 import { setComputerUseBatchMode, setSkipAutoScreenshot, clearAllSkillHooks } from '../tools/builtins';
 import { notifyTaskCompleted, notifyTaskError } from '../../utils/notifications';
 import { useSettingsStore, type SettingsState } from '../../stores/settingsStore';
-import { useChatStore } from '../../stores/chatStore';
+import { useChatStore, waitForConversationPersistence } from '../../stores/chatStore';
 import { useTaskExecutionStore } from '../../stores/taskExecutionStore';
 import type { PlannedStep } from '../../types/execution';
 import { getI18n, getLocale } from '../../i18n';
@@ -168,6 +168,13 @@ export interface RunSession {
    * don't set it upfront.
    */
   forwardedQueueIds?: Set<string>;
+  /**
+   * Per-run FIFO for asynchronous `agent.delta` application. JSON-RPC
+   * notifications arrive in order, but their handlers are synchronous and
+   * cannot await `applyDeltaFrames`; without this chain, separate batches
+   * race each other and the final response can resolve before disk frames.
+   */
+  frameApplyTail?: Promise<void>;
 }
 
 const sessions = new Map<string, RunSession>();
@@ -240,9 +247,17 @@ function handleAgentDelta(rawParams: unknown): void {
   // an already-committed, observable side effect (text/thinking streamed to
   // the real chatStore) — see RunSession.committed's doc.
   if (params.frames.length > 0) session.committed = true;
-  void applyDeltaFrames(params.frames as PortFrame[]).catch((err: unknown) => {
+  const previous = session.frameApplyTail ?? Promise.resolve();
+  session.frameApplyTail = previous.then(() =>
+    applyDeltaFrames(params.frames as PortFrame[])
+  ).catch((err: unknown) => {
     logger.warn('applyDeltaFrames threw', { runId: params.runId, error: err instanceof Error ? err.message : String(err) });
   });
+}
+
+async function settleRunPersistence(session: RunSession): Promise<void> {
+  await (session.frameApplyTail ?? Promise.resolve());
+  await waitForConversationPersistence(session.conversationId);
 }
 
 /** The four permissionBridge drain functions, addressable by `approval.drain`'s `kind`. The queues themselves are global (not per-run/per-loop — see permissionBridge.ts), so `runId` in the params is informational only; the drain always executes for the named kind(s) regardless of whether that runId is still a known session. */
@@ -1391,8 +1406,16 @@ export async function runAgentLoopDispatched(
     if (!isAgentLoopResult(raw)) {
       throw new Error('agent.run response did not match the expected AgentLoopResult shape');
     }
+    // The sidecar flushes its coalescer before replying, and the transport
+    // preserves byte order. Await the shell-side FIFO plus the store's
+    // fire-and-forget JSONL writes before exposing a completed turn.
+    await settleRunPersistence(session);
     return raw;
   } catch (err) {
+    // A failing RPC can still have flushed committed frames immediately
+    // before its error response. Land those frames before deciding fallback
+    // or applying the shell-owned error finalization.
+    await settleRunPersistence(session);
     if (shellAbortController.signal.aborted) {
       return { reason: 'aborted' };
     }

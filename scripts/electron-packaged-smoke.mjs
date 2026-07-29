@@ -52,6 +52,7 @@ const TEST_API_KEY = 'abu-packaged-e2e-key-not-a-real-secret';
 const TEST_MODEL_ID = 'abu-packaged-e2e-model';
 const E2E_APP_DATA_ROOT_ENV = 'ABU_E2E_APP_DATA_ROOT';
 const PACKAGED_E2E_ENV = 'ABU_PACKAGED_E2E';
+const CHAT_RUNTIME_PROBE_PREFIX = 'ABU_PACKAGED_RUNTIME_PROBE=';
 const SIGNATURE_VARIANT_RESOURCE_ROOTS = [
   'native-helper',
   'sandbox-launcher',
@@ -1102,7 +1103,7 @@ function commandResultPaths(testRoot, name) {
   };
 }
 
-function bareRuntimeProbeCommand(resultPath) {
+function bareRuntimeProbeCommand() {
   const script = `
     const cp = require('node:child_process');
     const fs = require('node:fs');
@@ -1149,7 +1150,7 @@ function bareRuntimeProbeCommand(resultPath) {
       }
       return result.stdout.trim();
     };
-    fs.writeFileSync(${JSON.stringify(resultPath)}, JSON.stringify({
+    const payload = JSON.stringify({
       executable: process.execPath,
       nodeOptions: process.env.NODE_OPTIONS || null,
       path: envPath,
@@ -1159,9 +1160,31 @@ function bareRuntimeProbeCommand(resultPath) {
       npxPath: npxCli,
       npm: runCli(npmCli),
       npx: runCli(npxCli),
-    }));
+    });
+    process.stdout.write(
+      ${JSON.stringify(CHAT_RUNTIME_PROBE_PREFIX)} +
+      Buffer.from(payload, 'utf8').toString('base64'),
+    );
   `;
-  return `node -e ${shellQuote(script)}`;
+  // Keep the PowerShell command a single opaque line. Encoding avoids
+  // platform-specific quote/newline parsing while still resolving bare
+  // `node` through the production bundled PATH.
+  const encoded = Buffer.from(script, 'utf8').toString('base64');
+  const loader = 'eval(Buffer.from(process.argv[1], "base64").toString("utf8"))';
+  return `node -e ${shellQuote(loader)} ${shellQuote(encoded)}`;
+}
+
+function runtimeProbeFromFollowup(followup) {
+  const toolPayload = JSON.stringify(
+    followup?.body?.messages?.filter((message) => message?.role === 'tool') ?? [],
+  );
+  const match = toolPayload.match(
+    new RegExp(`${CHAT_RUNTIME_PROBE_PREFIX}([A-Za-z0-9+/=]+)`),
+  );
+  if (!match) {
+    throw new Error(`real Chat runtime probe returned no payload: ${toolPayload}`);
+  }
+  return JSON.parse(Buffer.from(match[1], 'base64').toString('utf8'));
 }
 
 function pidCommandLine(pid) {
@@ -1822,7 +1845,6 @@ async function main() {
   const runtimeArtifactsDir = path.join(testRoot, 'runtime artifacts');
   const mcpRuntimePath = path.join(testRoot, 'mcp-runtime.json');
   const normalQuitMcpPath = path.join(testRoot, 'normal-quit-mcp-runtime.json');
-  const chatRuntimePath = path.join(testRoot, 'chat-runtime.json');
   fs.mkdirSync(previewFixtureDir, { recursive: true });
   fs.mkdirSync(runtimeArtifactsDir, { recursive: true });
   fs.writeFileSync(
@@ -1863,7 +1885,7 @@ async function main() {
       crashPrompt,
       longRunningTreeCommand(bundledNodePath, crashTree.resultPath, crashTree.marker),
     ],
-    [runtimePrompt, bareRuntimeProbeCommand(chatRuntimePath)],
+    [runtimePrompt, bareRuntimeProbeCommand()],
     [officeReadPrompt, officeArtifactPaths.map((file) => ({
       name: 'read_file',
       input: { path: file },
@@ -2345,11 +2367,6 @@ print(json.dumps({"executable": sys.executable, "files": [str(p) for p in [docx_
         timeout: READY_TIMEOUT,
       });
       checks.packagedTaskRendered = true;
-      await waitUntil(
-        () => diskContains(appDataDir, prompt) && diskContains(appDataDir, responseText),
-        'the packaged conversation to persist',
-      );
-      checks.packagedTaskPersisted = true;
 
       const browserResult = await runPackagedBrowserFlow(app, window, mock.browserUrl, runtimeTrap);
       checks.packagedBrowserMcpInitializes = browserResult.initialized;
@@ -2391,18 +2408,36 @@ print(json.dumps({"executable": sys.executable, "files": [str(p) for p in [docx_
         timeout: READY_TIMEOUT,
       });
       checks.packagedConversationRestored = true;
+      // Verify durability at the user-visible boundary: a normal quit and
+      // fresh process must restore both messages from JSONL. An immediate
+      // pre-quit filesystem poll races the renderer's intentionally batched
+      // write queue and is weaker than this actual restart contract.
+      checks.packagedTaskPersisted =
+        diskContains(appDataDir, prompt) &&
+        diskContains(appDataDir, responseText);
+      if (!checks.packagedTaskPersisted) {
+        throw new Error('restored packaged conversation was missing from messages.jsonl');
+      }
       await enableMockProviderTools(window);
 
       const restoredInput = window.getByPlaceholder(CHAT_PLACEHOLDER);
       const runtimeRequestStart = mock.requests.length;
       await restoredInput.fill(runtimePrompt);
       await restoredInput.press('Enter');
-      await waitUntil(() => fs.existsSync(chatRuntimePath), 'the real Chat bare-runtime probe');
+      let runtimeFollowup;
       await waitUntil(
-        () => !!findToolFollowup(mock.requests, runtimeRequestStart, runtimePrompt, 1),
+        () => {
+          runtimeFollowup = findToolFollowup(
+            mock.requests,
+            runtimeRequestStart,
+            runtimePrompt,
+            1,
+          );
+          return !!runtimeFollowup;
+        },
         'the real Chat bare-runtime tool result to reach the model',
       );
-      const chatRuntime = JSON.parse(fs.readFileSync(chatRuntimePath, 'utf8'));
+      const chatRuntime = runtimeProbeFromFollowup(runtimeFollowup);
       const bundledNodeRoot = path.join(found.resources, 'node-runtime');
       checks.packagedChatUsesBundledRuntimes =
         pathIsWithin(chatRuntime.executable, bundledNodeRoot) &&

@@ -993,15 +993,20 @@ function taggedTreeProbeScript(resultPath) {
   `;
 }
 
-function longRunningTreeCommand(nodePath, resultPath, marker) {
+function longRunningTreeCommand(resultPath, marker) {
   const script = taggedTreeProbeScript(resultPath);
-  const prefix = process.platform === 'win32' ? '& ' : '';
-  return [
-    prefix + shellQuote(nodePath),
-    '-e',
-    shellQuote(script),
-    shellQuote(marker),
-  ].join(' ');
+  const encoded = Buffer.from(script, 'utf8').toString('base64');
+  // Use the same opaque PowerShell-safe shape as the bundled-runtime probe
+  // above. Passing a multiline `node -e` source directly works in POSIX
+  // shells but can be reparsed before reaching node.exe on Windows. Remove the
+  // encoded payload from argv so the decoded probe continues to receive its
+  // marker at process.argv[1].
+  const loader = [
+    'const encoded = process.argv[1]',
+    'process.argv.splice(1, 1)',
+    "eval(Buffer.from(encoded, 'base64').toString('utf8'))",
+  ].join(';');
+  return `node -e ${shellQuote(loader)} ${shellQuote(encoded)} ${shellQuote(marker)}`;
 }
 
 function markerProcesses(marker) {
@@ -1864,11 +1869,6 @@ async function main() {
   const stopTree = commandResultPaths(pidRoot, 'abu-packaged-stop');
   const crashTree = commandResultPaths(pidRoot, 'abu-packaged-crash');
   const commandTrees = [abortTree, timeoutTree, stopTree, crashTree];
-  const bundledNodePath = path.resolve(
-    found.resources,
-    'node-runtime',
-    process.platform === 'win32' ? 'node.exe' : 'bin/node',
-  );
   const officeArtifacts = [
     { file: path.join(runtimeArtifactsDir, 'smoke.docx'), sentinel: 'Abu packaged DOCX sentinel' },
     { file: path.join(runtimeArtifactsDir, 'smoke.xlsx'), sentinel: 'Abu packaged XLSX sentinel' },
@@ -1880,11 +1880,11 @@ async function main() {
   const mock = await startOpenAiMock(responseText, new Map([
     [
       stopPrompt,
-      longRunningTreeCommand(bundledNodePath, stopTree.resultPath, stopTree.marker),
+      longRunningTreeCommand(stopTree.resultPath, stopTree.marker),
     ],
     [
       crashPrompt,
-      longRunningTreeCommand(bundledNodePath, crashTree.resultPath, crashTree.marker),
+      longRunningTreeCommand(crashTree.resultPath, crashTree.marker),
     ],
     [runtimePrompt, bareRuntimeProbeCommand()],
     [officeReadPrompt, officeArtifactPaths.map((file) => ({

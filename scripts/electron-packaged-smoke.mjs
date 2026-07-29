@@ -610,7 +610,7 @@ function sseChunk(content, finishReason) {
     model: TEST_MODEL_ID,
     choices: [{
       index: 0,
-      delta: content ? { content } : {},
+      delta: content ? { role: 'assistant', content } : {},
       finish_reason: finishReason,
     }],
   })}\n\n`;
@@ -770,12 +770,10 @@ async function startOpenAiMock(responseText, toolTasks = new Map()) {
       response.end(JSON.stringify(completionObject(responseText)));
       return;
     }
-    const splitAt = Math.ceil(responseText.length / 2);
-    response.write(sseChunk(responseText.slice(0, splitAt), null));
-    await new Promise((resolve) => setTimeout(resolve, 50));
-    response.write(sseChunk(responseText.slice(splitAt), null));
-    await new Promise((resolve) => setTimeout(resolve, 50));
-    response.write(sseChunk('', 'stop'));
+    // A single canonical assistant delta keeps this packaging smoke focused
+    // on the app/sidecar boundary instead of depending on CI timer scheduling
+    // between synthetic chunks. Adapter chunk-splitting remains unit-tested.
+    response.write(sseChunk(responseText, 'stop'));
     response.end('data: [DONE]\n\n');
   });
 

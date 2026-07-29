@@ -74,6 +74,16 @@ function writeSentinelAtomic(sentinelPath, record) {
   }
 }
 
+function removeStagingBestEffort(stagingPath) {
+  try {
+    fs.rmSync(stagingPath, { recursive: true, force: true });
+  } catch {
+    // The parent itself can be a file or otherwise unusable. The copy attempt
+    // below records the actionable migration error; staging cleanup must never
+    // escape first (Node versions differ on rmSync's ENOTDIR handling).
+  }
+}
+
 /**
  * The Tauri app-data dir this Electron build should migrate from — mirrors
  * the dev/prod split of appEnv.cjs's abuAppDataDir (Tauri dev id is
@@ -207,7 +217,6 @@ function runTauriMigration(opts) {
     // (cleaned up on the next run), never a half-populated `dest` that the
     // never-clobber guard below would wrongly treat as authoritative data.
     const staging = `${dest}.migrating`;
-    if (!dryRun) fs.rmSync(staging, { recursive: true, force: true }); // leftover from a crashed run
     if (!fs.existsSync(src)) {
       summary.dirs[name] = 'absent';
       continue;
@@ -225,6 +234,7 @@ function runTauriMigration(opts) {
       continue;
     }
     try {
+      removeStagingBestEffort(staging); // leftover from a crashed run
       fs.mkdirSync(electronDir, { recursive: true });
       fs.cpSync(src, staging, { recursive: true });
       fs.renameSync(staging, dest);
@@ -233,7 +243,7 @@ function runTauriMigration(opts) {
     } catch (err) {
       summary.dirs[name] = `error: ${err instanceof Error ? err.message : String(err)}`;
       warn(`dir ${name}: copy failed — ${summary.dirs[name]}`);
-      fs.rmSync(staging, { recursive: true, force: true }); // best-effort; next run also cleans
+      removeStagingBestEffort(staging); // next run also cleans
     }
   }
 

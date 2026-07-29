@@ -1930,11 +1930,12 @@ async function main() {
     const launcherName = process.platform === 'win32' ? 'sandbox-launcher.exe' : 'sandbox-launcher';
     const launcherPath = path.join(found.resources, 'sandbox-launcher', process.platform, launcherName);
     checks.sandboxLauncherInResources = fs.existsSync(launcherPath);
-    checks.nodeRuntimeInResources = fs.existsSync(path.join(
+    const bundledNodePath = path.join(
       found.resources,
       'node-runtime',
       process.platform === 'win32' ? 'node.exe' : 'bin/node',
-    ));
+    );
+    checks.nodeRuntimeInResources = fs.existsSync(bundledNodePath);
     checks.pythonRuntimeInResources = fs.existsSync(path.join(
       found.resources,
       'python-runtime',

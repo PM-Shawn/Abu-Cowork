@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { useChatStore } from '@/stores/chatStore';
 import { useTaskExecutionStore } from '@/stores/taskExecutionStore';
 import { useScratchpadStore } from '@/stores/scratchpadStore';
+import { invoke } from '@tauri-apps/api/core';
 
 const replaceMessageByIdMock = vi.fn().mockResolvedValue(undefined);
 // Partial mock (importOriginal) — chatStore.ts dynamically imports this SAME
@@ -148,6 +149,41 @@ describe('applyDeltaFrames', () => {
       const message = { id: 'm1', role: 'assistant' as const, content: 'x', timestamp: Date.now() };
       await applyDeltaFrames([{ p: 'session', m: 'replaceMessageById', a: ['conv-1', message] }]);
       expect(replaceMessageByIdMock).toHaveBeenCalledWith('conv-1', message);
+    });
+
+    it('does not let a session replacement overtake an earlier chat append', async () => {
+      let releaseAppend!: () => void;
+      const appendPending = new Promise<void>((resolve) => {
+        releaseAppend = resolve;
+      });
+      vi.mocked(invoke).mockImplementation(async (cmd: string) => {
+        if (cmd === 'append_file_text') await appendPending;
+        return undefined;
+      });
+
+      try {
+        const convId = useChatStore.getState().createConversation();
+        const message = {
+          id: `ordered-frame-${Date.now()}`,
+          role: 'assistant' as const,
+          content: 'final',
+          timestamp: Date.now(),
+        };
+        const applying = applyDeltaFrames([
+          { p: 'chat', m: 'addMessage', a: [convId, { ...message, content: '' }] },
+          { p: 'session', m: 'replaceMessageById', a: [convId, message] },
+        ]);
+
+        await Promise.resolve();
+        await Promise.resolve();
+        expect(replaceMessageByIdMock).not.toHaveBeenCalled();
+
+        releaseAppend();
+        await applying;
+        expect(replaceMessageByIdMock).toHaveBeenCalledWith(convId, message);
+      } finally {
+        vi.mocked(invoke).mockReset();
+      }
     });
 
     it('unknown session method is skipped, not dispatched', async () => {

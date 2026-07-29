@@ -23,6 +23,7 @@ import { getChatDelta } from './ports/chatDelta';
 import { getExecutionPort, applyExecutionWithId } from './ports/executionPort';
 import { applyScratchpadEntryWithId } from './ports/scratchpadPort';
 import { createLogger } from '../logging/logger';
+import { waitForConversationPersistence } from '../../stores/chatStore';
 
 const logger = createLogger('frameApplier');
 
@@ -172,6 +173,11 @@ async function applySessionFrame(m: string, a: unknown[]): Promise<void> {
   // dependency graph on any code path that never needs it).
   const { replaceMessageById } = await import('../session/conversationStorage');
   const [convId, message] = a as [string, Parameters<typeof replaceMessageById>[1]];
+  // Chat frames enqueue addMessage persistence without blocking rendering.
+  // A later explicit session replacement must not overtake that append or it
+  // will fail to find the assistant placeholder and silently leave the empty
+  // row behind.
+  await waitForConversationPersistence(convId);
   await replaceMessageById(convId, message);
 }
 

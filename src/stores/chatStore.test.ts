@@ -746,6 +746,63 @@ describe('chatStore', () => {
       // user-2 should be untouched (it never had isStreaming, must stay falsy not true)
       expect(msgs.find((m) => m.id === 'user-2')?.isStreaming).toBeFalsy();
     });
+
+    it('persists the assistant append before its final-content replacement', async () => {
+      let messagesJsonl = '';
+      let targetConvId = '';
+      vi.mocked(exists).mockResolvedValue(true);
+      vi.mocked(readTextFile).mockImplementation(async (path) =>
+        String(path).includes(targetConvId) && String(path).endsWith('messages.jsonl')
+          ? messagesJsonl
+          : '{}');
+      vi.mocked(invoke).mockImplementation(async (cmd: string, args?: unknown) => {
+        const a = args as { path?: string; data?: string; content?: string } | undefined;
+        if (
+          cmd === 'append_file_text'
+          && a?.path?.includes(targetConvId)
+          && a.path.endsWith('messages.jsonl')
+        ) {
+          messagesJsonl += a.data ?? '';
+        }
+        if (
+          cmd === 'atomic_write_text'
+          && a?.path?.includes(targetConvId)
+          && a.path.endsWith('messages.jsonl')
+        ) {
+          messagesJsonl = a.content ?? '';
+        }
+        return undefined;
+      });
+
+      try {
+        const id = useChatStore.getState().createConversation();
+        targetConvId = id;
+        const messageId = `ordered-assistant-${Date.now()}`;
+        const store = useChatStore.getState();
+        store.addMessage(id, {
+          id: messageId,
+          role: 'assistant',
+          content: '',
+          timestamp: Date.now(),
+          isStreaming: true,
+        });
+        store.appendToLastMessage(id, 'final answer', messageId);
+        store.finishStreaming(id, messageId);
+
+        await waitForConversationPersistence(id);
+        const rows = messagesJsonl.trim().split('\n').map((line) => JSON.parse(line));
+        expect(rows).toHaveLength(1);
+        expect(rows[0]).toMatchObject({
+          id: messageId,
+          content: 'final answer',
+          isStreaming: false,
+        });
+      } finally {
+        vi.mocked(exists).mockReset();
+        vi.mocked(readTextFile).mockReset();
+        vi.mocked(invoke).mockReset();
+      }
+    });
   });
 
   // ── cancelStreaming ──

@@ -166,19 +166,20 @@ const abortControllers: Map<string, AbortController> = new Map();
 // otherwise the UI can show a completed assistant turn while its fire-and-
 // forget JSONL append/replace is still in flight. Keep the promises grouped
 // by conversation so the dispatch bridge can await only the run it owns.
-const pendingConversationPersistence = new Map<string, Set<Promise<void>>>();
+const pendingConversationPersistence = new Map<string, Promise<void>>();
 
 function trackConversationPersistence(
   convId: string,
-  operation: Promise<unknown>,
+  operation: () => Promise<unknown>,
 ): void {
-  const tracked = operation.then(() => undefined).catch(() => undefined);
-  const pending = pendingConversationPersistence.get(convId) ?? new Set<Promise<void>>();
-  pending.add(tracked);
-  pendingConversationPersistence.set(convId, pending);
+  const previous = pendingConversationPersistence.get(convId) ?? Promise.resolve();
+  const tracked = previous
+    .then(operation)
+    .then(() => undefined)
+    .catch(() => undefined);
+  pendingConversationPersistence.set(convId, tracked);
   void tracked.finally(() => {
-    pending.delete(tracked);
-    if (pending.size === 0 && pendingConversationPersistence.get(convId) === pending) {
+    if (pendingConversationPersistence.get(convId) === tracked) {
       pendingConversationPersistence.delete(convId);
     }
   });
@@ -193,8 +194,9 @@ function trackConversationPersistence(
 export async function waitForConversationPersistence(convId: string): Promise<void> {
   while (true) {
     const pending = pendingConversationPersistence.get(convId);
-    if (!pending?.size) return;
-    await Promise.allSettled([...pending]);
+    if (!pending) return;
+    await pending;
+    if (pendingConversationPersistence.get(convId) === pending) return;
   }
 }
 
@@ -925,15 +927,18 @@ export const useChatStore = create<ChatStore>()(
         });
         // Async write to disk (non-blocking for rendering, tracked so a
         // sidecar run can establish a durability barrier before it settles).
-        trackConversationPersistence(convId, import('../core/session/conversationStorage').then(async ({
-          appendMessage: diskAppend,
-          updateIndexEntry,
-        }) => {
-          await diskAppend(convId, message);
-          // Always persist updated index (messageCount, updatedAt, and title if changed)
-          const meta = get().conversationIndex[convId];
-          if (meta) await updateIndexEntry(meta);
-        }));
+        trackConversationPersistence(
+          convId,
+          () => import('../core/session/conversationStorage').then(async ({
+            appendMessage: diskAppend,
+            updateIndexEntry,
+          }) => {
+            await diskAppend(convId, message);
+            // Always persist updated index (messageCount, updatedAt, and title if changed)
+            const meta = get().conversationIndex[convId];
+            if (meta) await updateIndexEntry(meta);
+          }),
+        );
         // Snapshot any user-uploaded files (currently only images with filePath).
         // Fire-and-forget — must never block the UI flow.
         // ★ Architecture contract: when adding new content types with stripForDisk
@@ -999,14 +1004,14 @@ export const useChatStore = create<ChatStore>()(
           if (msgId) {
             trackConversationPersistence(
               convId,
-              import('../core/session/conversationStorage').then(({ replaceMessageById }) =>
+              () => import('../core/session/conversationStorage').then(({ replaceMessageById }) =>
                 replaceMessageById(convId, finalMsg)
               ),
             );
           } else {
             trackConversationPersistence(
               convId,
-              import('../core/session/conversationStorage').then(({ updateLastMessage }) =>
+              () => import('../core/session/conversationStorage').then(({ updateLastMessage }) =>
                 updateLastMessage(convId, finalMsg)
               ),
             );

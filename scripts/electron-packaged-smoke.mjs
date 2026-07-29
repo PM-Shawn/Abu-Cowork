@@ -1746,14 +1746,24 @@ async function runPackagedBrowserFlow(app, window, browserUrl, runtimeTrap) {
   }
 }
 
-async function closePackagedApp(app) {
-  if (!app) return 'not-running';
-  const child = app.process();
-  try {
-    await app.evaluate(({ app: electronApp }) => electronApp.quit());
-  } catch {
-    // Playwright commonly loses its transport before quit() returns.
+async function closePackagedApp(app, knownChild) {
+  if (!app && !knownChild) return 'not-running';
+  let child = knownChild;
+  if (!child && app) {
+    try {
+      child = app.process();
+    } catch {
+      // A crashed Electron process can close Playwright's transport first.
+    }
   }
+  if (app) {
+    try {
+      await app.evaluate(({ app: electronApp }) => electronApp.quit());
+    } catch {
+      // Playwright commonly loses its transport before quit() returns.
+    }
+  }
+  if (!child) return 'connection-closed';
   if (await waitForChildExit(child, 5_000)) {
     return child.signalCode === null && child.exitCode === 0
       ? 'quit'
@@ -1902,8 +1912,10 @@ async function main() {
   ]));
 
   let app;
+  let appProcess;
   try {
     app = await launchPackagedApp(found, userDataDir, appDataDir, runtimeTrap);
+    appProcess = app.process();
     let window = await app.firstWindow({ timeout: 30_000 });
     checks.windowOpened = !!window;
     await window.waitForLoadState('domcontentloaded', { timeout: 30_000 });
@@ -2391,8 +2403,9 @@ print(json.dumps({"executable": sys.executable, "files": [str(p) for p in [docx_
         runtimeTrap,
         'packaged-normal-quit',
       );
-      const closeMode = await closePackagedApp(app);
+      const closeMode = await closePackagedApp(app, appProcess);
       app = undefined;
+      appProcess = undefined;
       if (closeMode !== 'quit') {
         throw new Error(`packaged app did not exit normally before restart: ${closeMode}`);
       }
@@ -2400,6 +2413,7 @@ print(json.dumps({"executable": sys.executable, "files": [str(p) for p in [docx_
       checks.packagedNormalQuitKillsMcpTree = true;
 
       app = await launchPackagedApp(found, userDataDir, appDataDir, runtimeTrap);
+      appProcess = app.process();
       window = await app.firstWindow({ timeout: READY_TIMEOUT });
       await window.getByPlaceholder(CHAT_PLACEHOLDER).waitFor({
         state: 'visible',
@@ -2579,7 +2593,7 @@ print(json.dumps({"executable": sys.executable, "files": [str(p) for p in [docx_
   } catch (err) {
     errors.launch = String(err);
   } finally {
-    const cleanupMode = await closePackagedApp(app);
+    const cleanupMode = await closePackagedApp(app, appProcess);
     if (cleanupMode === 'stuck') {
       errors.appCleanup = 'packaged Electron process remained alive after SIGKILL';
     }

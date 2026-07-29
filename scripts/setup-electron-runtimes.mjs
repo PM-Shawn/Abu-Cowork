@@ -312,9 +312,18 @@ async function setupPython() {
     const python = pythonBinary(prepared);
     if (!fs.existsSync(python)) throw new Error(`Python runtime is missing ${python}`);
     if (process.platform !== 'win32') fs.chmodSync(python, 0o755);
-    const pythonLicense = path.join(prepared, 'lib', `python${manifest.python.version.split('.').slice(0, 2).join('.')}`, 'LICENSE.txt');
-    if (!fs.existsSync(pythonLicense) || fs.statSync(pythonLicense).size === 0) {
-      throw new Error(`Python runtime archive is missing its license: ${pythonLicense}`);
+    const pythonVersion = manifest.python.version.split('.').slice(0, 2).join('.');
+    const pythonLicenseCandidates = [
+      path.join(prepared, 'LICENSE.txt'),
+      path.join(prepared, 'lib', `python${pythonVersion}`, 'LICENSE.txt'),
+    ];
+    const pythonLicense = pythonLicenseCandidates.find(
+      (candidate) => fs.existsSync(candidate) && fs.statSync(candidate).size > 0
+    );
+    if (!pythonLicense) {
+      throw new Error(
+        `Python runtime archive is missing its license; checked: ${pythonLicenseCandidates.join(', ')}`
+      );
     }
     fs.copyFileSync(pythonLicense, path.join(prepared, 'PYTHON_LICENSE.txt'));
 

@@ -18,6 +18,12 @@ function tempDir(t) {
   return dir;
 }
 
+function comparablePath(filePath) {
+  const resolved = path.resolve(filePath);
+  if (process.platform !== 'win32') return resolved;
+  return resolved.replace(/^\\\\\?\\/, '').toLowerCase();
+}
+
 test('normal files stay readable and stat returns the Tauri FileInfo shape', (t) => {
   const dir = tempDir(t);
   const file = path.join(dir, 'normal.txt');
@@ -213,7 +219,10 @@ test('EXDEV restore replaces a target symlink without writing through it', (t) =
   const canonicalTarget = path.join(canonicalDir, path.basename(target));
   let forcedExdev = false;
   fs.renameSync = (from, to) => {
-    if (from === canonicalBackup && to === canonicalTarget) {
+    if (
+      comparablePath(from) === comparablePath(canonicalBackup) &&
+      comparablePath(to) === comparablePath(canonicalTarget)
+    ) {
       forcedExdev = true;
       const err = new Error('forced cross-device restore');
       err.code = 'EXDEV';

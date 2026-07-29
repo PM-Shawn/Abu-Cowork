@@ -39,6 +39,14 @@ test('Electron build uses native runners for all three release targets', () => {
     ]
   );
   assert.equal(build.jobs['build-windows']['runs-on'], 'windows-latest');
+  assert.equal(
+    build.jobs['build-windows'].steps.find((step) => step.name === 'Windows gates').shell,
+    'bash'
+  );
+  for (const job of [build.jobs['build-mac'], build.jobs['build-windows']]) {
+    const setupNode = job.steps.find((step) => step.uses === 'actions/setup-node@v7');
+    assert.equal(setupNode.with['node-version'], 24);
+  }
   assert.match(
     JSON.stringify(build.jobs['build-windows']),
     /electron-windows-x64/
@@ -52,6 +60,12 @@ test('release publishes only after all Electron targets and switches root pointe
     'electron-transition',
     'publish',
   ]);
+  for (const jobName of ['preflight', 'publish']) {
+    const setupNode = release.jobs[jobName].steps.find(
+      (step) => step.uses === 'actions/setup-node@v7'
+    );
+    assert.equal(setupNode.with['node-version'], 24);
+  }
   assert.equal(
     release.jobs['electron-transition'].uses,
     './.github/workflows/electron-build.yml'

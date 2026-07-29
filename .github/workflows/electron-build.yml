@@ -1,58 +1,114 @@
-# Electron shell build — sign + notarize + (optionally) publish the update
-# feed to OSS. Manual-trigger only: the Electron shell is not GA; this
-# pipeline exists to validate the packaging/signing/updater chain end-to-end
-# and to stage artifacts for real-machine verification.
-#
-# Secrets: reuses the EXACT set the Tauri Release workflow already has —
-# APPLE_CERTIFICATE (base64 p12), APPLE_CERTIFICATE_PASSWORD,
-# APPLE_API_KEY (the App Store Connect KEY ID), APPLE_API_ISSUER,
-# APPLE_API_KEY_P8 (key file content), ALIYUN_ACCESS_KEY_ID,
-# ALIYUN_ACCESS_KEY_SECRET, OSS_BUCKET, OSS_REGION. No new secrets needed.
-#
-# Signing: import the p12 into one explicit throwaway keychain BEFORE
-# electron-builder starts. Its afterPack hook must sign nested extraResources
-# before the outer app signature, so relying on electron-builder's later
-# CSC_LINK import is too late. CSC_KEYCHAIN makes the nested and outer signing
-# passes use the same keychain and Developer ID identity.
-#
-# Notarization: electron-builder's built-in @electron/notarize integration —
-# activates automatically when APPLE_API_KEY/APPLE_API_KEY_ID/APPLE_API_ISSUER
-# env vars are present (app-builder-lib macOptions `notarize`). Runs on the
-# .app after signing, BEFORE dmg/zip are packed, so the artifacts contain the
-# notarized app. We staple the .app + dmg afterwards (zip contents can't be
-# stapled; Gatekeeper falls back to the online ticket check, same as VS Code's
-# zips).
-#
-# ⚠️ First run needs watching — this workflow has never executed (it can only
-# run after the electron branch lands on the default branch); treat the first
-# green run, not this file, as the verification.
+# Builds the Electron delivery surface on the operating system and CPU that
+# will run it. This workflow only stages artifacts; production OSS pointers are
+# owned by release.yml so a partial platform build can never publish.
 name: Electron Build
 
 on:
   workflow_dispatch:
     inputs:
-      publish_feed:
-        description: 'Upload zip/dmg/latest-mac.yml to OSS under /electron/ (leave false for a build-only validation run)'
+      transition_version:
+        description: 'Candidate version; must be newer than the live Tauri version'
+        type: string
+        default: '0.34.0'
+        required: true
+      transition_release:
+        description: 'Embed migration metadata and create Tauri-updater signatures'
         type: boolean
         default: false
+  workflow_call:
+    inputs:
+      transition_version:
+        description: 'Release tag or semver for the transition candidate'
+        type: string
+        required: true
+      transition_release:
+        description: 'Build the one-time Tauri to Electron transition artifacts'
+        type: boolean
+        default: false
+  pull_request:
+    paths:
+      - '.github/workflows/electron-build.yml'
+      - '.github/workflows/release.yml'
+      - 'electron-builder.yml'
+      - 'package.json'
+      - 'package-lock.json'
+      - 'electron/**'
+      - 'scripts/**'
+      - 'sidecar/**'
+      - 'src/**'
+      - 'public/**'
+      - 'builtin-agents/**'
+      - 'builtin-skills/**'
+      - 'abu-browser-bridge/**'
+      - 'abu-chrome-extension/**'
+      - 'vite.config.ts'
+      - 'tsconfig*.json'
 
 permissions:
   contents: read
 
 jobs:
   build-mac:
-    runs-on: macos-latest # arm64; add an x64/universal leg when Windows/Intel support lands
+    if: ${{ github.event_name != 'pull_request' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            runner_arch: arm64
+            builder_arch: arm64
+            transition_arch: arm64
+            transition_suffix: aarch64
+            feed_channel: mac-arm64
+            artifact_name: electron-mac-arm64
+          - runner: macos-15-intel
+            runner_arch: x86_64
+            builder_arch: x64
+            transition_arch: x86_64
+            transition_suffix: x64
+            feed_channel: mac-x64
+            artifact_name: electron-mac-x64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v7
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: 20
           cache: npm
 
+      - name: Require the intended macOS architecture
+        env:
+          EXPECTED_ARCH: ${{ matrix.runner_arch }}
+        run: test "$(uname -m)" = "$EXPECTED_ARCH"
+
       - name: Install dependencies
         run: npm ci
+
+      - name: Resolve candidate and architecture-specific update feed
+        env:
+          RAW_TRANSITION_VERSION: ${{ inputs.transition_version }}
+          FEED_CHANNEL: ${{ matrix.feed_channel }}
+        run: |
+          TRANSITION_VERSION="${RAW_TRANSITION_VERSION#v}"
+          node scripts/validate-electron-transition-version.mjs \
+            --candidate "$TRANSITION_VERSION" \
+            --latest-url "https://abu-agent.oss-cn-beijing.aliyuncs.com/latest.json"
+          echo "TRANSITION_VERSION=$TRANSITION_VERSION" >> "$GITHUB_ENV"
+          echo "ABU_ELECTRON_FEED=https://abu-agent.oss-cn-beijing.aliyuncs.com/electron/${FEED_CHANNEL}/" >> "$GITHUB_ENV"
+
+      - name: Gates
+        run: |
+          npm run build
+          npm run lint
+          npm test
+          npm run parity:check
+          npm run electron:bootstrap-test
+          npm run electron:migration-test
+          npm run electron:migration-preload-verify
+          npm run electron:security-test
+          npm run test:electron:release-stage
 
       - name: Setup and verify bundled Node/Python runtimes
         run: |
@@ -79,12 +135,6 @@ jobs:
           security list-keychains -d user -s "$KEYCHAIN" $EXISTING_KC
           echo "CSC_KEYCHAIN=$KEYCHAIN" >> "$GITHUB_ENV"
 
-      - name: Gates (build + lint + parity)
-        run: |
-          npm run build
-          npm run lint
-          npm run parity:check
-
       - name: Write App Store Connect API key
         env:
           APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
@@ -96,111 +146,281 @@ jobs:
           echo "APPLE_API_KEY=$KEY_PATH" >> "$GITHUB_ENV"
           echo "APPLE_API_KEY_ID=$APPLE_API_KEY_ID_SECRET" >> "$GITHUB_ENV"
 
-      - name: Build, sign, notarize (zip + dmg + latest-mac.yml)
-        env:
-          # Notarization env (APPLE_API_KEY / APPLE_API_KEY_ID from GITHUB_ENV
-          # above) + issuer:
-          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
-        run: >-
-          npm run dist:electron --
-          --config.mac.identity="Developer ID Application"
-          --config.mac.forceCodeSigning=true
-
-      - name: Staple + verify
+      - name: Build, sign, and notarize Electron
         env:
           APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          BUILDER_ARCH: ${{ matrix.builder_arch }}
+          TRANSITION_RELEASE: ${{ inputs.transition_release }}
         run: |
-          APP="release-electron/mac-arm64/Abu.app"
-          DMG="$(ls release-electron/*.dmg | head -1)"
+          BUILDER_ARGS=(
+            "--${BUILDER_ARCH}"
+            "--publish" "never"
+            "--config.extraMetadata.version=${TRANSITION_VERSION}"
+            "--config.publish.url=${ABU_ELECTRON_FEED}"
+            "--config.mac.identity=Developer ID Application"
+            "--config.mac.forceCodeSigning=true"
+          )
+          if [[ "$TRANSITION_RELEASE" == "true" ]]; then
+            BUILDER_ARGS+=("--config.extraMetadata.abuRelease.tauriMigration=true")
+          fi
+          npm run dist:electron -- "${BUILDER_ARGS[@]}"
+
+      - name: Locate, staple, and verify the packaged app
+        env:
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          EXPECTED_ARCH: ${{ matrix.transition_arch }}
+        run: |
+          APP_COUNT="$(find release-electron -maxdepth 2 -type d -name 'Abu.app' | wc -l | tr -d ' ')"
+          DMG_COUNT="$(find release-electron -maxdepth 1 -type f -name '*.dmg' | wc -l | tr -d ' ')"
+          test "$APP_COUNT" -eq 1
+          test "$DMG_COUNT" -eq 1
+          APP="$(find release-electron -maxdepth 2 -type d -name 'Abu.app' | head -1)"
+          DMG="$(find release-electron -maxdepth 1 -type f -name '*.dmg' | head -1)"
+          echo "ABU_PACKAGED_APP=$APP" >> "$GITHUB_ENV"
+
           xcrun stapler staple "$APP"
-          # The dmg carries NO notarization ticket of its own — electron-builder
-          # notarizes the .app BEFORE the dmg is packed — so stapling it directly
-          # fails with Error 65 "Record not found" (hit on the real local run,
-          # 2026-07-26). Submit the dmg itself first, then staple.
           xcrun notarytool submit "$DMG" \
             --key "$APPLE_API_KEY" --key-id "$APPLE_API_KEY_ID" \
             --issuer "$APPLE_API_ISSUER" --wait
           xcrun stapler staple "$DMG"
-          echo "== stapler validate (app + dmg) =="
           xcrun stapler validate "$APP"
           xcrun stapler validate "$DMG"
-          echo "== spctl assess (app) — fails the job if not notarized =="
           spctl -a -vvv --type execute "$APP"
-          echo "== codesign deep verify =="
           codesign --verify --deep --strict "$APP"
-          LAUNCHER="$APP/Contents/Resources/sandbox-launcher/darwin/sandbox-launcher"
-          test -x "$LAUNCHER"
-          echo "== nested sandbox-launcher signature =="
-          codesign --verify --strict "$LAUNCHER"
-          APP_TEAM="$(codesign -dv --verbose=4 "$APP" 2>&1 | sed -n 's/^TeamIdentifier=//p' | head -1)"
-          LAUNCHER_TEAM="$(codesign -dv --verbose=4 "$LAUNCHER" 2>&1 | sed -n 's/^TeamIdentifier=//p' | head -1)"
-          test -n "$APP_TEAM"
-          test "$APP_TEAM" = "$LAUNCHER_TEAM"
-          echo "nested launcher TeamIdentifier=$LAUNCHER_TEAM"
-          echo "== every nested Mach-O is signed by the app team =="
+
+          FOUND_MACHO=0
           while IFS= read -r -d '' nested; do
             if file "$nested" | grep -q 'Mach-O'; then
+              FOUND_MACHO=1
+              lipo -archs "$nested" | tr ' ' '\n' | grep -Fx "$EXPECTED_ARCH"
               codesign --verify --strict "$nested"
-              NESTED_TEAM="$(codesign -dv --verbose=4 "$nested" 2>&1 | sed -n 's/^TeamIdentifier=//p' | head -1)"
-              test "$NESTED_TEAM" = "$APP_TEAM"
             fi
-          done < <(find \
-            "$APP/Contents/Resources/native-helper" \
-            "$APP/Contents/Resources/sandbox-launcher" \
-            "$APP/Contents/Resources/node-runtime" \
-            "$APP/Contents/Resources/python-runtime" \
-            -type f -print0)
+          done < <(find "$APP" -type f -print0)
+          test "$FOUND_MACHO" -eq 1
           node scripts/verify-electron-runtimes.mjs \
             --resource-root "$APP/Contents/Resources"
 
-      # Stapling rewrites the dmg bytes, so the sha512/size electron-builder
-      # recorded in latest-mac.yml (and the dmg blockmap) are stale by now.
-      # The zip is untouched (zips can't be stapled), so the updater's own
-      # entry stays valid — this refresh keeps the dmg row honest too.
-      - name: Refresh dmg hash in latest-mac.yml after stapling
+      - name: Refresh DMG metadata after stapling
         run: node scripts/electron-refresh-dmg-hash.mjs
 
       - name: Packaged smoke on the notarized build
         run: npm run smoke:electron:packaged
 
-      - name: Upload artifacts (workflow run)
+      - name: Verify transition marker
+        if: ${{ inputs.transition_release }}
+        run: |
+          ABU_APP="$ABU_PACKAGED_APP" ELECTRON_RUN_AS_NODE=1 \
+            "$ABU_PACKAGED_APP/Contents/MacOS/Abu" -e '
+              const fs = require("node:fs");
+              const path = require("node:path");
+              const manifest = JSON.parse(fs.readFileSync(
+                path.join(process.env.ABU_APP, "Contents", "Resources", "app.asar", "package.json"),
+                "utf8"
+              ));
+              if (manifest?.abuRelease?.tauriMigration !== true) process.exit(1);
+              if (manifest?.version !== process.env.TRANSITION_VERSION) process.exit(2);
+            '
+
+      - name: Build and Tauri-sign the transition archive
+        if: ${{ inputs.transition_release }}
+        env:
+          RAW_TAURI_SIGNING_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          TRANSITION_ARCH: ${{ matrix.transition_arch }}
+          TRANSITION_SUFFIX: ${{ matrix.transition_suffix }}
+        run: |
+          ARCHIVE="release-electron/Abu_${TRANSITION_SUFFIX}_electron-transition.app.tar.gz"
+          node scripts/electron-tauri-transition.mjs \
+            --app "$ABU_PACKAGED_APP" \
+            --out "$ARCHIVE" \
+            --version "$TRANSITION_VERSION" \
+            --arch "$TRANSITION_ARCH"
+
+          python3 <<'PYEOF' > "$RUNNER_TEMP/tauri-signing-key.txt"
+          import os, re, sys
+          raw = os.environ.get('RAW_TAURI_SIGNING_KEY', '')
+          cleaned = re.sub(r'[^A-Za-z0-9+/=]', '', raw)
+          sys.stdout.write(cleaned[:(len(cleaned) // 4) * 4])
+          PYEOF
+          trap 'rm -f "$RUNNER_TEMP/tauri-signing-key.txt"' EXIT
+          test -s "$RUNNER_TEMP/tauri-signing-key.txt"
+          ./node_modules/.bin/tauri signer sign \
+            --private-key-path "$RUNNER_TEMP/tauri-signing-key.txt" \
+            --password "$TAURI_SIGNING_PRIVATE_KEY_PASSWORD" \
+            "$ARCHIVE"
+          rm -f "$RUNNER_TEMP/tauri-signing-key.txt"
+          trap - EXIT
+          test -s "$ARCHIVE"
+          test -s "$ARCHIVE.sig"
+
+      - name: Upload macOS artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: electron-mac-arm64
+          name: ${{ matrix.artifact_name }}
           path: |
             release-electron/*.zip
             release-electron/*.dmg
             release-electron/*.blockmap
             release-electron/latest-mac.yml
+            release-electron/*electron-transition.app.tar.gz
+            release-electron/*electron-transition.app.tar.gz.sig
+          if-no-files-found: error
           retention-days: 14
 
-      - name: Install + configure ossutil
-        if: ${{ inputs.publish_feed }}
-        run: |
-          curl -fsSL https://gosspublic.alicdn.com/ossutil/install.sh | sudo bash
-          ossutil config \
-            -e ${{ secrets.OSS_REGION }}.aliyuncs.com \
-            -i ${{ secrets.ALIYUN_ACCESS_KEY_ID }} \
-            -k ${{ secrets.ALIYUN_ACCESS_KEY_SECRET }}
-
-      - name: Publish feed to OSS (/electron/ prefix)
-        if: ${{ inputs.publish_feed }}
-        run: |
-          BUCKET="oss://${{ secrets.OSS_BUCKET }}"
-          # Artifacts + blockmaps are content-addressed by version — plain copy.
-          for f in release-electron/*.zip release-electron/*.dmg release-electron/*.blockmap; do
-            [ -f "$f" ] || continue
-            ossutil cp "$f" "${BUCKET}/electron/$(basename "$f")" -f
-          done
-          # The feed pointer must never be cached stale (mirrors the Tauri
-          # latest.json upload).
-          ossutil cp release-electron/latest-mac.yml "${BUCKET}/electron/latest-mac.yml" -f --meta "Cache-Control:no-cache"
-          echo "Done. Listing:"
-          ossutil ls "${BUCKET}/electron/"
-
-      - name: Remove signing keychain
+      - name: Remove signing material
         if: ${{ always() }}
         run: |
+          rm -f "${APPLE_API_KEY:-}" "$RUNNER_TEMP/tauri-signing-key.txt"
           if [ -n "${CSC_KEYCHAIN:-}" ]; then
             security delete-keychain "$CSC_KEYCHAIN" || true
           fi
+
+  build-windows:
+    runs-on: windows-latest
+    timeout-minutes: 75
+    env:
+      CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 20
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            electron/native-helper -> target
+            electron/sandbox-launcher -> target
+          shared-key: electron-windows-x64
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Windows gates
+        run: |
+          npm run build
+          npm run lint
+          npm test
+          npm run parity:check
+          npm run electron:bootstrap-test
+          npm run electron:migration-test
+          npm run electron:migration-preload-verify
+          npm run electron:security-test
+          npm run test:electron:release-stage
+          cargo test --manifest-path electron/native-helper/Cargo.toml --bin tauri-transition-reader
+
+      - name: Resolve Windows candidate configuration
+        shell: pwsh
+        run: |
+          $candidate = "${{ inputs.transition_version }}".Trim().TrimStart("v")
+          if ([string]::IsNullOrWhiteSpace($candidate)) {
+            $candidate = (Get-Content package.json -Raw | ConvertFrom-Json).version
+          }
+          if ($candidate -notmatch '^\d+\.\d+\.\d+([+-][0-9A-Za-z.-]+)?$') {
+            throw "Invalid transition version: $candidate"
+          }
+          "ABU_ELECTRON_VERSION=$candidate" | Out-File -FilePath $env:GITHUB_ENV -Append
+          "ABU_ELECTRON_FEED=https://abu-agent.oss-cn-beijing.aliyuncs.com/electron/win-x64/" |
+            Out-File -FilePath $env:GITHUB_ENV -Append
+          "ABU_EXPECTED_ELECTRON_FEED=https://abu-agent.oss-cn-beijing.aliyuncs.com/electron/win-x64/" |
+            Out-File -FilePath $env:GITHUB_ENV -Append
+          $release = "${{ inputs.transition_release }}" -eq "true"
+          "ABU_TRANSITION_RELEASE=$($release.ToString().ToLowerInvariant())" |
+            Out-File -FilePath $env:GITHUB_ENV -Append
+
+      - name: Require candidate newer than the live Tauri feed
+        if: ${{ inputs.transition_release }}
+        shell: pwsh
+        run: |
+          node scripts/validate-electron-transition-version.mjs `
+            --candidate $env:ABU_ELECTRON_VERSION `
+            --latest-url "https://abu-agent.oss-cn-beijing.aliyuncs.com/latest.json"
+
+      - name: Build unsigned current-user NSIS and update metadata
+        shell: pwsh
+        run: |
+          $builderArgs = @(
+            "--config.extraMetadata.version=$env:ABU_ELECTRON_VERSION",
+            "--config.publish.url=$env:ABU_ELECTRON_FEED"
+          )
+          if ($env:ABU_TRANSITION_RELEASE -eq "true") {
+            $builderArgs += "--config.extraMetadata.abuRelease.tauriMigration=true"
+          }
+          npm run dist:electron:windows -- @builderArgs
+
+      - name: Verify packaged transition marker
+        if: ${{ inputs.transition_release }}
+        shell: pwsh
+        run: |
+          $env:ELECTRON_RUN_AS_NODE = "1"
+          & "release-electron/win-unpacked/Abu.exe" -e @'
+          const fs = require("node:fs");
+          const manifest = JSON.parse(fs.readFileSync(
+            "release-electron/win-unpacked/resources/app.asar/package.json",
+            "utf8"
+          ));
+          if (manifest?.abuRelease?.tauriMigration !== true) process.exit(1);
+          if (manifest?.version !== process.env.ABU_ELECTRON_VERSION) process.exit(2);
+          '@
+          if ($LASTEXITCODE -ne 0) {
+            throw "Packaged transition metadata verification failed: $LASTEXITCODE"
+          }
+
+      - name: Verify installer, blockmap, latest.yml, and packaged feed
+        run: npm run verify:electron:windows-artifacts
+
+      - name: Install, launch, migrate, and preserve Tauri rollback
+        shell: pwsh
+        env:
+          ABU_EXPECT_TAURI_MIGRATION: ${{ inputs.transition_release }}
+        run: ./scripts/electron-windows-installed-smoke.ps1
+
+      - name: Packaged Windows smoke
+        run: npm run smoke:electron:packaged
+
+      - name: Tauri-sign transition installer
+        if: ${{ inputs.transition_release }}
+        shell: pwsh
+        env:
+          RAW_TAURI_SIGNING_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          $installer = Get-ChildItem release-electron -Filter "*-windows-x64-setup.exe" -File |
+            Select-Object -First 1
+          if (-not $installer) { throw "Transition installer is missing" }
+          $keyPath = Join-Path $env:RUNNER_TEMP "tauri-signing-key.txt"
+          try {
+            $cleaned = $env:RAW_TAURI_SIGNING_KEY -replace '[^A-Za-z0-9+/=]', ''
+            if ([string]::IsNullOrWhiteSpace($cleaned)) {
+              throw "TAURI_SIGNING_PRIVATE_KEY is unavailable"
+            }
+            [IO.File]::WriteAllText($keyPath, $cleaned)
+            npx tauri signer sign `
+              --private-key-path $keyPath `
+              --password $env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD `
+              $installer.FullName
+            if ($LASTEXITCODE -ne 0 -or -not (Test-Path "$($installer.FullName).sig")) {
+              throw "Tauri updater signature was not generated"
+            }
+          }
+          finally {
+            Remove-Item $keyPath -Force -ErrorAction SilentlyContinue
+          }
+
+      - name: Upload Windows artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: electron-windows-x64
+          path: |
+            release-electron/*-windows-x64-setup.exe
+            release-electron/*-windows-x64-setup.exe.sig
+            release-electron/*-windows-x64-setup.exe.blockmap
+            release-electron/latest.yml
+          if-no-files-found: error
+          retention-days: 14

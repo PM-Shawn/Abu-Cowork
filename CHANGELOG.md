@@ -7,6 +7,20 @@ All notable changes to Abu are documented here. Format based on [Keep a Changelo
 > [`CHANGELOG.zh-CN.md`](./CHANGELOG.zh-CN.md); keep both in sync per release (see
 > `RELEASING.md`). Entries before v0.31.0 predate this split and remain bilingual.
 
+## v0.34.0 · 2026-07-30
+
+### Changed
+
+- **The desktop shell moves from Tauri to Electron** — The packaged app now uses the Electron main process while preserving the existing Abu frontend, sidecar, built-in skills, and bundled Node/Python runtimes. macOS remains signed and notarized; Windows uses a current-user NSIS installer and is intentionally unsigned until Authenticode credentials are available.
+
+### Fixed
+
+- **Existing data survives the shell upgrade** — Conversation/session files are copied without modifying the Tauri source. macOS WebKit and Windows WebView2 localStorage settings are imported before the first renderer script, and Windows Credential Manager API keys are re-encrypted into Electron storage. Existing Electron-side values are never overwritten; incomplete or corrupt migration records stay retryable and stop the first Electron launch before an empty state can be shown.
+- **All supported platforms switch together** — CI builds macOS arm64, macOS x64, and Windows x64 on matching native runners. Each platform gets an independently verified Electron self-update feed; the existing Tauri update pointer changes only after all three transition artifacts and feeds are durable.
+- **Windows packaging is verified on Windows** — CI now builds native `node-pty`, the Rust helpers, sandbox launcher, and bundled runtimes on a real Windows x64 runner, then installs, launches, exercises packaged IPC/PTY/sidecar/runtime paths, and verifies update metadata.
+
+**Full Changelog**: https://github.com/PM-Shawn/Abu-Cowork/compare/v0.33.0...v0.34.0
+
 ## v0.33.0 · 2026-07-19
 
 ### Added

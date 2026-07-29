@@ -33,9 +33,17 @@ const { ipcMain, nativeTheme, screen, BrowserWindow, dialog } = require('electro
 const path = require('node:path');
 const os = require('node:os');
 const fs = require('node:fs');
-const { abuAppDataDir, REPO_ROOT } = require('./appEnv.cjs');
+const { abuAppDataDir, resourceRoot, REPO_ROOT } = require('./appEnv.cjs');
+const { isTauriTransitionBuild } = require('./releaseMetadata.cjs');
 const { initSecretStore, secretDispatch } = require('./secretStore.cjs');
 const { runTauriMigration, resolveTauriAppDataDir } = require('./tauriMigration.cjs');
+const {
+  GET_CHANNEL: TAURI_LOCAL_STORAGE_GET,
+  ACK_CHANNEL: TAURI_LOCAL_STORAGE_ACK,
+  prepareTauriLocalStorageMigration,
+  migrateWindowsSecrets,
+  finalizeTauriLocalStorageMigration,
+} = require('./tauriLocalStorageMigration.cjs');
 const { updaterDispatch, UPDATER_MISS } = require('./updaterHost.cjs');
 const { fsDispatch, FS_MISS } = require('./fsHost.cjs');
 const {
@@ -103,6 +111,40 @@ const {
 let mainWindow = null;
 let quitting = false;
 let computerUseGate = null;
+let migrationStartupBlock = null;
+let migrationStartupPending = false;
+
+function setMigrationStartupBlock(reason) {
+  migrationStartupBlock = String(reason || 'migration-incomplete');
+  console.error(`[tauriMigration] startup blocked: ${migrationStartupBlock}`);
+}
+
+function getMigrationStartupBlock() {
+  return migrationStartupBlock;
+}
+
+function isMigrationStartupPending() {
+  return migrationStartupPending;
+}
+
+function showMigrationRetryDialog(app) {
+  const isZh = app.getLocale().toLowerCase().startsWith('zh');
+  void dialog
+    .showMessageBox({
+      type: 'error',
+      title: isZh ? '升级数据迁移未完成' : 'Update migration incomplete',
+      message: isZh
+        ? 'Abu 没有写入或删除旧版数据。请重新启动后再试。'
+        : 'Abu did not write to or delete the old app data. Restart the app to retry.',
+      detail: isZh
+        ? `为避免新框架先写入空数据，本次启动已停止。\n错误：${migrationStartupBlock}`
+        : `This launch was stopped before the new framework could write empty state.\nReason: ${migrationStartupBlock}`,
+      buttons: [isZh ? '退出' : 'Quit'],
+      defaultId: 0,
+      noLink: true,
+    })
+    .finally(() => app.quit());
+}
 
 /** @param {import('electron').BrowserWindow} win */
 function setMainWindow(win) {
@@ -683,6 +725,8 @@ function dispatch(app, cmd, args) {
 
 /** @param {import('electron').App} app */
 function registerTauriHost(app) {
+  migrationStartupBlock = null;
+  migrationStartupPending = false;
   // safeStorage is only reliably usable once the app is ready — registerTauriHost
   // itself is only ever called from the app.whenReady() path, so this is safe here.
   initSecretStore(app);
@@ -796,15 +840,15 @@ function registerTauriHost(app) {
     },
   });
 
-  // One-time Tauri→Electron data migration (secrets + conversations/sessions/
-  // backups; sentinel-gated). Auto-run is armed ONLY when the packaged app's
-  // data dir is the FINAL production identity (com.abu.app) — appEnv.cjs's
-  // documented invariant is that unsigned test builds (currently
-  // com.abu.app.electron) must not touch real user data, and reading the real
-  // Tauri prod dir's secrets/conversations is exactly that. When the final
-  // signed release switches abuAppDataDir to com.abu.app, migration arms
-  // automatically. Until then dev/test runs opt in explicitly with
-  // ABU_MIGRATE_FROM_TAURI=1 (or =dry for a read-only dry-run).
+  // One-time Tauri→Electron migration. It is armed only by packaged release
+  // metadata (or an explicit dev test env), never merely by appId/path. This
+  // keeps local and PR packages away from installed user data.
+  //
+  // LocalStorage is prepared first because Windows Credential Manager keys
+  // include custom provider/backend ids stored in abu-settings. The reader
+  // opens only a temporary copy of WebView2 LevelDB. Existing Electron data
+  // wins, source data is never modified, and any failure leaves the sentinel
+  // absent for a retry.
   // Runs AFTER initSecretStore (it stores decrypted keys through the secret
   // commands) and never throws — a migration failure must not block boot.
   // KNOWN TRADEOFF: runs synchronously before the window exists, so a huge
@@ -814,8 +858,59 @@ function registerTauriHost(app) {
   // clobber guard). A progress UI for first-boot migration is a future,
   // user-facing slice.
   const migrateEnv = process.env.ABU_MIGRATE_FROM_TAURI;
-  const migrationArmed = app.isPackaged && path.basename(abuAppDataDir(app)) === 'com.abu.app';
+  const migrationArmed = isTauriTransitionBuild(app);
+  let localStorageMigration = null;
   if (migrationArmed || migrateEnv === '1' || migrateEnv === 'dry') {
+    const readerName = process.platform === 'win32'
+      ? 'tauri-transition-reader.exe'
+      : 'tauri-transition-reader';
+    const readerPath = path.join(resourceRoot(app), 'native-helper', readerName);
+    try {
+      localStorageMigration = prepareTauriLocalStorageMigration({
+        electronDir: abuAppDataDir(app),
+        readerPath,
+        dryRun: migrateEnv === 'dry',
+      });
+      if (process.platform === 'win32') {
+        const secrets = migrateWindowsSecrets(localStorageMigration, {
+          readerPath,
+          secretSet: (key, value) => secretDispatch('secret_set', { key, value }),
+          secretHas: (key) => secretDispatch('secret_has', { key }) === true,
+        });
+        console.log(
+          `[tauriLocalStorageMigration] Windows secrets: ${secrets.migrated.length} migrated, ` +
+            `${secrets.skippedExisting.length} existing, ${secrets.missing.length} absent, ` +
+            `${secrets.failed.length} failed`
+        );
+        if (migrationArmed && localStorageMigration.secretMigrationFailed) {
+          setMigrationStartupBlock('windows-secret-migration-failed');
+        }
+      }
+      const itemCount = Array.isArray(localStorageMigration.items)
+        ? localStorageMigration.items.length
+        : 0;
+      console.log(
+        `[tauriLocalStorageMigration] ${localStorageMigration.status}; ${itemCount} item(s)`
+      );
+      if (migrationArmed && localStorageMigration.status === 'error') {
+        setMigrationStartupBlock(localStorageMigration.reason);
+      }
+      migrationStartupPending =
+        migrationArmed && localStorageMigration.status === 'pending';
+    } catch (err) {
+      if (migrationArmed) {
+        setMigrationStartupBlock(
+          `local-storage-preparation-failed: ${
+            err instanceof Error ? err.message : String(err)
+          }`
+        );
+      }
+      console.warn(
+        `[tauriLocalStorageMigration] preparation failed (continuing boot): ${
+          err instanceof Error ? err.message : String(err)
+        }`
+      );
+    }
     try {
       const result = runTauriMigration({
         tauriDir: resolveTauriAppDataDir(app.getPath('appData'), app.isPackaged),
@@ -826,13 +921,68 @@ function registerTauriHost(app) {
       });
       if ('skipped' in result) {
         console.log(`[tauriMigration] skipped: ${result.skipped}`);
+      } else if (
+        migrationArmed &&
+        migrateEnv !== 'dry' &&
+        result.sentinelWritten !== true
+      ) {
+        setMigrationStartupBlock('file-or-secret-migration-incomplete');
       }
     } catch (err) {
+      if (migrationArmed) {
+        setMigrationStartupBlock(
+          `file-migration-failed: ${err instanceof Error ? err.message : String(err)}`
+        );
+      }
       console.warn(
         `[tauriMigration] migration failed (continuing boot): ${err instanceof Error ? err.message : String(err)}`
       );
     }
   }
+
+  ipcMain.on(TAURI_LOCAL_STORAGE_GET, (e) => {
+    try {
+      assertTrustedIpcSender(e);
+      e.returnValue =
+        localStorageMigration?.status === 'pending'
+          ? { version: 1, items: localStorageMigration.items }
+          : null;
+    } catch {
+      e.returnValue = null;
+    }
+  });
+  ipcMain.on(TAURI_LOCAL_STORAGE_ACK, (e, acknowledgement) => {
+    try {
+      assertTrustedIpcSender(e);
+      const result = finalizeTauriLocalStorageMigration(
+        localStorageMigration,
+        acknowledgement
+      );
+      migrationStartupPending = false;
+      e.returnValue = result;
+      if (migrationArmed && result?.ok !== true && result?.retry === true) {
+        setMigrationStartupBlock(result.reason);
+        if (!e.sender.isDestroyed()) e.sender.stop();
+        setImmediate(() => {
+          showMigrationRetryDialog(app);
+        });
+      }
+    } catch (err) {
+      migrationStartupPending = false;
+      e.returnValue = {
+        ok: false,
+        retry: true,
+        reason: err instanceof Error ? err.message : String(err),
+      };
+      if (migrationArmed) {
+        setMigrationStartupBlock(e.returnValue.reason);
+        if (!e.sender.isDestroyed()) e.sender.stop();
+        setImmediate(() => {
+          showMigrationRetryDialog(app);
+        });
+      }
+    }
+  });
 
   // Any real quit (OS Cmd+Q / menu Quit / app_exit's app.quit()) flips the
   // isQuitting guard BEFORE the window 'close' fires, so the preventable-close
@@ -1096,6 +1246,8 @@ module.exports = {
   getMainWindow,
   isQuitting,
   markQuitting,
+  getMigrationStartupBlock,
+  isMigrationStartupPending,
   hasListeners,
   wireWindowEvents,
   requestAppExit,

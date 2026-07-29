@@ -28,10 +28,14 @@ npm run release:check      # version match across 4 files + both changelog secti
 npm run build              # gen:models:check + tsc + vite build
 npm run lint
 npm test
+npm run test:electron:release-stage
+npm run test:electron:release-workflow
 ```
 
 - [ ] All four pass.
 - [ ] (Recommended) `npm run tauri:dev` — smoke new UI / behavior changes on a real desktop build.
+- [ ] For the Tauri → Electron transition, complete every gate in
+      [`ELECTRON-TRANSITION-RELEASE.md`](./ELECTRON-TRANSITION-RELEASE.md).
 
 ## 3. Release
 
@@ -46,7 +50,10 @@ git checkout dev
 
 ## 4. CI does the rest (automatic, ~40 min)
 
-`Release` workflow: `preflight` (release:check) → `build` (mac arm64 + mac x64 + Windows) → sign + notarize (macOS) → **GitHub Release** (English, from `CHANGELOG.md`) → `latest.json` (`notes` + per-locale `notes_i18n`) → upload to OSS.
+`Release` workflow: `preflight` → native Electron builds (mac arm64 + mac x64 +
+Windows x64) → macOS sign/notarize + Windows installed smoke → stage and
+byte-verify all artifacts → publish the three Electron self-update feeds →
+switch the Tauri `latest.json` last.
 
 - [ ] Confirm the `Release` run started (`gh run list --workflow=release.yml`).
 - [ ] (Optional) once the release exists, give it a subtitle: `gh release edit vX.Y.Z --title "vX.Y.Z — <subtitle>"` (CI titles it with the bare tag).

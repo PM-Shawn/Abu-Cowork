@@ -24,10 +24,17 @@
  */
 'use strict';
 
-const { app, BrowserWindow } = require('electron');
+const { app, BrowserWindow, dialog } = require('electron');
 const path = require('node:path');
 const fs = require('node:fs');
-const { registerTauriHost, wireWindowEvents, getMainWindow, emitEvent } = require('./tauriHost.cjs');
+const {
+  registerTauriHost,
+  wireWindowEvents,
+  getMainWindow,
+  getMigrationStartupBlock,
+  isMigrationStartupPending,
+  emitEvent,
+} = require('./tauriHost.cjs');
 const { sidecarBundleExists, sidecarPathFor } = require('./appEnv.cjs');
 const { initDeepLink, handleSecondInstanceArgv } = require('./deepLinkHost.cjs');
 const { registerPrivilegedWindow } = require('./securityBoundary.cjs');
@@ -64,6 +71,7 @@ function log(level, msg, extra) {
 function createWindow() {
   const isMac = process.platform === 'darwin';
   const win = new BrowserWindow({
+    show: false,
     width: 1200,
     height: 800,
     minWidth: 900,
@@ -80,6 +88,15 @@ function createWindow() {
       nodeIntegration: false,
       sandbox: true,
     },
+  });
+  win.once('ready-to-show', () => {
+    if (
+      !getMigrationStartupBlock() &&
+      !isMigrationStartupPending() &&
+      !win.isDestroyed()
+    ) {
+      win.show();
+    }
   });
 
   // Tauri drag regions use the [data-tauri-drag] attribute; under Electron a
@@ -130,7 +147,7 @@ if (!app.requestSingleInstanceLock()) {
 
   app.on('second-instance', (_event, commandLine) => {
     const existing = getMainWindow() || BrowserWindow.getAllWindows()[0];
-    if (existing) {
+    if (existing && !getMigrationStartupBlock() && !isMigrationStartupPending()) {
       if (existing.isMinimized()) existing.restore();
       existing.show();
       existing.focus();
@@ -142,6 +159,26 @@ if (!app.requestSingleInstanceLock()) {
 
   app.whenReady().then(() => {
   registerTauriHost(app);
+  const migrationBlock = getMigrationStartupBlock();
+  if (migrationBlock) {
+    const isZh = app.getLocale().toLowerCase().startsWith('zh');
+    void dialog
+      .showMessageBox({
+        type: 'error',
+        title: isZh ? '升级数据迁移未完成' : 'Update migration incomplete',
+        message: isZh
+          ? 'Abu 没有写入或删除旧版数据。请重新启动后再试。'
+          : 'Abu did not write to or delete the old app data. Restart the app to retry.',
+        detail: isZh
+          ? `为避免新框架先写入空数据，本次启动已停止。\n错误：${migrationBlock}`
+          : `This launch was stopped before the new framework could write empty state.\nReason: ${migrationBlock}`,
+        buttons: [isZh ? '退出' : 'Quit'],
+        defaultId: 0,
+        noLink: true,
+      })
+      .finally(() => app.quit());
+    return;
+  }
   // Preflight: the frontend spawns the sidecar via mcp_spawn, so a missing
   // bundle would surface only as an opaque child ENOENT — warn clearly here.
   if (!sidecarBundleExists(app)) {
@@ -157,10 +194,10 @@ if (!app.requestSingleInstanceLock()) {
     // showing that left the main UI hidden. window_hide (closeAction 'minimize')
     // hides rather than destroys the main window, so it's still there to show.
     const mainWin = getMainWindow();
-    if (mainWin) {
+    if (mainWin && !getMigrationStartupBlock() && !isMigrationStartupPending()) {
       mainWin.show();
       mainWin.focus();
-    } else {
+    } else if (!mainWin) {
       createWindow();
     }
     // TODO(slice E): Windows/Linux minimize-to-tray restore needs a tray

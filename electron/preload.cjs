@@ -14,6 +14,71 @@
 
 const { contextBridge, ipcRenderer } = require('electron');
 
+const TAURI_LOCAL_STORAGE_GET = 'abu:tauri-local-storage:get';
+const TAURI_LOCAL_STORAGE_ACK = 'abu:tauri-local-storage:ack';
+const TAURI_STORE_KEYS = new Set([
+  'abu-settings',
+  'abu-chat',
+  'abu-scratchpad-store',
+  'abu-permissions',
+  'abu-workspace',
+  'abu-mcp-store',
+  'abu-schedule',
+  'abu-triggers',
+  'abu-im-channel',
+  'abu-projects',
+  'abu-project-hint',
+  'abu-diagnostic-store',
+  'abu-usage-stats',
+  'abu-discovered-caps',
+  'abu-todos',
+  'abu-inbox',
+  'abu_device_id',
+  'abu_seen_announcements',
+  'abu-pet-position',
+  'wechat:ctx',
+]);
+
+function isAllowedTauriStorageKey(key) {
+  return TAURI_STORE_KEYS.has(key) || key.startsWith('wechat:cursor:');
+}
+
+// Import old Tauri WebView localStorage before any renderer module runs, so
+// Zustand hydrates the migrated state on this first Electron launch. Existing
+// Electron values always win; main writes its completion marker only after
+// this synchronous acknowledgement accounts for every expected key.
+try {
+  const payload = ipcRenderer.sendSync(TAURI_LOCAL_STORAGE_GET);
+  if (payload?.version === 1 && Array.isArray(payload.items)) {
+    const result = { imported: [], skippedExisting: [], failed: [] };
+    for (const item of payload.items) {
+      const key = item?.key;
+      if (
+        typeof key !== 'string' ||
+        typeof item?.value !== 'string' ||
+        !isAllowedTauriStorageKey(key)
+      ) {
+        if (typeof key === 'string') result.failed.push(key);
+        continue;
+      }
+      try {
+        if (globalThis.localStorage.getItem(key) !== null) {
+          result.skippedExisting.push(key);
+        } else {
+          globalThis.localStorage.setItem(key, item.value);
+          result.imported.push(key);
+        }
+      } catch {
+        result.failed.push(key);
+      }
+    }
+    ipcRenderer.sendSync(TAURI_LOCAL_STORAGE_ACK, result);
+  }
+} catch {
+  // Migration must never make the app unbootable. No acknowledgement means
+  // main leaves the sentinel absent and retries next launch.
+}
+
 let cbId = 1;
 
 // Real callback registry (Phase 2 slice B) — transformCallback used to return

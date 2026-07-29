@@ -5,9 +5,8 @@
  * release-electron/) via Playwright-for-Electron and asserts the packaging
  * wiring is correct end-to-end — the thing a `--dir` build can prove without a
  * signing certificate:
- *   1. The packaged app launches and opens a window (no boot crash — which also
- *      transitively proves node-pty, required at boot by tauriHost→ptyHost,
- *      loads under the packaged Electron ABI).
+ *   1. The packaged app launches and opens a window, then a real PTY command
+ *      round-trips through renderer → preload → IPC → node-pty.
  *   2. It reports app.isPackaged === true (we're testing the real bundle, not
  *      a dev `electron .`).
  *   3. The bundled resources resolve under process.resourcesPath: sidecar,
@@ -27,8 +26,9 @@
  *
  * Run: npm run smoke:electron:packaged   (after `npm run pack:electron`)
  *
- * NOT covered (documented, needs signing/real user flow): signed-install
- * behavior, auto-update, and cross-arch native rebuilds — later slices.
+ * NOT covered here: signed-install behavior, auto-update delivery, and
+ * cross-arch native rebuilds. Windows CI separately installs and launches the
+ * unsigned NSIS artifact with scripts/electron-windows-installed-smoke.ps1.
  */
 import { _electron as electron } from '@playwright/test';
 import { spawnSync } from 'node:child_process';
@@ -1890,8 +1890,14 @@ async function main() {
     checks.sidecarInResources = fs.existsSync(path.join(found.resources, 'sidecar', 'index.mjs'));
     checks.skillsInResources = fs.existsSync(path.join(found.resources, 'builtin-skills'));
     const helperName = process.platform === 'win32' ? 'native-helper.exe' : 'native-helper';
-    checks.helperInResources = fs.existsSync(
-      path.join(found.resources, 'native-helper', helperName)
+    const helperPath = path.join(found.resources, 'native-helper', helperName);
+    checks.helperInResources = fs.existsSync(helperPath);
+    const transitionReaderName =
+      process.platform === 'win32'
+        ? 'tauri-transition-reader.exe'
+        : 'tauri-transition-reader';
+    checks.transitionReaderInResources = fs.existsSync(
+      path.join(found.resources, 'native-helper', transitionReaderName),
     );
     const launcherName = process.platform === 'win32' ? 'sandbox-launcher.exe' : 'sandbox-launcher';
     const launcherPath = path.join(found.resources, 'sandbox-launcher', process.platform, launcherName);
@@ -1957,6 +1963,29 @@ async function main() {
       checks.sandboxLauncherExecutes = false;
       errors.sandboxLauncher = String(err);
     }
+    try {
+      const helperResult = spawnSync(helperPath, [], {
+        input: `${JSON.stringify({ id: 1, method: 'ping', params: {} })}\n`,
+        encoding: 'utf8',
+        timeout: 10_000,
+      });
+      const response = JSON.parse(String(helperResult.stdout || '').trim());
+      checks.nativeHelperPing =
+        helperResult.status === 0 &&
+        response?.id === 1 &&
+        response?.result?.pong === true;
+      if (!checks.nativeHelperPing) {
+        errors.nativeHelper = [
+          `status=${String(helperResult.status)}`,
+          `stdout=${JSON.stringify(helperResult.stdout)}`,
+          `stderr=${JSON.stringify(helperResult.stderr)}`,
+          helperResult.error ? `error=${String(helperResult.error)}` : '',
+        ].filter(Boolean).join(' ');
+      }
+    } catch (err) {
+      checks.nativeHelperPing = false;
+      errors.nativeHelper = String(err);
+    }
 
     // ── real packaged command path: renderer → preload → IPC → commandHost ──
     try {
@@ -1987,6 +2016,69 @@ async function main() {
       checks.packagedCommandUsesBundledNode = path.resolve(commandOutput.executable).startsWith(
         path.resolve(path.join(found.resources, 'node-runtime')) + path.sep,
       );
+
+      const ptyMarker = `abu-packaged-pty-${randomUUID()}`;
+      const ptyId = `packaged-pty-${randomUUID()}`;
+      const ptyOutput = await window.evaluate(
+        ({ id, marker, windows }) => new Promise((resolve, reject) => {
+          const internals = window.__TAURI_INTERNALS__;
+          let eventId;
+          let output = '';
+          let settled = false;
+          const fail = (error) => {
+            if (settled) return;
+            settled = true;
+            clearTimeout(timeout);
+            reject(error);
+          };
+          const timeout = setTimeout(async () => {
+            if (settled) return;
+            settled = true;
+            try {
+              await internals.invoke('pty_kill', { id });
+              if (eventId !== undefined) {
+                await internals.invoke('plugin:event|unlisten', { eventId });
+              }
+            } catch {
+              // Preserve the original timeout as the actionable failure.
+            }
+            reject(new Error(`PTY did not echo marker within 15 seconds: ${output}`));
+          }, 15_000);
+          const callbackId = internals.transformCallback(async (event) => {
+            if (settled) return;
+            output += String.fromCharCode(...new Uint8Array(event.payload));
+            if (!output.includes(marker)) return;
+            settled = true;
+            clearTimeout(timeout);
+            try {
+              await internals.invoke('pty_kill', { id });
+              if (eventId !== undefined) {
+                await internals.invoke('plugin:event|unlisten', { eventId });
+              }
+              resolve(output);
+            } catch (error) {
+              reject(error);
+            }
+          });
+
+          void internals.invoke('plugin:event|listen', {
+            event: `pty://data/${id}`,
+            handler: callbackId,
+          }).then(async (registeredEventId) => {
+            eventId = registeredEventId;
+            await internals.invoke('pty_spawn', { id, cols: 80, rows: 24, cwd: null });
+            const command = windows
+              ? `Write-Output '${marker}'; exit\r`
+              : `printf '${marker}\\n'; exit\n`;
+            await internals.invoke('pty_write', { id, data: command });
+          }).catch((error) => {
+            internals.unregisterCallback(callbackId);
+            fail(error);
+          });
+        }),
+        { id: ptyId, marker: ptyMarker, windows: process.platform === 'win32' },
+      );
+      checks.packagedPtyRoundTrip = ptyOutput.includes(ptyMarker);
 
       const abortCommandId = `packaged-abort-${randomUUID()}`;
       const abortScript = taggedTreeProbeScript(abortTree.resultPath);
@@ -2178,6 +2270,7 @@ print(json.dumps({"executable": sys.executable, "files": [str(p) for p in [docx_
       checks.packagedSandboxCommandAborts ??= false;
       checks.packagedCommandTimeoutKillsTree ??= false;
       checks.packagedCommandUsesBundledNode ??= false;
+      checks.packagedPtyRoundTrip ??= false;
       checks.packagedNpmRuns ??= false;
       checks.packagedNpxRuns ??= false;
       checks.packagedPythonUsesBundledRuntime ??= false;

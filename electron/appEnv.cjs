@@ -50,11 +50,10 @@ function sidecarPathFor(app) {
  * (tauriHost.cjs) so both sides agree on where app data lives.
  *  - Dev: `com.abu.app.electron-dev` — DISTINCT from the Tauri dev app's
  *    `com.abu.app.dev` so the two shells never share state while coexisting.
- *  - Packaged: `com.abu.app.electron` — still distinct from the Tauri PROD
- *    app's `com.abu.app` for now (the unsigned test builds must not touch real
- *    user data). The final signed release switches this to `com.abu.app` and
- *    runs the store-migration step (docs/2026-07-22-phase2-sliceC-secret-
- *    migration-plan.md + the conversation-dir migration).
+ *  - Packaged: `com.abu.app.electron` — permanently distinct from Tauri's
+ *    `com.abu.app`. A release-metadata-gated transition copies whitelisted
+ *    data into this root without modifying the old install, preserving
+ *    rollback and keeping ordinary unsigned test packages isolated.
  * @param {import('electron').App} app
  */
 function abuAppDataDir(app) {

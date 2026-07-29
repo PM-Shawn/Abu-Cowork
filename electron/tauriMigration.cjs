@@ -8,8 +8,9 @@
  *     UUID-derived key; see tauriSecretsReader.cjs) and hand each plaintext to
  *     an injected `secretSet` callback (production: secretStore.cjs, which
  *     re-encrypts via safeStorage). The formats are incompatible so the file
- *     can NOT simply be copied. On Windows/Linux Tauri kept secrets in the OS
- *     keyring (no file), so there is nothing to migrate there.
+ *     can NOT simply be copied. Windows Tauri secrets live in Credential
+ *     Manager and are migrated by tauriLocalStorageMigration.cjs, which can
+ *     derive the explicit custom-provider key allowlist from abu-settings.
  *
  *  2. Data dirs — copy `conversations/` (messages.jsonl + checkpoints +
  *     outputs; the canonical store), legacy `sessions/` (old tool-result
@@ -48,6 +49,30 @@ const { getMachineUuid, deriveTauriKey, readTauriSecrets } = require('./tauriSec
 const SENTINEL_FILENAME = 'tauri-migration.json';
 /** Copied wholesale when present at the source and absent at the target. */
 const DATA_DIRS = ['conversations', 'sessions', 'backups'];
+
+function hasValidSentinel(sentinelPath) {
+  try {
+    const record = JSON.parse(fs.readFileSync(sentinelPath, 'utf8'));
+    return (
+      record?.version === 1 &&
+      record?.summary?.sentinelWritten === true &&
+      typeof record?.migratedAt === 'string'
+    );
+  } catch {
+    return false;
+  }
+}
+
+function writeSentinelAtomic(sentinelPath, record) {
+  fs.mkdirSync(path.dirname(sentinelPath), { recursive: true });
+  const stagingPath = `${sentinelPath}.tmp-${process.pid}`;
+  try {
+    fs.writeFileSync(stagingPath, JSON.stringify(record, null, 2), 'utf8');
+    fs.renameSync(stagingPath, sentinelPath);
+  } finally {
+    fs.rmSync(stagingPath, { force: true });
+  }
+}
 
 /**
  * The Tauri app-data dir this Electron build should migrate from — mirrors
@@ -93,7 +118,7 @@ function runTauriMigration(opts) {
   const warn = (msg) => log.warn(`[tauriMigration] ${msg}`);
 
   const sentinelPath = path.join(electronDir, SENTINEL_FILENAME);
-  if (fs.existsSync(sentinelPath)) {
+  if (hasValidSentinel(sentinelPath)) {
     return { skipped: 'already-migrated' };
   }
 
@@ -108,11 +133,9 @@ function runTauriMigration(opts) {
   const writeSentinel = () => {
     if (dryRun) return;
     summary.sentinelWritten = true; // set BEFORE stringify so the persisted record agrees
-    fs.mkdirSync(electronDir, { recursive: true });
-    fs.writeFileSync(
+    writeSentinelAtomic(
       sentinelPath,
-      JSON.stringify({ version: 1, migratedAt: new Date().toISOString(), summary }, null, 2),
-      'utf8'
+      { version: 1, migratedAt: new Date().toISOString(), summary }
     );
   };
 
@@ -126,13 +149,11 @@ function runTauriMigration(opts) {
   // ── 1. secrets ─────────────────────────────────────────────
   const secretsBin = path.join(tauriDir, 'secrets.bin');
   if (process.platform !== 'darwin') {
-    // Tauri used the OS keyring off-macOS (keyring crate), and the Electron
-    // secretStore does NOT read the OS keyring — so those keys are NOT
-    // migrated and the user has to re-enter them. Doing better needs a native
-    // Credential Manager/secret-service reader (a future Windows-support
-    // slice); be honest about the gap instead of claiming nothing to migrate.
-    summary.secrets.skippedReason = `non-darwin platform (${process.platform}): Tauri keyring secrets are NOT migrated — user must re-enter API keys (future keyring-reader slice)`;
-    warn(summary.secrets.skippedReason);
+    summary.secrets.skippedReason =
+      process.platform === 'win32'
+        ? 'Windows keyring (Credential Manager) migration is handled by tauriLocalStorageMigration'
+        : `non-darwin platform (${process.platform}): no file-based secrets.bin`;
+    say(summary.secrets.skippedReason);
   } else if (!fs.existsSync(secretsBin)) {
     summary.secrets.skippedReason = 'no secrets.bin at source';
     say(summary.secrets.skippedReason);
@@ -240,4 +261,5 @@ module.exports = {
   resolveTauriAppDataDir,
   runTauriMigration,
   SENTINEL_FILENAME,
+  hasValidSentinel,
 };

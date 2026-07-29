@@ -14,6 +14,11 @@
 appId: com.abu.app
 productName: Abu
 copyright: Copyright © 2026 Abu
+extraMetadata:
+  abuRelease:
+    # Only a release workflow may override this exact boolean to true.
+    # Local/PR packages stay isolated from installed Tauri user data.
+    tauriMigration: false
 # Pin packaging to the Electron version resolved by package-lock.json so local
 # worktrees and CI download the same runtime.
 electronVersion: 43.1.1
@@ -108,6 +113,8 @@ extraResources:
     filter:
       - native-helper
       - native-helper.exe
+      - tauri-transition-reader
+      - tauri-transition-reader.exe
   - from: electron/sandbox-launcher/dist
     to: sandbox-launcher
   - from: electron/.runtime/node-runtime
@@ -145,17 +152,17 @@ extraResources:
 # (rejected invoke → frontend catch), same non-fatal behavior as before this
 # slice. Publishing artifacts to OSS stays a CI step; nothing is uploaded
 # from dev machines.
-# The electron feed lives under its own `/electron/` prefix so it can never
-# collide with the Tauri updater's `latest.json` at the bucket root — the two
-# update channels stay independent during the coexistence period (and after:
-# separate namespaces cost nothing).
+# The Electron feeds live under architecture-specific `/electron/` prefixes so
+# macOS arm64, macOS x64, and Windows metadata can never overwrite each other.
+# Release CI overrides this default for the x64 macOS and Windows builds.
 publish:
   provider: generic
-  url: https://abu-agent.oss-cn-beijing.aliyuncs.com/electron/
+  url: https://abu-agent.oss-cn-beijing.aliyuncs.com/electron/mac-arm64/
 
 mac:
   category: public.app-category.productivity
   icon: src-tauri/icons/icon.icns
+  artifactName: "${productName}-${version}-mac-${arch}.${ext}"
   # `npm run pack:electron` (--dir) still produces just the unpacked .app for
   # fast iteration + the packaged smoke. `npm run dist:electron` builds:
   #  - zip: REQUIRED for mac auto-update (Squirrel.Mac consumes a zip; its
@@ -193,8 +200,26 @@ mac:
 
 win:
   icon: src-tauri/icons/icon.ico
+  # Windows baseline ships a conventional x64 NSIS installer. It is
+  # deliberately per-user: no Microsoft Store packaging, no machine-wide
+  # install, and no elevation prompt. Signing remains unset until a later
+  # attended release stage with real credentials.
   target:
-    - dir
+    - target: nsis
+      arch:
+        - x64
+  artifactName: "${productName}-${version}-windows-${arch}-setup.${ext}"
+
+nsis:
+  oneClick: true
+  perMachine: false
+  allowElevation: false
+  packElevateHelper: false
+  include: build/electron-transition-installer.nsh
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  runAfterFinish: false
+  artifactName: "${productName}-${version}-windows-${arch}-setup.${ext}"
 
 linux:
   target:

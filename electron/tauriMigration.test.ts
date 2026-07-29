@@ -14,6 +14,7 @@ import {
   resolveTauriAppDataDir,
   runTauriMigration,
   SENTINEL_FILENAME,
+  hasValidSentinel,
 } from './tauriMigration.cjs';
 import { listFiles } from './spike/listFilesRecursive.cjs';
 
@@ -131,6 +132,21 @@ describe('runTauriMigration', () => {
     const second = runWith(store);
     expect(second).toEqual({ skipped: 'already-migrated' });
     expect(store.secretSet.mock.calls.length).toBe(callsAfterFirst);
+  });
+
+  it('does not trust a corrupt or incomplete sentinel', () => {
+    seedTauriDir();
+    fs.mkdirSync(electronDir, { recursive: true });
+    const sentinel = path.join(electronDir, SENTINEL_FILENAME);
+    fs.writeFileSync(sentinel, '{"version":1');
+    expect(hasValidSentinel(sentinel)).toBe(false);
+
+    const store = fakeSecretStore();
+    const summary = runWith(store);
+    if ('skipped' in summary) throw new Error('corrupt sentinel must not skip migration');
+    expect(summary.sentinelWritten).toBe(true);
+    expect(hasValidSentinel(sentinel)).toBe(true);
+    expect(fs.existsSync(`${sentinel}.tmp-${process.pid}`)).toBe(false);
   });
 
   it('never clobbers existing Electron data (dirs or secret keys)', () => {

@@ -17,6 +17,10 @@ publish = false
 name = "native-helper"
 path = "src/main.rs"
 
+[[bin]]
+name = "tauri-transition-reader"
+path = "src/tauri_transition_reader.rs"
+
 [dependencies]
 # Same versions as src-tauri/Cargo.toml so behavior matches the shipping code.
 enigo = { version = "0.3", features = ["serde"] }
@@ -28,6 +32,7 @@ serde_json = "1"
 # versions as src-tauri/Cargo.toml.
 base64 = "0.22"
 image = { version = "0.25", default-features = false, features = ["png"] }
+rusty-leveldb = "4.0.1"
 
 # Accessibility (AXUIElement) — re-hosts src-tauri's Tauri-free AX impl via
 # `include!` (see src/ax.rs). Versions + features copied verbatim from
@@ -48,6 +53,7 @@ objc2-core-graphics = "0.3"
 tokio = { version = "1", features = ["time"] }
 
 [target.'cfg(target_os = "windows")'.dependencies]
+keyring = { version = "3", features = ["windows-native"] }
 windows = { version = "0.58", features = [
   "Win32_Foundation",
   "Win32_UI_WindowsAndMessaging",

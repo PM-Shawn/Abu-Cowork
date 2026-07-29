@@ -1783,6 +1783,14 @@ function waitForChildExit(child, timeoutMs) {
   });
 }
 
+async function waitForPidExit(pid, timeoutMs) {
+  await waitUntil(
+    () => !pidAlive(pid),
+    `process ${pid} to exit`,
+    timeoutMs,
+  );
+}
+
 function launchPackagedApp(found, userDataDir, appDataDir, runtimeTrap) {
   fs.mkdirSync(userDataDir, { recursive: true });
   fs.mkdirSync(appDataDir, { recursive: true });
@@ -2518,8 +2526,10 @@ print(json.dumps({"executable": sys.executable, "files": [str(p) for p in [docx_
       await waitForMarkerGone(stopTree.marker, 'the real Stop path');
       checks.packagedTaskStopKillsCommandTree = true;
 
-      // SIGKILL bypasses JavaScript cleanup. The native liveness pipe remains
-      // authoritative and must close the command tree on its own.
+      // SIGKILL bypasses JavaScript cleanup. Read the real Electron main PID
+      // from inside the app: on Windows Playwright can expose a short-lived
+      // launcher wrapper through app.process(), and killing that wrapper does
+      // not crash the packaged application.
       await restoredInput.waitFor({ state: 'visible', timeout: READY_TIMEOUT });
       await restoredInput.fill(crashPrompt);
       await restoredInput.press('Enter');
@@ -2528,13 +2538,9 @@ print(json.dumps({"executable": sys.executable, "files": [str(p) for p in [docx_
         'the hard-crash command tree to start',
       );
       readLiveTaggedTree(crashTree.resultPath, crashTree.marker, 'hard Electron crash');
-      const appProcess = app.process();
-      appProcess.kill('SIGKILL');
-      const appExited = await waitForChildExit(appProcess, 5_000);
-      if (!appExited) {
-        throw new Error('packaged Electron process did not exit after SIGKILL');
-      }
-      app = undefined;
+      const electronMainPid = await app.evaluate(() => process.pid);
+      process.kill(electronMainPid, 'SIGKILL');
+      await waitForPidExit(electronMainPid, 5_000);
       await waitForMarkerGone(crashTree.marker, 'the launcher cleanup after a hard Electron crash');
       checks.packagedHardCrashKillsCommandTree = true;
     } catch (err) {

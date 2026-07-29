@@ -30,27 +30,31 @@ function fixture() {
   return { root, app };
 }
 
-test('packs exactly one Abu.app root and preserves executable mode and symlinks', () => {
-  const { root, app } = fixture();
-  const archive = path.join(root, 'Abu_aarch64_electron-transition.app.tar.gz');
-  const extracted = path.join(root, 'extracted');
-  try {
-    const summary = packAppArchive(app, archive);
-    assert.equal(summary.rootName, 'Abu.app');
-    const entries = listArchiveEntries(archive);
-    assert.equal(entries.some((entry) => entry.startsWith('./')), false);
-    assert.equal(entries.some((entry) => entry.includes('._')), false);
+test(
+  'packs exactly one Abu.app root and preserves executable mode and symlinks',
+  { skip: process.platform !== 'darwin' },
+  () => {
+    const { root, app } = fixture();
+    const archive = path.join(root, 'Abu_aarch64_electron-transition.app.tar.gz');
+    const extracted = path.join(root, 'extracted');
+    try {
+      const summary = packAppArchive(app, archive);
+      assert.equal(summary.rootName, 'Abu.app');
+      const entries = listArchiveEntries(archive);
+      assert.equal(entries.some((entry) => entry.startsWith('./')), false);
+      assert.equal(entries.some((entry) => entry.includes('._')), false);
 
-    extractArchive(archive, extracted);
-    const executable = path.join(extracted, 'Abu.app', 'Contents', 'MacOS', 'Abu');
-    const link = path.join(extracted, 'Abu.app', 'Contents', 'Resources', 'payload-link');
-    fs.accessSync(executable, fs.constants.X_OK);
-    assert.equal(fs.lstatSync(link).isSymbolicLink(), true);
-    assert.equal(fs.readlinkSync(link), 'payload.txt');
-  } finally {
-    fs.rmSync(root, { recursive: true, force: true });
+      extractArchive(archive, extracted);
+      const executable = path.join(extracted, 'Abu.app', 'Contents', 'MacOS', 'Abu');
+      const link = path.join(extracted, 'Abu.app', 'Contents', 'Resources', 'payload-link');
+      fs.accessSync(executable, fs.constants.X_OK);
+      assert.equal(fs.lstatSync(link).isSymbolicLink(), true);
+      assert.equal(fs.readlinkSync(link), 'payload.txt');
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
   }
-});
+);
 
 test('rejects extra roots, traversal, dot roots, and AppleDouble metadata', () => {
   const base = [

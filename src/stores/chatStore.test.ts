@@ -1121,7 +1121,7 @@ describe('chatStore', () => {
 
       // Let the addMessage-triggered append bumps (+1 each, fired via dynamic
       // import) settle so they don't pollute the post-clear assertion window.
-      await new Promise((r) => setTimeout(r, 20));
+      await waitForConversationPersistence(id);
       vi.mocked(invoke).mockClear();
       useChatStore.getState().deleteMessage(id, 'msg1');
 
@@ -1137,11 +1137,11 @@ describe('chatStore', () => {
       const id = useChatStore.getState().createConversation();
       useChatStore.getState().addMessage(id, { id: 'msg1', role: 'user', content: 'a', timestamp: 1 });
 
-      await new Promise((r) => setTimeout(r, 20));
+      await waitForConversationPersistence(id);
       vi.mocked(invoke).mockClear();
       useChatStore.getState().deleteMessage(id, 'nonexistent');
 
-      await new Promise((r) => setTimeout(r, 20));
+      await waitForConversationPersistence(id);
       const bump = vi.mocked(invoke).mock.calls.find((c) => c[0] === 'catalog_bump_count');
       expect(bump).toBeUndefined();
     });
@@ -1154,12 +1154,12 @@ describe('chatStore', () => {
       const id = useChatStore.getState().createConversation();
       useChatStore.getState().addMessage(id, { id: 'msg1', role: 'user', content: 'a', timestamp: 1 });
 
-      await new Promise((r) => setTimeout(r, 20));
+      await waitForConversationPersistence(id);
       vi.mocked(invoke).mockClear();
       useChatStore.getState().deleteMessage(id, 'msg1', { skipCatalogBump: true });
 
       expect(useChatStore.getState().conversations[id].messages).toHaveLength(0);
-      await new Promise((r) => setTimeout(r, 20));
+      await waitForConversationPersistence(id);
       const bump = vi.mocked(invoke).mock.calls.find((c) => c[0] === 'catalog_bump_count');
       expect(bump).toBeUndefined();
     });

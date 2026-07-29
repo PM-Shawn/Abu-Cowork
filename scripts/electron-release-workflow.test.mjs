@@ -105,4 +105,9 @@ test('packaged feeds are architecture-isolated', () => {
   assert.match(builder, /electron\/mac-arm64\//);
   assert.match(buildWorkflow, /electron\/\$\{FEED_CHANNEL\}\//);
   assert.match(buildWorkflow, /electron\/win-x64\//);
+  assert.equal(
+    (buildWorkflow.match(/--config\.detectUpdateChannel=false/g) || []).length,
+    2,
+    'RC validation must emit the same latest*.yml feed pointers as a stable release'
+  );
 });

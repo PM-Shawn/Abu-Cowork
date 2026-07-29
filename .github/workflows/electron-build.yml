@@ -157,6 +157,7 @@ jobs:
             "--publish" "never"
             "--config.extraMetadata.version=${TRANSITION_VERSION}"
             "--config.publish.url=${ABU_ELECTRON_FEED}"
+            "--config.detectUpdateChannel=false"
             "--config.mac.identity=Developer ID Application"
             "--config.mac.forceCodeSigning=true"
           )
@@ -365,7 +366,8 @@ jobs:
         run: |
           $builderArgs = @(
             "--config.extraMetadata.version=$env:ABU_ELECTRON_VERSION",
-            "--config.publish.url=$env:ABU_ELECTRON_FEED"
+            "--config.publish.url=$env:ABU_ELECTRON_FEED",
+            "--config.detectUpdateChannel=false"
           )
           if ($env:ABU_TRANSITION_RELEASE -eq "true") {
             $builderArgs += "--config.extraMetadata.abuRelease.tauriMigration=true"

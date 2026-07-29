@@ -1170,7 +1170,10 @@ function bareRuntimeProbeCommand() {
   // platform-specific quote/newline parsing while still resolving bare
   // `node` through the production bundled PATH.
   const encoded = Buffer.from(script, 'utf8').toString('base64');
-  const loader = 'eval(Buffer.from(process.argv[1], "base64").toString("utf8"))';
+  // PowerShell removes double quotes while serializing arguments for a native
+  // Windows executable. Single quotes survive that native argv boundary and
+  // remain JavaScript string delimiters for Node's `-e` source.
+  const loader = "eval(Buffer.from(process.argv[1], 'base64').toString('utf8'))";
   return `node -e ${shellQuote(loader)} ${shellQuote(encoded)}`;
 }
 

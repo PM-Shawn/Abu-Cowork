@@ -408,6 +408,10 @@ function makeLauncherConfig(spec, sandboxEnabled) {
     // killed or crashes, the OS closes the pipe and the native launcher tears
     // down its process group / Job Object without relying on JavaScript hooks.
     monitorParent: true,
+    // Also bind the launcher directly to Electron's main-process PID. This is
+    // an independent native liveness signal on Windows, where another process
+    // can briefly retain a duplicated pipe handle after abrupt termination.
+    parentPid: process.pid,
   };
 }
 

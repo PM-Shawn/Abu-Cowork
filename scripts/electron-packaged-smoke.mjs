@@ -2581,11 +2581,32 @@ print(json.dumps({"executable": sys.executable, "files": [str(p) for p in [docx_
     if (!checks.hostRuntimeTrapUnused) {
       errors.hostRuntimeTrap = fs.readFileSync(runtimeTrap.marker, 'utf8').trim();
     }
+    const cleanupFailures = [];
     for (const commandTree of commandTrees) {
-      await cleanupMarkerProcesses(commandTree.marker);
-      fs.rmSync(commandTree.resultPath, { force: true });
+      try {
+        await cleanupMarkerProcesses(commandTree.marker);
+      } catch (err) {
+        cleanupFailures.push(`${commandTree.marker}: ${String(err)}`);
+      }
+      try {
+        fs.rmSync(commandTree.resultPath, { force: true });
+      } catch (err) {
+        cleanupFailures.push(`${commandTree.resultPath}: ${String(err)}`);
+      }
     }
-    fs.rmSync(testRoot, { recursive: true, force: true });
+    try {
+      fs.rmSync(testRoot, {
+        recursive: true,
+        force: true,
+        maxRetries: 20,
+        retryDelay: 250,
+      });
+    } catch (err) {
+      cleanupFailures.push(`${testRoot}: ${String(err)}`);
+    }
+    if (cleanupFailures.length > 0) {
+      errors.cleanup = cleanupFailures.join('\n');
+    }
   }
 
   const passed =

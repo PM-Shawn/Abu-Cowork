@@ -490,6 +490,7 @@ test('Windows argv compatibility stays literal while launcher receives restricte
     args: ['-c', 'print("ok")'],
     sandboxEnabled: true,
     monitorParent: true,
+    parentPid: process.pid,
   });
   assert.equal(makeLauncherConfig(unsandboxed, false).sandboxEnabled, false);
 });

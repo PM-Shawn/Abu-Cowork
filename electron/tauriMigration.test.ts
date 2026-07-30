@@ -658,7 +658,9 @@ describe('runTauriMigration', () => {
     expect(fs.existsSync(
       path.join(summary.backup.path!, 'legacy-symlink-repairs.json'),
     )).toBe(true);
-    expect(fs.readlinkSync(path.join(sourceBinDir, 'image-size'))).toBe(relativeTarget);
+    expect(path.normalize(fs.readlinkSync(path.join(sourceBinDir, 'image-size')))).toBe(
+      path.normalize(relativeTarget),
+    );
   });
 
   it('still rejects unrelated absolute symlinks already present in Electron data', () => {

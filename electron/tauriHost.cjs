@@ -54,6 +54,7 @@ const {
 } = require('./fsWatchHost.cjs');
 const { mcpDispatch } = require('./mcpBridge.cjs');
 const { desktopDispatch, DESKTOP_MISS } = require('./desktopHost.cjs');
+const { syncMainWindowChromeTheme } = require('./windowChrome.cjs');
 const {
   nativeHelperDispatch,
   NATIVE_HELPER_MISS,
@@ -616,6 +617,7 @@ function windowDispatch(app, cmd, args, callerWin) {
     case 'plugin:window|set_theme':
       // value is 'light'|'dark'|null/undefined (null/undefined = follow system).
       nativeTheme.themeSource = a.value === 'light' || a.value === 'dark' ? a.value : 'system';
+      syncMainWindowChromeTheme(win, nativeTheme.shouldUseDarkColors);
       return null;
     case 'plugin:window|set_title':
       if (queryWin) queryWin.setTitle(String(a.title ?? ''));

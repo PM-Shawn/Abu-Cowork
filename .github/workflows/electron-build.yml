@@ -125,6 +125,7 @@ jobs:
             echo "Electron preload verification attempt $attempt failed; retrying after $((attempt * 10))s" >&2
             sleep "$((attempt * 10))"
           done
+          npm run electron:host-ui-test
           npm run electron:security-test
           npm run test:electron:release-stage
 
@@ -371,6 +372,7 @@ jobs:
             echo "Electron preload verification attempt $attempt failed; retrying after $((attempt * 10))s" >&2
             sleep "$((attempt * 10))"
           done
+          npm run electron:host-ui-test
           npm run electron:security-test
           npm run test:electron:release-stage
           cargo test --manifest-path electron/native-helper/Cargo.toml --bin tauri-transition-reader

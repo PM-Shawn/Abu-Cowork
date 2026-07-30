@@ -706,7 +706,10 @@ function App() {
         {showRightPanelToggle && (
           <button
             onClick={toggleRightPanel}
-            className="absolute right-4 btn-ghost p-1 text-[var(--abu-text-tertiary)] hover:text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-hover)] rounded-md pointer-events-auto"
+            className={cn(
+              'absolute btn-ghost p-1 text-[var(--abu-text-tertiary)] hover:text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-hover)] rounded-md pointer-events-auto',
+              mac ? 'right-4' : 'right-[152px]',
+            )}
             style={{ top: mac ? 23 : 6 }}
             title={rightPanelCollapsed ? t.panel.showPanel : t.panel.hidePanel}
           >

@@ -1,21 +1,36 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { openBundledChromeExtensionSetup } from './chromeSetup';
 
-const openPath = vi.fn();
+const revealItemInDir = vi.fn();
 const openUrl = vi.fn();
+const invoke = vi.fn();
 vi.mock('@tauri-apps/plugin-opener', () => ({
-  openPath: (...args: unknown[]) => openPath(...args),
+  revealItemInDir: (...args: unknown[]) => revealItemInDir(...args),
   openUrl: (...args: unknown[]) => openUrl(...args),
 }));
+vi.mock('@tauri-apps/api/core', () => ({
+  invoke: (...args: unknown[]) => invoke(...args),
+}));
+
+function setElectronHost(enabled: boolean) {
+  const runtime = globalThis as typeof globalThis & {
+    __ABU_SHELL__?: { mainSupervisesSidecar?: boolean };
+  };
+  runtime.__ABU_SHELL__ = enabled
+    ? { mainSupervisesSidecar: true }
+    : undefined;
+}
 
 describe('openBundledChromeExtensionSetup', () => {
   beforeEach(() => {
-    openPath.mockReset();
+    setElectronHost(false);
+    revealItemInDir.mockReset();
     openUrl.mockReset();
+    invoke.mockReset();
   });
 
-  it('opens the bundled extension folder and Chrome extension manager', async () => {
-    openPath.mockResolvedValue(undefined);
+  it('reveals the bundled extension folder itself and opens Chrome extension manager', async () => {
+    revealItemInDir.mockResolvedValue(undefined);
     openUrl.mockResolvedValue(undefined);
 
     await expect(openBundledChromeExtensionSetup('/resources/browser-extension'))
@@ -23,12 +38,26 @@ describe('openBundledChromeExtensionSetup', () => {
         extensionFolderOpened: true,
         extensionsPageOpened: true,
       });
-    expect(openPath).toHaveBeenCalledWith('/resources/browser-extension');
+    expect(revealItemInDir).toHaveBeenCalledWith('/resources/browser-extension');
     expect(openUrl).toHaveBeenCalledWith('chrome://extensions');
   });
 
+  it('asks the Electron host to launch Chrome for its internal extensions page', async () => {
+    setElectronHost(true);
+    revealItemInDir.mockResolvedValue(undefined);
+    invoke.mockResolvedValue(undefined);
+
+    await expect(openBundledChromeExtensionSetup(String.raw`C:\Program Files\Abu\resources\browser-extension`))
+      .resolves.toEqual({
+        extensionFolderOpened: true,
+        extensionsPageOpened: true,
+      });
+    expect(invoke).toHaveBeenCalledWith('open_chrome_extensions');
+    expect(openUrl).not.toHaveBeenCalled();
+  });
+
   it('reports each failed handoff independently', async () => {
-    openPath.mockRejectedValue(new Error('missing'));
+    revealItemInDir.mockRejectedValue(new Error('missing'));
     openUrl.mockRejectedValue(new Error('unsupported'));
 
     await expect(openBundledChromeExtensionSetup('/missing')).resolves.toEqual({

@@ -1826,6 +1826,10 @@ function launchPackagedApp(found, userDataDir, appDataDir, runtimeTrap, expectMi
     [PACKAGED_E2E_ENV]: '1',
   };
   if (expectMigration) {
+    // The production auto-confirm guard requires the generic CI marker plus
+    // both Abu-specific harness markers. Set all three here so the packaged
+    // migration smoke behaves identically when run locally and on Actions.
+    env.CI = 'true';
     env[E2E_AUTO_CONFIRM_TRANSITION_ENV] = '1';
   }
   return electron.launch({
@@ -2005,6 +2009,44 @@ async function main() {
     checks.userDataIsolated =
       path.resolve(reportedUserData) ===
       path.resolve(appDataDir, 'Abu-e2e-user-data');
+    const windowChrome = await app.evaluate(({ BrowserWindow }) => {
+      const mainWindow = BrowserWindow.getAllWindows()
+        .find((candidate) => candidate.webContents.getURL().includes('/dist-electron-spike/index.html'));
+      if (!mainWindow) return null;
+      return {
+        menuHidden: mainWindow.isMenuBarVisible() === false,
+        menuBarAutoHide: mainWindow.isMenuBarAutoHide(),
+      };
+    });
+    checks.packagedWindowsMenuHidden =
+      process.platform !== 'win32' ||
+      (windowChrome?.menuHidden === true && windowChrome?.menuBarAutoHide === true);
+
+    // Exercise the same BrowserWindow close event produced by the native ×.
+    // A fresh profile defaults to "ask", so the close must reach React and
+    // render an actionable prompt instead of being swallowed by main.
+    await window.getByPlaceholder(CHAT_PLACEHOLDER).waitFor({
+      state: 'visible',
+      timeout: READY_TIMEOUT,
+    });
+    await app.evaluate(({ BrowserWindow }) => {
+      const mainWindow = BrowserWindow.getAllWindows()
+        .find((candidate) => candidate.webContents.getURL().includes('/dist-electron-spike/index.html'));
+      if (!mainWindow) throw new Error('main window missing for native close check');
+      mainWindow.close();
+    });
+    const nativeClosePrompt = window.getByText(
+      /你想要退出应用还是最小化到系统托盘？|Would you like to quit the app or minimize to system tray\?/,
+    );
+    await nativeClosePrompt.waitFor({ state: 'visible', timeout: READY_TIMEOUT });
+    checks.packagedNativeClosePrompt = true;
+    await window.keyboard.press('Escape');
+    await nativeClosePrompt.waitFor({ state: 'hidden', timeout: READY_TIMEOUT });
+    checks.packagedNativeCloseCancelKeepsWindow = await app.evaluate(({ BrowserWindow }) => {
+      const mainWindow = BrowserWindow.getAllWindows()
+        .find((candidate) => candidate.webContents.getURL().includes('/dist-electron-spike/index.html'));
+      return Boolean(mainWindow && !mainWindow.isDestroyed() && mainWindow.isVisible());
+    });
     if (expectMigration) {
       const migratedFile = path.join(electronMigrationFixture, 'messages.jsonl');
       checks.packagedTauriSourceWins =
@@ -2514,12 +2556,34 @@ print(json.dumps({"executable": sys.executable, "files": [str(p) for p in [docx_
         runtimeTrap,
         'packaged-normal-quit',
       );
-      const closeMode = await closePackagedApp(app, appProcess);
+      // Finish through the user-visible native-close → renderer prompt → Quit
+      // route. This catches a regression where Electron prevents the native
+      // close but the renderer never handles it, leaving an unclosable window.
+      await app.evaluate(({ BrowserWindow }) => {
+        const mainWindow = BrowserWindow.getAllWindows()
+          .find((candidate) => candidate.webContents.getURL().includes('/dist-electron-spike/index.html'));
+        if (!mainWindow) throw new Error('main window missing for normal quit check');
+        mainWindow.close();
+      });
+      const quitButton = window.getByRole('button', { name: /^(退出|Quit)$/ });
+      await quitButton.waitFor({ state: 'visible', timeout: READY_TIMEOUT });
+      try {
+        await quitButton.click();
+      } catch (error) {
+        // The successful click tears down Playwright's transport immediately;
+        // only ignore that expected race, never a selector or interaction error.
+        if (!/closed|target|connection/i.test(String(error))) throw error;
+      }
+      const exitedNormally =
+        await waitForChildExit(appProcess, 10_000) &&
+        appProcess.signalCode === null &&
+        appProcess.exitCode === 0;
+      if (!exitedNormally) {
+        await closePackagedApp(app, appProcess);
+        throw new Error('packaged app did not exit through the native close prompt');
+      }
       app = undefined;
       appProcess = undefined;
-      if (closeMode !== 'quit') {
-        throw new Error(`packaged app did not exit normally before restart: ${closeMode}`);
-      }
       await waitForMarkerGone(normalQuitMcp.marker, 'normal packaged app quit');
       checks.packagedNormalQuitKillsMcpTree = true;
 

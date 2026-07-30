@@ -502,7 +502,52 @@ describe('runTauriMigration', () => {
     ).toContain('"id":"late"');
   });
 
-  it('rejects source symlinks without writing a completion marker', () => {
+  it('preserves safe relative npm bin symlinks whose targets stay inside session data', () => {
+    seedTauriDir();
+    const packageBin = path.join(
+      tauriDir,
+      'sessions',
+      'conv1',
+      'outputs',
+      'node_modules',
+      'image-size',
+      'bin',
+    );
+    const binDir = path.join(
+      tauriDir,
+      'sessions',
+      'conv1',
+      'outputs',
+      'node_modules',
+      '.bin',
+    );
+    fs.mkdirSync(packageBin, { recursive: true });
+    fs.mkdirSync(binDir, { recursive: true });
+    fs.writeFileSync(path.join(packageBin, 'image-size.js'), '#!/usr/bin/env node\n');
+    fs.symlinkSync(
+      '../image-size/bin/image-size.js',
+      path.join(binDir, 'image-size'),
+      'file',
+    );
+
+    const summary = runWith(fakeSecretStore());
+    if ('skipped' in summary) throw new Error('unexpected skip');
+    const migratedLink = path.join(
+      electronDir,
+      'sessions',
+      'conv1',
+      'outputs',
+      'node_modules',
+      '.bin',
+      'image-size',
+    );
+    expect(summary.sentinelWritten).toBe(true);
+    expect(fs.lstatSync(migratedLink).isSymbolicLink()).toBe(true);
+    expect(fs.readlinkSync(migratedLink)).toBe('../image-size/bin/image-size.js');
+    expect(fs.readFileSync(migratedLink, 'utf8')).toContain('/usr/bin/env node');
+  });
+
+  it('rejects absolute source symlinks without writing a completion marker', () => {
     seedTauriDir();
     fs.symlinkSync(
       path.join(tauriDir, 'conversations', 'index.json'),
@@ -511,7 +556,34 @@ describe('runTauriMigration', () => {
     const store = fakeSecretStore();
     const summary = runWith(store);
     if ('skipped' in summary) throw new Error('unexpected skip');
-    expect(summary.inventoryError).toMatch(/symbolic links are not allowed/);
+    expect(summary.inventoryError).toMatch(/absolute symbolic links are not allowed/);
+    expect(summary.sentinelWritten).toBe(false);
+  });
+
+  it('rejects relative source symlinks that escape the migrated tree', () => {
+    seedTauriDir();
+    fs.writeFileSync(path.join(root, 'outside.txt'), 'outside');
+    fs.symlinkSync(
+      '../../outside.txt',
+      path.join(tauriDir, 'sessions', 'outside-link'),
+      'file',
+    );
+    const summary = runWith(fakeSecretStore());
+    if ('skipped' in summary) throw new Error('unexpected skip');
+    expect(summary.inventoryError).toMatch(/symbolic link escapes transition data/);
+    expect(summary.sentinelWritten).toBe(false);
+  });
+
+  it('rejects dangling relative source symlinks', () => {
+    seedTauriDir();
+    fs.symlinkSync(
+      './missing.txt',
+      path.join(tauriDir, 'sessions', 'dangling-link'),
+      'file',
+    );
+    const summary = runWith(fakeSecretStore());
+    if ('skipped' in summary) throw new Error('unexpected skip');
+    expect(summary.inventoryError).toMatch(/dangling or looping symbolic links/);
     expect(summary.sentinelWritten).toBe(false);
   });
 });

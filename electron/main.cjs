@@ -24,7 +24,7 @@
  */
 'use strict';
 
-const { app, BrowserWindow, dialog } = require('electron');
+const { app, BrowserWindow, dialog, nativeTheme } = require('electron');
 const path = require('node:path');
 const fs = require('node:fs');
 const {
@@ -44,6 +44,11 @@ const {
 const { initDeepLink, handleSecondInstanceArgv } = require('./deepLinkHost.cjs');
 const { registerPrivilegedWindow } = require('./securityBoundary.cjs');
 const { isTauriTransitionBuild } = require('./releaseMetadata.cjs');
+const {
+  WINDOW_DRAG_REGION_CSS,
+  mainWindowPlatformOptions,
+  removeDefaultApplicationMenu,
+} = require('./windowChrome.cjs');
 const {
   hasValidSentinel,
   estimateMigrationSpace,
@@ -126,19 +131,15 @@ function showTransitionSuccess(appInstance, win) {
 }
 
 function createWindow(transitionWindow = null) {
-  const isMac = process.platform === 'darwin';
   const win = new BrowserWindow({
     show: false,
     width: 1200,
     height: 800,
     minWidth: 900,
-    backgroundColor: '#faf9f5',
-    // Match Tauri (tauri.conf.json: titleBarStyle "Overlay" + trafficLightPosition
-    // {x:20,y:31}): hide the native title bar and overlay the macOS traffic
-    // lights ON the content, so the frontend's own top bar isn't doubled by a
-    // separate native title-bar strip. The frontend already reserves the
-    // top-left space for the traffic lights (it was built for this layout).
-    ...(isMac ? { titleBarStyle: 'hidden', trafficLightPosition: { x: 20, y: 27 } } : {}),
+    // macOS overlays the traffic lights; Windows overlays native window
+    // controls on Abu's own 32px drag region. This avoids a second white title
+    // strip and the default File/Edit/View/Window menu seen in the RC.
+    ...mainWindowPlatformOptions(process.platform, nativeTheme.shouldUseDarkColors),
     webPreferences: {
       preload: path.join(__dirname, 'preload.cjs'),
       contextIsolation: true,
@@ -146,6 +147,7 @@ function createWindow(transitionWindow = null) {
       sandbox: true,
     },
   });
+  removeDefaultApplicationMenu(win, process.platform);
   win.once('ready-to-show', () => {
     if (
       !getMigrationStartupBlock() &&
@@ -171,9 +173,7 @@ function createWindow(transitionWindow = null) {
     // this way (interactive children keep working) — the previous version only
     // excluded button/input/a, so the workspace TABS (plain divs) inherited the
     // drag region and showed the window-move cursor / were hard to click.
-    void win.webContents.insertCSS(
-      '[data-tauri-drag]{-webkit-app-region:drag}[data-tauri-drag] *{-webkit-app-region:no-drag}'
-    );
+    void win.webContents.insertCSS(WINDOW_DRAG_REGION_CSS);
   });
   const hasFrontend = fs.existsSync(FRONTEND_INDEX);
   if (!hasFrontend) {

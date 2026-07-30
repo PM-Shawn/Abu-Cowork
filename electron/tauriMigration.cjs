@@ -6,8 +6,10 @@
  * before any replacement, Electron-only files are retained, and conflicting
  * Electron files are copied to a recovery tree before the Tauri copy wins.
  *
- * The Tauri source is read-only. Symlinks are rejected instead of followed so
- * a profile cannot make the public migration engine copy arbitrary paths.
+ * The Tauri source is read-only. Relative symlinks are preserved only when
+ * their canonical target remains inside the tree being copied. Absolute,
+ * dangling, looping, and escaping links are rejected so a profile cannot make
+ * the public migration engine copy arbitrary paths.
  */
 'use strict';
 
@@ -76,13 +78,44 @@ function removeStagingBestEffort(stagingPath) {
   }
 }
 
-function assertSafeEntry(entryPath, stat) {
+function isPathInside(rootPath, candidatePath) {
+  const relative = path.relative(rootPath, candidatePath);
+  return relative === '' || (!relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative));
+}
+
+function inspectSafeSymlink(entryPath, treeRoot) {
+  if (!treeRoot) {
+    throw new Error(`symbolic link has no trusted transition root: ${entryPath}`);
+  }
+  const linkTarget = fs.readlinkSync(entryPath);
+  if (path.isAbsolute(linkTarget)) {
+    throw new Error(`absolute symbolic links are not allowed in transition data: ${entryPath}`);
+  }
+  let rootRealPath;
+  let targetRealPath;
+  try {
+    rootRealPath = fs.realpathSync(treeRoot);
+    targetRealPath = fs.realpathSync(path.resolve(path.dirname(entryPath), linkTarget));
+  } catch {
+    throw new Error(`dangling or looping symbolic links are not allowed in transition data: ${entryPath}`);
+  }
+  if (!isPathInside(rootRealPath, targetRealPath)) {
+    throw new Error(`symbolic link escapes transition data: ${entryPath}`);
+  }
+  return {
+    linkTarget,
+    targetStat: fs.statSync(entryPath),
+  };
+}
+
+function assertSafeEntry(entryPath, stat, treeRoot) {
   if (stat.isSymbolicLink()) {
-    throw new Error(`symbolic links are not allowed in transition data: ${entryPath}`);
+    return inspectSafeSymlink(entryPath, treeRoot);
   }
   if (!stat.isDirectory() && !stat.isFile()) {
     throw new Error(`unsupported filesystem entry in transition data: ${entryPath}`);
   }
+  return null;
 }
 
 function fileDigest(filePath) {
@@ -101,7 +134,7 @@ function fileDigest(filePath) {
   return hash.digest('hex');
 }
 
-function inventoryTree(root) {
+function inventoryTree(root, treeRoot = root) {
   if (!fs.existsSync(root)) {
     return { exists: false, files: 0, bytes: 0, fingerprint: 'absent' };
   }
@@ -111,7 +144,13 @@ function inventoryTree(root) {
 
   function visit(current, relative) {
     const stat = fs.lstatSync(current);
-    assertSafeEntry(current, stat);
+    const safeSymlink = assertSafeEntry(current, stat, treeRoot);
+    if (safeSymlink) {
+      aggregate.update(`l\0${relative}\0${safeSymlink.linkTarget}\n`);
+      files += 1;
+      bytes += Buffer.byteLength(safeSymlink.linkTarget);
+      return;
+    }
     if (stat.isFile()) {
       const digest = fileDigest(current);
       aggregate.update(`f\0${relative}\0${stat.size}\0${digest}\n`);
@@ -149,9 +188,18 @@ function sourceInventory(tauriDir) {
   };
 }
 
-function copyTreeSafe(source, destination) {
+function copyTreeSafe(source, destination, treeRoot = source) {
   const stat = fs.lstatSync(source);
-  assertSafeEntry(source, stat);
+  const safeSymlink = assertSafeEntry(source, stat, treeRoot);
+  if (safeSymlink) {
+    fs.mkdirSync(path.dirname(destination), { recursive: true });
+    fs.symlinkSync(
+      safeSymlink.linkTarget,
+      destination,
+      safeSymlink.targetStat.isDirectory() ? 'dir' : 'file'
+    );
+    return;
+  }
   if (stat.isFile()) {
     fs.mkdirSync(path.dirname(destination), { recursive: true });
     fs.copyFileSync(source, destination, fs.constants.COPYFILE_EXCL);
@@ -161,7 +209,7 @@ function copyTreeSafe(source, destination) {
   const entries = fs.readdirSync(source, { withFileTypes: true })
     .sort((a, b) => a.name.localeCompare(b.name));
   for (const entry of entries) {
-    copyTreeSafe(path.join(source, entry.name), path.join(destination, entry.name));
+    copyTreeSafe(path.join(source, entry.name), path.join(destination, entry.name), treeRoot);
   }
 }
 
@@ -171,7 +219,7 @@ function copyTreeIfAbsent(source, destination) {
   removeStagingBestEffort(staging);
   try {
     fs.mkdirSync(path.dirname(destination), { recursive: true });
-    copyTreeSafe(source, staging);
+    copyTreeSafe(source, staging, source);
     fs.renameSync(staging, destination);
     return true;
   } finally {
@@ -179,12 +227,12 @@ function copyTreeIfAbsent(source, destination) {
   }
 }
 
-function copyForRecovery(source, destination) {
+function copyForRecovery(source, destination, treeRoot = source) {
   if (fs.existsSync(destination)) return;
   const stat = fs.lstatSync(source);
-  assertSafeEntry(source, stat);
-  if (stat.isDirectory()) {
-    copyTreeSafe(source, destination);
+  const safeSymlink = assertSafeEntry(source, stat, treeRoot);
+  if (safeSymlink || stat.isDirectory()) {
+    copyTreeSafe(source, destination, treeRoot);
   } else {
     fs.mkdirSync(path.dirname(destination), { recursive: true });
     fs.copyFileSync(source, destination, fs.constants.COPYFILE_EXCL);
@@ -213,29 +261,59 @@ function replaceFileAtomic(source, destination) {
   }
 }
 
-function mergeSourceAuthoritative(source, destination, recoveryRoot, relative = '') {
+function mergeSourceAuthoritative(
+  source,
+  destination,
+  recoveryRoot,
+  relative = '',
+  sourceRoot = source,
+  destinationRoot = destination
+) {
   const result = { copied: 0, identical: 0, replaced: 0, targetOnly: 0 };
   const sourceStat = fs.lstatSync(source);
-  assertSafeEntry(source, sourceStat);
+  const sourceSymlink = assertSafeEntry(source, sourceStat, sourceRoot);
 
   if (!fs.existsSync(destination)) {
-    if (sourceStat.isDirectory()) copyTreeSafe(source, destination);
+    if (sourceStat.isDirectory() || sourceSymlink) copyTreeSafe(source, destination, sourceRoot);
     else {
       fs.mkdirSync(path.dirname(destination), { recursive: true });
       fs.copyFileSync(source, destination, fs.constants.COPYFILE_EXCL);
     }
-    result.copied += sourceStat.isFile() ? 1 : inventoryTree(source).files;
+    result.copied +=
+      sourceStat.isFile() || sourceSymlink ? 1 : inventoryTree(source, sourceRoot).files;
     return result;
   }
 
   const destinationStat = fs.lstatSync(destination);
-  assertSafeEntry(destination, destinationStat);
+  const destinationSymlink = assertSafeEntry(destination, destinationStat, destinationRoot);
+  if (sourceSymlink) {
+    if (
+      destinationSymlink &&
+      destinationSymlink.linkTarget === sourceSymlink.linkTarget
+    ) {
+      result.identical += 1;
+      return result;
+    }
+    copyForRecovery(
+      destination,
+      path.join(recoveryRoot, relative || path.basename(destination)),
+      destinationRoot
+    );
+    fs.rmSync(destination, { recursive: true, force: true });
+    copyTreeSafe(source, destination, sourceRoot);
+    result.replaced += 1;
+    return result;
+  }
   if (sourceStat.isFile()) {
     if (destinationStat.isFile() && fileDigest(source) === fileDigest(destination)) {
       result.identical += 1;
       return result;
     }
-    copyForRecovery(destination, path.join(recoveryRoot, relative || path.basename(destination)));
+    copyForRecovery(
+      destination,
+      path.join(recoveryRoot, relative || path.basename(destination)),
+      destinationRoot
+    );
     fs.rmSync(destination, { recursive: true, force: true });
     replaceFileAtomic(source, destination);
     result.replaced += 1;
@@ -243,10 +321,14 @@ function mergeSourceAuthoritative(source, destination, recoveryRoot, relative = 
   }
 
   if (!destinationStat.isDirectory()) {
-    copyForRecovery(destination, path.join(recoveryRoot, relative || path.basename(destination)));
+    copyForRecovery(
+      destination,
+      path.join(recoveryRoot, relative || path.basename(destination)),
+      destinationRoot
+    );
     fs.rmSync(destination, { recursive: true, force: true });
-    copyTreeSafe(source, destination);
-    result.replaced += inventoryTree(source).files;
+    copyTreeSafe(source, destination, sourceRoot);
+    result.replaced += inventoryTree(source, sourceRoot).files;
     return result;
   }
 
@@ -260,14 +342,17 @@ function mergeSourceAuthoritative(source, destination, recoveryRoot, relative = 
       path.join(source, entry.name),
       path.join(destination, entry.name),
       recoveryRoot,
-      childRelative
+      childRelative,
+      sourceRoot,
+      destinationRoot
     );
     for (const key of Object.keys(result)) result[key] += child[key];
   }
   for (const entry of fs.readdirSync(destination, { withFileTypes: true })) {
     if (!sourceNames.has(entry.name)) {
       const targetOnlyPath = path.join(destination, entry.name);
-      result.targetOnly += entry.isFile() ? 1 : inventoryTree(targetOnlyPath).files;
+      result.targetOnly +=
+        entry.isDirectory() ? inventoryTree(targetOnlyPath, destinationRoot).files : 1;
     }
   }
   return result;
@@ -316,7 +401,7 @@ function backupExistingElectronData(electronDir, sourceFingerprint, dryRun) {
   if (dryRun) return { path: backupRoot, items: present };
   fs.mkdirSync(backupRoot, { recursive: true });
   for (const name of present) {
-    copyForRecovery(path.join(electronDir, name), path.join(backupRoot, name));
+    copyForRecovery(path.join(electronDir, name), path.join(backupRoot, name), electronDir);
   }
   return { path: backupRoot, items: present };
 }
@@ -334,7 +419,7 @@ function backupElectronChromiumState(userDataDir, backupRoot) {
       absent.push(name);
       continue;
     }
-    copyForRecovery(source, destination);
+    copyForRecovery(source, destination, userDataDir);
     copied.push(name);
   }
   writeJsonAtomic(path.join(destinationRoot, 'backup-manifest.json'), {
@@ -569,7 +654,14 @@ function runTauriMigration(opts) {
         'conflicts',
         name
       );
-      const merged = mergeSourceAuthoritative(source, destination, recoveryRoot);
+      const merged = mergeSourceAuthoritative(
+        source,
+        destination,
+        recoveryRoot,
+        '',
+        source,
+        destination
+      );
       if (name === 'conversations') {
         mergeConversationIndex(
           path.join(source, 'index.json'),

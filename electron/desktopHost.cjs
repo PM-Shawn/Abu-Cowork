@@ -26,6 +26,7 @@
  *  - `read_clipboard_file_paths`                      — src-tauri/src/clipboard_files.rs
  *  - `plugin:dialog|open`/`save`/`message`
  *  - `plugin:opener|open_path`/`open_url`/`reveal_item_in_dir`
+ *  - `open_chrome_extensions`                        — Chrome internal page
  *  - `plugin:shell|open`                              — @tauri-apps/plugin-shell
  *  - `plugin:notification|is_permission_granted`
  *  - `plugin:process|restart`/`exit`
@@ -55,6 +56,7 @@
 
 const os = require('node:os');
 const { shell, clipboard, dialog, powerSaveBlocker, BrowserWindow } = require('electron');
+const { openChromeExtensionsPage } = require('./chromeExtensionsLauncher.cjs');
 // Top-level is safe: updaterHost's only load-time require is 'electron' (its
 // tauriHost back-reference is lazy inside quitAndInstallIfPending), so there
 // is no cycle through this module.
@@ -535,6 +537,8 @@ function desktopDispatch(app, cmd, payload) {
       return openerOpenUrl(a);
     case 'plugin:opener|reveal_item_in_dir':
       return openerRevealItemInDir(a);
+    case 'open_chrome_extensions':
+      return openChromeExtensionsPage();
 
     case 'plugin:shell|open':
       return shellOpen(a);

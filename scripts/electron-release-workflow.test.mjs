@@ -75,6 +75,11 @@ test('Electron build uses native runners for all three release targets', () => {
     'utf8'
   );
   assert.match(installedSmoke, /ABU_E2E_AUTO_CONFIRM_TRANSITION/);
+  assert.match(
+    installedSmoke,
+    /Tauri updater arguments did not relaunch the installed Electron app/
+  );
+  assert.match(installedSmoke, /updaterRelaunchVerified=\$updaterRelaunchVerified/);
   assert.match(installedSmoke, /Tauri source did not win the migration conflict/);
   assert.match(
     installedSmoke,

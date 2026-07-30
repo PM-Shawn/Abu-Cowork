@@ -28,6 +28,7 @@ $installerProcess = $null
 $installedProcess = $null
 $installedProcesses = @()
 $uninstaller = $null
+$updaterRelaunchVerified = $false
 $upgradeFixtureName = "ci-electron-transition-$PID"
 $tauriFixture = Join-Path $env:APPDATA "com.abu.app\conversations\$upgradeFixtureName"
 $electronFixture = Join-Path $env:APPDATA "com.abu.app.electron\conversations\$upgradeFixtureName"
@@ -99,9 +100,60 @@ try {
     throw "Start menu shortcut does not target the installed Electron app: $shortcutTarget"
   }
 
-  if (-not $expectMigration) {
-    $installedProcess = Start-Process -FilePath $installedPath -PassThru
+  if ($expectMigration) {
+    # The Tauri updater argument family asks NSIS to relaunch the installed
+    # application through the Windows shell. That shell launch intentionally
+    # does not inherit this PowerShell process's CI-only environment variables,
+    # so the real application must stop at its user confirmation dialog. Verify
+    # that updater handoff first, then close it and perform a second explicit
+    # launch that inherits the triple-gated unattended migration controls.
+    $updaterLaunchDeadline = [DateTime]::UtcNow.AddSeconds(45)
+    while ([DateTime]::UtcNow -lt $updaterLaunchDeadline) {
+      Start-Sleep -Milliseconds 500
+      $installedProcesses = @(
+        Get-Process -Name "Abu" -ErrorAction SilentlyContinue |
+          Where-Object {
+            $beforePids -notcontains $_.Id -and
+            $_.Path -and
+            [System.IO.Path]::GetFullPath($_.Path).Equals(
+              $installedPath,
+              [System.StringComparison]::OrdinalIgnoreCase
+            )
+          }
+      )
+      if ($installedProcesses | Where-Object { $_.MainWindowHandle -ne 0 }) {
+        $updaterRelaunchVerified = $true
+        break
+      }
+    }
+    if (-not $updaterRelaunchVerified) {
+      throw "Tauri updater arguments did not relaunch the installed Electron app"
+    }
+    foreach ($process in $installedProcesses) {
+      if (-not $process.HasExited) {
+        Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
+      }
+    }
+    $shutdownDeadline = [DateTime]::UtcNow.AddSeconds(15)
+    do {
+      Start-Sleep -Milliseconds 250
+      $installedProcesses = @(
+        Get-Process -Name "Abu" -ErrorAction SilentlyContinue |
+          Where-Object {
+            $beforePids -notcontains $_.Id -and
+            $_.Path -and
+            [System.IO.Path]::GetFullPath($_.Path).Equals(
+              $installedPath,
+              [System.StringComparison]::OrdinalIgnoreCase
+            )
+          }
+      )
+    } while ($installedProcesses.Count -gt 0 -and [DateTime]::UtcNow -lt $shutdownDeadline)
+    if ($installedProcesses.Count -gt 0) {
+      throw "Updater-relaunched Electron app did not stop before migration smoke"
+    }
   }
+  $installedProcess = Start-Process -FilePath $installedPath -PassThru
   $deadline = [DateTime]::UtcNow.AddSeconds(45)
   $windowReady = $false
   while ([DateTime]::UtcNow -lt $deadline) {
@@ -183,6 +235,7 @@ try {
   Write-Host "signature=unsigned"
   Write-Host "tauriMigration=$expectMigration"
   Write-Host "tauriUpdaterArguments=$expectMigration"
+  Write-Host "updaterRelaunchVerified=$updaterRelaunchVerified"
   Write-Host "tauriRollbackPreserved=$expectMigration"
 }
 finally {

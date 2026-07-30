@@ -860,6 +860,44 @@ function registerTauriHost(app, options = {}) {
   // non-persistent progress window visible during this bounded first boot.
   const migrateEnv = process.env.ABU_MIGRATE_FROM_TAURI;
   const migrationArmed = isTauriTransitionBuild(app);
+  const migrationDiagnosticsPath =
+    process.env.ABU_E2E_MIGRATION_DIAGNOSTICS_PATH;
+  const writeMigrationDiagnostics = (record) => {
+    if (
+      process.env.CI !== 'true' ||
+      process.env.ABU_PACKAGED_E2E !== '1' ||
+      typeof migrationDiagnosticsPath !== 'string' ||
+      !path.isAbsolute(migrationDiagnosticsPath)
+    ) {
+      return;
+    }
+    try {
+      fs.mkdirSync(path.dirname(migrationDiagnosticsPath), { recursive: true });
+      fs.writeFileSync(
+        migrationDiagnosticsPath,
+        JSON.stringify(record, null, 2),
+        'utf8'
+      );
+    } catch (error) {
+      console.warn(
+        `[tauriMigration] could not write CI diagnostics: ${
+          error instanceof Error ? error.message : String(error)
+        }`
+      );
+    }
+  };
+  const migrationPaths = {
+    appData: app.getPath('appData'),
+    tauriDir: resolveTauriAppDataDir(app.getPath('appData'), app.isPackaged),
+    electronDir: abuAppDataDir(app),
+  };
+  writeMigrationDiagnostics({
+    stage: 'metadata',
+    migrationArmed,
+    migrateEnv: migrateEnv || null,
+    isPackaged: app.isPackaged,
+    paths: migrationPaths,
+  });
   let localStorageMigration = null;
   if (migrationArmed || migrateEnv === '1' || migrateEnv === 'dry') {
     const readerName = process.platform === 'win32'
@@ -900,13 +938,30 @@ function registerTauriHost(app, options = {}) {
     }
     try {
       const result = runTauriMigration({
-        tauriDir: resolveTauriAppDataDir(app.getPath('appData'), app.isPackaged),
-        electronDir: abuAppDataDir(app),
+        tauriDir: migrationPaths.tauriDir,
+        electronDir: migrationPaths.electronDir,
         secretSet: (key, value) => secretDispatch('secret_set', { key, value }),
         secretHas: (key) => secretDispatch('secret_has', { key }) === true,
         dryRun: migrateEnv === 'dry',
         sourceWins: migrationArmed || migrateEnv === '1',
         inventory: options.transitionInventory,
+      });
+      writeMigrationDiagnostics({
+        stage: 'file-migration',
+        migrationArmed,
+        migrateEnv: migrateEnv || null,
+        isPackaged: app.isPackaged,
+        paths: migrationPaths,
+        localStorage: localStorageMigration
+          ? {
+              status: localStorageMigration.status,
+              reason: localStorageMigration.reason || null,
+              sourceDatabase: localStorageMigration.sourceDatabase || null,
+              sourceFingerprint:
+                localStorageMigration.sourceFingerprint || null,
+            }
+          : null,
+        result,
       });
       if ('skipped' in result) {
         console.log(`[tauriMigration] skipped: ${result.skipped}`);

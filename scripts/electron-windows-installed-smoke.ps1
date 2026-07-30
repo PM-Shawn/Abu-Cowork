@@ -32,6 +32,8 @@ $upgradeFixtureName = "ci-electron-transition-$PID"
 $tauriFixture = Join-Path $env:APPDATA "com.abu.app\conversations\$upgradeFixtureName"
 $electronFixture = Join-Path $env:APPDATA "com.abu.app.electron\conversations\$upgradeFixtureName"
 $migrationBackupRoot = Join-Path $env:APPDATA "com.abu.app.electron-backups"
+$migrationDiagnostics = Join-Path $env:RUNNER_TEMP `
+  "abu-electron-migration-$upgradeFixtureName.json"
 $expectMigration = $env:ABU_EXPECT_TAURI_MIGRATION -eq "true"
 $tauriInstallRoot = Join-Path $env:LOCALAPPDATA "Abu"
 $tauriRollbackMarker = Join-Path $tauriInstallRoot "$upgradeFixtureName.rollback"
@@ -53,6 +55,7 @@ try {
     # exact code path without weakening normal packaged launches.
     $env:ABU_PACKAGED_E2E = "1"
     $env:ABU_E2E_AUTO_CONFIRM_TRANSITION = "1"
+    $env:ABU_E2E_MIGRATION_DIAGNOSTICS_PATH = $migrationDiagnostics
   }
 
   $installerArguments = if ($expectMigration) {
@@ -141,7 +144,12 @@ try {
       } else {
         "missing"
       }
-      throw "Tauri source did not win the migration conflict; sentinel=$sentinelState"
+      $diagnosticsState = if (Test-Path $migrationDiagnostics) {
+        Get-Content $migrationDiagnostics -Raw
+      } else {
+        "missing"
+      }
+      throw "Tauri source did not win the migration conflict; sentinel=$sentinelState; diagnostics=$diagnosticsState"
     }
     if ((Get-Content (Join-Path $tauriFixture "messages.jsonl") -Raw) -ne '{"role":"user","content":"upgrade-fixture"}') {
       throw "Migration modified the original Tauri conversation"
@@ -207,5 +215,7 @@ finally {
   }
   Remove-Item $tauriRollbackMarker -Force -ErrorAction SilentlyContinue
   Remove-Item Env:ABU_E2E_AUTO_CONFIRM_TRANSITION -ErrorAction SilentlyContinue
+  Remove-Item Env:ABU_E2E_MIGRATION_DIAGNOSTICS_PATH -ErrorAction SilentlyContinue
   Remove-Item Env:ABU_PACKAGED_E2E -ErrorAction SilentlyContinue
+  Remove-Item $migrationDiagnostics -Force -ErrorAction SilentlyContinue
 }

@@ -29,14 +29,16 @@ jobs:
           node scripts/release-preflight.mjs --tag "${{ github.ref_name }}"
           npm run test:electron:release-stage
 
-  # Every supported desktop target moves to Electron in the same version.
-  # The reusable workflow stages artifacts only and cannot mutate OSS.
+  # v0.34.x is the frozen bridge consumed by the hard-coded legacy Tauri
+  # latest.json. Later releases keep dormant direct-install migration support
+  # but do not create or publish a new Tauri transition pointer.
   electron-transition:
     needs: preflight
     uses: ./.github/workflows/electron-build.yml
     with:
       transition_version: ${{ github.ref_name }}
-      transition_release: true
+      transition_release: ${{ startsWith(github.ref_name, 'v0.34.') }}
+      legacy_migration_support: true
     secrets: inherit
 
   publish:
@@ -77,6 +79,7 @@ jobs:
         env:
           VERSION_TAG: ${{ github.ref_name }}
           REPOSITORY: ${{ github.repository }}
+          LEGACY_TRANSITION: ${{ startsWith(github.ref_name, 'v0.34.') }}
         run: |
           node scripts/stage-electron-transition-release.mjs \
             --input release-input \
@@ -85,9 +88,17 @@ jobs:
             --repo "$REPOSITORY" \
             --release-base-url "https://abu-agent.oss-cn-beijing.aliyuncs.com/releases/$VERSION_TAG" \
             --changelog-en CHANGELOG.md \
-            --changelog-zh CHANGELOG.zh-CN.md
+            --changelog-zh CHANGELOG.zh-CN.md \
+            --legacy-transition "$LEGACY_TRANSITION"
           node -e '
             const fs = require("node:fs");
+            const legacy = process.env.LEGACY_TRANSITION === "true";
+            if (!legacy) {
+              if (fs.existsSync("release-stage/latest.json")) {
+                throw new Error("normal Electron release must not stage legacy latest.json");
+              }
+              process.exit(0);
+            }
             const latest = JSON.parse(fs.readFileSync("release-stage/latest.json", "utf8"));
             const expected = ["darwin-aarch64", "darwin-x86_64", "windows-x86_64"];
             if (JSON.stringify(Object.keys(latest.platforms).sort()) !== JSON.stringify(expected)) {
@@ -170,7 +181,8 @@ jobs:
       # This is the only operation that makes existing Tauri installations see
       # the framework transition. It runs after all three new Electron feeds and
       # all transition artifacts are durable and byte-verified.
-      - name: Switch the production Tauri pointer last
+      - name: Switch the frozen production Tauri bridge pointer last
+        if: ${{ startsWith(github.ref_name, 'v0.34.') }}
         env:
           BUCKET: oss://${{ secrets.OSS_BUCKET }}
         run: |
@@ -216,9 +228,9 @@ jobs:
         with:
           name: electron-release-audit-${{ github.ref_name }}
           path: |
-            release-stage/latest.json
             release-stage/release-manifest.json
             release-stage/content-map.tsv
             release-stage/feed-pointer-map.tsv
+            release-stage/latest.json
           if-no-files-found: error
           retention-days: 90

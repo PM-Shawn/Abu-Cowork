@@ -43,8 +43,8 @@ const require = createRequire(import.meta.url);
 const { getCurrentFuseWire, FuseV1Options } = require('@electron/fuses');
 const FUSE_DISABLED = '0'.charCodeAt(0);
 const FUSE_ENABLED = '1'.charCodeAt(0);
-const OUT = 'release-electron';
-const E2E_OUT = 'release-electron-e2e';
+const OUT = process.env.ABU_ELECTRON_SMOKE_OUTPUT || 'release-electron';
+const E2E_OUT = `${OUT}-e2e`;
 const READY_TIMEOUT = 45_000;
 const CHAT_PLACEHOLDER = /想让阿布帮你做点什么？|What can Abu help you with\?/;
 const STOP_BUTTON_SELECTOR = 'button[aria-label="停止"], button[aria-label="Stop"]';
@@ -52,6 +52,8 @@ const TEST_API_KEY = 'abu-packaged-e2e-key-not-a-real-secret';
 const TEST_MODEL_ID = 'abu-packaged-e2e-model';
 const E2E_APP_DATA_ROOT_ENV = 'ABU_E2E_APP_DATA_ROOT';
 const PACKAGED_E2E_ENV = 'ABU_PACKAGED_E2E';
+const EXPECT_TAURI_MIGRATION_ENV = 'ABU_EXPECT_TAURI_MIGRATION';
+const E2E_AUTO_CONFIRM_TRANSITION_ENV = 'ABU_E2E_AUTO_CONFIRM_TRANSITION';
 const CHAT_RUNTIME_PROBE_PREFIX = 'ABU_PACKAGED_RUNTIME_PROBE=';
 const SIGNATURE_VARIANT_RESOURCE_ROOTS = [
   'native-helper',
@@ -105,6 +107,20 @@ function findPackagedApp(outputRoot) {
 
 function hashFile(filePath) {
   return createHash('sha256').update(fs.readFileSync(filePath)).digest('hex');
+}
+
+function listFilesRecursive(root) {
+  const files = [];
+  const pending = [root];
+  while (pending.length > 0) {
+    const current = pending.pop();
+    for (const entry of fs.readdirSync(current, { withFileTypes: true })) {
+      const candidate = path.join(current, entry.name);
+      if (entry.isDirectory()) pending.push(candidate);
+      else if (entry.isFile()) files.push(candidate);
+    }
+  }
+  return files;
 }
 
 function readThinMachOSemantics(raw, label) {
@@ -1801,22 +1817,42 @@ async function waitForPidExit(pid, timeoutMs) {
   );
 }
 
-function launchPackagedApp(found, userDataDir, appDataDir, runtimeTrap) {
+function launchPackagedApp(found, userDataDir, appDataDir, runtimeTrap, expectMigration = false) {
   fs.mkdirSync(userDataDir, { recursive: true });
   fs.mkdirSync(appDataDir, { recursive: true });
+  const env = {
+    ...cleanPackagedEnvironment(runtimeTrap),
+    [E2E_APP_DATA_ROOT_ENV]: appDataDir,
+    [PACKAGED_E2E_ENV]: '1',
+  };
+  if (expectMigration) {
+    env[E2E_AUTO_CONFIRM_TRANSITION_ENV] = '1';
+  }
   return electron.launch({
     executablePath: found.bin,
     args: [`--user-data-dir=${userDataDir}`],
-    env: {
-      ...cleanPackagedEnvironment(runtimeTrap),
-      [E2E_APP_DATA_ROOT_ENV]: appDataDir,
-      [PACKAGED_E2E_ENV]: '1',
-    },
+    env,
     timeout: 60_000,
   });
 }
 
+async function waitForMainWindow(app, firstWindow, expectMigration) {
+  if (!expectMigration) return firstWindow;
+  const deadline = Date.now() + 45_000;
+  while (Date.now() < deadline) {
+    for (const candidate of app.windows()) {
+      const url = candidate.url();
+      if (url.includes('/dist-electron-spike/index.html')) {
+        return candidate;
+      }
+    }
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  throw new Error('transition build did not open the real Abu main window');
+}
+
 async function main() {
+  const expectMigration = process.env[EXPECT_TAURI_MIGRATION_ENV] === 'true';
   const releasePackage = findPackagedApp(OUT);
   if (!releasePackage) {
     console.error(
@@ -1869,6 +1905,35 @@ async function main() {
   const runtimeArtifactsDir = path.join(testRoot, 'runtime artifacts');
   const mcpRuntimePath = path.join(testRoot, 'mcp-runtime.json');
   const normalQuitMcpPath = path.join(testRoot, 'normal-quit-mcp-runtime.json');
+  const migrationFixtureName = `packaged-transition-${randomUUID()}`;
+  const tauriMigrationFixture = path.join(
+    appDataDir,
+    'com.abu.app',
+    'sessions',
+    migrationFixtureName,
+  );
+  const electronMigrationFixture = path.join(
+    appDataDir,
+    'com.abu.app.electron',
+    'sessions',
+    migrationFixtureName,
+  );
+  if (expectMigration) {
+    fs.mkdirSync(tauriMigrationFixture, { recursive: true });
+    fs.writeFileSync(
+      path.join(tauriMigrationFixture, 'messages.jsonl'),
+      '{"role":"user","content":"tauri-packaged-source"}',
+    );
+    fs.mkdirSync(electronMigrationFixture, { recursive: true });
+    fs.writeFileSync(
+      path.join(electronMigrationFixture, 'messages.jsonl'),
+      '{"role":"user","content":"electron-packaged-conflict"}',
+    );
+    fs.writeFileSync(
+      path.join(electronMigrationFixture, 'electron-only.txt'),
+      'electron-only',
+    );
+  }
   fs.mkdirSync(previewFixtureDir, { recursive: true });
   fs.mkdirSync(runtimeArtifactsDir, { recursive: true });
   fs.writeFileSync(
@@ -1914,10 +1979,17 @@ async function main() {
   let app;
   let appProcess;
   try {
-    app = await launchPackagedApp(found, userDataDir, appDataDir, runtimeTrap);
+    app = await launchPackagedApp(
+      found,
+      userDataDir,
+      appDataDir,
+      runtimeTrap,
+      expectMigration,
+    );
     appProcess = app.process();
-    let window = await app.firstWindow({ timeout: 30_000 });
-    checks.windowOpened = !!window;
+    const firstWindow = await app.firstWindow({ timeout: 30_000 });
+    let window = await waitForMainWindow(app, firstWindow, expectMigration);
+    checks.windowOpened = Boolean(window);
     await window.waitForLoadState('domcontentloaded', { timeout: 30_000 });
 
     // ── main-process assertion: we launched the REAL packaged bundle ──
@@ -1929,6 +2001,45 @@ async function main() {
     checks.packagedProductIdentity = packagedAppName === 'Abu';
     const reportedAppData = await app.evaluate(({ app: a }) => a.getPath('appData'));
     checks.appDataIsolated = path.resolve(reportedAppData) === path.resolve(appDataDir);
+    const reportedUserData = await app.evaluate(({ app: a }) => a.getPath('userData'));
+    checks.userDataIsolated =
+      path.resolve(reportedUserData) ===
+      path.resolve(appDataDir, 'Abu-e2e-user-data');
+    if (expectMigration) {
+      const migratedFile = path.join(electronMigrationFixture, 'messages.jsonl');
+      checks.packagedTauriSourceWins =
+        fs.readFileSync(migratedFile, 'utf8') ===
+        '{"role":"user","content":"tauri-packaged-source"}';
+      checks.packagedTauriSourcePreserved =
+        fs.readFileSync(
+          path.join(tauriMigrationFixture, 'messages.jsonl'),
+          'utf8',
+        ) === '{"role":"user","content":"tauri-packaged-source"}';
+      checks.packagedElectronOnlyPreserved =
+        fs.readFileSync(
+          path.join(electronMigrationFixture, 'electron-only.txt'),
+          'utf8',
+        ) === 'electron-only';
+      const backupRoot = path.join(
+        appDataDir,
+        'com.abu.app.electron-backups',
+      );
+      const recoveredConflicts = fs.existsSync(backupRoot)
+        ? listFilesRecursive(backupRoot).filter((file) => (
+            file.endsWith(
+              path.join(
+                'sessions',
+                migrationFixtureName,
+                'messages.jsonl',
+              ),
+            ) &&
+            fs.readFileSync(file, 'utf8') ===
+              '{"role":"user","content":"electron-packaged-conflict"}'
+          ))
+        : [];
+      checks.packagedElectronConflictRecoverable =
+        recoveredConflicts.length >= 1;
+    }
     const packagedPath = await app.evaluate(() => process.env.PATH || process.env.Path || '');
     checks.hostRuntimePathSanitized =
       packagedPath.split(path.delimiter)[0] === runtimeTrap.dir &&
@@ -2412,14 +2523,23 @@ print(json.dumps({"executable": sys.executable, "files": [str(p) for p in [docx_
       await waitForMarkerGone(normalQuitMcp.marker, 'normal packaged app quit');
       checks.packagedNormalQuitKillsMcpTree = true;
 
-      app = await launchPackagedApp(found, userDataDir, appDataDir, runtimeTrap);
+      app = await launchPackagedApp(
+        found,
+        userDataDir,
+        appDataDir,
+        runtimeTrap,
+        expectMigration,
+      );
       appProcess = app.process();
       window = await app.firstWindow({ timeout: READY_TIMEOUT });
       await window.getByPlaceholder(CHAT_PLACEHOLDER).waitFor({
         state: 'visible',
         timeout: READY_TIMEOUT,
       });
-      await window.getByTitle(/显示侧栏|Show sidebar/).click();
+      const showSidebar = window.getByTitle(/显示侧栏|Show sidebar/);
+      if (await showSidebar.count()) {
+        await showSidebar.click();
+      }
       const recentConversation = window.getByRole('button', { name: recentTitle }).first();
       await recentConversation.waitFor({ state: 'visible', timeout: READY_TIMEOUT });
       await recentConversation.click();

@@ -1,6 +1,7 @@
 'use strict';
 
 const fs = require('node:fs');
+const crypto = require('node:crypto');
 const os = require('node:os');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
@@ -8,6 +9,7 @@ const { spawnSync } = require('node:child_process');
 const GET_CHANNEL = 'abu:tauri-local-storage:get';
 const ACK_CHANNEL = 'abu:tauri-local-storage:ack';
 const SENTINEL_FILENAME = 'tauri-local-storage-migration.json';
+const MIGRATION_VERSION = 2;
 const MAX_SCAN_ENTRIES = 20_000;
 const MAX_ITEMS = 128;
 const MAX_ITEM_BYTES = 16 * 1024 * 1024;
@@ -287,21 +289,52 @@ function writeSentinel(electronDir, record) {
   }
 }
 
-function hasValidSentinel(electronDir) {
+function hasValidSentinel(electronDir, sourceFingerprint) {
   try {
     const record = JSON.parse(
       fs.readFileSync(path.join(electronDir, SENTINEL_FILENAME), 'utf8')
     );
     return (
-      record?.version === 1 &&
+      record?.version === MIGRATION_VERSION &&
       record?.status === 'complete' &&
       typeof record?.migratedAt === 'string' &&
       Array.isArray(record?.imported) &&
-      Array.isArray(record?.skippedExisting)
+      Array.isArray(record?.skippedExisting) &&
+      typeof record?.sourceFingerprint === 'string' &&
+      (sourceFingerprint === undefined || record.sourceFingerprint === sourceFingerprint)
     );
   } catch {
     return false;
   }
+}
+
+function storageStateFingerprint(paths, platform = process.platform) {
+  const hash = crypto.createHash('sha256');
+  let visited = 0;
+  function add(candidate, root) {
+    if (!fs.existsSync(candidate) || visited >= MAX_SCAN_ENTRIES) return;
+    const stat = fs.lstatSync(candidate);
+    if (stat.isSymbolicLink()) {
+      throw new Error(`symbolic link in legacy localStorage path: ${candidate}`);
+    }
+    const relative = path.relative(root, candidate) || path.basename(candidate);
+    hash.update(`${relative}\0${stat.size}\0${Math.trunc(stat.mtimeMs)}\n`);
+    visited += 1;
+    if (!stat.isDirectory()) return;
+    for (const entry of fs.readdirSync(candidate).sort()) {
+      add(path.join(candidate, entry), root);
+    }
+  }
+  for (const candidate of [...paths].sort()) {
+    if (platform === 'darwin') {
+      add(candidate, path.dirname(candidate));
+      add(`${candidate}-wal`, path.dirname(candidate));
+      add(`${candidate}-shm`, path.dirname(candidate));
+    } else {
+      add(candidate, candidate);
+    }
+  }
+  return hash.digest('hex');
 }
 
 function prepareTauriLocalStorageMigration(options) {
@@ -311,15 +344,17 @@ function prepareTauriLocalStorageMigration(options) {
     storageRoot = resolveTauriStorageRoot(platform),
     readerPath,
     dryRun = false,
+    conflictPolicy = 'source-wins',
   } = options;
-  if (hasValidSentinel(electronDir)) {
-    return { status: 'skipped', reason: 'already-migrated' };
-  }
   if (platform !== 'darwin' && platform !== 'win32') {
     return { status: 'unsupported', reason: `unsupported-platform:${platform}` };
   }
   const scan = findStorageDatabases(storageRoot, platform);
   if (scan.incomplete) return { status: 'error', reason: 'storage-scan-incomplete' };
+  const sourceFingerprint = storageStateFingerprint(scan.paths, platform);
+  if (hasValidSentinel(electronDir, sourceFingerprint)) {
+    return { status: 'skipped', reason: 'already-migrated', sourceFingerprint };
+  }
 
   let selected = { items: [], rejectedKeys: [], allowedCount: 0 };
   let selectedPath = null;
@@ -356,16 +391,19 @@ function prepareTauriLocalStorageMigration(options) {
     expectedKeys: selected.items.map((item) => item.key),
     rejectedKeys: [...new Set(selected.rejectedKeys)],
     sourceDatabase: selectedPath ? path.relative(storageRoot, selectedPath) : null,
+    sourceFingerprint,
     electronDir,
     platform,
     dryRun,
+    conflictPolicy,
+    backupPath: null,
     secretMigrationFailed: false,
   };
 }
 
 function migrateWindowsSecrets(plan, options) {
   if (!plan || plan.platform !== 'win32' || !['pending', 'dry-run'].includes(plan.status)) {
-    return { migrated: [], skippedExisting: [], missing: [], failed: [] };
+    return { migrated: [], overwritten: [], skippedExisting: [], missing: [], failed: [] };
   }
   const keys = collectKnownSecretKeys(plan.items);
   let response;
@@ -373,10 +411,11 @@ function migrateWindowsSecrets(plan, options) {
     response = runReader(options.readerPath, { operation: 'windowsSecrets', keys });
   } catch {
     plan.secretMigrationFailed = true;
-    return { migrated: [], skippedExisting: [], missing: [], failed: ['reader'] };
+    return { migrated: [], overwritten: [], skippedExisting: [], missing: [], failed: ['reader'] };
   }
   const summary = {
     migrated: [],
+    overwritten: [],
     skippedExisting: [],
     missing: Array.isArray(response?.missing) ? response.missing : [],
     failed: Array.isArray(response?.failed) ? response.failed : [],
@@ -391,17 +430,19 @@ function migrateWindowsSecrets(plan, options) {
       summary.failed.push('invalid-entry');
       continue;
     }
-    if (options.secretHas(entry.key)) {
+    const existed = options.secretHas(entry.key);
+    if (existed && options.sourceWins !== true) {
       summary.skippedExisting.push(entry.key);
-    } else if (plan.dryRun) {
-      summary.migrated.push(entry.key);
     } else {
-      try {
-        options.secretSet(entry.key, entry.value);
-        summary.migrated.push(entry.key);
-      } catch {
-        summary.failed.push(entry.key);
+      if (!plan.dryRun) {
+        try {
+          options.secretSet(entry.key, entry.value);
+        } catch {
+          summary.failed.push(entry.key);
+          continue;
+        }
       }
+      (existed ? summary.overwritten : summary.migrated).push(entry.key);
     }
   }
   plan.secretMigrationFailed = summary.failed.length > 0;
@@ -421,17 +462,18 @@ function finalizeTauriLocalStorageMigration(plan, acknowledgement) {
     return { ok: false, retry: false, reason: 'no-pending-migration' };
   }
   const imported = stringArray(acknowledgement?.imported);
+  const overwritten = stringArray(acknowledgement?.overwritten);
   const skippedExisting = stringArray(acknowledgement?.skippedExisting);
   const failed = stringArray(acknowledgement?.failed);
-  if (!imported || !skippedExisting || !failed) {
+  if (!imported || !overwritten || !skippedExisting || !failed) {
     return { ok: false, retry: true, reason: 'invalid-acknowledgement' };
   }
   const expected = new Set(plan.expectedKeys);
-  const accounted = new Set([...imported, ...skippedExisting, ...failed]);
+  const accounted = new Set([...imported, ...overwritten, ...skippedExisting, ...failed]);
   const invalid =
     accounted.size !== expected.size ||
     [...accounted].some((key) => !expected.has(key)) ||
-    imported.length + skippedExisting.length + failed.length !== accounted.size;
+    imported.length + overwritten.length + skippedExisting.length + failed.length !== accounted.size;
   if (invalid || failed.length > 0 || plan.secretMigrationFailed) {
     return {
       ok: false,
@@ -446,12 +488,48 @@ function finalizeTauriLocalStorageMigration(plan, acknowledgement) {
   if (plan.rejectedKeys.length > 0) {
     return { ok: false, retry: true, reason: 'source-values-rejected' };
   }
+  const previous = Array.isArray(acknowledgement?.previous)
+    ? acknowledgement.previous
+    : [];
+  if (
+    previous.length > MAX_ITEMS ||
+    previous.some(
+      (entry) =>
+        !entry ||
+        typeof entry.key !== 'string' ||
+        typeof entry.value !== 'string' ||
+        !overwritten.includes(entry.key) ||
+        !isAllowedKey(entry.key) ||
+        Buffer.byteLength(entry.value, 'utf8') > MAX_ITEM_BYTES
+    ) ||
+    previous.reduce((total, entry) => total + Buffer.byteLength(entry.value, 'utf8'), 0) >
+      MAX_TOTAL_BYTES
+  ) {
+    return { ok: false, retry: true, reason: 'invalid-local-storage-backup' };
+  }
+  if (previous.length > 0 && typeof plan.backupPath === 'string' && plan.backupPath) {
+    fs.mkdirSync(plan.backupPath, { recursive: true });
+    const backupFile = path.join(plan.backupPath, 'electron-local-storage.json');
+    const staging = `${backupFile}.tmp-${process.pid}`;
+    try {
+      fs.writeFileSync(
+        staging,
+        JSON.stringify({ version: 1, backedUpAt: new Date().toISOString(), items: previous }, null, 2),
+        'utf8'
+      );
+      fs.renameSync(staging, backupFile);
+    } finally {
+      fs.rmSync(staging, { force: true });
+    }
+  }
   writeSentinel(plan.electronDir, {
-    version: 1,
+    version: MIGRATION_VERSION,
     migratedAt: new Date().toISOString(),
     status: 'complete',
     sourceDatabase: plan.sourceDatabase,
+    sourceFingerprint: plan.sourceFingerprint,
     imported,
+    overwritten,
     skippedExisting,
   });
   plan.status = 'complete';
@@ -462,11 +540,13 @@ module.exports = {
   GET_CHANNEL,
   ACK_CHANNEL,
   SENTINEL_FILENAME,
+  MIGRATION_VERSION,
   isAllowedKey,
   isValidValue,
   decodeWebKitValue,
   resolveTauriStorageRoot,
   findStorageDatabases,
+  storageStateFingerprint,
   collectValidatedItems,
   collectKnownSecretKeys,
   hasValidSentinel,

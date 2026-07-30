@@ -88,6 +88,7 @@ function startDiscoveryServer(): Promise<void> {
           service: 'abu-browser-bridge',
           wsPort: activePort,
           pid: process.pid,
+          parentPid: process.ppid,
           extensionConnected: isExtensionConnected(),
           uptime: Math.round((Date.now() - startTime) / 1000),
           version: PKG_VERSION,

@@ -143,9 +143,9 @@ app.whenReady().then(async () => {
     });
     check(
       'dryRun summary reports would-migrate work',
-      drySummary.dryRun === true &&
+        drySummary.dryRun === true &&
         drySummary.secrets.skippedExisting.length === 3 && // already stored by check 1
-        drySummary.dirs.conversations === 'copied',
+        drySummary.dirs.conversations.status === 'would-copy',
       JSON.stringify(drySummary)
     );
     check('dryRun wrote nothing (target dir not even created)', !fs.existsSync(dryTarget));

@@ -32,16 +32,31 @@ const {
   wireWindowEvents,
   getMainWindow,
   getMigrationStartupBlock,
+  getMigrationBackupPath,
   isMigrationStartupPending,
   emitEvent,
 } = require('./tauriHost.cjs');
-const { sidecarBundleExists, sidecarPathFor } = require('./appEnv.cjs');
+const {
+  abuAppDataDir,
+  sidecarBundleExists,
+  sidecarPathFor,
+} = require('./appEnv.cjs');
 const { initDeepLink, handleSecondInstanceArgv } = require('./deepLinkHost.cjs');
 const { registerPrivilegedWindow } = require('./securityBoundary.cjs');
+const { isTauriTransitionBuild } = require('./releaseMetadata.cjs');
+const {
+  hasValidSentinel,
+  estimateMigrationSpace,
+  resolveTauriAppDataDir,
+  SENTINEL_FILENAME,
+  sourceInventory,
+  backupElectronChromiumState,
+} = require('./tauriMigration.cjs');
 
 const REPO_ROOT = path.resolve(__dirname, '..');
 const FRONTEND_INDEX = path.join(REPO_ROOT, 'dist-electron-spike', 'index.html');
 const PLACEHOLDER_INDEX = path.join(__dirname, 'renderer', 'index.html');
+const MIGRATION_INDEX = path.join(__dirname, 'migration-renderer', 'index.html');
 
 // E2E launches can redirect the app-data parent before Electron initializes
 // any path-backed service. Packaged builds require a second explicit flag so a
@@ -49,14 +64,21 @@ const PLACEHOLDER_INDEX = path.join(__dirname, 'renderer', 'index.html');
 // app data. Both controls remain main-process-only.
 const E2E_APP_DATA_ROOT_ENV = 'ABU_E2E_APP_DATA_ROOT';
 const PACKAGED_E2E_ENV = 'ABU_PACKAGED_E2E';
+const E2E_AUTO_CONFIRM_TRANSITION_ENV = 'ABU_E2E_AUTO_CONFIRM_TRANSITION';
 const allowE2EAppDataRedirect =
   !app.isPackaged || process.env[PACKAGED_E2E_ENV] === '1';
+let e2eTauriStorageRoot = null;
 if (allowE2EAppDataRedirect && Object.hasOwn(process.env, E2E_APP_DATA_ROOT_ENV)) {
   const appDataRoot = process.env[E2E_APP_DATA_ROOT_ENV];
   if (typeof appDataRoot !== 'string' || !path.isAbsolute(appDataRoot)) {
     throw new Error(`${E2E_APP_DATA_ROOT_ENV} must be an absolute path when set`);
   }
   app.setPath('appData', appDataRoot);
+  // Electron's Chromium profile is separate from Abu's sidecar app-data tree.
+  // Redirect both so installed/packaged migration tests cannot read or back up
+  // a developer's real Local Storage, cookies, or other persistent state.
+  app.setPath('userData', path.join(appDataRoot, 'Abu-e2e-user-data'));
+  e2eTauriStorageRoot = path.join(appDataRoot, 'tauri-webview-user-data');
 }
 
 // Keep local Electron development isolated while giving packaged builds the
@@ -68,7 +90,42 @@ function log(level, msg, extra) {
   (level === 'error' ? console.error : console.log)(line);
 }
 
-function createWindow() {
+function isAutoConfirmedTransition() {
+  return (
+    process.env.CI === 'true' &&
+    process.env[PACKAGED_E2E_ENV] === '1' &&
+    process.env[E2E_AUTO_CONFIRM_TRANSITION_ENV] === '1'
+  );
+}
+
+function showTransitionSuccess(appInstance, win) {
+  if (isAutoConfirmedTransition()) return;
+  const isZh = appInstance.getLocale().toLowerCase().startsWith('zh');
+  const backupPath = getMigrationBackupPath();
+  void dialog.showMessageBox(win, {
+    type: 'info',
+    title: isZh ? '升级完成' : 'Upgrade complete',
+    message: isZh
+      ? '旧版阿布数据已安全迁移'
+      : 'Your legacy Abu data was migrated safely',
+    detail: isZh
+      ? [
+          '聊天、设置、密钥和扩展配置已完成校验。',
+          '旧版数据仍保留，可继续作为回退副本。',
+          backupPath ? `Electron 迁移备份：${backupPath}` : '',
+        ].filter(Boolean).join('\n')
+      : [
+          'Chats, settings, secrets, and extension configuration were verified.',
+          'Legacy data remains in place as a rollback copy.',
+          backupPath ? `Electron migration backup: ${backupPath}` : '',
+        ].filter(Boolean).join('\n'),
+    buttons: [isZh ? '进入阿布' : 'Continue to Abu'],
+    defaultId: 0,
+    noLink: true,
+  });
+}
+
+function createWindow(transitionWindow = null) {
   const isMac = process.platform === 'darwin';
   const win = new BrowserWindow({
     show: false,
@@ -95,7 +152,13 @@ function createWindow() {
       !isMigrationStartupPending() &&
       !win.isDestroyed()
     ) {
+      if (transitionWindow && !transitionWindow.isDestroyed()) {
+        transitionWindow.destroy();
+      }
       win.show();
+      if (transitionWindow) {
+        showTransitionSuccess(app, win);
+      }
     }
   });
 
@@ -130,6 +193,112 @@ function createWindow() {
   void win.loadFile(trustedPage);
 }
 
+function formatBytes(bytes) {
+  if (!Number.isFinite(bytes) || bytes <= 0) return '0 MB';
+  return `${Math.max(0.1, bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function inspectTransition(appInstance) {
+  if (!isTauriTransitionBuild(appInstance)) return null;
+  const tauriDir = resolveTauriAppDataDir(
+    appInstance.getPath('appData'),
+    appInstance.isPackaged
+  );
+  if (!fs.existsSync(tauriDir)) return null;
+  const inventory = sourceInventory(tauriDir);
+  const sentinelPath = path.join(abuAppDataDir(appInstance), SENTINEL_FILENAME);
+  if (hasValidSentinel(sentinelPath, inventory.fingerprint)) return null;
+  const files = Object.values(inventory.dirs)
+    .reduce((total, item) => total + Number(item.files || 0), 0);
+  const bytes = Object.values(inventory.dirs)
+    .reduce((total, item) => total + Number(item.bytes || 0), 0);
+  const space = estimateMigrationSpace(
+    abuAppDataDir(appInstance),
+    inventory,
+    appInstance.getPath('userData')
+  );
+  return { inventory, files, bytes, space };
+}
+
+async function confirmTransition(appInstance, inspection) {
+  const isZh = appInstance.getLocale().toLowerCase().startsWith('zh');
+  if (!inspection.space.enough) {
+    await dialog.showMessageBox({
+      type: 'warning',
+      title: isZh ? '升级空间不足' : 'Not enough space to upgrade',
+      message: isZh
+        ? '阿布尚未修改任何旧版数据'
+        : 'Abu has not changed any legacy data',
+      detail: isZh
+        ? `安全迁移需要约 ${formatBytes(inspection.space.requiredBytes)}，当前可用约 ${formatBytes(inspection.space.availableBytes)}。请释放空间后重新打开阿布。`
+        : `Safe migration needs about ${formatBytes(inspection.space.requiredBytes)}; about ${formatBytes(inspection.space.availableBytes)} is available. Free some space and reopen Abu.`,
+      buttons: [isZh ? '退出' : 'Quit'],
+      noLink: true,
+    });
+    return false;
+  }
+  // The installed Windows smoke has no interactive desktop driver. Allow it
+  // to exercise the real installer/migration path only when all three explicit
+  // CI harness markers are present. Normal packaged launches always retain the
+  // user confirmation above/below, even if one stray variable is inherited.
+  if (isAutoConfirmedTransition()) {
+    return true;
+  }
+  const result = await dialog.showMessageBox({
+    type: 'info',
+    title: isZh ? '安全升级阿布' : 'Safely upgrade Abu',
+    message: isZh
+      ? '检测到旧版阿布数据，升级前将先备份并校验'
+      : 'Legacy Abu data was found and will be backed up and verified first',
+    detail: isZh
+      ? [
+          `检测到 ${inspection.files} 个数据文件（约 ${formatBytes(inspection.bytes)}）。`,
+          '旧版数据不会被修改或删除；如发现 Electron 测试数据，将先备份再合并。',
+          '升级过程中请保持阿布运行。',
+        ].join('\n')
+      : [
+          `${inspection.files} data files were found (about ${formatBytes(inspection.bytes)}).`,
+          'Legacy data will not be changed or deleted. Existing Electron test data is backed up before merging.',
+          'Keep Abu open while the upgrade completes.',
+        ].join('\n'),
+    buttons: isZh ? ['开始安全升级', '退出'] : ['Start safe upgrade', 'Quit'],
+    defaultId: 0,
+    cancelId: 1,
+    noLink: true,
+  });
+  return result.response === 0;
+}
+
+async function createTransitionWindow(appInstance, inspection) {
+  const isZh = appInstance.getLocale().toLowerCase().startsWith('zh');
+  const win = new BrowserWindow({
+    show: false,
+    width: 560,
+    height: 390,
+    resizable: false,
+    maximizable: false,
+    minimizable: false,
+    backgroundColor: '#faf8f3',
+    title: isZh ? '阿布安全升级' : 'Abu safe upgrade',
+    webPreferences: {
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true,
+      partition: `abu-transition-${process.pid}`,
+    },
+  });
+  registerPrivilegedWindow(win, MIGRATION_INDEX, { label: 'transition' });
+  await win.loadFile(MIGRATION_INDEX, {
+    query: {
+      locale: isZh ? 'zh-CN' : 'en-US',
+      files: String(inspection.files),
+      size: formatBytes(inspection.bytes),
+    },
+  });
+  win.show();
+  return win;
+}
+
 // Single-instance lock (Tauri had tauri_plugin_single_instance; this is its
 // Electron equivalent). Without it, every launch — dock re-click, `open`,
 // deep-link, `npm run electron:dev` — spawns a SEPARATE app + sidecar, and N
@@ -157,53 +326,105 @@ if (!app.requestSingleInstanceLock()) {
     handleSecondInstanceArgv(commandLine);
   });
 
-  app.whenReady().then(() => {
-  registerTauriHost(app);
-  const migrationBlock = getMigrationStartupBlock();
-  if (migrationBlock) {
-    const isZh = app.getLocale().toLowerCase().startsWith('zh');
-    void dialog
-      .showMessageBox({
+  app.whenReady().then(async () => {
+    let transitionInspection = null;
+    let transitionWindow = null;
+    try {
+      transitionInspection = inspectTransition(app);
+    } catch (error) {
+      const isZh = app.getLocale().toLowerCase().startsWith('zh');
+      await dialog.showMessageBox({
         type: 'error',
-        title: isZh ? '升级数据迁移未完成' : 'Update migration incomplete',
+        title: isZh ? '无法检查旧版数据' : 'Could not inspect legacy data',
         message: isZh
-          ? 'Abu 没有写入或删除旧版数据。请重新启动后再试。'
-          : 'Abu did not write to or delete the old app data. Restart the app to retry.',
-        detail: isZh
-          ? `为避免新框架先写入空数据，本次启动已停止。\n错误：${migrationBlock}`
-          : `This launch was stopped before the new framework could write empty state.\nReason: ${migrationBlock}`,
+          ? '为避免数据风险，阿布已停止启动。'
+          : 'Abu stopped before startup to protect your data.',
+        detail: error instanceof Error ? error.message : String(error),
         buttons: [isZh ? '退出' : 'Quit'],
-        defaultId: 0,
         noLink: true,
-      })
-      .finally(() => app.quit());
-    return;
-  }
-  // Preflight: the frontend spawns the sidecar via mcp_spawn, so a missing
-  // bundle would surface only as an opaque child ENOENT — warn clearly here.
-  if (!sidecarBundleExists(app)) {
-    log('warn', 'sidecar bundle missing — the frontend will fail to start it; run `npm run build:sidecar`', {
-      path: sidecarPathFor(app),
-    });
-  }
-  createWindow();
-  app.on('activate', () => {
-    // Dock-icon click / reactivation. Target the tracked MAIN window
-    // specifically — NOT BrowserWindow.getAllWindows()[0], which since the GUI
-    // families landed may be the pet / overlay (small, transparent) window, so
-    // showing that left the main UI hidden. window_hide (closeAction 'minimize')
-    // hides rather than destroys the main window, so it's still there to show.
-    const mainWin = getMainWindow();
-    if (mainWin && !getMigrationStartupBlock() && !isMigrationStartupPending()) {
-      mainWin.show();
-      mainWin.focus();
-    } else if (!mainWin) {
-      createWindow();
+      });
+      app.quit();
+      return;
     }
-    // TODO(slice E): Windows/Linux minimize-to-tray restore needs a tray
-    // (no dock/activate equivalent there) — out of scope for slice D.
+    if (transitionInspection) {
+      if (!(await confirmTransition(app, transitionInspection))) {
+        app.quit();
+        return;
+      }
+      transitionWindow = await createTransitionWindow(app, transitionInspection);
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+    registerTauriHost(app, {
+      transitionInventory: transitionInspection?.inventory,
+      tauriStorageRoot: e2eTauriStorageRoot,
+    });
+    if (transitionInspection) {
+      try {
+        backupElectronChromiumState(app.getPath('userData'), getMigrationBackupPath());
+      } catch (error) {
+        if (transitionWindow && !transitionWindow.isDestroyed()) {
+          transitionWindow.destroy();
+        }
+        const isZh = app.getLocale().toLowerCase().startsWith('zh');
+        await dialog.showMessageBox({
+          type: 'error',
+          title: isZh ? '升级备份未完成' : 'Upgrade backup incomplete',
+          message: isZh
+            ? '阿布没有删除旧版数据，请重新启动后重试。'
+            : 'Abu did not delete legacy data. Restart to retry.',
+          detail: error instanceof Error ? error.message : String(error),
+          buttons: [isZh ? '退出' : 'Quit'],
+          noLink: true,
+        });
+        app.quit();
+        return;
+      }
+    }
+    const migrationBlock = getMigrationStartupBlock();
+    if (migrationBlock) {
+      const isZh = app.getLocale().toLowerCase().startsWith('zh');
+      void dialog
+        .showMessageBox({
+          type: 'error',
+          title: isZh ? '升级数据迁移未完成' : 'Update migration incomplete',
+          message: isZh
+            ? 'Abu 没有写入或删除旧版数据。请重新启动后再试。'
+            : 'Abu did not write to or delete the old app data. Restart the app to retry.',
+          detail: isZh
+            ? `为避免新框架先写入空数据，本次启动已停止。\n错误：${migrationBlock}`
+            : `This launch was stopped before the new framework could write empty state.\nReason: ${migrationBlock}`,
+          buttons: [isZh ? '退出' : 'Quit'],
+          defaultId: 0,
+          noLink: true,
+        })
+        .finally(() => app.quit());
+      return;
+    }
+    // Preflight: the frontend spawns the sidecar via mcp_spawn, so a missing
+    // bundle would surface only as an opaque child ENOENT — warn clearly here.
+    if (!sidecarBundleExists(app)) {
+      log('warn', 'sidecar bundle missing — the frontend will fail to start it; run `npm run build:sidecar`', {
+        path: sidecarPathFor(app),
+      });
+    }
+    createWindow(transitionWindow);
+    app.on('activate', () => {
+      // Dock-icon click / reactivation. Target the tracked MAIN window
+      // specifically — NOT BrowserWindow.getAllWindows()[0], which since the GUI
+      // families landed may be the pet / overlay (small, transparent) window, so
+      // showing that left the main UI hidden. window_hide (closeAction 'minimize')
+      // hides rather than destroys the main window, so it's still there to show.
+      const mainWin = getMainWindow();
+      if (mainWin && !getMigrationStartupBlock() && !isMigrationStartupPending()) {
+        mainWin.show();
+        mainWin.focus();
+      } else if (!mainWin) {
+        createWindow();
+      }
+      // TODO(slice E): Windows/Linux minimize-to-tray restore needs a tray
+      // (no dock/activate equivalent there) — out of scope for slice D.
+    });
   });
-});
 
   app.on('window-all-closed', () => {
     // macOS convention keeps the app alive; here we quit so the frontend-driven

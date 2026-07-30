@@ -70,6 +70,16 @@ test('Electron build uses native runners for all three release targets', () => {
     ).run,
     /for \(\$attempt = 1; \$attempt -le 3; \$attempt\+\+\)/
   );
+  const installedSmoke = fs.readFileSync(
+    path.join(root, 'scripts', 'electron-windows-installed-smoke.ps1'),
+    'utf8'
+  );
+  assert.match(installedSmoke, /ABU_E2E_AUTO_CONFIRM_TRANSITION/);
+  assert.match(installedSmoke, /Tauri source did not win the migration conflict/);
+  assert.match(
+    installedSmoke,
+    /Expected a recovery copy of the preexisting Electron conflict/
+  );
 });
 
 test('release publishes only after all Electron targets and switches root pointer transactionally', () => {
@@ -89,13 +99,19 @@ test('release publishes only after all Electron targets and switches root pointe
     release.jobs['electron-transition'].uses,
     './.github/workflows/electron-build.yml'
   );
-  assert.equal(release.jobs['electron-transition'].with.transition_release, true);
+  assert.match(
+    release.jobs['electron-transition'].with.transition_release,
+    /startsWith\(github\.ref_name, 'v0\.34\.'\)/,
+  );
+  assert.equal(release.jobs['electron-transition'].with.legacy_migration_support, true);
   assert.deepEqual(release.jobs.publish.needs, ['preflight', 'electron-transition']);
 
   const names = release.jobs.publish.steps.map((step) => step.name).filter(Boolean);
   const immutable = names.indexOf('Upload immutable release and updater artifacts');
   const feeds = names.indexOf('Publish and verify the three Electron feed pointers');
-  const rootPointer = names.indexOf('Switch the production Tauri pointer last');
+  const rootPointer = names.indexOf(
+    'Switch the frozen production Tauri bridge pointer last'
+  );
   const draft = names.indexOf('Prepare draft GitHub Release');
   const publishRelease = names.indexOf(
     'Publish GitHub Release after production verification'
@@ -112,6 +128,11 @@ test('release publishes only after all Electron targets and switches root pointe
   );
   assert.match(releaseSource, /gh release create "\$TAG".*--draft/s);
   assert.match(releaseSource, /restore_previous_pointer/);
+  assert.match(
+    releaseSource,
+    /Switch the frozen production Tauri bridge pointer last[\s\S]*startsWith\(github\.ref_name, 'v0\.34\.'\)/,
+  );
+  assert.match(releaseSource, /normal Electron release must not stage legacy latest\.json/);
   assert.match(releaseSource, /--draft=false/);
 });
 

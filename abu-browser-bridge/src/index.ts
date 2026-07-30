@@ -62,8 +62,14 @@ async function main(): Promise<void> {
   console.error('[abu-bridge] MCP server connected via stdio');
   console.error('[abu-bridge] Ready — waiting for Chrome Extension connection...');
 
-  // Graceful shutdown
+  // Graceful shutdown. Old npx-launched bridges only listened for signals;
+  // when the Tauri MCP parent disappeared their stdio closed but the process
+  // stayed alive and kept 9875/9876 forever. Treat both stdio EOF and parent
+  // death as ownership loss so the next Abu version can start cleanly.
+  let shuttingDown = false;
   const cleanup = (): void => {
+    if (shuttingDown) return;
+    shuttingDown = true;
     console.error('[abu-bridge] Shutting down...');
     stopWSServer();
     process.exit(0);
@@ -71,6 +77,26 @@ async function main(): Promise<void> {
 
   process.on('SIGINT', cleanup);
   process.on('SIGTERM', cleanup);
+  process.stdin.on('end', cleanup);
+  process.stdin.on('close', cleanup);
+
+  const ownerPid = process.ppid;
+  const parentMonitor = setInterval(() => {
+    if (ownerPid <= 1 || process.ppid === 1 || process.ppid !== ownerPid) {
+      clearInterval(parentMonitor);
+      cleanup();
+      return;
+    }
+    try {
+      process.kill(ownerPid, 0);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ESRCH') {
+        clearInterval(parentMonitor);
+        cleanup();
+      }
+    }
+  }, 2_000);
+  parentMonitor.unref();
 }
 
 main().catch((err) => {

@@ -125,6 +125,7 @@ export function stageRelease(options) {
     throw new Error(`invalid GitHub repository: ${repo}`);
   }
   const releaseBaseUrl = String(options.releaseBaseUrl || '').replace(/\/+$/, '');
+  const includeLegacyTransition = options.includeLegacyTransition !== false;
   if (!releaseBaseUrl.startsWith('https://')) {
     throw new Error('release base URL must use https');
   }
@@ -163,17 +164,23 @@ export function stageRelease(options) {
 
   const platforms = {};
   for (const config of macConfigs) {
-    const archive = requireUnique(
-      config.source,
-      (name) => config.archivePattern.test(name),
-      `${config.key} transition archive`
-    );
-    const signature = `${archive}.sig`;
-    if (!fs.existsSync(signature) || !fs.readFileSync(signature, 'utf8').trim()) {
-      throw new Error(`${config.key} transition signature is missing`);
+    if (includeLegacyTransition) {
+      const archive = requireUnique(
+        config.source,
+        (name) => config.archivePattern.test(name),
+        `${config.key} transition archive`
+      );
+      const signature = `${archive}.sig`;
+      if (!fs.existsSync(signature) || !fs.readFileSync(signature, 'utf8').trim()) {
+        throw new Error(`${config.key} transition signature is missing`);
+      }
+      copy(archive, path.join(releaseAssets, path.basename(archive)));
+      copy(signature, path.join(releaseAssets, path.basename(signature)));
+      platforms[config.key] = {
+        signature: fs.readFileSync(signature, 'utf8').trim(),
+        url: `${releaseBaseUrl}/${path.basename(archive)}`,
+      };
     }
-    copy(archive, path.join(releaseAssets, path.basename(archive)));
-    copy(signature, path.join(releaseAssets, path.basename(signature)));
     for (const dmg of filesIn(config.source).filter((file) => file.endsWith('.dmg'))) {
       copy(dmg, path.join(releaseAssets, path.basename(dmg)));
     }
@@ -184,10 +191,6 @@ export function stageRelease(options) {
       requiredExtension: '.zip',
       destination: config.feed,
     });
-    platforms[config.key] = {
-      signature: fs.readFileSync(signature, 'utf8').trim(),
-      url: `${releaseBaseUrl}/${path.basename(archive)}`,
-    };
   }
 
   const windowsInstaller = requireUnique(
@@ -196,11 +199,17 @@ export function stageRelease(options) {
     'Windows x64 transition installer'
   );
   const windowsSignature = `${windowsInstaller}.sig`;
-  if (!fs.existsSync(windowsSignature) || !fs.readFileSync(windowsSignature, 'utf8').trim()) {
-    throw new Error('Windows x64 transition signature is missing');
-  }
   copy(windowsInstaller, path.join(releaseAssets, path.basename(windowsInstaller)));
-  copy(windowsSignature, path.join(releaseAssets, path.basename(windowsSignature)));
+  if (includeLegacyTransition) {
+    if (!fs.existsSync(windowsSignature) || !fs.readFileSync(windowsSignature, 'utf8').trim()) {
+      throw new Error('Windows x64 transition signature is missing');
+    }
+    copy(windowsSignature, path.join(releaseAssets, path.basename(windowsSignature)));
+    platforms['windows-x86_64'] = {
+      signature: fs.readFileSync(windowsSignature, 'utf8').trim(),
+      url: `${releaseBaseUrl}/${path.basename(windowsInstaller)}`,
+    };
+  }
   validateUpdaterFeed({
     sourceDir: sources.windowsX64,
     metadataName: 'latest.yml',
@@ -208,23 +217,22 @@ export function stageRelease(options) {
     requiredExtension: '.exe',
     destination: feedRoots.windowsX64,
   });
-  platforms['windows-x86_64'] = {
-    signature: fs.readFileSync(windowsSignature, 'utf8').trim(),
-    url: `${releaseBaseUrl}/${path.basename(windowsInstaller)}`,
-  };
-
   const notesEn =
     extractNotes(path.resolve(options.changelogEn), version) ||
     `See https://github.com/${repo}/releases/tag/${tag}`;
   const notesZh = extractNotes(path.resolve(options.changelogZh), version) || notesEn;
-  const latest = {
-    version: tag,
-    notes: notesEn,
-    notes_i18n: { 'en-US': notesEn, 'zh-CN': notesZh },
-    pub_date: new Date().toISOString().replace(/\.\d{3}Z$/, 'Z'),
-    platforms,
-  };
-  fs.writeFileSync(path.join(output, 'latest.json'), JSON.stringify(latest, null, 2), 'utf8');
+  const latest = includeLegacyTransition
+    ? {
+        version: tag,
+        notes: notesEn,
+        notes_i18n: { 'en-US': notesEn, 'zh-CN': notesZh },
+        pub_date: new Date().toISOString().replace(/\.\d{3}Z$/, 'Z'),
+        platforms,
+      }
+    : null;
+  if (latest) {
+    fs.writeFileSync(path.join(output, 'latest.json'), JSON.stringify(latest, null, 2), 'utf8');
+  }
 
   const contentRows = [];
   for (const file of filesIn(releaseAssets)) {
@@ -265,7 +273,12 @@ export function stageRelease(options) {
   writeMap(path.join(output, 'content-map.tsv'), contentRows);
   writeMap(path.join(output, 'feed-pointer-map.tsv'), pointerRows);
 
-  const checksums = [...contentRows, ...pointerRows, { local: 'latest.json', remote: 'latest.json' }]
+  const checksumRows = [
+    ...contentRows,
+    ...pointerRows,
+    ...(latest ? [{ local: 'latest.json', remote: 'latest.json' }] : []),
+  ];
+  const checksums = checksumRows
     .map((entry) => ({
       ...entry,
       sha256: sha256(path.join(output, entry.local)),
@@ -273,7 +286,7 @@ export function stageRelease(options) {
     }));
   fs.writeFileSync(
     path.join(output, 'release-manifest.json'),
-    JSON.stringify({ version: tag, checksums }, null, 2),
+    JSON.stringify({ version: tag, includeLegacyTransition, checksums }, null, 2),
     'utf8'
   );
   return { version: tag, latest, contentRows, pointerRows, checksums };
@@ -313,6 +326,7 @@ if (import.meta.url === entry) {
       releaseBaseUrl: args['release-base-url'],
       changelogEn: args['changelog-en'],
       changelogZh: args['changelog-zh'],
+      includeLegacyTransition: args['legacy-transition'] !== 'false',
     });
     console.log(
       `[electron-release-stage] ${result.version}: ${result.checksums.length} verified file(s)`

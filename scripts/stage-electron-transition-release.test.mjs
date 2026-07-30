@@ -116,3 +116,63 @@ test('rejects a feed whose hash does not match the staged artifact', () => {
     fs.rmSync(fx.root, { recursive: true, force: true });
   }
 });
+
+test('normal Electron releases advance only Electron feeds and omit the frozen legacy pointer', () => {
+  const fx = fixture();
+  const output = path.join(fx.root, 'output');
+  try {
+    for (const relative of [
+      'mac-arm64/Abu-0.34.0-arm64.zip',
+      'mac-arm64/Abu-0.34.0-arm64.zip.blockmap',
+      'mac-x64/Abu-0.34.0-x64.zip',
+      'mac-x64/Abu-0.34.0-x64.zip.blockmap',
+      'windows-x64/Abu-0.34.0-windows-x64-setup.exe',
+      'windows-x64/Abu-0.34.0-windows-x64-setup.exe.blockmap',
+      'windows-x64/Abu-0.34.0-windows-x64-setup.exe.sig',
+    ]) {
+      fs.rmSync(path.join(fx.input, relative), { force: true });
+    }
+    writeFeed(
+      path.join(fx.input, 'mac-arm64'),
+      'latest-mac.yml',
+      '0.35.0',
+      'Abu-0.35.0-arm64.zip',
+    );
+    writeFeed(
+      path.join(fx.input, 'mac-x64'),
+      'latest-mac.yml',
+      '0.35.0',
+      'Abu-0.35.0-x64.zip',
+    );
+    writeFeed(
+      path.join(fx.input, 'windows-x64'),
+      'latest.yml',
+      '0.35.0',
+      'Abu-0.35.0-windows-x64-setup.exe',
+    );
+    const result = stageRelease({
+      input: fx.input,
+      output,
+      version: 'v0.35.0',
+      repo: 'PM-Shawn/Abu-Cowork',
+      releaseBaseUrl: 'https://example.invalid/releases/v0.35.0',
+      changelogEn: fx.changelogEn,
+      changelogZh: fx.changelogZh,
+      includeLegacyTransition: false,
+    });
+    assert.equal(result.latest, null);
+    assert.equal(fs.existsSync(path.join(output, 'latest.json')), false);
+    assert.equal(
+      result.checksums.some((entry) => entry.remote === 'latest.json'),
+      false,
+    );
+    assert.ok(fs.existsSync(path.join(output, 'feeds', 'mac-arm64', 'latest-mac.yml')));
+    assert.ok(fs.existsSync(path.join(output, 'feeds', 'win-x64', 'latest.yml')));
+    assert.match(
+      fs.readFileSync(path.join(output, 'release-manifest.json'), 'utf8'),
+      /"includeLegacyTransition": false/,
+    );
+  } finally {
+    fs.rmSync(fx.root, { recursive: true, force: true });
+  }
+});

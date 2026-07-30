@@ -13,8 +13,11 @@ import { writeTauriSecretsFile, encryptTauriEntries } from './tauriSecretsReader
 import {
   resolveTauriAppDataDir,
   runTauriMigration,
+  estimateMigrationSpace,
+  backupElectronChromiumState,
   SENTINEL_FILENAME,
   hasValidSentinel,
+  sourceInventory,
 } from './tauriMigration.cjs';
 import { listFiles } from './spike/listFilesRecursive.cjs';
 
@@ -93,6 +96,69 @@ describe('resolveTauriAppDataDir', () => {
 });
 
 describe('runTauriMigration', () => {
+  it('accounts for source copy, Electron backup, and safety headroom before migration', () => {
+    seedTauriDir();
+    fs.mkdirSync(path.join(electronDir, 'conversations'), { recursive: true });
+    fs.writeFileSync(
+      path.join(electronDir, 'conversations', 'electron-only.jsonl'),
+      'electron-only',
+    );
+    const chromiumDir = path.join(root, 'Abu');
+    fs.mkdirSync(path.join(chromiumDir, 'Local Storage', 'leveldb'), { recursive: true });
+    fs.writeFileSync(
+      path.join(chromiumDir, 'Local Storage', 'leveldb', '000003.log'),
+      'legacy-local-storage',
+    );
+    const estimate = estimateMigrationSpace(
+      electronDir,
+      sourceInventory(tauriDir),
+      chromiumDir,
+    );
+    expect(estimate.sourceBytes).toBeGreaterThan(0);
+    expect(estimate.existingBytes).toBeGreaterThan(0);
+    expect(estimate.requiredBytes).toBeGreaterThan(
+      estimate.sourceBytes + estimate.existingBytes,
+    );
+    expect(typeof estimate.enough).toBe('boolean');
+  });
+
+  it('backs up persistent Electron browser state but excludes disposable caches', () => {
+    const chromiumDir = path.join(root, 'Abu');
+    fs.mkdirSync(path.join(chromiumDir, 'Local Storage', 'leveldb'), { recursive: true });
+    fs.writeFileSync(
+      path.join(chromiumDir, 'Local Storage', 'leveldb', '000003.log'),
+      'electron-local-storage',
+    );
+    fs.mkdirSync(path.join(chromiumDir, 'Cache'), { recursive: true });
+    fs.writeFileSync(path.join(chromiumDir, 'Cache', 'cache.bin'), 'disposable');
+    const backupRoot = path.join(root, 'migration-backup');
+
+    const result = backupElectronChromiumState(chromiumDir, backupRoot);
+
+    expect(result.copied).toContain('Local Storage');
+    expect(
+      fs.readFileSync(
+        path.join(
+          backupRoot,
+          'chromium-user-data',
+          'Local Storage',
+          'leveldb',
+          '000003.log',
+        ),
+        'utf8',
+      ),
+    ).toBe('electron-local-storage');
+    expect(fs.existsSync(path.join(backupRoot, 'chromium-user-data', 'Cache'))).toBe(false);
+    expect(
+      JSON.parse(
+        fs.readFileSync(
+          path.join(backupRoot, 'chromium-user-data', 'backup-manifest.json'),
+          'utf8',
+        ),
+      ).copied,
+    ).toContain('Local Storage');
+  });
+
   it('migrates secrets and copies the data dirs on a fresh run', () => {
     seedTauriDir();
     const store = fakeSecretStore();
@@ -103,7 +169,9 @@ describe('runTauriMigration', () => {
     expect(summary.secrets.migrated.sort()).toEqual(['aux:webSearch', 'provider:claude']);
     expect(store.stored.get('provider:claude')).toBe('sk-ant-123');
     expect(store.stored.get('aux:webSearch')).toBe('tvly-456');
-    expect(summary.dirs).toEqual({ conversations: 'copied', sessions: 'copied', backups: 'copied' });
+    expect(summary.dirs.conversations).toMatchObject({ status: 'copied', copied: 2 });
+    expect(summary.dirs.sessions).toMatchObject({ status: 'copied', copied: 1 });
+    expect(summary.dirs.backups).toMatchObject({ status: 'copied', copied: 1 });
 
     // Copied file-by-file, and only the whitelisted dirs.
     expect(listFiles(path.join(electronDir, 'conversations'))).toEqual([
@@ -130,7 +198,7 @@ describe('runTauriMigration', () => {
     const callsAfterFirst = store.secretSet.mock.calls.length;
 
     const second = runWith(store);
-    expect(second).toEqual({ skipped: 'already-migrated' });
+    expect(second).toMatchObject({ skipped: 'already-migrated' });
     expect(store.secretSet.mock.calls.length).toBe(callsAfterFirst);
   });
 
@@ -149,23 +217,54 @@ describe('runTauriMigration', () => {
     expect(fs.existsSync(`${sentinel}.tmp-${process.pid}`)).toBe(false);
   });
 
-  it('never clobbers existing Electron data (dirs or secret keys)', () => {
+  it('backs up existing Electron data, preserves target-only files, and keeps source authoritative', () => {
     seedTauriDir();
-    // Electron side already has its own conversations + one of the two keys.
+    // Electron side already has its own conversation and one conflicting
+    // index. The source index must win for shared ids while target-only files
+    // remain available and the original Electron tree is recoverable.
     fs.mkdirSync(path.join(electronDir, 'conversations'), { recursive: true });
     fs.writeFileSync(path.join(electronDir, 'conversations', 'own.json'), 'electron-data');
+    fs.writeFileSync(
+      path.join(electronDir, 'conversations', 'index.json'),
+      JSON.stringify({ version: 1, entries: { electronOnly: { id: 'electronOnly' } } }),
+    );
     const store = fakeSecretStore({ 'provider:claude': 'already-set' });
 
     const summary = runWith(store);
     if ('skipped' in summary) throw new Error('unexpected skip');
-    expect(summary.dirs.conversations).toBe('skipped-existing');
-    expect(summary.dirs.sessions).toBe('copied');
+    expect(summary.dirs.conversations).toMatchObject({
+      status: 'merged-source-authoritative',
+      targetOnly: 1,
+    });
+    expect(summary.dirs.sessions).toMatchObject({ status: 'copied' });
     expect(fs.readFileSync(path.join(electronDir, 'conversations', 'own.json'), 'utf8')).toBe('electron-data');
-    expect(fs.existsSync(path.join(electronDir, 'conversations', 'index.json'))).toBe(false);
+    expect(
+      JSON.parse(fs.readFileSync(path.join(electronDir, 'conversations', 'index.json'), 'utf8')).entries
+        .electronOnly.id,
+    ).toBe('electronOnly');
+    expect(summary.backup.path).toBeTruthy();
+    expect(
+      fs.readFileSync(path.join(summary.backup.path!, 'conversations', 'own.json'), 'utf8'),
+    ).toBe('electron-data');
 
     expect(summary.secrets.skippedExisting).toEqual(['provider:claude']);
     expect(store.stored.get('provider:claude')).toBe('already-set');
     expect(summary.secrets.migrated).toEqual(['aux:webSearch']);
+  });
+
+  it('source-wins mode replaces an existing Electron secret after encrypted backup', () => {
+    seedTauriDir();
+    fs.mkdirSync(electronDir, { recursive: true });
+    fs.writeFileSync(path.join(electronDir, 'secrets.enc.json'), '{"provider:claude":"ciphertext"}');
+    const store = fakeSecretStore({ 'provider:claude': 'electron-test-value' });
+
+    const summary = runWith(store, { sourceWins: true });
+    if ('skipped' in summary) throw new Error('unexpected skip');
+    expect(summary.secrets.overwritten).toEqual(['provider:claude']);
+    expect(store.stored.get('provider:claude')).toBe('sk-ant-123');
+    expect(
+      fs.readFileSync(path.join(summary.backup.path!, 'secrets.enc.json'), 'utf8'),
+    ).toContain('ciphertext');
   });
 
   it('dryRun computes the full summary with zero writes', () => {
@@ -176,7 +275,9 @@ describe('runTauriMigration', () => {
 
     expect(summary.dryRun).toBe(true);
     expect(summary.secrets.migrated.sort()).toEqual(['aux:webSearch', 'provider:claude']);
-    expect(summary.dirs).toEqual({ conversations: 'copied', sessions: 'copied', backups: 'copied' });
+    expect(summary.dirs.conversations).toMatchObject({ status: 'would-copy', copied: 2 });
+    expect(summary.dirs.sessions).toMatchObject({ status: 'would-copy', copied: 1 });
+    expect(summary.dirs.backups).toMatchObject({ status: 'would-copy', copied: 1 });
     expect(summary.sentinelWritten).toBe(false);
 
     expect(store.secretSet).not.toHaveBeenCalled();
@@ -222,7 +323,10 @@ describe('runTauriMigration', () => {
     if ('skipped' in retry) throw new Error('retry unexpectedly skipped');
     expect(retry.secrets.migrated).toEqual(['provider:claude']);
     expect(retry.secrets.skippedExisting).toEqual(['aux:webSearch']);
-    expect(retry.dirs.conversations).toBe('skipped-existing');
+    expect(retry.dirs.conversations).toMatchObject({
+      status: 'merged-source-authoritative',
+      identical: 2,
+    });
     expect(retry.sentinelWritten).toBe(true);
   });
 
@@ -251,7 +355,7 @@ describe('runTauriMigration', () => {
     if ('skipped' in summary) throw new Error('unexpected skip');
     expect(summary.secrets.readError).toMatch(/unsupported.*version 99/);
     expect(summary.secrets.migrated).toEqual([]);
-    expect(summary.dirs.conversations).toBe('copied');
+    expect(summary.dirs.conversations).toMatchObject({ status: 'copied' });
     expect(summary.sentinelWritten).toBe(false);
     expect(fs.existsSync(path.join(electronDir, SENTINEL_FILENAME))).toBe(false);
   });
@@ -265,7 +369,7 @@ describe('runTauriMigration', () => {
 
     const summary = runWith(store);
     if ('skipped' in summary) throw new Error('unexpected skip');
-    expect(String(summary.dirs.conversations)).toMatch(/^error:/);
+    expect(summary.dirs.conversations.status).toBe('error');
     expect(summary.sentinelWritten).toBe(false);
 
     // Secrets still migrated (independent families) — retry skips them.
@@ -273,7 +377,7 @@ describe('runTauriMigration', () => {
     fs.rmSync(electronDir); // unblock the target
     const retry = runWith(store);
     if ('skipped' in retry) throw new Error('retry unexpectedly skipped');
-    expect(retry.dirs.conversations).toBe('copied');
+    expect(retry.dirs.conversations).toMatchObject({ status: 'copied' });
     expect(retry.secrets.skippedExisting.length).toBe(2);
     expect(retry.sentinelWritten).toBe(true);
   });
@@ -288,7 +392,7 @@ describe('runTauriMigration', () => {
     const store = fakeSecretStore();
     const summary = runWith(store);
     if ('skipped' in summary) throw new Error('unexpected skip');
-    expect(summary.dirs.conversations).toBe('copied');
+    expect(summary.dirs.conversations).toMatchObject({ status: 'copied' });
     expect(fs.existsSync(staging)).toBe(false);
     // The completed copy is the real source tree, not the stale partial one.
     expect(listFiles(path.join(electronDir, 'conversations'))).toEqual([
@@ -309,7 +413,7 @@ describe('runTauriMigration', () => {
       if ('skipped' in summary) throw new Error('unexpected skip');
       expect(summary.secrets.skippedReason).toMatch(/keyring/);
       expect(store.secretSet).not.toHaveBeenCalled();
-      expect(summary.dirs.conversations).toBe('copied');
+      expect(summary.dirs.conversations).toMatchObject({ status: 'copied' });
     } finally {
       Object.defineProperty(process, 'platform', orig);
     }
@@ -322,6 +426,44 @@ describe('runTauriMigration', () => {
     const summary = runWith(store);
     if ('skipped' in summary) throw new Error('unexpected skip');
     expect(summary.secrets.skippedReason).toMatch(/no secrets\.bin/);
-    expect(summary.dirs.conversations).toBe('copied');
+    expect(summary.dirs.conversations).toMatchObject({ status: 'copied' });
+  });
+
+  it('re-runs when the legacy source changes after a completed migration', () => {
+    seedTauriDir();
+    const store = fakeSecretStore();
+    const first = runWith(store);
+    if ('skipped' in first) throw new Error('unexpected skip');
+
+    fs.appendFileSync(
+      path.join(tauriDir, 'conversations', 'conv1', 'messages.jsonl'),
+      '{"id":"late","role":"assistant"}\n',
+    );
+    const second = runWith(store);
+    if ('skipped' in second) throw new Error('changed source must be rechecked');
+    expect(second.sourceFingerprint).not.toBe(first.sourceFingerprint);
+    expect(second.dirs.conversations).toMatchObject({
+      status: 'merged-source-authoritative',
+      replaced: 1,
+    });
+    expect(
+      fs.readFileSync(
+        path.join(electronDir, 'conversations', 'conv1', 'messages.jsonl'),
+        'utf8',
+      ),
+    ).toContain('"id":"late"');
+  });
+
+  it('rejects source symlinks without writing a completion marker', () => {
+    seedTauriDir();
+    fs.symlinkSync(
+      path.join(tauriDir, 'conversations', 'index.json'),
+      path.join(tauriDir, 'conversations', 'linked-index.json'),
+    );
+    const store = fakeSecretStore();
+    const summary = runWith(store);
+    if ('skipped' in summary) throw new Error('unexpected skip');
+    expect(summary.inventoryError).toMatch(/symbolic links are not allowed/);
+    expect(summary.sentinelWritten).toBe(false);
   });
 });

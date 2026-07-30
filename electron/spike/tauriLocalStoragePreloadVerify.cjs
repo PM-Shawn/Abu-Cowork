@@ -22,7 +22,8 @@ fs.writeFileSync(
 
 ipcMain.on('abu:tauri-local-storage:get', (event) => {
   event.returnValue = {
-    version: 1,
+    version: 2,
+    conflictPolicy: 'source-wins',
     items: [{ key: 'abu-settings', value: migratedValue }],
   };
 });
@@ -59,8 +60,10 @@ app.whenReady().then(async () => {
     assert.equal(valueAtFirstPageScript, migratedValue);
     assert.deepEqual(acknowledgement, {
       imported: ['abu-settings'],
+      overwritten: [],
       skippedExisting: [],
       failed: [],
+      previous: [],
     });
     process.stdout.write('Electron preload migration verified before page scripts.\n');
     app.exit(0);

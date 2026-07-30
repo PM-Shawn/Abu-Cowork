@@ -92,14 +92,17 @@ test('sentinel is atomic, retryable, and never written on partial migration', ()
     rejectedKeys: [],
     electronDir: root,
     sourceDatabase: 'Local Storage/leveldb',
+    sourceFingerprint: 'fixture-fingerprint',
     secretMigrationFailed: false,
   });
   try {
     let plan = makePlan();
     const partial = finalizeTauriLocalStorageMigration(plan, {
       imported: ['abu-settings'],
+      overwritten: [],
       skippedExisting: [],
       failed: ['abu_device_id'],
+      previous: [],
     });
     assert.equal(partial.retry, true);
     assert.equal(fs.existsSync(path.join(root, SENTINEL_FILENAME)), false);
@@ -108,8 +111,10 @@ test('sentinel is atomic, retryable, and never written on partial migration', ()
     plan.secretMigrationFailed = true;
     const secretFailure = finalizeTauriLocalStorageMigration(plan, {
       imported: ['abu-settings', 'abu_device_id'],
+      overwritten: [],
       skippedExisting: [],
       failed: [],
+      previous: [],
     });
     assert.equal(secretFailure.reason, 'secret-migration-failed');
     assert.equal(fs.existsSync(path.join(root, SENTINEL_FILENAME)), false);
@@ -117,8 +122,10 @@ test('sentinel is atomic, retryable, and never written on partial migration', ()
     plan = makePlan();
     const complete = finalizeTauriLocalStorageMigration(plan, {
       imported: ['abu-settings'],
+      overwritten: [],
       skippedExisting: ['abu_device_id'],
       failed: [],
+      previous: [],
     });
     assert.deepEqual(complete, { ok: true, retry: false });
     assert.equal(fs.existsSync(path.join(root, SENTINEL_FILENAME)), true);
@@ -137,6 +144,44 @@ test('a corrupt localStorage sentinel never suppresses a retry', () => {
   try {
     fs.writeFileSync(path.join(root, SENTINEL_FILENAME), '{"version":1');
     assert.equal(hasValidSentinel(root), false);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('source-wins acknowledgement backs up replaced Electron localStorage', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'abu-transition-localstorage-backup-'));
+  const electronDir = path.join(root, 'electron');
+  const backupPath = path.join(root, 'backup');
+  const plan = {
+    status: 'pending',
+    expectedKeys: ['abu-settings', 'abu-mcp-store'],
+    rejectedKeys: [],
+    electronDir,
+    sourceDatabase: 'LocalStorage/localstorage.sqlite3',
+    sourceFingerprint: 'backup-fixture-fingerprint',
+    secretMigrationFailed: false,
+    backupPath,
+  };
+  try {
+    const result = finalizeTauriLocalStorageMigration(plan, {
+      imported: ['abu-mcp-store'],
+      overwritten: ['abu-settings'],
+      skippedExisting: [],
+      failed: [],
+      previous: [
+        {
+          key: 'abu-settings',
+          value: JSON.stringify({ state: { source: 'electron-test' }, version: 42 }),
+        },
+      ],
+    });
+    assert.deepEqual(result, { ok: true, retry: false });
+    const backup = JSON.parse(
+      fs.readFileSync(path.join(backupPath, 'electron-local-storage.json'), 'utf8')
+    );
+    assert.equal(backup.items[0].key, 'abu-settings');
+    assert.match(backup.items[0].value, /electron-test/);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }

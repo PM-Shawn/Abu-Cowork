@@ -40,6 +40,7 @@ const { runTauriMigration, resolveTauriAppDataDir } = require('./tauriMigration.
 const {
   GET_CHANNEL: TAURI_LOCAL_STORAGE_GET,
   ACK_CHANNEL: TAURI_LOCAL_STORAGE_ACK,
+  MIGRATION_VERSION: TAURI_LOCAL_STORAGE_MIGRATION_VERSION,
   prepareTauriLocalStorageMigration,
   migrateWindowsSecrets,
   finalizeTauriLocalStorageMigration,
@@ -113,6 +114,7 @@ let quitting = false;
 let computerUseGate = null;
 let migrationStartupBlock = null;
 let migrationStartupPending = false;
+let migrationBackupPath = null;
 
 function setMigrationStartupBlock(reason) {
   migrationStartupBlock = String(reason || 'migration-incomplete');
@@ -724,9 +726,10 @@ function dispatch(app, cmd, args) {
 }
 
 /** @param {import('electron').App} app */
-function registerTauriHost(app) {
+function registerTauriHost(app, options = {}) {
   migrationStartupBlock = null;
   migrationStartupPending = false;
+  migrationBackupPath = null;
   // safeStorage is only reliably usable once the app is ready — registerTauriHost
   // itself is only ever called from the app.whenReady() path, so this is safe here.
   initSecretStore(app);
@@ -846,17 +849,15 @@ function registerTauriHost(app) {
   //
   // LocalStorage is prepared first because Windows Credential Manager keys
   // include custom provider/backend ids stored in abu-settings. The reader
-  // opens only a temporary copy of WebView2 LevelDB. Existing Electron data
-  // wins, source data is never modified, and any failure leaves the sentinel
-  // absent for a retry.
+  // opens only a temporary copy of WebView2 LevelDB. During the framework
+  // transition the installed Tauri source wins shared keys; prior Electron
+  // values are backed up, the source is never modified, and any failure leaves
+  // the sentinel absent for a retry.
   // Runs AFTER initSecretStore (it stores decrypted keys through the secret
   // commands) and never throws — a migration failure must not block boot.
-  // KNOWN TRADEOFF: runs synchronously before the window exists, so a huge
-  // Tauri history makes the first boot slow. Deliberate: data must be in
-  // place before the frontend reads/writes conversation dirs (an async copy
-  // races the frontend creating those dirs, which would burn the never-
-  // clobber guard). A progress UI for first-boot migration is a future,
-  // user-facing slice.
+  // The file copy is synchronous before the main window exists so the frontend
+  // cannot race it by creating empty state. main.cjs keeps a sandboxed,
+  // non-persistent progress window visible during this bounded first boot.
   const migrateEnv = process.env.ABU_MIGRATE_FROM_TAURI;
   const migrationArmed = isTauriTransitionBuild(app);
   let localStorageMigration = null;
@@ -868,24 +869,10 @@ function registerTauriHost(app) {
     try {
       localStorageMigration = prepareTauriLocalStorageMigration({
         electronDir: abuAppDataDir(app),
+        storageRoot: options.tauriStorageRoot || undefined,
         readerPath,
         dryRun: migrateEnv === 'dry',
       });
-      if (process.platform === 'win32') {
-        const secrets = migrateWindowsSecrets(localStorageMigration, {
-          readerPath,
-          secretSet: (key, value) => secretDispatch('secret_set', { key, value }),
-          secretHas: (key) => secretDispatch('secret_has', { key }) === true,
-        });
-        console.log(
-          `[tauriLocalStorageMigration] Windows secrets: ${secrets.migrated.length} migrated, ` +
-            `${secrets.skippedExisting.length} existing, ${secrets.missing.length} absent, ` +
-            `${secrets.failed.length} failed`
-        );
-        if (migrationArmed && localStorageMigration.secretMigrationFailed) {
-          setMigrationStartupBlock('windows-secret-migration-failed');
-        }
-      }
       const itemCount = Array.isArray(localStorageMigration.items)
         ? localStorageMigration.items.length
         : 0;
@@ -918,6 +905,8 @@ function registerTauriHost(app) {
         secretSet: (key, value) => secretDispatch('secret_set', { key, value }),
         secretHas: (key) => secretDispatch('secret_has', { key }) === true,
         dryRun: migrateEnv === 'dry',
+        sourceWins: migrationArmed || migrateEnv === '1',
+        inventory: options.transitionInventory,
       });
       if ('skipped' in result) {
         console.log(`[tauriMigration] skipped: ${result.skipped}`);
@@ -927,6 +916,12 @@ function registerTauriHost(app) {
         result.sentinelWritten !== true
       ) {
         setMigrationStartupBlock('file-or-secret-migration-incomplete');
+      }
+      if (typeof result.backup?.path === 'string') {
+        migrationBackupPath = result.backup.path;
+      }
+      if (localStorageMigration && migrationBackupPath) {
+        localStorageMigration.backupPath = migrationBackupPath;
       }
     } catch (err) {
       if (migrationArmed) {
@@ -938,6 +933,31 @@ function registerTauriHost(app) {
         `[tauriMigration] migration failed (continuing boot): ${err instanceof Error ? err.message : String(err)}`
       );
     }
+    // Windows secrets are read only after the Electron encrypted store has
+    // been copied into the recovery backup above. The installed Tauri profile
+    // is authoritative for a transition build; same-key RC/test secrets are
+    // replaced, while the encrypted pre-migration store remains recoverable.
+    if (
+      process.platform === 'win32' &&
+      localStorageMigration &&
+      ['pending', 'dry-run'].includes(localStorageMigration.status)
+    ) {
+      const secrets = migrateWindowsSecrets(localStorageMigration, {
+        readerPath,
+        secretSet: (key, value) => secretDispatch('secret_set', { key, value }),
+        secretHas: (key) => secretDispatch('secret_has', { key }) === true,
+        sourceWins: migrationArmed || migrateEnv === '1',
+      });
+      console.log(
+        `[tauriLocalStorageMigration] Windows secrets: ${secrets.migrated.length} migrated, ` +
+          `${secrets.overwritten.length} overwritten from installed Tauri, ` +
+          `${secrets.skippedExisting.length} existing, ${secrets.missing.length} absent, ` +
+          `${secrets.failed.length} failed`
+      );
+      if (migrationArmed && localStorageMigration.secretMigrationFailed) {
+        setMigrationStartupBlock('windows-secret-migration-failed');
+      }
+    }
   }
 
   ipcMain.on(TAURI_LOCAL_STORAGE_GET, (e) => {
@@ -945,7 +965,11 @@ function registerTauriHost(app) {
       assertTrustedIpcSender(e);
       e.returnValue =
         localStorageMigration?.status === 'pending'
-          ? { version: 1, items: localStorageMigration.items }
+          ? {
+              version: TAURI_LOCAL_STORAGE_MIGRATION_VERSION,
+              items: localStorageMigration.items,
+              conflictPolicy: localStorageMigration.conflictPolicy,
+            }
           : null;
     } catch {
       e.returnValue = null;
@@ -1248,6 +1272,7 @@ module.exports = {
   markQuitting,
   getMigrationStartupBlock,
   isMigrationStartupPending,
+  getMigrationBackupPath: () => migrationBackupPath,
   hasListeners,
   wireWindowEvents,
   requestAppExit,

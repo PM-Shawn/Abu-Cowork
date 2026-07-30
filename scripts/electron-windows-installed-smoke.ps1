@@ -31,6 +31,7 @@ $uninstaller = $null
 $upgradeFixtureName = "ci-electron-transition-$PID"
 $tauriFixture = Join-Path $env:APPDATA "com.abu.app\conversations\$upgradeFixtureName"
 $electronFixture = Join-Path $env:APPDATA "com.abu.app.electron\conversations\$upgradeFixtureName"
+$migrationBackupRoot = Join-Path $env:APPDATA "com.abu.app.electron-backups"
 $expectMigration = $env:ABU_EXPECT_TAURI_MIGRATION -eq "true"
 $tauriInstallRoot = Join-Path $env:LOCALAPPDATA "Abu"
 $tauriRollbackMarker = Join-Path $tauriInstallRoot "$upgradeFixtureName.rollback"
@@ -40,8 +41,18 @@ try {
     New-Item -ItemType Directory -Path $tauriFixture -Force | Out-Null
     Set-Content -Path (Join-Path $tauriFixture "messages.jsonl") `
       -Value '{"role":"user","content":"upgrade-fixture"}' -NoNewline
+    New-Item -ItemType Directory -Path $electronFixture -Force | Out-Null
+    Set-Content -Path (Join-Path $electronFixture "messages.jsonl") `
+      -Value '{"role":"user","content":"preexisting-electron-fixture"}' -NoNewline
+    Set-Content -Path (Join-Path $electronFixture "electron-only.txt") `
+      -Value "electron-only" -NoNewline
     New-Item -ItemType Directory -Path $tauriInstallRoot -Force | Out-Null
     Set-Content -Path $tauriRollbackMarker -Value "tauri-rollback" -NoNewline
+    # The actual app normally requires the user to click “Start safe upgrade”.
+    # This CI-only triple gate lets the unattended installed smoke take that
+    # exact code path without weakening normal packaged launches.
+    $env:ABU_PACKAGED_E2E = "1"
+    $env:ABU_E2E_AUTO_CONFIRM_TRANSITION = "1"
   }
 
   $installerArguments = if ($expectMigration) {
@@ -109,11 +120,38 @@ try {
   }
   if ($expectMigration) {
     $migratedFile = Join-Path $electronFixture "messages.jsonl"
+    $migrationDeadline = [DateTime]::UtcNow.AddSeconds(45)
+    while (
+      [DateTime]::UtcNow -lt $migrationDeadline -and
+      (
+        -not (Test-Path $migratedFile) -or
+        (Get-Content $migratedFile -Raw) -ne '{"role":"user","content":"upgrade-fixture"}'
+      )
+    ) {
+      Start-Sleep -Milliseconds 250
+    }
     if (-not (Test-Path $migratedFile)) {
       throw "Installed transition build did not copy the Tauri conversation fixture"
     }
     if ((Get-Content $migratedFile -Raw) -ne '{"role":"user","content":"upgrade-fixture"}') {
-      throw "Migrated conversation fixture content changed"
+      throw "Tauri source did not win the migration conflict"
+    }
+    if ((Get-Content (Join-Path $tauriFixture "messages.jsonl") -Raw) -ne '{"role":"user","content":"upgrade-fixture"}') {
+      throw "Migration modified the original Tauri conversation"
+    }
+    if ((Get-Content (Join-Path $electronFixture "electron-only.txt") -Raw) -ne "electron-only") {
+      throw "Migration did not retain Electron-only data"
+    }
+    $recoveredElectronFiles = @(
+      Get-ChildItem -Path $migrationBackupRoot -Filter "messages.jsonl" -File -Recurse `
+        -ErrorAction SilentlyContinue |
+        Where-Object {
+          $_.FullName -like "*\$upgradeFixtureName\messages.jsonl" -and
+          (Get-Content $_.FullName -Raw) -eq '{"role":"user","content":"preexisting-electron-fixture"}'
+        }
+    )
+    if ($recoveredElectronFiles.Count -lt 1) {
+      throw "Expected a recovery copy of the preexisting Electron conflict"
     }
   }
 
@@ -153,5 +191,14 @@ finally {
   }
   Remove-Item $tauriFixture -Recurse -Force -ErrorAction SilentlyContinue
   Remove-Item $electronFixture -Recurse -Force -ErrorAction SilentlyContinue
+  if ($expectMigration -and (Test-Path $migrationBackupRoot)) {
+    Get-ChildItem -Path $migrationBackupRoot -Directory -ErrorAction SilentlyContinue |
+      Where-Object {
+        Test-Path (Join-Path $_.FullName "conversations\$upgradeFixtureName")
+      } |
+      Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+  }
   Remove-Item $tauriRollbackMarker -Force -ErrorAction SilentlyContinue
+  Remove-Item Env:ABU_E2E_AUTO_CONFIRM_TRANSITION -ErrorAction SilentlyContinue
+  Remove-Item Env:ABU_PACKAGED_E2E -ErrorAction SilentlyContinue
 }

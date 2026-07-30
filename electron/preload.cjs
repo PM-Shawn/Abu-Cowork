@@ -44,13 +44,20 @@ function isAllowedTauriStorageKey(key) {
 }
 
 // Import old Tauri WebView localStorage before any renderer module runs, so
-// Zustand hydrates the migrated state on this first Electron launch. Existing
-// Electron values always win; main writes its completion marker only after
-// this synchronous acknowledgement accounts for every expected key.
+// Zustand hydrates the migrated state on this first Electron launch. Transition
+// builds use source-wins so a previously launched RC/test Electron profile
+// cannot shadow the user's installed Tauri settings. Replaced Electron values
+// are returned to main for a local recovery backup before completion is marked.
 try {
   const payload = ipcRenderer.sendSync(TAURI_LOCAL_STORAGE_GET);
-  if (payload?.version === 1 && Array.isArray(payload.items)) {
-    const result = { imported: [], skippedExisting: [], failed: [] };
+  if (payload?.version === 2 && Array.isArray(payload.items)) {
+    const result = {
+      imported: [],
+      overwritten: [],
+      skippedExisting: [],
+      failed: [],
+      previous: [],
+    };
     for (const item of payload.items) {
       const key = item?.key;
       if (
@@ -62,11 +69,15 @@ try {
         continue;
       }
       try {
-        if (globalThis.localStorage.getItem(key) !== null) {
+        const existing = globalThis.localStorage.getItem(key);
+        if (existing !== null && payload.conflictPolicy !== 'source-wins') {
           result.skippedExisting.push(key);
         } else {
+          if (existing !== null) {
+            result.previous.push({ key, value: existing });
+          }
           globalThis.localStorage.setItem(key, item.value);
-          result.imported.push(key);
+          (existing === null ? result.imported : result.overwritten).push(key);
         }
       } catch {
         result.failed.push(key);

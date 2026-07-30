@@ -15,6 +15,10 @@ on:
         description: 'Embed migration metadata and create Tauri-updater signatures'
         type: boolean
         default: false
+      legacy_migration_support:
+        description: 'Keep direct-install migration support without publishing the legacy pointer'
+        type: boolean
+        default: true
   workflow_call:
     inputs:
       transition_version:
@@ -25,6 +29,10 @@ on:
         description: 'Build the one-time Tauri to Electron transition artifacts'
         type: boolean
         default: false
+      legacy_migration_support:
+        description: 'Embed dormant Tauri migration support for direct installers'
+        type: boolean
+        default: true
   pull_request:
     paths:
       - '.github/workflows/electron-build.yml'
@@ -161,6 +169,7 @@ jobs:
           APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
           BUILDER_ARCH: ${{ matrix.builder_arch }}
           TRANSITION_RELEASE: ${{ inputs.transition_release }}
+          LEGACY_MIGRATION_SUPPORT: ${{ inputs.legacy_migration_support }}
         run: |
           BUILDER_ARGS=(
             "--${BUILDER_ARCH}"
@@ -171,7 +180,7 @@ jobs:
             "--config.mac.identity=Developer ID Application"
             "--config.mac.forceCodeSigning=true"
           )
-          if [[ "$TRANSITION_RELEASE" == "true" ]]; then
+          if [[ "$TRANSITION_RELEASE" == "true" || "$LEGACY_MIGRATION_SUPPORT" == "true" ]]; then
             BUILDER_ARGS+=("--config.extraMetadata.abuRelease.tauriMigration=true")
           fi
           for attempt in 1 2 3; do
@@ -242,10 +251,12 @@ jobs:
         run: node scripts/electron-refresh-dmg-hash.mjs
 
       - name: Packaged smoke on the notarized build
+        env:
+          ABU_EXPECT_TAURI_MIGRATION: ${{ inputs.transition_release || inputs.legacy_migration_support }}
         run: npm run smoke:electron:packaged
 
       - name: Verify transition marker
-        if: ${{ inputs.transition_release }}
+        if: ${{ inputs.transition_release || inputs.legacy_migration_support }}
         run: |
           ABU_APP="$ABU_PACKAGED_APP" ELECTRON_RUN_AS_NODE=1 \
             "$ABU_PACKAGED_APP/Contents/MacOS/Abu" -e '
@@ -382,6 +393,9 @@ jobs:
           $release = "${{ inputs.transition_release }}" -eq "true"
           "ABU_TRANSITION_RELEASE=$($release.ToString().ToLowerInvariant())" |
             Out-File -FilePath $env:GITHUB_ENV -Append
+          $migrationSupport = "${{ inputs.legacy_migration_support }}" -eq "true"
+          "ABU_LEGACY_MIGRATION_SUPPORT=$($migrationSupport.ToString().ToLowerInvariant())" |
+            Out-File -FilePath $env:GITHUB_ENV -Append
 
       - name: Require candidate newer than the live Tauri feed
         if: ${{ inputs.transition_release }}
@@ -399,7 +413,10 @@ jobs:
             "--config.publish.url=$env:ABU_ELECTRON_FEED",
             "--config.detectUpdateChannel=false"
           )
-          if ($env:ABU_TRANSITION_RELEASE -eq "true") {
+          if (
+            $env:ABU_TRANSITION_RELEASE -eq "true" -or
+            $env:ABU_LEGACY_MIGRATION_SUPPORT -eq "true"
+          ) {
             $builderArgs += "--config.extraMetadata.abuRelease.tauriMigration=true"
           }
           for ($attempt = 1; $attempt -le 3; $attempt++) {
@@ -414,7 +431,7 @@ jobs:
           }
 
       - name: Verify packaged transition marker
-        if: ${{ inputs.transition_release }}
+        if: ${{ inputs.transition_release || inputs.legacy_migration_support }}
         shell: pwsh
         run: |
           node -e @'
@@ -436,10 +453,12 @@ jobs:
       - name: Install, launch, migrate, and preserve Tauri rollback
         shell: pwsh
         env:
-          ABU_EXPECT_TAURI_MIGRATION: ${{ inputs.transition_release }}
+          ABU_EXPECT_TAURI_MIGRATION: ${{ inputs.transition_release || inputs.legacy_migration_support }}
         run: ./scripts/electron-windows-installed-smoke.ps1
 
       - name: Packaged Windows smoke
+        env:
+          ABU_EXPECT_TAURI_MIGRATION: ${{ inputs.transition_release || inputs.legacy_migration_support }}
         run: npm run smoke:electron:packaged
 
       - name: Tauri-sign transition installer

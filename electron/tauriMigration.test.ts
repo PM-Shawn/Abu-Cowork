@@ -543,7 +543,9 @@ describe('runTauriMigration', () => {
     );
     expect(summary.sentinelWritten).toBe(true);
     expect(fs.lstatSync(migratedLink).isSymbolicLink()).toBe(true);
-    expect(fs.readlinkSync(migratedLink)).toBe('../image-size/bin/image-size.js');
+    expect(path.normalize(fs.readlinkSync(migratedLink))).toBe(
+      path.normalize('../image-size/bin/image-size.js'),
+    );
     expect(fs.readFileSync(migratedLink, 'utf8')).toContain('/usr/bin/env node');
   });
 

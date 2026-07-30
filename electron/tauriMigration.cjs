@@ -83,6 +83,11 @@ function isPathInside(rootPath, candidatePath) {
   return relative === '' || (!relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative));
 }
 
+function pathKey(candidatePath) {
+  const resolved = path.resolve(candidatePath);
+  return process.platform === 'win32' ? resolved.toLowerCase() : resolved;
+}
+
 function inspectSafeSymlink(entryPath, treeRoot) {
   if (!treeRoot) {
     throw new Error(`symbolic link has no trusted transition root: ${entryPath}`);
@@ -108,14 +113,127 @@ function inspectSafeSymlink(entryPath, treeRoot) {
   };
 }
 
-function assertSafeEntry(entryPath, stat, treeRoot) {
+function symlinkOverrideMap(repairs = []) {
+  return new Map(repairs.map((repair) => [pathKey(repair.entryPath), repair]));
+}
+
+function assertSafeEntry(entryPath, stat, treeRoot, symlinkOverrides = null) {
   if (stat.isSymbolicLink()) {
+    const override = symlinkOverrides?.get(pathKey(entryPath));
+    if (override) {
+      return {
+        linkTarget: override.replacementRelativeTarget,
+        targetStat: fs.statSync(override.localTargetPath),
+      };
+    }
     return inspectSafeSymlink(entryPath, treeRoot);
   }
   if (!stat.isDirectory() && !stat.isFile()) {
     throw new Error(`unsupported filesystem entry in transition data: ${entryPath}`);
   }
   return null;
+}
+
+/**
+ * Node's old fs.cpSync default rewrote copied relative symlinks into absolute
+ * links pointing back into the Tauri source tree. Early Electron transition
+ * builds used that API, so a later safe v2 migration can encounter those links
+ * in the Electron destination even though the installed Tauri source is valid.
+ *
+ * Accept only that exact, reproducible legacy shape:
+ *  - the corresponding Tauri entry is a safe relative symlink;
+ *  - the absolute Electron target is exactly the resolved Tauri target;
+ *  - the replacement relative target already resolves inside Electron data.
+ *
+ * Every other absolute link remains a hard failure.
+ */
+function inspectLegacyElectronSymlinkRepairs(tauriDir, electronDir) {
+  const repairs = [];
+
+  for (const name of DATA_DIRS) {
+    const sourceRoot = path.join(tauriDir, name);
+    const electronRoot = path.join(electronDir, name);
+    if (!fs.existsSync(electronRoot)) continue;
+
+    const electronRootReal = fs.realpathSync(electronRoot);
+    const sourceRootExists = fs.existsSync(sourceRoot);
+
+    function visit(entryPath, relativePath) {
+      const stat = fs.lstatSync(entryPath);
+      if (stat.isSymbolicLink()) {
+        const originalTarget = fs.readlinkSync(entryPath);
+        if (!path.isAbsolute(originalTarget)) {
+          inspectSafeSymlink(entryPath, electronRoot);
+          return;
+        }
+
+        const sourcePath = path.join(sourceRoot, relativePath);
+        if (!sourceRootExists || !fs.existsSync(sourcePath)) {
+          throw new Error(`absolute symbolic links are not allowed in transition data: ${entryPath}`);
+        }
+        const sourceStat = fs.lstatSync(sourcePath);
+        if (!sourceStat.isSymbolicLink()) {
+          throw new Error(`absolute symbolic links are not allowed in transition data: ${entryPath}`);
+        }
+        const sourceSymlink = inspectSafeSymlink(sourcePath, sourceRoot);
+        const expectedLegacyTarget = path.resolve(
+          path.dirname(sourcePath),
+          sourceSymlink.linkTarget
+        );
+        if (pathKey(originalTarget) !== pathKey(expectedLegacyTarget)) {
+          throw new Error(`absolute symbolic links are not allowed in transition data: ${entryPath}`);
+        }
+
+        let originalTargetReal;
+        let sourceTargetReal;
+        let localTargetReal;
+        const localTargetPath = path.resolve(
+          path.dirname(entryPath),
+          sourceSymlink.linkTarget
+        );
+        try {
+          originalTargetReal = fs.realpathSync(entryPath);
+          sourceTargetReal = fs.realpathSync(sourcePath);
+          localTargetReal = fs.realpathSync(localTargetPath);
+        } catch {
+          throw new Error(`legacy transition symbolic link cannot be repaired safely: ${entryPath}`);
+        }
+        if (
+          pathKey(originalTargetReal) !== pathKey(sourceTargetReal) ||
+          !isPathInside(electronRootReal, localTargetReal)
+        ) {
+          throw new Error(`legacy transition symbolic link cannot be repaired safely: ${entryPath}`);
+        }
+
+        repairs.push({
+          entryPath,
+          relativePath: path.join(name, relativePath),
+          sourcePath,
+          originalAbsoluteTarget: originalTarget,
+          replacementRelativeTarget: sourceSymlink.linkTarget,
+          localTargetPath,
+          targetType: fs.statSync(localTargetPath).isDirectory() ? 'dir' : 'file',
+        });
+        return;
+      }
+      if (!stat.isDirectory() && !stat.isFile()) {
+        throw new Error(`unsupported filesystem entry in transition data: ${entryPath}`);
+      }
+      if (!stat.isDirectory()) return;
+      const entries = fs.readdirSync(entryPath, { withFileTypes: true })
+        .sort((a, b) => a.name.localeCompare(b.name));
+      for (const entry of entries) {
+        visit(
+          path.join(entryPath, entry.name),
+          relativePath ? path.join(relativePath, entry.name) : entry.name
+        );
+      }
+    }
+
+    visit(electronRoot, '');
+  }
+
+  return repairs.sort((a, b) => a.relativePath.localeCompare(b.relativePath));
 }
 
 function fileDigest(filePath) {
@@ -134,7 +252,7 @@ function fileDigest(filePath) {
   return hash.digest('hex');
 }
 
-function inventoryTree(root, treeRoot = root) {
+function inventoryTree(root, treeRoot = root, symlinkOverrides = null) {
   if (!fs.existsSync(root)) {
     return { exists: false, files: 0, bytes: 0, fingerprint: 'absent' };
   }
@@ -144,7 +262,7 @@ function inventoryTree(root, treeRoot = root) {
 
   function visit(current, relative) {
     const stat = fs.lstatSync(current);
-    const safeSymlink = assertSafeEntry(current, stat, treeRoot);
+    const safeSymlink = assertSafeEntry(current, stat, treeRoot, symlinkOverrides);
     if (safeSymlink) {
       aggregate.update(`l\0${relative}\0${safeSymlink.linkTarget}\n`);
       files += 1;
@@ -188,9 +306,9 @@ function sourceInventory(tauriDir) {
   };
 }
 
-function copyTreeSafe(source, destination, treeRoot = source) {
+function copyTreeSafe(source, destination, treeRoot = source, symlinkOverrides = null) {
   const stat = fs.lstatSync(source);
-  const safeSymlink = assertSafeEntry(source, stat, treeRoot);
+  const safeSymlink = assertSafeEntry(source, stat, treeRoot, symlinkOverrides);
   if (safeSymlink) {
     fs.mkdirSync(path.dirname(destination), { recursive: true });
     fs.symlinkSync(
@@ -209,7 +327,12 @@ function copyTreeSafe(source, destination, treeRoot = source) {
   const entries = fs.readdirSync(source, { withFileTypes: true })
     .sort((a, b) => a.name.localeCompare(b.name));
   for (const entry of entries) {
-    copyTreeSafe(path.join(source, entry.name), path.join(destination, entry.name), treeRoot);
+    copyTreeSafe(
+      path.join(source, entry.name),
+      path.join(destination, entry.name),
+      treeRoot,
+      symlinkOverrides
+    );
   }
 }
 
@@ -227,16 +350,61 @@ function copyTreeIfAbsent(source, destination) {
   }
 }
 
-function copyForRecovery(source, destination, treeRoot = source) {
+function copyForRecovery(source, destination, treeRoot = source, symlinkOverrides = null) {
   if (fs.existsSync(destination)) return;
   const stat = fs.lstatSync(source);
-  const safeSymlink = assertSafeEntry(source, stat, treeRoot);
-  if (safeSymlink || stat.isDirectory()) {
-    copyTreeSafe(source, destination, treeRoot);
-  } else {
+  const safeSymlink = assertSafeEntry(source, stat, treeRoot, symlinkOverrides);
+  const staging = `${destination}.recovering-${process.pid}-${crypto.randomBytes(4).toString('hex')}`;
+  removeStagingBestEffort(staging);
+  try {
     fs.mkdirSync(path.dirname(destination), { recursive: true });
-    fs.copyFileSync(source, destination, fs.constants.COPYFILE_EXCL);
+    if (safeSymlink || stat.isDirectory()) {
+      copyTreeSafe(source, staging, treeRoot, symlinkOverrides);
+    } else {
+      fs.copyFileSync(source, staging, fs.constants.COPYFILE_EXCL);
+    }
+    fs.renameSync(staging, destination);
+  } finally {
+    removeStagingBestEffort(staging);
   }
+}
+
+function applyLegacyElectronSymlinkRepairs(repairs) {
+  let repaired = 0;
+  for (const repair of repairs) {
+    const staging = `${repair.entryPath}.repair-${process.pid}-${crypto.randomBytes(4).toString('hex')}`;
+    let removedForWindows = false;
+    try {
+      fs.symlinkSync(
+        repair.replacementRelativeTarget,
+        staging,
+        repair.targetType
+      );
+      if (process.platform === 'win32') {
+        fs.rmSync(repair.entryPath, { force: true });
+        removedForWindows = true;
+      }
+      fs.renameSync(staging, repair.entryPath);
+      repaired += 1;
+    } catch (error) {
+      if (removedForWindows && !fs.existsSync(repair.entryPath)) {
+        try {
+          fs.symlinkSync(
+            repair.originalAbsoluteTarget,
+            repair.entryPath,
+            repair.targetType
+          );
+        } catch {
+          // The full Electron backup and read-only Tauri source remain
+          // available even if Windows cannot restore the legacy link.
+        }
+      }
+      throw error;
+    } finally {
+      fs.rmSync(staging, { force: true });
+    }
+  }
+  return repaired;
 }
 
 function replaceFileAtomic(source, destination) {
@@ -389,21 +557,68 @@ function mergeConversationIndex(sourceIndexPath, destinationIndexPath, targetInd
   writeJsonAtomic(destinationIndexPath, merged);
 }
 
-function backupExistingElectronData(electronDir, sourceFingerprint, dryRun) {
+function backupExistingElectronData(
+  electronDir,
+  sourceFingerprint,
+  dryRun,
+  legacySymlinkRepairs = []
+) {
   const candidates = [...DATA_DIRS, SECRET_STORE_FILENAME];
   const present = candidates.filter((name) => fs.existsSync(path.join(electronDir, name)));
-  const backupRoot = path.join(
+  const baseBackupRoot = path.join(
     path.dirname(electronDir),
     BACKUP_DIRNAME,
     `migration-v${MIGRATION_VERSION}-${sourceFingerprint.slice(0, 16)}`
   );
-  if (present.length === 0) return { path: backupRoot, items: [] };
-  if (dryRun) return { path: backupRoot, items: present };
+  if (present.length === 0) return { path: baseBackupRoot, items: [] };
+  if (dryRun) {
+    return {
+      path: baseBackupRoot,
+      items: present,
+      legacySymlinks: legacySymlinkRepairs.length,
+    };
+  }
+  let backupRoot = baseBackupRoot;
+  const completionMarker = path.join(backupRoot, 'file-backup-manifest.json');
+  if (fs.existsSync(backupRoot) && !fs.existsSync(completionMarker)) {
+    backupRoot = `${baseBackupRoot}-retry-${Date.now()}-${process.pid}`;
+  }
+  const overrides = symlinkOverrideMap(legacySymlinkRepairs);
   fs.mkdirSync(backupRoot, { recursive: true });
   for (const name of present) {
-    copyForRecovery(path.join(electronDir, name), path.join(backupRoot, name), electronDir);
+    copyForRecovery(
+      path.join(electronDir, name),
+      path.join(backupRoot, name),
+      electronDir,
+      overrides
+    );
   }
-  return { path: backupRoot, items: present };
+  let legacySymlinkManifest = null;
+  if (legacySymlinkRepairs.length > 0) {
+    legacySymlinkManifest = path.join(backupRoot, 'legacy-symlink-repairs.json');
+    writeJsonAtomic(legacySymlinkManifest, {
+      version: 1,
+      recordedAt: new Date().toISOString(),
+      items: legacySymlinkRepairs.map((repair) => ({
+        relativePath: repair.relativePath,
+        originalAbsoluteTarget: repair.originalAbsoluteTarget,
+        replacementRelativeTarget: repair.replacementRelativeTarget,
+      })),
+    });
+  }
+  writeJsonAtomic(path.join(backupRoot, 'file-backup-manifest.json'), {
+    version: 1,
+    completedAt: new Date().toISOString(),
+    sourceFingerprint,
+    items: present,
+    legacySymlinks: legacySymlinkRepairs.length,
+  });
+  return {
+    path: backupRoot,
+    items: present,
+    legacySymlinks: legacySymlinkRepairs.length,
+    legacySymlinkManifest,
+  };
 }
 
 function backupElectronChromiumState(userDataDir, backupRoot) {
@@ -431,12 +646,18 @@ function backupElectronChromiumState(userDataDir, backupRoot) {
   return { copied, absent, path: destinationRoot };
 }
 
-function estimateMigrationSpace(electronDir, inventory, userDataDir = null) {
+function estimateMigrationSpace(
+  electronDir,
+  inventory,
+  userDataDir = null,
+  legacySymlinkRepairs = []
+) {
+  const overrides = symlinkOverrideMap(legacySymlinkRepairs);
   let existingBytes = 0;
   for (const name of [...DATA_DIRS, SECRET_STORE_FILENAME]) {
     const candidate = path.join(electronDir, name);
     if (fs.existsSync(candidate)) {
-      existingBytes += inventoryTree(candidate).bytes;
+      existingBytes += inventoryTree(candidate, candidate, overrides).bytes;
     }
   }
   if (userDataDir && fs.existsSync(userDataDir)) {
@@ -546,6 +767,26 @@ function runTauriMigration(opts) {
     };
   }
 
+  let legacySymlinkRepairs;
+  try {
+    legacySymlinkRepairs = inspectLegacyElectronSymlinkRepairs(
+      tauriDir,
+      electronDir
+    );
+  } catch (error) {
+    return {
+      version: MIGRATION_VERSION,
+      dryRun,
+      sourceFingerprint: inventory.fingerprint,
+      legacySymlinkRepairError:
+        error instanceof Error ? error.message : String(error),
+      secrets: { migrated: [], overwritten: [], skippedExisting: [], decryptFailed: [], setFailed: [] },
+      dirs: {},
+      backup: { path: null, items: [] },
+      sentinelWritten: false,
+    };
+  }
+
   const summary = {
     version: MIGRATION_VERSION,
     dryRun,
@@ -554,6 +795,10 @@ function runTauriMigration(opts) {
     secrets: { migrated: [], overwritten: [], skippedExisting: [], decryptFailed: [], setFailed: [] },
     dirs: {},
     backup: { path: null, items: [] },
+    legacySymlinks: {
+      detected: legacySymlinkRepairs.length,
+      repaired: 0,
+    },
     sentinelWritten: false,
   };
 
@@ -561,12 +806,25 @@ function runTauriMigration(opts) {
     summary.backup = backupExistingElectronData(
       electronDir,
       inventory.fingerprint,
-      dryRun
+      dryRun,
+      legacySymlinkRepairs
     );
   } catch (error) {
     summary.backup.error = error instanceof Error ? error.message : String(error);
     warn(`could not back up existing Electron data: ${summary.backup.error}`);
     return summary;
+  }
+
+  if (!dryRun && legacySymlinkRepairs.length > 0) {
+    try {
+      summary.legacySymlinks.repaired =
+        applyLegacyElectronSymlinkRepairs(legacySymlinkRepairs);
+    } catch (error) {
+      summary.legacySymlinks.error =
+        error instanceof Error ? error.message : String(error);
+      warn(`could not repair legacy Electron symbolic links: ${summary.legacySymlinks.error}`);
+      return summary;
+    }
   }
 
   const secretsBin = path.join(tauriDir, 'secrets.bin');
@@ -681,6 +939,7 @@ function runTauriMigration(opts) {
   const clean =
     !summary.inventoryError &&
     !summary.backup.error &&
+    !summary.legacySymlinks.error &&
     !summary.secrets.readError &&
     summary.secrets.setFailed.length === 0 &&
     !Object.values(summary.dirs).some((entry) => entry.status === 'error');
@@ -710,6 +969,7 @@ module.exports = {
   backupElectronChromiumState,
   estimateMigrationSpace,
   hasValidSentinel,
+  inspectLegacyElectronSymlinkRepairs,
   inventoryTree,
   mergeSourceAuthoritative,
   resolveTauriAppDataDir,

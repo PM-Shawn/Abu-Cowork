@@ -52,6 +52,7 @@ const {
 const {
   hasValidSentinel,
   estimateMigrationSpace,
+  inspectLegacyElectronSymlinkRepairs,
   resolveTauriAppDataDir,
   SENTINEL_FILENAME,
   sourceInventory,
@@ -212,12 +213,24 @@ function inspectTransition(appInstance) {
     .reduce((total, item) => total + Number(item.files || 0), 0);
   const bytes = Object.values(inventory.dirs)
     .reduce((total, item) => total + Number(item.bytes || 0), 0);
-  const space = estimateMigrationSpace(
-    abuAppDataDir(appInstance),
-    inventory,
-    appInstance.getPath('userData')
+  const electronDir = abuAppDataDir(appInstance);
+  const legacySymlinkRepairs = inspectLegacyElectronSymlinkRepairs(
+    tauriDir,
+    electronDir
   );
-  return { inventory, files, bytes, space };
+  const space = estimateMigrationSpace(
+    electronDir,
+    inventory,
+    appInstance.getPath('userData'),
+    legacySymlinkRepairs
+  );
+  return {
+    inventory,
+    files,
+    bytes,
+    space,
+    legacySymlinkRepairs: legacySymlinkRepairs.length,
+  };
 }
 
 async function confirmTransition(appInstance, inspection) {

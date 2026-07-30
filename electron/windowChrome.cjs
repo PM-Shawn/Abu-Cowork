@@ -12,6 +12,7 @@ const WINDOWS_TITLE_BAR_HEIGHT = 32;
 const WINDOW_DRAG_REGION_CSS = [
   '[data-tauri-drag],[data-tauri-drag-region]{-webkit-app-region:drag}',
   '[data-tauri-drag] *,[data-tauri-drag-region] *{-webkit-app-region:no-drag}',
+  '[data-electron-no-drag]{-webkit-app-region:no-drag}',
 ].join('');
 
 function chromeColors(dark) {

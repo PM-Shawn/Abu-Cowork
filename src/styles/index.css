@@ -10,6 +10,17 @@
    Cascades to group-hover/peer-hover since they compose this base variant. */
 @custom-variant hover (&:hover);
 
+/* Electron exposes the rectangle not occupied by native Windows caption
+   buttons through titlebar-area-* environment variables. Keep Abu's drag row
+   and controls inside that safe rectangle instead of guessing a DPI-dependent
+   right offset. The fallback matches the standard 3-button Windows width. */
+.abu-windows-titlebar-safe-area {
+  left: env(titlebar-area-x, 0px);
+  top: env(titlebar-area-y, 0px);
+  width: env(titlebar-area-width, calc(100% - 138px));
+  height: env(titlebar-area-height, 32px);
+}
+
 @layer base {
   html, body, #root {
     height: 100%;

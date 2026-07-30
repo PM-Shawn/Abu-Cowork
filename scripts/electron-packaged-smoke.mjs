@@ -1922,6 +1922,8 @@ async function main() {
     'sessions',
     migrationFixtureName,
   );
+  let tauriLegacySymlink = null;
+  let electronLegacySymlink = null;
   if (expectMigration) {
     fs.mkdirSync(tauriMigrationFixture, { recursive: true });
     fs.writeFileSync(
@@ -1937,6 +1939,59 @@ async function main() {
       path.join(electronMigrationFixture, 'electron-only.txt'),
       'electron-only',
     );
+    if (process.platform !== 'win32') {
+      const relativeTarget = '../image-size/bin/image-size.js';
+      const tauriBinDir = path.join(
+        tauriMigrationFixture,
+        'outputs',
+        'node_modules',
+        '.bin',
+      );
+      const tauriPackageBin = path.join(
+        tauriMigrationFixture,
+        'outputs',
+        'node_modules',
+        'image-size',
+        'bin',
+      );
+      const electronBinDir = path.join(
+        electronMigrationFixture,
+        'outputs',
+        'node_modules',
+        '.bin',
+      );
+      const electronPackageBin = path.join(
+        electronMigrationFixture,
+        'outputs',
+        'node_modules',
+        'image-size',
+        'bin',
+      );
+      fs.mkdirSync(tauriBinDir, { recursive: true });
+      fs.mkdirSync(tauriPackageBin, { recursive: true });
+      fs.mkdirSync(electronBinDir, { recursive: true });
+      fs.mkdirSync(electronPackageBin, { recursive: true });
+      fs.writeFileSync(
+        path.join(tauriPackageBin, 'image-size.js'),
+        '#!/usr/bin/env node\n',
+      );
+      fs.writeFileSync(
+        path.join(electronPackageBin, 'image-size.js'),
+        '#!/usr/bin/env node\n',
+      );
+      tauriLegacySymlink = path.join(tauriBinDir, 'image-size');
+      electronLegacySymlink = path.join(electronBinDir, 'image-size');
+      fs.symlinkSync(relativeTarget, tauriLegacySymlink, 'file');
+      fs.symlinkSync(
+        path.resolve(tauriBinDir, relativeTarget),
+        electronLegacySymlink,
+        'file',
+      );
+      fs.writeFileSync(
+        path.join(appDataDir, 'com.abu.app.electron', 'tauri-migration.json'),
+        JSON.stringify({ version: 1, status: 'complete' }),
+      );
+    }
   }
   fs.mkdirSync(previewFixtureDir, { recursive: true });
   fs.mkdirSync(runtimeArtifactsDir, { recursive: true });
@@ -2029,6 +2084,92 @@ async function main() {
       state: 'visible',
       timeout: READY_TIMEOUT,
     });
+    if (process.platform === 'win32') {
+      const titlebarLayout = await window.evaluate(() => {
+        const titlebar = document.querySelector('[data-abu-windows-titlebar]');
+        const safeArea = document.querySelector('[data-abu-windows-titlebar-safe-area]');
+        const appLayout = document.querySelector('[data-abu-app-layout]');
+        const main = document.querySelector('main');
+        if (!titlebar || !safeArea || !appLayout || !main) return null;
+        const titlebarRect = titlebar.getBoundingClientRect();
+        const safeRect = safeArea.getBoundingClientRect();
+        const mainRect = main.getBoundingClientRect();
+        const controls = [...document.querySelectorAll('[data-window-control]')]
+          .map((control) => {
+            const rect = control.getBoundingClientRect();
+            const style = getComputedStyle(control);
+            return {
+              left: rect.left,
+              right: rect.right,
+              top: rect.top,
+              bottom: rect.bottom,
+              pointerEvents: style.pointerEvents,
+            };
+          });
+        return {
+          viewportWidth: window.innerWidth,
+          titlebar: {
+            left: titlebarRect.left,
+            right: titlebarRect.right,
+            top: titlebarRect.top,
+            bottom: titlebarRect.bottom,
+            height: titlebarRect.height,
+            background: getComputedStyle(titlebar).backgroundColor,
+          },
+          safeArea: {
+            left: safeRect.left,
+            right: safeRect.right,
+            top: safeRect.top,
+            bottom: safeRect.bottom,
+          },
+          appPaddingTop: Number.parseFloat(getComputedStyle(appLayout).paddingTop),
+          appBackground: getComputedStyle(appLayout).backgroundColor,
+          mainTop: mainRect.top,
+          controls,
+        };
+      });
+      checks.packagedWindowsTitlebarLayout =
+        titlebarLayout !== null &&
+        Math.abs(titlebarLayout.titlebar.height - 32) <= 1 &&
+        titlebarLayout.appPaddingTop >= 32 &&
+        titlebarLayout.mainTop >= 39 &&
+        titlebarLayout.titlebar.background === titlebarLayout.appBackground &&
+        titlebarLayout.safeArea.right <= titlebarLayout.viewportWidth + 1 &&
+        titlebarLayout.controls.length >= 2 &&
+        titlebarLayout.controls.every((control) => (
+          control.pointerEvents !== 'none' &&
+          control.left >= titlebarLayout.safeArea.left - 1 &&
+          control.right <= titlebarLayout.safeArea.right + 1 &&
+          control.top >= titlebarLayout.safeArea.top - 1 &&
+          control.bottom <= titlebarLayout.safeArea.bottom + 1
+        ));
+
+      const sidebarControl = window.locator('[data-window-control="sidebar"]');
+      const initialSidebarTitle = await sidebarControl.getAttribute('title');
+      await sidebarControl.click();
+      await waitUntil(
+        async () => (await sidebarControl.getAttribute('title')) !== initialSidebarTitle,
+        'the Windows title-bar sidebar control to toggle',
+      );
+      await sidebarControl.click();
+      await waitUntil(
+        async () => (await sidebarControl.getAttribute('title')) === initialSidebarTitle,
+        'the Windows title-bar sidebar control to restore',
+      );
+
+      const searchControl = window.locator('[data-window-control="search"]');
+      const searchTitle = await searchControl.getAttribute('title');
+      if (!searchTitle) throw new Error('Windows title-bar search label is missing');
+      await searchControl.click();
+      const searchInput = window.getByPlaceholder(searchTitle);
+      await searchInput.waitFor({ state: 'visible', timeout: READY_TIMEOUT });
+      await window.keyboard.press('Escape');
+      await searchInput.waitFor({ state: 'hidden', timeout: READY_TIMEOUT });
+      checks.packagedWindowsTitlebarControlsInteractive = true;
+    } else {
+      checks.packagedWindowsTitlebarLayout = true;
+      checks.packagedWindowsTitlebarControlsInteractive = true;
+    }
     await app.evaluate(({ BrowserWindow }) => {
       const mainWindow = BrowserWindow.getAllWindows()
         .find((candidate) => candidate.webContents.getURL().includes('/dist-electron-spike/index.html'));
@@ -2081,6 +2222,26 @@ async function main() {
         : [];
       checks.packagedElectronConflictRecoverable =
         recoveredConflicts.length >= 1;
+      checks.packagedLegacySymlinkRepair =
+        process.platform === 'win32' ||
+        (
+          tauriLegacySymlink !== null &&
+          electronLegacySymlink !== null &&
+          fs.readlinkSync(tauriLegacySymlink) ===
+            '../image-size/bin/image-size.js' &&
+          fs.readlinkSync(electronLegacySymlink) ===
+            '../image-size/bin/image-size.js' &&
+          fs.readFileSync(electronLegacySymlink, 'utf8') ===
+            '#!/usr/bin/env node\n'
+        );
+      checks.packagedLegacySymlinkRepairBackedUp =
+        process.platform === 'win32' ||
+        (
+          fs.existsSync(backupRoot) &&
+          listFilesRecursive(backupRoot).some(
+            (file) => path.basename(file) === 'legacy-symlink-repairs.json',
+          )
+        );
     }
     const packagedPath = await app.evaluate(() => process.env.PATH || process.env.Path || '');
     checks.hostRuntimePathSanitized =
@@ -2542,6 +2703,40 @@ print(json.dumps({"executable": sys.executable, "files": [str(p) for p in [docx_
         timeout: READY_TIMEOUT,
       });
       checks.packagedTaskRendered = true;
+
+      if (process.platform === 'win32') {
+        let rightPanel = window.locator('[data-abu-right-panel]');
+        if (!(await rightPanel.count())) {
+          const rightPanelToggle = window.locator('[data-window-control="right-panel"]');
+          await rightPanelToggle.waitFor({ state: 'visible', timeout: READY_TIMEOUT });
+          await rightPanelToggle.click();
+          rightPanel = window.locator('[data-abu-right-panel]');
+        }
+        await rightPanel.waitFor({ state: 'visible', timeout: READY_TIMEOUT });
+        const rightPanelLayout = await window.evaluate(() => {
+          const titlebar = document.querySelector('[data-abu-windows-titlebar]');
+          const panel = document.querySelector('[data-abu-right-panel]');
+          const tabs = document.querySelector('[data-abu-workspace-tabs]');
+          if (!titlebar || !panel || !tabs) return null;
+          const titlebarRect = titlebar.getBoundingClientRect();
+          const panelRect = panel.getBoundingClientRect();
+          const tabsRect = tabs.getBoundingClientRect();
+          return {
+            titlebarBottom: titlebarRect.bottom,
+            panelTop: panelRect.top,
+            tabsTop: tabsRect.top,
+            panelRight: panelRect.right,
+            viewportWidth: window.innerWidth,
+          };
+        });
+        checks.packagedWindowsRightPanelClearsTitlebar =
+          rightPanelLayout !== null &&
+          rightPanelLayout.panelTop >= rightPanelLayout.titlebarBottom + 7 &&
+          rightPanelLayout.tabsTop >= rightPanelLayout.titlebarBottom + 7 &&
+          rightPanelLayout.panelRight <= rightPanelLayout.viewportWidth + 1;
+      } else {
+        checks.packagedWindowsRightPanelClearsTitlebar = true;
+      }
 
       const browserResult = await runPackagedBrowserFlow(app, window, mock.browserUrl, runtimeTrap);
       checks.packagedBrowserMcpInitializes = browserResult.initialized;

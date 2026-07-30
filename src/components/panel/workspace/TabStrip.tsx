@@ -185,7 +185,10 @@ export default function TabStrip() {
     'flex items-center gap-2 w-full text-left px-3 py-1.5 text-minor text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-hover)]';
 
   return (
-    <div className="relative shrink-0 flex items-center border-b border-[var(--abu-bg-pressed)] bg-[var(--abu-bg-subtle)] pr-1 overflow-x-auto">
+    <div
+      data-abu-workspace-tabs
+      className="relative shrink-0 flex items-center border-b border-[var(--abu-bg-pressed)] bg-[var(--abu-bg-subtle)] pr-1 overflow-x-auto"
+    >
       {tabs.map((tab) => {
         const Icon = tabIcon(tab);
         const active = tab.id === activeTabId;

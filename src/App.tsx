@@ -21,6 +21,7 @@ import RightPanel from '@/components/panel/RightPanel';
 import { usePreviewStore } from '@/stores/previewStore';
 import { resolveChatWidth, useViewportWidth } from '@/components/panel/panelWidths';
 import ToastContainer from '@/components/common/ToastContainer';
+import WindowTitleBar from '@/components/window/WindowTitleBar';
 import { registerBuiltinTools } from '@/core/tools/builtins';
 import { installLargeWriteGuard } from '@/core/agent/hooks/largeWriteGuard';
 import { initPlatform } from '@/utils/platform';
@@ -31,7 +32,7 @@ import { startSidecar } from '@/core/sidecar/sidecarManager';
 
 // Initialize platform detection at module load time (before any component renders)
 // so that isWindows()/isMacOS() return correct values immediately
-initPlatform().then(() => {
+const platformInitialization = initPlatform().then((detectedPlatform) => {
   // Start network proxy after platform is detected (needs isMacOS())
   initNetworkProxy().catch((err) => {
     console.warn('[App] Network proxy init error:', err);
@@ -43,14 +44,15 @@ initPlatform().then(() => {
   startSidecar().catch((err) => {
     console.warn('[App] Sidecar init error:', err);
   });
+  return detectedPlatform;
 }).catch((err) => {
   console.warn('[App] Platform detection init error:', err);
+  return 'unknown';
 });
 import { useSettingsStore, bootstrapSecrets } from '@/stores/settingsStore';
 import { TooltipProvider } from '@/components/ui/tooltip';
-import { PanelLeft, PanelRight, Search, Plus } from 'lucide-react';
 import ConversationSearchModal from '@/components/sidebar/ConversationSearchModal';
-import { isMacOS } from '@/utils/platform';
+import { isMacOS, isWindows } from '@/utils/platform';
 import { cn } from '@/lib/utils';
 import { initNotifications } from '@/utils/notifications';
 import { initSidebarBadgeChannel } from '@/stores/noticeBadgeStore';
@@ -125,6 +127,11 @@ async function drainPendingInbox(abuIsFocused = false): Promise<void> {
 }
 
 function App() {
+  const [desktopPlatform, setDesktopPlatform] = useState(() => {
+    if (isMacOS()) return 'macos';
+    if (isWindows()) return 'windows';
+    return 'unknown';
+  });
   const refreshDiscovery = useDiscoveryStore((s) => s.refresh);
   const sidebarCollapsed = useSettingsStore((s) => s.sidebarCollapsed);
   const toggleSidebar = useSettingsStore((s) => s.toggleSidebar);
@@ -144,6 +151,16 @@ function App() {
   const showTodosInbox = useLabsFlag(LABS_TODOS_INBOX);
   const activeConv = useActiveConversation();
   const { t } = useI18n();
+
+  useEffect(() => {
+    let active = true;
+    void platformInitialization.then((platform) => {
+      if (active) setDesktopPlatform(platform);
+    });
+    return () => {
+      active = false;
+    };
+  }, []);
 
   // If the Todos/Inbox Labs experiment is turned off while the user is parked
   // on one of its views, fall back to chat — otherwise the sidebar nav out of
@@ -631,12 +648,14 @@ function App() {
   // Hide native title bar text on macOS (overlay mode — title shown in sidebar instead)
   // On Windows, show app name in native title bar
   useEffect(() => {
+    if (desktopPlatform === 'unknown') return;
     if (!isTauriEnv()) return; // web / E2E: no Tauri window API
-    getCurrentWindow().setTitle(isMacOS() ? '' : 'Abu');
-  }, []);
+    getCurrentWindow().setTitle(desktopPlatform === 'macos' ? '' : 'Abu');
+  }, [desktopPlatform]);
 
-  // macOS uses overlay title bar (content behind traffic lights); Windows uses native title bar
-  const mac = isMacOS();
+  // macOS overlays content behind the traffic lights. Windows reserves a
+  // dedicated 32px row for Abu's controls and the native caption buttons.
+  const windows = desktopPlatform === 'windows';
 
   // Preview split is active only when a preview is open in the chat view AND the
   // right panel is showing — then the chat holds a stable width and preview flex-fills.
@@ -655,70 +674,38 @@ function App() {
   return (
     <ErrorBoundary>
     <TooltipProvider delayDuration={200}>
-      {/* Title bar drag region — only the top canvas gutter (h-2). Kept thin so it does
-          NOT overlap the card headers below (which sit ~8px from the top now); a full-height
-          strip here would swallow clicks on the preview/title header buttons. Window can still
-          be dragged from this strip + the sidebar's own drag region + the traffic-light row. */}
-      {mac && (
-        <div
-          data-tauri-drag-region
-          className="fixed top-0 left-0 right-0 h-2 z-40"
-        />
-      )}
+      <WindowTitleBar
+        platform={desktopPlatform}
+        sidebarCollapsed={sidebarCollapsed}
+        showSearch={viewMode !== 'settings'}
+        showNewTask={sidebarCollapsed && viewMode !== 'settings'}
+        showRightPanelToggle={showRightPanelToggle}
+        rightPanelCollapsed={rightPanelCollapsed}
+        onToggleSidebar={toggleSidebar}
+        onOpenSearch={() => setSearchModalOpen(true)}
+        onNewTask={() => {
+          startNewConversation();
+          setViewMode('chat');
+          setFileTreeMode(false);
+        }}
+        onToggleRightPanel={toggleRightPanel}
+        labels={{
+          showSidebar: t.sidebar.showSidebar,
+          hideSidebar: t.sidebar.hideSidebar,
+          search: t.sidebar.searchPlaceholder,
+          newTask: t.sidebar.newTask,
+          showPanel: t.panel.showPanel,
+          hidePanel: t.panel.hidePanel,
+        }}
+      />
 
-      {/* Sidebar & panel toggle buttons — positioned in title bar area on macOS, top bar on Windows */}
-      <div className={cn('fixed left-0 right-0 z-40 pointer-events-none', mac ? 'top-0 h-11' : 'top-0 h-8')}>
-        <button
-          onClick={toggleSidebar}
-          className="absolute btn-ghost p-1 text-[var(--abu-text-tertiary)] hover:text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-hover)] rounded-md transition-[left] duration-200 pointer-events-auto"
-          style={{ top: mac ? 23 : 6, left: sidebarCollapsed ? 96 : 200 }}
-          title={sidebarCollapsed ? t.sidebar.showSidebar : t.sidebar.hideSidebar}
-        >
-          <PanelLeft className="h-3.5 w-[18px]" strokeWidth={1.5} />
-        </button>
-
-        {/* Conversation search — sits just right of the sidebar toggle (WorkBuddy-style),
-            opens a centered search modal. */}
-        {viewMode !== 'settings' && (
-          <button
-            onClick={() => setSearchModalOpen(true)}
-            className="absolute btn-ghost p-1 text-[var(--abu-text-tertiary)] hover:text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-hover)] rounded-md transition-[left] duration-200 pointer-events-auto"
-            style={{ top: mac ? 23 : 6, left: sidebarCollapsed ? 126 : 230 }}
-            title={t.sidebar.searchPlaceholder}
-          >
-            <Search className="h-3.5 w-[18px]" strokeWidth={1.5} />
-          </button>
+      <div
+        data-abu-app-layout
+        className={cn(
+          'flex h-full w-full overflow-hidden bg-[var(--abu-bg-canvas)]',
+          windows && 'pt-8',
         )}
-
-        {/* New task — only when the sidebar is collapsed (when expanded the sidebar hosts its
-            own 新建任务). Completes the [toggle][search][+new] top toolbar like TRAE/WorkBuddy. */}
-        {sidebarCollapsed && viewMode !== 'settings' && (
-          <button
-            onClick={() => { startNewConversation(); setViewMode('chat'); setFileTreeMode(false); }}
-            className="absolute btn-ghost p-1 text-[var(--abu-text-tertiary)] hover:text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-hover)] rounded-md pointer-events-auto"
-            style={{ top: mac ? 23 : 6, left: 156 }}
-            title={t.sidebar.newTask}
-          >
-            <Plus className="h-3.5 w-[18px]" strokeWidth={2} />
-          </button>
-        )}
-
-        {showRightPanelToggle && (
-          <button
-            onClick={toggleRightPanel}
-            className={cn(
-              'absolute btn-ghost p-1 text-[var(--abu-text-tertiary)] hover:text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-hover)] rounded-md pointer-events-auto',
-              mac ? 'right-4' : 'right-[152px]',
-            )}
-            style={{ top: mac ? 23 : 6 }}
-            title={rightPanelCollapsed ? t.panel.showPanel : t.panel.hidePanel}
-          >
-            <PanelRight className="h-3.5 w-[18px]" strokeWidth={1.5} />
-          </button>
-        )}
-      </div>
-
-      <div className="flex h-full w-full overflow-hidden bg-[var(--abu-bg-canvas)]">
+      >
         {/* Sidebar - width changes are always instant (no slide animation) */}
         <div
           className="shrink-0 overflow-hidden"
@@ -731,10 +718,9 @@ function App() {
 
         {/* Main — content surface. All content modes (chat/todos/inbox/toolbox/automation)
             render as a raised card floating on the canvas (rounded + border + shadow, top
-            margin clears the overlay title bar so it sits below it). 8px gap on all sides
-            (matches TRAE --solo-layout-padding); traffic-light clearance is handled by the
-            sidebar's own top strip, not by pushing the card down — so the card sits near the
-            window top, no empty band.
+            margin clears the macOS overlay; Windows first reserves its native 32px title-bar
+            row). 8px gap on all sides (matches TRAE --solo-layout-padding); traffic-light
+            clearance is handled by the sidebar's own top strip.
             In preview mode the chat takes a stable resizable width; otherwise it flex-fills. */}
         <main
           className={cn(

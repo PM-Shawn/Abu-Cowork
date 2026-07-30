@@ -1,11 +1,11 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { openBundledChromeExtensionSetup } from './chromeSetup';
 
-const revealItemInDir = vi.fn();
+const openPath = vi.fn();
 const openUrl = vi.fn();
 const invoke = vi.fn();
 vi.mock('@tauri-apps/plugin-opener', () => ({
-  revealItemInDir: (...args: unknown[]) => revealItemInDir(...args),
+  openPath: (...args: unknown[]) => openPath(...args),
   openUrl: (...args: unknown[]) => openUrl(...args),
 }));
 vi.mock('@tauri-apps/api/core', () => ({
@@ -24,13 +24,13 @@ function setElectronHost(enabled: boolean) {
 describe('openBundledChromeExtensionSetup', () => {
   beforeEach(() => {
     setElectronHost(false);
-    revealItemInDir.mockReset();
+    openPath.mockReset();
     openUrl.mockReset();
     invoke.mockReset();
   });
 
-  it('reveals the bundled extension folder itself and opens Chrome extension manager', async () => {
-    revealItemInDir.mockResolvedValue(undefined);
+  it('opens the extension parent folder and Chrome extension manager', async () => {
+    openPath.mockResolvedValue(undefined);
     openUrl.mockResolvedValue(undefined);
 
     await expect(openBundledChromeExtensionSetup('/resources/browser-extension'))
@@ -38,26 +38,27 @@ describe('openBundledChromeExtensionSetup', () => {
         extensionFolderOpened: true,
         extensionsPageOpened: true,
       });
-    expect(revealItemInDir).toHaveBeenCalledWith('/resources/browser-extension');
+    expect(openPath).toHaveBeenCalledWith('/resources');
     expect(openUrl).toHaveBeenCalledWith('chrome://extensions');
   });
 
   it('asks the Electron host to launch Chrome for its internal extensions page', async () => {
     setElectronHost(true);
-    revealItemInDir.mockResolvedValue(undefined);
+    openPath.mockResolvedValue(undefined);
     invoke.mockResolvedValue(undefined);
 
     await expect(openBundledChromeExtensionSetup(String.raw`C:\Program Files\Abu\resources\browser-extension`))
       .resolves.toEqual({
         extensionFolderOpened: true,
         extensionsPageOpened: true,
-      });
+    });
+    expect(openPath).toHaveBeenCalledWith(String.raw`C:/Program Files/Abu/resources`);
     expect(invoke).toHaveBeenCalledWith('open_chrome_extensions');
     expect(openUrl).not.toHaveBeenCalled();
   });
 
   it('reports each failed handoff independently', async () => {
-    revealItemInDir.mockRejectedValue(new Error('missing'));
+    openPath.mockRejectedValue(new Error('missing'));
     openUrl.mockRejectedValue(new Error('unsupported'));
 
     await expect(openBundledChromeExtensionSetup('/missing')).resolves.toEqual({

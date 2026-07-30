@@ -76,5 +76,6 @@ test('Windows title-bar colors follow Abu dark and light theme changes', () => {
 test('Electron maps both historical and current Tauri drag attributes', () => {
   assert.match(WINDOW_DRAG_REGION_CSS, /data-tauri-drag\]/);
   assert.match(WINDOW_DRAG_REGION_CSS, /data-tauri-drag-region\]/);
+  assert.match(WINDOW_DRAG_REGION_CSS, /data-electron-no-drag/);
   assert.match(WINDOW_DRAG_REGION_CSS, /no-drag/);
 });

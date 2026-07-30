@@ -23,7 +23,7 @@ import { open as openDialog } from '@tauri-apps/plugin-dialog';
 import { readTextFile } from '@tauri-apps/plugin-fs';
 import ShareExportDialog from '@/components/share/ShareExportDialog';
 import ImportedBadge from './ImportedBadge';
-import { isMacOS } from '@/utils/platform';
+import { isMacOS, isWindows } from '@/utils/platform';
 import EnterpriseStatusBadge from '@/components/enterprise/EnterpriseStatusBadge';
 // Side-effect import: registers BrandSlot in the enterprise mounts registry
 import '@/components/enterprise/BrandSlot';
@@ -276,7 +276,13 @@ export default function Sidebar() {
           toolbar row so 新建任务 sits comfortably below the toggle/search icons. */}
       <div
         data-tauri-drag-region
-        className={isMacOS() ? 'h-14 shrink-0' : 'h-8 shrink-0'}
+        className={
+          isMacOS()
+            ? 'h-14 shrink-0'
+            : isWindows()
+              ? 'h-0 shrink-0'
+              : 'h-8 shrink-0'
+        }
       />
       {/* Top Navigation */}
       <nav className="px-4 pb-2 space-y-0.5" aria-label="Main navigation">

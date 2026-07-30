@@ -11,12 +11,15 @@ import os from 'node:os';
 import path from 'node:path';
 import { writeTauriSecretsFile, encryptTauriEntries } from './tauriSecretsReader.cjs';
 import {
+  BACKUP_DIRNAME,
+  MIGRATION_VERSION,
   resolveTauriAppDataDir,
   runTauriMigration,
   estimateMigrationSpace,
   backupElectronChromiumState,
   SENTINEL_FILENAME,
   hasValidSentinel,
+  inspectLegacyElectronSymlinkRepairs,
   sourceInventory,
 } from './tauriMigration.cjs';
 import { listFiles } from './spike/listFilesRecursive.cjs';
@@ -547,6 +550,133 @@ describe('runTauriMigration', () => {
       path.normalize('../image-size/bin/image-size.js'),
     );
     expect(fs.readFileSync(migratedLink, 'utf8')).toContain('/usr/bin/env node');
+  });
+
+  it('repairs exact v1 absolute symlinks after rollback and re-upgrade without discarding partial backups', () => {
+    seedTauriDir();
+    const sourcePackageBin = path.join(
+      tauriDir,
+      'sessions',
+      'conv1',
+      'outputs',
+      'node_modules',
+      'image-size',
+      'bin',
+    );
+    const sourceBinDir = path.join(
+      tauriDir,
+      'sessions',
+      'conv1',
+      'outputs',
+      'node_modules',
+      '.bin',
+    );
+    const electronPackageBin = path.join(
+      electronDir,
+      'sessions',
+      'conv1',
+      'outputs',
+      'node_modules',
+      'image-size',
+      'bin',
+    );
+    const electronBinDir = path.join(
+      electronDir,
+      'sessions',
+      'conv1',
+      'outputs',
+      'node_modules',
+      '.bin',
+    );
+    const relativeTarget = '../image-size/bin/image-size.js';
+    fs.mkdirSync(sourcePackageBin, { recursive: true });
+    fs.mkdirSync(sourceBinDir, { recursive: true });
+    fs.writeFileSync(path.join(sourcePackageBin, 'image-size.js'), '#!/usr/bin/env node\n');
+    fs.symlinkSync(relativeTarget, path.join(sourceBinDir, 'image-size'), 'file');
+
+    // Early transition builds copied the local target but rewrote the link to
+    // the absolute source path. A later Tauri rollback left this v1 Electron
+    // profile in place for the next v2 upgrade.
+    fs.mkdirSync(electronPackageBin, { recursive: true });
+    fs.mkdirSync(electronBinDir, { recursive: true });
+    fs.writeFileSync(path.join(electronPackageBin, 'image-size.js'), '#!/usr/bin/env node\n');
+    const legacyLink = path.join(electronBinDir, 'image-size');
+    fs.symlinkSync(
+      path.resolve(sourceBinDir, relativeTarget),
+      legacyLink,
+      'file',
+    );
+    fs.writeFileSync(
+      path.join(electronDir, SENTINEL_FILENAME),
+      JSON.stringify({ version: 1, status: 'complete' }),
+    );
+
+    const inventory = sourceInventory(tauriDir);
+    const repairs = inspectLegacyElectronSymlinkRepairs(tauriDir, electronDir);
+    expect(repairs).toHaveLength(1);
+    expect(repairs[0].relativePath).toBe(
+      path.join('sessions', 'conv1', 'outputs', 'node_modules', '.bin', 'image-size'),
+    );
+    expect(
+      estimateMigrationSpace(electronDir, inventory, null, repairs).existingBytes,
+    ).toBeGreaterThan(0);
+
+    // Preserve a partial directory created by the failed RC backup. The retry
+    // must choose a fresh destination rather than mistaking it for complete.
+    const partialBackup = path.join(
+      root,
+      BACKUP_DIRNAME,
+      `migration-v${MIGRATION_VERSION}-${inventory.fingerprint.slice(0, 16)}`,
+    );
+    fs.mkdirSync(path.join(partialBackup, 'sessions'), { recursive: true });
+    fs.writeFileSync(path.join(partialBackup, 'sessions', 'partial.txt'), 'keep me');
+
+    const summary = runWith(fakeSecretStore(), { inventory });
+    if ('skipped' in summary) throw new Error('v1 marker must not skip v2 migration');
+    expect(summary.legacySymlinks).toMatchObject({ detected: 1, repaired: 1 });
+    expect(summary.sentinelWritten).toBe(true);
+    expect(path.normalize(fs.readlinkSync(legacyLink))).toBe(
+      path.normalize(relativeTarget),
+    );
+    expect(path.normalize(fs.readlinkSync(path.join(
+      summary.backup.path!,
+      'sessions',
+      'conv1',
+      'outputs',
+      'node_modules',
+      '.bin',
+      'image-size',
+    )))).toBe(path.normalize(relativeTarget));
+    expect(summary.backup.path).not.toBe(partialBackup);
+    expect(fs.readFileSync(
+      path.join(partialBackup, 'sessions', 'partial.txt'),
+      'utf8',
+    )).toBe('keep me');
+    expect(fs.existsSync(
+      path.join(summary.backup.path!, 'file-backup-manifest.json'),
+    )).toBe(true);
+    expect(fs.existsSync(
+      path.join(summary.backup.path!, 'legacy-symlink-repairs.json'),
+    )).toBe(true);
+    expect(fs.readlinkSync(path.join(sourceBinDir, 'image-size'))).toBe(relativeTarget);
+  });
+
+  it('still rejects unrelated absolute symlinks already present in Electron data', () => {
+    seedTauriDir();
+    fs.mkdirSync(path.join(electronDir, 'sessions'), { recursive: true });
+    fs.symlinkSync(
+      path.join(tauriDir, 'conversations', 'index.json'),
+      path.join(electronDir, 'sessions', 'untrusted-link'),
+      'file',
+    );
+
+    const summary = runWith(fakeSecretStore());
+    if ('skipped' in summary) throw new Error('unexpected skip');
+    expect(summary.legacySymlinkRepairError).toMatch(
+      /absolute symbolic links are not allowed/,
+    );
+    expect(summary.sentinelWritten).toBe(false);
+    expect(summary.backup.path).toBeNull();
   });
 
   it('rejects absolute source symlinks without writing a completion marker', () => {

@@ -1,6 +1,7 @@
-import { openUrl, revealItemInDir } from '@tauri-apps/plugin-opener';
+import { openPath, openUrl } from '@tauri-apps/plugin-opener';
 import { invoke } from '@tauri-apps/api/core';
 import { hasElectronCommandHost } from '@/utils/electronHost';
+import { getParentDir } from '@/utils/pathUtils';
 
 export interface ChromeExtensionSetupResult {
   extensionFolderOpened: boolean;
@@ -19,10 +20,11 @@ export async function openBundledChromeExtensionSetup(
   let extensionsPageOpened = false;
 
   try {
-    // Reveal the folder itself instead of navigating inside it. Chrome's
-    // “Load unpacked” picker expects the browser-extension directory, not the
-    // individual manifest/scripts contained by that directory.
-    await revealItemInDir(extensionPath);
+    // Windows Explorer commonly opens a directory argument *inside* that
+    // directory, which made users think they should drag manifest/scripts one
+    // by one. Open its parent instead so browser-extension is visible as the
+    // single folder Chrome's “Load unpacked” picker must select.
+    await openPath(getParentDir(extensionPath));
     extensionFolderOpened = true;
   } catch {
     // Return both outcomes so the UI can give an honest recovery path.

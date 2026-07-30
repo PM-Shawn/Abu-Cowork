@@ -134,7 +134,14 @@ try {
       throw "Installed transition build did not copy the Tauri conversation fixture"
     }
     if ((Get-Content $migratedFile -Raw) -ne '{"role":"user","content":"upgrade-fixture"}') {
-      throw "Tauri source did not win the migration conflict"
+      $sentinel = Join-Path (Split-Path (Split-Path $electronFixture -Parent) -Parent) `
+        "tauri-migration.json"
+      $sentinelState = if (Test-Path $sentinel) {
+        Get-Content $sentinel -Raw
+      } else {
+        "missing"
+      }
+      throw "Tauri source did not win the migration conflict; sentinel=$sentinelState"
     }
     if ((Get-Content (Join-Path $tauriFixture "messages.jsonl") -Raw) -ne '{"role":"user","content":"upgrade-fixture"}') {
       throw "Migration modified the original Tauri conversation"

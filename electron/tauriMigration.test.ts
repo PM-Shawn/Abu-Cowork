@@ -252,6 +252,54 @@ describe('runTauriMigration', () => {
     expect(summary.secrets.migrated).toEqual(['aux:webSearch']);
   });
 
+  it('replaces a conflicting Electron file with the Tauri source on Windows', () => {
+    seedTauriDir();
+    const sourceFile = path.join(
+      tauriDir,
+      'conversations',
+      'conv1',
+      'messages.jsonl',
+    );
+    const destinationFile = path.join(
+      electronDir,
+      'conversations',
+      'conv1',
+      'messages.jsonl',
+    );
+    fs.mkdirSync(path.dirname(destinationFile), { recursive: true });
+    fs.writeFileSync(destinationFile, '{"role":"user","content":"electron-conflict"}\n');
+    const store = fakeSecretStore();
+    const originalPlatform = Object.getOwnPropertyDescriptor(process, 'platform')!;
+    Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
+
+    try {
+      const summary = runWith(store, { sourceWins: true });
+      if ('skipped' in summary) throw new Error('unexpected skip');
+      expect(summary.dirs.conversations).toMatchObject({
+        status: 'merged-source-authoritative',
+        replaced: 1,
+      });
+      expect(fs.readFileSync(destinationFile, 'utf8')).toBe(
+        fs.readFileSync(sourceFile, 'utf8'),
+      );
+      expect(
+        fs.readFileSync(
+          path.join(
+            summary.backup.path!,
+            'conflicts',
+            'conversations',
+            'conv1',
+            'messages.jsonl',
+          ),
+          'utf8',
+        ),
+      ).toContain('electron-conflict');
+      expect(summary.sentinelWritten).toBe(true);
+    } finally {
+      Object.defineProperty(process, 'platform', originalPlatform);
+    }
+  });
+
   it('source-wins mode replaces an existing Electron secret after encrypted backup', () => {
     seedTauriDir();
     fs.mkdirSync(electronDir, { recursive: true });

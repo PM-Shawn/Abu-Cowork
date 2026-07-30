@@ -196,7 +196,18 @@ function replaceFileAtomic(source, destination) {
   fs.mkdirSync(path.dirname(destination), { recursive: true });
   fs.copyFileSync(source, staging);
   try {
-    fs.renameSync(staging, destination);
+    if (process.platform === 'win32') {
+      // Windows rename semantics are less reliable than POSIX when a file at
+      // the destination was just removed or scanned by another process. The
+      // pre-migration Electron tree and this individual conflict have already
+      // been copied to the recovery root, while the Tauri source remains
+      // read-only. Copying the fully staged bytes into place therefore keeps
+      // the operation recoverable and retryable without depending on rename
+      // replacement behavior.
+      fs.copyFileSync(staging, destination);
+    } else {
+      fs.renameSync(staging, destination);
+    }
   } finally {
     fs.rmSync(staging, { force: true });
   }

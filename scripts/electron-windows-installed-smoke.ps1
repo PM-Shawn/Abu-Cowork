@@ -38,9 +38,17 @@ $migrationDiagnostics = Join-Path $env:RUNNER_TEMP `
 $expectMigration = $env:ABU_EXPECT_TAURI_MIGRATION -eq "true"
 $tauriInstallRoot = Join-Path $env:LOCALAPPDATA "Abu"
 $tauriRollbackMarker = Join-Path $tauriInstallRoot "$upgradeFixtureName.rollback"
+$tauriLegacyExe = Join-Path $tauriInstallRoot "abu.exe"
+$tauriLegacyUninstaller = Join-Path $tauriInstallRoot "uninstall.exe"
+$tauriLegacyUninstallKey = `
+  "Registry::HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Uninstall\Abu"
+$createdLegacyUninstallFixture = $false
 
 try {
   if ($expectMigration) {
+    if (Test-Path $tauriLegacyUninstallKey) {
+      throw "CI runner already has a legacy Abu uninstall entry; refusing to overwrite it"
+    }
     New-Item -ItemType Directory -Path $tauriFixture -Force | Out-Null
     Set-Content -Path (Join-Path $tauriFixture "messages.jsonl") `
       -Value '{"role":"user","content":"upgrade-fixture"}' -NoNewline
@@ -51,6 +59,18 @@ try {
       -Value "electron-only" -NoNewline
     New-Item -ItemType Directory -Path $tauriInstallRoot -Force | Out-Null
     Set-Content -Path $tauriRollbackMarker -Value "tauri-rollback" -NoNewline
+    Set-Content -Path $tauriLegacyExe -Value "ci-tauri-exe-fixture" -NoNewline
+    Set-Content -Path $tauriLegacyUninstaller -Value "ci-tauri-uninstaller-fixture" -NoNewline
+    New-Item -Path $tauriLegacyUninstallKey -Force | Out-Null
+    $createdLegacyUninstallFixture = $true
+    New-ItemProperty -Path $tauriLegacyUninstallKey -Name "DisplayName" `
+      -Value "Abu" -PropertyType String | Out-Null
+    New-ItemProperty -Path $tauriLegacyUninstallKey -Name "DisplayVersion" `
+      -Value "0.33.0" -PropertyType String | Out-Null
+    New-ItemProperty -Path $tauriLegacyUninstallKey -Name "InstallLocation" `
+      -Value "`"$tauriInstallRoot`"" -PropertyType String | Out-Null
+    New-ItemProperty -Path $tauriLegacyUninstallKey -Name "UninstallString" `
+      -Value "`"$tauriLegacyUninstaller`"" -PropertyType String | Out-Null
     # The actual app normally requires the user to click “Start safe upgrade”.
     # This CI-only triple gate lets the unattended installed smoke take that
     # exact code path without weakening normal packaged launches.
@@ -174,6 +194,18 @@ try {
     throw "Installed Abu did not open a main window within 45 seconds"
   }
   if ($expectMigration) {
+    $legacyConvergenceDeadline = [DateTime]::UtcNow.AddSeconds(15)
+    while (
+      [DateTime]::UtcNow -lt $legacyConvergenceDeadline -and
+      (Get-ItemPropertyValue -Path $tauriLegacyUninstallKey `
+        -Name "SystemComponent" -ErrorAction SilentlyContinue) -ne 1
+    ) {
+      Start-Sleep -Milliseconds 250
+    }
+    if ((Get-ItemPropertyValue -Path $tauriLegacyUninstallKey `
+      -Name "SystemComponent" -ErrorAction SilentlyContinue) -ne 1) {
+      throw "Electron did not hide the recognized legacy Tauri uninstall entry"
+    }
     $migratedFile = Join-Path $electronFixture "messages.jsonl"
     $migrationDeadline = [DateTime]::UtcNow.AddSeconds(45)
     while (
@@ -257,6 +289,28 @@ finally {
   if ($expectMigration -and -not (Test-Path $tauriRollbackMarker)) {
     throw "Electron uninstall removed the preserved Tauri rollback install"
   }
+  if ($createdLegacyUninstallFixture) {
+    if (-not (Test-Path $tauriLegacyUninstallKey)) {
+      throw "Electron uninstall deleted the legacy Tauri uninstall entry"
+    }
+    $restoredLegacyEntry = Get-ItemProperty -Path $tauriLegacyUninstallKey
+    $expectedLegacyInstallLocation = "`"$tauriInstallRoot`""
+    $expectedLegacyUninstallString = "`"$tauriLegacyUninstaller`""
+    if (
+      $restoredLegacyEntry.DisplayName -ne "Abu" -or
+      $restoredLegacyEntry.DisplayVersion -ne "0.33.0" -or
+      $restoredLegacyEntry.InstallLocation -ne $expectedLegacyInstallLocation -or
+      $restoredLegacyEntry.UninstallString -ne $expectedLegacyUninstallString
+    ) {
+      throw "Electron uninstall corrupted the legacy Tauri uninstall entry"
+    }
+    if ($restoredLegacyEntry.SystemComponent -eq 1) {
+      throw "Electron uninstall did not restore the legacy Tauri uninstall entry"
+    }
+    if (-not (Test-Path $tauriLegacyExe) -or -not (Test-Path $tauriLegacyUninstaller)) {
+      throw "Electron uninstall removed a preserved Tauri rollback executable"
+    }
+  }
   Remove-Item $tauriFixture -Recurse -Force -ErrorAction SilentlyContinue
   Remove-Item $electronFixture -Recurse -Force -ErrorAction SilentlyContinue
   if ($expectMigration -and (Test-Path $migrationBackupRoot)) {
@@ -267,6 +321,11 @@ finally {
       Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
   }
   Remove-Item $tauriRollbackMarker -Force -ErrorAction SilentlyContinue
+  Remove-Item $tauriLegacyExe -Force -ErrorAction SilentlyContinue
+  Remove-Item $tauriLegacyUninstaller -Force -ErrorAction SilentlyContinue
+  if ($createdLegacyUninstallFixture) {
+    Remove-Item $tauriLegacyUninstallKey -Recurse -Force -ErrorAction SilentlyContinue
+  }
   Remove-Item Env:ABU_E2E_AUTO_CONFIRM_TRANSITION -ErrorAction SilentlyContinue
   Remove-Item Env:ABU_E2E_MIGRATION_DIAGNOSTICS_PATH -ErrorAction SilentlyContinue
   Remove-Item Env:ABU_PACKAGED_E2E -ErrorAction SilentlyContinue

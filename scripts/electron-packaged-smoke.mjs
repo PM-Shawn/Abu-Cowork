@@ -2069,13 +2069,13 @@ async function main() {
         .find((candidate) => candidate.webContents.getURL().includes('/dist-electron-spike/index.html'));
       if (!mainWindow) return null;
       return {
-        menuHidden: mainWindow.isMenuBarVisible() === false,
+        menuVisible: mainWindow.isMenuBarVisible() === true,
         menuBarAutoHide: mainWindow.isMenuBarAutoHide(),
       };
     });
-    checks.packagedWindowsMenuHidden =
+    checks.packagedWindowsNativeMenuVisible =
       process.platform !== 'win32' ||
-      (windowChrome?.menuHidden === true && windowChrome?.menuBarAutoHide === true);
+      (windowChrome?.menuVisible === true && windowChrome?.menuBarAutoHide === false);
 
     // Exercise the same BrowserWindow close event produced by the native ×.
     // A fresh profile defaults to "ask", so the close must reach React and
@@ -2098,14 +2098,12 @@ async function main() {
     }
     checks.packagedFirstRunGuideHandled = !(await firstRunGuide.isVisible());
     if (process.platform === 'win32') {
-      const titlebarLayout = await window.evaluate(() => {
-        const titlebar = document.querySelector('[data-abu-windows-titlebar]');
-        const safeArea = document.querySelector('[data-abu-windows-titlebar-safe-area]');
+      const toolbarLayout = await window.evaluate(() => {
+        const toolbar = document.querySelector('[data-abu-windows-toolbar]');
         const appLayout = document.querySelector('[data-abu-app-layout]');
         const main = document.querySelector('main');
-        if (!titlebar || !safeArea || !appLayout || !main) return null;
-        const titlebarRect = titlebar.getBoundingClientRect();
-        const safeRect = safeArea.getBoundingClientRect();
+        if (!toolbar || !appLayout || !main) return null;
+        const toolbarRect = toolbar.getBoundingClientRect();
         const mainRect = main.getBoundingClientRect();
         const controls = [...document.querySelectorAll('[data-window-control]')]
           .map((control) => {
@@ -2121,68 +2119,106 @@ async function main() {
           });
         return {
           viewportWidth: window.innerWidth,
-          titlebar: {
-            left: titlebarRect.left,
-            right: titlebarRect.right,
-            top: titlebarRect.top,
-            bottom: titlebarRect.bottom,
-            height: titlebarRect.height,
-            background: getComputedStyle(titlebar).backgroundColor,
-          },
-          safeArea: {
-            left: safeRect.left,
-            right: safeRect.right,
-            top: safeRect.top,
-            bottom: safeRect.bottom,
+          toolbar: {
+            left: toolbarRect.left,
+            right: toolbarRect.right,
+            top: toolbarRect.top,
+            bottom: toolbarRect.bottom,
+            height: toolbarRect.height,
+            background: getComputedStyle(toolbar).backgroundColor,
           },
           appPaddingTop: Number.parseFloat(getComputedStyle(appLayout).paddingTop),
           appBackground: getComputedStyle(appLayout).backgroundColor,
+          toolbarBottom: toolbarRect.bottom,
           mainTop: mainRect.top,
           controls,
         };
       });
-      checks.packagedWindowsTitlebarLayout =
-        titlebarLayout !== null &&
-        Math.abs(titlebarLayout.titlebar.height - 32) <= 1 &&
-        titlebarLayout.appPaddingTop >= 32 &&
-        titlebarLayout.mainTop >= 39 &&
-        titlebarLayout.titlebar.background === titlebarLayout.appBackground &&
-        titlebarLayout.safeArea.right <= titlebarLayout.viewportWidth + 1 &&
-        titlebarLayout.controls.length >= 2 &&
-        titlebarLayout.controls.every((control) => (
+      checks.packagedWindowsToolbarLayout =
+        toolbarLayout !== null &&
+        Math.abs(toolbarLayout.toolbar.height - 36) <= 1 &&
+        toolbarLayout.appPaddingTop <= 0.5 &&
+        toolbarLayout.mainTop >= toolbarLayout.toolbarBottom + 7 &&
+        toolbarLayout.toolbar.background === toolbarLayout.appBackground &&
+        toolbarLayout.toolbar.left >= -1 &&
+        toolbarLayout.toolbar.right <= toolbarLayout.viewportWidth + 1 &&
+        toolbarLayout.controls.length >= 2 &&
+        toolbarLayout.controls.every((control) => (
           control.pointerEvents !== 'none' &&
-          control.left >= titlebarLayout.safeArea.left - 1 &&
-          control.right <= titlebarLayout.safeArea.right + 1 &&
-          control.top >= titlebarLayout.safeArea.top - 1 &&
-          control.bottom <= titlebarLayout.safeArea.bottom + 1
+          control.left >= toolbarLayout.toolbar.left - 1 &&
+          control.right <= toolbarLayout.toolbar.right + 1 &&
+          control.top >= toolbarLayout.toolbar.top - 1 &&
+          control.bottom <= toolbarLayout.toolbar.bottom + 1
         ));
+    } else {
+      checks.packagedWindowsToolbarLayout = true;
+    }
 
-      const sidebarControl = window.locator('[data-window-control="sidebar"]');
-      const initialSidebarTitle = await sidebarControl.getAttribute('title');
+    // Exercise all three controls on every real packaged desktop platform.
+    // A drag-region regression manifests as Playwright's click being intercepted,
+    // which is exactly the RC25 macOS and early Windows failure mode.
+    const sidebarControl = window.locator('[data-window-control="sidebar"]');
+    const initialSidebarTitle = await sidebarControl.getAttribute('title');
+    if (!initialSidebarTitle) throw new Error('sidebar control label is missing');
+    checks.packagedDesktopToolbarNativeHitTesting = await window.evaluate(() => {
+      const controls = [...document.querySelectorAll('[data-window-control]')];
+      return controls.length >= 2 && controls.every((control) => {
+        const rect = control.getBoundingClientRect();
+        const hit = document.elementFromPoint(
+          rect.left + rect.width / 2,
+          rect.top + rect.height / 2,
+        );
+        const layers = document.elementsFromPoint(
+          rect.left + rect.width / 2,
+          rect.top + rect.height / 2,
+        );
+        let ancestor = control.parentElement;
+        while (ancestor) {
+          if (getComputedStyle(ancestor).pointerEvents === 'none') return false;
+          ancestor = ancestor.parentElement;
+        }
+        return (
+          getComputedStyle(control).webkitAppRegion === 'no-drag' &&
+          !layers.some((layer) => (
+            layer !== control &&
+            !control.contains(layer) &&
+            !layer.contains(control) &&
+            getComputedStyle(layer).webkitAppRegion === 'drag'
+          )) &&
+          Boolean(hit && (hit === control || control.contains(hit)))
+        );
+      });
+    });
+    const newTaskControl = window.locator('[data-window-control="new-task"]');
+    let sidebarChangedForNewTask = false;
+    if (!(await newTaskControl.isVisible())) {
       await sidebarControl.click();
       await waitUntil(
         async () => (await sidebarControl.getAttribute('title')) !== initialSidebarTitle,
-        'the Windows title-bar sidebar control to toggle',
+        'the packaged sidebar control to toggle',
       );
+      await newTaskControl.waitFor({ state: 'visible', timeout: READY_TIMEOUT });
+      sidebarChangedForNewTask = true;
+    }
+    await newTaskControl.click();
+
+    const searchControl = window.locator('[data-window-control="search"]');
+    const searchTitle = await searchControl.getAttribute('title');
+    if (!searchTitle) throw new Error('search control label is missing');
+    await searchControl.click();
+    const searchInput = window.getByPlaceholder(searchTitle);
+    await searchInput.waitFor({ state: 'visible', timeout: READY_TIMEOUT });
+    await window.keyboard.press('Escape');
+    await searchInput.waitFor({ state: 'hidden', timeout: READY_TIMEOUT });
+
+    if (sidebarChangedForNewTask) {
       await sidebarControl.click();
       await waitUntil(
         async () => (await sidebarControl.getAttribute('title')) === initialSidebarTitle,
-        'the Windows title-bar sidebar control to restore',
+        'the packaged sidebar control to restore',
       );
-
-      const searchControl = window.locator('[data-window-control="search"]');
-      const searchTitle = await searchControl.getAttribute('title');
-      if (!searchTitle) throw new Error('Windows title-bar search label is missing');
-      await searchControl.click();
-      const searchInput = window.getByPlaceholder(searchTitle);
-      await searchInput.waitFor({ state: 'visible', timeout: READY_TIMEOUT });
-      await window.keyboard.press('Escape');
-      await searchInput.waitFor({ state: 'hidden', timeout: READY_TIMEOUT });
-      checks.packagedWindowsTitlebarControlsInteractive = true;
-    } else {
-      checks.packagedWindowsTitlebarLayout = true;
-      checks.packagedWindowsTitlebarControlsInteractive = true;
     }
+    checks.packagedDesktopToolbarControlsInteractive = true;
     await app.evaluate(({ BrowserWindow }) => {
       const mainWindow = BrowserWindow.getAllWindows()
         .find((candidate) => candidate.webContents.getURL().includes('/dist-electron-spike/index.html'));
@@ -2727,28 +2763,28 @@ print(json.dumps({"executable": sys.executable, "files": [str(p) for p in [docx_
         }
         await rightPanel.waitFor({ state: 'visible', timeout: READY_TIMEOUT });
         const rightPanelLayout = await window.evaluate(() => {
-          const titlebar = document.querySelector('[data-abu-windows-titlebar]');
+          const toolbar = document.querySelector('[data-abu-windows-toolbar]');
           const panel = document.querySelector('[data-abu-right-panel]');
           const tabs = document.querySelector('[data-abu-workspace-tabs]');
-          if (!titlebar || !panel || !tabs) return null;
-          const titlebarRect = titlebar.getBoundingClientRect();
+          if (!toolbar || !panel || !tabs) return null;
+          const toolbarRect = toolbar.getBoundingClientRect();
           const panelRect = panel.getBoundingClientRect();
           const tabsRect = tabs.getBoundingClientRect();
           return {
-            titlebarBottom: titlebarRect.bottom,
+            toolbarBottom: toolbarRect.bottom,
             panelTop: panelRect.top,
             tabsTop: tabsRect.top,
             panelRight: panelRect.right,
             viewportWidth: window.innerWidth,
           };
         });
-        checks.packagedWindowsRightPanelClearsTitlebar =
+        checks.packagedWindowsRightPanelClearsToolbar =
           rightPanelLayout !== null &&
-          rightPanelLayout.panelTop >= rightPanelLayout.titlebarBottom + 7 &&
-          rightPanelLayout.tabsTop >= rightPanelLayout.titlebarBottom + 7 &&
+          rightPanelLayout.panelTop >= rightPanelLayout.toolbarBottom + 7 &&
+          rightPanelLayout.tabsTop >= rightPanelLayout.toolbarBottom + 7 &&
           rightPanelLayout.panelRight <= rightPanelLayout.viewportWidth + 1;
       } else {
-        checks.packagedWindowsRightPanelClearsTitlebar = true;
+        checks.packagedWindowsRightPanelClearsToolbar = true;
       }
 
       const browserResult = await runPackagedBrowserFlow(app, window, mock.browserUrl, runtimeTrap);

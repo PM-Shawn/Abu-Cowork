@@ -31,3 +31,17 @@
     ${StdUtils.ExecShellAsUser} $0 "$launchLink" "open" "--tauri-transition"
   ${EndIf}
 !macroend
+
+# If Electron is later removed, make the preserved Tauri rollback installation
+# visible in Windows Installed Apps again. This is deliberately path-checked and
+# never deletes either application's files or user data.
+!macro customUnInstall
+  ReadRegStr $R0 HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\Abu" "InstallLocation"
+  ReadRegStr $R1 HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\Abu" "UninstallString"
+  ${If} $R0 == "$LOCALAPPDATA\Abu"
+  ${OrIf} $R0 == '$\"$LOCALAPPDATA\Abu$\"'
+    ${If} $R1 == '$\"$LOCALAPPDATA\Abu\uninstall.exe$\"'
+      DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\Abu" "SystemComponent"
+    ${EndIf}
+  ${EndIf}
+!macroend

@@ -24,7 +24,7 @@
  */
 'use strict';
 
-const { app, BrowserWindow, dialog, nativeTheme } = require('electron');
+const { app, BrowserWindow, dialog, Menu, nativeTheme } = require('electron');
 const path = require('node:path');
 const fs = require('node:fs');
 const {
@@ -44,10 +44,11 @@ const {
 const { initDeepLink, handleSecondInstanceArgv } = require('./deepLinkHost.cjs');
 const { registerPrivilegedWindow } = require('./securityBoundary.cjs');
 const { isTauriTransitionBuild } = require('./releaseMetadata.cjs');
+const { hideLegacyTauriUninstallEntry } = require('./legacyWindowsInstall.cjs');
 const {
   WINDOW_DRAG_REGION_CSS,
+  configureApplicationMenu,
   mainWindowPlatformOptions,
-  removeDefaultApplicationMenu,
 } = require('./windowChrome.cjs');
 const {
   hasValidSentinel,
@@ -137,9 +138,9 @@ function createWindow(transitionWindow = null) {
     width: 1200,
     height: 800,
     minWidth: 900,
-    // macOS overlays the traffic lights; Windows overlays native window
-    // controls on Abu's own 32px drag region. This avoids a second white title
-    // strip and the default File/Edit/View/Window menu seen in the RC.
+    // macOS overlays the traffic lights. Windows retains its standard native
+    // frame/Snap behavior and uses a small localized native application menu;
+    // Abu's business controls live in a separate clickable renderer toolbar.
     ...mainWindowPlatformOptions(process.platform, nativeTheme.shouldUseDarkColors),
     webPreferences: {
       preload: path.join(__dirname, 'preload.cjs'),
@@ -148,7 +149,21 @@ function createWindow(transitionWindow = null) {
       sandbox: true,
     },
   });
-  removeDefaultApplicationMenu(win, process.platform);
+  configureApplicationMenu(win, Menu, {
+    platform: process.platform,
+    isZh: app.getLocale().toLowerCase().startsWith('zh'),
+    version: app.getVersion(),
+    onAbout: () => {
+      void dialog.showMessageBox(win, {
+        type: 'info',
+        title: 'Abu',
+        message: 'Abu',
+        detail: `v${app.getVersion()}`,
+        buttons: ['OK'],
+        noLink: true,
+      });
+    },
+  });
   win.once('ready-to-show', () => {
     if (
       !getMigrationStartupBlock() &&
@@ -157,6 +172,17 @@ function createWindow(transitionWindow = null) {
     ) {
       if (transitionWindow && !transitionWindow.isDestroyed()) {
         transitionWindow.destroy();
+      }
+      // Installed Apps must converge only after the migration gate has passed.
+      // This marks the recognized pre-0.34 Tauri uninstall entry as a hidden
+      // rollback component; it never removes old binaries or user data.
+      if (process.platform === 'win32' && isTauriTransitionBuild(app)) {
+        const legacyInstall = hideLegacyTauriUninstallEntry();
+        log(
+          legacyInstall.reason === 'registry-write-failed' ? 'warn' : 'info',
+          'legacy Tauri install convergence',
+          legacyInstall,
+        );
       }
       win.show();
       if (transitionWindow) {

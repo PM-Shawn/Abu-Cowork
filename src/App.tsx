@@ -653,9 +653,9 @@ function App() {
     getCurrentWindow().setTitle(desktopPlatform === 'macos' ? '' : 'Abu');
   }, [desktopPlatform]);
 
-  // macOS overlays content behind the traffic lights. Windows reserves a
-  // dedicated 32px row for Abu's controls and the native caption buttons.
-  const windows = desktopPlatform === 'windows';
+  // macOS uses panel-scoped draggable headers. Windows keeps the native
+  // frame/menu and reserves a separate renderer toolbar for business actions.
+  const mac = desktopPlatform === 'macos';
 
   // Preview split is active only when a preview is open in the chat view AND the
   // right panel is showing — then the chat holds a stable width and preview flex-fills.
@@ -671,76 +671,101 @@ function App() {
     !rightPanelCollapsed &&
     (((activeConv?.messages?.length ?? 0) > 0) || hasAnyTab);
 
+  const windowTitleBarProps = {
+    platform: desktopPlatform,
+    sidebarCollapsed,
+    showSearch: viewMode !== 'settings',
+    showNewTask: sidebarCollapsed && viewMode !== 'settings',
+    showRightPanelToggle,
+    rightPanelCollapsed,
+    onToggleSidebar: toggleSidebar,
+    onOpenSearch: () => setSearchModalOpen(true),
+    onNewTask: () => {
+      startNewConversation();
+      setViewMode('chat');
+      setFileTreeMode(false);
+    },
+    onToggleRightPanel: toggleRightPanel,
+    labels: {
+      showSidebar: t.sidebar.showSidebar,
+      hideSidebar: t.sidebar.hideSidebar,
+      search: t.sidebar.searchPlaceholder,
+      newTask: t.sidebar.newTask,
+      showPanel: t.panel.showPanel,
+      hidePanel: t.panel.hidePanel,
+    },
+  };
+
   return (
     <ErrorBoundary>
     <TooltipProvider delayDuration={200}>
-      <WindowTitleBar
-        platform={desktopPlatform}
-        sidebarCollapsed={sidebarCollapsed}
-        showSearch={viewMode !== 'settings'}
-        showNewTask={sidebarCollapsed && viewMode !== 'settings'}
-        showRightPanelToggle={showRightPanelToggle}
-        rightPanelCollapsed={rightPanelCollapsed}
-        onToggleSidebar={toggleSidebar}
-        onOpenSearch={() => setSearchModalOpen(true)}
-        onNewTask={() => {
-          startNewConversation();
-          setViewMode('chat');
-          setFileTreeMode(false);
-        }}
-        onToggleRightPanel={toggleRightPanel}
-        labels={{
-          showSidebar: t.sidebar.showSidebar,
-          hideSidebar: t.sidebar.hideSidebar,
-          search: t.sidebar.searchPlaceholder,
-          newTask: t.sidebar.newTask,
-          showPanel: t.panel.showPanel,
-          hidePanel: t.panel.hidePanel,
-        }}
-      />
-
       <div
-        data-abu-app-layout
-        className={cn(
-          'flex h-full w-full overflow-hidden bg-[var(--abu-bg-canvas)]',
-          windows && 'pt-8',
-        )}
+        data-abu-app-shell
+        className="relative flex h-full w-full flex-col overflow-hidden bg-[var(--abu-bg-canvas)]"
       >
-        {/* Sidebar - width changes are always instant (no slide animation) */}
+        {!mac && <WindowTitleBar {...windowTitleBarProps} />}
+
         <div
-          className="shrink-0 overflow-hidden"
-          style={{
-            width: sidebarCollapsed ? 0 : 260,
-          }}
+          data-abu-app-layout
+          className="flex min-h-0 w-full flex-1 overflow-hidden bg-[var(--abu-bg-canvas)]"
         >
-          <Sidebar />
+          {/* Sidebar - width changes are always instant (no slide animation).
+              On macOS its own header owns both the drag region and controls,
+              matching TRAE SOLO's task-list header instead of overlapping
+              independent drag and button layers. */}
+          <div
+            className="flex shrink-0 flex-col overflow-hidden"
+            style={{
+              width: sidebarCollapsed ? 0 : 260,
+            }}
+          >
+            {mac && !sidebarCollapsed && (
+              <WindowTitleBar {...windowTitleBarProps} macPlacement="sidebar" showNewTask={false} showRightPanelToggle={false} />
+            )}
+            <div className="min-h-0 flex-1">
+              <Sidebar />
+            </div>
+          </div>
+
+          <div className="relative flex min-w-0 flex-1 flex-col overflow-hidden">
+            {mac && sidebarCollapsed && (
+              <WindowTitleBar {...windowTitleBarProps} macPlacement="main" />
+            )}
+
+            {/* Like TRAE SOLO's panel-container/panel-content split, only the
+                exposed 8px canvas gutters are draggable. The raised cards
+                explicitly carve out stable no-drag interaction surfaces. */}
+            <div
+              data-abu-panel-container
+              data-tauri-drag-region={mac ? '' : undefined}
+              className="flex min-h-0 flex-1"
+            >
+              <main
+                data-electron-no-drag
+                className={cn(
+                  'relative bg-[var(--abu-bg-base)]',
+                  'mt-2 mb-2 ml-2 rounded-[var(--abu-radius-panel)] border border-[var(--abu-border)] shadow-[var(--abu-shadow-card)] overflow-hidden',
+                  previewSplit ? 'shrink-0' : 'flex-1 min-w-0',
+                  // Right panel beside chat (preview OR summary): tighter 4px gutter; otherwise 8px to the window edge.
+                  rightPanelBeside ? 'mr-1' : 'mr-2',
+                )}
+                style={previewSplit ? { width: previewChatWidth } : undefined}
+              >
+                {mac && !sidebarCollapsed && (
+                  <WindowTitleBar {...windowTitleBarProps} macPlacement="panel" />
+                )}
+                {viewMode === 'automation' && <AutomationView />}
+                {viewMode === 'toolbox' && <ToolboxView />}
+                {viewMode === 'todos' && <TodoView />}
+                {viewMode === 'inbox' && <InboxView />}
+                {(viewMode === 'chat' || !viewMode) && <ChatView />}
+              </main>
+
+              {/* Right panel */}
+              <RightPanel />
+            </div>
+          </div>
         </div>
-
-        {/* Main — content surface. All content modes (chat/todos/inbox/toolbox/automation)
-            render as a raised card floating on the canvas (rounded + border + shadow, top
-            margin clears the macOS overlay; Windows first reserves its native 32px title-bar
-            row). 8px gap on all sides (matches TRAE --solo-layout-padding); traffic-light
-            clearance is handled by the sidebar's own top strip.
-            In preview mode the chat takes a stable resizable width; otherwise it flex-fills. */}
-        <main
-          className={cn(
-            'bg-[var(--abu-bg-base)]',
-            'mt-2 mb-2 ml-2 rounded-[var(--abu-radius-panel)] border border-[var(--abu-border)] shadow-[var(--abu-shadow-card)] overflow-hidden',
-            previewSplit ? 'shrink-0' : 'flex-1 min-w-0',
-            // Right panel beside chat (preview OR summary): tighter 4px gutter; otherwise 8px to the window edge.
-            rightPanelBeside ? 'mr-1' : 'mr-2',
-          )}
-          style={previewSplit ? { width: previewChatWidth } : undefined}
-        >
-          {viewMode === 'automation' && <AutomationView />}
-          {viewMode === 'toolbox' && <ToolboxView />}
-          {viewMode === 'todos' && <TodoView />}
-          {viewMode === 'inbox' && <InboxView />}
-          {(viewMode === 'chat' || !viewMode) && <ChatView />}
-        </main>
-
-        {/* Right panel */}
-        <RightPanel />
 
         <ToastContainer />
 

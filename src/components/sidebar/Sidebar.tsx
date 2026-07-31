@@ -272,13 +272,12 @@ export default function Sidebar() {
 
   return (
     <div className="flex flex-col h-full w-[260px] bg-[var(--abu-bg-canvas)]">
-      {/* Drag region — covers the title bar area above sidebar content. Taller than the
-          toolbar row so 新建任务 sits comfortably below the toggle/search icons. */}
+      {/* macOS and Windows reserve title-bar/tool-bar space in App's normal
+          flow. Linux keeps the compact spacer below its native title bar. */}
       <div
-        data-tauri-drag-region
         className={
           isMacOS()
-            ? 'h-14 shrink-0'
+            ? 'h-0 shrink-0'
             : isWindows()
               ? 'h-0 shrink-0'
               : 'h-8 shrink-0'

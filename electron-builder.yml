@@ -221,6 +221,9 @@ nsis:
   perMachine: false
   allowElevation: false
   packElevateHelper: false
+  # Keep the Windows Installed Apps identity stable across the Tauri -> Electron
+  # transition. The old Tauri entry is hidden only after migration succeeds.
+  uninstallDisplayName: "Abu"
   include: build/electron-transition-installer.nsh
   createDesktopShortcut: true
   createStartMenuShortcut: true

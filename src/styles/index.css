@@ -10,15 +10,20 @@
    Cascades to group-hover/peer-hover since they compose this base variant. */
 @custom-variant hover (&:hover);
 
-/* Electron exposes the rectangle not occupied by native Windows caption
-   buttons through titlebar-area-* environment variables. Keep Abu's drag row
-   and controls inside that safe rectangle instead of guessing a DPI-dependent
-   right offset. The fallback matches the standard 3-button Windows width. */
-.abu-windows-titlebar-safe-area {
-  left: env(titlebar-area-x, 0px);
-  top: env(titlebar-area-y, 0px);
-  width: env(titlebar-area-width, calc(100% - 138px));
-  height: env(titlebar-area-height, 32px);
+/* Electron native title-bar hit testing happens before React receives a mouse
+   event. Keep this rule in the renderer stylesheet (not only insertCSS from
+   main) so real pointer clicks carve stable interaction islands out of macOS
+   hidden-titlebar and Windows toolbar regions from the first paint onward. */
+[data-tauri-drag],
+[data-tauri-drag-region] {
+  -webkit-app-region: drag;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+[data-electron-no-drag],
+[data-electron-no-drag] * {
+  -webkit-app-region: no-drag !important;
 }
 
 @layer base {

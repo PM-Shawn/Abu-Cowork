@@ -200,6 +200,7 @@ export default function RightPanel() {
   return (
     <div
       data-abu-right-panel
+      data-electron-no-drag
       className={cn(
         // Raised content card floating on the canvas (matches dev's panel redesign):
         // margins on 3 sides + rounded/border/shadow. No h-full — flex fills height

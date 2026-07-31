@@ -210,6 +210,11 @@ test('Electron build uses native runners for all three release targets', () => {
   );
   assert.match(
     installedSmoke,
+    /Electron uninstall state did not converge within 120 seconds/
+  );
+  assert.match(installedSmoke, /Test-Path \$installedExe\.FullName/);
+  assert.match(
+    installedSmoke,
     /Expected a recovery copy of the preexisting Electron conflict/
   );
   const transitionInstaller = fs.readFileSync(

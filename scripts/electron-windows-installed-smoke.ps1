@@ -25,6 +25,7 @@ if ($signature.Status -ne [System.Management.Automation.SignatureStatus]::NotSig
 $programsRoot = [System.IO.Path]::GetFullPath((Join-Path $env:LOCALAPPDATA "Programs"))
 $beforePids = @(Get-Process -Name "Abu" -ErrorAction SilentlyContinue | ForEach-Object { $_.Id })
 $installerProcess = $null
+$installedExe = $null
 $installedProcess = $null
 $installedProcesses = @()
 $uninstaller = $null
@@ -286,6 +287,52 @@ finally {
     }
     if ($uninstallProcess.ExitCode -ne 0) {
       throw "NSIS uninstaller exited with $($uninstallProcess.ExitCode)"
+    }
+
+    # NSIS first launches a short-lived bootstrap process, then performs the
+    # actual uninstall from a temporary Un_*.exe child. WaitForExit only covers
+    # the bootstrap, so use the observable uninstall state as the completion
+    # signal. This catches genuine rollback failures without racing the child.
+    $uninstallConvergenceDeadline = [DateTime]::UtcNow.AddSeconds(120)
+    $uninstallStateConverged = $false
+    $electronExecutablePresent = $true
+    $legacyEntryPresent = -not $createdLegacyUninstallFixture
+    $remainingSystemComponent = $null
+    $remainingTransitionMarker = $null
+    while ([DateTime]::UtcNow -lt $uninstallConvergenceDeadline) {
+      $electronExecutablePresent = Test-Path $installedExe.FullName
+      if ($createdLegacyUninstallFixture) {
+        $restoredLegacyEntry = Get-ItemProperty -Path $tauriLegacyUninstallKey `
+          -ErrorAction SilentlyContinue
+        $legacyEntryPresent = $null -ne $restoredLegacyEntry
+        $remainingSystemComponent = if ($legacyEntryPresent) {
+          $restoredLegacyEntry.SystemComponent
+        } else {
+          $null
+        }
+        $remainingTransitionMarker = if ($legacyEntryPresent) {
+          $restoredLegacyEntry.$tauriTransitionHiddenMarker
+        } else {
+          $null
+        }
+      }
+      if (
+        -not $electronExecutablePresent -and
+        $legacyEntryPresent -and
+        $remainingSystemComponent -ne 1 -and
+        $null -eq $remainingTransitionMarker
+      ) {
+        $uninstallStateConverged = $true
+        break
+      }
+      Start-Sleep -Milliseconds 250
+    }
+    if (-not $uninstallStateConverged) {
+      throw "Electron uninstall state did not converge within 120 seconds " +
+        "(electronExecutablePresent=$electronExecutablePresent; " +
+        "legacyEntryPresent=$legacyEntryPresent; " +
+        "SystemComponent=$remainingSystemComponent; " +
+        "transitionMarker=$remainingTransitionMarker)"
     }
   }
   if ($expectMigration -and -not (Test-Path $tauriRollbackMarker)) {

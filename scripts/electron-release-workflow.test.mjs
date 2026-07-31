@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import test from 'node:test';
@@ -13,8 +14,45 @@ function workflow(name) {
   );
 }
 
+function runBash(script, env) {
+  return spawnSync('bash', ['-c', script], {
+    encoding: 'utf8',
+    env: { ...process.env, ...env },
+  });
+}
+
 test('Electron build uses native runners for all three release targets', () => {
   const build = workflow('electron-build.yml');
+  const manualTarget = build.on.workflow_dispatch.inputs.target_platform;
+  assert.equal(manualTarget.type, 'choice');
+  assert.deepEqual(manualTarget.options, ['all', 'windows', 'mac']);
+  assert.equal(manualTarget.default, 'all');
+  assert.deepEqual(build.on.workflow_call.inputs.target_platform, {
+    description: 'Limit the reusable build to one platform family',
+    type: 'string',
+    default: 'all',
+  });
+  const targetValidation = build.jobs['validate-target-platform'];
+  assert.equal(targetValidation['runs-on'], 'ubuntu-latest');
+  const targetValidationStep = targetValidation.steps.find(
+    (step) => step.name === 'Require a supported target platform'
+  );
+  assert.equal(
+    targetValidationStep.env.TARGET_PLATFORM,
+    '${{ inputs.target_platform }}'
+  );
+  for (const target of ['', 'all', 'windows', 'mac']) {
+    assert.equal(
+      runBash(targetValidationStep.run, { TARGET_PLATFORM: target }).status,
+      0,
+      `target_platform=${target || '<empty>'} must be accepted`
+    );
+  }
+  const invalidTarget = runBash(targetValidationStep.run, {
+    TARGET_PLATFORM: 'windwos',
+  });
+  assert.equal(invalidTarget.status, 1);
+  assert.match(invalidTarget.stderr, /Unsupported target_platform: windwos/);
   const macMatrix = build.jobs['build-mac'].strategy.matrix.include;
   assert.deepEqual(
     macMatrix.map((entry) => ({
@@ -39,20 +77,104 @@ test('Electron build uses native runners for all three release targets', () => {
     ]
   );
   assert.equal(build.jobs['build-windows']['runs-on'], 'windows-latest');
+  assert.equal(build.jobs['build-mac'].needs, 'validate-target-platform');
+  assert.equal(build.jobs['build-windows'].needs, 'validate-target-platform');
   assert.equal(
-    build.jobs['build-windows'].steps.find((step) => step.name === 'Windows gates').shell,
-    'bash'
+    build.jobs['build-mac'].if,
+    "${{ github.event_name != 'pull_request' && (inputs.target_platform == '' || inputs.target_platform == 'all' || inputs.target_platform == 'mac') }}"
+  );
+  assert.equal(
+    build.jobs['build-windows'].if,
+    "${{ github.event_name == 'pull_request' || inputs.target_platform == '' || inputs.target_platform == 'all' || inputs.target_platform == 'windows' }}"
+  );
+  const windowsGateIds = [
+    'windows_frontend_gates',
+    'windows_electron_migration_gates',
+    'windows_host_security_gates',
+    'windows_active_window_probe',
+    'windows_native_helper_gates',
+  ];
+  for (const id of windowsGateIds) {
+    const step = build.jobs['build-windows'].steps.find((candidate) => candidate.id === id);
+    assert.equal(step.shell, 'bash');
+    assert.equal(step['continue-on-error'], true);
+  }
+  const requireWindowsGates = build.jobs['build-windows'].steps.find(
+    (step) => step.name === 'Require all Windows gates'
+  );
+  assert.equal(requireWindowsGates.if, '${{ always() && !cancelled() }}');
+  assert.deepEqual(requireWindowsGates.env, {
+    FRONTEND_OUTCOME: '${{ steps.windows_frontend_gates.outcome }}',
+    ELECTRON_MIGRATION_OUTCOME:
+      '${{ steps.windows_electron_migration_gates.outcome }}',
+    HOST_SECURITY_OUTCOME: '${{ steps.windows_host_security_gates.outcome }}',
+    ACTIVE_WINDOW_OUTCOME: '${{ steps.windows_active_window_probe.outcome }}',
+    NATIVE_HELPER_OUTCOME: '${{ steps.windows_native_helper_gates.outcome }}',
+  });
+  for (const gate of [
+    'frontend:$FRONTEND_OUTCOME',
+    'electron-migration:$ELECTRON_MIGRATION_OUTCOME',
+    'host-security:$HOST_SECURITY_OUTCOME',
+    'active-window:$ACTIVE_WINDOW_OUTCOME',
+    'native-helper:$NATIVE_HELPER_OUTCOME',
+  ]) {
+    assert.match(requireWindowsGates.run, new RegExp(gate.replace('$', '\\$')));
+  }
+  assert.match(requireWindowsGates.run, /Windows gates failed/);
+  const successfulOutcomes = {
+    FRONTEND_OUTCOME: 'success',
+    ELECTRON_MIGRATION_OUTCOME: 'success',
+    HOST_SECURITY_OUTCOME: 'success',
+    ACTIVE_WINDOW_OUTCOME: 'success',
+    NATIVE_HELPER_OUTCOME: 'success',
+  };
+  assert.equal(runBash(requireWindowsGates.run, successfulOutcomes).status, 0);
+  for (const [outcome, label] of [
+    ['FRONTEND_OUTCOME', 'frontend'],
+    ['ELECTRON_MIGRATION_OUTCOME', 'electron-migration'],
+    ['HOST_SECURITY_OUTCOME', 'host-security'],
+    ['ACTIVE_WINDOW_OUTCOME', 'active-window'],
+    ['NATIVE_HELPER_OUTCOME', 'native-helper'],
+  ]) {
+    const failedGate = runBash(requireWindowsGates.run, {
+      ...successfulOutcomes,
+      [outcome]: 'failure',
+    });
+    assert.equal(failedGate.status, 1);
+    assert.match(failedGate.stderr, new RegExp(`${label}:failure`));
+  }
+  const windowsStepNames = build.jobs['build-windows'].steps.map((step) => step.name);
+  assert.ok(
+    windowsStepNames.indexOf('Require all Windows gates') <
+      windowsStepNames.indexOf('Resolve Windows candidate configuration')
   );
   for (const job of [build.jobs['build-mac'], build.jobs['build-windows']]) {
     const setupNode = job.steps.find((step) => step.uses === 'actions/setup-node@v7');
     assert.equal(setupNode.with['node-version'], 24);
-    const gates = job.steps.find((step) =>
-      ['Gates', 'Windows gates'].includes(step.name)
-    );
+  }
+  const macGates = build.jobs['build-mac'].steps.find((step) => step.name === 'Gates');
+  const windowsMigrationGates = build.jobs['build-windows'].steps.find(
+    (step) => step.id === 'windows_electron_migration_gates'
+  );
+  for (const gates of [macGates, windowsMigrationGates]) {
     assert.match(
       gates.run,
       /for attempt in 1 2 3; do[\s\S]*electron:migration-preload-verify[\s\S]*retrying after/
     );
+  }
+  assert.match(macGates.run, /npm run test:electron:release-workflow/);
+  assert.match(
+    build.jobs['build-windows'].steps.find(
+      (step) => step.id === 'windows_host_security_gates'
+    ).run,
+    /npm run test:electron:release-workflow/
+  );
+  for (const job of [build.jobs['build-mac'], build.jobs['build-windows']]) {
+    const nativeProbe = job.steps.find((step) =>
+      ['Native active-window probe', 'Windows native active-window probe'].includes(step.name)
+    );
+    assert.equal(nativeProbe.env.ABU_RUN_NATIVE_ACTIVE_WINDOW_TEST, '1');
+    assert.match(nativeProbe.run, /for attempt in 1 2 3; do/);
   }
   assert.match(
     JSON.stringify(build.jobs['build-windows']),
@@ -103,6 +225,12 @@ test('release publishes only after all Electron targets and switches root pointe
   assert.equal(
     release.jobs['electron-transition'].uses,
     './.github/workflows/electron-build.yml'
+  );
+  assert.match(
+    release.jobs.preflight.steps.find(
+      (step) => step.name === 'Validate version, changelogs, and release staging logic'
+    ).run,
+    /npm run test:electron:release-workflow/
   );
   assert.match(
     release.jobs['electron-transition'].with.transition_release,

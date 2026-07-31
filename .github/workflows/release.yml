@@ -28,6 +28,7 @@ jobs:
         run: |
           node scripts/release-preflight.mjs --tag "${{ github.ref_name }}"
           npm run test:electron:release-stage
+          npm run test:electron:release-workflow
 
   # v0.34.x is the frozen bridge consumed by the hard-coded legacy Tauri
   # latest.json. Later releases keep dormant direct-install migration support

@@ -19,6 +19,14 @@ on:
         description: 'Keep direct-install migration support without publishing the legacy pointer'
         type: boolean
         default: true
+      target_platform:
+        description: 'Limit a manual candidate build while debugging platform-specific gates'
+        type: choice
+        options:
+          - all
+          - windows
+          - mac
+        default: all
   workflow_call:
     inputs:
       transition_version:
@@ -33,6 +41,10 @@ on:
         description: 'Embed dormant Tauri migration support for direct installers'
         type: boolean
         default: true
+      target_platform:
+        description: 'Limit the reusable build to one platform family'
+        type: string
+        default: all
   pull_request:
     paths:
       - '.github/workflows/electron-build.yml'
@@ -56,8 +68,25 @@ permissions:
   contents: read
 
 jobs:
+  validate-target-platform:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require a supported target platform
+        shell: bash
+        env:
+          TARGET_PLATFORM: ${{ inputs.target_platform }}
+        run: |
+          case "$TARGET_PLATFORM" in
+            ''|all|windows|mac) ;;
+            *)
+              echo "Unsupported target_platform: $TARGET_PLATFORM" >&2
+              exit 1
+              ;;
+          esac
+
   build-mac:
-    if: ${{ github.event_name != 'pull_request' }}
+    needs: validate-target-platform
+    if: ${{ github.event_name != 'pull_request' && (inputs.target_platform == '' || inputs.target_platform == 'all' || inputs.target_platform == 'mac') }}
     strategy:
       fail-fast: false
       matrix:
@@ -128,6 +157,23 @@ jobs:
           npm run electron:host-ui-test
           npm run electron:security-test
           npm run test:electron:release-stage
+          npm run test:electron:release-workflow
+
+      - name: Native active-window probe
+        env:
+          ABU_RUN_NATIVE_ACTIVE_WINDOW_TEST: '1'
+        run: |
+          for attempt in 1 2 3; do
+            if node --test electron/guiHost.active-window.test.cjs; then
+              break
+            fi
+            if [[ "$attempt" -eq 3 ]]; then
+              echo "Native active-window probe failed after $attempt attempts" >&2
+              exit 1
+            fi
+            echo "Native active-window probe attempt $attempt failed; retrying after $((attempt * 5))s" >&2
+            sleep "$((attempt * 5))"
+          done
 
       - name: Setup and verify bundled Node/Python runtimes
         run: |
@@ -326,6 +372,8 @@ jobs:
           fi
 
   build-windows:
+    needs: validate-target-platform
+    if: ${{ github.event_name == 'pull_request' || inputs.target_platform == '' || inputs.target_platform == 'all' || inputs.target_platform == 'windows' }}
     runs-on: windows-latest
     timeout-minutes: 75
     env:
@@ -352,13 +400,24 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Windows gates
+      # Keep independent gate groups running so one failure does not hide the
+      # rest of the Windows-specific diagnostics. The aggregate step below is
+      # the single fail-closed boundary before packaging begins.
+      - name: Windows frontend gates
+        id: windows_frontend_gates
+        continue-on-error: true
         shell: bash
         run: |
           npm run build
           npm run lint
           npm test
           npm run parity:check
+
+      - name: Windows Electron migration gates
+        id: windows_electron_migration_gates
+        continue-on-error: true
+        shell: bash
+        run: |
           npm run electron:bootstrap-test
           npm run electron:migration-test
           for attempt in 1 2 3; do
@@ -372,10 +431,68 @@ jobs:
             echo "Electron preload verification attempt $attempt failed; retrying after $((attempt * 10))s" >&2
             sleep "$((attempt * 10))"
           done
+
+      - name: Windows host and security gates
+        id: windows_host_security_gates
+        continue-on-error: true
+        shell: bash
+        run: |
           npm run electron:host-ui-test
           npm run electron:security-test
           npm run test:electron:release-stage
+          npm run test:electron:release-workflow
+
+      - name: Windows native active-window probe
+        id: windows_active_window_probe
+        continue-on-error: true
+        shell: bash
+        env:
+          ABU_RUN_NATIVE_ACTIVE_WINDOW_TEST: '1'
+        run: |
+          for attempt in 1 2 3; do
+            if node --test electron/guiHost.active-window.test.cjs; then
+              break
+            fi
+            if [[ "$attempt" -eq 3 ]]; then
+              echo "Native active-window probe failed after $attempt attempts" >&2
+              exit 1
+            fi
+            echo "Native active-window probe attempt $attempt failed; retrying after $((attempt * 5))s" >&2
+            sleep "$((attempt * 5))"
+          done
+
+      - name: Windows native-helper gates
+        id: windows_native_helper_gates
+        continue-on-error: true
+        shell: bash
+        run: |
           cargo test --manifest-path electron/native-helper/Cargo.toml --bin tauri-transition-reader
+
+      - name: Require all Windows gates
+        if: ${{ always() && !cancelled() }}
+        shell: bash
+        env:
+          FRONTEND_OUTCOME: ${{ steps.windows_frontend_gates.outcome }}
+          ELECTRON_MIGRATION_OUTCOME: ${{ steps.windows_electron_migration_gates.outcome }}
+          HOST_SECURITY_OUTCOME: ${{ steps.windows_host_security_gates.outcome }}
+          ACTIVE_WINDOW_OUTCOME: ${{ steps.windows_active_window_probe.outcome }}
+          NATIVE_HELPER_OUTCOME: ${{ steps.windows_native_helper_gates.outcome }}
+        run: |
+          failures=()
+          for gate in \
+            "frontend:$FRONTEND_OUTCOME" \
+            "electron-migration:$ELECTRON_MIGRATION_OUTCOME" \
+            "host-security:$HOST_SECURITY_OUTCOME" \
+            "active-window:$ACTIVE_WINDOW_OUTCOME" \
+            "native-helper:$NATIVE_HELPER_OUTCOME"; do
+            if [[ "${gate#*:}" != "success" ]]; then
+              failures+=("$gate")
+            fi
+          done
+          if (( ${#failures[@]} > 0 )); then
+            printf 'Windows gates failed: %s\n' "${failures[*]}" >&2
+            exit 1
+          fi
 
       - name: Resolve Windows candidate configuration
         shell: pwsh

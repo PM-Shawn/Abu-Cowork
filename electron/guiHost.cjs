@@ -411,6 +411,7 @@ const MACOS_ACTIVE_WINDOW_SCRIPT = `
 
 /** PowerShell script, verbatim port of window_info.rs's Windows branch. */
 const WINDOWS_ACTIVE_WINDOW_SCRIPT = `
+        $ErrorActionPreference = "Stop"
         Add-Type @"
         using System;
         using System.Runtime.InteropServices;
@@ -422,14 +423,16 @@ const WINDOWS_ACTIVE_WINDOW_SCRIPT = `
         }
 "@
         $hwnd = [WinAPI]::GetForegroundWindow()
+        if ($hwnd -eq [IntPtr]::Zero) { throw "Foreground window is unavailable" }
         $sb = New-Object System.Text.StringBuilder 256
         [WinAPI]::GetWindowText($hwnd, $sb, 256) | Out-Null
         $title = $sb.ToString()
-        $pid = 0
-        [WinAPI]::GetWindowThreadProcessId($hwnd, [ref]$pid) | Out-Null
-        $proc = Get-Process -Id $pid -ErrorAction SilentlyContinue
-        $appName = if ($proc) { $proc.ProcessName } else { "" }
-        Write-Output "$appName|||$title|||$appName|||$pid"
+        [uint32]$windowProcessId = 0
+        [WinAPI]::GetWindowThreadProcessId($hwnd, [ref]$windowProcessId) | Out-Null
+        if ($windowProcessId -eq 0) { throw "Foreground process identity is unavailable" }
+        $proc = Get-Process -Id $windowProcessId -ErrorAction Stop
+        $appName = $proc.ProcessName
+        Write-Output "$appName|||$title|||$appName|||$windowProcessId"
     `;
 
 function execFileP(file, args) {
@@ -442,9 +445,9 @@ function execFileP(file, args) {
 }
 
 /** `get_active_window` — window_info.rs. Returned shape is intentionally snake_case (`app_name`/`window_title`/`bundle_id`) to match the Rust struct's serde output verbatim — this is a RETURN value, not an invoke arg, so Tauri's camelCase auto-conversion never applied to it in the first place (confirmed against every frontend reader: behaviorSensor.ts, toolExecutor.ts, computerTools.ts all read `.app_name`/`.window_title`/`.bundle_id`). */
-async function getActiveWindow() {
-  if (process.platform === 'darwin') {
-    const stdout = await execFileP('osascript', ['-e', MACOS_ACTIVE_WINDOW_SCRIPT]);
+async function getActiveWindowForPlatform(platform, runCommand = execFileP) {
+  if (platform === 'darwin') {
+    const stdout = await runCommand('osascript', ['-e', MACOS_ACTIVE_WINDOW_SCRIPT]);
     const text = String(stdout).trim();
     const parts = text.split('|||');
     return {
@@ -454,8 +457,8 @@ async function getActiveWindow() {
       process_id: Number.isInteger(Number(parts[3])) ? Number(parts[3]) : null,
     };
   }
-  if (process.platform === 'win32') {
-    const stdout = await execFileP('powershell', ['-NoProfile', '-Command', WINDOWS_ACTIVE_WINDOW_SCRIPT]);
+  if (platform === 'win32') {
+    const stdout = await runCommand('powershell', ['-NoProfile', '-Command', WINDOWS_ACTIVE_WINDOW_SCRIPT]);
     const text = String(stdout).trim();
     const parts = text.split('|||');
     const processName = parts[0] ?? '';
@@ -467,6 +470,10 @@ async function getActiveWindow() {
     };
   }
   throw new Error('Active window detection not supported on this platform');
+}
+
+async function getActiveWindow() {
+  return getActiveWindowForPlatform(process.platform);
 }
 
 /** `get_abu_window_id` — computer_use.rs:126. Rust returns the main window's macOS NSWindow.windowNumber(); ported here via the same getMediaSourceId() parse as get_overlay_window_id (see report for the CGWindowID-equivalence caveat). Rust errors on non-macOS — matched here. */
@@ -681,4 +688,8 @@ module.exports = {
   teardownGuiHost,
   hasTray,
   showMainWindowFromTray,
+  __test: {
+    WINDOWS_ACTIVE_WINDOW_SCRIPT,
+    getActiveWindowForPlatform,
+  },
 };

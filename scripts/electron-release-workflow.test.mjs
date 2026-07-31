@@ -203,9 +203,30 @@ test('Electron build uses native runners for all three release targets', () => {
   );
   assert.match(installedSmoke, /updaterRelaunchVerified=\$updaterRelaunchVerified/);
   assert.match(installedSmoke, /Tauri source did not win the migration conflict/);
+  assert.match(installedSmoke, /AbuElectronTransitionHidden/);
+  assert.match(
+    installedSmoke,
+    /Electron uninstall did not clear the legacy Tauri transition marker/
+  );
   assert.match(
     installedSmoke,
     /Expected a recovery copy of the preexisting Electron conflict/
+  );
+  const transitionInstaller = fs.readFileSync(
+    path.join(root, 'build', 'electron-transition-installer.nsh'),
+    'utf8'
+  );
+  assert.match(
+    transitionInstaller,
+    /ReadRegDWORD \$R0 HKCU .* "AbuElectronTransitionHidden"/
+  );
+  assert.match(
+    transitionInstaller,
+    /DeleteRegValue HKCU .* "SystemComponent"/
+  );
+  assert.match(
+    transitionInstaller,
+    /DeleteRegValue HKCU .* "AbuElectronTransitionHidden"/
   );
 });
 

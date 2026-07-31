@@ -4,6 +4,7 @@ const assert = require('node:assert/strict');
 const test = require('node:test');
 const {
   LEGACY_UNINSTALL_KEY,
+  TRANSITION_HIDDEN_MARKER,
   hideLegacyTauriUninstallEntry,
   inspectLegacyTauriInstall,
 } = require('./legacyWindowsInstall.cjs');
@@ -12,7 +13,9 @@ function registry(values) {
   const calls = [];
   const runRegistry = (args) => {
     calls.push(args);
-    if (args[0] === 'add') return { status: 0, stdout: '', stderr: '' };
+    if (args[0] === 'add' || args[0] === 'delete') {
+      return { status: 0, stdout: '', stderr: '' };
+    }
     const name = args.at(-1);
     const value = values[name];
     return value == null
@@ -47,7 +50,7 @@ test('recognizes and hides only the historical current-user Tauri install', () =
     uninstallString: '"C:\\Users\\tester\\AppData\\Local\\Abu\\uninstall.exe"',
   });
   assert.equal(hideLegacyTauriUninstallEntry(options).hidden, true);
-  assert.deepEqual(fake.calls.at(-1), [
+  assert.deepEqual(fake.calls.at(-2), [
     'add',
     LEGACY_UNINSTALL_KEY,
     '/v',
@@ -56,6 +59,45 @@ test('recognizes and hides only the historical current-user Tauri install', () =
     'REG_DWORD',
     '/d',
     '1',
+    '/f',
+  ]);
+  assert.deepEqual(fake.calls.at(-1), [
+    'add',
+    LEGACY_UNINSTALL_KEY,
+    '/v',
+    TRANSITION_HIDDEN_MARKER,
+    '/t',
+    'REG_DWORD',
+    '/d',
+    '1',
+    '/f',
+  ]);
+});
+
+test('restores legacy visibility if the uninstall rollback marker cannot be written', () => {
+  const fake = registry(validValues);
+  const baseRunRegistry = fake.runRegistry;
+  const runRegistry = (args) => {
+    if (args[0] === 'add' && args.includes(TRANSITION_HIDDEN_MARKER)) {
+      return { status: 1, stdout: '', stderr: 'marker denied' };
+    }
+    return baseRunRegistry(args);
+  };
+  const result = hideLegacyTauriUninstallEntry({
+    platform: 'win32',
+    env: { LOCALAPPDATA: 'C:\\Users\\tester\\AppData\\Local' },
+    runRegistry,
+  });
+  assert.deepEqual(result, {
+    hidden: false,
+    reason: 'rollback-marker-write-failed',
+    error: 'marker denied',
+  });
+  assert.deepEqual(fake.calls.at(-1), [
+    'delete',
+    LEGACY_UNINSTALL_KEY,
+    '/v',
+    'SystemComponent',
     '/f',
   ]);
 });

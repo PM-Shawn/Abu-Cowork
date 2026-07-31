@@ -33,15 +33,14 @@
 !macroend
 
 # If Electron is later removed, make the preserved Tauri rollback installation
-# visible in Windows Installed Apps again. This is deliberately path-checked and
-# never deletes either application's files or user data.
+# visible in Windows Installed Apps again. The marker is written only after the
+# main process has strictly recognized the historical Tauri registry record.
+# This avoids re-parsing environment-dependent Windows paths in NSIS and never
+# deletes either application's files or user data.
 !macro customUnInstall
-  ReadRegStr $R0 HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\Abu" "InstallLocation"
-  ReadRegStr $R1 HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\Abu" "UninstallString"
-  ${If} $R0 == "$LOCALAPPDATA\Abu"
-  ${OrIf} $R0 == '$\"$LOCALAPPDATA\Abu$\"'
-    ${If} $R1 == '$\"$LOCALAPPDATA\Abu\uninstall.exe$\"'
-      DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\Abu" "SystemComponent"
-    ${EndIf}
+  ReadRegDWORD $R0 HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\Abu" "AbuElectronTransitionHidden"
+  ${If} $R0 == 1
+    DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\Abu" "SystemComponent"
+    DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\Abu" "AbuElectronTransitionHidden"
   ${EndIf}
 !macroend

@@ -5,6 +5,7 @@ const path = require('node:path');
 
 const LEGACY_UNINSTALL_KEY =
   'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\Abu';
+const TRANSITION_HIDDEN_MARKER = 'AbuElectronTransitionHidden';
 
 function defaultRegistryRun(args) {
   const systemRoot = process.env.SystemRoot;
@@ -104,11 +105,39 @@ function hideLegacyTauriUninstallEntry(options = {}) {
       error: String(result?.stderr || result?.error || '').trim(),
     };
   }
+  const markerResult = runRegistry([
+    'add',
+    LEGACY_UNINSTALL_KEY,
+    '/v',
+    TRANSITION_HIDDEN_MARKER,
+    '/t',
+    'REG_DWORD',
+    '/d',
+    '1',
+    '/f',
+  ]);
+  if (markerResult?.status !== 0) {
+    // Do not leave the old install hidden when the NSIS uninstaller would have
+    // no reliable proof that this application hid it.
+    runRegistry([
+      'delete',
+      LEGACY_UNINSTALL_KEY,
+      '/v',
+      'SystemComponent',
+      '/f',
+    ]);
+    return {
+      hidden: false,
+      reason: 'rollback-marker-write-failed',
+      error: String(markerResult?.stderr || markerResult?.error || '').trim(),
+    };
+  }
   return { hidden: true, legacy };
 }
 
 module.exports = {
   LEGACY_UNINSTALL_KEY,
+  TRANSITION_HIDDEN_MARKER,
   hideLegacyTauriUninstallEntry,
   inspectLegacyTauriInstall,
   isLegacyVersion,

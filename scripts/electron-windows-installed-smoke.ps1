@@ -42,6 +42,7 @@ $tauriLegacyExe = Join-Path $tauriInstallRoot "abu.exe"
 $tauriLegacyUninstaller = Join-Path $tauriInstallRoot "uninstall.exe"
 $tauriLegacyUninstallKey = `
   "Registry::HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Uninstall\Abu"
+$tauriTransitionHiddenMarker = "AbuElectronTransitionHidden"
 $createdLegacyUninstallFixture = $false
 
 try {
@@ -211,6 +212,11 @@ try {
     if ($legacySystemComponent -ne 1) {
       throw "Electron did not hide the recognized legacy Tauri uninstall entry"
     }
+    $legacyTransitionMarker = Get-ItemPropertyValue -Path $tauriLegacyUninstallKey `
+      -Name $tauriTransitionHiddenMarker -ErrorAction SilentlyContinue
+    if ($legacyTransitionMarker -ne 1) {
+      throw "Electron did not record how to restore the legacy Tauri uninstall entry"
+    }
     $migratedFile = Join-Path $electronFixture "messages.jsonl"
     $migrationDeadline = [DateTime]::UtcNow.AddSeconds(45)
     while (
@@ -265,15 +271,6 @@ try {
     throw "NSIS uninstaller was not created beside the installed application"
   }
 
-  Write-Host "[windows-installed-smoke] PASS"
-  Write-Host "installer=$($installer.FullName)"
-  Write-Host "installedExe=$installedPath"
-  Write-Host "installScope=current-user"
-  Write-Host "signature=unsigned"
-  Write-Host "tauriMigration=$expectMigration"
-  Write-Host "tauriUpdaterArguments=$expectMigration"
-  Write-Host "updaterRelaunchVerified=$updaterRelaunchVerified"
-  Write-Host "tauriRollbackPreserved=$expectMigration"
 }
 finally {
   foreach ($process in $installedProcesses) {
@@ -312,6 +309,9 @@ finally {
     if ($restoredLegacyEntry.SystemComponent -eq 1) {
       throw "Electron uninstall did not restore the legacy Tauri uninstall entry"
     }
+    if ($null -ne $restoredLegacyEntry.$tauriTransitionHiddenMarker) {
+      throw "Electron uninstall did not clear the legacy Tauri transition marker"
+    }
     if (-not (Test-Path $tauriLegacyExe) -or -not (Test-Path $tauriLegacyUninstaller)) {
       throw "Electron uninstall removed a preserved Tauri rollback executable"
     }
@@ -336,3 +336,13 @@ finally {
   Remove-Item Env:ABU_PACKAGED_E2E -ErrorAction SilentlyContinue
   Remove-Item $migrationDiagnostics -Force -ErrorAction SilentlyContinue
 }
+
+Write-Host "[windows-installed-smoke] PASS"
+Write-Host "installer=$($installer.FullName)"
+Write-Host "installedExe=$installedPath"
+Write-Host "installScope=current-user"
+Write-Host "signature=unsigned"
+Write-Host "tauriMigration=$expectMigration"
+Write-Host "tauriUpdaterArguments=$expectMigration"
+Write-Host "updaterRelaunchVerified=$updaterRelaunchVerified"
+Write-Host "tauriRollbackPreserved=$expectMigration"

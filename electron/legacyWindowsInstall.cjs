@@ -27,22 +27,12 @@ function queryRegistryValue(runRegistry, name) {
   return match?.[1]?.trim() || null;
 }
 
-function normalizeWindowsPath(value) {
-  if (typeof value !== 'string') return null;
-  const stripped = value.trim().replace(/^"|"$/g, '');
-  if (!stripped) return null;
-  return path.win32.normalize(stripped).replace(/[\\/]+$/, '').toLowerCase();
-}
-
-function executableFromUninstallString(value) {
-  if (typeof value !== 'string') return null;
-  const trimmed = value.trim();
-  if (trimmed.startsWith('"')) {
-    const closingQuote = trimmed.indexOf('"', 1);
-    return closingQuote > 1 ? trimmed.slice(1, closingQuote) : null;
-  }
-  const exeEnd = trimmed.toLowerCase().indexOf('.exe');
-  return exeEnd >= 0 ? trimmed.slice(0, exeEnd + 4) : null;
+function matchesExactRegistryPath(value, expected, { quotedOnly = false } = {}) {
+  if (typeof value !== 'string' || typeof expected !== 'string') return false;
+  const actual = value.trim().toLowerCase();
+  const plain = expected.toLowerCase();
+  const quoted = `"${plain}"`;
+  return actual === quoted || (!quotedOnly && actual === plain);
 }
 
 function isLegacyVersion(value) {
@@ -69,13 +59,12 @@ function inspectLegacyTauriInstall({
   const displayVersion = queryRegistryValue(runRegistry, 'DisplayVersion');
   const installLocation = queryRegistryValue(runRegistry, 'InstallLocation');
   const uninstallString = queryRegistryValue(runRegistry, 'UninstallString');
-  const uninstallExecutable = executableFromUninstallString(uninstallString);
 
   if (
     displayName !== 'Abu' ||
     !isLegacyVersion(displayVersion) ||
-    normalizeWindowsPath(installLocation) !== normalizeWindowsPath(expectedInstallDir) ||
-    normalizeWindowsPath(uninstallExecutable) !== normalizeWindowsPath(expectedUninstaller)
+    !matchesExactRegistryPath(installLocation, expectedInstallDir) ||
+    !matchesExactRegistryPath(uninstallString, expectedUninstaller, { quotedOnly: true })
   ) {
     return null;
   }
@@ -120,9 +109,8 @@ function hideLegacyTauriUninstallEntry(options = {}) {
 
 module.exports = {
   LEGACY_UNINSTALL_KEY,
-  executableFromUninstallString,
   hideLegacyTauriUninstallEntry,
   inspectLegacyTauriInstall,
   isLegacyVersion,
-  normalizeWindowsPath,
+  matchesExactRegistryPath,
 };

@@ -88,3 +88,21 @@ test('rejects Electron-era and malformed versions', () => {
     );
   }
 });
+
+test('rejects legacy paths the NSIS rollback hook cannot restore exactly', () => {
+  const incompatible = [
+    { InstallLocation: 'C:\\Users\\tester\\AppData\\Local\\Abu\\' },
+    { UninstallString: '"C:\\Users\\tester\\AppData\\Local\\Abu\\uninstall.exe" /S' },
+    { UninstallString: 'C:\\Users\\tester\\AppData\\Local\\Abu\\uninstall.exe' },
+  ];
+  for (const override of incompatible) {
+    const fake = registry({ ...validValues, ...override });
+    const result = hideLegacyTauriUninstallEntry({
+      platform: 'win32',
+      env: { LOCALAPPDATA: 'C:\\Users\\tester\\AppData\\Local' },
+      runRegistry: fake.runRegistry,
+    });
+    assert.deepEqual(result, { hidden: false, reason: 'not-recognized' });
+    assert.equal(fake.calls.some((args) => args[0] === 'add'), false);
+  }
+});

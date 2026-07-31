@@ -264,7 +264,7 @@ export default function AboutSection() {
         <p className="text-body text-[var(--abu-text-tertiary)]">
           Made with ❤️ by{' '}
           <button
-            onClick={() => handleOpenLink('https://github.com/PM-Shawn/Abu-Cowork')}
+            onClick={() => handleOpenLink('https://xhslink.cn/m/3A84p2yqNwZ')}
             className="text-[var(--abu-clay)] hover:underline font-medium"
           >
             Shawn

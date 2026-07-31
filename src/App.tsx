@@ -653,8 +653,8 @@ function App() {
     getCurrentWindow().setTitle(desktopPlatform === 'macos' ? '' : 'Abu');
   }, [desktopPlatform]);
 
-  // macOS uses panel-scoped draggable headers. Windows keeps the native
-  // frame/menu and reserves a separate renderer toolbar for business actions.
+  // macOS keeps its compact controls in a fixed overlay. Windows keeps the
+  // native frame/menu and reserves a renderer toolbar for business actions.
   const mac = desktopPlatform === 'macos';
 
   // Preview split is active only when a preview is open in the chat view AND the
@@ -703,37 +703,26 @@ function App() {
         data-abu-app-shell
         className="relative flex h-full w-full flex-col overflow-hidden bg-[var(--abu-bg-canvas)]"
       >
-        {!mac && <WindowTitleBar {...windowTitleBarProps} />}
+        <WindowTitleBar {...windowTitleBarProps} />
 
         <div
           data-abu-app-layout
           className="flex min-h-0 w-full flex-1 overflow-hidden bg-[var(--abu-bg-canvas)]"
         >
-          {/* Sidebar - width changes are always instant (no slide animation).
-              On macOS its own header owns both the drag region and controls,
-              matching TRAE SOLO's task-list header instead of overlapping
-              independent drag and button layers. */}
+          {/* Sidebar - width changes are always instant (no slide animation). */}
           <div
             className="flex shrink-0 flex-col overflow-hidden"
             style={{
               width: sidebarCollapsed ? 0 : 260,
             }}
           >
-            {mac && !sidebarCollapsed && (
-              <WindowTitleBar {...windowTitleBarProps} macPlacement="sidebar" showNewTask={false} showRightPanelToggle={false} />
-            )}
             <div className="min-h-0 flex-1">
               <Sidebar />
             </div>
           </div>
 
           <div className="relative flex min-w-0 flex-1 flex-col overflow-hidden">
-            {mac && sidebarCollapsed && (
-              <WindowTitleBar {...windowTitleBarProps} macPlacement="main" />
-            )}
-
-            {/* Like TRAE SOLO's panel-container/panel-content split, only the
-                exposed 8px canvas gutters are draggable. The raised cards
+            {/* Only the exposed canvas gutters are draggable. The raised cards
                 explicitly carve out stable no-drag interaction surfaces. */}
             <div
               data-abu-panel-container
@@ -751,9 +740,6 @@ function App() {
                 )}
                 style={previewSplit ? { width: previewChatWidth } : undefined}
               >
-                {mac && !sidebarCollapsed && (
-                  <WindowTitleBar {...windowTitleBarProps} macPlacement="panel" />
-                )}
                 {viewMode === 'automation' && <AutomationView />}
                 {viewMode === 'toolbox' && <ToolboxView />}
                 {viewMode === 'todos' && <TodoView />}

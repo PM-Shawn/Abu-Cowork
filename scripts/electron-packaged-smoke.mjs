@@ -2154,6 +2154,40 @@ async function main() {
       checks.packagedWindowsToolbarLayout = true;
     }
 
+    if (process.platform === 'darwin') {
+      const macToolbarLayout = await window.evaluate(() => {
+        const overlay = document.querySelector('[data-abu-macos-titlebar]');
+        const dragStrip = document.querySelector('[data-abu-macos-drag-strip]');
+        const appLayout = document.querySelector('[data-abu-app-layout]');
+        const main = document.querySelector('main');
+        if (!overlay || !dragStrip || !appLayout || !main) return null;
+        const overlayRect = overlay.getBoundingClientRect();
+        const dragStripRect = dragStrip.getBoundingClientRect();
+        const appLayoutRect = appLayout.getBoundingClientRect();
+        const mainRect = main.getBoundingClientRect();
+        return {
+          overlayHeight: overlayRect.height,
+          overlayPosition: getComputedStyle(overlay).position,
+          overlayAppRegion: getComputedStyle(overlay).webkitAppRegion,
+          dragStripHeight: dragStripRect.height,
+          dragStripAppRegion: getComputedStyle(dragStrip).webkitAppRegion,
+          appLayoutTop: appLayoutRect.top,
+          mainTop: mainRect.top,
+        };
+      });
+      checks.packagedMacToolbarLayout =
+        macToolbarLayout !== null &&
+        Math.abs(macToolbarLayout.overlayHeight - 44) <= 1 &&
+        macToolbarLayout.overlayPosition === 'fixed' &&
+        macToolbarLayout.overlayAppRegion !== 'drag' &&
+        Math.abs(macToolbarLayout.dragStripHeight - 8) <= 1 &&
+        macToolbarLayout.dragStripAppRegion === 'drag' &&
+        macToolbarLayout.appLayoutTop <= 0.5 &&
+        Math.abs(macToolbarLayout.mainTop - 8) <= 1;
+    } else {
+      checks.packagedMacToolbarLayout = true;
+    }
+
     // Exercise all three controls on every real packaged desktop platform.
     // A drag-region regression manifests as Playwright's click being intercepted,
     // which is exactly the RC25 macOS and early Windows failure mode.
@@ -2172,11 +2206,6 @@ async function main() {
           rect.left + rect.width / 2,
           rect.top + rect.height / 2,
         );
-        let ancestor = control.parentElement;
-        while (ancestor) {
-          if (getComputedStyle(ancestor).pointerEvents === 'none') return false;
-          ancestor = ancestor.parentElement;
-        }
         return (
           getComputedStyle(control).webkitAppRegion === 'no-drag' &&
           !layers.some((layer) => (

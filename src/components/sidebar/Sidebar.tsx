@@ -272,12 +272,13 @@ export default function Sidebar() {
 
   return (
     <div className="flex flex-col h-full w-[260px] bg-[var(--abu-bg-canvas)]">
-      {/* macOS and Windows reserve title-bar/tool-bar space in App's normal
-          flow. Linux keeps the compact spacer below its native title bar. */}
+      {/* macOS controls are an overlay, so the expanded sidebar keeps its
+          original 56px content clearance. Windows reserves toolbar space in
+          App's normal flow; Linux keeps its compact native-titlebar spacer. */}
       <div
         className={
           isMacOS()
-            ? 'h-0 shrink-0'
+            ? 'h-14 shrink-0'
             : isWindows()
               ? 'h-0 shrink-0'
               : 'h-8 shrink-0'

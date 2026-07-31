@@ -220,6 +220,11 @@ test('Electron build uses native runners for all three release targets', () => {
     transitionInstaller,
     /ReadRegDWORD \$R0 HKCU .* "AbuElectronTransitionHidden"/
   );
+  assert.ok(
+    transitionInstaller.indexOf('SetRegView 64') <
+      transitionInstaller.indexOf('ReadRegDWORD $R0 HKCU'),
+    'the generic embedded uninstaller must switch to the x64 registry view before reading the marker'
+  );
   assert.match(
     transitionInstaller,
     /DeleteRegValue HKCU .* "SystemComponent"/

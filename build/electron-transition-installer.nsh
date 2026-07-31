@@ -38,6 +38,12 @@
 # This avoids re-parsing environment-dependent Windows paths in NSIS and never
 # deletes either application's files or user data.
 !macro customUnInstall
+  # electron-builder compiles its embedded uninstaller before it adds the
+  # APP_64 payload define. Its generic architecture helper therefore leaves
+  # that uninstaller on the 32-bit registry view even in an x64-only package.
+  # The Electron main process uses 64-bit reg.exe, so select the same view
+  # explicitly before reading the transition marker it wrote.
+  SetRegView 64
   ReadRegDWORD $R0 HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\Abu" "AbuElectronTransitionHidden"
   ${If} $R0 == 1
     DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\Abu" "SystemComponent"

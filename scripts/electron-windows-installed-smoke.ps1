@@ -307,7 +307,9 @@ finally {
       throw "Electron uninstall corrupted the legacy Tauri uninstall entry"
     }
     if ($restoredLegacyEntry.SystemComponent -eq 1) {
-      throw "Electron uninstall did not restore the legacy Tauri uninstall entry"
+      $remainingTransitionMarker = $restoredLegacyEntry.$tauriTransitionHiddenMarker
+      throw "Electron uninstall did not restore the legacy Tauri uninstall entry " +
+        "(transitionMarker=$remainingTransitionMarker)"
     }
     if ($null -ne $restoredLegacyEntry.$tauriTransitionHiddenMarker) {
       throw "Electron uninstall did not clear the legacy Tauri transition marker"

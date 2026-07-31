@@ -195,15 +195,20 @@ try {
   }
   if ($expectMigration) {
     $legacyConvergenceDeadline = [DateTime]::UtcNow.AddSeconds(15)
-    while (
-      [DateTime]::UtcNow -lt $legacyConvergenceDeadline -and
-      (Get-ItemPropertyValue -Path $tauriLegacyUninstallKey `
-        -Name "SystemComponent" -ErrorAction SilentlyContinue) -ne 1
-    ) {
+    $legacySystemComponent = $null
+    while ([DateTime]::UtcNow -lt $legacyConvergenceDeadline) {
+      # The value is intentionally absent until the migrated main window is
+      # ready. Get-ItemPropertyValue treats that normal transient state as an
+      # error under PowerShell 7, so inspect the optional property instead of
+      # aborting the convergence poll on its first iteration.
+      $legacyEntry = Get-ItemProperty -Path $tauriLegacyUninstallKey -ErrorAction Stop
+      $legacySystemComponent = $legacyEntry.SystemComponent
+      if ($legacySystemComponent -eq 1) {
+        break
+      }
       Start-Sleep -Milliseconds 250
     }
-    if ((Get-ItemPropertyValue -Path $tauriLegacyUninstallKey `
-      -Name "SystemComponent" -ErrorAction SilentlyContinue) -ne 1) {
+    if ($legacySystemComponent -ne 1) {
       throw "Electron did not hide the recognized legacy Tauri uninstall entry"
     }
     $migratedFile = Join-Path $electronFixture "messages.jsonl"

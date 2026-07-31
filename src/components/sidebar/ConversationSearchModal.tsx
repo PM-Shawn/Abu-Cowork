@@ -54,6 +54,19 @@ export default function ConversationSearchModal({ open, onClose }: { open: boole
     }
   }, [open]);
 
+  // Close at the document boundary so Escape remains reliable during the
+  // short interval before the asynchronously focused input becomes active.
+  // Packaged arm64 runners exposed this race by pressing Escape immediately
+  // after the modal became visible.
+  useEffect(() => {
+    if (!open) return;
+    const handleEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') onClose();
+    };
+    document.addEventListener('keydown', handleEscape);
+    return () => document.removeEventListener('keydown', handleEscape);
+  }, [open, onClose]);
+
   // Debounced full-text search. Empty query clears hits (recents are shown).
   useEffect(() => {
     if (!isSearching) {
@@ -138,8 +151,7 @@ export default function ConversationSearchModal({ open, onClose }: { open: boole
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             onKeyDown={(e) => {
-              if (e.key === 'Escape') onClose();
-              else if (e.key === 'Enter' && firstId) pick(firstId);
+              if (e.key === 'Enter' && firstId) pick(firstId);
             }}
             placeholder={t.sidebar.searchPlaceholder}
             className="flex-1 bg-transparent text-body text-[var(--abu-text-primary)] placeholder:text-[var(--abu-text-muted)] focus:outline-none"

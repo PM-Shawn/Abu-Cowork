@@ -2084,6 +2084,19 @@ async function main() {
       state: 'visible',
       timeout: READY_TIMEOUT,
     });
+    // A fully isolated profile legitimately opens the first-run guide after
+    // persisted settings hydrate. Exercise that user-visible step before
+    // checking title-bar controls; otherwise its modal backdrop correctly
+    // intercepts every click and produces a false Windows interaction failure.
+    const firstRunGuide = window.locator('[data-abu-guide-modal="true"]');
+    await firstRunGuide.waitFor({ state: 'visible', timeout: 3_000 }).catch(() => {});
+    if (await firstRunGuide.isVisible()) {
+      await firstRunGuide
+        .getByRole('button', { name: /^(我知道了|Got it)$/ })
+        .click();
+      await firstRunGuide.waitFor({ state: 'hidden', timeout: READY_TIMEOUT });
+    }
+    checks.packagedFirstRunGuideHandled = !(await firstRunGuide.isVisible());
     if (process.platform === 'win32') {
       const titlebarLayout = await window.evaluate(() => {
         const titlebar = document.querySelector('[data-abu-windows-titlebar]');

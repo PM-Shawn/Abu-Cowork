@@ -50,4 +50,3 @@ Tag 触发的生产发布只允许官方仓库执行。Fork 维护者需要自�
 ## Open-core 边界
 
 本公开仓库只包含个人版代码，以及公开的企业接口和空实现。不得把私有企业实现、凭据、客户配置或 `.env.local` 内容放入 fork 或 Pull Request。具体边界见 [`docs/ENTERPRISE-BUILD.md`](docs/ENTERPRISE-BUILD.md)。
-

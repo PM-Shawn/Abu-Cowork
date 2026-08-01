@@ -65,4 +65,3 @@ This public repository contains personal-mode code and public enterprise
 interfaces/stubs. Do not copy private enterprise implementations, credentials,
 customer configuration, or `.env.local` values into a fork or pull request.
 See [`docs/ENTERPRISE-BUILD.md`](docs/ENTERPRISE-BUILD.md) for the boundary.
-

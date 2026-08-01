@@ -280,6 +280,38 @@ finally {
     }
   }
   if ($uninstaller -and (Test-Path $uninstaller.FullName)) {
+    # Do not start the uninstaller while an Electron process is still winding
+    # down. The real NSIS path also checks this, but making the CI precondition
+    # explicit prevents a late ready-to-show callback from rewriting the legacy
+    # visibility marker while rollback restoration is under test.
+    $appShutdownDeadline = [DateTime]::UtcNow.AddSeconds(30)
+    $remainingInstalledProcesses = @()
+    do {
+      $remainingInstalledProcesses = @(
+        Get-Process -Name "Abu" -ErrorAction SilentlyContinue |
+          Where-Object {
+            $_.Path -and
+            [System.IO.Path]::GetFullPath($_.Path).Equals(
+              $installedPath,
+              [System.StringComparison]::OrdinalIgnoreCase
+            )
+          }
+      )
+      foreach ($process in $remainingInstalledProcesses) {
+        Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
+      }
+      if ($remainingInstalledProcesses.Count -gt 0) {
+        Start-Sleep -Milliseconds 250
+      }
+    } while (
+      $remainingInstalledProcesses.Count -gt 0 -and
+      [DateTime]::UtcNow -lt $appShutdownDeadline
+    )
+    if ($remainingInstalledProcesses.Count -gt 0) {
+      $remainingAbuPids = ($remainingInstalledProcesses | ForEach-Object { $_.Id }) -join ","
+      throw "Installed Abu processes did not stop before uninstall (pids=$remainingAbuPids)"
+    }
+
     $uninstallProcess = Start-Process -FilePath $uninstaller.FullName -ArgumentList "/S" -PassThru
     if (-not $uninstallProcess.WaitForExit(120000)) {
       $uninstallProcess.Kill()
@@ -291,16 +323,40 @@ finally {
 
     # NSIS first launches a short-lived bootstrap process, then performs the
     # actual uninstall from a temporary Un_*.exe child. WaitForExit only covers
-    # the bootstrap, so use the observable uninstall state as the completion
-    # signal. This catches genuine rollback failures without racing the child.
+    # the bootstrap. Require both the observable rollback state and the absence
+    # of a current-user temporary uninstaller to remain stable for three seconds
+    # so a transient mid-uninstall registry state can never count as success.
     $uninstallConvergenceDeadline = [DateTime]::UtcNow.AddSeconds(120)
     $uninstallStateConverged = $false
+    $uninstallStableSince = $null
     $electronExecutablePresent = $true
     $legacyEntryPresent = -not $createdLegacyUninstallFixture
     $remainingSystemComponent = $null
     $remainingTransitionMarker = $null
+    $activeUninstallerPids = @()
+    $tempRoot = [System.IO.Path]::GetFullPath($env:TEMP).TrimEnd("\") + "\"
     while ([DateTime]::UtcNow -lt $uninstallConvergenceDeadline) {
       $electronExecutablePresent = Test-Path $installedExe.FullName
+      $activeUninstallerPids = @(
+        Get-Process -ErrorAction SilentlyContinue |
+          Where-Object { $_.ProcessName -like "Un_*" } |
+          ForEach-Object {
+            try {
+              if (
+                $_.Path -and
+                [System.IO.Path]::GetFullPath($_.Path).StartsWith(
+                  $tempRoot,
+                  [System.StringComparison]::OrdinalIgnoreCase
+                )
+              ) {
+                $_.Id
+              }
+            } catch {
+              # Ignore unrelated protected processes; only a readable
+              # current-user temporary uninstaller is relevant to this smoke.
+            }
+          }
+      )
       if ($createdLegacyUninstallFixture) {
         $restoredLegacyEntry = Get-ItemProperty -Path $tauriLegacyUninstallKey `
           -ErrorAction SilentlyContinue
@@ -320,10 +376,17 @@ finally {
         -not $electronExecutablePresent -and
         $legacyEntryPresent -and
         $remainingSystemComponent -ne 1 -and
-        $null -eq $remainingTransitionMarker
+        $null -eq $remainingTransitionMarker -and
+        $activeUninstallerPids.Count -eq 0
       ) {
-        $uninstallStateConverged = $true
-        break
+        if ($null -eq $uninstallStableSince) {
+          $uninstallStableSince = [DateTime]::UtcNow
+        } elseif (([DateTime]::UtcNow - $uninstallStableSince).TotalSeconds -ge 3) {
+          $uninstallStateConverged = $true
+          break
+        }
+      } else {
+        $uninstallStableSince = $null
       }
       Start-Sleep -Milliseconds 250
     }
@@ -332,7 +395,8 @@ finally {
         "(electronExecutablePresent=$electronExecutablePresent; " +
         "legacyEntryPresent=$legacyEntryPresent; " +
         "SystemComponent=$remainingSystemComponent; " +
-        "transitionMarker=$remainingTransitionMarker)"
+        "transitionMarker=$remainingTransitionMarker; " +
+        "activeUninstallerPids=$($activeUninstallerPids -join ','))"
     }
   }
   if ($expectMigration -and -not (Test-Path $tauriRollbackMarker)) {

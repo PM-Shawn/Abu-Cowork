@@ -212,6 +212,10 @@ test('Electron build uses native runners for all three release targets', () => {
     installedSmoke,
     /Electron uninstall state did not converge within 120 seconds/
   );
+  assert.match(installedSmoke, /Installed Abu processes did not stop before uninstall/);
+  assert.match(installedSmoke, /ProcessName -like "Un_\*"/);
+  assert.match(installedSmoke, /TotalSeconds -ge 3/);
+  assert.match(installedSmoke, /activeUninstallerPids=/);
   assert.match(installedSmoke, /Test-Path \$installedExe\.FullName/);
   assert.match(
     installedSmoke,
@@ -237,6 +241,18 @@ test('Electron build uses native runners for all three release targets', () => {
   assert.match(
     transitionInstaller,
     /DeleteRegValue HKCU .* "AbuElectronTransitionHidden"/
+  );
+  assert.match(
+    transitionInstaller,
+    /ReadRegDWORD \$R1 HKCU .* "SystemComponent"/
+  );
+  assert.match(
+    transitionInstaller,
+    /Abort "Could not restore the preserved Abu rollback entry\."/
+  );
+  assert.match(
+    transitionInstaller,
+    /Abort "Could not clear the Abu rollback transition marker\."/
   );
 });
 

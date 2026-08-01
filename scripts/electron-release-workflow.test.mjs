@@ -242,11 +242,18 @@ test('Electron build uses native runners for all three release targets', () => {
 
 test('release publishes only after all Electron targets and switches root pointer transactionally', () => {
   const release = workflow('release.yml');
+  const manualRelease = release.on.workflow_dispatch.inputs;
+  assert.equal(manualRelease.transition_version.type, 'string');
+  assert.equal(manualRelease.transition_version.required, true);
+  assert.deepEqual(manualRelease.target_platform.options, ['all', 'windows', 'mac']);
+  assert.equal(manualRelease.target_platform.default, 'all');
   assert.deepEqual(Object.keys(release.jobs), [
     'preflight',
     'electron-transition',
     'publish',
   ]);
+  assert.deepEqual(release.permissions, { contents: 'read' });
+  assert.deepEqual(release.jobs.publish.permissions, { contents: 'write' });
   for (const jobName of ['preflight', 'publish']) {
     const setupNode = release.jobs[jobName].steps.find(
       (step) => step.uses === 'actions/setup-node@v7'
@@ -265,10 +272,22 @@ test('release publishes only after all Electron targets and switches root pointe
   );
   assert.match(
     release.jobs['electron-transition'].with.transition_release,
-    /startsWith\(github\.ref_name, 'v0\.34\.'\)/,
+    /github\.event_name == 'push'.*startsWith\(github\.ref_name, 'v0\.34\.'\)/,
   );
   assert.equal(release.jobs['electron-transition'].with.legacy_migration_support, true);
+  assert.match(
+    release.jobs['electron-transition'].with.transition_version,
+    /workflow_dispatch.*inputs\.transition_version.*github\.ref_name/,
+  );
+  assert.match(
+    release.jobs['electron-transition'].with.target_platform,
+    /workflow_dispatch.*inputs\.target_platform.*'all'/,
+  );
   assert.deepEqual(release.jobs.publish.needs, ['preflight', 'electron-transition']);
+  assert.match(
+    release.jobs.publish.if,
+    /github\.event_name == 'push'.*!contains\(github\.ref_name, '-'\)/,
+  );
 
   const names = release.jobs.publish.steps.map((step) => step.name).filter(Boolean);
   const immutable = names.indexOf('Upload immutable release and updater artifacts');

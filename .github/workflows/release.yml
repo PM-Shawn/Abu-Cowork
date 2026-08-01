@@ -4,9 +4,24 @@ on:
   push:
     tags:
       - 'v*'
+  workflow_dispatch:
+    inputs:
+      transition_version:
+        description: 'Private candidate version; artifacts only, never published'
+        type: string
+        default: '0.34.0'
+        required: true
+      target_platform:
+        description: 'Limit a private candidate build to one platform family'
+        type: choice
+        options:
+          - all
+          - windows
+          - mac
+        default: all
 
 permissions:
-  contents: write
+  contents: read
 
 # A queued older tag must never overwrite a newer production pointer.
 concurrency:
@@ -25,8 +40,10 @@ jobs:
       - name: Install dependencies
         run: npm ci
       - name: Validate version, changelogs, and release staging logic
+        env:
+          CANDIDATE_VERSION: ${{ github.event_name == 'workflow_dispatch' && inputs.transition_version || github.ref_name }}
         run: |
-          node scripts/release-preflight.mjs --tag "${{ github.ref_name }}"
+          node scripts/release-preflight.mjs --tag "$CANDIDATE_VERSION"
           npm run test:electron:release-stage
           npm run test:electron:release-workflow
 
@@ -37,15 +54,18 @@ jobs:
     needs: preflight
     uses: ./.github/workflows/electron-build.yml
     with:
-      transition_version: ${{ github.ref_name }}
-      transition_release: ${{ startsWith(github.ref_name, 'v0.34.') }}
+      transition_version: ${{ github.event_name == 'workflow_dispatch' && inputs.transition_version || github.ref_name }}
+      transition_release: ${{ github.event_name == 'push' && startsWith(github.ref_name, 'v0.34.') }}
       legacy_migration_support: true
+      target_platform: ${{ github.event_name == 'workflow_dispatch' && inputs.target_platform || 'all' }}
     secrets: inherit
 
   publish:
     needs: [preflight, electron-transition]
     # RC tags exercise the complete native build but never alter production.
-    if: ${{ !contains(github.ref_name, '-') }}
+    if: ${{ github.event_name == 'push' && !contains(github.ref_name, '-') }}
+    permissions:
+      contents: write
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7

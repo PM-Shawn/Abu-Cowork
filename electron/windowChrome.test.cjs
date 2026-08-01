@@ -6,17 +6,25 @@ const {
   DARK_CHROME,
   LIGHT_CHROME,
   WINDOWS_TOOLBAR_HEIGHT,
+  WINDOWS_MENU_IDS,
   WINDOW_DRAG_REGION_CSS,
   buildWindowsMenuTemplate,
   configureApplicationMenu,
   mainWindowPlatformOptions,
+  popupWindowsMenu,
   syncMainWindowChromeTheme,
 } = require('./windowChrome.cjs');
 
-test('Windows keeps the native frame and a visible localized application menu', () => {
+test('Windows overlays native caption buttons and removes the second menu-bar row', () => {
   assert.deepEqual(mainWindowPlatformOptions('win32', false), {
     backgroundColor: LIGHT_CHROME.backgroundColor,
-    autoHideMenuBar: false,
+    titleBarStyle: 'hidden',
+    titleBarOverlay: {
+      color: LIGHT_CHROME.backgroundColor,
+      symbolColor: LIGHT_CHROME.symbolColor,
+      height: 36,
+    },
+    autoHideMenuBar: true,
   });
   assert.equal(WINDOWS_TOOLBAR_HEIGHT, 36);
   const templates = [];
@@ -36,7 +44,7 @@ test('Windows keeps the native frame and a visible localized application menu', 
       {
         buildFromTemplate: (template) => {
           templates.push(template);
-          return { native: true };
+          return { native: true, getMenuItemById: () => null };
         },
       },
       { platform: 'win32', isZh: true, version: '0.34.0-rc.29' },
@@ -48,14 +56,19 @@ test('Windows keeps the native frame and a visible localized application menu', 
     autoHide: calls.autoHide,
     visible: calls.visible,
   }, {
-    menu: [{ native: true }],
-    autoHide: [false],
-    visible: [true],
+    menu: [null],
+    autoHide: [true],
+    visible: [false],
   });
   assert.deepEqual(templates[0].map((item) => item.label), [
     '编辑(&E)',
     '窗口(&W)',
     '帮助(&H)',
+  ]);
+  assert.deepEqual(templates[0].map((item) => item.id), [
+    WINDOWS_MENU_IDS.edit,
+    WINDOWS_MENU_IDS.window,
+    WINDOWS_MENU_IDS.help,
   ]);
   assert.match(templates[0][2].submenu[0].label, /0\.34\.0-rc\.29/);
   const toggleMaximize = templates[0][1].submenu[1];
@@ -87,9 +100,11 @@ test('macOS retains its application menu and traffic-light overlay', () => {
 
 test('Windows background follows Abu dark and light theme changes', () => {
   const backgrounds = [];
+  const overlays = [];
   const win = {
     isDestroyed: () => false,
     setBackgroundColor: (color) => backgrounds.push(color),
+    setTitleBarOverlay: (options) => overlays.push(options),
   };
   assert.equal(syncMainWindowChromeTheme(win, true, 'win32'), true);
   assert.equal(syncMainWindowChromeTheme(win, false, 'win32'), true);
@@ -97,6 +112,58 @@ test('Windows background follows Abu dark and light theme changes', () => {
     DARK_CHROME.backgroundColor,
     LIGHT_CHROME.backgroundColor,
   ]);
+  assert.deepEqual(overlays, [
+    {
+      color: DARK_CHROME.backgroundColor,
+      symbolColor: DARK_CHROME.symbolColor,
+      height: WINDOWS_TOOLBAR_HEIGHT,
+    },
+    {
+      color: LIGHT_CHROME.backgroundColor,
+      symbolColor: LIGHT_CHROME.symbolColor,
+      height: WINDOWS_TOOLBAR_HEIGHT,
+    },
+  ]);
+});
+
+test('Windows renderer menu buttons open the matching native submenu at a clamped DIP point', async () => {
+  const popupCalls = [];
+  const editSubmenu = {
+    popup: (options) => {
+      popupCalls.push(options);
+      options.callback();
+    },
+  };
+  const win = {
+    setMenu: () => {},
+    setAutoHideMenuBar: () => {},
+    setMenuBarVisibility: () => {},
+    isDestroyed: () => false,
+    isMaximized: () => false,
+    maximize: () => {},
+    getContentSize: () => [1200, 800],
+  };
+  configureApplicationMenu(
+    win,
+    {
+      buildFromTemplate: () => ({
+        getMenuItemById: (id) => id === WINDOWS_MENU_IDS.edit
+          ? { submenu: editSubmenu }
+          : null,
+      }),
+    },
+    { platform: 'win32' },
+  );
+
+  assert.equal(await popupWindowsMenu(win, { group: 'edit', x: -5, y: 36.4 }), true);
+  assert.equal(popupCalls.length, 1);
+  assert.equal(popupCalls[0].window, win);
+  assert.equal(popupCalls[0].x, 0);
+  assert.equal(popupCalls[0].y, 36);
+  assert.throws(
+    () => popupWindowsMenu(win, { group: 'file', x: 0, y: 0 }),
+    /Unknown Windows title-bar menu/,
+  );
 });
 
 test('Windows menu exposes only the reviewed Edit, Window, and Help groups', () => {

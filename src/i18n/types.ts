@@ -142,6 +142,9 @@ export interface TranslationDict {
     noSessionsYet: string;
     hideSidebar: string;
     showSidebar: string;
+    editMenu: string;
+    windowMenu: string;
+    helpMenu: string;
     scheduled: string;
     noScheduledRuns: string;
     exportConversation: string;

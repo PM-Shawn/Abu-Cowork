@@ -138,9 +138,9 @@ function createWindow(transitionWindow = null) {
     width: 1200,
     height: 800,
     minWidth: 900,
-    // macOS overlays the traffic lights. Windows retains its standard native
-    // frame/Snap behavior and uses a small localized native application menu;
-    // Abu's business controls live in a separate clickable renderer toolbar.
+    // macOS overlays the traffic lights. Windows uses Window Controls Overlay:
+    // the OS still owns caption buttons/Snap, while Abu renders the icon/menu
+    // in the same row and keeps business controls in the row below.
     ...mainWindowPlatformOptions(process.platform, nativeTheme.shouldUseDarkColors),
     webPreferences: {
       preload: path.join(__dirname, 'preload.cjs'),

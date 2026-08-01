@@ -54,7 +54,7 @@ const {
 } = require('./fsWatchHost.cjs');
 const { mcpDispatch } = require('./mcpBridge.cjs');
 const { desktopDispatch, DESKTOP_MISS } = require('./desktopHost.cjs');
-const { syncMainWindowChromeTheme } = require('./windowChrome.cjs');
+const { popupWindowsMenu, syncMainWindowChromeTheme } = require('./windowChrome.cjs');
 const {
   nativeHelperDispatch,
   NATIVE_HELPER_MISS,
@@ -622,6 +622,12 @@ function windowDispatch(app, cmd, args, callerWin) {
     case 'plugin:window|set_title':
       if (queryWin) queryWin.setTitle(String(a.title ?? ''));
       return null;
+    case 'window_titlebar_menu':
+      // Only the tracked main window owns the Windows custom title bar. The
+      // IPC sender has already passed the privileged-page/main-frame checks in
+      // registerTauriHost's handler before reaching this dispatch.
+      if (process.platform !== 'win32' || !win || queryWin !== win) return false;
+      return popupWindowsMenu(win, a);
     case 'plugin:window|is_focused':
       return queryWin ? queryWin.isFocused() : false;
     case 'plugin:window|set_badge_count':

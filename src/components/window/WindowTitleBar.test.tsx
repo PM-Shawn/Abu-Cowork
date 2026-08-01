@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
 import WindowTitleBar from './WindowTitleBar';
@@ -6,6 +6,7 @@ import WindowTitleBar from './WindowTitleBar';
 function props(overrides: Record<string, unknown> = {}) {
   return {
     platform: 'windows',
+    windowsTitleBarOverlay: true,
     sidebarCollapsed: true,
     showSearch: true,
     showNewTask: true,
@@ -15,7 +16,12 @@ function props(overrides: Record<string, unknown> = {}) {
     onOpenSearch: vi.fn(),
     onNewTask: vi.fn(),
     onToggleRightPanel: vi.fn(),
+    onOpenWindowMenu: vi.fn(),
     labels: {
+      appName: 'Abu',
+      editMenu: 'Edit',
+      windowMenu: 'Window',
+      helpMenu: 'Help',
       showSidebar: 'Show sidebar',
       hideSidebar: 'Hide sidebar',
       search: 'Search',
@@ -28,15 +34,23 @@ function props(overrides: Record<string, unknown> = {}) {
 }
 
 describe('WindowTitleBar', () => {
-  it('keeps every Windows control clickable in a toolbar outside native chrome', async () => {
+  it('keeps native menus and every Windows business control clickable', async () => {
     const user = userEvent.setup();
     const callbacks = props();
     const { container } = render(<WindowTitleBar {...callbacks} />);
 
     const toolbar = container.querySelector('[data-abu-windows-toolbar]');
+    const nativeTitlebar = container.querySelector('[data-abu-windows-native-titlebar]');
+    const menus = [...container.querySelectorAll('[data-window-menu]')];
     const controls = [...container.querySelectorAll('[data-window-control]')];
     expect(toolbar).not.toBeNull();
+    expect(nativeTitlebar).toHaveAttribute('data-tauri-drag-region');
     expect(toolbar).not.toHaveAttribute('data-tauri-drag-region');
+    expect(menus).toHaveLength(3);
+    menus.forEach((menu) => {
+      expect(menu).toHaveAttribute('data-electron-no-drag');
+      expect(menu).toHaveAttribute('aria-haspopup', 'menu');
+    });
     expect(controls).toHaveLength(4);
     controls.forEach((control) => {
       expect(control).toHaveAttribute('data-electron-no-drag');
@@ -46,10 +60,27 @@ describe('WindowTitleBar', () => {
     await user.click(screen.getByRole('button', { name: 'Search' }));
     await user.click(screen.getByRole('button', { name: 'New task' }));
     await user.click(screen.getByRole('button', { name: 'Show panel' }));
+    await user.click(screen.getByRole('button', { name: 'Edit' }));
     expect(callbacks.onToggleSidebar).toHaveBeenCalledOnce();
     expect(callbacks.onOpenSearch).toHaveBeenCalledOnce();
     expect(callbacks.onNewTask).toHaveBeenCalledOnce();
     expect(callbacks.onToggleRightPanel).toHaveBeenCalledOnce();
+    expect(callbacks.onOpenWindowMenu).toHaveBeenCalledWith('edit', { x: 0, y: 0 });
+
+    fireEvent.keyDown(window, { key: 'w', altKey: true });
+    await waitFor(() => {
+      expect(callbacks.onOpenWindowMenu).toHaveBeenCalledWith('window', { x: 0, y: 0 });
+    });
+  });
+
+  it('keeps the legacy Windows business toolbar when Window Controls Overlay is unavailable', () => {
+    const { container } = render(
+      <WindowTitleBar {...props({ windowsTitleBarOverlay: false })} />,
+    );
+
+    expect(container.querySelector('[data-abu-windows-native-titlebar]')).toBeNull();
+    expect(container.querySelector('[data-abu-windows-toolbar]')).not.toBeNull();
+    expect(container.querySelectorAll('[data-window-menu]')).toHaveLength(0);
   });
 
   it('restores the compact macOS overlay without making controls draggable', async () => {

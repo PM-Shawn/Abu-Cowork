@@ -53,6 +53,7 @@ import { useSettingsStore, bootstrapSecrets } from '@/stores/settingsStore';
 import { TooltipProvider } from '@/components/ui/tooltip';
 import ConversationSearchModal from '@/components/sidebar/ConversationSearchModal';
 import { isMacOS, isWindows } from '@/utils/platform';
+import { hasElectronCommandHost } from '@/utils/electronHost';
 import { cn } from '@/lib/utils';
 import { initNotifications } from '@/utils/notifications';
 import { initSidebarBadgeChannel } from '@/stores/noticeBadgeStore';
@@ -673,6 +674,7 @@ function App() {
 
   const windowTitleBarProps = {
     platform: desktopPlatform,
+    windowsTitleBarOverlay: desktopPlatform === 'windows' && hasElectronCommandHost(),
     sidebarCollapsed,
     showSearch: viewMode !== 'settings',
     showNewTask: sidebarCollapsed && viewMode !== 'settings',
@@ -686,7 +688,15 @@ function App() {
       setFileTreeMode(false);
     },
     onToggleRightPanel: toggleRightPanel,
+    onOpenWindowMenu: (
+      group: 'edit' | 'window' | 'help',
+      anchor: { x: number; y: number },
+    ) => invoke('window_titlebar_menu', { group, ...anchor }),
     labels: {
+      appName: 'Abu',
+      editMenu: t.sidebar.editMenu,
+      windowMenu: t.sidebar.windowMenu,
+      helpMenu: t.sidebar.helpMenu,
       showSidebar: t.sidebar.showSidebar,
       hideSidebar: t.sidebar.hideSidebar,
       search: t.sidebar.searchPlaceholder,

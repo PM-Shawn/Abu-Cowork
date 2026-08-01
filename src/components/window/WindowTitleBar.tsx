@@ -1,8 +1,13 @@
+import { useEffect, useRef, useState } from 'react';
 import { PanelLeft, PanelRight, Plus, Search } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import abuAvatar from '@/assets/abu-avatar.png';
+
+type WindowMenuGroup = 'edit' | 'window' | 'help';
 
 interface WindowTitleBarProps {
   platform: string;
+  windowsTitleBarOverlay: boolean;
   sidebarCollapsed: boolean;
   showSearch: boolean;
   showNewTask: boolean;
@@ -12,7 +17,15 @@ interface WindowTitleBarProps {
   onOpenSearch: () => void;
   onNewTask: () => void;
   onToggleRightPanel: () => void;
+  onOpenWindowMenu: (
+    group: WindowMenuGroup,
+    anchor: { x: number; y: number },
+  ) => Promise<unknown> | unknown;
   labels: {
+    appName: string;
+    editMenu: string;
+    windowMenu: string;
+    helpMenu: string;
     showSidebar: string;
     hideSidebar: string;
     search: string;
@@ -28,11 +41,13 @@ const CONTROL_CLASS =
 /**
  * macOS keeps the controls in the original 44px overlay so the raised content
  * card can retain its compact 8px top gutter. Only the top 8px strip is
- * draggable; every control remains an explicit no-drag target. Windows keeps
- * native window chrome and a separate renderer toolbar for Abu actions.
+ * draggable; every control remains an explicit no-drag target. Electron on
+ * Windows uses a custom drag row with native Window Controls Overlay buttons,
+ * followed by the separate renderer toolbar for Abu actions.
  */
 export default function WindowTitleBar({
   platform,
+  windowsTitleBarOverlay,
   sidebarCollapsed,
   showSearch,
   showNewTask,
@@ -42,10 +57,32 @@ export default function WindowTitleBar({
   onOpenSearch,
   onNewTask,
   onToggleRightPanel,
+  onOpenWindowMenu,
   labels,
 }: WindowTitleBarProps) {
+  const [activeMenu, setActiveMenu] = useState<WindowMenuGroup | null>(null);
+  const windowMenuButtons = useRef<Partial<Record<WindowMenuGroup, HTMLButtonElement | null>>>({});
   const mac = platform === 'macos';
   const windows = platform === 'windows';
+
+  // Match the access-key hints shown in the Chinese labels. The legacy native
+  // menu handled Alt+E/W/H automatically; once the bar is renderer-owned we
+  // must forward those keys explicitly to avoid a visual-only regression.
+  useEffect(() => {
+    if (!windows || !windowsTitleBarOverlay) return;
+    const groups: Record<string, WindowMenuGroup> = { e: 'edit', w: 'window', h: 'help' };
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (!event.altKey || event.ctrlKey || event.metaKey) return;
+      const group = groups[event.key.toLowerCase()];
+      if (!group) return;
+      const button = windowMenuButtons.current[group];
+      if (!button) return;
+      event.preventDefault();
+      button.click();
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [windows, windowsTitleBarOverlay]);
 
   if (mac) {
     const top = 23;
@@ -184,16 +221,81 @@ export default function WindowTitleBar({
   ) : null;
 
   if (windows) {
+    const openMenu = (group: WindowMenuGroup, button: HTMLButtonElement) => {
+      const rect = button.getBoundingClientRect();
+      setActiveMenu(group);
+      void Promise.resolve().then(() => onOpenWindowMenu(group, {
+        x: Math.round(rect.left),
+        y: Math.round(rect.bottom),
+      })).catch((error) => {
+        console.warn('[WindowTitleBar] Could not open Windows menu', error);
+      }).finally(() => setActiveMenu(null));
+    };
+
     return (
-      <div
-        data-abu-windows-toolbar
-        className="flex h-9 shrink-0 items-center justify-between border-b border-[var(--abu-border)] bg-[var(--abu-bg-canvas)] px-2"
-      >
-        <div className="flex items-center gap-1">
-          {leftControls}
+      <>
+        {windowsTitleBarOverlay && (
+          <div
+            data-abu-windows-native-titlebar
+            data-tauri-drag-region
+            className="relative h-9 shrink-0 select-none bg-[var(--abu-bg-canvas)]"
+          >
+            <div
+              data-abu-windows-titlebar-safe-area
+              className="absolute inset-y-0 flex items-center"
+              style={{
+                left: 'env(titlebar-area-x, 0px)',
+                width: 'env(titlebar-area-width, calc(100% - 138px))',
+              }}
+            >
+              <div className="pointer-events-none flex h-full items-center gap-1.5 pl-2 pr-1.5">
+                <img src={abuAvatar} alt="" className="h-4 w-4 rounded-[4px]" draggable={false} />
+                <span className="text-minor font-medium text-[var(--abu-text-primary)]">
+                  {labels.appName}
+                </span>
+              </div>
+              <div
+                data-electron-no-drag
+                data-abu-window-menu-group
+                className="flex h-full items-center"
+              >
+                {([
+                  ['edit', labels.editMenu],
+                  ['window', labels.windowMenu],
+                  ['help', labels.helpMenu],
+                ] as const).map(([group, label]) => (
+                  <button
+                    key={group}
+                    ref={(button) => { windowMenuButtons.current[group] = button; }}
+                    type="button"
+                    data-electron-no-drag
+                    data-window-menu={group}
+                    aria-haspopup="menu"
+                    aria-expanded={activeMenu === group}
+                    onClick={(event) => openMenu(group, event.currentTarget)}
+                    className={cn(
+                      'h-7 rounded px-2 text-minor text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-hover)]',
+                      activeMenu === group && 'bg-[var(--abu-bg-hover)]',
+                    )}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+              <div className="h-full min-w-6 flex-1" aria-hidden="true" />
+            </div>
+          </div>
+        )}
+        <div
+          data-abu-windows-toolbar
+          className="flex h-9 shrink-0 items-center justify-between border-b border-[var(--abu-border)] bg-[var(--abu-bg-canvas)] px-2"
+        >
+          <div className="flex items-center gap-1">
+            {leftControls}
+          </div>
+          {rightControl}
         </div>
-        {rightControl}
-      </div>
+      </>
     );
   }
 

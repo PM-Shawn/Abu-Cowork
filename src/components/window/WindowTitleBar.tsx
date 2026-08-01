@@ -42,8 +42,9 @@ const CONTROL_CLASS =
  * macOS keeps the controls in the original 44px overlay so the raised content
  * card can retain its compact 8px top gutter. Only the top 8px strip is
  * draggable; every control remains an explicit no-drag target. Electron on
- * Windows uses a custom drag row with native Window Controls Overlay buttons,
- * followed by the separate renderer toolbar for Abu actions.
+ * Windows keeps native Window Controls Overlay buttons while the renderer owns
+ * the title-bar visuals. Both Windows rows expose an explicit empty drag lane;
+ * menus and business controls are isolated no-drag targets.
  */
 export default function WindowTitleBar({
   platform,
@@ -237,7 +238,6 @@ export default function WindowTitleBar({
         {windowsTitleBarOverlay && (
           <div
             data-abu-windows-native-titlebar
-            data-tauri-drag-region
             className="relative h-9 shrink-0 select-none bg-[var(--abu-bg-canvas)]"
           >
             <div
@@ -248,7 +248,10 @@ export default function WindowTitleBar({
                 width: 'env(titlebar-area-width, calc(100% - 138px))',
               }}
             >
-              <div className="pointer-events-none flex h-full items-center gap-1.5 pl-2 pr-1.5">
+              <div
+                data-tauri-drag-region
+                className="pointer-events-none flex h-full items-center gap-1.5 pl-2 pr-1.5"
+              >
                 <img src={abuAvatar} alt="" className="h-4 w-4 rounded-[4px]" draggable={false} />
                 <span className="text-minor font-medium text-[var(--abu-text-primary)]">
                   {labels.appName}
@@ -282,17 +285,26 @@ export default function WindowTitleBar({
                   </button>
                 ))}
               </div>
-              <div className="h-full min-w-6 flex-1" aria-hidden="true" />
+              <div
+                data-abu-windows-drag-region="titlebar"
+                data-tauri-drag-region
+                className="h-full min-w-8 flex-1"
+                aria-hidden="true"
+              />
             </div>
           </div>
         )}
         <div
           data-abu-windows-toolbar
-          className="flex h-9 shrink-0 items-center justify-between border-b border-[var(--abu-border)] bg-[var(--abu-bg-canvas)] px-2"
+          className="flex h-9 shrink-0 items-center border-b border-[var(--abu-border)] bg-[var(--abu-bg-canvas)] px-2"
         >
-          <div className="flex items-center gap-1">
-            {leftControls}
-          </div>
+          {leftControls}
+          <div
+            data-abu-windows-drag-region="toolbar"
+            data-tauri-drag-region
+            className="h-full min-w-8 flex-1"
+            aria-hidden="true"
+          />
           {rightControl}
         </div>
       </>

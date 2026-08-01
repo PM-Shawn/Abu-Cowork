@@ -2123,6 +2123,20 @@ async function main() {
               visible: rect.width > 0 && rect.height > 0,
             };
           });
+        const dragRegions = [...document.querySelectorAll('[data-abu-windows-drag-region]')]
+          .map((region) => {
+            const rect = region.getBoundingClientRect();
+            return {
+              group: region.getAttribute('data-abu-windows-drag-region'),
+              left: rect.left,
+              right: rect.right,
+              top: rect.top,
+              bottom: rect.bottom,
+              width: rect.width,
+              height: rect.height,
+              appRegion: getComputedStyle(region).webkitAppRegion,
+            };
+          });
         const controls = [...document.querySelectorAll('[data-window-control]')]
           .map((control) => {
             const rect = control.getBoundingClientRect();
@@ -2164,6 +2178,7 @@ async function main() {
           toolbarBottom: toolbarRect.bottom,
           mainTop: mainRect.top,
           menus,
+          dragRegions,
           controls,
         };
       });
@@ -2182,6 +2197,13 @@ async function main() {
           menu.right <= toolbarLayout.titlebarSafeArea.right + 1 &&
           menu.top >= toolbarLayout.titlebarSafeArea.top - 1 &&
           menu.bottom <= toolbarLayout.titlebarSafeArea.bottom + 1
+        )) &&
+        toolbarLayout.dragRegions.length === 2 &&
+        toolbarLayout.dragRegions.map((region) => region.group).join(',') === 'titlebar,toolbar' &&
+        toolbarLayout.dragRegions.every((region) => (
+          region.appRegion === 'drag' &&
+          region.width >= 32 &&
+          Math.abs(region.height - 36) <= 1
         ));
       checks.packagedWindowsToolbarLayout =
         toolbarLayout !== null &&
@@ -2199,9 +2221,102 @@ async function main() {
           control.top >= toolbarLayout.toolbar.top - 1 &&
           control.bottom <= toolbarLayout.toolbar.bottom + 1
         ));
+
+      // CSS app-region checks cannot prove that Windows' native hit testing
+      // actually starts a system move. Drag the packaged window through the
+      // renderer-owned title-bar lane with the bundled native helper, assert
+      // its native bounds changed, then restore the original position so the
+      // rest of the smoke remains stable. DevTools mouse events stay inside
+      // Chromium and cannot prove Windows' WM_NCHITTEST/HTCAPTION path.
+      let dragPlan = null;
+      try {
+        dragPlan = await app.evaluate(({ BrowserWindow, screen }) => {
+          const mainWindow = BrowserWindow.getAllWindows()
+            .find((candidate) => candidate.webContents.getURL().includes('/dist-electron-spike/index.html'));
+          if (!mainWindow) throw new Error('main window missing for Windows drag check');
+          if (mainWindow.isMaximized() || mainWindow.isFullScreen()) {
+            throw new Error('main window must be restored for Windows drag check');
+          }
+          const bounds = mainWindow.getBounds();
+          const contentBounds = mainWindow.getContentBounds();
+          const workArea = screen.getDisplayMatching(bounds).workArea;
+          const roomRight = workArea.x + workArea.width - (bounds.x + bounds.width);
+          const roomDown = workArea.y + workArea.height - (bounds.y + bounds.height);
+          mainWindow.focus();
+          mainWindow.moveTop();
+          return {
+            originalX: bounds.x,
+            originalY: bounds.y,
+            contentX: contentBounds.x,
+            contentY: contentBounds.y,
+            processId: process.pid,
+            deltaX: roomRight >= 64 ? 48 : -48,
+            deltaY: roomDown >= 48 ? 32 : -32,
+          };
+        });
+        const dragLane = window.locator('[data-abu-windows-drag-region="titlebar"]');
+        const dragBox = await dragLane.boundingBox();
+        if (!dragBox || dragBox.width < 32 || dragBox.height < 20) {
+          throw new Error(`Windows title-bar drag lane is unusable: ${JSON.stringify(dragBox)}`);
+        }
+        const startX = dragBox.x + dragBox.width / 2;
+        const startY = dragBox.y + dragBox.height / 2;
+        const screenStartX = Math.round(dragPlan.contentX + startX);
+        const screenStartY = Math.round(dragPlan.contentY + startY);
+        const dragHelperName = process.platform === 'win32' ? 'native-helper.exe' : 'native-helper';
+        const dragHelperPath = path.join(found.resources, 'native-helper', dragHelperName);
+        const helperResult = spawnSync(dragHelperPath, [], {
+          input: `${JSON.stringify({
+            id: 1,
+            method: 'mouse_drag',
+            params: {
+              start_x: screenStartX,
+              start_y: screenStartY,
+              end_x: screenStartX + dragPlan.deltaX,
+              end_y: screenStartY + dragPlan.deltaY,
+              expected_bundle_id: 'abu.packaged-smoke',
+              expected_process_id: dragPlan.processId,
+            },
+          })}\n`,
+          encoding: 'utf8',
+          timeout: 10_000,
+        });
+        const helperResponse = JSON.parse(String(helperResult.stdout || '').trim());
+        if (helperResult.status !== 0 || helperResponse?.error) {
+          throw new Error([
+            `native drag helper status=${String(helperResult.status)}`,
+            `response=${JSON.stringify(helperResponse)}`,
+            `stderr=${JSON.stringify(helperResult.stderr || '')}`,
+          ].join(' '));
+        }
+        await waitUntil(
+          () => app.evaluate(({ BrowserWindow }, original) => {
+            const mainWindow = BrowserWindow.getAllWindows()
+              .find((candidate) => candidate.webContents.getURL().includes('/dist-electron-spike/index.html'));
+            if (!mainWindow) return false;
+            const [x, y] = mainWindow.getPosition();
+            return x !== original.x || y !== original.y;
+          }, { x: dragPlan.originalX, y: dragPlan.originalY }),
+          'the packaged Windows title-bar drag to move the native window',
+          5_000,
+        );
+        checks.packagedWindowsWindowDrag = true;
+      } catch (err) {
+        checks.packagedWindowsWindowDrag = false;
+        errors.windowsWindowDrag = String(err);
+      } finally {
+        if (dragPlan) {
+          await app.evaluate(({ BrowserWindow }, original) => {
+            const mainWindow = BrowserWindow.getAllWindows()
+              .find((candidate) => candidate.webContents.getURL().includes('/dist-electron-spike/index.html'));
+            mainWindow?.setPosition(original.x, original.y);
+          }, { x: dragPlan.originalX, y: dragPlan.originalY });
+        }
+      }
     } else {
       checks.packagedWindowsTitlebarLayout = true;
       checks.packagedWindowsToolbarLayout = true;
+      checks.packagedWindowsWindowDrag = true;
     }
 
     if (process.platform === 'darwin') {

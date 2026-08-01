@@ -5,6 +5,7 @@ const test = require('node:test');
 const {
   DARK_CHROME,
   LIGHT_CHROME,
+  WINDOWS_OVERLAY_BACKGROUND,
   WINDOWS_TOOLBAR_HEIGHT,
   WINDOWS_MENU_IDS,
   WINDOW_DRAG_REGION_CSS,
@@ -20,7 +21,7 @@ test('Windows overlays native caption buttons and removes the second menu-bar ro
     backgroundColor: LIGHT_CHROME.backgroundColor,
     titleBarStyle: 'hidden',
     titleBarOverlay: {
-      color: LIGHT_CHROME.backgroundColor,
+      color: WINDOWS_OVERLAY_BACKGROUND,
       symbolColor: LIGHT_CHROME.symbolColor,
       height: 36,
     },
@@ -114,12 +115,12 @@ test('Windows background follows Abu dark and light theme changes', () => {
   ]);
   assert.deepEqual(overlays, [
     {
-      color: DARK_CHROME.backgroundColor,
+      color: WINDOWS_OVERLAY_BACKGROUND,
       symbolColor: DARK_CHROME.symbolColor,
       height: WINDOWS_TOOLBAR_HEIGHT,
     },
     {
-      color: LIGHT_CHROME.backgroundColor,
+      color: WINDOWS_OVERLAY_BACKGROUND,
       symbolColor: LIGHT_CHROME.symbolColor,
       height: WINDOWS_TOOLBAR_HEIGHT,
     },

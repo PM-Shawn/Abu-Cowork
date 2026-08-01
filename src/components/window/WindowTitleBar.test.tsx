@@ -41,11 +41,19 @@ describe('WindowTitleBar', () => {
 
     const toolbar = container.querySelector('[data-abu-windows-toolbar]');
     const nativeTitlebar = container.querySelector('[data-abu-windows-native-titlebar]');
+    const dragRegions = [...container.querySelectorAll('[data-abu-windows-drag-region]')];
     const menus = [...container.querySelectorAll('[data-window-menu]')];
     const controls = [...container.querySelectorAll('[data-window-control]')];
     expect(toolbar).not.toBeNull();
-    expect(nativeTitlebar).toHaveAttribute('data-tauri-drag-region');
+    expect(nativeTitlebar).not.toHaveAttribute('data-tauri-drag-region');
     expect(toolbar).not.toHaveAttribute('data-tauri-drag-region');
+    expect(dragRegions).toHaveLength(2);
+    expect(dragRegions.map((region) => region.getAttribute('data-abu-windows-drag-region')))
+      .toEqual(['titlebar', 'toolbar']);
+    dragRegions.forEach((region) => {
+      expect(region).toHaveAttribute('data-tauri-drag-region');
+      expect(region).not.toHaveAttribute('data-electron-no-drag');
+    });
     expect(menus).toHaveLength(3);
     menus.forEach((menu) => {
       expect(menu).toHaveAttribute('data-electron-no-drag');

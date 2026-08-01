@@ -9,6 +9,11 @@ const DARK_CHROME = {
   symbolColor: '#f0ede8',
 };
 const WINDOWS_TOOLBAR_HEIGHT = 36;
+// The renderer owns the complete visual title-bar plane. Keeping Electron's
+// Window Controls Overlay background transparent lets theme colors and every
+// full-window scrim flow underneath the native caption buttons automatically.
+// This avoids a second modal/theme state machine in the main process.
+const WINDOWS_OVERLAY_BACKGROUND = '#00000000';
 const WINDOWS_MENU_IDS = Object.freeze({
   edit: 'abu-window-menu-edit',
   window: 'abu-window-menu-window',
@@ -40,7 +45,7 @@ function mainWindowPlatformOptions(platform = process.platform, dark = false) {
       // renderer use the rest of this SAME row for Abu's icon and menus.
       titleBarStyle: 'hidden',
       titleBarOverlay: {
-        color: colors.backgroundColor,
+        color: WINDOWS_OVERLAY_BACKGROUND,
         symbolColor: colors.symbolColor,
         height: WINDOWS_TOOLBAR_HEIGHT,
       },
@@ -135,7 +140,7 @@ function syncMainWindowChromeTheme(win, dark, platform = process.platform) {
   win.setBackgroundColor?.(colors.backgroundColor);
   if (platform === 'win32') {
     win.setTitleBarOverlay?.({
-      color: colors.backgroundColor,
+      color: WINDOWS_OVERLAY_BACKGROUND,
       symbolColor: colors.symbolColor,
       height: WINDOWS_TOOLBAR_HEIGHT,
     });
@@ -175,6 +180,7 @@ module.exports = {
   DARK_CHROME,
   LIGHT_CHROME,
   WINDOWS_TOOLBAR_HEIGHT,
+  WINDOWS_OVERLAY_BACKGROUND,
   WINDOW_DRAG_REGION_CSS,
   WINDOWS_MENU_IDS,
   buildWindowsMenuTemplate,

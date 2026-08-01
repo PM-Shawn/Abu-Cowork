@@ -2073,9 +2073,9 @@ async function main() {
         menuBarAutoHide: mainWindow.isMenuBarAutoHide(),
       };
     });
-    checks.packagedWindowsNativeMenuVisible =
+    checks.packagedWindowsNativeMenuHidden =
       process.platform !== 'win32' ||
-      (windowChrome?.menuVisible === true && windowChrome?.menuBarAutoHide === false);
+      (windowChrome?.menuVisible === false && windowChrome?.menuBarAutoHide === true);
 
     // Exercise the same BrowserWindow close event produced by the native ×.
     // A fresh profile defaults to "ask", so the close must reach React and
@@ -2099,12 +2099,30 @@ async function main() {
     checks.packagedFirstRunGuideHandled = !(await firstRunGuide.isVisible());
     if (process.platform === 'win32') {
       const toolbarLayout = await window.evaluate(() => {
+        const titlebar = document.querySelector('[data-abu-windows-native-titlebar]');
+        const titlebarSafeArea = document.querySelector('[data-abu-windows-titlebar-safe-area]');
         const toolbar = document.querySelector('[data-abu-windows-toolbar]');
         const appLayout = document.querySelector('[data-abu-app-layout]');
         const main = document.querySelector('main');
-        if (!toolbar || !appLayout || !main) return null;
+        if (!titlebar || !titlebarSafeArea || !toolbar || !appLayout || !main) return null;
+        const titlebarRect = titlebar.getBoundingClientRect();
+        const titlebarSafeAreaRect = titlebarSafeArea.getBoundingClientRect();
         const toolbarRect = toolbar.getBoundingClientRect();
         const mainRect = main.getBoundingClientRect();
+        const menus = [...document.querySelectorAll('[data-window-menu]')]
+          .map((menu) => {
+            const rect = menu.getBoundingClientRect();
+            const style = getComputedStyle(menu);
+            return {
+              group: menu.getAttribute('data-window-menu'),
+              left: rect.left,
+              right: rect.right,
+              top: rect.top,
+              bottom: rect.bottom,
+              pointerEvents: style.pointerEvents,
+              visible: rect.width > 0 && rect.height > 0,
+            };
+          });
         const controls = [...document.querySelectorAll('[data-window-control]')]
           .map((control) => {
             const rect = control.getBoundingClientRect();
@@ -2119,6 +2137,20 @@ async function main() {
           });
         return {
           viewportWidth: window.innerWidth,
+          titlebar: {
+            left: titlebarRect.left,
+            right: titlebarRect.right,
+            top: titlebarRect.top,
+            bottom: titlebarRect.bottom,
+            height: titlebarRect.height,
+            background: getComputedStyle(titlebar).backgroundColor,
+          },
+          titlebarSafeArea: {
+            left: titlebarSafeAreaRect.left,
+            right: titlebarSafeAreaRect.right,
+            top: titlebarSafeAreaRect.top,
+            bottom: titlebarSafeAreaRect.bottom,
+          },
           toolbar: {
             left: toolbarRect.left,
             right: toolbarRect.right,
@@ -2131,9 +2163,26 @@ async function main() {
           appBackground: getComputedStyle(appLayout).backgroundColor,
           toolbarBottom: toolbarRect.bottom,
           mainTop: mainRect.top,
+          menus,
           controls,
         };
       });
+      checks.packagedWindowsTitlebarLayout =
+        toolbarLayout !== null &&
+        Math.abs(toolbarLayout.titlebar.height - 36) <= 1 &&
+        toolbarLayout.titlebar.background === toolbarLayout.appBackground &&
+        toolbarLayout.titlebar.left >= -1 &&
+        toolbarLayout.titlebar.right <= toolbarLayout.viewportWidth + 1 &&
+        toolbarLayout.menus.length === 3 &&
+        toolbarLayout.menus.map((menu) => menu.group).join(',') === 'edit,window,help' &&
+        toolbarLayout.menus.every((menu) => (
+          menu.visible &&
+          menu.pointerEvents !== 'none' &&
+          menu.left >= toolbarLayout.titlebarSafeArea.left - 1 &&
+          menu.right <= toolbarLayout.titlebarSafeArea.right + 1 &&
+          menu.top >= toolbarLayout.titlebarSafeArea.top - 1 &&
+          menu.bottom <= toolbarLayout.titlebarSafeArea.bottom + 1
+        ));
       checks.packagedWindowsToolbarLayout =
         toolbarLayout !== null &&
         Math.abs(toolbarLayout.toolbar.height - 36) <= 1 &&
@@ -2151,6 +2200,7 @@ async function main() {
           control.bottom <= toolbarLayout.toolbar.bottom + 1
         ));
     } else {
+      checks.packagedWindowsTitlebarLayout = true;
       checks.packagedWindowsToolbarLayout = true;
     }
 

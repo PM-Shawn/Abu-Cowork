@@ -23,7 +23,7 @@ function isApprovedBridgeCommand(commandLine) {
   return (
     /\/node_modules\/\.bin\/abu-browser-bridge(?:\s|$)/i.test(normalized) ||
     /\/abu-browser-bridge\/(?:dist\/)?index\.(?:js|mjs)(?:\s|$)/i.test(normalized) ||
-    /\/chrome-bridge-runtime\/server\.mjs(?:\s|$)/i.test(normalized)
+    /\/chrome-bridge-runtime\/(?:dist\/)?server\.mjs(?:\s|$)/i.test(normalized)
   );
 }
 

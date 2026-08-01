@@ -124,6 +124,12 @@ test('only reviewed first-party bridge command lines are eligible for takeover',
     ),
     true,
   );
+  assert.equal(
+    isApprovedBridgeCommand(
+      'node /repo/electron/chrome-bridge-runtime/dist/server.mjs'
+    ),
+    true,
+  );
   assert.equal(isApprovedBridgeCommand('python -m http.server 9875'), false);
   assert.equal(
     isApprovedBridgeCommand('node -e "console.log(\'abu-browser-bridge\')"'),

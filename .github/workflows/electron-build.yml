@@ -127,12 +127,18 @@ jobs:
         env:
           RAW_TRANSITION_VERSION: ${{ inputs.transition_version }}
           FEED_CHANNEL: ${{ matrix.feed_channel }}
-          OFFICIAL_BUILD: ${{ github.repository == 'PM-Shawn/Abu-Cowork' }}
+          TRANSITION_RELEASE: ${{ inputs.transition_release }}
+          OFFICIAL_BUILD: ${{ github.event_name != 'pull_request' && github.repository == 'PM-Shawn/Abu-Cowork' }}
         run: |
           TRANSITION_VERSION="${RAW_TRANSITION_VERSION#v}"
-          node scripts/validate-electron-transition-version.mjs \
+          VALIDATE_ARGS=(
             --candidate "$TRANSITION_VERSION" \
             --latest-url "https://abu-agent.oss-cn-beijing.aliyuncs.com/latest.json"
+          )
+          if [[ "$TRANSITION_RELEASE" == "true" ]]; then
+            VALIDATE_ARGS+=(--allow-equal true)
+          fi
+          node scripts/validate-electron-transition-version.mjs "${VALIDATE_ARGS[@]}"
           echo "TRANSITION_VERSION=$TRANSITION_VERSION" >> "$GITHUB_ENV"
           echo "ABU_ELECTRON_FEED=https://abu-agent.oss-cn-beijing.aliyuncs.com/electron/${FEED_CHANNEL}/" >> "$GITHUB_ENV"
           echo "ABU_OFFICIAL_BUILD=$OFFICIAL_BUILD" >> "$GITHUB_ENV"
@@ -519,7 +525,9 @@ jobs:
             Out-File -FilePath $env:GITHUB_ENV -Append
           "ABU_EXPECTED_ELECTRON_FEED=https://abu-agent.oss-cn-beijing.aliyuncs.com/electron/win-x64/" |
             Out-File -FilePath $env:GITHUB_ENV -Append
-          $officialBuild = "${{ github.repository }}" -eq "PM-Shawn/Abu-Cowork"
+          $officialBuild = `
+            "${{ github.event_name }}" -ne "pull_request" -and `
+            "${{ github.repository }}" -eq "PM-Shawn/Abu-Cowork"
           "ABU_OFFICIAL_BUILD=$($officialBuild.ToString().ToLowerInvariant())" |
             Out-File -FilePath $env:GITHUB_ENV -Append
           $release = "${{ inputs.transition_release }}" -eq "true"
@@ -535,7 +543,8 @@ jobs:
         run: |
           node scripts/validate-electron-transition-version.mjs `
             --candidate $env:ABU_ELECTRON_VERSION `
-            --latest-url "https://abu-agent.oss-cn-beijing.aliyuncs.com/latest.json"
+            --latest-url "https://abu-agent.oss-cn-beijing.aliyuncs.com/latest.json" `
+            --allow-equal true
 
       - name: Build unsigned current-user NSIS and update metadata
         shell: pwsh
@@ -588,7 +597,7 @@ jobs:
           }
 
       - name: Verify installer, blockmap, latest.yml, and packaged feed
-        if: ${{ github.repository == 'PM-Shawn/Abu-Cowork' }}
+        if: ${{ github.event_name != 'pull_request' && github.repository == 'PM-Shawn/Abu-Cowork' }}
         run: npm run verify:electron:windows-artifacts
 
       - name: Install, launch, migrate, and preserve Tauri rollback

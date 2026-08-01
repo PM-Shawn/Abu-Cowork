@@ -132,8 +132,11 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          set -euo pipefail
           TAG="${{ github.ref_name }}"
           VER="${TAG#v}"
+          VERIFY_DIR="$(mktemp -d)"
+          trap 'rm -rf "$VERIFY_DIR"' EXIT
           NOTES="$(awk -v ver="## v${VER}" 'index($0, ver)==1{f=1;next} /^## v/{if(f)exit} f' CHANGELOG.md)"
           if [ -z "$(printf '%s' "$NOTES" | tr -d '[:space:]')" ]; then
             NOTES="See the assets below for download links."
@@ -142,16 +145,56 @@ jobs:
           if ! gh release view "$TAG" --repo "${{ github.repository }}" >/dev/null 2>&1; then
             gh release create "$TAG" --repo "${{ github.repository }}" --draft \
               --title "$TAG" --notes-file "$RUNNER_TEMP/release-notes.md"
+          elif [ "$(gh release view "$TAG" --repo "${{ github.repository }}" \
+            --json isDraft --jq '.isDraft')" != "true" ]; then
+            echo "Release $TAG is already public; refusing to replace immutable assets" >&2
+            exit 1
           fi
           gh release edit "$TAG" --repo "${{ github.repository }}" \
             --title "$TAG" --notes-file "$RUNNER_TEMP/release-notes.md"
-          gh release upload "$TAG" release-stage/release-assets/* \
-            --repo "${{ github.repository }}" --clobber
+
+          # A failed draft publication may be retried, but a versioned asset is
+          # immutable: an existing name must have exactly the same bytes.
+          for asset in release-stage/release-assets/*; do
+            test -s "$asset"
+            name="$(basename "$asset")"
+            downloaded="$VERIFY_DIR/$name"
+            if gh release download "$TAG" --repo "${{ github.repository }}" \
+              --pattern "$name" --dir "$VERIFY_DIR" >/dev/null 2>&1; then
+              cmp "$asset" "$downloaded"
+            else
+              gh release upload "$TAG" "$asset" --repo "${{ github.repository }}"
+              gh release download "$TAG" --repo "${{ github.repository }}" \
+                --pattern "$name" --dir "$VERIFY_DIR" --clobber
+              cmp "$asset" "$downloaded"
+            fi
+          done
+
+          find release-stage/release-assets -maxdepth 1 -type f -exec basename {} \; \
+            | LC_ALL=C sort > "$VERIFY_DIR/expected-assets.txt"
+          gh release view "$TAG" --repo "${{ github.repository }}" \
+            --json assets --jq '.assets[].name' \
+            | LC_ALL=C sort > "$VERIFY_DIR/actual-assets.txt"
+          cmp "$VERIFY_DIR/expected-assets.txt" "$VERIFY_DIR/actual-assets.txt"
 
       - name: Install and configure ossutil
         run: |
-          curl -fsSL https://gosspublic.alicdn.com/ossutil/install.sh | sudo bash
-          ossutil config \
+          OSSUTIL_VERSION="1.7.19"
+          OSSUTIL_ARCHIVE="$RUNNER_TEMP/ossutil-v${OSSUTIL_VERSION}-linux-amd64.zip"
+          OSSUTIL_EXTRACT="$RUNNER_TEMP/ossutil-v${OSSUTIL_VERSION}"
+          OSSUTIL_BIN_DIR="$RUNNER_TEMP/ossutil-bin"
+          curl -fsSLo "$OSSUTIL_ARCHIVE" \
+            "https://gosspublic.alicdn.com/ossutil/${OSSUTIL_VERSION}/ossutil-v${OSSUTIL_VERSION}-linux-amd64.zip"
+          echo "dcc512e4a893e16bbee63bc769339d8e56b21744fd83c8212a9d8baf28767343  $OSSUTIL_ARCHIVE" \
+            | sha256sum -c -
+          mkdir -p "$OSSUTIL_EXTRACT" "$OSSUTIL_BIN_DIR"
+          unzip -q "$OSSUTIL_ARCHIVE" -d "$OSSUTIL_EXTRACT"
+          OSSUTIL_BIN="$(find "$OSSUTIL_EXTRACT" -type f -name ossutil -print -quit)"
+          test -n "$OSSUTIL_BIN"
+          install -m 0755 "$OSSUTIL_BIN" "$OSSUTIL_BIN_DIR/ossutil"
+          echo "$OSSUTIL_BIN_DIR" >> "$GITHUB_PATH"
+          "$OSSUTIL_BIN_DIR/ossutil" help >/dev/null
+          "$OSSUTIL_BIN_DIR/ossutil" config \
             -e "${{ secrets.OSS_REGION }}.aliyuncs.com" \
             -i "${{ secrets.ALIYUN_ACCESS_KEY_ID }}" \
             -k "${{ secrets.ALIYUN_ACCESS_KEY_SECRET }}"
@@ -161,11 +204,37 @@ jobs:
       - name: Upload immutable release and updater artifacts
         env:
           BUCKET: oss://${{ secrets.OSS_BUCKET }}
+          PUBLIC_BASE: https://abu-agent.oss-cn-beijing.aliyuncs.com
         run: |
+          set -euo pipefail
+          VERIFY_DIR="$(mktemp -d)"
+          trap 'rm -rf "$VERIFY_DIR"' EXIT
+          INDEX=0
           while IFS=$'\t' read -r local remote; do
             test -n "$local"
             test -s "release-stage/$local"
-            ossutil cp "release-stage/$local" "$BUCKET/$remote" -f
+            INDEX=$((INDEX + 1))
+            downloaded="$VERIFY_DIR/$INDEX"
+            http_status="$(curl -sS --retry 5 --retry-all-errors \
+              -o "$downloaded" -w '%{http_code}' \
+              "$PUBLIC_BASE/$remote?immutable=${GITHUB_RUN_ID}-${INDEX}")"
+            case "$http_status" in
+              200)
+                cmp "release-stage/$local" "$downloaded"
+                ;;
+              404)
+                rm -f "$downloaded"
+                # OSS evaluates this header atomically at object creation, so
+                # a stale CDN 404 or an external race can never replace bytes
+                # already addressed by this versioned key.
+                ossutil cp "release-stage/$local" "$BUCKET/$remote" -f \
+                  --meta "X-Oss-Forbid-Overwrite:true"
+                ;;
+              *)
+                echo "Could not inspect immutable object $remote: HTTP $http_status" >&2
+                exit 1
+                ;;
+            esac
           done < release-stage/content-map.tsv
 
       - name: Verify uploaded immutable bytes
@@ -183,16 +252,106 @@ jobs:
             cmp "release-stage/$local" "$downloaded"
           done < release-stage/content-map.tsv
 
-      - name: Publish and verify the three Electron feed pointers
+      # Every mutable release surface shares one EXIT trap. The workflow first
+      # snapshots and version-checks all three Electron feeds without writing,
+      # then publishes the feeds, GitHub Release, and (for v0.34.x only) the
+      # frozen Tauri bridge pointer. Any failure restores every surface.
+      - name: Publish and verify the release visibility transaction
         env:
           BUCKET: oss://${{ secrets.OSS_BUCKET }}
+          PUBLIC_BASE: https://abu-agent.oss-cn-beijing.aliyuncs.com
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          LEGACY_TRANSITION: ${{ startsWith(github.ref_name, 'v0.34.') }}
+          VERSION: ${{ github.ref_name }}
         run: |
+          set -euo pipefail
+          BACKUP_DIR="$(mktemp -d)"
           VERIFY_DIR="$(mktemp -d)"
-          trap 'rm -rf "$VERIFY_DIR"' EXIT
+          UPDATED_POINTERS="$BACKUP_DIR/updated.tsv"
+          PREVIOUS_LATEST="$BACKUP_DIR/latest.json"
+          ROOT_VERIFY_FILE="$VERIFY_DIR/latest.json"
+          : > "$UPDATED_POINTERS"
+          RELEASE_PUBLISH_ATTEMPTED=0
+          POINTER_CAPTURED=0
+          restore_release_transaction() {
+            status=$?
+            rollback_failed=0
+            if [ "$status" -ne 0 ]; then
+              if [ "$POINTER_CAPTURED" -eq 1 ] && [ -s "$PREVIOUS_LATEST" ]; then
+                echo "Release transaction failed; restoring the previous latest.json" >&2
+                ossutil cp "$PREVIOUS_LATEST" "$BUCKET/latest.json" \
+                  -f --meta "Cache-Control:no-cache" || rollback_failed=1
+              fi
+              if [ "$RELEASE_PUBLISH_ATTEMPTED" -eq 1 ]; then
+                echo "Release transaction failed; returning the GitHub Release to draft" >&2
+                gh release edit "$VERSION" --repo "${{ github.repository }}" \
+                  --draft=true || rollback_failed=1
+              fi
+              echo "Release transaction failed; restoring all changed Electron feeds" >&2
+              while IFS=$'\t' read -r remote previous_state backup; do
+                test -n "$remote" || continue
+                if [ "$previous_state" = "existing" ]; then
+                  ossutil cp "$backup" "$BUCKET/$remote" \
+                    -f --meta "Cache-Control:no-cache" || rollback_failed=1
+                elif [ "$previous_state" = "missing" ]; then
+                  ossutil rm "$BUCKET/$remote" -f || rollback_failed=1
+                else
+                  echo "Unknown pointer backup state: $previous_state" >&2
+                  rollback_failed=1
+                fi
+              done < "$UPDATED_POINTERS"
+              if [ "$rollback_failed" -ne 0 ]; then
+                echo "One or more release surfaces could not be restored" >&2
+              fi
+            fi
+            rm -rf "$BACKUP_DIR" "$VERIFY_DIR"
+            exit "$status"
+          }
+          trap restore_release_transaction EXIT
+          test "$(wc -l < release-stage/feed-pointer-map.tsv | tr -d ' ')" -eq 3
+
+          # Snapshot and validate all current feeds before the first production
+          # write. Equal is the idempotent retry case; an older tag fails here.
           INDEX=0
           while IFS=$'\t' read -r local remote; do
             test -n "$local"
+            case "$remote" in
+              electron/mac-arm64/latest-mac.yml|electron/mac-x64/latest-mac.yml|electron/win-x64/latest.yml) ;;
+              *)
+                echo "Unexpected Electron feed pointer target: $remote" >&2
+                exit 1
+                ;;
+            esac
             INDEX=$((INDEX + 1))
+            backup="$BACKUP_DIR/$INDEX"
+            http_status="$(curl -sS --retry 5 --retry-all-errors \
+              -o "$backup" -w '%{http_code}' \
+              "$PUBLIC_BASE/$remote?backup=${GITHUB_RUN_ID}-${INDEX}")"
+            case "$http_status" in
+              200)
+                previous_state=existing
+                node scripts/validate-electron-feed-version.mjs \
+                  --candidate "${VERSION#v}" --metadata "$backup"
+                ;;
+              404)
+                rm -f "$backup"
+                previous_state=missing
+                ;;
+              *)
+                echo "Could not snapshot $remote: HTTP $http_status" >&2
+                exit 1
+                ;;
+            esac
+            printf '%s\n' "$previous_state" > "$BACKUP_DIR/$INDEX.state"
+          done < release-stage/feed-pointer-map.tsv
+
+          INDEX=0
+          while IFS=$'\t' read -r local remote; do
+            INDEX=$((INDEX + 1))
+            backup="$BACKUP_DIR/$INDEX"
+            previous_state="$(cat "$BACKUP_DIR/$INDEX.state")"
+            printf '%s\t%s\t%s\n' "$remote" "$previous_state" "$backup" \
+              >> "$UPDATED_POINTERS"
             ossutil cp "release-stage/$local" "$BUCKET/$remote" \
               -f --meta "Cache-Control:no-cache"
             downloaded="$VERIFY_DIR/$INDEX"
@@ -200,50 +359,34 @@ jobs:
             cmp "release-stage/$local" "$downloaded"
           done < release-stage/feed-pointer-map.tsv
 
-      # This is the only operation that makes existing Tauri installations see
-      # the framework transition. It runs after all three new Electron feeds and
-      # all transition artifacts are durable and byte-verified.
-      - name: Switch the frozen production Tauri bridge pointer last
-        if: ${{ startsWith(github.ref_name, 'v0.34.') }}
-        env:
-          BUCKET: oss://${{ secrets.OSS_BUCKET }}
-        run: |
-          VERSION="${{ github.ref_name }}"
-          PREVIOUS_LATEST="$(mktemp)"
-          VERIFY_FILE="$(mktemp)"
-          restore_previous_pointer() {
-            status=$?
-            if [ "$status" -ne 0 ] && [ -s "$PREVIOUS_LATEST" ]; then
-              echo "New latest.json verification failed; restoring the previous pointer" >&2
-              ossutil cp "$PREVIOUS_LATEST" "$BUCKET/latest.json" \
-                -f --meta "Cache-Control:no-cache" || true
-            fi
-            rm -f "$PREVIOUS_LATEST" "$VERIFY_FILE"
-            exit "$status"
-          }
-          trap restore_previous_pointer EXIT
-          ossutil cp "$BUCKET/latest.json" "$PREVIOUS_LATEST" -f
-          node scripts/validate-electron-transition-version.mjs \
-            --candidate "${VERSION#v}" \
-            --latest-url "https://abu-agent.oss-cn-beijing.aliyuncs.com/latest.json" \
-            --allow-equal true
-          ossutil cp release-stage/latest.json "$BUCKET/latest.json" \
-            -f --meta "Cache-Control:no-cache"
-          ossutil cp "$BUCKET/latest.json" "$VERIFY_FILE" -f
-          cmp release-stage/latest.json "$VERIFY_FILE"
-          curl -fsS --retry 5 --retry-all-errors \
-            "https://abu-agent.oss-cn-beijing.aliyuncs.com/latest.json?release=${GITHUB_RUN_ID}" \
-            -o "$VERIFY_FILE"
-          cmp release-stage/latest.json "$VERIFY_FILE"
+          if [ "$LEGACY_TRANSITION" = "true" ]; then
+            ossutil cp "$BUCKET/latest.json" "$PREVIOUS_LATEST" -f
+            POINTER_CAPTURED=1
+            node scripts/validate-electron-transition-version.mjs \
+              --candidate "${VERSION#v}" \
+              --latest-url "$PUBLIC_BASE/latest.json" \
+              --allow-equal true
+          fi
+          # Set the compensation flag before the remote mutation: GitHub may
+          # accept the publish while the client loses the response.
+          RELEASE_PUBLISH_ATTEMPTED=1
+          gh release edit "$VERSION" --repo "${{ github.repository }}" --draft=false
+          if [ "$LEGACY_TRANSITION" = "true" ]; then
+            ossutil cp release-stage/latest.json "$BUCKET/latest.json" \
+              -f --meta "Cache-Control:no-cache"
+            ossutil cp "$BUCKET/latest.json" "$ROOT_VERIFY_FILE" -f
+            cmp release-stage/latest.json "$ROOT_VERIFY_FILE"
+            curl -fsS --retry 5 --retry-all-errors \
+              "$PUBLIC_BASE/latest.json?release=${GITHUB_RUN_ID}" \
+              -o "$ROOT_VERIFY_FILE"
+            cmp release-stage/latest.json "$ROOT_VERIFY_FILE"
+          fi
           trap - EXIT
-          rm -f "$PREVIOUS_LATEST" "$VERIFY_FILE"
+          rm -rf "$BACKUP_DIR" "$VERIFY_DIR"
 
-      - name: Publish GitHub Release after production verification
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          gh release edit "${{ github.ref_name }}" \
-            --repo "${{ github.repository }}" --draft=false
+      - name: Remove OSS credential material
+        if: ${{ always() }}
+        run: rm -f "$HOME/.ossutilconfig"
 
       - name: Upload the release audit manifest
         uses: actions/upload-artifact@v4

@@ -9,10 +9,12 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 import { writeTauriSecretsFile, encryptTauriEntries } from './tauriSecretsReader.cjs';
 import {
   BACKUP_DIRNAME,
   MIGRATION_VERSION,
+  NOTICE_DB_FILENAME,
   resolveTauriAppDataDir,
   runTauriMigration,
   estimateMigrationSpace,
@@ -21,6 +23,7 @@ import {
   hasValidSentinel,
   inspectLegacyElectronSymlinkRepairs,
   sourceInventory,
+  sourceInventoryV2,
 } from './tauriMigration.cjs';
 import { listFiles } from './spike/listFilesRecursive.cjs';
 
@@ -71,6 +74,85 @@ function seedTauriDir() {
     'provider:claude': 'sk-ant-123',
     'aux:webSearch': 'tvly-456',
   });
+}
+
+function seedNoticeDatabase(dir: string, label: string) {
+  const databasePath = path.join(dir, NOTICE_DB_FILENAME);
+  fs.mkdirSync(dir, { recursive: true });
+  const db = new DatabaseSync(databasePath);
+  db.exec(`
+    PRAGMA journal_mode = WAL;
+    PRAGMA wal_autocheckpoint = 0;
+    CREATE TABLE notice_audit (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      notice_id TEXT NOT NULL, type TEXT NOT NULL, tier TEXT NOT NULL,
+      source TEXT NOT NULL, decision TEXT NOT NULL, reason TEXT,
+      delivered_to TEXT NOT NULL DEFAULT '[]', timestamp INTEGER NOT NULL
+    );
+    CREATE TABLE notice_inbox (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      notice_id TEXT UNIQUE NOT NULL, notice_json TEXT NOT NULL, tier TEXT NOT NULL,
+      queued_at INTEGER NOT NULL, expires_at INTEGER NOT NULL, delivered INTEGER NOT NULL DEFAULT 0
+    );
+    CREATE INDEX idx_audit_timestamp ON notice_audit(timestamp);
+    CREATE INDEX idx_audit_type ON notice_audit(type, timestamp);
+    CREATE INDEX idx_inbox_expires ON notice_inbox(expires_at);
+  `);
+  db.prepare(
+    `INSERT INTO notice_audit (notice_id, type, tier, source, decision, reason, delivered_to, timestamp)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(`${label}-audit`, 'task_complete', 'L2', 'fixture', 'queue_inbox', label, '[]', 1000);
+  db.prepare(
+    `INSERT INTO notice_inbox (notice_id, notice_json, tier, queued_at, expires_at, delivered)
+     VALUES (?, ?, ?, ?, ?, ?)`,
+  ).run(`${label}-inbox`, JSON.stringify({ label }), 'L2', 1000, 9999999999999, 0);
+  return { db, databasePath };
+}
+
+function readNoticeRows(databasePath: string) {
+  const db = new DatabaseSync(databasePath, { readOnly: true });
+  try {
+    return {
+      audit: db.prepare('SELECT notice_id FROM notice_audit ORDER BY id').all(),
+      inbox: db.prepare('SELECT notice_id, delivered FROM notice_inbox ORDER BY id').all(),
+      integrity: db.prepare('PRAGMA integrity_check').all(),
+    };
+  } finally {
+    db.close();
+  }
+}
+
+function readNoticeMergeState(databasePath: string) {
+  const db = new DatabaseSync(databasePath, { readOnly: true });
+  try {
+    return {
+      audit: db.prepare('SELECT notice_id, type, tier, source, decision, reason, delivered_to, timestamp FROM notice_audit ORDER BY id').all(),
+      inbox: db.prepare('SELECT notice_id, notice_json, tier, queued_at, expires_at, delivered FROM notice_inbox ORDER BY notice_id').all(),
+    };
+  } finally {
+    db.close();
+  }
+}
+
+function writeCompleteV2Sentinel(legacyFingerprint: string, overrides: Record<string, unknown> = {}) {
+  fs.mkdirSync(electronDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(electronDir, SENTINEL_FILENAME),
+    JSON.stringify({
+      version: 2,
+      status: 'complete',
+      migratedAt: '2026-08-01T00:00:00.000Z',
+      sourceFingerprint: legacyFingerprint,
+      summary: {
+        sentinelWritten: true,
+        dirs: Object.fromEntries(
+          ['conversations', 'sessions', 'backups'].map((name) => [name, { status: 'copied' }]),
+        ),
+        secrets: { setFailed: [] },
+      },
+      ...overrides,
+    }),
+  );
 }
 
 // The secrets branch is darwin-gated on the REAL process.platform (secrets.bin
@@ -192,6 +274,269 @@ describe('runTauriMigration', () => {
     expect(summary.sentinelWritten).toBe(true);
     expect(fs.existsSync(path.join(electronDir, SENTINEL_FILENAME))).toBe(true);
     expect(fs.existsSync(path.join(tauriDir, 'secrets.bin'))).toBe(true);
+  });
+
+  it('snapshots a real WAL Notice SQLite database with audit and pending inbox rows', () => {
+    seedTauriDir();
+    const source = seedNoticeDatabase(tauriDir, 'tauri');
+    // Keep a read transaction only to retain the just-written WAL after the
+    // fixture writer closes.  The migration itself has no legacy writer, the
+    // same precondition as the packaged upgrade path.
+    const reader = new DatabaseSync(source.databasePath, { readOnly: true });
+    reader.exec('BEGIN');
+    reader.prepare('SELECT COUNT(*) AS count FROM notice_audit').get();
+    source.db.close();
+    expect(fs.existsSync(`${source.databasePath}-wal`)).toBe(true);
+
+    const summary = runWith(fakeSecretStore());
+    reader.exec('COMMIT');
+    reader.close();
+    if ('skipped' in summary) throw new Error('unexpected skip');
+
+    expect(summary.inventory.notice).toMatchObject({ exists: true });
+    expect(summary.notice).toMatchObject({
+      status: 'copied-consistent-snapshot',
+      copied: 1,
+      snapshot: true,
+    });
+    const destination = path.join(electronDir, NOTICE_DB_FILENAME);
+    expect(fs.existsSync(destination)).toBe(true);
+    expect(fs.existsSync(`${destination}-wal`)).toBe(false);
+    expect(readNoticeRows(destination)).toEqual({
+      audit: [{ notice_id: 'tauri-audit' }],
+      inbox: [{ notice_id: 'tauri-inbox', delivered: 0 }],
+      integrity: [{ integrity_check: 'ok' }],
+    });
+
+    // The v3 marker was written only after the SQLite snapshot and final
+    // source fingerprint check both succeeded.
+    expect(summary.sentinelWritten).toBe(true);
+  });
+
+  it('backs up an existing Electron Notice database before source-authoritative replacement', () => {
+    seedTauriDir();
+    const source = seedNoticeDatabase(tauriDir, 'tauri');
+    const electron = seedNoticeDatabase(electronDir, 'electron');
+    source.db.close();
+    electron.db.close();
+
+    const summary = runWith(fakeSecretStore());
+    if ('skipped' in summary) throw new Error('unexpected skip');
+
+    expect(summary.notice).toMatchObject({
+      status: 'replaced-source-authoritative',
+      replaced: 1,
+      snapshot: true,
+    });
+    expect(summary.backup.items).toContain(NOTICE_DB_FILENAME);
+    expect(readNoticeRows(path.join(electronDir, NOTICE_DB_FILENAME)).audit).toEqual([
+      { notice_id: 'tauri-audit' },
+    ]);
+    expect(readNoticeRows(path.join(summary.backup.path!, NOTICE_DB_FILENAME)).audit).toEqual([
+      { notice_id: 'electron-audit' },
+    ]);
+    expect(readNoticeRows(path.join(summary.backup.path!, NOTICE_DB_FILENAME)).inbox).toEqual([
+      { notice_id: 'electron-inbox', delivered: 0 },
+    ]);
+  });
+
+  it('does not replay a closed real Notice SQLite fixture after a completed v3 migration', () => {
+    seedTauriDir();
+    const source = seedNoticeDatabase(tauriDir, 'closed');
+    source.db.close();
+
+    const first = runWith(fakeSecretStore());
+    if ('skipped' in first) throw new Error('unexpected first-run skip');
+    expect(first.sentinelWritten).toBe(true);
+    expect(runWith(fakeSecretStore())).toMatchObject({ skipped: 'already-migrated' });
+    expect(readNoticeRows(path.join(electronDir, NOTICE_DB_FILENAME)).audit).toEqual([
+      { notice_id: 'closed-audit' },
+    ]);
+  });
+
+  it('fails closed on an invalid Notice SQLite source and retries after it is repaired', () => {
+    seedTauriDir();
+    fs.writeFileSync(path.join(tauriDir, NOTICE_DB_FILENAME), 'not a sqlite database');
+
+    const first = runWith(fakeSecretStore());
+    if ('skipped' in first) throw new Error('invalid source must not skip migration');
+    expect(first.notice).toMatchObject({ status: 'error' });
+    expect(first.notice.error).toMatch(/consistent Notice SQLite snapshot|file is not a database/);
+    expect(first.sentinelWritten).toBe(false);
+    expect(fs.existsSync(path.join(electronDir, SENTINEL_FILENAME))).toBe(false);
+
+    fs.rmSync(path.join(tauriDir, NOTICE_DB_FILENAME));
+    const source = seedNoticeDatabase(tauriDir, 'repaired');
+    source.db.close();
+    const retry = runWith(fakeSecretStore());
+    if ('skipped' in retry) throw new Error('repaired source must retry');
+    expect(retry.notice).toMatchObject({ status: 'copied-consistent-snapshot' });
+    expect(retry.sentinelWritten).toBe(true);
+    expect(readNoticeRows(path.join(electronDir, NOTICE_DB_FILENAME)).inbox).toEqual([
+      { notice_id: 'repaired-inbox', delivered: 0 },
+    ]);
+  });
+
+  it('upgrades a trusted v2 marker by migrating only Notice data and preserves Electron RC data', () => {
+    seedTauriDir();
+    const legacyFingerprint = sourceInventoryV2(tauriDir).fingerprint;
+    const sourceNotice = seedNoticeDatabase(tauriDir, 'v2-tauri');
+    sourceNotice.db.close();
+    fs.mkdirSync(path.join(electronDir, 'conversations', 'conv1'), { recursive: true });
+    fs.writeFileSync(
+      path.join(electronDir, 'conversations', 'conv1', 'messages.jsonl'),
+      '{"role":"assistant","content":"new-electron-rc-data"}\n',
+    );
+    fs.writeFileSync(path.join(electronDir, 'conversations', 'index.json'), '{"version":1}');
+    writeCompleteV2Sentinel(legacyFingerprint);
+    const store = fakeSecretStore({ 'provider:claude': 'new-electron-rc-secret' });
+
+    const summary = runWith(store, { sourceWins: true });
+    if ('skipped' in summary) throw new Error('v2 marker needs a Notice-only upgrade');
+
+    expect(summary).toMatchObject({
+      upgradedFromVersion: 2,
+      noticeOnlyUpgrade: true,
+      sentinelWritten: true,
+      dirs: { conversations: { status: 'preserved-from-v2' } },
+      secrets: { skippedReason: 'preserved-from-v2' },
+      notice: { status: 'copied-consistent-snapshot' },
+    });
+    expect(
+      fs.readFileSync(path.join(electronDir, 'conversations', 'conv1', 'messages.jsonl'), 'utf8'),
+    ).toContain('new-electron-rc-data');
+    expect(store.stored.get('provider:claude')).toBe('new-electron-rc-secret');
+    expect(readNoticeRows(path.join(electronDir, NOTICE_DB_FILENAME)).inbox).toEqual([
+      { notice_id: 'v2-tauri-inbox', delivered: 0 },
+    ]);
+    expect(
+      hasValidSentinel(path.join(electronDir, SENTINEL_FILENAME), sourceInventory(tauriDir).fingerprint),
+    ).toBe(true);
+    expect(runWith(store, { sourceWins: true })).toMatchObject({ skipped: 'already-migrated' });
+  });
+
+  it('merges trusted-v2 Notice data into the Electron baseline without replacing newer audit or inbox state', () => {
+    seedTauriDir();
+    const legacyFingerprint = sourceInventoryV2(tauriDir).fingerprint;
+    const source = seedNoticeDatabase(tauriDir, 'tauri');
+    const electron = seedNoticeDatabase(electronDir, 'electron');
+    const insertAudit = (db: DatabaseSync) => db.prepare(
+      `INSERT INTO notice_audit (notice_id, type, tier, source, decision, reason, delivered_to, timestamp)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run('shared-audit', 'task_complete', 'L2', 'fixture', 'queue_inbox', 'same-business-event', '[]', 2000);
+    insertAudit(source.db);
+    insertAudit(electron.db);
+    source.db.prepare(
+      `INSERT INTO notice_inbox (notice_id, notice_json, tier, queued_at, expires_at, delivered)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+    ).run('shared-inbox', '{"origin":"tauri"}', 'L2', 2000, 3000, 0);
+    electron.db.prepare(
+      `INSERT INTO notice_inbox (notice_id, notice_json, tier, queued_at, expires_at, delivered)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+    ).run('shared-inbox', '{"origin":"electron","updated":true}', 'L2', 2100, 4000, 1);
+    source.db.close();
+    electron.db.close();
+    writeCompleteV2Sentinel(legacyFingerprint);
+
+    const summary = runWith(fakeSecretStore());
+    if ('skipped' in summary) throw new Error('trusted v2 marker needs a Notice merge');
+    expect(summary.notice).toMatchObject({
+      status: 'merged-into-electron-baseline',
+      auditImported: 1,
+      auditDuplicates: 1,
+      inboxImported: 1,
+      inboxPreserved: 1,
+    });
+    const state = readNoticeMergeState(path.join(electronDir, NOTICE_DB_FILENAME));
+    expect(state.audit.map((row) => row.notice_id)).toEqual([
+      'electron-audit',
+      'shared-audit',
+      'tauri-audit',
+    ]);
+    expect(state.inbox).toContainEqual({
+      notice_id: 'shared-inbox',
+      notice_json: '{"origin":"electron","updated":true}',
+      tier: 'L2',
+      queued_at: 2100,
+      expires_at: 4000,
+      delivered: 1,
+    });
+    expect(state.inbox.map((row) => row.notice_id)).toEqual([
+      'electron-inbox',
+      'shared-inbox',
+      'tauri-inbox',
+    ]);
+  });
+
+  it('retries a trusted v2 Notice-only upgrade without replaying files or secrets', () => {
+    seedTauriDir();
+    const legacyFingerprint = sourceInventoryV2(tauriDir).fingerprint;
+    fs.mkdirSync(path.join(electronDir, 'conversations', 'conv1'), { recursive: true });
+    fs.writeFileSync(
+      path.join(electronDir, 'conversations', 'conv1', 'messages.jsonl'),
+      'electron-rc-preserved',
+    );
+    writeCompleteV2Sentinel(legacyFingerprint);
+    fs.writeFileSync(path.join(tauriDir, NOTICE_DB_FILENAME), 'invalid sqlite');
+    const store = fakeSecretStore({ 'provider:claude': 'electron-rc-secret' });
+
+    const failed = runWith(store, { sourceWins: true });
+    if ('skipped' in failed) throw new Error('invalid Notice database must retry');
+    expect(failed).toMatchObject({ noticeOnlyUpgrade: true, sentinelWritten: false });
+    expect(failed.notice).toMatchObject({ status: 'error' });
+    expect(store.stored.get('provider:claude')).toBe('electron-rc-secret');
+    expect(
+      fs.readFileSync(path.join(electronDir, 'conversations', 'conv1', 'messages.jsonl'), 'utf8'),
+    ).toBe('electron-rc-preserved');
+
+    fs.rmSync(path.join(tauriDir, NOTICE_DB_FILENAME));
+    const repaired = seedNoticeDatabase(tauriDir, 'v2-repaired');
+    repaired.db.close();
+    const retry = runWith(store, { sourceWins: true });
+    if ('skipped' in retry) throw new Error('trusted v2 marker must retry Notice-only migration');
+    expect(retry).toMatchObject({ noticeOnlyUpgrade: true, sentinelWritten: true });
+    expect(store.stored.get('provider:claude')).toBe('electron-rc-secret');
+    expect(
+      fs.readFileSync(path.join(electronDir, 'conversations', 'conv1', 'messages.jsonl'), 'utf8'),
+    ).toBe('electron-rc-preserved');
+  });
+
+  it('does not shortcut an incomplete v2 marker', () => {
+    seedTauriDir();
+    const legacyFingerprint = sourceInventoryV2(tauriDir).fingerprint;
+    const sourceNotice = seedNoticeDatabase(tauriDir, 'fallback');
+    sourceNotice.db.close();
+    fs.mkdirSync(path.join(electronDir, 'conversations', 'conv1'), { recursive: true });
+    fs.writeFileSync(path.join(electronDir, 'conversations', 'conv1', 'messages.jsonl'), 'electron-rc');
+    writeCompleteV2Sentinel(legacyFingerprint, {
+      summary: { sentinelWritten: true, dirs: {}, secrets: { setFailed: [] } },
+    });
+    const store = fakeSecretStore({ 'provider:claude': 'electron-rc-secret' });
+
+    const summary = runWith(store, { sourceWins: true });
+    if ('skipped' in summary) throw new Error('incomplete v2 marker cannot skip migration');
+    expect(summary.noticeOnlyUpgrade).not.toBe(true);
+    expect(summary.dirs.conversations.status).toBe('merged-source-authoritative');
+    expect(
+      fs.readFileSync(path.join(electronDir, 'conversations', 'conv1', 'messages.jsonl'), 'utf8'),
+    ).toContain('{"role":"user"}');
+    expect(store.stored.get('provider:claude')).toBe('sk-ant-123');
+  });
+
+  it('does not shortcut a v2 marker whose legacy source fingerprint changed', () => {
+    seedTauriDir();
+    writeCompleteV2Sentinel('not-the-current-v2-source');
+    const sourceNotice = seedNoticeDatabase(tauriDir, 'fingerprint-fallback');
+    sourceNotice.db.close();
+    fs.mkdirSync(path.join(electronDir, 'conversations', 'conv1'), { recursive: true });
+    fs.writeFileSync(path.join(electronDir, 'conversations', 'conv1', 'messages.jsonl'), 'electron-rc');
+    const store = fakeSecretStore({ 'provider:claude': 'electron-rc-secret' });
+
+    const summary = runWith(store, { sourceWins: true });
+    if ('skipped' in summary) throw new Error('stale v2 marker cannot skip migration');
+    expect(summary.noticeOnlyUpgrade).not.toBe(true);
+    expect(summary.dirs.conversations.status).toBe('merged-source-authoritative');
+    expect(store.stored.get('provider:claude')).toBe('sk-ant-123');
   });
 
   it('is idempotent: the second run is a sentinel-gated no-op', () => {

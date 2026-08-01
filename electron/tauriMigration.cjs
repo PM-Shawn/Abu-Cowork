@@ -18,11 +18,26 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { getMachineUuid, deriveTauriKey, readTauriSecrets } = require('./tauriSecretsReader.cjs');
 
-const MIGRATION_VERSION = 2;
+// v3 adds the Tauri Notice System database. A complete, source-matching v2
+// marker is upgraded through the narrowly scoped Notice-only path below; it
+// must never replay old Tauri conversations or secrets over an Electron RC.
+const MIGRATION_VERSION = 3;
 const SENTINEL_FILENAME = 'tauri-migration.json';
 const BACKUP_DIRNAME = 'com.abu.app.electron-backups';
 const DATA_DIRS = ['conversations', 'sessions', 'backups'];
 const SECRET_STORE_FILENAME = 'secrets.enc.json';
+const NOTICE_DB_FILENAME = 'notice.sqlite';
+const SQLITE_SIDECAR_SUFFIXES = ['-wal', '-shm'];
+const NOTICE_SCHEMA = {
+  notice_audit: [
+    'id', 'notice_id', 'type', 'tier', 'source', 'decision', 'reason',
+    'delivered_to', 'timestamp',
+  ],
+  notice_inbox: [
+    'id', 'notice_id', 'notice_json', 'tier', 'queued_at', 'expires_at', 'delivered',
+  ],
+};
+const COMPLETE_V2_DIR_STATUSES = new Set(['absent', 'copied', 'merged-source-authoritative']);
 const CHROMIUM_STATE_NAMES = [
   'Local Storage',
   'IndexedDB',
@@ -51,6 +66,33 @@ function hasValidSentinel(sentinelPath, sourceFingerprint) {
     typeof record?.sourceFingerprint === 'string' &&
     (sourceFingerprint === undefined || record.sourceFingerprint === sourceFingerprint)
   );
+}
+
+function isTrustedV2Record(record, sourceFingerprint) {
+  if (
+    record?.version !== 2 ||
+    record?.status !== 'complete' ||
+    record?.summary?.sentinelWritten !== true ||
+    typeof record?.migratedAt !== 'string' ||
+    typeof record?.sourceFingerprint !== 'string' ||
+    record.sourceFingerprint !== sourceFingerprint
+  ) {
+    return false;
+  }
+  const dirs = record.summary?.dirs;
+  const secrets = record.summary?.secrets;
+  return Boolean(
+    dirs &&
+    DATA_DIRS.every((name) => COMPLETE_V2_DIR_STATUSES.has(dirs[name]?.status)) &&
+    secrets &&
+    Array.isArray(secrets.setFailed) &&
+    secrets.setFailed.length === 0 &&
+    !secrets.readError
+  );
+}
+
+function hasTrustedV2Sentinel(sentinelPath, sourceFingerprint) {
+  return isTrustedV2Record(readSentinel(sentinelPath), sourceFingerprint);
 }
 
 function writeJsonAtomic(filePath, record) {
@@ -288,22 +330,410 @@ function inventoryTree(root, treeRoot = root, symlinkOverrides = null) {
   return { exists: true, files, bytes, fingerprint: aggregate.digest('hex') };
 }
 
-function sourceInventory(tauriDir) {
-  const dirs = {};
+function legacySourceFingerprint(dirs, secrets) {
   const aggregate = crypto.createHash('sha256');
   for (const name of DATA_DIRS) {
-    const inventory = inventoryTree(path.join(tauriDir, name));
-    dirs[name] = inventory;
-    aggregate.update(`${name}\0${inventory.fingerprint}\n`);
+    aggregate.update(`${name}\0${dirs[name].fingerprint}\n`);
   }
-  const secretsPath = path.join(tauriDir, 'secrets.bin');
-  const secrets = inventoryTree(secretsPath);
   aggregate.update(`secrets\0${secrets.fingerprint}\n`);
+  return aggregate.digest('hex');
+}
+
+function sourceInventoryV2(tauriDir) {
+  const dirs = {};
+  for (const name of DATA_DIRS) {
+    dirs[name] = inventoryTree(path.join(tauriDir, name));
+  }
+  const secrets = inventoryTree(path.join(tauriDir, 'secrets.bin'));
   return {
     dirs,
     secrets,
+    fingerprint: legacySourceFingerprint(dirs, secrets),
+  };
+}
+
+function sourceInventory(tauriDir) {
+  const legacy = sourceInventoryV2(tauriDir);
+  const aggregate = crypto.createHash('sha256');
+  for (const name of DATA_DIRS) {
+    aggregate.update(`${name}\0${legacy.dirs[name].fingerprint}\n`);
+  }
+  aggregate.update(`secrets\0${legacy.secrets.fingerprint}\n`);
+  const notice = inventorySqliteBundle(path.join(tauriDir, NOTICE_DB_FILENAME));
+  aggregate.update(`notice\0${notice.fingerprint}\n`);
+  return {
+    dirs: legacy.dirs,
+    secrets: legacy.secrets,
+    notice,
     fingerprint: aggregate.digest('hex'),
   };
+}
+
+function sqliteBundlePaths(databasePath) {
+  return [databasePath, ...SQLITE_SIDECAR_SUFFIXES.map((suffix) => `${databasePath}${suffix}`)];
+}
+
+// A WAL database is not represented by its main file alone.  Include the
+// sidecars in the migration fingerprint/space estimate, while the actual copy
+// below is a SQLite-consistent VACUUM snapshot rather than three racy copies.
+function inventorySqliteBundle(databasePath) {
+  const aggregate = crypto.createHash('sha256');
+  let files = 0;
+  let bytes = 0;
+  const parts = {};
+  for (const candidate of sqliteBundlePaths(databasePath)) {
+    const name = path.basename(candidate);
+    const entry = inventoryTree(candidate);
+    parts[name] = entry;
+    files += entry.files;
+    bytes += entry.bytes;
+    if (candidate === databasePath) {
+      aggregate.update(`${name}\0${entry.fingerprint}\n`);
+    } else if (candidate.endsWith('-wal')) {
+      // A read-only SQLite connection may create an empty WAL bookkeeping
+      // file.  It carries no rows, so it must not invalidate a completed
+      // migration by itself; non-empty WAL contents remain fingerprinted.
+      aggregate.update(`${name}\0${entry.bytes > 0 ? entry.fingerprint : 'empty-or-absent'}\n`);
+    } else {
+      // -shm is lock/index bookkeeping, not database content.  Keep it in
+      // the inventory for disk-space reporting but never treat its volatile
+      // bytes as a source-data mutation.
+      aggregate.update(`${name}\0ignored\n`);
+    }
+  }
+  return {
+    exists: fs.existsSync(databasePath),
+    files,
+    bytes,
+    parts,
+    fingerprint: aggregate.digest('hex'),
+  };
+}
+
+function sqlQuote(value) {
+  return `'${String(value).replaceAll("'", "''")}'`;
+}
+
+function validateNoticeDatabase(databasePath, label) {
+  let DatabaseSync;
+  try {
+    ({ DatabaseSync } = require('node:sqlite'));
+  } catch (error) {
+    throw new Error(
+      `cannot safely migrate ${label}: node:sqlite is unavailable (${error instanceof Error ? error.message : String(error)})`
+    );
+  }
+
+  let db;
+  try {
+    db = new DatabaseSync(databasePath, { readOnly: true });
+    const integrity = db.prepare('PRAGMA integrity_check').all();
+    if (integrity.length !== 1 || integrity[0].integrity_check !== 'ok') {
+      throw new Error(`SQLite integrity_check did not return ok for ${label}`);
+    }
+    for (const [table, expectedColumns] of Object.entries(NOTICE_SCHEMA)) {
+      const columns = db.prepare(`PRAGMA table_info(${table})`).all().map((row) => row.name);
+      const missing = expectedColumns.filter((column) => !columns.includes(column));
+      if (missing.length > 0) {
+        throw new Error(`unsupported Notice SQLite schema in ${label}: ${table} missing ${missing.join(', ')}`);
+      }
+    }
+  } finally {
+    db?.close();
+  }
+}
+
+/**
+ * Produce a self-contained SQLite snapshot.  The transition shell runs only
+ * after the old Tauri application has exited; this additionally handles a
+ * leftover -wal/-shm pair correctly and fails closed if node:sqlite or the
+ * schema/integrity checks are unavailable.  Never raw-copy a WAL database.
+ */
+function snapshotNoticeDatabase(sourcePath, destinationPath, label) {
+  let DatabaseSync;
+  try {
+    ({ DatabaseSync } = require('node:sqlite'));
+  } catch (error) {
+    throw new Error(
+      `cannot safely snapshot ${label}: node:sqlite is unavailable (${error instanceof Error ? error.message : String(error)})`
+    );
+  }
+  validateNoticeDatabase(sourcePath, label);
+  const stagingPath = `${destinationPath}.snapshot-${process.pid}-${crypto.randomBytes(4).toString('hex')}`;
+  removeStagingBestEffort(stagingPath);
+  let sourceDb;
+  let completed = false;
+  try {
+    fs.mkdirSync(path.dirname(destinationPath), { recursive: true });
+    sourceDb = new DatabaseSync(sourcePath, { readOnly: true });
+    // VACUUM INTO is SQLite's online-backup-equivalent for this synchronous
+    // API: it reads the coherent WAL view into a new standalone database.
+    sourceDb.exec(`VACUUM INTO ${sqlQuote(stagingPath)}`);
+    sourceDb.close();
+    sourceDb = null;
+    validateNoticeDatabase(stagingPath, `${label} snapshot`);
+    completed = true;
+    return stagingPath;
+  } catch (error) {
+    throw new Error(
+      `could not create a consistent Notice SQLite snapshot for ${label}: ${error instanceof Error ? error.message : String(error)}`
+    );
+  } finally {
+    sourceDb?.close();
+    // The caller owns a successfully returned staging file.  All failed
+    // snapshots are removed here, including a partially created VACUUM file.
+    if (!completed) removeStagingBestEffort(stagingPath);
+  }
+}
+
+function installNoticeSnapshot(stagingPath, destinationPath) {
+  for (const sidecarPath of SQLITE_SIDECAR_SUFFIXES.map((suffix) => `${destinationPath}${suffix}`)) {
+    fs.rmSync(sidecarPath, { force: true });
+  }
+  if (process.platform === 'win32' && fs.existsSync(destinationPath)) {
+    // Windows cannot reliably replace an existing SQLite file with rename.
+    // It has already been backed up as a validated snapshot, and the new
+    // snapshot remains intact until this recoverable rename succeeds.
+    fs.rmSync(destinationPath, { force: true });
+  }
+  fs.renameSync(stagingPath, destinationPath);
+}
+
+function migrateNoticeDatabase(sourcePath, destinationPath, dryRun) {
+  if (!fs.existsSync(sourcePath)) {
+    return { status: 'absent', copied: 0, replaced: 0, snapshot: false };
+  }
+  const replacing = fs.existsSync(destinationPath);
+  if (dryRun) {
+    validateNoticeDatabase(sourcePath, 'Tauri Notice database');
+    return {
+      status: replacing ? 'would-replace-source-authoritative' : 'would-copy-consistent-snapshot',
+      copied: replacing ? 0 : 1,
+      replaced: replacing ? 1 : 0,
+      snapshot: false,
+    };
+  }
+
+  const snapshotPath = snapshotNoticeDatabase(
+    sourcePath,
+    destinationPath,
+    'Tauri Notice database'
+  );
+  try {
+    // The full pre-migration Electron database was snapshotted into the
+    // recovery tree before this point.  Tauri is authoritative for a
+    // framework transition, so replace the one database atomically/staged
+    // rather than attempting an unsafe row merge with a live WAL.
+    installNoticeSnapshot(snapshotPath, destinationPath);
+    validateNoticeDatabase(destinationPath, 'migrated Electron Notice database');
+    return {
+      status: replacing ? 'replaced-source-authoritative' : 'copied-consistent-snapshot',
+      copied: replacing ? 0 : 1,
+      replaced: replacing ? 1 : 0,
+      snapshot: true,
+    };
+  } finally {
+    removeStagingBestEffort(snapshotPath);
+  }
+}
+
+function mergeNoticeDatabaseIntoElectron(sourcePath, destinationPath, dryRun) {
+  if (!fs.existsSync(sourcePath)) {
+    return { status: 'absent', auditImported: 0, auditDuplicates: 0, inboxImported: 0, inboxPreserved: 0, snapshot: false };
+  }
+  if (!fs.existsSync(destinationPath)) {
+    return migrateNoticeDatabase(sourcePath, destinationPath, dryRun);
+  }
+  validateNoticeDatabase(sourcePath, 'Tauri Notice database');
+  validateNoticeDatabase(destinationPath, 'existing Electron Notice database');
+  if (dryRun) {
+    return {
+      status: 'would-merge-into-electron-baseline',
+      auditImported: 0,
+      auditDuplicates: 0,
+      inboxImported: 0,
+      inboxPreserved: 0,
+      snapshot: false,
+    };
+  }
+
+  let DatabaseSync;
+  try {
+    ({ DatabaseSync } = require('node:sqlite'));
+  } catch (error) {
+    throw new Error(
+      `cannot safely merge Notice databases: node:sqlite is unavailable (${error instanceof Error ? error.message : String(error)})`
+    );
+  }
+  const snapshotPath = snapshotNoticeDatabase(
+    sourcePath,
+    `${destinationPath}.v2-import`,
+    'Tauri Notice database for v2 upgrade'
+  );
+  let sourceDb;
+  let destinationDb;
+  try {
+    sourceDb = new DatabaseSync(snapshotPath, { readOnly: true });
+    destinationDb = new DatabaseSync(destinationPath);
+    const auditRows = sourceDb.prepare(
+      `SELECT notice_id, type, tier, source, decision, reason, delivered_to, timestamp
+       FROM notice_audit ORDER BY id`,
+    ).all();
+    const inboxRows = sourceDb.prepare(
+      `SELECT notice_id, notice_json, tier, queued_at, expires_at, delivered
+      FROM notice_inbox ORDER BY id`,
+    ).all();
+    // Audit ids are per-database AUTOINCREMENT values, not portable identity.
+    // The full immutable audit payload is the cross-version business key.
+    const auditInsert = destinationDb.prepare(
+      `INSERT INTO notice_audit (notice_id, type, tier, source, decision, reason, delivered_to, timestamp)
+       SELECT ?, ?, ?, ?, ?, ?, ?, ?
+       WHERE NOT EXISTS (
+         SELECT 1 FROM notice_audit
+         WHERE notice_id = ? AND type = ? AND tier = ? AND source = ?
+           AND decision = ? AND reason IS ? AND delivered_to = ? AND timestamp = ?
+       )`,
+    );
+    // Electron's notice_id may already be delivered or have newer payload
+    // details; INSERT OR IGNORE preserves that live state exactly.
+    const inboxInsert = destinationDb.prepare(
+      `INSERT OR IGNORE INTO notice_inbox
+       (notice_id, notice_json, tier, queued_at, expires_at, delivered)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+    );
+    const result = {
+      status: 'merged-into-electron-baseline',
+      auditImported: 0,
+      auditDuplicates: 0,
+      inboxImported: 0,
+      inboxPreserved: 0,
+      snapshot: true,
+    };
+    destinationDb.exec('BEGIN IMMEDIATE');
+    try {
+      for (const row of auditRows) {
+        const change = auditInsert.run(
+          row.notice_id, row.type, row.tier, row.source, row.decision,
+          row.reason, row.delivered_to, row.timestamp,
+          row.notice_id, row.type, row.tier, row.source, row.decision,
+          row.reason, row.delivered_to, row.timestamp,
+        );
+        if (change.changes === 1) result.auditImported += 1;
+        else result.auditDuplicates += 1;
+      }
+      for (const row of inboxRows) {
+        const change = inboxInsert.run(
+          row.notice_id, row.notice_json, row.tier, row.queued_at, row.expires_at, row.delivered,
+        );
+        if (change.changes === 1) result.inboxImported += 1;
+        else result.inboxPreserved += 1;
+      }
+      destinationDb.exec('COMMIT');
+    } catch (error) {
+      try {
+        destinationDb.exec('ROLLBACK');
+      } catch {
+        // Preserve the original failure; the pre-merge recovery snapshot is intact.
+      }
+      throw error;
+    }
+    destinationDb.close();
+    destinationDb = null;
+    sourceDb.close();
+    sourceDb = null;
+    validateNoticeDatabase(destinationPath, 'merged Electron Notice database');
+    return result;
+  } finally {
+    destinationDb?.close();
+    sourceDb?.close();
+    removeStagingBestEffort(snapshotPath);
+  }
+}
+
+function upgradeTrustedV2SentinelWithNotice(opts, inventory, v2Record, sentinelPath) {
+  const { tauriDir, electronDir, dryRun = false } = opts;
+  const log = opts.log || console;
+  const warn = (msg) => log.warn(`[tauriMigration] ${msg}`);
+  const summary = {
+    version: MIGRATION_VERSION,
+    upgradedFromVersion: 2,
+    noticeOnlyUpgrade: true,
+    dryRun,
+    sourceFingerprint: inventory.fingerprint,
+    legacySourceFingerprint: v2Record.sourceFingerprint,
+    inventory: { notice: inventory.notice },
+    // A trusted v2 marker proves these families completed against the same
+    // Tauri source. Deliberately do not even read/copy them during v3 upgrade:
+    // Electron RC activity after v2 owns its conversations and secrets.
+    secrets: { migrated: [], overwritten: [], skippedExisting: [], decryptFailed: [], setFailed: [], skippedReason: 'preserved-from-v2' },
+    dirs: Object.fromEntries(
+      DATA_DIRS.map((name) => [name, { status: 'preserved-from-v2', copied: 0, identical: 0, replaced: 0, targetOnly: 0 }])
+    ),
+    notice: { status: 'pending', copied: 0, replaced: 0, snapshot: false },
+    backup: { path: null, items: [] },
+    sentinelWritten: false,
+  };
+
+  try {
+    summary.backup = backupExistingElectronData(
+      electronDir,
+      inventory.fingerprint,
+      dryRun,
+      [],
+      [NOTICE_DB_FILENAME]
+    );
+  } catch (error) {
+    summary.backup.error = error instanceof Error ? error.message : String(error);
+    warn(`could not back up existing Electron Notice data: ${summary.backup.error}`);
+    return summary;
+  }
+
+  try {
+    summary.notice = mergeNoticeDatabaseIntoElectron(
+      path.join(tauriDir, NOTICE_DB_FILENAME),
+      path.join(electronDir, NOTICE_DB_FILENAME),
+      dryRun
+    );
+  } catch (error) {
+    summary.notice = {
+      status: 'error',
+      error: error instanceof Error ? error.message : String(error),
+      copied: 0,
+      replaced: 0,
+      snapshot: false,
+    };
+  }
+
+  if (!dryRun) {
+    try {
+      const finalInventory = sourceInventory(tauriDir);
+      if (finalInventory.fingerprint !== inventory.fingerprint) {
+        summary.sourceChangedDuringMigration = true;
+      }
+    } catch (error) {
+      summary.sourceChangedDuringMigration =
+        error instanceof Error ? error.message : String(error);
+    }
+  }
+
+  const clean =
+    !summary.backup.error &&
+    summary.notice.status !== 'error' &&
+    !summary.sourceChangedDuringMigration;
+  if (clean && !dryRun) {
+    summary.sentinelWritten = true;
+    writeJsonAtomic(sentinelPath, {
+      version: MIGRATION_VERSION,
+      status: 'complete',
+      migratedAt: new Date().toISOString(),
+      sourceFingerprint: inventory.fingerprint,
+      summary,
+    });
+    log.log(`[tauriMigration] upgraded trusted v2 marker to v${MIGRATION_VERSION} with Notice data`);
+  } else if (!dryRun) {
+    warn('Notice-only v2 upgrade incomplete; completion marker was not written');
+  }
+  return summary;
 }
 
 function copyTreeSafe(source, destination, treeRoot = source, symlinkOverrides = null) {
@@ -561,10 +991,10 @@ function backupExistingElectronData(
   electronDir,
   sourceFingerprint,
   dryRun,
-  legacySymlinkRepairs = []
+  legacySymlinkRepairs = [],
+  candidateNames = [...DATA_DIRS, SECRET_STORE_FILENAME, NOTICE_DB_FILENAME]
 ) {
-  const candidates = [...DATA_DIRS, SECRET_STORE_FILENAME];
-  const present = candidates.filter((name) => fs.existsSync(path.join(electronDir, name)));
+  const present = candidateNames.filter((name) => fs.existsSync(path.join(electronDir, name)));
   const baseBackupRoot = path.join(
     path.dirname(electronDir),
     BACKUP_DIRNAME,
@@ -586,6 +1016,21 @@ function backupExistingElectronData(
   const overrides = symlinkOverrideMap(legacySymlinkRepairs);
   fs.mkdirSync(backupRoot, { recursive: true });
   for (const name of present) {
+    if (name === NOTICE_DB_FILENAME) {
+      const backupPath = path.join(backupRoot, name);
+      if (fs.existsSync(backupPath)) continue;
+      const snapshotPath = snapshotNoticeDatabase(
+        path.join(electronDir, name),
+        backupPath,
+        'existing Electron Notice database'
+      );
+      try {
+        fs.renameSync(snapshotPath, backupPath);
+      } finally {
+        removeStagingBestEffort(snapshotPath);
+      }
+      continue;
+    }
     copyForRecovery(
       path.join(electronDir, name),
       path.join(backupRoot, name),
@@ -660,6 +1105,10 @@ function estimateMigrationSpace(
       existingBytes += inventoryTree(candidate, candidate, overrides).bytes;
     }
   }
+  const existingNoticePath = path.join(electronDir, NOTICE_DB_FILENAME);
+  if (fs.existsSync(existingNoticePath)) {
+    existingBytes += inventorySqliteBundle(existingNoticePath).bytes;
+  }
   if (userDataDir && fs.existsSync(userDataDir)) {
     for (const name of CHROMIUM_STATE_NAMES) {
       const candidate = path.join(userDataDir, name);
@@ -672,7 +1121,7 @@ function estimateMigrationSpace(
     Object.values(inventory.dirs).reduce(
       (total, entry) => total + Number(entry.bytes || 0),
       0
-    ) + Number(inventory.secrets?.bytes || 0);
+    ) + Number(inventory.secrets?.bytes || 0) + Number(inventory.notice?.bytes || 0);
   // Source copy + full Electron recovery backup + staging/headroom. Keep a
   // fixed 64 MiB floor for sentinels, localStorage backup, SQLite rebuilds,
   // and filesystem allocation granularity.
@@ -727,6 +1176,7 @@ function runTauriMigration(opts) {
       sourceFingerprint: 'absent',
       secrets: { migrated: [], overwritten: [], skippedExisting: [], decryptFailed: [], setFailed: [] },
       dirs: {},
+      notice: { status: 'absent', copied: 0, replaced: 0, snapshot: false },
       backup: { path: null, items: [] },
       sentinelWritten: false,
     };
@@ -754,6 +1204,7 @@ function runTauriMigration(opts) {
       inventoryError: error instanceof Error ? error.message : String(error),
       secrets: { migrated: [], overwritten: [], skippedExisting: [], decryptFailed: [], setFailed: [] },
       dirs: {},
+      notice: { status: 'not-inventoried', copied: 0, replaced: 0, snapshot: false },
       backup: { path: null, items: [] },
       sentinelWritten: false,
     };
@@ -765,6 +1216,18 @@ function runTauriMigration(opts) {
       sourceFingerprint: inventory.fingerprint,
       backup: record?.summary?.backup || null,
     };
+  }
+  const legacyV2Record = readSentinel(sentinelPath);
+  if (legacyV2Record && isTrustedV2Record(
+    legacyV2Record,
+    legacySourceFingerprint(inventory.dirs, inventory.secrets)
+  )) {
+    return upgradeTrustedV2SentinelWithNotice(
+      opts,
+      inventory,
+      legacyV2Record,
+      sentinelPath
+    );
   }
 
   let legacySymlinkRepairs;
@@ -782,6 +1245,7 @@ function runTauriMigration(opts) {
         error instanceof Error ? error.message : String(error),
       secrets: { migrated: [], overwritten: [], skippedExisting: [], decryptFailed: [], setFailed: [] },
       dirs: {},
+      notice: { status: 'not-migrated', copied: 0, replaced: 0, snapshot: false },
       backup: { path: null, items: [] },
       sentinelWritten: false,
     };
@@ -791,9 +1255,10 @@ function runTauriMigration(opts) {
     version: MIGRATION_VERSION,
     dryRun,
     sourceFingerprint: inventory.fingerprint,
-    inventory: inventory.dirs,
+    inventory: { ...inventory.dirs, notice: inventory.notice },
     secrets: { migrated: [], overwritten: [], skippedExisting: [], decryptFailed: [], setFailed: [] },
     dirs: {},
+    notice: { status: 'pending', copied: 0, replaced: 0, snapshot: false },
     backup: { path: null, items: [] },
     legacySymlinks: {
       detected: legacySymlinkRepairs.length,
@@ -936,12 +1401,46 @@ function runTauriMigration(opts) {
     }
   }
 
+  try {
+    summary.notice = migrateNoticeDatabase(
+      path.join(tauriDir, NOTICE_DB_FILENAME),
+      path.join(electronDir, NOTICE_DB_FILENAME),
+      dryRun
+    );
+  } catch (error) {
+    summary.notice = {
+      status: 'error',
+      error: error instanceof Error ? error.message : String(error),
+      copied: 0,
+      replaced: 0,
+      snapshot: false,
+    };
+  }
+
+  // Tauri must be closed before transition (the Electron shell starts this
+  // one-time path after upgrade).  A second inventory makes that operational
+  // precondition observable: any source mutation during this synchronous pass
+  // withholds the completion marker and forces a safe retry on next launch.
+  if (!dryRun) {
+    try {
+      const finalInventory = sourceInventory(tauriDir);
+      if (finalInventory.fingerprint !== inventory.fingerprint) {
+        summary.sourceChangedDuringMigration = true;
+      }
+    } catch (error) {
+      summary.sourceChangedDuringMigration =
+        error instanceof Error ? error.message : String(error);
+    }
+  }
+
   const clean =
     !summary.inventoryError &&
     !summary.backup.error &&
     !summary.legacySymlinks.error &&
     !summary.secrets.readError &&
     summary.secrets.setFailed.length === 0 &&
+    summary.notice.status !== 'error' &&
+    !summary.sourceChangedDuringMigration &&
     !Object.values(summary.dirs).some((entry) => entry.status === 'error');
   if (clean && !dryRun) {
     summary.sentinelWritten = true;
@@ -964,15 +1463,20 @@ module.exports = {
   CHROMIUM_STATE_NAMES,
   DATA_DIRS,
   MIGRATION_VERSION,
+  NOTICE_DB_FILENAME,
   SENTINEL_FILENAME,
   backupExistingElectronData,
   backupElectronChromiumState,
   estimateMigrationSpace,
   hasValidSentinel,
+  hasTrustedV2Sentinel,
   inspectLegacyElectronSymlinkRepairs,
   inventoryTree,
+  inventorySqliteBundle,
   mergeSourceAuthoritative,
+  migrateNoticeDatabase,
   resolveTauriAppDataDir,
   runTauriMigration,
   sourceInventory,
+  sourceInventoryV2,
 };

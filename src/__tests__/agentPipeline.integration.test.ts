@@ -179,7 +179,10 @@ vi.mock('../core/tools/builtins', () => ({
 }));
 
 vi.mock('../core/agent/toolExecutor', () => ({
-  executeToolBatch: vi.fn().mockResolvedValue([]),
+  executeToolBatch: vi.fn().mockResolvedValue({
+    mcpChanged: false,
+    requiresUserRecovery: false,
+  }),
 }));
 
 vi.mock('../../utils/platform', () => ({
@@ -288,7 +291,9 @@ vi.mock('../../utils/platform', () => ({
 }));
 
 // Now import the module under test
-import { runAgentLoop, escalateMaxOutputTokens, persistExecutionSnapshot } from '../core/agent/agentLoop';
+import { runAgentLoop, persistExecutionSnapshot } from '../core/agent/agentLoop';
+import { executeToolBatch } from '../core/agent/toolExecutor';
+import { escalateMaxOutputTokens } from '../core/agent/loopGuards';
 import type { StreamEvent, Message } from '../types';
 // Mocked module reference — used to override token estimator per-test
 import * as tokenEstimatorModule from '../core/context/tokenEstimator';
@@ -439,6 +444,33 @@ describe('Agent Pipeline Integration', () => {
 
       expect(result.reason).toBe('max_turns');
       expect(calls).toBe(2); // turn 3's top-of-loop check trips before its LLM call
+    });
+
+    it('stops with reason=awaiting_user when a tool requires sandbox recovery', async () => {
+      let calls = 0;
+      mockClaudeChat.mockImplementation(
+        async (_m: unknown, _o: unknown, onEvent: (e: StreamEvent) => void) => {
+          calls++;
+          onEvent({
+            type: 'tool_use',
+            id: 'blocked-automation',
+            name: 'run_command',
+            input: { command: 'osascript -e \'tell application "Notes" to activate\'' },
+          });
+          onEvent({ type: 'done', stopReason: 'tool_use' });
+        },
+      );
+      vi.mocked(executeToolBatch).mockResolvedValueOnce({
+        mcpChanged: false,
+        requiresUserRecovery: true,
+      });
+
+      const convId = useChatStore.getState().createConversation();
+      const result = await runAgentLoop(convId, 'create a note');
+
+      expect(result.reason).toBe('awaiting_user');
+      expect(calls).toBe(1);
+      expect(useChatStore.getState().conversations[convId]?.status).toBe('idle');
     });
 
     it('reports reason=aborted (not completed) when cancelled between turns', async () => {

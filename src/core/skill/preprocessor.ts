@@ -6,8 +6,9 @@
  * 2. executeInlineCommands() — run !`command` directives and replace with output
  */
 
-import { invoke } from '@tauri-apps/api/core';
 import { parseArgs } from '../../utils/argsParser';
+import type { ToolExecutionContext } from '../../types';
+import { invokeTaskCommand } from '../tools/helpers/scopedCommand';
 
 export { parseArgs };
 
@@ -75,6 +76,7 @@ export function substituteVariables(
 export async function executeInlineCommands(
   content: string,
   skillDir: string,
+  context?: ToolExecutionContext,
 ): Promise<string> {
   const pattern = /!`([^`]+)`/g;
   const matches = [...content.matchAll(pattern)];
@@ -85,14 +87,14 @@ export async function executeInlineCommands(
     matches.map(async (match) => {
       const command = match[1];
       try {
-        const output = await invoke<CommandOutput>('run_shell_command', {
+        const output = await invokeTaskCommand<CommandOutput>('run_shell_command', {
           command,
           cwd: skillDir,
           background: false,
           timeout: 10,
-          sandbox: true,
-          extra_writable_paths: [skillDir],
-        });
+          sandboxEnabled: true,
+          extraWritablePaths: [skillDir],
+        }, context, { commandIdPrefix: 'skill-inline' });
         return output.code === 0
           ? output.stdout.trim()
           : `[Command failed: ${output.stderr.trim()}]`;

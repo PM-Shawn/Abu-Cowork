@@ -4,9 +4,8 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "prebuild": "cp ../abu-browser-shared/types.ts src/shared/types.ts",
     "build": "node build.js",
-    "dev": "cp ../abu-browser-shared/types.ts src/shared/types.ts && node build.js --watch"
+    "dev": "node build.js --watch"
   },
   "devDependencies": {
     "@types/chrome": "^0.0.287",

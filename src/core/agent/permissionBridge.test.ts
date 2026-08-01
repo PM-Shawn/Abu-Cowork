@@ -17,8 +17,13 @@ import {
   setLoopContext,
   clearLoopContext,
   getLoopContextForConversation,
+  requestFilePermission,
+  resolveFilePermission,
+  getPendingFilePermission,
+  drainFilePermissionQueue,
   type LoopContext,
 } from './permissionBridge';
+import { usePermissionStore } from '../../stores/permissionStore';
 import type { Message, UserQuestionPayload, UserQuestionResult } from '../../types';
 
 const MINIMAL_PAYLOAD: UserQuestionPayload = {
@@ -188,5 +193,57 @@ describe('permissionBridge — UserQuestion queue', () => {
     it('returns undefined when no message owns the id', () => {
       expect(findQuestionOwningMessage([], 'tc-none')).toBeUndefined();
     });
+  });
+});
+
+describe('permissionBridge — resolveFilePermission pending guard (F1 regression)', () => {
+  beforeEach(() => {
+    drainFilePermissionQueue();
+    usePermissionStore.setState({ persistedGrants: {}, sessionGrants: {}, pendingRequest: null });
+  });
+
+  afterEach(() => {
+    drainFilePermissionQueue();
+    usePermissionStore.setState({ persistedGrants: {}, sessionGrants: {}, pendingRequest: null });
+  });
+
+  it('does not persist a grant when there is no pending file-permission request', () => {
+    // Pre-E-block behavior: grantPermission lived entirely inside
+    // `if (pendingFilePermission) { ... }` — calling resolveFilePermission
+    // with nothing pending was a total no-op. A refactor regression made the
+    // grant side effect run unconditionally, ahead of the pending check.
+    expect(getPendingFilePermission()).toBeNull();
+
+    resolveFilePermission(true, '/ws/no-pending', ['write'], 'always');
+
+    expect(usePermissionStore.getState().hasPermission('/ws/no-pending', 'write')).toBe(false);
+    expect(Object.keys(usePermissionStore.getState().persistedGrants)).toHaveLength(0);
+  });
+
+  it('persists a grant and resolves the promise when a request is genuinely pending', async () => {
+    const promise = requestFilePermission({ path: '/ws/real', capability: 'write', toolName: 'write_file' });
+    expect(getPendingFilePermission()).not.toBeNull();
+
+    resolveFilePermission(true, '/ws/real', ['write'], 'always');
+
+    await expect(promise).resolves.toBe(true);
+    expect(usePermissionStore.getState().hasPermission('/ws/real', 'write')).toBe(true);
+  });
+
+  it('double resolve (e.g. duplicate dialog submit) — the second call is a no-op', async () => {
+    const promise = requestFilePermission({ path: '/ws/double', capability: 'write', toolName: 'write_file' });
+
+    // First resolve: a request really is pending — grants and settles it.
+    resolveFilePermission(true, '/ws/double', ['write'], 'always');
+    await expect(promise).resolves.toBe(true);
+    expect(usePermissionStore.getState().hasPermission('/ws/double', 'write')).toBe(true);
+
+    // Revoke so a re-grant on the second call would be observable.
+    usePermissionStore.getState().revokePermission('/ws/double');
+    expect(usePermissionStore.getState().hasPermission('/ws/double', 'write')).toBe(false);
+
+    // Second resolve: nothing pending anymore — must not re-grant.
+    resolveFilePermission(true, '/ws/double', ['write'], 'always');
+    expect(usePermissionStore.getState().hasPermission('/ws/double', 'write')).toBe(false);
   });
 });

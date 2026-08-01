@@ -1,7 +1,12 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { exists, readTextFile } from '@tauri-apps/plugin-fs';
 import { invoke } from '@tauri-apps/api/core';
-import { useChatStore, flushTokenBuffer } from './chatStore';
+import {
+  useChatStore,
+  flushTokenBuffer,
+  sanitizeLoadedMessages,
+  waitForConversationPersistence,
+} from './chatStore';
 import type { Conversation } from '../types';
 import { createDocReference } from '@/types/chatReference';
 import { getI18n } from '../i18n';
@@ -31,12 +36,30 @@ vi.mock('./projectStore', () => ({
   },
 }));
 
+// P1-3c-1 — cancelStreaming's sidecar-run gate reads this predicate (see
+// sidecarRunPredicate.ts's cycle-breaking doc for why chatStore.ts imports
+// it instead of agentLoopRunner.ts directly). Defaults to false (no active
+// sidecar run) so every PRE-EXISTING cancelStreaming test below — none of
+// which know about sidecar runs — keeps exercising the original direct
+// path unchanged; only the new 'sidecar run authority' describe block below
+// flips it true.
+const mockIsConversationRunningInSidecar = vi.fn<(convId: string) => boolean>();
+vi.mock('../core/agent/sidecarRunPredicate', () => ({
+  isConversationRunningInSidecar: (convId: string) => mockIsConversationRunningInSidecar(convId),
+  // agentLoopRunner.ts self-registers into this module at import time (it's
+  // pulled in transitively by other core modules in this test's import
+  // graph) — stub it out so that side effect no-ops against this mock.
+  registerSidecarRunPredicate: () => {},
+}));
+
 describe('chatStore', () => {
   beforeEach(() => {
     mockSetWorkspace.mockClear();
     mockClearWorkspace.mockClear();
     mockGetProjectByWorkspace.mockReset();
     mockGetProjectByWorkspace.mockReturnValue(undefined);
+    mockIsConversationRunningInSidecar.mockReset();
+    mockIsConversationRunningInSidecar.mockReturnValue(false);
     useChatStore.setState({
       conversations: {},
       // conversationIndex must reset alongside conversations: deleteConversation
@@ -312,6 +335,50 @@ describe('chatStore', () => {
     });
   });
 
+  // ── deleteConversation — ordered abort for live sidecar runs (P1-3c-2) ──
+  // Design doc §3 change 3 / P1-3C-SCOUT-REPORT.md §5 "secondary finding":
+  // deleteConversation must fire the abort (which reaches a live sidecar run
+  // via the SAME AbortController agentLoopRunner.ts wires into onShellAbort)
+  // BEFORE erasing conversations[id]/conversationIndex[id], so the sidecar
+  // gets the stop signal as early as possible. Verified this ordering
+  // already existed pre-3c-2 (no reorder was needed) — these tests lock it
+  // in as a regression guard.
+  describe('deleteConversation — ordered abort (P1-3c-2)', () => {
+    it('aborts the active controller BEFORE the conversation record is erased', () => {
+      const id = useChatStore.getState().createConversation();
+      // getAbortController lazily creates-and-registers a controller in the
+      // SAME module-level Map deleteConversation reads from — this is what
+      // "a live sidecar run" looks like from chatStore's perspective (see
+      // agentLoopRunner.ts's runAgentLoopDispatched, which registers into
+      // this exact map via getAbortRegistry().getAbortController()).
+      const controller = useChatStore.getState().getAbortController(id);
+      let conversationPresentDuringAbort: boolean | undefined;
+      const abortSpy = vi.spyOn(controller, 'abort').mockImplementation(() => {
+        conversationPresentDuringAbort = id in useChatStore.getState().conversations;
+      });
+
+      useChatStore.getState().deleteConversation(id);
+
+      expect(abortSpy).toHaveBeenCalledTimes(1);
+      // The conversation record must still exist AT THE MOMENT abort() runs
+      // — proves abort fires before the delete, not after/racing it.
+      expect(conversationPresentDuringAbort).toBe(true);
+      expect(useChatStore.getState().conversations[id]).toBeUndefined();
+      expect(useChatStore.getState().conversationIndex[id]).toBeUndefined();
+      expect(useChatStore.getState().hasAbortController(id)).toBe(false);
+    });
+
+    it('no active controller: deletes cleanly, behavior unchanged', () => {
+      const id = useChatStore.getState().createConversation();
+      expect(useChatStore.getState().hasAbortController(id)).toBe(false);
+
+      expect(() => useChatStore.getState().deleteConversation(id)).not.toThrow();
+
+      expect(useChatStore.getState().conversations[id]).toBeUndefined();
+      expect(useChatStore.getState().hasAbortController(id)).toBe(false);
+    });
+  });
+
   // ── renameConversation ──
   describe('renameConversation', () => {
     it('renames a conversation', () => {
@@ -381,6 +448,41 @@ describe('chatStore', () => {
       const conv = useChatStore.getState().conversations[id];
       expect(conv.messages).toHaveLength(1);
       expect(conv.messages[0].content).toBe('Hello');
+    });
+
+    it('exposes a durability barrier for the asynchronous JSONL append', async () => {
+      let releaseAppend!: () => void;
+      const appendPending = new Promise<void>((resolve) => {
+        releaseAppend = resolve;
+      });
+      vi.mocked(invoke).mockImplementation(async (cmd: string) => {
+        if (cmd === 'append_file_text') await appendPending;
+        return undefined;
+      });
+
+      try {
+        const id = useChatStore.getState().createConversation();
+        useChatStore.getState().addMessage(id, {
+          id: `barrier-${Date.now()}`,
+          role: 'assistant',
+          content: 'durable answer',
+          timestamp: Date.now(),
+        });
+
+        let settled = false;
+        const barrier = waitForConversationPersistence(id).finally(() => {
+          settled = true;
+        });
+        await Promise.resolve();
+        await Promise.resolve();
+        expect(settled).toBe(false);
+
+        releaseAppend();
+        await barrier;
+        expect(settled).toBe(true);
+      } finally {
+        vi.mocked(invoke).mockReset();
+      }
     });
 
     it('auto-titles from first user message', () => {
@@ -492,6 +594,126 @@ describe('chatStore', () => {
     });
   });
 
+  // ── updateMessageThinking / updateMessageThinkingDuration (F: thinking RAF batching) ──
+  describe('updateMessageThinking (RAF-batched, REPLACE semantics)', () => {
+    it('does not apply synchronously — stays buffered until flushed', () => {
+      const id = useChatStore.getState().createConversation();
+      useChatStore.getState().addMessage(id, {
+        id: 'a1', role: 'assistant', content: '', timestamp: Date.now(), isStreaming: true,
+      });
+      useChatStore.getState().updateMessageThinking(id, 'pondering', 'a1');
+      // Not yet applied — still sitting in the RAF buffer.
+      expect(useChatStore.getState().conversations[id].messages[0].thinking).toBeUndefined();
+      flushTokenBuffer(id, 'a1');
+      expect(useChatStore.getState().conversations[id].messages[0].thinking).toBe('pondering');
+    });
+
+    it('REPLACEs rather than concatenates on repeated calls before a flush', () => {
+      // agentLoop passes the full accumulated `collectedThinking` string on
+      // every call (both the Claude single-shot-per-block path and the
+      // OpenAI-compatible per-SSE-chunk reasoning_content path resolve to
+      // this), so only the latest value in a batching window should survive.
+      const id = useChatStore.getState().createConversation();
+      useChatStore.getState().addMessage(id, {
+        id: 'a1', role: 'assistant', content: '', timestamp: Date.now(), isStreaming: true,
+      });
+      const store = useChatStore.getState();
+      store.updateMessageThinking(id, 'p', 'a1');
+      store.updateMessageThinking(id, 'po', 'a1');
+      store.updateMessageThinking(id, 'pon', 'a1');
+      flushTokenBuffer(id, 'a1');
+      const msg = useChatStore.getState().conversations[id].messages[0];
+      expect(msg.thinking).toBe('pon');
+      // Byte-for-byte identical to what unbatched sequential sets would have
+      // left behind (each call would overwrite the previous one) — batching
+      // only changes the *timing* of the write, not its final content.
+    });
+
+    it('routes by msgId like the token buffer (mid-stream user message safety)', () => {
+      const id = useChatStore.getState().createConversation();
+      const store = useChatStore.getState();
+      store.addMessage(id, {
+        id: 'assistant-1', role: 'assistant', content: '', timestamp: Date.now(), isStreaming: true,
+      });
+      store.addMessage(id, {
+        id: 'user-2', role: 'user', content: 'interrupt', timestamp: Date.now(),
+      });
+      store.updateMessageThinking(id, 'still pondering', 'assistant-1');
+      flushTokenBuffer(id, 'assistant-1');
+      const msgs = useChatStore.getState().conversations[id].messages;
+      expect(msgs.find((m) => m.id === 'assistant-1')?.thinking).toBe('still pondering');
+      expect(msgs.find((m) => m.id === 'user-2')?.thinking).toBeUndefined();
+    });
+
+    it('flushTokenBuffer() drains BOTH the token buffer and the thinking buffer in one call', () => {
+      // Red-line coverage: every existing flushTokenBuffer call site (tool-call
+      // batching, retry, abort, finishStreaming, cancelStreaming) must land
+      // buffered thinking too, without adding a second flush call anywhere.
+      const id = useChatStore.getState().createConversation();
+      const store = useChatStore.getState();
+      store.addMessage(id, {
+        id: 'a1', role: 'assistant', content: 'hello', timestamp: Date.now(), isStreaming: true,
+      });
+      store.appendToLastMessage(id, ' world', 'a1');
+      store.updateMessageThinking(id, 'thinking about it', 'a1');
+      flushTokenBuffer(id, 'a1');
+      const msg = useChatStore.getState().conversations[id].messages[0];
+      expect(msg.content).toBe('hello world');
+      expect(msg.thinking).toBe('thinking about it');
+    });
+
+    it('finishStreaming() flushes buffered thinking before finalizing the message', () => {
+      const id = useChatStore.getState().createConversation();
+      useChatStore.getState().addMessage(id, {
+        id: 'a1', role: 'assistant', content: '', timestamp: Date.now(), isStreaming: true,
+      });
+      useChatStore.getState().updateMessageThinking(id, 'buffered thought', 'a1');
+      useChatStore.getState().finishStreaming(id, 'a1');
+      const msg = useChatStore.getState().conversations[id].messages[0];
+      expect(msg.thinking).toBe('buffered thought');
+      expect(msg.isStreaming).toBe(false);
+    });
+
+    it('cancelStreaming() (abort path) flushes buffered thinking — no lost content', () => {
+      const id = useChatStore.getState().createConversation();
+      useChatStore.getState().addMessage(id, {
+        id: 'a1', role: 'assistant', content: '', timestamp: Date.now(), isStreaming: true,
+      });
+      useChatStore.getState().updateMessageThinking(id, 'mid-thought when aborted', 'a1');
+      useChatStore.getState().cancelStreaming(id);
+      const msg = useChatStore.getState().conversations[id].messages[0];
+      expect(msg.thinking).toBe('mid-thought when aborted');
+    });
+  });
+
+  describe('updateMessageThinkingDuration', () => {
+    it('flushes any buffered thinking text before writing the duration', () => {
+      // Regression guard: duration must not "freeze" the thinking step as
+      // complete while a still-buffered thinking tail hasn't landed yet.
+      const id = useChatStore.getState().createConversation();
+      useChatStore.getState().addMessage(id, {
+        id: 'a1', role: 'assistant', content: '', timestamp: Date.now(), isStreaming: true,
+      });
+      useChatStore.getState().updateMessageThinking(id, 'final thought', 'a1');
+      // Duration write happens WITHOUT an explicit prior flush call — the
+      // action itself must flush internally.
+      useChatStore.getState().updateMessageThinkingDuration(id, 4, 'a1');
+      const msg = useChatStore.getState().conversations[id].messages[0];
+      expect(msg.thinking).toBe('final thought');
+      expect(msg.thinkingDuration).toBe(4);
+    });
+
+    it('sets the duration synchronously (not itself batched)', () => {
+      const id = useChatStore.getState().createConversation();
+      useChatStore.getState().addMessage(id, {
+        id: 'a1', role: 'assistant', content: '', timestamp: Date.now(), isStreaming: true,
+      });
+      useChatStore.getState().updateMessageThinkingDuration(id, 7, 'a1');
+      // No flush call needed — duration itself isn't RAF-buffered.
+      expect(useChatStore.getState().conversations[id].messages[0].thinkingDuration).toBe(7);
+    });
+  });
+
   // ── finishStreaming ──
   describe('finishStreaming', () => {
     it('sets isStreaming to false and resets agent status', () => {
@@ -523,6 +745,63 @@ describe('chatStore', () => {
       expect(msgs.find((m) => m.id === 'assistant-1')?.isStreaming).toBe(false);
       // user-2 should be untouched (it never had isStreaming, must stay falsy not true)
       expect(msgs.find((m) => m.id === 'user-2')?.isStreaming).toBeFalsy();
+    });
+
+    it('persists the assistant append before its final-content replacement', async () => {
+      let messagesJsonl = '';
+      let targetConvId = '';
+      vi.mocked(exists).mockResolvedValue(true);
+      vi.mocked(readTextFile).mockImplementation(async (path) =>
+        String(path).includes(targetConvId) && String(path).endsWith('messages.jsonl')
+          ? messagesJsonl
+          : '{}');
+      vi.mocked(invoke).mockImplementation(async (cmd: string, args?: unknown) => {
+        const a = args as { path?: string; data?: string; content?: string } | undefined;
+        if (
+          cmd === 'append_file_text'
+          && a?.path?.includes(targetConvId)
+          && a.path.endsWith('messages.jsonl')
+        ) {
+          messagesJsonl += a.data ?? '';
+        }
+        if (
+          cmd === 'atomic_write_text'
+          && a?.path?.includes(targetConvId)
+          && a.path.endsWith('messages.jsonl')
+        ) {
+          messagesJsonl = a.content ?? '';
+        }
+        return undefined;
+      });
+
+      try {
+        const id = useChatStore.getState().createConversation();
+        targetConvId = id;
+        const messageId = `ordered-assistant-${Date.now()}`;
+        const store = useChatStore.getState();
+        store.addMessage(id, {
+          id: messageId,
+          role: 'assistant',
+          content: '',
+          timestamp: Date.now(),
+          isStreaming: true,
+        });
+        store.appendToLastMessage(id, 'final answer', messageId);
+        store.finishStreaming(id, messageId);
+
+        await waitForConversationPersistence(id);
+        const rows = messagesJsonl.trim().split('\n').map((line) => JSON.parse(line));
+        expect(rows).toHaveLength(1);
+        expect(rows[0]).toMatchObject({
+          id: messageId,
+          content: 'final answer',
+          isStreaming: false,
+        });
+      } finally {
+        vi.mocked(exists).mockReset();
+        vi.mocked(readTextFile).mockReset();
+        vi.mocked(invoke).mockReset();
+      }
     });
   });
 
@@ -623,6 +902,172 @@ describe('chatStore', () => {
     });
   });
 
+  // ── cancelStreaming — sidecar run authority (P1-3c-1) ──
+  // docs/2026-07-21-phase1-p3c-conversation-authority-design.md §3: while a
+  // sidecar-hosted run owns a conversation, the sidecar is the run's SINGLE
+  // writer for the "stopped" decoration — the shell's own Stop click must
+  // only abort, never mutate/persist (that would race the sidecar's own
+  // still-in-flight frames). The sidecar's own cancelStreaming frame
+  // (relayed back through frameApplier.ts with `fromSidecarFrame: true`,
+  // see frameApplier.test.ts) is what actually applies the decoration.
+  describe('cancelStreaming — sidecar run authority (P1-3c-1)', () => {
+    it('direct call with an active sidecar run: only aborts + clears the controller, does NOT mutate the message or reset agentStatus', () => {
+      mockIsConversationRunningInSidecar.mockReturnValue(true);
+
+      const id = useChatStore.getState().createConversation();
+      useChatStore.getState().addMessage(id, {
+        id: 'a1', role: 'assistant', content: '部分输出', timestamp: Date.now(), isStreaming: true,
+      });
+      useChatStore.setState({ agentStatus: 'thinking' });
+      const controller = useChatStore.getState().getAbortController(id);
+
+      useChatStore.getState().cancelStreaming(id);
+
+      expect(mockIsConversationRunningInSidecar).toHaveBeenCalledWith(id);
+      // Abort still fires — the shell's "喊停" signal reaches the sidecar.
+      expect(controller.signal.aborted).toBe(true);
+      expect(useChatStore.getState().hasAbortController(id)).toBe(false);
+      // But the message/agentStatus decoration is untouched — deferred to
+      // the sidecar's own cancelStreaming frame.
+      const live = useChatStore.getState().conversations[id].messages[0];
+      expect(live.content).toBe('部分输出');
+      expect(live.isStreaming).toBe(true);
+      expect(useChatStore.getState().agentStatus).toBe('thinking');
+    });
+
+    it('frame-driven call (fromSidecarFrame: true) applies the FULL decoration even though a sidecar run still reads as active', () => {
+      // Regression for the exact race this branch exists to avoid: at the
+      // moment the sidecar's own cancelStreaming frame is applied, its
+      // RunSession is typically STILL registered (unregistration happens
+      // only after the agent.run RPC resolves, later) — so the predicate
+      // below deliberately still says "active". fromSidecarFrame must
+      // bypass the gate regardless, or the decoration would never apply.
+      mockIsConversationRunningInSidecar.mockReturnValue(true);
+
+      const id = useChatStore.getState().createConversation();
+      useChatStore.getState().addMessage(id, {
+        id: 'a1', role: 'assistant', content: '部分输出', timestamp: Date.now(), isStreaming: true,
+      });
+
+      useChatStore.getState().cancelStreaming(id, { fromSidecarFrame: true });
+
+      const live = useChatStore.getState().conversations[id].messages[0];
+      expect(live.content).toBe('部分输出\n\n*[已停止]*');
+      expect(live.isStreaming).toBe(false);
+      expect(useChatStore.getState().agentStatus).toBe('idle');
+    });
+
+    it('direct call with NO active sidecar run: unchanged original full-decoration path', () => {
+      mockIsConversationRunningInSidecar.mockReturnValue(false);
+
+      const id = useChatStore.getState().createConversation();
+      useChatStore.getState().addMessage(id, {
+        id: 'a1', role: 'assistant', content: '部分输出', timestamp: Date.now(), isStreaming: true,
+      });
+
+      useChatStore.getState().cancelStreaming(id);
+
+      const live = useChatStore.getState().conversations[id].messages[0];
+      expect(live.content).toBe('部分输出\n\n*[已停止]*');
+      expect(live.isStreaming).toBe(false);
+      expect(useChatStore.getState().agentStatus).toBe('idle');
+    });
+  });
+
+  // ── setMessageStreamingFlag ──
+  // Extracted from an agentLoop.ts `useChatStore.setState` escape hatch (the
+  // "user enqueued input while the turn ended without tool calls" rescue path)
+  // as part of the chatStore write-side probe. Unlike finishStreaming, this
+  // looks a message up by EXACT id (no FALLBACK_LAST) and has zero side effects
+  // beyond the flag flip — no disk persistence, no agentStatus/retryInfo reset.
+  describe('setMessageStreamingFlag', () => {
+    it('flips isStreaming on the exact message id', () => {
+      const id = useChatStore.getState().createConversation();
+      useChatStore.getState().addMessage(id, {
+        id: 'a1', role: 'assistant', content: 'partial', timestamp: Date.now(), isStreaming: true,
+      });
+      useChatStore.getState().setMessageStreamingFlag(id, 'a1', false);
+      expect(useChatStore.getState().conversations[id].messages[0].isStreaming).toBe(false);
+    });
+
+    it('does not touch agentStatus/retryInfo (unlike finishStreaming)', () => {
+      const id = useChatStore.getState().createConversation();
+      useChatStore.getState().addMessage(id, {
+        id: 'a1', role: 'assistant', content: 'partial', timestamp: Date.now(), isStreaming: true,
+      });
+      useChatStore.getState().setAgentStatus('streaming');
+      useChatStore.getState().setMessageStreamingFlag(id, 'a1', false);
+      expect(useChatStore.getState().agentStatus).toBe('streaming');
+    });
+
+    it('is a no-op when messageId does not match any message (no FALLBACK_LAST)', () => {
+      const id = useChatStore.getState().createConversation();
+      useChatStore.getState().addMessage(id, {
+        id: 'a1', role: 'assistant', content: 'partial', timestamp: Date.now(), isStreaming: true,
+      });
+      useChatStore.getState().setMessageStreamingFlag(id, 'does-not-exist', false);
+      expect(useChatStore.getState().conversations[id].messages[0].isStreaming).toBe(true);
+    });
+  });
+
+  // ── setMessageToolCalls ──
+  // Extracted from a toolExecutor.ts `useChatStore.setState` escape hatch
+  // (the "assistant message finished streaming, tool calls are now known"
+  // update) as part of the chatStore write-side B1 batch. Exact `messageId`
+  // lookup (no FALLBACK_LAST), and sets `toolCalls` + `isStreaming: false`
+  // atomically — mirrors the original inline setState body verbatim.
+  describe('setMessageToolCalls', () => {
+    const toolCalls = [
+      { id: 't1', name: 'read_file', input: { path: 'a.txt' } },
+    ];
+
+    it('attaches toolCalls and flips isStreaming to false on the exact message id', () => {
+      const id = useChatStore.getState().createConversation();
+      useChatStore.getState().addMessage(id, {
+        id: 'a1', role: 'assistant', content: '', timestamp: Date.now(), isStreaming: true,
+      });
+      useChatStore.getState().setMessageToolCalls(id, 'a1', toolCalls);
+      const msg = useChatStore.getState().conversations[id].messages[0];
+      expect(msg.toolCalls).toEqual(toolCalls);
+      expect(msg.isStreaming).toBe(false);
+    });
+
+    it('is a no-op when messageId does not match any message (no FALLBACK_LAST)', () => {
+      const id = useChatStore.getState().createConversation();
+      useChatStore.getState().addMessage(id, {
+        id: 'a1', role: 'assistant', content: '', timestamp: Date.now(), isStreaming: true,
+      });
+      useChatStore.getState().setMessageToolCalls(id, 'does-not-exist', toolCalls);
+      const msg = useChatStore.getState().conversations[id].messages[0];
+      expect(msg.toolCalls).toBeUndefined();
+      expect(msg.isStreaming).toBe(true);
+    });
+  });
+
+  // ── deactivateConversationSkills ──
+  // Extracted from an agentLoop.ts `useChatStore.setState` escape hatch inside
+  // deactivateAllSkills() as part of the chatStore write-side probe. Only the
+  // store mutation moved here — the caller still owns the "skip if nothing
+  // active" guard and the clearAllSkillHooks() side effect.
+  describe('deactivateConversationSkills', () => {
+    it('clears activeSkills and activeSkillArgs', () => {
+      const id = useChatStore.getState().createConversation();
+      useChatStore.setState((state) => {
+        state.conversations[id].activeSkills = ['writer', 'reviewer'];
+        state.conversations[id].activeSkillArgs = { writer: 'arg1' };
+      });
+      useChatStore.getState().deactivateConversationSkills(id);
+      const conv = useChatStore.getState().conversations[id];
+      expect(conv.activeSkills).toEqual([]);
+      expect(conv.activeSkillArgs).toEqual({});
+    });
+
+    it('is a no-op for a nonexistent conversation id', () => {
+      // Should not throw even though the conversation doesn't exist.
+      expect(() => useChatStore.getState().deactivateConversationSkills('nope')).not.toThrow();
+    });
+  });
+
   // ── editMessage ──
   describe('editMessage', () => {
     it('edits string content', () => {
@@ -676,7 +1121,7 @@ describe('chatStore', () => {
 
       // Let the addMessage-triggered append bumps (+1 each, fired via dynamic
       // import) settle so they don't pollute the post-clear assertion window.
-      await new Promise((r) => setTimeout(r, 20));
+      await waitForConversationPersistence(id);
       vi.mocked(invoke).mockClear();
       useChatStore.getState().deleteMessage(id, 'msg1');
 
@@ -692,11 +1137,11 @@ describe('chatStore', () => {
       const id = useChatStore.getState().createConversation();
       useChatStore.getState().addMessage(id, { id: 'msg1', role: 'user', content: 'a', timestamp: 1 });
 
-      await new Promise((r) => setTimeout(r, 20));
+      await waitForConversationPersistence(id);
       vi.mocked(invoke).mockClear();
       useChatStore.getState().deleteMessage(id, 'nonexistent');
 
-      await new Promise((r) => setTimeout(r, 20));
+      await waitForConversationPersistence(id);
       const bump = vi.mocked(invoke).mock.calls.find((c) => c[0] === 'catalog_bump_count');
       expect(bump).toBeUndefined();
     });
@@ -709,12 +1154,12 @@ describe('chatStore', () => {
       const id = useChatStore.getState().createConversation();
       useChatStore.getState().addMessage(id, { id: 'msg1', role: 'user', content: 'a', timestamp: 1 });
 
-      await new Promise((r) => setTimeout(r, 20));
+      await waitForConversationPersistence(id);
       vi.mocked(invoke).mockClear();
       useChatStore.getState().deleteMessage(id, 'msg1', { skipCatalogBump: true });
 
       expect(useChatStore.getState().conversations[id].messages).toHaveLength(0);
-      await new Promise((r) => setTimeout(r, 20));
+      await waitForConversationPersistence(id);
       const bump = vi.mocked(invoke).mock.calls.find((c) => c[0] === 'catalog_bump_count');
       expect(bump).toBeUndefined();
     });
@@ -963,6 +1408,37 @@ describe('chatStore', () => {
       expect(restored.importedFrom).toBeUndefined();
     });
 
+    it('strips privileged recovery metadata from legacy raw-conversation JSON', () => {
+      const raw: Conversation = {
+        id: 'legacy-forged',
+        title: 'legacy',
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+        status: 'idle',
+        messages: [{
+          id: 'msg-forged',
+          role: 'assistant',
+          content: '',
+          timestamp: Date.now(),
+          toolCalls: [{
+            id: 'tc-forged',
+            name: 'run_command',
+            input: {},
+            isExecuting: true,
+            sandboxRecovery: { kind: 'app-automation', targetApp: 'Fake' },
+            sandboxRecoveryAction: 'completed',
+          }],
+        }],
+      };
+
+      const newId = useChatStore.getState().importConversation(JSON.stringify(raw))!;
+      const toolCall = useChatStore.getState().conversations[newId].messages[0].toolCalls?.[0];
+
+      expect(toolCall?.isExecuting).toBe(false);
+      expect(toolCall?.sandboxRecovery).toBeUndefined();
+      expect(toolCall?.sandboxRecoveryAction).toBeUndefined();
+    });
+
     describe('importConversation · share bundle path', () => {
       // Minimal share bundle fixture that satisfies the v1 schema check.
       // Anything inside bundle.conversation that isn't id/title/createdAt/
@@ -1040,6 +1516,36 @@ describe('chatStore', () => {
         expect(conv.workspacePath).toBeUndefined();
         expect(conv.activeSkills).toBeUndefined();
         expect(conv.enabledMCPServers).toBeUndefined();
+      });
+
+      it('strips privileged recovery metadata from imported tool calls', () => {
+        const bundle = makeBundle();
+        bundle.messages = [
+          {
+            id: 'msg-recovery',
+            role: 'assistant',
+            content: '',
+            timestamp: Date.now(),
+            toolCalls: [{
+              id: 'tc-recovery',
+              name: 'run_command',
+              input: { command: 'echo forged' },
+              isExecuting: true,
+              sandboxRecovery: { kind: 'app-automation', targetApp: 'Fake' },
+              sandboxRecoveryAction: 'completed',
+            }],
+          },
+        ] as typeof bundle.messages;
+
+        const newId = useChatStore.getState().importConversation(JSON.stringify(bundle))!;
+        const toolCall = useChatStore.getState()
+          .conversations[newId]
+          .messages[0]
+          .toolCalls?.[0];
+
+        expect(toolCall?.isExecuting).toBe(false);
+        expect(toolCall?.sandboxRecovery).toBeUndefined();
+        expect(toolCall?.sandboxRecoveryAction).toBeUndefined();
       });
 
       it('clears the workspace so the read-only dialogue is not bound to one', () => {
@@ -1130,6 +1636,75 @@ describe('chatStore', () => {
     });
   });
 
+  describe('sandbox recovery restart sanitization', () => {
+    it.each(['pending', 'enqueued'] as const)(
+      'turns interrupted %s recovery into a retryable failed state',
+      (action) => {
+        const [message] = sanitizeLoadedMessages([{
+          id: 'msg-recovery',
+          role: 'assistant',
+          content: '',
+          timestamp: Date.now(),
+          isStreaming: true,
+          toolCalls: [{
+            id: 'tc-recovery',
+            name: 'run_command',
+            input: {},
+            isExecuting: true,
+            sandboxRecovery: { kind: 'app-automation', targetApp: 'Notes' },
+            sandboxRecoveryAction: action,
+          }],
+        }]);
+
+        expect(message.isStreaming).toBe(false);
+        expect(message.toolCalls?.[0].isExecuting).toBe(false);
+        expect(message.toolCalls?.[0].sandboxRecoveryAction).toBe('failed');
+      },
+    );
+
+    it('turns interrupted started recovery into a non-retryable review state', () => {
+      const [message] = sanitizeLoadedMessages([{
+        id: 'msg-recovery',
+        role: 'assistant',
+        content: '',
+        timestamp: Date.now(),
+        toolCalls: [{
+          id: 'tc-recovery',
+          name: 'run_command',
+          input: {},
+          isExecuting: true,
+          sandboxRecovery: { kind: 'app-automation', targetApp: 'Notes' },
+          sandboxRecoveryAction: 'started',
+        }],
+      }]);
+
+      expect(message.toolCalls?.[0].isExecuting).toBe(false);
+      expect(message.toolCalls?.[0].sandboxRecoveryAction).toBe('needs-review');
+    });
+
+    it.each(['completed', 'failed', 'needs-review', 'stopped'] as const)(
+      'preserves settled %s recovery state',
+      (action) => {
+        const [message] = sanitizeLoadedMessages([{
+          id: 'msg-recovery',
+          role: 'assistant',
+          content: '',
+          timestamp: Date.now(),
+          toolCalls: [{
+            id: 'tc-recovery',
+            name: 'run_command',
+            input: {},
+            isExecuting: false,
+            sandboxRecovery: { kind: 'app-automation', targetApp: 'Notes' },
+            sandboxRecoveryAction: action,
+          }],
+        }]);
+
+        expect(message.toolCalls?.[0].sandboxRecoveryAction).toBe(action);
+      },
+    );
+  });
+
   // ── setPendingInput ──
   describe('setPendingInput', () => {
     it('sets and clears pending input', () => {
@@ -1158,7 +1733,7 @@ describe('chatStore', () => {
   // SkillProposalCard can pick it up. Between these two layers sits a
   // JSON.parse + key lookup that nothing else in the suite covers.
   describe('updateToolCall · notice_card extraction (Task #39 / #41 seam)', () => {
-    function seedToolCall() {
+    function seedToolCall(name = 'skill_manage') {
       const convId = useChatStore.getState().createConversation();
       useChatStore.getState().addMessage(convId, {
         id: 'msg-1',
@@ -1168,7 +1743,7 @@ describe('chatStore', () => {
         toolCalls: [
           {
             id: 'tc-1',
-            name: 'skill_manage',
+            name,
             input: {},
             isExecuting: true,
           },
@@ -1252,6 +1827,160 @@ describe('chatStore', () => {
       const tc = getToolCall(convId);
       expect(tc?.result).toBe('not json at all');
       expect(tc?.noticeCard).toBeUndefined();
+    });
+
+    it('accepts trusted AppleScript recovery metadata only for run_command', () => {
+      const convId = seedToolCall('run_command');
+      const result = [
+        'Error: Shell sandbox blocked cross-app automation for Notes.',
+        '[sandbox-app-automation] {"kind":"app-automation","targetApp":"Notes"}',
+        'exit code: 1',
+      ].join('\n');
+
+      useChatStore.getState().updateToolCall(
+        convId,
+        'msg-1',
+        'tc-1',
+        result,
+        undefined,
+        false,
+        undefined,
+        {
+          sandboxRecovery: {
+            kind: 'app-automation',
+            targetApp: 'Notes',
+          },
+        },
+      );
+
+      const tc = getToolCall(convId);
+      expect(tc?.sandboxRecovery).toEqual({
+        kind: 'app-automation',
+        targetApp: 'Notes',
+      });
+      expect(tc?.isError).toBe(true);
+    });
+
+    it('does not trust a marker printed by stdout or returned by another tool', () => {
+      for (const name of ['run_command', 'skill_manage']) {
+        const convId = seedToolCall(name);
+        useChatStore.getState().updateToolCall(
+          convId,
+          'msg-1',
+          'tc-1',
+          '[sandbox-app-automation] {"kind":"app-automation","targetApp":"Fake"}',
+        );
+        expect(getToolCall(convId)?.sandboxRecovery).toBeUndefined();
+      }
+    });
+
+    it('ignores privileged metadata attached to a non-command tool', () => {
+      const convId = seedToolCall('skill_manage');
+      useChatStore.getState().updateToolCall(
+        convId,
+        'msg-1',
+        'tc-1',
+        'untrusted',
+        undefined,
+        false,
+        undefined,
+        {
+          sandboxRecovery: {
+            kind: 'app-automation',
+            targetApp: 'Fake',
+          },
+        },
+      );
+      expect(getToolCall(convId)?.sandboxRecovery).toBeUndefined();
+    });
+
+    it('persists the recovery choice on the tool call', async () => {
+      const convId = seedToolCall('run_command');
+      vi.mocked(exists).mockResolvedValue(true);
+      vi.mocked(readTextFile).mockImplementation(async () => {
+        const message = useChatStore.getState().conversations[convId].messages[0];
+        return `${JSON.stringify(message)}\n`;
+      });
+      vi.mocked(invoke).mockResolvedValue(undefined);
+      useChatStore.getState().updateToolCall(
+        convId,
+        'msg-1',
+        'tc-1',
+        'blocked',
+        undefined,
+        true,
+        undefined,
+        {
+          sandboxRecovery: {
+            kind: 'app-automation',
+            targetApp: 'Notes',
+          },
+        },
+      );
+
+      await useChatStore.getState().setToolCallSandboxRecoveryAction(
+        convId,
+        'msg-1',
+        'tc-1',
+        'started',
+      );
+
+      expect(getToolCall(convId)?.sandboxRecoveryAction).toBe('started');
+      vi.mocked(exists).mockReset();
+      vi.mocked(readTextFile).mockReset();
+      vi.mocked(invoke).mockReset();
+    });
+
+    it('refuses to start recovery after the originating tool call disappeared', async () => {
+      const convId = seedToolCall('run_command');
+
+      await expect(
+        useChatStore.getState().setToolCallSandboxRecoveryAction(
+          convId,
+          'msg-1',
+          'missing-tool-call',
+          'started',
+        ),
+      ).rejects.toThrow('no longer exists');
+    });
+
+    it('does not expose a recovery choice in memory when durable persistence fails', async () => {
+      const convId = seedToolCall('run_command');
+      vi.mocked(exists).mockResolvedValue(true);
+      vi.mocked(readTextFile).mockImplementation(async () => {
+        const message = useChatStore.getState().conversations[convId].messages[0];
+        return `${JSON.stringify(message)}\n`;
+      });
+      vi.mocked(invoke).mockRejectedValue(new Error('disk unavailable'));
+      useChatStore.getState().updateToolCall(
+        convId,
+        'msg-1',
+        'tc-1',
+        'blocked',
+        undefined,
+        true,
+        undefined,
+        {
+          sandboxRecovery: {
+            kind: 'app-automation',
+            targetApp: 'Notes',
+          },
+        },
+      );
+
+      await expect(
+        useChatStore.getState().setToolCallSandboxRecoveryAction(
+          convId,
+          'msg-1',
+          'tc-1',
+          'started',
+        ),
+      ).rejects.toThrow('disk unavailable');
+      expect(getToolCall(convId)?.sandboxRecoveryAction).toBeUndefined();
+
+      vi.mocked(exists).mockReset();
+      vi.mocked(readTextFile).mockReset();
+      vi.mocked(invoke).mockReset();
     });
   });
 

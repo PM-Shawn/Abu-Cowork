@@ -5,6 +5,10 @@ const isWatch = process.argv.includes('--watch');
 const pkg = JSON.parse(readFileSync('package.json', 'utf-8'));
 const version = pkg.version;
 
+// Keep the shared protocol types in sync without relying on POSIX shell
+// commands. This build runs in macOS and Windows packaging/CI.
+cpSync('../abu-browser-shared/types.ts', 'src/shared/types.ts');
+
 const entryPoints = [
   { in: 'src/background/index.ts', out: 'background' },
   { in: 'src/content/index.ts', out: 'content' },

@@ -35,6 +35,8 @@ export interface PreToolCallEvent extends BaseHookEvent {
   type: 'preToolCall';
   toolName: string;
   toolInput: Record<string, unknown>;
+  /** Live task signal for in-process hooks; reverse-RPC bridges reattach it by runId. */
+  abortSignal?: AbortSignal;
   /** Set to true to block the tool call */
   blocked?: boolean;
   /**
@@ -53,6 +55,8 @@ export interface PostToolCallEvent extends BaseHookEvent {
   type: 'postToolCall';
   toolName: string;
   toolInput: Record<string, unknown>;
+  /** Live task signal for in-process hooks; reverse-RPC bridges reattach it by runId. */
+  abortSignal?: AbortSignal;
   result: string;
   error: boolean;
   durationMs: number;

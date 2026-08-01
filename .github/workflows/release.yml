@@ -4,359 +4,255 @@ on:
   push:
     tags:
       - 'v*'
+  workflow_dispatch:
+    inputs:
+      transition_version:
+        description: 'Private candidate version; artifacts only, never published'
+        type: string
+        default: '0.34.0'
+        required: true
+      target_platform:
+        description: 'Limit a private candidate build to one platform family'
+        type: choice
+        options:
+          - all
+          - windows
+          - mac
+        default: all
 
 permissions:
-  contents: write
+  contents: read
+
+# A queued older tag must never overwrite a newer production pointer.
+concurrency:
+  group: abu-production-release
+  cancel-in-progress: false
 
 jobs:
-  # Gate the whole release: version must agree across the four manifests and,
-  # for non-pre-release tags, both CHANGELOG.md (English) and CHANGELOG.zh-CN.md
-  # (Chinese) must have this version's section in the right language. Fails the
-  # release before any build/sign/notarize runs, so a misprepared release can't
-  # ship (e.g. shipping English to zh users because the Chinese entry was
-  # forgotten). See scripts/release-preflight.mjs and RELEASING.md.
   preflight:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
         with:
-          node-version: 20
-      - name: Validate release consistency
-        run: node scripts/release-preflight.mjs --tag "${{ github.ref_name }}"
+          node-version: 24
+          cache: npm
+      - name: Install dependencies
+        run: npm ci
+      - name: Validate version, changelogs, and release staging logic
+        env:
+          CANDIDATE_VERSION: ${{ github.event_name == 'workflow_dispatch' && inputs.transition_version || github.ref_name }}
+        run: |
+          node scripts/release-preflight.mjs --tag "$CANDIDATE_VERSION"
+          npm run test:electron:release-stage
+          npm run test:electron:release-workflow
 
-  build:
+  # v0.34.x is the frozen bridge consumed by the hard-coded legacy Tauri
+  # latest.json. Later releases keep dormant direct-install migration support
+  # but do not create or publish a new Tauri transition pointer.
+  electron-transition:
     needs: preflight
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - platform: macos-latest
-            target: aarch64-apple-darwin
-          - platform: macos-latest
-            target: x86_64-apple-darwin
-          - platform: windows-latest
-            target: x86_64-pc-windows-msvc
+    if: ${{ github.repository == 'PM-Shawn/Abu-Cowork' || github.event_name == 'workflow_dispatch' }}
+    uses: ./.github/workflows/electron-build.yml
+    with:
+      transition_version: ${{ github.event_name == 'workflow_dispatch' && inputs.transition_version || github.ref_name }}
+      transition_release: ${{ github.event_name == 'push' && startsWith(github.ref_name, 'v0.34.') }}
+      legacy_migration_support: true
+      target_platform: ${{ github.event_name == 'workflow_dispatch' && inputs.target_platform || 'all' }}
+    secrets: inherit
 
-    runs-on: ${{ matrix.platform }}
-
+  publish:
+    needs: [preflight, electron-transition]
+    # RC tags exercise the complete native build but never alter production.
+    if: ${{ github.repository == 'PM-Shawn/Abu-Cowork' && github.event_name == 'push' && !contains(github.ref_name, '-') }}
+    permissions:
+      contents: write
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v7
+      - uses: actions/setup-node@v7
         with:
-          node-version: 20
+          node-version: 24
           cache: npm
-
-      - name: Install Rust stable
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ matrix.target }}
-
-      - name: Rust cache
-        uses: swatinem/rust-cache@v2
-        with:
-          workspaces: src-tauri -> target
-          shared-key: ${{ matrix.target }}
 
       - name: Install dependencies
         run: npm ci
 
-      - name: Setup embedded Python runtime
-        run: bash scripts/setup-python-runtime.sh
-        shell: bash
+      - name: Download Electron macOS arm64 artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: electron-mac-arm64
+          path: release-input/mac-arm64
 
-      - name: Setup embedded Node.js runtime
-        run: bash scripts/setup-node-runtime.sh
-        shell: bash
+      - name: Download Electron macOS x64 artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: electron-mac-x64
+          path: release-input/mac-x64
 
-      - name: Build Tauri app
+      - name: Download Electron Windows x64 artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: electron-windows-x64
+          path: release-input/windows-x64
+
+      - name: Stage and verify all transition and self-update artifacts
         env:
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-          RAW_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          VITE_CONSOLE_URL: ${{ secrets.VITE_CONSOLE_URL }}
-          # Apple Developer ID code signing + notarization. Used only on the
-          # macOS targets; on Windows these are simply ignored.
-          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
-          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
-          APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
-        shell: bash
+          VERSION_TAG: ${{ github.ref_name }}
+          REPOSITORY: ${{ github.repository }}
+          LEGACY_TRANSITION: ${{ startsWith(github.ref_name, 'v0.34.') }}
         run: |
-          # Write signing key to file. GitHub Secrets injection or shell expansion
-          # can append trailing bytes (observed: extra %/\n at end). Use Python to
-          # strip all non-base64 chars then truncate to a multiple of 4, which is
-          # the only valid length for base64.
-          #
-          # Tauri 2 only reads TAURI_SIGNING_PRIVATE_KEY; it auto-detects file path vs content.
-          python3 <<'PYEOF' > "$RUNNER_TEMP/tauri-signing-key.txt"
-          import os, sys, re
-          raw = os.environ.get('RAW_KEY', '')
-          cleaned = re.sub(r'[^A-Za-z0-9+/=]', '', raw)
-          valid_len = (len(cleaned) // 4) * 4
-          sys.stdout.write(cleaned[:valid_len])
-          PYEOF
-          echo "Key file size: $(wc -c < "$RUNNER_TEMP/tauri-signing-key.txt") bytes"
-          echo "Last 16 bytes (hex):"
-          tail -c 16 "$RUNNER_TEMP/tauri-signing-key.txt" | od -c | head -2
-          export TAURI_SIGNING_PRIVATE_KEY="$RUNNER_TEMP/tauri-signing-key.txt"
+          node scripts/stage-electron-transition-release.mjs \
+            --input release-input \
+            --output release-stage \
+            --version "$VERSION_TAG" \
+            --repo "$REPOSITORY" \
+            --release-base-url "https://abu-agent.oss-cn-beijing.aliyuncs.com/releases/$VERSION_TAG" \
+            --changelog-en CHANGELOG.md \
+            --changelog-zh CHANGELOG.zh-CN.md \
+            --legacy-transition "$LEGACY_TRANSITION"
+          node -e '
+            const fs = require("node:fs");
+            const legacy = process.env.LEGACY_TRANSITION === "true";
+            if (!legacy) {
+              if (fs.existsSync("release-stage/latest.json")) {
+                throw new Error("normal Electron release must not stage legacy latest.json");
+              }
+              process.exit(0);
+            }
+            const latest = JSON.parse(fs.readFileSync("release-stage/latest.json", "utf8"));
+            const expected = ["darwin-aarch64", "darwin-x86_64", "windows-x86_64"];
+            if (JSON.stringify(Object.keys(latest.platforms).sort()) !== JSON.stringify(expected)) {
+              throw new Error("latest.json does not contain exactly the three release platforms");
+            }
+          '
 
-          # ── macOS: Developer ID signing of embedded binaries + notarization ──
-          # Notarization rejects any unsigned Mach-O inside the .app. Abu bundles a
-          # standalone Python runtime (interpreter + dylibs + compiled .so) and a
-          # standalone Node.js runtime (the node binary), so we import the Developer
-          # ID cert into a throwaway keychain and deep-sign
-          # every embedded Mach-O with the hardened runtime BEFORE Tauri bundles
-          # and signs the outer .app. Tauri then notarizes + staples using the
-          # App Store Connect API key.
-          if [[ "${{ matrix.target }}" == *apple* ]]; then
-            KEYCHAIN="$RUNNER_TEMP/app-signing.keychain-db"
-            KEYCHAIN_PWD="$(openssl rand -base64 24)"
-            security create-keychain -p "$KEYCHAIN_PWD" "$KEYCHAIN"
-            security set-keychain-settings -lut 21600 "$KEYCHAIN"
-            security unlock-keychain -p "$KEYCHAIN_PWD" "$KEYCHAIN"
-
-            echo "$APPLE_CERTIFICATE" | base64 --decode > "$RUNNER_TEMP/cert.p12"
-            security import "$RUNNER_TEMP/cert.p12" -k "$KEYCHAIN" \
-              -P "$APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
-            rm -f "$RUNNER_TEMP/cert.p12"
-            # Allow codesign to use the key without an interactive prompt.
-            security set-key-partition-list -S apple-tool:,apple:,codesign: \
-              -s -k "$KEYCHAIN_PWD" "$KEYCHAIN" >/dev/null
-            # Put our keychain on the search list so codesign/Tauri can find the identity.
-            EXISTING_KC="$(security list-keychains -d user | sed 's/[[:space:]"]//g' | tr '\n' ' ')"
-            security list-keychains -d user -s "$KEYCHAIN" $EXISTING_KC
-
-            ENTITLEMENTS="$PWD/src-tauri/entitlements.plist"
-            echo "== Deep-signing embedded Mach-O binaries in python-runtime + node-runtime =="
-            SIGN_COUNT=0
-            while IFS= read -r -d '' f; do
-              if file -b "$f" | grep -q 'Mach-O'; then
-                codesign --force --timestamp --options runtime \
-                  --entitlements "$ENTITLEMENTS" \
-                  --sign "$APPLE_SIGNING_IDENTITY" "$f"
-                SIGN_COUNT=$((SIGN_COUNT + 1))
-              fi
-            done < <(find src-tauri/python-runtime src-tauri/node-runtime -type f -print0)
-            echo "Signed $SIGN_COUNT embedded Mach-O files."
-
-            # Write the notary API key to disk for Tauri's notarytool invocation.
-            mkdir -p "$RUNNER_TEMP/private_keys"
-            APPLE_API_KEY_PATH="$RUNNER_TEMP/private_keys/AuthKey_${APPLE_API_KEY}.p8"
-            printf '%s' "$APPLE_API_KEY_P8" > "$APPLE_API_KEY_PATH"
-            export APPLE_API_KEY_PATH
-
-            # The identity is already in our keychain; unset the cert env so Tauri
-            # reuses it (a second import would make `--sign <name>` ambiguous).
-            unset APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD
-          fi
-
-          npx tauri build --target ${{ matrix.target }}
-          rm -f "$RUNNER_TEMP/tauri-signing-key.txt" "${APPLE_API_KEY_PATH:-/nonexistent}"
-
-      - name: Verify macOS notarization
-        if: contains(matrix.target, 'apple')
-        shell: bash
-        run: |
-          # Fail loudly here if signing/notarization silently didn't happen, so a
-          # broken build never ships to users as "damaged / unidentified developer".
-          TARGET="${{ matrix.target }}"
-          BUNDLE="src-tauri/target/${TARGET}/release/bundle"
-          APP="$(ls -d "$BUNDLE"/macos/*.app | head -1)"
-          echo "== stapler validate (app) =="
-          xcrun stapler validate "$APP"
-          echo "== spctl assess (app) =="
-          spctl -a -vvv --type execute "$APP"
-          DMG="$(ls "$BUNDLE"/dmg/*.dmg 2>/dev/null | head -1 || true)"
-          if [[ -n "$DMG" ]]; then
-            echo "== stapler validate (dmg) =="
-            xcrun stapler validate "$DMG" || echo "note: dmg not stapled (app inside is; acceptable)"
-          fi
-
-      - name: Create GitHub Release (idempotent)
+      - name: Prepare draft GitHub Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        shell: bash
         run: |
           TAG="${{ github.ref_name }}"
           VER="${TAG#v}"
-          # Release body = this version's section from CHANGELOG.md (fallback to
-          # a placeholder if the entry is missing). Title = the bare tag, no
-          # "Abu" prefix.
-          NOTES=$(awk -v ver="## v${VER} " 'index($0, ver)==1{f=1;next} /^## v/{if(f)exit} f' CHANGELOG.md)
+          NOTES="$(awk -v ver="## v${VER}" 'index($0, ver)==1{f=1;next} /^## v/{if(f)exit} f' CHANGELOG.md)"
           if [ -z "$(printf '%s' "$NOTES" | tr -d '[:space:]')" ]; then
             NOTES="See the assets below for download links."
           fi
-          printf '%s\n' "$NOTES" > /tmp/release-notes.md
-          # Tags with a hyphen (v1.2.3-rc1) are pre-releases: mark them so they
-          # never show up as the repo's "Latest release".
-          PRERELEASE_FLAG=""
-          [[ "$TAG" == *-* ]] && PRERELEASE_FLAG="--prerelease"
-          gh release create "$TAG" --repo "${{ github.repository }}" \
-            --title "$TAG" --notes-file /tmp/release-notes.md $PRERELEASE_FLAG || true
-          # Idempotent re-runs: ensure title/notes are applied even if the
-          # release already existed.
-          gh release edit "$TAG" --repo "${{ github.repository }}" \
-            --title "$TAG" --notes-file /tmp/release-notes.md $PRERELEASE_FLAG || true
-
-      - name: Upload release assets
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        shell: bash
-        run: |
-          TAG="${{ github.ref_name }}"
-          TARGET="${{ matrix.target }}"
-          BUNDLE="src-tauri/target/${TARGET}/release/bundle"
-
-          echo "=== Bundle contents ==="
-          ls -la "$BUNDLE"/macos/ 2>/dev/null || true
-          ls -la "$BUNDLE"/dmg/ 2>/dev/null || true
-          ls -la "$BUNDLE"/nsis/ 2>/dev/null || true
-
-          if [[ "$TARGET" == *"apple"* ]]; then
-            # macOS .app.tar.gz has the same filename across architectures —
-            # rename to include arch suffix to avoid Release upload collision.
-            if [[ "$TARGET" == *"aarch64"* ]]; then
-              ARCH_SUFFIX="aarch64"
-            else
-              ARCH_SUFFIX="x64"
-            fi
-            cp "$BUNDLE"/macos/Abu.app.tar.gz "$BUNDLE"/macos/Abu_${ARCH_SUFFIX}.app.tar.gz
-            cp "$BUNDLE"/macos/Abu.app.tar.gz.sig "$BUNDLE"/macos/Abu_${ARCH_SUFFIX}.app.tar.gz.sig
-
-            gh release upload "$TAG" "$BUNDLE"/dmg/*.dmg --clobber || true
-            gh release upload "$TAG" "$BUNDLE"/macos/Abu_${ARCH_SUFFIX}.app.tar.gz --clobber
-            gh release upload "$TAG" "$BUNDLE"/macos/Abu_${ARCH_SUFFIX}.app.tar.gz.sig --clobber
-          else
-            # Tauri 2 signs the NSIS .exe installer directly (not a separate .nsis.zip).
-            # The .exe is both the installer and the updater bundle.
-            gh release upload "$TAG" "$BUNDLE"/nsis/*-setup.exe --clobber
-            gh release upload "$TAG" "$BUNDLE"/nsis/*-setup.exe.sig --clobber
+          printf '%s\n' "$NOTES" > "$RUNNER_TEMP/release-notes.md"
+          if ! gh release view "$TAG" --repo "${{ github.repository }}" >/dev/null 2>&1; then
+            gh release create "$TAG" --repo "${{ github.repository }}" --draft \
+              --title "$TAG" --notes-file "$RUNNER_TEMP/release-notes.md"
           fi
+          gh release edit "$TAG" --repo "${{ github.repository }}" \
+            --title "$TAG" --notes-file "$RUNNER_TEMP/release-notes.md"
+          gh release upload "$TAG" release-stage/release-assets/* \
+            --repo "${{ github.repository }}" --clobber
 
-  publish:
-    needs: build
-    # Skip the OSS/updater publish for pre-release tags (e.g. v1.2.3-rc1).
-    # Those are for exercising the signing+notarization build only and must
-    # never overwrite the production latest.json served to real users.
-    if: ${{ !contains(github.ref_name, '-') }}
-    runs-on: ubuntu-latest
-
-    steps:
-      # Checkout FIRST: actions/checkout@v7 defaults to clean: true which runs
-      # `git clean -ffdx` and would wipe any untracked dirs (like release-assets/)
-      # created by a prior step. Keep checkout ahead of the download.
-      - uses: actions/checkout@v7
-
-      - name: Download updater assets from GitHub Release
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Install and configure ossutil
         run: |
-          mkdir -p release-assets
-
-          echo "=== All release assets ==="
-          gh release view "${{ github.ref_name }}" --repo "${{ github.repository }}" --json assets --jq '.assets[].name'
-
-          gh release download "${{ github.ref_name }}" \
-            --repo "${{ github.repository }}" \
-            -D release-assets \
-            -p "*.tar.gz" -p "*.tar.gz.sig" -p "*-setup.exe" -p "*-setup.exe.sig"
-
-          echo "=== Downloaded ==="
-          ls -la release-assets/
-
-      - name: Generate latest.json
-        shell: bash
-        env:
-          VERSION_TAG: ${{ github.ref_name }}
-          REPO: ${{ github.repository }}
-          OSS_BUCKET: ${{ secrets.OSS_BUCKET }}
-          OSS_REGION: ${{ secrets.OSS_REGION }}
-        run: |
-          AARCH64_SIG=$(cat release-assets/*aarch64*.tar.gz.sig 2>/dev/null || echo "")
-          X86_64_SIG=$(cat release-assets/*x64*.tar.gz.sig 2>/dev/null || echo "")
-          WINDOWS_SIG=$(cat release-assets/*-setup.exe.sig 2>/dev/null || echo "")
-
-          AARCH64_FILE=$(ls release-assets/*aarch64*.tar.gz 2>/dev/null | head -1 | xargs basename 2>/dev/null || echo "")
-          X86_64_FILE=$(ls release-assets/*x64*.tar.gz 2>/dev/null | head -1 | xargs basename 2>/dev/null || echo "")
-          WINDOWS_FILE=$(ls release-assets/*-setup.exe 2>/dev/null | grep -v '.sig' | head -1 | xargs basename 2>/dev/null || echo "")
-
-          export AARCH64_SIG X86_64_SIG WINDOWS_SIG AARCH64_FILE X86_64_FILE WINDOWS_FILE
-          python3 <<'PYEOF'
-          import json, os, re
-          from datetime import datetime, timezone
-
-          version_tag = os.environ['VERSION_TAG']  # e.g. "v0.11.2"
-          version_num = version_tag.lstrip('v')
-          repo = os.environ['REPO']
-          oss_base = f"https://{os.environ['OSS_BUCKET']}.{os.environ['OSS_REGION']}.aliyuncs.com/releases/{version_tag}"
-
-          # Release notes are localized (see RELEASING.md): CHANGELOG.md is the
-          # English canonical source, CHANGELOG.zh-CN.md the Chinese one. The
-          # top-level `notes` stays English (the Tauri updater default + intl
-          # users); `notes_i18n` lets the client pick the user's language. Each
-          # extract matches "## v0.11.2 ..." through the next "## v" or EOF.
-          def extract(path):
-              try:
-                  with open(path, encoding='utf-8') as f:
-                      cl = f.read()
-              except FileNotFoundError:
-                  return ''
-              pattern = rf'^## v{re.escape(version_num)}[^\n]*\n(.*?)(?=^## v|\Z)'
-              m = re.search(pattern, cl, re.MULTILINE | re.DOTALL)
-              return m.group(1).strip() if m else ''
-
-          fallback = f"See https://github.com/{repo}/releases/tag/{version_tag}"
-          notes_en = extract('CHANGELOG.md') or fallback
-          notes_zh = extract('CHANGELOG.zh-CN.md') or notes_en
-          notes = notes_en
-          notes_i18n = {'en-US': notes_en, 'zh-CN': notes_zh}
-
-          platforms = {}
-          for key, fname, sig in [
-              ('darwin-aarch64', os.environ['AARCH64_FILE'], os.environ['AARCH64_SIG']),
-              ('darwin-x86_64',  os.environ['X86_64_FILE'],  os.environ['X86_64_SIG']),
-              ('windows-x86_64', os.environ['WINDOWS_FILE'], os.environ['WINDOWS_SIG']),
-          ]:
-              if fname and sig.strip():
-                  platforms[key] = {'signature': sig.strip(), 'url': f'{oss_base}/{fname}'}
-
-          data = {
-              'version': version_tag,
-              'notes': notes,
-              'notes_i18n': notes_i18n,
-              'pub_date': datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'),
-              'platforms': platforms,
-          }
-          with open('latest.json', 'w', encoding='utf-8') as f:
-              json.dump(data, f, indent=2, ensure_ascii=False)
-          print(json.dumps(data, indent=2, ensure_ascii=False))
-          PYEOF
-
-      - name: Install ossutil
-        run: curl -fsSL https://gosspublic.alicdn.com/ossutil/install.sh | sudo bash
-
-      - name: Configure ossutil
-        run: |
+          curl -fsSL https://gosspublic.alicdn.com/ossutil/install.sh | sudo bash
           ossutil config \
-            -e ${{ secrets.OSS_REGION }}.aliyuncs.com \
-            -i ${{ secrets.ALIYUN_ACCESS_KEY_ID }} \
-            -k ${{ secrets.ALIYUN_ACCESS_KEY_SECRET }}
+            -e "${{ secrets.OSS_REGION }}.aliyuncs.com" \
+            -i "${{ secrets.ALIYUN_ACCESS_KEY_ID }}" \
+            -k "${{ secrets.ALIYUN_ACCESS_KEY_SECRET }}"
 
-      - name: Upload to OSS
+      # Upload immutable/versioned bytes first. Pointer files are withheld until
+      # every referenced byte has been downloaded back and compared.
+      - name: Upload immutable release and updater artifacts
+        env:
+          BUCKET: oss://${{ secrets.OSS_BUCKET }}
+        run: |
+          while IFS=$'\t' read -r local remote; do
+            test -n "$local"
+            test -s "release-stage/$local"
+            ossutil cp "release-stage/$local" "$BUCKET/$remote" -f
+          done < release-stage/content-map.tsv
+
+      - name: Verify uploaded immutable bytes
+        env:
+          BUCKET: oss://${{ secrets.OSS_BUCKET }}
+        run: |
+          VERIFY_DIR="$(mktemp -d)"
+          trap 'rm -rf "$VERIFY_DIR"' EXIT
+          INDEX=0
+          while IFS=$'\t' read -r local remote; do
+            test -n "$local"
+            INDEX=$((INDEX + 1))
+            downloaded="$VERIFY_DIR/$INDEX"
+            ossutil cp "$BUCKET/$remote" "$downloaded" -f
+            cmp "release-stage/$local" "$downloaded"
+          done < release-stage/content-map.tsv
+
+      - name: Publish and verify the three Electron feed pointers
+        env:
+          BUCKET: oss://${{ secrets.OSS_BUCKET }}
+        run: |
+          VERIFY_DIR="$(mktemp -d)"
+          trap 'rm -rf "$VERIFY_DIR"' EXIT
+          INDEX=0
+          while IFS=$'\t' read -r local remote; do
+            test -n "$local"
+            INDEX=$((INDEX + 1))
+            ossutil cp "release-stage/$local" "$BUCKET/$remote" \
+              -f --meta "Cache-Control:no-cache"
+            downloaded="$VERIFY_DIR/$INDEX"
+            ossutil cp "$BUCKET/$remote" "$downloaded" -f
+            cmp "release-stage/$local" "$downloaded"
+          done < release-stage/feed-pointer-map.tsv
+
+      # This is the only operation that makes existing Tauri installations see
+      # the framework transition. It runs after all three new Electron feeds and
+      # all transition artifacts are durable and byte-verified.
+      - name: Switch the frozen production Tauri bridge pointer last
+        if: ${{ startsWith(github.ref_name, 'v0.34.') }}
+        env:
+          BUCKET: oss://${{ secrets.OSS_BUCKET }}
         run: |
           VERSION="${{ github.ref_name }}"
-          BUCKET="oss://${{ secrets.OSS_BUCKET }}"
+          PREVIOUS_LATEST="$(mktemp)"
+          VERIFY_FILE="$(mktemp)"
+          restore_previous_pointer() {
+            status=$?
+            if [ "$status" -ne 0 ] && [ -s "$PREVIOUS_LATEST" ]; then
+              echo "New latest.json verification failed; restoring the previous pointer" >&2
+              ossutil cp "$PREVIOUS_LATEST" "$BUCKET/latest.json" \
+                -f --meta "Cache-Control:no-cache" || true
+            fi
+            rm -f "$PREVIOUS_LATEST" "$VERIFY_FILE"
+            exit "$status"
+          }
+          trap restore_previous_pointer EXIT
+          ossutil cp "$BUCKET/latest.json" "$PREVIOUS_LATEST" -f
+          node scripts/validate-electron-transition-version.mjs \
+            --candidate "${VERSION#v}" \
+            --latest-url "https://abu-agent.oss-cn-beijing.aliyuncs.com/latest.json" \
+            --allow-equal true
+          ossutil cp release-stage/latest.json "$BUCKET/latest.json" \
+            -f --meta "Cache-Control:no-cache"
+          ossutil cp "$BUCKET/latest.json" "$VERIFY_FILE" -f
+          cmp release-stage/latest.json "$VERIFY_FILE"
+          curl -fsS --retry 5 --retry-all-errors \
+            "https://abu-agent.oss-cn-beijing.aliyuncs.com/latest.json?release=${GITHUB_RUN_ID}" \
+            -o "$VERIFY_FILE"
+          cmp release-stage/latest.json "$VERIFY_FILE"
+          trap - EXIT
+          rm -f "$PREVIOUS_LATEST" "$VERIFY_FILE"
 
-          for file in release-assets/*; do
-            [ -f "$file" ] || continue
-            ossutil cp "$file" "${BUCKET}/releases/${VERSION}/$(basename $file)" -f
-          done
+      - name: Publish GitHub Release after production verification
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release edit "${{ github.ref_name }}" \
+            --repo "${{ github.repository }}" --draft=false
 
-          ossutil cp latest.json "${BUCKET}/latest.json" -f --meta "Cache-Control:no-cache"
-
-          echo "Done. Listing:"
-          ossutil ls "${BUCKET}/releases/${VERSION}/"
+      - name: Upload the release audit manifest
+        uses: actions/upload-artifact@v4
+        with:
+          name: electron-release-audit-${{ github.ref_name }}
+          path: |
+            release-stage/release-manifest.json
+            release-stage/content-map.tsv
+            release-stage/feed-pointer-map.tsv
+            release-stage/latest.json
+          if-no-files-found: error
+          retention-days: 90

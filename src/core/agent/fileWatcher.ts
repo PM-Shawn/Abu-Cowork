@@ -9,7 +9,7 @@
 import { watch, readTextFile, writeTextFile, exists, type UnwatchFn } from '@tauri-apps/plugin-fs';
 import { homeDir } from '@tauri-apps/api/path';
 import { ensureParentDir, joinPath, getBaseName } from '../../utils/pathUtils';
-import { runAgentLoop } from './agentLoop';
+import { runAgentLoopDispatched } from './agentLoopRunner';
 import { useChatStore } from '../../stores/chatStore';
 import { format, getI18n } from '../../i18n';
 
@@ -94,7 +94,7 @@ async function handleWatchTrigger(rule: FileWatchRule, filePath: string) {
   );
 
   try {
-    await runAgentLoop(conversationId, prompt, {
+    await runAgentLoopDispatched(conversationId, prompt, {
       // Auto-deny dangerous commands in background mode
       commandConfirmCallback: async () => false,
     });

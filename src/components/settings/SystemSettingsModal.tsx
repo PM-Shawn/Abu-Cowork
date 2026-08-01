@@ -1,9 +1,9 @@
 import { useEffect } from 'react';
 import { useSettingsStore, type SystemSettingsTab } from '@/stores/settingsStore';
 import { useI18n } from '@/i18n';
-import { Settings2, Info, Shield, SlidersHorizontal, MessageCircle, Radio, Brain, Heart, Activity, BarChart3, Building2, FlaskConical, PawPrint } from 'lucide-react';
+import { Settings2, Info, Shield, SlidersHorizontal, MessageCircle, Radio, Brain, Heart, Activity, BarChart3, Building2, FlaskConical, PawPrint, Zap } from 'lucide-react';
 import { cn } from '@/lib/utils';
-import { AIServicesSection, AboutSection, SandboxSection, GeneralSection, IMChannelSection } from './sections';
+import { AIServicesSection, AboutSection, SandboxSection, GeneralSection, CapabilitiesSection, IMChannelSection } from './sections';
 import FeedbackSection from './sections/FeedbackSection';
 import PersonalMemorySection from './sections/PersonalMemorySection';
 import SoulSection from './sections/SoulSection';
@@ -42,6 +42,7 @@ export default function SystemSettingsView() {
     // ① 系统 / 应用设置 — 沙盒 folded in here, not its own cluster
     [
       { id: 'general', label: t.settings.general, icon: SlidersHorizontal },
+      { id: 'capabilities', label: t.settings.capabilityOverview, icon: Zap },
       { id: 'sandbox', label: t.settings.sandbox, icon: Shield },
       { id: 'labs', label: t.settings.labs, icon: FlaskConical },
     ],
@@ -78,6 +79,8 @@ export default function SystemSettingsView() {
     switch (activeSystemTab) {
       case 'general':
         return <GeneralSection />;
+      case 'capabilities':
+        return <CapabilitiesSection />;
       case 'labs':
         return <LabsSection />;
       case 'ai-services':

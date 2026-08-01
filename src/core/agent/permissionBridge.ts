@@ -3,6 +3,13 @@
  * Extracted from agentLoop.ts to reduce coupling.
  *
  * Loop context is stored per-loopId in a Map to support concurrent agents.
+ *
+ * The four approval queues below (command confirmation / file permission /
+ * workspace request / user question) are thin wrappers over the unified
+ * `ports/approvalBridge.ts` core — every exported function name and
+ * signature here is unchanged from before that refactor; only the storage
+ * moved. See `approvalBridge.ts`'s module doc for the queueing-policy
+ * rationale and `E-REPORT.md` for the before/after behavior checklist.
  */
 import type { ConfirmationInfo, FilePermissionCallback } from '../tools/registry';
 import type { Message, UserQuestionPayload, UserQuestionResult } from '../../types';
@@ -11,6 +18,16 @@ import { usePermissionStore } from '../../stores/permissionStore';
 import type { PermissionDuration } from '../../stores/permissionStore';
 import { authorizeWorkspace } from '../tools/pathSafety';
 import type { EventRouter } from './eventRouter';
+import * as approvalBridge from './ports/approvalBridge';
+
+// The file-permission queue's dequeue-time re-check ("another tool call may
+// have already been granted this permission while this request sat in the
+// queue") lives here, not in approvalBridge.ts, so the core stays free of
+// any dependency on application stores. Registered once at module load.
+approvalBridge.setDequeueShortCircuit('file-permission', (payload) => {
+  const permStore = usePermissionStore.getState();
+  return permStore.hasPermission(payload.path, payload.capability) ? true : undefined;
+});
 
 // ── Loop Context (per-loop Map) ──
 
@@ -22,6 +39,8 @@ export interface LoopContext {
   loopId: string;
   conversationId: string;
   toolCallToStepId: Map<string, string>;
+  /** Execution denylist inherited by tools that may create nested work. */
+  blockedTools?: string[];
   /** Agent name for UI display (e.g. permission dialog badge) */
   agentName?: string;
 }
@@ -87,63 +106,26 @@ export function setCurrentLoopContext(ctx: LoopContext | null): void {
 
 // ── Command Confirmation System ──
 
-// Global state for pending command confirmation
-let pendingConfirmation: {
-  info: ConfirmationInfo;
-  conversationId: string;
-  agentName?: string;
-  resolve: (confirmed: boolean) => void;
-} | null = null;
-
-// Queue for command confirmations — prevents overwriting when multiple dangerous commands fire in sequence
-const confirmationQueue: Array<{
-  info: ConfirmationInfo;
-  conversationId: string;
-  agentName?: string;
-  resolve: (confirmed: boolean) => void;
-}> = [];
-
-// Subscribers for command confirmation state changes
-const confirmationListeners = new Set<() => void>();
-
-function notifyConfirmationListeners() {
-  confirmationListeners.forEach(listener => listener());
-}
-
 /**
  * Subscribe to command confirmation state changes
  * For use with useSyncExternalStore
  */
 export function subscribeToCommandConfirmation(callback: () => void): () => void {
-  confirmationListeners.add(callback);
-  return () => confirmationListeners.delete(callback);
+  return approvalBridge.subscribe('command', callback);
 }
 
 /**
  * Get the current pending command confirmation request
  */
 export function getPendingCommandConfirmation() {
-  return pendingConfirmation;
+  return approvalBridge.getSnapshot('command');
 }
 
 /**
  * Resolve the pending command confirmation and process next in queue
  */
 export function resolveCommandConfirmation(confirmed: boolean) {
-  if (pendingConfirmation) {
-    pendingConfirmation.resolve(confirmed);
-    pendingConfirmation = null;
-
-    // Process next queued confirmation
-    processNextConfirmation();
-  }
-}
-
-function processNextConfirmation() {
-  if (confirmationQueue.length > 0) {
-    pendingConfirmation = confirmationQueue.shift()!;
-  }
-  notifyConfirmationListeners();
+  approvalBridge.resolveActive('command', confirmed);
 }
 
 /**
@@ -151,15 +133,7 @@ function processNextConfirmation() {
  * Called on abort to prevent stale confirmation dialogs.
  */
 export function drainConfirmationQueue() {
-  while (confirmationQueue.length > 0) {
-    const req = confirmationQueue.shift()!;
-    req.resolve(false);
-  }
-  if (pendingConfirmation) {
-    pendingConfirmation.resolve(false);
-    pendingConfirmation = null;
-    notifyConfirmationListeners();
-  }
+  approvalBridge.drainAll('command');
 }
 
 /**
@@ -174,14 +148,10 @@ export async function requestCommandConfirmation(info: ConfirmationInfo, loopId?
   const ctx = loopId ? getLoopContext(loopId) : getCurrentLoopContext();
   const convId = ctx?.conversationId ?? '';
   const agentName = ctx?.agentName;
-  return new Promise((resolve) => {
-    if (pendingConfirmation) {
-      // Queue instead of overwriting
-      confirmationQueue.push({ info, conversationId: convId, agentName, resolve });
-    } else {
-      pendingConfirmation = { info, conversationId: convId, agentName, resolve };
-      notifyConfirmationListeners();
-    }
+  return approvalBridge.request('command', {
+    loopId,
+    conversationId: convId,
+    payload: { info, agentName },
   });
 }
 
@@ -193,36 +163,30 @@ export interface FilePermissionRequest {
   toolName: string;
   conversationId: string;
   agentName?: string;
-  resolve: (granted: boolean) => void;
-}
-
-let pendingFilePermission: FilePermissionRequest | null = null;
-const filePermissionQueue: FilePermissionRequest[] = [];
-let isProcessingFilePermission = false;
-
-const filePermissionListeners = new Set<() => void>();
-
-function notifyFilePermissionListeners() {
-  filePermissionListeners.forEach(listener => listener());
 }
 
 /**
  * Subscribe to file permission state changes (for useSyncExternalStore)
  */
 export function subscribeToFilePermission(callback: () => void): () => void {
-  filePermissionListeners.add(callback);
-  return () => filePermissionListeners.delete(callback);
+  return approvalBridge.subscribe('file-permission', callback);
 }
 
 /**
  * Get the current pending file permission request
  */
 export function getPendingFilePermission(): FilePermissionRequest | null {
-  return pendingFilePermission;
+  return approvalBridge.getSnapshot('file-permission');
 }
 
 /**
  * Resolve the pending file permission request
+ *
+ * Guarded on there actually being a pending request (matches the pre-E-block
+ * singleton's `if (pendingFilePermission) { ... }` wrapper) — without this,
+ * a stray/duplicate call (e.g. a double-click that fires the resolve handler
+ * twice) would still persist a grant into permissionStore even though there
+ * was nothing left to resolve.
  */
 export function resolveFilePermission(
   granted: boolean,
@@ -230,37 +194,12 @@ export function resolveFilePermission(
   capabilities?: ('read' | 'write' | 'execute')[],
   duration?: PermissionDuration
 ) {
-  if (pendingFilePermission) {
-    if (granted && path && capabilities && duration) {
-      // Grant permission via permissionStore (which syncs to pathSafety)
-      usePermissionStore.getState().grantPermission(path, capabilities, duration);
-    }
-    pendingFilePermission.resolve(granted);
-    pendingFilePermission = null;
-    notifyFilePermissionListeners();
-
-    // Process next queued request
-    processNextFilePermission();
+  const hasPending = approvalBridge.getSnapshot('file-permission') !== null;
+  if (hasPending && granted && path && capabilities && duration) {
+    // Grant permission via permissionStore (which syncs to pathSafety)
+    usePermissionStore.getState().grantPermission(path, capabilities, duration);
   }
-}
-
-function processNextFilePermission() {
-  while (filePermissionQueue.length > 0) {
-    const next = filePermissionQueue.shift()!;
-
-    // Re-check if permission was already granted (another tool may have triggered it)
-    const permStore = usePermissionStore.getState();
-    if (permStore.hasPermission(next.path, next.capability)) {
-      next.resolve(true);
-      continue;
-    }
-
-    pendingFilePermission = next;
-    notifyFilePermissionListeners();
-    return;
-  }
-
-  isProcessingFilePermission = false;
+  approvalBridge.resolveActive('file-permission', granted);
 }
 
 /**
@@ -268,18 +207,7 @@ function processNextFilePermission() {
  * Called on abort to prevent stale permission dialogs.
  */
 export function drainFilePermissionQueue() {
-  // Reject all queued requests
-  while (filePermissionQueue.length > 0) {
-    const req = filePermissionQueue.shift()!;
-    req.resolve(false);
-  }
-  // Clear current pending request
-  if (pendingFilePermission) {
-    pendingFilePermission.resolve(false);
-    pendingFilePermission = null;
-    notifyFilePermissionListeners();
-  }
-  isProcessingFilePermission = false;
+  approvalBridge.drainAll('file-permission');
 }
 
 /**
@@ -304,17 +232,10 @@ export async function requestFilePermission(request: {
   const ctx = loopId ? getLoopContext(loopId) : getCurrentLoopContext();
   const convId = ctx?.conversationId ?? '';
   const agentName = ctx?.agentName;
-  return new Promise((resolve) => {
-    const filePermReq: FilePermissionRequest = { ...request, conversationId: convId, agentName, resolve };
-
-    if (!isProcessingFilePermission) {
-      isProcessingFilePermission = true;
-      pendingFilePermission = filePermReq;
-      notifyFilePermissionListeners();
-    } else {
-      // Queue for later processing
-      filePermissionQueue.push(filePermReq);
-    }
+  return approvalBridge.request('file-permission', {
+    loopId,
+    conversationId: convId,
+    payload: { ...request, agentName },
   });
 }
 
@@ -324,80 +245,51 @@ export interface WorkspaceRequest {
   reason: string;
   conversationId: string;
   suggestedPath?: string;
-  resolve: (path: string | null) => void;
-}
-
-let pendingWorkspaceRequest: WorkspaceRequest | null = null;
-const workspaceRequestListeners = new Set<() => void>();
-
-function notifyWorkspaceRequestListeners() {
-  workspaceRequestListeners.forEach(listener => listener());
 }
 
 /**
  * Subscribe to workspace request state changes (for useSyncExternalStore)
  */
 export function subscribeToWorkspaceRequest(callback: () => void): () => void {
-  workspaceRequestListeners.add(callback);
-  return () => workspaceRequestListeners.delete(callback);
+  return approvalBridge.subscribe('workspace', callback);
 }
 
 /**
  * Get the current pending workspace request
  */
 export function getPendingWorkspaceRequest(): WorkspaceRequest | null {
-  return pendingWorkspaceRequest;
+  return approvalBridge.getSnapshot('workspace');
 }
 
 /**
  * Resolve the pending workspace request (called from UI)
  */
 export function resolveWorkspaceRequest(path: string | null): void {
-  if (pendingWorkspaceRequest) {
-    pendingWorkspaceRequest.resolve(path);
-    pendingWorkspaceRequest = null;
-    notifyWorkspaceRequestListeners();
-  }
+  approvalBridge.resolveActive('workspace', path);
 }
 
 /**
  * Drain workspace request — reject pending request on abort
  */
 export function drainWorkspaceRequest(): void {
-  if (pendingWorkspaceRequest) {
-    pendingWorkspaceRequest.resolve(null);
-    pendingWorkspaceRequest = null;
-    notifyWorkspaceRequestListeners();
-  }
+  approvalBridge.drainAll('workspace');
 }
-
-/** Timeout for workspace selection — auto-resolve(null) if user doesn't respond */
-const WORKSPACE_REQUEST_TIMEOUT_MS = 60_000; // 60 seconds
 
 /**
  * Request the user to select a workspace folder.
  * Called from the request_workspace tool.
  * Auto-resolves to null after timeout to prevent indefinite hangs.
+ *
+ * NOTE: a second concurrent call silently overwrites the first — the first
+ * request's promise is then abandoned (see approvalBridge.ts's module doc,
+ * 'overwrite' mode). This is a pre-existing quirk of the original singleton,
+ * reproduced verbatim, not something this refactor fixes.
  */
 export async function requestWorkspace(reason: string, conversationId?: string, suggestedPath?: string): Promise<string | null> {
   const convId = conversationId ?? getCurrentLoopContext()?.conversationId ?? '';
-  return new Promise((resolve) => {
-    const timer = setTimeout(() => {
-      if (pendingWorkspaceRequest?.resolve === wrappedResolve) {
-        console.warn('[AgentLoop] Workspace request timed out, auto-cancelling');
-        pendingWorkspaceRequest = null;
-        notifyWorkspaceRequestListeners();
-        resolve(null);
-      }
-    }, WORKSPACE_REQUEST_TIMEOUT_MS);
-
-    const wrappedResolve = (path: string | null) => {
-      clearTimeout(timer);
-      resolve(path);
-    };
-
-    pendingWorkspaceRequest = { reason, conversationId: convId, suggestedPath, resolve: wrappedResolve };
-    notifyWorkspaceRequestListeners();
+  return approvalBridge.request('workspace', {
+    conversationId: convId,
+    payload: { reason, suggestedPath },
   });
 }
 
@@ -407,7 +299,6 @@ export interface PendingUserQuestion {
   id: string;              // = toolCallId
   conversationId: string;
   payload: UserQuestionPayload;
-  resolve: (r: UserQuestionResult | null) => void;
 }
 
 /** Tools whose calls can own a pending user question: ask_user_question asks
@@ -431,24 +322,11 @@ export function findQuestionOwningMessage(
   );
 }
 
-/** Queue — supports multiple conversations; isConcurrencySafe:false keeps it serial per conv */
-let userQuestionQueue: PendingUserQuestion[] = [];
-
-const userQuestionListeners = new Set<() => void>();
-
-/** 10 minutes — user may need time to read and decide before auto-cancel */
-const USER_QUESTION_TIMEOUT_MS = 10 * 60 * 1000;
-
-function notifyUserQuestionListeners() {
-  userQuestionListeners.forEach((l) => l());
-}
-
 /**
  * Subscribe to user question state changes (for useSyncExternalStore)
  */
 export function subscribeUserQuestion(callback: () => void): () => void {
-  userQuestionListeners.add(callback);
-  return () => userQuestionListeners.delete(callback);
+  return approvalBridge.subscribe('user-question', callback);
 }
 
 /**
@@ -456,53 +334,28 @@ export function subscribeUserQuestion(callback: () => void): () => void {
  * Returns a stable array reference until the queue mutates.
  */
 export function getPendingUserQuestions(): PendingUserQuestion[] {
-  return userQuestionQueue;
+  return approvalBridge.getSnapshot('user-question');
 }
 
 /**
  * Resolve a specific user question (from UserQuestionCard on submit, or timeout).
  */
 export function resolveUserQuestion(id: string, r: UserQuestionResult | null): void {
-  const idx = userQuestionQueue.findIndex((q) => q.id === id);
-  if (idx === -1) return;
-  const item = userQuestionQueue[idx];
-  userQuestionQueue = userQuestionQueue.filter((_, i) => i !== idx);
-  item.resolve(r);
-  notifyUserQuestionListeners();
+  approvalBridge.resolve('user-question', id, r);
 }
 
 /**
  * Drain all pending user questions — resolve(null) so blocked tools exit.
  */
 export function drainUserQuestions(): void {
-  if (userQuestionQueue.length === 0) return;
-  const drained = userQuestionQueue;
-  userQuestionQueue = [];
-  for (const item of drained) {
-    item.resolve(null);
-  }
-  notifyUserQuestionListeners();
+  approvalBridge.drainAll('user-question');
 }
 
 /**
  * Drain user questions for a specific conversation (on conversation delete).
  */
 export function drainUserQuestionsForConversation(conversationId: string): void {
-  const keep: PendingUserQuestion[] = [];
-  const drain: PendingUserQuestion[] = [];
-  for (const q of userQuestionQueue) {
-    if (q.conversationId === conversationId) {
-      drain.push(q);
-    } else {
-      keep.push(q);
-    }
-  }
-  if (drain.length === 0) return;
-  userQuestionQueue = keep;
-  for (const item of drain) {
-    item.resolve(null);
-  }
-  notifyUserQuestionListeners();
+  approvalBridge.drainByConversationId('user-question', conversationId);
 }
 
 /**
@@ -514,18 +367,9 @@ export function requestUserQuestion(
   conversationId: string,
   payload: UserQuestionPayload,
 ): Promise<UserQuestionResult | null> {
-  return new Promise((resolve) => {
-    const timer = setTimeout(() => {
-      console.warn('[permissionBridge] UserQuestion timed out, auto-cancelling', id);
-      resolveUserQuestion(id, null);
-    }, USER_QUESTION_TIMEOUT_MS);
-
-    const wrappedResolve = (r: UserQuestionResult | null) => {
-      clearTimeout(timer);
-      resolve(r);
-    };
-
-    userQuestionQueue = [...userQuestionQueue, { id, conversationId, payload, resolve: wrappedResolve }];
-    notifyUserQuestionListeners();
+  return approvalBridge.request('user-question', {
+    id,
+    conversationId,
+    payload: { payload },
   });
 }

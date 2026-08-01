@@ -3,11 +3,13 @@ import type { ToolDefinition, Conversation, SubagentDefinition } from '../../../
 import { skillLoader } from '../../skill/loader';
 import { agentRegistry } from '../../agent/registry';
 import { getCurrentLoopContext, getLoopContext, requestWorkspace } from '../../agent/permissionBridge';
-import { runSubagentLoop, extractParentConversationSummary } from '../../agent/subagentLoop';
+import { extractParentConversationSummary } from '../../agent/subagentLoop';
+import { runSubagent } from '../../agent/subagentRunner';
 import type { SubagentProgressEvent } from '../../agent/subagentLoop';
 import { createSubagentController } from '../../agent/subagentAbort';
 import { useChatStore } from '../../../stores/chatStore';
 import { useSettingsStore } from '../../../stores/settingsStore';
+import { getSettingsReader } from '../../agent/ports/settingsReader';
 import { useDiscoveryStore } from '../../../stores/discoveryStore';
 import { joinPath, ensureParentDir } from '../../../utils/pathUtils';
 import { ITEM_NAME_RE } from '../../../utils/validation';
@@ -216,7 +218,7 @@ export const delegateToAgentTool: ToolDefinition = {
       }
 
       // Check if disabled
-      const { disabledAgents } = useSettingsStore.getState();
+      const { disabledAgents } = getSettingsReader().getSnapshot();
       if (disabledAgents.includes(agentName)) {
         const t = getI18n().toolResult.agent;
         return format(t.errAgentDisabled, { agentName });
@@ -302,7 +304,7 @@ export const delegateToAgentTool: ToolDefinition = {
 
     // 8. Sync mode: blocking await
     try {
-      const result = await runSubagentLoop({
+      const result = await runSubagent({
         agent,
         task,
         context,

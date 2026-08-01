@@ -1,6 +1,15 @@
-import { describe, it, expect } from 'vitest';
-import { substituteVariables } from './preprocessor';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { invoke } from '@tauri-apps/api/core';
+import { substituteVariables, executeInlineCommands } from './preprocessor';
 import { parseArgs } from '../../utils/argsParser';
+
+function setElectronMarker(enabled: boolean): void {
+  const runtime = globalThis as typeof globalThis & {
+    __ABU_SHELL__?: { mainSupervisesSidecar?: boolean };
+  };
+  if (enabled) runtime.__ABU_SHELL__ = { mainSupervisesSidecar: true };
+  else delete runtime.__ABU_SHELL__;
+}
 
 describe('parseArgs', () => {
   it('parses space-separated args', () => {
@@ -85,5 +94,72 @@ describe('substituteVariables', () => {
     const content = 'Run $0 in ${ABU_SKILL_DIR} with args: $ARGUMENTS (session: ${ABU_SESSION_ID})';
     const result = substituteVariables(content, 'test --verbose', skillDir, sessionId);
     expect(result).toBe(`Run test in ${skillDir} with args: test --verbose (session: sess-123)`);
+  });
+});
+
+describe('executeInlineCommands', () => {
+  beforeEach(() => {
+    vi.mocked(invoke).mockReset();
+    setElectronMarker(false);
+  });
+
+  afterEach(() => {
+    vi.mocked(invoke).mockReset();
+    setElectronMarker(false);
+  });
+
+  it('keeps the locked Tauri payload and replaces an inline command with stdout', async () => {
+    vi.mocked(invoke).mockResolvedValueOnce({ code: 0, stdout: 'hello\n', stderr: '' });
+
+    const result = await executeInlineCommands('Result: !`printf hello`', '/tmp/example-skill');
+
+    expect(result).toBe('Result: hello');
+    expect(invoke).toHaveBeenCalledWith('run_shell_command', {
+      command: 'printf hello',
+      cwd: '/tmp/example-skill',
+      background: false,
+      timeout: 10,
+      sandboxEnabled: true,
+      extraWritablePaths: ['/tmp/example-skill'],
+    });
+  });
+
+  it('routes task cancellation to abort_command for a running Electron inline command', async () => {
+    setElectronMarker(true);
+    const controller = new AbortController();
+    let resolveCommand!: (value: unknown) => void;
+    vi.mocked(invoke).mockImplementation(async (cmd) => {
+      if (cmd === 'run_shell_command') {
+        return await new Promise((resolve) => {
+          resolveCommand = resolve;
+        });
+      }
+      if (cmd === 'abort_command') return true;
+      return undefined;
+    });
+
+    const running = executeInlineCommands(
+      'Before !`sleep 60` after',
+      '/tmp/example-skill',
+      { abortSignal: controller.signal },
+    );
+    await vi.waitFor(() => {
+      expect(invoke).toHaveBeenCalledWith(
+        'run_shell_command',
+        expect.objectContaining({
+          command: 'sleep 60',
+          commandId: expect.stringMatching(/^skill-inline-/),
+        }),
+      );
+    });
+    const commandCall = vi.mocked(invoke).mock.calls.find(([cmd]) => cmd === 'run_shell_command');
+    const commandId = (commandCall?.[1] as { commandId: string }).commandId;
+
+    controller.abort();
+    await vi.waitFor(() => {
+      expect(invoke).toHaveBeenCalledWith('abort_command', { commandId });
+    });
+    resolveCommand({ code: -1, stdout: '', stderr: '[Command aborted]' });
+    await expect(running).resolves.toContain('[Command failed: [Command aborted]]');
   });
 });

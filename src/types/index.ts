@@ -23,6 +23,29 @@
 // settleCardsForSkill's guard).
 export type NoticeCardAction = 'accepted' | 'rejected' | 'rejected-category' | 'deferred';
 
+export interface SandboxRecoveryPayload {
+  kind: 'app-automation';
+  targetApp?: string;
+}
+
+export type SandboxRecoveryAction =
+  | 'pending'
+  | 'started'
+  | 'enqueued'
+  | 'completed'
+  | 'failed'
+  | 'needs-review'
+  | 'stopped';
+
+/**
+ * Out-of-band metadata emitted by a trusted tool implementation. It travels
+ * through ToolExecutor/ChatDelta separately from stdout so imported messages
+ * and command output cannot manufacture privileged UI.
+ */
+export interface ToolExecutionMetadata {
+  sandboxRecovery?: SandboxRecoveryPayload;
+}
+
 /** Payload for a "save this as a skill?" proposal card. */
 export interface SkillProposalPayload {
   skillName: string;
@@ -159,6 +182,13 @@ export interface ToolCall {
    */
   noticeCardAction?: NoticeCardAction;
   /**
+   * Structured recovery metadata for a Shell command that macOS blocked from
+   * controlling another app through AppleScript.
+   */
+  sandboxRecovery?: SandboxRecoveryPayload;
+  /** Persisted user choice for the recovery card. */
+  sandboxRecoveryAction?: SandboxRecoveryAction;
+  /**
    * User's answers to an ask_user_question tool call. Set once the user
    * submits — drives settled read-only rendering. undefined = still
    * interactive (waiting for the user to answer).
@@ -243,6 +273,9 @@ export interface Message {
   plannedSteps?: import('./execution').PlannedStep[];
   // System-injected messages (e.g. max_tokens recovery) — hidden from chat UI
   isSystem?: boolean;
+  // Crash-recovery notices remain internal for context/export purposes, but
+  // must be visible so the user understands why an earlier task stopped.
+  isRecoveryNotice?: boolean;
   // Compaction boundary marker payload (long-conversation Part A). Present only
   // on marker messages (id prefix `compact-boundary-`). The message is appended
   // to the log and never rewrites earlier entries; the send-side rebuilds a
@@ -397,6 +430,13 @@ export interface ToolExecutionContext {
   /** Tool call ID — injected by toolExecutor; lets a tool locate itself and key per-call state (e.g. run_agent_batch progress) */
   toolCallId?: string;
   /**
+   * Whether this tool belongs to a user-visible desktop task. Background,
+   * scheduled, trigger and IM runs must never open local setup/approval UI.
+   */
+  interactionMode?: 'foreground' | 'background';
+  /** Effective three-tier permission mode for this conversation. */
+  permissionMode?: import('../core/permissions/permissionMode').PermissionMode;
+  /**
    * Whether the active model supports vision/image input, resolved from the
    * turn's model capabilities. When explicitly `false`, tools that would emit
    * image content (e.g. read_file on an image) must return a text note instead
@@ -404,6 +444,18 @@ export interface ToolExecutionContext {
    * providers. Undefined means "unknown / assume capable" (default behavior).
    */
   supportsVision?: boolean;
+  /**
+   * In-process cancellation signal. This is intentionally local-only: it must
+   * never be relied on across JSON/RPC serialization, where AbortSignal would
+   * lose its live behavior.
+   */
+  abortSignal?: AbortSignal;
+  /**
+   * Local execution-only metadata channel. Functions are deliberately omitted
+   * from reverse-RPC serialization; Electron's sidecar-local run_command and
+   * the in-process fallback both report through this callback.
+   */
+  reportMetadata?: (metadata: ToolExecutionMetadata) => void;
 }
 
 export interface ToolDefinition {

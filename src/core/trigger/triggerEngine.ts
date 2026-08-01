@@ -1,7 +1,7 @@
 import { useTriggerStore } from '../../stores/triggerStore';
 import { useChatStore } from '../../stores/chatStore';
 import { useToastStore } from '../../stores/toastStore';
-import { runAgentLoop } from '../agent/agentLoop';
+import { runAgentLoopDispatched } from '../agent/agentLoopRunner';
 import {
   notifyTriggerCompleted,
   notifyTriggerError,
@@ -325,7 +325,7 @@ class TriggerEngine {
         ? { ...trigger.action, workspacePath }
         : trigger.action;
       const callbacks = resolveTriggerCallbacks(actionWithWorkspace);
-      const result = await runAgentLoop(conversationId, prompt, {
+      const result = await runAgentLoopDispatched(conversationId, prompt, {
         commandConfirmCallback: callbacks.commandConfirmCallback,
         filePermissionCallback: callbacks.filePermissionCallback,
         blockedTools: callbacks.blockedTools,

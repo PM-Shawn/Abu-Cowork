@@ -51,6 +51,14 @@ const mockGetActiveProvider = vi.fn(
 );
 vi.mock('../../stores/settingsStore', () => ({
   useSettingsStore: { getState: () => ({ agentMaxTurns: 200, maxOutputTokens: undefined, contextWindowSize: undefined }) },
+}));
+
+// subagentLoop.ts imports getActiveProvider/getActiveApiKey/resolveAgentModel
+// from settingsSelectors.ts (NOT settingsStore.ts) — see that module's doc
+// for why (sidecar-bundle-safety: a pure module both the webview and the
+// sidecar bundle can import without dragging in settingsStore's zustand
+// create()/persist graph). Mock the module subagentLoop.ts ACTUALLY imports.
+vi.mock('../../utils/settingsSelectors', () => ({
   getActiveProvider: (...args: unknown[]) => mockGetActiveProvider(...args),
   getActiveApiKey: () => 'sk-test',
   resolveAgentModel: () => 'claude-opus-4-8',

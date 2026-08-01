@@ -2,7 +2,7 @@ import { useState, useMemo, useEffect } from 'react';
 import { useSettingsStore } from '@/stores/settingsStore';
 import { useMCPStore, type MCPServerEntry } from '@/stores/mcpStore';
 import { useI18n } from '@/i18n';
-import { mcpTemplates } from '@/data/marketplace/mcp';
+import { getMCPTemplatesForHost, mcpTemplates } from '@/data/marketplace/mcp';
 import { mcpManager, type MCPServerConfig, type MCPLogEntry } from '@/core/mcp/client';
 import { parseArgs } from '@/utils/argsParser';
 import { Trash2, Plus, Loader2, Check, X, Plug, PlugZap, ChevronDown, ChevronRight, Wrench, Zap, AlertCircle, ScrollText, Server, Pencil } from 'lucide-react';
@@ -71,12 +71,14 @@ export default function MCPSection({ showAddForm: externalShowAddForm, onAddForm
   const servers = useMCPStore((s) => s.servers);
   const addServer = useMCPStore((s) => s.addServer);
   const removeServer = useMCPStore((s) => s.removeServer);
+  const updateServer = useMCPStore((s) => s.updateServer);
   const connectServer = useMCPStore((s) => s.connectServer);
   const disconnectServer = useMCPStore((s) => s.disconnectServer);
   const clearServerError = useMCPStore((s) => s.clearServerError);
   const { t, locale } = useI18n();
 
   const mcpServers = useMemo(() => Object.values(servers), [servers]);
+  const availableTemplates = useMemo(() => getMCPTemplatesForHost(), []);
 
   // Selection
   const [selected, setSelected] = useState<SelectedItem>(null);
@@ -166,7 +168,7 @@ export default function MCPSection({ showAddForm: externalShowAddForm, onAddForm
   type ExampleItem = { kind: 'installed'; entry: MCPServerEntry } | { kind: 'template'; template: typeof mcpTemplates[0] };
   const exampleItems = useMemo(() => {
     const items: ExampleItem[] = [];
-    for (const tmpl of mcpTemplates) {
+    for (const tmpl of availableTemplates) {
       if (searchLower && !tmpl.name.toLowerCase().includes(searchLower) && !tmpl.description.toLowerCase().includes(searchLower)) continue;
       const entry = servers[tmpl.name];
       if (entry) {
@@ -176,7 +178,7 @@ export default function MCPSection({ showAddForm: externalShowAddForm, onAddForm
       }
     }
     return items;
-  }, [servers, searchLower]);
+  }, [availableTemplates, servers, searchLower]);
 
   // The detail is a modal now, so it stays closed until the user clicks a card
   // — no auto-select on load. Still guard against a dangling selection: if the
@@ -184,11 +186,11 @@ export default function MCPSection({ showAddForm: externalShowAddForm, onAddForm
   // template view (or close the modal).
   useEffect(() => {
     if (selected?.kind === 'server' && !servers[selected.name]) {
-      const tmpl = mcpTemplates.find((t) => t.name === selected.name);
+      const tmpl = availableTemplates.find((t) => t.name === selected.name);
       setSelected(tmpl ? { kind: 'template', id: tmpl.id } : null);
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps -- servers omitted: it's an object ref that changes on every store update, would cause frequent re-runs; mcpServers is the memoized array form
-  }, [mcpServers, selected]);
+  }, [availableTemplates, mcpServers, selected]);
 
   // Add or update custom server
   const handleAddServer = async () => {
@@ -366,7 +368,7 @@ export default function MCPSection({ showAddForm: externalShowAddForm, onAddForm
     // Keep selection in context after removal
     if (selected?.kind === 'server' && selected.name === name) {
       // If it's a template MCP, switch to template view (stays on same item)
-      const tmpl = mcpTemplates.find((t) => t.name === name);
+      const tmpl = availableTemplates.find((t) => t.name === name);
       if (tmpl) {
         setSelected({ kind: 'template', id: tmpl.id });
       } else {
@@ -389,7 +391,10 @@ export default function MCPSection({ showAddForm: externalShowAddForm, onAddForm
     setTestResults((prev) => { const next = { ...prev }; delete next[name]; return next; });
     try {
       if (entry.status === 'connected') await disconnectServer(name);
-      else await connectServer(name);
+      else {
+        updateServer(name, { enabled: true });
+        await connectServer(name);
+      }
     } catch (err) {
       setServerErrors((prev) => ({ ...prev, [name]: err instanceof Error ? err.message : String(err) }));
     } finally { setConnectingServer(null); }
@@ -429,7 +434,7 @@ export default function MCPSection({ showAddForm: externalShowAddForm, onAddForm
   // Get selected server entry or template
   const selectedServer = selected?.kind === 'server' ? servers[selected.name] : null;
   const selectedTemplate = selected?.kind === 'template'
-    ? mcpTemplates.find((t) => t.id === selected.id) ?? null
+    ? availableTemplates.find((t) => t.id === selected.id) ?? null
     : null;
 
   // Reset detail state when selection changes

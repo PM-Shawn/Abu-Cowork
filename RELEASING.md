@@ -3,7 +3,7 @@
 Release notes writing convention for Abu. Use alongside the Release Process section in `CLAUDE.md`. For the step-by-step release flow, follow the one-page [`RELEASE-CHECKLIST.md`](./RELEASE-CHECKLIST.md); this doc covers how to *write* the notes.
 
 > **Core principle — two files, dual-maintained by language**: Each release gets its entry written in **both** changelogs, never mixed in one file:
-> - **`CHANGELOG.md` (English, canonical)** → the GitHub Release + `latest.json.notes` (English default for the Tauri updater and international users).
+> - **`CHANGELOG.md` (English, canonical)** → the GitHub Release + English updater notes.
 > - **`CHANGELOG.zh-CN.md` (Chinese)** → `latest.json.notes_i18n["zh-CN"]`.
 >
 > CI extracts this version's section from each file into `latest.json.notes_i18n`; the **client (`checker.ts`) picks notes by the user's UI locale** and the website picks by page language. Same version and structure in both files, but one language each. Patches use the minimal template; Minor+ uses the full template. Always explain "why" and include specific numbers.
@@ -115,7 +115,7 @@ A subtitle makes the release list scannable. **Strongly recommended even for pat
 - **`CHANGELOG.md` — English only** (canonical). Drives the GitHub Release and `latest.json.notes`. Public / international / AI-crawler facing.
 - **`CHANGELOG.zh-CN.md` — Chinese only**. Drives `latest.json.notes_i18n["zh-CN"]`, shown in the in-app update dialog for zh-CN users and on the Chinese website.
 - **Same release, two files, never mixed.** Write the entry once in each language — don't append English tails to Chinese bullets or vice-versa. The `## vX.Y.Z · DATE` heading and section structure must match across both so CI extracts them consistently.
-- **CI routing** (`.github/workflows/release.yml`): the "Create GitHub Release" step reads `CHANGELOG.md`; the publish step's `latest.json` generator extracts this version's section from **both** files into `notes` (English) + `notes_i18n` (`en-US` + `zh-CN`). The client (`src/core/updates/checker.ts`) refetches `latest.json` and selects `notes_i18n[getLocale()]`, falling back to the English `notes`.
+- **CI routing** (`.github/workflows/release.yml`): the draft GitHub Release reads `CHANGELOG.md`; the publish stage extracts both files into the architecture-specific Electron feeds. For the one-time v0.34 transition it also writes `notes` + `notes_i18n` into the legacy Tauri bridge metadata. The client selects the current locale and falls back to English.
 - **History before v0.31.0** predates this split and lives only in `CHANGELOG.md` (bilingual); no need to backfill the Chinese file.
 
 ### 3. Explain "why", not just "what"
@@ -179,27 +179,23 @@ Consistent with the house voice style — use numbers when you have them:
 
 ### Recommended workflow (avoid duplicate releases)
 
-⚠️ **This repo's CI automatically creates a release after a tag push** (default title `Abu vX.Y.Z`, body is the placeholder "See the assets below…" — exactly the anti-example in this doc) and uploads build artifacts as assets. So **do not use `gh release create`** — it creates a second release while the auto-generated one remains, with its title/body uncorrected.
+⚠️ **The official repository's CI owns the complete release transaction.** A stable tag builds all three native packages, prepares one draft Release from `CHANGELOG.md`, uploads and byte-verifies immutable OSS artifacts, publishes the three Electron feed pointers, switches the legacy Tauri pointer last for v0.34, and only then publishes that same Release. Do **not** run `gh release create` manually.
 
 Correct order:
 
 ```bash
-# 1. Write release notes to a file (avoids shell escaping issues)
-vim /tmp/release-notes.md
-
-# 2. Push main, then the tag ON ITS OWN (triggers CI: preflight → build → release)
+# 1. Push main, then the tag ON ITS OWN (triggers CI: preflight → build → release)
 #    Do NOT use `git push origin main --tags`: pushing >3 tags at once makes
 #    GitHub skip the tag push events, so the Release workflow never fires.
 git push origin main
 git push origin vX.Y.Z
 
-# 3. Wait for CI to create the release (visible in release list is enough — no need to wait for assets)
-gh release list --limit 3
+# 2. Wait for the complete Release workflow. A visible draft is not success;
+#    announce only after the workflow publishes it.
+gh run list --workflow=release.yml --limit 3
 
-# 4. Overwrite the auto-release title and body (targets that release by tag)
-gh release edit v0.23.1 --title "v0.23.1 — Topic" -F /tmp/release-notes.md
-
-# 5. (Optional) Wait for assets to finish uploading, then announce
+# 3. Verify the published title, notes, and exact assets.
+gh release view vX.Y.Z --json isDraft,name,assets
 ```
 
 ### Other common commands
@@ -217,4 +213,8 @@ gh release create vX.Y.Z --title "..." -F /tmp/notes.md
 
 ### Known gotchas
 
-- `gh release create --draft` + `gh release edit --draft=false`: A draft is in untagged state; publishing it **creates a new** release that claims the tag, while the CI-generated one still exists. The result is two releases for the same tag. If you need a draft workflow, first delete the CI-generated release via the API (`gh api -X DELETE /repos/PM-Shawn/Abu-Cowork/releases/<id>`), then publish your draft. In most cases this isn't necessary — editing the auto-generated release directly is faster.
+- A draft created by the workflow is expected. Do not delete, recreate, or
+  publish it manually while the workflow is running.
+- Fork/source builds have no production updater by default. Fork maintainers
+  must follow [`FORKING.md`](FORKING.md) and provide their own identity,
+  signing, storage, feed, and rollback process.

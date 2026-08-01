@@ -1,4 +1,5 @@
 import { useSettingsStore } from '@/stores/settingsStore';
+import { getSettingsReader } from '@/core/agent/ports/settingsReader';
 import { getLabsExperiment } from './registry';
 
 /**
@@ -23,7 +24,7 @@ export function resolveLabsFlag(id: string, stored: Record<string, boolean>): bo
  * without a restart.
  */
 export function isLabsFlagOn(id: string): boolean {
-  return resolveLabsFlag(id, useSettingsStore.getState().labs);
+  return resolveLabsFlag(id, getSettingsReader().getSnapshot().labs);
 }
 
 /**

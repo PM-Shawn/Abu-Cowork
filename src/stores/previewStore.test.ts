@@ -94,6 +94,28 @@ describe('previewStore', () => {
       expect(usePreviewStore.getState().tabs).toHaveLength(1);
     });
 
+    it('openBrowser adopts a main-provided id for agent browser views', () => {
+      const id = usePreviewStore.getState().openBrowser('about:blank', 'agent-browser-1');
+      expect(id).toBe('agent-browser-1');
+      expect(usePreviewStore.getState().tabs).toEqual([
+        { id: 'agent-browser-1', kind: 'browser', url: 'about:blank' },
+      ]);
+    });
+
+    it('does not URL-dedupe a main-provided agent browser id', () => {
+      const existingId = usePreviewStore.getState().openBrowser('about:blank');
+      const agentId = usePreviewStore.getState().openBrowser('about:blank', 'agent-browser-2');
+
+      expect(agentId).toBe('agent-browser-2');
+      expect(agentId).not.toBe(existingId);
+      expect(usePreviewStore.getState().tabs).toHaveLength(2);
+      expect(usePreviewStore.getState().tabs[1]).toEqual({
+        id: 'agent-browser-2',
+        kind: 'browser',
+        url: 'about:blank',
+      });
+    });
+
     it('openTerminal always creates a new tab (never deduped)', () => {
       usePreviewStore.getState().openTerminal();
       usePreviewStore.getState().openTerminal();

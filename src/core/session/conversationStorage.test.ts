@@ -562,6 +562,101 @@ describe('conversationStorage', () => {
       expect(seed1Loaded?.content).toBe('REPLACED');
     });
 
+    it('strict replacement confirms that the message reached durable storage', async () => {
+      await storage.appendMessage(
+        'strict-conv',
+        makeMsg({ id: 'strict-msg', content: 'before' }),
+      );
+      await storage.flushWrites();
+
+      await storage.replaceMessageByIdStrict(
+        'strict-conv',
+        makeMsg({ id: 'strict-msg', content: 'after' }),
+      );
+
+      const loaded = await storage.loadMessages('strict-conv');
+      expect(loaded.find((message) => message.id === 'strict-msg')?.content).toBe('after');
+    });
+
+    it('strict replacement rejects missing files and missing message rows', async () => {
+      await expect(
+        storage.replaceMessageByIdStrict(
+          'missing-conv',
+          makeMsg({ id: 'missing-msg' }),
+        ),
+      ).rejects.toThrow('does not exist');
+
+      await storage.appendMessage(
+        'strict-row-conv',
+        makeMsg({ id: 'present-msg' }),
+      );
+      await storage.flushWrites();
+
+      await expect(
+        storage.replaceMessageByIdStrict(
+          'strict-row-conv',
+          makeMsg({ id: 'missing-msg' }),
+        ),
+      ).rejects.toThrow('was not found');
+    });
+
+    it('strict replacement surfaces atomic write failures', async () => {
+      await storage.appendMessage(
+        'strict-write-conv',
+        makeMsg({ id: 'strict-write-msg', content: 'before' }),
+      );
+      await storage.flushWrites();
+      vi.mocked(invoke).mockImplementation(async (cmd: string) => {
+        if (cmd === 'atomic_write_text') throw new Error('disk full');
+        return undefined;
+      });
+
+      await expect(
+        storage.replaceMessageByIdStrict(
+          'strict-write-conv',
+          makeMsg({ id: 'strict-write-msg', content: 'after' }),
+        ),
+      ).rejects.toThrow('disk full');
+    });
+
+    it('does not let a late whole-message write erase a settled recovery action', async () => {
+      const recoveryToolCall = {
+        id: 'recovery-tool',
+        name: 'run_command',
+        input: {},
+        isExecuting: false,
+        sandboxRecovery: {
+          kind: 'app-automation' as const,
+          targetApp: 'Notes',
+        },
+      };
+      await storage.appendMessage(
+        'recovery-race-conv',
+        makeMsg({
+          id: 'recovery-msg',
+          toolCalls: [{
+            ...recoveryToolCall,
+            sandboxRecoveryAction: 'stopped',
+          }],
+        }),
+      );
+      await storage.flushWrites();
+
+      await storage.replaceMessageById(
+        'recovery-race-conv',
+        makeMsg({
+          id: 'recovery-msg',
+          toolCalls: [recoveryToolCall],
+        }),
+      );
+
+      const loaded = await storage.loadMessages('recovery-race-conv');
+      expect(
+        loaded.find((message) => message.id === 'recovery-msg')
+          ?.toolCalls?.[0].sandboxRecoveryAction,
+      ).toBe('stopped');
+    });
+
     it('concurrent writes to different conversations run in parallel', async () => {
       // Different paths use different locks — throughput should not suffer.
       const writes = Array.from({ length: 5 }, (_, i) =>

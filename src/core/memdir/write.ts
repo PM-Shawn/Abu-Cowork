@@ -204,12 +204,14 @@ export async function writeMemory(options: WriteMemoryOptions): Promise<string> 
   //
   // Scanner can be disabled entirely via `settings.safety.enableContentGuard`
   // (kill switch — no UI, JSON only), and individual pattern IDs can be
-  // allow-listed via `settings.safety.bypass`. Lazy-import settings to avoid
-  // a module cycle on cold start (memdir is used during settingsStore
-  // rehydration in some edge cases).
+  // allow-listed via `settings.safety.bypass`. Lazy-import the settings port
+  // to avoid a module cycle on cold start (memdir is used during settingsStore
+  // rehydration in some edge cases) — dynamic import() defers the whole
+  // settingsReader→settingsStore subgraph to call time, same as importing
+  // settingsStore directly did, so the cycle-avoidance property is preserved.
   if (!bypassScan) {
-    const { useSettingsStore } = await import('../../stores/settingsStore');
-    const safety = useSettingsStore.getState().safety;
+    const { getSettingsReader } = await import('../agent/ports/settingsReader');
+    const safety = getSettingsReader().getSnapshot().safety;
     if (safety.enableContentGuard) {
       const scan = scanContent(content, { bypass: new Set(safety.bypass) });
       if (evaluate(scan, 'memory') === 'block') {

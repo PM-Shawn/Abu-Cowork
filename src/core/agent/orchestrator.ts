@@ -1,14 +1,16 @@
-import type { SubagentDefinition, Skill } from '../../types';
+import type { SubagentDefinition, Skill, ToolExecutionContext } from '../../types';
 import { agentRegistry } from './registry';
 import { skillLoader } from '../skill/loader';
 import { loadAllRules } from './projectRules';
 import { loadSoul } from './soulConfig';
-import { getDefaultSoul } from './agentLoop';
-import { useWorkspaceStore } from '../../stores/workspaceStore';
+import { getDefaultSoul } from './prompts/defaultSoul';
 import { useSettingsStore } from '../../stores/settingsStore';
+import { getSettingsReader } from './ports/settingsReader';
+import { getWorkspaceReader } from './ports/workspaceReader';
 import { getSessionOutputDir } from '../session/sessionDir';
 import { prepareSuggestedWorkspace } from './defaultWorkspace';
 import { isWindows } from '../../utils/platform';
+import { hasElectronCommandHost } from '../../utils/electronHost';
 import { mcpManager } from '../mcp/client';
 import { substituteVariables, executeInlineCommands } from '../skill/preprocessor';
 import { getSkillsGuidance } from './prompts/skillsGuidance';
@@ -57,6 +59,7 @@ When performing operations, prefer efficient tools — avoid inefficient approac
 - Search for files → find_files or search_files, not computer screenshots
 - Fetch web information → web_search or http_fetch, not opening a browser and screenshotting
 - System settings → run_command (osascript/defaults), not screenshotting system settings
+- Preview a generated file inside Abu → finish the file tool call and let Abu's side preview/file card handle it. Do not run macOS \`open\`, Windows \`start\`/\`Start-Process\`, or launch a system browser unless the user explicitly asks for an external/system browser
 - Use computer only when you must view the screen or interact with a GUI
 
 The last step of a multi-step task should be verification (e.g. list_directory to confirm file operations) — do not rely solely on execution output.
@@ -151,7 +154,7 @@ export function routeInput(input: string): RouteResult {
       }
       if (agent && agent.name !== 'abu') {
         // Check if disabled
-        const disabledAgents = useSettingsStore.getState().disabledAgents ?? [];
+        const disabledAgents = getSettingsReader().getSnapshot().disabledAgents ?? [];
         if (!disabledAgents.includes(agent.name)) {
           return {
             type: 'delegate',
@@ -243,8 +246,16 @@ export async function buildSystemPrompt(
   conversationId: string,
   imContext?: IMContext,
   turnCount?: number,
+  toolContext?: ToolExecutionContext,
 ): Promise<string> {
-  const sections = await buildSystemPromptSections(route, basePrompt, conversationId, imContext, turnCount);
+  const sections = await buildSystemPromptSections(
+    route,
+    basePrompt,
+    conversationId,
+    imContext,
+    turnCount,
+    toolContext,
+  );
   return sectionsToString(sections);
 }
 
@@ -263,6 +274,7 @@ export async function buildSystemPromptSections(
   conversationId: string,
   imContext?: IMContext,
   turnCount?: number,
+  toolContext?: ToolExecutionContext,
 ): Promise<PromptSection[]> {
   const sections: PromptSection[] = [];
   const isSkillMode = route.type === 'skill' && route.skillContent;
@@ -271,7 +283,7 @@ export async function buildSystemPromptSections(
   // Preprocess skill content if available
   let processedSkillContent = route.skillContent ?? '';
   if (isSkillMode && route.skill) {
-    const settings = useSettingsStore.getState();
+    const settings = getSettingsReader().getSnapshot();
     processedSkillContent = substituteVariables(
       processedSkillContent,
       route.args ?? '',
@@ -279,7 +291,11 @@ export async function buildSystemPromptSections(
       conversationId,
     );
     if (settings.allowSkillCommands) {
-      processedSkillContent = await executeInlineCommands(processedSkillContent, route.skill.skillDir);
+      processedSkillContent = await executeInlineCommands(
+        processedSkillContent,
+        route.skill.skillDir,
+        toolContext,
+      );
     }
   }
 
@@ -338,7 +354,7 @@ export async function buildSystemPromptSections(
 
   // Soul bootstrap: one-time personality introduction prompt
   // Triggers after user has had at least one deep conversation (≥3 user messages)
-  const settings = useSettingsStore.getState();
+  const settings = getSettingsReader().getSnapshot();
   if (!settings.soulInitialized && !isForkContext && !isSkillMode) {
     const chatMod = await import('../../stores/chatStore');
     const conversations = Object.values(chatMod.useChatStore.getState().conversations);
@@ -403,7 +419,7 @@ You are replying in an IM chat. Follow this style:
 - Keep the tone natural — like a colleague conversation, not a customer service document.`, cacheable: true });
   } else {
     // Interactive desktop mode
-    workspacePath = useWorkspaceStore.getState().currentPath;
+    workspacePath = getWorkspaceReader().getCurrentPath();
 
     if (workspacePath) {
       sections.push({ name: 'workspace', text: `\n## Current Workspace
@@ -459,7 +475,7 @@ Use the python3 command — the system will automatically use the built-in Pytho
 - Common command equivalents: ls→Get-ChildItem, cat→Get-Content, rm→Remove-Item, cp→Copy-Item, mv→Move-Item, grep→Select-String, open→Start-Process`, cacheable: true });
   }
 
-  const settingsState = useSettingsStore.getState();
+  const settingsState = getSettingsReader().getSnapshot();
 
   // Inject project rules (user-maintained, high priority)
   if (!isForkContext) {
@@ -572,21 +588,36 @@ ${isWindows()
 - Cannot complete the task → honestly tell the user where you got stuck`, cacheable: true });
     } // end of computer-use gate (settingsState.computerUseEnabled)
 
-    // Browser guidance: when bridge is not connected, always guide to Abu-Browser skill.
-    const browserBridgeConnected = mcpManager.isConnected('abu-browser-bridge');
-    if (!browserBridgeConnected) {
-      const playwrightConnected = mcpManager.isConnected('playwright');
-      let browserNote = `
+    const electronHost = hasElectronCommandHost();
+    const builtinBrowserConnected = mcpManager.isConnected('abu-browser');
+    const chromeBridgeConnected = mcpManager.isConnected('abu-browser-bridge');
+    const playwrightConnected = mcpManager.isConnected('playwright');
+    let browserNote = `
 ## Browser Operations
-- If the user asks you to interact with their already-open browser (view tab contents, click page buttons, fill forms, scrape web data, etc.), it is recommended to first call use_skill to activate the Abu-Browser skill — it will automatically install the required components and connect to the user's Chrome browser`;
+- Abu-Browser and Abu-Chrome-Bridge are different capabilities. A Skill provides operating instructions only; activating it does not install, replace, or start the other browser runtime`;
 
-      if (playwrightConnected) {
-        browserNote += `
-- The playwright tool launches a **brand-new blank browser** — not the user's existing browser. Do not use it to view pages the user already has open`;
-      }
-
-      sections.push({ name: 'browser-guide', text: browserNote, cacheable: true });
+    if (electronHost && builtinBrowserConnected) {
+      browserNote += `
+- For ordinary web-page tasks, call use_skill("Abu-Browser"), then continue immediately with \`abu-browser__get_tabs\`; do not stop after merely saying a browser skill is needed
+- \`abu-browser__get_tabs\` creates a visible tab in Abu when needed. Use the returned tabId with navigate, snapshot, interaction, and screenshot tools`;
+    } else if (electronHost) {
+      browserNote += `
+- Abu's bundled in-app browser is currently unavailable. Say so clearly and do not silently launch Chrome, Computer Use, Playwright, or a system browser`;
+    } else {
+      browserNote += `
+- This legacy host has no Abu in-app browser. For browser interaction, call use_skill("Abu-Chrome-Bridge") and follow its Chrome extension setup`;
     }
+
+    browserNote += `
+- Only when the user explicitly asks to use their existing Chrome tabs, cookies, extensions, or signed-in state, call use_skill("Abu-Chrome-Bridge") and use the \`abu-browser-bridge__\` tools${chromeBridgeConnected ? ' (the Chrome bridge is connected)' : ''}
+- Do not substitute the \`computer\` tool or launch a system browser for web-page screenshots and interaction unless the user explicitly asks for whole-desktop Computer Use or an external browser`;
+
+    if (playwrightConnected) {
+      browserNote += `
+- The playwright tool launches a **brand-new blank browser** — not the user's existing browser. Do not use it to view pages the user already has open`;
+    }
+
+    sections.push({ name: 'browser-guide', text: browserNote, cacheable: true });
   }
 
   // Inject agent-specific system prompt (Abu unified agent)

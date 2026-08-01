@@ -6,6 +6,7 @@ import type { ExecutionStep } from '@/types/execution';
 import type { WorkflowStep } from '@/utils/workflowExtractor';
 import MessageBubble from './MessageBubble';
 import SkillProposalCard from './SkillProposalCard';
+import SandboxRecoveryCard from './SandboxRecoveryCard';
 import UserQuestionCard from './UserQuestionCard';
 import PlanStepsCard from './PlanStepsCard';
 import ShowWidgetCard from './ShowWidgetCard';
@@ -22,7 +23,7 @@ import { useTaskExecutionStore } from '@/stores/taskExecutionStore';
 import { extractWorkflowSteps, extractFileOutputs, extractFilePathsFromText, parsePlanSteps } from '@/utils/workflowExtractor';
 import { parseSearchResults, stripSourcesBlock, parseSourcesFromText } from '@/utils/searchParser';
 import { snapshotToExecutionSteps } from '@/core/agent/executionSnapshot';
-import { runAgentLoop } from '@/core/agent/agentLoop';
+import { runAgentLoopDispatched } from '@/core/agent/agentLoopRunner';
 import { allWorkingDirectories } from '@/core/permissions/workingDirs';
 import { homeDir } from '@tauri-apps/api/path';
 import abuAvatar from '@/assets/abu-avatar.png';
@@ -525,7 +526,7 @@ export default function MessageGroup({ messages, isLastGroup: isLastGroupProp = 
       useChatStore.getState().deleteMessagesFrom(convId, firstAssistantInLoop.id);
     }
 
-    await runAgentLoop(convId, userContent, { images: retryImages });
+    await runAgentLoopDispatched(convId, userContent, { images: retryImages });
   };
 
   // Tool execution steps for this loop. Thinking is rebuilt per-message inside
@@ -815,6 +816,21 @@ export default function MessageGroup({ messages, isLastGroup: isLastGroupProp = 
                   toolCallId={tc.id}
                   card={tc.noticeCard!}
                   settledAction={tc.noticeCardAction}
+                />
+              );
+            })}
+
+            {activeConv?.id && allToolCalls.filter((tc) => tc.sandboxRecovery).map((tc) => {
+              const owningMsg = assistantMsgs.find((m) => m.toolCalls?.some((x) => x.id === tc.id));
+              if (!owningMsg) return null;
+              return (
+                <SandboxRecoveryCard
+                  key={`sandbox-recovery-${tc.id}`}
+                  conversationId={activeConv.id}
+                  messageId={owningMsg.id}
+                  toolCallId={tc.id}
+                  recovery={tc.sandboxRecovery!}
+                  settledAction={tc.sandboxRecoveryAction}
                 />
               );
             })}

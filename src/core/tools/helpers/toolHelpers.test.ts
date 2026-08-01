@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { invoke } from '@tauri-apps/api/core';
 import { extractOfficeText, listArchiveContents } from './toolHelpers';
 
@@ -23,6 +23,21 @@ type InvokePayload = { program: string; args: string[]; timeout?: number };
 function firstCall() {
   return vi.mocked(invoke).mock.calls[0] as unknown as [string, InvokePayload];
 }
+
+function setElectronMarker(enabled: boolean): void {
+  const runtime = globalThis as typeof globalThis & {
+    __ABU_SHELL__?: { mainSupervisesSidecar?: boolean };
+  };
+  if (enabled) {
+    runtime.__ABU_SHELL__ = { mainSupervisesSidecar: true };
+  } else {
+    delete runtime.__ABU_SHELL__;
+  }
+}
+
+afterEach(() => {
+  setElectronMarker(false);
+});
 
 describe('extractOfficeText(.pptx) — shell injection regression', () => {
   beforeEach(() => {
@@ -50,6 +65,40 @@ describe('extractOfficeText(.pptx) — shell injection regression', () => {
     expect(payload.args[1]).toContain('sys.argv[1]');
     // File path is passed as the third argv element — argv[1] for Python
     expect(payload.args[2]).toBe(EVIL_PPTX);
+    expect(payload).not.toHaveProperty('commandId');
+  });
+
+  it('routes task aborts to abort_command for the active pptx extractor process in Electron', async () => {
+    setElectronMarker(true);
+    const controller = new AbortController();
+    let resolveCommand!: (value: unknown) => void;
+    vi.mocked(invoke).mockImplementation(async (cmd) => {
+      if (cmd === 'run_argv_command') {
+        return await new Promise((resolve) => {
+          resolveCommand = resolve;
+        });
+      }
+      if (cmd === 'abort_command') return true;
+      return { code: 0, stdout: '', stderr: '' };
+    });
+
+    const running = extractOfficeText(EVIL_PPTX, '.pptx', { abortSignal: controller.signal });
+    await vi.waitFor(() => {
+      expect(invoke).toHaveBeenCalledWith(
+        'run_argv_command',
+        expect.objectContaining({ program: 'python3', commandId: expect.stringMatching(/^extract-pptx-/) }),
+      );
+    });
+    const [, payload] = firstCall() as unknown as [string, InvokePayload & { commandId: string }];
+
+    controller.abort();
+
+    await vi.waitFor(() => {
+      expect(invoke).toHaveBeenCalledWith('abort_command', { commandId: payload.commandId });
+    });
+    resolveCommand({ code: -1, stdout: '', stderr: '[Command aborted]' });
+    const result = await running;
+    expect(result).toContain('Error extracting pptx');
   });
 
   it('never dispatches run_shell_command for pptx', async () => {
@@ -81,6 +130,40 @@ describe('listArchiveContents — shell injection regression', () => {
     expect(cmdName).toBe('run_argv_command');
     expect(payload.program).toBe('unzip');
     expect(payload.args).toEqual(['-l', EVIL_ZIP]);
+    expect(payload).not.toHaveProperty('commandId');
+  });
+
+  it('routes task aborts to abort_command for the active archive listing process in Electron', async () => {
+    setElectronMarker(true);
+    const controller = new AbortController();
+    let resolveCommand!: (value: unknown) => void;
+    vi.mocked(invoke).mockImplementation(async (cmd) => {
+      if (cmd === 'run_argv_command') {
+        return await new Promise((resolve) => {
+          resolveCommand = resolve;
+        });
+      }
+      if (cmd === 'abort_command') return true;
+      return { code: 0, stdout: '', stderr: '' };
+    });
+
+    const running = listArchiveContents(EVIL_TAR, '.tar', { abortSignal: controller.signal });
+    await vi.waitFor(() => {
+      expect(invoke).toHaveBeenCalledWith(
+        'run_argv_command',
+        expect.objectContaining({ program: 'tar', commandId: expect.stringMatching(/^list-archive-/) }),
+      );
+    });
+    const [, payload] = firstCall() as unknown as [string, InvokePayload & { commandId: string }];
+
+    controller.abort();
+
+    await vi.waitFor(() => {
+      expect(invoke).toHaveBeenCalledWith('abort_command', { commandId: payload.commandId });
+    });
+    resolveCommand({ code: -1, stdout: '', stderr: '[Command aborted]' });
+    const result = await running;
+    expect(result).toContain('Error listing archive');
   });
 
   it('.tar uses tar -tf with file path as argv element', async () => {

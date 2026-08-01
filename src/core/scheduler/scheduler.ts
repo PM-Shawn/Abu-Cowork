@@ -1,7 +1,8 @@
 import { useScheduleStore } from '../../stores/scheduleStore';
 import { useChatStore } from '../../stores/chatStore';
 import { useToastStore } from '../../stores/toastStore';
-import { runAgentLoop, isIncompleteReason } from '../agent/agentLoop';
+import { isIncompleteReason } from '../agent/agentLoop';
+import { runAgentLoopDispatched } from '../agent/agentLoopRunner';
 import {
   notifyScheduledTaskCompleted,
   notifyScheduledTaskError,
@@ -106,7 +107,7 @@ class SchedulerEngine {
     }
 
     try {
-      const result = await runAgentLoop(conversationId, prompt, {
+      const result = await runAgentLoopDispatched(conversationId, prompt, {
         commandConfirmCallback: autoDenyConfirmation,
         filePermissionCallback: autoFilePermission,
       });

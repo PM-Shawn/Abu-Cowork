@@ -11,8 +11,8 @@
 import type { ToolDefinition, ToolExecutionContext, SubagentDefinition } from '../../../types';
 import { TOOL_NAMES } from '../toolNames';
 import { agentRegistry } from '../../agent/registry';
-import { runSubagentLoop } from '../../agent/subagentLoop';
-import { useSettingsStore } from '../../../stores/settingsStore';
+import { runSubagent } from '../../agent/subagentRunner';
+import { getSettingsReader } from '../../agent/ports/settingsReader';
 import { getCurrentLoopContext, getLoopContext } from '../../agent/permissionBridge';
 import { extractParentConversationSummary } from '../../agent/subagentLoop';
 import { useChatStore } from '../../../stores/chatStore';
@@ -344,7 +344,7 @@ export const runAgentBatchTool: ToolDefinition = {
           const presetList = Object.keys(PRESET_AGENTS).join(', ');
           return format(ot.errBatchAgentNotFound, { i, agentName, available: available || getI18n().toolResult.valueNone, presetList });
         }
-        const { disabledAgents } = useSettingsStore.getState();
+        const { disabledAgents } = getSettingsReader().getSnapshot();
         if (disabledAgents.includes(agentName)) {
           return format(ot.errBatchAgentDisabled, { i, agentName });
         }
@@ -383,7 +383,7 @@ export const runAgentBatchTool: ToolDefinition = {
             : resolved.task;
         let currentTurn = 0;
         return runWithTimeout(
-          (sig) => runSubagentLoop({
+          (sig) => runSubagent({
             agent: resolved.agent,
             task: effectiveTask,
             context: resolved.context,

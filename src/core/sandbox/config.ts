@@ -6,19 +6,19 @@
  */
 
 import { isMacOS, isWindows } from '@/utils/platform';
-import { useSettingsStore } from '@/stores/settingsStore';
+import { getSettingsReader } from '@/core/agent/ports/settingsReader';
 import { invoke } from '@tauri-apps/api/core';
 
 /** Whether OS-level sandbox should be enabled for shell commands */
 export function isSandboxEnabled(): boolean {
   if (!isMacOS() && !isWindows()) return false;
-  return useSettingsStore.getState().sandboxEnabled;
+  return getSettingsReader().getSnapshot().sandboxEnabled;
 }
 
 /** Whether network isolation (proxy-based domain whitelist) is enabled */
 export function isNetworkIsolationEnabled(): boolean {
   if (!isMacOS() && !isWindows()) return false;
-  const state = useSettingsStore.getState();
+  const state = getSettingsReader().getSnapshot();
   return state.sandboxEnabled && state.networkIsolationEnabled;
 }
 
@@ -28,7 +28,7 @@ let proxyStarted = false;
 export async function initNetworkProxy(): Promise<void> {
   if (proxyStarted || (!isMacOS() && !isWindows())) return;
 
-  const state = useSettingsStore.getState();
+  const state = getSettingsReader().getSnapshot();
   if (!state.networkIsolationEnabled) return;
 
   try {
@@ -46,7 +46,7 @@ export async function initNetworkProxy(): Promise<void> {
 /** Sync whitelist changes to the running proxy. */
 export async function syncNetworkWhitelist(): Promise<void> {
   if (!proxyStarted) return;
-  const state = useSettingsStore.getState();
+  const state = getSettingsReader().getSnapshot();
   try {
     await invoke('update_network_whitelist', {
       whitelist: state.networkWhitelist,

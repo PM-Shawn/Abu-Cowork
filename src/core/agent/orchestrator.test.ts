@@ -1,5 +1,10 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
+const browserMocks = vi.hoisted(() => ({
+  isConnected: vi.fn(),
+  hasElectronCommandHost: vi.fn(),
+}));
+
 // Mock all external dependencies
 vi.mock('./registry', () => ({
   agentRegistry: {
@@ -57,9 +62,13 @@ vi.mock('../../utils/platform', () => ({
   isWindows: vi.fn().mockReturnValue(false),
 }));
 
+vi.mock('../../utils/electronHost', () => ({
+  hasElectronCommandHost: browserMocks.hasElectronCommandHost,
+}));
+
 vi.mock('../mcp/client', () => ({
   mcpManager: {
-    isConnected: vi.fn().mockReturnValue(false),
+    isConnected: browserMocks.isConnected,
   },
 }));
 
@@ -81,6 +90,8 @@ beforeEach(() => {
   mockLoadAllRules.mockResolvedValue('');
   mockLoadMemoryIndex.mockResolvedValue('');
   mockScanMemoryFiles.mockResolvedValue([]);
+  browserMocks.hasElectronCommandHost.mockReturnValue(true);
+  browserMocks.isConnected.mockImplementation((name: string) => name === 'abu-browser');
 });
 
 describe('buildSystemPrompt - security features', () => {
@@ -172,6 +183,37 @@ describe('buildSystemPrompt - structure', () => {
   it('includes workspace path', async () => {
     const prompt = await buildSystemPrompt(generalRoute, basePrompt, 'test-conv');
     expect(prompt).toContain('/test/workspace');
+  });
+
+  it('keeps generated previews inside Abu unless the user explicitly requests an external browser', async () => {
+    const prompt = await buildSystemPrompt(generalRoute, basePrompt, 'test-conv');
+    expect(prompt).toContain("let Abu's side preview/file card handle it");
+    expect(prompt).toContain('Do not run macOS `open`');
+    expect(prompt).toContain('explicitly asks for an external/system browser');
+  });
+
+  it('routes web interaction to the built-in Electron browser instead of Computer Use', async () => {
+    const prompt = await buildSystemPrompt(generalRoute, basePrompt, 'test-conv');
+    expect(prompt).toContain('Abu-Browser and Abu-Chrome-Bridge are different capabilities');
+    expect(prompt).toContain('continue immediately with `abu-browser__get_tabs`');
+    expect(prompt).toContain('creates a visible tab in Abu');
+    expect(prompt).toContain('existing Chrome tabs, cookies, extensions, or signed-in state');
+    expect(prompt).toContain('Do not substitute the `computer` tool or launch a system browser');
+  });
+
+  it('does not silently fall back when the Electron browser runtime is unavailable', async () => {
+    browserMocks.isConnected.mockReturnValue(false);
+    const prompt = await buildSystemPrompt(generalRoute, basePrompt, 'test-conv');
+    expect(prompt).toContain("bundled in-app browser is currently unavailable");
+    expect(prompt).toContain('do not silently launch Chrome, Computer Use, Playwright, or a system browser');
+  });
+
+  it('preserves Chrome Bridge guidance for the legacy Tauri host', async () => {
+    browserMocks.hasElectronCommandHost.mockReturnValue(false);
+    browserMocks.isConnected.mockReturnValue(false);
+    const prompt = await buildSystemPrompt(generalRoute, basePrompt, 'test-conv');
+    expect(prompt).toContain('legacy host has no Abu in-app browser');
+    expect(prompt).toContain('use_skill("Abu-Chrome-Bridge")');
   });
 
   it('injects request_workspace hint + skill_manage/memory scenarios when workspace is null (Task #37)', async () => {

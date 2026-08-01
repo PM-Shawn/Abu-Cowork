@@ -109,4 +109,25 @@ describe('retry', () => {
     await expect(withRetry(fn)).rejects.toThrow('cancelled');
     expect(fn).toHaveBeenCalledTimes(1);
   });
+
+  it('treats a retryable error as cancellation when the signal is already aborted — does not fire onRetry (P1-3c)', async () => {
+    // A mid-stream fetch abort surfaces as a RETRYABLE network_error (not
+    // code='cancelled'), so it slips past the cancelled-check. If the signal
+    // is already aborted by the time fn() throws, the failure IS the abort —
+    // withRetry must short-circuit to cancelled WITHOUT firing onRetry (whose
+    // agentLoop.ts callback wipes partial streamed content for a clean retry,
+    // which would erase the text the Stop button's "[已停止]" marker needs).
+    const controller = new AbortController();
+    const onRetry = vi.fn();
+    const fn = vi.fn().mockImplementation(async () => {
+      controller.abort(); // the abort that caused this failure
+      throw new LLMError('stream closed', 'network_error', { retryable: true });
+    });
+
+    await expect(
+      withRetry(fn, { baseDelayMs: 10 }, controller.signal, onRetry)
+    ).rejects.toThrow('Request cancelled');
+    expect(fn).toHaveBeenCalledTimes(1); // no retry attempt
+    expect(onRetry).not.toHaveBeenCalled(); // the content-wiping callback never ran
+  });
 });

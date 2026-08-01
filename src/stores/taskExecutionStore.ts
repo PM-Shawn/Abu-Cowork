@@ -32,6 +32,24 @@ interface TaskExecutionActions {
 
   /** Create a new execution context */
   createExecution: (conversationId: string, loopId: string) => TaskExecution;
+  /**
+   * Create a new execution context with a CALLER-SUPPLIED id, instead of
+   * generating one.
+   *
+   * Narrow id-preserving apply seam for P1-3b-2's sidecar port-frame
+   * applier (`src/core/agent/frameApplier.ts`, via
+   * `ports/executionPort.ts`'s `applyExecutionWithId`): a sidecar-run agent
+   * loop's local execution mirror (`sidecar/src/portFrameSenders.ts`)
+   * derives the new execution's id from its `loopId` (both sides use the
+   * SAME convention: `id === loopId` — the sidecar mints `loopId` and it is
+   * already unique per run, so no separate id-generation/translation step
+   * is needed; see `portFrameSenders.ts`'s `createFrameExecutionPort` doc
+   * comment for the full argument). The shell-side apply must then use
+   * that SAME id, not a freshly generated one, or every subsequent
+   * `addStep(execId, ...)`-shaped frame in the run would reference an id
+   * the real store never created. `createExecution` itself is untouched —
+   * this is purely additive. */
+  createExecutionWithId: (conversationId: string, loopId: string, id: string) => TaskExecution;
   /** Complete an execution */
   completeExecution: (execId: string) => void;
   /** Mark execution as error */
@@ -124,6 +142,27 @@ export const useTaskExecutionStore = create<TaskExecutionStore>()(
 
     createExecution: (conversationId, loopId) => {
       const id = generateId();
+      const execution: TaskExecution = {
+        id,
+        conversationId,
+        loopId,
+        status: 'running',
+        startTime: Date.now(),
+        plannedSteps: [],
+        planParsed: false,
+        steps: [],
+      };
+
+      set((state) => {
+        state.executions[id] = execution;
+        state.activeExecutionId = id;
+        state.loopIdIndex[loopId] = id;
+      });
+
+      return execution;
+    },
+
+    createExecutionWithId: (conversationId, loopId, id) => {
       const execution: TaskExecution = {
         id,
         conversationId,

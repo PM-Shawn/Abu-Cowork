@@ -3,21 +3,26 @@
   // src/content/index.ts
   var MAX_EXTRACT_TEXT_SIZE = 5e4;
   var MAX_SNAPSHOT_ELEMENTS = 200;
-  function reportVisible() {
-    if (document.visibilityState === "visible") {
-      chrome.runtime.sendMessage({ type: "tab_visible" }).catch(() => {
-      });
-    }
+  var electronBrowserRuntime = globalThis.__ABU_ELECTRON_BROWSER_RUNTIME__;
+  if (electronBrowserRuntime) {
+    electronBrowserRuntime.handleAction = handleAction;
+  } else {
+    const reportVisible = () => {
+      if (document.visibilityState === "visible") {
+        chrome.runtime.sendMessage({ type: "tab_visible" }).catch(() => {
+        });
+      }
+    };
+    document.addEventListener("visibilitychange", reportVisible);
+    reportVisible();
+    chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+      const { action, payload } = message;
+      handleAction(action, payload).then((data) => sendResponse({ data })).catch((err) => sendResponse({ error: err instanceof Error ? err.message : String(err) }));
+      return true;
+    });
   }
-  document.addEventListener("visibilitychange", reportVisible);
-  reportVisible();
   var refMap = /* @__PURE__ */ new Map();
   var refCounter = 0;
-  chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
-    const { action, payload } = message;
-    handleAction(action, payload).then((data) => sendResponse({ data })).catch((err) => sendResponse({ error: err instanceof Error ? err.message : String(err) }));
-    return true;
-  });
   async function handleAction(action, payload) {
     switch (action) {
       case "snapshot":

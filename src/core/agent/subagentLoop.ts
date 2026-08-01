@@ -10,27 +10,37 @@ import type { StreamEvent, Message, SubagentDefinition, ToolExecutionContext } f
 import type { IMContext } from './orchestrator';
 import type { LLMAdapter } from '../llm/adapter';
 import { LLMError, formatLlmDisplayError } from '../llm/adapter';
-import { ClaudeAdapter } from '../llm/claude';
-import { OpenAICompatibleAdapter } from '../llm/openai-compatible';
-import { getAllTools, executeAnyTool, toolResultToString, type ConfirmationInfo, type FilePermissionCallback } from '../tools/registry';
+import { selectChatAdapter } from '../llm/selectChatAdapter';
+import { getToolInvoker, type ToolInvoker, type FilePermissionCallback } from './ports/toolInvoker';
+import type { ConfirmationInfo } from '../tools/commandSafety';
 import { TOOL_NAMES } from '../tools/toolNames';
-import { useSettingsStore, getActiveApiKey, getActiveProvider, resolveAgentModel } from '../../stores/settingsStore';
+// Pure selectors — imported from settingsSelectors.ts (NOT settingsStore.ts)
+// so this file stays sidecar-bundle-safe: settingsStore.ts's module-level
+// zustand create()/persist/secrets-bootstrap graph must never load in the
+// sidecar process. See settingsSelectors.ts's module doc.
+import { getActiveApiKey, getActiveProvider, resolveAgentModel } from '../../utils/settingsSelectors';
+import { getSettingsReader, type SettingsReader } from './ports/settingsReader';
 import { resolveCapabilities, computeReasoningParams, isReasoningStarvation, type ModelCapabilities } from '../llm/modelCapabilities';
 import { applyDeclaredCapabilities } from '../llm/applyDeclaredCapabilities';
 import { resolveModelDeclared } from '../llm/resolveModelDeclared';
-import { useDiscoveredCapsStore } from '../../stores/discoveredCapabilitiesStore';
-import { useWorkspaceStore } from '../../stores/workspaceStore';
+import { getCapsPort, type CapsPort } from './ports/capsPort';
+import { getWorkspaceReader, type WorkspaceReader } from './ports/workspaceReader';
 import { prepareContextMessages } from '../context/contextManager';
 import { compressContextIfNeeded } from '../context/contextCompressor';
 import { getMessageText } from '../context/contextUtils';
 import { withRetry } from './retry';
-import { allToolsUnparseable, MAX_NO_PROGRESS_TURNS, resolveMaxTurns } from './loopGuards';
+import {
+  allToolsUnparseable,
+  MAX_NO_PROGRESS_TURNS,
+  resolveMaxTurns,
+  escalateMaxOutputTokens,
+  shouldContinueTruncatedToolCalls,
+} from './loopGuards';
 import { resolveEffectiveLlmCreds } from '../enterprise/llm-resolver';
 import { emitHook } from './lifecycleHooks';
 import type { SubagentStartEvent, SubagentEndEvent, PreToolCallEvent } from './lifecycleHooks';
 import { startSubagentSpan } from '../observability/langfuse';
 import { getI18n } from '../../i18n';
-import { escalateMaxOutputTokens, shouldContinueTruncatedToolCalls } from './agentLoop';
 
 /** Max times a subagent re-prompts after a max_tokens truncation. Mirrors the
  *  same-named limit in agentLoop (kept in sync deliberately). */
@@ -186,6 +196,21 @@ export interface SubagentLoopOptions {
   imContext?: IMContext;
   /** Parent conversation ID for Langfuse parent-child span linking */
   parentConversationId?: string;
+  /**
+   * Per-run injectable ports — mirrors agentLoop.ts's `options?.settingsReader
+   * ?? getSettingsReader()` pattern (agentLoop.ts:~717). Zero behavior change
+   * for existing callers (both default to the in-process port singleton via
+   * `getX()` when omitted). The sidecar-side subagent host (subagentHost.ts)
+   * passes per-run instances here so concurrent runs get isolated settings
+   * snapshots / tool routing instead of sharing one process-wide ambient
+   * singleton — see
+   * docs/2026-07-19-phase1-p3-loop-migration-staging.md §2 "正式步 3a".
+   */
+  settingsReader?: SettingsReader;
+  toolInvoker?: ToolInvoker;
+  /** Same injectable-port shape as settingsReader/toolInvoker above — added alongside them once the sidecar bundle-graph fail-fast guard (scripts/build-sidecar.mjs) proved subagentLoop.ts's OTHER two bare port calls (getCapsPort/getWorkspaceReader) have the identical "statically bundled even though the fallback is never taken" problem. See P1-3a-REPORT.md's bundle-graph-battles section. */
+  capsPort?: CapsPort;
+  workspaceReader?: WorkspaceReader;
 }
 
 export async function runSubagentLoop(options: SubagentLoopOptions): Promise<SubagentResult> {
@@ -195,9 +220,18 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
   let totalInputTokens = 0;
   let totalOutputTokens = 0;
 
-  // Guard: if signal is already aborted at entry, ignore it to avoid stale abort state from previous runs.
-  // A genuinely cancelled request will re-abort the fresh controller created by the caller.
-  const signal = options.signal?.aborted ? undefined : options.signal;
+  // The caller owns signal freshness. Treat an already-aborted signal as a
+  // real cancellation; silently replacing it can resurrect a stopped task.
+  const signal = options.signal;
+
+  // Per-run injectable ports — same `options?.x ?? getX()` shape as
+  // agentLoop.ts (agentLoop.ts:~717). Resolved once and reused for every
+  // call site below so a sidecar-side per-run instance (subagentHost.ts)
+  // stays stable for the whole run.
+  const settingsReader = options.settingsReader ?? getSettingsReader();
+  const toolInvoker = options.toolInvoker ?? getToolInvoker();
+  const capsPort = options.capsPort ?? getCapsPort();
+  const workspaceReaderInst = options.workspaceReader ?? getWorkspaceReader();
 
   // Lifecycle: subagentStart
   await emitHook({ type: 'subagentStart', timestamp: Date.now(), agentName: agent.name, task });
@@ -206,10 +240,10 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
   const subagentSpan = startSubagentSpan(options.parentConversationId ?? null, { agentName: agent.name, task });
 
   try {
-    const settings = useSettingsStore.getState();
+    const settings = settingsReader.getSnapshot();
 
     // 1. Build system prompt
-    const workspacePath = options.imContext?.workspacePath ?? useWorkspaceStore.getState().currentPath;
+    const workspacePath = options.imContext?.workspacePath ?? workspaceReaderInst.getCurrentPath();
     const now = new Date();
     const dateStr = now.toLocaleDateString('zh-CN', {
       year: 'numeric', month: 'long', day: 'numeric', weekday: 'long',
@@ -238,7 +272,13 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
         wsPath ? scanMemoryFiles(wsPath) : Promise.resolve([]),
         loadMemoryIndex(null),
       ]);
-      const allHeaders = [...globalHeaders, ...wsHeaders];
+      // G5 fix: EXCLUDE private memories from auto-injection — same rule the
+      // main loop enforces (memdir/relevance.ts:172's `.filter(h => !h.private)`
+      // and orchestrator's documented "🔒 private memories will not be
+      // auto-injected; fetch with read_memory only when explicitly asked").
+      // Without this, a subagent leaked private memory names + descriptions
+      // straight into its system prompt.
+      const allHeaders = [...globalHeaders, ...wsHeaders].filter(h => !h.private);
 
       if (allHeaders.length > 0) {
         const top = allHeaders
@@ -263,7 +303,7 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
     const effectiveModelId = resolveAgentModel(agent.model, settings);
 
     // 3. Get + filter tools
-    let tools = getAllTools();
+    let tools = toolInvoker.getAllTools();
     if (agent.tools && agent.tools.length > 0) {
       const available = new Set(tools.map((t) => t.name));
       const unknown = agent.tools.filter((name) => !available.has(name));
@@ -293,10 +333,15 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
 
     // 4. Create LLM adapter
     // Enterprise mode always uses OpenAI-compatible adapter (LiteLLM exposes that interface).
+    // selectChatAdapter routes through the sidecar transport when it's healthy
+    // ('running'), else falls back to the local in-process adapter — the
+    // kind-choosing condition itself is unchanged (P1-1).
     const _enterpriseCreds = (() => { try { return resolveEffectiveLlmCreds(getActiveApiKey(settings), undefined) } catch { return null } })()
-    const adapter: LLMAdapter = (_enterpriseCreds?.forceOpenAiCompatible || getActiveProvider(settings)?.apiFormat === 'openai-compatible')
-      ? new OpenAICompatibleAdapter()
-      : new ClaudeAdapter();
+    const adapter: LLMAdapter = selectChatAdapter(
+      _enterpriseCreds?.forceOpenAiCompatible || getActiveProvider(settings)?.apiFormat === 'openai-compatible'
+        ? 'openai-compatible'
+        : 'claude',
+    );
 
     // 5. Initialize local messages
     const userContent = context ? `${task}\n\n${context}` : task;
@@ -313,7 +358,7 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
     // maxTurns priority: agent definition > global setting > DEFAULT_MAX_TURNS
     // (200, matching Claude Code's fork subagent). Shared with agentLoop via
     // resolveMaxTurns so the cap chain + unlimited escape hatch can't drift.
-    const globalMaxTurns = useSettingsStore.getState().agentMaxTurns;
+    const globalMaxTurns = settingsReader.getSnapshot().agentMaxTurns;
     const maxTurns = resolveMaxTurns({ definitionMaxTurns: agent.maxTurns, globalMaxTurns });
     let resultBuffer = '';
 
@@ -363,7 +408,7 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
       const provider = getActiveProvider(settings);
       const declared = resolveModelDeclared(provider, effectiveModelId);
       const discovered = provider
-        ? useDiscoveredCapsStore.getState().get(provider.id, effectiveModelId)
+        ? capsPort.get(provider.id, effectiveModelId)
         : undefined;
       const baseCaps = applyDeclaredCapabilities(resolveCapabilities(effectiveModelId), declared);
       const subagentCaps: ModelCapabilities = {
@@ -502,7 +547,7 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
       // L4: learn that a statically-non-reasoning model actually reasons, so future
       // runs bound it (treated as 'uncontrollable' → full budget + reactive net).
       if (sawThinking && baseCaps.thinking === false && provider) {
-        useDiscoveredCapsStore.getState().recordReasoningObserved(provider.id, effectiveModelId);
+        capsPort.recordReasoningObserved(provider.id, effectiveModelId);
       }
 
       // Accumulate text (append, not overwrite — preserve results from all turns).
@@ -599,6 +644,7 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
             timestamp: Date.now(),
             toolName: tc.name,
             toolInput: tc.input,
+            abortSignal: signal,
           } as PreToolCallEvent);
           if (preEvent.blocked) {
             if (preEvent.blockReason) {
@@ -610,21 +656,22 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
 
           const toolStart = Date.now();
           try {
-            const subagentToolContext: ToolExecutionContext = { workspacePath };
-            const rawResult = await executeAnyTool(
+            const subagentToolContext: ToolExecutionContext = { workspacePath, abortSignal: signal };
+            const rawResult = await toolInvoker.executeAnyTool(
               tc.name,
               effectiveInput,
               commandConfirmCallback,
               filePermissionCallback,
               subagentToolContext,
             );
-            const result = toolResultToString(rawResult);
+            const result = toolInvoker.toolResultToString(rawResult);
             const durationMs = Date.now() - toolStart;
             await emitHook({
               type: 'postToolCall' as const,
               timestamp: Date.now(),
               toolName: tc.name,
               toolInput: effectiveInput,
+              abortSignal: signal,
               result,
               error: false,
               durationMs,
@@ -639,6 +686,7 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
               timestamp: Date.now(),
               toolName: tc.name,
               toolInput: effectiveInput,
+              abortSignal: signal,
               result,
               error: true,
               durationMs,

@@ -23,7 +23,7 @@ import { open as openDialog } from '@tauri-apps/plugin-dialog';
 import { readTextFile } from '@tauri-apps/plugin-fs';
 import ShareExportDialog from '@/components/share/ShareExportDialog';
 import ImportedBadge from './ImportedBadge';
-import { isMacOS } from '@/utils/platform';
+import { isMacOS, isWindows } from '@/utils/platform';
 import EnterpriseStatusBadge from '@/components/enterprise/EnterpriseStatusBadge';
 // Side-effect import: registers BrandSlot in the enterprise mounts registry
 import '@/components/enterprise/BrandSlot';
@@ -196,6 +196,19 @@ export default function Sidebar() {
   // Use conversationIndex (lightweight metadata) instead of full conversations for listing
   const sortedConvs = Object.values(conversationIndex)
     .filter((c) => !c.scheduledTaskId && !c.triggerId && !c.projectId)
+    // Hide empty (0-message) conversations from 最近. A first send eagerly
+    // persists the index entry (createConversation) BEFORE its message lands,
+    // so an interrupted/abandoned send leaves a blank "新任务" row littering the
+    // list. Codex encodes the same rule structurally (a partial index
+    // `WHERE preview <> ''`); this is the read-side equivalent. Only an
+    // EXPLICIT messageCount===0 is hidden (undefined/legacy entries stay
+    // visible — never hide a real conversation). Always kept even at 0 messages:
+    // the ACTIVE conversation (so a just-created one doesn't flicker out while
+    // its first message is in flight) and any IM-channel-bound conversation
+    // (imChannelId — a real linked session, created eagerly by sessionMapper
+    // with skipActivate before its inbound message is appended; the earlier
+    // filter only excludes project/scheduled/trigger, not imChannelId).
+    .filter((c) => c.messageCount !== 0 || c.id === activeConversationId || !!c.imChannelId)
     .sort((a, b) => b.createdAt - a.createdAt);
 
   const handleDeleteConversation = async (e: React.MouseEvent, convId: string) => {
@@ -259,11 +272,17 @@ export default function Sidebar() {
 
   return (
     <div className="flex flex-col h-full w-[260px] bg-[var(--abu-bg-canvas)]">
-      {/* Drag region — covers the title bar area above sidebar content. Taller than the
-          toolbar row so 新建任务 sits comfortably below the toggle/search icons. */}
+      {/* macOS controls are an overlay, so the expanded sidebar keeps its
+          original 56px content clearance. Windows reserves toolbar space in
+          App's normal flow; Linux keeps its compact native-titlebar spacer. */}
       <div
-        data-tauri-drag-region
-        className={isMacOS() ? 'h-14 shrink-0' : 'h-8 shrink-0'}
+        className={
+          isMacOS()
+            ? 'h-14 shrink-0'
+            : isWindows()
+              ? 'h-0 shrink-0'
+              : 'h-8 shrink-0'
+        }
       />
       {/* Top Navigation */}
       <nav className="px-4 pb-2 space-y-0.5" aria-label="Main navigation">

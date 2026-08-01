@@ -1,11 +1,53 @@
 /**
  * MCP Tool definitions for browser automation.
- * Each tool sends a request to the Chrome Extension via WebSocket.
+ * Each tool sends a browser action through the configured transport.
  */
 
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
-import { sendToExtension, isExtensionConnected } from './wsServer.js';
+
+export interface BrowserTransportResponse {
+  success: boolean;
+  data?: unknown;
+  error?: string;
+}
+
+export interface BrowserTransport {
+  send(
+    action: string,
+    payload?: Record<string, unknown>,
+    timeoutMs?: number
+  ): Promise<BrowserTransportResponse>;
+  isConnected(): boolean | Promise<boolean>;
+  getConnectionError(): string;
+  getStatusMessage?(connected: boolean): string;
+}
+
+const BROWSER_EXTENSION_NOT_CONNECTED =
+  'Browser extension is not connected. Please install and enable the Abu Browser Extension, then check the connection status in the extension popup.';
+
+const chromeWsTransport: BrowserTransport = {
+  send: async (action, payload = {}, timeoutMs = 30_000) => {
+    const { sendToExtension, isExtensionConnected } = await import('./wsServer.js');
+    try {
+      return await sendToExtension(action, payload, timeoutMs);
+    } catch (err) {
+      if (!isExtensionConnected()) {
+        throw new Error(BROWSER_EXTENSION_NOT_CONNECTED, { cause: err });
+      }
+      throw err;
+    }
+  },
+  isConnected: async () => {
+    const { isExtensionConnected } = await import('./wsServer.js');
+    return isExtensionConnected();
+  },
+  getConnectionError: () => BROWSER_EXTENSION_NOT_CONNECTED,
+  getStatusMessage: connected =>
+    connected
+      ? 'Browser extension is connected and ready.'
+      : BROWSER_EXTENSION_NOT_CONNECTED,
+};
 
 // --- Element Locator Schema (reusable) ---
 
@@ -19,15 +61,13 @@ const LocatorDescription = `How to find the element. Supports multiple strategie
 
 // --- Helper ---
 
-function ensureConnected(): void {
-  if (!isExtensionConnected()) {
-    throw new Error(
-      'Chrome Extension is not connected. Please install the Abu Browser Extension and ensure it is enabled.'
-    );
+async function ensureConnected(transport: BrowserTransport): Promise<void> {
+  if (!(await transport.isConnected())) {
+    throw new Error(transport.getConnectionError());
   }
 }
 
-function formatResult(response: { success: boolean; data?: unknown; error?: string }): string {
+function formatResult(response: BrowserTransportResponse): string {
   if (!response.success) {
     return `Error: ${response.error ?? 'Unknown error'}`;
   }
@@ -71,15 +111,15 @@ function parseCondition(raw: string): Record<string, unknown> {
 
 // --- Register all tools ---
 
-export function registerTools(server: McpServer): void {
+export function registerTools(server: McpServer, transport: BrowserTransport = chromeWsTransport): void {
 
   // 1. browser_get_tabs
   server.tool(
     'get_tabs',
-    'Get all open Chrome browser tabs grouped by window. Returns a summary with the current window/tab info, plus a list of windows each containing their tabs. Use this first to find the target tab ID for other browser actions.',
+    'Get all open browser tabs grouped by window. Returns a summary with the current window/tab info, plus a list of windows each containing their tabs. Use this first to find the target tab ID for other browser actions.',
     async () => {
-      ensureConnected();
-      const res = await sendToExtension('get_tabs');
+      await ensureConnected(transport);
+      const res = await transport.send('get_tabs');
       return { content: [{ type: 'text' as const, text: formatResult(res) }] };
     }
   );
@@ -93,8 +133,8 @@ export function registerTools(server: McpServer): void {
       selector: z.string().optional().describe('Optional CSS selector to scope the snapshot to a specific area of the page'),
     },
     async ({ tabId, selector }) => {
-      ensureConnected();
-      const res = await sendToExtension('snapshot', { tabId, selector });
+      await ensureConnected(transport);
+      const res = await transport.send('snapshot', { tabId, selector });
       return { content: [{ type: 'text' as const, text: formatResult(res) }] };
     }
   );
@@ -108,9 +148,9 @@ export function registerTools(server: McpServer): void {
       locator: z.string().describe(`JSON string of element locator. ${LocatorDescription}`),
     },
     async ({ tabId, locator }) => {
-      ensureConnected();
+      await ensureConnected(transport);
       const parsed = parseLocator(locator);
-      const res = await sendToExtension('click', { tabId, locator: parsed });
+      const res = await transport.send('click', { tabId, locator: parsed });
       return { content: [{ type: 'text' as const, text: formatResult(res) }] };
     }
   );
@@ -125,9 +165,9 @@ export function registerTools(server: McpServer): void {
       value: z.string().describe('The text value to fill into the field'),
     },
     async ({ tabId, locator, value }) => {
-      ensureConnected();
+      await ensureConnected(transport);
       const parsed = parseLocator(locator);
-      const res = await sendToExtension('fill', { tabId, locator: parsed, value });
+      const res = await transport.send('fill', { tabId, locator: parsed, value });
       return { content: [{ type: 'text' as const, text: formatResult(res) }] };
     }
   );
@@ -142,9 +182,9 @@ export function registerTools(server: McpServer): void {
       value: z.string().describe('The option value or visible text to select'),
     },
     async ({ tabId, locator, value }) => {
-      ensureConnected();
+      await ensureConnected(transport);
       const parsed = parseLocator(locator);
-      const res = await sendToExtension('select', { tabId, locator: parsed, value });
+      const res = await transport.send('select', { tabId, locator: parsed, value });
       return { content: [{ type: 'text' as const, text: formatResult(res) }] };
     }
   );
@@ -166,9 +206,9 @@ export function registerTools(server: McpServer): void {
       timeout: z.coerce.number().optional().default(30000).describe('Maximum wait time in ms (default: 30000)'),
     },
     async ({ tabId, condition, timeout }) => {
-      ensureConnected();
+      await ensureConnected(transport);
       const parsed = parseCondition(condition);
-      const res = await sendToExtension('wait_for', { tabId, condition: parsed, timeout }, timeout + 5000);
+      const res = await transport.send('wait_for', { tabId, condition: parsed, timeout }, timeout + 5000);
       return { content: [{ type: 'text' as const, text: formatResult(res) }] };
     }
   );
@@ -182,8 +222,8 @@ export function registerTools(server: McpServer): void {
       selector: z.string().optional().describe('CSS selector to extract text from. If omitted, extracts the full page text (may be large).'),
     },
     async ({ tabId, selector }) => {
-      ensureConnected();
-      const res = await sendToExtension('extract_text', { tabId, selector });
+      await ensureConnected(transport);
+      const res = await transport.send('extract_text', { tabId, selector });
       return { content: [{ type: 'text' as const, text: formatResult(res) }] };
     }
   );
@@ -197,8 +237,8 @@ export function registerTools(server: McpServer): void {
       selector: z.string().optional().describe('CSS selector for the target table. If omitted, extracts the largest table on the page.'),
     },
     async ({ tabId, selector }) => {
-      ensureConnected();
-      const res = await sendToExtension('extract_table', { tabId, selector });
+      await ensureConnected(transport);
+      const res = await transport.send('extract_table', { tabId, selector });
       return { content: [{ type: 'text' as const, text: formatResult(res) }] };
     }
   );
@@ -214,8 +254,8 @@ export function registerTools(server: McpServer): void {
       selector: z.string().optional().describe('CSS selector for the scrollable element. If omitted, scrolls the whole page.'),
     },
     async ({ tabId, direction, amount, selector }) => {
-      ensureConnected();
-      const res = await sendToExtension('scroll', { tabId, direction, amount, selector });
+      await ensureConnected(transport);
+      const res = await transport.send('scroll', { tabId, direction, amount, selector });
       return { content: [{ type: 'text' as const, text: formatResult(res) }] };
     }
   );
@@ -230,8 +270,8 @@ export function registerTools(server: McpServer): void {
       action: z.enum(['goto', 'back', 'forward', 'reload']).optional().default('goto').describe('Navigation action (default: goto)'),
     },
     async ({ tabId, url, action }) => {
-      ensureConnected();
-      const res = await sendToExtension('navigate', { tabId, url, action });
+      await ensureConnected(transport);
+      const res = await transport.send('navigate', { tabId, url, action });
       return { content: [{ type: 'text' as const, text: formatResult(res) }] };
     }
   );
@@ -246,8 +286,8 @@ export function registerTools(server: McpServer): void {
       modifiers: z.array(z.enum(['ctrl', 'shift', 'alt', 'meta'])).optional().describe('Modifier keys to hold'),
     },
     async ({ tabId, key, modifiers }) => {
-      ensureConnected();
-      const res = await sendToExtension('keyboard', { tabId, key, modifiers });
+      await ensureConnected(transport);
+      const res = await transport.send('keyboard', { tabId, key, modifiers });
       return { content: [{ type: 'text' as const, text: formatResult(res) }] };
     }
   );
@@ -261,8 +301,8 @@ export function registerTools(server: McpServer): void {
       code: z.string().describe('JavaScript code to execute. The last expression value is returned.'),
     },
     async ({ tabId, code }) => {
-      ensureConnected();
-      const res = await sendToExtension('execute_js', { tabId, code }, 60_000);
+      await ensureConnected(transport);
+      const res = await transport.send('execute_js', { tabId, code }, 60_000);
       return { content: [{ type: 'text' as const, text: formatResult(res) }] };
     }
   );
@@ -275,8 +315,8 @@ export function registerTools(server: McpServer): void {
       tabId: z.coerce.number().describe('Tab ID from get_tabs'),
     },
     async ({ tabId }) => {
-      ensureConnected();
-      const res = await sendToExtension('screenshot', { tabId });
+      await ensureConnected(transport);
+      const res = await transport.send('screenshot', { tabId });
       if (res.success && typeof res.data === 'string') {
         return {
           content: [{
@@ -298,9 +338,9 @@ export function registerTools(server: McpServer): void {
       tabId: z.coerce.number().describe('Tab ID from get_tabs'),
     },
     async ({ tabId }) => {
-      ensureConnected();
+      await ensureConnected(transport);
       // Full-page capture needs more time: scroll + multiple captures + stitch
-      const res = await sendToExtension('screenshot_full_page', { tabId }, 120_000);
+      const res = await transport.send('screenshot_full_page', { tabId }, 120_000);
       if (res.success && typeof res.data === 'string') {
         return {
           content: [{
@@ -317,15 +357,14 @@ export function registerTools(server: McpServer): void {
   // 15. browser_connection_status
   server.tool(
     'connection_status',
-    'Check whether the Chrome Extension is connected to this bridge. Use this to verify the extension is ready before performing browser actions.',
+    'Check whether the browser transport is connected and ready before performing browser actions.',
     async () => {
-      const connected = isExtensionConnected();
+      const connected = await transport.isConnected();
       return {
         content: [{
           type: 'text' as const,
-          text: connected
-            ? 'Chrome Extension is connected and ready.'
-            : 'Chrome Extension is NOT connected. Please ensure the Abu Browser Extension is installed and enabled in Chrome.'
+          text: transport.getStatusMessage?.(connected) ??
+            (connected ? 'Browser transport is connected and ready.' : transport.getConnectionError())
         }]
       };
     }
@@ -336,8 +375,8 @@ export function registerTools(server: McpServer): void {
     'get_downloads',
     'Get recent file downloads from the browser. Useful for confirming that a file was downloaded after clicking a download button.',
     async () => {
-      ensureConnected();
-      const res = await sendToExtension('get_downloads');
+      await ensureConnected(transport);
+      const res = await transport.send('get_downloads');
       return { content: [{ type: 'text' as const, text: formatResult(res) }] };
     }
   );
@@ -350,8 +389,8 @@ export function registerTools(server: McpServer): void {
       tabId: z.coerce.number().describe('Tab ID from get_tabs'),
     },
     async ({ tabId }) => {
-      ensureConnected();
-      const res = await sendToExtension('start_recording', { tabId });
+      await ensureConnected(transport);
+      const res = await transport.send('start_recording', { tabId });
       return { content: [{ type: 'text' as const, text: formatResult(res) }] };
     }
   );
@@ -364,8 +403,8 @@ export function registerTools(server: McpServer): void {
       tabId: z.coerce.number().describe('Tab ID from get_tabs'),
     },
     async ({ tabId }) => {
-      ensureConnected();
-      const res = await sendToExtension('stop_recording', { tabId });
+      await ensureConnected(transport);
+      const res = await transport.send('stop_recording', { tabId });
       return { content: [{ type: 'text' as const, text: formatResult(res) }] };
     }
   );

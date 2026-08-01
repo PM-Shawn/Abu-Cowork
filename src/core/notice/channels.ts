@@ -13,9 +13,6 @@
  * noticeMenubarStore) that register themselves.
  */
 
-import {
-  sendNotification,
-} from '@tauri-apps/plugin-notification';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { isMacOS } from '@/utils/platform';
 import { registerChannel } from './pipeline';
@@ -89,14 +86,63 @@ export async function clearDockBadgeCount(): Promise<void> {
 
 // ── Channel handlers ───────────────────────────────────────────────────
 
+/** Best-effort bring the main window to front (notification click target). */
+async function focusMainWindow(): Promise<void> {
+  try {
+    const win = getCurrentWindow();
+    await win.show();
+    await win.unminimize();
+    await win.setFocus();
+  } catch {
+    // Non-critical
+  }
+}
+
+/**
+ * Jump to the notice's source conversation — mirrors
+ * ConversationSearchModal's pick(): switch + chat view + clear badges.
+ * Stores are imported dynamically: channels.ts sits below the stores in the
+ * import graph (stores publish notices), so a static import would be a cycle.
+ */
+async function jumpToConversation(id: string): Promise<void> {
+  try {
+    const [{ useChatStore }, { useSettingsStore }, { usePreviewStore }, { useNoticeBadgeStore }] =
+      await Promise.all([
+        import('@/stores/chatStore'),
+        import('@/stores/settingsStore'),
+        import('@/stores/previewStore'),
+        import('@/stores/noticeBadgeStore'),
+      ]);
+    const chat = useChatStore.getState();
+    if (!(id in chat.conversationIndex)) return; // deleted since the notice fired
+    void chat.switchConversation(id);
+    useSettingsStore.getState().setViewMode('chat');
+    usePreviewStore.getState().setFileTreeMode(false);
+    useNoticeBadgeStore.getState().clear(id);
+    chat.clearCompletedStatus(id);
+  } catch {
+    // Non-critical
+  }
+}
+
 function handleSystemNotification(notice: Notice): void {
   if (!notificationPermission) return;
 
   const title = getTitle(notice);
   const body = getBody(notice);
+  const conversationId =
+    typeof notice.payload.conversationId === 'string' ? notice.payload.conversationId : null;
 
   try {
-    sendNotification({ title, body });
+    // Web Notification directly (the same underlying path plugin-notification's
+    // sendNotification takes in both shells) — the plugin helper exposes no
+    // click handler, and without one a click lands on whatever conversation the
+    // window happens to show, not the one that finished.
+    const n = new Notification(title, { body });
+    n.onclick = () => {
+      void focusMainWindow();
+      if (conversationId) void jumpToConversation(conversationId);
+    };
   } catch {
     // Permission might have been revoked
   }

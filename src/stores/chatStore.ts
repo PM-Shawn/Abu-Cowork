@@ -1,7 +1,7 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import { immer } from 'zustand/middleware/immer';
-import type { Message, Conversation, AgentStatus, RetryInfo, TokenUsage, ConversationStatus, ToolCallForContext, ToolResultContent, ToolCall, NoticeCardAction, UserQuestionResult } from '../types';
+import type { Message, Conversation, AgentStatus, RetryInfo, TokenUsage, ConversationStatus, ToolCallForContext, ToolResultContent, ToolCall, NoticeCardAction, SandboxRecoveryAction, ToolExecutionMetadata, UserQuestionResult } from '../types';
 import type { ExecutionStepSnapshot, PlannedStep } from '../types/execution';
 import { useWorkspaceStore } from './workspaceStore';
 import { useProjectStore } from './projectStore';
@@ -10,11 +10,13 @@ import { clearInputQueue } from '../core/agent/userInputQueue';
 import { clearSkillHooksByConversation } from '../core/tools/builtins';
 import { clearPlanMode } from '../core/agent/planMode';
 import { setComputerUseActive } from '../core/agent/computerUseStatus';
+import { isConversationRunningInSidecar } from '../core/agent/sidecarRunPredicate';
 import type { ConversationMeta } from '../core/session/conversationStorage';
 import type { ShareBundle } from '../core/session/shareBundle';
 import type { PermissionMode } from '../core/permissions/permissionMode';
 import type { ChatReference } from '@/types/chatReference';
 import { getI18n } from '../i18n';
+import { TOOL_NAMES } from '../core/tools/toolNames';
 
 function generateId(): string {
   return Date.now().toString(36) + Math.random().toString(36).substring(2, 8);
@@ -22,20 +24,47 @@ function generateId(): string {
 
 /** Extra safety net for messages coming in via import — ensures no streaming
  * flag survives even if the source bundle was built by a broken exporter. */
-function sanitizeImportedMessage(msg: Message): Message {
+export function sanitizeImportedMessage(msg: Message): Message {
   return {
     ...msg,
     isStreaming: false,
-    toolCalls: msg.toolCalls?.map((tc) => ({ ...tc, isExecuting: false })),
+    toolCalls: msg.toolCalls?.map((tc) => {
+      const {
+        sandboxRecovery: _sandboxRecovery,
+        sandboxRecoveryAction: _sandboxRecoveryAction,
+        ...safeToolCall
+      } = tc;
+      return { ...safeToolCall, isExecuting: false };
+    }),
   };
 }
 
 /** Strip ghost assistant messages and clear stale isStreaming flags after loading from disk.
  * Ghost messages are empty assistant placeholders written before content arrived
  * (crash / network failure before streaming started). They must not reach the LLM. */
-function sanitizeLoadedMessages(messages: Message[]): Message[] {
+export function sanitizeLoadedMessages(messages: Message[]): Message[] {
   return messages
-    .map(msg => msg.isStreaming ? { ...msg, isStreaming: false } : msg)
+    .map((msg) => {
+      const toolCalls = msg.toolCalls?.map((tc) => {
+        const safeToRetryRecovery =
+          tc.sandboxRecoveryAction === 'pending'
+          || tc.sandboxRecoveryAction === 'enqueued';
+        return {
+          ...tc,
+          isExecuting: false,
+          sandboxRecoveryAction: tc.sandboxRecoveryAction === 'started'
+            ? 'needs-review' as const
+            : safeToRetryRecovery
+            ? 'failed' as const
+            : tc.sandboxRecoveryAction,
+        };
+      });
+      return {
+        ...msg,
+        isStreaming: false,
+        toolCalls,
+      };
+    })
     .filter(msg => {
       if (msg.role !== 'assistant') return true;
       const text = typeof msg.content === 'string'
@@ -132,6 +161,45 @@ export function findNextActiveConversation(
 // Store abort controllers for each conversation
 const abortControllers: Map<string, AbortController> = new Map();
 
+// Persistence started by store actions intentionally stays off the render
+// path, but sidecar runs need a durability barrier before their RPC resolves:
+// otherwise the UI can show a completed assistant turn while its fire-and-
+// forget JSONL append/replace is still in flight. Keep the promises grouped
+// by conversation so the dispatch bridge can await only the run it owns.
+const pendingConversationPersistence = new Map<string, Promise<void>>();
+
+function trackConversationPersistence(
+  convId: string,
+  operation: () => Promise<unknown>,
+): void {
+  const previous = pendingConversationPersistence.get(convId) ?? Promise.resolve();
+  const tracked = previous
+    .then(operation)
+    .then(() => undefined)
+    .catch(() => undefined);
+  pendingConversationPersistence.set(convId, tracked);
+  void tracked.finally(() => {
+    if (pendingConversationPersistence.get(convId) === tracked) {
+      pendingConversationPersistence.delete(convId);
+    }
+  });
+}
+
+/**
+ * Wait until every message/index persistence operation already started for
+ * this conversation has settled. The loop handles operations added while it
+ * is awaiting an earlier snapshot, so an append that schedules its index
+ * update cannot escape the barrier.
+ */
+export async function waitForConversationPersistence(convId: string): Promise<void> {
+  while (true) {
+    const pending = pendingConversationPersistence.get(convId);
+    if (!pending) return;
+    await pending;
+    if (pendingConversationPersistence.get(convId) === pending) return;
+  }
+}
+
 // ── Streaming token buffer (RAF-based debounce) ──
 // Tokens accumulate in the buffer and flush once per animation frame,
 // reducing React re-renders from 1000+/sec to ~60/sec during streaming.
@@ -142,6 +210,15 @@ const abortControllers: Map<string, AbortController> = new Map();
 // being appended to the new user bubble.
 type BufferKey = string;
 const tokenBuffer: Map<BufferKey, string> = new Map();
+// Thinking buffer — same RAF cadence as tokenBuffer, but REPLACE semantics
+// instead of concatenation: every `updateMessageThinking` call already
+// carries the FULL accumulated thinking text for the block (agentLoop keeps
+// its own `collectedThinking` accumulator and passes that whole string on
+// every call — true for both the Claude adapter, which emits one `thinking`
+// event per block, and the OpenAI-compatible adapter's DeepSeek-R1-style
+// per-SSE-chunk `reasoning_content` path). So batching only needs to keep
+// the latest value per key, not append fragments.
+const thinkingBuffer: Map<BufferKey, string> = new Map();
 const FALLBACK_LAST = '__last__';
 function bufferKey(convId: string, msgId?: string): BufferKey {
   return `${convId}::${msgId ?? FALLBACK_LAST}`;
@@ -149,6 +226,25 @@ function bufferKey(convId: string, msgId?: string): BufferKey {
 function parseBufferKey(key: BufferKey): { convId: string; msgId: string } {
   const idx = key.indexOf('::');
   return { convId: key.slice(0, idx), msgId: key.slice(idx + 2) };
+}
+
+/** Collect the buffer keys matching an optional (convId, msgId) filter —
+ *  shared selection logic between `flushTokenBuffer`'s two buffers. No
+ *  filter (convId omitted) matches everything, mirroring the pre-existing
+ *  tokenBuffer behavior. */
+function matchingBufferKeys(buf: Map<BufferKey, string>, convId?: string, msgId?: string): BufferKey[] {
+  const keys: BufferKey[] = [];
+  for (const key of buf.keys()) {
+    if (!convId) {
+      keys.push(key);
+      continue;
+    }
+    const parsed = parseBufferKey(key);
+    if (parsed.convId !== convId) continue;
+    if (msgId && parsed.msgId !== msgId && parsed.msgId !== FALLBACK_LAST) continue;
+    keys.push(key);
+  }
+  return keys;
 }
 
 /** Find target message: by id if provided, else last message. */
@@ -188,45 +284,54 @@ function scheduleFlush() {
   flushScheduled = true;
   requestAnimationFrame(() => {
     flushScheduled = false;
-    if (tokenBuffer.size === 0) return;
-    const entries = Array.from(tokenBuffer.entries());
+    if (tokenBuffer.size === 0 && thinkingBuffer.size === 0) return;
+    const tokenEntries = Array.from(tokenBuffer.entries());
     tokenBuffer.clear();
-    // Single Zustand set() call to batch all buffered tokens
+    const thinkingEntries = Array.from(thinkingBuffer.entries());
+    thinkingBuffer.clear();
+    // Single Zustand set() call to batch all buffered tokens + thinking text
     useChatStore.setState((state) => {
-      for (const [key, buffered] of entries) {
+      for (const [key, buffered] of tokenEntries) {
         const { convId, msgId } = parseBufferKey(key);
         const target = findTargetMessage(state.conversations[convId]?.messages, msgId);
         if (target && typeof target.content === 'string') {
           target.content += buffered;
         }
       }
+      for (const [key, thinking] of thinkingEntries) {
+        const { convId, msgId } = parseBufferKey(key);
+        const target = findTargetMessage(state.conversations[convId]?.messages, msgId);
+        if (target) target.thinking = thinking;
+      }
     });
   });
 }
 
-/** Flush any pending buffered tokens immediately (call before finishStreaming) */
+/** Flush any pending buffered tokens AND buffered thinking text immediately
+ *  (call before finishStreaming / retry / abort / tool-call batching).
+ *  Deliberately covers both buffers in one call — they share the same RAF
+ *  cadence and every call site that needs "land buffered stream state now"
+ *  needs both, so a single flush covers both without new call sites. */
 export function flushTokenBuffer(convId?: string, msgId?: string) {
-  const matchingKeys: BufferKey[] = [];
-  for (const key of tokenBuffer.keys()) {
-    if (!convId) {
-      matchingKeys.push(key);
-    } else {
-      const parsed = parseBufferKey(key);
-      if (parsed.convId !== convId) continue;
-      if (msgId && parsed.msgId !== msgId && parsed.msgId !== FALLBACK_LAST) continue;
-      matchingKeys.push(key);
-    }
-  }
-  if (matchingKeys.length === 0) return;
-  const entries = matchingKeys.map((k) => [k, tokenBuffer.get(k)!] as const);
-  for (const k of matchingKeys) tokenBuffer.delete(k);
+  const matchingTokenKeys = matchingBufferKeys(tokenBuffer, convId, msgId);
+  const matchingThinkingKeys = matchingBufferKeys(thinkingBuffer, convId, msgId);
+  if (matchingTokenKeys.length === 0 && matchingThinkingKeys.length === 0) return;
+  const tokenEntries = matchingTokenKeys.map((k) => [k, tokenBuffer.get(k)!] as const);
+  for (const k of matchingTokenKeys) tokenBuffer.delete(k);
+  const thinkingEntries = matchingThinkingKeys.map((k) => [k, thinkingBuffer.get(k)!] as const);
+  for (const k of matchingThinkingKeys) thinkingBuffer.delete(k);
   useChatStore.setState((state) => {
-    for (const [key, buffered] of entries) {
+    for (const [key, buffered] of tokenEntries) {
       const { convId: cId, msgId: mId } = parseBufferKey(key);
       const target = findTargetMessage(state.conversations[cId]?.messages, mId);
       if (target && typeof target.content === 'string') {
         target.content += buffered;
       }
+    }
+    for (const [key, thinking] of thinkingEntries) {
+      const { convId: cId, msgId: mId } = parseBufferKey(key);
+      const target = findTargetMessage(state.conversations[cId]?.messages, mId);
+      if (target) target.thinking = thinking;
     }
   });
 }
@@ -312,7 +417,7 @@ interface ChatActions {
   appendToLastMessage: (convId: string, token: string, msgId?: string) => void;
   setLastMessageContent: (convId: string, content: string, msgId?: string) => void;
   finishStreaming: (convId: string, msgId?: string) => void;
-  updateToolCall: (convId: string, messageId: string, toolCallId: string, result: string, resultContent?: ToolResultContent[], isError?: boolean, hideScreenshot?: boolean) => void;
+  updateToolCall: (convId: string, messageId: string, toolCallId: string, result: string, resultContent?: ToolResultContent[], isError?: boolean, hideScreenshot?: boolean, metadata?: ToolExecutionMetadata) => void;
   /**
    * Persist the user's click on an interactive notice card attached to a
    * tool call (see `ToolCall.noticeCardAction`). Called from the card
@@ -320,6 +425,7 @@ interface ChatActions {
    * through to disk via replaceMessageById so reload keeps the state.
    */
   setToolCallNoticeCardAction: (convId: string, messageId: string, toolCallId: string, action: NoticeCardAction) => void;
+  setToolCallSandboxRecoveryAction: (convId: string, messageId: string, toolCallId: string, action: SandboxRecoveryAction) => Promise<void>;
   setToolCallUserQuestionAnswers: (convId: string, messageId: string, toolCallId: string, answers: UserQuestionResult) => void;
   /**
    * Stash a post-loop proposal signal on the conversation so the next
@@ -336,6 +442,27 @@ interface ChatActions {
   updateMessageThinking: (convId: string, thinking: string, msgId?: string) => void;
   updateMessageThinkingDuration: (convId: string, duration: number, msgId?: string) => void;
   updateMessageUsage: (convId: string, usage: TokenUsage, msgId?: string) => void;
+  /**
+   * Force a specific message's `isStreaming` flag directly (looked up by exact
+   * `messageId`, no FALLBACK_LAST fanout like `finishStreaming`/`appendToLastMessage`).
+   * Extracted from an agentLoop.ts `useChatStore.setState` escape hatch (the
+   * "user enqueued more input while the turn ended without tool calls" rescue
+   * path) — kept as a narrow, purpose-specific action rather than generalizing
+   * `finishStreaming` because callers here intentionally do NOT want the
+   * disk-persistence / agentStatus/retryInfo side effects `finishStreaming` has.
+   */
+  setMessageStreamingFlag: (convId: string, messageId: string, streaming: boolean) => void;
+  /**
+   * Atomically attach the finalized tool calls to an assistant message and
+   * mark it done streaming, in one mutation. Extracted from a toolExecutor.ts
+   * raw `useChatStore.setState` escape hatch (exact `messageId` lookup, no
+   * FALLBACK_LAST fanout — same shape as `setMessageStreamingFlag`). The two
+   * fields are set together because they represent a single transition (the
+   * assistant's streamed response has finished and its tool calls are now
+   * known) — splitting them into two calls would let a re-render observe an
+   * inconsistent in-between state.
+   */
+  setMessageToolCalls: (convId: string, messageId: string, toolCalls: ToolCall[]) => void;
   appendToolCallContext: (convId: string, loopId: string, context: ToolCallForContext) => void;
   setExecutionStepsSnapshot: (convId: string, loopId: string, steps: ExecutionStepSnapshot[]) => void;
   setPlannedStepsSnapshot: (convId: string, loopId: string, steps: PlannedStep[]) => void;
@@ -344,8 +471,22 @@ interface ChatActions {
   getAbortController: (convId: string) => AbortController;
   /** True when a live agent loop holds a controller for this conversation. */
   hasAbortController: (convId: string) => boolean;
-  cancelStreaming: (convId: string) => void;
+  /**
+   * `opts.fromSidecarFrame` is set ONLY by frameApplier.ts's special-cased
+   * dispatch of the sidecar's own authoritative "stopped" decoration frame
+   * (P1-3c-1) — never by a direct caller (Stop button et al). See this
+   * action's own doc for the full branching rationale.
+   */
+  cancelStreaming: (convId: string, opts?: { fromSidecarFrame?: boolean }) => void;
   clearAbortController: (convId: string) => void;
+  /**
+   * Clear a conversation's single-turn-lifecycle skill activation state
+   * (`activeSkills`/`activeSkillArgs`). Extracted from an agentLoop.ts
+   * `useChatStore.setState` escape hatch inside `deactivateAllSkills()` — the
+   * caller still owns the "only mutate if something is active" guard and the
+   * `clearAllSkillHooks()` side effect; this action is only the store mutation.
+   */
+  deactivateConversationSkills: (convId: string) => void;
 
   setAgentStatus: (status: AgentStatus, tool?: string, agentName?: string) => void;
   setRetryInfo: (info: RetryInfo | null) => void;
@@ -599,6 +740,23 @@ export const useChatStore = create<ChatStore>()(
       },
 
       deleteConversation: (id) => {
+        // P1-3c-2 (design doc §3 change 3 / P1-3C-SCOUT-REPORT.md §5
+        // "secondary finding"): this abort MUST run before the `conversations`/
+        // `conversationIndex` deletion below — verified still true, not just
+        // assumed. `controller` here is the SAME AbortController instance
+        // `agentLoopRunner.ts`'s `runAgentLoopDispatched` registers into via
+        // `getAbortRegistry().getAbortController(conversationId)` (both read
+        // through this module's `abortControllers` Map), so `.abort()` fires
+        // that file's `onShellAbort` listener → `notifySidecar('agent.abort',
+        // { runId })`, the exact same signal the Stop button (`cancelStreaming`)
+        // sends. That notification is fire-and-forget — the sidecar can still
+        // be mid-flight on a `tool.invoke` for this conversation when it
+        // arrives. `handleMainLoopToolInvoke` (agentLoopRunner.ts) closes that
+        // residual window by refusing to execute a tool once the conversation
+        // record here is gone, so the ordering below (abort, THEN erase) is
+        // sufficient — no need to await a sidecar ack (would require making
+        // this action async, breaking its synchronous call contract).
+        //
         // Cancel any ongoing streaming for this conversation
         const controller = abortControllers.get(id);
         if (controller) {
@@ -767,13 +925,20 @@ export const useChatStore = create<ChatStore>()(
             }
           }
         });
-        // Async write to disk (non-blocking)
-        import('../core/session/conversationStorage').then(({ appendMessage: diskAppend, updateIndexEntry }) => {
-          diskAppend(convId, message).catch(() => {});
-          // Always persist updated index (messageCount, updatedAt, and title if changed)
-          const meta = get().conversationIndex[convId];
-          if (meta) updateIndexEntry(meta).catch(() => {});
-        });
+        // Async write to disk (non-blocking for rendering, tracked so a
+        // sidecar run can establish a durability barrier before it settles).
+        trackConversationPersistence(
+          convId,
+          () => import('../core/session/conversationStorage').then(async ({
+            appendMessage: diskAppend,
+            updateIndexEntry,
+          }) => {
+            await diskAppend(convId, message);
+            // Always persist updated index (messageCount, updatedAt, and title if changed)
+            const meta = get().conversationIndex[convId];
+            if (meta) await updateIndexEntry(meta);
+          }),
+        );
         // Snapshot any user-uploaded files (currently only images with filePath).
         // Fire-and-forget — must never block the UI flow.
         // ★ Architecture contract: when adding new content types with stripForDisk
@@ -837,18 +1002,24 @@ export const useChatStore = create<ChatStore>()(
           : messages?.slice(-1)[0];
         if (finalMsg) {
           if (msgId) {
-            import('../core/session/conversationStorage').then(({ replaceMessageById }) => {
-              replaceMessageById(convId, finalMsg).catch(() => {});
-            });
+            trackConversationPersistence(
+              convId,
+              () => import('../core/session/conversationStorage').then(({ replaceMessageById }) =>
+                replaceMessageById(convId, finalMsg)
+              ),
+            );
           } else {
-            import('../core/session/conversationStorage').then(({ updateLastMessage }) => {
-              updateLastMessage(convId, finalMsg).catch(() => {});
-            });
+            trackConversationPersistence(
+              convId,
+              () => import('../core/session/conversationStorage').then(({ updateLastMessage }) =>
+                updateLastMessage(convId, finalMsg)
+              ),
+            );
           }
         }
       },
 
-      updateToolCall: (convId, messageId, toolCallId, result, resultContent, isError, hideScreenshot) => {
+      updateToolCall: (convId, messageId, toolCallId, result, resultContent, isError, hideScreenshot, metadata) => {
         set((state) => {
           const msg = state.conversations[convId]?.messages.find((m) => m.id === messageId);
           if (msg?.toolCalls) {
@@ -871,6 +1042,14 @@ export const useChatStore = create<ChatStore>()(
                 }
               } catch {
                 /* non-JSON result — skip card extraction */
+              }
+
+              if (
+                tc.name === TOOL_NAMES.RUN_COMMAND
+                && metadata?.sandboxRecovery
+              ) {
+                tc.sandboxRecovery = metadata.sandboxRecovery;
+                tc.isError = true;
               }
             }
           }
@@ -933,6 +1112,37 @@ export const useChatStore = create<ChatStore>()(
           import('../core/session/conversationStorage').then(({ replaceMessageById }) => {
             replaceMessageById(convId, updatedMsg).catch(() => {});
           });
+        }
+      },
+
+      setToolCallSandboxRecoveryAction: async (convId, messageId, toolCallId, action) => {
+        const currentMsg = get().conversations[convId]?.messages.find((m) => m.id === messageId);
+        const currentToolCall = currentMsg?.toolCalls?.find((t) => t.id === toolCallId);
+        if (!currentMsg || !currentToolCall?.sandboxRecovery) {
+          throw new Error(`Sandbox recovery tool call "${toolCallId}" no longer exists`);
+        }
+        const persistedMsg: Message = {
+          ...currentMsg,
+          toolCalls: currentMsg.toolCalls?.map((toolCall) =>
+            toolCall.id === toolCallId
+              ? { ...toolCall, sandboxRecoveryAction: action }
+              : toolCall
+          ),
+        };
+        const { replaceMessageByIdStrict } = await import('../core/session/conversationStorage');
+        await replaceMessageByIdStrict(convId, persistedMsg);
+
+        let updated = false;
+        set((state) => {
+          const msg = state.conversations[convId]?.messages.find((m) => m.id === messageId);
+          const tc: ToolCall | undefined = msg?.toolCalls?.find((t) => t.id === toolCallId);
+          if (tc?.sandboxRecovery) {
+            tc.sandboxRecoveryAction = action;
+            updated = true;
+          }
+        });
+        if (!updated) {
+          throw new Error(`Sandbox recovery tool call "${toolCallId}" no longer exists`);
         }
       },
 
@@ -1031,22 +1241,48 @@ export const useChatStore = create<ChatStore>()(
       },
 
       updateMessageThinking: (convId, thinking, msgId) => {
-        set((state) => {
-          const target = findTargetMessage(
-            state.conversations[convId]?.messages,
-            msgId ?? FALLBACK_LAST,
-          );
-          if (target) target.thinking = thinking;
-        });
+        // Buffer and flush once per animation frame, mirroring
+        // appendToLastMessage's tokenBuffer — the OpenAI-compatible adapter's
+        // reasoning models (DeepSeek-R1 style) emit one `thinking` event per
+        // SSE chunk, which without batching means one React re-render per
+        // chunk. REPLACE (not append) semantics: `thinking` here is already
+        // the full accumulated text for this call (see thinkingBuffer's
+        // doc comment above), so the buffer just remembers the latest value.
+        const key = bufferKey(convId, msgId);
+        thinkingBuffer.set(key, thinking);
+        scheduleFlush();
       },
 
       updateMessageThinkingDuration: (convId, duration, msgId) => {
+        // Flush first: thinkingDuration marks the thinking step "done" in the
+        // UI, so any still-buffered thinking text must land before the
+        // duration freezes — otherwise the step reads as complete while its
+        // final text tail hasn't rendered yet. flushTokenBuffer covers the
+        // thinking buffer as well as the token buffer (see its doc comment).
+        flushTokenBuffer(convId, msgId);
         set((state) => {
           const target = findTargetMessage(
             state.conversations[convId]?.messages,
             msgId ?? FALLBACK_LAST,
           );
           if (target) target.thinkingDuration = duration;
+        });
+      },
+
+      setMessageStreamingFlag: (convId, messageId, streaming) => {
+        set((state) => {
+          const msg = state.conversations[convId]?.messages.find((m) => m.id === messageId);
+          if (msg) msg.isStreaming = streaming;
+        });
+      },
+
+      setMessageToolCalls: (convId, messageId, toolCalls) => {
+        set((state) => {
+          const msg = state.conversations[convId]?.messages.find((m) => m.id === messageId);
+          if (msg) {
+            msg.toolCalls = toolCalls;
+            msg.isStreaming = false;
+          }
         });
       },
 
@@ -1147,7 +1383,45 @@ export const useChatStore = create<ChatStore>()(
 
       hasAbortController: (convId) => abortControllers.has(convId),
 
-      cancelStreaming: (convId) => {
+      cancelStreaming: (convId, opts) => {
+        // P1-3c-1 (design doc §3, "conversation-authority"): while a
+        // sidecar-hosted run owns this conversation, the SIDECAR is the
+        // run's single writer for the "stopped" decoration (marker /
+        // thinkingDuration / tool-cancel + the persist below) — it sends its
+        // own `cancelStreaming` frame from agentLoop.ts's abort catch, which
+        // frameApplier.ts re-applies onto THIS SAME action with
+        // `opts.fromSidecarFrame: true` (see that file's special case for
+        // 'cancelStreaming'). That frame is guaranteed to land after any of
+        // the run's own in-flight streamed text/tool-call frames (same
+        // coalescer FIFO), so its decoration can't race trailing content the
+        // way an immediate local mutate would.
+        //
+        // `opts.fromSidecarFrame` always takes the full path below
+        // unconditionally — that call IS the authoritative decoration, not a
+        // second guess of it, so no registry re-check is needed (and would
+        // be wrong: by the time the frame applies, the RunSession this
+        // predicate reads is typically STILL registered — unregistration
+        // only happens after the `agent.run` RPC resolves, which is later).
+        //
+        // A direct call (Stop button or any other in-process caller;
+        // `opts` undefined) checks `isConversationRunningInSidecar` — if a
+        // sidecar run is live, it must NOT also mutate/persist here (that
+        // would race the sidecar's own trailing frames); it only signals
+        // abort + clears its own UI-only overlay state, and returns.
+        if (!opts?.fromSidecarFrame && isConversationRunningInSidecar(convId)) {
+          const controller = abortControllers.get(convId);
+          if (controller) {
+            controller.abort();
+            abortControllers.delete(convId);
+          }
+          setComputerUseActive(false);
+          import('@tauri-apps/api/core').then(({ invoke }) => {
+            invoke('hide_screen_border').catch(() => {});
+            invoke('window_show').catch(() => {});
+          }).catch(() => {});
+          return;
+        }
+
         // Land any RAF-buffered stream tokens first, so the stop marker below
         // is appended AFTER the streamed text (and both get persisted). The
         // stop button reaches here before the aborted loop's own flush runs.
@@ -1232,6 +1506,16 @@ export const useChatStore = create<ChatStore>()(
 
       clearAbortController: (convId) => {
         abortControllers.delete(convId);
+      },
+
+      deactivateConversationSkills: (convId) => {
+        set((state) => {
+          const conv = state.conversations[convId];
+          if (conv) {
+            conv.activeSkills = [];
+            conv.activeSkillArgs = {};
+          }
+        });
       },
 
       setRetryInfo: (info) => {
@@ -1499,17 +1783,8 @@ export const useChatStore = create<ChatStore>()(
             id: newId,
             status: 'idle',
             completedAt: undefined,
+            messages: conv.messages.map(sanitizeImportedMessage),
           };
-
-          // Clean up streaming states
-          for (const msg of imported.messages) {
-            msg.isStreaming = false;
-            if (msg.toolCalls) {
-              for (const tc of msg.toolCalls) {
-                tc.isExecuting = false;
-              }
-            }
-          }
 
           const meta: ConversationMeta = {
             id: newId,

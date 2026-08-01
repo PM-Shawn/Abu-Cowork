@@ -27,7 +27,7 @@ Tell Abu what you need — it reads files, runs commands, writes docs, and build
 | Autonomous planning & task execution | :white_check_mark: | :x: | :x: |
 | Read/write local files, run commands | :white_check_mark: | :x: | :white_check_mark: |
 | Natural language interaction | :white_check_mark: | :white_check_mark: | :x: |
-| 28 built-in skills + self-evolving (Abu grows its own) | :white_check_mark: | :x: | :x: |
+| 29 built-in skills + self-evolving (Abu grows its own) | :white_check_mark: | :x: | :x: |
 | Multi-conversation Project aggregation | :white_check_mark: | :x: | :x: |
 | Scheduled tasks & event triggers | :white_check_mark: | :x: | :white_check_mark: |
 | IM bot (Lark/DingTalk/WeCom/Slack) | :white_check_mark: | :x: | Partial |
@@ -39,7 +39,7 @@ Tell Abu what you need — it reads files, runs commands, writes docs, and build
 
 ## What's New
 
-**Latest release [v0.29.0](https://github.com/PM-Shawn/Abu-Cowork/releases/latest)** — workspace file tree + code canvas · declarative progress panel · multi-endpoint provider presets.
+**[Download the latest stable release](https://github.com/PM-Shawn/Abu-Cowork/releases/latest)** · [Read the full changelog](CHANGELOG.md)
 
 Recent highlights: **Workspace file tree + code canvas** (browse / preview / edit files in the side panel, CodeMirror source editing with auto-save, preview auto-refresh, version snapshots with rollback), **declarative progress panel** (the model declares its own plan steps and status via `report_plan`), **inline visualization widgets** (charts / HTML / Mermaid rendered inline in chat), **multi-endpoint provider presets** (Volcengine / Bailian / Zhipu access plans as curated presets + a unified add/edit modal), **per-model capabilities** (vision / tools / reasoning / token limits declared per model), plus **doc comment-to-chat**, **full internationalization**, and **signed + notarized macOS builds**.
 
@@ -78,7 +78,7 @@ Recent highlights: **Workspace file tree + code canvas** (browse / preview / edi
 <td align="center"><b>IM Channel Chat</b><br/>@Abu in Lark/DingTalk to interact<br/><br/><img src="website/assets/screenshot-im-chat.en.png" width="100%" /></td>
 </tr>
 <tr>
-<td align="center"><b>Skills</b><br/>28 built-in skills + self-evolving + custom<br/><br/><img src="website/assets/screenshot-skills.en.png" width="100%" /></td>
+<td align="center"><b>Skills</b><br/>29 built-in skills + self-evolving + custom<br/><br/><img src="website/assets/screenshot-skills.en.png" width="100%" /></td>
 <td align="center"><b>MCP Connectors</b><br/>One-click integration with Playwright, GitHub & more<br/><br/><img src="website/assets/screenshot-mcp.en.png" width="100%" /></td>
 </tr>
 <tr>
@@ -126,9 +126,9 @@ Recent highlights: **Workspace file tree + code canvas** (browse / preview / edi
 - **Theme switching** — Light / dark / system, via Settings → Appearance
 - **Labs** — In-progress features, off by default, opt-in, may change or be removed (currently hosting: Desktop Pet)
 - **Conversation Sharing** — Export any conversation to JSON in one click; API keys and local paths are auto-redacted before sharing
-- **28 Built-in Skills** — PDF/PPTX/DOCX/Excel generation, frontend design, canvas design, algorithmic art, Mermaid/SVG/infographics, Web Artifacts, Chrome automation (Abu-Browser), deep research, Agent self-reflection (reflect), workflow automation, and more — one-click install, fully customizable
+- **29 Built-in Skills** — PDF/PPTX/DOCX/Excel generation, frontend design, canvas design, algorithmic art, Mermaid/SVG/infographics, Abu's built-in browser, optional Chrome bridge, deep research, Agent self-reflection (reflect), workflow automation, and more — one-click install, fully customizable
 - **MCP Protocol** — Connect to databases, search engines, GitHub, and other external services via Model Context Protocol
-- **Browser Automation** — Built-in Browser Bridge + Chrome extension for web element interaction, form filling, screenshots, and JS execution
+- **Browser Automation** — Zero-setup built-in browser for ordinary web tasks, plus an optional Chrome extension bridge for existing tabs and signed-in sessions
 - **Computer Use** — Screenshot + mouse/keyboard control for desktop-level tasks, with sensitive app blocking, dangerous key interception, and a 5-minute session timeout
 - **HTTP Fetch** — Built-in safety gateway: URL length cap, embedded credential blocking, cloud metadata endpoint blocking, 10 MB download limit, 60-second timeout — no more raw `curl` blind spots
 
@@ -206,11 +206,11 @@ Head to [GitHub Releases](https://github.com/PM-Shawn/Abu-Cowork/releases) to do
 
 | Platform | File |
 |----------|------|
-| macOS (Apple Silicon) | `Abu_x.x.x_aarch64.dmg` |
-| macOS (Intel) | `Abu_x.x.x_x64.dmg` |
-| Windows | `Abu_x.x.x_x64-setup.exe` |
+| macOS (Apple Silicon) | `Abu-x.x.x-mac-arm64.dmg` |
+| macOS (Intel) | `Abu-x.x.x-mac-x64.dmg` |
+| Windows x64 | `Abu-x.x.x-windows-x64-setup.exe` |
 
-> **macOS Users**: If you see a "damaged" warning on first launch, run `xattr -cr /Applications/Abu.app`. See the [Installation Guide](docs/Installation-Guide.md) for details.
+> Official macOS packages are signed and notarized. The Windows installer is current-user only and does not need administrator rights, but remains Authenticode-unsigned; SmartScreen may require **More info → Run anyway**. See the [Installation Guide](docs/Installation-Guide.md).
 
 ## Quick Start
 
@@ -253,13 +253,13 @@ Create a weekly report PPT for this week
 
 > For more use cases, see the [User Guide](docs/User-Guide.md)
 
-## Built-in Skills (28 total)
+## Built-in Skills (29 total)
 
 | Category | Skills |
 |----------|--------|
 | Document Generation | PDF, PPTX, DOCX, XLSX |
 | Design & Creative | Frontend Design, Canvas Design, Algorithmic Art, SVG Diagram, Mermaid Diagram, Infographic, Slack GIF Creator, HTML Widget |
-| Browser Automation | **Abu-Browser** (Chrome bridge with auto extension setup, drives a real browser) |
+| Browser Automation | **Abu-Browser** (built-in, isolated session), **Abu-Chrome-Bridge** (optional Chrome extension for existing tabs and sign-in state) |
 | Developer Tools | Claude API, MCP Builder, Web Artifacts Builder, Webapp Testing (Playwright) |
 | Content Writing | Doc Co-authoring, Brand Guidelines, Internal Comms |
 | Automation | Schedule, Trigger, Alert SOP |
@@ -273,7 +273,7 @@ Create a weekly report PPT for this week
 
 | Layer | Technology |
 |-------|-----------|
-| Desktop Framework | Tauri 2.0 (Rust + Web) |
+| Desktop Framework | Electron (main + preload + isolated React renderer) |
 | Frontend | React 19 + TypeScript (strict) + TailwindCSS v4 + Vite |
 | LLM Adapter | Dual-protocol adapter (Anthropic / OpenAI-compatible) |
 | State Management | Zustand + Immer + Persist |
@@ -288,9 +288,9 @@ Create a weekly report PPT for this week
 
 ### Prerequisites
 
-- Node.js >= 18
-- Rust >= 1.75 ([Install Rust](https://rustup.rs/))
-- Tauri 2.0 system dependencies ([See docs](https://v2.tauri.app/start/prerequisites/))
+- Node.js 24 and npm
+- Rust stable ([Install Rust](https://rustup.rs/)) for the native helper and sandbox launcher
+- Platform build tools: Xcode Command Line Tools on macOS, or Visual Studio Build Tools on Windows
 
 ### Development
 
@@ -299,11 +299,12 @@ Create a weekly report PPT for this week
 git clone https://github.com/PM-Shawn/Abu-Cowork.git
 cd Abu-Cowork
 
-# Install dependencies
-npm install
+# Install locked dependencies and prepare the worktree-local Electron runtime
+npm ci
+npm run setup:electron-dev
 
-# Launch desktop app (uses dev-isolated config, fully separate from your installed Abu)
-npm run tauri:dev
+# Launch the Electron desktop app (dev data is isolated from installed Abu)
+npm run electron:dev
 
 # Frontend only (no Rust required)
 npm run dev
@@ -312,10 +313,12 @@ npm run dev
 ### Build
 
 ```bash
-npm run tauri build
+npm run dist:electron
 ```
 
-Build artifacts are located in `src-tauri/target/release/bundle/`.
+Build artifacts are written to `release-electron/`. Build and validate distributable packages on the target operating system; a macOS cross-build is not Windows acceptance.
+
+Source/fork packages do not use Abu's production updater or migrate installed Abu data. If you plan to distribute a modified build, read the [Fork & Distribution Guide](FORKING.md) first.
 
 ### Testing
 
@@ -364,10 +367,12 @@ src/
 ├── types/            # TypeScript type definitions
 └── utils/            # Utility functions
 
-builtin-skills/       # 28 built-in skills (one directory each)
+builtin-skills/       # 29 built-in skills (one directory each)
 builtin-agents/       # Built-in agent definitions (placeholder)
 abu-browser-bridge/   # Browser bridge MCP Server
-abu-chrome-extension/ # Chrome extension (used by the Abu-Browser skill)
+abu-chrome-extension/ # Chrome extension (used by the Abu-Chrome-Bridge skill)
+electron/             # Electron main process, preload bridge, native hosts
+sidecar/              # Agent/runtime sidecar process
 src-tauri/
 ├── src/
 │   ├── computer_use.rs    # Screenshot + mouse/keyboard + sensitive app blocking
@@ -386,10 +391,11 @@ src-tauri/
 |----------|-------------|
 | [User Guide](docs/User-Guide.md) | Complete product features and usage instructions |
 | [Installation Guide](docs/Installation-Guide.md) | Platform-specific installation and troubleshooting |
+| [Fork & Distribution Guide](FORKING.md) | App identity, updater, signing, migration, and release boundaries for forks |
 
 ## Contributing
 
-Issues and Pull Requests are welcome!
+Issues and Pull Requests are welcome. Read the [Fork & Distribution Guide](FORKING.md) before shipping a modified desktop package.
 
 1. Fork this repo
 2. Create your branch: `git checkout -b feat/my-feature`

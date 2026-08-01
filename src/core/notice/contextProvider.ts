@@ -12,6 +12,7 @@
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { invoke } from '@tauri-apps/api/core';
 import { useChatStore } from '@/stores/chatStore';
+import { hasElectronCommandHost } from '@/utils/electronHost';
 import type { GateContext } from './gate';
 
 const FULLSCREEN_CACHE_TTL_MS = 30_000;
@@ -99,10 +100,26 @@ export async function assembleGateContext(now: number): Promise<GateContext> {
  */
 export function cachedContextProvider(now: number): GateContext {
   const chatState = useChatStore.getState();
+  let focused = cachedFocused;
+  if (
+    hasElectronCommandHost()
+    && typeof document !== 'undefined'
+    && typeof document.hasFocus === 'function'
+  ) {
+    try {
+      // A focused child WebContentsView (the built-in browser) makes the main
+      // renderer report false even though the BrowserWindow is still focused.
+      // DOM focus may therefore promote a stale false cache, but must not
+      // demote a true native-window focus value.
+      focused = focused || document.hasFocus();
+    } catch {
+      // Keep the pushed native value when the DOM focus API is unavailable.
+    }
+  }
 
   return {
     now,
-    mainWindowFocused: cachedFocused,
+    mainWindowFocused: focused,
     currentConversationId: chatState.activeConversationId,
     petState: 'off',
     fullscreenApp: cachedFullscreenApp,

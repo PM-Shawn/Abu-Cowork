@@ -2,17 +2,28 @@ import type { StreamEvent, ToolCall, TokenUsage, ImageAttachment, MessageContent
 import type { LLMAdapter } from '../llm/adapter';
 import { LLMError, formatLlmDisplayError } from '../llm/adapter';
 import { recordProviderCallOutcome, isConfigFailureCode } from '../llm/providerCallHealth';
-import { ClaudeAdapter } from '../llm/claude';
-import { OpenAICompatibleAdapter } from '../llm/openai-compatible';
-import { getAllTools, type ConfirmationInfo, type FilePermissionCallback } from '../tools/registry';
+import { selectChatAdapter } from '../llm/selectChatAdapter';
+import { getToolInvoker, type ToolInvoker, type FilePermissionCallback } from './ports/toolInvoker';
+import type { ConfirmationInfo } from '../tools/commandSafety';
 import type { ToolDefinition } from '../../types';
-import { useChatStore, flushTokenBuffer } from '../../stores/chatStore';
-import { useSettingsStore, getEffectiveModel, getActiveApiKey, getActiveProvider, resolveAgentModel, providerRequiresApiKey } from '../../stores/settingsStore';
-import { useDiscoveredCapsStore } from '../../stores/discoveredCapabilitiesStore';
-import { useWorkspaceStore } from '../../stores/workspaceStore';
-import { useTaskExecutionStore } from '../../stores/taskExecutionStore';
+import { getActiveApiKey, getActiveProvider, providerRequiresApiKey } from '../../utils/settingsSelectors';
+import { resolveEntryModel } from './resolveEntryModel';
+import { getSettingsReader, type SettingsReader } from './ports/settingsReader';
+import { getChatDelta } from './ports/chatDelta';
+import { getConversationReader } from './ports/conversationReader';
+import { getWorkspaceReader } from './ports/workspaceReader';
+import { getCapsPort } from './ports/capsPort';
+import { getExecutionPort } from './ports/executionPort';
+import { getAbortRegistry } from './ports/abortRegistry';
+import { getScratchpadPort } from './ports/scratchpadPort';
 import { createEventRouter } from './eventRouter';
-import { routeInput, buildSystemPromptSections, type RouteResult, type IMContext } from './orchestrator';
+// Type-only import — the runtime routeInput/buildSystemPromptSections calls
+// moved to entryOrchestration.ts (P1-3B-3A item 1, dynamically imported from
+// runAgentLoop's fallback branch only). agentLoop.ts must never take a
+// runtime dependency on orchestrator.ts (see entryOrchestration.ts's doc
+// comment / design doc §2 "雷 1") — a type-only import erases at build time,
+// so this line carries zero runtime edge into the orchestrator graph.
+import type { RouteResult, IMContext } from './orchestrator';
 import type { PromptSection } from '../llm/promptSections';
 import { sectionsToString, mergeSections } from '../llm/promptSections';
 import { skillLoader } from '../skill/loader';
@@ -32,10 +43,11 @@ import { AutoCompactTracker, getUsagePercent } from '../context/autoCompact';
 import { estimateToolSchemaTokens, estimateTokens, estimateMessageTokens, calibrateFromUsage, setActiveModel } from '../context/tokenEstimator';
 import { identifyRounds, RECENT_ROUNDS_TO_KEEP } from '../context/contextUtils';
 import { withRetry } from './retry';
-import { runSubagentLoop, extractParentConversationSummary } from './subagentLoop';
+import { extractParentConversationSummary } from './subagentLoop';
+import { runSubagent } from './subagentRunner';
 import type { SubagentProgressEvent } from './subagentLoop';
 import { createSubagentController } from './subagentAbort';
-import { allToolsUnparseable, MAX_NO_PROGRESS_TURNS, resolveMaxTurns } from './loopGuards';
+import { allToolsUnparseable, MAX_NO_PROGRESS_TURNS, resolveMaxTurns, escalateMaxOutputTokens, shouldContinueTruncatedToolCalls } from './loopGuards';
 import { drainQueuedInputs, clearInputQueue, enqueueUserInput } from './userInputQueue';
 import { snapshotExecutionSteps } from './executionSnapshot';
 import { emitHook } from './lifecycleHooks';
@@ -45,14 +57,12 @@ import { executeToolBatch } from './toolExecutor';
 import { startConversationTrace, endConversationTrace, startGeneration } from '../observability/langfuse';
 import { calculateTurnCost } from '../llm/costTracker';
 import { formatPlannedStepsForPrompt } from './plannedStepsPrompt';
-import { isWindows } from '../../utils/platform';
 import { getBuiltinSearchConfig } from '../capabilities';
 import { resolveCapabilities, resolveEffectiveContextWindow, computeReasoningParams, type ModelCapabilities } from '../llm/modelCapabilities';
 import { applyDeclaredCapabilities } from '../llm/applyDeclaredCapabilities';
 import { resolveModelDeclared } from '../llm/resolveModelDeclared';
 import { rehydrateForSend, type ImageBase64Cache } from '../llm/imageRehydration';
 import { TOOL_NAMES, isDisplayHiddenStepBackedTool } from '../tools/toolNames';
-import { WIDGET_CDN_HOSTS, getWidgetHardBanBriefList } from '../widget/guidelines';
 import { prefetchTools } from '../tools/toolPrefetch';
 import { classifyTools, buildDeferredToolsSummary } from '../tools/toolSearch';
 import { hasQueuedInputs } from './userInputQueue';
@@ -185,235 +195,41 @@ import {
   drainUserQuestions,
 } from './permissionBridge';
 import { clearPlanMode } from './planMode';
+import { drainCapabilitySetupRequests } from '../capabilityPlugins/setupBridge';
 
 /** Persist execution steps onto the last assistant message for the given loop, then evict from memory */
 export function persistExecutionSnapshot(conversationId: string, loopId: string): void {
-  const store = useTaskExecutionStore.getState();
-  const exec = store.getExecutionByLoopId(loopId);
+  // NOTE: persistExecutionSnapshot is a standalone top-level function (not
+  // nested in runAgentLoop), so it has no access to any cached local —
+  // fetches getExecutionPort()/getChatDelta() fresh at each call, same
+  // pattern as deactivateAllSkills() (see CHAT-PROBE-REPORT.md §2c).
+  const exec = getExecutionPort().getExecutionByLoopId(loopId);
   // Return early only when there is truly nothing to persist.
   if (!exec || (exec.steps.length === 0 && exec.plannedSteps.length === 0)) return;
 
   // Persist execution steps snapshot if any.
   if (exec.steps.length > 0) {
-    useChatStore.getState().setExecutionStepsSnapshot(conversationId, loopId, snapshotExecutionSteps(exec.steps));
+    getChatDelta().setExecutionStepsSnapshot(conversationId, loopId, snapshotExecutionSteps(exec.steps));
   }
   // Persist planned steps so TaskProgressPanel survives loop eviction. The
   // panel renders an in_progress step statically (no spinner) once the live
   // execution is gone, so a stopped mid-flight step reads as "in progress,
   // paused" rather than a perpetual spinner — no status rewrite needed here.
   if (exec.plannedSteps.length > 0) {
-    useChatStore.getState().setPlannedStepsSnapshot(conversationId, loopId, exec.plannedSteps);
+    getChatDelta().setPlannedStepsSnapshot(conversationId, loopId, exec.plannedSteps);
   }
-  store.evictExecution(exec.id);
+  getExecutionPort().evictExecution(exec.id);
 }
 
 /**
- * Abu's default soul — factory personality.
- * Used when ~/.abu/SOUL.md is empty or doesn't exist.
- * Exported so orchestrator can use it as fallback.
+ * Abu's default soul — factory personality. Relocated to
+ * `./prompts/defaultSoul` to break the agentLoop.ts ↔ orchestrator.ts import
+ * cycle (see that module's doc comment). Re-exported here so any existing
+ * external callers of `getDefaultSoul` from `agentLoop.ts` keep working.
  */
-export function getDefaultSoul(): string {
-  return `You are Abu (阿布), a professional, reliable, easy-to-talk-to desktop AI assistant. Your job is to help the user get all kinds of work done efficiently — file management, finding information, content creation, everyday office tasks — you can lend a hand with anything.
+export { getDefaultSoul } from './prompts/defaultSoul';
 
-## Core principles
-- Natural, conversational tone, like a reliable friend helping out: not stuffy, but not cutesy either
-- Positive and pragmatic: when something breaks, offer a fix; when a task is done, give a brief report — no excessive reassurance or praise
-- Refer to yourself as "Abu" (阿布) or "I"; do not use kaomoji or emoji
-- Keep replies concise, clear, and focused: neither aloof nor long-winded
-
-## Reply style — concise and direct
-- **Focus on the result, not the process**: the tool-call process is already shown in the UI; don't restate it in text
-- **No technical jargon**: don't mention the OS type, programming languages, the command line, API names, or tool names
-- **No implementation details**: don't say "I'll use Python to...", "let me get the system info first...", or "on the xxx system..."
-- **Short reply examples**:
-  - Opened a website → "Opened Xiaohongshu for you"
-  - Finished → "Done"
-  - Read a file → "Took a look — this file is..."
-  - Something failed → "Didn't work: [brief reason]. Want me to try again?"
-- **Exceptions** (detail is fine): the user explicitly asks "how did you do it", a task failed and needs an explanation, or a complex task needs step-by-step confirmation`;
-}
-
-/**
- * The "Visual output" capability section — two variants, selected on the
- * resolved model's tool support:
- *
- * - Tools supported (default): visualization goes through the explicit
- *   show_widget tool (P1 widget system, aligned with WorkBuddy/ChatGPT/TRAE),
- *   and a "save as a real webpage" intent escalates to write_file. A written
- *   .html CAN open in the side preview panel — MessageGroup.tsx's openPreview
- *   effect auto-opens the LAST non-image deliverable of the turn, so the
- *   prompt is worded "can be opened" (not "always auto-opens"): if the model
- *   writes another file after the page, that one wins the auto-open. No new
- *   tool needed either way.
- * - Tools NOT supported (`supportsTools === false`): the model gets tools=[]
- *   (see the `noTools` gate in the turn loop) — no show_widget, no
- *   write_file, nothing. These models keep the previous ```html-fence
- *   instruction — the fence rendering path still works
- *   (codeBlockRenderers.ts) and is the ONLY channel they have, so there is
- *   no save-as-a-file escalation to offer them.
- *
- * Both variants share the same trigger tiers (when to make a visual at all)
- * and the same hard-ban list (`getWidgetHardBanBriefList()`, single-sourced
- * from guidelines.ts's `WIDGET_HARD_BAN_RULES` — read_me documents the same
- * rules in full) — this is what stops the white-screen failure class at the
- * prompt layer, before a single widget is ever rendered.
- *
- * Both variants also carve a STATIC structure diagram (flowchart, tree,
- * sequence, state machine, org chart, node/edge graph, ER diagram, Gantt
- * chart) out of the show_widget/```html default and route it to a
- * ```mermaid fence instead — Abu bundles a real Mermaid engine
- * (MermaidBlock.tsx, no CDN) registered for that fence in
- * codeBlockRenderers.ts, so this carve-out routes static structure diagrams
- * to the robust engine instead of fragile hand-drawn SVG. (ER diagram/Gantt
- * chart were folded in from the now-non-auto-invoking mermaid-diagram
- * builtin skill's type table — the two mermaid strengths svg-diagram can't
- * match — see guidelines.ts's file-header note on the wider skill fold-in.)
- * The carve-out must be worded as scoping DOWN the show_widget/html default,
- * not replacing it, so the two rules don't read as contradictory. It
- * distinguishes BY PURPOSE, not keyword: a project-scheduling Gantt (tasks
- * with start/end dates) stays on Mermaid, but a reading-oriented timeline of
- * milestones/history ("大事记", dated events for a reader) routes to
- * show_widget's `poster` Timeline recipe (guidelines.ts) instead — otherwise
- * the model over-generalizes "timeline" -> mermaid's own `timeline` diagram
- * type, which is plain and underwhelming compared to the poster rendering.
- * Qualifying Gantt this way also prevents the timeline exclusion from
- * contradicting the retained "Gantt chart" entry in the same mermaid list.
- */
-const VISUAL_TRIGGER_TIERS = `**When to make a visual** — explicit ask (show/visualize/diagram/chart/draw/graph/plot, "what does X look like"); proactively make a visual — don't answer in prose alone — for how-does-X-work / teaching / process / architecture / "compare A vs B" requests; or implied by the noun phrase ("comparison table of A vs B", "settings panel mockup", "state machine for …") — a markdown table is NOT a substitute when a visual is what's actually being asked for. (Mockups use plain inputs/buttons, never a real <form>.)`;
-
-// Shared blocks — identical in both variants, factored out so the ban list
-// and the CDN allowlist can't drift between the tool and fence prompts.
-const VISUAL_HARD_BANS_BLOCK = `**Hard bans** (cause a blank/broken render):
-${getWidgetHardBanBriefList()}`;
-
-const VISUAL_CDN_ALLOWED_LINE = `**Allowed**: CDN libraries (Chart.js, D3, etc.): ${WIDGET_CDN_HOSTS.join(' / ')}`;
-
-const VISUAL_OUTPUT_TOOL_VARIANT = `${VISUAL_TRIGGER_TIERS}
-
-**Routing — the deciding question is "is this a file the user wants to keep?"** Ephemeral, part of this reply → **call the show_widget tool**, right where you need it — this is the default (call read_me once before your first call each conversation, don't narrate it). A page the user wants to **save, export, download, or keep as a real file** → write_file a COMPLETE self-contained \`.html\` document (doctype + html/head/body; inline CSS/JS or the CDN allowlist below) — it can then be opened in the side preview panel. Only escalate to write_file on an explicit save/export intent.
-
-**Static structure diagrams — carve-out**: when labeled nodes and edges fully explain a STATIC structure — flowchart, tree, sequence diagram, state machine, org chart, node/edge graph, ER diagram, Gantt chart (project scheduling — tasks with start/end dates) — output a \`\`\`mermaid code block instead (rendered by the built-in Mermaid engine, no sandbox). A reading-oriented timeline of milestones/history ("大事记", dated events for a reader) is not a structure graph — use show_widget (poster-style timeline). (Project-scheduling Gantt charts still use Mermaid, above.) This narrows, not replaces, the show_widget default above: show_widget stays the default for everything dynamic, interactive, data-driven, or chart-like.
-
-${VISUAL_HARD_BANS_BLOCK}
-
-**Strictly forbidden**: generate_image for a chart/diagram (show_widget draws those) — just call show_widget.
-
-${VISUAL_CDN_ALLOWED_LINE}`;
-
-const VISUAL_OUTPUT_FENCE_VARIANT = `${VISUAL_TRIGGER_TIERS}
-
-**Rendering**: no tools here — every visual, including a "save"/"download" ask, goes through **a \`\`\`html code block in your reply**; there's no separate saved-file path, so say so if the user needs a real downloadable file.
-
-**Static structure diagrams — carve-out**: when labeled nodes and edges fully explain a STATIC structure — flowchart, tree, sequence diagram, state machine, org chart, node/edge graph, ER diagram, Gantt chart (project scheduling — tasks with start/end dates) — output a \`\`\`mermaid code block instead (rendered by the built-in Mermaid engine, no sandbox). A reading-oriented timeline of milestones/history ("大事记", dated events for a reader) is not a structure graph — use an \`\`\`html poster-style timeline. (Project-scheduling Gantt charts still use Mermaid, above.) Use an \`\`\`html fragment for everything dynamic, interactive, data-driven, or chart-like.
-
-${VISUAL_HARD_BANS_BLOCK}
-
-**Design system** (no design-guide tool in this mode — use these directly): utility classes \`.w-card\`/\`.w-stat\`/\`.w-grid\`/\`.w-row\`/\`.w-badge\`/\`.w-btn\` plus the \`--w-*\` theme vars.
-
-${VISUAL_CDN_ALLOWED_LINE}`;
-
-/**
- * Abu's capability prompt — always injected, cannot be overridden by SOUL.md.
- * Contains operational rules: visualization, work style, permissions, extensions.
- *
- * `supportsTools` (default true) selects the visual-output variant — see the
- * variant constants above. All other sections are identical in both modes.
- */
-export function getCapabilityPrompt(opts?: { supportsTools?: boolean }): string {
-  const win = isWindows();
-  const dangerousCmd = win ? 'del /s /q' : 'rm -rf';
-  const abuDir = win ? '%USERPROFILE%\\.abu\\' : '~/.abu/';
-  const skillPathTmpl = win ? '%USERPROFILE%\\.abu\\skills\\{skill-name}\\' : '~/.abu/skills/{skill-name}/';
-  const agentPathTmpl = win ? '%USERPROFILE%\\.abu\\agents\\{agent-name}\\' : '~/.abu/agents/{agent-name}/';
-  const visualOutput = opts?.supportsTools === false
-    ? VISUAL_OUTPUT_FENCE_VARIANT
-    : VISUAL_OUTPUT_TOOL_VARIANT;
-
-  return `## Visual output — generative UI (important!)
-${visualOutput}
-
-**Editing an already-exported file**:
-- ⚠️ Once a file is written to disk, **partial edits must use edit_file** (provide old_content + new_content for an exact replacement)
-- ❌ Never use write_file to fully overwrite an existing multi-section document (report / long HTML / long code) — it loses content the user didn't ask to change
-- ✅ If you truly need to rebuild the whole file structure, first run_command to delete the original file, then write_file to create a new one
-
-**Style requirement (exported/write_file documents only)**: use a light/white background, no dark/black background — a standalone file has no host theme to follow. (This is the opposite of the inline visual path above, which is theme-aware by design because it renders inside Abu's chat.)
-
-## How you work — take initiative!
-You are a **proactive assistant**. When the user gives you a task:
-1. **Act first, report after** — don't ask the user "do you want me to do X"; just use tools to do it
-2. **Gather information yourself** — if you need a path, file contents, etc., get it with tools directly; don't ask the user
-3. **Only reach out when you hit a problem** — ask the user only when you actually hit an obstacle (insufficient permission, path doesn't exist, the user needs to make a choice)
-
-### Common scenarios
-- User says "look at the desktop" → directly use tools to get the desktop path and list its contents
-- User says "help me organize files" → first see what's there, then make a plan and execute it
-- When you hit an uncertain proper noun, brand name, or project name, web_search first, then answer — don't guess
-- If during a task you find you're missing some tool capability (e.g. operating GitHub, Slack, a database), use search_mcp_server to find the matching MCP service
-- User asks to install some software/tool/app (e.g. "help me install xxx") → this is a normal software-install request; web_search for the install method and tell the user the steps, or run_command to run the install command — do NOT use search_mcp_server
-
-### Permissions and safety
-The following actions require informing the user and getting confirmation before executing:
-- **Deleting files/directories** — tell the user what you're about to delete, and wait for "ok / go ahead / delete it" before executing
-- **Overwriting an existing file** — tell the user the file already exists, and wait for confirmation before overwriting
-- **Running potentially risky commands** — e.g. ${dangerousCmd}, formatting, etc.
-
-**First-time access to a new directory requires user authorization.** When you read, list, or write files in a new directory, the system automatically pops up an authorization dialog. Once the user authorizes it, all operations under that directory proceed normally. Sensitive directories (e.g. .ssh, .aws) are rejected outright and cannot be authorized.
-Ordinary commands (run_command) can be run directly; just report the result afterward.
-
-## Extension directory structure
-Abu's extensions live under the ${abuDir} folder in the user's home directory:
-- **skills/** — the skills directory; each skill has a SKILL.md file, path: ${skillPathTmpl}SKILL.md
-- **agents/** — the agents directory; each agent has an AGENT.md file, path: ${agentPathTmpl}AGENT.md
-
-Use the skill_manage (create/patch/write_file) tool to create or modify skills, and the save_agent tool to create a new agent.
-
-## Parallel agent capability
-When the user's task can be split into multiple **independent subtasks**, you can use the async parameter of delegate_to_agent to run them in parallel:
-- Calling delegate_to_agent(task: "subtask description", type: "research", async: true) returns immediately, and the agent runs in the background
-- You can dispatch multiple agents at once (up to 5), each working independently
-- Once all agents finish, their results are returned automatically, and you then synthesize the output for the user
-
-### When to use parallel agents
-- The user asks to do several things "at the same time", "in parallel", or "separately"
-- The subtasks have no dependencies between them (e.g. researching topics A, B, and C)
-- Each subtask needs multiple steps (search + organize + summarize)
-
-### When not to use
-- A single simple question can just be answered directly
-- The subtasks depend on one another in sequence
-- It can be done with a single tool call
-
-### After receiving agent results
-- You'll receive agent results in <agent-result> format
-- **Synthesize and condense**: extract the key information and comparisons; don't list the raw content one by one
-- If multiple agents did similar research, present the differences as a comparison table or bullet points
-- Summarize in your own words; don't copy-paste the agents' raw output
-
-## Large-file reading strategy
-- When reading a text file, if it exceeds 256KB, read_file will prompt you to use the offset/limit parameters to read it in chunks
-- After a "File is too large" prompt, decide your strategy by need:
-  - Need to understand the overall structure: read the first 200 lines (offset=0, limit=200) to get the gist
-  - Need to find specific content: use search_files to locate it by keyword, then read the relevant region with offset/limit
-  - Need a thorough analysis: read in multiple passes, 2000 lines at a time, processing section by section
-- Don't try to read the entire contents of a large file at once
-
-## Multi-turn conversation management
-- In a long conversation, if you suspect earlier information may be stale (e.g. file contents may have changed), proactively re-fetch it rather than relying on old data
-- When the user's question is clearly unrelated to the earlier context (a topic change), just respond concisely — no need to tie it back to the previous context
-- If the context is compressed by the system, keep working normally; don't mention technical details like "the context was truncated"
-
-## Error-recovery strategy
-- When a tool call fails: analyze the cause and try a different approach (different params, different tool, different path); don't just retry the same operation
-- After two consecutive failures: stop and tell the user what went wrong, with a suggestion
-- Network-related errors: tell the user "the network seems unstable" and suggest trying again later
-- Permission errors: clearly tell the user what permission is needed; don't keep retrying
-
-## Using MCP tools
-- When tools from a connected MCP service are available, prefer them over the built-in tool alternatives
-- No need to explain the source before using an MCP tool — just call it
-- If an MCP tool fails, you can fall back to the built-in tool`;
-}
+export { getCapabilityPrompt } from './prompts/capabilityPrompt';
 
 function generateId(): string {
   return Date.now().toString(36) + Math.random().toString(36).substring(2, 8);
@@ -426,13 +242,14 @@ function generateId(): string {
  * Supports advanced allowed-tools patterns (wildcards, constraints).
  * Returns { tools, inputValidators } where inputValidators are used at execution time.
  */
-function resolveTools(
+export function resolveTools(
+  toolInvoker: ToolInvoker,
   route: RouteResult,
   hasBuiltinWebSearch: boolean,
   blockedTools?: string[],
   prefetchContext?: { userInput: string; computerUseEnabled: boolean; activeSkills: import('../../types').Skill[]; turnCount: number },
 ): { tools: ToolDefinition[]; deferredTools: ToolDefinition[]; inputValidators: Map<string, (input: Record<string, unknown>) => boolean> } {
-  let tools = getAllTools();
+  let tools = toolInvoker.getAllTools();
   let inputValidators = new Map<string, (input: Record<string, unknown>) => boolean>();
   let deferredTools: ToolDefinition[] = [];
 
@@ -550,16 +367,10 @@ async function loadActiveSkillContent(
  * Called when the agent loop ends (complete, abort, or error).
  */
 function deactivateAllSkills(conversationId: string): void {
-  const conv = useChatStore.getState().conversations[conversationId];
+  const conv = getConversationReader().getConversation(conversationId);
   if (!conv?.activeSkills || conv.activeSkills.length === 0) return;
 
-  useChatStore.setState((draft: { conversations: Record<string, import('@/types').Conversation> }) => {
-    const c = draft.conversations[conversationId];
-    if (c) {
-      c.activeSkills = [];
-      c.activeSkillArgs = {};
-    }
-  });
+  getChatDelta().deactivateSkills(conversationId);
 
   // Clean up skill-scoped hooks
   clearAllSkillHooks();
@@ -574,8 +385,32 @@ export interface AgentLoopOptions {
   images?: ImageAttachment[];
   /** Tool names to block from this run (e.g. 'request_workspace' in headless/IM mode) */
   blockedTools?: string[];
+  /** Fail instead of staging into an already-running loop. Used by recovery
+   * flows whose tool restrictions must apply from the first turn. */
+  requireNewRun?: boolean;
   /** IM headless context — injected into system prompt to replace UI-dependent workspace logic */
   imContext?: IMContext;
+  /** Settings port — defaults to the in-process Zustand-backed reader. Injection point for
+   *  a future out-of-process agent runtime (see SettingsReader docstring). */
+  settingsReader?: SettingsReader;
+  /** Pre-computed orchestration inputs (route + system prompt sections). Injection point for
+   *  the out-of-process runtime: the shell dispatch layer computes these (orchestrator stays
+   *  shell-side) and injects; when absent, the loop computes them in-process exactly as before. */
+  orchestration?: { route: RouteResult; systemPromptSections: PromptSection[] };
+  /**
+   * Override the loop's internally-generated `loopId` (normally
+   * `generateId()`, see the "Generate a unique loopId" block below).
+   * Injection point for the out-of-process runtime (P1-3B-3B): the shell
+   * dispatcher mints ONE id, uses it as both the wire `runId` AND this
+   * `loopId` (same "keyed by a shell-known id" trick `createExecutionWithId`
+   * uses for TaskExecution — see P1-3B-2-REPORT.md §2b) — so the shell's
+   * `RunSession.loopId` (used to key `setLoopContext`/`getLoopContext` for
+   * `delegate_to_agent`'s parent-step lookup) is known and registered
+   * BEFORE the sidecar's loop ever emits a `tool.invoke` carrying this same
+   * loopId in its context. Absent in-process (unchanged: a fresh
+   * `generateId()` every run).
+   */
+  loopId?: string;
 }
 
 /** Exit reason returned by runAgentLoop so callers (scheduler, trigger) can
@@ -590,6 +425,8 @@ export type AgentLoopExitReason =
   | 'error'
   | 'max_turns'
   | 'no_progress'
+  /** A trusted tool stopped the loop until the user chooses a recovery path. */
+  | 'awaiting_user'
   /** No loop ran: the conversation already had a live loop, so the message was
    *  queued into it (see the concurrency guard at the top of runAgentLoop). */
   | 'enqueued';
@@ -598,7 +435,7 @@ export type AgentLoopExitReason =
  *  be incomplete. Lets scheduler / trigger surface a meaningful status instead
  *  of treating these as either success or an opaque "Unknown error". */
 export function isIncompleteReason(reason: AgentLoopExitReason): boolean {
-  return reason === 'max_turns' || reason === 'no_progress';
+  return reason === 'max_turns' || reason === 'no_progress' || reason === 'awaiting_user';
 }
 
 export interface AgentLoopResult {
@@ -650,62 +487,9 @@ export function shouldComputeProposalSignal(
   return isInteractiveDesktop(options, conversation) && !!workspacePath;
 }
 
-/**
- * Calculate the escalated maxOutputTokens for a max_tokens recovery turn.
- *
- * A fixed 2× that PERSISTS for every recovery (recoveryCount >= 1), so the budget
- * sequence is base → 2× → 2× → 2×, clamped to contextWindowSize - 1000. Callers
- * recompute `currentMax` from base each turn, so the escalation must be a pure
- * function of `recoveryCount`. The old one-shot `alreadyEscalated` latch made the
- * budget fall back to base on later recoveries (base → 2× → base → base) — bug #5.
- *
- * The multiplier is deliberately NOT progressive (e.g. 2^recoveryCount): the
- * recovery prompt tells the model to break remaining work into smaller pieces, so
- * a single doubling suffices, and an ever-growing budget would compound the input
- * squeeze below. Note the unavoidable tradeoff: escalation raises maxOutputTokens,
- * which lowers maxInputTokens (= contextWindowSize - maxOutputTokens) for the whole
- * recovery sequence. On large windows this is negligible; on small windows it is
- * inherent to escalating output at all (the "break into smaller pieces" prompt, not
- * a bigger budget, is the real lever there). The clamp keeps ≥1000 input tokens.
- * Pure function, exported for testing.
- */
-export function escalateMaxOutputTokens(
-  currentMax: number,
-  contextWindowSize: number,
-  recoveryCount: number,
-): { maxOutputTokens: number; changed: boolean } {
-  if (recoveryCount <= 0) {
-    return { maxOutputTokens: currentMax, changed: false };
-  }
-  const escalated = Math.min(currentMax * 2, contextWindowSize - 1000);
-  if (escalated > currentMax) {
-    return { maxOutputTokens: escalated, changed: true };
-  }
-  return { maxOutputTokens: currentMax, changed: false };
-}
-
-/**
- * Decide whether to continue the loop when a turn was cut off by max_tokens but
- * still carried complete tool calls. The Claude adapter only emits a tool_use
- * event on content_block_stop, so a call truncated mid-JSON is dropped — any
- * collected calls are complete; sending their results back lets the model resume
- * instead of the turn being discarded (legacy behavior excluded these entirely).
- *
- * We require at least one WELL-FORMED tool call (input without `_parse_error`). An
- * all-malformed batch is not real progress: continuing on it would re-prompt a
- * broken model indefinitely — agentLoop has no no-progress guard and maxTurns
- * defaults to unlimited. This mirrors the subagent's `allToolsUnparseable` guard
- * (see isNoProgressTurn). Pure, exported for testing.
- */
-export function shouldContinueTruncatedToolCalls(
-  stopReason: string,
-  toolCalls: Array<{ input: Record<string, unknown> }>,
-): boolean {
-  return stopReason === 'max_tokens' && toolCalls.some((tc) => !('_parse_error' in tc.input));
-}
-
-
 export async function runAgentLoop(conversationId: string, userMessage: string, options?: AgentLoopOptions): Promise<AgentLoopResult> {
+  const settingsReader = options?.settingsReader ?? getSettingsReader();
+
   // ── Concurrency guard: one live loop per conversation ────────────────────
   // The entry sequence below (clearAbortController → getAbortController)
   // replaces the controller WITHOUT aborting the previous loop, so a second
@@ -718,14 +502,20 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
   // silently losing an image is worse than the rare double-loop race, so
   // image/empty sends fall through to a normal loop start.
   {
-    const runningConv = useChatStore.getState().conversations[conversationId];
+    const runningConv = getConversationReader().getConversation(conversationId);
     if (
       runningConv?.status === 'running'
-      && useChatStore.getState().hasAbortController(conversationId)
+      && getAbortRegistry().hasAbortController(conversationId)
       && isInteractiveDesktop(options, runningConv)
       && userMessage.trim().length > 0
       && !(options?.images?.length)
     ) {
+      if (options?.requireNewRun) {
+        return {
+          reason: 'error',
+          error: 'A restricted recovery run cannot join an existing agent loop',
+        };
+      }
       // Codex-style staging: the message lives in the cancellable queue strip
       // above the composer and becomes a transcript bubble only when the
       // running loop drains it (see the drainQueuedInputs block below).
@@ -737,9 +527,23 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
   // New turn starts clean: drop any stale plan-mode lock from a prior/abandoned plan (see planMode.ts).
   clearPlanMode(conversationId);
 
-  const chatStore = useChatStore.getState();
-  const settings = useSettingsStore.getState();
-  const taskExecutionStore = useTaskExecutionStore.getState();
+  // NOTE: the AbortController trio (control channel, deliberately excluded
+  // from both ChatDelta and ConversationReader — see B1-REPORT.md) now goes
+  // through the AbortRegistry port (P1-3b-pre) instead of a cached
+  // `useChatStore.getState()` local — see ports/abortRegistry.ts. All
+  // conversation-data reads below go through fresh `getConversationReader()`
+  // calls, same as before.
+  const abortRegistry = getAbortRegistry();
+  const chatDelta = getChatDelta();
+  const toolInvoker = getToolInvoker();
+  const settings = settingsReader.getSnapshot();
+  // `executionPort` now covers BOTH the lifecycle calls (createExecution/
+  // cancelExecution below) AND the step-mutation family threaded into
+  // `createEventRouter`'s `deps.executionStore` (P1-3b-pre widened
+  // ExecutionPort to cover eventRouter.ts's full call surface — see
+  // executionPort.ts's "Scope note"). No more separate `taskExecutionStore`
+  // local / dual-use split.
+  const executionPort = getExecutionPort();
 
   // ── Per-conversation model pin ──────────────────────────────────────────
   // A conversation runs on its own pinned model (conv.model); a new or legacy
@@ -749,22 +553,27 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
   // model switch made for another conversation never bleeds into this in-flight
   // one. Pinned onto the conversation on first run (below) so it also survives
   // later global switches for display + future runs.
-  const pinnedConv = chatStore.conversations[conversationId];
+  const pinnedConv = getConversationReader().getConversation(conversationId);
   const baseModel =
     pinnedConv?.model ??
-    chatStore.conversationIndex[conversationId]?.model ??
+    getConversationReader().getIndexEntry(conversationId)?.model ??
     settings.activeModel;
   const settingsForModel: typeof settings =
     baseModel === settings.activeModel ? settings : { ...settings, activeModel: baseModel };
 
-  // Generate a unique loopId for this agent loop - all messages in this loop share it
-  const loopId = generateId();
+  // Generate a unique loopId for this agent loop - all messages in this loop share it.
+  // Shell dispatch (P1-3B-3B) can override via options.loopId — see that
+  // field's doc comment above.
+  const loopId = options?.loopId ?? generateId();
 
   // Create EventRouter for this execution
   const eventRouter = createEventRouter({
-    executionStore: taskExecutionStore,
+    executionStore: executionPort,
     appendToolCallContext: (loopId, context) => {
-      useChatStore.getState().appendToolCallContext(conversationId, loopId, context);
+      chatDelta.appendToolCallContext(conversationId, loopId, context);
+    },
+    addScratchpadEntry: (entry) => {
+      getScratchpadPort().addEntry(entry);
     },
   });
 
@@ -779,14 +588,14 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
     // Use raw userMessage (orchestrator hasn't run); skill metadata is intentionally omitted —
     // the user needs to configure a key before any skill/agent routing takes effect.
     const userContent = await buildUserMessageContent(conversationId, userMessage, options?.images);
-    chatStore.addMessage(conversationId, {
+    chatDelta.addMessage(conversationId, {
       id: generateId(),
       role: 'user',
       content: userContent,
       timestamp: Date.now(),
       loopId,
     });
-    chatStore.addMessage(conversationId, {
+    chatDelta.addMessage(conversationId, {
       id: generateId(),
       role: 'assistant',
       content: getI18n().chat.configureApiKey,
@@ -797,35 +606,44 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
   }
 
   // Create TaskExecution for this agent loop (after apiKey check to avoid leaking executions)
-  const execution = taskExecutionStore.createExecution(conversationId, loopId);
+  const execution = executionPort.createExecution(conversationId, loopId);
 
   logger.info('Agent loop started', { conversationId, loopId });
 
   // Get abort controller for this conversation.
   // Force-clear any stale controller first to avoid inheriting aborted state from a previous run.
-  chatStore.clearAbortController(conversationId);
-  const abortController = chatStore.getAbortController(conversationId);
+  abortRegistry.clearAbortController(conversationId);
+  const abortController = abortRegistry.getAbortController(conversationId);
 
   // Set conversation status to running
-  chatStore.setConversationStatus(conversationId, 'running');
+  chatDelta.setConversationStatus(conversationId, 'running');
 
-  // Route the input through the orchestrator
-  const route = routeInput(userMessage);
-
-  // Refresh skill content from disk to ensure latest version
-  if (route.type === 'skill' && route.skill?.filePath) {
-    const fresh = await skillLoader.refreshSkill(route.skill.name);
-    if (fresh) {
-      route.skill = fresh;
-      route.skillContent = fresh.content;
-    }
-  }
+  // Route the input through the orchestrator + build the static system
+  // prompt sections — unless the shell dispatch layer already pre-computed
+  // both (out-of-process runtime injection seam, see
+  // AgentLoopOptions.orchestration's doc comment). Zero behavior change when
+  // not injected: same routeInput/skill-refresh/buildSystemPromptSections
+  // sequence as before, now single-sourced in entryOrchestration.ts (P1-3B-3A
+  // item 1) so the shell dispatcher's precomputed path and this in-process
+  // fallback can never drift apart. Dynamic import ONLY — agentLoop.ts must
+  // never take a static import of entryOrchestration.ts (it drags the full
+  // orchestrator graph); see that module's doc comment for the sidecar-bundle
+  // reasoning and entryOrchestrationRun.ts's throwing shim.
+  const { route, systemPromptSections } = options?.orchestration ?? await (
+    await import('./entryOrchestration')
+  ).precomputeOrchestration(
+    conversationId,
+    userMessage,
+    options?.imContext,
+    { settings, settingsForModel },
+    abortController.signal,
+  );
 
   // Build tool execution context — provides resolved workspace for tools like update_memory.
   // Priority: IM-injected path > conversation's own stored path > global store fallback.
   // Using the conversation record rather than the global store prevents cross-conversation
   // workspace leakage when multiple conversations are open simultaneously.
-  const _convForContext = useChatStore.getState().conversations[conversationId];
+  const _convForContext = getConversationReader().getConversation(conversationId);
   // Interactive-desktop conversations with no workspace get a managed default
   // (~/Abu/<name>/) bound here so the agent saves files there instead of
   // improvising (e.g. onto the Desktop). The folder is created lazily on the
@@ -835,40 +653,53 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
     workspacePath:
       options?.imContext?.workspacePath ??
       _convForContext?.workspacePath ??
-      useWorkspaceStore.getState().currentPath,
+      getWorkspaceReader().getCurrentPath(),
     loopId,
     conversationId,
+    interactionMode: isInteractiveDesktop(options, _convForContext)
+      ? 'foreground'
+      : 'background',
+    permissionMode: _convForContext?.permissionMode
+      ?? getSettingsReader().getSnapshot().permissionMode,
+    abortSignal: abortController.signal,
   };
+  let computerUseTaskEndPromise: Promise<void> | null = null;
+  const endComputerUseTaskLease = (): Promise<void> => {
+    if (!computerUseTaskEndPromise) {
+      computerUseTaskEndPromise = import('../tools/definitions/computerTools')
+        .then(({ endComputerUseTask }) => endComputerUseTask(conversationId, loopId))
+        .catch(() => {});
+    }
+    return computerUseTaskEndPromise;
+  };
+  const endComputerUseTaskOnAbort = () => {
+    void endComputerUseTaskLease();
+  };
+  abortController.signal.addEventListener('abort', endComputerUseTaskOnAbort, { once: true });
 
-  // Determine effective model — agent can override (with provider compatibility check)
-  let effectiveModelId = getEffectiveModel(settingsForModel);
-  if (route.type === 'agent' && route.definition?.model) {
-    effectiveModelId = resolveAgentModel(route.definition.model, settings);
-  }
+  // Determine effective model — agent can override (with provider compatibility check).
+  // P1-3B-3B: the pure formula moved to resolveEntryModel.ts (shared with
+  // entryOrchestration.ts's precomputeOrchestration and the shell
+  // dispatcher's buildAgentRunParams — single source, see that module's
+  // doc); setActiveModel's side effect stays uniquely here.
+  const { effectiveModelId, entryModelDeclared } = resolveEntryModel(route, settings, settingsForModel);
   // Set active model for per-model token calibration
   setActiveModel(effectiveModelId);
 
   // Tell tools whether this model can consume images. read_file uses it to
   // avoid emitting base64 image blocks to text-only models (which bloats
   // context and triggers a 400 on providers that only accept text content).
-  const entryModelDeclared = resolveModelDeclared(getActiveProvider(settingsForModel), effectiveModelId);
   toolContext.supportsVision = applyDeclaredCapabilities(
     resolveCapabilities(effectiveModelId),
     entryModelDeclared,
   ).vision;
 
-  // Build static system prompt sections once (active skills are injected
-  // dynamically per-turn). Built AFTER model resolution because the
-  // capability prompt's visual-output section branches on the model's tool
-  // support: no-tools models get the fence variant since tools=[] for them
-  // (the per-turn `noTools` gate resolves the same declared value).
-  const systemPromptSections = await buildSystemPromptSections(
-    route,
-    getCapabilityPrompt({ supportsTools: entryModelDeclared?.supportsTools !== false }),
-    conversationId,
-    options?.imContext,
-    0,
-  );
+  // `systemPromptSections` (active skills are injected dynamically per-turn)
+  // was already resolved above, together with `route`, via
+  // entryOrchestration.ts's precomputeOrchestration — see that module's
+  // "Reordering note" for why the capability-prompt's `entryModelDeclared`
+  // dependency is a deliberate, bounded, pure-formula duplicate rather than
+  // threaded through from here.
 
   // Pin the resolved model to the conversation on first run, so it survives
   // later global model switches (for display + future runs). Pins the
@@ -876,7 +707,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
   // per-invocation). Skipped in enterprise mode (model selection is gateway-
   // scoped) and when the conversation already carries a pin.
   if (!isEnterpriseGatewayMode && pinnedConv && !pinnedConv.model) {
-    useChatStore.getState().setConversationModel(conversationId, {
+    chatDelta.setConversationModel(conversationId, {
       providerId: baseModel.providerId,
       modelId: baseModel.modelId,
     });
@@ -886,7 +717,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
   // Include skill info if a skill was triggered; build multimodal content if images are attached
   const userContent = await buildUserMessageContent(conversationId, route.cleanInput, options?.images);
 
-  chatStore.addMessage(conversationId, {
+  chatDelta.addMessage(conversationId, {
     id: generateId(),
     role: 'user',
     content: userContent,
@@ -903,25 +734,30 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
   });
 
   // Enterprise mode always uses OpenAI-compatible adapter (LiteLLM exposes that interface).
-  const adapter: LLMAdapter = (isEnterpriseGatewayMode || getActiveProvider(settingsForModel)?.apiFormat === 'openai-compatible')
-    ? new OpenAICompatibleAdapter()
-    : new ClaudeAdapter();
+  // selectChatAdapter routes through the sidecar transport when it's healthy
+  // ('running'), else falls back to the local in-process adapter — the
+  // kind-choosing condition itself is unchanged (P1-1).
+  const adapter: LLMAdapter = selectChatAdapter(
+    isEnterpriseGatewayMode || getActiveProvider(settingsForModel)?.apiFormat === 'openai-compatible'
+      ? 'openai-compatible'
+      : 'claude',
+  );
 
   // Validate required tools are available (blocking check — one-time at start)
   if (route.type === 'skill' && route.skill?.requiredTools) {
-    const initialTools = getAllTools();
+    const initialTools = toolInvoker.getAllTools();
     const availableNames = new Set(initialTools.map(t => t.name));
     const missing = route.skill.requiredTools.filter(t => !availableNames.has(t));
     if (missing.length > 0) {
-      chatStore.addMessage(conversationId, {
+      chatDelta.addMessage(conversationId, {
         id: generateId(),
         role: 'assistant',
         content: format(getI18n().chat.skillMissingTools, { missing: missing.join(', ') }),
         timestamp: Date.now(),
         loopId,
       });
-      chatStore.setConversationStatus(conversationId, 'idle');
-      taskExecutionStore.cancelExecution(execution.id);
+      chatDelta.setConversationStatus(conversationId, 'idle');
+      executionPort.cancelExecution(execution.id);
       return { reason: 'error', error: `Missing required tools: ${missing.join(', ')}` };
     }
   }
@@ -933,7 +769,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
     const delegateAgent = route.delegateAgent;
     const taskText = route.cleanInput;
 
-    chatStore.setAgentStatus('tool-calling', TOOL_NAMES.DELEGATE_TO_AGENT, delegateAgent.name);
+    chatDelta.setAgentStatus('tool-calling', TOOL_NAMES.DELEGATE_TO_AGENT, delegateAgent.name);
 
     // Create a delegate step in the execution
     const delegateStepId = eventRouter.createStepForToolUse(loopId, {
@@ -966,7 +802,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
     const filePermCb = options?.filePermissionCallback ?? requestFilePermission;
 
     // Extract parent conversation context for the subagent
-    const existingMessages = useChatStore.getState().conversations[conversationId]?.messages ?? [];
+    const existingMessages = getConversationReader().getConversation(conversationId)?.messages ?? [];
     const parentConversationSummary = extractParentConversationSummary(existingMessages);
 
     // Create per-subagent AbortController (linked to parent)
@@ -976,7 +812,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
     );
 
     try {
-      const result = await runSubagentLoop({
+      const result = await runSubagent({
         agent: delegateAgent,
         task: taskText,
         parentConversationSummary: parentConversationSummary || undefined,
@@ -996,25 +832,25 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
       // completion (schedulers/triggers/isIncompleteReason depend on this).
       if (abortController.signal.aborted) {
         subagentCleanup();
-        chatStore.removeActiveAgent(delegateAgent.name);
-        chatStore.setAgentStatus('idle');
-        chatStore.cancelStreaming(conversationId);
-        chatStore.clearAbortController(conversationId);
-        taskExecutionStore.cancelExecution(execution.id);
-        chatStore.setConversationStatus(conversationId, 'idle');
+        chatDelta.removeActiveAgent(delegateAgent.name);
+        chatDelta.setAgentStatus('idle');
+        chatDelta.cancelStreaming(conversationId);
+        abortRegistry.clearAbortController(conversationId);
+        executionPort.cancelExecution(execution.id);
+        chatDelta.setConversationStatus(conversationId, 'idle');
         return { reason: 'aborted' };
       }
 
       // Complete the delegate step
       subagentCleanup();
-      chatStore.removeActiveAgent(delegateAgent.name);
+      chatDelta.removeActiveAgent(delegateAgent.name);
       if (delegateStepId) {
         eventRouter.route({ type: 'step-end', loopId, stepId: delegateStepId, result: result.text });
       }
 
       // Add result as assistant message
       const delegateAssistantId = generateId();
-      chatStore.addMessage(conversationId, {
+      chatDelta.addMessage(conversationId, {
         id: delegateAssistantId,
         role: 'assistant',
         content: result.text,
@@ -1028,22 +864,22 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
       // either clobber the user message (when the file already has user line)
       // or duplicate the assistant message (when the user line was still in
       // the queue) — leaving the user bubble missing after reload.
-      chatStore.finishStreaming(conversationId, delegateAssistantId);
-      chatStore.clearAbortController(conversationId);
+      chatDelta.finishStreaming(conversationId, delegateAssistantId);
+      abortRegistry.clearAbortController(conversationId);
       eventRouter.route({ type: 'done', loopId, reason: 'delegate_complete' });
       persistExecutionSnapshot(conversationId, loopId);
-      chatStore.setAgentStatus('idle');
-      chatStore.setConversationStatus(conversationId, 'completed');
+      chatDelta.setAgentStatus('idle');
+      chatDelta.setConversationStatus(conversationId, 'completed');
       // Delegate run completed without an LLMError → provider is healthy; clears
       // any stale config-failure recorded for it (mirrors the main-loop path).
       recordProviderCallOutcome(getActiveProvider(settingsForModel)?.id, { ok: true, at: Date.now() });
 
-      const convTitle = useChatStore.getState().conversationIndex[conversationId]?.title ?? getI18n().chat.notificationTaskFallback;
+      const convTitle = getConversationReader().getIndexEntry(conversationId)?.title ?? getI18n().chat.notificationTaskFallback;
       notifyTaskCompleted(convTitle, conversationId);
     } catch (err) {
       subagentCleanup();
-      chatStore.removeActiveAgent(delegateAgent.name);
-      chatStore.setAgentStatus('idle');
+      chatDelta.removeActiveAgent(delegateAgent.name);
+      chatDelta.setAgentStatus('idle');
       // Treat retry-layer cancellation sentinel (LLMError code='cancelled', thrown
       // from retry.ts's abort-aware sleep) as a user abort, not a user-facing error.
       const isUserAbort = err instanceof Error
@@ -1051,10 +887,10 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
           || abortController.signal.aborted
           || (err instanceof LLMError && err.code === 'cancelled'));
       if (isUserAbort) {
-        chatStore.cancelStreaming(conversationId);
-        chatStore.clearAbortController(conversationId);
-        taskExecutionStore.cancelExecution(execution.id);
-        chatStore.setConversationStatus(conversationId, 'idle');
+        chatDelta.cancelStreaming(conversationId);
+        abortRegistry.clearAbortController(conversationId);
+        executionPort.cancelExecution(execution.id);
+        chatDelta.setConversationStatus(conversationId, 'idle');
         return { reason: 'aborted' };
       }
       const errorMessage = err instanceof Error ? err.message : String(err);
@@ -1068,19 +904,19 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
         delegateDisplayError += `\n\n${getI18n().chat.errorNotFoundHint}`;
       }
       const delegateErrorId = generateId();
-      chatStore.addMessage(conversationId, {
+      chatDelta.addMessage(conversationId, {
         id: delegateErrorId,
         role: 'assistant',
         content: `**Error:** ${delegateDisplayError}`,
         timestamp: Date.now(),
         loopId,
       });
-      chatStore.finishStreaming(conversationId, delegateErrorId);
-      chatStore.clearAbortController(conversationId);
+      chatDelta.finishStreaming(conversationId, delegateErrorId);
+      abortRegistry.clearAbortController(conversationId);
       eventRouter.route({ type: 'error', loopId, error: errorMessage });
       persistExecutionSnapshot(conversationId, loopId);
-      chatStore.setConversationStatus(conversationId, 'error');
-      const convTitle = useChatStore.getState().conversationIndex[conversationId]?.title ?? getI18n().chat.notificationTaskFallback;
+      chatDelta.setConversationStatus(conversationId, 'error');
+      const convTitle = getConversationReader().getIndexEntry(conversationId)?.title ?? getI18n().chat.notificationTaskFallback;
       notifyTaskError(convTitle, conversationId);
       return { reason: 'error', error: errorMessage };
     }
@@ -1106,13 +942,14 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
   let continueLoop = true;
   let exitReason: AgentLoopExitReason = 'completed';
   let exitError: string | undefined;
+  let awaitingUserRecovery = false;
   // Cache of filePath → base64 for image rehydration, shared across every turn
   // of this request's tool-use loop so a stripped image is read from disk once,
   // not re-read + re-encoded on every iteration (source.data stays stripped).
   const imageBase64Cache: ImageBase64Cache = new Map();
   // maxTurns priority: skill > agent definition > global setting > sane default
   // (never unlimited — see resolveMaxTurns). Headless runs get a tighter cap.
-  const globalMaxTurns = useSettingsStore.getState().agentMaxTurns;
+  const globalMaxTurns = settingsReader.getSnapshot().agentMaxTurns;
   const maxTurns = resolveMaxTurns({
     skillMaxTurns: route.skill?.maxTurns,
     definitionMaxTurns: route.definition?.maxTurns,
@@ -1154,11 +991,11 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
   while (continueLoop) {
     // Check if cancelled before starting new turn
     if (abortController.signal.aborted) {
-      chatStore.cancelStreaming(conversationId);
-      chatStore.clearAbortController(conversationId);
-      taskExecutionStore.cancelExecution(execution.id);
+      chatDelta.cancelStreaming(conversationId);
+      abortRegistry.clearAbortController(conversationId);
+      executionPort.cancelExecution(execution.id);
       deactivateAllSkills(conversationId);
-      chatStore.setConversationStatus(conversationId, 'idle');
+      chatDelta.setConversationStatus(conversationId, 'idle');
       // Report the cancellation to callers — without this an abort between turns
       // falls through to the default 'completed', so scheduler/trigger would treat
       // a cancelled run as a success and push its partial output downstream.
@@ -1178,7 +1015,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
         conversationId,
         loopId,
         turnCount,
-        lastMessageId: useChatStore.getState().conversations[conversationId]?.messages.slice(-1)[0]?.id ?? '',
+        lastMessageId: getConversationReader().getConversation(conversationId)?.messages.slice(-1)[0]?.id ?? '',
         status: 'llm_calling',
         timestamp: Date.now(),
       });
@@ -1190,7 +1027,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
     // they group with the turn that actually reads them.
     const queuedInputs = drainQueuedInputs(conversationId);
     for (const qi of queuedInputs) {
-      useChatStore.getState().addMessage(conversationId, {
+      chatDelta.addMessage(conversationId, {
         id: generateId(),
         role: 'user',
         content: qi.text,
@@ -1211,18 +1048,18 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
 
     if (turnCount > maxTurns) {
       const maxTurnsMsgId = generateId();
-      chatStore.addMessage(conversationId, {
+      chatDelta.addMessage(conversationId, {
         id: maxTurnsMsgId,
         role: 'assistant',
         content: format(getI18n().chat.maxTurnsReached, { n: maxTurns }),
         timestamp: Date.now(),
         loopId,
       });
-      chatStore.finishStreaming(conversationId, maxTurnsMsgId);
-      chatStore.clearAbortController(conversationId);
+      chatDelta.finishStreaming(conversationId, maxTurnsMsgId);
+      abortRegistry.clearAbortController(conversationId);
       eventRouter.route({ type: 'done', loopId, reason: 'max_turns' });
       persistExecutionSnapshot(conversationId, loopId);
-      chatStore.setConversationStatus(conversationId, 'completed');
+      chatDelta.setConversationStatus(conversationId, 'completed');
       // Hitting the turn cap means every LLM call succeeded (a failed call throws
       // to the catch) → provider is healthy; record it so a prior config-failure
       // is cleared even when the run ends via the cap rather than end_turn.
@@ -1248,7 +1085,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
 
     // Create a placeholder assistant message for streaming with loopId
     const assistantMsgId = generateId();
-    chatStore.addMessage(conversationId, {
+    chatDelta.addMessage(conversationId, {
       id: assistantMsgId,
       role: 'assistant',
       content: '',
@@ -1258,7 +1095,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
       loopId,
     });
 
-    chatStore.setAgentStatus('thinking');
+    chatDelta.setAgentStatus('thinking');
 
     const collectedToolCalls: ToolCall[] = [];
     const toolCallToStepId: Map<string, string> = new Map();  // Map toolCallId -> stepId
@@ -1267,10 +1104,11 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
     let thinkingEndTime: number | undefined;  // Track when thinking ends
     let lastStopReason = '';
     let modelSupportsVision = false;
+    let streamFlushTimer: ReturnType<typeof setInterval> | null = null;
 
     try {
       // ── Per-turn: refresh tools and dynamic prompt sections ──
-      const freshSettings = useSettingsStore.getState();
+      const freshSettings = settingsReader.getSnapshot();
       // Provider identity (id/baseUrl/apiKey/apiFormat) is pinned to the ENTRY
       // snapshot (`settings`), NOT freshSettings: the model name (effectiveModelId),
       // the adapter (chosen once at loop start), and the provider must stay a
@@ -1291,7 +1129,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
       // also strips tools from the request body as belt-and-suspenders.
       const noTools = modelDeclared?.supportsTools === false;
       // Build prefetch context for conditional tool loading
-      const conv = useChatStore.getState().conversations[conversationId];
+      const conv = getConversationReader().getConversation(conversationId);
       const activeSkillObjects = (conv?.activeSkills ?? [])
         .map(name => skillLoader.getSkill(name))
         .filter((s): s is NonNullable<typeof s> => s !== undefined);
@@ -1301,7 +1139,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
         activeSkills: activeSkillObjects,
         turnCount,
       };
-      const { tools: rawTools, deferredTools: rawDeferredTools, inputValidators } = resolveTools(route, !!builtinWebSearch, options?.blockedTools, prefetchCtx);
+      const { tools: rawTools, deferredTools: rawDeferredTools, inputValidators } = resolveTools(toolInvoker, route, !!builtinWebSearch, options?.blockedTools, prefetchCtx);
       const tools = noTools ? [] : rawTools;
       const deferredTools = noTools ? [] : rawDeferredTools;
       const toolTokens = estimateToolSchemaTokens(tools);
@@ -1314,7 +1152,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
       );
 
       // Get current messages for this conversation
-      const messages = useChatStore.getState().conversations[conversationId]?.messages ?? [];
+      const messages = getConversationReader().getConversation(conversationId)?.messages ?? [];
       // Exclude the last empty assistant message we just added
       const historyMessages = messages.slice(0, -1);
 
@@ -1329,7 +1167,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
       modelCaps = applyDeclaredCapabilities(modelCaps, modelDeclared);
       modelSupportsVision = modelCaps.vision;
       const discoveredCaps = activeProvider
-        ? useDiscoveredCapsStore.getState().get(activeProvider.id, effectiveModelId)
+        ? getCapsPort().get(activeProvider.id, effectiveModelId)
         : undefined;
       const effectiveModelMaxOutput = discoveredCaps?.maxOutputTokens ?? modelCaps.maxOutputTokens;
       const effectiveModelContext = discoveredCaps?.contextWindow ?? modelCaps.contextWindow;
@@ -1420,7 +1258,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
         messagesForContext = boundaryView;
         compressionApplied = true;
       } else if (turnCount >= 3) {
-        const convForCache = useChatStore.getState().conversations[conversationId];
+        const convForCache = getConversationReader().getConversation(conversationId);
         const cache = convForCache?.contextCache;
 
         if (cache && cache.messageCountAtCompression <= historyMessages.length) {
@@ -1436,7 +1274,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
           // failures/timeouts), skip the LLM call entirely; the deterministic
           // truncation (prepareContextMessages) below still guarantees the request
           // fits, so a doomed provider can't re-stall every turn.
-          useChatStore.getState().setIsCompressing(conversationId, true);
+          chatDelta.setIsCompressing(conversationId, true);
           try {
             const compressionCreds = resolveEffectiveLlmCreds(
               getActiveApiKey(settingsForModel),
@@ -1466,7 +1304,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
                 const rounds = identifyRounds(historyMessages);
                 const recentMsgCount = rounds.slice(-RECENT_ROUNDS_TO_KEEP).flat().length;
                 const endIdx = historyMessages.length - recentMsgCount;
-                useChatStore.getState().setContextCache(conversationId, {
+                chatDelta.setContextCache(conversationId, {
                   summaryMessage: summaryMsg,
                   summarizedRange: [rounds[0].length, endIdx],
                   messageCountAtCompression: historyMessages.length,
@@ -1483,7 +1321,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
             // circuit-breaker record in case an unexpected error escapes.
             autoCompactTracker.recordFailure();
           } finally {
-            useChatStore.getState().setIsCompressing(conversationId, false);
+            chatDelta.setIsCompressing(conversationId, false);
           }
         }
       }
@@ -1526,7 +1364,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
       // can compute live = overhead + estimateMessageTokens(messagesNow) without
       // waiting for the next loop iteration (fixes streaming + post-restart UX).
       const systemAndToolsOverhead = estimateTokens(effectiveSystemPrompt) + toolTokens;
-      useChatStore.getState().setContextUsage(conversationId, {
+      chatDelta.setContextUsage(conversationId, {
         percent: getUsagePercent(postCompressionTokens, contextWindowSize),
         tokensUsed: postCompressionTokens,
         tokensMax: contextWindowSize,
@@ -1583,11 +1421,11 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
               source: 'auto',
               timestamp: Date.now(),
             });
-            useChatStore.getState().addMessage(conversationId, marker);
+            chatDelta.addMessage(conversationId, marker);
             // Clear the now-stale ephemeral 65% cache (a marker supersedes it),
             // mirroring the manual /compact path so the two land paths stay
             // symmetric.
-            useChatStore.getState().clearContextCache(conversationId);
+            chatDelta.clearContextCache(conversationId);
             autoCompactTracker.recordSuccess();
             logger.info('[persistentCompaction] landed compact-boundary marker', {
               from: plan.summarizedFromId,
@@ -1627,7 +1465,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
       preparedMessages = await rehydrateForSend(preparedMessages, {
         vision: modelCaps.vision,
         conversationId,
-        workspacePath: useChatStore.getState().conversations[conversationId]?.workspacePath ?? null,
+        workspacePath: getConversationReader().getConversation(conversationId)?.workspacePath ?? null,
         cache: imageBase64Cache,
       });
 
@@ -1657,9 +1495,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
         // discovered limit so the next request uses it pre-emptively.
         onMaxTokensLimitDiscovered: activeProvider
           ? (limit: number) => {
-              useDiscoveredCapsStore
-                .getState()
-                .recordMaxOutputTokens(activeProvider.id, effectiveModelId, limit);
+              getCapsPort().recordMaxOutputTokens(activeProvider.id, effectiveModelId, limit);
               logger.info('Persisted discovered max_tokens limit', {
                 providerId: activeProvider.id,
                 modelId: effectiveModelId,
@@ -1671,10 +1507,33 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
 
       const chatFn = () => adapter.chat(preparedMessages, chatOptions, eventHandler);
 
-      // Periodic flush during streaming — write current assistant message to disk every 5s
-      // so crash during long streaming doesn't lose all content
-      let lastStreamFlushTime = Date.now();
+      // Drive crash-protection flushes from elapsed time, not provider events.
+      // A provider can emit one partial chunk and then stall indefinitely; the
+      // old event-driven timestamp check never persisted that visible content.
       const STREAM_FLUSH_INTERVAL = 5000;
+      let streamFlushInFlight = false;
+      const flushStreamingMessage = async () => {
+        if (streamFlushInFlight) return;
+        streamFlushInFlight = true;
+        try {
+          const { replaceMessageById } = await import('../session/conversationStorage');
+          const currentMsg = getConversationReader().getConversation(conversationId)
+            ?.messages.find((m) => m.id === assistantMsgId);
+          // Re-read after the async import. If the turn completed while this
+          // timer callback yielded, its final write is authoritative and this
+          // older periodic snapshot must not overwrite it.
+          if (!currentMsg?.isStreaming) return;
+          await replaceMessageById(conversationId, currentMsg);
+        } catch {
+          // Best-effort crash protection. Final turn persistence remains the
+          // authoritative write when the request completes normally.
+        } finally {
+          streamFlushInFlight = false;
+        }
+      };
+      streamFlushTimer = setInterval(() => {
+        void flushStreamingMessage();
+      }, STREAM_FLUSH_INTERVAL);
 
       const eventHandler = (event: StreamEvent) => {
           switch (event.type) {
@@ -1686,45 +1545,33 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
               // while the body text is already streaming, which looks broken.
               if (!thinkingEndTime && collectedThinking) {
                 thinkingEndTime = Date.now();
-                const thinkingStartTime = useChatStore.getState().thinkingStartTime;
+                const thinkingStartTime = getConversationReader().getThinkingStartTime();
                 if (thinkingStartTime) {
                   const thinkingDuration = Math.max(1, Math.round((thinkingEndTime - thinkingStartTime) / 1000));
-                  useChatStore.getState().updateMessageThinkingDuration(conversationId, thinkingDuration, assistantMsgId);
+                  chatDelta.setThinkingDuration(conversationId, thinkingDuration, assistantMsgId);
                 }
               }
-              chatStore.setAgentStatus('streaming');
-              chatStore.appendToLastMessage(conversationId, event.text, assistantMsgId);
-              // Periodic disk flush for crash safety — must look up by id, not "last",
-              // because the user may have sent another message mid-stream.
-              if (Date.now() - lastStreamFlushTime > STREAM_FLUSH_INTERVAL) {
-                lastStreamFlushTime = Date.now();
-                const currentMsg = useChatStore.getState().conversations[conversationId]
-                  ?.messages.find((m) => m.id === assistantMsgId);
-                if (currentMsg) {
-                  import('../session/conversationStorage').then(({ replaceMessageById }) => {
-                    replaceMessageById(conversationId, currentMsg).catch(() => {});
-                  }).catch(() => {});
-                }
-              }
+              chatDelta.setAgentStatus('streaming');
+              chatDelta.appendText(conversationId, event.text, assistantMsgId);
               break;
 
             case 'thinking':
               collectedThinking += event.thinking;
-              useChatStore.getState().updateMessageThinking(conversationId, collectedThinking, assistantMsgId);
+              chatDelta.appendThinking(conversationId, collectedThinking, assistantMsgId);
               break;
 
             case 'tool_use': {
               // Flush any buffered streaming tokens before processing tool calls
-              flushTokenBuffer(conversationId);
+              chatDelta.flushTokens(conversationId);
               // Record thinking end time when we transition from thinking to tool-calling
               // and immediately push thinkingDuration so the UI's thinking step flips to
               // completed (same reason as the 'text' branch above).
               if (!thinkingEndTime && collectedThinking) {
                 thinkingEndTime = Date.now();
-                const thinkingStartTime = useChatStore.getState().thinkingStartTime;
+                const thinkingStartTime = getConversationReader().getThinkingStartTime();
                 if (thinkingStartTime) {
                   const thinkingDuration = Math.max(1, Math.round((thinkingEndTime - thinkingStartTime) / 1000));
-                  useChatStore.getState().updateMessageThinkingDuration(conversationId, thinkingDuration, assistantMsgId);
+                  chatDelta.setThinkingDuration(conversationId, thinkingDuration, assistantMsgId);
                 }
               }
 
@@ -1745,7 +1592,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
                 break;
               }
 
-              chatStore.setAgentStatus('tool-calling', event.name);
+              chatDelta.setAgentStatus('tool-calling', event.name);
 
               // Create step in TaskExecutionStore via EventRouter
               const stepId = eventRouter.createStepForToolUse(loopId, {
@@ -1783,7 +1630,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
               finalUsage = finalUsage
                 ? { ...finalUsage, ...event.usage }
                 : { ...event.usage };
-              chatStore.setCurrentUsage(finalUsage);
+              chatDelta.setCurrentUsage(finalUsage);
               break;
 
             case 'done':
@@ -1793,10 +1640,10 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
               }
               // Calculate and save thinking duration
               if (collectedThinking && thinkingEndTime) {
-                const thinkingStartTime = useChatStore.getState().thinkingStartTime;
+                const thinkingStartTime = getConversationReader().getThinkingStartTime();
                 if (thinkingStartTime) {
                   const thinkingDuration = Math.round((thinkingEndTime - thinkingStartTime) / 1000);
-                  useChatStore.getState().updateMessageThinkingDuration(conversationId, thinkingDuration, assistantMsgId);
+                  chatDelta.setThinkingDuration(conversationId, thinkingDuration, assistantMsgId);
                 }
               }
               // Track stop reason for max_tokens recovery
@@ -1820,12 +1667,12 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
               }
               if (event.usage) {
                 finalUsage = event.usage;
-                chatStore.setCurrentUsage(event.usage);
+                chatDelta.setCurrentUsage(event.usage);
               }
               break;
 
             case 'error':
-              chatStore.appendToLastMessage(conversationId, `\n\n**Error:** ${event.error}`, assistantMsgId);
+              chatDelta.appendText(conversationId, `\n\n**Error:** ${event.error}`, assistantMsgId);
               break;
           }
         };
@@ -1844,15 +1691,15 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
             // provider isn't a silent dead wait. rate_limit gets 5 attempts in
             // retry.ts, others get 3.
             const maxAttempts = error.code === 'rate_limit' ? 5 : 3;
-            chatStore.setRetryInfo({ attempt, maxAttempts, delayMs });
+            chatDelta.setRetryInfo({ attempt, maxAttempts, delayMs });
             if (error.code === 'rate_limit') {
-              chatStore.setAgentStatus('rate-limited', `${Math.round(delayMs / 1000)}s`);
+              chatDelta.setAgentStatus('rate-limited', `${Math.round(delayMs / 1000)}s`);
             }
             // Clear any partial content written before the stream failed so
             // the retry starts with a clean message instead of appending to
             // a truncated or corrupted response.
-            flushTokenBuffer(conversationId, assistantMsgId);
-            chatStore.setLastMessageContent(conversationId, '', assistantMsgId);
+            chatDelta.flushTokens(conversationId, assistantMsgId);
+            chatDelta.setLastMessageContent(conversationId, '', assistantMsgId);
           }
         );
       } catch (retryErr) {
@@ -1868,9 +1715,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
           if (ctxMatch && activeProvider) {
             const discoveredWindow = parseInt(ctxMatch[1], 10);
             if (Number.isFinite(discoveredWindow) && discoveredWindow > 0) {
-              useDiscoveredCapsStore
-                .getState()
-                .recordContextWindow(activeProvider.id, effectiveModelId, discoveredWindow);
+              getCapsPort().recordContextWindow(activeProvider.id, effectiveModelId, discoveredWindow);
               logger.info('Persisted discovered context window', {
                 providerId: activeProvider.id,
                 modelId: effectiveModelId,
@@ -1879,7 +1724,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
             }
           }
 
-          chatStore.appendToLastMessage(
+          chatDelta.appendText(
             conversationId,
             getI18n().chat.compactingInlineNotice,
             assistantMsgId
@@ -1953,7 +1798,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
           preparedMessages = await rehydrateForSend(preparedMessages, {
             vision: modelCaps.vision,
             conversationId,
-            workspacePath: useChatStore.getState().conversations[conversationId]?.workspacePath ?? null,
+            workspacePath: getConversationReader().getConversation(conversationId)?.workspacePath ?? null,
             cache: imageBase64Cache,
           });
           try {
@@ -1973,7 +1818,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
 
       // Observability: record this turn's LLM call as a generation (no-op when disabled)
       {
-        const turnMsg = useChatStore.getState().conversations[conversationId]?.messages.find(m => m.id === assistantMsgId);
+        const turnMsg = getConversationReader().getConversation(conversationId)?.messages.find(m => m.id === assistantMsgId);
         startGeneration(conversationId, {
           name: `turn-${turnCount}`,
           model: effectiveModelId,
@@ -1991,7 +1836,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
 
       // Update usage on message if available
       if (finalUsage) {
-        useChatStore.getState().updateMessageUsage(conversationId, finalUsage, assistantMsgId);
+        chatDelta.updateMessageUsage(conversationId, finalUsage, assistantMsgId);
         // Calibrate token estimator with actual API usage
         const estimatedInput = estimateTokens(effectiveSystemPrompt) + estimateMessageTokens(preparedMessages) + toolTokens;
         calibrateFromUsage(estimatedInput, finalUsage.inputTokens);
@@ -2003,7 +1848,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
             effectiveModelId,
             route.type === 'skill'
               ? (route.skill?.name ?? null)
-              : (useChatStore.getState().conversations[conversationId]?.activeSkills?.[0] ?? null),
+              : (getConversationReader().getConversation(conversationId)?.activeSkills?.[0] ?? null),
             {
               inputTokens: usageSnapshot.inputTokens,
               outputTokens: usageSnapshot.outputTokens,
@@ -2029,12 +1874,18 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
           eventRouter,
           executionId: execution.id,
           inputValidators,
+          blockedTools: options?.blockedTools,
           confirmCb,
           filePermCb,
           toolContext,
           continueLoop,
           contextUsagePercent: usagePercent,
+          toolInvoker,
         });
+        if (batchResult.requiresUserRecovery) {
+          awaitingUserRecovery = true;
+          continueLoop = false;
+        }
 
         // ★ Persist this turn's full message state (including completed tool calls)
         // to disk RIGHT NOW. We must use replaceMessageById (not updateLastMessage)
@@ -2043,7 +1894,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
         // updateLastMessage would either clobber the new placeholder or update the
         // wrong line. Awaiting here adds a few ms of latency but guarantees disk
         // state matches in-memory state before the loop continues.
-        const turnMsg = useChatStore.getState().conversations[conversationId]
+        const turnMsg = getConversationReader().getConversation(conversationId)
           ?.messages.find((m) => m.id === assistantMsgId);
         if (turnMsg) {
           try {
@@ -2061,7 +1912,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
           // (line ~1304). Without it, freshTools is the full unfiltered catalog
           // while `tools` is the prefetched subset, so every deferred tool shows
           // up as falsely "added" in the injected tools-changed notification.
-          const { tools: freshRawTools } = resolveTools(route, !!builtinWebSearch, options?.blockedTools, prefetchCtx);
+          const { tools: freshRawTools } = resolveTools(toolInvoker, route, !!builtinWebSearch, options?.blockedTools, prefetchCtx);
           const freshTools = noTools ? [] : freshRawTools;
           const freshNames = new Set(freshTools.map(t => t.name));
           const added = freshTools.filter(t => !toolNames.has(t.name));
@@ -2077,7 +1928,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
               parts.push(format(tc.toolsRemoved, { tools: removed.map(t => t.name).join(', ') }));
             }
             parts.push(tc.toolsUpdatedFooter);
-            chatStore.addMessage(conversationId, {
+            chatDelta.addMessage(conversationId, {
               id: generateId(),
               role: 'user',
               content: parts.join('\n'),
@@ -2094,7 +1945,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
       // takes precedence over runtime observation.
       if (collectedThinking && modelCaps.thinking === false && activeProvider
           && modelDeclared?.supportsReasoning !== false) {
-        useDiscoveredCapsStore.getState().recordReasoningObserved(activeProvider.id, effectiveModelId);
+        getCapsPort().recordReasoningObserved(activeProvider.id, effectiveModelId);
       }
 
       // Max Output Tokens recovery: if LLM output was truncated (not tool_use),
@@ -2114,7 +1965,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
             loopId,
             isSystem: true as const,
           };
-          useChatStore.getState().addMessage(conversationId, recoveryMsg);
+          chatDelta.addMessage(conversationId, recoveryMsg);
           continueLoop = true;
         } else {
           // Recovery exhausted: surface a visible error so the user knows the
@@ -2127,7 +1978,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
             attempts: MAX_OUTPUT_TOKENS_RECOVERY_LIMIT,
             finalMaxTokens: maxOutputTokens,
           });
-          chatStore.appendToLastMessage(
+          chatDelta.appendText(
             conversationId,
             format(getI18n().chat.outputLimitError, { limit: MAX_OUTPUT_TOKENS_RECOVERY_LIMIT }),
             assistantMsgId
@@ -2157,17 +2008,17 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
       // with plain text rather than tool_use, run another turn so the LLM actually
       // responds to that follow-up. Without this, mid-stream user messages get added
       // to the conversation but never receive a reply.
-      if (!continueLoop && hasQueuedInputs(conversationId) && !abortController.signal.aborted) {
+      if (
+        !continueLoop
+        && !awaitingUserRecovery
+        && hasQueuedInputs(conversationId)
+        && !abortController.signal.aborted
+      ) {
         // Flush any buffered tokens and finalize the previous assistant message
         // (toolExecutor normally does this between tool_use turns; we have to do it
         // ourselves on the no-tool path).
-        flushTokenBuffer(conversationId, assistantMsgId);
-        useChatStore.setState((state) => {
-          const msg = state.conversations[conversationId]?.messages.find(
-            (m) => m.id === assistantMsgId
-          );
-          if (msg) msg.isStreaming = false;
-        });
+        chatDelta.flushTokens(conversationId, assistantMsgId);
+        chatDelta.setMessageStreamingFlag(conversationId, assistantMsgId, false);
         continueLoop = true;
         // A new user directive is a fresh start: restore the full no-progress
         // tolerance budget so the rescue actually buys the intended retries, not
@@ -2180,15 +2031,17 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
         // doesn't mistake a degenerate stop for a finished answer (mirrors the
         // max_tokens-exhausted marker above).
         if (noProgressAborted) {
-          chatStore.appendToLastMessage(
+          chatDelta.appendText(
             conversationId,
             `\n\n${getI18n().chat.noProgressStopped}`,
             assistantMsgId,
           );
         }
-        chatStore.finishStreaming(conversationId, assistantMsgId);
-        chatStore.clearAbortController(conversationId);
-        const endReason = noProgressAborted
+        chatDelta.finishStreaming(conversationId, assistantMsgId);
+        abortRegistry.clearAbortController(conversationId);
+        const endReason = awaitingUserRecovery
+          ? 'awaiting_user'
+          : noProgressAborted
           ? 'no_progress'
           : maxTokensRecoveryExhausted ? 'max_tokens_exhausted' : 'end_turn';
         logger.info('Agent loop ended', { conversationId, loopId, turnCount, reason: endReason });
@@ -2223,13 +2076,18 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
         }).catch(() => {});
         // Mark conversation status — error if recovery exhausted, otherwise completed.
         // no_progress is a soft stop (visible marker, status completed) like maxTurns.
-        if (maxTokensRecoveryExhausted) {
+        if (awaitingUserRecovery) {
+          exitReason = 'awaiting_user';
+        } else if (maxTokensRecoveryExhausted) {
           exitReason = 'error';
           exitError = 'Max output tokens recovery exhausted';
         } else if (noProgressAborted) {
           exitReason = 'no_progress';
         }
-        chatStore.setConversationStatus(conversationId, maxTokensRecoveryExhausted ? 'error' : 'completed');
+        chatDelta.setConversationStatus(
+          conversationId,
+          awaitingUserRecovery ? 'idle' : maxTokensRecoveryExhausted ? 'error' : 'completed',
+        );
   
         // Interactive-desktop gate: user-visible conversations only.
         // IM conversations, scheduled tasks, triggers run headless — the
@@ -2238,13 +2096,13 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
         // pollute the workspace. Both memory extraction AND self-evolution
         // proposals share this gate (they're two sides of the same
         // "agent writes stuff only when user can review" invariant).
-        const convRecord = chatStore.conversations[conversationId];
+        const convRecord = getConversationReader().getConversation(conversationId);
         const interactiveDesktop = isInteractiveDesktop(options, convRecord);
 
         // Auto-extract memories from desktop conversations (non-blocking).
         // IM conversations have their own extraction in channelRouter.ts.
-        if (interactiveDesktop) {
-          const wsPath = convRecord?.workspacePath ?? useWorkspaceStore.getState().currentPath;
+        if (interactiveDesktop && !awaitingUserRecovery) {
+          const wsPath = convRecord?.workspacePath ?? getWorkspaceReader().getCurrentPath();
           import('../memdir/extractor').then(({ extractMemoriesFromConversation }) =>
             extractMemoriesFromConversation(conversationId, wsPath)
           ).catch(() => {});
@@ -2259,27 +2117,29 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
         // The gate logic (interactiveDesktop + workspace bound) lives
         // in `shouldComputeProposalSignal` so it's unit-testable. Full
         // rationale in that function's docstring (Task #49 + #51).
-        const wsPath = convRecord?.workspacePath ?? useWorkspaceStore.getState().currentPath;
+        const wsPath = convRecord?.workspacePath ?? getWorkspaceReader().getCurrentPath();
         if (
           exitReason === 'completed' &&
+          !awaitingUserRecovery &&
           shouldComputeProposalSignal(options, convRecord, wsPath)
         ) {
           try {
             const { computeProposalSignal } = await import('./proposalSignal');
-            const { useSettingsStore } = await import('../../stores/settingsStore');
             const proactivity =
-              useSettingsStore.getState().soul?.proactivity ?? 'companion';
+              settingsReader.getSnapshot().soul?.proactivity ?? 'companion';
             const loopMsgs = (convRecord?.messages ?? []).filter((m) => m.loopId === loopId);
             const signal = computeProposalSignal(loopMsgs, proactivity);
             if (signal) {
-              chatStore.setPendingProposalSignal(conversationId, signal);
+              chatDelta.setPendingProposalSignal(conversationId, signal);
             }
           } catch (err) {
             logger.warn('[proposalSignal] compute failed', { err: err instanceof Error ? err.message : String(err) });
           }
         }
-        const convTitle = useChatStore.getState().conversationIndex[conversationId]?.title ?? getI18n().chat.notificationTaskFallback;
-        notifyTaskCompleted(convTitle, conversationId);
+        if (!awaitingUserRecovery) {
+          const convTitle = getConversationReader().getIndexEntry(conversationId)?.title ?? getI18n().chat.notificationTaskFallback;
+          notifyTaskCompleted(convTitle, conversationId);
+        }
       }
     } catch (err) {
       // Handle abort errors gracefully.
@@ -2294,18 +2154,18 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
 
         // Flush partial streamed text into the message first — on this path the
         // RAF-batched token buffer may still hold everything streamed so far.
-        flushTokenBuffer(conversationId, assistantMsgId);
+        chatDelta.flushTokens(conversationId, assistantMsgId);
 
         // Backfill missing tool results for interrupted tool calls.
         // Without this, orphaned tool_use blocks cause API 400 errors on the next turn.
         for (const tc of collectedToolCalls) {
-          const existing = useChatStore.getState().conversations[conversationId]
+          const existing = getConversationReader().getConversation(conversationId)
             ?.messages.find((m) => m.id === assistantMsgId)
             ?.toolCalls?.find((t) => t.id === tc.id);
           if (existing && existing.result === undefined) {
-            chatStore.updateToolCall(conversationId, assistantMsgId, tc.id,
+            chatDelta.updateToolCall(conversationId, assistantMsgId, tc.id,
               '[Tool execution interrupted by user]', undefined, true);
-            chatStore.appendToolCallContext(conversationId, loopId, {
+            chatDelta.appendToolCallContext(conversationId, loopId, {
               name: tc.name,
               input: tc.input,
               result: '[Tool execution interrupted by user]',
@@ -2320,7 +2180,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
         // must remain visible instead of being silently destroyed.
         for (const qi of drainQueuedInputs(conversationId)) {
           if (qi.isSystem) continue;
-          useChatStore.getState().addMessage(conversationId, {
+          chatDelta.addMessage(conversationId, {
             id: generateId(),
             role: 'user',
             content: qi.text,
@@ -2333,12 +2193,13 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
         drainFilePermissionQueue();
         drainWorkspaceRequest();
         drainUserQuestions();
+        drainCapabilitySetupRequests(loopId);
 
         // Drop the untouched placeholder BEFORE cancelStreaming: an abort that
         // arrived before any text/thinking/tool call would otherwise persist as
         // a blank assistant bubble (live now, and after reload via the JSONL
         // copy written at creation — sanitizeLoadedMessages drops that one).
-        const placeholder = useChatStore.getState().conversations[conversationId]
+        const placeholder = getConversationReader().getConversation(conversationId)
           ?.messages.find((m) => m.id === assistantMsgId);
         if (placeholder) {
           const placeholderText = typeof placeholder.content === 'string'
@@ -2356,17 +2217,26 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
             // fire-and-forget disk-append ran, there was never a `+1` to
             // offset, so skip the bump — otherwise the catalog would
             // transiently undercount until the next turn-end reindex.
+            // P1-3B-3B fix: in-process this call is synchronous, but the
+            // sidecar-run path shims it to an async reverse RPC
+            // (session.isMessageWrittenToDisk — see
+            // sidecar/src/shims/conversationStorageRun.ts). An un-awaited
+            // call there always resolved a truthy Promise, so
+            // skipCatalogBump was always `false` on the sidecar path
+            // regardless of the real answer. `await`ing a synchronous
+            // boolean is harmless (Promise.resolve(value) semantics), so
+            // this is safe for both paths.
             const { isMessageWrittenToDisk } = await import('../session/conversationStorage');
-            chatStore.deleteMessage(conversationId, assistantMsgId, {
-              skipCatalogBump: !isMessageWrittenToDisk(assistantMsgId),
+            chatDelta.deleteMessage(conversationId, assistantMsgId, {
+              skipCatalogBump: !(await isMessageWrittenToDisk(assistantMsgId)),
             });
           }
         }
 
-        chatStore.cancelStreaming(conversationId);
-        chatStore.clearAbortController(conversationId);
+        chatDelta.cancelStreaming(conversationId);
+        abortRegistry.clearAbortController(conversationId);
         // Cancel the TaskExecution
-        taskExecutionStore.cancelExecution(execution.id);
+        executionPort.cancelExecution(execution.id);
         // Auto-deactivate skills on abort
         deactivateAllSkills(conversationId);
         // Clear crash recovery checkpoint — loop aborted by user
@@ -2378,9 +2248,10 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
           closeAxSession().catch(() => {});
         }).catch(() => {});
         // Set status back to idle on cancel
-        chatStore.setConversationStatus(conversationId, 'idle');
+        chatDelta.setConversationStatus(conversationId, 'idle');
 
         endConversationTrace(conversationId, { output: { reason: 'aborted' } });
+        await endComputerUseTaskLease();
         return { reason: 'aborted' as const };
       }
 
@@ -2413,7 +2284,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
       const isLikelyVisionError = isVisionUnsupportedError(
         errorCode,
         err instanceof LLMError ? err.statusCode : undefined,
-        conversationHasImages(useChatStore.getState().conversations[conversationId]?.messages ?? []),
+        conversationHasImages(getConversationReader().getConversation(conversationId)?.messages ?? []),
         modelSupportsVision,
       );
       const isOllamaForbidden = errorCode === 'authentication'
@@ -2431,13 +2302,13 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
         displayError += `\n\n${getI18n().chat.errorNotFoundHint}`;
       }
 
-      chatStore.appendToLastMessage(
+      chatDelta.appendText(
         conversationId,
         `\n\n**Error:** ${displayError}`,
         assistantMsgId
       );
-      chatStore.finishStreaming(conversationId, assistantMsgId);
-      chatStore.clearAbortController(conversationId);
+      chatDelta.finishStreaming(conversationId, assistantMsgId);
+      abortRegistry.clearAbortController(conversationId);
       // Error the TaskExecution
       eventRouter.route({ type: 'error', loopId, error: errorMessage });
       persistExecutionSnapshot(conversationId, loopId);
@@ -2456,15 +2327,19 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
         clearCheckpoint(conversationId);
       }).catch(() => {});
       // Mark conversation as error and send notification
-      chatStore.setConversationStatus(conversationId, 'error');
+      chatDelta.setConversationStatus(conversationId, 'error');
 
-      const convTitle = useChatStore.getState().conversationIndex[conversationId]?.title ?? getI18n().chat.notificationTaskFallback;
+      const convTitle = getConversationReader().getIndexEntry(conversationId)?.title ?? getI18n().chat.notificationTaskFallback;
       notifyTaskError(convTitle, conversationId);
       exitReason = 'error';
       exitError = errorMessage;
       continueLoop = false;
+    } finally {
+      if (streamFlushTimer) clearInterval(streamFlushTimer);
     }
   }
+  abortController.signal.removeEventListener('abort', endComputerUseTaskOnAbort);
+  await endComputerUseTaskLease();
   endConversationTrace(conversationId, { output: { reason: exitReason }, error: exitError });
   return { reason: exitReason, error: exitError };
 }

@@ -10,6 +10,22 @@
    Cascades to group-hover/peer-hover since they compose this base variant. */
 @custom-variant hover (&:hover);
 
+/* Electron native title-bar hit testing happens before React receives a mouse
+   event. Keep this rule in the renderer stylesheet (not only insertCSS from
+   main) so real pointer clicks carve stable interaction islands out of macOS
+   hidden-titlebar and Windows toolbar regions from the first paint onward. */
+[data-tauri-drag],
+[data-tauri-drag-region] {
+  -webkit-app-region: drag;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+[data-electron-no-drag],
+[data-electron-no-drag] * {
+  -webkit-app-region: no-drag !important;
+}
+
 @layer base {
   html, body, #root {
     height: 100%;

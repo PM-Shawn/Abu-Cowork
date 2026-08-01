@@ -15,8 +15,8 @@ official Abu Enterprise build.
 
 ## Build targets
 
-- `npm run tauri:dev` — OSS (this stub)
-- `npm run tauri:dev:enterprise` — uses `../Abu-enterprise-modules/src` via Vite alias (private repo required as sibling)
+- `npm run electron:dev` — OSS (this stub)
+- `ABU_BUILD_TARGET=enterprise npm run electron:dev` — uses `../Abu-enterprise-modules/src` via Vite alias (private repo required as sibling)
 
 ## Vite alias
 

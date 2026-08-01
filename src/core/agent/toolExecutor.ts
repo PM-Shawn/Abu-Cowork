@@ -8,9 +8,15 @@
  * - Process results: update chatStore, eventRouter, and planned step tracking
  */
 
-import type { ToolCall, ToolResultContent, ToolExecutionContext, ToolResult } from '../../types';
-import type { ConfirmationInfo, FilePermissionCallback } from '../tools/registry';
-import { executeAnyTool, toolResultToString } from '../tools/registry';
+import type {
+  ToolCall,
+  ToolResultContent,
+  ToolExecutionContext,
+  ToolExecutionMetadata,
+  ToolResult,
+} from '../../types';
+import type { ConfirmationInfo } from '../tools/commandSafety';
+import type { FilePermissionCallback, ToolInvoker } from './ports/toolInvoker';
 import { processToolResult } from '../session/sessionMemory';
 import { evaluatePlanGate, getPlanMode } from './planMode';
 import { emitHook } from './lifecycleHooks';
@@ -20,7 +26,8 @@ import { setComputerUseActive, incrementComputerUseStep, setCurrentAction, isSes
 import { getI18n } from '../../i18n';
 import { TOOL_NAMES } from '../tools/toolNames';
 import { invoke } from '@tauri-apps/api/core';
-import { useChatStore } from '../../stores/chatStore';
+import { getChatDelta } from './ports/chatDelta';
+import { getConversationReader } from './ports/conversationReader';
 import { setLoopContext, clearLoopContext } from './permissionBridge';
 import type { EventRouter } from './eventRouter';
 import { createLogger } from '../logging/logger';
@@ -64,9 +71,15 @@ export interface ToolBatchParams {
   eventRouter: EventRouter;
   executionId: string;
   inputValidators: Map<string, (input: Record<string, unknown>) => boolean>;
+  /** Per-run execution denylist. This is an enforcement boundary, not only a
+   * model-visible tool filter: hallucinated or malformed tool calls fail closed. */
+  blockedTools?: string[];
   confirmCb: (info: ConfirmationInfo) => Promise<boolean>;
   filePermCb: FilePermissionCallback;
   toolContext: ToolExecutionContext;
+  /** ToolInvoker port instance, resolved once by the caller (agentLoop.ts)
+   *  and threaded in — same discipline as the other resolve-once locals. */
+  toolInvoker: ToolInvoker;
   /** Whether the loop will continue (tool_use stop reason) */
   continueLoop: boolean;
   /** Current context window usage (0-100). Scales tool result truncation under pressure. */
@@ -76,6 +89,8 @@ export interface ToolBatchParams {
 export interface ToolBatchResult {
   /** Whether MCP tools changed (server installed/uninstalled) */
   mcpChanged: boolean;
+  /** A trusted tool requested an explicit user recovery choice. */
+  requiresUserRecovery: boolean;
 }
 
 type ToolExecResult = {
@@ -84,6 +99,7 @@ type ToolExecResult = {
   resultContent: ToolResultContent[] | undefined;
   error: boolean;
   duration: number;
+  metadata?: ToolExecutionMetadata;
 };
 
 /**
@@ -112,23 +128,17 @@ export async function executeToolBatch(params: ToolBatchParams): Promise<ToolBat
     toolContext,
     continueLoop,
     contextUsagePercent,
+    toolInvoker,
   } = params;
 
-  const chatStore = useChatStore.getState();
+  const chatDelta = getChatDelta();
+  const blockedTools = new Set(params.blockedTools ?? []);
 
   // Update the assistant message with tool calls
-  useChatStore.setState((state) => {
-    const msg = state.conversations[conversationId]?.messages.find(
-      (m) => m.id === assistantMsgId
-    );
-    if (msg) {
-      msg.toolCalls = collectedToolCalls;
-      msg.isStreaming = false;
-    }
-  });
+  chatDelta.setMessageToolCalls(conversationId, assistantMsgId, collectedToolCalls);
 
   // Execute tools in parallel using Promise.allSettled
-  chatStore.setAgentStatus('tool-calling', `${collectedToolCalls.length} tools`);
+  chatDelta.setAgentStatus('tool-calling', `${collectedToolCalls.length} tools`);
 
   // Expose loop context for delegate_to_agent tool (per-loop, supports concurrent agents)
   setLoopContext(loopId, {
@@ -139,12 +149,23 @@ export async function executeToolBatch(params: ToolBatchParams): Promise<ToolBat
     loopId,
     conversationId,
     toolCallToStepId,
+    blockedTools: params.blockedTools,
   });
 
   let completedCount = 0;
   const totalCount = collectedToolCalls.length;
 
   const executeSingleTool = async (tc: typeof collectedToolCalls[number]): Promise<ToolExecResult> => {
+    if (blockedTools.has(tc.name)) {
+      return {
+        id: tc.id,
+        result: `Error: tool "${tc.name}" is blocked for this agent run`,
+        resultContent: undefined,
+        error: true,
+        duration: 0,
+      };
+    }
+
     // Check if cancelled before executing
     if (abortController.signal.aborted) {
       return { id: tc.id, result: TOOL_RESULT_CANCELLED_MARKER, resultContent: undefined, error: false, duration: 0 };
@@ -157,6 +178,7 @@ export async function executeToolBatch(params: ToolBatchParams): Promise<ToolBat
       conversationId,
       toolName: tc.name,
       toolInput: tc.input,
+      abortSignal: abortController.signal,
     } as PreToolCallEvent);
 
     if (preEvent.blocked) {
@@ -193,6 +215,7 @@ export async function executeToolBatch(params: ToolBatchParams): Promise<ToolBat
     }
 
     const startTime = Date.now();
+    let metadata: ToolExecutionMetadata | undefined;
     // Observability: record this tool execution as a span (no-op when disabled)
     const toolSpan = startToolSpan(conversationId, { name: tc.name, input: effectiveInput });
     try {
@@ -210,7 +233,17 @@ export async function executeToolBatch(params: ToolBatchParams): Promise<ToolBat
           }
         };
         abortController.signal.addEventListener('abort', onAbort, { once: true });
-        executeAnyTool(tc.name, effectiveInput, confirmCb, filePermCb, { ...toolContext, toolCallId: tc.id }, contextUsagePercent)
+        toolInvoker.executeAnyTool(tc.name, effectiveInput, confirmCb, filePermCb, {
+          ...toolContext,
+          toolCallId: tc.id,
+          abortSignal: abortController.signal,
+          reportMetadata: (next) => {
+            metadata = {
+              ...metadata,
+              ...next,
+            };
+          },
+        }, contextUsagePercent)
           .then((result) => {
             if (!settled) {
               settled = true;
@@ -229,12 +262,13 @@ export async function executeToolBatch(params: ToolBatchParams): Promise<ToolBat
       const durationMs = Date.now() - startTime;
       completedCount++;
       if (totalCount > 1) {
-        chatStore.setAgentStatus('tool-calling', `${completedCount}/${totalCount}: ${tc.name}`);
+        chatDelta.setAgentStatus('tool-calling', `${completedCount}/${totalCount}: ${tc.name}`);
       }
       // Extract string for display/hooks; keep rich content for LLM
-      const resultStr = toolResultToString(rawResult);
+      const resultStr = toolInvoker.toolResultToString(rawResult);
       const resultContent: ToolResultContent[] | undefined =
         typeof rawResult !== 'string' ? rawResult : undefined;
+      const requiresUserRecovery = Boolean(metadata?.sandboxRecovery);
       // Emit postToolCall hook
       await emitHook({
         type: 'postToolCall',
@@ -242,13 +276,21 @@ export async function executeToolBatch(params: ToolBatchParams): Promise<ToolBat
         conversationId,
         toolName: tc.name,
         toolInput: effectiveInput,
+        abortSignal: abortController.signal,
         result: resultStr,
-        error: false,
+        error: requiresUserRecovery,
         durationMs,
       });
-      logger.info('Tool executed', { toolName: tc.name, durationMs, error: false });
+      logger.info('Tool executed', { toolName: tc.name, durationMs, error: requiresUserRecovery });
       toolSpan.end({ output: resultStr });
-      return { id: tc.id, result: resultStr, resultContent, error: false, duration: durationMs / 1000 };
+      return {
+        id: tc.id,
+        result: resultStr,
+        resultContent,
+        error: requiresUserRecovery,
+        duration: durationMs / 1000,
+        metadata,
+      };
     } catch (err) {
       // Re-throw AbortError so outer catch handles cancellation properly
       if (err instanceof Error && err.name === 'AbortError') {
@@ -258,7 +300,7 @@ export async function executeToolBatch(params: ToolBatchParams): Promise<ToolBat
       const durationMs = Date.now() - startTime;
       completedCount++;
       if (totalCount > 1) {
-        chatStore.setAgentStatus('tool-calling', `${completedCount}/${totalCount}: ${tc.name}`);
+        chatDelta.setAgentStatus('tool-calling', `${completedCount}/${totalCount}: ${tc.name}`);
       }
       const errorMsg = err instanceof Error ? err.message : String(err);
       // Emit postToolCall hook for errors too
@@ -268,6 +310,7 @@ export async function executeToolBatch(params: ToolBatchParams): Promise<ToolBat
         conversationId,
         toolName: tc.name,
         toolInput: effectiveInput,
+        abortSignal: abortController.signal,
         result: `Error: ${errorMsg}`,
         error: true,
         durationMs,
@@ -301,24 +344,9 @@ export async function executeToolBatch(params: ToolBatchParams): Promise<ToolBat
     // Subsequent batches in the same agent loop skip hide/show to avoid flickering.
     if (hasInteractiveAction && !isSessionWindowHidden()) {
       try { await invoke('show_screen_border', { stopLabel: getI18n().computerUse.stopControl }); } catch { /* ignore */ }
-      // Remember the foreground app before hiding Abu
-      let targetAppName: string | null = null;
-      try {
-        const activeWin = await invoke<{ app_name: string }>('get_active_window');
-        if (activeWin.app_name && activeWin.app_name !== 'Abu' && activeWin.app_name !== 'Abu Dev') {
-          targetAppName = activeWin.app_name;
-        }
-      } catch { /* ignore */ }
-
       try { await invoke('window_hide'); } catch { /* ignore */ }
       await new Promise(r => setTimeout(r, 200));
       setSessionWindowHidden(true);
-
-      // Re-activate the target app after Abu is hidden
-      if (targetAppName) {
-        try { await invoke('activate_app', { appName: targetAppName }); } catch { /* ignore */ }
-        await new Promise(r => setTimeout(r, 100));
-      }
     }
     setComputerUseActive(true, conversationId);
     setComputerUseBatchMode(true);
@@ -382,7 +410,7 @@ export async function executeToolBatch(params: ToolBatchParams): Promise<ToolBat
   for (let i = 0; i < results.length; i++) {
     const result = results[i];
     if (result.status === 'fulfilled') {
-      const { id, result: toolResult, resultContent, error } = result.value;
+      const { id, result: toolResult, resultContent, error, metadata } = result.value;
       // Determine hideScreenshot for computer tool
       let hideScreenshot: boolean | undefined;
       const matchedTc = collectedToolCalls[i];
@@ -412,7 +440,7 @@ export async function executeToolBatch(params: ToolBatchParams): Promise<ToolBat
       // Fire-and-forget: snapshot failures must never block the agent loop.
       // Uses the un-offloaded toolResult so extractFileOutputs can still parse stdout.
       if (!error && matchedTc) {
-        const workspacePath = useChatStore.getState().conversations[conversationId]?.workspacePath ?? null;
+        const workspacePath = getConversationReader().getConversation(conversationId)?.workspacePath ?? null;
         import('../session/outputSnapshots').then(({ snapshotToolOutputs }) => {
           snapshotToolOutputs(conversationId, {
             id,
@@ -423,7 +451,16 @@ export async function executeToolBatch(params: ToolBatchParams): Promise<ToolBat
         }).catch(() => {});
       }
 
-      chatStore.updateToolCall(conversationId, assistantMsgId, id, storedResult, resultContent, error, hideScreenshot);
+      chatDelta.updateToolCall(
+        conversationId,
+        assistantMsgId,
+        id,
+        storedResult,
+        resultContent,
+        error,
+        hideScreenshot,
+        metadata,
+      );
 
       // Update TaskExecutionStore via EventRouter
       const stepId = toolCallToStepId.get(id);
@@ -438,7 +475,7 @@ export async function executeToolBatch(params: ToolBatchParams): Promise<ToolBat
       // Use index to find the corresponding tool call
       const tc = collectedToolCalls[i];
       if (tc) {
-        chatStore.updateToolCall(conversationId, assistantMsgId, tc.id, `Error: ${result.reason}`, undefined, true);
+        chatDelta.updateToolCall(conversationId, assistantMsgId, tc.id, `Error: ${result.reason}`, undefined, true);
 
         // Update TaskExecutionStore via EventRouter
         const stepId = toolCallToStepId.get(tc.id);
@@ -457,6 +494,9 @@ export async function executeToolBatch(params: ToolBatchParams): Promise<ToolBat
     tc.name === TOOL_NAMES.MANAGE_MCP_SERVER && (tc.input as Record<string, unknown>)?.action === 'install' ||
     tc.name === 'install_mcp_server' || tc.name === 'uninstall_mcp_server'
   );
+  const requiresUserRecovery = results.some(
+    (result) => result.status === 'fulfilled' && Boolean(result.value.metadata?.sandboxRecovery),
+  );
 
-  return { mcpChanged };
+  return { mcpChanged, requiresUserRecovery };
 }

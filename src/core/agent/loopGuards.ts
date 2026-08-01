@@ -53,3 +53,61 @@ export function resolveMaxTurns(params: {
   if (explicit === undefined) return DEFAULT_MAX_TURNS;
   return explicit > 0 ? explicit : Infinity;
 }
+
+/**
+ * Calculate the escalated maxOutputTokens for a max_tokens recovery turn.
+ *
+ * A fixed 2× that PERSISTS for every recovery (recoveryCount >= 1), so the budget
+ * sequence is base → 2× → 2× → 2×, clamped to contextWindowSize - 1000. Callers
+ * recompute `currentMax` from base each turn, so the escalation must be a pure
+ * function of `recoveryCount`. The old one-shot `alreadyEscalated` latch made the
+ * budget fall back to base on later recoveries (base → 2× → base → base) — bug #5.
+ *
+ * The multiplier is deliberately NOT progressive (e.g. 2^recoveryCount): the
+ * recovery prompt tells the model to break remaining work into smaller pieces, so
+ * a single doubling suffices, and an ever-growing budget would compound the input
+ * squeeze below. Note the unavoidable tradeoff: escalation raises maxOutputTokens,
+ * which lowers maxInputTokens (= contextWindowSize - maxOutputTokens) for the whole
+ * recovery sequence. On large windows this is negligible; on small windows it is
+ * inherent to escalating output at all (the "break into smaller pieces" prompt, not
+ * a bigger budget, is the real lever there). The clamp keeps ≥1000 input tokens.
+ * Pure function. Shared by agentLoop and subagentLoop (see subagentLoop.ts's
+ * `MAX_OUTPUT_TOKENS_RECOVERY_LIMIT` usage) — extracted here (rather than staying
+ * in agentLoop.ts) so subagentLoop doesn't have to import agentLoop's whole
+ * store-import graph just to reuse this pure helper (P1-3a-pre).
+ */
+export function escalateMaxOutputTokens(
+  currentMax: number,
+  contextWindowSize: number,
+  recoveryCount: number,
+): { maxOutputTokens: number; changed: boolean } {
+  if (recoveryCount <= 0) {
+    return { maxOutputTokens: currentMax, changed: false };
+  }
+  const escalated = Math.min(currentMax * 2, contextWindowSize - 1000);
+  if (escalated > currentMax) {
+    return { maxOutputTokens: escalated, changed: true };
+  }
+  return { maxOutputTokens: currentMax, changed: false };
+}
+
+/**
+ * Decide whether to continue the loop when a turn was cut off by max_tokens but
+ * still carried complete tool calls. The Claude adapter only emits a tool_use
+ * event on content_block_stop, so a call truncated mid-JSON is dropped — any
+ * collected calls are complete; sending their results back lets the model resume
+ * instead of the turn being discarded (legacy behavior excluded these entirely).
+ *
+ * We require at least one WELL-FORMED tool call (input without `_parse_error`). An
+ * all-malformed batch is not real progress: continuing on it would re-prompt a
+ * broken model indefinitely — agentLoop has no no-progress guard and maxTurns
+ * defaults to unlimited. This mirrors the subagent's `allToolsUnparseable` guard
+ * (see isNoProgressTurn). Pure. Shared by agentLoop and subagentLoop — see
+ * `escalateMaxOutputTokens`'s doc comment for why this lives here.
+ */
+export function shouldContinueTruncatedToolCalls(
+  stopReason: string,
+  toolCalls: Array<{ input: Record<string, unknown> }>,
+): boolean {
+  return stopReason === 'max_tokens' && toolCalls.some((tc) => !('_parse_error' in tc.input));
+}

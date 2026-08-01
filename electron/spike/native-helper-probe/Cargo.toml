@@ -1,0 +1,16 @@
+# F10 spike probe — a dependency-free native helper that reports the two
+# TCC-gated statuses (Accessibility + Screen Recording) and its own identity,
+# to answer: when Electron main SPAWNS this binary, who does macOS attribute the
+# permission to — the helper or the app? Raw framework FFI, no crates, fast build.
+[package]
+name = "native-helper-probe"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[[bin]]
+name = "native-helper-probe"
+path = "src/main.rs"
+
+[profile.release]
+opt-level = 1

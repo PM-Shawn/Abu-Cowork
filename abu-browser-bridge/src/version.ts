@@ -2,8 +2,18 @@ import { readFileSync } from 'fs';
 import { fileURLToPath } from 'url';
 import { dirname, resolve } from 'path';
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = dirname(__filename);
-const pkg = JSON.parse(readFileSync(resolve(__dirname, '../package.json'), 'utf-8'));
+declare const __ABU_CHROME_BRIDGE_VERSION__: string;
 
-export const PKG_VERSION: string = pkg.version;
+function readPackageVersion(): string {
+  const filename = fileURLToPath(import.meta.url);
+  const directory = dirname(filename);
+  const pkg = JSON.parse(
+    readFileSync(resolve(directory, '../package.json'), 'utf-8'),
+  ) as { version: string };
+  return pkg.version;
+}
+
+export const PKG_VERSION: string =
+  typeof __ABU_CHROME_BRIDGE_VERSION__ === 'string'
+    ? __ABU_CHROME_BRIDGE_VERSION__
+    : readPackageVersion();

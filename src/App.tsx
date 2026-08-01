@@ -9,6 +9,7 @@ import Sidebar from '@/components/sidebar/Sidebar';
 import ChatView from '@/components/chat/ChatView';
 import AutomationView from '@/components/automation/AutomationView';
 import SystemSettingsDialog from '@/components/settings/SystemSettingsDialog';
+import CapabilitySetupDialog from '@/components/settings/CapabilitySetupDialog';
 import ToolboxView from '@/components/settings/ToolboxModal';
 import TodoView from '@/components/todos/TodoView';
 import InboxView from '@/components/inbox/InboxView';
@@ -20,35 +21,47 @@ import RightPanel from '@/components/panel/RightPanel';
 import { usePreviewStore } from '@/stores/previewStore';
 import { resolveChatWidth, useViewportWidth } from '@/components/panel/panelWidths';
 import ToastContainer from '@/components/common/ToastContainer';
+import WindowTitleBar from '@/components/window/WindowTitleBar';
 import { registerBuiltinTools } from '@/core/tools/builtins';
 import { installLargeWriteGuard } from '@/core/agent/hooks/largeWriteGuard';
 import { initPlatform } from '@/utils/platform';
 import { useDiscoveryStore } from '@/stores/discoveryStore';
 import { useChatStore, useActiveConversation } from '@/stores/chatStore';
 import { initNetworkProxy } from '@/core/sandbox/config';
+import { startSidecar } from '@/core/sidecar/sidecarManager';
 
 // Initialize platform detection at module load time (before any component renders)
 // so that isWindows()/isMacOS() return correct values immediately
-initPlatform().then(() => {
+const platformInitialization = initPlatform().then((detectedPlatform) => {
   // Start network proxy after platform is detected (needs isMacOS())
   initNetworkProxy().catch((err) => {
     console.warn('[App] Network proxy init error:', err);
   });
+  // P1-0 sidecar skeleton: fire-and-forget, fail-soft. startSidecar() never
+  // throws on its own (see src/core/sidecar/sidecarManager.ts), the .catch
+  // here is defense-in-depth so a future change there can't ever surface as
+  // an app-startup failure.
+  startSidecar().catch((err) => {
+    console.warn('[App] Sidecar init error:', err);
+  });
+  return detectedPlatform;
 }).catch((err) => {
   console.warn('[App] Platform detection init error:', err);
+  return 'unknown';
 });
 import { useSettingsStore, bootstrapSecrets } from '@/stores/settingsStore';
 import { TooltipProvider } from '@/components/ui/tooltip';
-import { PanelLeft, PanelRight, Search, Plus } from 'lucide-react';
 import ConversationSearchModal from '@/components/sidebar/ConversationSearchModal';
-import { isMacOS } from '@/utils/platform';
+import { isMacOS, isWindows } from '@/utils/platform';
+import { hasElectronCommandHost } from '@/utils/electronHost';
 import { cn } from '@/lib/utils';
-import { initNotifications, clearDockBadge } from '@/utils/notifications';
+import { initNotifications } from '@/utils/notifications';
 import { initSidebarBadgeChannel } from '@/stores/noticeBadgeStore';
-import { initMenubarChannel, useNoticeMenubarStore } from '@/stores/noticeMenubarStore';
+import { initMenubarChannel } from '@/stores/noticeMenubarStore';
 import { initNoticeChannelHandlers } from '@/core/notice/channels';
 import { setContextProvider } from '@/core/notice/pipeline';
-import { cachedContextProvider, primeContextCaches, assembleGateContext, setFocused } from '@/core/notice/contextProvider';
+import { cachedContextProvider, primeContextCaches, assembleGateContext } from '@/core/notice/contextProvider';
+import { installNoticeFocusSync } from '@/core/notice/focusSync';
 import { drainInbox } from '@/core/notice/inbox';
 import { startPetStatusBridge, resyncPetStatus } from '@/core/pet/petStatusBridge';
 import { schedulerEngine } from '@/core/scheduler/scheduler';
@@ -62,11 +75,16 @@ import { loadIMPlugins } from '@/core/im/pluginLoader';
 import { stopAllHeartbeats } from '@/core/im/pluginHeartbeat';
 import { reconcileIMSessions } from '@/core/im/sessionReconcile';
 import { initMCPStoreSync, cleanupMCPStoreSync } from '@/stores/mcpStore';
+import { provisionFirstPartyMCPServers } from '@/core/agent/mcpDiscovery';
+import {
+  initBuiltinBrowserRuntime,
+  cleanupBuiltinBrowserRuntime,
+} from '@/core/browser/builtinBrowserRuntime';
 import { initFileWatchers, stopAllWatchers } from '@/core/agent/fileWatcher';
 import { startRegistryWatcher, stopRegistryWatcher } from '@/core/skill/registryWatcher';
 import { getPendingWorkspaceRequest, resolveWorkspaceRequest, subscribeToWorkspaceRequest } from '@/core/agent/permissionBridge';
 import { startBehaviorSensor, stopBehaviorSensor } from '@/core/agent/behaviorSensor';
-import { runAgentLoop } from '@/core/agent/agentLoop';
+import { runAgentLoopDispatched } from '@/core/agent/agentLoopRunner';
 import { useI18n } from '@/i18n';
 import CloseDialog from '@/components/common/CloseDialog';
 import SensitiveAuditDialog from '@/components/settings/SensitiveAuditDialog';
@@ -110,6 +128,11 @@ async function drainPendingInbox(abuIsFocused = false): Promise<void> {
 }
 
 function App() {
+  const [desktopPlatform, setDesktopPlatform] = useState(() => {
+    if (isMacOS()) return 'macos';
+    if (isWindows()) return 'windows';
+    return 'unknown';
+  });
   const refreshDiscovery = useDiscoveryStore((s) => s.refresh);
   const sidebarCollapsed = useSettingsStore((s) => s.sidebarCollapsed);
   const toggleSidebar = useSettingsStore((s) => s.toggleSidebar);
@@ -129,6 +152,16 @@ function App() {
   const showTodosInbox = useLabsFlag(LABS_TODOS_INBOX);
   const activeConv = useActiveConversation();
   const { t } = useI18n();
+
+  useEffect(() => {
+    let active = true;
+    void platformInitialization.then((platform) => {
+      if (active) setDesktopPlatform(platform);
+    });
+    return () => {
+      active = false;
+    };
+  }, []);
 
   // If the Todos/Inbox Labs experiment is turned off while the user is parked
   // on one of its views, fall back to chat — otherwise the sidebar nav out of
@@ -191,32 +224,17 @@ function App() {
     invoke('window_hide');
   }, []);
 
-  // Clear dock badge whenever the window regains focus
+  // Keep notification focus state aligned through both the native Tauri event
+  // and the renderer's own focus event. Electron can miss one during startup
+  // or reload; either path must still clear stale menubar attention.
   useEffect(() => {
     if (!isTauriEnv()) return; // web / E2E: no Tauri window API
-    let unlistenFn: (() => void) | null = null;
-    let cancelled = false;
-    getCurrentWindow()
-      .onFocusChanged(({ payload: focused }) => {
-        setFocused(focused);
-        if (focused) {
-          clearDockBadge();
-          useNoticeMenubarStore.getState().dismissAll();
-          // Re-deliver L2 notices Gate queued while we were
-          // fullscreen / unfocused. Phase-2 main-window-toast will
-          // aggregate these; for v0.13.0 they just flow back through
-          // sidebar_badge / menubar so the user isn't left unaware.
-          void drainPendingInbox(true);
-        }
-      })
-      .then((fn) => {
-        if (cancelled) fn();
-        else unlistenFn = fn;
-      });
-    return () => {
-      cancelled = true;
-      unlistenFn?.();
-    };
+    return installNoticeFocusSync(() => {
+      // Re-deliver L2 notices Gate queued while we were fullscreen or
+      // unfocused. This stays on the native-focus path to avoid draining the
+      // same SQLite row twice when native and DOM focus events arrive together.
+      void drainPendingInbox(true);
+    });
   }, []);
 
   // Pet window asks for status resync when it (re)opens
@@ -226,6 +244,28 @@ function App() {
     let cancelled = false;
     listen('pet-resync-request', () => {
       resyncPetStatus();
+    }).then((fn) => {
+      if (cancelled) fn();
+      else unlistenFn = fn;
+    });
+    return () => {
+      cancelled = true;
+      unlistenFn?.();
+    };
+  }, []);
+
+  // Electron's bundled browser runtime asks the renderer to adopt a new
+  // WebContentsView into the normal workspace. Keeping this in the existing
+  // BrowserTab UI gives users a visible address bar, history controls, and a
+  // close button while the agent operates the page.
+  useEffect(() => {
+    if (!isTauriEnv()) return;
+    let unlistenFn: (() => void) | null = null;
+    let cancelled = false;
+    listen<{ id: string; url: string }>('browser://automation-open', (event) => {
+      const { id, url } = event.payload ?? {};
+      if (typeof id !== 'string' || !id.startsWith('__abu-browser-automation__')) return;
+      usePreviewStore.getState().openBrowser(typeof url === 'string' ? url : 'about:blank', id);
     }).then((fn) => {
       if (cancelled) fn();
       else unlistenFn = fn;
@@ -249,8 +289,8 @@ function App() {
         (conversationId && store.conversations[conversationId] ? conversationId : null) ??
         store.activeConversationId ??
         store.createConversation(null);
-      runAgentLoop(convId, text).catch((err) => {
-        console.warn('[pet-send-message] runAgentLoop error:', err);
+      runAgentLoopDispatched(convId, text).catch((err) => {
+        console.warn('[pet-send-message] runAgentLoopDispatched error:', err);
       });
     }).then((fn) => {
       if (cancelled) fn();
@@ -309,7 +349,9 @@ function App() {
     registerBuiltinTools();
     installLargeWriteGuard();
     refreshDiscovery();
+    provisionFirstPartyMCPServers();
     initMCPStoreSync();
+    initBuiltinBrowserRuntime();
     sendConsolePing();
 
     // Hydrate API keys from the encrypted secret store. During Phase 2 the
@@ -399,6 +441,7 @@ function App() {
     });
 
     return () => {
+      void cleanupBuiltinBrowserRuntime();
       cleanupMCPStoreSync();
       stopAllWatchers();
       stopRegistryWatcher();
@@ -419,22 +462,36 @@ function App() {
       reconcileIMSessions();
       // Migrate old memory systems (entries.json / memory.md) to memdir (.md files)
       import('@/core/memdir/migrate').then(m => m.migrateMemdirIfNeeded()).catch(() => {});
-      // Initialize conversation file storage and check for crash recovery
-      import('@/core/session/conversationStorage').then(m => {
-        m.initConversationStorage().catch(() => {});
+      // Initialize conversation storage before checking crash checkpoints.
+      // Otherwise the checkpoint scan can beat the async Zustand index
+      // rehydrate, mistake a valid conversation for a missing one, and delete
+      // the only recovery hint.
+      const conversationStorage = await import('@/core/session/conversationStorage').catch(() => null);
+      if (conversationStorage) {
+        await conversationStorage.initConversationStorage().catch(() => {});
         // Reconcile the SQLite conversation catalog against JSONL on disk
         // (message-storage P0): first run does the full scan-build migration,
         // later runs do incremental repair. Fire-and-forget — catalog is a
         // rebuildable projection, JSONL stays the source of truth.
-        m.reconcileCatalog().catch(() => {});
-      }).catch(() => {});
+        conversationStorage.reconcileCatalog().catch(() => {});
+      }
       import('@/core/session/checkpoint').then(async ({ findOrphanedCheckpoints, clearCheckpoint }) => {
         const orphans = await findOrphanedCheckpoints();
         if (orphans.length === 0) return;
         const { useChatStore } = await import('@/stores/chatStore');
         for (const cp of orphans) {
-          const meta = useChatStore.getState().conversationIndex[cp.conversationId];
+          const storeState = useChatStore.getState();
+          const meta = storeState.conversationIndex[cp.conversationId]
+            ?? conversationStorage?.getIndexEntries()[cp.conversationId];
           if (!meta) { await clearCheckpoint(cp.conversationId); continue; }
+          if (!storeState.conversationIndex[cp.conversationId]) {
+            useChatStore.setState({
+              conversationIndex: {
+                ...storeState.conversationIndex,
+                [cp.conversationId]: meta,
+              },
+            });
+          }
           // Load conversation from disk so messages are available
           await useChatStore.getState().loadConversation(cp.conversationId);
           // Add a system message indicating the interruption
@@ -446,6 +503,7 @@ function App() {
             content: `⚠️ 上次对话在第 ${cp.turnCount} 轮${statusText}。你可以继续发送消息恢复工作。`,
             timestamp: Date.now(),
             isSystem: true,
+            isRecoveryNotice: true,
           });
           await clearCheckpoint(cp.conversationId);
           // Do NOT auto-navigate — app always starts on welcome screen.
@@ -591,12 +649,14 @@ function App() {
   // Hide native title bar text on macOS (overlay mode — title shown in sidebar instead)
   // On Windows, show app name in native title bar
   useEffect(() => {
+    if (desktopPlatform === 'unknown') return;
     if (!isTauriEnv()) return; // web / E2E: no Tauri window API
-    getCurrentWindow().setTitle(isMacOS() ? '' : 'Abu');
-  }, []);
+    getCurrentWindow().setTitle(desktopPlatform === 'macos' ? '' : 'Abu');
+  }, [desktopPlatform]);
 
-  // macOS uses overlay title bar (content behind traffic lights); Windows uses native title bar
-  const mac = isMacOS();
+  // macOS keeps its compact controls in a fixed overlay. Windows keeps the
+  // native frame/menu and reserves a renderer toolbar for business actions.
+  const mac = desktopPlatform === 'macos';
 
   // Preview split is active only when a preview is open in the chat view AND the
   // right panel is showing — then the chat holds a stable width and preview flex-fills.
@@ -612,106 +672,96 @@ function App() {
     !rightPanelCollapsed &&
     (((activeConv?.messages?.length ?? 0) > 0) || hasAnyTab);
 
+  const windowTitleBarProps = {
+    platform: desktopPlatform,
+    windowsTitleBarOverlay: desktopPlatform === 'windows' && hasElectronCommandHost(),
+    sidebarCollapsed,
+    showSearch: viewMode !== 'settings',
+    showNewTask: sidebarCollapsed && viewMode !== 'settings',
+    showRightPanelToggle,
+    rightPanelCollapsed,
+    onToggleSidebar: toggleSidebar,
+    onOpenSearch: () => setSearchModalOpen(true),
+    onNewTask: () => {
+      startNewConversation();
+      setViewMode('chat');
+      setFileTreeMode(false);
+    },
+    onToggleRightPanel: toggleRightPanel,
+    onOpenWindowMenu: (
+      group: 'edit' | 'window' | 'help',
+      anchor: { x: number; y: number },
+    ) => invoke('window_titlebar_menu', { group, ...anchor }),
+    labels: {
+      appName: 'Abu',
+      editMenu: t.sidebar.editMenu,
+      windowMenu: t.sidebar.windowMenu,
+      helpMenu: t.sidebar.helpMenu,
+      showSidebar: t.sidebar.showSidebar,
+      hideSidebar: t.sidebar.hideSidebar,
+      search: t.sidebar.searchPlaceholder,
+      newTask: t.sidebar.newTask,
+      showPanel: t.panel.showPanel,
+      hidePanel: t.panel.hidePanel,
+    },
+  };
+
   return (
     <ErrorBoundary>
     <TooltipProvider delayDuration={200}>
-      {/* Title bar drag region — only the top canvas gutter (h-2). Kept thin so it does
-          NOT overlap the card headers below (which sit ~8px from the top now); a full-height
-          strip here would swallow clicks on the preview/title header buttons. Window can still
-          be dragged from this strip + the sidebar's own drag region + the traffic-light row. */}
-      {mac && (
+      <div
+        data-abu-app-shell
+        className="relative flex h-full w-full flex-col overflow-hidden bg-[var(--abu-bg-canvas)]"
+      >
+        <WindowTitleBar {...windowTitleBarProps} />
+
         <div
-          data-tauri-drag-region
-          className="fixed top-0 left-0 right-0 h-2 z-40"
-        />
-      )}
-
-      {/* Sidebar & panel toggle buttons — positioned in title bar area on macOS, top bar on Windows */}
-      <div className={cn('fixed left-0 right-0 z-40 pointer-events-none', mac ? 'top-0 h-11' : 'top-0 h-8')}>
-        <button
-          onClick={toggleSidebar}
-          className="absolute btn-ghost p-1 text-[var(--abu-text-tertiary)] hover:text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-hover)] rounded-md transition-[left] duration-200 pointer-events-auto"
-          style={{ top: mac ? 23 : 6, left: sidebarCollapsed ? 96 : 200 }}
-          title={sidebarCollapsed ? t.sidebar.showSidebar : t.sidebar.hideSidebar}
+          data-abu-app-layout
+          className="flex min-h-0 w-full flex-1 overflow-hidden bg-[var(--abu-bg-canvas)]"
         >
-          <PanelLeft className="h-3.5 w-[18px]" strokeWidth={1.5} />
-        </button>
-
-        {/* Conversation search — sits just right of the sidebar toggle (WorkBuddy-style),
-            opens a centered search modal. */}
-        {viewMode !== 'settings' && (
-          <button
-            onClick={() => setSearchModalOpen(true)}
-            className="absolute btn-ghost p-1 text-[var(--abu-text-tertiary)] hover:text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-hover)] rounded-md transition-[left] duration-200 pointer-events-auto"
-            style={{ top: mac ? 23 : 6, left: sidebarCollapsed ? 126 : 230 }}
-            title={t.sidebar.searchPlaceholder}
+          {/* Sidebar - width changes are always instant (no slide animation). */}
+          <div
+            className="flex shrink-0 flex-col overflow-hidden"
+            style={{
+              width: sidebarCollapsed ? 0 : 260,
+            }}
           >
-            <Search className="h-3.5 w-[18px]" strokeWidth={1.5} />
-          </button>
-        )}
+            <div className="min-h-0 flex-1">
+              <Sidebar />
+            </div>
+          </div>
 
-        {/* New task — only when the sidebar is collapsed (when expanded the sidebar hosts its
-            own 新建任务). Completes the [toggle][search][+new] top toolbar like TRAE/WorkBuddy. */}
-        {sidebarCollapsed && viewMode !== 'settings' && (
-          <button
-            onClick={() => { startNewConversation(); setViewMode('chat'); setFileTreeMode(false); }}
-            className="absolute btn-ghost p-1 text-[var(--abu-text-tertiary)] hover:text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-hover)] rounded-md pointer-events-auto"
-            style={{ top: mac ? 23 : 6, left: 156 }}
-            title={t.sidebar.newTask}
-          >
-            <Plus className="h-3.5 w-[18px]" strokeWidth={2} />
-          </button>
-        )}
+          <div className="relative flex min-w-0 flex-1 flex-col overflow-hidden">
+            {/* Only the exposed canvas gutters are draggable. The raised cards
+                explicitly carve out stable no-drag interaction surfaces. */}
+            <div
+              data-abu-panel-container
+              data-tauri-drag-region={mac ? '' : undefined}
+              className="flex min-h-0 flex-1"
+            >
+              <main
+                data-electron-no-drag
+                className={cn(
+                  'relative bg-[var(--abu-bg-base)]',
+                  'mt-2 mb-2 ml-2 rounded-[var(--abu-radius-panel)] border border-[var(--abu-border)] shadow-[var(--abu-shadow-card)] overflow-hidden',
+                  previewSplit ? 'shrink-0' : 'flex-1 min-w-0',
+                  // Right panel beside chat (preview OR summary): tighter 4px gutter; otherwise 8px to the window edge.
+                  rightPanelBeside ? 'mr-1' : 'mr-2',
+                )}
+                style={previewSplit ? { width: previewChatWidth } : undefined}
+              >
+                {viewMode === 'automation' && <AutomationView />}
+                {viewMode === 'toolbox' && <ToolboxView />}
+                {viewMode === 'todos' && <TodoView />}
+                {viewMode === 'inbox' && <InboxView />}
+                {(viewMode === 'chat' || !viewMode) && <ChatView />}
+              </main>
 
-        {showRightPanelToggle && (
-          <button
-            onClick={toggleRightPanel}
-            className="absolute right-4 btn-ghost p-1 text-[var(--abu-text-tertiary)] hover:text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-hover)] rounded-md pointer-events-auto"
-            style={{ top: mac ? 23 : 6 }}
-            title={rightPanelCollapsed ? t.panel.showPanel : t.panel.hidePanel}
-          >
-            <PanelRight className="h-3.5 w-[18px]" strokeWidth={1.5} />
-          </button>
-        )}
-      </div>
-
-      <div className="flex h-full w-full overflow-hidden bg-[var(--abu-bg-canvas)]">
-        {/* Sidebar - width changes are always instant (no slide animation) */}
-        <div
-          className="shrink-0 overflow-hidden"
-          style={{
-            width: sidebarCollapsed ? 0 : 260,
-          }}
-        >
-          <Sidebar />
+              {/* Right panel */}
+              <RightPanel />
+            </div>
+          </div>
         </div>
-
-        {/* Main — content surface. All content modes (chat/todos/inbox/toolbox/automation)
-            render as a raised card floating on the canvas (rounded + border + shadow, top
-            margin clears the overlay title bar so it sits below it). 8px gap on all sides
-            (matches TRAE --solo-layout-padding); traffic-light clearance is handled by the
-            sidebar's own top strip, not by pushing the card down — so the card sits near the
-            window top, no empty band.
-            In preview mode the chat takes a stable resizable width; otherwise it flex-fills. */}
-        <main
-          className={cn(
-            'bg-[var(--abu-bg-base)]',
-            'mt-2 mb-2 ml-2 rounded-[var(--abu-radius-panel)] border border-[var(--abu-border)] shadow-[var(--abu-shadow-card)] overflow-hidden',
-            previewSplit ? 'shrink-0' : 'flex-1 min-w-0',
-            // Right panel beside chat (preview OR summary): tighter 4px gutter; otherwise 8px to the window edge.
-            rightPanelBeside ? 'mr-1' : 'mr-2',
-          )}
-          style={previewSplit ? { width: previewChatWidth } : undefined}
-        >
-          {viewMode === 'automation' && <AutomationView />}
-          {viewMode === 'toolbox' && <ToolboxView />}
-          {viewMode === 'todos' && <TodoView />}
-          {viewMode === 'inbox' && <InboxView />}
-          {(viewMode === 'chat' || !viewMode) && <ChatView />}
-        </main>
-
-        {/* Right panel */}
-        <RightPanel />
 
         <ToastContainer />
 
@@ -719,6 +769,9 @@ function App() {
 
         {/* System settings — overlay dialog, self-gates on systemSettingsOpen */}
         <SystemSettingsDialog />
+
+        {/* Task-local capability setup — suspends the exact requesting tool call. */}
+        <CapabilitySetupDialog />
 
         <CloseDialog
           open={showCloseDialog}

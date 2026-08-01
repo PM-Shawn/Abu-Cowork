@@ -52,6 +52,7 @@ jobs:
   # but do not create or publish a new Tauri transition pointer.
   electron-transition:
     needs: preflight
+    if: ${{ github.repository == 'PM-Shawn/Abu-Cowork' || github.event_name == 'workflow_dispatch' }}
     uses: ./.github/workflows/electron-build.yml
     with:
       transition_version: ${{ github.event_name == 'workflow_dispatch' && inputs.transition_version || github.ref_name }}
@@ -63,7 +64,7 @@ jobs:
   publish:
     needs: [preflight, electron-transition]
     # RC tags exercise the complete native build but never alter production.
-    if: ${{ github.event_name == 'push' && !contains(github.ref_name, '-') }}
+    if: ${{ github.repository == 'PM-Shawn/Abu-Cowork' && github.event_name == 'push' && !contains(github.ref_name, '-') }}
     permissions:
       contents: write
     runs-on: ubuntu-latest

@@ -2,17 +2,28 @@
 
 > 本文件是**中文** canonical 更新日志 —— 驱动 App 内更新弹窗与官网的中文展示。英文版见 [`CHANGELOG.md`](./CHANGELOG.md)（驱动 GitHub Release）。每次发版两份同步维护、语言不混（见 `RELEASING.md`）。v0.31.0 之前的历史仅英文版有。
 
-## v0.34.0 · 2026-07-30
+## v0.34.0 · 2026-08-01
 
-### 变更
+### 重点更新
 
-- **桌面框架从 Tauri 切换到 Electron**：安装版改由 Electron 主进程承载，同时保留现有 Abu 前端、sidecar、内置 Skills 与随包 Node/Python 运行时。macOS 继续签名并公证；Windows 使用当前用户级 NSIS 安装包，在取得 Authenticode 证书前明确保持未签名。
+- **阿布在全部支持平台统一切换到 Electron**：macOS Apple Silicon、macOS Intel 与 Windows x64 共用同一套 Electron 外壳、阿布前端、sidecar、内置 Skills 和随包 Node/Python 运行时。三个包均在匹配架构的原生 runner 构建并执行安装态冒烟；macOS 包已完成 Developer ID 签名与公证。
 
 ### 修复
 
-- **升级不丢旧数据**：会话与 session 文件只读复制，不修改原 Tauri 数据；首次渲染脚本执行前导入 macOS WebKit / Windows WebView2 的 localStorage 设置，并把 Windows Credential Manager 中的 API Key 重新加密写入 Electron 存储。已有 Electron 数据永不覆盖；迁移记录不完整或损坏时保持可重试，并在显示空状态前停止首次 Electron 启动。
-- **所有支持平台同版本切换**：CI 在匹配架构的原生 runner 上分别构建 macOS arm64、macOS x64 和 Windows x64。每个平台拥有独立校验的 Electron 自更新源；只有三平台过渡产物和更新源全部落盘后，才切换现有 Tauri 更新入口。
-- **Windows 安装包在真实 Windows 环境验收**：CI 在 Windows x64 runner 原生构建 `node-pty`、Rust helpers、sandbox launcher 与内置运行时，再执行用户级安装、启动、打包态 IPC / PTY / sidecar / 运行时冒烟，并校验更新元数据。
+- **原生窗口操作恢复一致**：Windows 使用紧凑的系统标题栏，拖拽、最小化、最大化、关闭、菜单、弹窗遮罩、侧栏/搜索按钮和右栏缩放均可正常操作；macOS 保持紧凑红绿灯布局，可点击控件不再落入拖拽区。
+- **本地 Chrome Bridge 连接更稳定**：扩展安装入口会打开正确的上一级目录，指引文案与 Chrome 文件夹选择器一致；阿布只接管能够安全识别的 bridge 进程，不会静默终止无关端口进程。
+- **框架切换保留可用回退路径**：Windows 在一个版本周期内保留旧 Tauri 安装，并正确收敛重复卸载项；macOS 迁移会拒绝不安全链接、修复受支持的包管理器链接，校验失败时在显示空白数据前停止启动。
+
+### 迁移说明
+
+- 正式 Electron 首次启动时，以已安装的 Tauri 数据作为迁移来源。阿布把会话、session、设置和受支持密钥复制到独立 Electron 数据目录，原 Tauri 数据继续保留。
+- 如果机器上已有 Electron 测试数据，阿布会先生成恢复备份，再应用本次切换所需的正式 Tauri 数据；不完整的迁移记录可以重试，迁移失败会在新框架写入空状态前停止启动。
+- 源码构建和 fork 包默认关闭正式数据迁移与阿布官方更新源，只有官方发布工作流可以启用。
+
+### 已知限制
+
+- Windows 使用当前用户级 NSIS 安装包，不需要管理员权限，但暂未进行 Authenticode 签名；SmartScreen 可能需要选择 **更多信息 → 仍要运行**。
+- Chrome 扩展采用本地分发，需要在 Chrome 开发者模式下加载一次。本版本不包含 Microsoft Store 分发、完整 Windows 沙箱对齐和 Computer Use 对齐。
 
 **完整变更**：https://github.com/PM-Shawn/Abu-Cowork/compare/v0.33.0...v0.34.0
 

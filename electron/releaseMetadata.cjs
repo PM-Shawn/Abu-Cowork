@@ -29,4 +29,8 @@ function isTauriTransitionBuild(app, options) {
   return readReleaseMetadata(app, options)?.tauriMigration === true;
 }
 
-module.exports = { readReleaseMetadata, isTauriTransitionBuild };
+function isOfficialBuild(app, options) {
+  return readReleaseMetadata(app, options)?.officialBuild === true;
+}
+
+module.exports = { readReleaseMetadata, isOfficialBuild, isTauriTransitionBuild };

@@ -39,7 +39,7 @@ Tell Abu what you need — it reads files, runs commands, writes docs, and build
 
 ## What's New
 
-**Latest release [v0.29.0](https://github.com/PM-Shawn/Abu-Cowork/releases/latest)** — workspace file tree + code canvas · declarative progress panel · multi-endpoint provider presets.
+**[Download the latest stable release](https://github.com/PM-Shawn/Abu-Cowork/releases/latest)** · [Read the full changelog](CHANGELOG.md)
 
 Recent highlights: **Workspace file tree + code canvas** (browse / preview / edit files in the side panel, CodeMirror source editing with auto-save, preview auto-refresh, version snapshots with rollback), **declarative progress panel** (the model declares its own plan steps and status via `report_plan`), **inline visualization widgets** (charts / HTML / Mermaid rendered inline in chat), **multi-endpoint provider presets** (Volcengine / Bailian / Zhipu access plans as curated presets + a unified add/edit modal), **per-model capabilities** (vision / tools / reasoning / token limits declared per model), plus **doc comment-to-chat**, **full internationalization**, and **signed + notarized macOS builds**.
 
@@ -206,11 +206,11 @@ Head to [GitHub Releases](https://github.com/PM-Shawn/Abu-Cowork/releases) to do
 
 | Platform | File |
 |----------|------|
-| macOS (Apple Silicon) | `Abu_x.x.x_aarch64.dmg` |
-| macOS (Intel) | `Abu_x.x.x_x64.dmg` |
-| Windows | `Abu_x.x.x_x64-setup.exe` |
+| macOS (Apple Silicon) | `Abu-x.x.x-mac-arm64.dmg` |
+| macOS (Intel) | `Abu-x.x.x-mac-x64.dmg` |
+| Windows x64 | `Abu-x.x.x-windows-x64-setup.exe` |
 
-> **macOS Users**: If you see a "damaged" warning on first launch, run `xattr -cr /Applications/Abu.app`. See the [Installation Guide](docs/Installation-Guide.md) for details.
+> Official macOS packages are signed and notarized. The Windows installer is current-user only and does not need administrator rights, but remains Authenticode-unsigned; SmartScreen may require **More info → Run anyway**. See the [Installation Guide](docs/Installation-Guide.md).
 
 ## Quick Start
 
@@ -273,7 +273,7 @@ Create a weekly report PPT for this week
 
 | Layer | Technology |
 |-------|-----------|
-| Desktop Framework | Tauri 2.0 (Rust + Web) |
+| Desktop Framework | Electron (main + preload + isolated React renderer) |
 | Frontend | React 19 + TypeScript (strict) + TailwindCSS v4 + Vite |
 | LLM Adapter | Dual-protocol adapter (Anthropic / OpenAI-compatible) |
 | State Management | Zustand + Immer + Persist |
@@ -288,9 +288,9 @@ Create a weekly report PPT for this week
 
 ### Prerequisites
 
-- Node.js >= 18
-- Rust >= 1.75 ([Install Rust](https://rustup.rs/))
-- Tauri 2.0 system dependencies ([See docs](https://v2.tauri.app/start/prerequisites/))
+- Node.js 24 and npm
+- Rust stable ([Install Rust](https://rustup.rs/)) for the native helper and sandbox launcher
+- Platform build tools: Xcode Command Line Tools on macOS, or Visual Studio Build Tools on Windows
 
 ### Development
 
@@ -299,11 +299,12 @@ Create a weekly report PPT for this week
 git clone https://github.com/PM-Shawn/Abu-Cowork.git
 cd Abu-Cowork
 
-# Install dependencies
-npm install
+# Install locked dependencies and prepare the worktree-local Electron runtime
+npm ci
+npm run setup:electron-dev
 
-# Launch desktop app (uses dev-isolated config, fully separate from your installed Abu)
-npm run tauri:dev
+# Launch the Electron desktop app (dev data is isolated from installed Abu)
+npm run electron:dev
 
 # Frontend only (no Rust required)
 npm run dev
@@ -312,10 +313,12 @@ npm run dev
 ### Build
 
 ```bash
-npm run tauri build
+npm run dist:electron
 ```
 
-Build artifacts are located in `src-tauri/target/release/bundle/`.
+Build artifacts are written to `release-electron/`. Build and validate distributable packages on the target operating system; a macOS cross-build is not Windows acceptance.
+
+Source/fork packages do not use Abu's production updater or migrate installed Abu data. If you plan to distribute a modified build, read the [Fork & Distribution Guide](FORKING.md) first.
 
 ### Testing
 
@@ -368,6 +371,8 @@ builtin-skills/       # 29 built-in skills (one directory each)
 builtin-agents/       # Built-in agent definitions (placeholder)
 abu-browser-bridge/   # Browser bridge MCP Server
 abu-chrome-extension/ # Chrome extension (used by the Abu-Chrome-Bridge skill)
+electron/             # Electron main process, preload bridge, native hosts
+sidecar/              # Agent/runtime sidecar process
 src-tauri/
 ├── src/
 │   ├── computer_use.rs    # Screenshot + mouse/keyboard + sensitive app blocking
@@ -386,10 +391,11 @@ src-tauri/
 |----------|-------------|
 | [User Guide](docs/User-Guide.md) | Complete product features and usage instructions |
 | [Installation Guide](docs/Installation-Guide.md) | Platform-specific installation and troubleshooting |
+| [Fork & Distribution Guide](FORKING.md) | App identity, updater, signing, migration, and release boundaries for forks |
 
 ## Contributing
 
-Issues and Pull Requests are welcome!
+Issues and Pull Requests are welcome. Read the [Fork & Distribution Guide](FORKING.md) before shipping a modified desktop package.
 
 1. Fork this repo
 2. Create your branch: `git checkout -b feat/my-feature`

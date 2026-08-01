@@ -127,6 +127,7 @@ jobs:
         env:
           RAW_TRANSITION_VERSION: ${{ inputs.transition_version }}
           FEED_CHANNEL: ${{ matrix.feed_channel }}
+          OFFICIAL_BUILD: ${{ github.repository == 'PM-Shawn/Abu-Cowork' }}
         run: |
           TRANSITION_VERSION="${RAW_TRANSITION_VERSION#v}"
           node scripts/validate-electron-transition-version.mjs \
@@ -134,6 +135,7 @@ jobs:
             --latest-url "https://abu-agent.oss-cn-beijing.aliyuncs.com/latest.json"
           echo "TRANSITION_VERSION=$TRANSITION_VERSION" >> "$GITHUB_ENV"
           echo "ABU_ELECTRON_FEED=https://abu-agent.oss-cn-beijing.aliyuncs.com/electron/${FEED_CHANNEL}/" >> "$GITHUB_ENV"
+          echo "ABU_OFFICIAL_BUILD=$OFFICIAL_BUILD" >> "$GITHUB_ENV"
 
       - name: Gates
         run: |
@@ -222,11 +224,17 @@ jobs:
             "--${BUILDER_ARCH}"
             "--publish" "never"
             "--config.extraMetadata.version=${TRANSITION_VERSION}"
-            "--config.publish.url=${ABU_ELECTRON_FEED}"
             "--config.detectUpdateChannel=false"
             "--config.mac.identity=Developer ID Application"
             "--config.mac.forceCodeSigning=true"
           )
+          if [[ "$ABU_OFFICIAL_BUILD" == "true" ]]; then
+            BUILDER_ARGS+=(
+              "--config.extraMetadata.abuRelease.officialBuild=true"
+              "--config.publish.provider=generic"
+              "--config.publish.url=${ABU_ELECTRON_FEED}"
+            )
+          fi
           if [[ "$TRANSITION_RELEASE" == "true" || "$LEGACY_MIGRATION_SUPPORT" == "true" ]]; then
             BUILDER_ARGS+=("--config.extraMetadata.abuRelease.tauriMigration=true")
           fi
@@ -315,6 +323,8 @@ jobs:
               ));
               if (manifest?.abuRelease?.tauriMigration !== true) process.exit(1);
               if (manifest?.version !== process.env.TRANSITION_VERSION) process.exit(2);
+              const expectedOfficial = process.env.ABU_OFFICIAL_BUILD === "true";
+              if (manifest?.abuRelease?.officialBuild !== expectedOfficial) process.exit(3);
             '
 
       - name: Build and Tauri-sign the transition archive
@@ -509,6 +519,9 @@ jobs:
             Out-File -FilePath $env:GITHUB_ENV -Append
           "ABU_EXPECTED_ELECTRON_FEED=https://abu-agent.oss-cn-beijing.aliyuncs.com/electron/win-x64/" |
             Out-File -FilePath $env:GITHUB_ENV -Append
+          $officialBuild = "${{ github.repository }}" -eq "PM-Shawn/Abu-Cowork"
+          "ABU_OFFICIAL_BUILD=$($officialBuild.ToString().ToLowerInvariant())" |
+            Out-File -FilePath $env:GITHUB_ENV -Append
           $release = "${{ inputs.transition_release }}" -eq "true"
           "ABU_TRANSITION_RELEASE=$($release.ToString().ToLowerInvariant())" |
             Out-File -FilePath $env:GITHUB_ENV -Append
@@ -529,9 +542,15 @@ jobs:
         run: |
           $builderArgs = @(
             "--config.extraMetadata.version=$env:ABU_ELECTRON_VERSION",
-            "--config.publish.url=$env:ABU_ELECTRON_FEED",
             "--config.detectUpdateChannel=false"
           )
+          if ($env:ABU_OFFICIAL_BUILD -eq "true") {
+            $builderArgs += @(
+              "--config.extraMetadata.abuRelease.officialBuild=true",
+              "--config.publish.provider=generic",
+              "--config.publish.url=$env:ABU_ELECTRON_FEED"
+            )
+          }
           if (
             $env:ABU_TRANSITION_RELEASE -eq "true" -or
             $env:ABU_LEGACY_MIGRATION_SUPPORT -eq "true"
@@ -561,12 +580,15 @@ jobs:
           ).toString("utf8"));
           if (manifest?.abuRelease?.tauriMigration !== true) process.exit(1);
           if (manifest?.version !== process.env.ABU_ELECTRON_VERSION) process.exit(2);
+          const expectedOfficial = process.env.ABU_OFFICIAL_BUILD === "true";
+          if (manifest?.abuRelease?.officialBuild !== expectedOfficial) process.exit(3);
           '@
           if ($LASTEXITCODE -ne 0) {
             throw "Packaged transition metadata verification failed: $LASTEXITCODE"
           }
 
       - name: Verify installer, blockmap, latest.yml, and packaged feed
+        if: ${{ github.repository == 'PM-Shawn/Abu-Cowork' }}
         run: npm run verify:electron:windows-artifacts
 
       - name: Install, launch, migrate, and preserve Tauri rollback

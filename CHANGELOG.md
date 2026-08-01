@@ -7,17 +7,28 @@ All notable changes to Abu are documented here. Format based on [Keep a Changelo
 > [`CHANGELOG.zh-CN.md`](./CHANGELOG.zh-CN.md); keep both in sync per release (see
 > `RELEASING.md`). Entries before v0.31.0 predate this split and remain bilingual.
 
-## v0.34.0 · 2026-07-30
+## v0.34.0 · 2026-08-01
 
-### Changed
+### Highlights
 
-- **The desktop shell moves from Tauri to Electron** — The packaged app now uses the Electron main process while preserving the existing Abu frontend, sidecar, built-in skills, and bundled Node/Python runtimes. macOS remains signed and notarized; Windows uses a current-user NSIS installer and is intentionally unsigned until Authenticode credentials are available.
+- **Abu now ships on Electron across all supported desktops** — macOS Apple Silicon, macOS Intel, and Windows x64 use the same Electron shell, Abu frontend, sidecar, built-in skills, and bundled Node/Python runtimes. Each package is built and smoked on a matching native runner; macOS is Developer ID signed and notarized.
 
 ### Fixed
 
-- **Existing data survives the shell upgrade** — Conversation/session files are copied without modifying the Tauri source. macOS WebKit and Windows WebView2 localStorage settings are imported before the first renderer script, and Windows Credential Manager API keys are re-encrypted into Electron storage. Existing Electron-side values are never overwritten; incomplete or corrupt migration records stay retryable and stop the first Electron launch before an empty state can be shown.
-- **All supported platforms switch together** — CI builds macOS arm64, macOS x64, and Windows x64 on matching native runners. Each platform gets an independently verified Electron self-update feed; the existing Tauri update pointer changes only after all three transition artifacts and feeds are durable.
-- **Windows packaging is verified on Windows** — CI now builds native `node-pty`, the Rust helpers, sandbox launcher, and bundled runtimes on a real Windows x64 runner, then installs, launches, exercises packaged IPC/PTY/sidecar/runtime paths, and verifies update metadata.
+- **Native window controls behave consistently** — Windows now uses a compact system title bar with working drag, minimize, maximize, close, menus, modal masking, sidebar/search controls, and panel resizing. macOS keeps the compact traffic-light layout without placing clickable controls inside drag regions.
+- **The local Chrome bridge recovers more reliably** — The extension installer opens the correct parent folder, setup text matches Chrome's folder picker, and Abu reclaims only bridge processes it can identify safely instead of silently terminating unrelated listeners.
+- **Transition installs preserve a usable rollback** — Windows keeps the previous Tauri installation available for one release and converges duplicate uninstall entries correctly. macOS migration rejects unsafe links, repairs supported package-manager links, and stops before opening an empty profile when validation fails.
+
+### Migration notes
+
+- On the first official Electron launch, the installed Tauri profile is treated as the migration source. Abu copies conversations, sessions, settings, and supported credentials into a separate Electron data root; the original Tauri data is retained.
+- If an Electron profile already exists, Abu creates a recovery backup before applying the authoritative Tauri values needed for the transition. Incomplete migration records remain retryable, and a failed migration stops startup before the new shell can write an empty state.
+- Source/fork packages keep migration and the official Abu updater disabled by default. Only the official release workflow can enable them.
+
+### Known limitations
+
+- Windows uses a current-user NSIS installer and does not require administrator rights, but it is not Authenticode-signed yet. SmartScreen may require **More info → Run anyway**.
+- The Chrome extension is distributed locally and must be loaded once through Chrome's developer mode. Microsoft Store distribution, full Windows sandbox parity, and Computer Use parity are not part of this release.
 
 **Full Changelog**: https://github.com/PM-Shawn/Abu-Cowork/compare/v0.33.0...v0.34.0
 

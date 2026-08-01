@@ -1,21 +1,18 @@
-# electron-builder config for the Electron shell (Phase 2 / F12 packaging).
-#
-# This is the FIRST packaging slice: it produces an installable app bundle from
-# the real Abu frontend + the sidecar + native bits, UNSIGNED, so the packaging
-# wiring (paths, asar unpacking, resource layout) can be verified end-to-end
-# without an Apple cert. Signing / notarization / the electron-updater feed are
-# added on top later (they need the developer certificate + a real machine).
+# electron-builder config for the Electron desktop shell. The base configuration
+# is safe for local/source builds; official CI adds signing, notarization,
+# transition metadata, and an architecture-specific updater feed.
 #
 # Metadata mirrors src-tauri/tauri.conf.json (appId com.abu.app, productName
-# Abu, icons under src-tauri/icons). See memory
-# reference-electron-autoupdate-across-competitors for why updates will go
-# through electron-updater + a generic provider pointed at the existing Aliyun
-# OSS bucket (added in a later slice).
+# Abu, icons under src-tauri/icons). Official updates use electron-updater with
+# a generic provider injected only by the release workflow.
 appId: com.abu.app
 productName: Abu
 copyright: Copyright © 2026 Abu
 extraMetadata:
   abuRelease:
+    # Source/fork builds are never allowed to inherit Abu's production updater.
+    # Official release CI overrides this exact boolean together with `publish`.
+    officialBuild: false
     # Only a release workflow may override this exact boolean to true.
     # Local/PR packages stay isolated from installed Tauri user data.
     tauriMigration: false
@@ -158,12 +155,11 @@ extraResources:
 # (rejected invoke → frontend catch), same non-fatal behavior as before this
 # slice. Publishing artifacts to OSS stays a CI step; nothing is uploaded
 # from dev machines.
-# The Electron feeds live under architecture-specific `/electron/` prefixes so
-# macOS arm64, macOS x64, and Windows metadata can never overwrite each other.
-# Release CI overrides this default for the x64 macOS and Windows builds.
-publish:
-  provider: generic
-  url: https://abu-agent.oss-cn-beijing.aliyuncs.com/electron/mac-arm64/
+# Source and fork packages deliberately have no updater provider. Official CI
+# injects the generic provider plus the architecture-specific OSS URL and sets
+# `abuRelease.officialBuild=true`. This prevents a modified fork from silently
+# updating into the official Abu distribution.
+publish: null
 
 mac:
   category: public.app-category.productivity

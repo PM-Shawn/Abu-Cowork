@@ -43,22 +43,16 @@ Download the installer for your platform from [GitHub Releases](https://github.c
 
 | Platform | File |
 |----------|------|
-| macOS (Apple Silicon) | `Abu_x.x.x_aarch64.dmg` |
-| macOS (Intel) | `Abu_x.x.x_x64.dmg` |
-| Windows | `Abu_x.x.x_x64-setup.exe` |
+| macOS (Apple Silicon) | `Abu-x.x.x-mac-arm64.dmg` |
+| macOS (Intel) | `Abu-x.x.x-mac-x64.dmg` |
+| Windows x64 | `Abu-x.x.x-windows-x64-setup.exe` |
 
 #### macOS
 
-1. Double-click the `.dmg` file and drag Abu into the `Applications` folder
-2. **First launch will show an "App is Damaged" warning** (because the app is not yet Apple-signed). Open Terminal and run:
-   ```bash
-   xattr -cr /Applications/Abu.app
-   ```
-3. Double-click Abu again to open it
+1. Double-click the `.dmg` file and drag Abu into the `Applications` folder.
+2. Open Abu normally. Official packages are Developer ID signed and notarized.
 
-> If Abu is installed elsewhere, replace the path accordingly. You can also type `xattr -cr ` and drag Abu.app into the Terminal window to auto-fill the path.
-
-> If the command above doesn't work, go to **System Settings → Privacy & Security**, scroll to the bottom and click **"Open Anyway"**. Note: macOS 15 (Sequoia) and later removed `sudo spctl --master-disable`.
+> If Gatekeeper says an official package is damaged or cannot be verified, delete it and download the matching architecture again from the official Release. Do not disable Gatekeeper or use `xattr` to bypass verification.
 
 #### Windows
 
@@ -67,7 +61,7 @@ Download the installer for your platform from [GitHub Releases](https://github.c
 
 > If the installer won't run after downloading: right-click the `.exe` → Properties → check "Unblock" at the bottom → OK, then double-click to install.
 
-> Abu is open-source software. The security warnings appear because the app hasn't been signed with a commercial certificate, not because there's anything wrong with the app. macOS requires re-running `xattr -cr` after each update; Windows usually only needs SmartScreen approval on first launch.
+> Abu is open-source software. Official macOS packages are signed and notarized. Windows is currently Authenticode-unsigned, so verify the download came from the official Release before choosing **Run anyway**.
 
 ### 2. Configure a Model
 

@@ -3,12 +3,12 @@
 > 父目录 `../CLAUDE.md` 有跨端共享上下文（Abu 产品全景、与 console 控制台的关系、两仓库 git 分开/勿合并/脱敏约定）。
 
 ## Project Overview
-Local AI office assistant desktop app built with Tauri 2.0 + React + TypeScript.
+Local AI office assistant desktop app built with Electron + React + TypeScript.
 Inspired by Claude Code's Cowork mode. Features multi-agent architecture with extensible Skills and Subagents.
 
 ## Tech Stack
-- **Desktop**: Tauri 2.0 (Rust + Web)
-- **Frontend**: React 18 + TypeScript (strict) + TailwindCSS v4 + Vite
+- **Desktop**: Electron main/preload + isolated web renderer; Tauri remains only as the v0.34 migration/rollback compatibility path
+- **Frontend**: React 19 + TypeScript (strict) + TailwindCSS v4 + Vite
 - **LLM**: Anthropic API (Claude) via `@anthropic-ai/sdk`
 - **State**: Zustand + Immer + persist middleware
 - **Tools**: MCP Protocol (`@modelcontextprotocol/sdk`)
@@ -55,7 +55,7 @@ Inspired by Claude Code's Cowork mode. Features multi-agent architecture with ex
 3. `git checkout main && git merge dev` — **只 merge，绝不 cherry-pick**。正常情况是干净快进/合并；若有冲突且分支已对齐，多半是真冲突，逐个解。
 4. `git tag vX.Y.Z` — 打 tag，格式为 `v` + 语义化版本号。
 5. `git push origin main` 然后**单独推这一个 tag**：`git push origin vX.Y.Z`。⚠️ **别用 `git push origin main --tags`** —— 一次推 >3 个 tag 会触发 GitHub「不为这些 tag 生成 push 事件」的限制，`Release` workflow 就不触发了（本会话踩过：害得删 tag 重推）。单独推这一个 tag 就没这问题。
-6. `Release` workflow 自动构建三平台 + 签名公证 + 建 GitHub Release（英文，从 CHANGELOG.md）+ 生成 `latest.json`（`notes` + `notes_i18n`）传 OSS。如需给 Release 标题加副标题，等 CI 建出后 `gh release edit`（CI 只给裸 tag 标题）。
+6. `Release` workflow 自动构建三平台，准备一个 draft GitHub Release，上传并回读校验 OSS 产物，发布三套 Electron 更新源，并在 v0.34 中最后切换旧 Tauri 更新入口；全部成功后才公开同一个 Release。不要手工创建重复 Release。
 
 **热修（hotfix）也不许 cherry-pick**：要么在 `dev` 上修完走正常发版；要么从对应 tag 拉 `release/vX.Y` 分支修完打 tag，**再把该分支 merge 回 `dev`**（不留孤儿 commit）。目标永远是"任何进过 main 的东西，历史上都能从 dev 追溯到"。
 
@@ -79,7 +79,7 @@ Inspired by Claude Code's Cowork mode. Features multi-agent architecture with ex
 ### Observability Keys (Langfuse) — 防泄露红线
 - Langfuse 观测靠 `VITE_LANGFUSE_PUBLIC_KEY` / `VITE_LANGFUSE_SECRET_KEY` / `VITE_LANGFUSE_BASE_URL`，**只放 `.env.local`**（已 gitignore），绝不提交、绝不硬编码到源码。
 - 缺 key 时观测自动 no-op（`src/core/observability/langfuse.ts` 的 `getLangfuse()` 返回 `null`）。**开源版默认零采集**——这是开源/隐私底线，不要破坏。
-- 🔴 **绝不用带 `.env.local` 的本机环境打“对外分发”包**：`VITE_*` 会在 build 时编进前端 bundle，任何人都能从安装包里扒出 key。官方发布只走 CI（无 `.env.local`）才安全；本机 `npm run tauri build` 出的包仅供自用，不可分发。
+- 🔴 **绝不用带 `.env.local` 的本机环境打“对外分发”包**：`VITE_*` 会在 build 时编进前端 bundle，任何人都能从安装包里扒出 key。官方发布只走 CI（无 `.env.local`）才安全；本机 `npm run dist:electron` 出的包仅供自用，不可分发。
 - 真要做面向终端用户的线上遥测（Phase B）必须：**opt-in + 服务端中转（secret key 不下发客户端）+ 脱敏**。
 
 ### Enterprise 代码隔离 — 防泄露红线（open-core）
@@ -95,10 +95,10 @@ Inspired by Claude Code's Cowork mode. Features multi-agent architecture with ex
 
 ## Key Commands
 - `npm run dev` — Start Vite dev server (frontend only)
-- ⚠️ **`npm run tauri:dev`** (注意冒号) — Start Tauri 桌面端,**走 dev 隔离配置** (`com.abu.app.dev`),数据写到 `~/Library/Application Support/com.abu.app.dev/`,跟正式安装的 Abu 完全隔离
-- ❌ **不要用 `npm run tauri dev`**(空格)—— 这会用默认 `tauri.conf.json` (`com.abu.app`),数据**会污染你正式环境的对话历史**
+- `npm run setup:electron-dev` — Prepare worktree-local Electron dependencies, runtimes, bridges, and native helpers
+- `npm run electron:dev` — Start the Electron desktop shell with dev-isolated data
 - `npm run build` — Build frontend (`tsc -b && vite build`)
-- `npm run tauri build` — Build desktop app bundle
+- `npm run dist:electron` — Build a local Electron package (not an official distributable)
 - `npm test` — Run tests once (`vitest run`)
 - `npm run test:watch` — Watch mode
 - `npm run test:coverage` — Coverage report
@@ -152,7 +152,7 @@ Abu 的功能动辄横跨 store 持久化 / Tauri / i18n / 跨平台路径，一
 
 ### B2. Goal-Driven Execution — 翻译成可验证目标，再循环
 
-Abu 是 Tauri 桌面端，每轮"改 → 重启 dev → 验证"的成本比 web 项目高。**给定可验证的成功标准 → 自循环到验证通过 → 再回报**，比"我改完了你跑跑看"省一个回合。
+Abu 是 Electron 桌面端，每轮“改 → 重启 dev → 验证”的成本比 web 项目高。**给定可验证的成功标准 → 自循环到验证通过 → 再回报**，比“我改完了你跑跑看”省一个回合。
 
 **把祈使句翻译成可验证目标**：
 
@@ -166,15 +166,15 @@ Abu 是 Tauri 桌面端，每轮"改 → 重启 dev → 验证"的成本比 web 
 
 ```
 1. 改 chatStore 加 pinnedAt 字段 → verify: storeVersions.test.ts 通过
-2. 在 ChatList 里读 pinnedAt → verify: tauri:dev 跑一遍，置顶/取消置顶都点一次
+2. 在 ChatList 里读 pinnedAt → verify: electron:dev 跑一遍，置顶/取消置顶都点一次
 3. 持久化迁移 → verify: 删 ~/Library/.../com.abu.app.dev 重启，老 conversation 不丢
 ```
 
 **项目现成的验证手段优先用**：
 - `npm run build` / `npm run lint` — 抓编译和静态错误（必跑）
 - `npm test` — 抓已有行为回归（涉及 store、core/agent、core/skill 时必跑）
-- `npm run tauri:dev` — 抓行为类 bug（UI 改动、Tauri 调用、跨平台路径必跑，**冒号别忘**）
-- 看 MEMORY 里 `feedback_tauri_e2e_required` — Tauri 改动**真实 dev 环境跑一遍**才算完
+- `npm run electron:dev` — 抓行为类 bug（UI、IPC、跨平台路径必须在真实桌面壳跑）
+- 打包、签名、更新、权限和 Windows 行为必须在相应真实平台验证
 
 **没验证就不要说"修好了"**。build 全绿 ≠ 功能正确 — Abu 大量 bug 是行为类的（看近期 commit：批量整理对齐、草稿不显示、中文文件名 docx），build 抓不到。
 

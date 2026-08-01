@@ -43,22 +43,16 @@
 
 | 平台 | 文件格式 |
 |------|----------|
-| macOS (Apple Silicon) | `Abu_x.x.x_aarch64.dmg` |
-| macOS (Intel) | `Abu_x.x.x_x64.dmg` |
-| Windows | `Abu_x.x.x_x64-setup.exe` |
+| macOS (Apple Silicon) | `Abu-x.x.x-mac-arm64.dmg` |
+| macOS (Intel) | `Abu-x.x.x-mac-x64.dmg` |
+| Windows x64 | `Abu-x.x.x-windows-x64-setup.exe` |
 
 #### macOS
 
-1. 双击 `.dmg` 文件，将 Abu 拖入 `Applications` 文件夹
-2. **首次打开会提示"已损坏，无法打开"**（因为未进行 Apple 签名），打开终端执行：
-   ```bash
-   xattr -cr /Applications/Abu.app
-   ```
-3. 再次双击打开 Abu 即可
+1. 双击 `.dmg` 文件，将 Abu 拖入 `Applications` 文件夹。
+2. 正常打开阿布。官方包已经完成 Developer ID 签名和公证。
 
-> 如果 Abu 放在其他位置，将路径替换为实际路径。也可以输入 `xattr -cr ` 后把 Abu.app 拖入终端窗口自动填充。
-
-> 如果上述命令无效，从 **系统设置 → 隐私与安全性** 滚到底部，点「仍要打开」放行（macOS 15 Sequoia 起 `spctl --master-disable` 已被 Apple 移除，请走这个流程）。
+> 如果官方包仍提示“已损坏”或“无法验证开发者”，请删除后从官方 Release 重新下载与机器架构匹配的包；不要关闭 Gatekeeper，也不要使用 `xattr` 绕过验证。
 
 #### Windows
 
@@ -67,7 +61,7 @@
 
 > 如果安装包下载后无法运行：右键 `.exe` → 属性 → 勾选底部「解除锁定」→ 确定，再双击安装。
 
-> Abu 是开源软件，安全提示是因为未购买商业签名证书，非应用本身问题。macOS 每次更新后需重新执行 `xattr -cr`，Windows 通常仅首次需要放行。
+> 阿布是开源软件。官方 macOS 包已签名并公证；Windows 当前暂未进行 Authenticode 签名，选择「仍要运行」前请确认文件来自官方 Release。
 
 ### 2. 配置模型
 

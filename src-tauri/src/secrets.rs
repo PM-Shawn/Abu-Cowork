@@ -7,11 +7,10 @@
 //!   the same physical machine. Protects against file-level leaks (backups,
 //!   screenshots, cloud-sync) but not against same-user process attacks.
 //!
-//! Why not Keychain on macOS: without an Apple Developer account our builds
-//! are ad-hoc signed; the signature hash changes on every build, which
-//! invalidates Keychain ACLs and would re-prompt the user on every update.
-//! When a Dev account is available, add a Keychain implementation here
-//! guarded by `#[cfg(feature = "keychain")]`.
+//! This is the frozen legacy Tauri storage format retained for v0.34 migration
+//! and rollback compatibility. Electron re-encrypts migrated values with
+//! `safeStorage`; changing this format now would prevent older profiles from
+//! being read during the framework transition.
 //!
 //! Storage keys use colon-namespaced identifiers: e.g. `provider:claude`,
 //! `aux:webSearch`. The `KEYRING_SERVICE` constant below is the service name

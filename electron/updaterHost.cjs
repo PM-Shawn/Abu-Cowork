@@ -38,9 +38,9 @@
  * the update).
  *
  * ## Feed resolution
- *  - Packaged: electron-builder embeds `app-update.yml` (from
- *    electron-builder.yml's `publish` block) → generic provider at the OSS
- *    bucket. Real download/install still needs a signed build (F11 remainder).
+ *  - Official packaged build: release CI embeds `app-update.yml` plus the
+ *    immutable `officialBuild` marker → generic provider at the OSS bucket.
+ *    Source/fork packages have neither and keep the updater disabled.
  *  - Dev/harness: armed only when ABU_UPDATER_FEED_URL is set (e.g. the mock
  *    feed in electron/spike/updaterVerify.cjs) — forceDevUpdateConfig plus an
  *    explicit generic feed. Without it, check() reports null (updater idle in
@@ -50,13 +50,13 @@
 
 const { app } = require('electron');
 const { parseChannelId, sendChannelMessage } = require('./channelBridge.cjs');
+const { isOfficialBuild } = require('./releaseMetadata.cjs');
 
 /** Sentinel returned when `cmd` isn't one of the updater family. */
 const UPDATER_MISS = Symbol('updater-dispatch-miss');
-// The production feed URL lives in ONE place: electron-builder.yml's
-// `publish` block (embedded into the packaged app as app-update.yml).
-// Deliberately not duplicated here as a constant — a second copy could
-// drift and would never be the one packaged builds actually read.
+// Production feed URLs live only in the official build workflow and are
+// embedded into app-update.yml. Keeping them out of the base builder config
+// prevents a fork package from inheriting the official channel.
 
 /** @type {import('electron-updater').AppUpdater | null} */
 let updater = null;
@@ -78,6 +78,15 @@ function log(msg) {
 function getUpdater() {
   if (configured) return updater;
   configured = true;
+
+  // A source/fork package must never consume Abu's production feed merely
+  // because it retained the upstream app id or product name. Official CI sets
+  // the immutable package marker and embeds app-update.yml together.
+  if (app.isPackaged && !isOfficialBuild(app)) {
+    log('non-official packaged build — updater disabled');
+    updater = null;
+    return updater;
+  }
 
   // The env override is DEV/HARNESS ONLY. A packaged (production) build must
   // never honor it: an attacker-controlled environment (wrapper script, shell

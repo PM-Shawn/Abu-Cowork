@@ -281,6 +281,10 @@ test('release publishes only after all Electron targets and switches root pointe
     './.github/workflows/electron-build.yml'
   );
   assert.match(
+    release.jobs['electron-transition'].if,
+    /github\.repository == 'PM-Shawn\/Abu-Cowork'.*workflow_dispatch/
+  );
+  assert.match(
     release.jobs.preflight.steps.find(
       (step) => step.name === 'Validate version, changelogs, and release staging logic'
     ).run,
@@ -303,6 +307,10 @@ test('release publishes only after all Electron targets and switches root pointe
   assert.match(
     release.jobs.publish.if,
     /github\.event_name == 'push'.*!contains\(github\.ref_name, '-'\)/,
+  );
+  assert.match(
+    release.jobs.publish.if,
+    /github\.repository == 'PM-Shawn\/Abu-Cowork'/
   );
 
   const names = release.jobs.publish.steps.map((step) => step.name).filter(Boolean);
@@ -351,12 +359,33 @@ test('packaged feeds are architecture-isolated', () => {
     ),
     'Windows packages must explicitly retain the root-level bundled npm/npx tree'
   );
-  assert.match(builder, /electron\/mac-arm64\//);
+  assert.equal(builderConfig.publish, null);
+  assert.equal(builderConfig.extraMetadata.abuRelease.officialBuild, false);
+  assert.doesNotMatch(builder, /abu-agent\.oss-cn-beijing\.aliyuncs\.com/);
   assert.match(buildWorkflow, /electron\/\$\{FEED_CHANNEL\}\//);
   assert.match(buildWorkflow, /electron\/win-x64\//);
+  assert.equal(
+    (buildWorkflow.match(/--config\.extraMetadata\.abuRelease\.officialBuild=true/g) || []).length,
+    2,
+    'only official CI builds may arm the production updater'
+  );
+  assert.equal(
+    (buildWorkflow.match(/--config\.publish\.provider=generic/g) || []).length,
+    2,
+    'official CI must inject the provider together with the feed URL'
+  );
   assert.equal(
     (buildWorkflow.match(/--config\.detectUpdateChannel=false/g) || []).length,
     2,
     'RC validation must emit the same latest*.yml feed pointers as a stable release'
+  );
+  const windowsFeedVerification = workflow('electron-build.yml').jobs[
+    'build-windows'
+  ].steps.find(
+    (step) => step.name === 'Verify installer, blockmap, latest.yml, and packaged feed'
+  );
+  assert.equal(
+    windowsFeedVerification.if,
+    "${{ github.repository == 'PM-Shawn/Abu-Cowork' }}"
   );
 });

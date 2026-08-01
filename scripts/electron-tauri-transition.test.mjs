@@ -74,7 +74,7 @@ test('rejects extra roots, traversal, dot roots, and AppleDouble metadata', () =
   }
 });
 
-test('electron-builder keeps migration disabled unless release CI sets boolean true', async () => {
+test('electron-builder keeps migration and the official updater disabled unless release CI opts in', async () => {
   const { createYargs, configureBuildCommand, normalizeOptions } = require(
     'electron-builder/out/builder'
   );
@@ -83,16 +83,27 @@ test('electron-builder keeps migration disabled unless release CI sets boolean t
 
   const base = await getConfig(projectDir, null, null);
   assert.equal(base.extraMetadata.abuRelease.tauriMigration, false);
+  assert.equal(base.extraMetadata.abuRelease.officialBuild, false);
+  assert.equal(base.publish, null);
 
   const parser = configureBuildCommand(createYargs());
   const parsed = await parser.parseAsync([
     '--dir',
     '--config.extraMetadata.version=0.34.0',
     '--config.extraMetadata.abuRelease.tauriMigration=true',
+    '--config.extraMetadata.abuRelease.officialBuild=true',
+    '--config.publish.provider=generic',
+    '--config.publish.url=https://updates.example.test/electron/mac-arm64/',
   ]);
   const normalized = normalizeOptions(parsed);
   const transition = await getConfig(projectDir, null, normalized.config);
   assert.equal(transition.extraMetadata.abuRelease.tauriMigration, true);
+  assert.equal(transition.extraMetadata.abuRelease.officialBuild, true);
   assert.equal(typeof transition.extraMetadata.abuRelease.tauriMigration, 'boolean');
+  assert.equal(typeof transition.extraMetadata.abuRelease.officialBuild, 'boolean');
   assert.equal(transition.extraMetadata.version, '0.34.0');
+  assert.deepEqual(transition.publish, {
+    provider: 'generic',
+    url: 'https://updates.example.test/electron/mac-arm64/',
+  });
 });

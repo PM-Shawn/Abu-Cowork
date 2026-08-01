@@ -35,9 +35,10 @@ clients remain on the previous version.
 Tauri remains the read-only source of truth during the first Electron launch.
 Electron uses the separate `com.abu.app.electron` data root.
 
-- `conversations/`, `sessions/`, and `backups/` are copied through a staging
-  directory and atomically renamed. Existing Electron directories are not
-  overwritten.
+- `conversations/`, `sessions/`, and `backups/` are copied through staging and
+  activated only after validation. If an Electron test/RC profile already
+  exists, it is retained in the recovery backup before the installed Tauri
+  profile supplies the authoritative transition values.
 - macOS `secrets.bin` values are decrypted with the existing machine-derived
   key and re-encrypted with Electron safeStorage. The original file is never
   copied, changed, or deleted.
@@ -52,6 +53,10 @@ Electron uses the separate `com.abu.app.electron` data root.
   Electron launch before the UI is shown. Restarting retries the migration.
 
 The old source data is retained throughout the transition.
+
+Source/fork builds must keep `abuRelease.officialBuild=false`,
+`abuRelease.tauriMigration=false`, and `publish: null`. Only official release CI
+may arm migration and embed an architecture-specific production updater feed.
 
 ## Rollback
 
@@ -80,5 +85,8 @@ Before changing the root `latest.json`:
    and verify conversations, settings, credentials, and the old source data.
 5. Verify one Electron-to-Electron update on each platform using the staged
    architecture-specific feed.
+6. Confirm the final RC commit is the exact commit being promoted through
+   `dev` to `main`, and that a fork-like package cannot consume the official
+   updater or installed Abu data.
 
 Only the final root-pointer step exposes the transition to existing users.

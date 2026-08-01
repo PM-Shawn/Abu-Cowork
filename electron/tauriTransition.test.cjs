@@ -15,6 +15,7 @@ const {
   isValidValue,
 } = require('./tauriLocalStorageMigration.cjs');
 const {
+  isOfficialBuild,
   isTauriTransitionBuild,
   readReleaseMetadata,
 } = require('./releaseMetadata.cjs');
@@ -30,6 +31,13 @@ test('migration is armed only by packaged boolean metadata', () => {
 
   let current = manifest(true);
   assert.equal(isTauriTransitionBuild(current, { readFileSync }), true);
+  assert.equal(isOfficialBuild(current, { readFileSync }), false);
+  const readOfficialManifest = () =>
+    JSON.stringify({ abuRelease: { officialBuild: true, tauriMigration: true } });
+  assert.equal(
+    isOfficialBuild(current, { readFileSync: readOfficialManifest }),
+    true
+  );
   current = manifest('true');
   assert.equal(isTauriTransitionBuild(current, { readFileSync }), false);
   current = { ...manifest(true), isPackaged: false };

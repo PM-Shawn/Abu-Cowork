@@ -7,6 +7,17 @@ All notable changes to Abu are documented here. Format based on [Keep a Changelo
 > [`CHANGELOG.zh-CN.md`](./CHANGELOG.zh-CN.md); keep both in sync per release (see
 > `RELEASING.md`). Entries before v0.31.0 predate this split and remain bilingual.
 
+## v0.34.1 · 2026-08-02
+
+**Root cause**: Slow network setup and package verification had no moving status, while candidate builds compiled the renderer before applying their packaged version, making an RC look like the stable release it was still downloading.
+
+**Fix**:
+
+- Update downloads now report three visible phases—preparing, downloading, and verifying—with an indeterminate activity bar before byte totals are known and one-decimal live progress during transfer.
+- macOS and Windows release jobs now compile the renderer with the exact packaged candidate version, so About, diagnostics, and the updater agree on what is actually installed.
+
+**Full Changelog**: https://github.com/PM-Shawn/Abu-Cowork/compare/v0.34.0...v0.34.1
+
 ## v0.34.0 · 2026-08-01
 
 ### Highlights

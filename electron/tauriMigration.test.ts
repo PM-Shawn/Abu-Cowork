@@ -1,3 +1,5 @@
+// @vitest-environment node
+
 /**
  * Unit tests for the one-time Tauri→Electron migration orchestrator.
  * Everything host-specific is injected (fake secret store callbacks, a fixed

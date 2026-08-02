@@ -8,6 +8,7 @@ import abuAvatar from '@/assets/abu-avatar.png';
 import { APP_VERSION } from '@/utils/version';
 import { useSettingsStore } from '@/stores/settingsStore';
 import { checkForUpdate, downloadAndInstallUpdate, restartApp } from '@/core/updates/checker';
+import { getUpdateProgressPresentation } from '@/core/updates/progress';
 import { useI18n } from '@/i18n';
 import { cn } from '@/lib/utils';
 
@@ -75,11 +76,14 @@ export default function AboutSection() {
     }
   }, []);
 
-  const progressPercent = downloadProgress
-    ? downloadProgress.total > 0
-      ? Math.round((downloadProgress.downloaded / downloadProgress.total) * 100)
-      : 0
-    : 0;
+  const progressPresentation = downloadProgress
+    ? getUpdateProgressPresentation(downloadProgress)
+    : null;
+  const progressStatus = downloadProgress?.phase === 'preparing'
+    ? t.updates.preparingDownload
+    : downloadProgress?.phase === 'verifying'
+      ? t.updates.verifying
+      : t.updates.downloading;
 
   return (
     <div className="min-h-full flex flex-col justify-center gap-6">
@@ -166,18 +170,30 @@ export default function AboutSection() {
           {downloadProgress && (
             <div className="space-y-1.5">
               <div className="flex justify-between text-minor text-[var(--abu-text-tertiary)]">
-                <span>{t.updates.downloading}</span>
-                <span>{progressPercent}%</span>
+                <span>{progressStatus}</span>
+                {progressPresentation?.percentLabel && (
+                  <span className="tabular-nums">{progressPresentation.percentLabel}%</span>
+                )}
               </div>
-              <div className="w-full h-2 rounded-full bg-[var(--abu-bg-active)] overflow-hidden">
-                {/* No width transition: real download progress fires many high-frequency
-                    events; a CSS ease-transition lags far behind and the bar looks stuck
-                    at ~0 while the % text jumps ahead, then unmounts on Finished. Snap
-                    the fill to the true percent each update instead. */}
-                <div
-                  className="h-full rounded-full bg-[var(--abu-clay)]"
-                  style={{ width: `${progressPercent}%` }}
-                />
+              <div
+                className="w-full h-2 rounded-full bg-[var(--abu-bg-active)] overflow-hidden"
+                role="progressbar"
+                aria-label={progressStatus}
+                aria-valuemin={0}
+                aria-valuemax={100}
+                aria-valuenow={progressPresentation?.percent ?? undefined}
+              >
+                {progressPresentation?.indeterminate ? (
+                  <div className="update-progress-indeterminate h-full rounded-full bg-[var(--abu-clay)]" />
+                ) : (
+                  // Snap to the real value instead of easing behind frequent
+                  // updater events. The one-decimal label keeps slow downloads
+                  // visibly alive even while the fill advances by tiny amounts.
+                  <div
+                    className="h-full rounded-full bg-[var(--abu-clay)]"
+                    style={{ width: `${progressPresentation?.percent ?? 0}%` }}
+                  />
+                )}
               </div>
             </div>
           )}

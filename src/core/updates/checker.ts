@@ -3,6 +3,9 @@ import { relaunch } from '@tauri-apps/plugin-process';
 import { useSettingsStore } from '@/stores/settingsStore';
 import { publish } from '@/core/notice/bus';
 import { getLocale } from '@/i18n';
+import type { UpdateDownloadProgress, UpdateInfo } from './types';
+
+export type { UpdateDownloadProgress, UpdateInfo } from './types';
 
 const CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000; // 6 hours
 
@@ -11,14 +14,22 @@ const CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000; // 6 hours
 // updater plugin doesn't expose (it only surfaces the top-level `notes`).
 const LATEST_JSON_URL = 'https://abu-agent.oss-cn-beijing.aliyuncs.com/latest.json';
 
-export interface UpdateInfo {
-  version: string;
-  releaseNotes: string;
-  releaseUrl: string;
-  publishedAt: string;
+let _pendingUpdate: Update | null = null;
+
+interface ElectronProgressData {
+  total?: number;
+  transferred?: number;
 }
 
-let _pendingUpdate: Update | null = null;
+function toNonNegativeFinite(value: unknown): number | null {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0
+    ? value
+    : null;
+}
+
+function setDownloadProgress(progress: UpdateDownloadProgress): void {
+  useSettingsStore.getState().setUpdateDownloadProgress(progress);
+}
 
 /**
  * Pick release notes in the user's UI language. `latest.json` carries
@@ -127,6 +138,12 @@ export async function downloadAndInstallUpdate(): Promise<void> {
 
   const store = useSettingsStore.getState();
 
+  // Give immediate feedback before the updater opens the connection or emits
+  // its first byte event. Slow DNS/proxy/TLS setup must not look like a dead
+  // click or a frozen 0% progress bar.
+  store.setUpdateInstalling(false);
+  setDownloadProgress({ phase: 'preparing', downloaded: 0, total: 0 });
+
   try {
     let downloaded = 0;
     let contentLength = 0;
@@ -134,19 +151,45 @@ export async function downloadAndInstallUpdate(): Promise<void> {
     await _pendingUpdate.downloadAndInstall((event) => {
       switch (event.event) {
         case 'Started':
-          contentLength = event.data.contentLength ?? 0;
-          store.setUpdateDownloadProgress({ downloaded: 0, total: contentLength });
+          contentLength = toNonNegativeFinite(event.data.contentLength) ?? 0;
+          downloaded = 0;
+          setDownloadProgress({ phase: 'downloading', downloaded, total: contentLength });
           break;
-        case 'Progress':
-          downloaded += event.data.chunkLength;
-          store.setUpdateDownloadProgress({ downloaded, total: contentLength });
+        case 'Progress': {
+          // The Electron bridge includes absolute counters in addition to the
+          // Tauri-compatible chunkLength. Prefer them so throttled/coalesced
+          // progress callbacks cannot make the UI drift behind the real file.
+          const electronData = event.data as typeof event.data & ElectronProgressData;
+          const reportedTotal = toNonNegativeFinite(electronData.total);
+          const reportedTransferred = toNonNegativeFinite(electronData.transferred);
+          const chunkLength = toNonNegativeFinite(event.data.chunkLength) ?? 0;
+
+          // A zero total means "unknown". Do not let a later incomplete
+          // Electron event erase a valid total received in Started.
+          if (reportedTotal !== null && reportedTotal > 0) contentLength = reportedTotal;
+          downloaded = reportedTransferred ?? downloaded + chunkLength;
+          if (contentLength > 0) downloaded = Math.min(downloaded, contentLength);
+
+          const phase = contentLength > 0 && downloaded >= contentLength
+            ? 'verifying'
+            : 'downloading';
+          setDownloadProgress({ phase, downloaded, total: contentLength });
           break;
+        }
         case 'Finished':
-          store.setUpdateDownloadProgress(null);
+          // electron-updater verifies hashes/signatures before resolving. Keep
+          // the UI alive through that final hand-off instead of briefly hiding
+          // the progress row between download and restart-ready states.
+          setDownloadProgress({
+            phase: 'verifying',
+            downloaded: contentLength > 0 ? contentLength : downloaded,
+            total: contentLength,
+          });
           break;
       }
     });
 
+    store.setUpdateDownloadProgress(null);
     store.setUpdateInstalling(true);
   } catch (err) {
     store.setUpdateDownloadProgress(null);

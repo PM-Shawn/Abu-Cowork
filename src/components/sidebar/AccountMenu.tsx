@@ -10,6 +10,7 @@ import {
   RefreshCw,
   RotateCcw,
   Download,
+  LoaderCircle,
   ChevronsUpDown,
   Pencil,
 } from 'lucide-react';
@@ -18,6 +19,7 @@ import { Select } from '@/components/ui/select';
 import { cn } from '@/lib/utils';
 import { APP_VERSION } from '@/utils/version';
 import { checkForUpdate, downloadAndInstallUpdate, restartApp } from '@/core/updates/checker';
+import { getUpdateProgressPresentation } from '@/core/updates/progress';
 
 /**
  * Account / preferences popover anchored to the sidebar's bottom user row.
@@ -115,10 +117,16 @@ export default function AccountMenu({ onEditProfile }: { onEditProfile: () => vo
     { value: 'dark', label: t.settings.appearanceDark },
   ] as const;
 
-  const progressPercent =
-    downloadProgress && downloadProgress.total > 0
-      ? Math.round((downloadProgress.downloaded / downloadProgress.total) * 100)
-      : 0;
+  const progressPresentation = downloadProgress
+    ? getUpdateProgressPresentation(downloadProgress)
+    : null;
+  const downloadLabel = downloadProgress?.phase === 'preparing'
+    ? t.updates.preparingDownload
+    : downloadProgress?.phase === 'verifying'
+      ? t.updates.verifying
+      : progressPresentation?.percentLabel
+        ? `${t.updates.downloading} ${progressPresentation.percentLabel}%`
+        : t.updates.downloading;
 
   // Resolve the check-update row into a single state.
   const updateRow: {
@@ -132,7 +140,7 @@ export default function AccountMenu({ onEditProfile }: { onEditProfile: () => vo
   } = updateInstalling
     ? { icon: RotateCcw, label: t.updates.restartToInstall, onClick: handleRestart, accent: true }
     : downloadProgress
-      ? { icon: Download, label: `${t.updates.downloading} ${progressPercent}%`, disabled: true, accent: true }
+      ? { icon: LoaderCircle, label: downloadLabel, disabled: true, spin: true, accent: true }
       : updateInfo
         ? {
             icon: Download,

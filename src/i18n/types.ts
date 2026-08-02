@@ -2126,7 +2126,9 @@ export interface TranslationDict {
     releaseNotes: string;
     checkFailed: string;
     justChecked: string;
+    preparingDownload: string;
     downloading: string;
+    verifying: string;
     installing: string;
     restartToInstall: string;
     downloadFailed: string;

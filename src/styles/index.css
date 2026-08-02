@@ -176,6 +176,26 @@
 .typing-dot:nth-child(2) { animation-delay: 0.15s; }
 .typing-dot:nth-child(3) { animation-delay: 0.3s; }
 
+/* Update activity before byte totals are known and while the downloaded
+   package is being verified. The segment sweeps continuously so slow network
+   setup never looks like a frozen 0% bar. */
+@keyframes update-progress-indeterminate {
+  from { transform: translateX(-100%); }
+  to { transform: translateX(300%); }
+}
+
+.update-progress-indeterminate {
+  width: 33.333%;
+  transform: translateX(100%);
+  animation: update-progress-indeterminate 1.2s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .update-progress-indeterminate {
+    animation: none;
+  }
+}
+
 /* Pet notification bubble: 'done' state lingers briefly then fades out. */
 @keyframes petNotifFade {
   0%, 70% { opacity: 1; }

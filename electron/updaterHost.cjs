@@ -206,7 +206,17 @@ async function downloadAndInstall(a, event) {
       started = true;
       send({ event: 'Started', data: { contentLength: p.total } });
     }
-    send({ event: 'Progress', data: { chunkLength: p.delta } });
+    // Keep the public callback Tauri-compatible while also carrying Electron's
+    // absolute counters. The renderer prefers these optional fields so a
+    // throttled/coalesced delta stream cannot under-report real progress.
+    send({
+      event: 'Progress',
+      data: {
+        chunkLength: p.delta,
+        total: p.total,
+        transferred: p.transferred,
+      },
+    });
   };
   au.on('download-progress', onProgress);
   try {

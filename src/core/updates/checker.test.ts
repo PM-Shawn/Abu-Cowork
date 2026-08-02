@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import type { DownloadEvent } from '@tauri-apps/plugin-updater';
 import { useSettingsStore } from '@/stores/settingsStore';
 
 // Controllable UI locale (checker.ts picks notes by getLocale()).
@@ -10,6 +11,7 @@ vi.mock('@/i18n', async (importActual) => {
 
 // Tauri updater: check() returns our fake Update (body = English notes).
 const mockCheck = vi.fn();
+const mockDownloadAndInstall = vi.fn();
 vi.mock('@tauri-apps/plugin-updater', () => ({
   check: () => mockCheck(),
 }));
@@ -17,13 +19,18 @@ vi.mock('@tauri-apps/plugin-updater', () => ({
 // Silence the notice bus (irrelevant to notes-language behavior).
 vi.mock('@/core/notice/bus', () => ({ publish: vi.fn() }));
 
-import { checkForUpdate } from './checker';
+import { checkForUpdate, downloadAndInstallUpdate } from './checker';
 
 const EN_BODY = 'English release notes for v0.32.0 — multi-tab workspace and more.';
 const ZH_NOTES = '中文更新说明：多页签工作区、卡片化改版等，内容足够长以通过丰富度判断。';
 
 function fakeUpdate() {
-  return { version: 'v0.32.0', date: '2026-07-19T00:00:00Z', body: EN_BODY };
+  return {
+    version: 'v0.32.0',
+    date: '2026-07-19T00:00:00Z',
+    body: EN_BODY,
+    downloadAndInstall: mockDownloadAndInstall,
+  };
 }
 
 function mockLatestJson(notesI18n: Record<string, string> | undefined) {
@@ -39,8 +46,16 @@ function mockLatestJson(notesI18n: Record<string, string> | undefined) {
 describe('checkForUpdate — locale-aware release notes', () => {
   beforeEach(() => {
     mockCheck.mockReset();
+    mockDownloadAndInstall.mockReset();
+    mockDownloadAndInstall.mockResolvedValue(undefined);
     mockCheck.mockResolvedValue(fakeUpdate());
-    useSettingsStore.setState({ lastUpdateCheck: 0, updateInfo: null, updateChecking: false });
+    useSettingsStore.setState({
+      lastUpdateCheck: 0,
+      updateInfo: null,
+      updateChecking: false,
+      updateDownloadProgress: null,
+      updateInstalling: false,
+    });
     mockLocale = 'zh-CN';
   });
 
@@ -83,5 +98,148 @@ describe('checkForUpdate — locale-aware release notes', () => {
     const info = await checkForUpdate(true);
 
     expect(info?.releaseNotes).toBe(EN_BODY);
+  });
+});
+
+async function primePendingUpdate(): Promise<void> {
+  mockLocale = 'en-US';
+  await checkForUpdate(true);
+}
+
+function controlledDownload() {
+  let emit: ((event: DownloadEvent) => void) | undefined;
+  let finish = () => {};
+
+  mockDownloadAndInstall.mockImplementation(
+    (onEvent?: (event: DownloadEvent) => void) => new Promise<void>((resolve) => {
+      emit = onEvent;
+      finish = resolve;
+    }),
+  );
+
+  return {
+    emit: (event: DownloadEvent) => {
+      if (!emit) throw new Error('download callback is not ready');
+      emit(event);
+    },
+    finish: () => finish(),
+  };
+}
+
+describe('downloadAndInstallUpdate — progress lifecycle', () => {
+  beforeEach(() => {
+    mockCheck.mockReset();
+    mockDownloadAndInstall.mockReset();
+    mockCheck.mockResolvedValue(fakeUpdate());
+    useSettingsStore.setState({
+      lastUpdateCheck: 0,
+      updateInfo: null,
+      updateChecking: false,
+      updateDownloadProgress: null,
+      updateInstalling: false,
+    });
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+  });
+
+  it('shows preparing immediately while the first byte is delayed', async () => {
+    const download = controlledDownload();
+    await primePendingUpdate();
+
+    const pending = downloadAndInstallUpdate();
+
+    expect(useSettingsStore.getState().updateDownloadProgress).toEqual({
+      phase: 'preparing',
+      downloaded: 0,
+      total: 0,
+    });
+
+    download.finish();
+    await pending;
+  });
+
+  it('prefers Electron absolute counters and enters verification at 100%', async () => {
+    const download = controlledDownload();
+    await primePendingUpdate();
+    const pending = downloadAndInstallUpdate();
+
+    download.emit({ event: 'Started', data: { contentLength: 1_000 } });
+    download.emit({
+      event: 'Progress',
+      data: { chunkLength: 100, transferred: 400, total: 1_000 },
+    } as DownloadEvent);
+    expect(useSettingsStore.getState().updateDownloadProgress).toEqual({
+      phase: 'downloading',
+      downloaded: 400,
+      total: 1_000,
+    });
+
+    download.emit({
+      event: 'Progress',
+      data: { chunkLength: 100, transferred: 1_000, total: 1_000 },
+    } as DownloadEvent);
+    expect(useSettingsStore.getState().updateDownloadProgress?.phase).toBe('verifying');
+
+    download.finish();
+    await pending;
+    expect(useSettingsStore.getState().updateDownloadProgress).toBeNull();
+    expect(useSettingsStore.getState().updateInstalling).toBe(true);
+  });
+
+  it('keeps unknown-length downloads active and verifies after Finished', async () => {
+    const download = controlledDownload();
+    await primePendingUpdate();
+    const pending = downloadAndInstallUpdate();
+
+    download.emit({ event: 'Started', data: {} });
+    download.emit({ event: 'Progress', data: { chunkLength: 512 } });
+    expect(useSettingsStore.getState().updateDownloadProgress).toEqual({
+      phase: 'downloading',
+      downloaded: 512,
+      total: 0,
+    });
+
+    download.emit({ event: 'Finished' });
+    expect(useSettingsStore.getState().updateDownloadProgress).toEqual({
+      phase: 'verifying',
+      downloaded: 512,
+      total: 0,
+    });
+
+    download.finish();
+    await pending;
+  });
+
+  it('does not replace a known total with a later zero total', async () => {
+    const download = controlledDownload();
+    await primePendingUpdate();
+    const pending = downloadAndInstallUpdate();
+
+    download.emit({ event: 'Started', data: { contentLength: 1_000 } });
+    download.emit({
+      event: 'Progress',
+      data: { chunkLength: 100, transferred: 400, total: 0 },
+    } as DownloadEvent);
+
+    expect(useSettingsStore.getState().updateDownloadProgress).toEqual({
+      phase: 'downloading',
+      downloaded: 400,
+      total: 1_000,
+    });
+
+    download.finish();
+    await pending;
+  });
+
+  it('clears the active progress state when the updater rejects', async () => {
+    mockDownloadAndInstall.mockRejectedValue(new Error('network failed'));
+    await primePendingUpdate();
+
+    await expect(downloadAndInstallUpdate()).rejects.toThrow('network failed');
+    expect(useSettingsStore.getState().updateDownloadProgress).toBeNull();
+    expect(useSettingsStore.getState().updateInstalling).toBe(false);
   });
 });

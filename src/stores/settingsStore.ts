@@ -10,7 +10,7 @@ import type { CapabilitySetupTarget } from '../core/capabilityPlugins/types';
 import { hasElectronCommandHost } from '../utils/electronHost';
 import type { WebSearchProviderType } from '../core/search/providers';
 import { setLanguage, initLanguage, type LanguageSetting } from '@/i18n';
-import type { UpdateInfo } from '@/core/updates/checker';
+import type { UpdateDownloadProgress, UpdateInfo } from '@/core/updates/types';
 import {
   SECRET_KEYS,
   getSecret,
@@ -188,7 +188,7 @@ export interface SettingsState {
   updateInfo: UpdateInfo | null;
   updateChecking: boolean;
   lastUpdateCheck: number;
-  updateDownloadProgress: { downloaded: number; total: number } | null;
+  updateDownloadProgress: UpdateDownloadProgress | null;
   updateInstalling: boolean;
   userNickname: string;
   userAvatar: string;
@@ -343,7 +343,7 @@ interface SettingsActions {
   setUpdateInfo: (info: UpdateInfo | null) => void;
   setUpdateChecking: (checking: boolean) => void;
   setLastUpdateCheck: (time: number) => void;
-  setUpdateDownloadProgress: (progress: { downloaded: number; total: number } | null) => void;
+  setUpdateDownloadProgress: (progress: UpdateDownloadProgress | null) => void;
   setUpdateInstalling: (installing: boolean) => void;
   setUserNickname: (nickname: string) => void;
   setUserAvatar: (avatar: string) => void;

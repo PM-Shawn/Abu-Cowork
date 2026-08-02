@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <!--
+    Hardened-runtime entitlements for the Electron shell (Developer ID
+    signing + notarization). Mirrors src-tauri/entitlements.plist — the set
+    the Tauri build already ships and notarizes with — and every key is also
+    required by Electron itself:
+      - allow-jit + allow-unsigned-executable-memory: V8/JIT executable pages.
+      - disable-library-validation: native modules (node-pty .node, future
+        python .so) are re-signed with our Developer ID, but some load paths
+        would otherwise trip library validation.
+      - allow-dyld-environment-variables: embedded runtimes (python/node)
+        are pointed at via DYLD_* by their launchers.
+    Used as both `entitlements` and `entitlementsInherit` (helpers inherit
+    the same set) in electron-builder.yml.
+  -->
+  <key>com.apple.security.cs.allow-jit</key>
+  <true/>
+  <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+  <true/>
+  <key>com.apple.security.cs.disable-library-validation</key>
+  <true/>
+  <key>com.apple.security.cs.allow-dyld-environment-variables</key>
+  <true/>
+</dict>
+</plist>

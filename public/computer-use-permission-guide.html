@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8">
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self' data:; script-src 'self'; style-src 'self'; img-src 'self' data:;"
+    >
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Computer Use</title>
+    <link rel="stylesheet" href="./computer-use-permission-guide.css">
+  </head>
+  <body>
+    <main class="guide-shell" aria-live="polite">
+      <button class="icon-button close-button" id="closeButton" type="button" aria-label="Close">
+        <span aria-hidden="true">×</span>
+      </button>
+
+      <header class="guide-header">
+        <img class="app-icon" id="appIcon" alt="">
+        <div class="header-copy">
+          <h1 id="title"></h1>
+          <p id="description"></p>
+        </div>
+      </header>
+
+      <section class="permission-list" aria-label="Computer Use permissions">
+        <article class="permission-row" id="screenRow">
+          <div class="permission-index" aria-hidden="true">1</div>
+          <div class="permission-copy">
+            <div class="permission-title-line">
+              <h2 id="screenTitle"></h2>
+              <span class="step-label" id="screenStep"></span>
+            </div>
+            <p id="screenDescription"></p>
+          </div>
+          <button class="permission-action" id="screenAction" type="button"></button>
+        </article>
+
+        <article class="permission-row" id="controlRow">
+          <div class="permission-index" aria-hidden="true">2</div>
+          <div class="permission-copy">
+            <div class="permission-title-line">
+              <h2 id="controlTitle"></h2>
+              <span class="step-label" id="controlStep"></span>
+            </div>
+            <p id="controlDescription"></p>
+          </div>
+          <button class="permission-action" id="controlAction" type="button"></button>
+        </article>
+      </section>
+
+      <section class="error-banner" id="errorBanner" hidden>
+        <strong id="errorTitle"></strong>
+        <span id="errorMessage"></span>
+        <button id="retryButton" type="button"></button>
+      </section>
+
+      <p class="development-note" id="developmentNote" hidden></p>
+
+      <footer class="guide-footer">
+        <div class="fallback-action">
+          <span id="missingApp"></span>
+          <button class="text-button" id="revealButton" type="button"></button>
+        </div>
+        <div class="footer-actions">
+          <button class="secondary-button" id="cancelButton" type="button"></button>
+          <button class="primary-button" id="returnButton" type="button" hidden></button>
+        </div>
+      </footer>
+
+      <p class="privacy-note" id="privacyNote"></p>
+    </main>
+    <script src="./computer-use-permission-guide.js"></script>
+  </body>
+</html>

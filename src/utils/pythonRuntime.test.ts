@@ -3,6 +3,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 // Mock the Tauri APIs before importing the module
 vi.mock('@tauri-apps/api/path', () => ({
   resolveResource: vi.fn(),
+  resolve: vi.fn(),
 }));
 vi.mock('@tauri-apps/plugin-fs', () => ({
   exists: vi.fn(),
@@ -13,6 +14,9 @@ describe('pythonRuntime', () => {
   beforeEach(() => {
     vi.resetModules();
     vi.restoreAllMocks();
+    delete (globalThis as typeof globalThis & { __ABU_SHELL__?: unknown }).__ABU_SHELL__;
+    delete process.env.ABU_ELECTRON_COMMAND_HOST;
+    delete process.env.ELECTRON_RUN_AS_NODE;
   });
 
   afterEach(() => {
@@ -20,6 +24,20 @@ describe('pythonRuntime', () => {
   });
 
   describe('resolveCommandPython', () => {
+    it('leaves Electron commands bare for main-process runtime selection', async () => {
+      (globalThis as typeof globalThis & {
+        __ABU_SHELL__?: { mainSupervisesSidecar?: boolean };
+      }).__ABU_SHELL__ = { mainSupervisesSidecar: true };
+      const { resolveResource } = await import('@tauri-apps/api/path');
+      const { exists } = await import('@tauri-apps/plugin-fs');
+      vi.mocked(resolveResource).mockResolvedValue('C:\\Program Files\\Abu\\python-runtime\\python.exe');
+      vi.mocked(exists).mockResolvedValue(true);
+
+      const { resolveCommandPython } = await import('./pythonRuntime');
+      expect(await resolveCommandPython('python script.py')).toBe('python script.py');
+      expect(resolveResource).not.toHaveBeenCalled();
+    });
+
     it('replaces python3 at start of command', async () => {
       const { resolveResource } = await import('@tauri-apps/api/path');
       const { exists } = await import('@tauri-apps/plugin-fs');
@@ -83,6 +101,23 @@ describe('pythonRuntime', () => {
       const result = await resolveCommandPython('python3 script.py');
       expect(result).toBe('"/app/My Resources/python-runtime/bin/python3" -I script.py');
     });
+  });
+
+  it('uses only the Electron development runtime when Electron hosts commands', async () => {
+    process.env.ABU_ELECTRON_COMMAND_HOST = '1';
+    const { resolveResource, resolve } = await import('@tauri-apps/api/path');
+    const { exists } = await import('@tauri-apps/plugin-fs');
+    vi.mocked(resolve).mockClear();
+    vi.mocked(resolveResource).mockResolvedValue('/repo/python-runtime/bin/python3');
+    vi.mocked(resolve).mockImplementation(async (...paths: string[]) => `/repo/${paths.join('/')}`);
+    vi.mocked(exists).mockImplementation(async (candidate) =>
+      String(candidate).includes('/electron/.runtime/python-runtime/'),
+    );
+
+    const { getEmbeddedPythonPath } = await import('./pythonRuntime');
+    const result = await getEmbeddedPythonPath();
+    expect(result).toContain('/electron/.runtime/python-runtime/bin/python3');
+    expect(resolve).not.toHaveBeenCalledWith(expect.stringContaining('src-tauri'));
   });
 
   // ── Windows-specific ──

@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import { toolRegistry } from './registry';
+import { toolRegistry, FILE_TOOL_PATH_MAP } from './registry';
+import { FILE_TOOL_NAMES } from './osPermissionGuide';
 import type { ToolDefinition } from '../../types';
 
 // Test tool with required params
@@ -123,6 +124,18 @@ describe('ToolRegistry', () => {
       const result = await toolRegistry.execute('test_write', { path: '/tmp' });
       expect(result).toContain('Error executing tool');
       expect(result).toContain('boom');
+    });
+  });
+
+  // Drift guard: osPermissionGuide's FILE_TOOL_NAMES (which file tools get the
+  // OS-permission grant-guide) must stay identical to FILE_TOOL_PATH_MAP's keys
+  // (which tools go through path-safety checks). They're two separate consts —
+  // one lives in the pure module so the sidecar can share it — so a newly-added
+  // file tool that's added to one but not the other would silently miss the
+  // guide (or the path check). This locks them together.
+  describe('FILE_TOOL_NAMES ↔ FILE_TOOL_PATH_MAP sync', () => {
+    it('the OS-guide file-tool set matches the path-map keys exactly', () => {
+      expect([...FILE_TOOL_NAMES].sort()).toEqual(Object.keys(FILE_TOOL_PATH_MAP).sort());
     });
   });
 });

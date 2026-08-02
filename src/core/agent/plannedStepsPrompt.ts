@@ -1,5 +1,5 @@
-import { useTaskExecutionStore } from '../../stores/taskExecutionStore';
-import { useChatStore } from '../../stores/chatStore';
+import { getConversationReader } from './ports/conversationReader';
+import { getExecutionPort } from './ports/executionPort';
 import type { PlannedStep } from '../../types/execution';
 
 const STATUS_EMOJI: Record<PlannedStep['status'], string> = {
@@ -12,7 +12,7 @@ const STATUS_EMOJI: Record<PlannedStep['status'], string> = {
  * A follow-up turn starts a fresh empty execution, but the prior plan/progress
  * was snapshotted onto messages and should stay visible to the model. */
 function latestSnapshotPlannedSteps(conversationId: string): PlannedStep[] {
-  const conv = useChatStore.getState().conversations[conversationId];
+  const conv = getConversationReader().getConversation(conversationId);
   if (!conv) return [];
   for (let i = conv.messages.length - 1; i >= 0; i--) {
     const ps = conv.messages[i].plannedSteps;
@@ -26,7 +26,7 @@ function latestSnapshotPlannedSteps(conversationId: string): PlannedStep[] {
  * Mirrors the old formatTodosForPrompt output, sourced from the declared plan.
  */
 export function formatPlannedStepsForPrompt(conversationId: string): string {
-  const exec = useTaskExecutionStore.getState().getExecutionByConversationId(conversationId);
+  const exec = getExecutionPort().getExecutionByConversationId(conversationId);
   const steps = exec?.plannedSteps?.length
     ? exec.plannedSteps
     : latestSnapshotPlannedSteps(conversationId);

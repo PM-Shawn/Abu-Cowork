@@ -977,3 +977,34 @@ describe('bootstrapSecrets — pendingImageGenSecretBridge marker (F2 regression
     expect(useSettingsStore.getState().imageGeneration.backends[0].apiKey).toBe('sk-own-secret');
   });
 });
+
+describe('secret write-through failure fallback', () => {
+  const invokeMock = vi.mocked(invoke);
+
+  it('re-persists the current key in plaintext when a post-bootstrap encrypted write fails', async () => {
+    useSettingsStore.setState({
+      providers: [makeProvider({ id: 'p1', apiKey: 'sk-old' })],
+      auxiliaryServices: {},
+      imageGeneration: { backends: [], defaultId: undefined },
+    });
+    invokeMock.mockImplementation(async (cmd: unknown) => {
+      if (cmd === 'secret_get') return cmd === 'secret_get' ? 'sk-old' : null;
+      if (cmd === 'secret_failed_keys') return [];
+      if (cmd === 'secret_set') throw new Error('encrypted store unavailable');
+      return undefined;
+    });
+
+    await bootstrapSecrets();
+    const persistApi = (useSettingsStore as unknown as {
+      persist: { getOptions: () => { partialize: (state: unknown) => Record<string, unknown> } };
+    }).persist;
+    const partialize = persistApi.getOptions().partialize;
+    expect((partialize(useSettingsStore.getState()).providers as ProviderInstance[])[0].apiKey).toBe('');
+
+    useSettingsStore.getState().updateProvider('p1', { apiKey: 'sk-new' });
+
+    await vi.waitFor(() => {
+      expect((partialize(useSettingsStore.getState()).providers as ProviderInstance[])[0].apiKey).toBe('sk-new');
+    });
+  });
+});

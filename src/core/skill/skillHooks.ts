@@ -5,10 +5,10 @@
  * Hooks are scoped to the skill's lifetime — deactivated when skill is deactivated.
  */
 
-import { invoke } from '@tauri-apps/api/core';
-import type { Skill } from '../../types';
+import type { Skill, ToolExecutionContext } from '../../types';
 import { registerHook } from '../agent/lifecycleHooks';
 import type { PreToolCallEvent, PostToolCallEvent } from '../agent/lifecycleHooks';
+import { invokeTaskCommand } from '../tools/helpers/scopedCommand';
 import { matchWildcard } from './toolFilter';
 
 interface CommandOutput {
@@ -21,16 +21,20 @@ interface CommandOutput {
  * Execute a hook command in the skill's directory.
  * Returns true if the command succeeded (exit code 0), false otherwise.
  */
-async function executeHookCommand(command: string, skillDir: string): Promise<boolean> {
+async function executeHookCommand(
+  command: string,
+  skillDir: string,
+  context?: ToolExecutionContext,
+): Promise<boolean> {
   try {
-    const output = await invoke<CommandOutput>('run_shell_command', {
+    const output = await invokeTaskCommand<CommandOutput>('run_shell_command', {
       command,
       cwd: skillDir,
       background: false,
       timeout: 10,
-      sandbox: true,
-      extra_writable_paths: [skillDir],
-    });
+      sandboxEnabled: true,
+      extraWritablePaths: [skillDir],
+    }, context, { commandIdPrefix: 'skill-hook' });
     return output.code === 0;
   } catch {
     return false;
@@ -56,7 +60,11 @@ export function activateSkillHooks(skill: Skill): () => void {
 
           for (const hook of entry.hooks) {
             if (hook.type === 'command') {
-              const success = await executeHookCommand(hook.command, skill.skillDir);
+              const success = await executeHookCommand(
+                hook.command,
+                skill.skillDir,
+                { abortSignal: event.abortSignal },
+              );
               if (!success) {
                 event.blocked = true;
               }
@@ -78,7 +86,11 @@ export function activateSkillHooks(skill: Skill): () => void {
 
           for (const hook of entry.hooks) {
             if (hook.type === 'command') {
-              await executeHookCommand(hook.command, skill.skillDir);
+              await executeHookCommand(
+                hook.command,
+                skill.skillDir,
+                { abortSignal: event.abortSignal },
+              );
             }
           }
         },

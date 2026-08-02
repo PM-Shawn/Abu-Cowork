@@ -1,10 +1,24 @@
 import { describe, it, expect } from 'vitest';
-import { getPermissionStrategy, type PermissionMode } from './permissionMode';
+import {
+  decideComputerUseApp,
+  getPermissionStrategy,
+  type PermissionMode,
+} from './permissionMode';
 import type { ConfirmationInfo } from '../tools/registry';
 
 const cmd = (level: ConfirmationInfo['level']): ConfirmationInfo => ({ command: 'x', level, reason: '' });
 
 describe('permissionMode', () => {
+  it('keeps app authorization inside the mode without bypassing sensitive apps', () => {
+    expect(decideComputerUseApp('standard', 'ordinary')).toBe('confirm');
+    expect(decideComputerUseApp('smart', 'ordinary')).toBe('allow');
+    expect(decideComputerUseApp('autonomous', 'ordinary')).toBe('allow');
+
+    expect(decideComputerUseApp('standard', 'approval-required')).toBe('confirm');
+    expect(decideComputerUseApp('smart', 'approval-required')).toBe('confirm');
+    expect(decideComputerUseApp('autonomous', 'approval-required')).toBe('confirm');
+  });
+
   describe('standard mode', () => {
     const s = getPermissionStrategy('standard');
 

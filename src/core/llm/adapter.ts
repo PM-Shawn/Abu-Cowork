@@ -100,6 +100,15 @@ export interface LLMAdapter {
   ): Promise<void>;
 }
 
+/**
+ * Which concrete LLMAdapter implementation to instantiate. Shared between
+ * the shell (`selectChatAdapter.ts` / `sidecarAdapter.ts`) and the sidecar
+ * (`sidecar/src/llmHost.ts`, bundled from this same file) so both sides
+ * agree on the JSON-RPC `llm.chat` params' `adapterKind` field without
+ * duplicating the union.
+ */
+export type AdapterKind = 'claude' | 'openai-compatible';
+
 // --- Error Classification ---
 
 export type LLMErrorCode =

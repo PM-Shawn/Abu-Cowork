@@ -142,6 +142,9 @@ export interface TranslationDict {
     noSessionsYet: string;
     hideSidebar: string;
     showSidebar: string;
+    editMenu: string;
+    windowMenu: string;
+    helpMenu: string;
     scheduled: string;
     noScheduledRuns: string;
     exportConversation: string;
@@ -362,6 +365,8 @@ export interface TranslationDict {
     skillMissingTools: string;
     /** Enterprise AI gateway unreachable (shown as an error bubble). */
     gatewayUnreachable: string;
+    /** Sidecar process exited mid-task and automatic recovery has started. */
+    sidecarInterrupted: string;
     /** Model likely doesn't support image/vision input. */
     visionUnsupported: string;
     /** Ollama returned 403 Forbidden (CORS origin restriction). */
@@ -729,6 +734,107 @@ export interface TranslationDict {
     // General section
     general: string;
     generalDescription: string;
+    // Capability overview
+    capabilityOverview: string;
+    capabilitiesDescription: string;
+    capabilityWebTitle: string;
+    capabilityBuiltinBrowser: string;
+    capabilityBuiltinBrowserDesc: string;
+    capabilityBuiltinBrowserScope: string;
+    capabilityMyChrome: string;
+    capabilityMyChromeDesc: string;
+    capabilityMyChromeScope: string;
+    capabilityComputerTitle: string;
+    capabilityComputerDesc: string;
+    capabilityExtensionsTitle: string;
+    capabilityExtensionsDesc: string;
+    capabilitySkillsCount: string;
+    capabilityConnectorsCount: string;
+    capabilityManageSkills: string;
+    capabilityManageConnectors: string;
+    capabilityCheckStatus: string;
+    capabilityCheckPermissions: string;
+    capabilityRetry: string;
+    capabilityStatusReady: string;
+    capabilityStatusSetupRequired: string;
+    capabilityStatusNotConnected: string;
+    capabilityStatusOff: string;
+    capabilityStatusPermissionRequired: string;
+    capabilityStatusConnectionLost: string;
+    capabilityStatusUnavailable: string;
+    capabilityStatusChecking: string;
+    capabilityStatusNextStep: string;
+    capabilityScreenRead: string;
+    capabilityUIControl: string;
+    capabilityPermissionGranted: string;
+    capabilityPermissionMissing: string;
+    capabilityPermissionUnknown: string;
+    capabilityBuiltinBrowserDisconnected: string;
+    capabilityBuiltinBrowserUnavailable: string;
+    capabilityChromeSetupRequired: string;
+    capabilityChromeOptional: string;
+    capabilityChromeDisconnected: string;
+    capabilityChromeProbeUnavailable: string;
+    capabilityComputerDisabled: string;
+    capabilityComputerPermissionMissing: string;
+    capabilityComputerPartial: string;
+    capabilityBackToOverview: string;
+    capabilityDone: string;
+    capabilityCheckConnection: string;
+    capabilityChromeConnect: string;
+    capabilityChromeManage: string;
+    capabilityChromeDisconnect: string;
+    capabilityChromeSetupTitle: string;
+    capabilityChromeSetupDesc: string;
+    capabilityChromeTaskNeedsSetup: string;
+    capabilityChromeConfirmEnable: string;
+    capabilityChromeConsent: string;
+    capabilityChromeExperimental: string;
+    capabilityChromePermissionScope: string;
+    capabilityChromeServiceUnavailable: string;
+    capabilityChromeExtensionTitle: string;
+    capabilityChromeExtensionDesc: string;
+    capabilityChromeExtensionConnected: string;
+    capabilityChromeOpenInstaller: string;
+    capabilityChromeManualTitle: string;
+    capabilityChromeManualStep1: string;
+    capabilityChromeManualStep2: string;
+    capabilityChromeManualStep3: string;
+    capabilityChromeResourceMissing: string;
+    capabilityChromeOpenFailed: string;
+    capabilityChromePrivacy: string;
+    capabilityComputerEnable: string;
+    capabilityComputerStartSetup: string;
+    capabilityComputerContinue: string;
+    capabilityComputerManage: string;
+    capabilityComputerSetupTitle: string;
+    capabilityComputerSetupDesc: string;
+    capabilityComputerTaskNeedsSetup: string;
+    capabilityComputerConfirmEnable: string;
+    capabilityComputerConsent: string;
+    capabilityComputerDisable: string;
+    capabilityScreenReadDesc: string;
+    capabilityUIControlDesc: string;
+    capabilityComputerStepScreen: string;
+    capabilityComputerStepControl: string;
+    capabilityScreenReadInstruction: string;
+    capabilityUIControlInstruction: string;
+    capabilityOpenSystemSettings: string;
+    capabilityCheckAgain: string;
+    capabilityComputerAutomaticCheck: string;
+    capabilityComputerMissingApp: string;
+    capabilityShowAppInFinder: string;
+    capabilityComputerRevealFailed: string;
+    capabilityPermissionGuideAllow: string;
+    capabilityPermissionGuideDone: string;
+    capabilityPermissionGuideReturnToAbu: string;
+    capabilityPermissionGuideDevelopmentIdentity: string;
+    capabilityPermissionGuideErrorTitle: string;
+    capabilityComputerReadyTitle: string;
+    capabilityComputerReadyDesc: string;
+    capabilityReturnToTask: string;
+    capabilityComputerPlatformHint: string;
+    capabilityComputerPrivacy: string;
     closeWindowBehavior: string;
     closeWindowAsk: string;
     closeWindowAskDesc: string;
@@ -898,6 +1004,26 @@ export interface TranslationDict {
     authorizedPaths: string;
     authorizedPathsEmpty: string;
     revoke: string;
+    appAutomationTitle: string;
+    appAutomationDescription: string;
+    appAutomationConnectorPending: string;
+    appAutomationUseComputer: string;
+    appAutomationStop: string;
+    appAutomationAdvanced: string;
+    appAutomationAdvancedWarning: string;
+    appAutomationOpenSettings: string;
+    appAutomationPending: string;
+    appAutomationStarted: string;
+    appAutomationEnqueued: string;
+    appAutomationCompleted: string;
+    appAutomationFailed: string;
+    appAutomationNeedsReview: string;
+    appAutomationStopped: string;
+    appAutomationTargetFallback: string;
+    appAutomationToolError: string;
+    appAutomationContinuePrompt: string;
+    appAutomationContinueFailed: string;
+    appAutomationOutcomeUncertain: string;
   };
 
   // Diagnostic
@@ -1630,6 +1756,7 @@ export interface TranslationDict {
       startPrompt: string;
       framingHint: string;
       dismissHint: string;
+      selectElement: string;
     };
   };
 
@@ -2677,6 +2804,14 @@ export interface TranslationDict {
       errEnsureNeedsName: string;
       /** Ensure available failed. {error} */
       ensureFailed: string;
+      /** First-party capability has no setup surface. {name} */
+      errSetupNotSupported: string;
+      /** First-party capability setup was opened. */
+      capabilitySetupOpened: string;
+      /** First-party capability setup completed for the requesting task. */
+      capabilitySetupReady: string;
+      /** First-party capability setup was cancelled by the user. */
+      capabilitySetupCancelled: string;
       /** Error: action=add_custom requires name. */
       errAddCustomNeedsName: string;
       /** Error: action=add_custom requires url. */
@@ -2718,6 +2853,8 @@ export interface TranslationDict {
       mcpNotInRegistry: string;
       /** Install needs config. {name}, {hints} */
       mcpNeedsConfig: string;
+      /** Server was explicitly disabled by the user. {name} */
+      mcpDisabled: string;
     };
     // projectRules.ts: rule-bundle headers/markers, ABU.md template, /init results
     projectRules: {
@@ -2767,6 +2904,12 @@ export interface TranslationDict {
       imageSaved: string;
       /** Revised prompt suffix. {prompt} */
       revisedPrompt: string;
+      /** process_image: unknown action. {action} {valid} */
+      errUnsupportedAction: string;
+      /** process_image failed. {error} */
+      errProcessImage: string;
+      /** process_image succeeded. {path} */
+      imageProcessed: string;
     };
     // create_todo
     todo: {
@@ -3012,6 +3155,20 @@ export interface TranslationDict {
     };
     // computer (computerTools.ts) — AX/screenshot/input action results and errors
     computer: {
+      /** Computer Use is disabled by the user-facing hard gate. */
+      errDisabled: string;
+      /** Background tasks cannot request or use Computer Use. */
+      errBackgroundUnavailable: string;
+      /** OS permission probe failed. {msg} */
+      errPermissionProbeFailed: string;
+      /** Foreground target identity probe failed. {msg} */
+      errTargetIdentityFailed: string;
+      /** Main-process Computer Use authorization failed. {msg} */
+      errAuthorizationFailed: string;
+      /** Every computer action must declare whether it has a consequential outcome. */
+      errConsequenceRequired: string;
+      /** Consequential operations need a concise user-visible summary. */
+      errConsequenceDetailRequired: string;
       /** formatAxElements: no interactive elements found. */
       noInteractiveElements: string;
       /** screenshot: current model has no vision capability (bilingual). zh half. */

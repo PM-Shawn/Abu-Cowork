@@ -745,7 +745,9 @@ export class MCPClientManager {
         }>;
       };
       // Browser automation tools need longer timeouts (waiting for popups, page loads, etc.)
-      const defaultTimeout = serverName === 'abu-browser-bridge' ? 120000 : 30000;
+      const defaultTimeout = (
+        serverName === 'abu-browser' || serverName === 'abu-browser-bridge'
+      ) ? 120000 : 30000;
       const serverTimeout = server.config.timeout ?? defaultTimeout;
       const timeout = new Promise<never>((_, reject) => {
         timerId = setTimeout(() => reject(new Error(`MCP tool call timed out after ${serverTimeout / 1000}s: ${toolName}`)), serverTimeout);

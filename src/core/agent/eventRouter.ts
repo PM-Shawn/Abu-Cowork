@@ -18,14 +18,14 @@ import type {
   StepStartPayload,
   ToolCallContext,
 } from '../../types/execution';
-import type { TaskExecutionStore } from '../../stores/taskExecutionStore';
+import type { ExecutionPort } from './ports/executionPort';
+import type { ScratchpadEntry } from '../../stores/scratchpadStore';
 import {
-  useScratchpadStore,
   shouldCaptureScratchpad,
   inferScratchpadType,
   generateScratchpadTitle,
   truncateScratchpadContent,
-} from '../../stores/scratchpadStore';
+} from './scratchpadClassify';
 import { parseSearchResults } from '../../utils/searchParser';
 import { isToolResultError } from '../../utils/workflowExtractor';
 import { getToolLabel } from '../../utils/toolLabels';
@@ -222,9 +222,26 @@ function createResultBlock(stepId: string, result: string, toolName: string, loc
 // --- Event Router Class ---
 
 export interface EventRouterDeps {
-  executionStore: TaskExecutionStore;
+  /** Step-mutation surface for the execution this router is driving.
+   *
+   *  Typed as `ExecutionPort` (see `./ports/executionPort.ts`), not the raw
+   *  `TaskExecutionStore` zustand type — as of P1-3b-pre this is an
+   *  injectable seam, not a direct store capture (see executionPort.ts's
+   *  "Scope note" for the full history: the C batch deliberately left this
+   *  as a raw `taskExecutionStore` local threaded in from agentLoop.ts;
+   *  P1-3b-pre folded the 11 step-mutation methods this class actually
+   *  calls into `ExecutionPort` and switched the call site to pass the port
+   *  instead). The in-process default implementation is byte-identical
+   *  behavior — this change is a pure indirection, not a behavior change. */
+  executionStore: ExecutionPort;
   /** Callback to append tool call context to ChatStore */
   appendToolCallContext?: (loopId: string, context: ToolCallContext) => void;
+  /** Callback to capture an intermediate result to ScratchpadStore (DI seam —
+   *  mirrors `appendToolCallContext` above so EventRouter has zero direct
+   *  store imports; see agentLoop.ts's `createEventRouter` call site for the
+   *  in-process wiring). Signature mirrors `ScratchpadStore.addEntry`'s
+   *  actual parameter shape. */
+  addScratchpadEntry?: (entry: Omit<ScratchpadEntry, 'id' | 'timestamp' | 'isViewed'>) => void;
 }
 
 export class EventRouter {
@@ -421,7 +438,7 @@ export class EventRouter {
       const entryType = inferScratchpadType(step.toolName);
       if (entryType) {
         const path = (step.toolInput.path || step.toolInput.file_path || step.toolInput.filePath) as string | undefined;
-        useScratchpadStore.getState().addEntry({
+        this.deps.addScratchpadEntry?.({
           conversationId: execution.conversationId,
           title: generateScratchpadTitle(step.toolName, step.toolInput, entryType),
           type: entryType,

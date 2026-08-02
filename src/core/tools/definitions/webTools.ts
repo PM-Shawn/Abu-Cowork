@@ -1,6 +1,6 @@
 import type { ToolDefinition } from '../../../types';
 import { getTauriFetch } from '../../llm/tauriFetch';
-import { useSettingsStore } from '../../../stores/settingsStore';
+import { getSettingsReader } from '../../agent/ports/settingsReader';
 import { TOOL_NAMES } from '../toolNames';
 import { getI18n, format } from '../../../i18n';
 
@@ -109,7 +109,7 @@ export const webSearchTool: ToolDefinition = {
     try {
       const tw = getI18n().toolResult.web;
 
-      const state = useSettingsStore.getState();
+      const state = getSettingsReader().getSnapshot();
 
       const providerType = state.auxiliaryServices.webSearch?.provider ?? 'brave';
       const apiKey = state.auxiliaryServices.webSearch?.apiKey ?? '';

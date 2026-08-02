@@ -9,6 +9,34 @@
 import type { Skill } from '../../types';
 import { TOOL_NAMES } from './toolNames';
 
+const BROWSER_TOOL_SUFFIXES = [
+  'get_tabs',
+  'snapshot',
+  'click',
+  'fill',
+  'select',
+  'wait_for',
+  'extract_text',
+  'extract_table',
+  'scroll',
+  'navigate',
+  'keyboard',
+  'execute_js',
+  'screenshot',
+  'screenshot_full_page',
+  'connection_status',
+  'get_downloads',
+  'start_recording',
+  'stop_recording',
+] as const;
+
+const BUILTIN_BROWSER_TOOLS = BROWSER_TOOL_SUFFIXES.map(
+  (name) => `abu-browser__${name}`,
+);
+const CHROME_BRIDGE_TOOLS = BROWSER_TOOL_SUFFIXES.map(
+  (name) => `abu-browser-bridge__${name}`,
+);
+
 /** Tools always present in every turn (~3000 tokens) */
 export const CORE_TOOL_NAMES: ReadonlySet<string> = new Set([
   TOOL_NAMES.READ_FILE,
@@ -75,6 +103,22 @@ const PREFETCH_RULES: ReadonlyArray<{
     tools: [TOOL_NAMES.MANAGE_MCP_SERVER],
   },
   {
+    keywords: [
+      '内置浏览器',
+      '阿布浏览器',
+      '网页',
+      '网址',
+      '网站',
+      '浏览器',
+      '百度',
+      'browser',
+      'web page',
+      'http://',
+      'https://',
+    ],
+    tools: BUILTIN_BROWSER_TOOLS,
+  },
+  {
     keywords: ['之前', '上次', '最近', '记得', '回忆', '干了什么', '干了啥', '聊过', '做过', '历史', 'recall', '记忆'],
     tools: [TOOL_NAMES.RECALL],
   },
@@ -124,7 +168,9 @@ export function prefetchTools(ctx: PrefetchContext): string[] {
     }
   }
 
-  // Computer use: load when enabled (auto-enabled on first call) OR via keyword prefetch
+  // Computer Use stays loaded while enabled. Keyword prefetch may expose the
+  // tool while disabled so it can return the hard-gate setup guidance, but the
+  // tool itself must never flip the setting.
   if (ctx.computerUseEnabled) {
     additionalTools.push(TOOL_NAMES.COMPUTER);
   }
@@ -132,6 +178,12 @@ export function prefetchTools(ctx: PrefetchContext): string[] {
   // Active skill exists → may need read_skill_file
   if (ctx.activeSkills.length > 0) {
     additionalTools.push(TOOL_NAMES.READ_SKILL_FILE);
+  }
+  if (ctx.activeSkills.some((skill) => skill.name === 'Abu-Browser')) {
+    additionalTools.push(...BUILTIN_BROWSER_TOOLS);
+  }
+  if (ctx.activeSkills.some((skill) => skill.name === 'Abu-Chrome-Bridge')) {
+    additionalTools.push(TOOL_NAMES.MANAGE_MCP_SERVER, ...CHROME_BRIDGE_TOOLS);
   }
 
   // Early turns: load planning + system info tools (LLM may plan after initial research)

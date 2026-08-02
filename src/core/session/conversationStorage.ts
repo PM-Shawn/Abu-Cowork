@@ -620,13 +620,52 @@ export async function appendMessage(
  * tool calls) immediately after the tool batch completes — without this,
  * only the very last turn's tool calls would survive a restart.
  */
-export async function replaceMessageById(
+const SETTLED_SANDBOX_RECOVERY_ACTIONS = new Set([
+  'completed',
+  'failed',
+  'needs-review',
+  'stopped',
+]);
+
+function preservePersistedSandboxRecoveryActions(
+  incoming: Message,
+  persisted: Message,
+): Message {
+  if (!incoming.toolCalls?.length || !persisted.toolCalls?.length) return incoming;
+  const persistedById = new Map(
+    persisted.toolCalls.map((toolCall) => [toolCall.id, toolCall]),
+  );
+  let changed = false;
+  const toolCalls = incoming.toolCalls.map((toolCall) => {
+    const persistedAction = persistedById.get(toolCall.id)?.sandboxRecoveryAction;
+    const incomingAction = toolCall.sandboxRecoveryAction;
+    const shouldPreserve =
+      persistedAction != null
+      && (
+        incomingAction == null
+        || (
+          SETTLED_SANDBOX_RECOVERY_ACTIONS.has(persistedAction)
+          && !SETTLED_SANDBOX_RECOVERY_ACTIONS.has(incomingAction)
+        )
+      );
+    if (!shouldPreserve) return toolCall;
+    changed = true;
+    return { ...toolCall, sandboxRecoveryAction: persistedAction };
+  });
+  return changed ? { ...incoming, toolCalls } : incoming;
+}
+
+async function replaceMessageByIdInternal(
   convId: string,
   message: Message,
-): Promise<void> {
+  strict: boolean,
+): Promise<boolean> {
   await ensureBase();
   const path = messagesPath(convId);
-  if (!(await exists(path))) return;
+  if (!(await exists(path))) {
+    if (strict) throw new Error(`Conversation messages file does not exist: ${convId}`);
+    return false;
+  }
 
   // Serialize with concurrent drain / updateLastMessage on the same path.
   // We intentionally do NOT pre-flush via flushWrites(): drain would try
@@ -643,7 +682,8 @@ export async function replaceMessageById(
         try {
           const parsed = JSON.parse(lines[i]) as Message;
           if (parsed.id === message.id) {
-            lines[i] = JSON.stringify(stripForDisk(message));
+            const mergedMessage = preservePersistedSandboxRecoveryActions(message, parsed);
+            lines[i] = JSON.stringify(stripForDisk(mergedMessage));
             replaced = true;
             break;
           }
@@ -655,11 +695,36 @@ export async function replaceMessageById(
       if (replaced) {
         await atomicWrite(path, lines.join('\n') + '\n');
         writtenIds.add(message.id);
+        return true;
       }
-    } catch {
+      if (strict) throw new Error(`Message "${message.id}" was not found in conversation "${convId}"`);
+      return false;
+    } catch (error) {
+      if (strict) throw error;
       // Non-critical: leave the file as-is. Worst case the message disk state lags behind memory.
+      return false;
     }
   });
+}
+
+export async function replaceMessageById(
+  convId: string,
+  message: Message,
+): Promise<void> {
+  await replaceMessageByIdInternal(convId, message, false);
+}
+
+/**
+ * Same serialized replacement as replaceMessageById, but confirms durable
+ * success. Interactive workflow state uses this variant because reporting a
+ * choice as saved when the row was absent or the write failed would make crash
+ * recovery lie to the user.
+ */
+export async function replaceMessageByIdStrict(
+  convId: string,
+  message: Message,
+): Promise<void> {
+  await replaceMessageByIdInternal(convId, message, true);
 }
 
 /**

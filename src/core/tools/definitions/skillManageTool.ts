@@ -65,7 +65,7 @@ import { appendHistoryEntry, writeTombstone, newTurnId } from '../../skill/histo
 import { joinPath, normalizeSeparators } from '../../../utils/pathUtils';
 import { sanitizePath } from '../../memdir/paths';
 import { useWorkspaceStore } from '../../../stores/workspaceStore';
-import { useSettingsStore } from '../../../stores/settingsStore';
+import { getSettingsReader } from '../../agent/ports/settingsReader';
 
 // ── Constants ───────────────────────────────────────────────────────────
 
@@ -316,7 +316,7 @@ async function scanOrRollback(
   targetPath: string,
   backupPath: string | null,
 ): Promise<ErrorResult | null> {
-  const safety = useSettingsStore.getState().safety;
+  const safety = getSettingsReader().getSnapshot().safety;
   if (!safety.enableContentGuard) return null;
 
   const scan = scanContent(content, { bypass: new Set(safety.bypass) });
@@ -483,7 +483,7 @@ async function createAction(input: Record<string, unknown>, context?: ToolExecut
   // Pre-write scan: for create there is no pre-existing file to roll back
   // to, so we just refuse to write if the content trips the guard. Matches
   // scanOrRollback's verdict semantics (kill switch + bypass honored).
-  const safety = useSettingsStore.getState().safety;
+  const safety = getSettingsReader().getSnapshot().safety;
   if (safety.enableContentGuard) {
     const scan = scanContent(serialized, { bypass: new Set(safety.bypass) });
     if (evaluate(scan, 'skill-create') === 'block') {
@@ -528,7 +528,7 @@ async function createAction(input: Record<string, unknown>, context?: ToolExecut
     return false;
   })();
   const proactivity =
-    useSettingsStore.getState().soul?.proactivity ?? 'companion';
+    getSettingsReader().getSnapshot().soul?.proactivity ?? 'companion';
 
   if (agentProposed) {
     // ── Agent-proposed: write to drafts, notify per preset ──────────────

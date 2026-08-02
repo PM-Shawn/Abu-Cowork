@@ -1,22 +1,20 @@
 import { writeFile as writeBinFile } from '@tauri-apps/plugin-fs';
 import { downloadDir } from '@tauri-apps/api/path';
-import { invoke } from '@tauri-apps/api/core';
 import type { ToolDefinition } from '../../../types';
-import { isWindows } from '../../../utils/platform';
-import { joinPath, ensureParentDir, getParentDir } from '../../../utils/pathUtils';
+import { joinPath, ensureParentDir } from '../../../utils/pathUtils';
 import { getTauriFetch } from '../../llm/tauriFetch';
 import { normalizeImageGenerationsUrl } from '../../llm/urlUtils';
 import { buildImageRequest, parseImageResponse, resolveImageVendor } from '../../llm/imageGen';
-import { isSandboxEnabled, isNetworkIsolationEnabled } from '../../sandbox/config';
-import { useSettingsStore, getUsableImageBackend } from '../../../stores/settingsStore';
+import { getUsableImageBackend } from '../../../stores/settingsStore';
+import { getSettingsReader } from '../../agent/ports/settingsReader';
 import { useWorkspaceStore } from '../../../stores/workspaceStore';
-import {
-  buildMacImageCommand,
-  buildWindowsImageCommand,
-  type CommandOutput,
-} from '../helpers/toolHelpers';
 import { TOOL_NAMES } from '../toolNames';
 import { getI18n, format } from '../../../i18n';
+
+// `process_image` lives in its own file (P1-3d-5 slice 1) so the sidecar can
+// register it locally without dragging in generateImageTool's store imports
+// (getUsableImageBackend/useWorkspaceStore, above) — import it from
+// `./processImageTool` directly.
 
 export const generateImageTool: ToolDefinition = {
   name: TOOL_NAMES.GENERATE_IMAGE,
@@ -45,7 +43,7 @@ export const generateImageTool: ToolDefinition = {
     const savePath = input.save_path as string | undefined;
 
     try {
-      const state = useSettingsStore.getState();
+      const state = getSettingsReader().getSnapshot();
 
       // Resolve the image-generation backend from the independent
       // imageGeneration config (design doc §3.1, "C-a") — fully decoupled
@@ -158,86 +156,6 @@ export const generateImageTool: ToolDefinition = {
       return msg;
     } catch (err) {
       return `Error generating image: ${err instanceof Error ? err.message : String(err)}`;
-    }
-  },
-  isConcurrencySafe: false,
-};
-
-export const processImageTool: ToolDefinition = {
-  name: TOOL_NAMES.PROCESS_IMAGE,
-  description: 'Process an image file: resize, crop, convert format, or compress. Use when the user needs to adjust image dimensions, convert formats, etc. Returns the path of the processed file.',
-  inputSchema: {
-    type: 'object',
-    properties: {
-      input_path: { type: 'string', description: 'Absolute path to the input image file' },
-      output_path: { type: 'string', description: 'Absolute path for the output image file' },
-      action: { type: 'string', description: 'Action to perform: resize, crop, convert, or compress', enum: ['resize', 'crop', 'convert', 'compress'] },
-      width: { type: 'number', description: 'Target width in pixels (for resize and crop)' },
-      height: { type: 'number', description: 'Target height in pixels (for resize and crop)' },
-      x: { type: 'number', description: 'X offset for crop (default 0)' },
-      y: { type: 'number', description: 'Y offset for crop (default 0)' },
-      format: { type: 'string', description: 'Target format for convert (png, jpeg, gif, bmp, tiff)' },
-      quality: { type: 'number', description: 'Quality 1-100 for compress (default 80)' },
-    },
-    required: ['input_path', 'output_path', 'action'],
-  },
-  execute: async (input) => {
-    const inputPath = input.input_path as string;
-    const outputPath = input.output_path as string;
-    const action = input.action as string;
-    // Merge top-level params with nested params object (top-level takes priority)
-    const nested = (input.params as Record<string, unknown>) || {};
-    const params: Record<string, unknown> = {
-      ...nested,
-      ...(input.width !== undefined ? { width: input.width } : {}),
-      ...(input.height !== undefined ? { height: input.height } : {}),
-      ...(input.x !== undefined ? { x: input.x } : {}),
-      ...(input.y !== undefined ? { y: input.y } : {}),
-      ...(input.format !== undefined ? { format: input.format } : {}),
-      ...(input.quality !== undefined ? { quality: input.quality } : {}),
-    };
-
-    try {
-      const validActions = processImageTool.inputSchema.properties.action.enum!;
-      if (!validActions.includes(action)) {
-        return `Error: Unsupported action "${action}". Use one of: ${validActions.join(', ')}`;
-      }
-
-      await ensureParentDir(outputPath);
-
-      let command: string;
-
-      if (isWindows()) {
-        // Windows: use PowerShell + System.Drawing
-        command = buildWindowsImageCommand(inputPath, outputPath, action, params);
-      } else {
-        // macOS/Linux: use sips (macOS built-in)
-        command = buildMacImageCommand(inputPath, outputPath, action, params);
-      }
-
-      console.log('[process_image] command:', command);
-
-      // outputPath's parent directory needs write access in sandbox
-      const outputDir = getParentDir(outputPath);
-      const output = await invoke<CommandOutput>('run_shell_command', {
-        command,
-        cwd: null,
-        background: false,
-        timeout: 30,
-        sandboxEnabled: isSandboxEnabled(),
-        networkIsolation: isNetworkIsolationEnabled(),
-        extraWritablePaths: outputDir ? [outputDir] : [],
-      });
-
-      console.log('[process_image] exit code:', output.code, 'stdout:', output.stdout, 'stderr:', output.stderr);
-
-      if (output.code !== 0) {
-        return `Error processing image: ${output.stderr || output.stdout}`;
-      }
-
-      return `Image processed successfully: ${outputPath}`;
-    } catch (err) {
-      return `Error processing image: ${err instanceof Error ? err.message : String(err)}`;
     }
   },
   isConcurrencySafe: false,

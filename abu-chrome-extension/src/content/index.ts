@@ -12,32 +12,48 @@ const MAX_EXTRACT_TEXT_SIZE = 50_000;
 // Max interactive elements returned by snapshot
 const MAX_SNAPSHOT_ELEMENTS = 200;
 
-// --- Report visibility to background ---
-function reportVisible(): void {
-  if (document.visibilityState === 'visible') {
-    chrome.runtime.sendMessage({ type: 'tab_visible' }).catch(() => {
-      // Background not ready or extension context invalidated — ignore
-    });
-  }
+interface ElectronBrowserRuntime {
+  handleAction?: (action: string, payload: Record<string, unknown>) => Promise<unknown>;
 }
-document.addEventListener('visibilitychange', reportVisible);
-reportVisible();
+
+const electronBrowserRuntime = (
+  globalThis as typeof globalThis & {
+    __ABU_ELECTRON_BROWSER_RUNTIME__?: ElectronBrowserRuntime;
+  }
+).__ABU_ELECTRON_BROWSER_RUNTIME__;
+
+// The same audited DOM runtime serves two transports:
+// - Chrome extension messages in the ordinary extension isolated world.
+// - Electron main requests in a dedicated WebContents isolated world.
+// The Electron marker exists only in that isolated world; arbitrary pages
+// cannot see it and still receive no Node/preload privileges.
+if (electronBrowserRuntime) {
+  electronBrowserRuntime.handleAction = handleAction;
+} else {
+  const reportVisible = (): void => {
+    if (document.visibilityState === 'visible') {
+      chrome.runtime.sendMessage({ type: 'tab_visible' }).catch(() => {
+        // Background not ready or extension context invalidated — ignore
+      });
+    }
+  };
+  document.addEventListener('visibilitychange', reportVisible);
+  reportVisible();
+
+  chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+    const { action, payload } = message;
+
+    handleAction(action, payload)
+      .then((data) => sendResponse({ data }))
+      .catch((err) => sendResponse({ error: err instanceof Error ? err.message : String(err) }));
+
+    return true; // Keep message channel open for async response
+  });
+}
 
 // --- Element Reference Map (populated by snapshot) ---
 const refMap = new Map<string, Element>();
 let refCounter = 0;
-
-// --- Message Handler ---
-
-chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
-  const { action, payload } = message;
-
-  handleAction(action, payload)
-    .then((data) => sendResponse({ data }))
-    .catch((err) => sendResponse({ error: err instanceof Error ? err.message : String(err) }));
-
-  return true; // Keep message channel open for async response
-});
 
 async function handleAction(action: string, payload: Record<string, unknown>): Promise<unknown> {
   switch (action) {

@@ -1,14 +1,45 @@
-import { invoke } from '@tauri-apps/api/core';
 import type { ToolDefinition } from '../../../types';
 import { getPlatform, getShell, isWindows } from '../../../utils/platform';
 import { resolveCommandPython } from '../../../utils/pythonRuntime';
 import { isSandboxEnabled, isNetworkIsolationEnabled } from '../../sandbox/config';
-import { useWorkspaceStore } from '../../../stores/workspaceStore';
-import { getAuthorizedWritablePaths } from '../pathSafety';
+import { getWorkspaceReader } from '../../agent/ports/workspaceReader';
+import { getAuthorizedPathsReader } from '../../agent/ports/authorizedPathsReader';
 import { showSandboxBlockedToast } from '../../sandbox/recovery';
+import {
+  detectAppAutomationSandboxBlock,
+  getAppAutomationSandboxRecovery,
+  hasUnquotedShellControlSyntax,
+} from '../../sandbox/appAutomationRecovery';
 import type { CommandOutput } from '../helpers/toolHelpers';
+import { invokeTaskCommand, isTaskCommandAbortedError } from '../helpers/scopedCommand';
 import { isReadOnlyCommand } from '../readOnlyDetector';
 import { TOOL_NAMES } from '../toolNames';
+import { format, getI18n } from '../../../i18n';
+import { hasElectronCommandHost } from '../../../utils/electronHost';
+
+/**
+ * Global-workspace fallback for direct invocations that carry no context.
+ * Sidecar-safe: the bare `getWorkspaceReader()` getter throws outside a
+ * registered agent run (see `shims/workspaceReaderRun.ts`) — a throwing
+ * fallback must degrade to "no workspace", never fail the command itself.
+ */
+function safeGlobalWorkspacePath(): string | null {
+  try {
+    return getWorkspaceReader().getCurrentPath();
+  } catch {
+    return null;
+  }
+}
+
+function formatAppAutomationRecovery(
+  recovery: NonNullable<ReturnType<typeof getAppAutomationSandboxRecovery>>,
+): string {
+  const app = recovery.targetApp
+    ?? getI18n().sandbox.appAutomationTargetFallback;
+  return [
+    format(getI18n().sandbox.appAutomationToolError, { app }),
+  ].join('\n\n');
+}
 
 export const runCommandTool: ToolDefinition = {
   name: TOOL_NAMES.RUN_COMMAND,
@@ -42,30 +73,60 @@ This tool is suitable for: moving/copying/renaming files (mv/cp), package manage
     const cwd = input.cwd as string | undefined;
     const background = input.background as boolean | undefined;
     const timeout = input.timeout as number | undefined;
+    const abortSignal = context?.abortSignal;
+    if (abortSignal?.aborted) {
+      return 'Error executing command: command was aborted before it started';
+    }
 
     try {
       // Use embedded Python runtime if command starts with python/python3
       const resolvedCommand = await resolveCommandPython(command);
+      if (abortSignal?.aborted) {
+        return 'Error executing command: command was aborted before it started';
+      }
 
       // Exempt app-launcher commands from sandbox
       // macOS: `open` uses LaunchServices via XPC, blocked by Seatbelt
       // Windows: `start`/`Start-Process` exempted for consistency with ExecutionPolicy
-      const isLauncherCmd = isWindows()
+      const isLauncherCandidate = isWindows()
         ? /^\s*(start|Start-Process)\s/i.test(resolvedCommand)
         : /^\s*open\s/.test(resolvedCommand);
+      const isLauncherCmd = isLauncherCandidate
+        && (
+          !hasElectronCommandHost()
+          || !hasUnquotedShellControlSyntax(resolvedCommand)
+        );
       const sandbox = isLauncherCmd ? false : isSandboxEnabled();
+
+      // Seatbelt does not contain the target app process: Apple Events can ask
+      // that app to mutate data outside the shell profile. Electron therefore
+      // blocks explicit cross-app AppleScript before spawn while Shell sandbox
+      // protection is enabled. Tauri stays unchanged during coexistence.
+      const preflightAppAutomationRecovery = sandbox && hasElectronCommandHost()
+        ? getAppAutomationSandboxRecovery(resolvedCommand)
+        : null;
+      if (preflightAppAutomationRecovery) {
+        context?.reportMetadata?.({
+          sandboxRecovery: preflightAppAutomationRecovery,
+        });
+        return formatAppAutomationRecovery(preflightAppAutomationRecovery);
+      }
 
       // Use conversation-scoped workspace from context; fall back to global store
       // only if context is absent (e.g. direct invocation outside agent loop).
-      const workspacePath = context?.workspacePath ?? useWorkspaceStore.getState().currentPath;
-      const authorizedPaths = sandbox ? getAuthorizedWritablePaths() : [];
+      // The fallback must not fail the command: in the sidecar the bare getter
+      // resolves an ambient-run mirror and THROWS outside a registered run —
+      // treat that as "no workspace" (cwd-less spawn), matching the shell's
+      // no-workspace behavior instead of erroring before the spawn.
+      const workspacePath = context?.workspacePath ?? safeGlobalWorkspacePath();
+      const authorizedPaths = sandbox ? await getAuthorizedPathsReader().getAuthorizedWritablePaths() : [];
       const extraWritablePaths = [
         ...(workspacePath ? [workspacePath] : []),
         ...authorizedPaths,
       ];
 
       // Use custom Tauri command defined in Rust
-      const output = await invoke<CommandOutput>('run_shell_command', {
+      const output = await invokeTaskCommand<CommandOutput>('run_shell_command', {
         command: resolvedCommand,
         cwd: cwd || workspacePath || null,
         background: background || false,
@@ -73,14 +134,31 @@ This tool is suitable for: moving/copying/renaming files (mv/cp), package manage
         sandboxEnabled: sandbox,
         networkIsolation: isNetworkIsolationEnabled(),
         extraWritablePaths,
+      }, context, {
+        commandIdPrefix: 'run-command',
+        keepAbortListenerAfterResolve: (result) => background === true && result.code === 0,
       });
 
-      // Detect sandbox-blocked errors and show recovery toast
-      if (sandbox && output.stderr.includes('[sandbox-blocked]')) {
+      const appAutomationRecovery = sandbox
+        ? detectAppAutomationSandboxBlock(resolvedCommand, output.stderr, output.code)
+        : null;
+      if (appAutomationRecovery) {
+        context?.reportMetadata?.({
+          sandboxRecovery: appAutomationRecovery,
+        });
+      }
+
+      // File/path blocks keep the existing toast. AppleScript cross-app
+      // blocks render a task-local recovery card instead of a misleading
+      // "authorize this directory" prompt.
+      if (!appAutomationRecovery && sandbox && output.stderr.includes('[sandbox-blocked]')) {
         showSandboxBlockedToast(resolvedCommand);
       }
 
       const parts: string[] = [];
+      if (appAutomationRecovery) {
+        parts.push(formatAppAutomationRecovery(appAutomationRecovery));
+      }
       if (output.stdout.trim()) {
         parts.push(`stdout:\n${output.stdout.trim()}`);
       }
@@ -91,6 +169,9 @@ This tool is suitable for: moving/copying/renaming files (mv/cp), package manage
 
       return parts.join('\n\n');
     } catch (err) {
+      if (isTaskCommandAbortedError(err)) {
+        return 'Error executing command: command was aborted before it started';
+      }
       return `Error executing command: ${err instanceof Error ? err.message : String(err)}`;
     }
   },

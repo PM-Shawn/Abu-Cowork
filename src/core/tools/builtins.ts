@@ -17,7 +17,8 @@ export { clearAllSkillHooks, clearSkillHooksByConversation } from './definitions
 import { manageScheduledTaskTool, manageTriggerTool, manageFileWatchTool } from './definitions/automationTools';
 
 // --- Media tools ---
-import { generateImageTool, processImageTool } from './definitions/mediaTools';
+import { generateImageTool } from './definitions/mediaTools';
+import { processImageTool } from './definitions/processImageTool';
 
 // --- Widget tools (inline visualization) ---
 import { showWidgetTool, readMeTool } from './definitions/widgetTools';

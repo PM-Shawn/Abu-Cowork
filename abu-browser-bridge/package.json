@@ -29,12 +29,20 @@
     "start": "node dist/index.js"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.12.1",
+    "@modelcontextprotocol/sdk": "1.30.0",
     "ws": "^8.21.0"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
     "@types/ws": "^8.5.0",
     "typescript": "^5.7.0"
+  },
+  "overrides": {
+    "@hono/node-server": "^2.0.5",
+    "body-parser": "^2.3.0",
+    "express-rate-limit": "^8.2.2",
+    "fast-uri": "^3.1.4",
+    "ip-address": "^10.1.1",
+    "path-to-regexp": "^8.4.0"
   }
 }

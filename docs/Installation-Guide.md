@@ -8,9 +8,9 @@ Head to [GitHub Releases](https://github.com/PM-Shawn/Abu-Cowork/releases) to do
 
 | Platform | File |
 |----------|------|
-| macOS (Apple Silicon) | `Abu_x.x.x_aarch64.dmg` |
-| macOS (Intel) | `Abu_x.x.x_x64.dmg` |
-| Windows | `Abu_x.x.x_x64-setup.exe` |
+| macOS (Apple Silicon) | `Abu-x.x.x-mac-arm64.dmg` |
+| macOS (Intel) | `Abu-x.x.x-mac-x64.dmg` |
+| Windows x64 | `Abu-x.x.x-windows-x64-setup.exe` |
 
 ---
 
@@ -20,33 +20,13 @@ Head to [GitHub Releases](https://github.com/PM-Shawn/Abu-Cowork/releases) to do
 
 Double-click the `.dmg` file and drag Abu into the `Applications` folder.
 
-### 2. Fix "App is Damaged" Warning
+### 2. First Launch
 
-Since Abu is not yet signed with an Apple Developer certificate, macOS will show this warning on first launch:
+Official macOS packages are Developer ID signed, notarized, and stapled. Open Abu from the Applications folder normally. macOS may ask for permissions only when you use capabilities such as files, microphone, accessibility, or app automation.
 
-> "Abu" is damaged and can't be opened. You should move it to the Trash.
+If Gatekeeper reports that an official package is damaged or cannot be verified, do not bypass the warning with `xattr` or by disabling Gatekeeper. Delete that copy and download the matching architecture again from the official GitHub Release. If the problem remains, report the release version, Mac model, and macOS version.
 
-**Solution:**
-
-Open **Terminal** (search "Terminal" in Launchpad) and run:
-
-```bash
-xattr -cr /Applications/Abu.app
-```
-
-Press Enter, then double-click Abu to open it.
-
-> **Tip**: If you installed Abu in a different location, replace `/Applications/Abu.app` with the actual path. You can also type `xattr -cr ` and drag the Abu.app icon into the Terminal window — the path will auto-fill.
-
-### 3. Alternative Method
-
-If the command above doesn't work, allow Abu via System Settings:
-
-1. Double-click Abu to open it — do **not** click "Move to Trash" on the warning dialog
-2. Open **System Settings → Privacy & Security**, scroll to the bottom — you'll see a "was blocked" notice for Abu
-3. Click **"Open Anyway"** and confirm once more
-
-> **macOS 15 (Sequoia) and later**: Apple removed the `sudo spctl --master-disable` command. Use the System Settings → Privacy & Security → "Open Anyway" flow above instead. On older macOS, you can still temporarily disable Gatekeeper with `sudo spctl --master-disable`; remember to re-enable it afterward with `sudo spctl --master-enable`.
+Source/fork builds are not covered by Abu's official signature. Their maintainer must provide separate signing and installation instructions.
 
 ---
 
@@ -83,13 +63,13 @@ If the installer won't run after downloading:
 
 ### Q: Is this safe?
 
-Abu is open-source software — you can review the full source code on GitHub. The security warnings appear because the app hasn't been signed with a commercial code-signing certificate, not because there's anything wrong with the app itself.
+Abu is open-source software and its source can be reviewed on GitHub. Official macOS packages are signed and notarized. The Windows warning appears because the Windows installer does not yet have an Authenticode certificate; verify that you downloaded it from the official Release before choosing **Run anyway**.
 
 ### Q: Do I need to do this after every update?
 
-- **macOS**: Yes, you'll need to run `xattr -cr` again after each update.
-- **Windows**: Usually only the first launch requires SmartScreen approval.
+- **macOS**: No. Official updates remain signed and notarized.
+- **Windows**: SmartScreen behavior depends on Windows reputation and may appear again for a new installer.
 
 ### Q: Will this be fixed in the future?
 
-We plan to purchase code-signing certificates (Apple Developer + Windows EV certificate) for the official release, which will eliminate these security prompts.
+macOS signing and notarization are already enabled. Windows Authenticode signing will be added after an appropriate certificate is available.

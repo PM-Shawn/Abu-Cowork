@@ -10,7 +10,23 @@ export default defineConfig([
   // repo. Each carries its own tsconfig, which makes typescript-eslint find
   // multiple candidate TSConfig roots and fail to parse EVERY file. Ignore them
   // so local `eslint .` matches a clean CI checkout (which has no worktrees).
-  globalIgnores(['dist', 'src-tauri', 'coverage', '.wt-*/']),
+  // sidecar/index.mjs is esbuild's generated bundle output (scripts/build-sidecar.mjs)
+  // — vendored dependency code inlined into it can contain eslint-disable comments
+  // referencing rules this config doesn't define for non-ts/tsx files, which ESLint
+  // flags as "rule not found" rather than silently ignoring. It's a build artifact,
+  // never hand-edited — same treatment as `dist`.
+  globalIgnores([
+    'dist',
+    'dist-electron-spike', // vite build output for the Electron shell (bundled, never hand-edited)
+    'release-electron', // electron-builder packaged output
+    'release-electron-e2e', // pre-fuse packaged clone used only by local Playwright smoke tests
+    'src-tauri',
+    'coverage',
+    '.wt-*/',
+    'sidecar/index.mjs',
+    'electron/browser-runtime/dist',
+    'electron/chrome-bridge-runtime/dist',
+  ]),
   {
     files: ['**/*.{ts,tsx}'],
     extends: [
@@ -75,6 +91,34 @@ export default defineConfig([
           selector: 'TemplateElement[value.raw=/\\b(text|bg|border|ring|fill)-(red|green|emerald|lime|amber|yellow|blue|sky|indigo|orange)-[0-9]/]',
           message: 'Use a semantic color token instead of raw Tailwind status/link colors (template literal). See CLAUDE.md §6.2.',
         },
+      ],
+    },
+  },
+  // sidecar/src runs in a plain Node process — no DOM, no webview. But
+  // `tsconfig.sidecar.json` deliberately includes the DOM lib (so type-imports
+  // of DOM-dependent src/** modules resolve — see B2 / that file's comment),
+  // which means `tsc` alone CANNOT catch sidecar code that misuses a browser
+  // global: `window.foo` type-checks fine, then throws `window is not defined`
+  // at runtime. This override closes that masking gap — forbid the browser
+  // globals here, and provide Node globals so `process`/`Buffer`/`__dirname`/
+  // etc. are recognized (no false no-undef). Applies ON TOP of the block above.
+  {
+    files: ['sidecar/src/**/*.ts'],
+    languageOptions: {
+      globals: { ...globals.node },
+    },
+    rules: {
+      'no-restricted-globals': ['error',
+        { name: 'window', message: 'sidecar runs in Node — no DOM. `window` is undefined at runtime (tsconfig.sidecar\'s DOM lib masks this; see eslint.config.js).' },
+        { name: 'document', message: 'sidecar runs in Node — no DOM. `document` is undefined at runtime.' },
+        { name: 'navigator', message: 'sidecar runs in Node — no DOM. `navigator` is undefined at runtime.' },
+        { name: 'localStorage', message: 'sidecar runs in Node — no DOM. `localStorage` is undefined at runtime.' },
+        { name: 'sessionStorage', message: 'sidecar runs in Node — no DOM. `sessionStorage` is undefined at runtime.' },
+        { name: 'requestAnimationFrame', message: 'sidecar runs in Node — no requestAnimationFrame. Use a timer.' },
+        { name: 'cancelAnimationFrame', message: 'sidecar runs in Node — no cancelAnimationFrame.' },
+        { name: 'alert', message: 'sidecar runs in Node — no DOM.' },
+        { name: 'confirm', message: 'sidecar runs in Node — no DOM.' },
+        { name: 'prompt', message: 'sidecar runs in Node — no DOM.' },
       ],
     },
   },

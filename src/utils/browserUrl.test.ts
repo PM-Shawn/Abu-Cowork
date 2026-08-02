@@ -10,6 +10,9 @@ describe('normalizeBrowserUrl', () => {
 
     it('leaves other schemes (file://, about:) unchanged', () => {
       expect(normalizeBrowserUrl('file:///Users/x/a.html')).toBe('file:///Users/x/a.html');
+      expect(normalizeBrowserUrl('about:blank')).toBe('about:blank');
+      expect(normalizeBrowserUrl('mailto:hello@example.com')).toBe('mailto:hello@example.com');
+      expect(normalizeBrowserUrl('tel:12345')).toBe('tel:12345');
     });
 
     it('trims surrounding whitespace', () => {
@@ -34,6 +37,12 @@ describe('normalizeBrowserUrl', () => {
     it('prepends https:// for real-world domains', () => {
       expect(normalizeBrowserUrl('example.com')).toBe('https://example.com');
       expect(normalizeBrowserUrl('sub.example.com/path')).toBe('https://sub.example.com/path');
+      expect(normalizeBrowserUrl('example.com:8443')).toBe('https://example.com:8443');
+      expect(normalizeBrowserUrl('staging.example.com:8443/app')).toBe(
+        'https://staging.example.com:8443/app',
+      );
+      expect(normalizeBrowserUrl('intranet:8443')).toBe('https://intranet:8443');
+      expect(normalizeBrowserUrl('devbox:3000/app')).toBe('https://devbox:3000/app');
     });
   });
 });

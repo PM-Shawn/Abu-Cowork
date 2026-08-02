@@ -7,6 +7,34 @@ All notable changes to Abu are documented here. Format based on [Keep a Changelo
 > [`CHANGELOG.zh-CN.md`](./CHANGELOG.zh-CN.md); keep both in sync per release (see
 > `RELEASING.md`). Entries before v0.31.0 predate this split and remain bilingual.
 
+## v0.34.0 · 2026-08-01
+
+### Highlights
+
+- **Abu now ships on Electron across all supported desktops** — macOS Apple Silicon, macOS Intel, and Windows x64 use the same Electron shell, Abu frontend, sidecar, built-in skills, and bundled Node/Python runtimes. Each package is built and smoked on a matching native runner; macOS is Developer ID signed and notarized.
+
+### Fixed
+
+- **Native window controls behave consistently** — Windows now uses a compact system title bar with working drag, minimize, maximize, close, menus, modal masking, sidebar/search controls, and panel resizing. macOS keeps the compact traffic-light layout without placing clickable controls inside drag regions.
+- **The local Chrome bridge recovers more reliably** — The extension installer opens the correct parent folder, setup text matches Chrome's folder picker, and Abu reclaims only bridge processes it can identify safely instead of silently terminating unrelated listeners.
+- **Transition installs preserve a usable rollback** — Windows keeps the previous Tauri installation available for one release and converges duplicate uninstall entries correctly. macOS migration rejects unsafe links, repairs supported package-manager links, and stops before opening an empty profile when validation fails.
+- **Document and Browser Bridge dependencies are security-hardened** — Excel, PPT preview, MCP runtime, and the bundled Chrome bridge now use fixed versions and pass real Excel round trips, PPT preview tests, production audits/builds, and packaged document/browser smoke.
+- **Automation and local-preview boundaries are stricter** — Custom-trigger tool allowlists now apply across the main loop, sidecar, and delegated agents; default-app opening no longer constructs shell commands; HTML previews deny external requests, form submission, and popup escape paths by default.
+- **Secret-store failures no longer silently lose edits** — If encrypted storage fails later in a session, Abu immediately restores its data-preserving fallback so a newly edited model or auxiliary-service key survives restart.
+
+### Migration notes
+
+- On the first official Electron launch, the installed Tauri profile is treated as the migration source. Abu copies conversations, sessions, settings, and supported credentials into a separate Electron data root; the original Tauri data is retained.
+- If an Electron profile already exists, Abu creates a recovery backup before applying the authoritative Tauri values needed for the transition. Incomplete migration records remain retryable, and a failed migration stops startup before the new shell can write an empty state.
+- Source/fork packages keep migration and the official Abu updater disabled by default. Only the official release workflow can enable them.
+
+### Known limitations
+
+- Windows uses a current-user NSIS installer and does not require administrator rights, but it is not Authenticode-signed yet. SmartScreen may require **More info → Run anyway**.
+- The Chrome extension is distributed locally and must be loaded once through Chrome's developer mode. Microsoft Store distribution, full Windows sandbox parity, and Computer Use parity are not part of this release.
+
+**Full Changelog**: https://github.com/PM-Shawn/Abu-Cowork/compare/v0.33.0...v0.34.0
+
 ## v0.33.0 · 2026-07-19
 
 ### Added

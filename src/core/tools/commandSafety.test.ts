@@ -84,6 +84,14 @@ describe('commandSafety', () => {
   describe('danger commands', () => {
     const dangerCmds = [
       { cmd: 'rm -r /tmp/foo', reason: 'recursive delete' },
+      { cmd: 'rm -R /tmp/foo', reason: 'uppercase recursive delete option' },
+      { cmd: 'rm --recursive /tmp/foo', reason: 'long recursive delete option' },
+      { cmd: "rm '-r' /tmp/foo", reason: 'quoted recursive delete option' },
+      { cmd: 'rm /tmp/foo -rf', reason: 'recursive option after an operand' },
+      { cmd: 'rm &>/dev/null -r /tmp/foo', reason: 'recursive option after stdout/stderr redirect' },
+      { cmd: 'rm 2>&1 -R /tmp/foo', reason: 'recursive option after fd redirect' },
+      { cmd: 'rm --recurs /tmp/foo', reason: 'unambiguous GNU long-option abbreviation' },
+      { cmd: 'rm -- keep & rm -R /tmp/foo', reason: 'recursive rm after a command boundary' },
       { cmd: 'rm file*', reason: 'wildcard delete' },
       { cmd: 'git push --force', reason: 'force push' },
       { cmd: 'git reset --hard', reason: 'hard reset' },
@@ -100,6 +108,8 @@ describe('commandSafety', () => {
       { cmd: 'npm link --force', reason: 'force npm' },
       { cmd: 'bash -c "rm -r /tmp"', reason: 'bash -c rm' },
       { cmd: 'sh -c "rm file"', reason: 'sh -c rm' },
+      { cmd: "bash -c $'rm -r /tmp/foo'", reason: 'bash -c ANSI-C quoted recursive rm' },
+      { cmd: "sh -c $'rm -R /tmp/foo'", reason: 'sh -c ANSI-C quoted recursive rm' },
       // Note: 'find' matches SAFE_PATTERNS, so -delete/-exec rm are safe.
       // 'ls | xargs rm' — ls matches safe, but '| rm' injection check doesn't match 'xargs rm'
       // Testing xargs rm with a non-safe command:
@@ -118,6 +128,11 @@ describe('commandSafety', () => {
     const warnCmds = [
       { cmd: 'sudo apt update', reason: 'sudo' },
       { cmd: 'rm file.txt', reason: 'rm' },
+      { cmd: "rm -- '/tmp/abu-e2e-foo-RFESk2/file.txt'", reason: '-R inside a path after -- is not an option' },
+      { cmd: "rm '/tmp/report-R-final/file.txt'", reason: '-R inside a path is not an option' },
+      { cmd: "rm -- '-R'", reason: 'an option-looking filename after -- is not an option' },
+      { cmd: 'rm -- rm -R', reason: 'rm and -R operands after -- are not a second command' },
+      { cmd: 'rm -- /tmp/rm -R', reason: 'path basename rm after -- is still an operand' },
       { cmd: 'git push origin main', reason: 'git push' },
       { cmd: 'npm publish', reason: 'npm publish' },
       { cmd: 'brew uninstall node', reason: 'brew uninstall' },

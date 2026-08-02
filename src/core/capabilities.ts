@@ -1,4 +1,4 @@
-import { PROVIDER_CONFIGS } from '@/stores/settingsStore';
+import { PROVIDER_CONFIGS } from '@/utils/providerConfigs';
 import type { LLMProvider, BuiltinSearchMethod, ProviderCapabilities } from '@/types';
 
 /** Check if provider has built-in web search capability */

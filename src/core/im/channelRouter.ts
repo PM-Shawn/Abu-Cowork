@@ -11,7 +11,7 @@
 import { TOOL_NAMES } from '../tools/toolNames';
 import { useIMChannelStore } from '../../stores/imChannelStore';
 import { useChatStore } from '../../stores/chatStore';
-import { runAgentLoop } from '../agent/agentLoop';
+import { runAgentLoopDispatched } from '../agent/agentLoopRunner';
 import type { NormalizedIMMessage } from './inboundRouter';
 import { resolveCapability, getCallbacksForLevel } from './authGate';
 import { sessionMapper } from './sessionMapper';
@@ -238,7 +238,7 @@ class IMChannelRouter {
 
       const callbacks = getCallbacksForLevel(capability);
       await this.runWithTimeout(
-        runAgentLoop(session.conversationId, userText, {
+        runAgentLoopDispatched(session.conversationId, userText, {
           commandConfirmCallback: callbacks.commandConfirmCallback,
           filePermissionCallback: callbacks.filePermissionCallback,
           blockedTools: [TOOL_NAMES.REQUEST_WORKSPACE],

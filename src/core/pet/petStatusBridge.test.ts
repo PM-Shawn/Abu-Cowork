@@ -7,12 +7,22 @@ import type { Conversation, ConversationStatus, Message } from '@/types'
 
 // permissionBridge holds the blocking-approval state the pet now reads
 // directly. Mock it so we can drive a pending file-permission dialog and
-// capture the bridge's subscription.
-vi.mock('@/core/agent/permissionBridge', () => {
+// capture the bridge's subscription. Partial mock (importOriginal) — the
+// unrelated real exports (drain*/setLoopContext/etc.) must stay real: this
+// test's module graph transitively reaches them via
+// chatStore.ts -> tools/builtins.ts -> definitions/automationTools.ts ->
+// trigger/triggerEngine.ts -> agent/agentLoopRunner.ts (P1-3B-3B switched
+// triggerEngine.ts's runAgentLoop caller to runAgentLoopDispatched, which
+// pulled agentLoopRunner.ts's own top-level `DRAIN_BY_KIND` object — it
+// reads drainConfirmationQueue/etc. eagerly at module load, not lazily —
+// into this test's reachable graph for the first time).
+vi.mock('@/core/agent/permissionBridge', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/core/agent/permissionBridge')>()
   const state: { file: { conversationId: string } | null } = { file: null }
   const listeners = new Set<() => void>()
   const noop = () => () => {}
   return {
+    ...actual,
     subscribeToFilePermission: (cb: () => void) => { listeners.add(cb); return () => listeners.delete(cb) },
     getPendingFilePermission: () => state.file,
     subscribeToCommandConfirmation: noop,

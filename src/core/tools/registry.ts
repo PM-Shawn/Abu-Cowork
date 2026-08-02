@@ -1,11 +1,10 @@
-import type { ToolDefinition, ToolResult, ToolResultContent, ToolExecutionContext } from '../../types';
+import type { ToolDefinition, ToolResult, ToolExecutionContext } from '../../types';
 import { mcpManager } from '../mcp/client';
 import { analyzeCommand, type ConfirmationInfo, type DangerLevel } from './commandSafety';
 import { checkReadPath, checkWritePath, checkListPath, authorizeWorkspace } from './pathSafety';
-import { isWindows } from '../../utils/platform';
 import { getI18n } from '../../i18n';
 import { truncateToolResult } from '../context/truncation';
-import { useSettingsStore } from '../../stores/settingsStore';
+import { getSettingsReader } from '../agent/ports/settingsReader';
 import { useChatStore } from '../../stores/chatStore';
 import { getPermissionStrategy } from '../permissions/permissionMode';
 import { analyzeCommandBoundary, type CmdBoundary } from '../permissions/commandBoundary';
@@ -13,6 +12,7 @@ import { reviewAction } from '../safety/reviewer';
 import { getLoopContext } from '../agent/permissionBridge';
 import { homeDir } from '@tauri-apps/api/path';
 import { TOOL_NAMES } from './toolNames';
+import { applyOSPermissionGuideIfNeeded } from './osPermissionGuide';
 import { isLabsFlagOn } from '../labs/resolve';
 import { LABS_TODOS_INBOX } from '../labs/registry';
 
@@ -43,16 +43,13 @@ async function getCachedHomeDir(): Promise<string> {
 }
 
 /**
- * Extract text-only representation from a ToolResult.
- * For string results, returns as-is. For rich content arrays, extracts text blocks.
+ * Extract text-only representation from a ToolResult. Relocated to
+ * `./toolResultToString` (P1-3B-3A item 2, a zero-import leaf module so the
+ * sidecar's `ToolInvoker` shims can use the REAL implementation without
+ * dragging this whole file's store/mcp/enterprise graph); re-exported here
+ * for existing callers.
  */
-export function toolResultToString(result: ToolResult): string {
-  if (typeof result === 'string') return result;
-  return result
-    .filter((c): c is Extract<ToolResultContent, { type: 'text' }> => c.type === 'text')
-    .map((c) => c.text)
-    .join('\n') || '[image]';
-}
+export { toolResultToString } from './toolResultToString';
 
 /**
  * Check if a ToolResult contains image content.
@@ -155,8 +152,8 @@ class ToolRegistry {
 export const toolRegistry = new ToolRegistry();
 
 /**
- * Playwright browser tools that overlap with abu-browser-bridge.
- * When abu-browser-bridge is connected, these are filtered out to avoid
+ * Playwright browser tools that overlap with Abu's in-app browser or Chrome bridge.
+ * When either Abu browser runtime is connected, these are filtered out to avoid
  * the LLM accidentally launching a separate Chromium instance.
  */
 const PLAYWRIGHT_BROWSER_TOOLS = new Set([
@@ -182,15 +179,16 @@ const PLAYWRIGHT_BROWSER_TOOLS = new Set([
 /**
  * Get all available tools: builtin tools + MCP tools
  * Deduplicates by tool name — builtin tools take priority over MCP tools
- * Filters out conflicting playwright browser tools when abu-browser-bridge is connected
+ * Filters out conflicting playwright browser tools when an Abu browser is connected
  */
 export function getAllTools(): ToolDefinition[] {
   const builtinTools = toolRegistry.getAll();
   const mcpTools = mcpManager.listTools();
   const toolMap = new Map<string, ToolDefinition>();
 
-  // Check if abu-browser-bridge is connected — if so, filter out playwright browser tools
-  const hasBrowserBridge = mcpManager.isConnected('abu-browser-bridge');
+  const hasAbuBrowser =
+    mcpManager.isConnected('abu-browser') ||
+    mcpManager.isConnected('abu-browser-bridge');
 
   // Computer use tools are always registered — the tool itself handles
   // auto-enabling and permission checks when first called.
@@ -204,8 +202,8 @@ export function getAllTools(): ToolDefinition[] {
   // MCP tools — only add if no name conflict
   for (const tool of mcpTools) {
     if (!toolMap.has(tool.name)) {
-      // Skip playwright browser tools when abu-browser-bridge is active
-      if (hasBrowserBridge && PLAYWRIGHT_BROWSER_TOOLS.has(tool.name)) {
+      // Skip Playwright browser tools when an Abu-owned browser path is active.
+      if (hasAbuBrowser && PLAYWRIGHT_BROWSER_TOOLS.has(tool.name)) {
         continue;
       }
       toolMap.set(tool.name, tool);
@@ -235,7 +233,7 @@ export type FilePermissionCallback = (request: {
 // "present but invalid" and must still flow THROUGH the boundary check (which
 // rejects it), not skip it. A truthy `i.path ?` treats '' as falsy → returns
 // null → the whole permission/boundary block is bypassed for path: ''.
-const FILE_TOOL_PATH_MAP: Record<string, (input: Record<string, unknown>) => { path: string; capability: 'read' | 'write' } | null> = {
+export const FILE_TOOL_PATH_MAP: Record<string, (input: Record<string, unknown>) => { path: string; capability: 'read' | 'write' } | null> = {
   [TOOL_NAMES.READ_FILE]:      (i) => typeof i.path === 'string' ? { path: i.path, capability: 'read' } : null,
   [TOOL_NAMES.LIST_DIRECTORY]: (i) => typeof i.path === 'string' ? { path: i.path, capability: 'read' } : null,
   [TOOL_NAMES.WRITE_FILE]:     (i) => typeof i.path === 'string' ? { path: i.path, capability: 'write' } : null,
@@ -246,24 +244,52 @@ const FILE_TOOL_PATH_MAP: Record<string, (input: Record<string, unknown>) => { p
 };
 
 /**
- * Execute a tool by name, checking both builtin and MCP tools
- * With optional dangerous command confirmation and file permission callbacks.
- * Respects the current permission mode (default/auto/strict).
+ * Result of {@link checkToolApproval} — the single source of truth for
+ * "is this tool call allowed to execute". `reason` on a `'deny'` decision is
+ * the EXACT `ToolResult` error string `executeAnyTool` used to return
+ * directly before this function was extracted (P1-3d-3) — callers that
+ * short-circuit on `'deny'` return `reason` verbatim to preserve behavior.
  */
-export async function executeAnyTool(
+export interface ToolApprovalDecision {
+  decision: 'allow' | 'deny';
+  reason?: string;
+}
+
+/**
+ * The full tool-call approval chain (P1-3d-3,
+ * docs/2026-07-21-phase1-p3d-tool-migration-design.md §3): command safety
+ * analysis (+ optional AI review + user confirmation), file-path permission
+ * checks (`FILE_TOOL_PATH_MAP` → pathSafety, + optional AI review + user
+ * permission prompt), and the enterprise policy pre-check — in that exact
+ * order. This is a SURGICAL EXTRACTION of what used to be the first half of
+ * `executeAnyTool`'s body (behavior-preserving refactor, no logic changed —
+ * see `toolRegistry.integration.test.ts` for the regression coverage this
+ * relies on). `executeAnyTool` calls this first and only proceeds to
+ * `execute()` on `'allow'`.
+ *
+ * This is also the SINGLE SOURCE OF TRUTH the sidecar's `approval.check`
+ * reverse-RPC handler (`agentLoopRunner.ts`'s `handleApprovalCheck`) calls
+ * for tools the sidecar wants to run locally — never duplicate this chain,
+ * always call through here (fail-closed: an approval decision made anywhere
+ * else risks drifting from this one and silently reopening the exact policy
+ * gap P1-3d-1 flagged).
+ *
+ * Every UI-facing callback (`onRequireConfirmation`/`onRequireFilePermission`)
+ * and every side-effecting call (`authorizeWorkspace`, `showPolicyConfirm`)
+ * stays exactly as it was — this function still runs shell-side only.
+ */
+export async function checkToolApproval(
   name: string,
   input: Record<string, unknown>,
+  toolContext?: ToolExecutionContext,
   onRequireConfirmation?: CommandConfirmCallback,
   onRequireFilePermission?: FilePermissionCallback,
-  toolContext?: ToolExecutionContext,
-  /** Current context window usage (0-100). Scales truncation limits under pressure. */
-  contextUsagePercent?: number
-): Promise<ToolResult> {
+): Promise<ToolApprovalDecision> {
   const t = getI18n();
   const convPermissionMode = toolContext?.conversationId
     ? useChatStore.getState().conversations[toolContext.conversationId]?.permissionMode
     : undefined;
-  const permissionMode = convPermissionMode ?? useSettingsStore.getState().permissionMode;
+  const permissionMode = convPermissionMode ?? getSettingsReader().getSnapshot().permissionMode;
   const strategy = getPermissionStrategy(permissionMode);
 
   // Safety check for run_command tool
@@ -274,7 +300,7 @@ export async function executeAnyTool(
 
       // Block dangerous commands — always enforced regardless of permission mode
       if (analysis.level === 'block') {
-        return `Error: ${t.commandConfirm.blocked}: ${analysis.reason}`;
+        return { decision: 'deny', reason: `Error: ${t.commandConfirm.blocked}: ${analysis.reason}` };
       }
 
       // Best-effort boundary check: only matters for safe, non-read-only commands
@@ -305,7 +331,7 @@ export async function executeAnyTool(
           toolContext?.loopId ? getLoopContext(toolContext.loopId)?.signal : undefined,
         );
         if (verdict.decision === 'deny') {
-          return `${t.commandConfirm.aiDenied}: ${verdict.reason}`;
+          return { decision: 'deny', reason: `${t.commandConfirm.aiDenied}: ${verdict.reason}` };
         }
         outcome = verdict.decision === 'allow' ? 'allow' : 'confirm';
         // Surface the reviewer's reasoning so an escalated confirm explains itself.
@@ -318,7 +344,7 @@ export async function executeAnyTool(
           reason: reviewReason || analysis.reason,
         });
         if (!confirmed) {
-          return t.commandConfirm.userCancelled;
+          return { decision: 'deny', reason: t.commandConfirm.userCancelled };
         }
       }
     }
@@ -353,7 +379,7 @@ export async function executeAnyTool(
               toolContext?.loopId ? getLoopContext(toolContext.loopId)?.signal : undefined,
             );
             if (verdict.decision === 'deny') {
-              return `${t.commandConfirm.aiDenied}: ${verdict.reason}`;
+              return { decision: 'deny', reason: `${t.commandConfirm.aiDenied}: ${verdict.reason}` };
             }
             fileDecision = verdict.decision === 'allow' ? 'allow' : 'confirm';
           }
@@ -366,16 +392,16 @@ export async function executeAnyTool(
                 toolName: name,
               });
               if (!granted) {
-                return `[${t.toolErrors.userDeniedAccess} ${pathCheck.permissionPath}]`;
+                return { decision: 'deny', reason: `[${t.toolErrors.userDeniedAccess} ${pathCheck.permissionPath}]` };
               }
               // Permission granted — re-check (should now pass since authorizeWorkspace was called)
               const recheck = await checkFn(pathInfo.path);
               if (!recheck.allowed) {
-                return `Error: ${recheck.reason || t.toolErrors.pathAccessDenied}`;
+                return { decision: 'deny', reason: `Error: ${recheck.reason || t.toolErrors.pathAccessDenied}` };
               }
             } else {
               // No callback available (shouldn't happen in normal flow)
-              return `Error: ${t.toolErrors.needsAuthorization} ${pathCheck.permissionPath}`;
+              return { decision: 'deny', reason: `Error: ${t.toolErrors.needsAuthorization} ${pathCheck.permissionPath}` };
             }
           } else {
             // allow → auto-authorize the workspace for this path
@@ -383,7 +409,7 @@ export async function executeAnyTool(
           }
         } else {
           // Hard blocked — always enforced regardless of permission mode
-          return `Error: ${pathCheck.reason}`;
+          return { decision: 'deny', reason: `Error: ${pathCheck.reason}` };
         }
       }
     }
@@ -397,14 +423,38 @@ export async function executeAnyTool(
       : String(input).slice(0, 200)
     const policyCheck = checkTool(policy, name, summary)
     if (policyCheck.decision === 'deny') {
-      return `Error: [policy] ${policyCheck.reason}`
+      return { decision: 'deny', reason: `Error: [policy] ${policyCheck.reason}` }
     }
     if (policyCheck.decision === 'confirm') {
       const allowed = await showPolicyConfirm(policyCheck.reason ?? '此操作需要企业策略二次确认')
       if (!allowed) {
-        return `Error: [policy] user declined confirmation`
+        return { decision: 'deny', reason: `Error: [policy] user declined confirmation` }
       }
     }
+  }
+
+  return { decision: 'allow' };
+}
+
+/**
+ * Execute a tool by name, checking both builtin and MCP tools
+ * With optional dangerous command confirmation and file permission callbacks.
+ * Respects the current permission mode (default/auto/strict).
+ */
+export async function executeAnyTool(
+  name: string,
+  input: Record<string, unknown>,
+  onRequireConfirmation?: CommandConfirmCallback,
+  onRequireFilePermission?: FilePermissionCallback,
+  toolContext?: ToolExecutionContext,
+  /** Current context window usage (0-100). Scales truncation limits under pressure. */
+  contextUsagePercent?: number
+): Promise<ToolResult> {
+  // P1-3d-3: approval chain extracted to checkToolApproval — see its doc.
+  // Behavior-preserving: same deny-reason strings, same order, same callbacks.
+  const approval = await checkToolApproval(name, input, toolContext, onRequireConfirmation, onRequireFilePermission);
+  if (approval.decision === 'deny') {
+    return approval.reason ?? `Error: tool "${name}" was denied`;
   }
 
   // First check builtin tools. A Labs-gated-off tool stays in the registry but
@@ -414,10 +464,10 @@ export async function executeAnyTool(
     const result = await toolRegistry.execute(name, input, toolContext);
     // Only truncate string results; rich content (images) passes through
     if (typeof result === 'string') {
-      // Detect OS-level permission errors for file tools and add guidance
-      if (isFileToolName(name) && isOSPermissionError(result)) {
-        return formatOSPermissionGuide(result);
-      }
+      // File-tool OS-permission errors get a friendly grant-guide (not
+      // truncated — the raw error is short). See applyOSPermissionGuideIfNeeded.
+      const guided = applyOSPermissionGuideIfNeeded(name, result);
+      if (guided !== result) return guided;
       return truncateToolResult(name, result, contextUsagePercent);
     }
     return result;
@@ -440,21 +490,12 @@ export async function executeAnyTool(
 }
 
 // ── OS Permission Error Detection ──
-
-function isFileToolName(name: string): boolean {
-  return name in FILE_TOOL_PATH_MAP;
-}
-
-function isOSPermissionError(result: string): boolean {
-  return /operation not permitted|EACCES|EPERM|access is denied/i.test(result);
-}
-
-function formatOSPermissionGuide(originalError: string): string {
-  if (isWindows()) {
-    return `${originalError}\n\n系统未授权阿布访问此位置。请以管理员身份运行 Abu，或检查文件夹权限设置。`;
-  }
-  return `${originalError}\n\nmacOS 系统未授权阿布访问此位置。请前往「系统设置 → 隐私与安全性 → 文件和文件夹」中授权 Abu，然后重启 Abu。`;
-}
+// The detection + guide logic lives in the pure, store-free `osPermissionGuide`
+// module (re-exported here for existing importers) so the sidecar's local
+// path can share it without dragging registry.ts → chatStore — see that
+// module's doc. `FILE_TOOL_NAMES` there mirrors FILE_TOOL_PATH_MAP's keys; a
+// registry.test.ts case asserts the two stay in sync.
+export { applyOSPermissionGuideIfNeeded, FILE_TOOL_NAMES } from './osPermissionGuide';
 
 // Re-export types for convenience
 export type { ConfirmationInfo, DangerLevel };

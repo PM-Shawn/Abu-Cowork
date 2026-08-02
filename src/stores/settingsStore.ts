@@ -32,13 +32,24 @@ import { PROVIDER_CONFIGS } from '../utils/providerConfigs';
 export { PROVIDER_CONFIGS };
 
 /**
- * Fire-and-forget helper for secret-store side effects. Swallowing failures
- * here is intentional: the in-memory state is authoritative for the session,
- * and if the encrypted store is unavailable `persistApiKeyPlaintextFallback`
- * stays true so localStorage keeps the plaintext as a safety net.
+ * Fire-and-forget helper for secret-store side effects. A failure after a
+ * healthy bootstrap re-enables the plaintext persistence safety net and
+ * immediately re-persists current settings, preventing a newly edited key
+ * from disappearing after restart.
  */
 function fafSecret(promise: Promise<void>, label: string): void {
   promise.catch((err) => {
+    persistApiKeyPlaintextFallback = true;
+    // Zustand persist observes setState. Clone the secret-bearing branches so
+    // the current in-memory values are written with fallback mode enabled.
+    useSettingsStore.setState((state) => ({
+      providers: [...state.providers],
+      auxiliaryServices: { ...state.auxiliaryServices },
+      imageGeneration: {
+        ...state.imageGeneration,
+        backends: [...state.imageGeneration.backends],
+      },
+    }));
     console.warn(`[secrets] ${label} failed:`, err);
   });
 }

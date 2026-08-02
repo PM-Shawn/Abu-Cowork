@@ -17,7 +17,7 @@
  * `AgentRunParams` — the contract 3b-3B's shell dispatcher must build (see
  * P1-3B-3A-REPORT.md for the full field-by-field rationale):
  *   { runId, conversationId, userMessage,
- *     options: { images?, blockedTools?, imContext? },
+ *     options: { images?, blockedTools?, allowedTools?, imContext? },
  *     orchestration: { route, systemPromptSections } — precomputed via
  *       entryOrchestration.ts's precomputeOrchestration, SHELL-side (the
  *       function that stays out of the sidecar bundle),
@@ -80,6 +80,7 @@ export interface AgentRunParams {
   options: {
     images?: ImageAttachment[];
     blockedTools?: string[];
+    allowedTools?: string[];
     imContext?: IMContext;
   };
   orchestration: { route: RouteResult; systemPromptSections: PromptSection[] };
@@ -116,6 +117,12 @@ function parseAgentRunParams(params: unknown): AgentRunParams {
   if (typeof conversationId !== 'string' || !conversationId) throw new RpcError(-32602, 'Invalid params: conversationId must be a non-empty string');
   if (typeof userMessage !== 'string') throw new RpcError(-32602, 'Invalid params: userMessage must be a string');
   if (!isRecord(options)) throw new RpcError(-32602, 'Invalid params: options must be an object');
+  for (const field of ['blockedTools', 'allowedTools'] as const) {
+    const value = options[field];
+    if (value !== undefined && (!Array.isArray(value) || value.some((entry) => typeof entry !== 'string'))) {
+      throw new RpcError(-32602, `Invalid params: options.${field} must be a string array`);
+    }
+  }
   if (!isRecord(orchestration) || !isRecord((orchestration as { route?: unknown }).route)) {
     throw new RpcError(-32602, 'Invalid params: orchestration.route must be an object');
   }
@@ -527,6 +534,7 @@ export async function handleAgentRun(rawParams: unknown): Promise<unknown> {
     const options: AgentLoopOptions = {
       images: params.options.images,
       blockedTools: params.options.blockedTools,
+      allowedTools: params.options.allowedTools,
       imContext: params.options.imContext,
       settingsReader: getSettingsMirrorReader(),
       orchestration: params.orchestration,

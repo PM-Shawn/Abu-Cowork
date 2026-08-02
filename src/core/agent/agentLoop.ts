@@ -248,6 +248,7 @@ export function resolveTools(
   hasBuiltinWebSearch: boolean,
   blockedTools?: string[],
   prefetchContext?: { userInput: string; computerUseEnabled: boolean; activeSkills: import('../../types').Skill[]; turnCount: number },
+  allowedTools?: string[],
 ): { tools: ToolDefinition[]; deferredTools: ToolDefinition[]; inputValidators: Map<string, (input: Record<string, unknown>) => boolean> } {
   let tools = toolInvoker.getAllTools();
   let inputValidators = new Map<string, (input: Record<string, unknown>) => boolean>();
@@ -255,7 +256,7 @@ export function resolveTools(
 
   // Conditional tool loading: filter to core + prefetched tools
   // Non-core tools become "deferred" — name + description only in system prompt
-  if (prefetchContext && !route.skill?.allowedTools) {
+  if (prefetchContext && !route.skill?.allowedTools && !allowedTools?.length) {
     const additionalToolNames = prefetchTools(prefetchContext);
     const prefetchedSet = new Set(additionalToolNames);
     const classified = classifyTools(tools, prefetchedSet);
@@ -297,6 +298,15 @@ export function resolveTools(
       tools = tools.filter(t => !blocked.has(t.name));
       deferredTools = deferredTools.filter(t => !blocked.has(t.name));
     }
+  }
+  // Per-run whitelist (for example a custom trigger). This is mirrored by
+  // toolExecutor's fail-closed check so the restriction is both model-visible
+  // and authoritative at execution time.
+  if (allowedTools && allowedTools.length > 0) {
+    tools = tools.filter((tool) =>
+      allowedTools.some((pattern) => matchesToolName(tool.name, pattern)),
+    );
+    deferredTools = [];
   }
   if (hasBuiltinWebSearch) {
     tools = tools.filter(t => t.name !== TOOL_NAMES.WEB_SEARCH);
@@ -385,6 +395,9 @@ export interface AgentLoopOptions {
   images?: ImageAttachment[];
   /** Tool names to block from this run (e.g. 'request_workspace' in headless/IM mode) */
   blockedTools?: string[];
+  /** Tool-name patterns allowed for this run. When present, all other tools
+   * fail closed even if a model emits a call that was not advertised. */
+  allowedTools?: string[];
   /** Fail instead of staging into an already-running loop. Used by recovery
    * flows whose tool restrictions must apply from the first turn. */
   requireNewRun?: boolean;
@@ -1139,7 +1152,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
         activeSkills: activeSkillObjects,
         turnCount,
       };
-      const { tools: rawTools, deferredTools: rawDeferredTools, inputValidators } = resolveTools(toolInvoker, route, !!builtinWebSearch, options?.blockedTools, prefetchCtx);
+      const { tools: rawTools, deferredTools: rawDeferredTools, inputValidators } = resolveTools(toolInvoker, route, !!builtinWebSearch, options?.blockedTools, prefetchCtx, options?.allowedTools);
       const tools = noTools ? [] : rawTools;
       const deferredTools = noTools ? [] : rawDeferredTools;
       const toolTokens = estimateToolSchemaTokens(tools);
@@ -1875,6 +1888,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
           executionId: execution.id,
           inputValidators,
           blockedTools: options?.blockedTools,
+          allowedTools: options?.allowedTools,
           confirmCb,
           filePermCb,
           toolContext,
@@ -1912,7 +1926,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
           // (line ~1304). Without it, freshTools is the full unfiltered catalog
           // while `tools` is the prefetched subset, so every deferred tool shows
           // up as falsely "added" in the injected tools-changed notification.
-          const { tools: freshRawTools } = resolveTools(toolInvoker, route, !!builtinWebSearch, options?.blockedTools, prefetchCtx);
+          const { tools: freshRawTools } = resolveTools(toolInvoker, route, !!builtinWebSearch, options?.blockedTools, prefetchCtx, options?.allowedTools);
           const freshTools = noTools ? [] : freshRawTools;
           const freshNames = new Set(freshTools.map(t => t.name));
           const added = freshTools.filter(t => !toolNames.has(t.name));

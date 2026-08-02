@@ -53,6 +53,7 @@ interface SubagentRunParams {
   parentConversationSummary?: string;
   parentConversationId?: string;
   imContext?: IMContext;
+  allowedTools?: string[];
   locale: string;
   uiStrings: SubagentUiStrings;
   settingsSnapshot: SettingsState;
@@ -91,6 +92,12 @@ function parseSubagentRunParams(params: unknown): SubagentRunParams {
   }
   if (typeof locale !== 'string') {
     throw new RpcError(-32602, 'Invalid params: locale must be a string');
+  }
+  if (
+    params.allowedTools !== undefined &&
+    (!Array.isArray(params.allowedTools) || params.allowedTools.some((entry) => typeof entry !== 'string'))
+  ) {
+    throw new RpcError(-32602, 'Invalid params: allowedTools must be a string array');
   }
   const { workspacePathSnapshot } = params;
   if (workspacePathSnapshot !== null && typeof workspacePathSnapshot !== 'string') {
@@ -258,6 +265,7 @@ export async function handleSubagentRun(rawParams: unknown): Promise<unknown> {
     onProgress: (event: SubagentProgressEvent) => {
       sendNotification('subagent.progress', { runId, event });
     },
+    allowedTools: params.allowedTools,
     // commandConfirmCallback/filePermissionCallback intentionally omitted:
     // createReverseToolInvoker's executeAnyTool ALWAYS reverses to the
     // shell's tool.invoke handler, which threads the SESSION's REAL

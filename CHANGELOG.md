@@ -19,6 +19,8 @@ All notable changes to Abu are documented here. Format based on [Keep a Changelo
 - **The local Chrome bridge recovers more reliably** — The extension installer opens the correct parent folder, setup text matches Chrome's folder picker, and Abu reclaims only bridge processes it can identify safely instead of silently terminating unrelated listeners.
 - **Transition installs preserve a usable rollback** — Windows keeps the previous Tauri installation available for one release and converges duplicate uninstall entries correctly. macOS migration rejects unsafe links, repairs supported package-manager links, and stops before opening an empty profile when validation fails.
 - **Document preview dependencies are security-hardened** — Excel, PPT preview, and MCP runtime dependencies now use fixed versions and pass real Excel round trips, PPT preview tests, the production build, and packaged document-tool smoke.
+- **Automation and local-preview boundaries are stricter** — Custom-trigger tool allowlists now apply across the main loop, sidecar, and delegated agents; default-app opening no longer constructs shell commands; HTML previews deny external requests, form submission, and popup escape paths by default.
+- **Secret-store failures no longer silently lose edits** — If encrypted storage fails later in a session, Abu immediately restores its data-preserving fallback so a newly edited model or auxiliary-service key survives restart.
 
 ### Migration notes
 

@@ -32,6 +32,7 @@ import { setLoopContext, clearLoopContext } from './permissionBridge';
 import type { EventRouter } from './eventRouter';
 import { createLogger } from '../logging/logger';
 import { startToolSpan } from '../observability/langfuse';
+import { matchesToolPattern } from '../skill/toolFilter';
 
 const logger = createLogger('toolExecutor');
 
@@ -74,6 +75,9 @@ export interface ToolBatchParams {
   /** Per-run execution denylist. This is an enforcement boundary, not only a
    * model-visible tool filter: hallucinated or malformed tool calls fail closed. */
   blockedTools?: string[];
+  /** Per-run execution whitelist. Pattern matching follows skill allowedTools
+   * semantics and is enforced before hooks or tool invocation. */
+  allowedTools?: string[];
   confirmCb: (info: ConfirmationInfo) => Promise<boolean>;
   filePermCb: FilePermissionCallback;
   toolContext: ToolExecutionContext;
@@ -133,6 +137,7 @@ export async function executeToolBatch(params: ToolBatchParams): Promise<ToolBat
 
   const chatDelta = getChatDelta();
   const blockedTools = new Set(params.blockedTools ?? []);
+  const allowedTools = params.allowedTools ?? [];
 
   // Update the assistant message with tool calls
   chatDelta.setMessageToolCalls(conversationId, assistantMsgId, collectedToolCalls);
@@ -150,12 +155,22 @@ export async function executeToolBatch(params: ToolBatchParams): Promise<ToolBat
     conversationId,
     toolCallToStepId,
     blockedTools: params.blockedTools,
+    allowedTools: params.allowedTools,
   });
 
   let completedCount = 0;
   const totalCount = collectedToolCalls.length;
 
   const executeSingleTool = async (tc: typeof collectedToolCalls[number]): Promise<ToolExecResult> => {
+    if (allowedTools.length > 0 && !allowedTools.some((pattern) => matchesToolPattern(tc.name, pattern, tc.input))) {
+      return {
+        id: tc.id,
+        result: `Error: tool "${tc.name}" is not allowed for this agent run`,
+        resultContent: undefined,
+        error: true,
+        duration: 0,
+      };
+    }
     if (blockedTools.has(tc.name)) {
       return {
         id: tc.id,

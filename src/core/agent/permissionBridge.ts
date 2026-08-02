@@ -41,6 +41,8 @@ export interface LoopContext {
   toolCallToStepId: Map<string, string>;
   /** Execution denylist inherited by tools that may create nested work. */
   blockedTools?: string[];
+  /** Execution whitelist inherited by tools that may create nested work. */
+  allowedTools?: string[];
   /** Agent name for UI display (e.g. permission dialog badge) */
   agentName?: string;
 }

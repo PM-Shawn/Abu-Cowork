@@ -329,6 +329,7 @@ class TriggerEngine {
         commandConfirmCallback: callbacks.commandConfirmCallback,
         filePermissionCallback: callbacks.filePermissionCallback,
         blockedTools: callbacks.blockedTools,
+        allowedTools: callbacks.allowedTools,
       });
 
       // max_turns hit the cap but still produced a usable (partial) reply — fall

@@ -108,6 +108,37 @@ describe('resolveTools · per-run restrictions', () => {
       ...resolved.deferredTools.map((tool) => tool.name),
     ]).toContain('computer');
   });
+
+  it('exposes only tools matching a per-run whitelist and disables deferred tools', () => {
+    const tools = [
+      makeTool('read_file'),
+      makeTool('read_skill_file'),
+      makeTool('write_file'),
+      makeTool('run_command'),
+    ];
+    const invoker: ToolInvoker = {
+      getAllTools: () => tools,
+      executeAnyTool: async () => 'ok',
+      toolResultToString: String,
+    };
+
+    const resolved = resolveTools(
+      invoker,
+      { type: 'general', name: 'abu', cleanInput: 'read only' },
+      false,
+      undefined,
+      {
+        userInput: 'read only',
+        computerUseEnabled: false,
+        activeSkills: [],
+        turnCount: 1,
+      },
+      ['read_*'],
+    );
+
+    expect(resolved.tools.map((tool) => tool.name)).toEqual(['read_file', 'read_skill_file']);
+    expect(resolved.deferredTools).toEqual([]);
+  });
 });
 
 // Task #51 · Stricter gate for post-loop proposal signal. Adds a

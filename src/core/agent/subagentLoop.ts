@@ -41,6 +41,7 @@ import { emitHook } from './lifecycleHooks';
 import type { SubagentStartEvent, SubagentEndEvent, PreToolCallEvent } from './lifecycleHooks';
 import { startSubagentSpan } from '../observability/langfuse';
 import { getI18n } from '../../i18n';
+import { matchesToolName, matchesToolPattern } from '../skill/toolFilter';
 
 /** Max times a subagent re-prompts after a max_tokens truncation. Mirrors the
  *  same-named limit in agentLoop (kept in sync deliberately). */
@@ -191,6 +192,8 @@ export interface SubagentLoopOptions {
   signal?: AbortSignal;
   commandConfirmCallback?: (info: ConfirmationInfo) => Promise<boolean>;
   filePermissionCallback?: FilePermissionCallback;
+  /** Parent-run tool whitelist inherited by delegated work. */
+  allowedTools?: string[];
   onProgress?: (event: SubagentProgressEvent) => void;
   /** IM context — provides correct workspace path in headless mode */
   imContext?: IMContext;
@@ -316,6 +319,11 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
     if (agent.disallowedTools && agent.disallowedTools.length > 0) {
       const blocked = new Set(agent.disallowedTools);
       tools = tools.filter((t) => !blocked.has(t.name));
+    }
+    if (options.allowedTools && options.allowedTools.length > 0) {
+      tools = tools.filter((tool) =>
+        options.allowedTools!.some((pattern) => matchesToolName(tool.name, pattern)),
+      );
     }
     // Always strip the orchestration tools from sub-agents to prevent recursive
     // fan-out (a sub-agent spawning its own batch → unbounded blow-up, since there
@@ -636,6 +644,9 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
         collectedToolCalls.map(async (tc) => {
           if (signal?.aborted) {
             return { id: tc.id, result: getI18n().chat.subagent.cancelled };
+          }
+          if (options.allowedTools?.length && !options.allowedTools.some((pattern) => matchesToolPattern(tc.name, pattern, tc.input))) {
+            return { id: tc.id, result: `Error: tool "${tc.name}" is not allowed for this agent run` };
           }
 
           // Emit preToolCall — may block or modify input

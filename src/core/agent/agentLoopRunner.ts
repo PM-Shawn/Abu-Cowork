@@ -98,6 +98,7 @@ import { snapshotBeforeAiEdit } from '../../utils/aiEditSnapshots';
 import { getAuthorizedWritablePaths } from '../tools/pathSafety';
 import { showSandboxBlockedToast } from '../sandbox/recovery';
 import { ensureBuiltinBrowserRuntime } from '../browser/builtinBrowserRuntime';
+import { matchesToolPattern } from '../skill/toolFilter';
 
 const logger = createLogger('agent-loop-runner');
 
@@ -114,6 +115,7 @@ export interface AgentLoopRunOptions {
   requestCommandConfirmation?: (info: ConfirmationInfo, loopId?: string) => Promise<boolean>;
   requestFilePermission?: FilePermissionCallback;
   blockedTools?: string[];
+  allowedTools?: string[];
 }
 
 export interface RunSession {
@@ -513,6 +515,7 @@ async function handleMainLoopToolInvoke(rawParams: unknown): Promise<unknown> {
   if (!useChatStore.getState().conversations[session.conversationId]) {
     throw new SidecarRequestError(-32000, `Conversation no longer exists for agent-loop runId: ${params.runId}`);
   }
+  assertRunToolAllowed(session, params.toolName, (params.input as Record<string, unknown>) ?? {});
   // P1-3B-3B fallback discipline — see RunSession.committed's doc.
   session.committed = true;
 
@@ -573,6 +576,7 @@ async function handleApprovalCheck(rawParams: unknown): Promise<ToolApprovalDeci
   if (!useChatStore.getState().conversations[session.conversationId]) {
     throw new SidecarRequestError(-32000, `Conversation no longer exists for agent-loop runId: ${params.runId}`);
   }
+  assertRunToolAllowed(session, params.toolName, (params.input as Record<string, unknown>) ?? {});
 
   return await checkToolApproval(
     params.toolName,
@@ -581,6 +585,25 @@ async function handleApprovalCheck(rawParams: unknown): Promise<ToolApprovalDeci
     session.options.requestCommandConfirmation ?? requestCommandConfirmation,
     session.options.requestFilePermission ?? requestFilePermission,
   );
+}
+
+/** Enforce run-scoped restrictions at the shell boundary as well as in the
+ * sidecar loop. This protects both reverse tool.invoke and locally executed
+ * sidecar tools that first call approval.check. */
+function assertRunToolAllowed(
+  session: RunSession,
+  toolName: string,
+  input: Record<string, unknown>,
+): void {
+  if (session.options.blockedTools?.includes(toolName)) {
+    throw new SidecarRequestError(-32602, `Tool is blocked for this agent run: ${toolName}`);
+  }
+  if (
+    session.options.allowedTools?.length &&
+    !session.options.allowedTools.some((pattern) => matchesToolPattern(toolName, pattern, input))
+  ) {
+    throw new SidecarRequestError(-32602, `Tool is not allowed for this agent run: ${toolName}`);
+  }
 }
 
 /**
@@ -1034,6 +1057,7 @@ export function installShellLoopContext(runId: string, session: RunSession): voi
     conversationId: session.conversationId,
     toolCallToStepId: session.toolCallToStepId,
     blockedTools: session.options.blockedTools,
+    allowedTools: session.options.allowedTools,
   });
 }
 
@@ -1058,7 +1082,7 @@ interface AgentRunParams {
   runId: string;
   conversationId: string;
   userMessage: string;
-  options: { images?: ImageAttachment[]; blockedTools?: string[]; imContext?: IMContext };
+  options: { images?: ImageAttachment[]; blockedTools?: string[]; allowedTools?: string[]; imContext?: IMContext };
   orchestration: { route: RouteResult; systemPromptSections: PromptSection[] };
   conversationSnapshot: Conversation;
   indexEntrySnapshot?: ConversationMeta;
@@ -1206,7 +1230,12 @@ async function buildAgentRunParams(
     runId,
     conversationId,
     userMessage,
-    options: { images: options?.images, blockedTools: options?.blockedTools, imContext: options?.imContext },
+    options: {
+      images: options?.images,
+      blockedTools: options?.blockedTools,
+      allowedTools: options?.allowedTools,
+      imContext: options?.imContext,
+    },
     orchestration,
     conversationSnapshot: conversationSnapshot as Conversation,
     indexEntrySnapshot: indexEntrySnapshot as ConversationMeta | undefined,
@@ -1378,6 +1407,7 @@ export async function runAgentLoopDispatched(
       requestCommandConfirmation: options?.commandConfirmCallback,
       requestFilePermission: options?.filePermissionCallback,
       blockedTools: options?.blockedTools,
+      allowedTools: options?.allowedTools,
     },
     shellAbortController,
     toolCallToStepId: new Map(),

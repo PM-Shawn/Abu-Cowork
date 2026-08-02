@@ -26,6 +26,7 @@ export interface TriggerCallbacks {
   commandConfirmCallback: (info: ConfirmationInfo) => Promise<boolean>;
   filePermissionCallback: FilePermissionCallback;
   blockedTools: string[];
+  allowedTools?: string[];
 }
 
 /**
@@ -48,7 +49,7 @@ export function resolveTriggerCallbacks(action: TriggerAction): TriggerCallbacks
   }
 
   // Triggers never need UI-only tools
-  const blockedTools = buildBlockedTools(capability, action.permissions);
+  const blockedTools = buildBlockedTools();
 
   switch (capability) {
     case 'read_tools':
@@ -148,22 +149,13 @@ function buildCustomCallbacks(
       return false;
     },
     blockedTools,
+    allowedTools: permissions?.allowedTools,
   };
 }
 
-function buildBlockedTools(
-  capability: string,
-  permissions: TriggerPermissions | undefined,
-): string[] {
+function buildBlockedTools(): string[] {
   // request_workspace is always blocked — triggers can't pop UI dialogs
   const blocked = [TOOL_NAMES.REQUEST_WORKSPACE];
-
-  // For custom capability with tool whitelist, we don't add extra blocks here
-  // because tool filtering is handled via allowedTools in the agent loop options.
-  // But we record the intent for the engine to pass through.
-  if (capability === 'custom' && permissions?.allowedTools?.length) {
-    // Tool whitelist is enforced separately — see triggerEngine.executeAction
-  }
 
   return blocked;
 }

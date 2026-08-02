@@ -256,6 +256,24 @@ describe('subagentRunner', () => {
       expect(executeAnyToolMock).not.toHaveBeenCalled();
     });
 
+    it('refuses a delegated tool call outside the inherited whitelist', async () => {
+      getSidecarStatus.mockReturnValue('running');
+      const d = deferred<unknown>();
+      sidecarRequestMock.mockReturnValue(d.promise);
+      const { runSubagent } = await importFresh();
+      const runPromise = runSubagent({ agent, task: 'read only', allowedTools: ['read_*'] });
+      const toolInvokeHandler = onSidecarRequest.mock.calls.find((c) => c[0] === 'tool.invoke')![1] as (p: unknown) => Promise<unknown>;
+      const runId = (sidecarRequestMock.mock.calls[0][1] as { runId: string }).runId;
+
+      await expect(
+        toolInvokeHandler({ runId, toolName: 'write_file', input: { path: 'x' } }),
+      ).rejects.toThrow(/not allowed/);
+      expect(executeAnyToolMock).not.toHaveBeenCalled();
+
+      d.resolve({ text: 'done', toolCallCount: 0, turnCount: 1, tokenUsage: { input: 0, output: 0 }, duration: 1 });
+      await runPromise;
+    });
+
     it('run-session lifecycle: the session is removed once the run settles — a LATE tool.invoke for the same (finished) runId is rejected as unknown', async () => {
       getSidecarStatus.mockReturnValue('running');
       sidecarRequestMock.mockResolvedValue({ text: 'done', toolCallCount: 0, turnCount: 1, tokenUsage: { input: 0, output: 0 }, duration: 1 });

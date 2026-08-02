@@ -793,7 +793,7 @@ export default function PreviewPanel({
                 // still changing the `src` string enough for the webview to reload.
                 src={`${htmlPreviewUrl}?v=${reloadNonce}`}
                 title={fileName}
-                sandbox="allow-scripts allow-same-origin allow-forms allow-popups"
+                sandbox="allow-scripts allow-same-origin"
                 className="w-full h-full border-0 bg-white"
                 onLoad={() => setIframeLoaded(true)}
               />

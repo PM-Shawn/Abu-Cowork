@@ -98,6 +98,14 @@ async function main() {
       idxRes.headers['content-security-policy'].includes('sandbox'),
     idxRes.headers['content-security-policy']
   );
+  check(
+    '2d-2 CSP blocks external connections and form submission',
+    idxRes.headers['content-security-policy'].includes("connect-src 'self'") &&
+      idxRes.headers['content-security-policy'].includes("form-action 'none'") &&
+      !idxRes.headers['content-security-policy'].includes('allow-popups') &&
+      !idxRes.headers['content-security-policy'].includes('allow-forms'),
+    idxRes.headers['content-security-policy']
+  );
   const inspectJsPath = path.join(__dirname, '..', '..', 'src-tauri', 'inspect', 'abu-preview-inspect.js');
   const inspectAvailable = fs.existsSync(inspectJsPath);
   if (inspectAvailable) {

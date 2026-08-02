@@ -178,9 +178,10 @@ describe('agentLoopHost', () => {
         capturedOptions = options;
         return { reason: 'completed' };
       });
-      const params = baseParams({ options: { blockedTools: ['x'] } });
+      const params = baseParams({ options: { blockedTools: ['x'], allowedTools: ['read_*'] } });
       await handleAgentRun(params);
       expect(capturedOptions?.blockedTools).toEqual(['x']);
+      expect(capturedOptions?.allowedTools).toEqual(['read_*']);
       expect(capturedOptions?.orchestration).toBe(params.orchestration);
       expect(capturedOptions?.settingsReader).toBeDefined();
     });

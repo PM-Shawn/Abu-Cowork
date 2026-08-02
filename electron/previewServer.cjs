@@ -40,8 +40,8 @@
  * - Response headers: Content-Type (small hand-rolled ext→mime table — no new
  *   npm dep), charset=utf-8 appended for text/* without one, `Cache-Control:
  *   no-store`, `X-Content-Type-Options: nosniff`, and the same permissive-but-
- *   sandboxed CSP Rust sends (`sandbox allow-scripts allow-same-origin
- *   allow-forms allow-popups`).
+ *   CSP that keeps scripts and relative assets working while denying external
+ *   network access, forms, nested frames, plugins, and popup escape paths.
  *
  * ## Deliberate DEVIATION from the task brief: no `X-Frame-Options`
  * The brief asked for `X-Frame-Options: SAMEORIGIN` alongside nosniff. The
@@ -379,7 +379,7 @@ const RESPONSE_SECURITY_HEADERS = {
   'X-Content-Type-Options': 'nosniff',
   // See module doc header: deliberately no X-Frame-Options — the legitimate
   // embedder is cross-origin from this loopback server by design.
-  'Content-Security-Policy': 'sandbox allow-scripts allow-same-origin allow-forms allow-popups',
+  'Content-Security-Policy': "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; media-src 'self' data: blob:; connect-src 'self'; frame-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'; sandbox allow-scripts allow-same-origin",
 };
 
 /** @param {import('node:http').IncomingMessage} req @param {import('node:http').ServerResponse} res */

@@ -391,6 +391,7 @@ export const runAgentBatchTool: ToolDefinition = {
             signal: sig,
             commandConfirmCallback: loopCtx?.commandConfirmCallback,
             filePermissionCallback: loopCtx?.filePermissionCallback,
+            allowedTools: loopCtx?.allowedTools,
             onProgress: (event) => {
               try {
                 const store = useBatchProgressStore.getState();

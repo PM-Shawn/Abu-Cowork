@@ -71,11 +71,11 @@ vi.mock('@tauri-apps/api/core', () => ({
 
 import { executeToolBatch } from './toolExecutor';
 
-function makeToolCall(name: string): ToolCall {
+function makeToolCall(name: string, input: Record<string, unknown> = {}): ToolCall {
   return {
     id: `tc-${name}`,
     name,
-    input: {},
+    input,
     isExecuting: true,
   };
 }
@@ -94,6 +94,7 @@ function makeParams(
   toolCall: ToolCall,
   invoker: ToolInvoker,
   blockedTools?: string[],
+  allowedTools?: string[],
 ) {
   return {
     collectedToolCalls: [toolCall],
@@ -106,6 +107,7 @@ function makeParams(
     executionId: 'exec-1',
     inputValidators: new Map<string, (input: Record<string, unknown>) => boolean>(),
     blockedTools,
+    allowedTools,
     confirmCb: async () => true,
     filePermCb: async () => true,
     toolContext: {} as ToolExecutionContext,
@@ -143,6 +145,49 @@ describe('executeToolBatch · hard run restrictions', () => {
       mcpChanged: false,
       requiresUserRecovery: false,
     });
+  });
+
+  it('fails closed before invoking a tool outside the per-run whitelist', async () => {
+    const executeAnyTool = vi.fn();
+    const toolCall = makeToolCall('write_file');
+
+    await executeToolBatch(
+      makeParams(toolCall, makeInvoker(executeAnyTool), undefined, ['read_*']),
+    );
+
+    expect(executeAnyTool).not.toHaveBeenCalled();
+    expect(mocks.updateToolCall).toHaveBeenCalledWith(
+      'conv-1',
+      'msg-1',
+      toolCall.id,
+      'Error: tool "write_file" is not allowed for this agent run',
+      undefined,
+      true,
+      undefined,
+      undefined,
+    );
+  });
+
+  it('allows a tool matching a wildcard whitelist pattern', async () => {
+    const executeAnyTool = vi.fn().mockResolvedValue('ok');
+    const toolCall = makeToolCall('read_file');
+
+    await executeToolBatch(
+      makeParams(toolCall, makeInvoker(executeAnyTool), undefined, ['read_*']),
+    );
+
+    expect(executeAnyTool).toHaveBeenCalledTimes(1);
+  });
+
+  it('enforces an allowed-tool input constraint, not just the tool name', async () => {
+    const executeAnyTool = vi.fn();
+    const toolCall = makeToolCall('run_command', { command: 'rm -rf build' });
+
+    await executeToolBatch(
+      makeParams(toolCall, makeInvoker(executeAnyTool), undefined, ['run_command(npm run *)']),
+    );
+
+    expect(executeAnyTool).not.toHaveBeenCalled();
   });
 
   it('marks trusted recovery metadata as an error and stops the parent loop', async () => {

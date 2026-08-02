@@ -312,6 +312,7 @@ export const delegateToAgentTool: ToolDefinition = {
         signal: subagentSignal,
         commandConfirmCallback: loopCtx?.commandConfirmCallback,
         filePermissionCallback: loopCtx?.filePermissionCallback,
+        allowedTools: loopCtx?.allowedTools,
         onProgress,
       });
 

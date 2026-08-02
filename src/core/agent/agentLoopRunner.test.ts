@@ -1304,6 +1304,20 @@ describe('agentLoopRunner', () => {
       );
     });
 
+    it('refuses a reverse tool call outside the run whitelist before execution', async () => {
+      const { ensureHandlersRegistered, registerRunSession } = await importFresh();
+      ensureHandlersRegistered();
+      const session = makeSession();
+      session.options = { allowedTools: ['read_*'] };
+      registerRunSession('run-1', session);
+
+      const handler = handlerFor(onSidecarRequest, 'tool.invoke');
+      await expect(
+        handler({ runId: 'run-1', toolName: 'write_file', input: { path: 'x' } }),
+      ).rejects.toThrow(/not allowed/);
+      expect(executeAnyToolMock).not.toHaveBeenCalled();
+    });
+
     it('marks the session committed on the first tool.invoke', async () => {
       const { ensureHandlersRegistered, registerRunSession, getRunSession } = await importFresh();
       ensureHandlersRegistered();
@@ -1420,6 +1434,20 @@ describe('agentLoopRunner', () => {
       await handler({ runId: 'run-1', toolName: 'show_widget', input: {} });
 
       expect(checkToolApprovalMock).toHaveBeenCalledWith('show_widget', {}, undefined, requestCommandConfirmationMock, requestFilePermissionMock);
+    });
+
+    it('refuses local sidecar approval outside the run whitelist', async () => {
+      const { ensureHandlersRegistered, registerRunSession } = await importFresh();
+      ensureHandlersRegistered();
+      const session = makeSession();
+      session.options = { allowedTools: ['read_*'] };
+      registerRunSession('run-1', session);
+
+      const handler = handlerFor(onSidecarRequest, 'approval.check');
+      await expect(
+        handler({ runId: 'run-1', toolName: 'write_file', input: { path: 'x' } }),
+      ).rejects.toThrow(/not allowed/);
+      expect(checkToolApprovalMock).not.toHaveBeenCalled();
     });
 
     it('throws for an unknown runId instead of silently answering', async () => {
@@ -1644,6 +1672,18 @@ describe('agentLoopRunner', () => {
       expect(p.resolvedCreds).toEqual({ apiKey: 'sk-1', baseUrl: undefined, forceOpenAiCompatible: false });
       expect(p.toolList).toEqual([{ name: 'read_file', description: 'reads a file', inputSchema: { type: 'object', properties: {} } }]);
       expect(result).toEqual({ reason: 'completed' });
+    });
+
+    it('serializes the per-run tool whitelist into agent.run options', async () => {
+      const { runAgentLoopDispatched } = await importFresh();
+      sidecarRequestMock.mockResolvedValue({ reason: 'completed' });
+
+      await runAgentLoopDispatched('conv-1', 'read only', { allowedTools: ['read_*'] });
+
+      const params = sidecarRequestMock.mock.calls[0][1] as {
+        options: { allowedTools?: string[] };
+      };
+      expect(params.options.allowedTools).toEqual(['read_*']);
     });
 
     it('creates the task controller before prompt preprocessing and stops without dispatching when it is aborted there', async () => {

@@ -140,6 +140,10 @@ jobs:
           fi
           node scripts/validate-electron-transition-version.mjs "${VALIDATE_ARGS[@]}"
           echo "TRANSITION_VERSION=$TRANSITION_VERSION" >> "$GITHUB_ENV"
+          # Vite runs before electron-builder applies extraMetadata.version.
+          # Feed the renderer the identical candidate so its displayed and
+          # reported version matches Electron's app.getVersion().
+          echo "ABU_BUILD_VERSION=$TRANSITION_VERSION" >> "$GITHUB_ENV"
           echo "ABU_ELECTRON_FEED=https://abu-agent.oss-cn-beijing.aliyuncs.com/electron/${FEED_CHANNEL}/" >> "$GITHUB_ENV"
           echo "ABU_OFFICIAL_BUILD=$OFFICIAL_BUILD" >> "$GITHUB_ENV"
 
@@ -521,6 +525,7 @@ jobs:
             throw "Invalid transition version: $candidate"
           }
           "ABU_ELECTRON_VERSION=$candidate" | Out-File -FilePath $env:GITHUB_ENV -Append
+          "ABU_BUILD_VERSION=$candidate" | Out-File -FilePath $env:GITHUB_ENV -Append
           "ABU_ELECTRON_FEED=https://abu-agent.oss-cn-beijing.aliyuncs.com/electron/win-x64/" |
             Out-File -FilePath $env:GITHUB_ENV -Append
           "ABU_EXPECTED_ELECTRON_FEED=https://abu-agent.oss-cn-beijing.aliyuncs.com/electron/win-x64/" |

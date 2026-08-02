@@ -2,7 +2,17 @@ import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
 import path from 'path'
-import { version } from './package.json'
+import { version as packageVersion } from './package.json'
+
+// electron-builder can override extraMetadata.version for an RC/release
+// candidate, but the renderer is compiled before that packaging step. CI must
+// pass the same candidate here or the About screen and diagnostics will claim
+// the package.json version while Electron's app.getVersion() reports another
+// one (for example UI 0.34.0 inside an actual 0.34.0-rc.38 bundle).
+const version = process.env.ABU_BUILD_VERSION?.trim() || packageVersion
+if (!/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/.test(version)) {
+  throw new Error(`Invalid ABU_BUILD_VERSION: ${version}`)
+}
 
 // Build target switch: OSS (default) or Enterprise
 // ABU_BUILD_TARGET=enterprise → resolves @enterprise-modules to sibling private repo

@@ -586,6 +586,13 @@ test('packaged feeds are architecture-isolated', () => {
   assert.match(buildWorkflow, /"\$\{\{ github\.event_name \}\}" -ne "pull_request"/);
   assert.match(buildWorkflow, /--allow-equal true/);
   assert.equal(
+    (buildWorkflow.match(/ABU_BUILD_VERSION=/g) || []).length,
+    2,
+    'macOS and Windows must compile the renderer with the packaged candidate version'
+  );
+  assert.match(buildWorkflow, /ABU_BUILD_VERSION=\$TRANSITION_VERSION/);
+  assert.match(buildWorkflow, /ABU_BUILD_VERSION=\$candidate/);
+  assert.equal(
     (buildWorkflow.match(/--config\.extraMetadata\.abuRelease\.officialBuild=true/g) || []).length,
     2,
     'only official CI builds may arm the production updater'

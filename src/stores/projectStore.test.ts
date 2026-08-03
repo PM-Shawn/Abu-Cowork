@@ -265,4 +265,19 @@ describe('projectStore', () => {
       expect(afterPin[1].id).toBe(id1);
     });
   });
+
+  describe('renameMCPServerReferences', () => {
+    it('migrates project defaults and removes duplicates', () => {
+      const id = useProjectStore.getState().createProject({
+        name: 'MCP project',
+        workspacePath: '/mcp-project',
+        defaultMCPServers: ['old-name', 'new-name', 'other'],
+      });
+
+      useProjectStore.getState().renameMCPServerReferences('old-name', 'new-name');
+
+      expect(useProjectStore.getState().projects[id].defaultMCPServers)
+        .toEqual(['new-name', 'other']);
+    });
+  });
 });

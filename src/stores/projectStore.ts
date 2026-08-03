@@ -19,6 +19,8 @@ interface ProjectActions {
   // CRUD
   createProject: (data: Omit<Project, 'id' | 'createdAt' | 'updatedAt' | 'lastActiveAt' | 'pinned' | 'archived'>) => string;
   updateProject: (id: string, data: Partial<Pick<Project, 'name' | 'description' | 'icon' | 'defaultSkills' | 'defaultSkillArgs' | 'defaultMCPServers' | 'modelOverride'>>) => void;
+  /** Update persisted project defaults after a custom MCP server rename. */
+  renameMCPServerReferences: (oldName: string, newName: string) => void;
   deleteProject: (id: string) => void;
   archiveProject: (id: string) => void;
   restoreProject: (id: string) => void;
@@ -78,6 +80,20 @@ export const useProjectStore = create<ProjectStore>()(
           const project = state.projects[id];
           if (project) {
             Object.assign(project, data, { updatedAt: Date.now() });
+          }
+        });
+      },
+
+      renameMCPServerReferences: (oldName, newName) => {
+        if (!oldName || !newName || oldName === newName) return;
+        set((state) => {
+          const now = Date.now();
+          for (const project of Object.values(state.projects)) {
+            if (!project.defaultMCPServers?.includes(oldName)) continue;
+            project.defaultMCPServers = Array.from(new Set(
+              project.defaultMCPServers.map((name) => name === oldName ? newName : name),
+            ));
+            project.updatedAt = now;
           }
         });
       },

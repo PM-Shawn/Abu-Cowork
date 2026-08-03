@@ -505,6 +505,8 @@ interface ChatActions {
 
   // MCP per-session toggle
   toggleMCPServer: (convId: string, serverName: string) => void;
+  /** Update loaded per-session MCP filters after a custom server rename. */
+  renameMCPServerReferences: (oldName: string, newName: string) => void;
 
   // Context compression cache
   setContextCache: (convId: string, cache: import('../types').ContextCache) => void;
@@ -1696,6 +1698,18 @@ export const useChatStore = create<ChatStore>()(
             }
           } else {
             conv.enabledMCPServers = [...current, serverName];
+          }
+        });
+      },
+
+      renameMCPServerReferences: (oldName, newName) => {
+        if (!oldName || !newName || oldName === newName) return;
+        set((state) => {
+          for (const conv of Object.values(state.conversations)) {
+            if (!conv.enabledMCPServers?.includes(oldName)) continue;
+            conv.enabledMCPServers = Array.from(new Set(
+              conv.enabledMCPServers.map((name) => name === oldName ? newName : name),
+            ));
           }
         });
       },

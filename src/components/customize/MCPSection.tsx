@@ -1,7 +1,9 @@
 import { useState, useMemo, useEffect } from 'react';
 import { useSettingsStore } from '@/stores/settingsStore';
 import { useMCPStore, type MCPServerEntry } from '@/stores/mcpStore';
-import { useI18n } from '@/i18n';
+import { useChatStore } from '@/stores/chatStore';
+import { useProjectStore } from '@/stores/projectStore';
+import { useI18n, format } from '@/i18n';
 import { getMCPTemplatesForHost, mcpTemplates } from '@/data/marketplace/mcp';
 import { mcpManager, type MCPServerConfig, type MCPLogEntry } from '@/core/mcp/client';
 import { parseArgs } from '@/utils/argsParser';
@@ -72,6 +74,7 @@ export default function MCPSection({ showAddForm: externalShowAddForm, onAddForm
   const addServer = useMCPStore((s) => s.addServer);
   const removeServer = useMCPStore((s) => s.removeServer);
   const updateServer = useMCPStore((s) => s.updateServer);
+  const renameServer = useMCPStore((s) => s.renameServer);
   const connectServer = useMCPStore((s) => s.connectServer);
   const disconnectServer = useMCPStore((s) => s.disconnectServer);
   const clearServerError = useMCPStore((s) => s.clearServerError);
@@ -115,6 +118,7 @@ export default function MCPSection({ showAddForm: externalShowAddForm, onAddForm
   const [newServerUrl, setNewServerUrl] = useState('');
   const [newServerHeaders, setNewServerHeaders] = useState('');
   const [newServerEnv, setNewServerEnv] = useState('');
+  const [serverNameError, setServerNameError] = useState('');
 
   // JSON import mode
   const [addMode, setAddMode] = useState<'form' | 'json'>('form');
@@ -145,6 +149,7 @@ export default function MCPSection({ showAddForm: externalShowAddForm, onAddForm
     }
     setJsonInput(JSON.stringify({ [c.name]: jsonObj }, null, 2));
     setJsonError('');
+    setServerNameError('');
     setAddMode('form');
     setShowAddForm(true);
   };
@@ -156,6 +161,66 @@ export default function MCPSection({ showAddForm: externalShowAddForm, onAddForm
   // Categorize: "我的" = custom (not from templates), "示例" = template-based (installed + uninstalled)
   const searchLower = toolboxSearchQuery.toLowerCase();
   const templateNames = useMemo(() => new Set(mcpTemplates.map((t) => t.name)), []);
+  const editingNameLocked = !!editingServerName && templateNames.has(editingServerName);
+
+  const validateServerName = (requestedName: string, oldName?: string): string | null => {
+    const name = requestedName.trim();
+    if (!name) return t.toolbox.serverNameRequired;
+    if (name === oldName) return null;
+    if (servers[name]) return format(t.toolbox.serverNameExists, { name });
+    // Importing a known marketplace config by its canonical name is valid.
+    // Only a rename may not claim another template's identity.
+    if (oldName && templateNames.has(name)) return format(t.toolbox.serverNameReserved, { name });
+    return null;
+  };
+
+  async function saveEditedServer(config: MCPServerConfig, reportNameError: (message: string) => void): Promise<boolean> {
+    if (!editingServerName) return false;
+    const oldName = editingServerName;
+    const newName = config.name.trim();
+    const nameError = validateServerName(newName, oldName);
+    if (nameError) {
+      reportNameError(nameError);
+      return false;
+    }
+
+    try { await disconnectServer(oldName); } catch { /* store rename still remains safe */ }
+
+    if (newName !== oldName) {
+      if (!renameServer(oldName, newName)) {
+        reportNameError(t.toolbox.serverRenameFailed);
+        return false;
+      }
+      useChatStore.getState().renameMCPServerReferences(oldName, newName);
+      useProjectStore.getState().renameMCPServerReferences(oldName, newName);
+      // Old-name logs are no longer addressable from the renamed detail page.
+      mcpManager.clearServerLogs(oldName);
+    }
+
+    updateServer(newName, { ...config, name: newName });
+    setServerErrors((prev) => {
+      const next = { ...prev };
+      delete next[oldName];
+      delete next[newName];
+      return next;
+    });
+    setTestResults((prev) => {
+      const next = { ...prev };
+      delete next[oldName];
+      delete next[newName];
+      return next;
+    });
+    handleCloseAddForm();
+    setSelected({ kind: 'server', name: newName });
+    setConnectingServer(newName);
+    try { await connectServer(newName); }
+    catch (err) {
+      setServerErrors((prev) => ({ ...prev, [newName]: err instanceof Error ? err.message : String(err) }));
+    } finally {
+      setConnectingServer(null);
+    }
+    return true;
+  }
 
   // "我的": user-added custom servers (not matching any template)
   const customServers = useMemo(() => {
@@ -194,7 +259,11 @@ export default function MCPSection({ showAddForm: externalShowAddForm, onAddForm
 
   // Add or update custom server
   const handleAddServer = async () => {
-    if (!newServerName.trim()) return;
+    const nameError = validateServerName(newServerName, editingServerName ?? undefined);
+    if (nameError) {
+      setServerNameError(nameError);
+      return;
+    }
     const isEdit = !!editingServerName;
     const config: MCPServerConfig = {
       name: newServerName.trim(),
@@ -217,14 +286,11 @@ export default function MCPSection({ showAddForm: externalShowAddForm, onAddForm
     }
 
     if (isEdit) {
-      // Disconnect old connection first
-      try { await disconnectServer(config.name); } catch { /* ignore */ }
-      // Update config via store
-      const updateServer = useMCPStore.getState().updateServer;
-      updateServer(config.name, config);
-    } else {
-      addServer(config);
+      await saveEditedServer(config, setServerNameError);
+      return;
     }
+
+    addServer(config);
 
     handleCloseAddForm();
     setSelected({ kind: 'server', name: config.name });
@@ -252,10 +318,14 @@ export default function MCPSection({ showAddForm: externalShowAddForm, onAddForm
       const isEdit = !!editingServerName;
 
       if (isEdit) {
-        // In edit mode, use the first entry (or the entry matching editingServerName)
-        const [, serverDef] = entries.find(([n]) => n === editingServerName) ?? entries[0];
+        // Custom servers may rename by changing the JSON key. Marketplace /
+        // built-in entries keep their fixed identity even in JSON mode.
+        const [entryName, serverDef] = entries.find(([n]) => n === editingServerName) ?? entries[0];
         const def = serverDef as Record<string, unknown>;
-        const config: MCPServerConfig = { name: editingServerName!, enabled: true };
+        const config: MCPServerConfig = {
+          name: editingNameLocked ? editingServerName! : entryName.trim(),
+          enabled: true,
+        };
 
         if (def.url && typeof def.url === 'string') {
           config.transport = 'http';
@@ -268,19 +338,15 @@ export default function MCPSection({ showAddForm: externalShowAddForm, onAddForm
           if (def.env && typeof def.env === 'object') config.env = def.env as Record<string, string>;
         }
 
-        try { await disconnectServer(config.name); } catch { /* ignore */ }
-        const updateServer = useMCPStore.getState().updateServer;
-        updateServer(config.name, config);
-        handleCloseAddForm();
-        setSelected({ kind: 'server', name: config.name });
-        setConnectingServer(config.name);
-        setServerErrors((prev) => { const next = { ...prev }; delete next[config.name]; return next; });
-        try { await connectServer(config.name); }
-        catch (err) { setServerErrors((prev) => ({ ...prev, [config.name]: err instanceof Error ? err.message : String(err) })); }
-        finally { setConnectingServer(null); }
+        await saveEditedServer(config, setJsonError);
       } else {
         let firstName = '';
         for (const [name, serverDef] of entries) {
+          const nameError = validateServerName(name);
+          if (nameError) {
+            setJsonError(nameError);
+            return;
+          }
           if (!firstName) firstName = name;
           const config: MCPServerConfig = { name, enabled: true };
 
@@ -324,7 +390,7 @@ export default function MCPSection({ showAddForm: externalShowAddForm, onAddForm
     setEditingServerName(null);
     setNewServerName(''); setNewTransportType('stdio'); setNewServerCommand('');
     setNewServerArgs(''); setNewServerUrl(''); setNewServerHeaders(''); setNewServerEnv('');
-    setAddMode('form'); setJsonInput(''); setJsonError('');
+    setAddMode('form'); setJsonInput(''); setJsonError(''); setServerNameError('');
   };
 
   // Install from template
@@ -616,10 +682,12 @@ export default function MCPSection({ showAddForm: externalShowAddForm, onAddForm
                 <div>
                   <label className="block text-minor font-medium text-[var(--abu-text-secondary)] mb-1">{t.toolbox.serverName}</label>
                   <input type="text" placeholder={t.toolbox.serverName} value={newServerName}
-                    onChange={(e) => setNewServerName(e.target.value)}
-                    disabled={!!editingServerName}
+                    onChange={(e) => { setNewServerName(e.target.value); setServerNameError(''); }}
+                    disabled={editingNameLocked}
                     className={cn('w-full px-3 py-1.5 rounded-lg border border-[var(--abu-border)] text-body text-[var(--abu-text-primary)] bg-[var(--abu-bg-base)] focus:outline-none focus:ring-2 focus:ring-[var(--abu-clay-ring)] focus:border-[var(--abu-clay)] transition-all',
-                      editingServerName && 'opacity-60 cursor-not-allowed')} />
+                      editingNameLocked && 'opacity-60 cursor-not-allowed')} />
+                  {serverNameError && <p className="text-minor text-[var(--abu-danger)] mt-1">{serverNameError}</p>}
+                  {editingNameLocked && <p className="text-caption text-[var(--abu-text-muted)] mt-1">{t.toolbox.serverNameLockedHint}</p>}
                 </div>
                 <div>
                   <label className="block text-minor font-medium text-[var(--abu-text-secondary)] mb-1">{t.toolbox.transportType}</label>

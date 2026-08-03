@@ -1232,6 +1232,11 @@ export interface TranslationDict {
     myServers: string;
     exampleServers: string;
     serverName: string;
+    serverNameRequired: string;
+    serverNameExists: string;
+    serverNameReserved: string;
+    serverNameLockedHint: string;
+    serverRenameFailed: string;
     serverCommand: string;
     serverArgs: string;
     transportType: string;

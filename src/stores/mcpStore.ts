@@ -33,6 +33,8 @@ interface MCPActions {
   removeServer: (name: string) => void;
   /** Update server configuration */
   updateServer: (name: string, config: Partial<MCPServerConfig>) => void;
+  /** Move a server configuration to a new unique name. Runtime must be disconnected first. */
+  renameServer: (oldName: string, newName: string) => boolean;
   /** Connect to a server */
   connectServer: (name: string) => Promise<void>;
   /** Disconnect from a server */
@@ -84,6 +86,30 @@ export const useMCPStore = create<MCPStore>()(
             entry.config = { ...entry.config, ...config };
           }
         });
+      },
+
+      renameServer: (oldName, newName) => {
+        const oldKey = oldName.trim();
+        const newKey = newName.trim();
+        if (!oldKey || !newKey) return false;
+        if (oldKey === newKey) return !!get().servers[oldKey];
+        if (!get().servers[oldKey] || get().servers[newKey]) return false;
+
+        set((state) => {
+          const entry = state.servers[oldKey];
+          if (!entry || state.servers[newKey]) return;
+          state.servers[newKey] = {
+            ...entry,
+            config: { ...entry.config, name: newKey },
+            // A rename is performed after disconnecting the old runtime. Do
+            // not carry stale tools/errors across the identity boundary.
+            status: 'disconnected',
+            tools: [],
+            error: undefined,
+          };
+          delete state.servers[oldKey];
+        });
+        return true;
       },
 
       connectServer: async (name) => {

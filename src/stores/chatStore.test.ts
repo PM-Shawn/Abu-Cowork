@@ -2200,4 +2200,24 @@ describe('chatStore', () => {
     });
   });
 
+  describe('renameMCPServerReferences', () => {
+    it('migrates loaded per-session filters and removes duplicates', () => {
+      const id = useChatStore.getState().createConversation();
+      useChatStore.setState((state) => ({
+        conversations: {
+          ...state.conversations,
+          [id]: {
+            ...state.conversations[id],
+            enabledMCPServers: ['old-name', 'new-name', 'other'],
+          },
+        },
+      }));
+
+      useChatStore.getState().renameMCPServerReferences('old-name', 'new-name');
+
+      expect(useChatStore.getState().conversations[id].enabledMCPServers)
+        .toEqual(['new-name', 'other']);
+    });
+  });
+
 });

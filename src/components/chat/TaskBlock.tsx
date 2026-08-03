@@ -20,6 +20,7 @@ import {
   Plug,
   Users,
   MessageSquare,
+  CircleStop,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useI18n, format, type TranslationDict } from '@/i18n';
@@ -110,7 +111,14 @@ function getTypeLabel(step: UnifiedStep, t: TranslationDict): string | null {
 
 // Generate summary title from steps (with translations)
 // eslint-disable-next-line react-refresh/only-export-components
-export function generateSummary(steps: UnifiedStep[], t: TranslationDict, locale: string, isActive: boolean): string {
+export function generateSummary(
+  steps: UnifiedStep[],
+  t: TranslationDict,
+  locale: string,
+  isActive: boolean,
+  isStopped = false,
+): string {
+  if (isStopped) return t.task.stopped;
   const actions: string[] = [];
   const separator = locale.startsWith('zh') ? '，' : ', ';
 
@@ -226,6 +234,7 @@ interface TaskBlockProps {
   steps?: WorkflowStep[];
   executionSteps?: ExecutionStep[];
   isActive: boolean;
+  isStopped?: boolean;
   onRetry?: () => void;
 }
 
@@ -238,7 +247,7 @@ const PREVIEW_LIMIT = 3;
 
 type DisplayMode = 'collapsed' | 'preview' | 'expanded';
 
-export default function TaskBlock({ steps, executionSteps, isActive, onRetry }: TaskBlockProps) {
+export default function TaskBlock({ steps, executionSteps, isActive, isStopped = false, onRetry }: TaskBlockProps) {
   const { t, locale } = useI18n();
 
   // Convert to unified steps
@@ -270,7 +279,10 @@ export default function TaskBlock({ steps, executionSteps, isActive, onRetry }: 
   const completedCount = unifiedSteps.filter((s) => s.status === 'completed').length;
   const allCompleted = completedCount === unifiedSteps.length && unifiedSteps.length > 0 && !isActive;
   const hasError = unifiedSteps.some((s) => s.status === 'error');
-  const summary = useMemo(() => generateSummary(unifiedSteps, t, locale, isActive), [unifiedSteps, t, locale, isActive]);
+  const summary = useMemo(
+    () => generateSummary(unifiedSteps, t, locale, isActive, isStopped),
+    [unifiedSteps, t, locale, isActive, isStopped],
+  );
 
   // Determine which steps to display based on mode
   const isOpen = displayMode !== 'collapsed';
@@ -280,7 +292,7 @@ export default function TaskBlock({ steps, executionSteps, isActive, onRetry }: 
     : unifiedSteps;
 
   const handleHeaderClick = () => {
-    if (allCompleted && !hasError) {
+    if ((allCompleted || isStopped) && !hasError) {
       // Completed: toggle between collapsed and fully expanded (skip preview)
       setDisplayMode(displayMode === 'collapsed' ? 'expanded' : 'collapsed');
     } else {
@@ -301,8 +313,8 @@ export default function TaskBlock({ steps, executionSteps, isActive, onRetry }: 
   return (
     <div className="task-block mb-4">
       {/* Summary Header */}
-      {allCompleted && !hasError ? (
-        // Minimal completed header — single text line, no icons
+      {(allCompleted || isStopped) && !hasError ? (
+        // Minimal settled header — single text line, no icons
         <button
           onClick={handleHeaderClick}
           className="flex items-center gap-1 text-body text-[var(--abu-text-muted)] hover:text-[var(--abu-text-muted)] transition-colors mb-2"
@@ -344,7 +356,7 @@ export default function TaskBlock({ steps, executionSteps, isActive, onRetry }: 
           {visibleSteps.map((step, index) => {
             const isLastVisible = index === visibleSteps.length - 1;
             // Show connector if not the last visible step, or if there are trailing nodes
-            const hasTrailingNodes = allCompleted || isActive || hasError;
+            const hasTrailingNodes = allCompleted || isStopped || isActive || hasError;
             const isFullyExpanded = displayMode === 'expanded' || !needsTruncation;
             const showConnector = !isLastVisible || (isFullyExpanded && hasTrailingNodes);
             // For a thinking step, signal whether execution has moved on to a
@@ -390,13 +402,25 @@ export default function TaskBlock({ steps, executionSteps, isActive, onRetry }: 
           )}
 
           {/* Done node — only in fully expanded or no truncation needed */}
-          {allCompleted && (displayMode === 'expanded' || !needsTruncation) && (
+          {allCompleted && !isStopped && (displayMode === 'expanded' || !needsTruncation) && (
             <div className="flex items-start gap-3">
               <div className="w-3.5 h-3.5 mt-0.5 flex items-center justify-center shrink-0">
                 <Check className="h-3.5 w-3.5 text-[var(--abu-text-muted)]" />
               </div>
               <div className="flex-1 min-w-0 pb-2">
                 <div className="text-body leading-5 text-[var(--abu-text-muted)]">{t.task.done}</div>
+              </div>
+            </div>
+          )}
+
+          {/* User-stopped node — distinct from successful completion. */}
+          {isStopped && (displayMode === 'expanded' || !needsTruncation) && (
+            <div className="flex items-start gap-3">
+              <div className="w-3.5 h-3.5 mt-0.5 flex items-center justify-center shrink-0">
+                <CircleStop className="h-3.5 w-3.5 text-[var(--abu-text-muted)]" />
+              </div>
+              <div className="flex-1 min-w-0 pb-2">
+                <div className="text-body leading-5 text-[var(--abu-text-muted)]">{t.task.stopped}</div>
               </div>
             </div>
           )}

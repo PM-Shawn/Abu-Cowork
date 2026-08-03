@@ -245,7 +245,7 @@ describe('agentLoopHost', () => {
 
   describe('handleAgentAbort', () => {
     it('is idempotent and silent for an unknown runId', () => {
-      expect(() => handleAgentAbort({ runId: 'never-existed' })).not.toThrow();
+      expect(handleAgentAbort({ runId: 'never-existed' })).toEqual({ accepted: false, state: 'not_found' });
     });
 
     it('aborts the run\'s conversation-scoped controller (observed via AbortRegistry inside the loop)', async () => {
@@ -264,7 +264,7 @@ describe('agentLoopHost', () => {
       const runPromise = handleAgentRun(params);
       await loopStarted;
       expect(capturedSignal?.aborted).toBe(false);
-      handleAgentAbort({ runId: 'abort-me' });
+      expect(handleAgentAbort({ runId: 'abort-me' })).toEqual({ accepted: true, state: 'aborting' });
       expect(capturedSignal?.aborted).toBe(true);
       releaseLoop?.();
       const result = await runPromise;

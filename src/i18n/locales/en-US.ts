@@ -449,6 +449,7 @@ const enUS: TranslationDict = {
   task: {
     processing: 'Processing...',
     completed: 'Completed',
+    stopped: 'Stopped',
     createdFile: 'Created file',
     createdFiles: 'Created {count} files',
     modifiedFile: 'Modified file',

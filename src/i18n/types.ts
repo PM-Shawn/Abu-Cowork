@@ -467,6 +467,7 @@ export interface TranslationDict {
   task: {
     processing: string;
     completed: string;
+    stopped: string;
     createdFile: string;
     createdFiles: string;
     modifiedFile: string;

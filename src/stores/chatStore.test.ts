@@ -847,6 +847,7 @@ describe('chatStore', () => {
 
       const live = useChatStore.getState().conversations[id].messages[0];
       expect(live.content).toContain('已停止');
+      expect(live.stopReason).toBe('user');
       await vi.waitFor(() => {
         expect(written.some((c) => c.includes('已停止'))).toBe(true);
       });
@@ -897,8 +898,30 @@ describe('chatStore', () => {
       const live = useChatStore.getState().conversations[id].messages[0];
       expect(live.content).toBe('');
       expect(live.isStreaming).toBe(false);
+      expect(live.stopReason).toBeUndefined();
       await new Promise((r) => setTimeout(r, 30));
       expect(written.some((c) => c.includes('已停止'))).toBe(false);
+    });
+
+    it('persists a stopped terminal for a tool-only turn', async () => {
+      const id = useChatStore.getState().createConversation();
+      useChatStore.getState().addMessage(id, {
+        id: 'a1',
+        role: 'assistant',
+        content: '',
+        timestamp: Date.now(),
+        isStreaming: true,
+        toolCalls: [{ id: 'tc1', name: 'tool_search', input: {}, result: 'ok' }],
+      });
+
+      useChatStore.getState().cancelStreaming(id);
+
+      const live = useChatStore.getState().conversations[id].messages[0];
+      expect(live.stopReason).toBe('user');
+      expect(live.content).toBe('');
+      await vi.waitFor(() => {
+        expect(written.some((c) => c.includes('"stopReason":"user"'))).toBe(true);
+      });
     });
   });
 
@@ -911,7 +934,7 @@ describe('chatStore', () => {
   // (relayed back through frameApplier.ts with `fromSidecarFrame: true`,
   // see frameApplier.test.ts) is what actually applies the decoration.
   describe('cancelStreaming — sidecar run authority (P1-3c-1)', () => {
-    it('direct call with an active sidecar run: only aborts + clears the controller, does NOT mutate the message or reset agentStatus', () => {
+    it('direct call with an active sidecar run: aborts but retains ownership until terminal cleanup, without mutating the message', () => {
       mockIsConversationRunningInSidecar.mockReturnValue(true);
 
       const id = useChatStore.getState().createConversation();
@@ -926,7 +949,7 @@ describe('chatStore', () => {
       expect(mockIsConversationRunningInSidecar).toHaveBeenCalledWith(id);
       // Abort still fires — the shell's "喊停" signal reaches the sidecar.
       expect(controller.signal.aborted).toBe(true);
-      expect(useChatStore.getState().hasAbortController(id)).toBe(false);
+      expect(useChatStore.getState().hasAbortController(id)).toBe(true);
       // But the message/agentStatus decoration is untouched — deferred to
       // the sidecar's own cancelStreaming frame.
       const live = useChatStore.getState().conversations[id].messages[0];

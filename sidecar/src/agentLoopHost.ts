@@ -618,12 +618,26 @@ export function handleAgentEnqueueInput(rawParams: unknown): void {
   }
 }
 
-/** `{ runId }` — abort THIS run's conversation-scoped AbortController. Idempotent, unknown runId silent no-op (3a discipline). */
-export function handleAgentAbort(rawParams: unknown): void {
+export interface AgentAbortAck {
+  accepted: boolean;
+  state: 'aborting' | 'not_found';
+}
+
+/**
+ * `{ runId }` — abort THIS run's conversation-scoped AbortController and
+ * return an acknowledgement. Flushing before the ACK creates an ordering
+ * barrier: every frame emitted before Stop is already on stdout before the
+ * shell receives this response and performs its own idempotent finalization.
+ * Unknown/already-finished runIds are still safe and idempotent.
+ */
+export function handleAgentAbort(rawParams: unknown): AgentAbortAck {
   const { runId } = parseAbortParams(rawParams);
   const run = activeRuns.get(runId);
-  if (!run) return;
+  if (!run) return { accepted: false, state: 'not_found' };
+  run.coalescer.flush();
   run.controllers.get(run.conversationId)?.abort();
+  run.coalescer.flush();
+  return { accepted: true, state: 'aborting' };
 }
 
 /** `{ runId, patch }` — apply a `state.convPatch` scalar-field patch to the run's conversation mirror. Unknown runId silent drop. */

@@ -42,8 +42,9 @@ vi.mock('./frameApplier', () => ({
   applyDeltaFrames: (...a: unknown[]) => applyDeltaFramesMock(...a),
 }));
 
+const cancelExecutionMock = vi.fn();
 vi.mock('./ports/executionPort', () => ({
-  getExecutionPort: () => ({ marker: 'execution-port-stub' }),
+  getExecutionPort: () => ({ marker: 'execution-port-stub', cancelExecution: (...a: unknown[]) => cancelExecutionMock(...a) }),
 }));
 
 const appendToolCallContextMock = vi.fn();
@@ -51,6 +52,10 @@ const chatDeltaAppendTextMock = vi.fn();
 const chatDeltaFinishStreamingMock = vi.fn();
 const chatDeltaSetAgentStatusMock = vi.fn();
 const chatDeltaSetConversationStatusMock = vi.fn();
+const chatDeltaCancelStreamingMock = vi.fn();
+const chatDeltaDeactivateSkillsMock = vi.fn();
+const chatDeltaAddMessageMock = vi.fn();
+const chatDeltaDeleteMessageMock = vi.fn();
 vi.mock('./ports/chatDelta', () => ({
   getChatDelta: () => ({
     appendToolCallContext: (...a: unknown[]) => appendToolCallContextMock(...a),
@@ -58,6 +63,10 @@ vi.mock('./ports/chatDelta', () => ({
     finishStreaming: (...a: unknown[]) => chatDeltaFinishStreamingMock(...a),
     setAgentStatus: (...a: unknown[]) => chatDeltaSetAgentStatusMock(...a),
     setConversationStatus: (...a: unknown[]) => chatDeltaSetConversationStatusMock(...a),
+    cancelStreaming: (...a: unknown[]) => chatDeltaCancelStreamingMock(...a),
+    deactivateSkills: (...a: unknown[]) => chatDeltaDeactivateSkillsMock(...a),
+    addMessage: (...a: unknown[]) => chatDeltaAddMessageMock(...a),
+    deleteMessage: (...a: unknown[]) => chatDeltaDeleteMessageMock(...a),
   }),
 }));
 
@@ -175,6 +184,7 @@ vi.mock('../enterprise/llm-resolver', () => ({
 const enqueueUserInputMock = vi.fn();
 const getQueuedInputsMock = vi.fn().mockReturnValue([]);
 const removeQueuedInputMock = vi.fn();
+const drainQueuedInputsMock = vi.fn().mockReturnValue([]);
 let capturedQueueCb: (() => void) | undefined;
 const queueUnsubMock = vi.fn();
 const subscribeToInputQueueMock = vi.fn((cb: () => void) => {
@@ -185,6 +195,7 @@ vi.mock('./userInputQueue', () => ({
   enqueueUserInput: (...a: unknown[]) => enqueueUserInputMock(...a),
   getQueuedInputs: (...a: unknown[]) => getQueuedInputsMock(...a),
   removeQueuedInput: (...a: unknown[]) => removeQueuedInputMock(...a),
+  drainQueuedInputs: (...a: unknown[]) => drainQueuedInputsMock(...a),
   subscribeToInputQueue: (...a: [() => void]) => subscribeToInputQueueMock(...a),
 }));
 
@@ -257,6 +268,21 @@ vi.mock('../tools/builtins', () => ({
   setComputerUseBatchMode: (...a: unknown[]) => setComputerUseBatchModeMock(...a),
   setSkipAutoScreenshot: (...a: unknown[]) => setSkipAutoScreenshotMock(...a),
   clearAllSkillHooks: (...a: unknown[]) => clearAllSkillHooksMock(...a),
+}));
+
+const drainCapabilitySetupRequestsMock = vi.fn();
+vi.mock('../capabilityPlugins/setupBridge', () => ({
+  drainCapabilitySetupRequests: (...a: unknown[]) => drainCapabilitySetupRequestsMock(...a),
+}));
+
+const clearCheckpointMock = vi.fn().mockResolvedValue(undefined);
+vi.mock('../session/checkpoint', () => ({
+  clearCheckpoint: (...a: unknown[]) => clearCheckpointMock(...a),
+}));
+
+const closeAxSessionMock = vi.fn().mockResolvedValue(undefined);
+vi.mock('../tools/definitions/computerTools', () => ({
+  closeAxSession: (...a: unknown[]) => closeAxSessionMock(...a),
 }));
 
 const notifyTaskCompletedMock = vi.fn().mockResolvedValue(undefined);
@@ -379,6 +405,11 @@ describe('agentLoopRunner', () => {
     chatDeltaFinishStreamingMock.mockReset();
     chatDeltaSetAgentStatusMock.mockReset();
     chatDeltaSetConversationStatusMock.mockReset();
+    chatDeltaCancelStreamingMock.mockReset();
+    chatDeltaDeactivateSkillsMock.mockReset();
+    chatDeltaAddMessageMock.mockReset();
+    chatDeltaDeleteMessageMock.mockReset();
+    cancelExecutionMock.mockReset();
     scratchpadAddEntryMock.mockReset();
     recordMaxOutputTokensMock.mockReset();
     recordContextWindowMock.mockReset();
@@ -431,6 +462,11 @@ describe('agentLoopRunner', () => {
     capturedExecCb = undefined;
     taskExecState = { getExecutionByConversationId: () => undefined };
     clearAllSkillHooksMock.mockReset();
+    drainCapabilitySetupRequestsMock.mockReset();
+    clearCheckpointMock.mockReset();
+    clearCheckpointMock.mockResolvedValue(undefined);
+    closeAxSessionMock.mockReset();
+    closeAxSessionMock.mockResolvedValue(undefined);
     executeAnyToolMock.mockReset();
     executeAnyToolMock.mockResolvedValue('tool result');
     capsGetMock.mockReset();
@@ -457,6 +493,8 @@ describe('agentLoopRunner', () => {
     getQueuedInputsMock.mockReset();
     getQueuedInputsMock.mockReturnValue([]);
     removeQueuedInputMock.mockReset();
+    drainQueuedInputsMock.mockReset();
+    drainQueuedInputsMock.mockReturnValue([]);
     subscribeToInputQueueMock.mockClear();
     queueUnsubMock.mockReset();
     capturedQueueCb = undefined;
@@ -1122,7 +1160,7 @@ describe('agentLoopRunner', () => {
       expect(createEventRouterMock).toHaveBeenCalledTimes(1);
       expect(router.locale).toBe('zh-CN');
       const deps = router.deps as { executionStore: unknown; appendToolCallContext: (l: string, c: unknown) => void; addScratchpadEntry: (e: unknown) => void };
-      expect(deps.executionStore).toEqual({ marker: 'execution-port-stub' });
+      expect(deps.executionStore).toEqual(expect.objectContaining({ marker: 'execution-port-stub' }));
 
       deps.appendToolCallContext('loop-x', { toolCallId: 'tc1' });
       expect(appendToolCallContextMock).toHaveBeenCalledWith('conv-7', 'loop-x', { toolCallId: 'tc1' });
@@ -1779,6 +1817,134 @@ describe('agentLoopRunner', () => {
       expect(__getActiveRunSessionCount()).toBe(0);
       expect(clearLoopContextMock).toHaveBeenCalledTimes(1);
       expect(clearAbortControllerMock).toHaveBeenCalledWith('conv-1');
+    });
+
+    it('Stop uses an acknowledged abort request, finalizes locally, and closes the hung agent.run transport', async () => {
+      const { runAgentLoopDispatched } = await importFresh();
+      const shellController = new AbortController();
+      getAbortControllerMock.mockReturnValue(shellController);
+      sidecarRequestMock.mockImplementation((method: string, _params: unknown, _timeout: number, signal?: AbortSignal) => {
+        if (method === 'agent.abort') return Promise.resolve({ accepted: true, state: 'aborting' });
+        return new Promise((_resolve, reject) => {
+          signal?.addEventListener('abort', () => reject(signal.reason), { once: true });
+        });
+      });
+
+      const running = runAgentLoopDispatched('conv-1', 'hello');
+      await waitForCall(sidecarRequestMock);
+      getConversationMock.mockReturnValue({
+        id: 'conv-1',
+        title: 't',
+        status: 'running',
+        messages: [{ id: 'ghost-1', role: 'assistant', content: '', timestamp: 1, isStreaming: true }],
+      });
+      drainQueuedInputsMock.mockReturnValue([
+        { id: 'queued-1', text: 'keep this follow-up', timestamp: 2 },
+        { id: 'system-1', text: 'hidden control input', timestamp: 3, isSystem: true },
+      ]);
+      shellController.abort();
+      for (let i = 0; i < 30 && !sidecarRequestMock.mock.calls.some((c) => c[0] === 'agent.abort'); i++) {
+        await Promise.resolve();
+      }
+
+      await expect(running).resolves.toEqual({ reason: 'aborted' });
+      expect(sidecarRequestMock).toHaveBeenCalledWith(
+        'agent.abort',
+        { runId: expect.any(String) },
+        1_000,
+      );
+      expect(chatDeltaCancelStreamingMock).toHaveBeenCalledWith('conv-1', { fromSidecarFrame: true });
+      expect(chatDeltaDeactivateSkillsMock).toHaveBeenCalledWith('conv-1');
+      expect(chatDeltaDeleteMessageMock).toHaveBeenCalledWith('conv-1', 'ghost-1', { skipCatalogBump: false });
+      expect(chatDeltaAddMessageMock).toHaveBeenCalledWith('conv-1', expect.objectContaining({
+        id: 'abort-queued-queued-1',
+        role: 'user',
+        content: 'keep this follow-up',
+      }));
+      expect(chatDeltaAddMessageMock).not.toHaveBeenCalledWith('conv-1', expect.objectContaining({
+        content: 'hidden control input',
+      }));
+      expect(chatDeltaSetAgentStatusMock).toHaveBeenCalledWith('idle');
+      expect(chatDeltaSetConversationStatusMock).toHaveBeenCalledWith('conv-1', 'idle');
+      expect(cancelExecutionMock).toHaveBeenCalledWith(expect.any(String));
+      expect(clearAbortControllerMock).toHaveBeenCalledWith('conv-1');
+    });
+
+    it('force-finalizes after 5s when the sidecar never acknowledges Stop', async () => {
+      vi.useFakeTimers();
+      const { runAgentLoopDispatched } = await importFresh();
+      const shellController = new AbortController();
+      const never = deferred<unknown>();
+      getAbortControllerMock.mockReturnValue(shellController);
+      sidecarRequestMock.mockImplementation((method: string, _params: unknown, _timeout: number, signal?: AbortSignal) => {
+        if (method === 'agent.abort') return never.promise;
+        return new Promise((_resolve, reject) => {
+          signal?.addEventListener('abort', () => reject(signal.reason), { once: true });
+        });
+      });
+
+      const running = runAgentLoopDispatched('conv-1', 'hello');
+      await waitForCall(sidecarRequestMock);
+      shellController.abort();
+      await vi.advanceTimersByTimeAsync(4_999);
+      expect(chatDeltaCancelStreamingMock).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(1);
+
+      await expect(running).resolves.toEqual({ reason: 'aborted' });
+      expect(chatDeltaCancelStreamingMock).toHaveBeenCalledWith('conv-1', { fromSidecarFrame: true });
+      expect(cancelExecutionMock).toHaveBeenCalledTimes(1);
+    });
+
+    it('finalizes immediately if agent.run fails after Stop, instead of clearing the watchdog and leaving thinking stuck', async () => {
+      const { runAgentLoopDispatched } = await importFresh();
+      const shellController = new AbortController();
+      const runRpc = deferred<unknown>();
+      const abortRpc = deferred<unknown>();
+      getAbortControllerMock.mockReturnValue(shellController);
+      sidecarRequestMock.mockImplementation((method: string) => (
+        method === 'agent.abort' ? abortRpc.promise : runRpc.promise
+      ));
+
+      const running = runAgentLoopDispatched('conv-1', 'hello');
+      await waitForCall(sidecarRequestMock);
+      shellController.abort();
+      runRpc.reject(new Error('sidecar transport closed during stop'));
+
+      await expect(running).resolves.toEqual({ reason: 'aborted' });
+      expect(chatDeltaCancelStreamingMock).toHaveBeenCalledWith('conv-1', { fromSidecarFrame: true });
+      expect(chatDeltaSetConversationStatusMock).toHaveBeenCalledWith('conv-1', 'idle');
+    });
+
+    it('drops delta frames that arrive after the abort ACK fence', async () => {
+      const { runAgentLoopDispatched } = await importFresh();
+      const shellController = new AbortController();
+      const firstFrame = deferred<void>();
+      getAbortControllerMock.mockReturnValue(shellController);
+      applyDeltaFramesMock.mockReturnValueOnce(firstFrame.promise);
+      sidecarRequestMock.mockImplementation((method: string, _params: unknown, _timeout: number, signal?: AbortSignal) => {
+        if (method === 'agent.abort') return Promise.resolve({ accepted: true, state: 'aborting' });
+        return new Promise((_resolve, reject) => {
+          signal?.addEventListener('abort', () => reject(signal.reason), { once: true });
+        });
+      });
+
+      const running = runAgentLoopDispatched('conv-1', 'hello');
+      await waitForCall(sidecarRequestMock);
+      const runId = (sidecarRequestMock.mock.calls.find((c) => c[0] === 'agent.run')?.[1] as { runId: string }).runId;
+      const deltaHandler = handlerFor(onSidecarNotification, 'agent.delta');
+      deltaHandler({ runId, frames: [{ p: 'chat', m: 'appendText', a: ['conv-1', 'before-stop'] }] });
+
+      shellController.abort();
+      for (let i = 0; i < 30 && !sidecarRequestMock.mock.calls.some((c) => c[0] === 'agent.abort'); i++) {
+        await Promise.resolve();
+      }
+      await Promise.resolve(); // let the ACK handler close the frame gate
+      deltaHandler({ runId, frames: [{ p: 'chat', m: 'appendText', a: ['conv-1', 'late'] }] });
+      expect(applyDeltaFramesMock).toHaveBeenCalledTimes(1);
+
+      firstFrame.resolve();
+      await expect(running).resolves.toEqual({ reason: 'aborted' });
+      expect(applyDeltaFramesMock).toHaveBeenCalledTimes(1);
     });
 
     it('does not resolve or unregister until queued frames and chat persistence settle', async () => {

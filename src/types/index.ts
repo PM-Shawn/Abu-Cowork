@@ -243,6 +243,8 @@ export interface Message {
   content: string | MessageContent[];
   timestamp: number;
   isStreaming?: boolean;
+  /** Persisted terminal reason for an assistant turn that the user stopped. */
+  stopReason?: 'user';
   toolCalls?: ToolCall[];
   // Extended thinking content
   thinking?: string;

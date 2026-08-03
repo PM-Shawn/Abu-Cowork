@@ -15,4 +15,7 @@ describe('generateSummary — thinking-only block', () => {
   it('falls back to "思考过程" when no duration', () => {
     expect(generateSummary([thinkingStep(undefined)], t, locale, false)).toBe(t.chat.thinkingProcess);
   });
+  it('uses the stopped terminal instead of completed action summaries', () => {
+    expect(generateSummary([thinkingStep(5)], t, locale, false, true)).toBe(t.task.stopped);
+  });
 });

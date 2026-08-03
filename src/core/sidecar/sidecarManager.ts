@@ -165,6 +165,8 @@ interface PendingRequest {
   reject: (err: Error) => void;
   /** null when the request was sent with timeoutMs: 0 ("no timeout" — see request() JSDoc). */
   timer: ReturnType<typeof setTimeout> | null;
+  /** Removes the optional AbortSignal listener once this request settles. */
+  cleanupAbort?: () => void;
 }
 
 /** Handler for a sidecar→shell JSON-RPC notification (message with `method`, no `id`). */
@@ -322,25 +324,55 @@ export function request(
   method: string,
   params: unknown,
   timeoutMs: number = REQUEST_DEFAULT_TIMEOUT_MS,
+  signal?: AbortSignal,
 ): Promise<unknown> {
   const id = nextRequestId++;
   const payload = JSON.stringify({ jsonrpc: '2.0', id, method, params });
 
   return new Promise<unknown>((resolve, reject) => {
+    const abortError = (): Error => {
+      const reason = signal?.reason;
+      if (reason instanceof Error) return reason;
+      const error = new Error(typeof reason === 'string' ? reason : `Sidecar request "${method}" aborted`);
+      error.name = 'AbortError';
+      return error;
+    };
+
+    if (signal?.aborted) {
+      reject(abortError());
+      return;
+    }
+
     const timer = timeoutMs > 0
       ? setTimeout(() => {
+          const entry = pendingRequests.get(id);
           pendingRequests.delete(id);
+          entry?.cleanupAbort?.();
           reject(new Error(`Sidecar request "${method}" timed out after ${timeoutMs}ms`));
         }, timeoutMs)
       : null;
 
-    pendingRequests.set(id, { resolve, reject, timer });
+    const onAbort = (): void => {
+      const entry = pendingRequests.get(id);
+      if (!entry) return;
+      if (entry.timer) clearTimeout(entry.timer);
+      pendingRequests.delete(id);
+      entry.cleanupAbort?.();
+      reject(abortError());
+    };
+    const cleanupAbort = signal
+      ? () => signal.removeEventListener('abort', onAbort)
+      : undefined;
+    signal?.addEventListener('abort', onAbort, { once: true });
+
+    pendingRequests.set(id, { resolve, reject, timer, cleanupAbort });
 
     invoke('mcp_write', { id: SIDECAR_ID, message: payload }).catch((err: unknown) => {
       const entry = pendingRequests.get(id);
       if (entry) {
         if (entry.timer) clearTimeout(entry.timer);
         pendingRequests.delete(id);
+        entry.cleanupAbort?.();
       }
       reject(err instanceof Error ? err : new Error(String(err)));
     });
@@ -750,6 +782,7 @@ function handleMessage(raw: string): void {
 
   if (entry.timer) clearTimeout(entry.timer);
   pendingRequests.delete(msg.id);
+  entry.cleanupAbort?.();
 
   if (msg.error) {
     entry.reject(new SidecarRpcError(msg.error.code, msg.error.message, msg.error.data));
@@ -827,6 +860,7 @@ function handleClose(): void {
 function rejectAllPending(err: Error): void {
   for (const entry of pendingRequests.values()) {
     if (entry.timer) clearTimeout(entry.timer);
+    entry.cleanupAbort?.();
     entry.reject(err);
   }
   pendingRequests.clear();

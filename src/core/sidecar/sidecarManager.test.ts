@@ -227,6 +227,24 @@ describe('sidecarManager', () => {
       emitClose();
       await assertion;
     });
+
+    it('an AbortSignal rejects a no-timeout request and ignores its late response', async () => {
+      mockHappyPath();
+      await startSidecar();
+
+      const callsBefore = invoke.mock.calls.length;
+      const controller = new AbortController();
+      const pending = request('agent.run', { runId: 'run-1' }, 0, controller.signal);
+      const writeCall = invoke.mock.calls.slice(callsBefore).find((c) => c[0] === 'mcp_write');
+      const sent = JSON.parse((writeCall as [string, { message: string }])[1].message) as { id: number };
+
+      controller.abort();
+      await expect(pending).rejects.toMatchObject({ name: 'AbortError' });
+
+      // A sidecar that eventually unwinds may still send the original result.
+      // It must not resurrect or re-settle the cancelled transport request.
+      expect(() => emitMsg({ jsonrpc: '2.0', id: sent.id, result: { reason: 'aborted' } })).not.toThrow();
+    });
   });
 
   describe('notifySidecar', () => {

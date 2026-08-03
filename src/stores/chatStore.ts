@@ -747,14 +747,15 @@ export const useChatStore = create<ChatStore>()(
         // `agentLoopRunner.ts`'s `runAgentLoopDispatched` registers into via
         // `getAbortRegistry().getAbortController(conversationId)` (both read
         // through this module's `abortControllers` Map), so `.abort()` fires
-        // that file's `onShellAbort` listener → `notifySidecar('agent.abort',
-        // { runId })`, the exact same signal the Stop button (`cancelStreaming`)
-        // sends. That notification is fire-and-forget — the sidecar can still
-        // be mid-flight on a `tool.invoke` for this conversation when it
-        // arrives. `handleMainLoopToolInvoke` (agentLoopRunner.ts) closes that
+        // that file's `onShellAbort` listener → the acknowledged
+        // `agent.abort { runId }` request, the exact same signal the Stop
+        // button (`cancelStreaming`) sends. This synchronous store action
+        // cannot await that ACK, so the sidecar can still be mid-flight on a
+        // `tool.invoke` when the record is erased. `handleMainLoopToolInvoke`
+        // (agentLoopRunner.ts) closes that
         // residual window by refusing to execute a tool once the conversation
         // record here is gone, so the ordering below (abort, THEN erase) is
-        // sufficient — no need to await a sidecar ack (would require making
+        // sufficient — no need to await the sidecar ACK here (would require making
         // this action async, breaking its synchronous call contract).
         //
         // Cancel any ongoing streaming for this conversation
@@ -1385,16 +1386,14 @@ export const useChatStore = create<ChatStore>()(
 
       cancelStreaming: (convId, opts) => {
         // P1-3c-1 (design doc §3, "conversation-authority"): while a
-        // sidecar-hosted run owns this conversation, the SIDECAR is the
-        // run's single writer for the "stopped" decoration (marker /
-        // thinkingDuration / tool-cancel + the persist below) — it sends its
-        // own `cancelStreaming` frame from agentLoop.ts's abort catch, which
-        // frameApplier.ts re-applies onto THIS SAME action with
-        // `opts.fromSidecarFrame: true` (see that file's special case for
-        // 'cancelStreaming'). That frame is guaranteed to land after any of
-        // the run's own in-flight streamed text/tool-call frames (same
-        // coalescer FIFO), so its decoration can't race trailing content the
-        // way an immediate local mutate would.
+        // sidecar-hosted run owns this conversation, it remains authoritative
+        // for in-flight frames. A direct Stop therefore cannot decorate
+        // immediately: `agentLoopRunner` first obtains an ordered abort ACK
+        // (the sidecar flushes its frame coalescer before replying), closes
+        // the late-frame gate, then calls this action again with
+        // `opts.fromSidecarFrame: true`. The sidecar's normal abort catch may
+        // also emit the same frame; the full path below is idempotent, so both
+        // the healthy and 5s force-finalize paths converge safely.
         //
         // `opts.fromSidecarFrame` always takes the full path below
         // unconditionally — that call IS the authoritative decoration, not a
@@ -1407,13 +1406,17 @@ export const useChatStore = create<ChatStore>()(
         // `opts` undefined) checks `isConversationRunningInSidecar` — if a
         // sidecar run is live, it must NOT also mutate/persist here (that
         // would race the sidecar's own trailing frames); it only signals
-        // abort + clears its own UI-only overlay state, and returns.
+        // abort, retains ownership, clears its UI-only overlay, and returns.
         if (!opts?.fromSidecarFrame && isConversationRunningInSidecar(convId)) {
           const controller = abortControllers.get(convId);
           if (controller) {
             controller.abort();
-            abortControllers.delete(convId);
           }
+          // Keep the controller registered until the sidecar ACK (or the
+          // shell's force-finalize watchdog) reaches the full path below.
+          // Deleting it here used to abandon run ownership while the
+          // `agent.run` RPC could remain pending forever, leaving the UI on
+          // "thinking" with no controller/session able to finish cleanup.
           setComputerUseActive(false);
           import('@tauri-apps/api/core').then(({ invoke }) => {
             invoke('hide_screen_border').catch(() => {});
@@ -1452,6 +1455,21 @@ export const useChatStore = create<ChatStore>()(
             let mutated = false;
             if (lastMsg.isStreaming) {
               lastMsg.isStreaming = false;
+              const hasVisibleActivity =
+                (typeof lastMsg.content === 'string'
+                  ? lastMsg.content.trim().length > 0
+                  : lastMsg.content.some((part) => part.type === 'text' && part.text.trim().length > 0))
+                || !!lastMsg.thinking?.trim()
+                || !!lastMsg.toolCalls?.length
+                || !!lastMsg.toolCallsForContext?.length;
+              // Persist the user-stop terminal independently of the cosmetic
+              // markdown marker. Tool-only turns have no assistant text to
+              // append that marker to, but still need to reopen as "Stopped"
+              // rather than being inferred as successfully completed.
+              if (hasVisibleActivity && lastMsg.stopReason !== 'user') {
+                lastMsg.stopReason = 'user';
+                mutated = true;
+              }
               // Append cancellation notice — only when real streamed content
               // exists, so an untouched placeholder never becomes a
               // "*[已停止]*"-only bubble.

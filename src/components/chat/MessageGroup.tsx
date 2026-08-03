@@ -353,6 +353,11 @@ export default function MessageGroup({ messages, isLastGroup: isLastGroupProp = 
   // Check if THIS execution is active (not global status)
   const isThisExecutionActive = execution?.status === 'running';
 
+  // Execution status is live-only; message.stopReason is persisted so a
+  // stopped tool-only turn keeps the same terminal after app restart.
+  const isStopped = execution?.status === 'cancelled'
+    || assistantMsgs.some((message) => message.stopReason === 'user');
+
   // Check if any message is still streaming
   const isStreaming = assistantMsgs.some((m) => m.isStreaming);
 
@@ -706,12 +711,14 @@ export default function MessageGroup({ messages, isLastGroup: isLastGroupProp = 
           <TaskBlock
             executionSteps={seg.executionSteps}
             isActive={execIsActive}
+            isStopped={isStopped}
             onRetry={seg.isLastGroup && hasError && !isStreaming ? handleRetry : undefined}
           />
         ) : hasLegacySteps && (
           <TaskBlock
             steps={seg.legacySteps}
             isActive={legacyIsActive}
+            isStopped={isStopped}
             onRetry={seg.isLastGroup && hasError && !isStreaming ? handleRetry : undefined}
           />
         )}

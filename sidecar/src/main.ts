@@ -328,13 +328,15 @@ function handleMessage(raw: string): void {
   }
 
   if (method === 'agent.abort') {
-    // Notification only — fire-and-forget, same discipline as
-    // llm.abort/subagent.abort.
-    try {
-      handleAgentAbort(params);
-    } catch (err) {
-      log('agent.abort handler threw (ignored — notifications get no response)', err);
+    // Requests receive an ordering ACK so the shell can deterministically
+    // finalize and fence late frames. Keep accepting the old notification
+    // shape for rolling upgrades / backward compatibility.
+    if (!isNotification) {
+      runAsyncRequest(id, () => Promise.resolve(handleAgentAbort(params)));
+      return;
     }
+    try { handleAgentAbort(params); }
+    catch (err) { log('agent.abort handler threw (ignored — notification has no response)', err); }
     return;
   }
 

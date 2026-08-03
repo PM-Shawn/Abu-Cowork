@@ -449,6 +449,7 @@ const zhCN: TranslationDict = {
   task: {
     processing: '处理中...',
     completed: '完成',
+    stopped: '已停止',
     createdFile: '创建了文件',
     createdFiles: '创建了 {count} 个文件',
     modifiedFile: '修改了文件',

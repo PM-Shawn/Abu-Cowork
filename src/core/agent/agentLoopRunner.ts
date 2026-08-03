@@ -91,7 +91,7 @@ import type { ConversationMeta } from '../session/conversationStorage';
 import { resolveEntryModel } from './resolveEntryModel';
 import { getActiveApiKey, getActiveProvider } from '../../utils/settingsSelectors';
 import { resolveEffectiveLlmCreds } from '../enterprise/llm-resolver';
-import { enqueueUserInput, getQueuedInputs, subscribeToInputQueue, removeQueuedInput } from './userInputQueue';
+import { enqueueUserInput, getQueuedInputs, subscribeToInputQueue, removeQueuedInput, drainQueuedInputs } from './userInputQueue';
 import { registerSidecarRunPredicate } from './sidecarRunPredicate';
 import { bindWorkspaceFromWrite } from './defaultWorkspace';
 import { snapshotBeforeAiEdit } from '../../utils/aiEditSnapshots';
@@ -101,6 +101,8 @@ import { ensureBuiltinBrowserRuntime } from '../browser/builtinBrowserRuntime';
 import { matchesToolPattern } from '../skill/toolFilter';
 
 const logger = createLogger('agent-loop-runner');
+const AGENT_ABORT_ACK_TIMEOUT_MS = 1_000;
+const AGENT_ABORT_FORCE_FINALIZE_MS = 5_000;
 
 // ── Run-session registry ────────────────────────────────────────────────
 //
@@ -177,6 +179,15 @@ export interface RunSession {
    * race each other and the final response can resolve before disk frames.
    */
   frameApplyTail?: Promise<void>;
+  /** Dedicated cancellation for the long-lived `agent.run` transport. The
+   * UI AbortController must not cancel it immediately: we first wait for the
+   * sidecar's ordered abort ACK, then fence frames and end the transport. */
+  transportAbortController?: AbortController;
+  abortRequested?: boolean;
+  dropFrames?: boolean;
+  abortWatchdog?: ReturnType<typeof setTimeout>;
+  abortRequestPromise?: Promise<void>;
+  abortFinalizationPromise?: Promise<void>;
 }
 
 const sessions = new Map<string, RunSession>();
@@ -218,6 +229,8 @@ registerSidecarRunPredicate(isConversationRunningInSidecar);
 
 /** Unregister a run session. Uninstalls the push emitters once the LAST session is gone. */
 export function unregisterRunSession(runId: string): void {
+  const session = sessions.get(runId);
+  if (session?.abortWatchdog) clearTimeout(session.abortWatchdog);
   sessions.delete(runId);
   if (sessions.size === 0) uninstallPushEmitters();
 }
@@ -233,6 +246,9 @@ export function __getActiveRunSessionCount(): number {
 
 /** Test-only reset — clears the registry and uninstalls emitters without going through unregisterRunSession's one-at-a-time bookkeeping. */
 export function __resetAgentLoopRunnerForTests(): void {
+  for (const session of sessions.values()) {
+    if (session.abortWatchdog) clearTimeout(session.abortWatchdog);
+  }
   sessions.clear();
   uninstallPushEmitters();
 }
@@ -245,6 +261,7 @@ function handleAgentDelta(rawParams: unknown): void {
   if (!params || typeof params.runId !== 'string' || !Array.isArray(params.frames)) return;
   const session = sessions.get(params.runId);
   if (!session) return; // unknown/already-finished runId — silent drop
+  if (session.dropFrames) return; // terminal fence — late frames from an aborted run are stale
   // P1-3B-3B fallback discipline: the first frame observed for this run is
   // an already-committed, observable side effect (text/thinking streamed to
   // the real chatStore) — see RunSession.committed's doc.
@@ -260,6 +277,155 @@ function handleAgentDelta(rawParams: unknown): void {
 async function settleRunPersistence(session: RunSession): Promise<void> {
   await (session.frameApplyTail ?? Promise.resolve());
   await waitForConversationPersistence(session.conversationId);
+}
+
+/**
+ * Shell-owned, idempotent abort terminal. It is intentionally ordered after
+ * all frames accepted before the sidecar ACK (or before the watchdog fires),
+ * then closes the frame gate before mutating the real stores. This restores
+ * the Tauri-era guarantee that Stop always reaches a visible terminal state
+ * even when the model reader or sidecar cleanup never settles.
+ */
+async function finalizeAbortedRun(session: RunSession, source: 'ack' | 'watchdog' | 'run-terminal'): Promise<void> {
+  if (session.abortFinalizationPromise) return session.abortFinalizationPromise;
+
+  session.abortFinalizationPromise = (async () => {
+    session.dropFrames = true;
+    if (session.abortWatchdog) {
+      clearTimeout(session.abortWatchdog);
+      session.abortWatchdog = undefined;
+    }
+
+    await (session.frameApplyTail ?? Promise.resolve());
+
+    // Permission dialogs live in the shell and must not survive a force-stop.
+    drainConfirmationQueue();
+    drainFilePermissionQueue();
+    drainWorkspaceRequest();
+    drainUserQuestions();
+
+    if (getConversationReader().getConversation(session.conversationId)) {
+      const chatDelta = getChatDelta();
+
+      // Drop an untouched streaming placeholder before cancelStreaming, so
+      // Stop-before-first-token cannot leave a blank assistant bubble.
+      const conversation = getConversationReader().getConversation(session.conversationId);
+      const streamingAssistant = conversation
+        ? [...conversation.messages].reverse().find((message) => message.role === 'assistant' && message.isStreaming)
+        : undefined;
+      try {
+        if (streamingAssistant) {
+          const text = typeof streamingAssistant.content === 'string'
+            ? streamingAssistant.content
+            : streamingAssistant.content
+                .filter((part) => part.type === 'text')
+                .map((part) => (part as { type: 'text'; text: string }).text)
+                .join('');
+          const isGhost = text.trim().length === 0
+            && !(streamingAssistant.toolCalls?.length)
+            && !(streamingAssistant.toolCallsForContext?.length)
+            && !streamingAssistant.thinking;
+          if (isGhost) {
+            const { isMessageWrittenToDisk } = await import('../session/conversationStorage');
+            chatDelta.deleteMessage(session.conversationId, streamingAssistant.id, {
+              skipCatalogBump: !isMessageWrittenToDisk(streamingAssistant.id),
+            });
+          }
+        }
+      } catch (err) {
+        logger.warn('abort ghost cleanup failed; continuing terminal finalization', {
+          runId: session.runId,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+
+      // Preserve user-visible queued follow-ups before clearing the queue,
+      // matching agentLoop.ts's normal abort catch. System entries remain
+      // hidden because they are internal wake-up/control messages.
+      try {
+        for (const queued of drainQueuedInputs(session.conversationId)) {
+          if (queued.isSystem) continue;
+          chatDelta.addMessage(session.conversationId, {
+            id: `abort-queued-${queued.id}`,
+            role: 'user',
+            content: queued.text,
+            timestamp: queued.timestamp,
+            loopId: session.loopId,
+          });
+        }
+      } catch (err) {
+        logger.warn('abort queued-input cleanup failed; continuing terminal finalization', {
+          runId: session.runId,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+
+      chatDelta.cancelStreaming(session.conversationId, { fromSidecarFrame: true });
+      chatDelta.deactivateSkills(session.conversationId);
+      chatDelta.setAgentStatus('idle');
+      chatDelta.setConversationStatus(session.conversationId, 'idle');
+      getExecutionPort().cancelExecution(session.loopId);
+      await waitForConversationPersistence(session.conversationId);
+
+      // These are best-effort shell resources; a force-finalized sidecar run
+      // can no longer be trusted to send its normal cleanup notifications.
+      void import('../capabilityPlugins/setupBridge')
+        .then(({ drainCapabilitySetupRequests }) => drainCapabilitySetupRequests(session.loopId))
+        .catch(() => {});
+      void import('../session/checkpoint')
+        .then(({ clearCheckpoint }) => clearCheckpoint(session.conversationId))
+        .catch(() => {});
+      void import('../tools/definitions/computerTools')
+        .then(({ closeAxSession }) => closeAxSession())
+        .catch(() => {});
+    }
+
+    // Reject only this run's never-ending RPC. Its catch path sees the UI
+    // controller already aborted and returns `{ reason: 'aborted' }`.
+    if (!session.transportAbortController?.signal.aborted) {
+      const error = new Error(`agent.run transport closed after abort ${source}`);
+      error.name = 'AbortError';
+      session.transportAbortController?.abort(error);
+    }
+  })().catch((err: unknown) => {
+    logger.warn('abort finalization failed', {
+      runId: session.runId,
+      conversationId: session.conversationId,
+      source,
+      error: err instanceof Error ? err.message : String(err),
+    });
+    // Even if store cleanup failed, release the hung transport/session.
+    if (!session.transportAbortController?.signal.aborted) {
+      session.transportAbortController?.abort(err);
+    }
+  });
+
+  return session.abortFinalizationPromise;
+}
+
+function requestSidecarRunAbort(session: RunSession): Promise<void> {
+  if (session.abortRequestPromise) return session.abortRequestPromise;
+  session.abortRequested = true;
+  session.abortWatchdog = setTimeout(() => {
+    void finalizeAbortedRun(session, 'watchdog');
+  }, AGENT_ABORT_FORCE_FINALIZE_MS);
+
+  session.abortRequestPromise = sidecarRequest(
+    'agent.abort',
+    { runId: session.runId },
+    AGENT_ABORT_ACK_TIMEOUT_MS,
+  ).then(async () => {
+    await finalizeAbortedRun(session, 'ack');
+  }).catch((err: unknown) => {
+    // A pre-ACK timeout is not terminal: the sidecar may have received and
+    // acted on the request. The watchdog owns deterministic local cleanup.
+    logger.warn('agent.abort ACK unavailable; waiting for force-finalize watchdog', {
+      runId: session.runId,
+      conversationId: session.conversationId,
+      error: err instanceof Error ? err.message : String(err),
+    });
+  });
+  return session.abortRequestPromise;
 }
 
 /** The four permissionBridge drain functions, addressable by `approval.drain`'s `kind`. The queues themselves are global (not per-run/per-loop — see permissionBridge.ts), so `runId` in the params is informational only; the drain always executes for the named kind(s) regardless of whether that runId is still a known session. */
@@ -511,6 +677,9 @@ async function handleMainLoopToolInvoke(rawParams: unknown): Promise<unknown> {
   const session = sessions.get(params.runId);
   if (!session) {
     throw new SidecarRequestError(-32000, `Unknown agent-loop runId: ${params.runId}`);
+  }
+  if (session.abortRequested || session.shellAbortController.signal.aborted) {
+    throw new SidecarRequestError(-32000, `Agent-loop run is stopping: ${params.runId}`);
   }
   if (!useChatStore.getState().conversations[session.conversationId]) {
     throw new SidecarRequestError(-32000, `Conversation no longer exists for agent-loop runId: ${params.runId}`);
@@ -1410,6 +1579,7 @@ export async function runAgentLoopDispatched(
       allowedTools: options?.allowedTools,
     },
     shellAbortController,
+    transportAbortController: new AbortController(),
     toolCallToStepId: new Map(),
     committed: false,
     // P1-3B-4 — the entries in `params.queuedInputs` were already seeded
@@ -1422,7 +1592,7 @@ export async function runAgentLoopDispatched(
   };
 
   const onShellAbort = (): void => {
-    notifySidecar('agent.abort', { runId });
+    void requestSidecarRunAbort(session);
   };
   session.onShellAbort = onShellAbort;
   shellAbortController.signal.addEventListener('abort', onShellAbort, { once: true });
@@ -1432,7 +1602,7 @@ export async function runAgentLoopDispatched(
   let handedOffToLocal = false;
 
   try {
-    const raw = await sidecarRequest('agent.run', params, 0);
+    const raw = await sidecarRequest('agent.run', params, 0, session.transportAbortController!.signal);
     if (!isAgentLoopResult(raw)) {
       throw new Error('agent.run response did not match the expected AgentLoopResult shape');
     }
@@ -1440,6 +1610,10 @@ export async function runAgentLoopDispatched(
     // preserves byte order. Await the shell-side FIFO plus the store's
     // fire-and-forget JSONL writes before exposing a completed turn.
     await settleRunPersistence(session);
+    if (shellAbortController.signal.aborted) {
+      await finalizeAbortedRun(session, 'run-terminal');
+      return { reason: 'aborted' };
+    }
     return raw;
   } catch (err) {
     // A failing RPC can still have flushed committed frames immediately
@@ -1447,6 +1621,7 @@ export async function runAgentLoopDispatched(
     // or applying the shell-owned error finalization.
     await settleRunPersistence(session);
     if (shellAbortController.signal.aborted) {
+      await finalizeAbortedRun(session, 'run-terminal');
       return { reason: 'aborted' };
     }
     if (!session.committed) {

@@ -10,7 +10,7 @@ import { Toggle } from '@/components/ui/toggle';
 import { Textarea } from '@/components/ui/textarea';
 import { produceBundle, collectAndZip, type ProduceResult } from '@/core/diagnostic/bundle';
 import { mapPermissionsError } from '@/core/diagnostic/errorMap';
-import { uploadDiagnosticBundle } from '@/utils/consoleDiagnostic';
+import { isDiagnosticUploadUnavailable, uploadDiagnosticBundle } from '@/utils/consoleDiagnostic';
 import ConversationPicker from './ConversationPicker';
 import ScreenshotUpload from './ScreenshotUpload';
 
@@ -101,7 +101,12 @@ export default function DiagnosticUpload({ onExportSuccess, description, onDescr
       clearDraft();
     } catch (e) {
       const raw = e instanceof Error ? e.message : String(e);
-      addToast({ title: t.diagnostic.uploadFailed, message: raw, type: 'error', duration: 6000 });
+      addToast({
+        title: t.diagnostic.uploadFailed,
+        message: isDiagnosticUploadUnavailable(e) ? t.diagnostic.uploadUnavailable : raw,
+        type: 'error',
+        duration: 6000,
+      });
     } finally {
       setUploadInProgress(false);
     }

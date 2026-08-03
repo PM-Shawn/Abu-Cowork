@@ -1017,6 +1017,7 @@ const zhCN: TranslationDict = {
     uploadInProgress: '上传中…',
     uploadSuccess: '上传成功',
     uploadFailed: '上传失败',
+    uploadUnavailable: '当前版本未连接反馈服务，请先导出离线诊断包，再通过开发者联系方式发送。',
     uploadDescriptionPlaceholder: '具体描述你遇到的问题，比如：我在 xx 对话里问 xx，期望 xx，实际却报错/卡住了',
     successTitle: '已导出诊断包',
     successMeta: '{size} · {count} 个文件 · 已脱敏 {scrubbed} 处',

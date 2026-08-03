@@ -4,6 +4,10 @@ import { getPlatform } from './platform'
 import { useDiagnosticStore, getOverallStatus } from '@/stores/diagnosticStore'
 import { getTelemetryTarget } from './consoleTelemetryTarget'
 
+export function isDiagnosticUploadUnavailable(error: unknown): boolean {
+  return error instanceof Error && error.message === 'no_console_url'
+}
+
 export async function uploadDiagnosticBundle(
   bytes: Uint8Array,
   filename: string,

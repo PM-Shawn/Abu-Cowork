@@ -107,6 +107,8 @@ jobs:
             artifact_name: electron-mac-x64
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 90
+    env:
+      VITE_CONSOLE_URL: ${{ secrets.VITE_CONSOLE_URL }}
     steps:
       - uses: actions/checkout@v7
 
@@ -122,6 +124,10 @@ jobs:
 
       - name: Install dependencies
         run: npm ci
+
+      - name: Require diagnostic upload target
+        if: ${{ github.event_name != 'pull_request' && github.repository == 'PM-Shawn/Abu-Cowork' }}
+        run: node scripts/validate-diagnostic-upload-target.mjs
 
       - name: Resolve candidate and architecture-specific update feed
         env:
@@ -398,6 +404,7 @@ jobs:
     timeout-minutes: 75
     env:
       CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+      VITE_CONSOLE_URL: ${{ secrets.VITE_CONSOLE_URL }}
     steps:
       - uses: actions/checkout@v7
 
@@ -419,6 +426,10 @@ jobs:
 
       - name: Install dependencies
         run: npm ci
+
+      - name: Require diagnostic upload target
+        if: ${{ github.event_name != 'pull_request' && github.repository == 'PM-Shawn/Abu-Cowork' }}
+        run: node scripts/validate-diagnostic-upload-target.mjs
 
       # Keep independent gate groups running so one failure does not hide the
       # rest of the Windows-specific diagnostics. The aggregate step below is

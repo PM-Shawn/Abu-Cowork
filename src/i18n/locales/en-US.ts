@@ -1017,6 +1017,7 @@ const enUS: TranslationDict = {
     uploadInProgress: 'Uploading…',
     uploadSuccess: 'Uploaded',
     uploadFailed: 'Upload failed',
+    uploadUnavailable: 'This version is not connected to the feedback service. Save an offline bundle and share it through the developer contact instead.',
     uploadDescriptionPlaceholder: 'Describe the issue in detail, e.g. "In conversation X I asked Y, expected Z, but got an error / it hung instead."',
     successTitle: 'Bundle exported',
     successMeta: '{size} · {count} files · {scrubbed} text fields scrubbed',

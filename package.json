@@ -60,7 +60,7 @@
     "dist:electron:windows": "npm run setup:electron-runtimes && npm run verify:electron-runtimes && npm run build:electron-browser-runtime && npm run build:electron:renderer && npm run build:sidecar && npm run build:native-helper && npm run build:sandbox-launcher && electron-builder --win nsis --x64 --publish never",
     "verify:electron:windows-artifacts": "node scripts/verify-electron-windows-artifacts.mjs",
     "test:electron:release-stage": "node --test scripts/stage-electron-transition-release.test.mjs",
-    "test:electron:release-workflow": "node --test scripts/electron-release-workflow.test.mjs scripts/validate-electron-feed-version.test.mjs",
+    "test:electron:release-workflow": "node --test scripts/electron-release-workflow.test.mjs scripts/validate-diagnostic-upload-target.test.mjs scripts/validate-electron-feed-version.test.mjs",
     "smoke:electron:packaged": "node scripts/electron-packaged-smoke.mjs",
     "electron:host-ui-test": "node --test electron/windowChrome.test.cjs electron/chromeExtensionsLauncher.test.cjs electron/legacyWindowsInstall.test.cjs",
     "electron:security-test": "node --test electron/securityBoundary.test.cjs electron/fsHost.security.test.cjs electron/computerUseActionPolicy.test.cjs electron/computerUseGate.test.cjs electron/computerUsePermissionHost.test.cjs electron/computerUsePermissionGuideState.test.cjs electron/guiHost.active-window.test.cjs",

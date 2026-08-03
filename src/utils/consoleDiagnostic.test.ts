@@ -20,7 +20,37 @@ vi.mock('@/stores/diagnosticStore', () => ({
 }))
 
 // Import after mocks are in place
-import { pushDiagnosticSnapshot } from './consoleDiagnostic'
+import {
+  isDiagnosticUploadUnavailable,
+  pushDiagnosticSnapshot,
+  uploadDiagnosticBundle,
+} from './consoleDiagnostic'
+
+describe('isDiagnosticUploadUnavailable', () => {
+  it('recognizes the missing upload target without treating other failures as configuration errors', () => {
+    expect(isDiagnosticUploadUnavailable(new Error('no_console_url'))).toBe(true)
+    expect(isDiagnosticUploadUnavailable(new Error('upload_failed:500'))).toBe(false)
+    expect(isDiagnosticUploadUnavailable('no_console_url')).toBe(false)
+  })
+})
+
+describe('uploadDiagnosticBundle', () => {
+  it('posts the ZIP and description to the configured console upload endpoint', async () => {
+    const bytes = new Uint8Array([1, 2, 3])
+
+    await uploadDiagnosticBundle(bytes, 'diagnostic.zip', 'App froze')
+
+    expect(fetch).toHaveBeenCalledOnce()
+    const [url, init] = vi.mocked(fetch).mock.calls[0] as [string, RequestInit]
+    expect(url).toBe('https://console-test.local/api/diagnostics/upload')
+    expect(init.method).toBe('POST')
+    expect(init.body).toBeInstanceOf(FormData)
+    const formData = init.body as FormData
+    expect(formData.get('description')).toBe('App froze')
+    expect(formData.get('file')).toBeInstanceOf(Blob)
+    expect((formData.get('file') as Blob).size).toBe(bytes.byteLength)
+  })
+})
 
 // ── fixtures ────────────────────────────────────────────────────────────────
 

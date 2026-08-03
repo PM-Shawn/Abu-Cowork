@@ -230,6 +230,17 @@ test('Electron build uses native runners for all three release targets', () => {
   assert.equal(build.jobs['build-windows']['runs-on'], 'windows-latest');
   assert.equal(build.jobs['build-mac'].needs, 'validate-target-platform');
   assert.equal(build.jobs['build-windows'].needs, 'validate-target-platform');
+  for (const job of [build.jobs['build-mac'], build.jobs['build-windows']]) {
+    assert.equal(job.env.VITE_CONSOLE_URL, '${{ secrets.VITE_CONSOLE_URL }}');
+    const targetCheck = job.steps.find(
+      (step) => step.name === 'Require diagnostic upload target'
+    );
+    assert.equal(targetCheck.run, 'node scripts/validate-diagnostic-upload-target.mjs');
+    assert.equal(
+      targetCheck.if,
+      "${{ github.event_name != 'pull_request' && github.repository == 'PM-Shawn/Abu-Cowork' }}"
+    );
+  }
   assert.equal(
     build.jobs['build-mac'].if,
     "${{ github.event_name != 'pull_request' && (inputs.target_platform == '' || inputs.target_platform == 'all' || inputs.target_platform == 'mac') }}"
@@ -431,6 +442,7 @@ test('release publishes only after all Electron targets and switches root pointe
     release.jobs['electron-transition'].uses,
     './.github/workflows/electron-build.yml'
   );
+  assert.equal(release.jobs['electron-transition'].secrets, 'inherit');
   assert.match(
     release.jobs['electron-transition'].if,
     /github\.repository == 'PM-Shawn\/Abu-Cowork'.*workflow_dispatch/

@@ -71,8 +71,8 @@ export const PROVIDER_CONFIGS = {
   },
   bailian: {
     name: '阿里百炼',
-    // Default = Token Plan 团队版. Two OpenAI-compatible subscription tiers, each
-    // with its own endpoint + whitelist. No pay-as-you-go tier here.
+    // Default = Token Plan 团队版. Subscription and pay-as-you-go credentials
+    // are isolated by endpoint, so each billing mode must be an explicit plan.
     baseUrl: 'https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1',
     format: 'openai-compatible',
     models: [
@@ -105,6 +105,20 @@ export const PROVIDER_CONFIGS = {
           { id: 'qwen3.6-plus', label: 'Qwen3.6 Plus' },
           { id: 'kimi-k2.5', label: 'Kimi K2.5' },
           { id: 'glm-5', label: 'GLM-5' },
+          { id: 'MiniMax-M2.5', label: 'MiniMax M2.5' },
+        ] },
+      // China (Beijing) shared DashScope endpoint. Other regions and
+      // workspace-dedicated domains remain available through Custom API.
+      { id: 'paygo', baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1', format: 'openai-compatible',
+        models: [
+          { id: 'qwen3.7-max', label: 'Qwen3.7 Max' },
+          { id: 'qwen3.7-plus', label: 'Qwen3.7 Plus' },
+          { id: 'qwen3.6-flash', label: 'Qwen3.6 Flash' },
+          { id: 'deepseek-v4-pro', label: 'DeepSeek V4 Pro' },
+          { id: 'deepseek-v4-flash', label: 'DeepSeek V4 Flash' },
+          { id: 'kimi-k2.7-code', label: 'Kimi K2.7 Code' },
+          { id: 'glm-5.2', label: 'GLM-5.2' },
+          { id: 'glm-5.1', label: 'GLM-5.1' },
           { id: 'MiniMax-M2.5', label: 'MiniMax M2.5' },
         ] },
     ],

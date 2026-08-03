@@ -477,6 +477,44 @@ describe('AddProviderModal — Validate Connection gating', () => {
   });
 });
 
+describe('AddProviderModal — Bailian pay-as-you-go', () => {
+  beforeEach(() => {
+    setLanguage('en-US');
+    useSettingsStore.setState({
+      providers: [],
+      activeModel: { providerId: '', modelId: '' },
+      failedSecretKeys: [],
+    });
+  });
+
+  afterEach(() => {
+    cleanup();
+  });
+
+  it('switches the endpoint and curated models to Beijing pay-as-you-go', () => {
+    render(<AddProviderModal open={true} onClose={vi.fn()} />);
+
+    fireEvent.click(screen.getByRole('button', { name: /select provider/i }));
+    fireEvent.click(screen.getByRole('button', { name: 'Alibaba Bailian' }));
+    expect(screen.getByText(/three key types are not interchangeable/i)).toBeInTheDocument();
+
+    // Token Plan remains the recommended default; pay-as-you-go is an
+    // explicit last-tier choice because its API key is not interchangeable.
+    fireEvent.click(screen.getByRole('button', { name: 'Token Plan' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Pay-as-you-go (Beijing)' }));
+
+    expect(screen.getByText(
+      'https://dashscope.aliyuncs.com/compatible-mode/v1',
+      { exact: true },
+    )).toBeInTheDocument();
+    expect(screen.getByText(/POST https:\/\/dashscope\.aliyuncs\.com\/compatible-mode\/v1\/chat\/completions/))
+      .toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: /select model/i }));
+    expect(screen.getByText('Qwen3.7 Max')).toBeInTheDocument();
+  });
+});
+
 // ── Built-in curated dropdown: "使用其他模型" entry row ──
 // The curated dropdown's bottom affordance is a two-state "Use another model"
 // menu row (not an always-visible input): clicking it reveals the model-id

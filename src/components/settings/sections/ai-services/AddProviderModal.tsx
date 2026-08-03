@@ -1156,7 +1156,9 @@ export default function AddProviderModal({ open: isOpen, onClose, editProvider }
                   .map(p => ({
                     value: p.id,
                     label: p.label ?? (
-                      p.id === 'paygo' ? t.settings.billingPaygo
+                      p.id === 'paygo' && selectedOption?.provider === 'bailian'
+                        ? t.settings.billingPaygoBeijing
+                      : p.id === 'paygo' ? t.settings.billingPaygo
                       : p.id === 'coding' ? t.settings.billingCoding
                       : p.id === 'tokenplan' ? t.settings.billingTokenPlan
                       // Custom's two format "plans" (design doc §7b) — reuse
@@ -1205,26 +1207,33 @@ export default function AddProviderModal({ open: isOpen, onClose, editProvider }
                 {t.settings.localNoKeyNeeded}
               </div>
             ) : (
-              <div className="relative">
-                <Input
-                  type={showApiKey ? 'text' : 'password'}
-                  value={apiKey}
-                  onChange={(e) => setApiKey(e.target.value)}
-                  placeholder="sk-..."
-                  disabled={!selectedId}
-                  className="pr-9 h-8"
-                />
-                <button
-                  type="button"
-                  onClick={() => setShowApiKey(!showApiKey)}
-                  disabled={!selectedId}
-                  className="absolute right-2.5 top-1/2 -translate-y-1/2 text-[var(--abu-text-tertiary)] hover:text-[var(--abu-text-secondary)] disabled:opacity-50 disabled:pointer-events-none"
-                >
-                  {showApiKey
-                    ? <EyeOff className="h-4 w-4" />
-                    : <Eye className="h-4 w-4" />}
-                </button>
-              </div>
+              <>
+                <div className="relative">
+                  <Input
+                    type={showApiKey ? 'text' : 'password'}
+                    value={apiKey}
+                    onChange={(e) => setApiKey(e.target.value)}
+                    placeholder="sk-..."
+                    disabled={!selectedId}
+                    className="pr-9 h-8"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowApiKey(!showApiKey)}
+                    disabled={!selectedId}
+                    className="absolute right-2.5 top-1/2 -translate-y-1/2 text-[var(--abu-text-tertiary)] hover:text-[var(--abu-text-secondary)] disabled:opacity-50 disabled:pointer-events-none"
+                  >
+                    {showApiKey
+                      ? <EyeOff className="h-4 w-4" />
+                      : <Eye className="h-4 w-4" />}
+                  </button>
+                </div>
+                {selectedOption?.provider === 'bailian' && activePlan && (
+                  <p className="text-caption text-[var(--abu-text-tertiary)]">
+                    {t.settings.bailianBillingKeyHint}
+                  </p>
+                )}
+              </>
             )}
           </div>
 

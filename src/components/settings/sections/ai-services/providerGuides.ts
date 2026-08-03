@@ -55,11 +55,11 @@ export const PROVIDER_GUIDES: Record<string, ProviderGuideInfo> = {
     urlLabelEn: 'Volcengine Ark Console',
   },
   bailian: {
-    hint: '在阿里百炼控制台获取 API Key',
-    hintEn: 'Get an API key in the Alibaba Bailian console',
-    url: 'https://www.aliyun.com/benefit/scene/tokenplan',
-    urlLabel: '阿里百炼控制台',
-    urlLabelEn: 'Alibaba Bailian Console',
+    hint: '使用与所选计费方式匹配的 API Key 和 Base URL',
+    hintEn: 'Use the API key and Base URL for the selected billing plan',
+    url: 'https://help.aliyun.com/zh/model-studio/base-url',
+    urlLabel: '百炼 Base URL 文档',
+    urlLabelEn: 'Bailian Base URL docs',
   },
   siliconflow: {
     hint: '在硅基流动控制台创建 API Key',

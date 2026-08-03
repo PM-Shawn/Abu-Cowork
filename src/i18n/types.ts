@@ -627,9 +627,11 @@ export interface TranslationDict {
     baseUrlPlaceholder: string;
     apiFormat: string;
     billingPaygo: string;
+    billingPaygoBeijing: string;
     billingCoding: string;
     billingTokenPlan: string;
     billingAgent: string;
+    bailianBillingKeyHint: string;
     configPlan: string;
     viewDocs: string;
     selectModel: string;

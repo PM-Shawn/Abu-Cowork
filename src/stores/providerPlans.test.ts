@@ -36,6 +36,14 @@ describe('provider config plans (multi-endpoint)', () => {
     expect(v.format).toBe('openai-compatible');
     expect(agent.baseUrl).toBe('https://ark.cn-beijing.volces.com/api/plan/v3');
   });
+  it('bailian exposes Beijing pay-as-you-go last with the matching DashScope endpoint', () => {
+    const plans = PROVIDER_CONFIGS.bailian.plans!;
+    const paygo = plans.find(p => p.id === 'paygo')!;
+    expect(plans.map(p => p.id)).toEqual(['tokenplan', 'coding', 'paygo']);
+    expect(paygo.baseUrl).toBe('https://dashscope.aliyuncs.com/compatible-mode/v1');
+    expect(paygo.format).toBe('openai-compatible');
+    expect(paygo.models?.length).toBeGreaterThan(0);
+  });
   it('plan models (when present) resolve to a sane context window', () => {
     const suspicious: string[] = [];
     for (const cfg of Object.values(PROVIDER_CONFIGS)) {

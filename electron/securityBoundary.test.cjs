@@ -6,6 +6,8 @@ const { test } = require('node:test');
 const { pathToFileURL } = require('node:url');
 const path = require('node:path');
 const os = require('node:os');
+const fs = require('node:fs');
+const vm = require('node:vm');
 
 const {
   registerPrivilegedWebContents,
@@ -461,4 +463,42 @@ test('resources cannot be released by another IPC sender', () => {
     () => assertResourceOwner({ sender: owner }, other, 'test resource'),
     /different IPC sender/
   );
+});
+
+test('preload exposes only the narrow Electron file-path resolver', () => {
+  const exposed = new Map();
+  const nativeFile = { name: 'report.pdf' };
+  const webUtils = {
+    getPathForFile(file) {
+      assert.equal(file, nativeFile);
+      return '/native/report.pdf';
+    },
+  };
+  const ipcRenderer = {
+    invoke: async () => undefined,
+    on: () => undefined,
+    sendSync: () => null,
+  };
+  const context = {
+    require(id) {
+      assert.equal(id, 'electron');
+      return {
+        contextBridge: {
+          exposeInMainWorld(key, value) {
+            exposed.set(key, value);
+          },
+        },
+        ipcRenderer,
+        webUtils,
+      };
+    },
+  };
+  context.globalThis = context;
+
+  const preloadSource = fs.readFileSync(path.join(__dirname, 'preload.cjs'), 'utf8');
+  vm.runInNewContext(preloadSource, context, { filename: 'preload.cjs' });
+
+  const shellBridge = exposed.get('__ABU_SHELL__');
+  assert.deepEqual(Object.keys(shellBridge).sort(), ['getPathForFile', 'mainSupervisesSidecar']);
+  assert.equal(shellBridge.getPathForFile(nativeFile), '/native/report.pdf');
 });

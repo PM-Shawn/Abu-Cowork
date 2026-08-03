@@ -1,6 +1,102 @@
-import { describe, it, expect } from 'vitest';
-import { mergeComposerAppend, referenceDedupeKey, referenceChipLabel } from './ChatInput';
+import { afterEach, beforeEach, describe, it, expect, vi } from 'vitest';
+import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
+import ChatInput, { mergeComposerAppend, referenceDedupeKey, referenceChipLabel } from './ChatInput';
 import { createDocReference, createDomElementReference, type BrowserElementPayload } from '@/types/chatReference';
+import { useChatStore } from '@/stores/chatStore';
+import { clearAllComposerDrafts } from '@/stores/composerDraftStore';
+import { useEnterpriseStore } from '@/stores/enterpriseStore';
+import type { EnterpriseBinding } from '@/core/enterprise/types';
+
+const enterpriseBinding = (userId: string): EnterpriseBinding => ({
+  serverUrl: 'https://example.test',
+  orgId: 'org-1',
+  orgName: 'Example',
+  userId,
+  userName: userId,
+  userEmail: `${userId}@example.test`,
+  deptId: null,
+  roleId: null,
+  accessToken: 'test-token',
+  boundAt: '2026-08-04T00:00:00.000Z',
+  llmEndpoint: null,
+  llmVirtualKey: null,
+  llmKeyExpiresAt: null,
+});
+
+describe('ChatInput per-conversation drafts', () => {
+  beforeEach(() => {
+    clearAllComposerDrafts();
+    useEnterpriseStore.setState({ mode: { kind: 'personal' }, initialized: true });
+    useChatStore.setState({
+      conversations: {},
+      conversationIndex: {},
+      activeConversationId: null,
+      pendingInput: null,
+      pendingInputAppend: null,
+      pendingReferences: [],
+      pendingAttachmentPaths: [],
+    });
+  });
+
+  afterEach(() => {
+    cleanup();
+    vi.restoreAllMocks();
+  });
+
+  it('restores the textarea value after switching A → B → A', async () => {
+    const a = useChatStore.getState().createConversation();
+    const b = useChatStore.getState().createConversation(undefined, { skipActivate: true });
+    render(<ChatInput variant="chat" onSend={vi.fn()} />);
+
+    const textarea = screen.getByRole('textbox') as HTMLTextAreaElement;
+    fireEvent.change(textarea, { target: { value: 'draft from A' } });
+
+    await act(async () => {
+      await useChatStore.getState().switchConversation(b);
+    });
+    expect(textarea.value).toBe('');
+    fireEvent.change(textarea, { target: { value: 'draft from B' } });
+
+    await act(async () => {
+      await useChatStore.getState().switchConversation(a);
+    });
+    expect(textarea.value).toBe('draft from A');
+  });
+
+  it('isolates and restores drafts when switching between local and enterprise users', async () => {
+    render(<ChatInput variant="welcome" onSend={vi.fn()} />);
+    const textarea = screen.getByRole('textbox') as HTMLTextAreaElement;
+
+    fireEvent.change(textarea, { target: { value: 'local draft' } });
+    act(() => {
+      useEnterpriseStore.setState({
+        mode: { kind: 'enterprise', binding: enterpriseBinding('alice'), config: null },
+      });
+    });
+    expect(textarea.value).toBe('');
+
+    fireEvent.change(textarea, { target: { value: 'alice draft' } });
+    act(() => {
+      useEnterpriseStore.setState({
+        mode: { kind: 'enterprise', binding: enterpriseBinding('bob'), config: null },
+      });
+    });
+    expect(textarea.value).toBe('');
+
+    fireEvent.change(textarea, { target: { value: 'bob draft' } });
+    act(() => {
+      useEnterpriseStore.setState({ mode: { kind: 'personal' } });
+    });
+    expect(textarea.value).toBe('local draft');
+
+    act(() => {
+      useEnterpriseStore.setState({
+        mode: { kind: 'enterprise', binding: enterpriseBinding('alice'), config: null },
+      });
+    });
+    expect(textarea.value).toBe('alice draft');
+  });
+});
 
 describe('mergeComposerAppend — window.sendPrompt draft merge (C1)', () => {
   it('appends with a newline separator when the draft is non-empty', () => {

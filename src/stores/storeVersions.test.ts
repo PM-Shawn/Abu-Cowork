@@ -19,6 +19,7 @@ const PERSISTED_STORES = [
   { key: 'abu-discovered-caps', minVersion: 1 },
   { key: 'abu-todos', minVersion: 1 },
   { key: 'abu-inbox', minVersion: 2 },
+  { key: 'abu-composer-drafts', minVersion: 2 },
 ] as const;
 
 // Import all stores to trigger persist initialization
@@ -39,7 +40,8 @@ beforeAll(async () => {
   await import('./discoveredCapabilitiesStore');
   await import('./todosStore');
   await import('./inboxStore');
-}, 120_000); // 16 store imports trigger on-the-fly transforms; under v8 coverage instrumentation a cold cache exceeds 30s, so allow a generous ceiling (inline timeout overrides global hookTimeout)
+  await import('./composerDraftStore');
+}, 120_000); // Store imports trigger on-the-fly transforms; under v8 coverage instrumentation a cold cache exceeds 30s, so allow a generous ceiling (inline timeout overrides global hookTimeout)
 
 describe('Store version compliance', () => {
   it('all persisted stores should have version in their stored data', () => {

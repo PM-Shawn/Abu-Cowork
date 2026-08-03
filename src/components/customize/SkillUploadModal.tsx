@@ -135,8 +135,8 @@ export default function SkillUploadModal({ onClose, onInstalled }: SkillUploadMo
     }
   };
 
-  // Window-level Tauri drag-drop listener. Only active while the modal is mounted.
-  const { isDragging } = useFileDragDrop((paths) => {
+  // Tauri listens at window level; Electron handlers are scoped to the drop zone below.
+  const { isDragging, dropTargetProps } = useFileDragDrop((paths) => {
     if (importInProgress) return;
     if (paths.length > 0) void installFromPath(paths[0]);
   });
@@ -230,6 +230,7 @@ export default function SkillUploadModal({ onClose, onInstalled }: SkillUploadMo
                 folders); drag accepts a folder OR a .askill/.zip. Tauri can't
                 offer folder+file in one native picker, so archives get the link below. */}
             <button
+              {...dropTargetProps}
               type="button"
               onClick={pickFolder}
               disabled={importInProgress}

@@ -10,6 +10,12 @@ import {
 import type { Conversation } from '../types';
 import { createDocReference } from '@/types/chatReference';
 import { getI18n } from '../i18n';
+import {
+  clearAllComposerDrafts,
+  getComposerDraftKey,
+  useComposerDraftStore,
+  writePersistedComposerText,
+} from './composerDraftStore';
 
 // Stable workspace store mock — Task #34 regression tests need to assert
 // that clearWorkspace is NOT called on start/switch flows, so the fn
@@ -54,6 +60,7 @@ vi.mock('../core/agent/sidecarRunPredicate', () => ({
 
 describe('chatStore', () => {
   beforeEach(() => {
+    clearAllComposerDrafts();
     mockSetWorkspace.mockClear();
     mockClearWorkspace.mockClear();
     mockGetProjectByWorkspace.mockReset();
@@ -181,6 +188,16 @@ describe('chatStore', () => {
       const id = useChatStore.getState().createConversation();
       useChatStore.getState().deleteConversation(id);
       expect(useChatStore.getState().conversations[id]).toBeUndefined();
+    });
+
+    it('clears the deleted conversation draft', () => {
+      const id = useChatStore.getState().createConversation();
+      const draftKey = getComposerDraftKey(id);
+      writePersistedComposerText(draftKey, 'do not orphan this draft');
+
+      useChatStore.getState().deleteConversation(id);
+
+      expect(useComposerDraftStore.getState().drafts[draftKey]).toBeUndefined();
     });
 
     it('switches to another conversation when active is deleted', async () => {

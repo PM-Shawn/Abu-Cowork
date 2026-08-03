@@ -17,6 +17,11 @@ import type { PermissionMode } from '../core/permissions/permissionMode';
 import type { ChatReference } from '@/types/chatReference';
 import { getI18n } from '../i18n';
 import { TOOL_NAMES } from '../core/tools/toolNames';
+import {
+  clearConversationComposerDraft,
+  getComposerDraftScopeForEnterpriseMode,
+} from './composerDraftStore';
+import { useEnterpriseStore } from './enterpriseStore';
 
 function generateId(): string {
   return Date.now().toString(36) + Math.random().toString(36).substring(2, 8);
@@ -770,6 +775,10 @@ export const useChatStore = create<ChatStore>()(
         clearInputQueue(id);
         clearSkillHooksByConversation(id);
         useTaskExecutionStore.getState().clearConversation(id);
+        clearConversationComposerDraft(
+          id,
+          getComposerDraftScopeForEnterpriseMode(useEnterpriseStore.getState().mode),
+        );
         // Clean up disk files (JSONL messages, tool results, outputs)
         import('../core/session/conversationStorage').then(({ deleteConversationFiles, removeIndexEntry, catalogMarkMissing }) => {
           deleteConversationFiles(id).catch(() => {});

@@ -12,7 +12,7 @@
  */
 'use strict';
 
-const { contextBridge, ipcRenderer } = require('electron');
+const { contextBridge, ipcRenderer, webUtils } = require('electron');
 
 const TAURI_LOCAL_STORAGE_GET = 'abu:tauri-local-storage:get';
 const TAURI_LOCAL_STORAGE_ACK = 'abu:tauri-local-storage:ack';
@@ -263,7 +263,12 @@ contextBridge.exposeInMainWorld('__TAURI_OS_PLUGIN_INTERNALS__', ipcRenderer.sen
 // its own renderer heartbeat. This global is exposed ONLY here (Electron) —
 // under Tauri it's simply absent, which is exactly what tells sidecarManager
 // to fall back to running its own renderer heartbeat.
-contextBridge.exposeInMainWorld('__ABU_SHELL__', { mainSupervisesSidecar: true });
+contextBridge.exposeInMainWorld('__ABU_SHELL__', {
+  mainSupervisesSidecar: true,
+  // Chromium no longer exposes File.path. Keep the bridge deliberately narrow:
+  // the renderer can resolve only a File object the user already dragged in.
+  getPathForFile: (file) => webUtils.getPathForFile(file),
+});
 
 // unlisten() calls this SYNCHRONOUSLY before invoking `plugin:event|unlisten`
 // — must exist or unlisten throws before the real unlisten reaches main. No-op:

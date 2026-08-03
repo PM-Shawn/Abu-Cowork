@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useMemo, useCallback } from 'react';
+import { useState, useRef, useEffect, useLayoutEffect, useMemo, useCallback } from 'react';
 import { Plus, ArrowUp, Square, X, ChevronDown, FileText } from 'lucide-react';
 import { ModelSelector } from '@/components/chat/ModelSelector';
 // AgentSelector hidden from UI; import kept for easy restore
@@ -17,6 +17,7 @@ import { useDiscoveryStore } from '@/stores/discoveryStore';
 import { useSettingsStore } from '@/stores/settingsStore';
 import { useWorkspaceStore } from '@/stores/workspaceStore';
 import { usePermissionStore } from '@/stores/permissionStore';
+import { useEnterpriseStore } from '@/stores/enterpriseStore';
 import type { PermissionDuration } from '@/stores/permissionStore';
 import { useI18n, format } from '@/i18n';
 import { useToastStore } from '@/stores/toastStore';
@@ -31,6 +32,16 @@ import PermissionModeChip from '@/components/chat/PermissionModeChip';
 import { serializeReferences } from '@/utils/referenceSerializer';
 import { highlightRegistry } from '@/features/reference/highlightRegistry';
 import type { ChatReference } from '@/types/chatReference';
+import {
+  clearComposerDraft,
+  COMPOSER_DRAFT_SAVE_DELAY_MS,
+  getComposerDraftKey,
+  getComposerDraftScopeForEnterpriseMode,
+  readComposerDraft,
+  writeComposerDraft,
+  writePersistedComposerText,
+  type ComposerDraft,
+} from '@/stores/composerDraftStore';
 
 /** Max reference chips per message — guards against prompt bloat. */
 const MAX_REFERENCES = 20;
@@ -122,31 +133,43 @@ async function processFilePaths(
 
 export default function ChatInput({ variant, onSend, disabled, scenarioPlaceholder, onInputChange }: ChatInputProps) {
   const isWelcome = variant === 'welcome';
+  const activeConv = useActiveConversation();
+  const draftScope = useEnterpriseStore((state) => getComposerDraftScopeForEnterpriseMode(state.mode));
+  // An empty, already-created conversation still renders the welcome variant;
+  // it must keep its own key rather than sharing the top-level welcome draft.
+  const draftKey = getComposerDraftKey(activeConv?.id, draftScope);
+  const [initialDraft] = useState(() => readComposerDraft(draftKey));
   // Context usage indicator shows only in chat variant once a conversation exists.
   const activeConvIdForIndicator = useChatStore((s) => (isWelcome ? null : s.activeConversationId));
 
-  const [text, setText] = useState('');
-  const [images, setImages] = useState<ImageAttachment[]>([]);
-  const [files, setFiles] = useState<FileAttachmentItem[]>([]);
-  const [references, setReferences] = useState<ChatReference[]>([]);
-  const [selectedSkill, setSelectedSkill] = useState<SuggestionItem | null>(null);
-  const [selectedAgent, setSelectedAgent] = useState<SuggestionItem | null>(null);
+  const [text, setText] = useState(initialDraft.text);
+  const [images, setImages] = useState<ImageAttachment[]>(initialDraft.images);
+  const [files, setFiles] = useState<FileAttachmentItem[]>(initialDraft.files);
+  const [references, setReferences] = useState<ChatReference[]>(initialDraft.references);
+  const [selectedSkill, setSelectedSkill] = useState<SuggestionItem | null>(initialDraft.selectedSkill);
+  const [selectedAgent, setSelectedAgent] = useState<SuggestionItem | null>(initialDraft.selectedAgent);
   const [suggestionsDismissed, setSuggestionsDismissed] = useState(false);
   const [selectedIndex, setSelectedIndex] = useState(0);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const composingRef = useRef(false);
 
-  // Per-conversation draft cache (session-only, not persisted)
-  interface InputDraft {
-    text: string;
-    images: ImageAttachment[];
-    files: FileAttachmentItem[];
-    references: ChatReference[];
-    selectedSkill: SuggestionItem | null;
-    selectedAgent: SuggestionItem | null;
-  }
-  const draftsRef = useRef<Map<string, InputDraft>>(new Map());
-  const prevConvIdRef = useRef<string | null>(null);
+  const currentDraftRef = useRef<ComposerDraft>(initialDraft);
+  const currentDraftKeyRef = useRef(draftKey);
+  const prevDraftKeyRef = useRef(draftKey);
+  const restoringDraftRef = useRef(false);
+
+  // Keep the latest committed local state available to switch/unmount
+  // cleanup without reading or mutating refs during render.
+  useLayoutEffect(() => {
+    currentDraftRef.current = {
+      text,
+      images,
+      files,
+      references,
+      selectedSkill,
+      selectedAgent,
+    };
+  }, [files, images, references, selectedAgent, selectedSkill, text]);
 
   // Welcome-only state (always declared for hook stability).
   // `localWorkspace` defaults to the active conv's bound workspace (set
@@ -172,7 +195,6 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
   const clearPendingReferences = useChatStore((s) => s.clearPendingReferences);
   const pendingAttachmentPaths = useChatStore((s) => s.pendingAttachmentPaths);
   const clearPendingAttachments = useChatStore((s) => s.clearPendingAttachments);
-  const activeConv = useActiveConversation();
   const skills = useDiscoveryStore((s) => s.skills);
   const agents = useDiscoveryStore((s) => s.agents);
   const disabledSkills = useSettingsStore((s) => s.disabledSkills);
@@ -289,7 +311,8 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
     setFiles((prev) => prev.filter((f) => f.id !== id));
   }, []);
 
-  // Save draft & restore on conversation switch
+  // Save draft & restore on conversation switch. Rich content stays in the
+  // module-level session cache; plain text is also persisted for app reloads.
   const activeConvId = activeConv?.id ?? null;
 
   // Welcome-only: re-sync FolderSelector to the active conv's workspace
@@ -313,58 +336,55 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
   }, [activeConvId, activeConvWorkspace, globalWorkspace, isWelcome]);
 
   useEffect(() => {
-    const prevId = prevConvIdRef.current;
-    // Save draft for previous conversation (read from DOM to avoid stale closure)
-    if (prevId) {
-      const currentText = textareaRef.current?.value ?? '';
-      // We need to read latest state — use the setter callback trick to peek
-      let curImages: ImageAttachment[] = [];
-      let curFiles: FileAttachmentItem[] = [];
-      let curRefs: ChatReference[] = [];
-      let curSkill: SuggestionItem | null = null;
-      let curAgent: SuggestionItem | null = null;
-      setImages((prev) => { curImages = prev; return prev; });
-      setFiles((prev) => { curFiles = prev; return prev; });
-      setReferences((prev) => { curRefs = prev; return prev; });
-      setSelectedSkill((prev) => { curSkill = prev; return prev; });
-      setSelectedAgent((prev) => { curAgent = prev; return prev; });
+    const previousKey = prevDraftKeyRef.current;
+    if (previousKey === draftKey) return;
 
-      if (currentText || curImages.length > 0 || curFiles.length > 0 || curRefs.length > 0 || curSkill || curAgent) {
-        draftsRef.current.set(prevId, {
-          text: currentText,
-          images: curImages,
-          files: curFiles,
-          references: curRefs,
-          selectedSkill: curSkill,
-          selectedAgent: curAgent,
-        });
-      } else {
-        draftsRef.current.delete(prevId);
-      }
-    }
+    // The layout effect has captured the last committed local state. At this
+    // point it still belongs to the previous conversation.
+    writeComposerDraft(previousKey, currentDraftRef.current);
 
-    // Restore draft for new conversation (or clear)
-    const draft = activeConvId ? draftsRef.current.get(activeConvId) : undefined;
-    if (draft) {
-      setText(draft.text);
-      setImages(draft.images);
-      setFiles(draft.files);
-      setReferences(draft.references ?? []);
-      setSelectedSkill(draft.selectedSkill);
-      setSelectedAgent(draft.selectedAgent);
-    } else {
-      setText('');
-      setImages([]);
-      setFiles([]);
-      setReferences([]);
-      setSelectedSkill(null);
-      setSelectedAgent(null);
-    }
+    const draft = readComposerDraft(draftKey);
+    // Reassign ownership before scheduling React state updates so an unmount
+    // between this effect and the next render still flushes the right draft.
+    currentDraftRef.current = draft;
+    currentDraftKeyRef.current = draftKey;
+    restoringDraftRef.current = true;
+    setText(draft.text);
+    setImages(draft.images);
+    setFiles(draft.files);
+    setReferences(draft.references);
+    setSelectedSkill(draft.selectedSkill);
+    setSelectedAgent(draft.selectedAgent);
     setSuggestionsDismissed(false);
     if (textareaRef.current) textareaRef.current.style.height = 'auto';
 
-    prevConvIdRef.current = activeConvId;
-  }, [activeConvId]);
+    prevDraftKeyRef.current = draftKey;
+  }, [draftKey]);
+
+  // Persist text after a short quiet period. A key switch is handled above:
+  // the old draft is flushed synchronously and the first render containing
+  // stale text is deliberately skipped before the restored value arrives.
+  useEffect(() => {
+    if (restoringDraftRef.current) {
+      restoringDraftRef.current = false;
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      writePersistedComposerText(draftKey, text);
+    }, COMPOSER_DRAFT_SAVE_DELAY_MS);
+    return () => window.clearTimeout(timer);
+  }, [draftKey, text]);
+
+  // React can unmount ChatInput when moving between welcome/empty/chat
+  // layouts. Flush through refs so the latest keystroke is never stranded in
+  // a cancelled debounce timer.
+  useEffect(() => () => {
+    writeComposerDraft(currentDraftKeyRef.current, currentDraftRef.current);
+  }, []);
+
+  useEffect(() => {
+    if (isWelcome) onInputChange?.(text.trim().length > 0);
+  }, [isWelcome, onInputChange, text]);
 
   // Consume pending input (just set text; auto-selection handled in a later effect)
   useEffect(() => {
@@ -447,7 +467,7 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
   };
 
   // File drag & drop (always called; works for both variants)
-  const { isDragging } = useFileDragDrop(async (paths) => {
+  const { isDragging, dropTargetProps } = useFileDragDrop(async (paths) => {
     await processFilePaths(
       paths,
       (imgs) => setImages((prev) => [...prev, ...imgs]),
@@ -602,19 +622,30 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
   };
 
   const resetInput = () => {
+    const keepSelectors = activeConvId !== null;
+    currentDraftRef.current = {
+      text: '',
+      images: [],
+      files: [],
+      references: [],
+      selectedSkill: keepSelectors ? selectedSkill : null,
+      selectedAgent: keepSelectors ? selectedAgent : null,
+    };
+    clearComposerDraft(draftKey);
     setText('');
     setImages([]);
     setFiles([]);
     setReferences([]);
     highlightRegistry.clear();
-    // Intentionally KEEP selectedSkill / selectedAgent — the chip is sticky
-    // across messages in the same conversation, so users don't have to re-
-    // pick the expert (or /skill) on every turn. They can clear explicitly
-    // via the toolbar selector, the chip X, or backspace on empty input.
+    // Keep selectors across messages inside an existing conversation, but
+    // clear them after sending from the top-level welcome composer so that
+    // returning to "new task" starts clean.
+    if (!keepSelectors) {
+      setSelectedSkill(null);
+      setSelectedAgent(null);
+    }
     setSuggestionsDismissed(false);
     if (textareaRef.current) textareaRef.current.style.height = 'auto';
-    // Clear saved draft for current conversation
-    if (activeConvId) draftsRef.current.delete(activeConvId);
   };
 
   const handleSend = () => {
@@ -788,6 +819,7 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
 
         {/* Input Card */}
         <div
+          {...dropTargetProps}
           className={cn(
             'relative bg-[var(--abu-bg-base)] rounded-2xl border transition-all',
             !isWelcome && isDragging
@@ -804,7 +836,7 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
 
           {/* Attachment Strip (images + file badges) */}
           {hasAttachments && (
-            <div className={cn('flex items-center gap-2 overflow-x-auto', isWelcome ? 'px-5 pt-3 pb-1' : 'px-4 pt-3 pb-1')}>
+            <div className={cn('flex items-center gap-2 overflow-x-auto', isWelcome ? 'pl-5 pt-3 pb-1' : 'pl-4 pt-3 pb-1')}>
               {images.map((img) => (
                 <div key={img.id} className="relative group/img shrink-0">
                   <img
@@ -861,6 +893,9 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
                   </button>
                 </div>
               ))}
+              {/* A real flex item keeps the trailing inset scrollable in Chromium;
+                  padding-right alone disappears when the row overflows. */}
+              <div aria-hidden="true" className={cn('shrink-0 self-stretch', isWelcome ? 'w-3' : 'w-2')} />
             </div>
           )}
 
@@ -893,10 +928,7 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
             <textarea
               ref={textareaRef}
               value={text}
-              onChange={(e) => {
-                setText(e.target.value);
-                if (isWelcome && onInputChange) onInputChange(e.target.value.trim().length > 0);
-              }}
+              onChange={(e) => setText(e.target.value)}
               onKeyDown={handleKeyDown}
               onCompositionStart={() => { composingRef.current = true; }}
               onCompositionEnd={() => {

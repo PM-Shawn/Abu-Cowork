@@ -7,6 +7,22 @@ All notable changes to Abu are documented here. Format based on [Keep a Changelo
 > [`CHANGELOG.zh-CN.md`](./CHANGELOG.zh-CN.md); keep both in sync per release (see
 > `RELEASING.md`). Entries before v0.31.0 predate this split and remain bilingual.
 
+## v0.34.2 · 2026-08-04
+
+### Added
+
+- **Unsent drafts now follow each task** — Text typed in a new or existing task is restored after switching away or restarting Abu. Draft keys are scoped to the current local or enterprise account so another account on the same computer cannot see them; file and reference attachments remain session-only.
+- **Custom MCP servers can be renamed safely** — Renaming a server updates its stored identifier and rewrites matching references in conversations and projects without changing built-in servers.
+- **Bailian supports pay-as-you-go plans** — The provider setup now offers the matching plan and clearer configuration guidance.
+
+### Fixed
+
+- **Files and folders can be dragged into Electron again** — Chat attachments and Skill imports now resolve user-dropped files through a narrow preload bridge on macOS and Windows. Attachment chips also keep a consistent trailing inset.
+- **Diagnostic bundle uploads no longer fail with `no_console_url` in official builds** — The upload target is validated during packaging, malformed targets produce actionable feedback, and release CI rejects a build that would ship without a usable Console URL.
+- **Stopping a task completes deterministically** — The renderer and sidecar now reconcile stop/finalization events so tasks do not remain stuck in a stopping state or lose the final partial result.
+
+**Full Changelog**: https://github.com/PM-Shawn/Abu-Cowork/compare/v0.34.1...v0.34.2
+
 ## v0.34.1 · 2026-08-02
 
 **Root cause**: Slow network setup and package verification had no moving status, while candidate builds compiled the renderer before applying their packaged version, making an RC look like the stable release it was still downloading.

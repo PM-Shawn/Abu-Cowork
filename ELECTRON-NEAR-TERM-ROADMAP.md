@@ -2,13 +2,13 @@
 
 Date: 2026-07-28
 
-Status: the original runtime roadmap, capability-model follow-up, and
-consequential-action approval are merged into `refactor-dev`.
-Consequential-action approval passed its automated gates; broader attended
-acceptance and Windows real-machine package/runtime verification are still
-required before release. This is not release approval.
+Status: historical execution record. The Electron runtime, capability model,
+and consequential-action work were integrated and released in v0.34.0. Do not
+use the branch instructions in this document to start new development; `dev`
+is now the only active integration line. Remaining attended checks and
+post-release hardening stay useful as evidence requirements.
 
-Base branch: `refactor-dev`
+Historical base branch: `refactor-dev` (retired)
 
 ## Outcome
 
@@ -534,7 +534,6 @@ signed updates, or visual composition. Those remain explicit attended checks.
 - product Memory expansion
 - Linux distribution
 - a second bundled Chromium
-- public release and update-feed publication
 
 ## Model Routing Evidence
 

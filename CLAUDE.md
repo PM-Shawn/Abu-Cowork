@@ -22,13 +22,14 @@ Inspired by Claude Code's Cowork mode. Features multi-agent architecture with ex
 ### Branches
 - **`main`**: Stable release branch. **禁止直接在 main 上开发或 push commit**，只接受从 `dev` 的 **merge**（不是 cherry-pick，见下方红线）。
 - **`dev`**: 日常开发分支，所有工作在这里进行；**永远是唯一集成线**，其他开发者从 `dev` 拉、开 feature 分支、PR 回 `dev`。
+- **`refactor-dev`**: Electron 重构期间的历史集成指针，已完成使命并退役。不得再从它创建新分支；保留相关 worktree 只是为了保护历史报告和未提交材料。
 
-- 🔴 **发版只用 `git merge dev`，绝不 cherry-pick dev→main**。cherry-pick 会把同一改动复制成"内容一样、SHA 不同"的孪生 commit，两条分支历史发散 → 下次 merge 满屏假冲突 → 逼你继续 cherry-pick → **雪球债**（2026-07 已滚到 dev/main 分叉 223/124，靠一次收敛合并才解开）。main 内容始终是 dev 的子集，走 merge 永远干净。
+- 🔴 **发版只用 `git merge --ff-only dev`，绝不 cherry-pick dev→main**。cherry-pick 会把同一改动复制成"内容一样、SHA 不同"的孪生 commit，两条分支历史发散 → 下次 merge 满屏假冲突 → 逼你继续 cherry-pick → **雪球债**（2026-07 已滚到 dev/main 分叉 223/124，靠一次收敛合并才解开）。main 始终是 dev 的历史子集，保留同一 SHA 才能避免再次分叉。
 - 🔴 **`main` 没有"特殊内容"**：企业登录（`EnterpriseLoginPage`/bootstrap/discovery/auth）是 **OSS 合法**的（`ENTERPRISE-BUILD.md` 把 device-flow bind 列为 ✅ OSS；泄漏门禁 deny-list 也不含它），且深度运行时门控（只有用户主动绑企业服务器才出现），随 dev 进 main 无碍。真正的闭源模块早已构建隔离在私有仓（见「Enterprise 代码隔离」红线）。**不要**因为"怕泄企业代码"就把 main 拆成精选线搞 cherry-pick——那是历史误解。
 
 ### Before Starting Work (每次开始工作前必做)
-1. `git branch --show-current` — 确认当前分支。如果在 `main`，先 `git checkout dev`。
-2. `git pull origin dev` — 拉取最新代码，避免冲突。
+1. `git branch --show-current` — 确认当前分支；禁止在 `main`、`refactor-dev` 或历史 Electron worktree 上开始新开发。
+2. `git fetch origin dev` — 刷新唯一集成线；新 feature/fix 分支必须从最新 `origin/dev` 创建。
 
 ### Commit Rules
 - **Conventional commits**: `feat:`, `fix:`, `refactor:`, `chore:`, `docs:`, `test:`。
@@ -52,12 +53,13 @@ Inspired by Claude Code's Cowork mode. Features multi-agent architecture with ex
      - CI publish job 把两份各抽该版段写进 `latest.json.notes_i18n`；**客户端 `checker.ts` 按 UI locale（`getLocale()`）选对应语言**推给更新弹窗，官网按页面语言取。
      - ⚠️ 两份同版号、结构对应，但**语言不混**：CHANGELOG.md 全英文、CHANGELOG.zh-CN.md 全中文。v0.31.0 之前的历史仅英文版有，不用回填。
    - ✅ **发版前跑 `npm run release:check`**（`scripts/release-preflight.mjs`）：校验四处版本号一致 + 两份 CHANGELOG 该版段都在且语言正确（英文版无 CJK、中文版有中文）。CI 也把它挂成 `release.yml` 的 `preflight` job（tag 一推先跑，**任一项不对就整个发版红、包都不出**）；本地先跑省一次 CI 往返。
-3. `git checkout main && git merge dev` — **只 merge，绝不 cherry-pick**。正常情况是干净快进/合并；若有冲突且分支已对齐，多半是真冲突，逐个解。
-4. `git tag vX.Y.Z` — 打 tag，格式为 `v` + 语义化版本号。
-5. `git push origin main` 然后**单独推这一个 tag**：`git push origin vX.Y.Z`。⚠️ **别用 `git push origin main --tags`** —— 一次推 >3 个 tag 会触发 GitHub「不为这些 tag 生成 push 事件」的限制，`Release` workflow 就不触发了（本会话踩过：害得删 tag 重推）。单独推这一个 tag 就没这问题。
+3. 在 `dev` 的候选提交上打一个最终 RC tag；等三平台原生构建、签名/公证、安装态冒烟和发布预检全部通过。
+4. `git checkout main && git pull --ff-only origin main && git merge --ff-only dev` — `main` 只 fast-forward 到这个已经在 `dev` 验证过的**同一 SHA**，不使用 GitHub squash/rebase/cherry-pick 生成孪生提交。
+5. `git push origin main`，然后 `git tag vX.Y.Z && git push origin vX.Y.Z`。主分支保护要求该 SHA 先在 `dev` 上获得 `promotion-ready`，任意 feature/main 直推都会被拒绝。⚠️ **别用 `git push origin main --tags`**。
 6. `Release` workflow 自动构建三平台，准备一个 draft GitHub Release，上传并回读校验 OSS 产物，发布三套 Electron 更新源，并在 v0.34 中最后切换旧 Tauri 更新入口；全部成功后才公开同一个 Release。不要手工创建重复 Release。
+7. 发布后验证 `git rev-list --left-right --count origin/dev...origin/main` 的 main-only 计数为 `0`；正式发布时两者应为 `0 0`。
 
-**热修（hotfix）也不许 cherry-pick**：要么在 `dev` 上修完走正常发版；要么从对应 tag 拉 `release/vX.Y` 分支修完打 tag，**再把该分支 merge 回 `dev`**（不留孤儿 commit）。目标永远是"任何进过 main 的东西，历史上都能从 dev 追溯到"。
+**热修（hotfix）也不许 cherry-pick**：可以从对应 tag 拉 `release/vX.Y` 分支定位和修复，但修复必须先通过 PR 进入 `dev`，再按上面的同-SHA fast-forward 流程发布。目标永远是“任何进过 main 的提交，已经先存在于 dev”。
 
 ### Release Notes Convention (核心要点)
 - **分档**：patch（vX.Y.Z++）用极简模板（根因 + 修复 2-3 行）；minor（vX.Y.0）用完整模板（Features / Fixes / English Summary）；major（vX.0.0）额外加 Migration Notes。
@@ -72,6 +74,7 @@ Inspired by Claude Code's Cowork mode. Features multi-agent architecture with ex
 ### Forbidden
 - ❌ 直接在 `main` 上 commit 或 push。
 - ❌ **cherry-pick `dev`→`main`**（发版/热修一律走 merge；热修用 `release/vX.Y` 分支再合回 dev，见 Release Process）。
+- ❌ 从 `main` 或已退役的 `refactor-dev` 创建普通 feature/fix 分支。
 - ❌ `git push --force` 到 `main` 或 `dev`（除非用户明确要求）。
 - ❌ 提交未通过 build 的代码。
 - ❌ 跳过 pre-commit 检查（`--no-verify`）。

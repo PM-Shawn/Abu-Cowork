@@ -16,8 +16,13 @@ permissions:
 jobs:
   auto-merge:
     runs-on: ubuntu-latest
-    # Guard hard on the actor: never touch human-authored PRs.
-    if: github.actor == 'dependabot[bot]'
+    # Guard hard on both actor and integration target. Dependabot security PRs
+    # may target the repository default branch (`main`) even though
+    # dependabot.yml points version updates at `dev`; those must never bypass
+    # the single integration line.
+    if: >-
+      github.actor == 'dependabot[bot]' &&
+      github.event.pull_request.base.ref == 'dev'
     steps:
       - name: Fetch Dependabot metadata
         id: meta

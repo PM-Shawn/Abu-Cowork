@@ -9,6 +9,8 @@ convention in [`RELEASING.md`](./RELEASING.md). This page is the actionable sour
 - All release work is merged into `dev`; the release worktree is clean.
 - `dev` is up to date and CI is green. Resolve feature/main conflicts before
   promotion; do not repair them directly on `main`.
+- `git rev-list --right-only --count origin/dev...origin/main` returns `0`:
+  `main` must never contain a commit that is absent from `dev`.
 - The release commit contains no `.env.local`, signing material, private module,
   customer data, or internal-only URL.
 
@@ -45,17 +47,22 @@ bash scripts/enterprise-leak-guard.sh
       [`ELECTRON-TRANSITION-RELEASE.md`](./ELECTRON-TRANSITION-RELEASE.md).
 - [ ] Cut one final RC from the exact release commit and confirm macOS arm64,
       macOS x64, and Windows x64 native CI before creating the stable tag.
+- [ ] Confirm the candidate SHA has successful `check` and `promotion-ready`
+      statuses. `promotion-ready` is emitted only after the exact SHA lands on
+      `dev` and still contains the current `main` history.
 
 ## 3. Release
 
 ```bash
 git push origin dev
 git checkout main && git pull --ff-only origin main
-git merge dev                          # merge ONLY — never cherry-pick
+git merge --ff-only dev                # exact dev SHA ONLY — never cherry-pick
+git push origin main                   # protection requires promotion-ready
 git tag vX.Y.Z
-git push origin main
 git push origin vX.Y.Z                 # push the ONE tag — do NOT use --tags
 git checkout dev
+git fetch origin dev main
+git rev-list --left-right --count origin/dev...origin/main  # expect 0 0
 ```
 
 ## 4. CI does the rest (automatic, ~40 min)
@@ -83,6 +90,8 @@ switch the Tauri `latest.json` last.
 ## Red lines (don't)
 
 - ❌ **Never cherry-pick `dev` → `main`** — merge only. (Twin commits → divergence → fake-conflict snowball.)
+- ❌ **Never build a release branch by selecting commits from feature branches.** Every release commit must already be on `dev`.
+- ❌ **Never use a GitHub squash/rebase merge to promote `dev` → `main`.** Promotion preserves the exact verified SHA with `--ff-only`.
 - ❌ **Never `git push origin main --tags`** — pushing >3 tags at once makes GitHub skip the tag push events, so the `Release` workflow never fires. Push the single tag.
 - ❌ **Never mix languages** in a changelog file — `CHANGELOG.md` is English, `CHANGELOG.zh-CN.md` is Chinese. (`release:check` will fail the release if you do.)
 - ❌ **Never commit on `main`** or `git push --force` to `main`/`dev`.

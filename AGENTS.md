@@ -1,21 +1,25 @@
 # Abu Client: Codex Working Guide
 
-This worktree is the Electron-first integration line for the public Abu client.
-Treat the checked-out code and Git state as the source of truth. Historical
-reports and old agent instructions are useful evidence, not current status.
+This repository is the public Abu client. Treat the checked-out code and Git
+state as the source of truth. Historical reports and old agent instructions
+are useful evidence, not current status.
 
 ## Scope and Git Safety
 
-- `refactor-dev` is the active `dev` mainline for the Electron refactor. Start
-  each refactor task from it, use a focused feature branch when appropriate,
-  and merge verified refactor work back into `refactor-dev`. The older
-  `feat/electron-shell-p2-1` worktree has already been merged and is historical.
+- `dev` is the only active integration line. Start every feature/fix branch
+  from the latest `origin/dev` and merge verified work back into `dev`.
+- `main` is a stable release pointer, not a second development line. It may
+  only fast-forward to the exact commit already verified on `dev`.
+- `refactor-dev` and the older Electron feature worktrees are historical. Do
+  not start new work from them. Some historical worktrees still contain
+  user-owned reports, generated files, or uncommitted material; preserve them
+  until the user explicitly approves an archival or deletion policy.
 - Check `git status --short` and the current branch before making changes. This
   worktree currently contains user-owned uncommitted material; preserve it.
 - Do not commit or push unless the user explicitly asks. Do not force-push,
   reset, discard, delete, or move files without explicit approval.
-- Do not work directly on `main`. Release promotion remains a deliberate merge
-  decision, not an agent action.
+- Do not work directly on `main`. Release promotion remains a deliberate,
+  user-authorized fast-forward from `dev`, not an ordinary development action.
 
 ## Model Allocation
 
@@ -148,8 +152,8 @@ Do not publish update feeds or release artifacts without explicit user approval.
   Electron host. `npm run parity:check` is the static guard, not a substitute
   for real workflow tests.
 - Treat updater end-to-end behavior, Windows validation, packaged preview
-  inspection, and macOS computer-use/TCC permission behavior as release-readiness
-  work that still needs real-machine verification.
+  inspection, and macOS computer-use/TCC permission behavior as post-release
+  evidence that still needs real-machine verification.
 - The untracked `*-REPORT.md` files and `RUNTIME-LANDING-RUNBOOK.md` in this
   worktree are historical development records. Leave them in place unless the
   user explicitly chooses an archival policy. Do not blindly add them to the

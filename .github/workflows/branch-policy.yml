@@ -1,0 +1,40 @@
+name: Branch Policy
+
+on:
+  push:
+    branches: [dev]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  promotion-ready:
+    if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/dev' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: Verify main has no commits outside dev
+        run: |
+          git fetch --no-tags origin main
+          if ! git merge-base --is-ancestor origin/main HEAD; then
+            echo '::error::dev does not contain the complete main history. Reconcile main into dev before continuing.'
+            git log --oneline --left-right --boundary HEAD...origin/main -30
+            exit 1
+          fi
+
+  main-pr-source:
+    if: ${{ github.event_name == 'pull_request' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Allow only dev promotion pull requests
+        env:
+          HEAD_REF: ${{ github.head_ref }}
+        run: |
+          if [ "$HEAD_REF" != 'dev' ]; then
+            echo "::error::main accepts release promotion only from dev; got $HEAD_REF"
+            exit 1
+          fi

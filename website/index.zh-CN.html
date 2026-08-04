@@ -530,11 +530,10 @@
 
             function applyFromOSS(tag) {
                 const ver = tag.replace(/^v/, '');
-                const gh  = `https://github.com/PM-Shawn/Abu-Cowork/releases/download/${tag}`;
                 applyLinks(tag, {
-                    macSilicon: `${gh}/Abu_${ver}_aarch64.dmg`,
-                    macIntel:   `${gh}/Abu_${ver}_x64.dmg`,
-                    windows:    `${OSS_BASE}/releases/${tag}/Abu_${ver}_x64-setup.exe`,
+                    macSilicon: `${OSS_BASE}/releases/${tag}/Abu-${ver}-mac-arm64.dmg`,
+                    macIntel:   `${OSS_BASE}/releases/${tag}/Abu-${ver}-mac-x64.dmg`,
+                    windows:    `${OSS_BASE}/releases/${tag}/Abu-${ver}-windows-x64-setup.exe`,
                 });
             }
 
@@ -551,7 +550,7 @@
                     return a ? a.browser_download_url : GH_LATEST;
                 };
                 applyLinks(tag, {
-                    macSilicon: find(/aarch64.*\.dmg$/i),
+                    macSilicon: find(/(?:aarch64|arm64).*\.dmg$/i),
                     macIntel:   find(/x64.*\.dmg$/i),
                     windows:    find(/setup\.exe$/i),
                 });

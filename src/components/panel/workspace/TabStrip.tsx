@@ -20,7 +20,10 @@ function tabIcon(tab: WorkspaceTab) {
 
 function tabTitle(tab: WorkspaceTab, t: ReturnType<typeof useI18n>['t']): string {
   if (tab.kind === 'summary') return t.workspace.summaryTitle;
-  if (tab.kind === 'preview') return getBaseName(tab.filePath);
+  if (tab.kind === 'preview') {
+    if (tab.filePath.startsWith('data:image/')) return t.panel.imagePreview;
+    return getBaseName(tab.filePath);
+  }
   if (tab.kind === 'browser') {
     if (!tab.url) return t.workspace.newTabPage;
     try {

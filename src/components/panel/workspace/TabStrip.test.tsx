@@ -89,4 +89,17 @@ describe('TabStrip pointer interactions', () => {
       url: '',
     });
   });
+
+  it('uses a readable title for a data-url image preview', () => {
+    usePreviewStore.setState({
+      tabs: [{ id: 'image-tab', kind: 'preview', filePath: 'data:image/png;base64,abc' }],
+      activeTabId: 'image-tab',
+      previewFilePath: 'data:image/png;base64,abc',
+    });
+
+    renderTabs();
+
+    expect(screen.getByRole('tab', { name: /Image Preview/ })).toBeInTheDocument();
+    expect(screen.queryByText(/base64/)).not.toBeInTheDocument();
+  });
 });

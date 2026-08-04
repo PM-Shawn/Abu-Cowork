@@ -1638,6 +1638,16 @@ export interface TranslationDict {
     exitFullscreen: string;
     openInApp: string;
     openInAppFailed: string;
+    moreActions: string;
+    copyPath: string;
+    copyPathDone: string;
+    copyPathFailed: string;
+    saveAs: string;
+    saveAsDone: string;
+    saveAsFailed: string;
+    saved: string;
+    saving: string;
+    saveError: string;
     previewMode: string;
     reloadPreview: string;
     selectElement: string;
@@ -1691,6 +1701,9 @@ export interface TranslationDict {
     pdfZoomOut: string;
     pdfPrevPage: string;
     pdfNextPage: string;
+    pdfFitWidth: string;
+    pdfFit: string;
+    pdfRotate: string;
     // Preview: XLSX
     xlsxSheetLabel: string;
     xlsxRowsShowing: string;
@@ -1703,6 +1716,16 @@ export interface TranslationDict {
     openWithPowerPoint: string;
     // Preview: data-URL image (no file path)
     imagePreview: string;
+    imageType: string;
+    imageZoomIn: string;
+    imageZoomOut: string;
+    imageRotateLeft: string;
+    imageRotateRight: string;
+    imageResetView: string;
+    imageDoubleClickReset: string;
+    imageCopy: string;
+    imageCopied: string;
+    imageCopyFailed: string;
     // WorkspaceFileTree (lightweight lazy-loaded project file tree, code-canvas P0)
     fileTree: {
       title: string;

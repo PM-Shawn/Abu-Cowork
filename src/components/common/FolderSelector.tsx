@@ -11,6 +11,7 @@ export interface FolderSelectorProps {
   onSelect: (path: string) => void;
   onClear?: () => void;
   className?: string;
+  appearance?: 'chip' | 'context-bar';
 }
 
 /** Get the folder name from a full path */
@@ -24,6 +25,7 @@ export default function FolderSelector({
   onSelect,
   onClear,
   className,
+  appearance = 'chip',
 }: FolderSelectorProps) {
   const [isOpen, setIsOpen] = useState(false);
   const dropdownRef = useRef<HTMLDivElement>(null);
@@ -84,9 +86,9 @@ export default function FolderSelector({
   };
 
   return (
-    <div ref={dropdownRef} className={cn('relative', className)}>
+    <div ref={dropdownRef} className={cn('relative min-w-0', className)}>
       {/* Trigger Button */}
-      <div className="flex items-center gap-1">
+      <div className="flex min-w-0 items-center gap-1">
         <button
           onClick={() => {
             // First time use: no recent paths and no current path
@@ -98,23 +100,28 @@ export default function FolderSelector({
             }
           }}
           className={cn(
-            'flex items-center gap-1.5 px-2.5 py-1.5 text-minor rounded-lg transition-colors',
-            currentPath
-              ? 'text-[var(--abu-text-primary)] bg-[var(--abu-clay-bg)] hover:bg-[var(--abu-clay-20)]'
-              : 'text-[var(--abu-text-tertiary)] hover:text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-hover)]'
+            'flex min-w-0 items-center gap-1.5 px-2.5 py-1.5 text-minor rounded-lg transition-colors',
+            appearance === 'context-bar'
+              ? 'text-[var(--abu-text-secondary)] hover:text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-hover)]'
+              : currentPath
+                ? 'text-[var(--abu-text-primary)] bg-[var(--abu-clay-bg)] hover:bg-[var(--abu-clay-20)]'
+                : 'text-[var(--abu-text-tertiary)] hover:text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-hover)]'
           )}
         >
           {currentPath ? (
-            <FolderOpen className="h-3.5 w-3.5 text-[var(--abu-clay)]" />
+            <FolderOpen className={cn(
+              'h-3.5 w-3.5 shrink-0',
+              appearance === 'context-bar' ? 'text-[var(--abu-text-tertiary)]' : 'text-[var(--abu-clay)]',
+            )} />
           ) : (
-            <Folder className="h-3.5 w-3.5" />
+            <Folder className="h-3.5 w-3.5 shrink-0" />
           )}
-          <span className="max-w-[120px] truncate">
+          <span className={cn('truncate', appearance === 'context-bar' ? 'max-w-[240px]' : 'max-w-[120px]')}>
             {currentPath ? getFolderName(currentPath) : t.folder.loadFolder}
           </span>
           <ChevronDown
             className={cn(
-              'h-3.5 w-3.5 transition-transform',
+              'h-3.5 w-3.5 shrink-0 transition-transform',
               isOpen && 'rotate-180'
             )}
           />

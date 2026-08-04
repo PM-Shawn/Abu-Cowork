@@ -72,6 +72,17 @@ export function referenceChipLabel(r: ChatReference): string {
   return r.kind === 'dom-element' ? r.source.name : r.selection.text;
 }
 
+/** The workspace picker belongs to the pre-task context, not the send toolbar.
+ * Keep it visible while an unbound draft has a temporary folder selection so
+ * the user can verify or change that choice before the first send. */
+// eslint-disable-next-line react-refresh/only-export-components
+export function shouldShowWorkspaceContextBar(
+  variant: ChatInputProps['variant'],
+  boundWorkspacePath: string | null | undefined,
+): boolean {
+  return variant === 'welcome' && !boundWorkspacePath;
+}
+
 interface ChatInputProps {
   variant: 'welcome' | 'chat';
   onSend: (message: string, images?: ImageAttachment[], workspacePath?: string | null) => void;
@@ -329,11 +340,13 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
   // would then have no workspace, no project lookup, no auto-associate.
   const activeConvWorkspace = activeConv?.workspacePath ?? null;
   const globalWorkspace = useWorkspaceStore((s) => s.currentPath);
+  const boundWorkspacePath = activeConvWorkspace ?? globalWorkspace;
+  const showWorkspaceContextBar = shouldShowWorkspaceContextBar(variant, boundWorkspacePath);
   useEffect(() => {
     if (!isWelcome) return;
-    const next = activeConvWorkspace ?? globalWorkspace;
+    const next = boundWorkspacePath;
     setLocalWorkspace(next);
-  }, [activeConvId, activeConvWorkspace, globalWorkspace, isWelcome]);
+  }, [activeConvId, boundWorkspacePath, isWelcome]);
 
   useEffect(() => {
     const previousKey = prevDraftKeyRef.current;
@@ -951,7 +964,8 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
 
           {/* Bottom Toolbar */}
           {isWelcome ? (
-            /* Welcome variant: FolderSelector + [+] + --- + [Model ∨] + Start button */
+            /* Workspace context lives below the input card. The send toolbar
+               stays a single, calm row even in a narrow center pane. */
             <div className="flex items-center gap-2 px-5 pb-3.5">
               {/* AgentSelector entry hidden from UI; multi-agent logic remains intact */}
               {/* <AgentSelector
@@ -960,63 +974,60 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
                 onSelect={setSelectedAgent}
                 disabledAgentSet={disabledAgentSet}
               /> */}
-              <FolderSelector
-                currentPath={localWorkspace}
-                recentPaths={recentPaths}
-                onSelect={handleSelectFolder}
-                onClear={handleClearWorkspace}
-              />
-              <Button
-                variant="ghost"
-                size="icon"
-                onClick={handleAttach}
-                aria-label={t.chat.addAttachment}
-                className="btn-ghost h-7 w-7 text-[var(--abu-text-tertiary)] hover:text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-hover)] rounded-lg"
-              >
-                <Plus className="h-4 w-4" />
-              </Button>
-              <div className="flex-1" />
-
-              {/* Model picker — right-aligned, before Start button */}
-              <PermissionModeChip conversationId={null} />
-              <div className="relative" ref={modelPickerRef}>
-                <button
-                  onClick={() => setShowModelPicker(!showModelPicker)}
-                  title={modelDisplay}
-                  className={cn(
-                    'btn-ghost flex items-center gap-1 px-2 py-1 text-minor font-normal rounded-md transition-colors max-w-[180px]',
-                    hasActiveProvider
-                      ? 'text-[var(--abu-text-tertiary)] hover:text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-hover)]'
-                      : 'text-[var(--abu-clay)] hover:text-[var(--abu-clay-hover)] hover:bg-[var(--abu-clay-bg)]'
-                  )}
+              <div className="flex flex-1 items-center">
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  onClick={handleAttach}
+                  aria-label={t.chat.addAttachment}
+                  className="btn-ghost h-7 w-7 shrink-0 rounded-lg text-[var(--abu-text-tertiary)] hover:bg-[var(--abu-bg-hover)] hover:text-[var(--abu-text-primary)]"
                 >
-                  <span className="truncate">{modelDisplay}</span>
-                  <ChevronDown className={cn('h-3 w-3 transition-transform shrink-0', showModelPicker && 'rotate-180')} />
-                </button>
-                <ModelSelector
-                  open={showModelPicker}
-                  onClose={() => setShowModelPicker(false)}
-                  anchorRef={modelPickerRef as React.RefObject<HTMLElement>}
-                />
+                  <Plus className="h-4 w-4" />
+                </Button>
               </div>
 
-              <Button
-                size="icon"
-                onClick={handleSend}
-                disabled={!hasContent}
-                className={cn(
-                  'h-7 w-7 rounded-lg transition-colors',
-                  hasContent
-                    ? 'bg-[var(--abu-clay)] hover:bg-[var(--abu-clay-hover)] text-white shadow-sm'
-                    : 'bg-[var(--abu-bg-hover)] text-[var(--abu-text-muted)] cursor-not-allowed hover:bg-[var(--abu-bg-hover)]'
-                )}
-              >
-                <ArrowUp className="h-3.5 w-3.5" strokeWidth={2.5} />
-              </Button>
+              {/* Model picker — right-aligned, before Start button */}
+              <div className="ml-auto flex min-w-0 max-w-full items-center gap-1">
+                <PermissionModeChip conversationId={null} />
+                <div className="relative min-w-0 max-w-[180px]" ref={modelPickerRef}>
+                  <button
+                    onClick={() => setShowModelPicker(!showModelPicker)}
+                    title={modelDisplay}
+                    className={cn(
+                      'btn-ghost flex min-w-0 max-w-[180px] items-center gap-1 whitespace-nowrap rounded-md px-2 py-1 text-minor font-normal transition-colors',
+                      hasActiveProvider
+                        ? 'text-[var(--abu-text-tertiary)] hover:text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-hover)]'
+                        : 'text-[var(--abu-clay)] hover:text-[var(--abu-clay-hover)] hover:bg-[var(--abu-clay-bg)]'
+                    )}
+                  >
+                    <span className="min-w-0 truncate whitespace-nowrap">{modelDisplay}</span>
+                    <ChevronDown className={cn('h-3 w-3 transition-transform shrink-0', showModelPicker && 'rotate-180')} />
+                  </button>
+                  <ModelSelector
+                    open={showModelPicker}
+                    onClose={() => setShowModelPicker(false)}
+                    anchorRef={modelPickerRef as React.RefObject<HTMLElement>}
+                  />
+                </div>
+
+                <Button
+                  size="icon"
+                  onClick={handleSend}
+                  disabled={!hasContent}
+                  className={cn(
+                    'h-7 w-7 shrink-0 rounded-lg transition-colors',
+                    hasContent
+                      ? 'bg-[var(--abu-clay)] hover:bg-[var(--abu-clay-hover)] text-white shadow-sm'
+                      : 'bg-[var(--abu-bg-hover)] text-[var(--abu-text-muted)] cursor-not-allowed hover:bg-[var(--abu-bg-hover)]'
+                  )}
+                >
+                  <ArrowUp className="h-3.5 w-3.5" strokeWidth={2.5} />
+                </Button>
+              </div>
             </div>
           ) : (
             /* Chat variant: [+] --- [Model ∨] [Stop/Send] */
-            <div className="flex items-center justify-between px-4 pb-2.5 pt-0.5">
+            <div className="flex flex-wrap items-center justify-between gap-x-2 gap-y-1 px-4 pb-2.5 pt-0.5">
               {/* Left Actions */}
               <div className="flex items-center gap-0.5">
                 {/* AgentSelector entry hidden from UI; multi-agent logic remains intact */}
@@ -1039,21 +1050,21 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
               </div>
 
               {/* Right Actions: Model picker + Context indicator + Send / Stop */}
-              <div className="flex items-center gap-1">
+              <div className="ml-auto flex min-w-0 max-w-full items-center gap-1">
                 <PermissionModeChip conversationId={activeConvIdForIndicator} />
                 {/* Model picker */}
-                <div className="relative" ref={modelPickerRef}>
+                <div className="relative min-w-0 max-w-[180px]" ref={modelPickerRef}>
                   <button
                     onClick={() => setShowModelPicker(!showModelPicker)}
                     title={modelDisplay}
                     className={cn(
-                      'btn-ghost flex items-center gap-1 px-2 py-1 text-minor font-normal rounded-md transition-colors max-w-[180px]',
+                      'btn-ghost flex min-w-0 max-w-[180px] items-center gap-1 whitespace-nowrap rounded-md px-2 py-1 text-minor font-normal transition-colors',
                       hasActiveProvider
                         ? 'text-[var(--abu-text-tertiary)] hover:text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-hover)]'
                         : 'text-[var(--abu-clay)] hover:text-[var(--abu-clay-hover)] hover:bg-[var(--abu-clay-bg)]'
                     )}
                   >
-                    <span className="truncate">{modelDisplay}</span>
+                    <span className="min-w-0 truncate whitespace-nowrap">{modelDisplay}</span>
                     <ChevronDown className={cn('h-3 w-3 transition-transform shrink-0', showModelPicker && 'rotate-180')} />
                   </button>
                   <ModelSelector
@@ -1099,6 +1110,25 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
             </div>
           )}
         </div>
+
+        {/* New-task context: hidden when the conversation/project already
+            supplies a workspace. A temporary selection remains visible until
+            first send so it never vanishes before the task is actually bound. */}
+        {showWorkspaceContextBar && (
+          <div
+            data-abu-workspace-context
+            className="mt-2 flex min-h-10 items-center rounded-xl bg-[var(--abu-bg-muted)] px-2 py-1"
+          >
+            <FolderSelector
+              currentPath={localWorkspace}
+              recentPaths={recentPaths}
+              onSelect={handleSelectFolder}
+              onClear={handleClearWorkspace}
+              appearance="context-bar"
+              className="min-w-0 max-w-full"
+            />
+          </div>
+        )}
 
         {/* Promote-to-project hint: shown only on welcome when the bound
             workspace isn't already a project AND the user hasn't dismissed

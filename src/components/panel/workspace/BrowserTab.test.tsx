@@ -32,7 +32,14 @@ vi.mock('@/utils/platform', () => ({
 
 describe('BrowserTab native overlay visibility', () => {
   beforeEach(() => {
-    delete (globalThis as typeof globalThis & { __ABU_SHELL__?: unknown }).__ABU_SHELL__;
+    const runtime = globalThis as typeof globalThis & {
+      __ABU_SHELL__?: unknown;
+      __TAURI_INTERNALS__?: unknown;
+    };
+    delete runtime.__ABU_SHELL__;
+    // BrowserTab's native bridge is desktop-only. Mirror the preload marker
+    // that both packaged hosts expose so these tests exercise that path.
+    runtime.__TAURI_INTERNALS__ = {};
     initLanguage('en-US');
     invoke.mockReset();
     invoke.mockResolvedValue(undefined);
@@ -64,7 +71,12 @@ describe('BrowserTab native overlay visibility', () => {
   });
 
   afterEach(() => {
-    delete (globalThis as typeof globalThis & { __ABU_SHELL__?: unknown }).__ABU_SHELL__;
+    const runtime = globalThis as typeof globalThis & {
+      __ABU_SHELL__?: unknown;
+      __TAURI_INTERNALS__?: unknown;
+    };
+    delete runtime.__ABU_SHELL__;
+    delete runtime.__TAURI_INTERNALS__;
     approvalBridge.drainAll('command');
     approvalBridge.drainAll('file-permission');
     approvalBridge.drainAll('workspace');

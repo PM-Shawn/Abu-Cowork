@@ -103,7 +103,12 @@ export function DocSelectionLayer({ filePath, children }: { filePath: string; ch
   }, [sel, filePath, addPendingReference]);
 
   return (
-    <div ref={containerRef} data-doc-selection-layer aria-label={t.reference.addToChat}>
+    <div
+      ref={containerRef}
+      data-doc-selection-layer
+      aria-label={t.reference.addToChat}
+      className="h-full min-h-0 select-text"
+    >
       {children}
       {sel && (
         <SelectionToolbar

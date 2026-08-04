@@ -28,6 +28,7 @@ import {
 import { cn } from '@/lib/utils';
 import { isMacOS } from '@/utils/platform';
 import { hasElectronCommandHost } from '@/utils/electronHost';
+import { isTauriEnv } from '@/utils/tauriEnv';
 import { createDomElementReference, type BrowserElementPayload } from '@/types/chatReference';
 
 const browserLogger = createLogger('browser-tab');
@@ -287,6 +288,15 @@ export default function BrowserTab({ tabId, url }: { tabId: string; url: string 
   // (keep-alive — a background tab still loads). Listen for real navigations
   // (link clicks / redirects) to keep the address bar in sync.
   useEffect(() => {
+    // Tauri and the Electron compatibility preload both inject
+    // __TAURI_INTERNALS__. Plain web/E2E mode has no native event bridge, so
+    // keep the empty browser surface usable without registering listeners
+    // that would otherwise reject outside a desktop host.
+    if (!isTauriEnv()) {
+      addressInputRef.current?.focus();
+      return;
+    }
+
     let navUnlisten: UnlistenFn | undefined;
     let elementUnlisten: UnlistenFn | undefined;
     let disposed = false;

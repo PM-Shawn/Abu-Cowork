@@ -77,4 +77,29 @@ describe('TabStrip pointer interactions', () => {
     expect(usePreviewStore.getState().activeTabId).toBe(SUMMARY_ID);
     expect(document.body.style.cursor).toBe('');
   });
+
+  it('offers a browser tab in the new-tab menu', () => {
+    renderTabs();
+
+    fireEvent.click(screen.getByRole('button', { name: 'New tab' }));
+    fireEvent.click(screen.getByRole('button', { name: 'New Browser' }));
+
+    expect(usePreviewStore.getState().tabs.at(-1)).toMatchObject({
+      kind: 'browser',
+      url: '',
+    });
+  });
+
+  it('uses a readable title for a data-url image preview', () => {
+    usePreviewStore.setState({
+      tabs: [{ id: 'image-tab', kind: 'preview', filePath: 'data:image/png;base64,abc' }],
+      activeTabId: 'image-tab',
+      previewFilePath: 'data:image/png;base64,abc',
+    });
+
+    renderTabs();
+
+    expect(screen.getByRole('tab', { name: /Image Preview/ })).toBeInTheDocument();
+    expect(screen.queryByText(/base64/)).not.toBeInTheDocument();
+  });
 });

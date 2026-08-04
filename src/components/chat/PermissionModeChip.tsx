@@ -73,17 +73,17 @@ export default function PermissionModeChip({ conversationId }: Props) {
   }
 
   return (
-    <div ref={ref} className="relative">
+    <div ref={ref} className="relative shrink-0">
       <button
         onClick={() => setOpen((v) => !v)}
         title={`${t.settings.permissionMode}: ${currentLabel}`}
         className={cn(
-          'btn-ghost flex items-center gap-1 px-2 py-1 h-7 text-minor font-normal rounded-md transition-colors hover:bg-[var(--abu-bg-hover)]',
+          'btn-ghost flex h-7 shrink-0 items-center gap-1 whitespace-nowrap rounded-md px-2 py-1 text-minor font-normal transition-colors hover:bg-[var(--abu-bg-hover)]',
           MODE_CHIP_COLOR[effectiveMode] ?? MODE_CHIP_COLOR.standard
         )}
       >
         <CurrentIcon className="h-3.5 w-3.5 shrink-0" />
-        <span>{currentLabel}</span>
+        <span className="whitespace-nowrap">{currentLabel}</span>
       </button>
 
       {open && (

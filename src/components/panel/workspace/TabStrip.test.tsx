@@ -77,4 +77,16 @@ describe('TabStrip pointer interactions', () => {
     expect(usePreviewStore.getState().activeTabId).toBe(SUMMARY_ID);
     expect(document.body.style.cursor).toBe('');
   });
+
+  it('offers a browser tab in the new-tab menu', () => {
+    renderTabs();
+
+    fireEvent.click(screen.getByRole('button', { name: 'New tab' }));
+    fireEvent.click(screen.getByRole('button', { name: 'New Browser' }));
+
+    expect(usePreviewStore.getState().tabs.at(-1)).toMatchObject({
+      kind: 'browser',
+      url: '',
+    });
+  });
 });

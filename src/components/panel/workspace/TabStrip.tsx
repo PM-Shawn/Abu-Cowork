@@ -54,6 +54,7 @@ export default function TabStrip() {
   const closeAllTabs = usePreviewStore((s) => s.closeAllTabs);
   const reorderTabs = usePreviewStore((s) => s.reorderTabs);
   const openSummary = usePreviewStore((s) => s.openSummary);
+  const openBrowser = usePreviewStore((s) => s.openBrowser);
   const openTerminal = usePreviewStore((s) => s.openTerminal);
   const setMenuOpen = usePreviewStore((s) => s.setMenuOpen);
   const setRightPanelCollapsed = useSettingsStore((s) => s.setRightPanelCollapsed);
@@ -257,6 +258,7 @@ export default function TabStrip() {
             variant="ghost"
             size="icon-xs"
             onClick={toggleNewTabMenu}
+            aria-label={t.workspace.newTab}
             className="ml-0.5 shrink-0 text-[var(--abu-text-tertiary)] hover:text-[var(--abu-clay)]"
           >
             <Plus className="w-3.5 h-3.5" strokeWidth={1.5} />
@@ -297,9 +299,10 @@ export default function TabStrip() {
                   <ListChecks className="w-3.5 h-3.5" strokeWidth={1.5} />
                   {t.workspace.summaryTitle}
                 </button>
-                {/* Browser-tab entry hidden for now — see WorkspacePanel note.
-                    openBrowser + BrowserTab stay wired so existing browser tabs
-                    still render; only the "new browser tab" affordance is gone. */}
+                <button type="button" className={menuItemCls} onClick={() => { openBrowser(); closeMenus(); }}>
+                  <AppWindow className="w-3.5 h-3.5" strokeWidth={1.5} />
+                  {t.workspace.newBrowserTab}
+                </button>
                 <button type="button" className={menuItemCls} onClick={() => { openTerminal(); closeMenus(); }}>
                   <SquareTerminal className="w-3.5 h-3.5" strokeWidth={1.5} />
                   {t.workspace.newTerminalTab}

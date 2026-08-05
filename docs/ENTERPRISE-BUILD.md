@@ -65,6 +65,18 @@ A browser-only dev server, unit tests, or a renderer build does not count as
 desktop acceptance. A feature is complete only after the real Electron shell
 starts and the affected user journey is exercised.
 
+## Runtime entitlement boundary
+
+The desktop revalidates its enterprise session before loading private modules.
+Enterprise Skill, MCP, and KB capabilities are usable only while the server
+reports a signed, unexpired License for the bound organization and the matching
+module. Offline, expired, mismatched, or missing-module states fail closed:
+installed enterprise Skills are filtered from runtime lookup, enterprise MCP
+invocations are rejected and connections are withdrawn, and the KB tool is
+unregistered. Local installation metadata is retained so a valid renewal can
+restore the capability without reinstalling it. Personal Skill/MCP behavior is
+not affected.
+
 ## What's in / out of OSS
 
 | Feature | OSS | Enterprise |

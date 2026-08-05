@@ -5,6 +5,9 @@ export default defineConfig({
   resolve: {
     alias: [
       { find: '@', replacement: path.resolve(__dirname, './src') },
+      // Runtime loads this alias dynamically. Default tests exercise the OSS
+      // contract stub; enterprise tests override it with the private sibling.
+      { find: '@enterprise-modules', replacement: path.resolve(__dirname, './src/enterprise-modules-stub') },
       // Prevent vitest from trying to resolve MCP SDK (Node.js only)
       // Specific subpaths must come before the generic prefix
       { find: '@modelcontextprotocol/sdk/client/index.js', replacement: path.resolve(__dirname, './src/test/__mocks__/mcp.ts') },

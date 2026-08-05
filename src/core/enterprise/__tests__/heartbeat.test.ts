@@ -57,6 +57,7 @@ const EXISTING_CONFIG: EnterpriseConfigSnapshot = {
   policyDefaults: {},
   modules: ['core'],
   licenseStatus: 'valid',
+  licenseExpiresAt: '2027-06-26T00:00:00Z',
   serverTime: '2026-06-26T09:00:00Z',
   fetchedAt: 1_000_000,
   configVersion: 'sha256-abcd1234',
@@ -72,6 +73,7 @@ const SESSION_RESPONSE_200 = {
   llm: { gatewayUrl: 'https://llm.acme.com', virtualKey: 'vk-xxx', models: ['gpt-4o'], defaultModel: 'gpt-4o' },
   modules: { skills: true, mcp: true, kb: false },
   license: { plan: 'enterprise', expiresAt: '2027-06-26T00:00:00Z', seats: 100, usedSeats: 42 },
+  licenseExpiresAt: '2027-06-26T00:00:00Z',
   serverTime: '2026-06-26T10:00:00Z',
 }
 
@@ -139,6 +141,16 @@ describe('session 200 OK', () => {
     const snap = mockSetConfig.mock.calls[0][0] as EnterpriseConfigSnapshot
     expect(snap.brand.name).toBe('Acme Abu')
     expect(snap.brand.primaryColor).toBe('#1677FF')
+  })
+
+  it('persists the signed License expiry for fail-closed local gates', async () => {
+    mockGetState.mockReturnValue(makeStoreState({ config: EXISTING_CONFIG }))
+    mockCallEnterprise.mockResolvedValueOnce(SESSION_RESPONSE_200)
+
+    await _heartbeatTickForTesting()
+
+    const snap = mockSetConfig.mock.calls[0][0] as EnterpriseConfigSnapshot
+    expect(snap.licenseExpiresAt).toBe('2027-06-26T00:00:00Z')
   })
 
   it('sends If-None-Match header from existing configVersion', async () => {

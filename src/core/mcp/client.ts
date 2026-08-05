@@ -9,8 +9,14 @@ import { expandConfigEnvVars } from '@/utils/envExpansion';
 import { hasEmbeddedNode } from '@/utils/nodeRuntime';
 import { getTauriFetch } from '@/core/llm/tauriFetch';
 import { createLogger } from '@/core/logging/logger';
+import { isEnterpriseModuleActive } from '@/core/enterprise/entitlement';
 
 const mcpLogger = createLogger('mcp');
+const ENTERPRISE_SERVER_PREFIX = 'enterprise__';
+
+function isEnterpriseServerBlocked(name: string): boolean {
+  return name.startsWith(ENTERPRISE_SERVER_PREFIX) && !isEnterpriseModuleActive('mcp');
+}
 
 export interface MCPServerConfig {
   name: string;
@@ -652,13 +658,15 @@ export class MCPClientManager {
 
   listTools(): ToolDefinition[] {
     const allTools: ToolDefinition[] = [];
-    for (const server of this.servers.values()) {
+    for (const [name, server] of this.servers) {
+      if (isEnterpriseServerBlocked(name)) continue;
       allTools.push(...server.tools.values());
     }
     return allTools;
   }
 
   getServerTools(serverName: string): ToolDefinition[] {
+    if (isEnterpriseServerBlocked(serverName)) return [];
     const server = this.servers.get(serverName);
     return server ? Array.from(server.tools.values()) : [];
   }
@@ -669,6 +677,7 @@ export class MCPClientManager {
    * Returns the number of tools discovered, or -1 if server not connected.
    */
   async refreshServerTools(serverName: string): Promise<number> {
+    if (isEnterpriseServerBlocked(serverName)) return -1;
     const server = this.servers.get(serverName);
     if (!server) return -1;
 
@@ -727,6 +736,9 @@ export class MCPClientManager {
     toolName: string,
     args: Record<string, unknown>
   ): Promise<ToolResult> {
+    if (isEnterpriseServerBlocked(serverName)) {
+      throw new Error('Enterprise MCP is not authorized by the current live session');
+    }
     const server = this.servers.get(serverName);
     if (!server) {
       throw new Error(`Server ${serverName} not connected`);

@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(scriptDir, '..');
 const nodeModulesPath = path.join(repoRoot, 'node_modules');
+const buildTarget = process.env.ABU_BUILD_TARGET === 'enterprise' ? 'enterprise' : 'oss';
 
 if (existsSync(nodeModulesPath) && lstatSync(nodeModulesPath).isSymbolicLink()) {
   console.error(
@@ -69,6 +70,9 @@ const preflight = spawnSync(
 );
 
 if (preflight.status === 0) {
-  console.log('\n[Abu Electron] 开发环境已准备完成，可运行 npm run electron:dev。');
+  const command = buildTarget === 'enterprise'
+    ? 'npm run electron:dev:enterprise'
+    : 'npm run electron:dev';
+  console.log(`\n[Abu Electron] ${buildTarget} 开发环境已准备完成，可运行 ${command}。`);
 }
 process.exit(preflight.status ?? 1);

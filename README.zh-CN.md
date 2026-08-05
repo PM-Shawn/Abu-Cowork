@@ -288,16 +288,22 @@
 git clone https://github.com/PM-Shawn/Abu-Cowork.git
 cd Abu-Cowork
 
-# 安装锁定依赖并准备 worktree 内独立的 Electron 运行环境
-npm ci
+# 准备 worktree 内独立的依赖、Electron/浏览器运行时、Sidecar、
+# 原生辅助程序、沙箱启动器和 OSS 前端
 npm run setup:electron-dev
 
-# 启动 Electron 桌面应用（dev 数据与正式安装的 Abu 隔离）
+# 启动 Electron 桌面应用；启动前会重新构建 OSS 前端
 npm run electron:dev
 
-# 仅启动前端（不需要 Rust）
+# 企业版 worktree：准备并启动包含私有模块的企业版前端
+npm run setup:electron-dev:enterprise
+npm run electron:dev:enterprise
+
+# 仅启动前端预览（不能作为桌面端验收）
 npm run dev
 ```
+
+Tauri 不再用于新功能开发和验收；相关源码仅为已发布版本兼容、数据迁移和回退保留。
 
 ### 构建
 

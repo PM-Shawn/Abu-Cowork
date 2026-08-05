@@ -38,6 +38,22 @@ export default defineConfig({
       '@': path.resolve(__dirname, './src'),
       '@enterprise-modules': enterpriseModulesPath,
     },
+    // Enterprise modules are a sibling peer-dependency package. Vite 8's
+    // Rolldown resolver otherwise starts from the external importer's path and
+    // cannot see the host node_modules directory. Resolve every shared runtime
+    // from this application root so OSS and Enterprise builds use one copy.
+    dedupe: [
+      'react',
+      'react-dom',
+      'zustand',
+      '@noble/curves',
+      '@noble/hashes',
+      '@tauri-apps/api',
+      '@tauri-apps/plugin-fs',
+      '@tauri-apps/plugin-http',
+      'fflate',
+      'lucide-react',
+    ],
   },
   clearScreen: false,
   server: {

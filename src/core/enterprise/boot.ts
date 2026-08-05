@@ -1,6 +1,6 @@
 // src/core/enterprise/boot.ts
 // Reads AppData/enterprise/binding.json at startup.
-import { exists, readTextFile, writeTextFile, remove, BaseDirectory } from '@tauri-apps/plugin-fs'
+import { exists, mkdir, readTextFile, writeTextFile, remove, BaseDirectory } from '@tauri-apps/plugin-fs'
 import type { EnterpriseBinding } from './types'
 
 const PATH = 'enterprise/binding.json'
@@ -21,6 +21,10 @@ export async function loadBinding(): Promise<EnterpriseBinding | null> {
 }
 
 export async function saveBinding(b: EnterpriseBinding): Promise<void> {
+  // A fresh Electron profile has no enterprise directory yet. Tauri's fs API
+  // does not create parent directories for writeTextFile either, so make the
+  // persistence contract explicit and identical across both hosts.
+  await mkdir('enterprise', { baseDir: BaseDirectory.AppData, recursive: true })
   await writeTextFile(PATH, JSON.stringify(b, null, 2), { baseDir: BaseDirectory.AppData })
 }
 

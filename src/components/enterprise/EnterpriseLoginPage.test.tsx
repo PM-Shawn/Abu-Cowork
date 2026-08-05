@@ -10,10 +10,17 @@ import type { EnterpriseBinding } from '@/core/enterprise/types'
 const mockBind = vi.hoisted(() =>
   vi.fn<(binding: EnterpriseBinding) => Promise<void>>().mockResolvedValue(undefined),
 )
+const mockActivateEnterpriseRuntime = vi.hoisted(() =>
+  vi.fn<() => Promise<void>>().mockResolvedValue(undefined),
+)
 
 // Mock startBind to avoid calling Tauri openUrl
 vi.mock('@/core/enterprise/auth', () => ({
   startBind: vi.fn(),
+}))
+
+vi.mock('@/core/enterprise/runtime', () => ({
+  activateEnterpriseRuntime: mockActivateEnterpriseRuntime,
 }))
 
 // Mock enterpriseStore so we can capture what bind() is called with.
@@ -53,6 +60,8 @@ describe('EnterpriseLoginPage', () => {
     vi.mocked(global.fetch).mockReset()
     mockBind.mockReset()
     mockBind.mockResolvedValue(undefined)
+    mockActivateEnterpriseRuntime.mockReset()
+    mockActivateEnterpriseRuntime.mockResolvedValue(undefined)
   })
 
   afterEach(() => cleanup())
@@ -199,6 +208,8 @@ describe('EnterpriseLoginPage', () => {
 
       await waitFor(() => {
         expect(mockBind).toHaveBeenCalledOnce()
+        expect(mockActivateEnterpriseRuntime).toHaveBeenCalledOnce()
+        expect(onSuccess).toHaveBeenCalledOnce()
       })
 
       const capturedBinding = mockBind.mock.calls[0][0]

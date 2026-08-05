@@ -49,6 +49,7 @@ async function tick(): Promise<void> {
         ? Object.keys(modules).filter(k => modules[k] === true)
         : ['core'],
       licenseStatus:  'valid',
+      licenseExpiresAt: (resp.licenseExpiresAt as string | null | undefined) ?? null,
       serverTime:     (resp.serverTime as string | undefined) ?? new Date().toISOString(),
       fetchedAt:      Date.now(),
       configVersion:  (resp.configVersion as string | undefined) ?? undefined,
@@ -74,9 +75,9 @@ async function tick(): Promise<void> {
   }
 }
 
-export function startHeartbeat(): void {
+export function startHeartbeat(options: { immediate?: boolean } = {}): void {
   if (timer != null) return
-  void tick()  // immediate first poll
+  if (options.immediate !== false) void tick()
   timer = window.setInterval(() => { void tick() }, INTERVAL_MS) as unknown as number
 }
 
@@ -86,5 +87,10 @@ export function stopHeartbeat(): void {
 
 /** @internal — exposed for unit-testing only; do not call from production code. */
 export function _heartbeatTickForTesting(): Promise<void> {
+  return tick()
+}
+
+/** Validate the persisted binding before any local enterprise capability starts. */
+export function refreshEnterpriseSession(): Promise<void> {
   return tick()
 }

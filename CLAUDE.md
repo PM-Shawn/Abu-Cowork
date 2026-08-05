@@ -94,12 +94,13 @@ Inspired by Claude Code's Cowork mode. Features multi-agent architecture with ex
 - ✅ **公开仓库（本仓）只放「形状」**：扩展点接口 + 空插槽 + 默认 null 实现 + 协议层。即 `src/core/enterprise/mounts-registry.ts` 的 `EnterpriseMounts` slot、宿主 UI 里的 `<MountPoint slot="x"/>`、以及已明确属 OSS 的协议层（device-flow bind、brand badge、LLM gateway 路由、policy confirm modal / matcher、企业模式状态显示）。
 - 🔒 **私有仓库 `Abu-enterprise-modules` 才放「肉」**：真正的闭源实现（KB Browser/同步、skill-installer、mcp-installer、migration wizard、`kb_query` agent tool、企业策略实现、不想公开的服务端契约），在其 `initEnterpriseModules()` 里 `registerEnterpriseMount('x', Impl)` 注册进插槽。
 - 🔴 **绝不能因为本仓 `src/core/enterprise/` 已有文件，就把新的闭源实现也塞进去**——现存那些是协议层（✅ OSS），不是先例。判据：含商业逻辑 / 机密算法 / 付费功能本体 / 服务端契约 → 私有仓库；只是接口 / 插槽 / 默认 null → 公开仓库。拿不准就停下问，别默认往公开仓库写。
-- 🔴 **`npm run build` / `npm test` 全绿 ≠ 没泄露**——这是保密违规，工具链抓不到。一旦闭源逻辑进了本仓 commit 并 push，git 历史里**洗不掉**。`npm run dev` 看不到企业功能是正常的；要带企业功能开发用 `npm run dev:enterprise`（需私有仓库在 sibling 位置）。
+- 🔴 **`npm run build` / `npm test` 全绿 ≠ 没泄露**——这是保密违规，工具链抓不到。一旦闭源逻辑进了本仓 commit 并 push，git 历史里**洗不掉**。`npm run electron:dev` 看不到企业功能是正常的；企业功能开发和验收统一使用 `npm run electron:dev:enterprise`（需私有仓库在 sibling 位置）。
 
 ## Key Commands
-- `npm run dev` — Start Vite dev server (frontend only)
-- `npm run setup:electron-dev` — Prepare worktree-local Electron dependencies, runtimes, bridges, and native helpers
-- `npm run electron:dev` — Start the Electron desktop shell with dev-isolated data
+- `npm run dev` — Start Vite dev server (frontend preview only; not desktop acceptance)
+- `npm run setup:electron-dev` — Prepare an OSS worktree's local Electron dependencies, runtimes, bridges, and native helpers
+- `npm run setup:electron-dev:enterprise` — Prepare the same environment and build the Enterprise renderer
+- `npm run electron:dev` / `npm run electron:dev:enterprise` — Rebuild the intended renderer and start the Electron desktop shell with dev-isolated data
 - `npm run build` — Build frontend (`tsc -b && vite build`)
 - `npm run dist:electron` — Build a local Electron package (not an official distributable)
 - `npm test` — Run tests once (`vitest run`)

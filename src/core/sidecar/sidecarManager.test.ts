@@ -22,12 +22,21 @@ import {
   SidecarRequestError,
   __resetForTests,
 } from './sidecarManager';
+import { useEnterpriseStore } from '@/stores/enterpriseStore';
+import type { EnterpriseBinding } from '@/core/enterprise/types';
 
 type EventPayload = { payload: string };
 type EventCallback = (event: EventPayload) => void;
 
 /** eventName -> the callback most recently registered via listen(eventName, cb) */
 let listenCallbacks: Map<string, EventCallback>;
+
+const enterpriseBinding: EnterpriseBinding = {
+  serverUrl: 'https://enterprise.example', orgId: 'org-1', orgName: 'Org',
+  userId: 'user-1', userName: 'User', userEmail: 'user@example.com',
+  deptId: null, roleId: null, accessToken: 'token', boundAt: '2026-08-05T00:00:00Z',
+  llmEndpoint: null, llmVirtualKey: null, llmKeyExpiresAt: null,
+};
 
 function emitClose(): void {
   listenCallbacks.get('mcp-close-abu-sidecar')?.({ payload: '' });
@@ -71,6 +80,7 @@ describe('sidecarManager', () => {
     resolveResource.mockReset();
     listenCallbacks = new Map();
     __resetForTests();
+    useEnterpriseStore.setState({ mode: { kind: 'personal' }, initialized: true });
     // Simulate running inside the Tauri webview (see utils/tauriEnv.ts) —
     // happy-dom has no __TAURI_INTERNALS__ by default, so the gated no-op
     // test below explicitly deletes it instead.
@@ -91,6 +101,44 @@ describe('sidecarManager', () => {
   });
 
   describe('startSidecar', () => {
+    it('seeds and live-pushes the fail-closed enterprise entitlement mirror', async () => {
+      mockHappyPath();
+      await startSidecar();
+
+      const entitlementWrites = () => invoke.mock.calls
+        .filter((call) => call[0] === 'mcp_write')
+        .map((call) => JSON.parse((call as [string, { message: string }])[1].message) as { method?: string; params?: unknown })
+        .filter((message) => message.method === 'state.enterpriseEntitlement');
+
+      expect(entitlementWrites()).toContainEqual(expect.objectContaining({
+        params: { entitlement: { mode: 'personal', licenseStatus: null, licenseExpiresAt: null, modules: [] } },
+      }));
+
+      useEnterpriseStore.setState({
+        mode: {
+          kind: 'enterprise',
+          binding: enterpriseBinding,
+          config: {
+            brand: { name: 'Org', logoUrl: null, primaryColor: null },
+            defaultSoul: null,
+            policyDefaults: {},
+            modules: ['skills'],
+            licenseStatus: 'valid',
+            licenseExpiresAt: '2099-01-01T00:00:00Z',
+            serverTime: '2026-08-05T00:00:00Z',
+            fetchedAt: Date.now(),
+          },
+        },
+      });
+
+      expect(entitlementWrites()).toContainEqual(expect.objectContaining({
+        params: { entitlement: {
+          mode: 'enterprise', licenseStatus: 'valid',
+          licenseExpiresAt: '2099-01-01T00:00:00Z', modules: ['skills'],
+        } },
+      }));
+    });
+
     it('spawns node with the resolved entry path and registers listeners before spawning', async () => {
       const callOrder: string[] = [];
       resolveResource.mockResolvedValue('/resources/sidecar/index.mjs');

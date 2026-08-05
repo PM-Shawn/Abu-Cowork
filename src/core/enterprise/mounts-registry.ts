@@ -19,6 +19,9 @@ export interface SlotProps {
 export interface TabSlotProps extends SlotProps {
   onSelectSkill?: (id: string) => void
   onSelectMcp?: (id: string) => void
+  /** Search text owned by the public Toolbox shell. Enterprise overlays should
+   *  filter their managed catalog with the same query as personal content. */
+  searchQuery?: string
 }
 
 /** Brand renderer — shown wherever the host brand appears. */

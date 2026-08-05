@@ -219,8 +219,9 @@ export function formatPreflightFailure(result) {
 
   lines.push(
     '',
-    '请在当前 worktree 执行一次：',
-    '  npm run setup:electron-dev',
+    '请在当前 worktree 执行一次（按目标二选一）：',
+    '  OSS：    npm run setup:electron-dev',
+    '  企业版： npm run setup:electron-dev:enterprise',
     '',
     '预检不会使用 npx 临时下载，也不会启动一个依赖不完整的 Electron。',
     ''

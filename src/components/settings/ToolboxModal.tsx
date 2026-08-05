@@ -4,7 +4,7 @@ import { useSettingsStore, type ToolboxTab } from '@/stores/settingsStore';
 import { useChatStore } from '@/stores/chatStore';
 import { useDiscoveryStore } from '@/stores/discoveryStore';
 import { useI18n, format } from '@/i18n';
-import { Sparkles, Bot, Server, Building2, Search } from 'lucide-react';
+import { Sparkles, Bot, Server, Search } from 'lucide-react';
 import { open as openDialog } from '@tauri-apps/plugin-dialog';
 import { useToastStore } from '@/stores/toastStore';
 import { installSkillFromFolder } from '@/core/skill/installer';
@@ -16,14 +16,12 @@ import AgentsSection from '../customize/AgentsSection';
 import MCPSection from '../customize/MCPSection';
 import TopTabNav from '@/components/toolbox/TopTabNav';
 import ToolboxCreateMenu from '@/components/toolbox/ToolboxCreateMenu';
+import CapabilityScopeToggle, { type CapabilityScope } from '@/components/toolbox/CapabilityScopeToggle';
 import { Input } from '@/components/ui/input';
 // Enterprise skill/MCP tab implementations are registered by the enterprise-modules
 // entry point (real impls in the enterprise build, no-op in the OSS build). The
 // consumers below read them via getEnterpriseMount(), which returns a NullComponent
 // fallback when unregistered — so the OSS build never imports enterprise UI directly.
-
-// Extended tab type — enterprise tabs are local-only (not persisted in store)
-type ExtendedTab = ToolboxTab | 'enterprise-skills' | 'enterprise-mcp';
 
 export default function ToolboxView() {
   const {
@@ -43,31 +41,22 @@ export default function ToolboxView() {
   const [mcpAddFormOpen, setMcpAddFormOpen] = useState(false);
   const [skillUploadModalOpen, setSkillUploadModalOpen] = useState(false);
   const [manualCreateTrigger, setManualCreateTrigger] = useState(0);
-  // Local state for enterprise tab selection (not persisted)
-  const [activeExtTab, setActiveExtTab] = useState<ExtendedTab>(activeToolboxTab);
-
-  // Sync store tab changes to local extended tab
-  useEffect(() => {
-    setActiveExtTab(activeToolboxTab);
-  }, [activeToolboxTab]);
+  const [capabilityScope, setCapabilityScope] = useState<CapabilityScope>('personal');
 
   // Reset manual-create trigger and clear search when switching tabs
   useEffect(() => {
     setManualCreateTrigger(0);
     setToolboxSearchQuery('');
-  }, [activeExtTab, setToolboxSearchQuery]);
+  }, [activeToolboxTab, capabilityScope, setToolboxSearchQuery]);
 
-  const handleTabChange = (tab: ExtendedTab) => {
-    if (tab === 'skills' || tab === 'agents' || tab === 'mcp') {
-      setActiveToolboxTab(tab);
-    }
-    setActiveExtTab(tab);
-  };
+  useEffect(() => {
+    if (!isEnterprise) setCapabilityScope('personal');
+  }, [isEnterprise]);
 
   // Handler for creating with AI, adapts to active tab
   const handleAICreate = () => {
     startNewConversation();
-    const prompt = activeExtTab === 'agents'
+    const prompt = activeToolboxTab === 'agents'
       ? t.toolbox.aiCreateAgentPrompt
       : t.toolbox.aiCreateSkillPrompt;
     setPendingInput(prompt);
@@ -76,7 +65,7 @@ export default function ToolboxView() {
 
   // Handler for uploading a folder (Skills/Agents)
   const handleUploadFile = async () => {
-    const isAgent = activeExtTab === 'agents';
+    const isAgent = activeToolboxTab === 'agents';
     const addToast = useToastStore.getState().addToast;
 
     try {
@@ -109,20 +98,11 @@ export default function ToolboxView() {
     setManualCreateTrigger((c) => c + 1);
   };
 
-  const baseNavItems: { id: ExtendedTab; label: string; icon: typeof Sparkles }[] = [
+  const navItems: { id: ToolboxTab; label: string; icon: typeof Sparkles }[] = [
     { id: 'skills', label: t.toolbox.skills, icon: Sparkles },
     { id: 'agents', label: t.toolbox.agents, icon: Bot },
     { id: 'mcp', label: t.toolbox.mcp, icon: Server },
   ];
-
-  const enterpriseNavItems: { id: ExtendedTab; label: string; icon: typeof Sparkles }[] = isEnterprise
-    ? [
-        { id: 'enterprise-skills', label: t.toolbox.enterpriseSkills, icon: Building2 },
-        { id: 'enterprise-mcp', label: t.toolbox.enterpriseMcp, icon: Building2 },
-      ]
-    : [];
-
-  const navItems = [...baseNavItems, ...enterpriseNavItems];
 
   const renderContent = () => {
     const binding = enterpriseMode.kind === 'enterprise' || enterpriseMode.kind === 'offline'
@@ -134,38 +114,39 @@ export default function ToolboxView() {
         ? enterpriseMode.lastConfig
         : null;
 
-    switch (activeExtTab) {
-      case 'skills':
+    switch (activeToolboxTab) {
+      case 'skills': {
+        if (isEnterprise && capabilityScope === 'organization') {
+          if (!binding) return null;
+          const SkillTab = getEnterpriseMount('skillTab');
+          return <SkillTab binding={binding} config={config} searchQuery={toolboxSearchQuery} />;
+        }
         return <SkillsSection
           manualCreateTrigger={manualCreateTrigger}
           showUploadModal={skillUploadModalOpen}
           onUploadModalChange={setSkillUploadModalOpen}
         />;
+      }
       case 'agents':
         return <AgentsSection
           manualCreateTrigger={manualCreateTrigger}
         />;
-      case 'mcp':
+      case 'mcp': {
+        if (isEnterprise && capabilityScope === 'organization') {
+          if (!binding) return null;
+          const McpTab = getEnterpriseMount('mcpTab');
+          return <McpTab binding={binding} config={config} searchQuery={toolboxSearchQuery} />;
+        }
         return <MCPSection showAddForm={mcpAddFormOpen} onAddFormChange={setMcpAddFormOpen} />;
-      case 'enterprise-skills': {
-        if (!binding) return null;
-        const SkillTab = getEnterpriseMount('skillTab');
-        return <SkillTab binding={binding} config={config} />;
-      }
-      case 'enterprise-mcp': {
-        if (!binding) return null;
-        const McpTab = getEnterpriseMount('mcpTab');
-        return <McpTab binding={binding} config={config} />;
       }
       default:
         return null;
     }
   };
 
-  // Header-right control: always a search box, plus a per-tab "+ 添加" create
-  // control — a dropdown menu for agents/skills (AI-create/manual/upload), a
-  // direct-open button for mcp (opens the add-server form), nothing for the
-  // enterprise tabs (search only).
+  // Header-right control: always a search box, plus a per-tab create control.
+  // Organization catalogs reuse the same source toggle and search box, while
+  // create/import actions stay personal-only.
   const renderHeaderRight = () => {
     const searchBox = (
       <div className="relative w-52 shrink-0">
@@ -180,8 +161,17 @@ export default function ToolboxView() {
       </div>
     );
 
+    const scopeControl = isEnterprise && (activeToolboxTab === 'skills' || activeToolboxTab === 'mcp') ? (
+      <CapabilityScopeToggle
+        value={capabilityScope}
+        onChange={setCapabilityScope}
+        personalLabel={t.toolbox.personalSource}
+        organizationLabel={t.toolbox.organizationSource}
+      />
+    ) : null;
+
     let createControl: ReactNode = null;
-    if (activeExtTab === 'agents') {
+    if (activeToolboxTab === 'agents') {
       createControl = (
         <ToolboxCreateMenu
           onAICreate={handleAICreate}
@@ -190,7 +180,7 @@ export default function ToolboxView() {
           uploadLabel={t.toolbox.uploadFile}
         />
       );
-    } else if (activeExtTab === 'skills') {
+    } else if (activeToolboxTab === 'skills' && (!isEnterprise || capabilityScope === 'personal')) {
       createControl = (
         <ToolboxCreateMenu
           onAICreate={handleAICreate}
@@ -201,11 +191,11 @@ export default function ToolboxView() {
           menuTestId="skill-create-menu"
         />
       );
-    } else if (activeExtTab === 'mcp') {
+    } else if (activeToolboxTab === 'mcp' && (!isEnterprise || capabilityScope === 'personal')) {
       createControl = <ToolboxCreateMenu onClick={() => setMcpAddFormOpen(true)} />;
     }
 
-    return <>{searchBox}{createControl}</>;
+    return <>{scopeControl}{searchBox}{createControl}</>;
   };
 
   return (
@@ -216,8 +206,8 @@ export default function ToolboxView() {
           horizontal-clearance hack (see TopTabNav's `belowChrome` mode). */}
       <TopTabNav
         items={navItems}
-        activeId={activeExtTab}
-        onSelect={handleTabChange}
+        activeId={activeToolboxTab}
+        onSelect={setActiveToolboxTab}
         belowChrome
         right={renderHeaderRight()}
       />

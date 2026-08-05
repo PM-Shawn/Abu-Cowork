@@ -119,6 +119,8 @@ import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import { resolveResource, appDataDir, resourceDir } from '@tauri-apps/api/path';
 import { isTauriEnv } from '@/utils/tauriEnv';
 import { createLogger } from '@/core/logging/logger';
+import { useEnterpriseStore } from '@/stores/enterpriseStore';
+import { snapshotEnterpriseEntitlement } from '@/core/enterprise/entitlement-state';
 
 const logger = createLogger('sidecar');
 
@@ -243,6 +245,24 @@ let heartbeatFailures = 0;
 /** Rolling window of restart timestamps — see "Restart policy" in module JSDoc. */
 let restartTimestamps: number[] = [];
 let crashLoopWarned = false;
+let enterpriseEntitlementUnsub: (() => void) | undefined;
+
+function pushEnterpriseEntitlement(): void {
+  if (status !== 'running') return;
+  notifySidecar('state.enterpriseEntitlement', {
+    entitlement: snapshotEnterpriseEntitlement(useEnterpriseStore.getState().mode),
+  });
+}
+
+function ensureEnterpriseEntitlementSync(): void {
+  enterpriseEntitlementUnsub ??= useEnterpriseStore.subscribe(pushEnterpriseEntitlement);
+  pushEnterpriseEntitlement();
+}
+
+function stopEnterpriseEntitlementSync(): void {
+  enterpriseEntitlementUnsub?.();
+  enterpriseEntitlementUnsub = undefined;
+}
 
 // ── Public API ──
 
@@ -282,6 +302,7 @@ export async function startSidecar(): Promise<void> {
  */
 export async function stopSidecar(): Promise<void> {
   deliberatelyStopped = true;
+  stopEnterpriseEntitlementSync();
   stopHeartbeat();
   rejectAllPending(new Error('Sidecar stopped'));
   restartTimestamps = [];
@@ -436,6 +457,7 @@ export function onSidecarRequest(method: string, handler: SidecarRequestHandler)
 
 /** Reset all module state for test isolation. Not used by production code. */
 export function __resetForTests(): void {
+  stopEnterpriseEntitlementSync();
   status = 'stopped';
   listenersReady = false;
   unlisteners = [];
@@ -555,6 +577,8 @@ async function attemptSpawn(kind: 'initial' | 'restart'): Promise<void> {
   }
 
   status = 'running';
+  // Seed after every spawn/restart, then stream heartbeat/store changes.
+  ensureEnterpriseEntitlementSync();
   // Host gate (see module JSDoc "F1"): only Tauri (no main-process
   // supervisor) runs the renderer heartbeat; Electron's main-process
   // heartbeat + mcp-hung listener handle liveness there instead.

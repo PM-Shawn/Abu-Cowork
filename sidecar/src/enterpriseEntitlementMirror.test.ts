@@ -4,6 +4,7 @@ import {
   applyEnterpriseEntitlementSnapshot,
   isEnterpriseModuleActive,
 } from './enterpriseEntitlementMirror'
+import { IS_ENTERPRISE_BUILD } from '@/config/featureGates'
 
 describe('enterprise entitlement mirror', () => {
   beforeEach(() => {
@@ -22,7 +23,7 @@ describe('enterprise entitlement mirror', () => {
       licenseExpiresAt: '2026-08-05T12:00:01Z',
       modules: ['skills'],
     })
-    expect(isEnterpriseModuleActive('skills')).toBe(true)
+    expect(isEnterpriseModuleActive('skills')).toBe(IS_ENTERPRISE_BUILD)
     expect(isEnterpriseModuleActive('mcp')).toBe(false)
 
     vi.setSystemTime(new Date('2026-08-05T12:00:02Z'))
@@ -34,7 +35,7 @@ describe('enterprise entitlement mirror', () => {
       mode: 'enterprise', licenseStatus: 'valid',
       licenseExpiresAt: '2099-01-01T00:00:00Z', modules: ['kb'],
     })
-    expect(isEnterpriseModuleActive('kb')).toBe(true)
+    expect(isEnterpriseModuleActive('kb')).toBe(IS_ENTERPRISE_BUILD)
 
     applyEnterpriseEntitlementSnapshot({
       mode: 'offline', licenseStatus: 'valid',

@@ -84,8 +84,8 @@ describe('SkillLoader.discoverSkills · workspace awareness', () => {
 
     useEnterpriseStore.setState({ mode: { kind: 'enterprise', binding: enterpriseBinding, config: enterpriseConfig } });
     await loader.discoverSkills(null);
-    expect(loader.has('org-skill')).toBe(true);
-    expect(loader.getSkill('org-skill')?.source).toBe('enterprise');
+    expect(loader.has('org-skill')).toBe(__ENTERPRISE_BUILD__);
+    expect(loader.getSkill('org-skill')?.source).toBe(__ENTERPRISE_BUILD__ ? 'enterprise' : undefined);
 
     useEnterpriseStore.setState({
       mode: { kind: 'offline', binding: enterpriseBinding, lastConfig: enterpriseConfig, reason: 'license rejected' },

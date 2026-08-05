@@ -6,6 +6,8 @@ import { MountPoint } from '@/core/enterprise/mounts'
 import { getEnterpriseMount } from '@/core/enterprise/mounts-registry'
 import { Button } from '@/components/ui/button'
 import BindToEnterpriseFlow from '@/components/enterprise/BindToEnterpriseFlow'
+// Side-effect import: registers BrandSlot in the enterprise mounts registry.
+import '@/components/enterprise/BrandSlot'
 // The /me transparency page and migration wizard are registered by the
 // enterprise-modules entry point (real impls in the enterprise build, no-op in
 // OSS). Read below via getEnterpriseMount() — NullComponent fallback in OSS, so

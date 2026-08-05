@@ -28,9 +28,10 @@ interface Props {
   bootstrap: BootstrapDTO
   onSuccess: () => void
   onCancel?: () => void
+  surface?: 'page' | 'dialog'
 }
 
-export default function EnterpriseLoginPage({ serverUrl, bootstrap, onSuccess, onCancel }: Props) {
+export default function EnterpriseLoginPage({ serverUrl, bootstrap, onSuccess, onCancel, surface = 'page' }: Props) {
   const { t, format } = useI18n()
   const tl = t.enterpriseLogin
   const bind = useEnterpriseStore(s => s.bind)
@@ -57,6 +58,20 @@ export default function EnterpriseLoginPage({ serverUrl, bootstrap, onSuccess, o
   const [err, setErr] = useState<string | null>(null)
 
   const showTabs = methods.length > 1
+  const isDialog = surface === 'dialog'
+
+  const labelClass = isDialog
+    ? 'text-[var(--abu-text-secondary)]'
+    : 'text-neutral-300'
+  const mutedTextClass = isDialog
+    ? 'text-[var(--abu-text-muted)]'
+    : 'text-neutral-400'
+  const subtleTextClass = isDialog
+    ? 'text-[var(--abu-text-tertiary)]'
+    : 'text-neutral-500'
+  const errorClass = isDialog
+    ? 'text-[var(--abu-danger)]'
+    : 'text-rose-400'
 
   const base = serverUrl.replace(/\/$/, '')
 
@@ -221,6 +236,17 @@ export default function EnterpriseLoginPage({ serverUrl, bootstrap, onSuccess, o
   // ── Render ────────────────────────────────────────────────────────────────────
   return (
     <div className="space-y-4">
+      {isDialog && (
+        <div>
+          <h2 className="text-h-sm font-semibold text-[var(--abu-text-primary)]">
+            {bootstrap.instanceName || bootstrap.branding.name || tl.bindTitle}
+          </h2>
+          <p className="mt-2 text-body leading-relaxed text-[var(--abu-text-muted)]">
+            {tl.bindDescription}
+          </p>
+        </div>
+      )}
+
       {/* Branding */}
       {bootstrap.branding.logoUrl && (
         <img src={bootstrap.branding.logoUrl} alt={bootstrap.branding.name} className="h-8 object-contain" />
@@ -228,7 +254,13 @@ export default function EnterpriseLoginPage({ serverUrl, bootstrap, onSuccess, o
 
       {/* Method tabs (only when multiple methods) */}
       {showTabs && (
-        <div className="flex gap-1 border-b border-neutral-700 pb-0" role="tablist">
+        <div
+          className={cn(
+            'flex gap-1 border-b pb-0',
+            isDialog ? 'border-[var(--abu-border)]' : 'border-neutral-700',
+          )}
+          role="tablist"
+        >
           {methods.map(method => (
             <button
               key={method}
@@ -238,9 +270,13 @@ export default function EnterpriseLoginPage({ serverUrl, bootstrap, onSuccess, o
               onClick={() => { setActiveMethod(method); setErr(null) }}
               className={cn(
                 'px-3 py-1.5 text-minor rounded-t transition-colors',
-                activeMethod === method
-                  ? 'text-white border-b-2 border-[var(--abu-info)] -mb-px'
-                  : 'text-neutral-400 hover:text-neutral-200',
+                activeMethod === method && isDialog
+                  ? 'text-[var(--abu-clay)] border-b-2 border-[var(--abu-clay)] -mb-px'
+                  : activeMethod === method
+                    ? 'text-white border-b-2 border-[var(--abu-info)] -mb-px'
+                    : isDialog
+                      ? 'text-[var(--abu-text-muted)] hover:text-[var(--abu-text-primary)]'
+                      : 'text-neutral-400 hover:text-neutral-200',
               )}
             >
               {tabLabel(method)}
@@ -253,7 +289,7 @@ export default function EnterpriseLoginPage({ serverUrl, bootstrap, onSuccess, o
       {(activeMethod === 'password' || (!showTabs && methods.includes('password'))) && (
         <form data-testid="password-form" onSubmit={handlePassword} className="space-y-3">
           <div>
-            <label className="block text-minor text-neutral-300 mb-1">{tl.emailLabel}</label>
+            <label className={cn('mb-1 block text-minor font-medium', labelClass)}>{tl.emailLabel}</label>
             <Input
               data-testid="email-input"
               type="email"
@@ -264,7 +300,7 @@ export default function EnterpriseLoginPage({ serverUrl, bootstrap, onSuccess, o
             />
           </div>
           <div>
-            <label className="block text-minor text-neutral-300 mb-1">{tl.passwordLabel}</label>
+            <label className={cn('mb-1 block text-minor font-medium', labelClass)}>{tl.passwordLabel}</label>
             <Input
               data-testid="password-input"
               type="password"
@@ -274,7 +310,7 @@ export default function EnterpriseLoginPage({ serverUrl, bootstrap, onSuccess, o
               required
             />
           </div>
-          {err && <div className="text-minor text-rose-400">{err}</div>}
+          {err && <div className={cn('text-minor', errorClass)}>{err}</div>}
           <Button type="submit" size="sm" className="w-full" disabled={busy}>
             {busy ? tl.processing : tl.signInButton}
           </Button>
@@ -287,7 +323,7 @@ export default function EnterpriseLoginPage({ serverUrl, bootstrap, onSuccess, o
           {magicStep === 'start' ? (
             <form onSubmit={handleMagicStart} className="space-y-3">
               <div>
-                <label className="block text-minor text-neutral-300 mb-1">{tl.emailLabel}</label>
+                <label className={cn('mb-1 block text-minor font-medium', labelClass)}>{tl.emailLabel}</label>
                 <Input
                   type="email"
                   value={magicEmail}
@@ -296,18 +332,18 @@ export default function EnterpriseLoginPage({ serverUrl, bootstrap, onSuccess, o
                   required
                 />
               </div>
-              {err && <div className="text-minor text-rose-400">{err}</div>}
+              {err && <div className={cn('text-minor', errorClass)}>{err}</div>}
               <Button type="submit" size="sm" className="w-full" disabled={busy}>
                 {busy ? tl.processing : tl.magicSendCodeButton}
               </Button>
             </form>
           ) : (
             <form onSubmit={handleMagicVerify} className="space-y-3">
-              <p className="text-minor text-neutral-400">
+              <p className={cn('text-minor', mutedTextClass)}>
                 {format(tl.magicSentHint, { email: magicEmail })}
               </p>
               <div>
-                <label className="block text-minor text-neutral-300 mb-1">{tl.magicCodeLabel}</label>
+                <label className={cn('mb-1 block text-minor font-medium', labelClass)}>{tl.magicCodeLabel}</label>
                 <Input
                   type="text"
                   value={magicCode}
@@ -316,7 +352,7 @@ export default function EnterpriseLoginPage({ serverUrl, bootstrap, onSuccess, o
                   required
                 />
               </div>
-              {err && <div className="text-minor text-rose-400">{err}</div>}
+              {err && <div className={cn('text-minor', errorClass)}>{err}</div>}
               <Button type="submit" size="sm" className="w-full" disabled={busy}>
                 {busy ? tl.processing : tl.magicVerifyButton}
               </Button>
@@ -330,16 +366,23 @@ export default function EnterpriseLoginPage({ serverUrl, bootstrap, onSuccess, o
         <div data-testid="sso-section">
           {ssoUserCode ? (
             <div className="text-center space-y-2">
-              <p className="text-minor text-neutral-300">{tl.ssoCodeHint}</p>
-              <div className="text-h-xl font-mono tracking-widest py-3 bg-neutral-800 rounded">
+              <p className={cn('text-minor', labelClass)}>{tl.ssoCodeHint}</p>
+              <div
+                className={cn(
+                  'rounded-md py-3 font-mono text-h-xl tracking-widest',
+                  isDialog
+                    ? 'bg-[var(--abu-bg-muted)] text-[var(--abu-text-primary)]'
+                    : 'bg-neutral-800',
+                )}
+              >
                 {ssoUserCode}
               </div>
-              <p className="text-minor text-neutral-500">{tl.ssoWaiting}</p>
-              {err && <div className="text-minor text-rose-400">{err}</div>}
+              <p className={cn('text-minor', subtleTextClass)}>{tl.ssoWaiting}</p>
+              {err && <div className={cn('text-minor', errorClass)}>{err}</div>}
             </div>
           ) : (
             <>
-              {err && <div className="text-minor text-rose-400 mb-2">{err}</div>}
+              {err && <div className={cn('mb-2 text-minor', errorClass)}>{err}</div>}
               <Button
                 data-testid="sso-button"
                 type="button"
@@ -358,7 +401,15 @@ export default function EnterpriseLoginPage({ serverUrl, bootstrap, onSuccess, o
       {/* Cancel / back */}
       {onCancel && !busy && (
         <div className="flex justify-start pt-1">
-          <button onClick={onCancel} className="text-minor text-neutral-500 hover:text-neutral-300 transition-colors">
+          <button
+            onClick={onCancel}
+            className={cn(
+              'text-minor transition-colors',
+              isDialog
+                ? 'text-[var(--abu-text-muted)] hover:text-[var(--abu-text-primary)]'
+                : 'text-neutral-500 hover:text-neutral-300',
+            )}
+          >
             {tl.cancelButton}
           </button>
         </div>

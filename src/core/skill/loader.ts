@@ -4,6 +4,7 @@ import { homeDir, appDataDir, resolve, resolveResource } from '@tauri-apps/api/p
 import type { Skill, SkillMetadata, SkillHookEntry, SkillSource } from '../../types';
 import { joinPath, getParentDir, normalizeSeparators } from '../../utils/pathUtils';
 import { sanitizePath } from '../memdir/paths';
+import { isEnterpriseModuleActive } from '../enterprise/entitlement';
 
 /**
  * Normalize tool list: accept both YAML array (Abu format) and
@@ -207,10 +208,12 @@ export class SkillLoader {
 
     // Enterprise-installed skills (AppData/skills/enterprise/<name>/SKILL.md).
     // Each sub-directory is a separate skill package written by installer.ts.
-    try {
-      const appData = await appDataDir();
-      dirs.push({ path: joinPath(appData, 'skills/enterprise'), source: 'enterprise' });
-    } catch { /* appDataDir unavailable in non-Tauri/test environments */ }
+    if (isEnterpriseModuleActive('skills')) {
+      try {
+        const appData = await appDataDir();
+        dirs.push({ path: joinPath(appData, 'skills/enterprise'), source: 'enterprise' });
+      } catch { /* appDataDir unavailable in non-Tauri/test environments */ }
+    }
 
     if (builtinDir) {
       dirs.push({ path: builtinDir, source: 'builtin' });
@@ -262,7 +265,12 @@ export class SkillLoader {
 
   /** Load full skill content by name */
   async loadSkill(name: string): Promise<Skill | null> {
-    return this.skills.get(name) ?? null;
+    const skill = this.skills.get(name);
+    return skill && this.isUsable(skill) ? skill : null;
+  }
+
+  private isUsable(skill: Skill): boolean {
+    return skill.source !== 'enterprise' || isEnterpriseModuleActive('skills');
   }
 
   /**
@@ -276,7 +284,7 @@ export class SkillLoader {
   getAvailableSkills(options: { includeDrafts?: boolean } = {}): SkillMetadata[] {
     const includeDrafts = options.includeDrafts ?? false;
     return Array.from(this.skills.values())
-      .filter((skill) => includeDrafts || skill.source !== 'draft')
+      .filter((skill) => this.isUsable(skill) && (includeDrafts || skill.source !== 'draft'))
       .map((skill) => {
         // Omit runtime-only fields not part of SkillMetadata
         const { content, filePath, skillDir, ...meta } = skill;
@@ -292,13 +300,15 @@ export class SkillLoader {
 
   /** Get full skill by name */
   getSkill(name: string): Skill | undefined {
-    return this.skills.get(name);
+    const skill = this.skills.get(name);
+    return skill && this.isUsable(skill) ? skill : undefined;
   }
 
   /** Re-read a single skill from disk to get latest content */
   async refreshSkill(name: string): Promise<Skill | undefined> {
     const existing = this.skills.get(name);
-    if (!existing?.filePath) return existing;
+    if (!existing || !this.isUsable(existing)) return undefined;
+    if (!existing.filePath) return existing;
     try {
       const raw = await readTextFile(existing.filePath);
       const skill = parseSkillFile(raw, existing.filePath);
@@ -313,13 +323,15 @@ export class SkillLoader {
 
   /** Check if a skill is registered */
   has(name: string): boolean {
-    return this.skills.has(name);
+    const skill = this.skills.get(name);
+    return skill !== undefined && this.isUsable(skill);
   }
 
   /** Find skills matching a user query (for searching/filtering) */
   findMatchingSkills(query: string): Skill[] {
     const lower = query.toLowerCase();
     const matched = Array.from(this.skills.values()).filter((s) => {
+      if (!this.isUsable(s)) return false;
       if (s.disableAutoInvoke) return false;
       const haystack = `${s.name} ${s.description} ${(s.tags ?? []).join(' ')} ${s.trigger ?? ''}`.toLowerCase();
       const words = lower.split(/\s+/).filter(w => w.length > 0);

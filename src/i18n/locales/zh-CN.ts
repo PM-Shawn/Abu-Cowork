@@ -1394,6 +1394,8 @@ const zhCN: TranslationDict = {
     categoryBlocksHint: '你点过"这类别再提议"的技能。解除后阿布可以重新提议。',
     enterpriseSkills: '企业 Skill',
     enterpriseMcp: '企业 MCP',
+    personalSource: '我的',
+    organizationSource: '组织',
   },
 
   permission: {

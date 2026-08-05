@@ -299,16 +299,23 @@ Create a weekly report PPT for this week
 git clone https://github.com/PM-Shawn/Abu-Cowork.git
 cd Abu-Cowork
 
-# Install locked dependencies and prepare the worktree-local Electron runtime
-npm ci
+# Prepare worktree-local dependencies, Electron/browser runtimes, sidecar,
+# native helper, sandbox launcher, and the OSS renderer
 npm run setup:electron-dev
 
-# Launch the Electron desktop app (dev data is isolated from installed Abu)
+# Launch the Electron desktop app. The OSS renderer is rebuilt before launch.
 npm run electron:dev
 
-# Frontend only (no Rust required)
+# Enterprise worktree: prepare and launch the private Enterprise renderer
+npm run setup:electron-dev:enterprise
+npm run electron:dev:enterprise
+
+# Frontend-only preview (not desktop acceptance)
 npm run dev
 ```
+
+Tauri is not a feature-development or acceptance target. Its source remains
+only for compatibility with already shipped versions, migration, and rollback.
 
 ### Build
 

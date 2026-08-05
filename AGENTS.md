@@ -72,9 +72,12 @@ small edit expensive.
 - Do not build a distributable application from a machine environment that has
   `VITE_*` secrets configured. Those values can be embedded in renderer assets.
 
-## Electron-First Architecture
+## Electron-Only Development Architecture
 
-- Electron is the target desktop shell. The important boundaries are:
+- Electron is the only desktop shell for new feature development, debugging,
+  and acceptance. `src-tauri/` remains only for compatibility with already
+  shipped versions, migration, and rollback evidence. Never use a Tauri launch
+  or build as evidence that a new feature is complete. The important boundaries are:
   - `src/`: React renderer and product logic.
   - `electron/main.cjs`: Electron main-process lifecycle and native services.
   - `electron/preload.cjs`: the narrow, safe renderer bridge.
@@ -87,9 +90,9 @@ small edit expensive.
   inputs validated at the privileged boundary.
 - Node built-ins are appropriate in `electron/` and `sidecar/` when needed.
   They are not a reason to add direct privileged imports to `src/`.
-- Tauri/Rust is still a compatibility and migration path. Preserve behavior
-  until Electron parity is proven; do not remove Tauri code simply because an
-  Electron equivalent exists.
+- Tauri/Rust is a frozen compatibility and migration path. Preserve it where
+  transition behavior still depends on it, but do not add new product behavior
+  there and do not run it for normal development or acceptance.
 - `src-tauri/gen/` contains generated output. Change its source configuration
   first and regenerate when required; do not casually hand-edit or discard a
   generated diff.
@@ -128,23 +131,31 @@ relevant command:
 
 ```bash
 npm run setup:electron-dev # once per worktree, or after package-lock changes
+npm run setup:electron-dev:enterprise # enterprise worktrees
 npm run electron:test
 npm run test:e2e:electron
 npm run pack:electron
 npm run smoke:electron:packaged
 ```
 
-`npm run setup:electron-dev` prepares the worktree-local dependencies, bundled
-runtimes, generated bridges, native helpers, and renderer once.
-`npm run electron:dev` then performs only a fast local preflight and never
-downloads a temporary Electron through `npx`. Keep each active worktree's
-`node_modules` local when installing: the setup command deliberately refuses
+`npm run setup:electron-dev` and `npm run setup:electron-dev:enterprise`
+prepare worktree-local dependencies, bundled runtimes, generated bridges,
+native helpers, and the correctly targeted renderer. `npm run electron:dev`
+and `npm run electron:dev:enterprise` run preflight and rebuild their own
+renderer target before launch, so a stale OSS/Enterprise renderer cannot be
+mistaken for the other edition. Preflight never downloads a temporary Electron
+through `npx`. Keep each active worktree's `node_modules` local when installing:
+the setup command deliberately refuses
 to run through a symlink because `npm ci` could otherwise mutate another
 worktree's dependencies.
 
 Packaging, signing, updater, permissions, and cross-platform behavior require
 real application verification; a green unit-test suite alone is insufficient.
 Do not publish update feeds or release artifacts without explicit user approval.
+
+Before claiming a desktop feature complete, record evidence from the real
+Electron shell and affected user journey. Browser previews, unit tests, and
+renderer builds are supporting gates, not desktop acceptance.
 
 ## Current Migration Priorities
 

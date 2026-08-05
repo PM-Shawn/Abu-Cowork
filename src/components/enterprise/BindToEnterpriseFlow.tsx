@@ -39,33 +39,44 @@ export default function BindToEnterpriseFlow({
   }
 
   return (
-    <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50">
-      <div className="bg-neutral-900 border border-neutral-700 rounded-lg p-6 w-[420px]">
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/35 px-4 backdrop-blur-[2px]"
+      onMouseDown={(e) => { if (e.target === e.currentTarget) onCancel() }}
+    >
+      <div className="w-full max-w-[500px] rounded-lg border border-[var(--abu-border)] bg-[var(--abu-bg-base)] p-6 shadow-[0_18px_60px_rgba(24,22,18,0.22)]">
         {bootstrap ? (
           <>
-            <h2 className="text-h-sm font-semibold mb-2">{bootstrap.instanceName || bootstrap.branding.name}</h2>
             <EnterpriseLoginPage
               serverUrl={serverUrl}
               bootstrap={bootstrap}
               onSuccess={onDone}
               onCancel={() => { setBootstrap(null); setErr(null) }}
+              surface="dialog"
             />
           </>
         ) : (
           <>
-            <h2 className="text-h-sm font-semibold mb-2">{tl.bindTitle}</h2>
-            <p className="text-minor text-neutral-400 mb-4">{tl.bindDescription}</p>
-            <form onSubmit={handleUrlSubmit}>
-              <label className="block text-minor text-neutral-300 mb-1">{tl.serverUrlLabel}</label>
+            <h2 className="text-h-sm font-semibold text-[var(--abu-text-primary)]">{tl.bindTitle}</h2>
+            <p className="mt-2 text-body leading-relaxed text-[var(--abu-text-muted)]">{tl.bindDescription}</p>
+            <form onSubmit={handleUrlSubmit} className="mt-5">
+              <label className="mb-1.5 block text-minor font-medium text-[var(--abu-text-secondary)]">{tl.serverUrlLabel}</label>
               <Input
                 value={serverUrl}
                 onChange={e => setServerUrl(e.target.value)}
                 placeholder={tl.serverUrlPlaceholder}
                 required
               />
-              {err && <div className="text-minor text-rose-400 mt-2">{err}</div>}
+              {err && <div className="mt-2 text-minor text-[var(--abu-danger)]">{err}</div>}
               <div className="mt-4 flex justify-end gap-2">
-                <Button type="button" variant="ghost" size="sm" onClick={onCancel}>{tl.cancelButton}</Button>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  className="text-[var(--abu-text-muted)] hover:bg-[var(--abu-bg-hover)] hover:text-[var(--abu-text-primary)]"
+                  onClick={onCancel}
+                >
+                  {tl.cancelButton}
+                </Button>
                 <Button type="submit" size="sm" disabled={busy}>
                   {busy ? tl.processing : tl.continueButton}
                 </Button>

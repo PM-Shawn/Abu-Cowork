@@ -1,6 +1,8 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { readTextFile, readDir, exists } from '@tauri-apps/plugin-fs';
 import { SkillLoader } from './loader';
+import { useEnterpriseStore } from '@/stores/enterpriseStore';
+import type { EnterpriseBinding, EnterpriseConfigSnapshot } from '@/core/enterprise/types';
 
 const mockReadTextFile = vi.mocked(readTextFile);
 const mockReadDir = vi.mocked(readDir);
@@ -19,7 +21,22 @@ beforeEach(() => {
   mockExists.mockResolvedValue(true);
   mockReadDir.mockResolvedValue([]);
   mockReadTextFile.mockRejectedValue(new Error('not found'));
+  useEnterpriseStore.setState({ mode: { kind: 'personal' }, initialized: true });
 });
+
+const enterpriseBinding: EnterpriseBinding = {
+  serverUrl: 'https://enterprise.example', orgId: 'org-1', orgName: 'Org',
+  userId: 'user-1', userName: 'User', userEmail: 'user@example.com',
+  deptId: null, roleId: null, accessToken: 'token', boundAt: '2026-08-05T00:00:00Z',
+  llmEndpoint: null, llmVirtualKey: null, llmKeyExpiresAt: null,
+};
+
+const enterpriseConfig: EnterpriseConfigSnapshot = {
+  brand: { name: 'Org', logoUrl: null, primaryColor: null }, defaultSoul: null,
+  policyDefaults: {}, modules: ['skills', 'mcp', 'kb'], licenseStatus: 'valid',
+  licenseExpiresAt: '2099-01-01T00:00:00Z',
+  serverTime: '2026-08-05T00:00:00Z', fetchedAt: Date.now(),
+};
 
 /**
  * Set up a canned directory listing: when readDir is called with any
@@ -54,6 +71,31 @@ function stubFs(
 }
 
 describe('SkillLoader.discoverSkills · workspace awareness', () => {
+  it('loads enterprise skills only while a live session authorizes the skills module', async () => {
+    const enterpriseDir = '/Users/testuser/.abu/skills/enterprise';
+    stubFs(
+      { [enterpriseDir]: ['org-skill'] },
+      { [`${enterpriseDir}/org-skill/SKILL.md`]: SKILL_TEMPLATE('org-skill') },
+    );
+    const loader = new SkillLoader();
+
+    await loader.discoverSkills(null);
+    expect(loader.has('org-skill')).toBe(false);
+
+    useEnterpriseStore.setState({ mode: { kind: 'enterprise', binding: enterpriseBinding, config: enterpriseConfig } });
+    await loader.discoverSkills(null);
+    expect(loader.has('org-skill')).toBe(true);
+    expect(loader.getSkill('org-skill')?.source).toBe('enterprise');
+
+    useEnterpriseStore.setState({
+      mode: { kind: 'offline', binding: enterpriseBinding, lastConfig: enterpriseConfig, reason: 'license rejected' },
+    });
+    expect(loader.has('org-skill')).toBe(false);
+    expect(loader.getSkill('org-skill')).toBeUndefined();
+    expect(loader.getAvailableSkills().some(skill => skill.name === 'org-skill')).toBe(false);
+    expect(loader.findMatchingSkills('org-skill')).toEqual([]);
+  });
+
   it('scans global dirs only when workspacePath is null', async () => {
     stubFs(
       {

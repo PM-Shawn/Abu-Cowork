@@ -621,12 +621,8 @@ function App() {
       await useEnterpriseStore.getState().init().catch(e => console.warn('[enterprise] init failed', e))
       if (cancel) return
       if (useEnterpriseStore.getState().mode.kind !== 'personal') {
-        // Protocol layer: heartbeat stays in Abu-opensource (refreshes config / policies)
-        const { startHeartbeat } = await import('@/core/enterprise/heartbeat')
-        startHeartbeat()
-        // Business modules: routed through Vite alias (stub in OSS, real impl in Enterprise build)
-        const { initEnterpriseModules } = await import('@enterprise-modules')
-        await initEnterpriseModules()
+        const { activateEnterpriseRuntime } = await import('@/core/enterprise/runtime')
+        await activateEnterpriseRuntime()
       }
     })()
     return () => { cancel = true }

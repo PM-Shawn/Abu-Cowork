@@ -45,6 +45,8 @@ export interface EnterpriseConfigSnapshot {
   policyDefaults: Record<string, unknown>
   modules: string[]                     // ['core'] in V1; ['core','kb','agent-market'] later
   licenseStatus: 'valid' | 'expired' | 'missing' | 'invalid_signature' | 'malformed'
+  /** Signed License expiry; local gates stop immediately even between heartbeats. */
+  licenseExpiresAt?: string | null
   serverTime: string
   fetchedAt: number                     // local ms timestamp for freshness checks
   /** ETag / configVersion value from GET /session; used as If-None-Match on the next poll. */

@@ -1,7 +1,10 @@
-name: Tauri Native Smoke
+name: Legacy Tauri Smoke (Archived)
 
-# STATUS: V1 SKELETON — not part of PR gates.
-# Activate manually via workflow_dispatch when the V2 conditions below are met:
+# ARCHIVED: Electron is the only development and acceptance target. This file
+# remains as historical migration evidence and must not be used for new feature
+# validation. The job is deliberately disabled below.
+#
+# Historical V2 conditions were:
 #   - A Linux (or Windows) CI runner with a real display (Xvfb or DISPLAY env)
 #   - A signed Tauri build artifact uploaded to GitHub release or Actions cache
 #   - `tauri-driver` (cargo install tauri-driver) available in PATH
@@ -19,7 +22,8 @@ on:
 
 jobs:
   tauri-smoke:
-    name: Tauri native smoke tests
+    name: Archived — do not run
+    if: ${{ false }}
     # Linux needed: tauri-driver does NOT support macOS in Tauri 2.x.
     runs-on: ubuntu-latest
 

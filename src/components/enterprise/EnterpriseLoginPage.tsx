@@ -6,6 +6,7 @@ import { Input } from '@/components/ui/input'
 import { Button } from '@/components/ui/button'
 import { useEnterpriseStore } from '@/stores/enterpriseStore'
 import { startBind } from '@/core/enterprise/auth'
+import { activateEnterpriseRuntime } from '@/core/enterprise/runtime'
 import type { BootstrapDTO } from '@/core/enterprise/bootstrap'
 import type { EnterpriseBinding } from '@/core/enterprise/types'
 
@@ -93,6 +94,7 @@ export default function EnterpriseLoginPage({ serverUrl, bootstrap, onSuccess, o
     const session = await fetchSession(pair.access_token)
     const accessExpiresAt = new Date(Date.now() + pair.expires_in * 1000).toISOString()
     await bind(buildBinding(pair.access_token, session, { accessExpiresAt, refreshToken: pair.refresh_token }))
+    await activateEnterpriseRuntime()
     onSuccess()
   }
 
@@ -198,6 +200,7 @@ export default function EnterpriseLoginPage({ serverUrl, bootstrap, onSuccess, o
         llmEndpoint: r.llmEndpoint,
         llmVirtualKey: r.llmVirtualKey,
       }))
+      await activateEnterpriseRuntime()
       onSuccess()
     } catch (e) {
       setErr((e as Error).message)

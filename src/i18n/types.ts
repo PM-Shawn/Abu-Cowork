@@ -1536,9 +1536,11 @@ export interface TranslationDict {
     categoryBlocksUnblock: string;      // button label
     categoryBlocksUnblockError: string; // toast title on delete failure
     categoryBlocksHint: string;         // subtitle describing what these are
-    // Enterprise-only tabs (shown when enterprise mode is active)
+    // Enterprise capability source (shown inside Skill / MCP when bound)
     enterpriseSkills: string;
     enterpriseMcp: string;
+    personalSource: string;
+    organizationSource: string;
   };
 
   // Permission Dialog

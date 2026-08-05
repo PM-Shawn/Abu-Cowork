@@ -39,7 +39,9 @@ test('reports a missing worktree dependency directory without resolving from a p
   try {
     const result = inspectElectronDevDependencies(root);
     assert.deepEqual(result.issues.map((issue) => issue.code), ['missing-node-modules']);
-    assert.match(formatPreflightFailure(result), /npm run setup:electron-dev/);
+    const message = formatPreflightFailure(result);
+    assert.match(message, /npm run setup:electron-dev/);
+    assert.match(message, /npm run setup:electron-dev:enterprise/);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

@@ -29,15 +29,19 @@ export interface ToolItem {
  * every card is the same height whether its description is one line or two (grid
  * `stretch` only equalizes within a row, not across rows — hence a fixed height).
  */
-export default function ToolCard({ item, onClick }: { item: ToolItem; onClick: () => void }) {
+export default function ToolCard({ item, onClick }: { item: ToolItem; onClick?: () => void }) {
+  const interactive = onClick !== undefined;
+
   return (
-    // A <div role="button"> rather than a real <button> so an interactive
-    // <Toggle> button can nest inside (button-in-button is invalid HTML).
+    // Interactive cards use <div role="button"> rather than a real <button>
+    // so nested controls remain valid HTML. Display-only catalog cards omit
+    // the role and tab stop while keeping the same visual structure.
     <div
       onClick={onClick}
-      role="button"
-      tabIndex={0}
+      role={interactive ? 'button' : undefined}
+      tabIndex={interactive ? 0 : undefined}
       onKeyDown={(e) => {
+        if (!onClick) return;
         // Only when the card itself is focused — not a nested control (the enable
         // Toggle). A Space/Enter keydown on the Toggle bubbles here; without this
         // guard it would also open the detail modal on top of the toggle action.
@@ -48,9 +52,11 @@ export default function ToolCard({ item, onClick }: { item: ToolItem; onClick: (
         }
       }}
       className={cn(
-        'group flex flex-col gap-2 w-full h-[120px] overflow-hidden rounded-xl p-4 text-left cursor-pointer',
+        'group flex flex-col gap-2 w-full h-[120px] overflow-hidden rounded-xl p-4 text-left',
         'bg-[var(--abu-bg-subtle)] border border-[var(--abu-border)]',
-        'hover:border-[var(--abu-clay)] hover:shadow-sm transition-all duration-150'
+        interactive && 'cursor-pointer hover:border-[var(--abu-clay)] hover:shadow-sm',
+        !interactive && 'cursor-default',
+        'transition-all duration-150'
       )}
     >
       {/* Row 1: avatar + name (centered so they align), optional badge + toggle */}

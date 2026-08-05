@@ -1,0 +1,440 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <script>
+    (function () {
+      try {
+        var pref = localStorage.getItem('abu-lang');
+        var target = pref || ((navigator.language || 'en').toLowerCase().indexOf('zh') === 0 ? 'zh' : 'en');
+        if (target === 'zh') location.replace('enterprise.zh-CN.html');
+      } catch (e) {}
+    })();
+    </script>
+    <link rel="alternate" hreflang="en" href="enterprise.html">
+    <link rel="alternate" hreflang="zh-CN" href="enterprise.zh-CN.html">
+    <link rel="alternate" hreflang="x-default" href="enterprise.html">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Abu Enterprise — Bring employee AI use under enterprise governance</title>
+    <meta name="description" content="Abu Enterprise adds a privately deployed control console on top of the open-source desktop client for model routing, enterprise knowledge, access policies, Skill/MCP governance, audit, and usage.">
+    <link rel="stylesheet" href="style.css">
+    <link rel="icon" href="assets/abu-avatar.png" type="image/png">
+</head>
+<body class="enterprise-body">
+    <nav class="navbar" id="navbar">
+        <div class="container nav-container">
+            <a href="index.html" class="nav-brand">
+                <img src="assets/abu-avatar.png" alt="Abu" class="nav-logo">
+                <span class="nav-title">Abu</span>
+            </a>
+            <div class="nav-links" id="navLinks">
+                <a href="index.html#features" class="nav-link">Features</a>
+                <a href="index.html#screenshots" class="nav-link">Preview</a>
+                <a href="index.html#use-cases" class="nav-link">Use Cases</a>
+                <a href="index.html#tech" class="nav-link">Architecture</a>
+                <a href="enterprise.html" class="nav-link nav-link-active">Enterprise</a>
+                <a href="docs.html" class="nav-link">Docs</a>
+                <a href="index.html#social" class="nav-link">Community</a>
+                <a href="enterprise.zh-CN.html" class="nav-lang" aria-label="切换到中文" onclick="try{localStorage.setItem('abu-lang','zh')}catch(e){}">
+                    <svg class="nav-lang-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
+                    中文
+                </a>
+                <a href="https://github.com/PM-Shawn/Abu-Cowork" target="_blank" rel="noopener" class="nav-link nav-github">
+                    <svg class="icon" viewBox="0 0 16 16" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+                    GitHub
+                </a>
+            </div>
+            <button class="nav-toggle" id="navToggle" aria-label="Toggle menu">
+                <span></span><span></span><span></span>
+            </button>
+        </div>
+    </nav>
+
+    <section class="enterprise-hero">
+        <div class="container enterprise-hero-grid">
+            <div class="enterprise-hero-copy">
+                <div class="enterprise-eyebrow">Abu Enterprise</div>
+                <h1>Turn employee AI use<br>into governed productivity.</h1>
+                <p class="enterprise-lead">
+                    <strong>Abu Enterprise adds a privately deployed control console on top of the open-source Abu desktop client.</strong>
+                    Employees keep working in Abu while the enterprise centrally manages model routing, knowledge access, policy audit, and usage cost.
+                </p>
+                <div class="enterprise-actions">
+                    <a href="#contact" class="btn btn-primary">Book a demo</a>
+                    <a href="#comparison" class="btn btn-outline">Compare editions</a>
+                </div>
+            </div>
+        </div>
+        <div class="container enterprise-metrics">
+            <div class="enterprise-metric">
+                <strong>Unified gateway</strong>
+                <span>Employees do not handle raw provider keys</span>
+            </div>
+            <div class="enterprise-metric">
+                <strong>Team controls</strong>
+                <span>Budgets, RPM limits, model allowlists, and ACLs</span>
+            </div>
+            <div class="enterprise-metric">
+                <strong>Knowledge loop</strong>
+                <span>Org, team, and personal KBs with retrieval</span>
+            </div>
+            <div class="enterprise-metric">
+                <strong>Private deployment</strong>
+                <span>Governance data stays in the enterprise control plane</span>
+            </div>
+        </div>
+    </section>
+
+    <section class="enterprise-section">
+        <div class="container">
+            <div class="enterprise-heading">
+                <span class="enterprise-section-kicker">Why Enterprise</span>
+                <h2>Employees are already using AI. The organization needs to manage it.</h2>
+                <p>The open-source edition helps individuals move faster. At team scale, enterprises need to manage cost, access, knowledge, and risk.</p>
+            </div>
+            <div class="problem-list">
+                <article class="problem-row">
+                    <div>
+                        <span class="pain-index">01</span>
+                        <h3>AI spend becomes opaque</h3>
+                        <p>When everyone brings their own model key, it is hard to see usage, spend, and over-budget teams.</p>
+                    </div>
+                    <div>
+                        <span class="solution-label">Enterprise answer</span>
+                        <p>Route model calls through the enterprise gateway, set team budgets and RPM limits, and review usage and cost in the console.</p>
+                    </div>
+                </article>
+                <article class="problem-row">
+                    <div>
+                        <span class="pain-index">02</span>
+                        <h3>Access boundaries are unclear</h3>
+                        <p>Models, knowledge bases, Skills, MCP services, and file access cannot live only in personal settings.</p>
+                    </div>
+                    <div>
+                        <span class="solution-label">Enterprise answer</span>
+                        <p>Use organizations, departments, roles, ACLs, and client-side policy checks before tool, Skill, and MCP calls run.</p>
+                    </div>
+                </article>
+                <article class="problem-row">
+                    <div>
+                        <span class="pain-index">03</span>
+                        <h3>Company knowledge stays buried</h3>
+                        <p>Policies, FAQs, product docs, project files, and meeting notes need to become trusted AI context.</p>
+                    </div>
+                    <div>
+                        <span class="solution-label">Enterprise answer</span>
+                        <p>Enterprise KBs ingest documents, chunk and embed them, retrieve with hybrid search, cite sources, and audit queries.</p>
+                    </div>
+                </article>
+                <article class="problem-row">
+                    <div>
+                        <span class="pain-index">04</span>
+                        <h3>Tool risk is hard to trace</h3>
+                        <p>User-installed extensions and internal-system connections need source, permission, credential, version, and usage records.</p>
+                    </div>
+                    <div>
+                        <span class="solution-label">Enterprise answer</span>
+                        <p>Skills go through upload, scan, review, publish, and signature checks. MCP services go through catalog, review, ACL, and credential governance.</p>
+                    </div>
+                </article>
+            </div>
+        </div>
+    </section>
+
+    <section class="enterprise-section enterprise-section-alt">
+        <div class="container">
+            <div class="enterprise-heading">
+                <span class="enterprise-section-kicker">Product Shape</span>
+                <h2>Not another client. A governance layer on top of Abu.</h2>
+                <p>Enterprise keeps Abu's local-first desktop experience and adds private control-plane governance for configuration, audit, and rollout.</p>
+            </div>
+            <div class="product-split">
+                <article class="product-panel">
+                    <h3>Employee side: familiar workflow</h3>
+                    <p>Employees keep using Abu to start tasks, call tools, and run Skills. After binding, the client uses enterprise models, knowledge bases, approved Skills, and transparency views.</p>
+                    <div class="product-tags">
+                        <span>Enterprise binding</span>
+                        <span>Enterprise models</span>
+                        <span>Enterprise KB</span>
+                        <span>Approved Skills</span>
+                    </div>
+                </article>
+                <article class="product-panel product-panel-strong">
+                    <h3>Admin side: central control</h3>
+                    <p>Admins manage departments, roles, models, budgets, knowledge bases, Skills, MCP services, policies, and audit so AI usage has boundaries and records.</p>
+                    <div class="product-tags">
+                        <span>Access control</span>
+                        <span>Cost governance</span>
+                        <span>Tool approval</span>
+                        <span>Audit trail</span>
+                    </div>
+                </article>
+            </div>
+        </div>
+    </section>
+
+    <section class="enterprise-section" id="capabilities">
+        <div class="container">
+            <div class="enterprise-heading">
+                <span class="enterprise-section-kicker">Core Capabilities</span>
+                <h2>Identity, cost, knowledge, extensions, security, and operations</h2>
+                <p>These are grouped around the practical enterprise questions buyers ask during rollout: what can be configured, distributed, controlled, and traced.</p>
+            </div>
+            <div class="capability-grid capability-grid-major">
+                <article class="capability-card">
+                    <span class="capability-meta">Identity</span>
+                    <h3>Identity and organization governance</h3>
+                    <p>Bring organizations, departments, employees, roles, and login methods into one control plane.</p>
+                    <ul>
+                        <li>Password, Magic Link, OIDC SSO, and desktop Device Flow</li>
+                        <li>Organization, department tree, users, roles, and permission matrix</li>
+                        <li>Invites, pending approvals, sessions, and license seats</li>
+                    </ul>
+                </article>
+                <article class="capability-card">
+                    <span class="capability-meta">Gateway</span>
+                    <h3>Model gateway and cost controls</h3>
+                    <p>Centralize scattered model keys, providers, and AI spend in the enterprise control plane.</p>
+                    <ul>
+                        <li>LiteLLM gateway, multiple providers, and encrypted provider-key storage</li>
+                        <li>Team budgets, RPM limits, model allowlists, and connectivity tests</li>
+                        <li>Token, spend, and call usage by user, team, and model</li>
+                    </ul>
+                </article>
+                <article class="capability-card">
+                    <span class="capability-meta">Knowledge</span>
+                    <h3>Enterprise knowledge bases</h3>
+                    <p>Turn internal documents into trusted context Abu can retrieve, cite, and audit.</p>
+                    <ul>
+                        <li>PDF, Word, HTML, Markdown, and plain text ingestion</li>
+                        <li>pgvector vector search + BM25 full-text search + RRF ranking</li>
+                        <li>Org, team, and personal KB scopes with ACLs</li>
+                    </ul>
+                </article>
+                <article class="capability-card">
+                    <span class="capability-meta">Extensions</span>
+                    <h3>Trusted Skill and MCP extensions</h3>
+                    <p>Make internal capabilities and external tool connections publishable, authorized, signed, and traceable.</p>
+                    <ul>
+                        <li>Skill upload, manifest parsing, security scan, review, and publish flow</li>
+                        <li>Skill ACLs, signature verification, and client install records</li>
+                        <li>MCP catalog sync, review, ACLs, and authorized credential access</li>
+                    </ul>
+                </article>
+                <article class="capability-card">
+                    <span class="capability-meta">Policy</span>
+                    <h3>Security policies enforced locally</h3>
+                    <p>Push org-level and team-level policies to the desktop client so sensitive actions are blocked or confirmed before execution.</p>
+                    <ul>
+                        <li>Tool blacklist, tool confirmation rules, Skill/MCP blacklists</li>
+                        <li>File path allowlists and blocklists</li>
+                        <li>Enterprise policy hooks run before local tool calls</li>
+                    </ul>
+                </article>
+                <article class="capability-card">
+                    <span class="capability-meta">Ops</span>
+                    <h3>Audit, transparency, and operations</h3>
+                    <p>Admins see governance outcomes. Employees can inspect their own enterprise data and usage.</p>
+                    <ul>
+                        <li>Admin audit logs, sensitive-field redaction, usage, and cost dashboards</li>
+                        <li>Employee transparency: profile, tokens, audit, and usage</li>
+                        <li>Quality feedback, diagnostic logs, diagnostic bundles, and self-hosted observability entry</li>
+                    </ul>
+                </article>
+            </div>
+        </div>
+    </section>
+
+    <section class="enterprise-section enterprise-section-alt">
+        <div class="container">
+            <div class="enterprise-heading">
+                <span class="enterprise-section-kicker">Deployment</span>
+                <h2>Start with a private single-host deployment for PoC and mid-sized rollout</h2>
+                <p>The enterprise console is deployed separately. Enterprise desktop capabilities are delivered through enterprise builds and private modules, not through the public release package.</p>
+            </div>
+            <div class="deployment-grid">
+                <article class="deployment-card">
+                    <span class="deployment-label">Delivery</span>
+                    <h3>Privately deployed control console</h3>
+                    <p>The standard deployment includes Console, Postgres/pgvector, LiteLLM, Nginx, Redis, MinIO, and optional observability or KB enhancement components.</p>
+                </article>
+                <article class="deployment-card">
+                    <span class="deployment-label">Scale</span>
+                    <h3>50 to 2,000 seats</h3>
+                    <p>PoCs and 50-500 person teams can start with the default deployment. 500-2,000 seats should tune database, gateway, and observability resources. Larger environments need a dedicated HA design.</p>
+                </article>
+                <article class="deployment-card">
+                    <span class="deployment-label">Compliance</span>
+                    <h3>Ready for private-environment adaptation</h3>
+                    <p>The database layer stays close to standard Postgres, images support amd64/arm64, and local model or private-provider paths can be validated for each customer environment.</p>
+                </article>
+            </div>
+        </div>
+    </section>
+
+    <section class="enterprise-section" id="comparison">
+        <div class="container">
+            <div class="enterprise-heading">
+                <span class="enterprise-section-kicker">Open Source vs Enterprise</span>
+                <h2>Same client core. Enterprise adds organization-level governance.</h2>
+                <p>The open-source edition is for individuals and small teams. Enterprise is for organizations that need centralized cost, access, knowledge, extension, and audit control.</p>
+            </div>
+            <div class="edition-grid">
+                <article class="edition-card">
+                    <span class="edition-tag">Open Source</span>
+                    <h3>A full AI work assistant for one person</h3>
+                    <p>Local-first desktop app with user-managed model keys and local configuration. Best for individuals, developers, and small-team trials.</p>
+                    <div class="edition-meta">Free and open source · Local usage · Self-managed</div>
+                </article>
+                <article class="edition-card edition-card-strong">
+                    <span class="edition-tag">Enterprise</span>
+                    <h3>A governable AI platform for a team</h3>
+                    <p>Employees keep using Abu while the enterprise controls people, models, budgets, knowledge, extensions, policies, and audit in a private console.</p>
+                    <div class="edition-meta">Private deployment · Seat license · PoC available</div>
+                </article>
+            </div>
+            <div class="compare-panel compare-panel-detailed">
+                <div class="compare-row compare-head">
+                    <div>Area</div>
+                    <div>Open Source</div>
+                    <div>Enterprise</div>
+                </div>
+                <div class="compare-row compare-group">
+                    <div>Core work capabilities: both editions share the same Abu client core</div>
+                </div>
+                <div class="compare-row">
+                    <div>AI desktop work assistant</div>
+                    <div><span class="status-chip status-available">Available</span> Chat, task execution, tool calls, Skills, and local workspace collaboration.</div>
+                    <div><span class="status-chip status-available">Inherited</span> Same desktop experience, plus enterprise binding and governance.</div>
+                </div>
+                <div class="compare-row">
+                    <div>Local-first data model</div>
+                    <div>Conversations, memory, files, and projects stay local by default.</div>
+                    <div>The client remains local-first; enterprise configuration, authorization, audit, and usage flow to the private console.</div>
+                </div>
+                <div class="compare-row compare-group">
+                    <div>Enterprise governance capabilities: added by the enterprise edition</div>
+                </div>
+                <div class="compare-row">
+                    <div>Identity and login</div>
+                    <div>No enterprise login required; use locally.</div>
+                    <div>Password, Magic Link, OIDC SSO, desktop Device Flow, and pending-member approval.</div>
+                </div>
+                <div class="compare-row">
+                    <div>Org, department, and role access</div>
+                    <div>No organization-level access control.</div>
+                    <div>Organization, department tree, users, roles, permission matrix, and resource ACLs.</div>
+                </div>
+                <div class="compare-row">
+                    <div>Model keys and gateway</div>
+                    <div>Users manage their own provider keys and bills.</div>
+                    <div>Raw provider keys are encrypted in the enterprise console; the client uses the enterprise gateway and authorized tokens.</div>
+                </div>
+                <div class="compare-row">
+                    <div>Budgets, rate limits, and model allowlists</div>
+                    <div>No centralized controls.</div>
+                    <div>Team budgets, RPM limits, allowed models, and usage/cost dashboards.</div>
+                </div>
+                <div class="compare-row">
+                    <div>Enterprise knowledge bases</div>
+                    <div>Primarily local context and personal memory.</div>
+                    <div>Org, team, and personal KBs with document ingestion, hybrid retrieval, source citations, and ACLs.</div>
+                </div>
+                <div class="compare-row">
+                    <div>Enterprise Skill marketplace</div>
+                    <div>Users install and maintain Skills themselves.</div>
+                    <div>Upload, scan, review, publish, authorize, verify signatures, and record client installs.</div>
+                </div>
+                <div class="compare-row">
+                    <div>Enterprise MCP governance</div>
+                    <div>Users configure local MCP services themselves.</div>
+                    <div>Central registration, sync, review, authorization, and credential governance; clients can browse the catalog and retrieve authorized credentials.</div>
+                </div>
+                <div class="compare-row">
+                    <div>Enterprise security policies</div>
+                    <div>Depends on personal permission modes and local settings.</div>
+                    <div>Tool blacklist, tool confirmation rules, Skill/MCP blacklists, and file path allowlists/blocklists.</div>
+                </div>
+                <div class="compare-row">
+                    <div>Audit, transparency, and diagnostics</div>
+                    <div>No centralized enterprise audit.</div>
+                    <div>Admin audit, usage and cost, employee transparency pages, quality feedback, logs, and diagnostic bundles.</div>
+                </div>
+                <div class="compare-row">
+                    <div>Deployment, licensing, and branding</div>
+                    <div>Download from the open-source repository, self-build, or use public releases.</div>
+                    <div>Private console, enterprise client builds, license, enterprise logo/color, and controlled delivery.</div>
+                </div>
+            </div>
+            <p class="compare-note">Note: enterprise MCP in the current client focuses on catalog browsing and authorized credential access, so organizations can centralize approved tools and credential scope first.</p>
+        </div>
+    </section>
+
+    <section class="enterprise-cta" id="contact">
+        <div class="container">
+            <div class="enterprise-cta-box">
+                <span class="enterprise-section-kicker">PoC / Demo</span>
+                <h2>Want to see how Abu Enterprise fits your team?</h2>
+                <p>Start with a demo or small PoC: deployment shape, login method, model providers, knowledge samples, and the first approved enterprise Skills.</p>
+                <div class="enterprise-actions">
+                    <a href="index.html#social" class="btn btn-primary">Contact for a demo</a>
+                    <a href="docs.html" class="btn btn-outline">Read the docs</a>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <footer class="footer">
+        <div class="container">
+            <div class="footer-content">
+                <div class="footer-brand">
+                    <img src="assets/abu-avatar.png" alt="Abu" class="footer-logo">
+                    <span>Abu</span>
+                </div>
+                <div class="footer-links">
+                    <a href="index.html">Home</a>
+                    <a href="enterprise.html">Enterprise</a>
+                    <a href="docs.html">Docs</a>
+                    <a href="https://github.com/PM-Shawn/Abu-Cowork" target="_blank" rel="noopener">GitHub</a>
+                </div>
+                <p class="footer-copy">&copy; 2026 Abu. Open source under the Abu License.</p>
+            </div>
+        </div>
+    </footer>
+
+    <script>
+        const navbar = document.getElementById('navbar');
+        window.addEventListener('scroll', () => {
+            if (window.scrollY > 60) navbar.classList.add('scrolled');
+            else navbar.classList.remove('scrolled');
+        });
+
+        const navToggle = document.getElementById('navToggle');
+        const navLinks = document.getElementById('navLinks');
+        navToggle.addEventListener('click', () => {
+            navLinks.classList.toggle('open');
+            navToggle.classList.toggle('open');
+        });
+        navLinks.querySelectorAll('.nav-link').forEach(link => {
+            link.addEventListener('click', () => {
+                navLinks.classList.remove('open');
+                navToggle.classList.remove('open');
+            });
+        });
+
+        document.querySelectorAll('a[href^="#"]').forEach(anchor => {
+            anchor.addEventListener('click', function(e) {
+                const href = this.getAttribute('href');
+                if (href === '#') return;
+                const target = document.querySelector(href);
+                if (target) {
+                    e.preventDefault();
+                    const offset = navbar.offsetHeight + 16;
+                    const top = target.getBoundingClientRect().top + window.scrollY - offset;
+                    window.scrollTo({ top, behavior: 'smooth' });
+                }
+            });
+        });
+    </script>
+</body>
+</html>

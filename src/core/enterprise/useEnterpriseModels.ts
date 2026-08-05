@@ -11,6 +11,7 @@ import { resolveEnterpriseLlm } from './llm-resolver'
 export function useEnterpriseModels(): string[] | null {
   const mode = useEnterpriseStore(s => s.mode)
   const llmEndpoint = mode.kind === 'enterprise' ? mode.binding.llmEndpoint : null
+  const llmVirtualKey = mode.kind === 'enterprise' ? mode.binding.llmVirtualKey : null
   const [models, setModels] = useState<string[] | null>(null)
 
   useEffect(() => {
@@ -35,7 +36,7 @@ export function useEnterpriseModels(): string[] | null {
         if (!cancelled) setModels([])
       })
     return () => { cancelled = true }
-  }, [mode.kind, llmEndpoint])
+  }, [mode.kind, llmEndpoint, llmVirtualKey])
 
   return models
 }

@@ -5,6 +5,7 @@ import type { Message, ImageAttachment } from '@/types';
 import { runAgentLoopDispatched } from '@/core/agent/agentLoopRunner';
 import { getPendingCommandConfirmation, resolveCommandConfirmation, subscribeToCommandConfirmation, getPendingFilePermission, resolveFilePermission, subscribeToFilePermission, getPendingWorkspaceRequest, resolveWorkspaceRequest, subscribeToWorkspaceRequest, getPendingUserQuestions, subscribeUserQuestion, findQuestionOwningMessage } from '@/core/agent/permissionBridge';
 import { useSettingsStore, getActiveApiKey, providerRequiresApiKey } from '@/stores/settingsStore';
+import { useEnterpriseStore } from '@/stores/enterpriseStore';
 import { useWorkspaceStore } from '@/stores/workspaceStore';
 import type { PermissionDuration } from '@/stores/permissionStore';
 import { open as openDialog } from '@tauri-apps/plugin-dialog';
@@ -154,6 +155,7 @@ export default function ChatView() {
     setIsRenamingTitle(false);
   }, [activeConvId]);
   const createConversation = useChatStore((s) => s.createConversation);
+  const isEnterprise = useEnterpriseStore((s) => s.mode.kind !== 'personal');
   // Subscribe to messages count so ChatView re-renders when background processes
   // (IM agentLoop) add messages — even if the conversation object reference is stale
   const messageCount = useChatStore((s) => {
@@ -385,7 +387,7 @@ export default function ChatView() {
   const handleSend = async (text: string, images?: ImageAttachment[], workspacePath?: string | null) => {
     // Block sending if API key is not configured (Ollama doesn't need one)
     const currentState = useSettingsStore.getState();
-    if (providerRequiresApiKey(currentState) && !getActiveApiKey(currentState)?.trim()) {
+    if (!isEnterprise && providerRequiresApiKey(currentState) && !getActiveApiKey(currentState)?.trim()) {
       currentState.openSystemSettings('ai-services');
       return;
     }
@@ -422,11 +424,12 @@ export default function ChatView() {
 
   // First-run banner: show when no provider has been configured yet.
   // "Configured" = has an API key OR is a keyless provider (ollama/lmstudio).
-  const needsSetup = useSettingsStore((s) => {
+  const needsPersonalModelSetup = useSettingsStore((s) => {
     return !s.providers.some(
       p => p.apiKey.trim().length > 0 || p.id === 'ollama' || p.id === 'lmstudio'
     );
   });
+  const needsSetup = !isEnterprise && needsPersonalModelSetup;
 
   // Scenario guide state — lifted here so ChatInput can receive the custom placeholder
   const [scenarioPlaceholder, setScenarioPlaceholder] = useState<string | null>(null);

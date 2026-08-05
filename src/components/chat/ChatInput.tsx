@@ -15,9 +15,9 @@ import { useChatStore, useActiveConversation } from '@/stores/chatStore';
 import ContextIndicator from '@/components/chat/ContextIndicator';
 import { useDiscoveryStore } from '@/stores/discoveryStore';
 import { useSettingsStore } from '@/stores/settingsStore';
+import { useEnterpriseStore } from '@/stores/enterpriseStore';
 import { useWorkspaceStore } from '@/stores/workspaceStore';
 import { usePermissionStore } from '@/stores/permissionStore';
-import { useEnterpriseStore } from '@/stores/enterpriseStore';
 import type { PermissionDuration } from '@/stores/permissionStore';
 import { useI18n, format } from '@/i18n';
 import { useToastStore } from '@/stores/toastStore';
@@ -212,6 +212,7 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
   const disabledAgents = useSettingsStore((s) => s.disabledAgents);
   const globalActiveModel = useSettingsStore((s) => s.activeModel);
   const providers = useSettingsStore((s) => s.providers);
+  const isEnterprise = useEnterpriseStore((s) => s.mode.kind !== 'personal');
   // The model shown/edited here is the active conversation's pinned model when it
   // has one, else the global selection — keeps the picker label in sync with what
   // this specific conversation actually runs on (see per-conversation model pin).
@@ -226,12 +227,15 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
   // Chat-only derived state
   const isRunning = activeConv?.status === 'running';
   const isStreaming = !isWelcome && isRunning;
-  const hasActiveProvider = !!effProvider && effProvider.enabled;
+  const isEnterpriseGatewayModel = isEnterprise && effModel.providerId === 'enterprise-gateway' && currentModel.length > 0;
+  const hasActiveProvider = isEnterpriseGatewayModel || (!!effProvider && effProvider.enabled);
   const availableModels = effProvider?.models ?? [];
   const activeModelInfo = availableModels.find((m) => m.id === currentModel);
   const modelDisplay = !hasActiveProvider
     ? t.chat.noModelConfigured
-    : (activeModelInfo?.label ?? (currentModel ? currentModel.split('/').pop()?.split('-').slice(0, 2).join(' ') : 'Claude'));
+    : isEnterpriseGatewayModel
+      ? currentModel
+      : (activeModelInfo?.label ?? (currentModel ? currentModel.split('/').pop()?.split('-').slice(0, 2).join(' ') : 'Claude'));
   const [showModelPicker, setShowModelPicker] = useState(false);
   const modelPickerRef = useRef<HTMLDivElement>(null);
 

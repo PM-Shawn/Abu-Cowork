@@ -13,6 +13,7 @@ interface EnterpriseState {
 interface EnterpriseActions {
   init: () => Promise<void>
   bind: (b: EnterpriseBinding) => Promise<void>
+  updateBinding: (patch: Partial<EnterpriseBinding>) => Promise<void>
   unbind: () => Promise<void>
   setConfig: (c: EnterpriseConfigSnapshot) => void
   setOffline: (reason: string) => void
@@ -30,6 +31,17 @@ export const useEnterpriseStore = create<EnterpriseStore>((set, get) => ({
   async bind(b) {
     await saveBinding(b)
     set({ mode: { kind: 'enterprise', binding: b, config: null } })
+  },
+  async updateBinding(patch) {
+    const m = get().mode
+    if (m.kind === 'personal') return
+    const binding = { ...m.binding, ...patch }
+    await saveBinding(binding)
+    if (m.kind === 'enterprise') {
+      set({ mode: { ...m, binding } })
+    } else {
+      set({ mode: { ...m, binding } })
+    }
   },
   async unbind() {
     await clearBinding()

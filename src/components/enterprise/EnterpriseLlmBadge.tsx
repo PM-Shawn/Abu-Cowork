@@ -12,17 +12,17 @@ export default function EnterpriseLlmBadge() {
   return (
     <div className="p-4 rounded-lg bg-[var(--abu-clay-bg)] border border-[var(--abu-clay)] text-body space-y-2">
       <div className="font-medium text-[var(--abu-clay)]">{t.enterprise.usingGateway}</div>
-      <p className="text-minor text-neutral-300">
+      <p className="text-minor text-[var(--abu-text-tertiary)]">
         {t.enterprise.gatewayDesc}
       </p>
-      <dl className="text-minor text-neutral-400 space-y-1">
+      <dl className="text-minor text-[var(--abu-text-secondary)] space-y-1">
         <div className="flex justify-between">
-          <dt>{t.enterprise.organization}</dt>
-          <dd>{b.orgName}</dd>
+          <dt className="text-[var(--abu-text-tertiary)]">{t.enterprise.organization}</dt>
+          <dd className="text-[var(--abu-text-primary)]">{b.orgName}</dd>
         </div>
         <div className="flex justify-between">
-          <dt>{t.enterprise.gateway}</dt>
-          <dd className="font-mono truncate max-w-[200px]">{b.llmEndpoint ?? '—'}</dd>
+          <dt className="text-[var(--abu-text-tertiary)]">{t.enterprise.gateway}</dt>
+          <dd className="font-mono truncate max-w-[200px] text-[var(--abu-text-primary)]">{b.llmEndpoint ?? '—'}</dd>
         </div>
         {mode.kind === 'offline' && (
           <div className="flex justify-between text-[var(--abu-warning)]">

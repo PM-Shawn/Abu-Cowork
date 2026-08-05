@@ -6,7 +6,7 @@
 // On 200: replace snapshot, persist new configVersion + telemetryEnabled.
 import { callEnterprise, EnterpriseApiError } from './api'
 import { useEnterpriseStore } from '@/stores/enterpriseStore'
-import type { EnterpriseConfigSnapshot } from './types'
+import type { EnterpriseBinding, EnterpriseConfigSnapshot } from './types'
 
 const INTERVAL_MS = 5 * 60 * 1000
 
@@ -36,6 +36,20 @@ async function tick(): Promise<void> {
     const branding = resp.branding as Record<string, string | null> | undefined
     const policy = resp.policy as Record<string, unknown> | undefined
     const modules = resp.modules as Record<string, boolean> | undefined
+    const llm = resp.llm as Record<string, unknown> | undefined
+
+    const llmPatch: Partial<EnterpriseBinding> = {}
+    if (typeof llm?.gatewayUrl === 'string') llmPatch.llmEndpoint = llm.gatewayUrl
+    if (typeof llm?.virtualKey === 'string') llmPatch.llmVirtualKey = llm.virtualKey
+    if (Object.keys(llmPatch).length > 0) {
+      const store = useEnterpriseStore.getState()
+      const mode = store.mode
+      const binding = mode.kind === 'enterprise' || mode.kind === 'offline' ? mode.binding : null
+      const changed = binding && Object.entries(llmPatch).some(([key, value]) => {
+        return binding[key as keyof EnterpriseBinding] !== value
+      })
+      if (changed) await store.updateBinding(llmPatch)
+    }
 
     const snap: EnterpriseConfigSnapshot = {
       brand: {

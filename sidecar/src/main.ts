@@ -139,6 +139,7 @@ import {
 } from './agentLoopHost';
 import { resolvePendingResponse, rejectAllPendingRequests } from './rpcClient';
 import { isAuthorizedE2ECrash } from './e2eCrashGate';
+import { applyEnterpriseEntitlementSnapshot } from './enterpriseEntitlementMirror';
 import {
   writeLine,
   makeError,
@@ -393,6 +394,20 @@ function handleMessage(raw: string): void {
       handleStateSettings(params);
     } catch (err) {
       log('state.settings handler threw (ignored — notifications get no response)', err);
+    }
+    return;
+  }
+
+  if (method === 'state.enterpriseEntitlement') {
+    // Global, live, fail-closed mirror used by Skill/MCP runtime gates.
+    try {
+      const entitlement = typeof params === 'object' && params !== null
+        ? (params as { entitlement?: unknown }).entitlement
+        : undefined;
+      applyEnterpriseEntitlementSnapshot(entitlement);
+    } catch (err) {
+      applyEnterpriseEntitlementSnapshot(undefined);
+      log('state.enterpriseEntitlement handler threw; access revoked', err);
     }
     return;
   }

@@ -83,6 +83,7 @@ const SHIM_TARGETS = [
   // what behavior it preserves/documents-as-different.
   { real: path.resolve(srcDir, 'i18n/index.ts'), shim: path.resolve(__dirname, '../sidecar/src/shims/i18nRun.ts') },
   { real: path.resolve(srcDir, 'core/enterprise/llm-resolver.ts'), shim: path.resolve(__dirname, '../sidecar/src/shims/enterpriseCredsRun.ts') },
+  { real: path.resolve(srcDir, 'core/enterprise/entitlement.ts'), shim: path.resolve(__dirname, '../sidecar/src/shims/enterpriseEntitlementRun.ts') },
   { real: path.resolve(srcDir, 'core/llm/selectChatAdapter.ts'), shim: path.resolve(__dirname, '../sidecar/src/shims/selectChatAdapterRun.ts') },
   { real: path.resolve(srcDir, 'core/agent/lifecycleHooks.ts'), shim: path.resolve(__dirname, '../sidecar/src/shims/lifecycleHooksRun.ts') },
   { real: path.resolve(srcDir, 'core/observability/langfuse.ts'), shim: path.resolve(__dirname, '../sidecar/src/shims/langfuseRun.ts') },

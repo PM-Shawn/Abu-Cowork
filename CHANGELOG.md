@@ -7,6 +7,20 @@ All notable changes to Abu are documented here. Format based on [Keep a Changelo
 > [`CHANGELOG.zh-CN.md`](./CHANGELOG.zh-CN.md); keep both in sync per release (see
 > `RELEASING.md`). Entries before v0.31.0 predate this split and remain bilingual.
 
+## v0.35.0 · 2026-08-05
+
+### Added
+
+- **Preview file actions are easier to reach without crowding the header** — Reveal in folder, copy path, and save as now share one compact, keyboard-dismissable menu across supported file previews.
+- **Image and PDF reading controls are more complete** — Images can be zoomed, rotated, panned, and reset; PDF controls and selectable document content remain usable while moving between workspace tabs.
+- **Workspace context stays visible and tab state is preserved** — New unbound tasks keep the workspace chooser available, the browser-tab entry is restored, and switching between browser and preview tabs no longer discards the active preview state.
+
+### Security
+
+- **Electron build tooling uses patched HTTP dependencies** — The locked `undici` versions move to `7.29.0` and `6.28.0`, resolving the current High advisory and seven related advisories without changing application runtime behavior.
+
+**Full Changelog**: https://github.com/PM-Shawn/Abu-Cowork/compare/v0.34.2...v0.35.0
+
 ## v0.34.2 · 2026-08-04
 
 ### Added

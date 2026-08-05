@@ -278,11 +278,11 @@ export function ModelSelector({ open, onClose, anchorRef }: ModelSelectorProps) 
                   </span>
                 </div>
                 {filtered.map(modelId => {
-                  const isActive = effectiveActiveModel.modelId === modelId
+                  const isActive = effectiveActiveModel.providerId === 'enterprise-gateway' && effectiveActiveModel.modelId === modelId
                   return (
                     <button
                       key={modelId}
-                      onClick={() => { selectModel('enterprise-gateway', modelId); onClose(); }}
+                      onClick={() => handleSelect('enterprise-gateway', modelId)}
                       className={cn(
                         'w-full flex items-center gap-2 px-3 py-1.5 rounded-md text-left',
                         'text-minor transition-colors',

@@ -37,6 +37,7 @@ vi.mock('@/core/enterprise/api', () => ({
 
 const mockSetConfig = vi.hoisted(() => vi.fn())
 const mockSetOffline = vi.hoisted(() => vi.fn())
+const mockUpdateBinding = vi.hoisted(() => vi.fn())
 const mockGetState = vi.hoisted(() => vi.fn())
 
 vi.mock('@/stores/enterpriseStore', () => ({
@@ -82,19 +83,21 @@ function makeStoreState(
 ) {
   const { config = EXISTING_CONFIG, mode = 'enterprise' } = overrides
   if (mode === 'personal') {
-    return { mode: { kind: 'personal' as const }, setConfig: mockSetConfig, setOffline: mockSetOffline }
+    return { mode: { kind: 'personal' as const }, setConfig: mockSetConfig, setOffline: mockSetOffline, updateBinding: mockUpdateBinding }
   }
   if (mode === 'offline') {
     return {
       mode: { kind: 'offline' as const, binding: { serverUrl: 'https://abu.acme.com' }, lastConfig: config, reason: 'test' },
       setConfig: mockSetConfig,
       setOffline: mockSetOffline,
+      updateBinding: mockUpdateBinding,
     }
   }
   return {
     mode: { kind: 'enterprise' as const, binding: { serverUrl: 'https://abu.acme.com' }, config },
     setConfig: mockSetConfig,
     setOffline: mockSetOffline,
+    updateBinding: mockUpdateBinding,
   }
 }
 
@@ -151,6 +154,18 @@ describe('session 200 OK', () => {
 
     const snap = mockSetConfig.mock.calls[0][0] as EnterpriseConfigSnapshot
     expect(snap.licenseExpiresAt).toBe('2027-06-26T00:00:00Z')
+  })
+
+  it('persists LLM gateway credentials into the binding', async () => {
+    mockGetState.mockReturnValue(makeStoreState({ config: EXISTING_CONFIG }))
+    mockCallEnterprise.mockResolvedValueOnce(SESSION_RESPONSE_200)
+
+    await _heartbeatTickForTesting()
+
+    expect(mockUpdateBinding).toHaveBeenCalledWith({
+      llmEndpoint: 'https://llm.acme.com',
+      llmVirtualKey: 'vk-xxx',
+    })
   })
 
   it('sends If-None-Match header from existing configVersion', async () => {

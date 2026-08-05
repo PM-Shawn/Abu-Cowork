@@ -9,10 +9,10 @@ function BrandSlot({ binding, config, size = 'sm' }: BrandSlotProps) {
   const logo = config?.brand.logoUrl ?? null
   const px = size === 'lg' ? 'h-8 w-8 text-body' : size === 'md' ? 'h-6 w-6 text-body' : 'h-5 w-5 text-minor'
   return (
-    <div className="flex items-center gap-2 text-neutral-200">
+    <div className="flex min-w-0 items-center gap-2 text-[var(--abu-text-primary)]">
       {logo
         ? <img src={logo} alt="" className={`${px} rounded`} />
-        : <span className={`${px} grid place-items-center rounded bg-[var(--abu-clay-20)] text-[var(--abu-clay)]`}>🏢</span>}
+        : <span className={`${px} grid place-items-center rounded border border-[var(--abu-clay-40)] bg-[var(--abu-clay-bg-15)] text-[var(--abu-clay)]`}>🏢</span>}
       <span className="font-medium truncate">{name}</span>
     </div>
   )

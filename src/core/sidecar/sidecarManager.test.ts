@@ -131,11 +131,14 @@ describe('sidecarManager', () => {
         },
       });
 
+      const expectedEntitlement = __ENTERPRISE_BUILD__
+        ? {
+            mode: 'enterprise', licenseStatus: 'valid',
+            licenseExpiresAt: '2099-01-01T00:00:00Z', modules: ['skills'],
+          }
+        : { mode: 'personal', licenseStatus: null, licenseExpiresAt: null, modules: [] };
       expect(entitlementWrites()).toContainEqual(expect.objectContaining({
-        params: { entitlement: {
-          mode: 'enterprise', licenseStatus: 'valid',
-          licenseExpiresAt: '2099-01-01T00:00:00Z', modules: ['skills'],
-        } },
+        params: { entitlement: expectedEntitlement },
       }));
     });
 

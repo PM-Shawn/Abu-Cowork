@@ -17,10 +17,10 @@ vi.mock('@enterprise-modules/components/EnterpriseMcpTab', () => ({}))
 vi.mock('@enterprise-modules/components/MeTransparencyView', () => ({}))
 vi.mock('@enterprise-modules/components/MigrationWizard', () => ({}))
 
-vi.mock('@/core/enterprise/entitlement', () => ({
+vi.mock('@enterprise-modules/core/enterprise/entitlement', () => ({
   isEnterpriseModuleActive: (module: keyof typeof moduleFlags) => moduleFlags[module],
 }))
-vi.mock('@/stores/enterpriseStore', () => ({
+vi.mock('@enterprise-modules/stores/enterpriseStore', () => ({
   useEnterpriseStore: {
     subscribe: vi.fn((callback: () => void) => {
       subscription.callback = callback

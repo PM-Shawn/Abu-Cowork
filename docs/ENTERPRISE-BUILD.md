@@ -1,7 +1,8 @@
 # Abu Enterprise Build
 
-Abu-opensource produces an OSS build by default (personal mode + enterprise mode protocol layer).
-The official Abu Enterprise binary additionally incorporates the `@abu/enterprise-modules` closed-source plugin.
+Abu-opensource produces a personal-mode OSS build by default. The official Abu
+Enterprise binary incorporates the complete `@abu/enterprise-modules`
+closed-source client implementation at compile time.
 
 ## Sibling Repository Layout
 
@@ -82,10 +83,10 @@ not affected.
 | Feature | OSS | Enterprise |
 |---|---|---|
 | Personal mode (personal LLM key / Skill / MCP) | ✅ | ✅ |
-| Enterprise mode bind flow (device flow + SSO redirect) | ✅ | ✅ |
-| Enterprise brand badge / status display | ✅ | ✅ |
-| Enterprise LLM gateway routing | ✅ | ✅ |
-| Policy confirm modal (default UI) | ✅ | ✅ |
+| Enterprise mode bind flow (device flow + SSO redirect) | ✗ | ✅ |
+| Enterprise brand badge / status display | ✗ | ✅ |
+| Enterprise LLM gateway routing | ✗ | ✅ |
+| Policy confirm modal | ✗ | ✅ |
 | KB Browser (enterprise knowledge base UI) | ✗ | ✅ |
 | Skill Marketplace enterprise tab | ✗ | ✅ |
 | MCP Marketplace enterprise tab | ✗ | ✅ |
@@ -97,17 +98,19 @@ not affected.
 
 ```
 Abu-opensource/
-├── src/enterprise-modules-stub/   # OSS build stub (empty init)
-│   └── index.ts
+├── src/core/enterprise/           # host contracts + compile-time bridges only
+├── src/enterprise-modules-stub/   # personal-mode no-op implementation
+│   └── index.ts                   # mirrors the private package export contract
 └── vite.config.ts                 # ABU_BUILD_TARGET → @enterprise-modules alias
 
 Abu-enterprise-modules/
 └── src/
-    ├── index.ts                   # initEnterpriseModules() + side-effect imports
-    ├── components/                # KbBrowser, SkillTab, McpTab, MeTransparency, MigrationWizard
-    ├── core/                      # kb-sync, skill-installer, mcp-installer, migration
+    ├── index.ts                   # complete private runtime export surface
+    ├── components/                # login, brand, policy, KB, Skill, MCP and employee UI
+    ├── core/enterprise/           # auth, binding, heartbeat, gateway and policy
+    ├── core/                      # KB sync, Skill/MCP installers and migration
     ├── tools/                     # enterprise-kb-query (agent tool)
-    └── stores/                    # enterpriseKbStore, enterpriseSkillStore, enterpriseMcpStore
+    └── stores/                    # organization mode and enterprise catalog state
 ```
 
 ## Notes for Enterprise CI

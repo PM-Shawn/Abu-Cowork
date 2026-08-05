@@ -127,10 +127,17 @@ export default function ToolboxView() {
           onUploadModalChange={setSkillUploadModalOpen}
         />;
       }
-      case 'agents':
+      case 'agents': {
+        if (isEnterprise && capabilityScope === 'organization') {
+          if (!binding) return null;
+          const AgentMarket = getEnterpriseMount('agentMarket');
+          if (!AgentMarket) return null;
+          return <AgentMarket binding={binding} config={config} searchQuery={toolboxSearchQuery} />;
+        }
         return <AgentsSection
           manualCreateTrigger={manualCreateTrigger}
         />;
+      }
       case 'mcp': {
         if (isEnterprise && capabilityScope === 'organization') {
           if (!binding) return null;
@@ -161,7 +168,7 @@ export default function ToolboxView() {
       </div>
     );
 
-    const scopeControl = isEnterprise && (activeToolboxTab === 'skills' || activeToolboxTab === 'mcp') ? (
+    const scopeControl = isEnterprise ? (
       <CapabilityScopeToggle
         value={capabilityScope}
         onChange={setCapabilityScope}
@@ -171,7 +178,7 @@ export default function ToolboxView() {
     ) : null;
 
     let createControl: ReactNode = null;
-    if (activeToolboxTab === 'agents') {
+    if (activeToolboxTab === 'agents' && (!isEnterprise || capabilityScope === 'personal')) {
       createControl = (
         <ToolboxCreateMenu
           onAICreate={handleAICreate}

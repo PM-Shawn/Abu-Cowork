@@ -97,7 +97,7 @@ export default function AgentsSection({ manualCreateTrigger }: AgentsSectionProp
   // Filter by search across both visible names (zh + en) + description.
   // Excludes the 'abu' default agent — it's the fallback, not a selectable agent.
   const filteredAgents = useMemo(() => {
-    const visible = installedAgents.filter((a) => a.name !== 'abu');
+    const visible = installedAgents.filter((a) => a.name !== 'abu' && !a.managed);
     if (!toolboxSearchQuery) return visible;
     const q = toolboxSearchQuery.toLowerCase();
     return visible.filter((a) => {

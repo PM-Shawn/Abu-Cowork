@@ -622,6 +622,20 @@ export interface Skill extends SkillMetadata {
  *  — declared inline here to avoid pulling the i18n module into core agent code. */
 type AgentLocale = 'zh-CN' | 'en-US';
 
+/** Metadata attached to definitions supplied by a runtime extension. The host
+ * keeps this contract generic; enterprise catalog transport and policy stay in
+ * the closed-source module. */
+export interface ManagedAgentMetadata {
+  source: string;
+  id: string;
+  version: string;
+  readOnly: true;
+  ready: boolean;
+  unavailableReason?: string;
+  requiredSkills?: string[];
+  requiredMcpServers?: string[];
+}
+
 export interface SubagentMetadata {
   /** Canonical name — primary key in agentRegistry, also the `@mention` token. */
   name: string;
@@ -635,6 +649,7 @@ export interface SubagentMetadata {
   skills?: string[];
   memory?: 'session' | 'project' | 'user';
   background?: boolean;
+  managed?: ManagedAgentMetadata;
 
   // ── Display-only fields (rendered by toolbox AgentsSection / chat welcome banner)
   //   All optional. User-defined agents can fill any subset; builtins ship full data.

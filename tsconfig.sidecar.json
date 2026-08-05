@@ -16,7 +16,9 @@
 
     /* Path alias — mirrors the esbuild `alias` option in scripts/build-sidecar.mjs */
     "paths": {
-      "@/*": ["./src/*"]
+      "@/*": ["./src/*"],
+      "@enterprise-modules": ["./src/enterprise-modules-stub"],
+      "@enterprise-modules/*": ["./src/enterprise-modules-stub/*"]
     },
 
     /* Linting — same strictness as the rest of the repo (CLAUDE.md §2) */

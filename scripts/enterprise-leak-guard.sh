@@ -3,8 +3,8 @@
 # Enterprise closed-source leak guard (open-core).
 #
 # This is the PUBLIC repo. Per CLAUDE.md "Enterprise 代码隔离", the closed-source
-# enterprise business modules (KB browser/sync, skill/mcp installers, migration
-# wizard, kb_query tool, enterprise stores) live ONLY in the private
+# enterprise client implementation (authentication, heartbeat, gateway,
+# policy, UI, catalogs, migration, and stores) lives ONLY in the private
 # Abu-enterprise-modules repo and are swapped in at build time via the
 # @enterprise-modules alias. They must NEVER be committed to this tree.
 #
@@ -41,11 +41,34 @@ PATTERNS=(
   'enterpriseSkillStore'
 )
 
-files=$(git ls-files src/)
+# Public bridge/type files are intentionally allowlisted elsewhere. These
+# implementation files must never reappear in the OSS tree.
+IMPLEMENTATION_ONLY_PATHS=(
+  'src/core/enterprise/api.ts'
+  'src/core/enterprise/auth.ts'
+  'src/core/enterprise/boot.ts'
+  'src/core/enterprise/bootstrap.ts'
+  'src/core/enterprise/client-id.ts'
+  'src/core/enterprise/discovery.ts'
+  'src/core/enterprise/heartbeat.ts'
+  'src/core/enterprise/token-refresh.ts'
+  'src/components/enterprise/EnterpriseLoginPage.tsx'
+  'src/components/enterprise/EnterpriseStatusBadge.tsx'
+)
+
+files=$(git ls-files --cached --others --exclude-standard src/ | while IFS= read -r file; do
+  [ -e "$file" ] && printf '%s\n' "$file"
+done)
 hits=""
 for p in "${PATTERNS[@]}"; do
   m=$(printf '%s\n' "$files" | grep -iF -- "$p" || true)
   [ -n "$m" ] && hits="${hits}${m}"$'\n'
+done
+
+for p in "${IMPLEMENTATION_ONLY_PATHS[@]}"; do
+  if [ -e "$p" ]; then
+    hits="${hits}${p}"$'\n'
+  fi
 done
 
 if [ -n "$hits" ]; then

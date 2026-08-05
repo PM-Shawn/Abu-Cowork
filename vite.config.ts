@@ -28,8 +28,10 @@ const enterprisePeerPackages = [
   '@noble/curves',
   '@noble/hashes',
   '@tauri-apps/api',
+  '@tauri-apps/plugin-deep-link',
   '@tauri-apps/plugin-fs',
   '@tauri-apps/plugin-http',
+  '@tauri-apps/plugin-opener',
   'fflate',
   'lucide-react',
 ]

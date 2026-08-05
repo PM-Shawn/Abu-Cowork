@@ -10,10 +10,17 @@ import baseConfig from './vitest.config';
 const enterpriseConfig = mergeConfig(
   baseConfig,
   defineConfig({
+    define: {
+      __ENTERPRISE_BUILD__: JSON.stringify(true),
+    },
     resolve: {
       alias: {
         '@enterprise-modules': path.resolve(__dirname, '../Abu-enterprise-modules/src'),
+        '@tauri-apps/api/path': path.resolve(__dirname, 'node_modules/@tauri-apps/api/path.js'),
+        '@tauri-apps/plugin-deep-link': path.resolve(__dirname, 'node_modules/@tauri-apps/plugin-deep-link/dist-js/index.js'),
         '@tauri-apps/plugin-fs': path.resolve(__dirname, 'node_modules/@tauri-apps/plugin-fs/dist-js/index.js'),
+        '@tauri-apps/plugin-http': path.resolve(__dirname, 'node_modules/@tauri-apps/plugin-http/dist-js/index.js'),
+        '@tauri-apps/plugin-opener': path.resolve(__dirname, 'node_modules/@tauri-apps/plugin-opener/dist-js/index.js'),
         // Private component tests are authored in the enterprise repository but
         // intentionally execute with the public host's single React/test stack.
         '@testing-library/react': path.resolve(__dirname, 'node_modules/@testing-library/react/dist/index.js'),
@@ -21,6 +28,9 @@ const enterpriseConfig = mergeConfig(
         'react/jsx-runtime': path.resolve(__dirname, 'node_modules/react/jsx-runtime.js'),
         react: path.resolve(__dirname, 'node_modules/react/index.js'),
         'lucide-react': path.resolve(__dirname, 'node_modules/lucide-react/dist/cjs/lucide-react.js'),
+        '@noble/curves/ed25519': path.resolve(__dirname, 'node_modules/@noble/curves/esm/ed25519.js'),
+        '@noble/hashes/sha2': path.resolve(__dirname, 'node_modules/@noble/hashes/esm/sha2.js'),
+        fflate: path.resolve(__dirname, 'node_modules/fflate/esm/browser.js'),
         zustand: path.resolve(__dirname, 'node_modules/zustand/esm/index.mjs'),
       },
     },

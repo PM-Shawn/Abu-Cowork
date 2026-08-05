@@ -62,10 +62,11 @@ small edit expensive.
 
 - `Abu-opensource` is a public Apache-2.0 repository. Never commit credentials,
   private URLs, internal business data, or content from `.env.local` files.
-- Closed-source enterprise implementation belongs only in the sibling private
-  repository `Abu-enterprise-modules`. This repository may contain public
-  interfaces, extension points, protocol types, and no-op stubs, but not the
-  private implementation.
+- All enterprise client implementation belongs only in the sibling private
+  repository `Abu-enterprise-modules`, including authentication, heartbeat,
+  policy, gateway routing, organization state, and enterprise UI. This public
+  repository may contain neutral interfaces, extension points, compile-time
+  bridges, and no-op stubs, but not executable enterprise workflows.
 - Before changing enterprise behavior, read `docs/ENTERPRISE-BUILD.md` and keep
   the public/private split intact. Passing tests do not prove that no private
   code has leaked.

@@ -25,7 +25,7 @@ Inspired by Claude Code's Cowork mode. Features multi-agent architecture with ex
 - **`refactor-dev`**: Electron 重构期间的历史集成指针，已完成使命并退役。不得再从它创建新分支；保留相关 worktree 只是为了保护历史报告和未提交材料。
 
 - 🔴 **发版只用 `git merge --ff-only dev`，绝不 cherry-pick dev→main**。cherry-pick 会把同一改动复制成"内容一样、SHA 不同"的孪生 commit，两条分支历史发散 → 下次 merge 满屏假冲突 → 逼你继续 cherry-pick → **雪球债**（2026-07 已滚到 dev/main 分叉 223/124，靠一次收敛合并才解开）。main 始终是 dev 的历史子集，保留同一 SHA 才能避免再次分叉。
-- 🔴 **`main` 没有"特殊内容"**：企业登录（`EnterpriseLoginPage`/bootstrap/discovery/auth）是 **OSS 合法**的（`ENTERPRISE-BUILD.md` 把 device-flow bind 列为 ✅ OSS；泄漏门禁 deny-list 也不含它），且深度运行时门控（只有用户主动绑企业服务器才出现），随 dev 进 main 无碍。真正的闭源模块早已构建隔离在私有仓（见「Enterprise 代码隔离」红线）。**不要**因为"怕泄企业代码"就把 main 拆成精选线搞 cherry-pick——那是历史误解。
+- 🔴 **`main` 没有"特殊内容"**：企业实现不靠维护一条特殊公开分支来隔离，而是只存在于私有 sibling 仓库，并在企业构建时注入。`dev` 到 `main` 仍走同一条集成历史，禁止用 cherry-pick 制造分叉。
 
 ### Before Starting Work (每次开始工作前必做)
 1. `git branch --show-current` — 确认当前分支；禁止在 `main`、`refactor-dev` 或历史 Electron worktree 上开始新开发。
@@ -91,9 +91,9 @@ Inspired by Claude Code's Cowork mode. Features multi-agent architecture with ex
 
 加企业能力时**必须劈成两半**：
 
-- ✅ **公开仓库（本仓）只放「形状」**：扩展点接口 + 空插槽 + 默认 null 实现 + 协议层。即 `src/core/enterprise/mounts-registry.ts` 的 `EnterpriseMounts` slot、宿主 UI 里的 `<MountPoint slot="x"/>`、以及已明确属 OSS 的协议层（device-flow bind、brand badge、LLM gateway 路由、policy confirm modal / matcher、企业模式状态显示）。
-- 🔒 **私有仓库 `Abu-enterprise-modules` 才放「肉」**：真正的闭源实现（KB Browser/同步、skill-installer、mcp-installer、migration wizard、`kb_query` agent tool、企业策略实现、不想公开的服务端契约），在其 `initEnterpriseModules()` 里 `registerEnterpriseMount('x', Impl)` 注册进插槽。
-- 🔴 **绝不能因为本仓 `src/core/enterprise/` 已有文件，就把新的闭源实现也塞进去**——现存那些是协议层（✅ OSS），不是先例。判据：含商业逻辑 / 机密算法 / 付费功能本体 / 服务端契约 → 私有仓库；只是接口 / 插槽 / 默认 null → 公开仓库。拿不准就停下问，别默认往公开仓库写。
+- ✅ **公开仓库（本仓）只放「形状」**：扩展点接口、空插槽、编译期转发文件、OSS no-op stub，以及 `ABU_BUILD_TARGET` 构建开关。公开代码可以定义宿主需要的稳定类型，但不能实现企业工作流。
+- 🔒 **私有仓库 `Abu-enterprise-modules` 放全部客户端企业实现**：登录/绑定、SSO、token、心跳、品牌、License、策略、LiteLLM 网关与模型、Skills/MCP/知识库、迁移和员工 UI。私有入口在企业构建中注册组件并提供运行时适配器。
+- 🔴 **公开仓库不得保留“协议层实现”作为例外**：`src/core/enterprise/` 只能保留类型、挂载注册表和转发到 `@enterprise-modules` 的薄文件；`src/enterprise-modules-stub` 只能返回个人模式默认值。任何网络请求、凭证持久化、策略判断或企业 UI 都属于私有仓库。
 - 🔴 **`npm run build` / `npm test` 全绿 ≠ 没泄露**——这是保密违规，工具链抓不到。一旦闭源逻辑进了本仓 commit 并 push，git 历史里**洗不掉**。`npm run electron:dev` 看不到企业功能是正常的；企业功能开发和验收统一使用 `npm run electron:dev:enterprise`（需私有仓库在 sibling 位置）。
 
 ## Key Commands

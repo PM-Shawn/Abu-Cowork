@@ -48,6 +48,14 @@ import { fileURLToPath } from 'node:url';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(__dirname, '..');
 const srcDir = path.resolve(root, 'src');
+const buildTarget = process.env.ABU_BUILD_TARGET === 'enterprise' ? 'enterprise' : 'oss';
+const enterpriseModulesDir = buildTarget === 'enterprise'
+  ? path.resolve(root, '../Abu-enterprise-modules/src')
+  : path.resolve(srcDir, 'enterprise-modules-stub');
+
+if (!existsSync(enterpriseModulesDir)) {
+  throw new Error(`[build-sidecar] ${buildTarget} module directory not found: ${enterpriseModulesDir}`);
+}
 
 /**
  * `vite.config.ts` substitutes `__APP_VERSION__`/`__ENTERPRISE_BUILD__` as
@@ -401,10 +409,10 @@ async function main() {
     // @anthropic-ai/sdk (and everything else reachable from main.ts) bundles
     // INTO the output — nothing marked external. The packaged app ships
     // sidecar/index.mjs standalone, with no node_modules alongside it.
-    alias: { '@': srcDir },
+    alias: { '@': srcDir, '@enterprise-modules': enterpriseModulesDir },
     define: {
       __APP_VERSION__: JSON.stringify(packageJson.version),
-      __ENTERPRISE_BUILD__: JSON.stringify(false),
+      __ENTERPRISE_BUILD__: JSON.stringify(buildTarget === 'enterprise'),
     },
     plugins: [shimPlugin, bundleGraphGuardPlugin],
     banner: {

@@ -18,7 +18,7 @@
     <link rel="alternate" hreflang="x-default" href="docs.html">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>文档 - Abu (阿布)</title>
-    <meta name="description" content="Abu (阿布) 使用文档 — 使用指南、安装指南、浏览器桥接说明">
+    <meta name="description" content="Abu (阿布) 使用文档 — 快速开始、模型、项目、技能、连接器、浏览网页与安全说明">
     <link rel="icon" href="assets/abu-avatar.png" type="image/png">
     <link rel="stylesheet" href="style.css">
     <link rel="stylesheet" href="docs.css">
@@ -70,9 +70,9 @@
                         <svg class="docs-nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
                         安装指南
                     </a>
-                    <a href="#browser-bridge" class="docs-nav-item" data-doc="browser-bridge">
+                    <a href="#web-browsing" class="docs-nav-item" data-doc="web-browsing">
                         <svg class="docs-nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
-                        浏览器桥接
+                        浏览网页
                     </a>
                 </div>
                 <div class="docs-toc-section" id="docsToc">
@@ -104,7 +104,7 @@
         const DOCS = {
             'user-guide': { file: 'docs/User-Guide.zh-CN.md', title: '使用指南' },
             'installation': { file: 'docs/Installation-Guide.zh-CN.md', title: '安装指南' },
-            'browser-bridge': { file: 'docs/browser-bridge-vs-playwright.zh-CN.md', title: '浏览器桥接' }
+            'web-browsing': { file: 'docs/browser-bridge-vs-playwright.zh-CN.md', title: '浏览网页' }
         };
 
         let currentDoc = 'user-guide';
@@ -196,6 +196,13 @@
 
                 // Render markdown
                 article.innerHTML = marked.parse(md);
+
+                // Keep links between Markdown guides inside the single-page docs viewer.
+                article.querySelectorAll('a[href]').forEach(link => {
+                    const href = link.getAttribute('href').replace(/^\.\//, '');
+                    const target = Object.entries(DOCS).find(([, candidate]) => candidate.file.endsWith('/' + href));
+                    if (target) link.setAttribute('href', '#' + target[0]);
+                });
 
                 // Update page title
                 document.title = `${doc.title} - Abu (阿布)`;
@@ -333,9 +340,14 @@
         // Route on load
         function route() {
             const hash = window.location.hash.replace('#', '');
+            // Preserve old public links while using the current product term.
+            const docKey = hash === 'browser-bridge' ? 'web-browsing' : hash;
+            if (hash === 'browser-bridge') {
+                history.replaceState(null, '', '#web-browsing');
+            }
             // Check if hash matches a doc key
-            if (DOCS[hash]) {
-                loadDoc(hash);
+            if (DOCS[docKey]) {
+                loadDoc(docKey);
             } else {
                 // Default to user guide
                 loadDoc('user-guide');

@@ -3,7 +3,7 @@ import type { ReactNode } from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const settingsState = {
-  activeToolboxTab: 'skills' as const,
+  activeToolboxTab: 'skills' as 'skills' | 'agents' | 'mcp',
   closeToolbox: vi.fn(),
   setActiveToolboxTab: vi.fn(),
   toolboxSearchQuery: '',
@@ -76,6 +76,7 @@ import ToolboxView from './ToolboxModal';
 
 describe('Toolbox capability sources', () => {
   beforeEach(() => {
+    settingsState.activeToolboxTab = 'skills';
     settingsState.toolboxSearchQuery = '';
     vi.clearAllMocks();
   });
@@ -95,5 +96,17 @@ describe('Toolbox capability sources', () => {
     await waitFor(() => {
       expect(screen.getByTestId('organization-catalog')).toHaveTextContent('finance');
     });
+  });
+
+  it('uses the same personal and organization source model for agents', async () => {
+    settingsState.activeToolboxTab = 'agents';
+    render(<ToolboxView />);
+
+    expect(screen.getByText('Personal agents')).toBeInTheDocument();
+    expect(screen.getByTestId('create-control')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Organization' }));
+
+    expect(await screen.findByTestId('organization-catalog')).toBeInTheDocument();
+    expect(screen.queryByTestId('create-control')).not.toBeInTheDocument();
   });
 });

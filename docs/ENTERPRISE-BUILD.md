@@ -58,8 +58,8 @@ npm run electron:dev:check
 
 # 5. Real Enterprise Electron smoke (requires Abu-enterprise-modules as a sibling directory)
 npm run electron:dev:enterprise
-# In the Electron window → switch to enterprise mode → KbBrowser / SkillTab / MCPTab /
-# MeTransparencyView should all appear (requires connection to Abu Console)
+# In the Electron window → switch to enterprise mode → verify Skill / Agent / MCP
+# personal and organization sources plus the affected execution path.
 ```
 
 A browser-only dev server, unit tests, or a renderer build does not count as
@@ -69,11 +69,12 @@ starts and the affected user journey is exercised.
 ## Runtime entitlement boundary
 
 The desktop revalidates its enterprise session before loading private modules.
-Enterprise Skill, MCP, and KB capabilities are usable only while the server
+Enterprise Skill, Agent, MCP, and KB capabilities are usable only while the server
 reports a signed, unexpired License for the bound organization and the matching
 module. Offline, expired, mismatched, or missing-module states fail closed:
 installed enterprise Skills are filtered from runtime lookup, enterprise MCP
-invocations are rejected and connections are withdrawn, and the KB tool is
+invocations are rejected and connections are withdrawn, managed Agents are
+removed from runtime lookup, and the KB tool is
 unregistered. Local installation metadata is retained so a valid renewal can
 restore the capability without reinstalling it. Personal Skill/MCP behavior is
 not affected.
@@ -90,6 +91,7 @@ not affected.
 | KB Browser (enterprise knowledge base UI) | ✗ | ✅ |
 | Skill Marketplace enterprise tab | ✗ | ✅ |
 | MCP Marketplace enterprise tab | ✗ | ✅ |
+| Managed Agent templates (assigned, read-only, no local install) | ✗ | ✅ |
 | /me transparency page | ✗ | ✅ |
 | Migration wizard (personal → enterprise) | ✗ | ✅ |
 | Agent kb_query tool | ✗ | ✅ |
@@ -106,9 +108,9 @@ Abu-opensource/
 Abu-enterprise-modules/
 └── src/
     ├── index.ts                   # complete private runtime export surface
-    ├── components/                # login, brand, policy, KB, Skill, MCP and employee UI
+    ├── components/                # login, brand, policy, KB, Skill, Agent, MCP and employee UI
     ├── core/enterprise/           # auth, binding, heartbeat, gateway and policy
-    ├── core/                      # KB sync, Skill/MCP installers and migration
+    ├── core/                      # KB/Skill/Agent/MCP sync, installers and migration
     ├── tools/                     # enterprise-kb-query (agent tool)
     └── stores/                    # organization mode and enterprise catalog state
 ```

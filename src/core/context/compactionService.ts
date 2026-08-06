@@ -85,6 +85,7 @@ function resolveSummarizeConfig(): CompressionConfig {
     model: getEffectiveModel(settings),
     apiKey: creds.apiKey,
     baseUrl: creds.baseUrl,
+    gatewayMetadata: creds.traceMetadata,
   };
 }
 

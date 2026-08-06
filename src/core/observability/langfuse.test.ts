@@ -6,8 +6,36 @@
  * states: they verify the API contracts — non-throwing, correct return shape —
  * not the enabled/disabled state itself.
  */
-import { describe, it, expect } from 'vitest';
-import { startSubagentSpan } from './langfuse';
+import { describe, it, expect, afterEach } from 'vitest';
+import { startSubagentSpan, getLangfuse, isObservabilityEnabled } from './langfuse';
+import { useEnterpriseStore } from '../../stores/enterpriseStore';
+
+describe('enterprise mode gate', () => {
+  afterEach(() => {
+    useEnterpriseStore.setState({ mode: { kind: 'personal' } });
+  });
+
+  // In enterprise mode client-side Langfuse writes are disabled — the gateway
+  // callback is the single trace source (2026-08-05-llm-trace-amendment).
+  it('getLangfuse returns null in enterprise mode regardless of VITE_LANGFUSE_* keys', () => {
+    useEnterpriseStore.setState({
+      mode: {
+        kind: 'enterprise',
+        binding: {} as never,
+        config: null,
+      },
+    });
+    expect(getLangfuse()).toBeNull();
+    expect(isObservabilityEnabled()).toBe(false);
+  });
+
+  it('getLangfuse returns null in offline (still-enterprise) mode', () => {
+    useEnterpriseStore.setState({
+      mode: { kind: 'offline', binding: {} as never, lastConfig: null, reason: 'test' },
+    });
+    expect(getLangfuse()).toBeNull();
+  });
+});
 
 describe('startSubagentSpan', () => {
   it('always returns a handle (never null/undefined), regardless of observability state', () => {

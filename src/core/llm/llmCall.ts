@@ -94,6 +94,7 @@ export async function llmCall(options: LLMCallOptions): Promise<LLMCallResult> {
     tools: options.tools,
     maxTokens: options.maxTokens ?? 4096,
     signal: options.signal,
+    gatewayMetadata: effectiveCreds.traceMetadata,
   }, eventHandler);
 
   return { text, toolCalls };

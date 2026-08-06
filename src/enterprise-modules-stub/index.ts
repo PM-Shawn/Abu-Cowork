@@ -53,10 +53,23 @@ export class EnterpriseLlmUnavailableError extends Error {
 export function resolveEnterpriseLlm(): ResolvedEnterpriseLlm | null { return null }
 export function isEnterpriseLlmEnforced(): boolean { return false }
 export function canCallEnterpriseLlm(): boolean { return false }
+
+/** Mirror of the enterprise resolver's trace metadata (never produced in OSS). */
+export interface EnterpriseTraceMetadata {
+  trace_user_id: string
+  abu_org_id: string
+  abu_dept_id?: string
+  provider_kind: 'enterprise-gateway'
+  provider_id: string
+  [key: string]: string | undefined
+}
+
+export function getEnterpriseTraceMetadata(): EnterpriseTraceMetadata | null { return null }
+
 export function resolveEffectiveLlmCreds(
   personalApiKey: string,
   personalBaseUrl: string | undefined,
-): { apiKey: string; baseUrl: string | undefined; forceOpenAiCompatible: boolean } {
+): { apiKey: string; baseUrl: string | undefined; forceOpenAiCompatible: boolean; traceMetadata?: EnterpriseTraceMetadata } {
   return {
     apiKey: personalApiKey,
     baseUrl: personalBaseUrl,

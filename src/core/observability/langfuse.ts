@@ -14,6 +14,7 @@ import { Langfuse } from 'langfuse';
 import type { LangfuseTraceClient } from 'langfuse';
 import type { TokenUsage } from '../../types';
 import { getTauriFetch } from '../llm/tauriFetch';
+import { useEnterpriseStore } from '../../stores/enterpriseStore';
 
 // Structural match for langfuse-core's LangfuseFetchOptions (not re-exported by
 // the `langfuse` package). Method parameter bivariance lets this override the
@@ -45,6 +46,12 @@ let _client: Langfuse | null | undefined;
  * invoke this on every turn cheaply.
  */
 export function getLangfuse(): Langfuse | null {
+  // Enterprise mode: client-side Langfuse writes are disabled — the gateway's
+  // langfuse callback is the single trace source (spec: 2026-08-05-llm-trace-
+  // amendment). Checked before the cache so binding/unbinding mid-session
+  // takes effect immediately; VITE_LANGFUSE_* stays a personal/dev channel.
+  if (useEnterpriseStore.getState().mode.kind !== 'personal') return null;
+
   if (_client !== undefined) return _client;
 
   const publicKey = import.meta.env.VITE_LANGFUSE_PUBLIC_KEY;

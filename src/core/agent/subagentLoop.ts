@@ -463,7 +463,7 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
             systemPrompt,
             contextWindowSize,
             maxOutputTokens,
-            { adapter, model: effectiveModelId, apiKey: subCreds.apiKey, baseUrl: subCreds.baseUrl, signal }
+            { adapter, model: effectiveModelId, apiKey: subCreds.apiKey, baseUrl: subCreds.baseUrl, signal, gatewayMetadata: subCreds.traceMetadata }
           );
           if (compressionResult.compressed) {
             messagesForContext = compressionResult.messages;
@@ -490,6 +490,7 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
         model: effectiveModelId,
         apiKey: subChatCreds.apiKey,
         baseUrl: subChatCreds.baseUrl,
+        gatewayMetadata: subChatCreds.traceMetadata,
         systemPrompt,
         tools: tools.length > 0 ? tools : undefined,
         maxTokens: maxOutputTokens,

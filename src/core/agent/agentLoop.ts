@@ -1304,6 +1304,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
                 apiKey: compressionCreds.apiKey,
                 baseUrl: compressionCreds.baseUrl,
                 signal: abortController.signal,
+                gatewayMetadata: compressionCreds.traceMetadata,
               },
               toolTokens
             );
@@ -1413,6 +1414,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
               apiKey: compactionCreds.apiKey,
               baseUrl: compactionCreds.baseUrl,
               signal: abortController.signal,
+              gatewayMetadata: compactionCreds.traceMetadata,
             });
           } catch (err) {
             // Defensive: summarizeConversation is contractually no-throw (it
@@ -1493,6 +1495,11 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
         model: effectiveModelId,
         apiKey: effectiveCreds.apiKey,
         baseUrl: effectiveCreds.baseUrl,
+        // loop_id lets Langfuse group/filter the gateway's per-call traces by
+        // agent-loop run (V1 has no client-side span tree — see trace amendment).
+        gatewayMetadata: effectiveCreds.traceMetadata
+          ? { ...effectiveCreds.traceMetadata, loop_id: loopId }
+          : undefined,
         systemPrompt: effectiveSystemPrompt,
         systemPromptSections: allSections,
         tools: tools.length > 0 ? tools : undefined,
@@ -1767,6 +1774,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
                   apiKey: recoveryCreds.apiKey,
                   baseUrl: recoveryCreds.baseUrl,
                   signal: abortController.signal,
+                  gatewayMetadata: recoveryCreds.traceMetadata,
                 },
                 toolTokens
               );

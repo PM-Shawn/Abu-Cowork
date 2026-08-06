@@ -115,7 +115,7 @@ export interface SubagentRunParams {
   locale: string;
   uiStrings: ReturnType<typeof buildSubagentUiStrings>;
   settingsSnapshot: ReturnType<ReturnType<typeof getSettingsReader>['getSnapshot']>;
-  resolvedCreds: { apiKey: string; baseUrl: string | undefined; forceOpenAiCompatible: boolean };
+  resolvedCreds: { apiKey: string; baseUrl: string | undefined; forceOpenAiCompatible: boolean; traceMetadata?: Record<string, string | undefined> };
   tools: SerializableToolDefinition[];
   /**
    * Pre-resolved shell-side WorkspaceReader value (see subagentLoop.ts's

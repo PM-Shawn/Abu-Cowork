@@ -15,16 +15,18 @@
     <link rel="alternate" hreflang="zh-CN" href="enterprise.zh-CN.html">
     <link rel="alternate" hreflang="x-default" href="enterprise.html">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Abu 企业版 - 把员工 AI 使用纳入企业治理</title>
-    <meta name="description" content="Abu 企业版在开源桌面客户端之上增加私有部署控制台，帮助企业统一治理模型调用、企业知识、权限策略、Skill/MCP、审计和用量。">
+    <meta name="theme-color" content="#faf9f5">
+    <title>Abu 企业版 - 全员用 AI 提效，企业把成本、数据和风险管起来</title>
+    <meta name="description" content="Abu 企业版统一模型入口、知识权限、策略审计和用量预算，企业看得见、控得住、可追溯。">
     <link rel="stylesheet" href="style.css">
     <link rel="icon" href="assets/abu-avatar.png" type="image/png">
 </head>
 <body class="enterprise-body">
+    <a class="skip-link" href="#main-content">跳到主要内容</a>
     <nav class="navbar" id="navbar">
         <div class="container nav-container">
             <a href="index.zh-CN.html" class="nav-brand">
-                <img src="assets/abu-avatar.png" alt="Abu" class="nav-logo">
+                <img src="assets/abu-avatar.png" alt="Abu" class="nav-logo" width="32" height="32">
                 <span class="nav-title">Abu <span class="nav-title-cn">阿布</span></span>
             </a>
             <div class="nav-links" id="navLinks">
@@ -32,32 +34,32 @@
                 <a href="index.zh-CN.html#screenshots" class="nav-link">预览</a>
                 <a href="index.zh-CN.html#use-cases" class="nav-link">场景</a>
                 <a href="index.zh-CN.html#tech" class="nav-link">架构</a>
-                <a href="enterprise.zh-CN.html" class="nav-link nav-link-active">企业版</a>
+                <a href="enterprise.zh-CN.html" class="nav-link nav-link-active nav-link-hot" aria-label="企业版，热门">企业版<span class="nav-hot-flame" aria-hidden="true">🔥</span></a>
                 <a href="docs.zh-CN.html" class="nav-link">文档</a>
                 <a href="index.zh-CN.html#social" class="nav-link">社区</a>
                 <a href="enterprise.html" class="nav-lang" aria-label="Switch to English" onclick="try{localStorage.setItem('abu-lang','en')}catch(e){}">
-                    <svg class="nav-lang-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
+                    <svg class="nav-lang-icon" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
                     English
                 </a>
                 <a href="https://github.com/PM-Shawn/Abu-Cowork" target="_blank" rel="noopener" class="nav-link nav-github">
-                    <svg class="icon" viewBox="0 0 16 16" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+                    <svg class="icon" aria-hidden="true" viewBox="0 0 16 16" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
                     GitHub
                 </a>
             </div>
-            <button class="nav-toggle" id="navToggle" aria-label="Toggle menu">
+            <button class="nav-toggle" id="navToggle" aria-label="打开导航菜单" aria-controls="navLinks" aria-expanded="false">
                 <span></span><span></span><span></span>
             </button>
         </div>
     </nav>
 
+    <main id="main-content">
     <section class="enterprise-hero">
         <div class="container enterprise-hero-grid">
             <div class="enterprise-hero-copy">
                 <div class="enterprise-eyebrow">Abu Enterprise</div>
-                <h1>把员工手里的 AI，<br>变成企业可治理的生产力</h1>
+                <h1>全员用 AI 提效，<br>企业把成本、数据和风险管起来</h1>
                 <p class="enterprise-lead">
-                    <strong>Abu 企业版在开源桌面客户端之上，增加企业内网私有部署的管理控制台。</strong>
-                    员工继续用 Abu 完成日常任务，企业统一管理模型调用、知识权限、策略审计和用量成本。
+                    统一模型入口、知识权限、策略审计和用量预算，企业看得见、控得住、可追溯。
                 </p>
                 <div class="enterprise-actions">
                     <a href="#contact" class="btn btn-primary">预约演示</a>
@@ -146,7 +148,7 @@
             <div class="enterprise-heading">
                 <span class="enterprise-section-kicker">产品形态</span>
                 <h2>不是另一个客户端，而是在 Abu 之上加一层企业治理</h2>
-                <p>企业版保留开源客户端的本地优先体验，同时把组织级配置、审计和治理能力放进私有控制台。</p>
+                <p>员工在桌面端使用 AI，管理员在私有控制台统一配置组织、模型、知识、工具与治理策略。</p>
             </div>
             <div class="product-split">
                 <article class="product-panel">
@@ -304,66 +306,71 @@
                 </div>
                 <div class="compare-row">
                     <div>AI 桌面办公助手</div>
-                    <div><span class="status-chip status-available">完整可用</span> 对话、任务执行、工具调用、Skill 使用和本地工作区协作。</div>
-                    <div><span class="status-chip status-available">完整继承</span> 员工继续使用同一个桌面体验，叠加企业绑定和治理能力。</div>
+                    <div><span class="status-chip status-available">完整可用</span>对话、任务执行、工具调用、Skill 使用和本地工作区协作。</div>
+                    <div><span class="status-chip status-available">完整继承</span>同一个桌面体验，叠加企业绑定和治理能力。</div>
                 </div>
                 <div class="compare-row">
                     <div>本地优先</div>
-                    <div>对话、记忆、文件和项目数据默认保留在本机。</div>
-                    <div>客户端仍本地优先；企业相关配置、授权、审计和用量进入企业控制台。</div>
+                    <div><span class="status-chip status-available">支持</span>对话、记忆、文件和项目数据默认保留在本机。</div>
+                    <div><span class="status-chip status-available">支持</span>企业配置、授权、审计和用量进入私有控制台。</div>
                 </div>
                 <div class="compare-row compare-group">
                     <div>企业治理能力：企业版新增</div>
                 </div>
                 <div class="compare-row">
                     <div>身份与登录</div>
-                    <div>无需企业登录，个人本地直接使用。</div>
-                    <div>支持密码、Magic Link、OIDC SSO、客户端 Device Flow 绑定和待审批成员管理。</div>
+                    <div><span class="status-chip status-unavailable">不支持</span>无企业账号、统一登录和成员审批。</div>
+                    <div><span class="status-chip status-available">支持</span>密码、Magic Link、OIDC SSO、客户端 Device Flow 和成员审批。</div>
                 </div>
                 <div class="compare-row">
                     <div>组织、部门、角色权限</div>
-                    <div>不涉及组织级权限。</div>
-                    <div>组织、部门树、用户、角色、权限矩阵和资源 ACL。</div>
+                    <div><span class="status-chip status-unavailable">不支持</span>无组织级权限体系。</div>
+                    <div><span class="status-chip status-available">支持</span>组织、部门树、用户、角色、权限矩阵和资源 ACL。</div>
                 </div>
                 <div class="compare-row">
                     <div>模型 Key 与网关</div>
-                    <div>用户自行填写个人模型 Key，调用和账单由个人管理。</div>
-                    <div>真实 Key 在企业侧加密托管，客户端使用企业网关和授权 Token。</div>
+                    <div><span class="status-chip status-available">个人管理</span>用户自行填写模型 Key，调用和账单由个人负责。</div>
+                    <div><span class="status-chip status-available">统一管理</span>真实 Key 加密托管，客户端通过企业网关调用。</div>
                 </div>
                 <div class="compare-row">
                     <div>预算、限速和模型白名单</div>
-                    <div>无集中管控。</div>
-                    <div>按部门配置预算、RPM 限速、可用模型范围，并提供用量/成本看板。</div>
+                    <div><span class="status-chip status-unavailable">不支持</span>无组织级集中管控。</div>
+                    <div><span class="status-chip status-available">支持</span>按部门配置预算、RPM 限速和可用模型范围。</div>
+                </div>
+                <div class="compare-row">
+                    <div>用量与成本看板</div>
+                    <div><span class="status-chip status-unavailable">不支持</span>无企业集中统计。</div>
+                    <div><span class="status-chip status-available">支持</span>按用户、部门和模型统计 Token、调用量与成本。</div>
                 </div>
                 <div class="compare-row">
                     <div>企业知识库</div>
-                    <div>主要依赖本地上下文和个人记忆。</div>
-                    <div>企业、部门、个人知识库，支持文档入库、混合检索、来源引用和 ACL。</div>
+                    <div><span class="status-chip status-unavailable">不支持</span>仅使用本地上下文和个人记忆。</div>
+                    <div><span class="status-chip status-available">支持</span>企业、部门、个人知识库，支持混合检索、来源引用和 ACL。</div>
                 </div>
                 <div class="compare-row">
                     <div>企业 Skill 市场</div>
-                    <div>用户自行安装和维护 Skill，来源由个人判断。</div>
-                    <div>上传、扫描、审核、发布、授权、签名校验和客户端安装记录。</div>
+                    <div><span class="status-chip status-unavailable">不支持</span>用户仅可自行安装和维护 Skill。</div>
+                    <div><span class="status-chip status-available">支持</span>上传、扫描、审核、发布、授权、验签和安装记录。</div>
                 </div>
                 <div class="compare-row">
                     <div>企业 MCP 管理</div>
-                    <div>用户自行配置本地 MCP 服务。</div>
-                    <div>企业统一登记、同步、审核、授权和凭据管理；客户端可浏览目录并获取授权凭据。</div>
+                    <div><span class="status-chip status-unavailable">不支持</span>用户仅可自行配置本地 MCP 服务。</div>
+                    <div><span class="status-chip status-available">支持</span>统一登记、同步、审核、授权和凭据管理。</div>
                 </div>
                 <div class="compare-row">
                     <div>企业安全策略</div>
-                    <div>依赖个人权限模式和本机安全设置。</div>
-                    <div>工具黑名单、工具二次确认、Skill/MCP 黑名单、文件路径白名单/黑名单。</div>
+                    <div><span class="status-chip status-unavailable">不支持</span>仅有个人权限模式和本机安全设置。</div>
+                    <div><span class="status-chip status-available">支持</span>工具黑名单、二次确认、扩展黑名单和文件路径策略。</div>
                 </div>
                 <div class="compare-row">
                     <div>审计、透明度和诊断</div>
-                    <div>无企业集中审计。</div>
-                    <div>管理审计、用量成本、员工个人透明度页、质量反馈、日志和诊断包。</div>
+                    <div><span class="status-chip status-unavailable">不支持</span>无企业集中审计和诊断。</div>
+                    <div><span class="status-chip status-available">支持</span>管理审计、个人透明度、质量反馈、日志和诊断包。</div>
                 </div>
                 <div class="compare-row">
                     <div>部署、授权和品牌</div>
-                    <div>开源仓库下载，自行构建或使用公开版本。</div>
-                    <div>私有控制台、企业客户端构建、License、企业 Logo/主色和受控交付。</div>
+                    <div><span class="status-chip status-unavailable">不包含</span>仅提供开源仓库和公开版本。</div>
+                    <div><span class="status-chip status-available">支持</span>私有控制台、企业构建、License、Logo/主色和受控交付。</div>
                 </div>
             </div>
             <p class="compare-note">注：企业 MCP 客户端当前聚焦目录浏览和授权凭据获取，便于企业先把可用工具和凭据范围统一管起来。</p>
@@ -383,12 +390,13 @@
             </div>
         </div>
     </section>
+    </main>
 
     <footer class="footer">
         <div class="container">
             <div class="footer-content">
                 <div class="footer-brand">
-                    <img src="assets/abu-avatar.png" alt="Abu" class="footer-logo">
+                    <img src="assets/abu-avatar.png" alt="Abu" class="footer-logo" width="28" height="28" loading="lazy">
                     <span>Abu (阿布)</span>
                 </div>
                 <div class="footer-links">
@@ -411,29 +419,26 @@
 
         const navToggle = document.getElementById('navToggle');
         const navLinks = document.getElementById('navLinks');
+        const closeNavigation = () => {
+            navLinks.classList.remove('open');
+            navToggle.classList.remove('open');
+            navToggle.setAttribute('aria-expanded', 'false');
+            navToggle.setAttribute('aria-label', '打开导航菜单');
+        };
         navToggle.addEventListener('click', () => {
-            navLinks.classList.toggle('open');
-            navToggle.classList.toggle('open');
+            const isOpen = navLinks.classList.toggle('open');
+            navToggle.classList.toggle('open', isOpen);
+            navToggle.setAttribute('aria-expanded', String(isOpen));
+            navToggle.setAttribute('aria-label', isOpen ? '关闭导航菜单' : '打开导航菜单');
         });
         navLinks.querySelectorAll('.nav-link').forEach(link => {
-            link.addEventListener('click', () => {
-                navLinks.classList.remove('open');
-                navToggle.classList.remove('open');
-            });
+            link.addEventListener('click', closeNavigation);
         });
-
-        document.querySelectorAll('a[href^="#"]').forEach(anchor => {
-            anchor.addEventListener('click', function(e) {
-                const href = this.getAttribute('href');
-                if (href === '#') return;
-                const target = document.querySelector(href);
-                if (target) {
-                    e.preventDefault();
-                    const offset = navbar.offsetHeight + 16;
-                    const top = target.getBoundingClientRect().top + window.scrollY - offset;
-                    window.scrollTo({ top, behavior: 'smooth' });
-                }
-            });
+        document.addEventListener('keydown', event => {
+            if (event.key === 'Escape' && navLinks.classList.contains('open')) {
+                closeNavigation();
+                navToggle.focus();
+            }
         });
     </script>
 </body>

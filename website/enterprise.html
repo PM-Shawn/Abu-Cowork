@@ -15,16 +15,18 @@
     <link rel="alternate" hreflang="zh-CN" href="enterprise.zh-CN.html">
     <link rel="alternate" hreflang="x-default" href="enterprise.html">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Abu Enterprise — Bring employee AI use under enterprise governance</title>
-    <meta name="description" content="Abu Enterprise adds a privately deployed control console on top of the open-source desktop client for model routing, enterprise knowledge, access policies, Skill/MCP governance, audit, and usage.">
+    <meta name="theme-color" content="#faf9f5">
+    <title>Abu Enterprise — AI productivity for every employee, governed by the enterprise</title>
+    <meta name="description" content="Abu Enterprise centralizes model access, knowledge permissions, policy audit, and usage budgets so the enterprise keeps cost, data, and risk under control.">
     <link rel="stylesheet" href="style.css">
     <link rel="icon" href="assets/abu-avatar.png" type="image/png">
 </head>
 <body class="enterprise-body">
+    <a class="skip-link" href="#main-content">Skip to main content</a>
     <nav class="navbar" id="navbar">
         <div class="container nav-container">
             <a href="index.html" class="nav-brand">
-                <img src="assets/abu-avatar.png" alt="Abu" class="nav-logo">
+                <img src="assets/abu-avatar.png" alt="Abu" class="nav-logo" width="32" height="32">
                 <span class="nav-title">Abu</span>
             </a>
             <div class="nav-links" id="navLinks">
@@ -32,32 +34,32 @@
                 <a href="index.html#screenshots" class="nav-link">Preview</a>
                 <a href="index.html#use-cases" class="nav-link">Use Cases</a>
                 <a href="index.html#tech" class="nav-link">Architecture</a>
-                <a href="enterprise.html" class="nav-link nav-link-active">Enterprise</a>
+                <a href="enterprise.html" class="nav-link nav-link-active nav-link-hot" aria-label="Enterprise, hot">Enterprise<span class="nav-hot-flame" aria-hidden="true">🔥</span></a>
                 <a href="docs.html" class="nav-link">Docs</a>
                 <a href="index.html#social" class="nav-link">Community</a>
                 <a href="enterprise.zh-CN.html" class="nav-lang" aria-label="切换到中文" onclick="try{localStorage.setItem('abu-lang','zh')}catch(e){}">
-                    <svg class="nav-lang-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
+                    <svg class="nav-lang-icon" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
                     中文
                 </a>
                 <a href="https://github.com/PM-Shawn/Abu-Cowork" target="_blank" rel="noopener" class="nav-link nav-github">
-                    <svg class="icon" viewBox="0 0 16 16" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+                    <svg class="icon" aria-hidden="true" viewBox="0 0 16 16" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
                     GitHub
                 </a>
             </div>
-            <button class="nav-toggle" id="navToggle" aria-label="Toggle menu">
+            <button class="nav-toggle" id="navToggle" aria-label="Open navigation menu" aria-controls="navLinks" aria-expanded="false">
                 <span></span><span></span><span></span>
             </button>
         </div>
     </nav>
 
+    <main id="main-content">
     <section class="enterprise-hero">
         <div class="container enterprise-hero-grid">
             <div class="enterprise-hero-copy">
                 <div class="enterprise-eyebrow">Abu Enterprise</div>
-                <h1>Turn employee AI use<br>into governed productivity.</h1>
+                <h1>AI productivity for every employee.<br>Cost, data, and risk under control.</h1>
                 <p class="enterprise-lead">
-                    <strong>Abu Enterprise adds a privately deployed control console on top of the open-source Abu desktop client.</strong>
-                    Employees keep working in Abu while the enterprise centrally manages model routing, knowledge access, policy audit, and usage cost.
+                    Centralize model access, knowledge permissions, policy audit, and usage budgets so the enterprise keeps cost, data, and risk under control.
                 </p>
                 <div class="enterprise-actions">
                     <a href="#contact" class="btn btn-primary">Book a demo</a>
@@ -146,7 +148,7 @@
             <div class="enterprise-heading">
                 <span class="enterprise-section-kicker">Product Shape</span>
                 <h2>Not another client. A governance layer on top of Abu.</h2>
-                <p>Enterprise keeps Abu's local-first desktop experience and adds private control-plane governance for configuration, audit, and rollout.</p>
+                <p>Employees use AI in the desktop client while administrators manage organization, models, knowledge, tools, and governance policies in a private console.</p>
             </div>
             <div class="product-split">
                 <article class="product-panel">
@@ -304,66 +306,71 @@
                 </div>
                 <div class="compare-row">
                     <div>AI desktop work assistant</div>
-                    <div><span class="status-chip status-available">Available</span> Chat, task execution, tool calls, Skills, and local workspace collaboration.</div>
-                    <div><span class="status-chip status-available">Inherited</span> Same desktop experience, plus enterprise binding and governance.</div>
+                    <div><span class="status-chip status-available">Available</span>Chat, task execution, tool calls, Skills, and local workspace collaboration.</div>
+                    <div><span class="status-chip status-available">Inherited</span>Same desktop experience, plus enterprise binding and governance.</div>
                 </div>
                 <div class="compare-row">
                     <div>Local-first data model</div>
-                    <div>Conversations, memory, files, and projects stay local by default.</div>
-                    <div>The client remains local-first; enterprise configuration, authorization, audit, and usage flow to the private console.</div>
+                    <div><span class="status-chip status-available">Included</span>Conversations, memory, files, and projects stay local by default.</div>
+                    <div><span class="status-chip status-available">Included</span>Enterprise configuration, authorization, audit, and usage flow to the private console.</div>
                 </div>
                 <div class="compare-row compare-group">
                     <div>Enterprise governance capabilities: added by the enterprise edition</div>
                 </div>
                 <div class="compare-row">
                     <div>Identity and login</div>
-                    <div>No enterprise login required; use locally.</div>
-                    <div>Password, Magic Link, OIDC SSO, desktop Device Flow, and pending-member approval.</div>
+                    <div><span class="status-chip status-unavailable">Not included</span>No enterprise identity, SSO, or member approval.</div>
+                    <div><span class="status-chip status-available">Included</span>Password, Magic Link, OIDC SSO, desktop Device Flow, and member approval.</div>
                 </div>
                 <div class="compare-row">
                     <div>Org, department, and role access</div>
-                    <div>No organization-level access control.</div>
-                    <div>Organization, department tree, users, roles, permission matrix, and resource ACLs.</div>
+                    <div><span class="status-chip status-unavailable">Not included</span>No organization-level access control.</div>
+                    <div><span class="status-chip status-available">Included</span>Organization, department tree, users, roles, permission matrix, and resource ACLs.</div>
                 </div>
                 <div class="compare-row">
                     <div>Model keys and gateway</div>
-                    <div>Users manage their own provider keys and bills.</div>
-                    <div>Raw provider keys are encrypted in the enterprise console; the client uses the enterprise gateway and authorized tokens.</div>
+                    <div><span class="status-chip status-available">Personal</span>Users manage their own provider keys and bills.</div>
+                    <div><span class="status-chip status-available">Centralized</span>Raw keys are encrypted in the console and calls use the enterprise gateway.</div>
                 </div>
                 <div class="compare-row">
                     <div>Budgets, rate limits, and model allowlists</div>
-                    <div>No centralized controls.</div>
-                    <div>Team budgets, RPM limits, allowed models, and usage/cost dashboards.</div>
+                    <div><span class="status-chip status-unavailable">Not included</span>No organization-level controls.</div>
+                    <div><span class="status-chip status-available">Included</span>Team budgets, RPM limits, and allowed model ranges.</div>
+                </div>
+                <div class="compare-row">
+                    <div>Usage and cost dashboards</div>
+                    <div><span class="status-chip status-unavailable">Not included</span>No centralized enterprise reporting.</div>
+                    <div><span class="status-chip status-available">Included</span>Token, call, and cost reporting by user, department, and model.</div>
                 </div>
                 <div class="compare-row">
                     <div>Enterprise knowledge bases</div>
-                    <div>Primarily local context and personal memory.</div>
-                    <div>Org, team, and personal KBs with document ingestion, hybrid retrieval, source citations, and ACLs.</div>
+                    <div><span class="status-chip status-unavailable">Not included</span>Local context and personal memory only.</div>
+                    <div><span class="status-chip status-available">Included</span>Org, team, and personal KBs with hybrid retrieval, citations, and ACLs.</div>
                 </div>
                 <div class="compare-row">
                     <div>Enterprise Skill marketplace</div>
-                    <div>Users install and maintain Skills themselves.</div>
-                    <div>Upload, scan, review, publish, authorize, verify signatures, and record client installs.</div>
+                    <div><span class="status-chip status-unavailable">Not included</span>Users can only install and maintain Skills themselves.</div>
+                    <div><span class="status-chip status-available">Included</span>Upload, scan, review, publish, authorize, verify, and record installs.</div>
                 </div>
                 <div class="compare-row">
                     <div>Enterprise MCP governance</div>
-                    <div>Users configure local MCP services themselves.</div>
-                    <div>Central registration, sync, review, authorization, and credential governance; clients can browse the catalog and retrieve authorized credentials.</div>
+                    <div><span class="status-chip status-unavailable">Not included</span>Users can only configure local MCP services themselves.</div>
+                    <div><span class="status-chip status-available">Included</span>Central registration, sync, review, authorization, and credential governance.</div>
                 </div>
                 <div class="compare-row">
                     <div>Enterprise security policies</div>
-                    <div>Depends on personal permission modes and local settings.</div>
-                    <div>Tool blacklist, tool confirmation rules, Skill/MCP blacklists, and file path allowlists/blocklists.</div>
+                    <div><span class="status-chip status-unavailable">Not included</span>Personal permission modes and local settings only.</div>
+                    <div><span class="status-chip status-available">Included</span>Tool blocks, confirmations, extension blocks, and file path policies.</div>
                 </div>
                 <div class="compare-row">
                     <div>Audit, transparency, and diagnostics</div>
-                    <div>No centralized enterprise audit.</div>
-                    <div>Admin audit, usage and cost, employee transparency pages, quality feedback, logs, and diagnostic bundles.</div>
+                    <div><span class="status-chip status-unavailable">Not included</span>No centralized enterprise audit or diagnostics.</div>
+                    <div><span class="status-chip status-available">Included</span>Admin audit, transparency, feedback, logs, and diagnostic bundles.</div>
                 </div>
                 <div class="compare-row">
                     <div>Deployment, licensing, and branding</div>
-                    <div>Download from the open-source repository, self-build, or use public releases.</div>
-                    <div>Private console, enterprise client builds, license, enterprise logo/color, and controlled delivery.</div>
+                    <div><span class="status-chip status-unavailable">Not included</span>Open-source repository and public releases only.</div>
+                    <div><span class="status-chip status-available">Included</span>Private console, enterprise builds, license, logo/color, and controlled delivery.</div>
                 </div>
             </div>
             <p class="compare-note">Note: enterprise MCP in the current client focuses on catalog browsing and authorized credential access, so organizations can centralize approved tools and credential scope first.</p>
@@ -383,12 +390,13 @@
             </div>
         </div>
     </section>
+    </main>
 
     <footer class="footer">
         <div class="container">
             <div class="footer-content">
                 <div class="footer-brand">
-                    <img src="assets/abu-avatar.png" alt="Abu" class="footer-logo">
+                    <img src="assets/abu-avatar.png" alt="Abu" class="footer-logo" width="28" height="28" loading="lazy">
                     <span>Abu</span>
                 </div>
                 <div class="footer-links">
@@ -411,29 +419,26 @@
 
         const navToggle = document.getElementById('navToggle');
         const navLinks = document.getElementById('navLinks');
+        const closeNavigation = () => {
+            navLinks.classList.remove('open');
+            navToggle.classList.remove('open');
+            navToggle.setAttribute('aria-expanded', 'false');
+            navToggle.setAttribute('aria-label', 'Open navigation menu');
+        };
         navToggle.addEventListener('click', () => {
-            navLinks.classList.toggle('open');
-            navToggle.classList.toggle('open');
+            const isOpen = navLinks.classList.toggle('open');
+            navToggle.classList.toggle('open', isOpen);
+            navToggle.setAttribute('aria-expanded', String(isOpen));
+            navToggle.setAttribute('aria-label', isOpen ? 'Close navigation menu' : 'Open navigation menu');
         });
         navLinks.querySelectorAll('.nav-link').forEach(link => {
-            link.addEventListener('click', () => {
-                navLinks.classList.remove('open');
-                navToggle.classList.remove('open');
-            });
+            link.addEventListener('click', closeNavigation);
         });
-
-        document.querySelectorAll('a[href^="#"]').forEach(anchor => {
-            anchor.addEventListener('click', function(e) {
-                const href = this.getAttribute('href');
-                if (href === '#') return;
-                const target = document.querySelector(href);
-                if (target) {
-                    e.preventDefault();
-                    const offset = navbar.offsetHeight + 16;
-                    const top = target.getBoundingClientRect().top + window.scrollY - offset;
-                    window.scrollTo({ top, behavior: 'smooth' });
-                }
-            });
+        document.addEventListener('keydown', event => {
+            if (event.key === 'Escape' && navLinks.classList.contains('open')) {
+                closeNavigation();
+                navToggle.focus();
+            }
         });
     </script>
 </body>

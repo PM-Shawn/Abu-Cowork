@@ -85,6 +85,32 @@ test('user guides teach the current primary paths', () => {
   }
 });
 
+test('installation paths start from the official website', () => {
+  const files = [
+    'website/docs/User-Guide.zh-CN.md',
+    'website/docs/User-Guide.md',
+    'website/docs/Installation-Guide.zh-CN.md',
+    'website/docs/Installation-Guide.md',
+  ];
+
+  for (const file of files) {
+    const source = read(file);
+    assert.ok(source.includes('https://myabu.cn/'), `${file} does not link to the official website`);
+    assert.ok(
+      !source.includes('https://github.com/PM-Shawn/Abu-Cowork/releases'),
+      `${file} still routes installation through GitHub Releases`,
+    );
+  }
+});
+
+test('public user guides omit experimental todo and inbox surfaces', () => {
+  const zh = read('website/docs/User-Guide.zh-CN.md');
+  const en = read('website/docs/User-Guide.md');
+
+  assert.ok(!zh.includes('待办 / 收件箱'));
+  assert.ok(!en.includes('Todos / Inbox'));
+});
+
 test('relative Markdown links in public docs resolve', () => {
   const linkPattern = /\[[^\]]+\]\(([^)]+)\)/g;
 
@@ -105,15 +131,19 @@ test('homepage uses the same current terminology', () => {
 
   assert.ok(zh.includes('<h3>连接器</h3>'));
   assert.ok(zh.includes('<span class="more-cap">项目管理</span>'));
+  assert.ok(zh.includes('点击本页顶部的下载按钮，选择对应平台的安装包'));
   assert.ok(!zh.includes('MCP 工具协议'));
   assert.ok(!zh.includes('Projects 管理'));
   assert.ok(!zh.includes('7×24 无人值守'));
+  assert.ok(!zh.includes('从 GitHub Releases 下载对应平台的安装包'));
 
   assert.ok(en.includes('<h3>Connectors</h3>'));
   assert.ok(en.includes('<span class="more-cap">Project management</span>'));
+  assert.ok(en.includes('Use the download button at the top of this page and choose your platform'));
   assert.ok(!en.includes('MCP Tool Protocol'));
   assert.ok(!en.includes('Projects management'));
   assert.ok(!en.includes('24/7 unattended operation'));
+  assert.ok(!en.includes('Grab the installer for your platform from GitHub Releases'));
 });
 
 test('homepage architecture copy reflects the Electron product', () => {

@@ -69,21 +69,21 @@
                         <svg class="dl-chevron-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
                     </button>
                     <div class="dl-menu" id="dlMenu" hidden>
-                        <a href="https://github.com/PM-Shawn/Abu-Cowork/releases/latest" id="dlMacSilicon" class="dl-menu-item" target="_blank" rel="noopener">
+                        <a href="/" id="dlMacSilicon" class="dl-menu-item" target="_blank" rel="noopener" aria-disabled="true">
                             <svg class="dl-menu-icon" viewBox="0 0 24 24" fill="currentColor"><path d="M18.71 19.5c-.83 1.24-1.71 2.45-3.05 2.47-1.34.03-1.77-.79-3.29-.79-1.53 0-2 .77-3.27.82-1.31.05-2.3-1.32-3.14-2.53C4.25 17 2.94 12.45 4.7 9.39c.87-1.52 2.43-2.48 4.12-2.51 1.28-.02 2.5.87 3.29.87.78 0 2.26-1.07 3.8-.91.65.03 2.47.26 3.64 1.98-.09.06-2.17 1.28-2.15 3.81.03 3.02 2.65 4.03 2.68 4.04-.03.07-.42 1.44-1.38 2.83M13 3.5c.73-.83 1.94-1.46 2.94-1.5.13 1.17-.34 2.35-1.04 3.19-.69.85-1.83 1.51-2.95 1.42-.15-1.15.41-2.35 1.05-3.11z"/></svg>
                             <div class="dl-menu-info">
                                 <span class="dl-menu-name">macOS Apple Silicon</span>
                                 <span class="dl-menu-sub">dmg · M 系列芯片</span>
                             </div>
                         </a>
-                        <a href="https://github.com/PM-Shawn/Abu-Cowork/releases/latest" id="dlMacIntel" class="dl-menu-item" target="_blank" rel="noopener">
+                        <a href="/" id="dlMacIntel" class="dl-menu-item" target="_blank" rel="noopener" aria-disabled="true">
                             <svg class="dl-menu-icon" viewBox="0 0 24 24" fill="currentColor"><path d="M18.71 19.5c-.83 1.24-1.71 2.45-3.05 2.47-1.34.03-1.77-.79-3.29-.79-1.53 0-2 .77-3.27.82-1.31.05-2.3-1.32-3.14-2.53C4.25 17 2.94 12.45 4.7 9.39c.87-1.52 2.43-2.48 4.12-2.51 1.28-.02 2.5.87 3.29.87.78 0 2.26-1.07 3.8-.91.65.03 2.47.26 3.64 1.98-.09.06-2.17 1.28-2.15 3.81.03 3.02 2.65 4.03 2.68 4.04-.03.07-.42 1.44-1.38 2.83M13 3.5c.73-.83 1.94-1.46 2.94-1.5.13 1.17-.34 2.35-1.04 3.19-.69.85-1.83 1.51-2.95 1.42-.15-1.15.41-2.35 1.05-3.11z"/></svg>
                             <div class="dl-menu-info">
                                 <span class="dl-menu-name">macOS Intel</span>
                                 <span class="dl-menu-sub">dmg · x86_64</span>
                             </div>
                         </a>
-                        <a href="https://github.com/PM-Shawn/Abu-Cowork/releases/latest" id="dlWindows" class="dl-menu-item" target="_blank" rel="noopener">
+                        <a href="/" id="dlWindows" class="dl-menu-item" target="_blank" rel="noopener" aria-disabled="true">
                             <svg class="dl-menu-icon" viewBox="0 0 24 24" fill="currentColor"><path d="M0 3.449L9.75 2.1v9.451H0m10.949-9.602L24 0v11.4H10.949M0 12.6h9.75v9.451L0 20.699M10.949 12.6H24V24l-12.9-1.801"/></svg>
                             <div class="dl-menu-info">
                                 <span class="dl-menu-name">Windows</span>
@@ -92,7 +92,7 @@
                         </a>
                         <div class="dl-menu-footer">
                             <span id="dlVersion"></span>
-                            <a href="https://github.com/PM-Shawn/Abu-Cowork/releases" target="_blank" rel="noopener">所有版本</a>
+                            <a href="docs.zh-CN.html#installation">安装帮助</a>
                         </div>
                     </div>
                 </div>
@@ -402,7 +402,7 @@
                 <div class="step">
                     <div class="step-number">1</div>
                     <h3>下载安装</h3>
-                    <p>从 GitHub Releases 下载对应平台的安装包</p>
+                    <p>点击本页顶部的下载按钮，选择对应平台的安装包</p>
                 </div>
                 <div class="step">
                     <div class="step-number">2</div>
@@ -500,12 +500,17 @@
     </footer>
 
     <script>
-        // Dynamic download links from OSS latest.json → GitHub API fallback
+        // Resolve release metadata on the homepage; installer downloads always use the official OSS host.
         (function () {
             const OSS_LATEST = 'https://abu-agent.oss-cn-beijing.aliyuncs.com/latest.json';
             const OSS_BASE   = 'https://abu-agent.oss-cn-beijing.aliyuncs.com';
             const GH_API     = 'https://api.github.com/repos/PM-Shawn/Abu-Cowork/releases/latest';
-            const GH_LATEST  = 'https://github.com/PM-Shawn/Abu-Cowork/releases/latest';
+            const downloadLinks = ['dlMacSilicon', 'dlMacIntel', 'dlWindows']
+                .map(id => document.getElementById(id));
+
+            downloadLinks.forEach(link => link.addEventListener('click', event => {
+                if (link.dataset.ready !== 'true') event.preventDefault();
+            }));
 
             function detectPlatform() {
                 const ua = navigator.userAgent;
@@ -518,6 +523,10 @@
                 document.getElementById('dlMacSilicon').href = urls.macSilicon;
                 document.getElementById('dlMacIntel').href   = urls.macIntel;
                 document.getElementById('dlWindows').href    = urls.windows;
+                downloadLinks.forEach(link => {
+                    link.dataset.ready = 'true';
+                    link.removeAttribute('aria-disabled');
+                });
 
                 const platform = detectPlatform();
 
@@ -539,23 +548,9 @@
                 });
             }
 
-            function applyFromGitHub(release) {
-                const tag    = release.tag_name;
-                const assets = release.assets || [];
-                // Binaries are on OSS, not GitHub — if assets empty, fall back to OSS pattern
-                if (!assets.length) {
-                    applyFromOSS(tag);
-                    return;
-                }
-                const find = (re) => {
-                    const a = assets.find(a => re.test(a.name));
-                    return a ? a.browser_download_url : GH_LATEST;
-                };
-                applyLinks(tag, {
-                    macSilicon: find(/(?:aarch64|arm64).*\.dmg$/i),
-                    macIntel:   find(/x64.*\.dmg$/i),
-                    windows:    find(/setup\.exe$/i),
-                });
+            function markDownloadUnavailable() {
+                const versionEl = document.getElementById('dlVersion');
+                if (versionEl) versionEl.textContent = '暂时无法获取下载信息，请刷新页面';
             }
 
             // ── Localized release notes (What's new), rendered from latest.json ──
@@ -601,15 +596,15 @@
                 } catch (e) { /* leave the section hidden on any error */ }
             }
 
-            // Try OSS first, fall back to GitHub API
+            // GitHub is metadata-only fallback; users still download the installer from OSS.
             fetch(OSS_LATEST, { cache: 'no-cache' })
                 .then(r => { if (!r.ok) throw new Error(); return r.json(); })
                 .then(d => { applyFromOSS(d.version); renderNotes(d); })
                 .catch(() =>
                     fetch(GH_API)
                         .then(r => { if (!r.ok) throw new Error(); return r.json(); })
-                        .then(d => applyFromGitHub(d))
-                        .catch(() => { /* both failed, links stay on GH_LATEST page */ })
+                        .then(d => applyFromOSS(d.tag_name))
+                        .catch(markDownloadUnavailable)
                 );
 
             // Dropdown toggle

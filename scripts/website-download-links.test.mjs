@@ -19,10 +19,19 @@ for (const page of pages) {
     for (const link of expectedLinks) {
       assert.ok(source.includes(link), `${page} is missing ${link}`);
     }
+    for (const id of ['dlMacSilicon', 'dlMacIntel', 'dlWindows']) {
+      assert.ok(
+        source.includes(`href="/" id="${id}"`),
+        `${page} ${id} must stay on the official website until metadata resolves`,
+      );
+    }
     assert.ok(
-      source.includes('macSilicon: find(/(?:aarch64|arm64).*\\.dmg$/i),'),
-      `${page} GitHub fallback must recognize Electron arm64 DMGs`
+      source.includes('.then(d => applyFromOSS(d.tag_name))'),
+      `${page} must convert fallback release metadata into OSS download URLs`,
     );
+    assert.ok(source.includes('.catch(markDownloadUnavailable)'), `${page} must fail closed on the homepage`);
+    assert.ok(!source.includes('browser_download_url'), `${page} still links installers through GitHub`);
+    assert.ok(!source.includes('GH_LATEST'), `${page} still has a GitHub release-page fallback`);
     assert.ok(!source.includes('Abu_${ver}'), `${page} still contains a legacy Tauri installer name`);
   });
 }

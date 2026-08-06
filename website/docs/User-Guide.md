@@ -22,9 +22,9 @@ This guide follows the current Electron client. UI pages and controls are shown 
 
 ### 1. Install Abu
 
-Download the installer that matches your operating system and CPU architecture from [GitHub Releases](https://github.com/PM-Shawn/Abu-Cowork/releases) or the Abu website. See the [Installation Guide](Installation-Guide.md) for complete steps.
+Download the installer that matches your operating system and CPU architecture from the [Abu official website](https://myabu.cn/). See the [Installation Guide](Installation-Guide.md) for complete steps.
 
-Run installers only from the official Release. Official macOS packages are signed and notarized. The current Windows package may trigger SmartScreen, so verify its source and filename before continuing.
+Run only installers obtained through the download entry on the Abu official website. Official macOS packages are signed and notarized. The current Windows package may trigger SmartScreen, so verify its source and filename before continuing.
 
 ### 2. Configure a model
 
@@ -58,7 +58,6 @@ Abu can read files, call skills or connectors, run commands, and return results 
 ### Sidebar
 
 - **New Task** starts an independent task.
-- **Todos / Inbox** appear after you enable them under **Settings → Experiments**.
 - **Toolbox** manages **Skills, Agents, and Connectors**.
 - **Automation** manages **Scheduled Tasks** and **Event Listeners**.
 - **Recents** lets you search, rename, import, export, or delete past conversations.
@@ -259,7 +258,7 @@ When reporting an issue:
 
 Abu excludes API keys and known secrets, but conversations, logs, filenames, and screenshots can still contain confidential information. Review the package manually before submission.
 
-Use **Settings → Version** to check for updates. Official releases and installers are authoritative.
+Use **Settings → Version** to check for updates. Treat the Abu official website and in-app update prompts as authoritative.
 
 ## FAQ
 

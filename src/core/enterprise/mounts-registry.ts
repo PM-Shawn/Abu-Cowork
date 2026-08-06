@@ -55,7 +55,7 @@ export interface PolicyEnforcerProps extends SlotProps {
   resource: 'tool' | 'skill' | 'mcp'
   action: string
 }
-export type AgentMarketProps = SlotProps
+export type AgentMarketProps = TabSlotProps
 export type ImConnectorProps = SlotProps
 export type CrossUserTaskProps = SlotProps
 

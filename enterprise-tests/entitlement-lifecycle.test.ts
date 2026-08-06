@@ -1,11 +1,12 @@
 import { describe, expect, it, vi } from 'vitest'
 
-const moduleFlags = vi.hoisted(() => ({ skills: false, mcp: false, kb: false }))
+const moduleFlags = vi.hoisted(() => ({ skills: false, agents: false, mcp: false, kb: false }))
 const subscription = vi.hoisted(() => ({ callback: null as null | (() => void) }))
 const calls = vi.hoisted(() => ({
   startSkills: vi.fn(), stopSkills: vi.fn(),
   startMcp: vi.fn(), stopMcp: vi.fn(),
   startKb: vi.fn(), stopKb: vi.fn(),
+  startAgents: vi.fn(), stopAgents: vi.fn(),
   reloadMcp: vi.fn(async () => undefined), disconnectMcp: vi.fn(async () => undefined),
   registerKb: vi.fn(async () => undefined), unregisterKb: vi.fn(),
 }))
@@ -14,6 +15,7 @@ vi.mock('@enterprise-modules/components/KbBrowser', () => ({}))
 vi.mock('@enterprise-modules/components/PersonalKbView', () => ({}))
 vi.mock('@enterprise-modules/components/EnterpriseSkillTab', () => ({}))
 vi.mock('@enterprise-modules/components/EnterpriseMcpTab', () => ({}))
+vi.mock('@enterprise-modules/components/EnterpriseAgentTab', () => ({}))
 vi.mock('@enterprise-modules/components/MeTransparencyView', () => ({}))
 vi.mock('@enterprise-modules/components/MigrationWizard', () => ({}))
 
@@ -37,6 +39,9 @@ vi.mock('@enterprise-modules/core/mcp/catalog-sync', () => ({
 vi.mock('@enterprise-modules/core/kb/catalog-sync', () => ({
   startKbCatalogSync: calls.startKb, stopKbCatalogSync: calls.stopKb,
 }))
+vi.mock('@enterprise-modules/core/agent/catalog-sync', () => ({
+  startAgentCatalogSync: calls.startAgents, stopAgentCatalogSync: calls.stopAgents,
+}))
 vi.mock('@enterprise-modules/core/mcp/loader', () => ({
   reloadEnterpriseMcpConnections: calls.reloadMcp,
   disconnectEnterpriseMcpConnections: calls.disconnectMcp,
@@ -53,6 +58,7 @@ describe('enterprise entitlement lifecycle', () => {
     moduleFlags.skills = true
     moduleFlags.mcp = true
     moduleFlags.kb = true
+    moduleFlags.agents = true
     await initEnterpriseModules()
 
     expect(calls.startSkills).toHaveBeenCalled()
@@ -60,10 +66,12 @@ describe('enterprise entitlement lifecycle', () => {
     expect(calls.reloadMcp).toHaveBeenCalled()
     expect(calls.startKb).toHaveBeenCalled()
     expect(calls.registerKb).toHaveBeenCalled()
+    expect(calls.startAgents).toHaveBeenCalled()
 
     moduleFlags.skills = false
     moduleFlags.mcp = false
     moduleFlags.kb = false
+    moduleFlags.agents = false
     subscription.callback?.()
 
     await vi.waitFor(() => {
@@ -72,6 +80,7 @@ describe('enterprise entitlement lifecycle', () => {
       expect(calls.disconnectMcp).toHaveBeenCalled()
       expect(calls.stopKb).toHaveBeenCalled()
       expect(calls.unregisterKb).toHaveBeenCalled()
+      expect(calls.stopAgents).toHaveBeenCalled()
     })
   })
 })

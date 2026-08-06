@@ -35,7 +35,7 @@
                 <a href="#screenshots" class="nav-link">Preview</a>
                 <a href="#use-cases" class="nav-link">Use Cases</a>
                 <a href="#tech" class="nav-link">Architecture</a>
-                <a href="enterprise.html" class="nav-link">Enterprise</a>
+                <a href="enterprise.html" class="nav-link nav-link-hot" aria-label="Enterprise, hot">Enterprise<span class="nav-hot-flame" aria-hidden="true">🔥</span></a>
                 <a href="docs.html" class="nav-link">Docs</a>
                 <a href="#social" class="nav-link">Community</a>
                 <a href="index.zh-CN.html" class="nav-lang" aria-label="切换到中文" onclick="try{localStorage.setItem('abu-lang','zh')}catch(e){}">
@@ -47,7 +47,7 @@
                     GitHub
                 </a>
             </div>
-            <button class="nav-toggle" id="navToggle" aria-label="Toggle menu">
+            <button class="nav-toggle" id="navToggle" aria-label="Open navigation menu" aria-controls="navLinks" aria-expanded="false">
                 <span></span><span></span><span></span>
             </button>
         </div>
@@ -651,17 +651,28 @@
         // Mobile nav toggle
         const navToggle = document.getElementById('navToggle');
         const navLinks = document.getElementById('navLinks');
+        const closeNavigation = () => {
+            navLinks.classList.remove('open');
+            navToggle.classList.remove('open');
+            navToggle.setAttribute('aria-expanded', 'false');
+            navToggle.setAttribute('aria-label', 'Open navigation menu');
+        };
         navToggle.addEventListener('click', () => {
-            navLinks.classList.toggle('open');
-            navToggle.classList.toggle('open');
+            const isOpen = navLinks.classList.toggle('open');
+            navToggle.classList.toggle('open', isOpen);
+            navToggle.setAttribute('aria-expanded', String(isOpen));
+            navToggle.setAttribute('aria-label', isOpen ? 'Close navigation menu' : 'Open navigation menu');
         });
 
         // Close mobile nav on link click
         navLinks.querySelectorAll('.nav-link').forEach(link => {
-            link.addEventListener('click', () => {
-                navLinks.classList.remove('open');
-                navToggle.classList.remove('open');
-            });
+            link.addEventListener('click', closeNavigation);
+        });
+        document.addEventListener('keydown', event => {
+            if (event.key === 'Escape' && navLinks.classList.contains('open')) {
+                closeNavigation();
+                navToggle.focus();
+            }
         });
 
         // Screenshot tabs

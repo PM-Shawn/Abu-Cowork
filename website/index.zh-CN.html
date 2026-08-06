@@ -35,7 +35,7 @@
                 <a href="#screenshots" class="nav-link">预览</a>
                 <a href="#use-cases" class="nav-link">场景</a>
                 <a href="#tech" class="nav-link">架构</a>
-                <a href="enterprise.zh-CN.html" class="nav-link">企业版</a>
+                <a href="enterprise.zh-CN.html" class="nav-link nav-link-hot" aria-label="企业版，热门">企业版<span class="nav-hot-flame" aria-hidden="true">🔥</span></a>
                 <a href="docs.zh-CN.html" class="nav-link">文档</a>
                 <a href="#social" class="nav-link">社区</a>
                 <a href="index.html" class="nav-lang" aria-label="Switch to English" onclick="try{localStorage.setItem('abu-lang','en')}catch(e){}">
@@ -47,7 +47,7 @@
                     GitHub
                 </a>
             </div>
-            <button class="nav-toggle" id="navToggle" aria-label="Toggle menu">
+            <button class="nav-toggle" id="navToggle" aria-label="打开导航菜单" aria-controls="navLinks" aria-expanded="false">
                 <span></span><span></span><span></span>
             </button>
         </div>
@@ -648,17 +648,28 @@
         // Mobile nav toggle
         const navToggle = document.getElementById('navToggle');
         const navLinks = document.getElementById('navLinks');
+        const closeNavigation = () => {
+            navLinks.classList.remove('open');
+            navToggle.classList.remove('open');
+            navToggle.setAttribute('aria-expanded', 'false');
+            navToggle.setAttribute('aria-label', '打开导航菜单');
+        };
         navToggle.addEventListener('click', () => {
-            navLinks.classList.toggle('open');
-            navToggle.classList.toggle('open');
+            const isOpen = navLinks.classList.toggle('open');
+            navToggle.classList.toggle('open', isOpen);
+            navToggle.setAttribute('aria-expanded', String(isOpen));
+            navToggle.setAttribute('aria-label', isOpen ? '关闭导航菜单' : '打开导航菜单');
         });
 
         // Close mobile nav on link click
         navLinks.querySelectorAll('.nav-link').forEach(link => {
-            link.addEventListener('click', () => {
-                navLinks.classList.remove('open');
-                navToggle.classList.remove('open');
-            });
+            link.addEventListener('click', closeNavigation);
+        });
+        document.addEventListener('keydown', event => {
+            if (event.key === 'Escape' && navLinks.classList.contains('open')) {
+                closeNavigation();
+                navToggle.focus();
+            }
         });
 
         // Screenshot tabs

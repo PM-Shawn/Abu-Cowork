@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect, useCallback, type ReactNode } from 'react';
+import { openUrl } from '@tauri-apps/plugin-opener';
 import { useSettingsStore } from '@/stores/settingsStore';
 import { useI18n, type LanguageSetting } from '@/i18n';
 import {
@@ -13,6 +14,7 @@ import {
   LoaderCircle,
   ChevronsUpDown,
   Pencil,
+  ExternalLink,
 } from 'lucide-react';
 import DefaultUserAvatar from '@/components/common/DefaultUserAvatar';
 import { Select } from '@/components/ui/select';
@@ -20,6 +22,7 @@ import { cn } from '@/lib/utils';
 import { APP_VERSION } from '@/utils/version';
 import { checkForUpdate, downloadAndInstallUpdate, restartApp } from '@/core/updates/checker';
 import { getUpdateProgressPresentation } from '@/core/updates/progress';
+import { getHelpDocsUrl } from '@/utils/helpDocs';
 
 /**
  * Account / preferences popover anchored to the sidebar's bottom user row.
@@ -34,7 +37,7 @@ import { getUpdateProgressPresentation } from '@/core/updates/progress';
  * reads "本地模式".
  */
 export default function AccountMenu({ onEditProfile }: { onEditProfile: () => void }) {
-  const { t } = useI18n();
+  const { t, locale } = useI18n();
   const userNickname = useSettingsStore((s) => s.userNickname);
   const userAvatar = useSettingsStore((s) => s.userAvatar);
   const theme = useSettingsStore((s) => s.theme);
@@ -42,7 +45,6 @@ export default function AccountMenu({ onEditProfile }: { onEditProfile: () => vo
   const language = useSettingsStore((s) => s.language);
   const setLanguage = useSettingsStore((s) => s.setLanguage);
   const openSystemSettings = useSettingsStore((s) => s.openSystemSettings);
-  const openGuide = useSettingsStore((s) => s.openGuide);
   const updateInfo = useSettingsStore((s) => s.updateInfo);
   const updateChecking = useSettingsStore((s) => s.updateChecking);
   const downloadProgress = useSettingsStore((s) => s.updateDownloadProgress);
@@ -104,6 +106,12 @@ export default function AccountMenu({ onEditProfile }: { onEditProfile: () => vo
       /* no-op */
     }
   }, []);
+
+  const handleOpenHelp = useCallback(() => {
+    void openUrl(getHelpDocsUrl(locale)).catch((error) => {
+      console.error('[AccountMenu] Failed to open help documentation:', error);
+    });
+  }, [locale]);
 
   const languageOptions = [
     { value: 'system', label: t.settings.followSystem },
@@ -258,7 +266,18 @@ export default function AccountMenu({ onEditProfile }: { onEditProfile: () => vo
           <div className="mx-1.5 my-1 h-px bg-[var(--abu-border)]" />
 
           {/* Help */}
-          <MenuRow icon={HelpCircle} label={t.sidebar.help} onClick={() => run(() => openGuide())} />
+          <MenuRow
+            icon={HelpCircle}
+            label={t.sidebar.help}
+            onClick={() => run(handleOpenHelp)}
+            trailing={
+              <ExternalLink
+                className="h-3.5 w-3.5 text-[var(--abu-text-muted)]"
+                strokeWidth={1.6}
+                aria-hidden="true"
+              />
+            }
+          />
 
           {/* Feedback */}
           <MenuRow

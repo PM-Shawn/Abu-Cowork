@@ -1,137 +1,80 @@
-# abu-browser-bridge vs Playwright 原理对比
+# 浏览网页
 
-## Playwright
+[English](browser-bridge-vs-playwright.md) | **中文**
 
-- 直接通过 **CDP（Chrome DevTools Protocol）** 与浏览器进程通信
-- **启动并控制一个独立的浏览器实例**（headless 或 headed）
-- 不需要安装任何浏览器扩展
-- 通信链路：`Playwright → CDP WebSocket → Browser Process`
-- 拥有浏览器的完全控制权（网络拦截、多 tab/context 隔离、浏览器生命周期管理等）
+普通用户不需要理解浏览器协议或手动配置启动命令。先按任务是否需要现有登录状态选择浏览方式。
 
-## abu-browser-bridge
+## 两种浏览方式
 
-- 通过 **Chrome Extension + 自定义 WebSocket** 协议与**用户已打开的浏览器**通信
-- 通信链路：`MCP Server → WebSocket(:9876) → Extension Service Worker → Content Script → DOM`
-- **不控制浏览器进程本身**，而是作为"外挂"注入到用户正在使用的浏览器中
-- 依赖 Chrome Extension API（`chrome.scripting.executeScript`、`chrome.tabs.sendMessage` 等）操作 DOM
+| 能力 | 适合什么任务 | 是否使用你的 Chrome 登录状态 | 是否安装扩展 |
+|---|---|---|---|
+| **阿布内置浏览器** | 搜索、阅读、点击、填表、截图、提取网页内容 | 否，使用独立会话 | 否 |
+| **我的 Chrome** | 操作已有标签页，复用 Cookie、扩展或登录状态 | 是 | 是，本地加载 Abu 随附扩展 |
 
-## 关键差异总结
+默认从 **阿布内置浏览器** 开始。只有你明确要求“使用我的 Chrome”“操作现有标签页”，或任务必须复用 Chrome 中已有的登录状态时，才使用 **我的 Chrome**。
 
-| 维度 | Playwright | abu-browser-bridge |
-|------|-----------|-------------------|
-| 协议 | CDP (DevTools Protocol) | 自定义 WebSocket + Chrome Extension API |
-| 浏览器 | 启动新实例，完全受控 | 连接用户已有浏览器，通过扩展协作 |
-| 安装 | 无需扩展 | 需要安装 Chrome Extension |
-| 登录态 | 需要自行处理 | **天然复用用户的登录态和 Cookie** |
-| 控制深度 | 极深（网络层、协议层） | DOM 层为主 |
-| 典型用途 | 自动化测试、爬虫 | AI 助手操控用户真实浏览器 |
+## 阿布内置浏览器
 
-## 为什么 abu-browser-bridge 不用 CDP？
+内置浏览器随 Electron 客户端提供，无需额外安装。直接向 Abu 描述任务，例如：
 
-abu-browser-bridge 的设计目标是**让 AI 操作用户正在使用的浏览器**——复用用户的登录态、Cookie、已打开的页面。而 Playwright/CDP 模式会启动一个"干净"的浏览器实例，无法直接访问用户的真实浏览环境。
+> 搜索 Abu 最新 Release，比较 macOS 和 Windows 安装包，并把来源链接列出来。
 
-用 Chrome Extension 作为中间层，虽然控制能力不如 CDP 深，但换来了**对用户真实浏览器会话的无缝接入**，这对 AI 助手场景更实用。
+网页会在 Abu 的工作区面板中打开。你可以看到当前页面、切换标签或接管操作。内置浏览器使用独立会话，不会读取你日常 Chrome 的 Cookie、历史记录或已登录账号。
 
-## abu-browser-bridge 架构详解
+如果网页需要登录，可以在内置浏览器中单独登录；如果必须复用 Chrome 里已有的登录状态，再连接 **我的 Chrome**。
 
-### 三大组件
+## 连接我的 Chrome
 
-1. **abu-browser-bridge**（Node.js MCP Server）— 桥接进程
-2. **abu-chrome-extension**（Chrome Extension）— 浏览器端代理
-3. **abu-browser-shared**（共享类型）— 通信协议定义
+1. 打开 **设置 → 能力**。
+2. 在 **我的 Chrome** 卡片点击 **连接 Chrome**。
+3. 点击 **打开安装窗口**。Abu 会打开 Chrome 扩展管理页和随应用提供的扩展文件夹。
+4. 在 Chrome 扩展管理页开启 **开发者模式**。
+5. 点击 **加载已解压的扩展程序**，选择整个 `browser-extension` 文件夹；不要进入目录选择单个文件。
+6. 返回 Abu，等待状态变为 **已就绪**。
 
-### 通信协议
+Chrome 出于安全要求，必须由你亲自完成开发者模式、加载扩展和文件夹选择。Abu 不会代替你绕过这些步骤。
 
-#### WebSocket 连接（端口 9876）
+## 权限与隐私
 
-- 传输：原始 TCP WebSocket `ws://127.0.0.1:9876`
-- 认证：基于 Token，通过 `Sec-WebSocket-Protocol` header 传递
-  - Bridge 启动时生成随机 48 字节 hex token
-  - Chrome Extension 通过 HTTP 端点（端口 9875）发现 token
-  - 连接握手时验证 token
-- 心跳：15 秒 ping/pong 检测死连接
-- 单连接：同一时间只允许一个扩展连接
+为了完成你明确交给 Abu 的浏览器任务，扩展需要读取和操作网站页面，并管理下载。这是能力范围较大的权限，因此：
 
-#### HTTP 发现端点（端口 9875）
+- 只在可信设备上安装；
+- 不要安装来源不明的同名扩展；
+- 只在需要现有 Chrome 会话的任务中使用；
+- 不使用时，在 Abu 中点击 **断开我的 Chrome**，并可在 Chrome 中停用或移除扩展。
 
-- 固定端口 9875 上的轻量 HTTP 服务
-- CORS 限制为 `chrome-extension://` 来源
-- 返回 JSON：`{ wsPort, pid, extensionConnected, uptime, version, token }`
+连接使用本机组件完成，不需要把本地桥接端口、Token 或启动命令填进工具箱。若某篇旧教程要求手动添加浏览器 MCP 服务，请不要继续照做。
 
-#### 消息格式
+## 任务如何选择浏览器
 
-```typescript
-// Bridge → Extension
-interface BridgeRequest {
-  id: string;              // 每个请求的唯一 ID
-  action: string;          // 动作名称（如 "click", "snapshot"）
-  payload: Record<string, unknown>;
-}
+- 普通网页任务：使用阿布内置浏览器。
+- 你明确指定现有 Chrome：使用我的 Chrome。
+- 我的 Chrome 未连接：暂停当前浏览步骤并打开连接引导。
+- 连接中断：提示重新连接，不会静默切换到内置浏览器继续操作登录态任务。
 
-// Extension → Bridge
-interface BridgeResponse {
-  id: string;              // 与请求 ID 对应
-  success: boolean;
-  data?: unknown;
-  error?: string;
-}
-```
+这样可以避免一个需要登录状态的任务在另一个浏览器会话里误操作。
 
-### 浏览器通信分层
+## 常见问题
 
-| 层级 | 通信方式 |
-|------|---------|
-| Service Worker ↔ MCP Server | WebSocket |
-| Service Worker ↔ Content Script | `chrome.tabs.sendMessage()` |
-| Content Script → DOM | 直接 DOM 操作 |
+### 找不到“浏览器桥接”设置？
 
-### 支持的 17 个工具
+当前界面不再把它作为独立设置项。请打开 **设置 → 能力**，查看 **阿布内置浏览器** 和 **我的 Chrome**。
 
-**Tab 管理**：`get_tabs`、`screenshot`、`navigate`、`get_downloads`
+### 点击“打开安装窗口”没有同时打开两个位置？
 
-**DOM 查询与观察**：`snapshot`、`extract_text`、`extract_table`、`wait_for`
+手动打开 `chrome://extensions`，再回到 Abu 的连接引导定位 `browser-extension` 文件夹。选择文件夹本身，不要选择其中的 `manifest.json` 或单个文件。
 
-**DOM 交互**：`click`、`fill`、`select`、`scroll`、`keyboard`
+### 扩展已安装，但 Abu 显示未连接？
 
-**高级操作**：`execute_js`、`start_recording`、`stop_recording`、`connection_status`
+1. 确认扩展开关已启用。
+2. 在 **设置 → 能力** 点击 **检查连接** 或 **重试**。
+3. 关闭其他正在运行的 Abu 实例后重试。
+4. 仍失败时打开 **设置 → 诊断**，检查能力和网络状态。
 
-### 元素定位策略
+### 可以把扩展发布到 Chrome 应用商店吗？
 
-支持多种定位方式：
+当前正式版使用 Abu 随应用提供的本地扩展，不通过 Chrome 应用商店分发。是否采用商店分发以后续正式发布说明为准。
 
-```typescript
-{ "css": "#button-id" }                        // CSS 选择器
-{ "text": "Click Me" }                         // 可见文本
-{ "role": "button", "name": "Submit" }         // ARIA role + label
-{ "testId": "submit-btn" }                     // data-testid 属性
-{ "ref": "e3" }                                // snapshot 返回的引用 ID
-{ "xpath": "//div[@class='x']" }               // XPath（备选）
-```
+### 内置浏览器等于 Playwright 吗？
 
-### 安全特性
-
-1. **Auth Token** — 每次启动随机生成，防止未授权连接
-2. **CORS 限制** — 发现端点仅接受 `chrome-extension://` 来源
-3. **URL 校验** — `navigate` 仅接受 `http:` / `https:` 协议
-4. **CSP 绕过** — 通过 `chrome.scripting.executeScript({ world: 'MAIN' })` 执行
-5. **选择器注入防护** — CSS 选择器使用 `CSS.escape()` 转义
-
-### 数据流示例
-
-```
-用户请求 "点击提交按钮"
-  ↓
-MCP tool: click({ tabId: 5, locator: { "text": "提交" } })
-  ↓
-Bridge 通过 WS 发送 BridgeRequest
-  ↓
-Service Worker 接收，调用 sendToContentScript()
-  ↓
-Content Script 定位元素，触发 mousedown/mouseup/click 事件
-  ↓
-Content Script 返回结果
-  ↓
-Service Worker 通过 WS 返回 BridgeResponse
-  ↓
-Bridge 将结果返回给 AI
-```
+对用户来说不需要按底层框架选择。产品只承诺两条用户路径：独立会话的 **阿布内置浏览器**，以及复用现有 Chrome 会话的 **我的 Chrome**。自动化实现可能随版本演进，任务选择原则保持不变。

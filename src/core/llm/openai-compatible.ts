@@ -380,6 +380,11 @@ export class OpenAICompatibleAdapter implements LLMAdapter {
       ...(useStreaming ? { stream_options: { include_usage: true } } : {}),
     };
 
+    if (options.gatewayMetadata) {
+      const entries = Object.entries(options.gatewayMetadata).filter(([, v]) => v !== undefined);
+      if (entries.length > 0) body.metadata = Object.fromEntries(entries);
+    }
+
     // Reasoning controls. thinkingBudget is only set for reasoning models (the
     // caller's computeReasoningParams gates it), so non-reasoning models never
     // receive thinking_budget — avoiding a 400 from providers that reject it.

@@ -40,6 +40,8 @@ export interface CompressionConfig {
   signal?: AbortSignal;
   /** Independent timeout for the summarization LLM call. Defaults to 30s. */
   timeoutMs?: number;
+  /** Enterprise-gateway request metadata; see ChatOptions.gatewayMetadata. */
+  gatewayMetadata?: ChatOptions['gatewayMetadata'];
 }
 
 /** Result of compression attempt */
@@ -120,6 +122,7 @@ ${middleText}
     baseUrl: config.baseUrl,
     maxTokens: SUMMARY_MAX_TOKENS,
     signal: combinedSignal,
+    gatewayMetadata: config.gatewayMetadata,
   };
 
   let timedOut = false;
@@ -253,6 +256,7 @@ ${middleText}
       baseUrl: config.baseUrl,
       maxTokens: SUMMARY_MAX_TOKENS,
       signal: combinedSignal,
+      gatewayMetadata: config.gatewayMetadata,
     };
 
     let timedOut = false;

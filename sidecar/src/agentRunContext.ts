@@ -76,7 +76,7 @@ export interface AgentRunContext {
    * `agentRunContext` scope, no separate `subagentRunContext.run()` wrapper,
    * so it correctly inherits the parent run's creds).
    */
-  resolvedCreds: { apiKey: string; baseUrl: string | undefined; forceOpenAiCompatible: boolean };
+  resolvedCreds: { apiKey: string; baseUrl: string | undefined; forceOpenAiCompatible: boolean; traceMetadata?: Record<string, string | undefined> };
   /** Resolved once at `agent.run` dispatch time — consumed by `shims/i18nRun.ts`'s full-dict `getLocale()`. */
   locale: string;
 }

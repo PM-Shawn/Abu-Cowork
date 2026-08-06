@@ -37,7 +37,7 @@ export interface SubagentRunContext {
    * per-call, as the real `resolveEffectiveLlmCreds` does in-process, isn't
    * done here).
    */
-  resolvedCreds: { apiKey: string; baseUrl: string | undefined; forceOpenAiCompatible: boolean };
+  resolvedCreds: { apiKey: string; baseUrl: string | undefined; forceOpenAiCompatible: boolean; traceMetadata?: Record<string, string | undefined> };
 }
 
 export const subagentRunContext = new AsyncLocalStorage<SubagentRunContext>();

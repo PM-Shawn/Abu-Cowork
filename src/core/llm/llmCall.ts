@@ -55,6 +55,7 @@ export async function llmCall(options: LLMCallOptions): Promise<LLMCallResult> {
   const effectiveCreds = resolveEffectiveLlmCreds(
     getActiveApiKey(settings),
     getActiveProvider(settings)?.baseUrl || undefined,
+    settings.activeModel.providerId,
   )
 
   // Enterprise mode always uses OpenAI-compatible adapter (LiteLLM exposes that interface).

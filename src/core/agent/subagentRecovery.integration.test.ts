@@ -50,7 +50,7 @@ const mockGetActiveProvider = vi.fn(
   }),
 );
 vi.mock('../../stores/settingsStore', () => ({
-  useSettingsStore: { getState: () => ({ agentMaxTurns: 200, maxOutputTokens: undefined, contextWindowSize: undefined }) },
+  useSettingsStore: { getState: () => ({ agentMaxTurns: 200, maxOutputTokens: undefined, contextWindowSize: undefined, activeModel: { providerId: 'p1', modelId: 'claude-opus-4-8' } }) },
 }));
 
 // subagentLoop.ts imports getActiveProvider/getActiveApiKey/resolveAgentModel

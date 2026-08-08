@@ -23,7 +23,7 @@ vi.mock('@/stores/chatStore', () => ({
 // ── Mock settingsStore ──
 
 vi.mock('@/stores/settingsStore', () => ({
-  useSettingsStore: { getState: () => ({}) },
+  useSettingsStore: { getState: () => ({ activeModel: { providerId: 'anthropic', modelId: 'claude-haiku-4-5' } }) },
   getActiveProvider: vi.fn().mockReturnValue({ apiFormat: 'anthropic-compatible', baseUrl: undefined }),
   getActiveApiKey: vi.fn().mockReturnValue('test-api-key'),
   getEffectiveModel: vi.fn().mockReturnValue('claude-haiku-4-5'),

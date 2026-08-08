@@ -417,6 +417,8 @@ are a different concern from semantic status — keep those raw with a scoped
 - **Metadata pattern**: Separate metadata interface + full interface extending it (`SkillMetadata` → `Skill extends SkillMetadata`).
 
 ### 11. Testing
+- 🔴 **本仓测试的"宪法"是 [`TESTING.md`](./TESTING.md)** —— 分层（unit/integration/contract/e2e）、确定性铁律、门禁脚本、quarantine、覆盖率阈值、契约测试全在那，写/改测试前先读它。本节只是速览摘要。
+- **门禁**：`npm run verify` 退出码为 0 才算完（= `verify:full`：lint + typecheck + 全量 + 覆盖率）；秒级自检 `npm run verify:quick`；集成 `npm run test:integration`；E2E `npm run test:e2e`（外层门禁，独立于 verify）。跨端质量底线（DoD）见 `../AGENTS.md`。
 - **Vitest** with `happy-dom` environment. Config in `vitest.config.ts`.
 - **Test files co-located** next to source: `chatStore.ts` → `chatStore.test.ts`.
 - **Global mocks** in `src/test/setup.ts`: All Tauri APIs and external SDKs are mocked globally.

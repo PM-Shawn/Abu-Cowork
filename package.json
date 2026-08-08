@@ -32,6 +32,7 @@
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
     "test:changed": "vitest run --changed HEAD~1",
+    "test:integration": "vitest run --reporter=verbose integration",
     "test:quarantine": "vitest run --config vitest.quarantine.config.ts --passWithNoTests",
     "test:e2e": "playwright test",
     "test:e2e:electron": "playwright test -c playwright.electron.config.ts",

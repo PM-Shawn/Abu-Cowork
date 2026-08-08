@@ -1,99 +1,105 @@
 /**
- * Tests for Langfuse observability module — specifically the subagent span.
+ * Tests for the trace event port (client single-source model).
  *
- * The test environment may or may not have VITE_LANGFUSE_* keys (developer
- * machines with .env.local have them, CI does not). Tests must hold in BOTH
- * states: they verify the API contracts — non-throwing, correct return shape —
- * not the enabled/disabled state itself.
+ * OSS default has no sink registered — every helper must be a free no-op.
+ * With a sink registered (enterprise builds), startGeneration must deliver a
+ * complete GenerationEvent on end(); loop/tool/subagent helpers stay no-ops
+ * (the lifecycle-hook bus is their single source).
  */
-import { describe, it, expect, afterEach } from 'vitest';
-import { startSubagentSpan, getLangfuse, isObservabilityEnabled } from './langfuse';
-import { useEnterpriseStore } from '../../stores/enterpriseStore';
+import { describe, it, expect, afterEach, vi } from 'vitest';
+import {
+  registerTraceSink,
+  isObservabilityEnabled,
+  startConversationTrace,
+  endConversationTrace,
+  startGeneration,
+  startToolSpan,
+  startSubagentSpan,
+  type GenerationEvent,
+} from './langfuse';
 
-describe('enterprise mode gate', () => {
-  afterEach(() => {
-    useEnterpriseStore.setState({ mode: { kind: 'personal' } });
-  });
+let unregister: (() => void) | null = null;
+afterEach(() => {
+  unregister?.();
+  unregister = null;
+});
 
-  // In enterprise mode client-side Langfuse writes are disabled — the gateway
-  // callback is the single trace source (2026-08-05-llm-trace-amendment).
-  it('getLangfuse returns null in enterprise mode regardless of VITE_LANGFUSE_* keys', () => {
-    useEnterpriseStore.setState({
-      mode: {
-        kind: 'enterprise',
-        binding: {} as never,
-        config: null,
-      },
-    });
-    expect(getLangfuse()).toBeNull();
+describe('no sink registered (OSS default)', () => {
+  it('all helpers no-op without throwing', () => {
     expect(isObservabilityEnabled()).toBe(false);
-  });
-
-  it('getLangfuse returns null in offline (still-enterprise) mode', () => {
-    useEnterpriseStore.setState({
-      mode: { kind: 'offline', binding: {} as never, lastConfig: null, reason: 'test' },
-    });
-    expect(getLangfuse()).toBeNull();
+    expect(() => {
+      startConversationTrace('c1', { name: 'abu', input: 'hi' });
+      startGeneration('c1', { model: 'm', input: [] }).end({ output: 'x' });
+      startToolSpan('c1', { name: 'Bash' }).end();
+      startSubagentSpan('c1', { agentName: 'Explore', task: 't' }).end();
+      startSubagentSpan(null, { agentName: 'Explore', task: 't' }).end({
+        output: 'r', tokenUsage: { input: 1, output: 2 }, toolCallCount: 3, turnCount: 2, duration: 4.5, error: 'e',
+      });
+      endConversationTrace('c1');
+    }).not.toThrow();
   });
 });
 
-describe('startSubagentSpan', () => {
-  it('always returns a handle (never null/undefined), regardless of observability state', () => {
-    const handle = startSubagentSpan(null, { agentName: 'test-agent', task: 'do something' });
-    expect(handle).toBeDefined();
-    expect(typeof handle.end).toBe('function');
-  });
+describe('with a registered sink', () => {
+  it('startGeneration delivers a full GenerationEvent on end()', () => {
+    const events: GenerationEvent[] = [];
+    unregister = registerTraceSink({ onGeneration: e => events.push(e) });
+    expect(isObservabilityEnabled()).toBe(true);
 
-  it('.end() does not throw when called with no arguments (null parentId)', () => {
-    const handle = startSubagentSpan(null, { agentName: 'test-agent', task: 'do something' });
-    expect(() => handle.end()).not.toThrow();
-  });
-
-  it('.end() does not throw with a full payload (null parentId)', () => {
-    const handle = startSubagentSpan(null, { agentName: 'test-agent', task: 'do something' });
-    expect(() =>
-      handle.end({
-        output: 'result text',
-        tokenUsage: { input: 1000, output: 500 },
-        toolCallCount: 3,
-        turnCount: 2,
-        duration: 4.5,
-      })
-    ).not.toThrow();
-  });
-
-  it('.end() does not throw when parentConversationId is a non-existent trace id', () => {
-    // A conversationId that has no entry in _traces — must fall back gracefully
-    const handle = startSubagentSpan('missing-conversation-id', {
-      agentName: 'test-agent',
-      task: 'another task',
+    const gen = startGeneration('conv-1', {
+      name: 'turn-2',
+      model: 'glm-5',
+      input: [{ role: 'user', content: 'hi' }],
+      startTime: new Date(1786000000000),
     });
-    expect(() =>
-      handle.end({
-        output: 'some output',
-        tokenUsage: { input: 200, output: 100 },
-        toolCallCount: 1,
-        turnCount: 1,
-        duration: 1.2,
-        error: 'something went wrong',
-      })
-    ).not.toThrow();
+    gen.end({
+      output: { content: 'hello' },
+      usage: { inputTokens: 10, outputTokens: 4 },
+      costUsd: 0.002,
+    });
+
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({
+      conversationId: 'conv-1',
+      name: 'turn-2',
+      model: 'glm-5',
+      input: [{ role: 'user', content: 'hi' }],
+      output: { content: 'hello' },
+      usage: { inputTokens: 10, outputTokens: 4 },
+      costUsd: 0.002,
+      startTime: 1786000000000,
+    });
+    expect(events[0].error).toBeUndefined();
+    expect(events[0].endTime).toBeGreaterThanOrEqual(events[0].startTime);
   });
 
-  it('.end() does not throw when called multiple times on the same handle', () => {
-    const handle = startSubagentSpan(null, { agentName: 'multi-end', task: 'task' });
-    expect(() => handle.end()).not.toThrow();
-    expect(() => handle.end({ output: 'second call' })).not.toThrow();
+  it('maps ERROR level to the error field', () => {
+    const events: GenerationEvent[] = [];
+    unregister = registerTraceSink({ onGeneration: e => events.push(e) });
+    startGeneration('c', { model: 'm', input: 'x' }).end({ level: 'ERROR', statusMessage: 'timeout' });
+    expect(events[0].error).toBe('timeout');
   });
 
-  it('.end() does not throw with error field set', () => {
-    const handle = startSubagentSpan(null, { agentName: 'error-agent', task: 'fail task' });
-    expect(() =>
-      handle.end({
-        output: 'Error: network timeout',
-        error: 'network timeout',
-        duration: 0.5,
-      })
-    ).not.toThrow();
+  it('a throwing sink never propagates to the call site', () => {
+    unregister = registerTraceSink({ onGeneration: () => { throw new Error('sink boom'); } });
+    expect(() => startGeneration('c', { model: 'm', input: 'x' }).end()).not.toThrow();
+  });
+
+  it('tool/subagent spans remain no-ops (hook bus is their source)', () => {
+    const onGeneration = vi.fn();
+    unregister = registerTraceSink({ onGeneration });
+    startToolSpan('c', { name: 'Bash' }).end({ output: 'r' });
+    startSubagentSpan('c', { agentName: 'a', task: 't' }).end({ output: 'r' });
+    expect(onGeneration).not.toHaveBeenCalled();
+  });
+
+  it('unregister detaches the sink; a stale unregister does not detach a newer sink', () => {
+    const first = registerTraceSink({ onGeneration: () => {} });
+    const second = vi.fn();
+    unregister = registerTraceSink({ onGeneration: second });
+    first();  // stale — must not remove the second sink
+    expect(isObservabilityEnabled()).toBe(true);
+    startGeneration('c', { model: 'm', input: 'x' }).end();
+    expect(second).toHaveBeenCalledTimes(1);
   });
 });

@@ -2,13 +2,13 @@
  * Lightweight observability helper for OpenAI-compatible adapter edge cases.
  *
  * Reports control-flow anomalies (unknown finish_reason, content_filter, etc.)
- * to Langfuse as trace events. Completely no-ops when no Langfuse key is
- * configured — the OSS default is zero-collection (CLAUDE.md privacy red line).
+ * — metadata only, never message content.
  *
- * IMPORTANT: must never include user message content — metadata only.
+ * Currently inert: the VITE_LANGFUSE_* direct-write channel it used to feed
+ * was deleted with the client single-source decision (2026-08-09, keys must
+ * never reach a client build). Call sites are kept; if anomaly telemetry is
+ * needed again, route it through the trace sink in `./langfuse.ts`.
  */
-
-import { getLangfuse } from './langfuse';
 
 export interface CompatEventPayload {
   /** Discriminator for the type of anomaly. */
@@ -27,26 +27,5 @@ export interface CompatEventPayload {
   toolCallCount?: number;
 }
 
-/**
- * Emit a compat-event observation to Langfuse.
- * No-ops silently when observability is disabled (getLangfuse() === null).
- * Never throws — best-effort fire-and-forget, matching the rest of the
- * observability module's error-handling style.
- */
-export function observeCompatEvent(evt: CompatEventPayload): void {
-  const lf = getLangfuse();
-  if (!lf) return;
-  try {
-    const trace = lf.trace({
-      name: `compat-event:${evt.kind}`,
-      metadata: {
-        kind: evt.kind,
-        ...(evt.modelId !== undefined ? { modelId: evt.modelId } : {}),
-        ...(evt.requestHost !== undefined ? { requestHost: evt.requestHost } : {}),
-        ...(evt.finishReason !== undefined ? { finishReason: evt.finishReason } : {}),
-        ...(evt.toolCallCount !== undefined ? { toolCallCount: evt.toolCallCount } : {}),
-      },
-    });
-    trace.update({ output: { observed: true } });
-  } catch { /* best-effort */ }
-}
+/** No-op (see module header). Never throws. */
+export function observeCompatEvent(_evt: CompatEventPayload): void {}

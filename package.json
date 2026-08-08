@@ -113,7 +113,6 @@
     "fflate": "^0.8.3",
     "fs-extra": "10.1.0",
     "immer": "^11.1.15",
-    "langfuse": "^3.38.20",
     "linkedom": "^0.18.13",
     "lucide-react": "^0.575.0",
     "mermaid": "^11.15.0",

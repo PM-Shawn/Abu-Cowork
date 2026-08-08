@@ -1495,10 +1495,11 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
         model: effectiveModelId,
         apiKey: effectiveCreds.apiKey,
         baseUrl: effectiveCreds.baseUrl,
-        // loop_id lets Langfuse group/filter the gateway's per-call traces by
-        // agent-loop run (V1 has no client-side span tree — see trace amendment).
+        // trace_id joins the gateway's call-level generations into the SAME
+        // Langfuse trace the client span relay writes (loop-<loopId>); loop_id
+        // stays as a filterable metadata field (trace amendment, dual channel).
         gatewayMetadata: effectiveCreds.traceMetadata
-          ? { ...effectiveCreds.traceMetadata, loop_id: loopId }
+          ? { ...effectiveCreds.traceMetadata, loop_id: loopId, trace_id: `loop-${loopId}` }
           : undefined,
         systemPrompt: effectiveSystemPrompt,
         systemPromptSections: allSections,

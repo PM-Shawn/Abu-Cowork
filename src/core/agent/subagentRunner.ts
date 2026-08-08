@@ -291,6 +291,7 @@ function buildSubagentRunParams(runId: string, options: SubagentLoopOptions): Su
   const resolvedCreds = resolveEffectiveLlmCreds(
     getActiveApiKey(settingsSnapshot),
     getActiveProvider(settingsSnapshot)?.baseUrl || undefined,
+    settingsSnapshot.activeModel.providerId,
   );
 
   const workspaceReader = options.workspaceReader ?? getWorkspaceReader();

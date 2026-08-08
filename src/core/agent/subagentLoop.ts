@@ -344,7 +344,7 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
     // selectChatAdapter routes through the sidecar transport when it's healthy
     // ('running'), else falls back to the local in-process adapter — the
     // kind-choosing condition itself is unchanged (P1-1).
-    const _enterpriseCreds = (() => { try { return resolveEffectiveLlmCreds(getActiveApiKey(settings), undefined) } catch { return null } })()
+    const _enterpriseCreds = (() => { try { return resolveEffectiveLlmCreds(getActiveApiKey(settings), undefined, settings.activeModel.providerId) } catch { return null } })()
     const adapter: LLMAdapter = selectChatAdapter(
       _enterpriseCreds?.forceOpenAiCompatible || getActiveProvider(settings)?.apiFormat === 'openai-compatible'
         ? 'openai-compatible'
@@ -457,6 +457,7 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
           const subCreds = resolveEffectiveLlmCreds(
             getActiveApiKey(settings),
             getActiveProvider(settings)?.baseUrl || undefined,
+            settings.activeModel.providerId,
           )
           const compressionResult = await compressContextIfNeeded(
             messages,
@@ -485,6 +486,7 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
       const subChatCreds = resolveEffectiveLlmCreds(
         getActiveApiKey(settings),
         getActiveProvider(settings)?.baseUrl || undefined,
+        settings.activeModel.providerId,
       )
       const chatOptions = {
         model: effectiveModelId,

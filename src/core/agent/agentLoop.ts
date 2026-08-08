@@ -592,7 +592,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
 
   // Enterprise mode bypasses personal key requirement — gateway provides the key.
   const { forceOpenAiCompatible: _startForce } = (() => {
-    try { return resolveEffectiveLlmCreds(getActiveApiKey(settingsForModel), undefined) }
+    try { return resolveEffectiveLlmCreds(getActiveApiKey(settingsForModel), undefined, settingsForModel.activeModel.providerId) }
     catch { return { forceOpenAiCompatible: false } }
   })()
   const isEnterpriseGatewayMode = _startForce
@@ -1292,6 +1292,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
             const compressionCreds = resolveEffectiveLlmCreds(
               getActiveApiKey(settingsForModel),
               getActiveProvider(settingsForModel)?.baseUrl || undefined,
+              settingsForModel.activeModel.providerId,
             )
             const compressionResult = await compressContextIfNeeded(
               historyMessages,
@@ -1405,6 +1406,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
           const compactionCreds = resolveEffectiveLlmCreds(
             getActiveApiKey(settingsForModel),
             getActiveProvider(settingsForModel)?.baseUrl || undefined,
+            settingsForModel.activeModel.providerId,
           );
           let summaryText = '';
           try {
@@ -1489,6 +1491,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
       const effectiveCreds = resolveEffectiveLlmCreds(
         getActiveApiKey(settingsForModel),
         getActiveProvider(settingsForModel)?.baseUrl || undefined,
+        settingsForModel.activeModel.providerId,
       )
 
       const chatOptions = {
@@ -1759,6 +1762,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
               const recoveryCreds = resolveEffectiveLlmCreds(
                 getActiveApiKey(settingsForModel),
                 getActiveProvider(settingsForModel)?.baseUrl || undefined,
+                settingsForModel.activeModel.providerId,
               )
               // Use boundaryView (marker-free compact view if a marker exists,
               // else raw history) so recovery never re-feeds a marker to the LLM

@@ -1367,6 +1367,7 @@ async function buildAgentRunParams(
   const resolvedCreds = resolveEffectiveLlmCreds(
     getActiveApiKey(settingsForModel),
     getActiveProvider(settingsForModel)?.baseUrl || undefined,
+    settingsForModel.activeModel.providerId,
   );
 
   let capsSnapshot: AgentRunParams['capsSnapshot'];

@@ -75,7 +75,7 @@ export function landCompactBoundaryMarker(
 function resolveSummarizeConfig(): CompressionConfig {
   const settings = getSettingsReader().getSnapshot();
   const provider = getActiveProvider(settings);
-  const creds = resolveEffectiveLlmCreds(getActiveApiKey(settings), provider?.baseUrl || undefined);
+  const creds = resolveEffectiveLlmCreds(getActiveApiKey(settings), provider?.baseUrl || undefined, settings.activeModel.providerId);
   const adapter: LLMAdapter =
     creds.forceOpenAiCompatible || provider?.apiFormat === 'openai-compatible'
       ? new OpenAICompatibleAdapter()

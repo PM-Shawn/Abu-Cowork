@@ -54,6 +54,20 @@ export function resolveEnterpriseLlm(): ResolvedEnterpriseLlm | null { return nu
 export function isEnterpriseLlmEnforced(): boolean { return false }
 export function canCallEnterpriseLlm(): boolean { return false }
 
+/** Mirror of the enterprise resolver's picker id for the org gateway group. */
+export const ENTERPRISE_GATEWAY_PROVIDER_ID = 'enterprise-gateway'
+
+export type LlmLaneKind = 'enterprise-gateway' | 'personal'
+export interface LlmLaneInfo {
+  kind: LlmLaneKind
+  providerId: string | null
+}
+/** OSS builds have no gateway — every call is the personal lane. */
+export function getCurrentLlmLaneInfo(): LlmLaneInfo {
+  return { kind: 'personal', providerId: null }
+}
+export function isPersonalLaneAllowed(): boolean { return true }
+
 /** Mirror of the enterprise resolver's trace metadata (never produced in OSS). */
 export interface EnterpriseTraceMetadata {
   trace_user_id: string
@@ -69,6 +83,7 @@ export function getEnterpriseTraceMetadata(): EnterpriseTraceMetadata | null { r
 export function resolveEffectiveLlmCreds(
   personalApiKey: string,
   personalBaseUrl: string | undefined,
+  _activeProviderId?: string,
 ): { apiKey: string; baseUrl: string | undefined; forceOpenAiCompatible: boolean; traceMetadata?: EnterpriseTraceMetadata } {
   return {
     apiKey: personalApiKey,

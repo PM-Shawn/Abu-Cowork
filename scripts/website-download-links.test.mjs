@@ -25,9 +25,17 @@ for (const page of pages) {
         `${page} ${id} must stay on the official website until metadata resolves`,
       );
     }
+    // The latest GitHub Release is the source of truth for the version; its tag
+    // is converted into OSS installer URLs. The OSS latest.json pointer stays as
+    // a fallback and likewise resolves to OSS URLs. Either way installers come
+    // from OSS, never from GitHub.
     assert.ok(
-      source.includes('.then(d => applyFromOSS(d.tag_name))'),
-      `${page} must convert fallback release metadata into OSS download URLs`,
+      source.includes('applyFromOSS(d.tag_name)'),
+      `${page} must convert the GitHub release tag into OSS download URLs`,
+    );
+    assert.ok(
+      source.includes('applyFromOSS(d.version)'),
+      `${page} must keep the OSS latest.json fallback resolving to OSS URLs`,
     );
     assert.ok(source.includes('.catch(markDownloadUnavailable)'), `${page} must fail closed on the homepage`);
     assert.ok(!source.includes('browser_download_url'), `${page} still links installers through GitHub`);

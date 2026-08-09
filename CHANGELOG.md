@@ -7,6 +7,28 @@ All notable changes to Abu are documented here. Format based on [Keep a Changelo
 > [`CHANGELOG.zh-CN.md`](./CHANGELOG.zh-CN.md); keep both in sync per release (see
 > `RELEASING.md`). Entries before v0.31.0 predate this split and remain bilingual.
 
+## v0.36.0 · 2026-08-09
+
+### ✨ Features
+
+- **Help opens the online documentation** — The Help entry in the account menu now opens the official website guide in your language (Chinese or English) instead of the older in-app guide, so the docs stay current without shipping a new app build.
+- **Unified capability center for personal and organization tools** — The toolbox brings personal and organization-provided capabilities into one place, with per-capability scope and clearer entitlement state for enterprise-managed setups.
+- **Managed Agent templates for organizations** — Enterprises can distribute managed Agent templates that appear alongside personal Agents and stay in sync through a defined extension contract.
+
+### 🐛 Fixes
+
+- **Enterprise capabilities fail closed** — Unlicensed local capabilities are retracted and entitlements are mirrored into the sidecar, so an organization member never sees a capability they are not entitled to.
+
+### Changed
+
+- **Enterprise client internals isolated behind the open-core boundary** — Gateway model integration, entitlement mirroring, and bind-flow surfaces were refactored so closed logic lives in the private module while the public repository keeps only the extension shape.
+
+### Docs
+
+- Installation and user guides now route through the website with refreshed terminology, and `AGENTS.md` became the single source of truth for repository conventions (`CLAUDE.md` is a thin `@import` shell).
+
+**Full Changelog**: https://github.com/PM-Shawn/Abu-Cowork/compare/v0.35.0...v0.36.0
+
 ## v0.35.0 · 2026-08-05
 
 ### Added

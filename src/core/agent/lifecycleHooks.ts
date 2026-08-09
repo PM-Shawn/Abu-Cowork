@@ -21,7 +21,8 @@ export type HookEventType =
   | 'subagentStart'
   | 'subagentEnd'
   | 'turnStart'
-  | 'turnEnd';
+  | 'turnEnd'
+  | 'llmGeneration';
 
 /** Base hook event */
 interface BaseHookEvent {
@@ -103,6 +104,27 @@ export interface TurnEndEvent extends BaseHookEvent {
   toolCallCount: number;
 }
 
+/** One finished LLM call, emitted by SIDECAR-run loops over the hook bridge.
+ *  Renderer-run loops report generations via the observability trace sink
+ *  (src/core/observability/langfuse.ts) instead — consumers listening to both
+ *  never see duplicates because the two paths are process-exclusive.
+ *  input/output are JSON-serialized strings, capped at the emitter so the
+ *  RPC frame stays bounded (base64 image blocks etc. get truncated). */
+export interface LlmGenerationEvent extends BaseHookEvent {
+  type: 'llmGeneration';
+  model: string;
+  name?: string;
+  input?: string;
+  output?: string;
+  usage?: { inputTokens?: number; outputTokens?: number };
+  costUsd?: number;
+  /** epoch ms */
+  startTime: number;
+  /** epoch ms */
+  endTime: number;
+  error?: string;
+}
+
 /** Union of all hook events */
 export type HookEvent =
   | PreToolCallEvent
@@ -112,7 +134,8 @@ export type HookEvent =
   | SubagentStartEvent
   | SubagentEndEvent
   | TurnStartEvent
-  | TurnEndEvent;
+  | TurnEndEvent
+  | LlmGenerationEvent;
 
 /** Hook handler function */
 export type HookHandler<T extends HookEvent = HookEvent> = (event: T) => void | Promise<void>;

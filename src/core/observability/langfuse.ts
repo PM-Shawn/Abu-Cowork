@@ -15,10 +15,10 @@
  * decision — a client build must not even contain a path that could carry
  * keys.
  *
- * Known limit (unchanged from the sidecar design's §6 "本期明确不做"):
- * sidecar-run loops replace this module with a no-op shim, so their
- * generations are not reported; their loop/tool spans still arrive via the
- * lifecycle-hook bridge.
+ * Sidecar-run loops replace this module with a shim that forwards
+ * generations over the lifecycle-hook bridge as 'llmGeneration' events
+ * instead (sidecar/src/shims/langfuseRun.ts) — the two paths are
+ * process-exclusive, so consumers listening to both never see duplicates.
  */
 
 import type { TokenUsage } from '../../types';

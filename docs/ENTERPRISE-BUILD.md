@@ -115,6 +115,21 @@ Abu-enterprise-modules/
     └── stores/                    # organization mode and enterprise catalog state
 ```
 
+## Preconfigured Server URL (default-to-enterprise packaging)
+
+Enterprise builds accept a build-time default Console URL:
+
+```bash
+VITE_ABU_ENTERPRISE_DEFAULT_SERVER=https://abu.acme.com
+```
+
+When set (per-customer packaging CI, or `.env.local` for local dev), an
+UNBOUND app auto-opens the bind flow on startup with the URL pre-filled —
+employees only complete the login step, never type a server address. An
+`abu://enroll?server=...` deep link still takes precedence, and manual
+binds from Settings pre-fill the same default. The value is a plain URL,
+not a secret; baking it into distributed bundles is fine.
+
 ## Notes for Enterprise CI
 
 Enterprise build CI requires access to the private `Abu-enterprise-modules` repo.

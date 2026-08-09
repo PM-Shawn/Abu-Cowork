@@ -6,10 +6,11 @@ import tseslint from 'typescript-eslint'
 import { defineConfig, globalIgnores } from 'eslint/config'
 
 export default defineConfig([
-  // `.wt-*/` are nested git worktrees (feature branches) checked out inside the
-  // repo. Each carries its own tsconfig, which makes typescript-eslint find
-  // multiple candidate TSConfig roots and fail to parse EVERY file. Ignore them
-  // so local `eslint .` matches a clean CI checkout (which has no worktrees).
+  // `.wt-*/` and `.claude/worktrees/` are nested git worktrees (feature branches)
+  // checked out inside the repo. Each carries its own tsconfig, which makes
+  // typescript-eslint find multiple candidate TSConfig roots and fail to parse
+  // EVERY file. Ignore them so local `eslint .` matches a clean CI checkout
+  // (which has no worktrees).
   // sidecar/index.mjs is esbuild's generated bundle output (scripts/build-sidecar.mjs)
   // — vendored dependency code inlined into it can contain eslint-disable comments
   // referencing rules this config doesn't define for non-ts/tsx files, which ESLint
@@ -23,6 +24,7 @@ export default defineConfig([
     'src-tauri',
     'coverage',
     '.wt-*/',
+    '.claude/worktrees/',
     'sidecar/index.mjs',
     'electron/browser-runtime/dist',
     'electron/chrome-bridge-runtime/dist',

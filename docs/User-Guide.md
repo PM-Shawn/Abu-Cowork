@@ -2,7 +2,7 @@
 
 **English** | [中文](User-Guide.zh-CN.md)
 
-This guide follows the current Electron client. UI pages and controls are shown in **bold**. If an older screenshot or tutorial conflicts with this guide, follow the labels in the app.
+UI pages and controls are shown in **bold**. If an older screenshot or tutorial conflicts with this guide, follow the labels in the app.
 
 ## Key terms
 

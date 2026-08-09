@@ -80,19 +80,19 @@ jobs:
         run: npm ci
 
       - name: Download Electron macOS arm64 artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: electron-mac-arm64
           path: release-input/mac-arm64
 
       - name: Download Electron macOS x64 artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: electron-mac-x64
           path: release-input/mac-x64
 
       - name: Download Electron Windows x64 artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: electron-windows-x64
           path: release-input/windows-x64
@@ -389,7 +389,7 @@ jobs:
         run: rm -f "$HOME/.ossutilconfig"
 
       - name: Upload the release audit manifest
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: electron-release-audit-${{ github.ref_name }}
           path: |

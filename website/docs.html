@@ -2,17 +2,8 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <!-- Redirect to the visitor's preferred language (browser language by default,
-         overridden by an explicit manual choice remembered in localStorage). -->
-    <script>
-    (function () {
-      try {
-        var pref = localStorage.getItem('abu-lang');
-        var target = pref || ((navigator.language || 'en').toLowerCase().indexOf('zh') === 0 ? 'zh' : 'en');
-        if (target === 'zh') location.replace('docs.zh-CN.html');
-      } catch (e) {}
-    })();
-    </script>
+    <!-- This is an explicit English URL. Language selection happens at the
+         entry point so links from the desktop app always keep its UI locale. -->
     <link rel="alternate" hreflang="en" href="docs.html">
     <link rel="alternate" hreflang="zh-CN" href="docs.zh-CN.html">
     <link rel="alternate" hreflang="x-default" href="docs.html">

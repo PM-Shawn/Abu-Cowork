@@ -2,17 +2,8 @@
 <html lang="zh-CN">
 <head>
     <meta charset="UTF-8">
-    <!-- Redirect to the visitor's preferred language (browser language by default,
-         overridden by an explicit manual choice remembered in localStorage). -->
-    <script>
-    (function () {
-      try {
-        var pref = localStorage.getItem('abu-lang');
-        var target = pref || ((navigator.language || 'en').toLowerCase().indexOf('zh') === 0 ? 'zh' : 'en');
-        if (target === 'en') location.replace('docs.html');
-      } catch (e) {}
-    })();
-    </script>
+    <!-- 这是明确的中文 URL。语言分流由入口负责，确保桌面客户端跳转后
+         始终与当前界面语言一致。 -->
     <link rel="alternate" hreflang="en" href="docs.html">
     <link rel="alternate" hreflang="zh-CN" href="docs.zh-CN.html">
     <link rel="alternate" hreflang="x-default" href="docs.html">

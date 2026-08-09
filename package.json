@@ -178,7 +178,7 @@
     ]
   },
   "overrides": {
-    "dompurify": "^3.4.12",
+    "dompurify": "^3.4.13",
     "qs": "^6.15.2",
     "ip-address": "^10.1.1",
     "@hono/node-server": "^2.0.5",

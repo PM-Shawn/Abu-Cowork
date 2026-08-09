@@ -115,20 +115,46 @@ Abu-enterprise-modules/
     └── stores/                    # organization mode and enterprise catalog state
 ```
 
-## Preconfigured Server URL (default-to-enterprise packaging)
+## Edition and Enterprise Deployment Config
 
-Enterprise builds accept a build-time default Console URL:
+**Edition parameter.** `ABU_BUILD_TARGET=enterprise|oss` selects the edition
+at PACKAGING time (Vite alias → private overlay vs stub; the dev scripts set
+it too). At STARTUP the Electron shell resolves its edition as
+`ABU_EDITION > ABU_BUILD_TARGET > presence of abu-enterprise.json > 'oss'`
+(`electron/enterpriseConfig.cjs`) and exposes it to the renderer as
+`__ABU_SHELL__.edition`.
 
-```bash
-VITE_ABU_ENTERPRISE_DEFAULT_SERVER=https://abu.acme.com
+**Enterprise deployment config file** — one build, many customers. The shell
+looks for `abu-enterprise.json` at startup, first hit wins:
+
+1. `ABU_ENTERPRISE_CONFIG=<path>` — explicit override (dev / ops)
+2. `<resources>/abu-enterprise.json` — dropped in via electron-builder
+   `extraResources` at per-customer packaging time (dev: repo root, gitignored)
+3. OS managed location (MDM/admin deploys, survives app updates):
+   macOS `/Library/Application Support/Abu/`, Windows `%ProgramData%\Abu\`,
+   Linux `/etc/abu/`
+
+Shape (see `abu-enterprise.example.json`; unknown keys are passed through
+for future use):
+
+```json
+{
+  "serverUrl": "https://abu.acme.com",
+  "lockServerUrl": false
+}
 ```
 
-When set (per-customer packaging CI, or `.env.local` for local dev), an
-UNBOUND app auto-opens the bind flow on startup with the URL pre-filled —
-employees only complete the login step, never type a server address. An
+With `serverUrl` present, an UNBOUND app auto-opens the bind flow on
+startup with the URL pre-filled — employees only complete the login step.
+`lockServerUrl: true` renders the URL read-only (org-managed devices). An
 `abu://enroll?server=...` deep link still takes precedence, and manual
-binds from Settings pre-fill the same default. The value is a plain URL,
-not a secret; baking it into distributed bundles is fine.
+binds from Settings pre-fill the same default. A malformed file logs a
+warning and is ignored (the shell never fails over deployment config).
+
+Fallback channel: the build-time env `VITE_ABU_ENTERPRISE_DEFAULT_SERVER`
+(per-customer CI bake / `.env.local` for local dev) provides the same
+default when no config file is deployed; the file wins when both exist.
+These values are plain URLs, not secrets.
 
 ## Notes for Enterprise CI
 

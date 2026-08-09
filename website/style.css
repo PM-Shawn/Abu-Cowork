@@ -436,6 +436,7 @@ button:focus-visible {
 
 .dl-menu-info {
     display: block;
+    text-align: left;
 }
 
 .dl-menu-name {

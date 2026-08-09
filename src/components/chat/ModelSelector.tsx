@@ -89,7 +89,8 @@ export function ModelSelector({ open, onClose, anchorRef }: ModelSelectorProps) 
 
   // Enterprise mode: model list is scoped to gateway's /v1/models allow list.
   const isEnterprise = useEnterpriseStore(s => s.mode.kind !== 'personal');
-  // Re-evaluated per render; policy flips arrive with the heartbeat re-render.
+  // Read once per render. The picker unmounts when closed, so every OPEN
+  // gets fresh policy; a flip while it is open shows on the next open.
   const personalLaneAllowed = isPersonalLaneAllowed();
   const enterpriseModels = useEnterpriseModels();
 

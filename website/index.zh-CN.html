@@ -91,7 +91,6 @@
                             </div>
                         </a>
                         <div class="dl-menu-footer">
-                            <span id="dlVersion"></span>
                             <a href="docs.zh-CN.html#installation">安装帮助</a>
                         </div>
                     </div>
@@ -121,7 +120,7 @@
         </div>
     </section>
 
-    <!-- 最新更新（内容来自 latest.json，加载到才显示） -->
+    <!-- 最新更新（内容来自 Electron 发布元数据，加载到才显示） -->
     <section class="whatsnew" id="whatsnew" hidden>
         <div class="container">
             <details>
@@ -502,9 +501,8 @@
     <script>
         // Resolve release metadata on the homepage; installer downloads always use the official OSS host.
         (function () {
-            const OSS_LATEST = 'https://abu-agent.oss-cn-beijing.aliyuncs.com/latest.json';
-            const OSS_BASE   = 'https://abu-agent.oss-cn-beijing.aliyuncs.com';
-            const GH_API     = 'https://api.github.com/repos/PM-Shawn/Abu-Cowork/releases/latest';
+            const OSS_BASE = 'https://abu-agent.oss-cn-beijing.aliyuncs.com';
+            const RELEASE_METADATA = `${OSS_BASE}/electron/latest-release.json`;
             const downloadLinks = ['dlMacSilicon', 'dlMacIntel', 'dlWindows']
                 .map(id => document.getElementById(id));
 
@@ -519,7 +517,7 @@
                 return 'other';
             }
 
-            function applyLinks(tag, urls) {
+            function applyLinks(urls) {
                 document.getElementById('dlMacSilicon').href = urls.macSilicon;
                 document.getElementById('dlMacIntel').href   = urls.macIntel;
                 document.getElementById('dlWindows').href    = urls.windows;
@@ -534,23 +532,20 @@
                 if (dlCommunity) {
                     dlCommunity.href = platform === 'windows' ? urls.windows : urls.macSilicon;
                 }
-
-                const versionEl = document.getElementById('dlVersion');
-                if (versionEl) versionEl.textContent = tag;
             }
 
-            function applyFromOSS(tag) {
-                const ver = tag.replace(/^v/, '');
-                applyLinks(tag, {
-                    macSilicon: `${OSS_BASE}/releases/${tag}/Abu-${ver}-mac-arm64.dmg`,
-                    macIntel:   `${OSS_BASE}/releases/${tag}/Abu-${ver}-mac-x64.dmg`,
-                    windows:    `${OSS_BASE}/releases/${tag}/Abu-${ver}-windows-x64-setup.exe`,
-                });
+            function trustedDownloadUrl(value, extension, version) {
+                const url = new URL(value);
+                const releasePath = `/releases/${version}/`;
+                if (url.origin !== OSS_BASE || !url.pathname.startsWith(releasePath) || !url.pathname.toLowerCase().endsWith(extension)) {
+                    throw new Error('Untrusted installer URL');
+                }
+                return url.href;
             }
 
             function markDownloadUnavailable() {
-                const versionEl = document.getElementById('dlVersion');
-                if (versionEl) versionEl.textContent = '暂时无法获取下载信息，请刷新页面';
+                const label = document.getElementById('dlPrimaryLabel');
+                if (label) label.textContent = '暂时无法下载';
             }
 
             // ── Localized release notes (What's new) ──
@@ -579,8 +574,6 @@
                 if (inList) html += '</ul>';
                 return html;
             }
-            const pageLocale = ((document.documentElement.lang || 'en').toLowerCase().indexOf('zh') === 0) ? 'zh' : 'en';
-
             // Paint the "What's new" panel from a version label + Markdown body.
             function paintNotes(version, notes) {
                 notes = (notes || '').trim();
@@ -594,55 +587,31 @@
                 sec.hidden = false;
             }
 
-            // Notes from the OSS latest.json shape (fallback path only).
             function renderNotes(data) {
                 try {
                     const i18n = data.notes_i18n || {};
-                    const key = pageLocale === 'zh' ? 'zh-CN' : 'en-US';
-                    paintNotes(data.version, i18n[key] || i18n['en-US'] || data.notes || '');
+                    const key = (document.documentElement.lang || 'en').toLowerCase().indexOf('zh') === 0 ? 'zh-CN' : 'en-US';
+                    paintNotes(data.version, i18n[key] || '');
                 } catch (e) { /* leave the section hidden on any error */ }
             }
 
-            // Pull the "## <tag>" section out of a CHANGELOG (e.g. CHANGELOG.zh-CN.md).
-            function changelogSection(text, tag) {
-                const escaped = tag.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-                const head = new RegExp('^##\\s+' + escaped + '(?:\\s|·|$)');
-                const out = [];
-                let capturing = false;
-                for (const line of text.split('\n')) {
-                    if (/^##\s+/.test(line)) {
-                        if (capturing) break;          // reached the next version → stop
-                        if (head.test(line)) capturing = true;  // skip the header line itself
-                        continue;
-                    }
-                    if (capturing) out.push(line);
+            function applyMetadata(data) {
+                if (data.schema_version !== 1 || !/^v\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(data.version || '')) {
+                    throw new Error('Invalid release metadata');
                 }
-                return out.join('\n').trim();
+                const downloads = data.downloads || {};
+                applyLinks({
+                    macSilicon: trustedDownloadUrl(downloads['mac-arm64']?.url, '.dmg', data.version),
+                    macIntel: trustedDownloadUrl(downloads['mac-x64']?.url, '.dmg', data.version),
+                    windows: trustedDownloadUrl(downloads['windows-x64']?.url, '.exe', data.version),
+                });
+                renderNotes(data);
             }
 
-            // English notes come from the GitHub Release body (canonical). For the
-            // Chinese page, prefer CHANGELOG.zh-CN.md at that tag, falling back to English.
-            function renderReleaseNotes(tag, englishBody) {
-                if (pageLocale !== 'zh') { paintNotes(tag, englishBody); return; }
-                const url = `https://raw.githubusercontent.com/PM-Shawn/Abu-Cowork/${encodeURIComponent(tag)}/CHANGELOG.zh-CN.md`;
-                fetch(url, { cache: 'no-cache' })
-                    .then(r => { if (!r.ok) throw new Error(); return r.text(); })
-                    .then(text => paintNotes(tag, changelogSection(text, tag) || englishBody))
-                    .catch(() => paintNotes(tag, englishBody));
-            }
-
-            // The latest published GitHub Release is the source of truth for the version
-            // and release notes; installers still download from the OSS mirror. If the
-            // GitHub API is unreachable, fall back to the (possibly older) OSS pointer.
-            fetch(GH_API, { cache: 'no-cache' })
+            fetch(RELEASE_METADATA, { cache: 'no-cache' })
                 .then(r => { if (!r.ok) throw new Error(); return r.json(); })
-                .then(d => { applyFromOSS(d.tag_name); renderReleaseNotes(d.tag_name, (d.body || '').trim()); })
-                .catch(() =>
-                    fetch(OSS_LATEST, { cache: 'no-cache' })
-                        .then(r => { if (!r.ok) throw new Error(); return r.json(); })
-                        .then(d => { applyFromOSS(d.version); renderNotes(d); })
-                        .catch(markDownloadUnavailable)
-                );
+                .then(applyMetadata)
+                .catch(markDownloadUnavailable);
 
             // Dropdown toggle
             const chevron = document.getElementById('dlChevron');

@@ -7,10 +7,14 @@ on:
   workflow_dispatch:
     inputs:
       transition_version:
-        description: 'Private candidate version; artifacts only, never published'
+        description: 'Candidate or existing stable version'
         type: string
         default: '0.34.0'
         required: true
+      website_metadata_only:
+        description: 'Repair only the website release metadata for an existing stable release'
+        type: boolean
+        default: false
       target_platform:
         description: 'Limit a private candidate build to one platform family'
         type: choice
@@ -30,6 +34,7 @@ concurrency:
 
 jobs:
   preflight:
+    if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.website_metadata_only) }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -47,16 +52,16 @@ jobs:
           npm run test:electron:release-stage
           npm run test:electron:release-workflow
 
-  # v0.34.x is the frozen bridge consumed by the hard-coded legacy Tauri
+  # v0.34.2 is the frozen bridge consumed by the hard-coded legacy Tauri
   # latest.json. Later releases keep dormant direct-install migration support
   # but do not create or publish a new Tauri transition pointer.
   electron-transition:
     needs: preflight
-    if: ${{ github.repository == 'PM-Shawn/Abu-Cowork' || github.event_name == 'workflow_dispatch' }}
+    if: ${{ (github.repository == 'PM-Shawn/Abu-Cowork' || github.event_name == 'workflow_dispatch') && !(github.event_name == 'workflow_dispatch' && inputs.website_metadata_only) }}
     uses: ./.github/workflows/electron-build.yml
     with:
       transition_version: ${{ github.event_name == 'workflow_dispatch' && inputs.transition_version || github.ref_name }}
-      transition_release: ${{ github.event_name == 'push' && startsWith(github.ref_name, 'v0.34.') }}
+      transition_release: ${{ github.event_name == 'push' && github.ref_name == 'v0.34.2' }}
       legacy_migration_support: true
       target_platform: ${{ github.event_name == 'workflow_dispatch' && inputs.target_platform || 'all' }}
     secrets: inherit
@@ -101,7 +106,7 @@ jobs:
         env:
           VERSION_TAG: ${{ github.ref_name }}
           REPOSITORY: ${{ github.repository }}
-          LEGACY_TRANSITION: ${{ startsWith(github.ref_name, 'v0.34.') }}
+          LEGACY_TRANSITION: ${{ github.ref_name == 'v0.34.2' }}
         run: |
           node scripts/stage-electron-transition-release.mjs \
             --input release-input \
@@ -115,6 +120,17 @@ jobs:
           node -e '
             const fs = require("node:fs");
             const legacy = process.env.LEGACY_TRANSITION === "true";
+            const website = JSON.parse(fs.readFileSync("release-stage/website-release.json", "utf8"));
+            const downloadKeys = ["mac-arm64", "mac-x64", "windows-x64"];
+            if (website.schema_version !== 1 || website.version !== process.env.VERSION_TAG) {
+              throw new Error("website release metadata has the wrong schema or version");
+            }
+            if (JSON.stringify(Object.keys(website.downloads).sort()) !== JSON.stringify(downloadKeys)) {
+              throw new Error("website release metadata does not contain exactly the three installers");
+            }
+            if (!website.notes_i18n?.["en-US"] || !website.notes_i18n?.["zh-CN"]) {
+              throw new Error("website release metadata does not contain both languages");
+            }
             if (!legacy) {
               if (fs.existsSync("release-stage/latest.json")) {
                 throw new Error("normal Electron release must not stage legacy latest.json");
@@ -253,21 +269,22 @@ jobs:
           done < release-stage/content-map.tsv
 
       # Every mutable release surface shares one EXIT trap. The workflow first
-      # snapshots and version-checks all three Electron feeds without writing,
-      # then publishes the feeds, GitHub Release, and (for v0.34.x only) the
-      # frozen Tauri bridge pointer. Any failure restores every surface.
+      # snapshots and version-checks all three Electron feeds plus the bilingual
+      # website pointer, then publishes them with the GitHub Release and (for
+      # v0.34.x only) the frozen Tauri bridge pointer. Any failure restores all.
       - name: Publish and verify the release visibility transaction
         env:
           BUCKET: oss://${{ secrets.OSS_BUCKET }}
           PUBLIC_BASE: https://abu-agent.oss-cn-beijing.aliyuncs.com
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          LEGACY_TRANSITION: ${{ startsWith(github.ref_name, 'v0.34.') }}
+          LEGACY_TRANSITION: ${{ github.ref_name == 'v0.34.2' }}
           VERSION: ${{ github.ref_name }}
         run: |
           set -euo pipefail
           BACKUP_DIR="$(mktemp -d)"
           VERIFY_DIR="$(mktemp -d)"
           UPDATED_POINTERS="$BACKUP_DIR/updated.tsv"
+          ALL_POINTERS="$BACKUP_DIR/all-pointers.tsv"
           PREVIOUS_LATEST="$BACKUP_DIR/latest.json"
           ROOT_VERIFY_FILE="$VERIFY_DIR/latest.json"
           : > "$UPDATED_POINTERS"
@@ -287,7 +304,7 @@ jobs:
                 gh release edit "$VERSION" --repo "${{ github.repository }}" \
                   --draft=true || rollback_failed=1
               fi
-              echo "Release transaction failed; restoring all changed Electron feeds" >&2
+              echo "Release transaction failed; restoring all changed Electron pointers" >&2
               while IFS=$'\t' read -r remote previous_state backup; do
                 test -n "$remote" || continue
                 if [ "$previous_state" = "existing" ]; then
@@ -309,14 +326,18 @@ jobs:
           }
           trap restore_release_transaction EXIT
           test "$(wc -l < release-stage/feed-pointer-map.tsv | tr -d ' ')" -eq 3
+          test "$(wc -l < release-stage/website-pointer-map.tsv | tr -d ' ')" -eq 1
+          cat release-stage/feed-pointer-map.tsv release-stage/website-pointer-map.tsv \
+            > "$ALL_POINTERS"
+          test "$(wc -l < "$ALL_POINTERS" | tr -d ' ')" -eq 4
 
-          # Snapshot and validate all current feeds before the first production
+          # Snapshot and validate all current pointers before the first production
           # write. Equal is the idempotent retry case; an older tag fails here.
           INDEX=0
           while IFS=$'\t' read -r local remote; do
             test -n "$local"
             case "$remote" in
-              electron/mac-arm64/latest-mac.yml|electron/mac-x64/latest-mac.yml|electron/win-x64/latest.yml) ;;
+              electron/mac-arm64/latest-mac.yml|electron/mac-x64/latest-mac.yml|electron/win-x64/latest.yml|electron/latest-release.json) ;;
               *)
                 echo "Unexpected Electron feed pointer target: $remote" >&2
                 exit 1
@@ -330,8 +351,13 @@ jobs:
             case "$http_status" in
               200)
                 previous_state=existing
-                node scripts/validate-electron-feed-version.mjs \
-                  --candidate "${VERSION#v}" --metadata "$backup"
+                if [ "$remote" = "electron/latest-release.json" ]; then
+                  node scripts/validate-website-release-version.mjs \
+                    --candidate "$VERSION" --metadata "$backup"
+                else
+                  node scripts/validate-electron-feed-version.mjs \
+                    --candidate "${VERSION#v}" --metadata "$backup"
+                fi
                 ;;
               404)
                 rm -f "$backup"
@@ -343,7 +369,7 @@ jobs:
                 ;;
             esac
             printf '%s\n' "$previous_state" > "$BACKUP_DIR/$INDEX.state"
-          done < release-stage/feed-pointer-map.tsv
+          done < "$ALL_POINTERS"
 
           INDEX=0
           while IFS=$'\t' read -r local remote; do
@@ -357,7 +383,13 @@ jobs:
             downloaded="$VERIFY_DIR/$INDEX"
             ossutil cp "$BUCKET/$remote" "$downloaded" -f
             cmp "release-stage/$local" "$downloaded"
-          done < release-stage/feed-pointer-map.tsv
+            if [ "$remote" = "electron/latest-release.json" ]; then
+              curl -fsS --retry 5 --retry-all-errors \
+                "$PUBLIC_BASE/$remote?release=${GITHUB_RUN_ID}" \
+                -o "$downloaded"
+              cmp "release-stage/$local" "$downloaded"
+            fi
+          done < "$ALL_POINTERS"
 
           if [ "$LEGACY_TRANSITION" = "true" ]; then
             ossutil cp "$BUCKET/latest.json" "$PREVIOUS_LATEST" -f
@@ -396,6 +428,173 @@ jobs:
             release-stage/release-manifest.json
             release-stage/content-map.tsv
             release-stage/feed-pointer-map.tsv
+            release-stage/website-pointer-map.tsv
+            release-stage/website-release.json
             release-stage/latest.json
+          if-no-files-found: error
+          retention-days: 90
+
+  repair-website-metadata:
+    if: ${{ github.repository == 'PM-Shawn/Abu-Cowork' && github.event_name == 'workflow_dispatch' && inputs.website_metadata_only }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Validate website metadata repair logic
+        run: |
+          npm run test:electron:release-workflow
+          npm run test:website
+
+      - name: Generate metadata from the existing stable release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          INPUT_VERSION: ${{ inputs.transition_version }}
+        run: |
+          set -euo pipefail
+          TAG="$INPUT_VERSION"
+          case "$TAG" in v*) ;; *) TAG="v$TAG" ;; esac
+          VER="${TAG#v}"
+          RELEASE_JSON="$RUNNER_TEMP/release.json"
+          CHANGELOG_EN="$RUNNER_TEMP/CHANGELOG.md"
+          CHANGELOG_ZH="$RUNNER_TEMP/CHANGELOG.zh-CN.md"
+          LATEST_STABLE_TAG="$(gh release list --repo "${{ github.repository }}" \
+            --exclude-drafts --exclude-pre-releases --limit 1 --order desc \
+            --json tagName --jq '.[0].tagName')"
+          test -n "$LATEST_STABLE_TAG"
+          if [ "$TAG" != "$LATEST_STABLE_TAG" ]; then
+            echo "Website metadata repair requires latest stable $LATEST_STABLE_TAG, got $TAG" >&2
+            exit 1
+          fi
+          gh release view "$TAG" --repo "${{ github.repository }}" \
+            --json isDraft,isPrerelease,assets > "$RELEASE_JSON"
+          test "$(jq -r '.isDraft' "$RELEASE_JSON")" = "false"
+          test "$(jq -r '.isPrerelease' "$RELEASE_JSON")" = "false"
+          git cat-file -e "$TAG^{commit}"
+          git show "$TAG:CHANGELOG.md" > "$CHANGELOG_EN"
+          git show "$TAG:CHANGELOG.zh-CN.md" > "$CHANGELOG_ZH"
+
+          MAC_ARM="Abu-${VER}-mac-arm64.dmg"
+          MAC_X64="Abu-${VER}-mac-x64.dmg"
+          WINDOWS="Abu-${VER}-windows-x64-setup.exe"
+          for asset in "$MAC_ARM" "$MAC_X64" "$WINDOWS"; do
+            test "$(jq --arg name "$asset" '[.assets[] | select(.name == $name)] | length' "$RELEASE_JSON")" -eq 1
+          done
+
+          node scripts/website-release-metadata.mjs \
+            --version "$TAG" \
+            --release-base-url "https://abu-agent.oss-cn-beijing.aliyuncs.com/releases/$TAG" \
+            --changelog-en "$CHANGELOG_EN" \
+            --changelog-zh "$CHANGELOG_ZH" \
+            --mac-arm64 "$MAC_ARM" \
+            --mac-x64 "$MAC_X64" \
+            --windows-x64 "$WINDOWS" \
+            --output release-stage/website-release.json
+
+          while IFS= read -r url; do
+            curl -fsSI --retry 5 --retry-all-errors "$url" >/dev/null
+          done < <(jq -r '.downloads[].url' release-stage/website-release.json)
+
+      - name: Install and configure ossutil
+        run: |
+          OSSUTIL_VERSION="1.7.19"
+          OSSUTIL_ARCHIVE="$RUNNER_TEMP/ossutil-v${OSSUTIL_VERSION}-linux-amd64.zip"
+          OSSUTIL_EXTRACT="$RUNNER_TEMP/ossutil-v${OSSUTIL_VERSION}"
+          OSSUTIL_BIN_DIR="$RUNNER_TEMP/ossutil-bin"
+          curl -fsSLo "$OSSUTIL_ARCHIVE" \
+            "https://gosspublic.alicdn.com/ossutil/${OSSUTIL_VERSION}/ossutil-v${OSSUTIL_VERSION}-linux-amd64.zip"
+          echo "dcc512e4a893e16bbee63bc769339d8e56b21744fd83c8212a9d8baf28767343  $OSSUTIL_ARCHIVE" \
+            | sha256sum -c -
+          mkdir -p "$OSSUTIL_EXTRACT" "$OSSUTIL_BIN_DIR"
+          unzip -q "$OSSUTIL_ARCHIVE" -d "$OSSUTIL_EXTRACT"
+          OSSUTIL_BIN="$(find "$OSSUTIL_EXTRACT" -type f -name ossutil -print -quit)"
+          test -n "$OSSUTIL_BIN"
+          install -m 0755 "$OSSUTIL_BIN" "$OSSUTIL_BIN_DIR/ossutil"
+          echo "$OSSUTIL_BIN_DIR" >> "$GITHUB_PATH"
+          "$OSSUTIL_BIN_DIR/ossutil" config \
+            -e "${{ secrets.OSS_REGION }}.aliyuncs.com" \
+            -i "${{ secrets.ALIYUN_ACCESS_KEY_ID }}" \
+            -k "${{ secrets.ALIYUN_ACCESS_KEY_SECRET }}"
+
+      - name: Publish and verify website metadata repair
+        env:
+          BUCKET: oss://${{ secrets.OSS_BUCKET }}
+          PUBLIC_BASE: https://abu-agent.oss-cn-beijing.aliyuncs.com
+          INPUT_VERSION: ${{ inputs.transition_version }}
+        run: |
+          set -euo pipefail
+          REMOTE="electron/latest-release.json"
+          STAGED="release-stage/website-release.json"
+          BACKUP_DIR="$(mktemp -d)"
+          BACKUP="$BACKUP_DIR/previous.json"
+          VERIFY="$BACKUP_DIR/verify.json"
+          previous_state=unknown
+          mutation_started=0
+          restore_metadata() {
+            status=$?
+            rollback_failed=0
+            if [ "$status" -ne 0 ] && [ "$mutation_started" -eq 1 ]; then
+              if [ "$previous_state" = "existing" ]; then
+                ossutil cp "$BACKUP" "$BUCKET/$REMOTE" -f \
+                  --meta "Cache-Control:no-cache" || rollback_failed=1
+              elif [ "$previous_state" = "missing" ]; then
+                ossutil rm "$BUCKET/$REMOTE" -f || rollback_failed=1
+              else
+                echo "Website metadata state was unknown after mutation started" >&2
+                rollback_failed=1
+              fi
+              if [ "$rollback_failed" -ne 0 ]; then
+                echo "Website metadata repair rollback failed" >&2
+              fi
+            fi
+            rm -rf "$BACKUP_DIR"
+            exit "$status"
+          }
+          trap restore_metadata EXIT
+
+          http_status="$(curl -sS --retry 5 --retry-all-errors \
+            -o "$BACKUP" -w '%{http_code}' \
+            "$PUBLIC_BASE/$REMOTE?backup=${GITHUB_RUN_ID}")"
+          case "$http_status" in
+            200)
+              previous_state=existing
+              node scripts/validate-website-release-version.mjs \
+                --candidate "$INPUT_VERSION" --metadata "$BACKUP"
+              ;;
+            404)
+              rm -f "$BACKUP"
+              previous_state=missing
+              ;;
+            *) echo "Could not inspect current website metadata: HTTP $http_status" >&2; exit 1 ;;
+          esac
+
+          mutation_started=1
+          ossutil cp "$STAGED" "$BUCKET/$REMOTE" -f --meta "Cache-Control:no-cache"
+          ossutil cp "$BUCKET/$REMOTE" "$VERIFY" -f
+          cmp "$STAGED" "$VERIFY"
+          curl -fsS --retry 5 --retry-all-errors \
+            "$PUBLIC_BASE/$REMOTE?repair=${GITHUB_RUN_ID}" -o "$VERIFY"
+          cmp "$STAGED" "$VERIFY"
+          trap - EXIT
+          rm -rf "$BACKUP_DIR"
+
+      - name: Remove OSS credential material
+        if: ${{ always() }}
+        run: rm -f "$HOME/.ossutilconfig"
+
+      - name: Upload website metadata repair audit
+        uses: actions/upload-artifact@v7
+        with:
+          name: website-release-metadata-${{ inputs.transition_version }}
+          path: release-stage/website-release.json
           if-no-files-found: error
           retention-days: 90

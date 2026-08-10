@@ -8,6 +8,12 @@ import { pathToFileURL } from 'node:url';
 import YAML from 'yaml';
 import semver from 'semver';
 
+import {
+  createWebsiteReleaseMetadata,
+  extractReleaseNotes,
+  WEBSITE_RELEASE_REMOTE,
+} from './website-release-metadata.mjs';
+
 function requireDirectory(directory, label) {
   if (!fs.existsSync(directory) || !fs.statSync(directory).isDirectory()) {
     throw new Error(`${label} is missing: ${directory}`);
@@ -50,19 +56,6 @@ function safeBasename(value, label) {
     throw new Error(`${label} must be a plain filename`);
   }
   return value;
-}
-
-function extractNotes(changelogPath, version) {
-  const text = fs.readFileSync(changelogPath, 'utf8');
-  const heading = /^## v([0-9A-Za-z.+-]+)[^\n]*$/gm;
-  let match;
-  while ((match = heading.exec(text)) !== null) {
-    if (semver.clean(match[1]) !== version) continue;
-    const bodyStart = heading.lastIndex;
-    const next = heading.exec(text);
-    return text.slice(bodyStart, next ? next.index : text.length).trim();
-  }
-  return '';
 }
 
 function validateUpdaterFeed({ sourceDir, metadataName, version, requiredExtension, destination }) {
@@ -153,16 +146,19 @@ export function stageRelease(options) {
       source: sources.macArm64,
       feed: feedRoots.macArm64,
       archivePattern: /^Abu_aarch64_electron-transition\.app\.tar\.gz$/,
+      downloadKey: 'mac-arm64',
     },
     {
       key: 'darwin-x86_64',
       source: sources.macX64,
       feed: feedRoots.macX64,
       archivePattern: /^Abu_x64_electron-transition\.app\.tar\.gz$/,
+      downloadKey: 'mac-x64',
     },
   ];
 
   const platforms = {};
+  const websiteDownloads = {};
   for (const config of macConfigs) {
     if (includeLegacyTransition) {
       const archive = requireUnique(
@@ -181,9 +177,13 @@ export function stageRelease(options) {
         url: `${releaseBaseUrl}/${path.basename(archive)}`,
       };
     }
-    for (const dmg of filesIn(config.source).filter((file) => file.endsWith('.dmg'))) {
-      copy(dmg, path.join(releaseAssets, path.basename(dmg)));
-    }
+    const dmg = requireUnique(
+      config.source,
+      (name) => name.endsWith('.dmg'),
+      `${config.downloadKey} DMG installer`,
+    );
+    copy(dmg, path.join(releaseAssets, path.basename(dmg)));
+    websiteDownloads[config.downloadKey] = path.basename(dmg);
     validateUpdaterFeed({
       sourceDir: config.source,
       metadataName: 'latest-mac.yml',
@@ -200,6 +200,7 @@ export function stageRelease(options) {
   );
   const windowsSignature = `${windowsInstaller}.sig`;
   copy(windowsInstaller, path.join(releaseAssets, path.basename(windowsInstaller)));
+  websiteDownloads['windows-x64'] = path.basename(windowsInstaller);
   if (includeLegacyTransition) {
     if (!fs.existsSync(windowsSignature) || !fs.readFileSync(windowsSignature, 'utf8').trim()) {
       throw new Error('Windows x64 transition signature is missing');
@@ -218,9 +219,21 @@ export function stageRelease(options) {
     destination: feedRoots.windowsX64,
   });
   const notesEn =
-    extractNotes(path.resolve(options.changelogEn), version) ||
+    extractReleaseNotes(path.resolve(options.changelogEn), version) ||
     `See https://github.com/${repo}/releases/tag/${tag}`;
-  const notesZh = extractNotes(path.resolve(options.changelogZh), version) || notesEn;
+  const notesZh = extractReleaseNotes(path.resolve(options.changelogZh), version) || notesEn;
+  const websiteRelease = createWebsiteReleaseMetadata({
+    version: tag,
+    releaseBaseUrl,
+    downloads: websiteDownloads,
+    notesEn,
+    notesZh,
+  });
+  fs.writeFileSync(
+    path.join(output, 'website-release.json'),
+    `${JSON.stringify(websiteRelease, null, 2)}\n`,
+    'utf8',
+  );
   const latest = includeLegacyTransition
     ? {
         version: tag,
@@ -270,12 +283,20 @@ export function stageRelease(options) {
       remote: 'electron/win-x64/latest.yml',
     },
   ];
+  const websitePointerRows = [
+    {
+      local: 'website-release.json',
+      remote: WEBSITE_RELEASE_REMOTE,
+    },
+  ];
   writeMap(path.join(output, 'content-map.tsv'), contentRows);
   writeMap(path.join(output, 'feed-pointer-map.tsv'), pointerRows);
+  writeMap(path.join(output, 'website-pointer-map.tsv'), websitePointerRows);
 
   const checksumRows = [
     ...contentRows,
     ...pointerRows,
+    ...websitePointerRows,
     ...(latest ? [{ local: 'latest.json', remote: 'latest.json' }] : []),
   ];
   const checksums = checksumRows
@@ -286,10 +307,18 @@ export function stageRelease(options) {
     }));
   fs.writeFileSync(
     path.join(output, 'release-manifest.json'),
-    JSON.stringify({ version: tag, includeLegacyTransition, checksums }, null, 2),
+    JSON.stringify({ version: tag, includeLegacyTransition, websiteRelease, checksums }, null, 2),
     'utf8'
   );
-  return { version: tag, latest, contentRows, pointerRows, checksums };
+  return {
+    version: tag,
+    latest,
+    websiteRelease,
+    contentRows,
+    pointerRows,
+    websitePointerRows,
+    checksums,
+  };
 }
 
 function parseArgs(argv) {

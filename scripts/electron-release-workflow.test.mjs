@@ -54,6 +54,20 @@ function createReleaseVisibilityHarness() {
     path.join(stage, 'feed-pointer-map.tsv'),
     `${pointers.map(([local, remote]) => `${local}\t${remote}`).join('\n')}\n`,
   );
+  const websitePointer = ['website-release.json', 'electron/latest-release.json'];
+  fs.writeFileSync(
+    path.join(stage, websitePointer[0]),
+    '{"schema_version":1,"version":"v0.34.0"}\n',
+  );
+  fs.mkdirSync(path.dirname(path.join(bucket, websitePointer[1])), { recursive: true });
+  fs.writeFileSync(
+    path.join(bucket, websitePointer[1]),
+    '{"schema_version":1,"version":"v0.33.0"}\n',
+  );
+  fs.writeFileSync(
+    path.join(stage, 'website-pointer-map.tsv'),
+    `${websitePointer[0]}\t${websitePointer[1]}\n`,
+  );
   fs.writeFileSync(path.join(stage, 'latest.json'), '{"version":"0.34.0"}\n');
   fs.writeFileSync(path.join(bucket, 'latest.json'), '{"version":"0.33.0"}\n');
   fs.writeFileSync(path.join(directory, 'release-state'), 'draft\n');
@@ -111,6 +125,8 @@ esac
 remote="\${remote%%[?]*}"
 if [ "$remote" = 'latest.json' ] && [ "\${FAIL_ROOT_CDN:-0}" = '1' ]; then
   printf '%s\n' '{"version":"corrupt"}' > "$output"
+elif [ "$remote" = 'electron/latest-release.json' ] && [ "\${FAIL_WEBSITE_CDN:-0}" = '1' ] && [[ "$url" == *'?release='* ]]; then
+  printf '%s\n' '{"schema_version":1,"version":"v9.9.9"}' > "$output"
 elif [ -f "$FAKE_BUCKET/$remote" ]; then
   /bin/cp "$FAKE_BUCKET/$remote" "$output"
 else
@@ -135,6 +151,9 @@ esac
   writeExecutable(bin, 'node', `#!/usr/bin/env bash
 set -euo pipefail
 if [[ "$1" == *validate-electron-feed-version.mjs ]] && [ "\${FAIL_FEED_VERSION:-0}" = '1' ]; then
+  exit 1
+fi
+if [[ "$1" == *validate-website-release-version.mjs ]] && [ "\${FAIL_WEBSITE_VERSION:-0}" = '1' ]; then
   exit 1
 fi
 exit 0
@@ -166,9 +185,111 @@ exit 0
   });
   const readSurface = () => ({
     feeds: pointers.map(([, remote]) => fs.readFileSync(path.join(bucket, remote), 'utf8')),
+    website: fs.readFileSync(path.join(bucket, websitePointer[1]), 'utf8'),
     latest: fs.readFileSync(path.join(bucket, 'latest.json'), 'utf8'),
     release: fs.readFileSync(path.join(directory, 'release-state'), 'utf8'),
   });
+  return { directory, run, readSurface };
+}
+
+function createWebsiteMetadataRepairHarness({ existing = true } = {}) {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'abu-website-repair-'));
+  const bin = path.join(directory, 'bin');
+  const bucket = path.join(directory, 'bucket');
+  const stage = path.join(directory, 'release-stage');
+  const remote = path.join(bucket, 'electron', 'latest-release.json');
+  fs.mkdirSync(bin, { recursive: true });
+  fs.mkdirSync(path.dirname(remote), { recursive: true });
+  fs.mkdirSync(stage, { recursive: true });
+  fs.writeFileSync(
+    path.join(stage, 'website-release.json'),
+    '{"schema_version":1,"version":"v0.36.0"}\n',
+  );
+  if (existing) {
+    fs.writeFileSync(remote, '{"schema_version":1,"version":"v0.35.0"}\n');
+  }
+
+  writeExecutable(bin, 'ossutil', `#!/usr/bin/env bash
+set -euo pipefail
+map_path() {
+  case "$1" in
+    oss://test-bucket/*) printf '%s/%s' "$FAKE_BUCKET" "\${1#oss://test-bucket/}" ;;
+    *) printf '%s' "$1" ;;
+  esac
+}
+case "$1" in
+  cp)
+    source_path="$(map_path "$2")"
+    target_path="$(map_path "$3")"
+    if [ "\${FAIL_RESTORE:-0}" = '1' ] && [[ "$source_path" == */previous.json ]]; then
+      exit 1
+    fi
+    /bin/mkdir -p "$(dirname "$target_path")"
+    /bin/cp "$source_path" "$target_path"
+    ;;
+  rm)
+    /bin/rm -f "$(map_path "$2")"
+    ;;
+  *) exit 2 ;;
+esac
+`);
+  writeExecutable(bin, 'curl', `#!/usr/bin/env bash
+set -euo pipefail
+output=''
+write_format=''
+url=''
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    -o) output="$2"; shift 2 ;;
+    -w) write_format="$2"; shift 2 ;;
+    -*) shift ;;
+    *) url="$1"; shift ;;
+  esac
+done
+if [[ "$url" == *'?backup='* ]] && [ "\${FAIL_SNAPSHOT:-0}" = '1' ]; then
+  printf '%s\n' '{"error":"temporary"}' > "$output"
+  [ -z "$write_format" ] || printf '500'
+  exit 0
+fi
+if [[ "$url" == *'?repair='* ]] && [ "\${FAIL_VERIFY:-0}" = '1' ]; then
+  printf '%s\n' '{"schema_version":1,"version":"v9.9.9"}' > "$output"
+  exit 0
+fi
+if [ -f "$FAKE_REMOTE" ]; then
+  /bin/cp "$FAKE_REMOTE" "$output"
+  [ -z "$write_format" ] || printf '200'
+else
+  : > "$output"
+  [ -z "$write_format" ] || printf '404'
+fi
+`);
+  writeExecutable(bin, 'node', `#!/usr/bin/env bash
+set -euo pipefail
+if [[ "$1" == *validate-website-release-version.mjs ]] && [ "\${FAIL_WEBSITE_VERSION:-0}" = '1' ]; then
+  exit 1
+fi
+exit 0
+`);
+
+  const release = workflow('release.yml');
+  const step = release.jobs['repair-website-metadata'].steps.find(
+    (candidate) => candidate.name === 'Publish and verify website metadata repair',
+  );
+  const environment = {
+    BUCKET: 'oss://test-bucket',
+    PUBLIC_BASE: 'https://example.invalid',
+    INPUT_VERSION: 'v0.36.0',
+    GITHUB_RUN_ID: '456',
+    FAKE_BUCKET: bucket,
+    FAKE_REMOTE: remote,
+    PATH: `${bin}:${process.env.PATH}`,
+  };
+  const run = (extraEnv = {}) => spawnSync('bash', ['-c', step.run], {
+    cwd: directory,
+    encoding: 'utf8',
+    env: { ...process.env, ...environment, ...extraEnv },
+  });
+  const readSurface = () => fs.existsSync(remote) ? fs.readFileSync(remote, 'utf8') : null;
   return { directory, run, readSurface };
 }
 
@@ -423,12 +544,15 @@ test('release publishes only after all Electron targets and switches root pointe
   const manualRelease = release.on.workflow_dispatch.inputs;
   assert.equal(manualRelease.transition_version.type, 'string');
   assert.equal(manualRelease.transition_version.required, true);
+  assert.equal(manualRelease.website_metadata_only.type, 'boolean');
+  assert.equal(manualRelease.website_metadata_only.default, false);
   assert.deepEqual(manualRelease.target_platform.options, ['all', 'windows', 'mac']);
   assert.equal(manualRelease.target_platform.default, 'all');
   assert.deepEqual(Object.keys(release.jobs), [
     'preflight',
     'electron-transition',
     'publish',
+    'repair-website-metadata',
   ]);
   assert.deepEqual(release.permissions, { contents: 'read' });
   assert.deepEqual(release.jobs.publish.permissions, { contents: 'write' });
@@ -447,6 +571,7 @@ test('release publishes only after all Electron targets and switches root pointe
     release.jobs['electron-transition'].if,
     /github\.repository == 'PM-Shawn\/Abu-Cowork'.*workflow_dispatch/
   );
+  assert.match(release.jobs['electron-transition'].if, /website_metadata_only/);
   assert.match(
     release.jobs.preflight.steps.find(
       (step) => step.name === 'Validate version, changelogs, and release staging logic'
@@ -455,7 +580,7 @@ test('release publishes only after all Electron targets and switches root pointe
   );
   assert.match(
     release.jobs['electron-transition'].with.transition_release,
-    /github\.event_name == 'push'.*startsWith\(github\.ref_name, 'v0\.34\.'\)/,
+    /github\.event_name == 'push'.*github\.ref_name == 'v0\.34\.2'/,
   );
   assert.equal(release.jobs['electron-transition'].with.legacy_migration_support, true);
   assert.match(
@@ -519,17 +644,88 @@ test('release publishes only after all Electron targets and switches root pointe
   );
   assert.match(releaseSource, /sha256sum -c -/);
   assert.doesNotMatch(releaseSource, /install\.sh.*sudo bash/);
-  assert.match(
-    releaseSource,
-    /Publish and verify the release visibility transaction[\s\S]*startsWith\(github\.ref_name, 'v0\.34\.'\)/,
-  );
+  assert.match(releaseSource, /LEGACY_TRANSITION: \$\{\{ github\.ref_name == 'v0\.34\.2' \}\}/);
+  assert.doesNotMatch(releaseSource, /startsWith\(github\.ref_name, 'v0\.34\.'\)/);
   assert.match(releaseSource, /normal Electron release must not stage legacy latest\.json/);
+  assert.match(releaseSource, /electron\/latest-release\.json/);
+  assert.match(releaseSource, /validate-website-release-version\.mjs/);
+  assert.match(releaseSource, /website-pointer-map\.tsv/);
   assert.match(releaseSource, /--draft=false/);
   assert.match(releaseSource, /--draft=true/);
   assert.match(
     releaseSource,
     /RELEASE_PUBLISH_ATTEMPTED=1\s+gh release edit "\$VERSION"[^\n]*--draft=false/,
   );
+
+  const repair = release.jobs['repair-website-metadata'];
+  assert.match(repair.if, /workflow_dispatch.*website_metadata_only/);
+  assert.equal(repair.needs, undefined);
+  assert.match(release.jobs.preflight.if, /website_metadata_only/);
+  assert.equal(
+    repair.steps.find((step) => step.uses === 'actions/checkout@v7').with['fetch-depth'],
+    0,
+  );
+  const generateRepair = repair.steps.find(
+    (step) => step.name === 'Generate metadata from the existing stable release',
+  );
+  assert.match(generateRepair.run, /git show "\$TAG:CHANGELOG\.md"/);
+  assert.match(generateRepair.run, /git show "\$TAG:CHANGELOG\.zh-CN\.md"/);
+  assert.match(generateRepair.run, /--exclude-drafts --exclude-pre-releases/);
+  assert.match(generateRepair.run, /"\$TAG" != "\$LATEST_STABLE_TAG"/);
+  assert.ok(
+    repair.steps.some((step) => step.name === 'Publish and verify website metadata repair'),
+  );
+});
+
+test('website metadata repair makes zero writes when the initial snapshot fails', (t) => {
+  const harness = createWebsiteMetadataRepairHarness();
+  t.after(() => fs.rmSync(harness.directory, { recursive: true, force: true }));
+  const before = harness.readSurface();
+  const result = harness.run({ FAIL_SNAPSHOT: '1' });
+  assert.notEqual(result.status, 0);
+  assert.equal(harness.readSurface(), before);
+});
+
+test('website metadata repair makes zero writes when downgrade validation fails', (t) => {
+  const harness = createWebsiteMetadataRepairHarness();
+  t.after(() => fs.rmSync(harness.directory, { recursive: true, force: true }));
+  const before = harness.readSurface();
+  const result = harness.run({ FAIL_WEBSITE_VERSION: '1' });
+  assert.notEqual(result.status, 0);
+  assert.equal(harness.readSurface(), before);
+});
+
+test('website metadata repair restores an existing pointer after verification fails', (t) => {
+  const harness = createWebsiteMetadataRepairHarness();
+  t.after(() => fs.rmSync(harness.directory, { recursive: true, force: true }));
+  const before = harness.readSurface();
+  const result = harness.run({ FAIL_VERIFY: '1' });
+  assert.notEqual(result.status, 0);
+  assert.equal(harness.readSurface(), before);
+});
+
+test('website metadata repair removes a newly created pointer after verification fails', (t) => {
+  const harness = createWebsiteMetadataRepairHarness({ existing: false });
+  t.after(() => fs.rmSync(harness.directory, { recursive: true, force: true }));
+  const result = harness.run({ FAIL_VERIFY: '1' });
+  assert.notEqual(result.status, 0);
+  assert.equal(harness.readSurface(), null, `${result.stdout}\n${result.stderr}`);
+});
+
+test('website metadata repair reports rollback failure without hiding the original failure', (t) => {
+  const harness = createWebsiteMetadataRepairHarness();
+  t.after(() => fs.rmSync(harness.directory, { recursive: true, force: true }));
+  const result = harness.run({ FAIL_VERIFY: '1', FAIL_RESTORE: '1' });
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /Website metadata repair rollback failed/);
+});
+
+test('website metadata repair publishes the staged pointer on success', (t) => {
+  const harness = createWebsiteMetadataRepairHarness();
+  t.after(() => fs.rmSync(harness.directory, { recursive: true, force: true }));
+  const result = harness.run();
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(harness.readSurface(), '{"schema_version":1,"version":"v0.36.0"}\n');
 });
 
 test('release visibility makes zero writes when a current feed is newer', (t) => {
@@ -537,6 +733,15 @@ test('release visibility makes zero writes when a current feed is newer', (t) =>
   t.after(() => fs.rmSync(harness.directory, { recursive: true, force: true }));
   const before = harness.readSurface();
   const result = harness.run({ FAIL_FEED_VERSION: '1' });
+  assert.notEqual(result.status, 0);
+  assert.deepEqual(harness.readSurface(), before);
+});
+
+test('release visibility makes zero writes when website metadata is newer', (t) => {
+  const harness = createReleaseVisibilityHarness();
+  t.after(() => fs.rmSync(harness.directory, { recursive: true, force: true }));
+  const before = harness.readSurface();
+  const result = harness.run({ FAIL_WEBSITE_VERSION: '1' });
   assert.notEqual(result.status, 0);
   assert.deepEqual(harness.readSurface(), before);
 });
@@ -559,6 +764,15 @@ test('release visibility restores feeds, root pointer, and draft after CDN verif
   assert.deepEqual(harness.readSurface(), before);
 });
 
+test('release visibility restores all pointers after website CDN verification fails', (t) => {
+  const harness = createReleaseVisibilityHarness();
+  t.after(() => fs.rmSync(harness.directory, { recursive: true, force: true }));
+  const before = harness.readSurface();
+  const result = harness.run({ FAIL_WEBSITE_CDN: '1' });
+  assert.notEqual(result.status, 0);
+  assert.deepEqual(harness.readSurface(), before);
+});
+
 test('release visibility publishes all surfaces together on success', (t) => {
   const harness = createReleaseVisibilityHarness();
   t.after(() => fs.rmSync(harness.directory, { recursive: true, force: true }));
@@ -566,8 +780,21 @@ test('release visibility publishes all surfaces together on success', (t) => {
   assert.equal(result.status, 0, result.stderr);
   const surface = harness.readSurface();
   assert.ok(surface.feeds.every((feed) => feed.includes('version: 0.34.0')));
+  assert.equal(surface.website, '{"schema_version":1,"version":"v0.34.0"}\n');
   assert.equal(surface.latest, '{"version":"0.34.0"}\n');
   assert.equal(surface.release, 'published\n');
+});
+
+test('normal Electron release leaves the frozen Tauri root pointer untouched', (t) => {
+  const harness = createReleaseVisibilityHarness();
+  t.after(() => fs.rmSync(harness.directory, { recursive: true, force: true }));
+  const before = harness.readSurface();
+  const result = harness.run({ LEGACY_TRANSITION: 'false', VERSION: 'v0.35.0' });
+  assert.equal(result.status, 0, result.stderr);
+  const surface = harness.readSurface();
+  assert.equal(surface.latest, before.latest);
+  assert.equal(surface.release, 'published\n');
+  assert.ok(surface.feeds.every((feed) => feed.includes('version: 0.34.0')));
 });
 
 test('packaged feeds are architecture-isolated', () => {

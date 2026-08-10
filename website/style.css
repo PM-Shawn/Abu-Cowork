@@ -436,6 +436,7 @@ button:focus-visible {
 
 .dl-menu-info {
     display: block;
+    text-align: left;
 }
 
 .dl-menu-name {
@@ -453,7 +454,7 @@ button:focus-visible {
 
 .dl-menu-footer {
     display: flex;
-    justify-content: space-between;
+    justify-content: flex-end;
     align-items: center;
     padding: 8px 16px;
     border-top: 1px solid var(--color-border);
@@ -2090,6 +2091,17 @@ section h2 {
     .hero-buttons {
         flex-direction: column;
         align-items: center;
+    }
+
+    .download-dropdown {
+        width: 100%;
+        max-width: 280px;
+    }
+
+    .download-dropdown .btn,
+    .download-dropdown .dl-menu {
+        width: 100%;
+        max-width: none;
     }
 
     .btn {

@@ -57,8 +57,14 @@ function fixture() {
   }
   const changelogEn = path.join(root, 'CHANGELOG.md');
   const changelogZh = path.join(root, 'CHANGELOG.zh-CN.md');
-  fs.writeFileSync(changelogEn, '# Changelog\n\n## v0.34.0\n\nEnglish notes\n');
-  fs.writeFileSync(changelogZh, '# 更新日志\n\n## v0.34.0\n\n中文说明\n');
+  fs.writeFileSync(
+    changelogEn,
+    '# Changelog\n\n## v0.35.0\n\nNew English notes\n\n## v0.34.0\n\nEnglish notes\n',
+  );
+  fs.writeFileSync(
+    changelogZh,
+    '# 更新日志\n\n## v0.35.0\n\n新版中文说明\n\n## v0.34.0\n\n中文说明\n',
+  );
   return { root, input, changelogEn, changelogZh };
 }
 
@@ -82,6 +88,18 @@ test('stages all three transition platforms and three isolated updater feeds', (
     ]);
     assert.equal(result.latest.notes, 'English notes');
     assert.equal(result.latest.notes_i18n['zh-CN'], '中文说明');
+    assert.equal(result.websiteRelease.version, 'v0.34.0');
+    assert.equal(result.websiteRelease.notes_i18n['en-US'], 'English notes');
+    assert.equal(result.websiteRelease.notes_i18n['zh-CN'], '中文说明');
+    assert.equal(
+      result.websiteRelease.downloads['mac-arm64'].url,
+      'https://example.invalid/releases/v0.34.0/Abu-0.34.0-arm64.dmg',
+    );
+    assert.ok(fs.existsSync(path.join(output, 'website-release.json')));
+    assert.match(
+      fs.readFileSync(path.join(output, 'website-pointer-map.tsv'), 'utf8'),
+      /website-release\.json\telectron\/latest-release\.json/,
+    );
     assert.ok(fs.existsSync(path.join(output, 'feeds', 'mac-arm64', 'latest-mac.yml')));
     assert.ok(fs.existsSync(path.join(output, 'feeds', 'mac-x64', 'latest-mac.yml')));
     assert.ok(fs.existsSync(path.join(output, 'feeds', 'win-x64', 'latest.yml')));
@@ -161,10 +179,18 @@ test('normal Electron releases advance only Electron feeds and omit the frozen l
       includeLegacyTransition: false,
     });
     assert.equal(result.latest, null);
+    assert.equal(result.websiteRelease.version, 'v0.35.0');
+    assert.equal(result.websiteRelease.notes_i18n['en-US'], 'New English notes');
+    assert.equal(result.websiteRelease.notes_i18n['zh-CN'], '新版中文说明');
     assert.equal(fs.existsSync(path.join(output, 'latest.json')), false);
+    assert.equal(fs.existsSync(path.join(output, 'website-release.json')), true);
     assert.equal(
       result.checksums.some((entry) => entry.remote === 'latest.json'),
       false,
+    );
+    assert.equal(
+      result.checksums.some((entry) => entry.remote === 'electron/latest-release.json'),
+      true,
     );
     assert.ok(fs.existsSync(path.join(output, 'feeds', 'mac-arm64', 'latest-mac.yml')));
     assert.ok(fs.existsSync(path.join(output, 'feeds', 'win-x64', 'latest.yml')));

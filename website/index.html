@@ -556,7 +556,7 @@
                 if (versionEl) versionEl.textContent = 'Download information is temporarily unavailable. Refresh this page.';
             }
 
-            // ── Localized release notes (What's new), rendered from latest.json ──
+            // ── Localized release notes (What's new) ──
             function escapeHtml(s) {
                 return s.replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
             }
@@ -582,31 +582,68 @@
                 if (inList) html += '</ul>';
                 return html;
             }
+            const pageLocale = ((document.documentElement.lang || 'en').toLowerCase().indexOf('zh') === 0) ? 'zh' : 'en';
+
+            // Paint the "What's new" panel from a version label + Markdown body.
+            function paintNotes(version, notes) {
+                notes = (notes || '').trim();
+                const sec = document.getElementById('whatsnew');
+                const body = document.getElementById('wnBody');
+                const ver = document.getElementById('wnVersion');
+                // Skip the "See {github-url}" fallback stub — nothing useful to render.
+                if (!sec || !body || !notes || /^see\s+https?:\/\//i.test(notes)) return;
+                body.innerHTML = renderMarkdown(notes);
+                if (ver && version) ver.textContent = version;
+                sec.hidden = false;
+            }
+
+            // Notes from the OSS latest.json shape (fallback path only).
             function renderNotes(data) {
                 try {
-                    const raw = (document.documentElement.lang || 'en').toLowerCase();
-                    const key = raw.indexOf('zh') === 0 ? 'zh-CN' : 'en-US';
                     const i18n = data.notes_i18n || {};
-                    const notes = (i18n[key] || i18n['en-US'] || data.notes || '').trim();
-                    const sec = document.getElementById('whatsnew');
-                    const body = document.getElementById('wnBody');
-                    const ver = document.getElementById('wnVersion');
-                    // Skip the "See {github-url}" fallback stub — nothing useful to render.
-                    if (!sec || !body || !notes || /^see\s+https?:\/\//i.test(notes)) return;
-                    body.innerHTML = renderMarkdown(notes);
-                    if (ver && data.version) ver.textContent = data.version;
-                    sec.hidden = false;
+                    const key = pageLocale === 'zh' ? 'zh-CN' : 'en-US';
+                    paintNotes(data.version, i18n[key] || i18n['en-US'] || data.notes || '');
                 } catch (e) { /* leave the section hidden on any error */ }
             }
 
-            // GitHub is metadata-only fallback; users still download the installer from OSS.
-            fetch(OSS_LATEST, { cache: 'no-cache' })
+            // Pull the "## <tag>" section out of a CHANGELOG (e.g. CHANGELOG.zh-CN.md).
+            function changelogSection(text, tag) {
+                const escaped = tag.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+                const head = new RegExp('^##\\s+' + escaped + '(?:\\s|·|$)');
+                const out = [];
+                let capturing = false;
+                for (const line of text.split('\n')) {
+                    if (/^##\s+/.test(line)) {
+                        if (capturing) break;          // reached the next version → stop
+                        if (head.test(line)) capturing = true;  // skip the header line itself
+                        continue;
+                    }
+                    if (capturing) out.push(line);
+                }
+                return out.join('\n').trim();
+            }
+
+            // English notes come from the GitHub Release body (canonical). For the
+            // Chinese page, prefer CHANGELOG.zh-CN.md at that tag, falling back to English.
+            function renderReleaseNotes(tag, englishBody) {
+                if (pageLocale !== 'zh') { paintNotes(tag, englishBody); return; }
+                const url = `https://raw.githubusercontent.com/PM-Shawn/Abu-Cowork/${encodeURIComponent(tag)}/CHANGELOG.zh-CN.md`;
+                fetch(url, { cache: 'no-cache' })
+                    .then(r => { if (!r.ok) throw new Error(); return r.text(); })
+                    .then(text => paintNotes(tag, changelogSection(text, tag) || englishBody))
+                    .catch(() => paintNotes(tag, englishBody));
+            }
+
+            // The latest published GitHub Release is the source of truth for the version
+            // and release notes; installers still download from the OSS mirror. If the
+            // GitHub API is unreachable, fall back to the (possibly older) OSS pointer.
+            fetch(GH_API, { cache: 'no-cache' })
                 .then(r => { if (!r.ok) throw new Error(); return r.json(); })
-                .then(d => { applyFromOSS(d.version); renderNotes(d); })
+                .then(d => { applyFromOSS(d.tag_name); renderReleaseNotes(d.tag_name, (d.body || '').trim()); })
                 .catch(() =>
-                    fetch(GH_API)
+                    fetch(OSS_LATEST, { cache: 'no-cache' })
                         .then(r => { if (!r.ok) throw new Error(); return r.json(); })
-                        .then(d => applyFromOSS(d.tag_name))
+                        .then(d => { applyFromOSS(d.version); renderNotes(d); })
                         .catch(markDownloadUnavailable)
                 );
 

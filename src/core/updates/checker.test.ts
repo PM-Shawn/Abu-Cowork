@@ -21,7 +21,7 @@ vi.mock('@tauri-apps/plugin-updater', () => ({
 // Silence the notice bus (irrelevant to notes-language behavior).
 vi.mock('@/core/notice/bus', () => ({ publish: vi.fn() }));
 
-import { checkForUpdate, downloadAndInstallUpdate } from './checker';
+import { checkForUpdate, downloadAndInstallUpdate, refreshUpdateNotes } from './checker';
 import { publish } from '@/core/notice/bus';
 
 // The updater's own body — last-resort fallback (empty in real Electron builds).
@@ -148,6 +148,26 @@ describe('checkForUpdate — locale-aware release notes', () => {
     const info = await checkForUpdate(true);
 
     expect(info?.releaseNotes).toBe(ZH_NOTES);
+  });
+
+  it('refreshUpdateNotes re-picks the pending update notes for the new locale', async () => {
+    mockFeed({ schema_version: 1, version: 'v0.32.0', notes_i18n: { 'zh-CN': ZH_NOTES, 'en-US': EN_META } });
+    mockLocale = 'zh-CN';
+    await checkForUpdate(true);
+    expect(useSettingsStore.getState().updateInfo?.releaseNotes).toBe(ZH_NOTES);
+
+    // User switches language, then the panel re-picks the notes.
+    mockLocale = 'en-US';
+    await refreshUpdateNotes();
+    expect(useSettingsStore.getState().updateInfo?.releaseNotes).toBe(EN_META);
+    // Version is locale-independent and must be preserved.
+    expect(useSettingsStore.getState().updateInfo?.version).toBe('0.32.0');
+  });
+
+  it('refreshUpdateNotes is a no-op when there is no pending update result', async () => {
+    useSettingsStore.setState({ updateInfo: null });
+    await refreshUpdateNotes();
+    expect(useSettingsStore.getState().updateInfo).toBeNull();
   });
 });
 

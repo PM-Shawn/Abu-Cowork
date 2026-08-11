@@ -6,6 +6,17 @@
 interface AbuShellBridge {
   mainSupervisesSidecar?: boolean;
   getPathForFile?: (file: File) => string;
+  recordRuntimeEvent?: (event: Record<string, unknown>) => void;
+  getRuntimeDiagnostics?: () => Promise<ElectronRuntimeDiagnostics>;
+}
+
+export interface ElectronRuntimeDiagnostics {
+  schemaVersion: 1;
+  appSessionId: string;
+  recentEventLines: string[];
+  pendingRpcs: Array<Record<string, unknown>>;
+  sidecars: Array<Record<string, unknown>>;
+  pendingRendererAcks: Array<Record<string, unknown>>;
 }
 
 function getRuntime() {
@@ -27,4 +38,20 @@ export function hasElectronCommandHost(): boolean {
 /** Resolve the native path of a user-provided Electron File object. */
 export function getElectronFilePath(file: File): string {
   return getRuntime().__ABU_SHELL__?.getPathForFile?.(file) ?? '';
+}
+
+export function recordElectronRuntimeEvent(event: Record<string, unknown>): void {
+  try {
+    getRuntime().__ABU_SHELL__?.recordRuntimeEvent?.(event);
+  } catch {
+    // Observability is best-effort and must never change product behavior.
+  }
+}
+
+export async function getElectronRuntimeDiagnostics(): Promise<ElectronRuntimeDiagnostics | null> {
+  try {
+    return await getRuntime().__ABU_SHELL__?.getRuntimeDiagnostics?.() ?? null;
+  } catch {
+    return null;
+  }
 }

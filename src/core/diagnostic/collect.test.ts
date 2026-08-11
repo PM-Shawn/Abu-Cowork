@@ -9,6 +9,7 @@ import {
 import { useChatStore } from '@/stores/chatStore';
 import type { Conversation, Message } from '@/types';
 import type { ConversationMeta } from '@/core/session/conversationStorage';
+import { clearLogs, createLogger } from '@/core/logging/logger';
 
 function makeMessage(id: string, text: string): Message {
   return { id, role: 'user', content: text, timestamp: Date.now() };
@@ -79,6 +80,7 @@ describe('collectBundleFiles (诊断反馈增强 L1: 多选对话 / 描述 / 截
   const convC = makeConversation('conv-cccccccc-3333');
 
   beforeEach(() => {
+    clearLogs();
     useChatStore.setState({
       conversations: { [convA.id]: convA, [convB.id]: convB, [convC.id]: convC },
       conversationIndex: {
@@ -88,6 +90,11 @@ describe('collectBundleFiles (诊断反馈增强 L1: 多选对话 / 描述 / 截
       },
       activeConversationId: convA.id,
     });
+  });
+
+  afterEach(() => {
+    delete (globalThis as typeof globalThis & { __ABU_SHELL__?: unknown }).__ABU_SHELL__;
+    clearLogs();
   });
 
   it('embeds only the selected conversations when conversationIds has multiple entries', async () => {
@@ -154,6 +161,50 @@ describe('collectBundleFiles (诊断反馈增强 L1: 多选对话 / 描述 / 截
     const entry = files['feedback/screenshots/01.png'];
     expect(entry).toBeInstanceOf(Uint8Array);
     expect(entry).toEqual(bytes);
+  });
+
+  it('automatically includes cross-process runtime state without changing feedback options', async () => {
+    const runtime = globalThis as typeof globalThis & {
+      __ABU_SHELL__?: {
+        getRuntimeDiagnostics: () => Promise<{
+          schemaVersion: 1;
+          appSessionId: string;
+          recentEventLines: string[];
+          pendingRpcs: Array<Record<string, unknown>>;
+          sidecars: Array<Record<string, unknown>>;
+          pendingRendererAcks: Array<Record<string, unknown>>;
+        }>;
+      };
+    };
+    runtime.__ABU_SHELL__ = {
+      getRuntimeDiagnostics: async () => ({
+        schemaVersion: 1,
+        appSessionId: 'session-1',
+        recentEventLines: [JSON.stringify({ event: 'main.rpc_write_started', runId: 'run-1' })],
+        pendingRpcs: [{ runId: 'run-1', method: 'agent.run', durationMs: 321 }],
+        sidecars: [{ sidecarId: 'abu-sidecar', stage: 'running' }],
+        pendingRendererAcks: [{ runId: 'run-1', durationMs: 12 }],
+      }),
+    };
+
+    const { files } = await collectBundleFiles({ includeRawText: true, conversationIds: [] });
+
+    expect(files['runtime/renderer-trace.json']).toBeDefined();
+    expect(files['logs/main-runtime.jsonl']).toContain('main.rpc_write_started');
+    expect(files['runtime/pending-rpcs.json']).toContain('agent.run');
+    expect(files['runtime/sidecar-state.json']).toContain('abu-sidecar');
+    expect(files['runtime/sidecar-state.json']).toContain('pendingRendererAcks');
+  });
+
+  it('redacts secrets from existing runtime logs before adding them to the bundle', async () => {
+    const secret = `sk-${'a'.repeat(32)}`;
+    createLogger('diagnostic-test').info('provider failed', { detail: secret });
+
+    const { files } = await collectBundleFiles({ includeRawText: true, conversationIds: [] });
+    const runtimeLog = String(files['logs/runtime.jsonl']);
+
+    expect(runtimeLog).not.toContain(secret);
+    expect(runtimeLog).toContain('[REDACTED]');
   });
 
   it('applies the message cap independently per conversation', async () => {

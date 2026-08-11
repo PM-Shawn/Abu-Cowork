@@ -24,6 +24,12 @@ vi.mock('./rpcClient', () => ({
   setPreRequestFlush: (...a: unknown[]) => setPreRequestFlushMock(...a),
 }));
 
+const traceSidecarRuntimeEventMock = vi.hoisted(() => vi.fn());
+vi.mock('./runtimeTrace', () => ({
+  traceSidecarRuntimeEvent: (...a: unknown[]) => traceSidecarRuntimeEventMock(...a),
+  sidecarRuntimeErrorType: (error: unknown) => error instanceof Error ? error.name.toLowerCase() : typeof error,
+}));
+
 // P1-3d-1 — mock the local tool registry so this file's dispatch tests
 // (see "local tool dispatch (P1-3d-1)" below) exercise ONLY
 // createReverseToolInvoker.executeAnyTool's branch/fallback wiring, not any
@@ -122,6 +128,7 @@ describe('agentLoopHost', () => {
     sendRequestMock.mockReset();
     mockSendRequest();
     sendNotificationMock.mockReset();
+    traceSidecarRuntimeEventMock.mockReset();
     hasLocalToolMock.mockReset();
     hasLocalToolMock.mockReturnValue(false);
     isLocalToolReadOnlyMock.mockReset();
@@ -170,6 +177,18 @@ describe('agentLoopHost', () => {
       const result = await handleAgentRun(params);
       expect(result).toEqual({ reason: 'completed' });
       expect(sawContextRunId).toBe(params.runId);
+      expect(traceSidecarRuntimeEventMock).toHaveBeenCalledWith(
+        'sidecar.agent_run_received',
+        expect.objectContaining({ runId: params.runId, stage: 'params_parsed' }),
+      );
+      expect(traceSidecarRuntimeEventMock).toHaveBeenCalledWith(
+        'sidecar.agent_loop_started',
+        expect.objectContaining({ runId: params.runId, stage: 'agent_loop_running' }),
+      );
+      expect(traceSidecarRuntimeEventMock).toHaveBeenCalledWith(
+        'sidecar.agent_run_completed',
+        expect.objectContaining({ runId: params.runId, outcome: 'completed' }),
+      );
     });
 
     it('passes settingsReader/orchestration/options through AgentLoopOptions', async () => {
@@ -266,6 +285,10 @@ describe('agentLoopHost', () => {
       expect(capturedSignal?.aborted).toBe(false);
       expect(handleAgentAbort({ runId: 'abort-me' })).toEqual({ accepted: true, state: 'aborting' });
       expect(capturedSignal?.aborted).toBe(true);
+      expect(traceSidecarRuntimeEventMock).toHaveBeenCalledWith(
+        'sidecar.agent_abort_ack_ready',
+        expect.objectContaining({ runId: 'abort-me', outcome: 'success' }),
+      );
       releaseLoop?.();
       const result = await runPromise;
       expect(result).toEqual({ reason: 'aborted' });
@@ -457,6 +480,10 @@ describe('agentLoopHost', () => {
       const lastBatch = deltaCalls[deltaCalls.length - 1][1] as { runId: string; frames: unknown[] };
       expect(lastBatch.runId).toBe('flush-me');
       expect(lastBatch.frames.length).toBeGreaterThan(0);
+      expect(traceSidecarRuntimeEventMock).toHaveBeenCalledWith(
+        'sidecar.agent_delta_emitted',
+        expect.objectContaining({ runId: 'flush-me', frameCount: lastBatch.frames.length }),
+      );
     });
   });
 

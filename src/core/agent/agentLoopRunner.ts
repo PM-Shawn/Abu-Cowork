@@ -99,10 +99,18 @@ import { getAuthorizedWritablePaths } from '../tools/pathSafety';
 import { showSandboxBlockedToast } from '../sandbox/recovery';
 import { ensureBuiltinBrowserRuntime } from '../browser/builtinBrowserRuntime';
 import { matchesToolPattern } from '../skill/toolFilter';
+import {
+  finishRuntimeRun,
+  markRuntimeRunStage,
+  runtimeErrorType,
+  startRuntimeRun,
+  traceRuntimeEvent,
+} from '../observability/runtimeTrace';
 
 const logger = createLogger('agent-loop-runner');
 const AGENT_ABORT_ACK_TIMEOUT_MS = 1_000;
 const AGENT_ABORT_FORCE_FINALIZE_MS = 5_000;
+const AGENT_FIRST_FRAME_STALL_MS = 30_000;
 
 // ── Run-session registry ────────────────────────────────────────────────
 //
@@ -188,6 +196,10 @@ export interface RunSession {
   abortWatchdog?: ReturnType<typeof setTimeout>;
   abortRequestPromise?: Promise<void>;
   abortFinalizationPromise?: Promise<void>;
+  runtimeStartedAt?: number;
+  firstDeltaAt?: number;
+  firstFrameApplied?: boolean;
+  firstFrameStallTimer?: ReturnType<typeof setTimeout>;
 }
 
 const sessions = new Map<string, RunSession>();
@@ -231,6 +243,7 @@ registerSidecarRunPredicate(isConversationRunningInSidecar);
 export function unregisterRunSession(runId: string): void {
   const session = sessions.get(runId);
   if (session?.abortWatchdog) clearTimeout(session.abortWatchdog);
+  if (session?.firstFrameStallTimer) clearTimeout(session.firstFrameStallTimer);
   sessions.delete(runId);
   if (sessions.size === 0) uninstallPushEmitters();
 }
@@ -248,6 +261,7 @@ export function __getActiveRunSessionCount(): number {
 export function __resetAgentLoopRunnerForTests(): void {
   for (const session of sessions.values()) {
     if (session.abortWatchdog) clearTimeout(session.abortWatchdog);
+    if (session.firstFrameStallTimer) clearTimeout(session.firstFrameStallTimer);
   }
   sessions.clear();
   uninstallPushEmitters();
@@ -259,17 +273,49 @@ export function __resetAgentLoopRunnerForTests(): void {
 function handleAgentDelta(rawParams: unknown): void {
   const params = rawParams as { runId?: unknown; frames?: unknown } | null;
   if (!params || typeof params.runId !== 'string' || !Array.isArray(params.frames)) return;
+  const frames = params.frames as PortFrame[];
   const session = sessions.get(params.runId);
   if (!session) return; // unknown/already-finished runId — silent drop
   if (session.dropFrames) return; // terminal fence — late frames from an aborted run are stale
   // P1-3B-3B fallback discipline: the first frame observed for this run is
   // an already-committed, observable side effect (text/thinking streamed to
   // the real chatStore) — see RunSession.committed's doc.
-  if (params.frames.length > 0) session.committed = true;
+  const isFirstDelta = frames.length > 0 && session.firstDeltaAt === undefined;
+  if (frames.length > 0) {
+    session.committed = true;
+    if (isFirstDelta) {
+      session.firstDeltaAt = Date.now();
+      if (session.firstFrameStallTimer) {
+        clearTimeout(session.firstFrameStallTimer);
+        session.firstFrameStallTimer = undefined;
+      }
+      markRuntimeRunStage(params.runId, 'first_delta_received');
+      traceRuntimeEvent('renderer.agent_delta_received', {
+        runId: params.runId,
+        frameCount: frames.length,
+        stage: 'first_delta_received',
+        durationMs: session.runtimeStartedAt === undefined
+          ? undefined
+          : session.firstDeltaAt - session.runtimeStartedAt,
+      });
+    }
+  }
   const previous = session.frameApplyTail ?? Promise.resolve();
   session.frameApplyTail = previous.then(() =>
-    applyDeltaFrames(params.frames as PortFrame[])
-  ).catch((err: unknown) => {
+    applyDeltaFrames(frames)
+  ).then(() => {
+    if (!isFirstDelta || session.firstFrameApplied) return;
+    session.firstFrameApplied = true;
+    markRuntimeRunStage(params.runId as string, 'first_frame_applied');
+    traceRuntimeEvent('renderer.first_frame_applied', {
+      runId: params.runId as string,
+      frameCount: frames.length,
+      stage: 'first_frame_applied',
+      firstFrameMs: session.runtimeStartedAt === undefined
+        ? undefined
+        : Date.now() - session.runtimeStartedAt,
+    });
+  }).catch((err: unknown) => {
     logger.warn('applyDeltaFrames threw', { runId: params.runId, error: err instanceof Error ? err.message : String(err) });
   });
 }
@@ -406,7 +452,19 @@ async function finalizeAbortedRun(session: RunSession, source: 'ack' | 'watchdog
 function requestSidecarRunAbort(session: RunSession): Promise<void> {
   if (session.abortRequestPromise) return session.abortRequestPromise;
   session.abortRequested = true;
+  markRuntimeRunStage(session.runId ?? session.loopId, 'abort_requested');
+  traceRuntimeEvent('renderer.agent_abort_requested', {
+    runId: session.runId ?? session.loopId,
+    method: 'agent.abort',
+    stage: 'abort_requested',
+  });
   session.abortWatchdog = setTimeout(() => {
+    traceRuntimeEvent('renderer.agent_abort_watchdog_fired', {
+      runId: session.runId ?? session.loopId,
+      method: 'agent.abort',
+      stage: 'force_finalize',
+      outcome: 'stalled',
+    });
     void finalizeAbortedRun(session, 'watchdog');
   }, AGENT_ABORT_FORCE_FINALIZE_MS);
 
@@ -415,6 +473,12 @@ function requestSidecarRunAbort(session: RunSession): Promise<void> {
     { runId: session.runId },
     AGENT_ABORT_ACK_TIMEOUT_MS,
   ).then(async () => {
+    traceRuntimeEvent('renderer.agent_abort_ack_received', {
+      runId: session.runId ?? session.loopId,
+      method: 'agent.abort',
+      stage: 'ack_received',
+      outcome: 'success',
+    });
     await finalizeAbortedRun(session, 'ack');
   }).catch((err: unknown) => {
     // A pre-ACK timeout is not terminal: the sidecar may have received and
@@ -423,6 +487,13 @@ function requestSidecarRunAbort(session: RunSession): Promise<void> {
       runId: session.runId,
       conversationId: session.conversationId,
       error: err instanceof Error ? err.message : String(err),
+    });
+    traceRuntimeEvent('renderer.agent_abort_ack_timeout', {
+      runId: session.runId ?? session.loopId,
+      method: 'agent.abort',
+      stage: 'waiting_for_watchdog',
+      outcome: 'stalled',
+      errorType: runtimeErrorType(err),
     });
   });
   return session.abortRequestPromise;
@@ -1524,6 +1595,13 @@ export async function runAgentLoopDispatched(
 
   const runId = generateRunId();
   logger.debug('agent-loop path selected', { path: 'sidecar', runId, conversationId });
+  const runtimeStartedAt = Date.now();
+  startRuntimeRun(runId, 'sidecar', 'building_params');
+  traceRuntimeEvent('renderer.agent_params_build_started', {
+    runId,
+    executionPath: 'sidecar',
+    stage: 'building_params',
+  });
 
   // Skill inline commands execute while the system prompt is precomputed, so
   // the task controller and visible conversation ownership must exist before
@@ -1544,22 +1622,54 @@ export async function runAgentLoopDispatched(
       options,
       shellAbortController.signal,
     );
+    markRuntimeRunStage(runId, 'params_built');
+    traceRuntimeEvent('renderer.agent_params_build_completed', {
+      runId,
+      executionPath: 'sidecar',
+      stage: 'params_built',
+      durationMs: Date.now() - runtimeStartedAt,
+    });
   } catch (err) {
     const wasAborted = shellAbortController.signal.aborted;
     abortRegistry.clearAbortController(conversationId);
     shellChatDelta.setConversationStatus(conversationId, 'idle');
-    if (wasAborted) return { reason: 'aborted' };
+    if (wasAborted) {
+      traceRuntimeEvent('renderer.agent_run_aborted', {
+        runId,
+        executionPath: 'sidecar',
+        stage: 'params_build_aborted',
+        outcome: 'aborted',
+      });
+      finishRuntimeRun(runId);
+      return { reason: 'aborted' };
+    }
     // Failed before any dispatch — pre-commit by construction (see doc).
     logger.warn('agent-loop dispatch params build failed — running in-process', {
       runId,
       conversationId,
       error: err instanceof Error ? err.message : String(err),
     });
+    traceRuntimeEvent('renderer.agent_params_build_failed', {
+      runId,
+      executionPath: 'sidecar',
+      stage: 'fallback_in_process',
+      outcome: 'error',
+      errorType: runtimeErrorType(err),
+      durationMs: Date.now() - runtimeStartedAt,
+    });
+    finishRuntimeRun(runId);
     return runAgentLoop(conversationId, userMessage, options);
   }
   if (shellAbortController.signal.aborted) {
     abortRegistry.clearAbortController(conversationId);
     shellChatDelta.setConversationStatus(conversationId, 'idle');
+    traceRuntimeEvent('renderer.agent_run_aborted', {
+      runId,
+      executionPath: 'sidecar',
+      stage: 'before_dispatch',
+      outcome: 'aborted',
+    });
+    finishRuntimeRun(runId);
     return { reason: 'aborted' };
   }
 
@@ -1582,6 +1692,7 @@ export async function runAgentLoopDispatched(
     transportAbortController: new AbortController(),
     toolCallToStepId: new Map(),
     committed: false,
+    runtimeStartedAt,
     // P1-3B-4 — the entries in `params.queuedInputs` were already seeded
     // into the sidecar's OWN queue at dispatch time (agentLoopHost.ts's
     // handleAgentRun), so pre-mark them forwarded BEFORE registerRunSession
@@ -1599,6 +1710,27 @@ export async function runAgentLoopDispatched(
 
   registerRunSession(runId, session);
   installShellLoopContext(runId, session);
+  markRuntimeRunStage(runId, 'waiting_for_first_delta');
+  traceRuntimeEvent('renderer.agent_run_dispatched', {
+    runId,
+    method: 'agent.run',
+    executionPath: 'sidecar',
+    stage: 'waiting_for_first_delta',
+    durationMs: Date.now() - runtimeStartedAt,
+  });
+  session.firstFrameStallTimer = setTimeout(() => {
+    session.firstFrameStallTimer = undefined;
+    if (session.firstDeltaAt !== undefined || session.dropFrames) return;
+    markRuntimeRunStage(runId, 'stalled_before_first_delta');
+    traceRuntimeEvent('renderer.agent_run_stalled', {
+      runId,
+      method: 'agent.run',
+      executionPath: 'sidecar',
+      stage: 'stalled_before_first_delta',
+      outcome: 'stalled',
+      durationMs: Date.now() - runtimeStartedAt,
+    });
+  }, AGENT_FIRST_FRAME_STALL_MS);
   let handedOffToLocal = false;
 
   try {
@@ -1612,8 +1744,25 @@ export async function runAgentLoopDispatched(
     await settleRunPersistence(session);
     if (shellAbortController.signal.aborted) {
       await finalizeAbortedRun(session, 'run-terminal');
+      traceRuntimeEvent('renderer.agent_run_aborted', {
+        runId,
+        executionPath: 'sidecar',
+        stage: 'run_terminal',
+        outcome: 'aborted',
+        durationMs: Date.now() - runtimeStartedAt,
+      });
       return { reason: 'aborted' };
     }
+    traceRuntimeEvent('renderer.agent_run_completed', {
+      runId,
+      executionPath: 'sidecar',
+      stage: 'completed',
+      outcome: raw.reason,
+      durationMs: Date.now() - runtimeStartedAt,
+      firstFrameMs: session.firstDeltaAt === undefined
+        ? undefined
+        : session.firstDeltaAt - runtimeStartedAt,
+    });
     return raw;
   } catch (err) {
     // A failing RPC can still have flushed committed frames immediately
@@ -1622,6 +1771,13 @@ export async function runAgentLoopDispatched(
     await settleRunPersistence(session);
     if (shellAbortController.signal.aborted) {
       await finalizeAbortedRun(session, 'run-terminal');
+      traceRuntimeEvent('renderer.agent_run_aborted', {
+        runId,
+        executionPath: 'sidecar',
+        stage: 'run_terminal_error',
+        outcome: 'aborted',
+        durationMs: Date.now() - runtimeStartedAt,
+      });
       return { reason: 'aborted' };
     }
     if (!session.committed) {
@@ -1637,6 +1793,14 @@ export async function runAgentLoopDispatched(
         runId,
         conversationId,
         error: err instanceof Error ? err.message : String(err),
+      });
+      traceRuntimeEvent('renderer.agent_run_fallback', {
+        runId,
+        executionPath: 'sidecar',
+        stage: 'fallback_in_process',
+        outcome: 'error',
+        errorType: runtimeErrorType(err),
+        durationMs: Date.now() - runtimeStartedAt,
       });
       // The local loop synchronously installs its own AbortController before its
       // first await. Mark the ownership transfer so this dispatch wrapper's
@@ -1668,6 +1832,14 @@ export async function runAgentLoopDispatched(
           ? String((errData as { stack: unknown }).stack)
           : undefined,
     });
+    traceRuntimeEvent('renderer.agent_run_failed', {
+      runId,
+      executionPath: 'sidecar',
+      stage: 'failed_after_commit',
+      outcome: 'error',
+      errorType: runtimeErrorType(err),
+      durationMs: Date.now() - runtimeStartedAt,
+    });
     // The sidecar loop threw uncaught, so its OWN terminal UI-finalization
     // frames (finishStreaming / setConversationStatus) never arrived — the
     // conversation is left mid-stream and hangs on "thinking". Finalize it
@@ -1690,6 +1862,8 @@ export async function runAgentLoopDispatched(
     }
     return { reason: 'error', error: realMessage };
   } finally {
+    if (session.firstFrameStallTimer) clearTimeout(session.firstFrameStallTimer);
+    finishRuntimeRun(runId);
     removeShellLoopContext(runId);
     unregisterRunSession(runId);
     shellAbortController.signal.removeEventListener('abort', onShellAbort);

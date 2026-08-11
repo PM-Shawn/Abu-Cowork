@@ -53,6 +53,13 @@ const {
   cleanupFsWatchesForSender,
 } = require('./fsWatchHost.cjs');
 const { mcpDispatch } = require('./mcpBridge.cjs');
+const {
+  RUNTIME_EVENT_CHANNEL,
+  RUNTIME_DIAGNOSTICS_CHANNEL,
+  configureRuntimeObservability,
+  getRuntimeDiagnostics,
+  runtimeState,
+} = require('./runtimeObservability.cjs');
 const { desktopDispatch, DESKTOP_MISS } = require('./desktopHost.cjs');
 const { popupWindowsMenu, syncMainWindowChromeTheme } = require('./windowChrome.cjs');
 const {
@@ -1312,6 +1319,22 @@ function registerTauriHost(app, options = {}) {
     } catch {
       e.returnValue = null;
     }
+  });
+
+  ipcMain.on(RUNTIME_EVENT_CHANNEL, (e, payload) => {
+    try {
+      assertTrustedIpcSender(e);
+      configureRuntimeObservability(app);
+      runtimeState.noteRendererEvent(payload);
+    } catch {
+      // Runtime tracing is best-effort and must never affect product behavior.
+    }
+  });
+
+  ipcMain.handle(RUNTIME_DIAGNOSTICS_CHANNEL, async (e) => {
+    assertTrustedIpcSender(e);
+    configureRuntimeObservability(app);
+    return getRuntimeDiagnostics();
   });
 }
 

@@ -20,7 +20,9 @@ import { useDiagnosticStore } from '@/stores/diagnosticStore';
 import { useScheduleStore } from '@/stores/scheduleStore';
 import { skillLoader } from '@/core/skill/loader';
 import { getRecentLogs, getLogDirPath } from '@/core/logging/logger';
+import { getRendererRuntimeTraceSnapshot } from '@/core/observability/runtimeTrace';
 import { catalogGetCount } from '@/core/session/conversationStorage';
+import { getElectronRuntimeDiagnostics } from '@/utils/electronHost';
 import { APP_VERSION } from '@/utils/version';
 import { platform } from '@tauri-apps/plugin-os';
 import { scrubSecrets, scrubMessage } from './scrub';
@@ -489,7 +491,7 @@ export async function collectBundleFiles(opts: CollectOptions): Promise<CollectR
   // warn/error level that's the highest-value debug signal.
   try {
     const entries = getRecentLogs().slice(-RUNTIME_LOG_LIMIT);
-    files['logs/runtime.jsonl'] = entries.map((e) => JSON.stringify(e)).join('\n');
+    files['logs/runtime.jsonl'] = entries.map((e) => JSON.stringify(scrubSecrets(e))).join('\n');
   } catch (e) {
     files['logs/runtime.jsonl'] = JSON.stringify({ error: e instanceof Error ? e.message : String(e) });
   }
@@ -505,7 +507,7 @@ export async function collectBundleFiles(opts: CollectOptions): Promise<CollectR
         try {
           const content = await readTextFile(joinPath(logDir, name));
           const lines = content.split('\n');
-          files[`logs/${name}`] = lines.slice(-DISK_LOG_TAIL_LINES).join('\n');
+          files[`logs/${name}`] = String(scrubSecrets(lines.slice(-DISK_LOG_TAIL_LINES).join('\n')));
         } catch {
           // File not present — skip silently
         }
@@ -513,6 +515,43 @@ export async function collectBundleFiles(opts: CollectOptions): Promise<CollectR
     }
   } catch (e) {
     files['logs/disk-read-error.txt'] = e instanceof Error ? e.message : String(e);
+  }
+
+  // ── runtime/* + logs/main-runtime.jsonl ──────────────────────────────────
+  // Cross-process breadcrumbs for the Electron agent path. These snapshots
+  // contain identifiers, stages, durations, counts, and classified failures
+  // only — never prompts, message text, tool arguments, or provider bodies.
+  // Tauri and tests without an Electron preload bridge simply omit the main
+  // process files while retaining the renderer snapshot.
+  files['runtime/renderer-trace.json'] = JSON.stringify(
+    scrubSecrets(getRendererRuntimeTraceSnapshot()),
+    null,
+    2,
+  );
+  const electronRuntime = await getElectronRuntimeDiagnostics();
+  if (electronRuntime) {
+    files['logs/main-runtime.jsonl'] = String(
+      scrubSecrets(electronRuntime.recentEventLines.join('\n')),
+    );
+    files['runtime/pending-rpcs.json'] = JSON.stringify(
+      scrubSecrets({
+        schemaVersion: electronRuntime.schemaVersion,
+        appSessionId: electronRuntime.appSessionId,
+        pendingRpcs: electronRuntime.pendingRpcs,
+      }),
+      null,
+      2,
+    );
+    files['runtime/sidecar-state.json'] = JSON.stringify(
+      scrubSecrets({
+        schemaVersion: electronRuntime.schemaVersion,
+        appSessionId: electronRuntime.appSessionId,
+        sidecars: electronRuntime.sidecars,
+        pendingRendererAcks: electronRuntime.pendingRendererAcks,
+      }),
+      null,
+      2,
+    );
   }
 
   // ── stores/versions.json ─────────────────────────────────────────────

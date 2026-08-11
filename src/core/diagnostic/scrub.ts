@@ -87,6 +87,11 @@ const SECRET_VALUE_PATTERNS: RegExp[] = [
   /\bAIza[a-zA-Z0-9_-]{30,}/g,
 ];
 
+// Secret-looking key/value pairs embedded inside plain log strings, where
+// recursive field-name scrubbing cannot see the serialized object shape.
+const SERIALIZED_SECRET_VALUE_PATTERN =
+  /\b(api[_-]?key|access[_-]?token|token|password|secret|authorization)(["']?\s*[:=]\s*["']?)([^"',}\s]+)/gi;
+
 function isSecretField(key: string): boolean {
   const lower = key.toLowerCase();
   if (SECRET_FIELD_ALLOWLIST.has(lower)) return false;
@@ -94,7 +99,10 @@ function isSecretField(key: string): boolean {
 }
 
 function redactStringValue(s: string): string {
-  let out = s;
+  let out = s.replace(
+    SERIALIZED_SECRET_VALUE_PATTERN,
+    (_match, key: string, separator: string) => `${key}${separator}${REDACTED}`,
+  );
   for (const re of SECRET_VALUE_PATTERNS) {
     out = out.replace(re, REDACTED);
   }

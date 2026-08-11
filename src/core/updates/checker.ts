@@ -9,10 +9,13 @@ export type { UpdateDownloadProgress, UpdateInfo } from './types';
 
 const CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000; // 6 hours
 
-// Same manifest the Tauri updater polls (tauri.conf.json → updater.endpoints).
-// We refetch it directly to read the per-locale `notes_i18n` field, which the
-// updater plugin doesn't expose (it only surfaces the top-level `notes`).
-const LATEST_JSON_URL = 'https://abu-agent.oss-cn-beijing.aliyuncs.com/latest.json';
+// Release metadata feed published to OSS by the release pipeline
+// (scripts/website-release-metadata.mjs → electron/latest-release.json). It
+// carries the per-locale `notes_i18n` field the electron-updater feed
+// (latest-mac.yml) does not. The same feed also backs the website homepage.
+// NOTE: this is NOT the frozen Tauri-era `latest.json` (that manifest stopped
+// updating after v0.34.x); this one tracks every release.
+const RELEASE_METADATA_URL = 'https://abu-agent.oss-cn-beijing.aliyuncs.com/electron/latest-release.json';
 
 let _pendingUpdate: Update | null = null;
 
@@ -32,36 +35,38 @@ function setDownloadProgress(progress: UpdateDownloadProgress): void {
 }
 
 /**
- * Pick release notes in the user's UI language. `latest.json` carries
- * `notes_i18n: { "zh-CN": ..., "en-US": ... }`; the top-level `notes` (what the
- * updater hands back as `update.body`) stays English for the updater default and
- * international users. English users already have the right text, so skip the
- * extra fetch. Any failure (offline, old manifest without `notes_i18n`, missing
- * locale) falls back to the English body — never worse than before.
+ * Pick release notes in the user's UI language. The release metadata feed
+ * (`electron/latest-release.json`) carries `notes_i18n: { "zh-CN": ..., "en-US":
+ * ... }`. The electron-updater feed (`latest-mac.yml`) carries no release notes,
+ * so `update.body` is typically empty — we read BOTH languages from this feed
+ * (not just Chinese), otherwise English users would see an empty changelog.
  *
- * 🔴 Version guard: `latest.json` is a DIFFERENT manifest from the
- * electron-updater feed (`electron/<arch>/latest-mac.yml`) that produced
- * `expectedVersion`. The two can drift — e.g. the Tauri-era `latest.json`
- * publishing lagged behind and froze at an older release while the Electron
- * feed advanced. When they disagree, `latest.json`'s notes describe a
- * *different* version, so showing them would put the wrong changelog in the
- * update prompt (a zh-CN user offered vNEW would read vOLD's notes). Only trust
- * the localized notes when the manifest is for the same version as the offered
- * update; otherwise fall back to the English body from the updater itself,
- * which is always for the right version. A manifest without a `version` field
- * keeps the old behavior (no guard) for backward compatibility.
+ * 🔴 Version guard: this metadata feed is a SEPARATE file from the
+ * electron-updater feed that produced `expectedVersion`. The same release
+ * publishes both, but they could momentarily disagree (a partially completed or
+ * superseded release, or CDN caching). When they disagree, the metadata's notes
+ * describe a *different* version, so we fall back to the updater's own body
+ * rather than show the wrong changelog (a zh-CN user offered vNEW must not read
+ * vOLD's notes). An unexpected `schema_version`, a missing locale, or any
+ * failure (offline, empty notes) also falls back — never worse than before.
  */
 async function localizedNotes(fallback: string, expectedVersion: string): Promise<string> {
   const locale = getLocale();
-  if (locale === 'en-US') return fallback;
   try {
-    const res = await fetch(LATEST_JSON_URL, { cache: 'no-cache' });
+    const res = await fetch(RELEASE_METADATA_URL, { cache: 'no-cache' });
     if (!res.ok) return fallback;
-    const data = (await res.json()) as { version?: string; notes_i18n?: Record<string, string> };
-    const manifestVersion = data.version?.replace(/^v/, '').trim();
-    if (manifestVersion && manifestVersion !== expectedVersion) return fallback;
-    const localized = data.notes_i18n?.[locale]?.trim();
-    return localized && localized.length > 0 ? localized : fallback;
+    const data = (await res.json()) as {
+      schema_version?: number;
+      version?: string;
+      notes_i18n?: Record<string, string>;
+    };
+    if (data.schema_version !== 1) return fallback;
+    const metaVersion = data.version?.replace(/^v/, '').trim();
+    if (metaVersion && metaVersion !== expectedVersion) return fallback;
+    // Prefer the user's locale; fall back to the feed's English notes (always
+    // present) before the empty updater body, mirroring the website homepage.
+    const localized = (data.notes_i18n?.[locale] ?? data.notes_i18n?.['en-US'] ?? '').trim();
+    return localized.length > 0 ? localized : fallback;
   } catch {
     return fallback;
   }

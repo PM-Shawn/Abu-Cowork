@@ -980,6 +980,7 @@ const zhCN: TranslationDict = {
     appVersion: '应用版本',
     appLatest: '已是最新',
     appUpdateAvailable: '有新版本 v{version}',
+    appCheckFailed: '无法检查更新',
     checkInternalError: '检查内部错误',
     detailShow: '展开详情',
     detailHide: '收起详情',

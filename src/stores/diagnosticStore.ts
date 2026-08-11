@@ -34,6 +34,15 @@ interface DiagnosticState {
 interface DiagnosticActions {
   runAll: () => Promise<void>;
   runCategory: (cat: CheckCategory) => Promise<void>;
+  /**
+   * Silently refresh just the cheap, always-current `app` category (version +
+   * update status). Unlike {@link runCategory} this does NOT bump
+   * `lastCheckedAt` — it is fired on every panel open so a persisted snapshot
+   * can't keep showing a stale version after an in-place update, and bumping
+   * the "last checked" time would falsely imply the expensive checks (AI
+   * services, MCP, …) were re-run too.
+   */
+  refreshApp: () => Promise<void>;
   runItem: (id: string) => Promise<void>;
   setIncludeRawText: (v: boolean) => void;
   setExportInProgress: (v: boolean) => void;
@@ -94,6 +103,19 @@ export const useDiagnosticStore = create<DiagnosticStore>()(
           }
           for (const r of results) next[r.id] = r;
           return { results: next, lastCheckedAt: Date.now() };
+        });
+      },
+
+      refreshApp: async () => {
+        const rows = await runCategoryChecks('app');
+        set((s) => {
+          const next = { ...s.results };
+          for (const id of Object.keys(next)) {
+            if (next[id].category === 'app') delete next[id];
+          }
+          for (const r of rows) next[r.id] = r;
+          // Deliberately NOT touching lastCheckedAt — see refreshApp docs.
+          return { results: next };
         });
       },
 

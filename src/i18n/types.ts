@@ -1093,6 +1093,7 @@ export interface TranslationDict {
     appVersion: string;
     appLatest: string;
     appUpdateAvailable: string; // {version}
+    appCheckFailed: string;
     // Internal
     checkInternalError: string;
     // Detail toggle on failed items

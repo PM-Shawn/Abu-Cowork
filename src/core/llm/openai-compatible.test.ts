@@ -91,6 +91,43 @@ async function runChat(chunks: unknown[]): Promise<StreamEvent[]> {
 // text-only path), with NO placeholder — so the model saw nothing and could claim
 // "no file was provided". A document must leave a text breadcrumb, mirroring the
 // vision-unsupported image hint.
+describe('OpenAICompatibleAdapter — gatewayMetadata injection', () => {
+  beforeEach(() => {
+    mockFetch.mockReset();
+  });
+
+  async function requestBodyFor(overrides: Partial<ChatOptions> = {}) {
+    mockFetch.mockResolvedValueOnce(
+      makeSSEResponse([
+        { choices: [{ delta: { content: 'ok' } }] },
+        { choices: [{ delta: {}, finish_reason: 'stop' }] },
+      ]),
+    );
+    const adapter = new OpenAICompatibleAdapter();
+    await adapter.chat([userMessage], makeOptions(overrides), () => {});
+    return JSON.parse((mockFetch.mock.calls[0][1] as { body: string }).body) as {
+      metadata?: Record<string, string>;
+    };
+  }
+
+  it('injects body.metadata for gateway traffic, dropping undefined values', async () => {
+    const body = await requestBodyFor({
+      gatewayMetadata: { trace_id: 'loop-L1', abu_org_id: 'org-1', abu_dept_id: undefined },
+    });
+    expect(body.metadata).toEqual({ trace_id: 'loop-L1', abu_org_id: 'org-1' });
+  });
+
+  it('omits body.metadata entirely without gatewayMetadata (personal providers see no extra field)', async () => {
+    const body = await requestBodyFor();
+    expect('metadata' in body).toBe(false);
+  });
+
+  it('omits body.metadata when every value is undefined', async () => {
+    const body = await requestBodyFor({ gatewayMetadata: { a: undefined } });
+    expect('metadata' in body).toBe(false);
+  });
+});
+
 describe('OpenAICompatibleAdapter — document attachment placeholder (B6)', () => {
   beforeEach(() => {
     mockFetch.mockReset();

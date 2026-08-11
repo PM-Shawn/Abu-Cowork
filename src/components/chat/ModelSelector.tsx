@@ -8,6 +8,7 @@ import { Input } from '@/components/ui/input';
 import type { ModelInfo, ProviderInstance } from '@/types';
 import { useEnterpriseModels } from '@/core/enterprise/useEnterpriseModels';
 import { useEnterpriseStore } from '@/stores/enterpriseStore';
+import { isPersonalLaneAllowed } from '@/core/enterprise/llm-resolver';
 
 interface ModelSelectorProps {
   open: boolean;
@@ -88,6 +89,9 @@ export function ModelSelector({ open, onClose, anchorRef }: ModelSelectorProps) 
 
   // Enterprise mode: model list is scoped to gateway's /v1/models allow list.
   const isEnterprise = useEnterpriseStore(s => s.mode.kind !== 'personal');
+  // Read once per render. The picker unmounts when closed, so every OPEN
+  // gets fresh policy; a flip while it is open shows on the next open.
+  const personalLaneAllowed = isPersonalLaneAllowed();
   const enterpriseModels = useEnterpriseModels();
 
   const [query, setQuery] = useState('');
@@ -299,6 +303,47 @@ export function ModelSelector({ open, onClose, anchorRef }: ModelSelectorProps) 
                     </button>
                   )
                 })}
+              </div>
+            )}
+            {/* Provider leveling: personal providers are selectable alongside
+                the gateway — the picked provider decides the call lane. */}
+            {!personalLaneAllowed ? (
+              <div className="px-3 py-2 text-caption text-[var(--abu-text-placeholder)]">
+                {t.chat.personalLaneDisabledByPolicy}
+              </div>
+            ) : filteredProviders.length > 0 && (
+              <div className="mt-1 border-t border-[var(--abu-border)] pt-1">
+                {filteredProviders.map(({ provider, models }) => (
+                  <div key={provider.id} className="mb-1">
+                    <div className="px-3 py-1">
+                      <span className="text-caption font-medium uppercase tracking-wider text-[var(--abu-text-muted)]">
+                        {t.chat.personalProvidersLabel} · {provider.name}
+                      </span>
+                    </div>
+                    {models.map(model => {
+                      const isActive = effectiveActiveModel.providerId === provider.id && effectiveActiveModel.modelId === model.id
+                      return (
+                        <button
+                          key={model.id}
+                          onClick={() => handleSelect(provider.id, model.id)}
+                          className={cn(
+                            'w-full flex items-center gap-2 px-3 py-1.5 rounded-md text-left',
+                            'text-minor transition-colors',
+                            isActive
+                              ? 'bg-[var(--abu-bg-hover)] text-[var(--abu-text-primary)]'
+                              : 'text-[var(--abu-text-secondary)] hover:bg-[var(--abu-bg-hover)]'
+                          )}
+                        >
+                          {isActive
+                            ? <Check className="h-3 w-3 text-[var(--abu-clay)] shrink-0" />
+                            : <span className="h-3 w-3 shrink-0" />
+                          }
+                          <span className="truncate">{model.label ?? model.id}</span>
+                        </button>
+                      )
+                    })}
+                  </div>
+                ))}
               </div>
             )}
           </div>

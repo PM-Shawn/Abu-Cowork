@@ -1328,7 +1328,7 @@ interface AgentRunParams {
   indexEntrySnapshot?: ConversationMeta;
   settingsSnapshot: SettingsState;
   capsSnapshot?: { providerId: string; modelId: string; maxOutputTokens?: number; contextWindow?: number; isReasoningModel?: boolean };
-  resolvedCreds: { apiKey: string; baseUrl: string | undefined; forceOpenAiCompatible: boolean };
+  resolvedCreds: { apiKey: string; baseUrl: string | undefined; forceOpenAiCompatible: boolean; traceMetadata?: Record<string, string | undefined> };
   toolList: ReturnType<typeof toSerializableTool>[];
   planMode?: 'off' | 'planning' | 'approved';
   locale: string;
@@ -1438,6 +1438,7 @@ async function buildAgentRunParams(
   const resolvedCreds = resolveEffectiveLlmCreds(
     getActiveApiKey(settingsForModel),
     getActiveProvider(settingsForModel)?.baseUrl || undefined,
+    settingsForModel.activeModel.providerId,
   );
 
   let capsSnapshot: AgentRunParams['capsSnapshot'];

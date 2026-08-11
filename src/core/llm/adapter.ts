@@ -70,6 +70,14 @@ export interface ChatOptions {
   metadata?: {
     userId?: string;           // For tracking/analytics
   };
+  /**
+   * Request-body `metadata` for the enterprise LLM gateway (LiteLLM strips it
+   * before forwarding upstream and feeds it to its langfuse callback — the
+   * single trace source in enterprise mode). Only the OpenAI-compatible
+   * adapter sends it, and callers must only set it for gateway traffic:
+   * arbitrary OpenAI-compatible providers may reject unknown body fields.
+   */
+  gatewayMetadata?: Record<string, string | undefined>;
   // Extended thinking support (Claude Opus 4+)
   enableThinking?: boolean;
   thinkingBudget?: number;     // Max reasoning tokens (Claude budget_tokens / Qwen thinking_budget)

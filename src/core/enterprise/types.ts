@@ -53,6 +53,12 @@ export interface EnterpriseConfigSnapshot {
   configVersion?: string
   /** policy.telemetryEnabled from GET /session; controls whether telemetry is sent to the instance. */
   telemetryEnabled?: boolean
+  /**
+   * Hex Ed25519 public key for skill artifact verification (signing.skillPublicKey
+   * from GET /session). null/absent when the server has no signing key configured —
+   * the enterprise skill installer then skips signature verification.
+   */
+  skillSigningPublicKey?: string | null
 }
 
 export type EnterpriseMode =

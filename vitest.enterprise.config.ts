@@ -45,6 +45,22 @@ const enterpriseConfig = mergeConfig(
 );
 
 enterpriseConfig.test ??= {};
-enterpriseConfig.test.include = ['enterprise-tests/**/*.test.{ts,tsx}'];
+// Two test populations share this gate: the host-side enterprise tests in
+// this repo, and the overlay's own unit tests in the sibling repository
+// (dependency resolution there works via the overlay's gitignored
+// node_modules -> ../Abu-Cowork/node_modules symlink).
+enterpriseConfig.test.include = [
+  'enterprise-tests/**/*.test.{ts,tsx}',
+  '../Abu-enterprise-modules/src/**/*.test.{ts,tsx}',
+];
+enterpriseConfig.server ??= {};
+enterpriseConfig.server.fs = {
+  ...(enterpriseConfig.server.fs ?? {}),
+  allow: [
+    ...(enterpriseConfig.server.fs?.allow ?? []),
+    path.resolve(__dirname),
+    path.resolve(__dirname, '../Abu-enterprise-modules'),
+  ],
+};
 
 export default enterpriseConfig;

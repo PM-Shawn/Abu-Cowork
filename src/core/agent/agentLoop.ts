@@ -592,7 +592,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
 
   // Enterprise mode bypasses personal key requirement — gateway provides the key.
   const { forceOpenAiCompatible: _startForce } = (() => {
-    try { return resolveEffectiveLlmCreds(getActiveApiKey(settingsForModel), undefined) }
+    try { return resolveEffectiveLlmCreds(getActiveApiKey(settingsForModel), undefined, settingsForModel.activeModel.providerId) }
     catch { return { forceOpenAiCompatible: false } }
   })()
   const isEnterpriseGatewayMode = _startForce
@@ -1292,6 +1292,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
             const compressionCreds = resolveEffectiveLlmCreds(
               getActiveApiKey(settingsForModel),
               getActiveProvider(settingsForModel)?.baseUrl || undefined,
+              settingsForModel.activeModel.providerId,
             )
             const compressionResult = await compressContextIfNeeded(
               historyMessages,
@@ -1304,6 +1305,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
                 apiKey: compressionCreds.apiKey,
                 baseUrl: compressionCreds.baseUrl,
                 signal: abortController.signal,
+                gatewayMetadata: compressionCreds.traceMetadata,
               },
               toolTokens
             );
@@ -1404,6 +1406,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
           const compactionCreds = resolveEffectiveLlmCreds(
             getActiveApiKey(settingsForModel),
             getActiveProvider(settingsForModel)?.baseUrl || undefined,
+            settingsForModel.activeModel.providerId,
           );
           let summaryText = '';
           try {
@@ -1413,6 +1416,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
               apiKey: compactionCreds.apiKey,
               baseUrl: compactionCreds.baseUrl,
               signal: abortController.signal,
+              gatewayMetadata: compactionCreds.traceMetadata,
             });
           } catch (err) {
             // Defensive: summarizeConversation is contractually no-throw (it
@@ -1487,12 +1491,19 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
       const effectiveCreds = resolveEffectiveLlmCreds(
         getActiveApiKey(settingsForModel),
         getActiveProvider(settingsForModel)?.baseUrl || undefined,
+        settingsForModel.activeModel.providerId,
       )
 
       const chatOptions = {
         model: effectiveModelId,
         apiKey: effectiveCreds.apiKey,
         baseUrl: effectiveCreds.baseUrl,
+        // trace_id joins the gateway's call-level generations into the SAME
+        // Langfuse trace the client span relay writes (loop-<loopId>); loop_id
+        // stays as a filterable metadata field (trace amendment, dual channel).
+        gatewayMetadata: effectiveCreds.traceMetadata
+          ? { ...effectiveCreds.traceMetadata, loop_id: loopId, trace_id: `loop-${loopId}` }
+          : undefined,
         systemPrompt: effectiveSystemPrompt,
         systemPromptSections: allSections,
         tools: tools.length > 0 ? tools : undefined,
@@ -1751,6 +1762,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
               const recoveryCreds = resolveEffectiveLlmCreds(
                 getActiveApiKey(settingsForModel),
                 getActiveProvider(settingsForModel)?.baseUrl || undefined,
+                settingsForModel.activeModel.providerId,
               )
               // Use boundaryView (marker-free compact view if a marker exists,
               // else raw history) so recovery never re-feeds a marker to the LLM
@@ -1767,6 +1779,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
                   apiKey: recoveryCreds.apiKey,
                   baseUrl: recoveryCreds.baseUrl,
                   signal: abortController.signal,
+                  gatewayMetadata: recoveryCreds.traceMetadata,
                 },
                 toolTokens
               );

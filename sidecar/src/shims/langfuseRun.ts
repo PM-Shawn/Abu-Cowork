@@ -22,16 +22,22 @@
  * that IS exported.
  */
 import type { EndableSubagentSpan } from '@/core/observability/langfuse';
+import { emitHook } from '@/core/agent/lifecycleHooks';
 
 interface EndableGeneration {
-  end(data?: { output?: unknown; usage?: unknown; error?: string }): void;
+  end(data?: {
+    output?: unknown;
+    usage?: { inputTokens?: number; outputTokens?: number };
+    costUsd?: number;
+    level?: 'ERROR';
+    statusMessage?: string;
+  }): void;
 }
 interface EndableSpan {
   end(data?: { output?: unknown; error?: string }): void;
 }
 
 const NOOP_SUBAGENT_SPAN: EndableSubagentSpan = { end() {} };
-const NOOP_GENERATION: EndableGeneration = { end() {} };
 const NOOP_SPAN: EndableSpan = { end() {} };
 
 export function startSubagentSpan(
@@ -55,11 +61,51 @@ export function endConversationTrace(
   // Intentional no-op — see module doc.
 }
 
+// Generations from sidecar-run loops DO get reported — over the lifecycle
+// hook bridge (hook.notify → renderer hookBridge → renderer hook bus), the
+// same transport postToolCall already uses. The renderer-side enterprise
+// collector listens for 'llmGeneration'; in OSS builds nothing listens and
+// the event dies in the local bus, preserving zero-collection. Content is
+// JSON-serialized and capped so the RPC frame stays bounded.
+const GENERATION_CONTENT_CHARS = 200_000;
+
+function serializeCapped(v: unknown): string | undefined {
+  if (v === undefined || v === null) return undefined;
+  let s: string;
+  try {
+    s = typeof v === 'string' ? v : JSON.stringify(v);
+  } catch {
+    s = String(v);
+  }
+  return s.length > 0 ? s.slice(0, GENERATION_CONTENT_CHARS) : undefined;
+}
+
 export function startGeneration(
-  _conversationId: string,
-  _data: { name?: string; model: string; input: unknown; startTime?: Date },
+  conversationId: string,
+  data: { name?: string; model: string; input: unknown; startTime?: Date },
 ): EndableGeneration {
-  return NOOP_GENERATION;
+  const startTime = data.startTime?.getTime() ?? Date.now();
+  return {
+    end(end) {
+      try {
+        const endTime = Date.now();
+        void emitHook({
+          type: 'llmGeneration',
+          timestamp: endTime,
+          conversationId,
+          model: data.model,
+          name: data.name,
+          input: serializeCapped(data.input),
+          output: serializeCapped(end?.output),
+          usage: end?.usage,
+          costUsd: end?.costUsd,
+          startTime,
+          endTime,
+          ...(end?.level === 'ERROR' ? { error: end?.statusMessage ?? 'error' } : {}),
+        });
+      } catch { /* best-effort — a lost generation must never break the loop */ }
+    },
+  };
 }
 
 export function startToolSpan(

@@ -58,7 +58,7 @@ vi.mock('./ports/toolInvoker', () => ({
   }),
 }));
 
-const getSettingsSnapshotMock = vi.fn().mockReturnValue({ agentMaxTurns: 200 });
+const getSettingsSnapshotMock = vi.fn().mockReturnValue({ agentMaxTurns: 200, activeModel: { providerId: 'anthropic', modelId: 'claude-sonnet-4-5' } });
 vi.mock('./ports/settingsReader', () => ({
   getSettingsReader: () => ({ getSnapshot: () => getSettingsSnapshotMock() }),
 }));
@@ -138,7 +138,7 @@ describe('subagentRunner', () => {
     getAllToolsMock.mockReturnValue([
       { name: 'read_file', description: 'reads a file', inputSchema: { type: 'object', properties: {} }, execute: async () => 'x' },
     ]);
-    getSettingsSnapshotMock.mockReturnValue({ agentMaxTurns: 200 });
+    getSettingsSnapshotMock.mockReturnValue({ agentMaxTurns: 200, activeModel: { providerId: 'anthropic', modelId: 'claude-sonnet-4-5' } });
     getCurrentPathMock.mockReturnValue('/tmp/workspace');
     getActiveApiKeyMock.mockReturnValue('sk-test');
     getActiveProviderMock.mockReturnValue({ id: 'p1', baseUrl: undefined, apiFormat: 'anthropic' });

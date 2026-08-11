@@ -66,7 +66,8 @@ export class EnterpriseLlmUnavailableError extends Error {
 export function resolveEffectiveLlmCreds(
   _personalApiKey: string,
   _personalBaseUrl: string | undefined,
-): { apiKey: string; baseUrl: string | undefined; forceOpenAiCompatible: boolean } {
+  _activeProviderId?: string,
+): { apiKey: string; baseUrl: string | undefined; forceOpenAiCompatible: boolean; traceMetadata?: Record<string, string | undefined> } {
   try {
     return getCurrentAgentRunContext().resolvedCreds;
   } catch {

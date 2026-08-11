@@ -265,8 +265,24 @@ contextBridge.exposeInMainWorld('__TAURI_OS_PLUGIN_INTERNALS__', ipcRenderer.sen
 // its own renderer heartbeat. This global is exposed ONLY here (Electron) —
 // under Tauri it's simply absent, which is exactly what tells sidecarManager
 // to fall back to running its own renderer heartbeat.
+// Edition + enterprise runtime config resolved by main at startup (see
+// electron/enterpriseConfig.cjs). Fetched synchronously so the values exist
+// before any renderer module evaluates; falls back to OSS posture if the
+// handler is somehow absent (older main during a mixed-version dev reload).
+const shellContext = (() => {
+  try {
+    return ipcRenderer.sendSync('abu:shell-context') || {};
+  } catch {
+    return {};
+  }
+})();
+
 contextBridge.exposeInMainWorld('__ABU_SHELL__', {
   mainSupervisesSidecar: true,
+  edition: shellContext.edition ?? 'oss',
+  // Parsed abu-enterprise.json content (null when not deployed). Consumed
+  // only by the enterprise-modules overlay; OSS renderers ignore it.
+  enterpriseConfig: shellContext.enterpriseConfig ?? null,
   // Chromium no longer exposes File.path. Keep the bridge deliberately narrow:
   // the renderer can resolve only a File object the user already dragged in.
   getPathForFile: (file) => webUtils.getPathForFile(file),

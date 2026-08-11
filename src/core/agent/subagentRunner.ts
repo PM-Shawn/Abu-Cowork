@@ -115,7 +115,7 @@ export interface SubagentRunParams {
   locale: string;
   uiStrings: ReturnType<typeof buildSubagentUiStrings>;
   settingsSnapshot: ReturnType<ReturnType<typeof getSettingsReader>['getSnapshot']>;
-  resolvedCreds: { apiKey: string; baseUrl: string | undefined; forceOpenAiCompatible: boolean };
+  resolvedCreds: { apiKey: string; baseUrl: string | undefined; forceOpenAiCompatible: boolean; traceMetadata?: Record<string, string | undefined> };
   tools: SerializableToolDefinition[];
   /**
    * Pre-resolved shell-side WorkspaceReader value (see subagentLoop.ts's
@@ -291,6 +291,7 @@ function buildSubagentRunParams(runId: string, options: SubagentLoopOptions): Su
   const resolvedCreds = resolveEffectiveLlmCreds(
     getActiveApiKey(settingsSnapshot),
     getActiveProvider(settingsSnapshot)?.baseUrl || undefined,
+    settingsSnapshot.activeModel.providerId,
   );
 
   const workspaceReader = options.workspaceReader ?? getWorkspaceReader();

@@ -111,3 +111,4 @@ electron/chrome-bridge-runtime/dist/
 # electron-builder packaged output
 release-electron/
 release-electron-e2e/
+abu-enterprise.json

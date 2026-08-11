@@ -307,6 +307,8 @@ export interface TranslationDict {
     enterpriseModelNoMatch: string;
     enterpriseModelEmpty: string;
     enterpriseGatewayLabel: string;
+    personalProvidersLabel: string;
+    personalLaneDisabledByPolicy: string;
     // DetailBlockView
     characters: string;
     viewMore: string;
@@ -2455,6 +2457,11 @@ export interface TranslationDict {
   enterprise: {
     usingGateway: string;
     gatewayDesc: string;
+    laneLabel: string;
+    laneGateway: string;
+    lanePersonal: string;
+    offlineSwitchHint: string;
+    offlineNoFallbackHint: string;
     organization: string;
     gateway: string;
     status: string;

@@ -30,17 +30,6 @@ export default function AIServicesSection() {
   const [showAddImageGenModal, setShowAddImageGenModal] = useState(false);
   const [editingImageGenBackend, setEditingImageGenBackend] = useState<ImageGenBackend | null>(null);
 
-  // In enterprise mode, show the gateway badge and hide personal provider config.
-  if (isEnterprise) {
-    return (
-      <div className="space-y-4">
-        <h3 className="text-h-sm font-semibold text-[var(--abu-text-primary)]">
-          {t.settings.aiServices}
-        </h3>
-        <EnterpriseLlmBadge />
-      </div>
-    );
-  }
 
   // Check if any enabled provider has builtin capabilities
   const enabledProviders = providers.filter(p => p.enabled);
@@ -82,6 +71,12 @@ export default function AIServicesSection() {
           </Button>
         )}
       />
+
+      {/* Provider leveling: enterprise-bound users keep their personal
+          provider config — the gateway is one lane, chosen in the model
+          picker. The badge shows gateway status; the list below is the
+          personal lane. */}
+      {isEnterprise && <EnterpriseLlmBadge />}
 
       {/* Provider List */}
       {visibleProviders.length === 0 ? (

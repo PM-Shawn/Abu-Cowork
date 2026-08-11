@@ -38,9 +38,11 @@ const {
 } = require('./tauriHost.cjs');
 const {
   abuAppDataDir,
+  resourceRoot,
   sidecarBundleExists,
   sidecarPathFor,
 } = require('./appEnv.cjs');
+const { loadEnterpriseRuntimeConfig, resolveEdition } = require('./enterpriseConfig.cjs');
 const { initDeepLink, handleSecondInstanceArgv } = require('./deepLinkHost.cjs');
 const { registerPrivilegedWindow } = require('./securityBoundary.cjs');
 const { isTauriTransitionBuild } = require('./releaseMetadata.cjs');
@@ -444,6 +446,23 @@ if (!app.requestSingleInstanceLock()) {
     if (!sidecarBundleExists(app)) {
       log('warn', 'sidecar bundle missing — the frontend will fail to start it; run `npm run build:sidecar`', {
         path: sidecarPathFor(app),
+      });
+    }
+    // Edition + enterprise runtime config (abu-enterprise.json): loaded once,
+    // handed to the preload synchronously so __ABU_SHELL__ carries it before
+    // any renderer code runs. Must be registered BEFORE createWindow().
+    {
+      const { ipcMain } = require('electron');
+      const loadedEnterpriseConfig = loadEnterpriseRuntimeConfig(resourceRoot(app));
+      const edition = resolveEdition(loadedEnterpriseConfig);
+      if (loadedEnterpriseConfig) {
+        console.log(`[enterpriseConfig] loaded ${loadedEnterpriseConfig.path} (edition=${edition})`);
+      }
+      ipcMain.on('abu:shell-context', (e) => {
+        e.returnValue = {
+          edition,
+          enterpriseConfig: loadedEnterpriseConfig ? loadedEnterpriseConfig.config : null,
+        };
       });
     }
     createWindow(transitionWindow);

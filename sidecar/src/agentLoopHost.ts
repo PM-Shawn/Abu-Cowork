@@ -57,6 +57,7 @@ import { createFrameChatDelta, createFrameExecutionPort, createFrameScratchpadPo
 import { createConversationRunMirror, type ConversationPatch } from './conversationRunMirror';
 import { seedSettingsMirrorIfEmpty, getSettingsMirrorReader, applySettingsSnapshot } from './settingsMirror';
 import { hasLocalTool, isLocalToolReadOnly, executeLocalTool } from './localTools';
+import { sidecarRuntimeErrorType, traceSidecarRuntimeEvent } from './runtimeTrace';
 
 /** Sidecar-local declaration — never imported from shell-side code (same "src/ never runtime-imports sidecar/, and vice versa across this boundary" discipline `frameApplier.ts`/`subagentHost.ts` already document). */
 interface SerializableToolDefinition {
@@ -387,6 +388,12 @@ setPreRequestFlush(flushAllCoalescers);
 export async function handleAgentRun(rawParams: unknown): Promise<unknown> {
   const params = parseAgentRunParams(rawParams);
   const { runId, conversationId } = params;
+  const startedAt = Date.now();
+  traceSidecarRuntimeEvent('sidecar.agent_run_received', {
+    runId,
+    method: 'agent.run',
+    stage: 'params_parsed',
+  });
 
   if (activeRuns.has(runId)) {
     throw new RpcError(-32602, `Invalid params: runId "${runId}" is already active`);
@@ -402,7 +409,17 @@ export async function handleAgentRun(rawParams: unknown): Promise<unknown> {
   // (shims/settingsReaderRun.ts) always threw.
   setSettingsReader(getSettingsMirrorReader());
 
+  let emittedFirstDelta = false;
   const coalescer = createPortFrameCoalescer((frames) => {
+    if (!emittedFirstDelta && frames.length > 0) {
+      emittedFirstDelta = true;
+      traceSidecarRuntimeEvent('sidecar.agent_delta_emitted', {
+        runId,
+        frameCount: frames.length,
+        stage: 'first_delta_emitted',
+        durationMs: Date.now() - startedAt,
+      });
+    }
     sendNotification('agent.delta', { runId, frames });
   });
   const push = (frame: PortFrame): void => coalescer.push(frame);
@@ -529,6 +546,11 @@ export async function handleAgentRun(rawParams: unknown): Promise<unknown> {
     applyConvPatch: mirror.applyConvPatch,
     applyExecPatch,
   });
+  traceSidecarRuntimeEvent('sidecar.agent_loop_started', {
+    runId,
+    stage: 'agent_loop_running',
+    durationMs: Date.now() - startedAt,
+  });
 
   try {
     const options: AgentLoopOptions = {
@@ -551,7 +573,22 @@ export async function handleAgentRun(rawParams: unknown): Promise<unknown> {
     const result: AgentLoopResult = await agentRunContext.run(runCtx, () =>
       runAgentLoop(conversationId, params.userMessage, options),
     );
+    traceSidecarRuntimeEvent('sidecar.agent_run_completed', {
+      runId,
+      stage: 'completed',
+      outcome: result.reason,
+      durationMs: Date.now() - startedAt,
+    });
     return result;
+  } catch (error) {
+    traceSidecarRuntimeEvent('sidecar.agent_run_failed', {
+      runId,
+      stage: 'failed',
+      outcome: 'error',
+      errorType: sidecarRuntimeErrorType(error),
+      durationMs: Date.now() - startedAt,
+    });
+    throw error;
   } finally {
     coalescer.flush();
     activeRuns.delete(runId);
@@ -633,10 +670,21 @@ export interface AgentAbortAck {
 export function handleAgentAbort(rawParams: unknown): AgentAbortAck {
   const { runId } = parseAbortParams(rawParams);
   const run = activeRuns.get(runId);
+  traceSidecarRuntimeEvent('sidecar.agent_abort_received', {
+    runId,
+    method: 'agent.abort',
+    stage: run ? 'aborting' : 'not_found',
+  });
   if (!run) return { accepted: false, state: 'not_found' };
   run.coalescer.flush();
   run.controllers.get(run.conversationId)?.abort();
   run.coalescer.flush();
+  traceSidecarRuntimeEvent('sidecar.agent_abort_ack_ready', {
+    runId,
+    method: 'agent.abort',
+    stage: 'aborting',
+    outcome: 'success',
+  });
   return { accepted: true, state: 'aborting' };
 }
 

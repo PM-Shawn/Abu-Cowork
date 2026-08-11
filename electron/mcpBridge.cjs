@@ -67,6 +67,10 @@ const {
   sandboxLauncherPathFor,
   unixDescendantPids,
 } = require('./commandHost.cjs');
+const {
+  configureRuntimeObservability,
+  runtimeState,
+} = require('./runtimeObservability.cjs');
 
 /** id -> ChildProcess */
 const children = new Map();
@@ -191,6 +195,7 @@ function onHeartbeatTimeout(id) {
   state.failures += 1;
   if (state.failures >= HEARTBEAT_FAILURE_THRESHOLD) {
     state.failures = 0;
+    runtimeState.noteHeartbeatHung(id);
     emit(`mcp-hung-${id}`, '');
   }
 }
@@ -313,6 +318,7 @@ function mcpDispatch(appOrCmd, cmdOrArgs, maybeArgs) {
   const cmd = typeof appOrCmd === 'string' ? appOrCmd : cmdOrArgs;
   const args = typeof appOrCmd === 'string' ? cmdOrArgs : maybeArgs;
   if (!MCP_CMDS.has(cmd)) return undefined;
+  configureRuntimeObservability(app);
   const a = args || {};
   switch (cmd) {
     case 'mcp_spawn':
@@ -383,6 +389,7 @@ function mcpSpawnPrepared(app, { id, command, args = [], env = {}, heartbeat }) 
     callerEnv.PATH = loginShellPath();
   }
 
+  const generation = runtimeState.noteSpawnStarted(id, heartbeat);
   let resolved;
   let spawnEnv;
   try {
@@ -390,6 +397,7 @@ function mcpSpawnPrepared(app, { id, command, args = [], env = {}, heartbeat }) 
     spawnEnv = withBundledRuntimeEnv(app, callerEnv);
     if (heartbeat) spawnEnv.ABU_ELECTRON_COMMAND_HOST = '1';
   } catch (err) {
+    runtimeState.noteSpawnFailed(id, generation, 'runtime_resolution_failed');
     return Promise.reject(new Error(`mcp_spawn failed for "${command}": ${errMsg(err)}`));
   }
 
@@ -403,6 +411,7 @@ function mcpSpawnPrepared(app, { id, command, args = [], env = {}, heartbeat }) 
       detached: process.platform !== 'win32',
     });
   } catch (err) {
+    runtimeState.noteSpawnFailed(id, generation, 'launcher_spawn_failed');
     return Promise.reject(new Error(`mcp_spawn failed for "${command}": ${errMsg(err)}`));
   }
   children.set(id, child);
@@ -430,7 +439,10 @@ function mcpSpawnPrepared(app, { id, command, args = [], env = {}, heartbeat }) 
     if (children.get(id) === child) {
       children.delete(id);
       stopHeartbeatMonitor(id);
-      if (targetReady) emit(`mcp-close-${id}`, '');
+      if (targetReady) {
+        runtimeState.noteClosed(id, generation);
+        emit(`mcp-close-${id}`, '');
+      }
     }
   };
 
@@ -464,6 +476,7 @@ function mcpSpawnPrepared(app, { id, command, args = [], env = {}, heartbeat }) 
       // Heartbeat ack interception — see consumeHeartbeatAck()'s JSDoc for
       // why this can never swallow a real RPC response.
       if (line.includes('__mcphb-') && consumeHeartbeatAck(id, line)) continue;
+      runtimeState.noteStdoutLine(id, line);
       emit(`mcp-msg-${id}`, line);
     }
   });
@@ -487,10 +500,12 @@ function mcpSpawnPrepared(app, { id, command, args = [], env = {}, heartbeat }) 
         targetReady = true;
         child.__abuTargetPid = Number(readyMatch[1]);
         if (heartbeat) startHeartbeatMonitor(id);
+        runtimeState.noteReady(id, generation, child.__abuTargetPid);
         settleSpawn(null);
         continue;
       }
       if (line) {
+        runtimeState.noteSidecarTraceLine(id, line);
         launchError = launchError ? `${launchError}\n${line}` : line;
         if (targetReady) emit(`mcp-err-${id}`, line);
       }
@@ -506,6 +521,7 @@ function mcpSpawnPrepared(app, { id, command, args = [], env = {}, heartbeat }) 
       // Spawn-phase failure — the rejected invoke is the signal; no
       // mcp-err/close events (Rust emits none on spawn failure).
       if (children.get(id) === child) children.delete(id);
+      runtimeState.noteSpawnFailed(id, generation, 'process_spawn_error');
       rejectSpawn(new Error(`mcp_spawn failed for "${command}": ${errMsg(err)}`));
     }
   });
@@ -513,6 +529,7 @@ function mcpSpawnPrepared(app, { id, command, args = [], env = {}, heartbeat }) 
   child.on('close', (code) => {
     if (!targetReady) {
       if (children.get(id) === child) children.delete(id);
+      runtimeState.noteSpawnFailed(id, generation, 'launcher_exited_before_ready');
       rejectSpawn(new Error(
         `mcp_spawn failed for "${command}": launcher exited with ${String(code)}${launchError ? `: ${launchError}` : ''}`
       ));
@@ -541,6 +558,7 @@ function mcpSpawnPrepared(app, { id, command, args = [], env = {}, heartbeat }) 
 }
 
 function mcpWrite({ id, message }) {
+  const runtimeRpc = runtimeState.noteRpcWriteStarted(id, message);
   const child = children.get(id);
   if (
     !child ||
@@ -549,18 +567,22 @@ function mcpWrite({ id, message }) {
     child.stdin.destroyed ||
     child.stdin.writableEnded
   ) {
+    runtimeState.noteRpcWriteFinished(runtimeRpc, 'no_live_process');
     return Promise.reject(new Error(`mcp_write: no live process for id "${id}"`));
   }
   return new Promise((resolve, reject) => {
     try {
       child.stdin.write(String(message) + '\n', (err) => {
         if (err) {
+          runtimeState.noteRpcWriteFinished(runtimeRpc, 'stdin_write_failed');
           reject(new Error(`mcp_write failed for id "${id}": ${errMsg(err)}`));
         } else {
+          runtimeState.noteRpcWriteFinished(runtimeRpc);
           resolve(null);
         }
       });
     } catch (err) {
+      runtimeState.noteRpcWriteFinished(runtimeRpc, 'stdin_write_threw');
       reject(new Error(`mcp_write failed for id "${id}": ${errMsg(err)}`));
     }
   });
@@ -572,6 +594,7 @@ function mcpKill({ id }) {
     pending.cancelled = true;
     pendingBundledRuntimeSpawns.delete(id);
   }
+  if (children.has(id)) runtimeState.noteKilled(id);
   killChild(id);
   return null;
 }

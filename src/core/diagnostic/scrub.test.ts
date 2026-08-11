@@ -59,6 +59,15 @@ describe('scrubSecrets — value pattern redaction', () => {
     expect(scrubSecrets('Bearer xyz123abcdef0987654321qq')).toContain('[REDACTED]');
   });
 
+  it('redacts short secret fields embedded in serialized or plain log strings', () => {
+    expect(scrubSecrets('request {"apiKey":"short-local-key","model":"m"}')).toBe(
+      'request {"apiKey":"[REDACTED]","model":"m"}',
+    );
+    expect(scrubSecrets('access_token=short-token status=failed')).toBe(
+      'access_token=[REDACTED] status=failed',
+    );
+  });
+
   it('redacts GitHub PATs and Google API keys', () => {
     // Build fake fixtures from parts so source file scanners don't flag them as real secrets.
     const fakeGhPat = 'ghp' + '_' + 'abcdefghijklmnopqrstuvwxyz1234567890';

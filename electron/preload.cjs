@@ -16,6 +16,8 @@ const { contextBridge, ipcRenderer, webUtils } = require('electron');
 
 const TAURI_LOCAL_STORAGE_GET = 'abu:tauri-local-storage:get';
 const TAURI_LOCAL_STORAGE_ACK = 'abu:tauri-local-storage:ack';
+const RUNTIME_EVENT_CHANNEL = 'abu:runtime-event';
+const RUNTIME_DIAGNOSTICS_CHANNEL = 'abu:runtime-diagnostics';
 const TAURI_STORE_KEYS = new Set([
   'abu-settings',
   'abu-chat',
@@ -268,6 +270,8 @@ contextBridge.exposeInMainWorld('__ABU_SHELL__', {
   // Chromium no longer exposes File.path. Keep the bridge deliberately narrow:
   // the renderer can resolve only a File object the user already dragged in.
   getPathForFile: (file) => webUtils.getPathForFile(file),
+  recordRuntimeEvent: (event) => ipcRenderer.send(RUNTIME_EVENT_CHANNEL, safeArgs(event)),
+  getRuntimeDiagnostics: () => ipcRenderer.invoke(RUNTIME_DIAGNOSTICS_CHANNEL),
 });
 
 // unlisten() calls this SYNCHRONOUSLY before invoking `plugin:event|unlisten`

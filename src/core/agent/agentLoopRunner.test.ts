@@ -37,6 +37,25 @@ vi.mock('../sidecar/sidecarManager', () => ({
   SidecarRequestError: MockSidecarRequestError,
 }));
 
+const {
+  traceRuntimeEventMock,
+  startRuntimeRunMock,
+  markRuntimeRunStageMock,
+  finishRuntimeRunMock,
+} = vi.hoisted(() => ({
+  traceRuntimeEventMock: vi.fn(),
+  startRuntimeRunMock: vi.fn(),
+  markRuntimeRunStageMock: vi.fn(),
+  finishRuntimeRunMock: vi.fn(),
+}));
+vi.mock('../observability/runtimeTrace', () => ({
+  traceRuntimeEvent: (...a: unknown[]) => traceRuntimeEventMock(...a),
+  startRuntimeRun: (...a: unknown[]) => startRuntimeRunMock(...a),
+  markRuntimeRunStage: (...a: unknown[]) => markRuntimeRunStageMock(...a),
+  finishRuntimeRun: (...a: unknown[]) => finishRuntimeRunMock(...a),
+  runtimeErrorType: (error: unknown) => error instanceof Error ? error.name.toLowerCase() : typeof error,
+}));
+
 const applyDeltaFramesMock = vi.fn().mockResolvedValue(undefined);
 vi.mock('./frameApplier', () => ({
   applyDeltaFrames: (...a: unknown[]) => applyDeltaFramesMock(...a),
@@ -501,6 +520,10 @@ describe('agentLoopRunner', () => {
     getSidecarStatusMock.mockReset();
     getSidecarStatusMock.mockReturnValue('running');
     sidecarRequestMock.mockReset();
+    traceRuntimeEventMock.mockReset();
+    startRuntimeRunMock.mockReset();
+    markRuntimeRunStageMock.mockReset();
+    finishRuntimeRunMock.mockReset();
     getSettingsSnapshotMock.mockReset();
     getSettingsSnapshotMock.mockReturnValue({ agentMaxTurns: 200 });
     getPlanModeMock.mockReset();
@@ -1710,6 +1733,63 @@ describe('agentLoopRunner', () => {
       expect(p.resolvedCreds).toEqual({ apiKey: 'sk-1', baseUrl: undefined, forceOpenAiCompatible: false });
       expect(p.toolList).toEqual([{ name: 'read_file', description: 'reads a file', inputSchema: { type: 'object', properties: {} } }]);
       expect(result).toEqual({ reason: 'completed' });
+    });
+
+    it('records a stall after 30 seconds without a non-empty delta, without changing run behavior', async () => {
+      vi.useFakeTimers();
+      const { runAgentLoopDispatched } = await importFresh();
+      const rpc = deferred<unknown>();
+      sidecarRequestMock.mockReturnValue(rpc.promise);
+
+      const running = runAgentLoopDispatched('conv-1', 'hello');
+      await waitForCall(sidecarRequestMock);
+      const runId = (sidecarRequestMock.mock.calls[0][1] as { runId: string }).runId;
+
+      await vi.advanceTimersByTimeAsync(29_999);
+      expect(traceRuntimeEventMock).not.toHaveBeenCalledWith(
+        'renderer.agent_run_stalled',
+        expect.anything(),
+      );
+      await vi.advanceTimersByTimeAsync(1);
+      expect(traceRuntimeEventMock).toHaveBeenCalledWith(
+        'renderer.agent_run_stalled',
+        expect.objectContaining({ runId, stage: 'stalled_before_first_delta' }),
+      );
+
+      rpc.resolve({ reason: 'completed' });
+      await expect(running).resolves.toEqual({ reason: 'completed' });
+    });
+
+    it('first delta clears the stall timer and records successful frame application', async () => {
+      vi.useFakeTimers();
+      const { runAgentLoopDispatched } = await importFresh();
+      const rpc = deferred<unknown>();
+      sidecarRequestMock.mockReturnValue(rpc.promise);
+
+      const running = runAgentLoopDispatched('conv-1', 'hello');
+      await waitForCall(sidecarRequestMock);
+      const runId = (sidecarRequestMock.mock.calls[0][1] as { runId: string }).runId;
+      const deltaHandler = handlerFor(onSidecarNotification, 'agent.delta');
+      await vi.advanceTimersByTimeAsync(10_000);
+      deltaHandler({ runId, frames: [{ p: 'chat', m: 'appendText', a: ['conv-1', 'first'] }] });
+      await vi.waitFor(() => expect(applyDeltaFramesMock).toHaveBeenCalledTimes(1));
+      await vi.advanceTimersByTimeAsync(30_000);
+
+      expect(traceRuntimeEventMock).toHaveBeenCalledWith(
+        'renderer.agent_delta_received',
+        expect.objectContaining({ runId, frameCount: 1 }),
+      );
+      expect(traceRuntimeEventMock).toHaveBeenCalledWith(
+        'renderer.first_frame_applied',
+        expect.objectContaining({ runId, frameCount: 1 }),
+      );
+      expect(traceRuntimeEventMock).not.toHaveBeenCalledWith(
+        'renderer.agent_run_stalled',
+        expect.anything(),
+      );
+
+      rpc.resolve({ reason: 'completed' });
+      await expect(running).resolves.toEqual({ reason: 'completed' });
     });
 
     it('serializes the per-run tool whitelist into agent.run options', async () => {

@@ -465,8 +465,9 @@ test('resources cannot be released by another IPC sender', () => {
   );
 });
 
-test('preload exposes only the narrow Electron file-path resolver', () => {
+test('preload exposes only the narrow file resolver and runtime diagnostic bridge', async () => {
   const exposed = new Map();
+  const sent = [];
   const nativeFile = { name: 'report.pdf' };
   const webUtils = {
     getPathForFile(file) {
@@ -475,8 +476,9 @@ test('preload exposes only the narrow Electron file-path resolver', () => {
     },
   };
   const ipcRenderer = {
-    invoke: async () => undefined,
+    invoke: async (channel) => channel === 'abu:runtime-diagnostics' ? { schemaVersion: 1 } : undefined,
     on: () => undefined,
+    send: (channel, payload) => sent.push({ channel, payload }),
     sendSync: () => null,
   };
   const context = {
@@ -499,6 +501,17 @@ test('preload exposes only the narrow Electron file-path resolver', () => {
   vm.runInNewContext(preloadSource, context, { filename: 'preload.cjs' });
 
   const shellBridge = exposed.get('__ABU_SHELL__');
-  assert.deepEqual(Object.keys(shellBridge).sort(), ['getPathForFile', 'mainSupervisesSidecar']);
+  assert.deepEqual(Object.keys(shellBridge).sort(), [
+    'getPathForFile',
+    'getRuntimeDiagnostics',
+    'mainSupervisesSidecar',
+    'recordRuntimeEvent',
+  ]);
   assert.equal(shellBridge.getPathForFile(nativeFile), '/native/report.pdf');
+  shellBridge.recordRuntimeEvent({ event: 'renderer.test', runId: 'run-1' });
+  assert.deepEqual(JSON.parse(JSON.stringify(sent)), [{
+    channel: 'abu:runtime-event',
+    payload: { event: 'renderer.test', runId: 'run-1' },
+  }]);
+  assert.deepEqual(JSON.parse(JSON.stringify(await shellBridge.getRuntimeDiagnostics())), { schemaVersion: 1 });
 });

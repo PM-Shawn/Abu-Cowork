@@ -7,6 +7,19 @@ All notable changes to Abu are documented here. Format based on [Keep a Changelo
 > [`CHANGELOG.zh-CN.md`](./CHANGELOG.zh-CN.md); keep both in sync per release (see
 > `RELEASING.md`). Entries before v0.31.0 predate this split and remain bilingual.
 
+## v0.36.1 · 2026-08-12
+
+**Root cause**: When a conversation stopped sending, previous support bundles could not show which boundary stalled between the renderer, Electron main process, sidecar, and model request; version and update surfaces could also report stale release metadata.
+
+**Fix**:
+
+- Runtime diagnostics now correlate renderer, Electron main, and sidecar checkpoints with run and RPC identifiers, including sidecar readiness, first response, a 30-second no-response stall, bridge acknowledgement, cancellation, and failure stages.
+- Diagnostic exports automatically include the renderer trace, pending RPCs, and sidecar state. Fields are allowlisted and scrubbed so prompts, responses, credentials, and provider response bodies are not collected.
+- Diagnostics and update checks now use the live app version, actively verify update status, and display localized notes only when they match the exact release metadata.
+- Website download labels and bilingual release metadata now follow the latest published GitHub Release consistently.
+
+**Full Changelog**: https://github.com/PM-Shawn/Abu-Cowork/compare/v0.36.0...v0.36.1
+
 ## v0.36.0 · 2026-08-09
 
 ### ✨ Features

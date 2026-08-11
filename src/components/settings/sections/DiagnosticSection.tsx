@@ -24,12 +24,19 @@ export default function DiagnosticSection() {
   const lastCheckedAt = useDiagnosticStore((s) => s.lastCheckedAt);
   const isChecking = useDiagnosticStore((s) => s.isChecking);
   const runAll = useDiagnosticStore((s) => s.runAll);
+  const refreshApp = useDiagnosticStore((s) => s.refreshApp);
   const setActiveSystemTab = useSettingsStore((s) => s.setActiveSystemTab);
 
-  // Auto-run on first visit if no cached results.
+  // First visit (no cached results): run the full suite. Otherwise the panel
+  // renders the persisted snapshot instantly, but that snapshot can be stale —
+  // notably the app version froze at whatever build ran the last full check, so
+  // an in-place update kept showing the old version + "已是最新". The app check
+  // is cheap and always-current, so refresh just that item on every open.
   useEffect(() => {
     if (lastCheckedAt === null && !isChecking) {
       runAll();
+    } else {
+      refreshApp();
     }
   // run-once on mount; deps intentionally empty
   // eslint-disable-next-line react-hooks/exhaustive-deps

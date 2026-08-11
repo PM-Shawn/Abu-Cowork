@@ -980,6 +980,7 @@ const enUS: TranslationDict = {
     appVersion: 'App version',
     appLatest: 'Latest',
     appUpdateAvailable: 'Update available: v{version}',
+    appCheckFailed: 'Update check failed',
     checkInternalError: 'Check internal error',
     detailShow: 'Show details',
     detailHide: 'Hide details',

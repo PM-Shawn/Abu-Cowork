@@ -135,12 +135,19 @@ try {
       $installedProcesses = @(
         Get-Process -Name "Abu" -ErrorAction SilentlyContinue |
           Where-Object {
-            $beforePids -notcontains $_.Id -and
-            $_.Path -and
-            [System.IO.Path]::GetFullPath($_.Path).Equals(
-              $installedPath,
-              [System.StringComparison]::OrdinalIgnoreCase
-            )
+            try {
+              $beforePids -notcontains $_.Id -and
+              $_.Path -and
+              [System.IO.Path]::GetFullPath($_.Path).Equals(
+                $installedPath,
+                [System.StringComparison]::OrdinalIgnoreCase
+              )
+            } catch {
+              # A process exiting mid-shutdown can expose an empty/unreadable
+              # Path; treat it as not-a-match instead of crashing the smoke
+              # (mirrors the try/catch already guarding the Un_* scan below).
+              $false
+            }
           }
       )
       if ($installedProcesses | Where-Object { $_.MainWindowHandle -ne 0 }) {
@@ -162,12 +169,19 @@ try {
       $installedProcesses = @(
         Get-Process -Name "Abu" -ErrorAction SilentlyContinue |
           Where-Object {
-            $beforePids -notcontains $_.Id -and
-            $_.Path -and
-            [System.IO.Path]::GetFullPath($_.Path).Equals(
-              $installedPath,
-              [System.StringComparison]::OrdinalIgnoreCase
-            )
+            try {
+              $beforePids -notcontains $_.Id -and
+              $_.Path -and
+              [System.IO.Path]::GetFullPath($_.Path).Equals(
+                $installedPath,
+                [System.StringComparison]::OrdinalIgnoreCase
+              )
+            } catch {
+              # A process exiting mid-shutdown can expose an empty/unreadable
+              # Path; treat it as not-a-match instead of crashing the smoke
+              # (mirrors the try/catch already guarding the Un_* scan below).
+              $false
+            }
           }
       )
     } while ($installedProcesses.Count -gt 0 -and [DateTime]::UtcNow -lt $shutdownDeadline)
@@ -290,11 +304,18 @@ finally {
       $remainingInstalledProcesses = @(
         Get-Process -Name "Abu" -ErrorAction SilentlyContinue |
           Where-Object {
-            $_.Path -and
-            [System.IO.Path]::GetFullPath($_.Path).Equals(
-              $installedPath,
-              [System.StringComparison]::OrdinalIgnoreCase
-            )
+            try {
+              $_.Path -and
+              [System.IO.Path]::GetFullPath($_.Path).Equals(
+                $installedPath,
+                [System.StringComparison]::OrdinalIgnoreCase
+              )
+            } catch {
+              # A process exiting mid-shutdown can expose an empty/unreadable
+              # Path; treat it as not-a-match instead of crashing the smoke
+              # (mirrors the try/catch already guarding the Un_* scan below).
+              $false
+            }
           }
       )
       foreach ($process in $remainingInstalledProcesses) {

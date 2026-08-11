@@ -20,6 +20,7 @@ vi.mock('@tauri-apps/plugin-updater', () => ({
 vi.mock('@/core/notice/bus', () => ({ publish: vi.fn() }));
 
 import { checkForUpdate, downloadAndInstallUpdate } from './checker';
+import { publish } from '@/core/notice/bus';
 
 const EN_BODY = 'English release notes for v0.32.0 — multi-tab workspace and more.';
 const ZH_NOTES = '中文更新说明：多页签工作区、卡片化改版等，内容足够长以通过丰富度判断。';
@@ -98,6 +99,96 @@ describe('checkForUpdate — locale-aware release notes', () => {
     const info = await checkForUpdate(true);
 
     expect(info?.releaseNotes).toBe(EN_BODY);
+  });
+
+  it('ignores latest.json zh-CN notes when its version is behind the offered update', async () => {
+    // Regression: latest.json (Tauri manifest) froze at an older release while
+    // the electron-updater feed advanced. Without the version guard a zh-CN
+    // user offered v0.32.0 would read the STALE manifest's notes for a
+    // different version. Guard → fall back to the English body (right version).
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({ version: 'v0.30.0', notes_i18n: { 'zh-CN': ZH_NOTES } }),
+      }),
+    );
+
+    const info = await checkForUpdate(true);
+
+    expect(info?.releaseNotes).toBe(EN_BODY);
+  });
+
+  it('still uses zh-CN notes when latest.json omits a version (backward compat)', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({ notes_i18n: { 'zh-CN': ZH_NOTES } }), // no version field
+      }),
+    );
+
+    const info = await checkForUpdate(true);
+
+    expect(info?.releaseNotes).toBe(ZH_NOTES);
+  });
+
+  it('accepts zh-CN notes when latest.json version matches without the v prefix', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({ version: '0.32.0', notes_i18n: { 'zh-CN': ZH_NOTES } }), // no leading v
+      }),
+    );
+
+    const info = await checkForUpdate(true);
+
+    expect(info?.releaseNotes).toBe(ZH_NOTES);
+  });
+});
+
+describe('checkForUpdate — silent option (background/observer callers)', () => {
+  beforeEach(() => {
+    mockCheck.mockReset();
+    mockCheck.mockResolvedValue(fakeUpdate());
+    (publish as unknown as ReturnType<typeof vi.fn>).mockClear();
+    useSettingsStore.setState({
+      lastUpdateCheck: 0,
+      updateInfo: null,
+      updateChecking: false,
+    });
+    mockLocale = 'en-US'; // skip the latest.json fetch; not under test here
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+  });
+
+  it('silent: never fires the update_available notification', async () => {
+    await checkForUpdate(true, { silent: true });
+    expect(publish).not.toHaveBeenCalled();
+  });
+
+  it('silent: never flips the global updateChecking spinner flag', async () => {
+    const spy = vi.spyOn(useSettingsStore.getState(), 'setUpdateChecking');
+    await checkForUpdate(true, { silent: true });
+    expect(spy).not.toHaveBeenCalled();
+  });
+
+  it('silent: still records updateInfo so observer callers can read the result', async () => {
+    const info = await checkForUpdate(true, { silent: true });
+    expect(info?.version).toBe('0.32.0');
+    expect(useSettingsStore.getState().updateInfo?.version).toBe('0.32.0');
+  });
+
+  it('non-silent (default): fires the notification and toggles updateChecking', async () => {
+    const spy = vi.spyOn(useSettingsStore.getState(), 'setUpdateChecking');
+    await checkForUpdate(true);
+    expect(publish).toHaveBeenCalledTimes(1);
+    expect(spy).toHaveBeenCalledWith(true);
+    expect(spy).toHaveBeenCalledWith(false);
   });
 });
 

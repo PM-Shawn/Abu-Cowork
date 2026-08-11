@@ -38,14 +38,28 @@ function setDownloadProgress(progress: UpdateDownloadProgress): void {
  * international users. English users already have the right text, so skip the
  * extra fetch. Any failure (offline, old manifest without `notes_i18n`, missing
  * locale) falls back to the English body — never worse than before.
+ *
+ * 🔴 Version guard: `latest.json` is a DIFFERENT manifest from the
+ * electron-updater feed (`electron/<arch>/latest-mac.yml`) that produced
+ * `expectedVersion`. The two can drift — e.g. the Tauri-era `latest.json`
+ * publishing lagged behind and froze at an older release while the Electron
+ * feed advanced. When they disagree, `latest.json`'s notes describe a
+ * *different* version, so showing them would put the wrong changelog in the
+ * update prompt (a zh-CN user offered vNEW would read vOLD's notes). Only trust
+ * the localized notes when the manifest is for the same version as the offered
+ * update; otherwise fall back to the English body from the updater itself,
+ * which is always for the right version. A manifest without a `version` field
+ * keeps the old behavior (no guard) for backward compatibility.
  */
-async function localizedNotes(fallback: string): Promise<string> {
+async function localizedNotes(fallback: string, expectedVersion: string): Promise<string> {
   const locale = getLocale();
   if (locale === 'en-US') return fallback;
   try {
     const res = await fetch(LATEST_JSON_URL, { cache: 'no-cache' });
     if (!res.ok) return fallback;
-    const data = (await res.json()) as { notes_i18n?: Record<string, string> };
+    const data = (await res.json()) as { version?: string; notes_i18n?: Record<string, string> };
+    const manifestVersion = data.version?.replace(/^v/, '').trim();
+    if (manifestVersion && manifestVersion !== expectedVersion) return fallback;
     const localized = data.notes_i18n?.[locale]?.trim();
     return localized && localized.length > 0 ? localized : fallback;
   } catch {
@@ -82,18 +96,36 @@ async function enrichReleaseNotes(rawNotes: string): Promise<{ notes: string; ur
   return { notes: rawNotes, url: releaseUrl };
 }
 
-export async function checkForUpdate(force = false): Promise<UpdateInfo | null> {
+/**
+ * @param opts.silent Perform the check WITHOUT touching the global update UI:
+ *   skip the `updateChecking` spinner flag (bound by AboutSection/AccountMenu)
+ *   and skip the `update_available` notification. `updateInfo` and
+ *   `lastUpdateCheck` are still written so callers reading store state (e.g. the
+ *   diagnostic app-check) see the result. Use when a background/observer caller
+ *   wants the data but must not surface update UI to the user.
+ */
+export async function checkForUpdate(
+  force = false,
+  opts: { silent?: boolean } = {},
+): Promise<UpdateInfo | null> {
   const store = useSettingsStore.getState();
+  const { silent = false } = opts;
 
   if (!force) {
     const elapsed = Date.now() - store.lastUpdateCheck;
     if (elapsed < CHECK_INTERVAL_MS) return null;
   }
 
-  store.setUpdateChecking(true);
+  if (!silent) store.setUpdateChecking(true);
 
   try {
     const update = await check();
+    // Invariant relied on by the diagnostic app-check (core/diagnostic/checks/
+    // app.ts): `lastUpdateCheck` is advanced ONLY after check() actually
+    // resolves — i.e. the server (or the idle dev updater) was reached. A
+    // thrown check() skips straight to the catch below WITHOUT advancing it,
+    // which is how the diagnostic distinguishes "confirmed up to date" from
+    // "could not reach the update feed". Do not move this above `await check()`.
     store.setLastUpdateCheck(Date.now());
 
     if (!update) {
@@ -104,11 +136,12 @@ export async function checkForUpdate(force = false): Promise<UpdateInfo | null> 
 
     _pendingUpdate = update;
 
-    const localized = await localizedNotes(update.body ?? '');
+    const normalizedVersion = update.version.replace(/^v/, '').trim();
+    const localized = await localizedNotes(update.body ?? '', normalizedVersion);
     const { notes, url } = await enrichReleaseNotes(localized);
 
     const info: UpdateInfo = {
-      version: update.version.replace(/^v/, ''),
+      version: normalizedVersion,
       releaseNotes: notes,
       releaseUrl: url,
       publishedAt: update.date ?? '',
@@ -116,20 +149,22 @@ export async function checkForUpdate(force = false): Promise<UpdateInfo | null> 
 
     store.setUpdateInfo(info);
 
-    publish({
-      type: 'update_available',
-      source: 'core',
-      payload: { version: info.version, releaseUrl: info.releaseUrl },
-      // dedupKey includes version so each release only notifies once
-      dedupKey: `update_available:${info.version}`,
-    });
+    if (!silent) {
+      publish({
+        type: 'update_available',
+        source: 'core',
+        payload: { version: info.version, releaseUrl: info.releaseUrl },
+        // dedupKey includes version so each release only notifies once
+        dedupKey: `update_available:${info.version}`,
+      });
+    }
 
     return info;
   } catch (err) {
     console.warn('[Update] Check failed:', err);
     return null;
   } finally {
-    store.setUpdateChecking(false);
+    if (!silent) store.setUpdateChecking(false);
   }
 }
 

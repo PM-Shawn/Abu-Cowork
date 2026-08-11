@@ -42,6 +42,7 @@ const {
   ACK_CHANNEL: TAURI_LOCAL_STORAGE_ACK,
   MIGRATION_VERSION: TAURI_LOCAL_STORAGE_MIGRATION_VERSION,
   prepareTauriLocalStorageMigration,
+  hasLegacySourceEvidence,
   migrateWindowsSecrets,
   finalizeTauriLocalStorageMigration,
 } = require('./tauriLocalStorageMigration.cjs');
@@ -914,6 +915,7 @@ function registerTauriHost(app, options = {}) {
     paths: migrationPaths,
   });
   let localStorageMigration = null;
+  let fileMigrationResult = null;
   if (migrationArmed || migrateEnv === '1' || migrateEnv === 'dry') {
     const readerName = process.platform === 'win32'
       ? 'tauri-transition-reader.exe'
@@ -961,6 +963,7 @@ function registerTauriHost(app, options = {}) {
         sourceWins: migrationArmed || migrateEnv === '1',
         inventory: options.transitionInventory,
       });
+      fileMigrationResult = result;
       writeMigrationDiagnostics({
         stage: 'file-migration',
         migrationArmed,
@@ -1017,12 +1020,17 @@ function registerTauriHost(app, options = {}) {
         secretSet: (key, value) => secretDispatch('secret_set', { key, value }),
         secretHas: (key) => secretDispatch('secret_has', { key }) === true,
         sourceWins: migrationArmed || migrateEnv === '1',
+        hasLegacySource: hasLegacySourceEvidence(
+          localStorageMigration,
+          fileMigrationResult
+        ),
       });
       console.log(
         `[tauriLocalStorageMigration] Windows secrets: ${secrets.migrated.length} migrated, ` +
           `${secrets.overwritten.length} overwritten from installed Tauri, ` +
           `${secrets.skippedExisting.length} existing, ${secrets.missing.length} absent, ` +
-          `${secrets.failed.length} failed`
+          `${secrets.failed.length} failed` +
+          (secrets.skippedReason ? `; skipped: ${secrets.skippedReason}` : '')
       );
       if (migrationArmed && localStorageMigration.secretMigrationFailed) {
         setMigrationStartupBlock('windows-secret-migration-failed');

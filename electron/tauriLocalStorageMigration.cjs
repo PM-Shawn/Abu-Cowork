@@ -277,6 +277,26 @@ function collectKnownSecretKeys(items) {
   return [...keys];
 }
 
+function hasLegacySourceEvidence(plan, fileMigrationResult) {
+  // Windows Credential Manager outlives AppData. Do not let an unreadable
+  // orphaned credential keep a clean reinstall in the transition retry loop.
+  if (typeof plan?.sourceDatabase === 'string' && plan.sourceDatabase.length > 0) {
+    return true;
+  }
+  // A completed file migration can be retried solely because secret migration
+  // failed. Its summary omits inventory, but the legacy profile still exists.
+  if (fileMigrationResult?.skipped === 'already-migrated') {
+    return true;
+  }
+  const inventory = fileMigrationResult?.inventory;
+  if (!inventory || typeof inventory !== 'object' || Array.isArray(inventory)) {
+    return false;
+  }
+  return Object.values(inventory).some(
+    (entry) => entry && typeof entry === 'object' && Number(entry.files || 0) > 0
+  );
+}
+
 function writeSentinel(electronDir, record) {
   fs.mkdirSync(electronDir, { recursive: true });
   const sentinelPath = path.join(electronDir, SENTINEL_FILENAME);
@@ -405,10 +425,21 @@ function migrateWindowsSecrets(plan, options) {
   if (!plan || plan.platform !== 'win32' || !['pending', 'dry-run'].includes(plan.status)) {
     return { migrated: [], overwritten: [], skippedExisting: [], missing: [], failed: [] };
   }
+  if (options.hasLegacySource === false) {
+    return {
+      migrated: [],
+      overwritten: [],
+      skippedExisting: [],
+      missing: [],
+      failed: [],
+      skippedReason: 'no-legacy-source-evidence',
+    };
+  }
   const keys = collectKnownSecretKeys(plan.items);
   let response;
   try {
-    response = runReader(options.readerPath, { operation: 'windowsSecrets', keys });
+    const reader = options.runReader || runReader;
+    response = reader(options.readerPath, { operation: 'windowsSecrets', keys });
   } catch {
     plan.secretMigrationFailed = true;
     return { migrated: [], overwritten: [], skippedExisting: [], missing: [], failed: ['reader'] };
@@ -549,6 +580,7 @@ module.exports = {
   storageStateFingerprint,
   collectValidatedItems,
   collectKnownSecretKeys,
+  hasLegacySourceEvidence,
   hasValidSentinel,
   prepareTauriLocalStorageMigration,
   migrateWindowsSecrets,

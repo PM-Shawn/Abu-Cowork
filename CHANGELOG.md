@@ -7,6 +7,27 @@ All notable changes to Abu are documented here. Format based on [Keep a Changelo
 > [`CHANGELOG.zh-CN.md`](./CHANGELOG.zh-CN.md); keep both in sync per release (see
 > `RELEASING.md`). Entries before v0.31.0 predate this split and remain bilingual.
 
+## v0.37.0 · 2026-08-12
+
+### Features
+
+- **Reliable task execution across process boundaries** — A turn is now written to disk before execution starts, receives a bounded start acknowledgement, and settles only after its completed, failed, or interrupted state is durable. If Electron or the sidecar disconnects, Abu queries the existing run and resumes observation instead of replaying tool work.
+- **Actionable diagnostic bundles** — Exports now recheck live health and include a scrubbed manifest plus a renderer-to-sidecar run timeline, making it possible to distinguish persistence, startup, first-response, cancellation, and provider failures without collecting prompts, replies, credentials, or local paths.
+- **Adaptive context budgeting** — Long conversations reserve space for system prompts, tools, images, and model output before sending, then compact progressively while keeping recent user intent and tool results available.
+
+### Fixes
+
+- **One task owner per conversation** — Rapid sends, image attachments, scheduled tasks, triggers, and IM messages can no longer start overlapping model streams in the same conversation; text follow-ups remain safely staged for an interactive task.
+- **Stop and crash recovery are durable** — Stop waits for queued frames and local persistence, removes empty streaming placeholders, preserves queued follow-ups, and recovers partial replies after app termination or sidecar replacement.
+- **Custom web search status is accurate** — The AI services page now reflects a configured custom search endpoint instead of reporting the capability as unavailable.
+- **Update notes follow the selected language** — Switching the interface language now refreshes the update dialog with the matching English or Chinese release notes instead of keeping the previous locale.
+
+### Platform-Specific
+
+- **Windows** — Python launcher commands such as `py -3` and `py -3.12` are parsed as interpreter selectors, so bundled and host Python execution no longer forwards an invalid selector to CPython.
+
+**Full Changelog**: https://github.com/PM-Shawn/Abu-Cowork/compare/v0.36.1...v0.37.0
+
 ## v0.36.1 · 2026-08-12
 
 **Root cause**: When a conversation stopped sending, previous support bundles could not show which boundary stalled between the renderer, Electron main process, sidecar, and model request; version and update surfaces could also report stale release metadata.

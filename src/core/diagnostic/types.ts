@@ -27,6 +27,8 @@ export type CheckStatus =
   /** Currently running. */
   | 'checking';
 
+export type DiagnosticFreshness = 'fresh' | 'stale' | 'unknown';
+
 export interface SuggestedAction {
   /**
    * `open-settings` — deep-link into a system-settings tab.
@@ -59,6 +61,8 @@ export interface CheckResult {
   checkedAt: number;
   /** Wall time spent on this check in ms. */
   durationMs: number;
+  /** Whether this row was measured now, reused from cache, or could not be measured. */
+  freshness?: DiagnosticFreshness;
 }
 
 /** A `CheckResult` instance still in-flight (status === 'checking'). */
@@ -71,11 +75,15 @@ export type OverallStatus = 'all-passed' | 'has-warnings' | 'has-failures' | 'ch
 
 /** Snapshot embedded inside the diagnostic-bundle zip. */
 export interface DiagnosticSnapshot {
-  schemaVersion: 1;
+  schemaVersion: 2;
+  checkStartedAt: number;
   takenAt: number;
   appVersion: string;
   bundleId: string;
   os: string;
   overall: OverallStatus;
+  freshness: DiagnosticFreshness;
+  /** Present when cached results had to be reused. */
+  staleAgeMs?: number;
   results: CheckResult[];
 }

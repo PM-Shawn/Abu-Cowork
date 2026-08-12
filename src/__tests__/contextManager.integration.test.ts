@@ -3,13 +3,13 @@
  * Validates the full pipeline of context preparation with truncation
  */
 import { describe, it, expect } from 'vitest';
-import { prepareContextMessages } from '../core/context/contextManager';
+import { enforceContextBudget } from '../core/context/contextManager';
 import { estimateTokens, estimateMessageTokens } from '../core/context/tokenEstimator';
 import { truncateToolResult } from '../core/context/truncation';
 import type { Message } from '../types';
 
 function makeMsg(role: 'user' | 'assistant', content: string): Message {
-  return { id: Math.random().toString(36), role, content, timestamp: Date.now() };
+  return { id: `${role}-${content.slice(0, 12)}`, role, content, timestamp: 1_800_000_000_000 };
 }
 
 describe('contextManager integration', () => {
@@ -46,11 +46,12 @@ describe('contextManager integration', () => {
 
     const contextWindow = 8000;
     const reserveForOutput = 2000;
-    const result = prepareContextMessages(messages, systemPrompt, contextWindow, reserveForOutput);
+    const budgetResult = enforceContextBudget(messages, systemPrompt, contextWindow, reserveForOutput);
+    const result = budgetResult.messages;
 
     // Result should fit within the budget
     const resultTokens = estimateTokens(systemPrompt) + estimateMessageTokens(result);
-    expect(resultTokens).toBeLessThanOrEqual(contextWindow);
+    expect(resultTokens).toBeLessThanOrEqual(budgetResult.inputBudget);
 
     // First user message should be preserved
     const firstUser = result.find((m) => m.role === 'user');
@@ -61,7 +62,7 @@ describe('contextManager integration', () => {
     const textMsg: Message = {
       id: '1', role: 'user',
       content: 'Hello world',
-      timestamp: Date.now(),
+      timestamp: 1_800_000_000_000,
     };
 
     const multimodalMsg: Message = {
@@ -70,7 +71,7 @@ describe('contextManager integration', () => {
         { type: 'text', text: 'Hello world' },
         { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'abc' } },
       ],
-      timestamp: Date.now(),
+      timestamp: 1_800_000_000_000,
     };
 
     const textTokens = estimateMessageTokens([textMsg]);

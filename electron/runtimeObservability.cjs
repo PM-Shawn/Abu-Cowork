@@ -17,6 +17,7 @@ const BRIDGE_ACK_TIMEOUT_MS = 3_000;
 
 const SAFE_ATTRIBUTE_KEYS = new Set([
   'runId',
+  'clientMessageId',
   'rpcId',
   'method',
   'stage',
@@ -32,6 +33,8 @@ const SAFE_ATTRIBUTE_KEYS = new Set([
   'executionPath',
   'firstFrameMs',
   'bridgeLatencyMs',
+  'acceptedAt',
+  'replayCount',
 ]);
 
 const SECRET_PATTERNS = [

@@ -245,6 +245,17 @@ export interface Message {
   isStreaming?: boolean;
   /** Persisted terminal reason for an assistant turn that the user stopped. */
   stopReason?: 'user';
+  /**
+   * Durable shell-owned lifecycle for a user message dispatched to the
+   * sidecar. The message is appended before any asynchronous preparation so
+   * it can never disappear when the sidecar handshake stalls or fails.
+   */
+  runState?: 'pending' | 'accepted' | 'running' | 'completed' | 'failed' | 'interrupted';
+  /** Stable correlation ids for Reliable Run Protocol V1. */
+  runId?: string;
+  clientMessageId?: string;
+  /** User-facing detail retained when dispatch reaches a failed terminal. */
+  runError?: string;
   toolCalls?: ToolCall[];
   // Extended thinking content
   thinking?: string;

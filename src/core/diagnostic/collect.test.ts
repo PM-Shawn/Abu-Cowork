@@ -1,4 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+const diagnosticRunnerMock = vi.hoisted(() => vi.fn());
+vi.mock('./runner', () => ({ runAllChecks: diagnosticRunnerMock }));
+
 import {
   capDiagnosticMessages,
   DEFAULT_DIAGNOSTIC_MESSAGE_CAP,
@@ -10,6 +13,12 @@ import { useChatStore } from '@/stores/chatStore';
 import type { Conversation, Message } from '@/types';
 import type { ConversationMeta } from '@/core/session/conversationStorage';
 import { clearLogs, createLogger } from '@/core/logging/logger';
+import { useDiagnosticStore } from '@/stores/diagnosticStore';
+
+beforeEach(() => {
+  diagnosticRunnerMock.mockReset().mockResolvedValue([]);
+  useDiagnosticStore.setState({ results: {}, lastCheckedAt: null, isChecking: false });
+});
 
 function makeMessage(id: string, text: string): Message {
   return { id, role: 'user', content: text, timestamp: Date.now() };
@@ -113,6 +122,57 @@ describe('collectBundleFiles (诊断反馈增强 L1: 多选对话 / 描述 / 截
     expect(files[`conversations/${shortB}/index-entry.json`]).toBeDefined();
     // C was not selected — must not appear
     expect(files[`conversations/${shortC}/messages.jsonl`]).toBeUndefined();
+  });
+
+  it('runs a live bounded doctor and writes freshness plus a machine-readable manifest', async () => {
+    diagnosticRunnerMock.mockResolvedValue([{
+      id: 'app:version',
+      category: 'app',
+      name: 'version',
+      status: 'passed',
+      checkedAt: 100,
+      durationMs: 2,
+    }]);
+
+    const { files } = await collectBundleFiles({ includeRawText: true, conversationIds: [] });
+    const snapshot = JSON.parse(String(files['diagnostic-snapshot.json']));
+    const manifest = JSON.parse(String(files['manifest.json']));
+
+    expect(diagnosticRunnerMock).toHaveBeenCalledWith({ categoryTimeoutMs: 10_000 });
+    expect(snapshot).toMatchObject({ schemaVersion: 2, freshness: 'fresh' });
+    expect(snapshot.results[0]).toMatchObject({ id: 'app:version', freshness: 'fresh' });
+    expect(manifest).toMatchObject({
+      schemaVersion: 1,
+      diagnosticFreshness: 'fresh',
+      missingRequiredFiles: [],
+    });
+    expect(manifest.files.map((entry: { path: string }) => entry.path)).toEqual(
+      expect.arrayContaining(['manifest.json', 'README.txt', 'diagnostic-snapshot.json']),
+    );
+  });
+
+  it('marks cached fallback results stale instead of presenting them as live', async () => {
+    diagnosticRunnerMock.mockRejectedValue(new Error('runner unavailable'));
+    useDiagnosticStore.setState({
+      lastCheckedAt: 100,
+      results: {
+        'network:reachability': {
+          id: 'network:reachability',
+          category: 'network',
+          name: 'network',
+          status: 'passed',
+          checkedAt: 100,
+          durationMs: 1,
+        },
+      },
+    });
+
+    const { files } = await collectBundleFiles({ includeRawText: true, conversationIds: [] });
+    const snapshot = JSON.parse(String(files['diagnostic-snapshot.json']));
+
+    expect(snapshot.freshness).toBe('stale');
+    expect(snapshot.staleAgeMs).toBeGreaterThanOrEqual(0);
+    expect(snapshot.results[0]).toMatchObject({ freshness: 'stale' });
   });
 
   it('produces no conversations/<id>/ content when conversationIds is empty and there is no active conversation, but still writes environment files', async () => {

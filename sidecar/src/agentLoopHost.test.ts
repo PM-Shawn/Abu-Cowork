@@ -52,6 +52,8 @@ vi.mock('./localTools', () => ({
 
 import {
   handleAgentRun,
+  handleAgentStart,
+  handleAgentGetState,
   handleAgentAbort,
   handleAgentEnqueueInput,
   handleStateConvPatch,
@@ -60,6 +62,7 @@ import {
   handleStatePlanMode,
   shutdownAllAgentRuns,
   __getActiveAgentRunCount,
+  __resetAgentRunRegistryForTests,
 } from './agentLoopHost';
 import { getCurrentAgentRunContext } from './agentRunContext';
 // Real (unmocked) module — this file doesn't mock '@/core/agent/userInputQueue',
@@ -133,6 +136,73 @@ describe('agentLoopHost', () => {
     hasLocalToolMock.mockReturnValue(false);
     isLocalToolReadOnlyMock.mockReset();
     executeLocalToolMock.mockReset();
+    __resetAgentRunRegistryForTests();
+  });
+
+  describe('Reliable Run Protocol start registry', () => {
+    function reliableParams(overrides: Record<string, unknown> = {}) {
+      const params = baseParams(overrides);
+      return {
+        ...params,
+        clientMessageId: `msg-${params.runId}`,
+        payloadDigest: `digest-${params.runId}`,
+        options: { prePersistedUserMessageId: `msg-${params.runId}` },
+      };
+    }
+
+    it('acknowledges ownership before execution and exposes accepted state', () => {
+      const params = reliableParams({ runId: 'start-accepted' });
+      expect(handleAgentStart(params)).toEqual(expect.objectContaining({
+        version: 1,
+        runId: 'start-accepted',
+        clientMessageId: 'msg-start-accepted',
+        state: 'accepted',
+        replay: false,
+      }));
+      expect(runAgentLoopMock).not.toHaveBeenCalled();
+      expect(handleAgentGetState({ runId: 'start-accepted' })).toEqual(expect.objectContaining({
+        state: 'accepted',
+        clientMessageId: 'msg-start-accepted',
+      }));
+    });
+
+    it('replays the same acceptance without executing twice and rejects conflicting reuse', () => {
+      const params = reliableParams({ runId: 'start-replay' });
+      handleAgentStart(params);
+      expect(handleAgentStart(params)).toEqual(expect.objectContaining({ replay: true, state: 'accepted' }));
+      expect(() => handleAgentStart({ ...params, payloadDigest: 'different' })).toThrow(RpcError);
+      expect(runAgentLoopMock).not.toHaveBeenCalled();
+    });
+
+    it('caches the ordered terminal for getState and later start replays', async () => {
+      const params = reliableParams({ runId: 'start-terminal' });
+      handleAgentStart(params);
+      runAgentLoopMock.mockResolvedValueOnce({ reason: 'completed' });
+      await handleAgentRun(params);
+
+      expect(handleAgentGetState({ runId: params.runId })).toEqual(expect.objectContaining({
+        state: 'terminal',
+        terminal: expect.objectContaining({ state: 'completed', result: { reason: 'completed' } }),
+      }));
+      expect(handleAgentStart(params)).toEqual(expect.objectContaining({
+        replay: true,
+        state: 'terminal',
+        terminal: expect.objectContaining({ state: 'completed' }),
+      }));
+      expect(runAgentLoopMock).toHaveBeenCalledTimes(1);
+    });
+
+    it('accepts Stop between ACK and execution and never enters the loop', async () => {
+      const params = reliableParams({ runId: 'start-cancelled' });
+      handleAgentStart(params);
+      expect(handleAgentAbort({ runId: params.runId })).toEqual({ accepted: true, state: 'aborting' });
+      await expect(handleAgentRun(params)).resolves.toEqual({ reason: 'aborted' });
+      expect(runAgentLoopMock).not.toHaveBeenCalled();
+      expect(handleAgentGetState({ runId: params.runId })).toEqual(expect.objectContaining({
+        state: 'terminal',
+        terminal: expect.objectContaining({ state: 'interrupted' }),
+      }));
+    });
   });
 
   describe('param validation', () => {
@@ -227,6 +297,17 @@ describe('agentLoopHost', () => {
       const errParams = baseParams();
       await expect(handleAgentRun(errParams)).rejects.toThrow('boom');
       expect(__getActiveAgentRunCount()).toBe(before);
+      expect(sendNotificationMock).toHaveBeenCalledWith('agent.terminal', {
+        version: 1,
+        runId: errParams.runId,
+        state: 'failed',
+        result: { reason: 'error', error: 'boom' },
+        failure: {
+          errorType: 'error',
+          message: 'boom',
+          stack: expect.stringContaining('Error: boom'),
+        },
+      });
     });
   });
 
@@ -480,6 +561,19 @@ describe('agentLoopHost', () => {
       const lastBatch = deltaCalls[deltaCalls.length - 1][1] as { runId: string; frames: unknown[] };
       expect(lastBatch.runId).toBe('flush-me');
       expect(lastBatch.frames.length).toBeGreaterThan(0);
+      expect(sendNotificationMock).toHaveBeenCalledWith('agent.terminal', {
+        version: 1,
+        runId: 'flush-me',
+        state: 'completed',
+        result: { reason: 'completed' },
+      });
+      const deltaOrder = sendNotificationMock.mock.invocationCallOrder[
+        sendNotificationMock.mock.calls.findLastIndex((call) => call[0] === 'agent.delta')
+      ];
+      const terminalOrder = sendNotificationMock.mock.invocationCallOrder[
+        sendNotificationMock.mock.calls.findIndex((call) => call[0] === 'agent.terminal')
+      ];
+      expect(deltaOrder).toBeLessThan(terminalOrder);
       expect(traceSidecarRuntimeEventMock).toHaveBeenCalledWith(
         'sidecar.agent_delta_emitted',
         expect.objectContaining({ runId: 'flush-me', frameCount: lastBatch.frames.length }),

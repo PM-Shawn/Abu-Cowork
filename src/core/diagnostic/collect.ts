@@ -26,10 +26,18 @@ import { getElectronRuntimeDiagnostics } from '@/utils/electronHost';
 import { APP_VERSION } from '@/utils/version';
 import { platform } from '@tauri-apps/plugin-os';
 import { scrubSecrets, scrubMessage } from './scrub';
-import type { CheckResult, DiagnosticSnapshot, OverallStatus } from './types';
+import { runAllChecks } from './runner';
+import { buildDiagnosticRunTimeline } from './runTimeline';
+import type {
+  CheckResult,
+  DiagnosticFreshness,
+  DiagnosticSnapshot,
+  OverallStatus,
+} from './types';
 
 const RUNTIME_LOG_LIMIT = 200;
 const DISK_LOG_TAIL_LINES = 500;
+export const EXPORT_DIAGNOSTIC_CATEGORY_TIMEOUT_MS = 10_000;
 
 /** localStorage keys for all persisted Zustand stores. Keep in sync with storeVersions.test.ts. */
 const PERSISTED_STORE_KEYS = [
@@ -173,6 +181,109 @@ function deriveOverall(results: CheckResult[]): OverallStatus {
   return 'all-passed';
 }
 
+interface SnapshotIdentity {
+  bundleId: string;
+  os: string;
+}
+
+/** Always attempt a bounded live check; cached rows are explicitly marked stale on fallback. */
+export async function collectLiveDiagnosticSnapshot(
+  identity: SnapshotIdentity,
+): Promise<DiagnosticSnapshot> {
+  const checkStartedAt = Date.now();
+  const cached = useDiagnosticStore.getState();
+  try {
+    const liveResults = await runAllChecks({
+      categoryTimeoutMs: EXPORT_DIAGNOSTIC_CATEGORY_TIMEOUT_MS,
+    });
+    const results = liveResults.map((row) => ({
+      ...row,
+      freshness: row.freshness === 'unknown' ? 'unknown' as const : 'fresh' as const,
+    }));
+    const takenAt = Date.now();
+    const freshness: DiagnosticFreshness = results.some((row) => row.freshness === 'unknown')
+      ? 'unknown'
+      : 'fresh';
+    const resultMap = Object.fromEntries(results.map((row) => [row.id, row]));
+    useDiagnosticStore.setState({ results: resultMap, lastCheckedAt: takenAt });
+    return {
+      schemaVersion: 2,
+      checkStartedAt,
+      takenAt,
+      appVersion: APP_VERSION,
+      bundleId: identity.bundleId,
+      os: identity.os,
+      overall: deriveOverall(results),
+      freshness,
+      results,
+    };
+  } catch {
+    const takenAt = Date.now();
+    const cachedResults = Object.values(cached.results);
+    const freshness: DiagnosticFreshness = cachedResults.length > 0 ? 'stale' : 'unknown';
+    const results = cachedResults.map((row) => ({ ...row, freshness }));
+    return {
+      schemaVersion: 2,
+      checkStartedAt,
+      takenAt,
+      appVersion: APP_VERSION,
+      bundleId: identity.bundleId,
+      os: identity.os,
+      overall: deriveOverall(results),
+      freshness,
+      staleAgeMs: cached.lastCheckedAt == null ? undefined : Math.max(0, takenAt - cached.lastCheckedAt),
+      results,
+    };
+  }
+}
+
+type ManifestPrivacy = 'diagnostic-metadata' | 'scrubbed-config' | 'user-content';
+
+function manifestPrivacyFor(path: string): ManifestPrivacy {
+  if (path.startsWith('conversations/') || path.startsWith('feedback/')) return 'user-content';
+  if (path.startsWith('settings/') || path.startsWith('mcp/') || path.startsWith('permissions/')) {
+    return 'scrubbed-config';
+  }
+  return 'diagnostic-metadata';
+}
+
+function contentSizeBytes(content: string | Uint8Array): number {
+  return typeof content === 'string' ? new TextEncoder().encode(content).byteLength : content.byteLength;
+}
+
+export function buildDiagnosticManifest(
+  files: Record<string, string | Uint8Array>,
+  generatedAt: number,
+  includeRawText: boolean,
+  snapshot: DiagnosticSnapshot,
+): string {
+  const requiredFiles = [
+    'meta.json',
+    'diagnostic-snapshot.json',
+    'runtime/renderer-trace.json',
+    'settings/settings.json',
+    'stores/versions.json',
+  ];
+  const entries = Object.entries(files)
+    .map(([path, content]) => ({
+      path,
+      sizeBytes: contentSizeBytes(content),
+      privacy: manifestPrivacyFor(path),
+    }))
+    .sort((a, b) => a.path.localeCompare(b.path));
+  entries.push({ path: 'manifest.json', sizeBytes: 0, privacy: 'diagnostic-metadata' });
+  entries.sort((a, b) => a.path.localeCompare(b.path));
+  return JSON.stringify({
+    schemaVersion: 1,
+    generatedAt,
+    includeRawText,
+    diagnosticFreshness: snapshot.freshness,
+    requiredFiles,
+    missingRequiredFiles: requiredFiles.filter((path) => !Object.hasOwn(files, path)),
+    files: entries,
+  }, null, 2);
+}
+
 async function getBundleId(): Promise<string> {
   // Best-effort: derive from appDataDir path tail (com.abu.app vs com.abu.app.dev)
   try {
@@ -244,17 +355,10 @@ export async function collectBundleFiles(opts: CollectOptions): Promise<CollectR
   files['meta.json'] = JSON.stringify(meta, null, 2);
 
   // ── diagnostic-snapshot.json ────────────────────────────────────────
-  const diag = useDiagnosticStore.getState();
-  const results = Object.values(diag.results);
-  const snapshot: DiagnosticSnapshot = {
-    schemaVersion: 1,
-    takenAt: diag.lastCheckedAt ?? Date.now(),
-    appVersion: APP_VERSION,
-    bundleId: meta.bundleId,
-    os: meta.os,
-    overall: deriveOverall(results),
-    results,
-  };
+  // Never silently export a persisted historical result as if it were live.
+  // Every upload/export performs a bounded fresh run; fallback rows carry
+  // explicit stale/unknown freshness metadata.
+  const snapshot = await collectLiveDiagnosticSnapshot({ bundleId: meta.bundleId, os: meta.os });
   files['diagnostic-snapshot.json'] = JSON.stringify(snapshot, null, 2);
 
   // ── conversations/<shortId>/* ────────────────────────────────────────
@@ -523,8 +627,9 @@ export async function collectBundleFiles(opts: CollectOptions): Promise<CollectR
   // only — never prompts, message text, tool arguments, or provider bodies.
   // Tauri and tests without an Electron preload bridge simply omit the main
   // process files while retaining the renderer snapshot.
+  const rendererRuntime = getRendererRuntimeTraceSnapshot();
   files['runtime/renderer-trace.json'] = JSON.stringify(
-    scrubSecrets(getRendererRuntimeTraceSnapshot()),
+    scrubSecrets(rendererRuntime),
     null,
     2,
   );
@@ -553,6 +658,14 @@ export async function collectBundleFiles(opts: CollectOptions): Promise<CollectR
       2,
     );
   }
+  files['runtime/run-timeline.json'] = JSON.stringify(
+    scrubSecrets(buildDiagnosticRunTimeline(
+      rendererRuntime,
+      electronRuntime?.recentEventLines ?? [],
+    )),
+    null,
+    2,
+  );
 
   // ── stores/versions.json ─────────────────────────────────────────────
   // Schema versions of all persisted Zustand stores. Lets PM spot
@@ -613,9 +726,15 @@ export async function collectBundleFiles(opts: CollectOptions): Promise<CollectR
     files['schedule/summary.json'] = JSON.stringify({ error: e instanceof Error ? e.message : String(e) }, null, 2);
   }
 
-  // ── README.txt ───────────────────────────────────────────────────────
-  const fileList = Object.keys(files).sort().concat(['README.txt']);
+  // ── README.txt + manifest.json ───────────────────────────────────────
+  const fileList = Object.keys(files).sort().concat(['README.txt', 'manifest.json']).sort();
   files['README.txt'] = generateReadme(opts, fileList);
+  files['manifest.json'] = buildDiagnosticManifest(
+    files,
+    meta.generatedAt,
+    opts.includeRawText,
+    snapshot,
+  );
 
   return { files, scrubbedTextCount: scrubCount };
 }

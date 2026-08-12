@@ -14,10 +14,49 @@ const {
   buildSandboxedArgvCommandSpec,
   makeLauncherConfig,
   generateSeatbeltProfile,
+  rewriteWindowsBundledPythonCommand,
   __resetCommandHostForTests,
 } = require('./commandHost.cjs');
 
 const app = { isPackaged: false, once() {} };
+
+test('Windows shell rewrites bare Python aliases to the bundled executable', () => {
+  const resourceRoot = tmpDir();
+  const pythonExecutable = path.join(resourceRoot, 'python-runtime', 'python.exe');
+  fs.mkdirSync(path.dirname(pythonExecutable), { recursive: true });
+  fs.writeFileSync(pythonExecutable, '');
+  const packagedApp = { isPackaged: true };
+  const options = { platform: 'win32', resourceRoot };
+
+  for (const alias of ['python', 'python3', 'python3.12', 'py', 'PYTHON3.EXE']) {
+    assert.equal(
+      rewriteWindowsBundledPythonCommand(packagedApp, `${alias} script.py --flag`, options),
+      `& '${pythonExecutable}' -B script.py --flag`,
+    );
+  }
+  assert.equal(
+    rewriteWindowsBundledPythonCommand(packagedApp, 'py -3.12 script.py --flag', options),
+    `& '${pythonExecutable}' -B script.py --flag`,
+  );
+  assert.equal(
+    rewriteWindowsBundledPythonCommand(packagedApp, 'py -3 -c "print(1)"', options),
+    `& '${pythonExecutable}' -B -c "print(1)"`,
+  );
+});
+
+test('Windows shell preserves explicit paths and non-leading Python tokens', () => {
+  const options = { platform: 'win32', resourceRoot: tmpDir() };
+  const packagedApp = { isPackaged: true };
+
+  for (const command of [
+    'C:\\Tools\\python.exe script.py',
+    '.\\python3 script.py',
+    'Write-Output python3',
+    'echo ready; python3 script.py',
+  ]) {
+    assert.equal(rewriteWindowsBundledPythonCommand(packagedApp, command, options), command);
+  }
+});
 
 function tmpDir() {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'abu-command-host-'));

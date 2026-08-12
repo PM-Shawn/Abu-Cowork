@@ -186,6 +186,14 @@ test('resolveBundledProgram maps Windows commands case-insensitively with exe an
     bundled: true,
     runtime: 'python',
   });
+  for (const alias of ['py', 'PY.EXE', 'python3.11', 'Python3.12.exe']) {
+    assert.deepEqual(resolveBundledProgram(app, alias, ['script.py'], options), {
+      file: tree.python.executable,
+      args: ['-B', 'script.py'],
+      bundled: true,
+      runtime: 'python',
+    });
+  }
   assert.deepEqual(resolveBundledProgram(app, 'C:\\Tools\\node.exe', [], options), {
     file: 'C:\\Tools\\node.exe',
     args: [],

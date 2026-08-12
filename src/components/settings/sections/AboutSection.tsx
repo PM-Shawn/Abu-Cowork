@@ -1,4 +1,4 @@
-import { useState, useCallback, useRef } from 'react';
+import { useState, useCallback, useRef, useEffect } from 'react';
 import { openUrl } from '@tauri-apps/plugin-opener';
 import { RefreshCw, Download, CheckCircle, CircleAlert, RotateCcw, ExternalLink, Copy, Check } from 'lucide-react';
 import { getDeviceId } from '@/utils/deviceId';
@@ -7,7 +7,7 @@ import remarkGfm from 'remark-gfm';
 import abuAvatar from '@/assets/abu-avatar.png';
 import { APP_VERSION } from '@/utils/version';
 import { useSettingsStore } from '@/stores/settingsStore';
-import { checkForUpdate, downloadAndInstallUpdate, restartApp } from '@/core/updates/checker';
+import { checkForUpdate, downloadAndInstallUpdate, restartApp, refreshUpdateNotes } from '@/core/updates/checker';
 import { getUpdateProgressPresentation } from '@/core/updates/progress';
 import { useI18n } from '@/i18n';
 import { cn } from '@/lib/utils';
@@ -28,6 +28,19 @@ export default function AboutSection() {
   const [checkResult, setCheckResult] = useState<CheckResult>('idle');
   const [downloadError, setDownloadError] = useState<string | null>(null);
   const [idCopied, setIdCopied] = useState(false);
+
+  // The release notes are resolved in whatever language was active at check
+  // time. When the user switches the UI language, re-pick them for the new
+  // locale so a pending update's notes follow the language (skip the first
+  // render — nothing to re-pick until the language actually changes).
+  const localeInitRef = useRef(true);
+  useEffect(() => {
+    if (localeInitRef.current) {
+      localeInitRef.current = false;
+      return;
+    }
+    void refreshUpdateNotes();
+  }, [locale]);
   const deviceId = getDeviceId();
 
   const handleCopyDeviceId = useCallback(() => {

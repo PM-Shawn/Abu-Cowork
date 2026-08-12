@@ -458,6 +458,13 @@ export interface ToolExecutionContext {
    */
   supportsVision?: boolean;
   /**
+   * Names of tools whose schemas were deliberately deferred for this turn.
+   * This is selected by the trusted agent runtime only (never from model
+   * input) and is wire-safe so a sidecar-hosted loop can ask the shell-side
+   * registry for schemas without relying on cross-process module state.
+   */
+  deferredToolNames?: string[];
+  /**
    * In-process cancellation signal. This is intentionally local-only: it must
    * never be relied on across JSON/RPC serialization, where AbortSignal would
    * lose its live behavior.

@@ -10,6 +10,9 @@
 import { useSettingsStore } from '@/stores/settingsStore';
 import { checkProviderHealth, type HealthCheckResult } from '@/core/llm/healthCheck';
 import { getProviderCallHealth } from '@/core/llm/providerCallHealth';
+import { resolveCapabilities } from '@/core/llm/modelCapabilities';
+import { applyDeclaredCapabilities } from '@/core/llm/applyDeclaredCapabilities';
+import { resolveModelDeclared } from '@/core/llm/resolveModelDeclared';
 import { getI18n, format } from '@/i18n';
 import { mapAIServiceError } from '../errorMap';
 import type { CheckResult } from '../types';
@@ -43,7 +46,8 @@ function withTimeout(p: Promise<HealthCheckResult>, ms: number): Promise<HealthC
 
 export async function runAIServicesChecks(): Promise<CheckResult[]> {
   const t = getI18n();
-  const providers = useSettingsStore.getState().providers.filter((p) => p.enabled);
+  const settings = useSettingsStore.getState();
+  const providers = settings.providers.filter((p) => p.enabled);
 
   if (providers.length === 0) {
     return [{
@@ -136,7 +140,7 @@ export async function runAIServicesChecks(): Promise<CheckResult[]> {
     })
   );
 
-  return settled.map((s, i) => {
+  const rows: CheckResult[] = settled.map((s, i) => {
     if (s.status === 'fulfilled') return s.value;
     const p = providers[i];
     return {
@@ -150,4 +154,41 @@ export async function runAIServicesChecks(): Promise<CheckResult[]> {
       durationMs: 0,
     };
   });
+
+  if (settings.computerUseEnabled) {
+    const provider = providers.find((p) => p.id === settings.activeModel.providerId);
+    const modelId = settings.activeModel.modelId;
+    if (provider && modelId) {
+      const declared = resolveModelDeclared(provider, modelId);
+      const caps = applyDeclaredCapabilities(resolveCapabilities(modelId), declared);
+      const toolsSupported = declared?.supportsTools !== false;
+      const visionSupported = caps.vision;
+      rows.push({
+        id: 'ai-services:computer-use-model',
+        category: 'ai-services',
+        name: t.diagnostic.aiComputerUseModel,
+        status: !toolsSupported ? 'failed' : visionSupported ? 'passed' : 'warning',
+        metric: `${modelId} · ${!toolsSupported
+          ? t.diagnostic.aiComputerUseUnsupported
+          : visionSupported
+            ? t.diagnostic.aiComputerUseFull
+            : t.diagnostic.aiComputerUseStructured}`,
+        ...(!toolsSupported ? {
+          errorMessage: t.diagnostic.aiComputerUseToolsMissing,
+        } : !visionSupported ? {
+          errorMessage: t.diagnostic.aiComputerUseVisionMissing,
+        } : {}),
+        suggestedAction: !toolsSupported || !visionSupported ? {
+          type: 'open-settings' as const,
+          target: 'ai-services',
+          label: t.diagnostic.actionOpenAIServices,
+        } : undefined,
+        checkedAt: Date.now(),
+        durationMs: 0,
+        freshness: 'fresh',
+      });
+    }
+  }
+
+  return rows;
 }

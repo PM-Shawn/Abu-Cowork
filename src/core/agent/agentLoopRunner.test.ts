@@ -1482,6 +1482,23 @@ describe('agentLoopRunner', () => {
       expect(executeAnyToolMock).not.toHaveBeenCalled();
     });
 
+    it.each(['tool_search', 'use_skill', 'read_file', 'run_command'])(
+      'recovery whitelist refuses reverse %s at the shell boundary',
+      async (toolName) => {
+        const { ensureHandlersRegistered, registerRunSession } = await importFresh();
+        ensureHandlersRegistered();
+        const session = makeSession();
+        session.options = { allowedTools: ['computer', 'ask_user_question'] };
+        registerRunSession('run-1', session);
+
+        const handler = handlerFor(onSidecarRequest, 'tool.invoke');
+        await expect(
+          handler({ runId: 'run-1', toolName, input: {} }),
+        ).rejects.toThrow(/not allowed/);
+        expect(executeAnyToolMock).not.toHaveBeenCalled();
+      },
+    );
+
     it('marks the session committed on the first tool.invoke', async () => {
       const { ensureHandlersRegistered, registerRunSession, getRunSession } = await importFresh();
       ensureHandlersRegistered();
@@ -1613,6 +1630,23 @@ describe('agentLoopRunner', () => {
       ).rejects.toThrow(/not allowed/);
       expect(checkToolApprovalMock).not.toHaveBeenCalled();
     });
+
+    it.each(['tool_search', 'use_skill', 'read_file', 'run_command'])(
+      'recovery whitelist refuses local %s approval at the shell boundary',
+      async (toolName) => {
+        const { ensureHandlersRegistered, registerRunSession } = await importFresh();
+        ensureHandlersRegistered();
+        const session = makeSession();
+        session.options = { allowedTools: ['computer', 'ask_user_question'] };
+        registerRunSession('run-1', session);
+
+        const handler = handlerFor(onSidecarRequest, 'approval.check');
+        await expect(
+          handler({ runId: 'run-1', toolName, input: {} }),
+        ).rejects.toThrow(/not allowed/);
+        expect(checkToolApprovalMock).not.toHaveBeenCalled();
+      },
+    );
 
     it('throws for an unknown runId instead of silently answering', async () => {
       const { ensureHandlersRegistered } = await importFresh();

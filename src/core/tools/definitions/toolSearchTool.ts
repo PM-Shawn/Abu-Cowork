@@ -1,7 +1,7 @@
 import type { ToolDefinition, ToolResult } from '../../../types';
 import { TOOL_NAMES } from '../toolNames';
+import { resolveDeferredToolSearch } from '../toolSearch';
 import { getAllTools } from '../registry';
-import { searchTools, promoteToolToSession } from '../toolSearch';
 import { getI18n, format } from '../../../i18n';
 
 /**
@@ -9,7 +9,9 @@ import { getI18n, format } from '../../../i18n';
  *
  * When tools are deferred (only name + description in system prompt),
  * the LLM calls this tool to get the full input schema before invoking them.
- * Matched tools are automatically promoted to session-core for subsequent turns.
+ * The agent runtime promotes schemas confirmed in the successful result. This
+ * execute function may run in a different process, so it deliberately keeps no
+ * conversation catalog or promotion state of its own.
  */
 export const toolSearchTool: ToolDefinition = {
   name: TOOL_NAMES.TOOL_SEARCH,
@@ -29,21 +31,23 @@ export const toolSearchTool: ToolDefinition = {
     required: ['query'],
   },
   isConcurrencySafe: true,
-  async execute(input): Promise<ToolResult> {
+  async execute(input, context): Promise<ToolResult> {
     const ts = getI18n().toolResult.toolSearch;
-    const query = input.query as string;
-    const maxResults = (input.max_results as number) ?? 5;
+    const query = typeof input.query === 'string' ? input.query : '';
 
-    const allTools = getAllTools();
-    const matched = searchTools(query, allTools, maxResults);
+    // Fail closed without a conversation scope. Searching the global registry
+    // would re-return already loaded or policy-blocked tools and let the model
+    // escape the exposure selected by the host for this turn.
+    const deferredNames = Array.isArray(context?.deferredToolNames)
+      ? new Set(context.deferredToolNames.filter((name): name is string => typeof name === 'string'))
+      : new Set<string>();
+    const deferredTools = context?.conversationId
+      ? getAllTools().filter(tool => deferredNames.has(tool.name))
+      : [];
+    const matched = resolveDeferredToolSearch(input, deferredTools);
 
     if (matched.length === 0) {
       return format(ts.noResults, { query });
-    }
-
-    // Promote matched tools to session core
-    for (const tool of matched) {
-      promoteToolToSession(tool.name);
     }
 
     // Return full schema for each matched tool

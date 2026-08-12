@@ -100,7 +100,7 @@ describe('SandboxRecoveryCard', () => {
         'conv-1',
         expect.stringMatching(/Computer Use.*Notes/i),
         {
-          blockedTools: ['run_command', 'delegate_to_agent', 'run_agent_batch'],
+          allowedTools: ['computer', 'ask_user_question'],
           requireNewRun: true,
         },
       );

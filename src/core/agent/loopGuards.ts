@@ -17,6 +17,115 @@ export function allToolsUnparseable(
   return toolCalls.length > 0 && toolCalls.every((tc) => '_parse_error' in tc.input);
 }
 
+export type SemanticToolLoopReason =
+  | 'repeated_call'
+  | 'periodic_cycle'
+  | 'meta_only';
+
+export interface ToolLoopObservation {
+  name: string;
+  input: Record<string, unknown>;
+  result: string;
+  error: boolean;
+}
+
+/** Maximum history needed by the deterministic M0 semantic loop checks. */
+export const SEMANTIC_TOOL_LOOP_WINDOW = 6;
+
+const META_TOOL_NAMES = new Set([
+  'tool_search',
+  'use_skill',
+  'read_skill_file',
+  'read_me',
+  'skill_view',
+  'recall',
+  'read_memory',
+]);
+
+function stableValue(value: unknown): unknown {
+  if (typeof value === 'string') return value.trim().replace(/\s+/g, ' ');
+  if (Array.isArray(value)) return value.map(stableValue);
+  if (value && typeof value === 'object') {
+    const source = value as Record<string, unknown>;
+    return Object.fromEntries(
+      Object.keys(source).sort().map(key => [key, stableValue(source[key])]),
+    );
+  }
+  return value;
+}
+
+/** Small deterministic hash; keeps tool inputs/results out of retained guard state. */
+function hashText(value: string): string {
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < value.length; i++) {
+    hash ^= value.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return (hash >>> 0).toString(16).padStart(8, '0');
+}
+
+function observationFingerprint(observation: ToolLoopObservation): string {
+  const input = JSON.stringify(stableValue(observation.input));
+  return `${observation.name}:${hashText(input)}:${hashText(observation.result)}:${observation.error ? 1 : 0}`;
+}
+
+/**
+ * Reduce an observation before retaining it in the loop's rolling window.
+ * Tool inputs/results can contain file contents or user data; the guard needs
+ * only deterministic equality plus the non-sensitive tool name/error bit.
+ */
+export function minimizeToolLoopObservation(
+  observation: ToolLoopObservation,
+): ToolLoopObservation {
+  return {
+    name: observation.name,
+    input: {
+      fingerprint: hashText(JSON.stringify(stableValue(observation.input))),
+    },
+    result: hashText(observation.result),
+    error: observation.error,
+  };
+}
+
+/**
+ * Detect well-formed but unproductive tool loops using only signals available in
+ * M0. Repetition/cycle checks require the corresponding observable tool result
+ * to stay unchanged, avoiding false positives when repeated observation calls
+ * are actually seeing new state. M1 will replace this proxy with state_id.
+ */
+export function detectSemanticToolLoop(
+  observations: ToolLoopObservation[],
+): SemanticToolLoopReason | null {
+  const recent = observations.slice(-SEMANTIC_TOOL_LOOP_WINDOW);
+  const fingerprints = recent.map(observationFingerprint);
+
+  const lastThree = fingerprints.slice(-3);
+  if (lastThree.length === 3 && lastThree.every(value => value === lastThree[0])) {
+    return 'repeated_call';
+  }
+
+  // Detect repeated periods ABAB and ABCABC inside the six-call window.
+  for (const period of [2, 3]) {
+    const suffix = fingerprints.slice(-(period * 2));
+    if (
+      suffix.length === period * 2
+      && suffix.slice(0, period).every((value, index) => value === suffix[index + period])
+      && new Set(suffix.slice(0, period)).size > 1
+    ) {
+      return 'periodic_cycle';
+    }
+  }
+
+  if (
+    recent.length === SEMANTIC_TOOL_LOOP_WINDOW
+    && recent.every(observation => META_TOOL_NAMES.has(observation.name))
+  ) {
+    return 'meta_only';
+  }
+
+  return null;
+}
+
 /**
  * How many consecutive no-progress turns to tolerate before aborting the loop.
  * Shared by both agentLoop and subagentLoop so the threshold can't drift. One bad

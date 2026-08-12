@@ -365,6 +365,8 @@ export interface TranslationDict {
     maxTurnsReached: string;
     // Agent loop no-progress guard (model stuck emitting unparseable tool calls)
     noProgressStopped: string;
+    // Agent loop semantic guard (well-formed but repetitive/meta-only calls)
+    semanticLoopStopped: string;
     // Agent loop runtime status / errors + subagent result strings (P4-C)
     /** Error: no API key configured (keep the literal "API Key" substring). */
     configureApiKey: string;
@@ -1078,6 +1080,7 @@ export interface TranslationDict {
     actionRecheck: string;
     actionCopyError: string;
     actionOpenAIServices: string;
+    actionOpenCapabilities: string;
     actionOpenAbout: string;
     actionOpenToolbox: string;
     copiedError: string;
@@ -1087,11 +1090,30 @@ export interface TranslationDict {
     aiServicesNoKey: string;
     /** Probe passed but a recent real call failed — {detail} = error code. */
     aiRecentFailure: string;
+    aiComputerUseModel: string;
+    aiComputerUseUnsupported: string;
+    aiComputerUseFull: string;
+    aiComputerUseStructured: string;
+    aiComputerUseToolsMissing: string;
+    aiComputerUseVisionMissing: string;
     // Permissions check
     permAppData: string;
     permWorkspace: string;
     permWorkspaceAbu: string;
     permWorkspaceNoSelection: string;
+    permComputerHelper: string;
+    permComputerStatus: string;
+    permComputerUiControl: string;
+    permComputerScreenRead: string;
+    computerAvailable: string;
+    computerUnavailable: string;
+    computerGranted: string;
+    computerMissing: string;
+    computerRestricted: string;
+    computerHelperUnavailable: string;
+    computerPermissionUnknown: string;
+    computerUiControlMissing: string;
+    computerScreenReadMissing: string;
     // MCP
     mcpNone: string;
     mcpNoneHint: string;

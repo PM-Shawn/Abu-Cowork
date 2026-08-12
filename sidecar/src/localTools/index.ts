@@ -97,12 +97,13 @@
  * `core/tools/registry.ts` (`toolSearchTool.ts:3`) — `registry.ts` drags
  * `mcpManager`/`useChatStore`/`@tauri-apps/api/path`'s `homeDir`/enterprise
  * policy, all forbidden by `bundleGraphGuardPlugin`. The sidecar's
- * equivalent is `toolInvoker.getAllTools()` (already reverse-backed via
- * `tool.list`, see `agentLoopHost.ts`'s `createReverseToolInvoker`) — but
- * adapting `toolSearchTool.ts` to take a tools list instead of importing
- * `getAllTools()` directly is a real (if small) behavior change to a
- * module shared with the shell-side call path, not pure glue. Left for a
- * follow-up batch rather than done as a side effect of this one.
+ * Agent Loop therefore keeps this tool on the reverse `tool.invoke` path.
+ * The trusted turn context carries only the policy-filtered deferred tool
+ * names across RPC; shell-side `toolSearchTool.execute()` intersects those
+ * names with its real registry and returns schemas. After success, the
+ * sidecar-hosted loop deterministically recomputes the same matches from the
+ * trusted query and deferred list, then promotes them. This avoids
+ * importing the shell registry here and avoids cross-process module state.
  *
  * ── P1-3d-1 gap CLOSED by P1-3d-3 ────────────────────────────────────────
  * `registry.ts`'s `executeAnyTool` runs an enterprise-policy pre-check

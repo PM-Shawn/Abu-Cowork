@@ -160,7 +160,11 @@ function parseAgentRunParams(params: unknown): AgentRunParams {
 
 function toWireToolContext(context: ToolExecutionContext | undefined): ToolExecutionContext | undefined {
   if (!context) return undefined;
-  const { abortSignal: _abortSignal, ...wireContext } = context;
+  const {
+    abortSignal: _abortSignal,
+    reportMetadata: _reportMetadata,
+    ...wireContext
+  } = context;
   return wireContext;
 }
 

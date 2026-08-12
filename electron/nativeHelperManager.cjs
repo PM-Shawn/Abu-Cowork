@@ -45,6 +45,7 @@ const NATIVE_HELPER_MISS = Symbol('native-helper-dispatch-miss');
 // handled elsewhere. Permission prompts also stay in Electron main so macOS
 // attributes them to the Abu application instead of this command-line child.)
 const HELPER_CMDS = new Set([
+  'native_helper_health',
   'resolve_app_identity',
   'mouse_click',
   'mouse_move',
@@ -212,14 +213,27 @@ function callHelper(method, params) {
 }
 
 /**
+ * Build the fixed helper request for an allowlisted Electron command.
+ * Keeping the health mapping in this pure function makes the security property
+ * testable: caller-controlled args can never replace `ping` with an input or
+ * accessibility method.
+ */
+function buildNativeHelperRequest(cmd, args) {
+  if (!HELPER_CMDS.has(cmd)) return null;
+  if (cmd === 'native_helper_health') return { method: 'ping', params: {} };
+  return { method: cmd, params: toSnakeArgs(args) };
+}
+
+/**
  * Dispatch a `tauri:invoke` command to the native-helper if it owns it.
  * @param {string} cmd
  * @param {Record<string, unknown>} args
  * @returns {Promise<unknown> | typeof NATIVE_HELPER_MISS}
  */
 function nativeHelperDispatch(cmd, args) {
-  if (!HELPER_CMDS.has(cmd)) return NATIVE_HELPER_MISS;
-  return callHelper(cmd, toSnakeArgs(args));
+  const request = buildNativeHelperRequest(cmd, args);
+  if (!request) return NATIVE_HELPER_MISS;
+  return callHelper(request.method, request.params);
 }
 
 /** Kill the helper child (called on app quit; no orphans). */
@@ -253,4 +267,5 @@ module.exports = {
   HELPER_CMDS,
   nativeHelperExecutableName,
   resolveHelperPath,
+  buildNativeHelperRequest,
 };

@@ -144,6 +144,12 @@ describe('executeToolBatch · hard run restrictions', () => {
     expect(result).toEqual({
       mcpChanged: false,
       requiresUserRecovery: false,
+      observations: [{
+        name: 'run_command',
+        input: {},
+        result: 'Error: tool "run_command" is blocked for this agent run',
+        error: true,
+      }],
     });
   });
 
@@ -167,6 +173,28 @@ describe('executeToolBatch · hard run restrictions', () => {
       undefined,
     );
   });
+
+  it.each(['tool_search', 'use_skill', 'read_file', 'run_command'])(
+    'recovery allowlist blocks a guessed %s call before registry execution',
+    async (toolName) => {
+      const executeAnyTool = vi.fn();
+
+      const result = await executeToolBatch(
+        makeParams(
+          makeToolCall(toolName),
+          makeInvoker(executeAnyTool),
+          undefined,
+          ['computer', 'ask_user_question'],
+        ),
+      );
+
+      expect(executeAnyTool).not.toHaveBeenCalled();
+      expect(result.observations[0]).toMatchObject({
+        name: toolName,
+        error: true,
+      });
+    },
+  );
 
   it('allows a tool matching a wildcard whitelist pattern', async () => {
     const executeAnyTool = vi.fn().mockResolvedValue('ok');
@@ -232,6 +260,12 @@ describe('executeToolBatch · hard run restrictions', () => {
     expect(result).toEqual({
       mcpChanged: false,
       requiresUserRecovery: true,
+      observations: [{
+        name: 'run_command',
+        input: {},
+        result: 'blocked',
+        error: true,
+      }],
     });
   });
 });

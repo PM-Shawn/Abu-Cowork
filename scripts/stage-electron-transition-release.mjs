@@ -85,14 +85,18 @@ function validateUpdaterFeed({ sourceDir, metadataName, version, requiredExtensi
     copied.push(filename);
 
     const blockmap = `${source}.blockmap`;
-    if (entry.blockMapSize !== undefined) {
-      if (!fs.existsSync(blockmap)) throw new Error(`missing blockmap for ${filename}`);
-      if (Number(entry.blockMapSize) !== fs.statSync(blockmap).size) {
-        throw new Error(`${metadataName} blockmap size mismatch for ${filename}`);
-      }
-      copy(blockmap, path.join(destination, `${filename}.blockmap`));
-      copied.push(`${filename}.blockmap`);
+    const hasBlockmap = fs.existsSync(blockmap);
+    if (!hasBlockmap) {
+      throw new Error(`missing blockmap for ${filename}`);
     }
+    if (
+      entry.blockMapSize !== undefined &&
+      Number(entry.blockMapSize) !== fs.statSync(blockmap).size
+    ) {
+      throw new Error(`${metadataName} blockmap size mismatch for ${filename}`);
+    }
+    copy(blockmap, path.join(destination, `${filename}.blockmap`));
+    copied.push(`${filename}.blockmap`);
   }
   copy(metadataPath, path.join(destination, metadataName));
   return { metadata, copied };

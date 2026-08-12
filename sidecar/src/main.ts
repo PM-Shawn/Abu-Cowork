@@ -129,6 +129,8 @@ import { fsReadTextFile, fsReadFile, fsWriteTextFile, fsReadDir, fsExists, fsSta
 import { handleSubagentRun, handleSubagentAbort, shutdownAllSubagentRuns } from './subagentHost';
 import {
   handleAgentRun,
+  handleAgentStart,
+  handleAgentGetState,
   handleAgentAbort,
   handleAgentEnqueueInput,
   handleStateConvPatch,
@@ -349,6 +351,18 @@ function handleMessage(raw: string): void {
     // flight, plus receives state.* push notifications for this or other
     // runs the whole time.
     runAsyncRequest(id, () => handleAgentRun(params));
+    return;
+  }
+
+  if (method === 'agent.start') {
+    if (isNotification) return;
+    runAsyncRequest(id, () => Promise.resolve(handleAgentStart(params)));
+    return;
+  }
+
+  if (method === 'run.getState') {
+    if (isNotification) return;
+    runAsyncRequest(id, () => Promise.resolve(handleAgentGetState(params)));
     return;
   }
 

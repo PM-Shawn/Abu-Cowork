@@ -241,6 +241,13 @@ const zhCN: TranslationDict = {
     collapseSources: '收起',
     userMessageShowMore: '显示更多',
     userMessageCollapse: '收起',
+    runPending: '正在发送…',
+    runAccepted: '已接收，正在启动…',
+    runRunning: '运行中…',
+    runFailed: '发送失败',
+    runInterrupted: '已停止',
+    runRecoveredAfterRestart: '应用重启前任务未完成，请重试。',
+    runRetry: '重试',
     noModelConfigured: '请配置模型',
     scrollToBottom: '回到底部',
     compressingContext: '正在压缩长对话上下文…',
@@ -370,9 +377,14 @@ const zhCN: TranslationDict = {
     skillMissingTools: '这个技能需要一些工具但当前不可用哦：{missing}。检查一下相关 MCP 服务器是否已连接～',
     gatewayUnreachable: '无法连接企业 AI 网关。请检查网络连接，或联系管理员。\n\n客户端不会回退到个人 API key（防止预算绕过）。',
     sidecarInterrupted: '后台服务意外中断，正在自动恢复。请稍后重新发送刚才的请求。',
+    messageSaveFailed: '消息未能写入磁盘，阿布没有启动任务。请检查磁盘权限后重试。',
+    attachmentDuringRun: '请等待当前任务结束后再发送图片，草稿已为你保留。',
+    conversationBusy: '当前会话已有任务在运行，请等待结束后再启动新任务。',
     visionUnsupported: '当前模型可能不支持图片/视觉输入，请尝试移除图片或切换到支持视觉的模型（如 Claude、GPT-4o）。',
     ollamaForbidden: 'Ollama 返回了 403 Forbidden（CORS 来源限制）。请设置环境变量 `OLLAMA_ORIGINS=*` 后重启 Ollama，例如：`OLLAMA_ORIGINS=* ollama serve`',
     compactingInlineNotice: '\n*上下文过长，正在优化上下文...*',
+    contextInputTooLarge: '这条消息超过了当前模型的上下文容量。请缩短消息或附件，或者切换到上下文更大的模型。',
+    contextFixedTooLarge: '当前系统指令和工具定义超过了模型的安全上下文预算。请停用部分工具，或者切换到上下文更大的模型。',
     notificationTaskFallback: '任务',
     outputLimitError:
       '\n\n**Error:** 模型连续 {limit} 次输出达到 token 上限仍未完成。建议：\n' +
@@ -982,6 +994,7 @@ const zhCN: TranslationDict = {
     appUpdateAvailable: '有新版本 v{version}',
     appCheckFailed: '无法检查更新',
     checkInternalError: '检查内部错误',
+    checkTimedOut: '检查超时，结果未知',
     detailShow: '展开详情',
     detailHide: '收起详情',
     errMap: {
@@ -1049,7 +1062,7 @@ const zhCN: TranslationDict = {
     screenshotTooMany: '最多添加 5 张截图',
     screenshotTooLarge: '截图总大小超过 5MB，未添加',
     screenshotRemoveAria: '删除截图',
-    uploadAutoIncludedHint: '已自动附带：环境自检 · 日志 · 报错快照',
+    uploadAutoIncludedHint: '提交时会实时重检，并自动附带：诊断清单 · 环境自检 · 日志 · 报错快照',
   },
 
   toolbox: {

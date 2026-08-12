@@ -241,6 +241,13 @@ const enUS: TranslationDict = {
     collapseSources: 'Collapse',
     userMessageShowMore: 'Show more',
     userMessageCollapse: 'Collapse',
+    runPending: 'Sending…',
+    runAccepted: 'Accepted, starting…',
+    runRunning: 'Running…',
+    runFailed: 'Send failed',
+    runInterrupted: 'Stopped',
+    runRecoveredAfterRestart: 'The task did not finish before the app restarted. Please retry.',
+    runRetry: 'Retry',
     noModelConfigured: 'Set up a model',
     scrollToBottom: 'Scroll to bottom',
     compressingContext: 'Compacting long conversation…',
@@ -370,9 +377,14 @@ const enUS: TranslationDict = {
     skillMissingTools: 'This skill needs some tools that aren\'t available right now: {missing}. Check whether the related MCP servers are connected.',
     gatewayUnreachable: 'Cannot reach the enterprise AI gateway. Check your network connection, or contact your administrator.\n\nThe client will not fall back to a personal API key (to prevent budget bypass).',
     sidecarInterrupted: 'The background service was interrupted and is recovering automatically. Please resend your request in a moment.',
+    messageSaveFailed: 'The message could not be saved to disk, so Abu did not start the task. Check disk access and retry.',
+    attachmentDuringRun: 'Wait for the current task to finish before sending an image. Your draft is still here.',
+    conversationBusy: 'This conversation already has a running task. Wait for it to finish before starting another.',
     visionUnsupported: 'The current model may not support image/vision input. Try removing the image or switching to a vision-capable model (e.g. Claude, GPT-4o).',
     ollamaForbidden: 'Ollama returned 403 Forbidden (CORS origin restriction). Set the environment variable `OLLAMA_ORIGINS=*` and restart Ollama, e.g. `OLLAMA_ORIGINS=* ollama serve`',
     compactingInlineNotice: '\n*Context is getting long, optimizing context...*',
+    contextInputTooLarge: 'This message is too large for the current model context. Shorten the message or attachments, or switch to a model with a larger context window.',
+    contextFixedTooLarge: 'The current system instructions and tool definitions exceed this model’s safe context budget. Disable some tools or switch to a model with a larger context window.',
     notificationTaskFallback: 'Task',
     outputLimitError:
       '\n\n**Error:** The model hit the output token limit {limit} times in a row without finishing. Suggestions:\n' +
@@ -982,6 +994,7 @@ const enUS: TranslationDict = {
     appUpdateAvailable: 'Update available: v{version}',
     appCheckFailed: 'Update check failed',
     checkInternalError: 'Check internal error',
+    checkTimedOut: 'Check timed out; result is unknown',
     detailShow: 'Show details',
     detailHide: 'Hide details',
     errMap: {
@@ -1049,7 +1062,7 @@ const enUS: TranslationDict = {
     screenshotTooMany: 'Up to 5 screenshots allowed',
     screenshotTooLarge: 'Total screenshot size exceeds 5MB — not added',
     screenshotRemoveAria: 'Remove screenshot',
-    uploadAutoIncludedHint: 'Automatically included: environment self-check · logs · error snapshots',
+    uploadAutoIncludedHint: 'Rechecked at submission and automatically included: manifest · environment self-check · logs · error snapshots',
   },
 
   toolbox: {

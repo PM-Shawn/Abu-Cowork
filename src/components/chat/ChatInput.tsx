@@ -691,6 +691,13 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
     // Mid-task input: if agent is running, stage the message in the queue
     // strip above the composer (cancellable) instead of starting a new loop.
     // It becomes a transcript bubble only when the loop drains it.
+    if (isRunning && images.length > 0) {
+      useToastStore.getState().addToast({
+        type: 'warning',
+        title: t.chat.attachmentDuringRun,
+      });
+      return;
+    }
     if (isRunning && activeConv?.id && message) {
       enqueueUserInput(activeConv.id, message);
       resetInput();

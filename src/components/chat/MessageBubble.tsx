@@ -6,6 +6,7 @@ import ToolCallsGroup, { InlineToolResultImages } from './ToolCallsGroup';
 import { useChatStore, useActiveConversation } from '@/stores/chatStore';
 import { sendFeedback } from '@/utils/consoleFeedback';
 import { cn } from '@/lib/utils';
+import { Button } from '@/components/ui/button';
 import { usePreviewStore } from '@/stores/previewStore';
 import { useTodosStore } from '@/stores/todosStore';
 import { useLabsFlag } from '@/core/labs/resolve';
@@ -477,6 +478,24 @@ export default function MessageBubble({
     }
   };
 
+  const handleRunRetry = async () => {
+    if (!convId || !activeConv || message.role !== 'user') return;
+    const originalImages = getImageBlocks(message.content);
+    const imageAttachments = originalImages.map((img, i) => ({
+      id: `run-retry-${Date.now()}-${i}`,
+      data: img.source.data,
+      mediaType: img.source.media_type,
+    }));
+    const routedContent = reattachRoutingPrefix(getTextContent(message.content), message);
+    if (message.loopId) useChatStore.getState().deleteLoopMessages(convId, message.loopId);
+    else useChatStore.getState().deleteMessage(convId, message.id);
+    await runAgentLoopDispatched(
+      convId,
+      routedContent,
+      imageAttachments.length > 0 ? { images: imageAttachments } : undefined,
+    );
+  };
+
   const handleRegenerate = async () => {
     if (!convId || !activeConv) return;
     const messages = activeConv.messages;
@@ -621,6 +640,34 @@ export default function MessageBubble({
                       </div>
                     );
                   })()}
+                </div>
+              )}
+              {message.runState && message.runState !== 'completed' && (
+                <div
+                  className={cn(
+                    'flex items-center gap-1.5 text-caption',
+                    message.runState === 'failed'
+                      ? 'text-[var(--abu-danger)]'
+                      : 'text-[var(--abu-text-muted)]',
+                  )}
+                  title={message.runError}
+                >
+                  {(message.runState === 'pending' || message.runState === 'accepted' || message.runState === 'running') && (
+                    <RefreshCw className="h-3 w-3 animate-spin" />
+                  )}
+                  <span>
+                    {message.runState === 'pending' && t.chat.runPending}
+                    {message.runState === 'accepted' && t.chat.runAccepted}
+                    {message.runState === 'running' && t.chat.runRunning}
+                    {message.runState === 'failed' && t.chat.runFailed}
+                    {message.runState === 'interrupted' && t.chat.runInterrupted}
+                  </span>
+                  {message.runState === 'failed' && !isConvRunning && (
+                    <Button variant="ghost" size="xs" onClick={handleRunRetry}>
+                      <RefreshCw className="h-3 w-3" />
+                      {t.chat.runRetry}
+                    </Button>
+                  )}
                 </div>
               )}
               {/* Actions + timestamp row below bubble */}

@@ -80,10 +80,16 @@ import { getI18n, getLocale } from '../../i18n';
 import { createLogger } from '../logging/logger';
 import {
   runAgentLoop,
+  buildUserMessageContent,
   isInteractiveDesktop,
   type AgentLoopOptions,
   type AgentLoopResult,
 } from './agentLoop';
+import {
+  areAgentRunTerminalsEqual,
+  isAgentRunTerminal,
+  type AgentRunTerminal,
+} from './agentRunTerminal';
 import { precomputeOrchestration } from './entryOrchestration';
 import type { RouteResult, IMContext } from './orchestrator';
 import type { PromptSection } from '../llm/promptSections';
@@ -111,6 +117,8 @@ const logger = createLogger('agent-loop-runner');
 const AGENT_ABORT_ACK_TIMEOUT_MS = 1_000;
 const AGENT_ABORT_FORCE_FINALIZE_MS = 5_000;
 const AGENT_FIRST_FRAME_STALL_MS = 30_000;
+const AGENT_START_ACK_TIMEOUT_MS = 3_000;
+const AGENT_STATE_QUERY_TIMEOUT_MS = 2_000;
 
 // ── Run-session registry ────────────────────────────────────────────────
 //
@@ -147,6 +155,11 @@ export interface RunSession {
    * caller passed.
    */
   runId?: string;
+  clientMessageId?: string;
+  userMessageId?: string;
+  payloadDigest?: string;
+  accepted?: boolean;
+  transportReplayCount?: number;
   /**
    * Flips `true` the instant EITHER the first `tool.invoke` for this run
    * arrives OR the first `agent.delta` frame is applied — P1-3B-3B's
@@ -196,6 +209,13 @@ export interface RunSession {
   abortWatchdog?: ReturnType<typeof setTimeout>;
   abortRequestPromise?: Promise<void>;
   abortFinalizationPromise?: Promise<void>;
+  /** First valid terminal fact wins. Later duplicates are idempotent and a
+   * conflicting terminal is ignored, so transport retries cannot rewrite an
+   * already-observed outcome. */
+  terminal?: AgentRunTerminal;
+  terminalPromise?: Promise<AgentRunTerminal>;
+  resolveTerminal?: (terminal: AgentRunTerminal) => void;
+  failureFinalizationPromise?: Promise<void>;
   runtimeStartedAt?: number;
   firstDeltaAt?: number;
   firstFrameApplied?: boolean;
@@ -284,6 +304,7 @@ function handleAgentDelta(rawParams: unknown): void {
   if (frames.length > 0) {
     session.committed = true;
     if (isFirstDelta) {
+      updateSessionMessageState(session, 'running');
       session.firstDeltaAt = Date.now();
       if (session.firstFrameStallTimer) {
         clearTimeout(session.firstFrameStallTimer);
@@ -320,9 +341,163 @@ function handleAgentDelta(rawParams: unknown): void {
   });
 }
 
+/** `agent.terminal` (NOTIFICATION) — first valid terminal wins per run. */
+function handleAgentTerminal(rawParams: unknown): void {
+  if (!isAgentRunTerminal(rawParams)) return;
+  const session = sessions.get(rawParams.runId);
+  if (!session) return;
+
+  if (session.terminal) {
+    if (!areAgentRunTerminalsEqual(session.terminal, rawParams)) {
+      logger.warn('conflicting agent terminal ignored', {
+        runId: rawParams.runId,
+        firstState: session.terminal.state,
+        conflictingState: rawParams.state,
+      });
+    }
+    return;
+  }
+
+  session.terminal = rawParams;
+  session.dropFrames = true;
+  if (session.firstFrameStallTimer) {
+    clearTimeout(session.firstFrameStallTimer);
+    session.firstFrameStallTimer = undefined;
+  }
+  markRuntimeRunStage(rawParams.runId, 'terminal_received');
+  traceRuntimeEvent('renderer.agent_terminal_received', {
+    runId: rawParams.runId,
+    executionPath: 'sidecar',
+    stage: 'terminal_received',
+    outcome: rawParams.result.reason,
+    durationMs: session.runtimeStartedAt === undefined
+      ? undefined
+      : Date.now() - session.runtimeStartedAt,
+  });
+  session.resolveTerminal?.(rawParams);
+}
+
+function updateSessionMessageState(
+  session: RunSession,
+  state: NonNullable<Conversation['messages'][number]['runState']>,
+  error?: string,
+): void {
+  if (!session.userMessageId) return;
+  useChatStore.getState().updateUserMessageRun(
+    session.conversationId,
+    session.userMessageId,
+    { state, ...(error ? { error } : {}) },
+  );
+}
+
+async function runInProcessWithPersistedMessage(
+  conversationId: string,
+  userMessage: string,
+  runId: string,
+  clientMessageId: string,
+  options?: AgentLoopOptions,
+): Promise<AgentLoopResult> {
+  // Params preparation can fail before it upgrades the durable raw message
+  // to multimodal content. Do that here before the in-process handoff so a
+  // pre-dispatch failure never drops an attached image merely because the
+  // local loop is told not to append a duplicate user row.
+  const persistedMessage = getConversationReader()
+    .getConversation(conversationId)
+    ?.messages.find((message) => message.id === clientMessageId);
+  if (options?.images?.length && typeof persistedMessage?.content === 'string') {
+    const content = await buildUserMessageContent(conversationId, userMessage, options.images);
+    useChatStore.getState().updateUserMessageRun(conversationId, clientMessageId, {
+      state: 'pending',
+      content,
+    });
+    await waitForConversationPersistence(conversationId);
+  }
+  useChatStore.getState().updateUserMessageRun(conversationId, clientMessageId, { state: 'running' });
+  try {
+    const result = await runAgentLoop(conversationId, userMessage, {
+      ...options,
+      loopId: runId,
+      prePersistedUserMessageId: clientMessageId,
+    });
+    const state = result.reason === 'aborted'
+      ? 'interrupted'
+      : result.reason === 'error'
+        ? 'failed'
+        : 'completed';
+    useChatStore.getState().updateUserMessageRun(conversationId, clientMessageId, {
+      state,
+      ...(result.error ? { error: result.error } : {}),
+    });
+    await waitForConversationPersistence(conversationId);
+    return result;
+  } catch (error) {
+    useChatStore.getState().updateUserMessageRun(conversationId, clientMessageId, {
+      state: 'failed',
+      error: error instanceof Error ? error.message : String(error),
+    });
+    await waitForConversationPersistence(conversationId);
+    throw error;
+  }
+}
+
+async function finalizePreDispatchInterruptedRun(
+  conversationId: string,
+  clientMessageId: string,
+  runId: string,
+  stage: 'params_build_aborted' | 'before_dispatch',
+  runtimeStartedAt: number,
+): Promise<AgentLoopResult> {
+  useChatStore.getState().updateUserMessageRun(conversationId, clientMessageId, {
+    state: 'interrupted',
+  });
+  getAbortRegistry().clearAbortController(conversationId);
+  getChatDelta().setConversationStatus(conversationId, 'idle');
+  traceRuntimeEvent('renderer.agent_run_aborted', {
+    runId,
+    executionPath: 'sidecar',
+    stage,
+    outcome: 'aborted',
+    durationMs: Date.now() - runtimeStartedAt,
+  });
+  try {
+    await waitForConversationPersistence(conversationId);
+  } finally {
+    finishRuntimeRun(runId);
+  }
+  return { reason: 'aborted' };
+}
+
 async function settleRunPersistence(session: RunSession): Promise<void> {
   await (session.frameApplyTail ?? Promise.resolve());
   await waitForConversationPersistence(session.conversationId);
+}
+
+async function finalizeFailedRun(session: RunSession, displayMessage: string): Promise<void> {
+  if (session.failureFinalizationPromise) return session.failureFinalizationPromise;
+
+  session.failureFinalizationPromise = (async () => {
+    session.dropFrames = true;
+    updateSessionMessageState(session, 'failed', displayMessage);
+    await (session.frameApplyTail ?? Promise.resolve());
+    try {
+      const chatDelta = getChatDelta();
+      chatDelta.appendText(session.conversationId, `\n\n**Error:** ${displayMessage}`);
+      chatDelta.finishStreaming(session.conversationId);
+      chatDelta.setAgentStatus('idle');
+      chatDelta.setConversationStatus(session.conversationId, 'error');
+    } catch (cleanupErr) {
+      logger.warn('terminal UI finalization failed', {
+        conversationId: session.conversationId,
+        error: cleanupErr instanceof Error ? cleanupErr.message : String(cleanupErr),
+      });
+    }
+    // Both the user lifecycle row and the finalized assistant/error state are
+    // part of the terminal contract. Never report a failed run as settled
+    // while either write is still pending or has failed.
+    await waitForConversationPersistence(session.conversationId);
+  })();
+
+  return session.failureFinalizationPromise;
 }
 
 /**
@@ -336,22 +511,24 @@ async function finalizeAbortedRun(session: RunSession, source: 'ack' | 'watchdog
   if (session.abortFinalizationPromise) return session.abortFinalizationPromise;
 
   session.abortFinalizationPromise = (async () => {
-    session.dropFrames = true;
-    if (session.abortWatchdog) {
-      clearTimeout(session.abortWatchdog);
-      session.abortWatchdog = undefined;
-    }
+    try {
+      session.dropFrames = true;
+      updateSessionMessageState(session, 'interrupted');
+      if (session.abortWatchdog) {
+        clearTimeout(session.abortWatchdog);
+        session.abortWatchdog = undefined;
+      }
 
-    await (session.frameApplyTail ?? Promise.resolve());
+      await (session.frameApplyTail ?? Promise.resolve());
 
-    // Permission dialogs live in the shell and must not survive a force-stop.
-    drainConfirmationQueue();
-    drainFilePermissionQueue();
-    drainWorkspaceRequest();
-    drainUserQuestions();
+      // Permission dialogs live in the shell and must not survive a force-stop.
+      drainConfirmationQueue();
+      drainFilePermissionQueue();
+      drainWorkspaceRequest();
+      drainUserQuestions();
 
-    if (getConversationReader().getConversation(session.conversationId)) {
-      const chatDelta = getChatDelta();
+      if (getConversationReader().getConversation(session.conversationId)) {
+        const chatDelta = getChatDelta();
 
       // Drop an untouched streaming placeholder before cancelStreaming, so
       // Stop-before-first-token cannot leave a blank assistant bubble.
@@ -411,8 +588,9 @@ async function finalizeAbortedRun(session: RunSession, source: 'ack' | 'watchdog
       chatDelta.setAgentStatus('idle');
       chatDelta.setConversationStatus(session.conversationId, 'idle');
       getExecutionPort().cancelExecution(session.loopId);
-      await waitForConversationPersistence(session.conversationId);
-
+        await waitForConversationPersistence(session.conversationId);
+      }
+    } finally {
       // These are best-effort shell resources; a force-finalized sidecar run
       // can no longer be trusted to send its normal cleanup notifications.
       void import('../capabilityPlugins/setupBridge')
@@ -424,14 +602,15 @@ async function finalizeAbortedRun(session: RunSession, source: 'ack' | 'watchdog
       void import('../tools/definitions/computerTools')
         .then(({ closeAxSession }) => closeAxSession())
         .catch(() => {});
-    }
 
-    // Reject only this run's never-ending RPC. Its catch path sees the UI
-    // controller already aborted and returns `{ reason: 'aborted' }`.
-    if (!session.transportAbortController?.signal.aborted) {
-      const error = new Error(`agent.run transport closed after abort ${source}`);
-      error.name = 'AbortError';
-      session.transportAbortController?.abort(error);
+      // Reject only this run's never-ending RPC. This must happen even when
+      // the durability barrier fails, while that persistence error still
+      // propagates to the caller instead of being disguised as a settled run.
+      if (!session.transportAbortController?.signal.aborted) {
+        const error = new Error(`agent.run transport closed after abort ${source}`);
+        error.name = 'AbortError';
+        session.transportAbortController?.abort(error);
+      }
     }
   })().catch((err: unknown) => {
     logger.warn('abort finalization failed', {
@@ -440,10 +619,7 @@ async function finalizeAbortedRun(session: RunSession, source: 'ack' | 'watchdog
       source,
       error: err instanceof Error ? err.message : String(err),
     });
-    // Even if store cleanup failed, release the hung transport/session.
-    if (!session.transportAbortController?.signal.aborted) {
-      session.transportAbortController?.abort(err);
-    }
+    throw err;
   });
 
   return session.abortFinalizationPromise;
@@ -465,7 +641,7 @@ function requestSidecarRunAbort(session: RunSession): Promise<void> {
       stage: 'force_finalize',
       outcome: 'stalled',
     });
-    void finalizeAbortedRun(session, 'watchdog');
+    void finalizeAbortedRun(session, 'watchdog').catch(() => undefined);
   }, AGENT_ABORT_FORCE_FINALIZE_MS);
 
   session.abortRequestPromise = sidecarRequest(
@@ -990,6 +1166,7 @@ export function ensureHandlersRegistered(): void {
   ensureHookBridgeRegistered();
 
   onSidecarNotification('agent.delta', handleAgentDelta);
+  onSidecarNotification('agent.terminal', handleAgentTerminal);
   onSidecarNotification('approval.drain', handleApprovalDrain);
   onSidecarNotification('plan.clear', handlePlanClear);
   onSidecarNotification('caps.record', handleCapsRecord);
@@ -1176,6 +1353,9 @@ function forwardQueuedInputsForActiveSessions(): void {
   const seenConversationIds = new Set<string>();
   for (const session of sessions.values()) {
     if (!session.runId) continue;
+    // Stop is a synchronous local barrier: once requested, no pending or new
+    // composer input may cross into the old run and later "come back to life".
+    if (session.abortRequested || session.dropFrames) continue;
     if (seenConversationIds.has(session.conversationId)) continue;
     seenConversationIds.add(session.conversationId);
 
@@ -1320,9 +1500,17 @@ export function removeShellLoopContext(runId: string): void {
  */
 interface AgentRunParams {
   runId: string;
+  clientMessageId: string;
+  payloadDigest: string;
   conversationId: string;
   userMessage: string;
-  options: { images?: ImageAttachment[]; blockedTools?: string[]; allowedTools?: string[]; imContext?: IMContext };
+  options: {
+    images?: ImageAttachment[];
+    blockedTools?: string[];
+    allowedTools?: string[];
+    imContext?: IMContext;
+    prePersistedUserMessageId?: string;
+  };
   orchestration: { route: RouteResult; systemPromptSections: PromptSection[] };
   conversationSnapshot: Conversation;
   indexEntrySnapshot?: ConversationMeta;
@@ -1350,10 +1538,64 @@ function isAgentLoopResult(v: unknown): v is AgentLoopResult {
   return typeof v === 'object' && v !== null && typeof (v as Record<string, unknown>).reason === 'string';
 }
 
+interface AgentStartAck {
+  version: 1;
+  runId: string;
+  clientMessageId: string;
+  acceptedAt: number;
+  state: 'accepted' | 'running' | 'terminal';
+  replay: boolean;
+  terminal?: AgentRunTerminal;
+}
+
+interface AgentRunStateResult {
+  version: 1;
+  runId: string;
+  state: 'not_found' | 'accepted' | 'running' | 'terminal';
+  terminal?: AgentRunTerminal;
+}
+
+function isAgentStartAck(value: unknown, runId: string, clientMessageId: string): value is AgentStartAck {
+  if (typeof value !== 'object' || value === null) return false;
+  const candidate = value as Record<string, unknown>;
+  return candidate.version === 1
+    && candidate.runId === runId
+    && candidate.clientMessageId === clientMessageId
+    && typeof candidate.acceptedAt === 'number'
+    && (candidate.state === 'accepted' || candidate.state === 'running' || candidate.state === 'terminal')
+    && typeof candidate.replay === 'boolean'
+    && (candidate.terminal === undefined || isAgentRunTerminal(candidate.terminal));
+}
+
+function isAgentRunStateResult(value: unknown, runId: string): value is AgentRunStateResult {
+  if (typeof value !== 'object' || value === null) return false;
+  const candidate = value as Record<string, unknown>;
+  return candidate.version === 1
+    && candidate.runId === runId
+    && (
+      candidate.state === 'not_found'
+      || candidate.state === 'accepted'
+      || candidate.state === 'running'
+      || candidate.state === 'terminal'
+    )
+    && (candidate.terminal === undefined || isAgentRunTerminal(candidate.terminal));
+}
+
 let runIdCounter = 0;
 function generateRunId(): string {
   runIdCounter += 1;
   return `agl-${Date.now().toString(36)}-${runIdCounter.toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function digestRunPayload(value: string): string {
+  let left = 0x811c9dc5;
+  let right = 0x9e3779b9;
+  for (let i = 0; i < value.length; i++) {
+    const code = value.charCodeAt(i);
+    left = Math.imul(left ^ code, 0x01000193);
+    right = Math.imul(right ^ code, 0x85ebca6b);
+  }
+  return `rrp1-${value.length.toString(16)}-${(left >>> 0).toString(16).padStart(8, '0')}${(right >>> 0).toString(16).padStart(8, '0')}`;
 }
 
 /**
@@ -1376,6 +1618,144 @@ function resolveEntrySettings(conversationId: string): { settings: SettingsState
   const settingsForModel: SettingsState =
     baseModel === settings.activeModel ? settings : { ...settings, activeModel: baseModel };
   return { settings, settingsForModel };
+}
+
+async function establishAgentStart(
+  params: AgentRunParams,
+  session: RunSession,
+): Promise<AgentStartAck> {
+  const accept = (raw: unknown): AgentStartAck => {
+    if (!isAgentStartAck(raw, params.runId, params.clientMessageId)) {
+      throw new Error('agent.start response did not match the expected acknowledgement shape');
+    }
+    session.accepted = true;
+    updateSessionMessageState(session, raw.state === 'running' ? 'running' : 'accepted');
+    markRuntimeRunStage(params.runId, raw.state === 'running' ? 'running' : 'accepted');
+    traceRuntimeEvent('renderer.agent_start_accepted', {
+      runId: params.runId,
+      clientMessageId: params.clientMessageId,
+      executionPath: 'sidecar',
+      stage: raw.state,
+      replayCount: raw.replay ? 1 : 0,
+      acceptedAt: raw.acceptedAt,
+    });
+    if (raw.terminal) handleAgentTerminal(raw.terminal);
+    return raw;
+  };
+
+  try {
+    return accept(await sidecarRequest('agent.start', params, AGENT_START_ACK_TIMEOUT_MS));
+  } catch (startError) {
+    traceRuntimeEvent('renderer.agent_start_ack_missing', {
+      runId: params.runId,
+      clientMessageId: params.clientMessageId,
+      executionPath: 'sidecar',
+      stage: 'querying_state',
+      errorType: runtimeErrorType(startError),
+    });
+
+    try {
+      const rawState = await sidecarRequest(
+        'run.getState',
+        { runId: params.runId },
+        AGENT_STATE_QUERY_TIMEOUT_MS,
+      );
+      if (!isAgentRunStateResult(rawState, params.runId)) {
+        throw new Error('run.getState response did not match the expected shape', { cause: startError });
+      }
+      if (rawState.state !== 'not_found') {
+        if (rawState.terminal) handleAgentTerminal(rawState.terminal);
+        return accept({
+          version: 1,
+          runId: params.runId,
+          clientMessageId: params.clientMessageId,
+          acceptedAt: Date.now(),
+          state: rawState.state === 'terminal' ? 'terminal' : rawState.state,
+          replay: true,
+          ...(rawState.terminal ? { terminal: rawState.terminal } : {}),
+        });
+      }
+    } catch (stateError) {
+      logger.warn('run state query failed after missing start ACK; replaying idempotent start', {
+        runId: params.runId,
+        error: stateError instanceof Error ? stateError.message : String(stateError),
+      });
+    }
+
+    // Same runId/clientMessageId/payloadDigest: the sidecar either accepts it
+    // once or replays the existing fact. It can never execute twice.
+    return accept(await sidecarRequest('agent.start', params, AGENT_START_ACK_TIMEOUT_MS));
+  }
+}
+
+type TransportRecovery =
+  | { action: 'terminal'; terminal: AgentRunTerminal }
+  | { action: 'reattach' }
+  | { action: 'replay_execution' }
+  | { action: 'not_found' }
+  | { action: 'unavailable' };
+
+function recoveryDelay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function queryRunForTransportRecovery(
+  params: AgentRunParams,
+): Promise<TransportRecovery> {
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    if (getSidecarStatus() === 'running') {
+      try {
+        const raw = await sidecarRequest(
+          'run.getState',
+          { runId: params.runId },
+          AGENT_STATE_QUERY_TIMEOUT_MS,
+        );
+        if (isAgentRunStateResult(raw, params.runId)) {
+          if (raw.terminal) return { action: 'terminal', terminal: raw.terminal };
+          if (raw.state === 'running') return { action: 'reattach' };
+          if (raw.state === 'accepted') return { action: 'replay_execution' };
+          if (raw.state === 'not_found') return { action: 'not_found' };
+        }
+      } catch {
+        // The supervisor may be between process generations. Bounded retry
+        // below; no user work is replayed until a concrete state is known.
+      }
+    }
+    if (attempt < 3) await recoveryDelay(500 * attempt);
+  }
+  return { action: 'unavailable' };
+}
+
+async function waitForReattachedTerminal(
+  params: AgentRunParams,
+  session: RunSession,
+): Promise<AgentRunTerminal> {
+  let unavailableChecks = 0;
+  while (true) {
+    const tick = recoveryDelay(2_000).then(() => ({ kind: 'tick' as const }));
+    const terminal = session.terminalPromise!.then((value) => ({ kind: 'terminal' as const, value }));
+    const outcome = await Promise.race([terminal, tick]);
+    if (outcome.kind === 'terminal') return outcome.value;
+    if (session.shellAbortController.signal.aborted) {
+      throw session.shellAbortController.signal.reason ?? new Error('Agent run aborted while reattaching');
+    }
+    const recovery = await queryRunForTransportRecovery(params);
+    if (recovery.action === 'terminal') {
+      handleAgentTerminal(recovery.terminal);
+      return recovery.terminal;
+    }
+    if (recovery.action === 'not_found') {
+      throw new Error('Sidecar lost an accepted agent run before terminal state was observed');
+    }
+    if (recovery.action === 'unavailable') {
+      unavailableChecks += 1;
+      if (unavailableChecks >= 3) {
+        throw new Error('Sidecar run state remained unavailable during reattach');
+      }
+    } else {
+      unavailableChecks = 0;
+    }
+  }
 }
 
 /**
@@ -1407,13 +1787,14 @@ function resolveEntrySettings(conversationId: string): { settings: SettingsState
  */
 async function buildAgentRunParams(
   runId: string,
+  clientMessageId: string,
   conversationId: string,
   userMessage: string,
   options: AgentLoopOptions | undefined,
   abortSignal?: AbortSignal,
 ): Promise<AgentRunParams> {
-  const conversationSnapshot = getConversationReader().getConversation(conversationId);
-  if (!conversationSnapshot) {
+  const initialConversationSnapshot = getConversationReader().getConversation(conversationId);
+  if (!initialConversationSnapshot) {
     throw new Error(`buildAgentRunParams: no conversation record for "${conversationId}"`);
   }
   const indexEntrySnapshot = getConversationReader().getIndexEntry(conversationId);
@@ -1456,6 +1837,29 @@ async function buildAgentRunParams(
 
   const toolList = getToolInvoker().getAllTools().map(toSerializableTool);
 
+  const userContent = await buildUserMessageContent(
+    conversationId,
+    orchestration.route.cleanInput,
+    options?.images,
+  );
+  useChatStore.getState().updateUserMessageRun(conversationId, clientMessageId, {
+    state: 'pending',
+    content: userContent,
+    skill: orchestration.route.type === 'skill' && orchestration.route.skill ? {
+      name: orchestration.route.skill.name,
+      description: orchestration.route.skill.description,
+    } : undefined,
+    delegateAgent: orchestration.route.type === 'delegate' && orchestration.route.delegateAgent ? {
+      name: orchestration.route.delegateAgent.name,
+      description: orchestration.route.delegateAgent.description,
+    } : undefined,
+  });
+  await waitForConversationPersistence(conversationId);
+  const conversationSnapshot = getConversationReader().getConversation(conversationId);
+  if (!conversationSnapshot) {
+    throw new Error(`buildAgentRunParams: conversation "${conversationId}" disappeared before dispatch`);
+  }
+
   // P1-3B-4 — snapshot the shell's userInputQueue for this conversation at
   // dispatch time (projected to the wire-safe shape — id/text/isSystem,
   // dropping the shell-local `timestamp`). See AgentRunParams.queuedInputs's
@@ -1466,8 +1870,10 @@ async function buildAgentRunParams(
     ...(qi.isSystem ? { isSystem: qi.isSystem } : {}),
   }));
 
-  return {
+  const payloadDigest = digestRunPayload(JSON.stringify({
+    version: 1,
     runId,
+    clientMessageId,
     conversationId,
     userMessage,
     options: {
@@ -1475,6 +1881,21 @@ async function buildAgentRunParams(
       blockedTools: options?.blockedTools,
       allowedTools: options?.allowedTools,
       imContext: options?.imContext,
+    },
+  }));
+
+  return {
+    runId,
+    clientMessageId,
+    payloadDigest,
+    conversationId,
+    userMessage,
+    options: {
+      images: options?.images,
+      blockedTools: options?.blockedTools,
+      allowedTools: options?.allowedTools,
+      imContext: options?.imContext,
+      prePersistedUserMessageId: clientMessageId,
     },
     orchestration,
     conversationSnapshot: conversationSnapshot as Conversation,
@@ -1522,10 +1943,9 @@ async function buildAgentRunParams(
  *      between the two paths) → stage directly via the real
  *      `enqueueUserInput` (same call the in-process guard itself makes).
  * Same staging preconditions as the in-process guard: interactive-desktop
- * only, non-empty trimmed text, no images (an image/empty send falls
- * through to a normal dispatch — "silently losing an image is worse than
- * the rare double-loop race", same acceptance the in-process guard's own
- * comment documents).
+ * only and non-empty trimmed text. Attachments cannot be represented by the
+ * current text-only mid-run queue, so an attachment send is rejected while
+ * preserving the composer draft; it must never start a concurrent run.
  *
  * ## Fallback / re-run discipline
  *
@@ -1548,26 +1968,25 @@ export async function runAgentLoopDispatched(
   userMessage: string,
   options?: AgentLoopOptions,
 ): Promise<AgentLoopResult> {
-  // The bundled browser is a first-party Electron capability, not a Skill or
-  // user-configured MCP server. App startup normally connects it; this
-  // idempotent preflight closes the small startup/reload race before tools and
-  // the system prompt are snapshotted for either execution venue.
-  await ensureBuiltinBrowserRuntime();
+  const sidecarRunning = getSidecarStatus() === 'running';
 
-  if (getSidecarStatus() !== 'running') {
-    return runAgentLoop(conversationId, userMessage, options);
-  }
-
-  ensureHandlersRegistered();
-
-  // ── Concurrency guard — see doc above for the two-venue rationale.
+  // ── Concurrency guard — see doc above for the two-venue rationale. This
+  // runs before venue selection so sidecar-down/fallback callers cannot bypass
+  // the same one-live-run-per-conversation invariant.
   {
     const runningConv = getConversationReader().getConversation(conversationId);
-    const interactive = isInteractiveDesktop(options, runningConv);
-    const stageable = userMessage.trim().length > 0 && !(options?.images?.length);
-    if (interactive && stageable) {
-      const runningSession = findRunSessionForConversation(conversationId);
-      if (runningSession?.runId) {
+    const hasImages = Boolean(options?.images?.length);
+    const stageable = userMessage.trim().length > 0 && !hasImages;
+    const getBusyError = (): string => hasImages
+      ? getI18n().chat.attachmentDuringRun
+      : getI18n().chat.conversationBusy;
+    const runningSession = findRunSessionForConversation(conversationId);
+    if (runningSession?.runId) {
+      const interactive = isInteractiveDesktop(options, runningConv);
+      if (!interactive || hasImages || !stageable) {
+        return { reason: 'error', error: getBusyError() };
+      }
+      if (stageable) {
         if (options?.requireNewRun) {
           return {
             reason: 'error',
@@ -1577,7 +1996,13 @@ export async function runAgentLoopDispatched(
         notifySidecar('agent.enqueueInput', { runId: runningSession.runId, userMessage });
         return { reason: 'enqueued' };
       }
-      if (runningConv?.status === 'running' && getAbortRegistry().hasAbortController(conversationId)) {
+    }
+    if (runningConv?.status === 'running' && getAbortRegistry().hasAbortController(conversationId)) {
+      const interactive = isInteractiveDesktop(options, runningConv);
+      if (!interactive || hasImages || !stageable) {
+        return { reason: 'error', error: getBusyError() };
+      }
+      if (stageable) {
         if (options?.requireNewRun) {
           return {
             reason: 'error',
@@ -1593,10 +2018,67 @@ export async function runAgentLoopDispatched(
     }
   }
 
+  if (!sidecarRunning) {
+    await ensureBuiltinBrowserRuntime();
+    return runAgentLoop(conversationId, userMessage, options);
+  }
+
+  ensureHandlersRegistered();
+
   const runId = generateRunId();
+  const clientMessageId = `msg-${runId}`;
   logger.debug('agent-loop path selected', { path: 'sidecar', runId, conversationId });
   const runtimeStartedAt = Date.now();
-  startRuntimeRun(runId, 'sidecar', 'building_params');
+  startRuntimeRun(runId, 'sidecar', 'local_message_persisting');
+
+  const abortRegistry = getAbortRegistry();
+  abortRegistry.clearAbortController(conversationId);
+  const shellAbortController = abortRegistry.getAbortController(conversationId);
+  const shellChatDelta = getChatDelta();
+  useChatStore.getState().addMessage(conversationId, {
+    id: clientMessageId,
+    clientMessageId,
+    runId,
+    runState: 'pending',
+    role: 'user',
+    content: userMessage,
+    timestamp: runtimeStartedAt,
+    loopId: runId,
+  });
+  shellChatDelta.setConversationStatus(conversationId, 'running');
+  try {
+    await waitForConversationPersistence(conversationId);
+  } catch (error) {
+    const displayMessage = getI18n().chat.messageSaveFailed;
+    useChatStore.getState().updateUserMessageRun(conversationId, clientMessageId, {
+      state: 'failed',
+      error: displayMessage,
+    });
+    abortRegistry.clearAbortController(conversationId);
+    shellChatDelta.setConversationStatus(conversationId, 'error');
+    traceRuntimeEvent('renderer.local_message_persist_failed', {
+      runId,
+      clientMessageId,
+      executionPath: 'sidecar',
+      stage: 'local_message_persist_failed',
+      outcome: 'error',
+      errorType: runtimeErrorType(error),
+      durationMs: Date.now() - runtimeStartedAt,
+    });
+    finishRuntimeRun(runId);
+    // Let the failed lifecycle replacement attempt settle in the background;
+    // execution remains fenced regardless of whether the disk is still down.
+    void waitForConversationPersistence(conversationId).catch(() => undefined);
+    return { reason: 'error', error: displayMessage };
+  }
+  markRuntimeRunStage(runId, 'local_message_persisted');
+  traceRuntimeEvent('renderer.local_message_persisted', {
+    runId,
+    clientMessageId,
+    executionPath: 'sidecar',
+    stage: 'local_message_persisted',
+    durationMs: Date.now() - runtimeStartedAt,
+  });
   traceRuntimeEvent('renderer.agent_params_build_started', {
     runId,
     executionPath: 'sidecar',
@@ -1607,16 +2089,15 @@ export async function runAgentLoopDispatched(
   // the task controller and visible conversation ownership must exist before
   // buildAgentRunParams starts. This closes the rapid double-send window:
   // ChatInput shows Stop, while another textual send is routed into the queue.
-  const abortRegistry = getAbortRegistry();
-  abortRegistry.clearAbortController(conversationId);
-  const shellAbortController = abortRegistry.getAbortController(conversationId);
-  const shellChatDelta = getChatDelta();
-  shellChatDelta.setConversationStatus(conversationId, 'running');
-
   let params: AgentRunParams;
   try {
+    // Browser readiness and prompt preparation happen only after the user
+    // message is visible and durable, so either operation can fail without
+    // making the user's input disappear.
+    await ensureBuiltinBrowserRuntime();
     params = await buildAgentRunParams(
       runId,
+      clientMessageId,
       conversationId,
       userMessage,
       options,
@@ -1631,18 +2112,17 @@ export async function runAgentLoopDispatched(
     });
   } catch (err) {
     const wasAborted = shellAbortController.signal.aborted;
+    if (wasAborted) {
+      return finalizePreDispatchInterruptedRun(
+        conversationId,
+        clientMessageId,
+        runId,
+        'params_build_aborted',
+        runtimeStartedAt,
+      );
+    }
     abortRegistry.clearAbortController(conversationId);
     shellChatDelta.setConversationStatus(conversationId, 'idle');
-    if (wasAborted) {
-      traceRuntimeEvent('renderer.agent_run_aborted', {
-        runId,
-        executionPath: 'sidecar',
-        stage: 'params_build_aborted',
-        outcome: 'aborted',
-      });
-      finishRuntimeRun(runId);
-      return { reason: 'aborted' };
-    }
     // Failed before any dispatch — pre-commit by construction (see doc).
     logger.warn('agent-loop dispatch params build failed — running in-process', {
       runId,
@@ -1658,19 +2138,22 @@ export async function runAgentLoopDispatched(
       durationMs: Date.now() - runtimeStartedAt,
     });
     finishRuntimeRun(runId);
-    return runAgentLoop(conversationId, userMessage, options);
+    return runInProcessWithPersistedMessage(
+      conversationId,
+      userMessage,
+      runId,
+      clientMessageId,
+      options,
+    );
   }
   if (shellAbortController.signal.aborted) {
-    abortRegistry.clearAbortController(conversationId);
-    shellChatDelta.setConversationStatus(conversationId, 'idle');
-    traceRuntimeEvent('renderer.agent_run_aborted', {
+    return finalizePreDispatchInterruptedRun(
+      conversationId,
+      clientMessageId,
       runId,
-      executionPath: 'sidecar',
-      stage: 'before_dispatch',
-      outcome: 'aborted',
-    });
-    finishRuntimeRun(runId);
-    return { reason: 'aborted' };
+      'before_dispatch',
+      runtimeStartedAt,
+    );
   }
 
   // ── Shell-side session + abort wiring ────────────────────────────────
@@ -1679,9 +2162,16 @@ export async function runAgentLoopDispatched(
   // (chatStore.ts's `abortControllers` map), so the Stop button needs ZERO
   // changes (design doc §3's abortRegistry row) — its `.abort()` call fires
   // the listener below, which forwards to the sidecar.
+  let resolveTerminal!: (terminal: AgentRunTerminal) => void;
+  const terminalPromise = new Promise<AgentRunTerminal>((resolve) => {
+    resolveTerminal = resolve;
+  });
   const session: RunSession = {
     conversationId,
     loopId: runId, // same id as runId by convention — see agentLoop.ts's AgentLoopOptions.loopId doc.
+    clientMessageId,
+    userMessageId: clientMessageId,
+    payloadDigest: params.payloadDigest,
     options: {
       requestCommandConfirmation: options?.commandConfirmCallback,
       requestFilePermission: options?.filePermissionCallback,
@@ -1690,6 +2180,8 @@ export async function runAgentLoopDispatched(
     },
     shellAbortController,
     transportAbortController: new AbortController(),
+    terminalPromise,
+    resolveTerminal,
     toolCallToStepId: new Map(),
     committed: false,
     runtimeStartedAt,
@@ -1703,6 +2195,10 @@ export async function runAgentLoopDispatched(
   };
 
   const onShellAbort = (): void => {
+    // Once the ordered terminal fact has arrived, the run is already over.
+    // A click racing with renderer cleanup must not rewrite that first-wins
+    // outcome from completed to aborted.
+    if (session.terminal) return;
     void requestSidecarRunAbort(session);
   };
   session.onShellAbort = onShellAbort;
@@ -1713,7 +2209,7 @@ export async function runAgentLoopDispatched(
   markRuntimeRunStage(runId, 'waiting_for_first_delta');
   traceRuntimeEvent('renderer.agent_run_dispatched', {
     runId,
-    method: 'agent.run',
+    method: 'agent.start',
     executionPath: 'sidecar',
     stage: 'waiting_for_first_delta',
     durationMs: Date.now() - runtimeStartedAt,
@@ -1724,7 +2220,7 @@ export async function runAgentLoopDispatched(
     markRuntimeRunStage(runId, 'stalled_before_first_delta');
     traceRuntimeEvent('renderer.agent_run_stalled', {
       runId,
-      method: 'agent.run',
+      method: 'agent.start',
       executionPath: 'sidecar',
       stage: 'stalled_before_first_delta',
       outcome: 'stalled',
@@ -1733,8 +2229,91 @@ export async function runAgentLoopDispatched(
   }, AGENT_FIRST_FRAME_STALL_MS);
   let handedOffToLocal = false;
 
+  const settleFromTerminal = async (terminal: AgentRunTerminal): Promise<AgentLoopResult> => {
+    await settleRunPersistence(session);
+    if (session.abortRequested) {
+      await finalizeAbortedRun(session, 'run-terminal');
+      traceRuntimeEvent('renderer.agent_run_aborted', {
+        runId,
+        executionPath: 'sidecar',
+        stage: 'run_terminal',
+        outcome: 'aborted',
+        durationMs: Date.now() - runtimeStartedAt,
+      });
+      return { reason: 'aborted' };
+    }
+
+    if (terminal.state === 'failed') {
+      const realMessage = terminal.result.error || 'Agent run failed';
+      const displayMessage = realMessage === 'Sidecar process closed'
+        ? getI18n().chat.sidecarInterrupted
+        : realMessage;
+      logger.warn('agent loop reported a failed terminal', {
+        runId,
+        conversationId,
+        sidecarCause: realMessage,
+        sidecarErrorType: terminal.failure?.errorType,
+        sidecarStack: terminal.failure?.stack,
+      });
+      traceRuntimeEvent('renderer.agent_run_failed', {
+        runId,
+        executionPath: 'sidecar',
+        stage: 'failed_terminal',
+        outcome: 'error',
+        errorType: terminal.failure?.errorType,
+        durationMs: Date.now() - runtimeStartedAt,
+      });
+      await finalizeFailedRun(session, displayMessage);
+      return { reason: 'error', error: realMessage };
+    }
+
+    const eventName = terminal.state === 'interrupted'
+      ? 'renderer.agent_run_aborted'
+      : 'renderer.agent_run_completed';
+    traceRuntimeEvent(eventName, {
+      runId,
+      executionPath: 'sidecar',
+      stage: terminal.state === 'interrupted' ? 'interrupted_terminal' : 'completed',
+      outcome: terminal.result.reason,
+      durationMs: Date.now() - runtimeStartedAt,
+      firstFrameMs: session.firstDeltaAt === undefined
+        ? undefined
+        : session.firstDeltaAt - runtimeStartedAt,
+    });
+    updateSessionMessageState(
+      session,
+      terminal.state === 'interrupted' ? 'interrupted' : 'completed',
+    );
+    await waitForConversationPersistence(conversationId);
+    return terminal.result;
+  };
+
   try {
-    const raw = await sidecarRequest('agent.run', params, 0, session.transportAbortController!.signal);
+    await establishAgentStart(params, session);
+    if (session.terminal) return await settleFromTerminal(session.terminal);
+
+    const rpcOutcome = sidecarRequest(
+      'agent.run',
+      params,
+      0,
+      session.transportAbortController!.signal,
+    ).then((raw) => ({ source: 'rpc' as const, raw }));
+    const terminalOutcome = terminalPromise.then((terminal) => ({ source: 'terminal' as const, terminal }));
+    const outcome = await Promise.race([rpcOutcome, terminalOutcome]);
+
+    if (outcome.source === 'terminal') {
+      // The terminal notification is the primary completion contract. Close
+      // the now-redundant pending RPC so a lost response cannot leave a
+      // request entry alive indefinitely.
+      if (!session.transportAbortController!.signal.aborted) {
+        const terminalReceived = new Error('agent.run terminal received');
+        terminalReceived.name = 'AbortError';
+        session.transportAbortController!.abort(terminalReceived);
+      }
+      return await settleFromTerminal(outcome.terminal);
+    }
+
+    const raw = outcome.raw;
     if (!isAgentLoopResult(raw)) {
       throw new Error('agent.run response did not match the expected AgentLoopResult shape');
     }
@@ -1742,6 +2321,10 @@ export async function runAgentLoopDispatched(
     // preserves byte order. Await the shell-side FIFO plus the store's
     // fire-and-forget JSONL writes before exposing a completed turn.
     await settleRunPersistence(session);
+    // A new sidecar always writes agent.terminal before its RPC response.
+    // Prefer that first-wins fact if both became observable in the same tick;
+    // the raw response remains the compatibility path for older sidecars.
+    if (session.terminal) return await settleFromTerminal(session.terminal);
     if (shellAbortController.signal.aborted) {
       await finalizeAbortedRun(session, 'run-terminal');
       traceRuntimeEvent('renderer.agent_run_aborted', {
@@ -1763,12 +2346,26 @@ export async function runAgentLoopDispatched(
         ? undefined
         : session.firstDeltaAt - runtimeStartedAt,
     });
+    updateSessionMessageState(
+      session,
+      raw.reason === 'aborted' ? 'interrupted' : raw.reason === 'error' ? 'failed' : 'completed',
+      raw.error,
+    );
+    await waitForConversationPersistence(conversationId);
     return raw;
   } catch (err) {
+    let transportError = err;
     // A failing RPC can still have flushed committed frames immediately
     // before its error response. Land those frames before deciding fallback
     // or applying the shell-owned error finalization.
     await settleRunPersistence(session);
+    // The RPC may reject after a terminal notification was already received
+    // (for example, the response line is lost or the transport closes between
+    // the two). The terminal is authoritative even when no delta/tool call
+    // marked the run committed, so never fall back and execute it twice.
+    if (session.terminal) {
+      return await settleFromTerminal(session.terminal);
+    }
     if (shellAbortController.signal.aborted) {
       await finalizeAbortedRun(session, 'run-terminal');
       traceRuntimeEvent('renderer.agent_run_aborted', {
@@ -1779,6 +2376,76 @@ export async function runAgentLoopDispatched(
         durationMs: Date.now() - runtimeStartedAt,
       });
       return { reason: 'aborted' };
+    }
+    if (session.accepted) {
+      const recovery = await queryRunForTransportRecovery(params);
+      traceRuntimeEvent('renderer.agent_run_recovery_state', {
+        runId,
+        clientMessageId,
+        executionPath: 'sidecar',
+        stage: recovery.action,
+        replayCount: session.transportReplayCount ?? 0,
+      });
+      if (recovery.action === 'terminal') {
+        handleAgentTerminal(recovery.terminal);
+        return await settleFromTerminal(recovery.terminal);
+      }
+      if (recovery.action === 'reattach') {
+        try {
+          return await settleFromTerminal(await waitForReattachedTerminal(params, session));
+        } catch (reattachError) {
+          transportError = reattachError;
+        }
+      }
+      if (
+        (recovery.action === 'replay_execution' || recovery.action === 'not_found')
+        && !session.committed
+        && (session.transportReplayCount ?? 0) < 1
+      ) {
+        session.transportReplayCount = (session.transportReplayCount ?? 0) + 1;
+        try {
+          if (recovery.action === 'not_found') {
+            session.accepted = false;
+            await establishAgentStart(params, session);
+          }
+          traceRuntimeEvent('renderer.agent_run_transport_replayed', {
+            runId,
+            clientMessageId,
+            executionPath: 'sidecar',
+            stage: 'replay_execution',
+            replayCount: session.transportReplayCount,
+          });
+          const replayRpc = sidecarRequest(
+            'agent.run',
+            params,
+            0,
+            session.transportAbortController!.signal,
+          ).then((raw) => ({ source: 'rpc' as const, raw }));
+          const replayTerminal = terminalPromise.then((terminal) => ({ source: 'terminal' as const, terminal }));
+          const replayOutcome = await Promise.race([replayRpc, replayTerminal]);
+          if (replayOutcome.source === 'terminal') {
+            return await settleFromTerminal(replayOutcome.terminal);
+          }
+          if (!isAgentLoopResult(replayOutcome.raw)) {
+            throw new Error('replayed agent.run response did not match the expected result shape', { cause: err });
+          }
+          await settleRunPersistence(session);
+          if (session.terminal) return await settleFromTerminal(session.terminal);
+          updateSessionMessageState(
+            session,
+            replayOutcome.raw.reason === 'aborted'
+              ? 'interrupted'
+              : replayOutcome.raw.reason === 'error'
+                ? 'failed'
+                : 'completed',
+            replayOutcome.raw.error,
+          );
+          await waitForConversationPersistence(conversationId);
+          return replayOutcome.raw;
+        } catch (replayError) {
+          transportError = replayError;
+        }
+      }
     }
     if (!session.committed) {
       // Release the shell-side ownership before entering the in-process loop.
@@ -1792,32 +2459,38 @@ export async function runAgentLoopDispatched(
       logger.warn('agent-loop transport failed before commit — retrying in-process', {
         runId,
         conversationId,
-        error: err instanceof Error ? err.message : String(err),
+        error: transportError instanceof Error ? transportError.message : String(transportError),
       });
       traceRuntimeEvent('renderer.agent_run_fallback', {
         runId,
         executionPath: 'sidecar',
         stage: 'fallback_in_process',
         outcome: 'error',
-        errorType: runtimeErrorType(err),
+        errorType: runtimeErrorType(transportError),
         durationMs: Date.now() - runtimeStartedAt,
       });
       // The local loop synchronously installs its own AbortController before its
       // first await. Mark the ownership transfer so this dispatch wrapper's
       // finally block cannot delete that replacement controller.
       handedOffToLocal = true;
-      return runAgentLoop(conversationId, userMessage, options);
+      return runInProcessWithPersistedMessage(
+        conversationId,
+        userMessage,
+        runId,
+        clientMessageId,
+        options,
+      );
     }
     // Surface the REAL sidecar-side cause: a thrown handler comes back as a
     // generic `-32603 Internal error`, but `errorFromCaught` (sidecar
     // protocol.ts) carries the real message/stack in the error's `data`.
     // Logging only `err.message` (the generic wrapper) threw that away — pull
     // `data` out so the on-disk log names the actual failure.
-    const errData = (err as { data?: unknown } | null)?.data;
+    const errData = (transportError as { data?: unknown } | null)?.data;
     const realMessage =
       errData && typeof errData === 'object' && 'message' in errData
         ? String((errData as { message: unknown }).message)
-        : err instanceof Error ? err.message : String(err);
+        : transportError instanceof Error ? transportError.message : String(transportError);
     const displayMessage =
       realMessage === 'Sidecar process closed'
         ? getI18n().chat.sidecarInterrupted
@@ -1825,7 +2498,7 @@ export async function runAgentLoopDispatched(
     logger.warn('agent-loop transport failed after commit — surfacing error, no rerun', {
       runId,
       conversationId,
-      error: err instanceof Error ? err.message : String(err),
+      error: transportError instanceof Error ? transportError.message : String(transportError),
       sidecarCause: realMessage,
       sidecarStack:
         errData && typeof errData === 'object' && 'stack' in errData
@@ -1837,7 +2510,7 @@ export async function runAgentLoopDispatched(
       executionPath: 'sidecar',
       stage: 'failed_after_commit',
       outcome: 'error',
-      errorType: runtimeErrorType(err),
+      errorType: runtimeErrorType(transportError),
       durationMs: Date.now() - runtimeStartedAt,
     });
     // The sidecar loop threw uncaught, so its OWN terminal UI-finalization
@@ -1848,18 +2521,7 @@ export async function runAgentLoopDispatched(
     // delta frames were already flushed (sidecar handleAgentRun's finally
     // runs coalescer.flush() before the error propagates), so this runs after
     // them, not racing.
-    try {
-      const chatDelta = getChatDelta();
-      chatDelta.appendText(conversationId, `\n\n**Error:** ${displayMessage}`);
-      chatDelta.finishStreaming(conversationId);
-      chatDelta.setAgentStatus('idle');
-      chatDelta.setConversationStatus(conversationId, 'error');
-    } catch (cleanupErr) {
-      logger.warn('post-commit UI finalization failed', {
-        conversationId,
-        error: cleanupErr instanceof Error ? cleanupErr.message : String(cleanupErr),
-      });
-    }
+    await finalizeFailedRun(session, displayMessage);
     return { reason: 'error', error: realMessage };
   } finally {
     if (session.firstFrameStallTimer) clearTimeout(session.firstFrameStallTimer);

@@ -1,4 +1,6 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
+const diagnosticRunnerMock = vi.hoisted(() => vi.fn());
+vi.mock('./runner', () => ({ runAllChecks: diagnosticRunnerMock }));
 import { unzipSync, strFromU8 } from 'fflate';
 import { collectAndZip } from './bundle';
 import { useChatStore } from '@/stores/chatStore';
@@ -34,6 +36,7 @@ describe('collectAndZip (诊断反馈增强 L1: 二进制截图打包)', () => {
   const conv = makeConversation('conv-zzzzzzzz-9999');
 
   beforeEach(() => {
+    diagnosticRunnerMock.mockReset().mockResolvedValue([]);
     useChatStore.setState({
       conversations: { [conv.id]: conv },
       conversationIndex: { [conv.id]: makeMeta(conv.id) },
@@ -59,6 +62,10 @@ describe('collectAndZip (诊断反馈增强 L1: 二进制截图打包)', () => {
     const screenshotOut = unzipped['feedback/screenshots/01.png'];
     expect(screenshotOut).toBeInstanceOf(Uint8Array);
     expect(Array.from(screenshotOut)).toEqual(Array.from(pngBytes));
+    expect(JSON.parse(strFromU8(unzipped['manifest.json']))).toMatchObject({
+      schemaVersion: 1,
+      missingRequiredFiles: [],
+    });
   });
 
   it('uses a multi-N short id in the filename when several conversations are selected', async () => {

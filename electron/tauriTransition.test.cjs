@@ -10,10 +10,18 @@ const {
   collectKnownSecretKeys,
   collectValidatedItems,
   finalizeTauriLocalStorageMigration,
+  hasLegacySourceEvidence,
   hasValidSentinel,
   isAllowedKey,
   isValidValue,
+  migrateWindowsSecrets,
+  prepareTauriLocalStorageMigration,
 } = require('./tauriLocalStorageMigration.cjs');
+const {
+  SENTINEL_FILENAME: TAURI_FILE_SENTINEL_FILENAME,
+  runTauriMigration,
+  sourceInventoryV2,
+} = require('./tauriMigration.cjs');
 const {
   isOfficialBuild,
   isTauriTransitionBuild,
@@ -90,6 +98,253 @@ test('only validated Abu localStorage keys survive migration', () => {
   assert.equal(secretKeys.includes('provider:custom-1'), true);
   assert.equal(secretKeys.includes('imagegen:image-1'), true);
   assert.equal(secretKeys.includes('aux:webSearch'), true);
+});
+
+test('Windows secret migration requires live legacy source evidence', () => {
+  assert.equal(
+    hasLegacySourceEvidence(
+      { sourceDatabase: null },
+      { nothingToMigrate: true }
+    ),
+    false
+  );
+  assert.equal(
+    hasLegacySourceEvidence(
+      { sourceDatabase: null },
+      {
+        inventory: {
+          conversations: { files: 0, bytes: 0 },
+          notice: { files: 0, bytes: 0 },
+        },
+      }
+    ),
+    false
+  );
+  assert.equal(
+    hasLegacySourceEvidence(
+      { sourceDatabase: 'Local Storage/leveldb' },
+      { nothingToMigrate: true }
+    ),
+    true
+  );
+  assert.equal(
+    hasLegacySourceEvidence(
+      { sourceDatabase: null },
+      { inventory: { conversations: { files: 1, bytes: 0 } } }
+    ),
+    true
+  );
+  assert.equal(
+    hasLegacySourceEvidence(
+      { sourceDatabase: null },
+      {
+        noticeOnlyUpgrade: true,
+        inventory: { notice: { files: 0, bytes: 0 } },
+      }
+    ),
+    true
+  );
+  assert.equal(
+    hasLegacySourceEvidence(
+      { sourceDatabase: null },
+      {
+        skipped: 'already-migrated',
+        inventory: { conversations: { files: 0, bytes: 0 } },
+      }
+    ),
+    false
+  );
+  assert.equal(
+    hasLegacySourceEvidence(
+      { sourceDatabase: null },
+      { skipped: 'already-migrated' }
+    ),
+    true
+  );
+});
+
+test('deleted Windows legacy data skips stale Credential Manager probing', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'abu-transition-reset-'));
+  let readerCalls = 0;
+  try {
+    const electronDir = path.join(root, 'electron');
+    const fileMigrationResult = runTauriMigration({
+      tauriDir: path.join(root, 'deleted-tauri-profile'),
+      electronDir,
+      secretHas: () => false,
+      secretSet: () => {
+        throw new Error('must not write when the Tauri profile is absent');
+      },
+    });
+    assert.equal(fileMigrationResult.nothingToMigrate, true);
+    assert.equal(fileMigrationResult.sentinelWritten, true);
+
+    const plan = prepareTauriLocalStorageMigration({
+      electronDir,
+      platform: 'win32',
+      storageRoot: path.join(root, 'deleted-webview2-profile'),
+      readerPath: '/unused/tauri-transition-reader.exe',
+    });
+    assert.equal(plan.status, 'pending');
+    assert.equal(plan.sourceDatabase, null);
+
+    const hasLegacySource = hasLegacySourceEvidence(plan, fileMigrationResult);
+    assert.equal(hasLegacySource, false);
+    const summary = migrateWindowsSecrets(plan, {
+      readerPath: '/unused/tauri-transition-reader.exe',
+      hasLegacySource,
+      runReader: () => {
+        readerCalls += 1;
+        return { entries: [], missing: [], failed: ['provider:openai'] };
+      },
+      secretHas: () => false,
+      secretSet: () => {
+        throw new Error('must not write without legacy source evidence');
+      },
+    });
+
+    assert.equal(readerCalls, 0);
+    assert.equal(summary.skippedReason, 'no-legacy-source-evidence');
+    assert.deepEqual(summary.failed, []);
+    assert.equal(plan.secretMigrationFailed, false);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('failed Windows secret migration does not loop after an empty file migration completed', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'abu-transition-empty-retry-'));
+  let readerCalls = 0;
+  try {
+    const tauriDir = path.join(root, 'empty-tauri-profile');
+    const electronDir = path.join(root, 'electron');
+    fs.mkdirSync(tauriDir, { recursive: true });
+
+    const firstFileMigration = runTauriMigration({
+      tauriDir,
+      electronDir,
+      secretHas: () => false,
+      secretSet: () => {},
+    });
+    assert.equal(firstFileMigration.sentinelWritten, true);
+    assert.equal(
+      Object.values(firstFileMigration.inventory).some((entry) => entry.files > 0),
+      false
+    );
+
+    const retriedFileMigration = runTauriMigration({
+      tauriDir,
+      electronDir,
+      secretHas: () => false,
+      secretSet: () => {},
+    });
+    assert.equal(retriedFileMigration.skipped, 'already-migrated');
+    assert.deepEqual(retriedFileMigration.inventory, firstFileMigration.inventory);
+
+    const plan = prepareTauriLocalStorageMigration({
+      electronDir,
+      platform: 'win32',
+      storageRoot: path.join(root, 'deleted-webview2-profile'),
+      readerPath: '/unused/tauri-transition-reader.exe',
+    });
+    assert.equal(plan.status, 'pending');
+    const hasLegacySource = hasLegacySourceEvidence(plan, retriedFileMigration);
+    assert.equal(hasLegacySource, false);
+
+    const summary = migrateWindowsSecrets(plan, {
+      readerPath: '/unused/tauri-transition-reader.exe',
+      hasLegacySource,
+      runReader: () => {
+        readerCalls += 1;
+        return { entries: [], missing: [], failed: ['provider:openai'] };
+      },
+      secretHas: () => false,
+      secretSet: () => {},
+    });
+    assert.equal(readerCalls, 0);
+    assert.equal(summary.skippedReason, 'no-legacy-source-evidence');
+    assert.equal(plan.secretMigrationFailed, false);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('trusted v2 Windows credential evidence survives the completed-marker retry', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'abu-transition-v2-retry-'));
+  try {
+    const tauriDir = path.join(root, 'empty-tauri-profile');
+    const electronDir = path.join(root, 'electron');
+    fs.mkdirSync(tauriDir, { recursive: true });
+    fs.mkdirSync(electronDir, { recursive: true });
+    const v2Inventory = sourceInventoryV2(tauriDir);
+    fs.writeFileSync(
+      path.join(electronDir, TAURI_FILE_SENTINEL_FILENAME),
+      JSON.stringify({
+        version: 2,
+        status: 'complete',
+        migratedAt: '2026-01-01T00:00:00.000Z',
+        sourceFingerprint: v2Inventory.fingerprint,
+        summary: {
+          sentinelWritten: true,
+          dirs: {
+            conversations: { status: 'absent' },
+            sessions: { status: 'absent' },
+            backups: { status: 'absent' },
+          },
+          secrets: { setFailed: [] },
+        },
+      })
+    );
+
+    const firstUpgrade = runTauriMigration({
+      tauriDir,
+      electronDir,
+      secretHas: () => false,
+      secretSet: () => {},
+    });
+    assert.equal(firstUpgrade.noticeOnlyUpgrade, true);
+    assert.equal(
+      hasLegacySourceEvidence({ sourceDatabase: null }, firstUpgrade),
+      true
+    );
+
+    const retry = runTauriMigration({
+      tauriDir,
+      electronDir,
+      secretHas: () => false,
+      secretSet: () => {},
+    });
+    assert.equal(retry.skipped, 'already-migrated');
+    assert.equal(retry.noticeOnlyUpgrade, true);
+    assert.equal(hasLegacySourceEvidence({ sourceDatabase: null }, retry), true);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('Windows secret writes still fail closed when legacy data exists', () => {
+  const plan = {
+    platform: 'win32',
+    status: 'pending',
+    items: [],
+    secretMigrationFailed: false,
+  };
+  const summary = migrateWindowsSecrets(plan, {
+    readerPath: '/unused/tauri-transition-reader.exe',
+    hasLegacySource: true,
+    runReader: () => ({
+      entries: [{ key: 'provider:openai', value: 'legacy-secret' }],
+      missing: [],
+      failed: [],
+    }),
+    secretHas: () => false,
+    secretSet: () => {
+      throw new Error('safeStorage unavailable');
+    },
+  });
+
+  assert.deepEqual(summary.failed, ['provider:openai']);
+  assert.equal(plan.secretMigrationFailed, true);
 });
 
 test('sentinel is atomic, retryable, and never written on partial migration', () => {

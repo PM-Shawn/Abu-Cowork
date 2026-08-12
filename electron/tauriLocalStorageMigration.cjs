@@ -277,6 +277,30 @@ function collectKnownSecretKeys(items) {
   return [...keys];
 }
 
+function hasLegacySourceEvidence(plan, fileMigrationResult) {
+  // Windows Credential Manager outlives AppData. Do not let an unreadable
+  // orphaned credential keep a clean reinstall in the transition retry loop.
+  if (typeof plan?.sourceDatabase === 'string' && plan.sourceDatabase.length > 0) {
+    return true;
+  }
+  // A trusted v2 completion record is upgraded by migrating Notice data only.
+  // That result deliberately carries a partial inventory, so it cannot prove
+  // that the earlier Windows credential migration completed.
+  if (fileMigrationResult?.noticeOnlyUpgrade === true) {
+    return true;
+  }
+  const inventory = fileMigrationResult?.inventory;
+  if (inventory && typeof inventory === 'object' && !Array.isArray(inventory)) {
+    return Object.values(inventory).some(
+      (entry) => entry && typeof entry === 'object' && Number(entry.files || 0) > 0
+    );
+  }
+  // Older completion records may not carry the source inventory. Preserve the
+  // fail-closed retry in that unknown state; current records distinguish an
+  // empty reset from a source that still contains migratable files.
+  return fileMigrationResult?.skipped === 'already-migrated';
+}
+
 function writeSentinel(electronDir, record) {
   fs.mkdirSync(electronDir, { recursive: true });
   const sentinelPath = path.join(electronDir, SENTINEL_FILENAME);
@@ -405,10 +429,21 @@ function migrateWindowsSecrets(plan, options) {
   if (!plan || plan.platform !== 'win32' || !['pending', 'dry-run'].includes(plan.status)) {
     return { migrated: [], overwritten: [], skippedExisting: [], missing: [], failed: [] };
   }
+  if (options.hasLegacySource === false) {
+    return {
+      migrated: [],
+      overwritten: [],
+      skippedExisting: [],
+      missing: [],
+      failed: [],
+      skippedReason: 'no-legacy-source-evidence',
+    };
+  }
   const keys = collectKnownSecretKeys(plan.items);
   let response;
   try {
-    response = runReader(options.readerPath, { operation: 'windowsSecrets', keys });
+    const reader = options.runReader || runReader;
+    response = reader(options.readerPath, { operation: 'windowsSecrets', keys });
   } catch {
     plan.secretMigrationFailed = true;
     return { migrated: [], overwritten: [], skippedExisting: [], missing: [], failed: ['reader'] };
@@ -549,6 +584,7 @@ module.exports = {
   storageStateFingerprint,
   collectValidatedItems,
   collectKnownSecretKeys,
+  hasLegacySourceEvidence,
   hasValidSentinel,
   prepareTauriLocalStorageMigration,
   migrateWindowsSecrets,

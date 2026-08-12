@@ -16,6 +16,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 const onSidecarNotification = vi.fn();
 const onSidecarRequest = vi.fn();
+const onSidecarConnectionState = vi.fn();
 const notifySidecar = vi.fn();
 class MockSidecarRequestError extends Error {
   code: number;
@@ -44,6 +45,7 @@ const runGetStateRequestMock = vi.fn((params: { runId: string }) => Promise.reso
 vi.mock('../sidecar/sidecarManager', () => ({
   onSidecarNotification: (...a: unknown[]) => onSidecarNotification(...a),
   onSidecarRequest: (...a: unknown[]) => onSidecarRequest(...a),
+  onSidecarConnectionState: (...a: unknown[]) => onSidecarConnectionState(...a),
   notifySidecar: (...a: unknown[]) => notifySidecar(...a),
   getSidecarStatus: (...a: unknown[]) => getSidecarStatusMock(...a),
   request: (method: string, params: unknown, ...rest: unknown[]) => {
@@ -125,7 +127,7 @@ vi.mock('./ports/capsPort', () => ({
 }));
 
 const getAllToolsMock = vi.fn().mockReturnValue([
-  { name: 'read_file', description: 'reads a file', inputSchema: { type: 'object', properties: {} }, execute: async () => 'x' },
+  { name: 'read_file', description: 'reads a file', inputSchema: { type: 'object', properties: {} }, execute: async () => 'x', isConcurrencySafe: true },
 ]);
 const executeAnyToolMock = vi.fn().mockResolvedValue('tool result');
 vi.mock('./ports/toolInvoker', () => ({
@@ -444,6 +446,7 @@ describe('agentLoopRunner', () => {
   beforeEach(() => {
     onSidecarNotification.mockReset();
     onSidecarRequest.mockReset();
+    onSidecarConnectionState.mockReset();
     notifySidecar.mockReset();
     applyDeltaFramesMock.mockReset();
     applyDeltaFramesMock.mockResolvedValue(undefined);
@@ -461,7 +464,10 @@ describe('agentLoopRunner', () => {
     recordMaxOutputTokensMock.mockReset();
     recordContextWindowMock.mockReset();
     recordReasoningObservedMock.mockReset();
-    getAllToolsMock.mockClear();
+    getAllToolsMock.mockReset();
+    getAllToolsMock.mockReturnValue([
+      { name: 'read_file', description: 'reads a file', inputSchema: { type: 'object', properties: {} }, execute: async () => 'x', isConcurrencySafe: true },
+    ]);
     getSettingsSnapshotMock.mockClear();
     createEventRouterMock.mockClear();
     requestCommandConfirmationMock.mockClear();
@@ -608,6 +614,7 @@ describe('agentLoopRunner', () => {
       // tool.invoke via the router / hook.emit via the shared hookBridge).
       expect(onSidecarNotification).toHaveBeenCalledTimes(12);
       expect(onSidecarRequest).toHaveBeenCalledTimes(8);
+      expect(onSidecarConnectionState).toHaveBeenCalledTimes(1);
 
       const notifiedMethods = onSidecarNotification.mock.calls.map((c) => c[0]);
       expect(notifiedMethods).toEqual(
@@ -617,6 +624,32 @@ describe('agentLoopRunner', () => {
       expect(requestedMethods).toEqual(
         expect.arrayContaining(['native.invoke', 'tool.list', 'session.isMessageWrittenToDisk', 'approval.check', 'snapshot.beforeAiEdit', 'workspace.authorizedWritablePaths', 'tool.invoke', 'hook.emit']),
       );
+    });
+
+    it('projects connection recovery and failure onto active user-run lifecycle state', async () => {
+      const { ensureHandlersRegistered, registerRunSession } = await importFresh();
+      ensureHandlersRegistered();
+      registerRunSession('run-connection', {
+        ...makeSession(),
+        accepted: true,
+        userMessageId: 'msg-connection',
+      });
+      const handler = onSidecarConnectionState.mock.calls[0][0] as (
+        event: { state: 'connected' | 'recovering' | 'failed'; reason: string },
+      ) => void;
+
+      handler({ state: 'recovering', reason: 'process-close' });
+      handler({ state: 'connected', reason: 'ready' });
+      handler({ state: 'failed', reason: 'crash-loop' });
+
+      expect(chatStoreUpdateUserMessageRunMock.mock.calls).toEqual([
+        ['conv-1', 'msg-connection', { state: 'recovering' }],
+        ['conv-1', 'msg-connection', { state: 'running' }],
+        ['conv-1', 'msg-connection', {
+          state: 'connection-failed',
+          error: '后台服务意外中断，正在自动恢复。请稍后重新发送刚才的请求。',
+        }],
+      ]);
     });
   });
 
@@ -1574,6 +1607,56 @@ describe('agentLoopRunner', () => {
 
       expect(result).toEqual({ decision: 'allow' });
       expect(checkToolApprovalMock).toHaveBeenCalledWith('show_widget', { title: 't' }, context, confirmCb, filePermCb);
+    });
+
+    it('marks an allowed side-effecting local tool as committed before returning its ACK', async () => {
+      const { ensureHandlersRegistered, registerRunSession } = await importFresh();
+      ensureHandlersRegistered();
+      const session = makeSession();
+      registerRunSession('run-write', session);
+      getAllToolsMock.mockReturnValueOnce([{
+        name: 'write_file', description: 'writes', inputSchema: { type: 'object', properties: {} },
+        execute: async () => 'ok', isConcurrencySafe: false,
+      }]);
+      checkToolApprovalMock.mockResolvedValue({ decision: 'allow' });
+
+      const handler = handlerFor(onSidecarRequest, 'approval.check');
+      await handler({ runId: 'run-write', toolName: 'write_file', input: { path: '/tmp/x' } });
+
+      expect((session as typeof session & { committed?: boolean }).committed).toBe(true);
+    });
+
+    it('keeps an allowed read-only local tool replay-safe', async () => {
+      const { ensureHandlersRegistered, registerRunSession } = await importFresh();
+      ensureHandlersRegistered();
+      const session = makeSession();
+      registerRunSession('run-read', session);
+      checkToolApprovalMock.mockResolvedValue({ decision: 'allow' });
+
+      const handler = handlerFor(onSidecarRequest, 'approval.check');
+      await handler({ runId: 'run-read', toolName: 'read_file', input: { path: '/tmp/x' } });
+
+      expect((session as typeof session & { committed?: boolean }).committed).not.toBe(true);
+    });
+
+    it('marks an allowed HTTP mutation as committed before returning its ACK', async () => {
+      const { ensureHandlersRegistered, registerRunSession } = await importFresh();
+      ensureHandlersRegistered();
+      const session = makeSession();
+      registerRunSession('run-http', session);
+      getAllToolsMock.mockReturnValueOnce([{
+        name: 'http_fetch', description: 'fetches', inputSchema: { type: 'object', properties: {} },
+        execute: async () => 'ok', isConcurrencySafe: false,
+      }]);
+      checkToolApprovalMock.mockResolvedValue({ decision: 'allow' });
+
+      await handlerFor(onSidecarRequest, 'approval.check')({
+        runId: 'run-http',
+        toolName: 'http_fetch',
+        input: { url: 'https://example.com/items', method: 'POST', body: '{}' },
+      });
+
+      expect((session as typeof session & { committed?: boolean }).committed).toBe(true);
     });
 
     it('returns {decision:"deny", reason} verbatim from checkToolApproval — never executes anything itself', async () => {
@@ -2587,6 +2670,32 @@ describe('agentLoopRunner', () => {
       expect(runAgentLoopMock).not.toHaveBeenCalled();
       expect(result.reason).toBe('error');
       expect(result.error).toContain('sidecar crashed mid-run');
+    });
+
+    it('does not replay a run when a side-effecting local tool was approved before the sidecar crashed', async () => {
+      getAllToolsMock.mockReturnValue([
+        { name: 'write_file', description: 'writes a file', inputSchema: { type: 'object', properties: {} }, execute: async () => 'ok', isConcurrencySafe: false },
+      ]);
+      const { runAgentLoopDispatched } = await importFresh();
+      const d = deferred<unknown>();
+      sidecarRequestMock.mockReturnValue(d.promise);
+
+      const running = runAgentLoopDispatched('conv-1', 'hello');
+      await waitForCall(sidecarRequestMock);
+      const runId = (sidecarRequestMock.mock.calls[0][1] as { runId: string }).runId;
+      await handlerFor(onSidecarRequest, 'approval.check')({
+        runId,
+        toolName: 'write_file',
+        input: { path: '/tmp/already-written', content: 'done' },
+      });
+
+      d.reject(new Error('sidecar crashed after local write'));
+      const result = await running;
+
+      expect(sidecarRequestMock).toHaveBeenCalledTimes(1);
+      expect(runAgentLoopMock).not.toHaveBeenCalled();
+      expect(result.reason).toBe('error');
+      expect(result.error).toContain('sidecar crashed after local write');
     });
 
     it('a post-commit failure finalizes the conversation UI so it never hangs on "thinking"', async () => {

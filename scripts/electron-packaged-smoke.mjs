@@ -19,10 +19,11 @@
  *   5. A packaged HTML preview receives the shared element-picker script.
  *   6. The bundled browser MCP adopts a visible in-app tab and completes
  *      navigate/snapshot/fill/click/extract/screenshot through Chromium.
- *   7. With fully isolated temporary app data, the packaged frontend reaches
- *      the packaged sidecar, completes a loopback-only model request, persists
- *      the conversation, restores it after restart, and kills command/MCP
- *      descendant trees on abort, timeout, stop, and hard crash.
+ *   7. With fully isolated temporary app data, the packaged frontend survives
+ *      an HTML-widget child-frame navigation, reaches the packaged sidecar,
+ *      completes a loopback-only model request, persists the conversation,
+ *      restores it after restart, and kills command/MCP descendant trees on
+ *      abort, timeout, stop, and hard crash.
  *
  * Run: npm run smoke:electron:packaged   (after `npm run pack:electron`)
  *
@@ -2925,6 +2926,26 @@ print(json.dumps({"executable": sys.executable, "files": [str(p) for p in [docx_
     // ── packaged task assertion: renderer → packaged sidecar → local mock ──
     try {
       await configureLocalMockProvider(window, mock.baseUrl);
+      // Regression for the v0.37 Windows spinner: an HTML widget's `srcdoc`
+      // child-frame navigation used to trigger `did-start-loading` and clear
+      // the top-level renderer's sidecar subscriptions. Arm the exact failure
+      // mode immediately before the real user task; the response assertion
+      // below proves the packaged main→preload sidecar channel survived it.
+      await window.evaluate(() => new Promise((resolve, reject) => {
+        const iframe = document.createElement('iframe');
+        iframe.hidden = true;
+        const timeout = setTimeout(() => {
+          iframe.remove();
+          reject(new Error('srcdoc child frame did not load'));
+        }, 5_000);
+        iframe.addEventListener('load', () => {
+          clearTimeout(timeout);
+          iframe.remove();
+          resolve(true);
+        }, { once: true });
+        iframe.srcdoc = '<!doctype html><title>sidecar lifecycle regression</title>';
+        document.body.appendChild(iframe);
+      }));
       const input = window.getByPlaceholder(CHAT_PLACEHOLDER);
       await input.fill(prompt);
       await input.press('Enter');
@@ -2946,6 +2967,7 @@ print(json.dumps({"executable": sys.executable, "files": [str(p) for p in [docx_
         timeout: READY_TIMEOUT,
       });
       checks.packagedTaskRendered = true;
+      checks.packagedTaskSurvivesChildFrameNavigation = true;
 
       if (process.platform === 'win32') {
         let rightPanel = window.locator('[data-abu-right-panel]');
@@ -3182,6 +3204,7 @@ print(json.dumps({"executable": sys.executable, "files": [str(p) for p in [docx_
     } catch (err) {
       checks.packagedTaskReachedMock ??= false;
       checks.packagedTaskRendered ??= false;
+      checks.packagedTaskSurvivesChildFrameNavigation ??= false;
       checks.packagedTaskPersisted ??= false;
       checks.packagedBrowserMcpInitializes ??= false;
       checks.packagedBrowserVisibleTabAdopted ??= false;

@@ -53,6 +53,8 @@ const {
   cleanupFsWatchesForSender,
 } = require('./fsWatchHost.cjs');
 const { mcpDispatch } = require('./mcpBridge.cjs');
+const { SIDECAR_BRIDGE_STATE_CHANNEL } = require('./sidecarEventChannel.cjs');
+const { sidecarRunRegistry } = require('./sidecarRunRegistry.cjs');
 const {
   RUNTIME_EVENT_CHANNEL,
   RUNTIME_DIAGNOSTICS_CHANNEL,
@@ -111,6 +113,7 @@ const {
   validateInvokePayload,
   assertResourceOwner,
 } = require('./securityBoundary.cjs');
+const { wireRendererResourceCleanup } = require('./rendererLifecycle.cjs');
 
 // Window-family state (Phase 2 slice D). `mainWindow` is set by main.cjs right
 // after createWindow() via setMainWindow(); `quitting` is the standard
@@ -235,14 +238,15 @@ function wireWindowEvents(win) {
     e.preventDefault();
     emitEvent('close-requested', null);
   });
-  // Purge this renderer's subscriptions on reload (WebContents survives, no
-  // unlisten fires, the preload callbackId counter resets → stale subs would
-  // cross-wire to the reloaded page's colliding ids).
-  win.webContents.on('did-start-loading', () => {
-    clearSubscriptionsForSender(win.webContents);
+  // Purge this renderer's resources only when its top-level document is being
+  // replaced. Child-frame loads (notably HTML widget `srcdoc` previews) keep
+  // the renderer alive and must not disconnect its main→renderer event bridge.
+  wireRendererResourceCleanup(win.webContents, ({ reason }) => {
+    const subscriptionCount = clearSubscriptionsForSender(win.webContents);
     cleanupFsWatchesForSender(win.webContents);
     cleanupGlobalShortcutsForSender(win.webContents);
     computerUseGate?.revokeSender(win.webContents);
+    runtimeState.noteRendererResourcesCleared({ reason, subscriptionCount });
   });
 }
 
@@ -454,17 +458,22 @@ function emitEvent(event, payload) {
 
 /**
  * Drop every subscription owned by a given WebContents. Called on renderer
- * reload (main.cjs wires webContents 'did-start-loading'): a reload doesn't
- * destroy the WebContents or fire unlisten, and the reloaded page's preload
- * resets its callbackId counter — so stale subscriptions would cross-wire to
- * the fresh page's colliding ids. The reloaded page is gone, so there's no
- * preload callback to notify (unlike unlisten).
+ * reload: a reload doesn't destroy the WebContents or fire unlisten, and the
+ * reloaded page's preload resets its callbackId counter — so stale
+ * subscriptions would cross-wire to the fresh page's colliding ids. The
+ * reloaded page is gone, so there's no preload callback to notify (unlike
+ * unlisten).
  * @param {import('electron').WebContents} sender
+ * @returns {number} number of subscriptions removed
  */
 function clearSubscriptionsForSender(sender) {
+  let removed = 0;
   for (const [eventId, sub] of subscriptions) {
-    if (sub.sender === sender) subscriptions.delete(eventId);
+    if (sub.sender !== sender) continue;
+    subscriptions.delete(eventId);
+    removed++;
   }
+  return removed;
 }
 
 // Commands whose real handler isn't wired yet (next-layer slices B-E) but
@@ -1335,6 +1344,14 @@ function registerTauriHost(app, options = {}) {
     assertTrustedIpcSender(e);
     configureRuntimeObservability(app);
     return getRuntimeDiagnostics();
+  });
+
+  ipcMain.handle(SIDECAR_BRIDGE_STATE_CHANNEL, async (e, query = {}) => {
+    assertTrustedIpcSender(e);
+    const afterSequence = Number.isSafeInteger(query?.afterSequence) && query.afterSequence >= 0
+      ? query.afterSequence
+      : 0;
+    return sidecarRunRegistry.snapshot(afterSequence);
   });
 }
 

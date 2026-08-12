@@ -19,6 +19,7 @@ import {
   notifySidecar,
   onSidecarNotification,
   onSidecarRequest,
+  onSidecarConnectionState,
   SidecarRequestError,
   __resetForTests,
 } from './sidecarManager';
@@ -833,6 +834,185 @@ describe('sidecarManager', () => {
   });
 
   describe('host gate (window.__ABU_SHELL__.mainSupervisesSidecar)', () => {
+    it('uses the dedicated Electron sidecar channel instead of Tauri event subscriptions', async () => {
+      let dedicatedHandler: ((event: {
+        type: 'message' | 'error' | 'close' | 'hung';
+        payload: string;
+        sequence: number;
+        generation: number;
+      }) => void) | undefined;
+      const unsubscribe = vi.fn();
+      (window as Window & {
+        __ABU_SHELL__?: {
+          mainSupervisesSidecar: boolean;
+          subscribeSidecarEvents: (handler: (event: {
+            type: 'message' | 'error' | 'close' | 'hung';
+            payload: string;
+            sequence: number;
+            generation: number;
+          }) => void) => () => void;
+        };
+      }).__ABU_SHELL__ = {
+        mainSupervisesSidecar: true,
+        subscribeSidecarEvents: (handler) => {
+          dedicatedHandler = handler;
+          return unsubscribe;
+        },
+      };
+      mockHappyPath();
+
+      await startSidecar();
+      expect(listen).not.toHaveBeenCalled();
+      expect(dedicatedHandler).toBeTypeOf('function');
+
+      const callsBefore = invoke.mock.calls.length;
+      const pending = request('echo', { via: 'dedicated' }, 2_000);
+      const writeCall = invoke.mock.calls.slice(callsBefore).find((call) => call[0] === 'mcp_write');
+      const sent = JSON.parse((writeCall as [string, { message: string }])[1].message) as { id: number };
+      dedicatedHandler?.({
+        type: 'message',
+        payload: JSON.stringify({ jsonrpc: '2.0', id: sent.id, result: { ok: true } }),
+        sequence: 1,
+        generation: 1,
+      });
+      await expect(pending).resolves.toEqual({ ok: true });
+
+      await stopSidecar();
+      expect(unsubscribe).toHaveBeenCalledTimes(1);
+    });
+
+    it('detects a dedicated-channel sequence gap and replays the missing response from main', async () => {
+      let dedicatedHandler: ((event: {
+        type: 'message' | 'error' | 'close' | 'hung';
+        payload: string;
+        sequence: number;
+        generation: number;
+      }) => void) | undefined;
+      const getSidecarBridgeSnapshot = vi.fn();
+      (window as Window & {
+        __ABU_SHELL__?: {
+          mainSupervisesSidecar: boolean;
+          subscribeSidecarEvents: (handler: NonNullable<typeof dedicatedHandler>) => () => void;
+          getSidecarBridgeSnapshot: typeof getSidecarBridgeSnapshot;
+        };
+      }).__ABU_SHELL__ = {
+        mainSupervisesSidecar: true,
+        subscribeSidecarEvents: (handler) => {
+          dedicatedHandler = handler;
+          return () => {};
+        },
+        getSidecarBridgeSnapshot,
+      };
+      mockHappyPath();
+      await startSidecar();
+
+      dedicatedHandler?.({
+        type: 'error', payload: '[sidecar:test] [info] baseline', sequence: 1, generation: 1,
+      });
+      await vi.advanceTimersByTimeAsync(0);
+
+      const states: string[] = [];
+      onSidecarConnectionState((event) => states.push(event.state));
+      const callsBefore = invoke.mock.calls.length;
+      const pending = request('echo', { via: 'replay' }, 2_000);
+      const writeCall = invoke.mock.calls.slice(callsBefore).find((call) => call[0] === 'mcp_write');
+      const sent = JSON.parse((writeCall as [string, { message: string }])[1].message) as { id: number };
+      getSidecarBridgeSnapshot.mockResolvedValue({
+        version: 1,
+        sidecarId: 'abu-sidecar',
+        generation: 1,
+        bridgeStatus: 'running',
+        firstAvailableSequence: 1,
+        lastSequence: 3,
+        truncated: false,
+        events: [
+          {
+            type: 'message',
+            payload: JSON.stringify({ jsonrpc: '2.0', id: sent.id, result: { recovered: true } }),
+            sequence: 2,
+            generation: 1,
+          },
+          {
+            type: 'error', payload: '[sidecar:test] [info] live', sequence: 3, generation: 1,
+          },
+        ],
+        runs: [],
+      });
+
+      dedicatedHandler?.({
+        type: 'error', payload: '[sidecar:test] [info] live', sequence: 3, generation: 1,
+      });
+      await vi.advanceTimersByTimeAsync(0);
+
+      await expect(pending).resolves.toEqual({ recovered: true });
+      expect(getSidecarBridgeSnapshot).toHaveBeenCalledWith(1);
+      expect(states).toContain('recovering');
+      expect(states.at(-1)).toBe('connected');
+    });
+
+    it('does not execute reverse RPC requests from a truncated replay window', async () => {
+      let dedicatedHandler: ((event: {
+        type: 'message' | 'error' | 'close' | 'hung';
+        payload: string;
+        sequence: number;
+        generation: number;
+      }) => void) | undefined;
+      const getSidecarBridgeSnapshot = vi.fn();
+      (window as Window & {
+        __ABU_SHELL__?: {
+          mainSupervisesSidecar: boolean;
+          subscribeSidecarEvents: (handler: NonNullable<typeof dedicatedHandler>) => () => void;
+          getSidecarBridgeSnapshot: typeof getSidecarBridgeSnapshot;
+        };
+      }).__ABU_SHELL__ = {
+        mainSupervisesSidecar: true,
+        subscribeSidecarEvents: (handler) => {
+          dedicatedHandler = handler;
+          return () => {};
+        },
+        getSidecarBridgeSnapshot,
+      };
+      mockHappyPath();
+      await startSidecar();
+
+      dedicatedHandler?.({
+        type: 'error', payload: '[sidecar:test] [info] baseline', sequence: 1, generation: 1,
+      });
+      await vi.advanceTimersByTimeAsync(0);
+
+      const toolHandler = vi.fn().mockResolvedValue({ ok: true });
+      onSidecarRequest('tool.invoke', toolHandler);
+      const states: string[] = [];
+      onSidecarConnectionState((connection) => states.push(connection.state));
+      const reverseRequest = JSON.stringify({
+        jsonrpc: '2.0', id: 'sidecar-tool-1', method: 'tool.invoke',
+        params: { toolName: 'write_file', input: { path: '/tmp/should-not-run' } },
+      });
+      getSidecarBridgeSnapshot.mockResolvedValue({
+        version: 1,
+        sidecarId: 'abu-sidecar',
+        generation: 1,
+        bridgeStatus: 'running',
+        firstAvailableSequence: 2,
+        lastSequence: 3,
+        truncated: true,
+        events: [
+          { type: 'message', payload: reverseRequest, sequence: 2, generation: 1 },
+          { type: 'error', payload: '[sidecar:test] [info] live', sequence: 3, generation: 1 },
+        ],
+        runs: [],
+      });
+
+      dedicatedHandler?.({
+        type: 'error', payload: '[sidecar:test] [info] live', sequence: 3, generation: 1,
+      });
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(toolHandler).not.toHaveBeenCalled();
+      expect(states).toContain('recovering');
+      expect(states.at(-1)).toBe('failed');
+    });
+
     it('when mainSupervisesSidecar is true, startSidecar() does NOT start a renderer heartbeat, but the mcp-hung listener still forces a restart', async () => {
       (window as Window & { __ABU_SHELL__?: { mainSupervisesSidecar: boolean } }).__ABU_SHELL__ = {
         mainSupervisesSidecar: true,

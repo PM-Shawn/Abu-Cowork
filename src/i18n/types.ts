@@ -275,7 +275,9 @@ export interface TranslationDict {
     runPending: string;
     runAccepted: string;
     runRunning: string;
+    runRecovering: string;
     runFailed: string;
+    runConnectionFailed: string;
     runInterrupted: string;
     runRecoveredAfterRestart: string;
     runRetry: string;

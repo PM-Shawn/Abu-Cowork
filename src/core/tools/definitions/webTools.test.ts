@@ -6,6 +6,10 @@ import { httpFetchTool } from './webTools';
 // the guards short-circuit and return an error string directly.
 
 describe('httpFetchTool pre-flight guards', () => {
+  it('is never classified as replay-safe because it supports mutating HTTP methods', () => {
+    expect(httpFetchTool.isConcurrencySafe).toBe(false);
+  });
+
   it('rejects URL longer than 2000 chars', async () => {
     const longUrl = 'https://example.com/' + 'a'.repeat(2100);
     const result = await httpFetchTool.execute({ url: longUrl });

@@ -646,23 +646,25 @@ export default function MessageBubble({
                 <div
                   className={cn(
                     'flex items-center gap-1.5 text-caption',
-                    message.runState === 'failed'
+                    message.runState === 'failed' || message.runState === 'connection-failed'
                       ? 'text-[var(--abu-danger)]'
                       : 'text-[var(--abu-text-muted)]',
                   )}
                   title={message.runError}
                 >
-                  {(message.runState === 'pending' || message.runState === 'accepted' || message.runState === 'running') && (
+                  {(message.runState === 'pending' || message.runState === 'accepted' || message.runState === 'running' || message.runState === 'recovering') && (
                     <RefreshCw className="h-3 w-3 animate-spin" />
                   )}
                   <span>
                     {message.runState === 'pending' && t.chat.runPending}
                     {message.runState === 'accepted' && t.chat.runAccepted}
                     {message.runState === 'running' && t.chat.runRunning}
+                    {message.runState === 'recovering' && t.chat.runRecovering}
                     {message.runState === 'failed' && t.chat.runFailed}
+                    {message.runState === 'connection-failed' && t.chat.runConnectionFailed}
                     {message.runState === 'interrupted' && t.chat.runInterrupted}
                   </span>
-                  {message.runState === 'failed' && !isConvRunning && (
+                  {(message.runState === 'failed' || message.runState === 'connection-failed') && !isConvRunning && (
                     <Button variant="ghost" size="xs" onClick={handleRunRetry}>
                       <RefreshCw className="h-3 w-3" />
                       {t.chat.runRetry}

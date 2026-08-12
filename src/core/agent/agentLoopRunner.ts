@@ -34,6 +34,7 @@ import type { ImageAttachment, ToolExecutionContext, Conversation } from '../../
 import {
   onSidecarNotification,
   onSidecarRequest,
+  onSidecarConnectionState,
   notifySidecar,
   getSidecarStatus,
   request as sidecarRequest,
@@ -112,6 +113,7 @@ import {
   startRuntimeRun,
   traceRuntimeEvent,
 } from '../observability/runtimeTrace';
+import { getElectronSidecarRunFact } from '../../utils/electronHost';
 
 const logger = createLogger('agent-loop-runner');
 const AGENT_ABORT_ACK_TIMEOUT_MS = 1_000;
@@ -472,12 +474,16 @@ async function settleRunPersistence(session: RunSession): Promise<void> {
   await waitForConversationPersistence(session.conversationId);
 }
 
-async function finalizeFailedRun(session: RunSession, displayMessage: string): Promise<void> {
+async function finalizeFailedRun(
+  session: RunSession,
+  displayMessage: string,
+  state: 'failed' | 'connection-failed' = 'failed',
+): Promise<void> {
   if (session.failureFinalizationPromise) return session.failureFinalizationPromise;
 
   session.failureFinalizationPromise = (async () => {
     session.dropFrames = true;
-    updateSessionMessageState(session, 'failed', displayMessage);
+    updateSessionMessageState(session, state, displayMessage);
     await (session.frameApplyTail ?? Promise.resolve());
     try {
       const chatDelta = getChatDelta();
@@ -971,7 +977,11 @@ async function handleMainLoopToolInvoke(rawParams: unknown): Promise<unknown> {
  * `tool.invoke` path instead of ever defaulting to allow. This handler's job
  * is only to answer honestly; it does not itself need retry/timeout logic —
  * an unhandled throw here becomes an RPC error response, which the sidecar's
- * fail-closed catch already treats as "not approved".
+ * fail-closed catch already treats as "not approved". For an allowed tool
+ * that is not explicitly read-only, this handler also marks the run committed
+ * before returning the ACK: after that boundary the shell cannot prove a
+ * sidecar-local side effect did not happen, so automatic whole-run replay is
+ * forbidden.
  */
 async function handleApprovalCheck(rawParams: unknown): Promise<ToolApprovalDecision> {
   const params = rawParams as {
@@ -994,13 +1004,34 @@ async function handleApprovalCheck(rawParams: unknown): Promise<ToolApprovalDeci
   }
   assertRunToolAllowed(session, params.toolName, (params.input as Record<string, unknown>) ?? {});
 
-  return await checkToolApproval(
+  const decision = await checkToolApproval(
     params.toolName,
     (params.input as Record<string, unknown>) ?? {},
     params.context as ToolExecutionContext | undefined,
     session.options.requestCommandConfirmation ?? requestCommandConfirmation,
     session.options.requestFilePermission ?? requestFilePermission,
   );
+  if (decision.decision === 'allow' && !isToolCallReplaySafe(params.toolName, params.input)) {
+    // The sidecar executes this tool locally immediately after this ACK. From
+    // this point onward a transport failure cannot prove whether the local
+    // side effect happened, so the whole run must never be auto-replayed.
+    // Mark before returning the allow ACK: a crash between ACK receipt and the
+    // first delta is deliberately treated as "possibly committed".
+    session.committed = true;
+  }
+  return decision;
+}
+
+function isToolCallReplaySafe(toolName: string, input: unknown): boolean {
+  const tool = getToolInvoker().getAllTools().find((candidate) => candidate.name === toolName);
+  if (!tool) return false;
+  try {
+    return typeof tool.isConcurrencySafe === 'function'
+      ? tool.isConcurrencySafe((input as Record<string, unknown>) ?? {}) === true
+      : tool.isConcurrencySafe === true;
+  } catch {
+    return false;
+  }
 }
 
 /** Enforce run-scoped restrictions at the shell boundary as well as in the
@@ -1164,6 +1195,19 @@ export function ensureHandlersRegistered(): void {
   // first tool call's preToolCall hook failed with "-32601 Method not found:
   // hook.emit" (the bug the real-machine smoke surfaced).
   ensureHookBridgeRegistered();
+
+  onSidecarConnectionState((event) => {
+    for (const session of sessions.values()) {
+      if (!session.accepted || session.terminal || session.dropFrames) continue;
+      if (event.state === 'recovering') {
+        updateSessionMessageState(session, 'recovering');
+      } else if (event.state === 'connected') {
+        updateSessionMessageState(session, 'running');
+      } else {
+        updateSessionMessageState(session, 'connection-failed', getI18n().chat.sidecarInterrupted);
+      }
+    }
+  });
 
   onSidecarNotification('agent.delta', handleAgentDelta);
   onSidecarNotification('agent.terminal', handleAgentTerminal);
@@ -1702,6 +1746,10 @@ function recoveryDelay(ms: number): Promise<void> {
 async function queryRunForTransportRecovery(
   params: AgentRunParams,
 ): Promise<TransportRecovery> {
+  const mirrored = await getElectronSidecarRunFact(params.runId);
+  if (mirrored?.state === 'terminal' && isAgentRunTerminal(mirrored.terminal)) {
+    return { action: 'terminal', terminal: mirrored.terminal };
+  }
   for (let attempt = 1; attempt <= 3; attempt++) {
     if (getSidecarStatus() === 'running') {
       try {
@@ -2521,7 +2569,13 @@ export async function runAgentLoopDispatched(
     // delta frames were already flushed (sidecar handleAgentRun's finally
     // runs coalescer.flush() before the error propagates), so this runs after
     // them, not racing.
-    await finalizeFailedRun(session, displayMessage);
+    const isConnectionFailure = realMessage === 'Sidecar process closed'
+      || realMessage.startsWith('Sidecar event channel');
+    await finalizeFailedRun(
+      session,
+      displayMessage,
+      isConnectionFailure ? 'connection-failed' : 'failed',
+    );
     return { reason: 'error', error: realMessage };
   } finally {
     if (session.firstFrameStallTimer) clearTimeout(session.firstFrameStallTimer);

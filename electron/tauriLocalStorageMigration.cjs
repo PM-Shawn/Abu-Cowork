@@ -283,18 +283,16 @@ function hasLegacySourceEvidence(plan, fileMigrationResult) {
   if (typeof plan?.sourceDatabase === 'string' && plan.sourceDatabase.length > 0) {
     return true;
   }
-  // A completed file migration can be retried solely because secret migration
-  // failed. Its summary omits inventory, but the legacy profile still exists.
-  if (fileMigrationResult?.skipped === 'already-migrated') {
-    return true;
-  }
   const inventory = fileMigrationResult?.inventory;
-  if (!inventory || typeof inventory !== 'object' || Array.isArray(inventory)) {
-    return false;
+  if (inventory && typeof inventory === 'object' && !Array.isArray(inventory)) {
+    return Object.values(inventory).some(
+      (entry) => entry && typeof entry === 'object' && Number(entry.files || 0) > 0
+    );
   }
-  return Object.values(inventory).some(
-    (entry) => entry && typeof entry === 'object' && Number(entry.files || 0) > 0
-  );
+  // Older completion records may not carry the source inventory. Preserve the
+  // fail-closed retry in that unknown state; current records distinguish an
+  // empty reset from a source that still contains migratable files.
+  return fileMigrationResult?.skipped === 'already-migrated';
 }
 
 function writeSentinel(electronDir, record) {

@@ -1215,6 +1215,7 @@ function runTauriMigration(opts) {
       skipped: 'already-migrated',
       sourceFingerprint: inventory.fingerprint,
       backup: record?.summary?.backup || null,
+      inventory: record?.summary?.inventory || null,
     };
   }
   const legacyV2Record = readSentinel(sentinelPath);

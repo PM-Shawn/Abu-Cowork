@@ -17,7 +17,11 @@ const {
   migrateWindowsSecrets,
   prepareTauriLocalStorageMigration,
 } = require('./tauriLocalStorageMigration.cjs');
-const { runTauriMigration } = require('./tauriMigration.cjs');
+const {
+  SENTINEL_FILENAME: TAURI_FILE_SENTINEL_FILENAME,
+  runTauriMigration,
+  sourceInventoryV2,
+} = require('./tauriMigration.cjs');
 const {
   isOfficialBuild,
   isTauriTransitionBuild,
@@ -260,6 +264,59 @@ test('failed Windows secret migration does not loop after an empty file migratio
     assert.equal(readerCalls, 0);
     assert.equal(summary.skippedReason, 'no-legacy-source-evidence');
     assert.equal(plan.secretMigrationFailed, false);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('trusted v2 Windows credential evidence survives the completed-marker retry', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'abu-transition-v2-retry-'));
+  try {
+    const tauriDir = path.join(root, 'empty-tauri-profile');
+    const electronDir = path.join(root, 'electron');
+    fs.mkdirSync(tauriDir, { recursive: true });
+    fs.mkdirSync(electronDir, { recursive: true });
+    const v2Inventory = sourceInventoryV2(tauriDir);
+    fs.writeFileSync(
+      path.join(electronDir, TAURI_FILE_SENTINEL_FILENAME),
+      JSON.stringify({
+        version: 2,
+        status: 'complete',
+        migratedAt: '2026-01-01T00:00:00.000Z',
+        sourceFingerprint: v2Inventory.fingerprint,
+        summary: {
+          sentinelWritten: true,
+          dirs: {
+            conversations: { status: 'absent' },
+            sessions: { status: 'absent' },
+            backups: { status: 'absent' },
+          },
+          secrets: { setFailed: [] },
+        },
+      })
+    );
+
+    const firstUpgrade = runTauriMigration({
+      tauriDir,
+      electronDir,
+      secretHas: () => false,
+      secretSet: () => {},
+    });
+    assert.equal(firstUpgrade.noticeOnlyUpgrade, true);
+    assert.equal(
+      hasLegacySourceEvidence({ sourceDatabase: null }, firstUpgrade),
+      true
+    );
+
+    const retry = runTauriMigration({
+      tauriDir,
+      electronDir,
+      secretHas: () => false,
+      secretSet: () => {},
+    });
+    assert.equal(retry.skipped, 'already-migrated');
+    assert.equal(retry.noticeOnlyUpgrade, true);
+    assert.equal(hasLegacySourceEvidence({ sourceDatabase: null }, retry), true);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }

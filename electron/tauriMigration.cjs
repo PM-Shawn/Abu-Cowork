@@ -1216,6 +1216,7 @@ function runTauriMigration(opts) {
       sourceFingerprint: inventory.fingerprint,
       backup: record?.summary?.backup || null,
       inventory: record?.summary?.inventory || null,
+      noticeOnlyUpgrade: record?.summary?.noticeOnlyUpgrade === true,
     };
   }
   const legacyV2Record = readSentinel(sentinelPath);

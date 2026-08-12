@@ -7,7 +7,7 @@
  * - Mixed: weighted average based on character distribution
  */
 
-import type { Message, MessageContent, ToolDefinition } from '../../types';
+import type { Message, MessageContent, ToolDefinition, ToolResultContent } from '../../types';
 import { getMessageText } from './contextUtils';
 
 // CJK Unicode ranges
@@ -81,6 +81,15 @@ export function estimateTokens(text: string): number {
 // Approximate tokens per image (Anthropic vision: ~1600 tokens per image)
 const TOKENS_PER_IMAGE = 1600;
 
+function estimateToolResultContentTokens(content: ToolResultContent[] | undefined): number {
+  if (!content) return 0;
+  return content.reduce((total, block) => (
+    block.type === 'image'
+      ? total + TOKENS_PER_IMAGE
+      : total + estimateTokens(block.text)
+  ), 0);
+}
+
 /**
  * Count image blocks in message content
  */
@@ -107,23 +116,16 @@ export function estimateMessageTokens(messages: Message[]): number {
       total += estimateTokens(msg.thinking);
     }
 
-    // Tool calls
-    if (msg.toolCalls) {
-      for (const tc of msg.toolCalls) {
+    // Match the provider normalizer: toolCallsForContext is the canonical
+    // send representation when present; toolCalls is the UI fallback. Counting
+    // both would double-charge the same tool exchange and over-truncate history.
+    const contextToolCalls = msg.toolCallsForContext ?? msg.toolCalls;
+    if (contextToolCalls) {
+      for (const tc of contextToolCalls) {
         total += estimateTokens(tc.name);
         total += estimateTokens(JSON.stringify(tc.input));
-        if (tc.result) {
-          total += estimateTokens(tc.result);
-        }
-      }
-    }
-
-    // Tool calls for context
-    if (msg.toolCallsForContext) {
-      for (const tc of msg.toolCallsForContext) {
-        total += estimateTokens(tc.name);
-        total += estimateTokens(JSON.stringify(tc.input));
-        total += estimateTokens(tc.result);
+        if (tc.result) total += estimateTokens(tc.result);
+        total += estimateToolResultContentTokens(tc.resultContent);
       }
     }
 

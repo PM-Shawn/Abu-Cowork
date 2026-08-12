@@ -130,6 +130,41 @@ test('renderer first-delta acknowledgement closes the bridge timer and records l
   assert.equal(ack.attributes.bridgeLatencyMs, 45);
 });
 
+test('records renderer resource cleanup without navigation URLs', () => {
+  const h = makeHarness();
+  h.state.noteRendererResourcesCleared({
+    reason: 'main_frame_document_navigation',
+    subscriptionCount: 7,
+    url: 'file:///private/user/path/index.html',
+  });
+  assert.deepEqual(h.events.at(-1), {
+    processName: 'main',
+    event: 'main.renderer_resources_cleared',
+    attributes: {
+      reason: 'main_frame_document_navigation',
+      subscriptionCount: 7,
+    },
+  });
+});
+
+test('records a sidecar bridge miss without payload content', () => {
+  const h = makeHarness();
+  const generation = h.state.noteSpawnStarted('abu-sidecar', true);
+  h.state.noteReady('abu-sidecar', generation, 1234);
+  h.state.noteSidecarBridgeDeliveryMissed('message');
+  assert.deepEqual(h.events.at(-1), {
+    processName: 'main',
+    event: 'main.sidecar_bridge_delivery_missed',
+    attributes: {
+      sidecarId: 'abu-sidecar',
+      sidecarGeneration: 1,
+      stage: 'message',
+      outcome: 'dropped',
+      reason: 'no_live_renderer_transport',
+    },
+  });
+});
+
 test('sidecar marker parser accepts only safe sidecar events and attributes', () => {
   const h = makeHarness();
   const generation = h.state.noteSpawnStarted('abu-sidecar', true);

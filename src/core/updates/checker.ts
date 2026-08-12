@@ -173,6 +173,26 @@ export async function checkForUpdate(
   }
 }
 
+/**
+ * Re-resolve the pending update's release notes for the CURRENT UI locale and
+ * write them back to the store. `checkForUpdate()` resolves notes in whichever
+ * locale was active at check time; when the user switches language afterwards,
+ * call this so the update dialog follows the new language without forcing a
+ * fresh version check. No-ops when there is no pending update / prior result.
+ */
+export async function refreshUpdateNotes(): Promise<void> {
+  if (!_pendingUpdate) return;
+  const store = useSettingsStore.getState();
+  const current = store.updateInfo;
+  if (!current) return;
+
+  const normalizedVersion = _pendingUpdate.version.replace(/^v/, '').trim();
+  const localized = await localizedNotes(_pendingUpdate.body ?? '', normalizedVersion);
+  const { notes, url } = await enrichReleaseNotes(localized);
+  // Only the locale-dependent fields change; keep version/publishedAt intact.
+  store.setUpdateInfo({ ...current, releaseNotes: notes, releaseUrl: url });
+}
+
 export async function downloadAndInstallUpdate(): Promise<void> {
   if (!_pendingUpdate) throw new Error('No pending update');
 

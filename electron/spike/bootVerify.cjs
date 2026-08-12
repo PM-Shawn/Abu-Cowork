@@ -114,8 +114,9 @@ app.whenReady().then(async () => {
   // Phase 2 slice B acceptance: prove the callback registered via
   // transformCallback survives the contextBridge boundary and that main
   // (emitEvent) can deliver an event back to it through the real
-  // plugin:event|listen subscription registry — not just that the invoke
-  // resolves.
+  // plugin:event|listen subscription registry. The child `srcdoc` iframe is
+  // a regression check for HTML widgets: its navigation must not clear the
+  // still-live top-level renderer's subscriptions.
   let eventRoundTrip = false;
   try {
     await win.webContents.executeJavaScript(`
@@ -123,6 +124,12 @@ app.whenReady().then(async () => {
         globalThis.__abuEvtTest = null;
         const id = window.__TAURI_INTERNALS__.transformCallback((e) => { globalThis.__abuEvtTest = e; });
         await window.__TAURI_INTERNALS__.invoke('plugin:event|listen', { event: 'abu-b-roundtrip', target: { kind: 'Any' }, handler: id });
+        const iframe = document.createElement('iframe');
+        iframe.hidden = true;
+        const iframeLoaded = new Promise((resolve) => iframe.addEventListener('load', resolve, { once: true }));
+        iframe.srcdoc = '<!doctype html><title>widget regression</title>';
+        document.body.appendChild(iframe);
+        await iframeLoaded;
         return true;
       })()
     `);
@@ -135,6 +142,76 @@ app.whenReady().then(async () => {
     }
   } catch (err) {
     consoleLines.push('EVENT-ROUNDTRIP-ERROR ' + String(err));
+  }
+
+  // 0.38 reliability regression: the fixed Abu sidecar stream uses a
+  // preload-owned Electron IPC channel instead of the compatibility Tauri
+  // event registry. Prove a real sidecar echo still returns after another
+  // child-frame navigation.
+  let sidecarDirectRoundTrip = false;
+  let sidecarSequencedReplay = false;
+  try {
+    const sidecarResult = await win.webContents.executeJavaScript(`
+      (async () => {
+        const requestId = 'boot-direct-sidecar';
+        const received = [];
+        const unsubscribe = window.__ABU_SHELL__.subscribeSidecarEvents((event) => {
+          if (event.type !== 'message') return;
+          try {
+            const message = JSON.parse(event.payload);
+            if (message.id === requestId) received.push({ message, event });
+          } catch {}
+        });
+        try {
+          const iframe = document.createElement('iframe');
+          iframe.hidden = true;
+          const iframeLoaded = new Promise((resolve) => iframe.addEventListener('load', resolve, { once: true }));
+          iframe.srcdoc = '<!doctype html><title>sidecar channel regression</title>';
+          document.body.appendChild(iframe);
+          await iframeLoaded;
+
+          await window.__TAURI_INTERNALS__.invoke('mcp_write', {
+            id: 'abu-sidecar',
+            message: JSON.stringify({
+              jsonrpc: '2.0',
+              id: requestId,
+              method: 'echo',
+              params: { channel: 'dedicated' },
+            }),
+          });
+          for (let attempt = 0; attempt < 40 && received.length === 0; attempt++) {
+            await new Promise((resolve) => setTimeout(resolve, 50));
+          }
+          const matched = received[0];
+          const snapshot = await window.__ABU_SHELL__.getSidecarBridgeSnapshot(
+            Math.max(0, (matched?.event?.sequence ?? 1) - 1),
+          );
+          return {
+            echo: matched?.message?.result?.channel === 'dedicated',
+            sequencedReplay: Number.isSafeInteger(matched?.event?.sequence)
+              && matched.event.sequence > 0
+              && Number.isSafeInteger(matched?.event?.generation)
+              && matched.event.generation > 0
+              && snapshot?.events?.some?.((event) =>
+                event.sequence === matched.event.sequence
+                && event.payload === matched.event.payload
+              ),
+          };
+        } finally {
+          unsubscribe();
+        }
+      })()
+    `);
+    sidecarDirectRoundTrip = sidecarResult?.echo === true;
+    sidecarSequencedReplay = sidecarResult?.sequencedReplay === true;
+    if (!sidecarDirectRoundTrip) {
+      consoleLines.push('SIDECAR-DIRECT-ROUNDTRIP-MISMATCH');
+    }
+    if (!sidecarSequencedReplay) {
+      consoleLines.push('SIDECAR-SEQUENCED-REPLAY-MISMATCH');
+    }
+  } catch (err) {
+    consoleLines.push('SIDECAR-DIRECT-ROUNDTRIP-ERROR ' + String(err));
   }
 
   // Phase 2 slice C acceptance: real secret_set/get/has/list/delete round-trip
@@ -436,6 +513,8 @@ app.whenReady().then(async () => {
   const pass =
     goneOk &&
     eventRoundTrip &&
+    sidecarDirectRoundTrip &&
+    sidecarSequencedReplay &&
     secretOk &&
     windowRoundTrip &&
     closePrevented &&
@@ -453,6 +532,8 @@ app.whenReady().then(async () => {
     remainingErrors,
     stubCommands,
     eventRoundTrip,
+    sidecarDirectRoundTrip,
+    sidecarSequencedReplay,
     secretRoundTrip,
     ...(secretNote ? { secretNote } : {}),
     windowRoundTrip,
@@ -468,7 +549,7 @@ app.whenReady().then(async () => {
   fs.writeFileSync(OUT, JSON.stringify(report, null, 2));
 
   console.log(
-    `[boot-verify] ${pass ? 'PASS' : 'FAIL'} — ${remainingErrors.length} remaining console error line(s), eventRoundTrip=${eventRoundTrip}, secretRoundTrip=${secretRoundTrip}, windowRoundTrip=${windowRoundTrip}, closePrevented=${closePrevented}, closeRequestedDelivered=${closeRequestedDelivered}, fsRoundTrip=${fsRoundTrip}, ipcSenderGuard=${ipcSenderGuard}, navigationGuard=${navigationGuard}, popupGuard=${popupGuard} → ${OUT}`
+    `[boot-verify] ${pass ? 'PASS' : 'FAIL'} — ${remainingErrors.length} remaining console error line(s), eventRoundTrip=${eventRoundTrip}, sidecarDirectRoundTrip=${sidecarDirectRoundTrip}, sidecarSequencedReplay=${sidecarSequencedReplay}, secretRoundTrip=${secretRoundTrip}, windowRoundTrip=${windowRoundTrip}, closePrevented=${closePrevented}, closeRequestedDelivered=${closeRequestedDelivered}, fsRoundTrip=${fsRoundTrip}, ipcSenderGuard=${ipcSenderGuard}, navigationGuard=${navigationGuard}, popupGuard=${popupGuard} → ${OUT}`
   );
   if (secretNote) {
     console.log(`  ⚠ secretNote: ${secretNote}`);

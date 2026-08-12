@@ -5,6 +5,7 @@ const MAX_STRING_CHARS = 160;
 
 export interface RuntimeTraceAttributes {
   runId?: string;
+  clientMessageId?: string;
   rpcId?: string;
   method?: string;
   stage?: string;
@@ -20,6 +21,8 @@ export interface RuntimeTraceAttributes {
   executionPath?: string;
   firstFrameMs?: number;
   bridgeLatencyMs?: number;
+  acceptedAt?: number;
+  replayCount?: number;
 }
 
 export interface RuntimeTraceEvent extends RuntimeTraceAttributes {
@@ -54,6 +57,7 @@ const activeRuns = new Map<string, ActiveRuntimeRun>();
 
 const SAFE_ATTRIBUTE_KEYS = new Set<keyof RuntimeTraceAttributes>([
   'runId',
+  'clientMessageId',
   'rpcId',
   'method',
   'stage',
@@ -69,6 +73,8 @@ const SAFE_ATTRIBUTE_KEYS = new Set<keyof RuntimeTraceAttributes>([
   'executionPath',
   'firstFrameMs',
   'bridgeLatencyMs',
+  'acceptedAt',
+  'replayCount',
 ]);
 
 const SECRET_PATTERNS: RegExp[] = [

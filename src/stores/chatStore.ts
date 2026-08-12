@@ -27,10 +27,21 @@ function generateId(): string {
   return Date.now().toString(36) + Math.random().toString(36).substring(2, 8);
 }
 
+const ACTIVE_RUN_STATES = new Set<Message['runState']>(['pending', 'accepted', 'running', 'recovering']);
+
+function recoverInterruptedUserRun(msg: Message): Message {
+  if (msg.role !== 'user' || !ACTIVE_RUN_STATES.has(msg.runState)) return msg;
+  return {
+    ...msg,
+    runState: 'failed',
+    runError: getI18n().chat.runRecoveredAfterRestart,
+  };
+}
+
 /** Extra safety net for messages coming in via import — ensures no streaming
  * flag survives even if the source bundle was built by a broken exporter. */
 export function sanitizeImportedMessage(msg: Message): Message {
-  return {
+  return recoverInterruptedUserRun({
     ...msg,
     isStreaming: false,
     toolCalls: msg.toolCalls?.map((tc) => {
@@ -41,7 +52,7 @@ export function sanitizeImportedMessage(msg: Message): Message {
       } = tc;
       return { ...safeToolCall, isExecuting: false };
     }),
-  };
+  });
 }
 
 /** Strip ghost assistant messages and clear stale isStreaming flags after loading from disk.
@@ -64,11 +75,11 @@ export function sanitizeLoadedMessages(messages: Message[]): Message[] {
             : tc.sandboxRecoveryAction,
         };
       });
-      return {
+      return recoverInterruptedUserRun({
         ...msg,
         isStreaming: false,
         toolCalls,
-      };
+      });
     })
     .filter(msg => {
       if (msg.role !== 'assistant') return true;
@@ -171,20 +182,40 @@ const abortControllers: Map<string, AbortController> = new Map();
 // otherwise the UI can show a completed assistant turn while its fire-and-
 // forget JSONL append/replace is still in flight. Keep the promises grouped
 // by conversation so the dispatch bridge can await only the run it owns.
-const pendingConversationPersistence = new Map<string, Promise<void>>();
+interface ConversationPersistenceState {
+  tail: Promise<void>;
+  firstError?: unknown;
+}
+
+const pendingConversationPersistence = new Map<string, ConversationPersistenceState>();
 
 function trackConversationPersistence(
   convId: string,
   operation: () => Promise<unknown>,
 ): void {
-  const previous = pendingConversationPersistence.get(convId) ?? Promise.resolve();
-  const tracked = previous
+  const state = pendingConversationPersistence.get(convId) ?? {
+    tail: Promise.resolve(),
+  };
+  const tracked = state.tail
+    // A failed write must not permanently poison the serial queue: later
+    // mutations still get a chance to repair disk state. The first error is
+    // retained separately and surfaced by the durability barrier below.
+    .catch(() => undefined)
     .then(operation)
     .then(() => undefined)
-    .catch(() => undefined);
-  pendingConversationPersistence.set(convId, tracked);
-  void tracked.finally(() => {
-    if (pendingConversationPersistence.get(convId) === tracked) {
+    .catch((error: unknown) => {
+      state.firstError ??= error;
+      throw error;
+    });
+  state.tail = tracked;
+  pendingConversationPersistence.set(convId, state);
+  // Attach a rejection handler immediately so fire-and-forget store actions
+  // never produce an unhandled rejection. The error remains in `state` until
+  // an explicit barrier consumes it.
+  void tracked.catch(() => undefined).finally(() => {
+    if (pendingConversationPersistence.get(convId) === state
+      && state.tail === tracked
+      && state.firstError === undefined) {
       pendingConversationPersistence.delete(convId);
     }
   });
@@ -198,10 +229,19 @@ function trackConversationPersistence(
  */
 export async function waitForConversationPersistence(convId: string): Promise<void> {
   while (true) {
-    const pending = pendingConversationPersistence.get(convId);
-    if (!pending) return;
-    await pending;
-    if (pendingConversationPersistence.get(convId) === pending) return;
+    const state = pendingConversationPersistence.get(convId);
+    if (!state) return;
+    const pending = state.tail;
+    try {
+      await pending;
+    } catch {
+      // `firstError` below is the authoritative failure. Keep looping if a
+      // newer queued mutation appeared while this snapshot was in flight.
+    }
+    if (pendingConversationPersistence.get(convId) !== state || state.tail !== pending) continue;
+    pendingConversationPersistence.delete(convId);
+    if (state.firstError !== undefined) throw state.firstError;
+    return;
   }
 }
 
@@ -441,6 +481,17 @@ interface ChatActions {
 
   // New message operations
   editMessage: (convId: string, messageId: string, newContent: string) => void;
+  updateUserMessageRun: (
+    convId: string,
+    messageId: string,
+    patch: {
+      state: NonNullable<Message['runState']>;
+      error?: string;
+      content?: Message['content'];
+      skill?: Message['skill'];
+      delegateAgent?: Message['delegateAgent'];
+    },
+  ) => void;
   deleteMessage: (convId: string, messageId: string, opts?: { skipCatalogBump?: boolean }) => void;
   deleteMessagesFrom: (convId: string, messageId: string) => void;
   deleteLoopMessages: (convId: string, loopId: string) => void;
@@ -1175,6 +1226,34 @@ export const useChatStore = create<ChatStore>()(
       },
 
       // New message operations
+      updateUserMessageRun: (convId, messageId, patch) => {
+        let updatedMessage: Message | undefined;
+        set((state) => {
+          const conv = state.conversations[convId];
+          const message = conv?.messages.find((candidate) => candidate.id === messageId);
+          if (!conv || !message || message.role !== 'user') return;
+
+          message.runState = patch.state;
+          if (patch.error) message.runError = patch.error;
+          else delete message.runError;
+          if ('content' in patch && patch.content !== undefined) message.content = patch.content;
+          if ('skill' in patch) message.skill = patch.skill;
+          if ('delegateAgent' in patch) message.delegateAgent = patch.delegateAgent;
+          conv.updatedAt = Date.now();
+          conv.contextCache = undefined;
+          updatedMessage = { ...message };
+        });
+
+        if (!updatedMessage) return;
+        const messageToPersist = updatedMessage;
+        trackConversationPersistence(
+          convId,
+          () => import('../core/session/conversationStorage').then(({ replaceMessageByIdStrict }) =>
+            replaceMessageByIdStrict(convId, messageToPersist),
+          ),
+        );
+      },
+
       editMessage: (convId, messageId, newContent) => {
         set((state) => {
           const msg = state.conversations[convId]?.messages.find((m) => m.id === messageId);
@@ -1890,11 +1969,17 @@ export const useChatStore = create<ChatStore>()(
         if (!get().conversationIndex[convId]) return;
 
         try {
-          const { loadMessages } = await import('../core/session/conversationStorage');
-          const messages = sanitizeLoadedMessages(await loadMessages(convId));
+          const { loadMessages, replaceMessageById } = await import('../core/session/conversationStorage');
+          const loadedMessages = await loadMessages(convId);
+          const messages = sanitizeLoadedMessages(loadedMessages);
           const meta = get().conversationIndex[convId];
           if (!meta) return;
 
+          const recoveredMessages = messages.filter((message, index) => (
+            message.role === 'user'
+            && message.runState === 'failed'
+            && ACTIVE_RUN_STATES.has(loadedMessages[index]?.runState)
+          ));
           set((state) => {
             state.conversations[convId] = {
               id: meta.id,
@@ -1914,6 +1999,15 @@ export const useChatStore = create<ChatStore>()(
               importedFrom: meta.importedFrom,
             };
           });
+
+          // Recovery persistence is best-effort. The sanitized in-memory
+          // conversation must remain available even if a disk replacement
+          // fails (for example, a transient permission or I/O error). A
+          // failed repair must never fall through to the outer load catch
+          // and replace a successfully-read conversation with an empty one.
+          await Promise.allSettled(
+            recoveredMessages.map((message) => replaceMessageById(convId, message)),
+          );
         } catch {
           // Load failed — create an empty conversation so the chat view still
           // renders (instead of falling through to the welcome page)

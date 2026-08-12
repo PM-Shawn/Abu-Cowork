@@ -44,6 +44,10 @@ import type { ToolInvoker } from '@/core/agent/ports/toolInvoker';
 import type { CapsPort } from '@/core/agent/ports/capsPort';
 import type { PlanModeState } from '@/core/agent/planMode';
 import { runAgentLoop, type AgentLoopOptions, type AgentLoopResult } from '@/core/agent/agentLoop';
+import {
+  createAgentRunTerminal,
+  type AgentRunTerminal,
+} from '@/core/agent/agentRunTerminal';
 import { enqueueUserInputWithId } from '@/core/agent/userInputQueue';
 import { applyPlanModeState } from '@/core/agent/planMode';
 import { TOOL_NAMES } from '@/core/tools/toolNames';
@@ -76,6 +80,8 @@ interface CapsSnapshotEntry {
 
 export interface AgentRunParams {
   runId: string;
+  clientMessageId?: string;
+  payloadDigest?: string;
   conversationId: string;
   userMessage: string;
   options: {
@@ -83,6 +89,7 @@ export interface AgentRunParams {
     blockedTools?: string[];
     allowedTools?: string[];
     imContext?: IMContext;
+    prePersistedUserMessageId?: string;
   };
   orchestration: { route: RouteResult; systemPromptSections: PromptSection[] };
   conversationSnapshot: Conversation;
@@ -115,6 +122,12 @@ function parseAgentRunParams(params: unknown): AgentRunParams {
   if (!isRecord(params)) throw new RpcError(-32602, 'Invalid params: expected object');
   const { runId, conversationId, userMessage, options, orchestration, conversationSnapshot, settingsSnapshot, resolvedCreds, toolList, locale } = params;
   if (typeof runId !== 'string' || !runId) throw new RpcError(-32602, 'Invalid params: runId must be a non-empty string');
+  if (params.clientMessageId !== undefined && (typeof params.clientMessageId !== 'string' || !params.clientMessageId)) {
+    throw new RpcError(-32602, 'Invalid params: clientMessageId must be a non-empty string');
+  }
+  if (params.payloadDigest !== undefined && (typeof params.payloadDigest !== 'string' || !params.payloadDigest)) {
+    throw new RpcError(-32602, 'Invalid params: payloadDigest must be a non-empty string');
+  }
   if (typeof conversationId !== 'string' || !conversationId) throw new RpcError(-32602, 'Invalid params: conversationId must be a non-empty string');
   if (typeof userMessage !== 'string') throw new RpcError(-32602, 'Invalid params: userMessage must be a string');
   if (!isRecord(options)) throw new RpcError(-32602, 'Invalid params: options must be an object');
@@ -123,6 +136,11 @@ function parseAgentRunParams(params: unknown): AgentRunParams {
     if (value !== undefined && (!Array.isArray(value) || value.some((entry) => typeof entry !== 'string'))) {
       throw new RpcError(-32602, `Invalid params: options.${field} must be a string array`);
     }
+  }
+  if (options.prePersistedUserMessageId !== undefined && (
+    typeof options.prePersistedUserMessageId !== 'string' || !options.prePersistedUserMessageId
+  )) {
+    throw new RpcError(-32602, 'Invalid params: options.prePersistedUserMessageId must be a non-empty string');
   }
   if (!isRecord(orchestration) || !isRecord((orchestration as { route?: unknown }).route)) {
     throw new RpcError(-32602, 'Invalid params: orchestration.route must be an object');
@@ -371,6 +389,143 @@ interface ActiveRun {
 
 const activeRuns = new Map<string, ActiveRun>();
 
+export interface AgentStartAck {
+  version: 1;
+  runId: string;
+  clientMessageId: string;
+  acceptedAt: number;
+  state: 'accepted' | 'running' | 'terminal';
+  replay: boolean;
+  terminal?: AgentRunTerminal;
+}
+
+export interface AgentRunStateResult {
+  version: 1;
+  runId: string;
+  state: 'not_found' | 'accepted' | 'running' | 'terminal';
+  clientMessageId?: string;
+  acceptedAt?: number;
+  terminal?: AgentRunTerminal;
+}
+
+interface RunRegistryEntry {
+  params: AgentRunParams;
+  payloadDigest: string;
+  clientMessageId: string;
+  acceptedAt: number;
+  state: 'accepted' | 'running' | 'terminal';
+  cancelRequested: boolean;
+  terminal?: AgentRunTerminal;
+  terminalAt?: number;
+}
+
+const RUN_REGISTRY_MAX_ENTRIES = 128;
+const RUN_REGISTRY_TERMINAL_TTL_MS = 60 * 60 * 1_000;
+const runRegistry = new Map<string, RunRegistryEntry>();
+
+function pruneRunRegistry(now = Date.now()): void {
+  for (const [runId, entry] of runRegistry) {
+    if (
+      entry.state === 'terminal'
+      && now - (entry.terminalAt ?? entry.acceptedAt) > RUN_REGISTRY_TERMINAL_TTL_MS
+    ) {
+      runRegistry.delete(runId);
+    }
+  }
+  if (runRegistry.size <= RUN_REGISTRY_MAX_ENTRIES) return;
+  const terminalEntries = [...runRegistry.entries()]
+    .filter(([, entry]) => entry.state === 'terminal')
+    .sort((a, b) => (a[1].terminalAt ?? 0) - (b[1].terminalAt ?? 0));
+  for (const [runId] of terminalEntries) {
+    if (runRegistry.size <= RUN_REGISTRY_MAX_ENTRIES) break;
+    runRegistry.delete(runId);
+  }
+}
+
+function toStartAck(entry: RunRegistryEntry, replay: boolean): AgentStartAck {
+  return {
+    version: 1,
+    runId: entry.params.runId,
+    clientMessageId: entry.clientMessageId,
+    acceptedAt: entry.acceptedAt,
+    state: entry.state,
+    replay,
+    ...(entry.terminal ? { terminal: entry.terminal } : {}),
+  };
+}
+
+function rememberTerminal(runId: string, terminal: AgentRunTerminal): void {
+  const entry = runRegistry.get(runId);
+  if (!entry || entry.terminal) return;
+  entry.state = 'terminal';
+  entry.terminal = terminal;
+  entry.terminalAt = Date.now();
+  pruneRunRegistry(entry.terminalAt);
+}
+
+/**
+ * Reliable Run Protocol V1 phase 1: acknowledge ownership immediately, then
+ * execute independently from the request that carried the start command.
+ * Replaying the same ids/digest returns the existing fact and never starts a
+ * second loop; conflicting reuse of a runId fails closed.
+ */
+export function handleAgentStart(rawParams: unknown): AgentStartAck {
+  const params = parseAgentRunParams(rawParams);
+  if (!params.clientMessageId || !params.payloadDigest) {
+    throw new RpcError(-32602, 'Invalid params: agent.start requires clientMessageId and payloadDigest');
+  }
+  pruneRunRegistry();
+  const existing = runRegistry.get(params.runId);
+  if (existing) {
+    if (
+      existing.payloadDigest !== params.payloadDigest
+      || existing.clientMessageId !== params.clientMessageId
+    ) {
+      throw new RpcError(-32602, `Conflicting replay for runId "${params.runId}"`);
+    }
+    traceSidecarRuntimeEvent('sidecar.agent_start_replayed', {
+      runId: params.runId,
+      method: 'agent.start',
+      stage: existing.state,
+    });
+    return toStartAck(existing, true);
+  }
+
+  const entry: RunRegistryEntry = {
+    params,
+    payloadDigest: params.payloadDigest,
+    clientMessageId: params.clientMessageId,
+    acceptedAt: Date.now(),
+    state: 'accepted',
+    cancelRequested: false,
+  };
+  runRegistry.set(params.runId, entry);
+  traceSidecarRuntimeEvent('sidecar.agent_start_accepted', {
+    runId: params.runId,
+    method: 'agent.start',
+    stage: 'accepted',
+  });
+
+  return toStartAck(entry, false);
+}
+
+export function handleAgentGetState(rawParams: unknown): AgentRunStateResult {
+  if (!isRecord(rawParams) || typeof rawParams.runId !== 'string' || !rawParams.runId) {
+    throw new RpcError(-32602, 'Invalid params: runId must be a non-empty string');
+  }
+  pruneRunRegistry();
+  const entry = runRegistry.get(rawParams.runId);
+  if (!entry) return { version: 1, runId: rawParams.runId, state: 'not_found' };
+  return {
+    version: 1,
+    runId: rawParams.runId,
+    state: entry.state,
+    clientMessageId: entry.clientMessageId,
+    acceptedAt: entry.acceptedAt,
+    ...(entry.terminal ? { terminal: entry.terminal } : {}),
+  };
+}
+
 /**
  * Flushes EVERY active run's coalescer, not just the one issuing the
  * outbound request — `rpcClient.ts`'s `setPreRequestFlush` hook is
@@ -389,6 +544,18 @@ export async function handleAgentRun(rawParams: unknown): Promise<unknown> {
   const params = parseAgentRunParams(rawParams);
   const { runId, conversationId } = params;
   const startedAt = Date.now();
+  const registryEntry = runRegistry.get(runId);
+  if (registryEntry?.state === 'terminal' && registryEntry.terminal) {
+    return registryEntry.terminal.result;
+  }
+  if (registryEntry?.cancelRequested) {
+    const result: AgentLoopResult = { reason: 'aborted' };
+    const terminal = createAgentRunTerminal(runId, result);
+    rememberTerminal(runId, terminal);
+    sendNotification('agent.terminal', terminal);
+    return result;
+  }
+  if (registryEntry) registryEntry.state = 'running';
   traceSidecarRuntimeEvent('sidecar.agent_run_received', {
     runId,
     method: 'agent.run',
@@ -558,6 +725,7 @@ export async function handleAgentRun(rawParams: unknown): Promise<unknown> {
       blockedTools: params.options.blockedTools,
       allowedTools: params.options.allowedTools,
       imContext: params.options.imContext,
+      prePersistedUserMessageId: params.options.prePersistedUserMessageId,
       settingsReader: getSettingsMirrorReader(),
       orchestration: params.orchestration,
       // P1-3B-3B: use the shell-known runId as the loop's internal loopId
@@ -579,6 +747,13 @@ export async function handleAgentRun(rawParams: unknown): Promise<unknown> {
       outcome: result.reason,
       durationMs: Date.now() - startedAt,
     });
+    // Terminal fact is ordered AFTER every final delta frame and BEFORE the
+    // RPC response. If that response is lost, the shell can still settle the
+    // run from this idempotent notification without re-executing any work.
+    coalescer.flush();
+    const terminal = createAgentRunTerminal(runId, result);
+    rememberTerminal(runId, terminal);
+    sendNotification('agent.terminal', terminal);
     return result;
   } catch (error) {
     traceSidecarRuntimeEvent('sidecar.agent_run_failed', {
@@ -588,6 +763,19 @@ export async function handleAgentRun(rawParams: unknown): Promise<unknown> {
       errorType: sidecarRuntimeErrorType(error),
       durationMs: Date.now() - startedAt,
     });
+    coalescer.flush();
+    const message = error instanceof Error ? error.message : String(error);
+    const terminal = createAgentRunTerminal(
+      runId,
+      { reason: 'error', error: message },
+      {
+        errorType: sidecarRuntimeErrorType(error),
+        message,
+        ...(error instanceof Error && error.stack ? { stack: error.stack } : {}),
+      },
+    );
+    rememberTerminal(runId, terminal);
+    sendNotification('agent.terminal', terminal);
     throw error;
   } finally {
     coalescer.flush();
@@ -675,7 +863,14 @@ export function handleAgentAbort(rawParams: unknown): AgentAbortAck {
     method: 'agent.abort',
     stage: run ? 'aborting' : 'not_found',
   });
-  if (!run) return { accepted: false, state: 'not_found' };
+  if (!run) {
+    const registered = runRegistry.get(runId);
+    if (!registered || registered.state === 'terminal') {
+      return { accepted: false, state: 'not_found' };
+    }
+    registered.cancelRequested = true;
+    return { accepted: true, state: 'aborting' };
+  }
   run.coalescer.flush();
   run.controllers.get(run.conversationId)?.abort();
   run.coalescer.flush();
@@ -733,6 +928,9 @@ export function handleStatePlanMode(rawParams: unknown): void {
 
 /** Abort every in-flight `agent.run` — used by the `shutdown` notification handler before exit (mirrors `subagentHost.ts`'s `shutdownAllSubagentRuns`). */
 export function shutdownAllAgentRuns(): void {
+  for (const entry of runRegistry.values()) {
+    if (entry.state !== 'terminal') entry.cancelRequested = true;
+  }
   for (const run of activeRuns.values()) {
     for (const controller of run.controllers.values()) controller.abort();
   }
@@ -741,4 +939,9 @@ export function shutdownAllAgentRuns(): void {
 /** Test-only accessor. */
 export function __getActiveAgentRunCount(): number {
   return activeRuns.size;
+}
+
+/** Test-only reset for the bounded idempotency registry. */
+export function __resetAgentRunRegistryForTests(): void {
+  runRegistry.clear();
 }

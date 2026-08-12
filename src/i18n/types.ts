@@ -272,6 +272,15 @@ export interface TranslationDict {
     collapseSources: string;
     userMessageShowMore: string;
     userMessageCollapse: string;
+    runPending: string;
+    runAccepted: string;
+    runRunning: string;
+    runRecovering: string;
+    runFailed: string;
+    runConnectionFailed: string;
+    runInterrupted: string;
+    runRecoveredAfterRestart: string;
+    runRetry: string;
     noModelConfigured: string;
     scrollToBottom: string;
     compressingContext: string;
@@ -367,12 +376,19 @@ export interface TranslationDict {
     gatewayUnreachable: string;
     /** Sidecar process exited mid-task and automatic recovery has started. */
     sidecarInterrupted: string;
+    messageSaveFailed: string;
+    attachmentDuringRun: string;
+    conversationBusy: string;
     /** Model likely doesn't support image/vision input. */
     visionUnsupported: string;
     /** Ollama returned 403 Forbidden (CORS origin restriction). */
     ollamaForbidden: string;
     /** Streamed-inline notice while compacting an oversized context (includes markdown). */
     compactingInlineNotice: string;
+    /** Latest user message cannot fit within the model's safe context budget. */
+    contextInputTooLarge: string;
+    /** System prompt and tool definitions leave no safe room for user input. */
+    contextFixedTooLarge: string;
     /** Conversation-title fallback used in task notifications. */
     notificationTaskFallback: string;
     /** Error after repeated output-token-limit hits (multi-line). {limit} */
@@ -1096,6 +1112,7 @@ export interface TranslationDict {
     appCheckFailed: string;
     // Internal
     checkInternalError: string;
+    checkTimedOut: string;
     // Detail toggle on failed items
     detailShow: string;
     detailHide: string;

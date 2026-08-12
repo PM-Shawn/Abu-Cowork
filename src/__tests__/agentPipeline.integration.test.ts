@@ -39,6 +39,10 @@ vi.mock('../core/llm/tauriFetch', () => ({
   getTauriFetch: vi.fn().mockResolvedValue(vi.fn()),
 }));
 
+vi.mock('../utils/consoleError', () => ({
+  reportError: vi.fn(),
+}));
+
 // Mock tool registry
 vi.mock('../core/tools/registry', () => ({
   getAllTools: vi.fn().mockReturnValue([
@@ -91,10 +95,26 @@ vi.mock('../core/skill/loader', () => ({
 
 // Mock context modules
 vi.mock('../core/context/contextManager', () => ({
-  // Real prepareContextMessages returns Message[] — mirror that. (Previously
-  // returned an object, which was silently tolerated until the send path
-  // started calling array methods on the result via rehydrateImageData.)
-  prepareContextMessages: vi.fn().mockImplementation((msgs) => msgs),
+  ContextBudgetError: class ContextBudgetError extends Error {
+    code: string;
+    estimatedTokens: number;
+    inputBudget: number;
+
+    constructor(code: string, estimatedTokens: number, inputBudget: number) {
+      super(code);
+      this.code = code;
+      this.estimatedTokens = estimatedTokens;
+      this.inputBudget = inputBudget;
+    }
+  },
+  enforceContextBudget: vi.fn().mockImplementation((msgs) => ({
+    messages: msgs,
+    tokensBefore: 1,
+    tokensAfter: 1,
+    inputBudget: 100000,
+    safetyMarginTokens: 1000,
+    strategy: 'unchanged',
+  })),
   trimOldScreenshots: vi.fn().mockImplementation((msgs) => msgs),
 }));
 
@@ -297,6 +317,7 @@ import { escalateMaxOutputTokens } from '../core/agent/loopGuards';
 import type { StreamEvent, Message } from '../types';
 // Mocked module reference — used to override token estimator per-test
 import * as tokenEstimatorModule from '../core/context/tokenEstimator';
+import * as contextManagerModule from '../core/context/contextManager';
 
 describe('Agent Pipeline Integration', () => {
   beforeEach(() => {
@@ -387,6 +408,22 @@ describe('Agent Pipeline Integration', () => {
     // User and assistant messages should share the same loopId (one logical turn).
     expect(userMsg?.loopId).toBeDefined();
     expect(userMsg?.loopId).toBe(errorMsg?.loopId);
+  });
+
+  it('shows an actionable local error and skips the provider when the latest input is too large', async () => {
+    vi.mocked(contextManagerModule.enforceContextBudget).mockImplementationOnce(() => {
+      throw new contextManagerModule.ContextBudgetError('INPUT_TOO_LARGE', 20_000, 10_000);
+    });
+
+    const convId = useChatStore.getState().createConversation();
+    await runAgentLoop(convId, 'oversized input');
+
+    expect(mockClaudeChat).not.toHaveBeenCalled();
+    const assistantText = useChatStore.getState().conversations[convId].messages
+      .filter((message) => message.role === 'assistant')
+      .map((message) => typeof message.content === 'string' ? message.content : '')
+      .join('\n');
+    expect(assistantText).toMatch(/上下文容量|too large/i);
   });
 
   it('escalateMaxOutputTokens pure function works correctly', () => {
@@ -697,10 +734,10 @@ describe('Agent Pipeline Integration', () => {
       expect(staged).toBeDefined();
     });
 
-    it('image-only send during a running loop starts a normal loop instead of staging (F6)', async () => {
-      // Regression: the concurrency guard staged EVERY interactive send into
-      // the text-only queue — an image-only send was swallowed entirely.
-      // Image/empty sends must fall through to a normal loop start.
+    it('rejects an image-only send during a running in-process loop instead of starting a second stream (F6)', async () => {
+      // The mid-run queue is text-only. An image send must stay with the
+      // composer and wait for the current run; falling through replaces the
+      // live AbortController and races two streams on one conversation.
       const { enqueueUserInput } = await import('../core/agent/userInputQueue');
       const convId = useChatStore.getState().createConversation();
       let release!: () => void;
@@ -722,11 +759,42 @@ describe('Agent Pipeline Integration', () => {
         images: [{ id: 'img-1', data: 'aGk=', mediaType: 'image/png' }],
       });
 
-      expect(second.reason).not.toBe('enqueued');
+      expect(second.reason).toBe('error');
       expect(vi.mocked(enqueueUserInput)).not.toHaveBeenCalled();
 
       release();
       await first;
+      expect(streamCalls).toBe(1);
+    });
+
+    it('rejects a headless send during a running in-process loop instead of starting a second stream', async () => {
+      const { enqueueUserInput } = await import('../core/agent/userInputQueue');
+      const convId = useChatStore.getState().createConversation(undefined, {
+        scheduledTaskId: 'schedule-1',
+        skipActivate: true,
+      });
+      let release!: () => void;
+      const gate = new Promise<void>((resolve) => { release = resolve; });
+      let streamCalls = 0;
+      mockClaudeChat.mockImplementation(
+        async (_m: unknown, _o: unknown, onEvent: (e: StreamEvent) => void) => {
+          streamCalls++;
+          await gate;
+          onEvent({ type: 'text', text: 'done' });
+          onEvent({ type: 'done', stopReason: 'end_turn' });
+        },
+      );
+
+      const first = runAgentLoop(convId, 'scheduled first');
+      await new Promise((resolve) => setTimeout(resolve, 20));
+
+      const second = await runAgentLoop(convId, 'overlapping scheduler delivery');
+
+      expect(second.reason).toBe('error');
+      expect(vi.mocked(enqueueUserInput)).not.toHaveBeenCalled();
+      release();
+      await first;
+      expect(streamCalls).toBe(1);
     });
   });
 

@@ -333,9 +333,40 @@ function quotePosixShell(value) {
   return `'${String(value).replace(/'/g, `'\\''`)}'`;
 }
 
-function shellCommandWithBundledPath(app, command) {
-  if (process.platform === 'win32') return command;
-  const layout = runtimeLayout(app);
+function quotePowerShellLiteral(value) {
+  return `'${String(value).replace(/'/g, "''")}'`;
+}
+
+/**
+ * PowerShell does not expose the bundled python.exe under the Unix-style
+ * `python3` aliases. Rewrite only the command's first, bare executable token;
+ * explicit paths and later pipeline/statement tokens remain untouched.
+ */
+function rewriteWindowsBundledPythonCommand(app, command, options = {}) {
+  const platform = options.platform || process.platform;
+  if (platform !== 'win32') return command;
+  const match = /^(\s*)(?:&\s*)?(python(?:3(?:\.\d+)?)?|py)(?:\.(?:exe|cmd))?(?=\s|$)/i.exec(command);
+  if (!match) return command;
+  const resolved = resolveBundledProgram(app, match[2], [], { ...options, platform });
+  if (!resolved.bundled || resolved.runtime !== 'python') return command;
+  let remainder = command.slice(match[0].length);
+  // `py -3` / `py -3.12` use a launcher-only interpreter selector. Once the
+  // command is bound to Abu's bundled Python executable the selector must be
+  // consumed; CPython itself treats `-3.12` as an invalid option.
+  if (/^py$/i.test(match[2])) {
+    const selector = /^\s+-3(?:\.\d+)?(?=\s|$)/i.exec(remainder);
+    if (selector) {
+      const afterSelector = remainder.slice(selector[0].length).trimStart();
+      remainder = afterSelector ? ` ${afterSelector}` : '';
+    }
+  }
+  return `${match[1]}& ${quotePowerShellLiteral(resolved.file)} -B${remainder}`;
+}
+
+function shellCommandWithBundledPath(app, command, options = {}) {
+  const platform = options.platform || process.platform;
+  if (platform === 'win32') return rewriteWindowsBundledPythonCommand(app, command, options);
+  const layout = runtimeLayout(app, options);
   const prefix = [layout.node.binDir, layout.python.binDir]
     .filter((entry, index, entries) => entries.indexOf(entry) === index)
     .join(':');
@@ -842,4 +873,5 @@ module.exports = {
   __resetCommandHostForTests,
   unixDescendantPids,
   sandboxLauncherPathFor,
+  rewriteWindowsBundledPythonCommand,
 };

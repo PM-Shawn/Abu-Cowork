@@ -31,7 +31,11 @@ import { substituteVariables } from '../skill/preprocessor';
 import { joinPath } from '../../utils/pathUtils';
 import { matchesToolName, parseToolPatterns } from '../skill/toolFilter';
 import { notifyTaskCompleted, notifyTaskError } from '../../utils/notifications';
-import { prepareContextMessages, trimOldScreenshots } from '../context/contextManager';
+import {
+  ContextBudgetError,
+  enforceContextBudget,
+  trimOldScreenshots,
+} from '../context/contextManager';
 import { compressContextIfNeeded, summarizeConversation } from '../context/contextCompressor';
 import {
   buildContextFromBoundary,
@@ -164,7 +168,7 @@ async function saveUserImagesToDisk(
  * Persists images to disk so they survive localStorage stripping. Used by both the normal
  * agent loop path and the API-key-missing early-return path so user input is never dropped.
  */
-async function buildUserMessageContent(
+export async function buildUserMessageContent(
   conversationId: string,
   text: string,
   images: ImageAttachment[] | undefined,
@@ -424,6 +428,12 @@ export interface AgentLoopOptions {
    * `generateId()` every run).
    */
   loopId?: string;
+  /**
+   * Shell-owned user message already appended and durably flushed before a
+   * sidecar run starts. When present, the loop must consume that message from
+   * the conversation snapshot instead of appending a duplicate.
+   */
+  prePersistedUserMessageId?: string;
 }
 
 /** Exit reason returned by runAgentLoop so callers (scheduler, trigger) can
@@ -509,31 +519,35 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
   // runAgentLoop on a running conversation would race it unstoppably (the UI's
   // isRunning check is React state and can lag a rapid double-send). Route the
   // message into the running loop's input queue instead — same behavior as
-  // ChatInput's mid-task path. Interactive desktop only: headless callers
-  // (scheduler / trigger / IM) manage their own conversations. Only stage when
-  // there is stageable text and no images — the queue is text-only, and
-  // silently losing an image is worse than the rare double-loop race, so
-  // image/empty sends fall through to a normal loop start.
+  // ChatInput's mid-task path. Only interactive text can be staged because the
+  // queue is text-only. Every other request is rejected while the conversation
+  // is owned; allowing images or headless callers to fall through would replace
+  // the live AbortController and start a second LLM stream.
   {
     const runningConv = getConversationReader().getConversation(conversationId);
-    if (
-      runningConv?.status === 'running'
-      && getAbortRegistry().hasAbortController(conversationId)
-      && isInteractiveDesktop(options, runningConv)
-      && userMessage.trim().length > 0
-      && !(options?.images?.length)
-    ) {
-      if (options?.requireNewRun) {
-        return {
-          reason: 'error',
-          error: 'A restricted recovery run cannot join an existing agent loop',
-        };
+    if (runningConv?.status === 'running' && getAbortRegistry().hasAbortController(conversationId)) {
+      const interactive = isInteractiveDesktop(options, runningConv);
+      const hasImages = Boolean(options?.images?.length);
+      const stageable = userMessage.trim().length > 0 && !hasImages;
+      if (interactive && stageable) {
+        if (options?.requireNewRun) {
+          return {
+            reason: 'error',
+            error: 'A restricted recovery run cannot join an existing agent loop',
+          };
+        }
+        // Codex-style staging: the message lives in the cancellable queue strip
+        // above the composer and becomes a transcript bubble only when the
+        // running loop drains it (see the drainQueuedInputs block below).
+        enqueueUserInput(conversationId, userMessage);
+        return { reason: 'enqueued' };
       }
-      // Codex-style staging: the message lives in the cancellable queue strip
-      // above the composer and becomes a transcript bubble only when the
-      // running loop drains it (see the drainQueuedInputs block below).
-      enqueueUserInput(conversationId, userMessage);
-      return { reason: 'enqueued' };
+      return {
+        reason: 'error',
+        error: hasImages
+          ? getI18n().chat.attachmentDuringRun
+          : getI18n().chat.conversationBusy,
+      };
     }
   }
 
@@ -600,14 +614,16 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
     // Persist the user's input first so the chat history isn't an orphan warning.
     // Use raw userMessage (orchestrator hasn't run); skill metadata is intentionally omitted —
     // the user needs to configure a key before any skill/agent routing takes effect.
-    const userContent = await buildUserMessageContent(conversationId, userMessage, options?.images);
-    chatDelta.addMessage(conversationId, {
-      id: generateId(),
-      role: 'user',
-      content: userContent,
-      timestamp: Date.now(),
-      loopId,
-    });
+    if (!options?.prePersistedUserMessageId) {
+      const userContent = await buildUserMessageContent(conversationId, userMessage, options?.images);
+      chatDelta.addMessage(conversationId, {
+        id: generateId(),
+        role: 'user',
+        content: userContent,
+        timestamp: Date.now(),
+        loopId,
+      });
+    }
     chatDelta.addMessage(conversationId, {
       id: generateId(),
       role: 'assistant',
@@ -728,23 +744,25 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
 
   // Add user message with loopId (use cleanInput for display)
   // Include skill info if a skill was triggered; build multimodal content if images are attached
-  const userContent = await buildUserMessageContent(conversationId, route.cleanInput, options?.images);
+  if (!options?.prePersistedUserMessageId) {
+    const userContent = await buildUserMessageContent(conversationId, route.cleanInput, options?.images);
 
-  chatDelta.addMessage(conversationId, {
-    id: generateId(),
-    role: 'user',
-    content: userContent,
-    timestamp: Date.now(),
-    loopId,
-    skill: route.type === 'skill' && route.skill ? {
-      name: route.skill.name,
-      description: route.skill.description,
-    } : undefined,
-    delegateAgent: route.type === 'delegate' && route.delegateAgent ? {
-      name: route.delegateAgent.name,
-      description: route.delegateAgent.description,
-    } : undefined,
-  });
+    chatDelta.addMessage(conversationId, {
+      id: generateId(),
+      role: 'user',
+      content: userContent,
+      timestamp: Date.now(),
+      loopId,
+      skill: route.type === 'skill' && route.skill ? {
+        name: route.skill.name,
+        description: route.skill.description,
+      } : undefined,
+      delegateAgent: route.type === 'delegate' && route.delegateAgent ? {
+        name: route.delegateAgent.name,
+        description: route.delegateAgent.description,
+      } : undefined,
+    });
+  }
 
   // Enterprise mode always uses OpenAI-compatible adapter (LiteLLM exposes that interface).
   // selectChatAdapter routes through the sidecar transport when it's healthy
@@ -1285,7 +1303,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
           // No valid cache AND the auto-compact circuit breaker is not tripped —
           // attempt compression. When the breaker IS tripped (repeated provider
           // failures/timeouts), skip the LLM call entirely; the deterministic
-          // truncation (prepareContextMessages) below still guarantees the request
+          // context budget gate below still guarantees the request
           // fits, so a doomed provider can't re-stall every turn.
           chatDelta.setIsCompressing(conversationId, true);
           try {
@@ -1461,13 +1479,14 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
       const trimmedMessages = trimOldScreenshots(messagesForContext, usagePercent);
 
       // Step 3: Hard truncation as safety net
-      let preparedMessages = prepareContextMessages(
+      const initialBudgetResult = enforceContextBudget(
         trimmedMessages,
         effectiveSystemPrompt,
         contextWindowSize,
         maxOutputTokens,
         toolTokens
       );
+      let preparedMessages = initialBudgetResult.messages;
 
       // Step 4: Rehydrate stripped image base64 from disk before sending.
       // Persisted images keep only `filePath` (base64 cleared to save disk); the
@@ -1481,6 +1500,29 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
         workspacePath: getConversationReader().getConversation(conversationId)?.workspacePath ?? null,
         cache: imageBase64Cache,
       });
+
+      // The final provider-boundary invariant. Re-run after image rehydration so
+      // every primary send is checked in its actual outbound shape, not merely
+      // against the persisted (base64-stripped) history representation.
+      const finalBudgetResult = enforceContextBudget(
+        preparedMessages,
+        effectiveSystemPrompt,
+        contextWindowSize,
+        maxOutputTokens,
+        toolTokens,
+      );
+      preparedMessages = finalBudgetResult.messages;
+      if (initialBudgetResult.strategy !== 'unchanged' || finalBudgetResult.strategy !== 'unchanged') {
+        logger.info('Context budget gate applied', {
+          tokensBefore: initialBudgetResult.tokensBefore,
+          tokensAfter: finalBudgetResult.tokensAfter,
+          inputBudget: finalBudgetResult.inputBudget,
+          safetyMarginTokens: finalBudgetResult.safetyMarginTokens,
+          strategy: initialBudgetResult.strategy === 'unchanged'
+            ? finalBudgetResult.strategy
+            : initialBudgetResult.strategy,
+        });
+      }
 
       // Resolve apiKey + baseUrl — enterprise gateway overrides personal creds.
       // Throws EnterpriseLlmUnavailableError if enforced but gateway unreachable.
@@ -1725,15 +1767,19 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
           // and persist it. Pattern: "maximum context length is N tokens"
           // (OpenAI-compatible style). Next request will use this as a cap.
           const ctxMatch = /maximum context length is (\d+) tokens/i.exec(retryErr.message);
-          if (ctxMatch && activeProvider) {
+          let recoveryContextWindowSize = contextWindowSize;
+          if (ctxMatch) {
             const discoveredWindow = parseInt(ctxMatch[1], 10);
             if (Number.isFinite(discoveredWindow) && discoveredWindow > 0) {
-              getCapsPort().recordContextWindow(activeProvider.id, effectiveModelId, discoveredWindow);
-              logger.info('Persisted discovered context window', {
-                providerId: activeProvider.id,
-                modelId: effectiveModelId,
-                contextWindow: discoveredWindow,
-              });
+              recoveryContextWindowSize = Math.min(contextWindowSize, discoveredWindow);
+              if (activeProvider) {
+                getCapsPort().recordContextWindow(activeProvider.id, effectiveModelId, discoveredWindow);
+                logger.info('Persisted discovered context window', {
+                  providerId: activeProvider.id,
+                  modelId: effectiveModelId,
+                  contextWindow: discoveredWindow,
+                });
+              }
             }
           }
 
@@ -1771,13 +1817,13 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
                 toolTokens
               );
               if (compressionResult.compressed) {
-                preparedMessages = prepareContextMessages(
+                preparedMessages = enforceContextBudget(
                   compressionResult.messages,
                   effectiveSystemPrompt,
-                  contextWindowSize,
+                  recoveryContextWindowSize,
                   maxOutputTokens,
                   toolTokens
-                );
+                ).messages;
                 autoCompactTracker.recordSuccess();
                 recovered = true;
                 logger.info('Context recovered via semantic compression');
@@ -1813,6 +1859,21 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
             conversationId,
             workspacePath: getConversationReader().getConversation(conversationId)?.workspacePath ?? null,
             cache: imageBase64Cache,
+          });
+          const recoveryBudgetResult = enforceContextBudget(
+            preparedMessages,
+            effectiveSystemPrompt,
+            recoveryContextWindowSize,
+            maxOutputTokens,
+            toolTokens,
+          );
+          preparedMessages = recoveryBudgetResult.messages;
+          logger.info('Context recovery budget gate applied', {
+            tokensBefore: recoveryBudgetResult.tokensBefore,
+            tokensAfter: recoveryBudgetResult.tokensAfter,
+            inputBudget: recoveryBudgetResult.inputBudget,
+            safetyMarginTokens: recoveryBudgetResult.safetyMarginTokens,
+            strategy: recoveryBudgetResult.strategy,
           });
           try {
             await adapter.chat(preparedMessages, chatOptions, eventHandler);
@@ -2271,7 +2332,11 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
 
       clearLoopContext(loopId);
       const errorMessage = err instanceof Error ? err.message : String(err);
-      const errorCode = err instanceof LLMError ? err.code : undefined;
+      const errorCode = err instanceof LLMError
+        ? err.code
+        : err instanceof ContextBudgetError
+        ? err.code
+        : undefined;
       logger.error('LLM call failed', {
         error: errorMessage,
         code: errorCode,
@@ -2289,7 +2354,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
           recordProviderCallOutcome(getActiveProvider(settingsForModel)?.id, { ok: false, code: err.code, at: Date.now() });
         }
       } else {
-        reportError('agent_crash', 'unknown', undefined, effectiveModelId, errorMessage);
+        reportError('agent_crash', errorCode ?? 'unknown', undefined, effectiveModelId, errorMessage);
       }
       logger.info('Agent loop ended', { conversationId, loopId, turnCount, reason: 'error' });
 
@@ -2305,8 +2370,13 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
         && err instanceof LLMError && err.statusCode === 403
         && /^forbidden\s*$/i.test(err.message.trim());
       const isEnterpriseGatewayUnavailable = err instanceof EnterpriseLlmUnavailableError;
+      const isContextBudgetError = err instanceof ContextBudgetError;
       let displayError = isEnterpriseGatewayUnavailable
         ? getI18n().chat.gatewayUnreachable
+        : isContextBudgetError && err.code === 'INPUT_TOO_LARGE'
+        ? getI18n().chat.contextInputTooLarge
+        : isContextBudgetError
+        ? getI18n().chat.contextFixedTooLarge
         : isLikelyVisionError
         ? getI18n().chat.visionUnsupported
         : isOllamaForbidden

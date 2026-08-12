@@ -20,12 +20,19 @@ import { TOOL_NAMES } from '../tools/toolNames';
 // sidecar process. See settingsSelectors.ts's module doc.
 import { getActiveApiKey, getActiveProvider, resolveAgentModel } from '../../utils/settingsSelectors';
 import { getSettingsReader, type SettingsReader } from './ports/settingsReader';
-import { resolveCapabilities, computeReasoningParams, isReasoningStarvation, type ModelCapabilities } from '../llm/modelCapabilities';
+import {
+  resolveCapabilities,
+  resolveEffectiveContextWindow,
+  computeReasoningParams,
+  isReasoningStarvation,
+  type ModelCapabilities,
+} from '../llm/modelCapabilities';
 import { applyDeclaredCapabilities } from '../llm/applyDeclaredCapabilities';
 import { resolveModelDeclared } from '../llm/resolveModelDeclared';
 import { getCapsPort, type CapsPort } from './ports/capsPort';
 import { getWorkspaceReader, type WorkspaceReader } from './ports/workspaceReader';
-import { prepareContextMessages } from '../context/contextManager';
+import { enforceContextBudget } from '../context/contextManager';
+import { estimateToolSchemaTokens } from '../context/tokenEstimator';
 import { compressContextIfNeeded } from '../context/contextCompressor';
 import { getMessageText } from '../context/contextUtils';
 import { withRetry } from './retry';
@@ -42,6 +49,9 @@ import type { SubagentStartEvent, SubagentEndEvent, PreToolCallEvent } from './l
 import { startSubagentSpan } from '../observability/langfuse';
 import { getI18n } from '../../i18n';
 import { matchesToolName, matchesToolPattern } from '../skill/toolFilter';
+import { createLogger } from '../logging/logger';
+
+const logger = createLogger('subagentLoop');
 
 /** Max times a subagent re-prompts after a max_tokens truncation. Mirrors the
  *  same-named limit in agentLoop (kept in sync deliberately). */
@@ -433,7 +443,11 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
         settings.maxOutputTokens ?? subagentCaps.maxOutputTokens,
       );
       // Apply context management to prevent subagent context overflow
-      const contextWindowSize = settings.contextWindowSize ?? subagentCaps.contextWindow;
+      const contextWindowSize = resolveEffectiveContextWindow(
+        effectiveModelId,
+        declared?.maxInputTokens ?? settings.contextWindowSize,
+        discovered?.contextWindow,
+      );
       // True output ceiling (distinct from the conservative per-turn budget below):
       // max_tokens-recovery escalation may climb toward this, never above a known limit.
       const effectiveModelCeiling = discovered?.maxOutputTokens ?? baseCaps.outputCeiling ?? subagentCaps.maxOutputTokens;
@@ -474,12 +488,24 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
       }
 
       // Step 2: Hard truncation as safety net
-      const preparedMessages = prepareContextMessages(
+      const toolSchemaTokens = estimateToolSchemaTokens(tools);
+      const budgetResult = enforceContextBudget(
         messagesForContext,
         systemPrompt,
         contextWindowSize,
-        maxOutputTokens
+        maxOutputTokens,
+        toolSchemaTokens,
       );
+      const preparedMessages = budgetResult.messages;
+      if (budgetResult.strategy !== 'unchanged') {
+        logger.info('Context budget gate applied', {
+          tokensBefore: budgetResult.tokensBefore,
+          tokensAfter: budgetResult.tokensAfter,
+          inputBudget: budgetResult.inputBudget,
+          safetyMarginTokens: budgetResult.safetyMarginTokens,
+          strategy: budgetResult.strategy,
+        });
+      }
 
       // Resolve apiKey + baseUrl — enterprise gateway overrides personal creds.
       const subChatCreds = resolveEffectiveLlmCreds(

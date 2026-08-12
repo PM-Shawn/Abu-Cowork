@@ -19,6 +19,7 @@ export default function AIServicesSection() {
   const isEnterprise = useEnterpriseStore(s => s.mode.kind !== 'personal');
   const providers = useSettingsStore((s) => s.providers);
   const activeModel = useSettingsStore((s) => s.activeModel);
+  const customWebSearch = useSettingsStore((s) => s.auxiliaryServices.webSearch);
   const clearAllStoredKeys = useSettingsStore((s) => s.clearAllStoredKeys);
   // Hooks must run unconditionally before the isEnterprise early return below.
   const imageGenBackends = useSettingsStore((s) => s.imageGeneration.backends);
@@ -46,6 +47,10 @@ export default function AIServicesSection() {
   const enabledProviders = providers.filter(p => p.enabled);
   const hasBuiltinSearch = enabledProviders.some(p => !!p.capabilities?.webSearch);
   const searchProviderName = enabledProviders.find(p => !!p.capabilities?.webSearch)?.name;
+  const hasCustomSearch = customWebSearch?.provider === 'searxng'
+    ? (customWebSearch.baseUrl?.trim().length ?? 0) > 0
+    : (customWebSearch?.apiKey?.trim().length ?? 0) > 0;
+  const hasSearch = hasBuiltinSearch || hasCustomSearch;
   // Image generation is an independent config (design doc §3.1, "C-a") — no
   // longer derived from chat providers, so no "builtin via provider X" case.
 
@@ -124,7 +129,7 @@ export default function AIServicesSection() {
           <div className="px-4 py-3">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-3">
-                {hasBuiltinSearch ? (
+                {hasSearch ? (
                   <CircleCheck className="h-4 w-4 text-[var(--abu-success)] shrink-0" />
                 ) : (
                   <CircleAlert className="h-4 w-4 text-[var(--abu-warning)] shrink-0" />
@@ -143,11 +148,13 @@ export default function AIServicesSection() {
                     onClick={() => setSearchExpanded(!searchExpanded)}
                     className={cn(
                       'text-minor px-1.5 py-0.5 rounded cursor-pointer transition-colors',
-                      'bg-[var(--abu-warning-bg)] text-[var(--abu-warning)] hover:bg-[var(--abu-warning-bg)]'
+                      hasCustomSearch
+                        ? 'bg-[var(--abu-success-bg)] text-[var(--abu-success)] hover:bg-[var(--abu-success-bg)]'
+                        : 'bg-[var(--abu-warning-bg)] text-[var(--abu-warning)] hover:bg-[var(--abu-warning-bg)]'
                     )}
                   >
                     <span className="flex items-center gap-1">
-                      {t.settings.builtinNotSupported}
+                      {hasCustomSearch ? t.settings.configured : t.settings.builtinNotSupported}
                       <ChevronDown className={cn('h-3 w-3 transition-transform', searchExpanded && 'rotate-180')} />
                     </span>
                   </button>

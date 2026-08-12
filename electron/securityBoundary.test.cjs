@@ -465,9 +465,10 @@ test('resources cannot be released by another IPC sender', () => {
   );
 });
 
-test('preload exposes only the narrow file resolver and runtime diagnostic bridge', async () => {
+test('preload exposes only narrow file, diagnostics, and receive-only sidecar bridges', async () => {
   const exposed = new Map();
   const sent = [];
+  const ipcListeners = new Map();
   const nativeFile = { name: 'report.pdf' };
   const webUtils = {
     getPathForFile(file) {
@@ -476,8 +477,14 @@ test('preload exposes only the narrow file resolver and runtime diagnostic bridg
     },
   };
   const ipcRenderer = {
-    invoke: async (channel) => channel === 'abu:runtime-diagnostics' ? { schemaVersion: 1 } : undefined,
-    on: () => undefined,
+    invoke: async (channel, payload) => {
+      if (channel === 'abu:runtime-diagnostics') return { schemaVersion: 1 };
+      if (channel === 'abu:sidecar-bridge-state') {
+        return { version: 1, lastSequence: payload.afterSequence };
+      }
+      return undefined;
+    },
+    on: (channel, callback) => ipcListeners.set(channel, callback),
     send: (channel, payload) => sent.push({ channel, payload }),
     sendSync: () => null,
   };
@@ -504,8 +511,10 @@ test('preload exposes only the narrow file resolver and runtime diagnostic bridg
   assert.deepEqual(Object.keys(shellBridge).sort(), [
     'getPathForFile',
     'getRuntimeDiagnostics',
+    'getSidecarBridgeSnapshot',
     'mainSupervisesSidecar',
     'recordRuntimeEvent',
+    'subscribeSidecarEvents',
   ]);
   assert.equal(shellBridge.getPathForFile(nativeFile), '/native/report.pdf');
   shellBridge.recordRuntimeEvent({ event: 'renderer.test', runId: 'run-1' });
@@ -514,4 +523,30 @@ test('preload exposes only the narrow file resolver and runtime diagnostic bridg
     payload: { event: 'renderer.test', runId: 'run-1' },
   }]);
   assert.deepEqual(JSON.parse(JSON.stringify(await shellBridge.getRuntimeDiagnostics())), { schemaVersion: 1 });
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(await shellBridge.getSidecarBridgeSnapshot(17))),
+    { version: 1, lastSequence: 17 },
+  );
+
+  const sidecarEvents = [];
+  // Main may emit before renderer modules finish evaluating. The receive-only
+  // bridge must retain that first valid frame until sidecarManager subscribes.
+  ipcListeners.get('abu:sidecar-event')({}, {
+    type: 'message', payload: '{"ok":true}', sequence: 1, generation: 1,
+  });
+  ipcListeners.get('abu:sidecar-event')({}, {
+    type: 'unknown', payload: 'ignored', sequence: 2, generation: 1,
+  });
+  const unsubscribe = shellBridge.subscribeSidecarEvents((event) => sidecarEvents.push(event));
+  assert.deepEqual(JSON.parse(JSON.stringify(sidecarEvents)), [{
+    type: 'message',
+    payload: '{"ok":true}',
+    sequence: 1,
+    generation: 1,
+  }]);
+  unsubscribe();
+  ipcListeners.get('abu:sidecar-event')({}, {
+    type: 'close', payload: '', sequence: 3, generation: 1,
+  });
+  assert.equal(sidecarEvents.length, 1);
 });

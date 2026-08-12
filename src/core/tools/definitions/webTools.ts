@@ -255,5 +255,9 @@ export const httpFetchTool: ToolDefinition = {
       return `Error making HTTP request: ${err instanceof Error ? err.message : String(err)}`;
     }
   },
-  isConcurrencySafe: true,
+  // Although GET is normally read-only, this tool also accepts
+  // POST/PUT/DELETE/PATCH. Keep the definition fail-closed as a whole so a
+  // transport crash can never replay an HTTP mutation whose response was
+  // lost after the remote server committed it.
+  isConcurrencySafe: false,
 };

@@ -464,7 +464,6 @@ interface LocalToolEntry {
 const READ_ONLY_LOCAL_TOOLS: ToolDefinition[] = [
   showWidgetTool,
   readMeTool,
-  httpFetchTool,
   webSearchTool,
   readFileLocalTool,
   listDirectoryTool,
@@ -495,7 +494,7 @@ const WRITE_LOCAL_TOOLS: ToolDefinition[] = [writeFileTool, editFileTool, delete
 // in this file goes through — registry.ts:295, NOT duplicated here). See
 // this module's "P1-3d-5 slice 1: process_image" and "P1-3d-5 slice 2b:
 // run_command" doc sections above.
-const SIDE_EFFECTING_LOCAL_TOOLS: ToolDefinition[] = [processImageTool, runCommandTool];
+const SIDE_EFFECTING_LOCAL_TOOLS: ToolDefinition[] = [httpFetchTool, processImageTool, runCommandTool];
 
 const LOCAL_TOOLS = new Map<string, LocalToolEntry>([
   ...READ_ONLY_LOCAL_TOOLS.map((tool): [string, LocalToolEntry] => [tool.name, { tool, readOnly: true }]),

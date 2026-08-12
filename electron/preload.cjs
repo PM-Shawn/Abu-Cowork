@@ -18,6 +18,8 @@ const TAURI_LOCAL_STORAGE_GET = 'abu:tauri-local-storage:get';
 const TAURI_LOCAL_STORAGE_ACK = 'abu:tauri-local-storage:ack';
 const RUNTIME_EVENT_CHANNEL = 'abu:runtime-event';
 const RUNTIME_DIAGNOSTICS_CHANNEL = 'abu:runtime-diagnostics';
+const SIDECAR_EVENT_CHANNEL = 'abu:sidecar-event';
+const SIDECAR_BRIDGE_STATE_CHANNEL = 'abu:sidecar-bridge-state';
 const TAURI_STORE_KEYS = new Set([
   'abu-settings',
   'abu-chat',
@@ -99,6 +101,11 @@ let cbId = 1;
 // events/channel messages back to the exact page-world function the frontend
 // registered (LLM streaming, event listeners, fs.watch, etc.).
 const callbacks = new Map();
+const sidecarEventCallbacks = new Set();
+const pendingSidecarEvents = [];
+const MAX_PENDING_SIDECAR_EVENTS = 128;
+const MAX_PENDING_SIDECAR_CHARS = 16 * 1024 * 1024;
+let pendingSidecarChars = 0;
 const MAX_ARGS_JSON_CHARS = 8 * 1024 * 1024;
 const MAX_RAW_BODY_BYTES = 128 * 1024 * 1024;
 
@@ -240,6 +247,58 @@ ipcRenderer.on('tauri:uncallback', (_e, { id } = {}) => {
   callbacks.delete(id);
 });
 
+// The Abu agent sidecar is product-critical infrastructure, so Electron does
+// not route its stdout/error/close/hung stream through the compatibility
+// Tauri event-subscription registry. A child iframe must never be able to
+// disturb this preload-owned channel.
+function isValidSidecarEvent(event) {
+  return Boolean(
+    event
+    && ['message', 'error', 'close', 'hung'].includes(event.type)
+    && typeof event.payload === 'string'
+    && Number.isSafeInteger(event.sequence)
+    && event.sequence > 0
+    && Number.isSafeInteger(event.generation)
+    && event.generation > 0
+  );
+}
+
+function deliverSidecarEvent(callback, event) {
+  try {
+    callback(event);
+  } catch {
+    // One renderer consumer must not break delivery to the remaining
+    // consumers or poison the preload IPC listener.
+  }
+}
+
+function bufferSidecarEvent(event) {
+  const eventChars = event.payload.length;
+  if (eventChars > MAX_PENDING_SIDECAR_CHARS) return;
+  pendingSidecarEvents.push(event);
+  pendingSidecarChars += eventChars;
+  while (
+    pendingSidecarEvents.length > MAX_PENDING_SIDECAR_EVENTS
+    || pendingSidecarChars > MAX_PENDING_SIDECAR_CHARS
+  ) {
+    const removed = pendingSidecarEvents.shift();
+    pendingSidecarChars -= removed?.payload.length || 0;
+  }
+}
+
+ipcRenderer.on(SIDECAR_EVENT_CHANNEL, (_e, event) => {
+  if (!isValidSidecarEvent(event)) return;
+  if (sidecarEventCallbacks.size === 0) {
+    // Main can produce stdout immediately after mcp_spawn while renderer
+    // modules are still evaluating. Keep a bounded preload-owned startup
+    // queue so the first response/close cannot vanish before sidecarManager
+    // subscribes.
+    bufferSidecarEvent(event);
+    return;
+  }
+  for (const callback of sidecarEventCallbacks) deliverSidecarEvent(callback, event);
+});
+
 contextBridge.exposeInMainWorld('__TAURI_INTERNALS__', {
   invoke,
   transformCallback: (cb, once = false) => {
@@ -270,6 +329,26 @@ contextBridge.exposeInMainWorld('__ABU_SHELL__', {
   // Chromium no longer exposes File.path. Keep the bridge deliberately narrow:
   // the renderer can resolve only a File object the user already dragged in.
   getPathForFile: (file) => webUtils.getPathForFile(file),
+  subscribeSidecarEvents: (callback) => {
+    if (typeof callback !== 'function') {
+      throw new Error('subscribeSidecarEvents requires a callback');
+    }
+    sidecarEventCallbacks.add(callback);
+    if (pendingSidecarEvents.length > 0) {
+      const queued = pendingSidecarEvents.splice(0);
+      pendingSidecarChars = 0;
+      for (const event of queued) deliverSidecarEvent(callback, event);
+    }
+    return () => sidecarEventCallbacks.delete(callback);
+  },
+  getSidecarBridgeSnapshot: (afterSequence = 0) => ipcRenderer.invoke(
+    SIDECAR_BRIDGE_STATE_CHANNEL,
+    {
+      afterSequence: Number.isSafeInteger(afterSequence) && afterSequence >= 0
+        ? afterSequence
+        : 0,
+    },
+  ),
   recordRuntimeEvent: (event) => ipcRenderer.send(RUNTIME_EVENT_CHANNEL, safeArgs(event)),
   getRuntimeDiagnostics: () => ipcRenderer.invoke(RUNTIME_DIAGNOSTICS_CHANNEL),
 });

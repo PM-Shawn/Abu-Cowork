@@ -25,8 +25,9 @@
  * A single fixed process id (`abu-sidecar`) is reused across the sidecar's
  * entire lifetime — including every restart — rather than minting a new id
  * per spawn attempt (unlike `TauriStdioTransport` in mcp/client.ts, which
- * mints a unique id per MCP server connection). This lets Tauri event
- * listeners (`mcp-msg-*` / `mcp-err-*` / `mcp-close-*`) be registered ONCE
+ * mints a unique id per MCP server connection). This lets the host-specific
+ * receive channel (Electron's dedicated preload subscription, or Tauri's
+ * `mcp-msg-*` / `mcp-err-*` / `mcp-close-*` listeners) be registered ONCE
  * and reused across restarts, but it also means Rust's process table keeps a
  * dead child's entry around until `mcp_kill` is explicitly called (it does
  * not self-clean on unexpected exit) — so every spawn attempt, including the
@@ -96,10 +97,10 @@
  * The host gate is `window.__ABU_SHELL__.mainSupervisesSidecar` — a global
  * `electron/preload.cjs` exposes via `contextBridge` (absent under Tauri).
  * `attemptSpawn()` only calls `startHeartbeat()` when that flag is falsy
- * (Tauri); Electron never starts the renderer heartbeat at all. The
- * `mcp-hung-abu-sidecar` listener is registered UNCONDITIONALLY in
- * `ensureListeners()` for both hosts — it's a harmless no-op under Tauri
- * (electron/mcpBridge.cjs never runs there, so the event never fires).
+ * (Tauri); Electron never starts the renderer heartbeat at all. Electron's
+ * dedicated sidecar channel carries `message`/`error`/`close`/`hung`; Tauri
+ * registers the original four `mcp-*-abu-sidecar` listeners (where `hung`
+ * remains a harmless no-op because Electron's main heartbeat is absent).
  * Death-on-crash detection (`mcp-close-abu-sidecar` → `handleClose()`) is
  * independent of both heartbeat paths and unaffected by any of this.
  *
@@ -121,6 +122,11 @@ import { isTauriEnv } from '@/utils/tauriEnv';
 import { createLogger } from '@/core/logging/logger';
 import { useEnterpriseStore } from '@/stores/enterpriseStore';
 import { snapshotEnterpriseEntitlement } from '@/core/enterprise/entitlement-state';
+import {
+  getElectronSidecarBridgeSnapshot,
+  subscribeElectronSidecarEvents,
+  type ElectronSidecarEvent,
+} from '@/utils/electronHost';
 
 const logger = createLogger('sidecar');
 
@@ -152,6 +158,12 @@ const CRASH_LOOP_MAX_RESTARTS = 3;
 const RESTART_BACKOFF_MS = 500;
 
 export type SidecarStatus = 'stopped' | 'starting' | 'running' | 'restarting' | 'failed';
+export type SidecarConnectionState = 'connected' | 'recovering' | 'failed';
+
+export interface SidecarConnectionEvent {
+  state: SidecarConnectionState;
+  reason: 'ready' | 'process-close' | 'process-hung' | 'event-gap' | 'event-gap-unrecoverable' | 'crash-loop';
+}
 
 interface JSONRPCResponse {
   jsonrpc?: '2.0';
@@ -231,6 +243,11 @@ let deliberatelyStopped = true;
 let startPromise: Promise<void> | null = null;
 let nextRequestId = 1;
 const pendingRequests = new Map<number, PendingRequest>();
+const connectionHandlers = new Set<(event: SidecarConnectionEvent) => void>();
+let lastSidecarSequence = 0;
+let lastSidecarGeneration = 0;
+let sidecarEventChain: Promise<void> = Promise.resolve();
+let lastConnectionEvent: SidecarConnectionEvent | null = null;
 
 /** method -> handlers, for sidecar→shell notifications (llm.event, llm.chatMeta, ...). See onSidecarNotification(). */
 const notificationHandlers = new Map<string, Set<SidecarNotificationHandler>>();
@@ -269,6 +286,15 @@ function stopEnterpriseEntitlementSync(): void {
 /** Current supervisor state. Exported for future use/tests. */
 export function getSidecarStatus(): SidecarStatus {
   return status;
+}
+
+/** Subscribe to transport recovery state for task-level status/UI projection. */
+export function onSidecarConnectionState(
+  handler: (event: SidecarConnectionEvent) => void,
+): () => void {
+  connectionHandlers.add(handler);
+  if (lastConnectionEvent) handler(lastConnectionEvent);
+  return () => connectionHandlers.delete(handler);
 }
 
 /**
@@ -470,6 +496,11 @@ export function __resetForTests(): void {
   pendingRequests.clear();
   notificationHandlers.clear();
   requestHandlers.clear();
+  connectionHandlers.clear();
+  lastSidecarSequence = 0;
+  lastSidecarGeneration = 0;
+  sidecarEventChain = Promise.resolve();
+  lastConnectionEvent = null;
   if (heartbeatTimer) {
     clearInterval(heartbeatTimer);
     heartbeatTimer = null;
@@ -481,9 +512,113 @@ export function __resetForTests(): void {
 
 // ── Spawn / restart machinery ──
 
+function handleErrorLine(line: string): void {
+  const level = /\]\s*\[(debug|info|warn|error)\]/.exec(line)?.[1];
+  if (level === 'debug') logger.debug('Sidecar stderr', { line });
+  else if (level === 'info') logger.info('Sidecar stderr', { line });
+  else if (level === 'error') logger.error('Sidecar stderr', { line });
+  else logger.warn('Sidecar stderr', { line });
+}
+
+function publishConnectionState(event: SidecarConnectionEvent): void {
+  if (
+    lastConnectionEvent?.state === event.state
+    && lastConnectionEvent.reason === event.reason
+  ) return;
+  lastConnectionEvent = event;
+  for (const handler of connectionHandlers) {
+    try {
+      handler(event);
+    } catch (err) {
+      logger.warn('Sidecar connection-state handler threw', {
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+}
+
+function dispatchDedicatedEvent(event: ElectronSidecarEvent): void {
+  if (event.sequence <= lastSidecarSequence) return;
+  lastSidecarSequence = event.sequence;
+  lastSidecarGeneration = event.generation;
+  if (event.type === 'message') {
+    handleMessage(event.payload);
+  } else if (event.type === 'error') {
+    handleErrorLine(event.payload);
+  } else if (event.type === 'close') {
+    publishConnectionState({ state: 'recovering', reason: 'process-close' });
+    handleClose();
+  } else if (event.type === 'hung') {
+    publishConnectionState({ state: 'recovering', reason: 'process-hung' });
+    void forceRestartOnHang('main-heartbeat-hung');
+  }
+}
+
+async function deliverDedicatedEvent(event: ElectronSidecarEvent): Promise<void> {
+  if (
+    event.sequence <= lastSidecarSequence
+    || (lastSidecarGeneration > 0 && event.generation < lastSidecarGeneration)
+  ) return;
+  // A fresh preload after a full renderer reload has no safe callback/tool
+  // context to replay old reverse-RPC requests into. Persisted active runs
+  // are finalized by chatStore's reload recovery instead, so establish a
+  // new cursor at the first live event and never re-execute historical tool
+  // calls from main's replay window.
+  if (lastSidecarSequence === 0 && event.sequence > 1) {
+    lastSidecarSequence = event.sequence - 1;
+    lastSidecarGeneration = event.generation;
+  }
+  const expectedSequence = lastSidecarSequence + 1;
+  if (event.sequence !== expectedSequence) {
+    publishConnectionState({ state: 'recovering', reason: 'event-gap' });
+    const snapshot = await getElectronSidecarBridgeSnapshot(lastSidecarSequence);
+    if (!snapshot) {
+      // The current event may itself be a reverse RPC request. Do not execute
+      // any suffix of a stream whose missing prefix cannot be reconciled.
+      lastSidecarSequence = Math.max(lastSidecarSequence, event.sequence);
+      lastSidecarGeneration = Math.max(lastSidecarGeneration, event.generation);
+      publishConnectionState({ state: 'failed', reason: 'event-gap-unrecoverable' });
+      rejectAllPending(new Error('Sidecar event channel could not reconcile a missing response'));
+      return;
+    }
+
+    if (snapshot.truncated) {
+      // A partial replay can contain local tool/approval requests. Reject the
+      // stream before dispatching any of them: applying a suffix could repeat
+      // a side effect whose earlier completion frame was the missing event.
+      lastSidecarSequence = Math.max(lastSidecarSequence, snapshot.lastSequence, event.sequence);
+      lastSidecarGeneration = Math.max(lastSidecarGeneration, snapshot.generation, event.generation);
+      publishConnectionState({ state: 'failed', reason: 'event-gap-unrecoverable' });
+      rejectAllPending(new Error('Sidecar event channel lost responses before its replay window'));
+      return;
+    }
+
+    const replay = [...snapshot.events].sort((left, right) => left.sequence - right.sequence);
+    for (const replayEvent of replay) dispatchDedicatedEvent(replayEvent);
+    if (event.sequence > lastSidecarSequence) dispatchDedicatedEvent(event);
+  } else {
+    dispatchDedicatedEvent(event);
+  }
+
+  if (status === 'running') publishConnectionState({ state: 'connected', reason: 'ready' });
+}
+
 async function ensureListeners(): Promise<void> {
   if (listenersReady) return;
   listenersReady = true;
+
+  const unsubscribeDedicated = subscribeElectronSidecarEvents((event) => {
+    sidecarEventChain = sidecarEventChain
+      .then(() => deliverDedicatedEvent(event))
+      .catch((err: unknown) => {
+        publishConnectionState({ state: 'failed', reason: 'event-gap-unrecoverable' });
+        rejectAllPending(err instanceof Error ? err : new Error(String(err)));
+      });
+  });
+  if (unsubscribeDedicated) {
+    unlisteners = [unsubscribeDedicated];
+    return;
+  }
 
   const unlistenMsg = await listen<string>(`mcp-msg-${SIDECAR_ID}`, (event) => {
     handleMessage(event.payload);
@@ -498,12 +633,7 @@ async function ensureListeners(): Promise<void> {
     // to the matching shell level so real sidecar warn/error surface. An
     // UNTAGGED line (redirected console.log, or a raw thrown error with no
     // level) is surfaced at `warn` — better loud than lost.
-    const line = event.payload;
-    const level = /\]\s*\[(debug|info|warn|error)\]/.exec(line)?.[1];
-    if (level === 'debug') logger.debug('Sidecar stderr', { line });
-    else if (level === 'info') logger.info('Sidecar stderr', { line });
-    else if (level === 'error') logger.error('Sidecar stderr', { line });
-    else logger.warn('Sidecar stderr', { line });
+    handleErrorLine(event.payload);
   });
   const unlistenClose = await listen<string>(`mcp-close-${SIDECAR_ID}`, () => {
     handleClose();
@@ -577,6 +707,7 @@ async function attemptSpawn(kind: 'initial' | 'restart'): Promise<void> {
   }
 
   status = 'running';
+  publishConnectionState({ state: 'connected', reason: 'ready' });
   // Seed after every spawn/restart, then stream heartbeat/store changes.
   ensureEnterpriseEntitlementSync();
   // Host gate (see module JSDoc "F1"): only Tauri (no main-process
@@ -613,6 +744,7 @@ function scheduleRestartOrGiveUp(reason: string): void {
 
   if (restartTimestamps.length > CRASH_LOOP_MAX_RESTARTS) {
     status = 'failed';
+    publishConnectionState({ state: 'failed', reason: 'crash-loop' });
     if (!crashLoopWarned) {
       crashLoopWarned = true;
       logger.warn('Sidecar crash-looped — giving up', {

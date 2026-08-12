@@ -49,7 +49,6 @@ afterEach(() => {
 const READ_ONLY_TOOL_NAMES = [
   'show_widget',
   'read_me',
-  'http_fetch',
   'web_search',
   'read_file',
   'list_directory',
@@ -78,7 +77,7 @@ const WRITE_TOOL_NAMES = ['write_file', 'edit_file', 'delete_file'];
 // tests only the registration/membership + the real local execute() below —
 // see index.ts's "P1-3d-5 slice 2b: run_command" doc section for the full
 // approval-parity trace.
-const SIDE_EFFECTING_TOOL_NAMES = ['process_image', 'run_command'];
+const SIDE_EFFECTING_TOOL_NAMES = ['http_fetch', 'process_image', 'run_command'];
 
 describe('localTools registry membership', () => {
   it.each(READ_ONLY_TOOL_NAMES)('hasLocalTool("%s") is true', (name) => {

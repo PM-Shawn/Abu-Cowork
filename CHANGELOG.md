@@ -7,6 +7,18 @@ All notable changes to Abu are documented here. Format based on [Keep a Changelo
 > [`CHANGELOG.zh-CN.md`](./CHANGELOG.zh-CN.md); keep both in sync per release (see
 > `RELEASING.md`). Entries before v0.31.0 predate this split and remain bilingual.
 
+## v0.37.1 · 2026-08-13
+
+**Root cause**: Renderer lifecycle changes and sidecar reconnects could detach a task from its event stream, leaving the message stuck in a loading state even after the run had completed or failed.
+
+**Fix**:
+
+- Task events now use a dedicated, sequenced sidecar channel with status replay, so Abu can restore the existing run after a renderer reload or temporary disconnect instead of spinning indefinitely.
+- Terminal states are settled exactly once and stale sidecar generations are ignored, preventing duplicate tool side effects while reconnecting.
+- Connection failures now surface an explicit disconnected or reconnecting state rather than leaving the task on an ambiguous loading indicator.
+
+**Full Changelog**: https://github.com/PM-Shawn/Abu-Cowork/compare/v0.37.0...v0.37.1
+
 ## v0.37.0 · 2026-08-12
 
 ### Features

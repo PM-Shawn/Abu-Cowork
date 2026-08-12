@@ -7,6 +7,18 @@ All notable changes to Abu are documented here. Format based on [Keep a Changelo
 > [`CHANGELOG.zh-CN.md`](./CHANGELOG.zh-CN.md); keep both in sync per release (see
 > `RELEASING.md`). Entries before v0.31.0 predate this split and remain bilingual.
 
+## v0.37.3 · 2026-08-13
+
+**Root cause**: Electron Builder 26 writes external updater blockmaps without a `blockMapSize` field. Release staging treated that missing field as permission to omit the blockmap, so the three architecture feeds could reference complete installers while their differential update metadata returned 404.
+
+**Fix**:
+
+- macOS Apple Silicon, macOS Intel, and Windows updater feeds now publish the external blockmap beside every referenced artifact, allowing supported upgrades to use differential downloads again.
+- Release staging fails before publication if any feed-referenced blockmap is missing, and still verifies its exact size whenever the feed provides one.
+- Full-installer fallback behavior is unchanged for clients that cannot apply a differential update.
+
+**Full Changelog**: https://github.com/PM-Shawn/Abu-Cowork/compare/v0.37.2...v0.37.3
+
 ## v0.37.2 · 2026-08-13
 
 **Root cause**: On Windows, Credential Manager entries can outlive AppData. The transition startup kept retrying stale or unreadable credentials after the legacy Tauri profile had been removed, while completed migration markers did not preserve enough source evidence across later launches.

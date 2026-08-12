@@ -467,6 +467,45 @@ describe('chatStore', () => {
       expect(conv.messages[0].content).toBe('Hello');
     });
 
+    it('persists Reliable Run Protocol lifecycle and route metadata on the existing user message', async () => {
+      const id = useChatStore.getState().createConversation();
+      const message = {
+        id: 'client-msg-1',
+        role: 'user',
+        content: '/writer draft',
+        timestamp: Date.now(),
+        runId: 'run-1',
+        clientMessageId: 'client-msg-1',
+        runState: 'pending',
+      } as const;
+      useChatStore.getState().addMessage(id, message);
+      vi.mocked(exists).mockResolvedValue(true);
+      vi.mocked(readTextFile).mockResolvedValue(`${JSON.stringify(message)}\n`);
+
+      try {
+        useChatStore.getState().updateUserMessageRun(id, 'client-msg-1', {
+          state: 'accepted',
+          content: 'draft',
+          skill: { name: 'writer', description: 'Write documents' },
+        });
+        await waitForConversationPersistence(id);
+
+        expect(useChatStore.getState().conversations[id].messages[0]).toMatchObject({
+          id: 'client-msg-1',
+          content: 'draft',
+          runState: 'accepted',
+          runId: 'run-1',
+          clientMessageId: 'client-msg-1',
+          skill: { name: 'writer' },
+        });
+      } finally {
+        vi.mocked(exists).mockReset();
+        vi.mocked(exists).mockResolvedValue(false);
+        vi.mocked(readTextFile).mockReset();
+        vi.mocked(readTextFile).mockResolvedValue('');
+      }
+    });
+
     it('exposes a durability barrier for the asynchronous JSONL append', async () => {
       let releaseAppend!: () => void;
       const appendPending = new Promise<void>((resolve) => {
@@ -500,6 +539,20 @@ describe('chatStore', () => {
       } finally {
         vi.mocked(invoke).mockReset();
       }
+    });
+
+    it('rejects the durability barrier when every append path fails', async () => {
+      vi.mocked(invoke).mockRejectedValue(new Error('disk unavailable'));
+      const id = useChatStore.getState().createConversation();
+      useChatStore.getState().addMessage(id, {
+        id: `barrier-failure-${Date.now()}`,
+        role: 'user',
+        content: 'must not execute',
+        timestamp: Date.now(),
+      });
+
+      await expect(waitForConversationPersistence(id)).rejects.toThrow('disk unavailable');
+      vi.mocked(invoke).mockReset();
     });
 
     it('auto-titles from first user message', () => {
@@ -1677,6 +1730,24 @@ describe('chatStore', () => {
   });
 
   describe('sandbox recovery restart sanitization', () => {
+    it.each(['pending', 'accepted', 'running'] as const)(
+      'turns a persisted %s user run into an explicit retryable failure',
+      (runState) => {
+        const [message] = sanitizeLoadedMessages([{
+          id: 'msg-running-before-restart',
+          role: 'user',
+          content: 'continue the task',
+          timestamp: Date.now(),
+          runId: 'run-before-restart',
+          runState,
+        }]);
+
+        expect(message.runState).toBe('failed');
+        expect(message.runError).toBeTruthy();
+        expect(message.runId).toBe('run-before-restart');
+      },
+    );
+
     it.each(['pending', 'enqueued'] as const)(
       'turns interrupted %s recovery into a retryable failed state',
       (action) => {

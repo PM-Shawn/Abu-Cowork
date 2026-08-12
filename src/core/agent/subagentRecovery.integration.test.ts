@@ -34,7 +34,14 @@ vi.mock('../memdir/scan', () => ({
 }));
 
 vi.mock('../context/contextManager', () => ({
-  prepareContextMessages: vi.fn((msgs: unknown) => msgs),
+  enforceContextBudget: vi.fn((msgs: unknown[]) => ({
+    messages: msgs,
+    tokensBefore: 1,
+    tokensAfter: 1,
+    inputBudget: 100000,
+    safetyMarginTokens: 1000,
+    strategy: 'unchanged',
+  })),
 }));
 vi.mock('../context/contextCompressor', () => ({
   compressContextIfNeeded: vi.fn().mockResolvedValue({ compressed: false, messages: [] }),

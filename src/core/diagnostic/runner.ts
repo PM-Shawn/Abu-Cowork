@@ -23,6 +23,13 @@ interface CategoryRunner {
   run: () => CheckResult[] | Promise<CheckResult[]>;
 }
 
+export interface RunChecksOptions {
+  /** Per-category deadline. Categories run in parallel, so this also bounds the full run. */
+  categoryTimeoutMs?: number;
+}
+
+export const DEFAULT_CATEGORY_TIMEOUT_MS = 12_000;
+
 const RUNNERS: CategoryRunner[] = [
   { category: 'ai-services', run: runAIServicesChecks },
   { category: 'permissions', run: runPermissionsChecks },
@@ -43,11 +50,39 @@ function categoryErrorRow(category: CheckCategory, err: unknown): CheckResult {
     errorDetail: err instanceof Error ? err.stack ?? err.message : String(err),
     checkedAt: Date.now(),
     durationMs: 0,
+    freshness: 'unknown',
   };
 }
 
-export async function runAllChecks(): Promise<CheckResult[]> {
-  const settled = await Promise.allSettled(RUNNERS.map((r) => Promise.resolve(r.run())));
+function categoryTimeoutRow(category: CheckCategory, timeoutMs: number): CheckResult {
+  const t = getI18n();
+  return {
+    id: `${category}:runner-timeout`,
+    category,
+    name: t.diagnostic.checkTimedOut,
+    status: 'warning',
+    errorMessage: `${t.diagnostic.checkTimedOut} (${timeoutMs}ms)`,
+    checkedAt: Date.now(),
+    durationMs: timeoutMs,
+    freshness: 'unknown',
+  };
+}
+
+async function runWithDeadline(runner: CategoryRunner, timeoutMs: number): Promise<CheckResult[]> {
+  let timeoutId: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<CheckResult[]>((resolve) => {
+    timeoutId = setTimeout(() => resolve([categoryTimeoutRow(runner.category, timeoutMs)]), timeoutMs);
+  });
+  try {
+    return await Promise.race([Promise.resolve().then(runner.run), timeout]);
+  } finally {
+    if (timeoutId) clearTimeout(timeoutId);
+  }
+}
+
+export async function runAllChecks(options: RunChecksOptions = {}): Promise<CheckResult[]> {
+  const timeoutMs = Math.max(1, options.categoryTimeoutMs ?? DEFAULT_CATEGORY_TIMEOUT_MS);
+  const settled = await Promise.allSettled(RUNNERS.map((r) => runWithDeadline(r, timeoutMs)));
   const out: CheckResult[] = [];
   for (let i = 0; i < settled.length; i++) {
     const s = settled[i];
@@ -60,11 +95,15 @@ export async function runAllChecks(): Promise<CheckResult[]> {
   return out;
 }
 
-export async function runCategoryChecks(category: CheckCategory): Promise<CheckResult[]> {
+export async function runCategoryChecks(
+  category: CheckCategory,
+  options: RunChecksOptions = {},
+): Promise<CheckResult[]> {
   const runner = RUNNERS.find((r) => r.category === category);
   if (!runner) return [];
   try {
-    return await Promise.resolve(runner.run());
+    const timeoutMs = Math.max(1, options.categoryTimeoutMs ?? DEFAULT_CATEGORY_TIMEOUT_MS);
+    return await runWithDeadline(runner, timeoutMs);
   } catch (e) {
     return [categoryErrorRow(category, e)];
   }

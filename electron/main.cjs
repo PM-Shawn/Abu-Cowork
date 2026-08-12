@@ -85,6 +85,10 @@ if (allowE2EAppDataRedirect && Object.hasOwn(process.env, E2E_APP_DATA_ROOT_ENV)
   // Redirect both so installed/packaged migration tests cannot read or back up
   // a developer's real Local Storage, cookies, or other persistent state.
   app.setPath('userData', path.join(appDataRoot, 'Abu-e2e-user-data'));
+  // Offline diagnostic export is part of the real-Electron E2E journey.
+  // Keep its Downloads write inside the launch-specific temp root so the
+  // test never leaves artifacts in a developer's real ~/Downloads folder.
+  app.setPath('downloads', path.join(appDataRoot, 'Downloads'));
   e2eTauriStorageRoot = path.join(appDataRoot, 'tauri-webview-user-data');
 }
 

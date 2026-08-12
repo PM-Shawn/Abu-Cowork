@@ -263,6 +263,7 @@ export async function flushWrites(): Promise<void> {
 // ════════════════════════════════════════════════════════════
 
 const writtenIds = new Set<string>();
+const writingIds = new Map<string, Promise<void>>();
 
 /**
  * Clear the dedup cache. Call when loading messages from disk
@@ -597,19 +598,29 @@ export async function appendMessage(
   message: Message,
 ): Promise<void> {
   if (writtenIds.has(message.id)) return; // dedup
-  writtenIds.add(message.id);
+  const inFlight = writingIds.get(message.id);
+  if (inFlight) return inFlight;
 
-  await ensureBase();
-  const line = JSON.stringify(stripForDisk(message)) + '\n';
-  await enqueueWrite(messagesPath(convId), line);
+  const write = (async () => {
+    await ensureBase();
+    const line = JSON.stringify(stripForDisk(message)) + '\n';
+    await enqueueWrite(messagesPath(convId), line);
 
-  // Write-through the catalog AFTER the JSONL write is queued. Fire-and-
-  // forget (fix #9): the catalog bump is best-effort (IPC + SQLite +
-  // fs::metadata on every append) and already swallows its own errors, so
-  // there is nothing for a caller to await or react to. JSONL success above
-  // is the hard requirement; catalog drift is repaired by startup reconcile,
-  // which does not depend on append ordering.
-  void catalogBumpCount(convId, 1, message.timestamp ?? Date.now(), message.id);
+    // Only claim the id after the append has actually succeeded. Marking it
+    // before I/O made a transient disk failure permanently suppress retry and
+    // allowed Reliable Run to execute without a durable user message.
+    writtenIds.add(message.id);
+
+    // The catalog is a rebuildable projection; JSONL success above is the
+    // hard requirement and the catalog bump remains best-effort.
+    void catalogBumpCount(convId, 1, message.timestamp ?? Date.now(), message.id);
+  })();
+  writingIds.set(message.id, write);
+  try {
+    await write;
+  } finally {
+    if (writingIds.get(message.id) === write) writingIds.delete(message.id);
+  }
 }
 
 /**

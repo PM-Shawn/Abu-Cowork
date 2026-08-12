@@ -100,11 +100,14 @@ function bundledCommandName(program, platform) {
     const parsed = path.win32.parse(program);
     if (parsed.dir) return null;
     const lowerExt = parsed.ext.toLowerCase();
-    if (lowerExt && !WINDOWS_EXTENSIONS.has(lowerExt)) return null;
-    const base = (lowerExt ? parsed.name : program).toLowerCase();
+    const recognizedExecutableSuffix = WINDOWS_EXTENSIONS.has(lowerExt);
+    const base = (recognizedExecutableSuffix ? parsed.name : program).toLowerCase();
+    if (base === 'py' || /^python3\.\d+$/.test(base)) return 'python3';
+    if (lowerExt && !recognizedExecutableSuffix) return null;
     return BUNDLED_COMMANDS.has(base) ? base : null;
   }
 
+  if (program === 'py' || /^python3\.\d+$/.test(program)) return 'python3';
   return BUNDLED_COMMANDS.has(program) ? program : null;
 }
 

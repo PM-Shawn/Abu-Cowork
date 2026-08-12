@@ -79,8 +79,9 @@ switch the Tauri `latest.json` last.
 
 ## 5. Post-release
 
-- [ ] Confirm the GitHub Release contains the two DMGs and Windows setup EXE,
-      with matching update metadata and blockmaps.
+- [ ] Confirm the GitHub Release contains the two DMGs and Windows setup EXE.
+- [ ] Confirm all three public Electron feeds reference the release version and
+      each feed artifact plus its external `.blockmap` returns HTTP 200.
 - [ ] Real-machine smoke the published build (especially Windows / a machine without Node).
 - [ ] Keep v0.33.0 artifacts and the pre-release root `latest.json` available
       throughout the v0.34 transition window.

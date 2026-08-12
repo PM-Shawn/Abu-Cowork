@@ -626,6 +626,7 @@ test('release publishes only after all Electron targets and switches root pointe
   assert.match(immutableStep.run, /X-Oss-Forbid-Overwrite:true/);
   assert.match(immutableStep.run, /200\)[\s\S]*cmp "release-stage\/\$local" "\$downloaded"/);
   assert.match(immutableStep.run, /404\)[\s\S]*ossutil cp/);
+  assert.match(immutableStep.run, /done < release-stage\/content-map\.tsv/);
 
   const releaseSource = fs.readFileSync(
     path.join(root, '.github', 'workflows', 'release.yml'),

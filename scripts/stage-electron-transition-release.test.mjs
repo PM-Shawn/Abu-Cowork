@@ -36,6 +36,13 @@ function writeFeed(directory, metadataName, version, artifactName) {
   );
 }
 
+function omitBlockMapSize(directory, metadataName) {
+  const metadataPath = path.join(directory, metadataName);
+  const metadata = YAML.parse(fs.readFileSync(metadataPath, 'utf8'));
+  for (const entry of metadata.files) delete entry.blockMapSize;
+  fs.writeFileSync(metadataPath, YAML.stringify(metadata));
+}
+
 function fixture() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'abu-release-stage-test-'));
   const input = path.join(root, 'input');
@@ -108,6 +115,68 @@ test('stages all three transition platforms and three isolated updater feeds', (
       /electron\/win-x64\/Abu-0\.34\.0-windows-x64-setup\.exe/
     );
     assert.equal(result.checksums.every((entry) => entry.sha256.length === 64), true);
+  } finally {
+    fs.rmSync(fx.root, { recursive: true, force: true });
+  }
+});
+
+test('stages existing external blockmaps when feed entries omit blockMapSize', () => {
+  const fx = fixture();
+  const output = path.join(fx.root, 'output');
+  try {
+    omitBlockMapSize(path.join(fx.input, 'mac-arm64'), 'latest-mac.yml');
+    omitBlockMapSize(path.join(fx.input, 'mac-x64'), 'latest-mac.yml');
+    omitBlockMapSize(path.join(fx.input, 'windows-x64'), 'latest.yml');
+
+    stageRelease({
+      input: fx.input,
+      output,
+      version: 'v0.34.0',
+      repo: 'PM-Shawn/Abu-Cowork',
+      releaseBaseUrl: 'https://example.invalid/releases/v0.34.0',
+      changelogEn: fx.changelogEn,
+      changelogZh: fx.changelogZh,
+    });
+
+    for (const relative of [
+      'feeds/mac-arm64/Abu-0.34.0-arm64.zip.blockmap',
+      'feeds/mac-x64/Abu-0.34.0-x64.zip.blockmap',
+      'feeds/win-x64/Abu-0.34.0-windows-x64-setup.exe.blockmap',
+    ]) {
+      assert.equal(fs.existsSync(path.join(output, relative)), true, relative);
+    }
+    const contentMap = fs.readFileSync(path.join(output, 'content-map.tsv'), 'utf8');
+    assert.match(contentMap, /electron\/mac-arm64\/Abu-0\.34\.0-arm64\.zip\.blockmap/);
+    assert.match(contentMap, /electron\/mac-x64\/Abu-0\.34\.0-x64\.zip\.blockmap/);
+    assert.match(
+      contentMap,
+      /electron\/win-x64\/Abu-0\.34\.0-windows-x64-setup\.exe\.blockmap/,
+    );
+  } finally {
+    fs.rmSync(fx.root, { recursive: true, force: true });
+  }
+});
+
+test('rejects a feed whose external blockmap metadata and file are both absent', () => {
+  const fx = fixture();
+  try {
+    const arm = path.join(fx.input, 'mac-arm64');
+    omitBlockMapSize(arm, 'latest-mac.yml');
+    fs.rmSync(path.join(arm, 'Abu-0.34.0-arm64.zip.blockmap'));
+
+    assert.throws(
+      () =>
+        stageRelease({
+          input: fx.input,
+          output: path.join(fx.root, 'output'),
+          version: 'v0.34.0',
+          repo: 'PM-Shawn/Abu-Cowork',
+          releaseBaseUrl: 'https://example.invalid/releases/v0.34.0',
+          changelogEn: fx.changelogEn,
+          changelogZh: fx.changelogZh,
+        }),
+      /missing blockmap for Abu-0\.34\.0-arm64\.zip/,
+    );
   } finally {
     fs.rmSync(fx.root, { recursive: true, force: true });
   }

@@ -7,6 +7,18 @@ All notable changes to Abu are documented here. Format based on [Keep a Changelo
 > [`CHANGELOG.zh-CN.md`](./CHANGELOG.zh-CN.md); keep both in sync per release (see
 > `RELEASING.md`). Entries before v0.31.0 predate this split and remain bilingual.
 
+## v0.37.2 · 2026-08-13
+
+**Root cause**: On Windows, Credential Manager entries can outlive AppData. The transition startup kept retrying stale or unreadable credentials after the legacy Tauri profile had been removed, while completed migration markers did not preserve enough source evidence across later launches.
+
+**Fix**:
+
+- A clean reset or reinstall no longer loops on `windows-secret-migration-failed` when no live Tauri data remains.
+- Completed migration markers retain source inventory and trusted v2 provenance, so later launches make the same safe migration decision.
+- Real or ambiguous legacy data still fails closed; Abu never silently discards credentials that may still be recoverable.
+
+**Full Changelog**: https://github.com/PM-Shawn/Abu-Cowork/compare/v0.37.1...v0.37.2
+
 ## v0.37.1 · 2026-08-13
 
 **Root cause**: Renderer lifecycle changes and sidecar reconnects could detach a task from its event stream, leaving the message stuck in a loading state even after the run had completed or failed.

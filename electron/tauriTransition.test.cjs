@@ -134,6 +134,16 @@ test('Windows secret migration requires live legacy source evidence', () => {
     hasLegacySourceEvidence(
       { sourceDatabase: null },
       {
+        noticeOnlyUpgrade: true,
+        inventory: { notice: { files: 0, bytes: 0 } },
+      }
+    ),
+    true
+  );
+  assert.equal(
+    hasLegacySourceEvidence(
+      { sourceDatabase: null },
+      {
         skipped: 'already-migrated',
         inventory: { conversations: { files: 0, bytes: 0 } },
       }

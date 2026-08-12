@@ -283,6 +283,12 @@ function hasLegacySourceEvidence(plan, fileMigrationResult) {
   if (typeof plan?.sourceDatabase === 'string' && plan.sourceDatabase.length > 0) {
     return true;
   }
+  // A trusted v2 completion record is upgraded by migrating Notice data only.
+  // That result deliberately carries a partial inventory, so it cannot prove
+  // that the earlier Windows credential migration completed.
+  if (fileMigrationResult?.noticeOnlyUpgrade === true) {
+    return true;
+  }
   const inventory = fileMigrationResult?.inventory;
   if (inventory && typeof inventory === 'object' && !Array.isArray(inventory)) {
     return Object.values(inventory).some(

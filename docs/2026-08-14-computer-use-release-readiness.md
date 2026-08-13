@@ -2,60 +2,54 @@
 
 > 日期：2026-08-14
 > 工作树：`codex/computer-use-m1`
-> 当前基线：`e0cfa533`（版本 `0.37.0`）
+> 当前基线：`e408d68b`（正式版本 `0.37.4`）
 > 发布顺序：等待 `v0.37.4` 独立完成公开发布与外部验收后，再以其正式发布 SHA 为基线整合并发布 Computer Use 版本。
 
 ## 1. 当前结论
 
-- M1 功能实现、自动化回归和独立安全复审已完成；当前候选仍不可直接发布。
+- M1 已整合 `v0.37.4` 正式基线，本地候选版本已冻结为 `v0.38.0`；当前候选仍不可直接发布。
 - `v0.37.4` 与本版本是两个独立版本，不合并发布、不并行切换更新源。
-- 当前不提交、不推送、不打 tag；先完成验收准备并保护现有工作树。
-- Computer Use 属于 minor 级能力，版本号在完成 `v0.37.4` 基线整合后再冻结，避免提前制造版本冲突。
+- 当前只完成本地提交和门禁，不推送、不打 tag、不切换更新源；先完成整合后独立安全复审。
+- Computer Use 属于 minor 级能力，版本号冻结为 `0.38.0`。
 
 ## 2. 2026-08-14 已完成的本地准备
 
 | 门禁 | 结果 |
 |---|---|
-| `npm run verify` | 通过：357 个测试文件、4914 个测试；覆盖率 70.28% / 60.18% / 70.10% / 71.98% |
+| `npm run verify` | 通过：361 个测试文件、4952 个测试；覆盖率 70.45% / 60.32% / 70.33% / 72.13% |
 | `npm run build` | 通过 |
-| `npm run test:electron:release-stage` | 通过：6/6 |
+| `npm run test:electron:release-stage` | 通过：8/8 |
 | `npm run test:electron:release-workflow` | 通过：25/25 |
 | `npm run parity:check` | 通过：83 个命令满足、3 个已知后置项 |
 | `npm run electron:dev:check` | 通过 |
 | `npm run electron:security-test` | 通过：101 passed、1 skipped、0 failed |
+| `npm run electron:test` | 通过：迁移、Host UI、安全、命令沙箱、浏览器运行时和 sidecar acceptance 全绿 |
+| `npm run test:e2e:electron` | 通过：15/15，含 stop/restart、renderer/sidecar 异常、审批、BrowserView 与能力设置 |
 | `npm run build:native-helper` | 通过 |
 | `bash scripts/enterprise-leak-guard.sh` | 通过 |
 | `git diff --check` | 通过 |
 | `npm run pack:electron` | 通过：生成本地未签名 macOS arm64 候选包 |
+| `npm run smoke:electron:packaged` | 通过：63 项打包态检查全部为 true |
 
-说明：本轮没有启动 packaged smoke。被观察的 `v0.37.4` 任务仍运行自己的 Electron 实例；此时启动第二个候选会污染单实例锁、调试端口和用户数据目录证据。packaged smoke 留到该任务结束且 M1 完成新基线整合后执行。
+说明：上述打包态 smoke 使用隔离的本地未签名候选，不能替代最终签名 macOS 身份下的 TCC/Golden Journey，也不能替代 Windows installed 验收。
 
-## 3. 与 `v0.37.4` 的预合并检查
+## 3. `v0.37.4` 外部验收与整合结果
 
-- 远端 `origin/dev` 当前候选为 `e408d68b`，`origin/main` 尚未推进到同一 SHA。
-- M1 与 `e0cfa533..e408d68b` 有 22 个同路径改动。
-- 不修改工作树的补丁检查显示，以下 11 个文件需要人工语义整合：
-  - `electron/nativeHelperManager.cjs`
-  - `electron/nativeHelperManager.path.test.cjs`
+- `v0.37.4` 已独立核对为非 draft、非 prerelease 的正式 GitHub Release；macOS arm64、macOS x64、Windows x64 三个安装资产齐全且下载地址返回 HTTP 200。
+- `origin/dev`、`origin/main` 与 `v0.37.4` tag 均指向 `e408d68b04daa33980e23a2320763ae3f179d1d2`；三套 Electron feed 与 `latest-release.json` 均为 `0.37.4`。
+- M1 feature commit 为 `fdf9fd0e`，合入正式基线的 merge commit 为 `a5e1e092`，版本准备 commit 为 `ef54ab0e`。
+- Git 实际产生的冲突只有两个文件，均按语义合并：
   - `electron/runtimeObservability.cjs`
   - `src/core/agent/agentLoop.ts`
-  - `src/core/agent/agentLoopRunner.test.ts`
-  - `src/core/diagnostic/checks/aiServices.ts`
-  - `src/core/diagnostic/checks/aiServices.test.ts`
-  - `src/i18n/locales/en-US.ts`
-  - `src/i18n/locales/zh-CN.ts`
-  - `src/i18n/types.ts`
-  - `src/types/index.ts`
-- 重点不能机械选边：必须同时保留 `v0.37.4` 的停止/队列生命周期修复和 M1 的 Computer Use 租约、Host Gate、helper 代际、诊断字段及产品文案。
+- 合并结果同时保留 `v0.37.4` 的停止/队列生命周期修复与 M1 的 Computer Use 租约、语义循环检测、延迟工具提升和观测字段；针对性回归为 370 个 Vitest 用例与 62 个 Electron node 用例全绿。
 
-## 4. `v0.37.4` 成功后的整合顺序
+## 4. 下一阶段顺序
 
-1. 按发布验收规范独立确认 `v0.37.4`：非 draft Release、三个安装资产、`dev/main/tag` SHA、三套 Electron feed、`latest-release.json` 和安装器 HTTP 可达性。
-2. 记录正式发布 SHA，刷新 `origin/dev`、`origin/main` 和 tags；只有三者满足该版本发布策略后才开始 M1 整合。
-3. 将 M1 功能保存为可审查的 feature commit，再把正式 `origin/dev` 基线合入 feature 分支；逐个处理上述 11 个语义冲突，不改写 `main`。
-4. 重跑全量 `npm run verify`、生产构建、发布事务、parity、open-core 泄露门禁、Electron 安全测试和 native helper 测试。
-5. 重建本地候选并执行 packaged smoke；确认没有其他 Abu/Electron 候选占用同一 bundle ID、调试端口或用户数据目录。
-6. 对整合后的安全敏感 diff 再做一次独立复审，重点检查 Stop/queue 与 Computer Use task lease、审批失效和 renderer reload 的组合竞态。
+1. 完成整合后独立安全复审，重点检查 Stop/queue 与 Computer Use task lease、审批失效、renderer reload、helper 代际、观测脱敏及 open-core 边界。
+2. 复审无 P0/P1 后推送 feature 分支、创建目标为 `dev` 的 PR，并等待 exact-SHA CI 全绿。
+3. 合入 `dev` 后以同一 SHA 创建 `v0.38.0-rc.1`，等待三平台签名、公证、安装 smoke 与 `promotion-ready`。
+4. 使用 RC 的最终签名 macOS 应用和 Windows installed 包完成下述真机验收矩阵。
+5. 只有 RC 和真机证据全部通过，才将 exact SHA 快进到 `main` 并创建唯一稳定 tag `v0.38.0`。
 
 ## 5. 正式 RC 前真机验收矩阵
 

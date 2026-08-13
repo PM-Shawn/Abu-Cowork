@@ -2107,6 +2107,8 @@ const zhCN: TranslationDict = {
   queueStrip: {
     queuedHint: '已排队 · 阿布会在下轮读取',
     cancel: '取消排队',
+    paused: '当前回复已停止，队列已暂停',
+    resume: '继续队列',
   },
 
   reference: {

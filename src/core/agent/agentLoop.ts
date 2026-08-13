@@ -52,7 +52,12 @@ import { runSubagent } from './subagentRunner';
 import type { SubagentProgressEvent } from './subagentLoop';
 import { createSubagentController } from './subagentAbort';
 import { allToolsUnparseable, MAX_NO_PROGRESS_TURNS, resolveMaxTurns, escalateMaxOutputTokens, shouldContinueTruncatedToolCalls } from './loopGuards';
-import { drainQueuedInputs, clearInputQueue, enqueueUserInput } from './userInputQueue';
+import {
+  drainSystemQueuedInputs,
+  enqueueUserInput,
+  hasSystemQueuedInputs,
+  pauseUserInputQueue,
+} from './userInputQueue';
 import { snapshotExecutionSteps } from './executionSnapshot';
 import { emitHook } from './lifecycleHooks';
 import { getI18n, format } from '../../i18n';
@@ -69,7 +74,6 @@ import { rehydrateForSend, type ImageBase64Cache } from '../llm/imageRehydration
 import { TOOL_NAMES, isDisplayHiddenStepBackedTool } from '../tools/toolNames';
 import { prefetchTools } from '../tools/toolPrefetch';
 import { classifyTools, buildDeferredToolsSummary } from '../tools/toolSearch';
-import { hasQueuedInputs } from './userInputQueue';
 import { resolveEffectiveLlmCreds, EnterpriseLlmUnavailableError } from '../enterprise/llm-resolver';
 import { createLogger } from '../logging/logger';
 import { reportError } from '@/utils/consoleError';
@@ -536,9 +540,9 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
             error: 'A restricted recovery run cannot join an existing agent loop',
           };
         }
-        // Codex-style staging: the message lives in the cancellable queue strip
-        // above the composer and becomes a transcript bubble only when the
-        // running loop drains it (see the drainQueuedInputs block below).
+        // The message lives in the cancellable queue strip until the current
+        // run reaches a terminal state. The shell dispatcher then starts it as
+        // an independent run with its own loopId.
         enqueueUserInput(conversationId, userMessage);
         return { reason: 'enqueued' };
       }
@@ -1052,11 +1056,10 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
       });
     }).catch(() => {});
 
-    // Check for mid-task user input. Queued messages are staged OUTSIDE the
-    // transcript (cancellable strip above the composer) and become chat
-    // messages only here, at consumption time — tagged with THIS loop's id so
-    // they group with the turn that actually reads them.
-    const queuedInputs = drainQueuedInputs(conversationId);
+    // Only internal system wake-ups may join the current run. User-authored
+    // follow-ups stay in the shell queue until this run terminates, then start
+    // as independent runs with new loopIds (agentLoopRunner.ts).
+    const queuedInputs = drainSystemQueuedInputs(conversationId);
     for (const qi of queuedInputs) {
       chatDelta.addMessage(conversationId, {
         id: generateId(),
@@ -2078,15 +2081,13 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
         consecutiveNoProgress = 0;
       }
 
-      // If the user enqueued additional input mid-stream (handled by ChatInput when
-      // a message is sent while a turn is still running), and the current turn ended
-      // with plain text rather than tool_use, run another turn so the LLM actually
-      // responds to that follow-up. Without this, mid-stream user messages get added
-      // to the conversation but never receive a reply.
+      // Internal wake-ups (for example background-agent results) still belong
+      // to this task and need another model turn when the current turn ended in
+      // plain text. User-authored follow-ups are deliberately excluded here.
       if (
         !continueLoop
         && !awaitingUserRecovery
-        && hasQueuedInputs(conversationId)
+        && hasSystemQueuedInputs(conversationId)
         && !abortController.signal.aborted
       ) {
         // Flush any buffered tokens and finalize the previous assistant message
@@ -2250,20 +2251,11 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
 
         // Clear loop context and any pending confirmation/permission dialogs
         clearLoopContext(loopId);
-        // Surface staged (non-system) queue messages as transcript user bubbles
-        // before clearing — the aborted loop can't answer them, but the text
-        // must remain visible instead of being silently destroyed.
-        for (const qi of drainQueuedInputs(conversationId)) {
-          if (qi.isSystem) continue;
-          chatDelta.addMessage(conversationId, {
-            id: generateId(),
-            role: 'user',
-            content: qi.text,
-            timestamp: qi.timestamp,
-            loopId,
-          });
-        }
-        clearInputQueue(conversationId);
+        // Stop pauses staged user follow-ups instead of turning them into
+        // transcript bubbles owned by the aborted run. Internal system wake-ups
+        // are discarded because their parent task no longer exists.
+        pauseUserInputQueue(conversationId);
+        drainSystemQueuedInputs(conversationId);
         drainConfirmationQueue();
         drainFilePermissionQueue();
         drainWorkspaceRequest();
@@ -2304,6 +2296,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
             const { isMessageWrittenToDisk } = await import('../session/conversationStorage');
             chatDelta.deleteMessage(conversationId, assistantMsgId, {
               skipCatalogBump: !(await isMessageWrittenToDisk(assistantMsgId)),
+              persist: true,
             });
           }
         }

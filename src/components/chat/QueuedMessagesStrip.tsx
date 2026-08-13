@@ -1,26 +1,51 @@
-import { useSyncExternalStore } from 'react';
+import { useState, useSyncExternalStore } from 'react';
 import { CornerDownRight, X } from 'lucide-react';
 import {
+  dequeueNextUserInput,
   subscribeToInputQueue,
   getQueuedInputs,
+  isUserInputQueuePaused,
+  pauseUserInputQueue,
   removeQueuedInput,
+  resumeUserInputQueue,
 } from '@/core/agent/userInputQueue';
+import { runAgentLoopDispatched } from '@/core/agent/agentLoopRunner';
 import { useI18n } from '@/i18n';
+import { Button } from '@/components/ui/button';
 
 /**
- * Codex-style staging strip for mid-task messages: queued inputs sit at the
- * composer's top-right edge as light-gray cancellable pills. They become
- * transcript bubbles only when the running loop drains them (agentLoop's
- * drainQueuedInputs block) — until then the × removes them without a trace.
+ * Staging strip for follow-up messages: queued inputs sit at the composer's
+ * top-right edge as light-gray cancellable pills. After the current task
+ * finishes, each becomes an independent transcript turn; until then the ×
+ * removes it without a trace.
  */
 export default function QueuedMessagesStrip({ conversationId }: { conversationId: string }) {
   const { t } = useI18n();
+  const [isResuming, setIsResuming] = useState(false);
   const items = useSyncExternalStore(
     subscribeToInputQueue,
     () => getQueuedInputs(conversationId),
   );
   const visible = items.filter((qi) => !qi.isSystem);
   if (visible.length === 0) return null;
+  const isPaused = isUserInputQueuePaused(conversationId);
+
+  const handleResume = async () => {
+    if (!isPaused || isResuming) return;
+    setIsResuming(true);
+    resumeUserInputQueue(conversationId);
+    const next = dequeueNextUserInput(conversationId);
+    try {
+      if (next) await runAgentLoopDispatched(conversationId, next.text);
+    } catch {
+      pauseUserInputQueue(conversationId);
+    } finally {
+      if (getQueuedInputs(conversationId).some((item) => !item.isSystem)) {
+        pauseUserInputQueue(conversationId);
+      }
+      setIsResuming(false);
+    }
+  };
 
   return (
     <div className="flex flex-col items-end gap-1">
@@ -42,6 +67,14 @@ export default function QueuedMessagesStrip({ conversationId }: { conversationId
           </button>
         </div>
       ))}
+      {isPaused && (
+        <div className="flex items-center gap-2 text-caption text-[var(--abu-text-muted)]">
+          <span>{t.queueStrip.paused}</span>
+          <Button variant="ghost" size="xs" disabled={isResuming} onClick={handleResume}>
+            {t.queueStrip.resume}
+          </Button>
+        </div>
+      )}
     </div>
   );
 }

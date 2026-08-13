@@ -1,16 +1,22 @@
 /**
- * Queue staging semantics (Codex-style): queued messages live OUTSIDE the
- * transcript in a cancellable staging area and only become chat messages
- * when the running loop drains them.
+ * Queue staging semantics: user follow-ups live outside the transcript in a
+ * cancellable staging area until the current task finishes; system wake-ups
+ * may be consumed inside the current loop.
  */
 import { describe, it, expect, beforeEach } from 'vitest';
 import {
   enqueueUserInput,
   enqueueUserInputWithId,
+  dequeueNextUserInput,
   drainQueuedInputs,
+  drainSystemQueuedInputs,
   clearInputQueue,
   getQueuedInputs,
+  hasSystemQueuedInputs,
+  isUserInputQueuePaused,
+  pauseUserInputQueue,
   removeQueuedInput,
+  resumeUserInputQueue,
 } from './userInputQueue';
 
 const CONV = 'conv-queue-test';
@@ -45,6 +51,54 @@ describe('userInputQueue staging', () => {
     removeQueuedInput(CONV, target.id);
     expect(getQueuedInputs(CONV).map((i) => i.text)).toEqual(['keep']);
     expect(drainQueuedInputs(CONV).map((i) => i.text)).toEqual(['keep']);
+  });
+
+  it('drains only system wake-ups while preserving user follow-ups in FIFO order', () => {
+    enqueueUserInputWithId(CONV, 'user-1', 'first user');
+    enqueueUserInputWithId(CONV, 'system-1', 'background result', true);
+    enqueueUserInputWithId(CONV, 'user-2', 'second user');
+
+    expect(hasSystemQueuedInputs(CONV)).toBe(true);
+    expect(drainSystemQueuedInputs(CONV).map((item) => item.id)).toEqual(['system-1']);
+    expect(hasSystemQueuedInputs(CONV)).toBe(false);
+    expect(getQueuedInputs(CONV).map((item) => item.id)).toEqual(['user-1', 'user-2']);
+  });
+
+  it('dequeues user follow-ups one at a time without consuming system entries', () => {
+    enqueueUserInputWithId(CONV, 'system-1', 'background result', true);
+    enqueueUserInputWithId(CONV, 'user-1', 'first user');
+    enqueueUserInputWithId(CONV, 'user-2', 'second user');
+
+    expect(dequeueNextUserInput(CONV)?.id).toBe('user-1');
+    expect(getQueuedInputs(CONV).map((item) => item.id)).toEqual(['system-1', 'user-2']);
+    expect(dequeueNextUserInput(CONV)?.id).toBe('user-2');
+    expect(dequeueNextUserInput(CONV)).toBeUndefined();
+    expect(getQueuedInputs(CONV).map((item) => item.id)).toEqual(['system-1']);
+  });
+
+  it('blocks FIFO handoff while paused and resumes without losing order', () => {
+    enqueueUserInputWithId(CONV, 'user-1', 'first user');
+    enqueueUserInputWithId(CONV, 'user-2', 'second user');
+
+    pauseUserInputQueue(CONV);
+
+    expect(isUserInputQueuePaused(CONV)).toBe(true);
+    expect(dequeueNextUserInput(CONV)).toBeUndefined();
+    expect(getQueuedInputs(CONV).map((item) => item.id)).toEqual(['user-1', 'user-2']);
+
+    resumeUserInputQueue(CONV);
+    expect(isUserInputQueuePaused(CONV)).toBe(false);
+    expect(dequeueNextUserInput(CONV)?.id).toBe('user-1');
+    expect(dequeueNextUserInput(CONV)?.id).toBe('user-2');
+  });
+
+  it('clears the paused state after the last user item is cancelled', () => {
+    enqueueUserInputWithId(CONV, 'user-1', 'only user');
+    pauseUserInputQueue(CONV);
+
+    removeQueuedInput(CONV, 'user-1');
+
+    expect(isUserInputQueuePaused(CONV)).toBe(false);
   });
 
   describe('enqueueUserInputWithId (P1-3B-4)', () => {

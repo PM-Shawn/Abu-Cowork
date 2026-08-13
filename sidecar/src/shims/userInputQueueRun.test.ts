@@ -15,7 +15,9 @@ import {
   getQueuedInputs,
   removeQueuedInput,
   hasQueuedInputs,
+  hasSystemQueuedInputs,
   drainQueuedInputs,
+  drainSystemQueuedInputs,
   clearInputQueue,
 } from './userInputQueueRun';
 
@@ -95,6 +97,24 @@ describe('userInputQueueRun shim', () => {
 
       expect(drained.map((qi) => qi.text)).toEqual(['one']);
       expect(spy).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('drainSystemQueuedInputs — selective consumed-notify', () => {
+    it('notifies only system ids and leaves user follow-ups queued', () => {
+      const spy = vi.spyOn(rpcClient, 'sendNotification').mockImplementation(() => {});
+      enqueueUserInputWithId(CONV, 'user-1', 'later');
+      enqueueUserInputWithId(CONV, 'system-1', 'background result', true);
+
+      const drained = agentRunContext.run(
+        makeAgentCtx({ runId: 'run-42', conversationId: CONV }),
+        () => drainSystemQueuedInputs(CONV),
+      );
+
+      expect(drained.map((item) => item.id)).toEqual(['system-1']);
+      expect(hasSystemQueuedInputs(CONV)).toBe(false);
+      expect(getQueuedInputs(CONV).map((item) => item.id)).toEqual(['user-1']);
+      expect(spy).toHaveBeenCalledWith('input.consumed', { runId: 'run-42', queueIds: ['system-1'] });
     });
   });
 

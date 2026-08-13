@@ -7,6 +7,18 @@ All notable changes to Abu are documented here. Format based on [Keep a Changelo
 > [`CHANGELOG.zh-CN.md`](./CHANGELOG.zh-CN.md); keep both in sync per release (see
 > `RELEASING.md`). Entries before v0.31.0 predate this split and remain bilingual.
 
+## v0.37.4 · 2026-08-14
+
+**Root cause**: A stopped turn and its queued follow-ups were reconciled through overlapping renderer and sidecar lifecycle paths. That allowed a queued message to start before the active reply had settled, disappear during state replacement, or leave an empty assistant row after Stop.
+
+**Fix**:
+
+- Queued follow-ups now wait for the active turn to reach a durable terminal state, then start in order with the same visible thinking feedback as a normal message.
+- Queue entries stay visible and recoverable until their own run takes ownership, preventing a follow-up from disappearing or being attached to the previous answer.
+- Stopping a turn now preserves an explicit stopped result while removing only truly empty streaming placeholders; the redundant per-message running label is no longer shown.
+
+**Full Changelog**: https://github.com/PM-Shawn/Abu-Cowork/compare/v0.37.3...v0.37.4
+
 ## v0.37.3 · 2026-08-13
 
 **Root cause**: Electron Builder 26 writes external updater blockmaps without a `blockMapSize` field. Release staging treated that missing field as permission to omit the blockmap, so the three architecture feeds could reference complete installers while their differential update metadata returned 404.

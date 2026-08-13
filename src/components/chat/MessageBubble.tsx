@@ -430,6 +430,7 @@ export default function MessageBubble({
   const [isTextExpanded, setIsTextExpanded] = useState(false);
   const activeConv = useActiveConversation();
   const isConvRunning = activeConv?.status === 'running';
+  const hasRunFailure = message.runState === 'failed' || message.runState === 'connection-failed';
 
   const textContent = getTextContent(message.content);
   const imageBlocks = getImageBlocks(message.content);
@@ -642,27 +643,16 @@ export default function MessageBubble({
                   })()}
                 </div>
               )}
-              {message.runState && message.runState !== 'completed' && (
-                <div
-                  className={cn(
-                    'flex items-center gap-1.5 text-caption',
-                    message.runState === 'failed'
-                      ? 'text-[var(--abu-danger)]'
-                      : 'text-[var(--abu-text-muted)]',
-                  )}
-                  title={message.runError}
-                >
-                  {(message.runState === 'pending' || message.runState === 'accepted' || message.runState === 'running') && (
-                    <RefreshCw className="h-3 w-3 animate-spin" />
-                  )}
+              {/* Reliable-run progress is internal. The assistant activity row already
+                  communicates that work is in progress; only actionable failures belong
+                  under the user's message. */}
+              {hasRunFailure && (
+                <div className="flex items-center gap-1.5 text-caption text-[var(--abu-danger)]" title={message.runError}>
                   <span>
-                    {message.runState === 'pending' && t.chat.runPending}
-                    {message.runState === 'accepted' && t.chat.runAccepted}
-                    {message.runState === 'running' && t.chat.runRunning}
                     {message.runState === 'failed' && t.chat.runFailed}
-                    {message.runState === 'interrupted' && t.chat.runInterrupted}
+                    {message.runState === 'connection-failed' && t.chat.runConnectionFailed}
                   </span>
-                  {message.runState === 'failed' && !isConvRunning && (
+                  {!isConvRunning && (
                     <Button variant="ghost" size="xs" onClick={handleRunRetry}>
                       <RefreshCw className="h-3 w-3" />
                       {t.chat.runRetry}

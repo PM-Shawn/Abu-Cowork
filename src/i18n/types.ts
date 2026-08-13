@@ -275,7 +275,9 @@ export interface TranslationDict {
     runPending: string;
     runAccepted: string;
     runRunning: string;
+    runRecovering: string;
     runFailed: string;
+    runConnectionFailed: string;
     runInterrupted: string;
     runRecoveredAfterRestart: string;
     runRetry: string;
@@ -2294,6 +2296,10 @@ export interface TranslationDict {
     queuedHint: string;
     /** aria-label / tooltip of the cancel button */
     cancel: string;
+    /** Explains why queued messages did not auto-run after Stop. */
+    paused: string;
+    /** Resumes the paused FIFO queue. */
+    resume: string;
   };
 
   reference: {

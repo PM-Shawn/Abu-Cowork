@@ -75,14 +75,17 @@ describe('createInProcessChatDelta', () => {
     expect(useChatStore.getState().agentStatus).toBe('idle');
   });
 
-  it('cancelStreaming() forwards and appends the stop marker', () => {
+  it('cancelStreaming() forwards and records the stop terminal without changing content', () => {
     const delta = createInProcessChatDelta();
     const id = useChatStore.getState().createConversation();
     useChatStore.getState().addMessage(id, {
       id: 'a1', role: 'assistant', content: '部分', timestamp: Date.now(), isStreaming: true,
     });
     delta.cancelStreaming(id);
-    expect(useChatStore.getState().conversations[id].messages[0].content).toContain('已停止');
+    expect(useChatStore.getState().conversations[id].messages[0]).toMatchObject({
+      content: '部分',
+      stopReason: 'user',
+    });
   });
 
   it('deactivateSkills() forwards to deactivateConversationSkills', () => {

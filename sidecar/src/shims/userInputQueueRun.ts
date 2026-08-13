@@ -7,11 +7,9 @@
  * bundled into the sidecar as a plain module, giving the sidecar its OWN
  * separate module instance (a fresh, empty `inputQueues` Map) disconnected
  * from the shell's. `agentLoop.ts` (which now runs INSIDE the sidecar for a
- * sidecar-dispatched run) calls `drainQueuedInputs`/`hasQueuedInputs`/
- * `clearInputQueue` against THAT instance, never the shell's — so a message
- * the UI staged via the shell's `enqueueUserInput` (which drives the
- * `QueuedMessagesStrip` chip) was never seen by the sidecar-run loop: the
- * chip never cleared, the message never ran.
+ * sidecar-dispatched run) calls the queue APIs against THAT instance, never
+ * the shell's — so an internal wake-up staged shell-side was previously never
+ * seen by the sidecar loop.
  *
  * The fix keeps the shell's `userInputQueue` as the single UI source of
  * truth (the chip). This shim does NOT reimplement the queue — it wraps the
@@ -20,22 +18,20 @@
  * side effect: after the loop drains/clears queued entries from the
  * sidecar's own (real, unchanged) queue instance, notify the shell via
  * `input.consumed { runId, queueIds }` so `agentLoopRunner.ts`'s handler can
- * `removeQueuedInput` the SAME ids from the shell's queue — clearing the
- * chip exactly when the loop actually consumes it (lingers until consumed,
- * matching in-process; never a flash-then-clear).
+ * `removeQueuedInput` the same system ids from the shell's queue.
  *
  * The other half of the bridge — NEW entries reaching the sidecar's queue in
  * the first place — is NOT this shim's job:
- *   - Leftover-at-dispatch: `agentLoopHost.ts`'s `handleAgentRun` seeds this
+ *   - System wake-up at dispatch: `agentLoopHost.ts` seeds this
  *     module (via `enqueueUserInputWithId`, id-preserving) from the
  *     `agent.run` params' `queuedInputs` snapshot, BEFORE the loop starts —
- *     so `agentLoop.ts`'s turn-1 `drainQueuedInputs` (agentLoop.ts:990)
- *     picks it up.
- *   - Mid-run add: `agentLoopHost.ts`'s `handleAgentEnqueueInput` (the
+ *     so `agentLoop.ts`'s selective system drain picks it up.
+ *   - Mid-run system add: `agentLoopHost.ts`'s `handleAgentEnqueueInput` (the
  *     `agent.enqueueInput` notification handler) calls
  *     `enqueueUserInputWithId` directly when the shell's forwarder
  *     (`agentLoopRunner.ts`) observes a new shell-queue entry for a
- *     conversation with an active sidecar `RunSession`.
+ *     conversation with an active sidecar `RunSession`. User follow-ups are
+ *     never forwarded; the shell starts them as independent runs.
  *
  * ── runId resolution for the consumed-notify ─────────────────────────────
  * `drainQueuedInputs`/`clearInputQueue` take a `conversationId`, not a
@@ -57,8 +53,13 @@ import {
   getQueuedInputs as realGetQueuedInputs,
   removeQueuedInput as realRemoveQueuedInput,
   drainQueuedInputs as realDrainQueuedInputs,
+  drainSystemQueuedInputs as realDrainSystemQueuedInputs,
   hasQueuedInputs as realHasQueuedInputs,
+  hasSystemQueuedInputs as realHasSystemQueuedInputs,
   getQueuedInputCount as realGetQueuedInputCount,
+  isUserInputQueuePaused as realIsUserInputQueuePaused,
+  pauseUserInputQueue as realPauseUserInputQueue,
+  resumeUserInputQueue as realResumeUserInputQueue,
   clearInputQueue as realClearInputQueue,
   subscribeToInputQueue as realSubscribeToInputQueue,
   getInputQueueSnapshot as realGetInputQueueSnapshot,
@@ -78,7 +79,11 @@ export const enqueueUserInputWithId = realEnqueueUserInputWithId;
 export const getQueuedInputs = realGetQueuedInputs;
 export const removeQueuedInput = realRemoveQueuedInput;
 export const hasQueuedInputs = realHasQueuedInputs;
+export const hasSystemQueuedInputs = realHasSystemQueuedInputs;
 export const getQueuedInputCount = realGetQueuedInputCount;
+export const isUserInputQueuePaused = realIsUserInputQueuePaused;
+export const pauseUserInputQueue = realPauseUserInputQueue;
+export const resumeUserInputQueue = realResumeUserInputQueue;
 export const subscribeToInputQueue = realSubscribeToInputQueue;
 export const getInputQueueSnapshot = realGetInputQueueSnapshot;
 
@@ -92,6 +97,13 @@ function notifyConsumed(queueIds: string[]): void {
 /** Real drain — then notify the shell of exactly the ids this call drained. */
 export function drainQueuedInputs(conversationId: string): QueuedInput[] {
   const items = realDrainQueuedInputs(conversationId);
+  notifyConsumed(items.map((qi) => qi.id));
+  return items;
+}
+
+/** Selective real drain used by the active loop; user follow-ups stay shell-side. */
+export function drainSystemQueuedInputs(conversationId: string): QueuedInput[] {
+  const items = realDrainSystemQueuedInputs(conversationId);
   notifyConsumed(items.map((qi) => qi.id));
   return items;
 }

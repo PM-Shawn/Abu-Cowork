@@ -1,8 +1,8 @@
 <div align="center">
 
-**English** | [中文](README.zh-CN.md)
+<img src="website/assets/readme-cover.en.jpg" alt="Abu — Your AI Desktop Office Assistant" width="100%" />
 
-<img src="website/assets/abu-avatar.png" width="120" height="120" style="border-radius: 24px" />
+**English** | [中文](README.zh-CN.md)
 
 # Abu
 

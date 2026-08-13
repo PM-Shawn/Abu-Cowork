@@ -250,7 +250,9 @@ export interface Message {
    * sidecar. The message is appended before any asynchronous preparation so
    * it can never disappear when the sidecar handshake stalls or fails.
    */
-  runState?: 'pending' | 'accepted' | 'running' | 'completed' | 'failed' | 'interrupted';
+  runState?: 'pending' | 'accepted' | 'running' | 'recovering' | 'completed' | 'failed' | 'connection-failed' | 'interrupted';
+  /** Persisted wall-clock terminal time for reliable-run status and duration UI. */
+  runEndedAt?: number;
   /** Stable correlation ids for Reliable Run Protocol V1. */
   runId?: string;
   clientMessageId?: string;

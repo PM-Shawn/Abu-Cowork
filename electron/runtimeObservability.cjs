@@ -63,6 +63,7 @@ const SAFE_ATTRIBUTE_KEYS = new Set([
   'attemptCount',
   'consecutiveNoChange',
   'recoveryUsed',
+  'subscriptionCount',
 ]);
 
 const SECRET_PATTERNS = [
@@ -414,6 +415,20 @@ function createRuntimeState({
     return true;
   }
 
+  function noteRendererResourcesCleared(attributes) {
+    emitEvent('main', 'main.renderer_resources_cleared', attributes);
+  }
+
+  function noteSidecarBridgeDeliveryMissed(stage) {
+    emitEvent('main', 'main.sidecar_bridge_delivery_missed', {
+      sidecarId: SIDECAR_ID,
+      sidecarGeneration: sidecarGeneration(SIDECAR_ID),
+      stage,
+      outcome: 'dropped',
+      reason: 'no_live_renderer_transport',
+    });
+  }
+
   function noteSidecarTraceLine(id, line) {
     if (id !== SIDECAR_ID || typeof line !== 'string' || !line.startsWith(SIDECAR_TRACE_PREFIX)) return false;
     let parsed;
@@ -483,6 +498,8 @@ function createRuntimeState({
     noteRpcWriteFinished,
     noteStdoutLine,
     noteRendererEvent,
+    noteRendererResourcesCleared,
+    noteSidecarBridgeDeliveryMissed,
     noteSidecarTraceLine,
     snapshot,
     reset,

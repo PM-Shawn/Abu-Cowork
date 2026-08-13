@@ -34,40 +34,8 @@ import { cn } from '@/lib/utils';
 import { isMacOS } from '@/utils/platform';
 import { Input } from '@/components/ui/input';
 import UsageChip from './UsageChip';
-
-/**
- * Groups messages by loopId for rendering.
- * Messages with the same loopId are grouped together and rendered as one visual block.
- * Messages without loopId (legacy) are each treated as their own group.
- */
-function groupMessagesByLoop(messages: Message[]): Message[][] {
-  const groups: Message[][] = [];
-  let currentGroup: Message[] = [];
-  let currentLoopId: string | undefined | null = null;
-
-  for (const msg of messages) {
-    const msgLoopId = msg.loopId;
-
-    // If loopId changes, or message has no loopId (undefined !== undefined should start new group)
-    if (!msgLoopId || msgLoopId !== currentLoopId) {
-      if (currentGroup.length > 0) {
-        groups.push(currentGroup);
-      }
-      currentGroup = [msg];
-      currentLoopId = msgLoopId;
-    } else {
-      // Same loopId - add to current group
-      currentGroup.push(msg);
-    }
-  }
-
-  // Don't forget the last group
-  if (currentGroup.length > 0) {
-    groups.push(currentGroup);
-  }
-
-  return groups;
-}
+import { shouldShowTypingIndicator } from './typingIndicator';
+import { groupMessagesByLoop } from './messageGrouping';
 
 /**
  * Context passed to the Virtuoso `Footer` component (the streaming typing
@@ -116,15 +84,18 @@ const VirtuosoTypingFooter: NonNullable<Components<Message[], MessageListContext
 }) => {
   if (!context?.showTypingIndicator) return null;
   return (
-    <div className="flex items-center gap-3 pl-9 py-1">
-      <div className="flex items-center gap-1">
+    <div className="flex items-center gap-3 py-1">
+      <div className="w-7 h-7 rounded-full overflow-hidden shrink-0">
+        <img src={abuAvatar} alt="Abu" className="w-full h-full object-cover" />
+      </div>
+      <div className="flex items-center gap-1.5 py-2">
+        <span className="text-minor text-[var(--abu-text-muted)]">
+          {context.retryingLabel ?? context.thinkingLabel}
+        </span>
         <span className="typing-dot w-1.5 h-1.5 rounded-full bg-[var(--abu-clay-60)]" />
         <span className="typing-dot w-1.5 h-1.5 rounded-full bg-[var(--abu-clay-60)]" />
         <span className="typing-dot w-1.5 h-1.5 rounded-full bg-[var(--abu-clay-60)]" />
       </div>
-      <span className="text-body text-[var(--abu-text-tertiary)]">
-        {context.retryingLabel ?? context.thinkingLabel}
-      </span>
     </div>
   );
 };
@@ -709,9 +680,10 @@ export default function ChatView() {
             // srcdoc reload + in-widget JS state reset that a bare unmount causes.
             increaseViewportBy={{ top: 900, bottom: 900 }}
             context={{
-              // Typing indicator - brief flash before assistant message is created
-              showTypingIndicator:
-                activeConv?.status === 'running' && messages.every((m) => m.role === 'user'),
+              // Covers the gap before the next assistant placeholder is created.
+              // This occurs both on a normal send and when a staged queue item
+              // is consumed after earlier assistant turns already exist.
+              showTypingIndicator: shouldShowTypingIndicator(activeConv?.status, visibleMessages),
               retryingLabel: retryInfo
                 ? format(t.chat.retrying, { attempt: retryInfo.attempt, max: retryInfo.maxAttempts })
                 : null,

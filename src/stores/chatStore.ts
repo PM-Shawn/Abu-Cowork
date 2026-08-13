@@ -28,7 +28,13 @@ function generateId(): string {
   return Date.now().toString(36) + Math.random().toString(36).substring(2, 8);
 }
 
-const ACTIVE_RUN_STATES = new Set<Message['runState']>(['pending', 'accepted', 'running']);
+const ACTIVE_RUN_STATES = new Set<Message['runState']>(['pending', 'accepted', 'running', 'recovering']);
+const TERMINAL_RUN_STATES = new Set<Message['runState']>([
+  'completed',
+  'failed',
+  'connection-failed',
+  'interrupted',
+]);
 
 function recoverInterruptedUserRun(msg: Message): Message {
   if (msg.role !== 'user' || !ACTIVE_RUN_STATES.has(msg.runState)) return msg;
@@ -493,7 +499,7 @@ interface ChatActions {
       delegateAgent?: Message['delegateAgent'];
     },
   ) => void;
-  deleteMessage: (convId: string, messageId: string, opts?: { skipCatalogBump?: boolean }) => void;
+  deleteMessage: (convId: string, messageId: string, opts?: { skipCatalogBump?: boolean; persist?: boolean }) => void;
   deleteMessagesFrom: (convId: string, messageId: string) => void;
   deleteLoopMessages: (convId: string, loopId: string) => void;
   updateMessageThinking: (convId: string, thinking: string, msgId?: string) => void;
@@ -1236,6 +1242,11 @@ export const useChatStore = create<ChatStore>()(
           if (!conv || !message || message.role !== 'user') return;
 
           message.runState = patch.state;
+          if (TERMINAL_RUN_STATES.has(patch.state)) {
+            message.runEndedAt ??= Date.now();
+          } else {
+            delete message.runEndedAt;
+          }
           if (patch.error) message.runError = patch.error;
           else delete message.runError;
           if ('content' in patch && patch.content !== undefined) message.content = patch.content;
@@ -1279,6 +1290,7 @@ export const useChatStore = create<ChatStore>()(
 
       deleteMessage: (convId, messageId, opts) => {
         let removedCount = 0;
+        let metaToPersist: ConversationMeta | undefined;
         set((state) => {
           const conv = state.conversations[convId];
           if (conv) {
@@ -1287,8 +1299,30 @@ export const useChatStore = create<ChatStore>()(
             removedCount = before - conv.messages.length;
             conv.updatedAt = Date.now();
             conv.contextCache = undefined;  // Invalidate compression cache
+            const meta = state.conversationIndex[convId];
+            if (meta && removedCount > 0) {
+              meta.messageCount = conv.messages.length;
+              meta.updatedAt = conv.updatedAt;
+              metaToPersist = { ...meta };
+            }
           }
         });
+        if (opts?.persist && removedCount > 0) {
+          const finalMeta = metaToPersist;
+          trackConversationPersistence(
+            convId,
+            () => import('../core/session/conversationStorage').then(async ({
+              catalogReindexConversation,
+              deleteMessageById,
+              updateIndexEntry,
+            }) => {
+              await deleteMessageById(convId, messageId);
+              if (finalMeta) await updateIndexEntry(finalMeta);
+              await catalogReindexConversation(convId);
+            }),
+          );
+          return;
+        }
         // See bumpCatalogAfterDelete's doc comment for why this is an
         // intentionally approximate, self-healing display-level nudge.
         // `skipCatalogBump` (code-review fix #8): the agentLoop ghost-message
@@ -1554,19 +1588,12 @@ export const useChatStore = create<ChatStore>()(
                 || !!lastMsg.thinking?.trim()
                 || !!lastMsg.toolCalls?.length
                 || !!lastMsg.toolCallsForContext?.length;
-              // Persist the user-stop terminal independently of the cosmetic
-              // markdown marker. Tool-only turns have no assistant text to
-              // append that marker to, but still need to reopen as "Stopped"
-              // rather than being inferred as successfully completed.
+              // Persist a compatibility stop terminal on assistant activity.
+              // The canonical run terminal now lives on the user message's
+              // `runState`; this field keeps older transcripts and tool-only
+              // turns readable without injecting presentation text into content.
               if (hasVisibleActivity && lastMsg.stopReason !== 'user') {
                 lastMsg.stopReason = 'user';
-                mutated = true;
-              }
-              // Append cancellation notice — only when real streamed content
-              // exists, so an untouched placeholder never becomes a
-              // "*[已停止]*"-only bubble.
-              if (typeof lastMsg.content === 'string' && lastMsg.content.trim().length > 0) {
-                lastMsg.content += '\n\n*[已停止]*';
                 mutated = true;
               }
             }
@@ -1600,7 +1627,7 @@ export const useChatStore = create<ChatStore>()(
           state.thinkingStartTime = null;
         });
 
-        // Persist the stop mutation (marker + cancelled tool calls) — without
+        // Persist the stop mutation (terminal + cancelled tool calls) — without
         // this the live view shows "已停止" while reload shows the pre-stop
         // JSONL snapshot (often a blank bubble).
         if (cancelledMsgId) {

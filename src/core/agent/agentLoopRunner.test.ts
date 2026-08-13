@@ -16,6 +16,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 const onSidecarNotification = vi.fn();
 const onSidecarRequest = vi.fn();
+const onSidecarConnectionState = vi.fn();
 const notifySidecar = vi.fn();
 class MockSidecarRequestError extends Error {
   code: number;
@@ -44,6 +45,7 @@ const runGetStateRequestMock = vi.fn((params: { runId: string }) => Promise.reso
 vi.mock('../sidecar/sidecarManager', () => ({
   onSidecarNotification: (...a: unknown[]) => onSidecarNotification(...a),
   onSidecarRequest: (...a: unknown[]) => onSidecarRequest(...a),
+  onSidecarConnectionState: (...a: unknown[]) => onSidecarConnectionState(...a),
   notifySidecar: (...a: unknown[]) => notifySidecar(...a),
   getSidecarStatus: (...a: unknown[]) => getSidecarStatusMock(...a),
   request: (method: string, params: unknown, ...rest: unknown[]) => {
@@ -125,7 +127,7 @@ vi.mock('./ports/capsPort', () => ({
 }));
 
 const getAllToolsMock = vi.fn().mockReturnValue([
-  { name: 'read_file', description: 'reads a file', inputSchema: { type: 'object', properties: {} }, execute: async () => 'x' },
+  { name: 'read_file', description: 'reads a file', inputSchema: { type: 'object', properties: {} }, execute: async () => 'x', isConcurrencySafe: true },
 ]);
 const executeAnyToolMock = vi.fn().mockResolvedValue('tool result');
 vi.mock('./ports/toolInvoker', () => ({
@@ -222,7 +224,9 @@ vi.mock('../enterprise/llm-resolver', () => ({
 const enqueueUserInputMock = vi.fn();
 const getQueuedInputsMock = vi.fn().mockReturnValue([]);
 const removeQueuedInputMock = vi.fn();
-const drainQueuedInputsMock = vi.fn().mockReturnValue([]);
+const drainSystemQueuedInputsMock = vi.fn().mockReturnValue([]);
+const pauseUserInputQueueMock = vi.fn();
+const dequeueNextUserInputMock = vi.fn().mockReturnValue(undefined);
 let capturedQueueCb: (() => void) | undefined;
 const queueUnsubMock = vi.fn();
 const subscribeToInputQueueMock = vi.fn((cb: () => void) => {
@@ -233,7 +237,9 @@ vi.mock('./userInputQueue', () => ({
   enqueueUserInput: (...a: unknown[]) => enqueueUserInputMock(...a),
   getQueuedInputs: (...a: unknown[]) => getQueuedInputsMock(...a),
   removeQueuedInput: (...a: unknown[]) => removeQueuedInputMock(...a),
-  drainQueuedInputs: (...a: unknown[]) => drainQueuedInputsMock(...a),
+  drainSystemQueuedInputs: (...a: unknown[]) => drainSystemQueuedInputsMock(...a),
+  pauseUserInputQueue: (...a: unknown[]) => pauseUserInputQueueMock(...a),
+  dequeueNextUserInput: (...a: unknown[]) => dequeueNextUserInputMock(...a),
   subscribeToInputQueue: (...a: [() => void]) => subscribeToInputQueueMock(...a),
 }));
 
@@ -446,6 +452,7 @@ describe('agentLoopRunner', () => {
   beforeEach(() => {
     onSidecarNotification.mockReset();
     onSidecarRequest.mockReset();
+    onSidecarConnectionState.mockReset();
     notifySidecar.mockReset();
     applyDeltaFramesMock.mockReset();
     applyDeltaFramesMock.mockResolvedValue(undefined);
@@ -463,7 +470,10 @@ describe('agentLoopRunner', () => {
     recordMaxOutputTokensMock.mockReset();
     recordContextWindowMock.mockReset();
     recordReasoningObservedMock.mockReset();
-    getAllToolsMock.mockClear();
+    getAllToolsMock.mockReset();
+    getAllToolsMock.mockReturnValue([
+      { name: 'read_file', description: 'reads a file', inputSchema: { type: 'object', properties: {} }, execute: async () => 'x', isConcurrencySafe: true },
+    ]);
     getSettingsSnapshotMock.mockClear();
     createEventRouterMock.mockClear();
     requestCommandConfirmationMock.mockClear();
@@ -544,8 +554,11 @@ describe('agentLoopRunner', () => {
     getQueuedInputsMock.mockReset();
     getQueuedInputsMock.mockReturnValue([]);
     removeQueuedInputMock.mockReset();
-    drainQueuedInputsMock.mockReset();
-    drainQueuedInputsMock.mockReturnValue([]);
+    drainSystemQueuedInputsMock.mockReset();
+    drainSystemQueuedInputsMock.mockReturnValue([]);
+    pauseUserInputQueueMock.mockReset();
+    dequeueNextUserInputMock.mockReset();
+    dequeueNextUserInputMock.mockReturnValue(undefined);
     subscribeToInputQueueMock.mockClear();
     queueUnsubMock.mockReset();
     capturedQueueCb = undefined;
@@ -612,6 +625,7 @@ describe('agentLoopRunner', () => {
       // tool.invoke via the router / hook.emit via the shared hookBridge).
       expect(onSidecarNotification).toHaveBeenCalledTimes(12);
       expect(onSidecarRequest).toHaveBeenCalledTimes(8);
+      expect(onSidecarConnectionState).toHaveBeenCalledTimes(1);
 
       const notifiedMethods = onSidecarNotification.mock.calls.map((c) => c[0]);
       expect(notifiedMethods).toEqual(
@@ -621,6 +635,32 @@ describe('agentLoopRunner', () => {
       expect(requestedMethods).toEqual(
         expect.arrayContaining(['native.invoke', 'tool.list', 'session.isMessageWrittenToDisk', 'approval.check', 'snapshot.beforeAiEdit', 'workspace.authorizedWritablePaths', 'tool.invoke', 'hook.emit']),
       );
+    });
+
+    it('projects connection recovery and failure onto active user-run lifecycle state', async () => {
+      const { ensureHandlersRegistered, registerRunSession } = await importFresh();
+      ensureHandlersRegistered();
+      registerRunSession('run-connection', {
+        ...makeSession(),
+        accepted: true,
+        userMessageId: 'msg-connection',
+      });
+      const handler = onSidecarConnectionState.mock.calls[0][0] as (
+        event: { state: 'connected' | 'recovering' | 'failed'; reason: string },
+      ) => void;
+
+      handler({ state: 'recovering', reason: 'process-close' });
+      handler({ state: 'connected', reason: 'ready' });
+      handler({ state: 'failed', reason: 'crash-loop' });
+
+      expect(chatStoreUpdateUserMessageRunMock.mock.calls).toEqual([
+        ['conv-1', 'msg-connection', { state: 'recovering' }],
+        ['conv-1', 'msg-connection', { state: 'running' }],
+        ['conv-1', 'msg-connection', {
+          state: 'connection-failed',
+          error: '后台服务意外中断，正在自动恢复。请稍后重新发送刚才的请求。',
+        }],
+      ]);
     });
   });
 
@@ -1161,7 +1201,7 @@ describe('agentLoopRunner', () => {
   // ── Queued-input forwarder + input.consumed handler (P1-3B-4) ──────────
 
   describe('queued-input forwarder', () => {
-    it('forwards a new shell-queue entry to the matching active sidecar RunSession via agent.enqueueInput, id-preserved', async () => {
+    it('does not forward a user follow-up into the active sidecar run', async () => {
       const { registerRunSession } = await importFresh();
       registerRunSession('run-1', makeSession({ conversationId: 'conv-1' }));
       notifySidecar.mockClear();
@@ -1169,7 +1209,7 @@ describe('agentLoopRunner', () => {
       getQueuedInputsMock.mockReturnValue([{ id: 'q1', text: 'more', timestamp: 1 }]);
       capturedQueueCb?.();
 
-      expect(notifySidecar).toHaveBeenCalledWith('agent.enqueueInput', { runId: 'run-1', message: 'more', queueId: 'q1' });
+      expect(notifySidecar).not.toHaveBeenCalledWith('agent.enqueueInput', expect.anything());
     });
 
     it('threads the isSystem flag through when forwarding', async () => {
@@ -1186,7 +1226,7 @@ describe('agentLoopRunner', () => {
       const { registerRunSession } = await importFresh();
       registerRunSession('run-1', makeSession({ conversationId: 'conv-1' }));
 
-      getQueuedInputsMock.mockReturnValue([{ id: 'q1', text: 'more', timestamp: 1 }]);
+      getQueuedInputsMock.mockReturnValue([{ id: 'q1', text: 'system result', timestamp: 1, isSystem: true }]);
       capturedQueueCb?.();
       capturedQueueCb?.(); // entry still sitting in the (unmutated — chip lingers) shell queue
 
@@ -1220,7 +1260,7 @@ describe('agentLoopRunner', () => {
       const session = { ...makeSession({ conversationId: 'conv-1' }), forwardedQueueIds: new Set(['leftover-1']) };
       registerRunSession('run-1', session);
 
-      getQueuedInputsMock.mockReturnValue([{ id: 'leftover-1', text: 'already seeded', timestamp: 1 }]);
+      getQueuedInputsMock.mockReturnValue([{ id: 'leftover-1', text: 'already seeded', timestamp: 1, isSystem: true }]);
       capturedQueueCb?.();
 
       expect(notifySidecar).not.toHaveBeenCalledWith('agent.enqueueInput', expect.anything());
@@ -1230,7 +1270,7 @@ describe('agentLoopRunner', () => {
       const { registerRunSession } = await importFresh();
       const session = { ...makeSession({ conversationId: 'conv-1' }), abortRequested: true };
       registerRunSession('run-1', session);
-      getQueuedInputsMock.mockReturnValue([{ id: 'q-after-stop', text: 'must stay local', timestamp: 1 }]);
+      getQueuedInputsMock.mockReturnValue([{ id: 'q-after-stop', text: 'must stay local', timestamp: 1, isSystem: true }]);
 
       capturedQueueCb?.();
 
@@ -1606,6 +1646,56 @@ describe('agentLoopRunner', () => {
       expect(checkToolApprovalMock).toHaveBeenCalledWith('show_widget', { title: 't' }, context, confirmCb, filePermCb);
     });
 
+    it('marks an allowed side-effecting local tool as committed before returning its ACK', async () => {
+      const { ensureHandlersRegistered, registerRunSession } = await importFresh();
+      ensureHandlersRegistered();
+      const session = makeSession();
+      registerRunSession('run-write', session);
+      getAllToolsMock.mockReturnValueOnce([{
+        name: 'write_file', description: 'writes', inputSchema: { type: 'object', properties: {} },
+        execute: async () => 'ok', isConcurrencySafe: false,
+      }]);
+      checkToolApprovalMock.mockResolvedValue({ decision: 'allow' });
+
+      const handler = handlerFor(onSidecarRequest, 'approval.check');
+      await handler({ runId: 'run-write', toolName: 'write_file', input: { path: '/tmp/x' } });
+
+      expect((session as typeof session & { committed?: boolean }).committed).toBe(true);
+    });
+
+    it('keeps an allowed read-only local tool replay-safe', async () => {
+      const { ensureHandlersRegistered, registerRunSession } = await importFresh();
+      ensureHandlersRegistered();
+      const session = makeSession();
+      registerRunSession('run-read', session);
+      checkToolApprovalMock.mockResolvedValue({ decision: 'allow' });
+
+      const handler = handlerFor(onSidecarRequest, 'approval.check');
+      await handler({ runId: 'run-read', toolName: 'read_file', input: { path: '/tmp/x' } });
+
+      expect((session as typeof session & { committed?: boolean }).committed).not.toBe(true);
+    });
+
+    it('marks an allowed HTTP mutation as committed before returning its ACK', async () => {
+      const { ensureHandlersRegistered, registerRunSession } = await importFresh();
+      ensureHandlersRegistered();
+      const session = makeSession();
+      registerRunSession('run-http', session);
+      getAllToolsMock.mockReturnValueOnce([{
+        name: 'http_fetch', description: 'fetches', inputSchema: { type: 'object', properties: {} },
+        execute: async () => 'ok', isConcurrencySafe: false,
+      }]);
+      checkToolApprovalMock.mockResolvedValue({ decision: 'allow' });
+
+      await handlerFor(onSidecarRequest, 'approval.check')({
+        runId: 'run-http',
+        toolName: 'http_fetch',
+        input: { url: 'https://example.com/items', method: 'POST', body: '{}' },
+      });
+
+      expect((session as typeof session & { committed?: boolean }).committed).toBe(true);
+    });
+
     it('returns {decision:"deny", reason} verbatim from checkToolApproval — never executes anything itself', async () => {
       const { ensureHandlersRegistered, registerRunSession } = await importFresh();
       ensureHandlersRegistered();
@@ -1905,6 +1995,58 @@ describe('agentLoopRunner', () => {
           outcome: 'error',
         }),
       );
+    });
+
+    it('starts queued user follow-ups FIFO as independent runs with fresh loopIds', async () => {
+      const { runAgentLoopDispatched } = await importFresh();
+      sidecarRequestMock.mockResolvedValue({ reason: 'completed' });
+      dequeueNextUserInputMock
+        .mockReturnValueOnce({ id: 'q1', text: 'first follow-up', timestamp: 1 })
+        .mockReturnValueOnce({ id: 'q2', text: 'second follow-up', timestamp: 2 })
+        .mockReturnValue(undefined);
+
+      const result = await runAgentLoopDispatched('conv-1', 'original task');
+
+      expect(result).toEqual({ reason: 'completed' });
+      expect(sidecarRequestMock).toHaveBeenCalledTimes(3);
+      const payloads = sidecarRequestMock.mock.calls.map((call) => call[1] as {
+        runId: string;
+        conversationId: string;
+        userMessage: string;
+      });
+      expect(payloads.map((payload) => payload.userMessage)).toEqual([
+        'original task',
+        'first follow-up',
+        'second follow-up',
+      ]);
+      expect(new Set(payloads.map((payload) => payload.runId)).size).toBe(3);
+      expect(chatStoreAddMessageMock.mock.calls.map((call) => call[1])).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ content: 'original task', loopId: payloads[0].runId }),
+          expect.objectContaining({ content: 'first follow-up', loopId: payloads[1].runId }),
+          expect.objectContaining({ content: 'second follow-up', loopId: payloads[2].runId }),
+        ]),
+      );
+    });
+
+    it('does not fan out the remaining queue after a handed-off run fails', async () => {
+      const { runAgentLoopDispatched } = await importFresh();
+      sidecarRequestMock
+        .mockResolvedValueOnce({ reason: 'completed' })
+        .mockResolvedValueOnce({ reason: 'error', error: 'provider unavailable' });
+      dequeueNextUserInputMock
+        .mockReturnValueOnce({ id: 'q1', text: 'first follow-up', timestamp: 1 })
+        .mockReturnValueOnce({ id: 'q2', text: 'must remain queued', timestamp: 2 });
+      getQueuedInputsMock.mockReturnValue([
+        { id: 'q2', text: 'must remain queued', timestamp: 2 },
+      ]);
+
+      await expect(runAgentLoopDispatched('conv-1', 'original task'))
+        .resolves.toEqual({ reason: 'completed' });
+
+      expect(sidecarRequestMock).toHaveBeenCalledTimes(2);
+      expect(dequeueNextUserInputMock).toHaveBeenCalledTimes(1);
+      expect(pauseUserInputQueueMock).toHaveBeenCalledWith('conv-1');
     });
 
     it('persists the user message before the bounded start handshake', async () => {
@@ -2313,7 +2455,7 @@ describe('agentLoopRunner', () => {
       );
     });
 
-    it('buildAgentRunParams includes a queuedInputs snapshot of the shell queue at dispatch time (P1-3B-4, wire-safe shape)', async () => {
+    it('buildAgentRunParams includes only system wake-ups from the shell queue at dispatch time', async () => {
       const { runAgentLoopDispatched } = await importFresh();
       getQueuedInputsMock.mockReturnValue([
         { id: 'q1', text: 'leftover 1', timestamp: 111 },
@@ -2324,9 +2466,9 @@ describe('agentLoopRunner', () => {
       await runAgentLoopDispatched('conv-1', 'hello');
 
       const params = sidecarRequestMock.mock.calls[0][1] as { queuedInputs: unknown };
-      // Projected to id/text/isSystem — the shell-local `timestamp` is dropped (see AgentRunParams.queuedInputs's doc).
+      // User follow-ups remain shell-side; the system entry is projected to
+      // id/text/isSystem and the shell-local timestamp is dropped.
       expect(params.queuedInputs).toEqual([
-        { id: 'q1', text: 'leftover 1' },
         { id: 'q2', text: 'leftover 2', isSystem: true },
       ]);
     });
@@ -2344,7 +2486,7 @@ describe('agentLoopRunner', () => {
 
     it('pre-seeds the new RunSession.forwardedQueueIds from the queuedInputs snapshot, so the live forwarder never re-sends a dispatch-time leftover', async () => {
       const { runAgentLoopDispatched, getRunSession } = await importFresh();
-      getQueuedInputsMock.mockReturnValue([{ id: 'leftover-1', text: 'already seeded', timestamp: 1 }]);
+      getQueuedInputsMock.mockReturnValue([{ id: 'leftover-1', text: 'already seeded', timestamp: 1, isSystem: true }]);
       const d = deferred<unknown>();
       sidecarRequestMock.mockReturnValue(d.promise);
 
@@ -2399,8 +2541,7 @@ describe('agentLoopRunner', () => {
         status: 'running',
         messages: [{ id: 'ghost-1', role: 'assistant', content: '', timestamp: 1, isStreaming: true }],
       });
-      drainQueuedInputsMock.mockReturnValue([
-        { id: 'queued-1', text: 'keep this follow-up', timestamp: 2 },
+      drainSystemQueuedInputsMock.mockReturnValue([
         { id: 'system-1', text: 'hidden control input', timestamp: 3, isSystem: true },
       ]);
       shellController.abort();
@@ -2416,15 +2557,13 @@ describe('agentLoopRunner', () => {
       );
       expect(chatDeltaCancelStreamingMock).toHaveBeenCalledWith('conv-1', { fromSidecarFrame: true });
       expect(chatDeltaDeactivateSkillsMock).toHaveBeenCalledWith('conv-1');
-      expect(chatDeltaDeleteMessageMock).toHaveBeenCalledWith('conv-1', 'ghost-1', { skipCatalogBump: false });
-      expect(chatDeltaAddMessageMock).toHaveBeenCalledWith('conv-1', expect.objectContaining({
-        id: 'abort-queued-queued-1',
-        role: 'user',
-        content: 'keep this follow-up',
-      }));
-      expect(chatDeltaAddMessageMock).not.toHaveBeenCalledWith('conv-1', expect.objectContaining({
-        content: 'hidden control input',
-      }));
+      expect(chatDeltaDeleteMessageMock).toHaveBeenCalledWith('conv-1', 'ghost-1', {
+        skipCatalogBump: false,
+        persist: true,
+      });
+      expect(pauseUserInputQueueMock).toHaveBeenCalledWith('conv-1');
+      expect(drainSystemQueuedInputsMock).toHaveBeenCalledWith('conv-1');
+      expect(chatDeltaAddMessageMock).not.toHaveBeenCalled();
       expect(chatDeltaSetAgentStatusMock).toHaveBeenCalledWith('idle');
       expect(chatDeltaSetConversationStatusMock).toHaveBeenCalledWith('conv-1', 'idle');
       expect(cancelExecutionMock).toHaveBeenCalledWith(expect.any(String));
@@ -2659,6 +2798,32 @@ describe('agentLoopRunner', () => {
       expect(result.error).toContain('sidecar crashed mid-run');
     });
 
+    it('does not replay a run when a side-effecting local tool was approved before the sidecar crashed', async () => {
+      getAllToolsMock.mockReturnValue([
+        { name: 'write_file', description: 'writes a file', inputSchema: { type: 'object', properties: {} }, execute: async () => 'ok', isConcurrencySafe: false },
+      ]);
+      const { runAgentLoopDispatched } = await importFresh();
+      const d = deferred<unknown>();
+      sidecarRequestMock.mockReturnValue(d.promise);
+
+      const running = runAgentLoopDispatched('conv-1', 'hello');
+      await waitForCall(sidecarRequestMock);
+      const runId = (sidecarRequestMock.mock.calls[0][1] as { runId: string }).runId;
+      await handlerFor(onSidecarRequest, 'approval.check')({
+        runId,
+        toolName: 'write_file',
+        input: { path: '/tmp/already-written', content: 'done' },
+      });
+
+      d.reject(new Error('sidecar crashed after local write'));
+      const result = await running;
+
+      expect(sidecarRequestMock).toHaveBeenCalledTimes(1);
+      expect(runAgentLoopMock).not.toHaveBeenCalled();
+      expect(result.reason).toBe('error');
+      expect(result.error).toContain('sidecar crashed after local write');
+    });
+
     it('a post-commit failure finalizes the conversation UI so it never hangs on "thinking"', async () => {
       const { runAgentLoopDispatched } = await importFresh();
       const d = deferred<unknown>();
@@ -2874,14 +3039,15 @@ describe('agentLoopRunner', () => {
         expect(sidecarRequestMock).not.toHaveBeenCalled();
       });
 
-      it('stages the message into an existing sidecar RunSession via agent.enqueueInput instead of dispatching a second agent.run', async () => {
+      it('stages the message in the shell queue instead of injecting it into an existing sidecar run', async () => {
         const { runAgentLoopDispatched, registerRunSession } = await importFresh();
         registerRunSession('run-existing', makeSession({ conversationId: 'conv-1' }));
 
         const result = await runAgentLoopDispatched('conv-1', 'more instructions');
 
         expect(result).toEqual({ reason: 'enqueued' });
-        expect(notifySidecar).toHaveBeenCalledWith('agent.enqueueInput', { runId: 'run-existing', userMessage: 'more instructions' });
+        expect(enqueueUserInputMock).toHaveBeenCalledWith('conv-1', 'more instructions');
+        expect(notifySidecar).not.toHaveBeenCalledWith('agent.enqueueInput', expect.anything());
         expect(sidecarRequestMock).not.toHaveBeenCalled();
       });
 

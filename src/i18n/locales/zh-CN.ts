@@ -244,7 +244,9 @@ const zhCN: TranslationDict = {
     runPending: '正在发送…',
     runAccepted: '已接收，正在启动…',
     runRunning: '运行中…',
+    runRecovering: '连接中断，正在恢复…',
     runFailed: '发送失败',
+    runConnectionFailed: '连接恢复失败',
     runInterrupted: '已停止',
     runRecoveredAfterRestart: '应用重启前任务未完成，请重试。',
     runRetry: '重试',
@@ -2142,6 +2144,8 @@ const zhCN: TranslationDict = {
   queueStrip: {
     queuedHint: '已排队 · 阿布会在下轮读取',
     cancel: '取消排队',
+    paused: '当前回复已停止，队列已暂停',
+    resume: '继续队列',
   },
 
   reference: {

@@ -6,9 +6,11 @@
  * stdio servers (src/core/mcp/client.ts) AND the agent sidecar
  * (src/core/sidecar/sidecarManager.ts). The renderer owns the JSON-RPC /
  * supervision on top; main just spawns, pipes stdin, and re-emits stdout/
- * stderr/close as `mcp-msg-{id}` / `mcp-err-{id}` / `mcp-close-{id}` events
- * (delivered via the slice-B event bridge to the frontend's
- * `listen('mcp-msg-{id}', …)`), exactly like the Rust bridge.
+ * stderr/close as `mcp-msg-{id}` / `mcp-err-{id}` / `mcp-close-{id}` events.
+ * Generic MCP servers retain the Tauri-compatible event bridge. The fixed
+ * product sidecar (`abu-sidecar`) uses a dedicated Electron main→preload
+ * channel so unrelated renderer subscription cleanup cannot sever agent
+ * responses; Tauri keeps the original event-listener path.
  *
  * Protocol notes (matching Tauri):
  *  - stdout AND stderr are line-framed (persistent per-stream buffer) — one
@@ -71,6 +73,14 @@ const {
   configureRuntimeObservability,
   runtimeState,
 } = require('./runtimeObservability.cjs');
+const {
+  sendDedicatedSidecarEvent,
+  toDedicatedSidecarEvent,
+} = require('./sidecarEventChannel.cjs');
+const {
+  SIDECAR_ID,
+  sidecarRunRegistry,
+} = require('./sidecarRunRegistry.cjs');
 
 /** id -> ChildProcess */
 const children = new Map();
@@ -237,8 +247,31 @@ function consumeHeartbeatAck(id, line) {
 /** Cache the event-bridge emit after the first require (hot path: one call per stream line). */
 let _emitEvent = null;
 function emit(event, payload) {
-  if (!_emitEvent) _emitEvent = require('./tauriHost.cjs').emitEvent;
-  _emitEvent(event, payload);
+  const tauriHost = require('./tauriHost.cjs');
+  const projectedSidecarEvent = toDedicatedSidecarEvent(event, payload);
+  let sidecarEvent = null;
+  if (projectedSidecarEvent) {
+    if (projectedSidecarEvent.type === 'message') {
+      sidecarRunRegistry.observeInbound(projectedSidecarEvent.payload);
+    } else if (projectedSidecarEvent.type === 'close' || projectedSidecarEvent.type === 'hung') {
+      sidecarRunRegistry.markDisconnected(projectedSidecarEvent.type);
+    }
+    sidecarEvent = sidecarRunRegistry.recordEvent(
+      projectedSidecarEvent.type,
+      projectedSidecarEvent.payload,
+    );
+  }
+  if (
+    sidecarEvent
+    && sendDedicatedSidecarEvent(tauriHost.getMainWindow()?.webContents, sidecarEvent)
+  ) {
+    return;
+  }
+  if (!_emitEvent) _emitEvent = tauriHost.emitEvent;
+  const delivered = _emitEvent(event, payload);
+  if (sidecarEvent && delivered === 0) {
+    runtimeState.noteSidecarBridgeDeliveryMissed(sidecarEvent.type);
+  }
 }
 
 /**
@@ -389,6 +422,7 @@ function mcpSpawnPrepared(app, { id, command, args = [], env = {}, heartbeat }) 
     callerEnv.PATH = loginShellPath();
   }
 
+  if (id === SIDECAR_ID) sidecarRunRegistry.beginGeneration();
   const generation = runtimeState.noteSpawnStarted(id, heartbeat);
   let resolved;
   let spawnEnv;
@@ -467,6 +501,10 @@ function mcpSpawnPrepared(app, { id, command, args = [], env = {}, heartbeat }) 
   let outBuf = '';
   child.stdout.setEncoding('utf8');
   child.stdout.on('data', (chunk) => {
+    // killChild() removes this exact child before a replacement generation
+    // can register under the same id. Buffered stdout may still arrive after
+    // that kill; never project an obsolete generation into the live channel.
+    if (children.get(id) !== child) return;
     outBuf += chunk;
     let nl;
     while ((nl = outBuf.indexOf('\n')) >= 0) {
@@ -486,6 +524,7 @@ function mcpSpawnPrepared(app, { id, command, args = [], env = {}, heartbeat }) 
   let errBuf = '';
   child.stderr.setEncoding('utf8');
   child.stderr.on('data', (chunk) => {
+    if (children.get(id) !== child) return;
     errBuf += chunk;
     let nl;
     while ((nl = errBuf.indexOf('\n')) >= 0) {
@@ -501,6 +540,7 @@ function mcpSpawnPrepared(app, { id, command, args = [], env = {}, heartbeat }) 
         child.__abuTargetPid = Number(readyMatch[1]);
         if (heartbeat) startHeartbeatMonitor(id);
         runtimeState.noteReady(id, generation, child.__abuTargetPid);
+        if (id === SIDECAR_ID) sidecarRunRegistry.markReady();
         settleSpawn(null);
         continue;
       }
@@ -570,6 +610,7 @@ function mcpWrite({ id, message }) {
     runtimeState.noteRpcWriteFinished(runtimeRpc, 'no_live_process');
     return Promise.reject(new Error(`mcp_write: no live process for id "${id}"`));
   }
+  if (id === SIDECAR_ID) sidecarRunRegistry.observeOutbound(String(message));
   return new Promise((resolve, reject) => {
     try {
       child.stdin.write(String(message) + '\n', (err) => {

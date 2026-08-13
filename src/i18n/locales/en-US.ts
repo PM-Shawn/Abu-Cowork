@@ -244,7 +244,9 @@ const enUS: TranslationDict = {
     runPending: 'Sending…',
     runAccepted: 'Accepted, starting…',
     runRunning: 'Running…',
+    runRecovering: 'Connection interrupted. Recovering…',
     runFailed: 'Send failed',
+    runConnectionFailed: 'Connection recovery failed',
     runInterrupted: 'Stopped',
     runRecoveredAfterRestart: 'The task did not finish before the app restarted. Please retry.',
     runRetry: 'Retry',
@@ -2141,6 +2143,8 @@ const enUS: TranslationDict = {
   queueStrip: {
     queuedHint: 'Queued · read next turn',
     cancel: 'Cancel queued message',
+    paused: 'Queue paused because you stopped the response',
+    resume: 'Resume queue',
   },
 
   reference: {

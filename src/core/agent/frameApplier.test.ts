@@ -91,7 +91,8 @@ describe('applyDeltaFrames', () => {
       });
       await applyDeltaFrames([{ p: 'chat', m: 'cancelStreaming', a: [convId] }]);
       const msg = useChatStore.getState().conversations[convId].messages[0];
-      expect(msg.content).toBe('部分输出\n\n*[已停止]*');
+      expect(msg.content).toBe('部分输出');
+      expect(msg.stopReason).toBe('user');
       expect(msg.isStreaming).toBe(false);
     });
   });

@@ -181,9 +181,12 @@ vi.mock('../core/agent/permissionBridge', () => ({
 
 vi.mock('../core/agent/userInputQueue', () => ({
   drainQueuedInputs: vi.fn().mockReturnValue([]),
+  drainSystemQueuedInputs: vi.fn().mockReturnValue([]),
   clearInputQueue: vi.fn(),
   hasQueuedInputs: vi.fn().mockReturnValue(false),
+  hasSystemQueuedInputs: vi.fn().mockReturnValue(false),
   enqueueUserInput: vi.fn(),
+  pauseUserInputQueue: vi.fn(),
 }));
 
 vi.mock('../core/agent/executionSnapshot', () => ({
@@ -711,11 +714,11 @@ describe('Agent Pipeline Integration', () => {
       expect(execs.every((e) => e.plannedSteps.length === 0)).toBe(true);
     });
 
-    it('drained queued messages surface as user bubbles at consumption time', async () => {
-      const { drainQueuedInputs } = await import('../core/agent/userInputQueue');
+    it('drained system wake-ups remain hidden user-context messages', async () => {
+      const { drainSystemQueuedInputs } = await import('../core/agent/userInputQueue');
       const convId = useChatStore.getState().createConversation();
-      vi.mocked(drainQueuedInputs).mockReturnValueOnce([
-        { id: 'q1', text: '数完说你好', timestamp: 123 },
+      vi.mocked(drainSystemQueuedInputs).mockReturnValueOnce([
+        { id: 'q1', text: '后台任务完成', timestamp: 123, isSystem: true },
       ]);
       mockClaudeChat.mockImplementation(
         async (_m: unknown, _o: unknown, onEvent: (e: StreamEvent) => void) => {
@@ -727,9 +730,9 @@ describe('Agent Pipeline Integration', () => {
       await runAgentLoop(convId, '从1数到3');
 
       const conv = useChatStore.getState().conversations[convId];
-      const queuedMsg = conv.messages.find((m) => m.role === 'user' && m.content === '数完说你好');
+      const queuedMsg = conv.messages.find((m) => m.role === 'user' && m.content === '后台任务完成');
       expect(queuedMsg).toBeDefined();
-      expect(queuedMsg?.isSystem).toBeFalsy();
+      expect(queuedMsg?.isSystem).toBe(true);
     });
 
     it('keeps an aborted turn that already streamed partial text', async () => {
@@ -782,13 +785,13 @@ describe('Agent Pipeline Integration', () => {
       expect(useChatStore.getState().conversations[convId].activeSkills).toEqual([]);
     });
 
-    it('resets the no-progress counter when a queued-input override rescues the loop (review finding [5])', async () => {
+    it('resets the no-progress counter when a system wake-up rescues the loop (review finding [5])', async () => {
       // Without the reset, a mid-stream user rescue buys only ONE more turn before
       // the (still-3) counter trips. With it, the full 3-turn tolerance is restored:
       // turns 1-3 trip the guard, the rescue at turn 3 resets it, turns 4-6 trip it
       // again → stop at turn 6 (calls===6). Without the reset it would stop at turn 4.
-      const { hasQueuedInputs } = await import('../core/agent/userInputQueue');
-      vi.mocked(hasQueuedInputs).mockReturnValueOnce(true); // rescue exactly once (turn 3)
+      const { hasSystemQueuedInputs } = await import('../core/agent/userInputQueue');
+      vi.mocked(hasSystemQueuedInputs).mockReturnValueOnce(true); // rescue exactly once (turn 3)
 
       let calls = 0;
       mockClaudeChat.mockImplementation(
@@ -806,17 +809,8 @@ describe('Agent Pipeline Integration', () => {
       expect(calls).toBe(6);
     });
 
-    it('surfaces staged queue messages as user bubbles when the loop aborts (F5)', async () => {
-      // Regression: the abort path called clearInputQueue directly, silently
-      // destroying messages the user staged mid-loop. They must land in the
-      // transcript instead — the aborted loop can't answer them, but the text
-      // has to stay visible.
-      const { drainQueuedInputs } = await import('../core/agent/userInputQueue');
-      // Drain is called at the top of each loop iteration AND (now) in the
-      // abort path: 1st call = loop top (empty), 2nd call = abort drain (item).
-      vi.mocked(drainQueuedInputs)
-        .mockReturnValueOnce([])
-        .mockReturnValueOnce([{ id: 'q9', text: '别丢了我', timestamp: 1 }]);
+    it('pauses staged user follow-ups instead of attaching them to the aborted run', async () => {
+      const { pauseUserInputQueue, drainSystemQueuedInputs } = await import('../core/agent/userInputQueue');
       const convId = useChatStore.getState().createConversation();
       mockClaudeChat.mockImplementation(async () => {
         const err = new Error('Aborted');
@@ -827,9 +821,11 @@ describe('Agent Pipeline Integration', () => {
       const result = await runAgentLoop(convId, 'abort with staged input');
 
       expect(result.reason).toBe('aborted');
-      const conv = useChatStore.getState().conversations[convId];
-      const staged = conv.messages.find((m) => m.role === 'user' && m.content === '别丢了我');
-      expect(staged).toBeDefined();
+      expect(pauseUserInputQueue).toHaveBeenCalledWith(convId);
+      expect(drainSystemQueuedInputs).toHaveBeenCalledWith(convId);
+      expect(useChatStore.getState().conversations[convId].messages).not.toContainEqual(
+        expect.objectContaining({ role: 'user', content: '别丢了我' }),
+      );
     });
 
     it('rejects an image-only send during a running in-process loop instead of starting a second stream (F6)', async () => {

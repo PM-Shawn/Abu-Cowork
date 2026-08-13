@@ -137,6 +137,25 @@ function stripMarkdownImages(text: string): string {
   return text.replace(/!\[[^\]]*\]\([^)]+\)\n?/g, '').trim();
 }
 
+const LEGACY_STOP_MARKER = /\s*\*\[已停止\]\*\s*$/;
+
+/** Backward compatibility for transcripts written before runState terminals. */
+// eslint-disable-next-line react-refresh/only-export-components
+export function hasPersistedStopState(messages: Message[]): boolean {
+  return messages.some((message) =>
+    (message.role === 'user' && message.runState === 'interrupted')
+    || (message.role === 'assistant' && message.stopReason === 'user')
+    || (message.role === 'assistant'
+      && typeof message.content === 'string'
+      && LEGACY_STOP_MARKER.test(message.content)),
+  );
+}
+
+// eslint-disable-next-line react-refresh/only-export-components
+export function stripLegacyStopMarker(text: string): string {
+  return text.replace(LEGACY_STOP_MARKER, '').trimEnd();
+}
+
 // --- Render segment types ---
 
 type RenderSegment =
@@ -353,10 +372,11 @@ export default function MessageGroup({ messages, isLastGroup: isLastGroupProp = 
   // Check if THIS execution is active (not global status)
   const isThisExecutionActive = execution?.status === 'running';
 
-  // Execution status is live-only; message.stopReason is persisted so a
-  // stopped tool-only turn keeps the same terminal after app restart.
+  // Reliable-run state on the user message is the canonical persisted
+  // terminal. Assistant stopReason and the old markdown marker remain only as
+  // compatibility fallbacks for transcripts written before that protocol.
   const isStopped = execution?.status === 'cancelled'
-    || assistantMsgs.some((message) => message.stopReason === 'user');
+    || hasPersistedStopState(messages);
 
   // Check if any message is still streaming
   const isStreaming = assistantMsgs.some((m) => m.isStreaming);
@@ -564,7 +584,7 @@ export default function MessageGroup({ messages, isLastGroup: isLastGroupProp = 
   // the execution's start/end timing; fall back to message timestamps when the
   // execution has been evicted (older groups). Aborted = execution cancelled.
   const workStart = execution?.startTime ?? userMsg?.timestamp ?? assistantMsgs[0]?.timestamp;
-  const workEnd = execution?.endTime ?? lastAssistantMsg?.timestamp;
+  const workEnd = execution?.endTime ?? userMsg?.runEndedAt ?? lastAssistantMsg?.timestamp;
   const workSpanMs = workStart != null && workEnd != null ? Math.max(0, workEnd - workStart) : 0;
   // The message-timestamp span under-counts (the last message's own thinking/
   // generation isn't captured — its timestamp is set at creation — and the live
@@ -575,8 +595,11 @@ export default function MessageGroup({ messages, isLastGroup: isLastGroupProp = 
     assistantMsgs.reduce((a, m) => a + (m.thinkingDuration ?? 0), 0) +
     activeExecSteps.filter((s) => s.type !== 'thinking').reduce((a, s) => a + (s.duration ?? 0), 0);
   const workDurationMs = Math.max(workSpanMs, workStepsSec * 1000);
-  const workLabel = execution?.status === 'cancelled'
+  const stoppedLabel = workDurationMs > 0
     ? format(t.chat.stoppedAfter, { duration: formatWorkDuration(workDurationMs) })
+    : t.chat.runInterrupted;
+  const workLabel = isStopped
+    ? stoppedLabel
     : format(t.chat.workedFor, { duration: formatWorkDuration(workDurationMs) });
 
   // Per-segment render callback — extracted from the map so it can be reused
@@ -607,6 +630,9 @@ export default function MessageGroup({ messages, isLastGroup: isLastGroupProp = 
       let cleanedText = allMdImages.length > 0 ? stripMarkdownImages(seg.text) : seg.text;
       if (searchResults.length > 0 && cleanedText) {
         cleanedText = stripSourcesBlock(cleanedText);
+      }
+      if (isStopped) {
+        cleanedText = stripLegacyStopMarker(cleanedText);
       }
       const showCursor = seg.isLastTurn && seg.message.isStreaming && !!cleanedText;
 
@@ -749,7 +775,7 @@ export default function MessageGroup({ messages, isLastGroup: isLastGroupProp = 
       {userMsg && <MessageErrorBoundary><MessageBubble message={userMsg} /></MessageErrorBoundary>}
 
       {/* Multiple assistant messages grouped with single avatar */}
-      {assistantMsgs.length > 0 && (
+      {(assistantMsgs.length > 0 || isStopped) && (
         <div className="flex gap-3 w-full overflow-hidden group">
           {/* ABU Avatar - only shown once for the group */}
           <div className="shrink-0 mt-0.5">
@@ -760,6 +786,15 @@ export default function MessageGroup({ messages, isLastGroup: isLastGroupProp = 
 
           {/* Content area */}
           <div className="flex-1 min-w-0 overflow-hidden">
+            {/* A stopped run is a turn terminal, not assistant-authored text.
+                Render it even when Stop arrived before the first model token
+                and the empty assistant placeholder was durably deleted. */}
+            {isStopped && workFoldEnd == null && (
+              <div className="text-body text-[var(--abu-text-muted)] mb-2">
+                {stoppedLabel}
+              </div>
+            )}
+
             {/* Typing dots — shown while the current turn is streaming but has not
                 yet emitted any renderable content. Tracks the streaming message
                 itself, so a plan card from an earlier turn in the same group does

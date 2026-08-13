@@ -7,6 +7,54 @@ All notable changes to Abu are documented here. Format based on [Keep a Changelo
 > [`CHANGELOG.zh-CN.md`](./CHANGELOG.zh-CN.md); keep both in sync per release (see
 > `RELEASING.md`). Entries before v0.31.0 predate this split and remain bilingual.
 
+## v0.37.4 · 2026-08-14
+
+**Root cause**: A stopped turn and its queued follow-ups were reconciled through overlapping renderer and sidecar lifecycle paths. That allowed a queued message to start before the active reply had settled, disappear during state replacement, or leave an empty assistant row after Stop.
+
+**Fix**:
+
+- Queued follow-ups now wait for the active turn to reach a durable terminal state, then start in order with the same visible thinking feedback as a normal message.
+- Queue entries stay visible and recoverable until their own run takes ownership, preventing a follow-up from disappearing or being attached to the previous answer.
+- Stopping a turn now preserves an explicit stopped result while removing only truly empty streaming placeholders; the redundant per-message running label is no longer shown.
+
+**Full Changelog**: https://github.com/PM-Shawn/Abu-Cowork/compare/v0.37.3...v0.37.4
+
+## v0.37.3 · 2026-08-13
+
+**Root cause**: Electron Builder 26 writes external updater blockmaps without a `blockMapSize` field. Release staging treated that missing field as permission to omit the blockmap, so the three architecture feeds could reference complete installers while their differential update metadata returned 404.
+
+**Fix**:
+
+- macOS Apple Silicon, macOS Intel, and Windows updater feeds now publish the external blockmap beside every referenced artifact, allowing supported upgrades to use differential downloads again.
+- Release staging fails before publication if any feed-referenced blockmap is missing, and still verifies its exact size whenever the feed provides one.
+- Full-installer fallback behavior is unchanged for clients that cannot apply a differential update.
+
+**Full Changelog**: https://github.com/PM-Shawn/Abu-Cowork/compare/v0.37.2...v0.37.3
+
+## v0.37.2 · 2026-08-13
+
+**Root cause**: On Windows, Credential Manager entries can outlive AppData. The transition startup kept retrying stale or unreadable credentials after the legacy Tauri profile had been removed, while completed migration markers did not preserve enough source evidence across later launches.
+
+**Fix**:
+
+- A clean reset or reinstall no longer loops on `windows-secret-migration-failed` when no live Tauri data remains.
+- Completed migration markers retain source inventory and trusted v2 provenance, so later launches make the same safe migration decision.
+- Real or ambiguous legacy data still fails closed; Abu never silently discards credentials that may still be recoverable.
+
+**Full Changelog**: https://github.com/PM-Shawn/Abu-Cowork/compare/v0.37.1...v0.37.2
+
+## v0.37.1 · 2026-08-13
+
+**Root cause**: Renderer lifecycle changes and sidecar reconnects could detach a task from its event stream, leaving the message stuck in a loading state even after the run had completed or failed.
+
+**Fix**:
+
+- Task events now use a dedicated, sequenced sidecar channel with status replay, so Abu can restore the existing run after a renderer reload or temporary disconnect instead of spinning indefinitely.
+- Terminal states are settled exactly once and stale sidecar generations are ignored, preventing duplicate tool side effects while reconnecting.
+- Connection failures now surface an explicit disconnected or reconnecting state rather than leaving the task on an ambiguous loading indicator.
+
+**Full Changelog**: https://github.com/PM-Shawn/Abu-Cowork/compare/v0.37.0...v0.37.1
+
 ## v0.37.0 · 2026-08-12
 
 ### Features

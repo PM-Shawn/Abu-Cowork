@@ -653,6 +653,7 @@ export async function collectBundleFiles(opts: CollectOptions): Promise<CollectR
         appSessionId: electronRuntime.appSessionId,
         sidecars: electronRuntime.sidecars,
         pendingRendererAcks: electronRuntime.pendingRendererAcks,
+        nativeHelpers: electronRuntime.nativeHelpers,
       }),
       null,
       2,

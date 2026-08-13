@@ -187,9 +187,21 @@ function inferKeyboardConsequence(session, cmd, args) {
   const key = typeof args?.key === 'string' ? args.key.toLowerCase() : '';
   const modifiers = normalizedModifiers(args);
   const targetId = session.target.bundle_id.toLowerCase();
-  const finderLike = targetId === 'com.apple.finder'
-    || targetId === 'explorer'
-    || targetId === 'explorer.exe';
+  const finderLike = targetId === 'com.apple.finder';
+  const windowsExplorer = targetId === 'explorer' || targetId === 'explorer.exe';
+  if (
+    windowsExplorer
+    && (key === 'delete' || key === 'backspace')
+  ) {
+    const permanent = modifiers.has('shift');
+    return {
+      category: 'delete',
+      summary: permanent
+        ? `Permanently delete the selected item in ${session.target.app_name}`
+        : `Delete the selected item in ${session.target.app_name}`,
+      source: 'keyboard-shortcut',
+    };
+  }
   if (
     finderLike
     && (key === 'delete' || key === 'backspace')
@@ -204,17 +216,62 @@ function inferKeyboardConsequence(session, cmd, args) {
   return null;
 }
 
+/**
+ * A model-supplied `category: none` is not positive evidence that an input is
+ * harmless. In browsers, communication apps, and unknown applications the
+ * same Return key or unlabelled pointer action can submit a form, send a
+ * message, or confirm a purchase. App classification alone cannot prove the
+ * focused control is harmless, so fail closed for commit-like input that has
+ * no trustworthy AX semantics.
+ */
+function inferAmbiguousConsequence(session, cmd, args, axSession) {
+  if (cmd === 'keyboard_press') {
+    const key = typeof args?.key === 'string' ? args.key.trim().toLowerCase() : '';
+    if (key === 'enter' || key === 'return') {
+      return {
+        category: 'ambiguous',
+        summary: `Press ${args.key} in ${session.target.app_name}; this may submit or send content`,
+        source: 'host-ambiguous-input',
+      };
+    }
+  }
+
+  if (cmd === 'mouse_click' || cmd === 'mouse_drag') {
+    return {
+      category: 'ambiguous',
+      summary: `${cmd === 'mouse_click' ? 'Click' : 'Drag'} in ${session.target.app_name} without accessibility semantics`,
+      source: 'host-ambiguous-input',
+    };
+  }
+
+  if (cmd === 'ax_press' || cmd === 'ax_perform_action') {
+    const element = findElement(axSession, args?.elementId);
+    const label = typeof element?.label === 'string' ? element.label.trim() : '';
+    if (!label) {
+      return {
+        category: 'ambiguous',
+        summary: `Activate an unlabelled control in ${session.target.app_name}`,
+        source: 'host-ambiguous-input',
+      };
+    }
+  }
+
+  return null;
+}
+
 function resolveConsequence(session, cmd, args, axSession) {
   if (!CONSEQUENCE_TRIGGER_COMMANDS.has(cmd)) return null;
   const inferred = inferAxConsequence(cmd, args, axSession)
     ?? inferKeyboardConsequence(session, cmd, args);
   if (inferred) return inferred;
-  if (session.actionIntent.category === 'none') return null;
-  return {
-    category: session.actionIntent.category,
-    summary: session.actionIntent.summary,
-    source: 'declared-intent',
-  };
+  if (session.actionIntent.category !== 'none') {
+    return {
+      category: session.actionIntent.category,
+      summary: session.actionIntent.summary,
+      source: 'declared-intent',
+    };
+  }
+  return inferAmbiguousConsequence(session, cmd, args, axSession);
 }
 
 function sanitizeAxElements(result) {

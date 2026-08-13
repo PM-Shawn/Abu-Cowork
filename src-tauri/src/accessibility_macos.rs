@@ -180,6 +180,26 @@ unsafe fn copy_attr(el: CFTypeRef, name: &str) -> Option<CFTypeRef> {
     }
 }
 
+/// Prefer the application's focused/main window as the snapshot root.
+///
+/// Walking the application element itself starts with global UI such as the
+/// menu bar and every open window. In large apps (notably Finder) that can
+/// exhaust the bounded element budget before the visible window's content is
+/// reached. A window-scoped root makes the snapshot both more relevant and
+/// more privacy preserving. The returned reference follows the Create rule;
+/// callers must release it. If neither window attribute is available, retain
+/// the application element so the legacy whole-app fallback keeps identical
+/// ownership semantics.
+unsafe fn preferred_snapshot_root(app: CFTypeRef) -> CFTypeRef {
+    if let Some(window) = copy_attr(app, "AXFocusedWindow") {
+        return window;
+    }
+    if let Some(window) = copy_attr(app, "AXMainWindow") {
+        return window;
+    }
+    CFRetain(app)
+}
+
 /// Read a string-valued attribute (None if missing or not a CFString).
 unsafe fn attr_string(el: CFTypeRef, name: &str) -> Option<String> {
     let v = copy_attr(el, name)?;
@@ -1006,7 +1026,11 @@ pub async fn test_ax_snapshot_impl(app_name: String) -> Result<AxQualityReport, 
 
 /// Snapshot the target app and cache live element refs for action commands.
 /// `target_app`: optional app name. When provided the app need not be in the foreground.
-pub fn ax_snapshot_impl(target_app: Option<String>) -> Result<super::AxSnapshotResult, String> {
+pub fn ax_snapshot_impl(
+    target_app: Option<String>,
+    expected_bundle_id: Option<String>,
+    expected_process_id: Option<i32>,
+) -> Result<super::AxSnapshotResult, String> {
     unsafe {
         if !ax_is_trusted_with_prompt() {
             return Err(
@@ -1019,10 +1043,36 @@ pub fn ax_snapshot_impl(target_app: Option<String>) -> Result<super::AxSnapshotR
         }
 
         let (app, app_name) = if let Some(ref name) = target_app {
-            get_app_element_by_name(name).map_err(|e| {
-                format!("get_ui 不可用：{}。请确认应用名称正确且已在运行。", e)
-            })?
+            // Resolve the model-facing name exactly once, validate the stable
+            // identity that the Electron Host Gate authorized, then create the
+            // AX element for that exact PID. Re-resolving by name in the helper
+            // could otherwise bind a restarted or same-name process after the
+            // Host's preflight check.
+            let found = find_regular_app(name)
+                .map_err(|e| format!("get_ui 不可用：{}。请确认应用名称正确且已在运行。", e))?;
+            if expected_bundle_id
+                .as_ref()
+                .is_some_and(|expected| !found.bundle_id.eq_ignore_ascii_case(expected))
+                || expected_process_id.is_some_and(|expected| found.pid != expected)
+            {
+                return Err(format!(
+                    "Computer Use AX target changed before snapshot: expected {:?} ({:?}), got {} ({})",
+                    expected_bundle_id, expected_process_id, found.bundle_id, found.pid
+                ));
+            }
+            let app = AXUIElementCreateApplication(found.pid);
+            if app.is_null() {
+                return Err(format!(
+                    "AXUIElementCreateApplication({}) returned null for '{}'",
+                    found.pid, found.name
+                ));
+            }
+            let ax_title = attr_string(app, "AXTitle");
+            (app, ax_title.or(Some(found.name)))
         } else {
+            if expected_bundle_id.is_some() || expected_process_id.is_some() {
+                return Err("Computer Use AX identity requires an explicit target app".to_string());
+            }
             get_frontmost_app_element().map_err(|e| {
                 format!(
                     "get_ui 不可用：{}。\
@@ -1033,14 +1083,16 @@ pub fn ax_snapshot_impl(target_app: Option<String>) -> Result<super::AxSnapshotR
             })?
         };
 
+        let snapshot_root = preferred_snapshot_root(app);
         let mut st = WalkStateWithCache {
             elements: Vec::new(),
             refs: Vec::new(),
             visited: 0,
             truncated: false,
         };
-        walk_and_cache(app, 0, &mut st);
+        walk_and_cache(snapshot_root, 0, &mut st);
 
+        CFRelease(snapshot_root);
         CFRelease(app);
 
         // Store in the global session cache.

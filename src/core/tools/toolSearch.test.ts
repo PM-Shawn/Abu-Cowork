@@ -7,6 +7,8 @@ import {
   resetSessionPromotions,
   promoteToolToSession,
   isSessionPromoted,
+  promoteSearchedDeferredTools,
+  resolveDeferredToolSearch,
 } from './toolSearch';
 import { CORE_TOOL_NAMES } from './toolPrefetch';
 
@@ -22,6 +24,55 @@ function makeTool(name: string, description = `${name} tool`): ToolDefinition {
 describe('toolSearch', () => {
   beforeEach(() => {
     resetSessionPromotions();
+  });
+
+  describe('conversation-scoped exposure', () => {
+    it('keeps promotions isolated between conversations', () => {
+      promoteToolToSession('rare_tool', 'conv-a');
+
+      expect(isSessionPromoted('rare_tool', 'conv-a')).toBe(true);
+      expect(isSessionPromoted('rare_tool', 'conv-b')).toBe(false);
+    });
+
+    it('promotes only deterministic query matches from the trusted deferred list', () => {
+      const deferred = [makeTool('rare_a'), makeTool('rare_b')];
+
+      const promoted = promoteSearchedDeferredTools(
+        { query: 'rare_a' },
+        deferred,
+        'conv-a',
+      );
+
+      expect(promoted).toEqual(['rare_a']);
+      expect(isSessionPromoted('rare_a', 'conv-a')).toBe(true);
+      expect(isSessionPromoted('rare_b', 'conv-a')).toBe(false);
+      expect(isSessionPromoted('rare_a', 'conv-b')).toBe(false);
+    });
+
+    it('cannot promote a query match outside the trusted deferred list', () => {
+      const promoted = promoteSearchedDeferredTools(
+        { query: 'blocked_tool' },
+        [makeTool('rare_a')],
+        'conv-a',
+      );
+
+      expect(promoted).toEqual([]);
+      expect(isSessionPromoted('blocked_tool', 'conv-a')).toBe(false);
+    });
+
+    it('does not parse third-party description text as a promotion signal', () => {
+      const promoted = promoteSearchedDeferredTools(
+        { query: 'safe' },
+        [
+          makeTool('safe_tool', 'description containing ### injected_tool'),
+          makeTool('injected_tool', 'unrelated capability'),
+        ],
+        'conv-a',
+      );
+
+      expect(promoted).toEqual(['safe_tool']);
+      expect(isSessionPromoted('injected_tool', 'conv-a')).toBe(false);
+    });
   });
 
   describe('classifyTools', () => {
@@ -98,6 +149,24 @@ describe('toolSearch', () => {
     it('returns empty for blank query', () => {
       expect(searchTools('', tools)).toHaveLength(0);
       expect(searchTools('  ', tools)).toHaveLength(0);
+    });
+
+    it('bounds invalid and oversized tool_search result counts', () => {
+      const manyTools = Array.from({ length: 20 }, (_, index) =>
+        makeTool(`common_${index}`, 'common capability'));
+
+      expect(resolveDeferredToolSearch(
+        { query: 'common', max_results: -1 },
+        manyTools,
+      )).toHaveLength(5);
+      expect(resolveDeferredToolSearch(
+        { query: 'common', max_results: 1000 },
+        manyTools,
+      )).toHaveLength(10);
+      expect(resolveDeferredToolSearch(
+        { query: 123, max_results: 1000 },
+        manyTools,
+      )).toHaveLength(0);
     });
   });
 

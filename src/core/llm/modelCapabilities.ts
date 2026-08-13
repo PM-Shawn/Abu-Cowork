@@ -7,6 +7,7 @@
  */
 import { GENERATED_KNOWN_MODELS } from './generated/modelData.generated';
 import { classifyThinkingProtocol } from './model-data/classify';
+import type { DeclaredCapabilities, ProviderSource } from '@/types/provider';
 
 // How images in tool results are handled
 export type ToolResultImageSupport = 'native' | 'workaround' | 'none';
@@ -36,6 +37,84 @@ export interface ModelCapabilities {
   outputCeiling?: number;
   /** Context window size */
   contextWindow: number;
+}
+
+export type ComputerUseModelTier = 'full' | 'structured' | 'unsupported' | 'unknown';
+export type ToolCallingCapability = 'native' | 'text-recovery' | 'none';
+export type StructuredArgumentsCapability = 'reliable' | 'best-effort' | 'unknown';
+export type ModelCapabilitySource = 'builtin' | 'evaluated' | 'user-declared' | 'fallback';
+
+export interface AgentModelCapabilities {
+  toolCalling: ToolCallingCapability;
+  structuredArguments: StructuredArgumentsCapability;
+  computerUseTier: ComputerUseModelTier;
+  capabilitySource: ModelCapabilitySource;
+  vision: boolean;
+}
+
+/**
+ * Resolve the product-facing Computer Use tier without over-promising custom
+ * endpoints. A familiar model id does not prove that an arbitrary proxy or
+ * local server preserves native tool calling, so custom providers remain
+ * unknown until the user explicitly declares tool support.
+ */
+export function resolveAgentModelCapabilities({
+  modelId,
+  providerSource,
+  declared,
+}: {
+  modelId: string;
+  providerSource?: ProviderSource;
+  declared?: DeclaredCapabilities;
+}): AgentModelCapabilities {
+  const vision = declared?.supportsImages ?? resolveCapabilities(modelId).vision;
+
+  if (declared?.supportsTools === false) {
+    return {
+      toolCalling: 'none',
+      structuredArguments: 'unknown',
+      computerUseTier: 'unsupported',
+      capabilitySource: 'user-declared',
+      vision,
+    };
+  }
+
+  if (providerSource === 'custom') {
+    if (declared?.supportsTools !== true) {
+      return {
+        toolCalling: 'text-recovery',
+        structuredArguments: 'unknown',
+        computerUseTier: 'unknown',
+        capabilitySource: 'fallback',
+        vision,
+      };
+    }
+    return {
+      toolCalling: 'native',
+      structuredArguments: 'best-effort',
+      computerUseTier: vision ? 'full' : 'structured',
+      capabilitySource: 'user-declared',
+      vision,
+    };
+  }
+
+  if (providerSource === 'builtin' && isKnownModel(modelId)) {
+    return {
+      toolCalling: 'native',
+      structuredArguments: 'reliable',
+      computerUseTier: vision ? 'full' : 'structured',
+      capabilitySource: 'builtin',
+      vision,
+    };
+  }
+
+  return {
+    toolCalling: 'text-recovery',
+    structuredArguments: 'unknown',
+    computerUseTier: 'unknown',
+    capabilitySource: 'fallback',
+    vision,
+  };
 }
 
 // ── Known model capabilities ────────────────────────────────────────

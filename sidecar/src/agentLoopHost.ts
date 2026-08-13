@@ -160,7 +160,11 @@ function parseAgentRunParams(params: unknown): AgentRunParams {
 
 function toWireToolContext(context: ToolExecutionContext | undefined): ToolExecutionContext | undefined {
   if (!context) return undefined;
-  const { abortSignal: _abortSignal, ...wireContext } = context;
+  const {
+    abortSignal: _abortSignal,
+    reportMetadata: _reportMetadata,
+    ...wireContext
+  } = context;
   return wireContext;
 }
 
@@ -737,6 +741,9 @@ export async function handleAgentRun(rawParams: unknown): Promise<unknown> {
       // travels over the wire via tool.invoke's `context` field) resolves
       // correctly without threading a second id back across the wire.
       loopId: runId,
+      runtimeEvent: (event, attributes) => {
+        traceSidecarRuntimeEvent(`sidecar.${event}`, attributes);
+      },
     };
     const result: AgentLoopResult = await agentRunContext.run(runCtx, () =>
       runAgentLoop(conversationId, params.userMessage, options),

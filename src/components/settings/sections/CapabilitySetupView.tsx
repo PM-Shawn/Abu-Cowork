@@ -16,6 +16,7 @@ import { useI18n } from '@/i18n';
 import { cn } from '@/lib/utils';
 import type {
   ComputerUsePermission,
+  ComputerUsePermissionRequirements,
   ComputerUsePermissions,
 } from '@/core/agent/computerUsePermission';
 
@@ -304,6 +305,7 @@ export function ChromeSetupView({
 export function ComputerUseSetupView({
   enabled,
   requestedByTask,
+  requirements,
   permissions,
   checking,
   requesting,
@@ -316,9 +318,11 @@ export function ComputerUseSetupView({
   onRefresh,
   onDisable,
   onDone,
+  onRelaunch,
 }: {
   enabled: boolean;
   requestedByTask: boolean;
+  requirements?: ComputerUsePermissionRequirements;
   permissions?: ComputerUsePermissions;
   checking: boolean;
   requesting?: ComputerUsePermission;
@@ -331,19 +335,27 @@ export function ComputerUseSetupView({
   onRefresh: () => void;
   onDisable: () => void;
   onDone: () => void;
+  onRelaunch?: () => void;
 }) {
   const { t } = useI18n();
+  const required = requirements ?? { screenRead: true, uiControl: true };
   const screenReady = permissions?.screenRead === true;
   const controlReady = permissions?.uiControl === true;
-  const fullyReady = enabled && screenReady && controlReady;
-  const currentPermission: ComputerUsePermission | undefined = !screenReady
+  const fullyReady = enabled
+    && (!required.screenRead || screenReady)
+    && (!required.uiControl || controlReady);
+  const restartRequired = permissions?.restartRequired === true;
+  const currentPermission: ComputerUsePermission | undefined = required.screenRead && !screenReady
     ? 'screenRead'
-    : !controlReady
+    : required.uiControl && !controlReady
       ? 'uiControl'
       : undefined;
-  const currentStepLabel = currentPermission === 'screenRead'
-    ? t.settings.capabilityComputerStepScreen
-    : t.settings.capabilityComputerStepControl;
+  const oneRequiredPermission = Number(required.screenRead) + Number(required.uiControl) === 1;
+  const currentStepLabel = oneRequiredPermission
+    ? t.settings.capabilityComputerStepOnly
+    : currentPermission === 'screenRead'
+      ? t.settings.capabilityComputerStepScreen
+      : t.settings.capabilityComputerStepControl;
   const currentTitle = currentPermission === 'screenRead'
     ? t.settings.capabilityScreenRead
     : t.settings.capabilityUIControl;
@@ -396,31 +408,35 @@ export function ComputerUseSetupView({
       {enabled && (
         <>
           <div className="border-y border-[var(--abu-border)]">
-            <SetupRow
-              icon={Eye}
-              title={t.settings.capabilityScreenRead}
-              description={t.settings.capabilityScreenReadDesc}
-              state={screenReady
-                ? 'complete'
-                : requesting === 'screenRead'
-                  ? 'working'
-                  : 'pending'}
-            />
-            <SetupRow
-              icon={MousePointer2}
-              title={t.settings.capabilityUIControl}
-              description={t.settings.capabilityUIControlDesc}
-              state={controlReady
-                ? 'complete'
-                : requesting === 'uiControl'
-                  ? 'working'
-                  : screenReady
-                    ? 'pending'
-                    : 'upcoming'}
-            />
+            {required.screenRead && (
+              <SetupRow
+                icon={Eye}
+                title={t.settings.capabilityScreenRead}
+                description={t.settings.capabilityScreenReadDesc}
+                state={screenReady
+                  ? 'complete'
+                  : requesting === 'screenRead'
+                    ? 'working'
+                    : 'pending'}
+              />
+            )}
+            {required.uiControl && (
+              <SetupRow
+                icon={MousePointer2}
+                title={t.settings.capabilityUIControl}
+                description={t.settings.capabilityUIControlDesc}
+                state={controlReady
+                  ? 'complete'
+                  : requesting === 'uiControl'
+                    ? 'working'
+                    : required.screenRead && !screenReady
+                      ? 'upcoming'
+                      : 'pending'}
+              />
+            )}
           </div>
 
-          {currentPermission && canOpenSystemSettings && (
+          {currentPermission && !restartRequired && canOpenSystemSettings && (
             <div
               className="space-y-4 border-l-2 border-[var(--abu-clay)] pl-4"
               aria-live="polite"
@@ -483,7 +499,7 @@ export function ComputerUseSetupView({
             </div>
           )}
 
-          {currentPermission && !canOpenSystemSettings && (
+          {currentPermission && !restartRequired && !canOpenSystemSettings && (
             <div className="space-y-3 border-l-2 border-[var(--abu-warning)] pl-4">
               <p className="flex items-start gap-2 text-minor leading-relaxed text-[var(--abu-warning)]">
                 <CircleAlert className="mt-0.5 h-3.5 w-3.5 shrink-0" />
@@ -501,7 +517,26 @@ export function ComputerUseSetupView({
             </div>
           )}
 
-          {fullyReady && (
+          {restartRequired && requestedByTask && onRelaunch && (
+            <div className="space-y-3 border-l-2 border-[var(--abu-warning)] pl-4">
+              <p className="text-body font-semibold text-[var(--abu-text-primary)]">
+                {t.settings.capabilityPermissionGuideRestartTitle}
+              </p>
+              <p className="text-minor leading-relaxed text-[var(--abu-text-muted)]">
+                {t.settings.capabilityPermissionGuideRestartDesc}
+              </p>
+              <button
+                type="button"
+                onClick={onRelaunch}
+                className="inline-flex h-9 items-center gap-1.5 rounded-md bg-[var(--abu-clay)] px-4 text-body font-medium text-white transition-colors hover:bg-[var(--abu-clay-hover)]"
+              >
+                <RefreshCw className="h-4 w-4" />
+                {t.settings.capabilityPermissionGuideRestart}
+              </button>
+            </div>
+          )}
+
+          {fullyReady && !restartRequired && (
             <div className="space-y-4 border-l-2 border-[var(--abu-success)] pl-4">
               <div className="flex items-start gap-3">
                 <CheckCircle2 className="mt-0.5 h-5 w-5 shrink-0 text-[var(--abu-success)]" />

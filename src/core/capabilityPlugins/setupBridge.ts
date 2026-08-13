@@ -4,10 +4,16 @@ import type { CapabilitySetupTarget } from './types';
 export interface CapabilitySetupRequest {
   id: string;
   target: CapabilitySetupTarget;
-  source: 'task';
+  source: 'task' | 'relaunch';
   conversationId: string;
   loopId?: string;
-  toolCallId: string;
+  toolCallId?: string;
+  taskSummaryHash?: string;
+  /** Task-local TCC scope. Omitted for settings-driven setup, which configures both. */
+  computerUseRequirements?: {
+    screenRead: boolean;
+    uiControl: boolean;
+  };
 }
 
 interface PendingEntry {
@@ -68,6 +74,7 @@ function cancelById(id: string): void {
 export function requestCapabilitySetup(
   target: CapabilitySetupTarget,
   context: ToolExecutionContext,
+  options: Pick<CapabilitySetupRequest, 'computerUseRequirements'> = {},
 ): Promise<boolean> {
   const conversationId = context.conversationId;
   const toolCallId = context.toolCallId;
@@ -86,6 +93,10 @@ export function requestCapabilitySetup(
     conversationId,
     loopId: context.loopId,
     toolCallId,
+    ...(context.taskSummaryHash ? { taskSummaryHash: context.taskSummaryHash } : {}),
+    ...(target === 'computer' && options.computerUseRequirements
+      ? { computerUseRequirements: { ...options.computerUseRequirements } }
+      : {}),
   };
 
   return new Promise<boolean>((resolve) => {
@@ -107,6 +118,33 @@ export function requestCapabilitySetup(
     active = entry;
     notify();
   });
+}
+
+/** Recreate only the capability-check surface after a relaunch. There is no
+ * suspended tool Promise and no old authorization is restored. */
+export function restoreComputerUseSetupRequest({
+  conversationId,
+  taskSummaryHash,
+  requirements,
+}: {
+  conversationId: string;
+  taskSummaryHash: string;
+  requirements: NonNullable<CapabilitySetupRequest['computerUseRequirements']>;
+}): void {
+  if (active) return;
+  requestCounter += 1;
+  active = {
+    request: {
+      id: `${conversationId}:permission-relaunch:${requestCounter}`,
+      target: 'computer',
+      source: 'relaunch',
+      conversationId,
+      taskSummaryHash,
+      computerUseRequirements: { ...requirements },
+    },
+    resolve: () => {},
+  };
+  notify();
 }
 
 export function subscribeCapabilitySetup(listener: () => void): () => void {

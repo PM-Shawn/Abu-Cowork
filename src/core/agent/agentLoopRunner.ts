@@ -130,6 +130,16 @@ const AGENT_FIRST_FRAME_STALL_MS = 30_000;
 const AGENT_START_ACK_TIMEOUT_MS = 3_000;
 const AGENT_STATE_QUERY_TIMEOUT_MS = 2_000;
 
+function rendererRuntimeOptions(options?: AgentLoopOptions): AgentLoopOptions {
+  return {
+    ...options,
+    runtimeEvent: (event, attributes) => {
+      traceRuntimeEvent(`renderer.${event}`, attributes);
+      options?.runtimeEvent?.(event, attributes);
+    },
+  };
+}
+
 // ── Run-session registry ────────────────────────────────────────────────
 //
 // Callbacks and the AbortSignal stay HERE (never serialized) — same
@@ -424,11 +434,11 @@ async function runInProcessWithPersistedMessage(
   }
   useChatStore.getState().updateUserMessageRun(conversationId, clientMessageId, { state: 'running' });
   try {
-    const result = await runAgentLoop(conversationId, userMessage, {
+    const result = await runAgentLoop(conversationId, userMessage, rendererRuntimeOptions({
       ...options,
       loopId: runId,
       prePersistedUserMessageId: clientMessageId,
-    });
+    }));
     const state = result.reason === 'aborted'
       ? 'interrupted'
       : result.reason === 'error'
@@ -607,7 +617,7 @@ async function finalizeAbortedRun(session: RunSession, source: 'ack' | 'watchdog
         .then(({ clearCheckpoint }) => clearCheckpoint(session.conversationId))
         .catch(() => {});
       void import('../tools/definitions/computerTools')
-        .then(({ closeAxSession }) => closeAxSession())
+        .then(({ closeAxSession }) => closeAxSession(session.conversationId, session.loopId))
         .catch(() => {});
 
       // Reject only this run's never-ending RPC. This must happen even when
@@ -814,7 +824,11 @@ function handleCuSetState(rawParams: unknown): void {
  * `@tauri-apps/api/core` `invoke` bare-specifier shim as the other 5 commands
  * — reusing the shell's real Rust `atomic_write_text` command, rather than
  * reimplementing tempfile+fsync+rename in Node, keeps atomicity semantics
- * identical regardless of which process performs the write). Not listed →
+ * identical regardless of which process performs the write) + the two
+ * cleanup-only Computer Use commands used when a sidecar-owned agent loop
+ * terminates. The model cannot call `native.invoke`; these entries only let
+ * trusted bundled lifecycle code release its own AX session and task lease.
+ * Not listed →
  * fail-closed `SidecarRequestError`, never silently forwarded.
  */
 const NATIVE_INVOKE_ALLOWLIST: ReadonlySet<string> = new Set([
@@ -825,6 +839,8 @@ const NATIVE_INVOKE_ALLOWLIST: ReadonlySet<string> = new Set([
   'run_shell_command',
   'abort_command',
   'atomic_write_text',
+  'ax_close_session',
+  'computer_use_end_task',
   // P1-3d-5 slice 3: delete_file runs locally in the sidecar and reverses its
   // OS-Trash move here. Safe to allowlist — move_to_trash is recoverable (lands
   // in Finder Trash, never a permanent delete), delete_file's write-path approval
@@ -2070,7 +2086,7 @@ async function runSingleAgentLoopDispatched(
 
   if (!sidecarRunning) {
     await ensureBuiltinBrowserRuntime();
-    return runAgentLoop(conversationId, userMessage, options);
+    return runAgentLoop(conversationId, userMessage, rendererRuntimeOptions(options));
   }
 
   ensureHandlersRegistered();
@@ -2581,6 +2597,43 @@ async function runSingleAgentLoopDispatched(
     return { reason: 'error', error: realMessage };
   } finally {
     if (session.firstFrameStallTimer) clearTimeout(session.firstFrameStallTimer);
+    // The sidecar normally releases the task-scoped Computer Use lease from
+    // agentLoop.ts before it emits agent.terminal. Keep a shell-owned,
+    // idempotent release at the process boundary as the authoritative
+    // fallback: a reverse-RPC/allowlist regression must not leave the main
+    // process holding the global foreground-task lease after the visible run
+    // has already settled. Await it so a caller cannot start the next task in
+    // the small gap between terminal settlement and lease release.
+    // A pre-commit transport failure hands this same run id to the local
+    // loop, which owns its lease from that point onward; revoking here could
+    // race with the replacement local task's first Computer Use call.
+    if (!handedOffToLocal) {
+      try {
+        const { endComputerUseTask } = await import('../tools/definitions/computerTools');
+        await endComputerUseTask(conversationId, runId);
+        traceRuntimeEvent('renderer.computer_use_task_cleanup', {
+          runId,
+          conversationId,
+          executionPath: 'sidecar',
+          stage: 'run_finally',
+          outcome: 'success',
+        });
+      } catch (error) {
+        logger.warn('shell-side Computer Use task cleanup failed', {
+          runId,
+          conversationId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+        traceRuntimeEvent('renderer.computer_use_task_cleanup', {
+          runId,
+          conversationId,
+          executionPath: 'sidecar',
+          stage: 'run_finally',
+          outcome: 'error',
+          errorType: runtimeErrorType(error),
+        });
+      }
+    }
     finishRuntimeRun(runId);
     removeShellLoopContext(runId);
     unregisterRunSession(runId);

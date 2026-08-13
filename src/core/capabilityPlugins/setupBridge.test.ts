@@ -4,6 +4,7 @@ import {
   getPendingCapabilitySetup,
   requestCapabilitySetup,
   resolveCapabilitySetup,
+  restoreComputerUseSetupRequest,
 } from './setupBridge';
 
 describe('capability setup bridge', () => {
@@ -89,6 +90,38 @@ describe('capability setup bridge', () => {
       interactionMode: 'background',
     })).resolves.toBe(false);
     expect(getPendingCapabilitySetup()).toBeNull();
+  });
+
+  it('binds task-local Computer Use permission requirements to the setup request', async () => {
+    const result = requestCapabilitySetup('computer', {
+      conversationId: 'conversation-ax',
+      loopId: 'loop-ax',
+      toolCallId: 'tool-ax',
+      interactionMode: 'foreground',
+    }, {
+      computerUseRequirements: { screenRead: false, uiControl: true },
+    });
+
+    expect(getPendingCapabilitySetup()).toMatchObject({
+      target: 'computer',
+      computerUseRequirements: { screenRead: false, uiControl: true },
+    });
+    resolveCapabilitySetup(getPendingCapabilitySetup()!.id, false);
+    await expect(result).resolves.toBe(false);
+  });
+
+  it('restores only the capability check after relaunch without an old tool call', () => {
+    restoreComputerUseSetupRequest({
+      conversationId: 'conversation-resume',
+      taskSummaryHash: `sha256:${'a'.repeat(64)}`,
+      requirements: { screenRead: false, uiControl: true },
+    });
+    expect(getPendingCapabilitySetup()).toMatchObject({
+      source: 'relaunch',
+      conversationId: 'conversation-resume',
+      computerUseRequirements: { screenRead: false, uiControl: true },
+    });
+    expect(getPendingCapabilitySetup()).not.toHaveProperty('toolCallId');
   });
 
   it('drains only the stopped loop and promotes another conversation', async () => {

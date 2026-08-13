@@ -3,10 +3,12 @@
 const COMPUTER_USE_TOKEN_ARG = '__abuComputerUseToken';
 
 const COMPUTER_USE_PROBE_COMMANDS = new Set([
+  'native_helper_health',
   'check_macos_permissions',
   'request_screen_recording',
   'request_accessibility',
   'resolve_app_identity',
+  'frontmost_app_identity',
 ]);
 
 const COMPUTER_USE_CLEANUP_COMMANDS = new Set([

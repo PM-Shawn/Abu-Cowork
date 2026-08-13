@@ -40,6 +40,8 @@ import { createRequire } from 'node:module';
 import os from 'node:os';
 import path from 'node:path';
 
+import { isValidNativeHelperIdentity } from './electron-packaged-smoke-contract.mjs';
+
 const require = createRequire(import.meta.url);
 const { getCurrentFuseWire, FuseV1Options } = require('@electron/fuses');
 const FUSE_DISABLED = '0'.charCodeAt(0);
@@ -2576,6 +2578,30 @@ async function main() {
     } catch (err) {
       checks.sandboxLauncherExecutes = false;
       errors.sandboxLauncher = String(err);
+    }
+    try {
+      const helperResult = spawnSync(helperPath, [], {
+        input: `${JSON.stringify({ id: 1, method: 'hello', params: {} })}\n`,
+        encoding: 'utf8',
+        timeout: 10_000,
+      });
+      const response = JSON.parse(String(helperResult.stdout || '').trim());
+      checks.nativeHelperHandshake = isValidNativeHelperIdentity(
+        response,
+        helperResult.status,
+        process.platform,
+      );
+      if (!checks.nativeHelperHandshake) {
+        errors.nativeHelperHandshake = [
+          `status=${String(helperResult.status)}`,
+          `stdout=${JSON.stringify(helperResult.stdout)}`,
+          `stderr=${JSON.stringify(helperResult.stderr)}`,
+          helperResult.error ? `error=${String(helperResult.error)}` : '',
+        ].filter(Boolean).join(' ');
+      }
+    } catch (err) {
+      checks.nativeHelperHandshake = false;
+      errors.nativeHelperHandshake = String(err);
     }
     try {
       const helperResult = spawnSync(helperPath, [], {

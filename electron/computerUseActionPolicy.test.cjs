@@ -111,6 +111,34 @@ test('declared consequences bind to the next native side effect', () => {
   assert.equal(resolveConsequence(session, 'capture_screen', {}, null), null);
 });
 
+test('Windows Explorer Delete and Shift+Delete are host-inferred consequences', () => {
+  const session = {
+    target: { app_name: 'Explorer', bundle_id: 'explorer.exe' },
+    actionIntent: { action: 'key', category: 'none', summary: '' },
+  };
+  assert.deepEqual(
+    resolveConsequence(session, 'keyboard_press', { key: 'Delete' }, null),
+    {
+      category: 'delete',
+      summary: 'Delete the selected item in Explorer',
+      source: 'keyboard-shortcut',
+    },
+  );
+  assert.deepEqual(
+    resolveConsequence(
+      session,
+      'keyboard_press',
+      { key: 'Delete', modifiers: ['Shift'] },
+      null,
+    ),
+    {
+      category: 'delete',
+      summary: 'Permanently delete the selected item in Explorer',
+      source: 'keyboard-shortcut',
+    },
+  );
+});
+
 test('native action confirmation defaults to cancel and explains one-time scope', () => {
   const options = buildActionApprovalDialogOptions({
     isZh: true,

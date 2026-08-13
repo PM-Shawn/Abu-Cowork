@@ -325,8 +325,10 @@ vi.mock('../session/checkpoint', () => ({
 }));
 
 const closeAxSessionMock = vi.fn().mockResolvedValue(undefined);
+const endComputerUseTaskMock = vi.fn().mockResolvedValue(undefined);
 vi.mock('../tools/definitions/computerTools', () => ({
   closeAxSession: (...a: unknown[]) => closeAxSessionMock(...a),
+  endComputerUseTask: (...a: unknown[]) => endComputerUseTaskMock(...a),
 }));
 
 const notifyTaskCompletedMock = vi.fn().mockResolvedValue(undefined);
@@ -524,6 +526,8 @@ describe('agentLoopRunner', () => {
     clearCheckpointMock.mockResolvedValue(undefined);
     closeAxSessionMock.mockReset();
     closeAxSessionMock.mockResolvedValue(undefined);
+    endComputerUseTaskMock.mockReset();
+    endComputerUseTaskMock.mockResolvedValue(undefined);
     executeAnyToolMock.mockReset();
     executeAnyToolMock.mockResolvedValue('tool result');
     capsGetMock.mockReset();
@@ -951,7 +955,16 @@ describe('agentLoopRunner', () => {
   // ── native.invoke ──────────────────────────────────────────────────────
 
   describe('native.invoke handler (allowlist)', () => {
-    it.each(['show_screen_border', 'get_active_window', 'window_hide', 'activate_app', 'run_shell_command', 'abort_command'])(
+    it.each([
+      'show_screen_border',
+      'get_active_window',
+      'window_hide',
+      'activate_app',
+      'run_shell_command',
+      'abort_command',
+      'ax_close_session',
+      'computer_use_end_task',
+    ])(
       'allows %s and forwards to the real Tauri invoke',
       async (cmd) => {
         const { ensureHandlersRegistered } = await importFresh();
@@ -1522,6 +1535,23 @@ describe('agentLoopRunner', () => {
       expect(executeAnyToolMock).not.toHaveBeenCalled();
     });
 
+    it.each(['tool_search', 'use_skill', 'read_file', 'run_command'])(
+      'recovery whitelist refuses reverse %s at the shell boundary',
+      async (toolName) => {
+        const { ensureHandlersRegistered, registerRunSession } = await importFresh();
+        ensureHandlersRegistered();
+        const session = makeSession();
+        session.options = { allowedTools: ['computer', 'ask_user_question'] };
+        registerRunSession('run-1', session);
+
+        const handler = handlerFor(onSidecarRequest, 'tool.invoke');
+        await expect(
+          handler({ runId: 'run-1', toolName, input: {} }),
+        ).rejects.toThrow(/not allowed/);
+        expect(executeAnyToolMock).not.toHaveBeenCalled();
+      },
+    );
+
     it('marks the session committed on the first tool.invoke', async () => {
       const { ensureHandlersRegistered, registerRunSession, getRunSession } = await importFresh();
       ensureHandlersRegistered();
@@ -1703,6 +1733,23 @@ describe('agentLoopRunner', () => {
       ).rejects.toThrow(/not allowed/);
       expect(checkToolApprovalMock).not.toHaveBeenCalled();
     });
+
+    it.each(['tool_search', 'use_skill', 'read_file', 'run_command'])(
+      'recovery whitelist refuses local %s approval at the shell boundary',
+      async (toolName) => {
+        const { ensureHandlersRegistered, registerRunSession } = await importFresh();
+        ensureHandlersRegistered();
+        const session = makeSession();
+        session.options = { allowedTools: ['computer', 'ask_user_question'] };
+        registerRunSession('run-1', session);
+
+        const handler = handlerFor(onSidecarRequest, 'approval.check');
+        await expect(
+          handler({ runId: 'run-1', toolName, input: {} }),
+        ).rejects.toThrow(/not allowed/);
+        expect(checkToolApprovalMock).not.toHaveBeenCalled();
+      },
+    );
 
     it('throws for an unknown runId instead of silently answering', async () => {
       const { ensureHandlersRegistered } = await importFresh();
@@ -1903,7 +1950,9 @@ describe('agentLoopRunner', () => {
       const result = await runAgentLoopDispatched('conv-1', 'hello');
 
       expect(runAgentLoopMock).toHaveBeenCalledTimes(1);
-      expect(runAgentLoopMock).toHaveBeenCalledWith('conv-1', 'hello', undefined);
+      expect(runAgentLoopMock).toHaveBeenCalledWith('conv-1', 'hello', {
+        runtimeEvent: expect.any(Function),
+      });
       expect(sidecarRequestMock).not.toHaveBeenCalled();
       expect(result).toEqual({ reason: 'completed' });
     });
@@ -1926,6 +1975,26 @@ describe('agentLoopRunner', () => {
       expect(p.resolvedCreds).toEqual({ apiKey: 'sk-1', baseUrl: undefined, forceOpenAiCompatible: false });
       expect(p.toolList).toEqual([{ name: 'read_file', description: 'reads a file', inputSchema: { type: 'object', properties: {} } }]);
       expect(result).toEqual({ reason: 'completed' });
+      const runId = (params as { runId: string }).runId;
+      expect(endComputerUseTaskMock).toHaveBeenCalledOnce();
+      expect(endComputerUseTaskMock).toHaveBeenCalledWith('conv-1', runId);
+    });
+
+    it('does not let shell-side Computer Use cleanup failure replace the settled run result', async () => {
+      const { runAgentLoopDispatched } = await importFresh();
+      sidecarRequestMock.mockResolvedValue({ reason: 'completed' });
+      endComputerUseTaskMock.mockRejectedValueOnce(new Error('cleanup transport closed'));
+
+      await expect(runAgentLoopDispatched('conv-1', 'hello')).resolves.toEqual({ reason: 'completed' });
+
+      expect(traceRuntimeEventMock).toHaveBeenCalledWith(
+        'renderer.computer_use_task_cleanup',
+        expect.objectContaining({
+          conversationId: 'conv-1',
+          stage: 'run_finally',
+          outcome: 'error',
+        }),
+      );
     });
 
     it('starts queued user follow-ups FIFO as independent runs with fresh loopIds', async () => {
@@ -2661,6 +2730,7 @@ describe('agentLoopRunner', () => {
         loopId: expect.any(String),
         prePersistedUserMessageId: expect.any(String),
       }));
+      expect(endComputerUseTaskMock).not.toHaveBeenCalled();
       expect(result).toEqual({ reason: 'completed' });
     });
 

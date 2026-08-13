@@ -23,6 +23,34 @@ export interface RuntimeTraceAttributes {
   bridgeLatencyMs?: number;
   acceptedAt?: number;
   replayCount?: number;
+  conversationId?: string;
+  loopId?: string;
+  computerRunId?: string;
+  traceId?: string;
+  toolCallId?: string;
+  stateId?: string;
+  modelId?: string;
+  modelTier?: string;
+  capabilitySource?: string;
+  targetBundleId?: string;
+  targetProcessId?: number;
+  verificationStatus?: string;
+  axTreeHash?: string;
+  elementCount?: number;
+  permissionPath?: string;
+  routeType?: string;
+  turnIndex?: number;
+  activeToolCount?: number;
+  deferredToolCount?: number;
+  computerUseExposed?: boolean;
+  helperGeneration?: number;
+  helperProtocolVersion?: number;
+  helperBinaryVersion?: string;
+  helperPlatform?: string;
+  command?: string;
+  attemptCount?: number;
+  consecutiveNoChange?: number;
+  recoveryUsed?: boolean;
 }
 
 export interface RuntimeTraceEvent extends RuntimeTraceAttributes {
@@ -75,6 +103,34 @@ const SAFE_ATTRIBUTE_KEYS = new Set<keyof RuntimeTraceAttributes>([
   'bridgeLatencyMs',
   'acceptedAt',
   'replayCount',
+  'conversationId',
+  'loopId',
+  'computerRunId',
+  'traceId',
+  'toolCallId',
+  'stateId',
+  'modelId',
+  'modelTier',
+  'capabilitySource',
+  'targetBundleId',
+  'targetProcessId',
+  'verificationStatus',
+  'axTreeHash',
+  'elementCount',
+  'permissionPath',
+  'routeType',
+  'turnIndex',
+  'activeToolCount',
+  'deferredToolCount',
+  'computerUseExposed',
+  'helperGeneration',
+  'helperProtocolVersion',
+  'helperBinaryVersion',
+  'helperPlatform',
+  'command',
+  'attemptCount',
+  'consecutiveNoChange',
+  'recoveryUsed',
 ]);
 
 const SECRET_PATTERNS: RegExp[] = [
@@ -101,7 +157,9 @@ function sanitizeAttributes(attributes: RuntimeTraceAttributes): RuntimeTraceAtt
     RuntimeTraceAttributes[keyof RuntimeTraceAttributes],
   ]>) {
     if (!SAFE_ATTRIBUTE_KEYS.has(key) || raw === undefined) continue;
-    if (typeof raw === 'number' && Number.isFinite(raw)) {
+    if (typeof raw === 'boolean') {
+      (output as Record<string, unknown>)[key] = raw;
+    } else if (typeof raw === 'number' && Number.isFinite(raw)) {
       (output as Record<string, unknown>)[key] = Math.max(0, Math.round(raw));
     } else if (typeof raw === 'string') {
       (output as Record<string, unknown>)[key] = sanitizeString(raw);

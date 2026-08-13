@@ -17,9 +17,75 @@ import { hasElectronCommandHost } from '@/utils/electronHost';
 export interface ComputerUsePermissions {
   screenRead: boolean;
   uiControl: boolean;
+  screenReadStatus: ComputerUsePermissionStatus;
+  uiControlStatus: ComputerUsePermissionStatus;
+  restartRequired: boolean;
 }
 
 export type ComputerUsePermission = 'screenRead' | 'uiControl';
+export type ComputerUsePermissionStatus =
+  | 'not-determined'
+  | 'requesting'
+  | 'pending-user-action'
+  | 'granted'
+  | 'granted-relaunch-required'
+  | 'denied'
+  | 'restricted'
+  | 'unavailable';
+
+export type ComputerUseExecutionPath = 'ax' | 'screen-read' | 'pixel-control';
+
+export interface ComputerUsePermissionRequirements {
+  screenRead: boolean;
+  uiControl: boolean;
+}
+
+interface RawComputerUsePermissions {
+  screen_recording: boolean;
+  accessibility: boolean;
+  screen_recording_status?: ComputerUsePermissionStatus;
+  accessibility_status?: ComputerUsePermissionStatus;
+  restart_required?: boolean;
+}
+
+export function requiredComputerUsePermissions(path: ComputerUseExecutionPath): {
+  screenRead: boolean;
+  uiControl: boolean;
+} {
+  return {
+    screenRead: path !== 'ax',
+    uiControl: path !== 'screen-read',
+  };
+}
+
+function permissionStatus(
+  value: ComputerUsePermissionStatus | undefined,
+  granted: boolean,
+): ComputerUsePermissionStatus {
+  return value ?? (granted ? 'granted' : 'not-determined');
+}
+
+export function normalizeComputerUsePermissions(
+  raw: RawComputerUsePermissions,
+): ComputerUsePermissions {
+  const screenReadStatus = permissionStatus(
+    raw.screen_recording_status,
+    raw.screen_recording,
+  );
+  const uiControlStatus = permissionStatus(
+    raw.accessibility_status,
+    raw.accessibility,
+  );
+  return {
+    screenRead: screenReadStatus === 'granted',
+    uiControl: uiControlStatus === 'granted',
+    screenReadStatus,
+    uiControlStatus,
+    restartRequired: raw.restart_required === true
+      || screenReadStatus === 'granted-relaunch-required'
+      || uiControlStatus === 'granted-relaunch-required',
+  };
+}
 
 export interface ComputerUsePermissionGuideStrings {
   title: string;
@@ -40,11 +106,13 @@ export interface ComputerUsePermissionGuideStrings {
   developmentIdentity: string;
   errorTitle: string;
   retry: string;
+  timeout: string;
+  restart: string;
   privacyNote: string;
 }
 
 export interface ComputerUsePermissionGuideResult {
-  status: 'complete' | 'cancelled' | 'unavailable';
+  status: 'complete' | 'relaunch-required' | 'cancelled' | 'unavailable';
   permissions: ComputerUsePermissions;
   error: string | null;
 }
@@ -81,14 +149,8 @@ export async function testScreenshotPermission(): Promise<boolean> {
  */
 export async function checkComputerUsePermissions(): Promise<ComputerUsePermissions | undefined> {
   try {
-    const permissions = await invoke<{
-      screen_recording: boolean;
-      accessibility: boolean;
-    }>('check_macos_permissions');
-    return {
-      screenRead: permissions.screen_recording,
-      uiControl: permissions.accessibility,
-    };
+    const permissions = await invoke<RawComputerUsePermissions>('check_macos_permissions');
+    return normalizeComputerUsePermissions(permissions);
   } catch {
     return undefined;
   }
@@ -136,10 +198,12 @@ export async function requestComputerUsePermission(
 export async function runComputerUsePermissionGuide({
   requestedByTask,
   permissions,
+  requirements,
   strings,
 }: {
   requestedByTask: boolean;
   permissions?: ComputerUsePermissions;
+  requirements?: ComputerUsePermissionRequirements;
   strings: ComputerUsePermissionGuideStrings;
 }): Promise<ComputerUsePermissionGuideResult | undefined> {
   if (!isMacOS() || !hasElectronCommandHost()) return undefined;
@@ -148,6 +212,7 @@ export async function runComputerUsePermissionGuide({
     {
       requestedByTask,
       permissions,
+      ...(requirements ? { requirements } : {}),
       strings,
     },
   );

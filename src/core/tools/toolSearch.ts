@@ -12,28 +12,84 @@
 import type { ToolDefinition } from '../../types';
 import { CORE_TOOL_NAMES } from './toolPrefetch';
 
-/** Tools promoted to core for this session after being searched */
-const sessionPromotedTools = new Set<string>();
+const DEFAULT_EXPOSURE_SCOPE = '__default__';
+const MAX_PROMOTION_SCOPES = 200;
+const DEFAULT_SEARCH_RESULTS = 5;
+const MAX_SEARCH_RESULTS = 10;
+
+/** Tools promoted to core after being searched, isolated per conversation. */
+const promotedToolsByScope = new Map<string, Set<string>>();
+
+function getPromotionSet(scope: string, create: boolean): Set<string> | undefined {
+  const existing = promotedToolsByScope.get(scope);
+  if (existing || !create) return existing;
+  // Sidecar and renderer module state have independent lifetimes. Keep the
+  // transient name-only cache bounded even if a deleted conversation cannot
+  // notify the other process before it exits. Eviction only means an old
+  // conversation may need to search for a schema again.
+  if (promotedToolsByScope.size >= MAX_PROMOTION_SCOPES) {
+    const oldestScope = promotedToolsByScope.keys().next().value as string | undefined;
+    if (oldestScope) promotedToolsByScope.delete(oldestScope);
+  }
+  const created = new Set<string>();
+  promotedToolsByScope.set(scope, created);
+  return created;
+}
 
 /**
  * Reset session promotions (call on new conversation or session start)
  */
-export function resetSessionPromotions(): void {
-  sessionPromotedTools.clear();
+export function resetSessionPromotions(scope?: string): void {
+  if (scope) {
+    promotedToolsByScope.delete(scope);
+    return;
+  }
+  promotedToolsByScope.clear();
 }
 
 /**
  * Promote a tool to session-core so it's included in full schema for subsequent turns.
  */
-export function promoteToolToSession(toolName: string): void {
-  sessionPromotedTools.add(toolName);
+export function promoteToolToSession(toolName: string, scope = DEFAULT_EXPOSURE_SCOPE): void {
+  getPromotionSet(scope, true)!.add(toolName);
 }
 
 /**
  * Check if a tool is promoted for this session.
  */
-export function isSessionPromoted(toolName: string): boolean {
-  return sessionPromotedTools.has(toolName);
+export function isSessionPromoted(toolName: string, scope = DEFAULT_EXPOSURE_SCOPE): boolean {
+  return getPromotionSet(scope, false)?.has(toolName) ?? false;
+}
+
+/**
+ * Resolve tool_search input against a trusted deferred list. Both the
+ * shell-executed tool and the sidecar-hosted Agent Loop use this function so a
+ * successful search can be promoted without parsing human-readable tool output
+ * (which may contain third-party MCP descriptions).
+ */
+export function resolveDeferredToolSearch(
+  input: Record<string, unknown>,
+  deferredTools: ToolDefinition[],
+): ToolDefinition[] {
+  const query = typeof input.query === 'string' ? input.query : '';
+  const rawMax = input.max_results;
+  const maxResults = typeof rawMax === 'number' && Number.isFinite(rawMax) && rawMax > 0
+    ? Math.min(MAX_SEARCH_RESULTS, Math.max(1, Math.floor(rawMax)))
+    : DEFAULT_SEARCH_RESULTS;
+  return searchTools(query, deferredTools, maxResults);
+}
+
+/** Promote the deterministic matches from a successful tool_search call. */
+export function promoteSearchedDeferredTools(
+  input: Record<string, unknown>,
+  deferredTools: ToolDefinition[],
+  scope = DEFAULT_EXPOSURE_SCOPE,
+): string[] {
+  const matched = resolveDeferredToolSearch(input, deferredTools);
+  for (const tool of matched) {
+    promoteToolToSession(tool.name, scope);
+  }
+  return matched.map(tool => tool.name);
 }
 
 /**
@@ -51,6 +107,7 @@ export function isSessionPromoted(toolName: string): boolean {
 export function classifyTools(
   allTools: ToolDefinition[],
   prefetchedNames: Set<string>,
+  scope = DEFAULT_EXPOSURE_SCOPE,
 ): { coreTools: ToolDefinition[]; deferredTools: ToolDefinition[] } {
   const coreTools: ToolDefinition[] = [];
   const deferredTools: ToolDefinition[] = [];
@@ -59,7 +116,7 @@ export function classifyTools(
     if (
       CORE_TOOL_NAMES.has(tool.name) ||
       prefetchedNames.has(tool.name) ||
-      sessionPromotedTools.has(tool.name)
+      isSessionPromoted(tool.name, scope)
     ) {
       coreTools.push(tool);
     } else {

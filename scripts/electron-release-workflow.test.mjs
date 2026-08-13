@@ -500,6 +500,17 @@ test('Electron build uses native runners for all three release targets', () => {
   assert.match(installedSmoke, /TotalSeconds -ge 3/);
   assert.match(installedSmoke, /activeUninstallerPids=/);
   assert.match(installedSmoke, /Test-Path \$installedExe\.FullName/);
+  assert.match(installedSmoke, /\$primaryFailure = \$_/);
+  assert.match(installedSmoke, /\$cleanupFailure = \$_/);
+  assert.match(
+    installedSmoke,
+    /Installed smoke failed:/
+  );
+  assert.match(installedSmoke, /cleanup\/rollback also failed:/);
+  assert.match(
+    installedSmoke,
+    /if \(-not \$uninstaller -and \$installedExe -and \(Test-Path \$installedExe\.DirectoryName\)\)/
+  );
   assert.match(
     installedSmoke,
     /Expected a recovery copy of the preexisting Electron conflict/

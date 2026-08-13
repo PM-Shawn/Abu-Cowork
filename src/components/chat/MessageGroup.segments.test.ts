@@ -3,7 +3,13 @@
  * that interleaves text, tool-step, and mid-loop user-bubble segments.
  */
 import { describe, it, expect } from 'vitest';
-import { buildRenderSegments, computeWorkProcessFold, streamingTurnHasRenderableContent } from './MessageGroup';
+import {
+  buildRenderSegments,
+  computeWorkProcessFold,
+  hasPersistedStopState,
+  streamingTurnHasRenderableContent,
+  stripLegacyStopMarker,
+} from './MessageGroup';
 import type { Message } from '@/types';
 import type { ExecutionStep } from '@/types/execution';
 
@@ -243,6 +249,22 @@ describe('buildRenderSegments', () => {
     expect(stepSegs).toHaveLength(1);
     expect(stepSegs[0].executionSteps.map((s) => s.id)).toEqual(['thinking-a1', 'real-tool']);
     expect(stepSegs[0].executionSteps.some((s) => s.id === 'ghost')).toBe(false);
+  });
+});
+
+describe('persisted stop terminal', () => {
+  it('uses the user reliable-run terminal even when no assistant message exists', () => {
+    expect(hasPersistedStopState([{
+      ...makeUser('u1', 'stop before first token'),
+      runState: 'interrupted',
+      runEndedAt: 2_000,
+    }])).toBe(true);
+  });
+
+  it('keeps compatibility with assistant stopReason and legacy markers', () => {
+    expect(hasPersistedStopState([{ ...makeAssistant('a1', ''), stopReason: 'user' }])).toBe(true);
+    expect(hasPersistedStopState([makeAssistant('a2', 'partial\n\n*[已停止]*')])).toBe(true);
+    expect(stripLegacyStopMarker('partial\n\n*[已停止]*')).toBe('partial');
   });
 });
 

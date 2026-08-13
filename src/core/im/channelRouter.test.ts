@@ -203,6 +203,7 @@ describe('IMChannelRouter', () => {
       if (mockConversations[convId]) {
         mockConversations[convId].messages.push({ role: 'assistant', content: 'AI reply' });
       }
+      return { reason: 'completed' };
     });
 
     await getInternal().processMessage(message, channel, 'safe_tools');
@@ -250,6 +251,7 @@ describe('IMChannelRouter', () => {
       if (mockConversations[convId]) {
         mockConversations[convId].messages.push({ role: 'assistant', content: 'ok' });
       }
+      return { reason: 'completed' };
     });
     mockSetChannelStatus.mockClear();
 
@@ -304,7 +306,7 @@ describe('handleMessage dedup', () => {
 
     // Agent loop is a noop — we only care whether processMessage was reached
     mockRunAgentLoop.mockReset();
-    mockRunAgentLoop.mockResolvedValue(undefined);
+    mockRunAgentLoop.mockResolvedValue({ reason: 'completed' });
     mockSendThinking.mockReset();
     mockSendThinking.mockResolvedValue({ platform: 'dingtalk', supportsUpdate: false, replyContext: {} });
     mockSendFinal.mockReset();

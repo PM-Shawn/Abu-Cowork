@@ -1,9 +1,9 @@
 /**
- * User Input Queue — mid-task user message injection
+ * User Input Queue — staged follow-ups and internal loop wake-ups
  *
- * Allows users to send additional instructions while the agent loop is running.
- * The agent checks this queue at the start of each loop iteration and incorporates
- * new messages into the conversation context.
+ * User-authored entries wait for the current run to finish and are then started
+ * as independent runs. System entries (for example background-agent results)
+ * may still be consumed by the current loop at its next iteration.
  */
 
 /** Queued user input entry */
@@ -19,6 +19,7 @@ export interface QueuedInput {
 // change so getQueuedInputs() snapshots stay referentially stable for
 // useSyncExternalStore.
 const inputQueues = new Map<string, QueuedInput[]>();
+const pausedUserQueues = new Set<string>();
 
 const EMPTY_QUEUE: readonly QueuedInput[] = [];
 
@@ -30,8 +31,7 @@ function notifyListeners() {
 }
 
 /**
- * Enqueue a user message for a running conversation.
- * The agent loop will pick this up at the next iteration.
+ * Enqueue a staged message for a running conversation.
  */
 export function enqueueUserInput(conversationId: string, text: string, isSystem?: boolean): void {
   if (!text.trim()) return;
@@ -92,6 +92,7 @@ export function removeQueuedInput(conversationId: string, id: string): void {
   if (next.length === queue.length) return;
   if (next.length === 0) inputQueues.delete(conversationId);
   else inputQueues.set(conversationId, next);
+  if (!next.some((qi) => !qi.isSystem)) pausedUserQueues.delete(conversationId);
   notifyListeners();
 }
 
@@ -105,8 +106,72 @@ export function drainQueuedInputs(conversationId: string): QueuedInput[] {
 
   const items = [...queue];
   inputQueues.delete(conversationId);
+  pausedUserQueues.delete(conversationId);
   notifyListeners();
   return items;
+}
+
+/**
+ * Drain only system-authored entries, preserving user follow-ups and their FIFO
+ * order. The active agent loop uses this selective drain so a queued user turn
+ * can never be folded into the current run.
+ */
+export function drainSystemQueuedInputs(conversationId: string): QueuedInput[] {
+  const queue = inputQueues.get(conversationId);
+  if (!queue || queue.length === 0) return [];
+
+  const systemInputs = queue.filter((qi) => qi.isSystem);
+  if (systemInputs.length === 0) return [];
+
+  const userInputs = queue.filter((qi) => !qi.isSystem);
+  if (userInputs.length === 0) inputQueues.delete(conversationId);
+  else inputQueues.set(conversationId, userInputs);
+  notifyListeners();
+  return systemInputs;
+}
+
+/**
+ * Remove and return the oldest user-authored follow-up while leaving system
+ * entries untouched. The shell dispatcher calls this only after the previous
+ * run has reached a terminal state, then starts the returned item as a new run.
+ */
+export function dequeueNextUserInput(conversationId: string): QueuedInput | undefined {
+  if (pausedUserQueues.has(conversationId)) return undefined;
+  const queue = inputQueues.get(conversationId);
+  if (!queue || queue.length === 0) return undefined;
+
+  const index = queue.findIndex((qi) => !qi.isSystem);
+  if (index < 0) return undefined;
+
+  const item = queue[index];
+  const next = [...queue.slice(0, index), ...queue.slice(index + 1)];
+  if (next.length === 0) inputQueues.delete(conversationId);
+  else inputQueues.set(conversationId, next);
+  notifyListeners();
+  return item;
+}
+
+/** Pause user-authored follow-ups after the active run is interrupted. */
+export function pauseUserInputQueue(conversationId: string): void {
+  const queue = inputQueues.get(conversationId);
+  if (!queue?.some((qi) => !qi.isSystem) || pausedUserQueues.has(conversationId)) return;
+  pausedUserQueues.add(conversationId);
+  // Replace the snapshot so useSyncExternalStore subscribers observe the
+  // pause-state change even though the queue items themselves are unchanged.
+  inputQueues.set(conversationId, [...queue]);
+  notifyListeners();
+}
+
+/** Resume a queue explicitly; the caller owns dispatching its first item. */
+export function resumeUserInputQueue(conversationId: string): void {
+  if (!pausedUserQueues.delete(conversationId)) return;
+  const queue = inputQueues.get(conversationId);
+  if (queue) inputQueues.set(conversationId, [...queue]);
+  notifyListeners();
+}
+
+export function isUserInputQueuePaused(conversationId: string): boolean {
+  return pausedUserQueues.has(conversationId);
 }
 
 /**
@@ -115,6 +180,11 @@ export function drainQueuedInputs(conversationId: string): QueuedInput[] {
 export function hasQueuedInputs(conversationId: string): boolean {
   const queue = inputQueues.get(conversationId);
   return !!queue && queue.length > 0;
+}
+
+/** Check whether the active loop has an internal wake-up waiting. */
+export function hasSystemQueuedInputs(conversationId: string): boolean {
+  return (inputQueues.get(conversationId) ?? EMPTY_QUEUE).some((qi) => qi.isSystem);
 }
 
 /**
@@ -129,6 +199,7 @@ export function getQueuedInputCount(conversationId: string): number {
  */
 export function clearInputQueue(conversationId: string): void {
   inputQueues.delete(conversationId);
+  pausedUserQueues.delete(conversationId);
   notifyListeners();
 }
 

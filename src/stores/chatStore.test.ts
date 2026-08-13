@@ -506,6 +506,60 @@ describe('chatStore', () => {
       }
     });
 
+    it('persists a terminal timestamp with the interrupted reliable-run state', async () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date('2026-08-13T06:30:00.000Z'));
+      const id = 'conv-interrupted-terminal';
+      const message = {
+        id: 'client-msg-stopped',
+        role: 'user',
+        content: 'inspect my desktop',
+        timestamp: 1_000,
+        runState: 'running',
+      } as const;
+      useChatStore.setState({
+        conversations: {
+          [id]: {
+            id,
+            title: 'Stopped task',
+            messages: [message],
+            createdAt: 1_000,
+            updatedAt: 1_000,
+            status: 'running',
+          },
+        },
+        conversationIndex: {
+          [id]: {
+            id,
+            title: 'Stopped task',
+            createdAt: 1_000,
+            updatedAt: 1_000,
+            messageCount: 1,
+          },
+        },
+      });
+      vi.mocked(exists).mockResolvedValue(true);
+      vi.mocked(readTextFile).mockResolvedValue(`${JSON.stringify(message)}\n`);
+      vi.mocked(invoke).mockResolvedValue(undefined);
+
+      try {
+        useChatStore.getState().updateUserMessageRun(id, message.id, { state: 'interrupted' });
+        await waitForConversationPersistence(id);
+
+        expect(useChatStore.getState().conversations[id].messages[0]).toMatchObject({
+          runState: 'interrupted',
+          runEndedAt: new Date('2026-08-13T06:30:00.000Z').getTime(),
+        });
+      } finally {
+        vi.useRealTimers();
+        vi.mocked(exists).mockReset();
+        vi.mocked(exists).mockResolvedValue(false);
+        vi.mocked(readTextFile).mockReset();
+        vi.mocked(readTextFile).mockResolvedValue('');
+        vi.mocked(invoke).mockReset();
+      }
+    });
+
     it('exposes a durability barrier for the asynchronous JSONL append', async () => {
       let releaseAppend!: () => void;
       const appendPending = new Promise<void>((resolve) => {
@@ -904,10 +958,7 @@ describe('chatStore', () => {
       vi.mocked(invoke).mockReset();
     });
 
-    it('persists the stop-marker mutation to disk so reload matches the live view', async () => {
-      // Regression: cancelStreaming appended "*[已停止]*" and cancelled tool
-      // calls in memory only — the JSONL row on disk kept the pre-stop
-      // snapshot, so the same turn reloaded as a blank/stale bubble.
+    it('persists the assistant stop terminal to disk so reload matches the live view', async () => {
       const id = useChatStore.getState().createConversation();
       useChatStore.getState().addMessage(id, {
         id: 'a1', role: 'assistant', content: '部分输出', timestamp: Date.now(), isStreaming: true,
@@ -916,10 +967,10 @@ describe('chatStore', () => {
       useChatStore.getState().cancelStreaming(id);
 
       const live = useChatStore.getState().conversations[id].messages[0];
-      expect(live.content).toContain('已停止');
+      expect(live.content).toBe('部分输出');
       expect(live.stopReason).toBe('user');
       await vi.waitFor(() => {
-        expect(written.some((c) => c.includes('已停止'))).toBe(true);
+        expect(written.some((c) => c.includes('"stopReason":"user"'))).toBe(true);
       });
     });
 
@@ -936,9 +987,10 @@ describe('chatStore', () => {
       useChatStore.getState().cancelStreaming(id);
 
       const live = useChatStore.getState().conversations[id].messages[0];
-      expect(live.content).toBe('前段后段\n\n*[已停止]*');
+      expect(live.content).toBe('前段后段');
+      expect(live.stopReason).toBe('user');
       await vi.waitFor(() => {
-        expect(written.some((c) => c.includes('后段') && c.includes('已停止'))).toBe(true);
+        expect(written.some((c) => c.includes('后段') && c.includes('"stopReason":"user"'))).toBe(true);
       });
     });
 
@@ -1045,7 +1097,8 @@ describe('chatStore', () => {
       useChatStore.getState().cancelStreaming(id, { fromSidecarFrame: true });
 
       const live = useChatStore.getState().conversations[id].messages[0];
-      expect(live.content).toBe('部分输出\n\n*[已停止]*');
+      expect(live.content).toBe('部分输出');
+      expect(live.stopReason).toBe('user');
       expect(live.isStreaming).toBe(false);
       expect(useChatStore.getState().agentStatus).toBe('idle');
     });
@@ -1061,7 +1114,8 @@ describe('chatStore', () => {
       useChatStore.getState().cancelStreaming(id);
 
       const live = useChatStore.getState().conversations[id].messages[0];
-      expect(live.content).toBe('部分输出\n\n*[已停止]*');
+      expect(live.content).toBe('部分输出');
+      expect(live.stopReason).toBe('user');
       expect(live.isStreaming).toBe(false);
       expect(useChatStore.getState().agentStatus).toBe('idle');
     });
@@ -1255,6 +1309,61 @@ describe('chatStore', () => {
       await waitForConversationPersistence(id);
       const bump = vi.mocked(invoke).mock.calls.find((c) => c[0] === 'catalog_bump_count');
       expect(bump).toBeUndefined();
+    });
+
+    it('durably removes a zero-output placeholder when persist is true', async () => {
+      const id = 'conv-durable-ghost';
+      const user = { id: 'u1', role: 'user' as const, content: 'hello', timestamp: 1 };
+      const ghost = { id: 'a1', role: 'assistant' as const, content: '', timestamp: 2, isStreaming: true };
+      const messageWrites: string[] = [];
+      useChatStore.setState({
+        conversations: {
+          [id]: {
+            id,
+            title: 'Ghost cleanup',
+            messages: [user, ghost],
+            createdAt: 1,
+            updatedAt: 2,
+            status: 'running',
+          },
+        },
+        conversationIndex: {
+          [id]: {
+            id,
+            title: 'Ghost cleanup',
+            createdAt: 1,
+            updatedAt: 2,
+            messageCount: 2,
+          },
+        },
+      });
+      vi.mocked(exists).mockResolvedValue(true);
+      vi.mocked(readTextFile).mockImplementation(async (path) =>
+        String(path).endsWith('messages.jsonl')
+          ? `${JSON.stringify(user)}\n${JSON.stringify(ghost)}\n`
+          : '');
+      vi.mocked(invoke).mockImplementation(async (command, args) => {
+        const payload = args as { path?: string; content?: string } | undefined;
+        if (command === 'atomic_write_text' && payload?.path?.endsWith('messages.jsonl')) {
+          messageWrites.push(payload.content ?? '');
+        }
+        return undefined;
+      });
+
+      try {
+        useChatStore.getState().deleteMessage(id, ghost.id, { persist: true });
+        await waitForConversationPersistence(id);
+
+        expect(useChatStore.getState().conversations[id].messages.map((message) => message.id)).toEqual(['u1']);
+        expect(messageWrites.at(-1)).toContain('"id":"u1"');
+        expect(messageWrites.at(-1)).not.toContain('"id":"a1"');
+      } finally {
+        vi.mocked(exists).mockReset();
+        vi.mocked(exists).mockResolvedValue(false);
+        vi.mocked(readTextFile).mockReset();
+        vi.mocked(readTextFile).mockResolvedValue('');
+        vi.mocked(invoke).mockReset();
+      }
     });
   });
 

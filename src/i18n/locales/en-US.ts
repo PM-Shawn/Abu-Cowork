@@ -2106,6 +2106,8 @@ const enUS: TranslationDict = {
   queueStrip: {
     queuedHint: 'Queued · read next turn',
     cancel: 'Cancel queued message',
+    paused: 'Queue paused because you stopped the response',
+    resume: 'Resume queue',
   },
 
   reference: {

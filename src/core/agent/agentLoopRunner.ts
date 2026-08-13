@@ -98,7 +98,15 @@ import type { ConversationMeta } from '../session/conversationStorage';
 import { resolveEntryModel } from './resolveEntryModel';
 import { getActiveApiKey, getActiveProvider } from '../../utils/settingsSelectors';
 import { resolveEffectiveLlmCreds } from '../enterprise/llm-resolver';
-import { enqueueUserInput, getQueuedInputs, subscribeToInputQueue, removeQueuedInput, drainQueuedInputs } from './userInputQueue';
+import {
+  dequeueNextUserInput,
+  drainSystemQueuedInputs,
+  enqueueUserInput,
+  getQueuedInputs,
+  pauseUserInputQueue,
+  removeQueuedInput,
+  subscribeToInputQueue,
+} from './userInputQueue';
 import { registerSidecarRunPredicate } from './sidecarRunPredicate';
 import { bindWorkspaceFromWrite } from './defaultWorkspace';
 import { snapshotBeforeAiEdit } from '../../utils/aiEditSnapshots';
@@ -180,8 +188,8 @@ export interface RunSession {
    *  settle avoids leaking a dangling `abort` handler. */
   onShellAbort?: () => void;
   /**
-   * P1-3B-4 — ids of shell `userInputQueue` entries already forwarded to
-   * this run's sidecar-side queue (via `agent.enqueueInput`), so
+   * P1-3B-4 — ids of shell SYSTEM queue entries already forwarded to this
+   * run's sidecar-side queue (via `agent.enqueueInput`), so
    * `forwardQueuedInputsForActiveSessions` (below) forwards each entry
    * EXACTLY ONCE per run — otherwise every `subscribeToInputQueue` change
    * notification would re-scan the whole (unmutated, still-lingering-for-
@@ -558,6 +566,7 @@ async function finalizeAbortedRun(session: RunSession, source: 'ack' | 'watchdog
             const { isMessageWrittenToDisk } = await import('../session/conversationStorage');
             chatDelta.deleteMessage(session.conversationId, streamingAssistant.id, {
               skipCatalogBump: !isMessageWrittenToDisk(streamingAssistant.id),
+              persist: true,
             });
           }
         }
@@ -568,20 +577,12 @@ async function finalizeAbortedRun(session: RunSession, source: 'ack' | 'watchdog
         });
       }
 
-      // Preserve user-visible queued follow-ups before clearing the queue,
-      // matching agentLoop.ts's normal abort catch. System entries remain
-      // hidden because they are internal wake-up/control messages.
+      // Preserve staged user follow-ups as paused queue chips. They must not
+      // become transcript turns owned by this aborted run or execute until the
+      // user explicitly resumes. Internal wake-ups can be discarded.
       try {
-        for (const queued of drainQueuedInputs(session.conversationId)) {
-          if (queued.isSystem) continue;
-          chatDelta.addMessage(session.conversationId, {
-            id: `abort-queued-${queued.id}`,
-            role: 'user',
-            content: queued.text,
-            timestamp: queued.timestamp,
-            loopId: session.loopId,
-          });
-        }
+        pauseUserInputQueue(session.conversationId);
+        drainSystemQueuedInputs(session.conversationId);
       } catch (err) {
         logger.warn('abort queued-input cleanup failed; continuing terminal finalization', {
           runId: session.runId,
@@ -926,7 +927,6 @@ async function handleMainLoopToolInvoke(rawParams: unknown): Promise<unknown> {
   if (!params || typeof params.runId !== 'string' || typeof params.toolName !== 'string') {
     throw new SidecarRequestError(-32602, 'Invalid tool.invoke params: runId and toolName must be strings');
   }
-
   const session = sessions.get(params.runId);
   if (!session) {
     throw new SidecarRequestError(-32000, `Unknown agent-loop runId: ${params.runId}`);
@@ -1370,7 +1370,7 @@ function pushExecPatchesForActiveSessions(): void {
 }
 
 /**
- * Queued-input forwarder — P1-3B-4, closes the mid-task-queue sidecar gap
+ * System-input forwarder — relays internal wake-ups into an active sidecar run.
  * (see this module's header comment / P1-3B-4-QUEUEINPUT-FIX-REPORT.md).
  * The shell's `userInputQueue` stays the single UI source of truth (the
  * `QueuedMessagesStrip` chip) — this forwarder relays each NEW entry to the
@@ -1381,6 +1381,10 @@ function pushExecPatchesForActiveSessions(): void {
  * unrelated queue mutation (e.g. a different conversation's chip) would
  * re-scan this conversation's still-lingering (not-yet-consumed) entries and
  * re-send them.
+ *
+ * User-authored queue entries are deliberately NOT forwarded. They remain as
+ * cancellable chips until the current run terminates, then the dispatcher
+ * starts them as independent runs with fresh loopIds.
  *
  * Deliberately does NOT touch the shell queue itself (no `removeQueuedInput`
  * here) — the chip must linger until the sidecar loop actually CONSUMES the
@@ -1408,6 +1412,7 @@ function forwardQueuedInputsForActiveSessions(): void {
 
     session.forwardedQueueIds ??= new Set();
     for (const qi of queued) {
+      if (!qi.isSystem) continue;
       if (session.forwardedQueueIds.has(qi.id)) continue;
       session.forwardedQueueIds.add(qi.id);
       notifySidecar('agent.enqueueInput', {
@@ -1565,14 +1570,13 @@ interface AgentRunParams {
   planMode?: 'off' | 'planning' | 'approved';
   locale: string;
   /**
-   * P1-3B-4 — a snapshot of the shell's `userInputQueue` for this
+   * P1-3B-4 — a snapshot of the shell's SYSTEM queue entries for this
    * conversation, taken at dispatch time (see `buildAgentRunParams` below).
    * `agentLoopHost.ts`'s `handleAgentRun` seeds its own (real, but
    * previously-disconnected) `userInputQueue` instance from this,
-   * id-preserved, so a message already staged in the shell queue BEFORE
-   * this run was dispatched is picked up by `agentLoop.ts`'s turn-1
-   * `drainQueuedInputs` — the "leftover flushes on the next run" parity the
-   * in-process path already has.
+   * id-preserved, so an internal wake-up staged before dispatch is picked up
+   * by `agentLoop.ts`'s turn-1 selective system drain. User follow-ups never
+   * cross this boundary; the shell starts them as independent runs.
    */
   queuedInputs?: { id: string; text: string; isSystem?: boolean }[];
 }
@@ -1908,11 +1912,9 @@ async function buildAgentRunParams(
     throw new Error(`buildAgentRunParams: conversation "${conversationId}" disappeared before dispatch`);
   }
 
-  // P1-3B-4 — snapshot the shell's userInputQueue for this conversation at
-  // dispatch time (projected to the wire-safe shape — id/text/isSystem,
-  // dropping the shell-local `timestamp`). See AgentRunParams.queuedInputs's
-  // doc above for why this exists.
-  const queuedInputs = getQueuedInputs(conversationId).map((qi) => ({
+  // Snapshot only internal system wake-ups for this conversation at dispatch
+  // time. User follow-ups remain shell-side until the current run terminates.
+  const queuedInputs = getQueuedInputs(conversationId).filter((qi) => qi.isSystem).map((qi) => ({
     id: qi.id,
     text: qi.text,
     ...(qi.isSystem ? { isSystem: qi.isSystem } : {}),
@@ -2011,7 +2013,7 @@ async function buildAgentRunParams(
  * `EnterpriseLlmUnavailableError`, or a missing conversation record) is
  * ALSO pre-commit by construction — same in-process fallback.
  */
-export async function runAgentLoopDispatched(
+async function runSingleAgentLoopDispatched(
   conversationId: string,
   userMessage: string,
   options?: AgentLoopOptions,
@@ -2041,7 +2043,7 @@ export async function runAgentLoopDispatched(
             error: 'A restricted recovery run cannot join an existing agent loop',
           };
         }
-        notifySidecar('agent.enqueueInput', { runId: runningSession.runId, userMessage });
+        enqueueUserInput(conversationId, userMessage);
         return { reason: 'enqueued' };
       }
     }
@@ -2587,4 +2589,43 @@ export async function runAgentLoopDispatched(
       abortRegistry.clearAbortController(conversationId);
     }
   }
+}
+
+/**
+ * Dispatch one user turn, then hand staged user follow-ups off one-by-one after
+ * each completed run. Each follow-up re-enters the full dispatcher and therefore
+ * receives a fresh runId/loopId instead of being injected into the previous task.
+ *
+ * The original caller still receives the result of its own turn. A concurrent
+ * sender receives `{ reason: 'enqueued' }` immediately; the owner of the active
+ * run performs the FIFO handoff once its session has been fully unregistered.
+ */
+export async function runAgentLoopDispatched(
+  conversationId: string,
+  userMessage: string,
+  options?: AgentLoopOptions,
+): Promise<AgentLoopResult> {
+  const initialResult = await runSingleAgentLoopDispatched(conversationId, userMessage, options);
+  let previousResult = initialResult;
+
+  while (
+    previousResult.reason === 'completed'
+    || previousResult.reason === 'max_turns'
+    || previousResult.reason === 'no_progress'
+  ) {
+    const queuedInput = dequeueNextUserInput(conversationId);
+    if (!queuedInput) break;
+    previousResult = await runSingleAgentLoopDispatched(conversationId, queuedInput.text);
+  }
+
+  if (
+    (previousResult.reason === 'aborted'
+      || previousResult.reason === 'error'
+      || previousResult.reason === 'awaiting_user')
+    && getQueuedInputs(conversationId).some((queued) => !queued.isSystem)
+  ) {
+    pauseUserInputQueue(conversationId);
+  }
+
+  return initialResult;
 }

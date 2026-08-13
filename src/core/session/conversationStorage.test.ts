@@ -143,6 +143,23 @@ describe('conversationStorage', () => {
     });
   });
 
+  describe('deleteMessageById', () => {
+    it('durably removes only the targeted JSONL row and releases its dedup id', async () => {
+      await storage.appendMessage('conv-delete-one', makeMsg({ id: 'keep', content: 'keep me' }));
+      await storage.appendMessage('conv-delete-one', makeMsg({ id: 'ghost', role: 'assistant', content: '' }));
+
+      await expect(storage.deleteMessageById('conv-delete-one', 'ghost')).resolves.toBe(true);
+
+      const loaded = await storage.loadMessages('conv-delete-one');
+      expect(loaded.map((message) => message.id)).toEqual(['keep']);
+      expect(storage.isMessageWrittenToDisk('ghost')).toBe(false);
+    });
+
+    it('treats an id that never reached disk as an idempotent no-op', async () => {
+      await expect(storage.deleteMessageById('conv-missing', 'never-written')).resolves.toBe(false);
+    });
+  });
+
   describe('appendToFile · native append (Part B1)', () => {
     it('uses the native append_file_text command and skips the atomic-write fallback when it succeeds', async () => {
       const calls: Array<{ cmd: string; args?: Record<string, unknown> }> = [];

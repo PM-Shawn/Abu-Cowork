@@ -2258,6 +2258,10 @@ export interface TranslationDict {
     queuedHint: string;
     /** aria-label / tooltip of the cancel button */
     cancel: string;
+    /** Explains why queued messages did not auto-run after Stop. */
+    paused: string;
+    /** Resumes the paused FIFO queue. */
+    resume: string;
   };
 
   reference: {

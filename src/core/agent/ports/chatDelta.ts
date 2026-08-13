@@ -86,7 +86,7 @@ export interface ChatDelta {
   /** Mirrors chatStore's `addMessage`. */
   addMessage(convId: string, message: Message): void;
   /** Mirrors chatStore's `deleteMessage`. */
-  deleteMessage(convId: string, messageId: string, opts?: { skipCatalogBump?: boolean }): void;
+  deleteMessage(convId: string, messageId: string, opts?: { skipCatalogBump?: boolean; persist?: boolean }): void;
   /** Mirrors chatStore's `updateToolCall`. */
   updateToolCall(
     convId: string,

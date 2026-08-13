@@ -624,6 +624,64 @@ export async function appendMessage(
 }
 
 /**
+ * Durably remove one message row from a conversation JSONL file.
+ *
+ * The operation shares the per-file mutex with append/replace, so a ghost
+ * placeholder queued for append immediately before Stop is either deleted
+ * after that append lands or the append failure is surfaced by the caller's
+ * persistence barrier. A missing row is a valid no-op only when this process
+ * has never observed the id as persisted.
+ */
+export async function deleteMessageById(
+  convId: string,
+  messageId: string,
+): Promise<boolean> {
+  await ensureBase();
+  const path = messagesPath(convId);
+  if (!(await exists(path))) {
+    if (writtenIds.has(messageId)) {
+      throw new Error(`Conversation messages file does not exist for persisted message "${messageId}"`);
+    }
+    return false;
+  }
+
+  return withFileLock(path, async () => {
+    const raw = await readTextFile(path);
+    const lines = raw.trimEnd().split('\n');
+    const kept: string[] = [];
+    let removed = false;
+
+    for (const line of lines) {
+      if (!line.includes(`"${messageId}"`)) {
+        if (line) kept.push(line);
+        continue;
+      }
+      try {
+        const parsed = JSON.parse(line) as Message;
+        if (parsed.id === messageId) {
+          removed = true;
+          continue;
+        }
+      } catch {
+        // Preserve corrupt/non-matching lines; loadMessages already skips them.
+      }
+      if (line) kept.push(line);
+    }
+
+    if (!removed) {
+      if (writtenIds.has(messageId)) {
+        throw new Error(`Message "${messageId}" was not found in conversation "${convId}"`);
+      }
+      return false;
+    }
+
+    await atomicWrite(path, kept.length > 0 ? `${kept.join('\n')}\n` : '');
+    writtenIds.delete(messageId);
+    return true;
+  });
+}
+
+/**
  * Replace a message in the JSONL file by its id.
  * Unlike updateLastMessage, this scans for the matching id, so it correctly
  * updates intermediate-turn messages even after later turns have appended new

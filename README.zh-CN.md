@@ -2,7 +2,7 @@
 
 [English](README.md) | **中文**
 
-<img src="website/assets/abu-avatar.png" width="120" height="120" style="border-radius: 24px" />
+<img src="website/assets/readme-cover.zh-CN.jpg" alt="Abu — 你的 AI 桌面办公搭子" width="100%" />
 
 # Abu (阿布)
 

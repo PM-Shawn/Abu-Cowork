@@ -741,6 +741,9 @@ export async function handleAgentRun(rawParams: unknown): Promise<unknown> {
       // travels over the wire via tool.invoke's `context` field) resolves
       // correctly without threading a second id back across the wire.
       loopId: runId,
+      runtimeEvent: (event, attributes) => {
+        traceSidecarRuntimeEvent(`sidecar.${event}`, attributes);
+      },
     };
     const result: AgentLoopResult = await agentRunContext.run(runCtx, () =>
       runAgentLoop(conversationId, params.userMessage, options),

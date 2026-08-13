@@ -35,6 +35,34 @@ const SAFE_ATTRIBUTE_KEYS = new Set([
   'bridgeLatencyMs',
   'acceptedAt',
   'replayCount',
+  'conversationId',
+  'loopId',
+  'computerRunId',
+  'traceId',
+  'toolCallId',
+  'stateId',
+  'modelId',
+  'modelTier',
+  'capabilitySource',
+  'targetBundleId',
+  'targetProcessId',
+  'verificationStatus',
+  'axTreeHash',
+  'elementCount',
+  'permissionPath',
+  'routeType',
+  'turnIndex',
+  'activeToolCount',
+  'deferredToolCount',
+  'computerUseExposed',
+  'helperGeneration',
+  'helperProtocolVersion',
+  'helperBinaryVersion',
+  'helperPlatform',
+  'command',
+  'attemptCount',
+  'consecutiveNoChange',
+  'recoveryUsed',
 ]);
 
 const SECRET_PATTERNS = [
@@ -116,6 +144,7 @@ function createRuntimeState({
   const pendingRpcs = new Map();
   const firstDeltaRuns = new Set();
   const bridgeAcks = new Map();
+  const nativeHelpers = new Map();
 
   const emitEvent = (processName, event, attributes) => {
     emit?.(processName, event, sanitizeAttributes(attributes));
@@ -209,6 +238,82 @@ function createRuntimeState({
       sidecarGeneration: sidecarGeneration(id),
       outcome: 'stalled',
       errorType: 'heartbeat_timeout',
+    });
+  }
+
+  function noteNativeHelperSpawnStarted(generation, restarted = generation > 1) {
+    const startedAt = now();
+    nativeHelpers.set(generation, { generation, status: 'starting', startedAt });
+    emitEvent('main', 'main.native_helper_spawn_started', {
+      helperGeneration: generation,
+      stage: 'starting',
+    });
+    if (restarted) {
+      emitEvent('main', 'main.native_helper_restarted', {
+        helperGeneration: generation,
+        stage: 'restarted',
+      });
+    }
+  }
+
+  function noteNativeHelperReady(generation, hello) {
+    const helper = nativeHelpers.get(generation);
+    if (helper) helper.status = 'running';
+    emitEvent('main', 'main.native_helper_ready', {
+      helperGeneration: generation,
+      helperProtocolVersion: hello?.protocol_version,
+      helperBinaryVersion: hello?.binary_version,
+      helperPlatform: hello?.platform,
+      stage: 'running',
+      outcome: 'success',
+      durationMs: helper ? now() - helper.startedAt : undefined,
+    });
+  }
+
+  function noteNativeHelperSpawnFailed(generation, errorType) {
+    const helper = nativeHelpers.get(generation);
+    if (helper) helper.status = 'failed';
+    emitEvent('main', 'main.native_helper_spawn_failed', {
+      helperGeneration: generation,
+      stage: 'failed',
+      outcome: 'error',
+      errorType,
+      durationMs: helper ? now() - helper.startedAt : undefined,
+    });
+  }
+
+  function noteNativeHelperCrashed(generation, reason) {
+    const helper = nativeHelpers.get(generation);
+    if (helper) helper.status = 'crashed';
+    emitEvent('main', 'main.native_helper_crashed', {
+      helperGeneration: generation,
+      stage: 'crashed',
+      outcome: 'error',
+      reason,
+      durationMs: helper ? now() - helper.startedAt : undefined,
+    });
+  }
+
+  function noteNativeHelperStopped(generation, reason = 'stopped') {
+    const helper = nativeHelpers.get(generation);
+    if (helper) helper.status = 'stopped';
+    emitEvent('main', 'main.native_helper_stopped', {
+      helperGeneration: generation,
+      stage: 'stopped',
+      outcome: 'success',
+      reason,
+      durationMs: helper ? now() - helper.startedAt : undefined,
+    });
+  }
+
+  function noteNativeHelperCallTimeout(generation, command, durationMs) {
+    emitEvent('main', 'main.native_helper_call_timeout', {
+      helperGeneration: generation,
+      command,
+      durationMs,
+      stage: 'timeout',
+      outcome: 'error',
+      errorType: 'native_helper_timeout',
     });
   }
 
@@ -344,6 +449,11 @@ function createRuntimeState({
         stage: 'waiting_for_renderer_ack',
         durationMs: now() - ack.receivedAt,
       })),
+      nativeHelpers: Array.from(nativeHelpers.values(), (helper) => sanitizeAttributes({
+        helperGeneration: helper.generation,
+        stage: helper.status,
+        durationMs: now() - helper.startedAt,
+      })),
     };
   }
 
@@ -353,6 +463,7 @@ function createRuntimeState({
     pendingRpcs.clear();
     firstDeltaRuns.clear();
     bridgeAcks.clear();
+    nativeHelpers.clear();
   }
 
   return {
@@ -362,6 +473,12 @@ function createRuntimeState({
     noteClosed,
     noteKilled,
     noteHeartbeatHung,
+    noteNativeHelperSpawnStarted,
+    noteNativeHelperReady,
+    noteNativeHelperSpawnFailed,
+    noteNativeHelperCrashed,
+    noteNativeHelperStopped,
+    noteNativeHelperCallTimeout,
     noteRpcWriteStarted,
     noteRpcWriteFinished,
     noteStdoutLine,

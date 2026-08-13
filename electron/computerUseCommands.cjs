@@ -8,6 +8,7 @@ const COMPUTER_USE_PROBE_COMMANDS = new Set([
   'request_screen_recording',
   'request_accessibility',
   'resolve_app_identity',
+  'frontmost_app_identity',
 ]);
 
 const COMPUTER_USE_CLEANUP_COMMANDS = new Set([

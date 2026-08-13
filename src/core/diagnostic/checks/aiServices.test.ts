@@ -79,6 +79,47 @@ describe('runAIServicesChecks — recent real-call failures', () => {
     expect(support?.errorMessage).toBeTruthy();
   });
 
+  it('fails closed for an undeclared custom endpoint even when the model id looks familiar', async () => {
+    getProviderCallHealthMock.mockReturnValue(undefined);
+    const provider = makeProvider({
+      models: [{ id: 'gpt-4o', label: 'GPT-4o Proxy' }],
+    });
+    useSettingsStore.setState({
+      providers: [provider],
+      activeModel: { providerId: provider.id, modelId: 'gpt-4o' },
+      computerUseEnabled: true,
+    });
+
+    const results = await runAIServicesChecks();
+    const support = results.find(row => row.id === 'ai-services:computer-use-model');
+
+    expect(support?.status).toBe('failed');
+    expect(support?.metric).toContain('Not verified');
+    expect(support?.errorMessage).toContain('does not declare reliable tool calling');
+  });
+
+  it('reports an explicit no-tools declaration as unsupported', async () => {
+    getProviderCallHealthMock.mockReturnValue(undefined);
+    const provider = makeProvider({
+      models: [{
+        id: 'text-only-no-tools',
+        label: 'Text Only',
+        declaredCapabilities: { supportsTools: false, supportsImages: false },
+      }],
+    });
+    useSettingsStore.setState({
+      providers: [provider],
+      activeModel: { providerId: provider.id, modelId: 'text-only-no-tools' },
+      computerUseEnabled: true,
+    });
+
+    const results = await runAIServicesChecks();
+    const support = results.find(row => row.id === 'ai-services:computer-use-model');
+
+    expect(support?.status).toBe('failed');
+    expect(support?.metric).toContain('Unsupported');
+  });
+
   it('downgrades to "warning" when the last recorded real-call outcome is a recent failure', async () => {
     getProviderCallHealthMock.mockReturnValue({ ok: false, code: 'not_found', at: Date.now() });
 

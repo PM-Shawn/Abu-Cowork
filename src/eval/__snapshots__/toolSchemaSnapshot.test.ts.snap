@@ -43,6 +43,8 @@ exports[`Tool schema snapshot > all tool schemas match snapshot 1`] = `
       "element_id",
       "endX",
       "endY",
+      "expected_effect",
+      "expected_state_id",
       "height",
       "key",
       "modifiers",

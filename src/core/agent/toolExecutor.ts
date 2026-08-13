@@ -55,7 +55,7 @@ function actionToDescription(action: string, input: Record<string, unknown>): st
     case 'move': return `移动鼠标 (${input.x}, ${input.y})`;
     case 'scroll': return `滚动 ${input.direction}`;
     case 'drag': return `拖拽 (${input.startX},${input.startY}) → (${input.endX},${input.endY})`;
-    case 'type': return `输入: ${(input.text as string)?.slice(0, 30) ?? ''}`;
+    case 'type': return '输入文本';
     case 'key': return `按键: ${input.modifiers ? (input.modifiers as string[]).join('+') + '+' : ''}${input.key}`;
     case 'wait': return `等待 ${input.duration ?? 1000}ms`;
     default: return action;

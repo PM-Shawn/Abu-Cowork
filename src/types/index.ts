@@ -457,6 +457,15 @@ export interface ToolExecutionContext {
    * providers. Undefined means "unknown / assume capable" (default behavior).
    */
   supportsVision?: boolean;
+  /** Host-resolved Computer Use compatibility for the active model. */
+  computerUseTier?: import('../core/llm/modelCapabilities').ComputerUseModelTier;
+  /** Provenance for the Computer Use compatibility decision. */
+  modelCapabilitySource?: import('../core/llm/modelCapabilities').ModelCapabilitySource;
+  /** Model id used for diagnostics only; never a credential or provider payload. */
+  modelId?: string;
+  /** SHA-256 correlation for permission relaunch recovery. Raw task text is not
+   * copied into the recovery token. */
+  taskSummaryHash?: string;
   /**
    * Names of tools whose schemas were deliberately deferred for this turn.
    * This is selected by the trusted agent runtime only (never from model

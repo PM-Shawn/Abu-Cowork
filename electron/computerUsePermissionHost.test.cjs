@@ -27,6 +27,9 @@ test('macOS permission status is read from the Electron application identity', a
   const dispatch = createComputerUsePermissionHost({
     platform: 'darwin',
     electronProvider: () => ({
+      desktopCapturer: {
+        getSources: async () => [],
+      },
       systemPreferences: {
         getMediaAccessStatus: (mediaType) => {
           assert.equal(mediaType, 'screen');
@@ -43,8 +46,64 @@ test('macOS permission status is read from the Electron application identity', a
   assert.deepEqual(await dispatch('check_macos_permissions'), {
     screen_recording: true,
     accessibility: true,
+    screen_recording_status: 'granted',
+    accessibility_status: 'granted',
+    restart_required: false,
   });
   assert.deepEqual(accessibilityPrompts, [false]);
+});
+
+test('granted Screen Recording with a failed functional probe requires relaunch', async () => {
+  const dispatch = createComputerUsePermissionHost({
+    platform: 'darwin',
+    electronProvider: () => ({
+      desktopCapturer: {
+        getSources: async () => {
+          throw new Error('current process has stale TCC state');
+        },
+      },
+      systemPreferences: {
+        getMediaAccessStatus: () => 'granted',
+        isTrustedAccessibilityClient: () => true,
+      },
+    }),
+  });
+
+  assert.deepEqual(await dispatch('check_macos_permissions'), {
+    screen_recording: false,
+    accessibility: true,
+    screen_recording_status: 'granted-relaunch-required',
+    accessibility_status: 'granted',
+    restart_required: true,
+  });
+});
+
+test('Accessibility status moves from not-determined to pending user action', async () => {
+  const prompts = [];
+  const dispatch = createComputerUsePermissionHost({
+    platform: 'darwin',
+    electronProvider: () => ({
+      desktopCapturer: { getSources: async () => [] },
+      systemPreferences: {
+        getMediaAccessStatus: () => 'not-determined',
+        isTrustedAccessibilityClient: (prompt) => {
+          prompts.push(prompt);
+          return false;
+        },
+      },
+    }),
+  });
+
+  assert.equal(
+    (await dispatch('check_macos_permissions')).accessibility_status,
+    'not-determined',
+  );
+  assert.equal(await dispatch('request_accessibility'), false);
+  assert.equal(
+    (await dispatch('check_macos_permissions')).accessibility_status,
+    'pending-user-action',
+  );
+  assert.deepEqual(prompts, [false, true, false]);
 });
 
 test('Accessibility consent is requested by Electron itself', async () => {

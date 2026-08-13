@@ -71,7 +71,10 @@
     setText(elements.retryButton, strings.retry);
     setText(elements.revealButton, strings.revealApp);
     setText(elements.cancelButton, strings.cancel);
-    setText(elements.returnButton, strings.returnToAbu);
+    setText(
+      elements.returnButton,
+      view.restartRequired ? strings.restart : strings.returnToAbu,
+    );
     setText(elements.privacyNote, strings.privacyNote);
     elements.closeButton.setAttribute('aria-label', strings.cancel);
 
@@ -81,19 +84,21 @@
       requesting: view.requesting === 'screenRead',
       strings,
     });
+    elements.screenRow.hidden = view.requirements?.screenRead === false;
     renderPermission(elements.controlRow, elements.controlAction, {
       granted: view.permissions.uiControl,
       current: view.currentPermission === 'uiControl',
       requesting: view.requesting === 'uiControl',
       strings,
     });
+    elements.controlRow.hidden = view.requirements?.uiControl === false;
 
     elements.errorBanner.hidden = !view.error;
     setText(elements.errorMessage, view.error);
     elements.developmentNote.hidden = !state.development;
     setText(elements.developmentNote, strings.developmentIdentity);
     setText(elements.missingApp, strings.missingApp);
-    elements.returnButton.hidden = !view.complete;
+    elements.returnButton.hidden = !view.complete && !view.restartRequired;
     elements.cancelButton.hidden = view.complete;
   }
 

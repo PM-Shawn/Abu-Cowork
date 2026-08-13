@@ -215,6 +215,13 @@ vi.mock('../core/capabilities', () => ({
 }));
 
 vi.mock('../core/llm/modelCapabilities', () => ({
+  resolveAgentModelCapabilities: vi.fn().mockReturnValue({
+    toolCalling: 'native',
+    structuredArguments: 'reliable',
+    computerUseTier: 'full',
+    capabilitySource: 'builtin',
+    vision: true,
+  }),
   resolveCapabilities: vi.fn().mockReturnValue({
     contextWindow: 200000,
     maxOutputTokens: 8192,

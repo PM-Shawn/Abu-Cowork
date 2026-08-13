@@ -147,3 +147,32 @@ test('sidecar marker parser accepts only safe sidecar events and attributes', ()
   assert.equal('apiKey' in event.attributes, false);
   assert.equal(h.state.noteSidecarTraceLine('abu-sidecar', `${SIDECAR_TRACE_PREFIX}{bad-json`), false);
 });
+
+test('tracks native helper start, readiness, restart, crash, and call timeout without payloads', () => {
+  const h = makeHarness();
+  h.state.noteNativeHelperSpawnStarted(1, false);
+  h.advance(25);
+  h.state.noteNativeHelperReady(1, {
+    protocol_version: 1,
+    binary_version: '0.1.0',
+    platform: 'macos',
+    secret: 'must not escape',
+  });
+  h.state.noteNativeHelperCallTimeout(1, 'ax_snapshot', 30_000);
+  h.state.noteNativeHelperCrashed(1, 'code=1 sig=null');
+  h.state.noteNativeHelperSpawnStarted(2, true);
+
+  assert.ok(h.events.some((entry) => entry.event === 'main.native_helper_ready'));
+  assert.ok(h.events.some((entry) => entry.event === 'main.native_helper_call_timeout'));
+  assert.ok(h.events.some((entry) => entry.event === 'main.native_helper_crashed'));
+  assert.ok(h.events.some((entry) => entry.event === 'main.native_helper_restarted'));
+  const ready = h.events.find((entry) => entry.event === 'main.native_helper_ready');
+  assert.equal(ready.attributes.helperGeneration, 1);
+  assert.equal(ready.attributes.helperProtocolVersion, 1);
+  assert.equal(ready.attributes.helperBinaryVersion, '0.1.0');
+  assert.equal('secret' in ready.attributes, false);
+  assert.deepEqual(h.state.snapshot().nativeHelpers, [
+    { helperGeneration: 1, stage: 'crashed', durationMs: 25 },
+    { helperGeneration: 2, stage: 'starting', durationMs: 0 },
+  ]);
+});

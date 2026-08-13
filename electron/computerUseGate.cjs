@@ -20,8 +20,22 @@ const {
 const COMPUTER_USE_GATE_MISS = Symbol('computer-use-gate-miss');
 const SESSION_TTL_MS = 2 * 60 * 1000;
 const TASK_GRANT_TTL_MS = 30 * 60 * 1000;
+const COMPUTER_STATE_TTL_MS = 30 * 1000;
+const NO_PROGRESS_BEFORE_RECOVERY = 3;
+const NO_PROGRESS_AFTER_RECOVERY = 2;
 const VALID_SCOPES = new Set(['screen-read', 'ui-control']);
 const VALID_PERMISSION_MODES = new Set(['standard', 'smart', 'autonomous']);
+const STATEFUL_ACTIONS = new Set([
+  'click',
+  'move',
+  'type',
+  'perform_action',
+  'scroll',
+  'drag',
+  'key',
+  'ax_click',
+  'ax_type',
+]);
 const SCREEN_READ_TARGET = Object.freeze({
   app_name: 'Screen',
   bundle_id: 'abu.screen',
@@ -90,6 +104,7 @@ function createComputerUseGate(options) {
   const {
     nativeDispatch,
     getActiveWindow,
+    getNativeHelperGeneration = () => 0,
     killNativeHelper = () => {},
     requestAppApproval = async () => false,
     requestTaskApproval = async () => false,
@@ -97,10 +112,13 @@ function createComputerUseGate(options) {
     platform = process.platform,
     now = () => Date.now(),
     tokenFactory = () => crypto.randomBytes(32).toString('base64url'),
+    stateIdFactory = () => `cu-${crypto.randomBytes(18).toString('base64url')}`,
   } = options;
   const enabledSenders = new WeakSet();
   const sessions = new Map();
   const axSessions = new Map();
+  const computerStates = new Map();
+  const taskAttemptLedgers = new Map();
   const taskGrants = new Map();
   const taskLeases = new Map();
   let activeTask = null;
@@ -117,6 +135,18 @@ function createComputerUseGate(options) {
     for (const [sessionId, record] of axSessions) {
       if (record.sender === sender) {
         axSessions.delete(sessionId);
+        revoked = true;
+      }
+    }
+    for (const [key, state] of computerStates) {
+      if (state.sender === sender) {
+        computerStates.delete(key);
+        revoked = true;
+      }
+    }
+    for (const [key, ledger] of taskAttemptLedgers) {
+      if (ledger.sender === sender) {
+        taskAttemptLedgers.delete(key);
         revoked = true;
       }
     }
@@ -158,6 +188,128 @@ function createComputerUseGate(options) {
         }
       }
     }
+    for (const [key, state] of computerStates) {
+      if (state.expiresAt <= current) computerStates.delete(key);
+    }
+  }
+
+  function getTaskAttemptLedger(sender, key) {
+    let ledger = taskAttemptLedgers.get(key);
+    if (!ledger) {
+      ledger = {
+        sender,
+        attemptCount: 0,
+        consecutiveNoChange: 0,
+        recoveryUsed: false,
+        stoppedReason: null,
+        pendingAttempt: null,
+      };
+      taskAttemptLedgers.set(key, ledger);
+    }
+    if (ledger.sender !== sender) {
+      throw new Error('Computer Use task attempt ledger belongs to another sender');
+    }
+    return ledger;
+  }
+
+  function hashAxElements(elements) {
+    const normalized = elements instanceof Map
+      ? Array.from(elements.entries())
+      : Array.isArray(elements)
+        ? elements
+        : [];
+    return crypto.createHash('sha256').update(JSON.stringify(normalized)).digest('hex');
+  }
+
+  function assertTaskAttemptAllowed(sender, key) {
+    const ledger = getTaskAttemptLedger(sender, key);
+    if (ledger.stoppedReason) {
+      throw new Error(`Computer Use run is stopped (${ledger.stoppedReason})`);
+    }
+    if (ledger.pendingAttempt) {
+      throw new Error('Computer Use requires verification of the previous action before another write');
+    }
+    return ledger;
+  }
+
+  function beginTaskAttempt(sender, session, cmd, state, consequential) {
+    const ledger = assertTaskAttemptAllowed(sender, session.taskKey);
+    const beforeFingerprint = state.axSessionId
+      ? axSessions.get(state.axSessionId)?.fingerprint ?? hashAxElements([])
+      : hashAxElements([]);
+    ledger.attemptCount += 1;
+    ledger.pendingAttempt = {
+      attemptCount: ledger.attemptCount,
+      command: cmd,
+      beforeStateId: state.stateId,
+      beforeFingerprint,
+      consequential,
+    };
+    return ledger;
+  }
+
+  function failTaskAttempt(ledger) {
+    if (!ledger?.pendingAttempt) return;
+    if (ledger.pendingAttempt.consequential) {
+      ledger.stoppedReason = 'stop-ambiguous-side-effect';
+    }
+  }
+
+  function beginUnverifiedTaskAttempt(sender, session, cmd, consequential) {
+    const ledger = assertTaskAttemptAllowed(sender, session.taskKey);
+    ledger.attemptCount += 1;
+    ledger.pendingAttempt = {
+      attemptCount: ledger.attemptCount,
+      command: cmd,
+      beforeStateId: null,
+      beforeFingerprint: null,
+      consequential,
+    };
+    return ledger;
+  }
+
+  function completeUnverifiedTaskAttempt(ledger) {
+    if (ledger?.pendingAttempt) ledger.pendingAttempt = null;
+  }
+
+  function completeTaskAttempt(sender, key, stateId, elements) {
+    const ledger = getTaskAttemptLedger(sender, key);
+    const attempt = ledger.pendingAttempt;
+    if (!attempt) return null;
+    const changed = attempt.beforeFingerprint !== hashAxElements(elements);
+    let decision = 'continue';
+    if (changed) {
+      ledger.consecutiveNoChange = 0;
+    } else {
+      ledger.consecutiveNoChange += 1;
+      const threshold = ledger.recoveryUsed
+        ? NO_PROGRESS_AFTER_RECOVERY
+        : NO_PROGRESS_BEFORE_RECOVERY;
+      if (ledger.consecutiveNoChange >= threshold) {
+        if (!ledger.recoveryUsed) {
+          ledger.recoveryUsed = true;
+          ledger.consecutiveNoChange = 0;
+          decision = 'recover';
+        } else {
+          ledger.stoppedReason = 'stop-no-progress';
+          decision = ledger.stoppedReason;
+        }
+      }
+    }
+    if (ledger.stoppedReason === 'stop-ambiguous-side-effect') {
+      decision = ledger.stoppedReason;
+    }
+    ledger.pendingAttempt = null;
+    return {
+      attempt_count: attempt.attemptCount,
+      command: attempt.command,
+      before_state_id: attempt.beforeStateId,
+      after_state_id: stateId,
+      status: changed ? 'verified-change' : 'no-change',
+      decision,
+      consecutive_no_change: ledger.consecutiveNoChange,
+      recovery_used: ledger.recoveryUsed,
+    };
   }
 
   async function resolveTarget(targetApp) {
@@ -369,6 +521,12 @@ function createComputerUseGate(options) {
         revoked = true;
       }
     }
+    const state = computerStates.get(key);
+    if (state?.sender === sender) {
+      computerStates.delete(key);
+      revoked = true;
+    }
+    if (taskAttemptLedgers.delete(key)) revoked = true;
     const lease = taskLeases.get(key);
     if (lease?.sender === sender) {
       taskLeases.delete(key);
@@ -402,6 +560,45 @@ function createComputerUseGate(options) {
         `Computer Use target changed from "${session.target.app_name}" to "${identity.app_name}"`
       );
     }
+    if (
+      session.target.process_id !== null
+      && identity.process_id !== null
+      && session.target.process_id !== identity.process_id
+    ) {
+      throw new Error(
+        `Computer Use target process changed for "${session.target.app_name}"`
+      );
+    }
+  }
+
+  function assertComputerState(sender, key, target, expectedStateId, consume) {
+    const state = computerStates.get(key);
+    if (!state || state.sender !== sender) {
+      throw new Error('Computer Use requires a fresh state_id from get_app_state');
+    }
+    if (state.expiresAt <= now()) {
+      computerStates.delete(key);
+      throw new Error('Computer Use state_id is expired');
+    }
+    if (state.helperGeneration !== getNativeHelperGeneration()) {
+      computerStates.delete(key);
+      throw new Error('Computer Use requires a fresh state_id after native helper restart');
+    }
+    if (typeof expectedStateId !== 'string' || expectedStateId !== state.stateId) {
+      throw new Error('Computer Use state_id is not the latest observation');
+    }
+    assertSameTarget({ target: state.target }, target);
+    if (state.actionInFlight) {
+      throw new Error('Another Computer Use action is already in flight');
+    }
+    if (state.consumed) {
+      throw new Error('Computer Use state_id was already consumed');
+    }
+    if (consume) {
+      state.consumed = true;
+      state.actionInFlight = true;
+    }
+    return state;
   }
 
   async function assertCommandTarget(session, cmd, args) {
@@ -430,6 +627,10 @@ function createComputerUseGate(options) {
       const axSession = axSessions.get(args?.sessionId);
       if (!axSession || axSession.sender !== session.sender) {
         throw new Error('Accessibility session is invalid or expired');
+      }
+      if (axSession.helperGeneration !== getNativeHelperGeneration()) {
+        axSessions.delete(args.sessionId);
+        throw new Error('Accessibility session expired after native helper restart');
       }
       if (axSession.bundleId !== session.target.bundle_id) {
         throw new Error('Accessibility session belongs to a different app');
@@ -488,6 +689,20 @@ function createComputerUseGate(options) {
         const classification = args.scope === 'screen-read'
           ? 'ordinary'
           : assertIdentityAllowed(target);
+        if (
+          platform !== 'win32'
+          && args.scope === 'ui-control'
+          && STATEFUL_ACTIONS.has(actionIntent.action)
+        ) {
+          assertTaskAttemptAllowed(sender, taskKey(args));
+          assertComputerState(
+            sender,
+            taskKey(args),
+            target,
+            args?.expectedStateId,
+            false
+          );
+        }
         await assertOsPermissions(
           args.scope,
           args.scope === 'screen-read' ? 'capture_screen' : 'activate_app'
@@ -523,6 +738,9 @@ function createComputerUseGate(options) {
           classification,
           permissionMode,
           actionIntent,
+          expectedStateId: typeof args?.expectedStateId === 'string'
+            ? args.expectedStateId
+            : null,
           consequenceAttempted: false,
           expiresAt,
         });
@@ -557,7 +775,14 @@ function createComputerUseGate(options) {
     }
 
     if (COMPUTER_USE_CLEANUP_COMMANDS.has(cmd)) {
-      if (typeof args?.sessionId === 'string') axSessions.delete(args.sessionId);
+      if (typeof args?.sessionId === 'string') {
+        axSessions.delete(args.sessionId);
+        for (const [key, state] of computerStates) {
+          if (state.sender === sender && state.axSessionId === args.sessionId) {
+            computerStates.delete(key);
+          }
+        }
+      }
       return nativeDispatch(cmd, stripToken(args));
     }
 
@@ -568,49 +793,156 @@ function createComputerUseGate(options) {
     const axSession = typeof args?.sessionId === 'string'
       ? axSessions.get(args.sessionId)
       : null;
+    const statefulCommand = platform !== 'win32'
+      && COMPUTER_USE_CONTROL_COMMANDS.has(cmd)
+      && cmd !== 'activate_app';
+    const windowsControlCommand = platform === 'win32'
+      && COMPUTER_USE_CONTROL_COMMANDS.has(cmd);
+    if (statefulCommand) {
+      assertComputerState(
+        sender,
+        session.taskKey,
+        session.target,
+        session.expectedStateId,
+        false
+      );
+      assertTaskAttemptAllowed(sender, session.taskKey);
+    }
     const consequence = resolveConsequence(session, cmd, args, axSession);
+    let consumedState = null;
+    let attemptLedger = null;
+    if (windowsControlCommand) {
+      // Every Windows control command takes the same task mutex. Reserving only
+      // consequential actions leaves the reverse race open: an already-in-flight
+      // scroll/type can mutate the UI while a later coordinate approval is shown.
+      attemptLedger = beginUnverifiedTaskAttempt(
+        sender,
+        session,
+        cmd,
+        Boolean(consequence),
+      );
+    }
     if (consequence) {
       if (session.consequenceAttempted) {
+        completeUnverifiedTaskAttempt(attemptLedger);
         throw new Error('Computer Use consequential action authorization was already used');
       }
-      const approved = await requestActionApproval({
-        sender,
-        target: session.target,
-        action: session.actionIntent.action,
-        consequence,
-        permissionMode: session.permissionMode,
-        conversationId: session.conversationId,
-        loopId: session.loopId,
-        toolCallId: session.toolCallId,
-      });
-      if (!approved) {
-        throw new Error(`Computer Use consequential action was not approved for "${session.target.app_name}"`);
+      try {
+        const approved = await requestActionApproval({
+          sender,
+          target: session.target,
+          action: session.actionIntent.action,
+          consequence,
+          permissionMode: session.permissionMode,
+          conversationId: session.conversationId,
+          loopId: session.loopId,
+          toolCallId: session.toolCallId,
+        });
+        if (!approved) {
+          throw new Error(`Computer Use consequential action was not approved for "${session.target.app_name}"`);
+        }
+        assertTaskAuthorizationLive(session.authorization);
+        await assertOsPermissions(session.scope, cmd);
+        await assertCommandTarget(session, cmd, args);
+      } catch (error) {
+        // No native side effect was attempted, so a rejected, cancelled, or
+        // stale approval releases the Windows task reservation for a safe retry.
+        completeUnverifiedTaskAttempt(attemptLedger);
+        throw error;
       }
-      assertTaskAuthorizationLive(session.authorization);
-      await assertOsPermissions(session.scope, cmd);
-      await assertCommandTarget(session, cmd, args);
       // Mark before dispatch. If native input reports an ambiguous failure, a
       // renderer fallback must not repeat a potentially completed side effect.
       session.consequenceAttempted = true;
     }
+    if (statefulCommand) {
+      consumedState = assertComputerState(
+        sender,
+        session.taskKey,
+        session.target,
+        session.expectedStateId,
+        true
+      );
+      attemptLedger = beginTaskAttempt(
+        sender,
+        session,
+        cmd,
+        consumedState,
+        Boolean(consequence),
+      );
+    } else if (consequence && !attemptLedger) {
+      // Windows keeps its legacy visual control path without macOS AX
+      // state_id, but consequential failures still need the same task-level
+      // ambiguous-side-effect lock and in-flight serialization.
+      attemptLedger = beginUnverifiedTaskAttempt(sender, session, cmd, true);
+    }
     const nativeArgs = stripToken(args);
+    delete nativeArgs.expectedStateId;
     if (
       cmd.startsWith('mouse_')
       || cmd.startsWith('keyboard_')
       || (cmd.startsWith('capture_screen') && session.scope === 'ui-control')
+      || cmd === 'ax_snapshot'
     ) {
       nativeArgs.expectedBundleId = session.target.bundle_id;
       nativeArgs.expectedProcessId = session.target.process_id;
     }
-    const result = await nativeDispatch(cmd, nativeArgs);
+    let result;
+    try {
+      result = await nativeDispatch(cmd, nativeArgs);
+    } catch (error) {
+      failTaskAttempt(attemptLedger);
+      if (windowsControlCommand && !consequence) {
+        // A failed navigation/draft-edit command is safe to retry. Only an
+        // uncertain consequential side effect permanently stops the task.
+        completeUnverifiedTaskAttempt(attemptLedger);
+      }
+      throw error;
+    } finally {
+      if (consumedState) consumedState.actionInFlight = false;
+    }
+    if (windowsControlCommand) {
+      completeUnverifiedTaskAttempt(attemptLedger);
+    }
     if (cmd === 'ax_snapshot' && typeof result?.session_id === 'string') {
       axSessions.set(result.session_id, {
         sender,
         bundleId: session.target.bundle_id,
         taskKey: session.taskKey,
+        helperGeneration: getNativeHelperGeneration(),
         elements: sanitizeAxElements(result),
+        // Full AX values are reduced to an in-memory digest at the Host
+        // boundary. This catches value-only UI changes without retaining or
+        // logging labels, field values, or other user content.
+        fingerprint: hashAxElements(result.elements),
         createdAt: now(),
       });
+      const stateId = stateIdFactory({
+        sender,
+        taskKey: session.taskKey,
+        target: session.target,
+        axSessionId: result.session_id,
+      });
+      computerStates.set(session.taskKey, {
+        sender,
+        stateId,
+        target: session.target,
+        axSessionId: result.session_id,
+        helperGeneration: getNativeHelperGeneration(),
+        consumed: false,
+        actionInFlight: false,
+        expiresAt: now() + COMPUTER_STATE_TTL_MS,
+      });
+      const verificationReceipt = completeTaskAttempt(
+        sender,
+        session.taskKey,
+        stateId,
+        result.elements,
+      );
+      return {
+        ...result,
+        state_id: stateId,
+        ...(verificationReceipt ? { verification_receipt: verificationReceipt } : {}),
+      };
     }
     return result;
   }
@@ -618,6 +950,8 @@ function createComputerUseGate(options) {
   function teardown() {
     sessions.clear();
     axSessions.clear();
+    computerStates.clear();
+    taskAttemptLedgers.clear();
     taskGrants.clear();
     taskLeases.clear();
     activeTask = null;
@@ -637,6 +971,9 @@ module.exports = {
   COMPUTER_USE_GATE_MISS,
   SESSION_TTL_MS,
   TASK_GRANT_TTL_MS,
+  COMPUTER_STATE_TTL_MS,
+  NO_PROGRESS_BEFORE_RECOVERY,
+  NO_PROGRESS_AFTER_RECOVERY,
   normalizeIdentity,
   classifyIdentity,
 };

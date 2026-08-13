@@ -10,7 +10,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { invoke } from '@tauri-apps/api/core';
 import { isWindows, isMacOS } from '../../../utils/platform';
-import { computerTool } from './computerTools';
+import { closeAxSession, computerTool } from './computerTools';
 import { useChatStore } from '../../../stores/chatStore';
 import { useSettingsStore } from '../../../stores/settingsStore';
 import {
@@ -18,6 +18,10 @@ import {
   getPendingCapabilitySetup,
   resolveCapabilitySetup,
 } from '../../capabilityPlugins/setupBridge';
+import {
+  __resetRuntimeTraceForTests,
+  getRendererRuntimeTraceSnapshot,
+} from '../../observability/runtimeTrace';
 
 vi.mock('../../../utils/platform', () => ({
   initPlatform: vi.fn(),
@@ -52,8 +56,11 @@ function setElectronHost(enabled: boolean) {
 
 describe('computerTool — accessibility permission branch', () => {
   beforeEach(() => {
+    __resetRuntimeTraceForTests();
     drainCapabilitySetupRequests();
     setElectronHost(false);
+    vi.mocked(isWindows).mockReturnValue(false);
+    vi.mocked(isMacOS).mockReturnValue(true);
     vi.mocked(invoke).mockReset();
     useSettingsStore.setState({
       activeSystemTab: 'general',
@@ -64,7 +71,8 @@ describe('computerTool — accessibility permission branch', () => {
     useChatStore.setState({ activeConversationId: 'active-conversation' });
   });
 
-  afterEach(() => {
+  afterEach(async () => {
+    await closeAxSession();
     setElectronHost(false);
   });
 
@@ -99,6 +107,62 @@ describe('computerTool — accessibility permission branch', () => {
     expect(invoke).not.toHaveBeenCalled();
   });
 
+  it('requests only Accessibility setup for an AX-only task', async () => {
+    useSettingsStore.setState({ computerUseEnabled: false });
+
+    const resultPromise = computerTool.execute(
+      { action: 'get_app_state', app: 'Notes', consequence: 'none' },
+      {
+        conversationId: 'active-conversation',
+        loopId: 'loop-ax',
+        toolCallId: 'tool-ax',
+        interactionMode: 'foreground',
+        computerUseTier: 'structured',
+        modelId: 'deepseek-chat',
+      },
+    );
+
+    const request = getPendingCapabilitySetup();
+    expect(request).toMatchObject({
+      target: 'computer',
+      computerUseRequirements: { screenRead: false, uiControl: true },
+    });
+    resolveCapabilitySetup(request!.id, false);
+    await expect(resultPromise).resolves.toContain('Computer Use');
+    expect(invoke).not.toHaveBeenCalled();
+  });
+
+  it('requests both permissions for pixel control setup', async () => {
+    useSettingsStore.setState({ computerUseEnabled: false });
+
+    const resultPromise = computerTool.execute(
+      {
+        action: 'click',
+        x: 10,
+        y: 10,
+        expected_state_id: 'state-1',
+        consequence: 'none',
+      },
+      {
+        conversationId: 'active-conversation',
+        loopId: 'loop-pixel',
+        toolCallId: 'tool-pixel',
+        interactionMode: 'foreground',
+        computerUseTier: 'full',
+        modelId: 'gpt-4o',
+      },
+    );
+
+    const request = getPendingCapabilitySetup();
+    expect(request).toMatchObject({
+      target: 'computer',
+      computerUseRequirements: { screenRead: true, uiControl: true },
+    });
+    resolveCapabilitySetup(request!.id, false);
+    await expect(resultPromise).resolves.toContain('Computer Use');
+    expect(invoke).not.toHaveBeenCalled();
+  });
+
   it('refuses background setup without opening a global dialog', async () => {
     useSettingsStore.setState({ computerUseEnabled: false });
 
@@ -118,6 +182,69 @@ describe('computerTool — accessibility permission branch', () => {
     });
     await expect(resultPromise).resolves.toContain('Computer Use');
     expect(getPendingCapabilitySetup()).toBeNull();
+    expect(invoke).not.toHaveBeenCalled();
+  });
+
+  it('blocks a model that explicitly lacks tool calling before any host access', async () => {
+    const result = await computerTool.execute(
+      { action: 'wait', duration: 100, consequence: 'none' },
+      {
+        conversationId: 'active-conversation',
+        loopId: 'loop-1',
+        toolCallId: 'tool-unsupported',
+        interactionMode: 'foreground',
+        computerUseTier: 'unsupported',
+        modelId: 'text-only-no-tools',
+      },
+    );
+
+    expect(String(result)).toContain('text-only-no-tools');
+    expect(invoke).not.toHaveBeenCalled();
+  });
+
+  it('keeps an undeclared custom model fail-closed until capability is declared', async () => {
+    const result = await computerTool.execute(
+      { action: 'wait', duration: 100, consequence: 'none' },
+      {
+        conversationId: 'active-conversation',
+        loopId: 'loop-1',
+        toolCallId: 'tool-unknown',
+        interactionMode: 'foreground',
+        computerUseTier: 'unknown',
+        modelId: 'private-proxy-model',
+      },
+    );
+
+    expect(String(result)).toContain('private-proxy-model');
+    expect(invoke).not.toHaveBeenCalled();
+    expect(getRendererRuntimeTraceSnapshot().recentEvents).toContainEqual(
+      expect.objectContaining({
+        event: 'renderer.computer_use_blocked',
+        conversationId: 'active-conversation',
+        loopId: 'loop-1',
+        computerRunId: 'active-conversation:loop-1',
+        traceId: 'active-conversation:loop-1',
+        toolCallId: 'tool-unknown',
+        modelId: 'private-proxy-model',
+        modelTier: 'unknown',
+        reason: 'model-unknown',
+      }),
+    );
+  });
+
+  it('allows structured non-vision models to use the safe AX-oriented path', async () => {
+    await expect(computerTool.execute(
+      { action: 'wait', duration: 100, consequence: 'none' },
+      {
+        conversationId: 'active-conversation',
+        loopId: 'loop-1',
+        toolCallId: 'tool-structured',
+        interactionMode: 'foreground',
+        computerUseTier: 'structured',
+        modelId: 'deepseek-chat',
+        supportsVision: false,
+      },
+    )).resolves.toBe('Waited 100ms');
     expect(invoke).not.toHaveBeenCalled();
   });
 
@@ -232,14 +359,116 @@ describe('computerTool — accessibility permission branch', () => {
     });
   });
 
-  it('stops before native input when the task aborts during UI settling', async () => {
+  it('uses the native frontmost-app identity probe in Electron without Apple Events', async () => {
     setElectronHost(true);
-    const controller = new AbortController();
+    vi.mocked(invoke).mockImplementation((cmd: string) => {
+      if (cmd === 'check_macos_permissions') {
+        return Promise.resolve({ screen_recording: false, accessibility: true });
+      }
+      if (cmd === 'frontmost_app_identity' || cmd === 'resolve_app_identity') {
+        return Promise.resolve({
+          app_name: 'Finder',
+          bundle_id: 'com.apple.finder',
+          process_id: 42,
+        });
+      }
+      if (cmd === 'computer_use_begin_session') {
+        return Promise.resolve({
+          token: 'task-owned-token',
+          target: {
+            app_name: 'Finder',
+            bundle_id: 'com.apple.finder',
+            process_id: 42,
+          },
+          classification: 'ordinary',
+          expires_at: 61_000,
+        });
+      }
+      if (cmd === 'ax_snapshot') {
+        return Promise.resolve({
+          session_id: 'ax-finder',
+          app: 'Finder',
+          total_visited: 1,
+          truncated: false,
+          elements: [],
+        });
+      }
+      return Promise.resolve(null);
+    });
+
+    await computerTool.execute(
+      { action: 'get_app_state', app: 'Finder', consequence: 'none' },
+      {
+        conversationId: 'active-conversation',
+        loopId: 'loop-native-identity',
+        toolCallId: 'tool-native-identity',
+        interactionMode: 'foreground',
+        supportsVision: false,
+      },
+    );
+
+    const commands = vi.mocked(invoke).mock.calls.map(([cmd]) => cmd);
+    expect(commands).toContain('frontmost_app_identity');
+    expect(commands).not.toContain('get_active_window');
+  });
+
+  it('keeps the Windows foreground-process probe instead of calling macOS-only identity APIs', async () => {
+    vi.mocked(isWindows).mockReturnValue(true);
+    vi.mocked(isMacOS).mockReturnValue(false);
+    setElectronHost(true);
     vi.mocked(invoke).mockImplementation((cmd: string) => {
       if (cmd === 'check_macos_permissions') {
         return Promise.resolve({ screen_recording: true, accessibility: true });
       }
       if (cmd === 'get_active_window') {
+        return Promise.resolve({
+          app_name: 'notepad',
+          bundle_id: 'notepad.exe',
+          process_id: 42,
+        });
+      }
+      if (cmd === 'computer_use_begin_session') {
+        return Promise.resolve({
+          token: 'windows-task-token',
+          target: {
+            app_name: 'notepad',
+            bundle_id: 'notepad.exe',
+            process_id: 42,
+          },
+          classification: 'ordinary',
+          expires_at: 61_000,
+        });
+      }
+      if (cmd === 'mouse_move') return Promise.resolve('moved');
+      return Promise.resolve(null);
+    });
+
+    await computerTool.execute(
+      { action: 'move', x: 10, y: 20, consequence: 'none' },
+      {
+        conversationId: 'active-conversation',
+        loopId: 'loop-windows-identity',
+        toolCallId: 'tool-windows-identity',
+        interactionMode: 'foreground',
+        supportsVision: true,
+      },
+    );
+
+    const commands = vi.mocked(invoke).mock.calls.map(([cmd]) => cmd);
+    expect(commands).toContain('get_active_window');
+    expect(commands).toContain('mouse_move');
+    expect(commands).not.toContain('frontmost_app_identity');
+    expect(commands).not.toContain('ax_snapshot');
+  });
+
+  it('stops before native input when the task aborts during UI settling', async () => {
+    setElectronHost(true);
+    const abortController = new AbortController();
+    vi.mocked(invoke).mockImplementation((cmd: string) => {
+      if (cmd === 'check_macos_permissions') {
+        return Promise.resolve({ screen_recording: true, accessibility: true });
+      }
+      if (cmd === 'frontmost_app_identity') {
         return Promise.resolve({
           app_name: 'Notes',
           bundle_id: 'com.apple.Notes',
@@ -257,25 +486,237 @@ describe('computerTool — accessibility permission branch', () => {
           expires_at: Date.now() + 60_000,
         });
       }
+      if (cmd === 'ax_snapshot') {
+        return Promise.resolve({
+          session_id: 'ax-before-abort',
+          app: 'Notes',
+          total_visited: 1,
+          truncated: false,
+          elements: [],
+        });
+      }
+      if (cmd === 'resolve_app_identity') {
+        return Promise.resolve({
+          app_name: 'Notes',
+          bundle_id: 'com.apple.Notes',
+          process_id: 1,
+        });
+      }
       if (cmd === 'window_hide') {
-        controller.abort();
+        abortController.abort();
       }
       return Promise.resolve(null);
     });
 
+    const observed = await computerTool.execute(
+      { action: 'get_app_state', app: 'Notes', consequence: 'none' },
+      {
+        conversationId: 'active-conversation',
+        loopId: 'loop-1',
+        toolCallId: 'observe-1',
+        interactionMode: 'foreground',
+        supportsVision: false,
+      },
+    );
+    const stateId = String(observed).match(/state_id: ([^ ]+)/)?.[1];
+    expect(stateId).toBeTruthy();
+
     await expect(computerTool.execute(
-      { action: 'click', x: 10, y: 10, consequence: 'none' },
+      {
+        action: 'click',
+        x: 10,
+        y: 10,
+        expected_state_id: stateId,
+        consequence: 'none',
+      },
       {
         conversationId: 'active-conversation',
         loopId: 'loop-1',
         toolCallId: 'tool-1',
         interactionMode: 'foreground',
-        abortSignal: controller.signal,
+        abortSignal: abortController.signal,
       },
     )).rejects.toMatchObject({ name: 'AbortError' });
 
     const commands = vi.mocked(invoke).mock.calls.map(([cmd]) => cmd);
     expect(commands).toContain('computer_use_end_session');
     expect(commands).not.toContain('mouse_click');
+  });
+
+  it('returns state_id, consumes it once, and automatically verifies the write', async () => {
+    setElectronHost(true);
+    let snapshotCount = 0;
+    vi.mocked(invoke).mockImplementation((cmd: string) => {
+      if (cmd === 'check_macos_permissions') {
+        return Promise.resolve({ screen_recording: false, accessibility: true });
+      }
+      if (cmd === 'frontmost_app_identity' || cmd === 'resolve_app_identity') {
+        return Promise.resolve({
+          app_name: 'Notes',
+          bundle_id: 'com.apple.Notes',
+          process_id: 7,
+        });
+      }
+      if (cmd === 'computer_use_begin_session') {
+        return Promise.resolve({
+          token: `token-${snapshotCount}`,
+          target: {
+            app_name: 'Notes',
+            bundle_id: 'com.apple.Notes',
+            process_id: 7,
+          },
+          classification: 'ordinary',
+          expires_at: 61_000,
+        });
+      }
+      if (cmd === 'ax_snapshot') {
+        snapshotCount += 1;
+        return Promise.resolve({
+          session_id: `ax-${snapshotCount}`,
+          app: 'Notes',
+          total_visited: 1,
+          truncated: false,
+          elements: [{
+            id: 1,
+            role: 'AXTextField',
+            label: 'Name',
+            value: snapshotCount === 1 ? '' : 'Shawn',
+            bounds: [10, 20, 100, 30],
+            actions: ['AXSetValue'],
+            depth: 2,
+          }],
+        });
+      }
+      return Promise.resolve(null);
+    });
+    const context = {
+      conversationId: 'state-protocol-conversation',
+      loopId: 'state-protocol-loop',
+      interactionMode: 'foreground' as const,
+      supportsVision: false,
+    };
+
+    const observed = await computerTool.execute(
+      { action: 'get_app_state', app: 'Notes', consequence: 'none' },
+      { ...context, toolCallId: 'observe' },
+    );
+    const stateId = String(observed).match(/state_id: ([^ ]+)/)?.[1];
+    expect(stateId).toBeTruthy();
+
+    const action = await computerTool.execute({
+      action: 'type',
+      element_id: 1,
+      text: 'Shawn',
+      expected_state_id: stateId,
+      expected_effect: { type: 'element-value', element_id: 1, equals: 'Shawn' },
+      consequence: 'none',
+    }, { ...context, toolCallId: 'type' });
+
+    expect(action).toContain('Automatic verification: verified change');
+    expect(vi.mocked(invoke).mock.calls).toContainEqual([
+      'ax_set_value',
+      expect.objectContaining({ sessionId: 'ax-1', elementId: 1 }),
+    ]);
+
+    const staleRetry = await computerTool.execute({
+      action: 'type',
+      element_id: 1,
+      text: 'Shawn',
+      expected_state_id: stateId,
+      consequence: 'none',
+    }, { ...context, toolCallId: 'type-again' });
+
+    expect(staleRetry).toContain('state_id is stale');
+    expect(vi.mocked(invoke).mock.calls.filter(([cmd]) => cmd === 'ax_set_value')).toHaveLength(1);
+  });
+
+  it('keeps Host Gate tokens isolated across overlapping runs', async () => {
+    setElectronHost(true);
+    const beginResolvers: Array<() => void> = [];
+    vi.mocked(invoke).mockImplementation((cmd: string, args?: Record<string, unknown>) => {
+      if (cmd === 'check_macos_permissions') {
+        return Promise.resolve({ screen_recording: false, accessibility: true });
+      }
+      if (cmd === 'frontmost_app_identity') {
+        return Promise.resolve({
+          app_name: 'Finder',
+          bundle_id: 'com.apple.finder',
+          process_id: 1,
+        });
+      }
+      if (cmd === 'computer_use_begin_session') {
+        const app = args?.targetApp as string;
+        return new Promise((resolve) => {
+          beginResolvers.push(() => resolve({
+            token: `token-${app}`,
+            target: {
+              app_name: app,
+              bundle_id: `test.${app.toLowerCase()}`,
+              process_id: app === 'Notes' ? 11 : 22,
+            },
+            classification: 'ordinary',
+            expires_at: 61_000,
+          }));
+          if (beginResolvers.length === 2) {
+            beginResolvers.forEach((release) => release());
+          }
+        });
+      }
+      if (cmd === 'resolve_app_identity') {
+        const app = args?.appName as string;
+        return Promise.resolve({
+          app_name: app,
+          bundle_id: `test.${app.toLowerCase()}`,
+          process_id: app === 'Notes' ? 11 : 22,
+        });
+      }
+      if (cmd === 'ax_snapshot') {
+        const app = args?.appName as string;
+        return Promise.resolve({
+          session_id: `ax-${app}`,
+          app,
+          total_visited: 0,
+          truncated: false,
+          elements: [],
+        });
+      }
+      return Promise.resolve(null);
+    });
+
+    await Promise.all([
+      computerTool.execute(
+        { action: 'get_app_state', app: 'Notes', consequence: 'none' },
+        {
+          conversationId: 'parallel-a',
+          loopId: 'parallel-loop-a',
+          toolCallId: 'parallel-tool-a',
+          interactionMode: 'foreground',
+          supportsVision: false,
+        },
+      ),
+      computerTool.execute(
+        { action: 'get_app_state', app: 'TextEdit', consequence: 'none' },
+        {
+          conversationId: 'parallel-b',
+          loopId: 'parallel-loop-b',
+          toolCallId: 'parallel-tool-b',
+          interactionMode: 'foreground',
+          supportsVision: false,
+        },
+      ),
+    ]);
+
+    const privilegedCalls = vi.mocked(invoke).mock.calls.filter(([cmd]) => (
+      cmd === 'activate_app' || cmd === 'ax_snapshot'
+    ));
+    for (const [, args] of privilegedCalls) {
+      const payload = args as Record<string, unknown>;
+      expect(payload.__abuComputerUseToken).toBe(`token-${payload.appName}`);
+    }
+    const endedTokens = vi.mocked(invoke).mock.calls
+      .filter(([cmd]) => cmd === 'computer_use_end_session')
+      .map(([, args]) => (args as Record<string, unknown>).__abuComputerUseToken)
+      .sort();
+    expect(endedTokens).toEqual(['token-Notes', 'token-TextEdit']);
   });
 });

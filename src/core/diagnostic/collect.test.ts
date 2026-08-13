@@ -233,6 +233,7 @@ describe('collectBundleFiles (诊断反馈增强 L1: 多选对话 / 描述 / 截
           pendingRpcs: Array<Record<string, unknown>>;
           sidecars: Array<Record<string, unknown>>;
           pendingRendererAcks: Array<Record<string, unknown>>;
+          nativeHelpers: Array<Record<string, unknown>>;
         }>;
       };
     };
@@ -244,6 +245,7 @@ describe('collectBundleFiles (诊断反馈增强 L1: 多选对话 / 描述 / 截
         pendingRpcs: [{ runId: 'run-1', method: 'agent.run', durationMs: 321 }],
         sidecars: [{ sidecarId: 'abu-sidecar', stage: 'running' }],
         pendingRendererAcks: [{ runId: 'run-1', durationMs: 12 }],
+        nativeHelpers: [{ helperGeneration: 2, stage: 'running' }],
       }),
     };
 
@@ -254,6 +256,7 @@ describe('collectBundleFiles (诊断反馈增强 L1: 多选对话 / 描述 / 截
     expect(files['runtime/pending-rpcs.json']).toContain('agent.run');
     expect(files['runtime/sidecar-state.json']).toContain('abu-sidecar');
     expect(files['runtime/sidecar-state.json']).toContain('pendingRendererAcks');
+    expect(files['runtime/sidecar-state.json']).toContain('helperGeneration');
   });
 
   it('redacts secrets from existing runtime logs before adding them to the bundle', async () => {

@@ -2571,6 +2571,44 @@ async function main() {
     }
     try {
       const helperResult = spawnSync(helperPath, [], {
+        input: `${JSON.stringify({ id: 1, method: 'hello', params: {} })}\n`,
+        encoding: 'utf8',
+        timeout: 10_000,
+      });
+      const response = JSON.parse(String(helperResult.stdout || '').trim());
+      const identity = response?.result;
+      checks.nativeHelperHandshake =
+        helperResult.status === 0 &&
+        response?.id === 1 &&
+        identity?.protocol_version === 1 &&
+        typeof identity?.binary_version === 'string' &&
+        identity.binary_version.length > 0 &&
+        typeof identity?.platform === 'string' &&
+        typeof identity?.started_at_ms === 'number' &&
+        Array.isArray(identity?.supported_commands) &&
+        [
+          'health',
+          'frontmost_app_identity',
+          'mouse_click',
+          'capture_screen',
+          'ax_snapshot',
+        ].every((command) =>
+          identity.supported_commands.includes(command),
+        );
+      if (!checks.nativeHelperHandshake) {
+        errors.nativeHelperHandshake = [
+          `status=${String(helperResult.status)}`,
+          `stdout=${JSON.stringify(helperResult.stdout)}`,
+          `stderr=${JSON.stringify(helperResult.stderr)}`,
+          helperResult.error ? `error=${String(helperResult.error)}` : '',
+        ].filter(Boolean).join(' ');
+      }
+    } catch (err) {
+      checks.nativeHelperHandshake = false;
+      errors.nativeHelperHandshake = String(err);
+    }
+    try {
+      const helperResult = spawnSync(helperPath, [], {
         input: `${JSON.stringify({ id: 1, method: 'ping', params: {} })}\n`,
         encoding: 'utf8',
         timeout: 10_000,

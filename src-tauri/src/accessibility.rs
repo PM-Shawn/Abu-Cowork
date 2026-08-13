@@ -156,7 +156,10 @@ pub fn activate_app(app_name: String) -> Result<String, String> {
 pub fn ax_snapshot(app_name: Option<String>) -> Result<AxSnapshotResult, String> {
     #[cfg(target_os = "macos")]
     {
-        macos::ax_snapshot_impl(app_name)
+        // The legacy Tauri compatibility command has no Electron Host Gate
+        // identity to bind. New Computer Use development passes both values
+        // from the Electron helper entrypoint.
+        macos::ax_snapshot_impl(app_name, None, None)
     }
     #[cfg(not(target_os = "macos"))]
     {

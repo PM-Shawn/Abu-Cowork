@@ -101,6 +101,12 @@ import '@/core/enterprise/policy/enforcer';  // enforcer.ts — non-JSX, side-ef
 import PolicyConfirmModal from '@/components/enterprise/PolicyConfirmModal';
 import BindToEnterpriseFlow from '@/components/enterprise/BindToEnterpriseFlow';
 import { useDeepLinkEnroll } from '@/core/enterprise/useDeepLinkEnroll';
+import {
+  consumeComputerUseResumeToken,
+  resumeTokenMatchesTask,
+} from '@/core/capabilityPlugins/computerUseResume';
+import { restoreComputerUseSetupRequest } from '@/core/capabilityPlugins/setupBridge';
+import { checkComputerUsePermissions } from '@/core/agent/computerUsePermission';
 
 /**
  * Drain Notice inbox if we're in a state that can actually deliver.
@@ -152,6 +158,49 @@ function App() {
   const showTodosInbox = useLabsFlag(LABS_TODOS_INBOX);
   const activeConv = useActiveConversation();
   const { t } = useI18n();
+
+  useEffect(() => {
+    let cancelled = false;
+    const restore = async () => {
+      await platformInitialization;
+      const token = consumeComputerUseResumeToken();
+      if (!token || cancelled) return;
+      const chat = useChatStore.getState();
+      if (!(token.conversationId in chat.conversationIndex)) {
+        const conversationStorage = await import('@/core/session/conversationStorage');
+        await conversationStorage.initConversationStorage();
+        const meta = conversationStorage.getIndexEntries()[token.conversationId];
+        if (!meta || cancelled) return;
+        useChatStore.setState((state) => ({
+          conversationIndex: { ...state.conversationIndex, [token.conversationId]: meta },
+        }));
+      }
+      const permissions = await checkComputerUsePermissions();
+      if (!permissions || cancelled) return;
+      await chat.switchConversation(token.conversationId);
+      if (cancelled) return;
+      const conversation = useChatStore.getState().conversations[token.conversationId];
+      if (!conversation || !await resumeTokenMatchesTask(token, conversation.messages)) return;
+      useSettingsStore.getState().setViewMode('chat');
+      restoreComputerUseSetupRequest({
+        conversationId: token.conversationId,
+        taskSummaryHash: token.taskSummaryHash,
+        requirements: token.requirements,
+      });
+    };
+    const run = () => void restore();
+    if (useChatStore.persist.hasHydrated()) run();
+    else {
+      const unsubscribe = useChatStore.persist.onFinishHydration(run);
+      return () => {
+        cancelled = true;
+        unsubscribe();
+      };
+    }
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     let active = true;

@@ -35,9 +35,11 @@
 const { spawn } = require('node:child_process');
 const path = require('node:path');
 const fs = require('node:fs');
+const { runtimeState } = require('./runtimeObservability.cjs');
 
 /** Sentinel returned when `cmd` isn't a native-helper command. */
 const NATIVE_HELPER_MISS = Symbol('native-helper-dispatch-miss');
+const NATIVE_HELPER_PROTOCOL_VERSION = 1;
 
 // Commands routed to the helper. Input synthesis + screen capture + TCC checks
 // + the AX session-cache family. (get_abu_window_id / overlay / get_active_window
@@ -56,6 +58,7 @@ const HELPER_CMDS = new Set([
   'capture_screen',
   'capture_screen_excluding',
   'check_macos_permissions',
+  'frontmost_app_identity',
   'ax_snapshot',
   'ax_press',
   'ax_set_value',
@@ -99,6 +102,12 @@ let nextId = 1;
 /** id -> { resolve, reject, timer } */
 const pending = new Map();
 let stdoutBuf = '';
+let helperHandshake = null;
+// Monotonically changes whenever the helper process identity changes. Host-side
+// Computer Use state binds to this generation so a crash/restart cannot reuse an
+// observation or AX session created by the previous native process.
+let helperGeneration = 0;
+let hasSpawnedHelper = false;
 
 /** Convert an args object's keys camelCase→snake_case (shallow — these command
  * args are flat), reproducing Tauri's JS→Rust param casing. */
@@ -144,15 +153,24 @@ function handleLine(line) {
 function ensureChild() {
   if (child && !child.killed && child.exitCode === null) return child;
   if (!fs.existsSync(HELPER_PATH)) {
+    const failedGeneration = helperGeneration + 1;
+    runtimeState.noteNativeHelperSpawnStarted(failedGeneration, hasSpawnedHelper);
+    runtimeState.noteNativeHelperSpawnFailed(failedGeneration, 'binary_not_found');
     throw new Error(
       `native-helper binary not found at ${HELPER_PATH} — build it with \`cd electron/native-helper && cargo build --release\``
     );
   }
-  child = spawn(HELPER_PATH, [], { stdio: ['pipe', 'pipe', 'pipe'] });
+  const spawnedChild = spawn(HELPER_PATH, [], { stdio: ['pipe', 'pipe', 'pipe'] });
+  child = spawnedChild;
+  helperGeneration += 1;
+  const spawnedGeneration = helperGeneration;
+  runtimeState.noteNativeHelperSpawnStarted(spawnedGeneration, hasSpawnedHelper);
+  hasSpawnedHelper = true;
   stdoutBuf = '';
+  helperHandshake = null;
 
-  child.stdout.setEncoding('utf8');
-  child.stdout.on('data', (chunk) => {
+  spawnedChild.stdout.setEncoding('utf8');
+  spawnedChild.stdout.on('data', (chunk) => {
     stdoutBuf += chunk;
     let nl;
     while ((nl = stdoutBuf.indexOf('\n')) >= 0) {
@@ -163,20 +181,27 @@ function ensureChild() {
   });
 
   // stderr is the helper's diagnostic channel — surface at debug level only.
-  child.stderr.setEncoding('utf8');
-  child.stderr.on('data', (d) => {
+  spawnedChild.stderr.setEncoding('utf8');
+  spawnedChild.stderr.on('data', (d) => {
     const s = String(d).trim();
     if (s) console.log(`[native-helper] ${s}`);
   });
 
   const onGone = (reason) => {
+    // `error` and `close` may both fire. A deliberate kill may also be followed
+    // by a fast respawn, so an old child's late close event must never clear the
+    // replacement child or reject its pending calls.
+    if (child !== spawnedChild) return;
+    runtimeState.noteNativeHelperCrashed(spawnedGeneration, reason);
     rejectAllPending(new Error(`native-helper exited (${reason}); it will respawn on the next call`));
     child = null;
+    helperHandshake = null;
+    helperGeneration += 1;
   };
-  child.on('error', (err) => onGone(err.message));
-  child.on('close', (code, sig) => onGone(`code=${code} sig=${sig}`));
+  spawnedChild.on('error', (err) => onGone(err.message));
+  spawnedChild.on('close', (code, sig) => onGone(`code=${code} sig=${sig}`));
 
-  return child;
+  return spawnedChild;
 }
 
 /**
@@ -194,10 +219,12 @@ function callHelper(method, params) {
       reject(err);
       return;
     }
+    const callGeneration = helperGeneration;
     const id = nextId++;
     const timer = setTimeout(() => {
       if (pending.has(id)) {
         pending.delete(id);
+        runtimeState.noteNativeHelperCallTimeout(callGeneration, method, CALL_TIMEOUT_MS);
         reject(new Error(`native-helper call '${method}' timed out after ${CALL_TIMEOUT_MS}ms`));
       }
     }, CALL_TIMEOUT_MS);
@@ -220,8 +247,49 @@ function callHelper(method, params) {
  */
 function buildNativeHelperRequest(cmd, args) {
   if (!HELPER_CMDS.has(cmd)) return null;
-  if (cmd === 'native_helper_health') return { method: 'ping', params: {} };
+  if (cmd === 'native_helper_health') return { method: 'health', params: {} };
   return { method: cmd, params: toSnakeArgs(args) };
+}
+
+function validateHelperHello(value) {
+  if (!value || typeof value !== 'object') {
+    throw new Error('native-helper compatibility check failed: invalid hello response');
+  }
+  if (value.protocol_version !== NATIVE_HELPER_PROTOCOL_VERSION) {
+    throw new Error(
+      `native-helper protocol is incompatible: expected ${NATIVE_HELPER_PROTOCOL_VERSION}, got ${String(value.protocol_version)}`
+    );
+  }
+  if (
+    typeof value.binary_version !== 'string'
+    || typeof value.platform !== 'string'
+    || !Array.isArray(value.supported_commands)
+    || !value.supported_commands.every((command) => typeof command === 'string')
+    || typeof value.started_at_ms !== 'number'
+  ) {
+    throw new Error('native-helper compatibility check failed: incomplete hello response');
+  }
+  return value;
+}
+
+async function ensureHelperCompatibility() {
+  if (!helperHandshake) {
+    helperHandshake = callHelper('hello', {})
+      .then((value) => {
+        const hello = validateHelperHello(value);
+        runtimeState.noteNativeHelperReady(helperGeneration, hello);
+        return hello;
+      })
+      .catch((error) => {
+        runtimeState.noteNativeHelperSpawnFailed(
+          helperGeneration,
+          error instanceof Error ? error.name : typeof error,
+        );
+        helperHandshake = null;
+        throw error;
+      });
+  }
+  return helperHandshake;
 }
 
 /**
@@ -233,19 +301,38 @@ function buildNativeHelperRequest(cmd, args) {
 function nativeHelperDispatch(cmd, args) {
   const request = buildNativeHelperRequest(cmd, args);
   if (!request) return NATIVE_HELPER_MISS;
-  return callHelper(request.method, request.params);
+  return (async () => {
+    const hello = await ensureHelperCompatibility();
+    if (!hello.supported_commands.includes(request.method)) {
+      throw new Error(
+        `native-helper ${hello.binary_version} does not support '${request.method}'`
+      );
+    }
+    return callHelper(request.method, request.params);
+  })();
 }
 
 /** Kill the helper child (called on app quit; no orphans). */
 function killNativeHelper() {
-  if (child && !child.killed) {
+  const stoppedChild = child;
+  if (stoppedChild) {
+    runtimeState.noteNativeHelperStopped(helperGeneration);
+    child = null;
+    helperHandshake = null;
+    helperGeneration += 1;
+    rejectAllPending(new Error('native-helper was stopped; a fresh Computer Use observation is required'));
+  }
+  if (stoppedChild && !stoppedChild.killed) {
     try {
-      child.kill('SIGKILL');
+      stoppedChild.kill('SIGKILL');
     } catch {
       /* already dead */
     }
   }
-  child = null;
+}
+
+function getNativeHelperGeneration() {
+  return helperGeneration;
 }
 
 // No orphans on shell exit or termination signals (a signal doesn't run 'exit'
@@ -263,9 +350,12 @@ module.exports = {
   nativeHelperDispatch,
   NATIVE_HELPER_MISS,
   killNativeHelper,
+  getNativeHelperGeneration,
   callHelper,
   HELPER_CMDS,
   nativeHelperExecutableName,
   resolveHelperPath,
   buildNativeHelperRequest,
+  validateHelperHello,
+  NATIVE_HELPER_PROTOCOL_VERSION,
 };

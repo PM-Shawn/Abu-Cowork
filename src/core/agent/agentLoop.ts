@@ -73,7 +73,7 @@ import { startConversationTrace, endConversationTrace, startGeneration } from '.
 import { calculateTurnCost } from '../llm/costTracker';
 import { formatPlannedStepsForPrompt } from './plannedStepsPrompt';
 import { getBuiltinSearchConfig } from '../capabilities';
-import { resolveCapabilities, resolveEffectiveContextWindow, computeReasoningParams, type ModelCapabilities } from '../llm/modelCapabilities';
+import { resolveAgentModelCapabilities, resolveCapabilities, resolveEffectiveContextWindow, computeReasoningParams, type ModelCapabilities } from '../llm/modelCapabilities';
 import { applyDeclaredCapabilities } from '../llm/applyDeclaredCapabilities';
 import { resolveModelDeclared } from '../llm/resolveModelDeclared';
 import { rehydrateForSend, type ImageBase64Cache } from '../llm/imageRehydration';
@@ -88,6 +88,10 @@ import { hasQueuedInputs } from './userInputQueue';
 import { resolveEffectiveLlmCreds, EnterpriseLlmUnavailableError } from '../enterprise/llm-resolver';
 import { createLogger } from '../logging/logger';
 import { reportError } from '@/utils/consoleError';
+import {
+  hashComputerUseTaskSummary,
+  latestUserTaskSummary,
+} from '../capabilityPlugins/computerUseResume';
 
 const logger = createLogger('agentLoop');
 
@@ -450,6 +454,20 @@ export interface AgentLoopOptions {
    * the conversation snapshot instead of appending a duplicate.
    */
   prePersistedUserMessageId?: string;
+  /** Process-local structured diagnostics hook. The shell and sidecar inject
+   * their own sinks; it is deliberately omitted from the wire contract. */
+  runtimeEvent?: (event: string, attributes: {
+    conversationId?: string;
+    loopId?: string;
+    routeType?: string;
+    turnIndex?: number;
+    activeToolCount?: number;
+    deferredToolCount?: number;
+    computerUseExposed?: boolean;
+    modelId?: string;
+    modelTier?: string;
+    capabilitySource?: string;
+  }) => void;
 }
 
 /** Exit reason returned by runAgentLoop so callers (scheduler, trigger) can
@@ -683,6 +701,11 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
     { settings, settingsForModel },
     abortController.signal,
   );
+  options?.runtimeEvent?.('agent_route_selected', {
+    conversationId,
+    loopId,
+    routeType: route.type,
+  });
 
   // Build tool execution context — provides resolved workspace for tools like update_memory.
   // Priority: IM-injected path > conversation's own stored path > global store fallback.
@@ -707,6 +730,9 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
     permissionMode: _convForContext?.permissionMode
       ?? getSettingsReader().getSnapshot().permissionMode,
     abortSignal: abortController.signal,
+    taskSummaryHash: await hashComputerUseTaskSummary(
+      latestUserTaskSummary(_convForContext?.messages ?? []) ?? userMessage,
+    ),
   };
   let computerUseTaskEndPromise: Promise<void> | null = null;
   const endComputerUseTaskLease = (): Promise<void> => {
@@ -738,6 +764,15 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
     resolveCapabilities(effectiveModelId),
     entryModelDeclared,
   ).vision;
+  const entryProvider = getActiveProvider(settingsForModel);
+  const entryAgentCapabilities = resolveAgentModelCapabilities({
+    modelId: effectiveModelId,
+    providerSource: entryProvider?.source,
+    declared: entryModelDeclared,
+  });
+  toolContext.computerUseTier = entryAgentCapabilities.computerUseTier;
+  toolContext.modelCapabilitySource = entryAgentCapabilities.capabilitySource;
+  toolContext.modelId = effectiveModelId;
 
   // `systemPromptSections` (active skills are injected dynamically per-turn)
   // was already resolved above, together with `route`, via
@@ -1123,7 +1158,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
         setComputerUseActive(false);
       }).catch(() => {});
       import('../tools/definitions/computerTools').then(({ closeAxSession }) => {
-        closeAxSession().catch(() => {});
+        closeAxSession(conversationId, loopId).catch(() => {});
       }).catch(() => {});
       import('../session/checkpoint').then(({ clearCheckpoint }) => {
         clearCheckpoint(conversationId);
@@ -1197,6 +1232,18 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
         : deferredTools.length === 0
           ? rawTools.filter(tool => tool.name !== TOOL_NAMES.TOOL_SEARCH)
           : rawTools;
+      options?.runtimeEvent?.('agent_tool_exposure', {
+        conversationId,
+        loopId,
+        routeType: route.type,
+        turnIndex: turnCount,
+        activeToolCount: tools.length,
+        deferredToolCount: deferredTools.length,
+        computerUseExposed: tools.some((tool) => tool.name === TOOL_NAMES.COMPUTER),
+        modelId: effectiveModelId,
+        modelTier: toolContext.computerUseTier,
+        capabilitySource: toolContext.modelCapabilitySource,
+      });
       // Keep the deferred exposure with the trusted execution context rather
       // than module state. The Agent Loop may live in the sidecar while the
       // real tool registry executes in the renderer; this name-only snapshot
@@ -2207,7 +2254,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
         }).catch(() => {});
         // Close any open AX session (releases CFRetain'd element refs)
         import('../tools/definitions/computerTools').then(({ closeAxSession }) => {
-          closeAxSession().catch(() => {});
+          closeAxSession(conversationId, loopId).catch(() => {});
         }).catch(() => {});
         // Clear crash recovery checkpoint — loop completed normally
         import('../session/checkpoint').then(({ clearCheckpoint }) => {
@@ -2384,7 +2431,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
         }).catch(() => {});
         // Close any open AX session (releases CFRetain'd element refs)
         import('../tools/definitions/computerTools').then(({ closeAxSession }) => {
-          closeAxSession().catch(() => {});
+          closeAxSession(conversationId, loopId).catch(() => {});
         }).catch(() => {});
         // Set status back to idle on cancel
         chatDelta.setConversationStatus(conversationId, 'idle');
@@ -2468,7 +2515,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
       }).catch(() => {});
       // Close any open AX session (releases CFRetain'd element refs)
       import('../tools/definitions/computerTools').then(({ closeAxSession }) => {
-        closeAxSession().catch(() => {});
+        closeAxSession(conversationId, loopId).catch(() => {});
       }).catch(() => {});
       // Clear crash recovery checkpoint — loop ended with error
       import('../session/checkpoint').then(({ clearCheckpoint }) => {

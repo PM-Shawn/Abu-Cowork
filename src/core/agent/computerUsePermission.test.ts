@@ -49,6 +49,9 @@ describe('Computer Use permission probes', () => {
     await expect(checkComputerUsePermissions()).resolves.toEqual({
       screenRead: true,
       uiControl: false,
+      screenReadStatus: 'granted',
+      uiControlStatus: 'not-determined',
+      restartRequired: false,
     });
     expect(invoke).toHaveBeenCalledWith('check_macos_permissions');
   });
@@ -156,6 +159,7 @@ describe('Computer Use permission probes', () => {
       'developmentIdentity',
       'errorTitle',
       'retry',
+      'timeout',
       'privacyNote',
     ].map((key) => [key, key])) as unknown as ComputerUsePermissionGuideStrings;
     invoke.mockResolvedValueOnce({
@@ -186,6 +190,43 @@ describe('Computer Use permission probes', () => {
     await closeComputerUsePermissionGuide();
     expect(invoke).toHaveBeenLastCalledWith(
       'computer_use_permission_guide_close',
+    );
+  });
+
+  it('passes task-local AX-only requirements to the Electron permission guide', async () => {
+    (globalThis as typeof globalThis & {
+      __ABU_SHELL__?: { mainSupervisesSidecar: boolean };
+    }).__ABU_SHELL__ = { mainSupervisesSidecar: true };
+    const strings = Object.fromEntries([
+      'title', 'description', 'screenTitle', 'screenDescription', 'controlTitle',
+      'controlDescription', 'screenStep', 'controlStep', 'allow', 'done',
+      'checking', 'cancel', 'returnToAbu', 'missingApp', 'revealApp',
+      'developmentIdentity', 'errorTitle', 'retry', 'timeout', 'privacyNote',
+    ].map((key) => [key, key])) as unknown as ComputerUsePermissionGuideStrings;
+    invoke.mockResolvedValueOnce({
+      status: 'complete',
+      permissions: { screenRead: false, uiControl: true },
+      error: null,
+    });
+
+    await runComputerUsePermissionGuide({
+      requestedByTask: true,
+      permissions: {
+        screenRead: false,
+        uiControl: false,
+        screenReadStatus: 'not-determined',
+        uiControlStatus: 'not-determined',
+        restartRequired: false,
+      },
+      requirements: { screenRead: false, uiControl: true },
+      strings,
+    });
+
+    expect(invoke).toHaveBeenCalledWith(
+      'computer_use_permission_guide_show',
+      expect.objectContaining({
+        requirements: { screenRead: false, uiControl: true },
+      }),
     );
   });
 });

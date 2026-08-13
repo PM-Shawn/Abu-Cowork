@@ -18,6 +18,16 @@ interface SidecarTraceAttributes {
   durationMs?: number;
   frameCount?: number;
   reason?: string;
+  conversationId?: string;
+  loopId?: string;
+  routeType?: string;
+  turnIndex?: number;
+  activeToolCount?: number;
+  deferredToolCount?: number;
+  computerUseExposed?: boolean;
+  modelId?: string;
+  modelTier?: string;
+  capabilitySource?: string;
 }
 
 const SAFE_KEYS = new Set<keyof SidecarTraceAttributes>([
@@ -30,6 +40,16 @@ const SAFE_KEYS = new Set<keyof SidecarTraceAttributes>([
   'durationMs',
   'frameCount',
   'reason',
+  'conversationId',
+  'loopId',
+  'routeType',
+  'turnIndex',
+  'activeToolCount',
+  'deferredToolCount',
+  'computerUseExposed',
+  'modelId',
+  'modelTier',
+  'capabilitySource',
 ]);
 
 function sanitizeEventName(value: string): string | null {
@@ -49,7 +69,9 @@ function sanitizeAttributes(attributes: SidecarTraceAttributes): SidecarTraceAtt
     SidecarTraceAttributes[keyof SidecarTraceAttributes],
   ]>) {
     if (!SAFE_KEYS.has(key) || raw === undefined) continue;
-    if (typeof raw === 'number' && Number.isFinite(raw)) {
+    if (typeof raw === 'boolean') {
+      (output as Record<string, unknown>)[key] = raw;
+    } else if (typeof raw === 'number' && Number.isFinite(raw)) {
       (output as Record<string, unknown>)[key] = Math.max(0, Math.round(raw));
     } else if (typeof raw === 'string') {
       (output as Record<string, unknown>)[key] = sanitizeString(raw);

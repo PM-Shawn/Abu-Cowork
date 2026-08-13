@@ -10,8 +10,7 @@
 import { useSettingsStore } from '@/stores/settingsStore';
 import { checkProviderHealth, type HealthCheckResult } from '@/core/llm/healthCheck';
 import { getProviderCallHealth } from '@/core/llm/providerCallHealth';
-import { resolveCapabilities } from '@/core/llm/modelCapabilities';
-import { applyDeclaredCapabilities } from '@/core/llm/applyDeclaredCapabilities';
+import { resolveAgentModelCapabilities } from '@/core/llm/modelCapabilities';
 import { resolveModelDeclared } from '@/core/llm/resolveModelDeclared';
 import { getI18n, format } from '@/i18n';
 import { mapAIServiceError } from '../errorMap';
@@ -160,25 +159,36 @@ export async function runAIServicesChecks(): Promise<CheckResult[]> {
     const modelId = settings.activeModel.modelId;
     if (provider && modelId) {
       const declared = resolveModelDeclared(provider, modelId);
-      const caps = applyDeclaredCapabilities(resolveCapabilities(modelId), declared);
-      const toolsSupported = declared?.supportsTools !== false;
-      const visionSupported = caps.vision;
+      const caps = resolveAgentModelCapabilities({
+        modelId,
+        providerSource: provider.source,
+        declared,
+      });
+      const tier = caps.computerUseTier;
       rows.push({
         id: 'ai-services:computer-use-model',
         category: 'ai-services',
         name: t.diagnostic.aiComputerUseModel,
-        status: !toolsSupported ? 'failed' : visionSupported ? 'passed' : 'warning',
-        metric: `${modelId} · ${!toolsSupported
-          ? t.diagnostic.aiComputerUseUnsupported
-          : visionSupported
-            ? t.diagnostic.aiComputerUseFull
-            : t.diagnostic.aiComputerUseStructured}`,
-        ...(!toolsSupported ? {
+        status: tier === 'full'
+          ? 'passed'
+          : tier === 'structured'
+            ? 'warning'
+            : 'failed',
+        metric: `${modelId} · ${tier === 'full'
+          ? t.diagnostic.aiComputerUseFull
+          : tier === 'structured'
+            ? t.diagnostic.aiComputerUseStructured
+            : tier === 'unsupported'
+              ? t.diagnostic.aiComputerUseUnsupported
+              : t.diagnostic.aiComputerUseUnknown}`,
+        ...(tier === 'unsupported' ? {
           errorMessage: t.diagnostic.aiComputerUseToolsMissing,
-        } : !visionSupported ? {
+        } : tier === 'unknown' ? {
+          errorMessage: t.diagnostic.aiComputerUseUnknownReason,
+        } : tier === 'structured' ? {
           errorMessage: t.diagnostic.aiComputerUseVisionMissing,
         } : {}),
-        suggestedAction: !toolsSupported || !visionSupported ? {
+        suggestedAction: tier !== 'full' ? {
           type: 'open-settings' as const,
           target: 'ai-services',
           label: t.diagnostic.actionOpenAIServices,

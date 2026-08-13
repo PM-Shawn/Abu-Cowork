@@ -1513,15 +1513,16 @@ async function inspectPackagedBrowserView(app, tabId, screenshotData) {
       let windowComposite = null;
       let compositeError = '';
       let windowCompositeTrusted = false;
+      let screenCaptureGranted = false;
       let compositeSourceType = 'window';
       let compositeSourceId = '';
       let windowCompositePng = '';
       if (process.platform === 'darwin') {
         try {
-          windowCompositeTrusted =
+          screenCaptureGranted =
             systemPreferences.getMediaAccessStatus('screen') === 'granted';
         } catch {
-          windowCompositeTrusted = false;
+          screenCaptureGranted = false;
         }
       }
       try {
@@ -1532,7 +1533,7 @@ async function inspectPackagedBrowserView(app, tabId, screenshotData) {
         mainWindow.moveTop();
         await new Promise((resolve) => setTimeout(resolve, 200));
 
-        if (process.platform === 'darwin' && windowCompositeTrusted) {
+        if (process.platform === 'darwin' && screenCaptureGranted) {
           compositeSourceType = 'screen';
           const display = screen.getDisplayMatching(windowBounds);
           const displays = screen.getAllDisplays();
@@ -1551,6 +1552,10 @@ async function inspectPackagedBrowserView(app, tabId, screenshotData) {
             sources[displayIndex] ??
             sources[0];
           if (compositeSource) {
+            // TCC status alone is not proof that desktopCapturer produced an
+            // authoritative screen image. Only make composition mandatory
+            // after Electron returns a concrete source, matching Windows.
+            windowCompositeTrusted = true;
             compositeSourceId = `${compositeSource.id}:${compositeSource.display_id}`;
             const sourceSize = compositeSource.thumbnail.getSize();
             const scaleX = sourceSize.width / display.bounds.width;
@@ -1578,6 +1583,8 @@ async function inspectPackagedBrowserView(app, tabId, screenshotData) {
                 windowCompositePng = cropped.toPNG().toString('base64');
               }
             }
+          } else {
+            compositeError = 'screen capture was granted but returned no desktop source';
           }
         } else if (process.platform !== 'darwin') {
           const mediaSourceId = mainWindow.getMediaSourceId();

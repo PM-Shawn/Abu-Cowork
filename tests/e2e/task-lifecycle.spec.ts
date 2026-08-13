@@ -232,6 +232,42 @@ function diskContainsExactAssistantMessage(rootDir: string, expectedContent: str
   return visit(rootDir);
 }
 
+function diskContainsInterruptedUserMessage(rootDir: string, expectedContent: string): boolean {
+  const visit = (dir: string): boolean => {
+    let entries: fs.Dirent[];
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return false;
+    }
+    return entries.some((entry) => {
+      const entryPath = path.join(dir, entry.name);
+      if (entry.isDirectory()) return visit(entryPath);
+      if (entry.name !== 'messages.jsonl') return false;
+      try {
+        return fs.readFileSync(entryPath, 'utf8')
+          .trimEnd()
+          .split('\n')
+          .some((line) => {
+            const message = JSON.parse(line) as {
+              content?: unknown;
+              role?: unknown;
+              runEndedAt?: unknown;
+              runState?: unknown;
+            };
+            return message.role === 'user'
+              && message.content === expectedContent
+              && message.runState === 'interrupted'
+              && typeof message.runEndedAt === 'number';
+          });
+      } catch {
+        return false;
+      }
+    });
+  };
+  return visit(rootDir);
+}
+
 async function waitForApp(page: Page): Promise<void> {
   await page.waitForLoadState('domcontentloaded');
   await expect(page.getByPlaceholder(CHAT_PLACEHOLDER)).toBeVisible({ timeout: READY_TIMEOUT });
@@ -354,7 +390,6 @@ test.describe.serial('Electron product task lifecycle', () => {
     const followUp = `abu-e2e-stop-follow-up-${randomUUID()}`;
     const followUpResponse = `abu-e2e-stop-follow-up-answer-${randomUUID()}`;
     const recentTitle = `${prompt.slice(0, 30)}...`;
-    const stoppedContent = `${partial}\n\n*[已停止]*`;
     mock = await startOpenAiMock([
       { kind: 'hold-open', partialText: partial },
       { kind: 'complete', responseText: followUpResponse },
@@ -388,12 +423,19 @@ test.describe.serial('Electron product task lifecycle', () => {
     await expect(stopButton).toBeHidden({ timeout: READY_TIMEOUT });
     await expect(input).toBeEditable({ timeout: READY_TIMEOUT });
     await expect(firstPage.getByText(partial, { exact: true })).toBeVisible({ timeout: READY_TIMEOUT });
-    await expect(firstPage.getByText('[已停止]', { exact: true })).toBeVisible({ timeout: READY_TIMEOUT });
+    await expect(firstPage.getByText(/^(?:你在 .* 后停止了|You stopped after .*)$/)).toBeVisible({
+      timeout: READY_TIMEOUT,
+    });
 
-    // Exact persisted content proves both the partial token and the stop
-    // marker survived, with no later stream token appended after cancellation.
+    // The assistant content stays model-authored while the durable user-run
+    // terminal carries the stop state. Together they prove no later stream
+    // token was appended and the status can be reconstructed after restart.
     await expect.poll(
-      () => diskContainsExactAssistantMessage(dataRoot!.appDataDir, stoppedContent),
+      () => diskContainsExactAssistantMessage(dataRoot!.appDataDir, partial),
+      { timeout: READY_TIMEOUT },
+    ).toBe(true);
+    await expect.poll(
+      () => diskContainsInterruptedUserMessage(dataRoot!.appDataDir, prompt),
       { timeout: READY_TIMEOUT },
     ).toBe(true);
     await expect.poll(
@@ -414,7 +456,9 @@ test.describe.serial('Electron product task lifecycle', () => {
     await expect(recentConversation).toBeVisible({ timeout: READY_TIMEOUT });
     await recentConversation.click();
     await expect(secondPage.getByText(partial, { exact: true })).toBeVisible({ timeout: READY_TIMEOUT });
-    await expect(secondPage.getByText('[已停止]', { exact: true })).toBeVisible({ timeout: READY_TIMEOUT });
+    await expect(secondPage.getByText(/^(?:你在 .* 后停止了|You stopped after .*)$/)).toBeVisible({
+      timeout: READY_TIMEOUT,
+    });
 
     const restoredInput = secondPage.getByPlaceholder(CHAT_PLACEHOLDER);
     await restoredInput.fill(followUp);
@@ -426,7 +470,7 @@ test.describe.serial('Electron product task lifecycle', () => {
     const secondRequestBody = JSON.stringify(secondRequest.body);
     expect(secondRequestBody).toContain(prompt);
     expect(secondRequestBody).toContain(partial);
-    expect(secondRequestBody).toContain('[已停止]');
+    expect(secondRequestBody).not.toContain('[已停止]');
     expect(secondRequestBody).toContain(followUp);
     await expect(secondPage.getByText(followUpResponse, { exact: true })).toBeVisible({ timeout: READY_TIMEOUT });
     await expect.poll(

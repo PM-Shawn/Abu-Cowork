@@ -18,6 +18,8 @@ Tell Abu what you need — it reads files, runs commands, writes docs, and build
 
 </div>
 
+> 🚧 **Multi-Harness integration in progress:** Abu is evolving toward pluggable agent runtimes, with [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) among the first integration targets. Stable releases currently use Abu's native harness.
+
 ---
 
 ## Why Abu?

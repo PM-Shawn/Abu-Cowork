@@ -18,6 +18,8 @@
 
 </div>
 
+> 🚧 **多 Harness 改造进行中**：Abu 正在演进为可插拔的 Agent Runtime，并把 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) 作为首批适配目标。当前稳定版仍使用 Abu 原生 Harness。
+
 ---
 
 ## 为什么选择 Abu？

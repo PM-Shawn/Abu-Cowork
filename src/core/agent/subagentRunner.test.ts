@@ -191,6 +191,57 @@ describe('subagentRunner', () => {
       expect(result.tokenUsage).toEqual({ input: 10, output: 20 });
     });
 
+    it('uses the parent run settings snapshot for both subagent credentials and sidecar model selection', async () => {
+      getSidecarStatus.mockReturnValue('running');
+      sidecarRequestMock.mockResolvedValue({
+        text: 'sidecar result',
+        toolCallCount: 0,
+        turnCount: 1,
+        tokenUsage: { input: 1, output: 1 },
+        duration: 1,
+      });
+      const parentSettings = {
+        activeModel: { providerId: 'parent-provider', modelId: 'parent-model' },
+        providers: [{ id: 'parent-provider', apiKey: 'parent-key', baseUrl: 'https://parent.test' }],
+      };
+      const parentReader = { getSnapshot: () => parentSettings };
+      getActiveApiKeyMock.mockImplementation((settings: unknown) => {
+        expect(settings).toBe(parentSettings);
+        return 'parent-key';
+      });
+      getActiveProviderMock.mockImplementation((settings: unknown) => {
+        expect(settings).toBe(parentSettings);
+        return { id: 'parent-provider', baseUrl: 'https://parent.test', apiFormat: 'openai-compatible' };
+      });
+      resolveEffectiveLlmCredsMock.mockImplementation((apiKey: string, baseUrl: string | undefined) => ({
+        apiKey,
+        baseUrl,
+        forceOpenAiCompatible: false,
+      }));
+      const { getSubagentRunInheritance, runSubagent } = await importFresh();
+
+      expect(getSubagentRunInheritance({
+        conversationId: 'conv-parent',
+        settingsReader: parentReader as never,
+      })).toEqual({
+        parentConversationId: 'conv-parent',
+        settingsReader: parentReader,
+      });
+
+      await runSubagent({ agent, task: 'do the thing', settingsReader: parentReader as never });
+
+      const params = sidecarRequestMock.mock.calls[0][1] as {
+        settingsSnapshot: unknown;
+        resolvedCreds: unknown;
+      };
+      expect(params.settingsSnapshot).toBe(parentSettings);
+      expect(params.resolvedCreds).toEqual({
+        apiKey: 'parent-key',
+        baseUrl: 'https://parent.test',
+        forceOpenAiCompatible: false,
+      });
+    });
+
     it('falls back to runSubagentLoop when the dispatch-time projection fails (e.g. resolveEffectiveLlmCreds throws) — session never registered, sidecar never touched', async () => {
       getSidecarStatus.mockReturnValue('running');
       resolveEffectiveLlmCredsMock.mockImplementation(() => { throw new Error('EnterpriseLlmUnavailableError'); });

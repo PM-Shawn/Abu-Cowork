@@ -51,11 +51,22 @@ export function getActiveApiKey(state: SettingsState): string {
 export function resolveAgentModel(agentModel: string | undefined, state: SettingsState): string {
   const globalModel = state.activeModel.modelId;
   if (!agentModel || agentModel === 'inherit') return globalModel;
-  // Search across enabled providers
-  for (const p of state.providers) {
-    if (p.enabled && p.models.some(m => m.id === agentModel)) return agentModel;
+
+  // A model id cannot be detached from the provider whose base URL/API key
+  // will execute it. Accepting an override merely because another enabled
+  // provider exposes the same id creates an invalid mixed pair such as
+  // DeepSeek credentials + a GLM model. Agent definitions currently carry
+  // only a model id (no provider id), so the only unambiguous override is one
+  // offered by the active provider itself.
+  const activeProvider = getActiveProvider(state);
+  if (
+    activeProvider?.enabled
+    && activeProvider.models.some((model) => model.id === agentModel)
+  ) {
+    return agentModel;
   }
-  // Incompatible → fall back to global
+
+  // Incompatible with the active provider -> inherit its selected model.
   return globalModel;
 }
 

@@ -29,20 +29,18 @@ export interface ResolvedEntryModel {
 }
 
 /**
- * `settings` / `settingsForModel` mirror `runAgentLoop`'s own locals — the
- * latter is the per-conversation-pinned-model overlay on top of the former.
- * `resolveAgentModel` deliberately reads the RAW `settings`, not
- * `settingsForModel` (mirrors the original call site exactly — see
- * `entryOrchestration.ts`'s doc for why).
+ * `settingsForModel` is `runAgentLoop`'s per-conversation-pinned-model
+ * overlay. Provider identity, credentials and any agent model override must
+ * all resolve from this same snapshot; consulting the raw global selection
+ * would let a later switch in another conversation bleed into this run.
  */
 export function resolveEntryModel(
   route: Pick<RouteResult, 'type' | 'definition'>,
-  settings: SettingsState,
   settingsForModel: SettingsState,
 ): ResolvedEntryModel {
   let effectiveModelId = getEffectiveModel(settingsForModel);
   if (route.type === 'agent' && route.definition?.model) {
-    effectiveModelId = resolveAgentModel(route.definition.model, settings);
+    effectiveModelId = resolveAgentModel(route.definition.model, settingsForModel);
   }
   const provider = getActiveProvider(settingsForModel);
   const entryModelDeclared = resolveModelDeclared(provider, effectiveModelId);

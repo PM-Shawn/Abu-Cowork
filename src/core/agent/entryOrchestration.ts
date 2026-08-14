@@ -77,12 +77,9 @@ export interface PrecomputedOrchestration {
 }
 
 /**
- * `entry.settings` / `entry.settingsForModel` are the loop's OWN
- * already-resolved locals (see `runAgentLoop`'s `settings`/`settingsForModel`
- * — the latter is the per-conversation-pinned-model overlay on top of the
- * former; `resolveAgentModel` deliberately reads the RAW `settings`, not
- * `settingsForModel`, mirroring the original call site exactly). Accepting
- * both as params (rather than re-deriving `settingsForModel` from a fresh
+ * `entry.settingsForModel` is the loop's OWN already-resolved
+ * per-conversation-pinned-model overlay. Accepting it as a param (rather than
+ * re-deriving it from a fresh
  * conversation read) avoids duplicating the model-pin derivation logic
  * (`pinnedConv?.model ?? indexEntry?.model ?? settings.activeModel`) a
  * second time — "keep the signature small and derive internally what you
@@ -93,7 +90,7 @@ export async function precomputeOrchestration(
   conversationId: string,
   userMessage: string,
   imContext: IMContext | undefined,
-  entry: { settings: SettingsState; settingsForModel: SettingsState },
+  entry: { settingsForModel: SettingsState },
   abortSignal?: AbortSignal,
 ): Promise<PrecomputedOrchestration> {
   const route = routeInput(userMessage);
@@ -115,7 +112,7 @@ export async function precomputeOrchestration(
   // formula itself — only the `setActiveModel` side effect stays
   // uniquely in the loop), and the shell dispatcher's `buildAgentRunParams`
   // is a third caller of the same helper — see resolveEntryModel.ts's doc.
-  const { entryModelDeclared } = resolveEntryModel(route, entry.settings, entry.settingsForModel);
+  const { entryModelDeclared } = resolveEntryModel(route, entry.settingsForModel);
 
   const systemPromptSections = await buildSystemPromptSections(
     route,

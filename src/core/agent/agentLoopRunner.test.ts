@@ -2380,6 +2380,52 @@ describe('agentLoopRunner', () => {
       expect(params.options.allowedTools).toEqual(['read_*']);
     });
 
+    it('keeps the entry provider, model, and credentials atomic when the conversation model changes during persistence', async () => {
+      const { runAgentLoopDispatched } = await importFresh();
+      const p1Model = { providerId: 'p1', modelId: 'model-a' };
+      const p2Model = { providerId: 'p2', modelId: 'model-b' };
+      getSettingsSnapshotMock.mockReturnValue({
+        agentMaxTurns: 200,
+        activeModel: p1Model,
+        providers: [
+          { id: 'p1', name: 'P1', apiFormat: 'anthropic', enabled: true, apiKey: 'p1-key', baseUrl: 'https://p1.test', models: [{ id: 'model-a', name: 'Model A' }] },
+          { id: 'p2', name: 'P2', apiFormat: 'openai-compatible', enabled: true, apiKey: 'p2-key', baseUrl: 'https://p2.test', models: [{ id: 'model-b', name: 'Model B' }] },
+        ],
+      });
+      let conversation = { id: 'conv-1', title: 't', messages: [], status: 'idle' } as Record<string, unknown>;
+      getConversationMock.mockImplementation(() => conversation);
+      let persistenceCount = 0;
+      waitForConversationPersistenceMock.mockImplementation(async () => {
+        persistenceCount += 1;
+        if (persistenceCount === 2) conversation = { ...conversation, model: p2Model };
+      });
+      resolveEffectiveLlmCredsMock.mockImplementation((apiKey: string, baseUrl: string | undefined) => ({
+        apiKey,
+        baseUrl,
+        forceOpenAiCompatible: false,
+      }));
+      sidecarRequestMock.mockResolvedValue({ reason: 'completed' });
+
+      await runAgentLoopDispatched('conv-1', 'hello');
+
+      const params = sidecarRequestMock.mock.calls[0][1] as {
+        conversationSnapshot: { model?: unknown };
+        settingsSnapshot: { activeModel: unknown };
+        resolvedCreds: { apiKey: string; baseUrl?: string };
+      };
+      expect(params.conversationSnapshot.model).toEqual(p1Model);
+      expect(params.settingsSnapshot.activeModel).toEqual(p1Model);
+      expect(params.resolvedCreds).toEqual({
+        apiKey: 'p1-key',
+        baseUrl: 'https://p1.test',
+        forceOpenAiCompatible: false,
+      });
+      const installedContext = setLoopContextMock.mock.calls.at(-1)?.[1] as {
+        settingsReader?: { getSnapshot: () => { activeModel: unknown } };
+      };
+      expect(installedContext.settingsReader?.getSnapshot().activeModel).toEqual(p1Model);
+    });
+
     it('creates the task controller before prompt preprocessing and stops without dispatching when it is aborted there', async () => {
       const { runAgentLoopDispatched } = await importFresh();
       const controller = new AbortController();

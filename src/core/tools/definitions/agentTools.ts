@@ -4,7 +4,7 @@ import { skillLoader } from '../../skill/loader';
 import { agentRegistry } from '../../agent/registry';
 import { getCurrentLoopContext, getLoopContext, requestWorkspace } from '../../agent/permissionBridge';
 import { extractParentConversationSummary } from '../../agent/subagentLoop';
-import { runSubagent } from '../../agent/subagentRunner';
+import { getSubagentRunInheritance, runSubagent } from '../../agent/subagentRunner';
 import type { SubagentProgressEvent } from '../../agent/subagentLoop';
 import { createSubagentController } from '../../agent/subagentAbort';
 import { useChatStore } from '../../../stores/chatStore';
@@ -313,6 +313,7 @@ export const delegateToAgentTool: ToolDefinition = {
         commandConfirmCallback: loopCtx?.commandConfirmCallback,
         filePermissionCallback: loopCtx?.filePermissionCallback,
         allowedTools: loopCtx?.allowedTools,
+        ...getSubagentRunInheritance(loopCtx),
         onProgress,
       });
 

@@ -17,6 +17,7 @@ import type {
 } from '../../types';
 import type { ConfirmationInfo } from '../tools/commandSafety';
 import type { FilePermissionCallback, ToolInvoker } from './ports/toolInvoker';
+import type { SettingsReader } from './ports/settingsReader';
 import { processToolResult } from '../session/sessionMemory';
 import { evaluatePlanGate, getPlanMode } from './planMode';
 import { emitHook } from './lifecycleHooks';
@@ -84,6 +85,8 @@ export interface ToolBatchParams {
   /** ToolInvoker port instance, resolved once by the caller (agentLoop.ts)
    *  and threaded in — same discipline as the other resolve-once locals. */
   toolInvoker: ToolInvoker;
+  /** Frozen provider/model snapshot for nested delegate tools. */
+  settingsReader: SettingsReader;
   /** Whether the loop will continue (tool_use stop reason) */
   continueLoop: boolean;
   /** Current context window usage (0-100). Scales tool result truncation under pressure. */
@@ -135,6 +138,7 @@ export async function executeToolBatch(params: ToolBatchParams): Promise<ToolBat
     continueLoop,
     contextUsagePercent,
     toolInvoker,
+    settingsReader,
   } = params;
 
   const chatDelta = getChatDelta();
@@ -155,6 +159,7 @@ export async function executeToolBatch(params: ToolBatchParams): Promise<ToolBat
     eventRouter,
     loopId,
     conversationId,
+    settingsReader,
     toolCallToStepId,
     blockedTools: params.blockedTools,
     allowedTools: params.allowedTools,

@@ -22,10 +22,16 @@ function harness(overrides = {}) {
   let axElements = [];
   let helperKillCount = 0;
   let now = 10_000;
+  let stateSequence = 0;
+  let axSessionSequence = 0;
+  let failingNativeCommand = null;
+  let helperGeneration = 1;
   const gate = createComputerUseGate({
     platform: 'darwin',
     now: () => now,
     tokenFactory: () => '0123456789abcdef0123456789abcdef',
+    stateIdFactory: () => `state-${++stateSequence}`,
+    getNativeHelperGeneration: () => helperGeneration,
     getActiveWindow: async () => currentIdentity,
     nativeDispatch: async (cmd, args) => {
       nativeCalls.push({ cmd, args });
@@ -51,10 +57,13 @@ function harness(overrides = {}) {
       }
       if (cmd === 'ax_snapshot') {
         return {
-          session_id: 'ax-session-1',
+          session_id: `ax-session-${++axSessionSequence}`,
           app: currentIdentity.app_name,
           elements: axElements,
         };
+      }
+      if (cmd === failingNativeCommand) {
+        throw new Error(`simulated ${cmd} uncertainty`);
       }
       return { ok: true };
     },
@@ -92,6 +101,12 @@ function harness(overrides = {}) {
     setAxElements(value) {
       axElements = value;
     },
+    failNativeCommand(cmd) {
+      failingNativeCommand = cmd;
+    },
+    restartHelper() {
+      helperGeneration += 1;
+    },
     advance(ms) {
       now += ms;
     },
@@ -100,7 +115,7 @@ function harness(overrides = {}) {
 
 async function begin(h, extra = {}) {
   await h.gate.dispatch(h.record, h.sender, 'computer_use_set_enabled', { enabled: true });
-  return h.gate.dispatch(h.record, h.sender, 'computer_use_begin_session', {
+  const request = {
     conversationId: 'conversation-1',
     toolCallId: 'tool-1',
     loopId: 'loop-1',
@@ -113,7 +128,50 @@ async function begin(h, extra = {}) {
       summary: '',
     },
     ...extra,
+  };
+  const statefulActions = new Set([
+    'click', 'move', 'type', 'perform_action', 'scroll', 'drag', 'key', 'ax_click', 'ax_type',
+  ]);
+  if (
+    request.scope === 'ui-control'
+    && statefulActions.has(request.actionIntent.action)
+    && !request.expectedStateId
+  ) {
+    const observeSession = await h.gate.dispatch(
+      h.record,
+      h.sender,
+      'computer_use_begin_session',
+      {
+        ...request,
+        toolCallId: `${request.toolCallId}-observe`,
+        actionIntent: { action: 'get_app_state', category: 'none', summary: '' },
+      },
+    );
+    const snapshot = await h.gate.dispatch(h.record, h.sender, 'ax_snapshot', {
+      appName: request.targetApp ?? 'Notes',
+      [COMPUTER_USE_TOKEN_ARG]: observeSession.token,
+    });
+    await h.gate.dispatch(h.record, h.sender, 'computer_use_end_session', {
+      [COMPUTER_USE_TOKEN_ARG]: observeSession.token,
+    });
+    request.expectedStateId = snapshot.state_id;
+  }
+  return h.gate.dispatch(h.record, h.sender, 'computer_use_begin_session', request);
+}
+
+async function observeState(h, extra = {}) {
+  const session = await begin(h, {
+    actionIntent: { action: 'get_app_state', category: 'none', summary: '' },
+    ...extra,
   });
+  const snapshot = await h.gate.dispatch(h.record, h.sender, 'ax_snapshot', {
+    appName: extra.targetApp ?? 'Notes',
+    [COMPUTER_USE_TOKEN_ARG]: session.token,
+  });
+  await h.gate.dispatch(h.record, h.sender, 'computer_use_end_session', {
+    [COMPUTER_USE_TOKEN_ARG]: session.token,
+  });
+  return snapshot;
 }
 
 test('non-Computer-Use commands fall through', async () => {
@@ -174,6 +232,225 @@ test('UI-control sessions require a structured action intent', async () => {
   );
 });
 
+test('a read-intent session cannot bypass state_id by dispatching native input', async () => {
+  const h = harness();
+  const session = await begin(h, {
+    actionIntent: { action: 'get_app_state', category: 'none', summary: '' },
+  });
+
+  await assert.rejects(
+    h.gate.dispatch(h.record, h.sender, 'mouse_click', {
+      x: 1,
+      y: 1,
+      [COMPUTER_USE_TOKEN_ARG]: session.token,
+    }),
+    /fresh state_id/,
+  );
+  assert.equal(h.nativeCalls.some(({ cmd }) => cmd === 'mouse_click'), false);
+});
+
+test('Host Gate issues state_id and requires the latest observation for writes', async () => {
+  const h = harness();
+  const snapshot = await observeState(h);
+  assert.equal(snapshot.state_id, 'state-1');
+
+  const session = await begin(h, { expectedStateId: snapshot.state_id });
+  await h.gate.dispatch(h.record, h.sender, 'mouse_click', {
+    x: 1,
+    y: 1,
+    [COMPUTER_USE_TOKEN_ARG]: session.token,
+  });
+
+  await assert.rejects(
+    begin(h, { toolCallId: 'tool-reuse', expectedStateId: snapshot.state_id }),
+    /state_id was already consumed|verification of the previous action/,
+  );
+  assert.equal(h.nativeCalls.filter(({ cmd }) => cmd === 'mouse_click').length, 1);
+});
+
+test('Host Gate consumes state_id before an uncertain native failure', async () => {
+  const h = harness();
+  const snapshot = await observeState(h);
+  const session = await begin(h, { expectedStateId: snapshot.state_id });
+  h.failNativeCommand('mouse_click');
+
+  await assert.rejects(
+    h.gate.dispatch(h.record, h.sender, 'mouse_click', {
+      x: 1,
+      y: 1,
+      [COMPUTER_USE_TOKEN_ARG]: session.token,
+    }),
+    /simulated mouse_click uncertainty/,
+  );
+  await assert.rejects(
+    begin(h, { toolCallId: 'tool-after-error', expectedStateId: snapshot.state_id }),
+    /state_id was already consumed|verification of the previous action|stop-ambiguous-side-effect/,
+  );
+});
+
+test('Host Gate requires a verification snapshot before the next write and returns a receipt', async () => {
+  const h = harness();
+  h.setAxElements([{
+    id: 1,
+    role: 'AXButton',
+    label: 'Before',
+    value: null,
+    actions: ['AXPress'],
+    bounds: [0, 0, 20, 20],
+    depth: 1,
+  }]);
+  const before = await observeState(h);
+  const first = await begin(h, { expectedStateId: before.state_id });
+  await h.gate.dispatch(h.record, h.sender, 'mouse_click', {
+    x: 1,
+    y: 1,
+    [COMPUTER_USE_TOKEN_ARG]: first.token,
+  });
+
+  await assert.rejects(
+    begin(h, { toolCallId: 'tool-before-verify', expectedStateId: before.state_id }),
+    /verification of the previous action|already consumed/,
+  );
+
+  h.setAxElements([{
+    id: 1,
+    role: 'AXButton',
+    label: 'After',
+    value: null,
+    actions: ['AXPress'],
+    bounds: [0, 0, 20, 20],
+    depth: 1,
+  }]);
+  const after = await observeState(h, { toolCallId: 'tool-verify' });
+  assert.deepEqual(after.verification_receipt, {
+    attempt_count: 1,
+    command: 'mouse_click',
+    before_state_id: before.state_id,
+    after_state_id: after.state_id,
+    status: 'verified-change',
+    decision: 'continue',
+    consecutive_no_change: 0,
+    recovery_used: false,
+  });
+});
+
+test('Host Gate permits one recovery after three no-change receipts then stops after two more', async () => {
+  const h = harness();
+  h.setAxElements([{
+    id: 1,
+    role: 'AXButton',
+    label: 'Static',
+    value: null,
+    actions: ['AXPress'],
+    bounds: [0, 0, 20, 20],
+    depth: 1,
+  }]);
+  let state = await observeState(h);
+  const receipts = [];
+  for (let attempt = 1; attempt <= 5; attempt += 1) {
+    const session = await begin(h, {
+      toolCallId: `tool-${attempt}`,
+      expectedStateId: state.state_id,
+    });
+    await h.gate.dispatch(h.record, h.sender, 'mouse_click', {
+      x: attempt,
+      y: attempt,
+      [COMPUTER_USE_TOKEN_ARG]: session.token,
+    });
+    state = await observeState(h, { toolCallId: `verify-${attempt}` });
+    receipts.push(state.verification_receipt);
+  }
+
+  assert.deepEqual(receipts.map((receipt) => receipt.decision), [
+    'continue',
+    'continue',
+    'recover',
+    'continue',
+    'stop-no-progress',
+  ]);
+  await assert.rejects(
+    begin(h, { toolCallId: 'tool-after-stop', expectedStateId: state.state_id }),
+    /run is stopped/,
+  );
+});
+
+test('Host Gate stops a consequential run after an ambiguous native failure', async () => {
+  const h = harness();
+  const state = await observeState(h);
+  const session = await begin(h, {
+    expectedStateId: state.state_id,
+    actionIntent: {
+      action: 'click',
+      category: 'send',
+      summary: 'Send the disposable message',
+    },
+  });
+  h.failNativeCommand('mouse_click');
+  await assert.rejects(
+    h.gate.dispatch(h.record, h.sender, 'mouse_click', {
+      x: 1,
+      y: 1,
+      [COMPUTER_USE_TOKEN_ARG]: session.token,
+    }),
+    /simulated mouse_click uncertainty/,
+  );
+  await assert.rejects(
+    begin(h, { toolCallId: 'tool-after-ambiguous', expectedStateId: state.state_id }),
+    /run is stopped|already consumed/,
+  );
+});
+
+test('Host Gate rejects expired state and a restarted target process', async () => {
+  const expired = harness();
+  const expiredSnapshot = await observeState(expired);
+  expired.advance(30_001);
+  await assert.rejects(
+    begin(expired, { expectedStateId: expiredSnapshot.state_id }),
+    /fresh state_id|state_id is expired/,
+  );
+
+  const restarted = harness();
+  const restartedSnapshot = await observeState(restarted);
+  restarted.setIdentity({
+    app_name: 'Notes',
+    bundle_id: 'com.apple.Notes',
+    process_id: 101,
+  });
+  await assert.rejects(
+    begin(restarted, { expectedStateId: restartedSnapshot.state_id }),
+    /target process changed/,
+  );
+});
+
+test('native helper restart invalidates old state_id and AX sessions', async () => {
+  const pixel = harness();
+  const pixelSnapshot = await observeState(pixel);
+  pixel.restartHelper();
+  await assert.rejects(
+    begin(pixel, { expectedStateId: pixelSnapshot.state_id }),
+    /fresh state_id after native helper restart/,
+  );
+  assert.equal(pixel.nativeCalls.some(({ cmd }) => cmd === 'mouse_click'), false);
+
+  const accessibility = harness();
+  const axSnapshot = await observeState(accessibility);
+  const axSession = await begin(accessibility, {
+    toolCallId: 'tool-after-observe',
+    expectedStateId: axSnapshot.state_id,
+    actionIntent: { action: 'ax_click', category: 'none', summary: '' },
+  });
+  accessibility.restartHelper();
+  await assert.rejects(
+    accessibility.gate.dispatch(accessibility.record, accessibility.sender, 'ax_press', {
+      sessionId: 'ax-session-1',
+      elementId: 1,
+      [COMPUTER_USE_TOKEN_ARG]: axSession.token,
+    }),
+    /fresh state_id after native helper restart|Accessibility session expired after native helper restart/,
+  );
+  assert.equal(accessibility.nativeCalls.some(({ cmd }) => cmd === 'ax_press'), false);
+});
+
 test('consequential actions ask in every permission mode and only authorize one native attempt', async () => {
   for (const permissionMode of ['standard', 'smart', 'autonomous']) {
     const h = harness();
@@ -202,7 +479,7 @@ test('consequential actions ask in every permission mode and only authorize one 
         y: 50,
         [COMPUTER_USE_TOKEN_ARG]: session.token,
       }),
-      /authorization was already used/,
+      /state_id was already consumed|verification of the previous action/,
     );
     assert.equal(
       h.nativeCalls.filter(({ cmd }) => cmd === 'mouse_click').length,
@@ -230,6 +507,367 @@ test('rejecting a consequential action never dispatches native input', async () 
     /was not approved/,
   );
   assert.equal(h.nativeCalls.some(({ cmd }) => cmd === 'mouse_click'), false);
+});
+
+test('approval-required apps cannot bypass action approval by declaring Return harmless', async () => {
+  const requests = [];
+  const h = harness({
+    requestActionApproval: async (request) => {
+      requests.push(request);
+      return false;
+    },
+  });
+  h.setIdentity({
+    app_name: 'Slack',
+    bundle_id: 'com.tinyspeck.slackmacgap',
+    process_id: 300,
+  });
+  const session = await begin(h, {
+    targetApp: 'Slack',
+    permissionMode: 'autonomous',
+    actionIntent: { action: 'key', category: 'none', summary: '' },
+  });
+
+  await assert.rejects(
+    h.gate.dispatch(h.record, h.sender, 'keyboard_press', {
+      key: 'Return',
+      modifiers: [],
+      [COMPUTER_USE_TOKEN_ARG]: session.token,
+    }),
+    /was not approved/,
+  );
+  assert.equal(requests.length, 1);
+  assert.deepEqual(requests[0].consequence, {
+    category: 'ambiguous',
+    summary: 'Press Return in Slack; this may submit or send content',
+    source: 'host-ambiguous-input',
+  });
+  assert.equal(h.nativeCalls.some(({ cmd }) => cmd === 'keyboard_press'), false);
+});
+
+test('approval-required apps require approval for semantic-free pixel clicks', async () => {
+  const requests = [];
+  const h = harness({
+    requestActionApproval: async (request) => {
+      requests.push(request);
+      return false;
+    },
+  });
+  h.setIdentity({
+    app_name: 'Slack',
+    bundle_id: 'com.tinyspeck.slackmacgap',
+    process_id: 300,
+  });
+  const session = await begin(h, {
+    targetApp: 'Slack',
+    permissionMode: 'autonomous',
+    actionIntent: { action: 'click', category: 'none', summary: '' },
+  });
+
+  await assert.rejects(
+    h.gate.dispatch(h.record, h.sender, 'mouse_click', {
+      x: 20,
+      y: 30,
+      [COMPUTER_USE_TOKEN_ARG]: session.token,
+    }),
+    /was not approved/,
+  );
+  assert.equal(requests.length, 1);
+  assert.equal(requests[0].consequence.source, 'host-ambiguous-input');
+  assert.equal(h.nativeCalls.some(({ cmd }) => cmd === 'mouse_click'), false);
+});
+
+test('ordinary apps cannot bypass action approval with semantic-free pixel clicks', async () => {
+  const requests = [];
+  const h = harness({
+    requestActionApproval: async (request) => {
+      requests.push(request);
+      return false;
+    },
+  });
+  const session = await begin(h, {
+    permissionMode: 'autonomous',
+    actionIntent: { action: 'click', category: 'none', summary: '' },
+  });
+
+  await assert.rejects(
+    h.gate.dispatch(h.record, h.sender, 'mouse_click', {
+      x: 20,
+      y: 30,
+      [COMPUTER_USE_TOKEN_ARG]: session.token,
+    }),
+    /was not approved/,
+  );
+  assert.equal(requests.length, 1);
+  assert.equal(requests[0].consequence.source, 'host-ambiguous-input');
+  assert.equal(h.nativeCalls.some(({ cmd }) => cmd === 'mouse_click'), false);
+});
+
+test('declared consequences retain their exact category and detail before ambiguous fallback', async () => {
+  const h = harness();
+  h.setIdentity({
+    app_name: 'Slack',
+    bundle_id: 'com.tinyspeck.slackmacgap',
+    process_id: 300,
+  });
+  const session = await begin(h, {
+    targetApp: 'Slack',
+    actionIntent: {
+      action: 'click',
+      category: 'purchase',
+      summary: 'Purchase the selected monthly plan',
+    },
+  });
+  await h.gate.dispatch(h.record, h.sender, 'mouse_click', {
+    x: 20,
+    y: 30,
+    [COMPUTER_USE_TOKEN_ARG]: session.token,
+  });
+  assert.deepEqual(h.actionApprovalRequests[0].consequence, {
+    category: 'purchase',
+    summary: 'Purchase the selected monthly plan',
+    source: 'declared-intent',
+  });
+});
+
+test('Windows preserves legacy visual input without requiring a macOS AX state_id', async () => {
+  const h = harness({ platform: 'win32' });
+  h.setIdentity({ app_name: 'notepad', bundle_id: 'notepad.exe', process_id: 500 });
+  const session = await begin(h, {
+    targetApp: 'notepad',
+    permissionMode: 'autonomous',
+    expectedStateId: 'unused-on-windows',
+    actionIntent: { action: 'move', category: 'none', summary: '' },
+  });
+  await h.gate.dispatch(h.record, h.sender, 'mouse_move', {
+    x: 20,
+    y: 30,
+    [COMPUTER_USE_TOKEN_ARG]: session.token,
+  });
+  assert.equal(h.nativeCalls.filter(({ cmd }) => cmd === 'mouse_move').length, 1);
+  assert.equal(h.nativeCalls.some(({ cmd }) => cmd === 'ax_snapshot'), false);
+});
+
+test('Windows locks the whole task after an ambiguous consequential native failure', async () => {
+  const h = harness({ platform: 'win32' });
+  h.setIdentity({ app_name: 'explorer', bundle_id: 'explorer.exe', process_id: 500 });
+  const first = await begin(h, {
+    targetApp: 'explorer',
+    permissionMode: 'autonomous',
+    expectedStateId: 'unused-on-windows',
+    actionIntent: {
+      action: 'click',
+      category: 'delete',
+      summary: 'Delete the selected disposable test file',
+    },
+  });
+  h.failNativeCommand('mouse_click');
+  await assert.rejects(
+    h.gate.dispatch(h.record, h.sender, 'mouse_click', {
+      x: 20,
+      y: 30,
+      [COMPUTER_USE_TOKEN_ARG]: first.token,
+    }),
+    /simulated mouse_click uncertainty/,
+  );
+
+  const nativeAttempts = h.nativeCalls.filter(({ cmd }) => cmd === 'mouse_click').length;
+  const second = await begin(h, {
+    targetApp: 'explorer',
+    toolCallId: 'tool-windows-retry',
+    permissionMode: 'autonomous',
+    expectedStateId: 'unused-on-windows',
+    actionIntent: {
+      action: 'click',
+      category: 'delete',
+      summary: 'Retry deleting the selected disposable test file',
+    },
+  });
+  await assert.rejects(
+    h.gate.dispatch(h.record, h.sender, 'mouse_click', {
+      x: 20,
+      y: 30,
+      [COMPUTER_USE_TOKEN_ARG]: second.token,
+    }),
+    /stop-ambiguous-side-effect/,
+  );
+  assert.equal(h.nativeCalls.filter(({ cmd }) => cmd === 'mouse_click').length, nativeAttempts);
+});
+
+test('Windows blocks same-task UI changes while consequential approval is pending', async () => {
+  let resolveApproval;
+  const h = harness({
+    platform: 'win32',
+    requestActionApproval: async () => new Promise((resolve) => {
+      resolveApproval = resolve;
+    }),
+  });
+  h.setIdentity({ app_name: 'notepad', bundle_id: 'notepad.exe', process_id: 500 });
+  const click = await begin(h, {
+    targetApp: 'notepad',
+    permissionMode: 'autonomous',
+    expectedStateId: 'unused-on-windows',
+    actionIntent: {
+      action: 'click',
+      category: 'send',
+      summary: 'Submit the prepared test content',
+    },
+  });
+  const pendingClick = h.gate.dispatch(h.record, h.sender, 'mouse_click', {
+    x: 20,
+    y: 30,
+    [COMPUTER_USE_TOKEN_ARG]: click.token,
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+
+  const scroll = await begin(h, {
+    targetApp: 'notepad',
+    toolCallId: 'tool-scroll-during-approval',
+    permissionMode: 'autonomous',
+    expectedStateId: 'unused-on-windows',
+    actionIntent: { action: 'scroll', category: 'none', summary: '' },
+  });
+  await assert.rejects(
+    h.gate.dispatch(h.record, h.sender, 'mouse_scroll', {
+      x: 20,
+      y: 30,
+      direction: 'down',
+      [COMPUTER_USE_TOKEN_ARG]: scroll.token,
+    }),
+    /verification of the previous action/,
+  );
+  assert.equal(h.nativeCalls.some(({ cmd }) => cmd === 'mouse_scroll'), false);
+
+  resolveApproval(true);
+  await pendingClick;
+  assert.equal(h.nativeCalls.filter(({ cmd }) => cmd === 'mouse_click').length, 1);
+});
+
+test('Windows blocks consequential approval while another control command is in flight', async () => {
+  let resolveScroll;
+  const approvalRequests = [];
+  const h = harness({
+    platform: 'win32',
+    nativeDispatch: async (cmd) => {
+      if (cmd === 'check_macos_permissions') {
+        return { screen_recording: true, accessibility: true };
+      }
+      if (cmd === 'mouse_scroll') {
+        return new Promise((resolve) => {
+          resolveScroll = resolve;
+        });
+      }
+      return { ok: true };
+    },
+    requestActionApproval: async (request) => {
+      approvalRequests.push(request);
+      return true;
+    },
+  });
+  h.setIdentity({ app_name: 'notepad', bundle_id: 'notepad.exe', process_id: 500 });
+  const scroll = await begin(h, {
+    targetApp: 'notepad',
+    permissionMode: 'autonomous',
+    expectedStateId: 'unused-on-windows',
+    actionIntent: { action: 'scroll', category: 'none', summary: '' },
+  });
+  const pendingScroll = h.gate.dispatch(h.record, h.sender, 'mouse_scroll', {
+    x: 20,
+    y: 30,
+    direction: 'down',
+    [COMPUTER_USE_TOKEN_ARG]: scroll.token,
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+
+  const click = await begin(h, {
+    targetApp: 'notepad',
+    toolCallId: 'tool-click-during-scroll',
+    permissionMode: 'autonomous',
+    expectedStateId: 'unused-on-windows',
+    actionIntent: {
+      action: 'click',
+      category: 'send',
+      summary: 'Submit the prepared test content',
+    },
+  });
+  await assert.rejects(
+    h.gate.dispatch(h.record, h.sender, 'mouse_click', {
+      x: 20,
+      y: 30,
+      [COMPUTER_USE_TOKEN_ARG]: click.token,
+    }),
+    /verification of the previous action/,
+  );
+  assert.equal(approvalRequests.length, 0);
+
+  resolveScroll({ ok: true });
+  await pendingScroll;
+});
+
+test('Windows releases the pre-approval task reservation when the user rejects', async () => {
+  const h = harness({ platform: 'win32', requestActionApproval: async () => false });
+  h.setIdentity({ app_name: 'notepad', bundle_id: 'notepad.exe', process_id: 500 });
+  const click = await begin(h, {
+    targetApp: 'notepad',
+    permissionMode: 'autonomous',
+    expectedStateId: 'unused-on-windows',
+    actionIntent: {
+      action: 'click',
+      category: 'send',
+      summary: 'Submit the prepared test content',
+    },
+  });
+  await assert.rejects(
+    h.gate.dispatch(h.record, h.sender, 'mouse_click', {
+      x: 20,
+      y: 30,
+      [COMPUTER_USE_TOKEN_ARG]: click.token,
+    }),
+    /was not approved/,
+  );
+
+  const move = await begin(h, {
+    targetApp: 'notepad',
+    toolCallId: 'tool-move-after-reject',
+    permissionMode: 'autonomous',
+    expectedStateId: 'unused-on-windows',
+    actionIntent: { action: 'move', category: 'none', summary: '' },
+  });
+  await h.gate.dispatch(h.record, h.sender, 'mouse_move', {
+    x: 20,
+    y: 30,
+    [COMPUTER_USE_TOKEN_ARG]: move.token,
+  });
+  assert.equal(h.nativeCalls.filter(({ cmd }) => cmd === 'mouse_move').length, 1);
+});
+
+test('Windows Explorer Delete cannot bypass action approval by declaring none', async () => {
+  const requests = [];
+  const h = harness({
+    platform: 'win32',
+    requestActionApproval: async (request) => {
+      requests.push(request);
+      return false;
+    },
+  });
+  h.setIdentity({ app_name: 'explorer', bundle_id: 'explorer.exe', process_id: 500 });
+  const session = await begin(h, {
+    targetApp: 'explorer',
+    permissionMode: 'autonomous',
+    expectedStateId: 'unused-on-windows',
+    actionIntent: { action: 'key', category: 'none', summary: '' },
+  });
+  await assert.rejects(
+    h.gate.dispatch(h.record, h.sender, 'keyboard_press', {
+      key: 'Delete',
+      modifiers: ['Shift'],
+      [COMPUTER_USE_TOKEN_ARG]: session.token,
+    }),
+    /was not approved/,
+  );
+  assert.equal(requests[0].consequence.category, 'delete');
+  assert.match(requests[0].consequence.summary, /Permanently delete/);
+  assert.equal(h.nativeCalls.some(({ cmd }) => cmd === 'keyboard_press'), false);
 });
 
 test('a risky native accessibility label cannot bypass approval by declaring none', async () => {
@@ -561,6 +1199,12 @@ test('Stop invalidates a session begin that is still checking OS permissions', a
         }
         return { screen_recording: true, accessibility: true };
       }
+      if (cmd === 'resolve_app_identity') {
+        return { app_name: 'Notes', bundle_id: 'com.apple.Notes', process_id: 100 };
+      }
+      if (cmd === 'ax_snapshot') {
+        return { session_id: 'ax-stop-test', app: 'Notes', elements: [] };
+      }
       return { ok: true };
     },
   });
@@ -731,6 +1375,14 @@ test('global input carries the expected app identity into the native helper', as
           throw new Error('Computer Use native target changed');
         }
       }
+      if (cmd === 'resolve_app_identity') {
+        return { app_name: 'Notes', bundle_id: 'com.apple.Notes', process_id: 100 };
+      }
+      if (cmd === 'ax_snapshot') {
+        assert.equal(args.expectedBundleId, 'com.apple.Notes');
+        assert.equal(args.expectedProcessId, 100);
+        return { session_id: 'ax-global-input', app: 'Notes', elements: [] };
+      }
       return { ok: true };
     },
   });
@@ -749,11 +1401,6 @@ test('global input carries the expected app identity into the native helper', as
 test('AX sessions stay bound to the authorized app and are cleaned explicitly', async () => {
   const h = harness();
   const session = await begin(h);
-  const snapshot = await h.gate.dispatch(h.record, h.sender, 'ax_snapshot', {
-    appName: 'Notes',
-    [COMPUTER_USE_TOKEN_ARG]: session.token,
-  });
-  assert.equal(snapshot.session_id, 'ax-session-1');
 
   await h.gate.dispatch(h.record, h.sender, 'ax_press', {
     sessionId: 'ax-session-1',

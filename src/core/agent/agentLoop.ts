@@ -51,7 +51,18 @@ import { extractParentConversationSummary } from './subagentLoop';
 import { runSubagent } from './subagentRunner';
 import type { SubagentProgressEvent } from './subagentLoop';
 import { createSubagentController } from './subagentAbort';
-import { allToolsUnparseable, MAX_NO_PROGRESS_TURNS, resolveMaxTurns, escalateMaxOutputTokens, shouldContinueTruncatedToolCalls } from './loopGuards';
+import {
+  allToolsUnparseable,
+  MAX_NO_PROGRESS_TURNS,
+  resolveMaxTurns,
+  escalateMaxOutputTokens,
+  shouldContinueTruncatedToolCalls,
+  detectSemanticToolLoop,
+  minimizeToolLoopObservation,
+  SEMANTIC_TOOL_LOOP_WINDOW,
+  type SemanticToolLoopReason,
+  type ToolLoopObservation,
+} from './loopGuards';
 import {
   drainSystemQueuedInputs,
   enqueueUserInput,
@@ -67,16 +78,24 @@ import { startConversationTrace, endConversationTrace, startGeneration } from '.
 import { calculateTurnCost } from '../llm/costTracker';
 import { formatPlannedStepsForPrompt } from './plannedStepsPrompt';
 import { getBuiltinSearchConfig } from '../capabilities';
-import { resolveCapabilities, resolveEffectiveContextWindow, computeReasoningParams, type ModelCapabilities } from '../llm/modelCapabilities';
+import { resolveAgentModelCapabilities, resolveCapabilities, resolveEffectiveContextWindow, computeReasoningParams, type ModelCapabilities } from '../llm/modelCapabilities';
 import { applyDeclaredCapabilities } from '../llm/applyDeclaredCapabilities';
 import { resolveModelDeclared } from '../llm/resolveModelDeclared';
 import { rehydrateForSend, type ImageBase64Cache } from '../llm/imageRehydration';
 import { TOOL_NAMES, isDisplayHiddenStepBackedTool } from '../tools/toolNames';
 import { prefetchTools } from '../tools/toolPrefetch';
-import { classifyTools, buildDeferredToolsSummary } from '../tools/toolSearch';
+import {
+  classifyTools,
+  buildDeferredToolsSummary,
+  promoteSearchedDeferredTools,
+} from '../tools/toolSearch';
 import { resolveEffectiveLlmCreds, EnterpriseLlmUnavailableError } from '../enterprise/llm-resolver';
 import { createLogger } from '../logging/logger';
 import { reportError } from '@/utils/consoleError';
+import {
+  hashComputerUseTaskSummary,
+  latestUserTaskSummary,
+} from '../capabilityPlugins/computerUseResume';
 
 const logger = createLogger('agentLoop');
 
@@ -257,6 +276,7 @@ export function resolveTools(
   blockedTools?: string[],
   prefetchContext?: { userInput: string; computerUseEnabled: boolean; activeSkills: import('../../types').Skill[]; turnCount: number },
   allowedTools?: string[],
+  conversationId?: string,
 ): { tools: ToolDefinition[]; deferredTools: ToolDefinition[]; inputValidators: Map<string, (input: Record<string, unknown>) => boolean> } {
   let tools = toolInvoker.getAllTools();
   let inputValidators = new Map<string, (input: Record<string, unknown>) => boolean>();
@@ -267,7 +287,7 @@ export function resolveTools(
   if (prefetchContext && !route.skill?.allowedTools && !allowedTools?.length) {
     const additionalToolNames = prefetchTools(prefetchContext);
     const prefetchedSet = new Set(additionalToolNames);
-    const classified = classifyTools(tools, prefetchedSet);
+    const classified = classifyTools(tools, prefetchedSet, conversationId);
     tools = classified.coreTools;
     deferredTools = classified.deferredTools;
   }
@@ -438,6 +458,20 @@ export interface AgentLoopOptions {
    * the conversation snapshot instead of appending a duplicate.
    */
   prePersistedUserMessageId?: string;
+  /** Process-local structured diagnostics hook. The shell and sidecar inject
+   * their own sinks; it is deliberately omitted from the wire contract. */
+  runtimeEvent?: (event: string, attributes: {
+    conversationId?: string;
+    loopId?: string;
+    routeType?: string;
+    turnIndex?: number;
+    activeToolCount?: number;
+    deferredToolCount?: number;
+    computerUseExposed?: boolean;
+    modelId?: string;
+    modelTier?: string;
+    capabilitySource?: string;
+  }) => void;
 }
 
 /** Exit reason returned by runAgentLoop so callers (scheduler, trigger) can
@@ -591,6 +625,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
     settings.activeModel;
   const settingsForModel: typeof settings =
     baseModel === settings.activeModel ? settings : { ...settings, activeModel: baseModel };
+  const entrySettingsReader: SettingsReader = { getSnapshot: () => settingsForModel };
 
   // Generate a unique loopId for this agent loop - all messages in this loop share it.
   // Shell dispatch (P1-3B-3B) can override via options.loopId — see that
@@ -668,9 +703,14 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
     conversationId,
     userMessage,
     options?.imContext,
-    { settings, settingsForModel },
+    { settingsForModel },
     abortController.signal,
   );
+  options?.runtimeEvent?.('agent_route_selected', {
+    conversationId,
+    loopId,
+    routeType: route.type,
+  });
 
   // Build tool execution context — provides resolved workspace for tools like update_memory.
   // Priority: IM-injected path > conversation's own stored path > global store fallback.
@@ -695,6 +735,9 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
     permissionMode: _convForContext?.permissionMode
       ?? getSettingsReader().getSnapshot().permissionMode,
     abortSignal: abortController.signal,
+    taskSummaryHash: await hashComputerUseTaskSummary(
+      latestUserTaskSummary(_convForContext?.messages ?? []) ?? userMessage,
+    ),
   };
   let computerUseTaskEndPromise: Promise<void> | null = null;
   const endComputerUseTaskLease = (): Promise<void> => {
@@ -715,7 +758,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
   // entryOrchestration.ts's precomputeOrchestration and the shell
   // dispatcher's buildAgentRunParams — single source, see that module's
   // doc); setActiveModel's side effect stays uniquely here.
-  const { effectiveModelId, entryModelDeclared } = resolveEntryModel(route, settings, settingsForModel);
+  const { effectiveModelId, entryModelDeclared } = resolveEntryModel(route, settingsForModel);
   // Set active model for per-model token calibration
   setActiveModel(effectiveModelId);
 
@@ -726,6 +769,15 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
     resolveCapabilities(effectiveModelId),
     entryModelDeclared,
   ).vision;
+  const entryProvider = getActiveProvider(settingsForModel);
+  const entryAgentCapabilities = resolveAgentModelCapabilities({
+    modelId: effectiveModelId,
+    providerSource: entryProvider?.source,
+    declared: entryModelDeclared,
+  });
+  toolContext.computerUseTier = entryAgentCapabilities.computerUseTier;
+  toolContext.modelCapabilitySource = entryAgentCapabilities.capabilitySource;
+  toolContext.modelId = effectiveModelId;
 
   // `systemPromptSections` (active skills are injected dynamically per-turn)
   // was already resolved above, together with `route`, via
@@ -857,6 +909,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
         onProgress,
         imContext: options?.imContext,
         parentConversationId: conversationId,
+        settingsReader: entrySettingsReader,
       });
 
       // runSubagentLoop RETURNS a (partial/cancelled) SubagentResult on abort
@@ -997,6 +1050,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
   // of parse errors). One bad turn is tolerated so the _parse_error results give
   // the model a chance to recover.
   let consecutiveNoProgress = 0;
+  const semanticToolHistory: ToolLoopObservation[] = [];
   const autoCompactTracker = new AutoCompactTracker();
   let maxOutputTokensRecoveryCount = 0;
   const MAX_OUTPUT_TOKENS_RECOVERY_LIMIT = 3;
@@ -1109,7 +1163,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
         setComputerUseActive(false);
       }).catch(() => {});
       import('../tools/definitions/computerTools').then(({ closeAxSession }) => {
-        closeAxSession().catch(() => {});
+        closeAxSession(conversationId, loopId).catch(() => {});
       }).catch(() => {});
       import('../session/checkpoint').then(({ clearCheckpoint }) => {
         clearCheckpoint(conversationId);
@@ -1173,9 +1227,33 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
         activeSkills: activeSkillObjects,
         turnCount,
       };
-      const { tools: rawTools, deferredTools: rawDeferredTools, inputValidators } = resolveTools(toolInvoker, route, !!builtinWebSearch, options?.blockedTools, prefetchCtx, options?.allowedTools);
-      const tools = noTools ? [] : rawTools;
+      const { tools: rawTools, deferredTools: rawDeferredTools, inputValidators } = resolveTools(toolInvoker, route, !!builtinWebSearch, options?.blockedTools, prefetchCtx, options?.allowedTools, conversationId);
       const deferredTools = noTools ? [] : rawDeferredTools;
+      // tool_search is useful only when the host has an actual deferred catalog.
+      // Hiding it when the catalog is empty prevents a weak model from spending
+      // turns searching capabilities that are already loaded or policy-blocked.
+      const tools = noTools
+        ? []
+        : deferredTools.length === 0
+          ? rawTools.filter(tool => tool.name !== TOOL_NAMES.TOOL_SEARCH)
+          : rawTools;
+      options?.runtimeEvent?.('agent_tool_exposure', {
+        conversationId,
+        loopId,
+        routeType: route.type,
+        turnIndex: turnCount,
+        activeToolCount: tools.length,
+        deferredToolCount: deferredTools.length,
+        computerUseExposed: tools.some((tool) => tool.name === TOOL_NAMES.COMPUTER),
+        modelId: effectiveModelId,
+        modelTier: toolContext.computerUseTier,
+        capabilitySource: toolContext.modelCapabilitySource,
+      });
+      // Keep the deferred exposure with the trusted execution context rather
+      // than module state. The Agent Loop may live in the sidecar while the
+      // real tool registry executes in the renderer; this name-only snapshot
+      // safely crosses that boundary and is re-filtered by the shell registry.
+      toolContext.deferredToolNames = deferredTools.map(tool => tool.name);
       const toolTokens = estimateToolSchemaTokens(tools);
       const dynamicCapabilities = buildDynamicCapabilities(tools);
       const deferredToolsSummary = buildDeferredToolsSummary(deferredTools);
@@ -1936,6 +2014,8 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
         }).catch(() => {});
       }
 
+      let semanticLoopReason: SemanticToolLoopReason | null = null;
+
       // If there are tool calls, execute them via toolExecutor
       if (collectedToolCalls.length > 0) {
         const confirmCb = options?.commandConfirmCallback ?? requestCommandConfirmation;
@@ -1959,11 +2039,33 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
           continueLoop,
           contextUsagePercent: usagePercent,
           toolInvoker,
+          settingsReader: entrySettingsReader,
         });
         if (batchResult.requiresUserRecovery) {
           awaitingUserRecovery = true;
           continueLoop = false;
         }
+        collectedToolCalls.forEach((toolCall, index) => {
+          const observation = batchResult.observations[index];
+          if (
+            toolCall.name === TOOL_NAMES.TOOL_SEARCH
+            && observation
+            && !observation.error
+          ) {
+            promoteSearchedDeferredTools(
+              toolCall.input,
+              deferredTools,
+              conversationId,
+            );
+          }
+        });
+        semanticToolHistory.push(
+          ...batchResult.observations.map(minimizeToolLoopObservation),
+        );
+        if (semanticToolHistory.length > SEMANTIC_TOOL_LOOP_WINDOW) {
+          semanticToolHistory.splice(0, semanticToolHistory.length - SEMANTIC_TOOL_LOOP_WINDOW);
+        }
+        semanticLoopReason = detectSemanticToolLoop(semanticToolHistory);
 
         // ★ Persist this turn's full message state (including completed tool calls)
         // to disk RIGHT NOW. We must use replaceMessageById (not updateLastMessage)
@@ -1990,7 +2092,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
           // (line ~1304). Without it, freshTools is the full unfiltered catalog
           // while `tools` is the prefetched subset, so every deferred tool shows
           // up as falsely "added" in the injected tools-changed notification.
-          const { tools: freshRawTools } = resolveTools(toolInvoker, route, !!builtinWebSearch, options?.blockedTools, prefetchCtx, options?.allowedTools);
+          const { tools: freshRawTools } = resolveTools(toolInvoker, route, !!builtinWebSearch, options?.blockedTools, prefetchCtx, options?.allowedTools, conversationId);
           const freshTools = noTools ? [] : freshRawTools;
           const freshNames = new Set(freshTools.map(t => t.name));
           const added = freshTools.filter(t => !toolNames.has(t.name));
@@ -2071,7 +2173,16 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
       // via the shared allToolsUnparseable predicate. Checked before the queued-input
       // override below, so a present user can still rescue the loop by typing.
       let noProgressAborted = false;
-      if (allToolsUnparseable(collectedToolCalls)) {
+      if (semanticLoopReason && !awaitingUserRecovery) {
+        continueLoop = false;
+        noProgressAborted = true;
+        logger.warn('Semantic tool loop stopped', {
+          conversationId,
+          loopId,
+          reason: semanticLoopReason,
+          observationCount: semanticToolHistory.length,
+        });
+      } else if (allToolsUnparseable(collectedToolCalls)) {
         consecutiveNoProgress++;
         if (consecutiveNoProgress >= MAX_NO_PROGRESS_TURNS) {
           continueLoop = false;
@@ -2100,6 +2211,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
         // tolerance budget so the rescue actually buys the intended retries, not
         // just one more turn before the (still-3) counter trips again.
         consecutiveNoProgress = 0;
+        semanticToolHistory.length = 0;
       }
 
       if (!continueLoop) {
@@ -2109,7 +2221,9 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
         if (noProgressAborted) {
           chatDelta.appendText(
             conversationId,
-            `\n\n${getI18n().chat.noProgressStopped}`,
+            `\n\n${semanticLoopReason
+              ? getI18n().chat.semanticLoopStopped
+              : getI18n().chat.noProgressStopped}`,
             assistantMsgId,
           );
         }
@@ -2144,7 +2258,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
         }).catch(() => {});
         // Close any open AX session (releases CFRetain'd element refs)
         import('../tools/definitions/computerTools').then(({ closeAxSession }) => {
-          closeAxSession().catch(() => {});
+          closeAxSession(conversationId, loopId).catch(() => {});
         }).catch(() => {});
         // Clear crash recovery checkpoint — loop completed normally
         import('../session/checkpoint').then(({ clearCheckpoint }) => {
@@ -2313,7 +2427,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
         }).catch(() => {});
         // Close any open AX session (releases CFRetain'd element refs)
         import('../tools/definitions/computerTools').then(({ closeAxSession }) => {
-          closeAxSession().catch(() => {});
+          closeAxSession(conversationId, loopId).catch(() => {});
         }).catch(() => {});
         // Set status back to idle on cancel
         chatDelta.setConversationStatus(conversationId, 'idle');
@@ -2397,7 +2511,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
       }).catch(() => {});
       // Close any open AX session (releases CFRetain'd element refs)
       import('../tools/definitions/computerTools').then(({ closeAxSession }) => {
-        closeAxSession().catch(() => {});
+        closeAxSession(conversationId, loopId).catch(() => {});
       }).catch(() => {});
       // Clear crash recovery checkpoint — loop ended with error
       import('../session/checkpoint').then(({ clearCheckpoint }) => {

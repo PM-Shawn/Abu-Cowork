@@ -1,0 +1,84 @@
+{
+  "schemaVersion": 1,
+  "suiteId": "computer-use-golden-journeys",
+  "productStatus": "candidate-apps-awaiting-freeze",
+  "requiredRepeatRuns": 3,
+  "journeys": [
+    {
+      "id": "gj-finder-structured-observe",
+      "title": "无视觉模型读取 Finder 当前状态",
+      "platform": "macos",
+      "candidateApp": { "name": "Finder", "bundleId": "com.apple.finder" },
+      "modelTier": "structured",
+      "requiredPermissions": { "screenRead": false, "uiControl": true },
+      "steps": [
+        { "kind": "observe", "action": "get_app_state", "consequence": "none" },
+        { "kind": "assert", "condition": "state_id-present" },
+        { "kind": "assert", "condition": "ax-elements-present" },
+        { "kind": "assert", "condition": "no-image-required" }
+      ],
+      "success": ["target-bundle-matches", "state-id-issued", "no-user-content-in-trace"]
+    },
+    {
+      "id": "gj-textedit-structured-draft",
+      "title": "无视觉模型在 TextEdit 输入未发送草稿并验证",
+      "platform": "macos",
+      "candidateApp": { "name": "TextEdit", "bundleId": "com.apple.TextEdit" },
+      "modelTier": "structured",
+      "requiredPermissions": { "screenRead": false, "uiControl": true },
+      "steps": [
+        { "kind": "observe", "action": "get_app_state", "consequence": "none" },
+        { "kind": "write", "action": "type", "consequence": "none", "requiresStateId": true, "expectedEffect": "element-value" },
+        { "kind": "verify", "action": "get_app_state", "expectedStatus": "verified-change" }
+      ],
+      "success": ["single-native-attempt", "host-receipt-present", "typed-value-observed"]
+    },
+    {
+      "id": "gj-calculator-structured-click",
+      "title": "无视觉模型点击 Calculator 数字键并验证显示变化",
+      "platform": "macos",
+      "candidateApp": { "name": "Calculator", "bundleId": "com.apple.calculator" },
+      "modelTier": "structured",
+      "requiredPermissions": { "screenRead": false, "uiControl": true },
+      "steps": [
+        { "kind": "observe", "action": "get_app_state", "consequence": "none" },
+        { "kind": "write", "action": "click", "consequence": "none", "requiresStateId": true, "expectedEffect": "element-value" },
+        { "kind": "verify", "action": "get_app_state", "expectedStatus": "verified-change" }
+      ],
+      "success": ["single-native-attempt", "host-receipt-present", "display-value-changed"]
+    },
+    {
+      "id": "gj-finder-full-screenshot-fallback",
+      "title": "视觉模型在 AX 不足时安全使用截图回退",
+      "platform": "macos",
+      "candidateApp": { "name": "Finder", "bundleId": "com.apple.finder" },
+      "modelTier": "full",
+      "requiredPermissions": { "screenRead": true, "uiControl": true },
+      "steps": [
+        { "kind": "observe", "action": "get_app_state", "consequence": "none" },
+        { "kind": "observe", "action": "screenshot", "consequence": "none" },
+        { "kind": "assert", "condition": "abu-window-excluded" },
+        { "kind": "assert", "condition": "target-remains-pinned" }
+      ],
+      "success": ["screenshot-returned", "no-write-attempt", "trace-excludes-image-content"]
+    },
+    {
+      "id": "gj-textedit-helper-recovery",
+      "title": "Helper 崩溃后旧状态失效并只读恢复",
+      "platform": "macos",
+      "candidateApp": { "name": "TextEdit", "bundleId": "com.apple.TextEdit" },
+      "modelTier": "structured",
+      "requiredPermissions": { "screenRead": false, "uiControl": true },
+      "steps": [
+        { "kind": "observe", "action": "get_app_state", "consequence": "none" },
+        { "kind": "fault", "action": "kill-helper" },
+        { "kind": "assert", "condition": "old-state-id-rejected" },
+        { "kind": "observe", "action": "get_app_state", "consequence": "none" },
+        { "kind": "assert", "condition": "new-helper-generation" },
+        { "kind": "assert", "condition": "no-write-replayed" }
+      ],
+      "success": ["helper-restarted", "fresh-state-id-issued", "old-ax-session-rejected"]
+    }
+  ],
+  "runRecords": []
+}

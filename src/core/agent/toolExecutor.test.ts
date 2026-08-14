@@ -10,6 +10,7 @@ const mocks = vi.hoisted(() => ({
   executeAnyTool: vi.fn(),
   emitHook: vi.fn(),
   route: vi.fn(),
+  setLoopContext: vi.fn(),
 }));
 
 vi.mock('./ports/chatDelta', () => ({
@@ -51,7 +52,7 @@ vi.mock('./computerUseStatus', () => ({
 }));
 
 vi.mock('./permissionBridge', () => ({
-  setLoopContext: vi.fn(),
+  setLoopContext: (...args: unknown[]) => mocks.setLoopContext(...args),
   clearLoopContext: vi.fn(),
 }));
 
@@ -112,6 +113,7 @@ function makeParams(
     filePermCb: async () => true,
     toolContext: {} as ToolExecutionContext,
     toolInvoker: invoker,
+    settingsReader: { getSnapshot: () => ({}) as never },
     continueLoop: true,
   };
 }
@@ -144,7 +146,28 @@ describe('executeToolBatch · hard run restrictions', () => {
     expect(result).toEqual({
       mcpChanged: false,
       requiresUserRecovery: false,
+      observations: [{
+        name: 'run_command',
+        input: {},
+        result: 'Error: tool "run_command" is blocked for this agent run',
+        error: true,
+      }],
     });
+  });
+
+  it('installs the frozen parent settings reader for nested delegate tools', async () => {
+    const executeAnyTool = vi.fn().mockResolvedValue('ok');
+    const params = makeParams(makeToolCall('delegate_to_agent'), makeInvoker(executeAnyTool));
+
+    await executeToolBatch(params);
+
+    expect(mocks.setLoopContext).toHaveBeenCalledWith(
+      'loop-1',
+      expect.objectContaining({
+        conversationId: 'conv-1',
+        settingsReader: params.settingsReader,
+      }),
+    );
   });
 
   it('fails closed before invoking a tool outside the per-run whitelist', async () => {
@@ -167,6 +190,28 @@ describe('executeToolBatch · hard run restrictions', () => {
       undefined,
     );
   });
+
+  it.each(['tool_search', 'use_skill', 'read_file', 'run_command'])(
+    'recovery allowlist blocks a guessed %s call before registry execution',
+    async (toolName) => {
+      const executeAnyTool = vi.fn();
+
+      const result = await executeToolBatch(
+        makeParams(
+          makeToolCall(toolName),
+          makeInvoker(executeAnyTool),
+          undefined,
+          ['computer', 'ask_user_question'],
+        ),
+      );
+
+      expect(executeAnyTool).not.toHaveBeenCalled();
+      expect(result.observations[0]).toMatchObject({
+        name: toolName,
+        error: true,
+      });
+    },
+  );
 
   it('allows a tool matching a wildcard whitelist pattern', async () => {
     const executeAnyTool = vi.fn().mockResolvedValue('ok');
@@ -232,6 +277,12 @@ describe('executeToolBatch · hard run restrictions', () => {
     expect(result).toEqual({
       mcpChanged: false,
       requiresUserRecovery: true,
+      observations: [{
+        name: 'run_command',
+        input: {},
+        result: 'blocked',
+        error: true,
+      }],
     });
   });
 });

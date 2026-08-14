@@ -1,0 +1,36 @@
+{
+  "schemaVersion": 1,
+  "suiteId": "computer-use-wp0",
+  "cases": [
+    { "id": "model-deepseek-builtin", "domain": "model-capability", "input": { "modelId": "deepseek-chat", "providerSource": "builtin" }, "expected": { "computerUseTier": "structured", "vision": false, "capabilitySource": "builtin" } },
+    { "id": "model-deepseek-custom-undeclared", "domain": "model-capability", "input": { "modelId": "deepseek-chat", "providerSource": "custom" }, "expected": { "computerUseTier": "unknown", "toolCalling": "text-recovery", "capabilitySource": "fallback" } },
+    { "id": "model-custom-structured-declared", "domain": "model-capability", "input": { "modelId": "private-text-model", "providerSource": "custom", "declared": { "supportsTools": true, "supportsImages": false } }, "expected": { "computerUseTier": "structured", "vision": false, "capabilitySource": "user-declared" } },
+    { "id": "model-gpt-builtin-full", "domain": "model-capability", "input": { "modelId": "gpt-4o", "providerSource": "builtin" }, "expected": { "computerUseTier": "full", "vision": true, "toolCalling": "native" } },
+    { "id": "model-custom-tools-disabled", "domain": "model-capability", "input": { "modelId": "gpt-4o", "providerSource": "custom", "declared": { "supportsTools": false, "supportsImages": true } }, "expected": { "computerUseTier": "unsupported", "toolCalling": "none", "capabilitySource": "user-declared" } },
+    { "id": "model-unknown-source", "domain": "model-capability", "input": { "modelId": "unverified-local-model" }, "expected": { "computerUseTier": "unknown", "toolCalling": "text-recovery", "capabilitySource": "fallback" } },
+
+    { "id": "permission-ax-only", "domain": "permission-requirements", "input": { "path": "ax" }, "expected": { "screenRead": false, "uiControl": true } },
+    { "id": "permission-screen-read-only", "domain": "permission-requirements", "input": { "path": "screen-read" }, "expected": { "screenRead": true, "uiControl": false } },
+    { "id": "permission-pixel-control", "domain": "permission-requirements", "input": { "path": "pixel-control" }, "expected": { "screenRead": true, "uiControl": true } },
+
+    { "id": "permission-normalize-both-granted", "domain": "permission-normalization", "input": { "screen_recording": true, "accessibility": true }, "expected": { "screenRead": true, "uiControl": true, "restartRequired": false } },
+    { "id": "permission-normalize-accessibility-missing", "domain": "permission-normalization", "input": { "screen_recording": true, "accessibility": false }, "expected": { "screenReadStatus": "granted", "uiControlStatus": "not-determined", "restartRequired": false } },
+    { "id": "permission-normalize-screen-relaunch", "domain": "permission-normalization", "input": { "screen_recording": false, "accessibility": true, "screen_recording_status": "granted-relaunch-required" }, "expected": { "screenRead": false, "uiControl": true, "restartRequired": true } },
+    { "id": "permission-normalize-restricted", "domain": "permission-normalization", "input": { "screen_recording": false, "accessibility": false, "screen_recording_status": "restricted", "accessibility_status": "denied" }, "expected": { "screenReadStatus": "restricted", "uiControlStatus": "denied", "restartRequired": false } },
+
+    { "id": "progress-first-no-change", "domain": "progress-policy", "input": { "statuses": ["no-change"], "consequence": "none" }, "expected": { "decisions": ["continue"] } },
+    { "id": "progress-third-no-change-recovers", "domain": "progress-policy", "input": { "statuses": ["no-change", "no-change", "no-change"], "consequence": "none" }, "expected": { "decisions": ["continue", "continue", "recover"] } },
+    { "id": "progress-after-recovery-stops", "domain": "progress-policy", "input": { "statuses": ["no-change", "no-change", "no-change", "no-change", "no-change"], "consequence": "none" }, "expected": { "decisions": ["continue", "continue", "recover", "continue", "stop-no-progress"] } },
+    { "id": "progress-change-resets-counter", "domain": "progress-policy", "input": { "statuses": ["no-change", "no-change", "verified-change", "no-change"], "consequence": "none" }, "expected": { "decisions": ["continue", "continue", "continue", "continue"] } },
+    { "id": "progress-ambiguous-consequence-stops", "domain": "progress-policy", "input": { "statuses": ["ambiguous"], "consequence": "send" }, "expected": { "decisions": ["stop-ambiguous-side-effect"] } },
+
+    { "id": "verify-state-changed", "domain": "effect-verification", "input": { "beforeValue": "draft", "afterValue": "saved" }, "expected": { "status": "verified-change", "reason": "state-changed" } },
+    { "id": "verify-state-unchanged", "domain": "effect-verification", "input": { "beforeValue": "draft", "afterValue": "draft" }, "expected": { "status": "no-change", "reason": "state-unchanged" } },
+    { "id": "verify-observation-failed", "domain": "effect-verification", "input": { "beforeValue": "draft", "after": null }, "expected": { "status": "ambiguous", "reason": "observation-failed" } },
+    { "id": "verify-target-changed", "domain": "effect-verification", "input": { "beforeValue": "draft", "afterValue": "saved", "afterBundleId": "com.apple.finder" }, "expected": { "status": "ambiguous", "reason": "target-changed" } },
+    { "id": "verify-specific-value", "domain": "effect-verification", "input": { "beforeValue": "draft", "afterValue": "sent", "expectedValue": "sent" }, "expected": { "status": "verified-change", "reason": "expected-effect-observed" } },
+
+    { "id": "diagnostic-secret-redaction", "domain": "diagnostic-scrub", "input": { "event": "renderer.computer_use_permission", "attributes": { "stage": "authorization=Bearer abcdefghijklmnop", "prompt": "private text" } }, "expected": { "stageContains": "[REDACTED]", "absentKeys": ["prompt"] } },
+    { "id": "diagnostic-content-fields-dropped", "domain": "diagnostic-scrub", "input": { "event": "renderer.agent_tool_exposure", "attributes": { "activeToolCount": 18, "computerUseExposed": true, "toolNames": ["computer", "private-tool"] } }, "expected": { "activeToolCount": 18, "computerUseExposed": true, "absentKeys": ["toolNames"] } }
+  ]
+}

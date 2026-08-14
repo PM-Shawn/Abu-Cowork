@@ -7,6 +7,27 @@ All notable changes to Abu are documented here. Format based on [Keep a Changelo
 > [`CHANGELOG.zh-CN.md`](./CHANGELOG.zh-CN.md); keep both in sync per release (see
 > `RELEASING.md`). Entries before v0.31.0 predate this split and remain bilingual.
 
+## v0.38.0 · 2026-08-14
+
+### Features
+
+- **Reliable Computer Use loop** — Desktop control now follows an enforced Observe → Act → Verify cycle. Every writable action consumes a short-lived, single-use observation state bound to the target app and process, then requires a fresh observation before another action.
+- **Guided permissions and recovery** — Abu requests only the macOS permissions required by the current task, explains when a relaunch is needed, and can return to the original conversation without reusing an old authorization or accessibility session.
+- **Clear model capability modes** — Models are shown as full, structured, unsupported, or unknown. Tool-capable models without image input, including supported DeepSeek configurations, can use structured accessibility data without being presented as visually capable.
+
+### Reliability and Safety
+
+- Consequential actions are classified again by the Electron host and require a one-attempt confirmation; an ambiguous native result stops the task instead of retrying a possible side effect.
+- Stale observations, target-process changes, helper restarts, renderer reloads, and duplicate writes fail closed. Windows desktop control also serializes writes across approval and native-input paths.
+- Repeated no-change observations allow one bounded recovery attempt, then stop with an explicit result rather than looping indefinitely.
+
+### Diagnostics
+
+- The capability page and task status now show the active target, capability mode, permission state, and Observe/Act/Verify phase.
+- Local runtime traces correlate the conversation, loop, tool call, observation state, helper generation, and verification result through an allowlist that excludes prompts, screenshots, accessibility labels, user input, and tool-result bodies.
+
+**Full Changelog**: https://github.com/PM-Shawn/Abu-Cowork/compare/v0.37.4...v0.38.0
+
 ## v0.37.4 · 2026-08-14
 
 **Root cause**: A stopped turn and its queued follow-ups were reconciled through overlapping renderer and sidecar lifecycle paths. That allowed a queued message to start before the active reply had settled, disappear during state replacement, or leave an empty assistant row after Stop.

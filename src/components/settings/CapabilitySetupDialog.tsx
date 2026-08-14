@@ -7,6 +7,17 @@ import {
   subscribeCapabilitySetup,
 } from '@/core/capabilityPlugins/setupBridge';
 import CapabilitiesSection from './sections/CapabilitiesSection';
+import { restartApp } from '@/core/updates/checker';
+import {
+  clearComputerUseResumeToken,
+  hashComputerUseTaskSummary,
+  latestUserTaskSummary,
+  saveComputerUseResumeToken,
+} from '@/core/capabilityPlugins/computerUseResume';
+import { routedComputerUseTaskSummary } from '@/core/capabilityPlugins/computerUseResume';
+import { useChatStore } from '@/stores/chatStore';
+import { runAgentLoopDispatched } from '@/core/agent/agentLoopRunner';
+import { rehydrateImageData } from '@/core/llm/imageRehydration';
 
 /**
  * Task-local capability onboarding. The originating tool call remains
@@ -45,6 +56,57 @@ export default function CapabilitySetupDialog() {
 
   const cancel = () => resolveCapabilitySetup(request.id, false);
   const complete = () => resolveCapabilitySetup(request.id, true);
+  const resumeAfterRelaunch = async () => {
+    resolveCapabilitySetup(request.id, true);
+    const chat = useChatStore.getState();
+    const conversation = chat.conversations[request.conversationId];
+    const message = [...(conversation?.messages ?? [])]
+      .reverse()
+      .find((item) => item.role === 'user');
+    if (!conversation || !message || conversation.status === 'running') return;
+    const summary = routedComputerUseTaskSummary(message);
+    if (!summary) return;
+    const [rehydrated] = await rehydrateImageData(
+      [message],
+      request.conversationId,
+      conversation.workspacePath ?? null,
+    );
+    const images = Array.isArray(rehydrated?.content)
+      ? rehydrated.content
+        .filter((item) => item.type === 'image' && item.source.data)
+        .map((item, index) => ({
+          id: `permission-resume-${index}`,
+          data: item.type === 'image' ? item.source.data : '',
+          mediaType: item.type === 'image' ? item.source.media_type : 'image/png' as const,
+        }))
+      : [];
+    if (message.loopId) chat.deleteLoopMessages(request.conversationId, message.loopId);
+    else chat.deleteMessagesFrom(request.conversationId, message.id);
+    await runAgentLoopDispatched(
+      request.conversationId,
+      summary,
+      images.length > 0 ? { images } : undefined,
+    );
+  };
+  const relaunch = async () => {
+    let resumableRequest = request;
+    if (!request.taskSummaryHash) {
+      const conversation = useChatStore.getState().conversations[request.conversationId];
+      const summary = latestUserTaskSummary(conversation?.messages ?? []);
+      if (!summary) return;
+      resumableRequest = {
+        ...request,
+        taskSummaryHash: await hashComputerUseTaskSummary(summary),
+      };
+    }
+    if (!saveComputerUseResumeToken(resumableRequest)) return;
+    resolveCapabilitySetup(request.id, false);
+    try {
+      await restartApp();
+    } catch {
+      clearComputerUseResumeToken();
+    }
+  };
 
   return (
     <div
@@ -74,9 +136,11 @@ export default function CapabilitySetupDialog() {
           key={request.id}
           setupTarget={request.target}
           requestedByTask
+          computerUseRequirements={request.computerUseRequirements}
           setupOnly
-          onSetupComplete={complete}
+          onSetupComplete={request.source === 'relaunch' ? resumeAfterRelaunch : complete}
           onSetupCancel={cancel}
+          onSetupRelaunch={request.target === 'computer' ? relaunch : undefined}
         />
       </div>
     </div>

@@ -11,10 +11,14 @@
  */
 
 import { writeTextFile, remove, mkdir, exists } from '@tauri-apps/plugin-fs';
+import { invoke } from '@tauri-apps/api/core';
 import { appDataDir } from '@tauri-apps/api/path';
 import { joinPath } from '@/utils/pathUtils';
 import { useWorkspaceStore } from '@/stores/workspaceStore';
+import { useSettingsStore } from '@/stores/settingsStore';
 import { getI18n } from '@/i18n';
+import { checkComputerUsePermissions } from '@/core/agent/computerUsePermission';
+import { isMacOS } from '@/utils/platform';
 import { mapPermissionsError } from '../errorMap';
 import type { CheckResult } from '../types';
 
@@ -63,6 +67,95 @@ export async function runPermissionsChecks(): Promise<CheckResult[]> {
   const out: CheckResult[] = [];
   const ws = useWorkspaceStore.getState().currentPath;
   const ts = Date.now();
+
+  // Computer Use is opt-in. Once enabled, its runtime dependencies become part
+  // of the overall verdict so filesystem checks alone cannot yield false green.
+  if (useSettingsStore.getState().computerUseEnabled) {
+    const healthStartedAt = Date.now();
+    try {
+      const health = await invoke<{ pong?: boolean }>('native_helper_health');
+      const healthy = health?.pong === true;
+      out.push({
+        id: 'permissions:computer-helper',
+        category: 'permissions',
+        name: t.diagnostic.permComputerHelper,
+        status: healthy ? 'passed' : 'failed',
+        metric: healthy ? t.diagnostic.computerAvailable : t.diagnostic.computerUnavailable,
+        ...(!healthy ? { errorMessage: t.diagnostic.computerHelperUnavailable } : {}),
+        checkedAt: Date.now(),
+        durationMs: Date.now() - healthStartedAt,
+        freshness: 'fresh',
+      });
+    } catch (error) {
+      out.push({
+        id: 'permissions:computer-helper',
+        category: 'permissions',
+        name: t.diagnostic.permComputerHelper,
+        status: 'failed',
+        metric: t.diagnostic.computerUnavailable,
+        errorMessage: t.diagnostic.computerHelperUnavailable,
+        errorDetail: error instanceof Error ? error.message : String(error),
+        checkedAt: Date.now(),
+        durationMs: Date.now() - healthStartedAt,
+        freshness: 'unknown',
+      });
+    }
+
+    if (isMacOS()) {
+      const permissionStartedAt = Date.now();
+      const permissions = await checkComputerUsePermissions();
+      if (!permissions) {
+        out.push({
+          id: 'permissions:computer-status',
+          category: 'permissions',
+          name: t.diagnostic.permComputerStatus,
+          status: 'warning',
+          errorMessage: t.diagnostic.computerPermissionUnknown,
+          checkedAt: Date.now(),
+          durationMs: Date.now() - permissionStartedAt,
+          freshness: 'unknown',
+        });
+      } else {
+        out.push({
+          id: 'permissions:computer-ui-control',
+          category: 'permissions',
+          name: t.diagnostic.permComputerUiControl,
+          status: permissions.uiControl ? 'passed' : 'failed',
+          metric: permissions.uiControl ? t.diagnostic.computerGranted : t.diagnostic.computerMissing,
+          ...(!permissions.uiControl ? {
+            errorMessage: t.diagnostic.computerUiControlMissing,
+            suggestedAction: {
+              type: 'open-settings' as const,
+              target: 'capabilities',
+              label: t.diagnostic.actionOpenCapabilities,
+            },
+          } : {}),
+          checkedAt: Date.now(),
+          durationMs: Date.now() - permissionStartedAt,
+          freshness: 'fresh',
+        });
+        out.push({
+          id: 'permissions:computer-screen-read',
+          category: 'permissions',
+          name: t.diagnostic.permComputerScreenRead,
+          // AX-only work is usable without screenshots: restricted, not broken.
+          status: permissions.screenRead ? 'passed' : 'warning',
+          metric: permissions.screenRead ? t.diagnostic.computerGranted : t.diagnostic.computerRestricted,
+          ...(!permissions.screenRead ? {
+            errorMessage: t.diagnostic.computerScreenReadMissing,
+            suggestedAction: {
+              type: 'open-settings' as const,
+              target: 'capabilities',
+              label: t.diagnostic.actionOpenCapabilities,
+            },
+          } : {}),
+          checkedAt: Date.now(),
+          durationMs: Date.now() - permissionStartedAt,
+          freshness: 'fresh',
+        });
+      }
+    }
+  }
 
   // 1. App data dir
   try {

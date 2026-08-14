@@ -112,10 +112,9 @@ export default function SandboxRecoveryCard({
         conversationId,
         format(t.sandbox.appAutomationContinuePrompt, { app }),
         {
-          blockedTools: [
-            TOOL_NAMES.RUN_COMMAND,
-            TOOL_NAMES.DELEGATE_TO_AGENT,
-            TOOL_NAMES.RUN_AGENT_BATCH,
+          allowedTools: [
+            TOOL_NAMES.COMPUTER,
+            TOOL_NAMES.ASK_USER_QUESTION,
           ],
           requireNewRun: true,
         },

@@ -49,6 +49,7 @@ export interface ElectronRuntimeDiagnostics {
   pendingRpcs: Array<Record<string, unknown>>;
   sidecars: Array<Record<string, unknown>>;
   pendingRendererAcks: Array<Record<string, unknown>>;
+  nativeHelpers: Array<Record<string, unknown>>;
 }
 
 function getRuntime() {

@@ -205,6 +205,7 @@ vi.mock('../core/agent/toolExecutor', () => ({
   executeToolBatch: vi.fn().mockResolvedValue({
     mcpChanged: false,
     requiresUserRecovery: false,
+    observations: [],
   }),
 }));
 
@@ -217,6 +218,13 @@ vi.mock('../core/capabilities', () => ({
 }));
 
 vi.mock('../core/llm/modelCapabilities', () => ({
+  resolveAgentModelCapabilities: vi.fn().mockReturnValue({
+    toolCalling: 'native',
+    structuredArguments: 'reliable',
+    computerUseTier: 'full',
+    capabilitySource: 'builtin',
+    vision: true,
+  }),
   resolveCapabilities: vi.fn().mockReturnValue({
     contextWindow: 200000,
     maxOutputTokens: 8192,
@@ -244,6 +252,7 @@ vi.mock('../core/tools/toolNames', () => ({
     WEB_SEARCH: 'web_search',
     DELEGATE_TO_AGENT: 'delegate_to_agent',
     SHOW_WIDGET: 'show_widget',
+    TOOL_SEARCH: 'tool_search',
   },
   // agentLoop calls this on every tool_use event — the real function, not a
   // stub, so hidden-marking semantics stay faithful in the pipeline test.
@@ -260,6 +269,7 @@ vi.mock('../core/tools/toolSearch', () => ({
     deferredTools: [],
   })),
   buildDeferredToolsSummary: vi.fn().mockReturnValue(''),
+  promoteSearchedDeferredTools: vi.fn(),
 }));
 
 vi.mock('../core/logging/logger', () => ({
@@ -321,6 +331,7 @@ import type { StreamEvent, Message } from '../types';
 // Mocked module reference — used to override token estimator per-test
 import * as tokenEstimatorModule from '../core/context/tokenEstimator';
 import * as contextManagerModule from '../core/context/contextManager';
+import * as toolSearchModule from '../core/tools/toolSearch';
 
 describe('Agent Pipeline Integration', () => {
   beforeEach(() => {
@@ -466,6 +477,92 @@ describe('Agent Pipeline Integration', () => {
       expect(calls).toBe(3); // two tolerated retries, abort on the third
     });
 
+    it('stops a well-formed repeated tool loop after three unchanged observations', async () => {
+      let calls = 0;
+      mockClaudeChat.mockImplementation(
+        async (_m: unknown, _o: unknown, onEvent: (e: StreamEvent) => void) => {
+          calls++;
+          onEvent({
+            type: 'tool_use',
+            id: `search-${calls}`,
+            name: 'tool_search',
+            input: { query: 'computer' },
+          });
+          onEvent({ type: 'done', stopReason: 'tool_use' });
+        },
+      );
+      const repeatedBatch = {
+        mcpChanged: false,
+        requiresUserRecovery: false,
+        observations: [{
+          name: 'tool_search',
+          input: { query: 'computer' },
+          result: 'no deferred tools',
+          error: false,
+        }],
+      };
+      vi.mocked(executeToolBatch)
+        .mockResolvedValueOnce(repeatedBatch)
+        .mockResolvedValueOnce(repeatedBatch)
+        .mockResolvedValueOnce(repeatedBatch);
+
+      const convId = useChatStore.getState().createConversation();
+      const result = await runAgentLoop(convId, 'operate the computer');
+
+      expect(result.reason).toBe('no_progress');
+      expect(calls).toBe(3);
+    });
+
+    it('promotes only after a successful tool_search observation in the loop process', async () => {
+      const rareTool = {
+        name: 'rare_clipboard',
+        description: 'Read clipboard',
+        inputSchema: { type: 'object' as const, properties: {} },
+        execute: async () => 'ok',
+      };
+      vi.mocked(toolSearchModule.classifyTools).mockReturnValueOnce({
+        coreTools: [],
+        deferredTools: [rareTool],
+      });
+      mockClaudeChat
+        .mockImplementationOnce(
+          async (_m: unknown, _o: unknown, onEvent: (e: StreamEvent) => void) => {
+            onEvent({
+              type: 'tool_use',
+              id: 'search-1',
+              name: 'tool_search',
+              input: { query: 'clipboard' },
+            });
+            onEvent({ type: 'done', stopReason: 'tool_use' });
+          },
+        )
+        .mockImplementationOnce(
+          async (_m: unknown, _o: unknown, onEvent: (e: StreamEvent) => void) => {
+            onEvent({ type: 'text', text: 'ready' });
+            onEvent({ type: 'done', stopReason: 'end_turn' });
+          },
+        );
+      vi.mocked(executeToolBatch).mockResolvedValueOnce({
+        mcpChanged: false,
+        requiresUserRecovery: false,
+        observations: [{
+          name: 'tool_search',
+          input: { query: 'clipboard' },
+          result: '### rare_clipboard\nRead clipboard',
+          error: false,
+        }],
+      });
+
+      const convId = useChatStore.getState().createConversation();
+      await runAgentLoop(convId, 'read my clipboard');
+
+      expect(toolSearchModule.promoteSearchedDeferredTools).toHaveBeenCalledWith(
+        { query: 'clipboard' },
+        [rareTool],
+        convId,
+      );
+    });
+
     it('stops with reason=max_turns when the turn cap is reached', async () => {
       // B+C: the cap is now always finite (was unlimited by default), and the cap
       // branch must report 'max_turns' to callers, not the old silent 'completed'.
@@ -503,6 +600,7 @@ describe('Agent Pipeline Integration', () => {
       vi.mocked(executeToolBatch).mockResolvedValueOnce({
         mcpChanged: false,
         requiresUserRecovery: true,
+        observations: [],
       });
 
       const convId = useChatStore.getState().createConversation();

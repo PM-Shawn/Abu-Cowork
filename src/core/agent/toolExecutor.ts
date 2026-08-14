@@ -17,6 +17,7 @@ import type {
 } from '../../types';
 import type { ConfirmationInfo } from '../tools/commandSafety';
 import type { FilePermissionCallback, ToolInvoker } from './ports/toolInvoker';
+import type { SettingsReader } from './ports/settingsReader';
 import { processToolResult } from '../session/sessionMemory';
 import { evaluatePlanGate, getPlanMode } from './planMode';
 import { emitHook } from './lifecycleHooks';
@@ -55,7 +56,7 @@ function actionToDescription(action: string, input: Record<string, unknown>): st
     case 'move': return `移动鼠标 (${input.x}, ${input.y})`;
     case 'scroll': return `滚动 ${input.direction}`;
     case 'drag': return `拖拽 (${input.startX},${input.startY}) → (${input.endX},${input.endY})`;
-    case 'type': return `输入: ${(input.text as string)?.slice(0, 30) ?? ''}`;
+    case 'type': return '输入文本';
     case 'key': return `按键: ${input.modifiers ? (input.modifiers as string[]).join('+') + '+' : ''}${input.key}`;
     case 'wait': return `等待 ${input.duration ?? 1000}ms`;
     default: return action;
@@ -84,6 +85,8 @@ export interface ToolBatchParams {
   /** ToolInvoker port instance, resolved once by the caller (agentLoop.ts)
    *  and threaded in — same discipline as the other resolve-once locals. */
   toolInvoker: ToolInvoker;
+  /** Frozen provider/model snapshot for nested delegate tools. */
+  settingsReader: SettingsReader;
   /** Whether the loop will continue (tool_use stop reason) */
   continueLoop: boolean;
   /** Current context window usage (0-100). Scales tool result truncation under pressure. */
@@ -95,6 +98,8 @@ export interface ToolBatchResult {
   mcpChanged: boolean;
   /** A trusted tool requested an explicit user recovery choice. */
   requiresUserRecovery: boolean;
+  /** Transient, in-memory observations for deterministic loop governance. */
+  observations: import('./loopGuards').ToolLoopObservation[];
 }
 
 type ToolExecResult = {
@@ -133,6 +138,7 @@ export async function executeToolBatch(params: ToolBatchParams): Promise<ToolBat
     continueLoop,
     contextUsagePercent,
     toolInvoker,
+    settingsReader,
   } = params;
 
   const chatDelta = getChatDelta();
@@ -153,6 +159,7 @@ export async function executeToolBatch(params: ToolBatchParams): Promise<ToolBat
     eventRouter,
     loopId,
     conversationId,
+    settingsReader,
     toolCallToStepId,
     blockedTools: params.blockedTools,
     allowedTools: params.allowedTools,
@@ -513,5 +520,23 @@ export async function executeToolBatch(params: ToolBatchParams): Promise<ToolBat
     (result) => result.status === 'fulfilled' && Boolean(result.value.metadata?.sandboxRecovery),
   );
 
-  return { mcpChanged, requiresUserRecovery };
+  const observations = results.map((result, index) => {
+    const toolCall = collectedToolCalls[index];
+    if (result.status === 'fulfilled') {
+      return {
+        name: toolCall?.name ?? 'unknown',
+        input: toolCall?.input ?? {},
+        result: result.value.result,
+        error: result.value.error,
+      };
+    }
+    return {
+      name: toolCall?.name ?? 'unknown',
+      input: toolCall?.input ?? {},
+      result: String(result.reason),
+      error: true,
+    };
+  });
+
+  return { mcpChanged, requiresUserRecovery, observations };
 }

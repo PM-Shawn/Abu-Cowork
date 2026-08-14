@@ -61,8 +61,67 @@ describe('renderer runtime trace', () => {
     expect(getRendererRuntimeTraceSnapshot().activeRuns).toEqual([]);
   });
 
+  it('keeps Computer Use correlation ids and structural facts without content fields', () => {
+    traceRuntimeEvent('renderer.computer_use_observation', {
+      conversationId: 'conversation-1',
+      loopId: 'loop-1',
+      computerRunId: 'conversation-1:loop-1',
+      traceId: 'conversation-1:loop-1',
+      toolCallId: 'tool-1',
+      stateId: 'state-1',
+      modelTier: 'structured',
+      targetBundleId: 'com.apple.Notes',
+      targetProcessId: 42,
+      axTreeHash: 'sha256:abc',
+      elementCount: 3,
+      ...({
+        prompt: 'private prompt',
+        screenshot: 'base64-private',
+        axLabels: ['private label'],
+      } as unknown as Record<string, never>),
+    });
+
+    expect(getRendererRuntimeTraceSnapshot().recentEvents[0]).toMatchObject({
+      event: 'renderer.computer_use_observation',
+      conversationId: 'conversation-1',
+      loopId: 'loop-1',
+      computerRunId: 'conversation-1:loop-1',
+      toolCallId: 'tool-1',
+      stateId: 'state-1',
+      modelTier: 'structured',
+      targetBundleId: 'com.apple.Notes',
+      targetProcessId: 42,
+      elementCount: 3,
+    });
+    expect(getRendererRuntimeTraceSnapshot().recentEvents[0]).not.toHaveProperty('prompt');
+    expect(getRendererRuntimeTraceSnapshot().recentEvents[0]).not.toHaveProperty('screenshot');
+    expect(getRendererRuntimeTraceSnapshot().recentEvents[0]).not.toHaveProperty('axLabels');
+  });
+
   it('classifies errors without retaining their message', () => {
     expect(runtimeErrorType(new TypeError('secret prompt'))).toBe('typeerror');
     expect(runtimeErrorType('secret prompt')).toBe('string');
+  });
+
+  it('keeps bounded route and exposure facts, including boolean gates', () => {
+    traceRuntimeEvent('renderer.agent_tool_exposure', {
+      conversationId: 'conversation-1',
+      loopId: 'loop-1',
+      routeType: 'general',
+      turnIndex: 2,
+      activeToolCount: 17,
+      deferredToolCount: 9,
+      computerUseExposed: true,
+      ...({ toolNames: ['private-tool-name'] } as unknown as Record<string, never>),
+    });
+
+    expect(getRendererRuntimeTraceSnapshot().recentEvents[0]).toMatchObject({
+      routeType: 'general',
+      turnIndex: 2,
+      activeToolCount: 17,
+      deferredToolCount: 9,
+      computerUseExposed: true,
+    });
+    expect(getRendererRuntimeTraceSnapshot().recentEvents[0]).not.toHaveProperty('toolNames');
   });
 });

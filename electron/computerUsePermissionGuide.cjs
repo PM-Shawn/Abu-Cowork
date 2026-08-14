@@ -15,8 +15,11 @@ const { registerPrivilegedWindow } = require('./securityBoundary.cjs');
 const {
   sanitizeGuideStrings,
   normalizePermissions,
+  normalizeRequirements,
+  requiredPermissionsReady,
   derivePermissionGuideViewState,
   permissionsEqual,
+  permissionWaitTimedOut,
 } = require('./computerUsePermissionGuideState.cjs');
 
 const COMPUTER_USE_PERMISSION_GUIDE_MISS =
@@ -33,6 +36,7 @@ const ACTION_CHANNEL = 'computer-use-permission-guide:action';
 const PRELOAD_PATH = path.join(__dirname, 'computerUsePermissionGuidePreload.cjs');
 const GUIDE_FILE_NAME = 'computer-use-permission-guide.html';
 const POLL_INTERVAL_MS = 1_200;
+const POLL_TIMEOUT_MS = 120_000;
 const COMPLETE_CLOSE_DELAY_MS = 850;
 const GUIDE_WIDTH = 384;
 const GUIDE_HEIGHT = 360;
@@ -81,6 +85,7 @@ function currentPublicState() {
     requestedByTask: guideState.requestedByTask,
     view: derivePermissionGuideViewState({
       permissions: guideState.permissions,
+      requirements: guideState.requirements,
       requesting: guideState.requesting,
       error: guideState.error,
       complete: guideState.complete,
@@ -165,6 +170,9 @@ async function readPermissions() {
     return normalizePermissions({
       screenRead: result?.screen_recording,
       uiControl: result?.accessibility,
+      screen_recording_status: result?.screen_recording_status,
+      accessibility_status: result?.accessibility_status,
+      restart_required: result?.restart_required,
     });
   }).finally(() => {
     permissionCheck = null;
@@ -190,7 +198,7 @@ async function refreshPermissions() {
       ...guideState,
       permissions,
       error: null,
-      complete: permissions.screenRead && permissions.uiControl,
+      complete: requiredPermissionsReady(permissions, guideState.requirements),
     };
     if (changed || guideState.complete) sendState();
     if (guideState.complete) scheduleComplete();
@@ -205,6 +213,20 @@ async function refreshPermissions() {
   }
 }
 
+function stopTimedOutPolling() {
+  if (!guideState || guideState.complete) return false;
+  if (!permissionWaitTimedOut(guideState.startedAt, Date.now(), POLL_TIMEOUT_MS)) {
+    return false;
+  }
+  if (pollTimer) clearInterval(pollTimer);
+  pollTimer = null;
+  setGuideState({
+    requesting: null,
+    error: guideState.strings.timeout,
+  });
+  return true;
+}
+
 async function requestPermission(permission) {
   if (
     !guideState
@@ -215,6 +237,7 @@ async function requestPermission(permission) {
   }
   const view = derivePermissionGuideViewState({
     permissions: guideState.permissions,
+    requirements: guideState.requirements,
     requesting: null,
   });
   if (view.currentPermission !== permission) return;
@@ -353,7 +376,8 @@ async function showGuide(app, args) {
       error: error instanceof Error ? error.message : String(error),
     };
   }
-  if (permissions.screenRead && permissions.uiControl) {
+  const requirements = normalizeRequirements(args?.requirements);
+  if (requiredPermissionsReady(permissions, requirements)) {
     return { status: 'complete', permissions, error: null };
   }
 
@@ -363,6 +387,8 @@ async function showGuide(app, args) {
     development: !app.isPackaged,
     requestedByTask: args?.requestedByTask === true,
     permissions,
+    requirements,
+    startedAt: Date.now(),
     requesting: null,
     error: null,
     complete: false,
@@ -372,7 +398,7 @@ async function showGuide(app, args) {
   });
   createGuideWindow(app);
   pollTimer = setInterval(() => {
-    void refreshPermissions();
+    if (!stopTimedOutPolling()) void refreshPermissions();
   }, POLL_INTERVAL_MS);
   return guidePromise;
 }
@@ -393,6 +419,12 @@ function installHandlers(app) {
         void requestPermission(action.permission);
         break;
       case 'retry': {
+        if (guideState) guideState.startedAt = Date.now();
+        if (!pollTimer) {
+          pollTimer = setInterval(() => {
+            if (!stopTimedOutPolling()) void refreshPermissions();
+          }, POLL_INTERVAL_MS);
+        }
         void refreshPermissions().then(() => {
           if (!guideState) return;
           const current = derivePermissionGuideViewState({
@@ -406,7 +438,8 @@ function installHandlers(app) {
         revealCurrentApp(app);
         break;
       case 'return':
-        if (guideState?.complete) settleGuide('complete');
+        if (guideState?.permissions?.restartRequired) settleGuide('relaunch-required');
+        else if (guideState?.complete) settleGuide('complete');
         else focusMainWindow();
         break;
       case 'cancel':

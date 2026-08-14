@@ -27,6 +27,8 @@
 //! src/ax.rs, macOS-only).
 
 use std::io::{BufRead, Write};
+use std::sync::OnceLock;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use enigo::{Coordinate, Enigo, Mouse, Settings};
 use serde_json::{json, Value};
@@ -37,6 +39,58 @@ mod ax;
 // exclusion-capture + permission-check internals are macOS-gated, same as
 // src-tauri). See src/cu.rs.
 mod cu;
+
+const HELPER_PROTOCOL_VERSION: u32 = 1;
+static STARTED_AT_MS: OnceLock<u128> = OnceLock::new();
+
+fn started_at_ms() -> u128 {
+    *STARTED_AT_MS.get_or_init(|| {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis()
+    })
+}
+
+fn supported_commands() -> Vec<&'static str> {
+    let mut commands = vec![
+        "hello",
+        "version",
+        "health",
+        "ping",
+        "mouse_click",
+        "mouse_move",
+        "mouse_scroll",
+        "mouse_drag",
+        "keyboard_type",
+        "keyboard_press",
+        "capture_screen",
+        "capture_screen_excluding",
+        "check_macos_permissions",
+    ];
+    #[cfg(target_os = "macos")]
+    commands.extend([
+        "resolve_app_identity",
+        "frontmost_app_identity",
+        "activate_app",
+        "ax_snapshot",
+        "ax_press",
+        "ax_set_value",
+        "ax_perform_action",
+        "ax_close_session",
+    ]);
+    commands
+}
+
+fn helper_identity() -> Value {
+    json!({
+        "protocol_version": HELPER_PROTOCOL_VERSION,
+        "binary_version": env!("CARGO_PKG_VERSION"),
+        "platform": std::env::consts::OS,
+        "supported_commands": supported_commands(),
+        "started_at_ms": started_at_ms(),
+    })
+}
 
 /// Read a required string param, e.g. `session_id`.
 fn require_str(params: &Value, key: &str) -> Result<String, String> {
@@ -153,10 +207,18 @@ fn assert_expected_target(params: &Value) -> Result<(), String> {
 fn handle(method: &str, params: &Value) -> Result<Value, String> {
     match method {
         "ping" => Ok(json!({ "pong": true })),
+        "hello" | "version" => Ok(helper_identity()),
+        "health" => {
+            let mut identity = helper_identity();
+            if let Some(object) = identity.as_object_mut() {
+                object.insert("pong".to_string(), Value::Bool(true));
+                object.insert("healthy".to_string(), Value::Bool(true));
+            }
+            Ok(identity)
+        }
 
         // ── Accessibility (AXUIElement) family — reuses src-tauri's
         // Tauri-free `*_impl` code via `ax` module (see src/ax.rs). ──
-
         "resolve_app_identity" => {
             #[cfg(target_os = "macos")]
             {
@@ -167,6 +229,18 @@ fn handle(method: &str, params: &Value) -> Result<Value, String> {
             #[cfg(not(target_os = "macos"))]
             {
                 Err("App identity resolution is macOS-only".to_string())
+            }
+        }
+
+        "frontmost_app_identity" => {
+            #[cfg(target_os = "macos")]
+            {
+                let identity = ax::frontmost_app_identity_impl()?;
+                serde_json::to_value(identity).map_err(|e| format!("serialize failed: {e}"))
+            }
+            #[cfg(not(target_os = "macos"))]
+            {
+                Err("Frontmost app identity resolution is macOS-only".to_string())
             }
         }
 
@@ -190,8 +264,14 @@ fn handle(method: &str, params: &Value) -> Result<Value, String> {
             #[cfg(target_os = "macos")]
             {
                 // Frontend sends { appName } (computerTools.ts:551) → app_name.
-                let app = params.get("app_name").and_then(Value::as_str).map(str::to_string);
-                let result = ax::ax_snapshot_impl(app)?;
+                let app = params
+                    .get("app_name")
+                    .and_then(Value::as_str)
+                    .map(str::to_string);
+                let expected_bundle_id = require_str(params, "expected_bundle_id")?;
+                let expected_process_id = opt_i32(params, "expected_process_id");
+                let result =
+                    ax::ax_snapshot_impl(app, Some(expected_bundle_id), expected_process_id)?;
                 serde_json::to_value(result).map_err(|e| format!("serialize failed: {e}"))
             }
             #[cfg(not(target_os = "macos"))]
@@ -263,9 +343,17 @@ fn handle(method: &str, params: &Value) -> Result<Value, String> {
                 Enigo::new(&Settings::default()).map_err(|e| format!("enigo init failed: {e}"))?;
             // Current position — also the default target, so an argument-less call
             // is a no-op that still exercises the full input-synth (TCC) path.
-            let (cx, cy) = enigo.location().map_err(|e| format!("location failed: {e}"))?;
-            let tx = params.get("x").and_then(Value::as_i64).map_or(cx, |v| v as i32);
-            let ty = params.get("y").and_then(Value::as_i64).map_or(cy, |v| v as i32);
+            let (cx, cy) = enigo
+                .location()
+                .map_err(|e| format!("location failed: {e}"))?;
+            let tx = params
+                .get("x")
+                .and_then(Value::as_i64)
+                .map_or(cx, |v| v as i32);
+            let ty = params
+                .get("y")
+                .and_then(Value::as_i64)
+                .map_or(cy, |v| v as i32);
             enigo
                 .move_mouse(tx, ty, Coordinate::Abs)
                 .map_err(|e| format!("move_mouse failed: {e}"))?;
@@ -334,9 +422,8 @@ fn handle(method: &str, params: &Value) -> Result<Value, String> {
             let x = require_i32(params, "x")?;
             let y = require_i32(params, "y")?;
             let button = opt_str(params, "button");
-            let msg = cu::mouse_click_guarded_impl(x, y, button, || {
-                assert_expected_target(params)
-            })?;
+            let msg =
+                cu::mouse_click_guarded_impl(x, y, button, || assert_expected_target(params))?;
             Ok(json!(msg))
         }
 
@@ -371,9 +458,8 @@ fn handle(method: &str, params: &Value) -> Result<Value, String> {
         "keyboard_press" => {
             let key = require_str(params, "key")?;
             let modifiers = opt_str_vec(params, "modifiers");
-            let msg = cu::keyboard_press_guarded_impl(key, modifiers, || {
-                assert_expected_target(params)
-            })?;
+            let msg =
+                cu::keyboard_press_guarded_impl(key, modifiers, || assert_expected_target(params))?;
             Ok(json!(msg))
         }
 
@@ -382,6 +468,7 @@ fn handle(method: &str, params: &Value) -> Result<Value, String> {
 }
 
 fn main() {
+    let _ = started_at_ms();
     let stdin = std::io::stdin();
     let mut stdout = std::io::stdout();
     for line in stdin.lock().lines() {
@@ -396,7 +483,11 @@ fn main() {
         let req: Value = match serde_json::from_str(line) {
             Ok(v) => v,
             Err(e) => {
-                let _ = writeln!(stdout, "{}", json!({ "error": format!("parse error: {e}") }));
+                let _ = writeln!(
+                    stdout,
+                    "{}",
+                    json!({ "error": format!("parse error: {e}") })
+                );
                 let _ = stdout.flush();
                 continue;
             }

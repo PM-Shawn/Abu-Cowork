@@ -367,6 +367,8 @@ export interface TranslationDict {
     maxTurnsReached: string;
     // Agent loop no-progress guard (model stuck emitting unparseable tool calls)
     noProgressStopped: string;
+    // Agent loop semantic guard (well-formed but repetitive/meta-only calls)
+    semanticLoopStopped: string;
     // Agent loop runtime status / errors + subagent result strings (P4-C)
     /** Error: no API key configured (keep the literal "API Key" substring). */
     configureApiKey: string;
@@ -797,6 +799,15 @@ export interface TranslationDict {
     capabilityComputerDisabled: string;
     capabilityComputerPermissionMissing: string;
     capabilityComputerPartial: string;
+    capabilityComputerModel: string;
+    capabilityComputerModelFull: string;
+    capabilityComputerModelStructured: string;
+    capabilityComputerModelUnsupported: string;
+    capabilityComputerModelUnknown: string;
+    capabilityComputerModelFullNote: string;
+    capabilityComputerModelStructuredNote: string;
+    capabilityComputerModelUnsupportedNote: string;
+    capabilityComputerModelUnknownNote: string;
     capabilityBackToOverview: string;
     capabilityDone: string;
     capabilityCheckConnection: string;
@@ -836,6 +847,7 @@ export interface TranslationDict {
     capabilityUIControlDesc: string;
     capabilityComputerStepScreen: string;
     capabilityComputerStepControl: string;
+    capabilityComputerStepOnly: string;
     capabilityScreenReadInstruction: string;
     capabilityUIControlInstruction: string;
     capabilityOpenSystemSettings: string;
@@ -849,6 +861,10 @@ export interface TranslationDict {
     capabilityPermissionGuideReturnToAbu: string;
     capabilityPermissionGuideDevelopmentIdentity: string;
     capabilityPermissionGuideErrorTitle: string;
+    capabilityPermissionGuideTimeout: string;
+    capabilityPermissionGuideRestart: string;
+    capabilityPermissionGuideRestartTitle: string;
+    capabilityPermissionGuideRestartDesc: string;
     capabilityComputerReadyTitle: string;
     capabilityComputerReadyDesc: string;
     capabilityReturnToTask: string;
@@ -1080,6 +1096,7 @@ export interface TranslationDict {
     actionRecheck: string;
     actionCopyError: string;
     actionOpenAIServices: string;
+    actionOpenCapabilities: string;
     actionOpenAbout: string;
     actionOpenToolbox: string;
     copiedError: string;
@@ -1089,11 +1106,32 @@ export interface TranslationDict {
     aiServicesNoKey: string;
     /** Probe passed but a recent real call failed — {detail} = error code. */
     aiRecentFailure: string;
+    aiComputerUseModel: string;
+    aiComputerUseUnsupported: string;
+    aiComputerUseFull: string;
+    aiComputerUseStructured: string;
+    aiComputerUseUnknown: string;
+    aiComputerUseToolsMissing: string;
+    aiComputerUseVisionMissing: string;
+    aiComputerUseUnknownReason: string;
     // Permissions check
     permAppData: string;
     permWorkspace: string;
     permWorkspaceAbu: string;
     permWorkspaceNoSelection: string;
+    permComputerHelper: string;
+    permComputerStatus: string;
+    permComputerUiControl: string;
+    permComputerScreenRead: string;
+    computerAvailable: string;
+    computerUnavailable: string;
+    computerGranted: string;
+    computerMissing: string;
+    computerRestricted: string;
+    computerHelperUnavailable: string;
+    computerPermissionUnknown: string;
+    computerUiControlMissing: string;
+    computerScreenReadMissing: string;
     // MCP
     mcpNone: string;
     mcpNoneHint: string;
@@ -2515,6 +2553,15 @@ export interface TranslationDict {
     overlayStep: string;
     /** Overlay stop-button label. */
     stopControl: string;
+    phaseChecking: string;
+    phaseObserving: string;
+    phaseActing: string;
+    phaseVerifying: string;
+    phaseBlocked: string;
+    modeFull: string;
+    modeStructured: string;
+    modeUnsupported: string;
+    modeUnknown: string;
   };
 
   // Tool runtime result strings (execute() returns/success/error messages).
@@ -3219,6 +3266,9 @@ export interface TranslationDict {
       errBackgroundUnavailable: string;
       /** OS permission probe failed. {msg} */
       errPermissionProbeFailed: string;
+      errPermissionRelaunch: string;
+      errModelUnsupported: string;
+      errModelUnknown: string;
       /** Foreground target identity probe failed. {msg} */
       errTargetIdentityFailed: string;
       /** Main-process Computer Use authorization failed. {msg} */
@@ -3227,6 +3277,32 @@ export interface TranslationDict {
       errConsequenceRequired: string;
       /** Consequential operations need a concise user-visible summary. */
       errConsequenceDetailRequired: string;
+      /** Mutating actions require a fresh state_id from get_app_state. */
+      errStateRequired: string;
+      /** state_id is stale, expired, or already consumed. */
+      errStateStale: string;
+      /** The target identity no longer matches the observation. */
+      errStateTargetChanged: string;
+      /** A write action is already running for this Computer Use run. */
+      errActionInFlight: string;
+      /** The host progress/safety controller stopped the run. */
+      errRunStopped: string;
+      /** Consequential actions require a specific, machine-checkable effect. */
+      errWeakConsequenceVerification: string;
+      progressRecover: string;
+      progressStopped: string;
+      ambiguousSideEffectStopped: string;
+      /** Native input returned an ambiguous failure and must not be retried automatically. {msg} */
+      errActionAmbiguous: string;
+      /** Invalid state/effect protocol input. {reason} */
+      errStateProtocol: string;
+      /** Observation state header. {stateId} */
+      stateHeader: string;
+      /** Automatic post-action verification result. {status}, {stateId} */
+      verificationResult: string;
+      verificationChanged: string;
+      verificationNoChange: string;
+      verificationAmbiguous: string;
       /** formatAxElements: no interactive elements found. */
       noInteractiveElements: string;
       /** screenshot: current model has no vision capability (bilingual). zh half. */

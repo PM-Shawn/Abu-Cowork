@@ -615,7 +615,18 @@ describe('agentLoopHost', () => {
       hasLocalToolMock.mockReturnValue(false);
 
       const result = await withToolInvoker((toolInvoker) =>
-        toolInvoker.executeAnyTool('read_file', { path: '/tmp/x' }),
+        toolInvoker.executeAnyTool(
+          'read_file',
+          { path: '/tmp/x' },
+          undefined,
+          undefined,
+          {
+            conversationId: 'conv-wire',
+            deferredToolNames: ['rare_clipboard'],
+            abortSignal: new AbortController().signal,
+            reportMetadata: vi.fn(),
+          },
+        ),
       );
 
       expect(result).toBe('tool output');
@@ -623,7 +634,14 @@ describe('agentLoopHost', () => {
       expect(sendRequestMock).not.toHaveBeenCalledWith('approval.check', expect.anything());
       expect(sendRequestMock).toHaveBeenCalledWith(
         'tool.invoke',
-        expect.objectContaining({ toolName: 'read_file', input: { path: '/tmp/x' } }),
+        expect.objectContaining({
+          toolName: 'read_file',
+          input: { path: '/tmp/x' },
+          context: {
+            conversationId: 'conv-wire',
+            deferredToolNames: ['rare_clipboard'],
+          },
+        }),
       );
     });
 

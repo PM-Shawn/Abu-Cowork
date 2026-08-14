@@ -11,7 +11,7 @@
 import type { ToolDefinition, ToolExecutionContext, SubagentDefinition } from '../../../types';
 import { TOOL_NAMES } from '../toolNames';
 import { agentRegistry } from '../../agent/registry';
-import { runSubagent } from '../../agent/subagentRunner';
+import { getSubagentRunInheritance, runSubagent } from '../../agent/subagentRunner';
 import { getSettingsReader } from '../../agent/ports/settingsReader';
 import { getCurrentLoopContext, getLoopContext } from '../../agent/permissionBridge';
 import { extractParentConversationSummary } from '../../agent/subagentLoop';
@@ -392,6 +392,7 @@ export const runAgentBatchTool: ToolDefinition = {
             commandConfirmCallback: loopCtx?.commandConfirmCallback,
             filePermissionCallback: loopCtx?.filePermissionCallback,
             allowedTools: loopCtx?.allowedTools,
+            ...getSubagentRunInheritance(loopCtx),
             onProgress: (event) => {
               try {
                 const store = useBatchProgressStore.getState();

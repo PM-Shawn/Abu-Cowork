@@ -325,8 +325,10 @@ vi.mock('../session/checkpoint', () => ({
 }));
 
 const closeAxSessionMock = vi.fn().mockResolvedValue(undefined);
+const endComputerUseTaskMock = vi.fn().mockResolvedValue(undefined);
 vi.mock('../tools/definitions/computerTools', () => ({
   closeAxSession: (...a: unknown[]) => closeAxSessionMock(...a),
+  endComputerUseTask: (...a: unknown[]) => endComputerUseTaskMock(...a),
 }));
 
 const notifyTaskCompletedMock = vi.fn().mockResolvedValue(undefined);
@@ -524,6 +526,8 @@ describe('agentLoopRunner', () => {
     clearCheckpointMock.mockResolvedValue(undefined);
     closeAxSessionMock.mockReset();
     closeAxSessionMock.mockResolvedValue(undefined);
+    endComputerUseTaskMock.mockReset();
+    endComputerUseTaskMock.mockResolvedValue(undefined);
     executeAnyToolMock.mockReset();
     executeAnyToolMock.mockResolvedValue('tool result');
     capsGetMock.mockReset();
@@ -951,7 +955,16 @@ describe('agentLoopRunner', () => {
   // ── native.invoke ──────────────────────────────────────────────────────
 
   describe('native.invoke handler (allowlist)', () => {
-    it.each(['show_screen_border', 'get_active_window', 'window_hide', 'activate_app', 'run_shell_command', 'abort_command'])(
+    it.each([
+      'show_screen_border',
+      'get_active_window',
+      'window_hide',
+      'activate_app',
+      'run_shell_command',
+      'abort_command',
+      'ax_close_session',
+      'computer_use_end_task',
+    ])(
       'allows %s and forwards to the real Tauri invoke',
       async (cmd) => {
         const { ensureHandlersRegistered } = await importFresh();
@@ -1522,6 +1535,23 @@ describe('agentLoopRunner', () => {
       expect(executeAnyToolMock).not.toHaveBeenCalled();
     });
 
+    it.each(['tool_search', 'use_skill', 'read_file', 'run_command'])(
+      'recovery whitelist refuses reverse %s at the shell boundary',
+      async (toolName) => {
+        const { ensureHandlersRegistered, registerRunSession } = await importFresh();
+        ensureHandlersRegistered();
+        const session = makeSession();
+        session.options = { allowedTools: ['computer', 'ask_user_question'] };
+        registerRunSession('run-1', session);
+
+        const handler = handlerFor(onSidecarRequest, 'tool.invoke');
+        await expect(
+          handler({ runId: 'run-1', toolName, input: {} }),
+        ).rejects.toThrow(/not allowed/);
+        expect(executeAnyToolMock).not.toHaveBeenCalled();
+      },
+    );
+
     it('marks the session committed on the first tool.invoke', async () => {
       const { ensureHandlersRegistered, registerRunSession, getRunSession } = await importFresh();
       ensureHandlersRegistered();
@@ -1703,6 +1733,23 @@ describe('agentLoopRunner', () => {
       ).rejects.toThrow(/not allowed/);
       expect(checkToolApprovalMock).not.toHaveBeenCalled();
     });
+
+    it.each(['tool_search', 'use_skill', 'read_file', 'run_command'])(
+      'recovery whitelist refuses local %s approval at the shell boundary',
+      async (toolName) => {
+        const { ensureHandlersRegistered, registerRunSession } = await importFresh();
+        ensureHandlersRegistered();
+        const session = makeSession();
+        session.options = { allowedTools: ['computer', 'ask_user_question'] };
+        registerRunSession('run-1', session);
+
+        const handler = handlerFor(onSidecarRequest, 'approval.check');
+        await expect(
+          handler({ runId: 'run-1', toolName, input: {} }),
+        ).rejects.toThrow(/not allowed/);
+        expect(checkToolApprovalMock).not.toHaveBeenCalled();
+      },
+    );
 
     it('throws for an unknown runId instead of silently answering', async () => {
       const { ensureHandlersRegistered } = await importFresh();
@@ -1903,7 +1950,9 @@ describe('agentLoopRunner', () => {
       const result = await runAgentLoopDispatched('conv-1', 'hello');
 
       expect(runAgentLoopMock).toHaveBeenCalledTimes(1);
-      expect(runAgentLoopMock).toHaveBeenCalledWith('conv-1', 'hello', undefined);
+      expect(runAgentLoopMock).toHaveBeenCalledWith('conv-1', 'hello', {
+        runtimeEvent: expect.any(Function),
+      });
       expect(sidecarRequestMock).not.toHaveBeenCalled();
       expect(result).toEqual({ reason: 'completed' });
     });
@@ -1926,6 +1975,26 @@ describe('agentLoopRunner', () => {
       expect(p.resolvedCreds).toEqual({ apiKey: 'sk-1', baseUrl: undefined, forceOpenAiCompatible: false });
       expect(p.toolList).toEqual([{ name: 'read_file', description: 'reads a file', inputSchema: { type: 'object', properties: {} } }]);
       expect(result).toEqual({ reason: 'completed' });
+      const runId = (params as { runId: string }).runId;
+      expect(endComputerUseTaskMock).toHaveBeenCalledOnce();
+      expect(endComputerUseTaskMock).toHaveBeenCalledWith('conv-1', runId);
+    });
+
+    it('does not let shell-side Computer Use cleanup failure replace the settled run result', async () => {
+      const { runAgentLoopDispatched } = await importFresh();
+      sidecarRequestMock.mockResolvedValue({ reason: 'completed' });
+      endComputerUseTaskMock.mockRejectedValueOnce(new Error('cleanup transport closed'));
+
+      await expect(runAgentLoopDispatched('conv-1', 'hello')).resolves.toEqual({ reason: 'completed' });
+
+      expect(traceRuntimeEventMock).toHaveBeenCalledWith(
+        'renderer.computer_use_task_cleanup',
+        expect.objectContaining({
+          conversationId: 'conv-1',
+          stage: 'run_finally',
+          outcome: 'error',
+        }),
+      );
     });
 
     it('starts queued user follow-ups FIFO as independent runs with fresh loopIds', async () => {
@@ -2311,6 +2380,52 @@ describe('agentLoopRunner', () => {
       expect(params.options.allowedTools).toEqual(['read_*']);
     });
 
+    it('keeps the entry provider, model, and credentials atomic when the conversation model changes during persistence', async () => {
+      const { runAgentLoopDispatched } = await importFresh();
+      const p1Model = { providerId: 'p1', modelId: 'model-a' };
+      const p2Model = { providerId: 'p2', modelId: 'model-b' };
+      getSettingsSnapshotMock.mockReturnValue({
+        agentMaxTurns: 200,
+        activeModel: p1Model,
+        providers: [
+          { id: 'p1', name: 'P1', apiFormat: 'anthropic', enabled: true, apiKey: 'p1-key', baseUrl: 'https://p1.test', models: [{ id: 'model-a', name: 'Model A' }] },
+          { id: 'p2', name: 'P2', apiFormat: 'openai-compatible', enabled: true, apiKey: 'p2-key', baseUrl: 'https://p2.test', models: [{ id: 'model-b', name: 'Model B' }] },
+        ],
+      });
+      let conversation = { id: 'conv-1', title: 't', messages: [], status: 'idle' } as Record<string, unknown>;
+      getConversationMock.mockImplementation(() => conversation);
+      let persistenceCount = 0;
+      waitForConversationPersistenceMock.mockImplementation(async () => {
+        persistenceCount += 1;
+        if (persistenceCount === 2) conversation = { ...conversation, model: p2Model };
+      });
+      resolveEffectiveLlmCredsMock.mockImplementation((apiKey: string, baseUrl: string | undefined) => ({
+        apiKey,
+        baseUrl,
+        forceOpenAiCompatible: false,
+      }));
+      sidecarRequestMock.mockResolvedValue({ reason: 'completed' });
+
+      await runAgentLoopDispatched('conv-1', 'hello');
+
+      const params = sidecarRequestMock.mock.calls[0][1] as {
+        conversationSnapshot: { model?: unknown };
+        settingsSnapshot: { activeModel: unknown };
+        resolvedCreds: { apiKey: string; baseUrl?: string };
+      };
+      expect(params.conversationSnapshot.model).toEqual(p1Model);
+      expect(params.settingsSnapshot.activeModel).toEqual(p1Model);
+      expect(params.resolvedCreds).toEqual({
+        apiKey: 'p1-key',
+        baseUrl: 'https://p1.test',
+        forceOpenAiCompatible: false,
+      });
+      const installedContext = setLoopContextMock.mock.calls.at(-1)?.[1] as {
+        settingsReader?: { getSnapshot: () => { activeModel: unknown } };
+      };
+      expect(installedContext.settingsReader?.getSnapshot().activeModel).toEqual(p1Model);
+    });
+
     it('creates the task controller before prompt preprocessing and stops without dispatching when it is aborted there', async () => {
       const { runAgentLoopDispatched } = await importFresh();
       const controller = new AbortController();
@@ -2661,6 +2776,7 @@ describe('agentLoopRunner', () => {
         loopId: expect.any(String),
         prePersistedUserMessageId: expect.any(String),
       }));
+      expect(endComputerUseTaskMock).not.toHaveBeenCalled();
       expect(result).toEqual({ reason: 'completed' });
     });
 

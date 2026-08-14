@@ -41,23 +41,43 @@ function makeRoute(overrides: Partial<RouteResult> = {}): RouteResult {
 
 describe('resolveEntryModel', () => {
   it('uses settingsForModel.activeModel.modelId for a general route', () => {
-    const settings = makeSettings();
     const settingsForModel = makeSettings({ activeModel: { providerId: 'p1', modelId: 'model-b' } });
-    const { effectiveModelId, provider } = resolveEntryModel(makeRoute({ type: 'general' }), settings, settingsForModel);
+    const { effectiveModelId, provider } = resolveEntryModel(makeRoute({ type: 'general' }), settingsForModel);
     expect(effectiveModelId).toBe('model-b');
     expect(provider?.id).toBe('p1');
   });
 
-  it("an 'agent' route with a compatible definition.model overrides the effective model, resolved against the RAW settings (not settingsForModel)", () => {
-    const settings = makeSettings({ activeModel: { providerId: 'p1', modelId: 'model-a' } });
+  it("an 'agent' route with a definition.model offered by the active provider overrides the effective model", () => {
     const settingsForModel = makeSettings({ activeModel: { providerId: 'p1', modelId: 'model-b' } });
     const { effectiveModelId } = resolveEntryModel(
       makeRoute({ type: 'agent', definition: { model: 'model-a' } as never }),
-      settings,
       settingsForModel,
     );
-    // resolveAgentModel searches `settings.providers` (RAW) for a provider
-    // with this model enabled — 'model-a' is enabled there, so it wins.
+    expect(effectiveModelId).toBe('model-a');
+  });
+
+  it("an 'agent' route cannot borrow a model from a different provider", () => {
+    const settings = makeSettings({
+      activeModel: { providerId: 'p1', modelId: 'model-a' },
+      providers: [
+        ...makeSettings().providers,
+        {
+          id: 'p2',
+          name: 'P2',
+          apiFormat: 'openai-compatible',
+          enabled: true,
+          apiKey: 'sk-2',
+          models: [{ id: 'other-provider-model', name: 'Other Provider Model' }],
+        },
+      ],
+    });
+
+    const { effectiveModelId, provider } = resolveEntryModel(
+      makeRoute({ type: 'agent', definition: { model: 'other-provider-model' } as never }),
+      settings,
+    );
+
+    expect(provider?.id).toBe('p1');
     expect(effectiveModelId).toBe('model-a');
   });
 
@@ -66,27 +86,25 @@ describe('resolveEntryModel', () => {
     const { effectiveModelId } = resolveEntryModel(
       makeRoute({ type: 'agent', definition: { model: 'nonexistent-model' } as never }),
       settings,
-      settings,
     );
     expect(effectiveModelId).toBe('model-a');
   });
 
   it('derives entryModelDeclared from the resolved (provider, modelId) pair — a model-level declaredCapabilities override wins', () => {
-    const settings = makeSettings();
     const settingsForModel = makeSettings({ activeModel: { providerId: 'p1', modelId: 'model-b' } });
-    const { entryModelDeclared } = resolveEntryModel(makeRoute(), settings, settingsForModel);
+    const { entryModelDeclared } = resolveEntryModel(makeRoute(), settingsForModel);
     expect(entryModelDeclared?.supportsTools).toBe(false);
   });
 
   it('entryModelDeclared is undefined when neither provider nor model declares anything', () => {
     const settings = makeSettings();
-    const { entryModelDeclared } = resolveEntryModel(makeRoute(), settings, settings);
+    const { entryModelDeclared } = resolveEntryModel(makeRoute(), settings);
     expect(entryModelDeclared).toBeUndefined();
   });
 
   it('provider is undefined when settingsForModel.activeModel.providerId matches no configured provider', () => {
     const settings = makeSettings({ activeModel: { providerId: 'missing-provider', modelId: 'x' } });
-    const { provider, entryModelDeclared } = resolveEntryModel(makeRoute(), settings, settings);
+    const { provider, entryModelDeclared } = resolveEntryModel(makeRoute(), settings);
     expect(provider).toBeUndefined();
     expect(entryModelDeclared).toBeUndefined();
   });

@@ -10,6 +10,8 @@
 import { getI18n, format } from '@/i18n';
 
 export type CUSessionStatus = 'idle' | 'active' | 'paused';
+export type CUPhase = 'checking' | 'observing' | 'acting' | 'verifying' | 'blocked';
+export type CUCapabilityMode = 'full' | 'structured' | 'unsupported' | 'unknown';
 
 /** Max steps per CU session before auto-stop */
 const MAX_CU_STEPS = 30;
@@ -20,6 +22,9 @@ export interface CUState {
   status: CUSessionStatus;
   stepCount: number;
   currentAction: string | null;
+  phase: CUPhase;
+  targetApp: string | null;
+  capabilityMode: CUCapabilityMode | null;
   latestScreenshot: string | null; // base64
   activeConversationId: string | null; // for abort targeting
   /** Whether Abu window is hidden and border/stop-btn are shown (session-level, survives across batches) */
@@ -32,6 +37,9 @@ let state: CUState = {
   status: 'idle',
   stepCount: 0,
   currentAction: null,
+  phase: 'checking',
+  targetApp: null,
+  capabilityMode: null,
   latestScreenshot: null,
   activeConversationId: null,
   sessionWindowHidden: false,
@@ -54,11 +62,11 @@ function update(partial: Partial<CUState>) {
 /** Enter Computer Use session. */
 export function setComputerUseActive(active: boolean, conversationId?: string) {
   if (active) {
-    update({ status: 'active', stepCount: 0, currentAction: null, latestScreenshot: null, activeConversationId: conversationId ?? null, sessionStartTime: Date.now() });
+    update({ status: 'active', stepCount: 0, currentAction: null, phase: 'checking', targetApp: null, capabilityMode: null, latestScreenshot: null, activeConversationId: conversationId ?? null, sessionStartTime: Date.now() });
     setupAbortListener();
   } else {
     const wasHidden = state.sessionWindowHidden;
-    update({ status: 'idle', stepCount: 0, currentAction: null, latestScreenshot: null, activeConversationId: null, sessionWindowHidden: false, sessionStartTime: null });
+    update({ status: 'idle', stepCount: 0, currentAction: null, phase: 'checking', targetApp: null, capabilityMode: null, latestScreenshot: null, activeConversationId: null, sessionWindowHidden: false, sessionStartTime: null });
     cleanupAbortListener();
     // Session-level cleanup: restore window and hide overlay
     if (wasHidden) {
@@ -138,6 +146,23 @@ export function checkCUSessionLimits(): string | null {
 /** Set current action description. */
 export function setCurrentAction(action: string | null) {
   update({ currentAction: action });
+}
+
+/** Product-facing Computer Use phase; carries no prompt, AX label, or typed text. */
+export function setComputerUsePhase(phase: CUPhase) {
+  if (state.status === 'active') update({ phase });
+}
+
+/** Set safe structural context shown in the status bar. */
+export function setComputerUseContext(input: {
+  targetApp?: string | null;
+  capabilityMode?: CUCapabilityMode | null;
+}) {
+  if (state.status !== 'active') return;
+  update({
+    ...(input.targetApp !== undefined ? { targetApp: input.targetApp } : {}),
+    ...(input.capabilityMode !== undefined ? { capabilityMode: input.capabilityMode } : {}),
+  });
 }
 
 // ─── Stop button abort listener + global shortcut ───

@@ -69,6 +69,7 @@ const {
   nativeHelperDispatch,
   NATIVE_HELPER_MISS,
   killNativeHelper,
+  getNativeHelperGeneration,
 } = require('./nativeHelperManager.cjs');
 const {
   createComputerUseGate,
@@ -770,11 +771,25 @@ function registerTauriHost(app, options = {}) {
       }
       return await result;
     },
+    // Computer Use must not depend on Apple Events/System Events on macOS. The
+    // native helper resolves NSWorkspace identity there; Windows keeps its
+    // existing foreground-window process probe. Both return the stable
+    // bundle/process identity required by the Host Gate.
     getActiveWindow: async () => {
-      const result = await guiDispatch(app, 'get_active_window', {});
-      if (result === GUI_MISS) throw new Error('active-window provider unavailable');
-      return result;
+      if (process.platform === 'win32') {
+        const result = await guiDispatch(app, 'get_active_window', {});
+        if (result === GUI_MISS) {
+          throw new Error('Windows frontmost-app provider unavailable');
+        }
+        return result;
+      }
+      const result = nativeHelperDispatch('frontmost_app_identity', {});
+      if (result === NATIVE_HELPER_MISS) {
+        throw new Error('native frontmost-app provider unavailable');
+      }
+      return await result;
     },
+    getNativeHelperGeneration,
     killNativeHelper,
     requestTaskApproval: async ({ target, mode }) => {
       const isZh = app.getLocale().toLowerCase().startsWith('zh');

@@ -5,7 +5,105 @@ import {
   DEFAULT_MAX_TURNS,
   escalateMaxOutputTokens,
   shouldContinueTruncatedToolCalls,
+  detectSemanticToolLoop,
+  minimizeToolLoopObservation,
 } from './loopGuards';
+
+describe('detectSemanticToolLoop', () => {
+  const observed = (
+    name: string,
+    input: Record<string, unknown> = {},
+    result = 'same-result',
+  ) => ({ name, input, result, error: false });
+
+  it('detects the same normalized call with an unchanged result three times', () => {
+    expect(detectSemanticToolLoop([
+      observed('tool_search', { query: ' computer ' }),
+      observed('tool_search', { query: ' computer ' }),
+      observed('tool_search', { query: ' computer ' }),
+    ])).toBe('repeated_call');
+  });
+
+  it('does not flag repeated calls when their observable result changes', () => {
+    expect(detectSemanticToolLoop([
+      observed('computer', { action: 'screenshot' }, 'state-1'),
+      observed('computer', { action: 'screenshot' }, 'state-2'),
+      observed('computer', { action: 'screenshot' }, 'state-3'),
+    ])).toBeNull();
+  });
+
+  it('does not flag an A-B-A-B shape when the corresponding results changed', () => {
+    expect(detectSemanticToolLoop([
+      observed('computer', { action: 'snapshot' }, 'state-a1'),
+      observed('computer', { action: 'click' }, 'state-b1'),
+      observed('computer', { action: 'snapshot' }, 'state-a2'),
+      observed('computer', { action: 'click' }, 'state-b2'),
+    ])).toBeNull();
+  });
+
+  it('does not equate an error observation with a later successful one', () => {
+    expect(detectSemanticToolLoop([
+      { ...observed('computer', { action: 'click' }), error: true },
+      observed('computer', { action: 'click' }),
+      observed('computer', { action: 'click' }),
+    ])).toBeNull();
+  });
+
+  it('detects an A-B-A-B cycle with unchanged corresponding results', () => {
+    expect(detectSemanticToolLoop([
+      observed('tool_search', { query: 'computer' }, 'search-result'),
+      observed('read_me', { topic: 'computer' }, 'read-result'),
+      observed('tool_search', { query: 'computer' }, 'search-result'),
+      observed('read_me', { topic: 'computer' }, 'read-result'),
+    ])).toBe('periodic_cycle');
+  });
+
+  it('detects six consecutive meta-tool calls without target execution', () => {
+    expect(detectSemanticToolLoop([
+      observed('tool_search'),
+      observed('use_skill'),
+      observed('read_skill_file'),
+      observed('read_me'),
+      observed('tool_search', {}, 'changed-1'),
+      observed('use_skill', {}, 'changed-2'),
+    ])).toBe('meta_only');
+  });
+
+  it('resets the meta-only window after a target execution tool', () => {
+    expect(detectSemanticToolLoop([
+      observed('tool_search'),
+      observed('use_skill'),
+      observed('read_skill_file'),
+      observed('computer', { action: 'screenshot' }),
+      observed('tool_search', {}, 'changed-1'),
+      observed('use_skill', {}, 'changed-2'),
+    ])).toBeNull();
+  });
+
+  it('retains only hashes, not raw tool input or output content', () => {
+    const minimized = minimizeToolLoopObservation({
+      name: 'read_file',
+      input: { path: '/private/customer-secret.txt' },
+      result: 'customer secret body',
+      error: false,
+    });
+    const serialized = JSON.stringify(minimized);
+
+    expect(minimized.name).toBe('read_file');
+    expect(serialized).not.toContain('customer-secret');
+    expect(serialized).not.toContain('customer secret body');
+  });
+
+  it('still detects repetition after observations are minimized', () => {
+    const minimized = [
+      observed('computer', { action: 'snapshot' }, 'same-state'),
+      observed('computer', { action: 'snapshot' }, 'same-state'),
+      observed('computer', { action: 'snapshot' }, 'same-state'),
+    ].map(minimizeToolLoopObservation);
+
+    expect(detectSemanticToolLoop(minimized)).toBe('repeated_call');
+  });
+});
 
 // Shared no-progress predicate. Mirrors the half of subagentLoop's isNoProgressTurn
 // that detects "the model emitted only tool calls the loop can't act on" — extracted

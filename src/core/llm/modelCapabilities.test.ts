@@ -6,6 +6,7 @@ import {
   isReasoningStarvation,
   deriveDeclaredDefaults,
   isKnownModel,
+  resolveAgentModelCapabilities,
   CONTENT_FLOOR_TOKENS,
 } from './modelCapabilities';
 import { classifyThinking } from './model-data/classify';
@@ -230,6 +231,68 @@ describe('modelCapabilities', () => {
 
     it('returns false for an unrecognized id that falls through to FALLBACK_DEFAULT', () => {
       expect(isKnownModel('totally-unknown-xyz')).toBe(false);
+    });
+  });
+
+  describe('resolveAgentModelCapabilities — Computer Use tier', () => {
+    it('classifies built-in vision models as full Computer Use', () => {
+      expect(resolveAgentModelCapabilities({
+        modelId: 'gpt-4o',
+        providerSource: 'builtin',
+      })).toMatchObject({
+        toolCalling: 'native',
+        structuredArguments: 'reliable',
+        computerUseTier: 'full',
+        capabilitySource: 'builtin',
+      });
+    });
+
+    it('classifies built-in DeepSeek as structured instead of unsupported', () => {
+      expect(resolveAgentModelCapabilities({
+        modelId: 'deepseek-chat',
+        providerSource: 'builtin',
+      })).toMatchObject({
+        computerUseTier: 'structured',
+        vision: false,
+        capabilitySource: 'builtin',
+      });
+    });
+
+    it('keeps an undeclared custom proxy conservative even for a familiar model id', () => {
+      expect(resolveAgentModelCapabilities({
+        modelId: 'gpt-4o',
+        providerSource: 'custom',
+      })).toMatchObject({
+        toolCalling: 'text-recovery',
+        structuredArguments: 'unknown',
+        computerUseTier: 'unknown',
+        capabilitySource: 'fallback',
+      });
+    });
+
+    it('allows explicitly declared custom tool support as best-effort', () => {
+      expect(resolveAgentModelCapabilities({
+        modelId: 'private-model',
+        providerSource: 'custom',
+        declared: { supportsTools: true, supportsImages: false },
+      })).toMatchObject({
+        toolCalling: 'native',
+        structuredArguments: 'best-effort',
+        computerUseTier: 'structured',
+        capabilitySource: 'user-declared',
+      });
+    });
+
+    it('treats an explicit no-tools declaration as unsupported', () => {
+      expect(resolveAgentModelCapabilities({
+        modelId: 'gpt-4o',
+        providerSource: 'custom',
+        declared: { supportsTools: false, supportsImages: true },
+      })).toMatchObject({
+        toolCalling: 'none',
+        computerUseTier: 'unsupported',
+        capabilitySource: 'user-declared',
+      });
     });
   });
 });

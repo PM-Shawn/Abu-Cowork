@@ -17,6 +17,7 @@ import type { PermissionMode } from '../core/permissions/permissionMode';
 import type { ChatReference } from '@/types/chatReference';
 import { getI18n } from '../i18n';
 import { TOOL_NAMES } from '../core/tools/toolNames';
+import { resetSessionPromotions } from '../core/tools/toolSearch';
 import {
   clearConversationComposerDraft,
   getComposerDraftScopeForEnterpriseMode,
@@ -831,6 +832,7 @@ export const useChatStore = create<ChatStore>()(
         // Clean up per-conversation state in external modules
         clearInputQueue(id);
         clearSkillHooksByConversation(id);
+        resetSessionPromotions(id);
         useTaskExecutionStore.getState().clearConversation(id);
         clearConversationComposerDraft(
           id,

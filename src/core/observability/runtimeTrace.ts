@@ -66,6 +66,8 @@ interface ActiveRuntimeRun {
   stage: string;
   startedAt: number;
   updatedAt: number;
+  /** Set at run start so every later event carrying this runId can be joined to its conversation. */
+  conversationId?: string;
 }
 
 export interface RendererRuntimeTraceSnapshot {
@@ -173,24 +175,43 @@ export function runtimeErrorType(error: unknown): string {
   return raw.toLowerCase().replace(/[^a-z0-9_.-]+/g, '_').slice(0, 80) || 'unknown';
 }
 
+/**
+ * Attach the run's conversationId to events that carry a runId but no explicit
+ * conversationId. Without this the run timeline cannot be joined to the session
+ * ledger during diagnosis — most emit sites know their runId but not the
+ * conversation, so the join is resolved centrally from the run registry rather
+ * than threaded through every call site. An explicit conversationId always wins.
+ */
+function withRunConversation(attributes: RuntimeTraceAttributes): RuntimeTraceAttributes {
+  if (attributes.conversationId !== undefined || attributes.runId === undefined) return attributes;
+  const conversationId = activeRuns.get(attributes.runId)?.conversationId;
+  return conversationId === undefined ? attributes : { ...attributes, conversationId };
+}
+
 export function traceRuntimeEvent(eventName: string, attributes: RuntimeTraceAttributes = {}): void {
   const event = sanitizeEventName(eventName);
   if (!event || !event.startsWith('renderer.')) return;
+  const safeAttributes = sanitizeAttributes(withRunConversation(attributes));
   const entry: RuntimeTraceEvent = {
     schemaVersion: 1,
     timestamp: Date.now(),
     process: 'renderer',
     event,
-    ...sanitizeAttributes(attributes),
+    ...safeAttributes,
   };
   recentEvents.push(entry);
   if (recentEvents.length > MAX_EVENTS) recentEvents.shift();
-  recordElectronRuntimeEvent({ event, ...sanitizeAttributes(attributes) });
+  recordElectronRuntimeEvent({ event, ...safeAttributes });
 }
 
-export function startRuntimeRun(runId: string, executionPath: string, stage: string): void {
+export function startRuntimeRun(
+  runId: string,
+  executionPath: string,
+  stage: string,
+  conversationId?: string,
+): void {
   const now = Date.now();
-  activeRuns.set(runId, { runId, executionPath, stage, startedAt: now, updatedAt: now });
+  activeRuns.set(runId, { runId, executionPath, stage, startedAt: now, updatedAt: now, conversationId });
 }
 
 export function markRuntimeRunStage(runId: string, stage: string): void {

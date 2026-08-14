@@ -48,7 +48,7 @@ import { getScratchpadPort } from './ports/scratchpadPort';
 import { getCapsPort } from './ports/capsPort';
 import { getAbortRegistry } from './ports/abortRegistry';
 import { getToolInvoker } from './ports/toolInvoker';
-import { getSettingsReader } from './ports/settingsReader';
+import { getSettingsReader, type SettingsReader } from './ports/settingsReader';
 import { toSerializableTool } from './subagentRunner';
 import { registerToolInvokeSource, ensureToolInvokeRouterRegistered } from './toolInvokeRouter';
 import { ensureHookBridgeRegistered, registerHookSignalSource } from './hookBridge';
@@ -154,6 +154,8 @@ export interface AgentLoopRunOptions {
   requestFilePermission?: FilePermissionCallback;
   blockedTools?: string[];
   allowedTools?: string[];
+  /** Frozen provider/model snapshot inherited by nested shell-side agents. */
+  settingsReader?: SettingsReader;
 }
 
 export interface RunSession {
@@ -1540,6 +1542,7 @@ export function installShellLoopContext(runId: string, session: RunSession): voi
     eventRouter,
     loopId: session.loopId,
     conversationId: session.conversationId,
+    settingsReader: session.options.settingsReader,
     toolCallToStepId: session.toolCallToStepId,
     blockedTools: session.options.blockedTools,
     allowedTools: session.options.allowedTools,
@@ -1867,7 +1870,7 @@ async function buildAgentRunParams(
   }
   const indexEntrySnapshot = getConversationReader().getIndexEntry(conversationId);
 
-  const { settings, settingsForModel } = resolveEntrySettings(conversationId);
+  const { settingsForModel } = resolveEntrySettings(conversationId);
 
   // Single source with runAgentLoop's own entry derivation AND
   // entryOrchestration.ts's precomputeOrchestration — see
@@ -1877,10 +1880,10 @@ async function buildAgentRunParams(
     conversationId,
     userMessage,
     options?.imContext,
-    { settings, settingsForModel },
+    { settingsForModel },
     abortSignal,
   );
-  const { effectiveModelId, provider } = resolveEntryModel(orchestration.route, settings, settingsForModel);
+  const { effectiveModelId, provider } = resolveEntryModel(orchestration.route, settingsForModel);
 
   // May throw (EnterpriseLlmUnavailableError) — propagates to the caller,
   // see this function's doc.
@@ -1964,9 +1967,15 @@ async function buildAgentRunParams(
       prePersistedUserMessageId: clientMessageId,
     },
     orchestration,
-    conversationSnapshot: conversationSnapshot as Conversation,
+    // Freeze the entry provider/model onto the wire snapshot. A model switch
+    // while message persistence is in flight belongs to the next run and must
+    // not be combined with this run's already-resolved credentials.
+    conversationSnapshot: {
+      ...conversationSnapshot,
+      model: settingsForModel.activeModel,
+    } as Conversation,
     indexEntrySnapshot: indexEntrySnapshot as ConversationMeta | undefined,
-    settingsSnapshot: settings,
+    settingsSnapshot: settingsForModel,
     capsSnapshot,
     resolvedCreds,
     toolList,
@@ -2243,6 +2252,7 @@ async function runSingleAgentLoopDispatched(
       requestFilePermission: options?.filePermissionCallback,
       blockedTools: options?.blockedTools,
       allowedTools: options?.allowedTools,
+      settingsReader: { getSnapshot: () => params.settingsSnapshot },
     },
     shellAbortController,
     transportAbortController: new AbortController(),

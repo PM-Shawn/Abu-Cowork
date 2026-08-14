@@ -76,8 +76,20 @@ import { runSubagentLoop, SubagentResult, type SubagentLoopOptions, type Subagen
 import { registerToolInvokeSource, ensureToolInvokeRouterRegistered } from './toolInvokeRouter';
 import { ensureHookBridgeRegistered, registerHookSignalSource } from './hookBridge';
 import { createLogger } from '../logging/logger';
+import type { LoopContext } from './permissionBridge';
 
 const logger = createLogger('subagent-transport');
+
+/** Security boundary for tool-triggered nesting: inherit the parent run's
+ * frozen provider/model snapshot and conversation identity as one unit. */
+export function getSubagentRunInheritance(
+  loopContext: Pick<LoopContext, 'conversationId' | 'settingsReader'> | null | undefined,
+): Pick<SubagentLoopOptions, 'parentConversationId' | 'settingsReader'> {
+  return {
+    parentConversationId: loopContext?.conversationId,
+    settingsReader: loopContext?.settingsReader,
+  };
+}
 import { getToolInvoker } from './ports/toolInvoker';
 import { getSettingsReader } from './ports/settingsReader';
 import { getWorkspaceReader } from './ports/workspaceReader';

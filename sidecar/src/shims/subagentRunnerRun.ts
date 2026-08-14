@@ -26,9 +26,10 @@
  * `settingsReader` is the one exception — `AgentRunContext` deliberately has
  * no `settingsReader` field (see `agentRunContext.ts`'s own doc: settings
  * live in the sidecar-GLOBAL `settingsMirror.ts`, not per-run) — so this
- * uses `getSettingsMirrorReader()` directly, the SAME shared mirror
- * `agentLoopHost.ts` wires into the top-level `AgentLoopOptions.settingsReader`
- * for the parent run itself.
+ * uses the caller's frozen `settingsReader` when present. The main loop
+ * passes its entry provider/model snapshot so a nested agent cannot drift to
+ * a later global selection. Only legacy callers fall back to the shared
+ * mirror.
  *
  * ── `runSubagentLoop` called DIRECTLY, in-process — no reverse RPC ───────
  * We're already inside the sidecar process; there is no shell round trip to
@@ -80,7 +81,7 @@ export async function runSubagent(options: SubagentLoopOptions): Promise<Subagen
 
   const fullOptions: SubagentLoopOptions = {
     ...options,
-    settingsReader: getSettingsMirrorReader(),
+    settingsReader: options.settingsReader ?? getSettingsMirrorReader(),
     toolInvoker: ctx.toolInvoker,
     capsPort: ctx.capsPort,
     workspaceReader: ctx.workspaceReader,

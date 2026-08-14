@@ -18,6 +18,7 @@ import { usePermissionStore } from '../../stores/permissionStore';
 import type { PermissionDuration } from '../../stores/permissionStore';
 import { authorizeWorkspace } from '../tools/pathSafety';
 import type { EventRouter } from './eventRouter';
+import type { SettingsReader } from './ports/settingsReader';
 import * as approvalBridge from './ports/approvalBridge';
 
 // The file-permission queue's dequeue-time re-check ("another tool call may
@@ -38,6 +39,9 @@ export interface LoopContext {
   eventRouter: EventRouter;
   loopId: string;
   conversationId: string;
+  /** Frozen provider/model snapshot owned by this parent run. Nested agents
+   * must inherit it instead of consulting the mutable global selection. */
+  settingsReader?: SettingsReader;
   toolCallToStepId: Map<string, string>;
   /** Execution denylist inherited by tools that may create nested work. */
   blockedTools?: string[];

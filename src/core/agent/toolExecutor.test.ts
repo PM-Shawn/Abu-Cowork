@@ -10,6 +10,7 @@ const mocks = vi.hoisted(() => ({
   executeAnyTool: vi.fn(),
   emitHook: vi.fn(),
   route: vi.fn(),
+  setLoopContext: vi.fn(),
 }));
 
 vi.mock('./ports/chatDelta', () => ({
@@ -51,7 +52,7 @@ vi.mock('./computerUseStatus', () => ({
 }));
 
 vi.mock('./permissionBridge', () => ({
-  setLoopContext: vi.fn(),
+  setLoopContext: (...args: unknown[]) => mocks.setLoopContext(...args),
   clearLoopContext: vi.fn(),
 }));
 
@@ -112,6 +113,7 @@ function makeParams(
     filePermCb: async () => true,
     toolContext: {} as ToolExecutionContext,
     toolInvoker: invoker,
+    settingsReader: { getSnapshot: () => ({}) as never },
     continueLoop: true,
   };
 }
@@ -151,6 +153,21 @@ describe('executeToolBatch · hard run restrictions', () => {
         error: true,
       }],
     });
+  });
+
+  it('installs the frozen parent settings reader for nested delegate tools', async () => {
+    const executeAnyTool = vi.fn().mockResolvedValue('ok');
+    const params = makeParams(makeToolCall('delegate_to_agent'), makeInvoker(executeAnyTool));
+
+    await executeToolBatch(params);
+
+    expect(mocks.setLoopContext).toHaveBeenCalledWith(
+      'loop-1',
+      expect.objectContaining({
+        conversationId: 'conv-1',
+        settingsReader: params.settingsReader,
+      }),
+    );
   });
 
   it('fails closed before invoking a tool outside the per-run whitelist', async () => {

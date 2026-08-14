@@ -625,6 +625,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
     settings.activeModel;
   const settingsForModel: typeof settings =
     baseModel === settings.activeModel ? settings : { ...settings, activeModel: baseModel };
+  const entrySettingsReader: SettingsReader = { getSnapshot: () => settingsForModel };
 
   // Generate a unique loopId for this agent loop - all messages in this loop share it.
   // Shell dispatch (P1-3B-3B) can override via options.loopId — see that
@@ -702,7 +703,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
     conversationId,
     userMessage,
     options?.imContext,
-    { settings, settingsForModel },
+    { settingsForModel },
     abortController.signal,
   );
   options?.runtimeEvent?.('agent_route_selected', {
@@ -757,7 +758,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
   // entryOrchestration.ts's precomputeOrchestration and the shell
   // dispatcher's buildAgentRunParams — single source, see that module's
   // doc); setActiveModel's side effect stays uniquely here.
-  const { effectiveModelId, entryModelDeclared } = resolveEntryModel(route, settings, settingsForModel);
+  const { effectiveModelId, entryModelDeclared } = resolveEntryModel(route, settingsForModel);
   // Set active model for per-model token calibration
   setActiveModel(effectiveModelId);
 
@@ -908,6 +909,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
         onProgress,
         imContext: options?.imContext,
         parentConversationId: conversationId,
+        settingsReader: entrySettingsReader,
       });
 
       // runSubagentLoop RETURNS a (partial/cancelled) SubagentResult on abort
@@ -2037,6 +2039,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
           continueLoop,
           contextUsagePercent: usagePercent,
           toolInvoker,
+          settingsReader: entrySettingsReader,
         });
         if (batchResult.requiresUserRecovery) {
           awaitingUserRecovery = true;

@@ -2021,6 +2021,22 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
         const confirmCb = options?.commandConfirmCallback ?? requestCommandConfirmation;
         const filePermCb = options?.filePermissionCallback ?? requestFilePermission;
 
+        // Move the crash checkpoint from "waiting on the model" to "running
+        // tools" before any side effect starts, so recovery can tell which of
+        // the two a crash interrupted. App.tsx already renders the
+        // 'tool_executing' wording; until now nothing ever wrote that status.
+        import('../session/checkpoint').then(({ writeCheckpoint }) => {
+          writeCheckpoint({
+            conversationId,
+            loopId,
+            turnCount,
+            lastMessageId: assistantMsgId,
+            status: 'tool_executing',
+            currentTool: collectedToolCalls.map((tc) => tc.name).join(', '),
+            timestamp: Date.now(),
+          });
+        }).catch(() => {});
+
         const batchResult = await executeToolBatch({
           collectedToolCalls,
           toolCallToStepId,

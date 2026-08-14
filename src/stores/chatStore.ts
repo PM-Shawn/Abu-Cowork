@@ -1411,6 +1411,20 @@ export const useChatStore = create<ChatStore>()(
             msg.isStreaming = false;
           }
         });
+        // Persist the *intent* immediately, for the same reason updateToolCall
+        // persists the result: this call clears isStreaming, which switches off
+        // the streaming snapshot loop, so without an explicit write the pending
+        // tool calls would not reach disk until the batch finishes. A crash
+        // between here and that point would replay as "the model never called
+        // anything" even though a side effect (rm, write_file, an API call) had
+        // already run — the recovery path could not tell "not started" from
+        // "started, unrecorded", and a retry would execute it twice.
+        const updatedMsg = get().conversations[convId]?.messages.find((m) => m.id === messageId);
+        if (updatedMsg) {
+          import('../core/session/conversationStorage').then(({ replaceMessageById }) => {
+            replaceMessageById(convId, updatedMsg).catch(() => {});
+          });
+        }
       },
 
       updateMessageUsage: (convId, usage, msgId) => {

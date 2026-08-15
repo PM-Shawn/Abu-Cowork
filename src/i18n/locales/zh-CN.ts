@@ -2140,6 +2140,9 @@ const zhCN: TranslationDict = {
     blocked: '此命令因安全原因被阻止执行',
     userCancelled: '[用户取消了此操作]',
     aiDenied: 'AI 审核已拒绝此操作',
+    browserAction: '浏览器操作',
+    browserReason: '将在你已登录的浏览器里执行操作（可能提交表单、点击按钮或运行脚本）。允许后，本次对话内的后续浏览器操作不再询问。',
+    browserDenied: '浏览器操作需要确认，但当前没有可用的确认入口',
   },
 
   toolErrors: {

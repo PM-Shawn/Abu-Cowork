@@ -2139,6 +2139,9 @@ const enUS: TranslationDict = {
     blocked: 'This command has been blocked for security reasons',
     userCancelled: '[User cancelled this operation]',
     aiDenied: 'Blocked by AI review',
+    browserAction: 'Browser action',
+    browserReason: 'This acts inside your logged-in browser (it may submit forms, click buttons, or run scripts). Once allowed, later browser actions in this conversation will not ask again.',
+    browserDenied: 'Browser actions need confirmation, but no confirmation channel is available',
   },
 
   toolErrors: {

@@ -2290,6 +2290,9 @@ export interface TranslationDict {
     blocked: string;
     userCancelled: string;
     aiDenied: string;
+    browserAction: string;
+    browserReason: string;
+    browserDenied: string;
   };
 
   // Tool error messages (used in core/tools/registry.ts)

@@ -85,7 +85,16 @@ export function shouldShowWorkspaceContextBar(
 
 interface ChatInputProps {
   variant: 'welcome' | 'chat';
-  onSend: (message: string, images?: ImageAttachment[], workspacePath?: string | null) => void;
+  /**
+   * Deliver the composed message. Resolving to `false` means the send was not
+   * accepted (no API key, conversation busy) and the composer restores the
+   * draft it optimistically cleared.
+   */
+  onSend: (
+    message: string,
+    images?: ImageAttachment[],
+    workspacePath?: string | null,
+  ) => void | Promise<boolean | void>;
   disabled?: boolean;
   /** Custom placeholder from scenario guide (welcome variant only) */
   scenarioPlaceholder?: string | null;
@@ -665,6 +674,26 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
     if (textareaRef.current) textareaRef.current.style.height = 'auto';
   };
 
+  /**
+   * Put a cleared draft back after a send that was not accepted.
+   *
+   * The composer clears optimistically so typing stays responsive, but the
+   * dispatch result only arrives later — without this, a rejected send (no API
+   * key configured, conversation busy) left the user staring at an empty box
+   * with their text gone.
+   */
+  const restoreInput = (draft: ComposerDraft) => {
+    currentDraftRef.current = draft;
+    setText(draft.text);
+    setImages(draft.images);
+    setFiles(draft.files);
+    setReferences(draft.references);
+    setSelectedSkill(draft.selectedSkill);
+    setSelectedAgent(draft.selectedAgent);
+    writeComposerDraft(draftKey, draft);
+    textareaRef.current?.focus();
+  };
+
   const handleSend = () => {
     const trimmed = text.trim();
     if ((!trimmed && !selectedSkill && !selectedAgent && images.length === 0 && files.length === 0 && references.length === 0) || disabled) return;
@@ -704,8 +733,29 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
       return;
     }
 
-    onSend(message, images.length > 0 ? images : undefined, isWelcome ? localWorkspace : undefined);
+    // Snapshot before the optimistic clear so a rejected send can hand the
+    // draft back instead of losing it.
+    const sentDraft: ComposerDraft = {
+      text,
+      images: [...images],
+      files: [...files],
+      references: [...references],
+      selectedSkill,
+      selectedAgent,
+    };
+    const sendResult = onSend(
+      message,
+      images.length > 0 ? images : undefined,
+      isWelcome ? localWorkspace : undefined,
+    );
     resetInput();
+    if (sendResult && typeof sendResult.then === 'function') {
+      void sendResult.then(
+        (accepted) => { if (accepted === false) restoreInput(sentDraft); },
+        // A send that throws definitely did not take the message.
+        () => restoreInput(sentDraft),
+      );
+    }
   };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {

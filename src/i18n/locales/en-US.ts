@@ -2142,6 +2142,8 @@ const enUS: TranslationDict = {
     browserAction: 'Browser action',
     browserReason: 'This acts inside your logged-in browser (it may submit forms, click buttons, or run scripts). Once allowed, later browser actions in this conversation will not ask again.',
     browserDenied: 'Browser actions need confirmation, but no confirmation channel is available',
+    selfExtensionReason: 'This adds or rewrites a long-lived capability (subagent / MCP server / persona) that shapes every later conversation.',
+    selfExtensionDenied: 'Adding a capability needs confirmation, but no confirmation channel is available',
   },
 
   toolErrors: {

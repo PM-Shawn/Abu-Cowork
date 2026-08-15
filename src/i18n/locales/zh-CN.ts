@@ -2143,6 +2143,8 @@ const zhCN: TranslationDict = {
     browserAction: '浏览器操作',
     browserReason: '将在你已登录的浏览器里执行操作（可能提交表单、点击按钮或运行脚本）。允许后，本次对话内的后续浏览器操作不再询问。',
     browserDenied: '浏览器操作需要确认，但当前没有可用的确认入口',
+    selfExtensionReason: '将为阿布新增或改写一项长期能力（子代理 / MCP 服务 / 人格设定），它会影响之后的每一次对话。',
+    selfExtensionDenied: '新增能力需要确认，但当前没有可用的确认入口',
   },
 
   toolErrors: {

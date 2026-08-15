@@ -8,6 +8,7 @@ import { getSettingsReader } from '../agent/ports/settingsReader';
 import { useChatStore } from '../../stores/chatStore';
 import { getPermissionStrategy } from '../permissions/permissionMode';
 import { classifyBrowserTool, grantBrowserAutomation, hasBrowserGrant } from '../permissions/browserToolPolicy';
+import { classifySelfExtension } from '../permissions/selfExtensionPolicy';
 import { analyzeCommandBoundary, type CmdBoundary } from '../permissions/commandBoundary';
 import { reviewAction } from '../safety/reviewer';
 import { getLoopContext } from '../agent/permissionBridge';
@@ -441,6 +442,32 @@ export async function checkToolApproval(
           return { decision: 'deny', reason: t.commandConfirm.userCancelled };
         }
         grantBrowserAutomation(toolContext?.conversationId);
+      }
+    }
+  }
+
+  // Self-extension: creating a subagent, installing an MCP server, or
+  // rewriting the persona all write durable state that shapes every later
+  // turn. Skills already require a draft + content scan + audited history;
+  // these took the same kind of write with no gate at all, so a single
+  // injected instruction could buy a persistent foothold. No per-conversation
+  // grant here — these are rare, deliberate acts, each worth its own ask.
+  {
+    const selfExtension = classifySelfExtension(name, input);
+    if (selfExtension) {
+      const decision = strategy.decideOtherTool('state-changing', false);
+      if (decision !== 'allow') {
+        if (!onRequireConfirmation) {
+          return { decision: 'deny', reason: `Error: ${t.commandConfirm.selfExtensionDenied}` };
+        }
+        const confirmed = await onRequireConfirmation({
+          command: selfExtension.summary,
+          level: 'warn',
+          reason: t.commandConfirm.selfExtensionReason,
+        });
+        if (!confirmed) {
+          return { decision: 'deny', reason: t.commandConfirm.userCancelled };
+        }
       }
     }
   }

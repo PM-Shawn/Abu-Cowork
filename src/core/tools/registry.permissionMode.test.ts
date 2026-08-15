@@ -128,3 +128,76 @@ describe('browser automation approval gate', () => {
     expect(decision.decision).toBe('deny');
   });
 });
+
+// ── Self-extension gate ──
+// Creating a subagent, installing an MCP server, or rewriting the persona all
+// write durable state that shapes every later turn. Each is confirmed on its
+// own — unlike browser automation there is no per-conversation grant.
+describe('self-extension approval gate', () => {
+  beforeEach(() => {
+    useChatStore.setState({ conversations: {}, conversationIndex: {}, activeConversationId: null });
+    useSettingsStore.setState({ permissionMode: 'standard' });
+  });
+
+  const collectingConfirm = (asked: string[]) =>
+    (async (info: { command: string }) => { asked.push(info.command); return true; }) as never;
+
+  it('asks before saving an agent, and names it', async () => {
+    const asked: string[] = [];
+    const decision = await checkToolApproval(
+      'save_agent', { name: 'helper', systemPrompt: 'do things' },
+      { conversationId: 'conv-1' } as never, collectingConfirm(asked),
+    );
+
+    expect(decision.decision).toBe('allow');
+    expect(asked).toHaveLength(1);
+    expect(asked[0]).toContain('helper');
+  });
+
+  it('asks before rewriting the persona', async () => {
+    const asked: string[] = [];
+    await checkToolApproval(
+      'update_soul', { content: 'new persona' }, { conversationId: 'conv-1' } as never, collectingConfirm(asked),
+    );
+    expect(asked).toHaveLength(1);
+  });
+
+  it('asks for every install — approving one does not grant the next', async () => {
+    const asked: string[] = [];
+    const confirm = collectingConfirm(asked);
+
+    await checkToolApproval('manage_mcp_server', { action: 'install', name: 'a' }, { conversationId: 'conv-1' } as never, confirm);
+    await checkToolApproval('manage_mcp_server', { action: 'add_custom', name: 'b' }, { conversationId: 'conv-1' } as never, confirm);
+
+    expect(asked).toHaveLength(2);
+  });
+
+  it('leaves read-only MCP actions alone', async () => {
+    const asked: string[] = [];
+    const decision = await checkToolApproval(
+      'manage_mcp_server', { action: 'search', query: 'github' },
+      { conversationId: 'conv-1' } as never, collectingConfirm(asked),
+    );
+
+    expect(decision.decision).toBe('allow');
+    expect(asked).toHaveLength(0);
+  });
+
+  it('denies when the user declines the install', async () => {
+    const decision = await checkToolApproval(
+      'manage_mcp_server', { action: 'install', name: 'sketchy' },
+      { conversationId: 'conv-1' } as never, (async () => false) as never,
+    );
+    expect(decision.decision).toBe('deny');
+  });
+
+  it('fails closed with no confirmation channel, in every permission mode', async () => {
+    for (const mode of ['standard', 'smart', 'autonomous'] as const) {
+      useSettingsStore.setState({ permissionMode: mode });
+      const decision = await checkToolApproval(
+        'save_agent', { name: 'x' }, { conversationId: 'conv-1' } as never, undefined,
+      );
+      expect(decision.decision).toBe('deny');
+    }
+  });
+});

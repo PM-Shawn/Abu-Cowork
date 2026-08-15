@@ -2293,6 +2293,8 @@ export interface TranslationDict {
     browserAction: string;
     browserReason: string;
     browserDenied: string;
+    selfExtensionReason: string;
+    selfExtensionDenied: string;
   };
 
   // Tool error messages (used in core/tools/registry.ts)

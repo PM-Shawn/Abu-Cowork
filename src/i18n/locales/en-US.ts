@@ -960,6 +960,8 @@ const enUS: TranslationDict = {
   },
 
   diagnostic: {
+    telemetryOptOut: 'Send anonymous usage and error reports',
+    telemetryOptOutDesc: 'Helps diagnose crashes and failures. Turn this off and Abu stops sending any usage, error, or diagnostic data.',
     title: 'Diagnostic',
     desc: 'Check Abu\'s health. Export a diagnostic bundle when reporting issues.',
     bannerAllPassed: 'All systems healthy',

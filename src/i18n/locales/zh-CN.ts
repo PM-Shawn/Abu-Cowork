@@ -960,6 +960,8 @@ const zhCN: TranslationDict = {
   },
 
   diagnostic: {
+    telemetryOptOut: '发送匿名使用与错误报告',
+    telemetryOptOutDesc: '帮助定位崩溃与故障。关闭后阿布不再向服务端发送任何使用、错误或诊断数据。',
     title: '诊断',
     desc: '检查 Abu 的运行状态。出问题时也可以导出诊断包发给我们。',
     bannerAllPassed: '一切正常',

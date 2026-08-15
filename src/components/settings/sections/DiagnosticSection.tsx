@@ -8,6 +8,7 @@ import type { CheckCategory, CheckResult } from '@/core/diagnostic/types';
 import DiagnosticBanner from './diagnostic/DiagnosticBanner';
 import DiagnosticCategory from './diagnostic/DiagnosticCategory';
 import SettingsSectionHeader from '@/components/settings/SettingsSectionHeader';
+import { Toggle } from '@/components/ui/toggle';
 
 const CATEGORY_ICON = {
   'ai-services': Bot,
@@ -26,6 +27,8 @@ export default function DiagnosticSection() {
   const runAll = useDiagnosticStore((s) => s.runAll);
   const refreshApp = useDiagnosticStore((s) => s.refreshApp);
   const setActiveSystemTab = useSettingsStore((s) => s.setActiveSystemTab);
+  const telemetryOptOut = useSettingsStore((s) => s.telemetryOptOut);
+  const setTelemetryOptOut = useSettingsStore((s) => s.setTelemetryOptOut);
 
   // First visit (no cached results): run the full suite. Otherwise the panel
   // renders the persisted snapshot instantly, but that snapshot can be stale —
@@ -69,6 +72,21 @@ export default function DiagnosticSection() {
   return (
     <div className="space-y-6 max-w-3xl">
       <SettingsSectionHeader title={t.diagnostic.title} description={t.diagnostic.desc} />
+
+      {/* Anonymous reporting opt-out — personal installs previously had no way
+          to turn reporting off (only a build-time constant and, for enterprise,
+          a server-side flag). */}
+      <div className="flex items-center justify-between p-4 rounded-xl border border-[var(--abu-border)] bg-[var(--abu-bg-muted)]">
+        <div className="flex-1 mr-4">
+          <p className="text-body text-[var(--abu-text-primary)]">{t.diagnostic.telemetryOptOut}</p>
+          <p className="text-minor text-[var(--abu-text-muted)] mt-0.5">{t.diagnostic.telemetryOptOutDesc}</p>
+        </div>
+        <Toggle
+          checked={!telemetryOptOut}
+          onChange={() => setTelemetryOptOut(!telemetryOptOut)}
+          size="lg"
+        />
+      </div>
 
       {/* Banner */}
       <DiagnosticBanner />

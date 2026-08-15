@@ -1067,6 +1067,8 @@ export interface TranslationDict {
 
   // Diagnostic
   diagnostic: {
+    telemetryOptOut: string;
+    telemetryOptOutDesc: string;
     title: string;
     desc: string;
     // Banner

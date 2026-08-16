@@ -682,6 +682,9 @@ export interface TranslationDict {
     imageGenApiKeyPlaceholder: string;
     imageGenBaseUrl: string;
     imageGenBaseUrlPlaceholder: string;
+    /** Inline warning under the baseUrl input when it points at Volcengine's
+     *  chat endpoint (/api/coding/) instead of the image endpoint. */
+    imageGenChatEndpointWarning: string;
     imageGenModel: string;
     imageGenModelPlaceholder: string;
     imageGenBackendName: string;
@@ -3015,6 +3018,14 @@ export interface TranslationDict {
       errProcessImage: string;
       /** process_image succeeded. {path} */
       imageProcessed: string;
+      /** Hint appended to HTTP errors when the backend baseUrl is a
+       *  Volcengine chat endpoint (/api/coding/) instead of the image
+       *  endpoint — the exact shape the V41 migration produced from a legacy
+       *  chat-endpoint config, which 404s with an empty body. */
+      hintVolcChatEndpoint: string;
+      /** Generic hint appended to 404/401 errors: check baseUrl, image model
+       *  (doubao-seedream series for Volcengine), and API key. */
+      hintCheckImageBackend: string;
     };
     // create_todo
     todo: {

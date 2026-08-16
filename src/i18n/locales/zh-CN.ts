@@ -592,6 +592,7 @@ const zhCN: TranslationDict = {
     imageGenApiKeyPlaceholder: '输入该后端的 API Key',
     imageGenBaseUrl: 'API 地址',
     imageGenBaseUrlPlaceholder: '如 https://ark.cn-beijing.volces.com/api/plan/v3',
+    imageGenChatEndpointWarning: '该地址是火山方舟的聊天端点（/api/coding/），不能用于图片生成。请改为 https://ark.cn-beijing.volces.com/api/v3，并使用生图模型（doubao-seedream 系列）。',
     imageGenModel: '模型 ID',
     imageGenModelPlaceholder: '如 doubao-seedream-4-5',
     imageGenBackendName: '名称',
@@ -2708,6 +2709,8 @@ const zhCN: TranslationDict = {
       errUnsupportedAction: 'Error: 不支持的操作 "{action}"，可用操作：{valid}',
       errProcessImage: 'Error: 图片处理失败：{error}',
       imageProcessed: '图片处理完成：{path}',
+      hintVolcChatEndpoint: '提示：当前生图后端的 baseUrl 指向的是火山方舟的聊天端点（/api/coding/），不是图片生成端点。请在 设置 → 图片生成 中把 baseUrl 改为 https://ark.cn-beijing.volces.com/api/v3，并将模型设置为生图模型（doubao-seedream 系列）。',
+      hintCheckImageBackend: '提示：请在 设置 → 图片生成 中检查 baseUrl 是否为图片生成端点、模型是否为生图模型（火山引擎需使用 doubao-seedream 系列而非聊天模型），并确认 API Key 有效。',
     },
     todo: {
       errTitleEmpty: '标题不能为空，未创建提议。',

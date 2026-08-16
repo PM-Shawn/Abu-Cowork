@@ -592,6 +592,7 @@ const enUS: TranslationDict = {
     imageGenApiKeyPlaceholder: "Enter this backend's API key",
     imageGenBaseUrl: 'API Base URL',
     imageGenBaseUrlPlaceholder: 'e.g. https://ark.cn-beijing.volces.com/api/plan/v3',
+    imageGenChatEndpointWarning: 'This is Volcengine Ark\'s chat endpoint (/api/coding/) and cannot generate images. Use https://ark.cn-beijing.volces.com/api/v3 with an image-generation model (doubao-seedream series).',
     imageGenModel: 'Model ID',
     imageGenModelPlaceholder: 'e.g. doubao-seedream-4-5',
     imageGenBackendName: 'Name',
@@ -2707,6 +2708,8 @@ const enUS: TranslationDict = {
       errUnsupportedAction: 'Error: Unsupported action "{action}". Use one of: {valid}',
       errProcessImage: 'Error processing image: {error}',
       imageProcessed: 'Image processed successfully: {path}',
+      hintVolcChatEndpoint: 'Hint: this backend\'s baseUrl points at Volcengine Ark\'s chat endpoint (/api/coding/), not the image-generation endpoint. In Settings → Image Generation, change the baseUrl to https://ark.cn-beijing.volces.com/api/v3 and set the model to an image-generation model (doubao-seedream series).',
+      hintCheckImageBackend: 'Hint: in Settings → Image Generation, check that the baseUrl is an image-generation endpoint and the model is an image-generation model (for Volcengine use the doubao-seedream series, not a chat model), and confirm the API key is valid.',
     },
     todo: {
       errTitleEmpty: 'Title cannot be empty; proposal not created.',

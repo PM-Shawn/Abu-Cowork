@@ -232,6 +232,61 @@ describe('generateImageTool', () => {
 
     expect(typeof result).toBe('string');
     expect(result as string).toContain('429');
+    // A 429 is neither a 404/401 nor a chat-endpoint symptom — no
+    // misconfiguration hint should be appended.
+    expect(result as string).not.toContain('doubao-seedream');
+  });
+
+  it('appends the chat-endpoint hint (with the correct /api/v3 URL) when a Volcengine /api/coding/ baseUrl 404s — the V41-migrated misconfig', async () => {
+    // Regression: 0.38 users whose legacy auxiliaryServices.imageGen held the
+    // ark *chat* endpoint got it migrated verbatim by V41, so generate_image
+    // stably returned a bare "Error generating image: 404 " (empty body) —
+    // undiagnosable for both the model and the user.
+    mockFetch.mockImplementation(async (input: RequestInfo | URL) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (url.startsWith('data:')) return realFetch(url);
+      return new Response('', { status: 404 });
+    });
+    useSettingsStore.setState({
+      imageGeneration: {
+        // vendor 'custom' — exactly the migrated shape before F5 inference,
+        // resolved to volcengine via the ark host.
+        backends: [imageGenBackend({ id: 'volc-chat', vendor: 'custom', baseUrl: 'https://ark.cn-beijing.volces.com/api/coding/v3', model: 'Doubao-Seed-2.0-lite' })],
+        defaultId: 'volc-chat',
+      },
+    });
+
+    const result = await generateImageTool.execute({ prompt: 'test', save_path: '/tmp/abu-test/out.png' });
+
+    expect(result as string).toContain('404');
+    expect(result as string).toContain('/api/coding/');
+    expect(result as string).toContain('https://ark.cn-beijing.volces.com/api/v3');
+  });
+
+  it('appends the generic check-backend hint on a 404 from a correct-shaped endpoint (e.g. chat model on the image endpoint)', async () => {
+    mockFetch.mockImplementation(async (input: RequestInfo | URL) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (url.startsWith('data:')) return realFetch(url);
+      return new Response('', { status: 404 });
+    });
+
+    const result = await generateImageTool.execute({ prompt: 'test', save_path: '/tmp/abu-test/out.png' });
+
+    expect(result as string).toContain('404');
+    expect(result as string).toContain('doubao-seedream');
+  });
+
+  it('appends the generic check-backend hint on a 401', async () => {
+    mockFetch.mockImplementation(async (input: RequestInfo | URL) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (url.startsWith('data:')) return realFetch(url);
+      return new Response('unauthorized', { status: 401 });
+    });
+
+    const result = await generateImageTool.execute({ prompt: 'test', save_path: '/tmp/abu-test/out.png' });
+
+    expect(result as string).toContain('401');
+    expect(result as string).toContain('doubao-seedream');
   });
 
   it('decodes a b64_json response WITHOUT fetching a data: URL (CSP-blocked in the packaged WKWebView build)', async () => {

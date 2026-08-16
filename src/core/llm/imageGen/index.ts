@@ -7,6 +7,7 @@ import { buildZhipuRequest, parseZhipuResponse } from './vendors/zhipu';
 
 export type { ImageGenVendor, ImageGenParsedResult, ImageGenRequestBody, ImageGenRequestParams };
 export { resolveImageVendor } from './vendorResolve';
+export { isVolcengineChatEndpoint, VOLCENGINE_IMAGE_BASE_URL } from './endpointHints';
 export { normalizeSeedreamSize, normalizeOpenAiSize } from './sizePolicy';
 
 /**

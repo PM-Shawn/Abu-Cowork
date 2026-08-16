@@ -356,11 +356,13 @@ export default function ChatView() {
   }, [pendingSearchJump, activeConvId, messageCount, updatePinned]);
 
   const handleSend = async (text: string, images?: ImageAttachment[], workspacePath?: string | null) => {
-    // Block sending if API key is not configured (Ollama doesn't need one)
+    // Block sending if API key is not configured (Ollama doesn't need one).
+    // Returning false hands the text back to the composer — opening settings
+    // used to swallow whatever the user had typed.
     const currentState = useSettingsStore.getState();
     if (!isEnterprise && providerRequiresApiKey(currentState) && !getActiveApiKey(currentState)?.trim()) {
       currentState.openSystemSettings('ai-services');
-      return;
+      return false;
     }
 
     let convId = activeConv?.id;
@@ -389,7 +391,18 @@ export default function ChatView() {
     // freshly-appended item on its own next render, so this doesn't need to
     // wait for a DOM mutation callback the way the old MutationObserver did.
     scrollToLatest('auto');
-    await runAgentLoopDispatched(convId, text, { images });
+    const dispatch = await runAgentLoopDispatched(convId, text, { images });
+    // A rejected dispatch (conversation busy, attachment mid-run) used to be
+    // discarded here: the composer had already cleared, so the text and any
+    // images simply vanished with no feedback. Surface it and hand the draft
+    // back instead.
+    if (dispatch?.reason === 'error') {
+      useToastStore.getState().addToast({
+        type: 'error',
+        title: dispatch.error || t.chat.conversationBusy,
+      });
+      return false;
+    }
   };
 
 

@@ -960,6 +960,8 @@ const zhCN: TranslationDict = {
   },
 
   diagnostic: {
+    telemetryOptOut: '发送匿名使用与错误报告',
+    telemetryOptOutDesc: '帮助定位崩溃与故障。关闭后阿布不再向服务端发送任何使用、错误或诊断数据。',
     title: '诊断',
     desc: '检查 Abu 的运行状态。出问题时也可以导出诊断包发给我们。',
     bannerAllPassed: '一切正常',
@@ -2140,6 +2142,15 @@ const zhCN: TranslationDict = {
     blocked: '此命令因安全原因被阻止执行',
     userCancelled: '[用户取消了此操作]',
     aiDenied: 'AI 审核已拒绝此操作',
+    browserAction: '浏览器操作',
+    browserReason: '将在你已登录的浏览器里执行操作（可能提交表单、点击按钮或运行脚本）。允许后，本次对话内的后续浏览器操作不再询问。',
+    browserDenied: '浏览器操作需要确认，但当前没有可用的确认入口',
+    selfExtensionReason: '将为阿布新增或改写一项长期能力（子代理 / MCP 服务 / 人格设定），它会影响之后的每一次对话。',
+    selfExtensionDenied: '新增能力需要确认，但当前没有可用的确认入口',
+    browserTitle: '浏览器操作确认',
+    browserDescription: '阿布要在你已登录的浏览器里执行下面这个操作：',
+    selfExtensionTitle: '新增能力确认',
+    selfExtensionDescription: '阿布要为自己新增或改写一项长期能力：',
   },
 
   toolErrors: {

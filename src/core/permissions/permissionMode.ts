@@ -57,8 +57,35 @@ export interface PermissionStrategy {
   /** Decide gating for file tools (read_file, write_file, edit_file, etc.). */
   decideFileAccess(capability: 'read' | 'write', needsPermission: boolean): PermissionDecision;
 
-  /** Decide gating for MCP/other tools. */
-  decideOtherTool(): PermissionDecision;
+  /**
+   * Decide gating for MCP/other tools.
+   *
+   * @param consequence - 'state-changing' for actions that act on the user's
+   *   behalf inside a live session (browser click/fill/execute_js); 'read-only'
+   *   for observation. Omitted for tools with no consequence classification,
+   *   which stay ungated as before.
+   * @param alreadyGranted - the user already approved this class for the
+   *   current conversation, so the remaining actions of the task run freely
+   *   (same shape as Computer Use's per-task grant).
+   */
+  decideOtherTool(
+    consequence?: 'read-only' | 'state-changing',
+    alreadyGranted?: boolean,
+  ): PermissionDecision;
+}
+
+/**
+ * Shared gate for consequence-classified non-command tools.
+ * Mirrors `computerUsePolicy.modePolicy`'s `approval-required` row, which asks
+ * in every mode — the browser is the same high-consequence surface whether it
+ * is driven by Computer Use or by the automation tools.
+ */
+function decideConsequentialTool(
+  consequence?: 'read-only' | 'state-changing',
+  alreadyGranted?: boolean,
+): PermissionDecision {
+  if (consequence !== 'state-changing') return 'allow';
+  return alreadyGranted ? 'allow' : 'confirm';
 }
 
 /** Whether a command's content classification counts as an escalation. */
@@ -79,8 +106,8 @@ const standardStrategy: PermissionStrategy = {
     // needsPermission === true means the path isn't in an authorized working dir yet.
     return needsPermission ? 'confirm' : 'allow';
   },
-  decideOtherTool() {
-    return 'allow';
+  decideOtherTool(consequence, alreadyGranted) {
+    return decideConsequentialTool(consequence, alreadyGranted);
   },
 };
 
@@ -93,8 +120,8 @@ const smartStrategy: PermissionStrategy = {
   decideFileAccess(_capability, needsPermission) {
     return needsPermission ? 'review' : 'allow';
   },
-  decideOtherTool() {
-    return 'allow';
+  decideOtherTool(consequence, alreadyGranted) {
+    return decideConsequentialTool(consequence, alreadyGranted);
   },
 };
 
@@ -106,8 +133,10 @@ const autonomousStrategy: PermissionStrategy = {
   decideFileAccess() {
     return 'allow';
   },
-  decideOtherTool() {
-    return 'allow';
+  // Even here the browser stays gated: `computerUsePolicy.modePolicy` keeps
+  // `approval-required` at 'confirm' in autonomous for exactly this surface.
+  decideOtherTool(consequence, alreadyGranted) {
+    return decideConsequentialTool(consequence, alreadyGranted);
   },
 };
 

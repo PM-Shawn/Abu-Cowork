@@ -1047,6 +1047,65 @@ describe('chatStore', () => {
     });
   });
 
+  // ── setMessageToolCalls — intent durability ──
+  describe('setMessageToolCalls persistence', () => {
+    // Same fs simulation as the cancelStreaming block above: assert at the
+    // atomic_write_text layer, because the store reaches conversationStorage
+    // through a dynamic import that a module-level vi.mock cannot intercept.
+    let written: string[];
+
+    beforeEach(() => {
+      written = [];
+      vi.mocked(exists).mockResolvedValue(true);
+      vi.mocked(readTextFile).mockImplementation(async () =>
+        JSON.stringify({ id: 'a1', role: 'assistant', content: '', timestamp: 1 }) + '\n');
+      vi.mocked(invoke).mockImplementation(async (cmd: string, args?: unknown) => {
+        const a = args as { path?: string; content?: string } | undefined;
+        if (cmd === 'atomic_write_text' && a?.path?.endsWith('messages.jsonl')) {
+          written.push(a.content ?? '');
+        }
+        return undefined;
+      });
+    });
+
+    afterEach(() => {
+      vi.mocked(exists).mockReset();
+      vi.mocked(readTextFile).mockReset();
+      vi.mocked(invoke).mockReset();
+    });
+
+    it('persists pending tool calls before the tools run', async () => {
+      // Regression: this action clears isStreaming, which switches off the
+      // streaming snapshot loop — so without an explicit write the intent
+      // reached disk only after the batch finished. A crash in between
+      // replayed as "never called", and retrying re-ran the side effect.
+      const id = useChatStore.getState().createConversation();
+      useChatStore.getState().addMessage(id, {
+        id: 'a1', role: 'assistant', content: '', timestamp: Date.now(), isStreaming: true,
+      });
+
+      useChatStore.getState().setMessageToolCalls(id, 'a1', [
+        { id: 'tc1', name: 'run_command', input: { command: 'rm -rf tmp' }, status: 'pending' },
+      ]);
+
+      expect(useChatStore.getState().conversations[id].messages[0].isStreaming).toBe(false);
+      await vi.waitFor(() => {
+        expect(written.some((c) => c.includes('"tc1"') && c.includes('run_command'))).toBe(true);
+      });
+    });
+
+    it('leaves no write when the target message is gone', async () => {
+      const id = useChatStore.getState().createConversation();
+
+      useChatStore.getState().setMessageToolCalls(id, 'missing', [
+        { id: 'tc1', name: 'run_command', input: {}, status: 'pending' },
+      ]);
+
+      await new Promise((r) => setTimeout(r, 30));
+      expect(written).toHaveLength(0);
+    });
+  });
+
   // ── cancelStreaming — sidecar run authority (P1-3c-1) ──
   // docs/2026-07-21-phase1-p3c-conversation-authority-design.md §3: while a
   // sidecar-hosted run owns a conversation, the sidecar is the run's SINGLE

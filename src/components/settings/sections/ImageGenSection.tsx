@@ -8,6 +8,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Select, type SelectOption } from '@/components/ui/select';
 import ConfirmDialog from '@/components/common/ConfirmDialog';
+import { isVolcengineChatEndpoint, VOLCENGINE_IMAGE_BASE_URL } from '@/core/llm/imageGen';
 import type { ImageGenBackend, ImageGenVendor } from '@/types/provider';
 
 type BackendDraft = Omit<ImageGenBackend, 'id'>;
@@ -78,6 +79,14 @@ function BackendForm({
           onChange={(e) => onChange({ baseUrl: e.target.value })}
           placeholder={t.settings.imageGenBaseUrlPlaceholder}
         />
+        {/* Non-blocking: the save button stays enabled — the user may know
+            better (e.g. a gateway that proxies /api/coding/ to an image
+            model), so this only warns about the known-broken V41 shape. */}
+        {isVolcengineChatEndpoint(draft.baseUrl, draft.vendor) && (
+          <p className="text-minor text-[var(--abu-warning)]">
+            {t.settings.imageGenChatEndpointWarning.replace('{url}', VOLCENGINE_IMAGE_BASE_URL)}
+          </p>
+        )}
       </div>
       <div className="space-y-1">
         <label className="text-minor font-medium text-[var(--abu-text-primary)]">{t.settings.imageGenApiKey}</label>

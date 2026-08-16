@@ -18,6 +18,7 @@ import {
   writeSecretOrDelete,
   deleteSecret,
   listFailedSecrets,
+  listSecrets,
   clearAllSecrets,
 } from '@/utils/secretStore';
 // Relocated to a pure module so the sidecar bundle (and anything else that
@@ -2094,5 +2095,41 @@ export async function bootstrapSecrets(): Promise<void> {
   // persist saves will now strip apiKey from localStorage.
   if (backfillOk) {
     persistApiKeyPlaintextFallback = false;
+  }
+
+  // Best-effort orphan sweep: `imagegen:<id>` entries whose backend no longer
+  // exists. removeImageGenBackend deletes its own secret, but historical V41
+  // re-runs (each minting a fresh random backend id and bridging the legacy
+  // key onto it) left the previous ids' secrets behind unreferencable — the
+  // ids are random, so no future state can ever point at them again. Scoped
+  // strictly to the `imagegen:` namespace; `aux:imageGen` is deliberately
+  // kept (it's the bridge source, and the only key an app-version rollback
+  // could still read). listSecrets() returns null on Windows/Linux (keyring
+  // has no enumeration API) — skip there. Read backends from the live store,
+  // not the `state` snapshot from before hydration.
+  try {
+    const allKeys = await listSecrets();
+    if (Array.isArray(allKeys)) {
+      // Derive the namespace prefix from SECRET_KEYS itself so a future key
+      // rename can't silently detach the sweep from the keys it targets.
+      const imageGenPrefix = SECRET_KEYS.imageGenBackend('');
+      const live = new Set(
+        useSettingsStore.getState().imageGeneration.backends.map((b) => SECRET_KEYS.imageGenBackend(b.id)),
+      );
+      const orphans = allKeys.filter((k) => k.startsWith(imageGenPrefix) && !live.has(k));
+      if (orphans.length > 0) {
+        // allSettled: one transient keyring failure must neither abort the
+        // sibling deletes nor mislabel the whole sweep as failed — any
+        // survivor is simply retried on the next launch.
+        const outcomes = await Promise.allSettled(orphans.map((k) => deleteSecret(k)));
+        const failed = orphans.filter((_, i) => outcomes[i].status === 'rejected');
+        console.log(
+          `[secrets] orphaned imagegen sweep: removed ${orphans.length - failed.length}/${orphans.length}`,
+          failed.length > 0 ? { failed } : { removed: orphans },
+        );
+      }
+    }
+  } catch (err) {
+    console.warn('[secrets] orphaned imagegen secret sweep failed (non-fatal):', err);
   }
 }

@@ -4,7 +4,7 @@ import type { ToolDefinition } from '../../../types';
 import { joinPath, ensureParentDir } from '../../../utils/pathUtils';
 import { getTauriFetch } from '../../llm/tauriFetch';
 import { normalizeImageGenerationsUrl } from '../../llm/urlUtils';
-import { buildImageRequest, parseImageResponse, resolveImageVendor } from '../../llm/imageGen';
+import { buildImageRequest, parseImageResponse, resolveImageVendor, isVolcengineChatEndpoint, VOLCENGINE_IMAGE_BASE_URL } from '../../llm/imageGen';
 import { getUsableImageBackend } from '../../../stores/settingsStore';
 import { getSettingsReader } from '../../agent/ports/settingsReader';
 import { useWorkspaceStore } from '../../../stores/workspaceStore';
@@ -94,7 +94,19 @@ export const generateImageTool: ToolDefinition = {
 
       if (!response.ok) {
         const errorText = await response.text();
-        return `Error generating image: ${response.status} ${errorText}`;
+        let msg = `Error generating image: ${response.status} ${errorText}`;
+        const tm = getI18n().toolResult.media;
+        // Misconfiguration hints: a chat endpoint (or wrong model) yields a
+        // bare "404 " with an empty body — undiagnosable for both the model
+        // and the user without pointing at the actual setting to fix. The
+        // V41-migrated Volcengine chat endpoint is detected explicitly; other
+        // 404/401s get the generic "check baseUrl/model/key" nudge.
+        if (isVolcengineChatEndpoint(backend.baseUrl, backend.vendor)) {
+          msg += `\n${format(tm.hintVolcChatEndpoint, { url: VOLCENGINE_IMAGE_BASE_URL })}`;
+        } else if (response.status === 404 || response.status === 401) {
+          msg += `\n${tm.hintCheckImageBackend}`;
+        }
+        return msg;
       }
 
       const result = await response.json();

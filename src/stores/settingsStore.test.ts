@@ -978,6 +978,92 @@ describe('bootstrapSecrets — pendingImageGenSecretBridge marker (F2 regression
   });
 });
 
+describe('bootstrapSecrets — orphaned imagegen:<id> secret sweep', () => {
+  const invokeMock = vi.mocked(invoke);
+
+  beforeEach(() => {
+    invokeMock.mockReset();
+    useSettingsStore.setState({
+      providers: [],
+      auxiliaryServices: {},
+      imageGeneration: {
+        backends: [{ id: 'bk1', name: 'Live', vendor: 'volcengine', baseUrl: 'https://ark.cn-beijing.volces.com/api/v3', apiKey: '', model: 'doubao-seedream-4-5' }],
+        defaultId: 'bk1',
+      },
+      pendingImageGenSecretBridge: undefined,
+    });
+  });
+
+  function mockSecretHost(listResult: string[] | null | (() => never), deleted: string[]) {
+    invokeMock.mockImplementation(async (cmd: unknown, args?: unknown) => {
+      if (cmd === 'secret_get') return null;
+      if (cmd === 'secret_set') return undefined;
+      if (cmd === 'secret_failed_keys') return [];
+      if (cmd === 'secret_list') {
+        if (typeof listResult === 'function') return listResult();
+        return listResult;
+      }
+      if (cmd === 'secret_delete') {
+        deleted.push((args as { key: string }).key);
+        return undefined;
+      }
+      return undefined;
+    });
+  }
+
+  it('deletes imagegen:<id> keys with no matching backend, keeping live backends, provider keys, and aux:imageGen', async () => {
+    // The 7-orphan scenario: historical V41 re-runs each minted a fresh
+    // random backend id and bridged the legacy secret onto it, leaving the
+    // previous ids' secrets behind with nothing referencing them.
+    const deleted: string[] = [];
+    mockSecretHost(
+      ['imagegen:bk1', 'imagegen:dead1', 'imagegen:dead2', 'provider:p1', 'aux:imageGen', 'aux:webSearch'],
+      deleted,
+    );
+
+    await bootstrapSecrets();
+
+    expect(deleted.sort()).toEqual(['imagegen:dead1', 'imagegen:dead2']);
+  });
+
+  it('does nothing when secret_list returns null (Windows/Linux keyring has no enumeration API)', async () => {
+    const deleted: string[] = [];
+    mockSecretHost(null, deleted);
+
+    await bootstrapSecrets();
+
+    expect(deleted).toEqual([]);
+  });
+
+  it('still deletes the remaining orphans when one delete rejects (allSettled, not all)', async () => {
+    const deleted: string[] = [];
+    invokeMock.mockImplementation(async (cmd: unknown, args?: unknown) => {
+      if (cmd === 'secret_get') return null;
+      if (cmd === 'secret_set') return undefined;
+      if (cmd === 'secret_failed_keys') return [];
+      if (cmd === 'secret_list') return ['imagegen:dead1', 'imagegen:dead2'];
+      if (cmd === 'secret_delete') {
+        const key = (args as { key: string }).key;
+        if (key === 'imagegen:dead1') throw new Error('keyring busy');
+        deleted.push(key);
+        return undefined;
+      }
+      return undefined;
+    });
+
+    await expect(bootstrapSecrets()).resolves.toBeUndefined();
+    expect(deleted).toEqual(['imagegen:dead2']);
+  });
+
+  it('is non-fatal when the sweep itself throws', async () => {
+    const deleted: string[] = [];
+    mockSecretHost(() => { throw new Error('secret backend unavailable'); }, deleted);
+
+    await expect(bootstrapSecrets()).resolves.toBeUndefined();
+    expect(deleted).toEqual([]);
+  });
+});
+
 describe('secret write-through failure fallback', () => {
   const invokeMock = vi.mocked(invoke);
 

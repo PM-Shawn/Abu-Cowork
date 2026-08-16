@@ -1,5 +1,5 @@
 import { useEffect, useRef } from 'react';
-import { Terminal } from '@xterm/xterm';
+import { Terminal, type ITheme } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import '@xterm/xterm/css/xterm.css';
 import { invoke } from '@tauri-apps/api/core';
@@ -7,8 +7,26 @@ import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import { useActiveConversation } from '@/stores/chatStore';
 import { useI18n, format } from '@/i18n';
 import { createLogger } from '@/core/logging/logger';
+import { useEffectiveThemeIsDark } from '@/hooks/useEffectiveThemeIsDark';
 
 const terminalLogger = createLogger('terminal');
+
+/**
+ * Terminal colors from the app's own `--abu-*` tokens instead of a fixed
+ * "VS Code dark+" palette — the old hardcoded `#1e1e1e` background read as a
+ * jarring black box against Abu's warm light theme (the default since the
+ * v0.42 migration). `--abu-bg-base` matches the surrounding workspace panel
+ * card, so the terminal blends into it instead of looking bolted on.
+ */
+function resolveTerminalTheme(): ITheme {
+  const styles = getComputedStyle(document.documentElement);
+  const read = (name: string) => styles.getPropertyValue(name).trim();
+  return {
+    background: read('--abu-bg-base'),
+    foreground: read('--abu-text-primary'),
+    cursor: read('--abu-clay'),
+  };
+}
 
 /**
  * A real pty-backed terminal (Rust `portable-pty` + `@xterm/xterm`). One
@@ -19,8 +37,10 @@ const terminalLogger = createLogger('terminal');
  */
 export default function TerminalTab({ tabId }: { tabId: string }) {
   const containerRef = useRef<HTMLDivElement>(null);
+  const termRef = useRef<Terminal | null>(null);
   const conversation = useActiveConversation();
   const { t } = useI18n();
+  const isDark = useEffectiveThemeIsDark();
 
   // Resolve the starting cwd once, at mount time: the active conversation's
   // workspace dir if resolvable, else undefined (Rust falls back to the
@@ -37,12 +57,9 @@ export default function TerminalTab({ tabId }: { tabId: string }) {
       fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, "Cascadia Code", monospace',
       cursorBlink: true,
       convertEol: false,
-      theme: {
-        background: '#1e1e1e',
-        foreground: '#d4d4d4',
-        cursor: '#d4d4d4',
-      },
+      theme: resolveTerminalTheme(),
     });
+    termRef.current = term;
     const fitAddon = new FitAddon();
     term.loadAddon(fitAddon);
     term.open(container);
@@ -133,10 +150,18 @@ export default function TerminalTab({ tabId }: { tabId: string }) {
       unlistenFns.forEach((fn) => fn());
       void invoke('pty_kill', { id: tabId });
       term.dispose();
+      termRef.current = null;
     };
   // t is stable from the i18n singleton; cwdRef is a ref (identity-stable).
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tabId]);
+
+  // Live-recolor on theme toggle, without touching the pty session above:
+  // xterm supports swapping `options.theme` on an existing instance, so a
+  // light/dark switch just repaints instead of tearing down the terminal.
+  useEffect(() => {
+    if (termRef.current) termRef.current.options.theme = resolveTerminalTheme();
+  }, [isDark]);
 
   return <div ref={containerRef} className="h-full w-full overflow-hidden px-2 py-1" />;
 }

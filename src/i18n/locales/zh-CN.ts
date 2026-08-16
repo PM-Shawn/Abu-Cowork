@@ -385,6 +385,7 @@ const zhCN: TranslationDict = {
     conversationBusy: '当前会话已有任务在运行，请等待结束后再启动新任务。',
     visionUnsupported: '当前模型可能不支持图片/视觉输入，请尝试移除图片或切换到支持视觉的模型（如 Claude、GPT-4o）。',
     ollamaForbidden: 'Ollama 返回了 403 Forbidden（CORS 来源限制）。请设置环境变量 `OLLAMA_ORIGINS=*` 后重启 Ollama，例如：`OLLAMA_ORIGINS=* ollama serve`',
+    insufficientBalance: '余额不足或无可用资源包，请到对应模型平台充值。',
     compactingInlineNotice: '\n*上下文过长，正在优化上下文...*',
     contextInputTooLarge: '这条消息超过了当前模型的上下文容量。请缩短消息或附件，或者切换到上下文更大的模型。',
     contextFixedTooLarge: '当前系统指令和工具定义超过了模型的安全上下文预算。请停用部分工具，或者切换到上下文更大的模型。',

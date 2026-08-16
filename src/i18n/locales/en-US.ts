@@ -385,6 +385,7 @@ const enUS: TranslationDict = {
     conversationBusy: 'This conversation already has a running task. Wait for it to finish before starting another.',
     visionUnsupported: 'The current model may not support image/vision input. Try removing the image or switching to a vision-capable model (e.g. Claude, GPT-4o).',
     ollamaForbidden: 'Ollama returned 403 Forbidden (CORS origin restriction). Set the environment variable `OLLAMA_ORIGINS=*` and restart Ollama, e.g. `OLLAMA_ORIGINS=* ollama serve`',
+    insufficientBalance: "Insufficient balance or no available resource package. Please recharge on the corresponding model provider's platform.",
     compactingInlineNotice: '\n*Context is getting long, optimizing context...*',
     contextInputTooLarge: 'This message is too large for the current model context. Shorten the message or attachments, or switch to a model with a larger context window.',
     contextFixedTooLarge: 'The current system instructions and tool definitions exceed this model’s safe context budget. Disable some tools or switch to a model with a larger context window.',

@@ -385,6 +385,8 @@ export interface TranslationDict {
     visionUnsupported: string;
     /** Ollama returned 403 Forbidden (CORS origin restriction). */
     ollamaForbidden: string;
+    /** Provider account balance/resource-package exhausted. */
+    insufficientBalance: string;
     /** Streamed-inline notice while compacting an oversized context (includes markdown). */
     compactingInlineNotice: string;
     /** Latest user message cannot fit within the model's safe context budget. */

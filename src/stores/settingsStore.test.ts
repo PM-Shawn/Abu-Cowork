@@ -1035,6 +1035,26 @@ describe('bootstrapSecrets — orphaned imagegen:<id> secret sweep', () => {
     expect(deleted).toEqual([]);
   });
 
+  it('still deletes the remaining orphans when one delete rejects (allSettled, not all)', async () => {
+    const deleted: string[] = [];
+    invokeMock.mockImplementation(async (cmd: unknown, args?: unknown) => {
+      if (cmd === 'secret_get') return null;
+      if (cmd === 'secret_set') return undefined;
+      if (cmd === 'secret_failed_keys') return [];
+      if (cmd === 'secret_list') return ['imagegen:dead1', 'imagegen:dead2'];
+      if (cmd === 'secret_delete') {
+        const key = (args as { key: string }).key;
+        if (key === 'imagegen:dead1') throw new Error('keyring busy');
+        deleted.push(key);
+        return undefined;
+      }
+      return undefined;
+    });
+
+    await expect(bootstrapSecrets()).resolves.toBeUndefined();
+    expect(deleted).toEqual(['imagegen:dead2']);
+  });
+
   it('is non-fatal when the sweep itself throws', async () => {
     const deleted: string[] = [];
     mockSecretHost(() => { throw new Error('secret backend unavailable'); }, deleted);

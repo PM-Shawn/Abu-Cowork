@@ -24,5 +24,8 @@ export function isVolcengineChatEndpoint(
   const url = (baseUrl ?? '').trim();
   if (!url) return false;
   if (resolveImageVendor(url, vendor) !== 'volcengine') return false;
-  return /\/api\/coding(\/|$)/.test(url);
+  // Case-insensitive to match resolveImageVendor's own case-insensitive host
+  // handling — a pasted/autocapitalized "/API/Coding/v3" is the same broken
+  // endpoint.
+  return /\/api\/coding(\/|$)/i.test(url);
 }

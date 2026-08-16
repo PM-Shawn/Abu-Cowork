@@ -24,6 +24,10 @@ describe('isVolcengineChatEndpoint', () => {
     expect(isVolcengineChatEndpoint('https://ark.cn-beijing.volces.com/api/coding', 'volcengine')).toBe(true);
   });
 
+  it('matches a mixed-case path (same broken endpoint, autocapitalized paste)', () => {
+    expect(isVolcengineChatEndpoint('https://ark.cn-beijing.volces.com/API/Coding/v3', 'volcengine')).toBe(true);
+  });
+
   it('does NOT match the correct image endpoints (/api/v3, Agent Plan /api/plan/v3)', () => {
     expect(isVolcengineChatEndpoint(VOLCENGINE_IMAGE_BASE_URL, 'volcengine')).toBe(false);
     expect(isVolcengineChatEndpoint('https://ark.cn-beijing.volces.com/api/plan/v3', 'volcengine')).toBe(false);

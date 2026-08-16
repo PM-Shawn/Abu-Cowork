@@ -8,7 +8,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Select, type SelectOption } from '@/components/ui/select';
 import ConfirmDialog from '@/components/common/ConfirmDialog';
-import { isVolcengineChatEndpoint } from '@/core/llm/imageGen';
+import { isVolcengineChatEndpoint, VOLCENGINE_IMAGE_BASE_URL } from '@/core/llm/imageGen';
 import type { ImageGenBackend, ImageGenVendor } from '@/types/provider';
 
 type BackendDraft = Omit<ImageGenBackend, 'id'>;
@@ -84,7 +84,7 @@ function BackendForm({
             model), so this only warns about the known-broken V41 shape. */}
         {isVolcengineChatEndpoint(draft.baseUrl, draft.vendor) && (
           <p className="text-minor text-[var(--abu-warning)]">
-            {t.settings.imageGenChatEndpointWarning}
+            {t.settings.imageGenChatEndpointWarning.replace('{url}', VOLCENGINE_IMAGE_BASE_URL)}
           </p>
         )}
       </div>

@@ -682,7 +682,13 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
    * key configured, conversation busy) left the user staring at an empty box
    * with their text gone.
    */
-  const restoreInput = (draft: ComposerDraft) => {
+  const restoreInput = (draft: ComposerDraft, sentDraftKey: string) => {
+    // The rejection arrives asynchronously, so the user may have switched
+    // conversations in the meantime. Putting the text back on screen then would
+    // show conversation A's message inside conversation B. Persist it under the
+    // key it was typed for and leave the visible composer alone.
+    writeComposerDraft(sentDraftKey, draft);
+    if (sentDraftKey !== draftKey) return;
     currentDraftRef.current = draft;
     setText(draft.text);
     setImages(draft.images);
@@ -690,7 +696,6 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
     setReferences(draft.references);
     setSelectedSkill(draft.selectedSkill);
     setSelectedAgent(draft.selectedAgent);
-    writeComposerDraft(draftKey, draft);
     textareaRef.current?.focus();
   };
 
@@ -750,10 +755,11 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
     );
     resetInput();
     if (sendResult && typeof sendResult.then === 'function') {
+      const sentDraftKey = draftKey;
       void sendResult.then(
-        (accepted) => { if (accepted === false) restoreInput(sentDraft); },
+        (accepted) => { if (accepted === false) restoreInput(sentDraft, sentDraftKey); },
         // A send that throws definitely did not take the message.
-        () => restoreInput(sentDraft),
+        () => restoreInput(sentDraft, sentDraftKey),
       );
     }
   };

@@ -2147,6 +2147,10 @@ const zhCN: TranslationDict = {
     browserDenied: '浏览器操作需要确认，但当前没有可用的确认入口',
     selfExtensionReason: '将为阿布新增或改写一项长期能力（子代理 / MCP 服务 / 人格设定），它会影响之后的每一次对话。',
     selfExtensionDenied: '新增能力需要确认，但当前没有可用的确认入口',
+    browserTitle: '浏览器操作确认',
+    browserDescription: '阿布要在你已登录的浏览器里执行下面这个操作：',
+    selfExtensionTitle: '新增能力确认',
+    selfExtensionDescription: '阿布要为自己新增或改写一项长期能力：',
   },
 
   toolErrors: {

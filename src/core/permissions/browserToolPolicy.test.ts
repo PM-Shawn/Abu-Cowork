@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import {
   __resetBrowserGrantsForTests,
+  BROWSER_GRANT_TTL_MS,
   classifyBrowserTool,
   grantBrowserAutomation,
   hasBrowserGrant,
@@ -56,6 +57,27 @@ describe('browser tool policy', () => {
       grantBrowserAutomation('conv-1');
       revokeBrowserGrant('conv-1');
       expect(hasBrowserGrant('conv-1')).toBe(false);
+    });
+  });
+  describe('grant expiry', () => {
+    // Without a TTL the approval would be strictly weaker than the Computer Use
+    // task grant it mirrors: one approval would cover the conversation for as
+    // long as the app stayed open, including after the user tightened the
+    // permission mode expecting to be asked again.
+    it('stops covering the conversation once the TTL elapses', () => {
+      const start = 1_000_000;
+      grantBrowserAutomation('conv-1', start);
+
+      expect(hasBrowserGrant('conv-1', start + BROWSER_GRANT_TTL_MS - 1)).toBe(true);
+      expect(hasBrowserGrant('conv-1', start + BROWSER_GRANT_TTL_MS)).toBe(false);
+    });
+
+    it('re-approving extends the window from the new approval', () => {
+      const start = 1_000_000;
+      grantBrowserAutomation('conv-1', start);
+      grantBrowserAutomation('conv-1', start + BROWSER_GRANT_TTL_MS + 5);
+
+      expect(hasBrowserGrant('conv-1', start + BROWSER_GRANT_TTL_MS + 6)).toBe(true);
     });
   });
 });

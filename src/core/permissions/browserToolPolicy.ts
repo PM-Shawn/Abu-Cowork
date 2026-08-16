@@ -47,22 +47,45 @@ export function classifyBrowserTool(namespacedName: string): BrowserToolConseque
 }
 
 /**
- * Conversations that already approved browser automation.
+ * How long one approval covers the rest of the task.
  *
- * Scoped per conversation and kept in memory on purpose, mirroring Computer
- * Use's task grant: the user approves once for the task at hand, and the grant
- * dies with the app rather than silently outliving the session that earned it.
+ * Same 30 minutes Computer Use gives a task grant. An approval that never
+ * expires would be strictly weaker than the model it mirrors: the user would
+ * approve once and the conversation would keep acting in their browser for as
+ * long as the app stays open, including after they tightened the permission
+ * mode expecting to be asked again.
  */
-const grantedConversations = new Set<string>();
+export const BROWSER_GRANT_TTL_MS = 30 * 60 * 1000;
 
-export function hasBrowserGrant(conversationId: string | undefined): boolean {
-  return conversationId !== undefined && grantedConversations.has(conversationId);
+/**
+ * Conversations that already approved browser automation, with the moment the
+ * approval was given. Kept in memory on purpose — the grant dies with the app
+ * rather than silently outliving the session that earned it.
+ */
+const grantedConversations = new Map<string, number>();
+
+export function hasBrowserGrant(
+  conversationId: string | undefined,
+  now: number = Date.now(),
+): boolean {
+  if (conversationId === undefined) return false;
+  const grantedAt = grantedConversations.get(conversationId);
+  if (grantedAt === undefined) return false;
+  if (now - grantedAt >= BROWSER_GRANT_TTL_MS) {
+    grantedConversations.delete(conversationId);
+    return false;
+  }
+  return true;
 }
 
-export function grantBrowserAutomation(conversationId: string | undefined): void {
-  if (conversationId !== undefined) grantedConversations.add(conversationId);
+export function grantBrowserAutomation(
+  conversationId: string | undefined,
+  now: number = Date.now(),
+): void {
+  if (conversationId !== undefined) grantedConversations.set(conversationId, now);
 }
 
+/** Drop a grant early — used when the conversation's permission posture changes. */
 export function revokeBrowserGrant(conversationId: string): void {
   grantedConversations.delete(conversationId);
 }

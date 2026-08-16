@@ -8,6 +8,8 @@ export interface CommandConfirmRequest {
   command: string;
   level: DangerLevel;
   reason: string;
+  /** Selects the wording — see ConfirmationInfo.kind. */
+  kind?: 'command' | 'browser' | 'self-extension';
 }
 
 interface CommandConfirmDialogProps {
@@ -91,10 +93,18 @@ export default function CommandConfirmDialog({
             </div>
             <div className="flex-1 min-w-0">
               <h2 className="text-h-md font-semibold text-[var(--abu-text-primary)]">
-                {t.commandConfirm[config.titleKey]}
+                {request.kind === 'browser'
+                  ? t.commandConfirm.browserTitle
+                  : request.kind === 'self-extension'
+                    ? t.commandConfirm.selfExtensionTitle
+                    : t.commandConfirm[config.titleKey]}
               </h2>
               <p className="text-body text-[var(--abu-text-tertiary)] mt-0.5">
-                {t.commandConfirm[config.descKey]}
+                {request.kind === 'browser'
+                  ? t.commandConfirm.browserDescription
+                  : request.kind === 'self-extension'
+                    ? t.commandConfirm.selfExtensionDescription
+                    : t.commandConfirm[config.descKey]}
               </p>
             </div>
           </div>

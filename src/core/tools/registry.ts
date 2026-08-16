@@ -437,6 +437,7 @@ export async function checkToolApproval(
           command: `${t.commandConfirm.browserAction}: ${name}`,
           level: 'warn',
           reason: t.commandConfirm.browserReason,
+          kind: 'browser',
         });
         if (!confirmed) {
           return { decision: 'deny', reason: t.commandConfirm.userCancelled };
@@ -464,6 +465,7 @@ export async function checkToolApproval(
           command: selfExtension.summary,
           level: 'warn',
           reason: t.commandConfirm.selfExtensionReason,
+          kind: 'self-extension',
         });
         if (!confirmed) {
           return { decision: 'deny', reason: t.commandConfirm.userCancelled };

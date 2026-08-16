@@ -9,7 +9,7 @@ import { useChatStore } from '@/stores/chatStore';
 import { useI18n } from '@/i18n';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
-import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
+import { ToolbarTooltip } from '@/components/panel/workspace/ToolbarTooltip';
 import { createLogger } from '@/core/logging/logger';
 import { normalizeBrowserUrl } from '@/utils/browserUrl';
 import { hasVisibleBlockingApproval } from '@/core/browser/nativeBrowserVisibility';
@@ -414,30 +414,21 @@ export default function BrowserTab({ tabId, url }: { tabId: string; url: string 
   return (
     <div className="flex flex-col h-full">
       <div className="flex items-center gap-1.5 shrink-0 px-2 py-1.5 border-b border-[var(--abu-bg-pressed)] bg-[var(--abu-bg-subtle)]">
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <Button variant="ghost" size="icon-xs" disabled={!committedUrl} onClick={() => void invoke('browser_back', { id: tabId }).catch(() => {})} className="text-[var(--abu-text-tertiary)]">
-              <ArrowLeft className="w-3.5 h-3.5" strokeWidth={1.5} />
-            </Button>
-          </TooltipTrigger>
-          <TooltipContent side="bottom">{t.workspace.browser.back}</TooltipContent>
-        </Tooltip>
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <Button variant="ghost" size="icon-xs" disabled={!committedUrl} onClick={() => void invoke('browser_forward', { id: tabId }).catch(() => {})} className="text-[var(--abu-text-tertiary)]">
-              <ArrowRight className="w-3.5 h-3.5" strokeWidth={1.5} />
-            </Button>
-          </TooltipTrigger>
-          <TooltipContent side="bottom">{t.workspace.browser.forward}</TooltipContent>
-        </Tooltip>
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <Button variant="ghost" size="icon-xs" disabled={!committedUrl} onClick={() => void invoke('browser_reload', { id: tabId }).catch(() => {})} className="text-[var(--abu-text-tertiary)]">
-              <RotateCw className="w-3.5 h-3.5" strokeWidth={1.5} />
-            </Button>
-          </TooltipTrigger>
-          <TooltipContent side="bottom">{t.workspace.browser.reload}</TooltipContent>
-        </Tooltip>
+        <ToolbarTooltip content={t.workspace.browser.back}>
+          <Button variant="ghost" size="icon-xs" disabled={!committedUrl} onClick={() => void invoke('browser_back', { id: tabId }).catch(() => {})} className="text-[var(--abu-text-tertiary)]">
+            <ArrowLeft className="w-3.5 h-3.5" strokeWidth={1.5} />
+          </Button>
+        </ToolbarTooltip>
+        <ToolbarTooltip content={t.workspace.browser.forward}>
+          <Button variant="ghost" size="icon-xs" disabled={!committedUrl} onClick={() => void invoke('browser_forward', { id: tabId }).catch(() => {})} className="text-[var(--abu-text-tertiary)]">
+            <ArrowRight className="w-3.5 h-3.5" strokeWidth={1.5} />
+          </Button>
+        </ToolbarTooltip>
+        <ToolbarTooltip content={t.workspace.browser.reload}>
+          <Button variant="ghost" size="icon-xs" disabled={!committedUrl} onClick={() => void invoke('browser_reload', { id: tabId }).catch(() => {})} className="text-[var(--abu-text-tertiary)]">
+            <RotateCw className="w-3.5 h-3.5" strokeWidth={1.5} />
+          </Button>
+        </ToolbarTooltip>
 
         <Input
           ref={addressInputRef}
@@ -450,28 +441,22 @@ export default function BrowserTab({ tabId, url }: { tabId: string; url: string 
           className="flex-1 h-7 text-minor"
         />
 
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <Button variant="ghost" size="icon-xs" disabled={!committedUrl} onClick={() => void handleOpenExternal()} className="text-[var(--abu-text-tertiary)]">
-              <Compass className="w-3.5 h-3.5" strokeWidth={1.5} />
-            </Button>
-          </TooltipTrigger>
-          <TooltipContent side="bottom">{t.workspace.browser.openExternal}</TooltipContent>
-        </Tooltip>
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <Button
-              variant="ghost"
-              size="icon-xs"
-              disabled={!committedUrl}
-              onClick={() => void toggleInspect()}
-              className={cn(inspecting ? 'text-[var(--abu-clay)] bg-[var(--abu-clay-bg)]' : 'text-[var(--abu-text-tertiary)]')}
-            >
-              <SquareDashedMousePointer className="w-3.5 h-3.5" strokeWidth={1.5} />
-            </Button>
-          </TooltipTrigger>
-          <TooltipContent side="bottom">{t.workspace.browser.selectElement}</TooltipContent>
-        </Tooltip>
+        <ToolbarTooltip content={t.workspace.browser.openExternal}>
+          <Button variant="ghost" size="icon-xs" disabled={!committedUrl} onClick={() => void handleOpenExternal()} className="text-[var(--abu-text-tertiary)]">
+            <Compass className="w-3.5 h-3.5" strokeWidth={1.5} />
+          </Button>
+        </ToolbarTooltip>
+        <ToolbarTooltip content={t.workspace.browser.selectElement}>
+          <Button
+            variant="ghost"
+            size="icon-xs"
+            disabled={!committedUrl}
+            onClick={() => void toggleInspect()}
+            className={cn(inspecting ? 'text-[var(--abu-clay)] bg-[var(--abu-clay-bg)]' : 'text-[var(--abu-text-tertiary)]')}
+          >
+            <SquareDashedMousePointer className="w-3.5 h-3.5" strokeWidth={1.5} />
+          </Button>
+        </ToolbarTooltip>
       </div>
 
       {/* Placeholder the native webview is positioned over. When there's no URL

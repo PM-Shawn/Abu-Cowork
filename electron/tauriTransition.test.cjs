@@ -449,3 +449,109 @@ test('source-wins acknowledgement backs up replaced Electron localStorage', () =
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
+
+test('a completed sentinel skips migration even when the source fingerprint drifts', () => {
+  // Regression: the fingerprint hashes file metadata of live databases, and
+  // merely reading them mutates sidecar files (SQLite WAL -shm / LevelDB
+  // LOCK+LOG). Binding sentinel validity to fingerprint equality re-armed the
+  // migration on every launch and re-imported the stale Tauri snapshot with
+  // source-wins, wiping current renderer stores each boot.
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'abu-transition-drift-'));
+  const electronDir = path.join(root, 'electron');
+  const storageRoot = path.join(root, 'webkit');
+  const dbDir = path.join(storageRoot, 'LocalStorage');
+  try {
+    fs.mkdirSync(dbDir, { recursive: true });
+    fs.writeFileSync(path.join(dbDir, 'localstorage.sqlite3'), 'fixture-bytes');
+    const plan = {
+      status: 'pending',
+      expectedKeys: ['abu-settings'],
+      rejectedKeys: [],
+      electronDir,
+      sourceDatabase: 'LocalStorage/localstorage.sqlite3',
+      sourceFingerprint: 'stale-fingerprint-from-before-the-read',
+      secretMigrationFailed: false,
+    };
+    const complete = finalizeTauriLocalStorageMigration(plan, {
+      imported: ['abu-settings'],
+      overwritten: [],
+      skippedExisting: [],
+      failed: [],
+      previous: [],
+    });
+    assert.deepEqual(complete, { ok: true, retry: false });
+
+    const second = prepareTauriLocalStorageMigration({
+      electronDir,
+      storageRoot,
+      platform: 'darwin',
+    });
+    assert.equal(second.status, 'skipped');
+    assert.equal(second.reason, 'already-migrated');
+    assert.equal(second.sourceChangedSinceMigration, true);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('an old-version sentinel still re-arms the migration', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'abu-transition-oldver-'));
+  const electronDir = path.join(root, 'electron');
+  try {
+    fs.mkdirSync(electronDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(electronDir, SENTINEL_FILENAME),
+      JSON.stringify({
+        version: 1,
+        migratedAt: '2026-01-01T00:00:00.000Z',
+        status: 'complete',
+        sourceDatabase: null,
+        sourceFingerprint: 'v1-fingerprint',
+        imported: [],
+        skippedExisting: [],
+      })
+    );
+    const plan = prepareTauriLocalStorageMigration({
+      electronDir,
+      storageRoot: path.join(root, 'missing-webkit'),
+      platform: 'darwin',
+    });
+    assert.equal(plan.status, 'pending');
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('a removed legacy source completes as a no-op and stays skipped', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'abu-transition-nosource-'));
+  const electronDir = path.join(root, 'electron');
+  const storageRoot = path.join(root, 'missing-webkit');
+  try {
+    const first = prepareTauriLocalStorageMigration({
+      electronDir,
+      storageRoot,
+      platform: 'darwin',
+    });
+    assert.equal(first.status, 'pending');
+    assert.deepEqual(first.items, []);
+
+    const complete = finalizeTauriLocalStorageMigration(first, {
+      imported: [],
+      overwritten: [],
+      skippedExisting: [],
+      failed: [],
+      previous: [],
+    });
+    assert.deepEqual(complete, { ok: true, retry: false });
+
+    const second = prepareTauriLocalStorageMigration({
+      electronDir,
+      storageRoot,
+      platform: 'darwin',
+    });
+    assert.equal(second.status, 'skipped');
+    assert.equal(second.sourceChangedSinceMigration, false);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});

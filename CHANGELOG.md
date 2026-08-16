@@ -7,6 +7,19 @@ All notable changes to Abu are documented here. Format based on [Keep a Changelo
 > [`CHANGELOG.zh-CN.md`](./CHANGELOG.zh-CN.md); keep both in sync per release (see
 > `RELEASING.md`). Entries before v0.31.0 predate this split and remain bilingual.
 
+## v0.38.1 · 2026-08-16
+
+**Root cause**: The one-time Tauri→Electron localStorage migration validated its completion sentinel against a fingerprint of the legacy database's file metadata — but merely reading that database mutates its sidecar files (SQLite WAL `-shm` on macOS, LevelDB LOCK/LOG on Windows), so the sentinel never stayed valid and the migration re-imported the stale legacy snapshot on every launch, overwriting 13 renderer stores (deleted providers resurrected after restart). Separately, a broken OS keychain surfaced only as individual API-key failures with no way to see the real cause.
+
+**Fixes**:
+
+- A completed migration is now permanent; legacy-source drift is logged, never silently re-applied (macOS and Windows).
+- Re-entering an API key clears the "could not be decrypted" banner immediately; a failed encrypted save now shows a warning on the provider card instead of failing silently (the key keeps working via the local fallback).
+- New "Encrypted key storage" diagnostics row runs a real write→read→delete probe and counts undecryptable keys, so a broken system keychain is visible at a glance; the decrypt-failure message now names the encryption-key mismatch instead of guessing a hardware change.
+- Image generation: a Volcengine chat-endpoint misconfiguration now returns an actionable hint (correct image endpoint + doubao-seedream models) in tool errors and an inline settings warning; orphaned `imagegen:*` secrets left by historical migration re-runs are swept at startup (macOS).
+
+**Full Changelog**: https://github.com/PM-Shawn/Abu-Cowork/compare/v0.38.0...v0.38.1
+
 ## v0.38.0 · 2026-08-14
 
 ### Features

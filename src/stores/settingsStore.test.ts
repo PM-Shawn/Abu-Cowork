@@ -1008,3 +1008,45 @@ describe('secret write-through failure fallback', () => {
     });
   });
 });
+
+describe('failedSecretKeys clearing (decrypt-failed banner)', () => {
+  const invokeMock = vi.mocked(invoke);
+
+  beforeEach(() => {
+    invokeMock.mockReset();
+    useSettingsStore.setState({
+      providers: [makeProvider({ id: 'p1' })],
+      activeModel: { providerId: 'p1', modelId: 'm1' },
+      failedSecretKeys: ['provider:p1'],
+    });
+  });
+
+  it('clears the marker once updateProvider successfully re-writes the key', async () => {
+    invokeMock.mockResolvedValue(null);
+
+    useSettingsStore.getState().updateProvider('p1', { apiKey: 'sk-new' });
+
+    await vi.waitFor(() => {
+      expect(useSettingsStore.getState().failedSecretKeys).not.toContain('provider:p1');
+    });
+  });
+
+  it('keeps the marker when the secret write fails', async () => {
+    invokeMock.mockRejectedValue(new Error('encrypted store unavailable'));
+
+    useSettingsStore.getState().updateProvider('p1', { apiKey: 'sk-new' });
+
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(useSettingsStore.getState().failedSecretKeys).toContain('provider:p1');
+  });
+
+  it('clears the marker when the provider is removed', async () => {
+    invokeMock.mockResolvedValue(null);
+
+    useSettingsStore.getState().removeProvider('p1');
+
+    await vi.waitFor(() => {
+      expect(useSettingsStore.getState().failedSecretKeys).not.toContain('provider:p1');
+    });
+  });
+});

@@ -376,8 +376,23 @@ function prepareTauriLocalStorageMigration(options) {
   const scan = findStorageDatabases(storageRoot, platform);
   if (scan.incomplete) return { status: 'error', reason: 'storage-scan-incomplete' };
   const sourceFingerprint = storageStateFingerprint(scan.paths, platform);
-  if (hasValidSentinel(electronDir, sourceFingerprint)) {
-    return { status: 'skipped', reason: 'already-migrated', sourceFingerprint };
+  // A `complete` sentinel at the current MIGRATION_VERSION permanently ends
+  // the migration — fingerprint drift must NOT re-arm it. The fingerprint
+  // hashes file metadata (size/mtime) of live databases, and merely READING
+  // those databases mutates their sidecar files (SQLite WAL `-shm` on macOS,
+  // LevelDB LOCK/LOG on Windows), so requiring fingerprint equality here made
+  // every completed migration invalid again by the next launch and re-imported
+  // the stale Tauri snapshot with `source-wins` on every boot, wiping current
+  // renderer stores. The fingerprint is still recorded for diagnostics; a
+  // post-completion source change is reported via `sourceChangedSinceMigration`
+  // for the host to log, never silently re-applied.
+  if (hasValidSentinel(electronDir)) {
+    return {
+      status: 'skipped',
+      reason: 'already-migrated',
+      sourceFingerprint,
+      sourceChangedSinceMigration: !hasValidSentinel(electronDir, sourceFingerprint),
+    };
   }
 
   let selected = { items: [], rejectedKeys: [], allowedCount: 0 };

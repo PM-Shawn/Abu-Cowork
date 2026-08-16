@@ -958,6 +958,13 @@ function registerTauriHost(app, options = {}) {
       console.log(
         `[tauriLocalStorageMigration] ${localStorageMigration.status}; ${itemCount} item(s)`
       );
+      if (localStorageMigration.sourceChangedSinceMigration === true) {
+        // Completed migrations are never silently re-applied (see
+        // prepareTauriLocalStorageMigration); surface the drift for support.
+        console.log(
+          '[tauriLocalStorageMigration] legacy source changed after completed migration; not re-importing'
+        );
+      }
       if (migrationArmed && localStorageMigration.status === 'error') {
         setMigrationStartupBlock(localStorageMigration.reason);
       }

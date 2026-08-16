@@ -60,6 +60,12 @@ export default function ProviderCard({ provider, isActive, onEdit }: ProviderCar
   const keyDecryptFailed = useSettingsStore((s) =>
     s.failedSecretKeys.includes(SECRET_KEYS.provider(provider.id)),
   );
+  // True when the most recent secret write for this provider failed (broken
+  // OS keychain). The key still works via the plaintext fallback, but the
+  // user should know it isn't stored securely.
+  const keySaveFailed = useSettingsStore((s) =>
+    s.secretWriteFailedKeys.includes(SECRET_KEYS.provider(provider.id)),
+  );
 
   const [showStatus, setShowStatus] = useState(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
@@ -134,6 +140,12 @@ export default function ProviderCard({ provider, isActive, onEdit }: ProviderCar
         <div className="flex items-start gap-1.5 text-caption text-[var(--abu-danger)] mb-1.5">
           <AlertTriangle className="h-3 w-3 shrink-0 mt-0.5" />
           <span>{t.settings.apiKeyDecryptFailed}</span>
+        </div>
+      )}
+      {!keyDecryptFailed && keySaveFailed && (
+        <div className="flex items-start gap-1.5 text-caption text-[var(--abu-warning)] mb-1.5">
+          <AlertTriangle className="h-3 w-3 shrink-0 mt-0.5" />
+          <span>{t.settings.apiKeySaveFailed}</span>
         </div>
       )}
       {/* Row 1: Name + status + toggle */}

@@ -16,7 +16,7 @@ import { appDataDir } from '@tauri-apps/api/path';
 import { joinPath } from '@/utils/pathUtils';
 import { useWorkspaceStore } from '@/stores/workspaceStore';
 import { useSettingsStore } from '@/stores/settingsStore';
-import { getI18n } from '@/i18n';
+import { getI18n, format } from '@/i18n';
 import { checkComputerUsePermissions } from '@/core/agent/computerUsePermission';
 import { isMacOS } from '@/utils/platform';
 import { mapPermissionsError } from '../errorMap';
@@ -178,7 +178,70 @@ export async function runPermissionsChecks(): Promise<CheckResult[]> {
     out.push(failedRow('permissions:app-data', t.diagnostic.permAppData, e instanceof Error ? e.message : String(e), 0));
   }
 
-  // 2 + 3. Workspace tests (only if a workspace is selected)
+  // 2. Encrypted secret store (safeStorage / OS keychain) — write→read→delete
+  // a probe entry, then report any keys that failed to decrypt at launch. A
+  // broken system keychain fails every provider at once (2026-08 incident:
+  // a replaced login keychain made all keys undecryptable while the app
+  // itself was healthy); this row pins the blame on the OS layer instead of
+  // leaving users to debug individual API keys.
+  {
+    const secretStart = Date.now();
+    const probeKey = `diag:secret-probe-${ts}`;
+    try {
+      await invoke('secret_set', { key: probeKey, value: 'abu-diag-probe' });
+      const readBack = await invoke<string | null>('secret_get', { key: probeKey });
+      await invoke('secret_delete', { key: probeKey }).catch(() => {});
+      const failedKeys = await invoke<string[]>('secret_failed_keys').catch(() => [] as string[]);
+      const durationMs = Date.now() - secretStart;
+      if (readBack !== 'abu-diag-probe') {
+        out.push({
+          id: 'permissions:secret-store',
+          category: 'permissions',
+          name: t.diagnostic.permSecretStore,
+          status: 'failed',
+          errorMessage: t.diagnostic.secretStoreRoundtripFailed,
+          errorDetail: `read-back mismatch (${readBack === null ? 'null' : 'value differs'})`,
+          checkedAt: Date.now(),
+          durationMs,
+        });
+      } else if (failedKeys.length > 0) {
+        out.push({
+          id: 'permissions:secret-store',
+          category: 'permissions',
+          name: t.diagnostic.permSecretStore,
+          status: 'warning',
+          metric: format(t.diagnostic.secretStoreFailedKeys, { count: failedKeys.length }),
+          errorMessage: t.diagnostic.secretStoreFailedKeysHint,
+          checkedAt: Date.now(),
+          durationMs,
+        });
+      } else {
+        out.push({
+          id: 'permissions:secret-store',
+          category: 'permissions',
+          name: t.diagnostic.permSecretStore,
+          status: 'passed',
+          metric: `${durationMs}ms`,
+          checkedAt: Date.now(),
+          durationMs,
+        });
+      }
+    } catch (e) {
+      // secret_set throws when safeStorage/keychain encryption is unavailable.
+      out.push({
+        id: 'permissions:secret-store',
+        category: 'permissions',
+        name: t.diagnostic.permSecretStore,
+        status: 'failed',
+        errorMessage: t.diagnostic.secretStoreUnavailable,
+        errorDetail: e instanceof Error ? e.message : String(e),
+        checkedAt: Date.now(),
+        durationMs: Date.now() - secretStart,
+      });
+    }
+  }
+
+  // 3 + 4. Workspace tests (only if a workspace is selected)
   if (ws) {
     const wsProbe = await probeWrite(joinPath(ws, `abu-diag-${ts}.tmp`));
     if (wsProbe.ok) {

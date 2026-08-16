@@ -162,6 +162,11 @@ export default function AddProviderModal({ open: isOpen, onClose, editProvider }
   const keyDecryptFailed = useSettingsStore((s) =>
     !!editProvider && s.failedSecretKeys.includes(SECRET_KEYS.provider(editProvider.id)),
   );
+  // Most recent secret write for the edited provider failed (broken OS
+  // keychain) — key works via plaintext fallback but is not stored securely.
+  const keySaveFailed = useSettingsStore((s) =>
+    !!editProvider && s.secretWriteFailedKeys.includes(SECRET_KEYS.provider(editProvider.id)),
+  );
 
   // ── Form state ──
   const [selectedId, setSelectedId] = useState<string>('');
@@ -1032,6 +1037,12 @@ export default function AddProviderModal({ open: isOpen, onClose, editProvider }
             <div className="flex items-start gap-2 rounded-md border border-[var(--abu-danger)] bg-[var(--abu-danger-bg)] px-3 py-2 text-caption text-[var(--abu-danger)]">
               <AlertTriangle className="h-3.5 w-3.5 shrink-0 mt-0.5" />
               <span>{t.settings.apiKeyDecryptFailed}</span>
+            </div>
+          )}
+          {!keyDecryptFailed && keySaveFailed && (
+            <div className="flex items-start gap-2 rounded-md border border-[var(--abu-warning)] bg-[var(--abu-warning-bg)] px-3 py-2 text-caption text-[var(--abu-warning)]">
+              <AlertTriangle className="h-3.5 w-3.5 shrink-0 mt-0.5" />
+              <span>{t.settings.apiKeySaveFailed}</span>
             </div>
           )}
 

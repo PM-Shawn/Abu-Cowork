@@ -719,6 +719,7 @@ export async function handleAgentRun(rawParams: unknown): Promise<unknown> {
   });
   traceSidecarRuntimeEvent('sidecar.agent_loop_started', {
     runId,
+    conversationId,
     stage: 'agent_loop_running',
     durationMs: Date.now() - startedAt,
   });
@@ -742,7 +743,10 @@ export async function handleAgentRun(rawParams: unknown): Promise<unknown> {
       // correctly without threading a second id back across the wire.
       loopId: runId,
       runtimeEvent: (event, attributes) => {
-        traceSidecarRuntimeEvent(`sidecar.${event}`, attributes);
+        // Stamp the conversation so loop-emitted sidecar events join the same
+        // run timeline as the renderer/main planes during diagnosis; an
+        // explicit conversationId from the loop still wins.
+        traceSidecarRuntimeEvent(`sidecar.${event}`, { conversationId, ...attributes });
       },
     };
     const result: AgentLoopResult = await agentRunContext.run(runCtx, () =>
@@ -750,6 +754,7 @@ export async function handleAgentRun(rawParams: unknown): Promise<unknown> {
     );
     traceSidecarRuntimeEvent('sidecar.agent_run_completed', {
       runId,
+      conversationId,
       stage: 'completed',
       outcome: result.reason,
       durationMs: Date.now() - startedAt,
@@ -765,6 +770,7 @@ export async function handleAgentRun(rawParams: unknown): Promise<unknown> {
   } catch (error) {
     traceSidecarRuntimeEvent('sidecar.agent_run_failed', {
       runId,
+      conversationId,
       stage: 'failed',
       outcome: 'error',
       errorType: sidecarRuntimeErrorType(error),

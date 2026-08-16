@@ -14,6 +14,7 @@
 // This is intentionally a function (not a module-level const) so it reflects
 // the live store state at the time of each telemetry call.
 import { useEnterpriseStore } from '@/stores/enterpriseStore'
+import { useSettingsStore } from '@/stores/settingsStore'
 
 const CONSOLE_URL = import.meta.env?.VITE_CONSOLE_URL as string | undefined
 
@@ -23,6 +24,12 @@ export interface TelemetryTarget {
 }
 
 export function getTelemetryTarget(): TelemetryTarget {
+  // The user's own opt-out comes first, in every mode. Enterprise deployments
+  // could already switch reporting off from the server, but a personal install
+  // had no way to say no at all — the only inputs were a build-time constant
+  // and the enterprise config.
+  if (useSettingsStore.getState().telemetryOptOut) return { baseUrl: '', enabled: false }
+
   const mode = useEnterpriseStore.getState().mode
 
   // Enterprise (connected) with a fully-fetched config snapshot

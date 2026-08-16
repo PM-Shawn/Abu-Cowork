@@ -23,6 +23,7 @@ vi.mock('@/stores/enterpriseStore', () => ({
 // ─── Import after mocks ───────────────────────────────────────────────────────
 
 import { getTelemetryTarget } from './consoleTelemetryTarget'
+import { useSettingsStore } from '@/stores/settingsStore'
 
 // ─── Fixtures ─────────────────────────────────────────────────────────────────
 
@@ -153,5 +154,36 @@ describe('getTelemetryTarget', () => {
       expect(target.enabled).toBe(true)
       expect(target.baseUrl).toBe('https://console-test.local')
     })
+  })
+})
+
+// ─── User opt-out (personal mode had no way to say no) ───────────────────────
+
+describe('user telemetry opt-out', () => {
+  beforeEach(() => {
+    useSettingsStore.setState({ telemetryOptOut: false })
+  })
+
+  it('reports by default, matching the pre-existing behaviour', () => {
+    mockGetState.mockReturnValue({ mode: { kind: 'personal' } })
+    expect(getTelemetryTarget().enabled).toBe(true)
+  })
+
+  it('stops reporting in personal mode once the user opts out', () => {
+    mockGetState.mockReturnValue({ mode: { kind: 'personal' } })
+    useSettingsStore.setState({ telemetryOptOut: true })
+
+    const target = getTelemetryTarget()
+    expect(target.enabled).toBe(false)
+    expect(target.baseUrl).toBe('')
+  })
+
+  it('overrides an enterprise config that still has telemetry enabled', () => {
+    mockGetState.mockReturnValue({
+      mode: { kind: 'enterprise', binding: { serverUrl: SERVER_URL }, config: CONFIG_ENABLED },
+    })
+    useSettingsStore.setState({ telemetryOptOut: true })
+
+    expect(getTelemetryTarget().enabled).toBe(false)
   })
 })

@@ -1069,6 +1069,8 @@ export interface TranslationDict {
 
   // Diagnostic
   diagnostic: {
+    telemetryOptOut: string;
+    telemetryOptOutDesc: string;
     title: string;
     desc: string;
     // Banner
@@ -2292,6 +2294,15 @@ export interface TranslationDict {
     blocked: string;
     userCancelled: string;
     aiDenied: string;
+    browserAction: string;
+    browserReason: string;
+    browserDenied: string;
+    selfExtensionReason: string;
+    selfExtensionDenied: string;
+    browserTitle: string;
+    browserDescription: string;
+    selfExtensionTitle: string;
+    selfExtensionDescription: string;
   };
 
   // Tool error messages (used in core/tools/registry.ts)

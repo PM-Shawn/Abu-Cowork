@@ -961,6 +961,8 @@ const enUS: TranslationDict = {
   },
 
   diagnostic: {
+    telemetryOptOut: 'Send anonymous usage and error reports',
+    telemetryOptOutDesc: 'Helps diagnose crashes and failures. Turn this off and Abu stops sending any usage, error, or diagnostic data.',
     title: 'Diagnostic',
     desc: 'Check Abu\'s health. Export a diagnostic bundle when reporting issues.',
     bannerAllPassed: 'All systems healthy',
@@ -2140,6 +2142,15 @@ const enUS: TranslationDict = {
     blocked: 'This command has been blocked for security reasons',
     userCancelled: '[User cancelled this operation]',
     aiDenied: 'Blocked by AI review',
+    browserAction: 'Browser action',
+    browserReason: 'This acts inside your logged-in browser (it may submit forms, click buttons, or run scripts). Once allowed, later browser actions in this conversation will not ask again.',
+    browserDenied: 'Browser actions need confirmation, but no confirmation channel is available',
+    selfExtensionReason: 'This adds or rewrites a long-lived capability (subagent / MCP server / persona) that shapes every later conversation.',
+    selfExtensionDenied: 'Adding a capability needs confirmation, but no confirmation channel is available',
+    browserTitle: 'Confirm browser action',
+    browserDescription: 'Abu wants to run this action inside your logged-in browser:',
+    selfExtensionTitle: 'Confirm new capability',
+    selfExtensionDescription: 'Abu wants to add or rewrite one of its own long-lived capabilities:',
   },
 
   toolErrors: {

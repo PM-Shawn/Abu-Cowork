@@ -697,15 +697,47 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
   // never take a static import of entryOrchestration.ts (it drags the full
   // orchestrator graph); see that module's doc comment for the sidecar-bundle
   // reasoning and entryOrchestrationRun.ts's throwing shim.
-  const { route, systemPromptSections } = options?.orchestration ?? await (
-    await import('./entryOrchestration')
-  ).precomputeOrchestration(
-    conversationId,
-    userMessage,
-    options?.imContext,
-    { settingsForModel },
-    abortController.signal,
-  );
+  let orchestration: Awaited<ReturnType<
+    typeof import('./entryOrchestration').precomputeOrchestration
+  >>;
+  try {
+    orchestration = options?.orchestration ?? await (
+      await import('./entryOrchestration')
+    ).precomputeOrchestration(
+      conversationId,
+      userMessage,
+      options?.imContext,
+      { settingsForModel },
+      abortController.signal,
+    );
+  } catch (error) {
+    // Routing runs BEFORE the user message is persisted (it produces the
+    // cleanInput the message is built from), so a failure here used to escape
+    // as an unhandled rejection with the user's input never reaching the
+    // transcript — it just disappeared. Persist the raw input and explain,
+    // same shape as the missing-API-key path above.
+    if (!options?.prePersistedUserMessageId) {
+      const userContent = await buildUserMessageContent(conversationId, userMessage, options?.images);
+      chatDelta.addMessage(conversationId, {
+        id: generateId(),
+        role: 'user',
+        content: userContent,
+        timestamp: Date.now(),
+        loopId,
+      });
+    }
+    const detail = error instanceof Error ? error.message : String(error);
+    chatDelta.addMessage(conversationId, {
+      id: generateId(),
+      role: 'assistant',
+      content: `**Error:** ${detail}`,
+      timestamp: Date.now(),
+      loopId,
+    });
+    logger.error('orchestration failed before the loop started', { conversationId, error: detail });
+    return { reason: 'error', error: detail };
+  }
+  const { route, systemPromptSections } = orchestration;
   options?.runtimeEvent?.('agent_route_selected', {
     conversationId,
     loopId,
@@ -2020,6 +2052,22 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
       if (collectedToolCalls.length > 0) {
         const confirmCb = options?.commandConfirmCallback ?? requestCommandConfirmation;
         const filePermCb = options?.filePermissionCallback ?? requestFilePermission;
+
+        // Move the crash checkpoint from "waiting on the model" to "running
+        // tools" before any side effect starts, so recovery can tell which of
+        // the two a crash interrupted. App.tsx already renders the
+        // 'tool_executing' wording; until now nothing ever wrote that status.
+        import('../session/checkpoint').then(({ writeCheckpoint }) => {
+          writeCheckpoint({
+            conversationId,
+            loopId,
+            turnCount,
+            lastMessageId: assistantMsgId,
+            status: 'tool_executing',
+            currentTool: collectedToolCalls.map((tc) => tc.name).join(', '),
+            timestamp: Date.now(),
+          });
+        }).catch(() => {});
 
         const batchResult = await executeToolBatch({
           collectedToolCalls,

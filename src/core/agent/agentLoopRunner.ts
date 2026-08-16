@@ -2114,7 +2114,7 @@ async function runSingleAgentLoopDispatched(
   const clientMessageId = `msg-${runId}`;
   logger.debug('agent-loop path selected', { path: 'sidecar', runId, conversationId });
   const runtimeStartedAt = Date.now();
-  startRuntimeRun(runId, 'sidecar', 'local_message_persisting');
+  startRuntimeRun(runId, 'sidecar', 'local_message_persisting', conversationId);
 
   const abortRegistry = getAbortRegistry();
   abortRegistry.clearAbortController(conversationId);

@@ -73,21 +73,6 @@ export default function DiagnosticSection() {
     <div className="space-y-6 max-w-3xl">
       <SettingsSectionHeader title={t.diagnostic.title} description={t.diagnostic.desc} />
 
-      {/* Anonymous reporting opt-out — personal installs previously had no way
-          to turn reporting off (only a build-time constant and, for enterprise,
-          a server-side flag). */}
-      <div className="flex items-center justify-between p-4 rounded-xl border border-[var(--abu-border)] bg-[var(--abu-bg-muted)]">
-        <div className="flex-1 mr-4">
-          <p className="text-body text-[var(--abu-text-primary)]">{t.diagnostic.telemetryOptOut}</p>
-          <p className="text-minor text-[var(--abu-text-muted)] mt-0.5">{t.diagnostic.telemetryOptOutDesc}</p>
-        </div>
-        <Toggle
-          checked={!telemetryOptOut}
-          onChange={() => setTelemetryOptOut(!telemetryOptOut)}
-          size="lg"
-        />
-      </div>
-
       {/* Banner */}
       <DiagnosticBanner />
 
@@ -102,6 +87,23 @@ export default function DiagnosticSection() {
             results={grouped[cat]}
           />
         ))}
+      </div>
+
+      {/* Anonymous reporting opt-out. Sits at the bottom with the other
+          send-data affordances: most people never touch it, so it should not
+          outrank the diagnostic results this page exists to show. Personal
+          installs previously had no way to turn reporting off at all — only a
+          build-time constant and, for enterprise, a server-side flag. */}
+      <div className="pt-2 border-t border-[var(--abu-border)] flex items-center justify-between gap-4">
+        <div className="flex-1">
+          <p className="text-minor text-[var(--abu-text-primary)]">{t.diagnostic.telemetryOptOut}</p>
+          <p className="text-minor text-[var(--abu-text-muted)] mt-0.5">{t.diagnostic.telemetryOptOutDesc}</p>
+        </div>
+        <Toggle
+          checked={!telemetryOptOut}
+          onChange={() => setTelemetryOptOut(!telemetryOptOut)}
+          size="sm"
+        />
       </div>
 
       {/* Feedback navigation prompt */}

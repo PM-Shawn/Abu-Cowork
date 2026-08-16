@@ -50,7 +50,7 @@ describe('runPermissionsChecks — Computer Use readiness', () => {
     const results = await runPermissionsChecks();
 
     expect(invokeMock).toHaveBeenCalledWith('native_helper_health');
-    expect(invokeMock).toHaveBeenCalledTimes(1);
+    expect(invokeMock.mock.calls.filter(call => call[0] === 'native_helper_health')).toHaveLength(1);
     expect(results.find(row => row.id === 'permissions:computer-helper')?.status).toBe('passed');
     expect(results.find(row => row.id === 'permissions:computer-ui-control')?.status).toBe('passed');
     expect(results.find(row => row.id === 'permissions:computer-screen-read')?.status).toBe('passed');
@@ -75,5 +75,74 @@ describe('runPermissionsChecks — Computer Use readiness', () => {
     const helper = results.find(row => row.id === 'permissions:computer-helper');
     expect(helper?.status).toBe('failed');
     expect(helper?.errorDetail).toContain('helper missing');
+  });
+});
+
+describe('runPermissionsChecks — encrypted secret store', () => {
+  /** invoke mock routing secret_* commands; everything else resolves. */
+  function mockSecretStore(opts: {
+    setError?: string;
+    readBack?: string | null;
+    failedKeys?: string[];
+  }) {
+    invokeMock.mockReset().mockImplementation(async (cmd: unknown, args?: unknown) => {
+      if (cmd === 'secret_set') {
+        if (opts.setError) throw new Error(opts.setError);
+        return null;
+      }
+      if (cmd === 'secret_get') {
+        return opts.readBack !== undefined
+          ? opts.readBack
+          : (args as { key: string }).key.startsWith('diag:secret-probe')
+            ? 'abu-diag-probe'
+            : null;
+      }
+      if (cmd === 'secret_delete') return null;
+      if (cmd === 'secret_failed_keys') return opts.failedKeys ?? [];
+      return { pong: true };
+    });
+  }
+
+  beforeEach(() => {
+    useSettingsStore.setState({ computerUseEnabled: false });
+  });
+
+  it('passes when the probe round-trips and no keys failed to decrypt', async () => {
+    mockSecretStore({});
+
+    const results = await runPermissionsChecks();
+
+    const row = results.find(r => r.id === 'permissions:secret-store');
+    expect(row?.status).toBe('passed');
+  });
+
+  it('warns when saved keys failed to decrypt at launch', async () => {
+    mockSecretStore({ failedKeys: ['provider:p1', 'provider:p2'] });
+
+    const results = await runPermissionsChecks();
+
+    const row = results.find(r => r.id === 'permissions:secret-store');
+    expect(row?.status).toBe('warning');
+    expect(row?.metric).toContain('2');
+  });
+
+  it('fails when encryption is unavailable (secret_set throws)', async () => {
+    mockSecretStore({ setError: 'safeStorage encryption unavailable' });
+
+    const results = await runPermissionsChecks();
+
+    const row = results.find(r => r.id === 'permissions:secret-store');
+    expect(row?.status).toBe('failed');
+    expect(row?.errorDetail).toContain('safeStorage encryption unavailable');
+  });
+
+  it('fails when the probe read-back does not match', async () => {
+    mockSecretStore({ readBack: null });
+
+    const results = await runPermissionsChecks();
+
+    const row = results.find(r => r.id === 'permissions:secret-store');
+    expect(row?.status).toBe('failed');
+    expect(row?.errorDetail).toContain('read-back mismatch');
   });
 });

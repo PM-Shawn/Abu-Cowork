@@ -629,6 +629,7 @@ export interface TranslationDict {
     apiKeyPlaceholder: string;
     apiKeyDesc: string;
     apiKeyDecryptFailed: string;
+    apiKeySaveFailed: string;
     clearAllKeys: string;
     clearAllKeysConfirm: string;
     clearAllKeysDone: string;
@@ -1116,6 +1117,11 @@ export interface TranslationDict {
     aiComputerUseUnknownReason: string;
     // Permissions check
     permAppData: string;
+    permSecretStore: string;
+    secretStoreUnavailable: string;
+    secretStoreRoundtripFailed: string;
+    secretStoreFailedKeys: string;
+    secretStoreFailedKeysHint: string;
     permWorkspace: string;
     permWorkspaceAbu: string;
     permWorkspaceNoSelection: string;

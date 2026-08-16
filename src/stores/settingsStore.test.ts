@@ -1050,3 +1050,54 @@ describe('failedSecretKeys clearing (decrypt-failed banner)', () => {
     });
   });
 });
+
+describe('secretWriteFailedKeys (save-failure feedback)', () => {
+  const invokeMock = vi.mocked(invoke);
+
+  beforeEach(() => {
+    invokeMock.mockReset();
+    useSettingsStore.setState({
+      providers: [makeProvider({ id: 'p1' })],
+      activeModel: { providerId: 'p1', modelId: 'm1' },
+      failedSecretKeys: [],
+      secretWriteFailedKeys: [],
+    });
+  });
+
+  it('marks the key when the secret write fails', async () => {
+    invokeMock.mockRejectedValue(new Error('encrypted store unavailable'));
+
+    useSettingsStore.getState().updateProvider('p1', { apiKey: 'sk-new' });
+
+    await vi.waitFor(() => {
+      expect(useSettingsStore.getState().secretWriteFailedKeys).toContain('provider:p1');
+    });
+  });
+
+  it('clears the marker once a later write succeeds', async () => {
+    useSettingsStore.setState({ secretWriteFailedKeys: ['provider:p1'] });
+    invokeMock.mockResolvedValue(null);
+
+    useSettingsStore.getState().updateProvider('p1', { apiKey: 'sk-new' });
+
+    await vi.waitFor(() => {
+      expect(useSettingsStore.getState().secretWriteFailedKeys).not.toContain('provider:p1');
+    });
+  });
+
+  it('still flips the plaintext fallback on failure (fafSecret behavior preserved)', async () => {
+    invokeMock.mockRejectedValue(new Error('encrypted store unavailable'));
+
+    useSettingsStore.getState().updateProvider('p1', { apiKey: 'sk-new' });
+
+    await vi.waitFor(() => {
+      expect(useSettingsStore.getState().secretWriteFailedKeys).toContain('provider:p1');
+    });
+    const persistApi = (useSettingsStore as unknown as {
+      persist: { getOptions: () => { partialize: (state: unknown) => Record<string, unknown> } };
+    }).persist;
+    const partialize = persistApi.getOptions().partialize;
+    const persisted = partialize(useSettingsStore.getState()).providers as ProviderInstance[];
+    expect(persisted[0].apiKey).toBe('sk-new');
+  });
+});

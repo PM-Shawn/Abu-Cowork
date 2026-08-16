@@ -63,14 +63,26 @@ function fafSecret(promise: Promise<void>, label: string): void {
  */
 function fafSecretWrite(key: string, promise: Promise<void>, label: string): void {
   fafSecret(
-    promise.then(() => {
-      const { failedSecretKeys } = useSettingsStore.getState();
-      if (failedSecretKeys.includes(key)) {
-        useSettingsStore.setState({
-          failedSecretKeys: failedSecretKeys.filter((k) => k !== key),
-        });
-      }
-    }),
+    promise
+      .then(() => {
+        const { failedSecretKeys, secretWriteFailedKeys } = useSettingsStore.getState();
+        if (failedSecretKeys.includes(key) || secretWriteFailedKeys.includes(key)) {
+          useSettingsStore.setState({
+            failedSecretKeys: failedSecretKeys.filter((k) => k !== key),
+            secretWriteFailedKeys: secretWriteFailedKeys.filter((k) => k !== key),
+          });
+        }
+      })
+      .catch((err) => {
+        // Surface the failure on the affected card (the value still works via
+        // the plaintext fallback), then rethrow so fafSecret keeps its
+        // fallback-flipping and logging behavior.
+        const { secretWriteFailedKeys } = useSettingsStore.getState();
+        if (!secretWriteFailedKeys.includes(key)) {
+          useSettingsStore.setState({ secretWriteFailedKeys: [...secretWriteFailedKeys, key] });
+        }
+        throw err;
+      }),
     label,
   );
 }
@@ -266,6 +278,15 @@ export interface SettingsState {
    * "please re-enter" hint on affected provider cards.
    */
   failedSecretKeys: string[];
+
+  /**
+   * Secret-store keys whose most recent write (or delete) FAILED — e.g. the
+   * OS keychain / safeStorage is broken so the key could not be encrypted.
+   * The value still works this session and is kept in localStorage via the
+   * plaintext fallback, but the user should know it isn't stored securely.
+   * Ephemeral — never persisted; cleared per key once a later write succeeds.
+   */
+  secretWriteFailedKeys: string[];
 
   /**
    * One-shot flag for the v0.15 sensitive-memory audit. Set to true after the
@@ -621,6 +642,7 @@ export const useSettingsStore = create<SettingsStore>()(
         bypass: [],
       },
       failedSecretKeys: [],
+      secretWriteFailedKeys: [],
       // Defaults to false so existing users get the audit on first v0.15 launch.
       // The migration below sets `false` explicitly for upgraders; new installs
       // start with this default (also false).
@@ -1001,6 +1023,7 @@ export const useSettingsStore = create<SettingsStore>()(
             backends: state.imageGeneration.backends.map((b) => ({ ...b, apiKey: '' })),
           },
           failedSecretKeys: [],
+          secretWriteFailedKeys: [],
         }));
       },
       setPetPosition: (pos) => set({ petPosition: pos }),

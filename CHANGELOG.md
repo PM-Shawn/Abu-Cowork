@@ -7,6 +7,26 @@ All notable changes to Abu are documented here. Format based on [Keep a Changelo
 > [`CHANGELOG.zh-CN.md`](./CHANGELOG.zh-CN.md); keep both in sync per release (see
 > `RELEASING.md`). Entries before v0.31.0 predate this split and remain bilingual.
 
+## v0.39.0 · 2026-08-18
+
+### ✨ Features
+
+- **Per-site browser authorization** — The browser action confirmation now offers "Always allow this site" next to "Just this once". Verdicts are stored per exact origin (denied > allowed > ask), visible and revocable under Settings › Capabilities, and apply to both the built-in browser and the connected Chrome bridge. Page scripting (`execute_js`) never gets a permanent grant — each run asks separately. Scheduled tasks can now act on sites you pre-authorized; everything else stays fail-closed when nobody is present.
+- **Approval gates for high-consequence actions** — State-changing browser automation (click, fill, navigate, scripting) asks before acting inside your logged-in sessions, in every permission mode. Self-extension (creating a subagent, installing an MCP server, rewriting the persona) requires an explicit per-act confirmation.
+- **Telemetry opt-out** — Anonymous usage/error reporting can be turned off in Settings › Diagnostics.
+
+### 🐛 Fixes
+
+- The close-window dialog is no longer painted over by the browser pane — quitting the app with a browser tab open works again; while any modal is up, the pane shows a frozen snapshot of the page instead of flashing to blank white.
+- Browser toolbar tooltips are no longer clipped by the native webview.
+- The terminal pane follows the app theme (no more fixed dark palette on light theme).
+- Failed runs no longer render the same error twice; the insufficient-balance message now says what to do.
+- The user's input is no longer silently dropped when a run is rejected (no API key, dispatch failure, denied confirmation, aborted precompute) — it is restored to the input box.
+- Tool-call intent is persisted before tools run, so a crash mid-batch can no longer be misread as "nothing executed".
+- Runtime trace events now carry the conversation id across renderer, sidecar, and host planes.
+
+**Full Changelog**: https://github.com/PM-Shawn/Abu-Cowork/compare/v0.38.1...v0.39.0
+
 ## v0.38.1 · 2026-08-16
 
 **Root cause**: The one-time Tauri→Electron localStorage migration validated its completion sentinel against a fingerprint of the legacy database's file metadata — but merely reading that database mutates its sidecar files (SQLite WAL `-shm` on macOS, LevelDB LOCK/LOG on Windows), so the sentinel never stayed valid and the migration re-imported the stale legacy snapshot on every launch, overwriting 13 renderer stores (deleted providers resurrected after restart). Separately, a broken OS keychain surfaced only as individual API-key failures with no way to see the real cause.

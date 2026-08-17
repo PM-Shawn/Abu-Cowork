@@ -7,6 +7,8 @@ import { truncateToolResult } from '../context/truncation';
 import { getSettingsReader } from '../agent/ports/settingsReader';
 import { useChatStore } from '../../stores/chatStore';
 import { getPermissionStrategy } from '../permissions/permissionMode';
+import { classifyBrowserTool, grantBrowserAutomation, hasBrowserGrant } from '../permissions/browserToolPolicy';
+import { classifySelfExtension } from '../permissions/selfExtensionPolicy';
 import { analyzeCommandBoundary, type CmdBoundary } from '../permissions/commandBoundary';
 import { reviewAction } from '../safety/reviewer';
 import { getLoopContext } from '../agent/permissionBridge';
@@ -410,6 +412,63 @@ export async function checkToolApproval(
         } else {
           // Hard blocked — always enforced regardless of permission mode
           return { decision: 'deny', reason: `Error: ${pathCheck.reason}` };
+        }
+      }
+    }
+  }
+
+  // Browser automation acts inside the user's live, logged-in sessions — the
+  // same consequence Computer Use already gates for browser apps. Gate the
+  // state-changing subset here so the cheaper mechanism is not the ungated one.
+  // Approval is per conversation (like Computer Use's per-task grant): the user
+  // approves once for the task, not once per click.
+  {
+    const consequence = classifyBrowserTool(name);
+    if (consequence === 'state-changing') {
+      const granted = hasBrowserGrant(toolContext?.conversationId);
+      const decision = strategy.decideOtherTool(consequence, granted);
+      if (decision !== 'allow') {
+        if (!onRequireConfirmation) {
+          // No confirmation channel (headless/background run) — fail closed
+          // rather than silently acting in the user's session.
+          return { decision: 'deny', reason: `Error: ${t.commandConfirm.browserDenied}` };
+        }
+        const confirmed = await onRequireConfirmation({
+          command: `${t.commandConfirm.browserAction}: ${name}`,
+          level: 'warn',
+          reason: t.commandConfirm.browserReason,
+          kind: 'browser',
+        });
+        if (!confirmed) {
+          return { decision: 'deny', reason: t.commandConfirm.userCancelled };
+        }
+        grantBrowserAutomation(toolContext?.conversationId);
+      }
+    }
+  }
+
+  // Self-extension: creating a subagent, installing an MCP server, or
+  // rewriting the persona all write durable state that shapes every later
+  // turn. Skills already require a draft + content scan + audited history;
+  // these took the same kind of write with no gate at all, so a single
+  // injected instruction could buy a persistent foothold. No per-conversation
+  // grant here — these are rare, deliberate acts, each worth its own ask.
+  {
+    const selfExtension = classifySelfExtension(name, input);
+    if (selfExtension) {
+      const decision = strategy.decideOtherTool('state-changing', false);
+      if (decision !== 'allow') {
+        if (!onRequireConfirmation) {
+          return { decision: 'deny', reason: `Error: ${t.commandConfirm.selfExtensionDenied}` };
+        }
+        const confirmed = await onRequireConfirmation({
+          command: selfExtension.summary,
+          level: 'warn',
+          reason: t.commandConfirm.selfExtensionReason,
+          kind: 'self-extension',
+        });
+        if (!confirmed) {
+          return { decision: 'deny', reason: t.commandConfirm.userCancelled };
         }
       }
     }

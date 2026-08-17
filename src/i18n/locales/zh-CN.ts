@@ -385,6 +385,7 @@ const zhCN: TranslationDict = {
     conversationBusy: '当前会话已有任务在运行，请等待结束后再启动新任务。',
     visionUnsupported: '当前模型可能不支持图片/视觉输入，请尝试移除图片或切换到支持视觉的模型（如 Claude、GPT-4o）。',
     ollamaForbidden: 'Ollama 返回了 403 Forbidden（CORS 来源限制）。请设置环境变量 `OLLAMA_ORIGINS=*` 后重启 Ollama，例如：`OLLAMA_ORIGINS=* ollama serve`',
+    insufficientBalance: '余额不足或无可用资源包，请到对应模型平台充值。',
     compactingInlineNotice: '\n*上下文过长，正在优化上下文...*',
     contextInputTooLarge: '这条消息超过了当前模型的上下文容量。请缩短消息或附件，或者切换到上下文更大的模型。',
     contextFixedTooLarge: '当前系统指令和工具定义超过了模型的安全上下文预算。请停用部分工具，或者切换到上下文更大的模型。',
@@ -960,6 +961,8 @@ const zhCN: TranslationDict = {
   },
 
   diagnostic: {
+    telemetryOptOut: '发送匿名使用与错误报告',
+    telemetryOptOutDesc: '帮助定位崩溃与故障。关闭后阿布不再向服务端发送任何使用、错误或诊断数据。',
     title: '诊断',
     desc: '检查 Abu 的运行状态。出问题时也可以导出诊断包发给我们。',
     bannerAllPassed: '一切正常',
@@ -2140,6 +2143,15 @@ const zhCN: TranslationDict = {
     blocked: '此命令因安全原因被阻止执行',
     userCancelled: '[用户取消了此操作]',
     aiDenied: 'AI 审核已拒绝此操作',
+    browserAction: '浏览器操作',
+    browserReason: '将在你已登录的浏览器里执行操作（可能提交表单、点击按钮或运行脚本）。允许后，本次对话内的后续浏览器操作不再询问。',
+    browserDenied: '浏览器操作需要确认，但当前没有可用的确认入口',
+    selfExtensionReason: '将为阿布新增或改写一项长期能力（子代理 / MCP 服务 / 人格设定），它会影响之后的每一次对话。',
+    selfExtensionDenied: '新增能力需要确认，但当前没有可用的确认入口',
+    browserTitle: '浏览器操作确认',
+    browserDescription: '阿布要在你已登录的浏览器里执行下面这个操作：',
+    selfExtensionTitle: '新增能力确认',
+    selfExtensionDescription: '阿布要为自己新增或改写一项长期能力：',
   },
 
   toolErrors: {

@@ -494,10 +494,18 @@ async function settleRunPersistence(session: RunSession): Promise<void> {
   await waitForConversationPersistence(session.conversationId);
 }
 
+/**
+ * `skipErrorAppend` is for the case where the sidecar-hosted agent loop already
+ * rendered the error text itself (agentLoop.ts's own catch branch appends the
+ * display error and finishes streaming before returning a failed result).
+ * Appending here again would render the same provider error twice in the
+ * bubble. Everything else in the terminal contract still runs.
+ */
 async function finalizeFailedRun(
   session: RunSession,
   displayMessage: string,
   state: 'failed' | 'connection-failed' = 'failed',
+  skipErrorAppend = false,
 ): Promise<void> {
   if (session.failureFinalizationPromise) return session.failureFinalizationPromise;
 
@@ -507,7 +515,9 @@ async function finalizeFailedRun(
     await (session.frameApplyTail ?? Promise.resolve());
     try {
       const chatDelta = getChatDelta();
-      chatDelta.appendText(session.conversationId, `\n\n**Error:** ${displayMessage}`);
+      if (!skipErrorAppend) {
+        chatDelta.appendText(session.conversationId, `\n\n**Error:** ${displayMessage}`);
+      }
       chatDelta.finishStreaming(session.conversationId);
       chatDelta.setAgentStatus('idle');
       chatDelta.setConversationStatus(session.conversationId, 'error');
@@ -2104,7 +2114,7 @@ async function runSingleAgentLoopDispatched(
   const clientMessageId = `msg-${runId}`;
   logger.debug('agent-loop path selected', { path: 'sidecar', runId, conversationId });
   const runtimeStartedAt = Date.now();
-  startRuntimeRun(runId, 'sidecar', 'local_message_persisting');
+  startRuntimeRun(runId, 'sidecar', 'local_message_persisting', conversationId);
 
   const abortRegistry = getAbortRegistry();
   abortRegistry.clearAbortController(conversationId);
@@ -2339,7 +2349,14 @@ async function runSingleAgentLoopDispatched(
         errorType: terminal.failure?.errorType,
         durationMs: Date.now() - runtimeStartedAt,
       });
-      await finalizeFailedRun(session, displayMessage);
+      // `agent_loop_error` is the default errorType stamped by
+      // createAgentRunTerminal when the sidecar's agentLoop returned a failed
+      // result through its own catch branch — which already appended the error
+      // text and finished streaming. Any other errorType comes from a sidecar
+      // crash / uncaught throw, where nothing rendered and this append is the
+      // only chance to surface the failure.
+      const alreadyRenderedBySidecar = terminal.failure?.errorType === 'agent_loop_error';
+      await finalizeFailedRun(session, displayMessage, 'failed', alreadyRenderedBySidecar);
       return { reason: 'error', error: realMessage };
     }
 

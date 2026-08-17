@@ -424,6 +424,38 @@ describe('Agent Pipeline Integration', () => {
     expect(userMsg?.loopId).toBe(errorMsg?.loopId);
   });
 
+  it('keeps the user message when routing fails before the loop starts', async () => {
+    // Regression: routing produces the cleanInput the user message is built
+    // from, so it runs BEFORE that message is persisted. A throw there escaped
+    // as an unhandled rejection and the typed input vanished with no trace —
+    // the composer had already cleared.
+    const orchestration = await import('../core/agent/entryOrchestration');
+    const spy = vi
+      .spyOn(orchestration, 'precomputeOrchestration')
+      .mockRejectedValue(new Error('skill index unavailable'));
+
+    try {
+      const convId = useChatStore.getState().createConversation();
+      const result = await runAgentLoop(convId, 'route me somewhere');
+
+      expect(result.reason).toBe('error');
+
+      const conv = useChatStore.getState().conversations[convId];
+      const userMsg = conv.messages.find((m) => m.role === 'user');
+      expect(userMsg?.content).toBe('route me somewhere');
+
+      const errorMsg = conv.messages.find(
+        (m) => m.role === 'assistant'
+          && typeof m.content === 'string'
+          && m.content.includes('skill index unavailable'),
+      );
+      expect(errorMsg).toBeDefined();
+      expect(userMsg?.loopId).toBe(errorMsg?.loopId);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
   it('shows an actionable local error and skips the provider when the latest input is too large', async () => {
     vi.mocked(contextManagerModule.enforceContextBudget).mockImplementationOnce(() => {
       throw new contextManagerModule.ContextBudgetError('INPUT_TOO_LARGE', 20_000, 10_000);

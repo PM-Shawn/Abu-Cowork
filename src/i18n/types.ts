@@ -385,6 +385,8 @@ export interface TranslationDict {
     visionUnsupported: string;
     /** Ollama returned 403 Forbidden (CORS origin restriction). */
     ollamaForbidden: string;
+    /** Provider account balance/resource-package exhausted. */
+    insufficientBalance: string;
     /** Streamed-inline notice while compacting an oversized context (includes markdown). */
     compactingInlineNotice: string;
     /** Latest user message cannot fit within the model's safe context budget. */
@@ -1067,6 +1069,8 @@ export interface TranslationDict {
 
   // Diagnostic
   diagnostic: {
+    telemetryOptOut: string;
+    telemetryOptOutDesc: string;
     title: string;
     desc: string;
     // Banner
@@ -2290,6 +2294,15 @@ export interface TranslationDict {
     blocked: string;
     userCancelled: string;
     aiDenied: string;
+    browserAction: string;
+    browserReason: string;
+    browserDenied: string;
+    selfExtensionReason: string;
+    selfExtensionDenied: string;
+    browserTitle: string;
+    browserDescription: string;
+    selfExtensionTitle: string;
+    selfExtensionDescription: string;
   };
 
   // Tool error messages (used in core/tools/registry.ts)

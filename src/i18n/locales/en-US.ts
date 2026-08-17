@@ -385,6 +385,7 @@ const enUS: TranslationDict = {
     conversationBusy: 'This conversation already has a running task. Wait for it to finish before starting another.',
     visionUnsupported: 'The current model may not support image/vision input. Try removing the image or switching to a vision-capable model (e.g. Claude, GPT-4o).',
     ollamaForbidden: 'Ollama returned 403 Forbidden (CORS origin restriction). Set the environment variable `OLLAMA_ORIGINS=*` and restart Ollama, e.g. `OLLAMA_ORIGINS=* ollama serve`',
+    insufficientBalance: "Insufficient balance or no available resource package. Please recharge on the corresponding model provider's platform.",
     compactingInlineNotice: '\n*Context is getting long, optimizing context...*',
     contextInputTooLarge: 'This message is too large for the current model context. Shorten the message or attachments, or switch to a model with a larger context window.',
     contextFixedTooLarge: 'The current system instructions and tool definitions exceed this model’s safe context budget. Disable some tools or switch to a model with a larger context window.',
@@ -960,6 +961,8 @@ const enUS: TranslationDict = {
   },
 
   diagnostic: {
+    telemetryOptOut: 'Send anonymous usage and error reports',
+    telemetryOptOutDesc: 'Helps diagnose crashes and failures. Turn this off and Abu stops sending any usage, error, or diagnostic data.',
     title: 'Diagnostic',
     desc: 'Check Abu\'s health. Export a diagnostic bundle when reporting issues.',
     bannerAllPassed: 'All systems healthy',
@@ -2139,6 +2142,15 @@ const enUS: TranslationDict = {
     blocked: 'This command has been blocked for security reasons',
     userCancelled: '[User cancelled this operation]',
     aiDenied: 'Blocked by AI review',
+    browserAction: 'Browser action',
+    browserReason: 'This acts inside your logged-in browser (it may submit forms, click buttons, or run scripts). Once allowed, later browser actions in this conversation will not ask again.',
+    browserDenied: 'Browser actions need confirmation, but no confirmation channel is available',
+    selfExtensionReason: 'This adds or rewrites a long-lived capability (subagent / MCP server / persona) that shapes every later conversation.',
+    selfExtensionDenied: 'Adding a capability needs confirmation, but no confirmation channel is available',
+    browserTitle: 'Confirm browser action',
+    browserDescription: 'Abu wants to run this action inside your logged-in browser:',
+    selfExtensionTitle: 'Confirm new capability',
+    selfExtensionDescription: 'Abu wants to add or rewrite one of its own long-lived capabilities:',
   },
 
   toolErrors: {

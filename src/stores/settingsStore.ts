@@ -232,6 +232,10 @@ export interface SettingsState {
    *  Do NOT add to partialize. */
   guideOpen: boolean;
   behaviorSensorEnabled: boolean;
+  /** User opted out of anonymous usage/error reporting. Personal mode had no
+   *  way to turn reporting off; enterprise deployments already honour the
+   *  server-side telemetryEnabled flag. */
+  telemetryOptOut: boolean;
   computerUseEnabled: boolean;
   preventSleep: boolean;
   allowSkillCommands: boolean;
@@ -394,6 +398,7 @@ interface SettingsActions {
   openGuide: () => void;
   closeGuide: () => void;
   setBehaviorSensorEnabled: (enabled: boolean) => void;
+  setTelemetryOptOut: (optOut: boolean) => void;
   setComputerUseEnabled: (enabled: boolean) => void;
   setPreventSleep: (enabled: boolean) => void;
   setSoulInitialized: (initialized: boolean) => void;
@@ -628,6 +633,7 @@ export const useSettingsStore = create<SettingsStore>()(
       guideShown: false,
       guideOpen: false,
       behaviorSensorEnabled: false,
+      telemetryOptOut: false,
       computerUseEnabled: false,
       preventSleep: false,
       allowSkillCommands: true,
@@ -974,6 +980,7 @@ export const useSettingsStore = create<SettingsStore>()(
       // Closing the guide also marks it as shown so first-launch auto-open never re-triggers.
       closeGuide: () => set({ guideOpen: false, guideShown: true }),
       setBehaviorSensorEnabled: (behaviorSensorEnabled) => set({ behaviorSensorEnabled }),
+      setTelemetryOptOut: (telemetryOptOut) => set({ telemetryOptOut }),
       setComputerUseEnabled: (computerUseEnabled) => {
         set({ computerUseEnabled });
         syncComputerUseGate(computerUseEnabled);
@@ -1033,7 +1040,7 @@ export const useSettingsStore = create<SettingsStore>()(
     }),
     {
       name: 'abu-settings',
-      version: 42,
+      version: 43,
       migrate: (persisted: unknown, version: number) => {
         const state = persisted as Record<string, unknown>;
 
@@ -1051,6 +1058,13 @@ export const useSettingsStore = create<SettingsStore>()(
         // ════════════════════════════════════════════════
         if (version < 42) {
           state.theme = 'light';
+        }
+
+        if (version < 43) {
+          // New opt-out defaults to "still reporting" so upgrading does not
+          // silently change what an existing install already does; the point of
+          // this version is that the switch now exists at all.
+          if (state.telemetryOptOut === undefined) state.telemetryOptOut = false;
         }
 
         // NOTE: the V41 "imageGeneration independent config (C-a)" step lives at
@@ -1852,6 +1866,7 @@ export const useSettingsStore = create<SettingsStore>()(
         userAvatar: state.userAvatar,
         guideShown: state.guideShown,
         behaviorSensorEnabled: state.behaviorSensorEnabled,
+        telemetryOptOut: state.telemetryOptOut,
         computerUseEnabled: state.computerUseEnabled,
         preventSleep: state.preventSleep,
         allowSkillCommands: state.allowSkillCommands,

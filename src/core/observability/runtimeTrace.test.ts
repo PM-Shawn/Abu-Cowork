@@ -124,4 +124,40 @@ describe('renderer runtime trace', () => {
     });
     expect(getRendererRuntimeTraceSnapshot().recentEvents[0]).not.toHaveProperty('toolNames');
   });
+
+  describe('conversation join', () => {
+    it('stamps the run conversationId onto later events that only carry a runId', () => {
+      startRuntimeRun('run-join', 'sidecar', 'local_message_persisting', 'conversation-join');
+
+      traceRuntimeEvent('renderer.first_frame_applied', { runId: 'run-join' });
+
+      expect(getRendererRuntimeTraceSnapshot().recentEvents[0]).toMatchObject({
+        runId: 'run-join',
+        conversationId: 'conversation-join',
+      });
+      expect(recordElectronRuntimeEventMock).toHaveBeenCalledWith(
+        expect.objectContaining({ conversationId: 'conversation-join' }),
+      );
+    });
+
+    it('keeps an explicit conversationId and never invents one for unknown runs', () => {
+      startRuntimeRun('run-join', 'sidecar', 'stage', 'conversation-join');
+
+      traceRuntimeEvent('renderer.explicit', { runId: 'run-join', conversationId: 'conversation-explicit' });
+      traceRuntimeEvent('renderer.unknown_run', { runId: 'run-absent' });
+
+      const [explicit, unknown] = getRendererRuntimeTraceSnapshot().recentEvents;
+      expect(explicit).toMatchObject({ conversationId: 'conversation-explicit' });
+      expect(unknown).not.toHaveProperty('conversationId');
+    });
+
+    it('stops stamping once the run is finished', () => {
+      startRuntimeRun('run-join', 'sidecar', 'stage', 'conversation-join');
+      finishRuntimeRun('run-join');
+
+      traceRuntimeEvent('renderer.after_finish', { runId: 'run-join' });
+
+      expect(getRendererRuntimeTraceSnapshot().recentEvents[0]).not.toHaveProperty('conversationId');
+    });
+  });
 });

@@ -64,7 +64,15 @@ const SAFE_ATTRIBUTE_KEYS = new Set([
   'consecutiveNoChange',
   'recoveryUsed',
   'subscriptionCount',
+  'exitCode',
+  'windowLabel',
 ]);
+
+/**
+ * `render-process-gone` reasons that mean the renderer died unexpectedly, as
+ * opposed to a normal teardown ('clean-exit') or an intentional kill.
+ */
+const SEVERE_RENDER_PROCESS_REASONS = new Set(['crashed', 'oom']);
 
 const SECRET_PATTERNS = [
   /\bsk-[a-zA-Z0-9_-]{12,}/g,
@@ -419,6 +427,43 @@ function createRuntimeState({
     emitEvent('main', 'main.renderer_resources_cleared', attributes);
   }
 
+  function noteMainUncaughtException(errorType, origin) {
+    emitEvent('main', 'main.uncaught_exception', {
+      stage: 'uncaught_exception',
+      outcome: 'error',
+      errorType,
+      reason: origin,
+    });
+  }
+
+  function noteMainUnhandledRejection(errorType) {
+    emitEvent('main', 'main.unhandled_rejection', {
+      stage: 'unhandled_rejection',
+      outcome: 'error',
+      errorType,
+    });
+  }
+
+  function noteRenderProcessGone(windowLabel, details) {
+    emitEvent('main', 'main.render_process_gone', {
+      windowLabel,
+      stage: 'render_process_gone',
+      outcome: 'error',
+      errorType: 'render_process_gone',
+      reason: details?.reason,
+      exitCode: details?.exitCode,
+    });
+  }
+
+  function noteRendererUnresponsive(windowLabel) {
+    emitEvent('main', 'main.renderer_unresponsive', {
+      windowLabel,
+      stage: 'renderer_unresponsive',
+      outcome: 'stalled',
+      errorType: 'renderer_unresponsive',
+    });
+  }
+
   function noteSidecarBridgeDeliveryMissed(stage) {
     emitEvent('main', 'main.sidecar_bridge_delivery_missed', {
       sidecarId: SIDECAR_ID,
@@ -499,6 +544,10 @@ function createRuntimeState({
     noteStdoutLine,
     noteRendererEvent,
     noteRendererResourcesCleared,
+    noteMainUncaughtException,
+    noteMainUnhandledRejection,
+    noteRenderProcessGone,
+    noteRendererUnresponsive,
     noteSidecarBridgeDeliveryMissed,
     noteSidecarTraceLine,
     snapshot,
@@ -601,12 +650,114 @@ function getRuntimeDiagnostics() {
   };
 }
 
+function describeCrashError(error) {
+  if (error instanceof Error) {
+    return {
+      errorType: normalizeErrorType(error.name || 'error'),
+      message: redactString(error.message || ''),
+    };
+  }
+  return {
+    errorType: normalizeErrorType(typeof error),
+    message: typeof error === 'string' ? redactString(error) : '',
+  };
+}
+
+/** A crash observer must never become the reason the process misbehaves. */
+function safeNotify(onCrash, crash) {
+  if (typeof onCrash !== 'function') return;
+  try {
+    onCrash(crash);
+  } catch {
+    // Observability must never change product behavior.
+  }
+}
+
+/**
+ * Record main-process crashes WITHOUT changing what the process does next.
+ *
+ * `uncaughtExceptionMonitor` is deliberate, not a stylistic choice. Electron's
+ * own default 'uncaughtException' handler shows its "A JavaScript error
+ * occurred in the main process" dialog only while it is the sole listener
+ * (`process.listenerCount('uncaughtException') > 1` makes it bail out), and
+ * that count is already 1 at app-ready — so a plain `process.on(
+ * 'uncaughtException')` recorder would silently swallow the crash dialog.
+ * The monitor hook runs before the handlers, cannot preempt them, and leaves
+ * the listener count untouched, so existing crash behavior is preserved
+ * exactly (verified firsthand on Electron 43 / Node 24).
+ *
+ * 'unhandledRejection' has no monitor-only variant. Electron 43 runs Node's
+ * `warn` mode there (a rejected promise prints
+ * UnhandledPromiseRejectionWarning and the app keeps running), so attaching a
+ * listener suppresses that warning but cannot change any exit behavior; the
+ * caller re-surfaces the diagnostic from `onCrash`.
+ *
+ * @param {NodeJS.Process} processRef
+ * @param {{ state?: object, onCrash?: (crash: object) => void }} [options]
+ * @returns {() => void} removes both observers
+ */
+function observeMainProcessCrashes(processRef, { state = runtimeState, onCrash } = {}) {
+  const onMonitor = (error, origin) => {
+    const described = describeCrashError(error);
+    state.noteMainUncaughtException(described.errorType, origin);
+    safeNotify(onCrash, { kind: 'main_uncaught_exception', ...described, reason: origin });
+  };
+  const onRejection = (reason) => {
+    const described = describeCrashError(reason);
+    state.noteMainUnhandledRejection(described.errorType);
+    safeNotify(onCrash, { kind: 'main_unhandled_rejection', ...described });
+  };
+  processRef.on('uncaughtExceptionMonitor', onMonitor);
+  processRef.on('unhandledRejection', onRejection);
+  return () => {
+    processRef.removeListener('uncaughtExceptionMonitor', onMonitor);
+    processRef.removeListener('unhandledRejection', onRejection);
+  };
+}
+
+/**
+ * Record renderer death and renderer hangs for one window's WebContents.
+ * Purely observational: nothing here reloads, recovers, or closes the window,
+ * so a crash keeps whatever outcome it had before.
+ *
+ * @param {import('electron').WebContents} webContents
+ * @param {string} windowLabel
+ * @param {{ state?: object, onCrash?: (crash: object) => void }} [options]
+ * @returns {() => void} removes both observers
+ */
+function observeWebContentsCrashes(webContents, windowLabel, { state = runtimeState, onCrash } = {}) {
+  const onGone = (_event, details) => {
+    state.noteRenderProcessGone(windowLabel, details);
+    // A hang or a clean/intentional teardown is not worth a remote report;
+    // only a real renderer death is.
+    if (!SEVERE_RENDER_PROCESS_REASONS.has(details?.reason)) return;
+    safeNotify(onCrash, {
+      kind: 'renderer_process_gone',
+      errorType: 'render_process_gone',
+      reason: details.reason,
+      windowLabel,
+      message: '',
+    });
+  };
+  const onUnresponsive = () => {
+    state.noteRendererUnresponsive(windowLabel);
+  };
+  webContents.on('render-process-gone', onGone);
+  webContents.on('unresponsive', onUnresponsive);
+  return () => {
+    webContents.removeListener('render-process-gone', onGone);
+    webContents.removeListener('unresponsive', onUnresponsive);
+  };
+}
+
 module.exports = {
   RUNTIME_EVENT_CHANNEL,
   RUNTIME_DIAGNOSTICS_CHANNEL,
   SIDECAR_TRACE_PREFIX,
   configureRuntimeObservability,
   getRuntimeDiagnostics,
+  observeMainProcessCrashes,
+  observeWebContentsCrashes,
   runtimeState,
   sanitizeAttributes,
   parseJsonRpcMetadata,

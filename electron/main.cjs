@@ -51,6 +51,11 @@ const {
   mainWindowPlatformOptions,
 } = require('./windowChrome.cjs');
 const {
+  configureRuntimeObservability,
+  observeMainProcessCrashes,
+  observeWebContentsCrashes,
+} = require('./runtimeObservability.cjs');
+const {
   hasValidSentinel,
   estimateMigrationSpace,
   inspectLegacyElectronSymlinkRepairs,
@@ -100,6 +105,25 @@ function log(level, msg, extra) {
   const line = `[electron:${level}] ${msg}${extra ? ' ' + JSON.stringify(extra) : ''}`;
   (level === 'error' ? console.error : console.log)(line);
 }
+
+// Crash observability. Every hook below only RECORDS — the process keeps the
+// exact crash behavior it had before (see observeMainProcessCrashes' JSDoc for
+// why the uncaught-exception path uses the monitor hook rather than a plain
+// 'uncaughtException' listener, which would have swallowed Electron's own
+// crash dialog). A severe crash is additionally forwarded to any live renderer,
+// which is the only tier that can decide whether the user opted out of remote
+// telemetry, so it — not this process — makes the network call.
+const crashObserverOptions = {
+  onCrash: (crash) => {
+    log('error', 'crash observed', crash);
+    try {
+      emitEvent('runtime-crash', crash);
+    } catch {
+      // A dead/absent renderer must never turn a crash record into a second crash.
+    }
+  },
+};
+observeMainProcessCrashes(process, crashObserverOptions);
 
 function isAutoConfirmedTransition() {
   return (
@@ -194,6 +218,8 @@ function createWindow(transitionWindow = null) {
       }
     }
   });
+
+  observeWebContentsCrashes(win.webContents, 'main', crashObserverOptions);
 
   // Tauri drag regions use the [data-tauri-drag] attribute; under Electron a
   // window is dragged via CSS `-webkit-app-region`. Map them so the top bar
@@ -330,6 +356,7 @@ async function createTransitionWindow(appInstance, inspection) {
       partition: `abu-transition-${process.pid}`,
     },
   });
+  observeWebContentsCrashes(win.webContents, 'transition', crashObserverOptions);
   registerPrivilegedWindow(win, MIGRATION_INDEX, { label: 'transition' });
   await win.loadFile(MIGRATION_INDEX, {
     query: {
@@ -370,6 +397,10 @@ if (!app.requestSingleInstanceLock()) {
   });
 
   app.whenReady().then(async () => {
+    // Resolve the runtime-observability log path up front (idempotent). It was
+    // previously configured lazily by the first mcp command / renderer runtime
+    // event, so a crash during the startup gates below had nowhere to land.
+    configureRuntimeObservability(app);
     let transitionInspection = null;
     let transitionWindow = null;
     try {

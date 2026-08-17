@@ -3,9 +3,13 @@
 const assert = require('node:assert/strict');
 const { test } = require('node:test');
 
+const { EventEmitter } = require('node:events');
+
 const {
   SIDECAR_TRACE_PREFIX,
   createRuntimeState,
+  observeMainProcessCrashes,
+  observeWebContentsCrashes,
   parseJsonRpcMetadata,
   sanitizeAttributes,
 } = require('./runtimeObservability.cjs');
@@ -181,6 +185,126 @@ test('sidecar marker parser accepts only safe sidecar events and attributes', ()
   assert.equal('prompt' in event.attributes, false);
   assert.equal('apiKey' in event.attributes, false);
   assert.equal(h.state.noteSidecarTraceLine('abu-sidecar', `${SIDECAR_TRACE_PREFIX}{bad-json`), false);
+});
+
+test('main-process crash observers record without taking over crash behavior', () => {
+  const h = makeHarness();
+  const crashes = [];
+  const processRef = new EventEmitter();
+  const dispose = observeMainProcessCrashes(processRef, {
+    state: h.state,
+    onCrash: (crash) => crashes.push(crash),
+  });
+
+  // Electron's own default handler bails out as soon as a SECOND
+  // 'uncaughtException' listener exists, which would silently remove its crash
+  // dialog. Recording must therefore not add one.
+  assert.equal(processRef.listenerCount('uncaughtException'), 0);
+  assert.equal(processRef.listenerCount('uncaughtExceptionMonitor'), 1);
+
+  processRef.emit(
+    'uncaughtExceptionMonitor',
+    Object.assign(new TypeError('boom authorization=Bearer abcdefghijklmnop'), {}),
+    'uncaughtException',
+  );
+  processRef.emit('unhandledRejection', new Error('rejected'), Promise.resolve());
+
+  const uncaught = h.events.find((entry) => entry.event === 'main.uncaught_exception');
+  assert.deepEqual(uncaught.attributes, {
+    stage: 'uncaught_exception',
+    outcome: 'error',
+    errorType: 'typeerror',
+    reason: 'uncaughtException',
+  });
+  const rejection = h.events.find((entry) => entry.event === 'main.unhandled_rejection');
+  assert.deepEqual(rejection.attributes, {
+    stage: 'unhandled_rejection',
+    outcome: 'error',
+    errorType: 'error',
+  });
+
+  assert.equal(crashes.length, 2);
+  assert.equal(crashes[0].kind, 'main_uncaught_exception');
+  assert.match(crashes[0].message, /\[REDACTED\]/);
+  assert.equal(crashes[0].message.includes('abcdefghijklmnop'), false);
+  assert.equal(crashes[1].kind, 'main_unhandled_rejection');
+
+  dispose();
+  processRef.emit('uncaughtExceptionMonitor', new Error('after dispose'), 'uncaughtException');
+  assert.equal(h.events.filter((entry) => entry.event === 'main.uncaught_exception').length, 1);
+});
+
+test('a throwing crash consumer cannot escalate the crash it was observing', () => {
+  const h = makeHarness();
+  const processRef = new EventEmitter();
+  observeMainProcessCrashes(processRef, {
+    state: h.state,
+    onCrash: () => { throw new Error('consumer exploded'); },
+  });
+
+  assert.doesNotThrow(() => {
+    processRef.emit('uncaughtExceptionMonitor', new Error('boom'), 'uncaughtException');
+  });
+  assert.ok(h.events.some((entry) => entry.event === 'main.uncaught_exception'));
+});
+
+test('renderer death is recorded for every reason but only escalated when severe', () => {
+  const h = makeHarness();
+  const crashes = [];
+  const webContents = new EventEmitter();
+  const dispose = observeWebContentsCrashes(webContents, 'main', {
+    state: h.state,
+    onCrash: (crash) => crashes.push(crash),
+  });
+
+  webContents.emit('render-process-gone', {}, { reason: 'clean-exit', exitCode: 0 });
+  webContents.emit('render-process-gone', {}, { reason: 'crashed', exitCode: 133 });
+  webContents.emit('unresponsive');
+
+  assert.deepEqual(
+    h.events.filter((entry) => entry.event === 'main.render_process_gone').map((e) => e.attributes),
+    [
+      {
+        windowLabel: 'main',
+        stage: 'render_process_gone',
+        outcome: 'error',
+        errorType: 'render_process_gone',
+        reason: 'clean-exit',
+        exitCode: 0,
+      },
+      {
+        windowLabel: 'main',
+        stage: 'render_process_gone',
+        outcome: 'error',
+        errorType: 'render_process_gone',
+        reason: 'crashed',
+        exitCode: 133,
+      },
+    ],
+  );
+  assert.deepEqual(h.events.at(-1), {
+    processName: 'main',
+    event: 'main.renderer_unresponsive',
+    attributes: {
+      windowLabel: 'main',
+      stage: 'renderer_unresponsive',
+      outcome: 'stalled',
+      errorType: 'renderer_unresponsive',
+    },
+  });
+
+  // A clean teardown and a hang are not remote-report material; a death is.
+  assert.deepEqual(crashes, [{
+    kind: 'renderer_process_gone',
+    errorType: 'render_process_gone',
+    reason: 'crashed',
+    windowLabel: 'main',
+    message: '',
+  }]);
+
+  dispose();
+  webContents.emit('render-process-gone', {}, { reason: 'oom', exitCode: 9 });
+  assert.equal(crashes.length, 1);
 });
 
 test('tracks native helper start, readiness, restart, crash, and call timeout without payloads', () => {

@@ -110,16 +110,20 @@ describe('TerminalTab theming', () => {
     });
 
     // The MutationObserver callback (useEffectiveThemeIsDark) fires off a
-    // microtask checkpoint, not synchronously — give it real headroom rather
-    // than the default 1s waitFor window, which has been observed to flake
-    // under CPU contention (e.g. a concurrently running dev build).
+    // microtask checkpoint, not synchronously — under CI resource contention
+    // (observed on Windows runners) it can take a couple of seconds, so this
+    // needs real headroom. Vitest's per-test timeout defaults to 5s and is
+    // deliberately not raised project-wide (vitest.config.ts), so a waitFor
+    // timeout anywhere near that just loses the race against the *outer*
+    // test timeout before it ever gets to report its own diff — hence the
+    // explicit, larger `it(...)` timeout below alongside this one.
     await waitFor(() => {
       expect(terminalInstances[0].options.theme).toEqual({
         background: DARK_VARS['--abu-bg-base'],
         foreground: DARK_VARS['--abu-text-primary'],
         cursor: DARK_VARS['--abu-clay'],
       });
-    }, { timeout: 5000 });
+    }, { timeout: 12000 });
 
     // Still the same single terminal instance — no dispose/recreate cycle.
     expect(terminalInstances).toHaveLength(1);
@@ -127,5 +131,5 @@ describe('TerminalTab theming', () => {
     const killCallsAfter = invoke.mock.calls.filter(([cmd]) => cmd === 'pty_kill').length;
     expect(spawnCallsAfter).toBe(spawnCallsBefore);
     expect(killCallsAfter).toBe(killCallsBefore);
-  });
+  }, 15000);
 });

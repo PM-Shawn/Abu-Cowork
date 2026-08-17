@@ -2279,6 +2279,35 @@ describe('agentLoopRunner', () => {
       expect(chatDeltaSetConversationStatusMock).toHaveBeenCalledWith('conv-1', 'error');
     });
 
+    it('skips re-appending the error text when agentLoop already rendered it (errorType: agent_loop_error)', async () => {
+      const { runAgentLoopDispatched } = await importFresh();
+      sidecarRequestMock.mockImplementation((_method: string, _params: unknown, _timeout: number, signal?: AbortSignal) => (
+        new Promise((_resolve, reject) => {
+          signal?.addEventListener('abort', () => reject(signal.reason), { once: true });
+        })
+      ));
+
+      const running = runAgentLoopDispatched('conv-1', 'hello');
+      await waitForCall(sidecarRequestMock);
+      const runId = (sidecarRequestMock.mock.calls[0][1] as { runId: string }).runId;
+      const terminalHandler = handlerFor(onSidecarNotification, 'agent.terminal');
+      terminalHandler({
+        version: 1,
+        runId,
+        state: 'failed',
+        result: { reason: 'error', error: '余额不足或无可用资源包，请充值。' },
+        failure: { errorType: 'agent_loop_error', message: '余额不足或无可用资源包，请充值。' },
+      });
+
+      await expect(running).resolves.toEqual({ reason: 'error', error: '余额不足或无可用资源包，请充值。' });
+      expect(runAgentLoopMock).not.toHaveBeenCalled();
+      // agentLoop's own catch branch already appended the display error inside
+      // the sidecar — the shell must not render it a second time.
+      expect(chatDeltaAppendTextMock).not.toHaveBeenCalled();
+      expect(chatDeltaFinishStreamingMock).toHaveBeenCalledTimes(1);
+      expect(chatDeltaSetConversationStatusMock).toHaveBeenCalledWith('conv-1', 'error');
+    });
+
     it('does not settle a failed terminal until its failed lifecycle is durable', async () => {
       const { runAgentLoopDispatched } = await importFresh();
       const failurePersistence = deferred<void>();

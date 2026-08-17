@@ -2524,6 +2524,10 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
       const isOllamaForbidden = errorCode === 'authentication'
         && err instanceof LLMError && err.statusCode === 403
         && /^forbidden\s*$/i.test(err.message.trim());
+      // Provider-returned balance/resource-package exhaustion (e.g. Zhipu GLM
+      // answers HTTP 429 with this Chinese text). Replace the raw provider
+      // string with actionable copy; `result.error` keeps the original.
+      const isInsufficientBalanceError = /余额不足|无可用资源包/.test(errorMessage);
       const isEnterpriseGatewayUnavailable = err instanceof EnterpriseLlmUnavailableError;
       const isContextBudgetError = err instanceof ContextBudgetError;
       let displayError = isEnterpriseGatewayUnavailable
@@ -2536,6 +2540,8 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
         ? getI18n().chat.visionUnsupported
         : isOllamaForbidden
         ? getI18n().chat.ollamaForbidden
+        : isInsufficientBalanceError
+        ? getI18n().chat.insufficientBalance
         : formatLlmDisplayError(err, errorMessage, getI18n().chat.errorEmptyBody);
       if (errorCode === 'not_found') {
         displayError += `\n\n${getI18n().chat.errorNotFoundHint}`;

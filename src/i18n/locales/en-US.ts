@@ -2157,7 +2157,7 @@ const enUS: TranslationDict = {
     browserDescription: 'Abu wants to run this action inside your logged-in browser:',
     browserSiteDenied: 'You have blocked automation on this site (change it in Settings → Capabilities)',
     browserScriptReason: 'This runs a script inside the page. Scripts act with the page\'s full authority (reading content, acting as you), so each run asks separately — there is no "always allow".',
-    browserAllowOnce: 'Just this once',
+    browserAllowOnce: 'This conversation only',
     browserAlwaysAllowSite: 'Always allow this site',
     selfExtensionTitle: 'Confirm new capability',
     selfExtensionDescription: 'Abu wants to add or rewrite one of its own long-lived capabilities:',

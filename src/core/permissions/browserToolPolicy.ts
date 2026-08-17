@@ -60,7 +60,17 @@ export function normalizeBrowserOrigin(url: string | undefined): string | null {
   try {
     const parsed = new URL(url);
     if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return null;
-    return parsed.origin;
+    // Rebuild instead of using `.origin`: a FQDN trailing dot resolves to the
+    // same host over DNS but would otherwise mint a distinct key
+    // (`evil.com.` vs `evil.com`), letting one spelling slip past a verdict
+    // stored under the other. URL already lowercases the host, strips
+    // userinfo, punycodes IDN, and drops default ports.
+    const hostname = parsed.hostname.endsWith('.')
+      ? parsed.hostname.slice(0, -1)
+      : parsed.hostname;
+    if (!hostname) return null;
+    const port = parsed.port ? `:${parsed.port}` : '';
+    return `${parsed.protocol}//${hostname}${port}`;
   } catch {
     return null;
   }
@@ -72,6 +82,11 @@ export type SiteVerdict = 'allowed' | 'denied' | 'default';
  * Resolve a persistent per-site verdict. Precedence is fixed:
  * denied > allowed > default — a site the user blocked stays blocked no
  * matter what else would have allowed it.
+ *
+ * NOTE: no production UI writes 'denied' yet — the dialog only writes
+ * 'allowed' and Settings only revokes. The denied branch is forward schema
+ * for the planned block-site control; it is pinned by tests so wiring the
+ * UI later cannot regress the precedence.
  */
 export function getSiteVerdict(
   origin: string | null,

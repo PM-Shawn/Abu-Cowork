@@ -43,7 +43,7 @@ describe('CommandConfirmDialog', () => {
   it('offers three choices when a persistent site grant is allowed', () => {
     renderDialog({ browserOrigin: 'https://example.com', allowPersistentGrant: true });
 
-    expect(screen.getByRole('button', { name: '仅这次' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '仅本次对话' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: '此网站以后都允许' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: '取消' })).toBeInTheDocument();
   });
@@ -68,7 +68,7 @@ describe('CommandConfirmDialog', () => {
       allowPersistentGrant: true,
     });
 
-    await user.click(screen.getByRole('button', { name: '仅这次' }));
+    await user.click(screen.getByRole('button', { name: '仅本次对话' }));
 
     expect(useSettingsStore.getState().browserSitePermissions).toEqual({});
     expect(onConfirm).toHaveBeenCalledTimes(1);

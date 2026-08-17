@@ -138,6 +138,10 @@ export default function BrowserTab({ tabId, url }: { tabId: string; url: string 
   // visually "under" the overlay (Claude desktop's warm-capture approach).
   // null while the native view is visible.
   const [freezeFrame, setFreezeFrame] = useState<string | null>(null);
+  // Why the pane is about to hide. Only overlay hides deserve a capture — a
+  // keep-alive tab going off-screen would otherwise pay a capturePage round
+  // trip on every tab switch and retain a multi-MB data URL nobody can see.
+  const hiddenForOverlayRef = useRef(false);
 
   // Reconcile visibility serially. IPC failures leave `shownRef` unchanged so
   // the interval below retries instead of permanently believing the view moved.
@@ -149,19 +153,25 @@ export default function BrowserTab({ tabId, url }: { tabId: string; url: string 
         const desired = desiredVisibleRef.current;
         if (shownRef.current === desired) return;
         if (!desired) {
-          // Capture BEFORE hiding — a hidden view has no compositor frame.
-          // Best-effort: a null capture just falls back to the blank pane.
-          try {
-            const frame = await invoke<string | null>('browser_capture', { id: tabId });
-            if (typeof frame === 'string' && frame.startsWith('data:image/')) {
-              setFreezeFrame(frame);
+          if (hiddenForOverlayRef.current) {
+            // Capture BEFORE hiding — a hidden view has no compositor frame.
+            // Best-effort: a null capture just falls back to the blank pane.
+            try {
+              const frame = await invoke<string | null>('browser_capture', { id: tabId });
+              if (typeof frame === 'string' && frame.startsWith('data:image/')) {
+                setFreezeFrame(frame);
+              }
+            } catch {
+              /* keep whatever frame we already have */
             }
-          } catch {
-            /* keep whatever frame we already have */
+            if (!createdRef.current) return;
+            // Overlay may have closed while capturing — re-check before hiding.
+            if (desiredVisibleRef.current !== desired) continue;
+          } else {
+            // Off-screen hide (tab switch, zero rect): no capture, and drop
+            // any stale frame so it cannot outlive the page it shows.
+            setFreezeFrame(null);
           }
-          if (!createdRef.current) return;
-          // Overlay may have closed while capturing — re-check before hiding.
-          if (desiredVisibleRef.current !== desired) continue;
         }
         try {
           await invoke(desired ? 'browser_show' : 'browser_hide', { id: tabId });
@@ -190,14 +200,13 @@ export default function BrowserTab({ tabId, url }: { tabId: string; url: string 
     const r = el.getBoundingClientRect();
     // A CSS-hidden ancestor (inactive keep-alive tab) yields a zero rect; a
     // full-window modal should also force-hide even though the rect is valid.
-    const visible =
-      r.width >= 1
-      && r.height >= 1
-      && el.offsetParent !== null
-      && !systemSettingsOpen
-      && !menuOpen
-      && !blockingApprovalOpen;
+    const overlayActive = systemSettingsOpen || menuOpen || blockingApprovalOpen;
+    const onScreen = r.width >= 1 && r.height >= 1 && el.offsetParent !== null;
+    const visible = onScreen && !overlayActive;
 
+    // Record WHY we are hiding: only "on screen but covered by an overlay"
+    // warrants the freeze-frame capture in reconcileNativeVisibility.
+    hiddenForOverlayRef.current = onScreen && overlayActive;
     desiredVisibleRef.current = visible;
     reconcileNativeVisibility();
     if (!visible) {

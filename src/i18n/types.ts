@@ -2309,7 +2309,9 @@ export interface TranslationDict {
     browserDescription: string;
     browserSiteDenied: string;
     browserScriptReason: string;
-    /** "Just this once" button — shown when a persistent site grant is also offered. */
+    /** Conversation-scoped approval button (30-minute TTL, this conversation
+     *  only) — shown when a persistent site grant is also offered. Named for
+     *  what it actually grants: "this conversation", not "once". */
     browserAllowOnce: string;
     /** "Always allow this site" button — fixed text; the origin itself is
      *  shown in the dialog's command display, keeping the button short no

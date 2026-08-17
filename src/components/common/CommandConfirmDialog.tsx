@@ -170,9 +170,13 @@ export default function CommandConfirmDialog({
             </Button>
           )}
           {!isBlocked && offerSiteGrant && (
+            // The more consequential choice stays visually secondary: the
+            // conversation-scoped button keeps the primary styling so the
+            // safer default is the visually dominant one.
             <Button
+              variant="outline"
               onClick={handleAlwaysAllowSite}
-              className="flex-1 h-10 text-body bg-[var(--abu-text-primary)] hover:bg-[var(--abu-text-secondary)] text-white"
+              className="flex-1 h-10 text-body border-[var(--abu-border-hover)] hover:bg-[var(--abu-bg-muted)]"
               title={request.browserOrigin}
             >
               {t.commandConfirm.browserAlwaysAllowSite}

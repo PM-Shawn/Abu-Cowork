@@ -1263,10 +1263,10 @@ function registerTauriHost(app, options = {}) {
       // close, backed by a real `WebContentsView` per tab
       // (electron/browserHost.cjs), porting src-tauri/src/browser.rs for the
       // workspace browser tab. Placed after ptyDispatch and before
-      // windowDispatch — no ordering dependency on either; browserDispatch is
-      // synchronous today (WebContentsView setup/loadURL calls are all
-      // fire-and-forget); if it ever returns a Promise, returning it here still
-      // resolves through this async handler, so no await is needed.
+      // windowDispatch — no ordering dependency on either. Most browser_*
+      // commands are synchronous fire-and-forget; browser_capture returns a
+      // Promise, which resolves through this async handler, so no await is
+      // needed either way.
       const browserResult = browserDispatch(app, cmd, a);
       if (browserResult !== BROWSER_MISS) return browserResult;
       // GUI-families (tray/overlay/window_info/pet) — electron/guiHost.cjs,

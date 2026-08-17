@@ -96,6 +96,20 @@ describe('browser tool policy', () => {
         .not.toBe(normalizeBrowserOrigin('https://example.com/'));
     });
 
+    it('collapses a FQDN trailing dot — evil.com. and evil.com share one key', () => {
+      expect(normalizeBrowserOrigin('https://evil.com./login')).toBe('https://evil.com');
+      expect(normalizeBrowserOrigin('https://evil.com./login'))
+        .toBe(normalizeBrowserOrigin('https://evil.com/other'));
+    });
+
+    it('lowercases the host and strips userinfo and default ports', () => {
+      expect(normalizeBrowserOrigin('https://EXAMPLE.com/A')).toBe('https://example.com');
+      expect(normalizeBrowserOrigin('https://user:pass@example.com/')).toBe('https://example.com');
+      expect(normalizeBrowserOrigin('https://example.com:443/')).toBe('https://example.com');
+      expect(normalizeBrowserOrigin('http://example.com:80/')).toBe('http://example.com');
+      expect(normalizeBrowserOrigin('https://example.com:8443/')).toBe('https://example.com:8443');
+    });
+
     it('refuses non-http(s) and unparseable URLs — those pages never earn a grant', () => {
       expect(normalizeBrowserOrigin('file:///etc/passwd')).toBeNull();
       expect(normalizeBrowserOrigin('chrome://settings')).toBeNull();

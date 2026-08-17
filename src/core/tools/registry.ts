@@ -306,16 +306,29 @@ async function resolveBrowserActionOrigin(
   const toolName = namespacedName.slice(separator + 2);
 
   if (toolName === 'navigate') {
-    // back/forward/reload carry no URL — fall through to the current tab URL.
+    // Only `goto` actually navigates to `input.url`. For back/forward/reload
+    // the executor ignores `url` entirely, so trusting it here would let a
+    // decoy url ride an allowed-site verdict while the browser goes somewhere
+    // else (history/reload). Destination is unknowable → null → ask.
+    const action = typeof input.action === 'string' ? input.action : 'goto';
+    if (action !== 'goto') return null;
     const url = typeof input.url === 'string' ? input.url : undefined;
-    if (url) return normalizeBrowserOrigin(url);
+    return url ? normalizeBrowserOrigin(url) : null;
   }
 
   const tabId = Number(input.tabId);
   if (!Number.isFinite(tabId)) return null;
   try {
-    const result = await mcpManager.callTool(serverName, 'get_tabs', {});
-    if (typeof result !== 'string') return null;
+    // Approval must never hang on a wedged browser server: the MCP browser
+    // timeout is 120s, so race a short deadline and fall back to "unknown
+    // origin" (which just asks). Known residual: the builtin server's
+    // get_tabs provisions an automation view when none exists — acceptable
+    // here because an approved action would do the same a moment later.
+    const result = await Promise.race([
+      mcpManager.callTool(serverName, 'get_tabs', {}),
+      new Promise<null>((resolve) => setTimeout(() => resolve(null), 3000)),
+    ]);
+    if (result === null || typeof result !== 'string') return null;
     const parsed = JSON.parse(result) as {
       windows?: Array<{ tabs?: Array<{ tabId?: number; url?: string }> }>;
     };
@@ -486,10 +499,13 @@ export async function checkToolApproval(
       if (siteVerdict === 'denied') {
         return { decision: 'deny', reason: `Error: ${t.commandConfirm.browserSiteDenied}` };
       }
+      // Scripting (execute_js) is a stronger capability than clicking: the
+      // dialog promises "each run asks separately", so it must neither ride
+      // the conversation grant nor a persistent site grant.
       const scripting = isScriptingBrowserTool(name);
       const granted =
-        hasBrowserGrant(toolContext?.conversationId) ||
-        (siteVerdict === 'allowed' && !scripting);
+        !scripting &&
+        (hasBrowserGrant(toolContext?.conversationId) || siteVerdict === 'allowed');
       const decision = strategy.decideOtherTool(consequence, granted);
       if (decision !== 'allow') {
         if (!onRequireConfirmation) {
@@ -512,7 +528,10 @@ export async function checkToolApproval(
         if (!confirmed) {
           return { decision: 'deny', reason: t.commandConfirm.userCancelled };
         }
-        grantBrowserAutomation(toolContext?.conversationId);
+        // A script approval covers that one run only — minting the
+        // conversation grant from it would silently unlock 30 minutes of
+        // click/fill/navigate the user never approved.
+        if (!scripting) grantBrowserAutomation(toolContext?.conversationId);
       }
     }
   }

@@ -155,7 +155,7 @@ describe('browser site permission verdicts', () => {
     expect(asked).toHaveLength(0);
   });
 
-  it('lets an allowed site through even with no confirmation channel — the scheduled-task path', async () => {
+  it('lets an allowed site through even with no confirmation channel (headless run; the scheduler itself passes an auto-deny callback, same outcome)', async () => {
     useSettingsStore.setState({ browserSitePermissions: { 'https://example.com': 'allowed' } });
 
     const decision = await checkToolApproval(
@@ -207,6 +207,76 @@ describe('browser site permission verdicts', () => {
     );
 
     expect(asked).toHaveLength(1);
+  });
+
+  it('a decoy url on navigate back/forward/reload cannot ride an allowed-site verdict', async () => {
+    // The executor ignores `url` unless action === 'goto', so the gate must
+    // not let a crafted allowed-site url approve a history navigation whose
+    // real destination is unknown.
+    useSettingsStore.setState({ browserSitePermissions: { 'https://allowed.com': 'allowed' } });
+    const asked: string[] = [];
+    const confirm = async (info: { command: string }) => { asked.push(info.command); return true; };
+
+    await checkToolApproval(
+      'abu-browser__navigate', { tabId: 1, url: 'https://allowed.com/', action: 'back' },
+      { conversationId: 'conv-1' } as never, confirm as never,
+    );
+
+    expect(asked).toHaveLength(1);
+  });
+
+  it('denies navigate back with a decoy allowed url when headless — no silent unattended ride', async () => {
+    useSettingsStore.setState({ browserSitePermissions: { 'https://allowed.com': 'allowed' } });
+
+    const decision = await checkToolApproval(
+      'abu-browser__navigate', { tabId: 1, url: 'https://allowed.com/', action: 'reload' },
+      { conversationId: 'sched-run-1' } as never, undefined,
+    );
+
+    expect(decision.decision).toBe('deny');
+  });
+
+  it('execute_js does not ride the conversation grant earned by a non-scripting approval', async () => {
+    const asked: string[] = [];
+    const confirm = async (info: { command: string }) => { asked.push(info.command); return true; };
+
+    // Approving a click mints the conversation grant…
+    await checkToolApproval(
+      'abu-browser__click', {}, { conversationId: 'conv-1' } as never, confirm as never,
+    );
+    // …but a script run in the same conversation must still ask.
+    await checkToolApproval(
+      'abu-browser__execute_js', { code: 'document.cookie' },
+      { conversationId: 'conv-1' } as never, confirm as never,
+    );
+
+    expect(asked).toHaveLength(2);
+  });
+
+  it('approving a script does not mint the conversation grant for other browser actions', async () => {
+    const asked: string[] = [];
+    const confirm = async (info: { command: string }) => { asked.push(info.command); return true; };
+
+    await checkToolApproval(
+      'abu-browser__execute_js', { code: '1+1' },
+      { conversationId: 'conv-1' } as never, confirm as never,
+    );
+    await checkToolApproval(
+      'abu-browser__click', {}, { conversationId: 'conv-1' } as never, confirm as never,
+    );
+
+    expect(asked).toHaveLength(2);
+  });
+
+  it('denies headless execute_js even on an allowed site — fail-closed pinned', async () => {
+    useSettingsStore.setState({ browserSitePermissions: { 'https://example.com': 'allowed' } });
+
+    const decision = await checkToolApproval(
+      'abu-browser__execute_js', { tabId: 1, code: '1+1' },
+      { conversationId: 'sched-run-1' } as never, undefined,
+    );
+
+    expect(decision.decision).toBe('deny');
   });
 
   it('execute_js never rides a site grant — scripts ask every time', async () => {

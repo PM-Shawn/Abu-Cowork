@@ -2158,7 +2158,7 @@ const zhCN: TranslationDict = {
     browserDescription: '阿布要在你已登录的浏览器里执行下面这个操作：',
     browserSiteDenied: '该网站已被你设为禁止操作（可在 设置 → 能力 中修改）',
     browserScriptReason: '将在页面里运行一段脚本。脚本拥有该页面的全部权限（可读取内容、代表你操作），因此每次运行都会单独询问，不提供"以后都允许"。',
-    browserAllowOnce: '仅这次',
+    browserAllowOnce: '仅本次对话',
     browserAlwaysAllowSite: '此网站以后都允许',
     selfExtensionTitle: '新增能力确认',
     selfExtensionDescription: '阿布要为自己新增或改写一项长期能力：',

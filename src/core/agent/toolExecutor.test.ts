@@ -293,26 +293,6 @@ describe('executeToolBatch · run_command batch scheduling', () => {
     mocks.emitHook.mockResolvedValue({ blocked: false });
   });
 
-  /** ToolInvoker whose registry declares run_command concurrency-safe per input. */
-  function makeCommandInvoker(
-    executeAnyTool: ToolInvoker['executeAnyTool'],
-    isConcurrencySafe: (input: Record<string, unknown>) => boolean,
-  ): ToolInvoker {
-    return {
-      getAllTools: () => [
-        {
-          name: 'run_command',
-          description: 'run a command',
-          inputSchema: { type: 'object', properties: {} },
-          execute: async () => 'unused',
-          isConcurrencySafe,
-        } as never,
-      ],
-      executeAnyTool,
-      toolResultToString: (result) => String(result),
-    };
-  }
-
   function makeBatchParams(toolCalls: ToolCall[], invoker: ToolInvoker) {
     return {
       ...makeParams(toolCalls[0], invoker),
@@ -320,64 +300,65 @@ describe('executeToolBatch · run_command batch scheduling', () => {
     };
   }
 
-  /** Tracks whether the two calls' executions overlapped in time. */
+  /**
+   * Tracks whether the calls' executions overlapped. The await yields one
+   * microtask (no timers — TESTING.md determinism rules): under parallel
+   * scheduling the second call starts while the first is parked on the
+   * microtask (maxInFlight 2); under sequential scheduling the second call
+   * only starts after the first fully resolves (maxInFlight 1).
+   */
   function makeOverlapProbe() {
     let inFlight = 0;
     let maxInFlight = 0;
     const executeAnyTool = vi.fn().mockImplementation(async () => {
       inFlight++;
       maxInFlight = Math.max(maxInFlight, inFlight);
-      await new Promise((r) => setTimeout(r, 10));
+      await Promise.resolve();
       inFlight--;
       return 'ok';
     });
     return { executeAnyTool, maxInFlight: () => maxInFlight };
   }
 
+  // The scheduler classifies commands with the pure isReadOnlyCommand
+  // classifier directly (NOT via toolInvoker.getAllTools()): the registry's
+  // isConcurrencySafe predicate is a function and does not survive the
+  // sidecar RPC boundary. These tests use real command strings so they pin
+  // the actual classifier behavior on both planes.
   it('runs an all-read-only run_command batch in parallel', async () => {
     const probe = makeOverlapProbe();
-    const invoker = makeCommandInvoker(probe.executeAnyTool, () => true);
     const calls = [
       { ...makeToolCall('run_command', { command: 'ls -la' }), id: 'tc-1' },
       { ...makeToolCall('run_command', { command: 'grep foo bar.txt' }), id: 'tc-2' },
     ];
 
-    await executeToolBatch(makeBatchParams(calls, invoker));
+    await executeToolBatch(makeBatchParams(calls, makeInvoker(probe.executeAnyTool)));
 
     expect(probe.executeAnyTool).toHaveBeenCalledTimes(2);
     expect(probe.maxInFlight()).toBe(2);
   });
 
-  it('keeps a batch sequential when any command is not concurrency-safe', async () => {
+  it('keeps the batch sequential when any command is not read-only', async () => {
     const probe = makeOverlapProbe();
-    const invoker = makeCommandInvoker(
-      probe.executeAnyTool,
-      (input) => String(input.command).startsWith('ls'),
-    );
     const calls = [
       { ...makeToolCall('run_command', { command: 'ls -la' }), id: 'tc-1' },
       { ...makeToolCall('run_command', { command: 'npm install' }), id: 'tc-2' },
     ];
 
-    await executeToolBatch(makeBatchParams(calls, invoker));
+    await executeToolBatch(makeBatchParams(calls, makeInvoker(probe.executeAnyTool)));
 
     expect(probe.executeAnyTool).toHaveBeenCalledTimes(2);
     expect(probe.maxInFlight()).toBe(1);
   });
 
-  it('keeps a batch sequential when the tool definition is unknown to the registry', async () => {
+  it('keeps the batch sequential when a command is missing from the input', async () => {
     const probe = makeOverlapProbe();
-    const invoker: ToolInvoker = {
-      getAllTools: () => [],
-      executeAnyTool: probe.executeAnyTool,
-      toolResultToString: (result) => String(result),
-    };
     const calls = [
       { ...makeToolCall('run_command', { command: 'ls' }), id: 'tc-1' },
-      { ...makeToolCall('run_command', { command: 'ls -la' }), id: 'tc-2' },
+      { ...makeToolCall('run_command', {}), id: 'tc-2' },
     ];
 
-    await executeToolBatch(makeBatchParams(calls, invoker));
+    await executeToolBatch(makeBatchParams(calls, makeInvoker(probe.executeAnyTool)));
 
     expect(probe.executeAnyTool).toHaveBeenCalledTimes(2);
     expect(probe.maxInFlight()).toBe(1);

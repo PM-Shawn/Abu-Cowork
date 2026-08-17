@@ -1381,10 +1381,13 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
       if (relevantMemoriesSection) {
         dynamicSections.push({ name: 'relevant-memories', text: relevantMemoriesSection, cacheable: false });
       }
-      // Re-partition after appending per-turn dynamic sections: every volatile
-      // section must stay behind the last cacheable one or the cached prompt
-      // prefix breaks on every turn (see orderSectionsForCaching).
-      let allSections = mergeSections(orderSectionsForCaching([...systemPromptSections, ...dynamicSections]));
+      // Re-partition after appending per-turn dynamic sections: volatile
+      // sections must stay behind the last cacheable one (cache-prefix
+      // stability) and the pinned safety anchor must return to the absolute
+      // end (recency). Kept UNMERGED here so section identity (pinToEnd)
+      // survives the compression-hint append below; merging happens once at
+      // the send boundary.
+      let allSections = orderSectionsForCaching([...systemPromptSections, ...dynamicSections]);
       // String form for token estimation and context management
       let effectiveSystemPrompt = sectionsToString(allSections);
 
@@ -1488,7 +1491,9 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
           text: '\n[The earlier conversation history has been compressed and older details summarized. If the user mentions early details you are unsure about, say so honestly and ask them to confirm — do not fabricate.]',
           cacheable: false,
         };
-        allSections = mergeSections([...allSections, compressionHint]);
+        // Re-partition so the hint joins the volatile tail BEFORE the pinned
+        // safety anchor rather than trailing it.
+        allSections = orderSectionsForCaching([...allSections, compressionHint]);
         effectiveSystemPrompt = sectionsToString(allSections);
       }
 
@@ -1652,7 +1657,10 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
         apiKey: effectiveCreds.apiKey,
         baseUrl: effectiveCreds.baseUrl,
         systemPrompt: effectiveSystemPrompt,
-        systemPromptSections: allSections,
+        // Merge at the send boundary only — merging earlier would fuse the
+        // pinned safety anchor into the volatile tail and lose its identity
+        // for the compression-hint re-partition above.
+        systemPromptSections: mergeSections(allSections),
         tools: tools.length > 0 ? tools : undefined,
         maxTokens: maxOutputTokens,
         signal: abortController.signal,

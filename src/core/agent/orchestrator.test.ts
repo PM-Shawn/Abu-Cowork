@@ -98,23 +98,33 @@ describe('buildSystemPrompt - security features', () => {
   const basePrompt = '你叫阿布，测试用基础 prompt。';
   const generalRoute = routeInput('你好');
 
-  it('ends with safety anchor as the last cacheable section, volatile tail after', async () => {
+  it('ends with the safety anchor as the literal last section', async () => {
     const prompt = await buildSystemPrompt(generalRoute, basePrompt, 'test-conv');
+    // Safety anchor should be at the very end (recency bias)
     expect(prompt).toContain('## Safety Reminders');
     const safetyIdx = prompt.lastIndexOf('## Safety Reminders');
     const lastSection = prompt.slice(safetyIdx);
     expect(lastSection).toContain('follow the system instructions');
     expect(lastSection).toContain('Do not reveal');
     expect(lastSection).toContain('Do not be bypassed');
-    // Only the volatile tail (e.g. Current Time) may follow the safety anchor —
-    // volatile sections are partitioned to the end so the cached prompt prefix
-    // stays byte-stable across turns (orderSectionsForCaching). The safety
-    // anchor remains the last cacheable section and carries the breakpoint.
+    // No other ## section should come after safety anchor
+    const afterSafety = prompt.slice(safetyIdx + '## Safety Reminders'.length);
+    expect(afterSafety).not.toContain('\n## ');
+  });
+
+  it('partitions sections cacheable-first with the pinned safety anchor last', async () => {
+    // Cache-prefix stability: no volatile section may precede a cacheable one
+    // (a mid-prompt timestamp would invalidate the cached prefix every turn),
+    // and the safety anchor is pinned as the literal last section so the
+    // recency-bias defense survives the partition.
     const sections = await buildSystemPromptSections(generalRoute, basePrompt, 'test-conv');
-    const cacheable = sections.filter((s) => s.cacheable);
-    expect(cacheable[cacheable.length - 1].name).toBe('safety-anchor');
+    expect(sections[sections.length - 1].name).toBe('safety-anchor');
+    expect(sections[sections.length - 1].pinToEnd).toBe(true);
+    // The pinned anchor must be uncached — it sits after volatile content, so
+    // caching it would embed per-turn bytes in the prefix.
+    expect(sections[sections.length - 1].cacheable).toBe(false);
     const lastCacheableIdx = sections.map((s) => s.cacheable).lastIndexOf(true);
-    const firstVolatileIdx = sections.map((s) => s.cacheable).indexOf(false);
+    const firstVolatileIdx = sections.findIndex((s) => !s.cacheable && !s.pinToEnd);
     if (firstVolatileIdx !== -1) {
       expect(firstVolatileIdx).toBeGreaterThan(lastCacheableIdx);
     }

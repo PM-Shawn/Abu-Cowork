@@ -26,6 +26,7 @@ import { setComputerUseBatchMode, setSkipAutoScreenshot } from '../tools/builtin
 import { setComputerUseActive, incrementComputerUseStep, setCurrentAction, isSessionWindowHidden, setSessionWindowHidden, pauseComputerUseStatus } from './computerUseStatus';
 import { getI18n } from '../../i18n';
 import { TOOL_NAMES } from '../tools/toolNames';
+import { isReadOnlyCommand } from '../tools/readOnlyDetector';
 import { invoke } from '@tauri-apps/api/core';
 import { getChatDelta } from './ports/chatDelta';
 import { getConversationReader } from './ports/conversationReader';
@@ -350,35 +351,37 @@ export async function executeToolBatch(params: ToolBatchParams): Promise<ToolBat
   const allRunCommand = collectedToolCalls.every(tc => tc.name === TOOL_NAMES.RUN_COMMAND);
 
   // A run_command batch may serialize because commands can have implicit
-  // dependencies (npm install → npm build). But when EVERY call in the batch
-  // is declared concurrency-safe by its tool's own isConcurrencySafe predicate
-  // (per-input for run_command: read-only commands like grep/ls/cat), there is
-  // no ordering dependency and parallel execution cuts the batch wall-clock
-  // from sum-of-latencies to max. Any unsafe or unknown call keeps the whole
-  // batch sequential.
-  const allTools = toolInvoker.getAllTools();
-  const isCallConcurrencySafe = (tc: { name: string; input: Record<string, unknown> }): boolean => {
-    const tool = allTools.find(t => t.name === tc.name);
-    if (!tool) return false;
-    try {
-      return typeof tool.isConcurrencySafe === 'function'
-        ? tool.isConcurrencySafe(tc.input) === true
-        : tool.isConcurrencySafe === true;
-    } catch {
-      return false;
-    }
-  };
-  const allCommandsConcurrencySafe = allRunCommand && collectedToolCalls.every(isCallConcurrencySafe);
+  // dependencies (npm install → npm build). But when EVERY command in the
+  // batch is read-only (grep/ls/cat — same classifier commandTools declares
+  // as its isConcurrencySafe predicate), there is no ordering dependency and
+  // parallel execution cuts the batch wall-clock from sum-of-latencies to
+  // max. isReadOnlyCommand is called directly rather than through the tool
+  // registry: the registry's isConcurrencySafe is a function and does not
+  // cross the sidecar RPC boundary (SerializableToolDefinition carries only
+  // name/description/inputSchema), so a registry lookup would silently
+  // disable this on the sidecar-hosted loop. The pure classifier works
+  // identically in both planes.
+  const allCommandsConcurrencySafe = allRunCommand &&
+    collectedToolCalls.every(tc =>
+      typeof tc.input.command === 'string' &&
+      tc.input.command.trim() !== '' &&
+      isReadOnlyCommand(tc.input.command),
+    );
 
+  // Single source of truth for the batch routing — the execution branches
+  // below switch on this same value, so the log can never disagree with
+  // what actually ran.
   const strategy = hasComputerTool
     ? 'computer-sequential'
-    : allRunCommand
-      ? (allCommandsConcurrencySafe ? 'command-parallel' : 'command-sequential')
-      : 'parallel';
+    : !allRunCommand
+      ? 'parallel'
+      : allCommandsConcurrencySafe
+        ? 'command-parallel'
+        : 'command-sequential';
   logger.info('Tool batch started', { toolCount: collectedToolCalls.length, strategy });
 
   let results: PromiseSettledResult<ToolExecResult>[];
-  if (hasComputerTool) {
+  if (strategy === 'computer-sequential') {
     // Sequential execution for computer use batches.
     // Window hide is only needed when batch contains actions that physically interact
     // with the screen (click, type, etc.) — Abu's window may block the target.
@@ -435,7 +438,7 @@ export async function executeToolBatch(params: ToolBatchParams): Promise<ToolBat
 
     // run_command may have implicit dependencies (e.g. npm install → npm build), serialize them
     // — unless the whole batch was proven concurrency-safe above (read-only commands).
-    if (allRunCommand && !allCommandsConcurrencySafe) {
+    if (strategy === 'command-sequential') {
       const sequentialResults: PromiseSettledResult<ToolExecResult>[] = [];
       for (const tc of collectedToolCalls) {
         if (abortController.signal.aborted) break;

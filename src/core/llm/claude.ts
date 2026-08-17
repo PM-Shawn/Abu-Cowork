@@ -155,12 +155,12 @@ const CACHEABLE_BLOCK_TYPES = new Set(['text', 'tool_use', 'tool_result', 'image
 function addIncrementalCacheBreakpoint(messages: Anthropic.MessageParam[]): void {
   for (let m = messages.length - 1; m >= 0; m--) {
     const msg = messages[m];
+    // Normalize string content to block form first so a single walk handles
+    // both shapes (empty strings stay as-is — an empty text block would be
+    // rejected by the API, and there is nothing to attach to anyway).
     if (typeof msg.content === 'string') {
       if (msg.content.length === 0) continue;
-      msg.content = [
-        { type: 'text', text: msg.content, cache_control: { type: 'ephemeral' } } as Anthropic.ContentBlockParam,
-      ];
-      return;
+      msg.content = [{ type: 'text', text: msg.content }];
     }
     for (let b = msg.content.length - 1; b >= 0; b--) {
       const block = msg.content[b] as unknown as Record<string, unknown>;
@@ -234,14 +234,9 @@ export class ClaudeAdapter implements LLMAdapter {
       ];
     }
 
-    // Tools configuration with cache control
+    // Tools configuration
     if (options.tools && options.tools.length > 0) {
-      const tools = convertTools(options.tools);
-      // Add cache_control to the last tool for efficient caching
-      if (tools.length > 0) {
-        (tools[tools.length - 1] as unknown as Record<string, unknown>).cache_control = { type: 'ephemeral' };
-      }
-      params.tools = tools;
+      params.tools = convertTools(options.tools);
       // Tool choice
       const toolChoice = convertToolChoice(options.toolChoice);
       if (toolChoice) {
@@ -258,6 +253,13 @@ export class ClaudeAdapter implements LLMAdapter {
         const existingTools = params.tools ?? [];
         params.tools = [...existingTools, method.toolSpec as unknown as Anthropic.Tool];
       }
+    }
+
+    // Cache breakpoint on the LAST tool — placed after the web-search
+    // injection above so the marker actually sits on the final entry of the
+    // tools array (tools render first in the cached prefix).
+    if (params.tools && params.tools.length > 0) {
+      (params.tools[params.tools.length - 1] as unknown as Record<string, unknown>).cache_control = { type: 'ephemeral' };
     }
 
     // Extended thinking — auto-enabled when model supports 'anthropic' thinking protocol

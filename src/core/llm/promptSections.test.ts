@@ -91,6 +91,30 @@ describe('promptSections', () => {
       expect(cacheable[cacheable.length - 1].name).toBe('safety-anchor');
     });
 
+    it('pins pinToEnd sections after the volatile tail, preserving their order', () => {
+      const sections: PromptSection[] = [
+        { name: 'persona', text: 'p', cacheable: true },
+        { name: 'safety-anchor', text: 'a', cacheable: false, pinToEnd: true },
+        { name: 'current-time', text: 't', cacheable: false },
+        { name: 'workspace', text: 'w', cacheable: true },
+      ];
+      expect(orderSectionsForCaching(sections).map(s => s.name)).toEqual([
+        'persona', 'workspace', 'current-time', 'safety-anchor',
+      ]);
+    });
+
+    it('is idempotent — re-partitioning after appending a volatile section keeps the pin last', () => {
+      const first = orderSectionsForCaching([
+        { name: 'persona', text: 'p', cacheable: true },
+        { name: 'safety-anchor', text: 'a', cacheable: false, pinToEnd: true },
+      ]);
+      const second = orderSectionsForCaching([
+        ...first,
+        { name: 'compression-hint', text: 'h', cacheable: false },
+      ]);
+      expect(second.map(s => s.name)).toEqual(['persona', 'compression-hint', 'safety-anchor']);
+    });
+
     it('handles all-cacheable, all-volatile, and empty inputs unchanged', () => {
       const allCacheable: PromptSection[] = [
         { name: 'a', text: 'a', cacheable: true },

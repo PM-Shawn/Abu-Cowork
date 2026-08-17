@@ -24,6 +24,15 @@ export interface PromptSection {
    * false = content changes every turn (time, MCP, skills) → no cache_control
    */
   cacheable: boolean;
+  /**
+   * Pin this section to the absolute end of the prompt, after the volatile
+   * tail. Used by the safety anchor: recency bias makes the last-read
+   * instructions weigh most, so the safety rules must follow everything —
+   * including per-turn volatile content. A pinned section must also be
+   * `cacheable: false`: it sits after volatile content, so including it in
+   * the cached prefix would embed per-turn bytes and break the cache.
+   */
+  pinToEnd?: boolean;
 }
 
 /**
@@ -55,7 +64,8 @@ export function mergeSections(sections: PromptSection[]): PromptSection[] {
 
 /**
  * Stable-partition sections for prompt caching: cacheable sections first
- * (original relative order), volatile sections last (original relative order).
+ * (original relative order), then volatile sections, then pinned-to-end
+ * sections (each group keeps its original relative order).
  *
  * Prompt caching is a byte-prefix match on every provider (Anthropic caches up
  * to the last cache_control breakpoint; DeepSeek/OpenAI auto-cache the longest
@@ -63,11 +73,15 @@ export function mergeSections(sections: PromptSection[]): PromptSection[] {
  * minute-granularity timestamp — therefore invalidates every cacheable section
  * after it on every turn. Moving all volatile content behind the last cacheable
  * section keeps the cached prefix byte-stable across turns.
+ *
+ * The pinned tail (see PromptSection.pinToEnd) lets the safety anchor stay the
+ * literal last thing the model reads even though volatile sections exist.
  */
 export function orderSectionsForCaching(sections: PromptSection[]): PromptSection[] {
-  const cacheable = sections.filter(s => s.cacheable);
-  const volatile = sections.filter(s => !s.cacheable);
-  return [...cacheable, ...volatile];
+  const cacheable = sections.filter(s => s.cacheable && !s.pinToEnd);
+  const volatile = sections.filter(s => !s.cacheable && !s.pinToEnd);
+  const pinned = sections.filter(s => s.pinToEnd);
+  return [...cacheable, ...volatile, ...pinned];
 }
 
 /**

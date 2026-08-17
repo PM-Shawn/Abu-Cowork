@@ -501,3 +501,78 @@ describe('AI edit pre-snapshot hook', () => {
     expect(snapshotBeforeAiEditMock).not.toHaveBeenCalled();
   });
 });
+
+// Exact-match misses used to burn a full LLM round trip (model re-reads the
+// file and retries) even when old_content differed from the file only in
+// whitespace — trailing spaces, tab↔space, per-line trim. The tolerant
+// fallback reuses fuzzyFindAndReplace (skill-patch machinery) and only
+// applies a unique, unambiguous match; anything else still errors.
+describe('editFileTool — whitespace-tolerant fallback', () => {
+  beforeEach(() => {
+    vi.mocked(exists).mockResolvedValue(true);
+    vi.mocked(writeTextFile).mockClear();
+    vi.mocked(writeTextFile).mockResolvedValue(undefined);
+    snapshotBeforeAiEditMock.mockClear();
+  });
+
+  function writtenContent(): string {
+    return vi.mocked(writeTextFile).mock.calls[0][1] as string;
+  }
+
+  it('applies an edit when old_content carries trailing whitespace the file lacks', async () => {
+    // The model quoted the line with a trailing space that is not in the file.
+    vi.mocked(readTextFile).mockResolvedValueOnce('const a = 1;\nconst b = 2;');
+
+    const result = await editFileTool.execute({
+      path: '/w/drift.ts',
+      old_content: 'const a = 1; \nconst b = 2;',
+      new_content: 'const a = 42;\nconst b = 2;',
+    });
+
+    expect(String(result)).toContain('Successfully edited');
+    expect(String(result)).toContain('whitespace-tolerant fallback');
+    expect(writtenContent()).toBe('const a = 42;\nconst b = 2;');
+    expect(snapshotBeforeAiEditMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('applies an edit when indentation drifted from tabs to spaces', async () => {
+    vi.mocked(readTextFile).mockResolvedValueOnce('if (x) {\n\treturn 1;\n}');
+
+    const result = await editFileTool.execute({
+      path: '/w/tabs.ts',
+      old_content: 'if (x) {\n  return 1;\n}',
+      new_content: 'if (x) {\n  return 2;\n}',
+    });
+
+    expect(String(result)).toContain('Successfully edited');
+    expect(writtenContent()).toContain('return 2;');
+  });
+
+  it('still errors when the fuzzy match is ambiguous (multiple locations)', async () => {
+    // Two locations match after per-line trim — must NOT silently pick one.
+    vi.mocked(readTextFile).mockResolvedValueOnce('foo() \nbar\nfoo() \nbaz');
+
+    const result = await editFileTool.execute({
+      path: '/w/ambiguous.ts',
+      old_content: 'foo()',
+      new_content: 'qux()',
+    });
+
+    expect(String(result)).toContain('Error');
+    expect(vi.mocked(writeTextFile)).not.toHaveBeenCalled();
+    expect(snapshotBeforeAiEditMock).not.toHaveBeenCalled();
+  });
+
+  it('still errors with the similar-line hint when nothing matches at all', async () => {
+    vi.mocked(readTextFile).mockResolvedValueOnce('completely different content');
+
+    const result = await editFileTool.execute({
+      path: '/w/nomatch.ts',
+      old_content: 'function doesNotExist() {}',
+      new_content: 'function replacement() {}',
+    });
+
+    expect(String(result)).toContain('Error: old_content not found');
+    expect(vi.mocked(writeTextFile)).not.toHaveBeenCalled();
+  });
+});
